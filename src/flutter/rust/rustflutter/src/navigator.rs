@@ -1919,7 +1919,8 @@ mod initial_route_tests {
         // The same absence, twice, in one route table. `/a/b` missing is a
         // gap; `/a/b/c` missing is a failure. Nothing about the name says
         // which.
-        let missing_middle = default_generate_initial_routes("/a/b/c", table(&["/", "/a", "/a/b/c"]));
+        let missing_middle =
+            default_generate_initial_routes("/a/b/c", table(&["/", "/a", "/a/b/c"]));
         let missing_end = default_generate_initial_routes("/a/b/c", table(&["/", "/a", "/a/b"]));
         assert_eq!(missing_middle.len(), 3);
         assert_eq!(missing_end, vec![DEFAULT_ROUTE_NAME]);
@@ -1972,4 +1973,3 @@ mod initial_route_tests {
         );
     }
 }
-

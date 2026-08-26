@@ -306,7 +306,6 @@ impl DefaultCupertinoLocalizations {
     /// are that platform's promise that the button will not act on its own.
     pub const SHARE_BUTTON_LABEL: &'static str = "Share...";
 
-
     pub const SHORT_MONTHS: [&'static str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

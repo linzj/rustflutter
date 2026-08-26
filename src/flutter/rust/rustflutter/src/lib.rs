@@ -286,6 +286,7 @@ pub use engine::{
     Canvas, Color, DisplayList, LayerTree, Paint, Paragraph, Rect, RenderError, Style, TextAlign,
     TextStyle,
 };
+pub use feedback::Feedback;
 pub use focus::{
     ActionListener, DetectorState, Focus, FocusHighlightMode, FocusHighlightStrategy, FocusScope,
     FocusableActionDetector, KeyResult, NavigationMode, first_focusable_in, focus_scope_widget,
@@ -360,7 +361,6 @@ pub use semantics::{
     SemanticsHintOverrides, SemanticsLabelBuilder, SemanticsNode, SemanticsOwner,
     SemanticsProperties, SemanticsSortKey, SemanticsTag, StringAttribute,
 };
-pub use feedback::Feedback;
 pub use semantics_event::{Assertiveness, SemanticsEvent, SemanticsService};
 pub use services::restoration::{
     BucketData, Restorable, RestorableBool, RestorableBoolN, RestorableChangeNotifier,

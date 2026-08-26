@@ -801,7 +801,10 @@ mod tests {
         tree.set_can_request_focus(2, false);
         assert!(!tree.can_request_focus(4), "the page underneath is out");
         assert!(!tree.can_request_focus(5));
-        assert!(tree.can_request_focus(6), "and the other scope is untouched");
+        assert!(
+            tree.can_request_focus(6),
+            "and the other scope is untouched"
+        );
     }
 
     #[test]
@@ -845,10 +848,7 @@ mod tests {
         // be in, and disagree here -- which is why this asks about a tree
         // upstream cannot build.
         let mut shut = FocusTree::new(FocusNode::scope(1));
-        shut.attach(
-            FocusNode::scope(2).with_descendants_are_focusable(false),
-            1,
-        );
+        shut.attach(FocusNode::scope(2).with_descendants_are_focusable(false), 1);
         shut.attach(FocusNode::new(3), 2);
         assert!(
             !shut.descendants_are_focusable(2),

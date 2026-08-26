@@ -5310,7 +5310,11 @@ mod tests {
             .iter()
             .filter_map(|call| match call {
                 crate::engine_test_stubs::Drawn::RRect {
-                    left, right, top, bottom, ..
+                    left,
+                    right,
+                    top,
+                    bottom,
+                    ..
                 } if (bottom - top - HOUR_MINUTE_SIZE.1).abs() < 0.01 => Some(right - left),
                 _ => None,
             })
@@ -6365,7 +6369,9 @@ mod dial_geometry_tests {
         let quarter = painted(dial(std::f32::consts::FRAC_PI_2, 1.0), 300.0);
         let half = painted(dial(std::f32::consts::PI, 1.0), 300.0);
         let reach = |calls: &[Drawn]| match calls.last().expect("the hand") {
-            Drawn::Line { from, to, .. } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            Drawn::Line { from, to, .. } => {
+                ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt()
+            }
             other => panic!("{other:?}"),
         };
         let ends = |calls: &[Drawn]| match calls.last().expect("the hand") {
@@ -6389,7 +6395,9 @@ mod dial_geometry_tests {
         let outer = painted(dial(0.0, 1.0), 300.0);
         let inner = painted(dial(0.0, 0.2), 300.0);
         let reach = |calls: &[Drawn]| match calls.last().expect("the hand") {
-            Drawn::Line { from, to, .. } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            Drawn::Line { from, to, .. } => {
+                ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt()
+            }
             other => panic!("{other:?}"),
         };
         assert!(
@@ -6424,7 +6432,9 @@ mod dial_geometry_tests {
         // of 150 and labels at 150 - DIAL_PADDING.
         let calls = painted(dial(0.0, 1.0), 300.0);
         let reach = match calls.last().expect("the hand") {
-            Drawn::Line { from, to, .. } => ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt(),
+            Drawn::Line { from, to, .. } => {
+                ((to.0 - from.0).powi(2) + (to.1 - from.1).powi(2)).sqrt()
+            }
             other => panic!("{other:?}"),
         };
         assert!(
@@ -6491,9 +6501,7 @@ mod dial_label_tests {
         drawn()
             .iter()
             .filter_map(|call| match call {
-                Drawn::Paragraph { text, x, y, argb } => {
-                    Some((text.clone(), *x, *y, *argb))
-                }
+                Drawn::Paragraph { text, x, y, argb } => Some((text.clone(), *x, *y, *argb)),
                 _ => None,
             })
             .collect()
@@ -6514,7 +6522,9 @@ mod dial_label_tests {
         let texts: Vec<&str> = drawn.iter().map(|(text, ..)| text.as_str()).collect();
         assert_eq!(
             texts,
-            vec!["12", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]
+            vec![
+                "12", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"
+            ]
         );
     }
 
@@ -6534,14 +6544,20 @@ mod dial_label_tests {
         assert!((twelve.1 - centre).abs() < 12.0, "and roughly over it");
 
         assert_eq!(three.0, "3");
-        assert!(three.1 > centre, "3 is a quarter turn clockwise, to the right");
+        assert!(
+            three.1 > centre,
+            "3 is a quarter turn clockwise, to the right"
+        );
         assert!((three.2 - centre).abs() < 12.0);
 
         assert_eq!(six.0, "6");
         assert!(six.2 > centre, "6 is at the bottom");
 
         assert_eq!(nine.0, "9");
-        assert!(nine.1 < centre, "9 is on the left, so the ring is not mirrored");
+        assert!(
+            nine.1 < centre,
+            "9 is on the left, so the ring is not mirrored"
+        );
     }
 
     #[test]
@@ -6581,7 +6597,11 @@ mod dial_label_tests {
 
         // And the same sideways, on a pair whose two labels are the same width.
         let midpoint_x = (drawn[3].1 + drawn[9].1) / 2.0;
-        assert_eq!(drawn[3].0.len(), drawn[9].0.len(), "3 and 9 are one glyph each");
+        assert_eq!(
+            drawn[3].0.len(),
+            drawn[9].0.len(),
+            "3 and 9 are one glyph each"
+        );
         assert!(
             midpoint_x < centre,
             "half a glyph left of the middle: {midpoint_x} against {centre}"
@@ -6669,4 +6689,3 @@ mod dial_label_tests {
         );
     }
 }
-

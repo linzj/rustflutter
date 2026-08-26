@@ -576,10 +576,7 @@ impl ControlTile {
     /// secondary role at all, so the last step is its `primary`, which is the
     /// accent this port has. That is a substitution and is written down as
     /// one; it is not a claim that upstream ends at primary.
-    pub(crate) fn control_active_color(
-        &self,
-        context: &mut BuildContext,
-    ) -> crate::engine::Color {
+    pub(crate) fn control_active_color(&self, context: &mut BuildContext) -> crate::engine::Color {
         let theme = crate::components::theme_of(context);
         // The tile's `selected`, which is the whole of upstream's state set
         // here -- `enabled` is not in it, in any of the three.
@@ -757,7 +754,10 @@ mod tests {
         let checkmarked = tile.with_cupertino_checkmark_style(true);
 
         for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
-            assert!(checkmarked.draws_a_cupertino_checkmark(platform), "{platform:?}");
+            assert!(
+                checkmarked.draws_a_cupertino_checkmark(platform),
+                "{platform:?}"
+            );
         }
         for platform in [
             TargetPlatform::Android,
@@ -765,7 +765,10 @@ mod tests {
             TargetPlatform::Linux,
             TargetPlatform::Windows,
         ] {
-            assert!(!checkmarked.draws_a_cupertino_checkmark(platform), "{platform:?}");
+            assert!(
+                !checkmarked.draws_a_cupertino_checkmark(platform),
+                "{platform:?}"
+            );
         }
 
         // And an adaptive tile without the flag draws a ring on iOS like
@@ -817,8 +820,7 @@ mod tests {
     #[test]
     fn a_toggleable_radio_reports_null_to_un_choose_itself() {
         // Which is how a group goes back to having nothing in it.
-        let toggleable = ControlListTile::new(TileControl::Radio, Some(true))
-            .with_toggleable(true);
+        let toggleable = ControlListTile::new(TileControl::Radio, Some(true)).with_toggleable(true);
         assert_eq!(toggleable.tap_on_radio(true), Some(None));
         assert_eq!(toggleable.tap_on_radio(false), Some(Some(true)));
 
@@ -840,8 +842,7 @@ mod tests {
         // and being able to hold "nothing chosen" are one capability seen
         // from two sides -- so the validator that refuses a null value on a
         // non-tristate control lets one through here.
-        let toggleable = ControlListTile::new(TileControl::Radio, None)
-            .with_toggleable(true);
+        let toggleable = ControlListTile::new(TileControl::Radio, None).with_toggleable(true);
         assert!(toggleable.tristate);
         assert_eq!(toggleable.validate(), Ok(()));
 
@@ -850,10 +851,13 @@ mod tests {
 
         // And it is a radio's flag alone: a checkbox's tristate is its own
         // and `toggleable` does not touch it.
-        let checkbox = ControlListTile::new(TileControl::Checkbox, Some(true))
-            .with_toggleable(true);
+        let checkbox =
+            ControlListTile::new(TileControl::Checkbox, Some(true)).with_toggleable(true);
         assert!(checkbox.toggleable);
-        assert!(!checkbox.tristate, "a checkbox's tristate is a separate flag");
+        assert!(
+            !checkbox.tristate,
+            "a checkbox's tristate is a separate flag"
+        );
     }
 
     #[test]
@@ -889,7 +893,10 @@ mod tests {
         assert!(!tile.is_enabled(false));
 
         // And the flag overrides both directions.
-        assert!(!tile.with_enabled(false).is_enabled(true), "off despite a handler");
+        assert!(
+            !tile.with_enabled(false).is_enabled(true),
+            "off despite a handler"
+        );
         assert!(tile.with_enabled(true).is_enabled(false));
     }
 
@@ -1685,8 +1692,8 @@ mod control_colour_tests {
         // returned a bare accent for both checkbox and radio and never asked
         // either theme, so a page that recoloured its checkboxes left every
         // selected row's title behind at the default.
-        let tile = ControlTile::new(1, CheckboxListTile::new(true).0, "Remember me")
-            .with_selected(true);
+        let tile =
+            ControlTile::new(1, CheckboxListTile::new(true).0, "Remember me").with_selected(true);
         let (colour, primary) = control_colour(tile, Some(GREEN));
         assert_eq!(colour, GREEN);
         assert_ne!(colour, primary);

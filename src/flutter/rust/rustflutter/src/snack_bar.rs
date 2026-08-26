@@ -510,7 +510,6 @@ mod tests {
             "and it still waits -- persist was decided when the action arrived"
         );
     }
-
 }
 
 #[cfg(test)]
@@ -854,7 +853,9 @@ mod snack_bar_theme_tests {
         let (resolved, _) = resolve(SnackBar::new(), SnackBarThemeData::new());
         assert_eq!(
             resolved.close_icon_color,
-            crate::theme::ThemeData::light().color_scheme.on_inverse_surface(),
+            crate::theme::ThemeData::light()
+                .color_scheme
+                .on_inverse_surface(),
             "then upstream's default, the ink the content is written in"
         );
     }

@@ -858,7 +858,10 @@ mod tests {
         let mut state = state();
         state.push(0, "hello#1".to_string(), None, Some(&strip_after_hash));
         state.advance(WINDOW);
-        assert!(!state.throttle.is_active(), "the first edit's window closed");
+        assert!(
+            !state.throttle.is_active(),
+            "the first edit's window closed"
+        );
 
         // A cursor move: different value, same text once modified.
         state.push(WINDOW, "hello#7".to_string(), None, Some(&strip_after_hash));
@@ -868,7 +871,12 @@ mod tests {
         );
 
         // A real edit, a moment later.
-        state.push(WINDOW + 100 * MS, "world#1".to_string(), None, Some(&strip_after_hash));
+        state.push(
+            WINDOW + 100 * MS,
+            "world#1".to_string(),
+            None,
+            Some(&strip_after_hash),
+        );
         assert!(state.throttle.is_active());
 
         // The window belongs to the edit, so at the cursor move's deadline it

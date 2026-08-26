@@ -1316,7 +1316,10 @@ pub struct PressAction {
 /// gated. It does **not** set the flag -- a double tap goes with whatever the
 /// tap before it decided, which is how a double tap with a mouse selects the
 /// word without raising a menu nobody asked for.
-pub fn double_tap_down(selection_enabled: bool, should_show_selection_toolbar: bool) -> PressAction {
+pub fn double_tap_down(
+    selection_enabled: bool,
+    should_show_selection_toolbar: bool,
+) -> PressAction {
     PressAction {
         selects: selection_enabled,
         shows_toolbar: selection_enabled && should_show_selection_toolbar,
@@ -3453,7 +3456,8 @@ mod selection_gesture_rule_tests {
                 "{platform:?}: and this is the only path in the method that raises it"
             );
 
-            let cold = drag_selection_start(platform, true, PointerKind::Touch, false, true, 1, false);
+            let cold =
+                drag_selection_start(platform, true, PointerKind::Touch, false, true, 1, false);
             assert_eq!(cold.selects, DragStartSelects::Nothing, "{platform:?}");
             assert!(!cold.shows_magnifier, "{platform:?}");
         }
@@ -3514,7 +3518,8 @@ mod selection_gesture_rule_tests {
         // selection word by word. Placing a caret here would throw that away
         // at the moment the reader started to drag.
         for platform in TargetPlatform::ALL {
-            let start = drag_selection_start(platform, true, PointerKind::Mouse, false, true, 2, true);
+            let start =
+                drag_selection_start(platform, true, PointerKind::Mouse, false, true, 2, true);
             assert_eq!(start.selects, DragStartSelects::Nothing, "{platform:?}");
             assert!(
                 start.sets_the_overlay_flags,
@@ -3551,8 +3556,16 @@ mod selection_gesture_rule_tests {
         }
         // And with nothing selected the shift branch is not taken at all.
         assert_eq!(
-            drag_selection_start(TargetPlatform::MacOS, true, PointerKind::Mouse, true, false, 1, true)
-                .selects,
+            drag_selection_start(
+                TargetPlatform::MacOS,
+                true,
+                PointerKind::Mouse,
+                true,
+                false,
+                1,
+                true
+            )
+            .selects,
             DragStartSelects::CaretAtTheFinger
         );
     }
@@ -3724,7 +3737,10 @@ mod selection_gesture_rule_tests {
         // rather than a shrug, because a future reader will wonder why the
         // fallback is not the vertical one that most pages scroll.
         let fallback = drag_anchor_correction(true, 30.0, 10.0, 0.0, 0.0, None);
-        for axis in [crate::render::Axis::Horizontal, crate::render::Axis::Vertical] {
+        for axis in [
+            crate::render::Axis::Horizontal,
+            crate::render::Axis::Vertical,
+        ] {
             assert_eq!(
                 drag_anchor_correction(true, 30.0, 10.0, 0.0, 0.0, Some(axis)),
                 fallback,
@@ -4035,7 +4051,10 @@ mod selection_gesture_rule_tests {
         // The two branches are otherwise the same five lines, and this is the
         // only difference between them. Folding them together would lose the
         // spell-check on Android or invent it on Fuchsia.
-        assert_eq!(up(TargetPlatform::Android), TapUp::PlaceCaretAndOfferSpelling);
+        assert_eq!(
+            up(TargetPlatform::Android),
+            TapUp::PlaceCaretAndOfferSpelling
+        );
         assert_eq!(up(TargetPlatform::Fuchsia), TapUp::PlaceCaret);
     }
 
@@ -4045,11 +4064,25 @@ mod selection_gesture_rule_tests {
         // about when: macOS settles it on tap down, iOS on tap up. Each
         // carries its own copy of upstream's comment.
         assert_eq!(
-            single_tap_up(TargetPlatform::IOS, true, true, true, false, PointerKind::Touch),
+            single_tap_up(
+                TargetPlatform::IOS,
+                true,
+                true,
+                true,
+                false,
+                PointerKind::Touch
+            ),
             TapUp::ExpandFromTheStart
         );
         assert_eq!(
-            single_tap_up(TargetPlatform::IOS, true, true, true, true, PointerKind::Touch),
+            single_tap_up(
+                TargetPlatform::IOS,
+                true,
+                true,
+                true,
+                true,
+                PointerKind::Touch
+            ),
             TapUp::Expand
         );
         assert_eq!(
@@ -4308,7 +4341,10 @@ mod selection_gesture_rule_tests {
     #[test]
     fn the_two_affinities_carry_the_names_the_wire_already_used() {
         // The strings were being sent as literals before the type existed.
-        assert_eq!(TextAffinity::Downstream.as_wire(), "TextAffinity.downstream");
+        assert_eq!(
+            TextAffinity::Downstream.as_wire(),
+            "TextAffinity.downstream"
+        );
         assert_eq!(TextAffinity::Upstream.as_wire(), "TextAffinity.upstream");
         assert_eq!(TextAffinity::default(), TextAffinity::Downstream);
         // Item by item: `ALL.len() == 2` is a claim about an array literal
@@ -4319,4 +4355,3 @@ mod selection_gesture_rule_tests {
         );
     }
 }
-

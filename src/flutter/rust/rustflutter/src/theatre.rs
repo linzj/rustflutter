@@ -2026,7 +2026,9 @@ mod tests {
         let (_tree, handle) = mounted_overlay();
         assert_eq!(handle.entry_count(), 0, "a live, empty overlay");
 
-        handle.insert(|| counted_entry(1)).expect("the handle is live");
+        handle
+            .insert(|| counted_entry(1))
+            .expect("the handle is live");
         assert_eq!(handle.entry_count(), 1, "and it is this overlay's");
     }
 
@@ -3000,4 +3002,3 @@ mod scrim_paint_tests {
         );
     }
 }
-

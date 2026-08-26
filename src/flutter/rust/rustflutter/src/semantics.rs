@@ -3740,10 +3740,7 @@ mod tests {
     #[test]
     fn a_half_checked_box_is_neither_checked_nor_unchecked() {
         // The value the two booleans had nowhere to come from.
-        assert_eq!(
-            SemanticsCheckState::of(None),
-            SemanticsCheckState::Mixed
-        );
+        assert_eq!(SemanticsCheckState::of(None), SemanticsCheckState::Mixed);
         assert_ne!(SemanticsCheckState::Mixed, SemanticsCheckState::Checked);
         assert_ne!(SemanticsCheckState::Mixed, SemanticsCheckState::Unchecked);
         // And it is still a box: a reader should say something about it, just
@@ -3834,7 +3831,10 @@ mod tests {
         let is_checked = 1 << 10;
         let mixed = 1 << 15;
 
-        assert_eq!(bits(SemanticsCheckState::None) & (checkable | is_checked | mixed), 0);
+        assert_eq!(
+            bits(SemanticsCheckState::None) & (checkable | is_checked | mixed),
+            0
+        );
         assert_eq!(
             bits(SemanticsCheckState::Unchecked) & (checkable | is_checked | mixed),
             checkable
@@ -7705,12 +7705,17 @@ mod focus_block_tests {
         let radio = SemanticsProperties::radio("Medium", false, TargetPlatform::Android, HINT);
         let plain = SemanticsProperties::label("A row");
         assert!(
-            radio.flags.merge(&plain.flags).is_in_mutually_exclusive_group
+            radio
+                .flags
+                .merge(&plain.flags)
+                .is_in_mutually_exclusive_group
         );
         assert!(
-            plain.flags.merge(&radio.flags).is_in_mutually_exclusive_group,
+            plain
+                .flags
+                .merge(&radio.flags)
+                .is_in_mutually_exclusive_group,
             "either way round"
         );
     }
 }
-

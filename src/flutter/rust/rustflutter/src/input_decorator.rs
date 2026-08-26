@@ -324,11 +324,8 @@ impl InputDecorator {
             return LabelPlacement::Absent;
         }
         let behavior = self.decoration.floating_label_behavior;
-        let withdrawn = behavior.withdraws(
-            self.is_focused,
-            !self.is_empty,
-            self.decoration.enabled,
-        );
+        let withdrawn =
+            behavior.withdraws(self.is_focused, !self.is_empty, self.decoration.enabled);
         match (withdrawn, behavior.allows_floating()) {
             (true, true) => LabelPlacement::Floating,
             (true, false) => LabelPlacement::Hidden,
@@ -439,7 +436,9 @@ mod tests {
             "an empty field still reads it as a placeholder"
         );
         assert_eq!(
-            InputDecorator::new(never()).with_content().label_placement(),
+            InputDecorator::new(never())
+                .with_content()
+                .label_placement(),
             LabelPlacement::Hidden,
             "and once there is text, it goes nowhere"
         );
@@ -564,8 +563,16 @@ mod tests {
                 |d| d.has_helper_widget = true,
                 |d| d.helper_text = Some(String::from("x")),
             ),
-            ("prefix", |d| d.has_prefix_widget = true, |d| d.has_prefix_text = true),
-            ("suffix", |d| d.has_suffix_widget = true, |d| d.has_suffix_text = true),
+            (
+                "prefix",
+                |d| d.has_prefix_widget = true,
+                |d| d.has_prefix_text = true,
+            ),
+            (
+                "suffix",
+                |d| d.has_suffix_widget = true,
+                |d| d.has_suffix_text = true,
+            ),
         ];
         for (name, as_widget, as_string) in pairs {
             let mut only_widget = InputDecoration::new();

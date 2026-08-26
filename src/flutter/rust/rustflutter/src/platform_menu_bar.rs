@@ -839,11 +839,7 @@ mod tests {
             (keys::LABEL, ChannelValue::Text("Open".to_string())),
         ];
         assert_eq!(
-            DefaultPlatformMenuDelegate::tidy_dividers(vec![
-                divider(),
-                item.clone(),
-                divider()
-            ]),
+            DefaultPlatformMenuDelegate::tidy_dividers(vec![divider(), item.clone(), divider()]),
             vec![item],
             "the dividers go and the item stays"
         );
@@ -1193,4 +1189,3 @@ mod provided_menu_index_tests {
         }
     }
 }
-

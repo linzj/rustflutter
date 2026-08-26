@@ -620,8 +620,7 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         // `Localizations` around what you gave it; this is the same position
         // and the same reason -- everything below can ask what language it is
         // in without being handed one.
-        let localizations =
-            crate::localizations::Localizations::new(crate::platform::locale());
+        let localizations = crate::localizations::Localizations::new(crate::platform::locale());
         let mounted = if self.tree.is_empty() || resized || images_arrived {
             // Published above the application's own root, which is where
             // upstream puts it too: `WidgetsApp` wraps what you gave it in a
@@ -1766,9 +1765,7 @@ mod tests {
         let calls = frame(2.0);
         assert_eq!(
             calls.first(),
-            Some(&Drawn::Color {
-                argb: BACKGROUND.0
-            }),
+            Some(&Drawn::Color { argb: BACKGROUND.0 }),
             "{calls:?}"
         );
         assert!(

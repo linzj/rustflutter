@@ -808,10 +808,10 @@ impl TextStyle {
             font_family: nearer.font_family.clone(),
             font_family_fallback: nearer.font_family_fallback.clone(),
             font_size: a.font_size + (b.font_size - a.font_size) * t,
-            font_weight: ((a.font_weight as f32
-                + (b.font_weight as f32 - a.font_weight as f32) * t)
-                .round() as i32)
-                .clamp(100, 900),
+            font_weight:
+                ((a.font_weight as f32 + (b.font_weight as f32 - a.font_weight as f32) * t).round()
+                    as i32)
+                    .clamp(100, 900),
             italic: nearer.italic,
             letter_spacing: paired(a.letter_spacing, b.letter_spacing),
             word_spacing: paired(a.word_spacing, b.word_spacing),
@@ -1555,11 +1555,7 @@ mod tests {
         };
         let quarter = TextStyle::lerp(&a, &b, 0.25);
         assert_eq!(
-            (
-                quarter.letter_spacing,
-                quarter.word_spacing,
-                quarter.height
-            ),
+            (quarter.letter_spacing, quarter.word_spacing, quarter.height),
             (Some(8.0), Some(12.0), Some(16.0))
         );
         let back = TextStyle::lerp(&b, &a, 0.25);
@@ -1722,11 +1718,7 @@ mod ffi_table_tests {
         // encoding fault. Two messages that read alike are one diagnosis.
         for (index, one) in RenderError::ALL.iter().enumerate() {
             for other in RenderError::ALL.iter().skip(index + 1) {
-                assert_ne!(
-                    one.to_string(),
-                    other.to_string(),
-                    "{one:?} and {other:?}"
-                );
+                assert_ne!(one.to_string(), other.to_string(), "{one:?} and {other:?}");
             }
         }
     }
@@ -1736,7 +1728,11 @@ mod ffi_table_tests {
         // Not a spelling check: each message has to name the step, because it
         // is the only thing a caller gets. The words below are the ones that
         // tell the three failures of `rf_layer_tree_write_png` apart.
-        assert!(RenderError::RasterizationFailed.to_string().contains("rasterize"));
+        assert!(
+            RenderError::RasterizationFailed
+                .to_string()
+                .contains("rasterize")
+        );
         assert!(RenderError::SnapshotFailed.to_string().contains("snapshot"));
         assert!(RenderError::WriteFailed.to_string().contains("open"));
         assert!(RenderError::EncodeFailed.to_string().contains("encoding"));
@@ -1744,4 +1740,3 @@ mod ffi_table_tests {
         assert!(RenderError::NoPresenter.to_string().contains("presenter"));
     }
 }
-

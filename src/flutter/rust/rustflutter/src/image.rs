@@ -405,7 +405,9 @@ impl ImageProvider {
         match self.load_bytes() {
             Ok(bytes) => {
                 if let Some(image) = Image::shared(&key.key, &bytes) {
-                    completer.borrow_mut().set_image(ImageInfo::new(image, scale));
+                    completer
+                        .borrow_mut()
+                        .set_image(ImageInfo::new(image, scale));
                 }
             }
             Err(error) => completer.borrow_mut().report_error(error),
@@ -424,7 +426,9 @@ impl ImageProvider {
         match self.load_bytes() {
             Ok(bytes) => {
                 if let Some(image) = Image::shared_now(&key.key, &bytes) {
-                    completer.borrow_mut().set_image(ImageInfo::new(image, scale));
+                    completer
+                        .borrow_mut()
+                        .set_image(ImageInfo::new(image, scale));
                 }
             }
             Err(error) => completer.borrow_mut().report_error(error),
@@ -530,7 +534,9 @@ mod tests {
         let Some(image) = image else {
             return;
         };
-        let completer = Rc::new(RefCell::new(ImageStreamCompleter::one_frame(ImageInfo::new(Rc::new(image), 2.0))));
+        let completer = Rc::new(RefCell::new(ImageStreamCompleter::one_frame(
+            ImageInfo::new(Rc::new(image), 2.0),
+        )));
         let mut stream = ImageStream::new();
         stream.set_completer(completer);
         let scale_seen = Rc::new(Cell::new(0.0f32));
@@ -660,7 +666,10 @@ mod tests {
 
         let labelled = ImageInfo::new(Rc::clone(&image), 1.0).with_debug_label("avatar");
         assert!(!base.is_clone_of(&labelled), "same buffer, different label");
-        assert!(labelled.is_clone_of(&labelled.clone()), "and its own clone is");
+        assert!(
+            labelled.is_clone_of(&labelled.clone()),
+            "and its own clone is"
+        );
     }
 
     #[test]
@@ -691,4 +700,3 @@ mod tests {
         assert_eq!(scaled.size_bytes(), info.size_bytes());
     }
 }
-

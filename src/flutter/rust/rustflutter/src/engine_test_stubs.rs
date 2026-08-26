@@ -1174,7 +1174,12 @@ impl Drawn {
                 argb,
                 stroke,
             },
-            Drawn::Line { from, to, argb, stroke } => Drawn::Line {
+            Drawn::Line {
+                from,
+                to,
+                argb,
+                stroke,
+            } => Drawn::Line {
                 from: (from.0 + dx, from.1 + dy),
                 to: (to.0 + dx, to.1 + dy),
                 argb,
@@ -1851,8 +1856,7 @@ pub unsafe extern "C" fn rf_paragraph_builder_build(
     builder: *mut RfParagraphBuilder,
 ) -> *mut RfParagraph {
     unsafe { release(builder) };
-    let (text, font_size, max_lines, argb) =
-        BUILDING.with(|building| building.borrow().clone());
+    let (text, font_size, max_lines, argb) = BUILDING.with(|building| building.borrow().clone());
     Box::into_raw(Box::new(StubParagraph {
         text,
         font_size,
@@ -2001,4 +2005,3 @@ pub fn save_depth(calls: &[Drawn]) -> Option<i32> {
     }
     Some(depth)
 }
-

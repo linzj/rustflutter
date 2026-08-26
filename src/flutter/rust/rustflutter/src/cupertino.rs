@@ -6536,7 +6536,10 @@ mod glyph_paint_tests {
         let calls = painted(chevron(false), Offset::ZERO);
         let strokes = lines(&calls);
         assert_eq!(strokes.len(), 2, "{calls:?}");
-        assert_eq!(strokes[0].1, strokes[1].0, "the second starts where the first ended");
+        assert_eq!(
+            strokes[0].1, strokes[1].0,
+            "the second starts where the first ended"
+        );
         assert_eq!(strokes[0].1, (3.0, 10.0), "and the point is at the tip");
         assert_eq!(strokes[0].2, INK.0, "in the colour it was given");
         assert_eq!(strokes[1].2, INK.0);
@@ -6588,7 +6591,13 @@ mod glyph_paint_tests {
         let circles: Vec<_> = calls
             .iter()
             .filter_map(|call| match call {
-                Drawn::Circle { cx, cy, radius, argb, .. } => Some((*cx, *cy, *radius, *argb)),
+                Drawn::Circle {
+                    cx,
+                    cy,
+                    radius,
+                    argb,
+                    ..
+                } => Some((*cx, *cy, *radius, *argb)),
                 _ => None,
             })
             .collect();
@@ -6629,7 +6638,13 @@ mod glyph_paint_tests {
         let circles: Vec<_> = calls
             .iter()
             .filter_map(|call| match call {
-                Drawn::Circle { cx, cy, radius, argb, .. } => Some((*cx, *cy, *radius, *argb)),
+                Drawn::Circle {
+                    cx,
+                    cy,
+                    radius,
+                    argb,
+                    ..
+                } => Some((*cx, *cy, *radius, *argb)),
                 _ => None,
             })
             .collect();
@@ -6637,7 +6652,10 @@ mod glyph_paint_tests {
         let (cx, cy, radius, fill) = circles[0];
         assert_eq!(fill, INK.0, "the disc is the item colour");
         assert_eq!(radius, SEARCH_FIELD_ITEM_SIZE / 2.0);
-        assert_eq!((cx, cy), (SEARCH_FIELD_ITEM_SIZE / 2.0, SEARCH_FIELD_ITEM_SIZE / 2.0));
+        assert_eq!(
+            (cx, cy),
+            (SEARCH_FIELD_ITEM_SIZE / 2.0, SEARCH_FIELD_ITEM_SIZE / 2.0)
+        );
 
         let strokes = lines(&calls);
         assert_eq!(strokes.len(), 2, "two arms");
@@ -6894,11 +6912,7 @@ mod activity_tick_tests {
         // more than either flag, and the flags only choose *which default*.
         for apply in [None, Some(false), Some(true)] {
             for all in [false, true] {
-                assert_eq!(
-                    track(Some(ONE_OFF), apply, all),
-                    ONE_OFF,
-                    "{apply:?} {all}"
-                );
+                assert_eq!(track(Some(ONE_OFF), apply, all), ONE_OFF, "{apply:?} {all}");
             }
         }
     }
@@ -6911,4 +6925,3 @@ mod activity_tick_tests {
         assert!(!CupertinoTheme::dark().apply_theme_to_all);
     }
 }
-

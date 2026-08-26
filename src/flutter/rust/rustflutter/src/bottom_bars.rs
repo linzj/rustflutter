@@ -435,7 +435,6 @@ mod tests {
             BottomNavigationBarLandscapeLayout::Centered
         );
     }
-
 }
 
 #[cfg(test)]

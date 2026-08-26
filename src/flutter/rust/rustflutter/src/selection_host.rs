@@ -48,8 +48,8 @@ use std::rc::Rc;
 
 use crate::engine::Rect;
 use crate::framework::{AnyWidget, BuildContext, StateHandle, StatefulComponent, many};
-use crate::render::{Offset, RenderConstrainedBox, RenderRef, RenderStack, Size, StackPosition};
 use crate::magnifier_host::{MagnifierHost, MagnifierStyle, show_magnifier};
+use crate::render::{Offset, RenderConstrainedBox, RenderRef, RenderStack, Size, StackPosition};
 use crate::text_selection::{SelectionOverlay, TextSelectionToolbarLayoutDelegate};
 use crate::text_selection_controls::{
     TextSelectionControls, TextSelectionHandleType, TextSelectionToolbarAnchors,
@@ -383,9 +383,7 @@ impl SelectionHost {
     /// The question both of upstream's guards ask, and the one this host could
     /// not answer at all until now.
     pub fn magnifier_exists(&self) -> bool {
-        self.magnifier
-            .as_ref()
-            .is_some_and(MagnifierHost::exists)
+        self.magnifier.as_ref().is_some_and(MagnifierHost::exists)
     }
 
     /// Upstream's `SelectionOverlay.magnifierIsVisible`:
@@ -395,9 +393,7 @@ impl SelectionHost {
     /// from [magnifierIsVisible] in that the magnifier may exist in the
     /// overlay, but not be shown."*
     pub fn magnifier_is_visible(&self) -> bool {
-        self.magnifier
-            .as_ref()
-            .is_some_and(MagnifierHost::is_shown)
+        self.magnifier.as_ref().is_some_and(MagnifierHost::is_shown)
     }
 
     /// Upstream's `SelectionOverlay.showMagnifier`.
@@ -1296,7 +1292,10 @@ mod tests {
 
         // Below the line: the loupe hides itself and keeps its entry.
         host.update_magnifier(
-            magnifier_info(300.0 + crate::magnifier_host::CUPERTINO_HIDE_BELOW + 10.0, 300.0),
+            magnifier_info(
+                300.0 + crate::magnifier_host::CUPERTINO_HIDE_BELOW + 10.0,
+                300.0,
+            ),
             SCREEN,
             &theatre,
         );
@@ -1357,4 +1356,3 @@ mod tests {
         drop(tree);
     }
 }
-

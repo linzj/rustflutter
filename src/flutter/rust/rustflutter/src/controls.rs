@@ -470,31 +470,26 @@ impl Component for TabBar {
                     Column::expanded()
                         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
                         .push_flex(FlexChild::expanded(
-                            Align::new(
-                                Alignment::CENTER,
-                                {
-                                    // Upstream draws the label in the
-                                    // resolved style with the resolved colour
-                                    // over it: the style says the size, the
-                                    // weight and the family, and the colour
-                                    // is worked out separately because a
-                                    // theme may name it in either place.
-                                    let role = if active { &chosen } else { &quiet };
-                                    let ink = if active { primary } else { muted };
-                                    match role {
-                                        Some(style) => Text::new(label.clone()).with_style(
-                                            TextStyle {
-                                                color: ink,
-                                                ..style.clone()
-                                            },
-                                        ),
-                                        None => Text::new(label.clone())
-                                            .with_size(size)
-                                            .with_weight(if active { 700 } else { 500 })
-                                            .with_color(ink),
-                                    }
-                                },
-                            ),
+                            Align::new(Alignment::CENTER, {
+                                // Upstream draws the label in the
+                                // resolved style with the resolved colour
+                                // over it: the style says the size, the
+                                // weight and the family, and the colour
+                                // is worked out separately because a
+                                // theme may name it in either place.
+                                let role = if active { &chosen } else { &quiet };
+                                let ink = if active { primary } else { muted };
+                                match role {
+                                    Some(style) => Text::new(label.clone()).with_style(TextStyle {
+                                        color: ink,
+                                        ..style.clone()
+                                    }),
+                                    None => Text::new(label.clone())
+                                        .with_size(size)
+                                        .with_weight(if active { 700 } else { 500 })
+                                        .with_color(ink),
+                                }
+                            }),
                             1,
                         ))
                         // The indicator is a child of the tab rather than a
@@ -4153,7 +4148,10 @@ mod tab_bar_theme_tests {
         let theme = crate::theme::ThemeData::light();
         let resolved = resolve_under(TabBarThemeData::new(), theme.clone());
         assert_eq!(resolved.label_style, theme.text_theme.title_small);
-        assert_eq!(resolved.unselected_label_style, theme.text_theme.title_small);
+        assert_eq!(
+            resolved.unselected_label_style,
+            theme.text_theme.title_small
+        );
 
         // Material 2 reads `primaryTextTheme`, the scale for text drawn *on*
         // a primary-coloured surface -- which is what an M2 tab bar is, since
@@ -4946,4 +4944,3 @@ mod spinner_paint_tests {
         assert_eq!((there[0].1, there[0].2), (here[0].1, here[0].2));
     }
 }
-

@@ -1580,10 +1580,7 @@ mod tests {
             })
         })));
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(
-            &root,
-            BoxConstraints::new(200.0, 400.0, 0.0, 200.0),
-        );
+        crate::render::schedule_root_layout(&root, BoxConstraints::new(200.0, 400.0, 0.0, 200.0));
         crate::render::flush_layout();
 
         let mut layers = crate::engine::LayerTree::new(600, 400);
@@ -1680,17 +1677,15 @@ mod tests {
         // rounding.
         let calls = ink_clip(0.0, true);
         assert!(
-            calls.iter().any(|call| matches!(
-                call,
-                crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
-            )),
+            calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::ClipRectLayer { .. })),
             "a rect clip"
         );
         assert!(
-            !calls.iter().any(|call| matches!(
-                call,
-                crate::engine_test_stubs::Drawn::ClipRRectLayer { .. }
-            )),
+            !calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::ClipRRectLayer { .. })),
             "and no rounded one"
         );
     }
@@ -1717,4 +1712,3 @@ mod tests {
         }
     }
 }
-

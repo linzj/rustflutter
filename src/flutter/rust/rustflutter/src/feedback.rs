@@ -157,7 +157,10 @@ mod tests {
             .filter(|(channel, _, _)| channel == "flutter/accessibility")
             .filter_map(|(_, bytes, _)| {
                 let value = StandardMessageCodec.decode(&bytes).ok()?;
-                value.get("type").and_then(Value::as_str).map(str::to_string)
+                value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
             })
             .collect()
     }

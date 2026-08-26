@@ -329,8 +329,8 @@ mod tests {
         // versions. A custom entry has no other source, and a standard entry
         // an application has renamed keeps the name it was given.
         use crate::editable_text::TargetPlatform;
-        let renamed = ContextMenuButtonItem::new(ContextMenuButtonType::Copy)
-            .with_label("Duplicate");
+        let renamed =
+            ContextMenuButtonItem::new(ContextMenuButtonType::Copy).with_label("Duplicate");
         assert_eq!(renamed.resolved_label(TargetPlatform::Android), "Duplicate");
         assert_eq!(renamed.resolved_label(TargetPlatform::IOS), "Duplicate");
 
@@ -383,7 +383,10 @@ mod tests {
             ContextMenuButtonType::SelectAll.material_label(TargetPlatform::Android),
             "Select all"
         );
-        assert_eq!(ContextMenuButtonType::SelectAll.cupertino_label(), "Select All");
+        assert_eq!(
+            ContextMenuButtonType::SelectAll.cupertino_label(),
+            "Select All"
+        );
 
         assert_eq!(
             ContextMenuButtonType::Share.material_label(TargetPlatform::Android),
@@ -442,8 +445,7 @@ mod tests {
         assert_eq!(shouted, "DELETE");
         assert_eq!(
             shouted,
-            crate::material_app::DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP
-                .to_uppercase()
+            crate::material_app::DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP.to_uppercase()
         );
         assert_ne!(
             shouted,

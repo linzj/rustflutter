@@ -671,7 +671,11 @@ mod tests {
 
         binding.set_transient_callback_count(0);
         binding.handle_event_loop_callback();
-        assert_eq!(*log.borrow(), ["animation", "idle"], "until nothing animates");
+        assert_eq!(
+            *log.borrow(),
+            ["animation", "idle"],
+            "until nothing animates"
+        );
     }
 
     #[test]
@@ -763,11 +767,19 @@ mod tests {
             "just under animation",
         );
         binding.handle_event_loop_callback();
-        assert!(log.borrow().is_empty(), "one step under the line is under it");
+        assert!(
+            log.borrow().is_empty(),
+            "one step under the line is under it"
+        );
 
         let (mut binding, log) = recording();
         binding.set_transient_callback_count(1);
-        push(&mut binding, &log, Priority::IDLE.raise(999_999), "idle, raised");
+        push(
+            &mut binding,
+            &log,
+            Priority::IDLE.raise(999_999),
+            "idle, raised",
+        );
         binding.handle_event_loop_callback();
         assert!(
             log.borrow().is_empty(),

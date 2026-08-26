@@ -3335,8 +3335,7 @@ impl ShapeBorder {
             (a, b) if is_circle_like(a) && is_circle_like(b) => {
                 Some(ShapeBorder::Circle(CircleBorder::new(
                     BorderSide::lerp(circle_side(a), circle_side(b), t),
-                    lerp_double(circle_eccentricity(a), circle_eccentricity(b), t)
-                        .clamp(0.0, 1.0),
+                    lerp_double(circle_eccentricity(a), circle_eccentricity(b), t).clamp(0.0, 1.0),
                 )))
             }
             (ShapeBorder::Stadium(a), ShapeBorder::Stadium(b)) => Some(ShapeBorder::Stadium(
@@ -3600,8 +3599,7 @@ impl ShapeBorder {
             (a, b) if is_circle_like(a) && is_circle_like(b) => {
                 Some(ShapeBorder::Circle(CircleBorder::new(
                     BorderSide::lerp(circle_side(a), circle_side(b), t),
-                    lerp_double(circle_eccentricity(a), circle_eccentricity(b), t)
-                        .clamp(0.0, 1.0),
+                    lerp_double(circle_eccentricity(a), circle_eccentricity(b), t).clamp(0.0, 1.0),
                 )))
             }
             (ShapeBorder::Stadium(a), ShapeBorder::Stadium(b)) => Some(ShapeBorder::Stadium(
@@ -5835,15 +5833,15 @@ mod tests {
         // sweep above cannot reach the radius here: the mirrored pair takes a
         // different arm and carries its radius through, so the two directions
         // agree and the claim says nothing. This one asks outright.
-        let corners = |radius: f32| {
-            BorderRadiusGeometry::Absolute(BorderRadius::circular(radius))
-        };
+        let corners = |radius: f32| BorderRadiusGeometry::Absolute(BorderRadius::circular(radius));
         let radius_out = |shape: &ShapeBorder| match shape {
-            ShapeBorder::RoundedToCircle(shape) => shape
-                .border_radius
-                .resolve(crate::direction::TextDirection::Ltr)
-                .top_left
-                .x,
+            ShapeBorder::RoundedToCircle(shape) => {
+                shape
+                    .border_radius
+                    .resolve(crate::direction::TextDirection::Ltr)
+                    .top_left
+                    .x
+            }
             other => panic!("{other:?}"),
         };
 
@@ -5943,7 +5941,8 @@ mod tests {
         //
         // The lists are deliberately different lengths, because equal-length
         // lists never reach the two fading arms at all.
-        let shadow = |blur: f32| crate::painting::BoxShadow::new(Color(0xff000000), 0.0, 0.0, blur, 0.0);
+        let shadow =
+            |blur: f32| crate::painting::BoxShadow::new(Color(0xff000000), 0.0, 0.0, blur, 0.0);
         let near = ShapeDecoration {
             fill: None,
             shadows: vec![shadow(4.0), shadow(8.0)],
@@ -5955,7 +5954,8 @@ mod tests {
             shape: ShapeBorder::Stadium(StadiumBorder::new(wide(6.0))),
         };
 
-        let quarter = ShapeDecoration::lerp(Some(&near), Some(&far), 0.25).expect("stadiums interpolate");
+        let quarter =
+            ShapeDecoration::lerp(Some(&near), Some(&far), 0.25).expect("stadiums interpolate");
         assert_eq!(quarter.shadows.len(), 2, "the longer list decides how many");
         assert_eq!(
             quarter.shadows[0].blur_radius, 6.0,
@@ -6055,7 +6055,10 @@ mod tests {
         for (name, shape) in shapes(wide(4.0)) {
             let out = ShapeBorder::lerp(Some(shape.clone()), None, 0.25);
             let into = ShapeBorder::lerp(None, Some(shape.clone()), 0.25);
-            match (out.and_then(|s| s.outlined_side()), into.and_then(|s| s.outlined_side())) {
+            match (
+                out.and_then(|s| s.outlined_side()),
+                into.and_then(|s| s.outlined_side()),
+            ) {
                 (Some(out), Some(into)) => assert_ne!(
                     out.width, into.width,
                     "{name}: fading out and fading in are not the same"
@@ -6147,18 +6150,10 @@ mod tests {
         // line: uniform with uniform hands off to `Border::lerp`, directional
         // with directional to `BorderDirectional::lerp`. Neither needs the
         // two-phase treatment, because every edge has a counterpart.
-        let uniform_near = BoxBorder::Uniform(Border::new(
-            wide(4.0),
-            wide(8.0),
-            wide(12.0),
-            wide(16.0),
-        ));
-        let uniform_far = BoxBorder::Uniform(Border::new(
-            wide(20.0),
-            wide(24.0),
-            wide(28.0),
-            wide(32.0),
-        ));
+        let uniform_near =
+            BoxBorder::Uniform(Border::new(wide(4.0), wide(8.0), wide(12.0), wide(16.0)));
+        let uniform_far =
+            BoxBorder::Uniform(Border::new(wide(20.0), wide(24.0), wide(28.0), wide(32.0)));
         let quarter = BoxBorder::lerp(Some(uniform_near), Some(uniform_far), 0.25);
         assert!(matches!(quarter, BoxBorder::Uniform(_)), "it stays uniform");
         let (top, bottom, left, right, ..) = box_widths(&quarter);
@@ -6199,12 +6194,7 @@ mod tests {
         // spends the first half of the animation fading the left and the
         // right out and the second half fading the start and the end in. The
         // result changes type at the midpoint.
-        let uniform = BoxBorder::Uniform(Border::new(
-            wide(4.0),
-            wide(8.0),
-            wide(12.0),
-            wide(16.0),
-        ));
+        let uniform = BoxBorder::Uniform(Border::new(wide(4.0), wide(8.0), wide(12.0), wide(16.0)));
         let directional = BoxBorder::Directional(BorderDirectional::new(
             wide(20.0),
             wide(24.0),
@@ -6246,12 +6236,7 @@ mod tests {
         // twice. That is only right if the swap takes `t` with it: without
         // the `1.0 - t` the animation would play forwards while the reader
         // asked for backwards.
-        let uniform = BoxBorder::Uniform(Border::new(
-            wide(4.0),
-            wide(8.0),
-            wide(12.0),
-            wide(16.0),
-        ));
+        let uniform = BoxBorder::Uniform(Border::new(wide(4.0), wide(8.0), wide(12.0), wide(16.0)));
         let directional = BoxBorder::Directional(BorderDirectional::new(
             wide(20.0),
             wide(24.0),
@@ -6288,12 +6273,7 @@ mod tests {
         // left and the right fading out at the ordinary rate. A border that
         // took the two-phase path here would spend half the animation
         // standing still.
-        let uniform = BoxBorder::Uniform(Border::new(
-            wide(4.0),
-            wide(8.0),
-            wide(12.0),
-            wide(16.0),
-        ));
+        let uniform = BoxBorder::Uniform(Border::new(wide(4.0), wide(8.0), wide(12.0), wide(16.0)));
         let bare = BoxBorder::Directional(BorderDirectional::new(
             wide(20.0),
             BorderSide::NONE,
@@ -6301,7 +6281,10 @@ mod tests {
             wide(32.0),
         ));
         let quarter = BoxBorder::lerp(Some(uniform), Some(bare), 0.25);
-        assert!(matches!(quarter, BoxBorder::Uniform(_)), "and it stays uniform");
+        assert!(
+            matches!(quarter, BoxBorder::Uniform(_)),
+            "and it stays uniform"
+        );
         let (top, bottom, left, right, ..) = box_widths(&quarter);
         assert_eq!(top, 8.0);
         assert_eq!(bottom, 17.0);
@@ -6561,7 +6544,10 @@ mod tests {
                 border.bottom.map(|edge| edge.alignment),
             ]
         };
-        assert_eq!(sizes(&quarter), [Some(0.2), Some(0.3), Some(0.4), Some(0.5)]);
+        assert_eq!(
+            sizes(&quarter),
+            [Some(0.2), Some(0.3), Some(0.4), Some(0.5)]
+        );
         assert_eq!(
             alignments(&quarter),
             [Some(-0.5), Some(-0.4), Some(-0.3), Some(-0.2)]
@@ -6583,8 +6569,14 @@ mod tests {
         assert_eq!(BorderSide::lerp(wide(2.0), wide(6.0), 0.25).width, 3.0);
         assert_eq!(BorderSide::lerp(wide(6.0), wide(2.0), 0.25).width, 5.0);
 
-        assert_eq!(Radius::lerp(Radius::circular(4.0), Radius::circular(8.0), 0.25).x, 5.0);
-        assert_eq!(Radius::lerp(Radius::circular(8.0), Radius::circular(4.0), 0.25).x, 7.0);
+        assert_eq!(
+            Radius::lerp(Radius::circular(4.0), Radius::circular(8.0), 0.25).x,
+            5.0
+        );
+        assert_eq!(
+            Radius::lerp(Radius::circular(8.0), Radius::circular(4.0), 0.25).x,
+            7.0
+        );
 
         let near = BorderRadius::circular(4.0);
         let far = BorderRadius::circular(8.0);
@@ -6687,12 +6679,24 @@ mod tests {
 
         // Going towards the circle: nothing circular at the start, all of it
         // at the end.
-        assert_eq!(circularity(stadium.lerp_to(LerpPartner::Circle(circle), 0.0)), 0.0);
-        assert_eq!(circularity(stadium.lerp_to(LerpPartner::Circle(circle), 1.0)), 1.0);
+        assert_eq!(
+            circularity(stadium.lerp_to(LerpPartner::Circle(circle), 0.0)),
+            0.0
+        );
+        assert_eq!(
+            circularity(stadium.lerp_to(LerpPartner::Circle(circle), 1.0)),
+            1.0
+        );
 
         // Coming from it: the other way round, at the same `t`.
-        assert_eq!(circularity(stadium.lerp_from(LerpPartner::Circle(circle), 0.0)), 1.0);
-        assert_eq!(circularity(stadium.lerp_from(LerpPartner::Circle(circle), 1.0)), 0.0);
+        assert_eq!(
+            circularity(stadium.lerp_from(LerpPartner::Circle(circle), 0.0)),
+            1.0
+        );
+        assert_eq!(
+            circularity(stadium.lerp_from(LerpPartner::Circle(circle), 1.0)),
+            0.0
+        );
 
         // And the two agree about the middle, which is what says they are one
         // parameterisation seen from two ends rather than two rules.
@@ -6750,8 +6754,14 @@ mod tests {
         // behind the button.
         let stadium = StadiumBorder::default();
         let rect = Rect::ltrb(0.0, 0.0, 100.0, 40.0);
-        assert!(stadium.hit_test(rect, Offset::new(50.0, 20.0)), "the middle");
-        assert!(stadium.hit_test(rect, Offset::new(1.0, 20.0)), "the left end");
+        assert!(
+            stadium.hit_test(rect, Offset::new(50.0, 20.0)),
+            "the middle"
+        );
+        assert!(
+            stadium.hit_test(rect, Offset::new(1.0, 20.0)),
+            "the left end"
+        );
         assert!(
             !stadium.hit_test(rect, Offset::new(1.0, 1.0)),
             "the top-left corner is outside the curve"
@@ -7594,10 +7604,7 @@ mod tests {
     #[test]
     fn a_radius_that_appears_rounds_out_of_a_square() {
         // `Radius.lerp(null, b, t)` is `b * t`, not `b` held still.
-        let corner = Radius {
-            x: 8.0,
-            y: 20.0,
-        };
+        let corner = Radius { x: 8.0, y: 20.0 };
         assert_eq!(
             Radius::lerp_optional(None, Some(corner), 0.25),
             Some(Radius { x: 2.0, y: 5.0 })
@@ -8013,7 +8020,6 @@ mod paint_border_geometry_tests {
             vec![path(0.0, 0.0, 100.0, 0.0, RED)],
             "a fill of an empty quadrilateral would be invisible"
         );
-
     }
 
     #[test]

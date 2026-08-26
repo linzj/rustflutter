@@ -986,10 +986,18 @@ mod fab_theme_tests {
         // Four different numbers again: a resolver reading the regular field
         // for a small button would answer 40 where 41 was asked for.
         let themed = FloatingActionButtonThemeData {
-            size_constraints: Some(crate::render::BoxConstraints::tight_for(crate::render::Size::new(11.0, 11.0))),
-            small_size_constraints: Some(crate::render::BoxConstraints::tight_for(crate::render::Size::new(22.0, 22.0))),
-            large_size_constraints: Some(crate::render::BoxConstraints::tight_for(crate::render::Size::new(33.0, 33.0))),
-            extended_size_constraints: Some(crate::render::BoxConstraints::tight_for(crate::render::Size::new(44.0, 44.0))),
+            size_constraints: Some(crate::render::BoxConstraints::tight_for(
+                crate::render::Size::new(11.0, 11.0),
+            )),
+            small_size_constraints: Some(crate::render::BoxConstraints::tight_for(
+                crate::render::Size::new(22.0, 22.0),
+            )),
+            large_size_constraints: Some(crate::render::BoxConstraints::tight_for(
+                crate::render::Size::new(33.0, 33.0),
+            )),
+            extended_size_constraints: Some(crate::render::BoxConstraints::tight_for(
+                crate::render::Size::new(44.0, 44.0),
+            )),
             ..FloatingActionButtonThemeData::new()
         };
         let width = |kind| {

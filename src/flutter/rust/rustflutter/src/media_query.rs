@@ -145,8 +145,7 @@ impl MediaQueryData {
             // From the platform, like the two above it. Upstream reads it off
             // `platformDispatcher.alwaysUse24HourFormat` in the same
             // constructor.
-            always_use_24_hour_format: crate::platform::user_settings()
-                .always_use_24_hour_format,
+            always_use_24_hour_format: crate::platform::user_settings().always_use_24_hour_format,
         }
     }
 

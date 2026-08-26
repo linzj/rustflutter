@@ -968,7 +968,9 @@ mod tests {
 
     /// Paints an `InkResponse` and hands back what the compositor was asked
     /// for.
-    fn response_calls(build: impl FnOnce(InkResponse) -> InkResponse) -> Vec<crate::engine_test_stubs::Drawn> {
+    fn response_calls(
+        build: impl FnOnce(InkResponse) -> InkResponse,
+    ) -> Vec<crate::engine_test_stubs::Drawn> {
         use crate::framework::ElementTree;
         use crate::render::{BoxConstraints, RenderConstrainedBox};
 
@@ -1005,10 +1007,9 @@ mod tests {
         // square wedges of colour outside the shape.
         let square = response_calls(|response| response);
         assert!(
-            square.iter().any(|call| matches!(
-                call,
-                crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
-            )),
+            square
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::ClipRectLayer { .. })),
             "no radius, a square clip"
         );
 
@@ -1024,10 +1025,9 @@ mod tests {
             .collect();
         assert_eq!(radii, vec![12.0], "the radius it was given: {rounded:?}");
         assert!(
-            !rounded.iter().any(|call| matches!(
-                call,
-                crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
-            )),
+            !rounded
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::ClipRectLayer { .. })),
             "and nothing square"
         );
     }
@@ -1045,10 +1045,9 @@ mod tests {
                 ))
         });
         assert!(
-            calls.iter().any(|call| matches!(
-                call,
-                crate::engine_test_stubs::Drawn::ClipPathLayer { .. }
-            )),
+            calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::ClipPathLayer { .. })),
             "the shape's own path: {calls:?}"
         );
         assert!(
@@ -1074,10 +1073,14 @@ mod tests {
             })
         };
         assert!(clipped(&response_calls(|response| response
-            .with_border_radius(crate::borders::BorderRadius::circular(12.0)))));
+            .with_border_radius(crate::borders::BorderRadius::circular(
+                12.0
+            )))));
         assert!(!clipped(&response_calls(|response| response
             .with_contained(false)
-            .with_border_radius(crate::borders::BorderRadius::circular(12.0)))));
+            .with_border_radius(crate::borders::BorderRadius::circular(
+                12.0
+            )))));
     }
 
     #[test]
@@ -1097,10 +1100,7 @@ mod tests {
             })
         })));
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(
-            &root,
-            BoxConstraints::new(200.0, 400.0, 0.0, 200.0),
-        );
+        crate::render::schedule_root_layout(&root, BoxConstraints::new(200.0, 400.0, 0.0, 200.0));
         crate::render::flush_layout();
 
         let mut layers = crate::engine::LayerTree::new(600, 400);
@@ -1122,4 +1122,3 @@ mod tests {
         assert_eq!(filled, (0.0, 200.0));
     }
 }
-

@@ -319,7 +319,9 @@ impl ResolvedRangeSlider {
             )
         });
 
-        let track_height = data.track_height.unwrap_or(if material3 { 16.0 } else { 4.0 });
+        let track_height = data
+            .track_height
+            .unwrap_or(if material3 { 16.0 } else { 4.0 });
         ResolvedRangeSlider {
             track_shape,
             tick_mark_shape,
@@ -456,15 +458,10 @@ impl crate::render::CustomPainter for RangeSliderPainter {
         let together = (start.dx - end.dx).abs() < f32::EPSILON;
         for (center, is_on_top) in [(start, false), (end, together)] {
             self.resolved.thumb_shape.paint(
-                canvas,
-                center,
-                theme,
+                canvas, center, theme,
                 // Upstream's activation and press animations, both at rest:
                 // this port has no controller for either yet.
-                0.0,
-                enable,
-                is_on_top,
-                false,
+                0.0, enable, is_on_top, false,
             );
         }
     }
@@ -495,10 +492,8 @@ impl crate::framework::Component for RangeSlider {
         // whatever box it is given.
         let height = RangeSlider::MIN_TOUCH_TARGET_WIDTH;
         crate::framework::leaf(move || {
-            crate::render::RenderCustomPaint::new(
-                crate::widgets::SizedBox::new(200.0, height),
-            )
-            .with_foreground_painter(std::rc::Rc::clone(&painter))
+            crate::render::RenderCustomPaint::new(crate::widgets::SizedBox::new(200.0, height))
+                .with_foreground_painter(std::rc::Rc::clone(&painter))
         })
     }
 }
@@ -980,9 +975,7 @@ mod tests {
     fn a_theme_that_names_a_track_shape_gets_that_one() {
         // `range_track_shape` read off the theme rather than defaulted, which
         // is the half of the field the defaults table cannot show.
-        use crate::range_slider_parts::{
-            RangeSliderTrackShape, RectangularRangeSliderTrackShape,
-        };
+        use crate::range_slider_parts::{RangeSliderTrackShape, RectangularRangeSliderTrackShape};
         let asked = crate::slider_theme::SliderThemeData {
             range_track_shape: Some(RangeSliderTrackShape::Rectangular(
                 RectangularRangeSliderTrackShape::default(),
@@ -1068,6 +1061,3 @@ mod tests {
         assert_eq!(collapsed().validate(), Ok(()));
     }
 }
-
-
-

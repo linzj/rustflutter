@@ -1982,10 +1982,7 @@ mod tests {
         // children by saying nothing.
         let _tree = mounted(vec![
             field(1),
-            FocusTraversalGroup::unfocusable(
-                90,
-                FocusTraversalGroup::new(91, field(2)),
-            ),
+            FocusTraversalGroup::unfocusable(90, FocusTraversalGroup::new(91, field(2))),
         ]);
         assert!(!focus(2), "the outer group still refuses");
         assert!(focus(1), "and a node outside it is unaffected");

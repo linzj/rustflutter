@@ -1353,7 +1353,10 @@ mod tests {
         let back = ThemeData::lerp(&numbered_theme(80), &numbered_theme(0), 0.25);
         let expected = numbered_theme(60);
         assert_eq!(back.canvas_color, expected.canvas_color);
-        assert_eq!(back.unselected_widget_color, expected.unselected_widget_color);
+        assert_eq!(
+            back.unselected_widget_color,
+            expected.unselected_widget_color
+        );
     }
 
     #[test]
@@ -1438,10 +1441,6 @@ mod tests {
         );
     }
 
-
-
-
-
     // -- Every component theme a `ThemeData` hands through ------------------
     //
     // `tools/unlerped_fields.py` froze each of these lines in turn -- so the
@@ -1497,7 +1496,9 @@ mod tests {
             ..ThemeData::light()
         };
         assert_eq!(
-            ThemeData::lerp(&a, &b, 0.25).slider_theme.active_track_color,
+            ThemeData::lerp(&a, &b, 0.25)
+                .slider_theme
+                .active_track_color,
             Some(Color::argb(255, 0, 0, 12)),
             "slider_theme"
         );
@@ -1681,7 +1682,9 @@ mod tests {
             ..ThemeData::light()
         };
         assert_eq!(
-            ThemeData::lerp(&a, &b, 0.25).snack_bar_theme.background_color,
+            ThemeData::lerp(&a, &b, 0.25)
+                .snack_bar_theme
+                .background_color,
             Some(Color::argb(255, 0, 0, 44)),
             "snack_bar_theme"
         );
@@ -1796,7 +1799,9 @@ mod tests {
             ..ThemeData::light()
         };
         assert_eq!(
-            ThemeData::lerp(&a, &b, 0.25).data_table_theme.data_row_min_height,
+            ThemeData::lerp(&a, &b, 0.25)
+                .data_table_theme
+                .data_row_min_height,
             Some(64.0),
             "data_table_theme"
         );
@@ -1842,7 +1847,9 @@ mod tests {
             ..ThemeData::light()
         };
         assert_eq!(
-            ThemeData::lerp(&a, &b, 0.25).scrollbar_theme.cross_axis_margin,
+            ThemeData::lerp(&a, &b, 0.25)
+                .scrollbar_theme
+                .cross_axis_margin,
             Some(72.0),
             "scrollbar_theme"
         );
@@ -1907,7 +1914,9 @@ mod tests {
             ..ThemeData::light()
         };
         assert_eq!(
-            ThemeData::lerp(&a, &b, 0.25).button_bar_theme.button_min_width,
+            ThemeData::lerp(&a, &b, 0.25)
+                .button_bar_theme
+                .button_min_width,
             Some(84.0),
             "button_bar_theme"
         );
@@ -1923,24 +1932,28 @@ mod tests {
     fn the_theme_blends_its_banner_theme() {
         let a = ThemeData {
             banner_theme: MaterialBannerThemeData {
-                padding: Some(crate::borders::EdgeInsetsGeometry::Absolute(crate::render::EdgeInsets {
-                    left: 84.0,
-                    top: 84.0,
-                    right: 84.0,
-                    bottom: 84.0,
-                })),
+                padding: Some(crate::borders::EdgeInsetsGeometry::Absolute(
+                    crate::render::EdgeInsets {
+                        left: 84.0,
+                        top: 84.0,
+                        right: 84.0,
+                        bottom: 84.0,
+                    },
+                )),
                 ..MaterialBannerThemeData::default()
             },
             ..ThemeData::light()
         };
         let b = ThemeData {
             banner_theme: MaterialBannerThemeData {
-                padding: Some(crate::borders::EdgeInsetsGeometry::Absolute(crate::render::EdgeInsets {
-                    left: 100.0,
-                    top: 100.0,
-                    right: 100.0,
-                    bottom: 100.0,
-                })),
+                padding: Some(crate::borders::EdgeInsetsGeometry::Absolute(
+                    crate::render::EdgeInsets {
+                        left: 100.0,
+                        top: 100.0,
+                        right: 100.0,
+                        bottom: 100.0,
+                    },
+                )),
                 ..MaterialBannerThemeData::default()
             },
             ..ThemeData::light()

@@ -2334,10 +2334,7 @@ mod viewport_tests {
         assert!(
             !crate::engine_test_stubs::drawn()
                 .iter()
-                .any(|call| matches!(
-                    call,
-                    crate::engine_test_stubs::Drawn::SaveLayer { .. }
-                )),
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::SaveLayer { .. })),
             "the fade is a layer, not a canvas group"
         );
     }
@@ -2352,10 +2349,7 @@ mod viewport_tests {
         assert!(
             !crate::engine_test_stubs::drawn()
                 .iter()
-                .any(|call| matches!(
-                    call,
-                    crate::engine_test_stubs::Drawn::SaveLayer { .. }
-                )),
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::SaveLayer { .. })),
             "no group at full opacity"
         );
     }

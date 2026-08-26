@@ -2233,8 +2233,8 @@ impl ResolvedSlider {
         // move together: `onPrimary` over `primary`, `onInverseSurface` over
         // `inverseSurface`.
         let text_theme = ThemeData::of(context).text_theme.clone();
-        let value_indicator_text_style = data.value_indicator_text_style.clone().unwrap_or_else(
-            || {
+        let value_indicator_text_style =
+            data.value_indicator_text_style.clone().unwrap_or_else(|| {
                 let (role, ink) = if year_2023 {
                     (text_theme.label_medium.clone(), colors.on_primary)
                 } else {
@@ -2244,8 +2244,7 @@ impl ResolvedSlider {
                     color: ink,
                     ..role.unwrap_or_default()
                 }
-            },
-        );
+            });
         ResolvedSlider {
             track_height,
             active_track_color: data.active_track_color.unwrap_or(colors.primary),
@@ -2279,13 +2278,11 @@ impl ResolvedSlider {
                 // fills the bubble with `inverseSurface` -- the bubble is
                 // read, so it inverts -- where the 2023 table used
                 // `primary`.
-                value_indicator_color: Some(data.value_indicator_color.unwrap_or(
-                    if year_2023 {
-                        colors.primary
-                    } else {
-                        colors.inverse_surface()
-                    },
-                )),
+                value_indicator_color: Some(data.value_indicator_color.unwrap_or(if year_2023 {
+                    colors.primary
+                } else {
+                    colors.inverse_surface()
+                })),
                 value_indicator_shape: Some(value_indicator_shape),
                 value_indicator_text_style: Some(value_indicator_text_style.clone()),
                 // Upstream's `_SliderDefaultsM3`: the four tick colours are
@@ -3082,9 +3079,11 @@ mod tests {
             range_thumb_shape: Some(crate::range_slider_parts::RangeSliderThumbShape::Handle(
                 crate::range_slider_parts::HandleRangeSliderThumbShape::default(),
             )),
-            range_track_shape: Some(crate::range_slider_parts::RangeSliderTrackShape::Rectangular(
-                crate::range_slider_parts::RectangularRangeSliderTrackShape::default(),
-            )),
+            range_track_shape: Some(
+                crate::range_slider_parts::RangeSliderTrackShape::Rectangular(
+                    crate::range_slider_parts::RectangularRangeSliderTrackShape::default(),
+                ),
+            ),
             allowed_interaction: Some(SliderInteraction::TapOnly),
             year_2023: Some(true),
             ..SliderThemeData::default()
@@ -3312,9 +3311,7 @@ mod tick_mark_paint_tests {
     //! shape's answer -- with the suite green. A zero size draws no tick marks
     //! at all, because `paint` guards on `radius > 0.0`.
 
-    use super::{
-        RoundSliderTickMarkShape, SliderThemeData, SliderTickMarkShape,
-    };
+    use super::{RoundSliderTickMarkShape, SliderThemeData, SliderTickMarkShape};
     use crate::direction::TextDirection;
     use crate::engine::{Color, LayerTree};
     use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
@@ -3441,4 +3438,3 @@ mod tick_mark_paint_tests {
         assert!(drawn().is_empty());
     }
 }
-

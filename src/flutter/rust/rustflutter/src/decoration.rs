@@ -616,9 +616,13 @@ mod tests {
         let from = Decoration::Box(BoxDecoration::new().with_fill(Fill::Solid(Color(0xFF000000))));
         let to = Decoration::Box(BoxDecoration::new().with_fill(Fill::Solid(Color(0xFF0000FF))));
 
-        let quarter = from.lerp_to(Some(&to), 0.25).expect("two box decorations blend");
+        let quarter = from
+            .lerp_to(Some(&to), 0.25)
+            .expect("two box decorations blend");
         assert_eq!(fill_blue(&quarter), 64);
-        let back = to.lerp_to(Some(&from), 0.25).expect("two box decorations blend");
+        let back = to
+            .lerp_to(Some(&from), 0.25)
+            .expect("two box decorations blend");
         assert_eq!(fill_blue(&back), 191);
     }
 
@@ -1121,9 +1125,9 @@ mod decoration_paint_tests {
         // earlier. A painter that stopped at the first would lose the
         // ambient-plus-key pair that every elevation in Material is made of.
         let calls = painted(BoxDecoration::new().with_box_shadow(vec![
-                BoxShadow::new(Color(0x22000000), 0.0, 1.0, 0.0, 0.0),
-                BoxShadow::new(Color(0x44000000), 0.0, 6.0, 0.0, 0.0),
-            ]));
+            BoxShadow::new(Color(0x22000000), 0.0, 1.0, 0.0, 0.0),
+            BoxShadow::new(Color(0x44000000), 0.0, 6.0, 0.0, 0.0),
+        ]));
         let shapes = paths(&calls);
         assert_eq!(shapes.len(), 2, "{calls:?}");
         assert_eq!(shapes[0].1, 0x22000000);
@@ -1135,8 +1139,8 @@ mod decoration_paint_tests {
     fn a_circle_shadow_is_round_rather_than_the_shape_of_the_box() {
         // `BoxShape.circle` fits a circle to the *shortest* side, so an oblong
         // box gets a round shadow inside it rather than an ellipse filling it.
-        let mut decoration = BoxDecoration::new()
-            .with_box_shadow(vec![BoxShadow::new(SHADOW, 0.0, 0.0, 0.0, 0.0)]);
+        let mut decoration =
+            BoxDecoration::new().with_box_shadow(vec![BoxShadow::new(SHADOW, 0.0, 0.0, 0.0, 0.0)]);
         decoration.shape = BoxShape::Circle;
         let (left, top, right, bottom) = paths(&painted(decoration))[0].0;
         let width = right - left;
@@ -1160,4 +1164,3 @@ mod decoration_paint_tests {
         assert!(painted(BoxDecoration::new()).is_empty());
     }
 }
-

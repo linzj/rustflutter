@@ -615,7 +615,11 @@ impl TooltipThemeData {
                 &b.exclude_from_semantics,
                 t,
             ),
-            decoration: crate::decoration::Decoration::lerp(a.decoration.clone(), b.decoration.clone(), t),
+            decoration: crate::decoration::Decoration::lerp(
+                a.decoration.clone(),
+                b.decoration.clone(),
+                t,
+            ),
             text_style: lerp_text_style(&a.text_style, &b.text_style, t),
             text_align: lerp_nearer(&a.text_align, &b.text_align, t),
             wait_duration: lerp_nearer(&a.wait_duration, &b.wait_duration, t),
@@ -728,7 +732,11 @@ impl ProgressIndicatorThemeData {
             stroke_cap: lerp_nearer(&a.stroke_cap, &b.stroke_cap, t),
             constraints: BoxConstraints::lerp(a.constraints, b.constraints, t),
             track_gap: lerp_f32(a.track_gap, b.track_gap, t),
-            circular_track_padding: EdgeInsetsGeometry::lerp(a.circular_track_padding, b.circular_track_padding, t),
+            circular_track_padding: EdgeInsetsGeometry::lerp(
+                a.circular_track_padding,
+                b.circular_track_padding,
+                t,
+            ),
         }
     }
 }
@@ -982,7 +990,11 @@ impl SwitchThemeData {
                 b.track_outline_color.as_ref(),
                 t,
             ),
-            track_outline_width: lerp_state_f32(a.track_outline_width.as_ref(), b.track_outline_width.as_ref(), t),
+            track_outline_width: lerp_state_f32(
+                a.track_outline_width.as_ref(),
+                b.track_outline_width.as_ref(),
+                t,
+            ),
             material_tap_target_size: lerp_nearer(
                 &a.material_tap_target_size,
                 &b.material_tap_target_size,
@@ -4844,11 +4856,7 @@ impl ResolvedHourMinute {
     /// is the ink at full opacity, so pressing the hour box turns it from
     /// `primaryContainer` into `onPrimaryContainer` outright -- the strongest
     /// state change in any of these tables.
-    pub fn background_for(
-        scheme: &ColorScheme,
-        material3: bool,
-        states: WidgetStates,
-    ) -> Color {
+    pub fn background_for(scheme: &ColorScheme, material3: bool, states: WidgetStates) -> Color {
         let selected = states.contains(WidgetState::Selected);
         if !material3 {
             // One of the last places a colour is picked by brightness rather
@@ -4890,11 +4898,7 @@ impl ResolvedHourMinute {
     /// The digits' ink. Upstream's Material 3 ladder writes the same answer
     /// in all four arms of each branch, so what it comes to is: selected
     /// digits are `onPrimaryContainer` and the rest are `onSurface`.
-    pub fn foreground_for(
-        scheme: &ColorScheme,
-        material3: bool,
-        states: WidgetStates,
-    ) -> Color {
+    pub fn foreground_for(scheme: &ColorScheme, material3: bool, states: WidgetStates) -> Color {
         if states.contains(WidgetState::Selected) {
             if material3 {
                 scheme.on_primary_container()
@@ -5005,12 +5009,9 @@ impl ResolvedDayPeriod {
             // both tables give and what upstream's `OutlinedBorder` type
             // requires of any replacement.
             shape: match data.day_period_shape.clone() {
-                Some(ShapeBorder::Rounded(rounded)) => {
-                    ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
-                        side,
-                        rounded.border_radius,
-                    ))
-                }
+                Some(ShapeBorder::Rounded(rounded)) => ShapeBorder::Rounded(
+                    crate::borders::RoundedRectangleBorder::new(side, rounded.border_radius),
+                ),
                 Some(other) => other,
                 None => ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
                     side,
@@ -5049,20 +5050,20 @@ impl ResolvedDial {
         let data = TimePickerTheme::of(context);
         let dark = scheme.brightness == crate::platform::Brightness::Dark;
 
-        let text_color = data.dial_text_color.unwrap_or(
-            if states.contains(WidgetState::Selected) {
-                // Both are the ink for "on the hand", which is `primary`.
-                // Material 2 had no `onPrimary` habit yet and reached for
-                // `surface` instead.
-                if material3 {
-                    scheme.on_primary
+        let text_color =
+            data.dial_text_color
+                .unwrap_or(if states.contains(WidgetState::Selected) {
+                    // Both are the ink for "on the hand", which is `primary`.
+                    // Material 2 had no `onPrimary` habit yet and reached for
+                    // `surface` instead.
+                    if material3 {
+                        scheme.on_primary
+                    } else {
+                        scheme.surface
+                    }
                 } else {
-                    scheme.surface
-                }
-            } else {
-                scheme.on_surface
-            },
-        );
+                    scheme.on_surface
+                });
         ResolvedDial {
             background: data.dial_background_color.unwrap_or(if material3 {
                 scheme.surface_container_highest()
@@ -5078,13 +5079,17 @@ impl ResolvedDial {
             }),
             hand: data.dial_hand_color.unwrap_or(scheme.primary),
             text_color,
-            text_style: data.dial_text_style.clone().map(|style| TextStyle {
-                color: text_color,
-                ..style
-            }).unwrap_or_else(|| TextStyle {
-                color: text_color,
-                ..theme.text_theme.body_large.clone().unwrap_or_default()
-            }),
+            text_style: data
+                .dial_text_style
+                .clone()
+                .map(|style| TextStyle {
+                    color: text_color,
+                    ..style
+                })
+                .unwrap_or_else(|| TextStyle {
+                    color: text_color,
+                    ..theme.text_theme.body_large.clone().unwrap_or_default()
+                }),
         }
     }
 }
@@ -5268,10 +5273,14 @@ impl ResolvedTimePicker {
             /// The line above the picker -- "Select time".
             help_text_style: data.help_text_style.clone().or_else(|| {
                 if material3 {
-                    theme.text_theme.label_medium.clone().map(|style| TextStyle {
-                        color: scheme.on_surface_variant(),
-                        ..style
-                    })
+                    theme
+                        .text_theme
+                        .label_medium
+                        .clone()
+                        .map(|style| TextStyle {
+                            color: scheme.on_surface_variant(),
+                            ..style
+                        })
                 } else {
                     // Flat: no colour merged, so it keeps the scale's own.
                     theme.text_theme.label_small.clone()
@@ -5717,15 +5726,14 @@ impl ResolvedDatePicker {
             return Some(asked);
         }
         if material3 {
-            let opacity = if states.contains(WidgetState::Pressed)
-                || states.contains(WidgetState::Focused)
-            {
-                ResolvedDateCell::M3_STRONG_OVERLAY
-            } else if states.contains(WidgetState::Hovered) {
-                ResolvedDateCell::HOVERED_OVERLAY
-            } else {
-                return None;
-            };
+            let opacity =
+                if states.contains(WidgetState::Pressed) || states.contains(WidgetState::Focused) {
+                    ResolvedDateCell::M3_STRONG_OVERLAY
+                } else if states.contains(WidgetState::Hovered) {
+                    ResolvedDateCell::HOVERED_OVERLAY
+                } else {
+                    return None;
+                };
             return Some(crate::elevation_overlay::with_opacity(
                 scheme.on_primary_container(),
                 opacity,
@@ -5837,16 +5845,15 @@ impl ResolvedDatePicker {
                         text_theme.headline_small.clone()
                     }
                 }),
-            range_picker_header_help_style: data
-                .range_picker_header_help_style
-                .clone()
-                .or_else(|| {
+            range_picker_header_help_style: data.range_picker_header_help_style.clone().or_else(
+                || {
                     if material3 {
                         text_theme.title_small.clone()
                     } else {
                         text_theme.label_small.clone()
                     }
-                }),
+                },
+            ),
             range_picker_background_color: data.range_picker_background_color.or(if material3 {
                 None
             } else {
@@ -5854,15 +5861,16 @@ impl ResolvedDatePicker {
             }),
             // Both transparent in both tables, and for the reason the
             // dialog's are: the elevation is said by the colour underneath.
-            range_picker_shadow_color: data
-                .range_picker_shadow_color
-                .unwrap_or(Color::TRANSPARENT),
+            range_picker_shadow_color: data.range_picker_shadow_color.unwrap_or(Color::TRANSPARENT),
             range_picker_surface_tint_color: data
                 .range_picker_surface_tint_color
                 .unwrap_or(Color::TRANSPARENT),
-            range_picker_shape: data.range_picker_shape.clone().unwrap_or(ShapeBorder::Rounded(
-                crate::borders::RoundedRectangleBorder::default(),
-            )),
+            range_picker_shape: data
+                .range_picker_shape
+                .clone()
+                .unwrap_or(ShapeBorder::Rounded(
+                    crate::borders::RoundedRectangleBorder::default(),
+                )),
             // The last place in the date picker where Material 2 picks a
             // colour by *brightness* rather than by a scheme role. A dark
             // theme's header is `surface` and a light one's is `primary`,
@@ -6419,9 +6427,7 @@ impl ResolvedAppBar {
                         .with_color(scheme.on_surface_variant())
                         .with_size(ResolvedAppBar::ACTIONS_ICON_SIZE)
                 }),
-            leading_width: data
-                .leading_width
-                .unwrap_or(ResolvedAppBar::TOOLBAR_HEIGHT),
+            leading_width: data.leading_width.unwrap_or(ResolvedAppBar::TOOLBAR_HEIGHT),
             toolbar_text_style: data.toolbar_text_style.clone().or_else(|| {
                 ThemeData::of(context)
                     .text_theme
@@ -6454,7 +6460,10 @@ impl ResolvedAppBar {
     /// so a bar that has grown a second action gives up on centring rather
     /// than truncating the title. Everywhere else the title starts at the
     /// leading edge and the question does not arise.
-    pub fn platform_center(platform: crate::editable_text::TargetPlatform, action_count: usize) -> bool {
+    pub fn platform_center(
+        platform: crate::editable_text::TargetPlatform,
+        action_count: usize,
+    ) -> bool {
         use crate::editable_text::TargetPlatform;
         match platform {
             TargetPlatform::IOS | TargetPlatform::MacOS => action_count < 2,
@@ -6783,7 +6792,11 @@ impl ListTileThemeData {
             text_color: lerp_color(a.text_color, b.text_color, t),
             title_text_style: lerp_text_style(&a.title_text_style, &b.title_text_style, t),
             subtitle_text_style: lerp_text_style(&a.subtitle_text_style, &b.subtitle_text_style, t),
-            leading_and_trailing_text_style: lerp_text_style(&a.leading_and_trailing_text_style, &b.leading_and_trailing_text_style, t),
+            leading_and_trailing_text_style: lerp_text_style(
+                &a.leading_and_trailing_text_style,
+                &b.leading_and_trailing_text_style,
+                t,
+            ),
             content_padding: EdgeInsetsGeometry::lerp(a.content_padding, b.content_padding, t),
             tile_color: lerp_color(a.tile_color, b.tile_color, t),
             selected_tile_color: lerp_color(a.selected_tile_color, b.selected_tile_color, t),
@@ -7152,13 +7165,25 @@ impl ChipThemeData {
             },
             shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             label_style: lerp_text_style(&a.label_style, &b.label_style, t),
-            secondary_label_style: lerp_text_style(&a.secondary_label_style, &b.secondary_label_style, t),
+            secondary_label_style: lerp_text_style(
+                &a.secondary_label_style,
+                &b.secondary_label_style,
+                t,
+            ),
             brightness: lerp_nearer(&a.brightness, &b.brightness, t),
             icon_theme: lerp_icon_theme(&a.icon_theme, &b.icon_theme, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
             press_elevation: lerp_f32(a.press_elevation, b.press_elevation, t),
-            avatar_box_constraints: BoxConstraints::lerp(a.avatar_box_constraints, b.avatar_box_constraints, t),
-            delete_icon_box_constraints: BoxConstraints::lerp(a.delete_icon_box_constraints, b.delete_icon_box_constraints, t),
+            avatar_box_constraints: BoxConstraints::lerp(
+                a.avatar_box_constraints,
+                b.avatar_box_constraints,
+                t,
+            ),
+            delete_icon_box_constraints: BoxConstraints::lerp(
+                a.delete_icon_box_constraints,
+                b.delete_icon_box_constraints,
+                t,
+            ),
         }
     }
 }
@@ -7393,7 +7418,11 @@ impl TabBarThemeData {
     /// Upstream `TabBarThemeData.lerp`.
     pub fn lerp(a: &TabBarThemeData, b: &TabBarThemeData, t: f32) -> TabBarThemeData {
         TabBarThemeData {
-            indicator: crate::decoration::Decoration::lerp(a.indicator.clone(), b.indicator.clone(), t),
+            indicator: crate::decoration::Decoration::lerp(
+                a.indicator.clone(),
+                b.indicator.clone(),
+                t,
+            ),
             indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
             indicator_size: lerp_nearer(&a.indicator_size, &b.indicator_size, t),
             divider_color: lerp_color(a.divider_color, b.divider_color, t),
@@ -7406,7 +7435,11 @@ impl TabBarThemeData {
                 b.unselected_label_color,
                 t,
             ),
-            unselected_label_style: lerp_text_style(&a.unselected_label_style, &b.unselected_label_style, t),
+            unselected_label_style: lerp_text_style(
+                &a.unselected_label_style,
+                &b.unselected_label_style,
+                t,
+            ),
             overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             tab_alignment: lerp_nearer(&a.tab_alignment, &b.tab_alignment, t),
@@ -7541,7 +7574,10 @@ impl ResolvedTabBar {
             // primary-coloured surface, which is what a Material 2 tab bar
             // is: it sits in the app bar. Material 3's does not, so it reads
             // the ordinary scale.
-            label_style: data.label_style.clone().or_else(|| tab_label_role(&material)),
+            label_style: data
+                .label_style
+                .clone()
+                .or_else(|| tab_label_role(&material)),
             unselected_label_style: data
                 .unselected_label_style
                 .clone()
@@ -7628,7 +7664,11 @@ impl DataTableThemeData {
     /// Upstream `DataTableThemeData.lerp`.
     pub fn lerp(a: &DataTableThemeData, b: &DataTableThemeData, t: f32) -> DataTableThemeData {
         DataTableThemeData {
-            decoration: crate::decoration::Decoration::lerp(a.decoration.clone(), b.decoration.clone(), t),
+            decoration: crate::decoration::Decoration::lerp(
+                a.decoration.clone(),
+                b.decoration.clone(),
+                t,
+            ),
             data_row_color: lerp_state_color(
                 a.data_row_color.as_ref(),
                 b.data_row_color.as_ref(),
@@ -7748,8 +7788,16 @@ impl NavigationRailThemeData {
         NavigationRailThemeData {
             background_color: lerp_color(a.background_color, b.background_color, t),
             elevation: lerp_f32(a.elevation, b.elevation, t),
-            unselected_label_text_style: lerp_text_style(&a.unselected_label_text_style, &b.unselected_label_text_style, t),
-            selected_label_text_style: lerp_text_style(&a.selected_label_text_style, &b.selected_label_text_style, t),
+            unselected_label_text_style: lerp_text_style(
+                &a.unselected_label_text_style,
+                &b.unselected_label_text_style,
+                t,
+            ),
+            selected_label_text_style: lerp_text_style(
+                &a.selected_label_text_style,
+                &b.selected_label_text_style,
+                t,
+            ),
             unselected_icon_theme: lerp_icon_theme(
                 &a.unselected_icon_theme,
                 &b.unselected_icon_theme,
@@ -7760,7 +7808,11 @@ impl NavigationRailThemeData {
             label_type: lerp_nearer(&a.label_type, &b.label_type, t),
             use_indicator: lerp_nearer(&a.use_indicator, &b.use_indicator, t),
             indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
-            indicator_shape: ShapeBorder::lerp(a.indicator_shape.clone(), b.indicator_shape.clone(), t),
+            indicator_shape: ShapeBorder::lerp(
+                a.indicator_shape.clone(),
+                b.indicator_shape.clone(),
+                t,
+            ),
             min_width: lerp_f32(a.min_width, b.min_width, t),
             min_extended_width: lerp_f32(a.min_extended_width, b.min_extended_width, t),
         }
@@ -7854,8 +7906,16 @@ impl BottomNavigationBarThemeData {
             ),
             selected_item_color: lerp_color(a.selected_item_color, b.selected_item_color, t),
             unselected_item_color: lerp_color(a.unselected_item_color, b.unselected_item_color, t),
-            selected_label_style: lerp_text_style(&a.selected_label_style, &b.selected_label_style, t),
-            unselected_label_style: lerp_text_style(&a.unselected_label_style, &b.unselected_label_style, t),
+            selected_label_style: lerp_text_style(
+                &a.selected_label_style,
+                &b.selected_label_style,
+                t,
+            ),
+            unselected_label_style: lerp_text_style(
+                &a.unselected_label_style,
+                &b.unselected_label_style,
+                t,
+            ),
             show_selected_labels: lerp_nearer(&a.show_selected_labels, &b.show_selected_labels, t),
             show_unselected_labels: lerp_nearer(
                 &a.show_unselected_labels,
@@ -8672,14 +8732,22 @@ impl ExpansionTileThemeData {
                 t,
             ),
             tile_padding: EdgeInsetsGeometry::lerp(a.tile_padding, b.tile_padding, t),
-            expanded_alignment: AlignmentGeometry::lerp(a.expanded_alignment, b.expanded_alignment, t),
+            expanded_alignment: AlignmentGeometry::lerp(
+                a.expanded_alignment,
+                b.expanded_alignment,
+                t,
+            ),
             children_padding: EdgeInsetsGeometry::lerp(a.children_padding, b.children_padding, t),
             icon_color: lerp_color(a.icon_color, b.icon_color, t),
             collapsed_icon_color: lerp_color(a.collapsed_icon_color, b.collapsed_icon_color, t),
             text_color: lerp_color(a.text_color, b.text_color, t),
             collapsed_text_color: lerp_color(a.collapsed_text_color, b.collapsed_text_color, t),
             shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
-            collapsed_shape: ShapeBorder::lerp(a.collapsed_shape.clone(), b.collapsed_shape.clone(), t),
+            collapsed_shape: ShapeBorder::lerp(
+                a.collapsed_shape.clone(),
+                b.collapsed_shape.clone(),
+                t,
+            ),
             expansion_animation_style: lerp_nearer(
                 &a.expansion_animation_style,
                 &b.expansion_animation_style,
@@ -9351,9 +9419,21 @@ impl FloatingActionButtonThemeData {
             enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
             icon_size: lerp_f32(a.icon_size, b.icon_size, t),
             size_constraints: BoxConstraints::lerp(a.size_constraints, b.size_constraints, t),
-            small_size_constraints: BoxConstraints::lerp(a.small_size_constraints, b.small_size_constraints, t),
-            large_size_constraints: BoxConstraints::lerp(a.large_size_constraints, b.large_size_constraints, t),
-            extended_size_constraints: BoxConstraints::lerp(a.extended_size_constraints, b.extended_size_constraints, t),
+            small_size_constraints: BoxConstraints::lerp(
+                a.small_size_constraints,
+                b.small_size_constraints,
+                t,
+            ),
+            large_size_constraints: BoxConstraints::lerp(
+                a.large_size_constraints,
+                b.large_size_constraints,
+                t,
+            ),
+            extended_size_constraints: BoxConstraints::lerp(
+                a.extended_size_constraints,
+                b.extended_size_constraints,
+                t,
+            ),
             extended_icon_label_spacing: lerp_f32(
                 a.extended_icon_label_spacing,
                 b.extended_icon_label_spacing,
@@ -9482,14 +9562,18 @@ impl ResolvedFloatingActionButton {
                         ResolvedFloatingActionButton::SIZE,
                     ))
                 }
-                FloatingActionButtonKind::Small => BoxConstraints::tight_for(crate::render::Size::new(
-                    ResolvedFloatingActionButton::SMALL_SIZE,
-                    ResolvedFloatingActionButton::SMALL_SIZE,
-                )),
-                FloatingActionButtonKind::Large => BoxConstraints::tight_for(crate::render::Size::new(
-                    ResolvedFloatingActionButton::LARGE_SIZE,
-                    ResolvedFloatingActionButton::LARGE_SIZE,
-                )),
+                FloatingActionButtonKind::Small => {
+                    BoxConstraints::tight_for(crate::render::Size::new(
+                        ResolvedFloatingActionButton::SMALL_SIZE,
+                        ResolvedFloatingActionButton::SMALL_SIZE,
+                    ))
+                }
+                FloatingActionButtonKind::Large => {
+                    BoxConstraints::tight_for(crate::render::Size::new(
+                        ResolvedFloatingActionButton::LARGE_SIZE,
+                        ResolvedFloatingActionButton::LARGE_SIZE,
+                    ))
+                }
                 // Height only: the width is whatever the label needs.
                 FloatingActionButtonKind::Extended => BoxConstraints {
                     min_width: 0.0,
@@ -9590,7 +9674,11 @@ impl ToggleButtonsThemeData {
             selected_border_color: lerp_color(a.selected_border_color, b.selected_border_color, t),
             disabled_border_color: lerp_color(a.disabled_border_color, b.disabled_border_color, t),
             border_width: lerp_f32(a.border_width, b.border_width, t),
-            border_radius: crate::borders::BorderRadius::lerp_optional(a.border_radius, b.border_radius, t),
+            border_radius: crate::borders::BorderRadius::lerp_optional(
+                a.border_radius,
+                b.border_radius,
+                t,
+            ),
         }
     }
 }
@@ -9954,9 +10042,17 @@ impl TimePickerThemeData {
                 }
             },
             day_period_color: lerp_color(a.day_period_color, b.day_period_color, t),
-            day_period_shape: ShapeBorder::lerp(a.day_period_shape.clone(), b.day_period_shape.clone(), t),
+            day_period_shape: ShapeBorder::lerp(
+                a.day_period_shape.clone(),
+                b.day_period_shape.clone(),
+                t,
+            ),
             day_period_text_color: lerp_color(a.day_period_text_color, b.day_period_text_color, t),
-            day_period_text_style: lerp_text_style(&a.day_period_text_style, &b.day_period_text_style, t),
+            day_period_text_style: lerp_text_style(
+                &a.day_period_text_style,
+                &b.day_period_text_style,
+                t,
+            ),
             dial_background_color: lerp_color(a.dial_background_color, b.dial_background_color, t),
             dial_hand_color: lerp_color(a.dial_hand_color, b.dial_hand_color, t),
             dial_text_color: lerp_color(a.dial_text_color, b.dial_text_color, t),
@@ -9965,13 +10061,21 @@ impl TimePickerThemeData {
             entry_mode_icon_color: lerp_color(a.entry_mode_icon_color, b.entry_mode_icon_color, t),
             help_text_style: lerp_text_style(&a.help_text_style, &b.help_text_style, t),
             hour_minute_color: lerp_color(a.hour_minute_color, b.hour_minute_color, t),
-            hour_minute_shape: ShapeBorder::lerp(a.hour_minute_shape.clone(), b.hour_minute_shape.clone(), t),
+            hour_minute_shape: ShapeBorder::lerp(
+                a.hour_minute_shape.clone(),
+                b.hour_minute_shape.clone(),
+                t,
+            ),
             hour_minute_text_color: lerp_color(
                 a.hour_minute_text_color,
                 b.hour_minute_text_color,
                 t,
             ),
-            hour_minute_text_style: lerp_text_style(&a.hour_minute_text_style, &b.hour_minute_text_style, t),
+            hour_minute_text_style: lerp_text_style(
+                &a.hour_minute_text_style,
+                &b.hour_minute_text_style,
+                t,
+            ),
             padding: EdgeInsetsGeometry::lerp(a.padding, b.padding, t),
             shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
             time_selector_separator_color: lerp_state_color(
@@ -9979,7 +10083,11 @@ impl TimePickerThemeData {
                 b.time_selector_separator_color.as_ref(),
                 t,
             ),
-            time_selector_separator_text_style: lerp_state_text_style(a.time_selector_separator_text_style.as_ref(), b.time_selector_separator_text_style.as_ref(), t),
+            time_selector_separator_text_style: lerp_state_text_style(
+                a.time_selector_separator_text_style.as_ref(),
+                b.time_selector_separator_text_style.as_ref(),
+                t,
+            ),
         }
     }
 }
@@ -10124,7 +10232,11 @@ impl DatePickerThemeData {
                 b.header_foreground_color,
                 t,
             ),
-            header_headline_style: lerp_text_style(&a.header_headline_style, &b.header_headline_style, t),
+            header_headline_style: lerp_text_style(
+                &a.header_headline_style,
+                &b.header_headline_style,
+                t,
+            ),
             header_help_style: lerp_text_style(&a.header_help_style, &b.header_help_style, t),
             weekday_style: lerp_text_style(&a.weekday_style, &b.weekday_style, t),
             day_style: lerp_text_style(&a.day_style, &b.day_style, t),
@@ -10188,7 +10300,11 @@ impl DatePickerThemeData {
                 b.range_picker_surface_tint_color,
                 t,
             ),
-            range_picker_shape: ShapeBorder::lerp(a.range_picker_shape.clone(), b.range_picker_shape.clone(), t),
+            range_picker_shape: ShapeBorder::lerp(
+                a.range_picker_shape.clone(),
+                b.range_picker_shape.clone(),
+                t,
+            ),
             range_picker_header_background_color: lerp_color(
                 a.range_picker_header_background_color,
                 b.range_picker_header_background_color,
@@ -10199,8 +10315,16 @@ impl DatePickerThemeData {
                 b.range_picker_header_foreground_color,
                 t,
             ),
-            range_picker_header_headline_style: lerp_text_style(&a.range_picker_header_headline_style, &b.range_picker_header_headline_style, t),
-            range_picker_header_help_style: lerp_text_style(&a.range_picker_header_help_style, &b.range_picker_header_help_style, t),
+            range_picker_header_headline_style: lerp_text_style(
+                &a.range_picker_header_headline_style,
+                &b.range_picker_header_headline_style,
+                t,
+            ),
+            range_picker_header_help_style: lerp_text_style(
+                &a.range_picker_header_help_style,
+                &b.range_picker_header_help_style,
+                t,
+            ),
             range_selection_background_color: lerp_color(
                 a.range_selection_background_color,
                 b.range_selection_background_color,
@@ -10222,7 +10346,11 @@ impl DatePickerThemeData {
                 &b.confirm_button_style,
                 t,
             ),
-            toggle_button_text_style: lerp_text_style(&a.toggle_button_text_style, &b.toggle_button_text_style, t),
+            toggle_button_text_style: lerp_text_style(
+                &a.toggle_button_text_style,
+                &b.toggle_button_text_style,
+                t,
+            ),
             sub_header_foreground_color: lerp_color(
                 a.sub_header_foreground_color,
                 b.sub_header_foreground_color,
@@ -10723,7 +10851,11 @@ impl PopupMenuThemeData {
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             text_style: lerp_text_style(&a.text_style, &b.text_style, t),
-            label_text_style: lerp_state_text_style(a.label_text_style.as_ref(), b.label_text_style.as_ref(), t),
+            label_text_style: lerp_state_text_style(
+                a.label_text_style.as_ref(),
+                b.label_text_style.as_ref(),
+                t,
+            ),
             enable_feedback: lerp_nearer(&a.enable_feedback, &b.enable_feedback, t),
             mouse_cursor: lerp_nearer(&a.mouse_cursor, &b.mouse_cursor, t),
             position: lerp_nearer(&a.position, &b.position, t),
@@ -10955,8 +11087,16 @@ impl NavigationBarThemeData {
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
-            indicator_shape: ShapeBorder::lerp(a.indicator_shape.clone(), b.indicator_shape.clone(), t),
-            label_text_style: lerp_state_text_style(a.label_text_style.as_ref(), b.label_text_style.as_ref(), t),
+            indicator_shape: ShapeBorder::lerp(
+                a.indicator_shape.clone(),
+                b.indicator_shape.clone(),
+                t,
+            ),
+            label_text_style: lerp_state_text_style(
+                a.label_text_style.as_ref(),
+                b.label_text_style.as_ref(),
+                t,
+            ),
             icon_theme: lerp_state_icon_theme(a.icon_theme.as_ref(), b.icon_theme.as_ref(), t),
             label_behavior: lerp_nearer(&a.label_behavior, &b.label_behavior, t),
             overlay_color: lerp_state_color(a.overlay_color.as_ref(), b.overlay_color.as_ref(), t),
@@ -11030,7 +11170,11 @@ impl NavigationDrawerThemeData {
             shadow_color: lerp_color(a.shadow_color, b.shadow_color, t),
             surface_tint_color: lerp_color(a.surface_tint_color, b.surface_tint_color, t),
             indicator_color: lerp_color(a.indicator_color, b.indicator_color, t),
-            indicator_shape: ShapeBorder::lerp(a.indicator_shape.clone(), b.indicator_shape.clone(), t),
+            indicator_shape: ShapeBorder::lerp(
+                a.indicator_shape.clone(),
+                b.indicator_shape.clone(),
+                t,
+            ),
             indicator_size: match (a.indicator_size, b.indicator_size) {
                 (Some(first), Some(second)) => Some(Size::new(
                     first.width + (second.width - first.width) * t,
@@ -11044,7 +11188,11 @@ impl NavigationDrawerThemeData {
                     }
                 }
             },
-            label_text_style: lerp_state_text_style(a.label_text_style.as_ref(), b.label_text_style.as_ref(), t),
+            label_text_style: lerp_state_text_style(
+                a.label_text_style.as_ref(),
+                b.label_text_style.as_ref(),
+                t,
+            ),
             icon_theme: lerp_state_icon_theme(a.icon_theme.as_ref(), b.icon_theme.as_ref(), t),
         }
     }
@@ -12306,8 +12454,12 @@ mod tests {
         // *over* the elevation overlay instead of under it.
         for theme in [ThemeData::light(), material_two_light(), ThemeData::dark()] {
             assert_eq!(
-                day_period(TimePickerThemeData::new(), theme.clone(), WidgetStates::NONE)
-                    .background,
+                day_period(
+                    TimePickerThemeData::new(),
+                    theme.clone(),
+                    WidgetStates::NONE
+                )
+                .background,
                 Color::TRANSPARENT
             );
         }
@@ -12359,11 +12511,19 @@ mod tests {
         // see-through outline would pick up whatever the elevation overlay
         // put behind it. Material 3 names `outline` outright and needs no
         // blend.
-        let two = day_period(TimePickerThemeData::new(), material_two_light(), WidgetStates::NONE);
+        let two = day_period(
+            TimePickerThemeData::new(),
+            material_two_light(),
+            WidgetStates::NONE,
+        );
         assert_eq!(two.side.color.alpha(), 0xFF, "opaque, not 38% of something");
         assert_ne!(two.side.color, material_two_light().color_scheme.on_surface);
 
-        let three = day_period(TimePickerThemeData::new(), ThemeData::light(), WidgetStates::NONE);
+        let three = day_period(
+            TimePickerThemeData::new(),
+            ThemeData::light(),
+            WidgetStates::NONE,
+        );
         assert_eq!(three.side.color, ThemeData::light().color_scheme.outline());
         assert_ne!(three.side.color, two.side.color);
     }
@@ -12374,7 +12534,11 @@ mod tests {
         let theme = ThemeData::light();
         let selected = WidgetStates::NONE.with(WidgetState::Selected);
         let chosen = day_period(TimePickerThemeData::new(), theme.clone(), selected);
-        let quiet = day_period(TimePickerThemeData::new(), theme.clone(), WidgetStates::NONE);
+        let quiet = day_period(
+            TimePickerThemeData::new(),
+            theme.clone(),
+            WidgetStates::NONE,
+        );
 
         assert_eq!(
             chosen.style.font_size,
@@ -12382,12 +12546,19 @@ mod tests {
         );
         assert_eq!(chosen.style.color, chosen.foreground);
         assert_eq!(quiet.style.color, quiet.foreground);
-        assert_eq!(chosen.foreground, theme.color_scheme.on_tertiary_container());
+        assert_eq!(
+            chosen.foreground,
+            theme.color_scheme.on_tertiary_container()
+        );
         assert_eq!(quiet.foreground, theme.color_scheme.on_surface_variant());
 
         // Material 2 fades the unselected half's words instead of giving them
         // a role of their own.
-        let old = day_period(TimePickerThemeData::new(), material_two_light(), WidgetStates::NONE);
+        let old = day_period(
+            TimePickerThemeData::new(),
+            material_two_light(),
+            WidgetStates::NONE,
+        );
         assert!(old.foreground.alpha() < 0xFF, "sixty percent");
         assert_eq!(
             day_period(TimePickerThemeData::new(), material_two_light(), selected).foreground,
@@ -12400,8 +12571,16 @@ mod tests {
         // Worth asserting rather than leaving to look like an oversight: most
         // of this table branches, and these two do not.
         let theme = ThemeData::light();
-        let three = dial(TimePickerThemeData::new(), theme.clone(), WidgetStates::NONE);
-        let two = dial(TimePickerThemeData::new(), material_two_light(), WidgetStates::NONE);
+        let three = dial(
+            TimePickerThemeData::new(),
+            theme.clone(),
+            WidgetStates::NONE,
+        );
+        let two = dial(
+            TimePickerThemeData::new(),
+            material_two_light(),
+            WidgetStates::NONE,
+        );
         assert_eq!(three.hand, theme.color_scheme.primary);
         assert_eq!(two.hand, three.hand);
         assert_eq!(
@@ -12441,7 +12620,12 @@ mod tests {
     fn the_dial_face_is_a_surface_role_under_three_and_a_tint_under_two() {
         let theme = ThemeData::light();
         assert_eq!(
-            dial(TimePickerThemeData::new(), theme.clone(), WidgetStates::NONE).background,
+            dial(
+                TimePickerThemeData::new(),
+                theme.clone(),
+                WidgetStates::NONE
+            )
+            .background,
             theme.color_scheme.surface_container_highest()
         );
 
@@ -12449,7 +12633,11 @@ mod tests {
         // table.
         let mut dark = ThemeData::dark();
         dark.use_material3 = false;
-        let by_day = dial(TimePickerThemeData::new(), material_two_light(), WidgetStates::NONE);
+        let by_day = dial(
+            TimePickerThemeData::new(),
+            material_two_light(),
+            WidgetStates::NONE,
+        );
         let by_night = dial(TimePickerThemeData::new(), dark, WidgetStates::NONE);
         assert_eq!(by_day.background.alpha(), 20, "8% of 255");
         assert_eq!(by_night.background.alpha(), 31, "12%");
@@ -12473,11 +12661,20 @@ mod tests {
         let two = time_picker_under(TimePickerThemeData::new(), material_two_light());
         assert_eq!(
             two.help_text_style.as_ref().map(|s| s.font_size),
-            material_two_light().text_theme.label_small.as_ref().map(|s| s.font_size)
+            material_two_light()
+                .text_theme
+                .label_small
+                .as_ref()
+                .map(|s| s.font_size)
         );
         assert_eq!(
             two.help_text_style.as_ref().unwrap().color,
-            material_two_light().text_theme.label_small.as_ref().unwrap().color,
+            material_two_light()
+                .text_theme
+                .label_small
+                .as_ref()
+                .unwrap()
+                .color,
             "flat: the scale's own ink"
         );
     }
@@ -12521,8 +12718,11 @@ mod tests {
         }
         impl crate::framework::Component for Reader {
             fn build(&self, context: &mut BuildContext) -> crate::framework::AnyWidget {
-                *self.seen.borrow_mut() =
-                    Some(ResolvedHourMinute::of(context, self.entry_mode, self.states));
+                *self.seen.borrow_mut() = Some(ResolvedHourMinute::of(
+                    context,
+                    self.entry_mode,
+                    self.states,
+                ));
                 crate::framework::leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
             }
         }
@@ -12774,7 +12974,11 @@ mod tests {
 
         // And the four state arms really do agree, which is worth saying
         // because upstream writes them out separately.
-        for state in [WidgetState::Pressed, WidgetState::Hovered, WidgetState::Focused] {
+        for state in [
+            WidgetState::Pressed,
+            WidgetState::Hovered,
+            WidgetState::Focused,
+        ] {
             assert_eq!(
                 dialled(WidgetStates::of(&[WidgetState::Selected, state])).foreground,
                 selected.foreground,
@@ -12887,7 +13091,13 @@ mod tests {
             );
         }
         assert!(matches!(
-            cell(named, ThemeData::light(), DateCellSlot::Year, WidgetStates::NONE).shape,
+            cell(
+                named,
+                ThemeData::light(),
+                DateCellSlot::Year,
+                WidgetStates::NONE
+            )
+            .shape,
             ShapeBorder::Stadium(_)
         ));
     }
@@ -12937,8 +13147,7 @@ mod tests {
             two_dark.color_scheme.on_surface
         );
         assert_ne!(
-            night.range_picker_header_background_color,
-            two_dark.color_scheme.primary,
+            night.range_picker_header_background_color, two_dark.color_scheme.primary,
             "which is what a role-based rule would have given it"
         );
 
@@ -12994,7 +13203,10 @@ mod tests {
         );
 
         let old = date_picker_under(DatePickerThemeData::new(), two.clone());
-        assert_ne!(old.range_selection_background_color, new.range_selection_background_color);
+        assert_ne!(
+            old.range_selection_background_color,
+            new.range_selection_background_color
+        );
         assert!(
             old.range_selection_background_color.alpha() < 0x40,
             "a twelve percent tint"
@@ -13090,14 +13302,23 @@ mod tests {
         // show through -- including a range selection's tint, which is drawn
         // under the cells and would be covered by a transparent rectangle
         // painted over it.
-        assert_eq!(plain_cell(DateCellSlot::Day, WidgetStates::NONE).background, None);
+        assert_eq!(
+            plain_cell(DateCellSlot::Day, WidgetStates::NONE).background,
+            None
+        );
         assert_ne!(
             plain_cell(DateCellSlot::Day, WidgetStates::NONE).background,
             Some(Color::TRANSPARENT)
         );
 
-        let chosen = plain_cell(DateCellSlot::Day, WidgetStates::NONE.with(WidgetState::Selected));
-        assert_eq!(chosen.background, Some(ThemeData::light().color_scheme.primary));
+        let chosen = plain_cell(
+            DateCellSlot::Day,
+            WidgetStates::NONE.with(WidgetState::Selected),
+        );
+        assert_eq!(
+            chosen.background,
+            Some(ThemeData::light().color_scheme.primary)
+        );
         assert_eq!(
             chosen.foreground,
             ThemeData::light().color_scheme.on_primary,
@@ -13117,8 +13338,18 @@ mod tests {
         two.use_material3 = false;
         let disabled = WidgetStates::NONE.with(WidgetState::Disabled);
 
-        let new = cell(DatePickerThemeData::new(), ThemeData::light(), DateCellSlot::Today, disabled);
-        let old = cell(DatePickerThemeData::new(), two, DateCellSlot::Today, disabled);
+        let new = cell(
+            DatePickerThemeData::new(),
+            ThemeData::light(),
+            DateCellSlot::Today,
+            disabled,
+        );
+        let old = cell(
+            DatePickerThemeData::new(),
+            two,
+            DateCellSlot::Today,
+            disabled,
+        );
         assert_ne!(new.foreground, old.foreground);
 
         // Both are faded, so the difference is which colour is faded and not
@@ -13147,15 +13378,23 @@ mod tests {
             scheme.primary
         );
         assert_eq!(
-            cell(DatePickerThemeData::new(), two, DateCellSlot::Today, WidgetStates::NONE)
-                .foreground,
+            cell(
+                DatePickerThemeData::new(),
+                two,
+                DateCellSlot::Today,
+                WidgetStates::NONE
+            )
+            .foreground,
             scheme.primary
         );
         // And a selected today is `onPrimary` like any selected date: it is
         // sitting on the primary fill, so it has to be.
         assert_eq!(
-            plain_cell(DateCellSlot::Today, WidgetStates::NONE.with(WidgetState::Selected))
-                .foreground,
+            plain_cell(
+                DateCellSlot::Today,
+                WidgetStates::NONE.with(WidgetState::Selected)
+            )
+            .foreground,
             scheme.on_primary
         );
     }
@@ -13169,10 +13408,14 @@ mod tests {
         // number where it is.
         let mut two = ThemeData::light();
         two.use_material3 = false;
-        let pressed_selected =
-            WidgetStates::of(&[WidgetState::Selected, WidgetState::Pressed]);
+        let pressed_selected = WidgetStates::of(&[WidgetState::Selected, WidgetState::Pressed]);
 
-        let old = cell(DatePickerThemeData::new(), two.clone(), DateCellSlot::Day, pressed_selected);
+        let old = cell(
+            DatePickerThemeData::new(),
+            two.clone(),
+            DateCellSlot::Day,
+            pressed_selected,
+        );
         let new = plain_cell(DateCellSlot::Day, pressed_selected);
         assert_ne!(old.overlay, new.overlay);
         // "Heavier than Material 3" is too weak a claim to be worth making:
@@ -13204,7 +13447,11 @@ mod tests {
         // `None` rather than transparent, for the same reason as the
         // background: there is no layer, not an invisible one.
         for slot in [DateCellSlot::Day, DateCellSlot::Today, DateCellSlot::Year] {
-            assert_eq!(plain_cell(slot, WidgetStates::NONE).overlay, None, "{slot:?}");
+            assert_eq!(
+                plain_cell(slot, WidgetStates::NONE).overlay,
+                None,
+                "{slot:?}"
+            );
             assert_eq!(
                 plain_cell(slot, WidgetStates::NONE.with(WidgetState::Selected)).overlay,
                 None,
@@ -13271,10 +13518,7 @@ mod tests {
     // calendar is a whole rung of the type scale larger than a Material 2
     // one. `TextTheme::headline_large` had no reader in this port at all.
 
-    fn date_picker_under(
-        data: DatePickerThemeData,
-        theme: ThemeData,
-    ) -> ResolvedDatePicker {
+    fn date_picker_under(data: DatePickerThemeData, theme: ThemeData) -> ResolvedDatePicker {
         struct Reader {
             seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedDatePicker>>>,
         }
@@ -13315,7 +13559,11 @@ mod tests {
 
         assert_eq!(
             new.header_headline_style.as_ref().map(|s| s.font_size),
-            three.text_theme.headline_large.as_ref().map(|s| s.font_size)
+            three
+                .text_theme
+                .headline_large
+                .as_ref()
+                .map(|s| s.font_size)
         );
         assert_eq!(
             old.header_headline_style.as_ref().map(|s| s.font_size),
@@ -13328,8 +13576,7 @@ mod tests {
         );
 
         assert!(
-            new.day_style.as_ref().unwrap().font_size
-                > old.day_style.as_ref().unwrap().font_size,
+            new.day_style.as_ref().unwrap().font_size > old.day_style.as_ref().unwrap().font_size,
             "bodyLarge over bodySmall"
         );
         assert!(
@@ -13348,7 +13595,10 @@ mod tests {
         let new = date_picker_under(DatePickerThemeData::new(), three.clone());
         let old = date_picker_under(DatePickerThemeData::new(), two.clone());
 
-        assert_eq!(new.weekday_style.as_ref().unwrap().color, three.color_scheme.on_surface);
+        assert_eq!(
+            new.weekday_style.as_ref().unwrap().color,
+            three.color_scheme.on_surface
+        );
         let faded = old.weekday_style.as_ref().unwrap().color;
         assert_ne!(faded, two.color_scheme.on_surface);
         assert_ne!(
@@ -13379,7 +13629,10 @@ mod tests {
                 MINE
             );
             assert_eq!(
-                resolved.toggle_button_text_style.as_ref().map(|s| s.font_size),
+                resolved
+                    .toggle_button_text_style
+                    .as_ref()
+                    .map(|s| s.font_size),
                 theme.text_theme.title_small.as_ref().map(|s| s.font_size)
             );
         }
@@ -13393,10 +13646,7 @@ mod tests {
         let three = date_picker_under(DatePickerThemeData::new(), ThemeData::light());
         let two = date_picker_under(DatePickerThemeData::new(), material_two());
         assert_eq!(three.year_style, two.year_style);
-        assert_eq!(
-            three.year_style,
-            ThemeData::light().text_theme.body_large
-        );
+        assert_eq!(three.year_style, ThemeData::light().text_theme.body_large);
     }
 
     #[test]
@@ -13455,11 +13705,7 @@ mod tests {
     // `TextTheme::body_small` with it -- was named nowhere in this port
     // outside its own paperwork.
 
-    fn input_ink(
-        material3: bool,
-        slot: InputTextSlot,
-        states: WidgetStates,
-    ) -> Color {
+    fn input_ink(material3: bool, slot: InputTextSlot, states: WidgetStates) -> Color {
         let mut theme = ThemeData::light();
         theme.use_material3 = material3;
         ResolvedInputTextStyles::color_for(&theme, slot, states)
@@ -13493,7 +13739,11 @@ mod tests {
         // disabled field is ever red.
         let error = ThemeData::light().color_scheme.error;
         assert_eq!(
-            input_ink(true, InputTextSlot::Error, WidgetStates::NONE.with(WidgetState::Disabled)),
+            input_ink(
+                true,
+                InputTextSlot::Error,
+                WidgetStates::NONE.with(WidgetState::Disabled)
+            ),
             error
         );
         assert_eq!(
@@ -13556,7 +13806,11 @@ mod tests {
 
         // And an error that is neither is plain error red.
         assert_eq!(
-            input_ink(true, InputTextSlot::Label, WidgetStates::NONE.with(WidgetState::Error)),
+            input_ink(
+                true,
+                InputTextSlot::Label,
+                WidgetStates::NONE.with(WidgetState::Error)
+            ),
             scheme.error
         );
     }
@@ -13587,7 +13841,12 @@ mod tests {
         assert_eq!(helper.font_size, body_small.font_size);
         assert_ne!(
             helper.font_size,
-            theme.text_theme.body_large.clone().expect("a role").font_size,
+            theme
+                .text_theme
+                .body_large
+                .clone()
+                .expect("a role")
+                .font_size,
             "the helper line is smaller than the field's own text"
         );
 
@@ -15355,7 +15614,10 @@ mod tests {
             visual_density: Some(dense()),
             ..CheckboxThemeData::default()
         };
-        assert_eq!(CheckboxThemeData::lerp(&a, &b, 0.25).visual_density, quartered());
+        assert_eq!(
+            CheckboxThemeData::lerp(&a, &b, 0.25).visual_density,
+            quartered()
+        );
         assert_eq!(
             CheckboxThemeData::lerp(&b, &a, 0.25).visual_density,
             quartered_back()
@@ -15369,8 +15631,14 @@ mod tests {
             visual_density: Some(dense()),
             ..RadioThemeData::default()
         };
-        assert_eq!(RadioThemeData::lerp(&a, &b, 0.25).visual_density, quartered());
-        assert_eq!(RadioThemeData::lerp(&b, &a, 0.25).visual_density, quartered_back());
+        assert_eq!(
+            RadioThemeData::lerp(&a, &b, 0.25).visual_density,
+            quartered()
+        );
+        assert_eq!(
+            RadioThemeData::lerp(&b, &a, 0.25).visual_density,
+            quartered_back()
+        );
 
         let a = ListTileThemeData {
             visual_density: Some(sparse()),
@@ -15380,7 +15648,10 @@ mod tests {
             visual_density: Some(dense()),
             ..ListTileThemeData::default()
         };
-        assert_eq!(ListTileThemeData::lerp(&a, &b, 0.25).visual_density, quartered());
+        assert_eq!(
+            ListTileThemeData::lerp(&a, &b, 0.25).visual_density,
+            quartered()
+        );
         assert_eq!(
             ListTileThemeData::lerp(&b, &a, 0.25).visual_density,
             quartered_back()
@@ -15395,7 +15666,10 @@ mod tests {
             ..ButtonStyle::default()
         };
         assert_eq!(ButtonStyle::lerp(&a, &b, 0.25).visual_density, quartered());
-        assert_eq!(ButtonStyle::lerp(&b, &a, 0.25).visual_density, quartered_back());
+        assert_eq!(
+            ButtonStyle::lerp(&b, &a, 0.25).visual_density,
+            quartered_back()
+        );
 
         let a = MenuStyle {
             visual_density: Some(sparse()),
@@ -15406,7 +15680,10 @@ mod tests {
             ..MenuStyle::default()
         };
         assert_eq!(MenuStyle::lerp(&a, &b, 0.25).visual_density, quartered());
-        assert_eq!(MenuStyle::lerp(&b, &a, 0.25).visual_density, quartered_back());
+        assert_eq!(
+            MenuStyle::lerp(&b, &a, 0.25).visual_density,
+            quartered_back()
+        );
     }
 
     #[test]
@@ -15436,8 +15713,14 @@ mod tests {
             side: Some(side(20.0)),
             ..RadioThemeData::default()
         };
-        assert_eq!(RadioThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width), Some(8.0));
-        assert_eq!(RadioThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width), Some(16.0));
+        assert_eq!(
+            RadioThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width),
+            Some(8.0)
+        );
+        assert_eq!(
+            RadioThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width),
+            Some(16.0)
+        );
 
         let a = ChipThemeData {
             side: Some(side(4.0)),
@@ -15447,8 +15730,14 @@ mod tests {
             side: Some(side(20.0)),
             ..ChipThemeData::default()
         };
-        assert_eq!(ChipThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width), Some(8.0));
-        assert_eq!(ChipThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width), Some(16.0));
+        assert_eq!(
+            ChipThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width),
+            Some(8.0)
+        );
+        assert_eq!(
+            ChipThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width),
+            Some(16.0)
+        );
     }
 
     // -- The blends that replaced a step at tick 221 ------------------------
@@ -15553,11 +15842,15 @@ mod tests {
         };
         let quarter = TooltipThemeData::lerp(&a, &b, 0.25);
         assert_eq!(
-            quarter.padding.map(|p| p.resolve(crate::direction::TextDirection::Ltr).left),
+            quarter
+                .padding
+                .map(|p| p.resolve(crate::direction::TextDirection::Ltr).left),
             Some(8.0)
         );
         assert_eq!(
-            quarter.margin.map(|m| m.resolve(crate::direction::TextDirection::Ltr).left),
+            quarter
+                .margin
+                .map(|m| m.resolve(crate::direction::TextDirection::Ltr).left),
             Some(16.0)
         );
     }
@@ -15639,7 +15932,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn a_date_pickers_day_and_year_shapes_morph_state_by_state() {
         // Upstream: `WidgetStateProperty.lerp<OutlinedBorder?>`. The two
@@ -15668,14 +15960,12 @@ mod tests {
             ..DatePickerThemeData::default()
         };
         let quarter = DatePickerThemeData::lerp(&a, &b, 0.25);
-        let width_of = |shape: Option<StateProperty<Option<ShapeBorder>>>| {
-            match shape
-                .expect("two ends is enough")
-                .resolve(WidgetStates::NONE)
-            {
-                Some(ShapeBorder::Circle(circle)) => circle.side.width,
-                other => panic!("{other:?}"),
-            }
+        let width_of = |shape: Option<StateProperty<Option<ShapeBorder>>>| match shape
+            .expect("two ends is enough")
+            .resolve(WidgetStates::NONE)
+        {
+            Some(ShapeBorder::Circle(circle)) => circle.side.width,
+            other => panic!("{other:?}"),
         };
         assert_eq!(width_of(quarter.day_shape), 8.0);
         assert_eq!(width_of(quarter.year_shape), 16.0);
@@ -15835,7 +16125,10 @@ mod tests {
                 width: 4.0,
                 ..BorderSide::NONE
             }))),
-            alignment: Some(AlignmentGeometry::Absolute(crate::render::Alignment { x: -1.0, y: 1.0 })),
+            alignment: Some(AlignmentGeometry::Absolute(crate::render::Alignment {
+                x: -1.0,
+                y: 1.0,
+            })),
             ..ButtonStyle::default()
         };
         let b = ButtonStyle {
@@ -15847,7 +16140,10 @@ mod tests {
                 width: 20.0,
                 ..BorderSide::NONE
             }))),
-            alignment: Some(AlignmentGeometry::Absolute(crate::render::Alignment { x: 1.0, y: -1.0 })),
+            alignment: Some(AlignmentGeometry::Absolute(crate::render::Alignment {
+                x: 1.0,
+                y: -1.0,
+            })),
             ..ButtonStyle::default()
         };
         let quarter = ButtonStyle::lerp(&a, &b, 0.25);
@@ -15871,7 +16167,10 @@ mod tests {
         // lands on the other axis's answer.
         assert_eq!(
             quarter.alignment,
-            Some(AlignmentGeometry::Absolute(crate::render::Alignment { x: -0.5, y: 0.5 }))
+            Some(AlignmentGeometry::Absolute(crate::render::Alignment {
+                x: -0.5,
+                y: 0.5
+            }))
         );
     }
 
@@ -15906,11 +16205,15 @@ mod tests {
         // Three different themes, three different types: a geometry, a plain
         // radius, and a concrete border radius.
         let divider = DividerThemeData {
-            radius: Some(BorderRadiusGeometry::Absolute(crate::borders::BorderRadius::circular(4.0))),
+            radius: Some(BorderRadiusGeometry::Absolute(
+                crate::borders::BorderRadius::circular(4.0),
+            )),
             ..DividerThemeData::default()
         };
         let rounder = DividerThemeData {
-            radius: Some(BorderRadiusGeometry::Absolute(crate::borders::BorderRadius::circular(20.0))),
+            radius: Some(BorderRadiusGeometry::Absolute(
+                crate::borders::BorderRadius::circular(20.0),
+            )),
             ..DividerThemeData::default()
         };
         assert_eq!(
@@ -16015,12 +16318,16 @@ mod tests {
         };
         let a = ProgressIndicatorThemeData {
             circular_track_padding: track(4.0),
-            border_radius: Some(BorderRadiusGeometry::Absolute(crate::borders::BorderRadius::circular(12.0))),
+            border_radius: Some(BorderRadiusGeometry::Absolute(
+                crate::borders::BorderRadius::circular(12.0),
+            )),
             ..ProgressIndicatorThemeData::default()
         };
         let b = ProgressIndicatorThemeData {
             circular_track_padding: track(20.0),
-            border_radius: Some(BorderRadiusGeometry::Absolute(crate::borders::BorderRadius::circular(28.0))),
+            border_radius: Some(BorderRadiusGeometry::Absolute(
+                crate::borders::BorderRadius::circular(28.0),
+            )),
             ..ProgressIndicatorThemeData::default()
         };
         let quarter = ProgressIndicatorThemeData::lerp(&a, &b, 0.25);
@@ -16277,16 +16584,18 @@ mod tests {
     /// A rounded rectangle whose side width is the only thing that moves, so
     /// a blended shape reads back as a number.
     fn outline(width: f32) -> Option<ShapeBorder> {
-        Some(ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
-            BorderSide {
-                color: Color::argb(255, 255, 0, 0),
-                width,
-                ..BorderSide::NONE
-            },
-            crate::borders::BorderRadiusGeometry::Absolute(
-                crate::borders::BorderRadius::circular(8.0),
+        Some(ShapeBorder::Rounded(
+            crate::borders::RoundedRectangleBorder::new(
+                BorderSide {
+                    color: Color::argb(255, 255, 0, 0),
+                    width,
+                    ..BorderSide::NONE
+                },
+                crate::borders::BorderRadiusGeometry::Absolute(
+                    crate::borders::BorderRadius::circular(8.0),
+                ),
             ),
-        )))
+        ))
     }
 
     fn outline_width(shape: Option<ShapeBorder>) -> f32 {
@@ -16632,11 +16941,15 @@ mod tests {
             ..SearchViewThemeData::default()
         };
         assert_eq!(
-            SearchViewThemeData::lerp(&a, &b, 0.25).side.map(|s| s.width),
+            SearchViewThemeData::lerp(&a, &b, 0.25)
+                .side
+                .map(|s| s.width),
             Some(8.0)
         );
         assert_eq!(
-            SearchViewThemeData::lerp(&b, &a, 0.25).side.map(|s| s.width),
+            SearchViewThemeData::lerp(&b, &a, 0.25)
+                .side
+                .map(|s| s.width),
             Some(16.0)
         );
 
@@ -16719,11 +17032,19 @@ mod tests {
     #[test]
     fn divider_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            DividerThemeData::lerp(&numbered_divider_theme_data(0), &numbered_divider_theme_data(80), 0.25),
+            DividerThemeData::lerp(
+                &numbered_divider_theme_data(0),
+                &numbered_divider_theme_data(80),
+                0.25
+            ),
             numbered_divider_theme_data(20)
         );
         assert_eq!(
-            DividerThemeData::lerp(&numbered_divider_theme_data(80), &numbered_divider_theme_data(0), 0.25),
+            DividerThemeData::lerp(
+                &numbered_divider_theme_data(80),
+                &numbered_divider_theme_data(0),
+                0.25
+            ),
             numbered_divider_theme_data(60)
         );
     }
@@ -16746,11 +17067,19 @@ mod tests {
     #[test]
     fn card_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            CardThemeData::lerp(&numbered_card_theme_data(0), &numbered_card_theme_data(80), 0.25),
+            CardThemeData::lerp(
+                &numbered_card_theme_data(0),
+                &numbered_card_theme_data(80),
+                0.25
+            ),
             numbered_card_theme_data(20)
         );
         assert_eq!(
-            CardThemeData::lerp(&numbered_card_theme_data(80), &numbered_card_theme_data(0), 0.25),
+            CardThemeData::lerp(
+                &numbered_card_theme_data(80),
+                &numbered_card_theme_data(0),
+                0.25
+            ),
             numbered_card_theme_data(60)
         );
     }
@@ -16773,11 +17102,19 @@ mod tests {
     #[test]
     fn badge_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            BadgeThemeData::lerp(&numbered_badge_theme_data(0), &numbered_badge_theme_data(80), 0.25),
+            BadgeThemeData::lerp(
+                &numbered_badge_theme_data(0),
+                &numbered_badge_theme_data(80),
+                0.25
+            ),
             numbered_badge_theme_data(20)
         );
         assert_eq!(
-            BadgeThemeData::lerp(&numbered_badge_theme_data(80), &numbered_badge_theme_data(0), 0.25),
+            BadgeThemeData::lerp(
+                &numbered_badge_theme_data(80),
+                &numbered_badge_theme_data(0),
+                0.25
+            ),
             numbered_badge_theme_data(60)
         );
     }
@@ -16798,11 +17135,19 @@ mod tests {
     #[test]
     fn tooltip_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            TooltipThemeData::lerp(&numbered_tooltip_theme_data(0), &numbered_tooltip_theme_data(80), 0.25),
+            TooltipThemeData::lerp(
+                &numbered_tooltip_theme_data(0),
+                &numbered_tooltip_theme_data(80),
+                0.25
+            ),
             numbered_tooltip_theme_data(20)
         );
         assert_eq!(
-            TooltipThemeData::lerp(&numbered_tooltip_theme_data(80), &numbered_tooltip_theme_data(0), 0.25),
+            TooltipThemeData::lerp(
+                &numbered_tooltip_theme_data(80),
+                &numbered_tooltip_theme_data(0),
+                0.25
+            ),
             numbered_tooltip_theme_data(60)
         );
     }
@@ -16830,11 +17175,19 @@ mod tests {
     #[test]
     fn progress_indicator_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            ProgressIndicatorThemeData::lerp(&numbered_progress_indicator_theme_data(0), &numbered_progress_indicator_theme_data(80), 0.25),
+            ProgressIndicatorThemeData::lerp(
+                &numbered_progress_indicator_theme_data(0),
+                &numbered_progress_indicator_theme_data(80),
+                0.25
+            ),
             numbered_progress_indicator_theme_data(20)
         );
         assert_eq!(
-            ProgressIndicatorThemeData::lerp(&numbered_progress_indicator_theme_data(80), &numbered_progress_indicator_theme_data(0), 0.25),
+            ProgressIndicatorThemeData::lerp(
+                &numbered_progress_indicator_theme_data(80),
+                &numbered_progress_indicator_theme_data(0),
+                0.25
+            ),
             numbered_progress_indicator_theme_data(60)
         );
     }
@@ -16861,11 +17214,19 @@ mod tests {
     #[test]
     fn app_bar_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            AppBarThemeData::lerp(&numbered_app_bar_theme_data(0), &numbered_app_bar_theme_data(80), 0.25),
+            AppBarThemeData::lerp(
+                &numbered_app_bar_theme_data(0),
+                &numbered_app_bar_theme_data(80),
+                0.25
+            ),
             numbered_app_bar_theme_data(20)
         );
         assert_eq!(
-            AppBarThemeData::lerp(&numbered_app_bar_theme_data(80), &numbered_app_bar_theme_data(0), 0.25),
+            AppBarThemeData::lerp(
+                &numbered_app_bar_theme_data(80),
+                &numbered_app_bar_theme_data(0),
+                0.25
+            ),
             numbered_app_bar_theme_data(60)
         );
     }
@@ -16891,11 +17252,19 @@ mod tests {
     #[test]
     fn bottom_sheet_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            BottomSheetThemeData::lerp(&numbered_bottom_sheet_theme_data(0), &numbered_bottom_sheet_theme_data(80), 0.25),
+            BottomSheetThemeData::lerp(
+                &numbered_bottom_sheet_theme_data(0),
+                &numbered_bottom_sheet_theme_data(80),
+                0.25
+            ),
             numbered_bottom_sheet_theme_data(20)
         );
         assert_eq!(
-            BottomSheetThemeData::lerp(&numbered_bottom_sheet_theme_data(80), &numbered_bottom_sheet_theme_data(0), 0.25),
+            BottomSheetThemeData::lerp(
+                &numbered_bottom_sheet_theme_data(80),
+                &numbered_bottom_sheet_theme_data(0),
+                0.25
+            ),
             numbered_bottom_sheet_theme_data(60)
         );
     }
@@ -16919,11 +17288,19 @@ mod tests {
     #[test]
     fn snack_bar_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            SnackBarThemeData::lerp(&numbered_snack_bar_theme_data(0), &numbered_snack_bar_theme_data(80), 0.25),
+            SnackBarThemeData::lerp(
+                &numbered_snack_bar_theme_data(0),
+                &numbered_snack_bar_theme_data(80),
+                0.25
+            ),
             numbered_snack_bar_theme_data(20)
         );
         assert_eq!(
-            SnackBarThemeData::lerp(&numbered_snack_bar_theme_data(80), &numbered_snack_bar_theme_data(0), 0.25),
+            SnackBarThemeData::lerp(
+                &numbered_snack_bar_theme_data(80),
+                &numbered_snack_bar_theme_data(0),
+                0.25
+            ),
             numbered_snack_bar_theme_data(60)
         );
     }
@@ -16951,11 +17328,19 @@ mod tests {
     #[test]
     fn list_tile_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            ListTileThemeData::lerp(&numbered_list_tile_theme_data(0), &numbered_list_tile_theme_data(80), 0.25),
+            ListTileThemeData::lerp(
+                &numbered_list_tile_theme_data(0),
+                &numbered_list_tile_theme_data(80),
+                0.25
+            ),
             numbered_list_tile_theme_data(20)
         );
         assert_eq!(
-            ListTileThemeData::lerp(&numbered_list_tile_theme_data(80), &numbered_list_tile_theme_data(0), 0.25),
+            ListTileThemeData::lerp(
+                &numbered_list_tile_theme_data(80),
+                &numbered_list_tile_theme_data(0),
+                0.25
+            ),
             numbered_list_tile_theme_data(60)
         );
     }
@@ -16980,11 +17365,19 @@ mod tests {
     #[test]
     fn dialog_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            DialogThemeData::lerp(&numbered_dialog_theme_data(0), &numbered_dialog_theme_data(80), 0.25),
+            DialogThemeData::lerp(
+                &numbered_dialog_theme_data(0),
+                &numbered_dialog_theme_data(80),
+                0.25
+            ),
             numbered_dialog_theme_data(20)
         );
         assert_eq!(
-            DialogThemeData::lerp(&numbered_dialog_theme_data(80), &numbered_dialog_theme_data(0), 0.25),
+            DialogThemeData::lerp(
+                &numbered_dialog_theme_data(80),
+                &numbered_dialog_theme_data(0),
+                0.25
+            ),
             numbered_dialog_theme_data(60)
         );
     }
@@ -17013,11 +17406,19 @@ mod tests {
     #[test]
     fn chip_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            ChipThemeData::lerp(&numbered_chip_theme_data(0), &numbered_chip_theme_data(80), 0.25),
+            ChipThemeData::lerp(
+                &numbered_chip_theme_data(0),
+                &numbered_chip_theme_data(80),
+                0.25
+            ),
             numbered_chip_theme_data(20)
         );
         assert_eq!(
-            ChipThemeData::lerp(&numbered_chip_theme_data(80), &numbered_chip_theme_data(0), 0.25),
+            ChipThemeData::lerp(
+                &numbered_chip_theme_data(80),
+                &numbered_chip_theme_data(0),
+                0.25
+            ),
             numbered_chip_theme_data(60)
         );
     }
@@ -17040,11 +17441,19 @@ mod tests {
     #[test]
     fn tab_bar_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            TabBarThemeData::lerp(&numbered_tab_bar_theme_data(0), &numbered_tab_bar_theme_data(80), 0.25),
+            TabBarThemeData::lerp(
+                &numbered_tab_bar_theme_data(0),
+                &numbered_tab_bar_theme_data(80),
+                0.25
+            ),
             numbered_tab_bar_theme_data(20)
         );
         assert_eq!(
-            TabBarThemeData::lerp(&numbered_tab_bar_theme_data(80), &numbered_tab_bar_theme_data(0), 0.25),
+            TabBarThemeData::lerp(
+                &numbered_tab_bar_theme_data(80),
+                &numbered_tab_bar_theme_data(0),
+                0.25
+            ),
             numbered_tab_bar_theme_data(60)
         );
     }
@@ -17069,11 +17478,19 @@ mod tests {
     #[test]
     fn data_table_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            DataTableThemeData::lerp(&numbered_data_table_theme_data(0), &numbered_data_table_theme_data(80), 0.25),
+            DataTableThemeData::lerp(
+                &numbered_data_table_theme_data(0),
+                &numbered_data_table_theme_data(80),
+                0.25
+            ),
             numbered_data_table_theme_data(20)
         );
         assert_eq!(
-            DataTableThemeData::lerp(&numbered_data_table_theme_data(80), &numbered_data_table_theme_data(0), 0.25),
+            DataTableThemeData::lerp(
+                &numbered_data_table_theme_data(80),
+                &numbered_data_table_theme_data(0),
+                0.25
+            ),
             numbered_data_table_theme_data(60)
         );
     }
@@ -17098,11 +17515,19 @@ mod tests {
     #[test]
     fn navigation_rail_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            NavigationRailThemeData::lerp(&numbered_navigation_rail_theme_data(0), &numbered_navigation_rail_theme_data(80), 0.25),
+            NavigationRailThemeData::lerp(
+                &numbered_navigation_rail_theme_data(0),
+                &numbered_navigation_rail_theme_data(80),
+                0.25
+            ),
             numbered_navigation_rail_theme_data(20)
         );
         assert_eq!(
-            NavigationRailThemeData::lerp(&numbered_navigation_rail_theme_data(80), &numbered_navigation_rail_theme_data(0), 0.25),
+            NavigationRailThemeData::lerp(
+                &numbered_navigation_rail_theme_data(80),
+                &numbered_navigation_rail_theme_data(0),
+                0.25
+            ),
             numbered_navigation_rail_theme_data(60)
         );
     }
@@ -17125,11 +17550,19 @@ mod tests {
     #[test]
     fn bottom_navigation_bar_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            BottomNavigationBarThemeData::lerp(&numbered_bottom_navigation_bar_theme_data(0), &numbered_bottom_navigation_bar_theme_data(80), 0.25),
+            BottomNavigationBarThemeData::lerp(
+                &numbered_bottom_navigation_bar_theme_data(0),
+                &numbered_bottom_navigation_bar_theme_data(80),
+                0.25
+            ),
             numbered_bottom_navigation_bar_theme_data(20)
         );
         assert_eq!(
-            BottomNavigationBarThemeData::lerp(&numbered_bottom_navigation_bar_theme_data(80), &numbered_bottom_navigation_bar_theme_data(0), 0.25),
+            BottomNavigationBarThemeData::lerp(
+                &numbered_bottom_navigation_bar_theme_data(80),
+                &numbered_bottom_navigation_bar_theme_data(0),
+                0.25
+            ),
             numbered_bottom_navigation_bar_theme_data(60)
         );
     }
@@ -17154,11 +17587,19 @@ mod tests {
     #[test]
     fn drawer_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            DrawerThemeData::lerp(&numbered_drawer_theme_data(0), &numbered_drawer_theme_data(80), 0.25),
+            DrawerThemeData::lerp(
+                &numbered_drawer_theme_data(0),
+                &numbered_drawer_theme_data(80),
+                0.25
+            ),
             numbered_drawer_theme_data(20)
         );
         assert_eq!(
-            DrawerThemeData::lerp(&numbered_drawer_theme_data(80), &numbered_drawer_theme_data(0), 0.25),
+            DrawerThemeData::lerp(
+                &numbered_drawer_theme_data(80),
+                &numbered_drawer_theme_data(0),
+                0.25
+            ),
             numbered_drawer_theme_data(60)
         );
     }
@@ -17182,11 +17623,19 @@ mod tests {
     #[test]
     fn material_banner_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            MaterialBannerThemeData::lerp(&numbered_material_banner_theme_data(0), &numbered_material_banner_theme_data(80), 0.25),
+            MaterialBannerThemeData::lerp(
+                &numbered_material_banner_theme_data(0),
+                &numbered_material_banner_theme_data(80),
+                0.25
+            ),
             numbered_material_banner_theme_data(20)
         );
         assert_eq!(
-            MaterialBannerThemeData::lerp(&numbered_material_banner_theme_data(80), &numbered_material_banner_theme_data(0), 0.25),
+            MaterialBannerThemeData::lerp(
+                &numbered_material_banner_theme_data(80),
+                &numbered_material_banner_theme_data(0),
+                0.25
+            ),
             numbered_material_banner_theme_data(60)
         );
     }
@@ -17210,11 +17659,19 @@ mod tests {
     #[test]
     fn expansion_tile_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            ExpansionTileThemeData::lerp(&numbered_expansion_tile_theme_data(0), &numbered_expansion_tile_theme_data(80), 0.25),
+            ExpansionTileThemeData::lerp(
+                &numbered_expansion_tile_theme_data(0),
+                &numbered_expansion_tile_theme_data(80),
+                0.25
+            ),
             numbered_expansion_tile_theme_data(20)
         );
         assert_eq!(
-            ExpansionTileThemeData::lerp(&numbered_expansion_tile_theme_data(80), &numbered_expansion_tile_theme_data(0), 0.25),
+            ExpansionTileThemeData::lerp(
+                &numbered_expansion_tile_theme_data(80),
+                &numbered_expansion_tile_theme_data(0),
+                0.25
+            ),
             numbered_expansion_tile_theme_data(60)
         );
     }
@@ -17236,11 +17693,19 @@ mod tests {
     #[test]
     fn scrollbar_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            ScrollbarThemeData::lerp(&numbered_scrollbar_theme_data(0), &numbered_scrollbar_theme_data(80), 0.25),
+            ScrollbarThemeData::lerp(
+                &numbered_scrollbar_theme_data(0),
+                &numbered_scrollbar_theme_data(80),
+                0.25
+            ),
             numbered_scrollbar_theme_data(20)
         );
         assert_eq!(
-            ScrollbarThemeData::lerp(&numbered_scrollbar_theme_data(80), &numbered_scrollbar_theme_data(0), 0.25),
+            ScrollbarThemeData::lerp(
+                &numbered_scrollbar_theme_data(80),
+                &numbered_scrollbar_theme_data(0),
+                0.25
+            ),
             numbered_scrollbar_theme_data(60)
         );
     }
@@ -17270,11 +17735,19 @@ mod tests {
     #[test]
     fn floating_action_button_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            FloatingActionButtonThemeData::lerp(&numbered_floating_action_button_theme_data(0), &numbered_floating_action_button_theme_data(80), 0.25),
+            FloatingActionButtonThemeData::lerp(
+                &numbered_floating_action_button_theme_data(0),
+                &numbered_floating_action_button_theme_data(80),
+                0.25
+            ),
             numbered_floating_action_button_theme_data(20)
         );
         assert_eq!(
-            FloatingActionButtonThemeData::lerp(&numbered_floating_action_button_theme_data(80), &numbered_floating_action_button_theme_data(0), 0.25),
+            FloatingActionButtonThemeData::lerp(
+                &numbered_floating_action_button_theme_data(80),
+                &numbered_floating_action_button_theme_data(0),
+                0.25
+            ),
             numbered_floating_action_button_theme_data(60)
         );
     }
@@ -17305,11 +17778,19 @@ mod tests {
     #[test]
     fn toggle_buttons_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            ToggleButtonsThemeData::lerp(&numbered_toggle_buttons_theme_data(0), &numbered_toggle_buttons_theme_data(80), 0.25),
+            ToggleButtonsThemeData::lerp(
+                &numbered_toggle_buttons_theme_data(0),
+                &numbered_toggle_buttons_theme_data(80),
+                0.25
+            ),
             numbered_toggle_buttons_theme_data(20)
         );
         assert_eq!(
-            ToggleButtonsThemeData::lerp(&numbered_toggle_buttons_theme_data(80), &numbered_toggle_buttons_theme_data(0), 0.25),
+            ToggleButtonsThemeData::lerp(
+                &numbered_toggle_buttons_theme_data(80),
+                &numbered_toggle_buttons_theme_data(0),
+                0.25
+            ),
             numbered_toggle_buttons_theme_data(60)
         );
     }
@@ -17333,11 +17814,19 @@ mod tests {
     #[test]
     fn search_view_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            SearchViewThemeData::lerp(&numbered_search_view_theme_data(0), &numbered_search_view_theme_data(80), 0.25),
+            SearchViewThemeData::lerp(
+                &numbered_search_view_theme_data(0),
+                &numbered_search_view_theme_data(80),
+                0.25
+            ),
             numbered_search_view_theme_data(20)
         );
         assert_eq!(
-            SearchViewThemeData::lerp(&numbered_search_view_theme_data(80), &numbered_search_view_theme_data(0), 0.25),
+            SearchViewThemeData::lerp(
+                &numbered_search_view_theme_data(80),
+                &numbered_search_view_theme_data(0),
+                0.25
+            ),
             numbered_search_view_theme_data(60)
         );
     }
@@ -17365,11 +17854,19 @@ mod tests {
     #[test]
     fn time_picker_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            TimePickerThemeData::lerp(&numbered_time_picker_theme_data(0), &numbered_time_picker_theme_data(80), 0.25),
+            TimePickerThemeData::lerp(
+                &numbered_time_picker_theme_data(0),
+                &numbered_time_picker_theme_data(80),
+                0.25
+            ),
             numbered_time_picker_theme_data(20)
         );
         assert_eq!(
-            TimePickerThemeData::lerp(&numbered_time_picker_theme_data(80), &numbered_time_picker_theme_data(0), 0.25),
+            TimePickerThemeData::lerp(
+                &numbered_time_picker_theme_data(80),
+                &numbered_time_picker_theme_data(0),
+                0.25
+            ),
             numbered_time_picker_theme_data(60)
         );
     }
@@ -17394,11 +17891,19 @@ mod tests {
     #[test]
     fn date_picker_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            DatePickerThemeData::lerp(&numbered_date_picker_theme_data(0), &numbered_date_picker_theme_data(80), 0.25),
+            DatePickerThemeData::lerp(
+                &numbered_date_picker_theme_data(0),
+                &numbered_date_picker_theme_data(80),
+                0.25
+            ),
             numbered_date_picker_theme_data(20)
         );
         assert_eq!(
-            DatePickerThemeData::lerp(&numbered_date_picker_theme_data(80), &numbered_date_picker_theme_data(0), 0.25),
+            DatePickerThemeData::lerp(
+                &numbered_date_picker_theme_data(80),
+                &numbered_date_picker_theme_data(0),
+                0.25
+            ),
             numbered_date_picker_theme_data(60)
         );
     }
@@ -17419,11 +17924,19 @@ mod tests {
     #[test]
     fn text_selection_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            TextSelectionThemeData::lerp(&numbered_text_selection_theme_data(0), &numbered_text_selection_theme_data(80), 0.25),
+            TextSelectionThemeData::lerp(
+                &numbered_text_selection_theme_data(0),
+                &numbered_text_selection_theme_data(80),
+                0.25
+            ),
             numbered_text_selection_theme_data(20)
         );
         assert_eq!(
-            TextSelectionThemeData::lerp(&numbered_text_selection_theme_data(80), &numbered_text_selection_theme_data(0), 0.25),
+            TextSelectionThemeData::lerp(
+                &numbered_text_selection_theme_data(80),
+                &numbered_text_selection_theme_data(0),
+                0.25
+            ),
             numbered_text_selection_theme_data(60)
         );
     }
@@ -17448,11 +17961,19 @@ mod tests {
     #[test]
     fn popup_menu_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            PopupMenuThemeData::lerp(&numbered_popup_menu_theme_data(0), &numbered_popup_menu_theme_data(80), 0.25),
+            PopupMenuThemeData::lerp(
+                &numbered_popup_menu_theme_data(0),
+                &numbered_popup_menu_theme_data(80),
+                0.25
+            ),
             numbered_popup_menu_theme_data(20)
         );
         assert_eq!(
-            PopupMenuThemeData::lerp(&numbered_popup_menu_theme_data(80), &numbered_popup_menu_theme_data(0), 0.25),
+            PopupMenuThemeData::lerp(
+                &numbered_popup_menu_theme_data(80),
+                &numbered_popup_menu_theme_data(0),
+                0.25
+            ),
             numbered_popup_menu_theme_data(60)
         );
     }
@@ -17476,11 +17997,19 @@ mod tests {
     #[test]
     fn bottom_app_bar_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            BottomAppBarThemeData::lerp(&numbered_bottom_app_bar_theme_data(0), &numbered_bottom_app_bar_theme_data(80), 0.25),
+            BottomAppBarThemeData::lerp(
+                &numbered_bottom_app_bar_theme_data(0),
+                &numbered_bottom_app_bar_theme_data(80),
+                0.25
+            ),
             numbered_bottom_app_bar_theme_data(20)
         );
         assert_eq!(
-            BottomAppBarThemeData::lerp(&numbered_bottom_app_bar_theme_data(80), &numbered_bottom_app_bar_theme_data(0), 0.25),
+            BottomAppBarThemeData::lerp(
+                &numbered_bottom_app_bar_theme_data(80),
+                &numbered_bottom_app_bar_theme_data(0),
+                0.25
+            ),
             numbered_bottom_app_bar_theme_data(60)
         );
     }
@@ -17505,11 +18034,19 @@ mod tests {
     #[test]
     fn navigation_bar_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            NavigationBarThemeData::lerp(&numbered_navigation_bar_theme_data(0), &numbered_navigation_bar_theme_data(80), 0.25),
+            NavigationBarThemeData::lerp(
+                &numbered_navigation_bar_theme_data(0),
+                &numbered_navigation_bar_theme_data(80),
+                0.25
+            ),
             numbered_navigation_bar_theme_data(20)
         );
         assert_eq!(
-            NavigationBarThemeData::lerp(&numbered_navigation_bar_theme_data(80), &numbered_navigation_bar_theme_data(0), 0.25),
+            NavigationBarThemeData::lerp(
+                &numbered_navigation_bar_theme_data(80),
+                &numbered_navigation_bar_theme_data(0),
+                0.25
+            ),
             numbered_navigation_bar_theme_data(60)
         );
     }
@@ -17534,11 +18071,19 @@ mod tests {
     #[test]
     fn navigation_drawer_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            NavigationDrawerThemeData::lerp(&numbered_navigation_drawer_theme_data(0), &numbered_navigation_drawer_theme_data(80), 0.25),
+            NavigationDrawerThemeData::lerp(
+                &numbered_navigation_drawer_theme_data(0),
+                &numbered_navigation_drawer_theme_data(80),
+                0.25
+            ),
             numbered_navigation_drawer_theme_data(20)
         );
         assert_eq!(
-            NavigationDrawerThemeData::lerp(&numbered_navigation_drawer_theme_data(80), &numbered_navigation_drawer_theme_data(0), 0.25),
+            NavigationDrawerThemeData::lerp(
+                &numbered_navigation_drawer_theme_data(80),
+                &numbered_navigation_drawer_theme_data(0),
+                0.25
+            ),
             numbered_navigation_drawer_theme_data(60)
         );
     }
@@ -17559,11 +18104,19 @@ mod tests {
     #[test]
     fn carousel_view_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            CarouselViewThemeData::lerp(&numbered_carousel_view_theme_data(0), &numbered_carousel_view_theme_data(80), 0.25),
+            CarouselViewThemeData::lerp(
+                &numbered_carousel_view_theme_data(0),
+                &numbered_carousel_view_theme_data(80),
+                0.25
+            ),
             numbered_carousel_view_theme_data(20)
         );
         assert_eq!(
-            CarouselViewThemeData::lerp(&numbered_carousel_view_theme_data(80), &numbered_carousel_view_theme_data(0), 0.25),
+            CarouselViewThemeData::lerp(
+                &numbered_carousel_view_theme_data(80),
+                &numbered_carousel_view_theme_data(0),
+                0.25
+            ),
             numbered_carousel_view_theme_data(60)
         );
     }
@@ -17584,11 +18137,19 @@ mod tests {
     #[test]
     fn button_bar_theme_data_blends_every_field_it_names() {
         assert_eq!(
-            ButtonBarThemeData::lerp(&numbered_button_bar_theme_data(0), &numbered_button_bar_theme_data(80), 0.25),
+            ButtonBarThemeData::lerp(
+                &numbered_button_bar_theme_data(0),
+                &numbered_button_bar_theme_data(80),
+                0.25
+            ),
             numbered_button_bar_theme_data(20)
         );
         assert_eq!(
-            ButtonBarThemeData::lerp(&numbered_button_bar_theme_data(80), &numbered_button_bar_theme_data(0), 0.25),
+            ButtonBarThemeData::lerp(
+                &numbered_button_bar_theme_data(80),
+                &numbered_button_bar_theme_data(0),
+                0.25
+            ),
             numbered_button_bar_theme_data(60)
         );
     }
@@ -17607,37 +18168,29 @@ mod tests {
             base + n
         };
         CheckboxThemeData {
-            fill_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            check_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            overlay_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            fill_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            check_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            overlay_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             ..CheckboxThemeData::default()
         }
     }
 
     #[test]
     fn checkbox_theme_data_blends_every_state_field_it_names() {
-        let quarter = CheckboxThemeData::lerp(&state_numbered_checkbox_theme_data(0), &state_numbered_checkbox_theme_data(80), 0.25);
+        let quarter = CheckboxThemeData::lerp(
+            &state_numbered_checkbox_theme_data(0),
+            &state_numbered_checkbox_theme_data(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .fill_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_checkbox_theme_data(20).fill_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_checkbox_theme_data(20)
+                .fill_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "fill_color"
         );
         assert_eq!(
@@ -17645,7 +18198,10 @@ mod tests {
                 .check_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_checkbox_theme_data(20).check_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_checkbox_theme_data(20)
+                .check_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "check_color"
         );
         assert_eq!(
@@ -17653,7 +18209,10 @@ mod tests {
                 .overlay_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_checkbox_theme_data(20).overlay_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_checkbox_theme_data(20)
+                .overlay_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "overlay_color"
         );
     }
@@ -17665,24 +18224,9 @@ mod tests {
             base + n
         };
         RadioThemeData {
-            fill_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            overlay_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            background_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            fill_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            overlay_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            background_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             inner_radius: Some(StateProperty::all(Some(f32::from(next())))),
             ..RadioThemeData::default()
         }
@@ -17690,13 +18234,20 @@ mod tests {
 
     #[test]
     fn radio_theme_data_blends_every_state_field_it_names() {
-        let quarter = RadioThemeData::lerp(&state_numbered_radio_theme_data(0), &state_numbered_radio_theme_data(80), 0.25);
+        let quarter = RadioThemeData::lerp(
+            &state_numbered_radio_theme_data(0),
+            &state_numbered_radio_theme_data(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .fill_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_radio_theme_data(20).fill_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_radio_theme_data(20)
+                .fill_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "fill_color"
         );
         assert_eq!(
@@ -17704,7 +18255,10 @@ mod tests {
                 .overlay_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_radio_theme_data(20).overlay_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_radio_theme_data(20)
+                .overlay_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "overlay_color"
         );
         assert_eq!(
@@ -17712,7 +18266,10 @@ mod tests {
                 .background_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_radio_theme_data(20).background_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_radio_theme_data(20)
+                .background_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "background_color"
         );
         assert_eq!(
@@ -17720,7 +18277,10 @@ mod tests {
                 .inner_radius
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_radio_theme_data(20).inner_radius.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_radio_theme_data(20)
+                .inner_radius
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "inner_radius"
         );
     }
@@ -17732,30 +18292,10 @@ mod tests {
             base + n
         };
         SwitchThemeData {
-            thumb_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            track_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            track_outline_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            overlay_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            thumb_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            track_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            track_outline_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            overlay_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             track_outline_width: Some(StateProperty::all(Some(f32::from(next())))),
             ..SwitchThemeData::default()
         }
@@ -17763,13 +18303,20 @@ mod tests {
 
     #[test]
     fn switch_theme_data_blends_every_state_field_it_names() {
-        let quarter = SwitchThemeData::lerp(&state_numbered_switch_theme_data(0), &state_numbered_switch_theme_data(80), 0.25);
+        let quarter = SwitchThemeData::lerp(
+            &state_numbered_switch_theme_data(0),
+            &state_numbered_switch_theme_data(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .thumb_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_switch_theme_data(20).thumb_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_switch_theme_data(20)
+                .thumb_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "thumb_color"
         );
         assert_eq!(
@@ -17777,7 +18324,10 @@ mod tests {
                 .track_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_switch_theme_data(20).track_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_switch_theme_data(20)
+                .track_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "track_color"
         );
         assert_eq!(
@@ -17785,7 +18335,10 @@ mod tests {
                 .track_outline_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_switch_theme_data(20).track_outline_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_switch_theme_data(20)
+                .track_outline_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "track_outline_color"
         );
         assert_eq!(
@@ -17793,7 +18346,10 @@ mod tests {
                 .overlay_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_switch_theme_data(20).overlay_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_switch_theme_data(20)
+                .overlay_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "overlay_color"
         );
         assert_eq!(
@@ -17801,7 +18357,10 @@ mod tests {
                 .track_outline_width
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_switch_theme_data(20).track_outline_width.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_switch_theme_data(20)
+                .track_outline_width
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "track_outline_width"
         );
     }
@@ -17813,31 +18372,28 @@ mod tests {
             base + n
         };
         DataTableThemeData {
-            data_row_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            heading_row_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            data_row_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            heading_row_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             ..DataTableThemeData::default()
         }
     }
 
     #[test]
     fn data_table_theme_data_blends_every_state_field_it_names() {
-        let quarter = DataTableThemeData::lerp(&state_numbered_data_table_theme_data(0), &state_numbered_data_table_theme_data(80), 0.25);
+        let quarter = DataTableThemeData::lerp(
+            &state_numbered_data_table_theme_data(0),
+            &state_numbered_data_table_theme_data(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .data_row_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_data_table_theme_data(20).data_row_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_data_table_theme_data(20)
+                .data_row_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "data_row_color"
         );
         assert_eq!(
@@ -17845,7 +18401,10 @@ mod tests {
                 .heading_row_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_data_table_theme_data(20).heading_row_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_data_table_theme_data(20)
+                .heading_row_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "heading_row_color"
         );
     }
@@ -17857,42 +18416,12 @@ mod tests {
             base + n
         };
         ButtonStyle {
-            background_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            foreground_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            overlay_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            shadow_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            surface_tint_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            icon_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            background_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            foreground_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            overlay_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            shadow_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            surface_tint_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            icon_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             elevation: Some(StateProperty::all(Some(f32::from(next())))),
             icon_size: Some(StateProperty::all(Some(f32::from(next())))),
             ..ButtonStyle::default()
@@ -17901,13 +18430,20 @@ mod tests {
 
     #[test]
     fn button_style_blends_every_state_field_it_names() {
-        let quarter = ButtonStyle::lerp(&state_numbered_button_style(0), &state_numbered_button_style(80), 0.25);
+        let quarter = ButtonStyle::lerp(
+            &state_numbered_button_style(0),
+            &state_numbered_button_style(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .background_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_button_style(20).background_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_button_style(20)
+                .background_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "background_color"
         );
         assert_eq!(
@@ -17915,7 +18451,10 @@ mod tests {
                 .foreground_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_button_style(20).foreground_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_button_style(20)
+                .foreground_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "foreground_color"
         );
         assert_eq!(
@@ -17923,7 +18462,10 @@ mod tests {
                 .overlay_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_button_style(20).overlay_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_button_style(20)
+                .overlay_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "overlay_color"
         );
         assert_eq!(
@@ -17931,7 +18473,10 @@ mod tests {
                 .shadow_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_button_style(20).shadow_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_button_style(20)
+                .shadow_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "shadow_color"
         );
         assert_eq!(
@@ -17939,7 +18484,10 @@ mod tests {
                 .surface_tint_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_button_style(20).surface_tint_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_button_style(20)
+                .surface_tint_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "surface_tint_color"
         );
         assert_eq!(
@@ -17947,7 +18495,10 @@ mod tests {
                 .icon_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_button_style(20).icon_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_button_style(20)
+                .icon_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "icon_color"
         );
         assert_eq!(
@@ -17955,7 +18506,10 @@ mod tests {
                 .elevation
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_button_style(20).elevation.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_button_style(20)
+                .elevation
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "elevation"
         );
         assert_eq!(
@@ -17963,7 +18517,10 @@ mod tests {
                 .icon_size
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_button_style(20).icon_size.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_button_style(20)
+                .icon_size
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "icon_size"
         );
     }
@@ -17975,24 +18532,9 @@ mod tests {
             base + n
         };
         ScrollbarThemeData {
-            thumb_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            track_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            track_border_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            thumb_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            track_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            track_border_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             thickness: Some(StateProperty::all(Some(f32::from(next())))),
             ..ScrollbarThemeData::default()
         }
@@ -18000,13 +18542,20 @@ mod tests {
 
     #[test]
     fn scrollbar_theme_data_blends_every_state_field_it_names() {
-        let quarter = ScrollbarThemeData::lerp(&state_numbered_scrollbar_theme_data(0), &state_numbered_scrollbar_theme_data(80), 0.25);
+        let quarter = ScrollbarThemeData::lerp(
+            &state_numbered_scrollbar_theme_data(0),
+            &state_numbered_scrollbar_theme_data(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .thumb_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_scrollbar_theme_data(20).thumb_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_scrollbar_theme_data(20)
+                .thumb_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "thumb_color"
         );
         assert_eq!(
@@ -18014,7 +18563,10 @@ mod tests {
                 .track_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_scrollbar_theme_data(20).track_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_scrollbar_theme_data(20)
+                .track_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "track_color"
         );
         assert_eq!(
@@ -18022,7 +18574,10 @@ mod tests {
                 .track_border_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_scrollbar_theme_data(20).track_border_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_scrollbar_theme_data(20)
+                .track_border_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "track_border_color"
         );
         assert_eq!(
@@ -18030,7 +18585,10 @@ mod tests {
                 .thickness
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_scrollbar_theme_data(20).thickness.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_scrollbar_theme_data(20)
+                .thickness
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "thickness"
         );
     }
@@ -18042,24 +18600,9 @@ mod tests {
             base + n
         };
         MenuStyle {
-            background_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            shadow_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            surface_tint_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            background_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            shadow_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            surface_tint_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             elevation: Some(StateProperty::all(Some(f32::from(next())))),
             ..MenuStyle::default()
         }
@@ -18067,13 +18610,20 @@ mod tests {
 
     #[test]
     fn menu_style_blends_every_state_field_it_names() {
-        let quarter = MenuStyle::lerp(&state_numbered_menu_style(0), &state_numbered_menu_style(80), 0.25);
+        let quarter = MenuStyle::lerp(
+            &state_numbered_menu_style(0),
+            &state_numbered_menu_style(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .background_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_menu_style(20).background_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_menu_style(20)
+                .background_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "background_color"
         );
         assert_eq!(
@@ -18081,7 +18631,10 @@ mod tests {
                 .shadow_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_menu_style(20).shadow_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_menu_style(20)
+                .shadow_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "shadow_color"
         );
         assert_eq!(
@@ -18089,7 +18642,10 @@ mod tests {
                 .surface_tint_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_menu_style(20).surface_tint_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_menu_style(20)
+                .surface_tint_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "surface_tint_color"
         );
         assert_eq!(
@@ -18097,7 +18653,10 @@ mod tests {
                 .elevation
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_menu_style(20).elevation.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_menu_style(20)
+                .elevation
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "elevation"
         );
     }
@@ -18109,30 +18668,10 @@ mod tests {
             base + n
         };
         SearchBarThemeData {
-            background_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            shadow_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            surface_tint_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            overlay_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            background_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            shadow_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            surface_tint_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            overlay_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             elevation: Some(StateProperty::all(Some(f32::from(next())))),
             ..SearchBarThemeData::default()
         }
@@ -18140,13 +18679,20 @@ mod tests {
 
     #[test]
     fn search_bar_theme_data_blends_every_state_field_it_names() {
-        let quarter = SearchBarThemeData::lerp(&state_numbered_search_bar_theme_data(0), &state_numbered_search_bar_theme_data(80), 0.25);
+        let quarter = SearchBarThemeData::lerp(
+            &state_numbered_search_bar_theme_data(0),
+            &state_numbered_search_bar_theme_data(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .background_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_search_bar_theme_data(20).background_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_search_bar_theme_data(20)
+                .background_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "background_color"
         );
         assert_eq!(
@@ -18154,7 +18700,10 @@ mod tests {
                 .shadow_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_search_bar_theme_data(20).shadow_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_search_bar_theme_data(20)
+                .shadow_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "shadow_color"
         );
         assert_eq!(
@@ -18162,7 +18711,10 @@ mod tests {
                 .surface_tint_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_search_bar_theme_data(20).surface_tint_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_search_bar_theme_data(20)
+                .surface_tint_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "surface_tint_color"
         );
         assert_eq!(
@@ -18170,7 +18722,10 @@ mod tests {
                 .overlay_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_search_bar_theme_data(20).overlay_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_search_bar_theme_data(20)
+                .overlay_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "overlay_color"
         );
         assert_eq!(
@@ -18178,7 +18733,10 @@ mod tests {
                 .elevation
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_search_bar_theme_data(20).elevation.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_search_bar_theme_data(20)
+                .elevation
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "elevation"
         );
     }
@@ -18190,54 +18748,14 @@ mod tests {
             base + n
         };
         DatePickerThemeData {
-            day_foreground_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            day_background_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            day_overlay_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            today_foreground_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            today_background_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            year_foreground_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            year_background_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
-            year_overlay_color: Some(StateProperty::all(Some(Color::argb(
-                255,
-                0,
-                0,
-                next(),
-            )))),
+            day_foreground_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            day_background_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            day_overlay_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            today_foreground_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            today_background_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            year_foreground_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            year_background_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
+            year_overlay_color: Some(StateProperty::all(Some(Color::argb(255, 0, 0, next())))),
             range_selection_overlay_color: Some(StateProperty::all(Some(Color::argb(
                 255,
                 0,
@@ -18250,13 +18768,20 @@ mod tests {
 
     #[test]
     fn date_picker_theme_data_blends_every_state_field_it_names() {
-        let quarter = DatePickerThemeData::lerp(&state_numbered_date_picker_theme_data(0), &state_numbered_date_picker_theme_data(80), 0.25);
+        let quarter = DatePickerThemeData::lerp(
+            &state_numbered_date_picker_theme_data(0),
+            &state_numbered_date_picker_theme_data(80),
+            0.25,
+        );
         assert_eq!(
             quarter
                 .day_foreground_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).day_foreground_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .day_foreground_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "day_foreground_color"
         );
         assert_eq!(
@@ -18264,7 +18789,10 @@ mod tests {
                 .day_background_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).day_background_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .day_background_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "day_background_color"
         );
         assert_eq!(
@@ -18272,7 +18800,10 @@ mod tests {
                 .day_overlay_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).day_overlay_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .day_overlay_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "day_overlay_color"
         );
         assert_eq!(
@@ -18280,7 +18811,10 @@ mod tests {
                 .today_foreground_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).today_foreground_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .today_foreground_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "today_foreground_color"
         );
         assert_eq!(
@@ -18288,7 +18822,10 @@ mod tests {
                 .today_background_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).today_background_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .today_background_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "today_background_color"
         );
         assert_eq!(
@@ -18296,7 +18833,10 @@ mod tests {
                 .year_foreground_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).year_foreground_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .year_foreground_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "year_foreground_color"
         );
         assert_eq!(
@@ -18304,7 +18844,10 @@ mod tests {
                 .year_background_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).year_background_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .year_background_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "year_background_color"
         );
         assert_eq!(
@@ -18312,7 +18855,10 @@ mod tests {
                 .year_overlay_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).year_overlay_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .year_overlay_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "year_overlay_color"
         );
         assert_eq!(
@@ -18320,7 +18866,10 @@ mod tests {
                 .range_selection_overlay_color
                 .expect("two ends is enough")
                 .resolve(WidgetStates::NONE),
-            state_numbered_date_picker_theme_data(20).range_selection_overlay_color.unwrap().resolve(WidgetStates::NONE),
+            state_numbered_date_picker_theme_data(20)
+                .range_selection_overlay_color
+                .unwrap()
+                .resolve(WidgetStates::NONE),
             "range_selection_overlay_color"
         );
     }
@@ -18499,12 +19048,12 @@ mod tests {
             checkmark_color: Some(Color::argb(255, 0, 0, 10)),
             delete_icon_color: Some(Color::argb(255, 0, 0, 20)),
             selected_shadow_color: Some(Color::argb(255, 0, 0, 30)),
-            avatar_box_constraints: Some(BoxConstraints::tight_for(
-                crate::render::Size::new(40.0, 40.0),
-            )),
-            delete_icon_box_constraints: Some(BoxConstraints::tight_for(
-                crate::render::Size::new(50.0, 50.0),
-            )),
+            avatar_box_constraints: Some(BoxConstraints::tight_for(crate::render::Size::new(
+                40.0, 40.0,
+            ))),
+            delete_icon_box_constraints: Some(BoxConstraints::tight_for(crate::render::Size::new(
+                50.0, 50.0,
+            ))),
             ..ChipThemeData::new()
         };
         let resolved = chip_under(data, move |context| {
@@ -19004,10 +19553,7 @@ mod tests {
             },
             ResolvedTooltip::of,
         );
-        assert_eq!(
-            themed.exit_duration,
-            std::time::Duration::from_millis(66)
-        );
+        assert_eq!(themed.exit_duration, std::time::Duration::from_millis(66));
     }
 
     // -- Four tab bar theme fields that reached nothing, tick 238 -----------
@@ -19187,14 +19733,17 @@ mod tests {
         assert_eq!(plain.heading_cell_cursor, None);
     }
 
-
     #[test]
     fn a_drag_handle_is_wide_and_thin_so_it_reads_as_a_grip() {
         // Upstream's `_BottomSheetDefaultsM3.dragHandleSize` is 32 by 4.
-        let plain = read_in(|child| child, |context| {
-            ResolvedBottomSheet::of(context, false, None, true)
-        });
-        assert_eq!(plain.drag_handle_size, ResolvedBottomSheet::DRAG_HANDLE_SIZE);
+        let plain = read_in(
+            |child| child,
+            |context| ResolvedBottomSheet::of(context, false, None, true),
+        );
+        assert_eq!(
+            plain.drag_handle_size,
+            ResolvedBottomSheet::DRAG_HANDLE_SIZE
+        );
         assert!(
             plain.drag_handle_size.width > plain.drag_handle_size.height * 4.0,
             "much wider than it is tall: {:?}",
@@ -19250,7 +19799,6 @@ mod tests {
              own fallback"
         );
     }
-
 
     #[test]
     fn a_drawer_has_a_shape_for_each_edge_it_can_open_from() {
@@ -19738,10 +20286,7 @@ mod app_bar_centring_tests {
     #[test]
     fn the_apple_platforms_centre_a_title_and_the_others_do_not() {
         for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
-            assert!(
-                ResolvedAppBar::platform_center(platform, 0),
-                "{platform:?}"
-            );
+            assert!(ResolvedAppBar::platform_center(platform, 0), "{platform:?}");
         }
         for platform in [
             TargetPlatform::Android,
@@ -19780,4 +20325,3 @@ mod app_bar_centring_tests {
         }
     }
 }
-

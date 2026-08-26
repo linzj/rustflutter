@@ -1093,11 +1093,7 @@ mod debug_paint_tests {
         // row that runs off the right is a different bug from one that runs
         // off the bottom, and marking both would say neither.
         let container = Rect::xywh(0.0, 0.0, 200.0, 100.0);
-        let (drew, calls) = overflow(
-            container,
-            Rect::xywh(0.0, 0.0, 260.0, 100.0),
-            Offset::ZERO,
-        );
+        let (drew, calls) = overflow(container, Rect::xywh(0.0, 0.0, 260.0, 100.0), Offset::ZERO);
         assert!(drew);
         let marks = rects(&calls);
         assert_eq!(marks.len(), 1, "one edge, one mark: {calls:?}");
@@ -1133,4 +1129,3 @@ mod debug_paint_tests {
         assert_eq!((there.0 - here.0, there.1 - here.1), (at.dx, at.dy));
     }
 }
-

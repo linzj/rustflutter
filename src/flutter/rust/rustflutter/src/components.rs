@@ -666,11 +666,11 @@ impl Component for Button {
                         .with_fit(crate::render::StackFit::Passthrough)
                         .push(container)
                         .push_positioned(
-                        Container::new()
-                            .with_color(overlay)
-                            .with_corner_radius(radius),
-                        StackPosition::fill(),
-                    )
+                            Container::new()
+                                .with_color(overlay)
+                                .with_corner_radius(radius),
+                            StackPosition::fill(),
+                        )
                 } else {
                     RenderStack::new()
                         .with_fit(crate::render::StackFit::Passthrough)
@@ -1281,7 +1281,8 @@ impl Slider {
     /// label paints an empty bubble. An empty bubble is worse than none, so
     /// this port asks for the words first.
     fn shows_indicator(&self, slider: &crate::slider_theme::ResolvedSlider) -> bool {
-        self.label.is_some() && slider.shows_value_indicator(self.divisions.is_some(), self.dragging)
+        self.label.is_some()
+            && slider.shows_value_indicator(self.divisions.is_some(), self.dragging)
     }
 
     /// Upstream's `min` and `max`.
@@ -1446,7 +1447,9 @@ impl Slider {
                 if interaction == crate::slider_theme::SliderInteraction::TapOnly {
                     return;
                 }
-                if interaction == crate::slider_theme::SliderInteraction::SlideThumb && !began_on_thumb.get() {
+                if interaction == crate::slider_theme::SliderInteraction::SlideThumb
+                    && !began_on_thumb.get()
+                {
                     return;
                 }
                 dragging(to_value(drag.local_position.dx / width));
@@ -1454,7 +1457,8 @@ impl Slider {
             .with_tap(move |tap| {
                 if matches!(
                     interaction,
-                    crate::slider_theme::SliderInteraction::SlideOnly | crate::slider_theme::SliderInteraction::SlideThumb
+                    crate::slider_theme::SliderInteraction::SlideOnly
+                        | crate::slider_theme::SliderInteraction::SlideThumb
                 ) {
                     return;
                 }
@@ -1462,7 +1466,6 @@ impl Slider {
             })
     }
 }
-
 
 /// Draws a slider's tick marks, one per division boundary.
 ///
@@ -1517,7 +1520,6 @@ impl crate::render::CustomPainter for SliderTickMarks {
     }
 }
 
-
 /// Draws the bubble over a slider's thumb.
 ///
 /// The shape does all of it: `SliderComponentShape::paint_indicator` picks
@@ -1536,15 +1538,14 @@ struct SliderValueIndicator {
 
 impl crate::render::CustomPainter for SliderValueIndicator {
     fn paint(&self, canvas: &mut crate::engine::Canvas, size: crate::render::Size) {
-        let mut label = crate::painting::TextPainter::new()
-            .text(self.label.clone(), self.style.clone());
+        let mut label =
+            crate::painting::TextPainter::new().text(self.label.clone(), self.style.clone());
         // The bubble grows to its words rather than wrapping them, so the
         // width it lays out against is no constraint at all.
         label.layout(f32::INFINITY);
         let center = crate::render::Offset::new(self.thumb * size.width, size.height / 2.0);
         let geometry = crate::slider_theme::IndicatorPaintGeometry::new(
-            center,
-            size,
+            center, size,
             // Upstream's activation animation, at rest. This port has no
             // animation for it yet: the bubble is either drawn or it is not,
             // and `shows_indicator` has already decided which.
@@ -1589,7 +1590,8 @@ impl Component for Slider {
                 fractions: ticks,
                 thumb: value,
                 direction: crate::direction::direction_of(context),
-            }) as std::rc::Rc<dyn crate::render::CustomPainter>)
+            })
+                as std::rc::Rc<dyn crate::render::CustomPainter>)
         };
         let indicator = if self.shows_indicator(&slider) {
             Some(std::rc::Rc::new(SliderValueIndicator {
@@ -1598,7 +1600,8 @@ impl Component for Slider {
                 label: self.label.clone().unwrap_or_default(),
                 style: slider.value_indicator_text_style.clone(),
                 thumb: value,
-            }) as std::rc::Rc<dyn crate::render::CustomPainter>)
+            })
+                as std::rc::Rc<dyn crate::render::CustomPainter>)
         } else {
             None
         };
@@ -1625,35 +1628,35 @@ impl Component for Slider {
                     over(
                         indicator.clone(),
                         Container::new()
-                        // The thing you can hit should be bigger than the
-                        // thing you can see.
-                        .with_size(width, hit_height)
-                        .with_child(Center::new(
-                            over(
+                            // The thing you can hit should be bigger than the
+                            // thing you can see.
+                            .with_size(width, hit_height)
+                            .with_child(Center::new(over(
                                 tick_marks.clone(),
                                 Container::new()
-                                .with_size(width, track_height)
-                                .with_color(track)
-                                .with_corner_radius(track_height / 2.0)
-                                .with_child(
-                                    RenderFlex::row()
-                                        .with_main_axis_size(MainAxisSize::Max)
-                                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                                        .push(
-                                            Container::new()
-                                                .with_size(filled, track_height)
-                                                .with_color(fill)
-                                                .with_corner_radius(track_height / 2.0),
-                                        )
-                                        .push(
-                                            Container::new()
-                                                .with_size(thumb.width, thumb.height)
-                                                .with_color(knob)
-                                                .with_corner_radius(thumb.shortest_side() / 2.0),
-                                        ),
-                                ),
-                            ),
-                        )),
+                                    .with_size(width, track_height)
+                                    .with_color(track)
+                                    .with_corner_radius(track_height / 2.0)
+                                    .with_child(
+                                        RenderFlex::row()
+                                            .with_main_axis_size(MainAxisSize::Max)
+                                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                            .push(
+                                                Container::new()
+                                                    .with_size(filled, track_height)
+                                                    .with_color(fill)
+                                                    .with_corner_radius(track_height / 2.0),
+                                            )
+                                            .push(
+                                                Container::new()
+                                                    .with_size(thumb.width, thumb.height)
+                                                    .with_color(knob)
+                                                    .with_corner_radius(
+                                                        thumb.shortest_side() / 2.0,
+                                                    ),
+                                            ),
+                                    ),
+                            ))),
                     ),
                 )
                 .with_handlers(handlers.clone()),
@@ -1681,9 +1684,9 @@ fn over(
 ) -> Box<dyn crate::render::RenderBox> {
     match painter {
         None => Box::new(child),
-        Some(painter) => Box::new(
-            crate::render::RenderCustomPaint::new(child).with_foreground_painter(painter),
-        ),
+        Some(painter) => {
+            Box::new(crate::render::RenderCustomPaint::new(child).with_foreground_painter(painter))
+        }
     }
 }
 
@@ -1763,7 +1766,10 @@ impl Component for AppBar {
         // `theme.title()` -- a hand-rolled style with a hard-coded weight of
         // 700, where `titleLarge` is 400 -- so `AppBarThemeData::title_text_style`
         // reached nothing and the role had no reader in this port at all.
-        let title_style = bar.title_text_style.clone().unwrap_or_else(|| theme.title());
+        let title_style = bar
+            .title_text_style
+            .clone()
+            .unwrap_or_else(|| theme.title());
         let muted = theme.muted();
 
         let has_subtitle = subtitle.is_some();
@@ -2257,13 +2263,12 @@ impl Component for ListTile {
         // own colour all come off `ListTileTheme.of(context)` before the
         // control's defaults. `selected` is passed in because it chooses
         // between two different sets of those.
-        let tile =
-            crate::component_themes::ResolvedListTile::of_with_selected_color(
-                context,
-                self.selected,
-                self.dense,
-                self.selected_color,
-            );
+        let tile = crate::component_themes::ResolvedListTile::of_with_selected_color(
+            context,
+            self.selected,
+            self.dense,
+            self.selected_color,
+        );
         let content_padding = self.content_padding.unwrap_or(tile.content_padding);
         let title_gap = tile.horizontal_title_gap;
         let min_tile_height = tile.min_tile_height;
@@ -3624,10 +3629,9 @@ mod tests {
             "the ink is clipped to the pill: {calls:?}"
         );
         assert!(
-            !calls.iter().any(|call| matches!(
-                call,
-                crate::engine_test_stubs::Drawn::ClipRectLayer { .. }
-            )),
+            !calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::ClipRectLayer { .. })),
             "and to nothing square: {calls:?}"
         );
     }
@@ -3703,7 +3707,9 @@ mod tests {
             let label = calls
                 .iter()
                 .find_map(|call| match call {
-                    crate::engine_test_stubs::Drawn::Paragraph { text, x, .. } if text == "next" => {
+                    crate::engine_test_stubs::Drawn::Paragraph { text, x, .. }
+                        if text == "next" =>
+                    {
                         Some(*x)
                     }
                     _ => None,
@@ -3847,7 +3853,8 @@ mod tests {
                         padding: None,
                         minimum_size: None,
                         icon_alignment: crate::component_themes::IconAlignment::Start,
-                        animation_duration: crate::component_themes::ResolvedButton::ANIMATION_DURATION,
+                        animation_duration:
+                            crate::component_themes::ResolvedButton::ANIMATION_DURATION,
                     },
                 ));
                 leaf(|| crate::widgets::Empty)
@@ -3880,8 +3887,8 @@ mod tests {
     /// this function published one theme at a time.
     fn variant_reads(variant: ButtonVariant) -> ResolvedButton {
         use crate::component_themes::{
-            FilledButtonTheme, FilledButtonThemeData, OutlinedButtonTheme,
-            OutlinedButtonThemeData, TextButtonTheme, TextButtonThemeData,
+            FilledButtonTheme, FilledButtonThemeData, OutlinedButtonTheme, OutlinedButtonThemeData,
+            TextButtonTheme, TextButtonThemeData,
         };
         use crate::widget_state::StateProperty;
 
@@ -3902,7 +3909,8 @@ mod tests {
                         padding: None,
                         minimum_size: None,
                         icon_alignment: crate::component_themes::IconAlignment::Start,
-                        animation_duration: crate::component_themes::ResolvedButton::ANIMATION_DURATION,
+                        animation_duration:
+                            crate::component_themes::ResolvedButton::ANIMATION_DURATION,
                     },
                 ));
                 leaf(|| crate::widgets::Empty)
@@ -3937,10 +3945,7 @@ mod tests {
                 filled,
                 ElevatedButtonTheme::new(
                     elevated,
-                    OutlinedButtonTheme::new(
-                        outlined,
-                        TextButtonTheme::new(text, reader),
-                    ),
+                    OutlinedButtonTheme::new(outlined, TextButtonTheme::new(text, reader)),
                 ),
             ),
         ));
@@ -4298,9 +4303,7 @@ mod tests {
         //
         // What `minLeadingWidth` reserves is room before the title, so the
         // whole of its effect is that number.
-        let leading = || {
-            crate::framework::leaf(|| crate::widgets::SizedBox::new(10.0, 10.0))
-        };
+        let leading = || crate::framework::leaf(|| crate::widgets::SizedBox::new(10.0, 10.0));
         let narrow = title_x(ListTile::new("a").with_leading(leading()));
         let wide = title_x(
             ListTile::new("a")
@@ -5106,7 +5109,10 @@ mod tests {
     }
 
     fn drag_from_to(handlers: &PointerHandlers, from: f32, to: f32) {
-        let start = handlers.on_drag_start.clone().expect("a drag start handler");
+        let start = handlers
+            .on_drag_start
+            .clone()
+            .expect("a drag start handler");
         start(crate::gestures::DragEvent {
             delta: Offset::new(0.0, 0.0),
             total: Offset::new(0.0, 0.0),
@@ -5199,7 +5205,6 @@ mod tests {
     // round its corners however the theme was set. Upstream's
     // `Divider.build` reads `radius ?? dividerTheme.radius ?? defaults.radius`
     // and neither default sets one.
-
 
     // -- A divider can round its ends, tick 229 -----------------------------
     //
@@ -5454,14 +5459,10 @@ mod tests {
             .rev()
             .find_map(|call| match call {
                 crate::engine_test_stubs::Drawn::RRect {
-                    argb,
-                    stroke: None,
-                    ..
+                    argb, stroke: None, ..
                 }
                 | crate::engine_test_stubs::Drawn::Rect {
-                    argb,
-                    stroke: None,
-                    ..
+                    argb, stroke: None, ..
                 } => Some(Color(*argb)),
                 _ => None,
             })
@@ -5698,9 +5699,7 @@ mod tests {
         use crate::slider_theme::SliderInteraction;
         let seen = std::rc::Rc::new(std::cell::Cell::new(None));
         let recorder = std::rc::Rc::clone(&seen);
-        let mut slider = Slider::new(1, 0.0)
-            .with_range(0.0, 10.0)
-            .with_divisions(4);
+        let mut slider = Slider::new(1, 0.0).with_range(0.0, 10.0).with_divisions(4);
         slider.on_change = Some(std::rc::Rc::new(move |value| recorder.set(Some(value))));
         let resolved = plain_slider();
         let handlers = slider.gestures(&resolved);
@@ -5888,8 +5887,7 @@ mod tests {
         let (_, argb) = drawn.first().expect("the label");
         assert_eq!(*argb, scheme.on_inverse_surface().0);
         assert_ne!(
-            *argb,
-            scheme.on_surface.0,
+            *argb, scheme.on_surface.0,
             "which is what it would be if the style never reached the painter"
         );
     }
@@ -5940,7 +5938,9 @@ mod tests {
         let title = crate::engine_test_stubs::drawn()
             .into_iter()
             .find_map(|call| match call {
-                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. } if text == "Inbox" => {
+                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. }
+                    if text == "Inbox" =>
+                {
                     Some(argb)
                 }
                 _ => None,
@@ -6007,11 +6007,7 @@ mod tests {
             let mut tree = ElementTree::new();
             tree.rebuild(crate::theme::MaterialTheme::new(
                 crate::theme::ThemeData::light(),
-                component(
-                    Slider::new(1, value)
-                        .with_range(0.0, 4.0)
-                        .with_divisions(4),
-                ),
+                component(Slider::new(1, value).with_range(0.0, 4.0).with_divisions(4)),
             ));
             let mut root = tree.build_render_tree().expect("a root");
             crate::render::RenderBox::layout(
@@ -6291,11 +6287,9 @@ impl CircleAvatar {
         use crate::component_themes::estimate_brightness_for_color;
         use crate::platform::Brightness;
 
-        let pair = |against: crate::engine::Color| {
-            match estimate_brightness_for_color(against) {
-                Brightness::Dark => material.primary_color_light,
-                Brightness::Light => material.primary_color_dark,
-            }
+        let pair = |against: crate::engine::Color| match estimate_brightness_for_color(against) {
+            Brightness::Dark => material.primary_color_light,
+            Brightness::Light => material.primary_color_dark,
         };
 
         let mut foreground = self.foreground_color.or(if material.use_material3 {
@@ -6316,7 +6310,10 @@ impl CircleAvatar {
                 // otherwise. With neither named, the style's colour is what
                 // the typography carries.
                 let ink = foreground
-                    .or_else(|| self.label_style(material).and_then(|style| Some(style.color)))
+                    .or_else(|| {
+                        self.label_style(material)
+                            .and_then(|style| Some(style.color))
+                    })
                     .unwrap_or(material.color_scheme.on_surface);
                 (pair(ink), foreground)
             }

@@ -24222,10 +24222,7 @@ mod custom_painter_semantics_tests {
                 vec![at(0.0)]
             }
         }
-        assert_eq!(
-            Talkative.semantics_builder(Size::new(10.0, 10.0)).len(),
-            1
-        );
+        assert_eq!(Talkative.semantics_builder(Size::new(10.0, 10.0)).len(), 1);
     }
 
     #[test]
@@ -25483,4 +25480,3 @@ mod canvas_balance_tests {
         );
     }
 }
-

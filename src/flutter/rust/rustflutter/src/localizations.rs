@@ -730,7 +730,10 @@ mod tests {
         tree.rebuild(provide_localizations(
             Localizations::new(locale("fr")),
             many(
-                vec![outer, provide_localizations(Localizations::new(locale("ja")), inner)],
+                vec![
+                    outer,
+                    provide_localizations(Localizations::new(locale("ja")), inner),
+                ],
                 |children| {
                     let mut flex = crate::render::RenderFlex::column();
                     for child in children {
@@ -1341,4 +1344,3 @@ mod resolve_locales_tests {
         );
     }
 }
-

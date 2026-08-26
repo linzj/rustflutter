@@ -719,8 +719,14 @@ mod tests {
                 .with_type(material_type)
                 .effective_color(&theme)
         };
-        assert_eq!(of_type(MaterialType::Canvas), Some(Color::argb(255, 0, 0, 11)));
-        assert_eq!(of_type(MaterialType::Card), Some(Color::argb(255, 0, 0, 22)));
+        assert_eq!(
+            of_type(MaterialType::Canvas),
+            Some(Color::argb(255, 0, 0, 11))
+        );
+        assert_eq!(
+            of_type(MaterialType::Card),
+            Some(Color::argb(255, 0, 0, 22))
+        );
 
         // And the default type is `Canvas`, so a material told nothing takes
         // the canvas colour.

@@ -326,12 +326,8 @@ impl HapticFeedback {
             HapticFeedbackType::Medium => Value::from("HapticFeedbackType.mediumImpact"),
             HapticFeedbackType::Heavy => Value::from("HapticFeedbackType.heavyImpact"),
             HapticFeedbackType::Selection => Value::from("HapticFeedbackType.selectionClick"),
-            HapticFeedbackType::Success => {
-                Value::from("HapticFeedbackType.successNotification")
-            }
-            HapticFeedbackType::Warning => {
-                Value::from("HapticFeedbackType.warningNotification")
-            }
+            HapticFeedbackType::Success => Value::from("HapticFeedbackType.successNotification"),
+            HapticFeedbackType::Warning => Value::from("HapticFeedbackType.warningNotification"),
             HapticFeedbackType::Error => Value::from("HapticFeedbackType.errorNotification"),
         };
         PLATFORM.invoke("HapticFeedback.vibrate", argument);
@@ -1027,11 +1023,7 @@ mod tests {
 
         assert!(sink.set(DARK), "a real change, so a flush is arranged");
         assert!(!sink.set(LIGHT), "and then undone before it runs");
-        assert_eq!(
-            sink.flush(),
-            None,
-            "the flush finds nothing left to say"
-        );
+        assert_eq!(sink.flush(), None, "the flush finds nothing left to say");
         assert_eq!(sink.latest(), Some(LIGHT), "and the record is unmoved");
     }
 
@@ -2790,7 +2782,10 @@ mod channel_string_tests {
         // whole protocol: a cancelable exit sent as "required" is a window
         // that closes on the reader without asking whether they wanted to
         // save.
-        assert_eq!(AppExitType::ALL.map(AppExitType::as_message), ["required", "cancelable"]);
+        assert_eq!(
+            AppExitType::ALL.map(AppExitType::as_message),
+            ["required", "cancelable"]
+        );
         assert_ne!(
             AppExitType::Required.as_message(),
             AppExitType::Cancelable.as_message()
@@ -2843,4 +2838,3 @@ mod channel_string_tests {
         assert_eq!(AppExitResponse::from_message("cancelled"), None);
     }
 }
-

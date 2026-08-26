@@ -5105,7 +5105,9 @@ mod decoration_image_paint_tests {
     }
 
     #[allow(clippy::type_complexity)]
-    fn painted(decoration: DecorationImage) -> Option<((f32, f32, f32, f32), (f32, f32, f32, f32))> {
+    fn painted(
+        decoration: DecorationImage,
+    ) -> Option<((f32, f32, f32, f32), (f32, f32, f32, f32))> {
         let mut layers = LayerTree::new(400, 400);
         reset_drawn();
         let drew = {
@@ -5155,8 +5157,8 @@ mod decoration_image_paint_tests {
             "a picture smaller than the box is not grown"
         );
 
-        let filled = painted(DecorationImage::new(provider(40, 20)).with_fit(BoxFit::Fill))
-            .expect("a draw");
+        let filled =
+            painted(DecorationImage::new(provider(40, 20)).with_fit(BoxFit::Fill)).expect("a draw");
         assert_eq!(
             size_of_rect(filled.1),
             (BOX.width(), BOX.height()),
@@ -5451,4 +5453,3 @@ mod discriminant_table_tests {
         }
     }
 }
-

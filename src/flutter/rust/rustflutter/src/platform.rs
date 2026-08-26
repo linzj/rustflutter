@@ -371,7 +371,9 @@ pub(crate) fn set_locales(locales: Vec<Locale>) -> bool {
         platform.locales = locales;
         platform.locales_handler.take()
     });
-    let Some(mut handler) = handler else { return true };
+    let Some(mut handler) = handler else {
+        return true;
+    };
     let current = self::locales();
     handler(&current);
     PLATFORM.with(|platform| {

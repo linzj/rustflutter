@@ -404,8 +404,7 @@ mod tests {
             "the extra forty pixels buy the title extra room under it"
         );
         assert_eq!(
-            medium.expanded_title_padding.left,
-            large.expanded_title_padding.left,
+            medium.expanded_title_padding.left, large.expanded_title_padding.left,
             "and the sides do not move"
         );
     }
@@ -421,11 +420,19 @@ mod tests {
         let large = config(SliverAppVariant::Large);
         assert_eq!(
             large.expanded_text_style.as_ref().map(|s| s.font_size),
-            theme.text_theme.headline_medium.as_ref().map(|s| s.font_size)
+            theme
+                .text_theme
+                .headline_medium
+                .as_ref()
+                .map(|s| s.font_size)
         );
         assert_eq!(
             medium.expanded_text_style.as_ref().map(|s| s.font_size),
-            theme.text_theme.headline_small.as_ref().map(|s| s.font_size)
+            theme
+                .text_theme
+                .headline_small
+                .as_ref()
+                .map(|s| s.font_size)
         );
         assert!(
             large.expanded_text_style.as_ref().unwrap().font_size
