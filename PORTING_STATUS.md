@@ -18690,3 +18690,60 @@ unread_strings **36 → 44 条 Material（0 无人说、0 与上游不符）+ 16
 **下一步**：`depth` 里最薄的几个类——`RadioListTile` 3/43、`MaterialButton` 4/34、
 `CheckboxListTile` 5/42——都是组合型控件；`unwalked` 说 1528 个公开枚举变体里有
 219 个从未在测试里被点过名。
+
+## 第 260 轮：把注释里的那份顺序拿去和上游比
+
+`variant_sweep.py` 在自己的文档里写了它看不见什么：
+
+> 它改写单行 match 臂，所以一张没有 match 的表对它是隐形的。撞上的那个是最坏的
+> 一种：`PlatformProvidedMenuItemType` 以 `menu_type as i32` 过通道，**声明顺序
+> 就是协议**，而且一个 match 臂都没有——中间插一个变体会让后面十一项全部改号，
+> 而这个 sweep 会报告这个文件没什么可看的。
+
+`unwalked.py` 找到了它，端口也用一条测试回答了。但看那条测试能证明什么：
+
+    for (position, menu_type) in PlatformProvidedMenuItemType::ALL.iter().enumerate() {
+        assert_eq!(sent(*menu_type), position as i32);
+    }
+
+**这是循环论证。** 它说 `ALL` 和声明顺序一致——两份并排写下的列表永远一致。
+**上游的顺序只活在它上方的一句文档注释里**，十二个名字的散文，而没有任何东西
+把那句注释和 Dart 比对过。上游插一个变体、或者端口漏掉一个，后面全部改号，而
+这里每条测试照绿。
+
+新量尺 `tools/wire_enums.py` 做的就是那句注释一直在代替的比对，四个入围的枚举
+全部逐名对齐：`BlendMode`（29 个，显式判别值，`static_cast` 直通引擎）、
+`PlatformProvidedMenuItemType`（12 个，`as i32`）、`ContentSensitivity` 与
+`Assertiveness`（`index()` 进通道）。**0 不一致。**
+
+**入围规则的第二半是漏掉之后学会的。** 一开始"有 `index()` 方法"就算数，于是
+`HighlightType` 被收了进来——它确实有这么一个方法，用来在三个本地槽位里挑一个，
+**根本不是协议**，重排完全安全。规则改成"`index()` 的结果要进到一个通道值里"。
+一个 crate 外面看不见的下标是私事，无论它多像一个 Dart 枚举的下标。
+
+**上游列表末尾的私有变体单列一档。** `ContentSensitivity` 有第四个值 `_unknown`，
+对那个库私有。端口没有东西可镜像，它已有的三个下标也不受影响，所以这不是不一致。
+但它照样打印出来——因为**平台仍然可以送一个 3**。上游读 `values[result]` 然后抛
+`UnsupportedError` 说去提 issue；这个端口的 `from_index` 答 `None`，文档写明了
+为什么那是"没有地方可抛时的同一个答案"。两个都是决定，沉默不是。
+
+**写这把量尺的过程里它自己错了两次，两次都被它自己的输出抓住：**
+
+一是 `dart_enums()` 里 `for name in files` 遮住了枚举名，于是整张表以**文件名**
+为键——它因此报告自己的两个枚举"上游都找不到"。
+
+二是抓上游变体时先按 `;` 切再去注释，而 `BlendMode` 的散文里有好几个分号——
+二十九个值被截成十三个，量尺于是振振有词地报告"端口多了十六个"。**一把新量尺
+的第一次报警，先怀疑量尺。**
+
+量尺自己也逐条强制改错：把两个菜单项对调、把最后一个 blend mode 删掉，两次都
+报出 `DISAGREES` 并指出具体是哪一行。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，**wire_enums 4/0
+（新）**，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5743 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`unwalked` 的 213 条要用 `variant_sweep.py` 一个模块一个模块地定案
+（它自己的文档说 `WidgetStatesConstraint` 那五条是完全误报）；`depth` 里最薄的
+是 `RadioListTile` 3/43、`MaterialButton` 4/34、`CheckboxListTile` 5/42。
