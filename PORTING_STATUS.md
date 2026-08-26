@@ -19715,3 +19715,64 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 **下一步**：`RenderEditable` 全 crate 检查还剩几簇真缺口——
 `getLocalRectForCaret` 与 `caretPrototype` 那一组、`setPromptRectRange` 与
 `promptRectColor`（自动更正的下划线高亮）、`selectionHeightStyle`/`selectionWidthStyle`。
+
+## 第 280 轮：一个类画两种高亮，而那一摞的顺序本身是规则
+
+`_TextHighlightPainter`、`setPromptRectRange`、`promptRectColor`，以及
+`RenderEditable` 用它们搭出来的两摞画笔。
+
+### 一个类的两个实例
+
+    final _TextHighlightPainter _selectionPainter = _TextHighlightPainter();
+    final _TextHighlightPainter _autocorrectHighlightPainter = _TextHighlightPainter();
+
+选区高亮和自动更正的提示框是**同一段代码两次**，只在被交给什么范围、什么颜色上不同。
+所以取消提示框就是 `setPromptRectRange(null)`——没有另一套拆除逻辑。
+
+### 那两摞
+
+    前景：[if (paintCursorAboveText) _caretPainter]
+    背景：[_autocorrectHighlightPainter, _selectionPainter,
+           if (!paintCursorAboveText) _caretPainter]
+
+两个列表，光标**恰好在其中一个里**，由 `paintCursorAboveText` 决定：Apple 平台放前景,
+盖在字形之上；其余平台放在背景列表的**最后**，盖在两层高亮之上、字形之下。
+
+**自动更正的高亮画在选区之下**：读者选中一段正在被自动更正的文字时，看到的是选区的
+颜色。
+
+### 三种画不出东西的理由
+
+    if (range == null || color == null || range.isCollapsed) return;
+
+没有范围、没有颜色、范围是折叠的——三条各自独立，而第三条是读者预料不到的那一条：
+零宽的高亮不会被画成一根发丝。
+
+### box 是个集合，而且被裁到文字上
+
+    final Set<TextBox> boxes = ...getBoxesForSelection(...).toSet();
+    box.toRect().shift(_paintOffset)
+       .intersect(Rect.fromLTWH(0, 0, textPainter.width, textPainter.height))
+
+`toSet()` 把重复的收掉——同一个矩形用半透明的画笔画两遍，就是两倍的深。而相交的对象
+是**文字的** rect，不是字段的：滚出视野的那段文字上的高亮，被裁到文字所在的地方。
+
+**而且是先平移再相交。** 反过来会先按未滚动的位置裁一刀，再把裁剩的那块滑出去。
+
+十六条承重规则逐条强制改错，全红。其中两条（枚举重排）第一次写成了编译不过的形式——
+**编译不过不是红**，那两轮不作数，换成能编译的重排重来。
+
+### 一处没有尺子看着，如实记下
+
+`BoxHeightStyle`（六个）和 `BoxWidthStyle`（两个）的**顺序**是按索引过给引擎段落的,
+可是它们现在还没有真的过 FFI，所以 `wire_enums.py` 的判据（"过 channel 的 as i32"）
+够不着它们。这一轮的顺序由一条手写测试断言（0、5、0、1）加文档里的引用担保。**等它们
+真的被接上线，就归尺子管了**——在那之前这是一条手写的账。
+
+尺子：coverage 2102/0，constants 159/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5877 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`getLocalRectForCaret` 与 `caretPrototype` 那一组，然后回 `depth.py`
+队头的 `SelectionOverlay` 9/43。

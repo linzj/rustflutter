@@ -1167,6 +1167,191 @@ impl<'a> WordSelection<'a> {
     }
 }
 
+/// Upstream `ui.BoxHeightStyle`: how tall the boxes behind a run of selected
+/// text are computed to be.
+///
+/// The order is upstream's declaration order, because the value crosses to the
+/// engine's paragraph as an index.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoxHeightStyle {
+    /// Tight to each run, which can leave uneven boxes that do not meet.
+    #[default]
+    Tight,
+    /// The tallest run on the line, so every box on a line matches.
+    Max,
+    /// Half the line spacing above and half below.
+    IncludeLineSpacingMiddle,
+    /// All of the line spacing on top.
+    IncludeLineSpacingTop,
+    /// All of the line spacing underneath.
+    IncludeLineSpacingBottom,
+    /// The strut's height.
+    Strut,
+}
+
+/// Upstream `ui.BoxWidthStyle`. Two arms, and the same index contract.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoxWidthStyle {
+    /// Tight to the glyphs.
+    #[default]
+    Tight,
+    /// Out to the widest box on the line, so a wrapped selection has a
+    /// straight right edge.
+    Max,
+}
+
+/// Upstream `_TextHighlightPainter`: the rectangles behind a run of text.
+///
+/// **The selection highlight and the autocorrect prompt rectangle are this
+/// same class twice**, differing only in the range and colour they are handed.
+/// That is why dismissing the prompt is `setPromptRectRange(null)` and not a
+/// teardown of its own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextHighlightPainter {
+    highlighted_range: Option<crate::services::text_boundary::TextRange>,
+    highlight_color: Option<crate::engine::Color>,
+    pub height_style: BoxHeightStyle,
+    pub width_style: BoxWidthStyle,
+}
+
+impl TextHighlightPainter {
+    pub fn new() -> TextHighlightPainter {
+        TextHighlightPainter::default()
+    }
+
+    pub fn highlighted_range(&self) -> Option<crate::services::text_boundary::TextRange> {
+        self.highlighted_range
+    }
+
+    pub fn highlight_color(&self) -> Option<crate::engine::Color> {
+        self.highlight_color
+    }
+
+    /// Upstream's `highlightedRange` setter, and upstream's
+    /// `RenderEditable.setPromptRectRange` is a one-line call to it.
+    ///
+    /// Returns whether anything changed, which is upstream's
+    /// `notifyListeners()` -- guarded by an equality test, so setting the same
+    /// range again does not repaint the field.
+    pub fn set_highlighted_range(
+        &mut self,
+        range: Option<crate::services::text_boundary::TextRange>,
+    ) -> bool {
+        if range == self.highlighted_range {
+            return false;
+        }
+        self.highlighted_range = range;
+        true
+    }
+
+    /// Upstream's `highlightColor` setter, reached through
+    /// `RenderEditable.promptRectColor`. Guarded the same way.
+    pub fn set_highlight_color(&mut self, color: Option<crate::engine::Color>) -> bool {
+        if color == self.highlight_color {
+            return false;
+        }
+        self.highlight_color = color;
+        true
+    }
+
+    /// The rectangles this painter would draw -- upstream's `paint`, minus the
+    /// canvas.
+    ///
+    /// The boxes belong to the engine's paragraph and arrive rather than being
+    /// invented. `text_size` is the paragraph's own size, which is what the
+    /// boxes are clipped to.
+    ///
+    /// **Three separate reasons to draw nothing**: no range, no colour, and a
+    /// *collapsed* range. The third is the one a reader would not predict -- a
+    /// highlight of no width is not drawn as a hairline.
+    pub fn rects(
+        &self,
+        boxes: &[crate::engine::Rect],
+        paint_offset: crate::render::Offset,
+        text_size: crate::render::Size,
+    ) -> Vec<crate::engine::Rect> {
+        let (Some(range), Some(_)) = (self.highlighted_range, self.highlight_color) else {
+            return Vec::new();
+        };
+        if range.is_collapsed() {
+            return Vec::new();
+        }
+
+        let text_rect = crate::engine::Rect::ltrb(0.0, 0.0, text_size.width, text_size.height);
+        let mut seen: Vec<crate::engine::Rect> = Vec::new();
+        for incoming in boxes {
+            let shifted = crate::engine::Rect::ltrb(
+                incoming.left + paint_offset.dx,
+                incoming.top + paint_offset.dy,
+                incoming.right + paint_offset.dx,
+                incoming.bottom + paint_offset.dy,
+            );
+            // Clipped to the **text's** rect and not the field's: a highlight
+            // on text scrolled out of view is cut back to where the text is.
+            let clipped = crate::engine::Rect::ltrb(
+                shifted.left.max(text_rect.left),
+                shifted.top.max(text_rect.top),
+                shifted.right.min(text_rect.right),
+                shifted.bottom.min(text_rect.bottom),
+            );
+            // Upstream's `.toSet()`: the same rectangle drawn twice through a
+            // translucent paint is twice as dark.
+            if !seen.contains(&clipped) {
+                seen.push(clipped);
+            }
+        }
+        seen
+    }
+}
+
+/// Which of `RenderEditable`'s two painter stacks a thing sits in, and where
+/// -- upstream `_createBuiltInPainters` and
+/// `_createBuiltInForegroundPainters`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditablePainterSlot {
+    /// Upstream's `_autocorrectHighlightPainter`, **first** in the background
+    /// list and therefore under everything else.
+    AutocorrectHighlight,
+    /// Upstream's `_selectionPainter`, over the autocorrect highlight.
+    Selection,
+    /// Upstream's `_caretPainter`.
+    Caret,
+}
+
+/// The two stacks, which differ only in where the caret goes.
+pub struct EditablePainters;
+
+impl EditablePainters {
+    /// Upstream's `_createBuiltInForegroundPainters`: the caret, and only when
+    /// it is drawn over the glyphs.
+    pub fn foreground(paint_cursor_above_text: bool) -> Vec<EditablePainterSlot> {
+        if paint_cursor_above_text {
+            vec![EditablePainterSlot::Caret]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Upstream's `_createBuiltInPainters`.
+    ///
+    /// **The autocorrect highlight goes under the selection**: where a reader
+    /// selects text that is also being autocorrected, the selection's colour
+    /// is the one they see.
+    ///
+    /// And the caret is here, last, exactly when it is *not* in the foreground
+    /// list -- over both highlights but under the glyphs.
+    pub fn background(paint_cursor_above_text: bool) -> Vec<EditablePainterSlot> {
+        let mut painters = vec![
+            EditablePainterSlot::AutocorrectHighlight,
+            EditablePainterSlot::Selection,
+        ];
+        if !paint_cursor_above_text {
+            painters.push(EditablePainterSlot::Caret);
+        }
+        painters
+    }
+}
+
 /// Where the IME bar goes and how the caret lands on a real pixel -- upstream
 /// `RenderEditable.getRectForComposingRange` and `_snapToPhysicalPixel`.
 pub struct ComposingRegion;
@@ -2380,6 +2565,254 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- One class paints both highlights, tick 280 --------------------------
+
+    fn highlighting(start: isize, end: isize) -> TextHighlightPainter {
+        let mut painter = TextHighlightPainter::new();
+        painter.set_highlighted_range(Some(crate::services::text_boundary::TextRange {
+            start,
+            end,
+        }));
+        painter.set_highlight_color(Some(crate::engine::Color(0x8000_00FF)));
+        painter
+    }
+
+    fn text_of(width: f32, height: f32) -> crate::render::Size {
+        crate::render::Size::new(width, height)
+    }
+
+    #[test]
+    fn the_prompt_rectangle_and_the_selection_are_the_same_painter() {
+        // Two instances of one class, differing only in the range and colour
+        // they are handed -- which is why dismissing the prompt is
+        // setPromptRectRange(null) and not a teardown of its own.
+        let mut selection = TextHighlightPainter::new();
+        let mut prompt = TextHighlightPainter::new();
+        assert_eq!(selection, prompt, "nothing distinguishes them at rest");
+
+        selection.set_highlighted_range(Some(crate::services::text_boundary::TextRange {
+            start: 0,
+            end: 4,
+        }));
+        prompt.set_highlighted_range(Some(crate::services::text_boundary::TextRange {
+            start: 0,
+            end: 4,
+        }));
+        assert_eq!(selection, prompt, "nor once both are told the same thing");
+    }
+
+    #[test]
+    fn clearing_the_range_is_how_the_prompt_is_dismissed() {
+        let mut painter = highlighting(0, 4);
+        assert!(
+            !painter
+                .rects(
+                    &[crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 14.0)],
+                    crate::render::Offset::ZERO,
+                    text_of(200.0, 14.0),
+                )
+                .is_empty()
+        );
+        assert!(painter.set_highlighted_range(None), "and it did change");
+        assert!(
+            painter
+                .rects(
+                    &[crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 14.0)],
+                    crate::render::Offset::ZERO,
+                    text_of(200.0, 14.0),
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn setting_the_same_range_again_does_not_ask_for_a_repaint() {
+        // The setter is guarded by an equality test before it notifies.
+        let mut painter = TextHighlightPainter::new();
+        let range = crate::services::text_boundary::TextRange { start: 0, end: 4 };
+        assert!(painter.set_highlighted_range(Some(range)), "new");
+        assert!(!painter.set_highlighted_range(Some(range)), "same again");
+        assert!(painter.set_highlighted_range(None), "changed back");
+    }
+
+    #[test]
+    fn setting_the_same_colour_again_does_not_ask_for_a_repaint() {
+        let mut painter = TextHighlightPainter::new();
+        let blue = crate::engine::Color(0x8000_00FF);
+        assert!(painter.set_highlight_color(Some(blue)));
+        assert!(!painter.set_highlight_color(Some(blue)));
+        assert!(painter.set_highlight_color(None));
+    }
+
+    #[test]
+    fn a_collapsed_range_paints_nothing_at_all() {
+        // The third of the three early returns, and the one a reader would not
+        // predict: a highlight of no width is not drawn as a hairline.
+        let painter = highlighting(3, 3);
+        assert_eq!(
+            painter.rects(
+                &[crate::engine::Rect::ltrb(30.0, 0.0, 30.0, 14.0)],
+                crate::render::Offset::ZERO,
+                text_of(200.0, 14.0),
+            ),
+            Vec::new(),
+            "though the paragraph handed back a box for it"
+        );
+    }
+
+    #[test]
+    fn a_range_with_no_colour_paints_nothing() {
+        let mut painter = TextHighlightPainter::new();
+        painter.set_highlighted_range(Some(crate::services::text_boundary::TextRange {
+            start: 0,
+            end: 4,
+        }));
+        assert!(
+            painter
+                .rects(
+                    &[crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 14.0)],
+                    crate::render::Offset::ZERO,
+                    text_of(200.0, 14.0),
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_same_box_twice_is_drawn_once() {
+        // Upstream's `.toSet()`. The same rectangle drawn twice through a
+        // translucent paint is twice as dark, which is visible.
+        let painter = highlighting(0, 4);
+        let box_ = crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 14.0);
+        let rects = painter.rects(
+            &[box_, box_, box_],
+            crate::render::Offset::ZERO,
+            text_of(200.0, 14.0),
+        );
+        assert_eq!(rects.len(), 1, "three boxes, one rectangle: {rects:?}");
+    }
+
+    #[test]
+    fn two_different_boxes_are_both_drawn() {
+        // The other half of the previous test: the set collapses duplicates,
+        // not everything.
+        let painter = highlighting(0, 20);
+        let rects = painter.rects(
+            &[
+                crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 14.0),
+                crate::engine::Rect::ltrb(0.0, 14.0, 30.0, 28.0),
+            ],
+            crate::render::Offset::ZERO,
+            text_of(200.0, 28.0),
+        );
+        assert_eq!(rects.len(), 2);
+    }
+
+    #[test]
+    fn a_highlight_is_clipped_to_the_text_and_not_to_the_field() {
+        // The intersection is with Rect.fromLTWH(0, 0, textPainter.width,
+        // textPainter.height). A box on text scrolled past the left edge is
+        // cut back to where the text is.
+        let painter = highlighting(0, 4);
+        let rects = painter.rects(
+            &[crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 14.0)],
+            crate::render::Offset::new(-25.0, 0.0),
+            text_of(200.0, 14.0),
+        );
+        assert_eq!(rects[0].left, 0.0, "cut at the text's left edge, not -25");
+        assert_eq!(rects[0].right, 15.0, "and the rest of it survives");
+    }
+
+    #[test]
+    fn a_highlight_wider_than_the_text_is_cut_down_to_it() {
+        let painter = highlighting(0, 4);
+        let rects = painter.rects(
+            &[crate::engine::Rect::ltrb(0.0, 0.0, 400.0, 14.0)],
+            crate::render::Offset::ZERO,
+            text_of(200.0, 14.0),
+        );
+        assert_eq!(rects[0].right, 200.0, "the text's width, not the box's");
+    }
+
+    #[test]
+    fn the_paint_offset_moves_the_box_before_the_clip_and_not_after() {
+        // Shift then intersect. Intersecting first would clip against the
+        // unscrolled position and then slide the clipped rectangle off.
+        let painter = highlighting(0, 4);
+        let rects = painter.rects(
+            &[crate::engine::Rect::ltrb(180.0, 0.0, 220.0, 14.0)],
+            crate::render::Offset::new(-100.0, 0.0),
+            text_of(200.0, 14.0),
+        );
+        assert_eq!(
+            (rects[0].left, rects[0].right),
+            (80.0, 120.0),
+            "shifted into view and never clipped"
+        );
+    }
+
+    #[test]
+    fn the_autocorrect_highlight_is_painted_under_the_selection() {
+        // Where a reader selects text that is also being autocorrected, the
+        // selection's colour is the one they see.
+        let stack = EditablePainters::background(false);
+        let autocorrect = stack
+            .iter()
+            .position(|slot| *slot == EditablePainterSlot::AutocorrectHighlight)
+            .expect("the autocorrect highlight");
+        let selection = stack
+            .iter()
+            .position(|slot| *slot == EditablePainterSlot::Selection)
+            .expect("the selection");
+        assert!(autocorrect < selection, "{stack:?}");
+    }
+
+    #[test]
+    fn the_caret_is_in_exactly_one_of_the_two_stacks() {
+        // paintCursorAboveText moves it between them; it is never in both and
+        // never in neither.
+        for above in [true, false] {
+            let foreground = EditablePainters::foreground(above);
+            let background = EditablePainters::background(above);
+            let in_front = foreground.contains(&EditablePainterSlot::Caret);
+            let behind = background.contains(&EditablePainterSlot::Caret);
+            assert!(in_front != behind, "above = {above}");
+            assert_eq!(in_front, above);
+        }
+    }
+
+    #[test]
+    fn a_caret_behind_the_glyphs_still_sits_over_both_highlights() {
+        // It goes *last* in the background list, not first: under the text,
+        // but over the selection it is standing in.
+        let stack = EditablePainters::background(false);
+        assert_eq!(stack.last(), Some(&EditablePainterSlot::Caret), "{stack:?}");
+        assert_eq!(stack.len(), 3);
+    }
+
+    #[test]
+    fn the_two_highlights_are_in_the_background_stack_whatever_the_caret_does() {
+        for above in [true, false] {
+            let stack = EditablePainters::background(above);
+            assert_eq!(stack[0], EditablePainterSlot::AutocorrectHighlight);
+            assert_eq!(stack[1], EditablePainterSlot::Selection);
+        }
+    }
+
+    #[test]
+    fn the_box_styles_start_tight() {
+        // ui.BoxHeightStyle.tight and ui.BoxWidthStyle.tight are upstream's
+        // defaults, and they are the first arm of each enum because the value
+        // crosses to the engine as an index.
+        let painter = TextHighlightPainter::new();
+        assert_eq!(painter.height_style, BoxHeightStyle::Tight);
+        assert_eq!(painter.width_style, BoxWidthStyle::Tight);
+        assert_eq!(BoxHeightStyle::Tight as i32, 0);
+        assert_eq!(BoxWidthStyle::Tight as i32, 0);
+        assert_eq!(BoxHeightStyle::Strut as i32, 5, "the last of six");
+        assert_eq!(BoxWidthStyle::Max as i32, 1, "the last of two");
+    }
 
     // -- The IME bar and the physical pixel, tick 278 ------------------------
 
