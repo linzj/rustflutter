@@ -17850,3 +17850,42 @@ Material 2 应用被完全忽略。
 unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
 stale_engines 全部不落后，**unread_theme_fields 69 → 68**。
 门：5644 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+### 第 241 次：两个颜色互相推导，缺哪个就从另一个的明暗推
+
+`CircleAvatar` 从组件 `Theme` 取一个 `surface_variant` 就结束了，从不问
+`ThemeData`。于是三个字段到不了：`primaryColorLight`、`primaryColorDark`、
+`primaryTextTheme`。
+
+上游 `CircleAvatar.build` 的链有意思的地方是**互推**：
+
+```
+foreground = 自己的 ?? (M3 ? onPrimaryContainer : 无)
+background = 自己的 ?? (M3 ? primaryContainer  : 无)
+
+若 background 仍然没有：
+    background = 前景是暗的 ? primaryColorLight : primaryColorDark
+否则若 foreground 仍然没有：
+    foreground = 背景是暗的 ? primaryColorLight : primaryColorDark
+```
+
+所以两者**总是互相读得清**。**只有一支会触发**，这是它不会绕圈的原因——这一点
+写在文档里，也各有一条测试。
+
+Material 3 两个都从容器对里取，一个 primary 都不问；单独一条测试盯住这点，
+不然"M3 也去摸 primary"这种错不会有人发现。
+
+**排版也分版本**：M3 取普通排版的 `titleMedium`，M2 取**主排版**的——那是给
+"读在主色表面上"准备的字号，而头像正是那种表面。
+
+**没有把前景色留成半根线。**端口没有 `DefaultTextStyle`，前景色推不到任意子
+节点。所以给头像加了 `label`：上游最常见的写法就是 `CircleAvatar(child:
+Text('AB'))`，这就是那个情形，按解析出的前景色和排版画出来——而不是算出一个
+颜色然后没人用。
+
+四条承重规则逐条强制改错：**四条全红。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unread_strings 36+16/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，**unread_theme_fields 68 → 65**。
+门：5648 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。

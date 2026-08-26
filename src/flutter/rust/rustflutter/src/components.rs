@@ -5097,6 +5097,115 @@ mod tests {
             "and not the Material 2 field, which is what makes the pair a test"
         );
     }
+
+    // -- An avatar's two colours, tick 241 ----------------------------------
+    //
+    // `CircleAvatar` took its fill from the component `Theme`'s
+    // `surface_variant` and stopped, so `ThemeData::primary_color_light`,
+    // `primary_color_dark` and `primary_text_theme` reached nothing.
+
+    fn m2(light: Color, dark: Color) -> crate::theme::ThemeData {
+        crate::theme::ThemeData {
+            use_material3: false,
+            primary_color_light: light,
+            primary_color_dark: dark,
+            ..crate::theme::ThemeData::light()
+        }
+    }
+
+    #[test]
+    fn a_material_two_avatar_picks_the_primary_that_reads_against_the_other() {
+        // With neither colour named, upstream derives the background from
+        // the *foreground's* brightness: dark ink asks for
+        // `primaryColorLight`, light ink for `primaryColorDark`. The two
+        // always read against each other.
+        let pale = Color::argb(255, 0, 0, 11);
+        let deep = Color::argb(255, 0, 0, 22);
+
+        let (background, _) = CircleAvatar::new()
+            .with_foreground_color(Color::BLACK)
+            .colours(&m2(pale, deep));
+        assert_eq!(background, pale, "dark ink wants the pale primary");
+
+        let (background, _) = CircleAvatar::new()
+            .with_foreground_color(Color::WHITE)
+            .colours(&m2(pale, deep));
+        assert_eq!(background, deep, "and light ink the deep one");
+    }
+
+    #[test]
+    fn and_the_other_way_round_when_only_the_background_is_named() {
+        // The mirror branch: a named background derives the foreground. Only
+        // one of the two branches can fire, which is what stops it looping.
+        let pale = Color::argb(255, 0, 0, 33);
+        let deep = Color::argb(255, 0, 0, 44);
+
+        let (background, foreground) = CircleAvatar::new()
+            .with_background_color(Color::BLACK)
+            .colours(&m2(pale, deep));
+        assert_eq!(background, Color::BLACK, "the named one is kept");
+        assert_eq!(foreground, Some(pale), "and the ink reads against it");
+
+        let (_, foreground) = CircleAvatar::new()
+            .with_background_color(Color::WHITE)
+            .colours(&m2(pale, deep));
+        assert_eq!(foreground, Some(deep));
+    }
+
+    #[test]
+    fn a_material_three_avatar_asks_the_scheme_instead() {
+        // Upstream answers both from the container pair, so neither primary
+        // is consulted -- a resolver that reached for them under Material 3
+        // would be wrong there.
+        let theme = crate::theme::ThemeData {
+            use_material3: true,
+            primary_color_light: Color::argb(255, 0, 0, 55),
+            primary_color_dark: Color::argb(255, 0, 0, 66),
+            ..crate::theme::ThemeData::light()
+        };
+        let (background, foreground) = CircleAvatar::new().colours(&theme);
+        assert_eq!(background, theme.color_scheme.primary_container());
+        assert_eq!(foreground, Some(theme.color_scheme.on_primary_container()));
+    }
+
+    #[test]
+    fn the_label_is_written_in_the_primary_typography_under_material_two() {
+        // Upstream's `effectiveTextStyle`: Material 3 takes the ordinary
+        // typography's `titleMedium`, Material 2 the **primary** one's -- the
+        // face meant to be read against a primary-coloured surface, which is
+        // what an avatar is.
+        let mut theme = m2(Color::argb(255, 0, 0, 77), Color::argb(255, 0, 0, 88));
+        theme.primary_text_theme = crate::component_themes::TextTheme {
+            title_medium: Some(crate::engine::TextStyle {
+                font_size: 99.0,
+                ..crate::engine::TextStyle::default()
+            }),
+            ..crate::component_themes::TextTheme::default()
+        };
+        assert_eq!(
+            CircleAvatar::new()
+                .label_style(&theme)
+                .map(|style| style.font_size),
+            Some(99.0)
+        );
+
+        // And Material 3 does not look there.
+        let mut three = theme.clone();
+        three.use_material3 = true;
+        three.text_theme = crate::component_themes::TextTheme {
+            title_medium: Some(crate::engine::TextStyle {
+                font_size: 100.0,
+                ..crate::engine::TextStyle::default()
+            }),
+            ..crate::component_themes::TextTheme::default()
+        };
+        assert_eq!(
+            CircleAvatar::new()
+                .label_style(&three)
+                .map(|style| style.font_size),
+            Some(100.0)
+        );
+    }
 }
 
 /// Upstream `VerticalDivider`: the same hairline, on its side.
@@ -5214,6 +5323,15 @@ impl DataRow {
 /// the default as a minimum.
 pub struct CircleAvatar {
     pub child: std::cell::RefCell<Option<AnyWidget>>,
+    /// A short piece of text to draw inside, in the resolved foreground and
+    /// typography.
+    ///
+    /// Upstream writes `CircleAvatar(child: Text('AB'))` and lets a
+    /// `DefaultTextStyle` carry the colour down. This crate has no such
+    /// widget, so an avatar that is given an arbitrary child cannot colour
+    /// it -- but the common case is a couple of letters, and this is that
+    /// case done properly rather than left half-wired.
+    pub label: Option<String>,
     pub background_color: Option<Color>,
     pub foreground_color: Option<Color>,
     pub radius: Option<f32>,
@@ -5222,6 +5340,13 @@ pub struct CircleAvatar {
 }
 
 impl CircleAvatar {
+    /// A couple of letters inside, styled the way upstream styles
+    /// `CircleAvatar`'s child.
+    pub fn label_of(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
     /// Upstream's `_defaultRadius`.
     pub const DEFAULT_RADIUS: f32 = 20.0;
     pub const DEFAULT_MIN_RADIUS: f32 = 0.0;
@@ -5230,6 +5355,7 @@ impl CircleAvatar {
     pub fn new() -> CircleAvatar {
         CircleAvatar {
             child: std::cell::RefCell::new(None),
+            label: None,
             background_color: None,
             foreground_color: None,
             radius: None,
@@ -5297,18 +5423,100 @@ impl Default for CircleAvatar {
     }
 }
 
+impl CircleAvatar {
+    /// Upstream's `CircleAvatar.build` colour chain: the background and the
+    /// foreground, each falling back to the other's brightness.
+    ///
+    /// Material 3 answers both from the scheme's container pair. Material 2
+    /// answers neither, and then **whichever is missing is derived from the
+    /// one that is there**: a dark colour asks for `primaryColorLight` and a
+    /// light one for `primaryColorDark`, so the two always read against each
+    /// other. Only one of the two branches can fire, which is what stops it
+    /// looping.
+    ///
+    /// This used to take the component `Theme`'s `surface_variant` and stop,
+    /// so `ThemeData`'s two primaries and its `primary_text_theme` reached
+    /// nothing.
+    pub fn colours(
+        &self,
+        material: &crate::theme::ThemeData,
+    ) -> (crate::engine::Color, Option<crate::engine::Color>) {
+        use crate::component_themes::estimate_brightness_for_color;
+        use crate::platform::Brightness;
+
+        let pair = |against: crate::engine::Color| {
+            match estimate_brightness_for_color(against) {
+                Brightness::Dark => material.primary_color_light,
+                Brightness::Light => material.primary_color_dark,
+            }
+        };
+
+        let mut foreground = self.foreground_color.or(if material.use_material3 {
+            Some(material.color_scheme.on_primary_container())
+        } else {
+            None
+        });
+        let background = self.background_color.or(if material.use_material3 {
+            Some(material.color_scheme.primary_container())
+        } else {
+            None
+        });
+
+        match (background, foreground) {
+            (None, _) => {
+                // Upstream reads the *text style's* colour here, which is the
+                // effective foreground when there is one and the style's own
+                // otherwise. With neither named, the style's colour is what
+                // the typography carries.
+                let ink = foreground
+                    .or_else(|| self.label_style(material).and_then(|style| Some(style.color)))
+                    .unwrap_or(material.color_scheme.on_surface);
+                (pair(ink), foreground)
+            }
+            (Some(background), None) => {
+                foreground = Some(pair(background));
+                (background, foreground)
+            }
+            (Some(background), _) => (background, foreground),
+        }
+    }
+
+    /// Upstream's `effectiveTextStyle`: Material 3 takes the ordinary
+    /// typography's `titleMedium`, Material 2 the **primary** typography's --
+    /// the one meant to be read against a primary-coloured surface, which is
+    /// what an avatar is.
+    pub fn label_style(
+        &self,
+        material: &crate::theme::ThemeData,
+    ) -> Option<crate::engine::TextStyle> {
+        if material.use_material3 {
+            material.text_theme.title_medium.clone()
+        } else {
+            material.primary_text_theme.title_medium.clone()
+        }
+    }
+}
+
 impl Component for CircleAvatar {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
-        let theme = theme_of(context);
-        // Upstream falls back to the scheme's container colours; this crate's
-        // `Theme` has the one pair, which is where a filled patch takes its
-        // colours from everywhere else in it.
-        let background = self.background_color.unwrap_or(theme.surface_variant);
+        let material = crate::theme::ThemeData::of(context);
+        let (background, foreground) = self.colours(&material);
         // A radius fixes the size; a range lets the parent choose between the
         // two, and with nothing else deciding the smaller end is what is
         // drawn. An unbounded maximum is exactly that case.
         let diameter = self.min_diameter();
-        let child = self.child.borrow_mut().take();
+        let child = self.child.borrow_mut().take().or_else(|| {
+            let label = self.label.clone()?;
+            let mut style = self
+                .label_style(&material)
+                .unwrap_or_else(crate::engine::TextStyle::default);
+            if let Some(ink) = foreground {
+                style.color = ink;
+            }
+            Some(leaf(move || {
+                crate::render::RenderParagraph::new(label.clone()).with_style(style.clone())
+            }))
+        });
         match child {
             Some(child) => crate::framework::single(child, move |child| {
                 Container::new()
