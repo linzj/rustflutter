@@ -1614,6 +1614,193 @@ pub fn secondary_tap(
     }
 }
 
+/// Which end of the selection a handle drag is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionHandleEnd {
+    Start,
+    End,
+}
+
+/// What a handle drag reports back -- upstream's `onStartHandleDragStart`,
+/// `onStartHandleDragUpdate` and `onStartHandleDragEnd` and their end-handle
+/// twins, as the events they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandleDragCallback {
+    /// Upstream's `onStartHandleDragStart` / `onEndHandleDragStart`. Also
+    /// raised by an *update* that is picking up a drag it never got the start
+    /// of.
+    Start(SelectionHandleEnd),
+    Update(SelectionHandleEnd),
+    End(SelectionHandleEnd),
+}
+
+/// The drag lifecycle of the two selection handles -- upstream
+/// `SelectionOverlay`'s `_handle*HandleDrag*` methods and the two booleans
+/// behind each handle.
+///
+/// # Two flags per handle, and they mean different things
+///
+/// `in_progress` is set the moment a drag begins, **before** the can-drag
+/// guard, and says a gesture is happening at all. `dragging` is set only past
+/// the guard and only for a **touch** -- it says this is being *treated* as a
+/// handle drag. A mouse drag on a handle sets the first and not the second.
+///
+/// Upstream's public getter is the *or* of the two, so from the outside a
+/// handle is being dragged in either case; only in here are they apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HandleDragState {
+    /// Upstream's `_isDraggingStartHandle` / `_isDraggingEndHandle`.
+    dragging_start: bool,
+    dragging_end: bool,
+    /// Upstream's `_startHandleDragInProgress` / `_endHandleDragInProgress`.
+    in_progress_start: bool,
+    in_progress_end: bool,
+}
+
+impl HandleDragState {
+    pub fn new() -> HandleDragState {
+        HandleDragState::default()
+    }
+
+    /// Upstream's `isDraggingStartHandle` / `isDraggingEndHandle`: the **or**
+    /// of the two flags, so a mouse drag still reads as a drag from outside.
+    pub fn is_dragging(&self, end: SelectionHandleEnd) -> bool {
+        match end {
+            SelectionHandleEnd::Start => self.dragging_start || self.in_progress_start,
+            SelectionHandleEnd::End => self.dragging_end || self.in_progress_end,
+        }
+    }
+
+    fn dragging(&self, end: SelectionHandleEnd) -> bool {
+        match end {
+            SelectionHandleEnd::Start => self.dragging_start,
+            SelectionHandleEnd::End => self.dragging_end,
+        }
+    }
+
+    fn set_dragging(&mut self, end: SelectionHandleEnd, value: bool) {
+        match end {
+            SelectionHandleEnd::Start => self.dragging_start = value,
+            SelectionHandleEnd::End => self.dragging_end = value,
+        }
+    }
+
+    fn set_in_progress(&mut self, end: SelectionHandleEnd, value: bool) {
+        match end {
+            SelectionHandleEnd::Start => self.in_progress_start = value,
+            SelectionHandleEnd::End => self.in_progress_end = value,
+        }
+    }
+
+    /// Upstream's `_canDragStartHandle` / `_canDragEndHandle`.
+    ///
+    /// **On Apple and on the web only one handle moves at a time**, so a drag
+    /// on one blocks the other. Everywhere else both can move at once. Note
+    /// the shape: the guard is open whenever the *opposite* handle is idle, on
+    /// every platform.
+    pub fn can_drag(
+        &self,
+        end: SelectionHandleEnd,
+        platform: crate::editable_text::TargetPlatform,
+        is_web: bool,
+    ) -> bool {
+        use crate::editable_text::TargetPlatform;
+        let opposite = match end {
+            SelectionHandleEnd::Start => self.dragging_end,
+            SelectionHandleEnd::End => self.dragging_start,
+        };
+        !opposite
+            || (platform != TargetPlatform::IOS && platform != TargetPlatform::MacOS && !is_web)
+    }
+
+    /// Upstream's `_handleStartHandleDragStart` / `_handleEndHandleDragStart`.
+    ///
+    /// `handles_present` is upstream's `_handles != null`, and it is checked
+    /// first for the reason upstream records: "Calling OverlayEntry.remove may
+    /// not happen until the following frame, so it's possible for the handles
+    /// to receive a gesture after calling remove."
+    ///
+    /// `is_touch` is `details.kind == PointerDeviceKind.touch`.
+    pub fn drag_start(
+        &mut self,
+        end: SelectionHandleEnd,
+        handles_present: bool,
+        is_touch: bool,
+        platform: crate::editable_text::TargetPlatform,
+        is_web: bool,
+    ) -> Option<HandleDragCallback> {
+        if !handles_present {
+            self.set_dragging(end, false);
+            return None;
+        }
+        // Set **before** the guard: the gesture is happening whether or not
+        // this handle is allowed to answer it.
+        self.set_in_progress(end, true);
+        if !self.can_drag(end, platform, is_web) {
+            return None;
+        }
+        // And only a touch counts as dragging the handle.
+        self.set_dragging(end, is_touch);
+        Some(HandleDragCallback::Start(end))
+    }
+
+    /// Upstream's `_handleStartHandleDragUpdate` / `..EndHandleDragUpdate`.
+    ///
+    /// Returns the callbacks in the order upstream raises them. **An update
+    /// can raise a `Start`**: if the drag was blocked when it began -- the
+    /// opposite handle was down on an Apple platform, and has since been let
+    /// go -- this synthesises the start it never got, so that everything meant
+    /// to run on start still runs. Without it a drag would move without ever
+    /// having begun.
+    pub fn drag_update(
+        &mut self,
+        end: SelectionHandleEnd,
+        handles_present: bool,
+        is_touch: bool,
+        platform: crate::editable_text::TargetPlatform,
+        is_web: bool,
+    ) -> Vec<HandleDragCallback> {
+        if !handles_present {
+            self.set_dragging(end, false);
+            return Vec::new();
+        }
+        if !self.can_drag(end, platform, is_web) {
+            return Vec::new();
+        }
+        let mut raised = Vec::new();
+        if !self.dragging(end) {
+            self.set_dragging(end, is_touch);
+            raised.push(HandleDragCallback::Start(end));
+        }
+        raised.push(HandleDragCallback::Update(end));
+        raised
+    }
+
+    /// Upstream's `_handleStartHandleDragEnd` / `..EndHandleDragEnd`.
+    ///
+    /// The two flags are cleared on opposite sides of the null check, and that
+    /// asymmetry is upstream's: `dragging` is cleared **before** anything
+    /// else, so it is always cleared; `in_progress` is cleared only when the
+    /// handles are still there.
+    pub fn drag_end(
+        &mut self,
+        end: SelectionHandleEnd,
+        handles_present: bool,
+        platform: crate::editable_text::TargetPlatform,
+        is_web: bool,
+    ) -> Option<HandleDragCallback> {
+        self.set_dragging(end, false);
+        if !handles_present {
+            return None;
+        }
+        self.set_in_progress(end, false);
+        if !self.can_drag(end, platform, is_web) {
+            return None;
+        }
+        Some(HandleDragCallback::End(end))
+    }
+}
+
 /// Upstream `SelectionOverlay`: the handles and the toolbar, positioned.
 ///
 /// Upstream puts them in an `Overlay` so they can be drawn over anything,
@@ -2170,6 +2357,226 @@ impl VerticalCaretMovementRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Dragging a handle needs two flags, tick 282 -------------------------
+
+    use crate::editable_text::TargetPlatform;
+    const START: SelectionHandleEnd = SelectionHandleEnd::Start;
+    const END: SelectionHandleEnd = SelectionHandleEnd::End;
+    const TOUCH: bool = true;
+    const MOUSE: bool = false;
+    const HANDLES: bool = true;
+
+    #[test]
+    fn a_mouse_drag_is_in_progress_without_being_a_handle_drag() {
+        // `_startHandleDragInProgress` is set for any pointer;
+        // `_isDraggingStartHandle` only for a touch. The public getter is the
+        // or of the two, so from outside both read as dragging -- and only
+        // inside can the platform's one-at-a-time rule tell them apart.
+        let mut mouse = HandleDragState::new();
+        mouse.drag_start(START, HANDLES, MOUSE, TargetPlatform::IOS, false);
+        assert!(mouse.is_dragging(START), "a drag, as far as anyone outside");
+        // The end handle is still free, which it would not be if the mouse
+        // drag had set the inner flag.
+        assert!(
+            mouse.can_drag(END, TargetPlatform::IOS, false),
+            "a mouse on one handle does not block the other, even on iOS"
+        );
+
+        let mut touch = HandleDragState::new();
+        touch.drag_start(START, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        assert!(
+            !touch.can_drag(END, TargetPlatform::IOS, false),
+            "a touch does block it"
+        );
+    }
+
+    #[test]
+    fn only_apple_and_the_web_allow_one_handle_at_a_time() {
+        let mut state = HandleDragState::new();
+        state.drag_start(END, HANDLES, TOUCH, TargetPlatform::Android, false);
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert!(
+                !state.can_drag(START, platform, false),
+                "{platform:?} blocks the other handle"
+            );
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert!(
+                state.can_drag(START, platform, false),
+                "{platform:?} lets both move"
+            );
+            assert!(
+                !state.can_drag(START, platform, true),
+                "{platform:?} on the web does not"
+            );
+        }
+    }
+
+    #[test]
+    fn an_idle_opposite_handle_leaves_the_guard_open_on_every_platform() {
+        // The guard's first clause is `!_isDraggingEndHandle`, so the platform
+        // question only arises when the other handle is actually down.
+        let state = HandleDragState::new();
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert!(state.can_drag(START, platform, true), "{platform:?} on web");
+        }
+    }
+
+    #[test]
+    fn a_blocked_start_raises_nothing_but_still_records_the_gesture() {
+        // `_startHandleDragInProgress = true` happens *before* the guard, so a
+        // blocked drag is still a drag in progress -- which is what the public
+        // getter reports.
+        let mut state = HandleDragState::new();
+        state.drag_start(END, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        let raised = state.drag_start(START, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        assert_eq!(raised, None, "blocked, so no callback");
+        assert!(state.is_dragging(START), "and yet in progress");
+    }
+
+    #[test]
+    fn an_update_synthesises_the_start_a_blocked_drag_never_got() {
+        // Upstream: "The handle drag may have been blocked before on Apple
+        // platforms and the web while the opposite handle was being dragged.
+        // Ensure that any logic that was meant to be run in
+        // onStartHandleDragStart is still run." Without this the drag would
+        // move without ever having begun.
+        let mut state = HandleDragState::new();
+        state.drag_start(END, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        state.drag_start(START, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        // The end handle is released, so the start handle is free again.
+        state.drag_end(END, HANDLES, TargetPlatform::IOS, false);
+
+        let raised = state.drag_update(START, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        assert_eq!(
+            raised,
+            vec![
+                HandleDragCallback::Start(START),
+                HandleDragCallback::Update(START)
+            ],
+            "the start first, then the update"
+        );
+    }
+
+    #[test]
+    fn an_update_on_a_drag_that_did_begin_raises_only_the_update() {
+        let mut state = HandleDragState::new();
+        state.drag_start(START, HANDLES, TOUCH, TargetPlatform::Android, false);
+        assert_eq!(
+            state.drag_update(START, HANDLES, TOUCH, TargetPlatform::Android, false),
+            vec![HandleDragCallback::Update(START)],
+            "no second start"
+        );
+    }
+
+    #[test]
+    fn a_blocked_update_raises_nothing_at_all() {
+        let mut state = HandleDragState::new();
+        state.drag_start(END, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        assert_eq!(
+            state.drag_update(START, HANDLES, TOUCH, TargetPlatform::IOS, false),
+            Vec::new(),
+            "not even the synthesised start"
+        );
+    }
+
+    #[test]
+    fn a_gesture_after_the_handles_are_gone_is_dropped_and_clears_the_flag() {
+        // Upstream: "Calling OverlayEntry.remove may not happen until the
+        // following frame, so it's possible for the handles to receive a
+        // gesture after calling remove."
+        let mut state = HandleDragState::new();
+        state.drag_start(START, HANDLES, TOUCH, TargetPlatform::Android, false);
+        assert_eq!(
+            state.drag_update(START, false, TOUCH, TargetPlatform::Android, false),
+            Vec::new()
+        );
+        assert!(
+            state.can_drag(END, TargetPlatform::IOS, false),
+            "and the inner flag went down, so the other handle is free"
+        );
+    }
+
+    #[test]
+    fn a_start_after_the_handles_are_gone_never_records_the_gesture() {
+        // The null check comes before `in_progress` is set, so nothing is left
+        // behind to be cleared later.
+        let mut state = HandleDragState::new();
+        assert_eq!(
+            state.drag_start(START, false, TOUCH, TargetPlatform::Android, false),
+            None
+        );
+        assert!(!state.is_dragging(START));
+    }
+
+    #[test]
+    fn an_end_clears_the_inner_flag_even_with_the_handles_gone() {
+        // `_isDraggingStartHandle = false` is the *first* line of the end
+        // handler, before the null check, and `_startHandleDragInProgress` is
+        // cleared only after it. That asymmetry is upstream's.
+        let mut state = HandleDragState::new();
+        state.drag_start(START, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        assert!(!state.can_drag(END, TargetPlatform::IOS, false), "blocked");
+
+        assert_eq!(
+            state.drag_end(START, false, TargetPlatform::IOS, false),
+            None,
+            "no callback, the handles are gone"
+        );
+        assert!(
+            state.can_drag(END, TargetPlatform::IOS, false),
+            "and yet the other handle was released"
+        );
+        assert!(
+            state.is_dragging(START),
+            "while the gesture is still recorded as in progress"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_end_clears_both_flags() {
+        let mut state = HandleDragState::new();
+        state.drag_start(START, HANDLES, TOUCH, TargetPlatform::Android, false);
+        assert_eq!(
+            state.drag_end(START, HANDLES, TargetPlatform::Android, false),
+            Some(HandleDragCallback::End(START))
+        );
+        assert!(!state.is_dragging(START));
+    }
+
+    #[test]
+    fn a_blocked_end_still_lets_go_of_both_flags() {
+        // The guard is checked *after* both are cleared, so only the callback
+        // is skipped -- a handle blocked at the moment it is released does not
+        // stay stuck down.
+        let mut state = HandleDragState::new();
+        state.drag_start(START, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        state.drag_start(END, HANDLES, TOUCH, TargetPlatform::IOS, false);
+        // START is down, so END was blocked; now release END.
+        assert_eq!(
+            state.drag_end(END, HANDLES, TargetPlatform::IOS, false),
+            None,
+            "blocked, so no callback"
+        );
+        assert!(!state.is_dragging(END), "and yet fully released");
+    }
+
+    #[test]
+    fn the_two_handles_keep_their_own_flags() {
+        let mut state = HandleDragState::new();
+        state.drag_start(START, HANDLES, TOUCH, TargetPlatform::Android, false);
+        state.drag_start(END, HANDLES, TOUCH, TargetPlatform::Android, false);
+        assert!(state.is_dragging(START) && state.is_dragging(END));
+        state.drag_end(START, HANDLES, TargetPlatform::Android, false);
+        assert!(!state.is_dragging(START));
+        assert!(state.is_dragging(END), "untouched by the other's end");
+    }
 
     // -- Half a line up and one and a half down, tick 279 --------------------
 

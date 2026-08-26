@@ -19834,3 +19834,82 @@ stale_engines 全部不落后，unread_theme_fields 2。
 门：5888 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
 
 **下一步**：回 `depth.py` 队头的 `SelectionOverlay` 9/43。
+
+## 第 282 轮：拖一个选区手柄要两个标志，不是一个
+
+`SelectionOverlay` 的 `_handle*HandleDragStart/Update/End` 和每个手柄背后的那对布尔。
+
+### 两个标志，含义不同
+
+    bool get isDraggingStartHandle => _isDraggingStartHandle || _startHandleDragInProgress;
+
+`_startHandleDragInProgress` 在拖拽一开始就置上，**在可拖判据之前**，说的是"有一个
+手势正在发生"。`_isDraggingStartHandle` 只在过了判据之后置上，而且只在
+`details.kind == PointerDeviceKind.touch` 时——说的是"这个正被**当作**手柄拖拽处理"。
+**用鼠标拖一个手柄，只置上前者，不置后者。**
+
+对外的 getter 是两者的**或**，所以从外面看两种都算在拖；只有在里面它们才分得开。而
+这个区别是有后果的：Apple 上"一次只能拖一个手柄"的判据看的是**内层**那个，所以鼠标
+拖着一个手柄，**不会**挡住另一个。
+
+### 一次一个，只在两个平台和 web 上
+
+    bool get _canDragStartHandle =>
+        !_isDraggingEndHandle ||
+        (defaultTargetPlatform != TargetPlatform.iOS &&
+            defaultTargetPlatform != TargetPlatform.macOS && !kIsWeb);
+
+注意这个形状：**只要对面那个手柄闲着，判据在任何平台上都是开的**——平台问题只在对面
+真的按下去时才出现。
+
+### 被挡住的拖拽，由下一个 update 接上
+
+    // The handle drag may have been blocked before on Apple platforms and the web
+    // while the opposite handle was being dragged. Ensure that any logic that was
+    // meant to be run in onStartHandleDragStart is still run.
+
+update **补造出它没收到的那个 start**，并且**先发 start 再发 update**。没有这一段,
+在手势中途松开另一个手柄，就会得到一个"从来没有开始过却在移动"的拖拽。
+
+### end 在自己的判空两侧各清一个标志
+
+    void _handleStartHandleDragEnd(DragEndDetails details) {
+      _isDraggingStartHandle = false;          // <- 在一切之前
+      if (_handles == null) { return; }
+      _startHandleDragInProgress = false;      // <- 在判空之后
+      if (!_canDragStartHandle) { return; }
+      onStartHandleDragEnd?.call(details);
+    }
+
+内层那个**无条件**清掉；`in_progress` 只在手柄还在时清。而可拖判据在**两个都清完之后**
+才查——所以一个在释放时恰好被挡住的手柄，不会卡在按下状态，只是不发回调。
+
+判空的理由上游写明了："`OverlayEntry.remove` 可能要到下一帧才真的发生，所以手柄有可能
+在 remove 之后还收到手势。"
+
+十五条承重规则逐条强制改错，全红。
+
+### 两笔 depth 的账
+
+`depth.py` 仍报 `SelectionOverlay` 9/43、`RenderEditable` 22/97——这两轮的成果都落在
+旁边的具名类型里（`HandleDragState`；以及 273–281 的 `WordSelection`、`FloatingCursor`、
+`CaretRect`、`SelectionEndpoints`、`FieldExtent`、`ComposingRegion`、
+`TextHighlightPainter`、`VerticalCaretStep`），比值不动。两个类都做过全 crate 成员
+检查，据此写进 `depth_examined.json`，并**点名了真正没有对应物的那几族**：
+
+* 就地改树的那套（attach、detach、redepthChildren、layoutInlineChildren 等）——本端口
+  重建并做差，而不是养着长命节点打脏标记，和 `SemanticsNode` 那一笔记的是同一条理由；
+* 三个 `LayerLink`（startHandleLayerLink、endHandleLayerLink、toolbarLayerLink）——
+  这里的手柄和工具条是按算出来的端点摆的，不是跟着 leader layer 走的；
+* `capturedThemes` 与 `debugRequiredFor`——属于 `Overlay` 的 InheritedWidget 管线,
+  本端口没有那一层。
+
+examined 从 14 到 16，队列 668 → 666。
+
+尺子：coverage 2102/0，constants 160/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5901 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`depth` 队头的 `CupertinoApp` 8/37 与
+`TextSelectionGestureDetectorBuilder` 6/27。
