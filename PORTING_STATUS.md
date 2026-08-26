@@ -18747,3 +18747,60 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 **下一步**：`unwalked` 的 213 条要用 `variant_sweep.py` 一个模块一个模块地定案
 （它自己的文档说 `WidgetStatesConstraint` 那五条是完全误报）；`depth` 里最薄的
 是 `RadioListTile` 3/43、`MaterialButton` 4/34、`CheckboxListTile` 5/42。
+
+## 第 261 轮：一个取消不掉的单选行，和一句过期的注释
+
+`ControlTile::with_handlers` 上写着：
+
+> 上游的 `onChanged`，它为空就是这三个 tile 的 `enabled: false`——**它们没有
+> 单独的标志**。
+
+**现在有了。** `RadioListTile.enabled` 是 `bool?`，而围绕它的规则不是那个显而
+易见的：
+
+    bool get _enabled => widget.enabled ?? (widget.onChanged != null || registry != null);
+
+    assert(!(widget.enabled ?? false) || widget.onChanged != null
+               || RadioGroup.maybeOf<T>(context) != null,
+           'Radio is enabled but has no RadioListTile.onChange or registry above');
+
+**这个标志不对称。** 它可以随便把一个 tile 关掉，却只能在"本来就有地方接住这个
+变化"的前提下把它打开。`enabled: true` 而既无 handler 也无 group 是唯一被拒绝的
+组合——因为那会画出一个动不了的活控件。而**不设**这个标志从不被拒绝：它本身**就是**
+那个条件，不是关于它的一个主张。
+
+跟着来的两条都关于 `toggleable`，端口此前完全没有：
+
+**一个可切换的单选按钮就是一个三态控件。** 上游用一行说明白：
+`bool get tristate => widget.toggleable;`。端口本来就有 `tristate`，还有一条
+"只有三态控件可以持有空值"的校验——对单选按钮来说，那个标志**就是** `toggleable`：
+能把一个单选取消掉，和能持有"什么都没选"，是同一种能力的两面。而这是**单选按钮
+独有的**：复选框的 `tristate` 是它自己的一个字段，`toggleable` 碰不到它。
+
+**还有点击：**
+
+    void _handleListTileTap() {
+      if (!widget.toggleable && checked) { return; }
+      handleChange(checked ? null : radioValue);
+    }
+
+第一条臂最值得写下来：**一个已经选中的普通单选按钮会把这次点击吞掉。** 它不是
+"再报一次同样的值"——那是从外面照着写会写出来的东西，而那样每次点已选中的那一行
+都会触发 `onChanged`。可切换的那个则报 **null**，那正是一个分组回到"什么都没选"
+的办法。
+
+七条承重规则逐条强制改错，全红。
+
+**关于 `depth` 的一句话**：它仍然把 `RadioListTile` 记作 3/43，而且不会变——这一
+轮新增的字段落在 `ControlListTile` 上，那是端口把上游三个 widget 合成的**一个**
+共享类型。`depth` 自己的文档写着"成员可能答在别的类型上……低比值是一个问题，永远
+不是判决"。这一轮回答的是那个问题，不是那个数字。
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，wire_enums 4/0,
+unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0，hollow 67/0,
+vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5748 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：同一族里还剩 `useCupertinoCheckmarkStyle`（复选框独有）、
+`radioScaleFactor`、`radioSide`、`radioInnerRadius`、`radioBackgroundColor`;
+`unwalked` 的 213 条要用 `variant_sweep.py` 一个模块一个模块地定案。

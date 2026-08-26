@@ -96,6 +96,21 @@ pub struct ControlListTile {
     /// tiles that does consult the platform -- see
     /// [`ControlListTile::adapts_away_the_theme`].
     pub adaptive: bool,
+    /// Upstream's `toggleable`, which only a radio has.
+    ///
+    /// A toggleable radio can be un-chosen by tapping it again. Upstream
+    /// makes the identity explicit in one line -- `bool get tristate =>
+    /// widget.toggleable;` -- so for a radio this *is*
+    /// [`ControlListTile::tristate`]: being able to un-choose and being able
+    /// to hold "nothing chosen" are one capability seen from two sides.
+    pub toggleable: bool,
+    /// Upstream's `enabled`, a `bool?`, which this crate's comment used to
+    /// say did not exist: "onChanged being null is what `enabled: false`
+    /// means for these three -- they have no separate flag".
+    ///
+    /// `None` is the old behaviour and still the default. See
+    /// [`ControlListTile::is_enabled`] for why setting it is not symmetric.
+    pub enabled: Option<bool>,
 }
 
 impl ControlListTile {
@@ -110,7 +125,81 @@ impl ControlListTile {
             has_secondary: false,
             material_tap_target_size: None,
             adaptive: false,
+            toggleable: false,
+            enabled: None,
         }
+    }
+
+    /// Upstream's `toggleable`, and with it upstream's `tristate` for a
+    /// radio.
+    pub fn with_toggleable(mut self, toggleable: bool) -> Self {
+        self.toggleable = toggleable;
+        if self.control == TileControl::Radio {
+            self.tristate = toggleable;
+        }
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = Some(enabled);
+        self
+    }
+
+    /// Upstream's `_enabled`:
+    ///
+    /// ```dart
+    /// widget.enabled ?? (widget.onChanged != null || registry != null)
+    /// ```
+    ///
+    /// `has_somewhere_to_go` is upstream's `onChanged != null || registry !=
+    /// null` -- a handler on the tile, or a `RadioGroup` above it. The two
+    /// are one condition because either is somewhere for the new value to
+    /// land, and a control with neither has nothing to report to.
+    pub fn is_enabled(&self, has_somewhere_to_go: bool) -> bool {
+        self.enabled.unwrap_or(has_somewhere_to_go)
+    }
+
+    /// Upstream's `build` assert:
+    ///
+    /// ```dart
+    /// assert(!(widget.enabled ?? false) || widget.onChanged != null
+    ///            || RadioGroup.maybeOf<T>(context) != null,
+    ///        'Radio is enabled but has no RadioListTile.onChange or registry above');
+    /// ```
+    ///
+    /// **The flag is not symmetric.** It may turn a tile off freely, and may
+    /// only turn one on where there was already somewhere for the change to
+    /// go. `enabled: true` with no handler and no group is the one
+    /// combination refused, because it draws a live control that does
+    /// nothing.
+    pub fn validate_enabled(&self, has_somewhere_to_go: bool) -> Result<(), &'static str> {
+        if self.enabled == Some(true) && !has_somewhere_to_go {
+            return Err("enabled but has no onChanged and no RadioGroup above");
+        }
+        Ok(())
+    }
+
+    /// Upstream's `_handleListTileTap`:
+    ///
+    /// ```dart
+    /// if (!widget.toggleable && checked) { return; }
+    /// handleChange(checked ? null : radioValue);
+    /// ```
+    ///
+    /// `None` means **no change is reported at all**, and that is the arm
+    /// worth naming: an ordinary radio that is already chosen *swallows* the
+    /// tap. It does not report the same value again -- which is what a port
+    /// writing this from the outside would do, and which would fire
+    /// `onChanged` on every tap of a row that was already selected.
+    ///
+    /// `Some(None)` is the other interesting one: a toggleable radio that was
+    /// chosen reports **null**, which is how a group goes back to having
+    /// nothing in it.
+    pub fn tap_on_radio(&self, checked: bool) -> Option<Option<bool>> {
+        if !self.toggleable && checked {
+            return None;
+        }
+        Some(if checked { None } else { Some(true) })
     }
 
     /// Upstream's two constructor asserts.
@@ -295,8 +384,12 @@ impl ControlTile {
         tile
     }
 
-    /// Upstream's `onChanged`, which being null is what `enabled: false` means
-    /// for these three -- they have no separate flag.
+    /// Upstream's `onChanged`.
+    ///
+    /// This said "which being null is what `enabled: false` means for these
+    /// three -- they have no separate flag". They have one now; see
+    /// [`ControlListTile::is_enabled`], which is what a handler being present
+    /// now feeds rather than decides.
     pub fn with_handlers(mut self, handlers: PointerHandlers) -> Self {
         self.handlers = handlers;
         self
@@ -533,6 +626,107 @@ impl SwitchListTile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Un-choosing a radio, and a comment that had expired, tick 261 -------
+    //
+    // `with_handlers` carried this: "Upstream's `onChanged`, which being null
+    // is what `enabled: false` means for these three -- they have no separate
+    // flag." They have one now, and it does not work the way a reader of that
+    // sentence would guess.
+
+    #[test]
+    fn a_plain_radio_swallows_a_tap_on_the_row_it_already_chose() {
+        // The arm worth naming. It does *not* report the same value again --
+        // which is what writing this from the outside would produce, and
+        // which would fire `onChanged` on every tap of a row that was already
+        // selected.
+        let plain = ControlListTile::new(TileControl::Radio, Some(true));
+        assert_eq!(plain.tap_on_radio(true), None, "nothing is reported at all");
+        assert_eq!(
+            plain.tap_on_radio(false),
+            Some(Some(true)),
+            "and an unchosen row still chooses itself"
+        );
+    }
+
+    #[test]
+    fn a_toggleable_radio_reports_null_to_un_choose_itself() {
+        // Which is how a group goes back to having nothing in it.
+        let toggleable = ControlListTile::new(TileControl::Radio, Some(true))
+            .with_toggleable(true);
+        assert_eq!(toggleable.tap_on_radio(true), Some(None));
+        assert_eq!(toggleable.tap_on_radio(false), Some(Some(true)));
+
+        // The two differ only on the chosen row, which is the whole content
+        // of the flag.
+        let plain = ControlListTile::new(TileControl::Radio, Some(true));
+        assert_eq!(
+            toggleable.tap_on_radio(false),
+            plain.tap_on_radio(false),
+            "an unchosen row behaves the same either way"
+        );
+        assert_ne!(toggleable.tap_on_radio(true), plain.tap_on_radio(true));
+    }
+
+    #[test]
+    fn a_toggleable_radio_is_a_tristate_control() {
+        // Upstream makes the identity explicit in one line: `bool get
+        // tristate => widget.toggleable;`. Being able to un-choose a radio
+        // and being able to hold "nothing chosen" are one capability seen
+        // from two sides -- so the validator that refuses a null value on a
+        // non-tristate control lets one through here.
+        let toggleable = ControlListTile::new(TileControl::Radio, None)
+            .with_toggleable(true);
+        assert!(toggleable.tristate);
+        assert_eq!(toggleable.validate(), Ok(()));
+
+        let plain = ControlListTile::new(TileControl::Radio, Some(true));
+        assert!(!plain.tristate);
+
+        // And it is a radio's flag alone: a checkbox's tristate is its own
+        // and `toggleable` does not touch it.
+        let checkbox = ControlListTile::new(TileControl::Checkbox, Some(true))
+            .with_toggleable(true);
+        assert!(checkbox.toggleable);
+        assert!(!checkbox.tristate, "a checkbox's tristate is a separate flag");
+    }
+
+    #[test]
+    fn the_enabled_flag_may_turn_a_tile_off_freely_and_on_only_conditionally() {
+        // Upstream's assert:
+        //
+        //   assert(!(widget.enabled ?? false) || widget.onChanged != null
+        //              || RadioGroup.maybeOf<T>(context) != null,
+        //          'Radio is enabled but has no RadioListTile.onChange or registry above');
+        //
+        // `enabled: true` with nowhere for the change to go is the one
+        // combination refused, because it draws a live control that does
+        // nothing.
+        let tile = ControlListTile::new(TileControl::Radio, Some(true));
+        assert_eq!(tile.with_enabled(false).validate_enabled(false), Ok(()));
+        assert_eq!(tile.with_enabled(false).validate_enabled(true), Ok(()));
+        assert_eq!(tile.with_enabled(true).validate_enabled(true), Ok(()));
+        assert!(tile.with_enabled(true).validate_enabled(false).is_err());
+
+        // Unset is never refused: it *is* the condition rather than a claim
+        // about it.
+        assert_eq!(tile.validate_enabled(false), Ok(()));
+        assert_eq!(tile.validate_enabled(true), Ok(()));
+    }
+
+    #[test]
+    fn without_the_flag_a_handler_or_a_group_is_what_makes_a_tile_live() {
+        // `widget.enabled ?? (widget.onChanged != null || registry != null)`.
+        // The two halves of that disjunction are one condition because either
+        // is somewhere for the new value to land.
+        let tile = ControlListTile::new(TileControl::Radio, Some(true));
+        assert!(tile.is_enabled(true));
+        assert!(!tile.is_enabled(false));
+
+        // And the flag overrides both directions.
+        assert!(!tile.with_enabled(false).is_enabled(true), "off despite a handler");
+        assert!(tile.with_enabled(true).is_enabled(false));
+    }
 
     // -- The three, actually built -----------------------------------------------------
 
