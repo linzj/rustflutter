@@ -4885,6 +4885,202 @@ impl ResolvedTimePicker {
     }
 }
 
+/// Which of a date picker's cells is being asked about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DateCellSlot {
+    /// An ordinary date in the calendar grid.
+    Day,
+    /// The date that is today, which is drawn differently even when it is
+    /// not selected -- that is what the today border is for.
+    Today,
+    /// A year in the list the header's arrow opens.
+    Year,
+}
+
+/// What one cell of a date picker is drawn with, under one state set.
+///
+/// A resolver per cell rather than per picker, because that is the shape of
+/// the question: a calendar asks it once for every date on the screen, with
+/// a different state set each time.
+///
+/// `background` and `overlay` are `Option` because upstream's properties
+/// answer null for the ordinary case, and null is not a colour: an
+/// unselected date has **no** background, which is different from having a
+/// transparent one -- the surface behind it shows through whatever that is,
+/// including a range selection's tint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedDateCell {
+    pub foreground: Color,
+    pub background: Option<Color>,
+    pub overlay: Option<Color>,
+}
+
+impl ResolvedDateCell {
+    /// Upstream's `withOpacity(0.38)` for a disabled cell.
+    pub const DISABLED_OPACITY: f32 = 0.38;
+    /// Material 3's pressed and focused overlay.
+    pub const M3_STRONG_OVERLAY: f32 = 0.1;
+    /// The hovered overlay, which both tables share.
+    pub const HOVERED_OVERLAY: f32 = 0.08;
+    /// Material 2's focused overlay, and its pressed one when the day is not
+    /// selected.
+    pub const M2_OVERLAY: f32 = 0.12;
+    /// Material 2's overlay for a **pressed, selected** day: three times the
+    /// next largest number in either table. A selected date already carries
+    /// the primary colour, so an ordinary ripple over it would not be seen.
+    pub const M2_PRESSED_SELECTED_OVERLAY: f32 = 0.38;
+
+    pub fn of(
+        context: &mut BuildContext,
+        slot: DateCellSlot,
+        states: WidgetStates,
+    ) -> ResolvedDateCell {
+        let theme = ThemeData::of(context);
+        let data = DatePickerTheme::of(context);
+        let scheme = theme.color_scheme;
+        let material3 = theme.use_material3;
+
+        let asked = |property: &Option<StateProperty<Option<Color>>>| {
+            property
+                .as_ref()
+                .and_then(|property| property.resolve(states))
+        };
+        let (foreground, background, overlay) = match slot {
+            DateCellSlot::Day => (
+                &data.day_foreground_color,
+                &data.day_background_color,
+                &data.day_overlay_color,
+            ),
+            DateCellSlot::Today => (
+                &data.today_foreground_color,
+                &data.today_background_color,
+                // Upstream gives today no overlay of its own: it is a date
+                // like the others as far as touching it goes.
+                &data.day_overlay_color,
+            ),
+            DateCellSlot::Year => (
+                &data.year_foreground_color,
+                &data.year_background_color,
+                &data.year_overlay_color,
+            ),
+        };
+
+        ResolvedDateCell {
+            foreground: asked(foreground).unwrap_or_else(|| {
+                ResolvedDateCell::foreground_for(&scheme, material3, slot, states)
+            }),
+            background: asked(background)
+                .or_else(|| ResolvedDateCell::background_for(&scheme, slot, states)),
+            overlay: asked(overlay)
+                .or_else(|| ResolvedDateCell::overlay_for(&scheme, material3, slot, states)),
+        }
+    }
+
+    /// The ink, before any theme has been consulted.
+    pub fn foreground_for(
+        scheme: &ColorScheme,
+        material3: bool,
+        slot: DateCellSlot,
+        states: WidgetStates,
+    ) -> Color {
+        // A Material 2 year list is not themed at all -- the three year
+        // properties are absent from `_DatePickerDefaultsM2`, not null in it
+        // -- so it falls to whatever draws it.
+        let faded = |color: Color| {
+            crate::elevation_overlay::with_opacity(color, ResolvedDateCell::DISABLED_OPACITY)
+        };
+        if states.contains(WidgetState::Selected) {
+            return scheme.on_primary;
+        }
+        match slot {
+            DateCellSlot::Day => {
+                if states.contains(WidgetState::Disabled) {
+                    faded(scheme.on_surface)
+                } else {
+                    scheme.on_surface
+                }
+            }
+            // The one real disagreement between the tables: a disabled today
+            // fades towards the ordinary ink under Material 2 and stays a
+            // faded primary under Material 3. So an out-of-range today still
+            // says it is today under Material 3, and stops saying so under
+            // Material 2.
+            DateCellSlot::Today => {
+                if states.contains(WidgetState::Disabled) {
+                    faded(if material3 {
+                        scheme.primary
+                    } else {
+                        scheme.on_surface
+                    })
+                } else {
+                    scheme.primary
+                }
+            }
+            DateCellSlot::Year => {
+                if states.contains(WidgetState::Disabled) {
+                    faded(scheme.on_surface_variant())
+                } else {
+                    scheme.on_surface_variant()
+                }
+            }
+        }
+    }
+
+    /// The fill. `None` for anything but a selected cell, in every table --
+    /// and today's is upstream's `dayBackgroundColor`, the *defaults*
+    /// object's rather than the theme's, so a theme that recolours ordinary
+    /// dates does not thereby recolour today.
+    pub fn background_for(
+        scheme: &ColorScheme,
+        _slot: DateCellSlot,
+        states: WidgetStates,
+    ) -> Option<Color> {
+        if states.contains(WidgetState::Selected) {
+            Some(scheme.primary)
+        } else {
+            None
+        }
+    }
+
+    /// The ripple. Two branches, selected and not, and the numbers in them
+    /// are where the two tables differ most.
+    pub fn overlay_for(
+        scheme: &ColorScheme,
+        material3: bool,
+        _slot: DateCellSlot,
+        states: WidgetStates,
+    ) -> Option<Color> {
+        let selected = states.contains(WidgetState::Selected);
+        let ink = if selected {
+            scheme.on_primary
+        } else {
+            scheme.on_surface_variant()
+        };
+        let opacity = if states.contains(WidgetState::Pressed) {
+            if material3 {
+                ResolvedDateCell::M3_STRONG_OVERLAY
+            } else if selected {
+                ResolvedDateCell::M2_PRESSED_SELECTED_OVERLAY
+            } else {
+                ResolvedDateCell::M2_OVERLAY
+            }
+        } else if states.contains(WidgetState::Hovered) {
+            ResolvedDateCell::HOVERED_OVERLAY
+        } else if states.contains(WidgetState::Focused) {
+            if material3 {
+                ResolvedDateCell::M3_STRONG_OVERLAY
+            } else {
+                ResolvedDateCell::M2_OVERLAY
+            }
+        } else {
+            // Not touched, so nothing over it. `None` and not transparent:
+            // there is no layer, rather than an invisible one.
+            return None;
+        };
+        Some(crate::elevation_overlay::with_opacity(ink, opacity))
+    }
+}
+
 /// What a date picker is drawn with -- upstream's `_DatePickerDefaultsM3`
 /// under `DatePickerTheme.of`.
 ///
@@ -11409,6 +11605,228 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    // -- What a calendar's cells are drawn with, tick 254 --------------------
+    //
+    // Three slots and eight properties, none of which had a resolver: a date
+    // in this port had no selected colour, no disabled colour and no ripple.
+
+    fn cell(
+        data: DatePickerThemeData,
+        theme: ThemeData,
+        slot: DateCellSlot,
+        states: WidgetStates,
+    ) -> ResolvedDateCell {
+        struct Reader {
+            seen: std::rc::Rc<std::cell::RefCell<Option<ResolvedDateCell>>>,
+            slot: DateCellSlot,
+            states: WidgetStates,
+        }
+        impl crate::framework::Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> crate::framework::AnyWidget {
+                *self.seen.borrow_mut() =
+                    Some(ResolvedDateCell::of(context, self.slot, self.states));
+                crate::framework::leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            DatePickerTheme::new(
+                data,
+                crate::framework::component(Reader {
+                    seen: std::rc::Rc::clone(&seen),
+                    slot,
+                    states,
+                }),
+            ),
+        ));
+        seen.borrow_mut().take().expect("built once")
+    }
+
+    fn plain_cell(slot: DateCellSlot, states: WidgetStates) -> ResolvedDateCell {
+        cell(DatePickerThemeData::new(), ThemeData::light(), slot, states)
+    }
+
+    #[test]
+    fn an_unselected_date_has_no_background_rather_than_a_transparent_one() {
+        // Not the same thing. A date with no fill lets whatever is behind it
+        // show through -- including a range selection's tint, which is drawn
+        // under the cells and would be covered by a transparent rectangle
+        // painted over it.
+        assert_eq!(plain_cell(DateCellSlot::Day, WidgetStates::NONE).background, None);
+        assert_ne!(
+            plain_cell(DateCellSlot::Day, WidgetStates::NONE).background,
+            Some(Color::TRANSPARENT)
+        );
+
+        let chosen = plain_cell(DateCellSlot::Day, WidgetStates::NONE.with(WidgetState::Selected));
+        assert_eq!(chosen.background, Some(ThemeData::light().color_scheme.primary));
+        assert_eq!(
+            chosen.foreground,
+            ThemeData::light().color_scheme.on_primary,
+            "and the ink turns over with it"
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_today_still_says_it_is_today_under_material_three() {
+        // The one real disagreement between the two tables. A disabled today
+        // fades towards the ordinary ink under Material 2 and stays a faded
+        // `primary` under Material 3 -- so the ring around today still reads
+        // as today's when the date cannot be chosen, and stopped reading as
+        // anything under Material 2.
+        let scheme = ThemeData::light().color_scheme;
+        let mut two = ThemeData::light();
+        two.use_material3 = false;
+        let disabled = WidgetStates::NONE.with(WidgetState::Disabled);
+
+        let new = cell(DatePickerThemeData::new(), ThemeData::light(), DateCellSlot::Today, disabled);
+        let old = cell(DatePickerThemeData::new(), two, DateCellSlot::Today, disabled);
+        assert_ne!(new.foreground, old.foreground);
+
+        // Both are faded, so the difference is which colour is faded and not
+        // whether one is.
+        assert_ne!(new.foreground, scheme.primary, "faded, not full strength");
+        assert_ne!(
+            new.foreground,
+            plain_cell(DateCellSlot::Day, disabled).foreground,
+            "and not the ordinary date's, which is what Material 2 makes it"
+        );
+        assert_eq!(
+            old.foreground,
+            plain_cell(DateCellSlot::Day, disabled).foreground
+        );
+    }
+
+    #[test]
+    fn a_today_that_is_not_disabled_is_primary_in_both_tables() {
+        // The rest of today's ladder agrees, which is what makes the disabled
+        // arm above a disagreement rather than a different rule.
+        let scheme = ThemeData::light().color_scheme;
+        let mut two = ThemeData::light();
+        two.use_material3 = false;
+        assert_eq!(
+            plain_cell(DateCellSlot::Today, WidgetStates::NONE).foreground,
+            scheme.primary
+        );
+        assert_eq!(
+            cell(DatePickerThemeData::new(), two, DateCellSlot::Today, WidgetStates::NONE)
+                .foreground,
+            scheme.primary
+        );
+        // And a selected today is `onPrimary` like any selected date: it is
+        // sitting on the primary fill, so it has to be.
+        assert_eq!(
+            plain_cell(DateCellSlot::Today, WidgetStates::NONE.with(WidgetState::Selected))
+                .foreground,
+            scheme.on_primary
+        );
+    }
+
+    #[test]
+    fn a_pressed_selected_day_gets_a_much_heavier_ripple_under_material_two() {
+        // 0.38, three times the next largest number in either table. A
+        // selected date is already carrying the primary colour, so an
+        // ordinary ripple over it would not be seen. Material 3 solves the
+        // same problem by drawing the ripple in `onPrimary` and leaving the
+        // number where it is.
+        let mut two = ThemeData::light();
+        two.use_material3 = false;
+        let pressed_selected =
+            WidgetStates::of(&[WidgetState::Selected, WidgetState::Pressed]);
+
+        let old = cell(DatePickerThemeData::new(), two.clone(), DateCellSlot::Day, pressed_selected);
+        let new = plain_cell(DateCellSlot::Day, pressed_selected);
+        assert_ne!(old.overlay, new.overlay);
+        // "Heavier than Material 3" is too weak a claim to be worth making:
+        // every Material 2 overlay is heavier than every Material 3 one, so
+        // an arm that had lost its 0.38 and fallen back to 0.12 would still
+        // satisfy it. The distinctive thing is that Material 2's *selected*
+        // branch presses harder than its own unselected one.
+        let pressed_plain = cell(
+            DatePickerThemeData::new(),
+            two.clone(),
+            DateCellSlot::Day,
+            WidgetStates::NONE.with(WidgetState::Pressed),
+        );
+        assert!(
+            old.overlay.unwrap().alpha() > pressed_plain.overlay.unwrap().alpha() * 2,
+            "0.38 against 0.12, and not merely a little more"
+        );
+
+        // Hovered is the one arm the two tables agree on.
+        let hovered = WidgetStates::NONE.with(WidgetState::Hovered);
+        assert_eq!(
+            cell(DatePickerThemeData::new(), two, DateCellSlot::Day, hovered).overlay,
+            plain_cell(DateCellSlot::Day, hovered).overlay
+        );
+    }
+
+    #[test]
+    fn an_untouched_cell_has_no_overlay_layer_at_all() {
+        // `None` rather than transparent, for the same reason as the
+        // background: there is no layer, not an invisible one.
+        for slot in [DateCellSlot::Day, DateCellSlot::Today, DateCellSlot::Year] {
+            assert_eq!(plain_cell(slot, WidgetStates::NONE).overlay, None, "{slot:?}");
+            assert_eq!(
+                plain_cell(slot, WidgetStates::NONE.with(WidgetState::Selected)).overlay,
+                None,
+                "{slot:?} selected but untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn a_year_is_onsurfacevariant_where_a_date_is_onsurface() {
+        // The year list is quieter than the calendar: it is a way of getting
+        // somewhere, not the thing being read.
+        let scheme = ThemeData::light().color_scheme;
+        assert_eq!(
+            plain_cell(DateCellSlot::Year, WidgetStates::NONE).foreground,
+            scheme.on_surface_variant()
+        );
+        assert_eq!(
+            plain_cell(DateCellSlot::Day, WidgetStates::NONE).foreground,
+            scheme.on_surface
+        );
+        assert_ne!(scheme.on_surface_variant(), scheme.on_surface);
+    }
+
+    #[test]
+    fn a_theme_that_names_a_cells_colour_is_taken_at_its_word() {
+        const MINE: Color = Color::argb(0xFF, 0x11, 0x22, 0x33);
+        let named = cell(
+            DatePickerThemeData {
+                day_background_color: Some(StateProperty::all(Some(MINE))),
+                ..DatePickerThemeData::new()
+            },
+            ThemeData::light(),
+            DateCellSlot::Day,
+            WidgetStates::NONE,
+        );
+        assert_eq!(
+            named.background,
+            Some(MINE),
+            "even unselected, where the table answers nothing"
+        );
+
+        // And it does not thereby recolour today. Upstream's
+        // `todayBackgroundColor` is the *defaults* object's
+        // `dayBackgroundColor`, not the theme's -- so the alias is inside the
+        // table and does not reach across from a theme's own answer.
+        let today = cell(
+            DatePickerThemeData {
+                day_background_color: Some(StateProperty::all(Some(MINE))),
+                ..DatePickerThemeData::new()
+            },
+            ThemeData::light(),
+            DateCellSlot::Today,
+            WidgetStates::NONE,
+        );
+        assert_eq!(today.background, None);
+    }
 
     // -- What a calendar reads like, tick 253 --------------------------------
     //
