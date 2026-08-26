@@ -288,6 +288,25 @@ impl DefaultCupertinoLocalizations {
     /// explains itself, and that is the one a reader can be misled by.
     pub const SHORT_WEEKDAYS: [&'static str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+    /// The seven standard context menu entries that have a label of their
+    /// own on this platform, which arrived with
+    /// [`crate::icon_data::ContextMenuButtonType::cupertino_label`]. Only
+    /// strings something already says are here, which is the rule
+    /// `tools/unread_strings.py` exists to keep.
+    pub const CUT_BUTTON_LABEL: &'static str = "Cut";
+    pub const COPY_BUTTON_LABEL: &'static str = "Copy";
+    pub const PASTE_BUTTON_LABEL: &'static str = "Paste";
+    /// Capital A, where the Material table writes "Select all". The two are
+    /// translated separately, so the difference is not a typo that would be
+    /// caught downstream -- it survives into every locale.
+    pub const SELECT_ALL_BUTTON_LABEL: &'static str = "Select All";
+    pub const LOOK_UP_BUTTON_LABEL: &'static str = "Look Up";
+    pub const SEARCH_WEB_BUTTON_LABEL: &'static str = "Search Web";
+    /// With the ellipsis. On iOS sharing opens a sheet, and the three dots
+    /// are that platform's promise that the button will not act on its own.
+    pub const SHARE_BUTTON_LABEL: &'static str = "Share...";
+
+
     pub const SHORT_MONTHS: [&'static str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];

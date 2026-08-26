@@ -936,6 +936,28 @@ impl DefaultMaterialLocalizations {
     /// button a screen reader cannot describe.
     pub const DELETE_BUTTON_TOOLTIP: &'static str = "Delete";
 
+    /// The seven standard context menu entries that have a label of their own.
+    ///
+    /// The eighth and ninth do not: `delete` borrows
+    /// [`DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP`] and shouts it,
+    /// and `liveTextInput` takes
+    /// [`DefaultMaterialLocalizations::SCAN_TEXT_BUTTON_LABEL`], which is not
+    /// a "button label" in the same sense -- it names the *camera*, not the
+    /// menu entry.
+    pub const CUT_BUTTON_LABEL: &'static str = "Cut";
+    pub const COPY_BUTTON_LABEL: &'static str = "Copy";
+    pub const PASTE_BUTTON_LABEL: &'static str = "Paste";
+    /// Lower-case "all". The Cupertino table capitalises it, and that is the
+    /// kind of difference that survives a hundred translations because each
+    /// is translated separately.
+    pub const SELECT_ALL_BUTTON_LABEL: &'static str = "Select all";
+    pub const LOOK_UP_BUTTON_LABEL: &'static str = "Look Up";
+    pub const SEARCH_WEB_BUTTON_LABEL: &'static str = "Search Web";
+    /// No ellipsis. The Cupertino one has one, because on iOS sharing opens a
+    /// sheet and the three dots are that platform's promise that it will.
+    pub const SHARE_BUTTON_LABEL: &'static str = "Share";
+    pub const SCAN_TEXT_BUTTON_LABEL: &'static str = "Scan text";
+
     /// Upstream `licensesPackageDetailText`'s `assert(licenseCount >= 0)`,
     /// which in Dart is a real check and here is the type.
     pub fn license_count_is_valid(_count: u32) -> bool {

@@ -181,6 +181,11 @@ LOCAL_FN = re.compile(
     re.M | re.S)
 
 
+# `pub const NAME: &'static str = "...";` -- a declaration, which is not a
+# reader of the constant of that name somewhere else.
+DECLARATION = re.compile(r"^\s*pub const \w+: &'static str = .*$", re.M)
+
+
 def local_helpers():
     """Which constants each `pub fn` in the localizations file mentions."""
     text = strip_tests(open(HOME, encoding='utf-8', errors='replace').read())
@@ -198,6 +203,12 @@ for root, _dirs, files in os.walk(CRATE):
         body = strip_comments(
             strip_tests(open(path, encoding='utf-8', errors='replace').read()))
         where = os.path.relpath(path, CRATE).replace(os.sep, '/')
+        # A file that *declares* a constant of the same name is not thereby
+        # a reader of this one. `cupertino_app.rs` grew its own
+        # `LOOK_UP_BUTTON_LABEL`, and the Material constant immediately had a
+        # second "reader" that says nothing about it. A declaration is not a
+        # use, and the two are the same six words to a substring search.
+        body = DECLARATION.sub('', body)
         helper_callers[where] = body
         for constant, _value in localization_strings():
             if constant in body:
@@ -290,3 +301,48 @@ else:
     for getter in absent:
         print('  MISSING FROM THE BUNDLE   %-24s "%s"'
               % (getter, widgets_upstream[getter]))
+
+
+# -- The Cupertino table ----------------------------------------------------
+#
+# Added when `cupertino_label` brought seven strings in. Without it those seven
+# could drift from upstream exactly as `dateRangeStartLabel` did, which is the
+# case that made this file exist -- and the two tables disagree *on purpose*
+# in two places ("Select all"/"Select All", "Share"/"Share..."), so a reader
+# comparing them by eye would talk themselves out of both.
+
+CUPERTINO_HOME = os.path.join(CRATE, 'cupertino_app.rs')
+CUPERTINO_UPSTREAM = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..', '..', 'flutter',
+    'packages', 'flutter', 'lib', 'src', 'cupertino', 'localizations.dart')
+
+cupertino_upstream = None
+if os.path.exists(CUPERTINO_UPSTREAM):
+    cupertino_upstream = {
+        m.group('name'): m.group('value').replace("\\'", "'")
+        for m in GETTER.finditer(
+            open(CUPERTINO_UPSTREAM, encoding='utf-8', errors='replace').read())}
+
+cupertino_text = open(CUPERTINO_HOME, encoding='utf-8', errors='replace').read()
+cupertino_start = cupertino_text.index('impl DefaultCupertinoLocalizations')
+cupertino_port = {m.group('name'): m.group('value')
+                  for m in STRING.finditer(cupertino_text[cupertino_start:])}
+
+print()
+if cupertino_upstream is None:
+    print('DefaultCupertinoLocalizations: upstream not found, nothing compared')
+else:
+    wrong, elsewhere = [], []
+    for snake, value in sorted(cupertino_port.items()):
+        getter = camel(snake)
+        if getter not in cupertino_upstream:
+            elsewhere.append((snake, getter))
+        elif cupertino_upstream[getter] != value:
+            wrong.append((snake, value, cupertino_upstream[getter]))
+    print('DefaultCupertinoLocalizations: %d strings, %d disagreeing, %d whose '
+          'upstream getter could not be found' % (len(cupertino_port), len(wrong),
+                                                  len(elsewhere)))
+    for snake, ours, theirs in wrong:
+        print('  DISAGREES %-24s port "%s"  upstream "%s"' % (snake, ours, theirs))
+    for snake, getter in elsewhere:
+        print('  NO SUCH GETTER UPSTREAM   %-24s looked for %s' % (snake, getter))

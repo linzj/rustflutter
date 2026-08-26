@@ -235,11 +235,234 @@ impl BottomNavigationBarItem {
     }
 }
 
+impl ContextMenuButtonType {
+    /// Upstream `CupertinoTextSelectionToolbarButton.getButtonLabel`, minus
+    /// the item's own label, which the caller has already checked.
+    ///
+    /// Two entries answer with nothing at all. `Delete` and `LiveTextInput`
+    /// are not entries an iOS text menu has, and `Custom` has no label but
+    /// the one it was given -- so all three fall to the empty string rather
+    /// than to a name this crate would have had to invent.
+    pub fn cupertino_label(self) -> &'static str {
+        use crate::cupertino_app::DefaultCupertinoLocalizations as L;
+        match self {
+            ContextMenuButtonType::Cut => L::CUT_BUTTON_LABEL,
+            ContextMenuButtonType::Copy => L::COPY_BUTTON_LABEL,
+            ContextMenuButtonType::Paste => L::PASTE_BUTTON_LABEL,
+            ContextMenuButtonType::SelectAll => L::SELECT_ALL_BUTTON_LABEL,
+            ContextMenuButtonType::LookUp => L::LOOK_UP_BUTTON_LABEL,
+            ContextMenuButtonType::SearchWeb => L::SEARCH_WEB_BUTTON_LABEL,
+            ContextMenuButtonType::Share => L::SHARE_BUTTON_LABEL,
+            ContextMenuButtonType::LiveTextInput
+            | ContextMenuButtonType::Delete
+            | ContextMenuButtonType::Custom => "",
+        }
+    }
+
+    /// Upstream `AdaptiveTextSelectionToolbar.getButtonLabel`.
+    ///
+    /// One rule with a Cupertino branch rather than two rules: upstream's
+    /// switch hands iOS and macOS **straight to the Cupertino one**, so those
+    /// two platforms get "Select All" and "Share..." from a Material menu
+    /// too.
+    ///
+    /// Where the two tables both answer, they mostly agree. Where they do not
+    /// is `selectAll`'s capital and `share`'s ellipsis, and those survive
+    /// into every locale because each table is translated separately.
+    ///
+    /// And two entries exist here that do not exist there. `Delete` borrows
+    /// the delete *tooltip* and upper-cases it -- the only label in either
+    /// table that is derived rather than looked up, which is why it cannot be
+    /// a constant. `LiveTextInput` takes "Scan text", which names the camera
+    /// rather than the entry.
+    pub fn material_label(self, platform: crate::editable_text::TargetPlatform) -> String {
+        use crate::editable_text::TargetPlatform;
+        use crate::material_app::DefaultMaterialLocalizations as L;
+        if matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS) {
+            return self.cupertino_label().to_string();
+        }
+        match self {
+            ContextMenuButtonType::Cut => L::CUT_BUTTON_LABEL.to_string(),
+            ContextMenuButtonType::Copy => L::COPY_BUTTON_LABEL.to_string(),
+            ContextMenuButtonType::Paste => L::PASTE_BUTTON_LABEL.to_string(),
+            ContextMenuButtonType::SelectAll => L::SELECT_ALL_BUTTON_LABEL.to_string(),
+            ContextMenuButtonType::Delete => L::DELETE_BUTTON_TOOLTIP.to_uppercase(),
+            ContextMenuButtonType::LookUp => L::LOOK_UP_BUTTON_LABEL.to_string(),
+            ContextMenuButtonType::SearchWeb => L::SEARCH_WEB_BUTTON_LABEL.to_string(),
+            ContextMenuButtonType::Share => L::SHARE_BUTTON_LABEL.to_string(),
+            ContextMenuButtonType::LiveTextInput => L::SCAN_TEXT_BUTTON_LABEL.to_string(),
+            ContextMenuButtonType::Custom => String::new(),
+        }
+    }
+}
+
+impl ContextMenuButtonItem {
+    /// What this entry says, on `platform`.
+    ///
+    /// An item's own label wins outright and is checked first in both of
+    /// upstream's versions -- a custom entry has no other source, and a
+    /// standard entry an application has renamed keeps the name it was given.
+    pub fn resolved_label(&self, platform: crate::editable_text::TargetPlatform) -> String {
+        match &self.label {
+            Some(label) => label.clone(),
+            None => self.button_type.material_label(platform),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::framework::leaf;
     use crate::widgets::SizedBox;
+
+    // -- What a context menu entry says, tick 259 ----------------------------
+    //
+    // `ContextMenuButtonItem` travelled as a type with `label: None`, and the
+    // comment above the enum said why -- "the label is translated and the
+    // platform may also want to supply its own". True, and it left the crate
+    // with no way to turn a type into a label at all.
+
+    #[test]
+    fn an_items_own_label_wins_and_is_asked_first() {
+        // Upstream checks it before touching the localizations in both of its
+        // versions. A custom entry has no other source, and a standard entry
+        // an application has renamed keeps the name it was given.
+        use crate::editable_text::TargetPlatform;
+        let renamed = ContextMenuButtonItem::new(ContextMenuButtonType::Copy)
+            .with_label("Duplicate");
+        assert_eq!(renamed.resolved_label(TargetPlatform::Android), "Duplicate");
+        assert_eq!(renamed.resolved_label(TargetPlatform::IOS), "Duplicate");
+
+        let standard = ContextMenuButtonItem::new(ContextMenuButtonType::Copy);
+        assert_eq!(standard.resolved_label(TargetPlatform::Android), "Copy");
+    }
+
+    #[test]
+    fn a_custom_entry_with_no_label_says_nothing_rather_than_something_invented() {
+        use crate::editable_text::TargetPlatform;
+        let bare = ContextMenuButtonItem::new(ContextMenuButtonType::Custom);
+        assert_eq!(bare.resolved_label(TargetPlatform::Android), "");
+        assert_eq!(bare.resolved_label(TargetPlatform::IOS), "");
+    }
+
+    #[test]
+    fn ios_and_macos_read_the_cupertino_table_from_a_material_menu() {
+        // Upstream's `AdaptiveTextSelectionToolbar.getButtonLabel` switches on
+        // the platform and hands those two straight to the Cupertino version.
+        // One rule with a Cupertino branch, not two rules.
+        use crate::editable_text::TargetPlatform;
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert_eq!(
+                ContextMenuButtonType::SelectAll.material_label(platform),
+                ContextMenuButtonType::SelectAll.cupertino_label(),
+                "{platform:?}"
+            );
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert_ne!(
+                ContextMenuButtonType::SelectAll.material_label(platform),
+                ContextMenuButtonType::SelectAll.cupertino_label(),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_same_entry_says_a_different_thing_on_ios() {
+        // Two differences, and both survive into every locale because the two
+        // tables are translated separately -- neither is a typo something
+        // downstream would catch.
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            ContextMenuButtonType::SelectAll.material_label(TargetPlatform::Android),
+            "Select all"
+        );
+        assert_eq!(ContextMenuButtonType::SelectAll.cupertino_label(), "Select All");
+
+        assert_eq!(
+            ContextMenuButtonType::Share.material_label(TargetPlatform::Android),
+            "Share"
+        );
+        assert_eq!(
+            ContextMenuButtonType::Share.cupertino_label(),
+            "Share...",
+            "on iOS sharing opens a sheet, and the dots promise it will"
+        );
+
+        // The five that do agree, so the two above are a disagreement rather
+        // than two unrelated tables.
+        for button in [
+            ContextMenuButtonType::Cut,
+            ContextMenuButtonType::Copy,
+            ContextMenuButtonType::Paste,
+            ContextMenuButtonType::LookUp,
+            ContextMenuButtonType::SearchWeb,
+        ] {
+            assert_eq!(
+                button.material_label(TargetPlatform::Android),
+                button.cupertino_label(),
+                "{button:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_entries_do_not_exist_on_ios_and_answer_with_nothing() {
+        // A Cupertino text menu has no delete and no scan-text entry, so
+        // there is no string for them -- and upstream answers `''` rather
+        // than inventing one.
+        use crate::editable_text::TargetPlatform;
+        for button in [
+            ContextMenuButtonType::Delete,
+            ContextMenuButtonType::LiveTextInput,
+        ] {
+            assert_eq!(button.cupertino_label(), "", "{button:?}");
+            assert_ne!(
+                button.material_label(TargetPlatform::Android),
+                "",
+                "{button:?} does exist on Android"
+            );
+        }
+    }
+
+    #[test]
+    fn the_delete_entry_borrows_the_tooltip_and_shouts_it() {
+        // The only label in either table that is *derived* rather than looked
+        // up, which is why it cannot be a tenth constant. The delete entry has
+        // no label string of its own, so the menu takes the tooltip and
+        // upper-cases it to match the other entries.
+        use crate::editable_text::TargetPlatform;
+        let shouted = ContextMenuButtonType::Delete.material_label(TargetPlatform::Android);
+        assert_eq!(shouted, "DELETE");
+        assert_eq!(
+            shouted,
+            crate::material_app::DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP
+                .to_uppercase()
+        );
+        assert_ne!(
+            shouted,
+            crate::material_app::DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP,
+            "and it is not the tooltip as written"
+        );
+    }
+
+    #[test]
+    fn scan_text_names_the_camera_and_not_the_menu_entry() {
+        // `liveTextInput` is the entry; "Scan text" is what it does. Worth
+        // saying because the constant's name and the entry's name do not
+        // match, and the next reader will look for a `liveTextInputLabel`.
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            ContextMenuButtonType::LiveTextInput.material_label(TargetPlatform::Android),
+            "Scan text"
+        );
+    }
 
     #[test]
     fn an_icon_is_a_character_in_a_font() {

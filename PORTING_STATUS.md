@@ -18629,3 +18629,64 @@ widget 这个端口还没有。
 **下一步转向别的尺子**：`unwalked` 说 1528 个公开枚举变体里有 219 个从未在任何
 测试里被点过名；`depth` 说 672 个类里有一批成员覆盖率极低（`CupertinoLocalizations`
 2/46、`RadioListTile` 3/43、`MaterialButton` 4/34、`CheckboxListTile` 5/42）。
+
+## 第 259 轮：一个只带类型、不带文字的上下文菜单
+
+`ContextMenuButtonItem` 带着一个 `ContextMenuButtonType`，而每个标准条目的
+`label` 都是 `None`，枚举上方的注释说明了理由：*"标签是要翻译的，平台也可能想
+提供自己的——iOS 的 'Look Up' 不是这个 crate 该发明的字符串。"* 说得对，然后
+它让整个 crate **没有任何办法把一个类型变成一段文字**。
+
+上游有两个这样的映射，而且它们不一致：
+
+    CupertinoTextSelectionToolbarButton.getButtonLabel
+    AdaptiveTextSelectionToolbar.getButtonLabel
+
+Material 那个按平台分派，把 iOS 和 macOS **直接交给 Cupertino 那个**——所以这是
+一条带 Cupertino 分支的规则，不是两条规则。
+
+三处不一致，每一处读者都看得见：
+
+    类型             Material            Cupertino
+    selectAll       "Select all"        "Select All"
+    share           "Share"             "Share..."
+    delete          *提示语*，大写         ""——iOS 没有删除项
+    liveTextInput   "Scan text"         ""——同上
+
+`selectAll` 的大小写和 `share` 的省略号**会活到每一个语言里**，因为两张表是分开
+翻译的——两者都不是下游能抓到的笔误。iOS 上分享会打开一个面板，那三个点是那个
+平台"我不会自己动手"的承诺。
+
+`deleteButtonTooltip.toUpperCase()` 是读起来最怪的一条，而它是上游的：删除项
+没有自己的标签字符串，于是菜单借用提示语并把它喊出来，好跟其他条目对齐。它也是
+两张表里**唯一一条推导出来而不是查出来的标签**，所以端口不能简单地再存一个常量。
+
+十五个字符串是**跟着调用方一起来的**，那正是 `unread_strings.py` 当初写下来要
+守的规矩。
+
+**量尺自己也改了两处，两处都是用它的时候撞出来的：**
+
+一是**声明不是使用**。`cupertino_app.rs` 一有了自己的 `LOOK_UP_BUTTON_LABEL`，
+Material 那个常量立刻多出一个"读者"——而那个文件对它一个字都没说。对子串搜索来说
+声明和使用是同样的六个词。
+
+二是 **Cupertino 那张表根本没有和上游比对过**。这七个字符串本可以像
+`dateRangeStartLabel` 当年那样漂走，而那正是这个文件存在的原因。补上之后，把
+`SHARE_BUTTON_LABEL` 的省略号去掉，量尺当场报 `DISAGREES`。
+
+八条承重规则逐条强制改错，全红。中途出了一次事故：第四条改错还原时我写的是
+`git checkout -- <path>`，路径又写错到 `cd` 失败之后的相对位置——结果它把这一轮
+**新加的整块也一起还原了**，而下三条改错是在那个状态下跑的。发现后重新加回、用
+sidecar 文件重跑了四到八条。**改错的还原永远用 sidecar，不要用 `git checkout`：
+`git` 分不清"改错"和"这一轮的工作"。**
+
+尺子：coverage 2102/0，constants 158/0/0，wire_strings 122/0，unwired 48/0,
+unvaried 0，unpainted 0，hollow 67/0，vacuous 8，stale_engines 全部不落后,
+unread_theme_fields 2（两条都有答案），
+unread_strings **36 → 44 条 Material（0 无人说、0 与上游不符）+ 16 条 widgets
++ 7 条 Cupertino（新）**。
+门：5743 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`depth` 里最薄的几个类——`RadioListTile` 3/43、`MaterialButton` 4/34、
+`CheckboxListTile` 5/42——都是组合型控件；`unwalked` 说 1528 个公开枚举变体里有
+219 个从未在测试里被点过名。
