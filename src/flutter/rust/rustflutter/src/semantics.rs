@@ -116,13 +116,97 @@ pub enum SemanticsAction {
     Increase = 1 << 6,
     Decrease = 1 << 7,
     ShowOnScreen = 1 << 8,
+    /// The nine that make a text field editable by a screen reader. This port
+    /// had the *field* -- `is_text_field`, `is_obscured` and `is_read_only`
+    /// are all on [`SemanticsFlags`] -- and none of the verbs, so a reader
+    /// could be told it had found one and given no way to work it.
+    MoveCursorForwardByCharacter = 1 << 9,
+    MoveCursorBackwardByCharacter = 1 << 10,
+    SetSelection = 1 << 11,
+    Copy = 1 << 12,
+    Cut = 1 << 13,
+    Paste = 1 << 14,
     DidGainAccessibilityFocus = 1 << 15,
     DidLoseAccessibilityFocus = 1 << 16,
+    /// The only bit that does not name what it does.
+    ///
+    /// It says "one of the application's own actions", and **which one arrives
+    /// in a separate integer** -- so a bridge that treats this like the
+    /// others has thrown away the only part that carried the meaning.
+    CustomAction = 1 << 17,
     Dismiss = 1 << 18,
+    MoveCursorForwardByWord = 1 << 19,
+    MoveCursorBackwardByWord = 1 << 20,
+    SetText = 1 << 21,
     Focus = 1 << 22,
+    /// **Not a fourth scroll direction.** The four directions are a nudge --
+    /// move by about a screenful -- and this one carries a destination. A
+    /// reader dragging a scrollbar sends this; one pressing a page key sends
+    /// [`SemanticsAction::ScrollDown`].
+    ScrollToOffset = 1 << 23,
+    Expand = 1 << 24,
+    Collapse = 1 << 25,
 }
 
 impl SemanticsAction {
+    /// Every action, in bit order.
+    pub const ALL: [SemanticsAction; 26] = [
+        SemanticsAction::Tap,
+        SemanticsAction::LongPress,
+        SemanticsAction::ScrollLeft,
+        SemanticsAction::ScrollRight,
+        SemanticsAction::ScrollUp,
+        SemanticsAction::ScrollDown,
+        SemanticsAction::Increase,
+        SemanticsAction::Decrease,
+        SemanticsAction::ShowOnScreen,
+        SemanticsAction::MoveCursorForwardByCharacter,
+        SemanticsAction::MoveCursorBackwardByCharacter,
+        SemanticsAction::SetSelection,
+        SemanticsAction::Copy,
+        SemanticsAction::Cut,
+        SemanticsAction::Paste,
+        SemanticsAction::DidGainAccessibilityFocus,
+        SemanticsAction::DidLoseAccessibilityFocus,
+        SemanticsAction::CustomAction,
+        SemanticsAction::Dismiss,
+        SemanticsAction::MoveCursorForwardByWord,
+        SemanticsAction::MoveCursorBackwardByWord,
+        SemanticsAction::SetText,
+        SemanticsAction::Focus,
+        SemanticsAction::ScrollToOffset,
+        SemanticsAction::Expand,
+        SemanticsAction::Collapse,
+    ];
+
+    /// Upstream's `kVerticalScrollSemanticsActions`, which is the one place
+    /// the engine bundles two of these bits into a name: a node that can be
+    /// scrolled vertically offers both, and offering one alone would be a
+    /// list you can go down and not back up.
+    pub const VERTICAL_SCROLL: i32 =
+        SemanticsAction::ScrollUp as i32 | SemanticsAction::ScrollDown as i32;
+
+    /// Whether this action is one of the nine that edit text.
+    ///
+    /// Worth a name because it is the shape of what was missing: this port
+    /// had the *field* and none of the verbs, so a reader could be told it
+    /// had found a text field and given no way to work it.
+    pub fn edits_text(self) -> bool {
+        use SemanticsAction::*;
+        matches!(
+            self,
+            MoveCursorForwardByCharacter
+                | MoveCursorBackwardByCharacter
+                | MoveCursorForwardByWord
+                | MoveCursorBackwardByWord
+                | SetSelection
+                | Copy
+                | Cut
+                | Paste
+                | SetText
+        )
+    }
+
     /// The action a bit stands for, or `None` for one this framework has no
     /// name for yet.
     pub fn from_bits(bits: i32) -> Option<SemanticsAction> {
@@ -137,10 +221,23 @@ impl SemanticsAction {
             x if x == Increase as i32 => Increase,
             x if x == Decrease as i32 => Decrease,
             x if x == ShowOnScreen as i32 => ShowOnScreen,
+            x if x == MoveCursorForwardByCharacter as i32 => MoveCursorForwardByCharacter,
+            x if x == MoveCursorBackwardByCharacter as i32 => MoveCursorBackwardByCharacter,
+            x if x == SetSelection as i32 => SetSelection,
+            x if x == Copy as i32 => Copy,
+            x if x == Cut as i32 => Cut,
+            x if x == Paste as i32 => Paste,
             x if x == DidGainAccessibilityFocus as i32 => DidGainAccessibilityFocus,
             x if x == DidLoseAccessibilityFocus as i32 => DidLoseAccessibilityFocus,
+            x if x == CustomAction as i32 => CustomAction,
             x if x == Dismiss as i32 => Dismiss,
+            x if x == MoveCursorForwardByWord as i32 => MoveCursorForwardByWord,
+            x if x == MoveCursorBackwardByWord as i32 => MoveCursorBackwardByWord,
+            x if x == SetText as i32 => SetText,
             x if x == Focus as i32 => Focus,
+            x if x == ScrollToOffset as i32 => ScrollToOffset,
+            x if x == Expand as i32 => Expand,
+            x if x == Collapse as i32 => Collapse,
             _ => return None,
         })
     }
@@ -3338,6 +3435,113 @@ mod tests {
     use crate::widgets::SizedBox;
     use std::cell::Cell;
     use std::cmp::Ordering;
+
+    // -- The thirteen actions this port did not have, tick 265 ---------------
+    //
+    // `ffi_tables.py` found them, against an enum whose own doc says "four
+    // copies of one set of bits upstream; this is the fifth, and it has to
+    // match".
+
+    #[test]
+    fn every_bit_from_zero_to_twenty_five_has_exactly_one_action() {
+        // Upstream's list is dense: twenty-six actions on twenty-six
+        // consecutive bits, no gaps and no spares. This port's had nine holes
+        // in it -- 9 through 14, 17, and 19 through 21 and 23 through 25 --
+        // and a hole is not visible from inside: `from_bits` answered `None`
+        // for each, which is also what it answers for a bit the engine has
+        // not defined.
+        assert_eq!(SemanticsAction::ALL.len(), 26);
+        for (position, action) in SemanticsAction::ALL.iter().enumerate() {
+            assert_eq!(
+                *action as i32,
+                1 << position,
+                "{action:?} should be bit {position}"
+            );
+            assert_eq!(SemanticsAction::from_bits(1 << position), Some(*action));
+        }
+        // And bit 26 is past the end, which is where `None` starts meaning
+        // what it says.
+        assert_eq!(SemanticsAction::from_bits(1 << 26), None);
+    }
+
+    #[test]
+    fn a_text_field_now_has_verbs_as_well_as_a_name() {
+        // The shape of what was missing. `SemanticsFlags` already had
+        // `is_text_field`, `is_obscured` and `is_read_only`, so a reader
+        // could be told it had found a text field -- and every action that
+        // works one was absent. Nine of the thirteen were these.
+        let editing: Vec<SemanticsAction> = SemanticsAction::ALL
+            .into_iter()
+            .filter(|action| action.edits_text())
+            .collect();
+        assert_eq!(editing.len(), 9);
+        assert!(editing.contains(&SemanticsAction::SetText));
+        assert!(editing.contains(&SemanticsAction::MoveCursorForwardByWord));
+        assert!(editing.contains(&SemanticsAction::Paste));
+
+        // Tapping and scrolling are not editing, which is what makes the
+        // predicate say something.
+        assert!(!SemanticsAction::Tap.edits_text());
+        assert!(!SemanticsAction::ScrollUp.edits_text());
+        assert!(!SemanticsAction::Focus.edits_text());
+    }
+
+    #[test]
+    fn moving_by_a_word_is_a_different_bit_from_moving_by_a_character() {
+        // Four separate actions, and they are ten bits apart rather than
+        // adjacent -- the by-word pair was added later, which is why upstream
+        // could not put them beside their by-character partners. A port
+        // guessing at the numbering would have paired them.
+        use SemanticsAction::*;
+        assert_eq!(MoveCursorForwardByCharacter as i32, 1 << 9);
+        assert_eq!(MoveCursorBackwardByCharacter as i32, 1 << 10);
+        assert_eq!(MoveCursorForwardByWord as i32, 1 << 19);
+        assert_eq!(MoveCursorBackwardByWord as i32, 1 << 20);
+        assert_ne!(
+            MoveCursorForwardByWord as i32,
+            (MoveCursorForwardByCharacter as i32) << 1
+        );
+    }
+
+    #[test]
+    fn scrolling_to_an_offset_is_not_a_fifth_direction() {
+        // The four directions are a nudge -- move by about a screenful -- and
+        // this one carries a destination. A reader dragging a scrollbar sends
+        // it; one pressing a page key sends `ScrollDown`.
+        assert_ne!(
+            SemanticsAction::ScrollToOffset as i32,
+            SemanticsAction::ScrollDown as i32
+        );
+        // And it is not in the vertical-scroll pair, which is the engine's
+        // one bundling of these bits.
+        assert_eq!(
+            SemanticsAction::VERTICAL_SCROLL,
+            SemanticsAction::ScrollUp as i32 | SemanticsAction::ScrollDown as i32
+        );
+        assert_eq!(
+            SemanticsAction::VERTICAL_SCROLL & SemanticsAction::ScrollToOffset as i32,
+            0
+        );
+        // A node that scrolls vertically offers both directions: offering one
+        // alone would be a list you can go down and not back up.
+        assert_ne!(
+            SemanticsAction::VERTICAL_SCROLL,
+            SemanticsAction::ScrollDown as i32
+        );
+    }
+
+    #[test]
+    fn the_custom_action_bit_does_not_say_which_custom_action() {
+        // The only bit that does not name what it does: it says "one of the
+        // application's own", and which one arrives in a separate integer. A
+        // bridge treating it like the others has thrown away the only part
+        // that carried the meaning.
+        assert_eq!(SemanticsAction::CustomAction as i32, 1 << 17);
+        assert_eq!(
+            SemanticsAction::from_bits(1 << 17),
+            Some(SemanticsAction::CustomAction)
+        );
+    }
 
     /// Lays out a tree, paints it, and returns what it says about itself.
     ///
