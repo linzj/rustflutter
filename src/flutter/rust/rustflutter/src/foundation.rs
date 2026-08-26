@@ -12,8 +12,9 @@
 //!   `LabeledGlobalKey`/`GlobalObjectKey`) is this crate's `Option<u64>`
 //!   plus `GlobalKey`'s atomic counter. The spellings below wrap those
 //!   semantics without changing the element tree's key type.
-//! * `DiagnosticsNode` and the debug-assertion surface are not ported;
-//!   those classes are ledgered out of scope.
+//! * The debug-assertion surface is not ported; those classes are ledgered
+//!   out of scope. `DiagnosticsNode` itself **is** here, as a trait in
+//!   `diagnostics.rs` -- this line said otherwise until tick 286.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

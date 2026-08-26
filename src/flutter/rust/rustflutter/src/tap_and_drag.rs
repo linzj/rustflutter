@@ -1421,13 +1421,17 @@ mod tests {
 /// change the meaning of a gesture underneath the reader's hand, which is the
 /// obvious implementation and the wrong one.
 ///
-/// # What this port does not have yet
+/// # What reads it
 ///
-/// Shift-extend selection itself: nothing here reads this to widen a
-/// selection, because the selection model has no extend-from-anchor. The rule
-/// is ported because it belongs to the gesture rather than to the selection --
-/// [`TapAndDragTracker`] already fires both hooks, and this is what upstream
-/// hangs on them.
+/// `text_selection.rs`'s `shift_tap_down` and `SingleTapUp::shift_is_usable`,
+/// which route a shift-held tap to `extend_selection` or `expand_selection`
+/// depending on the platform. Those arrived after this type did, and this
+/// heading said "what this port does not have yet -- shift-extend selection
+/// itself" until tick 286, by which time it had been wrong for some time.
+///
+/// A note that a thing is missing is a claim with no test behind it, and it
+/// expires quietly. `stale_notes.py` checks the ones that name their subject;
+/// this one did not, and was found by hand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TapSequenceShift {
     pressed: bool,

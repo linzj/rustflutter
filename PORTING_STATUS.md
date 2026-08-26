@@ -20099,3 +20099,84 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 
 **下一步**：这个 builder 还剩 `onForcePressStart/End`、`onSecondaryTap(Down)`、
 `onDragSelection*`、`onTapTrackStart/Reset` 几族——**先按行为查，再动手**。
+
+## 第 286 轮：说自己没有某样东西的注释，也会过期——`stale_notes.py`
+
+上一轮按行为查 `onTapTrackStart` 时，落到了 `tap_and_drag.rs` 的 `TapSequenceShift`,
+它已经移植好了，可是文档里挂着一段标题：
+
+    /// # What this port does not have yet
+    ///
+    /// Shift-extend selection itself: nothing here reads this to widen a
+    /// selection, because the selection model has no extend-from-anchor.
+
+而 `text_selection.rs` 里 `extend_selection` 和 `expand_selection` 都在，
+`shift_tap_down` 和 `SingleTapUp::shift_is_usable` 正是**读它去加宽选区的**。这段话
+不知道什么时候起就不再成立了，而**没有任何东西会因此变红**。
+
+**一条"这里没有 X"的注释，是一个背后没有测试的断言，它会悄悄过期。** 而它比没有注释
+更糟：下一个读到的人会被告知这里有个缺口，于是去把已经有的东西再写一遍——正是第 284
+轮我干的事，只不过那次是从另一头撞上的。
+
+### 新尺子
+
+`tools/stale_notes.py`：找出形如"`X` is not here / not ported"的文档句，把主语拿去对
+crate 核。
+
+**主语只取那个短语之前的反引号名字**，之后的不算——理由部分往往会提到确实存在的类型
+（"`inputDecorationTheme` is not here: it is an `InputDecorationThemeData`"），把它们
+也当主语，每条注释都会显得过期。
+
+**作用域按大小写分，而这个区分是从语料里读出来的，不是发明的：**
+
+* **小驼峰**是上游的**成员名**，断言属于这条注释挂着的那个类型。
+  `TimePickerThemeData` 说自己没有 `inputDecorationTheme`，不会被"别的主题有一个"
+  驳倒——所以只查它自己的字段和方法。
+* **大驼峰**是上游的**类型名**，断言属于整个 crate。`theme.rs` 说 `TextTheme` 不在这里,
+  任何模块声明了它就算驳倒。
+* 模块级 `//!` 一律按 crate 查——它没有可归属的条目。
+
+**只有声明算数**，散文里、字符串里、别的注释里提到不算：断言说的是"没有这样的东西",
+只有一处声明能推翻它。
+
+### 第一版尺子报了十一条，其中十条是它自己的错
+
+第一版不分作用域，全 crate 查。于是 `TimePickerThemeData` 的 `inputDecorationTheme`
+被 `component_themes.rs` 里**另一个**主题的同名字段驳倒了，`selectedIcon` 被
+`navigation_destinations.rs` 驳倒，`locale` 被 `localizations.rs` 驳倒，`splashFactory`
+被 `ink_well.rs` 的私有字段驳倒。**新尺子的第一声告警是关于尺子的**，这次十一声里
+十声是。
+
+收紧之后剩三处，逐条核过，**三处都是真的**：
+
+* `theme.rs` 说 `Typography`、`TextTheme`、`IconThemeData`"还不在这里"——三个都在
+  `component_themes.rs`；
+* `foundation.rs` 说 `DiagnosticsNode` "未移植，划出范围"——它是 `diagnostics.rs`
+  里的一个 trait；
+* `cupertino.rs` 说 `BackdropFilter` 模糊"未移植（见模块文档）"——而
+  `widgets.rs` 的 `BackdropFilter::new(sigma, child)` 会模糊，`CupertinoPopupSurface`
+  正在用。
+
+顺着第三条查到模块文档本身那句"**No blur.** ...paint bridge 里没有 backdrop filter"
+也已经不对。**能力有了，只是两条 bar 还没接上去**——这是"还没做的选择"，不是"端口
+缺的能力"，两者混为一谈会让下一个人去修一个不存在的桥。四处注释逐一改成现在的实情,
+每处都写明它到 286 轮为止说的是反话。
+
+### 尺子自己也被改错验过
+
+* 把 `theme.rs` 那句退回旧说法 → 报 3 条（三个主语各一条）；
+* 给 `TimePickerThemeData` **真的加上** `input_decoration_theme` 字段 → 报 1 条,
+  而且指名道姓说"`TimePickerThemeData` declares it"，作用域判对了。
+
+### 它够不着什么，写在它自己的文档里
+
+不点名主语的同类注释——比如 `tap_and_drag.rs` 那条——它是哑的。那个洞是真的，写明
+而不是糊过去：那一条是手工找到的。
+
+尺子：coverage 2102/0，constants 160/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，**stale_notes 12/0（新）**，vacuous 8，stale_engines 全部不落后,
+unread_theme_fields 2。
+门：5933 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：回 `depth.py` 队头的 `CupertinoApp` 8/37——先按行为查。

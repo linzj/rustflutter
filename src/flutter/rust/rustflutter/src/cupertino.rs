@@ -18,8 +18,12 @@
 //!   canvas, the way [`crate::controls::Checkbox`] draws its tick; tab-bar
 //!   "icons" are caller-supplied one- or two-character marks, the same
 //!   substitution [`crate::controls::Destination`] makes.
-//! - **No blur.** Upstream's nav bar, tab bar and dialog sit over a
-//!   `BackdropFilter` blur; there is no backdrop filter in the paint bridge.
+//! - **The bars do not blur, though the bridge now can.** Upstream's nav
+//!   bar, tab bar and dialog sit over a `BackdropFilter` blur. The paint
+//!   bridge has had one since `RenderBackdropFilter`, and
+//!   [`CupertinoPopupSurface`] uses it -- so what is left here is a choice not
+//!   yet made for the two bars, not a capability the port lacks. This note
+//!   said the opposite until tick 286, when `stale_notes.py` caught it.
 //!   The translucent colors (`barBackgroundColor` 0xF0.., `_kDialogColor`
 //!   0xCC..) are kept, so the shapes and tints match and only the frosted
 //!   texture is missing.
@@ -1972,8 +1976,10 @@ impl RenderBox for BackChevron {
 /// chevron. Upstream's `CupertinoNavigationBar` (nav_bar.dart).
 ///
 /// The background is the theme's `bar_background_color` drawn flat --
-/// upstream's `BackdropFilter` blur is not ported (see the module docs), which
-/// is what "blur-free translucent approximation" means here.
+/// upstream's `BackdropFilter` blur is not applied here, which is what
+/// "blur-free translucent approximation" means. The bridge can blur --
+/// [`CupertinoPopupSurface`] does -- so this bar is a place the capability has
+/// not been wired to, and not a gap in the port.
 ///
 /// The large-title and sliver variants (`CupertinoSliverNavigationBar`) are
 /// not part of this port; the gallery demo's use of one is served by a plain

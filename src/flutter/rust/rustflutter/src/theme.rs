@@ -37,9 +37,9 @@
 //! * `useMaterial3` is not a field. Upstream keeps it to switch between two
 //!   sets of defaults during the migration; there is only one set here, the
 //!   Material 3 one.
-//! * `Typography`, `TextTheme` and `IconThemeData` are not here yet -- they
-//!   belong with the text and icon clusters (`E5` in the plan gives the
-//!   framework an icon system at all).
+//! * `Typography`, `TextTheme` and `IconThemeData` arrived with the text and
+//!   icon clusters and live in `component_themes.rs`. This line said they were
+//!   not here yet until tick 286.
 
 use crate::animation::{Animatable, ColorTween, Tween};
 use crate::color_scheme::ColorScheme;
