@@ -43,7 +43,7 @@ use rustflutter::render::StackPosition;
 use rustflutter::widgets::Stack;
 
 use rustflutter::popup::{PopupMenuButton as LiveMenuButton, PopupMenuOpener};
-use rustflutter::{dismiss_topmost_modal, OverlayHandle};
+use rustflutter::OverlayHandle;
 
 use crate::app::ids;
 
@@ -177,48 +177,41 @@ impl StatefulComponent for MenuDemo {
         // The four items, in upstream's configuration order: context menu,
         // sectioned menu, checklist menu, simple menu.
         //
-        // Each is a live `PopupMenuButton`: the trailing glyph (or, for the
-        // simple demo, the whole row) is its child, and the menu it opens is
-        // built where the button is -- which is what gives the menu the row's
-        // inherited theme and the anchor its position.
-        let context_item = anchored_menu(
-            overlay.clone(),
-            |open| {
-                component(
-                    ListTile::new("An item with a context menu")
-                        .with_trailing(component(PopupMenuButton::new(base).on_press(open))),
-                )
-            },
-            {
-                let handle = handle.clone();
-                move || open_menu(OpenMenu::Context, simple, checked, handle.clone())
-            },
+        // Each is a live `PopupMenuButton`. For the first three, upstream's
+        // `ListTile(trailing: PopupMenuButton(...))`: the button wraps only
+        // the trailing glyph, so the anchor it records is the glyph's rect
+        // and the menu opens beside it. Wrapping the whole row instead puts
+        // the menu at the row's top-left corner. For the simple demo the
+        // whole row is the button, as upstream's `_SimpleMenuDemo` has it.
+        let context_item = component(ListTile::new("An item with a context menu").with_trailing(
+            anchored_menu(
+                overlay.clone(),
+                |open| component(PopupMenuButton::new(base).on_press(open)),
+                {
+                    let handle = handle.clone();
+                    move || open_menu(OpenMenu::Context, simple, checked, handle.clone())
+                },
+            ),
+        ));
+        let sectioned_item = component(
+            ListTile::new("An item with a sectioned menu").with_trailing(anchored_menu(
+                overlay.clone(),
+                |open| component(PopupMenuButton::new(base + 1).on_press(open)),
+                {
+                    let handle = handle.clone();
+                    move || open_menu(OpenMenu::Sectioned, simple, checked, handle.clone())
+                },
+            )),
         );
-        let sectioned_item = anchored_menu(
-            overlay.clone(),
-            |open| {
-                component(
-                    ListTile::new("An item with a sectioned menu")
-                        .with_trailing(component(PopupMenuButton::new(base + 1).on_press(open))),
-                )
-            },
-            {
-                let handle = handle.clone();
-                move || open_menu(OpenMenu::Sectioned, simple, checked, handle.clone())
-            },
-        );
-        let checklist_item = anchored_menu(
-            overlay.clone(),
-            |open| {
-                component(
-                    ListTile::new("An item with a checklist menu")
-                        .with_trailing(component(PopupMenuButton::new(base + 2).on_press(open))),
-                )
-            },
-            {
-                let handle = handle.clone();
-                move || open_menu(OpenMenu::Checklist, simple, checked, handle.clone())
-            },
+        let checklist_item = component(
+            ListTile::new("An item with a checklist menu").with_trailing(anchored_menu(
+                overlay.clone(),
+                |open| component(PopupMenuButton::new(base + 2).on_press(open)),
+                {
+                    let handle = handle.clone();
+                    move || open_menu(OpenMenu::Checklist, simple, checked, handle.clone())
+                },
+            )),
         );
         // `_SimpleMenuDemo`: the whole list item is the button, its subtitle
         // the current value.
@@ -418,25 +411,11 @@ fn open_menu(
         }
     };
 
-    // Upstream's `onSelected` pops the menu route; here every item closes the
-    // topmost modal, which is this menu. Going through the opener instead would
-    // mean holding on to whichever one happened to be current when the item was
-    // built, and the menu is the thing on top by construction.
-    close_on_select(popup)
-}
-
-/// Wraps a menu so that a tap anywhere in it closes it, after its own handler
-/// has run. Upstream's `Navigator.pop` at the end of `onSelected`.
-fn close_on_select(popup: AnyWidget) -> AnyWidget {
-    single(popup, |inner| {
-        Box::new(
-            rustflutter::widgets::Pointer::new(ids::SCRIM + 1, inner).with_handlers(
-                rustflutter::gestures::PointerHandlers::new().with_tap(|_| {
-                    dismiss_topmost_modal();
-                }),
-            ),
-        )
-    })
+    // Upstream's menu closes itself: `PopupMenuItemState.handleTap` pops the
+    // route before `onSelected` runs. `PopupMenuItem::wired` does the same
+    // here -- it dismisses the topmost modal, which is this menu, and then
+    // runs the selection. Nothing further to wire.
+    popup
 }
 
 #[cfg(test)]

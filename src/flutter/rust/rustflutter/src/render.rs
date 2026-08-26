@@ -1112,10 +1112,12 @@ pub enum HitTestBehavior {
     /// Receives events anywhere inside its bounds, and keeps whatever is
     /// visually behind it from receiving them.
     ///
-    /// The default here, where upstream's is `deferToChild`, because the two
-    /// places that build a [`RenderPointerRegion`] -- an ink response and a
-    /// focus scope -- are upstream's `InkResponse`, which passes
-    /// `HitTestBehavior.opaque` (`material/ink_well.dart`).
+    /// The default here, where upstream's is `deferToChild`, because the
+    /// region builders that rely on the default -- ink responses, scrims,
+    /// and the like -- want what upstream's `InkResponse` asks for
+    /// explicitly: `HitTestBehavior.opaque` (`material/ink_well.dart`).
+    /// Builders that want upstream's deferral, such as `Focus`, pass
+    /// `DeferToChild` themselves.
     #[default]
     Opaque,
     /// Receives events anywhere inside its bounds, and lets whatever is behind

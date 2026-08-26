@@ -1579,7 +1579,16 @@ impl Component for Focus {
                     focus(id);
                 });
             }
-            Box::new(crate::render::RenderPointerRegion::new(id, child).with_handlers(handlers))
+            Box::new(
+                crate::render::RenderPointerRegion::new(id, child)
+                    .with_handlers(handlers)
+                    // Upstream's `Focus` defers to its child: it never claims a
+                    // hit where nothing under it did. That matters for modal
+                    // barriers, which sit *under* a full-screen focus group in
+                    // the overlay -- an opaque focus region there would swallow
+                    // every outside tap before the barrier saw it.
+                    .with_behavior(crate::render::HitTestBehavior::DeferToChild),
+            )
         })
     }
 }

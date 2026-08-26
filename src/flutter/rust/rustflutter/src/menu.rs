@@ -185,10 +185,12 @@ impl<T: 'static> PopupMenuItem<T> {
 
     /// Runs `select` with the item's value when the item is tapped.
     ///
-    /// Upstream this is `PopupMenuItem.onTap` plus the `Navigator.pop(value)`
-    /// of `PopupMenuItemState.handleTap`; popping the menu is the application's
-    /// to do in `select`, because the menu being shown was the application's
-    /// state to begin with.
+    /// Upstream this is `PopupMenuItemState.handleTap`, whose two steps run in
+    /// a documented order (see [`PopupMenuItemState::handle_tap`]): the menu is
+    /// popped *first* -- so a callback that pushes a route does not lose that
+    /// route to the pop meant for the menu -- and `onTap` runs after. Here the
+    /// pop is dismissing the topmost modal, which is the menu the item lives
+    /// in by construction.
     pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, select: fn(&mut S, T)) -> Self
     where
         T: Clone,
@@ -196,6 +198,7 @@ impl<T: 'static> PopupMenuItem<T> {
         if self.enabled {
             let value = self.value.clone();
             self.handlers = PointerHandlers::new().with_tap(move |_| {
+                crate::theatre::dismiss_topmost_modal();
                 if let Some(value) = value.clone() {
                     handle.set_state(move |state| select(state, value));
                 }
