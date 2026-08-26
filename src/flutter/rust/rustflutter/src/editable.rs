@@ -1167,6 +1167,131 @@ impl<'a> WordSelection<'a> {
     }
 }
 
+/// The caret's rectangle -- upstream `RenderEditable._computeCaretPrototype`
+/// and `getLocalRectForCaret`.
+///
+/// Two platforms, two prototypes six pixels apart, and one of them throws its
+/// own height away again before the caret is drawn.
+pub struct CaretRect;
+
+impl CaretRect {
+    /// Upstream's `_kCaretHeightOffset`, "2.0; // pixels".
+    pub const HEIGHT_OFFSET: f32 = 2.0;
+
+    /// Upstream's `_computeCaretPrototype`.
+    ///
+    /// For the same `cursor_height`, Apple's prototype is **two pixels
+    /// taller** and every other platform's is **four pixels shorter** -- the
+    /// inset is applied at the top *and* the bottom -- so they are six pixels
+    /// apart before a glyph has been measured. And the non-Apple one starts
+    /// two pixels down instead of at zero.
+    ///
+    /// This is not only a size. The prototype is handed to
+    /// `getOffsetForCaret`, so the engine positions against it as well.
+    pub fn prototype(
+        platform: crate::editable_text::TargetPlatform,
+        cursor_width: f32,
+        cursor_height: f32,
+    ) -> crate::engine::Rect {
+        use crate::editable_text::TargetPlatform;
+        match platform {
+            TargetPlatform::IOS | TargetPlatform::MacOS => {
+                crate::engine::Rect::ltrb(0.0, 0.0, cursor_width, cursor_height + 2.0)
+            }
+            _ => crate::engine::Rect::ltrb(
+                0.0,
+                CaretRect::HEIGHT_OFFSET,
+                cursor_width,
+                cursor_height - CaretRect::HEIGHT_OFFSET,
+            ),
+        }
+    }
+
+    /// Upstream's `scrollableWidth`: the wider of the text with the caret's
+    /// room after it and the field itself.
+    pub fn scrollable_width(text_width: f32, field_width: f32, caret_margin: f32) -> f32 {
+        (text_width + caret_margin).max(field_width)
+    }
+
+    /// Upstream's `getLocalRectForCaret`.
+    ///
+    /// `caret_offset` is the engine's `getOffsetForCaret` against
+    /// [`CaretRect::prototype`]; `full_height` is its
+    /// `getFullHeightForCaret`, the height of the glyph the caret is standing
+    /// beside.
+    pub fn local_rect(
+        platform: crate::editable_text::TargetPlatform,
+        cursor_width: f32,
+        cursor_height: f32,
+        cursor_offset: crate::render::Offset,
+        caret_offset: crate::render::Offset,
+        full_height: f32,
+        text_width: f32,
+        field_width: f32,
+        caret_margin: f32,
+        paint_offset: crate::render::Offset,
+        device_pixel_ratio: f32,
+    ) -> crate::engine::Rect {
+        use crate::editable_text::TargetPlatform;
+
+        let prototype = CaretRect::prototype(platform, cursor_width, cursor_height);
+        let left = prototype.left + caret_offset.dx + cursor_offset.dx;
+        let top = prototype.top + caret_offset.dy + cursor_offset.dy;
+        let width = prototype.width();
+        let height = prototype.height();
+
+        // Only x is clamped, and the ceiling takes the caret's own room back
+        // off: the caret may reach the last position where it still *fits*,
+        // not the last position of the text.
+        let scrollable = CaretRect::scrollable_width(text_width, field_width, caret_margin);
+        let left = left.clamp(0.0, (scrollable - caret_margin).max(0.0));
+
+        let (top, height) = match platform {
+            TargetPlatform::IOS | TargetPlatform::MacOS => {
+                // Apple keeps the prototype's height -- `cursor_height + 2` --
+                // and only centres it on the glyph.
+                (top + (full_height - height) / 2.0, height)
+            }
+            _ => {
+                // Everywhere else the prototype's height is **thrown away**
+                // and replaced with `cursor_height`, and the top gets an extra
+                // `-HEIGHT_OFFSET` that undoes the prototype's inset. So the
+                // four-pixel-shorter prototype never reaches the screen: it
+                // exists for the engine's positioning and is then overwritten.
+                //
+                // Upstream's comment here says "Override the height to take
+                // the full height of the glyph at the TextPosition", which the
+                // code does not do -- it takes `cursorHeight`. There is a TODO
+                // beside it pointing at flutter#120836. Ported as written,
+                // not as described.
+                let caret_height = cursor_height;
+                (
+                    top - CaretRect::HEIGHT_OFFSET + (full_height - caret_height) / 2.0,
+                    caret_height,
+                )
+            }
+        };
+
+        let shifted = crate::engine::Rect::ltrb(
+            left + paint_offset.dx,
+            top + paint_offset.dy,
+            left + paint_offset.dx + width,
+            top + paint_offset.dy + height,
+        );
+        // Then snapped, by the correction its own top left calls for.
+        let snap = ComposingRegion::snap_to_physical_pixel(
+            crate::render::Offset::new(shifted.left, shifted.top),
+            device_pixel_ratio,
+        );
+        crate::engine::Rect::ltrb(
+            shifted.left + snap.dx,
+            shifted.top + snap.dy,
+            shifted.right + snap.dx,
+            shifted.bottom + snap.dy,
+        )
+    }
+}
+
 /// Upstream `ui.BoxHeightStyle`: how tall the boxes behind a run of selected
 /// text are computed to be.
 ///
@@ -2565,6 +2690,260 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- The caret's rectangle, tick 281 -------------------------------------
+
+    const APPLE: [crate::editable_text::TargetPlatform; 2] = [
+        crate::editable_text::TargetPlatform::IOS,
+        crate::editable_text::TargetPlatform::MacOS,
+    ];
+    const THE_REST: [crate::editable_text::TargetPlatform; 4] = [
+        crate::editable_text::TargetPlatform::Android,
+        crate::editable_text::TargetPlatform::Fuchsia,
+        crate::editable_text::TargetPlatform::Linux,
+        crate::editable_text::TargetPlatform::Windows,
+    ];
+
+    /// Everything but the platform held still, so only the platform can be
+    /// what a difference is from.
+    fn caret_rect_on(platform: crate::editable_text::TargetPlatform) -> crate::engine::Rect {
+        CaretRect::local_rect(
+            platform,
+            2.0,  // cursor_width
+            14.0, // cursor_height
+            crate::render::Offset::ZERO,
+            crate::render::Offset::new(30.0, 0.0),
+            20.0,  // full_height of the glyph
+            200.0, // text_width
+            100.0, // field_width
+            3.0,   // caret_margin
+            crate::render::Offset::ZERO,
+            1.0, // device_pixel_ratio: a whole-pixel grid, so no snap
+        )
+    }
+
+    #[test]
+    fn the_two_prototypes_are_six_pixels_apart() {
+        // Apple's is two taller, everyone else's is four shorter -- the inset
+        // is applied at the top *and* the bottom. Six pixels of difference
+        // before a glyph has been measured.
+        for platform in APPLE {
+            let prototype = CaretRect::prototype(platform, 2.0, 14.0);
+            assert_eq!(prototype.height(), 16.0, "{platform:?}");
+            assert_eq!(prototype.top, 0.0, "{platform:?} starts at zero");
+        }
+        for platform in THE_REST {
+            let prototype = CaretRect::prototype(platform, 2.0, 14.0);
+            assert_eq!(prototype.height(), 10.0, "{platform:?}");
+            assert_eq!(prototype.top, 2.0, "{platform:?} starts two down");
+        }
+        assert_eq!(CaretRect::HEIGHT_OFFSET, 2.0);
+    }
+
+    #[test]
+    fn the_prototype_is_the_cursors_width_on_every_platform() {
+        // Only the height and the top differ; the width is not a platform
+        // question.
+        for platform in APPLE.iter().chain(THE_REST.iter()) {
+            assert_eq!(
+                CaretRect::prototype(*platform, 2.0, 14.0).width(),
+                2.0,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn apple_keeps_the_prototypes_height_and_the_rest_replace_it() {
+        // Apple's caret is `cursorHeight + 2` tall. Everywhere else the
+        // prototype's height is thrown away and replaced with `cursorHeight`
+        // exactly -- so the four-pixels-shorter prototype never reaches the
+        // screen. It exists for the engine's positioning and is then
+        // overwritten.
+        for platform in APPLE {
+            assert_eq!(caret_rect_on(platform).height(), 16.0, "{platform:?}");
+        }
+        for platform in THE_REST {
+            assert_eq!(
+                caret_rect_on(platform).height(),
+                14.0,
+                "{platform:?}: the cursor height, not the prototype's 10"
+            );
+        }
+    }
+
+    #[test]
+    fn both_branches_centre_the_caret_on_the_glyph() {
+        // heightDiff / 2 on each. A glyph taller than the caret puts the caret
+        // in the middle of it rather than at its top.
+        let short_glyph = |platform| {
+            CaretRect::local_rect(
+                platform,
+                2.0,
+                14.0,
+                crate::render::Offset::ZERO,
+                crate::render::Offset::new(30.0, 0.0),
+                14.0, // the glyph is exactly the cursor's height
+                200.0,
+                100.0,
+                3.0,
+                crate::render::Offset::ZERO,
+                1.0,
+            )
+        };
+        for platform in APPLE.iter().chain(THE_REST.iter()) {
+            let tall = caret_rect_on(*platform);
+            let short = short_glyph(*platform);
+            assert!(
+                tall.top > short.top,
+                "{platform:?}: a taller glyph pushes the caret down"
+            );
+            assert_eq!(
+                tall.top - short.top,
+                3.0,
+                "{platform:?}: half the six pixels of extra glyph"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_other_platforms_undo_the_prototypes_inset() {
+        // The extra `- _kCaretHeightOffset` is on the non-Apple branch alone.
+        // Its prototype started two pixels down and this is what takes that
+        // back; Apple's started at zero and has nothing to undo.
+        //
+        // Apple: top 0 + 30's y 0, centred by (20-16)/2 = 2   -> 2
+        // Others: top 2, minus 2, centred by (20-14)/2 = 3    -> 3
+        for platform in APPLE {
+            assert_eq!(caret_rect_on(platform).top, 2.0, "{platform:?}");
+        }
+        for platform in THE_REST {
+            assert_eq!(caret_rect_on(platform).top, 3.0, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn the_cursor_offset_moves_the_caret_before_anything_else() {
+        // The platform's horizontal nudge -- iOS's -2 device pixels -- is
+        // added to the caret offset, so it goes through the clamp with it.
+        let nudged = CaretRect::local_rect(
+            crate::editable_text::TargetPlatform::IOS,
+            2.0,
+            14.0,
+            crate::render::Offset::new(-2.0, 0.0),
+            crate::render::Offset::new(30.0, 0.0),
+            20.0,
+            200.0,
+            100.0,
+            3.0,
+            crate::render::Offset::ZERO,
+            1.0,
+        );
+        assert_eq!(
+            nudged.left, 28.0,
+            "two to the left of where the engine put it"
+        );
+    }
+
+    #[test]
+    fn the_scrollable_width_is_the_wider_of_the_text_and_the_field() {
+        // A field wider than its text still scrolls to its own width; a text
+        // wider than its field takes its own width plus the caret's room.
+        assert_eq!(CaretRect::scrollable_width(20.0, 100.0, 3.0), 100.0);
+        assert_eq!(CaretRect::scrollable_width(200.0, 100.0, 3.0), 203.0);
+    }
+
+    #[test]
+    fn the_caret_may_reach_the_last_place_it_fits_and_no_further() {
+        // The clamp's ceiling is `scrollableWidth - caretMargin`: the caret
+        // stops where it still fits, not where the text ends.
+        let far = CaretRect::local_rect(
+            crate::editable_text::TargetPlatform::Android,
+            2.0,
+            14.0,
+            crate::render::Offset::ZERO,
+            crate::render::Offset::new(9_000.0, 0.0),
+            20.0,
+            200.0,
+            100.0,
+            3.0,
+            crate::render::Offset::ZERO,
+            1.0,
+        );
+        assert_eq!(far.left, 200.0, "203 of scrollable width, less the 3");
+        assert_eq!(far.width(), 2.0, "and the size survived the clamp");
+    }
+
+    #[test]
+    fn a_caret_dragged_left_of_the_field_stops_at_the_origin() {
+        let behind = CaretRect::local_rect(
+            crate::editable_text::TargetPlatform::Android,
+            2.0,
+            14.0,
+            crate::render::Offset::new(-500.0, 0.0),
+            crate::render::Offset::new(30.0, 0.0),
+            20.0,
+            200.0,
+            100.0,
+            3.0,
+            crate::render::Offset::ZERO,
+            1.0,
+        );
+        assert_eq!(behind.left, 0.0);
+        assert_eq!(behind.width(), 2.0);
+    }
+
+    #[test]
+    fn the_clamp_does_not_touch_the_vertical() {
+        // Only x goes through it. A caret on a line scrolled below the field
+        // keeps its y, because the field scrolls and the caret has to scroll
+        // with it.
+        let low = CaretRect::local_rect(
+            crate::editable_text::TargetPlatform::Android,
+            2.0,
+            14.0,
+            crate::render::Offset::ZERO,
+            crate::render::Offset::new(30.0, 4_000.0),
+            20.0,
+            200.0,
+            100.0,
+            3.0,
+            crate::render::Offset::ZERO,
+            1.0,
+        );
+        assert_eq!(low.top, 4_003.0, "carried through untouched");
+    }
+
+    #[test]
+    fn the_paint_offset_lands_before_the_snap_and_not_after() {
+        // Upstream shifts by the paint offset and *then* asks for the snap of
+        // the shifted top left. Snapping the unscrolled position and shifting
+        // afterwards would land off the grid again.
+        //
+        // Half-pixel grid, and a scroll of -0.3: the shifted left is 29.7 and
+        // the correction rounds it to 29.5.
+        let rect = CaretRect::local_rect(
+            crate::editable_text::TargetPlatform::Android,
+            2.0,
+            14.0,
+            crate::render::Offset::ZERO,
+            crate::render::Offset::new(30.0, 0.0),
+            20.0,
+            200.0,
+            100.0,
+            3.0,
+            crate::render::Offset::new(-0.3, 0.0),
+            2.0,
+        );
+        assert!(
+            (rect.left - 29.5).abs() < 1e-4,
+            "on the half-pixel grid: {rect:?}"
+        );
+        assert!(
+            (rect.width() - 2.0).abs() < 1e-4,
+            "and the whole rect moved together: {rect:?}"
+        );
+    }
 
     // -- One class paints both highlights, tick 280 --------------------------
 

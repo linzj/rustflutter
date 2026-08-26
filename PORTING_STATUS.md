@@ -19776,3 +19776,61 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 
 **下一步**：`getLocalRectForCaret` 与 `caretPrototype` 那一组，然后回 `depth.py`
 队头的 `SelectionOverlay` 9/43。
+
+## 第 281 轮：光标的矩形，在什么都还没发生之前就差了六个像素
+
+`RenderEditable._computeCaretPrototype` 和 `getLocalRectForCaret`。
+
+### 两个原型，而且离得不近
+
+    const double _kCaretHeightOffset = 2.0; // pixels
+
+    iOS、macOS：Rect.fromLTWH(0.0, 0.0, cursorWidth, cursorHeight + 2)
+    其余：      Rect.fromLTWH(0.0, _kCaretHeightOffset,
+                             cursorWidth, cursorHeight - 2.0 * _kCaretHeightOffset)
+
+同样的 `cursorHeight`，Apple 的原型**高两个像素**，其余平台的**矮四个**——那个 inset
+在**上下各减一次**——两者相距**六个像素**，而这时还没有量过任何一个字形。而且非 Apple
+那个是从两个像素往下开始的，不是从零。
+
+原型不只是一个尺寸：它被交给 `getOffsetForCaret`，所以引擎也是拿它来定位的。
+
+### 一支覆盖高度，另一支留着
+
+Apple 留着原型给的 `cursorHeight + 2`。其余平台把高度**扔掉换成 `cursorHeight`**,
+并且给顶上多减一个 `_kCaretHeightOffset`，把原型的 inset 抵掉。
+
+于是光标在 Apple 上是 `cursorHeight + 2` 高，别处正好是 `cursorHeight`——**那个矮四
+像素的原型从来没有上过屏幕**：它是给引擎定位用的，然后就被覆盖了。
+
+上游这一支的注释写的是"覆盖高度以取得该 TextPosition 处字形的完整高度"，而代码**没有
+这么做**——它取的是 `cursorHeight`。旁边有一条 TODO 指向 flutter#120836。**按写的移植,
+不按说的移植**，并把这处不一致记下来。
+
+### 只有 x 被 clamp，而且上界把光标自己的地方减了回去
+
+    scrollableWidth = max(textPainter.width + _caretMargin, size.width)
+    caretX = clamp(caretRect.left, 0, max(scrollableWidth - _caretMargin, 0))
+    caretRect = Offset(caretX, caretRect.top) & caretRect.size
+
+可滚宽度是"文字加光标的地方"和"字段"里较宽的那个，而 clamp 的上界又把光标的地方减了
+回去——光标可以走到**它还放得下的最后一个位置**，不是文字的最后一个位置。重建时
+`& caretRect.size` 保住了尺寸，只有 left 动。
+
+最后按 paintOffset 平移，**再**按平移后的左上角去吸附——顺序反过来会吸附到未滚动的
+位置上，平移之后又掉出网格。
+
+十九条承重规则逐条强制改错。其中一条第一次读绿，而它**不是测试弱，是改错空转**：
+我写的是"把宽度按可滚区域再 min 一次"，可是 `caret_margin` 3 恒大于 `cursor_width` 2,
+那个 `min` 在任何输入下都不生效。换成"右边界各自 clamp 一次"，尺寸就真的活不下来了,
+立刻落红。
+
+**一个改不动行为的改错，和一条看不见的规则，长得一模一样。**
+
+尺子：coverage 2102/0，**constants 160/0/0**（`_kCaretHeightOffset` 也被尺子接住
+并与上游核过），wire_strings 122/0，wire_enums 4/0，ffi_tables 5/0，unwired 48/0,
+unvaried 0，unread_strings 44+16+7/0，unpainted 0，hollow 67/0，vacuous 8,
+stale_engines 全部不落后，unread_theme_fields 2。
+门：5888 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：回 `depth.py` 队头的 `SelectionOverlay` 9/43。
