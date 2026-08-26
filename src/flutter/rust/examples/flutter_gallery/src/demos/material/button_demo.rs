@@ -18,10 +18,13 @@
 //!   glyph added.
 //! * `ToggleButtons` has no framework counterpart; [`ToggleButtonsDemo`]
 //!   draws the bordered group and its segments directly.
-//! * `FloatingActionButton` likewise; [`FabDemo`] draws the 56-pixel circle
-//!   and the extended variant. The fill is the demo theme's secondary colour,
-//!   read off `material_demo_theme_data::COLOR_SCHEME` because the framework's
-//!   `Theme` has no secondary slot.
+//! * `FloatingActionButton` likewise; [`FabDemo`] draws the 56-pixel button
+//!   and the extended variant. Upstream's demo theme does not set
+//!   `useMaterial3`, and the framework defaults it to true, so the M3
+//!   defaults apply: the fill is `colorScheme.primaryContainer` (read off
+//!   `material_demo_theme_data::COLOR_SCHEME` because the framework's `Theme`
+//!   has no primary-container slot) and the shape is a 16-radius rounded
+//!   rectangle, not a circle.
 //! * Upstream's per-variant app bars are the demo page's own bar here
 //!   (`pages/demo.rs`).
 
@@ -543,23 +546,26 @@ impl StatefulComponent for FabDemo {
         context: &mut BuildContext,
     ) -> AnyWidget {
         let theme = theme_of(context);
-        // Upstream's FAB fill in this theme is `colorScheme.secondary`; the
-        // framework's Theme has no secondary slot, so it is read off the
-        // ported scheme.
-        let fill = COLOR_SCHEME.secondary;
-        let on_fill = COLOR_SCHEME.on_secondary;
-        let splash = on_fill.with_alpha(0x30);
+        // Upstream's demo theme leaves `useMaterial3` at the framework
+        // default (true), so the FAB takes `_FABDefaultsM3`: the fill is
+        // `colorScheme.primaryContainer`, the ink is `onPrimaryContainer` --
+        // which the scheme's getter falls back to `onPrimary` -- and the
+        // splash is that ink at 10%. The framework's Theme has no
+        // primary-container slot, so both are read off the ported scheme.
+        let fill = COLOR_SCHEME.primary_container;
+        let on_fill = COLOR_SCHEME.on_primary;
+        let splash = on_fill.with_alpha(0x1A);
         let label_size = theme.body_size;
 
         // FloatingActionButton(onPressed: () {}, tooltip: 'Create',
         // child: Icon(Icons.add)). 56 pixels, elevation 6: upstream's
-        // defaults.
+        // defaults. The M3 shape is a 16-radius rounded rectangle.
         let fab_face = move || {
             leaf(move || {
                 Container::new()
                     .with_size(56.0, 56.0)
                     .with_color(fill)
-                    .with_corner_radius(28.0)
+                    .with_corner_radius(16.0)
                     .with_elevation(6)
                     .with_child(Align::new(
                         Alignment::CENTER,
@@ -577,14 +583,14 @@ impl StatefulComponent for FabDemo {
         let fab = rustflutter::semantics::describe(SemanticsProperties::button("Create"), fab);
 
         // FloatingActionButton.extended(icon: Icon(Icons.add),
-        // label: Text('Create'), onPressed: () {}). Height 48 with horizontal
-        // padding 20: upstream's extended defaults.
+        // label: Text('Create'), onPressed: () {}). Height 56 with horizontal
+        // padding 20 and the same 16-radius shape: the M3 extended defaults.
         let extended_face = move || {
             leaf(move || {
                 Container::new()
-                    .with_height(48.0)
+                    .with_height(56.0)
                     .with_color(fill)
-                    .with_corner_radius(24.0)
+                    .with_corner_radius(16.0)
                     .with_elevation(6)
                     .with_padding(EdgeInsets::symmetric(20.0, 0.0))
                     .with_child(Align::new(
