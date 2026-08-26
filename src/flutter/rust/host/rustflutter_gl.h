@@ -18,6 +18,7 @@
 // IO thread. They share objects, so an image decoded on IO is drawable on
 // raster without a copy.
 
+#include <functional>
 #include <memory>
 
 #include "flutter/impeller/renderer/context.h"
@@ -99,6 +100,14 @@ class ImpellerGlDelegate final : public GPUSurfaceGLDelegate {
   /// that changed size; presenting to a stale one stretches the frame.
   bool Resize();
 
+  /// Installs a one-shot callback fired after the first successful present.
+  /// The host uses it to show the window only once a frame is on it; this
+  /// file stays platform-neutral, so the window message itself lives with
+  /// the caller.
+  void SetFirstPresentCallback(std::function<void()> callback) {
+    on_first_present_ = std::move(callback);
+  }
+
   // |GPUSurfaceGLDelegate|
   std::unique_ptr<GLContextResult> GLContextMakeCurrent() override;
 
@@ -118,6 +127,7 @@ class ImpellerGlDelegate final : public GPUSurfaceGLDelegate {
   ImpellerGlContext* context_ = nullptr;
   EGLNativeWindowType window_ = {};
   std::unique_ptr<impeller::egl::Surface> surface_;
+  std::function<void()> on_first_present_;
 
   ImpellerGlDelegate(const ImpellerGlDelegate&) = delete;
   ImpellerGlDelegate& operator=(const ImpellerGlDelegate&) = delete;

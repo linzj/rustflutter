@@ -28,10 +28,10 @@
 
 #include "flutter/rust/host/rustflutter_host.h"
 
-#include <windows.h>
 #include <dwmapi.h>
 #include <imm.h>
 #include <objbase.h>
+#include <windows.h>
 #include <windowsx.h>
 
 #include <atomic>
@@ -39,8 +39,8 @@
 #include <deque>
 #include <map>
 #include <memory>
-#include <optional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -51,35 +51,35 @@
 #include "flutter/fml/make_copyable.h"
 #include "flutter/fml/message_loop.h"
 #include "flutter/fml/paths.h"
+#include "flutter/fml/string_conversion.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/fml/task_runner.h"
 #include "flutter/impeller/renderer/context.h"
+#include "flutter/lib/ui/semantics/semantics_node.h"
 #include "flutter/lib/ui/window/key_data.h"
 #include "flutter/lib/ui/window/key_data_packet.h"
 #include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/lib/ui/window/pointer_data.h"
-#include "flutter/lib/ui/semantics/semantics_node.h"
 #include "flutter/lib/ui/window/pointer_data_packet.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
-#include "flutter/shell/common/platform_view.h"
-#include "flutter/shell/common/rasterizer.h"
-#include "flutter/shell/common/run_configuration.h"
-#include "flutter/shell/common/shell.h"
-#include "flutter/shell/common/thread_host.h"
-#include "flutter/shell/common/display.h"
-#include "flutter/shell/common/vsync_waiter.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_gl.h"
 #include "flutter/rust/host/rustflutter_host_a11y_win.h"
 #include "flutter/rust/host/rustflutter_key_map_win.h"
+#include "flutter/shell/common/display.h"
+#include "flutter/shell/common/platform_view.h"
+#include "flutter/shell/common/rasterizer.h"
+#include "flutter/shell/common/run_configuration.h"
+#include "flutter/shell/common/shell.h"
+#include "flutter/shell/common/thread_host.h"
+#include "flutter/shell/common/vsync_waiter.h"
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
-#include "flutter/fml/string_conversion.h"
+#include "flutter/shell/platform/common/client_wrapper/include/flutter/standard_method_codec.h"
 #include "flutter/shell/platform/common/text_input_model.h"
 #include "flutter/shell/platform/common/text_range.h"
-#include "flutter/shell/platform/common/client_wrapper/include/flutter/standard_method_codec.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -92,7 +92,8 @@ constexpr wchar_t kWindowClass[] = L"RustflutterHostWindow";
 
 /// Where key events go. Matched by RuntimeController, which is the only reader.
 /// Upstream this same string is in embedder.cc, platform_dispatcher.dart,
-/// KeyData.java and FlutterEngine.mm -- an embedder is expected to spell it out.
+/// KeyData.java and FlutterEngine.mm -- an embedder is expected to spell it
+/// out.
 constexpr char kKeyDataChannel[] = "flutter/keydata";
 
 //------------------------------------------------------------------------------
@@ -122,7 +123,8 @@ class DpiApi {
   void MakeProcessPerMonitorAware() const {
     // ((DPI_AWARENESS_CONTEXT)-4), spelled out because the constant only
     // exists in headers new enough to declare the function too.
-    HANDLE kPerMonitorAwareV2 = reinterpret_cast<HANDLE>(static_cast<intptr_t>(-4));
+    HANDLE kPerMonitorAwareV2 =
+        reinterpret_cast<HANDLE>(static_cast<intptr_t>(-4));
     if (set_process_dpi_awareness_context_ != nullptr) {
       set_process_dpi_awareness_context_(kPerMonitorAwareV2);
     }
@@ -170,13 +172,25 @@ class DpiApi {
 
   BOOL(WINAPI* set_process_dpi_awareness_context_)(HANDLE) = nullptr;
   UINT(WINAPI* get_dpi_for_window_)(HWND) = nullptr;
-  BOOL(WINAPI* adjust_window_rect_ex_for_dpi_)(LPRECT, DWORD, BOOL, DWORD,
+  BOOL(WINAPI* adjust_window_rect_ex_for_dpi_)(LPRECT,
+                                               DWORD,
+                                               BOOL,
+                                               DWORD,
                                                UINT) = nullptr;
 };
 
-// Posted by the raster thread once a frame has been copied into the shared
-// buffer. WM_APP is the first message id reserved for applications.
+// Posted by the raster thread once a frame has been presented -- copied into
+// the shared buffer on the software path, swapped onto the window on the
+// Impeller one. The software path posts one per frame; the Impeller path
+// posts only the first, because the first frame is the cue that shows the
+// window (rf_host_run leaves it hidden until then).
+// WM_APP is the first message id reserved for applications.
 constexpr UINT kMessageFramePresented = WM_APP + 1;
+
+// One-shot fallback for the deferred ShowWindow: if no frame is ever
+// presented, this timer shows the window anyway, so a broken engine does not
+// leave the process running invisibly.
+constexpr UINT_PTR kTimerShowWindowFallback = 1;
 
 // Posted by the platform thread when the framework has chosen a different
 // mouse cursor, so the window thread can apply it without waiting for the
@@ -277,8 +291,8 @@ class HighResolutionTimer {
     if (winmm_ == nullptr) {
       return;
     }
-    begin_period_ = reinterpret_cast<PeriodFn>(
-        GetProcAddress(winmm_, "timeBeginPeriod"));
+    begin_period_ =
+        reinterpret_cast<PeriodFn>(GetProcAddress(winmm_, "timeBeginPeriod"));
     end_period_ =
         reinterpret_cast<PeriodFn>(GetProcAddress(winmm_, "timeEndPeriod"));
     if (begin_period_ != nullptr && begin_period_(1) == 0) {
@@ -575,7 +589,8 @@ bool SetClipboardText(HWND window, const std::string& utf8) {
   std::wstring wide = WidenText(utf8);
   // The clipboard takes ownership of the handle on success, so it is only
   // freed on the paths where SetClipboardData was not reached.
-  HGLOBAL handle = GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(wchar_t));
+  HGLOBAL handle =
+      GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(wchar_t));
   if (handle == nullptr) {
     return false;
   }
@@ -708,8 +723,7 @@ class ImeContext {
     if (context == nullptr) {
       return -1;
     }
-    LONG position =
-        ImmGetCompositionString(context, GCS_CURSORPOS, nullptr, 0);
+    LONG position = ImmGetCompositionString(context, GCS_CURSORPOS, nullptr, 0);
     ImmReleaseContext(window_, context);
     return position;
   }
@@ -754,8 +768,8 @@ class ImeContext {
     // CFS_EXCLUDE rather than CFS_CANDIDATEPOS: it names the rectangle the
     // candidate list must *not* cover, so the list is placed clear of the line
     // being typed instead of on top of it.
-    CANDIDATEFORM candidate = {0, CFS_EXCLUDE, {left, bottom},
-                               {left, top, right, bottom}};
+    CANDIDATEFORM candidate = {
+        0, CFS_EXCLUDE, {left, bottom}, {left, top, right, bottom}};
     ImmSetCandidateWindow(context, &candidate);
 
     ImmReleaseContext(window_, context);
@@ -846,8 +860,8 @@ class TextInputHandler {
 
   void OnComposeChange(const std::u16string& text, int cursor_position) {
     if (Edit([&](TextInputModel& model) {
-          model.UpdateComposingText(text, TextRange(static_cast<size_t>(
-                                              cursor_position)));
+          model.UpdateComposingText(
+              text, TextRange(static_cast<size_t>(cursor_position)));
           return true;
         })) {
       SendStateUpdate();
@@ -962,10 +976,9 @@ bool PrefersDarkTheme() {
 double TextScaleFactor() {
   DWORD percent = 0;
   DWORD size = sizeof(percent);
-  LONG result =
-      RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Accessibility",
-                   L"TextScaleFactor", RRF_RT_REG_DWORD, nullptr, &percent,
-                   &size);
+  LONG result = RegGetValueW(
+      HKEY_CURRENT_USER, L"Software\\Microsoft\\Accessibility",
+      L"TextScaleFactor", RRF_RT_REG_DWORD, nullptr, &percent, &size);
   if (result != ERROR_SUCCESS || percent == 0) {
     return 1.0;
   }
@@ -1006,10 +1019,10 @@ std::string SettingsPayload() {
 
 /// The reader's languages, most preferred first.
 ///
-/// Upstream's `GetPreferredLanguages`: a double-null-terminated buffer of BCP 47
-/// names from `GetThreadPreferredUILanguages`. `MUI_UI_FALLBACK` is what makes
-/// the list non-empty on a machine whose preferred language has no installed
-/// language pack.
+/// Upstream's `GetPreferredLanguages`: a double-null-terminated buffer of BCP
+/// 47 names from `GetThreadPreferredUILanguages`. `MUI_UI_FALLBACK` is what
+/// makes the list non-empty on a machine whose preferred language has no
+/// installed language pack.
 std::vector<std::wstring> PreferredLanguages() {
   ULONG count = 0;
   ULONG size = 0;
@@ -1123,8 +1136,8 @@ std::optional<std::string> LocalizationPayload() {
 //------------------------------------------------------------------------------
 // Application exit.
 //
-// The strings and the shape of the exchange are upstream's `platform_handler.cc`
-// and `windows_lifecycle_manager.cc`.
+// The strings and the shape of the exchange are upstream's
+// `platform_handler.cc` and `windows_lifecycle_manager.cc`.
 //
 // Two methods and two directions. The framework can ask to exit
 // (`System.exitApplication`), and the platform can ask the framework whether it
@@ -1450,7 +1463,8 @@ std::optional<std::string> TextInputHandler::HandleMethodCall(
     const rapidjson::Value& client = (*args)[0];
     const rapidjson::Value& config = (*args)[1];
     if (!client.IsInt()) {
-      return ErrorEnvelope("TextInput.badArgument", "the client id is not a number");
+      return ErrorEnvelope("TextInput.badArgument",
+                           "the client id is not a number");
     }
     std::lock_guard<std::mutex> lock(mutex_);
     client_id_ = client.GetInt();
@@ -1501,7 +1515,8 @@ std::optional<std::string> TextInputHandler::HandleMethodCall(
 
   if (method == "TextInput.setEditingState") {
     if (args == nullptr || !args->IsObject()) {
-      return ErrorEnvelope("TextInput.badArgument", "setEditingState needs a state");
+      return ErrorEnvelope("TextInput.badArgument",
+                           "setEditingState needs a state");
     }
     auto text = args->FindMember("text");
     if (text == args->MemberEnd() || !text->value.IsString()) {
@@ -1539,7 +1554,8 @@ std::optional<std::string> TextInputHandler::HandleMethodCall(
   if (method == "TextInput.setMarkedTextRect") {
     // Where the composing text sits, in the editable's own coordinates.
     if (args == nullptr || !args->IsObject()) {
-      return ErrorEnvelope("TextInput.badArgument", "Method invoked without args");
+      return ErrorEnvelope("TextInput.badArgument",
+                           "Method invoked without args");
     }
     auto number = [args](const char* key, bool* found_it) {
       auto found = args->FindMember(key);
@@ -1552,7 +1568,8 @@ std::optional<std::string> TextInputHandler::HandleMethodCall(
     const double width = number("width", &ok[2]);
     const double height = number("height", &ok[3]);
     if (!ok[0] || !ok[1] || !ok[2] || !ok[3]) {
-      return ErrorEnvelope("TextInput.badArgument", "Composing rect values invalid.");
+      return ErrorEnvelope("TextInput.badArgument",
+                           "Composing rect values invalid.");
     }
     std::lock_guard<std::mutex> lock(mutex_);
     marked_x_ = x;
@@ -1569,12 +1586,14 @@ std::optional<std::string> TextInputHandler::HandleMethodCall(
     // cannot be rotated or scaled, so where the editable's origin lands is the
     // whole of what the platform can act on.
     if (args == nullptr || !args->IsObject()) {
-      return ErrorEnvelope("TextInput.badArgument", "Method invoked without args");
+      return ErrorEnvelope("TextInput.badArgument",
+                           "Method invoked without args");
     }
     auto transform = args->FindMember("transform");
     if (transform == args->MemberEnd() || !transform->value.IsArray() ||
         transform->value.Size() != 16) {
-      return ErrorEnvelope("TextInput.badArgument", "EditableText transform invalid.");
+      return ErrorEnvelope("TextInput.badArgument",
+                           "EditableText transform invalid.");
     }
     const rapidjson::Value& matrix = transform->value;
     if (!matrix[12].IsNumber() || !matrix[13].IsNumber()) {
@@ -1608,7 +1627,8 @@ bool TextInputHandler::OnEditingKey(WPARAM virtual_key, bool shift) {
         changed = model.MoveCursorForward();
         return true;
       case VK_HOME:
-        changed = shift ? model.SelectToBeginning() : model.MoveCursorToBeginning();
+        changed =
+            shift ? model.SelectToBeginning() : model.MoveCursorToBeginning();
         return true;
       case VK_END:
         changed = shift ? model.SelectToEnd() : model.MoveCursorToEnd();
@@ -1767,8 +1787,7 @@ class HostPlatformMessageResponse : public PlatformMessageResponse {
  private:
   HostPlatformMessageResponse(fml::RefPtr<fml::TaskRunner> task_runner,
                               Callback callback)
-      : task_runner_(std::move(task_runner)),
-        callback_(std::move(callback)) {}
+      : task_runner_(std::move(task_runner)), callback_(std::move(callback)) {}
 
   void Post(std::vector<uint8_t> reply) {
     if (is_complete_) {
@@ -1922,8 +1941,8 @@ class HostPlatformView final : public PlatformView,
   void SendPointer(const PointerData& data) {
     auto packet = std::make_unique<PointerDataPacket>(1);
     packet->SetPointerData(0, data);
-    task_runners_.GetPlatformTaskRunner()->PostTask(
-        fml::MakeCopyable([weak = GetWeakPtr(), packet = std::move(packet)]() mutable {
+    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
+        [weak = GetWeakPtr(), packet = std::move(packet)]() mutable {
           if (weak) {
             static_cast<HostPlatformView*>(weak.get())
                 ->DispatchPointerDataPacket(std::move(packet));
@@ -1948,7 +1967,8 @@ class HostPlatformView final : public PlatformView,
   // where an embedder's plugins are dispatched to; here it is the three
   // channels this host serves. Anything else falls through to an empty reply,
   // which the framework reads as "nobody implements this".
-  void HandlePlatformMessage(std::unique_ptr<PlatformMessage> message) override {
+  void HandlePlatformMessage(
+      std::unique_ptr<PlatformMessage> message) override {
     const auto& data = message->data();
     std::optional<std::vector<uint8_t>> reply;
 
@@ -1996,8 +2016,7 @@ class HostPlatformView final : public PlatformView,
       response->CompleteEmpty();
       return;
     }
-    response->Complete(
-        std::make_unique<fml::DataMapping>(std::move(*reply)));
+    response->Complete(std::make_unique<fml::DataMapping>(std::move(*reply)));
   }
 
   //----------------------------------------------------------------------------
@@ -2203,7 +2222,6 @@ class HostPlatformView final : public PlatformView,
   }
 
  public:
-
   //----------------------------------------------------------------------------
   /// Sends one key event and brings the framework's verdict back.
   ///
@@ -2265,6 +2283,12 @@ class HostPlatformView final : public PlatformView,
       gl_delegate_.reset();
       return nullptr;
     }
+    // The first swap is what makes the deferred ShowWindow happen; the
+    // window proc does the rest. Only the first matters, and the delegate
+    // drops the callback after firing it.
+    gl_delegate_->SetFirstPresentCallback([window = window_]() {
+      PostMessage(window, kMessageFramePresented, 0, 0);
+    });
 
     // GPUSurfaceGLImpeller's constructor builds an AiksContext, which compiles
     // pipelines through Impeller's reactor -- and the reactor refuses to run on
@@ -2514,7 +2538,10 @@ double ScrollPixelsPerNotch() {
 /// It is not its own change: the pointer did not go anywhere, and a recogniser
 /// that read the change would see a mouse being moved. The signal is what says
 /// otherwise.
-PointerData MakeScrollData(WindowState* state, double x, double y, double notches) {
+PointerData MakeScrollData(WindowState* state,
+                           double x,
+                           double y,
+                           double notches) {
   PointerData data = MakePointerData(state, PointerData::Change::kHover, x, y);
   data.signal_kind = PointerData::SignalKind::kScroll;
   // Positive means the content moves up -- the direction the reader is going,
@@ -2589,7 +2616,8 @@ std::string Utf8FromCodePoint(char32_t code_point) {
 }
 
 char32_t CodePointFromSurrogatePair(wchar_t high, wchar_t low) {
-  return 0x10000 + ((static_cast<char32_t>(high) & 0x03FF) << 10) + (low & 0x3FF);
+  return 0x10000 + ((static_cast<char32_t>(high) & 0x03FF) << 10) +
+         (low & 0x3FF);
 }
 
 /// Which Shift, which Control, which Alt.
@@ -2597,11 +2625,14 @@ char32_t CodePointFromSurrogatePair(wchar_t high, wchar_t low) {
 /// `VK_SHIFT` does not say. For Shift the scan code is asked, because the two
 /// sides sit at different positions; for Control and Alt the extended flag is
 /// what separates right from left. Straight from upstream's `ResolveKeyCode`.
-uint16_t ResolveVirtualKey(uint16_t virtual_key, bool extended, uint8_t scan_code) {
+uint16_t ResolveVirtualKey(uint16_t virtual_key,
+                           bool extended,
+                           uint8_t scan_code) {
   switch (virtual_key) {
     case VK_SHIFT:
     case VK_LSHIFT:
-      return static_cast<uint16_t>(MapVirtualKey(scan_code, MAPVK_VSC_TO_VK_EX));
+      return static_cast<uint16_t>(
+          MapVirtualKey(scan_code, MAPVK_VSC_TO_VK_EX));
     case VK_MENU:
     case VK_LMENU:
       return extended ? VK_RMENU : VK_LMENU;
@@ -2778,14 +2809,12 @@ void SyncModifiers(WindowState* state) {
   const bool control_held = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 
   if (shift_held != state->shift_reported) {
-    SendKeyEvent(state,
-                 shift_held ? KeyEventType::kDown : KeyEventType::kUp,
+    SendKeyEvent(state, shift_held ? KeyEventType::kDown : KeyEventType::kUp,
                  VK_LSHIFT, kScanCodeShiftLeft, /*extended=*/false,
                  /*character=*/"", /*synthesized=*/true);
   }
   if (control_held != state->control_reported) {
-    SendKeyEvent(state,
-                 control_held ? KeyEventType::kDown : KeyEventType::kUp,
+    SendKeyEvent(state, control_held ? KeyEventType::kDown : KeyEventType::kUp,
                  VK_LCONTROL, kScanCodeControlLeft, /*extended=*/false,
                  /*character=*/"", /*synthesized=*/true);
   }
@@ -2849,7 +2878,8 @@ bool HandleKeyMessage(WindowState* state,
         if (code_point > 0xFFFF) {
           const char32_t offset = code_point - 0x10000;
           event.text.push_back(static_cast<char16_t>(0xD800 + (offset >> 10)));
-          event.text.push_back(static_cast<char16_t>(0xDC00 + (offset & 0x3FF)));
+          event.text.push_back(
+              static_cast<char16_t>(0xDC00 + (offset & 0x3FF)));
         } else {
           event.text.push_back(static_cast<char16_t>(code_point));
         }
@@ -2921,13 +2951,15 @@ bool HandleKeyMessage(WindowState* state,
 
       const bool is_down = action == WM_KEYDOWN || action == WM_SYSKEYDOWN;
       if (is_down) {
-        const uint32_t mapped = MapVirtualKey(key.virtual_key, MAPVK_VK_TO_CHAR);
+        const uint32_t mapped =
+            MapVirtualKey(key.virtual_key, MAPVK_VK_TO_CHAR);
         // The dead-key bit means the mapping is real but deferred; either way a
         // character message follows, so peek for one rather than trusting the
         // mapping. Ctrl+digit maps to a character and produces no WM_CHAR.
         if ((mapped & ~kDeadKeyCharMask) != 0) {
           MSG next = {};
-          if (PeekMessage(&next, nullptr, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE) &&
+          if (PeekMessage(&next, nullptr, WM_KEYFIRST, WM_KEYLAST,
+                          PM_NOREMOVE) &&
               (next.message == WM_CHAR || next.message == WM_SYSCHAR ||
                next.message == WM_DEADCHAR || next.message == WM_SYSDEADCHAR)) {
             // The character decides what this key produced, so the session
@@ -3001,7 +3033,24 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case kMessageFramePresented:
+      // The first presented frame is the cue to show the window, which
+      // rf_host_run left hidden so the blank startup window is never on
+      // screen. The timer is the fallback for a first frame that never
+      // comes.
+      if (!IsWindowVisible(hwnd)) {
+        KillTimer(hwnd, kTimerShowWindowFallback);
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+      }
       InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
+
+    case WM_TIMER:
+      if (wparam == kTimerShowWindowFallback) {
+        KillTimer(hwnd, kTimerShowWindowFallback);
+        if (!IsWindowVisible(hwnd)) {
+          ShowWindow(hwnd, SW_SHOWNORMAL);
+        }
+      }
       return 0;
 
     case kMessageSemanticsUpdated:
@@ -3123,9 +3172,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         // The EGL surface has to be remade on the raster thread, where the GL
         // context lives, before the next frame is presented to it.
         if (state->platform_view != nullptr && state->raster_task_runner) {
-          state->raster_task_runner->PostTask([view = state->platform_view]() {
-            view->OnWindowResized();
-          });
+          state->raster_task_runner->PostTask(
+              [view = state->platform_view]() { view->OnWindowResized(); });
         }
         SendViewportMetrics(state, LOWORD(lparam), HIWORD(lparam));
       }
@@ -3252,15 +3300,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       ScreenToClient(hwnd, &point);
       const double notches =
           static_cast<double>(GET_WHEEL_DELTA_WPARAM(wparam)) / WHEEL_DELTA;
-      state->platform_view->SendPointer(MakeScrollData(
-          state, static_cast<double>(point.x), static_cast<double>(point.y),
-          notches));
+      state->platform_view->SendPointer(
+          MakeScrollData(state, static_cast<double>(point.x),
+                         static_cast<double>(point.y), notches));
       return 0;
     }
     case WM_CAPTURECHANGED:
       // Something else took the mouse. A press that ends this way is cancelled
       // rather than completed.
-      if (state != nullptr && state->pressed && state->platform_view != nullptr) {
+      if (state != nullptr && state->pressed &&
+          state->platform_view != nullptr) {
         state->platform_view->SendPointer(MakePointerData(
             state, PointerData::Change::kCancel, state->last_x, state->last_y));
         state->pressed = false;
@@ -3303,7 +3352,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         }
       }
       break;
-    // -- The IME ---------------------------------------------------------------
+    // -- The IME
+    // ---------------------------------------------------------------
     //
     // Upstream's FlutterWindow does exactly this, and the three return values
     // are the load-bearing part: DefWindowProc would otherwise draw the system
@@ -3316,8 +3366,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       }
       // Clearing this bit is what hides the system's composition window. The
       // framework draws the composing text itself, underlined, in the field.
-      return DefWindowProc(hwnd, msg, wparam,
-                           lparam & ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW));
+      return DefWindowProc(
+          hwnd, msg, wparam,
+          lparam & ~static_cast<LPARAM>(ISC_SHOWUICOMPOSITIONWINDOW));
 
     case WM_IME_STARTCOMPOSITION:
       if (state != nullptr && state->ime.has_value()) {
@@ -3382,9 +3433,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       SendLifecycle(state, "AppLifecycleState.detached");
       // The code `System.exitApplication` asked for, which is zero for every
       // other way of getting here.
-      PostQuitMessage(state == nullptr ? 0
-                                       : static_cast<int>(state->shared.exit_code
-                                                              .load()));
+      PostQuitMessage(state == nullptr
+                          ? 0
+                          : static_cast<int>(state->shared.exit_code.load()));
       return 0;
     default:
       break;
@@ -3428,9 +3479,9 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // problem can be bisected without rebuilding: RUSTFLUTTER_SOFTWARE=1 forces
   // the Skia software surface.
   const char* force_software = std::getenv("RUSTFLUTTER_SOFTWARE");
-  const bool software_forced =
-      force_software != nullptr && force_software[0] != '\0' &&
-      force_software[0] != '0';
+  const bool software_forced = force_software != nullptr &&
+                               force_software[0] != '\0' &&
+                               force_software[0] != '0';
   settings.enable_impeller = options->enable_impeller != 0 && !software_forced;
   if (software_forced) {
     FML_LOG(IMPORTANT) << "RUSTFLUTTER_SOFTWARE is set; using the software "
@@ -3488,10 +3539,10 @@ int32_t rf_host_run(const RfHostOptions* options) {
   AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
   std::wstring title = Widen(options->title);
-  HWND window = CreateWindowEx(0, kWindowClass, title.c_str(),
-                               WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-                               rect.right - rect.left, rect.bottom - rect.top,
-                               nullptr, nullptr, instance, &state);
+  HWND window = CreateWindowEx(
+      0, kWindowClass, title.c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+      CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr,
+      nullptr, instance, &state);
   if (window == nullptr) {
     return -3;
   }
@@ -3529,10 +3580,9 @@ int32_t rf_host_run(const RfHostOptions* options) {
 
   // -- Threads ----------------------------------------------------------------
 
-  ThreadHost thread_host("rf", ThreadHost::Type::kPlatform |
-                                   ThreadHost::Type::kUi |
-                                   ThreadHost::Type::kRaster |
-                                   ThreadHost::Type::kIo);
+  ThreadHost thread_host("rf",
+                         ThreadHost::Type::kPlatform | ThreadHost::Type::kUi |
+                             ThreadHost::Type::kRaster | ThreadHost::Type::kIo);
 
   TaskRunners task_runners("rustflutter",
                            thread_host.platform_thread->GetTaskRunner(),
@@ -3625,8 +3675,14 @@ int32_t rf_host_run(const RfHostOptions* options) {
         state.platform_view->SendPlatformSettings();
       }));
 
-  ShowWindow(window, SW_SHOWNORMAL);
-  UpdateWindow(window);
+  // The window is left hidden until the first frame has been presented:
+  // showing it now would put a blank window on screen for as long as the
+  // engine takes to start and the first frame to rasterise, because WM_PAINT
+  // has nothing to draw before then. The frame-presented message does the
+  // showing (see the window proc); this timer is the fallback for a first
+  // frame that never arrives, so a broken engine does not leave the process
+  // running invisibly.
+  SetTimer(window, kTimerShowWindowFallback, 5000, nullptr);
 
   // Every lifecycle report is made from this thread, including this first one.
   // The window proc makes the other four, and `lifecycle_state` is a plain
@@ -3635,8 +3691,10 @@ int32_t rf_host_run(const RfHostOptions* options) {
   // window thread reads it.
   //
   // Ordering still holds: the report is posted to the platform task runner,
-  // which runs it after the RunEngine task queued before it. ShowWindow has
-  // usually produced a WM_ACTIVATE by now, in which case this is a no-op.
+  // which runs it after the RunEngine task queued before it. With the window
+  // still hidden no WM_ACTIVATE has happened yet, so this first report is the
+  // one that reaches the framework; the activation that comes with the
+  // deferred ShowWindow repeats the same state and is deduplicated.
   SendLifecycle(&state, "AppLifecycleState.resumed");
 
   // -- Message loop -----------------------------------------------------------

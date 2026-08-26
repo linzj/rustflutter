@@ -20,15 +20,15 @@
 #include "flutter/impeller/renderer/backend/gles/proc_table_gles.h"
 #include "flutter/impeller/renderer/backend/gles/reactor_gles.h"
 #include "flutter/impeller/toolkit/egl/egl.h"
+#include "impeller/entity/gles/entity_shaders_gles.h"
+#include "impeller/entity/gles/framebuffer_blend_shaders_gles.h"
+#include "impeller/entity/gles3/entity_shaders_gles.h"
+#include "impeller/entity/gles3/framebuffer_blend_shaders_gles.h"
 #include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/encode/SkPngEncoder.h"
-#include "impeller/entity/gles/entity_shaders_gles.h"
-#include "impeller/entity/gles/framebuffer_blend_shaders_gles.h"
-#include "impeller/entity/gles3/entity_shaders_gles.h"
-#include "impeller/entity/gles3/framebuffer_blend_shaders_gles.h"
 
 namespace flutter {
 
@@ -101,9 +101,9 @@ std::shared_ptr<impeller::Context> CreateImpellerContext(
     };
   }
 
-  auto context = impeller::ContextGLES::Create(
-      impeller::Flags{}, std::move(proc_table), shaders,
-      /*enable_gpu_tracing=*/false);
+  auto context = impeller::ContextGLES::Create(impeller::Flags{},
+                                               std::move(proc_table), shaders,
+                                               /*enable_gpu_tracing=*/false);
   if (!context) {
     FML_LOG(ERROR) << "Could not create the Impeller OpenGL ES context.";
     return nullptr;
@@ -352,7 +352,7 @@ void ReportFrameStats(double idle_ms, double raster_ms, double swap_ms) {
     return;
   }
 
-  auto median = [&samples](double FrameSample::*field) {
+  auto median = [&samples](double FrameSample::* field) {
     std::vector<double> values;
     values.reserve(samples.size());
     for (const FrameSample& sample : samples) {
@@ -367,7 +367,7 @@ void ReportFrameStats(double idle_ms, double raster_ms, double swap_ms) {
   // uploaded to a texture the first time it is drawn happens on this thread,
   // once per image, and shows up as one slow frame rather than as a shifted
   // median.
-  auto worst = [&samples](double FrameSample::*field) {
+  auto worst = [&samples](double FrameSample::* field) {
     double top = 0.0;
     for (const FrameSample& sample : samples) {
       top = std::max(top, sample.*field);
@@ -380,8 +380,9 @@ void ReportFrameStats(double idle_ms, double raster_ms, double swap_ms) {
                      << " ms, rasterise " << median(&FrameSample::raster_ms)
                      << " ms (worst " << worst(&FrameSample::raster_ms)
                      << " ms), swap " << median(&FrameSample::swap_ms)
-                     << " ms, frame " << interval << " ms (" << (1000.0 / interval)
-                     << " fps), median of " << samples.size() << ".";
+                     << " ms, frame " << interval << " ms ("
+                     << (1000.0 / interval) << " fps), median of "
+                     << samples.size() << ".";
   samples.clear();
 }
 
@@ -487,21 +488,29 @@ bool ImpellerGlDelegate::GLContextPresent(const GLPresentInfo& present_info) {
   // Before the swap: after it, the back buffer's contents are undefined.
   MaybeCaptureFrame();
 
+  bool presented;
   if (!FrameStatsEnabled()) {
-    return surface_->Present();
+    presented = surface_->Present();
+  } else {
+    const auto asked = std::chrono::steady_clock::now();
+    const double idle_ms =
+        std::chrono::duration<double, std::milli>(RasterStart() - LastSwapEnd())
+            .count();
+    const double raster_ms =
+        std::chrono::duration<double, std::milli>(asked - RasterStart())
+            .count();
+    presented = surface_->Present();
+    const auto done = std::chrono::steady_clock::now();
+    LastSwapEnd() = done;
+    ReportFrameStats(
+        idle_ms, raster_ms,
+        std::chrono::duration<double, std::milli>(done - asked).count());
   }
-  const auto asked = std::chrono::steady_clock::now();
-  const double idle_ms =
-      std::chrono::duration<double, std::milli>(RasterStart() - LastSwapEnd())
-          .count();
-  const double raster_ms =
-      std::chrono::duration<double, std::milli>(asked - RasterStart()).count();
-  const bool presented = surface_->Present();
-  const auto done = std::chrono::steady_clock::now();
-  LastSwapEnd() = done;
-  ReportFrameStats(
-      idle_ms, raster_ms,
-      std::chrono::duration<double, std::milli>(done - asked).count());
+  if (presented && on_first_present_) {
+    auto callback = std::move(on_first_present_);
+    on_first_present_ = nullptr;
+    callback();
+  }
   return presented;
 }
 
