@@ -19662,3 +19662,56 @@ hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2�
 
 **下一步**：`RenderEditable` 这一批做完了，回到 `depth.py` 的队头——
 `SelectionOverlay` 9/43、`CupertinoApp` 8/37、`TextSelectionGestureDetectorBuilder` 6/27。
+
+## 第 279 轮：向上半行，向下一行半
+
+`RenderEditable.getTextPositionAbove`、`getTextPositionBelow` 和
+`VerticalCaretMovementRun.moveByOffset`。这个 run 本身早就在了——粘性列和按恒等判失效
+是之前几轮的事——这三个成员是它当时缺的。
+
+### 不对称就是那条规则
+
+    // The caret offset gives a location in the upper left hand corner of
+    // the caret so the middle of the line above is a half line above that
+    // point and the line below is 1.5 lines below that point.
+    final double verticalOffset = -0.5 * preferredLineHeight;   // 上
+    final double verticalOffset = 1.5 * preferredLineHeight;    // 下
+
+**不是 -1 和 +1。** 一个光标的偏移量是它的**顶**，所以从那里出发，上一行的**中间**在
+半行之上，下一行的中间在一行半之下。两个方向是从光标的两端量的。对称的数字会落在
+**行的边界上**，而命中测试在边界上挑哪一行是掷硬币。
+
+半行上加一行半下，两点相隔正好**两个整行**——这正是让一个点落进上一行内部、另一个点
+落进下一行内部的原因。
+
+### 一行的 y 是它的基线
+
+    final newOffset = Offset(_currentOffset.dx, _lineMetrics[lineNumber].baseline);
+
+不是行顶，也不是行中。而 `_currentOffset.dx` 原样带过去——那是粘性列，已经在了。
+
+### `moveByOffset` 是走，不是除
+
+翻页是**一个像素数**，而各行高度不一样，所以它一行一行地走到走够为止。从这个循环的
+形状掉出来三件事：
+
+* 它停在**第一个**到达或越过目标的行，不是目标之前的最后一行——判据测的是它**正站着
+  的那一行**，而且是在移动**之前**测的；
+* 撞到头是 **break**，不是返回 false：靠近底部的一次翻页应当走到最后一行并报告成功；
+* `moveByOffset(0)` 什么都不动并返回 **false**，因为循环条件进门就是假的。
+
+而"撞到头 break"和"根本没动"是两回事，返回值 `initialOffset != _currentOffset` 把它
+们分开：已经在最后一行再往下翻，返回 false。
+
+十条承重规则逐条强制改错，全红。其中"是走不是除"那条用的是一组**高度不齐**的基线
+（10、30、90、110）：同样五十像素，从第 0 行走两行，从第 2 行只走一行。一个按行高
+去除的端口两次都走一样多，齐高的基线看不出来。
+
+尺子：coverage 2102/0，constants 159/0/0，wire_strings 122/0，wire_enums 4/0,
+ffi_tables 5/0，unwired 48/0，unvaried 0，unread_strings 44+16+7/0，unpainted 0,
+hollow 67/0，vacuous 8，stale_engines 全部不落后，unread_theme_fields 2。
+门：5861 + 333 通过；五个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`RenderEditable` 全 crate 检查还剩几簇真缺口——
+`getLocalRectForCaret` 与 `caretPrototype` 那一组、`setPromptRectRange` 与
+`promptRectColor`（自动更正的下划线高亮）、`selectionHeightStyle`/`selectionWidthStyle`。

@@ -1968,6 +1968,43 @@ pub trait RenderEditablePainter {
     fn paint(&self, context: &mut PaintContext, offset: Offset, size: Size);
 }
 
+/// One press of the up or down arrow -- upstream
+/// `RenderEditable.getTextPositionAbove` and `getTextPositionBelow`.
+///
+/// The two numbers are **not** symmetric, and upstream says why: "The caret
+/// offset gives a location in the upper left hand corner of the caret so the
+/// middle of the line above is a half line above that point and the line below
+/// is 1.5 lines below that point."
+///
+/// A caret's offset is its *top*. From there the middle of the line above is
+/// half a line up and the middle of the line below is a line and a half down.
+/// Minus one and plus one land on a line boundary instead of inside a line,
+/// and which line the hit test picks there is a coin toss.
+pub struct VerticalCaretStep;
+
+impl VerticalCaretStep {
+    /// Upstream's `-0.5 * preferredLineHeight`.
+    pub const ABOVE: f32 = -0.5;
+    /// Upstream's `1.5 * preferredLineHeight`.
+    pub const BELOW: f32 = 1.5;
+
+    /// The point to hit-test for the line above. Only the y moves.
+    pub fn above(caret: Offset, preferred_line_height: f32) -> Offset {
+        Offset::new(
+            caret.dx,
+            caret.dy + VerticalCaretStep::ABOVE * preferred_line_height,
+        )
+    }
+
+    /// The point to hit-test for the line below.
+    pub fn below(caret: Offset, preferred_line_height: f32) -> Offset {
+        Offset::new(
+            caret.dx,
+            caret.dy + VerticalCaretStep::BELOW * preferred_line_height,
+        )
+    }
+}
+
 /// Upstream `VerticalCaretMovementRun`: the caret moving up or down through
 /// lines, one arrow press at a time.
 ///
@@ -2060,6 +2097,64 @@ impl VerticalCaretMovementRun {
         true
     }
 
+    /// Where the caret lands on `line` -- upstream's `_getTextPositionForLine`.
+    ///
+    /// The y is the line's **baseline**, not its top and not its middle. The x
+    /// is the sticky column, carried through untouched.
+    ///
+    /// `None` for a line that is not there, which is how the walk in
+    /// [`VerticalCaretMovementRun::move_by_offset`] knows it has run out.
+    pub fn offset_for_line(&self, line: usize, baselines: &[f32]) -> Option<(f32, f32)> {
+        baselines
+            .get(line)
+            .map(|baseline| (self.origin_x, *baseline))
+    }
+
+    /// Upstream's `moveByOffset`: move by a number of **pixels** rather than a
+    /// number of lines, which is what a page up or down is.
+    ///
+    /// Lines are not all the same height, so this steps one line at a time
+    /// until it has gone far enough rather than dividing. Three things follow
+    /// from the shape of that loop:
+    ///
+    /// * it stops at the **first** line at or past the target, because the
+    ///   condition is tested on the line it is standing on before it moves;
+    /// * reaching the top or bottom **breaks** rather than failing, so a page
+    ///   down near the end moves as far as it can and reports success;
+    /// * an offset of zero moves nothing and returns **false**, because the
+    ///   condition is already false on entry.
+    ///
+    /// The return value is upstream's `initialOffset != _currentOffset`:
+    /// whether anything moved, not whether it moved the whole way.
+    pub fn move_by_offset(&mut self, offset: f32, baselines: &[f32]) -> bool {
+        let Some((_, initial)) = self.offset_for_line(self.current_line, baselines) else {
+            return false;
+        };
+        let target = initial + offset;
+        if offset >= 0.0 {
+            while self
+                .offset_for_line(self.current_line, baselines)
+                .is_some_and(|(_, dy)| dy < target)
+            {
+                if !self.move_next() {
+                    break;
+                }
+            }
+        } else {
+            while self
+                .offset_for_line(self.current_line, baselines)
+                .is_some_and(|(_, dy)| dy > target)
+            {
+                if !self.move_previous() {
+                    break;
+                }
+            }
+        }
+        self.offset_for_line(self.current_line, baselines)
+            .map(|(_, dy)| dy)
+            != Some(initial)
+    }
+
     /// Where the caret lands on the current line: the sticky column, clamped
     /// into the line.
     ///
@@ -2075,6 +2170,141 @@ impl VerticalCaretMovementRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- Half a line up and one and a half down, tick 279 --------------------
+
+    /// Four lines of uneven height, so a pixel move cannot be a division.
+    /// Baselines at 10, 30, 90, 110: a tall third line in the middle.
+    const BASELINES: [f32; 4] = [10.0, 30.0, 90.0, 110.0];
+
+    #[test]
+    fn the_step_up_and_the_step_down_are_not_the_same_size() {
+        // Upstream: "The caret offset gives a location in the upper left hand
+        // corner of the caret so the middle of the line above is a half line
+        // above that point and the line below is 1.5 lines below that point."
+        //
+        // A caret's offset is its *top*, so the two directions are measured
+        // from different ends of it. Minus one and plus one land on a line
+        // boundary instead of inside a line.
+        assert_eq!(VerticalCaretStep::ABOVE, -0.5);
+        assert_eq!(VerticalCaretStep::BELOW, 1.5);
+        assert_ne!(
+            VerticalCaretStep::BELOW,
+            -VerticalCaretStep::ABOVE,
+            "not a mirror of each other"
+        );
+    }
+
+    #[test]
+    fn a_step_moves_a_whole_line_between_the_two_directions() {
+        // Half a line up and one and a half down is two whole lines apart,
+        // which is what puts one point inside the line above and the other
+        // inside the line below rather than both on a boundary.
+        let caret = Offset::new(40.0, 100.0);
+        let up = VerticalCaretStep::above(caret, 20.0);
+        let down = VerticalCaretStep::below(caret, 20.0);
+        assert_eq!(up.dy, 90.0, "into the middle of the line above");
+        assert_eq!(down.dy, 130.0, "into the middle of the line below");
+        assert_eq!(down.dy - up.dy, 40.0, "two lines apart");
+    }
+
+    #[test]
+    fn a_step_leaves_the_column_alone() {
+        // Only the y moves. Moving the x here would fight the sticky column
+        // the run exists to keep.
+        let caret = Offset::new(40.0, 100.0);
+        assert_eq!(VerticalCaretStep::above(caret, 20.0).dx, 40.0);
+        assert_eq!(VerticalCaretStep::below(caret, 20.0).dx, 40.0);
+    }
+
+    #[test]
+    fn a_line_is_found_at_its_baseline_and_at_the_sticky_column() {
+        let run = VerticalCaretMovementRun::new(200.0, 0, 4, 1);
+        assert_eq!(run.offset_for_line(2, &BASELINES), Some((200.0, 90.0)));
+        assert_eq!(run.offset_for_line(9, &BASELINES), None, "no such line");
+    }
+
+    #[test]
+    fn moving_by_zero_pixels_moves_nothing_and_says_so() {
+        // The loop's condition is already false on entry, so nothing happens
+        // -- and the caller is told nothing happened, which is what lets a
+        // key press fall through to whatever handles it next.
+        let mut run = VerticalCaretMovementRun::new(200.0, 1, 4, 1);
+        assert!(!run.move_by_offset(0.0, &BASELINES));
+        assert_eq!(run.current_line(), 1);
+    }
+
+    #[test]
+    fn a_pixel_move_stops_at_the_first_line_at_or_past_the_target() {
+        // From line 0 (baseline 10) by 50 pixels: the target is 60. Line 1 is
+        // at 30, still short; line 2 is at 90, past it. It stops there rather
+        // than at line 1, the last one *before* the target.
+        let mut run = VerticalCaretMovementRun::new(200.0, 0, 4, 1);
+        assert!(run.move_by_offset(50.0, &BASELINES));
+        assert_eq!(run.current_line(), 2);
+    }
+
+    #[test]
+    fn a_pixel_move_is_a_walk_and_not_a_division() {
+        // The lines are 20, 60 and 20 apart. Fifty pixels from line 0 reaches
+        // line 2; fifty pixels from line 2 reaches only line 3. A port that
+        // divided by a line height would move the same number of lines both
+        // times.
+        let mut from_top = VerticalCaretMovementRun::new(200.0, 0, 4, 1);
+        from_top.move_by_offset(50.0, &BASELINES);
+        assert_eq!(from_top.current_line(), 2, "two lines");
+
+        let mut from_middle = VerticalCaretMovementRun::new(200.0, 2, 4, 1);
+        from_middle.move_by_offset(50.0, &BASELINES);
+        assert_eq!(from_middle.current_line(), 3, "one line, same pixels");
+    }
+
+    #[test]
+    fn a_negative_offset_walks_the_other_way() {
+        let mut run = VerticalCaretMovementRun::new(200.0, 3, 4, 1);
+        assert!(run.move_by_offset(-50.0, &BASELINES));
+        assert_eq!(run.current_line(), 1, "110 - 50 is 60; line 1 is at 30");
+    }
+
+    #[test]
+    fn running_into_the_end_moves_as_far_as_it_can_and_reports_success() {
+        // The loop breaks rather than returning false. A page down near the
+        // bottom of a field should land on the last line, not refuse.
+        let mut run = VerticalCaretMovementRun::new(200.0, 0, 4, 1);
+        assert!(
+            run.move_by_offset(10_000.0, &BASELINES),
+            "it did move, even though not the whole way"
+        );
+        assert_eq!(run.current_line(), 3, "as far as there is");
+    }
+
+    #[test]
+    fn a_move_from_the_last_line_downwards_fails_without_moving() {
+        // Already at the end: nothing moved, so false -- the distinction the
+        // break above does *not* erase.
+        let mut run = VerticalCaretMovementRun::new(200.0, 3, 4, 1);
+        assert!(!run.move_by_offset(10_000.0, &BASELINES));
+        assert_eq!(run.current_line(), 3);
+
+        let mut top = VerticalCaretMovementRun::new(200.0, 0, 4, 1);
+        assert!(!top.move_by_offset(-10_000.0, &BASELINES));
+        assert_eq!(top.current_line(), 0);
+    }
+
+    #[test]
+    fn a_pixel_move_keeps_the_sticky_column() {
+        // The whole reason the run is a type: every line is measured against
+        // the column the run started at, however it got there.
+        let mut run = VerticalCaretMovementRun::new(200.0, 0, 4, 1);
+        run.move_by_offset(50.0, &BASELINES);
+        assert_eq!(run.origin_x(), 200.0);
+        assert_eq!(
+            run.offset_for_line(run.current_line(), &BASELINES)
+                .unwrap()
+                .0,
+            200.0
+        );
+    }
 
     #[test]
     fn unknown_is_a_real_state_and_not_a_missing_answer() {
