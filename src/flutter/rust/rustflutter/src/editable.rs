@@ -2670,6 +2670,28 @@ impl StatefulComponent for TextField {
                 .with_on_focus_change(on_focus_change),
         );
 
+        // A press anywhere else takes the keyboard away, which is upstream's
+        // `TextField.onTapOutside` and the only thing that ever closes a
+        // keyboard opened by a tap: the session follows focus, so the field
+        // has to *lose* focus for the platform to be told editing is over.
+        //
+        // In the text-editing group, so that the parts of a field that are not
+        // the field -- a selection toolbar, a magnifier -- do not read as
+        // somewhere else and dismiss what they belong to.
+        //
+        // Guarded on this field holding the focus, because every field on the
+        // screen hears this and only the focused one has anything to give up.
+        // The press arrives before the tap that focuses whatever was pressed,
+        // so a tap on a second field passes through here first and lands
+        // focused, rather than being taken away again on the way up.
+        let focused = crate::tap_region::TextFieldTapRegion::new(id)
+            .with_on_tap_outside(move |_| {
+                if crate::focus::has_focus(id) {
+                    crate::focus::unfocus();
+                }
+            })
+            .build(context, focused);
+
         // What a reader is told about a field: that it is one, what is in it,
         // and -- for an obscured field -- that the contents are not to be read
         // out. The value sent is the real text rather than the bullets: a

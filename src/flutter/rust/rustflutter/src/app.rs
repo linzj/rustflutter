@@ -570,6 +570,11 @@ impl<W: WidgetApplication> WidgetHost<W> {
     }
 }
 
+/// The one tap-region surface, above the overlay. An id rather than a name
+/// because that is what a region is keyed by; nothing else in a tree reaches
+/// for it, so it only has to be a number no application would pick.
+const TAP_REGION_SURFACE_ID: u64 = 0x7A9_0000;
+
 impl<W: WidgetApplication> Application for WidgetHost<W> {
     fn background(&self) -> Color {
         self.app.background()
@@ -646,7 +651,16 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
                 localizations,
                 crate::media_query::MediaQuery::new(
                     data,
-                    crate::theatre::overlay(self.app.build(context)),
+                    // Outside the overlay, because the regions it has to
+                    // classify are on both sides of it: a text field down in
+                    // the application, and the selection toolbar that belongs
+                    // to it up in an overlay entry. A surface under the
+                    // overlay would read every tap on the toolbar as a tap
+                    // somewhere else and take the keyboard away.
+                    crate::tap_region::TapRegionSurface::new(
+                        TAP_REGION_SURFACE_ID,
+                        crate::theatre::overlay(self.app.build(context)),
+                    ),
                 ),
             );
             self.tree.rebuild(root);
