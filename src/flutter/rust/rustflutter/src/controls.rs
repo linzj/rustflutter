@@ -1449,7 +1449,9 @@ impl Component for DataTable {
     }
 }
 
-/// The label bubble of a tooltip: a dark pill with the message.
+/// The label bubble of a tooltip: a grey pill with the message, in upstream's
+/// default decoration (`tooltip.dart`'s `defaultDecoration` -- grey 700 at 90%
+/// on a light theme, white at 90% on a dark one).
 ///
 /// The surface half of upstream's `Tooltip` (`material/tooltip.dart`), and only
 /// that. The trigger half -- what shows and hides it -- is [`TooltipTrigger`],
@@ -1474,18 +1476,30 @@ impl TooltipBubble {
 
 impl Component for TooltipBubble {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
-        let theme = theme_of(context);
+        // Upstream's default bubble (`tooltip.dart`'s `defaultDecoration` and
+        // `defaultTextStyle`): grey 700 at 90% with white text on a light
+        // theme, white at 90% with black text on a dark one, corner radius 4,
+        // padding 8 across and 4 up and down, the desktop font size 12.
+        let brightness = crate::theme::ThemeData::of(context).color_scheme.brightness;
         let message = self.message.clone();
-        let background = theme.text;
-        let foreground = theme.background;
+        let (background, foreground) = match brightness {
+            crate::platform::Brightness::Dark => (Color::WHITE.with_alpha(0xE6), Color::BLACK),
+            crate::platform::Brightness::Light => (
+                crate::colors::Colors::GREY
+                    .shade(700)
+                    .expect("grey has a 700")
+                    .with_alpha(0xE6),
+                Color::WHITE,
+            ),
+        };
         leaf(move || {
             Container::new()
                 .with_color(background)
-                .with_corner_radius(6.0)
-                .with_padding(EdgeInsets::symmetric(10.0, 6.0))
+                .with_corner_radius(4.0)
+                .with_padding(EdgeInsets::symmetric(8.0, 4.0))
                 .with_child(
                     Text::new(message.clone())
-                        .with_size(11.0)
+                        .with_size(12.0)
                         .with_color(foreground),
                 )
         })

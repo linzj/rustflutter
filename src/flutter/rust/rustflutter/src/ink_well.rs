@@ -674,8 +674,17 @@ impl StatefulComponent for InkResponse {
             // the way down -- which leaves the child painting narrower than
             // the box it was given and the difference showing through the
             // ink's own clip.
+            // ClipBehavior::None: upstream has no stack here at all -- the
+            // ink is painted on the `Material` beneath, and a circular
+            // highlight or splash is *meant* to overflow the child's box
+            // (an `IconButton`'s 35-radius circle on its 48-pixel target is
+            // the everyday case). The default HardEdge clip cut that circle
+            // down to a square the size of the button. A contained response
+            // still gets its clip from the `RenderClipRect` below, which is
+            // where upstream's three clip branches live.
             let mut stack = crate::render::RenderStack::new()
                 .with_fit(crate::render::StackFit::Passthrough)
+                .with_clip_behavior(crate::painting::ClipBehavior::None)
                 .push_boxed(child);
             for (centre, radius, colour) in &painted {
                 let circle = crate::widgets::Container::new()

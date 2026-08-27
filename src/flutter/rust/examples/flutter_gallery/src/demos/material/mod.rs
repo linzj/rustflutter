@@ -181,7 +181,7 @@ impl Component for Stage {
             "snackbars" => snackbar_demo::snackbar_launcher(state, pressed, handle),
             "tabs" => tabs_demo::tabs(state, handle),
             "text-field" => text_field_demo::stage(),
-            "tooltip" => tooltip_demo::tooltips(state, handle),
+            "tooltip" => tooltip_demo::tooltips(),
             other => not_written_yet(other),
         };
 

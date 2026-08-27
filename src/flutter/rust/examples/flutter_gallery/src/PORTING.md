@@ -180,7 +180,7 @@ Current mapping:
     not have) — app_bar, banner, menu demos.
   - Demo chrome (Scaffold/AppBar) belongs to `src/pages/demo.rs`; demos that
     upstream renders inside their own Scaffold approximate it
-    (bottom_app_bar, nav_drawer, nav_rail).
+    (bottom_app_bar, nav_drawer, nav_rail, tooltip).
   - Framework widget gaps are drawn locally in the demo: ToggleButtons, FAB,
     chip avatar/delete, `CircularNotchedRectangle` notch (rectangle clips
     only), `NavigationRail` leading/labelType, `TabBar` isScrollable,

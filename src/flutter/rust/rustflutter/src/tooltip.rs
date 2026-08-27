@@ -84,11 +84,15 @@ impl crate::framework::Component for Tooltip {
                         if let Some(style) = &style {
                             text = text.with_style(style.clone());
                         } else {
-                            // Upstream's default is the theme's body text in
-                            // the *inverse* surface colour: the bubble is a
-                            // dark card on a light app and the other way
-                            // round, so its text has to be the inverse too.
-                            text = text.with_color(scheme.on_inverse_surface());
+                            // Upstream's default text style (`tooltip.dart`'s
+                            // `defaultTextStyle`): body medium in white on a
+                            // light theme's bubble and black on a dark one's,
+                            // the pair that reads against the default bubble
+                            // colour below.
+                            text = text.with_color(match scheme.brightness {
+                                crate::platform::Brightness::Dark => crate::engine::Color::BLACK,
+                                crate::platform::Brightness::Light => crate::engine::Color::WHITE,
+                            });
                         }
                         let mut container = crate::widgets::Container::new()
                             .with_padding(padding)
@@ -99,9 +103,21 @@ impl crate::framework::Component for Tooltip {
                                 container = container.with_decoration(decoration.clone());
                             }
                             None => {
-                                container = container
-                                    .with_color(scheme.inverse_surface())
-                                    .with_corner_radius(4.0);
+                                // Upstream's `defaultDecoration`: grey 700 at
+                                // 90% on a light theme, white at 90% on a dark
+                                // one, corner radius 4.
+                                let fill = match scheme.brightness {
+                                    crate::platform::Brightness::Dark => {
+                                        crate::engine::Color::WHITE.with_alpha(0xE6)
+                                    }
+                                    crate::platform::Brightness::Light => {
+                                        crate::colors::Colors::GREY
+                                            .shade(700)
+                                            .expect("grey has a 700")
+                                            .with_alpha(0xE6)
+                                    }
+                                };
+                                container = container.with_color(fill).with_corner_radius(4.0);
                             }
                         }
                         crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints {
@@ -250,7 +266,79 @@ impl Tooltip {
             bubble,
             ..
         } = self;
-        let child = child.borrow_mut().take().expect("a tooltip has a child");
+        crate::framework::stateful(TooltipHost {
+            id,
+            controller,
+            anchor,
+            child,
+            bubble,
+            vertical_offset,
+            prefer_below,
+        })
+    }
+}
+
+/// The tooltip as upstream has it: a `StatefulWidget`. The widget is thrown
+/// away every time the demo around it rebuilds, and everything the bubble's
+/// lifetime depends on -- the controller above all -- belongs to the `State`,
+/// which is not.
+///
+/// This is the difference that keeps a bubble hideable: a rebuild hands down a
+/// fresh widget with a fresh controller, and it is still the **state's**
+/// controller the hover handlers and the portal talk to, so the entry the
+/// first build showed is the entry the next build's hover-out takes down.
+/// Found by tapping anywhere in a demo while a tooltip was up: the tap
+/// rebuilt the demo, the rebuilt tooltip answered "not showing" for the rest
+/// of the session, and the first controller's bubble had nobody left to hide
+/// it.
+struct TooltipHost {
+    id: u64,
+    controller: PortalController,
+    anchor: Anchor,
+    child: RefCell<Option<AnyWidget>>,
+    bubble: Rc<dyn Fn() -> AnyWidget>,
+    vertical_offset: f32,
+    prefer_below: bool,
+}
+
+/// Upstream's `TooltipState` field, `final _controller =
+/// OverlayPortalController()`. An `Option` only because `Default` cannot come
+/// from the widget; [`TooltipHost::initial_state`] fills it before the first
+/// build.
+#[derive(Default)]
+struct TooltipHostState {
+    controller: Option<PortalController>,
+}
+
+impl crate::framework::StatefulComponent for TooltipHost {
+    type State = TooltipHostState;
+
+    /// The widget's controller is the seed of the state's, so a caller that
+    /// took [`Tooltip::controller`] before building drives the same object the
+    /// portal does. After that the widget's is ignored: upstream initialises
+    /// the controller in the State, and a rebuilt widget bringing a new one is
+    /// the ordinary case, not a change to react to.
+    fn initial_state(&self) -> TooltipHostState {
+        TooltipHostState {
+            controller: Some(self.controller.clone()),
+        }
+    }
+
+    fn build(
+        &self,
+        state: &TooltipHostState,
+        _handle: crate::framework::StateHandle<TooltipHostState>,
+        _context: &mut crate::framework::BuildContext,
+    ) -> AnyWidget {
+        let controller = state
+            .controller
+            .clone()
+            .expect("initial_state ran before the first build");
+        let child = self
+            .child
+            .borrow_mut()
+            .take()
+            .expect("a tooltip has a child");
 
         let show = controller.clone();
         let hide = controller.clone();
@@ -265,7 +353,8 @@ impl Tooltip {
         // The anchor is filled in from the target's own assemble, which runs
         // before any layout -- so by the time the bubble needs a position there
         // is a handle to ask.
-        let anchor_for_target = anchor.clone();
+        let id = self.id;
+        let anchor_for_target = self.anchor.clone();
         let target = many(vec![child], move |mut rendered| {
             let child = rendered.pop().expect("the target");
             let region = crate::render::RenderPointerRegion::new(id, child.clone())
@@ -274,7 +363,9 @@ impl Tooltip {
             region
         });
 
-        let place = tooltip_placement(vertical_offset, prefer_below);
+        let place = tooltip_placement(self.vertical_offset, self.prefer_below);
+        let anchor = self.anchor.clone();
+        let bubble = Rc::clone(&self.bubble);
         overlay_portal(controller, target, move || {
             anchored(anchor.clone(), Rc::clone(&place), (bubble)())
         })
@@ -478,6 +569,67 @@ mod tests {
         controller.hide();
         tree.rebuild_dirty();
         assert_eq!(bubble_offset(&laid_out(&mut tree)), None);
+    }
+
+    /// A mouse at a position, hovering rather than pressing.
+    fn hover_at(x: f32, y: f32) -> crate::gestures::PointerEvent {
+        crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change: crate::gestures::PointerChange::Hover,
+            kind: crate::gestures::PointerKind::Mouse,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 0,
+            time_stamp_micros: 0,
+            position: Offset::new(x, y),
+            delta: Offset::ZERO,
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: Offset::new(x, y),
+        }
+    }
+
+    #[test]
+    fn a_rebuild_while_showing_does_not_orphan_the_bubble() {
+        // What the gallery's tooltip demo does on every tap: the demo's build
+        // runs again, and the rebuilt tooltip is a fresh widget whose
+        // controller is *not* the one that showed the bubble. Upstream
+        // survives this because the controller is `TooltipState`'s, and so
+        // does this: hover in, rebuild, hover out -- the bubble has to go.
+        let slot: Rc<RefCell<Option<PortalController>>> = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(page_with_tooltip(100.0, &slot)));
+        tree.build_render_tree();
+
+        let mut router = crate::gestures::GestureRouter::new();
+        // The 60x20 target sits at (100, 100).
+        let root = laid_out(&mut tree);
+        router.dispatch(&root, &hover_at(130.0, 110.0));
+        tree.rebuild_dirty();
+        assert!(
+            bubble_offset(&laid_out(&mut tree)).is_some(),
+            "hovering the target shows the bubble"
+        );
+
+        // The tap's rebuild: a brand-new Tooltip at the same position. The
+        // slot gets the new widget's controller, which -- like the demo's --
+        // nobody will ever call.
+        let other: Rc<RefCell<Option<PortalController>>> = Rc::new(RefCell::new(None));
+        tree.rebuild(overlay(page_with_tooltip(100.0, &other)));
+        let root = laid_out(&mut tree);
+        assert!(
+            bubble_offset(&root).is_some(),
+            "and the bubble is still up after the rebuild"
+        );
+
+        router.dispatch(&root, &hover_at(700.0, 500.0));
+        tree.rebuild_dirty();
+        assert_eq!(
+            bubble_offset(&laid_out(&mut tree)),
+            None,
+            "hovering away hides the bubble the previous build showed"
+        );
     }
 
     #[test]
