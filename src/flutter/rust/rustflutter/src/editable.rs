@@ -2581,17 +2581,16 @@ impl StatefulComponent for TextField {
             let tap_state = tap_handle.clone();
             let tapped_shown = shown.text.clone();
             let tapped_real = real_text.clone();
-            let on_tap = move |tap: TapEvent| {
+            // Placing the caret, which two gestures ask for: a tap, and a
+            // finger sliding over the text without lifting.
+            let place_caret: Rc<dyn Fn(Offset)> = Rc::new(move |local: Offset| {
                 let Some(layout) = tap_sink.borrow().clone() else {
                     return;
                 };
                 // The pointer's place in the field is its place in the
                 // content once the scroll is added back: paint drew the
                 // content `scroll` up and to the left of the field.
-                let at = Offset::new(
-                    tap.local_position.dx + layout.scroll.dx,
-                    tap.local_position.dy + layout.scroll.dy,
-                );
+                let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
                 let measure = |run: &str| {
                     // The field's own measurement, so the position under the
                     // finger is the position on screen.
@@ -2641,7 +2640,7 @@ impl StatefulComponent for TextField {
                     }
                 });
                 crate::focus::focus(id);
-            };
+            });
 
             // The field's own pointer region: the tap that places the caret
             // and takes the keyboard, on the same id the `Focus` around it is
@@ -2654,8 +2653,75 @@ impl StatefulComponent for TextField {
                 .with_max_lines(max_lines)
                 .with_report(report)
                 .with_lines_sink(lines_sink.clone());
-            RenderPointerRegion::new(id, field)
-                .with_handlers(PointerHandlers::new().with_tap(on_tap))
+            // The press's origin, so a slide can be told from a scroll by the
+            // shape of the travel rather than by who won the gesture.
+            let press_origin: Rc<std::cell::Cell<Option<Offset>>> =
+                Rc::new(std::cell::Cell::new(None));
+            let down_origin = Rc::clone(&press_origin);
+            let move_origin = Rc::clone(&press_origin);
+            let dragged = Rc::clone(&place_caret);
+            let tapped = Rc::clone(&place_caret);
+            RenderPointerRegion::new(id, field).with_handlers(
+                PointerHandlers::new()
+                    .with_tap(move |tap: TapEvent| tapped(tap.local_position))
+                    .with_pointer_down(move |event| {
+                        down_origin.set(Some(event.local_position));
+                    })
+                    // The caret follows a finger that stays down and slides
+                    // over the text. Upstream's `onDragSelectionUpdate`, in
+                    // the branch a touch on Android reaches:
+                    //
+                    //     case PointerDeviceKind.touch:
+                    //       if (renderEditable.hasFocus) {
+                    //         renderEditable.selectPositionAt(
+                    //             from: details.globalPosition, cause: drag);
+                    //
+                    // -- the caret goes to where the finger is now and the
+                    // selection stays collapsed, which is not what the same
+                    // gesture does with a mouse or on a desktop platform:
+                    // there it selects from where the drag began to where it
+                    // is, and that is a different feature. So this is for a
+                    // touch, and only when the field already has the focus,
+                    // exactly as upstream has it.
+                    //
+                    // **The mechanism is not upstream's.** Upstream installs a
+                    // `TapAndHorizontalDragGestureRecognizer` on Android and
+                    // iOS -- a drag recogniser that only accepts sideways
+                    // movement, so a scroll going down the form is never its
+                    // gesture to take. `tap_and_drag.rs` has that recogniser
+                    // ported, but the arena lives in `GestureRouter` and is
+                    // keyed to the router's own recogniser kinds, so nothing
+                    // can enter one yet. Using `with_drag_update` instead
+                    // would make the field the innermost region wanting drags
+                    // and a form would stop scrolling under the finger.
+                    //
+                    // So the same rule is applied where the crate can apply
+                    // it: raw pointer moves, which reach every region on the
+                    // hit-test path whatever the arena decides, filtered to
+                    // the sideways travel that recogniser would have accepted.
+                    // Measured from where the press began rather than between
+                    // events, so a scroll does not hand the caret over on the
+                    // one frame the finger wanders sideways.
+                    .with_pointer_move(move |event| {
+                        if event.kind != crate::gestures::PointerKind::Touch {
+                            return;
+                        }
+                        if !crate::focus::has_focus(id) {
+                            return;
+                        }
+                        let Some(origin) = move_origin.get() else {
+                            return;
+                        };
+                        let travel = Offset::new(
+                            event.local_position.dx - origin.dx,
+                            event.local_position.dy - origin.dy,
+                        );
+                        if travel.dx.abs() <= travel.dy.abs() {
+                            return;
+                        }
+                        dragged(event.local_position);
+                    }),
+            )
         });
 
         // The field is a focus node, which is what makes Tab reach it and what
