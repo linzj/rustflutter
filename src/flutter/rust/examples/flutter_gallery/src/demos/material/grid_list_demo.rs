@@ -5,44 +5,46 @@
 //! Ported from `lib/demos/material/grid_list_demo.dart` (flutter/gallery @
 //! d12640d), aligned with upstream.
 //!
-//! Upstream's `GridListDemo` takes a `GridListDemoType` and shows one tile
-//! style per catalogue configuration; the catalogue here is flattened to one
-//! configuration per demo (PORTING.md: "demo options section is unreachable"),
-//! so the stage shows all three styles stacked -- image only, with header,
-//! with footer -- each under a caption with its upstream configuration title
-//! (`demoGridListsImageOnlyTitle` and friends), and each a `GridView.count`
-//! over upstream's twelve `_Photo`s, exactly as upstream's `build` composes
-//! one.
+//! Upstream's `GridListDemo` is a `Scaffold` with an app bar (the
+//! `demoGridListsTitle`, no leading) over one `GridView.count` of the twelve
+//! `_Photo`s, each a `_GridDemoPhotoItem` in the style the page's options
+//! section selected -- image only, with header, or with footer. That is what
+//! is built here: the selection arrives as the catalogue configuration index
+//! (`Demo::configurations`, switched in `pages/demo.rs`'s options section),
+//! and the stage shows exactly one grid in that style.
 //!
 //! Divergences, each marked at its site as well:
 //!
 //! * **fixed viewport height** -- upstream's `GridView` is the body of a
 //!   `Scaffold` and fills the screen; the stage here is a shrink-wrapping
-//!   column inside the demo page's own scroll view, where a viewport given an
-//!   unbounded axis has no window to be, so each grid gets a fixed height
-//!   ([`SECTION_GRID_HEIGHT`]) and scrolls inside it, on a [`Scroll`] per
-//!   section held by a per-section StatefulComponent (`GridListSection`).
+//!   column inside the demo page, where a viewport given an unbounded axis
+//!   has no window to be, so the grid gets the height the demo card would
+//!   have given it ([`grid_height`]) and scrolls inside it, on a [`Scroll`]
+//!   held by the StatefulComponent (`GridListDemo`).
 //! * **no `Semantics` label** -- the photo's `Semantics(label:)` has no
 //!   counterpart in the framework; the title and subtitle it announced are
 //!   still what the header and footer styles draw.
 
 use std::rc::Rc;
 
+use rustflutter::components::K_TOOLBAR_HEIGHT;
 use rustflutter::framework::{
-    single, stateful, AnyWidget, BuildContext, StateHandle, StatefulComponent,
+    leaf, many, single, stateful, AnyWidget, BuildContext, StateHandle, StatefulComponent,
 };
 use rustflutter::gestures::PointerHandlers;
 use rustflutter::grid::GridView;
+use rustflutter::media_query::size_of;
 use rustflutter::painting::Image;
 use rustflutter::prelude::*;
-use rustflutter::render::{Alignment, BoxFit, RenderRef, StackPosition};
+use rustflutter::render::{
+    Alignment, BoxFit, CrossAxisAlignment, MainAxisSize, RenderFlex, RenderRef, StackPosition,
+};
 use rustflutter::scrolling::Scroll;
 use rustflutter::widgets::{Align, ClipRRect, ImageView, Pointer, Positioned, Stack};
 
 use crate::app::ids;
 use crate::l10n::gallery_localizations::GalleryLocalizations;
-
-use super::{caption, column};
+use crate::themes::material_demo_theme_data::MaterialDemoThemeData;
 
 /// The `GridTileBar` heights (`grid_tile_bar.dart`'s `preferredSize`): 48
 /// with a title only, 68 with a subtitle as well.
@@ -52,10 +54,10 @@ const FOOTER_BAR_HEIGHT: f32 = 68.0;
 /// Upstream's `Colors.black45`, the `GridTileBar` background.
 const BLACK_45: Color = Color(0x73000000);
 
-/// How tall a section's grid viewport is. See the module header: upstream's
-/// grid fills the demo body; here each section gets a window a little over two
-/// rows tall, so a section reads as a grid and still scrolls.
-const SECTION_GRID_HEIGHT: f32 = 420.0;
+/// The chrome around the demo card: the page's own bar (56), the wrapper's
+/// bottom padding (16, `pages/demo.rs`'s `demo_wrapper`) and the stage card's
+/// padding (16 either end, `demos/material/mod.rs`'s `spacing * 2`).
+const CHROME_HEIGHT: f32 = 56.0 + 16.0 + 32.0;
 
 /// Upstream's `GridListDemoType` (mirrored in `material_demo_types.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +65,16 @@ enum GridListDemoType {
     ImageOnly,
     Header,
     Footer,
+}
+
+/// The style a configuration index selects, in the order
+/// `Demo::configurations` lists them: image only, with header, with footer.
+fn style_for(config: usize) -> GridListDemoType {
+    match config {
+        1 => GridListDemoType::Header,
+        2 => GridListDemoType::Footer,
+        _ => GridListDemoType::ImageOnly,
+    }
 }
 
 /// Upstream's `_Photo`, with the decoded asset standing in for `assetName`:
@@ -158,50 +170,37 @@ fn photos() -> Vec<Photo> {
     ]
 }
 
-/// The demo body for the `grid-lists` slug: one section per upstream
-/// configuration.
-pub(super) fn grid_lists() -> AnyWidget {
-    let l10n = GalleryLocalizations::en();
-    column(
-        vec![
-            caption(l10n.demo_grid_lists_image_only_title()),
-            stateful(GridListSection {
-                style: GridListDemoType::ImageOnly,
-                id: ids::DEMO_LOCAL,
-            }),
-            caption(l10n.demo_grid_lists_header_title()),
-            stateful(GridListSection {
-                style: GridListDemoType::Header,
-                id: ids::DEMO_LOCAL + 1,
-            }),
-            caption(l10n.demo_grid_lists_footer_title()),
-            stateful(GridListSection {
-                style: GridListDemoType::Footer,
-                id: ids::DEMO_LOCAL + 2,
-            }),
-        ],
-        12.0,
-    )
+/// The demo body for the `grid-lists` slug: upstream's `GridListDemo` for the
+/// configuration the page's options section selected.
+pub(super) fn grid_lists(config: usize) -> AnyWidget {
+    stateful(GridListDemo {
+        style: style_for(config),
+    })
 }
 
-/// One section's grid: upstream's `GridListDemo.build`, the `GridView.count`
-/// with its twelve `_GridDemoPhotoItem`s, scrolling on its own [`Scroll`]
-/// (upstream's `restorationId: 'grid_view_demo_grid_offset'` position, per
-/// section here because all three grids are on stage at once).
-struct GridListSection {
+/// How tall the grid's viewport is. See the module header: upstream's grid
+/// fills the demo body; here it gets the height the card would have given it
+/// -- the window less the chrome and the demo's own app bar -- so the demo
+/// reads as a screen and still scrolls.
+fn grid_height(context: &BuildContext) -> f32 {
+    (size_of(context).height - CHROME_HEIGHT - K_TOOLBAR_HEIGHT).max(200.0)
+}
+
+/// Upstream's `GridListDemo`: the app bar over the `GridView.count`. The
+/// grid's scroll offset lives here (upstream's `restorationId:
+/// 'grid_view_demo_grid_offset'` position).
+struct GridListDemo {
     style: GridListDemoType,
-    /// The hit-test id of the scroll region, stable per section.
-    id: u64,
 }
 
-/// The section's scroll offset.
+/// The grid's scroll offset.
 #[derive(Default)]
-struct GridListSectionState {
+struct GridListDemoState {
     scroll: Scroll,
 }
 
-impl StatefulComponent for GridListSection {
-    type State = GridListSectionState;
+impl StatefulComponent for GridListDemo {
+    type State = GridListDemoState;
 
     fn advance(&self, state: &mut Self::State, frame_time_micros: i64) -> bool {
         state.scroll.advance(frame_time_micros)
@@ -215,6 +214,7 @@ impl StatefulComponent for GridListSection {
     ) -> AnyWidget {
         let style = self.style;
         let placeholder = theme_of(context).surface_variant;
+        let height = grid_height(context);
         let photos = Rc::new(photos());
         // Ask for every decode up front: the grid builds its tiles when the
         // render tree is laid out, which is after a headless render's one
@@ -226,7 +226,7 @@ impl StatefulComponent for GridListSection {
         let offset = state.scroll.offset;
         let extent = state.scroll.extent.clone();
 
-        // The handlers app::scroll_handlers gives a page, on the section's own
+        // The handlers app::scroll_handlers gives a page, on the grid's own
         // Scroll: touch it, drag it, throw it, or turn the wheel over it. The
         // grid's region is the innermost one on the hit path that wants
         // drags, so the grid -- not the page behind it -- moves.
@@ -249,6 +249,26 @@ impl StatefulComponent for GridListSection {
                 })
         };
 
+        // Upstream's app bar: `AppBar(automaticallyImplyLeading: false,
+        // title: Text(demoGridListsTitle))` on the demo theme's app-bar colors
+        // (`MaterialDemoThemeData.appBarTheme`) -- primary fill, on-primary
+        // title. With no leading, the title sits 16 from the start edge.
+        let (bar_fill, bar_ink) = MaterialDemoThemeData::app_bar_theme();
+        let title = GalleryLocalizations::en().demo_grid_lists_title();
+        let bar = leaf(move || {
+            Container::new()
+                .with_height(K_TOOLBAR_HEIGHT)
+                .with_color(bar_fill)
+                .with_padding(EdgeInsets::only(16.0, 0.0, 0.0, 0.0))
+                .with_child(Align::new(
+                    Alignment::CENTER_LEFT,
+                    Text::new(title)
+                        .with_size(20.0)
+                        .with_weight(500)
+                        .with_color(bar_ink),
+                ))
+        });
+
         // Upstream's `GridView.count(restorationId: 'grid_view_demo_grid_offset',
         // crossAxisCount: 2, mainAxisSpacing: 8, crossAxisSpacing: 8,
         // padding: EdgeInsets.all(8), childAspectRatio: 1)`.
@@ -262,12 +282,21 @@ impl StatefulComponent for GridListSection {
         .with_offset(offset)
         .with_extent_sink(extent);
 
-        let id = self.id;
-        single(rustflutter::framework::component(grid), move |rendered| {
+        let grid = single(rustflutter::framework::component(grid), move |rendered| {
+            Box::new(Container::new().with_height(height).with_child(
+                Pointer::new(ids::DEMO_LOCAL, rendered).with_handlers(handlers.clone()),
+            ))
+        });
+
+        many(vec![bar, grid], |mut rendered| {
+            let grid = rendered.pop().expect("the grid");
+            let bar = rendered.pop().expect("the app bar");
             Box::new(
-                Container::new()
-                    .with_height(SECTION_GRID_HEIGHT)
-                    .with_child(Pointer::new(id, rendered).with_handlers(handlers.clone())),
+                RenderFlex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                    .push(bar)
+                    .push(grid),
             )
         })
     }
@@ -384,6 +413,23 @@ mod tests {
                 ("Pondicherry", "Beach"),
                 ("Pondicherry", "Fisherman"),
             ]
+        );
+    }
+
+    #[test]
+    fn the_configurations_pick_the_style() {
+        // In `Demo::configurations`'s order: image only, header, footer.
+        assert_eq!(style_for(0), GridListDemoType::ImageOnly);
+        assert_eq!(style_for(1), GridListDemoType::Header);
+        assert_eq!(style_for(2), GridListDemoType::Footer);
+        // An out-of-range index is the first configuration, as an upstream
+        // restore of a dropped index would be.
+        assert_eq!(style_for(3), GridListDemoType::ImageOnly);
+        assert_eq!(
+            crate::data::demos::find("grid-lists")
+                .expect("the grid-lists demo")
+                .configurations(),
+            &["Image only", "With header", "With footer"]
         );
     }
 

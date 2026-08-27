@@ -20279,9 +20279,16 @@ impl RenderBox for RenderSliverGrid {
         }
         let mut effect = UpdateEffect::relayout_if(structure_changed);
         for position in 0..self.children.len() {
-            let fresh_child = (self.build_child)(self.first_index + position);
-            if self.children[position].reconfigure(fresh_child) {
+            let index = self.first_index + position;
+            // A tile whose root type changed -- the grid-list demo's options
+            // switch a plain image for a stack with a bar -- cannot take the
+            // new configuration in place; it has to be replaced, or the grid
+            // keeps drawing the tile it materialized with.
+            if self.children[position].reconfigure((self.build_child)(index)) {
                 effect = effect.and(UpdateEffect::Repaint);
+            } else {
+                self.children[position] = (self.build_child)(index);
+                effect = effect.and(UpdateEffect::Relayout);
             }
         }
         Some(effect)
@@ -20346,10 +20353,16 @@ impl RenderBox for RenderSliverGrid {
         self.geometry = SliverGeometry {
             scroll_extent,
             paint_extent,
-            max_paint_extent: paint_extent,
+            // Upstream's closing `SliverGeometry`: `maxPaintExtent` is the
+            // content's whole extent, and the viewport clips its slivers only
+            // when one asks it to -- which is what `hasVisualOverflow` is for.
+            // Left unset, a grid taller than its window paints every row past
+            // the bottom edge, over whatever follows it.
+            max_paint_extent: scroll_extent,
             layout_extent: paint_extent,
             visible: paint_extent > 0.0,
             cross_axis_extent: Some(constraints.cross_axis_extent),
+            has_visual_overflow: scroll_extent > paint_extent || constraints.scroll_offset > 0.0,
             ..SliverGeometry::ZERO
         };
         self.geometry
@@ -22756,6 +22769,72 @@ mod sliver_grid_tests {
         // Scrolled two rows in: the window starts at row two.
         grid.sliver_layout(constraints(100.0, 100.0, 300.0));
         assert_eq!(grid.live_range(), (4, 16));
+    }
+
+    #[test]
+    fn a_grid_reports_its_visual_overflow() {
+        // Upstream's closing `SliverGeometry(hasVisualOverflow: scrollExtent >
+        // paintExtent || constraints.scrollOffset > 0.0)`: the viewport clips
+        // only when a sliver asks, and a grid that never asks paints every row
+        // past the window's bottom edge, over whatever follows it.
+        let mut grid = RenderSliverGrid::new(
+            100,
+            SliverGridDelegate::fixed_cross_axis_count(2),
+            |_index| RenderRef::new(super::tests::FixedBox::new(50.0, 50.0)),
+        );
+        // Content taller than the window overflows even unscrolled.
+        let geometry = grid.sliver_layout(constraints(100.0, 0.0, 300.0));
+        assert!(geometry.has_visual_overflow);
+        assert_eq!(
+            geometry.max_paint_extent, geometry.scroll_extent,
+            "upstream's maxPaintExtent is the content's whole extent"
+        );
+        // Content that fits does not.
+        let mut small =
+            RenderSliverGrid::new(4, SliverGridDelegate::fixed_cross_axis_count(2), |_index| {
+                RenderRef::new(super::tests::FixedBox::new(50.0, 50.0))
+            });
+        let geometry = small.sliver_layout(constraints(100.0, 0.0, 300.0));
+        assert!(!geometry.has_visual_overflow);
+        // Having scrolled at all is an overflow, whatever fits now.
+        let geometry = small.sliver_layout(constraints(100.0, 10.0, 300.0));
+        assert!(geometry.has_visual_overflow);
+    }
+
+    /// A second box type, so a tile's root can change between builds.
+    struct OtherBox(super::tests::FixedBox);
+
+    impl RenderBox for OtherBox {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.0.layout(constraints)
+        }
+        fn size(&self) -> Size {
+            self.0.size()
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+    }
+
+    #[test]
+    fn a_grid_replaces_a_tile_whose_root_type_changed() {
+        // The demo page's options switch a tile's whole shape; a reconfigure
+        // that cannot take the new configuration in place must replace the
+        // child, or the grid draws the tile it materialized with forever.
+        let mut grid =
+            RenderSliverGrid::new(2, SliverGridDelegate::fixed_cross_axis_count(2), |_index| {
+                RenderRef::new(super::tests::FixedBox::new(50.0, 50.0))
+            });
+        grid.sliver_layout(constraints(100.0, 0.0, 300.0));
+        let is_fixed =
+            grid.children[0].with(|render| render.as_any().is::<super::tests::FixedBox>());
+        assert!(is_fixed);
+
+        let mut fresh =
+            RenderSliverGrid::new(2, SliverGridDelegate::fixed_cross_axis_count(2), |_index| {
+                RenderRef::new(OtherBox(super::tests::FixedBox::new(50.0, 50.0)))
+            });
+        grid.update_from(&mut fresh).expect("same type takes it");
+        let is_other = grid.children[0].with(|render| render.as_any().is::<OtherBox>());
+        assert!(is_other, "the mismatched tile is replaced, not kept");
     }
 
     #[test]

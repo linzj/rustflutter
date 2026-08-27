@@ -77,6 +77,24 @@ pub struct Demo {
     pub accent: Color,
 }
 
+/// The grid-list demo's variants, upstream's three
+/// `GalleryDemoConfiguration`s (`demoGridListsImageOnlyTitle` and friends).
+const GRID_LIST_CONFIGURATIONS: &[&str] = &["Image only", "With header", "With footer"];
+
+impl Demo {
+    /// Upstream's `GalleryDemo.configurations`: the variants the demo page's
+    /// options section switches between. Only the demos with more than one
+    /// get the tune icon and the section; here that is grid-lists alone --
+    /// every other upstream multi-configuration demo is flattened to one
+    /// entry per configuration (PORTING.md).
+    pub fn configurations(&self) -> &'static [&'static str] {
+        match self.slug {
+            "grid-lists" => GRID_LIST_CONFIGURATIONS,
+            _ => &[],
+        }
+    }
+}
+
 /// One study: a whole sample app, with the card the home page shows for it.
 #[derive(Clone, Copy, Debug)]
 pub struct Study {
@@ -183,6 +201,16 @@ pub mod icon {
     pub const FULLSCREEN: &str = "\u{e2cb}";
     pub const ARROW_BACK_IOS: &str = "\u{e093}";
     pub const ARROW_FORWARD_IOS: &str = "\u{e09c}";
+    // The text-field demo's decoration icons (upstream's `Icons.person` and
+    // friends on the fields, and the password's visibility toggle). The
+    // codepoints are this font's -- the bundled `MaterialIcons-Regular.otf`
+    // uses the new mapping, not the legacy one (`Icons.person` is 0xe7fd
+    // upstream, 0xe491 here).
+    pub const PERSON: &str = "\u{e491}";
+    pub const PHONE: &str = "\u{e4a2}";
+    pub const EMAIL: &str = "\u{e22a}";
+    pub const VISIBILITY: &str = "\u{e6bd}";
+    pub const VISIBILITY_OFF: &str = "\u{e6be}";
 }
 
 const BLUE: Color = Color::rgb(0x54, 0xC5, 0xF8);

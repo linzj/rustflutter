@@ -133,6 +133,7 @@ pub fn stage(
     component(Stage {
         demo,
         state: state.demo.clone(),
+        config: state.demo_config,
         pressed: state.pressed,
         handle,
     })
@@ -142,6 +143,9 @@ pub fn stage(
 struct Stage {
     demo: &'static Demo,
     state: DemoState,
+    /// Which of the demo's configurations is on stage, for the demos that
+    /// have any (`Demo::configurations`). Upstream's `_configIndex`.
+    config: usize,
     pressed: Option<u64>,
     handle: StateHandle<GalleryState>,
 }
@@ -165,7 +169,7 @@ impl Component for Stage {
             "data-table" => data_table_demo::data_table(),
             "dialog" => dialog_demo::dialog_launcher(state, pressed, handle),
             "divider" => divider_demo::dividers(),
-            "grid-lists" => grid_list_demo::grid_lists(),
+            "grid-lists" => grid_list_demo::grid_lists(self.config),
             "lists" => list_demo::lists(),
             "menu" => menu_demo::stage(),
             "nav_drawer" => navigation_drawer::stage(),

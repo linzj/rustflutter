@@ -16,9 +16,10 @@
 //!   and with it the desktop code-background crossfade.
 //! * The **documentation** icon is present but disabled: upstream opens the
 //!   API docs through `url_launcher`, which has no counterpart here.
-//! * The **options** section (`_DemoState.options`) is unreachable: the
-//!   catalogue flattens upstream's multi-configuration demos to one entry, so
-//!   no demo here has more than one configuration to pick between.
+//! * The **options** section (`_DemoState.options`) is reachable only for a
+//!   demo with more than one configuration, as upstream's `_hasOptions` gates
+//!   it; the catalogue carries them only for grid-lists
+//!   (`data/demos.rs`'s `Demo::configurations`).
 //! * `DemoWrapper`'s clip is upstream's `BorderRadius.vertical(top: 10,
 //!   bottom: 2)`; the framework's `ClipRRect` rounds all four corners alike,
 //!   so the bottom corners take the top's radius.
@@ -44,6 +45,7 @@ use crate::data::demos::Demo;
 use crate::demos::cupertino;
 use crate::demos::material as demos;
 use crate::demos::reference;
+use crate::l10n::gallery_localizations::GalleryLocalizations;
 use crate::pages::splash;
 use crate::themes::gallery_theme_data::{text, Scheme};
 use crate::themes::material_demo_theme_data::MaterialDemoThemeData;
@@ -54,9 +56,8 @@ pub enum DemoSection {
     /// Just the demo.
     #[default]
     Normal,
-    /// The per-configuration picker. Unreachable here: the catalogue carries
-    /// one configuration per demo (see the module header).
-    #[allow(dead_code)]
+    /// The per-configuration picker. Reachable only for a demo with more
+    /// than one configuration (see the module header).
     Options,
     /// The title and description above the demo.
     Info,
@@ -75,9 +76,18 @@ pub fn page(
     is_desktop: bool,
 ) -> AnyWidget {
     let scheme = state.scheme();
-    // Upstream's `_resolveState`: a desktop page never sits in `normal`.
+    // Upstream's `_hasOptions`.
+    let has_options = demo.configurations().len() > 1;
+    // Upstream's `_resolveState`: a desktop page never sits in `normal`, and
+    // the section it falls back to is options when the demo has any.
     let section = match state.demo_section {
-        DemoSection::Normal if is_desktop => DemoSection::Info,
+        DemoSection::Normal if is_desktop => {
+            if has_options {
+                DemoSection::Options
+            } else {
+                DemoSection::Info
+            }
+        }
         other => other,
     };
 
@@ -85,6 +95,7 @@ pub fn page(
         scheme,
         section,
         is_desktop,
+        has_options,
         pressed: state.pressed,
         handle: handle.clone(),
     });
@@ -97,7 +108,14 @@ pub fn page(
         let fullscreen = section == DemoSection::Fullscreen;
         let mut children = vec![];
         if !fullscreen {
-            children.push(section_widget(demo, section, scheme, is_desktop));
+            children.push(section_widget(
+                demo,
+                section,
+                scheme,
+                is_desktop,
+                state.demo_config,
+                handle.clone(),
+            ));
         }
         children.push(demo_content);
         many(children, move |mut rendered| {
@@ -123,7 +141,14 @@ pub fn page(
         // a tap of the demo.
         let mut rows: Vec<AnyWidget> = Vec::new();
         if section != DemoSection::Normal {
-            rows.push(section_widget(demo, section, scheme, is_desktop));
+            rows.push(section_widget(
+                demo,
+                section,
+                scheme,
+                is_desktop,
+                state.demo_config,
+                handle.clone(),
+            ));
         }
         let dismiss = PointerHandlers::new().with_tap({
             let handle = handle.clone();
@@ -185,6 +210,8 @@ struct DemoBar {
     scheme: Scheme,
     section: DemoSection,
     is_desktop: bool,
+    /// Upstream's `_hasOptions`: whether the tune icon shows at all.
+    has_options: bool,
     pressed: Option<u64>,
     handle: StateHandle<GalleryState>,
 }
@@ -201,25 +228,31 @@ impl DemoBar {
         enabled: bool,
         pressed: Option<u64>,
         handle: StateHandle<GalleryState>,
-        action: Option<fn(&mut GalleryState)>,
+        action: Option<impl Fn(&mut GalleryState) + 'static>,
     ) -> AnyWidget {
         let held = pressed == Some(id);
         let handlers = match action {
-            Some(action) if enabled => PointerHandlers::new()
-                .with_tap({
-                    let handle = handle.clone();
-                    move |_| {
-                        handle.set_state(move |state| action(state));
-                    }
-                })
-                .with_press_change({
-                    let handle = handle.clone();
-                    move |down| {
-                        handle.set_state(move |state| {
-                            state.pressed = if down { Some(id) } else { None };
-                        });
-                    }
-                }),
+            Some(action) if enabled => {
+                // Shared, because the tap handler is `Fn`: every tap applies
+                // the same action afresh.
+                let action = std::rc::Rc::new(action);
+                PointerHandlers::new()
+                    .with_tap({
+                        let handle = handle.clone();
+                        move |_| {
+                            let action = std::rc::Rc::clone(&action);
+                            handle.set_state(move |state| action(state));
+                        }
+                    })
+                    .with_press_change({
+                        let handle = handle.clone();
+                        move |down| {
+                            handle.set_state(move |state| {
+                                state.pressed = if down { Some(id) } else { None };
+                            });
+                        }
+                    })
+            }
             _ => PointerHandlers::new(),
         };
         let color = if enabled { ink } else { ink.with_alpha(0x61) };
@@ -263,11 +296,34 @@ impl Component for DemoBar {
             true,
             self.pressed,
             self.handle.clone(),
-            Some(|s| s.back()),
+            Some(|s: &mut GalleryState| s.back()),
         );
         // The tune icon appears only for a demo with more than one
-        // configuration; the catalogue carries exactly one per demo, so it
-        // never does.
+        // configuration, upstream's `_hasOptions` gate. Tapping it toggles
+        // the options section; on desktop `normal` is not allowed, so there
+        // the tap only enters the section, never leaves it (`_handleTap`).
+        let tune = self.has_options.then(|| {
+            Self::icon(
+                ids::DEMO_CHROME + 4,
+                catalog::icon::TUNE,
+                scheme,
+                if section == DemoSection::Options {
+                    selected
+                } else {
+                    icon_color
+                },
+                true,
+                self.pressed,
+                self.handle.clone(),
+                Some(move |s: &mut GalleryState| {
+                    s.demo_section = if s.demo_section == DemoSection::Options && !is_desktop {
+                        DemoSection::Normal
+                    } else {
+                        DemoSection::Options
+                    };
+                }),
+            )
+        });
         let info = Self::icon(
             ids::DEMO_CHROME,
             catalog::icon::INFO,
@@ -280,7 +336,7 @@ impl Component for DemoBar {
             true,
             self.pressed,
             self.handle.clone(),
-            Some(|s| {
+            Some(|s: &mut GalleryState| {
                 s.demo_section = if s.demo_section == DemoSection::Info {
                     DemoSection::Normal
                 } else {
@@ -297,7 +353,7 @@ impl Component for DemoBar {
             false,
             self.pressed,
             self.handle.clone(),
-            None,
+            None::<fn(&mut GalleryState)>,
         );
         // Present but disabled: upstream opens the API docs through
         // `url_launcher`, which has no counterpart here.
@@ -309,14 +365,20 @@ impl Component for DemoBar {
             false,
             self.pressed,
             self.handle.clone(),
-            None,
+            None::<fn(&mut GalleryState)>,
         );
 
         let mut children = vec![back];
+        // Upstream's action order: options (when there are any), info, code,
+        // documentation, fullscreen.
+        if let Some(tune) = tune {
+            children.push(tune);
+        }
         children.push(info);
         children.push(code);
         children.push(docs);
         if is_desktop {
+            let has_options = self.has_options;
             children.push(Self::icon(
                 ids::DEMO_CHROME + 3,
                 catalog::icon::FULLSCREEN,
@@ -329,9 +391,16 @@ impl Component for DemoBar {
                 true,
                 self.pressed,
                 self.handle.clone(),
-                Some(|s| {
+                // Leaving fullscreen lands on the page's default section:
+                // options when the demo has any, info otherwise
+                // (`_handleTap`'s desktop branch).
+                Some(move |s: &mut GalleryState| {
                     s.demo_section = if s.demo_section == DemoSection::Fullscreen {
-                        DemoSection::Info
+                        if has_options {
+                            DemoSection::Options
+                        } else {
+                            DemoSection::Info
+                        }
                     } else {
                         DemoSection::Fullscreen
                     };
@@ -365,22 +434,28 @@ impl Component for DemoBar {
     }
 }
 
-/// The section above (mobile) or beside (desktop) the demo. Upstream's
-/// `_DemoSectionInfo` is the only reachable one; see the module header.
+/// The section above (mobile) or beside (desktop) the demo: upstream's
+/// `_DemoSectionInfo`, or `_DemoSectionOptions` for a demo with
+/// configurations. The code section is batch M-H; see the module header.
 fn section_widget(
     demo: &'static Demo,
     section: DemoSection,
     scheme: Scheme,
     is_desktop: bool,
+    selected: usize,
+    handle: StateHandle<GalleryState>,
 ) -> AnyWidget {
     debug_assert!(
-        section == DemoSection::Info,
-        "only the info section is reachable"
+        matches!(section, DemoSection::Info | DemoSection::Options),
+        "only the info and options sections are reachable"
     );
     // Upstream's headline medium, with the desktop font delta on desktop.
     let mut title_style = text::HEADLINE_MEDIUM.styled(scheme.on_surface);
     if is_desktop {
         title_style.font_size += DESKTOP_DISPLAY1_FONT_DELTA;
+    }
+    if section == DemoSection::Options {
+        return options_section(demo, scheme, title_style, selected, handle);
     }
     let body_style = text::BODY_MEDIUM.styled(scheme.on_surface);
     let title = demo.title;
@@ -398,6 +473,98 @@ fn section_widget(
                     .push(Text::new(description).with_style(body_style.clone())),
             )
     })
+}
+
+/// The per-configuration picker, upstream's `_DemoSectionOptions`: the
+/// "Options" title, a divider, then one row per configuration -- the selected
+/// one on `surface` in `primary`, the rest on the page in `onSurface`.
+fn options_section(
+    demo: &'static Demo,
+    scheme: Scheme,
+    title_style: rustflutter::engine::TextStyle,
+    selected: usize,
+    handle: StateHandle<GalleryState>,
+) -> AnyWidget {
+    let configurations = demo.configurations();
+    let mut items: Vec<AnyWidget> = Vec::with_capacity(configurations.len());
+    for (index, title) in configurations.iter().enumerate() {
+        let is_selected = index == selected;
+        // Upstream's `_DemoSectionOptionsItem`: a full-width row padded 24/8
+        // whose tap selects the configuration (its `onConfigChanged`).
+        let ink = if is_selected {
+            scheme.primary
+        } else {
+            scheme.on_surface
+        };
+        let fill = if is_selected {
+            scheme.surface
+        } else {
+            Color::TRANSPARENT
+        };
+        let item = leaf(move || {
+            Container::new()
+                .with_color(fill)
+                .with_padding(EdgeInsets::symmetric(24.0, 8.0))
+                .with_child(Text::new(*title).with_style(text::BODY_MEDIUM.styled(ink)))
+        });
+        let tap = handle.clone();
+        items.push(single(item, move |rendered| {
+            let tap = tap.clone();
+            Box::new(
+                Pointer::new(ids::DEMO_CHROME + 10 + index as u64, rendered).with_handlers(
+                    PointerHandlers::new().with_tap(move |_| {
+                        tap.set_state(move |state| state.demo_config = index);
+                    }),
+                ),
+            )
+        }));
+    }
+
+    // Upstream's `Divider(thickness: 1, height: 16, color: onSurface)`: the
+    // line is one pixel centered in a sixteen-pixel band.
+    let divider = leaf(move || {
+        Container::new()
+            .with_height(16.0)
+            .with_padding(EdgeInsets::symmetric(0.0, 7.5))
+            .with_child(
+                Container::new()
+                    .with_height(1.0)
+                    .with_color(scheme.on_surface),
+            )
+    });
+
+    many(
+        vec![
+            leaf(move || {
+                Container::new()
+                    .with_padding(EdgeInsets::only(24.0, 12.0, 24.0, 0.0))
+                    .with_child(
+                        Text::new(GalleryLocalizations::en().demo_options_tooltip())
+                            .with_style(title_style.clone()),
+                    )
+            }),
+            divider,
+            many(items, |rendered| {
+                let mut column = RenderFlex::column()
+                    .with_main_axis_size(MainAxisSize::Min)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                for item in rendered {
+                    column = column.push(item);
+                }
+                Box::new(column)
+            }),
+            leaf(|| Container::new().with_height(12.0)),
+        ],
+        |rendered| {
+            let mut column = RenderFlex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+            for child in rendered {
+                column = column.push(child);
+            }
+            Box::new(column)
+        },
+    )
 }
 
 /// Upstream's `DemoWrapper`: the demo inside the Material demo theme, padded

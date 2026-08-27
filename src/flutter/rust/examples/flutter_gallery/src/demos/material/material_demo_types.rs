@@ -8,9 +8,10 @@
 //! Upstream each demo with variants takes one of these enums to pick its
 //! configuration, and the catalogue builds one `GalleryDemoConfiguration` per
 //! variant. Here the catalogue is flattened to one configuration per demo
-//! (PORTING.md: "demo options section is unreachable"), so nothing selects a
-//! variant and the enums are metadata only -- kept so the phase-2 alignment
-//! has the variant lists without re-reading upstream.
+//! (PORTING.md: "demo options section only serves grid-lists"), so only the
+//! grid lists demo selects a variant; the rest of the enums are metadata
+//! only -- kept so the phase-2 alignment has the variant lists without
+//! re-reading upstream.
 
 #![allow(dead_code)]
 

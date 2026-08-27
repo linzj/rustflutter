@@ -126,10 +126,12 @@ Current mapping:
 - **foldable is always false**: no hinge data in `MediaQueryData`, so
   `is_display_foldable` never fires and the splash's `TwoPane` branch is
   unreachable (`src/pages/adaptive_layout.rs`).
-- **demo options section is unreachable**: upstream has 81
+- **demo options section only serves grid-lists**: upstream has 81
   `GalleryDemoConfiguration`s across 42 demos; the catalogue here is
-  flattened to one configuration per demo, so the options icon and section
-  have nothing to pick (`src/pages/demo.rs`, `tools/gen_catalog.py`).
+  flattened to one configuration per demo, so only `grid-lists` has
+  configurations (Image only / With header / With footer) and only it
+  shows the options icon and section (`src/data/demos.rs`,
+  `src/pages/demo.rs`, `tools/gen_catalog.py`).
 - **demo code and docs icons are disabled**: code is batch M-H; docs needs
   `url_launcher`, which has no counterpart here. Both icons draw muted with
   no handler (`src/pages/demo.rs`).
@@ -183,8 +185,10 @@ Current mapping:
     chip avatar/delete, `CircularNotchedRectangle` notch (rectangle clips
     only), `NavigationRail` leading/labelType, `TabBar` isScrollable,
     indeterminate checkbox mark, range slider double thumb, SliderTheme
-    custom shapes, `InputDecoration` (labels/hints/helpers become
-    caption-above/note-below), input formatters (validated, not rewriting).
+    custom shapes, `InputDecoration` (the label floats inside the box --
+    always floated, with the focus/error tint from `focus::has_focus` --
+    helpers/errors in the note row below), input formatters (validated, not
+    rewriting).
   - `RestorationMixin` is not carried anywhere (no counterpart); snackbars
     ride inline areas rather than `ScaffoldMessenger` except the snackbars
     demo's own overlay; data-table rows-per-page is two text buttons, not a

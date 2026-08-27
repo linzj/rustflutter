@@ -126,6 +126,9 @@ pub struct GalleryState {
     pub about_open: bool,
     /// Which section the demo page is showing (`pages/demo.rs`).
     pub demo_section: demo_page::DemoSection,
+    /// Which of the demo's configurations is on stage, for the demos that
+    /// have any. Upstream's `_configIndex` (`lib/pages/demo.dart`).
+    pub demo_config: usize,
     /// The state each demo page needs, all in one place so a demo can be a
     /// plain function rather than a component with a life cycle.
     pub demo: demos::DemoState,
@@ -185,6 +188,7 @@ impl Default for GalleryState {
             expanded_setting: None,
             about_open: false,
             demo_section: demo_page::DemoSection::default(),
+            demo_config: 0,
             demo: demos::DemoState::default(),
             study: studies::StudyState::default(),
             pressed: None,
@@ -282,6 +286,7 @@ impl GalleryState {
         // in the state its description describes.
         self.demo = demos::DemoState::default();
         self.demo_section = demo_page::DemoSection::default();
+        self.demo_config = 0;
         self.study = studies::StudyState::default();
         self.navigator.push(
             Route::new(route).with_args(RouteArgs::new().with("slug", slug)),
