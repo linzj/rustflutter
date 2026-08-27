@@ -2,6 +2,14 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+# The NDK's own cpu-features, which is what `ndk_compat` means: the compatible
+# subset of google/cpu_features that Android already ships in the NDK.
+#
+# It used to name `//flutter/third_party/cpu_features`, a checkout this fork's
+# DEPS does not have and which nothing but this line wanted. `//third_party/
+# cpu-features` -- the same library, spelled with the other separator, and the
+# only other reference to it in the tree -- has always reached it through
+# android_tools, so this reaches it the same way.
 group("ndk_compat") {
-  public_deps = [ "//flutter/third_party/cpu_features:ndk_compat" ]
+  public_deps = [ "//flutter/third_party/android_tools:cpu_features" ]
 }

@@ -2,16 +2,24 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/android/config.gni")
 import("//build/config/android/rules.gni")
 
+# Where the NDK is, rather than where it used to be. `ndk/` beside this file was
+# the old SDK layout; config.gni has said `sdk/ndk/<version>` since the NDK
+# became something the SDK manager installs, and android_ndk_root is that path
+# wherever it points -- including at a junction, which is how a Windows host
+# gets an NDK at all (DEPS downloads none there).
+_cpufeatures = "$android_ndk_root/sources/android/cpufeatures"
+
 config("cpu_features_include") {
-  include_dirs = [ "ndk/sources/android/cpufeatures" ]
+  include_dirs = [ _cpufeatures ]
 }
 
 # This is the GN version of
 # //build/android/ndk.gyp:cpu_features
 source_set("cpu_features") {
-  sources = [ "ndk/sources/android/cpufeatures/cpu-features.c" ]
+  sources = [ "$_cpufeatures/cpu-features.c" ]
   public_configs = [ ":cpu_features_include" ]
 
   configs -= [ "//build/config/compiler:chromium_code" ]
