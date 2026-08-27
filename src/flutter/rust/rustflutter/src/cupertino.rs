@@ -27,9 +27,19 @@
 //!   The translucent colors (`barBackgroundColor` 0xF0.., `_kDialogColor`
 //!   0xCC..) are kept, so the shapes and tints match and only the frosted
 //!   texture is missing.
-//! - **Overlays are the app's, not the framework's** -- the same rule as
-//!   [`crate::controls`]: a dialog or context menu is a surface to put in a
-//!   `Stack` over a scrim; there is no `showCupertinoDialog` route machinery.
+//! - **A dialog is a surface the app puts up, not a route** -- the same rule
+//!   as [`crate::controls`]: [`CupertinoAlertDialog`] is something to put in a
+//!   `Stack` over a scrim, and there is no `showCupertinoDialog` route
+//!   machinery.
+//!
+//!   This used to cover the context menu as well, and no longer does:
+//!   [`CupertinoContextMenu`] opens itself over the application through
+//!   [`crate::theatre`]'s overlay, because *where* it opens is the whole
+//!   point of it -- upstream pushes on the **root** navigator so the menu
+//!   covers the application rather than the page that owns the child, and an
+//!   app-composed `Stack` covers only whatever built it. The gallery's demo
+//!   showed the difference plainly: its scrim reached the edges of the demo
+//!   card and stopped.
 //! - **Hairlines are one logical pixel.** Upstream draws its dividers at
 //!   thickness 0.0 or 0.3 (device-pixel hairlines); at this renderer's unit
 //!   scale one logical pixel is the hairline, the convention
@@ -55,10 +65,11 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::animation::{Controller, Curve, Direction};
 use crate::engine::{Color, Paint, Rect, Style, TextStyle};
 use crate::framework::{
-    AnyWidget, BuildContext, Component, Key, StateHandle, StatefulComponent, leaf, many, single,
-    stateful,
+    AnyWidget, BuildContext, Component, Key, StateHandle, StatefulComponent, component, leaf, many,
+    single, stateful,
 };
 use crate::gestures::PointerHandlers;
 use crate::list_wheel::{
@@ -69,8 +80,10 @@ use crate::platform::Brightness;
 use crate::render::{
     Alignment, BoxConstraints, BoxedRender, CrossAxisAlignment, EdgeInsets, FlexChild,
     MainAxisSize, Offset, PaintContext, RenderBox, RenderClipRect, RenderConstrainedBox,
-    RenderFlex, RenderOpacity, RenderRef, RenderStack, Size, StackPosition, TextOverflow,
+    RenderFlex, RenderOpacity, RenderRef, RenderStack, RenderTransform, Size, StackPosition,
+    TextOverflow,
 };
+use crate::theatre::{Anchor, PortalController};
 use crate::widgets::{Align, Center, Column, Container, Empty, Pointer, Row, Text};
 
 // -- Colors -------------------------------------------------------------------
@@ -3565,6 +3578,350 @@ const CONTEXT_MENU_ACTION_PRESSED: CupertinoDynamicColor =
 /// An action's minimum height. context_menu_action.dart's `_kButtonHeight`.
 const CONTEXT_MENU_ACTION_HEIGHT: f32 = 43.0;
 
+/// How far the child grows while the press is held. context_menu.dart's
+/// `_kOpenScale`.
+pub const CONTEXT_MENU_OPEN_SCALE: f32 = 1.15;
+
+/// The floor that growth is clamped to when the grown child would leave the
+/// safe area. context_menu.dart's `_kMinScaleFactor`.
+pub const CONTEXT_MENU_MIN_SCALE_FACTOR: f32 = 1.02;
+
+/// How long the press has to be held before the menu opens. context_menu.dart's
+/// `_previewLongPressTimeout`.
+///
+/// **Not [`crate::gestures::LONG_PRESS_TIMEOUT_MICROS`]**: upstream runs its own
+/// controller off the tap-down rather than using a `LongPressGestureRecognizer`,
+/// because the same controller drives the child's growth -- the animation *is*
+/// the timer, and it is 300ms longer than an ordinary long press.
+pub const CONTEXT_MENU_PREVIEW_TIMEOUT: Duration = Duration::from_millis(800);
+
+/// How long the menu takes to open once the press is done.
+/// context_menu.dart's `_kModalPopupTransitionDuration`.
+pub const CONTEXT_MENU_TRANSITION: Duration = Duration::from_millis(335);
+
+/// Where in the combined animation the menu starts opening. Upstream's
+/// `CupertinoContextMenu.animationOpensAt`, which is the press timeout over the
+/// sum of the two durations.
+pub fn context_menu_animation_opens_at() -> f32 {
+    let press = CONTEXT_MENU_PREVIEW_TIMEOUT.as_millis() as f32;
+    press / (press + CONTEXT_MENU_TRANSITION.as_millis() as f32)
+}
+
+/// The shadow the child has grown by the time the menu opens.
+/// context_menu.dart's `_endBoxShadow`, also `CupertinoContextMenu.kEndBoxShadow`.
+pub const CONTEXT_MENU_END_BOX_SHADOW: crate::painting::BoxShadow =
+    crate::painting::BoxShadow::new(Color(0x4000_0000), 0.0, 0.0, 10.0, 0.5);
+
+/// The gap the open menu keeps from the screen edges and between the preview
+/// and the sheet. `_ContextMenuRouteStaticState._kPadding`.
+pub const CONTEXT_MENU_PADDING: f32 = 20.0;
+
+/// How hard the page behind an open menu is blurred: the route's
+/// `ui.ImageFilter.blur(sigmaX: 5.0, sigmaY: 5.0)`.
+pub const CONTEXT_MENU_BLUR_SIGMA: f32 = 5.0;
+
+/// The longest a single frame may advance the press or the transition by,
+/// roughly three frames at sixty a second. See the clamp in
+/// [`CupertinoContextMenu::advance`].
+const MAX_FRAME_MICROS: i64 = 50_000;
+
+/// Which side of the screen the menu's child was on, which is what decides
+/// where the sheet goes. Upstream's `_ContextMenuLocation`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContextMenuLocation {
+    #[default]
+    Center,
+    Left,
+    Right,
+}
+
+/// Upstream's `_CupertinoContextMenuState._contextMenuLocation`: near enough to
+/// the middle counts as centred, and otherwise it is whichever half the child's
+/// centre falls in.
+pub fn context_menu_location(child: Rect, screen_width: f32) -> ContextMenuLocation {
+    let center = screen_width / 2.0;
+    let (child_center_x, _) = child.center();
+    let center_divides_child = child.left < center && child.right > center;
+    let distance_from_center = (center - child_center_x).abs();
+    if center_divides_child && distance_from_center <= child.width() / 4.0 {
+        return ContextMenuLocation::Center;
+    }
+    if child_center_x > center {
+        ContextMenuLocation::Right
+    } else {
+        ContextMenuLocation::Left
+    }
+}
+
+/// How far the child may grow without leaving the safe area. Upstream's
+/// `_CupertinoContextMenuState._getScaleFactor`.
+pub fn context_menu_scale_factor(child: Rect, padding: EdgeInsets, size: Size) -> f32 {
+    let (center_x, center_y) = child.center();
+    let left_max = 2.0 * (center_x - padding.left) / child.width();
+    let top_max = 2.0 * (center_y - padding.top) / child.height();
+    let right_max = 2.0 * (size.width - padding.right - center_x) / child.width();
+    let bottom_max = 2.0 * (size.height - padding.bottom - center_y) / child.height();
+    let min_width = left_max.min(right_max);
+    let min_height = top_max.min(bottom_max);
+    min_width
+        .min(min_height)
+        .clamp(CONTEXT_MENU_MIN_SCALE_FACTOR, CONTEXT_MENU_OPEN_SCALE)
+}
+
+/// Which corner the sheet grows out of. Upstream's
+/// `_ContextMenuRoute.getSheetAlignment`, resolved -- this crate's `Alignment`
+/// is absolute, and the tier is left-to-right.
+pub fn context_menu_sheet_alignment(
+    location: ContextMenuLocation,
+    orientation: crate::presence::Orientation,
+) -> Alignment {
+    match location {
+        ContextMenuLocation::Center if orientation == crate::presence::Orientation::Landscape => {
+            Alignment::TOP_LEFT
+        }
+        ContextMenuLocation::Center => Alignment::TOP_CENTER,
+        ContextMenuLocation::Right => Alignment::TOP_RIGHT,
+        ContextMenuLocation::Left => Alignment::TOP_LEFT,
+    }
+}
+
+/// Where the sheet starts from, so that it appears to unfold out of the child.
+/// Upstream's `_ContextMenuRoute._getSheetRectBegin`.
+pub fn context_menu_sheet_rect_begin(
+    orientation: crate::presence::Orientation,
+    location: ContextMenuLocation,
+    child: Rect,
+    sheet: Size,
+) -> Rect {
+    let portrait = orientation == crate::presence::Orientation::Portrait;
+    let y = if portrait { child.bottom } else { child.top };
+    let x = match location {
+        ContextMenuLocation::Center => {
+            let (center_x, _) = child.center();
+            center_x - sheet.width / 2.0
+        }
+        ContextMenuLocation::Right => child.right - sheet.width,
+        ContextMenuLocation::Left => child.left,
+    };
+    Rect::xywh(x, y, sheet.width, sheet.height)
+}
+
+/// Corner-by-corner, upstream's `RectTween`.
+fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
+    Rect::ltrb(
+        a.left + (b.left - a.left) * t,
+        a.top + (b.top - a.top) * t,
+        a.right + (b.right - a.right) * t,
+        a.bottom + (b.bottom - a.bottom) * t,
+    )
+}
+
+/// The preview's slot in [`ContextMenuLayout`], upstream's
+/// `_ContextMenuChild.child`.
+pub const CONTEXT_MENU_PREVIEW_SLOT: u64 = 0;
+/// The sheet's slot, upstream's `_ContextMenuChild.menuSheet`.
+pub const CONTEXT_MENU_SHEET_SLOT: u64 = 1;
+
+/// Where the open menu's preview and sheet go.
+///
+/// This is upstream's `_ContextMenuAlignedChildrenDelegate` **plus** the rect
+/// tweens of `_ContextMenuRoute.buildTransitions`, which upstream keeps apart:
+/// there the route renders a `Stack` of two `Positioned.fromRect`s while the
+/// transition runs and swaps to `_ContextMenuRouteStatic` once it is over, and
+/// the tweens' end points come from measuring that static layout on a frame
+/// rendered offstage.
+///
+/// Folding them together is what lets this port skip the offstage frame: the
+/// delegate *is* the static layout, so it has both end points in hand while it
+/// is laying out, and interpolating there costs one relayout per frame instead
+/// of a second render pass. At `t == 1` it lays out exactly what upstream's
+/// static route does.
+///
+/// The preview is tweened by **size**, not by a scale transform: its widget is
+/// a `FittedBox(fit: cover)`, so laying it out at the interpolated rect scales
+/// its contents to match, which is what upstream's `Positioned.fromRect` around
+/// the same `FittedBox` comes to. The sheet keeps its own size and is scaled by
+/// a [`crate::render::RenderTransform`] in the tree, as upstream's is -- a sheet
+/// laid out narrow would re-wrap its labels rather than shrink.
+pub struct ContextMenuLayout {
+    /// The child's rectangle before the press, upstream's `childRect` -- what
+    /// portrait placement anchors to.
+    pub target_rect: Rect,
+    /// The screen less its safe-area padding, upstream's `screenBounds`.
+    pub screen_bounds: Rect,
+    pub orientation: crate::presence::Orientation,
+    pub location: ContextMenuLocation,
+    /// Where the preview comes from: the rectangle the press grew it to
+    /// (`_previousChildRect`) while opening, and the child's own rectangle
+    /// while closing -- upstream's `_rectTween` and `_rectTweenReverse`.
+    pub from: Rect,
+    /// How far through the open transition, already curved.
+    pub t: f32,
+}
+
+impl ContextMenuLayout {
+    fn same(&self, other: &ContextMenuLayout) -> bool {
+        self.target_rect == other.target_rect
+            && self.screen_bounds == other.screen_bounds
+            && self.orientation == other.orientation
+            && self.location == other.location
+            && self.from == other.from
+            && self.t == other.t
+    }
+}
+
+impl crate::render::MultiChildLayoutDelegate for ContextMenuLayout {
+    fn perform_layout(&self, size: Size, context: &mut crate::render::MultiChildLayoutContext) {
+        let landscape = self.orientation == crate::presence::Orientation::Landscape;
+        let bounds = self.screen_bounds;
+
+        // Upstream's `performLayout`, up to the point where it positions.
+        let available_height_for_child = (bounds.height() - CONTEXT_MENU_PADDING).max(0.0);
+        let available_width = (bounds.width() - CONTEXT_MENU_PADDING * 2.0).max(0.0);
+        let available_width_for_child = if landscape {
+            (available_width - CONTEXT_MENU_SHEET_WIDTH).max(0.0)
+        } else {
+            available_width
+        };
+
+        let child_size = context
+            .layout_child(
+                CONTEXT_MENU_PREVIEW_SLOT,
+                BoxConstraints::new(
+                    0.0,
+                    available_width_for_child,
+                    0.0,
+                    available_height_for_child,
+                ),
+            )
+            .unwrap_or(Size::ZERO);
+
+        // Portrait puts the sheet under the preview, so the preview's height
+        // has already been spent; landscape puts it beside, so it has not.
+        let available_height_for_menu = if landscape {
+            available_height_for_child
+        } else {
+            (available_height_for_child - (child_size.height + CONTEXT_MENU_PADDING)).max(0.0)
+        };
+        let menu_size = context
+            .layout_child(
+                CONTEXT_MENU_SHEET_SLOT,
+                BoxConstraints::new(0.0, size.width, 0.0, available_height_for_menu),
+            )
+            .unwrap_or(Size::ZERO);
+
+        let initial_child_left;
+        let initial_child_top;
+        let max_clamped_left;
+        let max_clamped_top;
+        let second_child_offset;
+        let menu_before_child;
+        if landscape {
+            menu_before_child = self.location == ContextMenuLocation::Right;
+            let total_width = child_size.width + menu_size.width + CONTEXT_MENU_PADDING;
+            let (bounds_center_x, bounds_center_y) = bounds.center();
+            initial_child_left = bounds_center_x - total_width / 2.0;
+            initial_child_top = bounds_center_y - child_size.height.max(menu_size.height) / 2.0;
+            let second_child_dx = if menu_before_child {
+                menu_size.width
+            } else {
+                child_size.width
+            };
+            second_child_offset = Offset::new(second_child_dx + CONTEXT_MENU_PADDING, 0.0);
+            max_clamped_left = bounds.right - total_width;
+            max_clamped_top = bounds.bottom;
+        } else {
+            menu_before_child = false;
+            let total_height = child_size.height + menu_size.height + CONTEXT_MENU_PADDING;
+            let total_width = child_size.width + CONTEXT_MENU_PADDING;
+            let (target_center_x, target_center_y) = self.target_rect.center();
+            initial_child_left = target_center_x - child_size.width / 2.0;
+            initial_child_top = target_center_y - child_size.height;
+            let second_child_dx = match self.location {
+                ContextMenuLocation::Center => child_size.width / 2.0 - menu_size.width / 2.0,
+                ContextMenuLocation::Left => 0.0,
+                ContextMenuLocation::Right => child_size.width - menu_size.width,
+            };
+            second_child_offset =
+                Offset::new(second_child_dx, child_size.height + CONTEXT_MENU_PADDING);
+            max_clamped_left = bounds.right - total_width;
+            max_clamped_top = bounds.bottom - total_height;
+        }
+
+        // Upstream clamps with `clampDouble`, whose lower bound wins when the
+        // two cross -- which they do on a screen too small for the assembly.
+        let clamped_left = initial_child_left
+            .max(bounds.left + CONTEXT_MENU_PADDING)
+            .min(max_clamped_left.max(bounds.left + CONTEXT_MENU_PADDING));
+        let clamped_top = initial_child_top
+            .max(bounds.top + CONTEXT_MENU_PADDING)
+            .min(max_clamped_top.max(bounds.top + CONTEXT_MENU_PADDING));
+        let first = Offset::new(clamped_left, clamped_top);
+        let second = Offset::new(
+            first.dx + second_child_offset.dx,
+            first.dy + second_child_offset.dy,
+        );
+        let (child_offset, sheet_offset) = if menu_before_child {
+            (second, first)
+        } else {
+            (first, second)
+        };
+
+        // The transition, folded in (see the type docs). The preview walks from
+        // `from` to where it has just been laid out, and is laid out again at
+        // the rectangle it has reached; the sheet walks from the edge of the
+        // child it belongs to.
+        let child_end = Rect::xywh(
+            child_offset.dx,
+            child_offset.dy,
+            child_size.width,
+            child_size.height,
+        );
+        let child_now = lerp_rect(self.from, child_end, self.t);
+        context.layout_child(
+            CONTEXT_MENU_PREVIEW_SLOT,
+            BoxConstraints::tight(child_now.width(), child_now.height()),
+        );
+        context.position_child(
+            CONTEXT_MENU_PREVIEW_SLOT,
+            Offset::new(child_now.left, child_now.top),
+        );
+
+        let sheet_end = Rect::xywh(
+            sheet_offset.dx,
+            sheet_offset.dy,
+            menu_size.width,
+            menu_size.height,
+        );
+        let sheet_begin = context_menu_sheet_rect_begin(
+            self.orientation,
+            self.location,
+            self.target_rect,
+            menu_size,
+        );
+        let sheet_now = lerp_rect(sheet_begin, sheet_end, self.t);
+        context.position_child(
+            CONTEXT_MENU_SHEET_SLOT,
+            Offset::new(sheet_now.left, sheet_now.top),
+        );
+    }
+
+    fn should_relayout(&self, old: &dyn crate::render::MultiChildLayoutDelegate) -> bool {
+        match old.as_any().downcast_ref::<ContextMenuLayout>() {
+            Some(old) => !self.same(old),
+            None => true,
+        }
+    }
+
+    fn kind_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<ContextMenuLayout>()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// What a [`CupertinoContextMenuAction`] remembers between frames.
 #[derive(Default)]
 pub struct CupertinoContextMenuActionState {
@@ -3574,6 +3931,12 @@ pub struct CupertinoContextMenuActionState {
 
 /// One action in a context menu's sheet. Upstream's
 /// `CupertinoContextMenuAction` (context_menu_action.dart).
+///
+/// `Clone` because [`CupertinoContextMenu`] rebuilds its sheet on every frame
+/// of the open transition, and a built `AnyWidget` can only be handed over
+/// once. Every field is either plain data or a shared callback, so the copy is
+/// the same action rather than a second one.
+#[derive(Clone)]
 pub struct CupertinoContextMenuAction {
     id: u64,
     label: String,
@@ -3612,6 +3975,14 @@ impl CupertinoContextMenuAction {
         self.on_pressed = Some(Rc::new(move || {
             handle.set_state(move |state| action(state));
         }));
+        self
+    }
+
+    /// Upstream's `onPressed`, for a caller whose callback is not a state
+    /// change -- closing the menu through a
+    /// [`CupertinoContextMenuController`], above all.
+    pub fn on_pressed(mut self, action: impl Fn() + 'static) -> Self {
+        self.on_pressed = Some(Rc::new(action));
         self
     }
 }
@@ -3690,8 +4061,8 @@ impl StatefulComponent for CupertinoContextMenuAction {
 /// scrolls upstream; here the app keeps the list short, the same constraint
 /// [`crate::menu::PopupMenu`] puts on its callers).
 ///
-/// Presentation is the app's (see the module docs): put the sheet in a
-/// `Stack` over a scrim of [`CONTEXT_MENU_BARRIER_COLOR`].
+/// [`CupertinoContextMenu`] builds one of these itself and places it; this is
+/// public for a caller who wants the surface on its own.
 pub struct CupertinoContextMenuSheet {
     actions: RefCell<Vec<AnyWidget>>,
 }
@@ -3706,6 +4077,13 @@ impl CupertinoContextMenuSheet {
     /// Upstream's `actions`, in order.
     pub fn push(self, action: CupertinoContextMenuAction) -> Self {
         self.actions.borrow_mut().push(stateful(action));
+        self
+    }
+
+    /// The same list, already built -- what [`CupertinoContextMenu`] has in
+    /// hand by the time it puts the sheet up.
+    pub fn with_actions(self, actions: Vec<AnyWidget>) -> Self {
+        *self.actions.borrow_mut() = actions;
         self
     }
 }
@@ -3747,59 +4125,471 @@ impl Component for CupertinoContextMenuSheet {
     }
 }
 
-/// A long-press trigger for a context menu. Upstream's `CupertinoContextMenu`
-/// (context_menu.dart) opens a route on long press that zooms the child out
-/// of the layout and puts the action sheet beside it; the zoom, blur and
-/// drag-to-dismiss animations are not ported (see the module docs). What
-/// remains is the trigger: `open` runs on a long press, and putting the
-/// [`CupertinoContextMenuSheet`] over a scrim in a `Stack` is the app's, as
-/// it is for dialogs in this tier.
+/// Closes an open [`CupertinoContextMenu`]. Upstream's actions call
+/// `Navigator.pop(context)`; the menu here is an overlay portal rather than a
+/// route, so the handle it hands out is what stands in for the navigator.
+///
+/// Take one from [`CupertinoContextMenu::controller`] *before* the menu is
+/// built and wire the actions to it, the way upstream's actions close over
+/// their `BuildContext`.
+#[derive(Clone, Default)]
+pub struct CupertinoContextMenuController {
+    close: Rc<RefCell<Option<Rc<dyn Fn()>>>>,
+}
+
+impl CupertinoContextMenuController {
+    pub fn new() -> CupertinoContextMenuController {
+        CupertinoContextMenuController::default()
+    }
+
+    /// Closes the menu, if it is open and has been built at least once.
+    pub fn close(&self) {
+        let close = self.close.borrow().clone();
+        if let Some(close) = close {
+            close();
+        }
+    }
+
+    /// Filled in by the menu's build, which is the first moment there is a
+    /// state to talk to.
+    fn arm(&self, close: Rc<dyn Fn()>) {
+        *self.close.borrow_mut() = Some(close);
+    }
+}
+
+/// Upstream's `CupertinoContextMenu`: a widget that, held down, grows and then
+/// opens full-screen over a blurred page with its actions beside it.
+///
+/// The whole of upstream's shape is here -- the press animation with its
+/// shadow, the child hidden in place while the menu is up, the blurred and
+/// dimmed barrier, the preview and the sheet placed by
+/// [`ContextMenuLayout`], and the open and close transitions. Three things are
+/// deliberately different:
+///
+/// - **The menu is an overlay portal, not a `PopupRoute`.** Upstream pushes on
+///   the root navigator, which is what makes the menu cover the application
+///   rather than the page that opened it; the portal reaches the same root
+///   overlay ([`crate::theatre`]) and covers the same surface, and the price is
+///   that the system back gesture does not pop it.
+/// - **The preview is `builder`'s widget in a `FittedBox`, and the corner
+///   rounding is circular.** Upstream's `_defaultPreviewBuilder` clips to a
+///   `ClipRSuperellipse`, which the paint bridge has no shape for (see the
+///   module docs).
+/// - **There is no drag-to-dismiss.** Upstream's `_ContextMenuRouteStatic`
+///   lets the open menu be dragged down, scaling the preview and fading the
+///   sheet out until it lets go; here the barrier and the actions are what
+///   close it. Nothing else in this tier has a dismissible modal either.
 pub struct CupertinoContextMenu {
     id: u64,
-    child: RefCell<Option<AnyWidget>>,
-    handlers: PointerHandlers,
+    /// Upstream's `builder`. A closure rather than a widget because the child
+    /// is built three times over -- in place, in the press decoy, and as the
+    /// open preview -- and a widget can only be handed over once.
+    builder: Rc<dyn Fn() -> AnyWidget>,
+    actions: RefCell<Vec<CupertinoContextMenuAction>>,
+    controller: CupertinoContextMenuController,
 }
 
 impl CupertinoContextMenu {
     pub fn new(id: u64) -> CupertinoContextMenu {
         CupertinoContextMenu {
             id,
-            child: RefCell::new(None),
-            handlers: PointerHandlers::new(),
+            builder: Rc::new(|| leaf(|| Empty)),
+            actions: RefCell::new(Vec::new()),
+            controller: CupertinoContextMenuController::new(),
         }
     }
 
-    /// Upstream's `child` (its `builder` taking the open animation is the
-    /// animated variant, not ported).
-    pub fn with_child(self, child: AnyWidget) -> Self {
-        *self.child.borrow_mut() = Some(child);
+    /// Upstream's `child`, as the builder the port needs (see the field).
+    pub fn with_child(self, child: impl Fn() -> AnyWidget + 'static) -> Self {
+        CupertinoContextMenu {
+            builder: Rc::new(child),
+            ..self
+        }
+    }
+
+    /// Upstream's `actions`, in order.
+    pub fn push_action(self, action: CupertinoContextMenuAction) -> Self {
+        self.actions.borrow_mut().push(action);
         self
     }
 
-    /// Runs `open` on a long press. Upstream's `onLongPress` handler calling
-    /// `Navigator.push`; `open(true)` should put the sheet up, and the
-    /// actions' `wired` callbacks should take it down.
-    pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, open: fn(&mut S, bool)) -> Self {
-        self.handlers = PointerHandlers::new().with_long_press(move |_| {
-            handle.set_state(move |state| open(state, true));
-        });
-        self
+    /// The handle that closes this menu. Wire the actions to it.
+    pub fn controller(&self) -> CupertinoContextMenuController {
+        self.controller.clone()
     }
 }
 
-impl Component for CupertinoContextMenu {
-    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+/// What an open [`CupertinoContextMenu`] remembers.
+pub struct CupertinoContextMenuState {
+    /// Upstream's `_openController`: the press, which is also the timer that
+    /// decides when the menu opens.
+    press: Controller,
+    /// The route's own animation, upstream's `_ContextMenuRoute.animation`.
+    route: Controller,
+    /// Upstream's `_childHidden`: the child is drawn by the decoy and then by
+    /// the preview, and would otherwise be drawn twice.
+    child_hidden: bool,
+    /// Whether the menu itself is up, as opposed to the press growing.
+    open: bool,
+    /// Upstream's `childRect`, measured at tap-down.
+    child_rect: Rect,
+    /// Upstream's `_decoyChildEndRect`, which is also the route's
+    /// `_previousChildRect`.
+    decoy_end_rect: Rect,
+    location: ContextMenuLocation,
+    portal: PortalController,
+    anchor: Anchor,
+    last_frame_micros: Option<i64>,
+}
+
+impl Default for CupertinoContextMenuState {
+    fn default() -> CupertinoContextMenuState {
+        CupertinoContextMenuState {
+            press: Controller::new(CONTEXT_MENU_PREVIEW_TIMEOUT),
+            route: Controller::new(CONTEXT_MENU_TRANSITION),
+            child_hidden: false,
+            open: false,
+            child_rect: Rect::ltrb(0.0, 0.0, 0.0, 0.0),
+            decoy_end_rect: Rect::ltrb(0.0, 0.0, 0.0, 0.0),
+            location: ContextMenuLocation::Center,
+            portal: PortalController::new(),
+            anchor: Anchor::new(),
+            last_frame_micros: None,
+        }
+    }
+}
+
+impl StatefulComponent for CupertinoContextMenu {
+    type State = CupertinoContextMenuState;
+
+    fn key(&self) -> Key {
+        Some(self.id)
+    }
+
+    fn advance(&self, state: &mut CupertinoContextMenuState, frame_time_micros: i64) -> bool {
+        let elapsed = match state.last_frame_micros {
+            Some(previous) if frame_time_micros > previous => {
+                // Clamped, because the gap is not the frame rate. Frames are
+                // on demand: nothing draws while the demo sits still, so the
+                // press that starts the growth is measured against a frame
+                // from however long ago the reader last did anything.
+                // Unclamped, the very first tick of the press ran the whole
+                // 800ms in one step and the menu opened the instant it was
+                // touched.
+                let gap = (frame_time_micros - previous).min(MAX_FRAME_MICROS);
+                Duration::from_micros(gap as u64)
+            }
+            _ => Duration::ZERO,
+        };
+        state.last_frame_micros = Some(frame_time_micros);
+
+        let mut moving = state.press.tick(elapsed);
+        moving |= state.route.tick(elapsed);
+
+        // Upstream's `_onDecoyAnimationStatusChange`: a press that runs to the
+        // end opens the menu, and one that unwinds puts the child back.
+        if !state.open
+            && state.press.direction() == Direction::Forward
+            && state.press.value() >= 1.0
+        {
+            state.open = true;
+            state.route.set_value(0.0);
+            state.route.forward();
+            moving = true;
+        }
+        if !state.open
+            && state.press.direction() == Direction::Reverse
+            && state.press.is_settled()
+            && state.child_hidden
+        {
+            state.child_hidden = false;
+            state.portal.hide();
+        }
+
+        // Upstream's `_routeAnimationStatusListener`: the route finished
+        // closing, so the child is the child again.
+        if state.open && state.route.direction() == Direction::Reverse && state.route.is_settled() {
+            state.open = false;
+            state.child_hidden = false;
+            state.press.set_value(0.0);
+            state.portal.hide();
+        }
+        moving
+    }
+
+    fn build(
+        &self,
+        state: &CupertinoContextMenuState,
+        handle: StateHandle<CupertinoContextMenuState>,
+        context: &mut BuildContext,
+    ) -> AnyWidget {
+        let media = crate::media_query::media_query_of(context);
+        let screen = media.size;
+        let padding = media.padding;
+        let orientation = crate::media_query::orientation_of(context);
+
+        // Upstream's `_onTapDown`/`_onTapCompleted`, which is where the child's
+        // rectangle is measured and the growth is armed. `press_change` is this
+        // tier's tap-down and tap-cancel in one: it goes true when the press
+        // lands and false when it is lifted, cancelled, or dragged past the
+        // slop -- the three ways upstream's recogniser completes a tap.
+        let anchor = state.anchor.clone();
+        let portal = state.portal.clone();
+        let pressed_handle = handle.clone();
+        let handlers = PointerHandlers::new().with_press_change(move |down| {
+            let rect = anchor.rect();
+            let portal = portal.clone();
+            pressed_handle.set_state(move |state| {
+                if down {
+                    if state.open {
+                        return;
+                    }
+                    if let Some(rect) = rect {
+                        state.child_rect = rect;
+                        let scale = context_menu_scale_factor(rect, padding, screen);
+                        let (center_x, center_y) = rect.center();
+                        state.decoy_end_rect = Rect::from_center(
+                            center_x,
+                            center_y,
+                            rect.width() * scale,
+                            rect.height() * scale,
+                        );
+                        state.location = context_menu_location(rect, screen.width);
+                    }
+                    state.child_hidden = true;
+                    state.press.set_value(0.0);
+                    state.press.forward();
+                    portal.show();
+                } else if !state.open {
+                    state.press.reverse();
+                }
+            });
+        });
+
+        // Upstream's `Visibility.maintain(visible: !_childHidden)`: the child
+        // keeps its place in the layout, and stops being drawn.
         let id = self.id;
-        let handlers = self.handlers.clone();
-        let child = self
-            .child
-            .borrow_mut()
-            .take()
-            .expect("CupertinoContextMenu needs a child");
-        single(child, move |inner| {
-            Pointer::new(id, inner).with_handlers(handlers.clone())
+        let child = (self.builder)();
+        let child_hidden = state.child_hidden;
+        let anchor_for_target = state.anchor.clone();
+        let target = many(vec![child], move |mut rendered| {
+            let child = rendered.pop().expect("the context menu's child");
+            anchor_for_target.set(child.clone());
+            // `Visibility.maintain` keeps the space and stops the paint; the
+            // nearest thing here is a zero opacity, which is also what upstream
+            // falls back to when `maintainSize` is asked for.
+            let child: BoxedRender = if child_hidden {
+                RenderRef::new(RenderOpacity::new(0.0, child))
+            } else {
+                child
+            };
+            crate::render::RenderPointerRegion::new(id, child).with_handlers(handlers.clone())
+        });
+
+        // The close handle the actions are wired to, and the barrier's tap.
+        let closing_handle = handle.clone();
+        let close: Rc<dyn Fn()> = Rc::new(move || {
+            closing_handle.set_state(|state| {
+                if state.open {
+                    state.route.reverse();
+                }
+            });
+        });
+        self.controller.arm(Rc::clone(&close));
+
+        // Cloned rather than taken: `advance` marks *this* element dirty on
+        // every frame of the animation, so `build` runs again against the same
+        // widget while the demo above it sits still. Taking them left the
+        // sheet empty from the second frame on -- which is a 250-wide
+        // transparent nothing, not a missing widget, so it looked like the
+        // sheet had been positioned off the screen.
+        let actions = self.actions.borrow().clone();
+        let open = state.open;
+        let press = state.press.value();
+        let route_value = state.route.value();
+        let closing = state.route.direction() == Direction::Reverse;
+        let child_rect = state.child_rect;
+        let decoy_end_rect = state.decoy_end_rect;
+        let location = state.location;
+        let builder = Rc::clone(&self.builder);
+        let barrier_id = self.id;
+        let barrier_close = Rc::clone(&close);
+
+        crate::theatre::overlay_portal(state.portal.clone(), target, move || {
+            if !open {
+                return context_menu_decoy(child_rect, decoy_end_rect, press, (builder)());
+            }
+            // Upstream runs the open transition on `easeOutBack` and the close
+            // on `easeInBack` (`_ContextMenuRoute._curve`/`_curveReverse`).
+            let t = if closing {
+                Curve::EASE_IN_BACK.transform(route_value)
+            } else {
+                Curve::EASE_OUT_BACK.transform(route_value)
+            };
+            // The reverse tween starts from the child's own rectangle rather
+            // than the one the press grew it to: upstream's `_rectTweenReverse`.
+            let from = if closing { child_rect } else { decoy_end_rect };
+            context_menu_route(ContextMenuRoute {
+                id: barrier_id,
+                preview: (builder)(),
+                actions: actions.iter().cloned().map(stateful).collect(),
+                layout: ContextMenuLayout {
+                    target_rect: child_rect,
+                    // Upstream's `screenBounds`, spelled as upstream spells
+                    // it: an origin at zero and the padding taken off both
+                    // ends, which is only the safe area's own rectangle
+                    // because the layout runs inside a `SafeArea` there and
+                    // this one does not. The two agree wherever the padding
+                    // is zero, which is every desktop and every screen
+                    // without a cutout.
+                    screen_bounds: Rect::xywh(
+                        0.0,
+                        0.0,
+                        (screen.width - padding.left - padding.right).max(0.0),
+                        (screen.height - padding.top - padding.bottom).max(0.0),
+                    ),
+                    orientation,
+                    location,
+                    from,
+                    t,
+                },
+                opacity: route_value,
+                border_radius: K_OPEN_BORDER_RADIUS * route_value,
+                on_dismiss: Rc::clone(&barrier_close),
+            })
         })
     }
+}
+
+/// The floating copy of the child while the press is held: upstream's
+/// `_DecoyChild`, which grows it from `beginRect` to `endRect` and grows a
+/// shadow under it.
+fn context_menu_decoy(begin: Rect, end: Rect, press: f32, child: AnyWidget) -> AnyWidget {
+    // Upstream's `TweenSequence`: a pause for a sixth of the press, then the
+    // growth on `easeOutSine`, then a pause for the rest of the combined
+    // animation. The trailing pause is time this port's controller does not
+    // have -- its press controller runs to 1.0 at the moment the route opens --
+    // so what is left is the leading pause and the growth.
+    const BEGIN_PAUSE: f32 = 1.0;
+    const OPEN_LENGTH: f32 = 5.0;
+    let progress =
+        (((press * (BEGIN_PAUSE + OPEN_LENGTH)) - BEGIN_PAUSE) / OPEN_LENGTH).clamp(0.0, 1.0);
+    let rect = lerp_rect(begin, end, Curve::EASE_OUT_SINE.transform(progress));
+
+    // `DecorationTween` from no shadow to `_endBoxShadow`, on the whole press.
+    let shadow = crate::painting::BoxShadow {
+        color: CONTEXT_MENU_END_BOX_SHADOW
+            .color
+            .with_alpha((CONTEXT_MENU_END_BOX_SHADOW.color.alpha() as f32 * press) as u8),
+        offset: CONTEXT_MENU_END_BOX_SHADOW.offset,
+        blur_radius: CONTEXT_MENU_END_BOX_SHADOW.blur_radius * press,
+        spread_radius: CONTEXT_MENU_END_BOX_SHADOW.spread_radius * press,
+    };
+
+    single(child, move |child| {
+        RenderRef::new(
+            RenderStack::new().push_positioned(
+                RenderRef::new(
+                    Container::new()
+                        .with_shadows(vec![shadow])
+                        .with_child(child.clone()),
+                ),
+                StackPosition {
+                    left: Some(rect.left),
+                    top: Some(rect.top),
+                    width: Some(rect.width()),
+                    height: Some(rect.height()),
+                    ..StackPosition::default()
+                },
+            ),
+        )
+    })
+}
+
+/// Everything the open menu draws.
+struct ContextMenuRoute {
+    id: u64,
+    preview: AnyWidget,
+    actions: Vec<AnyWidget>,
+    layout: ContextMenuLayout,
+    opacity: f32,
+    border_radius: f32,
+    on_dismiss: Rc<dyn Fn()>,
+}
+
+/// The open menu: the blurred, dimmed barrier, then the preview and the sheet
+/// where [`ContextMenuLayout`] puts them.
+fn context_menu_route(route: ContextMenuRoute) -> AnyWidget {
+    let ContextMenuRoute {
+        id,
+        preview,
+        actions,
+        layout,
+        opacity,
+        border_radius,
+        on_dismiss,
+    } = route;
+
+    // Upstream's `PopupRoute.barrierColor` under the route's blur `filter`,
+    // both of which come in with the route's animation.
+    let barrier_color = CONTEXT_MENU_BARRIER_COLOR
+        .with_alpha((CONTEXT_MENU_BARRIER_COLOR.alpha() as f32 * opacity) as u8);
+    let barrier = leaf(move || {
+        let dismiss = Rc::clone(&on_dismiss);
+        crate::render::RenderPointerRegion::new(
+            id,
+            RenderRef::new(crate::widgets::BackdropFilter::new(
+                CONTEXT_MENU_BLUR_SIGMA * opacity,
+                Container::new().with_color(barrier_color),
+            )),
+        )
+        .with_handlers(PointerHandlers::new().with_tap(move |_| dismiss()))
+        .with_behavior(crate::render::HitTestBehavior::Opaque)
+    });
+
+    // Upstream's `_defaultPreviewBuilder`: the child fitted to the preview's
+    // rectangle, its corners rounding as the menu opens.
+    let preview = single(preview, move |child| {
+        RenderRef::new(
+            RenderClipRect::new(
+                crate::render::RenderFittedBox::boxed(child).with_fit(crate::render::BoxFit::Cover),
+            )
+            .with_corner_radius(border_radius),
+        )
+    });
+
+    // Upstream's `Transform.scale(alignment: getSheetAlignment, scale:
+    // sheetScale)` over a `FadeTransition`.
+    let alignment = context_menu_sheet_alignment(layout.location, layout.orientation);
+    let scale = layout.t;
+    let sheet = component(CupertinoContextMenuSheet::new().with_actions(actions));
+    let sheet = single(sheet, move |sheet| {
+        RenderRef::new(RenderOpacity::new(
+            opacity,
+            RenderTransform::new_boxed([scale, 0.0, 0.0, scale, 0.0, 0.0], sheet)
+                .with_origin(alignment),
+        ))
+    });
+
+    let layout = Rc::new(layout);
+    many(vec![barrier, preview, sheet], move |mut rendered| {
+        let sheet = rendered.pop().expect("the sheet");
+        let preview = rendered.pop().expect("the preview");
+        let barrier = rendered.pop().expect("the barrier");
+        RenderRef::new(
+            RenderStack::new()
+                .push_positioned(barrier, StackPosition::fill())
+                .push(RenderRef::new(
+                    crate::render::RenderCustomMultiChildLayoutBox::new(
+                        Rc::clone(&layout) as Rc<dyn crate::render::MultiChildLayoutDelegate>,
+                        vec![
+                            (CONTEXT_MENU_PREVIEW_SLOT, preview),
+                            (CONTEXT_MENU_SHEET_SLOT, sheet),
+                        ],
+                    ),
+                )),
+        )
+    })
 }
 
 // -- Cupertino's dialogs and action sheets ------------------------------------
@@ -4957,6 +5747,7 @@ mod tests {
     use super::*;
     use crate::framework::{ElementTree, component, provide};
     use crate::list_wheel::max_visible_radian;
+    use crate::presence::Orientation;
     use crate::render::HitTestResult;
 
     fn lay_out(widget: AnyWidget, width: f32, height: f32) -> Size {
@@ -5372,11 +6163,132 @@ mod tests {
     }
 
     #[test]
-    fn a_context_menu_trigger_lays_out_its_child() {
+    fn a_closed_context_menu_is_its_child() {
+        // Upstream's "when closed, the CupertinoContextMenu displays the child
+        // as if the CupertinoContextMenu were not there".
         let trigger = CupertinoContextMenu::new(1)
-            .with_child(leaf(|| Container::new().with_size(60.0, 60.0)));
-        let size = lay_out(component(trigger), 300.0, 300.0);
+            .with_child(|| leaf(|| Container::new().with_size(60.0, 60.0)));
+        let size = lay_out(stateful(trigger), 300.0, 300.0);
         assert_eq!(size, Size::new(60.0, 60.0));
+    }
+
+    #[test]
+    fn the_menu_goes_to_whichever_side_of_the_screen_the_child_is_on() {
+        // Upstream's `_contextMenuLocation`: the halves, and the tolerance
+        // that keeps a child straddling the middle centred.
+        let left = Rect::xywh(20.0, 100.0, 100.0, 100.0);
+        let right = Rect::xywh(680.0, 100.0, 100.0, 100.0);
+        let middle = Rect::xywh(350.0, 100.0, 100.0, 100.0);
+        assert_eq!(
+            context_menu_location(left, 800.0),
+            ContextMenuLocation::Left
+        );
+        assert_eq!(
+            context_menu_location(right, 800.0),
+            ContextMenuLocation::Right
+        );
+        assert_eq!(
+            context_menu_location(middle, 800.0),
+            ContextMenuLocation::Center
+        );
+        // Straddling the middle is not enough on its own: upstream also wants
+        // the centre within a quarter of the child's width.
+        let barely = Rect::xywh(320.0, 100.0, 100.0, 100.0);
+        assert_eq!(
+            context_menu_location(barely, 800.0),
+            ContextMenuLocation::Left
+        );
+    }
+
+    #[test]
+    fn the_press_grows_the_child_by_the_open_scale_where_there_is_room() {
+        let roomy = Rect::xywh(350.0, 250.0, 100.0, 100.0);
+        let scale = context_menu_scale_factor(roomy, EdgeInsets::ZERO, Size::new(800.0, 600.0));
+        assert!((scale - CONTEXT_MENU_OPEN_SCALE).abs() < 1e-6, "{scale}");
+
+        // Hard against an edge, growth is clamped rather than pushing the
+        // child off the screen: upstream's `_kMinScaleFactor` floor.
+        let cornered = Rect::xywh(0.0, 0.0, 100.0, 100.0);
+        let scale = context_menu_scale_factor(cornered, EdgeInsets::ZERO, Size::new(800.0, 600.0));
+        assert!(
+            (scale - CONTEXT_MENU_MIN_SCALE_FACTOR).abs() < 1e-6,
+            "{scale}"
+        );
+    }
+
+    #[test]
+    fn the_landscape_sheet_goes_on_the_far_side_of_the_preview() {
+        // Upstream's `menuBeforeChild`: a child on the right half opens with
+        // the sheet to its left, so the pair stays in the middle of the screen
+        // rather than running off the edge.
+        let screen = Rect::xywh(0.0, 0.0, 900.0, 600.0);
+        let child = Rect::xywh(650.0, 250.0, 100.0, 100.0);
+        let (preview, sheet) = lay_out_context_menu(child, screen, Orientation::Landscape);
+        assert!(
+            sheet.right <= preview.left,
+            "sheet {sheet:?} should be left of preview {preview:?}"
+        );
+        assert!(
+            (sheet.right - preview.left + CONTEXT_MENU_PADDING).abs() < 1.0,
+            "the gap should be _kPadding: {sheet:?} {preview:?}"
+        );
+
+        // And the other way round for a child on the left.
+        let child = Rect::xywh(150.0, 250.0, 100.0, 100.0);
+        let (preview, sheet) = lay_out_context_menu(child, screen, Orientation::Landscape);
+        assert!(
+            preview.right <= sheet.left,
+            "preview {preview:?} should be left of sheet {sheet:?}"
+        );
+    }
+
+    #[test]
+    fn the_portrait_sheet_goes_under_the_preview() {
+        let screen = Rect::xywh(0.0, 0.0, 400.0, 800.0);
+        let child = Rect::xywh(150.0, 300.0, 100.0, 100.0);
+        let (preview, sheet) = lay_out_context_menu(child, screen, Orientation::Portrait);
+        assert!(
+            sheet.top >= preview.bottom,
+            "sheet {sheet:?} should be under preview {preview:?}"
+        );
+        assert!(
+            (sheet.top - preview.bottom - CONTEXT_MENU_PADDING).abs() < 1.0,
+            "the gap should be _kPadding: {preview:?} {sheet:?}"
+        );
+    }
+
+    /// Runs [`ContextMenuLayout`] over a fixed preview and sheet and answers
+    /// where the two ended up.
+    fn lay_out_context_menu(child: Rect, screen: Rect, orientation: Orientation) -> (Rect, Rect) {
+        use crate::render::{MultiChildLayoutDelegate, RenderCustomMultiChildLayoutBox};
+        let delegate = ContextMenuLayout {
+            target_rect: child,
+            screen_bounds: screen,
+            orientation,
+            location: context_menu_location(child, screen.width()),
+            from: child,
+            t: 1.0,
+        };
+        let mut box_ = RenderCustomMultiChildLayoutBox::new(
+            Rc::new(delegate) as Rc<dyn MultiChildLayoutDelegate>,
+            vec![
+                (
+                    CONTEXT_MENU_PREVIEW_SLOT,
+                    RenderRef::new(RenderConstrainedBox::tight(200.0, 200.0)),
+                ),
+                (
+                    CONTEXT_MENU_SHEET_SLOT,
+                    RenderRef::new(RenderConstrainedBox::tight(CONTEXT_MENU_SHEET_WIDTH, 86.0)),
+                ),
+            ],
+        );
+        box_.layout(BoxConstraints::tight(screen.width(), screen.height()));
+        let mut placed: Vec<Rect> = Vec::new();
+        box_.visit_children(&mut |child, offset| {
+            let size = child.size();
+            placed.push(Rect::xywh(offset.dx, offset.dy, size.width, size.height));
+        });
+        (placed[0], placed[1])
     }
 
     #[test]

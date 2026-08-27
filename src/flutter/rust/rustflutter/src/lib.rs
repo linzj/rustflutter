@@ -263,11 +263,11 @@ pub use controls::{
 pub use cupertino::{
     CupertinoActivityIndicator, CupertinoAlertAction, CupertinoAlertDialog, CupertinoButton,
     CupertinoButtonSize, CupertinoColors, CupertinoContextMenu, CupertinoContextMenuAction,
-    CupertinoContextMenuSheet, CupertinoDynamicColor, CupertinoNavigationBar,
-    CupertinoPageScaffold, CupertinoPicker, CupertinoScrollbar, CupertinoSearchTextField,
-    CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch, CupertinoTabBar, CupertinoTabItem,
-    CupertinoTabScaffold, CupertinoTheme, CupertinoUserInterfaceLevel,
-    CupertinoUserInterfaceLevelData, cupertino_theme_of,
+    CupertinoContextMenuController, CupertinoContextMenuSheet, CupertinoDynamicColor,
+    CupertinoNavigationBar, CupertinoPageScaffold, CupertinoPicker, CupertinoScrollbar,
+    CupertinoSearchTextField, CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch,
+    CupertinoTabBar, CupertinoTabItem, CupertinoTabScaffold, CupertinoTheme,
+    CupertinoUserInterfaceLevel, CupertinoUserInterfaceLevelData, cupertino_theme_of,
 };
 pub use curves2d::{CatmullRomCurve, CatmullRomSpline, Curve2D, Curve2DSample, Interval, Split};
 pub use decoration::{BoxDecoration, Decoration, FlutterLogoDecoration, FlutterLogoStyle};
@@ -413,10 +413,11 @@ pub mod prelude {
     pub use crate::cupertino::{
         CupertinoActivityIndicator, CupertinoAlertAction, CupertinoAlertDialog, CupertinoButton,
         CupertinoButtonSize, CupertinoColors, CupertinoContextMenu, CupertinoContextMenuAction,
-        CupertinoContextMenuSheet, CupertinoDynamicColor, CupertinoNavigationBar,
-        CupertinoPageScaffold, CupertinoPicker, CupertinoScrollbar, CupertinoSearchTextField,
-        CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch, CupertinoTabBar,
-        CupertinoTabItem, CupertinoTabScaffold, CupertinoTheme, cupertino_theme_of,
+        CupertinoContextMenuController, CupertinoContextMenuSheet, CupertinoDynamicColor,
+        CupertinoNavigationBar, CupertinoPageScaffold, CupertinoPicker, CupertinoScrollbar,
+        CupertinoSearchTextField, CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch,
+        CupertinoTabBar, CupertinoTabItem, CupertinoTabScaffold, CupertinoTheme,
+        cupertino_theme_of,
     };
     pub use crate::direction::{TextDirection, current_direction, directionality};
     pub use crate::drawer::{Drawer, DrawerAlignment};

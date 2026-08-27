@@ -873,13 +873,21 @@ impl FlutterLogoDecoration {
         // The rotated square between middle and bottom beam: upstream
         // transforms the canvas by 45 degrees and draws an axis-aligned
         // rect; the same rect pre-rotated is a diamond.
+        //
+        // Upstream's matrix is a `Float64List`, which `Matrix4` reads
+        // **column-major**: `[0.7071, -0.7071, .., 0.7071, 0.7071, ..]` is
+        // `m00, m10, .., m01, m11`, so the y column is the one whose first
+        // entry is negative. Reading it row-major turns the rotation the other
+        // way and lands the square outside the mark entirely -- which is what
+        // this did until the context menu demo showed a stray diamond below
+        // and to the left of the logo.
         let (sin45, cos45) = (
             std::f32::consts::FRAC_1_SQRT_2,
             std::f32::consts::FRAC_1_SQRT_2,
         );
         let rotate = |x: f32, y: f32| -> (f32, f32) {
-            let rx = cos45 * x - sin45 * y;
-            let ry = sin45 * x + cos45 * y;
+            let rx = cos45 * x + sin45 * y;
+            let ry = -sin45 * x + cos45 * y;
             (rx - 77.697, ry + 98.057)
         };
         let square = (59.8, 123.1, 39.4, 39.4);
@@ -985,6 +993,71 @@ mod flutter_logo_tests {
                 TextDirection::Ltr,
             );
         }
+    }
+
+    /// Every piece of the mark is inside the box it was given.
+    ///
+    /// The mid-blue square is the one that can escape: upstream draws it
+    /// through a 45-degree canvas transform, and reading that matrix the wrong
+    /// way round turns the rotation the other way and throws the square out of
+    /// the logo entirely -- a stray diamond below and to the left, which is
+    /// exactly what the Cupertino context menu demo drew until this was fixed.
+    #[test]
+    fn every_beam_of_the_mark_lands_inside_its_box() {
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+        use crate::render::{PaintContext, Size};
+
+        const BOX: Rect = Rect {
+            left: 0.0,
+            top: 0.0,
+            right: 202.0,
+            bottom: 202.0,
+        };
+        let mut layers = LayerTree::new(400, 400);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(400.0, 400.0));
+            Decoration::FlutterLogo(FlutterLogoDecoration::new(FlutterLogoStyle::MarkOnly)).paint(
+                context.canvas(),
+                BOX,
+                TextDirection::Ltr,
+            );
+        }
+        let calls = drawn();
+        let mut squares = 0;
+        for call in &calls {
+            let Drawn::Path {
+                left,
+                top,
+                right,
+                bottom,
+                argb,
+                ..
+            } = call
+            else {
+                continue;
+            };
+            assert!(
+                *left >= BOX.left
+                    && *top >= BOX.top
+                    && *right <= BOX.right
+                    && *bottom <= BOX.bottom,
+                "a beam at ({left}, {top}, {right}, {bottom}) is outside {BOX:?}"
+            );
+            // The mid-blue square sits in the crook of the mark, where the
+            // middle beam ends and the bottom one begins -- lower right of
+            // centre, never lower left.
+            if *argb == 0xFF29B6F6 {
+                squares += 1;
+                let (center_x, center_y) = ((left + right) / 2.0, (top + bottom) / 2.0);
+                assert!(
+                    center_x > BOX.width() / 3.0 && center_y > BOX.height() / 2.0,
+                    "the square's centre is at ({center_x}, {center_y})"
+                );
+            }
+        }
+        assert_eq!(squares, 1, "the mark has exactly one mid-blue square");
     }
 }
 

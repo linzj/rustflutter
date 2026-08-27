@@ -9,108 +9,113 @@
 //! centred column holds a 100x100 box containing a `CupertinoContextMenu`
 //! around a `FlutterLogo(size: 250)`, then the hint text
 //! (`demoCupertinoContextMenuActionText`, centred, padded 30, black). A long
-//! press on the logo opens the menu: upstream zooms the child out of the
-//! layout and puts a `_ContextMenuSheet` of two `CupertinoContextMenuAction`s
-//! (`demoCupertinoContextMenuActionOne`/Two) beside it over a barrier.
+//! press on the logo grows it, then opens the menu full-screen over the
+//! blurred page with the two `CupertinoContextMenuAction`s
+//! (`demoCupertinoContextMenuActionOne`/Two) beside it.
 //!
-//! The framework's cupertino tier splits that widget the way its
-//! [`CupertinoContextMenu`] documents: the widget is the long-press trigger,
-//! and putting the [`CupertinoContextMenuSheet`] over a scrim in a `Stack` is
-//! the app's. The stack here is the stage's own, for the same reason the
-//! alerts demo keeps its dialogs in its own stack: `mod.rs`'s shared
-//! `overlay()` reads only `GalleryState`, and this demo's open flag is its
-//! own state (upstream's is the route's).
+//! So is this one, and it is stateless as upstream's is: opening, hiding the
+//! child, placing the preview and the sheet, and closing again all belong to
+//! [`rustflutter::CupertinoContextMenu`] now. This file used to own an `open`
+//! flag, a scrim and a second copy of the logo stacked under the sheet,
+//! because the framework's context menu was only the long-press trigger. It
+//! is not any more; what is left here is upstream's widget tree.
 //!
 //! Divergences, each also marked at its site:
 //!
-//! - **the child is the logo asset, not a drawn `FlutterLogo`.** The widget
-//!   has no counterpart here; `pages/splash.rs`'s colour logo at 100x100
-//!   stands in, the substitution `material/navigation_drawer.rs` already
-//!   makes.
-//! - **no zoom, blur or drag-to-dismiss.** Upstream's open animation lifts
-//!   the child out of the layout and rounds its corners; the menu here
-//!   appears with the frame the long press schedules, child rounded to
-//!   [`K_OPEN_BORDER_RADIUS`], sheet centred beneath it.
 //! - **the scaffold is a fixed height.** Upstream's `DemoWrapper` gives the
 //!   demo the page's content height; the demo page here renders each stage in
 //!   a scrolling column at its intrinsic height, so the scaffold gets
 //!   [`DEMO_HEIGHT`] to stand in for the screen's remainder.
+//! - **the actions close the menu through the widget's controller**, not
+//!   through `Navigator.pop`: the menu is an overlay portal rather than a
+//!   route (see [`rustflutter::CupertinoContextMenu`], which also records the
+//!   drag-to-dismiss it does not have).
 
-use rustflutter::cupertino::{CONTEXT_MENU_BARRIER_COLOR, K_OPEN_BORDER_RADIUS};
 use rustflutter::framework::BuildContext;
 use rustflutter::prelude::*;
-use rustflutter::render::{BoxedRender, CrossAxisAlignment, MainAxisSize, RenderFlex, RenderRef};
-use rustflutter::widgets::{Center, ClipRRect, Empty, Pointer, Positioned, SizedBox, Stack};
+use rustflutter::render::{CrossAxisAlignment, MainAxisSize, RenderFlex};
+use rustflutter::widgets::{Center, Empty, SizedBox};
+use rustflutter::{Decoration, FlutterLogoDecoration, FlutterLogoStyle};
 
 use crate::app::ids;
 use crate::l10n::gallery_localizations::GalleryLocalizations;
-use crate::pages::splash;
 
 /// The height the scaffold stands in for; see the module header.
 const DEMO_HEIGHT: f32 = 700.0;
 
-/// The logo's size: upstream's `SizedBox(width: 100, height: 100)` (its
-/// `FlutterLogo(size: 250)` is clipped to it; the asset needs no help).
-const LOGO_SIZE: f32 = 100.0;
+/// The box the trigger sits in: upstream's `SizedBox(width: 100, height: 100)`.
+const TRIGGER_SIZE: f32 = 100.0;
+
+/// Upstream's `FlutterLogo(size: 250)`. The logo is bigger than the box it is
+/// closed in on purpose: the box tightens it to 100 while the menu is shut,
+/// and the open preview -- which lays its child out unconstrained inside a
+/// `FittedBox` -- gets all 250 of it.
+const LOGO_SIZE: f32 = 250.0;
 
 /// The demo body for the `cupertino-context-menu` slug.
 pub(super) fn stage() -> AnyWidget {
-    stateful(ContextMenuDemo)
+    component(ContextMenuDemo)
 }
 
-/// Upstream's `CupertinoContextMenuDemo`. Stateless upstream; the open flag
-/// lives here because the framework's context menu is a trigger, not a route
-/// (see the module header).
+/// Upstream's `CupertinoContextMenuDemo`.
 struct ContextMenuDemo;
 
-/// Whether the menu is open. Upstream this is whether its route is up.
-#[derive(Default)]
-struct ContextMenuDemoState {
-    open: bool,
-}
-
-/// Closes the menu: the `Navigator.pop(context)` both of upstream's actions
-/// run, and the barrier's dismiss.
-fn close(state: &mut ContextMenuDemoState) {
-    state.open = false;
-}
-
-/// The logo, at `size`. Upstream's `FlutterLogo(size: 250)`; the colour logo
-/// asset stands in for it (see the module header).
-fn logo(size: f32) -> AnyWidget {
-    let image = Image::shared("flutter_logo_color", splash::FLUTTER_LOGO_COLOR);
-    leaf(move || {
-        let view: BoxedRender = match image.clone() {
-            Some(image) => RenderRef::new(rustflutter::widgets::ImageView::with_fit(
-                image,
-                rustflutter::render::BoxFit::Contain,
-            )),
-            // Not yet decoded: the box still takes the layout space, and the
-            // next frame draws the logo (a headless render waits for it).
-            None => RenderRef::new(Empty),
-        };
-        SizedBox::new(size, size).with_child(view)
+/// Upstream's `FlutterLogo(size: 250)`: the mark on its own, which is what
+/// `FlutterLogoStyle.markOnly` -- the widget's default -- draws.
+///
+/// The wordmark asset `pages/splash.rs` carries used to stand in for this,
+/// because the logo widget had no counterpart here. It has one:
+/// [`FlutterLogoDecoration`] draws the mark from the artwork's own
+/// coordinates, so the substitution is gone and the demo shows what upstream
+/// shows.
+fn logo() -> AnyWidget {
+    leaf(|| {
+        Container::new()
+            .with_size(LOGO_SIZE, LOGO_SIZE)
+            .with_decoration(Decoration::FlutterLogo(FlutterLogoDecoration::new(
+                FlutterLogoStyle::MarkOnly,
+            )))
     })
 }
 
-impl StatefulComponent for ContextMenuDemo {
-    type State = ContextMenuDemoState;
-
-    fn build(
-        &self,
-        state: &ContextMenuDemoState,
-        handle: StateHandle<ContextMenuDemoState>,
-        _context: &mut BuildContext,
-    ) -> AnyWidget {
+impl Component for ContextMenuDemo {
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
         let l10n = GalleryLocalizations::en();
 
-        // Upstream's `Center(SizedBox(100, 100, CupertinoContextMenu(...)))`:
-        // the trigger carries the logo, and a long press opens the menu.
-        let trigger = component(
-            CupertinoContextMenu::new(ids::DEMO_LOCAL)
-                .with_child(logo(LOGO_SIZE))
-                .wired(handle.clone(), |state, open| state.open = open),
-        );
+        // Upstream's `CupertinoContextMenu(actions: [...], child:
+        // FlutterLogo(size: 250))`. The controller is taken before the actions
+        // are wired to it, the way upstream's actions close over the
+        // `BuildContext` they will pop.
+        let menu = CupertinoContextMenu::new(ids::DEMO_LOCAL).with_child(logo);
+        let dismiss = menu.controller();
+        let menu = menu
+            .push_action(
+                CupertinoContextMenuAction::new(
+                    ids::DEMO_LOCAL + 1,
+                    l10n.demo_cupertino_context_menu_action_one(),
+                )
+                .on_pressed({
+                    let dismiss = dismiss.clone();
+                    move || dismiss.close()
+                }),
+            )
+            .push_action(
+                CupertinoContextMenuAction::new(
+                    ids::DEMO_LOCAL + 2,
+                    l10n.demo_cupertino_context_menu_action_two(),
+                )
+                .on_pressed({
+                    let dismiss = dismiss.clone();
+                    move || dismiss.close()
+                }),
+            );
+
+        // Upstream's `Center(SizedBox(100, 100, CupertinoContextMenu(...)))`.
+        let trigger = single(stateful(menu), |menu| {
+            Box::new(Center::new(
+                SizedBox::new(TRIGGER_SIZE, TRIGGER_SIZE).with_child(menu),
+            ))
+        });
 
         // The hint text: centred, padded 30, black as upstream's explicit
         // `TextStyle(color: Colors.black)` -- the demo always renders light
@@ -159,101 +164,27 @@ impl StatefulComponent for ContextMenuDemo {
             )
         });
 
-        // The open menu over the stage: the barrier, then the child and the
-        // sheet beside it, centred. See the module header for why this is not
-        // `mod.rs`'s `overlay()`, and for the zoom/blur that are not ported.
-        let content = if state.open {
-            let barrier_handle = handle.clone();
-            let barrier = leaf(move || {
-                // context_menu.dart's `_kModalBarrierColor`.
-                Pointer::new(
-                    ids::SCRIM,
-                    Container::new().with_color(CONTEXT_MENU_BARRIER_COLOR),
-                )
-                .with_handlers(
-                    rustflutter::gestures::PointerHandlers::new().with_tap({
-                        let handle = barrier_handle.clone();
-                        move |_| {
-                            handle.set_state(close);
-                        }
-                    }),
-                )
-            });
-            let sheet = component(
-                CupertinoContextMenuSheet::new()
-                    .push(
-                        CupertinoContextMenuAction::new(
-                            ids::DEMO_LOCAL + 1,
-                            l10n.demo_cupertino_context_menu_action_one(),
-                        )
-                        .wired(handle.clone(), close),
-                    )
-                    .push(
-                        CupertinoContextMenuAction::new(
-                            ids::DEMO_LOCAL + 2,
-                            l10n.demo_cupertino_context_menu_action_two(),
-                        )
-                        .wired(handle.clone(), close),
-                    ),
-            );
-            // The child floats over the sheet, corners rounded to
-            // `kOpenBorderRadius` as while open upstream; the zoom is the
-            // part that is not ported.
-            let lifted = logo(LOGO_SIZE);
-            many(vec![stage, barrier, sheet, lifted], move |mut rendered| {
-                let logo = rendered.pop().unwrap_or_else(|| boxed(Empty));
-                let sheet = rendered.pop().unwrap_or_else(|| boxed(Empty));
-                let barrier = rendered.pop().unwrap_or_else(|| boxed(Empty));
-                let stage = rendered.pop().unwrap_or_else(|| boxed(Empty));
-                let lifted = ClipRRect::new(K_OPEN_BORDER_RADIUS, logo);
-                Box::new(
-                    Stack::new()
-                        .push(stage)
-                        .push_positioned(barrier, Positioned::fill())
-                        .push(Center::new(
-                            RenderFlex::column()
-                                .with_main_axis_size(MainAxisSize::Min)
-                                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                                .push(Container::new().with_child(lifted))
-                                .push(Container::new().with_height(20.0))
-                                .push(sheet),
-                        )),
-                )
-            })
-        } else {
-            stage
-        };
-
         // Upstream's `DemoWrapper` wraps every demo in a light
         // `CupertinoTheme` (`lib/pages/demo.dart`).
-        provide(CupertinoTheme::light(), content)
+        provide(CupertinoTheme::light(), stage)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustflutter::cupertino::{
+        context_menu_animation_opens_at, context_menu_location, context_menu_scale_factor,
+        ContextMenuLocation, CONTEXT_MENU_OPEN_SCALE, CONTEXT_MENU_PADDING,
+    };
     use rustflutter::framework::ElementTree;
-    use rustflutter::render::{BoxConstraints, RenderBox, Size};
+    use rustflutter::render::{BoxConstraints, EdgeInsets as Insets, RenderBox, Size};
 
     fn lay_out(widget: AnyWidget, width: f32) -> Size {
         let mut tree = ElementTree::new();
         tree.rebuild(provide(CupertinoTheme::light(), widget));
         let mut root = tree.build_render_tree().expect("a root");
         root.layout(BoxConstraints::new(0.0, width, 0.0, f32::INFINITY))
-    }
-
-    #[test]
-    fn the_menu_starts_closed() {
-        assert!(!ContextMenuDemoState::default().open);
-    }
-
-    #[test]
-    fn both_actions_close_the_menu() {
-        // Upstream's `onPressed: () { Navigator.pop(context); }` on both.
-        let mut state = ContextMenuDemoState { open: true };
-        close(&mut state);
-        assert!(!state.open);
     }
 
     #[test]
@@ -268,20 +199,53 @@ mod tests {
     }
 
     #[test]
-    fn the_open_sheet_lays_out_under_the_logo() {
-        let sheet = component(
-            CupertinoContextMenuSheet::new()
-                .push(CupertinoContextMenuAction::new(1, "Action one"))
-                .push(CupertinoContextMenuAction::new(2, "Action two")),
-        );
-        let size = lay_out(sheet, 428.0);
-        assert_eq!(size.width, rustflutter::cupertino::CONTEXT_MENU_SHEET_WIDTH);
-    }
-
-    #[test]
     fn the_stage_is_a_scaffold_at_the_stand_in_height() {
         let size = lay_out(stage(), 428.0);
         assert_eq!(size.height, DEMO_HEIGHT);
         assert_eq!(size.width, 428.0);
+    }
+
+    /// The demo's trigger sits in the middle of the demo card, which on the
+    /// desktop layout is the right-hand half of the window -- so the sheet
+    /// goes to the *left* of the preview, which is what upstream shows.
+    #[test]
+    fn a_trigger_in_the_right_hand_half_puts_the_sheet_first() {
+        let child = rustflutter::Rect::xywh(1000.0, 400.0, TRIGGER_SIZE, TRIGGER_SIZE);
+        assert_eq!(
+            context_menu_location(child, 1536.0),
+            ContextMenuLocation::Right
+        );
+    }
+
+    /// A trigger centred in the window is centred when it opens.
+    #[test]
+    fn a_trigger_in_the_middle_stays_in_the_middle() {
+        let child = rustflutter::Rect::xywh(718.0, 400.0, TRIGGER_SIZE, TRIGGER_SIZE);
+        assert_eq!(
+            context_menu_location(child, 1536.0),
+            ContextMenuLocation::Center
+        );
+    }
+
+    /// Room to spare means the press grows the child by the full `_kOpenScale`.
+    #[test]
+    fn a_press_in_open_space_grows_by_the_full_scale() {
+        let child = rustflutter::Rect::xywh(718.0, 400.0, TRIGGER_SIZE, TRIGGER_SIZE);
+        let scale = context_menu_scale_factor(child, Insets::ZERO, Size::new(1536.0, 826.0));
+        assert!((scale - CONTEXT_MENU_OPEN_SCALE).abs() < 1e-6, "{scale}");
+    }
+
+    /// The press is most of the combined animation; the menu opens in the
+    /// remainder. Upstream's `animationOpensAt` is 800/1135.
+    #[test]
+    fn the_menu_opens_in_the_last_third_of_the_animation() {
+        let opens_at = context_menu_animation_opens_at();
+        assert!((opens_at - 800.0 / 1135.0).abs() < 1e-6, "{opens_at}");
+    }
+
+    /// The gap the open menu keeps, upstream's `_kPadding`.
+    #[test]
+    fn the_open_menu_keeps_upstreams_padding() {
+        assert_eq!(CONTEXT_MENU_PADDING, 20.0);
     }
 }
