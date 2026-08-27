@@ -120,6 +120,11 @@ def main(argv):
                       help='the application, e.g. "counter"')
   parser.add_argument('--library', required=True,
                       help='path to lib<name>.so')
+  parser.add_argument('--extra-library', action='append', default=[],
+                      help='another .so to package beside it, repeatable. '
+                           'This is librustflutter_engine.so for an '
+                           'application linked against the shared engine; '
+                           'the Activity loads it before the application.')
   parser.add_argument('--java', required=True,
                       help='directory holding the io/flutter/rustflutter tree')
   parser.add_argument('--icu', required=True, help='path to icudtl.dat')
@@ -205,6 +210,8 @@ def main(argv):
     with zipfile.ZipFile(unsigned, 'a', zipfile.ZIP_DEFLATED) as apk:
       apk.write(os.path.join(work, 'classes.dex'), 'classes.dex')
       apk.write(args.library, 'lib/%s/%s' % (args.abi, library_name))
+      for extra in args.extra_library:
+        apk.write(extra, 'lib/%s/%s' % (args.abi, os.path.basename(extra)))
       apk.write(args.icu, 'assets/icudtl.dat')
 
     aligned = os.path.join(work, 'aligned.apk')

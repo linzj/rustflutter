@@ -67,6 +67,13 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
   /** Which .so to load, from {@code <meta-data android:name="rustflutter.library">}. */
   private static final String LIBRARY_META_DATA = "rustflutter.library";
 
+  /**
+   * The engine, when the application was linked against the shared one. Named
+   * rather than discovered because there is only ever one of it, and packaged
+   * beside the application by make_apk.py when the application needs it.
+   */
+  private static final String ENGINE_LIBRARY = "rustflutter_engine";
+
   // Must match HostRequest in rustflutter_host_android.cc.
   private static final int HOST_SHOW_KEYBOARD = 0;
   private static final int HOST_HIDE_KEYBOARD = 1;
@@ -123,6 +130,21 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
     sInstance = this;
+
+    // The engine, when it is a library of its own rather than part of the
+    // application's. Loaded first and by name, because loading it is what runs
+    // its JNI_OnLoad -- the application's library names it as a dependency, so
+    // the linker would bring it in either way, but a dependency pulled in that
+    // way is never handed the VM.
+    //
+    // Its absence is not an error and is not a flag either: an application
+    // linked against the engine archive has the engine inside its own library
+    // and there is nothing here to load. That the .so is there is the fact.
+    try {
+      System.loadLibrary(ENGINE_LIBRARY);
+    } catch (UnsatisfiedLinkError error) {
+      Log.d(TAG, "No lib" + ENGINE_LIBRARY + ".so; the engine is linked in.");
+    }
 
     String library = libraryName();
     try {

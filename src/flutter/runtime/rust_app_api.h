@@ -257,9 +257,7 @@ int32_t rf_app_launch(RfApp* app);
 
 // -- Views --------------------------------------------------------------------
 
-void rf_app_add_view(RfApp* app,
-                     int64_t view_id,
-                     const RfViewMetrics* metrics);
+void rf_app_add_view(RfApp* app, int64_t view_id, const RfViewMetrics* metrics);
 void rf_app_remove_view(RfApp* app, int64_t view_id);
 void rf_app_set_view_metrics(RfApp* app,
                              int64_t view_id,
@@ -268,9 +266,10 @@ void rf_app_set_view_metrics(RfApp* app,
 // -- Platform state -----------------------------------------------------------
 //
 // What the platform says about itself. Not platform messages, even though it
-// arrives as one: `Engine` consumes `flutter/settings` and `flutter/localization`
-// on the way past and hands the contents here, exactly as upstream hands them
-// to `PlatformConfiguration` rather than letting them reach a channel.
+// arrives as one: `Engine` consumes `flutter/settings` and
+// `flutter/localization` on the way past and hands the contents here, exactly
+// as upstream hands them to `PlatformConfiguration` rather than letting them
+// reach a channel.
 
 // The `flutter/settings` payload, verbatim: a JSON object with
 // `textScaleFactor`, `alwaysUse24HourFormat` and `platformBrightness`. Passed
@@ -285,9 +284,7 @@ void rf_app_set_user_settings(RfApp* app, const char* json, size_t length);
 //
 // Flat because that is the shape `flutter/localization` already carries and
 // upstream's `_updateLocales` already unpacks.
-void rf_app_set_locales(RfApp* app,
-                        const char* const* locales,
-                        size_t count);
+void rf_app_set_locales(RfApp* app, const char* const* locales, size_t count);
 
 // -- Frames -------------------------------------------------------------------
 
@@ -431,7 +428,86 @@ void rf_app_set_semantics_enabled(RfApp* app, bool enabled);
 // Delivers an action a screen reader asked for. `action` is one
 // flutter::SemanticsAction bit. Returns whether anything took it -- false for
 // a node that has gone, which is a race with the reader rather than an error.
-bool rf_app_dispatch_semantics_action(RfApp* app, int32_t node_id, int32_t action);
+bool rf_app_dispatch_semantics_action(RfApp* app,
+                                      int32_t node_id,
+                                      int32_t action);
+
+// -- Reaching the framework ---------------------------------------------------
+//
+// The seventeen functions above are what the shell calls. This is how it finds
+// them, and it is not by name.
+//
+// They are declared as plain symbols because that is what they are: the Rust
+// framework exports them under exactly these names, and `rust_ffi_unittests`
+// calls them that way. But `RuntimeController` does not, and the reason is
+// which binary each half ends up in. Linked statically the two are one
+// executable and a call resolves at link time. Split apart -- the C++ engine in
+// a shared library, the framework and the application in the module that loads
+// it -- the call points *out* of the shared library and into its consumer, and
+// that direction has no portable spelling: on Windows the executable would have
+// to export the symbols and the DLL import them back, and on ELF whoever links
+// last would need --export-dynamic.
+//
+// So the framework pushes a table down, exactly as the shell pushes RfAppHost
+// up, and the shell calls through it. Both link modes then take the same path
+// and the same code; all the split changes is where the pointers point.
+//
+// The order is the order of the declarations above, and the two are read
+// together -- each field's contract is the prototype it mirrors.
+typedef struct RfAppInterface {
+  RfApp* (*create)(const RfAppHost* host);
+  void (*destroy)(RfApp* app);
+  int32_t (*launch)(RfApp* app);
+  void (*add_view)(RfApp* app, int64_t view_id, const RfViewMetrics* metrics);
+  void (*remove_view)(RfApp* app, int64_t view_id);
+  void (*set_view_metrics)(RfApp* app,
+                           int64_t view_id,
+                           const RfViewMetrics* metrics);
+  void (*set_user_settings)(RfApp* app, const char* json, size_t length);
+  void (*set_locales)(RfApp* app, const char* const* locales, size_t count);
+  void (*begin_frame)(RfApp* app,
+                      int64_t frame_time_micros,
+                      uint64_t frame_number);
+  void (*draw_frame)(RfApp* app);
+  void (*run_tasks)(RfApp* app);
+  void (*dispatch_pointers)(RfApp* app,
+                            const RfPointerEvent* events,
+                            size_t count);
+  bool (*dispatch_key)(RfApp* app, const RfKeyEvent* event);
+  void (*dispatch_platform_message)(RfApp* app,
+                                    const char* channel,
+                                    const uint8_t* message,
+                                    size_t length,
+                                    int64_t response_id);
+  void (*complete_platform_message_reply)(RfApp* app,
+                                          int64_t response_id,
+                                          const uint8_t* reply,
+                                          size_t length);
+  void (*set_semantics_enabled)(RfApp* app, bool enabled);
+  bool (*dispatch_semantics_action)(RfApp* app,
+                                    int32_t node_id,
+                                    int32_t action);
+} RfAppInterface;
+
+// Installs the table.
+//
+// Called by the framework before the shell exists -- `run()` in app.rs does it
+// on the way to rf_host_run, which is upstream of every RuntimeController there
+// will be -- and not again afterwards. `app_interface` is not copied: it must
+// outlive the shell, which the framework's `static` one does.
+//
+// Callable from any thread, but expected on the platform thread before there is
+// a UI thread to race with. NULL clears it, which no caller has a use for
+// beyond a test that wants the unregistered state back.
+//
+// This one and its reader are the engine's; the seventeen above are the
+// framework's, which is why only these two are exported from it.
+RF_EXPORT
+void rf_set_app_interface(const RfAppInterface* app_interface);
+
+// The installed table, or NULL if no framework registered one.
+RF_EXPORT
+const RfAppInterface* rf_app_interface(void);
 
 #if defined(__cplusplus)
 }  // extern "C"

@@ -58,6 +58,11 @@ template("rustflutter_app") {
         ":$_crate",
         "//flutter/rust/ffi:engine_ffi",
         "//flutter/rust/host",
+
+        # Registers this application's `rustflutter_app_main` with the host,
+        # from a load-time initialiser. On a desktop `main.cc` calls it
+        # directly; here the host calls it, and so has to be told where it is.
+        "//flutter/rust/host:app_entry",
       ]
 
       # Rust's standard library unwinds -- for panics, and for the backtrace it

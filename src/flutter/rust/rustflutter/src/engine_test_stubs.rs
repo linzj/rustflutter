@@ -30,6 +30,14 @@ pub extern "C" fn rf_host_run(_options: *const std::ffi::c_void) -> std::os::raw
     -1
 }
 
+// Where the framework hands the shell its function table on the way to
+// `rf_host_run`. There is no shell here to hand it to, and nothing reads it
+// back, so this takes the pointer and forgets it -- the point is only that
+// `register_app_interface` links.
+#[cfg(rustflutter_stubs)]
+#[unsafe(no_mangle)]
+pub extern "C" fn rf_set_app_interface(_interface: *const std::ffi::c_void) {}
+
 use std::os::raw::{c_char, c_int};
 
 use crate::engine::sys::*;

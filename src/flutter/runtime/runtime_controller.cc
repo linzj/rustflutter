@@ -11,6 +11,7 @@
 #include "flutter/fml/logging.h"
 #include "flutter/fml/make_copyable.h"
 #include "flutter/fml/trace_event.h"
+#include "flutter/runtime/rust_app_interface.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 
 namespace flutter {
@@ -63,9 +64,9 @@ class RustPlatformMessageResponse : public PlatformMessageResponse {
     if (!ui_task_runner_) {
       return;
     }
-    ui_task_runner_->PostTask(fml::MakeCopyable(
-        [controller = controller_, response_id = response_id_,
-         data = std::move(data)]() mutable {
+    ui_task_runner_->PostTask(
+        fml::MakeCopyable([controller = controller_, response_id = response_id_,
+                           data = std::move(data)]() mutable {
           if (controller) {
             controller->CompletePlatformMessageReply(response_id,
                                                      std::move(data));
@@ -103,7 +104,7 @@ RuntimeController::~RuntimeController() {
   pending_responses_.clear();
 
   if (app_ != nullptr) {
-    rf_app_destroy(app_);
+    RustApp().destroy(app_);
     app_ = nullptr;
   }
 }
@@ -113,6 +114,13 @@ RuntimeController::~RuntimeController() {
 // would otherwise be read as the next field's bytes.
 static_assert(sizeof(RfAppHost) == sizeof(void*) * 9,
               "RfAppHost has drifted from its Rust mirror in app.rs");
+
+// The same check for the table going the other way. This one has teeth beyond
+// the count: the fields are unnamed at the ABI level, so a function inserted in
+// the middle on one side silently shifts every call after it onto its
+// neighbour's signature. app.rs carries the matching assertion.
+static_assert(sizeof(RfAppInterface) == sizeof(void*) * 17,
+              "RfAppInterface has drifted from its Rust mirror in app.rs");
 
 bool RuntimeController::LaunchApplication() {
   if (app_ != nullptr) {
@@ -140,7 +148,7 @@ bool RuntimeController::LaunchApplication() {
   // have one until a task is spawned, and it cannot spawn until it exists.
   weak_for_tasks_ = weak_factory_.GetWeakPtr();
 
-  app_ = rf_app_create(&host);
+  app_ = RustApp().create(&host);
   if (app_ == nullptr) {
     FML_LOG(ERROR) << "Could not create the Rust application instance.";
     return false;
@@ -149,19 +157,20 @@ bool RuntimeController::LaunchApplication() {
   // Replay everything the platform told us before the app existed. Upstream
   // this is FlushRuntimeStateToIsolate, called for the same reason: the
   // embedder configures the shell before there is anything to configure.
-  for (const auto& [view_id, metrics] : platform_data_.viewport_metrics_for_views) {
+  for (const auto& [view_id, metrics] :
+       platform_data_.viewport_metrics_for_views) {
     RfViewMetrics rf_metrics = ToRfViewMetrics(metrics);
-    rf_app_add_view(app_, view_id, &rf_metrics);
+    RustApp().add_view(app_, view_id, &rf_metrics);
   }
   if (!platform_data_.user_settings_data.empty()) {
-    rf_app_set_user_settings(app_, platform_data_.user_settings_data.data(),
-                             platform_data_.user_settings_data.size());
+    RustApp().set_user_settings(app_, platform_data_.user_settings_data.data(),
+                                platform_data_.user_settings_data.size());
   }
   PushLocales();
 
-  if (rf_app_launch(app_) != 0) {
+  if (RustApp().launch(app_) != 0) {
     FML_LOG(ERROR) << "The Rust application entry point failed.";
-    rf_app_destroy(app_);
+    RustApp().destroy(app_);
     app_ = nullptr;
     return false;
   }
@@ -207,7 +216,7 @@ void RuntimeController::AddView(int64_t view_id,
 
   if (app_ != nullptr) {
     RfViewMetrics rf_metrics = ToRfViewMetrics(view_metrics);
-    rf_app_add_view(app_, view_id, &rf_metrics);
+    RustApp().add_view(app_, view_id, &rf_metrics);
   }
 
   // Upstream this callback is deferred until the isolate acknowledges the view.
@@ -225,7 +234,7 @@ bool RuntimeController::RemoveView(int64_t view_id) {
   rendered_views_during_frame_.erase(view_id);
 
   if (app_ != nullptr) {
-    rf_app_remove_view(app_, view_id);
+    RustApp().remove_view(app_, view_id);
   }
   return true;
 }
@@ -244,7 +253,7 @@ bool RuntimeController::SetViewportMetrics(int64_t view_id,
 
   if (app_ != nullptr) {
     RfViewMetrics rf_metrics = ToRfViewMetrics(metrics);
-    rf_app_set_view_metrics(app_, view_id, &rf_metrics);
+    RustApp().set_view_metrics(app_, view_id, &rf_metrics);
     return true;
   }
   return false;
@@ -276,7 +285,7 @@ bool RuntimeController::SetUserSettingsData(const std::string& data) {
   if (app_ == nullptr) {
     return false;
   }
-  rf_app_set_user_settings(app_, data.data(), data.size());
+  RustApp().set_user_settings(app_, data.data(), data.size());
   return true;
 }
 
@@ -296,7 +305,7 @@ void RuntimeController::PushLocales() {
   for (size_t i = 0; i < count * kStringsPerLocale; ++i) {
     pointers.push_back(data[i].c_str());
   }
-  rf_app_set_locales(app_, pointers.data(), count);
+  RustApp().set_locales(app_, pointers.data(), count);
 }
 
 bool RuntimeController::SetInitialLifecycleState(const std::string& data) {
@@ -312,7 +321,7 @@ bool RuntimeController::SetSemanticsEnabled(bool enabled) {
   // The framework builds no semantics tree until it is told one is being read,
   // which is upstream's arrangement (`SemanticsBinding.semanticsEnabled`) and
   // is why this is a message rather than a flag the shell keeps to itself.
-  rf_app_set_semantics_enabled(app_, enabled);
+  RustApp().set_semantics_enabled(app_, enabled);
   return true;
 }
 
@@ -350,9 +359,10 @@ bool RuntimeController::BeginFrame(fml::TimePoint frame_time,
   // The framework reads this as a clock. AnimationSet::tick already refuses to
   // run backwards, but anything that derives a phase from the raw time -- the
   // gallery's cycle() and ping_pong() do -- would step back for one frame.
-  // Upstream clamps at this same boundary, in PlatformConfiguration::BeginFrame,
-  // and for the same reason. Clamping here rather than in each consumer means
-  // there is one place that decides what "now" is.
+  // Upstream clamps at this same boundary, in
+  // PlatformConfiguration::BeginFrame, and for the same reason. Clamping here
+  // rather than in each consumer means there is one place that decides what
+  // "now" is.
   int64_t frame_micros = frame_time.ToEpochDelta().ToMicroseconds();
   if (frame_micros < last_frame_micros_) {
     // Not FML_LOG(WARNING): that level is filtered out of a release build, and
@@ -377,9 +387,9 @@ bool RuntimeController::BeginFrame(fml::TimePoint frame_time,
   // rf_app_run_tasks is that drain -- a task that completes while tickers are
   // advancing has to be visible to the build that follows it, for the same
   // reason an animation started in onBeginFrame does.
-  rf_app_begin_frame(app_, frame_micros, frame_number);
-  rf_app_run_tasks(app_);
-  rf_app_draw_frame(app_);
+  RustApp().begin_frame(app_, frame_micros, frame_number);
+  RustApp().run_tasks(app_);
+  RustApp().draw_frame(app_);
 
   frame_in_progress_ = false;
   return true;
@@ -426,9 +436,9 @@ bool RuntimeController::DispatchPlatformMessage(
   }
 
   const auto& data = message->data();
-  rf_app_dispatch_platform_message(app_, message->channel().c_str(),
-                                   data.GetMapping(), data.GetSize(),
-                                   response_id);
+  RustApp().dispatch_platform_message(app_, message->channel().c_str(),
+                                      data.GetMapping(), data.GetSize(),
+                                      response_id);
   return true;
 }
 
@@ -442,11 +452,11 @@ void RuntimeController::CompletePlatformMessageReply(
     // Nothing handled the message. The framework tells this apart from an
     // empty reply -- it is what raises MissingPluginException upstream -- so
     // the null has to survive the crossing rather than becoming zero bytes.
-    rf_app_complete_platform_message_reply(app_, response_id, nullptr, 0);
+    RustApp().complete_platform_message_reply(app_, response_id, nullptr, 0);
     return;
   }
-  rf_app_complete_platform_message_reply(app_, response_id, data->GetMapping(),
-                                         data->GetSize());
+  RustApp().complete_platform_message_reply(
+      app_, response_id, data->GetMapping(), data->GetSize());
 }
 
 void RuntimeController::OnSendPlatformMessage(void* user_data,
@@ -559,8 +569,8 @@ void RuntimeController::OnUpdateSemantics(void* user_data,
       return (flags & is) != 0 ? SemanticsTristate::kTrue
                                : SemanticsTristate::kFalse;
     };
-    out.flags.isToggled = tristate(in.flags, kRfSemanticsHasToggledState,
-                                   kRfSemanticsIsToggled);
+    out.flags.isToggled =
+        tristate(in.flags, kRfSemanticsHasToggledState, kRfSemanticsIsToggled);
     out.flags.isExpanded = tristate(in.flags, kRfSemanticsHasExpandedState,
                                     kRfSemanticsIsExpanded);
     out.flags.isRequired = tristate(in.flags, kRfSemanticsHasRequiredState,
@@ -572,8 +582,8 @@ void RuntimeController::OnUpdateSemantics(void* user_data,
     }
     out.flags.isSelected = tristate(in.flags, kRfSemanticsHasSelectedState,
                                     kRfSemanticsIsSelected);
-    out.flags.isFocused = tristate(in.flags, kRfSemanticsHasFocusedState,
-                                   kRfSemanticsIsFocused);
+    out.flags.isFocused =
+        tristate(in.flags, kRfSemanticsHasFocusedState, kRfSemanticsIsFocused);
 
     const auto text = [](const char* value) {
       return value == nullptr ? std::string() : std::string(value);
@@ -660,9 +670,8 @@ bool RuntimeController::DispatchKeyDataPacket(const PlatformMessage& message) {
 
   // Copied rather than pointed at, because the framework is handed a
   // NUL-terminated C string and the packet's bytes are not terminated.
-  const std::string character(
-      reinterpret_cast<const char*>(bytes + kHeader),
-      static_cast<size_t>(character_size));
+  const std::string character(reinterpret_cast<const char*>(bytes + kHeader),
+                              static_cast<size_t>(character_size));
 
   // Narrowed the same way, and for the same reason, as PointerData above.
   // `device_type` is dropped: every key this shell sees comes from a keyboard.
@@ -677,7 +686,7 @@ bool RuntimeController::DispatchKeyDataPacket(const PlatformMessage& message) {
   // An application that has not started yet cannot have an opinion, and
   // `rf_app_dispatch_key` says so for a null app; the answer still has to go
   // back, because the embedder is holding the key until it arrives.
-  const bool handled = rf_app_dispatch_key(app_, &event);
+  const bool handled = RustApp().dispatch_key(app_, &event);
 
   // One byte, 1 for handled -- the same reply `_keyDataListener` writes. The
   // Windows host reads it: a key the framework declines is put back into the
@@ -722,7 +731,7 @@ bool RuntimeController::DispatchPointerDataPacket(
   }
 
   if (!events.empty()) {
-    rf_app_dispatch_pointers(app_, events.data(), events.size());
+    RustApp().dispatch_pointers(app_, events.data(), events.size());
   }
   return true;
 }
@@ -748,8 +757,8 @@ bool RuntimeController::DispatchSemanticsAction(int64_t view_id,
   // have one -- `setSelection` and `setText` -- and neither has an equivalent
   // on this side yet; every action the framework offers is an action with no
   // arguments. When one grows arguments this is where they arrive.
-  return rf_app_dispatch_semantics_action(app_, node_id,
-                                          static_cast<int32_t>(action));
+  return RustApp().dispatch_semantics_action(app_, node_id,
+                                             static_cast<int32_t>(action));
 }
 
 // -- Callbacks from the framework ---------------------------------------------
@@ -787,7 +796,7 @@ void RuntimeController::OnPostTask(void* user_data) {
   // decode worker, and the task runs on the UI thread where the factory lives.
   ui_task_runner->PostTask([weak = self->weak_for_tasks_]() {
     if (weak && weak->app_ != nullptr) {
-      rf_app_run_tasks(weak->app_);
+      RustApp().run_tasks(weak->app_);
     }
   });
 }
@@ -802,7 +811,7 @@ void RuntimeController::OnPostDelayedTask(void* user_data,
   ui_task_runner->PostDelayedTask(
       [weak = self->weak_for_tasks_]() {
         if (weak && weak->app_ != nullptr) {
-          rf_app_run_tasks(weak->app_);
+          RustApp().run_tasks(weak->app_);
         }
       },
       fml::TimeDelta::FromMicroseconds(delay_micros));

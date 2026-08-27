@@ -1177,6 +1177,10 @@ impl Default for RunOptions {
 /// [`services::system::exit_application`] (positive).
 #[cfg(not(test))]
 pub fn run(options: &RunOptions) -> Result<(), i32> {
+    // Before the shell exists, which is the whole requirement: everything it
+    // will call is in the table this installs.
+    register_app_interface();
+
     let title = std::ffi::CString::new(options.title.as_str()).map_err(|_| -1)?;
     let raw = host_sys::RfHostOptions {
         width: options.width,
@@ -1187,6 +1191,53 @@ pub fn run(options: &RunOptions) -> Result<(), i32> {
     };
     let code = unsafe { host_sys::rf_host_run(&raw) };
     if code == 0 { Ok(()) } else { Err(code) }
+}
+
+// -- What we give the shell ---------------------------------------------------
+
+// Both live in `abi` below, beside the functions the table is made of and the
+// two event structs its signatures name. They are the module's public face all
+// the same, and `lib.rs` re-exports them from here.
+#[cfg(not(test))]
+pub use abi::{RfAppInterface, register_app_interface};
+
+/// Telling the Android host where the application's entry point is.
+///
+/// Everywhere else the application owns `main` and calls `rustflutter_app_main`
+/// itself. On Android the Activity owns the process and the host calls it, when
+/// there is a Surface -- so the host has to be able to reach it, and reaching
+/// it by name is a call out of the engine and up into whoever loaded it. See
+/// `rf_set_app_main` in `rustflutter_host.h`.
+///
+/// The registration has to happen before anything asks, and there is no moment
+/// between "loaded" and "asked" that the framework controls, so it goes in
+/// `.init_array`: the ELF loader runs it while `System.loadLibrary` is still
+/// returning. `#[used]` is what keeps it, since nothing references it.
+///
+/// `rustflutter_app_main` is the application's, not the framework's, and this
+/// is where the framework depends on the application defining it. That is only
+/// true on Android, where every application is a library the host starts; a
+/// desktop binary that never defined one links fine because none of this is
+/// compiled.
+#[cfg(all(target_os = "android", not(test)))]
+mod android_entry {
+    use std::os::raw::{c_char, c_int};
+
+    unsafe extern "C" {
+        /// Defined by the application.
+        fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) -> c_int;
+
+        /// Defined by the host, in `rustflutter_app_main.cc`.
+        fn rf_set_app_main(app_main: unsafe extern "C" fn(c_int, *const *const c_char) -> c_int);
+    }
+
+    unsafe extern "C" fn register() {
+        unsafe { rf_set_app_main(rustflutter_app_main) };
+    }
+
+    #[used]
+    #[unsafe(link_section = ".init_array")]
+    static REGISTER: unsafe extern "C" fn() = register;
 }
 
 // -- The C ABI ----------------------------------------------------------------
@@ -1730,6 +1781,95 @@ mod abi {
         let _ = instance;
         services::complete_reply(response_id, bytes);
     }
+
+    // -- Handing them over ----------------------------------------------------
+
+    /// The mirror of `RfAppInterface` in `runtime/rust_app_api.h`: every
+    /// `rf_app_*` function above, as a table.
+    ///
+    /// The shell does not call them by name. It could when the two halves are
+    /// one executable, and that is how this started, but the call points the
+    /// wrong way the moment they are not: out of the C++ engine and up into
+    /// whatever module the framework was linked into. Nothing spells that
+    /// portably -- Windows wants the executable to export and the DLL to import
+    /// back, ELF wants `--export-dynamic` on whoever links last -- so the
+    /// framework hands its functions down instead, exactly as the shell hands
+    /// [`RfAppHost`] up, and both link modes then run the same code.
+    ///
+    /// The fields are in the order the header declares them, and the order is
+    /// the ABI: a field inserted in the middle on one side only would call its
+    /// neighbour with the wrong signature. The `size_of` check below and the
+    /// matching `static_assert` in `runtime_controller.cc` catch a count that
+    /// has drifted; nothing but a reader catches a swap.
+    #[repr(C)]
+    pub struct RfAppInterface {
+        create: unsafe extern "C" fn(*const c_void) -> *mut RfApp,
+        destroy: unsafe extern "C" fn(*mut RfApp),
+        launch: unsafe extern "C" fn(*mut RfApp) -> c_int,
+        add_view: unsafe extern "C" fn(*mut RfApp, i64, *const ViewMetrics),
+        remove_view: unsafe extern "C" fn(*mut RfApp, i64),
+        set_view_metrics: unsafe extern "C" fn(*mut RfApp, i64, *const ViewMetrics),
+        set_user_settings: unsafe extern "C" fn(*mut RfApp, *const c_char, usize),
+        set_locales: unsafe extern "C" fn(*mut RfApp, *const *const c_char, usize),
+        begin_frame: unsafe extern "C" fn(*mut RfApp, i64, u64),
+        draw_frame: unsafe extern "C" fn(*mut RfApp),
+        run_tasks: unsafe extern "C" fn(*mut RfApp),
+        dispatch_pointers: unsafe extern "C" fn(*mut RfApp, *const RfPointerEvent, usize),
+        dispatch_key: unsafe extern "C" fn(*mut RfApp, *const RfKeyEvent) -> bool,
+        dispatch_platform_message:
+            unsafe extern "C" fn(*mut RfApp, *const c_char, *const u8, usize, i64),
+        complete_platform_message_reply: unsafe extern "C" fn(*mut RfApp, i64, *const u8, usize),
+        set_semantics_enabled: unsafe extern "C" fn(*mut RfApp, bool),
+        dispatch_semantics_action: unsafe extern "C" fn(*mut RfApp, i32, i32) -> bool,
+    }
+
+    const _: () = assert!(
+        size_of::<RfAppInterface>() == size_of::<*mut c_void>() * 17,
+        "RfAppInterface has drifted from rust_app_api.h"
+    );
+
+    unsafe extern "C" {
+        /// Takes the table, in the engine. Not copied: `INTERFACE` is `static`,
+        /// so it outlives every shell that will read it.
+        fn rf_set_app_interface(app_interface: *const RfAppInterface);
+    }
+
+    /// Installs the table, so the shell can reach the framework.
+    ///
+    /// [`run`](super::run) does this on the way to the host and nothing else
+    /// has to. It is public for the embedder that starts a shell some other way
+    /// -- the Android host reaches `rustflutter_app_main` and the application
+    /// calls `run` from there, but an embedder that owns its own shell would
+    /// not -- and it is idempotent, because it writes one pointer.
+    ///
+    /// Must be called before the shell starts. After that the first thing the
+    /// shell does is ask for the table, and one that finds none stops there.
+    pub fn register_app_interface() {
+        unsafe { rf_set_app_interface(&INTERFACE) };
+    }
+
+    /// The seventeen functions above, in the order `rust_app_api.h` declares
+    /// them. Read the two together; a line out of place here is a call landing
+    /// on the wrong signature with nothing to catch it.
+    static INTERFACE: RfAppInterface = RfAppInterface {
+        create: rf_app_create,
+        destroy: rf_app_destroy,
+        launch: rf_app_launch,
+        add_view: rf_app_add_view,
+        remove_view: rf_app_remove_view,
+        set_view_metrics: rf_app_set_view_metrics,
+        set_user_settings: rf_app_set_user_settings,
+        set_locales: rf_app_set_locales,
+        begin_frame: rf_app_begin_frame,
+        draw_frame: rf_app_draw_frame,
+        run_tasks: rf_app_run_tasks,
+        dispatch_pointers: rf_app_dispatch_pointers,
+        dispatch_key: rf_app_dispatch_key,
+        dispatch_platform_message: rf_app_dispatch_platform_message,
+        complete_platform_message_reply: rf_app_complete_platform_message_reply,
+        set_semantics_enabled: rf_app_set_semantics_enabled,
+        dispatch_semantics_action: rf_app_dispatch_semantics_action,
+    };
 }
 
 #[cfg(test)]

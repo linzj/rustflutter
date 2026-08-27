@@ -73,9 +73,9 @@ cd src
 vpython3 flutter/tools/gn --unoptimized --no-rbe
 ninja -C out/host_debug_unopt
 
-# 应用要链接的那个归档，以及创建一个应用
+# 应用要链接的东西，以及创建一个应用
 vpython3 flutter/tools/gn --runtime-mode=release --no-rbe
-ninja -C out/host_release flutter/rust:rustflutter_engine
+ninja -C out/host_release flutter/rust
 ./out/host_debug_unopt/rustflutter create my_app --title "My App" --path ~/code
 ```
 
@@ -104,9 +104,23 @@ adb install -r out/android_release_arm64/apk/counter.apk
 aapt2、javac、d8、zip、zipalign、apksigner，每步一条命令——因为这里只有一个
 .java、一个 .so、一个 asset。
 
+引擎在这儿也是两种链接方式都成立。链了动态引擎的应用，它的 .so 里会把
+`librustflutter_engine.so` 列为依赖，`build_apks.py` 直接把这条读出来，
+于是把引擎和它打在一起，Activity 也会先加载引擎——先加载才会跑它的
+`JNI_OnLoad`。链了归档的应用里没有这条依赖，就单独打包，
+谁也不用为一个已经折进去的库多付 15 MB。
+
+能这样是因为 Android 的入口点现在是注册进来的，而不是按名字调的：
+host 以前声明 `rustflutter_app_main` 并调用它，那是一个从引擎里朝上打出去的调用，
+一旦引擎自己成了一个库就不可能成立。改成由应用在加载期把指针塞进 `rf_set_app_main`
+——GN 应用靠一个 C++ shim，Cargo 应用靠框架 crate 里的一条 `.init_array`——
+两边都不用为此做什么。
+
 用 Cargo 建的应用还要三样，相册示例里都能看到：`crate-type = ["lib", "cdylib"]`、
 一份把 JNI 入口点回来的第二个 version script（rustc 自己那份会把它们藏掉），
-以及指向 Android 输出目录的 `RUSTFLUTTER_ENGINE_OUT`。
+以及指向 Android 输出目录的 `RUSTFLUTTER_ENGINE_OUT`。加了
+`--features shared-engine` 之后，除最后一样外都不再需要：
+那时引擎已经是独立的库，它的符号根本不经过 rustc 的 version script。
 
 
 ## 应用
@@ -121,12 +135,37 @@ cargo run -- --png out.png   # 无头单帧，不起 shell
 cargo test
 ```
 
-能这样是因为引擎构建会产出 `flutter/rust:rustflutter_engine`——
-一个装着整个 C++ 侧的归档，生成的 `build.rs` 链接它。
+能这样是因为引擎构建把整个 C++ 侧产出成两份产物，
+生成的 `build.rs` 链接应用要的那一份。
 Cargo 把框架 crate 和应用一起编译在它之上，所以应用完全不需要知道 GN 的存在。
+
+```sh
+cargo run                            # 归档，进可执行文件里
+cargo run --features shared-engine   # 库，放在它旁边
+rustflutter run --shared             # 同一件事，写法短一点
+```
+
+两份产物由同一次 `ninja` 构建，选哪一份不是引擎的决定——
+那属于发布应用的人。静态是默认，运行时不需要找任何东西，
+代价是每个应用都驮着一份引擎，而谁也没改过它。
+动态链接快得多，因为这里 release 链接的绝大部分工作*就是*引擎，
+并且同一个目录下的多个应用共用一份；`build.rs` 会把库拷到可执行文件旁边，
+两者一起发布。Windows 上是 `rustflutter_engine.dll`，
+Linux 和 Android 上是 `librustflutter_engine.so`，
+macOS 上是 `librustflutter_engine.dylib`，同一个 feature 在哪儿都管用。
+
+引擎导出的正好是应用够得着的那些符号——100 个 `rf_*` FFI、`rf_host_run`，
+以及注册框架函数表的那两个——Skia、Impeller、txt 和 shell 一个都不导出。
+反方向的调用，也就是 shell 向上调进框架，走 `RfAppInterface`：
+框架在 shell 启动前把自己的十七个函数递下去，
+这正是同一份 `RuntimeController` 两种链接方式都能用的原因。
 
 必须是 **release** 引擎构建：一切都链接静态 CRT（`/MT`），
 这也是 rustc 用的，而 debug 构建用的是 `/MTd`。
+两个模块各带一份静态 CRT 就是两个堆，这里之所以安全，
+靠的是一条值得一直守住的规矩：这套 C ABI 从不跨越自己转移所有权。
+每个 `rf_*_new` 都由同一侧的 `rf_*_free` 配对释放，
+其余一切都只在一次调用期间借用。
 
 应用以前是 `flutter/rust/projects` 下的 GN target——因为引擎是 GN 构建的，
 而应用必须链接引擎。那让每个应用都变成了引擎代码，而它不是：

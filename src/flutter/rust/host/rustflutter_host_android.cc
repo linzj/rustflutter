@@ -110,7 +110,8 @@ constexpr char kUnknownClipboardFormatMessage[] = "Unknown clipboard format";
 constexpr char kTextPlainFormat[] = "text/plain";
 
 constexpr char kExitRequestError[] = "ExitApplication error";
-constexpr char kInvalidExitRequestMessage[] = "Invalid application exit request";
+constexpr char kInvalidExitRequestMessage[] =
+    "Invalid application exit request";
 constexpr char kExitTypeCancelable[] = "cancelable";
 constexpr char kExitTypeRequired[] = "required";
 
@@ -187,7 +188,8 @@ void SendOutputToLogcat() {
         while ((count = read(pipe_fds[0], buffer, sizeof(buffer))) > 0) {
           for (ssize_t index = 0; index < count; ++index) {
             if (buffer[index] == '\n') {
-              __android_log_write(ANDROID_LOG_INFO, "rustflutter", line.c_str());
+              __android_log_write(ANDROID_LOG_INFO, "rustflutter",
+                                  line.c_str());
               line.clear();
             } else if (buffer[index] != '\r') {
               line.push_back(buffer[index]);
@@ -229,8 +231,8 @@ class JavaBridge {
   /// Caches the class and the two methods. Called once, from JNI_OnLoad.
   static void Initialise(JNIEnv* env, jclass activity_class) {
     class_ = static_cast<jclass>(env->NewGlobalRef(activity_class));
-    request_ = env->GetStaticMethodID(class_, "onHostRequest",
-                                      "(ILjava/lang/String;)Ljava/lang/String;");
+    request_ = env->GetStaticMethodID(
+        class_, "onHostRequest", "(ILjava/lang/String;)Ljava/lang/String;");
     editing_ = env->GetStaticMethodID(class_, "onEditingState",
                                       "(Ljava/lang/String;IIII)V");
     semantics_ = env->GetStaticMethodID(class_, "onSemanticsUpdate",
@@ -431,7 +433,8 @@ class TextInputHandler {
   std::optional<std::string> HandleMethodCall(const std::string& method,
                                               const rapidjson::Value* args);
 
-  // -- What the input connection reports ---------------------------------------
+  // -- What the input connection reports
+  // ---------------------------------------
 
   /// Text the IME committed.
   void OnText(const std::u16string& text) {
@@ -541,7 +544,8 @@ bool TextInputHandler::OnEditingKey(int32_t key_code, bool shift) {
         changed = model.MoveCursorForward();
         return true;
       case kKeyCodeMoveHome:
-        changed = shift ? model.SelectToBeginning() : model.MoveCursorToBeginning();
+        changed =
+            shift ? model.SelectToBeginning() : model.MoveCursorToBeginning();
         return true;
       case kKeyCodeMoveEnd:
         changed = shift ? model.SelectToEnd() : model.MoveCursorToEnd();
@@ -1106,7 +1110,8 @@ class HostPlatformView final : public PlatformView,
     }
     writer.EndArray();
 
-    JavaBridge::SemanticsUpdate(std::string(buffer.GetString(), buffer.GetSize()));
+    JavaBridge::SemanticsUpdate(
+        std::string(buffer.GetString(), buffer.GetSize()));
   }
 
   // |PlatformView|
@@ -1194,7 +1199,8 @@ class HostPlatformView final : public PlatformView,
   }
 
   // |PlatformView|
-  void HandlePlatformMessage(std::unique_ptr<PlatformMessage> message) override {
+  void HandlePlatformMessage(
+      std::unique_ptr<PlatformMessage> message) override {
     const auto& data = message->data();
     std::optional<std::vector<uint8_t>> reply;
 
@@ -1215,9 +1221,9 @@ class HostPlatformView final : public PlatformView,
         const rapidjson::Value* args =
             found == document.MemberEnd() ? nullptr : &found->value;
         std::optional<std::string> json =
-            platform
-                ? HandlePlatformCall(this, method->value.GetString(), args)
-                : text_input_->HandleMethodCall(method->value.GetString(), args);
+            platform ? HandlePlatformCall(this, method->value.GetString(), args)
+                     : text_input_->HandleMethodCall(method->value.GetString(),
+                                                     args);
         if (json.has_value()) {
           reply.emplace(json->begin(), json->end());
         }
@@ -1591,7 +1597,8 @@ int32_t rf_host_run(const RfHostOptions* options) {
   }
 
   Settings settings;
-  settings.enable_impeller = options == nullptr || options->enable_impeller != 0;
+  settings.enable_impeller =
+      options == nullptr || options->enable_impeller != 0;
   settings.enable_software_rendering = !settings.enable_impeller;
   settings.icu_initialization_required = true;
   settings.icu_data_path = state.icu_data_path;
@@ -1672,11 +1679,6 @@ int32_t rf_host_run(const RfHostOptions* options) {
 
 extern "C" {
 
-/// The application's own entry point, which is what a Rust example compiles to.
-/// Declared rather than included because the host must not depend on any one
-/// application.
-int rustflutter_app_main(int argc, const char** argv);
-
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
   fml::jni::InitJavaVM(vm);
   JNIEnv* env = fml::jni::AttachCurrentThread();
@@ -1736,7 +1738,17 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeStart(
          fml::jni::JavaStringToString(env, external_files_path).c_str(), 1);
   // Everything after this is the application's: it registers itself and calls
   // `run`, which lands in rf_host_run above and comes straight back.
-  rustflutter_app_main(0, nullptr);
+  //
+  // Reached through the pointer the application left in rf_set_app_main rather
+  // than by name, because by name is a call out of this library and up into
+  // whoever loaded it once the engine is a shared library of its own. See
+  // rustflutter_host.h.
+  RfAppMain app_main = rf_app_main();
+  FML_CHECK(app_main != nullptr)
+      << "No application entry point is registered. The application registers "
+         "rustflutter_app_main from a load-time initialiser; a library that "
+         "left it out has none, and there is nothing here to start.";
+  app_main(0, nullptr);
 }
 
 JNIEXPORT void JNICALL
@@ -1758,16 +1770,17 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeSurfaceChanged(
 /// Arrives whenever Android applies window insets, which is at least once
 /// before the first frame and again every time the keyboard opens or closes.
 JNIEXPORT void JNICALL
-Java_io_flutter_rustflutter_RustflutterActivity_nativeInsets(JNIEnv* env,
-                                                             jclass clazz,
-                                                             jint padding_top,
-                                                             jint padding_right,
-                                                             jint padding_bottom,
-                                                             jint padding_left,
-                                                             jint inset_top,
-                                                             jint inset_right,
-                                                             jint inset_bottom,
-                                                             jint inset_left) {
+Java_io_flutter_rustflutter_RustflutterActivity_nativeInsets(
+    JNIEnv* env,
+    jclass clazz,
+    jint padding_top,
+    jint padding_right,
+    jint padding_bottom,
+    jint padding_left,
+    jint inset_top,
+    jint inset_right,
+    jint inset_bottom,
+    jint inset_left) {
   auto& state = flutter::HostState::Get();
   state.padding_top = padding_top;
   state.padding_right = padding_right;
@@ -1791,8 +1804,7 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeLifecycle(
     JNIEnv* env,
     jclass clazz,
     jstring state_name) {
-  flutter::SendLifecycle(
-      fml::jni::JavaStringToString(env, state_name).c_str());
+  flutter::SendLifecycle(fml::jni::JavaStringToString(env, state_name).c_str());
 }
 
 JNIEXPORT void JNICALL
@@ -1855,9 +1867,8 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativePointer(
     state.last_positions[pointer_id] = {x, y};
   }
 
-  const bool down =
-      data.change == flutter::PointerData::Change::kDown ||
-      data.change == flutter::PointerData::Change::kMove;
+  const bool down = data.change == flutter::PointerData::Change::kDown ||
+                    data.change == flutter::PointerData::Change::kMove;
   data.buttons = down ? flutter::kPointerButtonTouchContact : 0;
   data.pressure = down ? (pressure > 0 ? pressure : 1.0) : 0.0;
   data.pressure_max = 1.0;
@@ -1909,11 +1920,10 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeText(JNIEnv* env,
 }
 
 JNIEXPORT void JNICALL
-Java_io_flutter_rustflutter_RustflutterActivity_nativeComposing(
-    JNIEnv* env,
-    jclass clazz,
-    jstring text,
-    jint cursor) {
+Java_io_flutter_rustflutter_RustflutterActivity_nativeComposing(JNIEnv* env,
+                                                                jclass clazz,
+                                                                jstring text,
+                                                                jint cursor) {
   const std::string utf8 = fml::jni::JavaStringToString(env, text);
   std::u16string utf16(utf8.begin(), utf8.end());
   flutter::HostState::Get().text_input.OnComposing(utf16, cursor);
@@ -1991,8 +2001,9 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeSemanticsAction(
 /// just finish. The difference is whether anything over there is listening: a
 /// back press that silently did nothing would be worse than one that leaves.
 JNIEXPORT jboolean JNICALL
-Java_io_flutter_rustflutter_RustflutterActivity_nativeBackPressed(JNIEnv* env,
-                                                                  jclass clazz) {
+Java_io_flutter_rustflutter_RustflutterActivity_nativeBackPressed(
+    JNIEnv* env,
+    jclass clazz) {
   auto& state = flutter::HostState::Get();
   if (state.platform_view == nullptr) {
     return JNI_FALSE;

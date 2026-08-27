@@ -19,9 +19,15 @@ source_set("runtime") {
     "runtime_delegate.cc",
     "runtime_delegate.h",
     "rust_app_api.h",
+    "rust_app_interface.cc",
+    "rust_app_interface.h",
   ]
 
   public_configs = [ "//flutter:config" ]
+
+  # rf_set_app_interface and rf_app_interface are defined here. See
+  # rustflutter_export.h.
+  defines = [ "RUSTFLUTTER_ENGINE_IMPLEMENTATION" ]
 
   public_deps = [
     "//flutter/assets",

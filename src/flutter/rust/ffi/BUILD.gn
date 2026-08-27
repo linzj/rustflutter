@@ -29,6 +29,11 @@ source_set("engine_ffi") {
 
   public_configs = [ "//flutter:config" ]
 
+  # Marks this target as the one that *defines* the rf_* surface, so the
+  # declarations in rustflutter_ffi.h annotate themselves for export. See
+  # rustflutter_export.h; the engine is linked both ways from these objects.
+  defines = [ "RUSTFLUTTER_ENGINE_IMPLEMENTATION" ]
+
   if (is_win) {
     libs = [
       "gdi32.lib",

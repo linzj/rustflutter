@@ -7,8 +7,29 @@
 # because there is no plugin registrar and no embedder C API to serve -- only a
 # window, the thread model, the shell, and the two platform channels the engine
 # itself defines.
+if (is_android) {
+  # What tells the host where the application's entry point is. Separate from
+  # `host` because it belongs to the *application*: it names
+  # `rustflutter_app_main`, and the host must not. See the file itself, and
+  # rustflutter_app.gni for who depends on it.
+  #
+  # A source_set rather than a static_library on purpose: its object goes on the
+  # link line directly, and a load-time initialiser nothing references would not
+  # survive being archived.
+  source_set("app_entry") {
+    sources = [ "android/rustflutter_app_entry.cc" ]
+
+    public_configs = [ "//flutter:config" ]
+
+    deps = [ "//flutter/rust/host" ]
+  }
+}
+
 source_set("host") {
-  sources = [ "rustflutter_host.h" ]
+  sources = [
+    "rustflutter_app_main.cc",
+    "rustflutter_host.h",
+  ]
 
   # Impeller on EGL, which is the same file on every platform that has EGL --
   # only where the EGL comes from differs, and this does not name it.
@@ -44,6 +65,10 @@ source_set("host") {
   }
 
   public_configs = [ "//flutter:config" ]
+
+  # rf_host_run, rf_set_app_main and rf_app_main are defined here. See
+  # rustflutter_export.h.
+  defines = [ "RUSTFLUTTER_ENGINE_IMPLEMENTATION" ]
 
   deps = [
     "//flutter/common",

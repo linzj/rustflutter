@@ -85,9 +85,9 @@ cd src
 vpython3 flutter/tools/gn --unoptimized --no-rbe
 ninja -C out/host_debug_unopt
 
-# the archive an application links against, and an application
+# what an application links against, and an application
 vpython3 flutter/tools/gn --runtime-mode=release --no-rbe
-ninja -C out/host_release flutter/rust:rustflutter_engine
+ninja -C out/host_release flutter/rust
 ./out/host_debug_unopt/rustflutter create my_app --title "My App" --path ~/code
 ```
 
@@ -116,10 +116,26 @@ adb install -r out/android_release_arm64/apk/counter.apk
 `make_apk.py` runs aapt2, javac, d8, zip, zipalign and apksigner, one command
 each, because this has one .java file, one .so and one asset.
 
+The engine is linked both ways here too. An application built against the shared
+one names `librustflutter_engine.so` among its dependencies, `build_apks.py`
+reads that off the .so and packages the engine beside it, and the Activity loads
+the engine first — which is what runs its `JNI_OnLoad`. An application that
+linked the archive names nothing of the sort and is packaged alone, so nobody
+pays 15 MB for a library they folded in.
+
+That works because Android's entry point is registered rather than called by
+name: the host used to declare `rustflutter_app_main` and call it, which is a
+call up out of the engine and impossible once the engine is a library of its
+own. The application leaves the pointer in `rf_set_app_main` from a load-time
+initialiser instead — a C++ shim for a GN application, an `.init_array` entry in
+the framework crate for a Cargo one — so neither has to do anything about it.
+
 A Cargo application needs three more things, which the album example shows:
 `crate-type = ["lib", "cdylib"]`, a second version script naming the JNI
 entry points back (rustc's own hides them), and `RUSTFLUTTER_ENGINE_OUT`
-pointing at an Android output directory.
+pointing at an Android output directory. `--features shared-engine` needs none
+of them beyond the last: the engine is a library of its own by then, so its
+symbols never pass through rustc's version script at all.
 
 
 ## Applications
@@ -134,14 +150,40 @@ cargo run -- --png out.png   # one frame, headless, no shell
 cargo test
 ```
 
-That works because the engine build produces
-`flutter/rust:rustflutter_engine` — one archive holding the whole C++ side,
-which the generated `build.rs` links against. Cargo compiles the framework
-crate and the application together on top of it, so nothing about an
-application has to know that GN exists.
+That works because the engine build produces the whole C++ side as two
+artifacts, and the generated `build.rs` links whichever the application asks
+for. Cargo compiles the framework crate and the application together on top of
+it, so nothing about an application has to know that GN exists.
+
+```sh
+cargo run                            # the archive, inside the executable
+cargo run --features shared-engine   # the library, beside it
+rustflutter run --shared             # the same thing, spelled shorter
+```
+
+Both are built by the same `ninja` and neither is the engine's decision — it
+belongs to whoever ships the application. Static is the default and has nothing
+to find at startup, at the cost of every application carrying its own copy of an
+engine none of them modify. Shared links in a fraction of the time, because most
+of a release link here *is* the engine, and lets applications in one directory
+share it; `build.rs` copies the library next to the executable, and the two ship
+together. It is `rustflutter_engine.dll` on Windows, `librustflutter_engine.so`
+on Linux and Android, `librustflutter_engine.dylib` on macOS, and the same
+feature picks it everywhere.
+
+The engine exports exactly the surface an application reaches — the 100 `rf_*`
+FFI functions, `rf_host_run`, and the two that register the framework's own
+table — and nothing of Skia, Impeller, txt or the shell. Calls the other way,
+from the shell up into the framework, go through `RfAppInterface`: the framework
+hands its seventeen functions down before the shell starts, which is what makes
+one build of `RuntimeController` work either way round.
 
 It has to be a **release** engine build: everything links the static CRT
-(`/MT`), which is what rustc uses, and a debug engine build uses `/MTd`.
+(`/MT`), which is what rustc uses, and a debug engine build uses `/MTd`. Two
+modules with the static CRT have two heaps, which is safe here for a reason
+worth keeping true: the C ABI never transfers ownership across itself. Every
+`rf_*_new` is matched by an `rf_*_free` on the same side, and everything else is
+borrowed for the length of a call.
 
 Applications used to be GN targets under `flutter/rust/projects`, because the
 engine is built with GN and an application has to link it. That made every

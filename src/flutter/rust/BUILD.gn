@@ -81,6 +81,115 @@ static_library("rustflutter_engine") {
   }
 }
 
+# The same engine, linked instead of archived.
+#
+# Both artifacts are built, always, from one compilation of the objects behind
+# them, and an application picks between them at its own link time rather than
+# at the engine's -- the `shared-engine` feature of a generated project, which
+# is `rustflutter build --shared`. That is the point: an engine configured for
+# one or the other would make the choice the engine's, and it is not. It belongs
+# to whoever is shipping the application.
+#
+#   rustflutter_engine.lib      the archive; the application carries the engine
+#   rustflutter_engine.dll      the library; applications in one directory share
+#                               a copy, and each links in a fraction of the time
+#
+# (.a and .dylib, .a and .so, on the platforms that spell them that way.)
+#
+# The exported surface is exactly what rustflutter_export.h annotates: the rf_*
+# FFI, rf_host_run, and the registration functions. Nothing of Skia, Impeller,
+# txt or the shell is reachable from outside, which was always true of the
+# archive too -- an application never referenced any of it.
+#
+# Android included, and that took the second inversion in this change: the two
+# calls that used to point up out of the engine -- RuntimeController reaching
+# the framework, and the Android host reaching `rustflutter_app_main` -- are
+# both registrations now, so this library resolves entirely within itself.
+#
+# In the group below rather than left to whoever remembers it: a
+# `--shared`-built application links this, so a plain `ninja` has to produce it
+# the same way it produces the archive.
+shared_library("rustflutter_engine_shared") {
+  output_name = "rustflutter_engine"
+
+  deps = [
+    "//flutter/rust/ffi:engine_ffi",
+    "//flutter/rust/host",
+  ]
+
+  if (is_win) {
+    # Named by nothing on this side -- these are what the *Rust* standard
+    # library asks for, and in a static link the application's own link line
+    # carries them. A DLL resolves everything at its own link time, and the
+    # framework is on the far side of it, so they are named here instead.
+    libs = [
+      "advapi32.lib",
+      "bcrypt.lib",
+      "ntdll.lib",
+      "userenv.lib",
+      "ws2_32.lib",
+    ]
+  }
+
+  if (is_mac) {
+    # What an executable records as the library's name, and so what its loader
+    # goes looking for. The toolchain's solink passes no -install_name, which
+    # leaves it as the path this was linked to -- a path inside the engine
+    # build, which is not where a shipped application's copy is. `@rpath` defers
+    # the question to the executable, and the generated build.rs answers it with
+    # `@executable_path`: beside the binary, where it puts that copy.
+    ldflags = [ "-Wl,-install_name,@rpath/librustflutter_engine.dylib" ]
+  }
+}
+
+# What an application has to link, written where a build.rs can read it.
+#
+# A Cargo application is not in this build graph and cannot ask GN anything, so
+# what it needs -- which archive, which library, and the system libraries the
+# archive cannot carry -- used to be copied into each generated build.rs. It
+# rotted the way a copy does: `uiautomationcore` arrived with the accessibility
+# bridge and never reached the copy, and every generated project stopped
+# linking.
+#
+# GN already works the list out, in full, for the one target that really links
+# the engine -- the shared library above -- and writes the expansion into that
+# target's own .ninja file. This reads it back out. The manifest is therefore
+# the link line rather than a description of it, and a library added anywhere
+# under the engine reaches applications as soon as gn regenerates.
+#
+# Those .ninja files are what it reruns on, for the same reason: gn rewrites
+# them when the link line changes and not otherwise. They arrive through a
+# depfile rather than `inputs` because `inputs` are checked against the build
+# graph, and nothing in the graph generates them -- gn does, before ninja has
+# run at all.
+action("rustflutter_link_manifest") {
+  script = "tools/link_manifest.py"
+
+  _archive_ninja = "$target_out_dir/rustflutter_engine.ninja"
+  _library_ninja = "$target_out_dir/rustflutter_engine_shared.ninja"
+
+  outputs = [ "$root_out_dir/rustflutter_link.txt" ]
+  depfile = "$target_gen_dir/rustflutter_link.d"
+
+  args = [
+    "--depfile",
+    rebase_path(depfile, root_build_dir),
+    "--archive-ninja",
+    rebase_path(_archive_ninja, root_build_dir),
+    "--library-ninja",
+    rebase_path(_library_ninja, root_build_dir),
+
+    # Where the archive lands, which is beside its own .ninja file and not in
+    # the output directory's root the way the shared library is.
+    "--archive-dir",
+    rebase_path(target_out_dir, root_build_dir),
+    "--os",
+    current_os,
+    "--output",
+    rebase_path(outputs[0], root_build_dir),
+  ]
+}
+
 # The framework crate wrapped as a staticlib, so C++ targets can link it.
 static_library("rust_lib") {
   crate_name = "rustflutter_staticlib"
@@ -376,7 +485,11 @@ group("rust") {
   # `ninja -C out` compiled every object fresh and still left the archive a
   # stale one -- an application's `rerun-if-changed` on the archive then
   # noticed nothing, because the archive's own mtime never moved.
-  deps += [ ":rustflutter_engine" ]
+  deps += [
+    ":rustflutter_engine",
+    ":rustflutter_engine_shared",
+    ":rustflutter_link_manifest",
+  ]
 
   # The tests run on the machine that builds them, so they exist only for a
   # host build. `enable_unittests` is already false for Android and iOS -- the

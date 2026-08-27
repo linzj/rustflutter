@@ -241,6 +241,8 @@ pub use app::{
     Application, ApplicationFactory, BuildContext, FrameContext, FrameScheduler, RunOptions,
     ViewMetrics, WidgetApplication, WidgetHost, register_application,
 };
+#[cfg(not(test))]
+pub use app::{RfAppInterface, register_app_interface};
 pub use r#async::{AsyncSnapshot, ConnectionState, async_builder};
 pub use autocomplete_view::{AutocompleteView, autocomplete_view, options_placement};
 pub use borders::{

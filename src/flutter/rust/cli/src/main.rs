@@ -20,8 +20,8 @@
 use std::env;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::os::raw::c_int;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod templates;
@@ -84,10 +84,16 @@ COMMANDS:
     create <name> [--title <text>] [--path <dir>]
                                      Scaffold a Cargo project. Written to
                                      <dir>/<name>, defaulting to ./<name>.
-    build [-- <cargo args>]          `cargo build` in the current project
-    run   [-- <app args>]            `cargo run` in the current project
+    build [--shared] [<cargo args>]  `cargo build` in the current project
+    run   [--shared] [<cargo args>] [-- <app args>]
+                                     `cargo run` in the current project
 
     help, --version
+
+`--shared` links the engine as a shared library beside the executable instead
+of folding its archive in; it is `--features shared-engine` under a name that
+says what it does. Both engine artifacts are always built, so it costs a link
+and nothing else. `--static` is the default and is accepted for symmetry.
 
 `create` must be run from inside a checkout, so it can find the framework and
 the engine build to point the new project at. Nothing else has to be: a project
@@ -141,18 +147,39 @@ fn create(name: &str, rest: &[&str]) -> Result<(), Error> {
 
     fs::create_dir_all(project_dir.join("src"))?;
     fs::create_dir_all(project_dir.join(".cargo"))?;
-    write(&project_dir.join("Cargo.toml"), &templates::cargo_toml(name, &framework))?;
-    write(&project_dir.join(".cargo/config.toml"), &templates::cargo_config(&linker))?;
+    write(
+        &project_dir.join("Cargo.toml"),
+        &templates::cargo_toml(name, &framework),
+    )?;
+    write(
+        &project_dir.join(".cargo/config.toml"),
+        &templates::cargo_config(&linker),
+    )?;
     write(&project_dir.join("build.rs"), &templates::build_rs(&engine))?;
-    write(&project_dir.join("src/main.rs"), &templates::main_rs(name, &title))?;
+    write(
+        &project_dir.join("src/main.rs"),
+        &templates::main_rs(name, &title),
+    )?;
     write(&project_dir.join(".gitignore"), templates::gitignore())?;
-    write(&project_dir.join("README.md"), &templates::readme(name, &engine))?;
+    write(
+        &project_dir.join("README.md"),
+        &templates::readme(name, &engine),
+    )?;
 
     println!("Created `{name}` in {}", project_dir.display());
-    if !engine_out.join("obj/flutter/rust/rustflutter_engine.lib").exists() {
+    if !engine_out
+        .join("obj/flutter/rust/rustflutter_engine.lib")
+        .exists()
+    {
         println!();
-        println!("The engine archive is not built yet. From {}:", root.display());
-        println!("  ninja -C {} flutter/rust:rustflutter_engine", relative_out(&root, &engine_out));
+        println!(
+            "The engine archive is not built yet. From {}:",
+            root.display()
+        );
+        println!(
+            "  ninja -C {} flutter/rust:rustflutter_engine",
+            relative_out(&root, &engine_out)
+        );
     }
     println!();
     println!("  cd {}", project_dir.display());
@@ -209,15 +236,33 @@ fn titlecase(name: &str) -> String {
 /// A thin pass-through, and deliberately so: a generated project is a Cargo
 /// project, so `cargo build` already works and this only saves remembering
 /// that. Anything Cargo can do that this cannot, do with Cargo.
+///
+/// The one thing it rewrites is `--shared`, which is the `shared-engine`
+/// feature under a name that says what it does. `--static` is the default and
+/// is accepted so that a script can say which it meant.
 fn cargo(subcommand: &str, rest: &[&str]) -> Result<(), Error> {
     if !Path::new("Cargo.toml").is_file() {
         return Err(Error::NotAProject);
     }
-    let passthrough: Vec<&str> = match rest.first() {
-        Some(&"--") => rest.to_vec(),
-        _ if rest.is_empty() => Vec::new(),
-        _ => rest.to_vec(),
-    };
+
+    let mut passthrough: Vec<String> = Vec::new();
+    // Only before `--`: after it the words are the application's, and an
+    // application is entitled to its own `--shared`.
+    let mut ours = true;
+    for arg in rest {
+        match *arg {
+            "--" => {
+                ours = false;
+                passthrough.push((*arg).to_string());
+            }
+            "--shared" if ours => {
+                passthrough.push("--features".to_string());
+                passthrough.push("shared-engine".to_string());
+            }
+            "--static" if ours => {}
+            other => passthrough.push(other.to_string()),
+        }
+    }
 
     let status = Command::new("cargo")
         .arg(subcommand)
@@ -259,7 +304,11 @@ fn source_root() -> Result<PathBuf, Error> {
 fn release_out_dir(root: &Path) -> Result<PathBuf, Error> {
     if let Ok(explicit) = env::var("RUSTFLUTTER_OUT") {
         let path = root.join("out").join(&explicit);
-        return if path.is_dir() { Ok(path) } else { Err(Error::NoOutDir) };
+        return if path.is_dir() {
+            Ok(path)
+        } else {
+            Err(Error::NoOutDir)
+        };
     }
 
     let out = root.join("out");
