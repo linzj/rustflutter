@@ -1310,6 +1310,26 @@ class HostPlatformView final : public PlatformView,
     SendOnChannel(kLifecycleChannel, state);
   }
 
+  /// Remakes the EGL window surface after the Surface changed size.
+  ///
+  /// The same thing the Windows host does on WM_SIZE, and for the same reason:
+  /// an EGL surface does not follow a window that changed size, and presenting
+  /// to a stale one shows the old frame or nothing at all. Android resizes a
+  /// Surface in place rather than replacing it -- a rotation, a fold, a
+  /// multi-window drag, or an `adjustResize` window making room for the
+  /// keyboard -- and that case had no answer here.
+  ///
+  /// Called on the raster thread, which is where the GL context is current.
+  void OnWindowResized() {
+    if (gl_delegate_) {
+      gl_delegate_->Resize();
+    }
+    // The software path asks the window what pixels it will be handed, once.
+    // A resize is the other moment worth asking at: the geometry it was told
+    // belonged to the old size.
+    geometry_set_ = false;
+  }
+
   void SendMethodCall(const char* channel,
                       const std::string& method,
                       const std::string& arguments_json) {
@@ -1759,9 +1779,18 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeSurfaceChanged(
     jint height,
     jfloat device_pixel_ratio) {
   auto& state = flutter::HostState::Get();
+  const bool resized = state.width != width || state.height != height;
   state.width = width;
   state.height = height;
   state.device_pixel_ratio = device_pixel_ratio > 0 ? device_pixel_ratio : 1.0;
+
+  // Before the metrics, and on the raster thread where the GL context lives.
+  // Without this the engine draws the new size into a surface that is still
+  // the old one.
+  if (resized && state.platform_view != nullptr && state.task_runners) {
+    state.task_runners->GetRasterTaskRunner()->PostTask(
+        [view = state.platform_view]() { view->OnWindowResized(); });
+  }
   flutter::SendViewportMetrics();
 }
 
