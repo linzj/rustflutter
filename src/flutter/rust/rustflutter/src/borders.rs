@@ -258,6 +258,35 @@ impl RRect {
         self.rect.width().min(self.rect.height())
     }
 
+    /// Where each of the four straight runs of the outline begins and ends:
+    /// `[top start, top end, right start, right end, bottom start, bottom end,
+    /// left start, left end]`, clockwise from the top-left corner's arc.
+    ///
+    /// A straight run lies **on its own edge** -- the top run at `top`, the
+    /// right run at `right` -- and it is only the *ends* of it that a corner's
+    /// radius moves, inwards along that edge. Split out from
+    /// [`RRect::append_to`] because the engine's path is an opaque handle: a
+    /// test can read this and cannot read the path.
+    pub fn edge_points(&self) -> [(f32, f32); 8] {
+        let [tl, tr, br, bl] = self.scaled();
+        let (l, t, r, b) = (
+            self.rect.left,
+            self.rect.top,
+            self.rect.right,
+            self.rect.bottom,
+        );
+        [
+            (l + tl.x, t),
+            (r - tr.x, t),
+            (r, t + tr.y),
+            (r, b - br.y),
+            (r - br.x, b),
+            (l + bl.x, b),
+            (l, b - bl.y),
+            (l, t + tl.y),
+        ]
+    }
+
     /// Appends the outline -- four straight runs joined by kappa cubics, so
     /// a corner of radius zero degenerates to a sharp angle. When every
     /// corner is zero this is the plain rectangle.
@@ -273,8 +302,17 @@ impl RRect {
             path.add_rect(self.rect);
             return;
         }
-        path.move_to(l + tl.x, t + tl.y);
-        path.line_to(r - tr.x, t + tr.y);
+        // The top run is on the top edge. It used to start and end at
+        // `t + tl.y` and `t + tr.y` -- a corner's radius pulled the *edge*
+        // down rather than pulling the end of the run inwards along it. With
+        // four equal radii that is a rectangle shifted down by one radius and
+        // closed up again by `close()`, which is nearly invisible; with the
+        // top two radii different it is a visible slope, which is how the
+        // Cupertino date picker's selection band -- three abutting bands, the
+        // outer two capped on one side each -- came to sag in the middle.
+        let [top_start, top_end, ..] = self.edge_points();
+        path.move_to(top_start.0, top_start.1);
+        path.line_to(top_end.0, top_end.1);
         path.cubic_to(
             r - tr.x + tr.x * KAPPA,
             t,
@@ -5427,6 +5465,74 @@ mod tests {
 
     const RED: Color = Color(0xFF0000FF);
     const BLUE: Color = Color(0xFFFF0000);
+
+    /// Every straight run of a rounded rectangle's outline lies on its own
+    /// edge, whatever the corners do.
+    ///
+    /// A corner's radius moves the *ends* of the two runs it joins inwards
+    /// along their edges; it does not move the edges. Getting that backwards
+    /// on the top run alone put the top edge at `top + radius` -- with four
+    /// equal radii that is the whole rectangle a radius lower, closed up by
+    /// `close()` and nearly invisible, and with the top two radii different it
+    /// is a slope from one to the other. The Cupertino date picker's selection
+    /// band is three bands side by side, each capped on the edge that faces
+    /// out, so it read as one band sagging in the middle.
+    #[test]
+    fn a_rounded_rectangles_edges_are_straight_even_when_its_corners_differ() {
+        let rect = Rect::ltrb(0.0, 0.0, 200.0, 40.0);
+        let capped_at_the_start = RRect::from_rect_and_corners(
+            rect,
+            Radius::circular(8.0),
+            Radius::ZERO,
+            Radius::ZERO,
+            Radius::circular(8.0),
+        );
+        let [
+            top_start,
+            top_end,
+            right_start,
+            right_end,
+            bottom_start,
+            bottom_end,
+            left_start,
+            left_end,
+        ] = capped_at_the_start.edge_points();
+        assert_eq!(top_start.1, 0.0, "the top run starts on the top edge");
+        assert_eq!(top_end.1, 0.0, "and ends on it");
+        assert_eq!(top_start.0, 8.0, "the capped corner pulls its end inwards");
+        assert_eq!(top_end.0, 200.0, "the square one does not");
+        assert_eq!(bottom_start.1, 40.0);
+        assert_eq!(bottom_end.1, 40.0);
+        assert_eq!(right_start.0, 200.0);
+        assert_eq!(right_end.0, 200.0);
+        assert_eq!(left_start.0, 0.0);
+        assert_eq!(left_end.0, 0.0);
+
+        // And the outline closes: the last corner's arc lands where the first
+        // run began.
+        assert_eq!(left_end, (0.0, 8.0));
+        assert_eq!(top_start, (8.0, 0.0));
+    }
+
+    #[test]
+    fn a_uniformly_rounded_rectangle_is_inset_at_all_four_corners_and_nowhere_else() {
+        let square = RRect::from_rect_and_corners(
+            Rect::ltrb(10.0, 20.0, 110.0, 60.0),
+            Radius::circular(6.0),
+            Radius::circular(6.0),
+            Radius::circular(6.0),
+            Radius::circular(6.0),
+        );
+        let points = square.edge_points();
+        assert_eq!(points[0], (16.0, 20.0));
+        assert_eq!(points[1], (104.0, 20.0));
+        assert_eq!(points[2], (110.0, 26.0));
+        assert_eq!(points[3], (110.0, 54.0));
+        assert_eq!(points[4], (104.0, 60.0));
+        assert_eq!(points[5], (16.0, 60.0));
+        assert_eq!(points[6], (10.0, 54.0));
+        assert_eq!(points[7], (10.0, 26.0));
+    }
 
     fn side(color: Color, width: f32) -> BorderSide {
         BorderSide {
