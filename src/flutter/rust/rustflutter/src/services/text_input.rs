@@ -745,10 +745,13 @@ impl TextInputConnection {
         }
     }
 
-    /// Where the field is in the window, in physical pixels.
+    /// Where the field is in the window, in logical pixels.
     ///
     /// Sent as a 4x4 transform because that is the channel's shape; only the
-    /// translation is meaningful to an IME.
+    /// translation is meaningful to an IME. Logical pixels are what the
+    /// framework works in; the host scales them by the device pixel ratio
+    /// before handing them to the IMM APIs, which want physical client-area
+    /// pixels.
     pub fn set_editable_transform(&self, dx: f64, dy: f64) {
         if !self.is_attached() {
             return;

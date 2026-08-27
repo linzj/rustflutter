@@ -701,7 +701,9 @@ class ImeContext {
   ///
   /// Comes from the framework, which is the only side that knows: it is
   /// `TextInput.setMarkedTextRect` put through the transform from
-  /// `TextInput.setEditableSizeAndTransform`.
+  /// `TextInput.setEditableSizeAndTransform`, scaled from the framework's
+  /// logical pixels to physical ones by the caller (`UpdateImePosition`,
+  /// which is the side that knows the DPI).
   void SetCaretRect(double x, double y, double width, double height) {
     caret_ = {x, y, width, height};
     MoveImeWindow();
@@ -2439,7 +2441,13 @@ void UpdateImePosition(WindowState* state) {
   double width = 0;
   double height = 0;
   if (state->text_input.TakeCaretRect(&x, &y, &width, &height)) {
-    state->ime->SetCaretRect(x, y, width, height);
+    // The framework works in logical pixels and the IMM APIs want physical
+    // client-area pixels, so the caret rect crosses scaled by the DPI -- the
+    // step upstream's `FlutterWindow::OnCursorRectUpdated` applies
+    // `GetDpiScale()` at. Without it the composition and candidate windows
+    // land at 1/dpr of the caret's real place.
+    const double dpr = state->device_pixel_ratio;
+    state->ime->SetCaretRect(x * dpr, y * dpr, width * dpr, height * dpr);
   } else {
     state->ime->UpdateImeWindow();
   }

@@ -8,6 +8,13 @@ from ctypes import wintypes
 
 user32 = ctypes.windll.user32
 
+# See grab_window.py: DPI awareness makes client coordinates physical pixels,
+# the same space a DPI-aware app hit-tests in.
+try:
+    user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+except Exception:
+    user32.SetProcessDPIAware()
+
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 MK_LBUTTON = 0x0001

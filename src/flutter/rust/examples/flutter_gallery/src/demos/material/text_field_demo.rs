@@ -5,30 +5,39 @@
 //! Ported from `lib/demos/material/text_field_demo.dart` (flutter/gallery @
 //! d12640d), aligned with upstream.
 //!
-//! Upstream's `TextFieldDemo` is a `Scaffold` around `TextFormFieldDemo`, the
-//! form itself. The scaffold and app bar are the demo page's chrome here
-//! (`src/pages/demo.rs`); what remains is the form: eight fields, a submit
-//! button and the required-field footnote, with 24 between them (upstream's
+//! Upstream's `TextFieldDemo` is a `Scaffold` with an app bar (the
+//! `demoTextFieldTitle`, no leading) around `TextFormFieldDemo`, the form
+//! itself. The app bar is built here, the way `grid_list_demo.rs` builds its
+//! own; what remains is the form: eight fields, a submit button and the
+//! required-field footnote, with 24 between them (upstream's
 //! `sizedBoxSpace`). The form's state -- the `PersonData`, the autovalidate
 //! mode, the password's obscurity -- is [`FormState`] on a per-demo
 //! `StatefulComponent`, as upstream's `TextFormFieldDemoState` is per widget.
 //!
 //! The framework's `TextField` is an editable and nothing else: it has no
 //! `InputDecoration`, so what upstream's decoration says is said here around
-//! the field instead --
+//! the field instead:
 //!
-//! - `labelText` becomes a caption above the field, `hintText` stays the
-//!   field's placeholder, and `helperText`/validation errors become a note
-//!   below it (the error replaces the helper, as upstream's does);
-//! - `filled: true` and `OutlineInputBorder` become the box the field sits
-//!   in, per field, matching which decoration upstream gave which field;
-//! - the leading icons (`Icons.person`, `Icons.phone`, `Icons.email`) and the
-//!   phone field's `prefixText: '+1 '` have no hook and are dropped;
+//! - `labelText` is a floated label at the top of the field's box. Upstream
+//!   rests with the label in the field's middle and floats it when the field
+//!   is focused or has content; there is no floating-label animation to port
+//!   that with, so the label is always floated -- upstream's focused look.
+//!   Its colour follows upstream's: primary while the field is focused
+//!   (asked of `focus::has_focus`), red when it shows an error.
+//! - `filled: true` is the Material filled field: a fill with the top
+//!   corners rounded 4 and a bottom underline, which thickens and goes
+//!   primary on focus, red on error. `OutlineInputBorder` is a 1px outline
+//!   rounded 4, 2px and primary on focus.
+//! - The leading icons (`Icons.person`, `Icons.phone`, `Icons.email`) sit
+//!   beside the box as glyph text, and the phone field's `prefixText: '+1 '`
+//!   shows when the field is focused or has content, as upstream's
+//!   `prefixText` does;
 //! - the salary field's `suffixText: 'USD'` is a trailing label in the box;
-//! - `PasswordField`'s visibility `IconButton` becomes a text button whose
-//!   label is the icon's semantic label ("Show password"/"Hide password");
+//! - `PasswordField`'s visibility `IconButton` is the same eye glyph inside
+//!   the box, toggling the field's obscurity (its semantic label has no
+//!   counterpart here);
 //! - `maxLength: 8` on the password fields is not enforceable -- there is no
-//!   length hook -- and is dropped; the helper text stays;
+//!   length hook -- but its counter is, so the demo draws the `n/8` itself;
 //! - `textCapitalization`, `keyboardType` and `textInputAction` have no
 //!   counterparts. Focus walking is the framework's (Tab between fields);
 //!   upstream's `onFieldSubmitted` focus moves and the form-level
@@ -48,18 +57,27 @@
 //! still leaving on its own after upstream's four-second
 //! `_kSnackBarDisplayDuration`.
 
+use rustflutter::borders::{BorderRadius, Radius};
+use rustflutter::components::K_TOOLBAR_HEIGHT;
 use rustflutter::framework::BuildContext;
+use rustflutter::gestures::PointerHandlers;
 use rustflutter::prelude::*;
-use rustflutter::render::{CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex};
-use rustflutter::widgets::Center;
+use rustflutter::render::{Alignment, CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex};
+use rustflutter::widgets::{Align, Center, Pointer};
 
 use crate::app::ids;
+use crate::data::demos as catalog;
+use crate::l10n::gallery_localizations::GalleryLocalizations;
+use crate::themes::material_demo_theme_data::MaterialDemoThemeData;
 
 use super::column;
 
 /// How long the form's message stays up, in frame-clock microseconds.
 /// Upstream's default `SnackBar.duration`, `_kSnackBarDisplayDuration`.
 const SNACKBAR_DURATION_MICROS: i64 = 4_000_000;
+
+/// The floated label's size, upstream's `bodySmall` the decorator shrinks to.
+const LABEL_SIZE: f32 = 12.0;
 
 /// Whether the message shown at `shown_micros` has served its time.
 fn should_dismiss(shown_micros: i64, frame_time_micros: i64) -> bool {
@@ -260,6 +278,175 @@ fn validate_retype(password: &str, retype: &str) -> Option<&'static str> {
     None
 }
 
+/// The decoration's palette, resolved once per build.
+#[derive(Clone, Copy)]
+struct FieldColors {
+    fill: Color,
+    outline: Color,
+    muted: Color,
+    primary: Color,
+    danger: Color,
+}
+
+/// The two `InputDecoration` shapes the form uses: `filled: true`, or
+/// `border: OutlineInputBorder()`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoxKind {
+    Filled,
+    Outlined,
+}
+
+/// A Material-icons glyph as text, the demo bar's trick.
+fn material_icon(glyph: &'static str, color: Color) -> AnyWidget {
+    leaf(move || {
+        Text::new(glyph)
+            .with_font_family(catalog::MATERIAL_ICONS)
+            .with_size(24.0)
+            .with_color(color)
+    })
+}
+
+/// One field with its decoration: the label floated inside the box, the
+/// leading icon beside it, the note (error or helper) and the character
+/// counter below. The error wins the note slot, as upstream's `errorText`
+/// replaces `helperText`.
+fn field_group(
+    label: &'static str,
+    icon: Option<&'static str>,
+    content: AnyWidget,
+    kind: BoxKind,
+    focused: bool,
+    error: Option<String>,
+    helper: Option<String>,
+    counter: Option<String>,
+    colors: FieldColors,
+) -> AnyWidget {
+    // The label's colour answers focus and error before anything else does,
+    // upstream's `InputDecorator`'s labelStyle resolution.
+    let label_color = if error.is_some() {
+        colors.danger
+    } else if focused {
+        colors.primary
+    } else {
+        colors.muted
+    };
+    let floated = leaf(move || {
+        Text::new(label)
+            .with_size(LABEL_SIZE)
+            .with_color(label_color)
+    });
+    let inner = column(vec![floated, content], 4.0);
+
+    // The box. Filled is a fill with the top corners rounded and an
+    // underline flush beneath (the two are one shape upstream, split here
+    // because a `Container` border is all four sides); outlined is a border
+    // rounded all round.
+    let edge_color = if error.is_some() {
+        colors.danger
+    } else if focused {
+        colors.primary
+    } else {
+        colors.outline
+    };
+    let boxed = single(inner, move |inner| {
+        let container = Container::new().with_padding(EdgeInsets::symmetric(12.0, 8.0));
+        let container = match kind {
+            BoxKind::Filled => container
+                .with_color(colors.fill)
+                .with_border_radius(BorderRadius::vertical(Radius::circular(4.0), Radius::ZERO)),
+            BoxKind::Outlined => container
+                .with_border(if focused { 2.0 } else { 1.0 }, edge_color)
+                .with_border_radius(BorderRadius::circular(4.0)),
+        };
+        Box::new(container.with_child(inner))
+    });
+    let decorated = if kind == BoxKind::Filled {
+        let underline_color = edge_color;
+        let underline = leaf(move || {
+            Container::new()
+                .with_height(if focused { 2.0 } else { 1.0 })
+                .with_color(underline_color)
+        });
+        column(vec![boxed, underline], 0.0)
+    } else {
+        boxed
+    };
+
+    // The leading icon, centred against the box as upstream's `icon:` is.
+    let body = if let Some(glyph) = icon {
+        let icon_color = colors.muted;
+        many(
+            vec![material_icon(glyph, icon_color), decorated],
+            |mut rendered| {
+                let field = rendered.pop().expect("the field");
+                let icon = rendered.pop().expect("the icon");
+                Box::new(
+                    RenderFlex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_spacing(16.0)
+                        .push(icon)
+                        .push_flex(FlexChild::expanded(field, 1)),
+                )
+            },
+        )
+    } else {
+        decorated
+    };
+
+    // Below the box: the note on the left, the counter on the right --
+    // upstream's helper/error and counter share the decorator's subtext row.
+    let note = error
+        .map(|text| (text, true))
+        .or(helper.map(|text| (text, false)));
+    if note.is_none() && counter.is_none() {
+        return body;
+    }
+    let note_widget = match note {
+        Some((text, is_error)) => {
+            let color = if is_error {
+                colors.danger
+            } else {
+                colors.muted
+            };
+            leaf(move || {
+                Text::new(text.clone())
+                    .with_size(LABEL_SIZE)
+                    .with_color(color)
+            })
+        }
+        None => leaf(Container::new),
+    };
+    let mut note_row = Vec::new();
+    note_row.push(note_widget);
+    if let Some(counter) = counter {
+        let muted = colors.muted;
+        note_row.push(leaf(move || {
+            Text::new(counter.clone())
+                .with_size(LABEL_SIZE)
+                .with_color(muted)
+        }));
+    }
+    let note_row = many(note_row, |mut rendered| {
+        let counter = if rendered.len() > 1 {
+            Some(rendered.pop().expect("the counter"))
+        } else {
+            None
+        };
+        let note = rendered.pop().expect("the note");
+        let mut flex = RenderFlex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_spacing(8.0)
+            .push_flex(FlexChild::expanded(note, 1));
+        if let Some(counter) = counter {
+            flex = flex.push(counter);
+        }
+        Box::new(flex)
+    });
+    column(vec![body, note_row], 4.0)
+}
+
 impl StatefulComponent for TextFormFieldDemo {
     type State = FormState;
 
@@ -285,17 +472,21 @@ impl StatefulComponent for TextFormFieldDemo {
     ) -> AnyWidget {
         let theme = theme_of(context);
         let base = ids::DEMO_LOCAL;
-        let fill = theme.surface_variant;
-        let outline = theme.outline;
-        let muted_color = theme.text_muted;
-        let danger = theme.danger;
-        let label_style = TextStyle {
-            font_weight: 600,
-            ..theme.body()
+        let colors = FieldColors {
+            fill: theme.surface_variant,
+            outline: theme.outline,
+            muted: theme.text_muted,
+            primary: theme.primary,
+            danger: theme.danger,
         };
         let note_style = TextStyle {
             font_size: theme.body_size - 2.0,
             ..theme.muted()
+        };
+        let text_style = {
+            let mut style = theme.body();
+            style.color = theme.text;
+            style
         };
 
         // A change handler that also re-validates, once a failed submit has
@@ -318,135 +509,174 @@ impl StatefulComponent for TextFormFieldDemo {
                 }
             };
 
+        // A focus listener that rebuilds the form: the decoration answers
+        // focus (the label and underline go primary), and the field's own
+        // session machinery marks only the field dirty.
+        let rebuild_on_focus = |handle: &StateHandle<FormState>| {
+            let handle = handle.clone();
+            move |_| {
+                handle.set_state(|_| {});
+            }
+        };
+
         let mut children: Vec<AnyWidget> = Vec::new();
+
+        // Upstream's app bar: `AppBar(automaticallyImplyLeading: false,
+        // title: Text(demoTextFieldTitle))`, on the demo theme's app-bar
+        // colours -- the same bar `grid_list_demo.rs` builds.
+        let (bar_fill, bar_ink) = MaterialDemoThemeData::app_bar_theme();
+        let title = GalleryLocalizations::en().demo_text_field_title();
+        children.push(leaf(move || {
+            Container::new()
+                .with_height(K_TOOLBAR_HEIGHT)
+                .with_color(bar_fill)
+                .with_padding(EdgeInsets::only(16.0, 0.0, 0.0, 0.0))
+                .with_child(Align::new(
+                    Alignment::CENTER_LEFT,
+                    Text::new(title)
+                        .with_size(20.0)
+                        .with_weight(500)
+                        .with_color(bar_ink),
+                ))
+        }));
 
         // Name. Upstream's `textCapitalization: words` has no counterpart.
         children.push(field_group(
             "Name*",
-            decoration_box(
-                stateful(
-                    TextField::new(base)
-                        .with_placeholder("What do people call you?")
-                        .with_on_changed(on_changed(
-                            handle.clone(),
-                            |s, text| s.name = text.to_string(),
-                            |e| &mut e.name,
-                            |s| validate_name(&s.name),
-                        )),
-                ),
-                true,
-                fill,
-                outline,
+            Some(catalog::icon::PERSON),
+            stateful(
+                TextField::new(base)
+                    .with_placeholder("What do people call you?")
+                    .with_on_focus_change(rebuild_on_focus(&handle))
+                    .with_on_changed(on_changed(
+                        handle.clone(),
+                        |s, text| s.name = text.to_string(),
+                        |e| &mut e.name,
+                        |s| validate_name(&s.name),
+                    )),
             ),
+            BoxKind::Filled,
+            rustflutter::focus::has_focus(base),
             state.errors.name.map(str::to_string),
             None,
-            danger,
-            label_style.clone(),
-            note_style.clone(),
+            None,
+            colors,
         ));
 
         // Phone number. The digits-only filter runs here; the US formatter
-        // runs at validation. Upstream's `prefixText: '+1 '` is dropped.
+        // runs at validation. Upstream's `prefixText: '+1 '` shows with the
+        // field focused or filled.
+        let phone_field = stateful(
+            TextField::new(base + 1)
+                .with_placeholder("Where can we reach you?")
+                .with_on_focus_change(rebuild_on_focus(&handle))
+                .with_on_changed(on_changed(
+                    handle.clone(),
+                    |s, text| s.phone = digits_only(text),
+                    |e| &mut e.phone,
+                    |s| validate_phone(&s.phone),
+                )),
+        );
+        let phone_focused = rustflutter::focus::has_focus(base + 1);
+        let phone_content: AnyWidget = if phone_focused || !state.phone.is_empty() {
+            let prefix_style = text_style.clone();
+            many(
+                vec![
+                    leaf(move || Text::new("+1 ").with_style(prefix_style.clone())),
+                    phone_field,
+                ],
+                |mut rendered| {
+                    let field = rendered.pop().expect("the field");
+                    let prefix = rendered.pop().expect("the prefix");
+                    Box::new(
+                        RenderFlex::row()
+                            .with_main_axis_size(MainAxisSize::Max)
+                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                            .push(prefix)
+                            .push_flex(FlexChild::expanded(field, 1)),
+                    )
+                },
+            )
+        } else {
+            phone_field
+        };
         children.push(field_group(
             "Phone number*",
-            decoration_box(
-                stateful(
-                    TextField::new(base + 1)
-                        .with_placeholder("Where can we reach you?")
-                        .with_on_changed(on_changed(
-                            handle.clone(),
-                            |s, text| s.phone = digits_only(text),
-                            |e| &mut e.phone,
-                            |s| validate_phone(&s.phone),
-                        )),
-                ),
-                true,
-                fill,
-                outline,
-            ),
+            Some(catalog::icon::PHONE),
+            phone_content,
+            BoxKind::Filled,
+            phone_focused,
             state.errors.phone.map(str::to_string),
             None,
-            danger,
-            label_style.clone(),
-            note_style.clone(),
+            None,
+            colors,
         ));
 
         // Email. Upstream validates nothing on it; neither does this.
         children.push(field_group(
             "Email",
-            decoration_box(
-                stateful(
-                    TextField::new(base + 2)
-                        .with_placeholder("Your email address")
-                        .with_on_changed({
-                            let handle = handle.clone();
-                            move |text: &str| {
-                                let text = text.to_string();
-                                handle.set_state(move |s| s.email = text);
-                            }
-                        }),
-                ),
-                true,
-                fill,
-                outline,
+            Some(catalog::icon::EMAIL),
+            stateful(
+                TextField::new(base + 2)
+                    .with_placeholder("Your email address")
+                    .with_on_focus_change(rebuild_on_focus(&handle))
+                    .with_on_changed({
+                        let handle = handle.clone();
+                        move |text: &str| {
+                            let text = text.to_string();
+                            handle.set_state(move |s| s.email = text);
+                        }
+                    }),
             ),
+            BoxKind::Filled,
+            rustflutter::focus::has_focus(base + 2),
             None,
             None,
-            danger,
-            label_style.clone(),
-            note_style.clone(),
+            None,
+            colors,
         ));
 
         // The disabled email field. `TextField` has no `enabled`, so the
         // field is its decoration and its hint, drawn muted, and takes no
         // input at all -- which is what `enabled: false` means upstream.
+        let muted_hint = note_style.clone();
         children.push(field_group(
             "Email",
-            decoration_box(
-                leaf(move || {
-                    Text::new("Your email address").with_style(TextStyle {
-                        color: muted_color,
-                        ..TextStyle::default()
-                    })
-                }),
-                true,
-                fill,
-                outline,
-            ),
+            Some(catalog::icon::EMAIL),
+            leaf(move || Text::new("Your email address").with_style(muted_hint.clone())),
+            BoxKind::Filled,
+            false,
             None,
             None,
-            danger,
-            label_style.clone(),
-            note_style.clone(),
+            None,
+            colors,
         ));
 
         // Life story: upstream's three-line outlined field.
         children.push(field_group(
             "Life story",
-            decoration_box(
-                stateful(
-                    TextField::new(base + 4)
-                        .with_placeholder(
-                            "Tell us about yourself (e.g., write down what you do or what hobbies you have)",
-                        )
-                        .with_max_lines(3),
-                ),
-                false,
-                fill,
-                outline,
+            None,
+            stateful(
+                TextField::new(base + 4)
+                    .with_placeholder(
+                        "Tell us about yourself (e.g., write down what you do or what hobbies you have)",
+                    )
+                    .with_on_focus_change(rebuild_on_focus(&handle))
+                    .with_max_lines(3),
             ),
+            BoxKind::Outlined,
+            rustflutter::focus::has_focus(base + 4),
             None,
             Some("Keep it short, this is just a demo.".to_string()),
-            danger,
-            label_style.clone(),
-            note_style.clone(),
+            None,
+            colors,
         ));
 
         // Salary: outlined, with the "USD" suffix alongside the field.
         let usd_style = note_style.clone();
         let salary = many(
             vec![
-                stateful(TextField::new(base + 5)),
+                stateful(TextField::new(base + 5).with_on_focus_change(rebuild_on_focus(&handle))),
                 leaf(move || Text::new("USD").with_style(usd_style.clone())),
             ],
             |mut rendered| {
@@ -464,47 +694,67 @@ impl StatefulComponent for TextFormFieldDemo {
         );
         children.push(field_group(
             "Salary",
-            decoration_box(salary, false, fill, outline),
+            None,
+            salary,
+            BoxKind::Outlined,
+            rustflutter::focus::has_focus(base + 5),
             None,
             None,
-            danger,
-            label_style.clone(),
-            note_style.clone(),
+            None,
+            colors,
         ));
 
-        // Password. Upstream's `maxLength: 8` is not enforceable here. The
-        // field's text is tracked as it changes: upstream's
-        // `_validatePassword` reads the field's value, which is this.
-        let toggle_label = if state.obscure_password {
-            "Show password"
-        } else {
-            "Hide password"
-        };
-        let password_field = TextField::new(base + 6).with_on_changed({
-            let handle = handle.clone();
-            move |text: &str| {
-                let text = text.to_string();
-                handle.set_state(move |s| s.password = text);
-            }
-        });
+        // Password. Upstream's `maxLength: 8` is not enforceable here, but
+        // its counter is drawn below. The field's text is tracked as it
+        // changes: upstream's `_validatePassword` reads the field's value,
+        // which is this. The visibility `IconButton` is the eye glyph inside
+        // the box.
+        let password_field = TextField::new(base + 6)
+            .with_on_focus_change(rebuild_on_focus(&handle))
+            .with_on_changed({
+                let handle = handle.clone();
+                move |text: &str| {
+                    let text = text.to_string();
+                    handle.set_state(move |s| s.password = text);
+                }
+            });
         let password_field: AnyWidget = if state.obscure_password {
             stateful(password_field.obscured())
         } else {
             stateful(password_field)
         };
-        let toggle = component(
-            Button::new(base + 8, toggle_label)
-                .with_style(ButtonVariant::Text)
-                .with_pressed(state.pressed == Some(base + 8))
-                .wired(
-                    handle.clone(),
-                    |s| &mut s.pressed,
-                    |s| {
-                        s.obscure_password = !s.obscure_password;
-                    },
-                ),
-        );
-        let password_row = many(vec![password_field, toggle], |mut rendered| {
+        let toggle_glyph = if state.obscure_password {
+            catalog::icon::VISIBILITY
+        } else {
+            catalog::icon::VISIBILITY_OFF
+        };
+        let toggle_color = colors.muted;
+        let toggle = leaf({
+            let handle = handle.clone();
+            move || {
+                Pointer::new(
+                    base + 8,
+                    Container::new()
+                        .with_size(40.0, 40.0)
+                        .with_child(Align::new(
+                            Alignment::CENTER,
+                            Text::new(toggle_glyph)
+                                .with_font_family(catalog::MATERIAL_ICONS)
+                                .with_size(24.0)
+                                .with_color(toggle_color),
+                        )),
+                )
+                .with_handlers(PointerHandlers::new().with_tap({
+                    let handle = handle.clone();
+                    move |_| {
+                        handle.set_state(|s| {
+                            s.obscure_password = !s.obscure_password;
+                        });
+                    }
+                }))
+            }
+        });
+        let password_content = many(vec![password_field, toggle], |mut rendered| {
             let toggle = rendered.pop().expect("the toggle");
             let field = rendered.pop().expect("the field");
             Box::new(
@@ -516,46 +766,48 @@ impl StatefulComponent for TextFormFieldDemo {
                     .push(toggle),
             )
         });
+        let password_counter = format!("{}/8", state.password.chars().count());
         children.push(field_group(
             "Password*",
-            decoration_box(password_row, true, fill, outline),
+            None,
+            password_content,
+            BoxKind::Filled,
+            rustflutter::focus::has_focus(base + 6),
             None,
             Some("No more than 8 characters.".to_string()),
-            danger,
-            label_style.clone(),
-            note_style.clone(),
+            Some(password_counter),
+            colors,
         ));
 
         // Re-type password: submitting it submits the form, upstream's
         // `onFieldSubmitted: (value) { _handleSubmitted(); }`.
+        let retype_counter = format!("{}/8", state.retype.chars().count());
         children.push(field_group(
             "Re-type password*",
-            decoration_box(
-                stateful(
-                    TextField::new(base + 7)
-                        .obscured()
-                        .with_on_changed(on_changed(
-                            handle.clone(),
-                            |s, text| s.retype = text.to_string(),
-                            |e| &mut e.retype,
-                            |s| validate_retype(&s.password, &s.retype),
-                        ))
-                        .with_on_submitted({
-                            let handle = handle.clone();
-                            move |_text: &str| {
-                                handle.set_state(|s| s.handle_submitted());
-                            }
-                        }),
-                ),
-                true,
-                fill,
-                outline,
+            None,
+            stateful(
+                TextField::new(base + 7)
+                    .obscured()
+                    .with_on_focus_change(rebuild_on_focus(&handle))
+                    .with_on_changed(on_changed(
+                        handle.clone(),
+                        |s, text| s.retype = text.to_string(),
+                        |e| &mut e.retype,
+                        |s| validate_retype(&s.password, &s.retype),
+                    ))
+                    .with_on_submitted({
+                        let handle = handle.clone();
+                        move |_text: &str| {
+                            handle.set_state(|s| s.handle_submitted());
+                        }
+                    }),
             ),
+            BoxKind::Filled,
+            rustflutter::focus::has_focus(base + 7),
             state.errors.retype.map(str::to_string),
             None,
-            danger,
-            label_style.clone(),
-            note_style.clone(),
+            Some(retype_counter),
+            colors,
         ));
 
         // Submit.
@@ -584,63 +836,6 @@ impl StatefulComponent for TextFormFieldDemo {
 
         column(children, 24.0)
     }
-}
-
-/// One field with its decoration: label above, note (error or helper) below.
-/// Upstream's `InputDecoration` spread around the field, per the module
-/// header. The error wins the note slot, as upstream's `errorText` replaces
-/// `helperText`.
-fn field_group(
-    label: &'static str,
-    field: AnyWidget,
-    error: Option<String>,
-    helper: Option<String>,
-    danger: Color,
-    label_style: TextStyle,
-    note_style: TextStyle,
-) -> AnyWidget {
-    let note = error
-        .map(|text| (text, true))
-        .or(helper.map(|text| (text, false)));
-    let mut rows = vec![
-        leaf(move || Text::new(label).with_style(label_style.clone())),
-        field,
-    ];
-    if let Some((text, is_error)) = note {
-        let mut style = note_style.clone();
-        if is_error {
-            style.color = danger;
-        }
-        rows.push(leaf(move || {
-            Text::new(text.clone()).with_style(style.clone())
-        }));
-    }
-    many(rows, |rendered| {
-        let mut flex = RenderFlex::column()
-            .with_main_axis_size(MainAxisSize::Min)
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_spacing(6.0);
-        for row in rendered {
-            flex = flex.push(row);
-        }
-        Box::new(flex)
-    })
-}
-
-/// The box a field sits in: filled, or outlined, per the field's upstream
-/// decoration.
-fn decoration_box(field: AnyWidget, filled: bool, fill: Color, outline: Color) -> AnyWidget {
-    single(field, move |inner| {
-        let mut container = rustflutter::widgets::Container::new()
-            .with_corner_radius(8.0)
-            .with_padding(EdgeInsets::symmetric(12.0, 10.0));
-        container = if filled {
-            container.with_color(fill)
-        } else {
-            container.with_border(1.0, outline)
-        };
-        Box::new(container.with_child(inner))
-    })
 }
 
 #[cfg(test)]

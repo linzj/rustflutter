@@ -2169,6 +2169,11 @@ pub struct TextField {
     max_length: Option<i32>,
     on_changed: Option<TextCallback>,
     on_submitted: Option<TextCallback>,
+    /// Called when the field gains or loses the keyboard. Upstream's
+    /// `Focus.onFocusChange`, which an ancestor decorating the field -- a
+    /// label that goes primary on focus -- needs to know to rebuild: the
+    /// session machinery below marks only the field dirty.
+    on_focus_change: Option<Rc<dyn Fn(bool)>>,
     /// Somewhere to publish this field's [`StateHandle`], so a widget composed
     /// around the field -- a search field's clear button -- can reach the
     /// field's text. Upstream's equivalent is handing both the field and the
@@ -2303,6 +2308,7 @@ impl TextField {
             max_length: None,
             on_changed: None,
             on_submitted: None,
+            on_focus_change: None,
             state_sink: None,
         }
     }
@@ -2358,6 +2364,14 @@ impl TextField {
     /// Called when the reader presses Enter on a single-line field.
     pub fn with_on_submitted(mut self, submitted: impl Fn(&str) + 'static) -> Self {
         self.on_submitted = Some(Rc::new(submitted));
+        self
+    }
+
+    /// Called when the field gains or loses the keyboard. Upstream's
+    /// `Focus.onFocusChange` on the `Focus` a `TextField` wraps its editable
+    /// in.
+    pub fn with_on_focus_change(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.on_focus_change = Some(Rc::new(handler));
         self
     }
 
@@ -2474,8 +2488,15 @@ impl StatefulComponent for TextField {
             ..TextInputConfiguration::default()
         };
         let focus_handle = field_handle.clone();
+        let user_on_focus_change = self.on_focus_change.clone();
         let max_lines = self.max_lines;
         let on_focus_change = move |has_focus: bool| {
+            // The application's listener runs first: it may rebuild an
+            // ancestor, and the session work below must see the field's own
+            // state undisturbed by it.
+            if let Some(listener) = &user_on_focus_change {
+                listener(has_focus);
+            }
             if !has_focus {
                 focus_handle.set_state(|state| {
                     if let Some(connection) = state.connection.take() {
