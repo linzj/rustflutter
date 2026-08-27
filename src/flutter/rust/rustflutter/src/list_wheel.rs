@@ -1275,6 +1275,29 @@ impl RenderListWheelViewport {
             .and_then(|d| d.transform)
     }
 
+    /// Upstream's `_topScrollMarginExtent`: **the wheel is anchored at its
+    /// middle, not at its top.**
+    ///
+    /// `indexToScrollOffset` is `index * itemExtent` for the layout, the
+    /// extents and the visible range alike, and the scroll offset that selects
+    /// an item is the offset that puts that item *under the selection band* --
+    /// which is the middle of the viewport, not its top edge. This is the
+    /// half-viewport that turns one into the other.
+    ///
+    /// Leaving it out is self-consistent and wrong: the wheel still scrolls,
+    /// and every row it shows is half a viewport away from the row it reports.
+    /// A 216-high date picker read six rows below its own answer.
+    fn top_scroll_margin_extent(&self) -> f32 {
+        -self.laid_out.height / 2.0 + self.item_extent / 2.0
+    }
+
+    /// Upstream's `_getUntransformedPaintingCoordinateY`: a child's layout
+    /// coordinate (`index * itemExtent`) as a y in the viewport, before the
+    /// cylinder bends it.
+    fn untransformed_painting_y(&self, layout_y: f32) -> f32 {
+        layout_y - self.top_scroll_margin_extent() - self.offset
+    }
+
     /// Upstream's `_shouldClipAtCurrentOffset`, which clips only when a child
     /// actually reaches past an edge -- so a wheel whose content fits pays for
     /// no clip layer at all.
@@ -1282,11 +1305,11 @@ impl RenderListWheelViewport {
         if self.render_children_outside_viewport {
             return false;
         }
-        let top = self.offset;
-        let bottom = self.offset + self.laid_out.height;
-        let first = self.first_index as f32 * self.item_extent;
-        let last = first + self.children.len() as f32 * self.item_extent;
-        first < top || last > bottom
+        let highest = self.untransformed_painting_y(0.0);
+        // `_maxEstimatedScrollExtent`: the last child's layout coordinate.
+        let max_extent =
+            (self.first_index + self.children.len()).saturating_sub(1) as f32 * self.item_extent;
+        highest < 0.0 || self.laid_out.height < highest + max_extent + self.item_extent
     }
 
     /// Where the projection's origin sits across the wheel. Upstream's
@@ -1335,8 +1358,8 @@ impl RenderListWheelViewport {
         for (i, child) in self.children.iter().enumerate() {
             let index = self.first_index + i;
             self.child_data.borrow_mut()[i].index = Some(index as i64);
-            let flat_center =
-                index as f32 * self.item_extent + self.item_extent / 2.0 - self.offset;
+            let flat_center = self.untransformed_painting_y(index as f32 * self.item_extent)
+                + self.item_extent / 2.0;
             let angle = angle_for(flat_center, height, self.diameter_ratio, self.squeeze);
             // The backside of the cylinder is not painted -- which is also why
             // `renderChildrenOutsideViewport` costs nothing at paint time: the
@@ -1466,7 +1489,7 @@ impl RenderBox for RenderListWheelViewport {
             let index = self.first_index + i;
             let child_offset = Offset::new(
                 (self.laid_out.width - child.size().width) / 2.0,
-                index as f32 * self.item_extent - self.offset,
+                self.untransformed_painting_y(index as f32 * self.item_extent),
             );
             let local = Offset::new(position.dx - child_offset.dx, position.dy - child_offset.dy);
             if child.hit_test(local, result) {
@@ -1490,7 +1513,7 @@ impl RenderBox for RenderListWheelViewport {
                 child,
                 Offset::new(
                     (self.laid_out.width - child.size().width) / 2.0,
-                    index as f32 * self.item_extent - self.offset,
+                    self.untransformed_painting_y(index as f32 * self.item_extent),
                 ),
             );
         }
@@ -2225,7 +2248,12 @@ mod viewport_tests {
         // perspective divide is 1 there -- so it must be painted through an
         // identity scale at its natural place. Anything else means the recorded
         // transform and the paint have drifted apart.
-        let w = laid_out(wheel(5));
+        //
+        // The offset is what says which child that is: the wheel is anchored at
+        // its middle, so `offset == index * itemExtent` centres `index`.
+        let mut w = wheel(5);
+        w.offset = 2.0 * 40.0;
+        let w = laid_out(w);
         paint_once(&w);
         let [a, b, c, d, e, f] = w.apply_paint_transform(2).expect("index 2 is centred");
         assert_eq!((b, c), (0.0, 0.0), "no rotation: the projection is a scale");
@@ -2235,11 +2263,43 @@ mod viewport_tests {
         assert!((f - 80.0).abs() < 1e-3, "and centred down it, got {f}");
     }
 
+    /// The offset that selects an item is the offset that puts it under the
+    /// selection band.
+    ///
+    /// Upstream's `_topScrollMarginExtent` is the whole of this, and leaving it
+    /// out is self-consistent and wrong: the wheel scrolls, the extents are
+    /// right, the visible range is right, and every row it *shows* is half a
+    /// viewport away from the row it *reports*. A 216-high Cupertino date
+    /// picker sitting on August showed November.
+    #[test]
+    fn the_offset_that_selects_an_item_is_the_offset_that_centres_it() {
+        for index in 0..5 {
+            let mut w = wheel(5);
+            w.offset = index as f32 * 40.0;
+            let w = laid_out(w);
+            paint_once(&w);
+            let placed = w
+                .apply_paint_transform(index)
+                .unwrap_or_else(|| panic!("index {index} is painted"));
+            // The child's top, from the recorded translation: half the
+            // viewport less half an item.
+            assert!(
+                (placed[5] - 80.0).abs() < 1e-3,
+                "index {index} should sit at the middle, got {}",
+                placed[5]
+            );
+            // And it is the one under the band, so it is not turned at all.
+            assert!((placed[0] - 1.0).abs() < 1e-3, "{placed:?}");
+        }
+    }
+
     #[test]
     fn a_child_away_from_the_centre_is_turned_and_shrunk() {
         // The other half: the projection has to actually do something, or the
         // test above would pass on a wheel that never turns.
-        let w = laid_out(wheel(5));
+        let mut w = wheel(5);
+        w.offset = 2.0 * 40.0;
+        let w = laid_out(w);
         paint_once(&w);
         let far = w.apply_paint_transform(0).expect("painted");
         assert!(far[0] < 1.0, "narrower, got {}", far[0]);
@@ -2268,13 +2328,13 @@ mod viewport_tests {
         // It moves the origin the projection turns about, not the children --
         // and the child at the centre is not turned at all, so it must not move.
         let mut centered = wheel(9);
-        centered.offset = 40.0 * 4.0 - 80.0;
+        centered.offset = 40.0 * 4.0;
         let centered = laid_out(centered);
         paint_once(&centered);
         let straight = centered.apply_paint_transform(4).expect("painted");
 
         let mut off = wheel(9);
-        off.offset = 40.0 * 4.0 - 80.0;
+        off.offset = 40.0 * 4.0;
         off.off_axis_fraction = 0.5;
         let off = laid_out(off);
         paint_once(&off);
@@ -2402,6 +2462,7 @@ mod viewport_tests {
         let mut w = wheel(5);
         w.magnification = 2.0;
         w.use_magnifier = false;
+        w.offset = 2.0 * 40.0;
         let w = laid_out(w);
         paint_once(&w);
         let plain = w.apply_paint_transform(2).expect("index 2 is centred");
@@ -2414,6 +2475,7 @@ mod viewport_tests {
         let mut on = wheel(5);
         on.magnification = 2.0;
         on.use_magnifier = true;
+        on.offset = 2.0 * 40.0;
         let on = laid_out(on);
         paint_once(&on);
         let magnified = on.apply_paint_transform(2).expect("index 2 is centred");
@@ -2424,7 +2486,13 @@ mod viewport_tests {
 
     #[test]
     fn a_wheel_whose_content_fits_asks_for_no_clip() {
-        let w = laid_out(wheel(5));
+        // Five 40-high items exactly fill a 200-high wheel -- but only at the
+        // offset that centres the middle one, because the wheel is anchored at
+        // its middle. At any other offset the run hangs over an edge and the
+        // clip is asked for, which the test below is the other half of.
+        let mut w = wheel(5);
+        w.offset = 2.0 * 40.0;
+        let w = laid_out(w);
         assert!(!w.should_clip_at_current_offset(), "5 * 40 == 200, exactly");
     }
 
@@ -2434,7 +2502,7 @@ mod viewport_tests {
         assert!(w.should_clip_at_current_offset(), "6 * 40 > 200");
 
         let mut scrolled = wheel(5);
-        scrolled.offset = 10.0;
+        scrolled.offset = 2.0 * 40.0 + 10.0;
         assert!(
             laid_out(scrolled).should_clip_at_current_offset(),
             "and content that fits but is scrolled reaches past the top"

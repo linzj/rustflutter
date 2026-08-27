@@ -2757,6 +2757,113 @@ pub struct CupertinoPickerState {
     snapping_to: Option<f32>,
 }
 
+/// Upstream `FixedExtentScrollController`, reduced to the two things a
+/// picker's owner uses it for: saying which item the wheel starts on, and
+/// driving the wheel afterwards.
+///
+/// It exists because upstream's date picker is not one wheel but several that
+/// have to move each other -- scrolling the hour column past noon animates the
+/// AM/PM column, and landing on February 30th animates the day column back to
+/// the 28th. A column's scroll position lives in its own state here, so the
+/// only way for the owner to reach it is a shared handle, which is what this
+/// is. The pattern is [`crate::theatre::PortalController`]'s: the widget
+/// carries one, the state attaches to it on the first build, and calls made
+/// before then are dropped rather than queued -- a wheel that is not on screen
+/// has nothing to animate.
+#[derive(Clone, Default)]
+pub struct FixedExtentScrollController {
+    inner: Rc<RefCell<FixedExtentScrollInner>>,
+}
+
+#[derive(Default)]
+struct FixedExtentScrollInner {
+    initial_item: usize,
+    item_extent: f32,
+    /// How many items the wheel has, and whether it loops -- what turns a
+    /// caller's index into the wheel index nearest where the wheel is now.
+    count: usize,
+    looping: bool,
+    attached: Option<StateHandle<CupertinoPickerState>>,
+}
+
+impl FixedExtentScrollController {
+    /// Upstream's `FixedExtentScrollController(initialItem:)`.
+    pub fn new(initial_item: usize) -> FixedExtentScrollController {
+        FixedExtentScrollController {
+            inner: Rc::new(RefCell::new(FixedExtentScrollInner {
+                initial_item,
+                item_extent: 0.0,
+                count: 0,
+                looping: false,
+                attached: None,
+            })),
+        }
+    }
+
+    pub fn initial_item(&self) -> usize {
+        self.inner.borrow().initial_item
+    }
+
+    /// Upstream's `hasClients`.
+    pub fn has_clients(&self) -> bool {
+        self.inner.borrow().attached.is_some()
+    }
+
+    /// Upstream's `animateToItem`. Does nothing while the wheel is not
+    /// mounted, which is upstream's `hasClients` guard at its call sites.
+    pub fn animate_to_item(&self, index: usize, micros: i64, curve: crate::animation::Curve) {
+        let (handle, extent, count, looping) = {
+            let inner = self.inner.borrow();
+            (
+                inner.attached.clone(),
+                inner.item_extent,
+                inner.count,
+                inner.looping,
+            )
+        };
+        let Some(handle) = handle else {
+            return;
+        };
+        handle.set_state(move |state| {
+            // On a looping wheel the caller's index names a *value*, not a
+            // place -- the same value is at every turn -- so the wheel goes to
+            // whichever turn is nearest, which is also the shortest way round.
+            let target = if looping && count > 0 {
+                let here = (state.scroll.offset / extent).round() as i64;
+                let turn = here.div_euclid(count as i64);
+                let candidates =
+                    [turn - 1, turn, turn + 1].map(|turn| turn * count as i64 + index as i64);
+                let nearest = candidates
+                    .into_iter()
+                    .filter(|candidate| *candidate >= 0)
+                    .min_by_key(|candidate| (candidate - here).abs())
+                    .unwrap_or(index as i64);
+                nearest as f32 * extent
+            } else {
+                index_to_scroll_offset(index, extent)
+            };
+            state.snapping_to = Some(target);
+            state.scroll.animate_to(target, micros, curve);
+        });
+    }
+
+    /// Called from the wheel's own build, which is the first moment there is a
+    /// state to drive.
+    fn attach(
+        &self,
+        handle: StateHandle<CupertinoPickerState>,
+        item_extent: f32,
+        count: usize,
+        looping: bool,
+    ) {
+        let inner = &mut *self.inner.borrow_mut();
+        inner.attached = Some(handle);
+        inner.item_extent = item_extent;
+        inner.count = count;
+        inner.looping = looping;
+    }
+}
+
 /// A wheel of fixed-extent items. Upstream's `CupertinoPicker` (picker.dart).
 ///
 /// The scroll is the crate's [`crate::scrolling::Scroll`]: drags move it
@@ -2790,8 +2897,17 @@ pub struct CupertinoPicker {
     /// shared axis.
     off_axis_fraction: f32,
     background_color: Option<Color>,
-    selection_overlay: bool,
+    /// Upstream's `selectionOverlay`, which defaults to a
+    /// `CupertinoPickerDefaultSelectionOverlay` capped on both edges and is
+    /// `null` for a picker that draws no band. A date picker passes a
+    /// differently capped one per column so the three read as one band.
+    selection_overlay: Option<CupertinoPickerDefaultSelectionOverlay>,
     initial_item: usize,
+    /// Upstream's `scrollController`. When one is given it, not
+    /// `initial_item`, says where the wheel starts.
+    scroll_controller: Option<FixedExtentScrollController>,
+    /// Upstream's `looping`: December is followed by January.
+    looping: bool,
     on_selected: Option<Rc<dyn Fn(usize)>>,
     /// The themed label color for [`CupertinoPicker::labels`] items, refreshed
     /// on every build; `None` for picker items the caller builds itself.
@@ -2819,8 +2935,10 @@ impl CupertinoPicker {
             use_magnifier: false,
             off_axis_fraction: 0.0,
             background_color: None,
-            selection_overlay: true,
+            selection_overlay: Some(CupertinoPickerDefaultSelectionOverlay::new()),
             initial_item: 0,
+            scroll_controller: None,
+            looping: false,
             on_selected: None,
             label_color: None,
         }
@@ -2893,10 +3011,30 @@ impl CupertinoPicker {
     }
 
     /// The selection highlight band. Upstream's `selectionOverlay`, which
-    /// defaults to `CupertinoPickerDefaultSelectionOverlay`; pass false for
-    /// `selectionOverlay: null`.
-    pub fn with_selection_overlay(mut self, on: bool) -> Self {
-        self.selection_overlay = on;
+    /// defaults to `CupertinoPickerDefaultSelectionOverlay`; pass `None` for
+    /// `selectionOverlay: null`, and a capped one for a column of a date
+    /// picker (see [`CupertinoPickerDefaultSelectionOverlay::for_column`]).
+    pub fn with_selection_overlay(
+        mut self,
+        overlay: Option<CupertinoPickerDefaultSelectionOverlay>,
+    ) -> Self {
+        self.selection_overlay = overlay;
+        self
+    }
+
+    /// Upstream's `offAxisFraction`: where the cylinder's axis sits across
+    /// this column, so that a row of columns appears to turn on one shared
+    /// axis.
+    pub fn with_off_axis_fraction(mut self, fraction: f32) -> Self {
+        self.off_axis_fraction = fraction;
+        self
+    }
+
+    /// Upstream's `onSelectedItemChanged`, for a caller whose callback is not
+    /// a state change on one handle -- a date picker's columns, which write
+    /// through their own state.
+    pub fn with_on_selected(mut self, on_selected: impl Fn(usize) + 'static) -> Self {
+        self.on_selected = Some(Rc::new(on_selected));
         self
     }
 
@@ -2904,6 +3042,66 @@ impl CupertinoPicker {
     pub fn with_initial_item(mut self, index: usize) -> Self {
         self.initial_item = index;
         self
+    }
+
+    /// Upstream's `scrollController`, for an owner that has to move this wheel
+    /// later -- a date picker's hour column moving its AM/PM column.
+    pub fn with_scroll_controller(mut self, controller: FixedExtentScrollController) -> Self {
+        self.scroll_controller = Some(controller);
+        self
+    }
+
+    /// Upstream's `looping`, which a date picker sets on its day, month, hour
+    /// and minute columns so that they have no visible ends.
+    ///
+    /// **Upstream's loop is infinite and this one is not.** Its
+    /// `ListWheelChildLoopingListDelegate` answers for every index there is,
+    /// negative ones included, and reports no child count at all; this crate's
+    /// wheel is a finite list with a scroll extent, so looping here is
+    /// [`CupertinoPicker::LOOPING_ITEMS`] items' worth of turns with the wheel
+    /// starting in the middle of them. A reader who drags for long enough
+    /// reaches an end; at thirty-two logical pixels an item that is some
+    /// hundreds of screens of dragging in one direction.
+    pub fn with_looping(mut self, looping: bool) -> Self {
+        self.looping = looping;
+        self
+    }
+
+    /// Roughly how many items a looping wheel lays out in total. See
+    /// [`CupertinoPicker::with_looping`].
+    pub const LOOPING_ITEMS: usize = 20_000;
+
+    /// How many items the wheel scrolls through, which is `count` unless it
+    /// loops.
+    fn wheel_count(&self) -> usize {
+        if self.looping && self.count > 0 {
+            self.turns() * self.count
+        } else {
+            self.count
+        }
+    }
+
+    fn turns(&self) -> usize {
+        (CupertinoPicker::LOOPING_ITEMS / self.count.max(1)).max(1)
+    }
+
+    /// The wheel index the caller's `initial_item` lands on: the same item,
+    /// half the turns in, so there is as much wheel above it as below.
+    fn wheel_initial(&self, item: usize) -> usize {
+        if self.looping && self.count > 0 {
+            self.turns() / 2 * self.count + item % self.count
+        } else {
+            item
+        }
+    }
+
+    /// The caller's index for a wheel index.
+    fn logical_index(&self, index: usize) -> usize {
+        if self.looping && self.count > 0 {
+            index % self.count
+        } else {
+            index
+        }
     }
 
     /// `select` is given the state and the index under the highlight band.
@@ -2926,9 +3124,16 @@ impl StatefulComponent for CupertinoPicker {
 
     fn initial_state(&self) -> CupertinoPickerState {
         let mut scroll = crate::scrolling::Scroll::new();
-        let last = self.count.saturating_sub(1);
+        let last = self.wheel_count().saturating_sub(1);
         scroll.set_extent(index_to_scroll_offset(last, self.item_extent), 0.0);
-        scroll.offset = index_to_scroll_offset(self.initial_item.min(last), self.item_extent);
+        // A `scrollController` outranks `initial_item`, as upstream's does:
+        // the two are the same argument, one held by the caller.
+        let initial = match &self.scroll_controller {
+            Some(controller) => controller.initial_item(),
+            None => self.initial_item,
+        };
+        scroll.offset =
+            index_to_scroll_offset(self.wheel_initial(initial).min(last), self.item_extent);
         CupertinoPickerState {
             scroll,
             viewport: Rc::new(Cell::new(0.0)),
@@ -2941,7 +3146,7 @@ impl StatefulComponent for CupertinoPicker {
     fn advance(&self, state: &mut CupertinoPickerState, frame_time_micros: i64) -> bool {
         // What layout measured, a frame late at most: upstream's
         // `applyNewDimensions`.
-        let last = self.count.saturating_sub(1);
+        let last = self.wheel_count().saturating_sub(1);
         let max = index_to_scroll_offset(last, self.item_extent);
         state.scroll.set_extent(max, state.viewport.get());
 
@@ -2976,6 +3181,7 @@ impl StatefulComponent for CupertinoPicker {
         let index = (state.scroll.offset / self.item_extent)
             .round()
             .clamp(0.0, last as f32) as usize;
+        let index = self.logical_index(index);
         if state.reported != Some(index) {
             state.reported = Some(index);
             if let Some(on_selected) = &self.on_selected {
@@ -2996,6 +3202,10 @@ impl StatefulComponent for CupertinoPicker {
         state
             .scroll
             .set_notification_sink(context.notification_sink());
+        // The owner's handle on this wheel, if it kept one.
+        if let Some(controller) = &self.scroll_controller {
+            controller.attach(handle.clone(), self.item_extent, self.count, self.looping);
+        }
         // Themed `labels` items: publish this build's label color before the
         // item closures are assembled below.
         if let Some(label_color) = &self.label_color {
@@ -3003,7 +3213,9 @@ impl StatefulComponent for CupertinoPicker {
         }
         let offset = state.scroll.offset;
         let extent = self.item_extent;
-        let count = self.count;
+        let count = self.wheel_count();
+        let logical_count = self.count;
+        let looping = self.looping;
         let diameter_ratio = self.diameter_ratio;
         let squeeze = self.squeeze;
         let magnification = self.magnification;
@@ -3065,7 +3277,14 @@ impl StatefulComponent for CupertinoPicker {
                 })
                 .with_tap(move |tap| {
                     handle.set_state(move |state| {
-                        let index = ((state.scroll.offset + tap.local_position.dy) / extent)
+                        // Back through `_getUntransformedPaintingCoordinateY`:
+                        // the wheel is anchored at its middle, so the layout
+                        // coordinate under the finger is the tap's y plus the
+                        // offset, less the half viewport the anchor is worth.
+                        let layout_y = state.scroll.offset + tap.local_position.dy
+                            - height_estimate / 2.0
+                            + extent / 2.0;
+                        let index = (layout_y / extent)
                             .round()
                             .clamp(0.0, count.saturating_sub(1) as f32);
                         let target = index * extent;
@@ -3081,7 +3300,12 @@ impl StatefulComponent for CupertinoPicker {
 
         let mut children: Vec<AnyWidget> = Vec::new();
         for index in first..=last {
-            children.push((self.build_item)(index));
+            let item = if looping && logical_count > 0 {
+                index % logical_count
+            } else {
+                index
+            };
+            children.push((self.build_item)(item));
         }
 
         let overlay_color = theme.resolve(CupertinoColors::TERTIARY_SYSTEM_FILL);
@@ -3098,7 +3322,14 @@ impl StatefulComponent for CupertinoPicker {
             let mut items: Vec<BoxedRender> = Vec::new();
             for (i, child) in rendered.into_iter().enumerate() {
                 let index = first + i;
-                let flat_center = index as f32 * extent + extent / 2.0 - offset;
+                // `_getUntransformedPaintingCoordinateY` plus half an item:
+                // the wheel is anchored at its middle (see
+                // `RenderListWheelViewport::top_scroll_margin_extent`), and
+                // this has to agree with what the render object will do or the
+                // dim lands on different rows than the magnifier.
+                let flat_center =
+                    index as f32 * extent + height_estimate / 2.0 - extent / 2.0 - offset
+                        + extent / 2.0;
                 let angle = angle_for(flat_center, height_estimate, diameter_ratio, squeeze);
                 let radius = height_estimate * diameter_ratio / 2.0;
                 let y_rel = flat_center - height_estimate / 2.0;
@@ -3137,20 +3368,27 @@ impl StatefulComponent for CupertinoPicker {
 
             let mut stack = RenderStack::new().with_fit(crate::render::StackFit::Expand);
             stack = stack.push(wheel);
-            if selection_overlay {
+            if let Some(overlay) = selection_overlay {
                 // `CupertinoPickerDefaultSelectionOverlay`: a centered band
-                // `itemExtent * magnification` tall, inset 9 on each side,
-                // corners rounded 8, in tertiarySystemFill -- and
-                // `IgnorePointer`, which the render-level equivalent of is
-                // `RenderIgnorePointer`. A non-positioned child under
-                // `StackFit::Expand` fills the stack, so `Center` puts the
-                // fixed-height band in the middle.
+                // `itemExtent * magnification` tall, inset 9 on the edges it
+                // caps, corners rounded 8 on those same edges, in
+                // tertiarySystemFill -- and `IgnorePointer`, which the
+                // render-level equivalent of is `RenderIgnorePointer`. A
+                // non-positioned child under `StackFit::Expand` fills the
+                // stack, so `Center` puts the fixed-height band in the middle.
+                //
+                // The caps are what let a date picker's three columns read as
+                // one band: see the type's own docs.
+                let (start_radius, end_radius) = overlay.radii();
                 stack = stack.push(crate::render::RenderIgnorePointer::new(Center::new(
                     Container::new()
                         .with_height(extent * magnification)
-                        .with_margin(EdgeInsets::symmetric(9.0, 0.0))
+                        .with_margin(overlay.margin())
                         .with_color(overlay_color)
-                        .with_corner_radius(8.0),
+                        .with_border_radius(crate::borders::BorderRadius::horizontal(
+                            crate::borders::Radius::circular(start_radius),
+                            crate::borders::Radius::circular(end_radius),
+                        )),
                 )));
             }
             let mut container = Container::new().with_child(stack);
@@ -6087,13 +6325,16 @@ mod tests {
         assert_eq!(size, Size::new(300.0, 216.0));
         // The layout published the viewport height for the next build.
         assert_eq!(wheel.viewport_sink.get(), 216.0);
-        // The child is centered horizontally; a tap on it hits it.
+        // The child is centered horizontally, and -- at offset 0, which is
+        // the offset that selects item 0 -- vertically too: the wheel is
+        // anchored at its middle, so the selected row sits under the band
+        // rather than at the top edge.
         let mut result = HitTestResult::new();
-        assert!(wheel.hit_test_children(Offset::new(150.0, 16.0), &mut result));
+        assert!(wheel.hit_test_children(Offset::new(150.0, 108.0), &mut result));
         assert!(!result.path.is_empty());
-        // Below the one child there is nothing to hit.
+        // Away from the one child there is nothing to hit.
         let mut miss = HitTestResult::new();
-        assert!(!wheel.hit_test_children(Offset::new(150.0, 100.0), &mut miss));
+        assert!(!wheel.hit_test_children(Offset::new(150.0, 16.0), &mut miss));
     }
 
     #[test]

@@ -38,6 +38,106 @@ use crate::theatre::{ModalHandle, OverlayHandle, show_modal};
 /// dimming says so; a menu is a choice among things you can already see.
 pub const DIALOG_BARRIER_COLOR: Color = Color::argb(0x8A, 0, 0, 0);
 
+/// Upstream `showCupertinoModalPopup`.
+///
+/// The popup is bottom-aligned over [`crate::cupertino_route::MODAL_BARRIER_COLOR`]
+/// and **slides up on a spring**, not a curve -- upstream's
+/// `_CupertinoModalPopupRoute.createSimulation`, whose reason
+/// [`crate::cupertino_route::CupertinoModalPopupRoute::create_simulation`]
+/// records: a sheet grabbed on the way up keeps moving from where it was.
+///
+/// It lives beside `showDialog` rather than in the Cupertino tier because it
+/// is the same shape of thing -- a route turned into a call on the theatre --
+/// and the tier it belongs to holds the *rules*
+/// ([`crate::cupertino_route`]'s header says so outright: geometry, durations
+/// and decisions, no widgets).
+pub fn show_cupertino_modal_popup(
+    overlay: Rc<OverlayHandle>,
+    content: impl Fn() -> AnyWidget + 'static,
+) -> Option<ModalHandle> {
+    // `barrierDismissible: true` and `barrierLabel: 'Dismiss'`, from
+    // `CupertinoModalPopupRoute::new`.
+    let route = crate::cupertino_route::CupertinoModalPopupRoute::new();
+    let barrier = ModalBarrier::new()
+        .with_color(
+            route
+                .popup
+                .modal
+                .barrier_color
+                .unwrap_or(Color::TRANSPARENT),
+        )
+        .with_semantics_label(
+            route
+                .popup
+                .modal
+                .barrier_label
+                .clone()
+                .unwrap_or_else(|| "Dismiss".to_string()),
+        );
+    let content: Rc<dyn Fn() -> AnyWidget> = Rc::new(content);
+    show_modal(overlay, barrier, move || {
+        crate::framework::stateful(CupertinoModalPopup {
+            content: Rc::clone(&content),
+        })
+    })
+}
+
+/// The sliding half of [`show_cupertino_modal_popup`]: upstream's
+/// `buildTransitions`, which is an `Align(bottomCenter)` around a
+/// `FractionalTranslation` from one whole height below to nothing.
+struct CupertinoModalPopup {
+    content: Rc<dyn Fn() -> AnyWidget>,
+}
+
+/// How far into the spring the sheet is. The simulation is stateless, so all
+/// that is kept is the clock.
+#[derive(Default)]
+struct CupertinoModalPopupState {
+    elapsed_micros: i64,
+    last_frame_micros: Option<i64>,
+}
+
+impl crate::framework::StatefulComponent for CupertinoModalPopup {
+    type State = CupertinoModalPopupState;
+
+    fn advance(&self, state: &mut CupertinoModalPopupState, frame_time_micros: i64) -> bool {
+        // Clamped for the same reason every on-demand animation in this crate
+        // clamps: the previous frame may be a page-load away.
+        const MAX_FRAME_MICROS: i64 = 50_000;
+        if let Some(previous) = state.last_frame_micros {
+            state.elapsed_micros += (frame_time_micros - previous).clamp(0, MAX_FRAME_MICROS);
+        }
+        state.last_frame_micros = Some(frame_time_micros);
+        !crate::physics::Simulation::is_done(
+            &crate::cupertino_route::CupertinoModalPopupRoute::new().create_simulation(0.0, true),
+            state.elapsed_micros as f32 / 1_000_000.0,
+        )
+    }
+
+    fn build(
+        &self,
+        state: &CupertinoModalPopupState,
+        _handle: crate::framework::StateHandle<CupertinoModalPopupState>,
+        _context: &mut crate::framework::BuildContext,
+    ) -> AnyWidget {
+        let route = crate::cupertino_route::CupertinoModalPopupRoute::new();
+        let simulation = route.create_simulation(0.0, true);
+        let progress =
+            crate::physics::Simulation::x(&simulation, state.elapsed_micros as f32 / 1_000_000.0)
+                .clamp(0.0, 1.0);
+        let offset = route.offset(progress);
+        many(vec![(self.content)()], move |mut rendered| {
+            RenderAlign::new(
+                Alignment::BOTTOM_CENTER,
+                crate::render::RenderFractionalTranslation::new(
+                    (offset.dx, offset.dy),
+                    rendered.pop().expect("the popup's content"),
+                ),
+            )
+        })
+    }
+}
+
 /// Upstream `showDialog`.
 ///
 /// The dialog is centred over a dimmed barrier, focus is confined to it, and

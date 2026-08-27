@@ -7,41 +7,40 @@
 //!
 //! Upstream's `CupertinoPickerDemo` is five `_Menu` rows -- Date, Time, Date
 //! and Time, Timer, Picker -- each opening a `showCupertinoModalPopup` bottom
-//! sheet (`_BottomPicker`, 216 high) with a wheel picker in it, and showing
-//! the picked value in the row. The wheels here are the framework's
-//! `CupertinoPicker`; the values land in [`PickerDemoState`] and the rows
-//! reformat on every change, as upstream's `setState` does.
+//! sheet (`_BottomPicker`, 216 high) with a picker in it, and showing the
+//! picked value in the row. So is this one: the first four sheets hold a
+//! [`rustflutter::CupertinoDatePicker`] or a
+//! [`rustflutter::CupertinoTimerPicker`], the fifth a plain
+//! [`rustflutter::CupertinoPicker`], and the sheet is put up by
+//! [`rustflutter::show_cupertino_modal_popup`].
 //!
-//! Divergences, each marked at its site:
+//! This file used to build the date, time and timer sheets out of rows of
+//! plain wheels -- one per field -- because the framework had no date picker;
+//! it had its own scrim and its own open flag, because there was no modal
+//! popup either. Both are gone.
 //!
-//! * `CupertinoDatePicker` and `CupertinoTimerPicker` are not part of the
-//!   framework's Cupertino tier (rustflutter/src/cupertino.rs ports only
-//!   `CupertinoPicker`), so the date/time/timer sheets are rows of
-//!   `CupertinoPicker` wheels -- one per field of the value -- rather than
-//!   upstream's single multi-column widget. The date-and-time sheet's first
-//!   column is a month wheel and a day wheel where upstream's
-//!   `CupertinoDatePickerMode.dateAndTime` shows formatted date strings.
-//! * The modal is a stage-local sheet over a scrim rather than a popup route:
-//!   there is no `showCupertinoModalPopup` machinery (cupertino.rs's module
-//!   docs: "overlays are the app's"), and the slide-up entrance animation is
-//!   not carried -- the sheet appears with the state change.
-//! * `DateTime.now()` stands in as UTC: the engine bridge has no local-time
-//!   query, the same substitution `pickers::Date::today` documents. The
-//!   initial date and time are therefore UTC's.
-//! * The sheet's `DefaultTextStyle` (22pt) is not carried: the framework's
-//!   `CupertinoPicker::labels` styles its items at text_theme.dart's
-//!   `_kDefaultPickerTextStyle` (21pt).
-//! * The stage is height-bounded ([`DEMO_HEIGHT`]); upstream's `ListView`
-//!   body is a fixed column, five rows never needing to scroll here.
+//! Divergences, each also marked at its site:
+//!
+//! * **`DateTime.now()` stands in as UTC.** The engine bridge has no
+//!   local-time query -- nothing in `services/` or the platform channels
+//!   reports a zone offset -- so the clock the demo opens on is UTC's, the
+//!   same substitution [`rustflutter::pickers::Date::today`] documents.
+//! * **The stage is height-bounded** ([`DEMO_HEIGHT`]); upstream's `ListView`
+//!   body fills the screen, and five rows never need to scroll here.
 
+use rustflutter::dialogs::show_cupertino_modal_popup;
 use rustflutter::framework::BuildContext;
 use rustflutter::gestures::PointerHandlers;
+use rustflutter::pickers::Date;
 use rustflutter::prelude::*;
 use rustflutter::render::{
-    Alignment, CrossAxisAlignment, FlexChild, MainAxisAlignment, MainAxisSize, RenderFlex,
-    StackPosition,
+    CrossAxisAlignment, FlexChild, MainAxisAlignment, MainAxisSize, RenderFlex,
 };
-use rustflutter::widgets::{Align, Pointer};
+use rustflutter::theatre::OverlayHandle;
+use rustflutter::widgets::Pointer;
+use rustflutter::{
+    CupertinoDatePicker, CupertinoDatePickerMode, CupertinoTimerPicker, PickerDateTime,
+};
 
 use crate::app::ids;
 use crate::l10n::gallery_localizations::GalleryLocalizations;
@@ -55,8 +54,8 @@ const BOTTOM_PICKER_HEIGHT: f32 = 216.0;
 /// `_Menu`'s height.
 const MENU_HEIGHT: f32 = 44.0;
 
-/// The wheels' item extent: upstream's `CupertinoPicker(itemExtent: 32.0)`,
-/// also `CupertinoDatePicker`'s `_kPickerItemExtent`.
+/// The weekday wheel's item extent: upstream's `CupertinoPicker(itemExtent:
+/// 32.0)` in `_buildPicker`.
 const ITEM_EXTENT: f32 = 32.0;
 
 /// `getDaysOfWeek`: `DateFormat.WEEKDAY` over the seven days from the current
@@ -71,7 +70,7 @@ const DAYS_OF_WEEK: [&str; 7] = [
     "Sunday",
 ];
 
-/// Full month names, for `DateFormat.yMMMMd` and the date wheels.
+/// Full month names, for `DateFormat.yMMMMd`.
 const MONTHS: [&str; 12] = [
     "January",
     "February",
@@ -92,88 +91,86 @@ const MONTHS_ABBR: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// The year wheel's absolute span. Upstream's date-mode year column runs the
-/// calendar's full range; two centuries is the window the wheel is given.
-const YEAR_MIN: i32 = 1900;
-const YEAR_MAX: i32 = 2100;
-
-/// Which row's sheet is open. Upstream's route stack holds at most one popup.
+/// Upstream's `_CupertinoPickerDemoState`: the five picked values.
+///
+/// Upstream's `Navigator` stack held the sixth thing this used to keep -- which
+/// sheet is open -- and the theatre holds it now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SheetKind {
-    Date,
-    Time,
-    DateTime,
-    Timer,
-    Weekday,
-}
-
-/// Upstream's `_CupertinoPickerDemoState`: the five picked values, plus which
-/// sheet is open (upstream's `Navigator` stack).
 struct PickerDemoState {
     /// `timer`, the countdown picker's value, in seconds.
-    timer: u64,
+    timer: i64,
     /// `date`, the date-mode picker's value.
-    date: Date,
-    /// `time`, as (hour of day, minute).
-    time: (u32, u32),
-    /// `dateTime`, as (date, hour of day, minute).
-    date_time: (Date, u32, u32),
+    date: PickerDateTime,
+    /// `time`, the time-mode picker's value.
+    time: PickerDateTime,
+    /// `dateTime`, the dateAndTime-mode picker's value.
+    date_time: PickerDateTime,
     /// `_selectedWeekday`.
     weekday: usize,
-    /// The open sheet, if any.
-    open: Option<SheetKind>,
 }
 
 impl Default for PickerDemoState {
     fn default() -> PickerDemoState {
-        // `DateTime.now()`, in UTC (see the header).
-        let seconds = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        let now = (seconds / 3600 % 24) as u32;
-        let minute = (seconds / 60 % 60) as u32;
+        // Upstream's three `DateTime.now()`s, in UTC (see the header).
+        let now = now_utc();
         PickerDemoState {
             timer: 0,
-            date: Date::today(),
-            time: (now, minute),
-            date_time: (Date::today(), now, minute),
+            date: now,
+            time: now,
+            date_time: now,
             weekday: 0,
-            open: None,
         }
     }
 }
 
-/// `DateFormat.yMMMMd().format`: "August 17, 2026".
-fn format_date(date: Date) -> String {
-    format!(
-        "{} {}, {}",
-        MONTHS[(date.month - 1) as usize],
-        date.day,
-        date.year
+/// `DateTime.now()`, as far as the engine bridge can answer it.
+fn now_utc() -> PickerDateTime {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    PickerDateTime::new(
+        Date::today(),
+        (seconds.div_euclid(3600).rem_euclid(24)) as u32,
+        (seconds.div_euclid(60).rem_euclid(60)) as u32,
     )
 }
 
-/// `DateFormat.jm().format`: "9:44 AM".
-fn format_time(hour: u32, minute: u32) -> String {
-    let (hour12, period) = hour12_and_period(hour);
-    format!("{hour12}:{minute:02} {period}")
+/// `DateFormat.yMMMMd().format`: "August 27, 2026".
+fn format_date(value: PickerDateTime) -> String {
+    format!(
+        "{} {}, {}",
+        MONTHS[(value.date.month - 1) as usize],
+        value.date.day,
+        value.date.year
+    )
 }
 
-/// `DateFormat.yMMMd().add_jm().format`: "Aug 17, 2026 9:44 AM".
-fn format_date_time(date: Date, hour: u32, minute: u32) -> String {
+/// `DateFormat.jm().format`: "1:40 PM".
+///
+/// The space before the day period is **U+202F**, a narrow no-break space, not
+/// an ordinary one: that is what CLDR's `en_US` `jm` pattern has used since
+/// release 42, and it is visibly narrower on the screen than the space in
+/// "Aug 27, 2026" beside it.
+fn format_time(value: PickerDateTime) -> String {
+    let (hour12, period) = hour12_and_period(value.hour);
+    format!("{hour12}:{:02}\u{202f}{period}", value.minute)
+}
+
+/// `DateFormat.yMMMd().add_jm().format`: "Aug 27, 2026 1:40 PM".
+fn format_date_time(value: PickerDateTime) -> String {
     format!(
         "{} {}, {} {}",
-        MONTHS_ABBR[(date.month - 1) as usize],
-        date.day,
-        date.year,
-        format_time(hour, minute),
+        MONTHS_ABBR[(value.date.month - 1) as usize],
+        value.date.day,
+        value.date.year,
+        format_time(value),
     )
 }
 
 /// Upstream's timer row: hours unpadded, minutes and seconds two digits
 /// (`timer.inHours` / `padLeft(2, '0')`).
-fn format_timer(seconds: u64) -> String {
+fn format_timer(seconds: i64) -> String {
     format!(
         "{}:{:02}:{:02}",
         seconds / 3600,
@@ -190,18 +187,6 @@ fn hour12_and_period(hour: u32) -> (u32, &'static str) {
         other => other,
     };
     (hour12, period)
-}
-
-/// The day wheel's length for a month, clamping a day that no longer fits --
-/// the same clamp upstream's date picker applies when February follows a
-/// 31-day month.
-fn clamp_day(date: Date) -> Date {
-    let days = rustflutter::pickers::days_in_month(date.year, date.month);
-    if date.day > days {
-        Date { day: days, ..date }
-    } else {
-        date
-    }
 }
 
 /// The demo body for the `cupertino-picker` slug. The Cupertino theme the
@@ -232,6 +217,12 @@ impl StatefulComponent for PickerDemo {
         let l10n = GalleryLocalizations::en();
         let label_color = theme.resolve(CupertinoColors::LABEL);
         let value_color = theme.resolve(CupertinoColors::INACTIVE_GRAY);
+        let background = theme.resolve(CupertinoColors::SYSTEM_BACKGROUND);
+        // `showCupertinoModalPopup` reaches the root navigator upstream, which
+        // is why its barrier covers the application rather than the page; the
+        // theatre's root overlay is the same surface. Taken here because the
+        // row's tap handler runs without a context.
+        let overlay = OverlayHandle::of(context);
 
         // The five rows, upstream's build order: date, time, dateAndTime,
         // countdown timer, picker.
@@ -242,26 +233,77 @@ impl StatefulComponent for PickerDemo {
                 format_date(state.date),
                 label_color,
                 value_color,
-                handle.clone(),
-                SheetKind::Date,
+                {
+                    let (overlay, handle) = (overlay.clone(), handle.clone());
+                    let initial = state.date;
+                    move || {
+                        let handle = handle.clone();
+                        show_sheet(&overlay, background, move || {
+                            let handle = handle.clone();
+                            stateful(
+                                CupertinoDatePicker::new(CupertinoDatePickerMode::Date)
+                                    .with_id(ids::DEMO_LOCAL + 50)
+                                    .with_initial(initial)
+                                    .with_background_color(background)
+                                    .with_on_changed(move |value| {
+                                        handle.set_state(move |state| state.date = value);
+                                    }),
+                            )
+                        });
+                    }
+                },
             ),
             menu_row(
                 ids::DEMO_LOCAL + 41,
                 l10n.demo_cupertino_picker_time().to_string(),
-                format_time(state.time.0, state.time.1),
+                format_time(state.time),
                 label_color,
                 value_color,
-                handle.clone(),
-                SheetKind::Time,
+                {
+                    let (overlay, handle) = (overlay.clone(), handle.clone());
+                    let initial = state.time;
+                    move || {
+                        let handle = handle.clone();
+                        show_sheet(&overlay, background, move || {
+                            let handle = handle.clone();
+                            stateful(
+                                CupertinoDatePicker::new(CupertinoDatePickerMode::Time)
+                                    .with_id(ids::DEMO_LOCAL + 60)
+                                    .with_initial(initial)
+                                    .with_background_color(background)
+                                    .with_on_changed(move |value| {
+                                        handle.set_state(move |state| state.time = value);
+                                    }),
+                            )
+                        });
+                    }
+                },
             ),
             menu_row(
                 ids::DEMO_LOCAL + 42,
                 l10n.demo_cupertino_picker_date_time().to_string(),
-                format_date_time(state.date_time.0, state.date_time.1, state.date_time.2),
+                format_date_time(state.date_time),
                 label_color,
                 value_color,
-                handle.clone(),
-                SheetKind::DateTime,
+                {
+                    let (overlay, handle) = (overlay.clone(), handle.clone());
+                    let initial = state.date_time;
+                    move || {
+                        let handle = handle.clone();
+                        show_sheet(&overlay, background, move || {
+                            let handle = handle.clone();
+                            stateful(
+                                CupertinoDatePicker::new(CupertinoDatePickerMode::DateAndTime)
+                                    .with_id(ids::DEMO_LOCAL + 70)
+                                    .with_initial(initial)
+                                    .with_background_color(background)
+                                    .with_on_changed(move |value| {
+                                        handle.set_state(move |state| state.date_time = value);
+                                    }),
+                            )
+                        });
+                    }
+                },
             ),
             menu_row(
                 ids::DEMO_LOCAL + 43,
@@ -269,8 +311,24 @@ impl StatefulComponent for PickerDemo {
                 format_timer(state.timer),
                 label_color,
                 value_color,
-                handle.clone(),
-                SheetKind::Timer,
+                {
+                    let (overlay, handle) = (overlay.clone(), handle.clone());
+                    let initial = state.timer;
+                    move || {
+                        let handle = handle.clone();
+                        show_sheet(&overlay, background, move || {
+                            let handle = handle.clone();
+                            stateful(
+                                CupertinoTimerPicker::new(initial)
+                                    .with_id(ids::DEMO_LOCAL + 80)
+                                    .with_background_color(background)
+                                    .with_on_changed(move |seconds| {
+                                        handle.set_state(move |state| state.timer = seconds);
+                                    }),
+                            )
+                        });
+                    }
+                },
             ),
             menu_row(
                 ids::DEMO_LOCAL + 44,
@@ -278,8 +336,31 @@ impl StatefulComponent for PickerDemo {
                 DAYS_OF_WEEK[state.weekday].to_string(),
                 label_color,
                 value_color,
-                handle.clone(),
-                SheetKind::Weekday,
+                {
+                    let (overlay, handle) = (overlay.clone(), handle.clone());
+                    let initial = state.weekday;
+                    move || {
+                        let handle = handle.clone();
+                        show_sheet(&overlay, background, move || {
+                            // `_buildPicker`'s `CupertinoPicker`: magnified and
+                            // squeezed as upstream sets it, the seven weekdays
+                            // centred.
+                            stateful(
+                                CupertinoPicker::labels(
+                                    ids::DEMO_LOCAL + 90,
+                                    ITEM_EXTENT,
+                                    DAYS_OF_WEEK.iter().map(|day| day.to_string()).collect(),
+                                )
+                                .with_background_color(background)
+                                .with_magnification(1.22)
+                                .with_squeeze(1.2)
+                                .with_magnifier(true)
+                                .with_initial_item(initial)
+                                .wired(handle.clone(), |state, index| state.weekday = index),
+                            )
+                        });
+                    }
+                },
             ),
         ];
 
@@ -296,56 +377,50 @@ impl StatefulComponent for PickerDemo {
             Box::new(column)
         });
 
-        let page = component(
+        component(
             CupertinoPageScaffold::new(body).with_navigation_bar(component(
                 // `automaticallyImplyLeading: false`: no back button.
                 CupertinoNavigationBar::new().with_middle(l10n.demo_cupertino_picker_title()),
             )),
-        );
-
-        // The open sheet, if any, over the page -- upstream's
-        // `showCupertinoModalPopup`, stage-local here (see the header).
-        match state.open {
-            None => page,
-            Some(kind) => {
-                let barrier: AnyWidget = {
-                    // cupertino/dialog.dart's `_kModalBarrierColor`, the
-                    // default barrier of `showCupertinoModalPopup`; a tap
-                    // dismisses, as the popup's does.
-                    let dismiss = handle.clone();
-                    leaf(move || {
-                        let tap = PointerHandlers::new().with_tap({
-                            let dismiss = dismiss.clone();
-                            move |_| {
-                                dismiss.set_state(|state| state.open = None);
-                            }
-                        });
-                        Pointer::new(
-                            ids::DEMO_LOCAL + 45,
-                            Container::new().with_color(Color(0x6604_040F)),
-                        )
-                        .with_handlers(tap)
-                    })
-                };
-                let sheet = bottom_picker(state, handle, &theme, kind);
-                many(vec![page, barrier, sheet], move |rendered| {
-                    let mut rendered = rendered.into_iter();
-                    let page = rendered.next().expect("three layers");
-                    let barrier = rendered.next().expect("three layers");
-                    let sheet = rendered.next().expect("three layers");
-                    Box::new(
-                        // `StackFit::Expand` so the sheet's bottom alignment
-                        // has the stage's size to align in.
-                        rustflutter::render::RenderStack::new()
-                            .with_fit(rustflutter::render::StackFit::Expand)
-                            .push_positioned(page, StackPosition::fill())
-                            .push_positioned(barrier, StackPosition::fill())
-                            .push(sheet),
-                    )
-                })
-            }
-        }
+        )
     }
+}
+
+/// Upstream's `_showDemoPicker`: the picker wrapped in `_BottomPicker` and
+/// handed to `showCupertinoModalPopup`.
+fn show_sheet(
+    overlay: &Option<std::rc::Rc<OverlayHandle>>,
+    background: Color,
+    picker: impl Fn() -> AnyWidget + 'static,
+) {
+    let Some(overlay) = overlay.clone() else {
+        return;
+    };
+    show_cupertino_modal_popup(overlay, move || bottom_picker(background, picker()));
+}
+
+/// `_BottomPicker`: the 216-high sheet on the theme's `systemBackground`,
+/// padded 6 at the top, holding the picker.
+///
+/// The `Pointer` around it is upstream's `GestureDetector(onTap: () {})`, whose
+/// comment is the whole of its purpose: "Blocks taps from propagating to the
+/// modal sheet and popping." Without it a tap on the sheet's own background
+/// reaches the barrier underneath and closes the sheet.
+fn bottom_picker(background: Color, picker: AnyWidget) -> AnyWidget {
+    single(picker, move |inner| {
+        Box::new(
+            Pointer::new(
+                ids::DEMO_LOCAL + 45,
+                Container::new()
+                    .with_height(BOTTOM_PICKER_HEIGHT)
+                    // `padding: const EdgeInsets.only(top: 6)`.
+                    .with_padding(EdgeInsets::only(0.0, 6.0, 0.0, 0.0))
+                    .with_color(background)
+                    .with_child(inner),
+            )
+            .with_handlers(PointerHandlers::new().with_tap(|_| {})),
+        )
+    })
 }
 
 /// `_Menu`: a 44-high row, hairlines top and bottom, the label on the leading
@@ -357,12 +432,9 @@ fn menu_row(
     value: String,
     label_color: Color,
     value_color: Color,
-    handle: StateHandle<PickerDemoState>,
-    kind: SheetKind,
+    open: impl Fn() + 'static,
 ) -> AnyWidget {
-    let handlers = PointerHandlers::new().with_tap(move |_| {
-        handle.set_state(move |state| state.open = Some(kind));
-    });
+    let handlers = PointerHandlers::new().with_tap(move |_| open());
     leaf(move || {
         // Upstream's `Border(top:, bottom:)` hairlines (width 0) are one
         // logical pixel here, cupertino.rs's hairline convention.
@@ -403,287 +475,17 @@ fn menu_row(
     })
 }
 
-/// `_BottomPicker` and its child: the 216-high sheet on the theme's
-/// `systemBackground`, bottom-aligned, holding the row's wheels.
-fn bottom_picker(
-    state: &PickerDemoState,
-    handle: StateHandle<PickerDemoState>,
-    theme: &CupertinoTheme,
-    kind: SheetKind,
-) -> AnyWidget {
-    let background = theme.resolve(CupertinoColors::SYSTEM_BACKGROUND);
-    let wheels = sheet_wheels(state, handle, background, kind);
-    single(wheels, move |inner| {
-        Box::new(Align::new(
-            Alignment::BOTTOM_CENTER,
-            Container::new()
-                .with_height(BOTTOM_PICKER_HEIGHT)
-                // `padding: const EdgeInsets.only(top: 6)`.
-                .with_padding(EdgeInsets::only(0.0, 6.0, 0.0, 0.0))
-                .with_color(background)
-                .with_child(inner),
-        ))
-    })
-}
-
-/// The open sheet's wheels, one `CupertinoPicker` per field of the row's
-/// value (see the header for the mapping from upstream's pickers).
-fn sheet_wheels(
-    state: &PickerDemoState,
-    handle: StateHandle<PickerDemoState>,
-    background: Color,
-    kind: SheetKind,
-) -> AnyWidget {
-    // One wheel: `CupertinoPicker::labels` at the shared extent, on the
-    // sheet's background, starting from the current value. `select` writes
-    // the picked index back, upstream's `onSelectedItemChanged`.
-    fn wheel(
-        id: u64,
-        labels: Vec<String>,
-        selected: usize,
-        background: Color,
-        handle: StateHandle<PickerDemoState>,
-        select: fn(&mut PickerDemoState, usize),
-    ) -> AnyWidget {
-        stateful(
-            CupertinoPicker::labels(id, ITEM_EXTENT, labels)
-                .with_background_color(background)
-                .with_initial_item(selected)
-                .wired(handle, select),
-        )
-    }
-
-    fn numbers(first: u32, last: u32, pad: bool) -> Vec<String> {
-        (first..=last)
-            .map(|n| {
-                if pad {
-                    format!("{n:02}")
-                } else {
-                    format!("{n}")
-                }
-            })
-            .collect()
-    }
-
-    let hour_labels = numbers(1, 12, false);
-    let minute_labels = numbers(0, 59, true);
-    let period_labels = vec!["AM".to_string(), "PM".to_string()];
-    let month_labels: Vec<String> = MONTHS.iter().map(|m| m.to_string()).collect();
-
-    let wheels: Vec<AnyWidget> = match kind {
-        // `CupertinoDatePickerMode.date`: month, day, year columns.
-        SheetKind::Date => {
-            let days = rustflutter::pickers::days_in_month(state.date.year, state.date.month);
-            vec![
-                wheel(
-                    ids::DEMO_LOCAL + 50,
-                    month_labels,
-                    (state.date.month - 1) as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        state.date = clamp_day(Date {
-                            month: index as u32 + 1,
-                            ..state.date
-                        });
-                    },
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 51,
-                    numbers(1, days, false),
-                    (state.date.day - 1) as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| state.date.day = index as u32 + 1,
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 52,
-                    (YEAR_MIN..=YEAR_MAX)
-                        .map(|year| format!("{year}"))
-                        .collect(),
-                    (state.date.year - YEAR_MIN).clamp(0, YEAR_MAX - YEAR_MIN) as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        state.date = clamp_day(Date {
-                            year: YEAR_MIN + index as i32,
-                            ..state.date
-                        });
-                    },
-                ),
-            ]
-        }
-        // `CupertinoDatePickerMode.time`: hour, minute, AM/PM columns.
-        SheetKind::Time => {
-            let (hour12, period) = hour12_and_period(state.time.0);
-            vec![
-                wheel(
-                    ids::DEMO_LOCAL + 53,
-                    hour_labels,
-                    (hour12 - 1) as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        let pm = state.time.0 >= 12;
-                        state.time.0 = (index as u32 + 1) % 12 + if pm { 12 } else { 0 };
-                    },
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 54,
-                    minute_labels,
-                    state.time.1 as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| state.time.1 = index as u32,
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 55,
-                    period_labels,
-                    (period == "PM") as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        let (hour12, _) = hour12_and_period(state.time.0);
-                        state.time.0 = hour12 % 12 + if index == 1 { 12 } else { 0 };
-                    },
-                ),
-            ]
-        }
-        // `CupertinoDatePickerMode.dateAndTime`: upstream's first column is
-        // formatted dates; here a month wheel and a day wheel (header).
-        SheetKind::DateTime => {
-            let (date, hour, minute) = state.date_time;
-            let days = rustflutter::pickers::days_in_month(date.year, date.month);
-            let (hour12, period) = hour12_and_period(hour);
-            vec![
-                wheel(
-                    ids::DEMO_LOCAL + 56,
-                    month_labels,
-                    (date.month - 1) as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        let (date, h, m) = state.date_time;
-                        state.date_time = (
-                            clamp_day(Date {
-                                month: index as u32 + 1,
-                                ..date
-                            }),
-                            h,
-                            m,
-                        );
-                    },
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 57,
-                    numbers(1, days, false),
-                    (date.day - 1) as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| state.date_time.0.day = index as u32 + 1,
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 58,
-                    hour_labels,
-                    (hour12 - 1) as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        let pm = state.date_time.1 >= 12;
-                        state.date_time.1 = (index as u32 + 1) % 12 + if pm { 12 } else { 0 };
-                    },
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 59,
-                    minute_labels,
-                    minute as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| state.date_time.2 = index as u32,
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 60,
-                    period_labels,
-                    (period == "PM") as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        let (hour12, _) = hour12_and_period(state.date_time.1);
-                        state.date_time.1 = hour12 % 12 + if index == 1 { 12 } else { 0 };
-                    },
-                ),
-            ]
-        }
-        // `CupertinoTimerPicker`: hour, minute, second columns; the minute
-        // and second wheels read two digits, as upstream's do.
-        SheetKind::Timer => {
-            let (hours, minutes, seconds) =
-                (state.timer / 3600, state.timer / 60 % 60, state.timer % 60);
-            vec![
-                wheel(
-                    ids::DEMO_LOCAL + 61,
-                    numbers(0, 23, false),
-                    hours as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        state.timer = index as u64 * 3600 + state.timer % 3600;
-                    },
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 62,
-                    numbers(0, 59, true),
-                    minutes as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        state.timer =
-                            state.timer / 3600 * 3600 + index as u64 * 60 + state.timer % 60;
-                    },
-                ),
-                wheel(
-                    ids::DEMO_LOCAL + 63,
-                    numbers(0, 59, true),
-                    seconds as usize,
-                    background,
-                    handle.clone(),
-                    |state, index| {
-                        state.timer = state.timer / 60 * 60 + index as u64;
-                    },
-                ),
-            ]
-        }
-        // `_buildPicker`'s `CupertinoPicker`: the seven weekdays,
-        // magnified and squeezed as upstream sets them.
-        SheetKind::Weekday => vec![stateful(
-            CupertinoPicker::labels(
-                ids::DEMO_LOCAL + 64,
-                ITEM_EXTENT,
-                DAYS_OF_WEEK.iter().map(|d| d.to_string()).collect(),
-            )
-            .with_background_color(background)
-            .with_magnification(1.22)
-            .with_squeeze(1.2)
-            .with_magnifier(true)
-            .with_initial_item(state.weekday)
-            .wired(handle.clone(), |state, index| state.weekday = index),
-        )],
-    };
-
-    many(wheels, move |rendered| {
-        let mut row = RenderFlex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-        for wheel in rendered {
-            row = row.push_flex(FlexChild::expanded(wheel, 1));
-        }
-        Box::new(row)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustflutter::cupertino_pickers::{
+        DATE_PICKER_HEIGHT, DATE_PICKER_ITEM_EXTENT, DATE_PICKER_MAGNIFICATION,
+        DATE_PICKER_PAD_SIZE, DATE_PICKER_SQUEEZE,
+    };
+
+    fn at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> PickerDateTime {
+        PickerDateTime::new(Date { year, month, day }, hour, minute)
+    }
 
     #[test]
     fn the_weekday_wheel_is_monday_through_sunday() {
@@ -696,45 +498,23 @@ mod tests {
 
     #[test]
     fn the_date_format_is_yMMMMd() {
-        assert_eq!(
-            format_date(Date {
-                year: 2026,
-                month: 8,
-                day: 17
-            }),
-            "August 17, 2026"
-        );
-        assert_eq!(
-            format_date(Date {
-                year: 2026,
-                month: 1,
-                day: 3
-            }),
-            "January 3, 2026"
-        );
+        assert_eq!(format_date(at(2026, 8, 17, 0, 0)), "August 17, 2026");
+        assert_eq!(format_date(at(2026, 1, 3, 0, 0)), "January 3, 2026");
     }
 
     #[test]
     fn the_time_format_is_jm() {
-        assert_eq!(format_time(9, 44), "9:44 AM");
-        assert_eq!(format_time(0, 5), "12:05 AM");
-        assert_eq!(format_time(12, 0), "12:00 PM");
-        assert_eq!(format_time(23, 59), "11:59 PM");
+        assert_eq!(format_time(at(2026, 8, 17, 9, 44)), "9:44\u{202f}AM");
+        assert_eq!(format_time(at(2026, 8, 17, 0, 5)), "12:05\u{202f}AM");
+        assert_eq!(format_time(at(2026, 8, 17, 12, 0)), "12:00\u{202f}PM");
+        assert_eq!(format_time(at(2026, 8, 17, 23, 59)), "11:59\u{202f}PM");
     }
 
     #[test]
     fn the_date_time_format_is_yMMMd_add_jm() {
         assert_eq!(
-            format_date_time(
-                Date {
-                    year: 2026,
-                    month: 8,
-                    day: 17
-                },
-                9,
-                44
-            ),
-            "Aug 17, 2026 9:44 AM"
+            format_date_time(at(2026, 8, 17, 9, 44)),
+            "Aug 17, 2026 9:44\u{202f}AM"
         );
     }
 
@@ -746,31 +526,6 @@ mod tests {
     }
 
     #[test]
-    fn the_day_clamps_when_the_month_shortens() {
-        // January 31, moved to February: upstream's day column shrinks and
-        // the date follows.
-        let date = clamp_day(Date {
-            year: 2026,
-            month: 2,
-            day: 31,
-        });
-        assert_eq!(
-            date,
-            Date {
-                year: 2026,
-                month: 2,
-                day: 28
-            }
-        );
-        let date = clamp_day(Date {
-            year: 2024,
-            month: 2,
-            day: 31,
-        });
-        assert_eq!(date.day, 29);
-    }
-
-    #[test]
     fn the_hour_wheels_round_trip_through_the_12_hour_clock() {
         for hour in 0..24 {
             let (hour12, period) = hour12_and_period(hour);
@@ -779,14 +534,22 @@ mod tests {
         }
     }
 
+    /// The sheet is exactly as tall as the picker inside it, which is what
+    /// makes `_BottomPicker`'s 216 and `_kPickerHeight`'s 216 the same number
+    /// rather than a coincidence.
     #[test]
-    fn only_one_sheet_is_open_at_a_time() {
-        let mut state = PickerDemoState::default();
-        assert_eq!(state.open, None);
-        state.open = Some(SheetKind::Weekday);
-        state.open = Some(SheetKind::Date);
-        assert_eq!(state.open, Some(SheetKind::Date));
-        state.open = None;
-        assert_eq!(state.open, None);
+    fn the_sheet_is_the_pickers_own_height() {
+        assert_eq!(BOTTOM_PICKER_HEIGHT, DATE_PICKER_HEIGHT);
+    }
+
+    /// The demo's own wheel is a generic picker and the other four are date
+    /// pickers, which are denser: upstream's `_kSqueeze` is 1.25 against the
+    /// 1.2 this demo asks for, and its magnification 2.35/2.1 against 1.22.
+    #[test]
+    fn the_weekday_wheel_is_not_a_date_pickers_wheel() {
+        assert_eq!(ITEM_EXTENT, DATE_PICKER_ITEM_EXTENT);
+        assert!(DATE_PICKER_SQUEEZE > 1.2);
+        assert!(DATE_PICKER_MAGNIFICATION < 1.22);
+        assert_eq!(DATE_PICKER_PAD_SIZE, 12.0);
     }
 }

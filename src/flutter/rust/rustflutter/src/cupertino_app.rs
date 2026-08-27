@@ -368,13 +368,187 @@ impl DefaultCupertinoLocalizations {
     }
 
     /// Upstream `datePickerMediumDate`, the other use of the weekday list.
+    ///
+    /// The day is `padRight(2)`, not `padLeft`: a single-digit day carries a
+    /// **trailing** space, so "Fri Aug 1 " is as wide as "Fri Aug 31" and the
+    /// column does not shuffle as the wheel turns. The same layout-inside-a-
+    /// translation as [`DefaultCupertinoLocalizations::date_picker_day_of_month`].
     pub fn date_picker_medium_date(week_day: u32, month: usize, day: u32) -> String {
         format!(
-            "{} {} {day}",
+            "{} {} {:<2}",
+            DefaultCupertinoLocalizations::SHORT_WEEKDAYS
+                [(week_day - DefaultCupertinoLocalizations::MONDAY) as usize],
+            DefaultCupertinoLocalizations::SHORT_MONTHS[month - 1],
+            day
+        )
+    }
+
+    /// Upstream `datePickerHour`, which is `hour.toString()` -- **unpadded**,
+    /// where the minute beside it is padded to two. A twelve-hour clock reads
+    /// "9:05", not "09:05".
+    pub fn date_picker_hour(hour: u32) -> String {
+        hour.to_string()
+    }
+
+    /// Upstream `datePickerMinute`: `padLeft(2, '0')`.
+    pub fn date_picker_minute(minute: u32) -> String {
+        format!("{minute:02}")
+    }
+
+    pub const ANTE_MERIDIEM_ABBREVIATION: &'static str = "AM";
+    pub const POST_MERIDIEM_ABBREVIATION: &'static str = "PM";
+
+    /// Upstream `todayLabel`, which the `dateAndTime` date column shows in
+    /// place of today's date.
+    pub const TODAY_LABEL: &'static str = "Today";
+
+    /// Upstream `timerPickerHour`/`timerPickerMinute`/`timerPickerSecond`:
+    /// all three are `toString()`, **none of them padded** -- a countdown's
+    /// columns carry their own unit labels, so there is nothing to line up
+    /// against.
+    pub fn timer_picker_hour(hour: u32) -> String {
+        hour.to_string()
+    }
+
+    pub fn timer_picker_minute(minute: u32) -> String {
+        minute.to_string()
+    }
+
+    pub fn timer_picker_second(second: u32) -> String {
+        second.to_string()
+    }
+
+    /// Upstream `timerPickerHourLabel`, **the only one of the three that is
+    /// plural-sensitive**: `hour == 1 ? 'hour' : 'hours'`. The other two are
+    /// abbreviations with a full stop and do not inflect.
+    pub fn timer_picker_hour_label(hour: u32) -> &'static str {
+        if hour == 1 { "hour" } else { "hours" }
+    }
+
+    pub fn timer_picker_minute_label(_minute: u32) -> &'static str {
+        "min."
+    }
+
+    pub fn timer_picker_second_label(_second: u32) -> &'static str {
+        "sec."
+    }
+}
+
+/// Upstream `CupertinoLocalizationEn`, the English member of
+/// `flutter_localizations`' `GlobalCupertinoLocalizations`.
+///
+/// # Why there are two of these
+///
+/// [`DefaultCupertinoLocalizations`] above is the class in `packages/flutter`,
+/// and it is what an application gets when it installs **no** localisation
+/// delegates. Every real application installs `GlobalCupertinoLocalizations`,
+/// and the strings differ where it matters most to a picker: the default class
+/// writes an hour as `hour.toString()`, and this one runs it through
+/// `intl.DateFormat('HH')` -- so a date picker shows `01` under one and `1`
+/// under the other. The gallery installs the delegate, so these are the
+/// strings on its screen, and they are the ones [`crate::cupertino_pickers`]
+/// reads.
+///
+/// The formats are the skeletons `_GlobalCupertinoLocalizationsDelegate.
+/// loadFormats` builds, resolved for `en_US`. This crate compiles one locale,
+/// so they are resolved once here rather than looked up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CupertinoLocalizationEn;
+
+impl CupertinoLocalizationEn {
+    /// `intl.DateFormat.y` -- the year, unpadded.
+    pub fn date_picker_year(year_index: i32) -> String {
+        year_index.to_string()
+    }
+
+    /// `_fullYearFormat.dateSymbols.MONTHS[monthIndex - 1]`, which for English
+    /// is the same list [`DefaultCupertinoLocalizations`] carries.
+    pub fn date_picker_month(month_index: usize) -> &'static str {
+        DefaultCupertinoLocalizations::MONTHS[month_index - 1]
+    }
+
+    /// `intl.DateFormat.d` for the day, with `intl.DateFormat.E` in front of
+    /// it when a weekday is asked for -- **no leading or trailing spaces**,
+    /// where the default class bakes them into the string.
+    pub fn date_picker_day_of_month(day_index: u32, week_day: Option<u32>) -> String {
+        match week_day {
+            Some(week_day) => format!(
+                "{} {day_index}",
+                DefaultCupertinoLocalizations::SHORT_WEEKDAYS
+                    [(week_day - DefaultCupertinoLocalizations::MONDAY) as usize]
+            ),
+            None => day_index.to_string(),
+        }
+    }
+
+    /// `intl.DateFormat.MMMEd`, which for `en_US` is `EEE, MMM d` -- **with a
+    /// comma**, where the default class's hand-written version has none and
+    /// pads the day instead.
+    pub fn date_picker_medium_date(week_day: u32, month: usize, day: u32) -> String {
+        format!(
+            "{}, {} {day}",
             DefaultCupertinoLocalizations::SHORT_WEEKDAYS
                 [(week_day - DefaultCupertinoLocalizations::MONDAY) as usize],
             DefaultCupertinoLocalizations::SHORT_MONTHS[month - 1]
         )
+    }
+
+    /// `intl.DateFormat('HH')`: **two digits**. Upstream's own comment on the
+    /// field explains the odd skeleton -- "We don't want any additional
+    /// decoration here. The am/pm is handled in the date picker. We just want
+    /// an hour number localized" -- with a TODO pointing at the intl issue
+    /// that would let it ask for the hour alone.
+    pub fn date_picker_hour(hour: u32) -> String {
+        format!("{hour:02}")
+    }
+
+    /// `intl.DateFormat('mm')`: two digits.
+    pub fn date_picker_minute(minute: u32) -> String {
+        format!("{minute:02}")
+    }
+
+    /// `intl.DateFormat('HH')` again -- a countdown's hours are padded even
+    /// though its minutes and seconds are not.
+    pub fn timer_picker_hour(hour: u32) -> String {
+        format!("{hour:02}")
+    }
+
+    /// `intl.DateFormat.m`: the minute alone, unpadded.
+    pub fn timer_picker_minute(minute: u32) -> String {
+        minute.to_string()
+    }
+
+    /// `intl.DateFormat.s`: the second alone, unpadded.
+    pub fn timer_picker_second(second: u32) -> String {
+        second.to_string()
+    }
+
+    /// The four strings the generated `CupertinoLocalizationEn` carries
+    /// verbatim, which are the same as the default class's.
+    pub const ANTE_MERIDIEM_ABBREVIATION: &'static str = "AM";
+    pub const POST_MERIDIEM_ABBREVIATION: &'static str = "PM";
+    pub const TODAY_LABEL: &'static str = "Today";
+
+    pub fn timer_picker_hour_label(hour: u32) -> &'static str {
+        DefaultCupertinoLocalizations::timer_picker_hour_label(hour)
+    }
+
+    pub fn timer_picker_minute_label(minute: u32) -> &'static str {
+        DefaultCupertinoLocalizations::timer_picker_minute_label(minute)
+    }
+
+    pub fn timer_picker_second_label(second: u32) -> &'static str {
+        DefaultCupertinoLocalizations::timer_picker_second_label(second)
+    }
+
+    /// Both orders are the generated class's, and both are the default
+    /// class's too.
+    pub fn date_picker_date_order() -> DatePickerDateOrder {
+        DatePickerDateOrder::Mdy
+    }
+
+    pub fn date_picker_date_time_order() -> DatePickerDateTimeOrder {
+        DatePickerDateTimeOrder::DateTimeDayPeriod
     }
 }
 
@@ -393,6 +567,72 @@ mod tests {
     ];
 
     // -- Three copies of one function, already out of step --------------------------
+
+    // -- Two English localisations, and where they disagree --------------------------
+
+    #[test]
+    fn the_delegate_pads_a_picker_hour_and_the_default_class_does_not() {
+        // The difference an application sees the moment it installs
+        // `GlobalCupertinoLocalizations`, and the reason
+        // `cupertino_pickers` reads the delegate's strings: a date picker
+        // shows `01` under one and `1` under the other.
+        assert_eq!(DefaultCupertinoLocalizations::date_picker_hour(1), "1");
+        assert_eq!(CupertinoLocalizationEn::date_picker_hour(1), "01");
+        assert_eq!(CupertinoLocalizationEn::date_picker_hour(12), "12");
+
+        // A countdown's hours are padded and its minutes and seconds are not,
+        // in the delegate; the default class pads none of the three.
+        assert_eq!(CupertinoLocalizationEn::timer_picker_hour(5), "05");
+        assert_eq!(CupertinoLocalizationEn::timer_picker_minute(5), "5");
+        assert_eq!(CupertinoLocalizationEn::timer_picker_second(5), "5");
+        assert_eq!(DefaultCupertinoLocalizations::timer_picker_hour(5), "5");
+    }
+
+    #[test]
+    fn the_delegates_medium_date_has_a_comma_and_the_default_classs_has_padding() {
+        // `intl.DateFormat.MMMEd` against a string written out by hand: the
+        // one place the two Englishes differ by punctuation rather than by
+        // width.
+        assert_eq!(
+            CupertinoLocalizationEn::date_picker_medium_date(4, 8, 27),
+            "Thu, Aug 27"
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_medium_date(4, 8, 27),
+            "Thu Aug 27"
+        );
+        // And the default class's `padRight(2)`, which is what keeps its own
+        // column from shuffling: a one-digit day carries a trailing space.
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_medium_date(4, 8, 1),
+            "Thu Aug 1 "
+        );
+    }
+
+    #[test]
+    fn only_the_hour_label_of_a_countdown_inflects() {
+        assert_eq!(
+            DefaultCupertinoLocalizations::timer_picker_hour_label(1),
+            "hour"
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::timer_picker_hour_label(2),
+            "hours"
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::timer_picker_hour_label(0),
+            "hours"
+        );
+        // The other two are abbreviations with a full stop, and do not.
+        assert_eq!(
+            DefaultCupertinoLocalizations::timer_picker_minute_label(1),
+            "min."
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::timer_picker_second_label(1),
+            "sec."
+        );
+    }
 
     #[test]
     fn a_horizontal_list_gets_a_scrollbar_here_and_none_in_a_material_app() {

@@ -264,16 +264,21 @@ pub use cupertino::{
     CupertinoActivityIndicator, CupertinoAlertAction, CupertinoAlertDialog, CupertinoButton,
     CupertinoButtonSize, CupertinoColors, CupertinoContextMenu, CupertinoContextMenuAction,
     CupertinoContextMenuController, CupertinoContextMenuSheet, CupertinoDynamicColor,
-    CupertinoNavigationBar, CupertinoPageScaffold, CupertinoPicker, CupertinoScrollbar,
-    CupertinoSearchTextField, CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch,
-    CupertinoTabBar, CupertinoTabItem, CupertinoTabScaffold, CupertinoTheme,
-    CupertinoUserInterfaceLevel, CupertinoUserInterfaceLevelData, cupertino_theme_of,
+    CupertinoNavigationBar, CupertinoPageScaffold, CupertinoPicker,
+    CupertinoPickerDefaultSelectionOverlay, CupertinoScrollbar, CupertinoSearchTextField,
+    CupertinoSegmentedControl, CupertinoSlider, CupertinoSwitch, CupertinoTabBar, CupertinoTabItem,
+    CupertinoTabScaffold, CupertinoTheme, CupertinoUserInterfaceLevel,
+    CupertinoUserInterfaceLevelData, FixedExtentScrollController, cupertino_theme_of,
+};
+pub use cupertino_pickers::{
+    CupertinoDatePicker, CupertinoDatePickerMode, CupertinoTimerPicker, CupertinoTimerPickerMode,
+    PickerDateTime,
 };
 pub use curves2d::{CatmullRomCurve, CatmullRomSpline, Curve2D, Curve2DSample, Interval, Split};
 pub use decoration::{BoxDecoration, Decoration, FlutterLogoDecoration, FlutterLogoStyle};
 pub use dialogs::{
-    DialogCloser, show_date_picker, show_date_range_picker, show_dialog, show_dialog_with,
-    show_time_picker,
+    DialogCloser, show_cupertino_modal_popup, show_date_picker, show_date_range_picker,
+    show_dialog, show_dialog_with, show_time_picker,
 };
 pub use direction::{TextDirection, current_direction, direction_of, directionality};
 pub use drag_feedback::{
