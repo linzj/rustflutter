@@ -224,8 +224,8 @@ impl crate::framework::Component for Scope {
         provide(
             extended,
             self.child
-                .borrow_mut()
-                .take()
+                .borrow()
+                .clone()
                 .expect("a scope builds its child once"),
         )
     }

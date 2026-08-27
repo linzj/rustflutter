@@ -613,7 +613,7 @@ impl Component for PopupMenuButton {
         let id = self.id;
         let handlers = self.handlers.clone();
         let enabled = self.enabled;
-        let child = self.child.borrow_mut().take().unwrap_or_else(|| {
+        let child = self.child.borrow().clone().unwrap_or_else(|| {
             let mut style = theme.body();
             if !enabled {
                 style.color = theme.text.with_alpha(0x61);

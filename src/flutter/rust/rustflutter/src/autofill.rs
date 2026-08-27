@@ -227,8 +227,8 @@ impl Component for AutofillGroup {
 
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
         provide(AutofillScopeHandle(Rc::clone(&self.state)), child)
     }

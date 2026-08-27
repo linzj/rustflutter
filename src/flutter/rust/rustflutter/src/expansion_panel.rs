@@ -400,7 +400,7 @@ impl Component for ExpansionPanelList {
                 },
             );
             bodies.push(if expanded[index] {
-                panel.body.borrow_mut().take()
+                panel.body.borrow().clone()
             } else {
                 None
             });

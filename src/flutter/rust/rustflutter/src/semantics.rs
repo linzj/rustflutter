@@ -1725,8 +1725,8 @@ impl Semantics {
     pub fn build(self) -> AnyWidget {
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
         let id = self.id;
         let properties = self.properties;
@@ -2002,8 +2002,8 @@ impl Component for AutoSemantics {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
         let mut annotation = Semantics::new(
             AUTO_BASE.wrapping_add(context.element().index() as i32),

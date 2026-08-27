@@ -208,6 +208,17 @@ pub trait RenderWidget: 'static {
 }
 
 /// A widget with its concrete type erased.
+///
+/// Cheap to clone, and that is load-bearing rather than a convenience. An
+/// element is rebuilt by running `build` on the widget it is already holding
+/// -- that is what a `set_state` or an inherited value changing does, and it is
+/// what upstream's `Element.rebuild` does too. Upstream can afford it because a
+/// Dart widget holds `final Widget child` and reading a field is free; a
+/// component here has to hand its child *out* of a `&self` build, so if that
+/// were a move the second build would find nothing and replace the subtree with
+/// `Empty`. Sharing the widget makes handing it out repeatable, which is the
+/// property the element machinery was written against.
+#[derive(Clone)]
 pub struct AnyWidget {
     inner: WidgetKind,
     type_id: TypeId,
@@ -225,9 +236,10 @@ pub struct AnyWidget {
     listener: Option<ListenerRegistration>,
 }
 
+#[derive(Clone)]
 enum WidgetKind {
-    Component(Box<dyn ComponentObject>),
-    Render(Box<dyn RenderWidgetObject>),
+    Component(Rc<dyn ComponentObject>),
+    Render(Rc<dyn RenderWidgetObject>),
 }
 
 impl AnyWidget {
@@ -379,7 +391,7 @@ pub fn component<C: Component>(widget: C) -> AnyWidget {
     AnyWidget {
         type_id: TypeId::of::<C>(),
         key: widget.key(),
-        inner: WidgetKind::Component(Box::new(StatelessObject(widget))),
+        inner: WidgetKind::Component(Rc::new(StatelessObject(widget))),
         global_key: None,
         provided: None,
         listener: None,
@@ -391,7 +403,7 @@ pub fn stateful<C: StatefulComponent>(widget: C) -> AnyWidget {
     AnyWidget {
         type_id: TypeId::of::<C>(),
         key: widget.key(),
-        inner: WidgetKind::Component(Box::new(StatefulObject(widget))),
+        inner: WidgetKind::Component(Rc::new(StatefulObject(widget))),
         global_key: None,
         provided: None,
         listener: None,
@@ -403,7 +415,7 @@ pub fn render_widget<W: RenderWidget>(widget: W) -> AnyWidget {
     AnyWidget {
         type_id: TypeId::of::<W>(),
         key: widget.key(),
-        inner: WidgetKind::Render(Box::new(RenderObjectWidget(widget))),
+        inner: WidgetKind::Render(Rc::new(RenderObjectWidget(widget))),
         global_key: None,
         provided: None,
         listener: None,
@@ -570,9 +582,10 @@ where
     }
 
     fn children(&self) -> Vec<AnyWidget> {
-        // The widget is consumed exactly once per rebuild, so taking is safe;
-        // AnyWidget is not Clone because the closures inside it are not.
-        self.child.borrow_mut().take().into_iter().collect()
+        // Cloned rather than taken: an element rebuilds by running this again
+        // on the widget it already holds, and a taken child is gone by then.
+        // See AnyWidget.
+        self.child.borrow().clone().into_iter().collect()
     }
 
     fn create_render(&self, mut children: Vec<BoxedRender>) -> BoxedRender {
@@ -632,7 +645,7 @@ where
     }
 
     fn children(&self) -> Vec<AnyWidget> {
-        std::mem::take(&mut *self.children.borrow_mut())
+        self.children.borrow().clone()
     }
 
     fn create_render(&self, children: Vec<BoxedRender>) -> BoxedRender {
@@ -738,7 +751,7 @@ pub struct Provider<T: 'static> {
 
 impl<T: 'static> RenderWidget for Provider<T> {
     fn children(&self) -> Vec<AnyWidget> {
-        self.child.borrow_mut().take().into_iter().collect()
+        self.child.borrow().clone().into_iter().collect()
     }
 
     fn create_render(&self, mut children: Vec<BoxedRender>) -> BoxedRender {
@@ -962,7 +975,7 @@ struct ListenerWidget {
 
 impl RenderWidget for ListenerWidget {
     fn children(&self) -> Vec<AnyWidget> {
-        self.child.borrow_mut().take().into_iter().collect()
+        self.child.borrow().clone().into_iter().collect()
     }
 
     fn create_render(&self, mut children: Vec<BoxedRender>) -> BoxedRender {

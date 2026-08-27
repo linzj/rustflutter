@@ -286,8 +286,8 @@ impl Component for MergeableMaterial {
                         self.border_radius(index, index == 0, index + 1 == count, openness);
                     let child = slice
                         .child
-                        .borrow_mut()
-                        .take()
+                        .borrow()
+                        .clone()
                         .unwrap_or_else(|| leaf(|| crate::widgets::Empty));
                     plans.push((0.0, Some(slice.color.unwrap_or(surface)), false, radius));
                     widgets.push(child);

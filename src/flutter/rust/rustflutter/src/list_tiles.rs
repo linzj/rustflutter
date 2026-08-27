@@ -679,7 +679,7 @@ impl Component for ControlTile {
         );
         let slots = self.slots();
         let control = self.control_widget();
-        let secondary = self.secondary.borrow_mut().take();
+        let secondary = self.secondary.borrow().clone();
 
         let mut list = crate::components::ListTile::new(self.title.clone())
             .with_selected_color(self.control_active_color(_context))

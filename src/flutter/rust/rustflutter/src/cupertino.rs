@@ -1662,7 +1662,7 @@ impl Component for CupertinoAlertDialog {
         let theme = cupertino_theme_of(context);
         let title = self.title.clone();
         let content = self.content.clone();
-        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        let actions = self.actions.borrow().clone();
         let surface = theme.resolve(DIALOG_COLOR);
         let divider_color = theme.resolve(CupertinoColors::SEPARATOR);
         let label = theme.resolve(CupertinoColors::LABEL);
@@ -2064,7 +2064,7 @@ impl Component for CupertinoNavigationBar {
         let theme = cupertino_theme_of(context);
         let background = self.background_color.unwrap_or(theme.bar_background_color);
         let middle = self.middle.clone();
-        let trailing = self.trailing.borrow_mut().take();
+        let trailing = self.trailing.borrow().clone();
         let back = self.back.clone();
         let back_handlers = self.back_handlers.clone();
         let primary = theme.primary_color;
@@ -2439,12 +2439,8 @@ impl Component for CupertinoPageScaffold {
         let background = self
             .background_color
             .unwrap_or(theme.scaffold_background_color);
-        let bar = self.navigation_bar.borrow_mut().take();
-        let body = self
-            .body
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| leaf(|| Empty));
+        let bar = self.navigation_bar.borrow().clone();
+        let body = self.body.borrow().clone().unwrap_or_else(|| leaf(|| Empty));
         // The bar has already moved the page past the status bar, so the body
         // must not do it again -- the same MediaQuery reduction
         // [`crate::components::Scaffold`] makes.
@@ -2511,14 +2507,10 @@ impl Component for CupertinoTabScaffold {
             .unwrap_or(theme.scaffold_background_color);
         let tab_bar = self
             .tab_bar
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| Empty));
-        let body = self
-            .body
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| leaf(|| Empty));
+        let body = self.body.borrow().clone().unwrap_or_else(|| leaf(|| Empty));
 
         many(vec![body, tab_bar], move |rendered| {
             let mut rendered = rendered.into_iter();
@@ -4337,7 +4329,7 @@ impl Component for CupertinoContextMenuSheet {
         let theme = cupertino_theme_of(context);
         let background = theme.resolve(CONTEXT_MENU_BACKGROUND);
         let border = theme.resolve(CONTEXT_MENU_BORDER);
-        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        let actions = self.actions.borrow().clone();
         many(actions, move |rendered| {
             let mut column = Column::new().with_main_axis_size(MainAxisSize::Min);
             let mut first = true;

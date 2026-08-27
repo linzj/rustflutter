@@ -1049,8 +1049,8 @@ impl Component for RestorationScope {
         let parent = RestorationScope::maybe_of(context);
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
 
         // A null id, or no parent bucket to claim from, and nothing is
@@ -1102,8 +1102,8 @@ impl Component for RootRestorationScope {
     fn build(&self, _context: &mut BuildContext) -> AnyWidget {
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
         if !self.is_ready() {
             // Upstream's blank container. Not the child without a bucket: a

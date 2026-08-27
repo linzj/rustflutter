@@ -362,8 +362,8 @@ impl Component for Material {
         let material = crate::theme::ThemeData::of(context);
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| crate::widgets::Empty));
         let colour = self.effective_color(&material);
         // The renderer's shadow table is indexed by whole elevation steps, as

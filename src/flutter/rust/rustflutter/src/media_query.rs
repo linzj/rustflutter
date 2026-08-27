@@ -322,8 +322,8 @@ impl Component for RescaleText {
         let data = media_query_of(context);
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| Empty));
         MediaQuery::new(data.clamp_text_scale(self.min, self.max), child)
     }
@@ -510,8 +510,8 @@ impl Component for SafeArea {
         };
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| Empty));
         let inner = data.remove_padding(self.left, self.top, self.right, self.bottom);
         crate::framework::single(MediaQuery::new(inner, child), move |child| {

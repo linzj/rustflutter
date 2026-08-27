@@ -148,8 +148,8 @@ impl Component for Drawer {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| crate::widgets::Empty));
         // Upstream's `Drawer.build`: the width and the background come off
         // `DrawerTheme.of(context)` and then off `_DrawerDefaultsM3`, whose
@@ -286,8 +286,8 @@ impl Component for DrawerHeader {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| crate::widgets::Empty));
         let status_bar_height = crate::media_query::padding_of(context).top;
         // Upstream's `Divider.createBorderSide(context)`, which is the same

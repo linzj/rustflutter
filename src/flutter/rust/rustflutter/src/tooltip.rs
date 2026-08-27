@@ -137,7 +137,7 @@ impl crate::framework::Component for Tooltip {
             id: self.id,
             controller: self.controller.clone(),
             anchor: self.anchor.clone(),
-            child: RefCell::new(self.child.borrow_mut().take()),
+            child: RefCell::new(self.child.borrow().clone()),
             bubble,
             vertical_offset: self.vertical_offset,
             prefer_below: self.prefer_below,
@@ -334,11 +334,7 @@ impl crate::framework::StatefulComponent for TooltipHost {
             .controller
             .clone()
             .expect("initial_state ran before the first build");
-        let child = self
-            .child
-            .borrow_mut()
-            .take()
-            .expect("a tooltip has a child");
+        let child = self.child.borrow().clone().expect("a tooltip has a child");
 
         let show = controller.clone();
         let hide = controller.clone();

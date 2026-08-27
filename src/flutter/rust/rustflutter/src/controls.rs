@@ -895,7 +895,7 @@ impl Component for Dialog {
             .clone()
             .unwrap_or_else(|| theme.muted());
 
-        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        let actions = self.actions.borrow().clone();
         let has_actions = !actions.is_empty();
 
         let mut children = vec![leaf(move || {
@@ -1014,8 +1014,8 @@ impl Component for BottomSheet {
         let title = self.title.clone();
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| Empty));
         let surface = theme.surface;
         let outline = theme.outline;
@@ -1204,7 +1204,7 @@ impl Component for Banner {
             .map(|padding| padding.resolve(crate::direction::current_direction()))
             .unwrap_or(EdgeInsets::symmetric(spacing * 2.0, spacing * 1.5));
 
-        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        let actions = self.actions.borrow().clone();
         let has_actions = !actions.is_empty();
         let mut children = vec![leaf(move || {
             Text::new(message.clone()).with_style(body.clone())
@@ -1284,7 +1284,7 @@ impl Component for GridList {
         let columns = self.columns;
         let spacing = self.spacing;
         let aspect = self.aspect_ratio;
-        let children = std::mem::take(&mut *self.children.borrow_mut());
+        let children = self.children.borrow().clone();
 
         many(children, move |rendered| {
             let mut column = RenderFlex::column()
@@ -1605,8 +1605,8 @@ impl Component for TooltipTrigger {
         let handlers = self.handlers();
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| Empty));
         // Upstream wraps the child in a `_ExclusiveMouseRegion` around a
         // `Listener(onPointerDown:)`; the trigger gestures here arrive through
@@ -1729,8 +1729,8 @@ impl Component for Section {
         let title = self.title.clone();
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| Empty));
         let spacing = theme.spacing;
         let caption = TextStyle {
@@ -2235,7 +2235,7 @@ impl Component for SimpleDialog {
         let title = self.title.clone();
         let title_style = theme.title();
         let background = self.background_color.unwrap_or(theme.surface);
-        let children = std::mem::take(&mut *self.children.borrow_mut());
+        let children = self.children.borrow().clone();
 
         many(children, move |boxed| {
             let mut column = Column::new()
@@ -2387,9 +2387,9 @@ impl Component for AlertDialog {
         let content_padding = AlertDialog::scaled(AlertDialog::CONTENT_PADDING, scale);
         let actions_padding = AlertDialog::scaled(AlertDialog::ACTIONS_PADDING, scale);
 
-        let icon = self.icon.borrow_mut().take();
+        let icon = self.icon.borrow().clone();
         let has_icon = icon.is_some();
-        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        let actions = self.actions.borrow().clone();
         let action_count = actions.len();
         let mut children = Vec::new();
         children.extend(icon);

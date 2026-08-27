@@ -858,7 +858,7 @@ impl StatefulComponent for OverlayRoot {
             host: Rc::clone(&state.host),
         });
         let page =
-            self.page.borrow_mut().take().unwrap_or_else(|| {
+            self.page.borrow().clone().unwrap_or_else(|| {
                 crate::framework::leaf(|| RenderRef::new(crate::widgets::Empty))
             });
         let stage = state.stage.clone();

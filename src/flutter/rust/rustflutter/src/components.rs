@@ -788,8 +788,8 @@ impl Component for Card {
         let padding = self.padding.unwrap_or(EdgeInsets::all(theme.spacing * 2.0));
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| Empty));
         // Upstream `Card.build`: `color`, `elevation` and `shape` come off
         // `CardTheme.of(context)` before the control's own defaults.
@@ -1747,7 +1747,7 @@ impl Component for AppBar {
         let theme = theme_of(context);
         let title = self.title.clone();
         let subtitle = self.subtitle.clone();
-        let trailing = self.trailing.borrow_mut().take();
+        let trailing = self.trailing.borrow().clone();
         // The bar's own background is what should extend under the status bar,
         // not the page behind it, so this is padding *inside* the surface
         // rather than a `SafeArea` wrapped around it. Upstream reaches the same
@@ -2006,13 +2006,9 @@ impl Component for Scaffold {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
         let background = theme.background;
-        let app_bar = self.app_bar.borrow_mut().take();
-        let body = self
-            .body
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| leaf(|| Empty));
-        let drawer = self.drawer.borrow_mut().take();
+        let app_bar = self.app_bar.borrow().clone();
+        let body = self.body.borrow().clone().unwrap_or_else(|| leaf(|| Empty));
+        let drawer = self.drawer.borrow().clone();
         // A drawer nobody opened is nothing at all: upstream's closed
         // `DrawerController` builds a `SizedBox.shrink` on desktop (the
         // edge-drag strip it would install on mobile is not ported; see
@@ -2270,8 +2266,8 @@ impl Component for ListTile {
         // target that ignores what it is told.
         let id = self.enabled.then_some(self.id).flatten();
         let handlers = self.handlers.clone();
-        let leading = self.leading.borrow_mut().take();
-        let trailing = self.trailing.borrow_mut().take();
+        let leading = self.leading.borrow().clone();
+        let trailing = self.trailing.borrow().clone();
         let spacing = theme.spacing;
         let radius = theme.radius;
         // Upstream's `ListTile.build`: the content padding, the gap between
@@ -2630,7 +2626,7 @@ impl Component for Badge {
         let text_color = self.text_color.unwrap_or(resolved.text_color);
         let label = self.label.clone();
         let visible = self.is_label_visible;
-        let child = self.child.borrow_mut().take();
+        let child = self.child.borrow().clone();
         let small = resolved.small_size;
         let large = resolved.large_size;
         let padding = resolved.padding;
@@ -2948,12 +2944,12 @@ impl Component for MaterialBanner {
 
         let content = self
             .content
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| leaf(|| crate::widgets::Empty));
-        let leading = self.leading.borrow_mut().take();
+        let leading = self.leading.borrow().clone();
         let has_leading = leading.is_some();
-        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        let actions = self.actions.borrow().clone();
         let action_count = actions.len();
 
         let mut children = vec![content];
@@ -6365,7 +6361,7 @@ impl Component for CircleAvatar {
         // two, and with nothing else deciding the smaller end is what is
         // drawn. An unbounded maximum is exactly that case.
         let diameter = self.min_diameter();
-        let child = self.child.borrow_mut().take().or_else(|| {
+        let child = self.child.borrow().clone().or_else(|| {
             let label = self.label.clone()?;
             let mut style = self
                 .label_style(&material)

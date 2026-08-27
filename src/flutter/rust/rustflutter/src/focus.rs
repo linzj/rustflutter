@@ -1536,8 +1536,8 @@ impl Component for Focus {
             .unwrap_or_default();
         let child = self
             .child
-            .borrow_mut()
-            .take()
+            .borrow()
+            .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
         // Anything focusable below this is inside it, and says so by reading
         // what this publishes.
