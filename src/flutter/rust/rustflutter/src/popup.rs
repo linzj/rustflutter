@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::direction::TextDirection;
-use crate::framework::{AnyWidget, many};
+use crate::framework::{AnyWidget, BuildContext, ThemeCapture, many};
 use crate::menu::popup_menu_offset;
 use crate::modal_barrier::ModalBarrier;
 use crate::render::{EdgeInsets, Offset, RenderRef, Size};
@@ -132,7 +132,13 @@ impl PopupMenuButton {
     /// Opening is a call rather than a flag because a menu is a modal: it goes
     /// up over everything, it takes the presses, and it comes down when it is
     /// dismissed. [`ModalHandle`] is what a caller keeps.
-    pub fn build(self) -> (AnyWidget, PopupMenuOpener) {
+    ///
+    /// `context` is the button's, and is read for one thing: the themes in
+    /// scope here. The menu is built in the overlay, which is not below them --
+    /// a light page inside a dark application would otherwise open a dark menu
+    /// over itself. Upstream's `showMenu` takes the same capture at the same
+    /// place (`InheritedTheme.capture(from: context, ...)`).
+    pub fn build(self, context: &BuildContext) -> (AnyWidget, PopupMenuOpener) {
         let PopupMenuButton {
             anchor,
             child,
@@ -163,6 +169,7 @@ impl PopupMenuButton {
             padding,
             direction,
             barrier,
+            themes: context.capture_themes(),
             open: Rc::new(RefCell::new(None)),
         };
         (button, opener)
@@ -177,6 +184,9 @@ pub struct PopupMenuOpener {
     padding: EdgeInsets,
     direction: TextDirection,
     barrier: ModalBarrier,
+    /// The themes the button was built under, to be put back around the menu
+    /// in the overlay. Upstream's `CapturedThemes`, held by the route.
+    themes: ThemeCapture,
     open: Rc<RefCell<Option<ModalHandle>>>,
 }
 
@@ -193,8 +203,12 @@ impl PopupMenuOpener {
         let anchor = self.anchor.clone();
         let menu = Rc::clone(&self.menu);
         let place = menu_placement(self.padding, self.direction);
+        // Inside the anchoring, so the themes wrap the menu itself and not the
+        // positioner: what is wrapped is what upstream's route wraps, the thing
+        // being built in the overlay.
+        let themes = self.themes.clone();
         let handle = show_modal(overlay, self.barrier.clone(), move || {
-            anchored(anchor.clone(), Rc::clone(&place), (menu)())
+            anchored(anchor.clone(), Rc::clone(&place), themes.wrap((menu)()))
         });
         let opened = handle.is_some();
         *self.open.borrow_mut() = handle;
@@ -306,7 +320,7 @@ mod tests {
             fn build(&self, context: &mut BuildContext) -> AnyWidget {
                 *self.overlay.borrow_mut() = OverlayHandle::of(context);
                 let (button, opener) =
-                    PopupMenuButton::new(leaf(40.0, 20.0), || leaf(120.0, 90.0)).build();
+                    PopupMenuButton::new(leaf(40.0, 20.0), || leaf(120.0, 90.0)).build(context);
                 *self.opener.borrow_mut() = Some(opener);
                 let inset = self.inset;
                 many(vec![button], move |mut rendered| {
@@ -347,6 +361,73 @@ mod tests {
         tree.rebuild_dirty();
         assert!(opener.is_open());
         assert!(menu_offset(&laid_out(&mut tree)).is_some());
+    }
+
+    #[test]
+    fn the_menu_is_drawn_in_the_button_s_theme_not_the_overlay_s() {
+        // The bug this answers, seen on a device: the gallery's demo pages
+        // publish a light theme *below* the application's overlay, so a menu
+        // pushed into that overlay was built under the application's dark
+        // theme and opened as a dark card over a light page. Upstream's
+        // `showMenu` captures at the button (`InheritedTheme.capture`) and
+        // wraps the route in what it caught; so does `PopupMenuButton::build`.
+        let seen: Rc<RefCell<Option<crate::engine::Color>>> = Rc::new(RefCell::new(None));
+        let opener_slot: Rc<RefCell<Option<PopupMenuOpener>>> = Rc::new(RefCell::new(None));
+        let overlay_slot: Rc<RefCell<Option<Rc<OverlayHandle>>>> = Rc::new(RefCell::new(None));
+
+        /// The menu's content, which reports the theme it was built under.
+        struct Probe(Rc<RefCell<Option<crate::engine::Color>>>);
+
+        impl Component for Probe {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = Some(crate::components::theme_of(context).background);
+                leaf(120.0, 90.0)
+            }
+        }
+
+        struct Page {
+            seen: Rc<RefCell<Option<crate::engine::Color>>>,
+            opener: Rc<RefCell<Option<PopupMenuOpener>>>,
+            overlay: Rc<RefCell<Option<Rc<OverlayHandle>>>>,
+        }
+
+        impl Component for Page {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.overlay.borrow_mut() = OverlayHandle::of(context);
+                let seen = Rc::clone(&self.seen);
+                let (button, opener) = PopupMenuButton::new(leaf(40.0, 20.0), move || {
+                    crate::framework::component(Probe(Rc::clone(&seen)))
+                })
+                .build(context);
+                *self.opener.borrow_mut() = Some(opener);
+                button
+            }
+        }
+
+        // The overlay is above the theme, exactly as the application's is
+        // above a demo page's.
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(crate::framework::provide(
+            crate::components::Theme::light(),
+            crate::framework::component(Page {
+                seen: Rc::clone(&seen),
+                opener: Rc::clone(&opener_slot),
+                overlay: Rc::clone(&overlay_slot),
+            }),
+        )));
+        tree.build_render_tree();
+
+        let opener = opener_slot.borrow().clone().expect("an opener");
+        let overlay_handle = overlay_slot.borrow().clone().expect("an overlay");
+        assert!(opener.open(overlay_handle));
+        tree.rebuild_dirty();
+
+        assert_eq!(
+            *seen.borrow(),
+            Some(crate::components::Theme::light().background),
+            "the menu was built under the page's theme, not the default one \
+             the overlay sits in"
+        );
     }
 
     // -- The plan's first symptom, answered ---------------------------------------

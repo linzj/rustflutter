@@ -36,7 +36,7 @@ use crate::color_scheme::ColorScheme;
 use crate::controls::TooltipTriggerMode;
 use crate::editable_text::TargetPlatform;
 use crate::engine::{Color, TextAlign, TextStyle};
-use crate::framework::{AnyWidget, BuildContext, provide};
+use crate::framework::{AnyWidget, BuildContext, provide_theme};
 use crate::painting::StrokeCap;
 use crate::platform::Brightness;
 use crate::render::{AlignmentGeometry, BoxConstraints, EdgeInsets, Offset, Size};
@@ -368,7 +368,7 @@ pub struct DividerTheme;
 impl DividerTheme {
     /// Installs one for a subtree.
     pub fn new(data: DividerThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     /// Upstream `DividerTheme.of`: the nearest installed one, or the field on
@@ -447,7 +447,7 @@ pub struct CardTheme;
 
 impl CardTheme {
     pub fn new(data: CardThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> CardThemeData {
@@ -528,7 +528,7 @@ pub struct BadgeTheme;
 
 impl BadgeTheme {
     pub fn new(data: BadgeThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> BadgeThemeData {
@@ -636,7 +636,7 @@ pub struct TooltipTheme;
 
 impl TooltipTheme {
     pub fn new(data: TooltipThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> TooltipThemeData {
@@ -746,7 +746,7 @@ pub struct ProgressIndicatorTheme;
 
 impl ProgressIndicatorTheme {
     pub fn new(data: ProgressIndicatorThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ProgressIndicatorThemeData {
@@ -845,7 +845,7 @@ pub struct CheckboxTheme;
 
 impl CheckboxTheme {
     pub fn new(data: CheckboxThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> CheckboxThemeData {
@@ -935,7 +935,7 @@ pub struct RadioTheme;
 
 impl RadioTheme {
     pub fn new(data: RadioThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> RadioThemeData {
@@ -1013,7 +1013,7 @@ pub struct SwitchTheme;
 
 impl SwitchTheme {
     pub fn new(data: SwitchThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> SwitchThemeData {
@@ -6341,7 +6341,7 @@ pub struct AppBarTheme;
 
 impl AppBarTheme {
     pub fn new(data: AppBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> AppBarThemeData {
@@ -6583,7 +6583,7 @@ pub struct BottomSheetTheme;
 
 impl BottomSheetTheme {
     pub fn new(data: BottomSheetThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> BottomSheetThemeData {
@@ -6689,7 +6689,7 @@ pub struct SnackBarTheme;
 
 impl SnackBarTheme {
     pub fn new(data: SnackBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> SnackBarThemeData {
@@ -6856,7 +6856,7 @@ pub struct ListTileTheme;
 
 impl ListTileTheme {
     pub fn new(data: ListTileThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ListTileThemeData {
@@ -7081,7 +7081,7 @@ pub struct DialogTheme;
 
 impl DialogTheme {
     pub fn new(data: DialogThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> DialogThemeData {
@@ -7221,7 +7221,7 @@ pub struct ChipTheme;
 
 impl ChipTheme {
     pub fn new(data: ChipThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ChipThemeData {
@@ -7482,7 +7482,7 @@ pub struct TabBarTheme;
 
 impl TabBarTheme {
     pub fn new(data: TabBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> TabBarThemeData {
@@ -7736,7 +7736,7 @@ pub struct DataTableTheme;
 
 impl DataTableTheme {
     pub fn new(data: DataTableThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> DataTableThemeData {
@@ -7852,7 +7852,7 @@ pub struct NavigationRailTheme;
 
 impl NavigationRailTheme {
     pub fn new(data: NavigationRailThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> NavigationRailThemeData {
@@ -7963,7 +7963,7 @@ pub struct BottomNavigationBarTheme;
 
 impl BottomNavigationBarTheme {
     pub fn new(data: BottomNavigationBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> BottomNavigationBarThemeData {
@@ -8034,7 +8034,7 @@ pub struct DrawerTheme;
 
 impl DrawerTheme {
     pub fn new(data: DrawerThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> DrawerThemeData {
@@ -8352,7 +8352,7 @@ pub struct ElevatedButtonTheme;
 
 impl ElevatedButtonTheme {
     pub fn new(data: ElevatedButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ElevatedButtonThemeData {
@@ -8399,7 +8399,7 @@ pub struct FilledButtonTheme;
 
 impl FilledButtonTheme {
     pub fn new(data: FilledButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> FilledButtonThemeData {
@@ -8442,7 +8442,7 @@ pub struct TextButtonTheme;
 
 impl TextButtonTheme {
     pub fn new(data: TextButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> TextButtonThemeData {
@@ -8489,7 +8489,7 @@ pub struct OutlinedButtonTheme;
 
 impl OutlinedButtonTheme {
     pub fn new(data: OutlinedButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> OutlinedButtonThemeData {
@@ -8532,7 +8532,7 @@ pub struct IconButtonTheme;
 
 impl IconButtonTheme {
     pub fn new(data: IconButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> IconButtonThemeData {
@@ -8688,7 +8688,7 @@ pub struct MaterialBannerTheme;
 
 impl MaterialBannerTheme {
     pub fn new(data: MaterialBannerThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> MaterialBannerThemeData {
@@ -8790,7 +8790,7 @@ pub struct ExpansionTileTheme;
 
 impl ExpansionTileTheme {
     pub fn new(data: ExpansionTileThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ExpansionTileThemeData {
@@ -8914,7 +8914,7 @@ pub struct ButtonTheme;
 
 impl ButtonTheme {
     pub fn new(data: ButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ButtonThemeData {
@@ -9012,7 +9012,7 @@ pub struct ScrollbarTheme;
 
 impl ScrollbarTheme {
     pub fn new(data: ScrollbarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ScrollbarThemeData {
@@ -9223,7 +9223,7 @@ pub struct MenuTheme;
 
 impl MenuTheme {
     pub fn new(data: MenuThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> MenuThemeData {
@@ -9265,7 +9265,7 @@ pub struct MenuBarTheme;
 
 impl MenuBarTheme {
     pub fn new(data: MenuBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> MenuBarThemeData {
@@ -9305,7 +9305,7 @@ pub struct MenuButtonTheme;
 
 impl MenuButtonTheme {
     pub fn new(data: MenuButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> MenuButtonThemeData {
@@ -9352,7 +9352,7 @@ pub struct SegmentedButtonTheme;
 
 impl SegmentedButtonTheme {
     pub fn new(data: SegmentedButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> SegmentedButtonThemeData {
@@ -9479,7 +9479,7 @@ pub struct FloatingActionButtonTheme;
 
 impl FloatingActionButtonTheme {
     pub fn new(data: FloatingActionButtonThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> FloatingActionButtonThemeData {
@@ -9716,7 +9716,7 @@ pub struct ToggleButtonsTheme;
 
 impl ToggleButtonsTheme {
     pub fn new(data: ToggleButtonsThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ToggleButtonsThemeData {
@@ -9876,7 +9876,7 @@ pub struct SearchBarTheme;
 
 impl SearchBarTheme {
     pub fn new(data: SearchBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> SearchBarThemeData {
@@ -9966,7 +9966,7 @@ pub struct SearchViewTheme;
 
 impl SearchViewTheme {
     pub fn new(data: SearchViewThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> SearchViewThemeData {
@@ -10125,7 +10125,7 @@ pub struct TimePickerTheme;
 
 impl TimePickerTheme {
     pub fn new(data: TimePickerThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> TimePickerThemeData {
@@ -10393,7 +10393,7 @@ pub struct DatePickerTheme;
 
 impl DatePickerTheme {
     pub fn new(data: DatePickerThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> DatePickerThemeData {
@@ -10616,7 +10616,7 @@ pub struct InputDecorationTheme;
 
 impl InputDecorationTheme {
     pub fn new(data: InputDecorationThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> InputDecorationThemeData {
@@ -10736,7 +10736,7 @@ pub struct IconTheme;
 
 impl IconTheme {
     pub fn new(data: IconThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> IconThemeData {
@@ -10802,7 +10802,7 @@ pub struct TextSelectionTheme;
 
 impl TextSelectionTheme {
     pub fn new(data: TextSelectionThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> TextSelectionThemeData {
@@ -10898,7 +10898,7 @@ pub struct PopupMenuTheme;
 
 impl PopupMenuTheme {
     pub fn new(data: PopupMenuThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> PopupMenuThemeData {
@@ -10965,7 +10965,7 @@ pub struct DropdownMenuTheme;
 
 impl DropdownMenuTheme {
     pub fn new(data: DropdownMenuThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> DropdownMenuThemeData {
@@ -11035,7 +11035,7 @@ pub struct BottomAppBarTheme;
 
 impl BottomAppBarTheme {
     pub fn new(data: BottomAppBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> BottomAppBarThemeData {
@@ -11138,7 +11138,7 @@ pub struct NavigationBarTheme;
 
 impl NavigationBarTheme {
     pub fn new(data: NavigationBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> NavigationBarThemeData {
@@ -11231,7 +11231,7 @@ pub struct NavigationDrawerTheme;
 
 impl NavigationDrawerTheme {
     pub fn new(data: NavigationDrawerThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> NavigationDrawerThemeData {
@@ -11293,7 +11293,7 @@ pub struct CarouselViewTheme;
 
 impl CarouselViewTheme {
     pub fn new(data: CarouselViewThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> CarouselViewThemeData {
@@ -12057,7 +12057,7 @@ pub struct ButtonBarTheme;
 
 impl ButtonBarTheme {
     pub fn new(data: ButtonBarThemeData, child: AnyWidget) -> AnyWidget {
-        provide(data, child)
+        provide_theme(data, child)
     }
 
     pub fn of(context: &mut BuildContext) -> ButtonBarThemeData {
@@ -12319,7 +12319,7 @@ pub fn scheme_of(context: &mut BuildContext) -> ColorScheme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framework::{Component, ElementTree, component, leaf};
+    use crate::framework::{Component, ElementTree, component, leaf, provide};
     use crate::theme::MaterialTheme;
     use crate::widgets::SizedBox;
     use std::cell::RefCell;

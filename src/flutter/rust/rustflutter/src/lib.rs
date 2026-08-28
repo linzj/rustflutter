@@ -304,8 +304,8 @@ pub use foundation::{
 };
 pub use framework::{
     AnyWidget, Component, ElementTree, GlobalKey, Key, RenderWidget, StateHandle,
-    StatefulComponent, component, keyed_leaf, keyed_many, keyed_single, leaf, many, provide,
-    single, stateful, with_global_key,
+    StatefulComponent, ThemeCapture, component, keyed_leaf, keyed_many, keyed_single, leaf, many,
+    provide, provide_theme, single, stateful, with_global_key,
 };
 pub use grid::{
     GridView, RenderSliverGrid, SliverGridDelegate, SliverGridGeometry, SliverGridRegularTileLayout,
@@ -432,8 +432,9 @@ pub mod prelude {
     pub use crate::engine::{Color, Paint, Rect, Style, TextAlign, TextStyle};
     pub use crate::focus::{Focus, KeyResult, focusable};
     pub use crate::framework::{
-        AnyWidget, Component, GlobalKey, StateHandle, StatefulComponent, component, keyed_leaf,
-        keyed_many, keyed_single, leaf, many, provide, single, stateful, with_global_key,
+        AnyWidget, Component, GlobalKey, StateHandle, StatefulComponent, ThemeCapture, component,
+        keyed_leaf, keyed_many, keyed_single, leaf, many, provide, provide_theme, single, stateful,
+        with_global_key,
     };
     pub use crate::grid::{GridView, SliverGridDelegate};
     pub use crate::implicit::{Animated, animated};

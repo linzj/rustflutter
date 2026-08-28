@@ -185,6 +185,7 @@ impl StatefulComponent for MenuDemo {
         // whole row is the button, as upstream's `_SimpleMenuDemo` has it.
         let context_item = component(ListTile::new("An item with a context menu").with_trailing(
             anchored_menu(
+                context,
                 overlay.clone(),
                 |open| component(PopupMenuButton::new(base).on_press(open)),
                 {
@@ -195,6 +196,7 @@ impl StatefulComponent for MenuDemo {
         ));
         let sectioned_item = component(
             ListTile::new("An item with a sectioned menu").with_trailing(anchored_menu(
+                context,
                 overlay.clone(),
                 |open| component(PopupMenuButton::new(base + 1).on_press(open)),
                 {
@@ -205,6 +207,7 @@ impl StatefulComponent for MenuDemo {
         );
         let checklist_item = component(
             ListTile::new("An item with a checklist menu").with_trailing(anchored_menu(
+                context,
                 overlay.clone(),
                 |open| component(PopupMenuButton::new(base + 2).on_press(open)),
                 {
@@ -216,6 +219,7 @@ impl StatefulComponent for MenuDemo {
         // `_SimpleMenuDemo`: the whole list item is the button, its subtitle
         // the current value.
         let simple_item = anchored_menu(
+            context,
             overlay.clone(),
             move |open| {
                 component(
@@ -286,11 +290,18 @@ impl StatefulComponent for MenuDemo {
 /// row's context, and the button records itself on the anchor the menu is
 /// placed against.
 ///
+/// `context` is the demo's, and is the one thing the menu cannot inherit: it
+/// goes up in the application's overlay, above the demo page's theme rather
+/// than below it. The button captures the themes here and the overlay entry
+/// puts them back -- upstream's `InheritedTheme.capture`, taken at the same
+/// place its `showMenu` takes it.
+///
 /// The opener is made fresh each build. That is safe because a menu's barrier
 /// covers the button that opened it -- there is no way to press it again while
 /// it is up -- and a selection closes the topmost modal rather than going back
 /// through the opener that happens to be current.
 fn anchored_menu(
+    context: &BuildContext,
     overlay: Option<std::rc::Rc<OverlayHandle>>,
     child: impl FnOnce(Box<dyn Fn()>) -> AnyWidget,
     menu: impl Fn() -> AnyWidget + 'static,
@@ -307,7 +318,7 @@ fn anchored_menu(
             opener.open(overlay);
         }) as Box<dyn Fn()>
     };
-    let (widget, made) = LiveMenuButton::new(child(press), menu).build();
+    let (widget, made) = LiveMenuButton::new(child(press), menu).build(context);
     *opener.borrow_mut() = Some(made);
     widget
 }

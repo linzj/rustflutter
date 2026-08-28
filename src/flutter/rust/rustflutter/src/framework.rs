@@ -49,7 +49,7 @@
 //! rebuilt is not a screen that has to be re-measured. See
 //! [`crate::render::RenderBox::update_from`].
 
-use std::any::{Any, TypeId};
+use std::any::{Any, TypeId, type_name};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -780,12 +780,20 @@ impl<T: 'static> RenderWidget for Provider<T> {
 /// left alone. `None` is the plain `InheritedWidget` answer -- there are no
 /// parts, every change is every reader's news -- and is what [`provide`] fills
 /// in; [`provide_model`] fills in the other.
+///
+/// `theme_type` is upstream's `InheritedTheme`, which there is a class a widget
+/// extends and here is a mark on the value, since a value is what this port
+/// publishes. `Some` means the value is carried across a subtree boundary by
+/// [`BuildContext::capture_themes`]; `None`, the usual answer, means it is not
+/// -- a `MediaQuery` that followed a menu into the overlay would tell it the
+/// size of the button.
 #[derive(Clone)]
 struct Provided {
     type_id: TypeId,
     value: Rc<dyn Any>,
     same: fn(&dyn Any, &dyn Any) -> bool,
     aspect_stale: Option<fn(&dyn Any, &dyn Any, &str) -> bool>,
+    theme_type: Option<&'static str>,
 }
 
 /// A published value whose readers can depend on one *part* of it.
@@ -827,6 +835,7 @@ impl Provided {
                 _ => false,
             },
             aspect_stale: None,
+            theme_type: None,
         }
     }
 
@@ -853,11 +862,41 @@ impl Provided {
 /// everything that reads it every frame, which is the thing dependency
 /// tracking exists to avoid.
 pub fn provide<T: PartialEq + 'static>(value: T, child: AnyWidget) -> AnyWidget {
+    // A `Theme` is an inherited theme wherever it is published. Upstream says
+    // so once, on the `Theme` widget; this port has no `Theme` widget to say it
+    // on -- an application publishes the value itself, with this function -- so
+    // it is said here instead. Every other theme is a `provide_theme` call.
+    let theme_type =
+        (TypeId::of::<T>() == TypeId::of::<crate::components::Theme>()).then(type_name::<T>);
+    published(value, child, theme_type)
+}
+
+/// [`provide`], for a value that is an **inherited theme**: one a subtree built
+/// somewhere else should keep.
+///
+/// Upstream's `InheritedTheme`, and the same short list of things: a theme, a
+/// component theme, a default text style. What it buys is
+/// [`BuildContext::capture_themes`] -- a menu or a dialog put up in an overlay
+/// is not below the theme that opened it, and without a capture it would be
+/// drawn in whatever theme happens to be above the overlay instead.
+pub fn provide_theme<T: PartialEq + 'static>(value: T, child: AnyWidget) -> AnyWidget {
+    published(value, child, Some(type_name::<T>()))
+}
+
+/// [`provide`] and [`provide_theme`], which differ only in the mark.
+fn published<T: PartialEq + 'static>(
+    value: T,
+    child: AnyWidget,
+    theme_type: Option<&'static str>,
+) -> AnyWidget {
     let widget = Provider {
         value: Rc::new(value),
         child: RefCell::new(Some(child)),
     };
-    let provided = widget.provided();
+    let provided = Provided {
+        theme_type,
+        ..widget.provided()
+    };
     let mut any = render_widget(widget);
     any.provided = Some(provided);
     any
@@ -880,6 +919,70 @@ pub fn provide_model<T: DependentNotify + 'static>(value: T, child: AnyWidget) -
     let mut any = render_widget(widget);
     any.provided = Some(provided);
     any
+}
+
+/// The themes a widget was built under, ready to be put back around something
+/// built somewhere else.
+///
+/// Upstream's `CapturedThemes`, which holds widgets where this holds the values
+/// they publish, and frozen for the same reason it says twice: what is wrapped
+/// sees the themes **as they were at the capture**, not as they are now. A menu
+/// lives for as long as a press, so that is the whole of the difference.
+///
+/// Taken with [`BuildContext::capture_themes`] and spent with
+/// [`ThemeCapture::wrap`]. A capture from a context with no themes above it is
+/// empty, and wrapping with an empty capture returns the child unchanged.
+#[derive(Clone, Default)]
+pub struct ThemeCapture {
+    /// Nearest theme first, which is the order upstream's `_CaptureAll` wraps
+    /// in: each one goes outside the last, so the nearest ends up outermost
+    /// and shadows the rest -- the arrangement the capture was taken under.
+    themes: Vec<Provided>,
+}
+
+impl ThemeCapture {
+    pub fn is_empty(&self) -> bool {
+        self.themes.is_empty()
+    }
+
+    /// How many themes were captured. The types are not exposed: a caller can
+    /// spend a capture, not read it.
+    pub fn len(&self) -> usize {
+        self.themes.len()
+    }
+
+    /// Upstream's `CapturedThemes.wrap`: rebuild the captured themes around
+    /// `child`, wherever `child` is about to be built.
+    pub fn wrap(&self, child: AnyWidget) -> AnyWidget {
+        let mut wrapped = child;
+        for provided in &self.themes {
+            let mut any = render_widget(CapturedTheme {
+                child: RefCell::new(Some(wrapped)),
+            });
+            any.provided = Some(provided.clone());
+            wrapped = any;
+        }
+        wrapped
+    }
+}
+
+/// What a [`ThemeCapture`] wraps with: a [`Provider`] whose value was published
+/// by somebody else, so it can be republished without knowing its type.
+struct CapturedTheme {
+    child: RefCell<Option<AnyWidget>>,
+}
+
+impl RenderWidget for CapturedTheme {
+    fn children(&self) -> Vec<AnyWidget> {
+        self.child.borrow().clone().into_iter().collect()
+    }
+
+    fn create_render(&self, mut children: Vec<BoxedRender>) -> BoxedRender {
+        match children.pop() {
+            Some(child) => child,
+            None => crate::render::RenderRef::new(crate::widgets::Empty),
+        }
+    }
 }
 
 // -- Notifications ------------------------------------------------------------
@@ -1458,6 +1561,57 @@ impl BuildContext {
     pub fn inherited_aspect_or_default<T: Default + 'static>(&self, aspect: &'static str) -> Rc<T> {
         self.inherited_aspect::<T>(aspect)
             .unwrap_or_else(|| Rc::new(T::default()))
+    }
+
+    /// The inherited themes above this element, frozen, so a subtree built
+    /// somewhere else can be built under them.
+    ///
+    /// Upstream's `InheritedTheme.capture(from: context, to: ...)`, and the
+    /// case it exists for is exactly the one this port has: a menu is put up in
+    /// an overlay at the root, which is not below the page that opened it, so
+    /// the page's theme is not above the menu. The button captures on its way
+    /// past and the overlay entry wraps the menu in what it caught.
+    ///
+    /// The rule is [`crate::inherited::capture_themes`]: walk up, keep the
+    /// values marked as themes by [`provide_theme`], and keep only the first
+    /// of each type, because a nearer theme shadows a farther one and wrapping
+    /// in both would put the shadowed one on the outside where it can never be
+    /// read.
+    ///
+    /// Divergence from upstream, and it is the `to` argument: upstream stops at
+    /// the navigator's context, since the themes above *that* are still above
+    /// the route and do not need copying. This walks to the root, because an
+    /// overlay here is a handle rather than an element and there is no context
+    /// to stop at. The extra themes are the ones the wrapped subtree would have
+    /// seen anyway; the cost is that a change to one of them after the capture
+    /// does not reach the menu that is already open.
+    pub fn capture_themes(&self) -> ThemeCapture {
+        let ancestors: Vec<crate::inherited::ThemeLink> = {
+            let parents = self.shared.parents.borrow();
+            let provided = self.shared.provided.borrow();
+            let mut links = Vec::new();
+            let mut current = Some(self.element);
+            while let Some(id) = current {
+                links.push(match provided.get(&id).and_then(|entry| entry.theme_type) {
+                    Some(theme_type) => crate::inherited::ThemeLink::theme(id.0 as u64, theme_type),
+                    None => crate::inherited::ThemeLink::plain(id.0 as u64),
+                });
+                current = parents.get(&id).copied().flatten();
+            }
+            links
+        };
+        // `to: None` -- the walk reaches the root, so this cannot be the
+        // "`to` is not an ancestor" error.
+        let captured = crate::inherited::capture_themes(&ancestors, self.element.0 as u64, None)
+            .expect("a walk to the root always reaches its end");
+        let provided = self.shared.provided.borrow();
+        ThemeCapture {
+            themes: captured
+                .themes()
+                .iter()
+                .filter_map(|link| provided.get(&ElementId(link.element as usize)).cloned())
+                .collect(),
+        }
     }
 
     /// Starts `notification` bubbling up from this element.
@@ -2097,6 +2251,9 @@ impl ElementTree {
                 value: Rc::clone(&value) as Rc<dyn Any>,
                 same: current.same,
                 aspect_stale: current.aspect_stale,
+                // Carried over for the same reason as the comparisons: being a
+                // theme is the provider's property, not the value's.
+                theme_type: current.theme_type,
             };
             if (current.same)(current.value.as_ref(), replacement.value.as_ref()) {
                 return false;
@@ -3511,6 +3668,108 @@ mod tests {
         assert!(!tree.publish(Published(1)), "the same value is not news");
         assert_eq!(tree.rebuild_dirty(), 0);
         assert_eq!(builds_of("reader"), 1);
+    }
+
+    // -- Captured themes ------------------------------------------------------
+
+    /// A value published as an inherited theme, sized so a reader can be
+    /// measured rather than interrogated.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Skin(f32);
+
+    /// Takes the capture where it is built, and hands it back.
+    struct Capturer(Rc<RefCell<Option<ThemeCapture>>>);
+
+    impl Component for Capturer {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.0.borrow_mut() = Some(context.capture_themes());
+            leaf(|| Sized(1.0))
+        }
+    }
+
+    /// Sizes itself to the `Skin` it can see, or to nothing.
+    struct SkinReader;
+
+    impl Component for SkinReader {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            let width = context.inherited::<Skin>().map_or(0.0, |skin| skin.0);
+            leaf(move || Sized(width))
+        }
+    }
+
+    /// Mounts `under` and returns the capture its `Capturer` took.
+    fn capture_under(under: impl FnOnce(AnyWidget) -> AnyWidget) -> ThemeCapture {
+        let slot: Rc<RefCell<Option<ThemeCapture>>> = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(under(component(Capturer(Rc::clone(&slot)))));
+        let capture = slot.borrow().clone().expect("the capturer built");
+        capture
+    }
+
+    /// What a `SkinReader` measures when it is built in a tree of its own,
+    /// wrapped in `capture` -- the overlay case, in miniature.
+    fn skin_seen_through(capture: &ThemeCapture) -> f32 {
+        let mut tree = ElementTree::new();
+        tree.rebuild(capture.wrap(component(SkinReader)));
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        root.layout(BoxConstraints::new(0.0, 100.0, 0.0, 100.0));
+        root.size().width
+    }
+
+    #[test]
+    fn a_captured_theme_reaches_a_tree_that_is_not_below_it() {
+        // The whole point: the reader is in another tree entirely, which is
+        // what an overlay is to the page that opened a menu in it.
+        let capture = capture_under(|child| provide_theme(Skin(7.0), child));
+        assert_eq!(capture.len(), 1);
+        assert_eq!(skin_seen_through(&capture), 7.0);
+    }
+
+    #[test]
+    fn a_plain_published_value_is_not_carried() {
+        // Upstream captures `InheritedTheme`s and nothing else, and this is the
+        // reason: a `MediaQuery` that followed a menu into the overlay would
+        // tell it the size of the button it came from.
+        let capture = capture_under(|child| provide(Skin(7.0), child));
+        assert!(capture.is_empty());
+        assert_eq!(skin_seen_through(&capture), 0.0, "nothing was carried");
+    }
+
+    #[test]
+    fn only_the_nearest_theme_of_a_type_travels() {
+        // Upstream: "inherited themes completely shadow ancestors of the same
+        // type". Carrying both would wrap the child twice, with the shadowed
+        // one on the outside where nothing can read it.
+        let capture =
+            capture_under(|child| provide_theme(Skin(3.0), provide_theme(Skin(9.0), child)));
+        assert_eq!(capture.len(), 1);
+        assert_eq!(skin_seen_through(&capture), 9.0, "the nearer one");
+    }
+
+    #[test]
+    fn a_material_theme_is_a_theme_without_being_told() {
+        // An application publishes a `Theme` with plain `provide` -- there is
+        // no `Theme` widget in this port to mark it as upstream's does -- so
+        // `provide` marks it, and this is the test that says so.
+        struct ThemeReader(Rc<RefCell<Option<crate::components::Theme>>>);
+        impl Component for ThemeReader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = Some((*crate::components::theme_of(context)).clone());
+                leaf(|| Sized(1.0))
+            }
+        }
+
+        let capture = capture_under(|child| provide(crate::components::Theme::light(), child));
+        assert_eq!(capture.len(), 1);
+
+        let seen = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(capture.wrap(component(ThemeReader(Rc::clone(&seen)))));
+        assert_eq!(
+            seen.borrow().as_ref().map(|theme| theme.background),
+            Some(crate::components::Theme::light().background),
+            "the light theme crossed, rather than the dark default"
+        );
     }
 
     #[test]
