@@ -106,6 +106,25 @@ impl StatefulComponent for SnackbarLauncher {
         }
     }
 
+    /// The bar goes when the page does.
+    ///
+    /// Upstream's `ScaffoldMessengerState.dispose` cancels `_snackBarTimer`,
+    /// and the bar goes with the messenger's own subtree -- the gallery gives
+    /// each demo page its own `ScaffoldMessenger` (`pages/demo.dart`'s
+    /// `ScaffoldMessenger(child: DemoWrapper(...))`), so leaving the page ends
+    /// the bar it was showing.
+    ///
+    /// Here the messenger presents into the *root* overlay, which is above the
+    /// navigator and outlives this page by design -- so leaving is not enough
+    /// on its own. Without this the bar stayed on screen over the demo list,
+    /// with no clock left to time it out and no handle left to take it down:
+    /// popping the route dropped the only `Messenger` there was.
+    fn dispose(&self, state: &mut LauncherState) {
+        if let Some(messenger) = &state.messenger {
+            messenger.clear();
+        }
+    }
+
     fn build(
         &self,
         state: &LauncherState,

@@ -163,6 +163,24 @@ pub trait StatefulComponent: 'static {
     /// for, because one is already on its way.
     fn did_update_widget(&self, _old: &Self, _state: &mut Self::State) {}
 
+    /// Called once, when the element is taken out of the tree for good.
+    ///
+    /// Upstream's `State.dispose`, and it exists for upstream's reason: state
+    /// can own things the tree does not -- a timer, a listener, an entry in an
+    /// overlay that lives somewhere else -- and dropping the state is not the
+    /// same as letting those go. Rust frees the memory either way; what it
+    /// cannot do is know that an `Rc` handed to an overlay above the navigator
+    /// was meant to be taken back out.
+    ///
+    /// That is not hypothetical. The gallery's snackbar put its bar in the
+    /// root overlay and its clock in a component inside the route, so popping
+    /// the route dropped the clock and left the bar on screen for ever, with
+    /// nothing left that could reach it.
+    ///
+    /// Not called for an element merely deactivated -- a [`GlobalKey`] may
+    /// still claim it -- only when it is released.
+    fn dispose(&self, _state: &mut Self::State) {}
+
     /// The state this widget starts with, used once when its element is
     /// mounted. Defaults to `State::default()`.
     ///
@@ -267,6 +285,8 @@ trait ComponentObject {
     fn as_any(&self) -> &dyn Any;
     /// Runs the widget's `did_update_widget`, with the widget it replaces.
     fn did_update_widget(&self, old: &dyn Any, state: Option<&mut dyn Any>);
+    /// Runs the widget's `dispose`, as its element is released.
+    fn dispose(&self, state: Option<&mut dyn Any>);
     fn build(
         &self,
         state: Option<&mut dyn Any>,
@@ -312,6 +332,10 @@ impl<C: Component> ComponentObject for StatelessObject<C> {
         // A stateless widget has no state to tell that it changed.
     }
 
+    fn dispose(&self, _state: Option<&mut dyn Any>) {
+        // Nor any to let go of.
+    }
+
     fn build(
         &self,
         _state: Option<&mut dyn Any>,
@@ -348,6 +372,12 @@ impl<C: StatefulComponent> ComponentObject for StatefulObject<C> {
             return;
         };
         self.0.did_update_widget(old, state);
+    }
+
+    fn dispose(&self, state: Option<&mut dyn Any>) {
+        if let Some(state) = state.and_then(|s| s.downcast_mut::<C::State>()) {
+            self.0.dispose(state);
+        }
     }
 
     fn build(
@@ -1916,6 +1946,16 @@ impl ElementTree {
             }
         }
         if let Some(node) = self.nodes[id.0].take() {
+            // The widget says goodbye to its state before either is dropped --
+            // upstream's `State.dispose`, called from `Element.unmount`. It
+            // runs before the children are released so that a parent still
+            // sees the tree it is letting go of, which is the order upstream
+            // uses too.
+            if let WidgetKind::Component(component) = &node.widget.inner {
+                let mut states = self.shared.states.borrow_mut();
+                let state = states.get_mut(&id).map(|state| &mut **state);
+                component.dispose(state);
+            }
             for child in node.children {
                 self.release(child);
             }
@@ -5009,6 +5049,80 @@ mod tests {
             record("drop-counted");
             leaf(|| Sized(1.0))
         }
+    }
+
+    thread_local! {
+        static DISPOSED: std::cell::RefCell<Vec<&'static str>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// A widget that says goodbye, so a test can tell "released" from
+    /// "released and told".
+    struct Farewell(&'static str);
+
+    #[derive(Default)]
+    struct FarewellState;
+
+    impl StatefulComponent for Farewell {
+        type State = FarewellState;
+
+        fn dispose(&self, _state: &mut FarewellState) {
+            DISPOSED.with(|disposed| disposed.borrow_mut().push(self.0));
+        }
+
+        fn build(
+            &self,
+            _state: &FarewellState,
+            _handle: StateHandle<FarewellState>,
+            _context: &mut BuildContext,
+        ) -> AnyWidget {
+            leaf(|| Sized(1.0))
+        }
+    }
+
+    fn disposed() -> Vec<&'static str> {
+        DISPOSED.with(|disposed| disposed.borrow().clone())
+    }
+
+    /// Upstream's `State.dispose`, which is how a state lets go of what the
+    /// tree does not own -- a timer, a listener, an entry in an overlay
+    /// somewhere else.
+    #[test]
+    fn a_released_element_is_told_it_is_going() {
+        DISPOSED.with(|disposed| disposed.borrow_mut().clear());
+        let mut tree = ElementTree::new();
+        tree.rebuild(holder(stateful(Farewell("gone"))));
+        assert_eq!(disposed(), Vec::<&str>::new(), "still mounted");
+
+        tree.rebuild(holder(leaf(|| Empty)));
+        assert_eq!(disposed(), vec!["gone"], "and told once it is not");
+    }
+
+    #[test]
+    fn a_rebuild_in_place_is_not_a_goodbye() {
+        // The same widget type and key: the element is updated, not released,
+        // so nothing is disposed. Upstream calls `dispose` from `unmount`, not
+        // from `update`.
+        DISPOSED.with(|disposed| disposed.borrow_mut().clear());
+        let mut tree = ElementTree::new();
+        tree.rebuild(holder(stateful(Farewell("staying"))));
+        tree.rebuild(holder(stateful(Farewell("staying"))));
+        assert_eq!(disposed(), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_whole_released_subtree_is_told() {
+        // Children as well as the parent, so a page that goes takes everything
+        // it was showing with it.
+        DISPOSED.with(|disposed| disposed.borrow_mut().clear());
+        let mut tree = ElementTree::new();
+        tree.rebuild(holder(single(stateful(Farewell("child")), |child| {
+            let mut flex = RenderFlex::column();
+            flex = flex.push(child);
+            flex
+        })));
+        tree.rebuild(holder(leaf(|| Empty)));
+        assert_eq!(disposed(), vec!["child"]);
     }
 
     /// A one-child wrapper whose widget type is stable across frames, so the
