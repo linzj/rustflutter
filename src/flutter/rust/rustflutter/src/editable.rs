@@ -3070,6 +3070,36 @@ impl StatefulComponent for TextField {
         Some(self.id)
     }
 
+    /// Upstream's `EditableTextState.dispose`, which disposes the selection
+    /// overlay along with everything else the state owns:
+    ///
+    ///     _selectionOverlay?.dispose();
+    ///     _selectionOverlay = null;
+    ///
+    /// The handles and the toolbar are entries in the **root** overlay, above
+    /// the navigator, while the field that put them there is inside a route.
+    /// Popping the route takes the field away and leaves them behind, drawn
+    /// over whatever the reader went back to -- which is exactly what
+    /// happened: a bar reading Cut / Copy / Paste, floating over the demo
+    /// list, belonging to a field that no longer existed.
+    ///
+    /// The same shape as the snackbar's, and the reason `dispose` exists at
+    /// all: a state that handed an `Rc` to something outside the tree has to
+    /// be told when to take it back.
+    ///
+    /// The editing session goes here too. A field popped while it had the
+    /// keyboard would otherwise leave the platform holding a client nothing
+    /// answers for.
+    fn dispose(&self, state: &mut TextFieldState) {
+        if let Some(host) = state.selection_overlay.borrow_mut().take() {
+            host.dismiss();
+        }
+        state.toolbar_shown = false;
+        if let Some(connection) = state.connection.take() {
+            connection.close();
+        }
+    }
+
     /// The caret's blink, on the frame clock. Upstream drives it from a timer
     /// started by `_startCursorBlink` and stopped by `_stopCursorBlink`;
     /// there is no platform timer to borrow here, so the half-seconds are

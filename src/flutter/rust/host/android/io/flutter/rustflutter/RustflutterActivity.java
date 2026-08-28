@@ -120,6 +120,25 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
    */
   private static boolean sHasClient = false;
 
+  /**
+   * The focused field's configuration, as {@code TextInput.setClient} described
+   * it, for {@link #onCreateInputConnection} to turn into an {@link EditorInfo}.
+   *
+   * <p>Names rather than numbers cross from C++, so every Android constant is
+   * spelled here rather than copied there -- which is also where upstream keeps
+   * them, in {@code TextInputPlugin.inputTypeFromTextInputType}.
+   */
+  private static String sInputType = "";
+
+  private static String sInputAction = "";
+  private static boolean sObscureText = false;
+  private static boolean sAutocorrect = true;
+  private static boolean sEnableSuggestions = true;
+  private static boolean sPersonalizedLearning = true;
+  private static boolean sNumberSigned = false;
+  private static boolean sNumberDecimal = false;
+  private static String sCapitalization = "";
+
   private HostView mView;
   private boolean mStarted;
   private boolean mSurfaceReady;
@@ -360,8 +379,9 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
         activity.setTaskLabel(argument);
         return null;
       case HOST_RESTART_INPUT:
-        // "1" when a field has just been focused, "0" when it has gone.
-        sHasClient = "1".equals(argument);
+        // "0" when the field has gone; otherwise "1" and the configuration,
+        // newline separated -- see TextInputHandler::Descriptor.
+        setInputConfiguration(argument);
         activity.restartInput();
         if (!sHasClient) {
           activity.hideKeyboard();
@@ -369,6 +389,148 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
         return null;
       default:
         return null;
+    }
+  }
+
+  /**
+   * Unpacks what {@code TextInputHandler::Descriptor} packed: "0" for a field
+   * that has gone, otherwise "1" and the six things an {@link EditorInfo} is
+   * built from.
+   */
+  private static void setInputConfiguration(String descriptor) {
+    String[] parts = descriptor == null ? new String[0] : descriptor.split("\n", -1);
+    sHasClient = parts.length > 0 && "1".equals(parts[0]);
+    if (!sHasClient) {
+      return;
+    }
+    sInputType = parts.length > 1 ? parts[1] : "";
+    sInputAction = parts.length > 2 ? parts[2] : "";
+    sObscureText = parts.length > 3 && "1".equals(parts[3]);
+    // Upstream's defaults are true, so a missing field is on rather than off.
+    sAutocorrect = parts.length <= 4 || "1".equals(parts[4]);
+    sEnableSuggestions = parts.length <= 5 || "1".equals(parts[5]);
+    sPersonalizedLearning = parts.length <= 6 || "1".equals(parts[6]);
+    sNumberSigned = parts.length > 7 && "1".equals(parts[7]);
+    sNumberDecimal = parts.length > 8 && "1".equals(parts[8]);
+    sCapitalization = parts.length > 9 ? parts[9] : "";
+  }
+
+  /**
+   * Upstream's {@code TextInputPlugin.inputTypeFromTextInputType}.
+   *
+   * <p>This is what tells the IME what kind of field it is editing, and the
+   * absence of it is what stopped the keyboard composing at all: without
+   * {@code TYPE_TEXT_FLAG_AUTO_CORRECT} an IME commits every keystroke as it
+   * arrives, so there is no composing region to build a suggestion on and no
+   * strip of candidates over the keys. Typing "wor" got "wor" and never "work".
+   */
+  private static int inputTypeFor() {
+    switch (sInputType) {
+      case "TextInputType.datetime":
+        return android.text.InputType.TYPE_CLASS_DATETIME;
+      case "TextInputType.number":
+        return android.text.InputType.TYPE_CLASS_NUMBER
+            | (sNumberSigned ? android.text.InputType.TYPE_NUMBER_FLAG_SIGNED : 0)
+            | (sNumberDecimal ? android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL : 0)
+            | (sObscureText ? android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD : 0);
+      case "TextInputType.phone":
+        return android.text.InputType.TYPE_CLASS_PHONE;
+      case "TextInputType.none":
+        return android.text.InputType.TYPE_NULL;
+      default:
+        break;
+    }
+
+    int type = android.text.InputType.TYPE_CLASS_TEXT;
+    switch (sInputType) {
+      case "TextInputType.multiline":
+        type |= android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE;
+        break;
+      case "TextInputType.emailAddress":
+      // Upstream puts Twitter with the email addresses rather than giving it
+      // an arm of its own, which is a statement about @ being on the keyboard.
+      case "TextInputType.twitter":
+        type |= android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS;
+        break;
+      case "TextInputType.url":
+      case "TextInputType.webSearch":
+        type |= android.text.InputType.TYPE_TEXT_VARIATION_URI;
+        break;
+      case "TextInputType.visiblePassword":
+        type |= android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;
+        break;
+      case "TextInputType.name":
+        type |= android.text.InputType.TYPE_TEXT_VARIATION_PERSON_NAME;
+        break;
+      // "address", not "streetAddress": upstream's `TextInputType._names`
+      // spells this one differently from its Dart getter, and a case matching
+      // the getter would never fire.
+      case "TextInputType.address":
+        type |= android.text.InputType.TYPE_TEXT_VARIATION_POSTAL_ADDRESS;
+        break;
+      default:
+        break;
+    }
+
+    if (sObscureText) {
+      // Upstream's comment, and it is a warning rather than a note: "both
+      // required. Some devices ignore TYPE_TEXT_FLAG_NO_SUGGESTIONS."
+      type |= android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+      type |= android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD;
+    } else {
+      if (sAutocorrect) {
+        type |= android.text.InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
+      }
+      if (!sEnableSuggestions) {
+        type |= android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        type |= android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;
+      }
+    }
+
+    switch (sCapitalization) {
+      case "TextCapitalization.characters":
+        type |= android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS;
+        break;
+      case "TextCapitalization.words":
+        type |= android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS;
+        break;
+      case "TextCapitalization.sentences":
+        type |= android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES;
+        break;
+      default:
+        break;
+    }
+    return type;
+  }
+
+  /**
+   * The enter key's action -- upstream's `enterAction` in
+   * {@code createInputConnection}.
+   *
+   * <p>With no action asked for, upstream defaults a multi-line field to none
+   * and every other to done: a field that takes several lines wants a return
+   * key that inserts one.
+   */
+  private static int imeActionFor(int inputType) {
+    switch (sInputAction) {
+      case "TextInputAction.none":
+        return EditorInfo.IME_ACTION_NONE;
+      case "TextInputAction.go":
+        return EditorInfo.IME_ACTION_GO;
+      case "TextInputAction.search":
+        return EditorInfo.IME_ACTION_SEARCH;
+      case "TextInputAction.send":
+        return EditorInfo.IME_ACTION_SEND;
+      case "TextInputAction.next":
+        return EditorInfo.IME_ACTION_NEXT;
+      case "TextInputAction.previous":
+        return EditorInfo.IME_ACTION_PREVIOUS;
+      case "TextInputAction.done":
+        return EditorInfo.IME_ACTION_DONE;
+      default:
+        return (android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE & inputType) != 0
+            ? EditorInfo.IME_ACTION_NONE
+            : EditorInfo.IME_ACTION_DONE;
     }
   }
 
@@ -737,9 +899,17 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
 
     @Override
     public InputConnection onCreateInputConnection(EditorInfo attributes) {
-      attributes.inputType = android.text.InputType.TYPE_CLASS_TEXT;
+      attributes.inputType = inputTypeFor();
       attributes.imeOptions =
-          EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_FULLSCREEN;
+          EditorInfo.IME_FLAG_NO_FULLSCREEN | imeActionFor(attributes.inputType);
+      // Upstream's guard, kept: the flag arrived in API 26 and this package's
+      // manifest goes back to 24 (`make_apk.py --min-sdk`, whose default is
+      // that). javac inlines the constant so the reference itself is safe on an
+      // older device; what the check is for is not asking a platform that never
+      // had the flag to honour it.
+      if (!sPersonalizedLearning && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        attributes.imeOptions |= EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING;
+      }
       attributes.initialSelStart = sSelectionBase;
       attributes.initialSelEnd = sSelectionExtent;
       return new HostInputConnection(this);

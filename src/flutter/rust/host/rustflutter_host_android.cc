@@ -507,11 +507,48 @@ class TextInputHandler {
 
   void SendStateUpdate();
 
+  /// The configuration, as the one line `RustflutterActivity` unpacks to build
+  /// an `EditorInfo`.
+  ///
+  /// Ten fields separated by newlines, the first being "a field is focused".
+  /// The *names* cross rather than Android's numbers: every constant
+  /// (`TYPE_TEXT_FLAG_AUTO_CORRECT` and the rest) stays on the Java side where
+  /// it can be spelled rather than copied, which is where upstream's
+  /// `TextInputPlugin.inputTypeFromTextInputType` keeps them too.
+  std::string Descriptor() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string out = "1\n";
+    out += input_type_ + "\n";
+    out += input_action_ + "\n";
+    out += (obscure_text_ ? "1\n" : "0\n");
+    out += (autocorrect_ ? "1\n" : "0\n");
+    out += (enable_suggestions_ ? "1\n" : "0\n");
+    out += (personalized_learning_ ? "1\n" : "0\n");
+    out += (number_signed_ ? "1\n" : "0\n");
+    out += (number_decimal_ ? "1\n" : "0\n");
+    out += capitalization_;
+    return out;
+  }
+
   mutable std::mutex mutex_;
   std::unique_ptr<TextInputModel> model_;
   int client_id_ = 0;
   std::string input_action_;
   std::string input_type_;
+  // The rest of what upstream's `TextInputPlugin` turns into an `EditorInfo`.
+  // Read from the configuration and handed to Java, which owns the mapping to
+  // Android's own constants -- see
+  // `RustflutterActivity.onCreateInputConnection`.
+  bool obscure_text_ = false;
+  bool autocorrect_ = true;
+  bool enable_suggestions_ = true;
+  bool personalized_learning_ = true;
+  /// `TextInputType.number`'s two options, which upstream reads as
+  /// `type.isSigned` and `type.isDecimal`. False for every other type, which
+  /// is what the wire sends for them.
+  bool number_signed_ = false;
+  bool number_decimal_ = false;
+  std::string capitalization_;
   Sender sender_;
 };
 
@@ -588,6 +625,16 @@ std::optional<std::string> TextInputHandler::HandleMethodCall(
       client_id_ = client.GetInt();
       input_action_.clear();
       input_type_.clear();
+      capitalization_.clear();
+      // Upstream's defaults, from `TextInputConfiguration`: autocorrection and
+      // suggestions are on unless a field turns them off, and only an obscured
+      // field is obscured.
+      obscure_text_ = false;
+      autocorrect_ = true;
+      enable_suggestions_ = true;
+      personalized_learning_ = true;
+      number_signed_ = false;
+      number_decimal_ = false;
       if (config.IsObject()) {
         auto action = config.FindMember("inputAction");
         if (action != config.MemberEnd() && action->value.IsString()) {
@@ -599,6 +646,28 @@ std::optional<std::string> TextInputHandler::HandleMethodCall(
           if (name != type->value.MemberEnd() && name->value.IsString()) {
             input_type_ = name->value.GetString();
           }
+          auto option = [&type](const char* key) {
+            auto member = type->value.FindMember(key);
+            return member != type->value.MemberEnd() && member->value.IsBool()
+                       ? member->value.GetBool()
+                       : false;
+          };
+          number_signed_ = option("signed");
+          number_decimal_ = option("decimal");
+        }
+        auto flag = [&config](const char* key, bool fallback) {
+          auto member = config.FindMember(key);
+          return member != config.MemberEnd() && member->value.IsBool()
+                     ? member->value.GetBool()
+                     : fallback;
+        };
+        obscure_text_ = flag("obscureText", false);
+        autocorrect_ = flag("autocorrect", true);
+        enable_suggestions_ = flag("enableSuggestions", true);
+        personalized_learning_ = flag("enableIMEPersonalizedLearning", true);
+        auto caps = config.FindMember("textCapitalization");
+        if (caps != config.MemberEnd() && caps->value.IsString()) {
+          capitalization_ = caps->value.GetString();
         }
       }
       model_ = std::make_unique<TextInputModel>();
@@ -608,7 +677,7 @@ std::optional<std::string> TextInputHandler::HandleMethodCall(
     // field is focused, which is what decides whether the view is a text
     // editor at all -- see RustflutterActivity.sHasClient.
     JavaBridge::SetEditingState("", 0, 0, -1, -1);
-    JavaBridge::Request(HostRequest::kRestartInput, "1");
+    JavaBridge::Request(HostRequest::kRestartInput, Descriptor());
     return NullEnvelope();
   }
 

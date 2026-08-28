@@ -187,7 +187,7 @@ impl crate::render::CustomPainter for HandlePainter {
     }
 }
 
-/// The angle upstream rotates the onion by, per handle type.
+/// The angle upstream rotates the onion by, per handle type, in degrees.
 ///
 /// Upstream's own comments name where each ends up pointing, and the painter
 /// draws the one that points up-left: `right` is unrotated, `left` is a
@@ -195,29 +195,10 @@ impl crate::render::CustomPainter for HandlePainter {
 /// points straight up.
 fn handle_rotation(kind: TextSelectionHandleType) -> f32 {
     match kind {
-        TextSelectionHandleType::Left => std::f32::consts::FRAC_PI_2,
+        TextSelectionHandleType::Left => 90.0,
         TextSelectionHandleType::Right => 0.0,
-        TextSelectionHandleType::Collapsed => std::f32::consts::FRAC_PI_4,
+        TextSelectionHandleType::Collapsed => 45.0,
     }
-}
-
-/// A rotation about the centre of a `size` box, as the affine matrix
-/// [`crate::render::RenderTransform`] takes.
-///
-/// Upstream's `Transform.rotate` turns about the child's centre; a bare
-/// rotation matrix turns about the origin, so the centre is moved to the
-/// origin and back around it.
-fn rotation_about_centre(angle: f32, size: Size) -> [f32; 6] {
-    let (sin, cos) = angle.sin_cos();
-    let (cx, cy) = (size.width / 2.0, size.height / 2.0);
-    [
-        cos,
-        sin,
-        -sin,
-        cos,
-        cx - cos * cx + sin * cy,
-        cy - sin * cx - cos * cy,
-    ]
 }
 
 /// One handle's entry.
@@ -275,10 +256,15 @@ impl StatefulComponent for HandleEntry {
                 size.height,
             ))
             .with_painter(Rc::new(HandlePainter { color }));
-            let turned = crate::render::RenderTransform::new(
-                rotation_about_centre(handle_rotation(kind), size),
-                onion,
-            );
+            // `RenderTransform::rotate`, not a matrix worked out here:
+            // `RenderTransform` already turns about its child's centre --
+            // `origin` defaults to `Alignment::CENTER`, which is upstream's
+            // `Transform.rotate` -- so a matrix that also moved the centre to
+            // the origin and back applied that shift twice. The start handle
+            // came out a whole handle's width to the right of the character it
+            // was holding, and the end handle looked fine only because its
+            // rotation is nought.
+            let turned = crate::render::RenderTransform::rotate(handle_rotation(kind), onion);
             let mut handlers = crate::gestures::PointerHandlers::new();
             if let Some(on_drag) = on_drag.clone() {
                 // Raw pointer moves rather than a drag recogniser: a handle
@@ -734,6 +720,47 @@ impl HandleDrag {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_onion_is_turned_the_way_upstream_turns_it() {
+        // `buildHandle`'s switch, in degrees: the painter draws the handle
+        // pointing up-left, so the *right* handle is the unrotated one and the
+        // left is a quarter turn. Reading it the other way round is easy and
+        // puts both squares on the wrong sides of the selection.
+        assert_eq!(handle_rotation(TextSelectionHandleType::Right), 0.0);
+        assert_eq!(handle_rotation(TextSelectionHandleType::Left), 90.0);
+        assert_eq!(handle_rotation(TextSelectionHandleType::Collapsed), 45.0);
+    }
+
+    #[test]
+    fn each_handles_square_corner_meets_the_text_it_holds() {
+        // Upstream's anchors, applied: the left handle's box ends where the
+        // selection starts and the right handle's begins where it ends, so
+        // each body hangs outside the words rather than over them.
+        //
+        // This is what the rotation bug broke without moving either box -- the
+        // matrix moved the *paint* a whole handle to the right, so the start
+        // handle appeared under the middle of the selected word.
+        use crate::text_selection_controls::MaterialTextSelectionControls;
+        let controls = MaterialTextSelectionControls;
+        let size = MaterialTextSelectionControls::HANDLE_SIZE;
+
+        let start = SelectionEndpoint::new(Offset::new(100.0, 40.0), 16.0);
+        let at = handle_position(&controls, TextSelectionHandleType::Left, start);
+        assert_eq!(
+            at,
+            Offset::new(100.0 - size, 40.0),
+            "its right edge is the selection's start"
+        );
+
+        let end = SelectionEndpoint::new(Offset::new(180.0, 40.0), 16.0);
+        let at = handle_position(&controls, TextSelectionHandleType::Right, end);
+        assert_eq!(
+            at,
+            Offset::new(180.0, 40.0),
+            "its left edge is the selection's end"
+        );
+    }
     use super::*;
     use crate::framework::{Component, ElementTree};
     use crate::render::{
