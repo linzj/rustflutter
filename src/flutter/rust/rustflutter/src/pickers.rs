@@ -4634,6 +4634,13 @@ impl StatefulComponent for DateRangePickerDialog {
             Orientation::Landscape => RANGE_MAX_CALENDAR_WIDTH_LANDSCAPE,
         };
         let weekday_style = theme.muted();
+        // What the system draws over at the top -- the status bar, a notch.
+        // The fullscreen range dialog is upstream's `Scaffold` with an
+        // `AppBar`, and an `AppBar` sits its 56-tall toolbar *below* this: it
+        // wraps itself in a `SafeArea(bottom: false)`. Without it the close
+        // button and Save are under the status bar on a phone, which is to say
+        // unreachable, and the only way out of the dialog is the back button.
+        let top_inset = crate::media_query::padding_of(context).top;
 
         many(
             vec![toggle, content, ok, cancel, close],
@@ -4649,8 +4656,13 @@ impl StatefulComponent for DateRangePickerDialog {
                     // app bar carries the close button and Save, with the help
                     // text and the "start – end" line below it.
                     let top_bar = Container::new()
-                        .with_height(56.0)
-                        .with_padding(EdgeInsets::symmetric(4.0, 0.0))
+                        .with_height(56.0 + top_inset)
+                        .with_padding(EdgeInsets {
+                            left: 4.0,
+                            top: top_inset,
+                            right: 4.0,
+                            bottom: 0.0,
+                        })
                         .with_child(
                             Row::new()
                                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
