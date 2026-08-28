@@ -1069,6 +1069,11 @@ struct PortalControllerInner {
     /// place for it: a portal widget is rebuilt and replaced, and the
     /// controller is what stays the same thing across all of it.
     portal_id: u64,
+    /// The stage this portal last put its child on, so it can be taken off
+    /// again when the portal goes. On the controller because the controller is
+    /// what survives the widget being rebuilt and replaced -- the same reason
+    /// `portal_id` lives here.
+    stage: Option<OverlayStage>,
     controller: OverlayPortalController,
     /// The element to wake. `None` until the portal has built once -- upstream's
     /// `OverlayPortalController` is likewise inert until its portal attaches.
@@ -1115,9 +1120,28 @@ impl PortalController {
         PortalController {
             inner: Rc::new(RefCell::new(PortalControllerInner {
                 portal_id: next_overlay_id(),
+                stage: None,
                 controller: OverlayPortalController::new(None),
                 attached: None,
             })),
+        }
+    }
+
+    /// Records the stage the portal is putting its child on. Called from the
+    /// build that stages it; read by [`PortalController::withdraw`].
+    pub fn remember_stage(&self, stage: &OverlayStage) {
+        self.inner.borrow_mut().stage = Some(stage.clone());
+    }
+
+    /// Takes whatever this portal staged back off again.
+    ///
+    /// For the moment the portal's element goes while it is still showing:
+    /// `build`'s `take_out` never runs then, and the registry keeps what it
+    /// was last told until something says otherwise.
+    pub fn withdraw(&self) {
+        let inner = self.inner.borrow();
+        if let Some(stage) = &inner.stage {
+            stage.take_out(inner.portal_id);
         }
     }
 
@@ -1210,6 +1234,25 @@ struct PortalGate {
 impl StatefulComponent for PortalGate {
     type State = PortalState;
 
+    /// Takes the portal's child off the stage when the portal goes.
+    ///
+    /// **The registry keeps what it was last told.** `take_out` is called from
+    /// `build`, in the branch where the controller is not showing -- so a
+    /// portal that is *showing* when its element is released never withdraws,
+    /// and what it staged stays on the overlay over whatever comes next. A
+    /// tooltip put up and then left behind by the back button hung over the
+    /// page the reader went back to, which is how this was found; the same
+    /// would happen to any menu or dropdown whose route is popped while it is
+    /// open.
+    ///
+    /// Upstream has nothing here because it has nothing to withdraw: an
+    /// `OverlayPortal`'s child is an element in the overlay's own subtree, and
+    /// unmounting the portal unmounts it in the ordinary way. This stage is a
+    /// registry beside the tree, so it has to be told.
+    fn dispose(&self, _state: &mut PortalState) {
+        self.controller.withdraw();
+    }
+
     fn build(
         &self,
         _state: &PortalState,
@@ -1228,6 +1271,9 @@ impl StatefulComponent for PortalGate {
         };
 
         let stage = overlay.stage().clone();
+        // Remembered on the controller, which outlives every rebuild of this
+        // widget, so `dispose` can withdraw without a context to ask.
+        self.controller.remember_stage(&stage);
         if !self.controller.is_showing() {
             // Showing nothing is a withdrawal, not a silence: the registry
             // keeps what it was last told.
@@ -2404,18 +2450,36 @@ mod tests {
     /// driven by the returned controller.
     fn portal_app(controller: PortalController) -> ElementTree {
         OVERLAY_CHILD_SAW.with(|cell| cell.set(None));
+        PORTAL_STAGE.with(|cell| *cell.borrow_mut() = None);
         let mut tree = ElementTree::new();
         tree.rebuild(provide(
             Marker(1),
             overlay(provide(
                 Marker(2),
-                overlay_portal(controller, leaf(50.0, 50.0), || {
+                overlay_portal(controller, crate::framework::component(StageSpy), || {
                     crate::framework::component(Watcher)
                 }),
             )),
         ));
         tree.build_render_tree();
         tree
+    }
+
+    thread_local! {
+        static PORTAL_STAGE: RefCell<Option<OverlayStage>> = const { RefCell::new(None) };
+    }
+
+    /// Records the stage the portal's overlay is using, so a test can ask the
+    /// registry what is in it.
+    struct StageSpy;
+
+    impl Component for StageSpy {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            if let Some(overlay) = OverlayHandle::of(context) {
+                PORTAL_STAGE.with(|cell| *cell.borrow_mut() = Some(overlay.stage().clone()));
+            }
+            leaf(50.0, 50.0)
+        }
     }
 
     #[test]
@@ -2437,6 +2501,41 @@ mod tests {
         tree.rebuild_dirty();
 
         assert_eq!(theatre_entry_count(&mut tree), 1);
+    }
+
+    #[test]
+    fn a_portal_taken_away_while_showing_takes_its_child_with_it() {
+        // The bug this guards: `take_out` is called from `build`, in the branch
+        // where the controller is not showing. A portal released while it *is*
+        // showing never runs that branch, and the registry keeps what it was
+        // last told -- so the child stayed on the overlay, drawn over whatever
+        // came next.
+        //
+        // A tooltip put up and then left by the back button hung over the page
+        // the reader went back to, which is how this was found.
+        let controller = PortalController::new();
+        let mut tree = portal_app(controller.clone());
+        controller.show();
+        tree.rebuild_dirty();
+        assert_eq!(theatre_entry_count(&mut tree), 1, "it is up");
+
+        // The stage the portal put its child on. Read directly, because the
+        // leak is *in the registry*: a fresh overlay would make a fresh stage
+        // and show nothing either way, which is not the question.
+        let stage = PORTAL_STAGE
+            .with(|cell| cell.borrow().clone())
+            .expect("a stage");
+        assert_eq!(stage.registered(), 1);
+
+        // The page goes, and the portal with it, while still showing.
+        tree.rebuild(overlay(leaf(10.0, 10.0)));
+        tree.build_render_tree();
+
+        assert_eq!(
+            stage.registered(),
+            0,
+            "and nothing of it is left in the registry"
+        );
     }
 
     #[test]
