@@ -3877,6 +3877,24 @@ impl RenderBox for RangeWeekRow {
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         self.flex.visit_children(visit);
     }
+
+    /// The days, which is the whole point of the row.
+    ///
+    /// `RenderBox::hit_test_children` answers false by default -- the right
+    /// answer for a leaf, and the reason a box that paints children has to say
+    /// so itself. Without this the flex was painted and never hit: every day
+    /// in the range picker was visible, none was reachable, and the dialog was
+    /// a picture of a calendar.
+    ///
+    /// The flex sits at the row's own origin, which is where `paint` puts it,
+    /// so the position crosses unchanged.
+    fn hit_test_children(
+        &self,
+        position: Offset,
+        result: &mut crate::render::HitTestResult,
+    ) -> bool {
+        self.flex.hit_test(position, result)
+    }
 }
 
 /// One week row of a month item.

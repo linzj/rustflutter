@@ -22,7 +22,8 @@ use std::cell::Cell;
 
 use crate::framework::{AnyWidget, Notification, single};
 use crate::render::{
-    BoxConstraints, BoxedRender, Offset, PaintContext, RenderBox, RenderRef, Size, UpdateEffect,
+    BoxConstraints, BoxedRender, HitTestResult, Offset, PaintContext, RenderBox, RenderRef, Size,
+    UpdateEffect,
 };
 
 /// Upstream `PreferredSizeWidget`: a widget that knows how big it would like
@@ -156,6 +157,13 @@ impl RenderBox for RenderSizeChangedWithCallback {
 
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         visit(&self.child, Offset::ZERO);
+    }
+
+    /// Upstream's `_RenderSizeChangedWithCallback` is a `RenderProxyBox`, and
+    /// a proxy forwards its hit test. Saying nothing here would mean anything
+    /// wrapped in one could be seen and not touched.
+    fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
     }
 }
 

@@ -1598,6 +1598,34 @@ pub fn dismiss_topmost_modal() -> bool {
     }
 }
 
+/// The back button reaching the topmost modal.
+///
+/// Upstream has no counterpart because it needs none: a dialog there *is* a
+/// route, so the back button pops it the way it pops anything else, and
+/// `barrierDismissible` never enters into it -- that flag governs taps on the
+/// barrier and nothing else. Here a modal lives in the overlay rather than the
+/// route stack, so the platform's `popRoute` has to be told about it, and told
+/// with the barrier's opinion left out.
+///
+/// Which is the difference from [`dismiss_topmost_modal`]: that one is the
+/// `DismissIntent` -- Escape, the barrier -- and respects `dismissible`, and
+/// this one is the back button, which does not.
+///
+/// Returns whether a modal took it.
+pub fn pop_topmost_modal() -> bool {
+    let dismiss = MODALS.with(|modals| {
+        let modals = modals.borrow();
+        modals.last().map(|record| Rc::clone(&record.dismiss))
+    });
+    match dismiss {
+        Some(dismiss) => {
+            dismiss();
+            true
+        }
+        None => false,
+    }
+}
+
 /// How many modals are up. For tests and for anything that needs to know
 /// whether the page is reachable.
 pub fn modal_count() -> usize {

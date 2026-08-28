@@ -831,6 +831,21 @@ pub fn on_memory_pressure(mut handler: impl FnMut() + 'static) {
 /// answered with a bool, which would have been a protocol of our own invention.
 pub fn on_route_message(mut handler: impl FnMut(&str, &Value) + 'static) {
     NAVIGATION.set_handler(move |call, respond| {
+        // A modal is modal, so the back button takes down the dialog that is up
+        // before the application's own routes hear about it. Upstream needs no
+        // such interception -- a dialog there is a route, so it is simply the
+        // top of the stack `Navigator.maybePop` finds -- but a modal here lives
+        // in the theatre's overlay, which no navigator can see. Without this
+        // the back button reached straight past an open dialog and popped the
+        // page underneath it, leaving the dialog over a screen it did not
+        // belong to.
+        //
+        // This is the same interception `WidgetHost::on_key` makes for Escape,
+        // and for the same reason.
+        if call.method == "popRoute" && crate::theatre::pop_topmost_modal() {
+            respond.success(Value::Null);
+            return;
+        }
         handler(&call.method, &call.arguments);
         respond.success(Value::Null);
     });
