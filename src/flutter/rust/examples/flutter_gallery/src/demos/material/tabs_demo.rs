@@ -163,7 +163,7 @@ fn scrollable_strip(
     let theme = theme_of(context);
     let selected = state.scrollable;
     let offset = state.scroll.offset;
-    let extent = state.scroll.extent.clone();
+    let extent = state.scroll.link();
     let primary = theme.primary;
     let muted = theme.text_muted;
     let outline = theme.outline;
@@ -226,7 +226,7 @@ fn scrollable_strip(
     many(tabs, move |rendered| {
         let mut list = ListView::horizontal()
             .with_offset(offset)
-            .with_extent_sink(extent.clone());
+            .with_link(extent.clone());
         for tab in rendered {
             list = list.push(tab);
         }

@@ -59,7 +59,7 @@ pub(crate) fn screen(state: &GalleryState, handle: StateHandle<GalleryState>) ->
     super::app::themed(component(CraneBackdrop {
         tab: state.study.tab.min(2),
         scroll_offset: state.screen.offset,
-        scroll_extent: state.screen.extent.clone(),
+        scroll_extent: state.screen.link(),
         handle,
     }))
 }
@@ -69,7 +69,7 @@ struct CraneBackdrop {
     /// Upstream's `_tabController.index`, gallery-wide in `StudyState::tab`.
     tab: usize,
     scroll_offset: f32,
-    scroll_extent: std::rc::Rc<std::cell::Cell<f32>>,
+    scroll_extent: std::rc::Rc<rustflutter::scrolling::ScrollLink>,
     handle: StateHandle<GalleryState>,
 }
 
@@ -111,7 +111,7 @@ impl Component for CraneBackdrop {
             }
             let list = ListView::new()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone())
+                .with_link(extent.clone())
                 .push(column);
             Box::new(Pointer::new(ids::SCREEN_SCROLL, list).with_handlers(handlers.clone()))
         });

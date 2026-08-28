@@ -238,11 +238,10 @@ pub struct Scroll {
     /// [`jump_to`](Scroll::jump_to) can do the same, and
     /// [`set_extent`](Scroll::set_extent) is the correction.
     pub offset: f32,
-    /// How far this list can scroll, filled in at layout.
-    pub extent: Rc<Cell<f32>>,
-    /// How much of the content is on screen, filled in at layout alongside the
-    /// extent. Upstream's `ScrollPosition.viewportDimension`.
-    viewport: Rc<Cell<f32>>,
+    /// What this scroll and its viewport say to each other: how far the
+    /// content can scroll and how much of it is on screen, filled in at
+    /// layout, and the reveals the render tree asks for. See [`ScrollLink`].
+    link: Rc<ScrollLink>,
     /// What is in flight, if anything: a fling or an animation. Upstream's
     /// current `ScrollActivity`.
     activity: Option<Activity>,
@@ -359,12 +358,75 @@ const FLING_TOLERANCE_VELOCITY: f32 = 20.0;
 /// logical pixels.
 const SCROLL_TOLERANCE_DISTANCE: f32 = 1.0;
 
+/// What a viewport and the [`Scroll`] that holds its offset say to each other.
+///
+/// Upstream needs no such thing. A `RenderViewportBase` holds its
+/// `ViewportOffset`, and that object *is* the `ScrollPosition`: reading the
+/// offset, reporting the extent and moving the offset are three method calls
+/// on one thing. Here the offset lives on the application's state, because
+/// that is what lets a drag and a fling move it from where the events arrive
+/// -- so the two halves are joined by this handle instead.
+///
+/// It carries both directions, and that is the point of it being one type:
+///
+///   * **down**, what only layout knows -- how far the content can scroll and
+///     how much of it is on screen, settled when the viewport is measured;
+///   * **up**, what only the render tree can decide -- a *reveal*: "put the
+///     offset here, so that something inside can be seen". A focused text
+///     field about to be covered by the keyboard is what asks.
+///
+/// One handle rather than two sinks because a scrollable that wired the extent
+/// and forgot the reveal would look completely normal and silently never
+/// scroll a focused field into view. There is nothing to forget: whatever is
+/// given a link can do both.
+#[derive(Debug, Default)]
+pub struct ScrollLink {
+    extent: Cell<f32>,
+    viewport: Cell<f32>,
+    /// A reveal asked for by the render tree and not yet acted on. Taken by
+    /// [`Scroll::advance`] on the next frame, which is the first moment there
+    /// is a frame clock to animate against.
+    reveal: Cell<Option<(f32, crate::render::Reveal)>>,
+}
+
+impl ScrollLink {
+    /// What the last layout measured. Called by the viewport.
+    pub fn set_measurements(&self, extent: f32, viewport: f32) {
+        self.extent.set(extent);
+        self.viewport.set(viewport);
+    }
+
+    /// How far the content can scroll, as last measured.
+    pub fn extent(&self) -> f32 {
+        self.extent.get()
+    }
+
+    /// How much of the content is on screen, as last measured.
+    pub fn viewport(&self) -> f32 {
+        self.viewport.get()
+    }
+
+    /// Asks for the offset to go to `offset`. Called by the viewport, from a
+    /// [`crate::render::RenderRef::show_on_screen`] walk.
+    ///
+    /// The last ask wins: two reveals in one frame mean the second knows
+    /// something the first did not, which is upstream's behaviour too -- its
+    /// `offset.moveTo` simply replaces whatever activity was running.
+    pub fn request_reveal(&self, offset: f32, reveal: crate::render::Reveal) {
+        self.reveal.set(Some((offset, reveal)));
+    }
+
+    /// Takes the pending reveal, if any.
+    pub fn take_reveal(&self) -> Option<(f32, crate::render::Reveal)> {
+        self.reveal.take()
+    }
+}
+
 impl Default for Scroll {
     fn default() -> Scroll {
         Scroll {
             offset: 0.0,
-            extent: Rc::new(Cell::new(0.0)),
-            viewport: Rc::new(Cell::new(0.0)),
+            link: Rc::new(ScrollLink::default()),
             activity: None,
             sink: RefCell::new(None),
             scrolling: Cell::new(false),
@@ -380,7 +442,13 @@ impl Scroll {
 
     /// How far this list can scroll. Zero until something has measured it.
     pub fn max_extent(&self) -> f32 {
-        self.extent.get().max(0.0)
+        self.link.extent().max(0.0)
+    }
+
+    /// The handle a viewport is given, so it can report what it measured and
+    /// ask for what it needs to show. See [`ScrollLink`].
+    pub fn link(&self) -> Rc<ScrollLink> {
+        Rc::clone(&self.link)
     }
 
     /// Records how far the list can scroll and how much of it is on screen,
@@ -400,8 +468,7 @@ impl Scroll {
     /// `applyContentDimensions`, and this is that moment here. A jump made
     /// before anything was measured therefore survives to be measured.
     pub fn set_extent(&mut self, extent: f32, viewport_dimension: f32) {
-        self.extent.set(extent);
-        self.viewport.set(viewport_dimension);
+        self.link.set_measurements(extent, viewport_dimension);
         self.offset = self.offset.clamp(0.0, self.max_extent());
     }
 
@@ -436,7 +503,7 @@ impl Scroll {
             pixels: self.offset,
             min_scroll_extent: 0.0,
             max_scroll_extent: self.max_extent(),
-            viewport_dimension: self.viewport.get(),
+            viewport_dimension: self.link.viewport(),
         }
     }
 
@@ -720,11 +787,35 @@ impl Scroll {
     /// the frame the motion finishes -- or runs into the end of the content --
     /// dispatches the [`End`](ScrollNotification::End) and nothing further.
     pub fn advance(&mut self, frame_time_micros: i64) -> bool {
+        // A reveal the render tree asked for during the last frame's paint --
+        // a focused field getting out from under the keyboard. Taken before
+        // the early return below, because a scroll standing still is exactly
+        // the case a reveal has to be able to start from.
+        //
+        // Upstream does this without a hop: `showInViewport` calls
+        // `offset.moveTo` and the position it is holding moves there and then.
+        // Here the offset is the application's, and this is the first moment
+        // it is in hand -- with a frame clock, which is what an animated
+        // reveal needs.
+        let revealed = match self.link.take_reveal() {
+            Some((target, reveal)) => {
+                self.animate_to(target, reveal.duration_micros, reveal.curve);
+                true
+            }
+            None => false,
+        };
+
         // Ask the simulation first and let it go, before anything is notified:
         // the notification is dispatched into the tree, which may rebuild, and
         // nothing there may still be borrowed when it is.
+        //
+        // `revealed` rather than `false`, and that is not a nicety: a reveal
+        // with no duration is a jump, a jump leaves no activity behind, and
+        // answering "nothing is moving" to the frame loop would end the frame
+        // that was going to draw the offset this just changed. The keyboard's
+        // reveal is exactly that jump -- see `Reveal::NOW`.
         let Some(activity) = self.activity.as_mut() else {
-            return false;
+            return revealed;
         };
         let started = *activity.started_micros.get_or_insert(frame_time_micros);
         let elapsed = (frame_time_micros - started).max(0) as f32 / 1_000_000.0;
@@ -1206,7 +1297,7 @@ pub struct SliverListView {
     offset: f32,
     cache_extent: f32,
     user_scroll_direction: ScrollDirection,
-    extent_sink: Option<Rc<Cell<f32>>>,
+    link: Option<Rc<ScrollLink>>,
 }
 
 impl SliverListView {
@@ -1224,7 +1315,7 @@ impl SliverListView {
             offset: 0.0,
             cache_extent: DEFAULT_CACHE_EXTENT,
             user_scroll_direction: ScrollDirection::Idle,
-            extent_sink: None,
+            link: None,
         }
     }
 
@@ -1294,8 +1385,8 @@ impl SliverListView {
 
     /// Reports how far this list can scroll, once it has been laid out. The
     /// cell is the way back out; see [`ListView`]'s note on the same trick.
-    pub fn with_extent_sink(mut self, sink: Rc<Cell<f32>>) -> Self {
-        self.extent_sink = Some(sink);
+    pub fn with_link(mut self, link: Rc<ScrollLink>) -> Self {
+        self.link = Some(link);
         self
     }
 }
@@ -1437,8 +1528,8 @@ impl crate::render::RenderBox for SliverListHost {
         }
         let viewport = self.viewport.as_mut().expect("built just above");
         let size = viewport.layout(constraints);
-        if let Some(sink) = &self.config.extent_sink {
-            sink.set(viewport.max_scroll_extent());
+        if let Some(link) = &self.config.link {
+            link.set_measurements(viewport.max_scroll_extent(), size.height);
         }
         size
     }
@@ -1974,6 +2065,99 @@ impl ShrinkWrappingViewport {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    // -- Reveals: what a viewport asks its scroll for ------------------------
+
+    #[test]
+    fn a_link_carries_a_reveal_once() {
+        let link = ScrollLink::default();
+        assert_eq!(link.take_reveal(), None, "nothing asked for yet");
+        link.request_reveal(120.0, crate::render::Reveal::NOW);
+        assert_eq!(
+            link.take_reveal(),
+            Some((120.0, crate::render::Reveal::NOW))
+        );
+        assert_eq!(link.take_reveal(), None, "and it is spent");
+    }
+
+    #[test]
+    fn the_last_reveal_in_a_frame_is_the_one_that_happens() {
+        // Two asks before anything consumed either: the second knows whatever
+        // the first did. Upstream's `offset.moveTo` replaces the running
+        // activity rather than queueing behind it.
+        let link = ScrollLink::default();
+        link.request_reveal(120.0, crate::render::Reveal::NOW);
+        link.request_reveal(300.0, crate::render::Reveal::NOW);
+        assert_eq!(link.take_reveal().map(|(offset, _)| offset), Some(300.0));
+    }
+
+    #[test]
+    fn a_scroll_takes_a_reveal_on_the_next_frame() {
+        let mut scroll = Scroll::new();
+        scroll.set_extent(500.0, 200.0);
+        scroll
+            .link()
+            .request_reveal(120.0, crate::render::Reveal::NOW);
+
+        let moving = scroll.advance(0);
+        assert_eq!(scroll.offset, 120.0, "the offset is where the reveal asked");
+        assert!(
+            moving,
+            "and the frame loop is told something moved -- a reveal with no              duration leaves no activity behind, and answering `false` would              end the frame that was going to draw it"
+        );
+    }
+
+    #[test]
+    fn a_scroll_standing_still_still_takes_a_reveal() {
+        // The early return for "no activity" is below the reveal, not above
+        // it: a still scroll is exactly the case a reveal starts from.
+        let mut scroll = Scroll::new();
+        scroll.set_extent(500.0, 200.0);
+        assert!(!scroll.advance(0), "nothing is moving to begin with");
+        scroll
+            .link()
+            .request_reveal(80.0, crate::render::Reveal::NOW);
+        assert!(scroll.advance(16_000));
+        assert_eq!(scroll.offset, 80.0);
+    }
+
+    #[test]
+    fn an_animated_reveal_travels_rather_than_jumping() {
+        let mut scroll = Scroll::new();
+        scroll.set_extent(500.0, 200.0);
+        scroll.link().request_reveal(
+            200.0,
+            crate::render::Reveal::animated(100_000, crate::animation::Curve::FAST_OUT_SLOW_IN),
+        );
+        scroll.advance(0);
+        assert!(
+            scroll.offset < 200.0,
+            "still on its way at the first frame, not already there"
+        );
+        // Well past the hundred milliseconds it was given.
+        scroll.advance(500_000);
+        assert_eq!(scroll.offset, 200.0);
+    }
+
+    #[test]
+    fn a_reveal_out_of_range_waits_to_be_corrected_like_any_other_jump() {
+        // The clamping belongs to the viewport, which knows what it measured
+        // and does it before asking -- see `RenderViewport::show_in_viewport`.
+        // A `Scroll` handed a number past the end keeps it, exactly as
+        // [`Scroll::jump_to`] does and for the reason upstream's `forcePixels`
+        // does: the correction is the next layout, not the assignment.
+        let mut scroll = Scroll::new();
+        scroll.set_extent(50.0, 200.0);
+        scroll
+            .link()
+            .request_reveal(400.0, crate::render::Reveal::NOW);
+        scroll.advance(0);
+        assert_eq!(scroll.offset, 400.0, "stored as given");
+        scroll.set_extent(50.0, 200.0);
+        assert_eq!(scroll.offset, 50.0, "and corrected when it is measured");
+    }
+
     #[test]
     fn a_shrink_wrapping_viewport_takes_what_its_content_asked_for() {
         let viewport = ShrinkWrappingViewport::default();

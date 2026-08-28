@@ -1261,7 +1261,7 @@ impl StatefulComponent for YearPicker {
     ) -> AnyWidget {
         let theme = theme_of(context);
         let offset = state.scroll.offset;
-        let extent_sink = state.scroll.extent.clone();
+        let extent_sink = state.scroll.link();
         let current_date = self.current_date.unwrap_or_else(Date::today);
         let selected_year = self.selected_date.map(|d| d.year);
         let selected_month = self.selected_date.map(|d| d.month);
@@ -1294,9 +1294,7 @@ impl StatefulComponent for YearPicker {
         leaf(move || {
             // `_YearPickerState.build`: dividers around a grid of year cells.
             let extent_sink = extent_sink.clone();
-            let mut list = ListView::new()
-                .with_offset(offset)
-                .with_extent_sink(extent_sink);
+            let mut list = ListView::new().with_offset(offset).with_link(extent_sink);
             let count = item_count_of(first_date, last_date);
             let backfill = if count < MIN_YEARS {
                 (MIN_YEARS - count) / 2
@@ -4397,7 +4395,7 @@ impl StatefulComponent for DateRangePickerDialog {
                 on_primary,
             };
             let scroll_offset = state.month_scroll.offset;
-            let extent_sink = state.month_scroll.extent.clone();
+            let extent_sink = state.month_scroll.link();
             let list_handle = handle.clone();
             let down_handle = handle.clone();
             let drag_handle = handle.clone();
@@ -4422,7 +4420,7 @@ impl StatefulComponent for DateRangePickerDialog {
             leaf(move || {
                 let mut list = ListView::new()
                     .with_offset(scroll_offset)
-                    .with_extent_sink(extent_sink.clone());
+                    .with_link(extent_sink.clone());
                 let months = month_delta(first_date, last_date) + 1;
                 let mut month = first_date.first_of_month();
                 for month_index in 0..months {

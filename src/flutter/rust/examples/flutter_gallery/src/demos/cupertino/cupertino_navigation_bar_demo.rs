@@ -180,11 +180,11 @@ fn first_page(
         });
 
     let offset = state.scroll.offset;
-    let extent = state.scroll.extent.clone();
+    let extent = state.scroll.link();
     let list: AnyWidget = many(tiles, move |rendered| {
         let mut list = ListView::new()
             .with_offset(offset)
-            .with_extent_sink(extent.clone());
+            .with_link(extent.clone());
         for tile in rendered {
             list = list.push(tile);
         }

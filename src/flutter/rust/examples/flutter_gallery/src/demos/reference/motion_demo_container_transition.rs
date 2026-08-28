@@ -353,7 +353,7 @@ fn icon_button(
 fn closed_list(state: &ContainerDemoState, handle: &StateHandle<ContainerDemoState>) -> AnyWidget {
     let l10n = GalleryLocalizations::en();
     let offset = state.closed_scroll.offset;
-    let extent = state.closed_scroll.extent.clone();
+    let extent = state.closed_scroll.link();
 
     let mut children: Vec<AnyWidget> = Vec::new();
     // `_DetailsCard`.
@@ -418,7 +418,7 @@ fn closed_list(state: &ContainerDemoState, handle: &StateHandle<ContainerDemoSta
         }
         let list = rustflutter::widgets::ListView::new()
             .with_offset(offset)
-            .with_extent_sink(extent.clone())
+            .with_link(extent.clone())
             .push(column);
         Box::new(
             Container::new()
@@ -700,7 +700,7 @@ fn details_page(
         close_details,
     );
     let offset = state.details_scroll.offset;
-    let extent = state.details_scroll.extent.clone();
+    let extent = state.details_scroll.link();
 
     let down_handle = handle.clone();
     let drag_handle = handle.clone();
@@ -751,7 +751,7 @@ fn details_page(
         }
         let list = rustflutter::widgets::ListView::new()
             .with_offset(offset)
-            .with_extent_sink(extent.clone())
+            .with_link(extent.clone())
             .push(hero)
             .push(
                 Container::new()

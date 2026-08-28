@@ -1205,6 +1205,23 @@ impl UpdateEffect {
 /// 3. `paint` draws at the offset it is given and nowhere else; a render object
 ///    never knows its absolute position.
 pub trait RenderBox: AsAny {
+    /// The viewport this object scrolls with, if it is one or owns one.
+    ///
+    /// Upstream has no equivalent because it does not need one: `showOnScreen`
+    /// is a virtual method, and `RenderViewportBase` overrides it. The walk in
+    /// [`RenderRef::show_on_screen`] dispatches on this instead, and it is a
+    /// question rather than an override because a viewport here is not always
+    /// the object the walk finds -- [`crate::widgets::ListView`] owns its
+    /// [`RenderViewport`] inline rather than behind a handle, so the handle the
+    /// walk reaches is the list's and the viewport is one field further in.
+    ///
+    /// Answering it is what makes an object scrollable by a reveal. Everything
+    /// else says `None` and is walked straight through, which is upstream's
+    /// behaviour for every render object that is not a viewport.
+    fn as_viewport(&self) -> Option<&RenderViewport> {
+        None
+    }
+
     /// Chooses a size for the given constraints, laying out children as needed.
     fn layout(&mut self, constraints: BoxConstraints) -> Size;
 
@@ -2200,6 +2217,63 @@ impl RenderRef {
         let origin = self.local_to_global(Offset::ZERO, ancestor);
         let size = self.size();
         crate::engine::Rect::xywh(origin.dx, origin.dy, size.width, size.height)
+    }
+
+    /// Scrolls every viewport above this object until `rect` is on screen.
+    ///
+    /// Upstream's `RenderObject.showOnScreen`, which is how a focused text
+    /// field gets out from under the keyboard, how focus traversal follows the
+    /// Tab key down a long form, and how a semantics action brings the node a
+    /// screen reader named into view. `rect` is in this object's own
+    /// coordinates; passing the caret's rectangle is what makes this the caret
+    /// that is revealed rather than the whole field.
+    ///
+    /// # The walk, and what each viewport changes
+    ///
+    /// Upstream is two methods that call each other: `RenderObject.
+    /// showOnScreen` forwards to the parent carrying `descendant ?? this`, and
+    /// `RenderViewportBase.showOnScreen` overrides it to scroll first and then
+    /// forward *without* a descendant -- which makes itself the descendant and
+    /// rebases `rect` into its own coordinates. Written as a loop rather than
+    /// as an override because this crate's render objects are reached through
+    /// handles and dispatch on a downcast, but the two facts it turns on are
+    /// upstream's:
+    ///
+    ///   * **the rect stays in the descendant's frame** until a viewport
+    ///     rewrites it, so a chain of plain boxes between the field and the
+    ///     list costs nothing and loses nothing;
+    ///   * **each viewport rebases** to where the target will be *after* its
+    ///     own scroll, so the next one up is told the truth rather than where
+    ///     the target used to be. Getting that wrong is how a field inside two
+    ///     nested lists ends up half-revealed.
+    ///
+    /// A viewport with nothing to scroll -- no sink, already showing the
+    /// target, or no room -- still rebases and the walk goes on. That is
+    /// upstream's already-visible branch, which returns the transformed rect
+    /// rather than `null` for exactly this reason.
+    ///
+    /// # Not during your own layout
+    ///
+    /// It reads [`RenderRef::transform_to`], so it carries that method's
+    /// constraint: call it from paint, hit testing or semantics, never from
+    /// inside a layout. [`RenderEditable`] calls it from paint, which is also
+    /// the first moment the caret's place in the field is known.
+    pub fn show_on_screen(&self, rect: crate::engine::Rect, reveal: Reveal) {
+        let mut descendant = self.clone();
+        let mut rect = rect;
+        let mut current = self.clone();
+        while let Some(parent) = current.parent_ref() {
+            let rebased = parent.with(|object| {
+                object
+                    .as_viewport()
+                    .map(|viewport| viewport.show_in_viewport(&descendant, &parent, rect, reveal))
+            });
+            if let Some(rebased) = rebased {
+                rect = rebased;
+                descendant = parent.clone();
+            }
+            current = parent;
+        }
     }
 
     /// Says this object's layout is no longer good, so the next frame does it
@@ -9418,6 +9492,17 @@ pub struct RenderViewport {
     /// what turns the clip off rather than only blunting it, see
     /// [`RenderViewport::should_clip_at_paint_offset`].
     clip_behavior: ClipBehavior,
+    /// What this viewport and the `Scroll` holding its offset say to each
+    /// other: where the offset should go when something inside has to be seen,
+    /// and how far the content turned out to reach.
+    ///
+    /// `None` is a viewport nobody can scroll programmatically: it still
+    /// rebases a [`RenderRef::show_on_screen`] walk passing through it, and
+    /// still scrolls under a finger, but a caret inside it stays where it is.
+    /// Upstream's equivalent is `ViewportOffset.allowImplicitScrolling`, false
+    /// for `NeverScrollableScrollPhysics`, which makes `showOnScreen` pass
+    /// straight through.
+    link: Option<std::rc::Rc<crate::scrolling::ScrollLink>>,
     child: BoxedRender,
     child_size: Size,
     size: Size,
@@ -9445,10 +9530,92 @@ impl RenderViewport {
             axis_direction,
             offset: 0.0,
             clip_behavior: ClipBehavior::HardEdge,
+            link: None,
             child: RenderRef::new(child),
             child_size: Size::ZERO,
             size: Size::ZERO,
         }
+    }
+
+    /// The handle this viewport and its `Scroll` talk through. See
+    /// [`crate::scrolling::ScrollLink`].
+    pub fn with_link(mut self, link: std::rc::Rc<crate::scrolling::ScrollLink>) -> Self {
+        self.link = Some(link);
+        self
+    }
+
+    /// Scrolls so `rect` -- given in `descendant`'s coordinates -- is inside
+    /// this viewport, and answers where it will then be in *this* object's.
+    ///
+    /// Upstream's `RenderViewportBase.showInViewport`, which
+    /// [`RenderRef::show_on_screen`] drives. The answer is returned rather
+    /// than acted on further because the caller keeps walking: an outer list
+    /// has to be told where the target lands after this scroll, not where it
+    /// was before.
+    ///
+    /// The offset asked for is the *smallest* one that reveals the target --
+    /// [`RevealedOffset::clamp_offset`] over the leading and trailing edges --
+    /// so a target already fully visible is not moved at all. Upstream returns
+    /// `null` from `clampOffset` in that case and still recomputes the rect,
+    /// which is what the `None` arm does here.
+    fn show_in_viewport(
+        &self,
+        descendant: &RenderRef,
+        this: &RenderRef,
+        rect: crate::engine::Rect,
+        reveal: Reveal,
+    ) -> crate::engine::Rect {
+        // The target in this viewport's coordinates. Only the origin is
+        // mapped and the size kept, which is exact under a translation and is
+        // what [`RenderRef::global_rect`] does for the same reason.
+        let origin = descendant.local_to_global(Offset::new(rect.left, rect.top), Some(this));
+        let (width, height) = (rect.width(), rect.height());
+        let in_viewport = crate::engine::Rect::xywh(origin.dx, origin.dy, width, height);
+
+        // And then in the content's: paint puts the content at
+        // `scroll_offset()`, so undoing that turns "where it is drawn" into
+        // "where it lives in the content" -- the frame
+        // `get_offset_to_reveal` measures a scroll in.
+        let drawn_at = self.scroll_offset();
+        let in_child = crate::engine::Rect::xywh(
+            origin.dx - drawn_at.dx,
+            origin.dy - drawn_at.dy,
+            width,
+            height,
+        );
+
+        let leading = self.get_offset_to_reveal(in_child, 0.0);
+        let trailing = self.get_offset_to_reveal(in_child, 1.0);
+        let asked = RevealedOffset::clamp_offset(leading, trailing, self.offset);
+
+        // Already showing, or nothing to scroll with. Either way this viewport
+        // does not move, so neither does the target: the rect goes back in
+        // this object's coordinates and the walk carries on. Upstream returns
+        // the transformed rect from the already-visible branch of
+        // `showInViewport` for exactly this reason, and passes straight
+        // through when `allowImplicitScrolling` is false.
+        let (Some(asked), Some(link)) = (asked, self.link.as_ref()) else {
+            return in_viewport;
+        };
+
+        // Clamped here rather than trusted from the arithmetic, because
+        // `get_offset_to_reveal` deliberately does not clamp -- upstream
+        // leaves that to `ScrollPosition.moveTo`, and this is that step.
+        let offset = asked.offset.clamp(0.0, self.max_scroll_extent());
+        link.request_reveal(offset, reveal);
+
+        // Where the target lands once that scroll has happened. Worked out
+        // from the paint offset at the new scroll rather than taken from
+        // `asked.rect`, because the two disagree in the case that matters: a
+        // viewport with no room left did not move as far as it asked, and the
+        // list above it must be told what actually happens.
+        let settled = self.scroll_offset_for(offset);
+        crate::engine::Rect::xywh(
+            in_child.left + settled.dx,
+            in_child.top + settled.dy,
+            width,
+            height,
+        )
     }
 
     /// The scroll axis, and which way it runs. Upstream's `ScrollView.reverse`
@@ -9510,14 +9677,21 @@ impl RenderViewport {
     /// children walk and the hit test all read this, which is what keeps the
     /// three saying the same thing about a reversed viewport.
     fn scroll_offset(&self) -> Offset {
+        self.scroll_offset_for(self.offset)
+    }
+
+    /// The same, for a scroll this viewport has not made yet. What a reveal
+    /// needs: where the target *would* be drawn at the offset it is about to
+    /// ask for.
+    fn scroll_offset_for(&self, offset: f32) -> Offset {
         match self.axis_direction {
-            AxisDirection::Down => Offset::new(0.0, -self.offset),
-            AxisDirection::Right => Offset::new(-self.offset, 0.0),
+            AxisDirection::Down => Offset::new(0.0, -offset),
+            AxisDirection::Right => Offset::new(-offset, 0.0),
             AxisDirection::Up => {
-                Offset::new(0.0, self.offset - self.child_size.height + self.size.height)
+                Offset::new(0.0, offset - self.child_size.height + self.size.height)
             }
             AxisDirection::Left => {
-                Offset::new(self.offset - self.child_size.width + self.size.width, 0.0)
+                Offset::new(offset - self.child_size.width + self.size.width, 0.0)
             }
         }
     }
@@ -9540,6 +9714,10 @@ impl RenderViewport {
 }
 
 impl RenderBox for RenderViewport {
+    fn as_viewport(&self) -> Option<&RenderViewport> {
+        Some(self)
+    }
+
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderViewport>()?;
         // The offset is read by `layout`, which also re-clamps it against
@@ -9557,6 +9735,11 @@ impl RenderBox for RenderViewport {
         self.axis_direction = fresh.axis_direction;
         self.offset = fresh.offset;
         self.clip_behavior = fresh.clip_behavior;
+        // Carried without being compared: it is a handle to the same `Scroll`
+        // either way, and nothing about the geometry changes when it is
+        // replaced. What matters is that the object the walk will find is
+        // holding one, so it takes the newest.
+        self.link = fresh.link.take();
         self.child = fresh.child.clone();
         Some(effect)
     }
@@ -12137,6 +12320,33 @@ impl RenderBox for RenderCustomPaint {
 
 // -- Scrolling something into view --------------------------------------------
 
+/// How a reveal should move: instantly, or over a duration.
+///
+/// Upstream passes `duration` and `curve` along the whole `showOnScreen`
+/// chain; they travel together and are never apart, so they are one value
+/// here. `Reveal::NOW` is upstream's `Duration.zero` default, which
+/// `ViewportOffset.moveTo` turns into a `jumpTo`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Reveal {
+    pub duration_micros: i64,
+    pub curve: crate::animation::Curve,
+}
+
+impl Reveal {
+    /// No animation: the offset is where it needs to be on the next frame.
+    pub const NOW: Reveal = Reveal {
+        duration_micros: 0,
+        curve: crate::animation::Curve::Linear,
+    };
+
+    pub fn animated(duration_micros: i64, curve: crate::animation::Curve) -> Reveal {
+        Reveal {
+            duration_micros,
+            curve,
+        }
+    }
+}
+
 /// Upstream `RevealedOffset` (`rendering/viewport.dart`): a scroll offset that
 /// would reveal something, and where that something would then be.
 ///
@@ -12204,14 +12414,16 @@ impl RevealedOffset {
 ///
 /// Upstream's `getOffsetToReveal(RenderObject target, ...)` starts by walking
 /// the transforms from `target` up to the viewport to work out where the
-/// target *is*. This crate has no such walk exposed, so the rect is passed in
-/// -- in the scrolled child's coordinates, which is the frame a caller who
-/// knows where its own item sits already has. What is left is the arithmetic,
-/// which is the whole of what the method decides.
+/// target *is*. Here the walk is the caller's: [`RenderRef::show_on_screen`]
+/// does it with [`RenderRef::transform_to`] and hands the arithmetic a rect
+/// already in the scrolled child's coordinates. What is left is the
+/// arithmetic, which is the whole of what the method decides -- and a caller
+/// who knows where its own item sits can use it directly, without a walk.
 ///
-/// Upstream's `maybeOf`/`of` static ancestor lookups are absent for the same
-/// reason: they walk `RenderObject.parent`, and reaching a viewport here is
-/// something the caller does by holding it.
+/// Upstream's `maybeOf`/`of` static ancestor lookups have no counterpart:
+/// they exist so a widget can find the viewport above it, and
+/// [`RenderRef::show_on_screen`] finds it by walking rather than by handing it
+/// back.
 pub trait RenderAbstractViewport {
     /// Upstream's `defaultCacheExtent`. The value lives in
     /// [`crate::scrolling::DEFAULT_CACHE_EXTENT`], beside the scrolling that
@@ -16008,6 +16220,64 @@ mod tests {
         let revealed = viewport.get_offset_to_reveal(target, 0.0);
         assert_eq!(revealed.offset, 400.0);
         assert_eq!(revealed.rect, Rect::ltrb(0.0, 0.0, 50.0, 100.0));
+    }
+
+    // -- The walk: from a leaf up to whatever can show it ---------------------
+
+    /// A list with a tall spacer and then a target, laid out in a 200 window.
+    /// Built out of handles directly, the way the `transform_to` tests are:
+    /// what the walk needs is the parent links, and those are claimed by
+    /// layout.
+    fn list_with_a_target_below_the_fold(
+        spacer: f32,
+    ) -> (
+        std::rc::Rc<crate::scrolling::ScrollLink>,
+        RenderRef,
+        RenderRef,
+    ) {
+        let link = std::rc::Rc::new(crate::scrolling::ScrollLink::default());
+        let target = RenderRef::new(RenderConstrainedBox::tight(100.0, 50.0));
+        let column = RenderFlex::column()
+            .push(RenderConstrainedBox::tight(100.0, spacer))
+            .push(target.clone());
+        let mut root = RenderRef::new(
+            crate::widgets::ListView::new()
+                .with_link(std::rc::Rc::clone(&link))
+                .push(column),
+        );
+        root.layout(BoxConstraints::tight(100.0, 200.0));
+        (link, target, root)
+    }
+
+    #[test]
+    fn a_reveal_walks_up_to_the_list_that_can_show_it() {
+        // Upstream's `RenderObject.showOnScreen`: nothing between the target
+        // and the list has to know anything about scrolling, and the list is
+        // found by walking rather than by being handed over.
+        //
+        // 400 of spacer then a 50 target, in a 200 window: the content is 450,
+        // so the list can scroll 250, and the smallest scroll that shows the
+        // target puts its bottom on the window's -- 400 + 50 - 200 = 250.
+        let (link, target, _root) = list_with_a_target_below_the_fold(400.0);
+
+        target.show_on_screen(Rect::ltrb(0.0, 0.0, 100.0, 50.0), Reveal::NOW);
+
+        assert_eq!(
+            link.take_reveal(),
+            Some((250.0, Reveal::NOW)),
+            "the list was asked to scroll exactly far enough"
+        );
+    }
+
+    #[test]
+    fn a_reveal_of_something_already_on_screen_asks_for_nothing() {
+        // The same walk, with the target inside the window to begin with.
+        // `clamp_offset` answers `None` and the list is never asked.
+        let (link, target, _root) = list_with_a_target_below_the_fold(50.0);
+
+        target.show_on_screen(Rect::ltrb(0.0, 0.0, 100.0, 50.0), Reveal::NOW);
+
+        assert_eq!(link.take_reveal(), None);
     }
 
     #[test]

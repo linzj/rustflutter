@@ -82,7 +82,7 @@ pub struct GridView {
     offset: f32,
     cache_extent: f32,
     user_scroll_direction: ScrollDirection,
-    extent_sink: Option<Rc<Cell<f32>>>,
+    link: Option<Rc<crate::scrolling::ScrollLink>>,
 }
 
 impl GridView {
@@ -135,7 +135,7 @@ impl GridView {
             offset: 0.0,
             cache_extent: crate::scrolling::DEFAULT_CACHE_EXTENT,
             user_scroll_direction: ScrollDirection::Idle,
-            extent_sink: None,
+            link: None,
         }
     }
 
@@ -212,8 +212,8 @@ impl GridView {
     /// Reports how far this grid can scroll, once it has been laid out. The
     /// cell is the way back out; see [`crate::scrolling::SliverListView`]'s
     /// note on the same trick.
-    pub fn with_extent_sink(mut self, sink: Rc<Cell<f32>>) -> Self {
-        self.extent_sink = Some(sink);
+    pub fn with_link(mut self, link: Rc<crate::scrolling::ScrollLink>) -> Self {
+        self.link = Some(link);
         self
     }
 }
@@ -343,8 +343,8 @@ impl RenderBox for GridHost {
         }
         let viewport = self.viewport.as_mut().expect("built just above");
         let size = viewport.layout(constraints);
-        if let Some(sink) = &self.config.extent_sink {
-            sink.set(viewport.max_scroll_extent());
+        if let Some(link) = &self.config.link {
+            link.set_measurements(viewport.max_scroll_extent(), size.height);
         }
         size
     }
@@ -703,19 +703,18 @@ mod tests {
     fn a_grid_view_reports_how_far_it_can_scroll() {
         use crate::framework::{ElementTree, component};
 
-        let extent = Rc::new(Cell::new(0.0f32));
-        let sink = Rc::clone(&extent);
+        let link = Rc::new(crate::scrolling::ScrollLink::default());
         let mut tree = ElementTree::new();
         tree.rebuild(component(
             GridView::count(2, 20, |_| {
                 RenderRef::new(render::RenderConstrainedBox::tight(50.0, 50.0))
             })
-            .with_extent_sink(sink),
+            .with_link(Rc::clone(&link)),
         ));
         let mut root = tree.build_render_tree().expect("a mounted root");
         root.layout(BoxConstraints::tight(100.0, 200.0));
         // Ten rows of 50 in a 200 window.
-        assert_eq!(extent.get(), 300.0);
+        assert_eq!(link.extent(), 300.0);
     }
 
     #[test]

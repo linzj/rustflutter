@@ -117,7 +117,7 @@ impl StatefulComponent for ScrollbarDemo {
             leaf(move || {
                 let mut list = ListView::new()
                     .with_offset(scroll.offset)
-                    .with_extent_sink(scroll.extent.clone());
+                    .with_link(scroll.link());
                 for index in 0..ITEM_COUNT {
                     // `Center(child: Text('item $index'))`, zero-based as the
                     // builder's index is.

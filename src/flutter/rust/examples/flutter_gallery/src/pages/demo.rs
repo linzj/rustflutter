@@ -165,38 +165,28 @@ pub fn page(
         }));
         let body = app::scrolling_body(rows, 0.0, 0.0, state, handle.clone());
         // The bar floats over the body; the body starts below it.
-        single(body, |rendered| {
+        let body = single(body, |rendered| {
             Box::new(
                 Container::new()
                     .with_padding(EdgeInsets::only(0.0, 56.0, 0.0, 0.0))
                     .with_child(rendered),
             )
-        })
+        });
+        body
     };
 
-    let page = many(vec![bar, body], move |mut rendered| {
-        let body = rendered.pop().expect("two children");
-        let bar = rendered.pop().expect("two children");
-        Box::new(
-            rustflutter::render::RenderStack::new()
-                .push_positioned(body, rustflutter::render::StackPosition::fill())
-                .push_positioned(
-                    bar,
-                    rustflutter::render::StackPosition {
-                        left: Some(0.0),
-                        top: Some(0.0),
-                        right: Some(0.0),
-                        ..rustflutter::render::StackPosition::default()
-                    },
-                ),
-        )
-    });
-
-    // Upstream's page background, and on desktop the splash layer around it.
-    let background = scheme.background;
-    let page = single(page, move |rendered| {
-        Box::new(Container::new().with_color(background).with_child(rendered))
-    });
+    // Upstream's `GalleryDemoPage` is a `Scaffold`, and so is this: the bar
+    // floats over the body (`extendBodyBehindAppBar`), the scaffold paints the
+    // background, and -- the reason this page stopped hand-rolling its own
+    // frame -- `resizeToAvoidBottomInset` shrinks the body when the keyboard
+    // opens. Without that the list under a form still believes it is full
+    // height, and a focused field cannot be scrolled out from under the
+    // keyboard because there is nowhere to scroll to.
+    let page = component(
+        rustflutter::components::Scaffold::new(body)
+            .with_app_bar(bar)
+            .with_extend_body_behind_app_bar(true),
+    );
     if is_desktop {
         splash::page(state, handle, true, page)
     } else {

@@ -184,7 +184,7 @@ impl StatefulComponent for TypographyList {
             .scroll
             .set_notification_sink(context.notification_sink());
         let offset = state.scroll.offset;
-        let extent = state.scroll.extent.clone();
+        let extent = state.scroll.link();
         let ink = theme_of(context).text;
 
         // The same handlers the list demo gives its lists, against this
@@ -221,7 +221,7 @@ impl StatefulComponent for TypographyList {
             }
             let list = ListView::new()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone())
+                .with_link(extent.clone())
                 .push(flex);
             Box::new(Pointer::new(ids::DEMO_LOCAL, list).with_handlers(handlers.clone()))
         })

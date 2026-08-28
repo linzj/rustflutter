@@ -212,7 +212,7 @@ fn list_pane(
     let body = theme.body();
     let selected = state.selected;
     let offset = state.scroll.offset;
-    let extent = state.scroll.extent.clone();
+    let extent = state.scroll.link();
 
     // The list's drag wiring, the per-demo counterpart of
     // `app::scroll_handlers`: a finger down stops a fling, a drag moves the
@@ -301,7 +301,7 @@ fn list_pane(
         flex = flex.push(Container::new().with_size(1.0, 8.0));
         let list = ListView::new()
             .with_offset(offset)
-            .with_extent_sink(extent.clone())
+            .with_link(extent.clone())
             .push(flex);
         Box::new(Pointer::new(ids::DEMO_LOCAL + 1, list).with_handlers(handlers.clone()))
     });

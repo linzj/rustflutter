@@ -213,6 +213,52 @@ impl MediaQueryData {
         }
     }
 
+    /// The same data with the given sides' *view insets* zeroed, for a subtree
+    /// that has already made room for them.
+    ///
+    /// Upstream's `MediaQueryData.removeViewInsets`, and `Scaffold` is what
+    /// calls it: a scaffold that has shrunk its body to sit above the keyboard
+    /// has dealt with the keyboard, and a body still told the keyboard is
+    /// there would make room for it twice.
+    ///
+    /// `view_padding` shrinks by as much as the inset did rather than going to
+    /// zero, the mirror of [`MediaQueryData::remove_padding`] and upstream's
+    /// same asymmetry.
+    pub fn remove_view_insets(
+        &self,
+        left: bool,
+        top: bool,
+        right: bool,
+        bottom: bool,
+    ) -> MediaQueryData {
+        if !(left || top || right || bottom) {
+            return *self;
+        }
+        let removed = |remove: bool, inset: f32| if remove { 0.0 } else { inset };
+        let kept = |remove: bool, view: f32, inset: f32| {
+            if remove {
+                (view - inset).max(0.0)
+            } else {
+                view
+            }
+        };
+        MediaQueryData {
+            view_insets: EdgeInsets {
+                left: removed(left, self.view_insets.left),
+                top: removed(top, self.view_insets.top),
+                right: removed(right, self.view_insets.right),
+                bottom: removed(bottom, self.view_insets.bottom),
+            },
+            view_padding: EdgeInsets {
+                left: kept(left, self.view_padding.left, self.view_insets.left),
+                top: kept(top, self.view_padding.top, self.view_insets.top),
+                right: kept(right, self.view_padding.right, self.view_insets.right),
+                bottom: kept(bottom, self.view_padding.bottom, self.view_insets.bottom),
+            },
+            ..*self
+        }
+    }
+
     /// The same data with a different text scale.
     ///
     /// Upstream's `copyWith(textScaler: ...)`. See [`MediaQuery::no_text_scaling`]
@@ -346,6 +392,32 @@ impl Component for RescaleText {
 
 thread_local! {
     static TEXT_SCALE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    static VIEW_INSETS: std::cell::Cell<EdgeInsets> = const { std::cell::Cell::new(EdgeInsets::ZERO) };
+}
+
+/// What is covering the view right now, as the platform last said -- the
+/// keyboard, and essentially only it.
+///
+/// Upstream's `View.of(context).viewInsets`, and it exists for upstream's
+/// reason. `EditableText.didChangeMetrics` reads the raw `FlutterView` rather
+/// than the `MediaQuery`, deliberately: a `Scaffold` that has made room for
+/// the keyboard **removes the inset from the `MediaQuery` it gives its body**,
+/// so a field asking the context how far up the keyboard reaches is told
+/// nothing -- by the very widget that dealt with it. The field still has to
+/// know, because it is the one that has to get out of the way.
+///
+/// Not a dependency, because there is nothing to depend on: it is the
+/// platform's own number, not an inherited value. Upstream is in the same
+/// position and answers it the same way, with a `WidgetsBindingObserver` for
+/// the notification rather than an inherited widget.
+pub fn current_view_insets() -> EdgeInsets {
+    VIEW_INSETS.with(|insets| insets.get())
+}
+
+/// Records what the platform last said. Called once a frame by the binding,
+/// before anything is built; not public API.
+pub(crate) fn set_current_view_insets(insets: EdgeInsets) {
+    VIEW_INSETS.with(|slot| slot.set(insets));
 }
 
 /// The text scale a paragraph built right now should be shaped at.
@@ -662,6 +734,49 @@ impl SystemTextScaler {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// Upstream's `removeViewInsets`, which a `Scaffold` that made room for
+    /// the keyboard applies to its body.
+    #[test]
+    fn removing_a_view_inset_takes_the_same_amount_off_the_view_padding() {
+        let data = MediaQueryData {
+            view_insets: EdgeInsets::only(0.0, 0.0, 0.0, 300.0),
+            view_padding: EdgeInsets::only(0.0, 24.0, 0.0, 340.0),
+            padding: EdgeInsets::only(0.0, 24.0, 0.0, 40.0),
+            ..MediaQueryData::default()
+        };
+        let body = data.remove_view_insets(false, false, false, true);
+
+        assert_eq!(body.view_insets.bottom, 0.0, "dealt with");
+        assert_eq!(
+            body.view_padding.bottom, 40.0,
+            "the view padding loses exactly the inset, not everything -- what              the system still covers underneath the keyboard is a different              fact, and the asymmetry is upstream's"
+        );
+        assert_eq!(body.padding.bottom, 40.0, "untouched");
+    }
+
+    #[test]
+    fn removing_nothing_is_the_same_data() {
+        let data = MediaQueryData {
+            view_insets: EdgeInsets::only(0.0, 0.0, 0.0, 300.0),
+            ..MediaQueryData::default()
+        };
+        assert_eq!(data.remove_view_insets(false, false, false, false), data);
+    }
+
+    #[test]
+    fn the_raw_view_insets_are_what_the_platform_last_said() {
+        // Not the `MediaQuery`'s: a scaffold strips the inset from the data it
+        // hands its body, and the field that has to get out of the keyboard's
+        // way still has to know. Upstream reads `View.of(context).viewInsets`
+        // for this and not `MediaQuery.of`.
+        set_current_view_insets(EdgeInsets::only(0.0, 0.0, 0.0, 300.0));
+        assert_eq!(current_view_insets().bottom, 300.0);
+        set_current_view_insets(EdgeInsets::ZERO);
+        assert_eq!(current_view_insets().bottom, 0.0);
+    }
+
     use super::*;
     use crate::framework::{ElementTree, leaf, many};
     use crate::render::RenderBox;

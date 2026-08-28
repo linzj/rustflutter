@@ -1934,6 +1934,38 @@ pub struct Scaffold {
     drawer_alignment: crate::drawer::DrawerAlignment,
     drawer_scrim_id: Option<u64>,
     drawer_handlers: PointerHandlers,
+    /// Whether the body shrinks to sit above the keyboard.
+    ///
+    /// Upstream's `Scaffold.resizeToAvoidBottomInset`, whose effective default
+    /// is true. It is what makes a form usable on a phone: the body is given
+    /// the view minus `viewInsets.bottom`, so the scrollable inside it gains
+    /// exactly as much scroll extent as the keyboard took away, and a field
+    /// underneath can be scrolled up to.
+    ///
+    /// Without it a reveal has nowhere to go -- the viewport still believes it
+    /// is full height, the field is inside it by that reckoning, and the
+    /// smallest scroll that shows the field is none at all.
+    resize_to_avoid_bottom_inset: bool,
+    /// Whether the body reaches up behind the app bar instead of starting
+    /// below it.
+    ///
+    /// Upstream's `Scaffold.extendBodyBehindAppBar`, false by default. Upstream
+    /// says it by setting `contentTop = 0.0` in `_ScaffoldLayout` and letting
+    /// the bar be painted after the body; here it is the difference between
+    /// stacking the two and putting them in a column, which is the same two
+    /// facts -- the body gets the whole height, and the bar is drawn over it.
+    ///
+    /// What it is for is a page whose content scrolls *under* a transparent
+    /// bar. Without it such a page has to frame itself, and a page that frames
+    /// itself is a page with no scaffold -- so no `resize_to_avoid_bottom_inset`
+    /// either, and a form on it cannot get out from under the keyboard.
+    ///
+    /// Upstream also raises the body's `MediaQuery.padding.top` to the bar's
+    /// height (`_BodyBuilder`), so a `SafeArea` inside the body pads past the
+    /// bar. That needs the bar's measured height during the body's build,
+    /// which is a `LayoutBuilder` upstream and has no counterpart here; a page
+    /// using this pads its own content down instead.
+    extend_body_behind_app_bar: bool,
 }
 
 impl Scaffold {
@@ -1946,7 +1978,24 @@ impl Scaffold {
             drawer_alignment: crate::drawer::DrawerAlignment::default(),
             drawer_scrim_id: None,
             drawer_handlers: PointerHandlers::new(),
+            resize_to_avoid_bottom_inset: true,
+            extend_body_behind_app_bar: false,
         }
+    }
+
+    /// Whether the body reaches up behind the app bar.
+    /// Upstream's `Scaffold.extendBodyBehindAppBar`.
+    pub fn with_extend_body_behind_app_bar(mut self, extend: bool) -> Self {
+        self.extend_body_behind_app_bar = extend;
+        self
+    }
+
+    /// Whether the body makes room for the keyboard.
+    /// Upstream's `Scaffold.resizeToAvoidBottomInset`; true unless said
+    /// otherwise, which is upstream's `?? true`.
+    pub fn with_resize_to_avoid_bottom_inset(mut self, resize: bool) -> Self {
+        self.resize_to_avoid_bottom_inset = resize;
+        self
     }
 
     pub fn with_app_bar(self, app_bar: AnyWidget) -> Self {
@@ -2019,13 +2068,61 @@ impl Component for Scaffold {
         let scrim_handlers = self.drawer_handlers.clone();
 
         let has_app_bar = app_bar.is_some();
+        let behind_bar = self.extend_body_behind_app_bar;
         // A bar has already moved the page down past the status bar, so the
         // body must not do it again -- and must still be told what the bar did
         // not deal with, which is the bottom. Upstream's `Scaffold` removes the
         // same padding from the body's `MediaQuery` for the same reason.
-        let body = if has_app_bar {
-            let data = crate::media_query::media_query_of(context);
-            crate::media_query::MediaQuery::new(data.remove_padding(true, true, true, false), body)
+        // How far the keyboard reaches up the view, and therefore how much of
+        // the body is not really there. Upstream's `_ScaffoldLayout`:
+        //
+        //     final EdgeInsets minInsets = MediaQuery.paddingOf(context).copyWith(
+        //       bottom: _resizeToAvoidBottomInset ? MediaQuery.viewInsetsOf(context).bottom : 0.0);
+        //     ...
+        //     final double contentBottom =
+        //         math.max(0.0, bottom - math.max(minInsets.bottom, bottomWidgetsHeight));
+        //
+        // There are no bottom widgets in this scaffold, so the `max` against
+        // them is not a case that can arise and the inset is the whole of it.
+        // Reading it is also what subscribes to it, so the scaffold rebuilds on
+        // every frame of the keyboard's animation -- which is what upstream's
+        // `MediaQuery` dependency does too.
+        let bottom_inset = if self.resize_to_avoid_bottom_inset {
+            crate::media_query::view_insets_of(context).bottom.max(0.0)
+        } else {
+            0.0
+        };
+
+        // A bar has already moved the page down past the status bar, so the
+        // body must not do it again -- and must still be told what the bar did
+        // not deal with, which is the bottom. Upstream's `Scaffold` removes the
+        // same padding from the body's `MediaQuery` for the same reason.
+        //
+        // The keyboard is removed on the same principle and in the same place
+        // upstream removes it (`removeBottomInset: _resizeToAvoidBottomInset`):
+        // the body is about to be given a box that already stops above the
+        // keyboard, so a descendant that made room for the keyboard as well
+        // would make it twice.
+        //
+        // Both removals are decided by *configuration*, never by the current
+        // value: a wrapper that came and went as the keyboard opened would be
+        // a different tree each way, and everything below it would be rebuilt
+        // from nothing -- including the focused field's editing session.
+        // Upstream's `_BodyBuilder` is unconditional for the same reason.
+        let resizes = self.resize_to_avoid_bottom_inset;
+        let body = if has_app_bar || resizes {
+            let data = *crate::media_query::media_query_of(context);
+            let data = if has_app_bar {
+                data.remove_padding(true, true, true, false)
+            } else {
+                data
+            };
+            let data = if resizes {
+                data.remove_view_insets(false, false, false, true)
+            } else {
+                data
+            };
+            crate::media_query::MediaQuery::new(data, body)
         } else {
             body
         };
@@ -2055,17 +2152,57 @@ impl Component for Scaffold {
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             let mut rendered = rendered.into_iter();
+            let mut floating_bar = None;
             if has_app_bar {
                 if let Some(bar) = rendered.next() {
-                    column = column.push(bar);
+                    if behind_bar {
+                        // Kept back, to go over the body rather than above it.
+                        floating_bar = Some(bar);
+                    } else {
+                        column = column.push(bar);
+                    }
                 }
             }
             if let Some(body) = rendered.next() {
-                // The body takes everything the bar left.
+                // The body takes everything the bar left, less whatever the
+                // keyboard is standing on. The padding is inside the flex
+                // child, so the child is still handed the whole of the
+                // remaining height and gives this much of it back -- which is
+                // upstream's `contentBottom` arrived at from the other side.
+                let body: crate::render::RenderRef = if resizes {
+                    RenderRef::new(RenderPadding::new(
+                        EdgeInsets::only(0.0, 0.0, 0.0, bottom_inset),
+                        body,
+                    ))
+                } else {
+                    body
+                };
                 column = column.push_flex(crate::render::FlexChild::expanded(body, 1));
             }
+            // The page: the body, and over it the bar when it floats. The bar
+            // goes on last, which is what makes it paint over the body --
+            // upstream's `_ScaffoldSlot.appBar` comes after the body in the
+            // stacking order for the same reason, and its comment says so.
+            let page: crate::render::BoxedRender = match floating_bar {
+                None => RenderRef::new(column),
+                Some(bar) => RenderRef::new(
+                    RenderStack::new()
+                        .with_fit(StackFit::Expand)
+                        .push(column)
+                        .push_positioned(
+                            bar,
+                            StackPosition {
+                                left: Some(0.0),
+                                top: Some(0.0),
+                                right: Some(0.0),
+                                ..StackPosition::default()
+                            },
+                        ),
+                ),
+            };
+
             if !drawer_open {
-                return RenderRef::new(Container::new().with_color(background).with_child(column));
+                return RenderRef::new(Container::new().with_color(background).with_child(page));
             }
             let scrim = rendered.next();
             let drawer = rendered.next();
@@ -2077,7 +2214,7 @@ impl Component for Scaffold {
             // open drawer.
             let mut stack = RenderStack::new()
                 .with_fit(StackFit::Expand)
-                .push(Container::new().with_color(background).with_child(column));
+                .push(Container::new().with_color(background).with_child(page));
             if let Some(scrim) = scrim {
                 stack = stack.push_positioned(scrim, StackPosition::fill());
             }

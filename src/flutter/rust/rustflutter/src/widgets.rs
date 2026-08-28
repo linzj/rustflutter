@@ -1452,7 +1452,7 @@ pub struct ListView {
     offset: f32,
     spacing: f32,
     centred_item: Option<f32>,
-    extent_sink: Option<std::rc::Rc<std::cell::Cell<f32>>>,
+    link: Option<std::rc::Rc<crate::scrolling::ScrollLink>>,
     children: Vec<BoxedWidget>,
     /// How much padding each end got so an item could sit in the middle. Not
     /// known until layout, because it depends on the constraints.
@@ -1471,7 +1471,7 @@ impl ListView {
             offset: 0.0,
             spacing: 0.0,
             centred_item: None,
-            extent_sink: None,
+            link: None,
             children: Vec::new(),
             inset: None,
             flex: None,
@@ -1508,15 +1508,22 @@ impl ListView {
         self
     }
 
-    /// Reports how far this list can scroll, once it has been laid out.
+    /// The [`Scroll`](crate::scrolling::Scroll) this list belongs to, as a
+    /// handle.
     ///
     /// A scroll offset has to be clamped to something, and that something is
     /// not known until the content has been measured -- which happens inside
-    /// the tree, a frame after whoever holds the offset needs it. The cell is
-    /// the way back out. Upstream solves the same problem with a
-    /// `ScrollPosition` that the viewport attaches itself to at layout.
-    pub fn with_extent_sink(mut self, sink: std::rc::Rc<std::cell::Cell<f32>>) -> Self {
-        self.extent_sink = Some(sink);
+    /// the tree, a frame after whoever holds the offset needs it. And a
+    /// focused field that has to be scrolled into view is decided in the other
+    /// direction, inside the tree, by something that cannot reach the offset.
+    /// The handle carries both. Upstream solves the pair with a
+    /// `ScrollPosition` the viewport attaches itself to at layout.
+    ///
+    /// A list without one still scrolls under a finger; it just never reports
+    /// its extent and never scrolls itself. See
+    /// [`crate::scrolling::ScrollLink`].
+    pub fn with_link(mut self, link: std::rc::Rc<crate::scrolling::ScrollLink>) -> Self {
+        self.link = Some(link);
         self
     }
 
@@ -1619,7 +1626,7 @@ impl RenderBox for ListView {
         self.offset = fresh.offset;
         self.spacing = fresh.spacing;
         self.centred_item = fresh.centred_item;
-        self.extent_sink = fresh.extent_sink.take();
+        self.link = fresh.link.take();
         self.children = std::mem::take(&mut fresh.children);
         // Never laid out, so there is nothing to keep and no end padding to
         // keep it with: the first layout builds the tree out of what was just
@@ -1638,6 +1645,9 @@ impl RenderBox for ListView {
         let mut staged = RenderViewport::new(self.axis, flex)
             .with_offset(self.offset)
             .with_axis_direction(self.axis_direction);
+        if let Some(link) = &self.link {
+            staged = staged.with_link(std::rc::Rc::clone(link));
+        }
         self.composed
             .as_mut()
             .expect("built with the column")
@@ -1652,11 +1662,13 @@ impl RenderBox for ListView {
             self.inset = inset;
             let flex = RenderRef::new(self.build_flex());
             self.flex = Some(flex.clone());
-            self.composed = Some(
-                RenderViewport::new(self.axis, flex)
-                    .with_offset(self.offset)
-                    .with_axis_direction(self.axis_direction),
-            );
+            let mut viewport = RenderViewport::new(self.axis, flex)
+                .with_offset(self.offset)
+                .with_axis_direction(self.axis_direction);
+            if let Some(link) = &self.link {
+                viewport = viewport.with_link(std::rc::Rc::clone(link));
+            }
+            self.composed = Some(viewport);
         } else if self.inset != inset {
             // The space to centre an item in changed, so the padding at both
             // ends did. This is the only place the new constraints are known,
@@ -1667,8 +1679,8 @@ impl RenderBox for ListView {
         }
         let viewport = self.composed.as_mut().expect("built just above");
         let size = viewport.layout(constraints);
-        if let Some(sink) = &self.extent_sink {
-            sink.set(viewport.max_scroll_extent());
+        if let Some(link) = &self.link {
+            link.set_measurements(viewport.max_scroll_extent(), viewport.size().height);
         }
         size
     }
@@ -1683,10 +1695,40 @@ impl RenderBox for ListView {
         }
     }
 
+    /// The scrolled column, where the viewport draws it.
+    ///
+    /// Straight through the viewport rather than reporting it, because the
+    /// viewport is not behind a handle -- this list is its handle, as
+    /// [`ListView::update_from`] says -- and so the column's parent, claimed
+    /// when it was laid out, is *this* object. A walk up from anything inside
+    /// the list arrives here and asks this method where its child is; an
+    /// answer naming the viewport is an answer about something that walk will
+    /// never reach, and `Offset::ZERO` with it, which is the scroll offset
+    /// thrown away.
+    ///
+    /// [`RenderRef::offset_in`] is what asks, on behalf of
+    /// [`RenderRef::transform_to`], so what this reports is where a tooltip
+    /// anchored inside a scrolled list opens and how far a reveal decides to
+    /// scroll.
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         if let Some(composed) = &self.composed {
-            visit(composed, Offset::ZERO);
+            composed.visit_children(visit);
         }
+    }
+
+    /// The viewport's, for the same reason: what clips the column is the
+    /// window, and the window is one field in.
+    fn describe_approximate_paint_clip(
+        &self,
+        child: &dyn RenderBox,
+    ) -> Option<crate::engine::Rect> {
+        self.composed
+            .as_ref()
+            .and_then(|composed| composed.describe_approximate_paint_clip(child))
+    }
+
+    fn as_viewport(&self) -> Option<&crate::render::RenderViewport> {
+        self.composed.as_ref()
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {

@@ -304,13 +304,10 @@ fn album_list(
     let (offset, extent) = if alphabetical {
         (
             state.alphabetical_scroll.offset,
-            state.alphabetical_scroll.extent.clone(),
+            state.alphabetical_scroll.link(),
         )
     } else {
-        (
-            state.recent_scroll.offset,
-            state.recent_scroll.extent.clone(),
-        )
+        (state.recent_scroll.offset, state.recent_scroll.link())
     };
 
     let down_handle = handle.clone();
@@ -346,7 +343,7 @@ fn album_list(
         }
         let list = rustflutter::widgets::ListView::new()
             .with_offset(offset)
-            .with_extent_sink(extent.clone())
+            .with_link(extent.clone())
             .push(column);
         Box::new(Pointer::new(id, list).with_handlers(handlers.clone()))
     })

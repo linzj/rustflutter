@@ -64,6 +64,11 @@ const CARET_MARGIN: f32 = 1.0 + CARET_WIDTH;
 /// and hidden for the other, starting shown the moment editing starts.
 const CARET_BLINK_HALF_PERIOD_MICROS: i64 = 500_000;
 
+/// How long a caret takes to scroll back on screen. Upstream's
+/// `EditableText._caretAnimationDuration`, a hundred milliseconds, run on
+/// `_caretAnimationCurve` -- `Curves.fastOutSlowIn`.
+const CARET_REVEAL_MICROS: i64 = 100_000;
+
 /// How far under the baseline the composing underline sits.
 const UNDERLINE_GAP: f32 = 1.0;
 
@@ -80,6 +85,19 @@ const DEFAULT_SELECTION: Color = Color::argb(0x66, 0x44, 0x88, 0xCC);
 /// Shared because the render object is rebuilt every frame and the callback is
 /// not.
 type ReportPlacement = Rc<dyn Fn(Offset, Size, Rect)>;
+
+/// Told where the caret is inside the field, at every paint.
+///
+/// The other half of [`ReportPlacement`], split from it because the two are
+/// answered at different rates and one of them must not be throttled: the IME
+/// is told where the field is only when that changed, and a reveal has to be
+/// spendable on the very frame it was asked for, whether or not anything moved.
+///
+/// The rect is in the field's own coordinates, scroll included -- where the
+/// caret is *drawn* -- because that is the frame
+/// [`crate::render::RenderRef::show_on_screen`] takes and the one the reader
+/// is looking at.
+type ReportCaret = Rc<dyn Fn(Rect)>;
 
 /// Where the text ended up the last time the field was painted: the lines, the
 /// line height, the scroll, and what the lines were measured with.
@@ -361,6 +379,9 @@ pub struct RenderEditable {
     /// Told where the field ended up, so the platform can put the IME there.
     /// Called from `paint`, which is the first moment the answer is known.
     report: Option<ReportPlacement>,
+    /// Told where the caret is, at every paint, so a pending reveal can be
+    /// spent on the frame it was asked for. See [`ReportCaret`].
+    report_caret: Option<ReportCaret>,
     /// Where the painted line layout is left for the tap handler, in the same
     /// shape [`ReportPlacement`] reaches the platform in. Written at `paint`,
     /// read by whichever tap handler the frame after that dispatches.
@@ -388,6 +409,7 @@ impl RenderEditable {
             show_caret: false,
             scroll: Cell::new(Offset::ZERO),
             report: None,
+            report_caret: None,
             lines_sink: None,
             text_scale: crate::media_query::current_text_scale(),
             reported: Cell::new(None),
@@ -419,6 +441,13 @@ impl RenderEditable {
 
     pub fn with_report(mut self, report: ReportPlacement) -> Self {
         self.report = Some(report);
+        self
+    }
+
+    /// Where the caret's rectangle is sent at every paint. See
+    /// [`ReportCaret`].
+    pub fn with_report_caret(mut self, report: ReportCaret) -> Self {
+        self.report_caret = Some(report);
         self
     }
 
@@ -781,7 +810,7 @@ impl RenderBox for RenderEditable {
         // window is known -- layout gives a size, not a place. The caret is
         // reported where it was drawn, scroll included, because the candidate
         // list belongs under what the reader can see.
-        if let Some(report) = &self.report {
+        if self.report.is_some() || self.report_caret.is_some() {
             let caret =
                 caret.unwrap_or_else(|| Rect::ltrb(0.0, 0.0, CARET_WIDTH, self.size.height));
             let on_screen = Rect::ltrb(
@@ -790,15 +819,23 @@ impl RenderBox for RenderEditable {
                 caret.right - scroll.dx,
                 caret.bottom - scroll.dy,
             );
+            // Every paint, unthrottled: a reveal asked for on a frame where
+            // nothing else moved is still a reveal, and the stamp below would
+            // swallow it.
+            if let Some(report_caret) = &self.report_caret {
+                report_caret(on_screen);
+            }
             let stamp = (
                 (offset.dx.round()) as i32,
                 (offset.dy.round()) as i32,
                 (on_screen.left.round()) as i32,
                 (on_screen.top.round()) as i32,
             );
-            if self.reported.get() != Some(stamp) {
-                self.reported.set(Some(stamp));
-                report(offset, self.size, on_screen);
+            if let Some(report) = &self.report {
+                if self.reported.get() != Some(stamp) {
+                    self.reported.set(Some(stamp));
+                    report(offset, self.size, on_screen);
+                }
             }
         }
     }
@@ -857,6 +894,23 @@ pub struct TextFieldState {
     /// nothing is being edited, and for the one frame before the clock has
     /// started.
     caret_blink_micros: Option<i64>,
+    /// A reveal asked for and not yet spent.
+    ///
+    /// Upstream's `_showCaretOnScreenScheduled`, which is a bool because
+    /// upstream can carry the animation in the post-frame closure it is
+    /// guarding; here the closure is rebuilt every frame anyway, so the thing
+    /// worth remembering is *how* to move rather than merely that something
+    /// wants to. Set when the field takes the keyboard and when the keyboard
+    /// grows; cleared at the paint that spends it, which is the first moment
+    /// the caret's place on the page is known.
+    reveal: Option<crate::render::Reveal>,
+    /// How far the keyboard reached up the view, last time this field looked.
+    ///
+    /// Upstream's `_lastBottomViewInset`, and read for the same one purpose:
+    /// the comparison is **strictly greater**, so a keyboard opening reveals
+    /// the caret and a keyboard closing does not. A field that scrolled itself
+    /// back on the way down would fight the page settling.
+    bottom_inset: f32,
 }
 
 impl TextFieldState {
@@ -2179,6 +2233,14 @@ pub struct TextField {
     /// field's text. Upstream's equivalent is handing both the field and the
     /// button the same `TextEditingController`.
     state_sink: Option<Rc<RefCell<Option<StateHandle<TextFieldState>>>>>,
+    /// How much room to leave around the caret when scrolling it into view.
+    ///
+    /// Upstream's `EditableText.scrollPadding`, whose default is
+    /// `EdgeInsets.all(20.0)` and which `TextField` passes straight through.
+    /// It is what stops a revealed caret from landing hard against the
+    /// keyboard: the rect handed to the reveal is the caret's, grown by this,
+    /// so the scroll overshoots by twenty and the line is readable.
+    scroll_padding: crate::render::EdgeInsets,
 }
 
 impl TextField {
@@ -2192,6 +2254,16 @@ impl TextField {
 
     /// Upstream's default `obscuringCharacter`.
     pub const OBSCURING_CHARACTER: char = '\u{2022}';
+
+    /// Upstream's default `scrollPadding`, `EdgeInsets.all(20.0)`.
+    pub const SCROLL_PADDING: crate::render::EdgeInsets = crate::render::EdgeInsets::all(20.0);
+
+    /// How much room to leave around the caret when it is scrolled into
+    /// view. Upstream's `TextField.scrollPadding`.
+    pub fn with_scroll_padding(mut self, padding: crate::render::EdgeInsets) -> Self {
+        self.scroll_padding = padding;
+        self
+    }
 
     pub fn with_min_lines(mut self, lines: usize) -> Self {
         self.min_lines = Some(lines);
@@ -2310,6 +2382,7 @@ impl TextField {
             on_submitted: None,
             on_focus_change: None,
             state_sink: None,
+            scroll_padding: TextField::SCROLL_PADDING,
         }
     }
 
@@ -2432,6 +2505,36 @@ impl StatefulComponent for TextField {
                 state.caret_blink_micros = Some(phase);
             }
         }
+        // The keyboard, as this field last saw it.
+        //
+        // Upstream is a `WidgetsBindingObserver` added in `_handleFocusChanged`
+        // and removed when the focus goes, whose `didChangeMetrics` compares
+        // `View.of(context).viewInsets.bottom` against `_lastBottomViewInset`.
+        // This hook is the same scope said in this crate's idiom: `advance`
+        // runs once a frame **while the session is open**, and the early return
+        // above is what unsubscribes -- an unfocused field gets here and leaves
+        // before this line, exactly as upstream's observer is removed.
+        //
+        // Read raw rather than from a `MediaQuery`, and upstream reads
+        // `View.of` for the same reason: a `Scaffold` that made room for the
+        // keyboard strips the inset from the data it hands its body, so the
+        // field that has to get out of the way would be told there is nothing
+        // to get out of the way of. See `media_query::current_view_insets`.
+        //
+        // Strictly greater, so a keyboard going away does not scroll: see
+        // [`TextFieldState::bottom_inset`]. No animation, because the metrics
+        // arrive on **every frame** of the keyboard's own animation -- a
+        // hundred-millisecond scroll restarted sixty times a second never
+        // arrives. Upstream says exactly this, in a comment, and passes
+        // `withAnimation: false`.
+        let bottom = crate::media_query::current_view_insets().bottom;
+        if bottom != state.bottom_inset {
+            if bottom > state.bottom_inset {
+                state.reveal = Some(crate::render::Reveal::NOW);
+            }
+            state.bottom_inset = bottom;
+        }
+
         // The next toggle is always pending while editing, so every frame is
         // wanted until the session ends.
         true
@@ -2477,7 +2580,7 @@ impl StatefulComponent for TextField {
             *sink.borrow_mut() = Some(handle.clone());
         }
         let tap_handle = handle.clone();
-        let field_handle = handle;
+        let field_handle = handle.clone();
         let on_changed = self.on_changed.clone();
         let on_submitted = self.on_submitted.clone();
         let configuration = TextInputConfiguration {
@@ -2533,6 +2636,16 @@ impl StatefulComponent for TextField {
                 // clock is started by `advance` on the frames after this one.
                 state.caret_blink_on = true;
                 state.caret_blink_micros = None;
+                // Upstream's `_handleFocusChanged`, which asks for the caret
+                // on screen -- animated -- the moment the field takes the
+                // focus, before the keyboard has moved at all. On a field
+                // already in view that is the whole of it; on one lower down
+                // the page it is the first of two, the second being what the
+                // keyboard arriving asks for a moment later.
+                state.reveal = Some(crate::render::Reveal::animated(
+                    CARET_REVEAL_MICROS,
+                    crate::animation::Curve::FAST_OUT_SLOW_IN,
+                ));
             });
             opened.show();
         };
@@ -2554,6 +2667,47 @@ impl StatefulComponent for TextField {
         // Only the shown half of the blink draws a caret -- upstream's cursor
         // opacity, with the `advance` clock flipping it every half second.
         let caret_shown = editing && state.caret_blink_on;
+
+        // Spending a pending reveal.
+        //
+        // Upstream's `_scheduleShowCaretOnScreen` posts a frame callback and
+        // does the work in it, because the caret's rectangle is only known
+        // after layout. The equivalent moment here is paint -- it is where the
+        // caret rect is computed anyway, and where
+        // [`crate::render::RenderRef::show_on_screen`] is allowed to walk, a
+        // layout having every ancestor mutably borrowed.
+        //
+        // The walk starts from the leaf, whose handle the `many` below records
+        // as the field is assembled: `show_on_screen` reads the rect in the
+        // object it is called on, and the leaf is that object.
+        let reveal_anchor: Rc<RefCell<Option<crate::render::RenderRef>>> =
+            Rc::new(RefCell::new(None));
+        let anchor_at_paint = Rc::clone(&reveal_anchor);
+        let pending_reveal = state.reveal;
+        let reveal_padding = self.scroll_padding;
+        let reveal_handle = handle.clone();
+        let report_caret: ReportCaret = Rc::new(move |caret: Rect| {
+            let Some(reveal) = pending_reveal else {
+                return;
+            };
+            let Some(target) = anchor_at_paint.borrow().clone() else {
+                return;
+            };
+            // The caret, grown by the scroll padding, is what is revealed --
+            // upstream inflates by `scrollPadding` for the same reason, so the
+            // line does not land hard against the keyboard.
+            let wanted = Rect::ltrb(
+                caret.left - reveal_padding.left,
+                caret.top - reveal_padding.top,
+                caret.right + reveal_padding.right,
+                caret.bottom + reveal_padding.bottom,
+            );
+            target.show_on_screen(wanted, reveal);
+            // Spent. Nothing is asked for again until the field is focused
+            // afresh or the keyboard grows further, which is upstream's
+            // `_showCaretOnScreenScheduled` going back to false.
+            reveal_handle.set_state(|state| state.reveal = None);
+        });
 
         let editable = leaf(move || {
             let report_connection = connection;
@@ -2652,6 +2806,7 @@ impl StatefulComponent for TextField {
                 .with_selection_color(selection_color)
                 .with_max_lines(max_lines)
                 .with_report(report)
+                .with_report_caret(report_caret.clone())
                 .with_lines_sink(lines_sink.clone());
             // The press's origin, so a slide can be told from a scroll by the
             // shape of the travel rather than by who won the gesture.
@@ -2730,6 +2885,17 @@ impl StatefulComponent for TextField {
         // focuses is the editable's own -- placing the caret is half of what
         // a tap on a field means -- so this one carries no pointer handler of
         // its own and the two never compete for the gesture.
+        // The leaf's handle, recorded as it is built. The same trick
+        // [`crate::theatre::Anchor`] plays for a tooltip's target, and for the
+        // same reason: what a walk up the tree needs is a handle, and the only
+        // place one exists is the assemble that made it.
+        let anchor_at_build = Rc::clone(&reveal_anchor);
+        let editable = crate::framework::many(vec![editable], move |mut rendered| {
+            let leaf = rendered.pop().expect("the editable");
+            *anchor_at_build.borrow_mut() = Some(leaf.clone());
+            Box::new(leaf)
+        });
+
         let focused = crate::framework::component(
             crate::focus::Focus::new(id, editable)
                 .with_focus_on_tap(false)

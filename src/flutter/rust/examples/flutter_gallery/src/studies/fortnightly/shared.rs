@@ -524,7 +524,7 @@ impl StatefulComponent for HashtagBar {
         }
 
         let offset = state.scroll.offset;
-        let extent = state.scroll.extent.clone();
+        let extent = state.scroll.link();
         let id = self.id;
         let handlers = scroll_handlers(handle, |s| &mut s.scroll, Axis::Horizontal);
 
@@ -537,7 +537,7 @@ impl StatefulComponent for HashtagBar {
             }
             let list = ListView::horizontal()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone())
+                .with_link(extent.clone())
                 .push(row);
             Box::new(
                 SizedBox::height(height)
@@ -880,7 +880,7 @@ impl StatefulComponent for ScrollColumn {
     ) -> AnyWidget {
         let children = self.children.borrow_mut().take().unwrap_or_default();
         let offset = state.scroll.offset;
-        let extent = state.scroll.extent.clone();
+        let extent = state.scroll.link();
         let id = self.id;
         let handlers = scroll_handlers(handle, |s| &mut s.scroll, Axis::Vertical);
 
@@ -893,7 +893,7 @@ impl StatefulComponent for ScrollColumn {
             }
             let list = ListView::new()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone())
+                .with_link(extent.clone())
                 .push(column);
             Box::new(Pointer::new(id, list).with_handlers(handlers.clone()))
         })

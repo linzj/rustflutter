@@ -889,7 +889,7 @@ pub fn scrolling_body(
     handle: StateHandle<GalleryState>,
 ) -> AnyWidget {
     let offset = state.screen.offset;
-    let extent = state.screen.extent.clone();
+    let link = state.screen.link();
     let handlers = scroll_handlers(
         handle,
         |s| &mut s.screen,
@@ -909,7 +909,7 @@ pub fn scrolling_body(
         }
         let list = ListView::new()
             .with_offset(offset)
-            .with_extent_sink(extent.clone())
+            .with_link(link.clone())
             .push(column);
         Box::new(
             rustflutter::widgets::Pointer::new(
@@ -1011,7 +1011,7 @@ mod tests {
     #[test]
     fn a_scroll_stays_inside_the_content() {
         let mut scroll = Scroll::default();
-        scroll.extent.set(500.0);
+        scroll.set_extent(500.0, 0.0);
 
         scroll.scroll_by(200.0);
         assert_eq!(scroll.offset, 200.0);
@@ -1038,7 +1038,7 @@ mod tests {
     #[test]
     fn opening_a_screen_puts_it_at_the_top() {
         let mut state = GalleryState::default();
-        state.screen.extent.set(900.0);
+        state.screen.set_extent(900.0, 0.0);
         state.screen.scroll_by(400.0);
         state.open(catalog::DEMOS[0].slug);
         assert_eq!(state.screen.offset, 0.0, "a screen opens at its top");

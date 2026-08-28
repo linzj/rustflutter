@@ -106,7 +106,7 @@ impl StatefulComponent for DemoList {
             .scroll
             .set_notification_sink(context.notification_sink());
         let offset = state.scroll.offset;
-        let extent = state.scroll.extent.clone();
+        let extent = state.scroll.link();
         let id = self.id;
 
         // The same handlers `app::scroll_handlers` gives the page scrollables,
@@ -153,7 +153,7 @@ impl StatefulComponent for DemoList {
             flex = flex.push(Container::new().with_size(1.0, 8.0));
             let list = ListView::new()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone())
+                .with_link(extent.clone())
                 .push(flex);
             Box::new(Pointer::new(id, list).with_handlers(handlers.clone()))
         })

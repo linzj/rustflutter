@@ -224,7 +224,7 @@ impl StatefulComponent for GridListDemo {
             let _ = Image::shared(photo.cache_key, photo.asset);
         }
         let offset = state.scroll.offset;
-        let extent = state.scroll.extent.clone();
+        let extent = state.scroll.link();
 
         // The handlers app::scroll_handlers gives a page, on the grid's own
         // Scroll: touch it, drag it, throw it, or turn the wheel over it. The
@@ -280,7 +280,7 @@ impl StatefulComponent for GridListDemo {
         .with_padding(EdgeInsets::all(8.0))
         .with_child_aspect_ratio(1.0)
         .with_offset(offset)
-        .with_extent_sink(extent);
+        .with_link(extent);
 
         let grid = single(rustflutter::framework::component(grid), move |rendered| {
             Box::new(Container::new().with_height(height).with_child(

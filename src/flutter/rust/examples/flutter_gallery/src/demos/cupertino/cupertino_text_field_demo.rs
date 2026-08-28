@@ -113,7 +113,7 @@ impl StatefulComponent for CupertinoTextFieldDemo {
         _context: &mut BuildContext,
     ) -> AnyWidget {
         let offset = state.scroll.offset;
-        let extent = state.scroll.extent.clone();
+        let extent = state.scroll.link();
 
         // The same handlers `app::scroll_handlers` gives the page
         // scrollables, against this list's own `Scroll` (see the material
@@ -183,7 +183,7 @@ impl StatefulComponent for CupertinoTextFieldDemo {
                 .with_child(flex);
             let list = ListView::new()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone())
+                .with_link(extent.clone())
                 .push(content);
             Box::new(Pointer::new(LIST_SCROLL, list).with_handlers(handlers.clone()))
         });

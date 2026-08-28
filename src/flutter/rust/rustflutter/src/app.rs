@@ -626,6 +626,10 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
         // `painting::take_images_arrived` for what the narrow version needs.
         let images_arrived = crate::painting::take_images_arrived();
         let resized = self.last_size != Some(context.size);
+        // The platform's own insets, before anything in the tree has a chance
+        // to strip them. What upstream reads as `View.of(context).viewInsets`;
+        // see [`crate::media_query::current_view_insets`].
+        crate::media_query::set_current_view_insets(context.metrics.view_insets());
         let data = crate::media_query::MediaQueryData::from_view(&context.metrics);
         // The reader's language, from the same place the text scale and the
         // brightness come from. Upstream's `WidgetsApp` builds a

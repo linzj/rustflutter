@@ -317,7 +317,7 @@ fn strip(
     let theme = theme_of(context);
     let selected = state.selected;
     let offset = state.strip.offset;
-    let extent = state.strip.extent.clone();
+    let extent = state.strip.link();
     let bar = theme.primary;
     let label = theme.on_primary;
     let unselected = theme.on_primary.with_alpha(0x99);
@@ -400,7 +400,7 @@ fn strip(
     many(tabs, move |rendered| {
         let mut list = ListView::horizontal()
             .with_offset(offset)
-            .with_extent_sink(extent.clone());
+            .with_link(extent.clone());
         for tab in rendered {
             list = list.push(tab);
         }
@@ -477,7 +477,7 @@ impl StatefulComponent for PaletteView {
             .scroll
             .set_notification_sink(context.notification_sink());
         let offset = state.scroll.offset;
-        let extent = state.scroll.extent.clone();
+        let extent = state.scroll.link();
 
         // The same handlers the list demo gives its lists, against this
         // list's own `Scroll`.
@@ -528,7 +528,7 @@ impl StatefulComponent for PaletteView {
             }
             let list = ListView::new()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone())
+                .with_link(extent.clone())
                 .push(flex);
             Box::new(Pointer::new(ids::DEMO_LOCAL + 1, list).with_handlers(handlers.clone()))
         })

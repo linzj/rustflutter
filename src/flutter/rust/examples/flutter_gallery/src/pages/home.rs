@@ -178,7 +178,7 @@ fn mobile_page(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWi
     // The list runs edge to edge; the padding is per-row, because the carousel
     // has to be able to scroll out past it.
     let offset = state.page.offset;
-    let extent = state.page.extent.clone();
+    let extent = state.page.link();
     let scroll = app::scroll_handlers(handle.clone(), |s| &mut s.page, Axis::Vertical);
 
     // Upstream's drag-down strip: a transparent band over the top of the list
@@ -204,7 +204,7 @@ fn mobile_page(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyWi
     let body = many(rows, move |rendered| {
         let mut list = ListView::new()
             .with_offset(offset)
-            .with_extent_sink(extent.clone());
+            .with_link(extent.clone());
         for child in rendered {
             list = list.push(child);
         }
@@ -275,8 +275,8 @@ impl Component for Carousel {
         }
 
         let offset = self.scroll.offset;
-        let extent = self.scroll.extent.clone();
-        let max_extent = self.scroll.extent.get();
+        let extent = self.scroll.link();
+        let max_extent = self.scroll.max_extent();
         let handlers =
             app::scroll_handlers(self.handle.clone(), |s| &mut s.carousel, Axis::Horizontal);
         // The band slides in from the right over the entrance's middle.
@@ -291,7 +291,7 @@ impl Component for Carousel {
         many(cards, move |rendered| {
             let mut list = ListView::horizontal()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone());
+                .with_link(extent.clone());
             if !is_desktop {
                 // Upstream's carousel is a PageView whose viewportFraction is
                 // one card plus its margins, which centres whichever card is
@@ -583,13 +583,13 @@ fn desktop_page(state: &GalleryState, handle: StateHandle<GalleryState>) -> AnyW
     children.push(leaf(|| Container::new().with_size(1.0, 109.0)));
 
     let offset = state.page.offset;
-    let extent = state.page.extent.clone();
+    let extent = state.page.link();
     let handlers = app::scroll_handlers(handle.clone(), |s| &mut s.page, Axis::Vertical);
 
     let body = many(children, move |rendered| {
         let mut list = ListView::new()
             .with_offset(offset)
-            .with_extent_sink(extent.clone());
+            .with_link(extent.clone());
         for child in rendered {
             list = list.push(child);
         }
@@ -695,7 +695,7 @@ impl Component for DesktopCategoryItem {
         }
 
         let offset = self.scroll.offset;
-        let extent = self.scroll.extent.clone();
+        let extent = self.scroll.link();
         let index = self.index;
         let handlers = app::scroll_handlers(
             self.handle.clone(),
@@ -734,7 +734,7 @@ impl Component for DesktopCategoryItem {
 
             let list = ListView::new()
                 .with_offset(offset)
-                .with_extent_sink(extent.clone())
+                .with_link(extent.clone())
                 .push(column);
 
             Box::new(

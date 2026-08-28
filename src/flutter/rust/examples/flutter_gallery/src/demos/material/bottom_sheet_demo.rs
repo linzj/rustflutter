@@ -249,7 +249,7 @@ impl StatefulComponent for BottomSheetContent {
         let list_widget: AnyWidget = leaf(move || {
             let mut list = ListView::new()
                 .with_offset(scroll.offset)
-                .with_extent_sink(scroll.extent.clone());
+                .with_link(scroll.link());
             for index in 0..ITEM_COUNT {
                 list = list.push(
                     Container::new()

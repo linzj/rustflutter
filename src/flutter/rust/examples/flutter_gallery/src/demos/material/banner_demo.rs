@@ -357,7 +357,7 @@ impl StatefulComponent for BannerDemo {
             rows.push(list_tile(number));
         }
         let offset = state.scroll.offset;
-        let extent = state.scroll.extent.clone();
+        let extent = state.scroll.link();
         let handlers = scroll_handlers(handle.clone());
         let body = many(rows, move |rendered| {
             let mut column = RenderFlex::column()
@@ -372,7 +372,7 @@ impl StatefulComponent for BannerDemo {
                     Container::new().with_height(LIST_VIEWPORT).with_child(
                         ListView::new()
                             .with_offset(offset)
-                            .with_extent_sink(extent.clone())
+                            .with_link(extent.clone())
                             .push(column),
                     ),
                 )
