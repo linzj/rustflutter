@@ -139,6 +139,13 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
   private static boolean sNumberDecimal = false;
   private static String sCapitalization = "";
 
+  /**
+   * The IME's standing request to be told when the text changes, if it made
+   * one -- upstream's {@code mExtractRequest}, set from the
+   * {@code GET_EXTRACTED_TEXT_MONITOR} flag.
+   */
+  private static android.view.inputmethod.ExtractedTextRequest sExtractRequest;
+
   private HostView mView;
   private boolean mStarted;
   private boolean mSurfaceReady;
@@ -542,6 +549,57 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
     sSelectionExtent = selectionExtent;
     sComposingBase = composingBase;
     sComposingExtent = composingExtent;
+    notifyInputMethod();
+  }
+
+  /**
+   * Tells the IME the editing state moved -- upstream's
+   * {@code InputConnectionAdaptor.didChangeEditingState}, whose own comment is
+   * the reason this exists: "<b>updateSelection is mandatory.</b>
+   * updateExtractedText and updateCursorAnchorInfo are on demand".
+   *
+   * <p>None of it was being sent. An IME that is never told where the caret is
+   * or what is composing cannot keep a composition across keystrokes, so it
+   * starts a new word at every letter: "wor" arrives as w, then o, then r, and
+   * the keyboard never has a word in hand to finish into "work".
+   *
+   * <p>Posted to the view rather than called here: the framework's state
+   * arrives on whichever thread edited it, and these are main-thread calls.
+   */
+  private static void notifyInputMethod() {
+    final RustflutterActivity activity = sInstance;
+    if (activity == null || activity.mView == null || !sHasClient) {
+      return;
+    }
+    final String text = sText;
+    final int selectionStart = Math.min(Math.max(sSelectionBase, 0), text.length());
+    final int selectionEnd = Math.min(Math.max(sSelectionExtent, 0), text.length());
+    final int composingStart = sComposingBase;
+    final int composingEnd = sComposingExtent;
+    activity.mView.post(
+        () -> {
+          InputMethodManager imm = activity.inputMethodManager();
+          if (imm == null) {
+            return;
+          }
+          // Upstream sends this every time and lets the manager decide:
+          // "InputMethodManager#updateSelection skips sending the message if
+          // none of the parameters have changed since the last time".
+          imm.updateSelection(
+              activity.mView, selectionStart, selectionEnd, composingStart, composingEnd);
+          android.view.inputmethod.ExtractedTextRequest request = sExtractRequest;
+          if (request != null) {
+            android.view.inputmethod.ExtractedText extracted =
+                new android.view.inputmethod.ExtractedText();
+            extracted.text = text;
+            extracted.startOffset = 0;
+            extracted.partialStartOffset = -1;
+            extracted.partialEndOffset = -1;
+            extracted.selectionStart = selectionStart;
+            extracted.selectionEnd = selectionEnd;
+            imm.updateExtractedText(activity.mView, request.token, extracted);
+          }
+        });
   }
 
   private void showKeyboard() {
@@ -963,9 +1021,59 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
     }
 
     @Override
+    public boolean setComposingRegion(int start, int end) {
+      // How a suggestion replaces a word: the keyboard puts the region back
+      // around what was already committed and then sets its text. Upstream's
+      // adaptor lets its shared `Editable` do this; there is no shared editable
+      // here, so it goes to the model in C++ that is the one authority.
+      nativeComposingRegion(start, end);
+      return true;
+    }
+
+    @Override
+    public boolean setSelection(int start, int end) {
+      nativeSetSelection(start, end);
+      return true;
+    }
+
+    @Override
     public boolean finishComposingText() {
       nativeComposingEnd();
       return true;
+    }
+
+    /**
+     * The whole field, for an IME that would rather read it in one go.
+     *
+     * <p>Upstream implements this with a comment worth repeating: "When there's
+     * not enough vertical screen space, the IME may enter fullscreen mode and
+     * this method will be used to get (a portion of) the currently edited text.
+     * <b>Samsung keyboard seems to use this method instead of
+     * InputConnection#getText{Before,After}Cursor.</b>"
+     *
+     * <p>Which is the whole of why it is here. {@code BaseInputConnection}'s
+     * default answers from the dummy editable it keeps -- always empty, because
+     * nothing writes to it -- so a keyboard that reads the field this way saw an
+     * empty field, had no word in hand, and offered no candidates for one.
+     */
+    @Override
+    public android.view.inputmethod.ExtractedText getExtractedText(
+        android.view.inputmethod.ExtractedTextRequest request, int flags) {
+      // Upstream enables text monitoring from the same flag, and the pushes
+      // it turns on are `notifyInputMethod`'s.
+      sExtractRequest =
+          (flags & android.view.inputmethod.InputConnection.GET_EXTRACTED_TEXT_MONITOR) != 0
+              ? request
+              : null;
+      android.view.inputmethod.ExtractedText extracted =
+          new android.view.inputmethod.ExtractedText();
+      extracted.text = sText;
+      extracted.startOffset = 0;
+      extracted.partialStartOffset = -1;
+      extracted.partialEndOffset = -1;
+      extracted.selectionStart = Math.min(Math.max(sSelectionBase, 0), sText.length());
+      extracted.selectionEnd = Math.min(Math.max(sSelectionExtent, 0), sText.length());
+      return extracted;
     }
 
     @Override
@@ -1512,6 +1620,10 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
   private static native void nativeComposing(String text, int cursor);
 
   private static native void nativeComposingEnd();
+
+  private static native void nativeComposingRegion(int start, int end);
+
+  private static native void nativeSetSelection(int start, int end);
 
   private static native boolean nativeEditingKey(int keyCode, boolean shift);
 

@@ -468,6 +468,58 @@ class TextInputHandler {
     }
   }
 
+  /// The IME re-opening a composition over text that is already committed.
+  ///
+  /// Upstream's `InputConnectionAdaptor.setComposingRegion`, and **this is how
+  /// a suggestion replaces a word**: the keyboard puts the region back around
+  /// "wor" and then sets its text to "work". Without it the region stays where
+  /// the caret is, an empty range, and the suggestion is inserted beside the
+  /// word instead of over it.
+  void OnComposingRegion(int start, int end) {
+    if (Edit([&](TextInputModel& model) {
+          if (start < 0 || end < 0 || end < start) {
+            return false;
+          }
+          // **A composition has to be open first.** `SetComposingRange`
+          // refuses outright when `composing_` is false, and re-opening a
+          // region over text that is already committed -- which is the whole
+          // point of this call -- is exactly the case where it is.
+          if (!model.composing()) {
+            model.BeginComposing();
+          }
+          // `SetComposingRange` moves the caret to `range.start() +
+          // cursor_offset`, and upstream's `setComposingRegion` moves it
+          // nowhere: `BaseInputConnection` sets spans and leaves the selection
+          // alone. There is no way to ask this model for that, so the offset
+          // is chosen to put the caret back where it already is -- which is
+          // the same thing whenever the caret is inside the region, and it is
+          // in every case a keyboard uses this for.
+          const size_t begin = static_cast<size_t>(start);
+          const size_t finish = static_cast<size_t>(end);
+          const size_t caret = model.selection().extent();
+          const size_t offset = caret >= begin && caret <= finish
+                                    ? caret - begin
+                                    : finish - begin;
+          return model.SetComposingRange(TextRange(begin, finish), offset);
+        })) {
+      SendStateUpdate();
+    }
+  }
+
+  /// The IME moving the caret -- upstream's
+  /// `InputConnectionAdaptor.setSelection`.
+  void OnSelection(int start, int end) {
+    if (Edit([&](TextInputModel& model) {
+          if (start < 0 || end < 0) {
+            return false;
+          }
+          return model.SetSelection(
+              TextRange(static_cast<size_t>(start), static_cast<size_t>(end)));
+        })) {
+      SendStateUpdate();
+    }
+  }
+
   /// The IME gave up on the composition without committing it.
   void OnComposingEnd() {
     if (Edit([](TextInputModel& model) {
@@ -840,6 +892,25 @@ void TextInputHandler::SendStateUpdate() {
     sender_("TextInputClient.updateEditingState",
             std::string(buffer.GetString(), buffer.GetSize()));
   }
+
+  // And Java, which is what this class's own header says happens after every
+  // change and what did not: `SetEditingState` was called from `setClient`,
+  // which clears it, and from the framework's `setEditingState`, and from
+  // nowhere else. So the mirror the IME reads through stayed **empty for the
+  // whole time the reader was typing**.
+  //
+  // Every question an IME asks about the field goes through that mirror --
+  // `getTextBeforeCursor`, `getSelectedText`, `getExtractedText` -- and each
+  // was answered "there is nothing here". A keyboard that cannot see the word
+  // being typed has no word to correct or to finish, so it starts a new one at
+  // every keystroke: "wor" arrives as w, then o, then r, and never becomes
+  // "work".
+  //
+  // The offsets need no conversion. `TextInputModel` counts UTF-16 code units
+  // and a Java `String` is indexed in them, so base and extent cross as they
+  // are; only the text itself is re-encoded, by `StringToJavaString`.
+  JavaBridge::SetEditingState(text, selection_base, selection_extent,
+                              composing_base, composing_extent);
 }
 
 //------------------------------------------------------------------------------
@@ -2193,6 +2264,23 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeComposingEnd(
     JNIEnv* env,
     jclass clazz) {
   flutter::HostState::Get().text_input.OnComposingEnd();
+}
+
+JNIEXPORT void JNICALL
+Java_io_flutter_rustflutter_RustflutterActivity_nativeComposingRegion(
+    JNIEnv* env,
+    jclass clazz,
+    jint start,
+    jint end) {
+  flutter::HostState::Get().text_input.OnComposingRegion(start, end);
+}
+
+JNIEXPORT void JNICALL
+Java_io_flutter_rustflutter_RustflutterActivity_nativeSetSelection(JNIEnv* env,
+                                                                   jclass clazz,
+                                                                   jint start,
+                                                                   jint end) {
+  flutter::HostState::Get().text_input.OnSelection(start, end);
 }
 
 JNIEXPORT jboolean JNICALL
