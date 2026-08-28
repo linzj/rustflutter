@@ -53,7 +53,8 @@ through ANGLE.*
 </p>
 
 *Flutter Gallery: home, Rally, components, settings. 26 screens, all laid out
-by Rust.*
+by Rust. The screenshots are the dark theme, which is what the headless
+renderer pins them to; the app itself follows the reader's system setting.*
 
 ## Getting the dependencies
 

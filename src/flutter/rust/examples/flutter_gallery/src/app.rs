@@ -164,11 +164,11 @@ impl Default for GalleryState {
         GalleryState {
             navigator: Navigator::new(Route::new(routes::HOME))
                 .with_duration(Duration::from_millis(280)),
-            // Dark by default, as the gallery has always opened here. Upstream
-            // defaults to `ThemeMode.system`; the headless and test platforms
-            // report light, so following the system would change what every
-            // screenshot shows. See PORTING.md.
-            options: GalleryOptions::default().with_theme_mode(ThemeMode::Dark),
+            // Whatever the reader's system says, which is upstream's initial
+            // `GalleryOptions.themeMode` -- a phone in day mode opens a light
+            // gallery. `Gallery::theme_mode` overrides it where the answer has
+            // to be the same on every machine; see [`Gallery::initial_state`].
+            options: GalleryOptions::default(),
             category_expand,
             settings_open: false,
             // Upstream reads `isDesktop ? mobile : desktop` for this duration
@@ -346,7 +346,13 @@ pub const MOTION_PERIOD_MICROS: i64 = 3_200_000;
 /// and the one that navigated would not be the one that drew -- which is a bug
 /// that looks like a screen that never changes.
 pub struct Gallery {
-    pub light: bool,
+    /// Which theme to open in, or `None` to follow the reader's system
+    /// setting the way upstream's initial options do.
+    ///
+    /// A running app leaves this `None`; the headless renderer fills it in,
+    /// because a screenshot has to be the same picture on every machine and
+    /// the platform brightness is the one input that is not.
+    pub theme_mode: Option<ThemeMode>,
     /// Where to open. Only the headless path uses anything but home; a running
     /// app starts at the top and navigates.
     pub route: &'static str,
@@ -460,14 +466,12 @@ impl StatefulComponent for Gallery {
 
     fn initial_state(&self) -> GalleryState {
         let mut state = GalleryState::default();
-        // The launch flag is an explicit choice, not `ThemeMode::System`: a
-        // headless platform reports light, and `--light` is how a screenshot
-        // says which it wants.
-        state.options.theme_mode = if self.light {
-            ThemeMode::Light
-        } else {
-            ThemeMode::Dark
-        };
+        // Only when the launch asked for one. Left alone, the mode is
+        // `ThemeMode::System` and resolves against `platform::brightness()`,
+        // which is what upstream's gallery starts at.
+        if let Some(theme_mode) = self.theme_mode {
+            state.options.theme_mode = theme_mode;
+        }
         match self.route {
             // Settings is the backdrop's front layer, not a route: land on
             // home with the panel already open.
@@ -947,10 +951,38 @@ mod tests {
 
     fn gallery() -> Gallery {
         Gallery {
-            light: false,
+            // Explicit, so a test's colours do not depend on the machine's
+            // light/dark setting.
+            theme_mode: Some(ThemeMode::Dark),
             route: routes::HOME,
             slug: None,
         }
+    }
+
+    #[test]
+    fn a_launch_that_says_nothing_follows_the_system() {
+        // Upstream's initial `GalleryOptions.themeMode` is `ThemeMode.system`,
+        // and a phone in day mode opening a dark gallery was the complaint
+        // this answers. Only the headless renderer pins a mode; see
+        // `Gallery::theme_mode`.
+        assert_eq!(
+            GalleryState::default().options.theme_mode,
+            ThemeMode::System
+        );
+        let following = Gallery {
+            theme_mode: None,
+            route: routes::HOME,
+            slug: None,
+        };
+        assert_eq!(
+            following.initial_state().options.theme_mode,
+            ThemeMode::System
+        );
+        assert_eq!(
+            gallery().initial_state().options.theme_mode,
+            ThemeMode::Dark,
+            "and a launch that does say is obeyed"
+        );
     }
 
     #[test]

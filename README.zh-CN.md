@@ -44,7 +44,8 @@ rust_ffi_unittests            →   15 passed
   <img src="docs/gallery/settings.png" width="24%">
 </p>
 
-*Flutter Gallery：首页、Rally、组件页、设置。26 个屏幕，全部由 Rust 排版。*
+*Flutter Gallery：首页、Rally、组件页、设置。26 个屏幕，全部由 Rust 排版。
+截图是深色主题——无头渲染把它固定成深色；应用本身跟随系统设置。*
 
 ## 拉依赖
 

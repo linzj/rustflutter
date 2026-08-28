@@ -90,13 +90,17 @@ Current mapping:
   that predate the catalogue (`src/data/demos.rs` titles/descriptions, page
   chrome) are baked in and read as English; routing them through the
   catalogue is later-batch work.
-- **theme mode is explicit, not system**: upstream's initial
-  `GalleryOptions.themeMode` is `ThemeMode.system`; here the default and the
-  `--light` flag set an explicit mode, because the headless and test
-  platforms report light and following the system would change what every
-  screenshot shows. `ThemeMode::System` resolves through
-  `platform::brightness()` and is selectable in settings
-  (`src/data/gallery_options.rs`, `src/app.rs`).
+- **the app follows the system, the screenshots do not**: upstream's initial
+  `GalleryOptions.themeMode` is `ThemeMode.system`, and so is this one — a
+  phone in day mode opens a light gallery, which is what it does upstream.
+  What is pinned is the headless renderer: `--png` starts in dark, or in
+  light with `--light`, because a screenshot has to be the same picture on
+  every machine and the platform brightness is the one input that is not.
+  **The recorded screenshots are therefore the dark theme.** A windowed or
+  Android run passes `Gallery::theme_mode: None` and resolves
+  `ThemeMode::System` through `platform::brightness()`; the mode stays
+  selectable in settings (`src/data/gallery_options.rs`, `src/app.rs`,
+  `src/main.rs`).
 - **some options resolve but are not rendered**: theme mode, text scale (a
   `MediaQuery` override at the root) and `time_dilation` (the frame clock in
   `Gallery::advance`) are live. Text direction, locale and platform still

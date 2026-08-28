@@ -21,7 +21,8 @@
 //!   --png <path>        render one frame headlessly
 //!   --route <name>      which screen: home, demo, study, settings
 //!   --slug <slug>       which demo or study, for --route demo|study
-//!   --light             start in the light theme
+//!   --light             start in the light theme (a windowed run otherwise
+//!                       follows the system; `--png` otherwise renders dark)
 //!   --dpr <scale>       render as a display at that scale would, e.g. 2.0
 //!   --width <px>        window or screenshot width, default 460
 //!   --height <px>       window or screenshot height, default 820
@@ -43,23 +44,39 @@ use rustflutter::prelude::*;
 use rustflutter::render::{BoxConstraints, Offset, RenderBox, Size};
 
 use app::Gallery;
+use data::gallery_options::ThemeMode;
 
 const WIDTH: i32 = 460;
 const HEIGHT: i32 = 820;
 
 /// The application the shell runs.
 struct GalleryApp {
-    light: bool,
+    /// `None` follows the reader's system setting; see [`Gallery::theme_mode`].
+    theme_mode: Option<ThemeMode>,
     route: &'static str,
     slug: Option<String>,
 }
 
+/// Light or dark, with "follow the system" resolved the way
+/// `GalleryOptions::resolved_brightness` resolves it.
+fn brightness_of(theme_mode: Option<ThemeMode>) -> Brightness {
+    match theme_mode {
+        Some(ThemeMode::Light) => Brightness::Light,
+        Some(ThemeMode::Dark) => Brightness::Dark,
+        Some(ThemeMode::System) | None => rustflutter::platform::brightness(),
+    }
+}
+
 impl WidgetApplication for GalleryApp {
     fn background(&self) -> Color {
-        if self.light {
-            Theme::light().background
-        } else {
-            Theme::dark().background
+        // The colour behind the frame, asked for before the first build --
+        // and, on a windowed run, possibly before the platform has said which
+        // brightness it is. It is only ever seen where the app has not painted,
+        // so a first frame that guesses light and a second that knows better
+        // costs nothing visible.
+        match brightness_of(self.theme_mode) {
+            Brightness::Light => Theme::light().background,
+            Brightness::Dark => Theme::dark().background,
         }
     }
 
@@ -69,7 +86,7 @@ impl WidgetApplication for GalleryApp {
         // title sits underneath it. Upstream's gallery reaches the same place
         // through `Scaffold`, which pads its app bar by the same amount.
         component(SafeArea::new(stateful(Gallery {
-            light: self.light,
+            theme_mode: self.theme_mode,
             route: self.route,
             slug: self.slug.clone(),
         })))
@@ -108,12 +125,30 @@ pub extern "C" fn rustflutter_app_main(argc: c_int, argv: *const *const c_char) 
         .unwrap_or(HEIGHT);
 
     if let Some(path) = named(&args, "--png") {
-        return render_png(&path, route, slug.as_deref(), light, dpr, width, height);
+        // A screenshot is pinned: dark unless it was asked for light. Reading
+        // the platform here would make the picture depend on the machine that
+        // took it, and the recorded screenshots are dark.
+        let theme_mode = if light {
+            ThemeMode::Light
+        } else {
+            ThemeMode::Dark
+        };
+        return render_png(
+            &path,
+            route,
+            slug.as_deref(),
+            theme_mode,
+            dpr,
+            width,
+            height,
+        );
     }
 
     register_application(move || {
         Box::new(WidgetHost::new(GalleryApp {
-            light,
+            // No flag means the reader's own setting, as upstream's gallery
+            // opens; `--light` is still an explicit override.
+            theme_mode: light.then_some(ThemeMode::Light),
             route,
             slug: slug.clone(),
         }))
@@ -154,7 +189,7 @@ fn render_png(
     path: &str,
     route: &'static str,
     slug: Option<&str>,
-    light: bool,
+    theme_mode: ThemeMode,
     dpr: f64,
     width: i32,
     height: i32,
@@ -173,7 +208,7 @@ fn render_png(
                 ..rustflutter::media_query::MediaQueryData::default()
             },
             stateful(Gallery {
-                light,
+                theme_mode: Some(theme_mode),
                 route,
                 slug: slug.map(str::to_string),
             }),
@@ -196,10 +231,9 @@ fn render_png(
     let mut root = tree.build_render_tree().expect("the tree has a root");
     root.layout(BoxConstraints::tight(width as f32, height as f32));
 
-    let background = if light {
-        Theme::light().background
-    } else {
-        Theme::dark().background
+    let background = match brightness_of(Some(theme_mode)) {
+        Brightness::Light => Theme::light().background,
+        Brightness::Dark => Theme::dark().background,
     };
     // Through the same composition the windowed path uses, so a screenshot is a
     // picture of the frame the shell would have rasterized rather than of one
