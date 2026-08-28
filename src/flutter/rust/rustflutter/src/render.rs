@@ -12875,6 +12875,36 @@ mod tests {
     }
 
     #[test]
+    fn text_with_no_glyphs_in_it_is_no_pixels_wide() {
+        // Zero ink is a width, not a missing one. `Paragraph::new` shrinks its
+        // box to the ink it measured, and used to skip that pass when the ink
+        // came out at zero -- leaving the box as wide as the space it was
+        // offered, which against an unbounded width is `f32::MAX / 4`.
+        let mut empty = RenderParagraph::new("");
+        let size = empty.layout(BoxConstraints::new(0.0, f32::INFINITY, 0.0, f32::INFINITY));
+        assert_eq!(size.width, 0.0, "{size:?}");
+    }
+
+    #[test]
+    fn an_empty_text_beside_a_flexible_child_leaves_it_the_whole_row() {
+        // What the width above buys, and how the bug was found: a non-flex
+        // child is measured against an unbounded width, so an empty text that
+        // measured as `f32::MAX / 4` took the row and starved the expanded
+        // sibling to nothing. A text field beside such a prefix drew no text
+        // at all.
+        let field = RenderRef::new(FixedBox::new(10.0, 20.0));
+        let mut row = RenderFlex::row()
+            .push(RenderParagraph::new(""))
+            .push_flex(FlexChild::expanded(RenderRef::clone(&field), 1));
+        row.layout(BoxConstraints::new(0.0, 300.0, 0.0, 100.0));
+        assert_eq!(
+            field.state.size.get().width,
+            300.0,
+            "the prefix took none of the row"
+        );
+    }
+
+    #[test]
     fn stretch_on_an_unbounded_cross_axis_does_not_become_infinite() {
         // A row inside a scroll viewport: the height is unbounded, so there is
         // nothing to stretch to. The row must take its children's height, not

@@ -31,7 +31,11 @@
 //! - The leading icons (`Icons.person`, `Icons.phone`, `Icons.email`) sit
 //!   beside the box as glyph text, and the phone field's `prefixText: '+1 '`
 //!   shows when the field is focused or has content, as upstream's
-//!   `prefixText` does;
+//!   `prefixText` does. Upstream's prefix is inside the field's decoration;
+//!   here it is a sibling, so the row holding the two is built whether the
+//!   prefix has anything to say or not -- a row that came and went would
+//!   re-parent the field, and a re-parented `TextField` loses the editing
+//!   session its state holds;
 //! - the salary field's `suffixText: 'USD'` is a trailing label in the box;
 //! - `PasswordField`'s visibility `IconButton` is the same eye glyph inside
 //!   the box, toggling the field's obscurity (its semantic label has no
@@ -578,28 +582,41 @@ impl StatefulComponent for TextFormFieldDemo {
                 )),
         );
         let phone_focused = rustflutter::focus::has_focus(base + 1);
-        let phone_content: AnyWidget = if phone_focused || !state.phone.is_empty() {
-            let prefix_style = text_style.clone();
-            many(
-                vec![
-                    leaf(move || Text::new("+1 ").with_style(prefix_style.clone())),
-                    phone_field,
-                ],
-                |mut rendered| {
-                    let field = rendered.pop().expect("the field");
-                    let prefix = rendered.pop().expect("the prefix");
-                    Box::new(
-                        RenderFlex::row()
-                            .with_main_axis_size(MainAxisSize::Max)
-                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                            .push(prefix)
-                            .push_flex(FlexChild::expanded(field, 1)),
-                    )
-                },
-            )
+        // The prefix comes and goes, but the row it sits in does not: it is
+        // the prefix's *text* that empties, not the row that disappears.
+        //
+        // Upstream's `prefixText` lives inside the field's own
+        // `InputDecoration`, so showing it moves nothing. Here the prefix is
+        // a sibling, and a sibling that appears re-parents the field -- into
+        // this row on focus, out of it again on blur. A re-parented widget is
+        // a new element with a new `TextFieldState`, and a `TextField`'s
+        // editing session lives in that state: the field would take the
+        // keyboard, open a session, and then be rebuilt out from under the
+        // session in the very frame the focus asked for. Focus said the field
+        // had the keyboard; nothing could be typed into it.
+        let prefix_text = if phone_focused || !state.phone.is_empty() {
+            "+1 "
         } else {
-            phone_field
+            ""
         };
+        let prefix_style = text_style.clone();
+        let phone_content: AnyWidget = many(
+            vec![
+                leaf(move || Text::new(prefix_text).with_style(prefix_style.clone())),
+                phone_field,
+            ],
+            |mut rendered| {
+                let field = rendered.pop().expect("the field");
+                let prefix = rendered.pop().expect("the prefix");
+                Box::new(
+                    RenderFlex::row()
+                        .with_main_axis_size(MainAxisSize::Max)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .push(prefix)
+                        .push_flex(FlexChild::expanded(field, 1)),
+                )
+            },
+        );
         children.push(field_group(
             "Phone number*",
             Some(catalog::icon::PHONE),
@@ -841,6 +858,63 @@ impl StatefulComponent for TextFormFieldDemo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustflutter::editable::TextFieldState;
+    use rustflutter::framework::{ElementId, ElementTree};
+
+    /// Every element holding a `TextFieldState`, in tree order: the seven
+    /// editable fields, name first.
+    fn field_elements(tree: &ElementTree) -> Vec<ElementId> {
+        let mut found = Vec::new();
+        let mut stack: Vec<ElementId> = tree.root().into_iter().collect();
+        while let Some(id) = stack.pop() {
+            if tree.state::<TextFieldState, _>(id, |_| ()).is_some() {
+                found.push(id);
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        found
+    }
+
+    /// Mounts the demo and settles it: one build, then the render tree, which
+    /// is what registers the focus nodes.
+    fn mounted() -> ElementTree {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Theme::dark(), stage()));
+        let _ = tree.build_render_tree();
+        tree
+    }
+
+    #[test]
+    fn focusing_the_phone_field_keeps_the_field_that_was_focused() {
+        // The bug this guards: the phone field grows a `+1 ` prefix when it
+        // takes the keyboard, and the prefix used to arrive by *wrapping the
+        // field in a row*. That moves the field to a new parent, so its
+        // element is dropped and rebuilt -- and a rebuilt `TextField` has a
+        // fresh `TextFieldState`, with no editing session in it. Focus said
+        // the field had the keyboard; nothing could be typed into it.
+        let mut tree = mounted();
+        let before = field_elements(&tree);
+        assert_eq!(before.len(), 7, "seven editable fields");
+
+        let phone = ids::DEMO_LOCAL + 1;
+        assert!(rustflutter::focus::focus(phone), "the phone field focuses");
+        tree.rebuild_dirty();
+        let _ = tree.build_render_tree();
+
+        let after = field_elements(&tree);
+        assert_eq!(
+            after.get(1),
+            before.get(1),
+            "the focused phone field is the same element it was"
+        );
+        assert_eq!(
+            rustflutter::focus::focused(),
+            Some(phone),
+            "and it still holds the keyboard"
+        );
+    }
 
     #[test]
     fn digits_only_drops_everything_but_digits() {

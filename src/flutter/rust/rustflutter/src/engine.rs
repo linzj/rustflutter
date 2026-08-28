@@ -1019,9 +1019,21 @@ impl Paragraph {
         // rather than to its own box, so the caller's paint origin no longer
         // matches what it measured. This mirrors what RenderParagraph does
         // upstream when a Text is given loose constraints.
+        //
+        // **Zero ink is a width, not a missing one.** Text with no glyphs in
+        // it -- the empty string -- has a longest line of zero, and zero is
+        // exactly how wide its box should be; skipping the second pass there
+        // leaves the box as wide as the space it was offered. In a row that
+        // is not a cosmetic difference: a non-flex child is measured against
+        // an unbounded width, so an empty text would measure as `f32::MAX / 4`
+        // and leave its expanded siblings nothing to lay out in. Upstream's
+        // `TextPainter._layoutParagraph` re-lays out at
+        // `clampDouble(maxIntrinsicWidth, minWidth, maxWidth)` with no
+        // positivity guard at all, and gets a zero-wide box for the same
+        // reason.
         unsafe { sys::rf_paragraph_layout(raw, max_width) };
         let ink_width = unsafe { sys::rf_paragraph_longest_line(raw) };
-        if ink_width > 0.0 && ink_width < max_width {
+        if ink_width < max_width {
             unsafe { sys::rf_paragraph_layout(raw, ink_width.ceil()) };
         }
 
@@ -1099,10 +1111,11 @@ impl Paragraph {
 
         // Two passes, for the reason `new` gives: the second shrinks the
         // paragraph box to the ink so that alignment is measured against the
-        // box the caller was handed.
+        // box the caller was handed -- zero ink included, which is a width of
+        // its own and not a pass to skip.
         unsafe { sys::rf_paragraph_layout(raw, max_width) };
         let ink_width = unsafe { sys::rf_paragraph_longest_line(raw) };
-        if ink_width > 0.0 && ink_width < max_width {
+        if ink_width < max_width {
             unsafe { sys::rf_paragraph_layout(raw, ink_width.ceil()) };
         }
         Paragraph { raw }
