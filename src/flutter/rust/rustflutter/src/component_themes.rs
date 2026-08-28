@@ -1263,6 +1263,14 @@ pub struct ResolvedTooltip {
     /// that slid off is not the same event as a reader who has finished
     /// reading, and it is not given the same grace.
     pub exit_duration: std::time::Duration,
+    /// What a touch does. Upstream's `Tooltip.triggerMode`, whose fallback is
+    /// this whole three-step chain: the widget's, then the theme's, then
+    /// `longPress`.
+    ///
+    /// Hover is not in it. A mouse resting on a tooltip shows it whatever this
+    /// says, because hovering is not a gesture anyone has to be taught --
+    /// upstream says exactly that in `TooltipTriggerMode`'s doc.
+    pub trigger_mode: crate::raw_tooltip::TooltipTriggerMode,
 }
 
 impl ResolvedTooltip {
@@ -1277,6 +1285,9 @@ impl ResolvedTooltip {
     /// Upstream's `_defaultWaitDuration`, which is **zero**: a tooltip summoned
     /// by a long press has already been waited for.
     pub const WAIT_DURATION: std::time::Duration = std::time::Duration::ZERO;
+    /// Upstream's `_defaultTriggerMode`.
+    pub const TRIGGER_MODE: crate::raw_tooltip::TooltipTriggerMode =
+        crate::raw_tooltip::TooltipTriggerMode::LongPress;
 
     /// Upstream's `_getDefaultTooltipHeight`.
     pub fn default_height(platform: TargetPlatform) -> f32 {
@@ -1320,6 +1331,7 @@ impl ResolvedTooltip {
             wait_duration: data.wait_duration.unwrap_or(ResolvedTooltip::WAIT_DURATION),
             show_duration: data.show_duration.unwrap_or(ResolvedTooltip::SHOW_DURATION),
             exit_duration: data.exit_duration.unwrap_or(ResolvedTooltip::EXIT_DURATION),
+            trigger_mode: data.trigger_mode.unwrap_or(ResolvedTooltip::TRIGGER_MODE),
         }
     }
 }

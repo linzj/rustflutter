@@ -224,6 +224,19 @@ impl RawTooltip {
         self.hover_delay_ms = delay;
         self
     }
+
+    /// Upstream's `showDuration`: how long a touch-triggered tooltip stays up
+    /// once the finger has gone.
+    pub fn with_touch_delay_ms(mut self, delay: f32) -> Self {
+        self.touch_delay_ms = delay;
+        self
+    }
+
+    /// Upstream's `exitDuration`: the grace period after a mouse leaves.
+    pub fn with_dismiss_delay_ms(mut self, delay: f32) -> Self {
+        self.dismiss_delay_ms = delay;
+        self
+    }
 }
 
 impl Default for RawTooltip {
@@ -454,6 +467,19 @@ impl RawTooltipState {
             return;
         }
         self.schedule_dismiss(self.widget.touch_delay_ms);
+    }
+
+    /// Upstream `_handleMouseEnter`, the half of it that is about this
+    /// tooltip.
+    ///
+    /// The other half -- dismissing every *other* open tooltip, and skipping
+    /// the delay when it dismissed any -- needs to see them all, so it stays on
+    /// [`TooltipScope::handle_mouse_enter`]. A lone tooltip has nobody to
+    /// dismiss and nothing to skip the delay for, which is why this is the
+    /// shorter of the two rather than a different one.
+    pub fn handle_mouse_enter(&mut self, device: i32) {
+        self.hovering_devices.insert(device);
+        self.schedule_show(self.widget.hover_delay_ms, None);
     }
 
     /// Upstream `_handleMouseExit`. The tooltip goes when the **last** device

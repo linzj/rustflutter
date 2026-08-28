@@ -61,6 +61,7 @@ impl crate::framework::Component for Tooltip {
     fn build(&self, context: &mut crate::framework::BuildContext) -> AnyWidget {
         let resolved = crate::component_themes::ResolvedTooltip::of(context);
         let (vertical_offset, prefer_below) = self.placement_from(&resolved);
+        let touch = self.touch_from(&resolved);
 
         let bubble: Rc<dyn Fn() -> AnyWidget> = match &self.message {
             // Upstream's standard bubble: the decoration, the padding, the
@@ -141,18 +142,27 @@ impl crate::framework::Component for Tooltip {
             bubble,
             vertical_offset: self.vertical_offset,
             prefer_below: self.prefer_below,
+            trigger_mode: self.trigger_mode,
             message: None,
         }
-        .assemble(vertical_offset, prefer_below)
+        .assemble(vertical_offset, prefer_below, touch)
     }
 }
 
 /// A tooltip: `child` as it was, and `bubble` above it while the pointer rests
 /// on it.
 ///
-/// The trigger here is hover in and hover out. The delays, the touch path and
-/// the announcement belong to `raw_tooltip.rs` and are driven by whoever owns
-/// the clock -- [`Tooltip::controller`] is how they reach this.
+/// The triggers are upstream's: a mouse hovering, and -- on a touch screen,
+/// where there is no hover to have -- whatever
+/// [`TooltipTriggerMode`](crate::raw_tooltip::TooltipTriggerMode) says, which
+/// is a long press unless the theme or the caller says otherwise.
+///
+/// The state machine behind them is `raw_tooltip.rs`'s
+/// [`RawTooltipState`](crate::raw_tooltip::RawTooltipState) -- upstream's
+/// `_scheduleShowTooltip`, `_handlePressUp`, the `showDuration` self-destruct
+/// and the rest of it, ported whole. This host is what gives it a clock: see
+/// [`TooltipHost::advance`]. [`Tooltip::controller`] is still there for a
+/// caller who wants to drive the bubble themselves.
 pub struct Tooltip {
     id: u64,
     controller: PortalController,
@@ -165,6 +175,9 @@ pub struct Tooltip {
     /// the third.
     vertical_offset: Option<f32>,
     prefer_below: Option<bool>,
+    /// What a touch does. `None` defers to the theme and then to upstream's
+    /// `longPress`, the same three-step chain the placement uses.
+    trigger_mode: Option<crate::raw_tooltip::TooltipTriggerMode>,
     /// Upstream's `message`: the text of a *standard* tooltip, built from the
     /// theme rather than by the caller.
     ///
@@ -186,6 +199,7 @@ impl Tooltip {
             bubble: Rc::new(bubble),
             vertical_offset: None,
             prefer_below: None,
+            trigger_mode: None,
             message: None,
         }
     }
@@ -197,6 +211,12 @@ impl Tooltip {
 
     pub fn with_prefer_below(mut self, prefer_below: bool) -> Self {
         self.prefer_below = Some(prefer_below);
+        self
+    }
+
+    /// What a touch does. Upstream's `Tooltip.triggerMode`.
+    pub fn with_trigger_mode(mut self, mode: crate::raw_tooltip::TooltipTriggerMode) -> Self {
+        self.trigger_mode = Some(mode);
         self
     }
 
@@ -224,7 +244,13 @@ impl Tooltip {
         let prefer_below = self
             .prefer_below
             .unwrap_or(crate::component_themes::ResolvedTooltip::PREFER_BELOW);
-        self.assemble(vertical_offset, prefer_below)
+        // Upstream's bare defaults, which are `RawTooltip`'s own: this path
+        // has no context, so there is no theme step to take.
+        let touch = crate::raw_tooltip::RawTooltip::new().with_trigger_mode(
+            self.trigger_mode
+                .unwrap_or(crate::component_themes::ResolvedTooltip::TRIGGER_MODE),
+        );
+        self.assemble(vertical_offset, prefer_below, touch)
     }
 
     /// Upstream's `Tooltip(message:)`: the ordinary tooltip, whose bubble this
@@ -255,9 +281,32 @@ impl Tooltip {
         )
     }
 
-    /// The tooltip with its placement decided. `build` and the `Component`
-    /// implementation differ only in where the two numbers come from.
-    fn assemble(self, vertical_offset: f32, prefer_below: bool) -> AnyWidget {
+    /// The widget's step of the chain for what a touch does and how long the
+    /// bubble then stays, as [`Tooltip::placement_from`] is for where it goes.
+    ///
+    /// The durations have no widget step here -- upstream's `Tooltip` takes
+    /// `showDuration` and friends and this port's does not yet -- so they come
+    /// from the resolution alone. The trigger mode has all three steps.
+    pub fn touch_from(
+        &self,
+        resolved: &crate::component_themes::ResolvedTooltip,
+    ) -> crate::raw_tooltip::RawTooltip {
+        let millis = |duration: std::time::Duration| duration.as_secs_f32() * 1000.0;
+        crate::raw_tooltip::RawTooltip::new()
+            .with_trigger_mode(self.trigger_mode.unwrap_or(resolved.trigger_mode))
+            .with_hover_delay_ms(millis(resolved.wait_duration))
+            .with_touch_delay_ms(millis(resolved.show_duration))
+            .with_dismiss_delay_ms(millis(resolved.exit_duration))
+    }
+
+    /// The tooltip with its placement and its touch behaviour decided. `build`
+    /// and the `Component` implementation differ only in where those come from.
+    fn assemble(
+        self,
+        vertical_offset: f32,
+        prefer_below: bool,
+        touch: crate::raw_tooltip::RawTooltip,
+    ) -> AnyWidget {
         let Tooltip {
             id,
             controller,
@@ -274,6 +323,7 @@ impl Tooltip {
             bubble,
             vertical_offset,
             prefer_below,
+            touch,
         })
     }
 }
@@ -299,6 +349,8 @@ struct TooltipHost {
     bubble: Rc<dyn Fn() -> AnyWidget>,
     vertical_offset: f32,
     prefer_below: bool,
+    /// What a touch does and how long the bubble stays, already resolved.
+    touch: crate::raw_tooltip::RawTooltip,
 }
 
 /// Upstream's `TooltipState` field, `final _controller =
@@ -308,6 +360,36 @@ struct TooltipHost {
 #[derive(Default)]
 struct TooltipHostState {
     controller: Option<PortalController>,
+    /// Upstream's `RawTooltipState`, which is where all the deciding happens:
+    /// what a trigger means, when the bubble goes away by itself, and what a
+    /// press-up or a tap elsewhere does about it. `None` until
+    /// [`TooltipHost::initial_state`] fills it, for the reason the controller
+    /// is.
+    raw: Option<crate::raw_tooltip::RawTooltipState>,
+    /// The frame clock, so [`TooltipHost::advance`] can hand the model an
+    /// elapsed time rather than a timestamp. `None` before the first frame.
+    last_micros: Option<i64>,
+}
+
+/// Puts the bubble where the model says it should be.
+///
+/// `finish_animation` first, because this port's portal has no fade: the
+/// model's Forward and Reverse are passed straight through rather than
+/// waited out.
+fn settle(state: &mut TooltipHostState) {
+    let Some(raw) = state.raw.as_mut() else {
+        return;
+    };
+    raw.finish_animation();
+    let showing = raw.is_showing();
+    let Some(controller) = &state.controller else {
+        return;
+    };
+    if showing {
+        controller.show();
+    } else {
+        controller.hide();
+    }
 }
 
 impl crate::framework::StatefulComponent for TooltipHost {
@@ -321,13 +403,48 @@ impl crate::framework::StatefulComponent for TooltipHost {
     fn initial_state(&self) -> TooltipHostState {
         TooltipHostState {
             controller: Some(self.controller.clone()),
+            raw: Some(crate::raw_tooltip::RawTooltipState::new(
+                self.id,
+                self.touch.clone(),
+            )),
+            last_micros: None,
         }
+    }
+
+    /// The clock the model has been waiting for.
+    ///
+    /// Upstream's timers are `Timer`s on a real event loop; there is no such
+    /// loop to borrow here, so the delays are counted in frame time the way
+    /// every other animation in this crate is -- see `TextField::advance`,
+    /// which does the same for the caret's blink.
+    ///
+    /// Returns whether another frame is wanted, which is exactly "a timer is
+    /// still pending": a tooltip with nothing due does not keep the frame loop
+    /// awake.
+    ///
+    /// The bubble is put up and taken down from here rather than from the
+    /// handlers, so there is one place that decides and one place that acts.
+    /// `finish_animation` is called straight after the clock because this port
+    /// has no fade -- the portal is instant, so the model's Forward and Reverse
+    /// are passed through rather than waited out.
+    fn advance(&self, state: &mut TooltipHostState, frame_time_micros: i64) -> bool {
+        let Some(raw) = state.raw.as_mut() else {
+            return false;
+        };
+        let elapsed = match state.last_micros {
+            Some(last) => (frame_time_micros - last).max(0) as f32 / 1000.0,
+            None => 0.0,
+        };
+        state.last_micros = Some(frame_time_micros);
+        raw.advance_ms(elapsed);
+        settle(state);
+        state.raw.as_ref().is_some_and(|raw| raw.timer().is_some())
     }
 
     fn build(
         &self,
         state: &TooltipHostState,
-        _handle: crate::framework::StateHandle<TooltipHostState>,
+        handle: crate::framework::StateHandle<TooltipHostState>,
         _context: &mut crate::framework::BuildContext,
     ) -> AnyWidget {
         let controller = state
@@ -336,15 +453,89 @@ impl crate::framework::StatefulComponent for TooltipHost {
             .expect("initial_state ran before the first build");
         let child = self.child.borrow().clone().expect("a tooltip has a child");
 
-        let show = controller.clone();
-        let hide = controller.clone();
-        let handlers = crate::gestures::PointerHandlers::new().with_hover_change(move |inside| {
-            if inside {
-                show.show();
-            } else {
-                hide.hide();
+        // Every gesture says the same thing: tell the model, and let `advance`
+        // act on what it decided. Upstream's handlers are the same shape --
+        // `_handleLongPress` and the rest only ever schedule.
+        let tell = {
+            let handle = handle.clone();
+            move |what: fn(&mut crate::raw_tooltip::RawTooltipState)| {
+                handle.set_state(move |state| {
+                    if let Some(raw) = state.raw.as_mut() {
+                        what(raw);
+                    }
+                    // At once, not on the next frame: upstream's
+                    // `_scheduleShowTooltip` calls `forward()` synchronously
+                    // when there is no delay left to wait out, and a hover that
+                    // showed a frame late would read as a stutter.
+                    settle(state);
+                });
             }
-        });
+        };
+
+        // Hover shows and hides whatever the trigger mode says, because
+        // hovering is not one of the modes: upstream's `MouseRegion` sits
+        // outside the `Listener` that reads them.
+        //
+        // One device rather than a set of them. Upstream tracks device ids so
+        // two mice can hold one tooltip open; `with_hover_change` reports a
+        // single "inside or not", so there is one to track and this is its id.
+        const HOVER_DEVICE: i32 = 0;
+        let hover = tell.clone();
+        let mut handlers =
+            crate::gestures::PointerHandlers::new().with_hover_change(move |inside| {
+                if inside {
+                    hover(|raw| raw.handle_mouse_enter(HOVER_DEVICE));
+                } else {
+                    hover(|raw| raw.handle_mouse_exit(HOVER_DEVICE));
+                }
+            });
+
+        // And the touch trigger, which is upstream's `_handlePointerDown`
+        // switch. The gesture arena is what decides a long press here, where
+        // upstream builds a recognizer per mode and adds the pointer to it.
+        match self.touch.trigger_mode {
+            crate::raw_tooltip::TooltipTriggerMode::LongPress => {
+                let press = tell.clone();
+                let up = tell.clone();
+                handlers = handlers
+                    .with_long_press(move |_| {
+                        press(|raw| {
+                            raw.handle_long_press();
+                        })
+                    })
+                    // `onLongPressUp`: the bubble outlives the finger by
+                    // `showDuration`, which is what makes it readable.
+                    .with_pointer_up(move |_| up(|raw| raw.handle_press_up()));
+            }
+            crate::raw_tooltip::TooltipTriggerMode::Tap => {
+                let tap = tell.clone();
+                handlers = handlers.with_tap(move |_| {
+                    tap(|raw| {
+                        raw.handle_tap();
+                    })
+                });
+            }
+            crate::raw_tooltip::TooltipTriggerMode::Manual => {}
+        }
+
+        // A tap that was not the trigger takes the tooltip down -- upstream's
+        // `onLongPressCancel`, wired to `_handleTapToDismiss`. In long-press
+        // mode a tap is by definition not the trigger, so this is where a quick
+        // tap ends a bubble rather than starting one.
+        //
+        // **The mechanism differs and the difference is worth knowing.**
+        // Upstream hears this from the long-press recognizer it already added
+        // the pointer to, so it costs nothing: the tap was never contested. A
+        // separate tap handler here does enter the arena, and the child is
+        // inside this region -- so a child that takes taps of its own keeps
+        // them, and this only ever sees the ones the child ignored. That is the
+        // safe way round (a tooltip cannot swallow a button's tap) but it does
+        // mean a tooltip wrapped around a real button is dismissed by the
+        // showDuration rather than by the tap.
+        if self.touch.trigger_mode == crate::raw_tooltip::TooltipTriggerMode::LongPress {
+            let dismiss = tell.clone();
+            handlers = handlers.with_tap(move |_| dismiss(|raw| raw.handle_tap_to_dismiss()));
+        }
 
         // The anchor is filled in from the target's own assemble, which runs
         // before any layout -- so by the time the bubble needs a position there
@@ -567,6 +758,105 @@ mod tests {
         assert_eq!(bubble_offset(&laid_out(&mut tree)), None);
     }
 
+    /// A finger, which is what a phone has instead of a hover.
+    fn touch_at(
+        x: f32,
+        y: f32,
+        change: crate::gestures::PointerChange,
+        at_micros: i64,
+    ) -> crate::gestures::PointerEvent {
+        let mut event = hover_at(x, y);
+        event.kind = crate::gestures::PointerKind::Touch;
+        event.change = change;
+        event.time_stamp_micros = at_micros;
+        // A finger on the glass is the primary button held down; lifting it
+        // releases. Without this a `Down` is a hover that happens to say Down.
+        event.buttons = match change {
+            crate::gestures::PointerChange::Up | crate::gestures::PointerChange::Cancel => 0,
+            _ => 1,
+        };
+        event
+    }
+
+    /// The port's `Tooltip` showed on hover and on nothing else, so on a phone
+    /// -- where there is no hover to have -- it could not be shown at all.
+    /// Upstream's default trigger is a long press; these are it.
+    #[test]
+    fn a_long_press_shows_the_bubble_where_a_finger_cannot_hover() {
+        let slot: Rc<RefCell<Option<PortalController>>> = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(page_with_tooltip(100.0, &slot)));
+        tree.build_render_tree();
+
+        let mut router = crate::gestures::GestureRouter::new();
+        let root = laid_out(&mut tree);
+        router.dispatch(
+            &root,
+            &touch_at(130.0, 110.0, crate::gestures::PointerChange::Down, 0),
+        );
+        tree.rebuild_dirty();
+        assert_eq!(
+            bubble_offset(&laid_out(&mut tree)),
+            None,
+            "a finger that has only just landed is not a long press yet"
+        );
+
+        // Upstream's `kLongPressTimeout` is half a second, and the router's
+        // clock is what turns a held press into one.
+        router.tick(crate::gestures::LONG_PRESS_TIMEOUT_MICROS + 1);
+        tree.rebuild_dirty();
+        assert!(
+            bubble_offset(&laid_out(&mut tree)).is_some(),
+            "holding it shows the bubble"
+        );
+    }
+
+    #[test]
+    fn and_the_bubble_outlives_the_finger_long_enough_to_read() {
+        // Upstream's `showDuration`, 1500ms: a finger that lifted has no way to
+        // say "still looking", so the tooltip has to end by itself -- and not
+        // the instant the finger goes, or there would be nothing to read.
+        let slot: Rc<RefCell<Option<PortalController>>> = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(page_with_tooltip(100.0, &slot)));
+        tree.build_render_tree();
+
+        let mut router = crate::gestures::GestureRouter::new();
+        let root = laid_out(&mut tree);
+        router.dispatch(
+            &root,
+            &touch_at(130.0, 110.0, crate::gestures::PointerChange::Down, 0),
+        );
+        router.tick(crate::gestures::LONG_PRESS_TIMEOUT_MICROS + 1);
+        tree.rebuild_dirty();
+        assert!(bubble_offset(&laid_out(&mut tree)).is_some(), "shown");
+
+        let root = laid_out(&mut tree);
+        router.dispatch(
+            &root,
+            &touch_at(
+                130.0,
+                110.0,
+                crate::gestures::PointerChange::Up,
+                crate::gestures::LONG_PRESS_TIMEOUT_MICROS + 2,
+            ),
+        );
+        tree.rebuild_dirty();
+        assert!(
+            bubble_offset(&laid_out(&mut tree)).is_some(),
+            "still up the moment the finger leaves"
+        );
+
+        tree.advance_frame(0);
+        tree.advance_frame(2_000_000);
+        tree.rebuild_dirty();
+        assert_eq!(
+            bubble_offset(&laid_out(&mut tree)),
+            None,
+            "and gone once the reading time is up"
+        );
+    }
+
     /// A mouse at a position, hovering rather than pressing.
     fn hover_at(x: f32, y: f32) -> crate::gestures::PointerEvent {
         crate::gestures::PointerEvent {
@@ -620,6 +910,18 @@ mod tests {
         );
 
         router.dispatch(&root, &hover_at(700.0, 500.0));
+        tree.rebuild_dirty();
+        assert!(
+            bubble_offset(&laid_out(&mut tree)).is_some(),
+            "not the instant the pointer left: upstream's `exitDuration` is a              hundred milliseconds, enough to cross a one-pixel gap between a              button and the tooltip it opened"
+        );
+
+        // And then it goes, once the grace period is up. Two frames: the first
+        // one a tree ever advances only starts the clock -- there is no
+        // previous frame to have elapsed from -- and an application's frame
+        // loop has long since spent that one.
+        tree.advance_frame(0);
+        tree.advance_frame(200_000);
         tree.rebuild_dirty();
         assert_eq!(
             bubble_offset(&laid_out(&mut tree)),
