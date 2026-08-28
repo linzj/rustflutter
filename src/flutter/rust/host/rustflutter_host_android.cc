@@ -1330,6 +1330,64 @@ class HostPlatformView final : public PlatformView,
     geometry_set_ = false;
   }
 
+  /// The Surface that was here has been taken away, and the engine stays up.
+  ///
+  /// `AndroidSurfaceGLImpeller::TeardownOnScreenContext`, which is two lines --
+  /// clear the context, drop the onscreen surface -- and this is the same two,
+  /// plus the software path's copy of the frame. Called on the platform thread,
+  /// straight after `NotifyDestroyed`, which is the order
+  /// `PlatformViewAndroid::NotifyDestroyed` uses: the rasterizer gives its
+  /// surface back first, and only then does the EGL surface it was drawing into
+  /// go.
+  ///
+  /// The GL *context* stays, exactly as upstream's stays -- it belongs to
+  /// `AndroidContextGLImpeller` rather than to the surface, and nothing in
+  /// upstream's teardown path touches it. That is the difference between this
+  /// and a shutdown, and it is the whole reason the application survives being
+  /// backgrounded: the context, the shell, the framework and everything the
+  /// reader had done are all still here, waiting for a new Surface.
+  void OnSurfaceReleased() {
+    window_ = nullptr;
+    geometry_set_ = false;
+    backing_store_.reset();
+    if (gl_delegate_ == nullptr) {
+      return;
+    }
+    // On the raster thread, because that is where the surface was made current
+    // and EGL only really destroys one that is not. Clearing first is what
+    // `ImpellerGlDelegate::Resize` does before dropping its surface, and what
+    // upstream's teardown does before dropping its own.
+    fml::AutoResetWaitableEvent latch;
+    fml::TaskRunner::RunNowOrPostTask(task_runners_.GetRasterTaskRunner(),
+                                      [this, &latch]() {
+                                        if (gl_context_) {
+                                          gl_context_->ClearCurrent();
+                                        }
+                                        gl_delegate_.reset();
+                                        latch.Signal();
+                                      });
+    latch.Wait();
+  }
+
+  /// A Surface again, after [`OnSurfaceReleased`].
+  ///
+  /// `AndroidSurfaceGLImpeller::SetNativeWindow`, and called where upstream
+  /// calls it: on the platform thread, before `NotifyCreated`, because
+  /// `NotifyCreated` is what builds the rendering surface out of this window
+  /// and there has to be a window by then. Nothing is reading `window_` in
+  /// between -- the rasterizer has no surface at all until that call returns.
+  ///
+  /// One thing this does that upstream does not: nulling `window_` in
+  /// `OnSurfaceReleased` rather than leaving the old one there until a new one
+  /// replaces it. Upstream can leave it because everything that reads it checks
+  /// the onscreen surface first; the software path here reads the window
+  /// directly.
+  void OnSurfaceAcquired(ANativeWindow* window) {
+    window_ = window;
+    // A new window has been told nothing about what pixels it will be handed.
+    geometry_set_ = false;
+  }
+
   void SendMethodCall(const char* channel,
                       const std::string& method,
                       const std::string& arguments_json) {
@@ -1477,6 +1535,15 @@ struct HostState {
 
   ANativeWindow* window = nullptr;
 
+  /// Whether the shell is currently rendering into that window.
+  ///
+  /// False between the Activity losing its Surface and being given a new one,
+  /// which is most of the time an application spends in the background. The
+  /// shell is up throughout; only the surface comes and goes, and this is which
+  /// of the two states it is in -- `NotifyCreated` and `NotifyDestroyed` are
+  /// not idempotent enough to be called on a guess.
+  bool surface_attached = false;
+
   /// Whether an accessibility service is listening, as the Activity last said.
   ///
   /// Kept here because the Activity asks before there is a shell to ask: it
@@ -1563,6 +1630,40 @@ void SendLifecycle(const char* next) {
   state.platform_view->SendLifecycleState(next);
 }
 
+/// Gives the Surface back, and keeps everything else.
+///
+/// Android reclaims an Activity's Surface every time it stops being visible --
+/// the reader switched to another application, or the screen turned off -- and
+/// hands a new one over on the way back in. Nothing about the application is
+/// over when that happens, so nothing about it is torn down here: the shell,
+/// the framework, and every route, scroll position and half-filled field the
+/// reader had are all still in memory, waiting for somewhere to draw.
+///
+/// What does go is the surface, in the two layers that have one: the
+/// rasterizer's, through `NotifyDestroyed`, and then this host's own EGL window
+/// surface, through `OnSurfaceReleased`. In that order, because the second is
+/// what the first was drawing into -- and it is the order
+/// `PlatformViewAndroid::NotifyDestroyed` uses, where `PlatformView::
+/// NotifyDestroyed` comes first and `TeardownOnScreenContext` after it.
+///
+/// Platform thread, which is where `NotifyDestroyed` must be called from.
+void DetachSurface() {
+  HostState& state = HostState::Get();
+  if (state.shell != nullptr && state.surface_attached) {
+    if (auto view = state.shell->GetPlatformView()) {
+      view->NotifyDestroyed();
+    }
+    if (state.platform_view != nullptr) {
+      state.platform_view->OnSurfaceReleased();
+    }
+    state.surface_attached = false;
+  }
+  if (state.window != nullptr) {
+    ANativeWindow_release(state.window);
+    state.window = nullptr;
+  }
+}
+
 /// Tears the shell down. Called from the Activity's destruction and from
 /// rf_host_run if a second start ever arrived.
 void Shutdown() {
@@ -1571,24 +1672,17 @@ void Shutdown() {
     return;
   }
   state.text_input.Detach();
+  DetachSurface();
   state.platform_view = nullptr;
 
   // The shell must be destroyed on the platform thread, which is this one: its
   // destructor drains the UI, raster and IO threads in order and would deadlock
   // if it were not the one holding the platform thread. That this is already
   // the platform thread is the one real simplification Android buys.
-  if (auto view = state.shell->GetPlatformView()) {
-    view->NotifyDestroyed();
-  }
   state.shell.reset();
   state.task_runners.reset();
   state.threads.reset();
   state.lifecycle_state.clear();
-
-  if (state.window != nullptr) {
-    ANativeWindow_release(state.window);
-    state.window = nullptr;
-  }
 }
 
 }  // namespace
@@ -1677,6 +1771,7 @@ int32_t rf_host_run(const RfHostOptions* options) {
   if (auto view = state.shell->GetPlatformView()) {
     view->NotifyCreated();
   }
+  state.surface_attached = true;
   std::vector<std::unique_ptr<Display>> displays;
   displays.push_back(std::make_unique<Display>(
       /*display_id=*/0, 1000000.0 / 16667.0, state.width, state.height,
@@ -1791,6 +1886,72 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeSurfaceChanged(
     state.task_runners->GetRasterTaskRunner()->PostTask(
         [view = state.platform_view]() { view->OnWindowResized(); });
   }
+  flutter::SendViewportMetrics();
+}
+
+/// The Activity has lost its Surface, and has not lost the application.
+///
+/// What used to happen here was a full shutdown, on the reasoning that this
+/// fork has one Activity and no engine cache, so "the Surface is gone" and "the
+/// application is gone" were the same event. They are not: Android takes the
+/// Surface away every time the reader looks at something else. Coming back
+/// built a second shell and ran the application's `main` a second time, and the
+/// reader found themselves on the first screen with everything they had done
+/// gone. The application ends at `onDestroy`, which is where `nativeStop` still
+/// is; this is only the Surface.
+///
+/// Upstream's is `SurfaceDestroyed` in platform_view_android_jni_impl.cc, which
+/// is one line -- `NotifyDestroyed` -- and reached from
+/// `FlutterSurfaceView.surfaceDestroyed` by way of
+/// `FlutterRenderer.stopRenderingToSurface`. Nothing on that path destroys an
+/// engine; `FlutterEngine.destroy` is called from `onDetach` and nowhere else.
+JNIEXPORT void JNICALL
+Java_io_flutter_rustflutter_RustflutterActivity_nativeSurfaceDestroyed(
+    JNIEnv* env,
+    jclass clazz) {
+  flutter::DetachSurface();
+}
+
+/// A Surface again, for the shell that has been up all along.
+///
+/// Upstream's `SurfaceCreated`, which is the same two steps in the same order:
+/// the window to the platform view first, then `NotifyCreated`, which asks the
+/// shell for a rendering surface and -- through `Shell::OnPlatformViewCreated`
+/// -- schedules a frame. So what the reader sees on the way back in is the
+/// screen they left, drawn again rather than built again.
+///
+/// The counterpart of nativeSurfaceDestroyed, and deliberately not
+/// nativeSurfaceCreated: that one is the first Surface, and starts the
+/// application. This one starts nothing. Upstream has no such split because
+/// starting the application is not a surface event over there at all -- the
+/// engine is created and runs its entry point before a Surface exists.
+JNIEXPORT void JNICALL
+Java_io_flutter_rustflutter_RustflutterActivity_nativeSurfaceRecreated(
+    JNIEnv* env,
+    jclass clazz,
+    jobject surface,
+    jint width,
+    jint height,
+    jfloat device_pixel_ratio) {
+  auto& state = flutter::HostState::Get();
+  if (state.window != nullptr) {
+    ANativeWindow_release(state.window);
+  }
+  state.window = ANativeWindow_fromSurface(env, surface);
+  state.width = width;
+  state.height = height;
+  state.device_pixel_ratio = device_pixel_ratio > 0 ? device_pixel_ratio : 1.0;
+  if (state.shell == nullptr || state.platform_view == nullptr) {
+    return;
+  }
+  // Before NotifyCreated, which is what makes the rendering surface out of it.
+  state.platform_view->OnSurfaceAcquired(state.window);
+  if (auto view = state.shell->GetPlatformView()) {
+    view->NotifyCreated();
+  }
+  state.surface_attached = true;
+  // The window may be a different size than the one that went away -- the
+  // reader could have folded, rotated or resized while they were elsewhere.
   flutter::SendViewportMetrics();
 }
 

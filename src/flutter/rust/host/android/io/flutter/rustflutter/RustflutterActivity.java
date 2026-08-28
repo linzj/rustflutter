@@ -196,19 +196,10 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
   @Override
   protected void onDestroy() {
     if (mStarted) {
-      if (mAccessibilityManager != null) {
-        if (mTouchExplorationListener != null) {
-          mAccessibilityManager.removeTouchExplorationStateChangeListener(
-              mTouchExplorationListener);
-          mTouchExplorationListener = null;
-        }
-        if (mAccessibilityListener != null) {
-          mAccessibilityManager.removeAccessibilityStateChangeListener(mAccessibilityListener);
-          mAccessibilityListener = null;
-        }
-      }
+      stopWatchingAccessibility();
       nativeStop();
       mStarted = false;
+      mSurfaceReady = false;
     }
     if (sInstance == this) {
       sInstance = null;
@@ -281,30 +272,47 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
       mStarted = true;
       return;
     }
+    if (!mSurfaceReady) {
+      // The application was in the background and has been brought back. The
+      // engine never went away; this is a new Surface for it to draw the same
+      // screen into. Not nativeSurfaceCreated, which is the one that starts the
+      // application -- starting it a second time is exactly the bug this
+      // avoids.
+      //
+      // Upstream reattaches from surfaceCreated rather than from here
+      // (FlutterSurfaceView.connectSurfaceToRenderer, which reaches
+      // FlutterJNI.onSurfaceCreated), and sends the size afterwards as a
+      // separate onSurfaceChanged. This host needs a size to hand the shell
+      // along with the window, and Android always calls surfaceChanged straight
+      // after surfaceCreated, so the two arrive together -- which is the same
+      // reason the first attach is here rather than there.
+      nativeSurfaceRecreated(holder.getSurface(), width, height, density);
+      mSurfaceReady = true;
+      return;
+    }
     nativeSurfaceChanged(width, height, density);
   }
 
   @Override
   public void surfaceDestroyed(SurfaceHolder holder) {
-    // The Surface is going away while the shell may still be rasterising into
-    // it. Tearing the whole shell down is heavier than upstream, which detaches
-    // the surface and keeps the engine -- but this fork has one Activity and no
-    // engine cache, so "the Surface is gone" and "the application is gone" are
-    // the same event.
-    if (mStarted) {
-      if (mAccessibilityManager != null) {
-        if (mTouchExplorationListener != null) {
-          mAccessibilityManager.removeTouchExplorationStateChangeListener(
-              mTouchExplorationListener);
-          mTouchExplorationListener = null;
-        }
-        if (mAccessibilityListener != null) {
-          mAccessibilityManager.removeAccessibilityStateChangeListener(mAccessibilityListener);
-          mAccessibilityListener = null;
-        }
-      }
-      nativeStop();
-      mStarted = false;
+    // Only the Surface. Android reclaims it whenever the Activity stops being
+    // visible -- another application came to the front, or the screen went off
+    // -- and that is not the application ending, so the shell, the framework
+    // and everything the reader had done stay up. Tearing them down here is
+    // what used to happen, and it meant every trip to another application came
+    // back to the first screen with the state gone.
+    //
+    // The application ends at onDestroy, where nativeStop is. Upstream draws
+    // the line in the same place: FlutterSurfaceView.surfaceDestroyed reaches
+    // FlutterRenderer.stopRenderingToSurface and stops there, and the engine is
+    // destroyed only from onDetach.
+    //
+    // The mSurfaceReady guard is upstream's `if (surface != null)` in
+    // stopRenderingToSurface: this can arrive for a Surface that has already
+    // been given back, and telling the shell twice is not the same as telling
+    // it once.
+    if (mStarted && mSurfaceReady) {
+      nativeSurfaceDestroyed();
       mSurfaceReady = false;
     }
   }
@@ -1263,6 +1271,21 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
     nativeSemanticsEnabled(manager.isEnabled());
   }
 
+  /** Undoes watchAccessibility. Called once, from onDestroy. */
+  private void stopWatchingAccessibility() {
+    if (mAccessibilityManager == null) {
+      return;
+    }
+    if (mTouchExplorationListener != null) {
+      mAccessibilityManager.removeTouchExplorationStateChangeListener(mTouchExplorationListener);
+      mTouchExplorationListener = null;
+    }
+    if (mAccessibilityListener != null) {
+      mAccessibilityManager.removeAccessibilityStateChangeListener(mAccessibilityListener);
+      mAccessibilityListener = null;
+    }
+  }
+
   private static void forgetSemantics() {
     synchronized (sSemantics) {
       sSemantics.clear();
@@ -1289,6 +1312,11 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
       String externalFilesPath);
 
   private static native void nativeSurfaceChanged(int width, int height, float devicePixelRatio);
+
+  private static native void nativeSurfaceDestroyed();
+
+  private static native void nativeSurfaceRecreated(
+      Surface surface, int width, int height, float devicePixelRatio);
 
   private static native void nativeInsets(
       int paddingTop,
