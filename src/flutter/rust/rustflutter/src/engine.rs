@@ -386,6 +386,12 @@ pub(crate) mod sys {
         pub fn rf_paragraph_baseline(paragraph: *mut RfParagraph) -> f32;
         pub fn rf_paragraph_min_intrinsic_width(paragraph: *mut RfParagraph) -> f32;
         pub fn rf_paragraph_max_intrinsic_width(paragraph: *mut RfParagraph) -> f32;
+        pub fn rf_paragraph_word_boundary(
+            paragraph: *mut RfParagraph,
+            offset: usize,
+            start: *mut usize,
+            end: *mut usize,
+        );
 
         pub fn rf_layer_tree_new(width: c_int, height: c_int) -> *mut RfLayerTree;
         pub fn rf_layer_tree_free(tree: *mut RfLayerTree);
@@ -1139,6 +1145,26 @@ impl Paragraph {
     /// baseline. What baseline alignment lines up on.
     pub fn baseline(&self) -> f32 {
         unsafe { sys::rf_paragraph_baseline(self.raw) }
+    }
+
+    /// The word around `offset`, in UTF-16 code units -- upstream's
+    /// `Paragraph.getWordBoundary`, which `TextPainter` hands to
+    /// `RenderEditable.getWordAtOffset`.
+    ///
+    /// **The answer has to come from the engine.** A word is a run of letters
+    /// between spaces only in the scripts that put spaces between words;
+    /// Chinese and Japanese do not, and it is ICU's dictionary inside
+    /// skparagraph that finds the breaks in them. A Rust approximation would
+    /// select a whole sentence of Chinese on a long press, which is exactly
+    /// the case a reader here is most likely to try first.
+    ///
+    /// A paragraph that has not been laid out has no words in it yet, and
+    /// answers the empty range at `offset`.
+    pub fn word_boundary(&self, offset: usize) -> (usize, usize) {
+        let mut start = offset;
+        let mut end = offset;
+        unsafe { sys::rf_paragraph_word_boundary(self.raw, offset, &mut start, &mut end) };
+        (start, end)
     }
 
     /// The narrowest width that does not split a word.

@@ -1932,6 +1932,51 @@ pub unsafe extern "C" fn rf_paragraph_max_intrinsic_width(paragraph: *mut RfPara
     })
 }
 
+/// The word around `offset`, as a run between whitespace.
+///
+/// **This is the stub's word, not ICU's.** The real one is a dictionary
+/// lookup for the scripts that are written without spaces, and no fake here
+/// could stand in for that -- which is why the Chinese case is an
+/// `ffi_unittests.cc` test against the real engine rather than a Rust one.
+/// What this is good for is the same thing the stub's line breaking is good
+/// for: exercising the logic *around* the answer with an answer that is
+/// shaped right, on the ASCII the surrounding tests are written in.
+///
+/// Offsets are UTF-16 code units, as the real one's are.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rf_paragraph_word_boundary(
+    paragraph: *mut RfParagraph,
+    offset: usize,
+    start: *mut usize,
+    end: *mut usize,
+) {
+    let Some(p) = (unsafe { stub_paragraph(paragraph) }) else {
+        return;
+    };
+    // The text as UTF-16 units, so the offsets going out are in the units the
+    // caller counts in.
+    let units: Vec<u16> = p.text.encode_utf16().collect();
+    let is_space = |unit: u16| char::from_u32(unit as u32).is_some_and(|c| c.is_whitespace());
+    // A caret sitting past the last character belongs to the word before it,
+    // which is what makes a long press at the end of a field select the last
+    // word rather than nothing.
+    let at = offset.min(units.len().saturating_sub(1));
+    let mut from = at;
+    while from > 0 && !is_space(units[from - 1]) {
+        from -= 1;
+    }
+    let mut to = at;
+    while to < units.len() && !is_space(units[to]) {
+        to += 1;
+    }
+    if !start.is_null() {
+        unsafe { *start = from };
+    }
+    if !end.is_null() {
+        unsafe { *end = to };
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_layer_tree_new(width: c_int, height: c_int) -> *mut RfLayerTree {
     allocate::<RfLayerTree>()

@@ -427,6 +427,22 @@ RF_EXPORT
 float rf_paragraph_min_intrinsic_width(RfParagraph* paragraph);
 RF_EXPORT
 float rf_paragraph_max_intrinsic_width(RfParagraph* paragraph);
+// The word around `offset`, as ICU's word breaker sees it -- what a long press
+// or a double tap selects. Offsets are UTF-16 code units, the unit the whole
+// text-input wire speaks in.
+//
+// It has to come from here rather than being worked out in Rust: a word is not
+// a run of letters between spaces in every script. Chinese and Japanese are
+// written without spaces at all, and ICU's dictionary is what finds the breaks
+// in them. `start` and `end` are left untouched if there is nothing to answer.
+//
+// Valid without a prior layout: skparagraph breaks the text with ICU on first
+// use, so the words are known as soon as the paragraph is built.
+RF_EXPORT
+void rf_paragraph_word_boundary(RfParagraph* paragraph,
+                                size_t offset,
+                                size_t* start,
+                                size_t* end);
 
 // A paragraph with more than one style in it, assembled run by run. The same
 // push/add/pop/build sequence as txt::ParagraphBuilder and as dart:ui's

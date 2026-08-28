@@ -127,6 +127,109 @@ TEST(RustFFI, ShapesTextAndReportsItsMetrics) {
   rf_paragraph_free(paragraph);
 }
 
+namespace {
+
+// Builds and lays out a paragraph of `text`, for the word-boundary tests.
+RfParagraph* LayOut(const char* text, size_t length) {
+  RfParagraph* paragraph = rf_paragraph_new(
+      text, length, nullptr,
+      /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0, 24.0f, 400,
+      /*italic=*/false,
+      /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
+      /*height=*/1.0f, /*has_height=*/false,
+      /*decoration=*/0,
+      /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
+      /*feature_count=*/0, 0xFF000000, /*text_align=*/0, /*text_direction=*/0,
+      /*max_lines=*/0, /*ellipsis=*/false);
+  if (paragraph != nullptr) {
+    rf_paragraph_layout(paragraph, 2000.0f);
+  }
+  return paragraph;
+}
+
+}  // namespace
+
+// What a long press selects. The framework cannot work this out for itself,
+// which is the whole reason the call exists -- see the two cases below.
+TEST(RustFFI, FindsTheWordAroundAnOffset) {
+  ASSERT_EQ(rf_initialize(nullptr), 0);
+
+  const char kText[] = "Hello, brave world!";
+  //                    0123456789...
+  RfParagraph* paragraph = LayOut(kText, std::strlen(kText));
+  ASSERT_NE(paragraph, nullptr);
+
+  // Inside "brave", which runs [7, 12).
+  size_t start = 0;
+  size_t end = 0;
+  rf_paragraph_word_boundary(paragraph, 9, &start, &end);
+  EXPECT_EQ(start, 7u);
+  EXPECT_EQ(end, 12u);
+
+  // Inside "Hello", which stops at the comma rather than running into it.
+  rf_paragraph_word_boundary(paragraph, 2, &start, &end);
+  EXPECT_EQ(start, 0u);
+  EXPECT_EQ(end, 5u);
+
+  rf_paragraph_free(paragraph);
+}
+
+// The case a Rust implementation could not have got right: Chinese is written
+// without spaces, so "a run of letters between spaces" would select the whole
+// line. ICU's dictionary is what breaks it into words.
+TEST(RustFFI, BreaksChineseIntoWordsWithoutSpaces) {
+  ASSERT_EQ(rf_initialize(nullptr), 0);
+
+  // "I love programming" -- 我 喜欢 编程, six characters and no spaces.
+  const char kText[] =
+      "\xE6\x88\x91\xE5\x96\x9C\xE6\xAC\xA2\xE7\xBC\x96\xE7\xA8\x8B";
+  RfParagraph* paragraph = LayOut(kText, std::strlen(kText));
+  ASSERT_NE(paragraph, nullptr);
+
+  // Offsets are UTF-16 units; each of these characters is one.
+  size_t start = 0;
+  size_t end = 0;
+  rf_paragraph_word_boundary(paragraph, 1, &start, &end);
+  // Whatever ICU decides the word is, it must not be the whole line -- that
+  // is the failure a hand-rolled boundary would have had.
+  EXPECT_LT(end - start, 5u) << "selected " << (end - start) << " of 5";
+  EXPECT_GT(end, start);
+  EXPECT_LE(end, 5u);
+
+  rf_paragraph_free(paragraph);
+}
+
+// Words are a fact about the string, not about the box it was measured into,
+// so an unmeasured paragraph answers the same as a measured one. That is
+// upstream's shape -- `Paragraph::getWordBoundary` passes straight through and
+// skparagraph breaks the text with ICU on first use -- and it is worth pinning
+// because a layout guard here would look harmless and would break a long press
+// on a field that has not painted yet.
+TEST(RustFFI, KnowsItsWordsBeforeItIsLaidOut) {
+  ASSERT_EQ(rf_initialize(nullptr), 0);
+
+  const char kText[] = "Hello, world";
+  RfParagraph* paragraph = rf_paragraph_new(
+      kText, std::strlen(kText), nullptr,
+      /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0, 24.0f, 400,
+      /*italic=*/false,
+      /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
+      /*height=*/1.0f, /*has_height=*/false,
+      /*decoration=*/0,
+      /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
+      /*feature_count=*/0, 0xFF000000, /*text_align=*/0, /*text_direction=*/0,
+      /*max_lines=*/0, /*ellipsis=*/false);
+  ASSERT_NE(paragraph, nullptr);
+
+  size_t start = 0;
+  size_t end = 0;
+  rf_paragraph_word_boundary(paragraph, 2, &start, &end);
+  EXPECT_EQ(start, 0u);
+  EXPECT_EQ(end, 5u);
+
+  rf_paragraph_free(paragraph);
+}
+
 // Painting text must actually put ink on the surface, not silently no-op.
 TEST(RustFFI, PaintsTextIntoTheSurface) {
   ASSERT_EQ(rf_initialize(nullptr), 0);

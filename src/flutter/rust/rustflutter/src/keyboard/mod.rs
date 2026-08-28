@@ -297,6 +297,49 @@ impl Keyboard {
     }
 }
 
+/// Which modifiers were held when the key being dispatched arrived.
+///
+/// A focused widget's `on_key` handler is given the [`KeyEvent`] and nothing
+/// else, and an event does not carry the modifier state -- it is the
+/// *keyboard's*, not the keystroke's. Upstream's handlers reach it through
+/// `HardwareKeyboard.instance`, a singleton; this is the same singleton with
+/// the same three questions on it, filled in by the binding as each key is
+/// recorded. Without it a field cannot tell C from Ctrl+C.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub control: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
+thread_local! {
+    static MODIFIERS: std::cell::Cell<Modifiers> = const { std::cell::Cell::new(Modifiers {
+        control: false,
+        shift: false,
+        alt: false,
+        meta: false,
+    }) };
+}
+
+/// What was held when the key now being handled arrived.
+pub fn modifiers() -> Modifiers {
+    MODIFIERS.with(|held| held.get())
+}
+
+/// Records the modifier state, called by the binding once per key, right after
+/// the keyboard itself has been updated.
+pub fn note_modifiers(keyboard: &Keyboard) {
+    MODIFIERS.with(|held| {
+        held.set(Modifiers {
+            control: keyboard.control(),
+            shift: keyboard.shift(),
+            alt: keyboard.alt(),
+            meta: keyboard.meta(),
+        })
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

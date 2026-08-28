@@ -226,12 +226,20 @@ impl TextSelectionControls for MaterialTextSelectionControls {
     /// one's square corner meets the text and its round body hangs outside
     /// the selection. A collapsed handle anchors at its middle, because it
     /// marks a point rather than an edge.
+    ///
+    /// **Both y values are upstream's and neither is zero-by-symmetry.** The
+    /// left handle's is `0`, not the handle size -- anchoring it a whole
+    /// handle up would hang it over the line of text instead of below it --
+    /// and the collapsed one's is **-4**, four pixels *above* the point, which
+    /// is upstream's only magic number here and the thing that stops a caret's
+    /// teardrop touching the glyph bottoms. Both were wrong until a handle was
+    /// actually drawn with them.
     fn handle_anchor(&self, kind: TextSelectionHandleType, _text_line_height: f32) -> Offset {
         let size = MaterialTextSelectionControls::HANDLE_SIZE;
         match kind {
-            TextSelectionHandleType::Left => Offset::new(size, size),
+            TextSelectionHandleType::Left => Offset::new(size, 0.0),
             TextSelectionHandleType::Right => Offset::new(0.0, 0.0),
-            TextSelectionHandleType::Collapsed => Offset::new(size / 2.0, 0.0),
+            TextSelectionHandleType::Collapsed => Offset::new(size / 2.0, -4.0),
         }
     }
 }
@@ -797,21 +805,28 @@ mod tests {
         // The asymmetry is the point: a left handle anchors at its right edge
         // and a right handle at its left, so each one's body hangs *outside*
         // the selection rather than over the words being selected.
+        //
+        // The **y** values are upstream's `getHandleAnchor` verbatim and were
+        // both wrong here until a handle was drawn with them: this test used
+        // to assert the left handle anchored a whole handle *up*, which hung
+        // it over the line of text instead of below it, and that the collapsed
+        // one anchored at zero rather than at upstream's -4.
         let material = MaterialTextSelectionControls;
         let size = MaterialTextSelectionControls::HANDLE_SIZE;
         assert_eq!(
             material.handle_anchor(TextSelectionHandleType::Left, 16.0),
-            Offset::new(size, size)
+            Offset::new(size, 0.0)
         );
         assert_eq!(
             material.handle_anchor(TextSelectionHandleType::Right, 16.0),
             Offset::ZERO
         );
         // A collapsed handle marks a point rather than an edge, so it is
-        // centred.
+        // centred -- and lifted four pixels, which is the one magic number in
+        // upstream's switch.
         assert_eq!(
             material.handle_anchor(TextSelectionHandleType::Collapsed, 16.0),
-            Offset::new(size / 2.0, 0.0)
+            Offset::new(size / 2.0, -4.0)
         );
         assert!(material.draws_handles(16.0));
     }

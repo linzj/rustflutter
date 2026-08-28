@@ -1101,6 +1101,9 @@ impl AppInstance {
         // or not. It is the platform's state; an app that ignores Shift still
         // has to see it held when the next key it does care about arrives.
         self.keyboard.record(event);
+        // And published, so a focused widget's `on_key` -- which is handed the
+        // event and nothing else -- can tell C from Ctrl+C.
+        crate::keyboard::note_modifiers(&self.keyboard);
 
         // The application first, then the focused widget, then Tab.
         //

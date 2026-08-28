@@ -566,6 +566,28 @@ float rf_paragraph_max_intrinsic_width(RfParagraph* paragraph) {
   return static_cast<float>(paragraph->paragraph->GetMaxIntrinsicWidth());
 }
 
+void rf_paragraph_word_boundary(RfParagraph* paragraph,
+                                size_t offset,
+                                size_t* start,
+                                size_t* end) {
+  if (paragraph == nullptr || paragraph->paragraph == nullptr) {
+    return;
+  }
+  // No layout guard, and that is upstream's shape rather than an oversight:
+  // `Paragraph::getWordBoundary` in `lib/ui/text/paragraph.cc` passes straight
+  // through, and skparagraph's `ParagraphImpl::getWordBoundary` breaks `fText`
+  // with ICU on first use -- text the builder already has. Words are a fact
+  // about the string, not about the box it was measured into.
+  const txt::Paragraph::Range<size_t> range =
+      paragraph->paragraph->GetWordBoundary(offset);
+  if (start != nullptr) {
+    *start = range.start;
+  }
+  if (end != nullptr) {
+    *end = range.end;
+  }
+}
+
 // -- Layer tree ---------------------------------------------------------------
 
 RfLayerTree* rf_layer_tree_new(int32_t width, int32_t height) {

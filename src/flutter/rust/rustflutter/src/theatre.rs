@@ -652,6 +652,19 @@ pub struct OverlayHandle {
     /// Identity, and the only thing equality looks at.
     id: u64,
     stage: OverlayStage,
+    /// The overlay's own render object, recorded by the assemble that makes
+    /// it.
+    ///
+    /// Everything an entry is positioned by arrives in global coordinates --
+    /// a field's rectangle, a selection's endpoints -- and an entry is laid
+    /// out in the overlay's. Something has to convert, and the thing that
+    /// converts is the overlay's own object. [`Anchor::rect`] gets away
+    /// without it because `global_rect(None)` walks to the root and the
+    /// overlay is at the root; a caller converting a *point* wants the object
+    /// itself. See [`crate::selection_host`] and [`crate::magnifier_host`],
+    /// both of which take one and neither of which could be reached before
+    /// this existed.
+    surface: Anchor,
 }
 
 /// **Equality is the element identity and nothing else, and that is load
@@ -686,6 +699,16 @@ impl OverlayHandle {
     /// The stage portals beneath this overlay hand their children to.
     pub fn stage(&self) -> &OverlayStage {
         &self.stage
+    }
+
+    /// The overlay's own render object, once a frame has built one.
+    ///
+    /// What a caller wants it for is
+    /// [`RenderRef::global_to_local`](crate::render::RenderRef::global_to_local):
+    /// turning a rectangle it measured on the page into the coordinates its
+    /// overlay entry is laid out in. `None` before the first build.
+    pub fn surface(&self) -> Option<RenderRef> {
+        self.surface.render()
     }
 
     /// How many entries are inserted, on stage or not.
@@ -819,6 +842,11 @@ struct OverlayRootState {
     host: Rc<RefCell<Option<StateHandle<EntryHostState>>>>,
     stage: OverlayStage,
     id: u64,
+    /// The theatre's render object, recorded each time the assemble runs. On
+    /// the state rather than in the widget for the reason the rest of this is:
+    /// the widget is rebuilt and the slot must survive it, or the first
+    /// converted coordinate after a rebuild would be asked of nothing.
+    surface: Anchor,
 }
 
 impl Default for OverlayRootState {
@@ -830,6 +858,7 @@ impl Default for OverlayRootState {
             host: Rc::new(RefCell::new(None)),
             stage,
             id: next_overlay_id(),
+            surface: Anchor::new(),
         }
     }
 }
@@ -852,6 +881,7 @@ impl StatefulComponent for OverlayRoot {
             host: Rc::clone(&state.host),
             id: state.id,
             stage: state.stage.clone(),
+            surface: state.surface.clone(),
         };
         let entry_host = crate::framework::stateful(EntryHost {
             data: Rc::clone(&state.data),
@@ -862,25 +892,33 @@ impl StatefulComponent for OverlayRoot {
                 crate::framework::leaf(|| RenderRef::new(crate::widgets::Empty))
             });
         let stage = state.stage.clone();
+        let surface = state.surface.clone();
 
         provide(
             handle,
             many(vec![page, entry_host], move |mut rendered| {
                 let entry_stack = rendered.pop().expect("the entry host");
                 let page = rendered.pop().expect("the page");
-                RenderTheatre::new(
-                    page,
-                    // The inserted entries are one layer, beneath every portal: a
-                    // dialog is put up by the application and a tooltip by the
-                    // thing it belongs to, and the application's surfaces go under.
-                    vec![StagedEntry {
-                        portal_id: 0,
-                        render: entry_stack,
-                        z_order: 0,
-                        stage_id: 0,
-                    }],
-                )
-                .with_stage(stage.clone(), 0)
+                let theatre = RenderRef::new(
+                    RenderTheatre::new(
+                        page,
+                        // The inserted entries are one layer, beneath every portal: a
+                        // dialog is put up by the application and a tooltip by the
+                        // thing it belongs to, and the application's surfaces go under.
+                        vec![StagedEntry {
+                            portal_id: 0,
+                            render: entry_stack,
+                            z_order: 0,
+                            stage_id: 0,
+                        }],
+                    )
+                    .with_stage(stage.clone(), 0),
+                );
+                // Recorded here because here is the only place a handle to it
+                // exists -- the same trick a tooltip's `Anchor` plays on its
+                // target, and a text field's on the leaf it reveals.
+                surface.set(RenderRef::clone(&theatre));
+                theatre
             }),
         )
     }
@@ -1666,6 +1704,13 @@ impl Anchor {
             .as_ref()
             .map(|target| target.global_rect(None))
     }
+
+    /// The recorded object itself, for a caller that needs to convert
+    /// coordinates rather than read a rectangle --
+    /// [`RenderRef::global_to_local`] wants the object to convert *into*.
+    pub fn render(&self) -> Option<RenderRef> {
+        self.target.borrow().clone()
+    }
 }
 
 /// Decides where an anchored surface goes: given the target's rectangle, the
@@ -2046,6 +2091,30 @@ mod tests {
         (tree, handle)
     }
 
+    #[test]
+    fn the_overlay_hands_out_its_own_object_to_convert_coordinates_with() {
+        // The seam a selection overlay needs and could not reach: everything
+        // an entry is placed by arrives in global coordinates -- a field's
+        // rectangle, a selection's endpoints -- and an entry is laid out in
+        // the overlay's. `Anchor::rect` gets away without this because
+        // `global_rect(None)` walks to the root; a caller converting a
+        // *point* wants the object to convert into.
+        let (_tree, handle) = mounted_overlay();
+        let surface = handle.surface().expect("the theatre, once built");
+        // It is the overlay itself, so a point in the overlay's own frame
+        // converts to itself.
+        let origin = surface.global_to_local(crate::render::Offset::new(0.0, 0.0), None);
+        assert_eq!(origin, crate::render::Offset::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn there_is_nothing_to_convert_with_before_the_first_build() {
+        // `None` rather than a panic: a field asking on the frame it was
+        // mounted has a real answer, which is "not yet".
+        let empty = OverlayRootState::default();
+        assert!(empty.surface.render().is_none());
+    }
+
     /// How many portals the theatre is hosting: everything above the entry
     /// stack, which is always its first entry.
     fn theatre_entry_count(tree: &mut ElementTree) -> usize {
@@ -2200,6 +2269,9 @@ mod tests {
             host: Rc::clone(&first.host),
             id: first.id,
             stage: OverlayStage::new(),
+            // Nor does a slot with nothing recorded in it yet, for the same
+            // reason: equality is the element identity and nothing else.
+            surface: Anchor::new(),
         };
         assert!(
             *first == second,

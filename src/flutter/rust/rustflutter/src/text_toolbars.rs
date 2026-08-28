@@ -5,7 +5,135 @@
 //! The little bars that appear next to text you have selected, and where each
 //! decides to put itself.
 
+use std::rc::Rc;
+
 use crate::text_selection::TextSelectionToolbarLayoutDelegate;
+
+/// Upstream's `_kToolbarHeight` (`material/text_selection_toolbar.dart`), and
+/// half of it is the corner radius -- "eyeballed to match the native text
+/// selection menu on a Pixel 6 emulator", says the line it came from.
+pub const TOOLBAR_HEIGHT: f32 = 44.0;
+
+/// Upstream's `_kToolbarContentDistance`: how far above the selection the bar
+/// sits when it goes above.
+pub const TOOLBAR_CONTENT_DISTANCE: f32 = 8.0;
+
+/// Upstream `TextSelectionToolbarTextButton._kMiddlePadding` and
+/// `_kEndPadding`, "eyeballed to match the native text selection menu on a
+/// Pixel 2 running Android 10". The ends of the bar are padded wider than the
+/// gaps between its buttons, which is what stops the first label sitting hard
+/// against the rounded corner.
+pub const BUTTON_MIDDLE_PADDING: f32 = 9.5;
+pub const BUTTON_END_PADDING: f32 = 14.5;
+
+/// The padding for the button at `index` of `total` -- upstream's
+/// `TextSelectionToolbarTextButton.getPadding`, whose whole content is that
+/// the outside edges are wider than the inside ones.
+pub fn button_padding(index: usize, total: usize) -> (f32, f32) {
+    debug_assert!(total > 0 && index < total);
+    let first = index == 0;
+    let last = index + 1 == total;
+    (
+        if first {
+            BUTTON_END_PADDING
+        } else {
+            BUTTON_MIDDLE_PADDING
+        },
+        if last {
+            BUTTON_END_PADDING
+        } else {
+            BUTTON_MIDDLE_PADDING
+        },
+    )
+}
+
+/// One command in a selection toolbar: its label and what pressing it does.
+///
+/// Upstream's `ContextMenuButtonItem`, minus the `type` -- the type there
+/// exists to look a label up in the localizations, and the label is already
+/// resolved by the time it reaches this.
+pub struct ToolbarButton {
+    pub label: String,
+    /// The hit id the button's pointer region answers to.
+    pub id: u64,
+    pub on_pressed: Rc<dyn Fn()>,
+}
+
+impl ToolbarButton {
+    pub fn new(id: u64, label: impl Into<String>, on_pressed: Rc<dyn Fn()>) -> ToolbarButton {
+        ToolbarButton {
+            label: label.into(),
+            id,
+            on_pressed,
+        }
+    }
+}
+
+/// Upstream `TextSelectionToolbar`: the Material bar of text buttons that
+/// appears beside a selection.
+///
+/// What is here is the bar itself -- the rounded card and the row of labels.
+/// *Where* it goes is [`TextSelectionToolbarLayoutDelegate`]'s decision, made
+/// by [`crate::selection_host::SelectionHost::place_toolbar`], and the
+/// overflow menu upstream grows when the buttons do not fit is not ported:
+/// the four commands a text field offers have always fitted.
+pub fn material_selection_toolbar(
+    buttons: Vec<ToolbarButton>,
+    surface: crate::engine::Color,
+    ink: crate::engine::Color,
+    label_style: crate::engine::TextStyle,
+) -> crate::framework::AnyWidget {
+    use crate::borders::{BorderRadius, Radius};
+    use crate::framework::{AnyWidget, leaf, many};
+    use crate::render::{CrossAxisAlignment, EdgeInsets, MainAxisSize, RenderFlex};
+    use crate::widgets::{Container, Pointer, Text};
+
+    let total = buttons.len();
+    let children: Vec<AnyWidget> = buttons
+        .into_iter()
+        .enumerate()
+        .map(|(index, button)| {
+            let (start, end) = button_padding(index, total);
+            let mut style = label_style.clone();
+            style.color = ink;
+            leaf(move || {
+                Pointer::new(
+                    button.id,
+                    Container::new()
+                        .with_height(TOOLBAR_HEIGHT)
+                        .with_padding(EdgeInsets::only(start, 0.0, end, 0.0))
+                        .with_child(crate::widgets::Align::new(
+                            crate::render::Alignment::CENTER,
+                            Text::new(button.label.clone()).with_style(style.clone()),
+                        )),
+                )
+                .with_handlers({
+                    let on_pressed = Rc::clone(&button.on_pressed);
+                    crate::gestures::PointerHandlers::new().with_tap(move |_| on_pressed())
+                })
+            })
+        })
+        .collect();
+
+    many(children, move |rendered| {
+        let mut row = RenderFlex::row()
+            .with_main_axis_size(MainAxisSize::Min)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center);
+        for child in rendered {
+            row = row.push(child);
+        }
+        Box::new(
+            Container::new()
+                .with_color(surface)
+                // Upstream's radius is half the bar's height, so the ends are
+                // semicircles rather than rounded corners.
+                .with_border_radius(BorderRadius::circular(TOOLBAR_HEIGHT / 2.0))
+                // Upstream's `elevation: 1.0` on a `MaterialType.card`.
+                .with_elevation(1)
+                .with_child(row),
+        )
+    })
+}
 
 /// The platforms these toolbars distinguish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -479,5 +607,37 @@ mod tests {
     fn the_toolbar_hands_its_own_anchor_to_its_delegate() {
         let toolbar = SpellCheckSuggestionsToolbar::new((42.0, 84.0), 2);
         assert_eq!(toolbar.layout_delegate().anchor, (42.0, 84.0));
+    }
+
+    #[test]
+    fn the_bars_ends_are_padded_wider_than_the_gaps_between_its_buttons() {
+        // Upstream's `getPadding`, whose whole content this is: the outside
+        // edges get `_kEndPadding` and every inside edge `_kMiddlePadding`,
+        // which is what stops the first label sitting hard against the
+        // rounded corner.
+        assert_eq!(
+            button_padding(0, 3),
+            (BUTTON_END_PADDING, BUTTON_MIDDLE_PADDING)
+        );
+        assert_eq!(
+            button_padding(1, 3),
+            (BUTTON_MIDDLE_PADDING, BUTTON_MIDDLE_PADDING)
+        );
+        assert_eq!(
+            button_padding(2, 3),
+            (BUTTON_MIDDLE_PADDING, BUTTON_END_PADDING)
+        );
+    }
+
+    #[test]
+    fn a_lone_button_is_padded_at_both_ends() {
+        // Upstream's `_TextSelectionToolbarItemPosition.only`, which is a
+        // fourth case rather than "first and last happening to coincide" --
+        // and it is reached by the single-button bar a long press on empty
+        // text puts up, with nothing on it but Paste.
+        assert_eq!(
+            button_padding(0, 1),
+            (BUTTON_END_PADDING, BUTTON_END_PADDING)
+        );
     }
 }

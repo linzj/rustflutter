@@ -99,6 +99,33 @@ type ReportPlacement = Rc<dyn Fn(Offset, Size, Rect)>;
 /// is looking at.
 type ReportCaret = Rc<dyn Fn(Rect)>;
 
+/// Where a selection's two ends are, and the field they are in -- everything a
+/// selection overlay needs to place two handles and a toolbar.
+///
+/// Upstream reaches the same facts through `RenderEditable`'s
+/// `getEndpointsForSelection` and `getLocalRectForCaret`, called by
+/// `TextSelectionOverlay` on a render object it holds a reference to. There is
+/// no such reference here, so the field hands them out at the one moment both
+/// are known -- paint, which is where the boxes are computed to be drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectionGeometry {
+    /// Lower left of the first selected box, in the coordinates paint drew in.
+    /// Upstream's first `TextSelectionPoint`.
+    pub start: Offset,
+    /// Lower right of the last selected box. Upstream's second one.
+    pub end: Offset,
+    /// One line's height, which is what a handle is sized against.
+    pub line_height: f32,
+    /// Every selected box together, for the toolbar's anchors.
+    pub bounds: Rect,
+    /// The field's own rectangle, upstream's `editingRegion`.
+    pub field: Rect,
+}
+
+/// Where [`SelectionGeometry`] is delivered. Same shape and same reason as
+/// [`ReportCaret`].
+type ReportSelection = Rc<dyn Fn(SelectionGeometry)>;
+
 /// Where the text ended up the last time the field was painted: the lines, the
 /// line height, the scroll, and what the lines were measured with.
 ///
@@ -382,6 +409,9 @@ pub struct RenderEditable {
     /// Told where the caret is, at every paint, so a pending reveal can be
     /// spent on the frame it was asked for. See [`ReportCaret`].
     report_caret: Option<ReportCaret>,
+    /// Where the selection's endpoints are handed out. See
+    /// [`SelectionGeometry`].
+    report_selection: Option<ReportSelection>,
     /// Where the painted line layout is left for the tap handler, in the same
     /// shape [`ReportPlacement`] reaches the platform in. Written at `paint`,
     /// read by whichever tap handler the frame after that dispatches.
@@ -410,6 +440,7 @@ impl RenderEditable {
             scroll: Cell::new(Offset::ZERO),
             report: None,
             report_caret: None,
+            report_selection: None,
             lines_sink: None,
             text_scale: crate::media_query::current_text_scale(),
             reported: Cell::new(None),
@@ -446,6 +477,13 @@ impl RenderEditable {
 
     /// Where the caret's rectangle is sent at every paint. See
     /// [`ReportCaret`].
+    /// Where the selection's endpoints are handed out, every paint that has a
+    /// selection to report. See [`SelectionGeometry`].
+    pub fn with_report_selection(mut self, report: ReportSelection) -> Self {
+        self.report_selection = Some(report);
+        self
+    }
+
     pub fn with_report_caret(mut self, report: ReportCaret) -> Self {
         self.report_caret = Some(report);
         self
@@ -805,6 +843,61 @@ impl RenderBox for RenderEditable {
             body(context.canvas());
         }
 
+        // Where the selection's handles and toolbar go. Reported from here for
+        // the same reason the candidate list below is: layout gives a size,
+        // not a place, and the boxes were just computed to be drawn.
+        //
+        // Upstream's `getEndpointsForSelection` returns the **lower** left and
+        // lower right corners -- a handle hangs from the bottom of the line it
+        // holds -- which is why each y is a line's top plus its height. See
+        // [`SelectionEndpoints`], which is the same rule written out.
+        if let Some(report_selection) = &self.report_selection {
+            let mut first: Option<(f32, f32, f32)> = None;
+            let mut last: Option<(f32, f32, f32)> = None;
+            if let Some(range) = self.value.selection_bytes() {
+                for (index, line) in lines.iter().enumerate() {
+                    let Some((start, width)) = self.line_extent(*line, range.clone()) else {
+                        continue;
+                    };
+                    let top = offset.dy + paint_offset.dy + index as f32 * line_height;
+                    let box_ = (base + start, base + start + width, top);
+                    if first.is_none() {
+                        first = Some(box_);
+                    }
+                    last = Some(box_);
+                }
+            }
+            // A collapsed selection asks for no boxes and gets none, and the
+            // caret is the answer instead -- upstream's
+            // `getEndpointsForSelection` returns a single point built from
+            // `getOffsetForCaret` in exactly that case. The toolbar still has
+            // somewhere to go, which is what lets a long press on empty text
+            // offer Paste.
+            if first.is_none() {
+                if let Some(rect) = caret {
+                    let top = offset.dy + paint_offset.dy + rect.top;
+                    let x = base + rect.left;
+                    first = Some((x, x, top));
+                    last = first;
+                }
+            }
+            if let (Some(first), Some(last)) = (first, last) {
+                let bounds = Rect::ltrb(
+                    first.0.min(last.0),
+                    first.2,
+                    first.1.max(last.1),
+                    last.2 + line_height,
+                );
+                report_selection(SelectionGeometry {
+                    start: Offset::new(first.0, first.2 + line_height),
+                    end: Offset::new(last.1, last.2 + line_height),
+                    line_height,
+                    bounds,
+                    field: Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height),
+                });
+            }
+        }
+
         // Where the IME should put its candidate list. Reported from here
         // because this is the first point at which the field's position in the
         // window is known -- layout gives a size, not a place. The caret is
@@ -911,6 +1004,21 @@ pub struct TextFieldState {
     /// the caret and a keyboard closing does not. A field that scrolled itself
     /// back on the way down would fight the page settling.
     bottom_inset: f32,
+    /// Whether the selection toolbar -- cut, copy, paste, select all -- is up.
+    ///
+    /// Upstream's `EditableTextState._selectionOverlay?.toolbarIsVisible`,
+    /// kept here rather than on the overlay because the overlay is made only
+    /// when there is something to put in it, and this is what says there is.
+    pub(crate) toolbar_shown: bool,
+    /// The live selection overlay -- upstream's
+    /// `EditableTextState._selectionOverlay`, which is likewise null until
+    /// there is a selection to show and disposed when there is not.
+    ///
+    /// Behind an `Rc<RefCell<_>>` because two places reach it and neither has
+    /// `&mut` on the state: `build`, which is handed `&TextFieldState`, and
+    /// the paint-time closure that moves the handles, which outlives the
+    /// build that made it.
+    pub(crate) selection_overlay: Rc<RefCell<Option<crate::selection_host::SelectionHost>>>,
 }
 
 impl TextFieldState {
@@ -924,11 +1032,121 @@ impl TextFieldState {
     /// the next keystroke.
     pub fn clear(&mut self) {
         self.value = TextEditingValue::default();
+        self.push_to_platform();
+    }
+
+    /// Hands the value to the IME, which keeps its own copy of the text and
+    /// would otherwise hand the old one back on the next keystroke.
+    ///
+    /// Every edit made on this side -- the clipboard commands below, the tap
+    /// that places the caret -- has to do this, and each used to write the
+    /// same four lines out.
+    fn push_to_platform(&self) {
         if let Some(connection) = &self.connection {
             if connection.is_attached() {
                 connection.set_editing_state(&self.value);
             }
         }
+    }
+
+    /// The selected text, or `None` when nothing is selected. Upstream's
+    /// `selection.textInside(text)`.
+    pub fn selected_text(&self) -> Option<&str> {
+        self.value
+            .selection_bytes()
+            .and_then(|range| self.value.text.get(range))
+    }
+
+    /// Upstream's `EditableTextState.copySelection`.
+    ///
+    /// **An obscured field copies nothing.** A password is on screen as
+    /// bullets and upstream refuses to put the real text behind them on the
+    /// clipboard, which is a rule about secrets rather than about selections.
+    ///
+    /// The Android arm afterwards is upstream's too, and it is the surprising
+    /// half: having copied, Android *collapses the selection* to its end, so
+    /// the highlight and the bar go away together. iOS and the desktops leave
+    /// the selection standing.
+    pub fn copy_selection(
+        &mut self,
+        obscured: bool,
+        platform: crate::editable_text::TargetPlatform,
+    ) {
+        use crate::editable_text::TargetPlatform;
+        if obscured {
+            return;
+        }
+        let Some(text) = self.selected_text() else {
+            return;
+        };
+        crate::services::system::Clipboard::set_data(text);
+        self.toolbar_shown = false;
+        if matches!(platform, TargetPlatform::Android | TargetPlatform::Fuchsia) {
+            let end = self.value.selection_base.max(self.value.selection_extent);
+            self.value.selection_base = end;
+            self.value.selection_extent = end;
+            self.push_to_platform();
+        }
+    }
+
+    /// Upstream's `EditableTextState.cutSelection`: the copy, and then the
+    /// selection replaced by nothing.
+    ///
+    /// Obscured fields are refused here too, and for the same reason -- a cut
+    /// is a copy that also deletes.
+    pub fn cut_selection(&mut self, obscured: bool) {
+        if obscured {
+            return;
+        }
+        let Some(range) = self.value.selection_bytes() else {
+            return;
+        };
+        let Some(text) = self.value.text.get(range.clone()) else {
+            return;
+        };
+        crate::services::system::Clipboard::set_data(text);
+        self.replace_selection("");
+        self.toolbar_shown = false;
+    }
+
+    /// Upstream's `EditableTextState._pasteText`: the selection is replaced,
+    /// and the caret ends up collapsed **after** what was pasted.
+    pub fn paste_text(&mut self, pasted: &str) {
+        // Upstream's `_allowPaste`, minus the read-only half this crate has no
+        // field for: a selection that is not valid has nowhere to paste into.
+        if self.value.selection_base < 0 || self.value.selection_extent < 0 {
+            return;
+        }
+        self.replace_selection(pasted);
+        self.toolbar_shown = false;
+    }
+
+    /// Upstream's `EditableTextState.selectAll`.
+    pub fn select_all(&mut self) {
+        self.value.selection_base = 0;
+        self.value.selection_extent = self.value.text.encode_utf16().count() as i32;
+        self.push_to_platform();
+    }
+
+    /// Replaces whatever is selected with `replacement`, leaving the caret
+    /// collapsed after it. A collapsed selection is an insertion point, which
+    /// is what makes this serve both the paste and the cut.
+    fn replace_selection(&mut self, replacement: &str) {
+        let start = self.value.selection_base.min(self.value.selection_extent);
+        let end = self.value.selection_base.max(self.value.selection_extent);
+        let start_byte = byte_offset_of(&self.value.text, start.max(0) as usize);
+        let end_byte = byte_offset_of(&self.value.text, end.max(0) as usize);
+        self.value
+            .text
+            .replace_range(start_byte..end_byte, replacement);
+        let caret = start + replacement.encode_utf16().count() as i32;
+        self.value.selection_base = caret;
+        self.value.selection_extent = caret;
+        // A composition that spanned what was just replaced is about text
+        // that no longer exists.
+        self.value.composing_base = -1;
+        self.value.composing_extent = -1;
+        self.push_to_platform();
     }
 }
 
@@ -959,6 +1177,10 @@ impl TextInputClient for FieldClient {
         // A frame is asked for by the messenger, which knows a handler ran.
         self.handle.set_state(move |state| {
             state.value = value;
+            // Upstream's `updateEditingValue` hides the toolbar when the text
+            // itself changed -- the selection the bar was offered for is gone
+            // the moment a keystroke replaces it.
+            state.toolbar_shown = false;
             // Typing restarts the blink with the caret shown: it has just
             // moved, and a caret that stays hidden through the keystroke
             // reads as though it did not. Upstream restarts the blink timer
@@ -1217,6 +1439,386 @@ impl<'a> WordSelection<'a> {
             (from_word.start, to_word.end)
         } else {
             (from_word.end, to_word.start)
+        }
+    }
+}
+
+/// The greatest character boundary at or below `byte`.
+///
+/// [`WordSelection`] walks with `range.start - 1`, which on a multi-byte
+/// character lands inside one. Slicing there would panic; the character it
+/// landed in is the one it meant.
+pub(crate) fn floor_char_boundary(text: &str, byte: usize) -> usize {
+    let mut byte = byte.min(text.len());
+    while byte > 0 && !text.is_char_boundary(byte) {
+        byte -= 1;
+    }
+    byte
+}
+
+/// A byte offset into `text` as a count of UTF-16 code units.
+///
+/// The two units meet here and nowhere else: this crate's line layout is in
+/// bytes, and both the engine's word breaker and the text-input wire count
+/// UTF-16.
+pub(crate) fn utf16_offset_of(text: &str, byte: usize) -> usize {
+    text[..floor_char_boundary(text, byte)]
+        .encode_utf16()
+        .count()
+}
+
+/// The other way: a count of UTF-16 code units as a byte offset.
+pub(crate) fn byte_offset_of(text: &str, units: usize) -> usize {
+    let mut seen = 0usize;
+    for (index, character) in text.char_indices() {
+        if seen >= units {
+            return index;
+        }
+        seen += character.len_utf16();
+    }
+    text.len()
+}
+
+/// The word around a byte offset, asked of the engine's word breaker.
+///
+/// The shape [`WordSelection`] wants: it calls this repeatedly, walking over
+/// whitespace runs, and works in the byte offsets the rest of this module
+/// works in. What it gets back is ICU's answer, converted at the seam --
+/// which is the only reason a Chinese long press selects a word rather than
+/// the whole line. See [`crate::engine::Paragraph::word_boundary`].
+fn engine_word_boundary(
+    text: &str,
+    paragraph: &crate::engine::Paragraph,
+    offset: isize,
+) -> crate::services::text_boundary::TextRange {
+    use crate::services::text_boundary::TextRange;
+    if offset < 0 {
+        return TextRange { start: 0, end: 0 };
+    }
+    let byte = floor_char_boundary(text, offset as usize);
+    let (start, end) = paragraph.word_boundary(utf16_offset_of(text, byte));
+    TextRange {
+        start: byte_offset_of(text, start) as isize,
+        end: byte_offset_of(text, end) as isize,
+    }
+}
+
+/// The commands a selection toolbar offers, in upstream's order.
+///
+/// `EditableText.getEditableButtonItems` builds the list cut, copy, paste,
+/// select all, dropping each whose callback is null -- and the callbacks are
+/// null exactly when the matching `can*` on [`TextSelectionControls`] says so.
+/// The labels are upstream's `MaterialLocalizations`, which this crate has
+/// only in English.
+fn toolbar_commands(
+    obscured: bool,
+    state: crate::text_selection_controls::SelectionState,
+) -> Vec<ToolbarCommand> {
+    use crate::text_selection_controls::{MaterialTextSelectionControls, TextSelectionControls};
+    let controls = MaterialTextSelectionControls;
+    let mut commands = Vec::new();
+    // An obscured field offers neither cut nor copy: upstream's
+    // `copySelection` and `cutSelection` both return early on `obscureText`,
+    // so a button for either would be a button that does nothing.
+    if controls.can_cut(state) && !obscured {
+        commands.push(ToolbarCommand::Cut);
+    }
+    if controls.can_copy(state) && !obscured {
+        commands.push(ToolbarCommand::Copy);
+    }
+    if controls.can_paste(state) {
+        commands.push(ToolbarCommand::Paste);
+    }
+    if controls.can_select_all(state) {
+        commands.push(ToolbarCommand::SelectAll);
+    }
+    commands
+}
+
+/// One of the four commands, and its label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolbarCommand {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+impl ToolbarCommand {
+    /// Upstream's `MaterialLocalizations.cutButtonLabel` and the three beside
+    /// it, in the one language this crate ships.
+    fn label(self) -> &'static str {
+        match self {
+            ToolbarCommand::Cut => "Cut",
+            ToolbarCommand::Copy => "Copy",
+            ToolbarCommand::Paste => "Paste",
+            ToolbarCommand::SelectAll => "Select all",
+        }
+    }
+}
+
+/// What the field's current value says about which commands apply.
+fn selection_state(state: &TextFieldState) -> crate::text_selection_controls::SelectionState {
+    // `editable()` and not `default()`: the four `*_enabled` flags are
+    // upstream's `cutEnabled`/`copyEnabled`/`pasteEnabled`/`selectAllEnabled`,
+    // whose defaults are **true**, and a derived `Default` makes every bool
+    // false. Taking the derived one gives a field that permits nothing and a
+    // toolbar with no buttons in it -- which is what it did.
+    let mut selection = crate::text_selection_controls::SelectionState::editable();
+    selection.is_collapsed = !state.value.has_selection();
+    selection.has_text = !state.value.text.is_empty();
+    selection
+}
+
+/// How big the toolbar will be, for the placement that has to happen before it
+/// is laid out.
+///
+/// Upstream never needs this: its toolbar is a widget in the overlay and the
+/// layout delegate is given the size by the framework. Here the placement is
+/// computed at paint, so the size is measured the same way the bar will
+/// measure itself -- each label shaped in the style it will be drawn in, plus
+/// upstream's paddings.
+fn toolbar_extent(
+    theme: &crate::components::Theme,
+    obscured: bool,
+    _platform: crate::editable_text::TargetPlatform,
+    state: crate::text_selection_controls::SelectionState,
+) -> crate::render::Size {
+    let commands = toolbar_commands(obscured, state);
+    if commands.is_empty() {
+        return crate::render::Size::ZERO;
+    }
+    let style = theme.body();
+    let total = commands.len();
+    let mut width = 0.0;
+    for (index, command) in commands.iter().enumerate() {
+        let (start, end) = crate::text_toolbars::button_padding(index, total);
+        width += start + end;
+        width += painting::shape(command.label(), &style, None, false, f32::MAX / 4.0, 1.0)
+            .max_intrinsic_width();
+    }
+    crate::render::Size::new(width, crate::text_toolbars::TOOLBAR_HEIGHT)
+}
+
+/// The toolbar the overlay entry rebuilds every frame.
+///
+/// A closure rather than a widget because the entry is rebuilt on its own
+/// clock -- `selection_host` hands it `Fn() -> AnyWidget` and calls it
+/// whenever the geometry moves.
+fn toolbar_builder(
+    handle: StateHandle<TextFieldState>,
+    theme: &crate::components::Theme,
+    obscured: bool,
+    platform: crate::editable_text::TargetPlatform,
+    state: crate::text_selection_controls::SelectionState,
+) -> impl Fn() -> crate::framework::AnyWidget + 'static {
+    let commands = toolbar_commands(obscured, state);
+    // Upstream's `_TextSelectionToolbarContainer` colours, "taken from a
+    // screenshot of a Pixel 6 emulator running Android API level 34" -- the
+    // theme's surface, which is what a default scheme resolves those to.
+    let surface = theme.surface;
+    let ink = theme.text;
+    let style = theme.body();
+    // One id per button, taken once so a rebuild does not renumber them and
+    // lose the press that was in flight.
+    let ids: Vec<u64> = commands
+        .iter()
+        .map(|_| crate::theatre::next_surface_id())
+        .collect();
+    move || {
+        let buttons = commands
+            .iter()
+            .zip(ids.iter())
+            .map(|(command, id)| {
+                let command = *command;
+                let handle = handle.clone();
+                crate::text_toolbars::ToolbarButton::new(
+                    *id,
+                    command.label(),
+                    Rc::new(move || run_toolbar_command(command, &handle, obscured, platform)),
+                )
+            })
+            .collect();
+        crate::text_toolbars::material_selection_toolbar(buttons, surface, ink, style.clone())
+    }
+}
+
+/// The keyboard half of the clipboard: Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A --
+/// Command on a Mac.
+///
+/// Upstream's `defaultTextEditingShortcuts` binds these to
+/// `CopySelectionTextIntent.cut`, `CopySelectionTextIntent.copy`,
+/// `PasteTextIntent` and `SelectAllTextIntent`, in two tables: the desktop one
+/// uses control and `_macShortcuts` uses meta. There is no `Actions`/`Intents`
+/// dispatch wired to a field in this crate, so the four land here, on the
+/// field's own focus node, which is where upstream's shortcuts resolve to
+/// anyway.
+///
+/// The two Windows-only aliases -- Ctrl+Insert for copy and Shift+Insert for
+/// paste -- are upstream's and are not carried: nothing else in this crate
+/// reads Insert, and they would need a second table to say which platform they
+/// belong to.
+fn clipboard_shortcuts(
+    handle: StateHandle<TextFieldState>,
+    obscured: bool,
+    platform: crate::editable_text::TargetPlatform,
+) -> impl Fn(&crate::keyboard::KeyEvent) -> crate::focus::KeyResult + 'static {
+    use crate::editable_text::TargetPlatform;
+    use crate::focus::KeyResult;
+    use crate::keyboard::{KeyChange, LogicalKey};
+
+    move |event| {
+        if event.change != KeyChange::Down {
+            return KeyResult::Ignored;
+        }
+        let held = crate::keyboard::modifiers();
+        // Upstream keys the desktop table on control and the Mac one on meta,
+        // which is the whole difference between them.
+        let command = match platform {
+            TargetPlatform::MacOS | TargetPlatform::IOS => held.meta,
+            _ => held.control,
+        };
+        if !command || held.alt {
+            return KeyResult::Ignored;
+        }
+        match event.logical {
+            LogicalKey::KEY_X => {
+                handle.set_state(move |state| state.cut_selection(obscured));
+                KeyResult::Handled
+            }
+            LogicalKey::KEY_C => {
+                handle.set_state(move |state| state.copy_selection(obscured, platform));
+                KeyResult::Handled
+            }
+            LogicalKey::KEY_V => {
+                let handle = handle.clone();
+                crate::services::system::Clipboard::get_data(move |text| {
+                    let Some(text) = text else {
+                        return;
+                    };
+                    handle.set_state(move |state| state.paste_text(&text));
+                });
+                KeyResult::Handled
+            }
+            LogicalKey::KEY_A => {
+                handle.set_state(|state| state.select_all());
+                KeyResult::Handled
+            }
+            _ => KeyResult::Ignored,
+        }
+    }
+}
+
+/// Moves one edge of the selection to follow a finger on a handle.
+///
+/// Upstream's `TextSelectionOverlay._handleSelectionHandleDragUpdate`, which
+/// asks the render editable for the text position under the handle and then
+/// sets base or extent from it, leaving the *other* end where it was. The
+/// handle arrives in global coordinates because it lives in the overlay, so
+/// the first thing done with it is to bring it back into the field.
+fn drag_handle_to(
+    handle: StateHandle<TextFieldState>,
+    anchor: Rc<RefCell<Option<crate::render::RenderRef>>>,
+    lines: LinesSink,
+    shown: String,
+    real: String,
+) -> Rc<dyn Fn(crate::selection_host::HandleEnd, Offset)> {
+    Rc::new(move |end, global: Offset| {
+        let Some(field) = anchor.borrow().clone() else {
+            return;
+        };
+        let Some(layout) = lines.borrow().clone() else {
+            return;
+        };
+        let local = field.global_to_local(global, None);
+        // A handle is dragged by its tip, which hangs a line below the text it
+        // holds -- so the point the reader means is a line height above the
+        // finger. Upstream reaches the same place through the handle's anchor.
+        let at = Offset::new(
+            local.dx + layout.scroll.dx,
+            local.dy + layout.scroll.dy - layout.line_height / 2.0,
+        );
+        let measure = |run: &str| {
+            if run.is_empty() {
+                0.0
+            } else {
+                painting::shape(
+                    run,
+                    &layout.style,
+                    None,
+                    false,
+                    f32::MAX / 4.0,
+                    layout.text_scale,
+                )
+                .max_intrinsic_width()
+            }
+        };
+        let byte = caret_position_at(&shown, &layout.lines, layout.line_height, at, &measure);
+        let character = shown[..floor_char_boundary(&shown, byte)].chars().count();
+        let position: i32 = real
+            .chars()
+            .take(character)
+            .map(|c| c.len_utf16() as i32)
+            .sum();
+        handle.set_state(move |state| {
+            // Which end moves is which handle was grabbed, and the other end
+            // stays: that is what makes a drag widen a selection rather than
+            // replace it. Upstream refuses to let them cross -- a selection
+            // whose ends swapped would hand the reader the other handle
+            // mid-drag -- so the moving end stops one position short.
+            match end {
+                crate::selection_host::HandleEnd::Start => {
+                    if position != state.value.selection_extent {
+                        state.value.selection_base = position;
+                    }
+                }
+                crate::selection_host::HandleEnd::End => {
+                    if position != state.value.selection_base {
+                        state.value.selection_extent = position;
+                    }
+                }
+            }
+            state.push_to_platform();
+        });
+    })
+}
+
+/// What pressing a toolbar button does. Upstream's four
+/// `EditableTextState` methods, reached through the field's state.
+fn run_toolbar_command(
+    command: ToolbarCommand,
+    handle: &StateHandle<TextFieldState>,
+    obscured: bool,
+    platform: crate::editable_text::TargetPlatform,
+) {
+    match command {
+        ToolbarCommand::Cut => {
+            handle.set_state(move |state| state.cut_selection(obscured));
+        }
+        ToolbarCommand::Copy => {
+            handle.set_state(move |state| state.copy_selection(obscured, platform));
+        }
+        ToolbarCommand::Paste => {
+            // The clipboard is a round trip to the host, so the text arrives
+            // in a callback and the edit happens then. Upstream's `pasteText`
+            // is `async` for exactly this reason.
+            let handle = handle.clone();
+            crate::services::system::Clipboard::get_data(move |text| {
+                let Some(text) = text else {
+                    return;
+                };
+                handle.set_state(move |state| state.paste_text(&text));
+            });
+        }
+        ToolbarCommand::SelectAll => {
+            handle.set_state(|state| {
+                state.select_all();
+                // Upstream reopens the toolbar over the new selection rather
+                // than leaving the reader with everything selected and no
+                // commands: `selectAll` is followed by the bar being rebuilt
+                // with cut and copy now available.
+                state.toolbar_shown = true;
+            });
         }
     }
 }
@@ -2602,6 +3204,8 @@ impl StatefulComponent for TextField {
             }
             if !has_focus {
                 focus_handle.set_state(|state| {
+                    // The bar belongs to the field that has the keyboard.
+                    state.toolbar_shown = false;
                     if let Some(connection) = state.connection.take() {
                         // Closing tells the platform to take the keyboard
                         // away and forget the client; `hide` alone would
@@ -2685,6 +3289,105 @@ impl StatefulComponent for TextField {
         let anchor_at_paint = Rc::clone(&reveal_anchor);
         let pending_reveal = state.reveal;
         let reveal_padding = self.scroll_padding;
+        // Read out here rather than inside the leaf: the leaf's closure is
+        // `move` and outlives this method, so touching `self` in it would
+        // borrow a reference that ends when `build` returns.
+        let obscured = self.obscure;
+        // Taken before the leaf's closure swallows the handle it was cloned
+        // from: the shortcuts are installed on the `Focus` further down, which
+        // is built after the leaf.
+        let shortcut_handle = handle.clone();
+
+        // -- The selection overlay ------------------------------------------
+        //
+        // Upstream's `EditableTextState._selectionOverlay`: two handles and a
+        // toolbar in the `Overlay`, made when there is a selection to show and
+        // disposed when there is not. The three entries are
+        // `selection_host`'s; what is decided here is *whether* there should
+        // be one and *what the toolbar says*.
+        let platform = crate::editable_text::TargetPlatform::host();
+        // Not gated on there being a *range*: upstream's `onSingleLongTapEnd`
+        // calls `showToolbar()` whatever the selection came out as, and a long
+        // press on empty text is how a reader reaches Paste with nothing
+        // selected. What changes with a collapsed selection is the buttons --
+        // `can_cut` and `can_copy` both refuse one -- and the handles, of
+        // which there is then one rather than two.
+        let wants_overlay = state.toolbar_shown;
+        let overlay = crate::theatre::OverlayHandle::of(context);
+        if wants_overlay {
+            if state.selection_overlay.borrow().is_none() {
+                if let Some(overlay) = overlay.clone() {
+                    let host = crate::selection_host::show_selection_overlay(
+                        overlay,
+                        Rc::new(crate::text_selection_controls::MaterialTextSelectionControls),
+                        toolbar_builder(
+                            handle.clone(),
+                            &theme,
+                            obscured,
+                            platform,
+                            selection_state(state),
+                        ),
+                    );
+                    if let Some(mut host) = host {
+                        host.set_toolbar_visible(true);
+                        host.set_handles_visible(true);
+                        // Upstream's `buildHandle` reads
+                        // `TextSelectionTheme.selectionHandleColor ??
+                        // colorScheme.primary`; this crate's theme has the
+                        // second of those.
+                        host.set_handle_color(theme.primary);
+                        host.set_on_drag(drag_handle_to(
+                            handle.clone(),
+                            Rc::clone(&reveal_anchor),
+                            Rc::clone(&lines_sink),
+                            shown.text.clone(),
+                            real_text.clone(),
+                        ));
+                        *state.selection_overlay.borrow_mut() = Some(host);
+                    }
+                }
+            }
+        } else if let Some(host) = state.selection_overlay.borrow_mut().take() {
+            host.dismiss();
+        }
+
+        // Moving the handles and the bar as the field is painted. Everything
+        // arrives in the window's coordinates and an overlay entry is laid out
+        // in the overlay's, so both are converted through the overlay's own
+        // object -- see `OverlayHandle::surface`.
+        let host_slot = Rc::clone(&state.selection_overlay);
+        let overlay_for_geometry = overlay.clone();
+        let toolbar_size = toolbar_extent(&theme, obscured, platform, selection_state(state));
+        let report_selection: ReportSelection = Rc::new(move |geometry: SelectionGeometry| {
+            let Some(surface) = overlay_for_geometry
+                .as_ref()
+                .and_then(|overlay| overlay.surface())
+            else {
+                return;
+            };
+            let overlay_size = {
+                let rect = surface.global_rect(None);
+                crate::render::Size::new(rect.width(), rect.height())
+            };
+            let mut slot = host_slot.borrow_mut();
+            let Some(host) = slot.as_mut() else {
+                return;
+            };
+            host.set_selection(
+                crate::selection_host::SelectionEndpoint::new(geometry.start, geometry.line_height),
+                crate::selection_host::SelectionEndpoint::new(geometry.end, geometry.line_height),
+                false,
+                &surface,
+            );
+            host.place_toolbar(
+                geometry.bounds,
+                geometry.field,
+                toolbar_size,
+                &surface,
+                overlay_size,
+            );
+        });
+
         let reveal_handle = handle.clone();
         let report_caret: ReportCaret = Rc::new(move |caret: Rect| {
             let Some(reveal) = pending_reveal else {
@@ -2787,6 +3490,11 @@ impl StatefulComponent for TextField {
                 tap_state.set_state(move |state| {
                     state.value.selection_base = position;
                     state.value.selection_extent = position;
+                    // Upstream's `onSingleTapUp`, which calls
+                    // `editableText.hideToolbar()` before it moves the caret:
+                    // a bar acting on a selection the tap just threw away
+                    // would act on nothing.
+                    state.toolbar_shown = false;
                     if let Some(connection) = &state.connection {
                         if connection.is_attached() {
                             connection.set_editing_state(&state.value);
@@ -2794,6 +3502,110 @@ impl StatefulComponent for TextField {
                     }
                 });
                 crate::focus::focus(id);
+            });
+
+            // Selecting the word under a long press. Upstream's Android arm
+            // of `TextSelectionGestureDetectorBuilder.onSingleLongTapStart`:
+            //
+            //     case TargetPlatform.android:
+            //       renderEditable.selectWord(cause: longPress);
+            //       Feedback.forLongPress(_state.context);
+            //
+            // -- and `onSingleLongTapEnd` shows the toolbar when the finger
+            // lifts. There is no long-press-*end* callback in this crate's
+            // gesture set, so the toolbar goes up with the selection instead
+            // of a moment later. What a reader sees is the same two things;
+            // what they lose is the chance to slide the finger and take more
+            // words before the bar appears, which is upstream's
+            // `onSingleLongTapMoveUpdate` and is not ported either.
+            let word_sink = lines_sink.clone();
+            let word_state = handle.clone();
+            let word_shown = shown.text.clone();
+            let word_real = real_text.clone();
+            let select_word: Rc<dyn Fn(Offset)> = Rc::new(move |local: Offset| {
+                let Some(layout) = word_sink.borrow().clone() else {
+                    return;
+                };
+                let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
+                let measure = |run: &str| {
+                    if run.is_empty() {
+                        0.0
+                    } else {
+                        painting::shape(
+                            run,
+                            &layout.style,
+                            None,
+                            false,
+                            f32::MAX / 4.0,
+                            layout.text_scale,
+                        )
+                        .max_intrinsic_width()
+                    }
+                };
+                let byte =
+                    caret_position_at(&word_shown, &layout.lines, layout.line_height, at, &measure);
+                // The words are the *shown* text's, which for an obscured
+                // field is a row of bullets -- and `WordSelection` answers
+                // "all of it" for those without asking the breaker anything.
+                let paragraph = painting::shape(
+                    &word_shown,
+                    &layout.style,
+                    None,
+                    false,
+                    f32::MAX / 4.0,
+                    layout.text_scale,
+                );
+                let words = WordSelection {
+                    text: &word_shown,
+                    obscured,
+                    // Upstream reads `widget.readOnly`; this crate has no
+                    // read-only field yet, so the flag is what a field that
+                    // can be typed into would say.
+                    read_only: false,
+                    // Upstream asks `Theme.of(context).platform`, whose own
+                    // default is the host. There is no field on this crate's
+                    // `Theme` to override it with, so the host it is.
+                    platform: crate::editable_text::TargetPlatform::host(),
+                };
+                let word = words.at_offset(byte as isize, false, &|offset| {
+                    engine_word_boundary(&word_shown, &paragraph, offset)
+                });
+
+                // Both ends cross from the shown text's bytes to the real
+                // text's UTF-16 units, the way the tap handler crosses one.
+                let cross = |byte: isize| -> i32 {
+                    let byte = floor_char_boundary(&word_shown, byte.max(0) as usize);
+                    let character = word_shown[..byte].chars().count();
+                    word_real
+                        .chars()
+                        .take(character)
+                        .map(|c| c.len_utf16() as i32)
+                        .sum()
+                };
+                let base = cross(word.start);
+                let extent = cross(word.end);
+                word_state.set_state(move |state| {
+                    state.value.selection_base = base;
+                    state.value.selection_extent = extent;
+                    // Upstream's `onSingleLongTapEnd`: `showToolbar()`, with
+                    // no question asked about what got selected. A long press
+                    // that landed past the end of the text selects nothing and
+                    // still earns a bar -- with Paste on it, which is the only
+                    // way to reach a paste into an empty field.
+                    state.toolbar_shown = true;
+                    if let Some(connection) = &state.connection {
+                        if connection.is_attached() {
+                            connection.set_editing_state(&state.value);
+                        }
+                    }
+                });
+                crate::focus::focus(id);
+                // Upstream's `Feedback.forLongPress`, which on Android is the
+                // buzz that says the press was taken as a long one.
+                crate::feedback::Feedback::for_long_press(
+                    id as i32,
+                    crate::editable_text::TargetPlatform::host(),
+                );
             });
 
             // The field's own pointer region: the tap that places the caret
@@ -2807,6 +3619,7 @@ impl StatefulComponent for TextField {
                 .with_max_lines(max_lines)
                 .with_report(report)
                 .with_report_caret(report_caret.clone())
+                .with_report_selection(report_selection.clone())
                 .with_lines_sink(lines_sink.clone());
             // The press's origin, so a slide can be told from a scroll by the
             // shape of the travel rather than by who won the gesture.
@@ -2816,9 +3629,27 @@ impl StatefulComponent for TextField {
             let move_origin = Rc::clone(&press_origin);
             let dragged = Rc::clone(&place_caret);
             let tapped = Rc::clone(&place_caret);
+            let long_pressed = Rc::clone(&select_word);
+            let secondary_caret = Rc::clone(&place_caret);
+            let secondary_state = handle.clone();
             RenderPointerRegion::new(id, field).with_handlers(
                 PointerHandlers::new()
                     .with_tap(move |tap: TapEvent| tapped(tap.local_position))
+                    .with_long_press(move |press: TapEvent| long_pressed(press.local_position))
+                    // Upstream's `onSecondaryTap`, the Android/Fuchsia/Linux/
+                    // Windows arm: place the caret if the field did not have
+                    // the keyboard, then `toggleToolbar()`. A right-click on a
+                    // field that is already focused leaves the selection
+                    // alone, which is what makes right-clicking a selection
+                    // offer to copy it rather than throwing it away first.
+                    .with_secondary_tap(move |tap: TapEvent| {
+                        if !crate::focus::has_focus(id) {
+                            secondary_caret(tap.local_position);
+                        }
+                        secondary_state.set_state(|state| {
+                            state.toolbar_shown = !state.toolbar_shown;
+                        });
+                    })
                     .with_pointer_down(move |event| {
                         down_origin.set(Some(event.local_position));
                     })
@@ -2899,6 +3730,7 @@ impl StatefulComponent for TextField {
         let focused = crate::framework::component(
             crate::focus::Focus::new(id, editable)
                 .with_focus_on_tap(false)
+                .with_on_key(clipboard_shortcuts(shortcut_handle, obscured, platform))
                 .with_on_focus_change(on_focus_change),
         );
 
@@ -2965,6 +3797,191 @@ mod tests {
     use crate::services::codec::MethodCodec;
     use crate::services::tests_support::install;
     use crate::services::text_input;
+
+    // -- Selecting, and the clipboard ----------------------------------------
+
+    /// A field holding `text` with `base..extent` selected, in UTF-16 units.
+    fn selected(text: &str, base: i32, extent: i32) -> TextFieldState {
+        TextFieldState {
+            value: TextEditingValue {
+                text: text.to_string(),
+                selection_base: base,
+                selection_extent: extent,
+                ..TextEditingValue::default()
+            },
+            ..TextFieldState::default()
+        }
+    }
+
+    #[test]
+    fn the_two_offset_units_convert_both_ways() {
+        // Bytes on this side, UTF-16 on the engine's and the wire's. An
+        // emoji is four bytes and two UTF-16 units, so nothing about the two
+        // scales agrees except at the ends.
+        let text = "a\u{4e2d}\u{1F600}b";
+        assert_eq!(utf16_offset_of(text, 0), 0);
+        assert_eq!(utf16_offset_of(text, 1), 1, "after 'a'");
+        assert_eq!(utf16_offset_of(text, 4), 2, "after the Chinese character");
+        assert_eq!(utf16_offset_of(text, 8), 4, "after the surrogate pair");
+        // The round trip is the identity on every offset that is a character
+        // boundary, and rounds *up* on one that is not: unit 3 is the low
+        // half of the surrogate pair, and half an emoji is not a place a
+        // caret can be.
+        for units in [0, 1, 2, 4, 5] {
+            assert_eq!(utf16_offset_of(text, byte_offset_of(text, units)), units);
+        }
+        assert_eq!(
+            utf16_offset_of(text, byte_offset_of(text, 3)),
+            4,
+            "inside the surrogate pair, and the whole character is taken"
+        );
+    }
+
+    #[test]
+    fn a_byte_offset_inside_a_character_falls_back_to_its_start() {
+        // `WordSelection` walks with `range.start - 1`, which on a multi-byte
+        // character lands inside one. Slicing there would panic.
+        let text = "\u{4e2d}\u{6587}";
+        assert_eq!(floor_char_boundary(text, 0), 0);
+        assert_eq!(floor_char_boundary(text, 1), 0);
+        assert_eq!(floor_char_boundary(text, 2), 0);
+        assert_eq!(floor_char_boundary(text, 3), 3);
+        assert_eq!(floor_char_boundary(text, 99), 6, "and clamps to the end");
+    }
+
+    #[test]
+    fn copying_leaves_the_text_alone_and_android_collapses_the_selection() {
+        // Upstream's `copySelection`: everywhere puts the text on the
+        // clipboard, and **only** Android and Fuchsia then collapse the
+        // selection to its end. Reading the iOS/desktop arm as "and then
+        // collapse" is the easy mistake -- upstream's switch breaks there.
+        use crate::editable_text::TargetPlatform;
+
+        let mut field = selected("Hello brave world", 6, 11);
+        assert_eq!(field.selected_text(), Some("brave"));
+        field.copy_selection(false, TargetPlatform::Windows);
+        assert_eq!(
+            field.value.text, "Hello brave world",
+            "a copy edits nothing"
+        );
+        assert_eq!(
+            (field.value.selection_base, field.value.selection_extent),
+            (6, 11)
+        );
+
+        let mut field = selected("Hello brave world", 6, 11);
+        field.copy_selection(false, TargetPlatform::Android);
+        assert_eq!(
+            (field.value.selection_base, field.value.selection_extent),
+            (11, 11),
+            "Android collapses to the selection's end"
+        );
+    }
+
+    #[test]
+    fn an_obscured_field_refuses_to_copy_or_cut() {
+        // Upstream's `copySelection` and `cutSelection` both return early on
+        // `obscureText`. A password is on screen as bullets and the real text
+        // behind them does not go on the clipboard -- and a cut is a copy
+        // that also deletes, so it is refused too rather than deleting
+        // silently.
+        use crate::editable_text::TargetPlatform;
+
+        let mut field = selected("hunter2", 0, 7);
+        field.copy_selection(true, TargetPlatform::Android);
+        assert_eq!(field.value.text, "hunter2");
+
+        let mut field = selected("hunter2", 0, 7);
+        field.cut_selection(true);
+        assert_eq!(field.value.text, "hunter2", "and nothing was deleted");
+    }
+
+    #[test]
+    fn cutting_removes_the_selection_and_leaves_a_caret_where_it_was() {
+        let mut field = selected("Hello brave world", 6, 11);
+        field.cut_selection(false);
+        assert_eq!(field.value.text, "Hello  world");
+        assert_eq!(
+            (field.value.selection_base, field.value.selection_extent),
+            (6, 6)
+        );
+    }
+
+    #[test]
+    fn pasting_replaces_the_selection_and_puts_the_caret_after_it() {
+        // Upstream's `_pasteText`: "After the paste, the cursor should be
+        // collapsed and located after the pasted content."
+        let mut field = selected("Hello brave world", 6, 11);
+        field.paste_text("timid");
+        assert_eq!(field.value.text, "Hello timid world");
+        assert_eq!(
+            (field.value.selection_base, field.value.selection_extent),
+            (11, 11)
+        );
+
+        // A collapsed selection is an insertion point, which is the same code
+        // path with nothing to remove.
+        let mut field = selected("ac", 1, 1);
+        field.paste_text("b");
+        assert_eq!(field.value.text, "abc");
+        assert_eq!(field.value.selection_base, 2);
+    }
+
+    #[test]
+    fn pasting_counts_the_caret_in_utf16_units() {
+        // The caret lands `replacement.len()` past the start, and the wire
+        // counts UTF-16 -- so a pasted emoji moves it by two, not by one or
+        // by four.
+        let mut field = selected("", 0, 0);
+        field.paste_text("\u{1F600}");
+        assert_eq!(field.value.selection_base, 2, "one emoji, two UTF-16 units");
+    }
+
+    #[test]
+    fn select_all_takes_the_whole_text_in_utf16_units() {
+        let mut field = selected("a\u{1F600}", 0, 0);
+        field.select_all();
+        assert_eq!(
+            (field.value.selection_base, field.value.selection_extent),
+            (0, 3)
+        );
+    }
+
+    #[test]
+    fn the_toolbar_offers_what_the_selection_allows() {
+        use crate::text_selection_controls::SelectionState;
+
+        // A range: cut and copy, no select-all -- upstream's `canSelectAll`
+        // wants the selection *collapsed*.
+        let mut state = SelectionState::editable();
+        state.is_collapsed = false;
+        assert_eq!(
+            toolbar_commands(false, state),
+            vec![
+                ToolbarCommand::Cut,
+                ToolbarCommand::Copy,
+                ToolbarCommand::Paste
+            ]
+        );
+
+        // A caret in some text: paste and select-all, nothing to cut or copy.
+        let state = SelectionState::editable();
+        assert_eq!(
+            toolbar_commands(false, state),
+            vec![ToolbarCommand::Paste, ToolbarCommand::SelectAll]
+        );
+
+        // An obscured field with a range offers only paste: the commands that
+        // would move the hidden text off the field are gone.
+        let mut state = SelectionState::editable();
+        state.is_collapsed = false;
+        assert_eq!(toolbar_commands(true, state), vec![ToolbarCommand::Paste]);
+
+        // An empty field has nothing to select all of.
+        let mut state = SelectionState::editable();
+        state.has_text = false;
+        assert_eq!(toolbar_commands(false, state), vec![ToolbarCommand::Paste]);
+    }
 
     // -- The caret's rectangle, tick 281 -------------------------------------
 

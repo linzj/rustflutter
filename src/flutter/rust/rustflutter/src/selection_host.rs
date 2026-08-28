@@ -103,7 +103,7 @@ pub enum HandleEnd {
 
 /// What the entries are showing. One cell per thing that can move, so a drag
 /// repositions a handle without touching the toolbar.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct OverlayGeometry {
     start_at: Rc<Cell<Offset>>,
     end_at: Rc<Cell<Offset>>,
@@ -113,16 +113,111 @@ struct OverlayGeometry {
     handles_visible: Rc<Cell<bool>>,
     collapsed: Rc<Cell<bool>>,
     toolbar_visible: Rc<Cell<bool>>,
+    /// What colour the onions are drawn in -- upstream's
+    /// `TextSelectionTheme.selectionHandleColor ?? colorScheme.primary`,
+    /// which only the field knows. `Color` has no `Default` of its own, and
+    /// the right stand-in is the invisible one: a handle nobody has coloured
+    /// yet has not been shown either.
+    handle_color: Rc<Cell<crate::engine::Color>>,
+    /// Where a finger on a handle is reported. The field installs it; the
+    /// entries read it when they build.
+    on_drag: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, Offset)>>>>,
     /// What tells the three entries the cells above changed. One between them,
     /// because a handle moving and the toolbar moving are the same frame's
     /// work and there is nothing to gain from waking them separately.
     refresh: EntryRefresh,
 }
 
+impl Default for OverlayGeometry {
+    fn default() -> OverlayGeometry {
+        OverlayGeometry {
+            start_at: Rc::default(),
+            end_at: Rc::default(),
+            toolbar_at: Rc::default(),
+            start_size: Rc::default(),
+            end_size: Rc::default(),
+            handles_visible: Rc::default(),
+            collapsed: Rc::default(),
+            toolbar_visible: Rc::default(),
+            handle_color: Rc::new(Cell::new(crate::engine::Color(0))),
+            on_drag: Rc::default(),
+            refresh: EntryRefresh::default(),
+        }
+    }
+}
+
 impl OverlayGeometry {
     fn touch(&self) {
         self.refresh.refresh();
     }
+}
+
+/// Upstream `_TextSelectionHandlePainter` (`material/text_selection.dart`).
+///
+/// > [handle] is a circle, with a rectangle in the top left quadrant of that
+/// > circle (an onion pointing to 10:30).
+///
+/// The rectangle is a *quadrant* of the circle's bounding box, not a tail
+/// stuck on the side, which is why the two are drawn overlapping and the seam
+/// between them never shows.
+struct HandlePainter {
+    color: crate::engine::Color,
+}
+
+impl crate::render::CustomPainter for HandlePainter {
+    fn paint(&self, canvas: &mut crate::engine::Canvas, size: Size) {
+        let paint = crate::engine::Paint::new(self.color);
+        let radius = size.width / 2.0;
+        canvas.draw_circle(radius, radius, radius, &paint);
+        canvas.draw_rect(Rect::ltrb(0.0, 0.0, radius, radius), &paint);
+    }
+
+    fn should_repaint(&self, old: &dyn crate::render::CustomPainter) -> bool {
+        old.as_any()
+            .downcast_ref::<HandlePainter>()
+            .is_none_or(|old| old.color != self.color)
+    }
+
+    fn kind_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<HandlePainter>()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// The angle upstream rotates the onion by, per handle type.
+///
+/// Upstream's own comments name where each ends up pointing, and the painter
+/// draws the one that points up-left: `right` is unrotated, `left` is a
+/// quarter turn, and a collapsed caret's handle is turned half of that so it
+/// points straight up.
+fn handle_rotation(kind: TextSelectionHandleType) -> f32 {
+    match kind {
+        TextSelectionHandleType::Left => std::f32::consts::FRAC_PI_2,
+        TextSelectionHandleType::Right => 0.0,
+        TextSelectionHandleType::Collapsed => std::f32::consts::FRAC_PI_4,
+    }
+}
+
+/// A rotation about the centre of a `size` box, as the affine matrix
+/// [`crate::render::RenderTransform`] takes.
+///
+/// Upstream's `Transform.rotate` turns about the child's centre; a bare
+/// rotation matrix turns about the origin, so the centre is moved to the
+/// origin and back around it.
+fn rotation_about_centre(angle: f32, size: Size) -> [f32; 6] {
+    let (sin, cos) = angle.sin_cos();
+    let (cx, cy) = (size.width / 2.0, size.height / 2.0);
+    [
+        cos,
+        sin,
+        -sin,
+        cos,
+        cx - cos * cx + sin * cy,
+        cy - sin * cx - cos * cy,
+    ]
 }
 
 /// One handle's entry.
@@ -164,13 +259,44 @@ impl StatefulComponent for HandleEntry {
             HandleEnd::End => (self.geometry.end_at.get(), self.geometry.end_size.get()),
         };
         let hit_id = self.hit_id;
+        let kind = if self.geometry.collapsed.get() {
+            TextSelectionHandleType::Collapsed
+        } else if self.end == HandleEnd::Start {
+            TextSelectionHandleType::Left
+        } else {
+            TextSelectionHandleType::Right
+        };
+        let color = self.geometry.handle_color.get();
+        let end = self.end;
+        let on_drag = self.geometry.on_drag.borrow().clone();
         crate::framework::leaf(move || {
+            let onion = crate::render::RenderCustomPaint::new(RenderConstrainedBox::tight(
+                size.width,
+                size.height,
+            ))
+            .with_painter(Rc::new(HandlePainter { color }));
+            let turned = crate::render::RenderTransform::new(
+                rotation_about_centre(handle_rotation(kind), size),
+                onion,
+            );
+            let mut handlers = crate::gestures::PointerHandlers::new();
+            if let Some(on_drag) = on_drag.clone() {
+                // Raw pointer moves rather than a drag recogniser: a handle
+                // sits in the overlay, above whatever is scrolling underneath,
+                // and entering the arena would put it in competition with that
+                // scroll for the same finger. Upstream's handle is a
+                // `RawGestureDetector` with a pan recogniser of its own, which
+                // it can afford because its overlay entry is not inside the
+                // scrollable either.
+                let moved = Rc::clone(&on_drag);
+                handlers = handlers.with_pointer_move(move |event| {
+                    moved(end, event.position);
+                });
+            }
             RenderStack::new().push_positioned(
-                crate::render::RenderPointerRegion::new(
-                    hit_id,
-                    RenderConstrainedBox::tight(size.width, size.height),
-                )
-                .with_behavior(crate::render::HitTestBehavior::Opaque),
+                crate::render::RenderPointerRegion::new(hit_id, turned)
+                    .with_handlers(handlers)
+                    .with_behavior(crate::render::HitTestBehavior::Opaque),
                 StackPosition {
                     left: Some(at.dx),
                     top: Some(at.dy),
@@ -356,6 +482,23 @@ impl SelectionHost {
     pub fn set_toolbar_visible(&mut self, visible: bool) {
         self.config.set_toolbar_visible(visible);
         self.geometry.toolbar_visible.set(visible);
+        self.geometry.touch();
+    }
+
+    /// What colour the handles are drawn in. Upstream reads
+    /// `TextSelectionTheme.of(context).selectionHandleColor ??
+    /// theme.colorScheme.primary` inside `buildHandle`; the theme is the
+    /// field's, so the field passes it down.
+    pub fn set_handle_color(&mut self, color: crate::engine::Color) {
+        self.geometry.handle_color.set(color);
+        self.geometry.touch();
+    }
+
+    /// Where a finger dragging a handle is reported, so the field can move the
+    /// selection's edge to follow it. Upstream's
+    /// `TextSelectionOverlay._handleSelectionHandleDragUpdate`.
+    pub fn set_on_drag(&mut self, on_drag: Rc<dyn Fn(HandleEnd, Offset)>) {
+        *self.geometry.on_drag.borrow_mut() = Some(on_drag);
         self.geometry.touch();
     }
 
