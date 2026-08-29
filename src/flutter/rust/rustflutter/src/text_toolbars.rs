@@ -18,12 +18,18 @@ pub const TOOLBAR_HEIGHT: f32 = 44.0;
 /// sits when it goes above.
 pub const TOOLBAR_CONTENT_DISTANCE: f32 = 8.0;
 
-/// Upstream `TextSelectionToolbarTextButton._kMiddlePadding` and
-/// `_kEndPadding`, "eyeballed to match the native text selection menu on a
-/// Pixel 2 running Android 10". The ends of the bar are padded wider than the
-/// gaps between its buttons, which is what stops the first label sitting hard
-/// against the rounded corner.
+/// Upstream `TextSelectionToolbarTextButton._kMiddlePadding`, "eyeballed to
+/// match the native text selection menu on a Pixel 2 running Android 10".
+///
+/// The ends of the bar are padded wider than the gaps between its buttons,
+/// which is what stops the first label sitting hard against the rounded
+/// corner. The two are cited separately rather than in one sentence over both
+/// so that each is checked against its own upstream name: one doc block naming
+/// both leaves a ruler able to say only that 9.5 is *one of* the two numbers,
+/// which a swapped pair would also satisfy.
 pub const BUTTON_MIDDLE_PADDING: f32 = 9.5;
+
+/// Upstream `TextSelectionToolbarTextButton._kEndPadding`.
 pub const BUTTON_END_PADDING: f32 = 14.5;
 
 /// The padding for the button at `index` of `total` -- upstream's

@@ -20457,3 +20457,80 @@ stale_engines 全部不落后。
 **下一步**：`constants.py` 那唯一一条对不上的——`text_toolbars.rs:21`
 `BUTTON_MIDDLE_PADDING = 9.5`，上游 `_kEndPadding` 是 14.5。尺子刚接回来就指着它,
 是这一批新露头里最短最硬的一条。先按行为查：这个数是被谁读的、9.5 是从哪儿来的。
+
+## 第 290 轮：那条"不一致"是尺子自己读漏了
+
+上一轮尺子刚接回上游，`constants.py` 指着一条：
+
+    MISMATCH text_toolbars.rs:21 BUTTON_MIDDLE_PADDING = 9.5, but _kEndPadding is 14.5
+
+上游是 `_kMiddlePadding = 9.5`、`_kEndPadding = 14.5`。**端口两个值都对。** 报错的是
+尺子。
+
+### 一个反引号的位置
+
+    /// Upstream `TextSelectionToolbarTextButton._kMiddlePadding` and
+    /// `_kEndPadding`, "eyeballed to match ...".
+    pub const BUTTON_MIDDLE_PADDING: f32 = 9.5;
+    pub const BUTTON_END_PADDING: f32 = 14.5;
+
+`CITATION = re.compile(r'`(_k\w+)`')` 要求反引号**紧挨着** `_k`。第一条引用前面是
+`` `TextSelectionToolbarTextButton. ``，所以 `_kMiddlePadding` 根本不算引用，只读到了
+`_kEndPadding`，于是拿 9.5 去比 14.5。**对的端口、错的尺子，而且是最坏的那种错**——
+它会把下一个人派去改一段本来就对的代码。
+
+### 顺着它量出第二处，比第一处大得多
+
+`RUST_CONST` 只匹配 `pub const`。**27 个模块私有的常数带着引用，从来没被查过**,
+而汇总行照旧写着"179 cited constants"，像那就是全部。一个常数是不是 `pub`,
+跟它的数值还对不对没有半点关系。
+
+两处都修好：**179 → 208 条**，其中真正被比较的从 121 涨到 138 条，**0 条不一致**。
+那条 MISMATCH 是假阳性，消失了。
+
+### 第三处同类的洞，量过之后决定不修
+
+有 11 个文档块下面跟着一串没有自己文档的常数（`_kDialogActionsSectionMinHeight` 下面
+挨着一个没写文档的 `CORNER_RADIUS`）。把文档块延到整串会多出 17 条声明——**而且条条
+是假的**，因为 `CORNER_RADIUS` 根本不是那个上游常数。那 17 个是**没写文档**,
+不是**引错**，是另一把尺子的事。写进了工具的"它不做什么"一节，而不是含糊过去。
+
+### 第四处：端口写了 owner，尺子把它丢了
+
+我第一版的修法是 `` `(?:\w+\.)?(_k\w+)` ``——认得 owner，然后**扔掉**。改错扫描当场
+抓到后果：`cupertino.rs` 的 `CONTEXT_MENU_PADDING = 20.0` 引的是
+`_ContextMenuRouteStaticState._kPadding`，把它故意改成 21.0，尺子**一声不吭**。
+
+因为 `_kPadding` 上游有三个定义：context_menu 里的 20.0、slider.dart 顶上的 8.0、
+list_tile.dart 里一个 `EdgeInsetsDirectional`。裸名字确实有歧义，工具早就写明"这把尺子
+settle 不了、不猜"——**可端口明明写了是哪个类**。那个前缀正是能了结歧义的唯一信息,
+而我刚写的代码把它扔了。
+
+改成记录上游每个 `static const` 的所属类，限定引用按 `(owner, name)` 精确查。
+`CONTEXT_MENU_PADDING` 从"有歧义、不比较"变成可查（unchecked 71 → 70），改成 21.0
+立刻落红，MISMATCH 那行现在还会指名道姓写出 `_ContextMenuRouteStaticState._kPadding`。
+owner 认不出来（extension、mixin、端口写得松）就**退回裸名字**，而不是报 MISSING——
+把一个活着的常数说成没了，是另一个方向的假警报。
+
+### 端口这边也改了一处，而且是被证明出来的
+
+把那一个文档块拆成两个，各引各的上游名。**理由不是整洁**：一个文档块同时引两个名字,
+尺子只能说"9.5 是这两个数之一"，**把两个值对调也照样通过**。这条不是推测,
+是当成改错跑出来的——
+
+* 分开引用 + 对调两值 → **2 条 MISMATCH**；
+* 合并引用 + 对调两值 → **0 条，静悄悄地过**。
+
+**九条承重规则逐条强制改错，九条全红**（含两条反向断言：owner 认不出必须退回而不是报
+MISSING；合并引用下的对调必须"过"，那正是要拆开的理由）。
+
+尺子：coverage 2107/0 MISSING，**constants 208/0/0（原 179/1/0）**，wire_strings 122/0,
+wire_enums 4/0 乱序、4 条无出处，ffi_tables 2 个问题，unwired 48/1，unvaried 0,
+unread_strings 44/0/0，unpainted 2，hollow 67/0，stale_notes 13/0，vacuous 10,
+unread_theme_fields 2，stale_engines 全部不落后。
+门：6039 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`wire_enums` 那 4 条"一个出处都没引"——`Assertiveness`、`BlendMode`、
+`ContentSensitivity`、`PlatformProvidedMenuItemType`，它们的编号会跨出这个 crate（进
+FFI 或进平台通道），而**没有一条写下自己是照着谁排的**。这一轮刚证明了没写下的对应
+关系没人查得了，那 4 条正是同一种账。先按行为查：每个枚举的序号实际被谁读走。
