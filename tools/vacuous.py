@@ -44,9 +44,9 @@ import os
 import re
 import sys
 
-PORT = os.path.join(
-    'K:', os.sep, 'rustflutter', 'src', 'flutter', 'rust', 'rustflutter', 'src'
-)
+import paths
+
+PORT = paths.SRC
 
 TEST = re.compile(r'^([ \t]*)#\[test\][ \t]*\n(?:[ \t]*#\[[^\]]*\][ \t]*\n)*'
                   r'[ \t]*(?:async )?fn (\w+)\(', re.M)

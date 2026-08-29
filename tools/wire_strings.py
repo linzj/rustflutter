@@ -40,11 +40,14 @@ import os
 import re
 import sys
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORT = os.path.join(REPO, 'src', 'flutter', 'rust', 'rustflutter', 'src')
+import paths
+
+REPO = paths.REPO
+PORT = paths.SRC
+_UPSTREAM_ROOT = paths.require_upstream()
 UPSTREAM = [
-    os.path.join('K:', os.sep, 'flutter', 'packages', 'flutter', 'lib', 'src'),
-    os.path.join('K:', os.sep, 'flutter', 'engine', 'src', 'flutter', 'lib', 'ui'),
+    paths.upstream_src(_UPSTREAM_ROOT),
+    paths.upstream_ui(_UPSTREAM_ROOT),
 ]
 
 DECL = re.compile(

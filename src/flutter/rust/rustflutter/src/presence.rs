@@ -11,6 +11,7 @@
 //! most of the combinations are not coherent.
 
 use crate::engine::Color;
+use crate::services::system::ApplicationSwitcherDescription;
 
 /// Upstream `Visibility`: hide a child, with six independent decisions about
 /// what "hidden" means.
@@ -339,10 +340,22 @@ impl Title {
         if color.alpha() != 0xFF {
             return None;
         }
-        Some(Title {
+        Some(Title::opaqued(title, color))
+    }
+
+    /// The same, with the colour **made** opaque rather than checked.
+    ///
+    /// This is what upstream's `WidgetsApp` does -- it hands `Title` its
+    /// `color.withOpacity(1.0)`, never the application's colour as given. That
+    /// forcing is the *only* reason the assert above never fires from there:
+    /// `WidgetsApp.color` is a required `Color`, but nothing requires it to be
+    /// opaque, and an application that passes a translucent one would crash
+    /// its own root widget if the value went through unchanged.
+    pub fn opaqued(title: impl Into<String>, color: Color) -> Title {
+        Title {
             title: title.into(),
-            color,
-        })
+            color: color.with_alpha(0xFF),
+        }
     }
 
     /// Upstream's default title is the **empty string**, not the application's
@@ -350,6 +363,85 @@ impl Title {
     /// inventing something would put a wrong name in the switcher.
     pub fn untitled(color: Color) -> Option<Title> {
         Title::new("", color)
+    }
+
+    /// What crosses the platform channel for this title.
+    ///
+    /// Upstream sends `widget.color.value` -- the whole 0xAARRGGBB word, alpha
+    /// included, not the three colour channels. The alpha is always 0xFF by
+    /// then, so what the host reads is a fully opaque word rather than a bare
+    /// RGB triple it would have to decide the top byte of itself.
+    pub fn description(&self) -> ApplicationSwitcherDescription {
+        ApplicationSwitcherDescription::new()
+            .with_label(self.title.as_str())
+            .with_primary_color(self.color.0)
+    }
+}
+
+/// Upstream `_TitleState`: **when** the operating system gets told.
+///
+/// The widget above holds what to say; this holds the decision of whether to
+/// say it again. Upstream's two lifecycle methods are the whole class:
+///
+/// ```dart
+/// void initState() { super.initState(); _updateChrome(); }
+///
+/// void didUpdateWidget(covariant Title oldWidget) {
+///   super.didUpdateWidget(oldWidget);
+///   if (oldWidget.title != widget.title || oldWidget.color != widget.color) {
+///     _updateChrome();
+///   }
+/// }
+/// ```
+///
+/// Both halves matter and they say opposite things. The first is
+/// unconditional: an application is told to the host **once, on the way up**,
+/// before anything has changed and even when the title is the empty string.
+/// The second is conditional: the root widget rebuilds on every frame that
+/// touches anything, and a platform message per frame for a name that has not
+/// moved would be a channel round trip sixty times a second for nothing.
+///
+/// The pairing is what makes an `onGenerateTitle` callback cheap. Upstream
+/// documents that the callback "is called each time the [WidgetsApp]
+/// rebuilds" -- so it *does* run every frame -- but the string it returns is
+/// compared here, and a rebuild that regenerates the same title sends nothing.
+/// The cost of a localized title is the callback, not the channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TitleState {
+    title: Title,
+    told: Vec<ApplicationSwitcherDescription>,
+}
+
+impl TitleState {
+    /// Upstream's `initState`, which calls `_updateChrome` with nothing to
+    /// compare against -- so the host is always told once.
+    pub fn init_state(title: Title) -> TitleState {
+        let told = vec![title.description()];
+        TitleState { title, told }
+    }
+
+    /// Upstream's `didUpdateWidget`. Returns whether the host was told.
+    ///
+    /// The comparison is on **both** fields. A title that keeps its name and
+    /// changes its colour still has to go: the colour is half of what the
+    /// switcher card shows, and on the web the engine turns it into the page's
+    /// theme colour.
+    pub fn did_update_widget(&mut self, title: Title) -> bool {
+        let changed = self.title != title;
+        self.title = title;
+        if changed {
+            self.told.push(self.title.description());
+        }
+        changed
+    }
+
+    pub fn title(&self) -> &Title {
+        &self.title
+    }
+
+    /// Every description handed to the platform, oldest first.
+    pub fn told(&self) -> &[ApplicationSwitcherDescription] {
+        &self.told
     }
 }
 
@@ -652,6 +744,67 @@ mod tests {
         // inventing something would put a wrong name in the task switcher.
         let untitled = Title::untitled(Color(0xFF00_0000)).unwrap();
         assert_eq!(untitled.title, "");
+    }
+
+    #[test]
+    fn the_host_is_told_once_on_the_way_up_even_with_nothing_to_say() {
+        // `initState` calls `_updateChrome` with nothing to compare against.
+        // An application whose title is the empty string still sends it.
+        let state = TitleState::init_state(Title::untitled(Color(0xFF00_0000)).unwrap());
+        assert_eq!(state.told().len(), 1);
+        assert_eq!(state.told()[0].label.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_rebuild_that_changed_nothing_sends_no_platform_message() {
+        // The root widget rebuilds on every frame that touches anything, and
+        // an `onGenerateTitle` callback re-runs each time. Comparing here is
+        // what keeps a localized title from costing a channel round trip
+        // sixty times a second.
+        let same = Title::new("Inbox", Color(0xFF00_7ACC)).unwrap();
+        let mut state = TitleState::init_state(same.clone());
+        assert!(!state.did_update_widget(same.clone()));
+        assert!(!state.did_update_widget(same));
+        assert_eq!(state.told().len(), 1);
+    }
+
+    #[test]
+    fn either_half_changing_on_its_own_is_enough_to_send() {
+        // Upstream compares both fields. The colour is half of what the
+        // switcher card shows -- and on the web the engine turns it into the
+        // page's theme colour -- so a rename-free recolour still has to go.
+        let mut state = TitleState::init_state(Title::new("Inbox", Color(0xFF00_7ACC)).unwrap());
+
+        assert!(state.did_update_widget(Title::new("Drafts", Color(0xFF00_7ACC)).unwrap()));
+        assert_eq!(state.told().len(), 2);
+
+        assert!(state.did_update_widget(Title::new("Drafts", Color(0xFFCC_2200)).unwrap()));
+        assert_eq!(state.told().len(), 3);
+        assert_eq!(state.told()[2].primary_color, Some(0xFFCC_2200));
+    }
+
+    #[test]
+    fn what_crosses_is_the_whole_word_alpha_included() {
+        // Upstream sends `color.value`, not the three colour channels. The
+        // alpha is 0xFF by then, so the host reads a fully opaque word rather
+        // than having to decide the top byte itself.
+        let described = Title::new("Inbox", Color(0xFF00_7ACC))
+            .unwrap()
+            .description();
+        assert_eq!(described.label.as_deref(), Some("Inbox"));
+        assert_eq!(described.primary_color, Some(0xFF00_7ACC));
+    }
+
+    #[test]
+    fn widgets_app_forces_the_colour_where_title_only_refuses_it() {
+        // The two constructors differ on purpose: `Title` itself asserts, and
+        // `WidgetsApp` hands it `color.withOpacity(1.0)` so the assert is
+        // unreachable from there.
+        assert!(Title::new("App", Color(0x2200_7ACC)).is_none());
+        assert_eq!(
+            Title::opaqued("App", Color(0x2200_7ACC)).color,
+            Color(0xFF00_7ACC)
+        );
     }
 
     // -- Status transitions --------------------------------------------------

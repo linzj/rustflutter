@@ -186,6 +186,7 @@ pub mod services;
 pub mod shortcuts;
 pub mod slider_theme;
 pub mod sliver;
+pub mod sliver_clip;
 pub mod sliver_fill;
 pub mod sliver_headers;
 pub mod sliver_tree;

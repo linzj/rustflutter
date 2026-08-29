@@ -98,6 +98,13 @@ impl CupertinoScrollBehavior {
 }
 
 /// Upstream `CupertinoApp`.
+///
+/// Its `title` and `onGenerateTitle` are not here because they are not its:
+/// both are forwarded to the `WidgetsApp` it builds, unchanged, on both the
+/// `.router` and the navigator path. What decides between them lives at
+/// [`crate::widgets_app::WidgetsApp::app_title`], and `MaterialApp` forwards
+/// the identical pair -- there is no Cupertino-specific naming behaviour to
+/// port, which is itself the answer to "where did the title go".
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CupertinoApp {
     pub has_home: bool,

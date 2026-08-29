@@ -19,7 +19,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rust_source import production  # noqa: E402
 
-CRATE = r'K:\rustflutter\src\flutter\rust\rustflutter'
+import paths  # noqa: E402
+
+CRATE = paths.CRATE
 MSVC = (r'C:\Program Files\Microsoft Visual Studio\2022\Community'
         r'\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64')
 

@@ -11,6 +11,9 @@
 //! Note that `app.rs` in this crate is a different subject entirely -- the shell
 //! contract, the FFI the engine calls into. This is the widget.
 
+use crate::engine::Color;
+use crate::presence::Title;
+
 /// Where a route came from. Upstream's error message spells the order out, and
 /// the order is the interesting part: an explicit table is consulted **before**
 /// the generator callback, so a named route somebody wrote down wins over one
@@ -41,6 +44,20 @@ pub struct RouteConfiguration {
     pub has_page_route_builder: bool,
 }
 
+/// What upstream wraps the application in to name it, at the end of
+/// `_WidgetsAppState.build`.
+///
+/// The second variant is not "an empty name" -- it is **no [`Title`] widget at
+/// all**, which is a different thing, and the difference is the whole reason
+/// the variant exists. See [`WidgetsApp::app_title`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppTitle {
+    /// `Title(title: ..., color: ...)`, wrapped around the app.
+    Names(Title),
+    /// Nothing wrapped around the app, so nothing is ever sent to the host.
+    Unnamed,
+}
+
 /// Upstream `WidgetsApp`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WidgetsApp {
@@ -48,6 +65,13 @@ pub struct WidgetsApp {
     /// Upstream asserts this is non-empty: an application that supports no
     /// locales has nothing to resolve the system's locale against.
     pub supported_locales: Vec<String>,
+    /// Upstream's `title`, which is nullable -- and whose null is *not* the
+    /// same as `""`. See [`WidgetsApp::app_title`].
+    pub title: Option<String>,
+    /// Upstream's `color`: required, and **not** required to be opaque, which
+    /// is why the title path forces it. Documented as "the primary color to
+    /// use for the application in the operating system interface".
+    pub color: Color,
     pub show_performance_overlay: bool,
     pub debug_show_checked_mode_banner: bool,
 }
@@ -65,6 +89,8 @@ impl WidgetsApp {
                 ..RouteConfiguration::default()
             },
             supported_locales: vec!["en".to_string()],
+            title: None,
+            color: Color::BLACK,
             show_performance_overlay: false,
             debug_show_checked_mode_banner: true,
         }
@@ -122,6 +148,80 @@ impl WidgetsApp {
             return RouteSource::Generator;
         }
         RouteSource::Unknown
+    }
+
+    /// Upstream's three-branch title choice, at the end of
+    /// `_WidgetsAppState.build`:
+    ///
+    /// ```dart
+    /// final Widget? title;
+    /// if (widget.onGenerateTitle != null) {
+    ///   title = Builder(
+    ///     // This Builder exists to provide a context below the Localizations widget.
+    ///     builder: (BuildContext context) {
+    ///       final String title = widget.onGenerateTitle!(context);
+    ///       return Title(title: title, color: widget.color.withOpacity(1.0), child: result);
+    ///     },
+    ///   );
+    /// } else if (widget.title == null && kIsWeb) {
+    ///   title = null;
+    /// } else {
+    ///   title = Title(title: widget.title ?? '', color: widget.color.withOpacity(1.0), child: result);
+    /// }
+    /// ```
+    ///
+    /// `generated` is what `onGenerateTitle` returned, or `None` when there is
+    /// no callback -- the two are the same question here, because a callback
+    /// "must not return null".
+    ///
+    /// Three decisions, none of them obvious:
+    ///
+    /// **The callback wins outright.** An application that sets both `title`
+    /// and `onGenerateTitle` never has its `title` read. There is no fallback
+    /// between them and no assert against giving both, so the static one sits
+    /// there looking configured and doing nothing.
+    ///
+    /// **The `Builder` in the first branch is load-bearing.** It is not a
+    /// wrapper someone left behind: it exists to give the callback a context
+    /// *below* the `Localizations` widget this same build installs. Called
+    /// with the state's own context instead, the callback would look up a
+    /// `Localizations` that is above it -- the ambient one, or none -- and a
+    /// localized title is the entire point of the callback.
+    ///
+    /// **A null title off the web still names the application** -- it names it
+    /// the empty string, because `widget.title ?? ''` builds a real [`Title`]
+    /// and [`crate::presence::TitleState`] sends whatever it holds. Android's
+    /// embedder passes
+    /// that straight into `setTaskDescription(TaskDescription(label, ...))`,
+    /// so the recents card ends up labelled with nothing rather than falling
+    /// back to the manifest.
+    ///
+    /// On the web the same default would be worse, and that is what the second
+    /// branch is for. The web engine's handler is an unconditional assignment:
+    ///
+    /// ```dart
+    /// final String label = arguments['label'] as String? ?? '';
+    /// domDocument.title = label;
+    /// ```
+    ///
+    /// -- so a Flutter view embedded in somebody else's page would blank that
+    /// page's `<title>` merely by starting up. The title belongs to the host
+    /// there, so an application that did not ask for one gets no [`Title`]
+    /// widget and the message is never sent. Note the condition is on
+    /// `title == null`, not on emptiness: `title: ''` on the web *does* blank
+    /// the tab, because that is then something the application asked for.
+    pub fn app_title(&self, generated: Option<&str>, is_web: bool) -> AppTitle {
+        // Forced, not checked -- see `Title::opaqued`.
+        if let Some(generated) = generated {
+            return AppTitle::Names(Title::opaqued(generated, self.color));
+        }
+        if self.title.is_none() && is_web {
+            return AppTitle::Unnamed;
+        }
+        AppTitle::Names(Title::opaqued(
+            self.title.as_deref().unwrap_or(""),
+            self.color,
+        ))
     }
 
     /// Upstream's assert inside the default handler: using `home` or `routes`
@@ -599,5 +699,90 @@ mod tests {
         let default = PopScope::default();
         assert!(default.can_pop);
         assert!(!default.notifies());
+    }
+
+    // -- Naming the application ------------------------------------------------
+
+    fn named(app: &WidgetsApp, generated: Option<&str>, is_web: bool) -> Option<String> {
+        match app.app_title(generated, is_web) {
+            AppTitle::Names(title) => Some(title.title),
+            AppTitle::Unnamed => None,
+        }
+    }
+
+    #[test]
+    fn a_generated_title_wins_outright_and_the_static_one_is_never_read() {
+        // There is no fallback between the two and no assert against giving
+        // both, so a `title` set alongside an `onGenerateTitle` sits there
+        // looking configured and doing nothing.
+        let mut app = app();
+        app.title = Some("Set In The Constructor".to_string());
+        assert_eq!(
+            named(&app, Some("Generated"), false).as_deref(),
+            Some("Generated")
+        );
+        assert_eq!(
+            named(&app, None, false).as_deref(),
+            Some("Set In The Constructor")
+        );
+    }
+
+    #[test]
+    fn the_web_gets_no_title_widget_at_all_rather_than_an_empty_one() {
+        // The web engine's handler is `domDocument.title = label`, an
+        // unconditional assignment -- an embedded view would blank its host
+        // page's tab merely by starting up. So the message is never sent.
+        let app = app();
+        assert_eq!(named(&app, None, true), None);
+    }
+
+    #[test]
+    fn off_the_web_the_same_application_names_itself_the_empty_string() {
+        // Not "says nothing" -- `widget.title ?? ''` builds a real Title, and
+        // Android's embedder passes the empty label into setTaskDescription,
+        // so the recents card is labelled with nothing rather than falling
+        // back to the manifest. The two branches disagree on purpose.
+        let app = app();
+        assert_eq!(named(&app, None, false).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn an_explicitly_empty_title_does_blank_the_web_tab() {
+        // The condition is on `title == null`, not on emptiness. An
+        // application that asked for an empty title on the web gets one.
+        let mut app = app();
+        app.title = Some(String::new());
+        assert_eq!(named(&app, None, true).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn the_callback_branch_is_reached_before_the_web_branch() {
+        // A web application with no `title` but with an `onGenerateTitle` is
+        // named: the first branch never consults `kIsWeb`.
+        let app = app();
+        assert!(app.title.is_none());
+        assert_eq!(
+            named(&app, Some("Generated"), true).as_deref(),
+            Some("Generated")
+        );
+    }
+
+    #[test]
+    fn a_translucent_application_colour_reaches_the_title_opaque() {
+        // `WidgetsApp.color` is required but not required to be opaque, and
+        // `Title` asserts opacity. `color.withOpacity(1.0)` is what stops an
+        // application from crashing its own root widget.
+        let mut app = app();
+        app.color = Color(0x2200_7ACC);
+        for (generated, is_web) in [
+            (Some("Generated"), false),
+            (Some("Generated"), true),
+            (None, false),
+        ] {
+            let AppTitle::Names(title) = app.app_title(generated, is_web) else {
+                panic!("expected a Title");
+            };
+            assert_eq!(title.color, Color(0xFF00_7ACC));
+        }
     }
 }

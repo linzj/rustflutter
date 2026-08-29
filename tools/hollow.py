@@ -20,7 +20,9 @@ belong.
 import os
 import re
 
-PORT = r'K:\rustflutter\src\flutter\rust\rustflutter\src'
+import paths
+
+PORT = paths.SRC
 
 # `pub fn name(args) -> bool {` then a lone `true`/`false` then `}`.
 # Whether a doc comment sits directly above the function. That is the signal

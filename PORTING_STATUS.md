@@ -20238,3 +20238,222 @@ unread_theme_fields 2。
 **下一步**：`CupertinoApp` 还剩 `checkerboardRasterCacheImages` /
 `checkerboardOffscreenLayers` / `showSemanticsDebugger` / `onGenerateTitle` /
 `navigatorObservers` 这一族 app 级开关——先按行为查。
+
+## 第 288 轮：尺子被拔掉了，读数一直是零
+
+这一轮从队头开始：`python tools/depth.py` 说
+
+    0 covered classes with 6+ upstream members
+
+看起来像"队列做完了"。于是照上一轮的"下一步"接着做 `CupertinoApp` 那一族开关，做完了
+`onGenerateTitle` 这一支（写在下面）。收尾跑整套尺子时，`unread_theme_fields.py` 抛了
+
+    FileNotFoundError: 'K:\rustflutter\src\flutter\rust\rustflutter\src'
+
+**`K:` 这个盘不在了。** 仓库现在在 `D:\linzjUbuntu2204\rustflutter`，上游在
+`E:\source\flutter`，而 `tools/` 里十四个脚本把两个根**逐个写死**成 `K:\...`。
+
+### 拔掉的仪器读出的是"通过"
+
+一个不存在的目录，`os.walk` 走出来是空的。于是：数不一致的尺子数出零个不一致；数缺失
+成员的尺子找不到成员可缺。整套尺子对着空气量了不知道多少轮，**每一轮都打印满分**。
+把上游指回去之后：
+
+    666 covered classes with 6+ upstream members
+
+队头是 `Icons` 22/8826、`CupertinoIcons` 8/1324、`CupertinoApp` 8/37……上一轮记下的
+"队列已空"是假的，这一轮开头我信了它一次。
+
+逐条对照上一轮的尺子行与今天的真实读数：
+
+| 尺子 | 287 轮记的 | 今天真的 |
+|---|---|---|
+| coverage | 2102/0 | 2107 个类，**5 个 MISSING**，1 个 mapping-unresolved |
+| constants | 160/0/0 | 179 条，**1 条对不上** |
+| wire_enums | 4/0 | 0 条乱序，但 **4 条一个出处都没引** |
+| ffi_tables | 5/0 | **2 个问题** |
+| unwired | 48/0 | 48 个主题，**1 个没有任何读者** |
+| unpainted | 0 | **2 处 draw 没有人观察** |
+| vacuous | 8 | 10 |
+| wire_strings / hollow / stale_notes / unread_theme_fields | 122/0、67/0、12/0、2 | 一致 |
+
+最后一行是有意思的部分：**对得上的那几个，正是不需要上游、或者根已经是从脚本自己的
+位置推出来的那几个。** 分界线干干净净地落在"路径是写下来的"和"路径是算出来的"之间。
+
+### 修法：根不许再写下来
+
+新的 `tools/paths.py` 立两条规矩：
+
+* **仓库根是推出来的**——`os.path.dirname(os.path.dirname(__file__))`。只要这个文件还
+  在树里，它就不可能过时；再搬一次盘什么都不用改。
+* **上游找不到是错误，不是零。** `require_upstream()` 直接 `SystemExit`，而不是返回一
+  个会安静地走到空的路径。`constants.py` 原本那句 `print('upstream not present;
+  nothing to check'); return 0` 就是这次沉默的原话——它自己下面几行还写着"一次空扫描
+  和一次干净扫描分不开，而被相信的是干净的那个答案"，写对了道理，漏了这一种空扫描。
+
+十四个脚本改完，五个原本读上游的都验过：`FLUTTER_UPSTREAM` 指向不存在的目录时全部
+exit 1 并打印去哪儿找，不再有一个返回零。
+
+### 这一轮真正做的那件端口：应用的名字什么时候到达操作系统
+
+`widgets/title.dart` 的值早就在（`presence.rs` 的 `Title`，带那条"颜色必须不透明"的
+断言），平台消息也早就在（`SystemChrome.setApplicationSwitcherDescription`）。缺的是
+**中间那一段**：谁在什么时候把前者交给后者。
+
+`_TitleState` 两个生命周期方法说的是相反的两件事，两件都要：
+
+* `initState` **无条件**发一次——哪怕标题是空字符串。应用在起来的路上被报一次名。
+* `didUpdateWidget` **只在 title 或 color 变了**才发。根 widget 每帧都可能重建,
+  名字没动却每帧过一次 channel 是白花的往返。
+
+这一对是 `onGenerateTitle` 便宜的原因：上游明说回调"每次 `WidgetsApp` 重建都调用",
+所以它**确实**每帧都跑；但它吐出来的字符串在这里被比较，重建生成同一个名字就一条消息
+都不发。**代价在回调，不在通道。**
+
+`WidgetsApp` 那头三个分支，三个都不显然：
+
+**回调赢到底。** 同时给了 `title` 和 `onGenerateTitle` 的应用，`title` 永远不会被读。
+两者之间没有回退，也没有断言拦着你两个都给——那个静态的就摆在那里，看着像配置好了,
+什么也不做。
+
+**第一支里那个 `Builder` 是承重的。** 它不是谁忘了删的包装：它存在是为了给回调一个
+**在 `Localizations` 下面**的 context。用 state 自己的 context 调，回调查到的是它上面
+那个（环境里的，或者没有），而本地化标题正是这个回调的全部意义。
+
+**非 web 上 title 为 null 仍然给应用起了名**——起成空字符串。`widget.title ?? ''` 建
+的是一个真的 `Title`，Android 的 embedder 把它直接塞进
+`setTaskDescription(TaskDescription(label, ...))`，最近任务卡片上就是空的，而不是退回
+manifest 里的名字。
+
+web 上同一个默认会更糟，第二支就是为它开的。web 引擎那边的处理是一句**无条件赋值**：
+
+```dart
+final String label = arguments['label'] as String? ?? '';
+domDocument.title = label;
+```
+
+——嵌在别人页面里的一个 Flutter view，光是启动就会把宿主页面的 `<title>` 抹掉。那里的
+标题是宿主的，所以没要过标题的应用**根本不套 `Title` widget**，消息永远不发。注意条件
+是 `title == null` 而不是"空"：web 上 `title: ''` **确实**会把标签页抹白，因为那是应用
+自己要的。
+
+两处 dart 引擎源都去 `E:\source\flutter\engine` 里读了原文核对过，不是照 framework 的
+注释猜的。
+
+### 十条承重规则逐条强制改错，十条全红
+
+包括三条容易糊过去的：把 web 那支的条件从"null"改成"空"（`title: ''` 那条落红）；把
+`didUpdateWidget` 的比较只留 title 不看 color（改名之外的纯改色那条落红）；把发出去的
+颜色掩掉 alpha（"过去的是整个字，含 alpha"那条落红）。
+
+顺手：`editable.rs:3076` 一段 Dart 片段用了四空格缩进而不是 ```dart 围栏，被 rustdoc
+当 Rust 编译，doctest 门是红的（不是这一轮改出来的，HEAD 上就红）。加了围栏。
+
+尺子（**这些是尺子接回上游之后的真读数**）：coverage 2107 类 / 5 MISSING /
+1 mapping-unresolved，constants 179/1，wire_strings 122/0，wire_enums 4/0 乱序但 4 条
+无出处，ffi_tables 2 个问题，unwired 48/1，unvaried 0，unread_strings 44/0/0,
+unpainted 2，hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2,
+stale_engines 全部不落后。
+门：6008 + 353 通过（不是 5940 + 333——那两个数也已经跟不上了）；doctest 由红转绿；
+三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：接尺子刚刚重新看见的最硬的那个洞——coverage 的 5 个 MISSING，
+`rendering/sliver_clip.dart`（`ClipOverlapBehavior`、`RenderSliverClipRect`、
+`RenderSliverClipRRect`）与 `widgets/sliver_clip.dart` 两个。整整一个上游文件这个端口
+从来没看见过，比队头那些"覆盖率低"的类更硬。先按行为查。
+
+## 第 289 轮：被钉住的头挡住的那一条，剪到哪里为止
+
+尺子接回上游后露出的 5 个 MISSING，是**整整一个上游文件**这个端口从来没看见过：
+`rendering/sliver_clip.dart` 与 `widgets/sliver_clip.dart`，`ClipOverlapBehavior`、
+`RenderSliverClipRect`、`RenderSliverClipRRect`、`SliverClipRect`、`SliverClipRRect`。
+
+一个盒子剪自己的孩子，只要回答**剪成什么形状**。一个 sliver 剪自己的孩子，还要回答第二
+个问题，而这个问题就是这个文件与 `ClipRect` 的全部区别：**被钉住的兄弟正画在上面的那
+一条，怎么办。**
+
+场景是 `CustomScrollView` 第一个 sliver 是半透明的 pinned `SliverAppBar`。它报的
+`layoutExtent` 小于 `paintExtent`，所以后面那个 sliver 被摆在了它正画着的位置上，差额
+以 `SliverConstraints.overlap` 送来。默认什么都不剪：列表项从半透明的 bar 底下透出来。
+
+**剪到 sliver 自己的边界解决不了**——那一条就在边界里面。剪的长度必须减掉 overlap,
+`ClipOverlapBehavior` 是三个答案。
+
+### 全部重量在 `getClipOriginForOverlap` 那四行上
+
+    final double effectiveOverlap = math.max(0.0, constraints.overlap);
+    final double flexibleClipExtent =
+        math.max(0.0, insideClipExtent - geometry!.maxScrollObstructionExtent);
+    final double minClipOrigin = -math.min(flexibleClipExtent, constraints.scrollOffset);
+    return clampDouble(flexibleClipExtent - constraints.scrollOffset, minClipOrigin, effectiveOverlap);
+
+四行各说一件事：overlap 取零下限（反向增长时它是负的，原样用会去剪没人盖住的内容）；
+减掉 obstruction extent（钉住的那部分内容永远不滚走，它没有余量）；clamp 的下端是负的;
+clamp 的**上端就是 overlap 本身**——有余量时剪切边正好停在 overlap 边界上,
+这就是 `followEdge`。
+
+`insideClipExtent` 是调用方的选择，而它是 `preserveShape` **唯一**改的东西。
+
+### `preserveShape` 不是"把形状往里挪"，是"让边提早开始动"
+
+上游那句 doc 说 "the entire shape of the clip shifts inwards to preserve its form",
+读着像是形状被重画了。**不是。** 两条路走的是同一个 `copyNewClipWith`，四个圆角原样带
+过去（`RRect.fromLTRBAndCorners` 加原来的四个半径）。差别只有一行：
+
+    (Axis.vertical, ClipOverlapBehavior.preserveShape) => newClip.middleRect.height,
+    (Axis.vertical, _)                                => newClip.height,
+
+`middleRect` 比整个 clip 矮，矮的正是上下两个角。喂一个更小的 extent 进去,
+`flexibleClipExtent` 变小，`flexible - scrollOffset` 就**在更小的滚动位移上**跌破
+overlap——剪切边提早离开边界，跟着内容走。
+
+算出来是这样：200 高的卡片、56 的 overlap、24 的圆角，滚到 160：
+
+| | clip 的 top | 高度 |
+|---|---|---|
+| followEdge | 40 | **0** |
+| preserveShape | -8 | **48** |
+
+`followEdge` 到这里已经**完全关死**——卡片剩下的可见部分全在 overlap 里，圆角被边界
+削平。`preserveShape` 还留着 48 高的一条，正好是上下两个圆角的高度，让角完整地滑进去。
+48 = 24 + 24，不是巧合，是那一行的全部内容。这条钉成了测试。
+
+### 两条自己写错的期望，改错扫描抓出来的第三条
+
+**一、"clamp 的下端是 -scrollOffset"。错。** 写了个 `inside_clip_extent = 0`、
+`scroll_offset = 10` 的用例，等着读 -10，读出 0。下端是 `-min(flexible, scrollOffset)`,
+而 `min` 挑中 scrollOffset 的**那种情况恰好是被 clamp 的值已经为正的情况**
+（`flexible - scrollOffset > 0`），下端根本轮不到生效。**所以那个 `min` 在实践中永远
+等于 `-flexibleClipExtent`，写出来是防御性的。** 这条写进了注释。
+
+**二、"overlap 为零时 followEdge 什么都不做"。错。** 想单独量 clipper 的位移，把
+overlap 设成 0 就以为隔离了，结果 clip 的 top 从 -60 被拉到了 0。`effectiveOverlap`
+是 0 → clamp 上端是 0 → origin 是 0 → 边被拉到 sliver 自己的前缘。**底下什么都没有的
+sliver，它的 clip 一样被缩短。** 隔离得把 behavior 关掉，不是把 overlap 设成零。
+
+**三、改错扫描抓的：`SliverGeometry::ZERO` 的提前返回，我第一版测试量不出来。**
+用的是 `SliverConstraints::default()`，它的 `cross_axis_extent` 是 0，于是掉下去算也
+得零矩形，两条路一样。真实约束下不一样：零 geometry 的 `crossAxisExtent` 是 `null`,
+**会回退到约束的**，掉下去算出来是一个 400 宽、0 高的矩形，不是"什么都没有"。
+把测试改成有宽度的约束，那条改错立刻落红。
+
+**二十二条承重规则逐条强制改错，二十二条全红。**
+
+### 没做的那一半，写在这里而不是含糊过去
+
+这一轮端的是**几何与决策**：paint rect、overlap 原点、四个方向的边、两种形状的
+`buildClip`、clip 缓存的失效规则、命中测试的坐标变换、剔除用的近似 clip、两个 widget
+的默认值。**没有接进活的绘制树**——`PaintContext::push_clip_rect` 只收一个统一圆角,
+接一个四角不同的 `RRect` clip 层要先动引擎。所以这五个类现在是被端口"看见并算得对"了,
+不是"画得出来了"。
+
+尺子：**coverage 2107 类 / 0 MISSING**（5 个清掉，靠的是真行为不是空壳类：22 条改错
+全红），1 mapping-unresolved，constants 179/1，wire_strings 122/0，wire_enums 4/0 乱序、
+4 条无出处，ffi_tables 2 个问题，unwired 48/1，unvaried 0，unread_strings 44/0/0,
+unpainted 2，hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2,
+stale_engines 全部不落后。
+门：6039 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`constants.py` 那唯一一条对不上的——`text_toolbars.rs:21`
+`BUTTON_MIDDLE_PADDING = 9.5`，上游 `_kEndPadding` 是 14.5。尺子刚接回来就指着它,
+是这一批新露头里最短最硬的一条。先按行为查：这个数是被谁读的、9.5 是从哪儿来的。

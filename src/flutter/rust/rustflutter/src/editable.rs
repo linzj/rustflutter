@@ -3073,8 +3073,10 @@ impl StatefulComponent for TextField {
     /// Upstream's `EditableTextState.dispose`, which disposes the selection
     /// overlay along with everything else the state owns:
     ///
-    ///     _selectionOverlay?.dispose();
-    ///     _selectionOverlay = null;
+    /// ```dart
+    /// _selectionOverlay?.dispose();
+    /// _selectionOverlay = null;
+    /// ```
     ///
     /// The handles and the toolbar are entries in the **root** overlay, above
     /// the navigator, while the field that put them there is inside a route.

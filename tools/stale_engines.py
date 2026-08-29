@@ -21,8 +21,10 @@ memory, and a check is not.
 import os
 import sys
 
-SRC = os.path.join('K:', os.sep, 'rustflutter', 'src')
-OUT = os.path.join(SRC, 'out')
+import paths
+
+SRC = os.path.join(paths.REPO, 'src')
+OUT = paths.OUT
 
 # The C++ that becomes `rustflutter_engine`. Not the whole engine: these are
 # the files this project writes, and the ones a change here can outrun.

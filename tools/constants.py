@@ -32,9 +32,10 @@ import os
 import re
 import sys
 
-PORT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    'src', 'flutter', 'rust', 'rustflutter', 'src')
-UPSTREAM = r'K:\flutter\packages\flutter\lib\src'
+import paths
+
+PORT = paths.SRC
+UPSTREAM = paths.upstream_src(paths.upstream_root() or '')
 
 # `const double _kFoo = 20.0;` / `const int _kBar = 3;`, allowing a leading
 # `static` inside a class body.
@@ -135,9 +136,10 @@ def same_number(rust, dart):
 
 
 def main():
-    if not os.path.isdir(UPSTREAM):
-        print('upstream not present; nothing to check')
-        return 0
+    # Not `print and return 0`. A count measured against a tree that is
+    # not there is not a clean bill of health, and reporting it as one is
+    # how this whole suite went quiet for a drive move.
+    paths.require_upstream()
 
     scalars, structured = upstream_constants()
     if not scalars:

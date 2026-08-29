@@ -5,7 +5,9 @@ import re
 import subprocess
 import sys
 
-CRATE = r'K:\rustflutter\src\flutter\rust\rustflutter'
+import paths
+
+CRATE = paths.CRATE
 MSVC = (r'C:\Program Files\Microsoft Visual Studio\2022\Community'
         r'\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64')
 CALL = re.compile(

@@ -13,8 +13,10 @@ import os
 import shutil
 import zipfile
 
-DEFAULT_OUT = 'K:/rustflutter/src/out/host_release'
-DEFAULT_DEST = 'K:/rustflutter/dist/rustflutter-gallery'
+import paths
+
+DEFAULT_OUT = os.path.join(paths.OUT, 'host_release')
+DEFAULT_DEST = os.path.join(paths.REPO, 'dist', 'rustflutter-gallery')
 
 # The data upstream ships, trimmed to what Flutter needs (see the README
 # beside it) -- not the full Chromium bundle the build copies to the out dir.

@@ -36,7 +36,9 @@ import os
 import re
 import sys
 
-PORT = r'K:\rustflutter\src\flutter\rust\rustflutter\src'
+import paths
+
+PORT = paths.SRC
 
 ENUM = re.compile(r'^pub enum ([A-Za-z0-9_]+)\s*\{', re.M)
 # `= 0,` is in there because it was not, and the omission hid exactly the

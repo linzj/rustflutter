@@ -69,15 +69,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rust_source import test_spans  # noqa: E402
 
-SRC = os.path.join('K:', os.sep, 'rustflutter', 'src', 'flutter', 'rust',
-                   'rustflutter', 'src')
+import paths  # noqa: E402
+
+SRC = paths.SRC
 # The files that declare themes, and so do not count as readers of them.
 DECLARING = {'component_themes.rs', 'slider_theme.rs', 'theme.rs',
              'color_scheme.rs'}
 
 
-UPSTREAM = os.path.join('K:', os.sep, 'flutter', 'packages', 'flutter', 'lib',
-                        'src')
+UPSTREAM = paths.upstream_src(paths.upstream_root() or '')
 
 
 def deprecated_upstream():

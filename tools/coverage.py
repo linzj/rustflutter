@@ -29,9 +29,11 @@ import os
 import re
 import sys
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UPSTREAM = os.environ.get('FLUTTER_UPSTREAM', r'K:\flutter')
-CRATE = os.path.join(REPO, 'src', 'flutter', 'rust', 'rustflutter', 'src')
+import paths
+
+REPO = paths.REPO
+UPSTREAM = paths.require_upstream()
+CRATE = paths.SRC
 LEDGER = os.path.join(REPO, 'coverage_ledger.json')
 
 # Every directory under packages/flutter/lib/src, not a chosen ten.
