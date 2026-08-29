@@ -400,12 +400,17 @@ fn field_group(
 
     // Below the box: the note on the left, the counter on the right --
     // upstream's helper/error and counter share the decorator's subtext row.
+    //
+    // The row is built whether it has anything to say or not, the way the
+    // phone field's prefix row is and for the same reason: a row that came
+    // and went would re-parent the field above it, and a re-parented
+    // `TextField` loses the editing session its state holds. An error
+    // arriving on submit is exactly such a moment -- upstream's
+    // `Form.validate()` shows every error without touching the fields' text,
+    // so this tree's shape may not answer the errors either.
     let note = error
         .map(|text| (text, true))
         .or(helper.map(|text| (text, false)));
-    if note.is_none() && counter.is_none() {
-        return body;
-    }
     let note_widget = match note {
         Some((text, is_error)) => {
             let color = if is_error {
@@ -1015,5 +1020,49 @@ mod tests {
             1_000_000,
             1_000_000 + SNACKBAR_DURATION_MICROS
         ));
+    }
+
+    #[test]
+    fn an_error_arriving_does_not_remount_the_field_it_describes() {
+        // The bug this guards: a failed submit shows the name and phone
+        // fields' errors, and the note row used to *arrive* with the error --
+        // a new widget in the slot the field's group held, so the element
+        // tree dropped the subtree and remounted it, and the remounted
+        // `TextField` had a fresh `TextFieldState`: what the reader had typed
+        // was gone. Upstream's `Form.validate()` shows every error without
+        // touching the fields' text, so the row is always there and the
+        // tree's shape never answers the errors.
+        let theme = Theme::dark();
+        let colors = FieldColors {
+            fill: theme.surface_variant,
+            outline: theme.outline,
+            muted: theme.text_muted,
+            primary: theme.primary,
+            danger: theme.danger,
+        };
+        let build = |error: Option<String>| {
+            field_group(
+                "Name*",
+                None,
+                stateful(TextField::new(ids::DEMO_LOCAL)),
+                BoxKind::Filled,
+                false,
+                error,
+                None,
+                None,
+                colors,
+            )
+        };
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(build(None));
+        let before = field_elements(&tree);
+        tree.rebuild(build(Some("Name is required.".to_string())));
+        let after = field_elements(&tree);
+        assert_eq!(before.len(), 1, "one field");
+        assert_eq!(
+            before, after,
+            "the error arriving remounted nothing, so the field keeps its text"
+        );
     }
 }

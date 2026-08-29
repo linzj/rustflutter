@@ -3460,59 +3460,73 @@ impl StatefulComponent for TextField {
                 );
             });
 
+            // The position under the pointer, which three gestures ask for: a
+            // tap, a finger sliding over the text without lifting, and a mouse
+            // drag marking out a run. Made once and shared. `None` until the
+            // field has painted, the lines being what the walk reads.
+            let position_sink = lines_sink.clone();
+            let position_shown = shown.text.clone();
+            let position_real = real_text.clone();
+            let position_at: Rc<dyn Fn(Offset) -> Option<i32>> =
+                Rc::new(move |local: Offset| -> Option<i32> {
+                    let layout = position_sink.borrow().clone()?;
+                    // The pointer's place in the field is its place in the
+                    // content once the scroll is added back: paint drew the
+                    // content `scroll` up and to the left of the field.
+                    let at =
+                        Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
+                    let measure = |run: &str| {
+                        // The field's own measurement, so the position under
+                        // the pointer is the position on screen.
+                        if run.is_empty() {
+                            0.0
+                        } else {
+                            painting::shape(
+                                run,
+                                &layout.style,
+                                None,
+                                false,
+                                f32::MAX / 4.0,
+                                layout.text_scale,
+                            )
+                            .max_intrinsic_width()
+                        }
+                    };
+                    let byte = caret_position_at(
+                        &position_shown,
+                        &layout.lines,
+                        layout.line_height,
+                        at,
+                        &measure,
+                    );
+                    // The lines are ranges of the text as drawn -- bullets,
+                    // for an obscured field -- while the platform counts
+                    // UTF-16 units of the text as typed. The two have a
+                    // character for each of the other's characters, so the
+                    // character index crosses and the units are counted on the
+                    // real text.
+                    let character = position_shown[..byte].chars().count();
+                    Some(
+                        position_real
+                            .chars()
+                            .take(character)
+                            .map(|c| c.len_utf16() as i32)
+                            .sum(),
+                    )
+                });
+
             // The tap handler, made fresh on every build because the region
             // consumes it. A tap does what upstream's `handleTap` ->
             // `selectPosition` does: the caret goes to the position under the
             // finger, and the field takes the keyboard.
-            let tap_sink = lines_sink.clone();
             let tap_state = tap_handle.clone();
-            let tapped_shown = shown.text.clone();
-            let tapped_real = real_text.clone();
             // Placing the caret, which two gestures ask for: a tap, and a
             // finger sliding over the text without lifting.
+            let caret_at = Rc::clone(&position_at);
             let place_caret: Rc<dyn Fn(Offset)> = Rc::new(move |local: Offset| {
-                let Some(layout) = tap_sink.borrow().clone() else {
+                let Some(position) = caret_at(local) else {
                     return;
                 };
-                // The pointer's place in the field is its place in the
-                // content once the scroll is added back: paint drew the
-                // content `scroll` up and to the left of the field.
-                let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
-                let measure = |run: &str| {
-                    // The field's own measurement, so the position under the
-                    // finger is the position on screen.
-                    if run.is_empty() {
-                        0.0
-                    } else {
-                        painting::shape(
-                            run,
-                            &layout.style,
-                            None,
-                            false,
-                            f32::MAX / 4.0,
-                            layout.text_scale,
-                        )
-                        .max_intrinsic_width()
-                    }
-                };
-                let byte = caret_position_at(
-                    &tapped_shown,
-                    &layout.lines,
-                    layout.line_height,
-                    at,
-                    &measure,
-                );
-                // The lines are ranges of the text as drawn -- bullets, for an
-                // obscured field -- while the platform counts UTF-16 units of
-                // the text as typed. The two have a character for each of the
-                // other's characters, so the character index crosses and the
-                // units are counted on the real text.
-                let character = tapped_shown[..byte].chars().count();
-                let position: i32 = tapped_real
-                    .chars()
-                    .take(character)
-                    .map(|c| c.len_utf16() as i32)
-                    .sum();
                 // The selection first and the focus second: a field that was
                 // not being edited opens its session from the state as it now
                 // stands, so the caret is where the reader tapped from the
@@ -3533,6 +3547,40 @@ impl StatefulComponent for TextField {
                 });
                 crate::focus::focus(id);
             });
+
+            // Selecting the run a mouse drag spans -- upstream's
+            // `onDragSelectionStart`/`onDragSelectionUpdate` for a precise
+            // pointer, which is the same on every desktop platform:
+            //
+            //     renderEditable.selectPositionAt(
+            //         from: dragStartGlobalPosition, to: details.globalPosition,
+            //         cause: SelectionChangedCause.drag);
+            //
+            // The base pins where the press began and the extent follows the
+            // pointer, which is what highlights. A touch does the opposite --
+            // the caret slides and the selection stays collapsed -- and keeps
+            // its own handler below.
+            let drag_at = Rc::clone(&position_at);
+            let drag_state = handle.clone();
+            let select_from_press: Rc<dyn Fn(Offset, Offset)> =
+                Rc::new(move |origin: Offset, local: Offset| {
+                    let (Some(base), Some(extent)) = (drag_at(origin), drag_at(local)) else {
+                        return;
+                    };
+                    drag_state.set_state(move |state| {
+                        state.value.selection_base = base;
+                        state.value.selection_extent = extent;
+                        // A drag replaces the selection the way a tap throws
+                        // it away: the bar goes down with the old one.
+                        state.toolbar_shown = false;
+                        if let Some(connection) = &state.connection {
+                            if connection.is_attached() {
+                                connection.set_editing_state(&state.value);
+                            }
+                        }
+                    });
+                    crate::focus::focus(id);
+                });
 
             // Selecting the word under a long press. Upstream's Android arm
             // of `TextSelectionGestureDetectorBuilder.onSingleLongTapStart`:
@@ -3652,7 +3700,8 @@ impl StatefulComponent for TextField {
                 .with_report_selection(report_selection.clone())
                 .with_lines_sink(lines_sink.clone());
             // The press's origin, so a slide can be told from a scroll by the
-            // shape of the travel rather than by who won the gesture.
+            // shape of the travel rather than by who won the gesture, and so a
+            // mouse drag knows where its selection began.
             let press_origin: Rc<std::cell::Cell<Option<Offset>>> =
                 Rc::new(std::cell::Cell::new(None));
             let down_origin = Rc::clone(&press_origin);
@@ -3660,6 +3709,7 @@ impl StatefulComponent for TextField {
             let dragged = Rc::clone(&place_caret);
             let tapped = Rc::clone(&place_caret);
             let long_pressed = Rc::clone(&select_word);
+            let mouse_dragged = Rc::clone(&select_from_press);
             let secondary_caret = Rc::clone(&place_caret);
             let secondary_state = handle.clone();
             RenderPointerRegion::new(id, field).with_handlers(
@@ -3683,22 +3733,30 @@ impl StatefulComponent for TextField {
                     .with_pointer_down(move |event| {
                         down_origin.set(Some(event.local_position));
                     })
-                    // The caret follows a finger that stays down and slides
-                    // over the text. Upstream's `onDragSelectionUpdate`, in
-                    // the branch a touch on Android reaches:
+                    // What a slide over the text does depends on the pointer.
+                    //
+                    // A **touch** moves the caret and keeps the selection
+                    // collapsed. Upstream's `onDragSelectionUpdate`, in the
+                    // branch a touch on Android reaches:
                     //
                     //     case PointerDeviceKind.touch:
                     //       if (renderEditable.hasFocus) {
                     //         renderEditable.selectPositionAt(
                     //             from: details.globalPosition, cause: drag);
                     //
-                    // -- the caret goes to where the finger is now and the
-                    // selection stays collapsed, which is not what the same
-                    // gesture does with a mouse or on a desktop platform:
-                    // there it selects from where the drag began to where it
-                    // is, and that is a different feature. So this is for a
-                    // touch, and only when the field already has the focus,
-                    // exactly as upstream has it.
+                    // -- the caret goes to where the finger is now, and only
+                    // when the field already has the focus, exactly as
+                    // upstream has it.
+                    //
+                    // A **mouse** does the other thing upstream lists for the
+                    // same gesture: it selects the run from where the press
+                    // began to where the pointer is (`selectPositionAt(from:
+                    // dragStart, to: current)`), which is what highlights.
+                    // No focus question is asked -- a drag that begins on an
+                    // unfocused field selects, and takes the keyboard doing
+                    // it -- and no direction is either: a mouse is precise,
+                    // so a vertical drag in a multiline field is a selection
+                    // across lines, never a scroll.
                     //
                     // **The mechanism is not upstream's.** Upstream installs a
                     // `TapAndHorizontalDragGestureRecognizer` on Android and
@@ -3711,31 +3769,44 @@ impl StatefulComponent for TextField {
                     // would make the field the innermost region wanting drags
                     // and a form would stop scrolling under the finger.
                     //
-                    // So the same rule is applied where the crate can apply
-                    // it: raw pointer moves, which reach every region on the
-                    // hit-test path whatever the arena decides, filtered to
-                    // the sideways travel that recogniser would have accepted.
-                    // Measured from where the press began rather than between
-                    // events, so a scroll does not hand the caret over on the
-                    // one frame the finger wanders sideways.
+                    // So the same rules are applied where the crate can apply
+                    // them: raw pointer moves, which reach every region on the
+                    // hit-test path whatever the arena decides. The touch arm
+                    // is filtered to the sideways travel that recogniser would
+                    // have accepted, measured from where the press began
+                    // rather than between events, so a scroll does not hand
+                    // the caret over on the one frame the finger wanders
+                    // sideways. The mouse arm needs no such filter -- a mouse
+                    // drag is never the form's scroll -- only the primary
+                    // button still being held (`buttons` bit 0), a hover not
+                    // being a drag.
                     .with_pointer_move(move |event| {
-                        if event.kind != crate::gestures::PointerKind::Touch {
-                            return;
-                        }
-                        if !crate::focus::has_focus(id) {
-                            return;
-                        }
                         let Some(origin) = move_origin.get() else {
                             return;
                         };
-                        let travel = Offset::new(
-                            event.local_position.dx - origin.dx,
-                            event.local_position.dy - origin.dy,
-                        );
-                        if travel.dx.abs() <= travel.dy.abs() {
-                            return;
+                        match event.kind {
+                            crate::gestures::PointerKind::Touch => {
+                                if !crate::focus::has_focus(id) {
+                                    return;
+                                }
+                                let travel = Offset::new(
+                                    event.local_position.dx - origin.dx,
+                                    event.local_position.dy - origin.dy,
+                                );
+                                if travel.dx.abs() <= travel.dy.abs() {
+                                    return;
+                                }
+                                dragged(event.local_position);
+                            }
+                            crate::gestures::PointerKind::Mouse
+                            | crate::gestures::PointerKind::Trackpad => {
+                                if event.buttons & 1 == 0 {
+                                    return;
+                                }
+                                mouse_dragged(origin, event.local_position);
+                            }
+                            _ => {}
                         }
-                        dragged(event.local_position);
                     }),
             )
         });
@@ -6537,6 +6608,73 @@ mod tests {
         drop(tree);
     }
 
+    #[test]
+    fn a_mouse_drag_selects_from_where_the_press_began() {
+        // Upstream's `onDragSelectionUpdate` for a precise pointer:
+        // `selectPositionAt(from: dragStart, to: current)` -- the base pins
+        // where the press began and the extent follows the pointer, which is
+        // what highlights the run. The stub measures every run as zero wide
+        // and every line as zero tall, so the lines are decided by y and the
+        // offsets within one lean earliest, as in
+        // `a_tap_puts_the_caret_where_the_finger_was`.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(TextField::new(1).multiline()));
+        assert!(crate::focus::focus(1));
+        let id = client_id(&_messenger);
+        _messenger.deliver(
+            "flutter/textinput",
+            &state_message(id, "ab\ncd", 5, 5, (-1, -1)),
+            0,
+        );
+        let root = pump(&mut tree);
+
+        // Press on the first line, drag onto the second, let go. A mouse's
+        // pan slop is two pixels, so forty of travel is no tap.
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(
+            &root,
+            &mouse_event(crate::gestures::PointerChange::Down, 10.0, 0.0, 0.0, 0.0, 1),
+        );
+        router.dispatch(
+            &root,
+            &mouse_event(crate::gestures::PointerChange::Move, 10.0, 40.0, 0.0, 40.0, 1),
+        );
+        router.dispatch(
+            &root,
+            &mouse_event(crate::gestures::PointerChange::Up, 10.0, 40.0, 0.0, 0.0, 0),
+        );
+
+        let drag = last_selection(&_messenger).expect("a selection");
+        assert_ne!(drag.0, drag.1, "a drag marks out a run rather than collapsing");
+        assert!(drag.0 < 3, "the base stayed where the press began: {}", drag.0);
+        assert!(
+            drag.1 >= 3,
+            "the extent followed the pointer onto the second line: {}",
+            drag.1
+        );
+
+        // A move without the primary button is a hover, and a hover selects
+        // nothing: the press is over, so the run the drag made stands.
+        router.dispatch(
+            &root,
+            &mouse_event(crate::gestures::PointerChange::Down, 10.0, 0.0, 0.0, 0.0, 1),
+        );
+        router.dispatch(
+            &root,
+            &mouse_event(crate::gestures::PointerChange::Move, 10.0, 40.0, 0.0, 40.0, 0),
+        );
+        let hover = last_selection(&_messenger).expect("a selection");
+        assert_eq!(
+            hover, drag,
+            "the button being up made the move a hover: {hover:?}"
+        );
+        drop(tree);
+    }
+
     /// Rebuilds, lays out and paints, and hands back the render tree it
     /// produced: the frame the tap will act on is the frame the reader can
     /// see.
@@ -6576,6 +6714,25 @@ mod tests {
             scroll_delta: Offset::ZERO,
             pressure: 1.0,
             local_position: Offset::new(x, y),
+        }
+    }
+
+    /// A mouse event, in the shape the shell delivers them: the primary
+    /// button's bit in `buttons` says whether the move is a drag or a hover.
+    /// The delta is what the router's slop is measured from, so a drag's
+    /// moves carry their travel.
+    fn mouse_event(
+        change: crate::gestures::PointerChange,
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+        buttons: i32,
+    ) -> crate::gestures::PointerEvent {
+        crate::gestures::PointerEvent {
+            kind: crate::gestures::PointerKind::Mouse,
+            buttons,
+            ..event(change, x, y, dx, dy)
         }
     }
 
