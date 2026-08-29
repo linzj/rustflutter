@@ -134,6 +134,26 @@ pub fn column_width(texts: &[String], style: &TextStyle) -> f32 {
         .fold(0.0_f32, f32::max)
 }
 
+/// The same over borrowed strings. Upstream's
+/// `CupertinoTimerPicker._measureLabelsMaxWidth`, which is the identical
+/// measurement under a second name because the labels arrive as a
+/// `List<String?>` rather than as the date picker's built strings.
+///
+/// Upstream starts its running maximum at `double.negativeInfinity` and skips
+/// nulls, so an all-null list would come back as negative infinity. There are
+/// no nulls to skip here -- a locale that has no word for a unit gives an
+/// empty list, which measures zero, and zero is the width a missing label
+/// should take.
+pub fn labels_width(labels: &[&str], style: &TextStyle) -> f32 {
+    labels
+        .iter()
+        .map(|text| {
+            crate::painting::shape(text, style, None, false, f32::MAX / 4.0, 1.0)
+                .max_intrinsic_width()
+        })
+        .fold(0.0_f32, f32::max)
+}
+
 // -- Where the columns go ------------------------------------------------------
 
 /// Upstream `_DatePickerLayoutDelegate`: every column padded by
@@ -1481,9 +1501,14 @@ impl TimerPickerMetrics {
             // the alphabetic baseline of a single line sits at the ascent,
             // which for these one-line labels is the same measurement.
             number_label_baseline: paragraph.height() * 0.8,
-            hour_label_width: column_width(&["hour".to_string(), "hours".to_string()], style),
-            minute_label_width: column_width(&["min.".to_string()], style),
-            second_label_width: column_width(&["sec.".to_string()], style),
+            // Upstream's `_measureLabelsMaxWidth(localizations.timerPicker*Labels)`
+            // -- the widest of every form, not the one on screen. These used
+            // to be three string literals written out here, a second copy of
+            // words that already had a home in the localizations; renaming a
+            // label there would have left the column measured for the old one.
+            hour_label_width: labels_width(&L10n::TIMER_PICKER_HOUR_LABELS, style),
+            minute_label_width: labels_width(&L10n::TIMER_PICKER_MINUTE_LABELS, style),
+            second_label_width: labels_width(&L10n::TIMER_PICKER_SECOND_LABELS, style),
         }
     }
 }
@@ -2521,7 +2546,88 @@ mod cupertino_menu_item_tests {
 
 #[cfg(test)]
 mod timer_picker_mode_tests {
-    use super::{CupertinoTimerPicker, CupertinoTimerPickerMode, TimerPickerUnit};
+    use super::{
+        CupertinoTimerPicker, CupertinoTimerPickerMode, TIMER_PICKER_MAGNIFICATION,
+        TimerPickerUnit, labels_width, picker_text_style,
+    };
+    use crate::cupertino_app::CupertinoLocalizationEn as L10n;
+    use crate::cupertino_app::DefaultCupertinoLocalizations as Default10n;
+    use crate::engine::Color;
+
+    #[test]
+    fn the_hour_column_is_sized_for_hours_while_the_wheel_says_hour() {
+        // The whole reason `timerPickerHourLabels` exists. Sizing the column
+        // to the label on screen would fit "hour" at 1 and then have to grow
+        // the moment the reader spun to 2 -- the number beside it sliding
+        // sideways as they scrolled, which is the one thing a spinner must
+        // not do.
+        let style = picker_text_style(Color::BLACK, TIMER_PICKER_MAGNIFICATION);
+        let measured = labels_width(&L10n::TIMER_PICKER_HOUR_LABELS, &style);
+        let singular = labels_width(&[Default10n::timer_picker_hour_label(1)], &style);
+        let plural = labels_width(&[Default10n::timer_picker_hour_label(2)], &style);
+
+        assert!(singular < plural, "'hours' is the wider word");
+        assert_eq!(measured, plural, "the column takes the wider one");
+        assert!(measured > singular, "and not the one on screen at 1");
+    }
+
+    #[test]
+    fn the_pickers_own_metrics_read_the_shared_lists_and_not_a_copy() {
+        // The test above measures the helper; this one measures the wiring,
+        // which is the part that was actually wrong. A private
+        // `["hour", "hours"]` here would pass every check on the helper and
+        // still drift the moment the localizations were reworded -- the first
+        // version of this sweep replaced the list with `["hour"]` and nothing
+        // went red.
+        let style = picker_text_style(Color::BLACK, TIMER_PICKER_MAGNIFICATION);
+        let metrics = super::TimerPickerMetrics::measure(&style);
+        assert_eq!(
+            metrics.hour_label_width,
+            labels_width(&L10n::TIMER_PICKER_HOUR_LABELS, &style)
+        );
+        assert_eq!(
+            metrics.minute_label_width,
+            labels_width(&L10n::TIMER_PICKER_MINUTE_LABELS, &style)
+        );
+        assert_eq!(
+            metrics.second_label_width,
+            labels_width(&L10n::TIMER_PICKER_SECOND_LABELS, &style)
+        );
+        // And that the hour is genuinely the wider measurement, so the
+        // equality above is not two zeroes agreeing.
+        assert!(metrics.hour_label_width > labels_width(&["hour"], &style));
+    }
+
+    #[test]
+    fn a_unit_that_does_not_inflect_measures_the_same_either_way() {
+        // Minutes and seconds have one form, so the list and the label agree
+        // and there is nothing for the maximum to choose between. That is why
+        // a one-entry list is not a bug: it is English.
+        let style = picker_text_style(Color::BLACK, TIMER_PICKER_MAGNIFICATION);
+        for (list, label) in [
+            (
+                &L10n::TIMER_PICKER_MINUTE_LABELS[..],
+                Default10n::timer_picker_minute_label(7),
+            ),
+            (
+                &L10n::TIMER_PICKER_SECOND_LABELS[..],
+                Default10n::timer_picker_second_label(7),
+            ),
+        ] {
+            assert_eq!(labels_width(list, &style), labels_width(&[label], &style));
+        }
+    }
+
+    #[test]
+    fn an_empty_label_list_measures_zero_rather_than_negative_infinity() {
+        // Upstream starts its running maximum at `double.negativeInfinity`
+        // and skips nulls, so a list of nothing but nulls comes back as
+        // negative infinity. There are no nulls here; a locale with no word
+        // for a unit gives an empty list, and zero is the width a missing
+        // label should take.
+        let style = picker_text_style(Color::BLACK, TIMER_PICKER_MAGNIFICATION);
+        assert_eq!(labels_width(&[], &style), 0.0);
+    }
 
     #[test]
     fn the_minute_is_in_every_mode() {

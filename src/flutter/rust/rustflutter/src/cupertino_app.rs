@@ -439,6 +439,55 @@ impl DefaultCupertinoLocalizations {
     pub fn timer_picker_second_label(_second: u32) -> &'static str {
         "sec."
     }
+
+    /// Upstream `timerPickerHourLabels` / `timerPickerMinuteLabels` /
+    /// `timerPickerSecondLabels`: **every** form the label above can take,
+    /// not the one it is taking.
+    ///
+    /// They exist for one job, and it is a layout job. `CupertinoTimerPicker`
+    /// measures its label column with
+    ///
+    /// ```dart
+    /// hourLabelWidth = _measureLabelsMaxWidth(localizations.timerPickerHourLabels, textStyle);
+    /// ```
+    ///
+    /// -- the widest of *all* of them. Measuring the label currently on screen
+    /// instead would size the column to "hour" while the wheel sits on 1, and
+    /// then the column would have to grow the moment the reader spun to 2:
+    /// the number beside it would shift sideways as they scrolled, which is
+    /// the one thing a spinner must not do.
+    ///
+    /// So the singular list is not an oversight. English minutes and seconds
+    /// are abbreviations that do not inflect, so their lists hold one entry;
+    /// hours inflect, so that list holds two. A language whose hour has six
+    /// forms would return six here and the column would be sized for the
+    /// longest of them.
+    ///
+    /// [`DefaultCupertinoLocalizations::labels_cover_every_form`] is the
+    /// invariant that keeps these lists honest.
+    pub const TIMER_PICKER_HOUR_LABELS: [&'static str; 2] = ["hour", "hours"];
+    pub const TIMER_PICKER_MINUTE_LABELS: [&'static str; 1] = ["min."];
+    pub const TIMER_PICKER_SECOND_LABELS: [&'static str; 1] = ["sec."];
+
+    /// Whether the three lists above really cover what the three functions
+    /// above can return, over `0..=count`.
+    ///
+    /// Upstream cannot check this -- the list and the function are separate
+    /// overrides in every one of its eighty-odd locale classes -- and this
+    /// port had the same pair written twice with nothing between them: the
+    /// picker's own metrics carried a private `["hour", "hours"]` of their
+    /// own, so renaming a label would have left the column measured for the
+    /// old word and nothing would have said so.
+    pub fn labels_cover_every_form(count: u32) -> bool {
+        (0..=count).all(|n| {
+            DefaultCupertinoLocalizations::TIMER_PICKER_HOUR_LABELS
+                .contains(&DefaultCupertinoLocalizations::timer_picker_hour_label(n))
+                && DefaultCupertinoLocalizations::TIMER_PICKER_MINUTE_LABELS
+                    .contains(&DefaultCupertinoLocalizations::timer_picker_minute_label(n))
+                && DefaultCupertinoLocalizations::TIMER_PICKER_SECOND_LABELS
+                    .contains(&DefaultCupertinoLocalizations::timer_picker_second_label(n))
+        })
+    }
 }
 
 /// Upstream `CupertinoLocalizationEn`, the English member of
@@ -548,6 +597,16 @@ impl CupertinoLocalizationEn {
         DefaultCupertinoLocalizations::timer_picker_second_label(second)
     }
 
+    /// The generated English class overrides these three the same way it
+    /// overrides the singular labels: with the same words. Forwarded rather
+    /// than repeated, so the pair cannot drift apart here either.
+    pub const TIMER_PICKER_HOUR_LABELS: [&'static str; 2] =
+        DefaultCupertinoLocalizations::TIMER_PICKER_HOUR_LABELS;
+    pub const TIMER_PICKER_MINUTE_LABELS: [&'static str; 1] =
+        DefaultCupertinoLocalizations::TIMER_PICKER_MINUTE_LABELS;
+    pub const TIMER_PICKER_SECOND_LABELS: [&'static str; 1] =
+        DefaultCupertinoLocalizations::TIMER_PICKER_SECOND_LABELS;
+
     /// Both orders are the generated class's, and both are the default
     /// class's too.
     pub fn date_picker_date_order() -> DatePickerDateOrder {
@@ -638,6 +697,42 @@ mod tests {
         assert_eq!(
             DefaultCupertinoLocalizations::timer_picker_second_label(1),
             "sec."
+        );
+    }
+
+    #[test]
+    fn the_label_lists_cover_every_form_the_labels_can_take() {
+        // The invariant the picker's column width rests on. Upstream cannot
+        // check it -- the list and the function are separate overrides in
+        // every locale class -- and this port had the pair written twice with
+        // nothing between them, so renaming a label would have left the
+        // column measured for the old word.
+        assert!(DefaultCupertinoLocalizations::labels_cover_every_form(99));
+        assert!(CupertinoLocalizationEn::TIMER_PICKER_HOUR_LABELS.len() == 2);
+    }
+
+    #[test]
+    fn the_singular_lists_are_a_fact_about_english_not_an_omission() {
+        // English minutes and seconds are abbreviations that do not inflect,
+        // so one entry each is the whole truth; hours inflect, so two. A
+        // language whose hour had six forms would list six and the column
+        // would be sized for the longest.
+        assert_eq!(
+            DefaultCupertinoLocalizations::TIMER_PICKER_HOUR_LABELS,
+            ["hour", "hours"]
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::TIMER_PICKER_MINUTE_LABELS,
+            ["min."]
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::TIMER_PICKER_SECOND_LABELS,
+            ["sec."]
+        );
+        // The generated English class forwards rather than repeating them.
+        assert_eq!(
+            CupertinoLocalizationEn::TIMER_PICKER_HOUR_LABELS,
+            DefaultCupertinoLocalizations::TIMER_PICKER_HOUR_LABELS
         );
     }
 

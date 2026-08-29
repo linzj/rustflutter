@@ -20601,3 +20601,81 @@ vacuous 10，unread_theme_fields 2，stale_engines 全部不落后。**十六把
 表（8826 和 1324 个成员，是数据不是行为），真正的队头是 `CupertinoLocalizations`
 2/46——而这一轮刚把 `unread_strings` 的 Cupertino 那张表接上，两件事正好碰头。先按行为
 查：那 46 个成员里哪些是这个端口真的要说的话。
+
+## 第 292 轮：计时选择器按语言可能说的最宽的词排版，不是按此刻说的那个
+
+尺子全绿之后回 `depth.py` 队头。撇开 `Icons` 8826 和 `CupertinoIcons` 1324（纯图标表,
+是数据不是行为），真队头是 `CupertinoLocalizations` **2/46**。
+
+逐个成员对过去，**13 个在整个 crate 里连名字都没有**。其中最硬的一组是三个复数词表：
+`timerPickerHourLabels` / `timerPickerMinuteLabels` / `timerPickerSecondLabels`。
+
+### 它们只为一件事存在，而且是排版的事
+
+    hourLabelWidth = _measureLabelsMaxWidth(localizations.timerPickerHourLabels, textStyle);
+
+取**全部**词形里最宽的那个。按屏幕上此刻那个词量的话，轮子停在 1 时列按 "hour" 收窄,
+读者一转到 2 列就得变宽——**旁边的数字会随着滚动横向平移**，而这正是一个转轮绝对不能
+做的事。
+
+所以单元素的列表不是漏写：英语的分和秒是不变形的缩写，各一条；小时变形，两条。某个
+语言的小时有六个形态就返回六个，列按最长的那个排。
+
+### 端口的行为对了，但那批词被写了两遍
+
+`TimerPickerMetrics::measure` 里是三个匿名字面量：
+
+    hour_label_width: column_width(&["hour".to_string(), "hours".to_string()], style),
+    minute_label_width: column_width(&["min.".to_string()], style),
+    second_label_width: column_width(&["sec.".to_string()], style),
+
+而同样这批词在 `DefaultCupertinoLocalizations::timer_picker_*_label(n)` 里已经有家了。
+**两份互不相识的副本**：把本地化里的词改个名，列还按旧词量着，没有任何东西会出声。
+上游正好有把两者接起来的那三个 getter——缺的不是行为，是**中间那个名字**。
+
+三个列表落到本地化类上（英文生成类转发而不是重抄），metrics 改读它们,
+并加了一条上游查不了的不变式：
+
+    labels_cover_every_form(n)：timer_picker_*_label(0..=n) 的每个返回值都必须在对应列表里
+
+上游查不了这条，因为在它那八十多个 locale 类里，列表和函数是两个各自独立的 override。
+
+### 改错扫描抓出我自己测试的洞
+
+第一版八条改错里，"**列改成按屏幕上那个词量**"这条**没落红**——因为我测的是
+`labels_width` 这个辅助函数，**没测我真正改的那处接线**。`TimerPickerMetrics` 是私有的,
+但测试模块在同一个文件里够得着。补了一条直接读 metrics 的测试，那条改错立刻落红。
+
+**测辅助函数不等于测接线。** 助手对了、接线换成私有副本，八条里七条照样绿。
+
+另一条幸存的是我瞄错了函数：它改的是 `column_width`（日期选择器的辅助函数，这一轮没
+碰），`labels_width` 的同款改动确实落红。如实记下：`column_width` 传空切片这条边界
+没有测试，是这一轮之前就有的，日期选择器不会传空。
+
+**八条承重规则，七条如设计，第八条是错瞄，补测之后全红。**
+
+### 队头那个比值本身动不了，说清楚
+
+改完之后 `CupertinoLocalizations` 还是 **2/46**。`depth.py` 严格按 **Rust 类型名**归属
+成员，而端口忠实地把成员实现在具体类 `DefaultCupertinoLocalizations` 上——上游的
+`CupertinoLocalizations` 本来就是 `abstract class`。**这个比值永远不会动**,
+它会一直霸在队头，把后面每一轮往一个不存在的形状上引。
+
+工具为这种情况留了 `depth_examined.json`。**但这一轮不往里写**：它自己的文档说"那是一份
+主张，不是压制清单"，而底下确实还有 **10 个真缺的成员**，写进去就是拿命名假象把真活
+埋掉。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 2,
+hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engines 全部不
+落后。十六把尺子全部 exit 0。
+门：6045 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：接着清 `CupertinoLocalizations` 剩下的 10 个（比值不会动，按名单走）——
+`datePickerStandaloneMonth`（俄语里月份跟在日后面用属格、独立时用主格，所以它和
+`datePickerMonth` 是两个词）、`datePickerHourSemanticsLabel` /
+`datePickerMinuteSemanticsLabel` / `tabSemanticsLabel` /
+`expansionTileExpandedTapHint` / `expansionTileCollapsedTapHint`（读屏器念出来的话,
+数字 "3" 单独念是没有意义的）、`clearButtonLabel` / `noSpellCheckReplacementsLabel` /
+`searchTextFieldPlaceholderLabel` / `backButtonLabel`。这五个控件端口里都已经有了,
+现在它们没有话可说。先按行为查：从读屏器那一组开始。
