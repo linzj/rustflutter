@@ -50,11 +50,12 @@ import os
 import re
 import sys
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CRATE = os.path.join(REPO, 'src', 'flutter', 'rust', 'rustflutter', 'src')
+import paths
+
+REPO = paths.REPO
+CRATE = paths.SRC
 THEMES = os.path.join(CRATE, 'component_themes.rs')
-UPSTREAM = os.path.join(
-    os.path.dirname(REPO), 'flutter', 'packages', 'flutter', 'lib', 'src')
+UPSTREAM = paths.upstream_src()
 
 
 def deprecated_upstream():
@@ -63,8 +64,11 @@ def deprecated_upstream():
     Read from the declaration rather than from a list here, so the answer
     follows upstream instead of following a note somebody wrote once.
     """
-    if not os.path.isdir(UPSTREAM):
-        return set()
+    # No `isdir` guard returning an empty set: this ran for a whole round
+    # against a tree that was not there, answering "nothing is deprecated
+    # upstream" and so reporting `ButtonBarTheme` -- which upstream *has*
+    # deprecated -- as a theme nobody reads. `paths.upstream_src` raises
+    # instead.
     out = set()
     for root, _dirs, files in os.walk(UPSTREAM):
         for name in files:

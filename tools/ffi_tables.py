@@ -93,10 +93,12 @@ import os
 import re
 import sys
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORT = os.path.join(REPO, 'src', 'flutter', 'rust', 'rustflutter', 'src')
+import paths
+
+REPO = paths.REPO
+PORT = paths.SRC
 FFI = os.path.join(REPO, 'src', 'flutter', 'rust')
-ENGINE = os.path.join(os.path.dirname(REPO), 'flutter', 'engine', 'src', 'flutter')
+ENGINE = paths.upstream_engine()
 
 # `pub enum Name {` with explicit discriminants, and the doc above it.
 # The doc, then any number of attribute lines -- `#[derive(...)]` sits between
@@ -257,7 +259,9 @@ def cpp_enum(name):
                     seen.add(entry.group(1))
                     numbered[running] = entry.group(1)
                     running += 1
-                return numbered, os.path.relpath(path, os.path.dirname(REPO))
+                # Relative to the engine root: the two checkouts are no longer
+                # siblings, and `relpath` across drives raises on Windows.
+                return numbered, os.path.relpath(path, ENGINE)
             if followed is None:
                 hop = alias.search(text)
                 if hop:

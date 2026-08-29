@@ -75,16 +75,16 @@ Usage:
 """
 import os
 import re
+import sys
 
 CRATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                      '..', 'src', 'flutter', 'rust', 'rustflutter', 'src')
 HOME = os.path.join(CRATE, 'material_app.rs')
-UPSTREAM = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                        'flutter', 'packages', 'flutter', 'lib', 'src',
-                        'material', 'material_localizations.dart')
-WIDGETS_UPSTREAM = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), '..', '..', 'flutter',
-    'packages', 'flutter', 'lib', 'src', 'widgets', 'localizations.dart')
+import paths
+
+_UPSTREAM_SRC = paths.upstream_src()
+UPSTREAM = os.path.join(_UPSTREAM_SRC, 'material', 'material_localizations.dart')
+WIDGETS_UPSTREAM = os.path.join(_UPSTREAM_SRC, 'widgets', 'localizations.dart')
 WIDGETS_HOME = os.path.join(CRATE, 'localizations.rs')
 
 # `fn snake_name(&self) -> &str { "Value" }`, however rustfmt laid it out.
@@ -102,9 +102,13 @@ def camel(constant):
 
 
 def upstream_strings():
-    """Upstream's plain-literal getters, by name. Empty if it is not there."""
+    """Upstream's plain-literal getters, by name."""
     if not os.path.exists(UPSTREAM):
-        return None
+        # The root is there -- `paths.upstream_src` insisted on it -- so a
+        # missing *file* means upstream renamed or moved it, which is a
+        # finding about this port's bearings and not a reason to compare
+        # nothing and say so in passing.
+        raise SystemExit('upstream no longer has %s' % UPSTREAM)
     text = open(UPSTREAM, encoding='utf-8', errors='replace').read()
     return {m.group('name'): m.group('value').replace("\\'", "'")
             for m in GETTER.finditer(text)}
@@ -243,12 +247,14 @@ if upstream is not None:
 
 print('%d localization strings, %d with nothing to say them, %d disagreeing '
       'with upstream' % (len(strings), len(unread), len(disagreeing)))
-if upstream is None:
-    print('(upstream not found, so nothing was compared)')
-else:
-    print('%d not compared -- upstream builds them rather than declaring a '
-          'literal; %d whose upstream getter could not be found'
-          % (len(uncompared), len(unresolved)))
+print('%d not compared -- upstream builds them rather than declaring a '
+      'literal; %d whose upstream getter could not be found'
+      % (len(uncompared), len(unresolved)))
+# Every ruler here has to be gateable. This one printed its findings and
+# exited 0 whatever it found, which makes it a report rather than a ruler:
+# a reworded Cupertino label showed up as "1 disagreeing" and the process
+# still succeeded, so nothing checking exit codes would ever have noticed.
+PROBLEMS = len(unread) + len(disagreeing) + len(unresolved)
 print()
 for name, value, theirs in disagreeing:
     print('  DISAGREES %-28s port %-22s upstream "%s"'
@@ -263,12 +269,12 @@ for name, value in strings:
 
 # -- The widgets table ------------------------------------------------------
 
-widgets_upstream = None
-if os.path.exists(WIDGETS_UPSTREAM):
-    widgets_upstream = {
-        m.group('name'): m.group('value').replace("\\'", "'")
-        for m in GETTER.finditer(
-            open(WIDGETS_UPSTREAM, encoding='utf-8', errors='replace').read())}
+if not os.path.exists(WIDGETS_UPSTREAM):
+    raise SystemExit('upstream no longer has %s' % WIDGETS_UPSTREAM)
+widgets_upstream = {
+    m.group('name'): m.group('value').replace("\\'", "'")
+    for m in GETTER.finditer(
+        open(WIDGETS_UPSTREAM, encoding='utf-8', errors='replace').read())}
 
 widgets_port = {
     m.group('name'): m.group('value')
@@ -278,9 +284,7 @@ widgets_port = {
 widgets_port.pop('resource_type', None)
 
 print()
-if widgets_upstream is None:
-    print('DefaultWidgetsLocalizations: upstream not found, nothing compared')
-else:
+if True:
     wrong, elsewhere, absent = [], [], []
     for snake, value in sorted(widgets_port.items()):
         getter = camel(snake)
@@ -294,6 +298,7 @@ else:
     print('DefaultWidgetsLocalizations: %d strings, %d disagreeing, %d not on '
           'upstream\'s widgets class, %d of upstream\'s missing here'
           % (len(widgets_port), len(wrong), len(elsewhere), len(absent)))
+    PROBLEMS += len(wrong) + len(elsewhere) + len(absent)
     for snake, ours, theirs in wrong:
         print('  DISAGREES %-24s port "%s"  upstream "%s"' % (snake, ours, theirs))
     for snake, getter in elsewhere:
@@ -313,15 +318,14 @@ else:
 
 CUPERTINO_HOME = os.path.join(CRATE, 'cupertino_app.rs')
 CUPERTINO_UPSTREAM = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), '..', '..', 'flutter',
-    'packages', 'flutter', 'lib', 'src', 'cupertino', 'localizations.dart')
+    _UPSTREAM_SRC, 'cupertino', 'localizations.dart')
 
-cupertino_upstream = None
-if os.path.exists(CUPERTINO_UPSTREAM):
-    cupertino_upstream = {
-        m.group('name'): m.group('value').replace("\\'", "'")
-        for m in GETTER.finditer(
-            open(CUPERTINO_UPSTREAM, encoding='utf-8', errors='replace').read())}
+if not os.path.exists(CUPERTINO_UPSTREAM):
+    raise SystemExit('upstream no longer has %s' % CUPERTINO_UPSTREAM)
+cupertino_upstream = {
+    m.group('name'): m.group('value').replace("\\'", "'")
+    for m in GETTER.finditer(
+        open(CUPERTINO_UPSTREAM, encoding='utf-8', errors='replace').read())}
 
 cupertino_text = open(CUPERTINO_HOME, encoding='utf-8', errors='replace').read()
 cupertino_start = cupertino_text.index('impl DefaultCupertinoLocalizations')
@@ -329,9 +333,7 @@ cupertino_port = {m.group('name'): m.group('value')
                   for m in STRING.finditer(cupertino_text[cupertino_start:])}
 
 print()
-if cupertino_upstream is None:
-    print('DefaultCupertinoLocalizations: upstream not found, nothing compared')
-else:
+if True:
     wrong, elsewhere = [], []
     for snake, value in sorted(cupertino_port.items()):
         getter = camel(snake)
@@ -346,3 +348,6 @@ else:
         print('  DISAGREES %-24s port "%s"  upstream "%s"' % (snake, ours, theirs))
     for snake, getter in elsewhere:
         print('  NO SUCH GETTER UPSTREAM   %-24s looked for %s' % (snake, getter))
+    PROBLEMS += len(wrong) + len(elsewhere)
+
+sys.exit(1 if PROBLEMS else 0)

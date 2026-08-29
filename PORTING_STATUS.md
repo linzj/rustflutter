@@ -20534,3 +20534,70 @@ unread_theme_fields 2，stale_engines 全部不落后。
 `ContentSensitivity`、`PlatformProvidedMenuItemType`，它们的编号会跨出这个 crate（进
 FFI 或进平台通道），而**没有一条写下自己是照着谁排的**。这一轮刚证明了没写下的对应
 关系没人查得了，那 4 条正是同一种账。先按行为查：每个枚举的序号实际被谁读走。
+
+## 第 291 轮：第 288 轮那次清扫漏了一半，因为漏的那一半没写盘符
+
+上一轮的"下一步"是 `wire_enums` 报的 4 条"一个出处都没引"——编号跨出 crate 却没写下
+照着谁排。打开工具第一件事看见的是它的路径：
+
+    DART = os.path.join(os.path.dirname(REPO), 'flutter', 'packages', ...)
+
+`D:\linzjUbuntu2204\flutter` **不存在**。第 288 轮清扫的是写死 `K:` 的工具，靠 grep 盘符
+找的；**这一族根本没写盘符**，它写的是"上游在仓库旁边"——两个 checkout 并排放的时候
+是对的，现在一个在 D 一个在 E。
+
+一次修补，只修了自己找得到的那一半，然后接着报零报了三轮。
+
+### 四把尺子，四个假发现
+
+| 尺子 | 上一轮记的 | 上游插回来之后 |
+|---|---|---|
+| wire_enums | **4 条无出处** | **0 条无出处、0 条乱序**，外加它文档里写的 `_unknown` 私有尾变体那条注记回来了 |
+| ffi_tables | **2 个问题** | **0 problems**（那 2 个是 `BlendMode`/`SemanticsAction` 走裸 cast，引擎树不在就没法核对） |
+| unwired | **1 个主题没有读者** | **0 个**——`ButtonBarTheme` 上游标了 `@Deprecated`，工具的 `deprecated_upstream()` 对着空目录当然读不到 |
+| unread_strings | 44+16/0，Cupertino 那张**整表没比** | 44 + 16 + **10**，全部 0 |
+
+**四条"发现"，四条都是假的。** 上一轮我还照着其中一条排了这一轮的活。
+
+### 尺子自己没有退出码
+
+`unread_strings.py` 是一路 print 到底的脚本，**从头到尾没有 sys.exit**。把一条 Cupertino
+标签改掉，它老老实实打印 `1 disagreeing`——然后 **exit 0**。任何按退出码把门的东西
+永远看不见它。三张表的问题数现在汇总成 `PROBLEMS`，非零就 exit 1；改错验过：改标签
+exit 1，改回来 exit 0。
+
+顺手把"文件找不到就安静略过"的守卫也改响。根目录有 `require_upstream` 兜底了,
+所以单个**文件**不在只可能是上游改名或搬家——那是关于这个端口方位的发现，不是
+"nothing compared" 一句带过的理由。
+
+### 一条等价改错，如实记下
+
+想验 `ffi_tables` 真在读引擎的 C++，把 `TileMode::Clamp => 0` 改成 `=> 7`,
+尺子**不吭声**。差点记成一个洞。去读 `rustflutter_ffi_draw.cc`：
+
+    flutter::DlTileMode ToTileMode(int32_t tile_mode) {
+      switch (tile_mode) {
+        case 1: return kRepeat;
+        case 2: return kMirror;
+        case 3: return kDecal;
+        default: return kClamp;
+      }
+    }
+
+`default: kClamp`。**7 和 0 都落到默认臂，行为一模一样**——尺子是对的，改错是等价的。
+`TileMode` 的零不承重，承重的只有 1/2/3。换成 `Decal => 2` 立刻两条红。等价的那条留在
+扫描里，标着为什么。
+
+**七条承重规则逐条强制改错，七条如设计**（含两条反向断言：把上游根指歪必须让 4 条重新
+变成"无出处"——假象一字不差地复现；等价的那条必须"过"）。
+
+尺子（**这是整套第一次真正对着上游全绿**）：coverage 2107/0 MISSING，constants 208/0/0,
+wire_strings 122/0，**wire_enums 4/0/0**，**ffi_tables 0 problems**，**unwired 48/0**,
+unvaried 0，**unread_strings 44+16+10/0**，unpainted 2，hollow 67/0，stale_notes 13/0,
+vacuous 10，unread_theme_fields 2，stale_engines 全部不落后。**十六把尺子全部 exit 0。**
+门：6039 + 353 通过；doctest 绿。
+
+**下一步**：尺子全绿了，回 `depth.py` 队头。忽略 `Icons`/`CupertinoIcons` 那两个纯图标
+表（8826 和 1324 个成员，是数据不是行为），真正的队头是 `CupertinoLocalizations`
+2/46——而这一轮刚把 `unread_strings` 的 Cupertino 那张表接上，两件事正好碰头。先按行为
+查：那 46 个成员里哪些是这个端口真的要说的话。

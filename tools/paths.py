@@ -22,6 +22,16 @@ Two rules follow, and this file exists to enforce them:
 parent's parent. It cannot be stale while this file is in the tree, and moving
 the checkout to another drive changes nothing.
 
+The *upstream* root cannot be derived that way, and one round of this fix
+tried to have it both ways. Four tools did not write `K:` at all -- they wrote
+`os.path.dirname(REPO)` and then `'flutter'`, which was true while the two
+checkouts sat side by side. A grep for the dead drive letter did not find
+them, so they went on reporting zero for another round: `wire_enums` said "0
+disagreeing with upstream's order" and named four tables as citing nothing,
+which is what an empty upstream looks like from the inside. **A path derived
+from the wrong thing is still a path written down.** Upstream is asked for
+here, by name, or not at all.
+
 **A missing upstream is an error, not a zero.** `require_upstream` raises
 rather than returning a path that will quietly walk to nothing. Tools that
 genuinely can run without upstream should ask with `upstream_root()` and say
@@ -88,3 +98,8 @@ def upstream_ui(root=None):
     return os.path.join(
         root or require_upstream(), 'engine', 'src', 'flutter', 'lib', 'ui'
     )
+
+
+def upstream_engine(root=None):
+    """`engine/src/flutter` -- the engine's own sources, C++ included."""
+    return os.path.join(root or require_upstream(), 'engine', 'src', 'flutter')

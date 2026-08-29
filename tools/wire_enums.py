@@ -86,10 +86,13 @@ import os
 import re
 import sys
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PORT = os.path.join(REPO, 'src', 'flutter', 'rust', 'rustflutter', 'src')
-DART = os.path.join(os.path.dirname(REPO), 'flutter', 'packages', 'flutter', 'lib', 'src')
-ENGINE = os.path.join(os.path.dirname(REPO), 'flutter', 'engine', 'src', 'flutter', 'lib', 'ui')
+import paths
+
+REPO = paths.REPO
+PORT = paths.SRC
+_UPSTREAM = paths.require_upstream()
+DART = paths.upstream_src(_UPSTREAM)
+ENGINE = paths.upstream_ui(_UPSTREAM)
 
 # `pub enum Name {` with whatever doc comment sits above it.
 ENUM = re.compile(
@@ -176,9 +179,13 @@ def dart_enums():
                         if word:
                             cleaned.append(word.group(1))
                     if cleaned:
+                        # Relative to the upstream root, not to a shared
+                        # parent: the two checkouts no longer sit side by
+                        # side, and on Windows `relpath` across drives raises
+                        # rather than falling back to an absolute path.
                         found.setdefault(
                             enum_name,
-                            (cleaned, os.path.relpath(path, os.path.dirname(REPO))))
+                            (cleaned, os.path.relpath(path, _UPSTREAM)))
     return found
 
 
