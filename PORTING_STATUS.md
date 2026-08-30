@@ -26779,3 +26779,51 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 然后回 `shells.py` 的表挑下一个。
 挑之前先跑一次表：这几轮接了 `BottomAppBar`、四个 Chip、三个 list tile 的转换，
 **表应该更短了**，从当前的表头开始看，而不是从记忆里的顺序。
+
+---
+
+## 第 401 轮：抽屉拉开时，后面那一页终于从读屏用户的路上让开了
+
+先把上一轮的“下一步”办掉：`selected_icon_theme` / `unselected_icon_theme`
+**接不了**，写进代码注释——`IconThemeData` 带的是图标的尺寸、颜色、不透明度，
+而本项目**不画图标**（`Destination.mark` 是一两个字符，因为没有图标字体）。
+注释里也写了为什么**不半接**：把颜色读出来涂到 mark 上，
+看起来像"这对字段被尊重了"，而尺寸和不透明度被悄悄丢掉。
+**规则在、宿主未到**，和第 382 轮 `to_properties` 同样的记法。
+
+然后重跑 `shells.py`（**不是凭记忆挑**），从表头往下看，挑中 `BlockSemantics`。
+
+### 又一次"两端齐全、中间没人接"，而这次的后果是安全性质的
+
+`semantics_markers.rs` 的模块文档**开篇就在讲这件事**：
+
+> Exclude 向内看自己的后代。**Block 向外、向后看，看同一个容器里画在它之前的一切。**
+> 一个拉开的抽屉要的是后者——它要挡住的东西不在它下面，在它后面。
+
+`RenderBlockSemanticsBox` 在（只有自己的测试用），
+`BlockSemantics { blocking }` 也在（能设能读）——**中间没有任何东西能包住一个孩子**。
+
+上游 `drawer.dart:708` 把**遮罩**包在 `BlockSemantics` 里。
+本项目的 scaffold 没有。也就是说：**抽屉拉开时，读屏用户可以从抽屉划回被它盖住的那一页**，
+然后在一个不听话的界面上操作。补上 `BlockSemantics::wrapping` 并接到遮罩上。
+
+### 变异扫描 4 个，第一遍 3 红
+
+唯一的绿是"永远 blocking"——**因为全项目只传 `true`**。
+而 `blocking` 这个字段的存在理由就写在它自己的文档里：
+**正在关闭的抽屉要停止遮挡、又不能离开树**（离开会把下面整棵子树重建）。
+补了一条直接测 `false` 的用例。第二遍**四个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6425 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+`shells.py`：152 个 build（原 151）。
+
+**下一步**：`semantics_markers.rs` 里还有一个同样的形状——`ExcludeSemantics`。
+上游 `drawer.dart:709` 紧挨着 `BlockSemantics` 就是它，
+而且带一个**平台条件**：`excluding: platformHasBackButton`——
+Android 上遮罩自己不出现在无障碍树里（因为返回键就能关抽屉），
+其他平台上它是"关掉抽屉"的那个可点区域。
+**先查两件事**：`ExcludeSemantics` 在本项目是不是也只有设置没有包装；
+以及本项目有没有 `platformHasBackButton` 这个判断
+（`TargetPlatform` 有了，但"有没有返回键"是另一回事）——
+**没有的话就不要照抄那个条件**，宁可先接无条件的排除并写明差别。

@@ -2430,6 +2430,21 @@ pub struct ResolvedBottomNavigationBar {
     /// [`crate::bottom_bars::BottomNavigationBar::selected_font_size`].
     pub selected_font_size: f32,
     pub unselected_font_size: f32,
+    /// Upstream's `selectedIconTheme` / `unselectedIconTheme`, resolved and
+    /// **with nowhere to go**.
+    ///
+    /// `IconThemeData` carries a size, a colour and an opacity for an icon,
+    /// and this port draws no icons: a destination's picture is
+    /// [`crate::controls::Destination::mark`], one or two *characters*,
+    /// because there is no icon font and a missing glyph draws nothing at all.
+    /// A size and an opacity have nothing to act on until there is.
+    ///
+    /// Written down rather than deleted, and rather than half-applied: the
+    /// colour could be read off and put on the mark, which would look like the
+    /// pair being honoured while the size and the opacity were quietly
+    /// dropped. The rule is ported, its host is not -- the same shape as
+    /// `SemanticsConfiguration::to_properties` in round 382, and recorded the
+    /// same way so a later round does not have to rediscover it.
     pub selected_icon_theme: Option<IconThemeData>,
     pub unselected_icon_theme: Option<IconThemeData>,
     pub show_selected_labels: bool,

@@ -2627,12 +2627,25 @@ impl Component for Scaffold {
             // `DrawerController._buildDrawer` is exactly these two.
             let handlers = scrim_handlers.clone();
             children.push(leaf(move || {
-                // `Colors.black54`, the drawer barrier's default color.
-                Pointer::new(
-                    scrim_id.unwrap_or(0),
-                    Container::new().with_color(crate::drawer::DRAWER_SCRIM),
+                // **Blocking**, which is upstream's arrangement exactly:
+                // `DrawerController.build` wraps the barrier in
+                // `BlockSemantics`, so everything painted before it -- the
+                // whole page -- leaves the walk while the drawer is out.
+                //
+                // Without it a reader could swipe straight off the drawer into
+                // the page it is covering: the page is *behind* the drawer
+                // rather than under it, so neither excluding the drawer's
+                // descendants nor merging them reaches it. That difference is
+                // what this crate's `semantics_markers` module doc opens with,
+                // and nothing had ever acted on it.
+                crate::semantics_markers::BlockSemantics::new().wrapping(
+                    // `Colors.black54`, the drawer barrier's default color.
+                    Pointer::new(
+                        scrim_id.unwrap_or(0),
+                        Container::new().with_color(crate::drawer::DRAWER_SCRIM),
+                    )
+                    .with_handlers(handlers.clone()),
                 )
-                .with_handlers(handlers.clone())
             }));
             children.push(drawer.expect("checked above"));
         }
@@ -5888,6 +5901,67 @@ mod tests {
         let mut root = tree.build_render_tree().expect("a root");
         let size = crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
         assert_eq!(size, Size::new(400.0, 800.0));
+    }
+
+    /// Every word a reader would meet in this scaffold.
+    fn scaffold_words(scaffold: Scaffold) -> Vec<String> {
+        crate::semantics::set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(scaffold),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(Size::new(400.0, 800.0), &root).unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| !node.properties.label.is_empty())
+            .map(|node| node.properties.label.clone())
+            .collect()
+    }
+
+    #[test]
+    fn an_open_drawer_takes_the_page_out_of_the_readers_way() {
+        // Upstream wraps the drawer's barrier in `BlockSemantics`
+        // (`drawer.dart:708`), so the page stops being reachable while the
+        // drawer is out. This port had the render object and the settings
+        // struct and **nothing joining them**, so a reader could swipe off the
+        // drawer straight back into the page it was covering -- and act on a
+        // screen that is not listening.
+        //
+        // The page is *behind* the drawer rather than under it, which is why
+        // neither excluding nor merging reaches it.
+        let page = || leaf(|| Empty);
+        let with_words = |scaffold: Scaffold| {
+            scaffold.with_drawer(component(crate::components::Label::new("Settings")))
+        };
+
+        let shut = scaffold_words(with_words(Scaffold::new(component(
+            crate::components::Label::new("Inbox"),
+        ))));
+        assert!(
+            shut.iter().any(|words| words == "Inbox"),
+            "the page is reachable with the drawer shut: {shut:?}"
+        );
+
+        let open = scaffold_words(
+            with_words(Scaffold::new(component(crate::components::Label::new(
+                "Inbox",
+            ))))
+            .with_drawer_open(true),
+        );
+        assert!(
+            !open.iter().any(|words| words == "Inbox"),
+            "the page is still reachable behind an open drawer: {open:?}"
+        );
+        assert!(
+            open.iter().any(|words| words == "Settings"),
+            "and the drawer itself went with it: {open:?}"
+        );
+        let _ = page;
     }
 
     #[test]

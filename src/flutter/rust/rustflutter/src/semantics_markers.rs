@@ -63,6 +63,27 @@ impl BlockSemantics {
     pub fn with_blocking(blocking: bool) -> BlockSemantics {
         BlockSemantics { blocking }
     }
+
+    /// The widget: `child` with everything painted **before** it in the same
+    /// container dropped from the walk.
+    ///
+    /// This is what the struct above was missing. `blocking` could be set and
+    /// read and there was no way to wrap anything in it, so the render object
+    /// that does the work -- [`crate::render::RenderBlockSemanticsBox`] -- had
+    /// no caller outside its own tests. Upstream's `BlockSemantics` is three
+    /// lines around exactly that object.
+    ///
+    /// A `blocking` of false still wraps, and that is the field's whole
+    /// reason: a drawer that is closing stops hiding the page without leaving
+    /// the tree, and a widget that came and went would rebuild the subtree
+    /// under it each way.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn wrapping(
+        &self,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderBlockSemanticsBox {
+        crate::render::RenderBlockSemanticsBox::new(self.blocking, child)
+    }
 }
 
 impl Default for BlockSemantics {
@@ -606,5 +627,60 @@ mod tests {
         assert!(!SliverEnsureSemantics::extent_is_known_in_advance(
             "SliverList"
         ));
+    }
+
+    /// What a reader would meet, walking a column of `children`.
+    fn words_in(children: Vec<crate::framework::AnyWidget>) -> Vec<String> {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::many(children, |rendered| {
+            let mut column = crate::render::RenderFlex::column();
+            for child in rendered {
+                column = column.push(child);
+            }
+            crate::render::RenderRef::new(column)
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| !node.properties.label.is_empty())
+            .map(|node| node.properties.label.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_blocker_that_is_not_blocking_lets_what_came_before_it_through() {
+        // The field's whole reason, said in its own doc: a drawer that is
+        // closing stops hiding the page **without leaving the tree**, because
+        // a widget that came and went would rebuild everything under it each
+        // way. Nothing in the crate passes `false`, so without this the only
+        // exercised value is `true` and hard-coding it changes nothing.
+        let before = || crate::framework::leaf(|| crate::widgets::Text::new("behind".to_string()));
+        let after = |blocking: bool| {
+            crate::framework::leaf(move || {
+                BlockSemantics::with_blocking(blocking)
+                    .wrapping(crate::widgets::Text::new("in front".to_string()))
+            })
+        };
+
+        let blocked = words_in(vec![before(), after(true)]);
+        assert!(
+            !blocked.iter().any(|words| words == "behind"),
+            "blocking left the page reachable: {blocked:?}"
+        );
+
+        let allowed = words_in(vec![before(), after(false)]);
+        assert!(
+            allowed.iter().any(|words| words == "behind"),
+            "not blocking still took the page away: {allowed:?}"
+        );
     }
 }
