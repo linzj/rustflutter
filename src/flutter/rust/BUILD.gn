@@ -462,7 +462,6 @@ group("rust") {
   testonly = true
 
   deps = [
-    "//flutter/rust/cli:rustflutter_cli",
     "//flutter/rust/examples/counter",
     "//flutter/rust/examples/cursor_demo",
     "//flutter/rust/examples/exit_demo",
@@ -477,6 +476,16 @@ group("rust") {
     "//flutter/rust/host",
     "//flutter/rust/rustflutter",
   ]
+
+  # The command line tool scaffolds a project and drives this build, so it runs
+  # on the machine the developer is sitting at; a copy of it cross-compiled for
+  # the phone is of no use to anyone. It is also the one target here that is not
+  # a rustflutter_app(), so it does not get the unwinder the Rust standard
+  # library needs on Android -- see rustflutter_app.gni -- and a device build
+  # that kept it failed on a dozen `_Unwind_*` symbols.
+  if (!is_android) {
+    deps += [ "//flutter/rust/cli:rustflutter_cli" ]
+  }
 
   # The fold into `rustflutter_engine.lib` is a separate step from compiling
   # the objects it folds, and nothing else in this group links it: the apps
