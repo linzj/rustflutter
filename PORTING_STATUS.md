@@ -21722,3 +21722,66 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 原因和第 292 轮一样。**这一支到此为止**，回队列取下一个：
 `TextSelectionOverlay` 6/25（widgets/text_selection.dart 同一个文件）。先按行为查——
 先确认哪些是改名的账，别再被名字带着走。
+
+## 第 310 轮：一个东西可以在那儿而不被看见，两条规则都问的是前一个
+
+`TextSelectionOverlay` 6/25。先按上一轮学到的做法分辨名字和行为——这次真缺的不少,
+而其中反复出现同一个区分：
+
+```dart
+bool get magnifierIsVisible => _magnifierController.shown;
+
+/// This differs from [magnifierIsVisible] in that the magnifier may exist
+/// in the overlay, but not be shown.
+bool get magnifierExists => _magnifierController.overlayEntry != null;
+```
+
+同样的分法也在 `handlesAreVisible`：`_handles != null && handlesVisible`——
+**被造出来了没有**，和**要不要显示**。端口这边是一个布尔，说不了两件事。
+
+### 两条规则都问"在不在"，而不是"看不看得见"
+
+**`showMagnifier` 的守卫**：`if (_magnifierController.overlayEntry != null) return;`——
+一个已经存在、但自己把自己藏起来的放大镜**不会被重新显示**。按 `shown` 来判,
+就会往已经在那儿的那个上面再插一个。
+
+**`hideMagnifier` 的守卫**：同一个，而且上游把理由写在旁边：
+
+```dart
+// This cannot be a check on `MagnifierController.shown`, since
+// it's possible that the magnifier is still in the overlay, but
+// not shown in cases where the magnifier hides itself.
+```
+
+一个自己藏起来的放大镜**仍然在那儿**，按 `shown` 判的 hide 会把那个 entry 永远留在
+overlay 里。**这一对的两端问的都是"存在"；"可见"是放大镜自己的事。**
+上游甚至在 `showMagnifier` 的文档里直说 `shown` **不是**真相来源。
+
+### 放大镜和工具栏永不同时在场，而且工具栏先走
+
+```dart
+if (toolbarIsVisible) { hideToolbar(); }
+...
+final Widget? builtMagnifier = magnifierConfiguration.magnifierBuilder(...);
+if (builtMagnifier == null) { return; }
+```
+
+**工具栏是在"会不会真造出一个放大镜"揭晓之前就被收走的。** 构造器晚两句才被问到,
+而没有放大镜的平台在那里返回 null、什么也不插——**可工具栏已经没了**。
+
+手势那条路走不到这里（`_showMagnifierIfSupportedByPlatform` 只对 Android 和 iOS 应答）,
+所以能这么做的是那个**公开方法**，而它自己的文档还写着 "safe to call on platforms not
+mobile"，等于在邀请这个调用。按原样端过来，把顺序和它的后果写明。
+
+**八条承重规则强制改错，八条一次全红**（含把两个守卫各自改成问 `shown`、
+让工具栏活下来、让没造出放大镜时放过工具栏、把 exists 和 shown 合成一个）。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6129 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：同一个类里，把这个区分用到手柄上——`handlesAreVisible` 是
+`_handles != null && handlesVisible` 的**合取**，而端口只有后一半；再看 `showHandles`
+在手柄还没造出来时做什么。这和这一轮是同一条线索的另一头。先按行为查。

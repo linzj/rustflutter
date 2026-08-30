@@ -2771,6 +2771,9 @@ pub struct SelectionOverlay {
     /// proportionate to what it is holding.
     pub line_height_at_start: f32,
     pub line_height_at_end: f32,
+    /// The two questions upstream asks about the magnifier, which is one
+    /// question more than the handles and the toolbar get here.
+    pub magnifier: OverlayMagnifier,
 }
 
 impl SelectionOverlay {
@@ -2780,6 +2783,7 @@ impl SelectionOverlay {
             toolbar_visible: false,
             line_height_at_start: 0.0,
             line_height_at_end: 0.0,
+            magnifier: OverlayMagnifier::default(),
         }
     }
 
@@ -2807,6 +2811,134 @@ impl SelectionOverlay {
     pub fn hide(&mut self) {
         self.handles_visible = false;
         self.toolbar_visible = false;
+        self.magnifier.hide();
+    }
+}
+
+/// Upstream keeps **two** questions about the magnifier and answers them from
+/// two different places:
+///
+/// ```dart
+/// bool get magnifierIsVisible => _magnifierController.shown;
+///
+/// /// This differs from [magnifierIsVisible] in that the magnifier may exist
+/// /// in the overlay, but not be shown.
+/// bool get magnifierExists => _magnifierController.overlayEntry != null;
+/// ```
+///
+/// The same split is in `handlesAreVisible`, which is
+/// `_handles != null && handlesVisible` -- whether they were built, *and*
+/// whether they are wanted. One boolean cannot say both, and which one a rule
+/// reads turns out to matter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OverlayMagnifier {
+    /// `_magnifierController.overlayEntry != null`.
+    pub exists: bool,
+    /// `_magnifierController.shown`, which upstream's own doc calls out as
+    /// **not** the source of truth for whether a magnifier is up: "magnifiers
+    /// may hide themselves".
+    pub shown: bool,
+}
+
+/// What upstream's `showMagnifier` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShowMagnifier {
+    /// It returned at the first line because one was already there.
+    pub already_there: bool,
+    /// `if (toolbarIsVisible) { hideToolbar(); }`
+    pub hides_toolbar: bool,
+    /// Whether anything was put in the overlay. `false` when the builder
+    /// returned null, which is how a platform without a magnifier opts out.
+    pub inserts: bool,
+}
+
+impl OverlayMagnifier {
+    /// Upstream's `showMagnifier`, in the order it does things:
+    ///
+    /// ```dart
+    /// // Do not show the magnifier if one already exists.
+    /// if (_magnifierController.overlayEntry != null) { return; }
+    /// if (toolbarIsVisible) { hideToolbar(); }
+    /// ...
+    /// final Widget? builtMagnifier = magnifierConfiguration.magnifierBuilder(...);
+    /// if (builtMagnifier == null) { return; }
+    /// _magnifierController.show(...);
+    /// ```
+    ///
+    /// **The guard is on `overlayEntry`, not on `shown`** -- so a magnifier
+    /// that exists and has hidden itself is not re-shown. Keying off `shown`
+    /// would try to insert a second one on top of the first.
+    ///
+    /// **A magnifier and a toolbar are never up together.** Showing one takes
+    /// the other down, and it does not come back: nothing here remembers that
+    /// there was a toolbar.
+    ///
+    /// **And the toolbar goes before it is known whether a magnifier will be
+    /// built.** The builder is consulted two statements later, and a platform
+    /// without one returns null and nothing is inserted -- but the toolbar has
+    /// already gone. The gesture path never reaches this on a desktop
+    /// (`_showMagnifierIfSupportedByPlatform` answers only for Android and
+    /// iOS), so it is the public method rather than ordinary use that can do
+    /// it, and the method's own doc invites the call by saying it is "safe to
+    /// call on platforms not mobile".
+    pub fn show(&mut self, toolbar_visible: bool, builder_gives_one: bool) -> ShowMagnifier {
+        if self.exists {
+            return ShowMagnifier {
+                already_there: true,
+                hides_toolbar: false,
+                inserts: false,
+            };
+        }
+        let hides_toolbar = toolbar_visible;
+        if !builder_gives_one {
+            return ShowMagnifier {
+                already_there: false,
+                hides_toolbar,
+                inserts: false,
+            };
+        }
+        self.exists = true;
+        self.shown = true;
+        ShowMagnifier {
+            already_there: false,
+            hides_toolbar,
+            inserts: true,
+        }
+    }
+
+    /// Upstream's `hideMagnifier`, whose guard is the same one and whose
+    /// comment says why:
+    ///
+    /// ```dart
+    /// // This cannot be a check on `MagnifierController.shown`, since
+    /// // it's possible that the magnifier is still in the overlay, but
+    /// // not shown in cases where the magnifier hides itself.
+    /// if (_magnifierController.overlayEntry == null) { return; }
+    /// ```
+    ///
+    /// A magnifier that hid itself is still **there**, and a hide that asked
+    /// `shown` would leave that entry in the overlay for ever. Both ends of
+    /// this pair are about existence; visibility is the magnifier's own
+    /// business.
+    ///
+    /// Returns whether there was anything to take down.
+    pub fn hide(&mut self) -> bool {
+        if !self.exists {
+            return false;
+        }
+        self.exists = false;
+        self.shown = false;
+        true
+    }
+
+    /// Upstream's `magnifierIsVisible`.
+    pub fn is_visible(&self) -> bool {
+        self.shown
+    }
+
+    /// Upstream's `magnifierExists`.
+    pub fn exists(&self) -> bool {
+        self.exists
     }
 }
 
@@ -4519,6 +4651,82 @@ two";
         });
         assert!(!does_not.handles_force_press());
         assert!(does_not.handles_selection());
+    }
+
+    #[test]
+    fn a_magnifier_can_exist_without_being_shown() {
+        // Upstream's own words: "the magnifier may exist in the overlay, but
+        // not be shown". One boolean cannot say both.
+        let mut magnifier = OverlayMagnifier::default();
+        assert!(!magnifier.exists() && !magnifier.is_visible());
+        magnifier.show(false, true);
+        assert!(magnifier.exists() && magnifier.is_visible());
+
+        // A magnifier that hid itself -- which upstream says they do.
+        magnifier.shown = false;
+        assert!(magnifier.exists(), "still in the overlay");
+        assert!(!magnifier.is_visible(), "and not on screen");
+    }
+
+    #[test]
+    fn showing_again_is_refused_by_existence_and_not_by_visibility() {
+        // Keying the guard off `shown` would try to insert a second magnifier
+        // on top of the one that is already there.
+        let mut magnifier = OverlayMagnifier::default();
+        magnifier.show(false, true);
+        magnifier.shown = false;
+
+        let again = magnifier.show(true, true);
+        assert!(again.already_there);
+        assert!(!again.inserts, "nothing added on top of the one there");
+        assert!(
+            !again.hides_toolbar,
+            "and it returns before it would have touched the toolbar"
+        );
+    }
+
+    #[test]
+    fn hiding_is_refused_by_existence_too_or_the_entry_would_never_go() {
+        // "This cannot be a check on `MagnifierController.shown`, since it's
+        // possible that the magnifier is still in the overlay, but not shown."
+        let mut magnifier = OverlayMagnifier::default();
+        assert!(!magnifier.hide(), "nothing to take down");
+
+        magnifier.show(false, true);
+        magnifier.shown = false;
+        assert!(magnifier.hide(), "the entry goes even though it was hidden");
+        assert!(!magnifier.exists());
+    }
+
+    #[test]
+    fn a_magnifier_and_a_toolbar_are_never_up_together() {
+        let mut magnifier = OverlayMagnifier::default();
+        let shown = magnifier.show(true, true);
+        assert!(shown.hides_toolbar);
+        assert!(shown.inserts);
+    }
+
+    #[test]
+    fn the_toolbar_goes_before_it_is_known_a_magnifier_will_be_built() {
+        // The builder is consulted two statements later, so a platform that
+        // has none takes the toolbar down and puts nothing up.
+        let mut magnifier = OverlayMagnifier::default();
+        let shown = magnifier.show(true, false);
+        assert!(shown.hides_toolbar, "the toolbar has already gone");
+        assert!(!shown.inserts, "and nothing replaced it");
+        assert!(!magnifier.exists(), "not even an entry");
+    }
+
+    #[test]
+    fn hiding_the_overlay_takes_the_magnifier_with_it() {
+        // `hide()` opens with `_magnifierController.hide()`.
+        let mut overlay = SelectionOverlay::new().with_handles_visible(true);
+        overlay.set_toolbar_visible(true);
+        overlay.magnifier.show(false, true);
+        overlay.hide();
+        assert!(!overlay.handles_visible);
+        assert!(!overlay.toolbar_visible);
+        assert!(!overlay.magnifier.exists());
     }
 
     #[test]
