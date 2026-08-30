@@ -214,7 +214,15 @@ UploadTarget GetUploadTarget() {
 class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
  public:
   explicit RfDeferredImpellerImage(std::shared_ptr<SkBitmap> pixels)
-      : pixels_(std::move(pixels)) {}
+      : pixels_(std::move(pixels)),
+        // Read once, here, because the bitmap is released the moment the
+        // texture has the pixels and these three still have to be answerable
+        // afterwards -- a display list asks an image its size long after it
+        // was uploaded.
+        size_(pixels_ == nullptr
+                  ? flutter::DlISize()
+                  : flutter::DlISize(pixels_->width(), pixels_->height())),
+        opaque_(pixels_ != nullptr && pixels_->isOpaque()) {}
 
   /// Uploads now, on the calling thread. Safe to call from the IO thread ahead
   /// of any drawing, and from the raster thread if that never happened.
@@ -263,6 +271,25 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
     }
     ReportUpload(started, descriptor.GetByteSizeOfBaseMipLevel(), ahead);
     texture_ = std::move(texture);
+
+    // The pixels are in video memory now, and nothing here reads them again:
+    // `size_` and `opaque_` were taken in the constructor for exactly this
+    // moment. Holding them would mean every image the application caches
+    // costing its bytes a second time, in a CPU bitmap that only exists to
+    // have been the source of an upload that has already happened.
+    //
+    // Safe whether or not the backend copied eagerly: `mapping` owns a
+    // reference of its own and releases it when the upload is done with it,
+    // which is what that lambda is for.
+    pixels_.reset();
+
+    // What upstream does at the end of the same function -- see
+    // `ImageDecoderImpeller::UploadTextureToStorage`. An upload leaves staging
+    // buffers behind on whichever thread ran it, and this is the thread that
+    // will not come back for them. A no-op on GLES, where the base class's
+    // empty implementation stands; real on Vulkan, which is the backend the
+    // Android target uses.
+    context->DisposeThreadLocalCachedResources();
     return texture_;
   }
 
@@ -272,17 +299,18 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
     return Upload(context, /*ahead=*/false);
   }
 
-  // |DlImage|
-  flutter::DlISize GetSize() const override {
-    return pixels_ == nullptr
-               ? flutter::DlISize()
-               : flutter::DlISize(pixels_->width(), pixels_->height());
+  /// Whether the pixels have reached a texture, and so whether anyone else
+  /// still holding them is holding them for nothing.
+  bool Uploaded() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return texture_ != nullptr;
   }
 
   // |DlImage|
-  bool isOpaque() const override {
-    return pixels_ != nullptr && pixels_->isOpaque();
-  }
+  flutter::DlISize GetSize() const override { return size_; }
+
+  // |DlImage|
+  bool isOpaque() const override { return opaque_; }
 
   // |DlImage|
   // False: the pixels are readable from any thread, but the texture this
@@ -296,11 +324,19 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
 
   // |DlImage|
   size_t GetApproximateByteSize() const override {
-    return sizeof(*this) + (pixels_ == nullptr ? 0 : pixels_->computeByteSize());
+    // Four bytes a pixel whether the bytes are still in a bitmap here or only
+    // in the texture they were uploaded to: what this reports is the cost of
+    // the image, and releasing the CPU copy did not make the image free.
+    return sizeof(*this) +
+           static_cast<size_t>(size_.width) * size_.height * 4u;
   }
 
  private:
-  std::shared_ptr<SkBitmap> pixels_;
+  // Released by `Upload` once the texture has the bytes; null after that, which
+  // is why nothing below it may be derived from this.
+  mutable std::shared_ptr<SkBitmap> pixels_;
+  const flutter::DlISize size_;
+  const bool opaque_;
   // Written by whichever thread uploads first and read by the raster thread, so
   // the two cannot race over who allocates the texture.
   mutable std::mutex mutex_;
@@ -334,6 +370,31 @@ const sk_sp<flutter::DlImage>& ImageFor(const RfImage* image) {
       target.runner->PostTask([deferred, context = target.context]() {
         deferred->Upload(context, /*ahead=*/true);
       });
+    }
+  }
+
+  // The bytes are in a texture now, so the CPU copy behind them is redundant
+  // and this is where it goes. Upstream never has one to release -- an image
+  // decoded for Impeller becomes a `DlImageImpeller` holding a texture and
+  // nothing else (`ImageDecoderImpeller::UploadTextureToStorage`). Here the
+  // decode happens before the backend is known, so both representations exist
+  // for a while and one of them turns out to be dead weight. Held, it doubled
+  // the cost of every image an application cached.
+  //
+  // Both go together or neither does: `image` is an SkImage over the same
+  // pixel ref as `pixels`, so releasing one of them frees nothing.
+  //
+  // Done here, on the thread that records, rather than from `Upload`: that can
+  // run on the IO thread, and it has no safe way to reach back to an `RfImage`
+  // the application may have freed in the meantime. The cost of waiting is
+  // that an image drawn exactly once keeps its pixels; anything on screen is
+  // recorded again next frame.
+  if (mutable_image->pixels != nullptr) {
+    const auto* deferred = static_cast<const RfDeferredImpellerImage*>(
+        mutable_image->impeller_image.get());
+    if (deferred != nullptr && deferred->Uploaded()) {
+      mutable_image->image.reset();
+      mutable_image->pixels.reset();
     }
   }
   return mutable_image->impeller_image;
@@ -665,9 +726,9 @@ void rf_canvas_draw_image(RfCanvas* canvas,
     return;
   }
   // Through `ImageFor` like its sibling below, rather than reaching for the
-  // Skia view: under Impeller that view is the wrong representation to record,
-  // and the dispatcher does not survive being handed it -- it calls
-  // asImpellerImage() and dereferences the result without checking.
+  // Skia view: under Impeller that view is the wrong representation to record
+  // -- the dispatcher asks a DlImage for its Impeller texture -- and it is
+  // released as soon as the Impeller one exists.
   const sk_sp<flutter::DlImage>& drawable = ImageFor(image);
   if (drawable == nullptr) {
     return;
@@ -1037,6 +1098,8 @@ RfImage* rf_image_decode(const uint8_t* data, size_t length) {
   }
 
   auto* out = new RfImage();
+  out->width = pixels->width();
+  out->height = pixels->height();
   out->image = flutter::DlImageSkia::Make(std::move(image));
   out->pixels = std::move(pixels);
   return out;
@@ -1078,6 +1141,8 @@ RfImage* rf_image_from_pixels(const uint8_t* pixels,
   }
 
   auto* out = new RfImage();
+  out->width = width;
+  out->height = height;
   out->image = flutter::DlImageSkia::Make(std::move(image));
   out->pixels = std::move(bitmap);
   return out;
@@ -1088,15 +1153,12 @@ void rf_image_free(RfImage* image) {
 }
 
 int32_t rf_image_width(const RfImage* image) {
-  if (image == nullptr || image->image == nullptr) {
-    return 0;
-  }
-  return image->image->GetSize().width;
+  // The recorded size rather than the live representation's: under Impeller
+  // the CPU bitmap is released once the texture has the pixels, and an image
+  // has to be able to say how big it is for as long as the handle exists.
+  return image == nullptr ? 0 : image->width;
 }
 
 int32_t rf_image_height(const RfImage* image) {
-  if (image == nullptr || image->image == nullptr) {
-    return 0;
-  }
-  return image->image->GetSize().height;
+  return image == nullptr ? 0 : image->height;
 }

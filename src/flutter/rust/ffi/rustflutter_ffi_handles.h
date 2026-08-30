@@ -89,11 +89,23 @@ struct RfImage {
   /// one will draw is not known when the image is decoded: Skia takes the
   /// DlImage directly, Impeller needs those pixels uploaded to a texture. The
   /// pixels are shared rather than copied a second time.
+  ///
+  /// Both are released once Impeller has the pixels in a texture -- see
+  /// `ImageFor`. Until that happened they were kept for the whole life of the
+  /// image, which meant every decoded image cost its bytes twice over, once in
+  /// video memory and once in a CPU bitmap nothing would read again. An album
+  /// holding a few hundred thumbnails paid for two of everything.
   sk_sp<flutter::DlImage> image;
   std::shared_ptr<SkBitmap> pixels;
   /// Built on first use under Impeller, and uploaded later still -- on the
   /// raster thread, where there is a GPU context to upload to.
   sk_sp<flutter::DlImage> impeller_image;
+  /// The size, kept here rather than asked of whichever representation is
+  /// alive. `rf_image_width` and `rf_image_height` are answerable for as long
+  /// as the handle is, and after the release above there may be no CPU bitmap
+  /// left to ask.
+  int32_t width = 0;
+  int32_t height = 0;
 };
 
 //------------------------------------------------------------------------------
