@@ -128,22 +128,7 @@ impl Component for Checkbox {
             let tap = self.handlers.on_tap.clone();
             let node = crate::semantics::node_id_for(id);
             move |inner: crate::framework::AnyWidget| {
-                let tap = tap.clone();
-                crate::semantics::semantics_with_action(
-                    node,
-                    properties.clone(),
-                    inner,
-                    move |action| {
-                        if action == crate::semantics::SemanticsAction::Tap {
-                            if let Some(tap) = &tap {
-                                tap(crate::gestures::TapEvent {
-                                    local_position: crate::render::Offset::ZERO,
-                                    pointer_id: 0,
-                                });
-                            }
-                        }
-                    },
-                )
+                crate::semantics::tappable(node, properties.clone(), inner, tap.clone())
             }
         };
         let fill = resolved.fill;
@@ -298,22 +283,7 @@ impl Component for Radio {
             let tap = self.handlers.on_tap.clone();
             let node = crate::semantics::node_id_for(id);
             move |inner: crate::framework::AnyWidget| {
-                let tap = tap.clone();
-                crate::semantics::semantics_with_action(
-                    node,
-                    properties.clone(),
-                    inner,
-                    move |action| {
-                        if action == crate::semantics::SemanticsAction::Tap {
-                            if let Some(tap) = &tap {
-                                tap(crate::gestures::TapEvent {
-                                    local_position: crate::render::Offset::ZERO,
-                                    pointer_id: 0,
-                                });
-                            }
-                        }
-                    },
-                )
+                crate::semantics::tappable(node, properties.clone(), inner, tap.clone())
             }
         };
 

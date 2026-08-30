@@ -700,21 +700,11 @@ impl Component for Button {
             } else {
                 crate::semantics::SemanticsProperties::disabled_button(&self.label)
             };
-            let tap = self.handlers.on_tap.clone();
-            crate::semantics::semantics_with_action(
+            crate::semantics::tappable(
                 crate::semantics::node_id_for(id),
                 properties,
                 inner,
-                move |action| {
-                    if action == crate::semantics::SemanticsAction::Tap {
-                        if let Some(tap) = &tap {
-                            tap(crate::gestures::TapEvent {
-                                local_position: crate::render::Offset::ZERO,
-                                pointer_id: 0,
-                            });
-                        }
-                    }
-                },
+                self.handlers.on_tap.clone(),
             )
         };
 

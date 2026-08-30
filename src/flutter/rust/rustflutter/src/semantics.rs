@@ -2438,6 +2438,43 @@ pub fn semantics_with_action(
         .build()
 }
 
+/// Wraps `child` in a node whose **Tap action reaches the same handler a
+/// finger would**.
+///
+/// Upstream's rule for `Semantics.onTap`, and the reason it is worth one
+/// function rather than three copies: a control with two ways in must not be
+/// able to disagree with itself about what pressing it does. Written out at
+/// each call site, the day one of them grows a condition the others do not is
+/// the day a screen reader starts doing something slightly different from a
+/// finger -- and nothing fails, it just diverges.
+///
+/// `on_tap` of `None` is a control that does nothing when pressed. The node is
+/// still made, because *saying* what something is does not depend on its being
+/// operable, and a disabled control that vanished from the tree would be worse
+/// than one that says it is disabled.
+pub fn tappable(
+    id: i32,
+    properties: SemanticsProperties,
+    child: AnyWidget,
+    on_tap: Option<std::rc::Rc<dyn Fn(crate::gestures::TapEvent)>>,
+) -> AnyWidget {
+    semantics_with_action(id, properties, child, move |action| {
+        if action != SemanticsAction::Tap {
+            return;
+        }
+        let Some(on_tap) = &on_tap else {
+            return;
+        };
+        // The position is the one thing the two paths cannot share: a reader
+        // activates the control, not a point on it. Upstream hands its own
+        // `onTap` no coordinates either.
+        on_tap(crate::gestures::TapEvent {
+            local_position: crate::render::Offset::ZERO,
+            pointer_id: 0,
+        });
+    })
+}
+
 // -- What a label carries besides its letters ---------------------------------
 
 /// Upstream's `StringAttribute` family (`dart:ui`), which a screen reader reads
