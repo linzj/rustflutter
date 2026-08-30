@@ -934,6 +934,40 @@ mod radio_semantics_tests {
     }
 
     #[test]
+    fn a_bar_dropped_straight_into_a_column_is_still_announced() {
+        // The case that moved the announcement onto the widget. Four of the
+        // gallery's demos build a `Snackbar` and push it into a column,
+        // never touching the messenger -- so with the flag on the messenger's
+        // door those bars appeared with nothing to draw a reader's attention,
+        // and were gone four seconds later.
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(Snackbar::new(7, "Saved")),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 300.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(300.0, 300.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let live: Vec<&crate::semantics::SemanticsNode> = nodes
+            .iter()
+            .filter(|node| node.properties.flags.is_live_region)
+            .collect();
+        assert_eq!(live.len(), 1, "one live region: {live:?}");
+        assert_eq!(
+            live[0].properties.label, "Saved",
+            "and it is the node with the words -- an empty live region              announces nothing"
+        );
+    }
+
+    #[test]
     fn all_three_bars_of_one_of_n_announce_themselves_alike() {
         // The rail was the one that drifted: four bare stops, no position and
         // no sense of which page you are on, while the tab bar and the bottom
@@ -2370,7 +2404,7 @@ impl Component for Snackbar {
         let spacing = theme.spacing;
         let size = theme.body_size - 1.0;
 
-        leaf(move || {
+        let bar = leaf(move || {
             let mut row = RenderFlex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -2406,6 +2440,33 @@ impl Component for Snackbar {
                     .with_child(row),
             )
             .with_handlers(handlers.clone())
+        });
+
+        // The announcement is **here, on the widget**, which is where upstream
+        // puts it (`_SnackBarState.build` wraps itself in `Semantics(container:
+        // true, liveRegion: true, ...)`).
+        //
+        // It used to be on the messenger's door instead, and that was the
+        // wrong place: four of the gallery's demos build a `Snackbar` and push
+        // it straight into a column, never touching the messenger, so those
+        // bars appeared with nothing to draw a reader's attention. A bar that
+        // is gone in four seconds is a bar nobody finds by hunting for it.
+        //
+        // **Container**: one stop, so the message and its action are met
+        // together rather than as two unrelated things at the bottom of the
+        // screen. The flag rides on the merged node because that is the node
+        // with the words -- a live region with nothing in it announces
+        // nothing.
+        crate::framework::single(bar, |inner| {
+            crate::render::RenderMergeSemanticsBox::new(inner).with_properties(
+                crate::semantics::SemanticsProperties {
+                    flags: crate::semantics::SemanticsFlags {
+                        is_live_region: true,
+                        ..crate::semantics::SemanticsFlags::default()
+                    },
+                    ..crate::semantics::SemanticsProperties::label("")
+                },
+            )
         })
     }
 }

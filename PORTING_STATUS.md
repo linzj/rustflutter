@@ -25494,3 +25494,44 @@ NavigationRail   -> "H", "Home", "S", "Saved"
 `Banner`、`SimpleDialogOption`（是个按钮）、`TooltipTrigger`（有提示要报）。
 **先查 `Snackbar`**：如果它只能经由 messenger 上屏，那它就不缺什么，
 清单上这一行是对的；**能被直接用，就是一个真缺口**。
+
+---
+
+## 第 379 轮：提示条挪到自己身上宣告——顺带发现我上一轮给的理由是错的
+
+按“下一步”查 `Snackbar` 能不能绕开 messenger 上屏。**能，而且 gallery 里有四处**：
+`dialog_demo`、`menu_demo`、`snackbar_demo`、`text_field_demo`——
+全都是 `Snackbar::new(...)` 直接塞进 `children`。
+
+而第 364 轮我把 live region 接在了 **messenger 那道门**上。
+所以这四处的提示条**冒出来时没有任何东西提醒读屏用户**，四秒后就没了。
+
+回查上游：那个 `Semantics(container: true, liveRegion: true, ...)` 在
+`_SnackBarState.build` 里——**在控件自己身上**，不在路由上。
+第 364 轮我引用的就是这一段，却接错了地方。
+
+于是把它挪到 `Snackbar` 上，门那边去掉。两条测试各钉一头：
+直接塞进列的 bar **被宣告**；经由 messenger 的 bar **恰好被宣告一次**。
+
+### 变异扫描 3 个，2 红，第 3 个绿得有道理——而它证明我写的理由是错的
+
+我给门那边留的注释说：“再包一层会让经由 messenger 的 bar 被念两遍。”
+**变异把那一层加回去——全绿。**
+
+因为第 349 轮那条规则：**合并盒子套合并盒子仍然只有一站**
+（`a_merge_inside_a_merge_is_still_one_stop`）——
+外层把内层折进去，内层根本不开节点。所以**不会念两遍**。
+
+真正该说的理由要小得多、也才是真的：**那是错的位置，留着是多余的重量。**
+注释改过来了，并把“第一版怎么写错的、变异怎么证伪的”一起留在里面。
+
+尺子：十六把全部 exit 0。门：Rust 6351 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+`tools/spoken.py` 这一行也跟着变了：`Snackbar -> "Saved" +flags`，之前是光秃秃的 `"Saved"`。
+
+**下一步**：清单继续往下读。`Banner` 就在旁边，形状**看似**和提示条一样
+（自己冒出来、横跨屏幕），但**不要照抄**——上游 `MaterialBanner` 是
+“需要被确认”的东西，**不会自己消失**，
+而 live region 的理由恰恰是“四秒后就没了、找不回来”。
+**一个不会消失的东西该不该打断读屏用户，是另一个判断**，
+先去 `banner.dart` 看上游到底给不给它 `liveRegion`，再决定接什么。

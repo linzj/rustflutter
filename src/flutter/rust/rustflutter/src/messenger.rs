@@ -298,26 +298,25 @@ pub fn snack_bar_slot(bar: AnyWidget) -> AnyWidget {
     many(vec![bar], |mut rendered| {
         RenderAlign::new(
             Alignment::new(0.0, 1.0),
-            // Upstream wraps every bar in
-            // `Semantics(container: true, liveRegion: true, ...)`, and both
-            // halves matter. **Container**: a bar is one thing to land on, not
-            // a message and a button that a reader meets separately.
-            // **Live region**: the bar arrives without anyone asking for it,
-            // so a reader who is somewhere else on the page has to be told;
-            // without the flag the words are in the tree and nothing draws
-            // attention to them, which for a four-second bar means they are
-            // gone before anyone finds them.
+            // **No announcement here.** It used to be, and that was the
+            // wrong place: upstream puts it in `_SnackBarState.build`, on the
+            // widget, and four of the gallery's demos build a `Snackbar`
+            // without going anywhere near this door -- so those bars appeared
+            // silently. `Snackbar` announces itself now.
             //
-            // The flag rides on the merged node because that is the node with
-            // the words -- a live region with nothing in it announces nothing.
-            crate::render::RenderMergeSemanticsBox::new(rendered.pop().expect("the snack bar"))
-                .with_properties(crate::semantics::SemanticsProperties {
-                    flags: crate::semantics::SemanticsFlags {
-                        is_live_region: true,
-                        ..crate::semantics::SemanticsFlags::default()
-                    },
-                    ..crate::semantics::SemanticsProperties::label("")
-                }),
+            // The first draft of this note said a wrapper here would announce
+            // the bar *twice*, and that is **not true** -- a mutation putting
+            // it back turns nothing red. Nesting one merging box inside
+            // another still yields one stop (see
+            // `a_merge_inside_a_merge_is_still_one_stop`): the outer node folds
+            // the inner one in, and the inner never opens. So the reason to
+            // leave it out is not that it would double anything but that it is
+            // the wrong place and would be dead weight -- which is a smaller
+            // claim, and the true one.
+            //
+            // What remains is what this slot is actually for: where the bar
+            // sits.
+            rendered.pop().expect("the snack bar"),
         )
     })
 }
@@ -333,46 +332,32 @@ mod tests {
     use crate::theatre::overlay;
 
     #[test]
-    fn a_bar_that_appears_is_announced_as_one_thing() {
-        // Two halves of upstream's one wrapper, and both matter.
-        //
-        // **Live region**: the bar arrives without anyone asking, so a reader
-        // elsewhere on the page has to be told. Four seconds later it is gone;
-        // words in the tree that nothing points at are words nobody hears.
-        //
-        // **Container**: one stop, so "Saved" and "Undo" are met together
-        // rather than as two unrelated things at the bottom of the screen.
+    fn a_bar_shown_through_the_messenger_is_announced_exactly_once() {
+        // The announcement lives on the `Snackbar` widget, where upstream puts
+        // it, so this door adds nothing. That is the point: a bar built
+        // directly into a column -- which four of the gallery's demos do --
+        // is announced too, and a bar that came through here is announced
+        // once rather than twice.
         crate::semantics::set_enabled(true);
         let mut tree = ElementTree::new();
-        tree.rebuild(snack_bar_slot(crate::framework::single(
-            crate::framework::leaf(|| crate::widgets::SizedBox::new(0.0, 0.0)),
-            |_inner| {
-                crate::widgets::Column::new()
-                    .with_main_axis_size(crate::render::MainAxisSize::Min)
-                    .push(crate::widgets::Text::new("Saved"))
-                    .push(crate::widgets::Text::new("Undo"))
-            },
-        )));
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            snack_bar_slot(crate::framework::component(crate::controls::Snackbar::new(
+                7, "Saved",
+            ))),
+        ));
         let mut root = tree.build_render_tree().expect("mounted");
         RenderBox::layout(&mut root, BoxConstraints::loose(300.0, 300.0));
         crate::semantics::mark_needs_update();
         let nodes = crate::semantics::flush(Size::new(300.0, 300.0), &root).unwrap_or_default();
         crate::semantics::set_enabled(false);
 
-        let spoken: Vec<&crate::semantics::SemanticsNode> = nodes
+        let live: Vec<&crate::semantics::SemanticsNode> = nodes
             .iter()
-            .filter(|node| !node.properties.label.is_empty())
+            .filter(|node| node.properties.flags.is_live_region)
             .collect();
-        assert_eq!(spoken.len(), 1, "one stop, not two: {spoken:?}");
-        assert_eq!(
-            spoken[0].properties.label,
-            "Saved
-Undo"
-        );
-        assert!(
-            spoken[0].properties.flags.is_live_region,
-            "and the flag is on the node that has the words"
-        );
+        assert_eq!(live.len(), 1, "announced once, not twice: {live:?}");
+        assert_eq!(live[0].properties.label, "Saved");
     }
 
     const PAGE_TARGET: u64 = 7001;
