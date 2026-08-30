@@ -3486,8 +3486,7 @@ impl StatefulComponent for TextField {
                     // The pointer's place in the field is its place in the
                     // content once the scroll is added back: paint drew the
                     // content `scroll` up and to the left of the field.
-                    let at =
-                        Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
+                    let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
                     let measure = |run: &str| {
                         // The field's own measurement, so the position under
                         // the pointer is the position on screen.
@@ -6667,7 +6666,14 @@ mod tests {
         );
         router.dispatch(
             &root,
-            &mouse_event(crate::gestures::PointerChange::Move, 10.0, 40.0, 0.0, 40.0, 1),
+            &mouse_event(
+                crate::gestures::PointerChange::Move,
+                10.0,
+                40.0,
+                0.0,
+                40.0,
+                1,
+            ),
         );
         router.dispatch(
             &root,
@@ -6675,8 +6681,15 @@ mod tests {
         );
 
         let drag = last_selection(&_messenger).expect("a selection");
-        assert_ne!(drag.0, drag.1, "a drag marks out a run rather than collapsing");
-        assert!(drag.0 < 3, "the base stayed where the press began: {}", drag.0);
+        assert_ne!(
+            drag.0, drag.1,
+            "a drag marks out a run rather than collapsing"
+        );
+        assert!(
+            drag.0 < 3,
+            "the base stayed where the press began: {}",
+            drag.0
+        );
         assert!(
             drag.1 >= 3,
             "the extent followed the pointer onto the second line: {}",
@@ -6691,7 +6704,14 @@ mod tests {
         );
         router.dispatch(
             &root,
-            &mouse_event(crate::gestures::PointerChange::Move, 10.0, 40.0, 0.0, 40.0, 0),
+            &mouse_event(
+                crate::gestures::PointerChange::Move,
+                10.0,
+                40.0,
+                0.0,
+                40.0,
+                0,
+            ),
         );
         let hover = last_selection(&_messenger).expect("a selection");
         assert_eq!(
