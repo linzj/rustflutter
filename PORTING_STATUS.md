@@ -21564,3 +21564,55 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 正好接上第 304 轮那两个标志）和 `onSingleLongTapCancel`（与 `onSingleLongTapEnd`
 共用上游一个 `_onSingleLongTapEndOrCancel` 收尾，而两者对工具栏的处理不同）。
 先做长按的收尾那一对。
+
+## 第 307 轮：被夺走的长按，收拾得和结束的一模一样，只差一个菜单
+
+`onSingleLongTapEnd` 与 `onSingleLongTapCancel`。共享的收尾早就端好了,
+连"只 iOS 不是苹果两家"那处不对称都写明了。**缺的是它周围的三样东西。**
+
+### 一、两个滚动锚点要清零
+
+```dart
+_dragStartViewportOffset = 0.0;
+_dragStartScrollOffset = 0.0;
+```
+
+这正是 `drag_anchor_correction`（第 305 轮读到的那一段）拿来相减的两个读数。
+**它们在按下时取、在拖动中花掉**，留着不清，下一次长按就会拿上一次的滚动位置去校正
+自己的锚点——选区从一个读者从没按过的地方开始，而且**只在那个字段中途滚过时才发作**。
+
+无条件清，而且必须无条件：cancel 那条路正是"按到一半被夺走"的那条,
+也正是锚点最可能是脏的时候。
+
+### 二、`_isEditableTextMounted`，第四道守卫
+
+它**只挡浮动光标那一步**。cancel 完全可能在字段已经销毁之后才到——那是它正常的到达方式
+之一——所以唯一要跟字段说话的那一步得先问一句。而收起放大镜、清零锚点是这个对象自己的
+事，两种情况都照做。
+
+### 三、End 与 Cancel 的唯一差别
+
+```dart
+void onSingleLongTapEnd(...) { _onSingleLongTapEndOrCancel(); if (shouldShowSelectionToolbar) { ... } }
+void onSingleLongTapCancel()  { _onSingleLongTapEndOrCancel(); }
+```
+
+**一个被夺走的长按收拾得和结束的一模一样**，工具栏是全部差别。这就是那个收尾要被提出来
+的理由：一次被手势竞技场夺走、或者字段从底下消失的长按，不能把放大镜留在屏幕上、
+不能把锚点留成半设状态，也**不能为一个读者根本没完成的手势弹出菜单**。
+
+而且结束了也还要再问一句"这个指针挣到工具栏了吗"——就是第 304 轮那两个标志里的第一个。
+
+**九条承重规则强制改错，九条一次全红**（含"让 cancel 也弹菜单"、"让 cancel 留着锚点"、
+"让已销毁的字段照样收到浮动光标消息"、"让 mounted 守卫把整个清理都吞掉"）。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6113 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：这个类按行为只剩 `onDragSelectionEnd` 和 `onTapTrackStart`/`onTapTrackReset`。
+先做 `onDragSelectionEnd`：它读 `_shouldShowSelectionToolbar` **并且**还要问拖动是不是
+真的拖过（`_dragStartSelection` 那一族状态的收尾），和这一轮的长按收尾是对称的一对,
+正好接着读。

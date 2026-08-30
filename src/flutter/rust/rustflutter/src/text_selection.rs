@@ -1660,7 +1660,32 @@ pub fn long_press_start(
 pub struct LongPressEnd {
     pub hides_magnifier: bool,
     pub clears_the_flag: bool,
+    /// `_dragStartViewportOffset = 0.0; _dragStartScrollOffset = 0.0;`
+    ///
+    /// The two readings [`drag_anchor_correction`] subtracts against. They are
+    /// **taken at the press and spent by the drag**, so leaving them behind
+    /// would have the next press correct its anchor against a scroll position
+    /// belonging to the last one -- a selection that begins somewhere the
+    /// reader never pressed, and only in a field that had scrolled since.
+    ///
+    /// Unconditional, and it has to be: the cancel path is the one where a
+    /// press is taken away mid-drag, which is exactly when the anchors are
+    /// most likely to be stale.
+    pub resets_the_drag_anchors: bool,
     pub ends_floating_cursor: bool,
+    /// Only [`LongPressFinish::Ended`] can raise it, and only when the
+    /// pointer that pressed had earned one. See [`long_press_finish`].
+    pub shows_toolbar: bool,
+}
+
+/// Which way a long press stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LongPressFinish {
+    /// `onSingleLongTapEnd` -- the finger lifted.
+    Ended,
+    /// `onSingleLongTapCancel` -- the gesture was taken away, by the arena or
+    /// by the field going out from under it.
+    Cancelled,
 }
 
 /// Upstream's `_onSingleLongTapEndOrCancel`, which the end and the cancel
@@ -1689,13 +1714,62 @@ pub fn long_press_end(
     selection_enabled: bool,
     selection_is_collapsed: bool,
 ) -> LongPressEnd {
+    long_press_finish(
+        LongPressFinish::Ended,
+        platform,
+        selection_enabled,
+        selection_is_collapsed,
+        true,
+        true,
+    )
+}
+
+/// Upstream's `onSingleLongTapEnd` and `onSingleLongTapCancel`, which are the
+/// same function plus one line:
+///
+/// ```dart
+/// void onSingleLongTapEnd(LongPressEndDetails details) {
+///   _onSingleLongTapEndOrCancel();
+///   if (shouldShowSelectionToolbar) {
+///     editableText.showToolbar();
+///   }
+/// }
+///
+/// void onSingleLongTapCancel() {
+///   _onSingleLongTapEndOrCancel();
+/// }
+/// ```
+///
+/// **A cancelled press tidies up exactly as a finished one does**, and the
+/// toolbar is the whole difference. That is the reason the tail is factored
+/// out at all: a press taken away by the gesture arena, or by the field being
+/// disposed under it, must not leave the magnifier on screen or the anchors
+/// half-set, and it must not put a menu up for a gesture the reader never
+/// completed.
+///
+/// `editable_text_mounted` is upstream's `_isEditableTextMounted`, and it
+/// guards only the floating cursor. A cancel can arrive **after the field is
+/// gone** -- that is a normal way for one to arrive -- so the one step that
+/// talks to the field is the one that has to ask. Hiding the magnifier and
+/// zeroing the anchors are this object's own business and happen either way.
+pub fn long_press_finish(
+    finish: LongPressFinish,
+    platform: crate::editable_text::TargetPlatform,
+    selection_enabled: bool,
+    selection_is_collapsed: bool,
+    editable_text_mounted: bool,
+    should_show_selection_toolbar: bool,
+) -> LongPressEnd {
     use crate::editable_text::TargetPlatform;
     LongPressEnd {
         hides_magnifier: true,
         clears_the_flag: true,
-        ends_floating_cursor: platform == TargetPlatform::IOS
+        resets_the_drag_anchors: true,
+        ends_floating_cursor: editable_text_mounted
+            && platform == TargetPlatform::IOS
             && selection_enabled
             && selection_is_collapsed,
+        shows_toolbar: finish == LongPressFinish::Ended && should_show_selection_toolbar,
     }
 }
 
@@ -4977,6 +5051,105 @@ mod selection_gesture_rule_tests {
                 "{kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_cancelled_press_tidies_up_exactly_as_a_finished_one_does() {
+        // The reason the tail is factored out. A press taken away by the
+        // arena must not leave the magnifier on screen or the anchors
+        // half-set.
+        let ended = long_press_finish(
+            LongPressFinish::Ended,
+            TargetPlatform::IOS,
+            true,
+            true,
+            true,
+            true,
+        );
+        let cancelled = long_press_finish(
+            LongPressFinish::Cancelled,
+            TargetPlatform::IOS,
+            true,
+            true,
+            true,
+            true,
+        );
+        assert_eq!(ended.hides_magnifier, cancelled.hides_magnifier);
+        assert_eq!(ended.clears_the_flag, cancelled.clears_the_flag);
+        assert_eq!(
+            ended.resets_the_drag_anchors,
+            cancelled.resets_the_drag_anchors
+        );
+        assert_eq!(ended.ends_floating_cursor, cancelled.ends_floating_cursor);
+    }
+
+    #[test]
+    fn and_the_toolbar_is_the_whole_difference() {
+        let both = |finish| long_press_finish(finish, TargetPlatform::IOS, true, true, true, true);
+        assert!(both(LongPressFinish::Ended).shows_toolbar);
+        assert!(
+            !both(LongPressFinish::Cancelled).shows_toolbar,
+            "no menu for a gesture the reader never completed"
+        );
+    }
+
+    #[test]
+    fn a_finished_press_still_asks_whether_the_pointer_earned_a_toolbar() {
+        // `if (shouldShowSelectionToolbar)` -- the flag the tap that began
+        // this press set from its pointer kind.
+        assert!(
+            !long_press_finish(
+                LongPressFinish::Ended,
+                TargetPlatform::IOS,
+                true,
+                true,
+                true,
+                false,
+            )
+            .shows_toolbar
+        );
+    }
+
+    #[test]
+    fn the_drag_anchors_are_zeroed_whichever_way_it_stopped() {
+        // They are what `drag_anchor_correction` subtracts against. Left
+        // behind, the next press would correct its anchor against a scroll
+        // position belonging to the last one.
+        for finish in [LongPressFinish::Ended, LongPressFinish::Cancelled] {
+            for platform in [TargetPlatform::IOS, TargetPlatform::Android] {
+                let end = long_press_finish(finish, platform, false, false, false, false);
+                assert!(end.resets_the_drag_anchors, "{finish:?} {platform:?}");
+                assert!(end.hides_magnifier, "{finish:?} {platform:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_field_that_is_already_gone_gets_no_floating_cursor_message() {
+        // `_isEditableTextMounted`. A cancel arriving after the field was
+        // disposed is a normal way for one to arrive, and the one step that
+        // talks to the field is the one that has to ask.
+        assert!(
+            !long_press_finish(
+                LongPressFinish::Cancelled,
+                TargetPlatform::IOS,
+                true,
+                true,
+                false,
+                true,
+            )
+            .ends_floating_cursor
+        );
+        // ... while the cleanup this object owns happens anyway.
+        let gone = long_press_finish(
+            LongPressFinish::Cancelled,
+            TargetPlatform::IOS,
+            true,
+            true,
+            false,
+            true,
+        );
+        assert!(gone.hides_magnifier && gone.resets_the_drag_anchors);
     }
 
     #[test]
