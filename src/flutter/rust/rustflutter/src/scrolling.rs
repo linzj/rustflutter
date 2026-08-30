@@ -1225,7 +1225,19 @@ impl crate::framework::Component for LazyList {
                 // every row, and scrolling moves them rather than redrawing
                 // them.
                 crate::widgets::repaint_boundary((self.build_item)(index)),
-                |child| child,
+                // **And a semantic index**, which is the same delegate's
+                // `addSemanticIndexes` and equally on by default. It is what
+                // lets a reader be told "item 3 of 40" instead of meeting
+                // forty indistinguishable rows: the row's *position in the
+                // list*, which nothing downstream can work out, because by the
+                // time the walk sees these rows the ones scrolled past are
+                // already gone.
+                //
+                // Everything below this had been ported and had no producer --
+                // `RenderIndexedSemanticsBox`, the walk's `pending_index`, and
+                // `RfSemanticsNode::scroll_index` crossing to the engine. This
+                // one line is what they were waiting for.
+                move |child| crate::render::RenderIndexedSemanticsBox::new(index as i64, child),
             ));
         }
         if after > 0 {
@@ -3143,6 +3155,73 @@ mod tests {
             assert!(window.first <= window.last, "{what}");
             assert!(window.len() >= 1, "{what}");
             assert!(!window.is_empty(), "{what}");
+        }
+    }
+
+    #[test]
+    fn a_lazy_lists_rows_say_which_one_they_are() {
+        // Upstream's `SliverChildBuilderDelegate` wraps every child in an
+        // `IndexedSemantics` by default (`addSemanticIndexes`), beside the
+        // repaint boundary it is better known for. This port had the whole
+        // chain below that line -- `RenderIndexedSemanticsBox`, the walk's
+        // `pending_index`, `RfSemanticsNode::scroll_index` crossing to the
+        // engine -- and **nobody putting an index on a row**, so a reader met
+        // forty indistinguishable rows with no sense of where in the list they
+        // were.
+        //
+        // The position cannot be recovered further down: by the time the walk
+        // runs, the rows scrolled off the top are gone, so counting the ones
+        // that survived would number the first *visible* row zero.
+        use crate::framework::{ElementTree, component, leaf};
+        use crate::render::{BoxConstraints, RenderBox, Size};
+
+        // **Scrolled**, which is the whole point: at the top the row's place
+        // in the list and its place among the rows that survived are the same
+        // number, so a list examined only at rest cannot tell an absolute
+        // index from a relative one.
+        crate::semantics::set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(
+            LazyList::new(40, 50.0, |index| {
+                component(crate::components::Label::new(format!("Row {index}")))
+            })
+            .with_offset(500.0),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        RenderBox::layout(&mut root, BoxConstraints::tight(200.0, 150.0));
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(Size::new(200.0, 150.0), &root).unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let numbered: Vec<(String, Option<i32>)> = nodes
+            .iter()
+            .filter(|node| node.properties.label.starts_with("Row "))
+            .map(|node| (node.properties.label.clone(), node.index_in_parent))
+            .collect();
+        assert!(!numbered.is_empty(), "no rows reached the walk");
+        // **And nothing above them says it is a list yet.** No node in this
+        // tree carries `scroll_index` or `scroll_child_count`, because
+        // `RenderSliverViewport` -- which is what a `LazyList` scrolls in --
+        // has no `describe_semantics` at all; only the box `RenderViewport`
+        // does. So the numbers these rows now carry have no scrollable node to
+        // be gathered onto, and the platform still hears no "3 of 40".
+        //
+        // Asserted rather than left implied, so the day that annotation lands
+        // this test says which half moved.
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.properties.scroll_index.is_none()
+                    && node.properties.scroll_child_count.is_none()),
+            "a sliver viewport started describing itself -- see the note above"
+        );
+        for (label, index) in &numbered {
+            let expected: i32 = label.trim_start_matches("Row ").parse().expect("a number");
+            assert_eq!(
+                *index,
+                Some(expected),
+                "{label} did not say which row it is: {numbered:?}"
+            );
         }
     }
 
