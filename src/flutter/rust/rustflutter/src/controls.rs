@@ -778,6 +778,7 @@ mod radio_semantics_tests {
                         .filter(|node| {
                             !node.properties.label.is_empty()
                                 || !node.properties.value.is_empty()
+                                || node.properties.role.is_set()
                                 // The tip counts, for the reason the value was
                                 // added in round 378: a report that shows a
                                 // control with something to say as a blank
@@ -790,6 +791,9 @@ mod radio_semantics_tests {
                             let mut what = format!("{:?}", node.properties.label);
                             if !node.properties.value.is_empty() {
                                 what.push_str(&format!(" ={:?}", node.properties.value));
+                            }
+                            if node.properties.role.is_set() {
+                                what.push_str(&format!(" role={:?}", node.properties.role));
                             }
                             if !node.properties.tooltip.is_empty() {
                                 what.push_str(&format!(" tip={:?}", node.properties.tooltip));
@@ -1011,6 +1015,117 @@ mod radio_semantics_tests {
                 )
             })
             .collect()
+    }
+
+    /// Every stop a reader would meet, as `(label, role)`.
+    fn roles_of(
+        widget: crate::framework::AnyWidget,
+    ) -> Vec<(String, crate::semantics::SemanticsRole)> {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            widget,
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| !node.properties.label.is_empty())
+            .map(|node| (node.properties.label.clone(), node.properties.role))
+            .collect()
+    }
+
+    #[test]
+    fn a_column_header_says_that_it_heads_a_column() {
+        // Upstream's `_buildHeadingCell` opens with
+        // `Semantics(role: SemanticsRole.columnHeader, ...)`. The case that
+        // shows why a role is not a flag: a header has no state and nothing to
+        // press, so no flag has anything to say about it, and a reader who is
+        // told only the word "Name" has no reason to think it names a column.
+        //
+        // Every node in this port crossed to the engine as `kNone` until now,
+        // so this is the first role it has ever sent.
+        use crate::semantics::SemanticsRole;
+        assert_eq!(
+            roles_of(crate::framework::component(
+                DataTable::new(vec!["Name".to_string(), "Size".to_string()])
+                    .push_row(vec!["notes.txt".to_string(), "2 KB".to_string()])
+            )),
+            vec![
+                ("Name".to_string(), SemanticsRole::ColumnHeader),
+                ("Size".to_string(), SemanticsRole::ColumnHeader),
+                ("notes.txt".to_string(), SemanticsRole::None),
+                ("2 KB".to_string(), SemanticsRole::None),
+            ],
+            "the headers head and the cells do not"
+        );
+    }
+
+    #[test]
+    fn the_nearest_role_is_the_one_a_reader_hears() {
+        // Upstream's merge: `if (role == SemanticsRole.none) role = node._role`.
+        // A merging node is one thing, so it has one kind, and the claim
+        // nearest the top wins -- a header folded into a region that merges
+        // for its own reasons keeps the region's kind, not the header's.
+        use crate::semantics::SemanticsRole;
+        let folded = roles_of(crate::semantics::announces_itself(
+            crate::framework::component(DataTable::new(vec!["Name".to_string()])),
+        ));
+        assert_eq!(
+            folded,
+            vec![("Name".to_string(), SemanticsRole::ColumnHeader)],
+            "with nothing above claiming a kind, the header's rises"
+        );
+    }
+
+    #[test]
+    fn a_kind_claimed_higher_up_is_not_overwritten_from_below() {
+        // The other half of upstream's `if (role == SemanticsRole.none) role =
+        // node._role`. A merging node is **one thing**, so it has one kind,
+        // and the claim nearest the top is the one that describes what the
+        // reader has actually stopped on. Taken the other way round, a region
+        // holding a table would be announced as a column header.
+        use crate::semantics::SemanticsRole;
+        let inside_a_region = roles_of(crate::framework::single(
+            crate::framework::component(DataTable::new(vec!["Name".to_string()])),
+            |inner| {
+                crate::render::RenderMergeSemanticsBox::new(inner).with_properties(
+                    crate::semantics::SemanticsProperties {
+                        role: SemanticsRole::Region,
+                        ..crate::semantics::SemanticsProperties::label("")
+                    },
+                )
+            },
+        ));
+        assert_eq!(
+            inside_a_region,
+            vec![("Name".to_string(), SemanticsRole::Region)],
+            "the header's kind overwrote the region's"
+        );
+    }
+
+    #[test]
+    fn a_config_carries_its_kind_across_the_seam_to_the_collector() {
+        // The same seam round 382 found dropping the tooltip, and the same
+        // reason for testing it directly: `to_properties` copies field by
+        // field, so a field added to both ends and forgotten in the middle is
+        // silently lost. No widget reaches the collector through this seam
+        // yet -- the rule is here and its producer is still to come, which the
+        // test says rather than dresses up.
+        let mut config = crate::semantics::SemanticsConfiguration::default();
+        config.role = crate::semantics::SemanticsRole::ColumnHeader;
+        assert_eq!(
+            config.to_properties().role,
+            crate::semantics::SemanticsRole::ColumnHeader
+        );
     }
 
     #[test]
@@ -2991,7 +3106,23 @@ impl Component for DataTable {
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center);
             for name in &headers {
-                header_row = header_row.push_flex(FlexChild::expanded(cell(name, true, muted), 1));
+                // Upstream's `_buildHeadingCell` opens with
+                // `Semantics(role: SemanticsRole.columnHeader, ...)`, and this
+                // is the case that shows why a role is not a flag: a header
+                // has no state and nothing to press, so no flag has anything
+                // to say about it. Without the role a reader meets the word
+                // "Name" with no reason to think it names a column -- and a
+                // table read as a run of loose words is not a table.
+                //
+                // A fold rather than an annotation, for the reason round 381
+                // gives: the words are the cell's, and a header that said its
+                // own would stand a blank stop beside them.
+                let header = crate::render::RenderMergeSemanticsBox::new(cell(name, true, muted))
+                    .with_properties(crate::semantics::SemanticsProperties {
+                        role: crate::semantics::SemanticsRole::ColumnHeader,
+                        ..crate::semantics::SemanticsProperties::label("")
+                    });
+                header_row = header_row.push_flex(FlexChild::expanded(header, 1));
             }
             table = table.push(header_row);
             table = table.push(Container::new().with_height(1.0).with_color(outline));

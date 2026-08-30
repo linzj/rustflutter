@@ -204,6 +204,10 @@ pub struct RfSemanticsNode {
     /// tip is the extra sentence somebody wrote for whoever hovers. Folded
     /// into the label it would be read as the control's name.
     pub tooltip: *const c_char,
+    /// Upstream's `SemanticsNode.role`, as `flutter::SemanticsRole`'s integer.
+    /// 0 is `kNone`, which is what every node this port produced said before
+    /// roles reached it.
+    pub role: i32,
     pub scroll_position: f64,
     pub scroll_extent_min: f64,
     pub scroll_extent_max: f64,
@@ -232,7 +236,7 @@ pub struct RfSemanticsNode {
 /// the size it is.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
-    size_of::<RfSemanticsNode>() == 136,
+    size_of::<RfSemanticsNode>() == 144,
     "RfSemanticsNode has drifted from rust_app_api.h"
 );
 
@@ -402,6 +406,7 @@ impl PackedSemantics {
                     increased_value: strings[base + 3].as_ptr(),
                     decreased_value: strings[base + 4].as_ptr(),
                     tooltip: strings[base + 5].as_ptr(),
+                    role: node.properties.role as i32,
                     scroll_position: node.properties.scroll_position as f64,
                     scroll_extent_min: node.properties.scroll_extent_min as f64,
                     scroll_extent_max: node.properties.scroll_extent_max as f64,
@@ -2082,6 +2087,7 @@ mod tests {
                 increased_value: "first up".to_string(),
                 decreased_value: "first down".to_string(),
                 tooltip: "first tip".to_string(),
+                role: crate::semantics::SemanticsRole::ColumnHeader,
                 text_direction: Some(TextDirection::Ltr),
                 actions: 5,
                 scroll_position: 12.0,
@@ -2108,6 +2114,7 @@ mod tests {
                 increased_value: "second up".to_string(),
                 decreased_value: "second down".to_string(),
                 tooltip: "second tip".to_string(),
+                role: crate::semantics::SemanticsRole::MenuItem,
                 text_direction: Some(TextDirection::Rtl),
                 actions: 6,
                 ..SemanticsProperties::label("second label")
@@ -2161,6 +2168,7 @@ mod tests {
         assert_eq!(read(first.increased_value), "first up");
         assert_eq!(read(first.decreased_value), "first down");
         assert_eq!(read(first.tooltip), "first tip");
+        assert_eq!(first.role, 9);
         assert_eq!(first.scroll_position, 12.0);
         assert_eq!(first.scroll_extent_min, 1.0);
         assert_eq!(first.scroll_extent_max, 100.0);
@@ -2182,6 +2190,7 @@ mod tests {
         assert_eq!(read(second.increased_value), "second up");
         assert_eq!(read(second.decreased_value), "second down");
         assert_eq!(read(second.tooltip), "second tip");
+        assert_eq!(second.role, 15);
         assert_eq!(
             second.text_direction,
             pack_text_direction(Some(TextDirection::Rtl))

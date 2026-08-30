@@ -909,6 +909,7 @@ struct SemanticsFixture {
     first.increased_value = first_up.c_str();
     first.decreased_value = first_down.c_str();
     first.tooltip = first_tip.c_str();
+    first.role = 9;  // flutter::SemanticsRole::kColumnHeader
     first.scroll_position = 12.0;
     first.scroll_extent_min = 1.0;
     first.scroll_extent_max = 100.0;
@@ -932,6 +933,7 @@ struct SemanticsFixture {
     second.increased_value = second_up.c_str();
     second.decreased_value = second_down.c_str();
     second.tooltip = second_tip.c_str();
+    second.role = 15;  // flutter::SemanticsRole::kMenuItem
     second.children = nullptr;
     second.child_count = 0;
     second.text_direction = 1;
@@ -971,6 +973,7 @@ TEST(RustSemantics, EveryFieldArrivesFromTheNodeItBelongsTo) {
   EXPECT_EQ(first.increasedValue, "first up");
   EXPECT_EQ(first.decreasedValue, "first down");
   EXPECT_EQ(first.tooltip, "first tip");
+  EXPECT_EQ(first.role, flutter::SemanticsRole::kColumnHeader);
   EXPECT_EQ(first.scrollPosition, 12.0);
   EXPECT_EQ(first.scrollExtentMin, 1.0);
   EXPECT_EQ(first.scrollExtentMax, 100.0);
@@ -988,6 +991,7 @@ TEST(RustSemantics, EveryFieldArrivesFromTheNodeItBelongsTo) {
   EXPECT_EQ(second.increasedValue, "second up");
   EXPECT_EQ(second.decreasedValue, "second down");
   EXPECT_EQ(second.tooltip, "second tip");
+  EXPECT_EQ(second.role, flutter::SemanticsRole::kMenuItem);
   EXPECT_EQ(second.textDirection, 1);
   EXPECT_TRUE(second.flags.isHeader);
   EXPECT_FALSE(second.flags.isButton);

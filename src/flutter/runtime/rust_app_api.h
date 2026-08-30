@@ -126,6 +126,11 @@ typedef struct RfSemanticsNode {
   // what the thing is, the tip is the extra sentence written for whoever
   // hovers over it.
   const char* tooltip;
+  // What kind of thing this is, as flutter::SemanticsRole's integer. 0 is
+  // kNone. A role says what a node *is* where a flag would say what it does --
+  // a cell, a column header, an item of a menu -- and the platform's
+  // accessibility layer maps it onto a native control.
+  int32_t role;
   // NaN for a node that does not scroll, which is what upstream uses for the
   // same "no answer".
   double scroll_position;

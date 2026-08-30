@@ -25739,3 +25739,71 @@ FFI 测试当场抓住。改成具名常量 `STRINGS_PER_NODE`，
 这是**孩子扛不动的状态**（一个 `Text("Name")` 不知道自己是表头，
 更不知道排序）。先查本项目的 `DataTable` 有没有排序这回事：
 **没有的话这一轮就不是接 semantics，而是先补排序**，两者大小完全不同。
+
+---
+
+## 第 383 轮：这个移植从来没告诉过 engine 任何东西"是什么"
+
+按“下一步”查表的排序。查出来的东西比预期的大，而且换了一个方向。
+
+先是一个**第三次出现的同名陷阱**：`controls::DataTable` 是本项目自己的
+纯字符串小表（清单量的就是它），而上游那个完整的 `DataTable`
+**根本没移植**——`components` 里只有它的零件 `DataColumn`/`DataCell`
+和它的 theme，**没有任何东西组装它们**（`DataColumn` 在 components.rs 之外零引用）。
+所以“先补排序再接 semantics”这条路，实际是“先把整个 DataTable 移植过来”，
+不是一轮的事。
+
+而上游 `_buildHeadingCell` 第一行给出了一个更小也更真的缺口：
+
+```dart
+label = Semantics(role: SemanticsRole.columnHeader, child: Row(...));
+```
+
+**`SemanticsRole` 这个东西，本项目一个都没有。**
+engine 那边 `semantics_node.h` 里 33 个值、`SemanticsNode::role` 字段都在，
+而本移植产出的**每一个节点都以 `kNone` 过去**。
+
+### role 不是 flag
+
+本项目已经有的那些 flag 说的是这东西**能做什么**：能勾选、被选中、是个按钮。
+role 说的是它在页面结构里**是什么**，平台的无障碍层把它映射到原生控件上。
+差别正好在"没有事情可做"的地方显出来：
+**表头没有状态、也不能按，flag 对它无话可说**——
+于是读屏用户听到"Name"这个词，没有任何理由认为它是一列的名字。
+一张被读成一串散词的表，不是表。
+
+一路接穿：`SemanticsRole`（33 个值，判别式必须逐个对上）、
+`SemanticsProperties.role`、`SemanticsConfiguration.role`、`to_properties`、
+FFI（`RfSemanticsNode.role` + `rust_app_api.h` + `runtime_controller.cc`
++ 两侧 `static_assert` 136→144），
+合并规则照上游 `if (role == SemanticsRole.none) role = node._role`：
+**一个合并节点是一样东西，所以只有一种 kind，最靠上的那个说了算。**
+第一个用处：`controls::DataTable` 的表头。
+
+### 变异扫描 8 个，第一遍 5 红、2 绿 + 1 个 BUILD ERROR
+
+两个绿的都补了测试（外层 role 不该被里层覆盖；`to_properties` 那道 seam
+——和第 382 轮的 tooltip 同一处、同一个"规则先到、生产者未到"的写法）。
+
+BUILD ERROR 那个（改判别式撞号）说明它**根本不该由测试来守**：
+`tools/wire_enums.py` 正是为这件事写的。
+**去校准它**——第一次跑报"0 disagreeing"，看着像仪器不管用；
+其实是我的替换**没匹配上、静默没生效**（第 355 轮那个损坏基线的同一种失败）。
+加上 `assert count == 1` 之后重跑：**exit 1，指名 `SemanticsRole` 与上游不符**。
+仪器是好的，我的检查是坏的。这条如实记下。
+
+尺子：十六把全部 exit 0（`wire_enums` 现在把 `SemanticsRole` 列为
+第 5 个"编号对外可见"的枚举，33 个变体）。
+门：Rust 6372 通过、`cargo fmt --check` 干净；C++ 34 个 gtest 全过
+（FFI 测试两侧都加了 role）；三个输出目录与三个测试二进制全部重建。
+清单：`DataTable -> "Name" role=ColumnHeader, "Size" role=ColumnHeader`，
+并给清单加上显示 role 的能力。
+
+**下一步**：机制通了，**接下来是把已经有事实依据的 role 一个个补上**，
+而不是一次全塞。优先级按"flag 说不出、而本项目已经把含义钉死了的"来排：
+`Dialog`/`AlertDialog`（已有 `DIALOG_SEMANTICS_ID` 和对应 flag）、
+`Tab`/`TabBar`（第 378 轮三个条已统一）、
+`DragHandle`、`LoadingSpinner`、`ProgressBar`（都已有专门的 id 和标签）。
+**先做 Dialog**：它最靠近本轮的形状（一个已经在合并的节点上加一个 kind），
+而且 `AlertDialog` 与 `SimpleDialog` 上游给的是**两个不同的 role**——
+先去 `dialog.dart` 确认哪个给哪个，不要照着名字猜。

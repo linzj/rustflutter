@@ -99,6 +99,76 @@ use crate::framework::{AnyWidget, BuildContext, Component, component, single};
 use crate::render::{BoxConstraints, BoxedRender, Offset, PaintContext, RenderBox, Size};
 use crate::services::text_boundary::TextRange;
 
+/// **What kind of thing** a node is, where saying so needs more than a flag.
+///
+/// Upstream's `SemanticsRole` (`semantics.dart`, mirrored as
+/// `flutter::SemanticsRole` in `semantics_node.h`), which this port had none of
+/// -- every node it produced crossed to the engine as `kNone`.
+///
+/// # A role is not a flag
+///
+/// The flags this crate already sets say what a control *does*: it can be
+/// checked, it is selected, it is a button. A role says what it **is** in the
+/// structure of the page, and a platform's accessibility layer maps it onto a
+/// native control -- a cell of a table, a header of a column, an item of a
+/// menu. The difference shows up where there is nothing to do: a column header
+/// has no state and no action, so a flag has nothing to say about it, and
+/// without a role a reader meets the word "Name" and no reason to think it
+/// names a column.
+///
+/// The discriminants are the engine's, and they have to match exactly: the
+/// value crosses as a plain integer, so a role inserted in the middle on one
+/// side would arrive as its neighbour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum SemanticsRole {
+    /// No role, which is upstream's default and what every node in this port
+    /// said until roles existed here.
+    #[default]
+    None = 0,
+    Tab = 1,
+    TabBar = 2,
+    TabPanel = 3,
+    Dialog = 4,
+    AlertDialog = 5,
+    Table = 6,
+    Cell = 7,
+    Row = 8,
+    ColumnHeader = 9,
+    DragHandle = 10,
+    SpinButton = 11,
+    ComboBox = 12,
+    MenuBar = 13,
+    Menu = 14,
+    MenuItem = 15,
+    MenuItemCheckbox = 16,
+    MenuItemRadio = 17,
+    List = 18,
+    ListItem = 19,
+    Form = 20,
+    Tooltip = 21,
+    LoadingSpinner = 22,
+    ProgressBar = 23,
+    HotKey = 24,
+    RadioGroup = 25,
+    Status = 26,
+    Alert = 27,
+    Complementary = 28,
+    ContentInfo = 29,
+    Main = 30,
+    Navigation = 31,
+    Region = 32,
+}
+
+impl SemanticsRole {
+    /// Whether this node has a role at all, which is the test upstream's
+    /// merge uses: a merging node takes a descendant's role only if it has
+    /// none of its own.
+    pub fn is_set(self) -> bool {
+        self != SemanticsRole::None
+    }
+}
+
 /// What a reader can be told to do with a node.
 ///
 /// The discriminants are `flutter::SemanticsAction`, which is in turn
@@ -532,6 +602,10 @@ pub struct SemanticsProperties {
     /// write reached either of them -- the shape of a rule with no producer
     /// these rounds keep turning up.
     pub tooltip: String,
+    /// What kind of thing this is -- see [`SemanticsRole`]. `None` is
+    /// upstream's default: a node that is described by its words and its flags
+    /// and has no structural part to declare.
+    pub role: SemanticsRole,
     /// The reading direction of everything said above: `label`, `value`,
     /// `hint`, and the two value forecasts.
     ///
@@ -1761,6 +1835,16 @@ fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) ->
         // Inside a merge, a descendant says its piece into the merging node
         // rather than becoming a stop of its own.
         if let Some(&into) = collector.merging.last() {
+            // Upstream's merge, same rule as the tip and for the same
+            // reason: `if (role == SemanticsRole.none) role = node._role`. A
+            // merging node is one thing, so it has one kind, and the nearest
+            // claim wins.
+            if properties.role.is_set() {
+                let node = &mut collector.nodes[into];
+                if !node.properties.role.is_set() {
+                    node.properties.role = properties.role;
+                }
+            }
             // Upstream's `SemanticsConfiguration.absorb`: the tip is taken
             // only if the merging node has none. Unlike the label, two tips
             // are not joined -- a tip is one sentence about one control, and
@@ -3685,6 +3769,8 @@ pub struct SemanticsConfiguration {
     pub increased_value: AttributedString,
     pub decreased_value: AttributedString,
     pub tooltip: String,
+    /// Upstream's `SemanticsConfiguration.role`.
+    pub role: SemanticsRole,
     /// Upstream's `identifier`, whose "unset" is the empty string rather than
     /// null -- which is why the merge tests it against `""`.
     pub identifier: String,
@@ -3913,6 +3999,7 @@ impl SemanticsConfiguration {
             // hole: a config could carry a tip through every merge rule above
             // and this seam would throw it away on the way to the collector.
             tooltip: self.tooltip.clone(),
+            role: self.role,
             text_direction: self.text_direction,
             flags: self.flags,
             actions: self
