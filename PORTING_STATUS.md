@@ -21664,3 +21664,61 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 **下一步**：这个类按行为只剩 `onTapTrackStart` / `onTapTrackReset` 这一对——它们管的是
 **连击计数什么时候归零**，而这一族这几轮反复在读那个计数（双击拖拽、三击拖拽、
 收尾弹不弹菜单都由它决定）。把定义它的那一对补上，这个类就按行为清完了。先按行为查。
+
+## 第 309 轮：两个开关，两个层次，两个理由
+
+先又撞了一次名字：`onTapTrackStart` / `onTapTrackReset` **不是**管连击计数的
+（我上一轮那句预判是错的），它们管 shift 键——而**这条也早就端好了**,
+在 `tap_and_drag.rs` 的 `TapSequenceShift` 里，连"在一串点击开始时采样一次、
+不是每个回调去问键盘"都写明了。
+
+**这是这三轮里第二次，'按名字缺'和'按行为缺'不是一回事。**
+
+于是这个类按行为只剩装配那一步，而它正好有一条值钉的规则。
+
+### 二十个参数里，只有一对是条件接线的
+
+```dart
+onForcePressStart: delegate.forcePressEnabled ? onForcePressStart : null,
+onForcePressEnd:   delegate.forcePressEnabled ? onForcePressEnd   : null,
+```
+
+其余十七个回调无条件接上，各自在函数体里开头写
+`if (!delegate.selectionEnabled) { return; }`。
+
+**两个开关，两个层次，而且各有各的理由。** null 回调告诉手势检测器**不要建那个识别器**,
+所以一个不要强按压的字段在竞技场里什么也不放；一个只是提前 return 的识别器仍然在**争这
+根指针**，还可能把它从真正想要它的那些识别器手里赢走。而一个关掉了选择的字段**仍然得接
+下这一次点按**——点它要移焦点、要弹键盘——所以那些识别器必须留在竞技场里,
+再各自谢绝这份工作。
+
+### 这也解释了那两条永远不会触发的 assert
+
+```dart
+void onForcePressStart(ForcePressDetails details) {
+  assert(delegate.forcePressEnabled);
+```
+
+**唯一的调用者是一处只在那个标志为真时才存在的接线。** 这条 assert 说的是接线,
+不是运行时检查；把它改写成提前 `return` 的端口，是在回答一个没人问的问题。
+
+### 改错扫描抓出两件事
+
+一、**"从名单里删掉一个 handler"编译不过**——定长数组的长度自己在把关,
+比测试更硬。但把长度也一起改成 18 就能编译，而且**所有遍历照样通过**,
+只是不再看那一行。补了一条钉住数量的测试（顺带发现我文档里写的"twenty"是错的,
+上游是 **19** 个回调，另外四个参数不是回调）。
+
+二、其余四条一次全红。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6123 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`TextSelectionGestureDetectorBuilder` 按行为清完了（剩下的 `delegate` /
+`editableText` / `renderEditable` 是访问器，不是行为），而 `depth.py` 的比值不会动,
+原因和第 292 轮一样。**这一支到此为止**，回队列取下一个：
+`TextSelectionOverlay` 6/25（widgets/text_selection.dart 同一个文件）。先按行为查——
+先确认哪些是改名的账，别再被名字带着走。

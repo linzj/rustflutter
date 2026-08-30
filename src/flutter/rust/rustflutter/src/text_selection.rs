@@ -757,6 +757,107 @@ impl<D: TextSelectionGestureDetectorBuilderDelegate> TextSelectionGestureDetecto
     pub fn handles_selection(&self) -> bool {
         self.delegate.selection_enabled()
     }
+
+    /// Whether `buildGestureDetector` hands the detector a callback for
+    /// `handler` at all.
+    ///
+    /// Upstream wires nineteen of them and **exactly two are conditional**:
+    ///
+    /// ```dart
+    /// onForcePressStart: delegate.forcePressEnabled ? onForcePressStart : null,
+    /// onForcePressEnd:   delegate.forcePressEnabled ? onForcePressEnd   : null,
+    /// ```
+    ///
+    /// # The two delegate flags are enforced at two different layers
+    ///
+    /// `selectionEnabled` is checked **inside** each handler -- every one of
+    /// them opens with `if (!delegate.selectionEnabled) { return; }`. Force
+    /// press is checked **at the wiring**, and is not connected at all.
+    ///
+    /// That is not a style choice, and the difference has a reason at each
+    /// end. A null callback tells the gesture detector not to build the
+    /// recognizer, so a field that does not want force press puts nothing in
+    /// the arena for it; a recognizer that merely returned early would still
+    /// be competing for the pointer, and could still win it away from the ones
+    /// that do want it. Whereas a field with selection turned off still has to
+    /// take a tap -- tapping it moves focus and opens the keyboard -- so those
+    /// recognizers must stay in the arena and decline the work individually.
+    ///
+    /// # And it is why the force-press asserts can never fire
+    ///
+    /// ```dart
+    /// void onForcePressStart(ForcePressDetails details) {
+    ///   assert(delegate.forcePressEnabled);
+    /// ```
+    ///
+    /// The only caller is a wiring that exists only when the flag is true. The
+    /// assert is a statement about the wiring rather than a runtime check, and
+    /// a port that moved it to an early `return` would be answering a question
+    /// nobody asks.
+    pub fn wires(&self, handler: GestureHandler) -> bool {
+        match handler {
+            GestureHandler::ForcePressStart | GestureHandler::ForcePressEnd => {
+                self.delegate.force_press_enabled()
+            }
+            _ => true,
+        }
+    }
+}
+
+/// The callbacks `buildGestureDetector` passes on, named as upstream names
+/// them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GestureHandler {
+    TapTrackStart,
+    TapTrackReset,
+    TapDown,
+    ForcePressStart,
+    ForcePressEnd,
+    SecondaryTap,
+    SecondaryTapDown,
+    SingleTapUp,
+    SingleTapCancel,
+    UserTap,
+    SingleLongTapStart,
+    SingleLongTapMoveUpdate,
+    SingleLongTapEnd,
+    SingleLongTapCancel,
+    DoubleTapDown,
+    TripleTapDown,
+    DragSelectionStart,
+    DragSelectionUpdate,
+    DragSelectionEnd,
+}
+
+impl GestureHandler {
+    /// All nineteen, so a test can walk them rather than sample them.
+    ///
+    /// The count is the assertion. `buildGestureDetector` passes nineteen
+    /// callbacks -- `onUserTapAlwaysCalled`, `behavior`, `child` and `key` are
+    /// the arguments that are not one -- and a list that quietly lost a row
+    /// would leave every walk below still passing, having simply stopped
+    /// looking at it.
+    pub const ALL: [GestureHandler; 19] = [
+        GestureHandler::TapTrackStart,
+        GestureHandler::TapTrackReset,
+        GestureHandler::TapDown,
+        GestureHandler::ForcePressStart,
+        GestureHandler::ForcePressEnd,
+        GestureHandler::SecondaryTap,
+        GestureHandler::SecondaryTapDown,
+        GestureHandler::SingleTapUp,
+        GestureHandler::SingleTapCancel,
+        GestureHandler::UserTap,
+        GestureHandler::SingleLongTapStart,
+        GestureHandler::SingleLongTapMoveUpdate,
+        GestureHandler::SingleLongTapEnd,
+        GestureHandler::SingleLongTapCancel,
+        GestureHandler::DoubleTapDown,
+        GestureHandler::TripleTapDown,
+        GestureHandler::DragSelectionStart,
+        GestureHandler::DragSelectionUpdate,
+        GestureHandler::DragSelectionEnd,
+    ];
 }
 
 /// Upstream `TextAffinity` (`dart:ui`): which side of an ambiguous offset a
@@ -4418,6 +4519,99 @@ two";
         });
         assert!(!does_not.handles_force_press());
         assert!(does_not.handles_selection());
+    }
+
+    #[test]
+    fn all_nineteen_callbacks_are_accounted_for() {
+        // Every walk below is over this list, so a row lost from it would not
+        // fail anything -- the walks would just stop looking. The count is
+        // what upstream's `buildGestureDetector` passes, minus the four
+        // arguments that are not callbacks.
+        assert_eq!(GestureHandler::ALL.len(), 19);
+        let mut seen = GestureHandler::ALL.to_vec();
+        let before = seen.len();
+        seen.sort_by_key(|handler| format!("{handler:?}"));
+        seen.dedup();
+        assert_eq!(seen.len(), before, "and none of them listed twice");
+    }
+
+    #[test]
+    fn only_the_force_press_pair_is_gated_at_the_wiring() {
+        // Twenty callbacks, and exactly two are conditional. Everything else
+        // is connected whatever the delegate says and declines the work
+        // inside.
+        let does_not = TextSelectionGestureDetectorBuilder::new(Field {
+            force_press: false,
+            selectable: false,
+        });
+        let withheld: Vec<GestureHandler> = GestureHandler::ALL
+            .into_iter()
+            .filter(|handler| !does_not.wires(*handler))
+            .collect();
+        assert_eq!(
+            withheld,
+            vec![
+                GestureHandler::ForcePressStart,
+                GestureHandler::ForcePressEnd
+            ],
+            "and not one of the selection handlers"
+        );
+    }
+
+    #[test]
+    fn a_field_that_wants_force_press_is_wired_for_everything() {
+        let wants = TextSelectionGestureDetectorBuilder::new(Field {
+            force_press: true,
+            selectable: false,
+        });
+        for handler in GestureHandler::ALL {
+            assert!(wants.wires(handler), "{handler:?}");
+        }
+    }
+
+    #[test]
+    fn turning_selection_off_withholds_no_callback_at_all() {
+        // A field with selection off still has to take a tap -- tapping it
+        // moves focus and opens the keyboard -- so those recognizers stay in
+        // the arena and decline the work one at a time.
+        let no_selection = TextSelectionGestureDetectorBuilder::new(Field {
+            force_press: true,
+            selectable: false,
+        });
+        let with_selection = TextSelectionGestureDetectorBuilder::new(Field {
+            force_press: true,
+            selectable: true,
+        });
+        for handler in GestureHandler::ALL {
+            assert_eq!(
+                no_selection.wires(handler),
+                with_selection.wires(handler),
+                "{handler:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_force_press_assert_is_about_the_wiring_and_can_never_fire() {
+        // `assert(delegate.forcePressEnabled)` opens both force-press
+        // handlers, and the only caller is a wiring that exists only when the
+        // flag is true. Stated as the invariant it is.
+        for force_press in [false, true] {
+            let builder = TextSelectionGestureDetectorBuilder::new(Field {
+                force_press,
+                selectable: true,
+            });
+            for handler in [
+                GestureHandler::ForcePressStart,
+                GestureHandler::ForcePressEnd,
+            ] {
+                assert_eq!(
+                    builder.wires(handler),
+                    builder.handles_force_press(),
+                    "reached only when the field wants it"
+                );
+            }
+        }
     }
 
     #[test]
