@@ -22292,3 +22292,47 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 真问题：标签淡出的同时如果高度也跟着变，整条栏会抖。先查本项目
 `navigation_destinations.rs` 里 label behavior 在不在、`onlyShowSelected` 那一支怎么处理
 淡出期间的布局，按行为查。
+
+---
+
+## 第 321 轮：没有东西在收缩——是图标往上抬了半个标签的高度
+
+接上一轮的“下一步”查标签行为。本项目 `bottom_bars.rs` 里有 `shows_label(index)`，
+**但它是个布尔**；上游给出的是一条**动画**，而那条动画同时驱动**淡入淡出和布局**。
+布尔只拿到了这条动画的两个端点，中间那一段——也就是读者真正看见的全部——丢掉了。
+
+我上一轮猜的问题（“标签淡出时高度跟着变，整条栏会抖”）**上游根本不是那样解决的，而是
+不让它发生**：
+
+* **标签始终按全尺寸布局，不管动画说什么。** 会动的是**图标**。
+* 未选中（0）时图标独自在盒子里居中，标签排在它下面、掉到盒子外；
+  选中（1）时图标**往上抬正好半个标签的高度**，于是图标和标签**合在一起**居中。
+* 所以被插值的量是**图标离中心的偏移**，而 tween 的两端相差恰好是半个标签。
+  盒子的尺寸自始至终没变，旁边的目的地没有任何东西可以跟着抖。
+
+另外两条：
+
+* **标签是相对图标定位的，不是相对盒子**：`iconYPosition + iconSize.height`，
+  上游注释写着“标签永远直接出现在图标下方”。一个数同时定住两者，动画中途它们的间距
+  不可能漂开。
+* **三种行为里有两种压根不是动画**：`alwaysShow` 给的是常量 1
+  （`kAlwaysCompleteAnimation`），`alwaysHide` 给的是常量 0；只有 `onlyShowSelected`
+  才真的动，而且**去程用 `easeInOutCubicEmphasized`、回程用它的 `flipped`**——
+  两者不是同一条曲线。`flipped` 是沿对角线翻折，不是倒放，所以缓动在时间上保持形状，
+  而不是把加速过程反着放一遍。
+* **`FadeTransition(alwaysIncludeSemantics: true)`**：淡没了的标签**仍然会被读出来**。
+  这是 `alwaysHide` 之所以是个能用的设置、而不是“做一排没有名字的图片”的唯一原因。
+
+**变异扫描 12 个，第一遍全红。** 包括：`onlyShowSelected` 当成常量、`alwaysShow` 改成动画、
+两个常量对调、标签高度跟着动画收缩、标签改成相对盒子定位、图标抬一整个标签／抬半个自己、
+tween 反向、图标不动、标签按图标宽度居中、图标从顶部挂下来、淡出的标签被移出语义树。
+
+尺子：十六把全部 exit 0。门：6205 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`Curves.easeInOutCubicEmphasized` 和 `Curve.flipped` 这两样，本项目
+`animation.rs` 的 `Curve` 枚举里有没有？这一轮把“回程用 flipped”写进了文档，但**没有验证
+本项目能不能表示它**——`flipped` 是 `f(x) = 1 - curve(1 - x)`，一个把任意曲线沿对角线翻折的
+包装，而 `easeInOutCubicEmphasized` 是上游用两段三次贝塞尔拼出来的、Material 3 的强调缓动。
+先跑 `python tools/unwalked.py` 看 `Curve` 那一行（上一轮它还在报 `ElasticIn, ElasticOut,
+ElasticInOut` 没被走到），再按行为查这两样在不在。

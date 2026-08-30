@@ -198,6 +198,95 @@ impl NavigationRailDestination {
 /// semicircles. Upstream writes 16 rather than naming the stadium, and the
 /// two stay equal only by hand -- so a change to the height that forgot the
 /// radius would quietly square the ends.
+/// What drives a destination's label -- its fade **and** its layout, which are
+/// the same number. Upstream's `_DestinationLayoutAnimationBuilder`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LabelAnimationSource {
+    /// `kAlwaysCompleteAnimation`: the constant 1.
+    AlwaysShown,
+    /// `kAlwaysDismissedAnimation`: the constant 0.
+    AlwaysHidden,
+    /// The destination's own selection animation, put through
+    /// `Curves.easeInOutCubicEmphasized` going out and **its `flipped`**
+    /// coming back.
+    ///
+    /// The two are not the same curve. `flipped` is the curve reflected
+    /// through the diagonal, not played backwards, so the ease keeps its
+    /// shape in time rather than replaying its acceleration in reverse.
+    FromSelection,
+}
+
+/// Upstream's `_DestinationLayoutAnimationBuilder.build`.
+///
+/// Note that two of the three answers are **constants, not animations**. Under
+/// `alwaysShow` and `alwaysHide` the label does not move or fade at all when
+/// the selection changes; only `onlyShowSelected` animates. Reading
+/// [`crate::bottom_bars::NavigationBar::shows_label`] -- which answers the same
+/// question as a boolean -- gives the two endpoints of this and loses the
+/// middle, which is the whole of what the reader actually sees.
+pub fn destination_label_animation(
+    behavior: crate::component_themes::NavigationDestinationLabelBehavior,
+) -> LabelAnimationSource {
+    use crate::component_themes::NavigationDestinationLabelBehavior;
+    match behavior {
+        NavigationDestinationLabelBehavior::AlwaysShow => LabelAnimationSource::AlwaysShown,
+        NavigationDestinationLabelBehavior::AlwaysHide => LabelAnimationSource::AlwaysHidden,
+        NavigationDestinationLabelBehavior::OnlyShowSelected => LabelAnimationSource::FromSelection,
+    }
+}
+
+/// Where a destination's icon and label go, from upstream's
+/// `_NavigationDestinationLayoutDelegate.performLayout`.
+///
+/// # Nothing shrinks; the **icon** slides
+///
+/// The obvious way to hide a label is to let its height collapse -- and that
+/// would make the whole bar jitter as the reader moved between destinations.
+/// Upstream does not do it. The label is laid out at **full size whatever the
+/// animation says**, and what moves is the icon:
+///
+/// * unselected (0), the icon is centred in the box on its own, and the label
+///   sits below it, off the bottom;
+/// * selected (1), the icon is lifted by **half the label's height**, which is
+///   exactly what puts the icon and label *together* in the middle.
+///
+/// So the interpolated quantity is the icon's offset above centre, and the two
+/// ends of the tween differ by half a label. The box never changes size, so
+/// there is nothing for a neighbouring destination to react to.
+///
+/// # The label is placed relative to the icon, not to the box
+///
+/// `iconYPosition + iconSize.height` -- "label always appears directly below
+/// the icon". One number positions both, so the gap between them cannot drift
+/// apart mid-animation however the two are sized.
+pub fn destination_layout(
+    box_size: crate::render::Size,
+    icon_size: crate::render::Size,
+    label_size: crate::render::Size,
+    t: f32,
+) -> (crate::render::Offset, crate::render::Offset) {
+    let half = |value: f32| value / 2.0;
+    let begin = half(icon_size.height);
+    let end = half(icon_size.height) + half(label_size.height);
+    let y_position_offset = begin + (end - begin) * t;
+    let icon_y = half(box_size.height) - y_position_offset;
+    (
+        crate::render::Offset::new(half(box_size.width) - half(icon_size.width), icon_y),
+        crate::render::Offset::new(
+            half(box_size.width) - half(label_size.width),
+            icon_y + icon_size.height,
+        ),
+    )
+}
+
+/// Upstream wraps the label in `FadeTransition(alwaysIncludeSemantics: true)`.
+///
+/// A label faded to nothing is **still announced**. Under `alwaysHide` the
+/// labels are invisible to a reader looking at the bar and unchanged for one
+/// listening to it -- which is the only reason `alwaysHide` is a usable
+/// setting rather than a way to make a bar of unlabelled pictures.
+pub const LABEL_ALWAYS_INCLUDES_SEMANTICS: bool = true;
+
 /// Whether a destination draws its **selected** icon and label, from
 /// upstream's `animation.isForwardOrCompleted` in `navigation_bar.dart` (476,
 /// 499, 864) and `navigation_drawer.dart` (290, 305).
@@ -481,6 +570,109 @@ mod tests {
 
     fn widget() -> AnyWidget {
         leaf(|| Empty)
+    }
+
+    // -- Where the label goes while it fades, tick 321 ---------------------
+
+    fn size(width: f32, height: f32) -> crate::render::Size {
+        crate::render::Size::new(width, height)
+    }
+
+    #[test]
+    fn two_of_the_three_behaviours_do_not_animate_at_all() {
+        use crate::component_themes::NavigationDestinationLabelBehavior::*;
+        assert_eq!(
+            destination_label_animation(AlwaysShow),
+            LabelAnimationSource::AlwaysShown
+        );
+        assert_eq!(
+            destination_label_animation(AlwaysHide),
+            LabelAnimationSource::AlwaysHidden
+        );
+        assert_eq!(
+            destination_label_animation(OnlyShowSelected),
+            LabelAnimationSource::FromSelection,
+            "the only one where selecting moves anything"
+        );
+    }
+
+    #[test]
+    fn the_label_keeps_its_full_height_the_whole_way_across() {
+        // Letting the height collapse is the obvious way to hide a label, and
+        // it would make the whole bar jitter as the reader moved along it.
+        // What moves is the icon.
+        let box_size = size(80.0, 60.0);
+        let icon = size(24.0, 24.0);
+        let label = size(40.0, 16.0);
+
+        let gaps: Vec<f32> = [0.0, 0.25, 0.5, 0.75, 1.0]
+            .iter()
+            .map(|t| {
+                let (icon_at, label_at) = destination_layout(box_size, icon, label, *t);
+                label_at.dy - icon_at.dy
+            })
+            .collect();
+        for gap in &gaps {
+            assert!(
+                (gap - icon.height).abs() < 1e-5,
+                "the label sits directly below the icon at every point: {gaps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn selecting_lifts_the_icon_by_exactly_half_a_label() {
+        // Which is what re-centres the icon and label together.
+        let box_size = size(80.0, 60.0);
+        let icon = size(24.0, 24.0);
+        let label = size(40.0, 16.0);
+
+        let (unselected, _) = destination_layout(box_size, icon, label, 0.0);
+        let (selected, _) = destination_layout(box_size, icon, label, 1.0);
+        assert!(
+            (unselected.dy - selected.dy - label.height / 2.0).abs() < 1e-5,
+            "lifted by half the label's height"
+        );
+
+        // Unselected, the icon alone is centred.
+        assert!((unselected.dy - (box_size.height / 2.0 - icon.height / 2.0)).abs() < 1e-5);
+        // Selected, the icon and label together are.
+        let pair_top = selected.dy;
+        let pair_bottom = selected.dy + icon.height + label.height;
+        assert!(
+            ((pair_top + pair_bottom) / 2.0 - box_size.height / 2.0).abs() < 1e-5,
+            "the pair is centred, not the icon"
+        );
+    }
+
+    #[test]
+    fn a_label_with_no_height_leaves_the_icon_where_it_was() {
+        // The tween's two ends differ by half a label, so a label of nothing
+        // makes the animation a no-op -- which is the right degenerate case
+        // and shows the difference really is the label's height.
+        let box_size = size(80.0, 60.0);
+        let icon = size(24.0, 24.0);
+        let (start, _) = destination_layout(box_size, icon, size(0.0, 0.0), 0.0);
+        let (end, _) = destination_layout(box_size, icon, size(0.0, 0.0), 1.0);
+        assert_eq!(start, end);
+    }
+
+    #[test]
+    fn both_children_stay_centred_across_the_box() {
+        let box_size = size(80.0, 60.0);
+        let icon = size(24.0, 24.0);
+        let label = size(40.0, 16.0);
+        let (icon_at, label_at) = destination_layout(box_size, icon, label, 0.4);
+        assert!((icon_at.dx + icon.width / 2.0 - box_size.width / 2.0).abs() < 1e-5);
+        assert!((label_at.dx + label.width / 2.0 - box_size.width / 2.0).abs() < 1e-5);
+        assert_ne!(icon_at.dx, label_at.dx, "different widths, different lefts");
+    }
+
+    #[test]
+    fn a_faded_out_label_is_still_announced() {
+        // Which is the only thing that makes `alwaysHide` a usable setting
+        // rather than a way to produce a bar of unlabelled pictures.
+        assert!(LABEL_ALWAYS_INCLUDES_SEMANTICS);
     }
 
     // -- The selected look and what drives it, tick 320 --------------------
