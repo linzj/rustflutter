@@ -1380,6 +1380,20 @@ pub trait RenderBox: AsAny {
         false
     }
 
+    /// Upstream's `RenderMergeSemantics`: whether everything below this box
+    /// folds into one node instead of getting nodes of its own.
+    ///
+    /// Upstream sets `isSemanticBoundary` **and**
+    /// `isMergingSemanticsOfDescendants` together, and has to: a node you can
+    /// fold things into is precisely what a boundary is, so asking to merge
+    /// without becoming one would be asking the descendants to fold into
+    /// nothing. Here that pairing is not two flags but one fact -- a box that
+    /// answers true opens a node of its own and the walk folds its
+    /// descendants' labels into it.
+    fn merges_descendant_semantics(&self) -> bool {
+        false
+    }
+
     /// What this box says about itself to a screen reader, if anything.
     ///
     /// Upstream's `describeSemanticsConfiguration`, which fills in a
@@ -2685,6 +2699,9 @@ impl RenderBox for RenderRef {
     fn blocks_previously_painted_semantics(&self) -> bool {
         self.render.borrow().blocks_previously_painted_semantics()
     }
+    fn merges_descendant_semantics(&self) -> bool {
+        self.render.borrow().merges_descendant_semantics()
+    }
     fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         self.render.borrow().visit_children_for_semantics(visit)
     }
@@ -2813,6 +2830,9 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     /// the box stopped the question here.
     fn blocks_previously_painted_semantics(&self) -> bool {
         (**self).blocks_previously_painted_semantics()
+    }
+    fn merges_descendant_semantics(&self) -> bool {
+        (**self).merges_descendant_semantics()
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         (**self).layout(constraints)
@@ -8272,6 +8292,99 @@ impl RenderBox for RenderBlockSemanticsBox {
     /// before, not about what is inside.
     fn blocks_previously_painted_semantics(&self) -> bool {
         self.blocking.blocking()
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
+}
+
+/// Folds everything below it into one node -- the widget
+/// [`crate::semantics_markers::MergeSemantics`] had no render object for.
+///
+/// # The third shape in the family, and the only one that keeps what it takes
+///
+/// [`RenderExcludeSemanticsBox`] does not ask its descendants.
+/// [`RenderBlockSemanticsBox`] takes back what earlier siblings already said.
+/// This one asks its descendants and **keeps their words**, in one node
+/// instead of several -- a button whose icon and label would otherwise be two
+/// stops for a reader becomes one thing that says both.
+///
+/// The labels join with a newline, which is the separator
+/// [`SemanticsConfiguration::absorb`] already uses for the same job: that
+/// method is the full merge rule, modelled and unit-tested, and this walk
+/// cannot run through it (see the note on `SemanticsConfiguration`), so what
+/// is shared is the rule about how two labels become one.
+pub struct RenderMergeSemanticsBox {
+    merging: crate::render_semantics::RenderMergeSemantics,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderMergeSemanticsBox {
+    pub fn new(child: impl RenderBox + 'static) -> RenderMergeSemanticsBox {
+        RenderMergeSemanticsBox {
+            merging: crate::render_semantics::RenderMergeSemantics,
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderMergeSemanticsBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderMergeSemanticsBox>()?;
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn merges_descendant_semantics(&self) -> bool {
+        let _ = &self.merging;
+        crate::render_semantics::RenderMergeSemantics::is_merging_semantics_of_descendants()
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {

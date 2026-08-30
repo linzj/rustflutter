@@ -900,6 +900,12 @@ struct Collector {
     /// `MergeSemantics`; the rule here is the common case of both -- a node
     /// that gave itself a label speaks for everything under it.
     labelled_depth: usize,
+    /// Indices of the nodes opened by a merging box, innermost last. While
+    /// this is not empty, a descendant's label joins the node on top instead
+    /// of opening one of its own -- upstream's
+    /// `isMergingSemanticsOfDescendants`, which is why the merging box has to
+    /// be a boundary: there has to be a node to fold *into*.
+    merging: Vec<usize>,
     /// Where automatic ids for text nodes are handed out from.
     next_text_id: i32,
 }
@@ -1227,6 +1233,15 @@ pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
         collector.nodes.clear();
         collector.open.clear();
         collector.labelled_depth = 0;
+        // Belt and braces, and known to be: a mutation that deletes this line
+        // turns nothing red, because `describe_subtree` pushes and pops the
+        // merging stack around one recursive call and nothing between them can
+        // return early -- the only way to leave a stale index here is a panic
+        // mid-walk, after which nobody flushes again. It stays because the
+        // three lines above it are the same promise (a walk starts from
+        // nothing) and a stack that kept its contents across flushes would fold
+        // the next frame's whole tree into a node that no longer exists.
+        collector.merging.clear();
     });
     // Opened before the walk and closed after it, so that everything the walk
     // finds lands inside it -- in paint order, which is reading order.
@@ -1265,6 +1280,40 @@ pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
 fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
     if render.blocks_previously_painted_semantics() {
         block_previously_painted();
+    }
+
+    // A merging box is a boundary and a target at once: it opens a node with
+    // no label of its own, and its descendants fold their labels into that
+    // node rather than opening any. Upstream pairs `isSemanticBoundary` with
+    // `isMergingSemanticsOfDescendants` for exactly this reason -- there has
+    // to be a node to fold into.
+    if render.merges_descendant_semantics() {
+        let size = render.size();
+        let merged = open(
+            take_text_id(),
+            SemanticsProperties::label(""),
+            (
+                offset.dx,
+                offset.dy,
+                offset.dx + size.width,
+                offset.dy + size.height,
+            ),
+        );
+        if let Some(index) = merged {
+            COLLECTOR.with(|collector| collector.borrow_mut().merging.push(index));
+            render.visit_children_for_semantics(&mut |child, child_offset| {
+                describe_subtree(
+                    child,
+                    offset.plus(child_offset),
+                    clips.refined_by(render, child, offset),
+                );
+            });
+            COLLECTOR.with(|collector| {
+                collector.borrow_mut().merging.pop();
+            });
+            close(index);
+            return;
+        }
     }
 
     let opened = match render.describe_semantics() {
@@ -1505,11 +1554,37 @@ pub(crate) fn take_text_id() -> i32 {
 /// Where text node ids start. The third of the three ranges; see [`AUTO_BASE`].
 const TEXT_BASE: i32 = 2 << 28;
 
+/// What goes between two labels folded into one node.
+///
+/// Upstream has no name for this: it is the bare `'\n'` inside
+/// `SemanticsConfiguration._concatAttributedStrings`, which is the one place a
+/// merge joins two labels. Naming it here is not decoration -- the live merge in
+/// [`open`] and the modelled merge in [`concat_attributed_string`] are two
+/// separate pieces of code doing the same join, and a separator written out
+/// twice is a separator that can drift once. A reader hears the difference
+/// immediately: `"Save Ctrl S"` is one phrase, `"Save\nCtrl S"` is two.
+const MERGED_LABEL_SEPARATOR: &str = "\n";
+
 /// Opens a node during the walk, returning its index.
 fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) -> Option<usize> {
     COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
         if !collector.enabled {
+            return None;
+        }
+        // Inside a merge, a descendant says its piece into the merging node
+        // rather than becoming a stop of its own.
+        if let Some(&into) = collector.merging.last() {
+            let label = properties.label;
+            if !label.is_empty() {
+                let node = &mut collector.nodes[into];
+                if node.properties.label.is_empty() {
+                    node.properties.label = label;
+                } else {
+                    node.properties.label.push_str(MERGED_LABEL_SEPARATOR);
+                    node.properties.label.push_str(&label);
+                }
+            }
             return None;
         }
         let index = collector.nodes.len();
@@ -2932,7 +3007,7 @@ fn concat_attributed_string(
     if this_string.string().is_empty() {
         return other;
     }
-    &(&this_string.clone() + &AttributedString::new("\n")) + &other
+    &(&this_string.clone() + &AttributedString::new(MERGED_LABEL_SEPARATOR)) + &other
 }
 
 /// The actions a node keeps even while it is blocking user actions.
@@ -4597,6 +4672,218 @@ mod tests {
             both.iter().any(|label| label.contains("the page")),
             "nothing blocking, nothing hidden: {both:?}"
         );
+    }
+
+    #[test]
+    fn a_merged_button_is_one_stop_that_says_both_its_words() {
+        // The third shape in upstream's family. Exclusion does not ask;
+        // blocking takes back what was asked; merging asks and **keeps** the
+        // words, in one node instead of several -- an icon and a label that
+        // would otherwise be two stops for a reader become one thing saying
+        // both.
+        set_enabled(true);
+        let laid = |widget| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("mounted");
+            crate::render::RenderBox::layout(
+                &mut root,
+                crate::render::BoxConstraints::loose(200.0, 100.0),
+            );
+            root
+        };
+        let spoken = |root: &crate::render::BoxedRender| {
+            crate::semantics::mark_needs_update();
+            flush(Size::new(200.0, 100.0), root)
+                .unwrap_or_default()
+                .iter()
+                .map(|node| node.properties.label.clone())
+                .filter(|label| !label.is_empty())
+                .collect::<Vec<_>>()
+        };
+
+        let apart = laid(leaf(|| {
+            crate::widgets::Column::new()
+                .push(crate::widgets::Text::new("Save"))
+                .push(crate::widgets::Text::new("Ctrl S"))
+        }));
+        assert_eq!(
+            spoken(&apart),
+            vec!["Save".to_string(), "Ctrl S".to_string()],
+            "two stops when nothing merges them"
+        );
+
+        let together = laid(leaf(|| {
+            crate::render::RenderMergeSemanticsBox::new(
+                crate::widgets::Column::new()
+                    .push(crate::widgets::Text::new("Save"))
+                    .push(crate::widgets::Text::new("Ctrl S")),
+            )
+        }));
+        assert_eq!(
+            spoken(&together),
+            vec!["Save\nCtrl S".to_string()],
+            "one stop, both words, joined the way `absorb` joins them"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn merging_keeps_the_order_the_reader_would_have_heard() {
+        // Paint order is reading order, and folding must not reshuffle it:
+        // "Save / Ctrl S" and "Ctrl S / Save" are the same two words and a
+        // different sentence.
+        set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| {
+            crate::render::RenderMergeSemanticsBox::new(
+                crate::widgets::Column::new()
+                    .push(crate::widgets::Text::new("first"))
+                    .push(crate::widgets::Text::new("second"))
+                    .push(crate::widgets::Text::new("third")),
+            )
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 100.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = flush(Size::new(200.0, 100.0), &root).expect("somebody asked");
+        let labels: Vec<&str> = nodes
+            .iter()
+            .map(|node| node.properties.label.as_str())
+            .filter(|label| !label.is_empty())
+            .collect();
+        assert_eq!(labels, vec!["first\nsecond\nthird"]);
+        set_enabled(false);
+    }
+
+    #[test]
+    fn the_merge_lets_go_of_everything_painted_after_it() {
+        // The fold has an end, and the end is the box. A sibling painted after
+        // the merging box is nobody's descendant, so it stays a stop of its
+        // own; swallowing it would make "merge these two things" mean "merge
+        // the rest of the screen", which is a different and much worse widget.
+        set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| {
+            crate::widgets::Column::new()
+                .push(crate::render::RenderMergeSemanticsBox::new(
+                    crate::widgets::Column::new()
+                        .with_main_axis_size(crate::render::MainAxisSize::Min)
+                        .push(crate::widgets::Text::new("Save"))
+                        .push(crate::widgets::Text::new("Ctrl S")),
+                ))
+                .push(crate::widgets::Text::new("after"))
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = flush(Size::new(200.0, 200.0), &root).expect("somebody asked");
+        let labels: Vec<&str> = nodes
+            .iter()
+            .map(|node| node.properties.label.as_str())
+            .filter(|label| !label.is_empty())
+            .collect();
+        assert_eq!(labels, vec!["Save\nCtrl S", "after"]);
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_merge_inside_a_merge_is_still_one_stop() {
+        // The outer merge has already claimed everything below it, so the inner
+        // one has nothing left to claim: it opens no node of its own (`open`
+        // hands back `None` while merging), falls through to the ordinary path,
+        // and its children keep folding into the outer node. One stop, not two
+        // -- which is what a reader wants, and it falls out of the rule rather
+        // than needing a case of its own.
+        set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| {
+            crate::render::RenderMergeSemanticsBox::new(
+                crate::widgets::Column::new()
+                    .push(crate::widgets::Text::new("outer"))
+                    .push(crate::render::RenderMergeSemanticsBox::new(
+                        crate::widgets::Text::new("inner"),
+                    )),
+            )
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 100.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = flush(Size::new(200.0, 100.0), &root).expect("somebody asked");
+        let labels: Vec<&str> = nodes
+            .iter()
+            .map(|node| node.properties.label.as_str())
+            .filter(|label| !label.is_empty())
+            .collect();
+        assert_eq!(labels, vec!["outer\ninner"]);
+        set_enabled(false);
+    }
+
+    #[test]
+    fn the_merged_node_stands_where_the_merging_box_stands() {
+        // The fold has to produce a node a reader can *point at*, and the only
+        // rect that covers all the folded pieces is the merging box's own. Take
+        // it from one of the children and the highlight lands on half the
+        // button. The control is the same tree unmerged: the union of the two
+        // stops it produces is the rect the one merged stop has to have.
+        set_enabled(true);
+        // Shrink-wrapped on purpose: a `MainAxisSize::Max` column would stand
+        // taller than its two rows, and then "the box's rect" and "the union of
+        // the rows" would be two different answers and the assertion could not
+        // tell which one the code gave.
+        fn column() -> crate::render::RenderFlex {
+            crate::widgets::Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .push(crate::widgets::Text::new("top"))
+                .push(crate::widgets::Text::new("bottom"))
+        }
+        let spans = |widget| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("mounted");
+            crate::render::RenderBox::layout(
+                &mut root,
+                crate::render::BoxConstraints::loose(200.0, 100.0),
+            );
+            crate::semantics::mark_needs_update();
+            let nodes = flush(Size::new(200.0, 100.0), &root).expect("somebody asked");
+            let spoken: Vec<(f32, f32)> = nodes
+                .iter()
+                .filter(|node| !node.properties.label.is_empty())
+                .map(|node| (node.top, node.bottom))
+                .collect();
+            spoken
+        };
+
+        let apart = spans(leaf(column));
+        assert_eq!(apart.len(), 2, "two stops unmerged: {apart:?}");
+        let union = (
+            apart.iter().map(|it| it.0).fold(f32::MAX, f32::min),
+            apart.iter().map(|it| it.1).fold(f32::MIN, f32::max),
+        );
+
+        let together = spans(leaf(|| {
+            crate::render::RenderMergeSemanticsBox::new(column())
+        }));
+        assert_eq!(together.len(), 1, "one stop merged: {together:?}");
+        assert_eq!(
+            together[0], union,
+            "the folded node covers both rows, not one"
+        );
+        assert!(
+            union.1 - union.0 > 0.0,
+            "and the two rows are not the same row: {union:?}"
+        );
+        set_enabled(false);
     }
 
     #[test]
