@@ -21020,3 +21020,83 @@ hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engi
 `CupertinoNavigationBarBackButton` 在**没有上一页标题可用**时说的话，所以真正要查的不是
 这个字符串，是**那条回退链**：上游先用上一页的 `previousPageTitle`，再退到上一页的
 `middle`，最后才退到这个词。端口的返回按钮现在在这三级里走到哪一级？先按行为查。
+
+## 第 298 轮：一个太长的标题不是被截断，是被换掉
+
+`CupertinoLocalizations` 的最后一个，`backButtonLabel`（"Back"）。查的不是这个字符串,
+是它出现的**两个**地方——而它们做的是两件不同的事。
+
+### 一、看得见的那一路：`> 12` 就换词
+
+    if (previousTitle == null) {
+      return const SizedBox.shrink();
+    }
+    var textWidget = Text(previousTitle, maxLines: 1, overflow: TextOverflow.ellipsis);
+    if (previousTitle.length > 12) {
+      textWidget = Text(CupertinoLocalizations.of(context).backButtonLabel);
+    }
+
+**先建好带省略号的 `Text`，然后在标题超过十二时整个扔掉。** 所以那个省略号只会落在
+**短**标题身上（窄条里放不下时），长标题走的是另一条路：**换成 "Back"**。
+
+端口原来直接省略号截断，没有这条规则——"Notification Settings" 会显示成
+"Notification Set…"，而 iOS 显示 "Back"。**后者不只是更短：返回标签的作用是说出你要去
+哪儿，半个名字不是名字。**
+
+### 十二是 UTF-16 码元，不是字节也不是字符
+
+Dart 的 `String.length` 数的是 UTF-16 码元。三种数法在这里会分道扬镳:
+
+* `"Настройки"`：9 个码元（可以显示），**18 个字节**（按字节数就误判成太长）；
+* 七个 emoji：7 个 `char`，**14 个码元**（Dart 会换词，按 `char` 数就放过去了）。
+
+用 `encode_utf16().count()`，两种误判各钉了一条测试。
+
+### 二、听得见的那一路：无论显示什么，读屏器只听见 "Back"
+
+    Semantics(
+      container: true,
+      excludeSemantics: true,
+      label: localizations.backButtonLabel,
+      button: true,
+      child: ...,
+    )
+
+`excludeSemantics: true` 把底下整棵子树的语义**丢掉**，换成这一个词。所以按钮上写着
+"Settings" 的那一页，读者听到的仍是 "Back"——而且**不会把页面标题听两遍**,
+那个标题已经由它自己的页面播报过了。端口这个按钮原来没有任何语义标签。
+
+### 一条写反了的文档
+
+端口 `previous_page_title` 的文档写着：
+
+    Unset, the button shows the generic word for "back" rather than nothing:
+    a bare chevron says which way but not to what.
+
+**正好反了。** 上游：没设 → `SizedBox.shrink()`，什么都不显示；**是标题太长才用那个词
+顶替**。这句不是过期（第 295 轮那种），是**从来就是错的**——crate 里没有任何东西查过它,
+读它的人会照着实现出一条不存在的回退。
+
+三个结果因此是：**沉默、标题、那个词**；而你得到哪一个，跟哪个是"默认"没有关系。
+
+### 十条改错：九红，第十条**事先声明**为绿
+
+第十条是"让 nav bar 重新绕过这条规则"——**渲染树走不到那个 `Text`**，第 295 轮已经把
+这个限制写进代码（`RenderBox::visit_children` 默认空实现）。这是**连续第三轮**碰到它:
+295 的占位符、296 的月份形、这一轮的返回标签，每一轮凡是碰到 build 里的接线都要付这
+笔账。**它现在是这套测试设施里最大的单个洞。**
+
+`CupertinoLocalizations` 的 45 个成员，**现在 0 个在 crate 里没有对应物**（这一支从
+13 个缺口开始，用了七轮）。队头那个 2/46 的比值仍然不会动，原因见第 292 轮。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 2,
+hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engines 全部不
+落后。十六把尺子全部 exit 0。
+门：6078 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：不再追 `CupertinoLocalizations`——它已清干净，比值动不了。转去补那个连续
+三轮都在付账的洞：**给根到叶之间的渲染对象补 `visit_children`**，这样 build 里的接线
+才能被测试看见。先按行为查：`RenderBox::visit_children` 有默认空实现，哪些节点覆盖了
+它、哪些没有；从 `CupertinoSearchTextField` 那条路径（Row / Padding / Pointer /
+ConstrainedBox）上缺的那几个开始，第 295 轮那条断言就是白捡的。

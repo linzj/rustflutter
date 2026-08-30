@@ -321,6 +321,17 @@ impl DefaultCupertinoLocalizations {
     /// names, which is why the per-widget override is a
     /// `clearButtonSemanticLabel` rather than a `clearButtonText`.
     pub const CLEAR_BUTTON_LABEL: &'static str = "Clear";
+    /// Upstream `backButtonLabel`, and it does **two** jobs in the navigation
+    /// bar that are worth keeping apart.
+    ///
+    /// It is the `Semantics.label` of the whole back button, under
+    /// `excludeSemantics: true` -- so a screen reader hears this word and
+    /// never the visible label, whatever that turned out to be. And it is the
+    /// **replacement** for a previous-page title longer than twelve UTF-16
+    /// units, which is a visible substitution rather than an announcement.
+    ///
+    /// See [`crate::cupertino::CupertinoNavigationBarBackButton::label_for`].
+    pub const BACK_BUTTON_LABEL: &'static str = "Back";
     /// Upstream `noSpellCheckReplacementsLabel`, the sentence a Cupertino
     /// spell-check toolbar shows **instead of** suggestions.
     ///

@@ -2092,9 +2092,16 @@ impl Component for CupertinoNavigationBar {
                             laid_out: Size::ZERO,
                         }),
                 );
-                if let Some(title) = &previous_title {
+                // A title longer than twelve UTF-16 units is *replaced* by
+                // the generic word, not ellipsized -- see
+                // `CupertinoNavigationBarBackButton::label_for`. The ellipsis
+                // below is upstream's too, and only a short title in a narrow
+                // bar ever reaches it.
+                if let Some(text) =
+                    CupertinoNavigationBarBackButton::label_for(previous_title.as_deref()).text()
+                {
                     row = row.push(
-                        Text::new(title.clone())
+                        Text::new(text.to_string())
                             .with_size(17.0)
                             .with_color(primary)
                             .with_soft_wrap(false)
@@ -5901,9 +5908,15 @@ impl CupertinoPageScaffoldBackgroundColor {
 /// two things doing one job, which one widget could not.
 pub struct CupertinoNavigationBarBackButton {
     pub color: Option<Color>,
-    /// Upstream's `previousPageTitle`. Unset, the button shows the generic
-    /// word for "back" rather than nothing: a bare chevron says which way but
-    /// not to what.
+    /// Upstream's `previousPageTitle`.
+    ///
+    /// **This doc used to say the opposite** -- that an unset title shows the
+    /// generic word, "because a bare chevron says which way but not to what".
+    /// Upstream does the reverse: an unset title shows *nothing* beside the
+    /// chevron, and it is a title **too long** that gets replaced by the word.
+    /// See [`CupertinoNavigationBarBackButton::label_for`], which is the rule
+    /// written out, and the sentence was wrong rather than merely stale --
+    /// nothing in the crate had ever checked it.
     pub previous_page_title: Option<String>,
     #[allow(clippy::type_complexity)]
     pub on_pressed: Option<std::rc::Rc<dyn Fn()>>,
@@ -5947,6 +5960,97 @@ impl CupertinoNavigationBarBackButton {
     pub fn with_color(mut self, color: Color) -> Self {
         self.color = Some(color);
         self
+    }
+
+    /// Upstream's bare `12` in `_BackLabel._buildPreviousTitleWidget`.
+    ///
+    /// Not a width and not an ellipsis threshold: a **count of UTF-16 code
+    /// units**, which is what Dart's `String.length` is. `"Ärger"` counts 5
+    /// here and in Dart; an emoji outside the basic plane counts 2 in both.
+    /// Counting bytes would cut a Cyrillic title in half its true length, and
+    /// counting `char`s would let a title of thirteen astral glyphs through
+    /// where Dart sees twenty-six.
+    pub const MAX_PREVIOUS_TITLE_UNITS: usize = 12;
+
+    /// What sits beside the chevron.
+    ///
+    /// ```dart
+    /// if (previousTitle == null) {
+    ///   return const SizedBox.shrink();
+    /// }
+    /// var textWidget = Text(previousTitle, maxLines: 1, overflow: TextOverflow.ellipsis);
+    /// if (previousTitle.length > 12) {
+    ///   textWidget = Text(CupertinoLocalizations.of(context).backButtonLabel);
+    /// }
+    /// ```
+    ///
+    /// **A long title is replaced, not ellipsized.** The `Text` upstream
+    /// builds first -- with `maxLines: 1` and an ellipsis -- is thrown away
+    /// whenever the title runs past twelve, so the ellipsis is only ever seen
+    /// on a *short* title in a bar too narrow for it. A port that kept the
+    /// ellipsis and dropped the length test would show "Notification Set…"
+    /// where iOS shows "Back", which is worse than it looks: the point of the
+    /// back label is to name where you are going, and half a name is not a
+    /// name.
+    ///
+    /// The `null` case is genuinely nothing -- `SizedBox.shrink()`, not the
+    /// generic word. So the three outcomes are: silence, the title, the word;
+    /// and which one you get has nothing to do with which is the "default".
+    pub fn label_for(previous_title: Option<&str>) -> BackLabel {
+        let Some(title) = previous_title else {
+            return BackLabel::Nothing;
+        };
+        if title.encode_utf16().count() > CupertinoNavigationBarBackButton::MAX_PREVIOUS_TITLE_UNITS
+        {
+            return BackLabel::Generic;
+        }
+        BackLabel::PreviousTitle(title.to_string())
+    }
+
+    /// What a screen reader is told, which is **not** what the button shows.
+    ///
+    /// ```dart
+    /// Semantics(
+    ///   container: true,
+    ///   excludeSemantics: true,
+    ///   label: localizations.backButtonLabel,
+    ///   button: true,
+    ///   child: ...,
+    /// )
+    /// ```
+    ///
+    /// `excludeSemantics: true` throws away everything underneath -- the
+    /// chevron and whatever the label turned out to be -- and puts one word in
+    /// its place. So a reader on a page whose back button reads "Settings"
+    /// hears "Back", always, and never hears the page title twice: the title
+    /// is already announced by the page it belongs to.
+    pub fn semantics_label() -> &'static str {
+        crate::cupertino_app::DefaultCupertinoLocalizations::BACK_BUTTON_LABEL
+    }
+}
+
+/// What [`CupertinoNavigationBarBackButton::label_for`] decided to put beside
+/// the chevron.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BackLabel {
+    /// `SizedBox.shrink()`: no previous title to name.
+    Nothing,
+    /// The previous page's title, short enough to fit in a bar.
+    PreviousTitle(String),
+    /// The localized word, because the title was too long to be one.
+    Generic,
+}
+
+impl BackLabel {
+    /// The text actually drawn, or `None` for the empty case.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            BackLabel::Nothing => None,
+            BackLabel::PreviousTitle(title) => Some(title),
+            BackLabel::Generic => {
+                Some(crate::cupertino_app::DefaultCupertinoLocalizations::BACK_BUTTON_LABEL)
+            }
+        }
     }
 }
 
@@ -7439,6 +7543,100 @@ mod tab_bar_tests {
         assert!(!CupertinoTabBar::is_opaque(
             CupertinoTheme::dark().bar_background_color
         ));
+    }
+
+    #[test]
+    fn a_back_button_with_nothing_to_name_shows_nothing() {
+        // `SizedBox.shrink()`, not the generic word. The doc on
+        // `previous_page_title` claimed the opposite until this round, and
+        // nothing had ever checked it.
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(None),
+            BackLabel::Nothing
+        );
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(None).text(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_title_too_long_to_be_a_name_is_replaced_by_the_word() {
+        // Not ellipsized -- replaced. Half a name is not a name, and the
+        // point of the back label is to say where you are going.
+        let long = "Notification Settings";
+        assert!(long.encode_utf16().count() > 12);
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(Some(long)),
+            BackLabel::Generic
+        );
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(Some(long)).text(),
+            Some("Back")
+        );
+    }
+
+    #[test]
+    fn the_threshold_is_above_twelve_and_not_at_it() {
+        let twelve = "abcdefghijkl";
+        assert_eq!(twelve.encode_utf16().count(), 12);
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(Some(twelve)),
+            BackLabel::PreviousTitle(twelve.to_string())
+        );
+        let thirteen = "abcdefghijklm";
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(Some(thirteen)),
+            BackLabel::Generic
+        );
+    }
+
+    #[test]
+    fn the_count_is_utf16_units_because_dart_string_length_is() {
+        // Bytes would cut a Cyrillic title to half its true length; `char`s
+        // would let thirteen astral glyphs through where Dart sees
+        // twenty-six.
+        let cyrillic = "Настройки";
+        assert_eq!(cyrillic.encode_utf16().count(), 9, "nine units to Dart");
+        assert!(
+            cyrillic.len() > 12,
+            "and eighteen bytes, which would misjudge it"
+        );
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(Some(cyrillic)),
+            BackLabel::PreviousTitle(cyrillic.to_string())
+        );
+
+        // Seven astral glyphs: seven `char`s, fourteen UTF-16 units.
+        let astral = "\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}\u{1F600}";
+        assert_eq!(astral.chars().count(), 7);
+        assert_eq!(astral.encode_utf16().count(), 14);
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(Some(astral)),
+            BackLabel::Generic,
+            "Dart counts fourteen and replaces it"
+        );
+    }
+
+    #[test]
+    fn the_reader_always_hears_back_whatever_the_button_shows() {
+        // `excludeSemantics: true` throws the subtree's semantics away and
+        // puts one word in its place, so the visible label and the spoken one
+        // are independent.
+        assert_eq!(CupertinoNavigationBarBackButton::semantics_label(), "Back");
+        for title in [None, Some("Inbox"), Some("Notification Settings")] {
+            let shown = CupertinoNavigationBarBackButton::label_for(title);
+            assert_eq!(
+                CupertinoNavigationBarBackButton::semantics_label(),
+                "Back",
+                "shown as {shown:?}"
+            );
+        }
+        // And on the one page where they agree, they agree by coincidence.
+        assert_eq!(
+            CupertinoNavigationBarBackButton::label_for(Some("Notification Settings")).text(),
+            Some(CupertinoNavigationBarBackButton::semantics_label())
+        );
     }
 
     #[test]
