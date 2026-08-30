@@ -25093,3 +25093,47 @@ C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建
 一样就抽成一条、两处都接上；**不一样的地方就是缺口，先查那里**
 （上游 `SimpleDialog` 的兜底是 `dialogLabel` 而不是 `alertDialogLabel`，
 所以大概率有一个真差别，那正是要确认的东西）。
+
+---
+
+## 第 371 轮：那“第二份副本”不是副本——而真正会被复制的是我下一步要写的东西
+
+按上一轮的“下一步”先 diff `SimpleDialog` 与 `AlertDialog` 的
+`resolved_semantic_label`。差异只有一行：
+
+```
+-        L10n::modal_surface_label(platform, self.semantic_label.as_deref(), L10n::DIALOG_LABEL)
++        L10n::modal_surface_label(platform, self.semantic_label.as_deref(), L10n::ALERT_DIALOG_LABEL)
+```
+
+**所以它不是同一条规则写了两遍。** 共享的部分早就抽好了（`modal_surface_label`），
+剩下的那一处差别**是上游自己的区分**：alert 打断，dialog 询问。
+上一轮我猜“大概率有一个真差别”——**是真的，而且已经被正确处理了**。如实记下。
+
+**但差点被复制的是另一个东西。** 上一轮我把宣告用的包装**内联写在 `AlertDialog::build` 里**，
+而这一轮要给 `SimpleDialog` 接同样的东西——**照抄一遍就是第二份副本**。
+所以先把它抽成 `announced(surface, label)`，两处都调它，
+那段解释“上游四个标志为什么只接两个”的文档也从内联注释搬到了函数上，**只留一份**。
+
+于是两个对话框共享**苹果那条分支**，不会走散：
+没写标签的对话框在 iOS 上谁都不命名路由，因为 VoiceOver 的焦点本来就落在标题上。
+
+**变异扫描 6 个，全红**，而且分三层各钉一处：
+
+* **共用规则**：不宣告（5 红）、没话也硬宣告（2 红）、不命名路由（5 红）。
+* **两个调用点各自独立**：alert 不宣告（4 红）、simple dialog 不宣告（2 红）。
+* **两者之所以是两个的那件事**：把 `DIALOG_LABEL` 换成 `ALERT_DIALOG_LABEL`，
+  让两个对话框兜底成同一个词——**3 红**。
+  这一条是这一轮的要害：如果它不红，那“共享”就把一个真区分抹平了。
+
+尺子：十六把全部 exit 0。门：Rust 6331 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+
+第 369 轮那 26 个哑控件，接掉三个（TabBar、AlertDialog、SimpleDialog），还剩 23 个。
+
+**下一步**：`Dialog`（`controls.rs:1229`，那个朴素的容器）就在旁边，
+但**先按行为查它是不是同一种东西**：上游 `Dialog` 也有 `semanticLabel`，
+可它有没有 `resolved_semantic_label`、有没有兜底词？
+**有就用 `announced` 接上，第三个调用点；没有就说明它在本项目里是纯容器**——
+那它该不该宣告就是另一个问题（一个被 `AlertDialog` 包着的 `Dialog` 宣告两遍会更糟）。
+**先确认它今天在树里是被谁用的，再决定**，别默认它和另外两个同类。
