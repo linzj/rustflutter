@@ -6816,6 +6816,13 @@ impl ListTileThemeData {
         self
     }
 
+    /// Upstream's `ListTileThemeData.visualDensity`, the middle step of
+    /// `visualDensity ?? tileTheme.visualDensity ?? theme.visualDensity`.
+    pub fn with_visual_density(mut self, density: VisualDensity) -> Self {
+        self.visual_density = Some(density);
+        self
+    }
+
     pub fn with_horizontal_title_gap(mut self, gap: f32) -> Self {
         self.horizontal_title_gap = Some(gap);
         self
@@ -6893,6 +6900,12 @@ pub struct ResolvedListTile {
     pub tile_color: Option<Color>,
     pub text_color: Color,
     pub dense: bool,
+    /// Upstream's `visualDensity ?? tileTheme.visualDensity ?? theme.visualDensity`.
+    ///
+    /// Carried here rather than read at the call site because it is the third
+    /// step of the same chain everything else on this struct came down, and a
+    /// caller that reached past it to `ThemeData` would skip the tile theme.
+    pub visual_density: VisualDensity,
     /// The three text styles, each `tile ?? tileTheme ?? defaults`.
     ///
     /// Upstream's M3 defaults are three *different* roles -- `bodyLarge` for
@@ -7025,6 +7038,19 @@ impl ResolvedListTile {
         dense_override: Option<bool>,
         selected_color: Option<Color>,
     ) -> ResolvedListTile {
+        ResolvedListTile::of_with_density(context, selected, dense_override, selected_color, None)
+    }
+
+    /// The same, with the widget's own visual density as the first step of
+    /// upstream's `visualDensity ?? tileTheme.visualDensity ??
+    /// theme.visualDensity`.
+    pub fn of_with_density(
+        context: &mut BuildContext,
+        selected: bool,
+        dense_override: Option<bool>,
+        selected_color: Option<Color>,
+        density_override: Option<VisualDensity>,
+    ) -> ResolvedListTile {
         let data = ListTileTheme::of(context);
         let theme = ThemeData::of(context);
         let dense = dense_override.or(data.dense).unwrap_or(false);
@@ -7052,6 +7078,9 @@ impl ResolvedListTile {
             min_leading_width: data
                 .min_leading_width
                 .unwrap_or(ResolvedListTile::MIN_LEADING_WIDTH),
+            visual_density: density_override
+                .or(data.visual_density)
+                .unwrap_or(ThemeData::of(context).visual_density),
             min_tile_height: data.min_tile_height.unwrap_or(if dense {
                 ResolvedListTile::DENSE_MIN_TILE_HEIGHT
             } else {
@@ -14151,6 +14180,74 @@ mod tests {
             DividerTheme::of,
         );
         assert_eq!(seen.color, Some(Color::argb(255, 1, 2, 3)));
+    }
+
+    #[test]
+    fn the_visual_density_comes_down_the_same_three_steps_as_everything_else() {
+        // `visualDensity ?? tileTheme.visualDensity ?? theme.visualDensity`.
+        // Tick 341 left this as a hardcoded 0.0 in `ListTile::build`, which
+        // is the step-three answer for a standard theme and wrong for any
+        // application that set a density anywhere.
+        let compact = VisualDensity {
+            horizontal: -1.0,
+            vertical: -2.0,
+        };
+
+        // Step three: nobody said, so the theme's own.
+        let dense_theme = ThemeData::light().with_visual_density(compact);
+        let installed = dense_theme.clone();
+        let from_theme = read_in(
+            move |child| MaterialTheme::new(installed, child),
+            |context| ResolvedListTile::of(context, false, None),
+        );
+        assert_eq!(from_theme.visual_density, compact);
+
+        // Step two: the tile theme, over the ThemeData.
+        let roomy = VisualDensity {
+            horizontal: 1.0,
+            vertical: 2.0,
+        };
+        let both = ThemeData::light()
+            .with_visual_density(compact)
+            .with_list_tile_theme(ListTileThemeData::new().with_visual_density(roomy));
+        let installed = both.clone();
+        let from_tile_theme = read_in(
+            move |child| MaterialTheme::new(installed, child),
+            |context| ResolvedListTile::of(context, false, None),
+        );
+        assert_eq!(
+            from_tile_theme.visual_density, roomy,
+            "the tile theme is nearer than the ThemeData"
+        );
+    }
+
+    #[test]
+    fn density_shifts_a_row_and_dense_picks_a_different_one() {
+        // The two are easy to conflate and they compose: `dense` chooses the
+        // 48 row instead of the 56 one, and the density then moves whichever
+        // was chosen by a signed number of pixels.
+        type Tile = ResolvedListTile;
+        let shift = VisualDensity {
+            horizontal: 0.0,
+            vertical: -2.0,
+        }
+        .base_size_adjustment()
+        .1;
+        assert!(shift < 0.0, "a compact density is negative: {shift}");
+
+        assert_eq!(
+            Tile::default_tile_height(false, false, false, shift),
+            56.0 + shift
+        );
+        assert_eq!(
+            Tile::default_tile_height(false, false, true, shift),
+            48.0 + shift,
+            "dense picked the other row, and the shift still applies"
+        );
+        assert_eq!(
+            Tile::default_tile_height(false, true, true, shift),
+            64.0 + shift
+        );
     }
 
     #[test]

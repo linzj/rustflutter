@@ -2271,6 +2271,8 @@ pub struct ListTile {
     enabled: bool,
     /// Upstream's `dense`, three-valued: `None` defers to the theme.
     dense: Option<bool>,
+    /// Upstream's `visualDensity`, likewise three-valued.
+    visual_density: Option<crate::theme::VisualDensity>,
     /// Upstream's `isThreeLine`, which upstream asserts implies a subtitle --
     /// three lines with nothing on the second two is not a layout.
     is_three_line: bool,
@@ -2295,6 +2297,7 @@ impl ListTile {
             // Upstream's default. A tile is live unless it is said not to be.
             enabled: true,
             dense: None,
+            visual_density: None,
             is_three_line: false,
             content_padding: None,
             min_leading_width: None,
@@ -2348,6 +2351,18 @@ impl ListTile {
     /// Upstream's `dense`.
     pub fn with_dense(mut self, dense: bool) -> Self {
         self.dense = Some(dense);
+        self
+    }
+
+    /// Upstream's `visualDensity`, the first step of
+    /// `visualDensity ?? tileTheme.visualDensity ?? theme.visualDensity`.
+    ///
+    /// Separate from `dense`, which the two are easy to conflate: `dense`
+    /// picks a different **row** from upstream's height table (48 rather than
+    /// 56 for one line), while this shifts whichever row was picked by a
+    /// signed number of pixels. A tile can be both, and the two compose.
+    pub fn with_visual_density(mut self, density: crate::theme::VisualDensity) -> Self {
+        self.visual_density = Some(density);
         self
     }
 
@@ -2412,11 +2427,12 @@ impl Component for ListTile {
         // own colour all come off `ListTileTheme.of(context)` before the
         // control's defaults. `selected` is passed in because it chooses
         // between two different sets of those.
-        let tile = crate::component_themes::ResolvedListTile::of_with_selected_color(
+        let tile = crate::component_themes::ResolvedListTile::of_with_density(
             context,
             self.selected,
             self.dense,
             self.selected_color,
+            self.visual_density,
         );
         let content_padding = self.content_padding.unwrap_or(tile.content_padding);
         let title_gap = tile.horizontal_title_gap;
@@ -2432,7 +2448,10 @@ impl Component for ListTile {
                     self.is_three_line,
                     self.subtitle.is_some(),
                     tile.dense,
-                    0.0,
+                    // Upstream's `baseDensity.dy`. Only the vertical half:
+                    // this is a height, and the horizontal adjustment is
+                    // what the tile's padding takes.
+                    tile.visual_density.base_size_adjustment().1,
                 ),
             };
         let tile_color = tile.tile_color;
@@ -5187,6 +5206,114 @@ mod tests {
             value_indicator_text_style: TextStyle::default(),
             shape_theme: crate::slider_theme::SliderThemeData::new(),
         }
+    }
+
+    /// A list tile's laid-out height under a Material theme of its own,
+    /// which [`tile_height`] cannot express -- that one publishes a
+    /// `Theme::dark()` and the visual density lives on `ThemeData`.
+    fn tile_height_themed(tile: ListTile, theme: crate::theme::ThemeData) -> f32 {
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(theme, component(tile)));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            BoxConstraints {
+                min_width: 0.0,
+                max_width: 400.0,
+                min_height: 0.0,
+                max_height: 400.0,
+            },
+        )
+        .height
+    }
+
+    #[test]
+    fn a_theme_density_shortens_the_row_a_tile_asks_for() {
+        // Tick 341 left `ListTile::build` passing a hardcoded 0.0 where
+        // upstream passes `visualDensity.baseSizeAdjustment.dy`, so an
+        // application that set a density anywhere got the standard row.
+        let plain = tile_height_themed(
+            ListTile::new("Wi-Fi").with_subtitle("Connected"),
+            crate::theme::ThemeData::light(),
+        );
+        assert_eq!(plain, 72.0, "two lines at the standard density");
+
+        let compact = tile_height_themed(
+            ListTile::new("Wi-Fi").with_subtitle("Connected"),
+            crate::theme::ThemeData::light().with_visual_density(crate::theme::VisualDensity {
+                horizontal: 0.0,
+                vertical: -2.0,
+            }),
+        );
+        assert!(
+            compact < plain,
+            "the density took height off the row: {plain} then {compact}"
+        );
+        assert_eq!(compact, 72.0 - 8.0, "two density units, four pixels each");
+    }
+
+    #[test]
+    fn the_tiles_own_density_beats_the_theme_it_sits_in() {
+        // Step one of `visualDensity ?? tileTheme.visualDensity ??
+        // theme.visualDensity`.
+        let roomy_theme =
+            crate::theme::ThemeData::light().with_visual_density(crate::theme::VisualDensity {
+                horizontal: 0.0,
+                vertical: 2.0,
+            });
+        let deferring = tile_height_themed(
+            ListTile::new("Wi-Fi").with_subtitle("Connected"),
+            roomy_theme.clone(),
+        );
+        assert_eq!(deferring, 72.0 + 8.0, "the theme's, with nothing nearer");
+
+        let insisting = tile_height_themed(
+            ListTile::new("Wi-Fi")
+                .with_subtitle("Connected")
+                .with_visual_density(crate::theme::VisualDensity {
+                    horizontal: 0.0,
+                    vertical: -2.0,
+                }),
+            roomy_theme,
+        );
+        assert_eq!(
+            insisting,
+            72.0 - 8.0,
+            "the tile's own, against a theme asking for the opposite"
+        );
+
+        // And against the *tile* theme, which is the nearer of the two it has
+        // to beat -- a widget that only outranked `ThemeData` would pass the
+        // check above and still lose here.
+        let roomy_tile_theme = crate::theme::ThemeData::light().with_list_tile_theme(
+            crate::component_themes::ListTileThemeData::new().with_visual_density(
+                crate::theme::VisualDensity {
+                    horizontal: 0.0,
+                    vertical: 2.0,
+                },
+            ),
+        );
+        assert_eq!(
+            tile_height_themed(
+                ListTile::new("Wi-Fi").with_subtitle("Connected"),
+                roomy_tile_theme.clone()
+            ),
+            72.0 + 8.0,
+            "the tile theme's, with nothing nearer"
+        );
+        assert_eq!(
+            tile_height_themed(
+                ListTile::new("Wi-Fi")
+                    .with_subtitle("Connected")
+                    .with_visual_density(crate::theme::VisualDensity {
+                        horizontal: 0.0,
+                        vertical: -2.0,
+                    }),
+                roomy_tile_theme
+            ),
+            72.0 - 8.0,
+            "the tile's own beats the tile theme too"
+        );
     }
 
     /// Every filled shape a slider draws, as colours. The value indicator's

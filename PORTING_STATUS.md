@@ -23388,3 +23388,43 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 先按行为查本项目有没有 `VisualDensity`／`base_size_adjustment`（`grep`），
 有就把它接上（那是这一轮留下的唯一一处“参数在、来源没接”），没有就把这个缺口
 写进 `default_tile_height` 的文档里说明为什么传零。**别把它留成一个没人说清的 0.0。**
+
+---
+
+## 第 342 轮：那个硬编码的 0.0 接上了——三步链条，而且步步都得测
+
+接上一轮留下的唯一一处松线：`default_tile_height` 收 `density_dy`，
+而 `ListTile::build` 传的是**写死的 0.0**，上游那里是 `visualDensity.baseSizeAdjustment.dy`。
+先查能不能接——**能**：`VisualDensity` 和 `base_size_adjustment()` 早就在 `theme.rs` 里，
+`ThemeData::visual_density` 在，`ListTileThemeData::visual_density` 也在。
+**只差控件自己那一格和接线**，所以这不是“记一笔”，是“接上”。
+
+上游是三步：`visualDensity ?? tileTheme.visualDensity ?? theme.visualDensity`。
+这一轮补齐：`ListTile` 加上自己的 `visual_density`（三值，`None` 让给主题），
+`ResolvedListTile` 多解析一格并新增 `of_with_density`，
+`ListTile::build` 传 `tile.visual_density.base_size_adjustment().1`——
+**只取竖直那一半**，因为这是个高度，水平那一半是内边距的事。
+
+文档里写清了 `dense` 和 `visual_density` 的区别（这两个最容易混）：
+**`dense` 换的是行**（一行从 56 换成 48），**密度移的是选中那一行**（带符号的像素数），
+两者可以同时生效、互相叠加。
+
+**变异扫描 6 个，第一遍 4 个没红，全是接线那一半**——判定链测了，**用它的地方没测**。
+补了两条走真实布局的测试（`tile_height_themed`：在自己的 `ThemeData` 下量一个 `ListTile` 的高）：
+主题密度让两行从 72 变 64；控件自己的密度压过主题。
+
+补完还剩一个没红：**“控件输给主题”**。原因是我那条测试拿控件去比的是 **`ThemeData`**（第三步），
+而把 `density_override.or(data.visual_density)` 反过来写，**只有在控件和“列表项主题”都设了的时候
+才看得出来**。加了那一组：列表项主题设成 +2、控件设成 −2，控件必须赢。这才转红。
+（一个只压过 `ThemeData` 的控件，能通过前一条断言而在这一条上输掉。）
+
+尺子：十六把全部 exit 0。门：6253 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`ListTile` 这条线上还有一个同型的可疑点值得按行为查一次——
+上游 `ListTile` 把 `visualDensity` 传给 `_RenderListTile` 之后，除了高度还用在别处吗？
+`base_size_adjustment()` 是一对 `(dx, dy)`，这一轮只用了 `dy`，而**水平那一半上游给了谁**
+还没查（多半是 `contentPadding` 或 `minLeadingWidth` 一类）。
+先在上游 `list_tile.dart` 里搜 `visualDensity` 的每一个使用点，逐个对照本项目有没有；
+**有用到而这里没接的就是下一个缺口，没有就把“水平那一半上游也没用在高度以外”写下来**，
+免得下次又对着 `.0` 那半边犯嘀咕。
