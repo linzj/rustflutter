@@ -222,6 +222,41 @@ impl CupertinoTextField {
         self.clear_button_mode.shows(has_text)
     }
 
+    /// What a screen reader calls the clear button.
+    ///
+    /// ```dart
+    /// final String clearLabel =
+    ///     widget.clearButtonSemanticLabel ?? CupertinoLocalizations.of(context).clearButtonLabel;
+    /// return Semantics(button: true, label: clearLabel, child: ...);
+    /// ```
+    ///
+    /// The button paints an icon and nothing else, so this word is the only
+    /// name it has. Upstream also marks the node `button: true` -- an icon in
+    /// a `GestureDetector` is not a button to a screen reader unless somebody
+    /// says so, and a label on a node that is not a button is read as static
+    /// text the reader will not offer to activate.
+    ///
+    /// `override_label` is upstream's `clearButtonSemanticLabel`, a widget
+    /// property; it is a parameter here rather than a field because this
+    /// struct is `Copy` and a per-instance `String` would end that for the
+    /// sake of one rarely-set word.
+    ///
+    /// `None` when there is no clear button to name, so a caller cannot
+    /// attach a label to something that is not on screen.
+    pub fn clear_button_semantics_label<'a>(
+        &self,
+        has_text: bool,
+        override_label: Option<&'a str>,
+    ) -> Option<&'a str> {
+        if !self.shows_clear_button(has_text) {
+            return None;
+        }
+        Some(
+            override_label
+                .unwrap_or(crate::cupertino_app::DefaultCupertinoLocalizations::CLEAR_BUTTON_LABEL),
+        )
+    }
+
     /// Upstream's `_onClearButtonTapped`: whether tapping it should reach
     /// `onChanged`.
     ///
@@ -640,6 +675,47 @@ mod overlay_visibility_tests {
     }
 
     // -- Decoration -------------------------------------------------------------
+
+    #[test]
+    fn the_clear_button_has_a_word_that_is_never_drawn() {
+        // It paints `CupertinoIcons.clear_thick_circled` and nothing else, so
+        // the localized word is the only name a screen reader has for it.
+        let mut field = CupertinoTextField::new();
+        field.clear_button_mode = OverlayVisibilityMode::Editing;
+        assert_eq!(
+            field.clear_button_semantics_label(true, None),
+            Some("Clear")
+        );
+    }
+
+    #[test]
+    fn a_button_that_is_not_showing_has_no_label_to_give() {
+        // Upstream builds the Semantics node inside `_buildClearButton`, so
+        // there is no node and no label when the button is not built.
+        let mut field = CupertinoTextField::new();
+        assert_eq!(field.clear_button_mode, OverlayVisibilityMode::Never);
+        assert_eq!(field.clear_button_semantics_label(true, None), None);
+
+        field.clear_button_mode = OverlayVisibilityMode::Editing;
+        assert_eq!(
+            field.clear_button_semantics_label(false, None),
+            None,
+            "empty field, no button, no label"
+        );
+        assert!(field.clear_button_semantics_label(true, None).is_some());
+    }
+
+    #[test]
+    fn the_widgets_own_label_replaces_the_localized_one() {
+        // `widget.clearButtonSemanticLabel ?? localizations.clearButtonLabel`
+        // -- it overrides rather than adds to.
+        let mut field = CupertinoTextField::new();
+        field.clear_button_mode = OverlayVisibilityMode::Always;
+        assert_eq!(
+            field.clear_button_semantics_label(false, Some("Erase query")),
+            Some("Erase query")
+        );
+    }
 
     #[test]
     fn a_clear_button_counts_as_decoration_before_it_appears() {

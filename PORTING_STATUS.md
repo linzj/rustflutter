@@ -20824,3 +20824,67 @@ hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engi
 `searchTextFieldPlaceholderLabel`（同一个控件的占位符）、
 `noSpellCheckReplacementsLabel`、`backButtonLabel`。先按行为查：从
 `CupertinoSearchTextField` 那两条开始，它们属于同一个控件。
+
+## 第 295 轮：两个写法一模一样的回退，落在控件的两半里
+
+`CupertinoSearchTextField` 那两条。上游把它们写成同一个句式——控件属性回退到本地化：
+
+```dart
+final String placeholder =
+    widget.placeholder ?? CupertinoLocalizations.of(context).searchTextFieldPlaceholderLabel;
+
+final String clearLabel =
+    widget.clearButtonSemanticLabel ?? CupertinoLocalizations.of(context).clearButtonLabel;
+```
+
+**两个 `??` 落在控件完全不同的两半里。** 上面那个进的是**画出来**的东西——没设占位符的
+搜索框不是一个空槽，它写着 "Search"。下面那个进的是**永远画不出来**的东西——清除键画的
+是 `CupertinoIcons.clear_thick_circled`，那个词只为读屏器存在，所以覆盖用的属性叫
+`clearButtonSemanticLabel` 而不是 `clearButtonText`。
+
+上游也在那个语义节点上写了 `button: true`：`GestureDetector` 里的一个图标，对读屏器来说
+不是按钮，除非有人说它是；而挂在非按钮节点上的 label 会被当成静态文字念，读者不会被
+提示可以激活它。
+
+### 一条过期的注释，把一个空槽留在了那里
+
+端口 `CupertinoSearchTextField` 的文档写着：
+
+    Upstream's default placeholder is the localized
+    `searchTextFieldPlaceholderLabel` ("Search"); there are no localizations
+    in this crate, so the placeholder is unset unless the caller sets one
+
+**写的时候是真的。** 这个 crate 后来长出了 `DefaultCupertinoLocalizations`，句子留在那里,
+于是一个不设占位符的搜索框是个**空的灰槽**，而上游那里有个词。
+
+`stale_notes.py` 没抓到它，而且这不是尺子的毛病：那句话**没点名反引号主语**,
+工具自己的文档写明"不点名主语的同类注释它够不着"。第 287 轮记过同一种。手工找到的。
+
+### 改错扫描抓出的那条，这一轮修不动，如实写在代码里
+
+八条改错里七条落红。第八条——**把 `build` 里那一行换回旧的 `if let Some(..)`,
+也就是把空槽装回去**——**零条落红**。
+
+这正是第 292 轮的教训又来一次：**测了决策，没测它被用上。** 而这一轮我去补了,
+补不成：想从渲染树走到 `RenderEditable` 把真正要画的字读回来，走了两个叶子就停——
+`RenderBox::visit_children` 默认是空实现，根到 editable 之间大部分节点没覆盖它。
+
+试过的东西都退掉了（探针、为它加的访问器），换成写在 `effective_placeholder` 的文档里：
+这一行是唯一的调用者，没有测试能证明它，能证明它的东西需要那些节点先有
+`visit_children`。**谁把那些节点的 `visit_children` 补上，这条断言就是白捡的**——
+在那之前写下来，而不是编一条假的。
+
+（顺带：这是一条具体的、可动手的下游工作，比"覆盖率低"那种条目硬得多。）
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 2,
+hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engines 全部不
+落后。十六把尺子全部 exit 0。
+门：6063 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`CupertinoLocalizations` 还剩 3 个——`datePickerStandaloneMonth`、
+`noSpellCheckReplacementsLabel`、`backButtonLabel`。先做 `datePickerStandaloneMonth`,
+它是这一批里唯一**英语看不出差别**的：俄语里月份跟在日后面用属格（"января"）、独立时用
+主格（"январь"），所以上游把它和 `datePickerMonth` 分成两个词；英语两者同形,
+`monthYear` 模式下的那一列因此在英语里怎么写都对——**这正是照着英语抄会漏掉的那种**。
+先按行为查：`CupertinoDatePickerMode::monthYear` 的月份列现在读的是哪一个。

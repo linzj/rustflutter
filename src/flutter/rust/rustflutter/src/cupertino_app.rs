@@ -303,6 +303,37 @@ impl DefaultCupertinoLocalizations {
     pub const CUT_BUTTON_LABEL: &'static str = "Cut";
     pub const COPY_BUTTON_LABEL: &'static str = "Copy";
     pub const PASTE_BUTTON_LABEL: &'static str = "Paste";
+    /// Upstream `clearButtonLabel`, and it sits in this list without being
+    /// one of its neighbours: the cut/copy/paste words are **painted** on
+    /// toolbar buttons, and this one is never drawn at all.
+    ///
+    /// `CupertinoTextField`'s clear button is an icon --
+    /// `CupertinoIcons.clear_thick_circled` -- and the word exists only for a
+    /// screen reader:
+    ///
+    /// ```dart
+    /// final String clearLabel =
+    ///     widget.clearButtonSemanticLabel ?? CupertinoLocalizations.of(context).clearButtonLabel;
+    /// return Semantics(button: true, label: clearLabel, child: ...);
+    /// ```
+    ///
+    /// So it is a localization whose whole audience cannot see the control it
+    /// names, which is why the per-widget override is a
+    /// `clearButtonSemanticLabel` rather than a `clearButtonText`.
+    pub const CLEAR_BUTTON_LABEL: &'static str = "Clear";
+    /// Upstream `searchTextFieldPlaceholderLabel`, and **the opposite case**:
+    /// this one is painted.
+    ///
+    /// ```dart
+    /// final String placeholder =
+    ///     widget.placeholder ?? CupertinoLocalizations.of(context).searchTextFieldPlaceholderLabel;
+    /// ```
+    ///
+    /// The two are written the same way -- a widget property falling back to
+    /// the localizations -- and land in different halves of the widget. A
+    /// search field with no placeholder set is not an empty well: it says
+    /// "Search".
+    pub const SEARCH_TEXT_FIELD_PLACEHOLDER_LABEL: &'static str = "Search";
     /// Capital A, where the Material table writes "Select all". The two are
     /// translated separately, so the difference is not a typo that would be
     /// caught downstream -- it survives into every locale.

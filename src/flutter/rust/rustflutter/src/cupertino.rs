@@ -3609,12 +3609,25 @@ pub struct CupertinoSearchTextFieldState {
 /// upstream's `controller.clear()`. The marks are drawn, not icon-font
 /// glyphs (see the module docs).
 ///
-/// Upstream's default placeholder is the localized
-/// `searchTextFieldPlaceholderLabel` ("Search"); there are no localizations
-/// in this crate, so the placeholder is unset unless the caller sets one
-/// with [`CupertinoSearchTextField::with_placeholder`]. The placeholder's
-/// color is the field's own muted color rather than `secondaryLabel`, a
-/// half-shade difference noted rather than fixed.
+/// The placeholder defaults to the localized
+/// `searchTextFieldPlaceholderLabel` ("Search"), as upstream's does:
+///
+/// ```dart
+/// final String placeholder =
+///     widget.placeholder ?? CupertinoLocalizations.of(context).searchTextFieldPlaceholderLabel;
+/// ```
+///
+/// **This doc used to say the opposite** -- "there are no localizations in
+/// this crate, so the placeholder is unset unless the caller sets one" -- and
+/// that was true when it was written. The crate grew a
+/// [`crate::cupertino_app::DefaultCupertinoLocalizations`] several ticks
+/// later and the sentence stayed, so a search field built without a
+/// placeholder was an empty grey well where upstream shows a word. The note
+/// names no backticked subject, so `stale_notes.py` is dumb to it by its own
+/// documented rule; this one was found by hand.
+///
+/// The placeholder's color is the field's own muted color rather than
+/// `secondaryLabel`, a half-shade difference noted rather than fixed.
 pub struct CupertinoSearchTextField {
     id: u64,
     placeholder: Option<String>,
@@ -3637,6 +3650,29 @@ impl CupertinoSearchTextField {
             on_submitted: None,
             field_sink: Rc::new(RefCell::new(None)),
         }
+    }
+
+    /// The word the well shows when it is empty: whatever the caller set, or
+    /// upstream's localized default.
+    ///
+    /// `unwrap_or` and not `unwrap_or_default`: an unset placeholder falls
+    /// back to "Search", while a placeholder explicitly set to the empty
+    /// string is a caller asking for a blank well and gets one.
+    ///
+    /// **The build below is the only caller, and no test can prove it.**
+    /// Replacing that one line with the old `if let Some(..)` -- reinstating
+    /// the empty well -- turns nothing red: this decision is tested, its use
+    /// is not. Reading the built tree back would settle it, and cannot here,
+    /// because `RenderBox::visit_children` is a no-op by default and most of
+    /// the nodes between the root and the `RenderEditable` never override it,
+    /// so a walk from the root reaches two leaves and stops. Whoever gives
+    /// those nodes a `visit_children` gets this assertion for free; until
+    /// then it is written down rather than faked.
+    pub fn effective_placeholder(&self) -> String {
+        self.placeholder.clone().unwrap_or_else(|| {
+            crate::cupertino_app::DefaultCupertinoLocalizations::SEARCH_TEXT_FIELD_PLACEHOLDER_LABEL
+                .to_string()
+        })
     }
 
     /// Upstream's `placeholder`.
@@ -3719,9 +3755,7 @@ impl StatefulComponent for CupertinoSearchTextField {
                 }
             });
         style.color = theme.resolve(CupertinoColors::SECONDARY_LABEL);
-        if let Some(placeholder) = &self.placeholder {
-            field = field.with_placeholder(placeholder.clone());
-        }
+        field = field.with_placeholder(self.effective_placeholder());
         if let Some(submitted) = &self.on_submitted {
             let submitted = submitted.clone();
             field = field.with_on_submitted(move |text| submitted(text));
@@ -7405,6 +7439,35 @@ mod tab_bar_tests {
         assert!(!CupertinoTabBar::is_opaque(
             CupertinoTheme::dark().bar_background_color
         ));
+    }
+
+    #[test]
+    fn an_unset_search_placeholder_says_search_rather_than_nothing() {
+        // Upstream: `widget.placeholder ?? localizations.searchTextFieldPlaceholderLabel`.
+        // This crate had no localizations when the field was ported and the
+        // doc saying so outlived them, leaving an empty grey well.
+        assert_eq!(
+            CupertinoSearchTextField::new(1).effective_placeholder(),
+            "Search"
+        );
+        assert_eq!(
+            CupertinoSearchTextField::new(1)
+                .with_placeholder("Find a demo")
+                .effective_placeholder(),
+            "Find a demo"
+        );
+    }
+
+    #[test]
+    fn an_explicitly_empty_placeholder_is_still_the_callers_choice() {
+        // `??` falls back on null, not on empty. Somebody who asked for a
+        // blank well gets one; only an unset placeholder takes the default.
+        assert_eq!(
+            CupertinoSearchTextField::new(1)
+                .with_placeholder("")
+                .effective_placeholder(),
+            ""
+        );
     }
 
     #[test]
