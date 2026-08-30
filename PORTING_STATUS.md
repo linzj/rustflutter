@@ -21277,3 +21277,52 @@ unread_theme_fields 2，stale_engines 全部不落后。十六把尺子全部 ex
 自己冒出来的几条看起：`cupertino_refresh.rs` 的 `neither_given_is_empty`、
 `list_wheel.rs` 的 `an_empty_looping_list_has_nothing_to_show`（"循环列表"和"空"这两件事
 撞在一起，最容易写成看不见的那种）。先按行为查。
+
+## 第 302 轮：一个关于路由的测试，从没证明路由是通的
+
+从 31 条里挑，读了五条，判下来四条可接受、一条要动。
+
+### 三条记档
+
+* `neither_given_is_empty`（cupertino_refresh.rs）——正面主张就在上面两个测试里。
+* `an_empty_looping_list_has_nothing_to_show`（list_wheel.rs）——紧邻的兄弟用**非空**
+  循环表跑同一个 `build`，断言 `build(-1).is_some()`、`build(1_000_000).is_some()`。
+  所以那是"同一套机制已被证明能工作"，不是一个可能永远答 None 的 `build`。
+* `a_sound_tree_reports_nothing`（semantics.rs）——"校验器报没问题"是最容易变成"校验器
+  什么也不做"的形状，而这里有**四条**兄弟从同一个 `invisible_nodes()` 断言非空结果。
+
+### 一条要动，而且它正是这把尺子存在的理由
+
+`a_stale_update_for_a_detached_field_is_dropped`（services/text_input.rs）。焦点移走后,
+飞行中的旧更新不能落到新字段上——**整条测试讲的是路由**。它的全部断言是：
+
+    assert!(first.borrow().values.is_empty());
+    assert!(second.borrow().values.is_empty());
+
+**两条都是缺席，而且投递整个断掉时它们照样成立。** channel 名字写错、编解码器拒收、
+recorder 没装上——两个字段都空，理由和 stale id 一点关系没有。
+
+补的是同一条通路上的正面主张：同一个 channel、同一个编解码器、同一种消息,
+发给**还连着**的那个字段，它必须收到。
+
+### 反事实量了出来
+
+* 把 channel 名字改错 → **新形态落红**；
+* 让那个方法的处理分支永不匹配 → **新形态落红**；
+* **把测试退回旧形态（只剩两条缺席）＋ 同时打断投递 → 照样通过。**
+
+最后一条是这一轮的度量本身：**旧测试在投递完全断掉的情况下是绿的。**
+
+`vacuous`：31 → 27（12 条已读入档；被修的那条自己带上正面主张，不再属于这个形状）。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 27/12 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6087 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：接着按"能不能和'代码从没跑到'区分开"这条标准读，下一批挑关于**通知与投递**
+的那几条，它们和这一轮是同一种风险：`scroll_plumbing.rs` 的
+`notifying_with_nobody_listening_does_nothing`、`raw_menu_anchor.rs` 的
+`closing_something_already_closed_says_nothing`、`services/restoration.rs` 的
+`a_scope_with_no_id_publishes_nothing_and_the_subtree_stops_remembering`。先按行为查。

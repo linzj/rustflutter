@@ -62,6 +62,24 @@
       "file": "page_transitions_theme.rs",
       "tick": 301,
       "finding": "Not fixable as a test, and the reason is a finding of its own: `fallback_color` has no reader anywhere in the crate, so there is nothing to resolve a set colour against and no positive claim to make. The vacuous test is a symptom of an unwired field, not of a badly written test. Porting the resolution -- upstream falls back to the fallback builder's own transition on a platform without predictive back -- is the work, and it is bigger than this row."
+    },
+    {
+      "test": "neither_given_is_empty",
+      "file": "cupertino_refresh.rs",
+      "tick": 302,
+      "finding": "The positive claim is two tests above in the same module: `button_items_answer_only_when_there_are_no_children_at_all` asserts `!sheet.is_empty()` for a toolbar that does have children, and then the empty one. The pair says the count is read."
+    },
+    {
+      "test": "an_empty_looping_list_has_nothing_to_show",
+      "file": "list_wheel.rs",
+      "tick": 302,
+      "finding": "The guard is against dividing by zero in the modulo, and the sibling immediately above exercises the same `build` on a non-empty looping delegate -- `build(-1).is_some()` and `build(1_000_000).is_some()`. So it is the same mechanism proven to work, not a `build` that might always answer None."
+    },
+    {
+      "test": "a_sound_tree_reports_nothing",
+      "file": "semantics.rs",
+      "tick": 302,
+      "finding": "A validator reporting no problems is the shape most at risk of meaning 'the validator does nothing', and here four sibling tests assert non-empty results from the same `invisible_nodes()` -- a zero-area node, an off-screen one, an invisible root, and one that names which of two children is at fault. The soundness case is the only one left over."
     }
   ]
 }

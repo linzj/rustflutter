@@ -1088,7 +1088,7 @@ mod tests {
         let recorder = install();
         reset();
         let (first, first_connection) = attach_field();
-        let (second, _second_connection) = attach_field();
+        let (second, second_connection) = attach_field();
 
         recorder.deliver(
             "flutter/textinput",
@@ -1098,6 +1098,33 @@ mod tests {
 
         assert!(first.borrow().values.is_empty());
         assert!(second.borrow().values.is_empty());
+
+        // The two assertions above are the whole test and neither of them can
+        // fail if nothing is being delivered at all -- a wrong channel name, a
+        // message the codec rejects, a recorder that was never installed, and
+        // both fields stay empty for reasons that have nothing to do with
+        // stale ids. So the same message addressed to the field that *is*
+        // attached has to land, on the same channel, through the same codec.
+        recorder.deliver(
+            "flutter/textinput",
+            &state_message(second_connection.id, "current", 7, 7, (-1, -1)),
+            0,
+        );
+
+        assert!(
+            first.borrow().values.is_empty(),
+            "the detached field hears nothing either way"
+        );
+        assert_eq!(
+            second
+                .borrow()
+                .values
+                .iter()
+                .map(|value| value.text.clone())
+                .collect::<Vec<_>>(),
+            vec!["current".to_string()],
+            "and the attached one hears exactly the message meant for it"
+        );
     }
 
     #[test]
