@@ -20751,3 +20751,76 @@ hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engi
 （`1` 说 "1 minute"，其余说 "$minute minutes"，是这一组里唯一变形的）、
 `tabSemanticsLabel`（`tabIndex`/`tabCount` 都必须 ≥ 1，上游断言在此）。三条都有对应的
 控件已经在端口里。先按行为查：`CupertinoDatePicker` 的时分两列现在报给语义树的是什么。
+
+## 第 294 轮：三处"说出口的数字"和它握着的数字不是同一个
+
+读屏器这一组的最后三条：`datePickerHourSemanticsLabel`、
+`datePickerMinuteSemanticsLabel`、`tabSemanticsLabel`。它们存在的理由是同一句话——
+**一个数字单独念出来什么也没说**：同一个"3"，在小时列里是三点，在分钟列里是三分钟。
+
+三条各有一处"说的和握的不是同一个数"。
+
+### 一、小时报的是**显示**的那个数，不是轮子的索引
+
+    final int displayHour = widget.use24hFormat ? hour : (hour + 11) % 12 + 1;
+    ...
+    semanticsLabel: localizations.datePickerHourSemanticsLabel(displayHour),
+
+十二小时制下，代表 13:00 的那一行画的是 "1"，读屏器念的也必须是 "1 o'clock"。把原始
+小时交给标签，**耳朵和眼睛就差十二**。钉成测试：`display(13) == 1`、`display(0) == 12`。
+
+### 二、分钟是这一组里**唯一**变形的
+
+    if (minute == 1) { return '1 minute'; }
+    return '$minute minutes';
+
+小时不变形——`o'clock` 在英语里不随数变。有意思的是生成的英文类**照样带着复数机制**,
+只是两格填了同一个串：
+
+    String? get datePickerHourSemanticsLabelOne  => r"$hour o'clock";
+    String get datePickerHourSemanticsLabelOther => r"$hour o'clock";
+
+和第 292 轮那三个单元素词表是同一个形状：**分类是为需要它的语言留的，不是因为英语需要。**
+另外零走复数（"0 minutes"），这也是英语的规矩而非所有语言的。
+
+### 三、tab 的序号是一基的，而调用它的循环不是
+
+    hint: localizations.tabSemanticsLabel(tabIndex: index + 1, tabCount: items.length),
+
+上游 `assert(tabIndex >= 1)` 挡的就是这个 `+ 1`：它是**要念出口的位置**，而循环从零数。
+把循环变量直接传进去，读者听到的是 "Tab 0 of 3"，然后永远听不到 "Tab 3"。这个换算放在
+`CupertinoTabBar::tab_semantics_hint` 里做一次，调用方不必记。它进的是 `hint` 而不是
+`label`——图标和标题才是 label，`selected` 又是第三样东西，上游分开设。
+
+### 顺出来的第四条，比那三条更值得写
+
+    return isDisabled ? ExcludeSemantics(child: child) : child;
+
+**一个不可选的行不是"念出来说它不可选"，是根本不出声。** 带 `minimumDate` 的选择器
+照样要**画**出之前那些小时（轮子那儿得有东西），用的是变暗的样式——**而"暗"对读屏器
+是不存在的**，那些行和能用的行毫无分别。所以上游把它们整个从语义树里摘掉，而不是让人
+花一次手势去发现它不管用。
+
+端口的列构造器本来就返回 `(文本, 是否有效)`，有效性只用来挑样式；现在同一个标志也决定
+标签是 `Some` 还是 `None`。
+
+其余几列上游没有语义标签：它们画的本来就是词（"Aug"、"Fri Aug 31"、"AM"），再念一遍
+是噪音。这条也钉了测试。
+
+**九条承重规则逐条强制改错，九条全红**（含"把 `+ 1` 忘掉"、"让不可选的行出声"、
+"把小时和分钟的标签对调"、"给词的那几列也加数字标签"）。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 2,
+hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engines 全部不
+落后。十六把尺子全部 exit 0。
+门：6058 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`CupertinoLocalizations` 的 13 个缺口已清 8 个（3 个词表 + 2 个 tap hint +
+这 3 条），还剩 5 个，都是**控件已在端口里、只是没有话可说**的那种：
+`datePickerStandaloneMonth`（俄语里月份跟在日后面用属格、独立时用主格，所以它和
+`datePickerMonth` 必须是两个词，而英语两者同形——这正是"英语看不出差别"的又一例）、
+`clearButtonLabel`（`CupertinoSearchTextField` 的清除键）、
+`searchTextFieldPlaceholderLabel`（同一个控件的占位符）、
+`noSpellCheckReplacementsLabel`、`backButtonLabel`。先按行为查：从
+`CupertinoSearchTextField` 那两条开始，它们属于同一个控件。

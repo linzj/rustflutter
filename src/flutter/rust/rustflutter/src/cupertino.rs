@@ -2258,6 +2258,30 @@ impl CupertinoTabBar {
         TAB_BAR_HEIGHT + bottom_inset
     }
 
+    /// What a screen reader is told about the tab at `index`, counting from
+    /// **zero** as this crate's loops do.
+    ///
+    /// ```dart
+    /// hint: localizations.tabSemanticsLabel(tabIndex: index + 1, tabCount: items.length),
+    /// ```
+    ///
+    /// The `+ 1` is the whole method. `tabSemanticsLabel` asserts its index is
+    /// at least one because it is a position a person is told out loud --
+    /// "Tab 1 of 3" -- and the loop that calls it counts from zero. Passing
+    /// the loop variable straight through gives "Tab 0 of 3" and then never
+    /// says "Tab 3". Doing the conversion here, once, is what keeps every
+    /// caller from having to remember it.
+    ///
+    /// It goes to `Semantics.hint`, not `label`: the tab's own icon and title
+    /// are the label, and this is the extra sentence about where it sits.
+    /// `selected` is a third thing again, and upstream sets it separately.
+    pub fn tab_semantics_hint(index: usize, count: usize) -> Option<String> {
+        crate::cupertino_app::DefaultCupertinoLocalizations::tab_semantics_label(
+            index as u32 + 1,
+            count as u32,
+        )
+    }
+
     /// Upstream's `opaque`: whether anything shows through.
     ///
     /// It is decided by the **resolved** background colour's alpha being
@@ -7381,6 +7405,28 @@ mod tab_bar_tests {
         assert!(!CupertinoTabBar::is_opaque(
             CupertinoTheme::dark().bar_background_color
         ));
+    }
+
+    #[test]
+    fn a_tab_is_announced_by_a_position_a_person_can_use() {
+        // Upstream passes `tabIndex: index + 1` from a zero-based loop. The
+        // conversion lives here so no caller has to remember it -- passing
+        // the loop variable through gives "Tab 0 of 3" and never says
+        // "Tab 3".
+        let count = 3;
+        let said: Vec<String> = (0..count)
+            .map(|i| CupertinoTabBar::tab_semantics_hint(i, count).unwrap())
+            .collect();
+        assert_eq!(said, ["Tab 1 of 3", "Tab 2 of 3", "Tab 3 of 3"]);
+        // Every tab is named, and the last one is named by the count.
+        assert!(said.last().unwrap().starts_with(&format!("Tab {count}")));
+    }
+
+    #[test]
+    fn an_empty_bar_has_no_tab_to_announce() {
+        // Upstream's `assert(tabCount >= 1)`. Nothing calls this for a bar
+        // with no items, and answering None beats formatting "Tab 1 of 0".
+        assert_eq!(CupertinoTabBar::tab_semantics_hint(0, 0), None);
     }
 
     #[test]

@@ -469,6 +469,79 @@ impl DefaultCupertinoLocalizations {
     pub const TIMER_PICKER_MINUTE_LABELS: [&'static str; 1] = ["min."];
     pub const TIMER_PICKER_SECOND_LABELS: [&'static str; 1] = ["sec."];
 
+    // -- What a screen reader is told about a spinner ----------------------
+    //
+    // A date picker's columns show numbers, and a number read out on its own
+    // says nothing: "3" in a column of hours and "3" in a column of minutes
+    // are the same utterance for two different things. Upstream gives each
+    // column a `semanticsLabel` distinct from the text it paints.
+
+    /// Upstream `datePickerHourSemanticsLabel`, `"$hour o'clock"`.
+    ///
+    /// **The number is the displayed hour, not the wheel's index.** Upstream
+    /// converts first --
+    ///
+    /// ```dart
+    /// final int displayHour = widget.use24hFormat ? hour : (hour + 11) % 12 + 1;
+    /// ...
+    /// semanticsLabel: localizations.datePickerHourSemanticsLabel(displayHour),
+    /// ```
+    ///
+    /// -- so in twelve-hour mode the row that paints "1" is heard as "1
+    /// o'clock" even though it stands for 13:00. Handing it the raw hour would
+    /// make the reader and the screen disagree by twelve.
+    ///
+    /// It does not inflect. The generated English class carries the plural
+    /// machinery anyway and fills both categories with the same string
+    /// (`datePickerHourSemanticsLabelOne` and `...Other` are both
+    /// `"$hour o'clock"`), which is the same shape as the timer picker's
+    /// one-entry label lists: the categories exist for languages that need
+    /// them, not because English does.
+    pub fn date_picker_hour_semantics_label(display_hour: u32) -> String {
+        format!("{display_hour} o'clock")
+    }
+
+    /// Upstream `datePickerMinuteSemanticsLabel`, and **the one in this group
+    /// that does inflect**:
+    ///
+    /// ```dart
+    /// if (minute == 1) {
+    ///   return '1 minute';
+    /// }
+    /// return '$minute minutes';
+    /// ```
+    ///
+    /// Zero takes the plural -- "0 minutes" -- which is English's rule and not
+    /// every language's.
+    pub fn date_picker_minute_semantics_label(minute: u32) -> String {
+        if minute == 1 {
+            "1 minute".to_string()
+        } else {
+            format!("{minute} minutes")
+        }
+    }
+
+    /// Upstream `tabSemanticsLabel`, `"Tab $tabIndex of $tabCount"`, with both
+    /// of its asserts:
+    ///
+    /// ```dart
+    /// assert(tabIndex >= 1);
+    /// assert(tabCount >= 1);
+    /// ```
+    ///
+    /// **The index is one-based and the caller's is not.** `CupertinoTabBar`
+    /// passes `tabIndex: index + 1` from a zero-based loop, and the assert is
+    /// what stands between a forgotten `+ 1` and a reader hearing "Tab 0 of
+    /// 3". Returns `None` rather than asserting, on this port's usual grounds
+    /// -- a wrong number is a bug to catch in a test, not a reason to take the
+    /// application down in front of somebody using a screen reader.
+    pub fn tab_semantics_label(tab_index: u32, tab_count: u32) -> Option<String> {
+        if tab_index < 1 || tab_count < 1 {
+            return None;
+        }
+        Some(format!("Tab {tab_index} of {tab_count}"))
+    }
+
     // -- What a screen reader is told about an expansion tile --------------
     //
     // Upstream declares these six on `CupertinoLocalizations` **and** on
@@ -730,6 +803,72 @@ mod tests {
         assert_eq!(
             DefaultCupertinoLocalizations::date_picker_medium_date(4, 8, 1),
             "Thu Aug 1 "
+        );
+    }
+
+    #[test]
+    fn a_spinners_number_is_said_as_a_quantity_not_as_a_digit() {
+        // "3" alone is the same utterance in a column of hours and a column
+        // of minutes. The label is what tells them apart.
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_hour_semantics_label(3),
+            "3 o'clock"
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_minute_semantics_label(3),
+            "3 minutes"
+        );
+    }
+
+    #[test]
+    fn the_minute_inflects_and_the_hour_does_not() {
+        // The minute is the only one in this group that changes shape. The
+        // hour keeps "o'clock" at every value -- the generated English class
+        // fills both plural categories with the same string, which is the
+        // same shape as the timer picker's one-entry label lists.
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_minute_semantics_label(1),
+            "1 minute"
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_minute_semantics_label(2),
+            "2 minutes"
+        );
+        // Zero takes the plural, which is English's rule and not every
+        // language's.
+        assert_eq!(
+            DefaultCupertinoLocalizations::date_picker_minute_semantics_label(0),
+            "0 minutes"
+        );
+        for hour in [1, 2, 12, 23] {
+            assert!(
+                DefaultCupertinoLocalizations::date_picker_hour_semantics_label(hour)
+                    .ends_with("o'clock"),
+                "hour {hour} keeps its shape"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tab_is_counted_from_one_because_it_is_said_out_loud() {
+        assert_eq!(
+            DefaultCupertinoLocalizations::tab_semantics_label(1, 3).as_deref(),
+            Some("Tab 1 of 3")
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::tab_semantics_label(3, 3).as_deref(),
+            Some("Tab 3 of 3")
+        );
+        // Upstream's two asserts. A zero index means a caller forgot the
+        // `+ 1`; answering None is this port's usual choice over taking the
+        // application down in front of somebody using a screen reader.
+        assert_eq!(
+            DefaultCupertinoLocalizations::tab_semantics_label(0, 3),
+            None
+        );
+        assert_eq!(
+            DefaultCupertinoLocalizations::tab_semantics_label(1, 0),
+            None
         );
     }
 

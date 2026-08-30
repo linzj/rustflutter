@@ -615,6 +615,55 @@ pub enum PickerColumnType {
     TimeSeparator,
 }
 
+impl PickerColumnType {
+    /// What a screen reader is told about one item of this column, or `None`
+    /// when it is told nothing at all.
+    ///
+    /// Two rules, and the second is the surprising one.
+    ///
+    /// **The label is not the text.** Upstream paints
+    /// `localizations.datePickerHour(displayHour)` and announces
+    /// `localizations.datePickerHourSemanticsLabel(displayHour)` -- "1" on
+    /// screen, "1 o'clock" in the ear. A bare number read out of a spinner
+    /// says nothing: the same "3" is three hours in one column and three
+    /// minutes in the next.
+    ///
+    /// **An unselectable item is silent, not read out as unselectable.**
+    /// Upstream wraps it:
+    ///
+    /// ```dart
+    /// return isDisabled ? ExcludeSemantics(child: child) : child;
+    /// ```
+    ///
+    /// A picker with a `minimumDate` still *paints* the hours before it, in
+    /// the dimmed style, because the wheel has to have something there. To a
+    /// reader those rows are not dim -- they are indistinguishable from the
+    /// ones that work -- so upstream removes them from the tree entirely
+    /// rather than let somebody spend the gesture finding out.
+    ///
+    /// The other columns have no semantics label upstream: their text is
+    /// already a word ("Aug", "Fri Aug 31", "AM"), and a label repeating it
+    /// would be noise.
+    pub fn semantics_label(self, display_number: u32, is_valid: bool) -> Option<String> {
+        if !is_valid {
+            return None;
+        }
+        match self {
+            PickerColumnType::Hour => Some(
+                crate::cupertino_app::DefaultCupertinoLocalizations::date_picker_hour_semantics_label(
+                    display_number,
+                ),
+            ),
+            PickerColumnType::Minute => Some(
+                crate::cupertino_app::DefaultCupertinoLocalizations::date_picker_minute_semantics_label(
+                    display_number,
+                ),
+            ),
+            _ => None,
+        }
+    }
+}
+
 /// How far up and down the `dateAndTime` date column runs.
 ///
 /// **Upstream's has no ends at all**: its `dateController` starts at item 0
@@ -2541,6 +2590,76 @@ mod cupertino_menu_item_tests {
         ] {
             assert!(!item.is_divider());
         }
+    }
+}
+
+#[cfg(test)]
+mod spinner_semantics_tests {
+    use super::PickerColumnType;
+    use crate::cupertino_app::DefaultCupertinoLocalizations as L10n;
+
+    #[test]
+    fn the_hour_is_announced_as_the_number_it_shows_not_the_one_it_stands_for() {
+        // Twelve-hour mode paints `(hour + 11) % 12 + 1`, so the row for
+        // 13:00 shows "1". Handing the raw hour to the label would have the
+        // reader and the screen disagree by twelve.
+        let display = |hour: u32| (hour + 11) % 12 + 1;
+        assert_eq!(display(13), 1);
+        assert_eq!(
+            PickerColumnType::Hour
+                .semantics_label(display(13), true)
+                .as_deref(),
+            Some("1 o'clock")
+        );
+        assert_eq!(display(0), 12);
+        assert_eq!(
+            PickerColumnType::Hour
+                .semantics_label(display(0), true)
+                .as_deref(),
+            Some("12 o'clock")
+        );
+    }
+
+    #[test]
+    fn an_unselectable_row_says_nothing_rather_than_saying_it_is_dim() {
+        // Upstream wraps it in ExcludeSemantics. The wheel has to paint
+        // something there, and the dimmed style is invisible to a reader --
+        // so the row is removed from the tree rather than let somebody spend
+        // the gesture finding out it does not work.
+        for column in [PickerColumnType::Hour, PickerColumnType::Minute] {
+            assert!(column.semantics_label(5, true).is_some(), "{column:?}");
+            assert_eq!(column.semantics_label(5, false), None, "{column:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_number_columns_carry_a_label() {
+        // The others already paint a word -- "Aug", "Fri Aug 31", "AM" -- and
+        // a label repeating it would be noise.
+        for column in [
+            PickerColumnType::DayOfMonth,
+            PickerColumnType::Month,
+            PickerColumnType::Year,
+            PickerColumnType::Date,
+            PickerColumnType::DayPeriod,
+            PickerColumnType::TimeSeparator,
+        ] {
+            assert_eq!(column.semantics_label(5, true), None, "{column:?}");
+        }
+    }
+
+    #[test]
+    fn the_two_number_columns_do_not_say_the_same_thing_about_the_same_number() {
+        // Which is the whole reason the labels exist.
+        assert_ne!(
+            PickerColumnType::Hour.semantics_label(3, true),
+            PickerColumnType::Minute.semantics_label(3, true)
+        );
+        assert_eq!(
+            PickerColumnType::Minute.semantics_label(1, true).as_deref(),
+            Some("1 minute")
+        );
+        assert_eq!(L10n::date_picker_minute_semantics_label(1), "1 minute");
     }
 }
 
