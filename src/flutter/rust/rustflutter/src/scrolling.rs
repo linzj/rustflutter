@@ -1509,6 +1509,9 @@ impl crate::render::RenderBox for SliverListHost {
             .with_sliver(root)
             .with_offset(self.config.offset)
             .with_cache_extent(self.config.cache_extent)
+            // How many items there are in total, which only the list knows:
+            // the viewport holds the slivers that survived the window.
+            .with_semantic_child_count(Some(self.config.child_count as i32))
             .with_user_scroll_direction(self.config.user_scroll_direction);
         self.viewport
             .as_mut()
@@ -1535,6 +1538,7 @@ impl crate::render::RenderBox for SliverListHost {
                     .with_sliver(root)
                     .with_offset(self.config.offset)
                     .with_cache_extent(self.config.cache_extent)
+                    .with_semantic_child_count(Some(self.config.child_count as i32))
                     .with_user_scroll_direction(self.config.user_scroll_direction),
             );
         }
@@ -2995,6 +2999,71 @@ mod tests {
     }
 
     #[test]
+    fn a_sliver_list_says_it_is_a_list_and_how_long() {
+        // Upstream's `_RenderScrollSemantics.describeSemanticsConfiguration`.
+        // The box `RenderViewport` grew this first and the sliver one -- what
+        // a `SliverListView` actually scrolls in -- had none, so a reader met
+        // every such list as a plain box: no announcement that it scrolls, no
+        // "you are a third of the way down", and no count to place a row
+        // against.
+        //
+        // The count is the list's to supply: the viewport holds the slivers
+        // that survived the window, so counting *those* would answer "how many
+        // are on screen" to a question about the whole list.
+        use crate::framework::{ElementTree, component};
+        use crate::render::{BoxConstraints, RenderBox, Size};
+
+        crate::semantics::set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(
+            SliverListView::new(1000, |_| {
+                crate::render::RenderRef::new(crate::render::RenderConstrainedBox::tight(
+                    100.0, 50.0,
+                ))
+            })
+            .with_item_extent(50.0)
+            .with_offset(250.0),
+        ));
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        RenderBox::layout(&mut root, BoxConstraints::new(0.0, 300.0, 0.0, 500.0));
+        // **Rebuilt before it is read.** A list is rebuilt on every scroll, and
+        // the second build goes down a different path -- `update_from` onto the
+        // viewport that is already there rather than a fresh one -- so a count
+        // supplied only on the first build would vanish the moment anybody
+        // scrolled. Examined once, at birth, the two paths look alike.
+        tree.rebuild(component(
+            SliverListView::new(1000, |_| {
+                crate::render::RenderRef::new(crate::render::RenderConstrainedBox::tight(
+                    100.0, 50.0,
+                ))
+            })
+            .with_item_extent(50.0)
+            .with_offset(250.0),
+        ));
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        RenderBox::layout(&mut root, BoxConstraints::new(0.0, 300.0, 0.0, 500.0));
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(Size::new(300.0, 500.0), &root).unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let listed = nodes
+            .iter()
+            .find(|node| node.properties.scroll_child_count.is_some())
+            .expect("no node said it was a list");
+        assert_eq!(listed.properties.scroll_child_count, Some(1000));
+        assert_eq!(listed.properties.scroll_position, 250.0);
+        assert_eq!(listed.properties.scroll_extent_min, 0.0);
+        // A thousand rows of fifty in a five-hundred window.
+        assert_eq!(listed.properties.scroll_extent_max, 1000.0 * 50.0 - 500.0);
+        // And it offers the gestures, which is the difference between saying
+        // "this is a list" and letting a reader move through it.
+        assert!(
+            listed.properties.actions != 0,
+            "no scroll gesture was offered"
+        );
+    }
+
+    #[test]
     fn a_sliver_list_view_builds_only_the_window_it_is_asked_for() {
         use crate::framework::{ElementTree, component};
         use crate::render::{BoxConstraints, RenderBox};
@@ -3199,21 +3268,21 @@ mod tests {
             .map(|node| (node.properties.label.clone(), node.index_in_parent))
             .collect();
         assert!(!numbered.is_empty(), "no rows reached the walk");
-        // **And nothing above them says it is a list yet.** No node in this
-        // tree carries `scroll_index` or `scroll_child_count`, because
-        // `RenderSliverViewport` -- which is what a `LazyList` scrolls in --
-        // has no `describe_semantics` at all; only the box `RenderViewport`
-        // does. So the numbers these rows now carry have no scrollable node to
-        // be gathered onto, and the platform still hears no "3 of 40".
+        // **And nothing above them says it is a list**, because a `LazyList`
+        // is not a viewport: it builds a plain column and the caller puts it
+        // inside whatever scrolls. So there is no scrollable node in *this*
+        // tree for the indices to be gathered onto -- not a gap, a boundary.
         //
-        // Asserted rather than left implied, so the day that annotation lands
-        // this test says which half moved.
+        // Round 403 first wrote this down as "the sliver viewport has no
+        // `describe_semantics`", which was the wrong cause: that viewport is
+        // not in this tree either way. It does now (round 404) and this still
+        // reads `None`, which is how the mistake was caught.
         assert!(
             nodes
                 .iter()
                 .all(|node| node.properties.scroll_index.is_none()
                     && node.properties.scroll_child_count.is_none()),
-            "a sliver viewport started describing itself -- see the note above"
+            "a list on its own is not a scrollable -- something wrapped it"
         );
         for (label, index) in &numbered {
             let expected: i32 = label.trim_start_matches("Row ").parse().expect("a number");

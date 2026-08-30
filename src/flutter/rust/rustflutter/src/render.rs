@@ -11303,6 +11303,15 @@ pub struct RenderSliverViewport {
     cache_extent: f32,
     clip_behavior: ClipBehavior,
     children: Vec<SliverChild>,
+    /// Upstream's `semanticChildCount`: how many items the list holds in
+    /// total, not how many were built.
+    ///
+    /// It cannot be counted from `children`, and that is the point: those are
+    /// the slivers that survived the window, so counting them would answer
+    /// "how many are on screen" to a question about the whole list. The
+    /// number comes from whoever knows it -- a `LazyList` is told its item
+    /// count and passes it through.
+    semantic_child_count: Option<i32>,
     size: Size,
     /// The total of every sliver's scroll extent, upstream's
     /// `_maxScrollExtent` as accumulated by `updateOutOfBandData`.
@@ -11322,6 +11331,7 @@ impl RenderSliverViewport {
             cache_extent: crate::scrolling::DEFAULT_CACHE_EXTENT,
             clip_behavior: ClipBehavior::HardEdge,
             children: Vec::new(),
+            semantic_child_count: None,
             size: Size::ZERO,
             content_scroll_extent: 0.0,
             has_visual_overflow: false,
@@ -11341,6 +11351,12 @@ impl RenderSliverViewport {
     /// the next layout.
     pub fn with_offset(mut self, offset: f32) -> Self {
         self.offset = offset;
+        self
+    }
+
+    /// Upstream's `semanticChildCount`. See the field.
+    pub fn with_semantic_child_count(mut self, count: Option<i32>) -> Self {
+        self.semantic_child_count = count;
         self
     }
 
@@ -11689,6 +11705,13 @@ impl RenderBox for RenderSliverViewport {
         self.user_scroll_direction = fresh.user_scroll_direction;
         self.cache_extent = fresh.cache_extent;
         self.clip_behavior = fresh.clip_behavior;
+        // Taken from the fresh object like everything above it: a list whose
+        // length changed publishes a new count, and a kept viewport that did
+        // not take it would go on announcing "of 40" for a list of three. It
+        // is deliberately **not** in `changed`: the count is something a
+        // reader is told, not a measurement, so a list that only grew its
+        // count does not have to be laid out again.
+        self.semantic_child_count = fresh.semantic_child_count;
         self.children = std::mem::take(&mut fresh.children);
         // The offset and the directions are read by `layout`, which also
         // re-clamps against content that may have shrunk, so every one of them
@@ -11809,6 +11832,42 @@ impl RenderBox for RenderSliverViewport {
     /// becomes sliver coordinates, and each visible sliver is asked in list
     /// order -- the reverse of paint order, so where slivers overlap the one
     /// on top is the one hit.
+    /// Says that this is a list, where in it the reader is, how far it runs,
+    /// and **how many items it holds**.
+    ///
+    /// Upstream's `_RenderScrollSemantics.describeSemanticsConfiguration`. The
+    /// box `RenderViewport` grew this first; a sliver viewport is what a
+    /// `LazyList` actually scrolls in, and it had none -- so round 403 gave
+    /// every row of a list its index and there was **no scrollable node for
+    /// those indices to be gathered onto**. Half a sentence: "item 3" with
+    /// nothing saying of how many, or that the thing scrolls at all.
+    ///
+    /// Two numbers were checked rather than copied from the box version:
+    ///
+    /// * the **minimum** is a literal zero for the same reason and it is the
+    ///   same reason -- this viewport's offsets run `0..=max_scroll_extent()`,
+    ///   which is the total `content_scroll_extent` its own layout clamps
+    ///   against. Upstream reads `minScrollExtent` off the position because a
+    ///   `ScrollPosition` can sit below zero; neither viewport here can.
+    /// * the **count** is `semantic_child_count`, which the box version has to
+    ///   leave `None` because it holds one child of whatever size. This one is
+    ///   told, because a `LazyList` knows.
+    fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
+        Some(crate::semantics::SemanticsAnnotation::new(
+            crate::semantics::take_text_id(),
+            crate::semantics::SemanticsProperties::scrollable(
+                self.offset,
+                0.0,
+                self.max_scroll_extent(),
+                // The direction, not the axis: which gesture goes further into
+                // the list depends on which end it starts from.
+                self.axis_direction,
+                self.semantic_child_count,
+            ),
+            None,
+        ))
+    }
+
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         let (main_axis_position, cross_axis_position) = match self.axis() {
             Axis::Vertical => (position.dy, position.dx),
