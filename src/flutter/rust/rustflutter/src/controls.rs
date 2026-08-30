@@ -106,13 +106,53 @@ impl Component for Checkbox {
             states = states.with(crate::widget_state::WidgetState::Disabled);
         }
         let resolved = crate::component_themes::ResolvedCheckbox::of(context, states);
+        // What a reader is told: that this is a checkbox and whether it is
+        // ticked. `SemanticsProperties::check` is the last of this module's
+        // twelve property constructors to have had no caller outside its own
+        // tests -- so a checkbox reached a screen reader as a box with a word
+        // beside it, indistinguishable from a label.
+        //
+        // `Some(checked)` rather than `None`: `None` is upstream's `mixed`,
+        // which a `Checkbox` passes **only when `tristate` is set**, and this
+        // one has no third state to be in. Sending it would announce every
+        // plain checkbox as partly checked.
+        let described = {
+            let mut properties = crate::semantics::SemanticsProperties::check(
+                label.clone().unwrap_or_default(),
+                Some(checked),
+            );
+            properties.flags.is_enabled = enabled;
+            if !enabled {
+                properties.actions = 0;
+            }
+            let tap = self.handlers.on_tap.clone();
+            let node = crate::semantics::node_id_for(id);
+            move |inner: crate::framework::AnyWidget| {
+                let tap = tap.clone();
+                crate::semantics::semantics_with_action(
+                    node,
+                    properties.clone(),
+                    inner,
+                    move |action| {
+                        if action == crate::semantics::SemanticsAction::Tap {
+                            if let Some(tap) = &tap {
+                                tap(crate::gestures::TapEvent {
+                                    local_position: crate::render::Offset::ZERO,
+                                    pointer_id: 0,
+                                });
+                            }
+                        }
+                    },
+                )
+            }
+        };
         let fill = resolved.fill;
         let border = resolved.side.color;
         let border_width = resolved.side.width;
         let tick = resolved.check;
         let spacing = theme.spacing;
 
-        leaf(move || {
+        let ticked = leaf(move || {
             // The tick is two strokes rather than a glyph: a font that has no
             // check mark would silently draw nothing, and this is two lines.
             let mark = if checked {
@@ -148,7 +188,8 @@ impl Component for Checkbox {
                     .with_child(content),
             )
             .with_handlers(handlers.clone())
-        })
+        });
+        described(ticked)
     }
 }
 
@@ -353,6 +394,72 @@ mod radio_semantics_tests {
             .find(|node| node.properties.flags.is_in_mutually_exclusive_group)
             .cloned()
             .expect("a radio said it was one")
+    }
+
+    /// The node a checkbox produces, through the real walk.
+    fn checkbox_node(checked: bool, enabled: bool) -> crate::semantics::SemanticsNode {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                Checkbox::new(2, checked)
+                    .with_label("Remember me")
+                    .with_enabled(enabled),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(300.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .find(|node| node.properties.label == "Remember me")
+            .cloned()
+            .expect("a checkbox said its label")
+    }
+
+    #[test]
+    fn a_checkbox_says_whether_it_is_ticked() {
+        // The last of this module's twelve property constructors to have had
+        // no caller: a checkbox reached a screen reader as a box with a word
+        // beside it, which is a label.
+        use crate::semantics::SemanticsCheckState;
+        let on = checkbox_node(true, true);
+        assert_eq!(on.properties.flags.checked, SemanticsCheckState::Checked);
+        assert!(on.properties.has(crate::semantics::SemanticsAction::Tap));
+
+        let off = checkbox_node(false, true);
+        assert_eq!(off.properties.flags.checked, SemanticsCheckState::Unchecked);
+    }
+
+    #[test]
+    fn a_plain_checkbox_is_never_partly_checked() {
+        // `None` is upstream's `mixed`, which a `Checkbox` passes **only** when
+        // `tristate` is set. This one has no third state, so sending `None`
+        // would announce every plain checkbox as partly checked -- and
+        // "partly" is a real answer a reader acts on.
+        use crate::semantics::SemanticsCheckState;
+        for checked in [true, false] {
+            assert_ne!(
+                checkbox_node(checked, true).properties.flags.checked,
+                SemanticsCheckState::Mixed,
+                "checked = {checked}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_checkbox_that_cannot_be_ticked_says_so_and_offers_nothing() {
+        let node = checkbox_node(false, false);
+        assert!(!node.properties.flags.is_enabled);
+        assert!(node.properties.flags.has_enabled_state);
+        assert!(!node.properties.has(crate::semantics::SemanticsAction::Tap));
     }
 
     #[test]
