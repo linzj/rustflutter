@@ -8080,6 +8080,106 @@ impl RenderBox for RenderSizedOverflowBox {
 /// a scrollbar, a gradient, a watermark -- that must not take the taps meant
 /// for what is underneath it. Without it the topmost thing in a stack takes
 /// every press that lands on it, whether or not it wanted one.
+/// Hides a subtree from a screen reader, the widget
+/// [`crate::semantics_markers::ExcludeSemantics`] had no render object for.
+///
+/// # The exclusion is a walk turning back, not a flag on the subtree
+///
+/// Nothing here marks the descendants. The semantics walk asks each box for
+/// its children through `visit_children_for_semantics`, and this one simply
+/// does not offer any -- so the descendants are never asked what they would
+/// have said. That is upstream's shape too
+/// ([`crate::render_semantics::RenderExcludeSemantics::visits_children`],
+/// whose model this consults), and it is why a subtree can be excluded
+/// without touching anything inside it.
+///
+/// `RenderOpacity` next door skips the same way at zero opacity, for the same
+/// reason: nothing drawn is nothing to describe.
+///
+/// **Note it is only the semantics walk that turns back.** `visit_children`
+/// still offers the child, so the subtree lays out, paints and takes taps
+/// exactly as before -- which is the difference between this and
+/// `RenderIgnorePointer` below, and the reason they are two widgets.
+pub struct RenderExcludeSemanticsBox {
+    excluding: crate::render_semantics::RenderExcludeSemantics,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderExcludeSemanticsBox {
+    pub fn new(excluding: bool, child: impl RenderBox + 'static) -> RenderExcludeSemanticsBox {
+        RenderExcludeSemanticsBox {
+            excluding: crate::render_semantics::RenderExcludeSemantics::new(excluding),
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderExcludeSemanticsBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderExcludeSemanticsBox>()?;
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.excluding = fresh.excluding.clone();
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    /// The one method that differs, and the whole of the widget.
+    fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        if self.excluding.visits_children() {
+            visit(&self.child, Offset::ZERO);
+        }
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
+}
+
 pub struct RenderIgnorePointer {
     child: BoxedRender,
     size: Size,

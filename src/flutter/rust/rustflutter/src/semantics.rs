@@ -4411,6 +4411,95 @@ mod tests {
     }
 
     #[test]
+    fn an_excluded_subtree_says_nothing_and_still_draws() {
+        // `ExcludeSemantics` had no render object until tick 347: the widget
+        // was a bare struct with a flag, and `render_semantics.rs` held a
+        // model nothing built. So a subtree "excluded" from a screen reader
+        // was read out in full.
+        set_enabled(true);
+        let laid = |widget| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("mounted");
+            crate::render::RenderBox::layout(
+                &mut root,
+                crate::render::BoxConstraints::loose(200.0, 100.0),
+            );
+            root
+        };
+
+        let plain = laid(leaf(|| crate::widgets::Text::new("read me")));
+        crate::semantics::mark_needs_update();
+        let heard = flush(Size::new(200.0, 100.0), &plain).expect("somebody asked");
+        assert!(
+            heard
+                .iter()
+                .any(|node| node.properties.label.contains("read me")),
+            "the text speaks for itself when nothing hides it"
+        );
+
+        let hidden = laid(leaf(|| {
+            crate::render::RenderExcludeSemanticsBox::new(
+                true,
+                crate::widgets::Text::new("read me"),
+            )
+        }));
+        crate::semantics::mark_needs_update();
+        let silence = flush(Size::new(200.0, 100.0), &hidden);
+        assert!(
+            silence
+                .iter()
+                .flatten()
+                .all(|node| !node.properties.label.contains("read me")),
+            "the walk never asked the text what it would have said"
+        );
+
+        // And `excluding: false` is the same widget doing nothing, which is
+        // what makes the flag rather than the wrapper the thing that hides.
+        let showing = laid(leaf(|| {
+            crate::render::RenderExcludeSemanticsBox::new(
+                false,
+                crate::widgets::Text::new("read me"),
+            )
+        }));
+        crate::semantics::mark_needs_update();
+        let audible = flush(Size::new(200.0, 100.0), &showing).expect("somebody asked");
+        assert!(
+            audible
+                .iter()
+                .any(|node| node.properties.label.contains("read me")),
+            "not excluding hides nothing"
+        );
+
+        // The subtree is hidden from the reader and from nobody else: it
+        // still lays out, which is the difference between this and not
+        // building the child at all.
+        assert_eq!(
+            crate::render::RenderBox::size(&hidden),
+            crate::render::RenderBox::size(&plain),
+            "excluded, not removed"
+        );
+
+        // And the ordinary walk still finds the child. Only the semantics
+        // walk turns back, which is what makes this different from a widget
+        // that does not build its child: anything walking the tree for
+        // layout, paint or debugging still sees everything.
+        let excluded = crate::render::RenderExcludeSemanticsBox::new(
+            true,
+            crate::widgets::Text::new("read me"),
+        );
+        let mut ordinary = 0;
+        crate::render::RenderBox::visit_children(&excluded, &mut |_, _| ordinary += 1);
+        let mut for_semantics = 0;
+        crate::render::RenderBox::visit_children_for_semantics(&excluded, &mut |_, _| {
+            for_semantics += 1
+        });
+        assert_eq!(ordinary, 1, "the child is still there");
+        assert_eq!(for_semantics, 0, "and only the reader is turned away");
+        set_enabled(false);
+    }
+
+    #[test]
     fn nothing_is_collected_until_something_asks() {
         set_enabled(false);
         let mut tree = ElementTree::new();

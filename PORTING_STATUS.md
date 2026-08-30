@@ -23633,3 +23633,54 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 先按行为查：本项目的语义遍历在哪里决定要不要下降到孩子，
 有没有一个地方可以让 `ExcludeSemantics` 控件真的挡住那次下降。
 **能接就接一个，接不上就说明活路径缺的是别的东西，那也是一个明确的答案。**
+
+---
+
+## 第 347 轮：接上一个——被排除的子树真的不说话了
+
+不再追元线索，按上一轮的“下一步”**挑最小的一个模型去接**：`ExcludeSemantics`。
+
+查下来，缺的**只有一样**，而且两头都已经就位：
+
+* 语义遍历的下降钩子 `RenderBox::visit_children_for_semantics` **是活的**
+  （`RenderRef` 逐条转发它，`flush` 就是靠它走树），而且**已有先例**——
+  `RenderOpacity` 在不透明度为零时用它跳过孩子，理由是“什么都没画就没什么可描述的”。
+* `semantics_markers::ExcludeSemantics` 是一个只有 `excluding` 标志的**裸结构体**，
+  **没有渲染对象**。
+
+也就是说：**一个“排除了”的子树，从头到尾被完整念给读屏软件听。**
+
+补上 `RenderExcludeSemanticsBox`——一个代理盒子，只有一个方法与众不同：
+
+```rust
+fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+    if self.excluding.visits_children() {
+        visit(&self.child, Offset::ZERO);
+    }
+}
+```
+
+它**consults 那个原本没人建的模型**（`render_semantics::RenderExcludeSemantics`），
+所以第 346 轮那八个里的一个，现在被运行时代码建了。
+
+文档里写清了这条的性质：**排除是“遍历掉头”，不是“给子树打标记”**——
+底下什么都没有被改动过，只是没有人再去问它们；以及**只有语义那次遍历掉头**，
+布局、绘制、命中测试照旧，这正是它和隔壁 `RenderIgnorePointer` 是两个控件的原因。
+
+测试走的是真遍历：开语义 → `flush` → 断言。不排除时听得见 "read me"，
+排除时**整棵树上找不到它**，`excluding: false` 时又听得见。
+
+**变异扫描 6 个，第一遍 5 个红，1 个是真窟窿**：把 `visit_children`（普通遍历）
+也一起跳过，全绿——我那句“excluded, not removed”比的是**尺寸**，而尺寸早就算完存下了，
+这个变异动不了它。补了一条直接的：对同一个盒子分别数两次遍历看到几个孩子，
+**普通遍历 1 个、语义遍历 0 个**。补完转红。
+
+尺子：十六把全部 exit 0。门：6262 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：同一批里挑第二个接——`RenderBlockSemantics`。
+它跟 `ExcludeSemantics` **方向相反**（上游注释里那句“有意思的一对”）：
+排除是**丢掉自己和自己的后代**，阻断是**挡住在它之前、被同一个遍历访问过的兄弟**，
+自己照说不误。先按行为查：本项目的 `flush` 收集节点时有没有“先访问的兄弟”这个概念，
+**有就接得上，没有就说明活路径缺的是遍历顺序这一层**——那也是一个明确的答案，
+跟这一轮一样，接不上就说清楚缺在哪里。
