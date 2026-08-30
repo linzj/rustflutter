@@ -21220,3 +21220,60 @@ unread_theme_fields 2，stale_engines 全部不落后。十六把尺子全部 ex
 尺子（`unread_theme_fields` 那 2 条是已知并写明的）。第 299、300 两轮刚好在讲同一件事:
 一条断言能不能真的看见它声称的东西。先按行为查：那十条各是什么，哪些是真的空断言、
 哪些是像这一轮的 bounds 一样"能看见的就这么多"。
+
+## 第 301 轮：那把尺子报的 10，两个方向都在错数
+
+`vacuous.py` 长年报 10——"十条测试只声称什么都没发生"。工具自己写着 **"The count is not
+a target."**：第 174 tick 读过八条，缺席本身就是全部主张，兄弟测试作正面断言。
+
+十条逐条读了。判断如下。
+
+### 一条是真的错机制
+
+`a_range_with_no_colour_paints_nothing`（`editable.rs`）。它设了 range、没设颜色,
+断言 `rects(..)` 为空。而 `rects` 在 **range 或 colour 缺任一时**都返回空:
+
+    let (Some(range), Some(_)) = (self.highlighted_range, self.highlight_color) else {
+        return Vec::new();
+    };
+
+**空答案说不出是哪一半的缘故**——range 没生效、盒子列表坏掉，看起来一模一样。补上工具
+文档说的那一行："同一个 painter、同一批盒子，加一个颜色，现在有矩形了。"两条改错各落红。
+
+### 一条是别的账，如实记下
+
+`the_scrim_defaults_to_whatever_the_fallback_builder_uses` **修不成测试**,
+因为 `fallback_color` **在整个 crate 里没有任何读者**——没有东西可以拿一个设好的颜色去
+对，也就没有正面主张可作。**这条空测试是"字段没接上"的症状，不是测试写坏了。**
+
+### 判断落进了一个文件，不再每次重读
+
+工具的判断本来只写在它自己的文档段落里，**它自己读不到**——于是数字十轮不动,
+每次来都把同样十条再读一遍。加了 `vacuous_examined.json`,
+和 `depth.py` 的 `depth_examined.json` 同一个机制、同一条规矩：**是主张,
+不是压制清单**，每行必须说明为什么缺席就够了，或者正面主张在哪儿。九条读完入档。
+
+### 然后数字从 10 跳到 31，而且不是变坏了
+
+为了让 rustfmt 换行后的 `!x.is_empty()` 也能被认出来，我把 `POSITIVE` 的字符类放宽到
+含空白——**当场把尺子弄瞎了**：`assert!` 结尾也是个 `!`，放宽之后它一路够到参数里的
+`is_none()`，**每一条 `assert!(x.is_none())` 都被读成"正面主张"**，十条里七条当场消失,
+数字降到 0。
+
+加上 `(?<!assert)` 之后真相出来了：**原来的正则也在犯同一个错**，只是它排除空白和逗号,
+所以只在参数里没有引号、没有逗号时才误判——也就是**最简单最常见的那一种**
+`assert!(x.is_none())` 一直被排除在计数之外。**那个 10 是正则自己碰巧撞出来的数。**
+真实的队列是 **31**（默认视图，9 条已读入档）。
+
+五条改错全部改变了可观察结果，其中一条精确复现了那次失明（31 → 0）。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，**vacuous 31/9 已读（原报 10，是错数）**,
+unread_theme_fields 2，stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6087 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`vacuous` 那 31 条里挑真的错机制那种读，不要按数字清。先从这一轮扫描里
+自己冒出来的几条看起：`cupertino_refresh.rs` 的 `neither_given_is_empty`、
+`list_wheel.rs` 的 `an_empty_looping_list_has_nothing_to_show`（"循环列表"和"空"这两件事
+撞在一起，最容易写成看不见的那种）。先按行为查。

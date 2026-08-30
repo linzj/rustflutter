@@ -4448,6 +4448,14 @@ mod tests {
 
     #[test]
     fn a_range_with_no_colour_paints_nothing() {
+        // `rects` gives up when *either* half is missing, so an empty answer
+        // on its own says nothing about which half was the reason -- a range
+        // that never took, or a broken box list, would look the same. The
+        // second half of this test is what makes the first half about colour:
+        // the same painter, the same boxes, one colour added, and now there
+        // are rectangles.
+        let boxes = [crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 14.0)];
+        let text = text_of(200.0, 14.0);
         let mut painter = TextHighlightPainter::new();
         painter.set_highlighted_range(Some(crate::services::text_boundary::TextRange {
             start: 0,
@@ -4455,12 +4463,17 @@ mod tests {
         }));
         assert!(
             painter
-                .rects(
-                    &[crate::engine::Rect::ltrb(0.0, 0.0, 40.0, 14.0)],
-                    crate::render::Offset::ZERO,
-                    text_of(200.0, 14.0),
-                )
-                .is_empty()
+                .rects(&boxes, crate::render::Offset::ZERO, text)
+                .is_empty(),
+            "a range with no colour"
+        );
+
+        painter.set_highlight_color(Some(crate::engine::Color(0x8800_7ACC)));
+        assert!(
+            !painter
+                .rects(&boxes, crate::render::Offset::ZERO, text)
+                .is_empty(),
+            "and the very same painter once it has one"
         );
     }
 

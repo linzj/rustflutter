@@ -1,0 +1,67 @@
+{
+  "_": [
+    "Tests read against the code they cover and left as they are, with the",
+    "reason. A claim, not a suppression list: each row has to say what makes",
+    "the absence the whole claim, or where the positive claim lives instead.",
+    "",
+    "Keyed by (file, test), as depth.py keys by class -- so a test that is",
+    "rewritten keeps this verdict until somebody reads it again. Renaming it",
+    "brings the row back."
+  ],
+  "examined": [
+    {
+      "test": "merging_two_empty_lists_is_empty",
+      "file": "services/spell_check.rs",
+      "tick": 174,
+      "finding": "The absence is the whole claim. `merge_results` over two empty inputs has nothing else it could say, and the module's other merge tests supply every positive case."
+    },
+    {
+      "test": "a_negative_index_is_out_whatever_the_bounds_say",
+      "file": "two_dimensional.rs",
+      "tick": 174,
+      "finding": "A negative vicinity is refused before the bounds are consulted at all, which is the point -- there is no positive half to this, because the whole statement is that one branch never runs."
+    },
+    {
+      "test": "a_scrim_with_no_colour_paints_nothing_at_all",
+      "file": "theatre.rs",
+      "tick": 174,
+      "finding": "`painted(None, ..)` is empty, and the sibling tests in the same module call `painted(Some(..))` and read the rectangle back. The pair together says the path ran."
+    },
+    {
+      "test": "an_empty_list_has_no_window",
+      "file": "scrolling.rs",
+      "tick": 174,
+      "finding": "Zero items and zero extent are the two ways a window cannot exist, and the module's other window tests are all positive. Asserting a window elsewhere inside this test would be about a different list."
+    },
+    {
+      "test": "an_empty_variable_list_has_no_window",
+      "file": "scrolling.rs",
+      "tick": 174,
+      "finding": "The `ExtentBook` spelling of the row above, with the same sibling coverage."
+    },
+    {
+      "test": "the_catalogue_has_no_artwork_and_says_so_rather_than_handing_back_an_empty_icon",
+      "file": "animated_icons.rs",
+      "tick": 301,
+      "finding": "Both names answer None and the test cannot tell the two Nones apart -- but the distinction it would need is already asserted a few lines above, where a sibling test claims `contains(\"play_pause\")` and `!contains(\"not_an_icon\")`. The positive claim exists in the module, which is this ruler's stated bar, and repeating it here would be the padding the ruler warns against."
+    },
+    {
+      "test": "a_still_finger_produces_no_sample_at_all",
+      "file": "resampler.rs",
+      "tick": 301,
+      "finding": "The positive half is in the setup rather than an assertion: the first `sample` call is what puts a sample in flight, and the second returning None is only interesting because of it. Left as it is because the two calls are visibly a pair; a reader cannot mistake this for a test that never reached the resampler."
+    },
+    {
+      "test": "a_relative_priority_can_cross_the_line_the_strategy_draws",
+      "file": "scheduler_priority.rs",
+      "tick": 301,
+      "finding": "Only the first half of the test is negative. It goes on to raise the same task over the line and assert the log is not empty, so the positive claim is in this test and the ruler's pattern is reading the assertions one at a time."
+    },
+    {
+      "test": "the_scrim_defaults_to_whatever_the_fallback_builder_uses",
+      "file": "page_transitions_theme.rs",
+      "tick": 301,
+      "finding": "Not fixable as a test, and the reason is a finding of its own: `fallback_color` has no reader anywhere in the crate, so there is nothing to resolve a set colour against and no positive claim to make. The vacuous test is a symptom of an unwired field, not of a badly written test. Porting the resolution -- upstream falls back to the fallback builder's own transition on a platform without predictive back -- is the work, and it is bigger than this row."
+    }
+  ]
+}

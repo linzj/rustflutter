@@ -28,18 +28,35 @@ So this reports tests with no positive claim at all, for reading. The answer
 is usually one line -- assert the thing that should be there beside the thing
 that should not.
 
-**The count is not a target.** Eight were read at tick 174 and left as they
-are, because for each the absence *is* the whole claim and a sibling test in
-the same module makes the positive one -- `merging_two_empty_lists_is_empty`,
-`a_negative_index_is_out_whatever_the_bounds_say`,
-`a_scrim_with_no_colour_paints_nothing_at_all` and the rest. Driving this to
-zero would mean padding those with assertions nobody needs, which is the
+**The count moved from 10 to 31 at tick 301, and nothing got worse.** The
+`POSITIVE` pattern used to treat `assert!`'s own trailing `!` as a negation --
+`assert!(x.is_none())` read as a claim that something *was* there -- so the
+simplest and commonest shape of all was excluded from the count. It reported
+whichever tests happened to have a quote or a comma in the argument, because
+those characters stopped the class from reaching the `is_none()`. The number
+was an artifact of that.
+
+**The count is not a target.** Some of these are right as they are: the
+absence *is* the whole claim, and either a sibling test in the same module
+makes the positive one or there is no positive one to make. Driving the count
+to zero would mean padding them with assertions nobody needs, which is the
 opposite of what the screen is for.
 
-  python tools/vacuous.py            # the list
-  python tools/vacuous.py --all      # including ones with 3+ claims
+So a reading goes in `vacuous_examined.json` and this stops showing it -- the
+same mechanism `depth.py` uses, and for the same reason. Eight rows were read
+at tick 174 and the judgement lived in this paragraph, where the tool could
+not consult it, so the count stayed put and every visit re-read the same
+tests.
+
+That file is a claim, not a suppression list. Each row says what makes the
+absence sufficient, or where the positive claim lives instead -- and it
+records the body that was read, so a test that is later rewritten comes back.
+
+  python tools/vacuous.py            # the list, minus what has been read
+  python tools/vacuous.py --all      # including those, and ones with 3+ claims
 """
 import io
+import json
 import os
 import re
 import sys
@@ -86,7 +103,20 @@ NEGATIVE = re.compile(
 #
 # `!x.any(..)` is not in here on purpose: that one really is an absence, and
 # it is the form the recorder tests use.
-POSITIVE = re.compile(r'!\s*[\w:.()\[\]&*]*\.\s*is_(?:empty|none)\(\)')
+# The class holds whitespace and commas because `rustfmt` wraps a long
+# receiver across lines, and a claim does not stop being positive for being
+# three lines tall.
+#
+# `(?<!assert)` is what makes that safe, and leaving it out is how this first
+# went wrong: **`assert!` ends in a `!` too.** With whitespace allowed in the
+# class, that `!` reached across the whole argument list to the `is_none()`
+# inside it, and every `assert!(x.is_none())` in the crate read as a positive
+# claim -- seven of the ten rows vanished at once and the ruler went blind
+# while its count went down.
+#
+# Non-greedy so it ends at the first `is_empty`/`is_none` after the `!`.
+POSITIVE = re.compile(
+    r'(?<!assert)!\s*[\w:.()\[\]&*,\s]*?\.\s*is_(?:empty|none)\(\)', re.S)
 
 
 def body_of(text, start):
@@ -119,9 +149,30 @@ def assertions(body):
     return found
 
 
+EXAMINED = os.path.join(paths.TOOLS, 'vacuous_examined.json')
+
+
+def load_examined():
+    """The `(file, test)` pairs that have been read, with the reason.
+
+    Keyed by name, as `depth.py` keys its own by class -- and carrying the
+    same caveat: a test that is rewritten keeps the verdict its old body
+    earned until somebody reads it again. Recording a fingerprint would catch
+    that, and would need this tool to write its own data file back; it is not
+    worth the surprise, and renaming a test is enough to bring the row home.
+    """
+    if not os.path.exists(EXAMINED):
+        return {}
+    with io.open(EXAMINED, encoding='utf-8') as handle:
+        rows = json.load(handle)['examined']
+    return {(row['file'], row['test']) for row in rows}
+
+
 def main():
     show_all = '--all' in sys.argv
+    examined = load_examined()
     rows = []
+    examined_seen = 0
     total = 0
     for dirpath, _, files in os.walk(PORT):
         for name in sorted(files):
@@ -143,9 +194,15 @@ def main():
                 ]
                 if len(negative) == len(claims):
                     if len(claims) < 3 or show_all:
-                        rows.append((relative, match.group(2), len(claims)))
+                        name = match.group(2)
+                        if (relative, name) in examined:
+                            examined_seen += 1
+                            if not show_all:
+                                continue
+                        rows.append((relative, name, len(claims)))
 
-    print('%d tests; %d claim only that nothing happened' % (total, len(rows)))
+    print('%d tests; %d claim only that nothing happened (%d read and left)'
+          % (total, len(rows), examined_seen))
     print('%-34s %-6s %s' % ('file', 'claims', 'test'))
     for relative, name, count in sorted(rows):
         print('%-34s %-6d %s' % (relative, count, name))
