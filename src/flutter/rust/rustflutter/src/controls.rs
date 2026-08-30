@@ -885,6 +885,15 @@ mod radio_semantics_tests {
         );
         println!(
             "SPOKEN {:<20} -> {}",
+            "MaterialBanner",
+            spoken_by(component(crate::components::MaterialBanner::new(
+                component(Label::new("You are offline")),
+                Vec::new()
+            )))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
             "DataTable",
             spoken_by(component(super::DataTable::new(vec![
                 "Name".to_string(),
@@ -930,6 +939,61 @@ mod radio_semantics_tests {
             "SPOKEN {:<20} -> {}",
             "ProgressBar",
             spoken_by(component(ProgressBar::new(0.6))).join(", ")
+        );
+    }
+
+    /// Whether a widget announces itself, and with what words.
+    fn announced_as(widget: crate::framework::AnyWidget) -> Vec<String> {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            widget,
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| node.properties.flags.is_live_region)
+            .map(|node| node.properties.label.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_banner_announces_itself_even_though_it_will_not_go_away() {
+        // The judgement worth recording: a snack bar's case is easy, since it
+        // is gone in four seconds and a reader who has to hunt for it has
+        // already lost it. A banner **stays**, which makes the case look
+        // weaker -- and upstream gives it the flag anyway (`banner.dart:443`).
+        // A thing that appeared unbidden is worth telling someone about
+        // whether or not it will leave on its own.
+        assert_eq!(
+            announced_as(crate::framework::component(Banner::new("You are offline"))),
+            vec!["You are offline".to_string()]
+        );
+    }
+
+    #[test]
+    fn upstreams_own_banner_shape_announces_itself_too() {
+        // Two banners live here: this crate's simple one above, and the full
+        // upstream shape in `components`. Both appear on their own, so both
+        // say so -- through one rule, so they cannot drift apart.
+        assert_eq!(
+            announced_as(crate::framework::component(
+                crate::components::MaterialBanner::new(
+                    crate::framework::component(crate::components::Label::new("You are offline")),
+                    Vec::new(),
+                )
+            )),
+            vec!["You are offline".to_string()],
+            "and once, not twice -- see `a_label_folded_into_a_merge_says_its_words_once`"
         );
     }
 
@@ -2452,22 +2516,7 @@ impl Component for Snackbar {
         // bars appeared with nothing to draw a reader's attention. A bar that
         // is gone in four seconds is a bar nobody finds by hunting for it.
         //
-        // **Container**: one stop, so the message and its action are met
-        // together rather than as two unrelated things at the bottom of the
-        // screen. The flag rides on the merged node because that is the node
-        // with the words -- a live region with nothing in it announces
-        // nothing.
-        crate::framework::single(bar, |inner| {
-            crate::render::RenderMergeSemanticsBox::new(inner).with_properties(
-                crate::semantics::SemanticsProperties {
-                    flags: crate::semantics::SemanticsFlags {
-                        is_live_region: true,
-                        ..crate::semantics::SemanticsFlags::default()
-                    },
-                    ..crate::semantics::SemanticsProperties::label("")
-                },
-            )
-        })
+        crate::semantics::announces_itself(bar)
     }
 }
 
@@ -2514,7 +2563,7 @@ impl Component for Banner {
         })];
         children.extend(actions);
 
-        many(children, move |mut rendered| {
+        let banner_body = many(children, move |mut rendered| {
             let text = if rendered.is_empty() {
                 crate::render::RenderRef::new(Empty) as crate::widgets::BoxedWidget
             } else {
@@ -2537,7 +2586,14 @@ impl Component for Banner {
                     .with_padding(padding)
                     .with_child(row),
             )
-        })
+        });
+        // A banner appears without being asked for, so a reader elsewhere on
+        // the page has to be told. It does **not** dismiss itself the way a
+        // snack bar does, and it would be reasonable to guess that a permanent
+        // thing should not interrupt -- upstream gives it the flag anyway
+        // (`banner.dart:443`), and the reason survives the difference. See
+        // [`crate::semantics::announces_itself`].
+        crate::semantics::announces_itself(banner_body)
     }
 }
 

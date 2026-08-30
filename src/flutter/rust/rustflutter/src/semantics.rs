@@ -942,6 +942,11 @@ struct Collector {
     ///
     /// It is taken, not copied: the item's own node claims it, and the nodes
     /// beneath that one are parts of the item rather than further items.
+    /// Whether each open node raised [`Collector::labelled_depth`], innermost
+    /// last. `close` has to undo exactly what `open` did, and it cannot work
+    /// that out by looking at the label again: a merging node's label **grows**
+    /// while it is open, as its descendants fold into it.
+    labelled: Vec<bool>,
     pending_index: Option<i32>,
     /// Where automatic ids for text nodes are handed out from.
     next_text_id: i32,
@@ -1282,6 +1287,7 @@ pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
         // into a node that no longer exists, and a pending index that survived
         // would hand the next frame's first node a position from the last one.
         collector.merging.clear();
+        collector.labelled.clear();
         collector.pending_index = None;
     });
     // Opened before the walk and closed after it, so that everything the walk
@@ -1369,13 +1375,29 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
         let Some(rect) = clips.applied_to(bounds) else {
             return;
         };
+        // Opened with **no label**, and given one immediately afterwards.
+        //
+        // The words matter but the *depth* must not: a merging node that
+        // counted as "something above already speaks" would silence the very
+        // text it opened to gather. Round 369 fixed that by switching the
+        // suppression off inside a merge altogether, and that was too broad --
+        // a `Label` folded into a banner then said its words twice, once from
+        // its own annotation and once from the `Text` underneath it, which is
+        // what `spoken_census` caught in round 380.
+        let mut properties = render
+            .merged_node_properties()
+            .unwrap_or_else(|| SemanticsProperties::label(""));
+        let own_label = std::mem::take(&mut properties.label);
         let merged = open(
             take_text_id(),
-            render
-                .merged_node_properties()
-                .unwrap_or_else(|| SemanticsProperties::label("")),
+            properties,
             (rect.left, rect.top, rect.right, rect.bottom),
         );
+        if let Some(index) = merged {
+            COLLECTOR.with(|collector| {
+                collector.borrow_mut().nodes[index].properties.label = own_label;
+            });
+        }
         if let Some(index) = merged {
             COLLECTOR.with(|collector| collector.borrow_mut().merging.push(index));
             render.visit_children_for_semantics(&mut |child, child_offset| {
@@ -1393,6 +1415,7 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
         }
     }
 
+    let mut folded_label = false;
     let opened = match render.describe_semantics() {
         // Text that something above already speaks for. Its children are still
         // walked -- suppressing what a node says is not suppressing what is
@@ -1406,11 +1429,7 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
         // and with this rule missing a reader heard the position and never the
         // tab. Round 349's own tests all used a merging node with an empty
         // label, so nothing noticed.
-        Some(annotation)
-            if annotation.yields_to_a_label && inside_labelled() && !inside_merge() =>
-        {
-            None
-        }
+        Some(annotation) if annotation.yields_to_a_label && inside_labelled() => None,
         Some(annotation) => {
             let size = render.size();
             let bounds = Rect::xywh(offset.dx, offset.dy, size.width, size.height);
@@ -1420,15 +1439,40 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
                 // (`children.removeWhere(shouldDrop)`), and everything under it
                 // leaves with the node -- so the subtree is not walked.
                 None => return,
-                Some(rect) => open(
-                    annotation.id,
-                    annotation.properties,
-                    (rect.left, rect.top, rect.right, rect.bottom),
-                ),
+                Some(rect) => {
+                    // An annotation with words **speaks for what is under it**,
+                    // whether it becomes a node or is folded into one. Folded,
+                    // `open` returns `None` and there is no `close` to pair
+                    // with, so the depth is raised here and lowered by the
+                    // guard below.
+                    //
+                    // Without this a `Label` inside a merging box said its
+                    // words twice -- once from its own annotation, folded in,
+                    // and once from the `Text` underneath it, which no longer
+                    // had anything above it to yield to. `spoken_census` caught
+                    // that on a `MaterialBanner`.
+                    folded_label = inside_merge() && !annotation.properties.label.is_empty();
+                    if folded_label {
+                        COLLECTOR.with(|collector| collector.borrow_mut().labelled_depth += 1);
+                    }
+                    open(
+                        annotation.id,
+                        annotation.properties,
+                        (rect.left, rect.top, rect.right, rect.bottom),
+                    )
+                }
             }
         }
         None => None,
     };
+    let _lower = OnDrop(move || {
+        if folded_label {
+            COLLECTOR.with(|collector| {
+                let mut collector = collector.borrow_mut();
+                collector.labelled_depth = collector.labelled_depth.saturating_sub(1);
+            });
+        }
+    });
     render.visit_children_for_semantics(&mut |child, child_offset| {
         describe_subtree(
             child,
@@ -1724,9 +1768,11 @@ fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) ->
             collector.nodes[parent].children.push(id);
         }
         collector.open.push(index);
-        if !collector.nodes[index].properties.label.is_empty() {
+        let raised = !collector.nodes[index].properties.label.is_empty();
+        if raised {
             collector.labelled_depth += 1;
         }
+        collector.labelled.push(raised);
         Some(index)
     })
 }
@@ -1789,7 +1835,7 @@ fn close(index: usize) {
                 .find_map(|node| node.index_in_parent);
             collector.nodes[index].properties.scroll_index = first;
         }
-        if !collector.nodes[index].properties.label.is_empty() {
+        if collector.labelled.pop().unwrap_or(false) {
             collector.labelled_depth = collector.labelled_depth.saturating_sub(1);
         }
         // Closes down to and including `index`. A child that opened and never
@@ -2551,6 +2597,43 @@ pub fn semantics_with_action(
     Semantics::new(id, properties, child)
         .with_on_action(handler)
         .build()
+}
+
+/// Wraps `child` in the node that says **something arrived without being asked
+/// for**.
+///
+/// Upstream gives this to a snack bar (`_SnackBarState.build`) and to a
+/// material banner (`_MaterialBannerState.build`), in both cases as
+/// `Semantics(container: true, liveRegion: true, ...)`.
+///
+/// **Container**: one stop, so a message and its action are met together
+/// rather than as two unrelated things at the edge of the screen.
+/// **Live region**: the thing appeared on its own, and a reader who is
+/// somewhere else on the page has to be told -- words sitting in the tree with
+/// nothing pointing at them are words nobody hears.
+///
+/// The flag rides on the folded node because that is the node with the words:
+/// a live region with nothing in it announces nothing.
+///
+/// # It is not only for things that vanish
+///
+/// A snack bar's case is easy -- it is gone in four seconds, so a reader who
+/// has to hunt for it has already lost it. A banner does **not** dismiss
+/// itself, and it would be reasonable to guess it therefore should not
+/// interrupt. Upstream gives it the flag anyway, and the reason survives the
+/// difference: a thing that appears unbidden is worth telling someone about
+/// whether or not it will leave on its own. Guessed the other way, this would
+/// have been a silent banner.
+pub fn announces_itself(child: AnyWidget) -> AnyWidget {
+    crate::framework::single(child, |inner| {
+        crate::render::RenderMergeSemanticsBox::new(inner).with_properties(SemanticsProperties {
+            flags: SemanticsFlags {
+                is_live_region: true,
+                ..SemanticsFlags::default()
+            },
+            ..SemanticsProperties::label("")
+        })
+    })
 }
 
 /// Wraps `child` in a node whose **Tap action reaches the same handler a
@@ -6015,6 +6098,34 @@ mod tests {
             .filter(|label| !label.is_empty())
             .collect();
         assert_eq!(labels, vec!["Save\nCtrl S", "after"]);
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_label_folded_into_a_merge_says_its_words_once() {
+        // A `Label` is an annotation with words and a `Text` underneath saying
+        // the same thing; ordinarily the text yields to the label above it.
+        // Folded into a merging box the annotation becomes no node at all, so
+        // for a while nothing was left for the text to yield to and a banner
+        // said "You are offline" twice.
+        //
+        // The rule that fixes it is the one that was always meant: **words
+        // speak for what is under them**, whether they become a node or are
+        // folded into one.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            crate::render::RenderMergeSemanticsBox::new(RenderSemantics::new(
+                720,
+                SemanticsProperties::label("You are offline"),
+                crate::widgets::Text::new("You are offline"),
+            ))
+        }));
+        let heard: Vec<&str> = nodes
+            .iter()
+            .map(|node| node.properties.label.as_str())
+            .filter(|label| !label.is_empty())
+            .collect();
+        assert_eq!(heard, vec!["You are offline"], "once, not twice");
         set_enabled(false);
     }
 

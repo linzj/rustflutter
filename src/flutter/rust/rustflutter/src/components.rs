@@ -3358,7 +3358,7 @@ impl Component for MaterialBanner {
         children.extend(leading);
         children.extend(actions);
 
-        crate::framework::many(children, move |mut boxed| {
+        let banner_body = crate::framework::many(children, move |mut boxed| {
             let mut boxed = boxed.drain(..);
             let content = boxed.next().expect("the content is always pushed");
             let leading = if has_leading { boxed.next() } else { None };
@@ -3432,7 +3432,13 @@ impl Component for MaterialBanner {
                 .with_color(background)
                 .with_elevation(elevation.round().max(0.0) as u32)
                 .with_child(column)
-        })
+        });
+        // The same rule the snack bar has, and upstream gives it to both:
+        // something that appeared without being asked for is worth telling a
+        // reader about. A banner does not dismiss itself, which makes the case
+        // look weaker and is not -- see
+        // [`crate::semantics::announces_itself`].
+        crate::semantics::announces_itself(banner_body)
     }
 }
 
