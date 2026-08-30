@@ -127,12 +127,36 @@ std::unique_ptr<ImpellerGlContext> ImpellerGlContext::Create() {
     return nullptr;
   }
 
+  // One sample and eight bits of depth, which is upstream's Windows config --
+  // `shell/platform/windows/egl/manager.cc:188`: RGBA8888, EGL_DEPTH_SIZE 8,
+  // EGL_STENCIL_SIZE 8, and no EGL_SAMPLES at all.
+  //
+  // Impeller renders the root pass straight into this surface, and it asks
+  // for it at one sample: `SurfaceGLES::WrapFBO` sets
+  // `color0_tex.sample_count = SampleCount::kCount1`. What antialiases that
+  // pass is Impeller's own coverage, computed per fragment from the geometry;
+  // the subpasses that do want multisampling -- save layers, advanced blends
+  // -- make an offscreen 4x target of their own and resolve it. Asking EGL
+  // for a multisampled *window* on top of that buys a second, hardware round
+  // of it that Impeller neither asked for nor knows about.
+  //
+  // Which would be a defensible thing to buy if it were cheap, and it is not.
+  // A 4x window surface makes ANGLE hold a 4x colour buffer and a 4x
+  // depth-stencil buffer at window size and resolve both at present: 28 bytes
+  // per window pixel above this config, or 220 MB at 3840x2054. That is more
+  // video memory than a 544-photograph album holds in thumbnails, map tiles
+  // and full-size decodes put together, spent on the one part of the frame
+  // Impeller had already antialiased.
+  //
+  // Twenty-four bits of depth was the same in miniature. Nothing here draws
+  // with depth; the eight upstream asks for are what the stencil is packed
+  // beside.
   impeller::egl::ConfigDescriptor desc;
   desc.api = impeller::egl::API::kOpenGLES3;
   desc.color_format = impeller::egl::ColorFormat::kRGBA8888;
-  desc.depth_bits = impeller::egl::DepthBits::kTwentyFour;
+  desc.depth_bits = impeller::egl::DepthBits::kEight;
   desc.stencil_bits = impeller::egl::StencilBits::kEight;
-  desc.samples = impeller::egl::Samples::kFour;
+  desc.samples = impeller::egl::Samples::kOne;
   desc.surface_type = impeller::egl::SurfaceType::kWindow;
 
   self->onscreen_config_ = self->display_->ChooseConfig(desc);
@@ -141,17 +165,8 @@ std::unique_ptr<ImpellerGlContext> ImpellerGlContext::Create() {
     self->onscreen_config_ = self->display_->ChooseConfig(desc);
   }
   if (!self->onscreen_config_) {
-    // Software ANGLE and some virtual display drivers have no multisampled
-    // window config. One sample is worse looking, not broken.
-    desc.samples = impeller::egl::Samples::kOne;
-    self->onscreen_config_ = self->display_->ChooseConfig(desc);
-    if (self->onscreen_config_) {
-      FML_LOG(INFO) << "No multisampled window config; falling back to one "
-                       "sample.";
-    } else {
-      FML_LOG(ERROR) << "Could not choose an onscreen EGL config.";
-      return nullptr;
-    }
+    FML_LOG(ERROR) << "Could not choose an onscreen EGL config.";
+    return nullptr;
   }
 
   desc.surface_type = impeller::egl::SurfaceType::kPBuffer;
