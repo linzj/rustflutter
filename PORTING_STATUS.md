@@ -22497,3 +22497,55 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 （`_lastValue`／`_lastStatus`）——两个父级在同一帧都变了，监听者只应该被叫一次。
 另外它的 `status` 不是随便取一个：`next.status.isAnimating ? next.status : first.status`，
 **动着的那个说了算，都不动才轮到 first**。先按行为查本项目这三个的 `status` 是怎么写的。
+
+---
+
+## 第 325 轮：三个复合动画各自发明了一套状态规则，而上游给的是同一套
+
+接上一轮的“下一步”，把 `AnimationMean`／`AnimationMax`／`AnimationMin` 查完。
+上游这三个**都没有覆写 `status`**——它们从 `CompoundAnimation` 继承同一条规则。
+本项目把三个分开写了，于是**每一个都发明了一套不同的规则**：
+
+| | 本项目原来 | 上游 |
+|---|---|---|
+| Mean | 永远取 left | `next.status.isAnimating ? next.status : first.status` |
+| Max | 取**值**大的那个的状态 | 同上 |
+| Min | 取**值**小的那个的状态 | 同上 |
+
+上游既不看值，也不认死一边：**谁在动谁说话**。两个推论：**都在动时 next 说了算**；
+**都不动时轮到 first**——后一条是个平局裁决，不是判断，静止时 first 并不比 next 更权威。
+（测试里钉了一条：min 的**值**来自 next、**状态**来自 first，两个问题确实是分开答的。）
+
+监听那一半也补齐了，而上游的两道闸都**丢掉传进来的东西、重新自己算**：
+
+* `_maybeNotifyStatusListeners(AnimationStatus _)` 把收到的状态**整个丢掉**，重新问自己的。
+  它必须这样：`next` 在动的时候 `first` 改变状态，复合动画自己的状态**没变**，
+  把父级那个传下去等于白白吵醒所有监听者，还告诉他们一个错的状态。
+* 值那道闸形状相同，抓的东西更尖：**赢家不动、输家在跑**的 max，每一帧父级都在通知，
+  而每一帧 max 都是同一个数——一次都不该往下发。
+* 还有惰性挂载：`didStartListening` 才挂到两个父级上，最后一个监听者走了就摘下来。
+
+三个公开类型现在都是同一个 `CompoundAnimation` 的薄壳，只各自提供“两个值怎么合成”。
+
+**变异扫描 14 个，第一遍三个没红，全是真窟窿：**
+
+* **“值闸从不更新它记住的东西”**没红——我的测试里值每次都在变，跟种子比和跟上一次比结果一样。
+* **“只看第二个父级”**没红——那条 max 测试只推动了 `next`。
+* **“还有别的监听者时就把父级放掉”**没红——测试里只挂过一个监听者。
+
+三条都指向同一件事：**用真控制器测不出“通知了但值没变”**，因为控制器不动就不通知。
+补了一个手动驱动的 `DrivenAnimation`（值和状态可设，`announce()` 想叫就叫），
+三个窟窿一次补完：同一个值再宣布一次不再往下发、值回到原处算一次变化、
+两个父级各自推动都听得到、移除两个监听者中的一个之后另一个仍然听得到。补完全部转红。
+
+另外两条自己写歪的测试也记下来：先想用“两个父级反向等速、均值不动”来测值闸，
+但父级是分别 tick 的，两次之间均值**确实**动过；又想让输家“超过”赢家，
+可赢家已经在 1.0 的天花板上，追平就到头了。改成赢家停在 0.6。
+
+尺子：十六把全部 exit 0。门：6220 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`animation.rs` 里还剩最后一个空监听——`AlwaysStoppedAnimation`，
+但那个**大概是对的**：上游的 `addListener` 就是个空方法，因为它永远不变。
+先按行为确认这一条（连同它的 `status` 恒为 dismissed 是否也是上游写死的），
+确认之后这一族就走完了。然后回 `python tools/depth.py` 看队头。

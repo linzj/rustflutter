@@ -1289,6 +1289,286 @@ mod tests {
         );
     }
 
+    /// A parent driven by hand: its value and status are set, and it notifies
+    /// only when told to. A controller cannot be made to notify without
+    /// moving, which is exactly the case the guards are about.
+    struct DrivenAnimation {
+        value: Cell<f32>,
+        status: Cell<AnimationStatus>,
+        listeners: AnimationListeners,
+    }
+
+    impl DrivenAnimation {
+        fn new(value: f32) -> Rc<DrivenAnimation> {
+            Rc::new(DrivenAnimation {
+                value: Cell::new(value),
+                status: Cell::new(AnimationStatus::Dismissed),
+                listeners: AnimationListeners::new(),
+            })
+        }
+
+        /// One parent notification, whether or not anything changed.
+        fn announce(&self) {
+            self.listeners.notify_value();
+            self.listeners.notify_status(self.status.get());
+        }
+    }
+
+    impl Animation for DrivenAnimation {
+        fn value(&self) -> f32 {
+            self.value.get()
+        }
+
+        fn status(&self) -> AnimationStatus {
+            self.status.get()
+        }
+
+        fn add_listener(&self, listener: AnimationListener) {
+            self.listeners.add(listener);
+        }
+
+        fn remove_listener(&self, listener: &AnimationListener) {
+            self.listeners.remove(listener);
+        }
+    }
+
+    #[test]
+    fn the_guard_remembers_the_value_it_last_announced() {
+        // Comparing against a stale remembered value would let a second
+        // notification through at a value already announced.
+        let first = DrivenAnimation::new(0.0);
+        let next = DrivenAnimation::new(0.0);
+        let mean = AnimationMean::new(first.clone(), next.clone());
+
+        let ticks = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&ticks);
+        mean.add_listener(AnimationListener {
+            on_value: Rc::new(move || counter.set(counter.get() + 1)),
+            on_status: None,
+        });
+
+        first.value.set(1.0);
+        first.announce();
+        assert_eq!(ticks.get(), 1, "moved to 0.5");
+
+        first.announce();
+        assert_eq!(ticks.get(), 1, "announced again at the same value");
+
+        first.value.set(0.0);
+        first.announce();
+        assert_eq!(ticks.get(), 2, "back to 0, which is a change");
+        first.announce();
+        assert_eq!(ticks.get(), 2, "and still no repeat at the value it left");
+    }
+
+    #[test]
+    fn both_parents_are_watched_and_not_just_one() {
+        let first = DrivenAnimation::new(0.0);
+        let next = DrivenAnimation::new(0.0);
+        let mean = AnimationMean::new(first.clone(), next.clone());
+
+        let heard_first = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&heard_first);
+        mean.add_listener(AnimationListener {
+            on_value: Rc::new(move || counter.set(counter.get() + 1)),
+            on_status: None,
+        });
+
+        first.value.set(1.0);
+        first.announce();
+        assert_eq!(heard_first.get(), 1, "the first parent is watched");
+
+        next.value.set(1.0);
+        next.announce();
+        assert_eq!(heard_first.get(), 2, "and so is the second");
+    }
+
+    #[test]
+    fn the_parents_are_kept_while_any_listener_remains() {
+        // The lazy detach is on the *last* listener leaving, not the first.
+        let first = DrivenAnimation::new(0.0);
+        let next = DrivenAnimation::new(0.0);
+        let mean = AnimationMean::new(first.clone(), next.clone());
+
+        let staying = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&staying);
+        let stays = AnimationListener {
+            on_value: Rc::new(move || counter.set(counter.get() + 1)),
+            on_status: None,
+        };
+        let goes = AnimationListener {
+            on_value: Rc::new(|| {}),
+            on_status: None,
+        };
+        mean.add_listener(stays.clone());
+        mean.add_listener(goes.clone());
+
+        mean.remove_listener(&goes);
+        assert!(
+            mean.inner.attached.borrow().is_some(),
+            "one listener still there"
+        );
+
+        first.value.set(1.0);
+        first.announce();
+        assert_eq!(staying.get(), 1, "and it still hears the parents");
+    }
+
+    #[test]
+    fn a_compound_reports_whichever_parent_is_moving() {
+        // Not a fixed side, and not whichever holds the winning value. All
+        // three compounds ask the same question.
+        let first = AnimationController::new(Duration::from_millis(100));
+        let next = AnimationController::new(Duration::from_millis(100));
+        let mean = AnimationMean::new(first.clone(), next.clone());
+
+        assert_eq!(mean.status(), AnimationStatus::Dismissed, "neither moving");
+
+        first.forward();
+        first.tick(Duration::from_millis(10));
+        assert_eq!(
+            mean.status(),
+            AnimationStatus::Forward,
+            "first is the only one moving"
+        );
+
+        // `next` moving the other way takes over even though `first` is still
+        // going, and even though `first` holds the larger value.
+        next.forward();
+        next.tick(Duration::from_millis(10));
+        next.reverse();
+        assert_eq!(
+            mean.status(),
+            AnimationStatus::Reverse,
+            "both moving, so next answers"
+        );
+        assert_eq!(first.status(), AnimationStatus::Forward);
+    }
+
+    #[test]
+    fn at_rest_the_first_parent_answers_for_all_three_compounds() {
+        // A tie-break rather than a judgement: at rest neither parent is more
+        // authoritative, and upstream picks first.
+        let first = AnimationController::new(Duration::from_millis(100));
+        let next = AnimationController::new(Duration::from_millis(100));
+        first.forward();
+        first.tick(Duration::from_millis(100));
+        assert_eq!(first.status(), AnimationStatus::Completed);
+        assert_eq!(next.status(), AnimationStatus::Dismissed);
+
+        for status in [
+            AnimationMean::new(first.clone(), next.clone()).status(),
+            AnimationMax::new(first.clone(), next.clone()).status(),
+            AnimationMin::new(first.clone(), next.clone()).status(),
+        ] {
+            assert_eq!(status, AnimationStatus::Completed, "first, not next");
+        }
+
+        // And the min's value comes from `next` while its status comes from
+        // `first`, so the two questions really are answered separately.
+        let min = AnimationMin::new(first.clone(), next.clone());
+        assert_eq!(min.value(), 0.0, "next's value");
+        assert_eq!(min.status(), AnimationStatus::Completed, "first's status");
+    }
+
+    #[test]
+    fn a_compound_whose_own_value_did_not_move_notifies_nobody() {
+        // A parent moving is not the question; the compound moving is. The
+        // clearest case is a max whose *losing* parent is the one running:
+        // every frame it notifies, and every frame the max is the same
+        // number.
+        let winner = AnimationController::new(Duration::from_millis(100));
+        let loser = AnimationController::new(Duration::from_millis(100));
+        // Held at 0.6 -- below the ceiling, so the loser has somewhere to
+        // overtake it to.
+        winner.forward();
+        winner.tick(Duration::from_millis(60));
+        assert!((winner.value() - 0.6).abs() < 1e-5);
+
+        let max = AnimationMax::new(winner.clone(), loser.clone());
+        assert!((max.value() - 0.6).abs() < 1e-5);
+
+        let ticks = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&ticks);
+        max.add_listener(AnimationListener {
+            on_value: Rc::new(move || counter.set(counter.get() + 1)),
+            on_status: None,
+        });
+
+        loser.forward();
+        for _ in 0..4 {
+            loser.tick(Duration::from_millis(10));
+        }
+        assert!(loser.value() > 0.0, "the loser really did move");
+        assert!((max.value() - 0.6).abs() < 1e-5, "and the max did not");
+        assert_eq!(ticks.get(), 0, "so nobody was woken");
+
+        // It does speak once the loser overtakes.
+        loser.tick(Duration::from_millis(30));
+        assert!(loser.value() > 0.6, "past the winner now");
+        assert!(ticks.get() > 0, "the max moved, so the listener heard");
+    }
+
+    #[test]
+    fn a_status_change_the_compound_does_not_share_is_not_passed_on() {
+        // The guard discards the status it was handed and asks for its own.
+        // `first` completing while `next` is animating leaves the compound's
+        // status alone.
+        let first = AnimationController::new(Duration::from_millis(100));
+        let next = AnimationController::new(Duration::from_millis(1000));
+        next.forward();
+        next.tick(Duration::from_millis(10));
+        let mean = AnimationMean::new(first.clone(), next.clone());
+        assert_eq!(mean.status(), AnimationStatus::Forward, "next's");
+
+        let heard: Rc<RefCell<Vec<AnimationStatus>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&heard);
+        mean.add_listener(AnimationListener {
+            on_value: Rc::new(|| {}),
+            on_status: Some(Rc::new(move |status| sink.borrow_mut().push(status))),
+        });
+
+        first.forward();
+        first.tick(Duration::from_millis(100));
+        assert_eq!(first.status(), AnimationStatus::Completed, "first changed");
+        assert_eq!(
+            mean.status(),
+            AnimationStatus::Forward,
+            "and the compound did not"
+        );
+        assert!(
+            heard.borrow().is_empty(),
+            "so nothing was announced: {:?}",
+            heard.borrow()
+        );
+    }
+
+    #[test]
+    fn a_compound_nobody_watches_holds_no_place_in_its_parents() {
+        // didStartListening / didStopListening. Once the last listener goes,
+        // the parents stop being told about a compound that will tell nobody.
+        let first = AnimationController::new(Duration::from_millis(100));
+        let next = AnimationController::new(Duration::from_millis(100));
+        let mean = AnimationMean::new(first.clone(), next.clone());
+        assert!(
+            mean.inner.attached.borrow().is_none(),
+            "not attached before anyone listens"
+        );
+
+        let listener = AnimationListener {
+            on_value: Rc::new(|| {}),
+            on_status: None,
+        };
+        mean.add_listener(listener.clone());
+        assert!(mean.inner.attached.borrow().is_some());
+
+        mean.remove_listener(&listener);
+        assert!(
+            mean.inner.attached.borrow().is_none(),
+            "and detached when the last one goes"
+        );
+    }
+
     #[test]
     fn a_listener_on_a_reversed_animation_hears_the_reversed_status() {
         // The value callback takes no argument and is forwarded as it is; the
@@ -2048,87 +2328,223 @@ impl Animation for CurvedAnimation {
     }
 }
 
+/// Upstream `CompoundAnimation`: the shared body of [`AnimationMean`],
+/// [`AnimationMax`] and [`AnimationMin`].
+///
+/// All three inherit their status and their notification behaviour from here;
+/// each supplies only how to combine the two values. This port had written the
+/// three separately, and each had **invented a different status rule** -- the
+/// mean always answered its left parent, the max and the min answered whichever
+/// parent held the winning *value*. Upstream asks none of those.
+///
+/// # Whichever one is moving speaks, and `next` wins a tie
+///
+/// `next.status.isAnimating ? next.status : first.status`. Neither the value
+/// nor a fixed side comes into it. Two things follow: with **both** moving,
+/// `next` answers; with **neither** moving, `first` does. The second is a
+/// tie-break rather than a judgement -- at rest `first` is no more
+/// authoritative than `next`.
+///
+/// # Both guards recompute rather than passing anything through
+///
+/// Upstream's `_maybeNotifyStatusListeners(AnimationStatus _)` **discards the
+/// status it was handed** and asks for its own, then notifies only if that
+/// changed. It has to: a status change on `first` while `next` is animating
+/// leaves the compound's status alone, so passing the parent's along would wake
+/// every listener for nothing and tell them the wrong status besides.
+///
+/// The value guard has the same shape and catches something sharper: two
+/// parents moving in opposite directions leave a mean **unchanged**, and on
+/// those frames `_maybeNotifyListeners` says nothing at all.
+///
+/// # It listens to its parents only while someone is listening to it
+///
+/// Upstream's `AnimationLazyListenerMixin`: `didStartListening` attaches to
+/// both parents and `didStopListening` detaches from both, so a compound nobody
+/// is watching holds no place in either parent's listener list.
+struct CompoundAnimation {
+    first: Rc<dyn Animation>,
+    next: Rc<dyn Animation>,
+    combine: fn(f32, f32) -> f32,
+    listeners: AnimationListeners,
+    last_value: Cell<Option<f32>>,
+    last_status: Cell<Option<AnimationStatus>>,
+    attached: RefCell<Option<AnimationListener>>,
+}
+
+impl CompoundAnimation {
+    fn new(
+        first: Rc<dyn Animation>,
+        next: Rc<dyn Animation>,
+        combine: fn(f32, f32) -> f32,
+    ) -> Rc<CompoundAnimation> {
+        Rc::new(CompoundAnimation {
+            first,
+            next,
+            combine,
+            listeners: AnimationListeners::new(),
+            last_value: Cell::new(None),
+            last_status: Cell::new(None),
+            attached: RefCell::new(None),
+        })
+    }
+
+    fn value(&self) -> f32 {
+        (self.combine)(self.first.value(), self.next.value())
+    }
+
+    fn status(&self) -> AnimationStatus {
+        if self.next.status().is_animating() {
+            self.next.status()
+        } else {
+            self.first.status()
+        }
+    }
+
+    /// Upstream's `_maybeNotifyListeners` and `_maybeNotifyStatusListeners`,
+    /// which hang off the same parent notification.
+    fn maybe_notify(&self) {
+        let value = self.value();
+        if self.last_value.get() != Some(value) {
+            self.last_value.set(Some(value));
+            self.listeners.notify_value();
+        }
+        let status = self.status();
+        if self.last_status.get() != Some(status) {
+            self.last_status.set(Some(status));
+            self.listeners.notify_status(status);
+        }
+    }
+
+    fn add_listener(self: &Rc<Self>, listener: AnimationListener) {
+        self.listeners.add(listener);
+        if self.attached.borrow().is_some() {
+            return;
+        }
+        // Upstream's `didStartListening`. The two are seeded first, so the
+        // next parent notification is judged against what the compound read at
+        // the moment it began watching rather than against nothing.
+        self.last_value.set(Some(self.value()));
+        self.last_status.set(Some(self.status()));
+        let weak = Rc::downgrade(self);
+        let forward: Rc<dyn Fn()> = Rc::new(move || {
+            if let Some(compound) = weak.upgrade() {
+                compound.maybe_notify();
+            }
+        });
+        let hook = AnimationListener {
+            on_value: forward,
+            on_status: None,
+        };
+        self.first.add_listener(hook.clone());
+        self.next.add_listener(hook.clone());
+        *self.attached.borrow_mut() = Some(hook);
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.listeners.remove(listener);
+        if !self.listeners.is_empty() {
+            return;
+        }
+        // Upstream's `didStopListening`.
+        if let Some(hook) = self.attached.borrow_mut().take() {
+            self.first.remove_listener(&hook);
+            self.next.remove_listener(&hook);
+        }
+    }
+}
+
 /// Upstream `AnimationMean`: the average of two.
 pub struct AnimationMean {
-    left: Rc<dyn Animation>,
-    right: Rc<dyn Animation>,
+    inner: Rc<CompoundAnimation>,
 }
 
 impl AnimationMean {
     pub fn new(left: Rc<dyn Animation>, right: Rc<dyn Animation>) -> AnimationMean {
-        AnimationMean { left, right }
+        AnimationMean {
+            inner: CompoundAnimation::new(left, right, |first, next| (first + next) / 2.0),
+        }
     }
 }
 
 impl Animation for AnimationMean {
     fn value(&self) -> f32 {
-        (self.left.value() + self.right.value()) / 2.0
+        self.inner.value()
     }
 
     fn status(&self) -> AnimationStatus {
-        self.left.status()
+        self.inner.status()
     }
 
-    fn add_listener(&self, _listener: AnimationListener) {}
-    fn remove_listener(&self, _listener: &AnimationListener) {}
+    fn add_listener(&self, listener: AnimationListener) {
+        self.inner.add_listener(listener);
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.inner.remove_listener(listener);
+    }
 }
 
 /// Upstream `AnimationMax`: the larger of two.
 pub struct AnimationMax {
-    left: Rc<dyn Animation>,
-    right: Rc<dyn Animation>,
+    inner: Rc<CompoundAnimation>,
 }
 
 impl AnimationMax {
     pub fn new(left: Rc<dyn Animation>, right: Rc<dyn Animation>) -> AnimationMax {
-        AnimationMax { left, right }
+        AnimationMax {
+            inner: CompoundAnimation::new(left, right, |first, next| first.max(next)),
+        }
     }
 }
 
 impl Animation for AnimationMax {
     fn value(&self) -> f32 {
-        self.left.value().max(self.right.value())
+        self.inner.value()
     }
 
     fn status(&self) -> AnimationStatus {
-        if self.left.value() > self.right.value() {
-            self.left.status()
-        } else {
-            self.right.status()
-        }
+        self.inner.status()
     }
 
-    fn add_listener(&self, _listener: AnimationListener) {}
-    fn remove_listener(&self, _listener: &AnimationListener) {}
+    fn add_listener(&self, listener: AnimationListener) {
+        self.inner.add_listener(listener);
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.inner.remove_listener(listener);
+    }
 }
 
 /// Upstream `AnimationMin`: the smaller of two.
 pub struct AnimationMin {
-    left: Rc<dyn Animation>,
-    right: Rc<dyn Animation>,
+    inner: Rc<CompoundAnimation>,
 }
 
 impl AnimationMin {
     pub fn new(left: Rc<dyn Animation>, right: Rc<dyn Animation>) -> AnimationMin {
-        AnimationMin { left, right }
+        AnimationMin {
+            inner: CompoundAnimation::new(left, right, |first, next| first.min(next)),
+        }
     }
 }
 
 impl Animation for AnimationMin {
     fn value(&self) -> f32 {
-        self.left.value().min(self.right.value())
+        self.inner.value()
     }
 
     fn status(&self) -> AnimationStatus {
-        if self.left.value() < self.right.value() {
-            self.left.status()
-        } else {
-            self.right.status()
-        }
+        self.inner.status()
     }
 
-    fn add_listener(&self, _listener: AnimationListener) {}
-    fn remove_listener(&self, _listener: &AnimationListener) {}
+    fn add_listener(&self, listener: AnimationListener) {
+        self.inner.add_listener(listener);
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.inner.remove_listener(listener);
+    }
 }
 
 // -- Animatable and the tween remainder (upstream tween.dart) -----------------------
