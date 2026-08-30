@@ -158,8 +158,31 @@ impl OverlayGeometry {
 /// > circle (an onion pointing to 10:30).
 ///
 /// The rectangle is a *quadrant* of the circle's bounding box, not a tail
-/// stuck on the side, which is why the two are drawn overlapping and the seam
-/// between them never shows.
+/// stuck on the side, which is why the two overlap and the seam between them
+/// never shows.
+///
+/// # One path, not two shapes
+///
+/// Upstream builds a single `Path` and fills it once:
+///
+/// ```dart
+/// final path = Path()
+///   ..addOval(circle)
+///   ..addRect(point);
+/// canvas.drawPath(path, paint);
+/// ```
+///
+/// This crate drew a circle and then a rectangle -- two fills -- and while
+/// the handle colour is opaque the two are indistinguishable. **They part
+/// company the moment it is not.** The rectangle is a quadrant *of* the
+/// circle, so the two overlap over a quarter-disc; two translucent fills
+/// composite twice there and leave a visibly darker wedge inside the handle,
+/// where one filled path covers the union exactly once.
+///
+/// The colour is `TextSelectionThemeData.selectionHandleColor`, which an
+/// application may set to anything, and a handle fading in or out is
+/// translucent whatever colour it was given. So this is not a hypothetical
+/// difference; it is the ordinary one.
 struct HandlePainter {
     color: crate::engine::Color,
 }
@@ -168,8 +191,12 @@ impl crate::render::CustomPainter for HandlePainter {
     fn paint(&self, canvas: &mut crate::engine::Canvas, size: Size) {
         let paint = crate::engine::Paint::new(self.color);
         let radius = size.width / 2.0;
-        canvas.draw_circle(radius, radius, radius, &paint);
-        canvas.draw_rect(Rect::ltrb(0.0, 0.0, radius, radius), &paint);
+        let mut path = crate::painting::RenderPath::new();
+        // `Rect.fromCircle(center: Offset(radius, radius), radius: radius)`
+        // and `Rect.fromLTWH(0, 0, radius, radius)`.
+        path.add_oval(Rect::ltrb(0.0, 0.0, radius * 2.0, radius * 2.0));
+        path.add_rect(Rect::ltrb(0.0, 0.0, radius, radius));
+        canvas.draw_path(&path, &paint);
     }
 
     fn should_repaint(&self, old: &dyn crate::render::CustomPainter) -> bool {
@@ -715,6 +742,114 @@ impl HandleDrag {
 
     pub fn end(&self) {
         *self.grabbed.borrow_mut() = None;
+    }
+}
+
+#[cfg(test)]
+mod handle_paint_tests {
+    use super::HandlePainter;
+    use crate::engine::{Canvas, Color};
+    use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+    use crate::render::{CustomPainter, Size};
+
+    const HANDLE: Color = Color(0xFF22_88CC);
+    const TRANSLUCENT: Color = Color(0x8022_88CC);
+
+    /// What the handle tells the canvas, for a handle `extent` wide.
+    ///
+    /// This file had draw calls and no test that read them back -- the two
+    /// `unpainted.py` has been naming for as long as it has been able to see
+    /// anything. This is that readback.
+    fn painted(color: Color, extent: f32) -> Vec<Drawn> {
+        let painter = HandlePainter { color };
+        let mut canvas = Canvas::new(extent, extent);
+        reset_drawn();
+        painter.paint(&mut canvas, Size::new(extent, extent));
+        drawn()
+    }
+
+    #[test]
+    fn the_handle_is_one_filled_path_and_not_two_shapes() {
+        // Upstream unions an oval and a rect into one `Path` and fills it
+        // once. Two fills are the same picture in an opaque colour and a
+        // different one otherwise, so the count is the assertion.
+        let calls = painted(HANDLE, 20.0);
+        assert_eq!(calls.len(), 1, "one fill, not two: {calls:?}");
+        assert!(
+            matches!(calls[0], Drawn::Path { .. }),
+            "and a path: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_translucent_handle_has_no_darker_wedge_inside_it() {
+        // The reason the count matters. The rectangle is a *quadrant of* the
+        // circle, so two translucent fills would composite twice over a
+        // quarter-disc and leave a visible seam-shaped stain. One path covers
+        // the union exactly once, whatever the alpha.
+        let calls = painted(TRANSLUCENT, 20.0);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        match calls[0] {
+            Drawn::Path { argb, stroke, .. } => {
+                assert_eq!(argb, TRANSLUCENT.0, "painted in the colour it was given");
+                assert_eq!(stroke, None, "filled, not stroked");
+            }
+            ref other => panic!("expected a path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_path_spans_the_whole_handle_because_the_quadrant_is_inside_it() {
+        // `Rect.fromCircle(center: (r, r), radius: r)` is the full box, and
+        // `Rect.fromLTWH(0, 0, r, r)` sits in its top-left corner -- so the
+        // union's bounds are the circle's, and the rectangle adds no reach.
+        // A rectangle drawn as a tail on the side would widen them.
+        let extent = 20.0;
+        match painted(HANDLE, extent)[0] {
+            Drawn::Path {
+                left,
+                top,
+                right,
+                bottom,
+                ..
+            } => {
+                assert_eq!((left, top, right, bottom), (0.0, 0.0, extent, extent));
+            }
+            ref other => panic!("expected a path, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_handle_is_an_onion_and_not_a_circle() {
+        // The bounds cannot say this. The quadrant is a corner *of* the
+        // circle, so removing it leaves every bound where it was -- a plain
+        // round blob with no point and no direction would pass every other
+        // assertion here. Only the commands the path was given tell them
+        // apart, which is what `drawn_path_ops` is for.
+        let painter = HandlePainter { color: HANDLE };
+        let mut canvas = Canvas::new(20.0, 20.0);
+        reset_drawn();
+        painter.paint(&mut canvas, Size::new(20.0, 20.0));
+
+        let ops = crate::engine_test_stubs::drawn_path_ops();
+        assert_eq!(ops.len(), 1, "one path: {ops:?}");
+        assert_eq!(
+            ops[0],
+            vec![
+                crate::engine_test_stubs::PathOp::AddOval,
+                crate::engine_test_stubs::PathOp::AddRect
+            ],
+            "an oval with a quadrant added to it, in that order"
+        );
+    }
+
+    #[test]
+    fn the_painter_repaints_only_when_the_colour_moves() {
+        // `shouldRepaint` is `color != oldPainter.color`, and nothing else on
+        // this painter can change.
+        let painter = HandlePainter { color: HANDLE };
+        assert!(!painter.should_repaint(&HandlePainter { color: HANDLE }));
+        assert!(painter.should_repaint(&HandlePainter { color: TRANSLUCENT }));
     }
 }
 

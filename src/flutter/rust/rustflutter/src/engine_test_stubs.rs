@@ -264,7 +264,10 @@ pub unsafe extern "C" fn rf_paint_clear_shader(paint: *mut RfPaint) {}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_new() -> *mut RfPath {
-    Box::into_raw(Box::new(StubPath { bounds: None })) as *mut RfPath
+    Box::into_raw(Box::new(StubPath {
+        bounds: None,
+        ops: Vec::new(),
+    })) as *mut RfPath
 }
 
 /// What the stub remembers about a path: **where it is, not what it is.**
@@ -275,18 +278,47 @@ pub unsafe extern "C" fn rf_path_new() -> *mut RfPath {
 /// the mistake these calls actually make -- a border or a shadow drawn at the
 /// wrong inset, offset or size.
 ///
-/// It does **not** identify a shape. A rounded rectangle and a rectangle of
-/// the same extent record identically, and a test that reads these bounds is
-/// entitled to conclude where something was drawn and nothing more. That is a
-/// smaller claim than a shape comparison and it is one the recording can
+/// The bounds do **not** identify a shape. A rounded rectangle and a rectangle
+/// of the same extent record identically, and a test that reads these bounds
+/// is entitled to conclude where something was drawn and nothing more. That is
+/// a smaller claim than a shape comparison and it is one the recording can
 /// actually support; the alternative -- noting that *a path* was drawn and
 /// calling that coverage -- is the kind of test that proves less than it looks
 /// like it does.
+///
+/// `ops` is a second, separate fact: **which commands the path was given**,
+/// in order. That is not a shape comparison either -- it says nothing about
+/// what the result looks like -- but it is the same kind of record `Drawn`
+/// keeps of the canvas, one level down, and it catches what bounds cannot.
+/// The selection handle is an oval with a quadrant of itself added to it; drop
+/// the quadrant and the bounds do not move, because the quadrant was inside
+/// them all along. Only the ops say the handle stopped being an onion and
+/// became a circle.
 struct StubPath {
     bounds: Option<(f32, f32, f32, f32)>,
+    ops: Vec<PathOp>,
+}
+
+/// A command a path was given. Named after the `rf_path_*` entry point, not
+/// after a shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathOp {
+    MoveTo,
+    LineTo,
+    QuadraticTo,
+    CubicTo,
+    Close,
+    AddRect,
+    AddOval,
+    AddCircle,
+    AddRoundedRect,
 }
 
 impl StubPath {
+    fn note(&mut self, op: PathOp) {
+        self.ops.push(op);
+    }
+
     fn include(&mut self, x: f32, y: f32) {
         self.bounds = Some(match self.bounds {
             None => (x, y, x, y),
@@ -312,6 +344,13 @@ unsafe fn extend_path(path: *mut RfPath, points: &[(f32, f32)]) {
     }
 }
 
+/// Notes a command against a path, ignoring a null handle.
+unsafe fn note_op(path: *mut RfPath, op: PathOp) {
+    if let Some(path) = unsafe { stub_path(path) } {
+        path.note(op);
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_free(path: *mut RfPath) {
     if !path.is_null() {
@@ -324,16 +363,19 @@ pub unsafe extern "C" fn rf_path_set_fill_type(path: *mut RfPath, fill_type: c_i
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_move_to(path: *mut RfPath, x: f32, y: f32) {
+    unsafe { note_op(path, PathOp::MoveTo) };
     unsafe { extend_path(path, &[(x, y)]) };
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_line_to(path: *mut RfPath, x: f32, y: f32) {
+    unsafe { note_op(path, PathOp::LineTo) };
     unsafe { extend_path(path, &[(x, y)]) };
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_quadratic_to(path: *mut RfPath, cx: f32, cy: f32, x: f32, y: f32) {
+    unsafe { note_op(path, PathOp::QuadraticTo) };
     // The control point counts towards the bounds. A true curve stays inside
     // its hull, so this over-reports rather than under-reports -- the right
     // direction for a bound something is being compared against.
@@ -350,11 +392,14 @@ pub unsafe extern "C" fn rf_path_cubic_to(
     x: f32,
     y: f32,
 ) {
+    unsafe { note_op(path, PathOp::CubicTo) };
     unsafe { extend_path(path, &[(cx1, cy1), (cx2, cy2), (x, y)]) };
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rf_path_close(path: *mut RfPath) {}
+pub unsafe extern "C" fn rf_path_close(path: *mut RfPath) {
+    unsafe { note_op(path, PathOp::Close) };
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_add_rect(
@@ -364,6 +409,7 @@ pub unsafe extern "C" fn rf_path_add_rect(
     right: f32,
     bottom: f32,
 ) {
+    unsafe { note_op(path, PathOp::AddRect) };
     unsafe { extend_path(path, &[(left, top), (right, bottom)]) };
 }
 
@@ -375,11 +421,13 @@ pub unsafe extern "C" fn rf_path_add_oval(
     right: f32,
     bottom: f32,
 ) {
+    unsafe { note_op(path, PathOp::AddOval) };
     unsafe { extend_path(path, &[(left, top), (right, bottom)]) };
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rf_path_add_circle(path: *mut RfPath, x: f32, y: f32, radius: f32) {
+    unsafe { note_op(path, PathOp::AddCircle) };
     unsafe { extend_path(path, &[(x - radius, y - radius), (x + radius, y + radius)]) };
 }
 
@@ -393,6 +441,7 @@ pub unsafe extern "C" fn rf_path_add_rounded_rect(
     radius_x: f32,
     radius_y: f32,
 ) {
+    unsafe { note_op(path, PathOp::AddRoundedRect) };
     unsafe { extend_path(path, &[(left, top), (right, bottom)]) };
 }
 
@@ -438,9 +487,12 @@ pub unsafe extern "C" fn rf_canvas_draw_path(
     path: *const RfPath,
     paint: *const RfPaint,
 ) {
-    let bounds = unsafe { stub_path(path as *mut RfPath) }
+    let stub = unsafe { stub_path(path as *mut RfPath) };
+    let bounds = stub
+        .as_ref()
         .and_then(|path| path.bounds)
         .unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let ops = stub.map(|path| path.ops.clone()).unwrap_or_default();
     record(Drawn::Path {
         left: bounds.0,
         top: bounds.1,
@@ -449,6 +501,7 @@ pub unsafe extern "C" fn rf_canvas_draw_path(
         argb: unsafe { paint_argb(paint) },
         stroke: unsafe { paint_stroke(paint) },
     });
+    PATH_OPS.with(|all| all.borrow_mut().push(ops));
 }
 
 #[unsafe(no_mangle)]
@@ -1249,12 +1302,34 @@ pub fn drawn() -> Vec<Drawn> {
     DRAWN.with(|drawn| drawn.borrow().clone())
 }
 
+thread_local! {
+    static PATH_OPS: std::cell::RefCell<Vec<Vec<PathOp>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The commands behind each filled path, in draw order.
+///
+/// Kept beside [`drawn`] rather than inside `Drawn::Path`, because that
+/// variant is *constructed* as an expected value by the tests that read it
+/// and widening it would rewrite every one of them to spell out commands they
+/// have no opinion about.
+///
+/// Bounds say where a path is; these say what it was told to be. The
+/// difference matters exactly when one part of a path lies inside the bounds
+/// of another -- the selection handle's quadrant is a corner of its own
+/// circle, so dropping it moves no bound and leaves a plain circle where an
+/// onion should be.
+pub fn drawn_path_ops() -> Vec<Vec<PathOp>> {
+    PATH_OPS.with(|all| all.borrow().clone())
+}
+
 /// Starts recording again. Thread-local, so tests need not coordinate -- but
 /// a test that reads [`drawn`] must call this first, because the paint of
 /// whatever ran before it is still in the list.
 #[allow(dead_code)]
 pub fn reset_drawn() {
     DRAWN.with(|drawn| drawn.borrow_mut().clear());
+    PATH_OPS.with(|all| all.borrow_mut().clear());
 }
 
 fn count_rect() {

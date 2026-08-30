@@ -21164,3 +21164,59 @@ hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engi
 `unpainted.py` 常年报 2——"两处 draw 调用坐在没人观察的文件里"。以前"观察"只能靠画布
 回读；现在可以走建出来的树。先按行为查：那两处是哪两个文件、画的是什么,
 `RenderRef::unwrapped` 够不够得着它们。
+
+## 第 300 轮：不透明时看不出的那一笔，和 bounds 看不出的那一块
+
+`unpainted.py` 常年报的 2 处，是 `selection_host.rs` 里选择手柄的画法——上游注释叫它
+"指向 10:30 的洋葱"：一个圆，加上圆的**左上象限**那块方。
+
+### 上游填一条路径，端口填了两次
+
+    final path = Path()
+      ..addOval(circle)
+      ..addRect(point);
+    canvas.drawPath(path, paint);
+
+端口是 `draw_circle` 再 `draw_rect`——**两次填充**。手柄颜色不透明时两者一模一样,
+**不透明这个前提一没就分家**：那块方是圆的**一个象限**，两者重叠在四分之一圆盘上,
+两次半透明填充在那里合成两遍，手柄内部会留下一块明显更深的楔形；一条路径填一次,
+并集只覆盖一遍。
+
+而颜色是 `selectionHandleColor`，应用可以设成任何值；再说手柄淡入淡出时**本来就是半透明
+的**，无论它被给了什么颜色。所以这不是假想的差别，是寻常的那个。
+
+改成一条路径。
+
+### 改错扫描抓出一条：bounds 看不见那块象限
+
+七条改错里六条落红，第七条——**"把象限去掉，只剩一个圆"**——**零落红**。
+
+因为桩记录路径时记的是 **bounds**，而那块方是圆的一个**角**，去掉它**每一条边界都不动**。
+**一个没有尖、没有方向的圆blob 能通过我写的每一条断言。**
+
+桩自己的文档把这条盲区写得很清楚，还讲了理由：它记"在哪儿，不记是什么"，并且明确不做
+形状比较，因为那是"看着比实际证明得多"的测试。**那个理由是对的**，所以没有去做形状比较。
+
+做的是另一件事：记录**路径被下达了哪些命令**（`AddOval`、`AddRect`……，按顺序）。
+这不是形状比较——它对结果长什么样一个字都没说——但它和 `Drawn` 记录"画布被下达了什么"
+是同一类事实，低一层。而它正好能看见 bounds 看不见的那块：
+
+    assert_eq!(ops[0], vec![PathOp::AddOval, PathOp::AddRect]);
+
+`ops` 放在 `drawn_path_ops()` 里而**不是**塞进 `Drawn::Path`：那个变体是被现有测试当
+**期望值构造**的，加一个字段就得把每一处都改写成去声明它们并不关心的命令。
+
+**七条改错，七条全红。**
+
+**`unpainted.py` 第一次归零**：107 处 draw 调用横跨 14 个文件，14 个文件都有回读测试。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0,
+**unpainted 0（原 2）**，hollow 67/0，stale_notes 13/0，vacuous 10,
+unread_theme_fields 2，stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6087 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`vacuous.py` 报 10——"十条测试只声称什么都没发生"。这是现在唯一还带着数字的
+尺子（`unread_theme_fields` 那 2 条是已知并写明的）。第 299、300 两轮刚好在讲同一件事:
+一条断言能不能真的看见它声称的东西。先按行为查：那十条各是什么，哪些是真的空断言、
+哪些是像这一轮的 bounds 一样"能看见的就这么多"。
