@@ -575,6 +575,12 @@ impl TooltipScope {
         if let Some(state) = self.get_mut(id) {
             state.hovering_devices.insert(device);
         }
+        // `state.id != id` is upstream's and is kept, but it **cannot change
+        // the answer**: the device was inserted into this tooltip's set on the
+        // line above, so this tooltip already fails the `is_empty` test. A
+        // mutation removing it survives every test in this crate, and that is
+        // the truth about it rather than a gap in the tests. Said here so it
+        // is not rediscovered as a suspicious uncovered line.
         let to_dismiss: Vec<u64> = self
             .tooltips
             .iter()
@@ -612,6 +618,57 @@ impl TooltipScope {
         }
         any
     }
+
+    /// Takes a tooltip out, for a widget leaving the tree.
+    ///
+    /// Upstream's `dispose` does `RawTooltip._openedTooltips.remove(this)`.
+    /// Without it the list grows for the life of the process and a tooltip on
+    /// a page that has been popped still sends its neighbours away.
+    pub fn remove(&mut self, id: u64) {
+        self.tooltips.retain(|state| state.id != id);
+    }
+}
+
+thread_local! {
+    /// The one scope, because upstream's is one `static` field.
+    ///
+    /// Every rule in [`TooltipScope`] is about **two** tooltips, so a scope
+    /// per tooltip would answer every one of them with "there is only me".
+    /// That is what this crate did: the whole class was ported, tested, and
+    /// **called from nowhere**, while [`crate::tooltip::Tooltip`] kept a
+    /// `RawTooltipState` inside its own component state where no other
+    /// tooltip could see it.
+    ///
+    /// The visible consequence was two: two bubbles could be up at once, and
+    /// moving from one tooltipped control to the next always waited the full
+    /// delay again.
+    ///
+    /// A thread local rather than an inherited widget, which is what upstream
+    /// does too -- and what [`crate::focus`]'s manager and the direction stack
+    /// already do here.
+    static SCOPE: std::cell::RefCell<TooltipScope> = std::cell::RefCell::new(TooltipScope::new());
+}
+
+/// Runs `act` on the one scope.
+pub fn with_tooltip_scope<R>(act: impl FnOnce(&mut TooltipScope) -> R) -> R {
+    SCOPE.with(|scope| act(&mut scope.borrow_mut()))
+}
+
+/// Upstream `RawTooltip.dismissAllToolTips`, on the ambient scope.
+///
+/// Upstream calls it from the `Focus` at the root of `WidgetsApp` when escape
+/// is pressed, and `Tooltip.dismissAllToolTips` forwards to it. Returns
+/// whether there was anything to dismiss, which is what tells a key handler
+/// whether it has consumed the key.
+pub fn dismiss_all_tooltips() -> bool {
+    with_tooltip_scope(|scope| scope.dismiss_all())
+}
+
+/// Empties the scope. For tests, which would otherwise inherit whatever the
+/// last one left registered.
+#[cfg(test)]
+pub fn reset_tooltip_scope() {
+    SCOPE.with(|scope| *scope.borrow_mut() = TooltipScope::new());
 }
 
 #[cfg(test)]
@@ -642,6 +699,24 @@ mod tests {
         assert_eq!(widget.touch_delay_ms, 1500.0);
         assert_eq!(widget.dismiss_delay_ms, 100.0);
         assert_eq!(widget.trigger_mode, TooltipTriggerMode::LongPress);
+    }
+
+    #[test]
+    fn a_mouse_entering_a_tooltip_that_is_already_up_does_not_send_it_away() {
+        // Upstream's filter is `tooltip != this`, and it is load-bearing:
+        // moving back onto a tooltip inside its dismiss grace period is an
+        // enter on a tooltip that is still showing, and a rule that swept up
+        // everything unhovered would sweep up the one being returned to.
+        let mut scope = TooltipScope::new();
+        scope.add(shown());
+        assert!(scope.get(1).expect("registered").is_showing());
+
+        let sent_away = scope.handle_mouse_enter(1, 0);
+        assert!(
+            sent_away.is_empty(),
+            "it should not have sent itself away: {sent_away:?}"
+        );
+        assert!(scope.get(1).expect("registered").is_showing());
     }
 
     // -- The status edges ------------------------------------------------------

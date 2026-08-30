@@ -27338,3 +27338,68 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 **先弄清楚 gallery 的根到底套了哪几层、和上游那一摞差在哪**，
 再决定这一轮是"把 `MaterialApp` 造出来"还是"先补它缺的那一层"——
 否则很容易造出第二个没人用的根，那正是这些轮一直在拆的形状。
+
+---
+
+## 第 411 轮：`TooltipScope` 整个类**移植完、测试齐、一个调用者都没有**
+
+按"下一步"先查根：gallery 的根套的是 `Theme` → `SpinnerValue` → `MotionValue` → `MediaQuery`；
+框架自己的根（`app.rs`）套的是 `Localizations` → `MediaQuery` → `TapRegionSurface` → `overlay`。
+对照上游 `WidgetsApp.build` 那一摞
+（`RootRestorationScope` / `SharedAppData` / `Shortcuts` / `Actions` /
+`FocusTraversalGroup` / `Localizations` / `Title` / `Focus` / `CheckedModeBanner`…），
+缺的是**一整摞**，一轮显然接不完，而且三个 app 类**没有一个会 build**——
+硬造只会多出一个没人用的根。
+
+于是顺着那摞里的 `Focus(esc → dismissAllToolTips)` 往下查，撞到真东西：
+
+**`raw_tooltip.rs` 里的 `TooltipScope` 是上游静态 `RawTooltip._openedTooltips` 的完整移植**——
+`opened()`、`dismiss_all()`、还有 `handle_mouse_enter` 那条上游注释最长的规则，
+文档、测试、全都在。**而 `grep` 全项目：一个调用者都没有。**
+
+同时 `TooltipHost`（真正会 build 的那个）把 `RawTooltipState`
+**存在自己的组件状态里**——别的 tooltip 看不见。
+`TooltipScope` 里每一条规则讲的都是**两个** tooltip 的事，
+所以一个别人够不着的状态，对每一条都回答"这儿只有我一个"。
+
+**看得见的后果两条**：
+
+1. **两个气泡能同时挂着**。鼠标从一个图标按钮移到下一个，前一个不下去。
+2. **每一跳都要重新等满延迟**，而上游那一行写得明明白白：
+   `withDelay: tooltipsToDismiss.isNotEmpty ? Duration.zero : widget.hoverDelay`
+   ——刚读完一个 tooltip 的人已经表明自己在读 tooltip 了，
+   再让他等一遍，是在回答一个他已经不问了的问题。
+
+这一轮把状态**搬进共享作用域**（thread local，和 `focus.rs` 的 `MANAGER`、
+方向栈是同一个套路，也正是上游用 `static` 的位置），
+`initial_state` 注册、`dispose` 注销（上游 `dispose` 里就是
+`_openedTooltips.remove(this)`——不注销的话，被 pop 掉的页面上的 tooltip
+会一直算作"开着"，在它已经不在的屏幕上把别人的气泡赶下去）。
+顺带补上 `dismiss_all_tooltips()` 自由函数，就是上游 escape 键调的那个。
+
+一处**如实记下的时序**：被赶走的那个 tooltip **不是**运行处理器的那个，
+它的模型立刻进入 Reverse，但**只有它自己的组件能收自己的传送门**，
+所以屏幕上要慢一帧。测试就按这个写。
+
+### 变异扫描 10 个，第一遍 8 红、2 绿，其中一条绿是**真的测不出来**
+
+- "整个作用域一起走时钟"活了：原测试的延迟 500ms、推进到 600ms，
+  时钟跑两倍也照样过。加一条"300ms 时还不该出现"——两倍的话读数是 600，就出现了。转红。
+- **"把正在进入的那个也赶走"活了，而这条查下来是本来就测不出来**：
+  `handle_mouse_enter` 第一件事就是把 device 插进**自己**的集合，
+  所以自己早就被 `hovering_devices.is_empty()` 这一项挡掉了，
+  `state.id != id` **改不了任何答案**。上游也是同样的顺序。
+  没有编个测试去糊它，而是**把这件事写进代码注释**——
+  留一条"看起来没覆盖到"的可疑行给下一个人重新查一遍，比写清楚要贵。
+
+尺子：十六把全部 exit 0。门：Rust 6463 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：作用域接上了，但**上游调 `dismissAllToolTips` 的那个地方仍然空着**——
+`WidgetsApp` 根上的 `Focus(canRequestFocus: false, onKeyEvent: esc → …)`。
+现在 `dismiss_all_tooltips()` 有了，缺的是"按 esc 时有人调它"。
+**先查一件事**：本项目的按键事件到底怎么走——
+`app.rs` 的根有没有一个能接 key event 的位置，`focus.rs` 的 `FocusNode`
+收不收 `on_key_event`，还是说按键只到 `shortcuts.rs` 的 `Shortcuts`/`Actions` 那一层。
+如果按键根本到不了一个"根级监听者"，那这一轮真正该补的是**那条路**，
+而不是在没有路的地方挂一个回调。

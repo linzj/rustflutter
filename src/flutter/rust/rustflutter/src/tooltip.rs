@@ -360,12 +360,20 @@ struct TooltipHost {
 #[derive(Default)]
 struct TooltipHostState {
     controller: Option<PortalController>,
-    /// Upstream's `RawTooltipState`, which is where all the deciding happens:
-    /// what a trigger means, when the bubble goes away by itself, and what a
-    /// press-up or a tap elsewhere does about it. `None` until
-    /// [`TooltipHost::initial_state`] fills it, for the reason the controller
-    /// is.
-    raw: Option<crate::raw_tooltip::RawTooltipState>,
+    /// This tooltip's id **in the shared scope**, which is where its
+    /// `RawTooltipState` now lives.
+    ///
+    /// It used to be the state itself, one per component, and that was the
+    /// bug: every rule in [`crate::raw_tooltip::TooltipScope`] is about *two*
+    /// tooltips -- one bubble sending another away, one that has just been
+    /// read letting the next skip its delay -- and a state nobody else can
+    /// reach answers all of them with "there is only me". Two bubbles could be
+    /// up at once, and every hop across a row of icon buttons waited the full
+    /// delay again.
+    ///
+    /// Upstream's list is a `static` for exactly this reason. `None` until
+    /// [`TooltipHost::initial_state`] registers.
+    registered: Option<u64>,
     /// The frame clock, so [`TooltipHost::advance`] can hand the model an
     /// elapsed time rather than a timestamp. `None` before the first frame.
     last_micros: Option<i64>,
@@ -377,11 +385,17 @@ struct TooltipHostState {
 /// model's Forward and Reverse are passed straight through rather than
 /// waited out.
 fn settle(state: &mut TooltipHostState) {
-    let Some(raw) = state.raw.as_mut() else {
+    let Some(id) = state.registered else {
         return;
     };
-    raw.finish_animation();
-    let showing = raw.is_showing();
+    let showing = crate::raw_tooltip::with_tooltip_scope(|scope| {
+        let raw = scope.get_mut(id)?;
+        raw.finish_animation();
+        Some(raw.is_showing())
+    });
+    let Some(showing) = showing else {
+        return;
+    };
     let Some(controller) = &state.controller else {
         return;
     };
@@ -390,6 +404,18 @@ fn settle(state: &mut TooltipHostState) {
     } else {
         controller.hide();
     }
+}
+
+/// Runs `act` on this tooltip's own state in the shared scope.
+fn on_own(state: &TooltipHostState, act: impl FnOnce(&mut crate::raw_tooltip::RawTooltipState)) {
+    let Some(id) = state.registered else {
+        return;
+    };
+    crate::raw_tooltip::with_tooltip_scope(|scope| {
+        if let Some(raw) = scope.get_mut(id) {
+            act(raw);
+        }
+    });
 }
 
 impl crate::framework::StatefulComponent for TooltipHost {
@@ -401,13 +427,30 @@ impl crate::framework::StatefulComponent for TooltipHost {
     /// the controller in the State, and a rebuilt widget bringing a new one is
     /// the ordinary case, not a change to react to.
     fn initial_state(&self) -> TooltipHostState {
-        TooltipHostState {
-            controller: Some(self.controller.clone()),
-            raw: Some(crate::raw_tooltip::RawTooltipState::new(
+        // Upstream registers in `initState` and removes in `dispose`; the two
+        // halves are in the same two places here.
+        crate::raw_tooltip::with_tooltip_scope(|scope| {
+            scope.remove(self.id);
+            scope.add(crate::raw_tooltip::RawTooltipState::new(
                 self.id,
                 self.touch.clone(),
-            )),
+            ));
+        });
+        TooltipHostState {
+            controller: Some(self.controller.clone()),
+            registered: Some(self.id),
             last_micros: None,
+        }
+    }
+
+    /// Upstream's `dispose`: `RawTooltip._openedTooltips.remove(this)`.
+    ///
+    /// The scope outlives every tooltip in it, so a page that has been popped
+    /// would otherwise leave its tooltips behind -- still counted as open, and
+    /// still sending their neighbours away on a screen they are no longer on.
+    fn dispose(&self, state: &mut TooltipHostState) {
+        if let Some(id) = state.registered.take() {
+            crate::raw_tooltip::with_tooltip_scope(|scope| scope.remove(id));
         }
     }
 
@@ -428,7 +471,7 @@ impl crate::framework::StatefulComponent for TooltipHost {
     /// has no fade -- the portal is instant, so the model's Forward and Reverse
     /// are passed through rather than waited out.
     fn advance(&self, state: &mut TooltipHostState, frame_time_micros: i64) -> bool {
-        let Some(raw) = state.raw.as_mut() else {
+        let Some(id) = state.registered else {
             return false;
         };
         let elapsed = match state.last_micros {
@@ -436,9 +479,18 @@ impl crate::framework::StatefulComponent for TooltipHost {
             None => 0.0,
         };
         state.last_micros = Some(frame_time_micros);
-        raw.advance_ms(elapsed);
+        // Its own clock only. The scope has an `advance_ms` that moves every
+        // tooltip at once, and calling it from here would move each of them
+        // once per tooltip on screen.
+        crate::raw_tooltip::with_tooltip_scope(|scope| {
+            if let Some(raw) = scope.get_mut(id) {
+                raw.advance_ms(elapsed);
+            }
+        });
         settle(state);
-        state.raw.as_ref().is_some_and(|raw| raw.timer().is_some())
+        crate::raw_tooltip::with_tooltip_scope(|scope| {
+            scope.get(id).is_some_and(|raw| raw.timer().is_some())
+        })
     }
 
     fn build(
@@ -460,9 +512,7 @@ impl crate::framework::StatefulComponent for TooltipHost {
             let handle = handle.clone();
             move |what: fn(&mut crate::raw_tooltip::RawTooltipState)| {
                 handle.set_state(move |state| {
-                    if let Some(raw) = state.raw.as_mut() {
-                        what(raw);
-                    }
+                    on_own(state, what);
                     // At once, not on the next frame: upstream's
                     // `_scheduleShowTooltip` calls `forward()` synchronously
                     // when there is no delay left to wait out, and a hover that
@@ -480,13 +530,28 @@ impl crate::framework::StatefulComponent for TooltipHost {
         // two mice can hold one tooltip open; `with_hover_change` reports a
         // single "inside or not", so there is one to track and this is its id.
         const HOVER_DEVICE: i32 = 0;
-        let hover = tell.clone();
+        let hover_in = handle.clone();
+        let hover_out = tell.clone();
         let mut handlers =
             crate::gestures::PointerHandlers::new().with_hover_change(move |inside| {
                 if inside {
-                    hover(|raw| raw.handle_mouse_enter(HOVER_DEVICE));
+                    // **The scope's rule, not this tooltip's.** Entering is the
+                    // one event that is about every other tooltip as well:
+                    // whichever ones nobody is still hovering go down at once,
+                    // and if any did, this one skips its delay. Calling the
+                    // state's own `handle_mouse_enter` -- which is what this
+                    // did -- gets the delay wrong and leaves the other bubble
+                    // on screen.
+                    hover_in.set_state(move |state| {
+                        if let Some(id) = state.registered {
+                            crate::raw_tooltip::with_tooltip_scope(|scope| {
+                                scope.handle_mouse_enter(id, HOVER_DEVICE);
+                            });
+                        }
+                        settle(state);
+                    });
                 } else {
-                    hover(|raw| raw.handle_mouse_exit(HOVER_DEVICE));
+                    hover_out(|raw| raw.handle_mouse_exit(HOVER_DEVICE));
                 }
             });
 
@@ -858,6 +923,217 @@ mod tests {
     }
 
     /// A mouse at a position, hovering rather than pressing.
+    // -- Two tooltips at once ------------------------------------------------
+
+    /// Two targets, 60 x 20 each, at (100, 100) and (300, 100).
+    fn page_with_two_tooltips() -> AnyWidget {
+        let first = Tooltip::new(9101, leaf(60.0, 20.0), || leaf(100.0, 30.0)).build();
+        let second = Tooltip::new(9102, leaf(60.0, 20.0), || leaf(100.0, 30.0)).build();
+        many(vec![first, second], move |mut rendered| {
+            let second = rendered.pop().expect("the second target");
+            let first = rendered.pop().expect("the first target");
+            crate::render::RenderStack::new()
+                .push_positioned(
+                    first,
+                    crate::render::StackPosition {
+                        left: Some(100.0),
+                        top: Some(100.0),
+                        ..Default::default()
+                    },
+                )
+                .push_positioned(
+                    second,
+                    crate::render::StackPosition {
+                        left: Some(300.0),
+                        top: Some(100.0),
+                        ..Default::default()
+                    },
+                )
+        })
+    }
+
+    /// How many bubbles are on screen, by counting the positioners the portals
+    /// put up. Reading the scope alone would only say what the scope thinks.
+    fn bubbles_up(root: &RenderRef) -> usize {
+        fn walk(handle: &RenderRef, count: &mut usize) {
+            let children: Vec<RenderRef> = handle.with(|object| {
+                if object.as_any().downcast_ref::<RenderAnchored>().is_some() {
+                    *count += 1;
+                }
+                let mut kids = Vec::new();
+                object.visit_children(&mut |child, _| {
+                    if let Some(child) = child.as_any().downcast_ref::<RenderRef>() {
+                        kids.push(child.clone());
+                    }
+                });
+                kids
+            });
+            for child in children {
+                walk(&child, count);
+            }
+        }
+        let mut count = 0;
+        walk(root, &mut count);
+        count
+    }
+
+    #[test]
+    fn hovering_a_second_tooltip_takes_the_first_one_down() {
+        // Upstream's `_handleMouseEnter` sends away every open tooltip no
+        // mouse is still hovering. Nothing here called it: the whole of
+        // `TooltipScope` was ported and reached from nowhere, and every
+        // tooltip kept its state where no other tooltip could see it. So two
+        // bubbles could be up at once, which is what this asserts against.
+        crate::raw_tooltip::reset_tooltip_scope();
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(page_with_two_tooltips()));
+        tree.build_render_tree();
+        let mut router = crate::gestures::GestureRouter::new();
+
+        router.dispatch(&laid_out(&mut tree), &hover_at(130.0, 110.0));
+        tree.rebuild_dirty();
+        assert_eq!(bubbles_up(&laid_out(&mut tree)), 1, "the first one is up");
+        assert_eq!(
+            crate::raw_tooltip::with_tooltip_scope(|scope| scope.opened()),
+            vec![9101]
+        );
+
+        router.dispatch(&laid_out(&mut tree), &hover_at(330.0, 110.0));
+        // One frame, because the tooltip being sent away is not the one whose
+        // handler ran: its model is put into reverse at once, and only its own
+        // component can take its own portal down.
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        assert_eq!(
+            crate::raw_tooltip::with_tooltip_scope(|scope| scope.opened()),
+            vec![9102],
+            "the second one replaces the first rather than joining it"
+        );
+        assert_eq!(
+            bubbles_up(&laid_out(&mut tree)),
+            1,
+            "and only one bubble is on screen"
+        );
+    }
+
+    #[test]
+    fn moving_from_one_tooltip_to_the_next_does_not_wait_again() {
+        // ```dart
+        // _scheduleShowTooltip(withDelay: tooltipsToDismiss.isNotEmpty ? Duration.zero : widget.hoverDelay);
+        // ```
+        // A reader who has just read one tooltip has shown they are reading
+        // tooltips; making them wait the full delay for the next answers a
+        // question they have stopped asking. Only visible with a delay set,
+        // because this port's default hover delay is zero.
+        crate::raw_tooltip::reset_tooltip_scope();
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(page_with_two_tooltips()));
+        tree.build_render_tree();
+        crate::raw_tooltip::with_tooltip_scope(|scope| {
+            for id in [9101, 9102] {
+                scope
+                    .get_mut(id)
+                    .expect("both registered")
+                    .widget
+                    .hover_delay_ms = 500.0;
+            }
+        });
+        let mut router = crate::gestures::GestureRouter::new();
+
+        // The first one waits its delay out.
+        router.dispatch(&laid_out(&mut tree), &hover_at(130.0, 110.0));
+        tree.rebuild_dirty();
+        assert!(
+            crate::raw_tooltip::with_tooltip_scope(|scope| scope.opened()).is_empty(),
+            "not before its delay"
+        );
+        tree.advance_frame(0);
+        tree.advance_frame(300_000);
+        tree.rebuild_dirty();
+        assert!(
+            crate::raw_tooltip::with_tooltip_scope(|scope| scope.opened()).is_empty(),
+            "and not before it either -- with two tooltips mounted, a host              that advanced the whole scope rather than its own entry would              have run this clock twice per frame"
+        );
+        tree.advance_frame(600_000);
+        tree.rebuild_dirty();
+        assert_eq!(
+            crate::raw_tooltip::with_tooltip_scope(|scope| scope.opened()),
+            vec![9101]
+        );
+
+        // The second one does not.
+        router.dispatch(&laid_out(&mut tree), &hover_at(330.0, 110.0));
+        tree.advance_frame(616_000);
+        tree.rebuild_dirty();
+        assert_eq!(
+            crate::raw_tooltip::with_tooltip_scope(|scope| scope.opened()),
+            vec![9102],
+            "the second should be up at once, with no delay to wait out"
+        );
+    }
+
+    #[test]
+    fn dismissing_them_all_takes_down_the_one_the_mouse_is_still_on() {
+        // Upstream's `RawTooltip.dismissAllToolTips`, which `WidgetsApp` calls
+        // from its root `Focus` when escape is pressed. Its whole point is
+        // that it does **not** spare a hovered tooltip -- the reader asked for
+        // it to go, and the mouse has not moved.
+        crate::raw_tooltip::reset_tooltip_scope();
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(page_with_two_tooltips()));
+        tree.build_render_tree();
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&laid_out(&mut tree), &hover_at(130.0, 110.0));
+        tree.rebuild_dirty();
+        assert_eq!(bubbles_up(&laid_out(&mut tree)), 1);
+
+        assert!(
+            crate::raw_tooltip::dismiss_all_tooltips(),
+            "it reports having dismissed something, which is what tells a key \
+             handler it has consumed the key"
+        );
+        tree.advance_frame(0);
+        tree.advance_frame(16_000);
+        tree.rebuild_dirty();
+        assert_eq!(
+            bubbles_up(&laid_out(&mut tree)),
+            0,
+            "the bubble goes even though the mouse is still on the target"
+        );
+        assert!(
+            !crate::raw_tooltip::dismiss_all_tooltips(),
+            "and with nothing up it says so, so escape falls through"
+        );
+    }
+
+    #[test]
+    fn a_tooltip_that_leaves_the_tree_stops_sending_its_neighbours_away() {
+        // Upstream's `dispose` removes it from the static list. The scope
+        // outlives every tooltip in it, so without that a popped page's
+        // tooltips stay registered for the life of the process -- counted as
+        // open, and dismissing bubbles on screens they are not on.
+        crate::raw_tooltip::reset_tooltip_scope();
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(page_with_two_tooltips()));
+        tree.build_render_tree();
+        laid_out(&mut tree);
+        assert_eq!(
+            crate::raw_tooltip::with_tooltip_scope(|scope| scope.get(9102).is_some()),
+            true
+        );
+
+        // The page is replaced by one with neither of them.
+        tree.rebuild(overlay(leaf(10.0, 10.0)));
+        tree.rebuild_dirty();
+        laid_out(&mut tree);
+        assert!(
+            crate::raw_tooltip::with_tooltip_scope(
+                |scope| scope.get(9101).is_none() && scope.get(9102).is_none()
+            ),
+            "both should have taken themselves out of the scope"
+        );
+    }
+
     fn hover_at(x: f32, y: f32) -> crate::gestures::PointerEvent {
         crate::gestures::PointerEvent {
             view_id: 0,
