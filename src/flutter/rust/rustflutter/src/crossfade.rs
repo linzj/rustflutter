@@ -250,6 +250,13 @@ impl AnimatedCrossFade {
 pub struct AnimatedSwitcher {
     pub duration_micros: i64,
     pub reverse_duration_micros: Option<i64>,
+    /// Upstream's `switchInCurve`, `Curves.linear` by default.
+    pub switch_in_curve: crate::animation::Curve,
+    /// Upstream's `switchOutCurve`, also `Curves.linear` by default.
+    ///
+    /// Reached less often than it looks: see
+    /// [`AnimatedSwitcher::curve_a_child_leaves_on`].
+    pub switch_out_curve: crate::animation::Curve,
 }
 
 /// A child, reduced to what `Widget.canUpdate` compares.
@@ -303,6 +310,8 @@ impl AnimatedSwitcher {
         AnimatedSwitcher {
             duration_micros,
             reverse_duration_micros: None,
+            switch_in_curve: crate::animation::Curve::Linear,
+            switch_out_curve: crate::animation::Curve::Linear,
         }
     }
 
@@ -380,6 +389,37 @@ impl AnimatedSwitcher {
         true
     }
 
+    /// Which curve a child that is being sent away actually leaves on, which
+    /// is **not** always `switchOutCurve`.
+    ///
+    /// The entry's fade is a `CurvedAnimation(curve: switchInCurve,
+    /// reverseCurve: switchOutCurve)` over the entry's own controller, and
+    /// `CurvedAnimation` will not change curve under a value that is on
+    /// screen: its `_curveDirection` is "only reset when we hit the beginning
+    /// or the end of the timeline to avoid discontinuities". So a child that
+    /// **had fully arrived** before it was replaced leaves on
+    /// `switchOutCurve`, and a child **interrupted on its way in** keeps
+    /// running `switchInCurve` backwards.
+    ///
+    /// Worth stating rather than leaving to be discovered: the second case is
+    /// the common one in a list that changes twice in quick succession, and a
+    /// reader looking for `switchOutCurve` in the output will not find it
+    /// there.
+    pub fn curve_a_child_leaves_on(&self, had_fully_arrived: bool) -> crate::animation::Curve {
+        crate::animation::curve_for_direction(
+            if had_fully_arrived {
+                // Reaching the end cleared the direction, so the reversal
+                // starts a fresh one.
+                crate::animation::AnimationStatus::Reverse
+            } else {
+                // Still latched to the way in.
+                crate::animation::AnimationStatus::Forward
+            },
+            self.switch_in_curve,
+            Some(self.switch_out_curve),
+        )
+    }
+
     /// The widget: hand it one child at a time and it fades between them.
     ///
     /// Everything above this was policy with no consumer. The reason it stayed
@@ -434,6 +474,11 @@ struct OutgoingChild {
     from_opacity: f32,
     /// The frame the reversal began, stamped by the next `advance`.
     started_micros: Option<i64>,
+    /// The curve this child leaves on, fixed the moment it was sent away by
+    /// [`AnimatedSwitcher::curve_a_child_leaves_on`]. Kept on the entry rather
+    /// than worked out per frame because the answer depends on how far the
+    /// child had got, which nothing remembers once it has gone.
+    curve: crate::animation::Curve,
 }
 
 /// What a switcher remembers between builds.
@@ -462,8 +507,8 @@ pub struct AnimatedSwitcherState {
 }
 
 impl AnimatedSwitcherState {
-    /// The current child's opacity this frame.
-    fn arriving_opacity(&self, duration_micros: i64) -> f32 {
+    /// Where the current child's **controller** has got to, before any curve.
+    fn arriving_controller_value(&self, duration_micros: i64) -> f32 {
         let Some(started) = self.current_started_micros else {
             // Settled, or never faded in at all.
             return 1.0;
@@ -473,16 +518,22 @@ impl AnimatedSwitcherState {
         }
         (((self.now_micros - started).max(0) as f32) / duration_micros as f32).clamp(0.0, 1.0)
     }
+
+    /// What is actually painted: that value through `switchInCurve`.
+    fn arriving_opacity(&self, duration_micros: i64, curve: crate::animation::Curve) -> f32 {
+        curve.transform(self.arriving_controller_value(duration_micros))
+    }
 }
 
 impl OutgoingChild {
-    /// This child's opacity at `now_micros`.
+    /// Where this child's **controller** has got to at `now_micros`, before
+    /// any curve.
     ///
     /// A reversing controller falls at one over its duration per microsecond,
     /// which is why this subtracts rather than interpolating: an entry that
     /// began its exit from 0.4 reaches zero in 40% of the reverse duration,
     /// not in all of it.
-    fn opacity(&self, now_micros: i64, reverse_micros: i64) -> f32 {
+    fn controller_value(&self, now_micros: i64, reverse_micros: i64) -> f32 {
         let Some(started) = self.started_micros else {
             return self.from_opacity;
         };
@@ -491,6 +542,13 @@ impl OutgoingChild {
         }
         let fallen = (now_micros - started).max(0) as f32 / reverse_micros as f32;
         (self.from_opacity - fallen).clamp(0.0, 1.0)
+    }
+
+    /// What is actually painted: the controller's value through this child's
+    /// curve.
+    fn opacity(&self, now_micros: i64, reverse_micros: i64) -> f32 {
+        self.curve
+            .transform(self.controller_value(now_micros, reverse_micros))
     }
 }
 
@@ -534,12 +592,15 @@ impl StatefulComponent for Switching {
             return;
         }
         if let Some(leaving) = old.child.clone() {
-            let from_opacity = state.arriving_opacity(old.switcher.duration_micros);
+            // The controller's value, not the painted one: upstream reverses
+            // the controller, and the curve is read off it afterwards.
+            let from_opacity = state.arriving_controller_value(old.switcher.duration_micros);
             state.outgoing.push(OutgoingChild {
                 number: state.current_number,
                 child: leaving,
                 from_opacity,
                 started_micros: None,
+                curve: old.switcher.curve_a_child_leaves_on(from_opacity >= 1.0),
             });
         }
         state.next_number += 1;
@@ -563,11 +624,14 @@ impl StatefulComponent for Switching {
         let reverse_micros = self.reverse_micros();
         let before = state.outgoing.len();
         // Upstream removes an entry from `_outgoingEntries` when its animation
-        // reports dismissed, and disposes it there.
+        // reports **dismissed**, which is the controller's status and not the
+        // curved value. The two part company for any curve that reaches zero
+        // early, and dropping an entry a curve has merely made invisible would
+        // take it out of the tree while its controller was still running.
         let now = state.now_micros;
         state
             .outgoing
-            .retain(|entry| entry.opacity(now, reverse_micros) > 0.0);
+            .retain(|entry| entry.controller_value(now, reverse_micros) > 0.0);
         let dropped = state.outgoing.len() != before;
 
         let mut wants_another = !state.outgoing.is_empty() || dropped;
@@ -612,7 +676,8 @@ impl StatefulComponent for Switching {
             entries.push((
                 state.current_number,
                 child.clone(),
-                state.arriving_opacity(self.switcher.duration_micros),
+                state
+                    .arriving_opacity(self.switcher.duration_micros, self.switcher.switch_in_curve),
             ));
         }
 
@@ -1387,6 +1452,168 @@ mod tests {
         assert!(
             switcher_painted(&mut tree).is_empty(),
             "and then there is nothing left"
+        );
+    }
+
+    #[test]
+    fn a_child_that_had_fully_arrived_leaves_on_the_curve_for_leaving() {
+        // Its controller reached the end, which cleared `_curveDirection`, so
+        // the reversal that follows starts a fresh direction and picks up
+        // `switchOutCurve`.
+        let mut switcher = AnimatedSwitcher::new(200_000);
+        switcher.switch_in_curve = crate::animation::Curve::EASE_IN;
+        switcher.switch_out_curve = crate::animation::Curve::EASE_OUT;
+        assert_eq!(
+            switcher.curve_a_child_leaves_on(true),
+            crate::animation::Curve::EASE_OUT
+        );
+    }
+
+    #[test]
+    fn a_child_interrupted_on_its_way_in_keeps_the_curve_it_was_already_on() {
+        // `CurvedAnimation` will not change curve under a value that is on
+        // screen: "the curve direction is only reset when we hit the beginning
+        // or the end of the timeline to avoid discontinuities". So the way out
+        // is the way in, run backwards -- and somebody looking for
+        // `switchOutCurve` in that output will not find it.
+        let mut switcher = AnimatedSwitcher::new(200_000);
+        switcher.switch_in_curve = crate::animation::Curve::EASE_IN;
+        switcher.switch_out_curve = crate::animation::Curve::EASE_OUT;
+        assert_eq!(
+            switcher.curve_a_child_leaves_on(false),
+            crate::animation::Curve::EASE_IN
+        );
+    }
+
+    #[test]
+    fn the_arriving_child_is_painted_through_the_curve_for_arriving() {
+        // Linear would put it at half; `EASE_IN` is `t^2`-ish and is well
+        // under that a third of the way through, which is the whole point of
+        // asking for a curve.
+        let mut switcher = AnimatedSwitcher::new(300_000);
+        switcher.switch_in_curve = crate::animation::Curve::EASE_IN;
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+        tree.rebuild(switcher.widget(Some(switcher_child("two", Some(2)))));
+        tree.advance_frame(2_000_000);
+        tree.rebuild_dirty();
+        tree.advance_frame(2_100_000);
+        tree.rebuild_dirty();
+
+        let painted = switcher_painted(&mut tree);
+        let arriving = painted
+            .iter()
+            .find(|(text, _)| text == "two")
+            .expect("the arriving child");
+        let expected = crate::animation::Curve::EASE_IN.transform(1.0 / 3.0);
+        assert!(
+            (arriving.1 as f32 - expected * 255.0).abs() < 6.0,
+            "a third of the way in on an ease-in should be about {}, not {}",
+            expected * 255.0,
+            arriving.1
+        );
+        assert!(
+            arriving.1 < 60,
+            "and nowhere near the 85 a linear fade would give: {}",
+            arriving.1
+        );
+    }
+
+    #[test]
+    fn an_entry_a_curve_has_taken_below_zero_is_kept_until_its_controller_lands() {
+        // Upstream removes an entry when its **animation** reports dismissed,
+        // which is the controller's status and not the curved value. An
+        // elastic reverse curve dips below zero on the way out, so the child
+        // disappears and comes back; dropping it the first time it went
+        // invisible would mean it could never come back.
+        let mut switcher = AnimatedSwitcher::new(200_000);
+        switcher.switch_out_curve = crate::animation::Curve::ElasticIn(0.4);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+        // "one" had fully arrived, so it leaves on `switchOutCurve`.
+        tree.rebuild(switcher.widget(Some(switcher_child("two", Some(2)))));
+        tree.advance_frame(2_000_000);
+        tree.rebuild_dirty();
+
+        // A fifth of the way out the curve is at about -0.25, which the
+        // opacity clamps away entirely.
+        tree.advance_frame(2_040_000);
+        tree.rebuild_dirty();
+        assert!(
+            switcher_painted(&mut tree)
+                .iter()
+                .all(|(text, _)| text != "one"),
+            "the curve has taken it below nothing, so it is not painted"
+        );
+
+        // And a little later the curve comes back up and so does the child --
+        // which it could not do if it had been thrown away above.
+        tree.advance_frame(2_070_000);
+        tree.rebuild_dirty();
+        assert!(
+            switcher_painted(&mut tree)
+                .iter()
+                .any(|(text, _)| text == "one"),
+            "an entry is kept until its controller lands, not until its curve              first reaches nothing"
+        );
+
+        tree.advance_frame(2_200_000);
+        tree.rebuild_dirty();
+        assert!(
+            switcher_painted(&mut tree)
+                .iter()
+                .all(|(text, _)| text != "one"),
+            "and once the controller lands it is gone for good"
+        );
+    }
+
+    #[test]
+    fn the_child_leaving_is_reversed_from_its_controller_and_not_from_what_was_drawn() {
+        // The two are the same number only while the curve is linear, which
+        // is why this needs one that is not. Upstream reverses the
+        // *controller*; a child caught at controller 0.5 has half a reverse
+        // duration left however faint an ease-in had made it look.
+        let mut switcher = AnimatedSwitcher::new(200_000);
+        switcher.switch_in_curve = crate::animation::Curve::EASE_IN;
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+
+        tree.rebuild(switcher.widget(Some(switcher_child("two", Some(2)))));
+        tree.advance_frame(2_000_000);
+        tree.rebuild_dirty();
+
+        // "two" is at controller 0.5 -- but drawn at about a third of that,
+        // because an ease-in is slow to start.
+        tree.advance_frame(2_100_000);
+        tree.rebuild_dirty();
+        tree.rebuild(switcher.widget(Some(switcher_child("three", Some(3)))));
+        tree.advance_frame(2_101_000);
+        tree.rebuild_dirty();
+
+        // Reversed from 0.5 it still has 100ms to run. Reversed from what was
+        // painted it would have run out around 2_163_000.
+        tree.advance_frame(2_180_000);
+        tree.rebuild_dirty();
+        assert!(
+            switcher_painted(&mut tree)
+                .iter()
+                .any(|(text, _)| text == "two"),
+            "reversing from the painted value would have finished it early"
+        );
+
+        tree.advance_frame(2_210_000);
+        tree.rebuild_dirty();
+        assert!(
+            switcher_painted(&mut tree)
+                .iter()
+                .all(|(text, _)| text != "two"),
+            "and half a reverse duration is all it has"
         );
     }
 

@@ -2399,36 +2399,98 @@ impl Animation for ReverseAnimation {
     }
 }
 
+/// Which of a pair of curves a given direction uses.
+///
+/// Upstream's `_useForwardCurve`, pulled out because two places need it and
+/// they must agree: [`CurvedAnimation`] below, and
+/// [`crate::crossfade::AnimatedSwitcher`], whose entries are reversed by hand
+/// rather than by a controller.
+///
+/// A `None` reverse curve means the forward one is used in both directions --
+/// which reads as "run the forward curve backwards", and is why a widget that
+/// offers a reverse curve can leave it unset without having to pick a
+/// substitute.
+pub fn curve_for_direction(
+    direction: AnimationStatus,
+    curve: Curve,
+    reverse_curve: Option<Curve>,
+) -> Curve {
+    match (direction, reverse_curve) {
+        (AnimationStatus::Reverse, Some(reverse)) => reverse,
+        _ => curve,
+    }
+}
+
 /// Upstream `CurvedAnimation`: the parent's value through a curve, with
 /// the curve's own flipping at the half and the ends clamped.
 pub struct CurvedAnimation {
     parent: Rc<dyn Animation>,
     curve: Curve,
     reverse_curve: Option<Curve>,
+    /// Upstream's `_curveDirection`, and the reason it exists is in its own
+    /// documentation: "the curve direction is only reset when we hit the
+    /// beginning or the end of the timeline to avoid discontinuities".
+    ///
+    /// So a parent that turns round **mid-flight** keeps the curve it was
+    /// already on, running it backwards, and only picks up the reverse curve
+    /// once it has actually reached an end first. Reading the parent's status
+    /// live -- which is what this did before -- swaps the curve underneath a
+    /// value that is on screen, which is precisely the jump upstream wrote
+    /// this field to prevent.
+    ///
+    /// Upstream keeps it fresh with a status listener on the parent. There is
+    /// none here: a `CurvedAnimation` in this crate has no `dispose`, so a
+    /// listener registered in the constructor could never be taken off again.
+    /// It is latched on read instead, which agrees with upstream for any
+    /// animation whose value is being read while it runs -- and differs for
+    /// one that changed direction with nobody looking, where upstream would
+    /// remember a phase this never saw.
+    curve_direction: Cell<Option<AnimationStatus>>,
 }
 
 impl CurvedAnimation {
     pub fn new(parent: Rc<dyn Animation>, curve: Curve) -> CurvedAnimation {
-        CurvedAnimation {
+        let curve_direction = Cell::new(None);
+        let animation = CurvedAnimation {
             parent,
             curve,
             reverse_curve: None,
-        }
+            curve_direction,
+        };
+        // Upstream's constructor calls `_updateCurveDirection(parent.status)`
+        // before it subscribes, so an animation already in flight when it is
+        // wrapped is on the right curve from the first read.
+        animation.latch_direction();
+        animation
     }
 
     pub fn with_reverse_curve(mut self, curve: Curve) -> CurvedAnimation {
         self.reverse_curve = Some(curve);
         self
     }
+
+    /// Upstream's `_updateCurveDirection`: remember the first animating
+    /// status, forget it the moment the parent stops at either end.
+    fn latch_direction(&self) -> Option<AnimationStatus> {
+        let status = self.parent.status();
+        let direction = if status.is_animating() {
+            self.curve_direction.get().or(Some(status))
+        } else {
+            None
+        };
+        self.curve_direction.set(direction);
+        direction
+    }
 }
 
 impl Animation for CurvedAnimation {
     fn value(&self) -> f32 {
         let t = self.parent.value();
-        let curve = match (self.parent.status(), self.reverse_curve) {
-            (AnimationStatus::Reverse, Some(reverse)) => reverse,
-            _ => self.curve,
-        };
+        // Upstream's `_useForwardCurve`: `_curveDirection ?? parent.status`.
+        let direction = self
+            .latch_direction()
+            .unwrap_or_else(|| self.parent.status());
+        let curve = curve_for_direction(direction, self.curve, self.reverse_curve);
         // Outside 0..1 the curve clamps to its ends, exactly as
         // `CurvedAnimation.transform` does.
         if t <= 0.0 {
@@ -3015,6 +3077,124 @@ mod animation_graph_tests {
             ReverseAnimation::new(dismissed).status(),
             AnimationStatus::Completed
         );
+    }
+
+    /// A parent that can be moved and turned round, which is what the curve
+    /// direction rule is about -- a [`FixedAnimation`] can never change
+    /// direction, so it cannot see that rule at all.
+    struct MovingAnimation {
+        value: std::cell::Cell<f32>,
+        status: std::cell::Cell<AnimationStatus>,
+    }
+    impl MovingAnimation {
+        fn new(value: f32, status: AnimationStatus) -> MovingAnimation {
+            MovingAnimation {
+                value: std::cell::Cell::new(value),
+                status: std::cell::Cell::new(status),
+            }
+        }
+        fn set(&self, value: f32, status: AnimationStatus) {
+            self.value.set(value);
+            self.status.set(status);
+        }
+    }
+    impl Animation for MovingAnimation {
+        fn value(&self) -> f32 {
+            self.value.get()
+        }
+        fn status(&self) -> AnimationStatus {
+            self.status.get()
+        }
+        fn add_listener(&self, _listener: AnimationListener) {}
+        fn remove_listener(&self, _listener: &AnimationListener) {}
+    }
+
+    #[test]
+    fn an_animation_turned_round_mid_flight_keeps_the_curve_it_was_on() {
+        // Upstream's `_curveDirection`, whose own documentation says why: it
+        // "is only reset when we hit the beginning or the end of the timeline
+        // to avoid discontinuities in the value of any variables this
+        // animation is used to animate". Reading the parent's status live --
+        // which is what this did before -- swaps the curve underneath a value
+        // that is on screen, which is the jump the field exists to prevent.
+        let parent = Rc::new(MovingAnimation::new(0.1, AnimationStatus::Forward));
+        let curved = CurvedAnimation::new(Rc::clone(&parent) as Rc<dyn Animation>, Curve::EASE_IN)
+            .with_reverse_curve(Curve::EASE_OUT);
+
+        parent.set(0.4, AnimationStatus::Forward);
+        assert!((curved.value() - Curve::EASE_IN.transform(0.4)).abs() < 1e-5);
+
+        // Turned round without ever having reached either end.
+        parent.set(0.4, AnimationStatus::Reverse);
+        assert!(
+            (curved.value() - Curve::EASE_IN.transform(0.4)).abs() < 1e-5,
+            "the value must not jump at the moment the direction changes, and \
+             it did: {}",
+            curved.value()
+        );
+    }
+
+    #[test]
+    fn the_direction_is_taken_at_construction_and_not_at_the_first_read() {
+        // Upstream's constructor calls `_updateCurveDirection(parent.status)`
+        // *before* it subscribes, so a `CurvedAnimation` built over a running
+        // animation already knows which way it was going. Latching only on the
+        // first read would miss the whole forward phase of a parent nobody
+        // looked at, and then treat the reversal as a fresh direction.
+        let parent = Rc::new(MovingAnimation::new(0.1, AnimationStatus::Forward));
+        let curved = CurvedAnimation::new(Rc::clone(&parent) as Rc<dyn Animation>, Curve::EASE_IN)
+            .with_reverse_curve(Curve::EASE_OUT);
+
+        // Turned round with nobody having read a value in between.
+        parent.set(0.4, AnimationStatus::Reverse);
+        assert!(
+            (curved.value() - Curve::EASE_IN.transform(0.4)).abs() < 1e-5,
+            "it was going forwards when it was wrapped and never reached an \
+             end, so it is still on the forward curve: {}",
+            curved.value()
+        );
+    }
+
+    #[test]
+    fn an_animation_that_reached_an_end_first_does_pick_up_the_reverse_curve() {
+        // The other half of the same rule: hitting the end of the timeline
+        // clears the direction, so the reversal that follows is a fresh one.
+        let parent = Rc::new(MovingAnimation::new(0.1, AnimationStatus::Forward));
+        let curved = CurvedAnimation::new(Rc::clone(&parent) as Rc<dyn Animation>, Curve::EASE_IN)
+            .with_reverse_curve(Curve::EASE_OUT);
+
+        parent.set(0.4, AnimationStatus::Forward);
+        curved.value();
+        parent.set(1.0, AnimationStatus::Completed);
+        curved.value();
+
+        parent.set(0.4, AnimationStatus::Reverse);
+        assert!(
+            (curved.value() - Curve::EASE_OUT.transform(0.4)).abs() < 1e-5,
+            "a reversal that started from a settled animation is a new \
+             direction, and should be on the reverse curve: {}",
+            curved.value()
+        );
+    }
+
+    #[test]
+    fn a_curve_wrapped_round_an_animation_already_going_backwards_starts_reversed() {
+        // Upstream's constructor calls `_updateCurveDirection(parent.status)`
+        // before it subscribes, so the first read is already on the right
+        // curve rather than one frame behind it.
+        let parent = Rc::new(MovingAnimation::new(0.4, AnimationStatus::Reverse));
+        let curved = CurvedAnimation::new(Rc::clone(&parent) as Rc<dyn Animation>, Curve::EASE_IN)
+            .with_reverse_curve(Curve::EASE_OUT);
+        assert!((curved.value() - Curve::EASE_OUT.transform(0.4)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn with_no_reverse_curve_the_forward_one_is_used_in_both_directions() {
+        // Which is what a widget offering a reverse curve is relying on when
+        // it leaves it unset, rather than having to pick a substitute.
+        let parent = Rc::new(MovingAnimation::new(0.4, AnimationStatus::Reverse));
+        let curved = CurvedAnimation::new(Rc::clone(&parent) as Rc<dyn Animation>, Curve::EASE_IN);
+        assert!((curved.value() - Curve::EASE_IN.transform(0.4)).abs() < 1e-5);
     }
 
     #[test]

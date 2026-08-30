@@ -27187,3 +27187,76 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 **先确认倒放那一半该怎么取值**（是 `switchOutCurve.transform(t)` 还是
 `1 - switchOutCurve.transform(1 - t)`），查上游 `CurvedAnimation.value` 的实际算法，
 不要照着直觉写——这正是第 389 轮那种"三个测试的名字断言了错误的规则"的入口。
+
+---
+
+## 第 409 轮：先查的那件事，答案两条都不是——而查出来的是 `CurvedAnimation` 一条**移植错了**的规则
+
+上一轮留的问题：倒放时曲线该怎么取值，是 `switchOutCurve.transform(t)`
+还是 `1 - switchOutCurve.transform(1 - t)`？
+去读上游 `CurvedAnimation.value`：**两条都不是，而且根本没有"翻转"这回事**——
+公式两个方向**一模一样**，都是 `activeCurve.transform(parent.value)`。
+方向唯一改变的是**用哪一条曲线对象**。
+（`t` 恰好是 0 或 1 时还会绕过曲线直接返回 `t`，本项目 `Curve::transform` 已经这样做了。）
+
+### 而顺着这条读下去，露出了真正该做的那件事
+
+上游 `CurvedAnimation` 有一个 `_curveDirection`，它自己的文档写着为什么存在：
+
+> "If the parent animation changes direction without first reaching the
+> completed or dismissed status, the CurvedAnimation stays on the same curve
+> (albeit in the opposite direction) **to avoid visual discontinuities**."
+
+也就是说：**中途掉头的动画不换曲线**，只有先走到过某一端、方向被清空之后，
+下一次倒放才算新方向、才会拿到 reverse curve。
+本项目那份 `CurvedAnimation` **实时读 `parent.status()`**——
+方向一变曲线立刻换，正是这个字段被写出来要挡住的那一跳。
+
+补上了 `curve_direction: Cell<Option<AnimationStatus>>`，
+按上游 `_updateCurveDirection` 的状态机 latch（在动就记住**第一个**方向，
+停在任一端就清空），并按上游构造函数那样**先看一眼 parent 的状态再说**。
+上游用 status listener 保持新鲜，这里没有——本项目的 `CurvedAnimation` 没有 `dispose`，
+构造时挂的 listener 永远摘不下来——所以改成**读的时候 latch**，
+并如实写明差别：一个**没人看过**的动画中途掉头，上游记得那个阶段，这里记不得。
+
+### 于是 `AnimatedSwitcher` 的两条曲线才敢加
+
+加上 `switch_in_curve` / `switch_out_curve`（默认都是 `Curves.linear`，
+和上游一致，所以默认行为一点没变），
+并新增 `curve_a_child_leaves_on(had_fully_arrived)`——
+**它是这一轮最值得记的一条**：一个**已经完全到位**的孩子被换掉，走的是 `switchOutCurve`；
+一个**淡入到一半被打断**的孩子，**继续把 `switchInCurve` 倒着跑**。
+后者在"列表连着变两次"时才是常态，而去输出里找 `switchOutCurve` 的人**找不到它**。
+两处（`CurvedAnimation` 与切换器）共用同一个 `curve_for_direction`。
+
+还改了一处：条目的**退场判定从曲线值改回控制器值**。
+上游删条目看的是 animation **dismissed**，那是控制器的状态，不是画出来的数。
+
+### 变异扫描 11 个，第一遍 9 红、2 绿，而两条绿都是**测试没覆盖到**、不是代码错
+
+- "构造函数不先看 parent" 活了：因为我的测试里第一次 `value()` 自己会 latch。
+  但这条**不是死代码**——"构造时在前进、第一次读时已在倒退"这个场景两者答案不同。补了那个测试。
+- "从画出来的值倒放而不是从控制器值倒放" 活了：因为那个测试用的是**线性曲线**，
+  两个数恰好相等。改成 `EASE_IN` 之后，控制器 0.5 画出来只有约 0.32，
+  两者退场时刻差 37ms——第二遍转红。
+
+另一条值得记的：**本项目没有任何一条曲线有"零平台"**，
+所以"按曲线值删条目"和"按控制器值删条目"用普通曲线看不出差别。
+最后用 `ElasticIn`——它在退场途中**掉到零以下**（0.8 处约 -0.25），
+被 opacity 夹成 0 不画，随后又**回到可见**。
+"消失又回来"才是能把这条规则照出来的形状，而按曲线值删的话它**再也回不来**。
+
+尺子：十六把全部 exit 0。门：Rust 6452 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：`AnimatedSwitcher` 现在整套齐了，但**上游那个 `transitionBuilder` 还是写死的淡入淡出**。
+本项目 `widget(...)` 只会做 opacity，调用者换不了。
+上游的默认值是 `defaultTransitionBuilder`，**参数化本身就是这个类的一半用途**
+（滑入、缩放都是换这一个回调）。
+但**先查一件事**：本项目的 `transitions.rs` 里已经有哪些现成的 transition
+（`FadeTransition` / `ScaleTransition` / `SlideTransition` 之类）、
+它们收的是 `Rc<dyn Animation>` 还是别的。
+切换器手里只有一个 `f32` 和帧钟，**没有 `Animation` 对象**——
+如果现成的 transition 都要 `Animation`，那这一轮真正该补的是
+"**把条目的进度包成一个 `Animation`**"这件事，而不是硬塞一个只收 f32 的回调。
+先确认，再决定形状。
