@@ -2952,6 +2952,44 @@ pub const UNBLOCKED_USER_ACTIONS: &[SemanticsAction] = &[
 ///
 /// [`absorb`]: SemanticsConfiguration::absorb
 /// [`is_compatible_with`]: SemanticsConfiguration::is_compatible_with
+/// Upstream `SemanticsConfiguration`.
+///
+/// # This is a model, not the path a node in this crate is built on
+///
+/// Upstream's render objects fill one of these in
+/// `describeSemanticsConfiguration` and the framework assembles nodes from
+/// them. **Here they do not**: [`crate::render::RenderBox::describe_semantics`]
+/// answers a [`SemanticsAnnotation`], which is a smaller thing on purpose --
+/// one `yields_to_a_label` flag standing in for the common case of upstream's
+/// `excludeSemantics` and `MergeSemantics` both.
+///
+/// So this struct and its `absorb`/`is_compatible_with` rules are a faithful
+/// port that the tree never asks -- `absorb` itself is called from tests and
+/// nowhere else -- and three of its four flags are inert in the stronger
+/// sense that **no code anywhere writes them**:
+///
+/// * `is_semantic_boundary` -- never set, never read.
+/// * `explicit_child_nodes` -- never set; read once, in `absorb`'s own
+///   `debug_assert`.
+/// * `is_merging_semantics_of_descendants` -- never set, never read.
+/// * `is_blocking_user_actions` -- **live**, and the exception that shows the
+///   others are not: it is set in `absorb` and read in `has_action`.
+///
+/// # Upstream's one class is three things here, and only one is wired
+///
+/// * this struct -- the flags and the merge rules, tests only;
+/// * [`crate::render_semantics::RenderSemanticsAnnotations`] -- `container`,
+///   `explicit_child_nodes` and `exclude_semantics`, also constructed only in
+///   tests;
+/// * [`RenderSemantics`], which the [`Semantics`] widget actually builds, and
+///   which carries **properties and an action handler and neither flag**.
+///
+/// Said here because the fields read as working machinery. A caller reaching
+/// for `is_semantic_boundary` to make a card one node (upstream's
+/// `Semantics(container: ..)`) would set it, see nothing happen, and have to
+/// find this out the hard way. Making them live means giving the live
+/// annotation path a distinction it currently folds away, which is a piece of
+/// work rather than a flag.
 #[derive(Clone, Debug, Default)]
 pub struct SemanticsConfiguration {
     /// Upstream's `isSemanticBoundary`: whether this gets a node of its own

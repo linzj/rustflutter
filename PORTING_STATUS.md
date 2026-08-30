@@ -23527,3 +23527,62 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 按老规矩**先读上游行为再决定值不值得做一轮**——前面
 `CupertinoLocalizations`、`TextSelectionGestureDetectorBuilder`、`MagnifierController`
 三次都证明了低比值有很大一块是改名造成的。
+
+---
+
+## 第 345 轮：上游的一个类在这里是三份，只有一份接着树
+
+回队头，挑了 `Card`（0.25，3/12）。上游 `Card.build` 里最尖的一条是
+**`semanticContainer` 被用了两次，第二次取反**：
+
+```dart
+Semantics(
+  container: semanticContainer,                              // 外面
+  child: ... Material(
+    child: Semantics(explicitChildNodes: !semanticContainer, // 里面，取反
+                     child: child),
+  ),
+)
+```
+
+一个决定从两头看：卡片要么**是一个节点、孩子折进去**，要么**根本不是节点、孩子各自暴露**。
+只设其中一个，得到的是“两者都是”或“两者都不是”。
+
+本项目的 `Card` 没有这个参数。**但这一轮的重点不是补上它——是查出它为什么补不上。**
+
+顺着 `is_semantic_boundary` / `explicit_child_nodes` 查下去，查到的东西比预想的大：
+
+* `SemanticsConfiguration` 的四个标志里，**三个从来没有任何代码写过**
+  （`is_semantic_boundary`、`explicit_child_nodes`、`is_merging_semantics_of_descendants`；
+  只有 `is_blocking_user_actions` 是活的，正好反衬出另外三个不是）。
+* 连 `absorb` 本身也**只在测试里被调用**。
+* 再查，发现 `render_semantics.rs` 里还有一个 `RenderSemanticsAnnotations`，
+  带着 `container` 和 `explicit_child_nodes`——**它也只在测试里被构造**。
+* 而 `Semantics` 控件真正建出来的是 `RenderSemantics`，
+  它带的是 properties 和 action handler，**两个标志一个都没有**。
+
+**所以上游的一个类，在这里是三份，只有第三份接着树**，而那一份把
+`excludeSemantics` 和 `MergeSemantics` 的整个区分折进了一个 `yields_to_a_label`。
+
+**第一版注释我写错了**，写成“`SemanticsConfiguration` 是唯一的模型”——
+是在按纪律核实“从来没写过”这句话时，grep 到 `render_semantics.rs:79` 才发现还有第三份，
+回头改正的。**先核实再断言**，这一条这次自己救了自己一次。
+
+这一轮交付的是**准确的记录**，不是代码：在 `SemanticsConfiguration` 上写明它是模型不是活路径、
+哪三个标志是死的、上游的一个类在这里是哪三份；在 `Card` 上写明缺的两个参数
+（`semanticContainer` 和 `margin`）各自为什么缺。**这些字段读起来像能用的机器**，
+不写下来，下一个人（或下一个我）会去设 `is_semantic_boundary`、什么都不发生、再查一遍。
+
+顺带记下 `Card` 的第二个缺口：上游是 **`margin`**（默认 4，在 material **外面**，卡片之间的间距），
+本项目是 **`padding`**（在**里面**），而上游的卡片**没有内边距**——内容自己带。
+两者不是一回事，改它会动到整个 gallery 里每一张卡片，所以写下来，不顺手改。
+
+尺子：十六把全部 exit 0。门：6261 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：这一轮暴露的“三份模型只有一份接着树”值得**量一量有多普遍**，
+但按第 339 轮的规矩，先别做尺子。**先手工确认第二例**：
+挑另一个上游有、这里也“建了模型”的地方（`render_semantics.rs` 里除
+`RenderSemanticsAnnotations` 之外的类型，或 `SemanticsConfiguration` 的
+`is_compatible_with` 那一族），看它是不是同样只在测试里被构造。
+**两例就够说明这是一类而不是一处**；到那时再决定写不写尺子，以及那把尺子怎么标定。

@@ -763,6 +763,32 @@ pub struct ButtonGroupState {
 // -- Card ---------------------------------------------------------------------
 
 /// A surface with a border and padding, for grouping.
+/// # Two of upstream's parameters are missing, for two different reasons
+///
+/// * **`semanticContainer`** (default true) is used *twice* upstream, and the
+///   second use is negated: `Semantics(container: semanticContainer)` outside
+///   the material, and `Semantics(explicitChildNodes: !semanticContainer)`
+///   inside it. One decision seen from both ends -- a card is either one node
+///   with its children folded in, or not a node at all with its children
+///   exposed. Setting only one of the pair gives a card that is both or
+///   neither.
+///
+///   Not portable here yet: the two flags it would set exist on
+///   [`crate::semantics::SemanticsConfiguration`] and on
+///   [`crate::render_semantics::RenderSemanticsAnnotations`], and **neither
+///   of those is what the tree builds** -- see the note on the former. The
+///   render object a `Semantics` widget really makes carries properties and
+///   an action handler and no such flag, folding the whole distinction into
+///   one `yields_to_a_label`.
+///
+/// * **`margin`** (default `EdgeInsets.all(4)`) is space *outside* the
+///   material, between one card and the next. What this struct has is
+///   `padding`, applied *inside*, which upstream's card does not have at all
+///   -- its child brings its own. So a card here is inset from its contents
+///   by `spacing * 2` and flush with its neighbours, where upstream's is
+///   flush with its contents and inset from its neighbours by 4. Changing it
+///   moves every card in the gallery, which is why it is written down rather
+///   than done in passing.
 pub struct Card {
     child: std::cell::RefCell<Option<AnyWidget>>,
     padding: Option<EdgeInsets>,
