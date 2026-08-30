@@ -1333,6 +1333,75 @@ mod tests {
     }
 
     #[test]
+    fn an_animation_stopped_at_a_value_still_aims_at_completion() {
+        // Forward whatever the value is, including zero. It is a stand-in
+        // handed to an API that wants an animation when nothing will animate,
+        // and everything gated on the aim -- a selected icon, a shown
+        // magnifier, an open menu -- has to treat a constant as on.
+        for value in [0.0, 0.5, 1.0] {
+            let stopped = AlwaysStoppedAnimation { value };
+            assert_eq!(stopped.status(), AnimationStatus::Forward, "at {value}");
+            assert!(stopped.is_forward_or_completed());
+        }
+    }
+
+    #[test]
+    fn the_two_constants_are_separate_classes_because_of_their_statuses() {
+        // Same values as an AlwaysStoppedAnimation at 1 and 0, deliberately
+        // different statuses. One says "not animating"; the other says "off".
+        assert_eq!(AlwaysCompleteAnimation.value(), 1.0);
+        assert_eq!(AlwaysCompleteAnimation.status(), AnimationStatus::Completed);
+        assert_eq!(AlwaysDismissedAnimation.value(), 0.0);
+        assert_eq!(
+            AlwaysDismissedAnimation.status(),
+            AnimationStatus::Dismissed
+        );
+
+        assert_eq!(
+            AlwaysStoppedAnimation { value: 0.0 }.value(),
+            AlwaysDismissedAnimation.value(),
+            "the same value"
+        );
+        assert_ne!(
+            AlwaysStoppedAnimation { value: 0.0 }.status(),
+            AlwaysDismissedAnimation.status(),
+            "and not the same animation"
+        );
+        assert_ne!(
+            AlwaysStoppedAnimation { value: 1.0 }.status(),
+            AlwaysCompleteAnimation.status(),
+            "nor is the other pair"
+        );
+
+        // Only one of the three aims away from completion, which is what
+        // `alwaysHide` reaches for.
+        assert!(AlwaysCompleteAnimation.is_forward_or_completed());
+        assert!(!AlwaysDismissedAnimation.is_forward_or_completed());
+    }
+
+    #[test]
+    fn a_constant_animation_never_calls_a_listener() {
+        // Upstream: "Since the value and status of an AlwaysStoppedAnimation
+        // can never change, the listeners can never be called." Unlike the
+        // wrappers of rounds 324 and 325, empty here is the rule.
+        let noisy = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&noisy);
+        let listener = AnimationListener {
+            on_value: Rc::new(move || counter.set(counter.get() + 1)),
+            on_status: None,
+        };
+        for animation in [
+            &AlwaysStoppedAnimation { value: 0.5 } as &dyn Animation,
+            &AlwaysCompleteAnimation,
+            &AlwaysDismissedAnimation,
+        ] {
+            animation.add_listener(listener.clone());
+            animation.remove_listener(&listener);
+        }
+        assert_eq!(noisy.get(), 0);
+    }
+
+    #[test]
     fn the_guard_remembers_the_value_it_last_announced() {
         // Comparing against a stale remembered value would let a second
         // notification through at a value already announced.
@@ -1669,8 +1738,8 @@ mod tests {
         // And one absolute reading, so the pairing above cannot be satisfied
         // by both sides being wrong together.
         assert!(
-            !AlwaysStoppedAnimation { value: 0.5 }.is_forward_or_completed(),
-            "a stopped animation reports dismissed, whose aim is away"
+            !AlwaysDismissedAnimation.is_forward_or_completed(),
+            "the one constant whose aim is away from completion"
         );
     }
 
@@ -1873,6 +1942,68 @@ pub struct AlwaysStoppedAnimation {
 impl Animation for AlwaysStoppedAnimation {
     fn value(&self) -> f32 {
         self.value
+    }
+
+    /// Upstream: "The [status] is always [AnimationStatus.forward]."
+    ///
+    /// **Forward, whatever the value is** -- including 0. That reads oddly
+    /// until you see what it is for: this is a stand-in handed to an API that
+    /// wants an animation when nothing is going to animate, and everything
+    /// gated on [`AnimationStatus::is_forward_or_completed`] -- a selected
+    /// icon, a shown magnifier, an open menu -- should treat a constant as
+    /// **on**. Answering `dismissed` would turn all of those off.
+    ///
+    /// This is why upstream keeps [`AlwaysDismissedAnimation`] as a separate
+    /// class rather than `AlwaysStoppedAnimation(0.0)`: the two have the same
+    /// value and deliberately different statuses. One is "not animating"; the
+    /// other is "off".
+    fn status(&self) -> AnimationStatus {
+        AnimationStatus::Forward
+    }
+
+    /// Upstream's are empty too, and its doc says why: "Since the [value] and
+    /// [status] of an [AlwaysStoppedAnimation] can never change, the listeners
+    /// can never be called." Unlike the empty implementations on the wrapper
+    /// animations, which were a gap (rounds 324 and 325), these are the rule.
+    fn add_listener(&self, _listener: AnimationListener) {}
+    fn remove_listener(&self, _listener: &AnimationListener) {}
+}
+
+/// Upstream `kAlwaysCompleteAnimation` (its `_AlwaysCompleteAnimation`).
+///
+/// Value 1, status `completed`. Upstream's reason for the constant is cost --
+/// "less overhead than building an `AnimationController` with an initial value
+/// of 1.0" -- but the reason it is a *separate class* rather than
+/// `AlwaysStoppedAnimation(1.0)` is the status. See
+/// [`AlwaysStoppedAnimation::status`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AlwaysCompleteAnimation;
+
+impl Animation for AlwaysCompleteAnimation {
+    fn value(&self) -> f32 {
+        1.0
+    }
+
+    fn status(&self) -> AnimationStatus {
+        AnimationStatus::Completed
+    }
+
+    fn add_listener(&self, _listener: AnimationListener) {}
+    fn remove_listener(&self, _listener: &AnimationListener) {}
+}
+
+/// Upstream `kAlwaysDismissedAnimation` (its `_AlwaysDismissedAnimation`).
+///
+/// Value 0, status `dismissed` -- the one constant whose aim is *away* from
+/// completion, and so the one a navigation destination's `alwaysHide` reaches
+/// for (see
+/// [`crate::navigation_destinations::destination_label_animation`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AlwaysDismissedAnimation;
+
+impl Animation for AlwaysDismissedAnimation {
+    fn value(&self) -> f32 {
+        0.0
     }
 
     fn status(&self) -> AnimationStatus {

@@ -227,11 +227,11 @@ pub use animated_icons::{
     AnimatedIcon, AnimatedIconData, AnimatedIcons, PathCommand, PathFrames, ResolvedCommand,
 };
 pub use animation::{
-    AlwaysStoppedAnimation, Animatable, Animation, AnimationListener, AnimationMax, AnimationMean,
-    AnimationMin, AnimationStatus, AnimationStyle, Animations, ConstantTween, Controller,
-    CurveTween, CurvedAnimation, Direction, FlippedTweenSequence, FloatTween, IntTween,
-    OffsetTween, ProxyAnimation, RectTween, Repeat, ReverseAnimation, ReverseTween, SizeTween,
-    StepTween, Tween, TweenSequence, TweenSequenceItem,
+    AlwaysCompleteAnimation, AlwaysDismissedAnimation, AlwaysStoppedAnimation, Animatable,
+    Animation, AnimationListener, AnimationMax, AnimationMean, AnimationMin, AnimationStatus,
+    AnimationStyle, Animations, ConstantTween, Controller, CurveTween, CurvedAnimation, Direction,
+    FlippedTweenSequence, FloatTween, IntTween, OffsetTween, ProxyAnimation, RectTween, Repeat,
+    ReverseAnimation, ReverseTween, SizeTween, StepTween, Tween, TweenSequence, TweenSequenceItem,
 };
 pub use annotated_region::{
     AnnotatedRegion, AnnotatedRegionLayer, AnnotatedRegions, AnnotationEntry, AnnotationResult,

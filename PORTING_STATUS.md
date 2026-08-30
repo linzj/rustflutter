@@ -22549,3 +22549,51 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 但那个**大概是对的**：上游的 `addListener` 就是个空方法，因为它永远不变。
 先按行为确认这一条（连同它的 `status` 恒为 dismissed 是否也是上游写死的），
 确认之后这一族就走完了。然后回 `python tools/depth.py` 看队头。
+
+---
+
+## 第 326 轮：停住的动画报的是 forward，哪怕它停在 0——而我第 318 轮把这条写反了
+
+接上一轮的“下一步”确认 `AlwaysStoppedAnimation`。空监听**是对的**——上游也是空的，
+文档里写明理由：“既然 `value` 和 `status` 永远不会变，监听器就永远不会被调用。”
+这跟第 324、325 轮那些空实现不是一回事：那些是缺口，这些是规则。
+
+**但 `status` 是错的。** 上游是 `AnimationStatus.forward`，本项目答的是 `Dismissed`。
+
+**forward，而且不管值是多少——停在 0 也报 forward。** 这条乍看很怪，看清它是干什么的就通了：
+它是**一个交给“要一条动画但其实什么都不会动”的接口的替身**，而所有以
+`isForwardOrCompleted` 把门的东西——选中的图标、显示中的放大镜、打开的菜单——
+都得把一个常量当成**开着**。答 `dismissed` 会把这些统统关掉。
+
+这也正是上游为什么把 `kAlwaysDismissedAnimation` 写成**另一个类**、而不是
+`AlwaysStoppedAnimation(0.0)`：两者**值相同、状态故意不同**。一个说“没有在动”，
+另一个说“关着”。同理 `kAlwaysCompleteAnimation`（值 1、状态 completed）也不是
+`AlwaysStoppedAnimation(1.0)`。三者两两不同，本项目原来一个都没有区分——
+两个常量类**根本不存在**，这一轮补上。
+
+**并且要更正我自己第 318 轮写下的一句。** 那一轮给 `is_forward_or_completed` 补的
+“绝对读数”断言写的是：
+
+> `!AlwaysStoppedAnimation { value: 0.5 }.is_forward_or_completed()`，
+> “一条停住的动画报 dismissed，朝向是背离的”
+
+**这句是错的**，而且它把这个 bug 钉在了测试里——所以这一轮改 `status` 时，
+**没有任何一条测试变红**。改用 `AlwaysDismissedAnimation`：三个常量里只有它的朝向是背离完成的，
+这才是那条断言当初想要的那个绝对读数。
+
+**变异扫描 7 个，全红。** 包括：停住的动画重新报 dismissed／报 completed／
+按自己的值去推状态、complete 常量报 forward、dismissed 常量跟着报 forward、
+两个常量的值对调、常量动画开始理会监听器。
+
+尺子：十六把全部 exit 0。门：6223 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+至此 `animation.rs` 里“派生／常量动画”这一族（Reverse、Curved、三个 Compound、
+AlwaysStopped 与两个常量）走完了。
+
+**下一步**：回队头。`python tools/depth.py` 之前报的是
+`CupertinoTextSelectionToolbarButton`（0.29，2/7）与 `CupertinoSearchTextField`（0.29，10/35）。
+先跑一遍 depth 看队头有没有变；然后照老规矩**按行为查**——前面
+`CupertinoLocalizations`、`TextSelectionGestureDetectorBuilder`、`MagnifierController`
+三次都证明了那个比值有很大一块是改名造成的，所以先读上游那一个类的**行为**，
+再决定值不值得做一轮。
