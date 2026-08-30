@@ -1072,19 +1072,48 @@ enum Slot {
     Done(Option<Rc<Image>>),
 }
 
+/// A slot, with what the cache needs to decide whether to keep it.
+struct Entry {
+    slot: Slot,
+    /// The cache's own clock at the last hit. Least-recently-used goes first.
+    used: u64,
+    /// What the entry costs, in bytes of RGBA. Recorded at the time the image
+    /// arrives rather than asked of it later, because `Image::width` is an FFI
+    /// call and eviction would otherwise make one per entry per pass.
+    bytes: usize,
+}
+
+/// How many images stay decoded. Upstream `ImageCache.maximumSize`.
+const MAX_CACHE_ENTRIES: usize = 1000;
+
+/// How many bytes of decoded image stay resident. Upstream
+/// `ImageCache._kDefaultSizeBytes`.
+///
+/// A count alone does not bound the memory: a thousand icons and a thousand
+/// photographs are the same number and a thousandfold different in bytes. Each
+/// entry is also a GPU texture, and a driver keeps a system-memory backing for
+/// one, so an image is charged about twice over against the process's private
+/// bytes. Whichever limit binds first wins, which is upstream's rule too.
+const MAX_CACHE_BYTES: usize = 100 << 20;
+
 /// The images this thread has asked for, and the workers decoding them.
 ///
 /// One pool per thread that builds, which in practice means one: the UI thread.
 /// A pool shared between threads would need results routed back to whoever
 /// asked, and nothing here asks from anywhere else.
 struct ImageCache {
-    entries: HashMap<String, Slot>,
+    entries: HashMap<String, Entry>,
     requests: std::sync::mpsc::Sender<Request>,
     results: std::sync::mpsc::Receiver<Decoded>,
     /// Requests sent and not yet collected.
     outstanding: usize,
     /// A decode has landed and nothing has been rebuilt around it yet.
     arrived: bool,
+    /// Ticks on every hit and every arrival, so `used` orders the entries.
+    clock: u64,
+    /// What the decoded entries hold, in bytes. A running total rather than a
+    /// sum on demand, for the same reason `bytes` is recorded per entry.
+    bytes: usize,
 }
 
 impl ImageCache {
@@ -1141,6 +1170,108 @@ impl ImageCache {
             results: result_rx,
             outstanding: 0,
             arrived: false,
+            clock: 0,
+            bytes: 0,
+        }
+    }
+
+    /// Files a slot under `key`, keeping the byte total and the clock right,
+    /// and then brings the cache back inside its limits.
+    fn file(&mut self, key: String, slot: Slot) {
+        let bytes = match &slot {
+            Slot::Done(Some(image)) => {
+                let (width, height) = image.size();
+                (width.max(0) as usize)
+                    .saturating_mul(height.max(0) as usize)
+                    .saturating_mul(4)
+            }
+            // A decode in flight and a decode that failed both cost nothing to
+            // hold; what they hold is the knowledge that it is in flight, or
+            // that it will not open.
+            Slot::Decoding | Slot::Done(None) => 0,
+        };
+        self.clock += 1;
+        let entry = Entry {
+            slot,
+            used: self.clock,
+            bytes,
+        };
+        self.bytes += bytes;
+        if let Some(replaced) = self.entries.insert(key, entry) {
+            self.bytes -= replaced.bytes;
+        }
+        self.evict();
+    }
+
+    /// Marks `key` as the most recently used.
+    fn touch(&mut self, key: &str) {
+        self.clock += 1;
+        let clock = self.clock;
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.used = clock;
+        }
+    }
+
+    /// How many entries count against the size limit.
+    ///
+    /// Upstream's `currentSize` is `_cache.length`, and `_cache` holds only
+    /// decoded images: a request still with a worker is in `_pendingImages`,
+    /// a separate map with no limit on it. So a screenful of decodes in flight
+    /// cannot push finished images out of the cache, which is the point --
+    /// they are what the next frame will draw.
+    fn cached_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| matches!(entry.slot, Slot::Done(_)))
+            .count()
+    }
+
+    /// Whether the cache is the only holder of this entry.
+    ///
+    /// Upstream splits the same question across two maps: `_liveImages` holds
+    /// what something is still listening to, `_cache` is the keep-alive pool
+    /// for what nothing references any more, and only `_cache` is bounded
+    /// (`image_cache.dart:87-131`). An entry somebody else is holding is
+    /// upstream's live image: evicting it would free nothing, because the
+    /// holder keeps the pixels, and would only cost a decode when it is asked
+    /// for again.
+    ///
+    /// An `Rc` answers this directly, where upstream needs listener bookkeeping
+    /// to: a strong count of one means this map is the only reference.
+    fn is_evictable(entry: &Entry) -> bool {
+        match &entry.slot {
+            Slot::Done(Some(image)) => Rc::strong_count(image) == 1,
+            // A decode that failed holds no pixels, and one still in flight is
+            // upstream's pending image: a promise that a worker has these bytes
+            // and nothing else need ask for them. Dropping the promise would
+            // let a second request go out for the same image.
+            Slot::Done(None) => true,
+            Slot::Decoding => false,
+        }
+    }
+
+    /// Drops least-recently-used images until the cache is inside both limits.
+    ///
+    /// The loop is upstream's `_checkCacheSize` (`image_cache.dart:498`) --
+    /// the same two conditions, and the same least-recently-used end taken
+    /// first.
+    fn evict(&mut self) {
+        while self.cached_count() > MAX_CACHE_ENTRIES || self.bytes > MAX_CACHE_BYTES {
+            let Some(oldest) = self
+                .entries
+                .iter()
+                .filter(|(_, entry)| Self::is_evictable(entry))
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| key.clone())
+            else {
+                // Everything left is in flight or still being drawn. Upstream
+                // does not bound either, and there is nothing here to drop that
+                // would free a byte.
+                return;
+            };
+            if let Some(dropped) = self.entries.remove(&oldest) {
+                self.bytes -= dropped.bytes;
+            }
         }
     }
 
@@ -1151,16 +1282,25 @@ impl ImageCache {
         while let Ok(decoded) = self.results.try_recv() {
             self.outstanding = self.outstanding.saturating_sub(1);
             self.arrived = true;
-            self.entries
-                .insert(decoded.key, Slot::Done(decoded.image.0.map(Rc::new)));
+            self.file(decoded.key, Slot::Done(decoded.image.0.map(Rc::new)));
         }
     }
 
     fn get_or_request(&mut self, key: &str, data: &[u8]) -> Option<Rc<Image>> {
         self.collect();
         match self.entries.get(key) {
-            Some(Slot::Done(image)) => return image.clone(),
-            Some(Slot::Decoding) => return None,
+            Some(Entry {
+                slot: Slot::Done(image),
+                ..
+            }) => {
+                let image = image.clone();
+                self.touch(key);
+                return image;
+            }
+            Some(Entry {
+                slot: Slot::Decoding,
+                ..
+            }) => return None,
             None => {}
         }
 
@@ -1173,15 +1313,14 @@ impl ImageCache {
         };
         match self.requests.send(request) {
             Ok(()) => {
-                self.entries.insert(key.to_string(), Slot::Decoding);
+                self.file(key.to_string(), Slot::Decoding);
                 self.outstanding += 1;
                 None
             }
             Err(returned) => {
                 // No workers came up. Decode here rather than never.
                 let image = Image::decode(&returned.0.data).map(Rc::new);
-                self.entries
-                    .insert(key.to_string(), Slot::Done(image.clone()));
+                self.file(key.to_string(), Slot::Done(image.clone()));
                 image
             }
         }
@@ -1189,20 +1328,37 @@ impl ImageCache {
 
     fn get_or_decode(&mut self, key: &str, data: &[u8]) -> Option<Rc<Image>> {
         self.collect();
-        if let Some(Slot::Done(image)) = self.entries.get(key) {
-            return image.clone();
+        if let Some(Entry {
+            slot: Slot::Done(image),
+            ..
+        }) = self.entries.get(key)
+        {
+            let image = image.clone();
+            self.touch(key);
+            return image;
         }
         // Already with a worker: wait for that one rather than decoding the
         // same bytes a second time.
-        if matches!(self.entries.get(key), Some(Slot::Decoding)) {
+        if matches!(
+            self.entries.get(key),
+            Some(Entry {
+                slot: Slot::Decoding,
+                ..
+            })
+        ) {
             self.wait();
-            if let Some(Slot::Done(image)) = self.entries.get(key) {
-                return image.clone();
+            if let Some(Entry {
+                slot: Slot::Done(image),
+                ..
+            }) = self.entries.get(key)
+            {
+                let image = image.clone();
+                self.touch(key);
+                return image;
             }
         }
         let image = Image::decode(data).map(Rc::new);
-        self.entries
-            .insert(key.to_string(), Slot::Done(image.clone()));
+        self.file(key.to_string(), Slot::Done(image.clone()));
         image
     }
 
@@ -1216,8 +1372,7 @@ impl ImageCache {
             };
             self.outstanding -= 1;
             self.arrived = true;
-            self.entries
-                .insert(decoded.key, Slot::Done(decoded.image.0.map(Rc::new)));
+            self.file(decoded.key, Slot::Done(decoded.image.0.map(Rc::new)));
         }
     }
 }
@@ -1242,12 +1397,18 @@ fn with_images<R>(body: impl FnOnce(&mut ImageCache) -> R) -> R {
 /// Drops a cache entry, upstream `ImageCache.evict` narrowed to the key
 /// spellings the crate caches under. Whether anything was there.
 pub fn image_cache_evict(key: &str) -> bool {
-    with_images(|images| images.entries.remove(key).is_some())
+    with_images(|images| match images.entries.remove(key) {
+        Some(dropped) => {
+            images.bytes -= dropped.bytes;
+            true
+        }
+        None => false,
+    })
 }
 
 /// Upstream `ImageCache.statusForKey`, in the three states the slot has.
 pub fn image_cache_status(key: &str) -> crate::image::ImageCacheStatus {
-    with_images(|images| match images.entries.get(key) {
+    with_images(|images| match images.entries.get(key).map(|entry| &entry.slot) {
         Some(Slot::Decoding) => crate::image::ImageCacheStatus::Pending,
         Some(Slot::Done(Some(_))) => crate::image::ImageCacheStatus::Live,
         _ => crate::image::ImageCacheStatus::Uncached,
@@ -3986,6 +4147,114 @@ mod image_tests {
         let again = Image::shared("async:joins", PNG).expect("decoded");
         assert!(Rc::ptr_eq(&image, &again));
         assert!(!images_pending());
+    }
+
+    #[test]
+    fn the_image_cache_stops_at_its_entry_limit() {
+        let mut images = ImageCache::new();
+        for index in 0..MAX_CACHE_ENTRIES + 10 {
+            // Unreadable rather than decoded: the entry limit is about how many
+            // are remembered, and a failure is remembered like anything else.
+            images.file(format!("{index}.png"), Slot::Done(None));
+        }
+        assert_eq!(images.entries.len(), MAX_CACHE_ENTRIES);
+        // The oldest went first, so the newest are what is left.
+        assert!(images.entries.contains_key("1009.png"));
+        assert!(!images.entries.contains_key("0.png"));
+    }
+
+    #[test]
+    fn the_image_cache_stops_at_its_byte_budget() {
+        let mut images = ImageCache::new();
+        // Ten entries, each a tenth of the budget and a byte, so the count is
+        // nowhere near its limit and only the bytes can evict.
+        let each = MAX_CACHE_BYTES / 10 + 1;
+        for index in 0..10 {
+            images.clock += 1;
+            let used = images.clock;
+            images.entries.insert(
+                format!("{index}.png"),
+                Entry {
+                    slot: Slot::Done(None),
+                    used,
+                    bytes: each,
+                },
+            );
+            images.bytes += each;
+        }
+        assert!(images.entries.len() < MAX_CACHE_ENTRIES, "the count must not bind");
+        images.evict();
+        assert!(
+            images.bytes <= MAX_CACHE_BYTES,
+            "over budget at {} bytes",
+            images.bytes
+        );
+        assert!(!images.entries.contains_key("0.png"));
+        assert!(images.entries.contains_key("9.png"));
+    }
+
+    #[test]
+    fn a_decode_still_in_flight_is_not_evicted() {
+        let mut images = ImageCache::new();
+        // One request out with a worker, and the cache far over its entry
+        // limit. Dropping the promise would send a second request for bytes
+        // somebody is already decoding.
+        images.file("pending.png".to_string(), Slot::Decoding);
+        for index in 0..MAX_CACHE_ENTRIES + 10 {
+            images.file(format!("{index}.png"), Slot::Done(None));
+        }
+        assert!(
+            matches!(
+                images.entries.get("pending.png"),
+                Some(Entry {
+                    slot: Slot::Decoding,
+                    ..
+                })
+            ),
+            "the decode in flight was evicted"
+        );
+    }
+
+    #[test]
+    fn an_image_something_else_is_still_holding_is_not_evicted() {
+        // Upstream's `_liveImages`: what is still referenced is not in the
+        // bounded pool at all, so pressure on the cache cannot take it. Here
+        // the reference itself is the evidence -- the caller's `Rc`.
+        let mut images = ImageCache::new();
+        let held = Rc::new(Image::from_pixels(&[0u8; 4], 1, 1).expect("the stub allocates"));
+        images.file("live.png".to_string(), Slot::Done(Some(Rc::clone(&held))));
+        for index in 0..MAX_CACHE_ENTRIES + 10 {
+            images.file(format!("{index}.png"), Slot::Done(None));
+        }
+        assert!(
+            images.entries.contains_key("live.png"),
+            "an image still being drawn was evicted"
+        );
+        // And once the last holder lets go it is an ordinary cache entry again.
+        drop(held);
+        for index in 0..MAX_CACHE_ENTRIES + 10 {
+            images.file(format!("second-{index}.png"), Slot::Done(None));
+        }
+        assert!(!images.entries.contains_key("live.png"));
+    }
+
+    #[test]
+    fn a_hit_makes_an_entry_the_newest() {
+        let mut images = ImageCache::new();
+        for index in 0..MAX_CACHE_ENTRIES {
+            images.file(format!("{index}.png"), Slot::Done(None));
+        }
+        // The oldest entry, touched, and then pushed at until something has to
+        // go. What goes is whatever is oldest now, which is no longer this.
+        images.touch("0.png");
+        for index in MAX_CACHE_ENTRIES..MAX_CACHE_ENTRIES + 10 {
+            images.file(format!("{index}.png"), Slot::Done(None));
+        }
+        assert!(
+            images.entries.contains_key("0.png"),
+            "a hit did not save the entry from eviction"
+        );
+        assert!(!images.entries.contains_key("1.png"));
     }
 }
 
