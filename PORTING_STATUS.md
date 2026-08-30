@@ -22250,3 +22250,45 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 关键在于这个切换发生在**动画的第一帧**而不是过半时：手指一抬，图标立刻变成选中态，
 然后指示器才慢慢长出来；照 `animation.value > 0.5` 写会晚半拍，而且回退时也会晚半拍。
 先查本项目 `navigation_destinations.rs` 里这两处是怎么写的，按行为比。
+
+---
+
+## 第 320 轮：图标在动画的第一帧就换掉，而那个淡入永远跑满全程
+
+接上一轮的“下一步”，查 `isForwardOrCompleted` 在导航栏／抽屉里的那一族调用点
+（`navigation_bar.dart` 476、499、864，`navigation_drawer.dart` 290、305）。
+本项目 `navigation_destinations.rs` 里**一条都没有**——那个文件里连 `AnimationStatus`
+都没出现过。
+
+两件按名字猜不到的事：
+
+1. **选中／未选中的图标与文字样式，按动画的“状态”切换，不按它的值。**
+   手指一抬，图标**立刻**变成选中态，而指示器药丸还在后面慢慢长出来；点走时也立刻变回去，
+   药丸还在缩。写成最自然的 `animation.value > 0.5`，两边都会晚上百来毫秒——读者已经做完选择了,
+   图标还显示着旧状态。更要命的是**在被打断时不对称**：一个选到一半又被取消的目的地
+   **永远到不了 0.5**，那样写的话图标从头到尾就没换过。
+   上游还只在**状态变化**时重建（`_StatusTransitionWidgetBuilder`），不是每帧重建——
+   这是同一件事的另一面：两次状态变化之间，这里没有任何东西会不一样。
+2. **`_SelectableAnimatedBuilder` 的 `alwaysDoFullAnimation`：为真时从**远端**重新开始，
+   而不是从当前位置掉头。** `forward(from: alwaysDoFullAnimation ? 0 : null)`。
+   默认（假）是掉头，那是任何在动、在长的东西要的——从远端重来会跳。
+   而指示器的**淡入**传的是真，理由是时长：那个淡入是 100ms，从 0.3 掉头三十毫秒就结束了，
+   短到根本读不出是个淡入，而且和它所属的那颗药丸的更长的动画对不上拍。跑满全程才看得清。
+   还有两条附带的：**选择没变就什么都不做**（换时长、换主题、父级重建都不算），所以
+   **新时长是不重启地采纳的**，作用在剩下那段上；以及 `initState` 里值是**赋**的不是**动画到**的，
+   一个初次构建时就已经被选中的目的地直接显示满尺寸的药丸，不会在没要求过的读者面前长一遍。
+
+**变异扫描 10 个，第一遍全红。** 包括：切换改成等动画结束／任何运动都算选中／整个取反、
+选择没变也重启、跑满全程时从**要去的**那一端重开（而不是**要离开的**那一端）、
+full-animation 这个开关不再起作用、所有情况都改成掉头、跑满全程时一律从 0 重开、
+运行方向取成来的方向、初始值一律 0。
+
+尺子：十六把全部 exit 0。门：6199 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`_SelectableAnimatedBuilder` 旁边还有一个没查的
+——`navigation_bar.dart` 的 `_DestinationInfo`／`NavigationDestinationLabelBehavior`
+（`alwaysShow` / `alwaysHide` / `onlyShowSelected`）。第三种在**动画期间**标签要不要占位是个
+真问题：标签淡出的同时如果高度也跟着变，整条栏会抖。先查本项目
+`navigation_destinations.rs` 里 label behavior 在不在、`onlyShowSelected` 那一支怎么处理
+淡出期间的布局，按行为查。

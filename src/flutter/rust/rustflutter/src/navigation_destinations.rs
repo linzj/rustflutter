@@ -198,6 +198,93 @@ impl NavigationRailDestination {
 /// semicircles. Upstream writes 16 rather than naming the stadium, and the
 /// two stay equal only by hand -- so a change to the height that forgot the
 /// radius would quietly square the ends.
+/// Whether a destination draws its **selected** icon and label, from
+/// upstream's `animation.isForwardOrCompleted` in `navigation_bar.dart` (476,
+/// 499, 864) and `navigation_drawer.dart` (290, 305).
+///
+/// # The swap happens on the animation's first frame, not at its half-way mark
+///
+/// It reads the animation's *status*, not its value. Lift a finger from a new
+/// destination and the icon becomes the selected one **immediately**, while
+/// the indicator pill is still growing in behind it; tap away and it becomes
+/// the unselected one immediately, while the pill is still shrinking.
+///
+/// Written the obvious way -- `animation.value > 0.5` -- both halves would lag
+/// by a hundred milliseconds or so, and the lag would be visible: the reader
+/// has already committed, and the icon would still be showing the old state.
+/// Worse, it would be *asymmetric under interruption*: a destination
+/// deselected part-way through its selection animation never reaches 0.5, so
+/// the icon would never have swapped at all.
+///
+/// Upstream also rebuilds this only when the **status** changes
+/// (`_StatusTransitionWidgetBuilder`) rather than every frame, which is the
+/// same fact seen from the other side: between two status changes there is
+/// nothing here that could differ.
+pub fn destination_shows_selected(status: crate::animation::AnimationStatus) -> bool {
+    status.is_forward_or_completed()
+}
+
+/// What [`selectable_animation_update`] decides: whether to run, which way,
+/// and from where.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelectableAnimationRun {
+    /// True to go towards 1, false to go towards 0.
+    pub forward: bool,
+    /// Upstream's `from:` -- `Some` restarts at that value, `None` continues
+    /// from wherever the controller got to.
+    pub from: Option<f32>,
+}
+
+/// Upstream `_SelectableAnimatedBuilder.didUpdateWidget`: what a change of
+/// selection does to the little controller behind an indicator or a fade.
+///
+/// # `alwaysDoFullAnimation` restarts from the far end rather than turning round
+///
+/// `forward(from: alwaysDoFullAnimation ? 0 : null)`. With it off -- the
+/// default -- a selection reversed mid-flight turns round from where it got
+/// to, which is right for anything moving or growing: restarting from the far
+/// end would make it jump.
+///
+/// With it on, the animation always runs its whole length. The indicator's
+/// **fade** passes true, and the reason is duration: that fade is 100ms, so a
+/// reversal from 0.3 would finish in thirty milliseconds -- too short to read
+/// as a fade at all, and out of step with the longer animation of the pill it
+/// belongs to. Running the full length keeps the two legible.
+///
+/// # Nothing happens unless the selection itself changed
+///
+/// Upstream guards on `oldWidget.isSelected != widget.isSelected`. A rebuild
+/// for any other reason -- a new duration, a theme change, the parent
+/// rebuilding -- leaves the controller alone. In particular a **new duration
+/// is adopted without restarting**, so it applies to whatever is left of the
+/// run rather than beginning it again.
+pub fn selectable_animation_update(
+    was_selected: bool,
+    is_selected: bool,
+    always_do_full_animation: bool,
+) -> Option<SelectableAnimationRun> {
+    if was_selected == is_selected {
+        return None;
+    }
+    Some(SelectableAnimationRun {
+        forward: is_selected,
+        from: match (always_do_full_animation, is_selected) {
+            (false, _) => None,
+            (true, true) => Some(0.0),
+            (true, false) => Some(1.0),
+        },
+    })
+}
+
+/// Upstream's `initState`: `_controller.value = isSelected ? 1.0 : 0.0`.
+///
+/// The value is **set**, not animated to. A destination that is already the
+/// chosen one when the bar is first built shows its pill at full size rather
+/// than growing one in front of a reader who did not ask for it.
+pub fn selectable_animation_initial_value(is_selected: bool) -> f32 {
+    if is_selected { 1.0 } else { 0.0 }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NavigationIndicator {
     pub color: Option<Color>,
@@ -394,6 +481,108 @@ mod tests {
 
     fn widget() -> AnyWidget {
         leaf(|| Empty)
+    }
+
+    // -- The selected look and what drives it, tick 320 --------------------
+
+    use crate::animation::AnimationStatus::{Completed, Dismissed, Forward, Reverse};
+
+    #[test]
+    fn the_icon_swaps_on_the_first_frame_rather_than_half_way_through() {
+        // Lift a finger and the icon is the selected one at once, while the
+        // pill is still growing in behind it.
+        assert!(destination_shows_selected(Forward), "from the first frame");
+        assert!(destination_shows_selected(Completed));
+        assert!(
+            !destination_shows_selected(Reverse),
+            "and unselected from the first frame of leaving"
+        );
+        assert!(!destination_shows_selected(Dismissed));
+    }
+
+    #[test]
+    fn a_destination_deselected_part_way_in_still_swaps_back() {
+        // The reason value > 0.5 would not do: an interrupted selection never
+        // reaches the half-way mark, so the icon would never swap at all.
+        // Status has no such gap -- forward becomes reverse at once.
+        assert!(destination_shows_selected(Forward));
+        assert!(
+            !destination_shows_selected(Reverse),
+            "whatever value it was interrupted at"
+        );
+    }
+
+    #[test]
+    fn a_selection_that_did_not_change_leaves_the_controller_alone() {
+        // A rebuild for a new duration, a theme change, or a parent
+        // rebuilding is not a selection change.
+        assert_eq!(selectable_animation_update(true, true, false), None);
+        assert_eq!(selectable_animation_update(false, false, true), None);
+        assert!(selectable_animation_update(false, true, false).is_some());
+    }
+
+    #[test]
+    fn a_full_animation_restarts_from_the_far_end_and_the_default_turns_round() {
+        // The indicator's 100ms fade passes true: reversed from 0.3 it would
+        // finish in thirty milliseconds, too short to read as a fade and out
+        // of step with the pill it belongs to.
+        assert_eq!(
+            selectable_animation_update(false, true, true),
+            Some(SelectableAnimationRun {
+                forward: true,
+                from: Some(0.0)
+            })
+        );
+        assert_eq!(
+            selectable_animation_update(true, false, true),
+            Some(SelectableAnimationRun {
+                forward: false,
+                from: Some(1.0)
+            }),
+            "and from the other end going the other way"
+        );
+
+        // The default continues from wherever it got to, which is what
+        // anything moving or growing needs.
+        assert_eq!(
+            selectable_animation_update(false, true, false),
+            Some(SelectableAnimationRun {
+                forward: true,
+                from: None
+            })
+        );
+        assert_eq!(
+            selectable_animation_update(true, false, false),
+            Some(SelectableAnimationRun {
+                forward: false,
+                from: None
+            })
+        );
+    }
+
+    #[test]
+    fn the_far_end_is_the_one_it_is_leaving_not_the_one_it_is_going_to() {
+        // Selecting restarts at 0 and runs to 1; deselecting restarts at 1
+        // and runs to 0. Restarting at the destination end would put the
+        // animation where it is trying to get to and play nothing.
+        for (selected, from) in [(true, 0.0), (false, 1.0)] {
+            let run = selectable_animation_update(!selected, selected, true).unwrap();
+            assert_eq!(run.forward, selected);
+            assert_eq!(run.from, Some(from));
+            assert_ne!(
+                run.from,
+                Some(if selected { 1.0 } else { 0.0 }),
+                "not the end it is heading for"
+            );
+        }
+    }
+
+    #[test]
+    fn a_destination_already_chosen_when_first_built_shows_its_pill_at_once() {
+        // The value is set, not animated to: no pill grows in front of a
+        // reader who did not ask for one.
+        assert_eq!(selectable_animation_initial_value(true), 1.0);
+        assert_eq!(selectable_animation_initial_value(false), 0.0);
     }
 
     fn destination() -> NavigationDrawerChild {
