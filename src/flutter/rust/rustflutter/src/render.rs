@@ -1394,6 +1394,25 @@ pub trait RenderBox: AsAny {
         false
     }
 
+    /// Where this box sits in the list its parent is showing, if it knows.
+    ///
+    /// Upstream's `SemanticsConfiguration.indexInParent`, written by
+    /// `RenderIndexedSemantics.describeSemanticsConfiguration` and by
+    /// `RenderTable`. **The walk cannot work this out for itself** -- by the
+    /// time it runs, the siblings that were dropped are gone and their
+    /// positions with them, so counting the survivors would say "item 3 of 3"
+    /// about the fifth of five. Only whoever built the list still knows, which
+    /// is why upstream asks the render object rather than counting.
+    ///
+    /// Answering `Some` here does not make this box a stop of its own: the
+    /// index travels down to the first node opened inside it, which is the
+    /// node for the item this box was wrapped around. That is upstream's
+    /// `absorb` rule (`indexInParent ?? child.indexInParent`) seen from the
+    /// other end.
+    fn index_in_parent_for_semantics(&self) -> Option<i32> {
+        None
+    }
+
     /// What this box says about itself to a screen reader, if anything.
     ///
     /// Upstream's `describeSemanticsConfiguration`, which fills in a
@@ -2702,6 +2721,9 @@ impl RenderBox for RenderRef {
     fn merges_descendant_semantics(&self) -> bool {
         self.render.borrow().merges_descendant_semantics()
     }
+    fn index_in_parent_for_semantics(&self) -> Option<i32> {
+        self.render.borrow().index_in_parent_for_semantics()
+    }
     fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         self.render.borrow().visit_children_for_semantics(visit)
     }
@@ -2833,6 +2855,9 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     }
     fn merges_descendant_semantics(&self) -> bool {
         (**self).merges_descendant_semantics()
+    }
+    fn index_in_parent_for_semantics(&self) -> Option<i32> {
+        (**self).index_in_parent_for_semantics()
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         (**self).layout(constraints)
@@ -8385,6 +8410,114 @@ impl RenderBox for RenderMergeSemanticsBox {
     fn merges_descendant_semantics(&self) -> bool {
         let _ = &self.merging;
         crate::render_semantics::RenderMergeSemantics::is_merging_semantics_of_descendants()
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
+}
+
+/// Writes down where its child sits in the list around it -- the widget
+/// [`crate::semantics_markers::IndexedSemantics`] had no render object for.
+///
+/// # Why anyone has to write it down
+///
+/// A screen reader announcing "row 12 of 200" needs somebody to have known the
+/// 12, and by the time the semantics walk runs it is too late to count:
+/// [`crate::semantics::Clips`]-dropped and empty-rect nodes are gone and their
+/// positions with them, so the survivors of a five-item list would number
+/// themselves 0, 1, 2 and the last would be announced as the third. Upstream's
+/// own example is exactly this -- five children with the first two off screen
+/// leave three nodes, and the last still has index **4**.
+///
+/// So the index comes from whoever built the list, which is what upstream's
+/// `RenderIndexedSemantics.describeSemanticsConfiguration` does in one line
+/// (`config.indexInParent = index`), and what
+/// [`crate::semantics::SemanticsNode::indices_in_parent`] states as a rule.
+///
+/// # It is not a stop of its own
+///
+/// This box says nothing to a reader; it labels the node *inside* it. Upstream
+/// gets that from the config merging upward (`indexInParent ?? child
+/// .indexInParent` in `absorb`); here the index travels down and the first
+/// node opened within this subtree takes it.
+pub struct RenderIndexedSemanticsBox {
+    indexed: crate::render_semantics::RenderIndexedSemantics,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderIndexedSemanticsBox {
+    pub fn new(index: i64, child: impl RenderBox + 'static) -> RenderIndexedSemanticsBox {
+        RenderIndexedSemanticsBox {
+            indexed: crate::render_semantics::RenderIndexedSemantics::new(index),
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderIndexedSemanticsBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderIndexedSemanticsBox>()?;
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.child = fresh.child.clone();
+        // `set_index` is the upstream setter, and it is the one that decides
+        // whether this costs a semantics walk: an item rebuilt at the same
+        // position is not news to a reader.
+        self.indexed.set_index(fresh.indexed.index());
+        if self.indexed.needs_semantics_update {
+            self.indexed.needs_semantics_update = false;
+            crate::semantics::mark_needs_update();
+        }
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    fn index_in_parent_for_semantics(&self) -> Option<i32> {
+        Some(self.indexed.index() as i32)
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {

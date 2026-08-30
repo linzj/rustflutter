@@ -906,6 +906,15 @@ struct Collector {
     /// `isMergingSemanticsOfDescendants`, which is why the merging box has to
     /// be a boundary: there has to be a node to fold *into*.
     merging: Vec<usize>,
+    /// An index a box declared for whatever node opens next inside it, waiting
+    /// to be claimed. Upstream's `SemanticsConfiguration.indexInParent`, which
+    /// travels up through `absorb` to the node that ends up carrying it; here
+    /// it travels down to the same node, because the walk builds nodes on the
+    /// way in rather than merging configs on the way out.
+    ///
+    /// It is taken, not copied: the item's own node claims it, and the nodes
+    /// beneath that one are parts of the item rather than further items.
+    pending_index: Option<i32>,
     /// Where automatic ids for text nodes are handed out from.
     next_text_id: i32,
 }
@@ -1233,15 +1242,19 @@ pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
         collector.nodes.clear();
         collector.open.clear();
         collector.labelled_depth = 0;
-        // Belt and braces, and known to be: a mutation that deletes this line
-        // turns nothing red, because `describe_subtree` pushes and pops the
-        // merging stack around one recursive call and nothing between them can
-        // return early -- the only way to leave a stale index here is a panic
-        // mid-walk, after which nobody flushes again. It stays because the
-        // three lines above it are the same promise (a walk starts from
-        // nothing) and a stack that kept its contents across flushes would fold
-        // the next frame's whole tree into a node that no longer exists.
+        // Belt and braces, and known to be: a mutation that deletes either of
+        // the next two lines turns nothing red. `describe_subtree` balances
+        // both of them -- the merging stack is pushed and popped around one
+        // recursive call, and the pending index is restored by a drop guard on
+        // every way out -- so the only way to leave one stale is a panic
+        // mid-walk, after which nobody flushes again. They stay because the
+        // three lines above are the same promise (a walk starts from nothing),
+        // and what they would do if they ever were stale is not small: a
+        // merging stack that survived would fold the next frame's whole tree
+        // into a node that no longer exists, and a pending index that survived
+        // would hand the next frame's first node a position from the last one.
         collector.merging.clear();
+        collector.pending_index = None;
     });
     // Opened before the walk and closed after it, so that everything the walk
     // finds lands inside it -- in paint order, which is reading order.
@@ -1271,6 +1284,22 @@ pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
     })
 }
 
+/// Runs a closure when it goes out of scope, however it goes.
+///
+/// [`describe_subtree`] leaves by three doors -- off the end, the clip drop,
+/// and the merging branch's early return -- and what it puts back on the way
+/// out has to be put back through all three. A guard says that once; three
+/// hand-written restores would be three chances to add a fourth door and
+/// forget one, and the symptom would be a *sibling* silently taking an index
+/// meant for a subtree that was thrown away.
+struct OnDrop<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+
 /// One render object and everything under it, at `offset` from the root and
 /// inside `clips`.
 ///
@@ -1281,6 +1310,20 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
     if render.blocks_previously_painted_semantics() {
         block_previously_painted();
     }
+
+    // An index this box declared for its subtree, offered until a node takes
+    // it. The previous value is put back afterwards rather than cleared: two
+    // indexed boxes can nest (a table cell inside a row), and the outer one's
+    // offer must survive the inner one's subtree -- an unclaimed offer that
+    // vanished would silently renumber the outer list.
+    let displaced = render.index_in_parent_for_semantics().map(|index| {
+        COLLECTOR.with(|collector| collector.borrow_mut().pending_index.replace(index))
+    });
+    let _restore = OnDrop(move || {
+        if let Some(previous) = displaced {
+            COLLECTOR.with(|collector| collector.borrow_mut().pending_index = previous);
+        }
+    });
 
     // A merging box is a boundary and a target at once: it opens a node with
     // no label of its own, and its descendants fold their labels into that
@@ -1606,6 +1649,7 @@ fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) ->
             return None;
         }
         let index = collector.nodes.len();
+        let claimed = collector.pending_index.take();
         collector.nodes.push(SemanticsNode {
             id,
             properties,
@@ -1622,9 +1666,11 @@ fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) ->
             // siblings are already gone and their positions with them.
             //
             // A value computed here from `children.len()` would be the
-            // renumbering the rule exists to forbid, so this stays `None`
-            // until a render object supplies one.
-            index_in_parent: None,
+            // renumbering the rule exists to forbid. So this is never counted,
+            // only claimed: `RenderIndexedSemanticsBox` puts one in
+            // `pending_index` on the way down and the first node opened inside
+            // it takes it, which is the item's own node.
+            index_in_parent: claimed,
         });
         if let Some(parent) = collector.open.last().copied() {
             collector.nodes[parent].children.push(id);
@@ -4506,6 +4552,13 @@ mod tests {
         // `RenderTable` put it on the config -- where the full list is still
         // there to count.
         //
+        // The walk now *carries* an index that a render object declared (see
+        // [`crate::render::RenderIndexedSemanticsBox`] and
+        // `the_last_of_five_is_still_the_fifth_when_two_were_dropped`), which
+        // makes this test the other half of that rule rather than a record of
+        // a gap: nobody in this tree declared one, so nobody gets one. Carrying
+        // and inventing are the two things it is easy to confuse.
+        //
         // Checked on nodes the collector produced, not on one built by hand:
         // a mutation making the walk fill in `Some(0)` survived a test that
         // constructed its own node, because that test never ran the walk.
@@ -4876,6 +4929,149 @@ mod tests {
         );
         assert!(!said(&bare), "unclipped and empty: dropped");
         assert!(!said(&clipped), "clipped and empty: dropped, as before");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn the_last_of_five_is_still_the_fifth_when_two_were_dropped() {
+        // Upstream's own example, run end to end: "a scrollable with five
+        // children whose first two are not visible has three nodes, and the
+        // last of them still has index 4". Counting the survivors would say
+        // "item 3 of 3" and quietly tell the reader the list is shorter than
+        // it is -- which is the whole reason the index is written down by
+        // whoever built the list instead of worked out by the walk.
+        //
+        // This test could not have been written before nodes were dropped at
+        // all; until then the survivors and the full list were the same thing,
+        // which is the case a careless test picks.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            let mut stack = crate::render::RenderStack::new();
+            for index in 0..5 {
+                stack = stack.push_positioned(
+                    crate::render::RenderIndexedSemanticsBox::new(
+                        index,
+                        RenderSemantics::new(
+                            600 + index as i32,
+                            SemanticsProperties::label(format!("row {index}")),
+                            crate::widgets::SizedBox::new(40.0, 20.0),
+                        ),
+                    ),
+                    crate::render::StackPosition {
+                        left: Some(0.0),
+                        // The first two sit above the clip and never arrive.
+                        top: Some(index as f32 * 20.0 - 40.0),
+                        ..Default::default()
+                    },
+                );
+            }
+            crate::render::RenderClipRect::new(stack)
+        }));
+        let rows: Vec<(i32, Option<i32>)> = nodes
+            .iter()
+            .filter(|node| node.properties.label.starts_with("row "))
+            .map(|node| (node.id, node.index_in_parent))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(602, Some(2)), (603, Some(3)), (604, Some(4))],
+            "three nodes, and the last of them is still the fifth"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn one_offer_labels_one_node_and_not_everything_under_it() {
+        // The offer is taken, not copied. An item is usually more than one box
+        // deep, and if the index stuck to every node inside it a reader would
+        // be told that each part of row 3 is itself row 3 -- the position of
+        // the item, repeated onto its contents.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            crate::render::RenderIndexedSemanticsBox::new(
+                3,
+                crate::widgets::Column::new()
+                    .with_main_axis_size(crate::render::MainAxisSize::Min)
+                    .push(crate::widgets::Text::new("first inside"))
+                    .push(crate::widgets::Text::new("second inside")),
+            )
+        }));
+        let inside: Vec<(&str, Option<i32>)> = nodes
+            .iter()
+            .filter(|node| node.properties.label.ends_with("inside"))
+            .map(|node| (node.properties.label.as_str(), node.index_in_parent))
+            .collect();
+        assert_eq!(
+            inside,
+            vec![("first inside", Some(3)), ("second inside", None)],
+            "the offer was claimed once"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn an_inner_list_does_not_swallow_the_outer_list_s_offer() {
+        // A cell inside a row: two indexed boxes, one inside the other. The
+        // inner one's offer covers its own subtree and no more, so what the
+        // outer one offered is still on the table afterwards. Clearing instead
+        // of restoring would drop the outer index silently -- the reader would
+        // simply never be told where the row sits.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            crate::render::RenderIndexedSemanticsBox::new(
+                7,
+                crate::widgets::Column::new()
+                    .with_main_axis_size(crate::render::MainAxisSize::Min)
+                    .push(crate::render::RenderIndexedSemanticsBox::new(
+                        2,
+                        crate::widgets::Text::new("cell"),
+                    ))
+                    .push(crate::widgets::Text::new("after the cell")),
+            )
+        }));
+        let seen: Vec<(&str, Option<i32>)> = nodes
+            .iter()
+            .filter(|node| !node.properties.label.is_empty())
+            .map(|node| (node.properties.label.as_str(), node.index_in_parent))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![("cell", Some(2)), ("after the cell", Some(7))],
+            "the inner offer was spent inside, the outer one survived it"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn an_index_offered_to_a_subtree_that_was_dropped_is_not_taken_by_a_sibling() {
+        // The offer is put back on every way out of the walk, including the two
+        // that abandon a subtree. Leave it lying and the next node to open --
+        // a *sibling*, nothing to do with the indexed box -- picks it up, and
+        // a reader is told the wrong position for the wrong row.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            crate::widgets::Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .push(crate::render::RenderIndexedSemanticsBox::new(
+                    9,
+                    // Sizeless, so the walk drops it and never opens a node
+                    // that could claim the 9.
+                    RenderSemantics::new(
+                        610,
+                        SemanticsProperties::label("dropped"),
+                        crate::widgets::SizedBox::new(0.0, 0.0),
+                    ),
+                ))
+                .push(crate::widgets::Text::new("innocent"))
+        }));
+        let bystander = nodes
+            .iter()
+            .find(|node| node.properties.label == "innocent")
+            .expect("the sibling is read");
+        assert_eq!(
+            bystander.index_in_parent, None,
+            "a sibling took an index offered to a subtree that was thrown away"
+        );
         set_enabled(false);
     }
 
