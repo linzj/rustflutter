@@ -3896,16 +3896,19 @@ impl StatefulComponent for CupertinoSearchTextField {
                     // `show_clear=true`) and the handler below **still never
                     // runs**, at any point inside the laid-out 300x44 box.
                     //
-                    // Tick 332 traced it to something under this widget
-                    // rather than in it. After the row is laid out, its
-                    // children answer `size()` of **0x0** while their own
-                    // `compute_dry_layout` answers 6x16 and 11x16 -- the
-                    // stored size was never written, though the flex clearly
-                    // measured them, because it placed the second child at
-                    // dx=26. Every hit test guards on `size.contains(..)`, so
-                    // a zero-sized ancestor makes everything beneath it
-                    // unreachable. That is the bug to fix; this button is one
-                    // of its symptoms.
+                    // Ticks 332-334 traced it out of this widget entirely.
+                    // Laying out a freshly built tree gives its children real
+                    // sizes (26x36, 274x36.4); **rebuilding the tree and
+                    // laying that out gives 0x0**, with the old offsets still
+                    // in place. Every hit test guards on
+                    // `size.contains(..)`, so after a rebuild nothing under
+                    // those children can be tapped.
+                    //
+                    // This button only ever exists *after* a rebuild -- it
+                    // needs text to appear -- which is why it looked like its
+                    // own bug. It is not: it is a symptom of a general one
+                    // that reaches every widget that rebuilds. See
+                    // PORTING_STATUS tick 334.
                     let announcement = CupertinoSearchTextField::suffix_tap(&text_before);
 
                     // `_clearText`: empty the field through its own handle,

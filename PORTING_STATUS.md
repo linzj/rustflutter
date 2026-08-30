@@ -22948,3 +22948,59 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 `child_size` 就是 0，`0 + 内边距` 本该是 14×16 而不是 0×0——**所以这两件事对不上，
 还差一步**。直接去读 `cupertino.rs` 里那个 mark 的 `layout`／`size` 实现，
 按行为核对：它把量出来的尺寸写回去了吗？
+
+---
+
+## 第 334 轮：**重建之后，布局过的树报 0×0** —— 不是搜索框的 bug，是所有会重建的控件的
+
+接上一轮的“下一步”去读那两个自绘 mark。`SearchGlyph` 是对的：
+
+```rust
+fn layout(&mut self, c: BoxConstraints) -> Size { self.laid_out = c.constrain(...); self.laid_out }
+fn size(&self) -> Size { self.laid_out }
+```
+
+写回去了，也读回来了。**所以 0×0 只可能是“`layout` 没跑在这个实例上”。**
+
+于是不猜了，直接对同一棵树走四次：
+
+```
+walk 1  首次构建 + 布局   : 26×36, 274×36.4     ← 正确
+walk 2  中间什么都不做     : 26×36, 274×36.4     ← 正确
+walk 3  再布局一次         : 26×36, 274×36.4     ← 正确
+walk 4  rebuild 之后再布局 : 0×0,   0×0          ← 坏了
+```
+
+**首次构建出来的树布局之后尺寸是对的；`rebuild` 之后再 `build_render_tree` 再布局，
+孩子全部报 0×0**，而 flex 给的偏移还是老的（0 和 26）——它没有重新量过。
+
+这一下把前面五轮串起来了，而且**结论比一直以为的严重得多**：
+
+* 每一次命中判定都要过 `size.contains(..)`，所以**重建之后，那些孩子底下的一切都点不到**；
+* 清空按钮**只可能在重建之后存在**（它要有文字才出现），所以它从来就没被点到过——
+  它看起来像自己的 bug，其实只是这个 bug 的一个症状；
+* 字段本身也一样：打字之前点得到，打字（=重建）之后点不到；
+* **这不是搜索框的问题，是每一个会重建的控件的问题。**
+
+**一个候选机制，但没有验证，如实标注。** `RenderRef::adopt` 里有这么一段：
+
+```rust
+let Ok(cell) = Rc::try_unwrap(fresh.render) else { return false; };  // 被别人持有 → 放弃
+```
+
+新建的 handle 只要**还被别人持有**（`many()` 的闭包、`FlexChild` 里的克隆都会持有），
+`try_unwrap` 就失败，`adopt` 返回 `false`，这次更新被放弃。调用方拿到 `false` 之后
+大概率是整个换成那个**从没布局过的新实例**，于是尺寸是 0、偏移还是旧的——症状对得上。
+**但这只是对得上，我没有验证它，前面这条链上我已经自信地错过两次了。**
+
+按纪律实验代码没有留下；`cupertino.rs` 里那条注释改写成了现在这个更准确、更大的结论。
+
+尺子：十六把全部 exit 0。门：6240 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：**先写一个失败的测试**，再修。这一轮的复现只有四行、不需要搜索框：
+构树 → 布局 → 断言孩子尺寸非零 → `rebuild` → 布局 → **断言孩子尺寸仍然非零**（现在会红）。
+放在 `render.rs` 的测试里，用第 333 轮那个 `Measured` 盒子（**不能用 `Sized`**，
+它的尺寸不是布局写的，测不出来）。红了之后再去验证 `adopt` 那条 `try_unwrap` 假设：
+在 `adopt` 返回 `false` 的路径上打一个计数器，看重建时是不是真的走了那条路；
+是就修那条路，不是就继续往上找。**先有红测试，再动实现。**
