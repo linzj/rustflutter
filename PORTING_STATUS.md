@@ -26343,3 +26343,54 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 **先把 `*Theme` 这一类从报告里排掉**（它们在上游是 `InheritedWidget`，
 本项目有对应的 `of` 函数就算已实现），再看剩下的表还有多长——
 现在的 224 行里有相当一部分是这个。
+
+---
+
+## 第 393 轮：报告差点把一轮送去修一个没坏的东西
+
+上一轮的“下一步”写着"先把 `*Theme` 那一类从报告里排掉，现在的 224 行里有相当一部分是这个"。
+**先查了一下，这句话是错的：整张表里 `*Theme` 只有一行**（`CupertinoTheme`）。
+我是从 v1 那版的输出（`BottomNavigationBarTheme`、`CardTheme`、`CheckboxTheme`……）
+推的，而那些在门面规则修好之后**早就不在表里了**——
+`CardTheme::new(data, child) -> AnyWidget` 正好符合门面规则。
+**又是一次"查了才知道"**：不查就会去改一个已经对的东西。
+
+于是改从表里挑真活，挑中 `CheckboxListTile` / `RadioListTile` / `SwitchListTile`——
+三个都是 `pub struct X(pub ControlListTile)`、都没有 `Component` impl，
+和上一轮那四个 Chip 一模一样的形状。
+
+**读代码之后发现：它们不是缺口。** 三个各自都已经有
+
+```rust
+pub fn widget(self, id: u64, title: impl Into<String>) -> ControlTile
+```
+
+这是本项目**有意**的两段式：上游那三个 widget，在这里被拆成
+"一袋设置"加"一个会画任意一种的 `ControlTile`"。**这条路是通的**，
+只是分了两步走。
+
+### 所以这一轮的活是修仪器，不是修控件
+
+这是 `shells.py` 的一类**误报**：
+"某个类型的方法交还了另一个会 build 的类型"——它是隔一层的 widget。
+加了一条**传递规则**并求到不动点（这条链可能不止一环）。
+
+**误报的代价比漏报大**：漏报只是少列几行，
+而误报会**派一轮去修一个没坏的东西**——这一轮差点就是。
+所以规则只读每个 `impl` 块里**第一个** `pub fn ... ->`，
+宁可少认（这条限制写进文件头了）。
+
+校准：三个 list tile 从表里消失；4 个已知壳子**仍在**表里；
+14 个已知会 build 的类型**一个都没被误列**。147 个 build（原 144）。
+
+尺子：十六把全部 exit 0；三份报告 exit 0。
+门：Rust 6395 通过、`cargo fmt --check` 干净。（这一轮没动 crate 代码。）
+
+**下一步**：表里挑一个**上游确有行为**的真控件，别按字母序。
+`BottomAppBar`（`bottom_bars.rs`）看着最合适：本项目已经有
+`BottomNavigationBar`/`NavigationBar` 的度量，而上游 `BottomAppBar` 的核心是
+**notch**——给 FAB 让出的那个缺口（`shape`、`notchMargin`），
+这一项**画出来看得见**，不是又一个数据结构。
+**先确认两件事再动手**：`bottom_bars.rs` 里那个 `BottomAppBar` 现在有哪些字段；
+以及本项目的 `Scaffold` 有没有"FAB 停靠在底栏上"这回事——
+**没有停靠就没有 notch 可言**，那这一轮就该换成先补停靠位置。

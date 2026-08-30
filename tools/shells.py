@@ -37,7 +37,10 @@ whether the matching type has any of:
 
   * `impl Component for X` / `impl StatefulComponent for X` -- it builds;
   * `impl RenderBox for X` -- it *is* a render object;
-  * a free function returning `AnyWidget` named after it.
+  * a free function returning `AnyWidget` named after it;
+  * a method handing back a type that itself builds, resolved to a fixed
+    point -- this port splits three upstream widgets into a settings bag and a
+    `ControlTile` that draws any of them, so the bag is a widget at one remove.
 
 Calibrated before it was kept, against the shells above and against fourteen
 types known to build (`Align`, `ClipOval`, `ColoredBox`, `Divider`,
@@ -55,6 +58,13 @@ failures were the same shape -- **this port has no single spelling of "widget"**
   * v2 accounted for facades and still called `ClipOval` data, because its
     `new` returns `crate::render::RenderClipOval` -- the same shape written
     with a path.
+
+It reads only the **first** `pub fn ... ->` in each `impl` block, so a type
+whose *second* method is the one handing back a widget is under-reported. That
+direction is the safe one: this report's cost is a false positive, which sends a
+round to repair something that works -- round 393 nearly spent itself on
+`CheckboxListTile` before reading the code and finding
+`widget(id, title) -> ControlTile` already there.
 
 The one known shell it misses is `DropdownMenuItem`, and the miss is on the
 *upstream* side: it extends a private `_DropdownMenuItemContainer` rather than
@@ -90,6 +100,14 @@ WIDGET_CLASS = re.compile(
     re.M)
 
 PORT_STRUCT = re.compile(r'^pub struct (\w+)', re.M)
+
+# `impl Foo {` ... `pub fn bar(..) -> Baz`, for the transitive rule: a
+# settings type whose method hands back the widget that draws it.
+RETURNS = re.compile(
+    r'^impl(?:<[^>]*>)?\s+(\w+)[^{\n]*\{'
+    r'(?:(?!^impl)[\s\S])*?'
+    r'pub fn \w+\([^)]*\)\s*->\s*([\w:]+)',
+    re.M)
 
 # `impl Foo {` ... `pub fn bar(..) -> RenderBaz` / `-> AnyWidget`, anywhere
 # in that block. Matched with the impl header and the return type in one
@@ -132,6 +150,7 @@ def main():
 
     builds = set()
     declared = {}
+    returns = {}
     for path in port_files():
         try:
             text = open(path, encoding='utf-8').read()
@@ -158,6 +177,32 @@ def main():
         # nothing behind them.
         for match in FACADE.finditer(text):
             builds.add(match.group(1))
+        # What each type's methods hand back, for the transitive pass below.
+        for match in RETURNS.finditer(text):
+            owner, returned = match.group(1), match.group(2)
+            returns.setdefault(owner, set()).add(returned.split('::')[-1])
+
+    # A type also counts as building when one of its own methods hands back a
+    # type that builds. `CheckboxListTile::widget(id, title) -> ControlTile` is
+    # the case: this port splits three upstream widgets into a settings bag and
+    # one `ControlTile` that draws any of them, so the bag is a widget at one
+    # remove. Resolved to a fixed point, because that chain can be longer than
+    # one link.
+    #
+    # Round 393 added this after the report sent that round at the three list
+    # tiles as though they could not reach the screen. They can; the API is two
+    # steps. **A report with false positives spends rounds repairing what is
+    # not broken**, which is worse than one that lists too little.
+    while True:
+        grew = False
+        for owner, returned in returns.items():
+            if owner in builds:
+                continue
+            if any(name in builds for name in returned):
+                builds.add(owner)
+                grew = True
+        if not grew:
+            break
 
     shells = sorted(
         (name, declared[name], widgets[name])
