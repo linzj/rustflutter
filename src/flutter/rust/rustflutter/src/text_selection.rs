@@ -492,6 +492,31 @@ pub enum CaretLands {
     AtTheWordEdge,
 }
 
+/// The gestures that write `_shouldShowSelectionToolbar` and
+/// `_shouldShowSelectionHandles`. Every other handler leaves both alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionGesture {
+    /// `onTapDown`.
+    TapDown,
+    /// `onDragSelectionStart`.
+    DragSelectionStart,
+    /// `onSecondaryTapDown` -- a right-click, or a long press on a touch
+    /// screen, asking for the context menu.
+    SecondaryTapDown,
+    /// `onForcePressStart`, which exists only where the screen reports
+    /// pressure.
+    ForcePressStart,
+}
+
+/// What a gesture leaves the two flags saying. `None` is upstream not
+/// assigning that field at all, which leaves the previous gesture's answer
+/// standing -- a different thing from assigning `false`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionUiFlags {
+    pub toolbar: Option<bool>,
+    pub handles: Option<bool>,
+}
+
 /// The platform rules a text field's gestures follow, which upstream keeps in
 /// `TextSelectionGestureDetectorBuilder` so that a field writing its own would
 /// not get some of them wrong.
@@ -521,10 +546,66 @@ impl TextSelectionGestures {
         )
     }
 
-    /// Whether the handles follow the toolbar. Upstream assigns one from the
-    /// other on the next line, so they cannot disagree.
+    /// Whether the handles follow the toolbar **for a primary tap or a drag**,
+    /// where upstream assigns one from the other on the next line:
+    ///
+    /// ```dart
+    /// _shouldShowSelectionToolbar =
+    ///     kind == null || kind == PointerDeviceKind.touch || kind == PointerDeviceKind.stylus;
+    /// _shouldShowSelectionHandles = _shouldShowSelectionToolbar;
+    /// ```
+    ///
+    /// **This doc used to say they "cannot disagree", full stop.** They can,
+    /// and [`TextSelectionGestures::flags_for`] is where. The sentence was
+    /// true of the two gestures it was read from and not of the class.
     pub fn shows_selection_handles(kind: PointerKind) -> bool {
         TextSelectionGestures::shows_selection_toolbar(kind)
+    }
+
+    /// What a gesture leaves the two flags saying.
+    ///
+    /// Upstream keeps `_shouldShowSelectionToolbar` and
+    /// `_shouldShowSelectionHandles` as separate fields and writes them at
+    /// four places. Three of those write the same value into both, which is
+    /// why reading any one of them suggests the two are one thing. The fourth
+    /// is `onSecondaryTapDown`:
+    ///
+    /// ```dart
+    /// _shouldShowSelectionToolbar = true;
+    /// _shouldShowSelectionHandles =
+    ///     details.kind == null ||
+    ///     details.kind == PointerDeviceKind.touch ||
+    ///     details.kind == PointerDeviceKind.stylus;
+    /// ```
+    ///
+    /// **A right-click always earns a toolbar and only sometimes earns
+    /// handles.** That is the whole reason they are two fields: the toolbar is
+    /// the context menu the secondary tap asked for, and a mouse that can
+    /// summon it has a pointer precise enough to select with -- draggable
+    /// handles would be furniture in the way. A finger long-pressing to the
+    /// same menu still needs them.
+    ///
+    /// `onForcePressStart` is the other asymmetry, and a quieter one: it sets
+    /// the toolbar flag to `true` and **does not touch the handles flag at
+    /// all**, so the handles keep whatever the tap that preceded the press
+    /// decided. A force press only exists on a pressure-sensitive screen, so
+    /// that earlier decision was a finger's and the handles are already on.
+    pub fn flags_for(gesture: SelectionGesture, kind: PointerKind) -> SelectionUiFlags {
+        let by_kind = TextSelectionGestures::shows_selection_toolbar(kind);
+        match gesture {
+            SelectionGesture::TapDown | SelectionGesture::DragSelectionStart => SelectionUiFlags {
+                toolbar: Some(by_kind),
+                handles: Some(by_kind),
+            },
+            SelectionGesture::SecondaryTapDown => SelectionUiFlags {
+                toolbar: Some(true),
+                handles: Some(by_kind),
+            },
+            SelectionGesture::ForcePressStart => SelectionUiFlags {
+                toolbar: Some(true),
+                handles: None,
+            },
+        }
     }
 
     /// Upstream's two comments, each pointing at the other:
@@ -4583,8 +4664,11 @@ mod selection_gesture_rule_tests {
     }
 
     #[test]
-    fn the_handles_cannot_disagree_with_the_toolbar() {
-        // Upstream assigns one from the other on the next line.
+    fn a_primary_tap_gives_the_handles_and_the_toolbar_the_same_answer() {
+        // Upstream assigns one from the other on the next line -- but only in
+        // `onTapDown` and `onDragSelectionStart`. This test was called
+        // `the_handles_cannot_disagree_with_the_toolbar`, which is a claim
+        // about the class and is false; see the secondary-tap tests below.
         for kind in [
             PointerKind::Touch,
             PointerKind::Mouse,
@@ -4598,6 +4682,76 @@ mod selection_gesture_rule_tests {
                 TextSelectionGestures::shows_selection_toolbar(kind),
                 "{kind:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_right_click_earns_a_toolbar_it_has_not_earned_handles_for() {
+        // The one place the two flags genuinely part company. A mouse asking
+        // for the context menu gets it, and gets no draggable handles: it has
+        // a pointer precise enough to select with, and handles would be
+        // furniture in the way.
+        let mouse = TextSelectionGestures::flags_for(
+            SelectionGesture::SecondaryTapDown,
+            PointerKind::Mouse,
+        );
+        assert_eq!(mouse.toolbar, Some(true));
+        assert_eq!(mouse.handles, Some(false), "and no handles for a mouse");
+
+        // A finger long-pressing to the same menu still needs them.
+        let finger = TextSelectionGestures::flags_for(
+            SelectionGesture::SecondaryTapDown,
+            PointerKind::Touch,
+        );
+        assert_eq!(finger.toolbar, Some(true));
+        assert_eq!(finger.handles, Some(true));
+    }
+
+    #[test]
+    fn a_mouse_gets_no_toolbar_from_a_primary_tap_and_one_from_a_secondary() {
+        // The same pointer, two gestures, opposite answers -- which is what
+        // makes `flags_for` take the gesture and not just the kind.
+        assert_eq!(
+            TextSelectionGestures::flags_for(SelectionGesture::TapDown, PointerKind::Mouse).toolbar,
+            Some(false)
+        );
+        assert_eq!(
+            TextSelectionGestures::flags_for(
+                SelectionGesture::SecondaryTapDown,
+                PointerKind::Mouse
+            )
+            .toolbar,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn a_force_press_leaves_the_handles_where_the_tap_before_it_left_them() {
+        // `onForcePressStart` writes the toolbar flag and does not touch the
+        // handles flag at all. `None` is that absence, and it is a different
+        // thing from `Some(false)`: the previous gesture's answer stands.
+        for kind in [PointerKind::Touch, PointerKind::Stylus, PointerKind::Mouse] {
+            let flags = TextSelectionGestures::flags_for(SelectionGesture::ForcePressStart, kind);
+            assert_eq!(flags.toolbar, Some(true), "{kind:?}");
+            assert_eq!(flags.handles, None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_tap_and_a_drag_start_write_both_flags_together() {
+        // The three-of-four case that makes the two look like one field.
+        for gesture in [
+            SelectionGesture::TapDown,
+            SelectionGesture::DragSelectionStart,
+        ] {
+            for kind in [PointerKind::Touch, PointerKind::Mouse, PointerKind::Stylus] {
+                let flags = TextSelectionGestures::flags_for(gesture, kind);
+                assert_eq!(flags.toolbar, flags.handles, "{gesture:?} {kind:?}");
+                assert_eq!(
+                    flags.toolbar,
+                    Some(TextSelectionGestures::shows_selection_toolbar(kind))
+                );
+            }
         }
     }
 

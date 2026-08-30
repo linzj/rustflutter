@@ -21379,3 +21379,59 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 六百多个类没碰。回队头，跳过 `Icons`/`CupertinoIcons` 那两张纯图标表,
 从 `TextSelectionGestureDetectorBuilder` 6/27 开始（widgets/text_selection.dart）。
 先按行为查：那 27 个成员里，哪些是这个端口的手势链真的会走到的。
+
+## 第 304 轮：两个标志，通常一起写，恰好有一处故意分开
+
+回 `depth.py` 队列，跳过两张纯图标表，队头是 `TextSelectionGestureDetectorBuilder`
+6/27——**18 个成员在 crate 里连名字都没有**。
+
+端口对这个类用的不是"回调清单"的形状，而是把它编码的**规则**抽出来
+（`TextSelectionGestures`）。所以这一轮加的也是一条规则。
+
+### 那条规则
+
+上游把 `_shouldShowSelectionToolbar` 和 `_shouldShowSelectionHandles` 存成**两个字段**,
+在四个地方写它们。**三处把同一个值写进两个字段**——所以随便读到哪一处,
+都会以为这是同一件事。第四处是 `onSecondaryTapDown`：
+
+```dart
+_shouldShowSelectionToolbar = true;
+_shouldShowSelectionHandles =
+    details.kind == null ||
+    details.kind == PointerDeviceKind.touch ||
+    details.kind == PointerDeviceKind.stylus;
+```
+
+**右键永远换来一个工具栏，只是有时候换不来手柄。** 这就是它们要分成两个字段的全部理由：
+工具栏是这次二级点击要的那个上下文菜单，而能召出它的鼠标，指针精度足以自己选——
+可拖的手柄只会碍事。用手指长按到同一个菜单的人仍然需要它们。
+
+`onForcePressStart` 是另一处不对称，安静一些：它把工具栏标志写成 `true`,
+**完全不碰手柄标志**，所以手柄保持之前那次点击定下的样子。强按压只存在于压感屏上,
+所以之前那次决定是手指做的，手柄本来就在。
+
+**`None` 不是 `Some(false)`**：一个是"上游没写这个字段"，一个是"写成了假"。
+
+### 端口原来那句话是错的
+
+`shows_selection_handles` 的文档写着："Upstream assigns one from the other on the next
+line, so they cannot disagree."——**它们能。** 那句话对它被读出来的那两个手势成立,
+对这个类不成立。测试的名字也叫 `the_handles_cannot_disagree_with_the_toolbar`。
+两处都改成了它们真正覆盖的范围，新规则另立。
+
+### 六条改错，六条全红
+
+含"让二级点击的手柄跟随它的工具栏"（也就是那句旧信念）、"让强按压也写手柄"、
+"让强按压写 `Some(false)` 而不是 `None`"。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6092 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：这个类还剩 17 个没对应物的成员。挑下一族连贯的：长按那四个
+（`onSingleLongTapStart` / `MoveUpdate` / `End` / `Cancel`），它们共用上游一个
+`_onSingleLongTapEndOrCancel` 收尾，而 `MoveUpdate` 里有这一族最硬的一段算术——
+手指按住不动、字段在底下滚动时，选区要跟的是**内容坐标**里的位置
+（`_dragStartViewportOffset` 那笔账）。先按行为查。
