@@ -124,11 +124,31 @@ impl BottomNavigationBar {
         })
     }
 
-    /// Whether an item's label is drawn.
-    pub fn shows_label(&self, index: usize, effective_type: BottomNavigationBarType) -> bool {
-        match effective_type {
-            BottomNavigationBarType::Fixed => true,
-            BottomNavigationBarType::Shifting => index == self.current_index,
+    /// Whether an item's label is drawn, which is upstream's
+    /// `_BottomNavigationTile` condition: the selected item asks
+    /// `showSelectedLabels` and every other one asks `showUnselectedLabels`.
+    ///
+    /// **Takes the resolved bar rather than the type**, and that is the
+    /// correction: this used to read the type directly and answer "a fixed bar
+    /// shows every label, a shifting bar shows only the selected one". That is
+    /// true of the *defaults* and is where the resolver gets
+    /// `show_unselected_labels` from -- so the rule was written twice, once
+    /// here from the type and once there from the theme, and only the second
+    /// could be overridden. A caller who set `showUnselectedLabels: true` on a
+    /// shifting bar was answered "no" by this one.
+    ///
+    /// It had no caller outside its own tests until round 398, which is how
+    /// two answers to one question sat side by side without disagreeing out
+    /// loud.
+    pub fn shows_label(
+        &self,
+        index: usize,
+        resolved: &crate::component_themes::ResolvedBottomNavigationBar,
+    ) -> bool {
+        if index == self.current_index {
+            resolved.show_selected_labels
+        } else {
+            resolved.show_unselected_labels
         }
     }
 }
@@ -852,16 +872,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shifting_writes_only_the_selected_label_and_fixed_writes_them_all() {
-        let bar = BottomNavigationBar::new(5, 2);
-        for index in 0..5 {
-            assert!(bar.shows_label(index, BottomNavigationBarType::Fixed));
-        }
-        assert!(bar.shows_label(2, BottomNavigationBarType::Shifting));
-        assert!(!bar.shows_label(0, BottomNavigationBarType::Shifting));
-    }
-
     // -- What the constructor refuses --------------------------------------------
 
     #[test]
@@ -981,6 +991,30 @@ mod bottom_bar_theme_tests {
             *self.seen.borrow_mut() = Some(self.bar.resolved(context));
             crate::framework::leaf(|| crate::widgets::Empty)
         }
+    }
+
+    #[test]
+    fn shifting_writes_only_the_selected_label_and_fixed_writes_them_all() {
+        // Through the **resolved** bar, which is where the type-based default
+        // lives. Asked of the type directly, as this used to be, a caller who
+        // turned the unselected labels back on for a shifting bar was told no
+        // by one of the two rules and yes by the other.
+        let bar = BottomNavigationBar::new(5, 2);
+        let resolved = |show_unselected: bool| {
+            resolve(
+                BottomNavigationBar {
+                    show_selected_labels: Some(true),
+                    show_unselected_labels: Some(show_unselected),
+                    ..BottomNavigationBar::new(5, 2)
+                },
+                BottomNavigationBarThemeData::new(),
+            )
+        };
+        for index in 0..5 {
+            assert!(bar.shows_label(index, &resolved(true)));
+        }
+        assert!(bar.shows_label(2, &resolved(false)));
+        assert!(!bar.shows_label(0, &resolved(false)));
     }
 
     fn resolve(

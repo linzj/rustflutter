@@ -460,6 +460,97 @@ You"
         );
     }
 
+    /// Which destination labels a bar actually drew, in order.
+    fn labels_drawn(destinations: usize, selected: usize) -> Vec<String> {
+        let marks: Vec<Destination> = (0..destinations)
+            .map(|index| Destination::new(format!("Page {index}"), "M"))
+            .collect();
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(BottomNavigation::new(9800, marks, selected)),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .into_iter()
+            .filter_map(|call| match call {
+                // Only the ones that would actually be seen: a hidden label is
+                // drawn transparent so its words stay in the semantics walk,
+                // so counting paragraphs alone counts every label either way.
+                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. }
+                    if text.starts_with("Page") && argb >> 24 != 0 =>
+                {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_crowded_bar_writes_only_the_selected_label() {
+        // Upstream's count-based default: three or fewer destinations is a
+        // *fixed* bar and every label is written; four or more is *shifting*
+        // and only the selected one is. `bottom_bars` has worked this out and
+        // been tested doing it since it was ported -- and the widget that
+        // draws the bar never asked, so every label was written whatever the
+        // count.
+        //
+        // Counted by what reached the canvas: a hidden label is still in the
+        // tree for a screen reader, so its absence has to be measured where it
+        // is actually absent.
+        assert_eq!(
+            labels_drawn(3, 0),
+            vec!["Page 0", "Page 1", "Page 2"],
+            "a fixed bar writes them all"
+        );
+        // **Which** one, not merely how many: a bar that always wrote the
+        // first destination's label would also write exactly one.
+        assert_eq!(
+            labels_drawn(5, 2),
+            vec!["Page 2"],
+            "a shifting bar writes only the one you are on"
+        );
+    }
+
+    #[test]
+    fn a_hidden_label_is_still_read_out() {
+        // `bottom_bars` says it in as many words --
+        // `hiding_a_label_is_not_removing_it` -- and here it is the reason the
+        // label is drawn transparent rather than left out: the words a reader
+        // hears come from this very `Text`, folded into the destination's
+        // node. Omitted, a crowded bar would announce four unnamed buttons and
+        // one named one.
+        let stops = roles_of(crate::framework::component(BottomNavigation::new(
+            9801,
+            (0..5)
+                .map(|index| Destination::new(format!("Page {index}"), "M"))
+                .collect(),
+            2,
+        )));
+        let said: Vec<String> = stops.into_iter().map(|(label, _)| label).collect();
+        for index in 0..5 {
+            assert!(
+                said.iter()
+                    .any(|words| words.contains(&format!("Page {index}"))),
+                "destination {index} lost its name: {said:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_other_two_bars_of_choices_claim_no_kind() {
         // Checked one upstream file at a time, because this crate writes all
@@ -2567,6 +2658,16 @@ impl Component for BottomNavigation {
         // Upstream's `BottomNavigationBar` calls this `additionalBottomPadding`
         // and takes it from `viewPadding` rather than `padding`: the gesture
         // bar is there whether or not a keyboard is over it.
+        // The metrics for this bar, which `bottom_bars` has had all along and
+        // nothing drew from: whether an item's label is written depends on the
+        // bar's type, and upstream's count-based default makes a bar of four
+        // or more *shifting* -- only the selected item keeps its words.
+        // Drawing every label regardless is what this did.
+        let policy =
+            crate::bottom_bars::BottomNavigationBar::new(self.destinations.len(), self.selected);
+        let resolved = policy.resolved(context);
+        let shows_label = move |index: usize| policy.shows_label(index, &resolved);
+
         let bottom = crate::media_query::media_query_of(context)
             .view_padding
             .bottom;
@@ -2604,10 +2705,25 @@ impl Component for BottomNavigation {
                                 )),
                         )
                         .push(
+                            // A hidden label is **still there for a reader**.
+                            // Upstream draws nothing and the tile's own
+                            // `Semantics` still carries the words; here the
+                            // words come from this very `Text`, folded into
+                            // the destination's node -- so removing it would
+                            // leave an unnamed button, which
+                            // `hiding_a_label_is_not_removing_it` in
+                            // `bottom_bars` says in as many words.
+                            //
+                            // Drawn transparent rather than omitted: invisible
+                            // on the screen, present in the walk.
                             Text::new(destination.label.clone())
                                 .with_size(11.0)
                                 .with_weight(if active { 700 } else { 500 })
-                                .with_color(color),
+                                .with_color(if shows_label(index) {
+                                    color
+                                } else {
+                                    Color::TRANSPARENT
+                                }),
                         ),
                 ));
                 let region = match handlers.get(index) {

@@ -26620,3 +26620,60 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 所以这可能是**同名两份**而不是缺口——
 **先比对两者的字段，判断是该给 `bottom_bars::BottomNavigationBar` 补 build，
 还是把 `controls::BottomNavigation` 认作它的实现并把度量接上去。**
+
+---
+
+## 第 398 轮：四个以上的目的地只写选中那一个——规则一直在，画的人从没问过
+
+按“下一步”先比对两者，**不是同名两份，是又一次"两端齐全、中间没人接"**：
+
+* `bottom_bars::BottomNavigationBar` 是**度量与策略**：item 数、fixed/shifting、
+  两种颜色、标签显隐、`effective_type`、`validate`，还有一整个
+  `ResolvedBottomNavigationBar` 主题解析器——**全都有测试**；
+* `controls::BottomNavigation` 是**真正在画的那个**——而它一个都没问过。
+
+上游按数量给默认值：**三个及以下是 fixed，四个及以上是 shifting，
+shifting 只写选中那一个的标签**。本项目无论几个都全写。
+
+### 顺手并掉一处"一条规则写了两遍"
+
+`shows_label(index, type)` 从类型直接作答（"fixed 全写、shifting 只写选中"），
+而解析器的 `show_unselected_labels` **也是从同一个类型推出来的默认值**。
+两处写着同一条规则，**只有后者能被主题或调用者覆盖**——
+于是在 shifting 的条上把 `showUnselectedLabels` 打开的人，
+会被前者答"不写"、被后者答"写"。
+
+改成 `shows_label(index, &resolved)`：一条规则，就是上游
+`_BottomNavigationTile` 的那个条件（选中的问 `showSelectedLabels`，
+其余的问 `showUnselectedLabels`），类型默认值只活在解析器里。
+**它在这一轮之前只有自己的测试调用**——这正是两个答案能并排放着而不吵起来的原因。
+
+### 藏起来的标签**不能**从读屏用户那里也拿走
+
+`bottom_bars` 早写着 `hiding_a_label_is_not_removing_it`。
+而这里的词**就是那个 `Text`**（折叠进目的地的节点），删掉它
+= 四个没名字的按钮加一个有名字的。所以是**画成透明**：屏幕上看不见，走查里还在。
+（第一版试过 size 0——**画布上照样是一次 Paragraph 调用**，量不出来。）
+
+### 变异扫描 6 个，第一遍 4 红、2 绿
+
+* **"藏起来的标签连读屏也没了"**绿——没测过"藏起来还念得出"。补上。
+* **"问错了选中项"**绿——我的断言只数了**几个**标签可见。
+  把选中项改成 0，可见的仍然是**一个**。
+  改成断言**是哪一个**（`vec!["Page 2"]`）之后转红：
+  **数得对不等于指得对。**
+
+第二遍**六个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6417 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+清单未变（两个目的地是 fixed，两个标签都在）。
+
+**下一步**：同一条线索还没走完——`ResolvedBottomNavigationBar` 里
+`selected_item_color` / `unselected_item_color` 两个颜色也是**解析好了没人用**：
+`controls::BottomNavigation` 画的是自己从 `theme.primary`/`theme.text_muted` 取的色。
+**先确认一件事**：那两个解析出来的颜色在 shifting 条上都会落到
+`colorScheme.surface`（文档里写着"两端都是 surface，对比来自背景"）——
+如果本项目的这条 M2 条**没有画那个彩色背景**，直接接上去会得到
+**两个一样的颜色、一条看不出选中项的条**。
+所以先查这条条画不画 `shifting` 的背景，再决定是接颜色还是先补背景。
