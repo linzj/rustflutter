@@ -637,6 +637,84 @@ pub fn editable_button_items(
     items
 }
 
+/// Upstream `EditableTextState._textProcessingActionButtonItems`: the entries
+/// another application registered -- translate this, define this, add this to
+/// a note -- appended to the field's own menu.
+///
+/// # Its guard is a fourth one, and it is not any of the eight
+///
+/// `obscureText || !selection.isValid || selection.isCollapsed`, all-or-nothing
+/// for the whole group. Two things about it:
+///
+/// * **It does not check `readOnly`.** A read-only field still offers these.
+///   The platform is told the field is read-only when the action runs (see
+///   [`ProcessTextOutcome`]) and can offer to look something up rather than to
+///   rewrite it; refusing them here would take away the ones that only read.
+/// * **Invalid and collapsed are separate clauses**, as they are everywhere
+///   else in this file. A selection of `(-1, 5)` is invalid without being
+///   collapsed, so neither clause covers the other.
+///
+/// These are appended **after** the eight standard buttons, so an application
+/// registering ten actions cannot push cut and copy out of reach.
+pub fn process_text_button_items(
+    obscure_text: bool,
+    selection_valid: bool,
+    collapsed: bool,
+    actions: &[crate::services::process_text::ProcessTextAction],
+) -> Vec<crate::services::process_text::ProcessTextAction> {
+    if obscure_text || !selection_valid || collapsed {
+        return Vec::new();
+    }
+    actions.to_vec()
+}
+
+/// What becomes of a process-text action once the platform has answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessTextOutcome {
+    /// The selection was empty by the time the entry was pressed, so nothing
+    /// was sent and nothing happens. Upstream checks this **inside the
+    /// callback**, not when the menu is built -- the menu can outlive the
+    /// selection that justified it.
+    NothingToSend,
+    /// The activity returned a rewritten string and the field can take it.
+    Replace(String),
+    /// Upstream's `else`: the toolbar goes away and the text is left alone.
+    HideToolbar,
+}
+
+/// Upstream's `_allowPaste`: `!readOnly && selection.isValid`.
+///
+/// Note it does **not** ask whether the selection is collapsed -- pasting at a
+/// caret is the ordinary case.
+pub fn allow_paste(read_only: bool, selection_valid: bool) -> bool {
+    !read_only && selection_valid
+}
+
+/// Upstream's `onPressed` for a process-text entry, as a decision.
+///
+/// # Three outcomes, and the third is where a read-only field lands
+///
+/// Upstream's comment on the `else` is "If an activity does not return a
+/// modified version, just hide the toolbar" -- which reads as two cases, a
+/// rewrite or nothing. But the condition is `processedText != null &&
+/// _allowPaste`, so a **read-only field that did get a rewritten string back
+/// also lands in the `else`**: the toolbar closes and the text does not
+/// change. That is not the same as the activity declining, and it is the case
+/// a two-branch reading loses.
+pub fn process_text_outcome(
+    selected_text: &str,
+    processed: Option<String>,
+    allow_paste: bool,
+) -> ProcessTextOutcome {
+    if selected_text.is_empty() {
+        return ProcessTextOutcome::NothingToSend;
+    }
+    match processed {
+        Some(text) if allow_paste => ProcessTextOutcome::Replace(text),
+        _ => ProcessTextOutcome::HideToolbar,
+    }
+}
+
 /// Upstream `EditableTextState`, reduced to the decisions it makes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditableTextState {
@@ -650,6 +728,10 @@ pub struct EditableTextState {
     pub live_text_input_status: Option<LiveTextInputStatus>,
     pub is_web: bool,
     pub has_input_connection: bool,
+    /// Upstream's `_processTextActions`, filled in from
+    /// `ProcessTextService.queryTextActions` when the field is first built.
+    /// Empty everywhere but Android, where nothing has registered one.
+    pub process_text_actions: Vec<crate::services::process_text::ProcessTextAction>,
     obscure_show_char_ticks_pending: u32,
     obscure_latest_char_index: Option<i32>,
     batch_edit_depth: i32,
@@ -672,6 +754,7 @@ impl EditableTextState {
             live_text_input_status: None,
             is_web: false,
             has_input_connection: true,
+            process_text_actions: Vec::new(),
             obscure_show_char_ticks_pending: 0,
             obscure_latest_char_index: None,
             batch_edit_depth: 0,
@@ -822,8 +905,11 @@ impl EditableTextState {
     /// The eight predicates above answer *whether* each button belongs. This
     /// answers *where*, and it is a separate question with rules of its own --
     /// see [`editable_button_items`].
+    ///
+    /// The platform's own actions are appended after, under a guard of their
+    /// own -- see [`process_text_button_items`].
     pub fn context_menu_button_items(&self) -> Vec<ContextMenuButtonType> {
-        editable_button_items(
+        let mut items = editable_button_items(
             self.platform,
             self.clipboard_status,
             EnabledButtons {
@@ -836,6 +922,23 @@ impl EditableTextState {
                 share: self.share_enabled(),
                 live_text_input: self.live_text_input_enabled(),
             },
+        );
+        items.extend(
+            self.process_text_actions()
+                .iter()
+                .map(|_| ContextMenuButtonType::Custom),
+        );
+        items
+    }
+
+    /// The platform actions this field would offer, which is
+    /// [`process_text_button_items`] asked with the field's own state.
+    pub fn process_text_actions(&self) -> Vec<crate::services::process_text::ProcessTextAction> {
+        process_text_button_items(
+            self.widget.obscure_text,
+            self.value.selection_base >= 0 && self.value.selection_extent >= 0,
+            !self.has_selection(),
+            &self.process_text_actions,
         )
     }
 
@@ -1208,6 +1311,156 @@ mod tests {
             ..field
         };
         assert!(!answered.context_menu_button_items().is_empty());
+    }
+
+    // -- What another application offers to do with the selection, tick 317 --
+
+    fn actions() -> Vec<crate::services::process_text::ProcessTextAction> {
+        vec![
+            crate::services::process_text::ProcessTextAction::new("translate", "Translate"),
+            crate::services::process_text::ProcessTextAction::new("define", "Define"),
+        ]
+    }
+
+    #[test]
+    fn a_read_only_field_still_offers_the_platforms_actions() {
+        // The guard checks obscureText, validity and collapsedness -- and not
+        // readOnly. The platform is told the field is read-only when the
+        // action runs, and can offer to look something up rather than to
+        // rewrite it; refusing them here would take away the reading ones.
+        assert_eq!(
+            process_text_button_items(false, true, false, &actions()).len(),
+            2
+        );
+        let read_only = EditableTextState::new(EditableText::new().with_read_only(true))
+            .with_value(value("hello world", 0, 5));
+        let read_only = EditableTextState {
+            process_text_actions: actions(),
+            ..read_only
+        };
+        assert_eq!(read_only.process_text_actions().len(), 2);
+    }
+
+    #[test]
+    fn an_obscured_field_offers_none_of_them() {
+        // A password is not handed to another application to translate.
+        assert!(process_text_button_items(true, true, false, &actions()).is_empty());
+
+        // And through the field, which is what carries its own obscureText
+        // into the guard.
+        let obscured = EditableTextState::new(EditableText::new().with_obscure_text(true))
+            .with_value(value("hunter2", 0, 7));
+        let obscured = EditableTextState {
+            process_text_actions: actions(),
+            ..obscured
+        };
+        assert!(obscured.process_text_actions().is_empty());
+        assert!(
+            !obscured
+                .context_menu_button_items()
+                .contains(&ContextMenuButtonType::Custom),
+            "and none reach the menu"
+        );
+
+        let plain = EditableTextState::new(EditableText::new()).with_value(value("hunter2", 0, 7));
+        let plain = EditableTextState {
+            process_text_actions: actions(),
+            ..plain
+        };
+        assert_eq!(
+            plain.process_text_actions().len(),
+            2,
+            "the same field unobscured does offer them"
+        );
+    }
+
+    #[test]
+    fn invalid_and_collapsed_are_two_separate_reasons_to_offer_none() {
+        // (-1, 5) is invalid without being collapsed, so neither clause
+        // covers the other -- the same shape as the composing-range note.
+        assert!(
+            process_text_button_items(false, false, false, &actions()).is_empty(),
+            "invalid but not collapsed"
+        );
+        assert!(
+            process_text_button_items(false, true, true, &actions()).is_empty(),
+            "valid but collapsed"
+        );
+        assert_eq!(
+            process_text_button_items(false, true, false, &actions()).len(),
+            2,
+            "and neither, so both clauses were doing work above"
+        );
+    }
+
+    #[test]
+    fn the_platforms_actions_come_after_the_fields_own_buttons() {
+        // An application registering ten actions cannot push cut and copy
+        // out of reach.
+        use ContextMenuButtonType::*;
+        let field = EditableTextState::new(EditableText::new())
+            .with_value(value("hello world", 0, 5))
+            .with_platform(TargetPlatform::IOS);
+        let field = EditableTextState {
+            clipboard_status: ClipboardStatus::NotPasteable,
+            process_text_actions: actions(),
+            ..field
+        };
+        let items = field.context_menu_button_items();
+        assert_eq!(
+            items.iter().filter(|item| **item == Custom).count(),
+            2,
+            "one per registered action"
+        );
+        let first_custom = items.iter().position(|item| *item == Custom).unwrap();
+        let last_standard = items.iter().rposition(|item| *item != Custom).unwrap();
+        assert!(
+            last_standard < first_custom,
+            "every standard button comes first: {items:?}"
+        );
+        assert_eq!(items.first(), Some(&Cut));
+    }
+
+    #[test]
+    fn a_read_only_field_handed_a_rewrite_hides_the_toolbar_instead_of_taking_it() {
+        // Upstream's comment reads as two cases -- a rewrite or nothing --
+        // but the condition is `processedText != null && _allowPaste`, so a
+        // read-only field that did get a string back lands in the else. That
+        // is not the same as the activity declining.
+        assert_eq!(
+            process_text_outcome("hello", Some("HELLO".to_string()), true),
+            ProcessTextOutcome::Replace("HELLO".to_string())
+        );
+        assert_eq!(
+            process_text_outcome("hello", Some("HELLO".to_string()), false),
+            ProcessTextOutcome::HideToolbar,
+            "a string came back and is thrown away"
+        );
+        assert_eq!(
+            process_text_outcome("hello", None, true),
+            ProcessTextOutcome::HideToolbar,
+            "the activity declined"
+        );
+    }
+
+    #[test]
+    fn an_entry_pressed_after_the_selection_went_away_sends_nothing() {
+        // Upstream checks this inside the callback, not when the menu is
+        // built: the menu can outlive the selection that justified it.
+        assert_eq!(
+            process_text_outcome("", Some("HELLO".to_string()), true),
+            ProcessTextOutcome::NothingToSend,
+            "before either of the other two questions is asked"
+        );
+    }
+
+    #[test]
+    fn pasting_needs_a_valid_selection_but_not_a_collapsed_one() {
+        // `!readOnly && selection.isValid`, with nothing said about
+        // collapsedness -- pasting at a caret is the ordinary case.
+        assert!(allow_paste(false, true));
+        assert!(!allow_paste(true, true), "read-only");
+        assert!(!allow_paste(false, false), "never placed in");
     }
 
     // -- The controller ----------------------------------------------------

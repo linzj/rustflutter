@@ -22095,3 +22095,51 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 `obscureText || !selection.isValid || selection.isCollapsed` 就整组不给——注意这道闸跟
 逐按钮那八条是分开的一套，条件也不完全一样。本项目 `services/process_text.rs` 已经在了，
 先查那边有什么、这道闸和这个追加顺序在不在，按行为查。
+
+---
+
+## 第 317 轮：只读字段照样offer平台的动作，而只读字段拿回改写串反而只是关掉工具条
+
+接上一轮的“下一步”，把 `contextMenuButtonItems` 的最后一截端完：
+`_textProcessingActionButtonItems`（`widgets/editable_text.dart` 3294）。
+`services/process_text.rs` 那一层（`ProcessTextAction`、`ProcessTextService`、
+`DefaultProcessTextService` 和两个方法名）早就在了，**但没有任何地方把它接进菜单**。
+
+三件按名字猜不到的事：
+
+1. **这一组有自己的第四道闸，而且不是那八条里的任何一条**：
+   `obscureText || !selection.isValid || selection.isCollapsed`，整组要么全给要么全不给。
+   两点：**它不查 `readOnly`**——只读字段照样 offer 这些动作。字段是不是只读会在动作**执行时**
+   告诉平台（`processTextAction(id, text, readOnly)`），活动据此决定是提供“查一下”还是
+   “改写它”；在这里就把它们拦掉，等于把那些只读也能用的动作一并抹掉。另外，
+   **invalid 和 collapsed 是两条独立的从句**，跟这个文件里别处一样：`(-1, 5)` 无效但不折叠，
+   两条谁也盖不住谁。
+2. **追加在八个标准按钮之后**（上游的 `..addAll`）。一个注册了十个动作的应用，
+   顶不掉 cut 和 copy。
+3. **动作的结局有三种，不是两种。** 上游那句注释“如果活动没有返回修改过的版本，就把工具条
+   收起来”读起来像是两种情形——改写，或者什么都没有。但条件是
+   `processedText != null && _allowPaste`，所以**一个只读字段确实拿回了改写串，也会落进
+   `else`**：工具条关掉，文字不动。这跟“活动拒绝了”不是一回事，而正是两分支读法会丢掉的那一种。
+   还有第三种：按下时选区已经空了，那就**什么都不发**——上游这个检查在回调里，不在建菜单时，
+   因为菜单可以活得比让它出现的那个选区更久。
+
+`_allowPaste` 本身也端了：`!readOnly && selection.isValid`，**不问折不折叠**——在光标处粘贴
+是最普通的情形。
+
+**变异扫描 15 个，第一遍两个没红，一个是我自己的变异写歪了。**
+
+* “动作的闸也查 read-only”那一条我写成了 `|| actions.is_empty()`，这跟提前返回空 Vec
+  **等价**，名不副实。改成在字段那一层加 `if read_only { return Vec::new(); }` 之后转红——
+  那才是这条规则真正要挡的写法。
+* **“字段问闸时不带自己的 obscureText”没红，是真窟窿**：遮蔽那条测试只走了自由函数，
+  字段那条路径上从没有过一个遮蔽字段。补了：遮蔽字段 `process_text_actions()` 为空、
+  菜单里一个 `Custom` 都没有，同一个字段不遮蔽则有两个。
+
+尺子：十六把全部 exit 0。门：6182 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`contextMenuButtonItems` 这条线到此走完了，回队头看。
+`python tools/depth.py` 现在的队头是 `CupertinoSegmentedControl`（0.31，4/13）和
+`CupertinoSwitch`（0.31，8/26）。先跑一遍 depth 看看队头有没有变，再照老规矩**按行为查**
+而不是按成员名差——前面 `CupertinoLocalizations` 与 `TextSelectionGestureDetectorBuilder`
+两次都证明了那个比值有很大一块是改名造成的。
