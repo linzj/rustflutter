@@ -1165,6 +1165,178 @@ pub fn drag_selection_start(
     }
 }
 
+/// What a drag does to the selection, once the corrections of
+/// [`drag_anchor_correction`] have been applied to its anchor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DragSelects {
+    /// Upstream returns without touching the selection. Several paths do, and
+    /// on each of them it is the answer rather than an oversight.
+    Nothing,
+    /// `selectPositionAt(from: anchor, to: finger)` -- a caret drag that marks
+    /// out a range from where the drag began.
+    RangeFromTheAnchor,
+    /// `selectPositionAt(from: finger)` with **no `to`** -- the caret follows
+    /// the finger and nothing is selected. Not the same as the above with a
+    /// short range: there is no anchor at all.
+    CaretAtTheFingerOnly,
+    /// `selectWordsInRange` -- the range grows a whole word at a time.
+    WordsFromTheAnchor,
+    /// `_selectParagraphsInRange`.
+    ParagraphsFromTheAnchor,
+    /// `_selectLinesInRange`.
+    LinesFromTheAnchor,
+}
+
+/// Everything upstream's `onDragSelectionUpdate` decides on the path where
+/// shift is **not** held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragSelectionUpdate {
+    pub selects: DragSelects,
+    pub shows_magnifier: bool,
+}
+
+/// Upstream's `onDragSelectionUpdate`, minus the shift branch.
+///
+/// The question it answers is "what does dragging select", and the answer
+/// depends on three things at once: **how many times you tapped before the
+/// drag, what you are dragging with, and which platform you are on.**
+///
+/// # The granularity comes from the tap count
+///
+/// One tap and a drag marks out a range; two marks it out a word at a time;
+/// three, a paragraph at a time. The count is
+/// [`TextSelectionGestureDetector::effective_consecutive_tap_count`], not the
+/// raw one, so a fourth tap is a first tap again and the ladder restarts.
+///
+/// # And Linux drags by the line where every other desktop drags by the paragraph
+///
+/// ```dart
+/// case TargetPlatform.linux:
+///   return _selectLinesInRange(...);
+/// case TargetPlatform.windows:
+/// case TargetPlatform.macOS:
+///   return _selectParagraphsInRange(...);
+/// ```
+///
+/// One arm of one switch, and it is the whole difference between selecting a
+/// wrapped paragraph and selecting the visual row under the pointer.
+///
+/// # A finger on Android drags the caret rather than a range
+///
+/// Everywhere a precise pointer drags, upstream passes both ends --
+/// `selectPositionAt(from: anchor, to: finger)`. On Android and Fuchsia a
+/// **touch** drag passes only one:
+///
+/// ```dart
+/// renderEditable.selectPositionAt(from: details.globalPosition, cause: ...);
+/// return _showMagnifierIfSupportedByPlatform(details.globalPosition);
+/// ```
+///
+/// No anchor, so nothing is selected -- the caret simply follows the finger,
+/// with the magnifier over it so the reader can see where it landed. That is
+/// [`DragSelects::CaretAtTheFingerOnly`], and reading it as a range of length
+/// zero loses the distinction: one of them can grow into a selection by
+/// dragging further and the other cannot.
+///
+/// And it only happens **when the field already has focus**; an unfocused one
+/// does nothing at all, because the drag that would focus it is the same
+/// gesture and it has not finished.
+///
+/// # The magnifier follows the finger, not the drag
+///
+/// At two taps upstream raises it for touch, stylus and unknown and returns
+/// early for mouse and trackpad. A magnifier exists to show what a fingertip
+/// is covering; a pointer covers nothing.
+pub fn drag_selection_update(
+    platform: crate::editable_text::TargetPlatform,
+    selection_enabled: bool,
+    kind: PointerKind,
+    effective_consecutive_tap_count: u32,
+    has_focus: bool,
+) -> DragSelectionUpdate {
+    use crate::editable_text::TargetPlatform;
+    let nothing = DragSelectionUpdate {
+        selects: DragSelects::Nothing,
+        shows_magnifier: false,
+    };
+    if !selection_enabled {
+        return nothing;
+    }
+    let precise = matches!(kind, PointerKind::Mouse | PointerKind::Trackpad);
+    let fingerlike = matches!(
+        kind,
+        PointerKind::Touch
+            | PointerKind::Stylus
+            | PointerKind::InvertedStylus
+            | PointerKind::Unknown
+    );
+
+    match effective_consecutive_tap_count {
+        2 => DragSelectionUpdate {
+            selects: DragSelects::WordsFromTheAnchor,
+            // Raised for a fingertip and withheld from a pointer, which
+            // covers nothing that needs magnifying.
+            shows_magnifier: fingerlike,
+        },
+        3 => match platform {
+            // "Triple tap to drag is not present on these platforms when
+            // using non-precise pointer devices at the moment."
+            TargetPlatform::Android | TargetPlatform::Fuchsia | TargetPlatform::IOS => {
+                if precise {
+                    DragSelectionUpdate {
+                        selects: DragSelects::ParagraphsFromTheAnchor,
+                        ..nothing
+                    }
+                } else {
+                    nothing
+                }
+            }
+            TargetPlatform::Linux => DragSelectionUpdate {
+                selects: DragSelects::LinesFromTheAnchor,
+                ..nothing
+            },
+            TargetPlatform::Windows | TargetPlatform::MacOS => DragSelectionUpdate {
+                selects: DragSelects::ParagraphsFromTheAnchor,
+                ..nothing
+            },
+        },
+        _ => {
+            let range = DragSelectionUpdate {
+                selects: DragSelects::RangeFromTheAnchor,
+                ..nothing
+            };
+            match platform {
+                TargetPlatform::MacOS | TargetPlatform::Linux | TargetPlatform::Windows => range,
+                // "With a mouse device, a drag should select the range from
+                // the origin of the drag to the current position of the drag.
+                // With a touch device, nothing should happen."
+                TargetPlatform::IOS => {
+                    if precise {
+                        range
+                    } else {
+                        nothing
+                    }
+                }
+                TargetPlatform::Android | TargetPlatform::Fuchsia => {
+                    // A stylus counts as precise here and did not at two taps.
+                    if precise || matches!(kind, PointerKind::Stylus | PointerKind::InvertedStylus)
+                    {
+                        range
+                    } else if matches!(kind, PointerKind::Touch | PointerKind::Unknown) && has_focus
+                    {
+                        DragSelectionUpdate {
+                            selects: DragSelects::CaretAtTheFingerOnly,
+                            shows_magnifier: true,
+                        }
+                    } else {
+                        nothing
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// How the drag after a long press moves the selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LongPressMove {
@@ -4613,6 +4785,20 @@ mod selection_theme_tests {
 mod selection_gesture_rule_tests {
     use super::*;
 
+    /// `drag_selection_update` with the arguments in the order the tests care
+    /// about, so a row reads as the question it is asking.
+    struct TextSelectionGestures2;
+    impl TextSelectionGestures2 {
+        fn drag(
+            platform: TargetPlatform,
+            kind: PointerKind,
+            taps: u32,
+            has_focus: bool,
+        ) -> DragSelectionUpdate {
+            drag_selection_update(platform, true, kind, taps, has_focus)
+        }
+    }
+
     const DESKTOP: [TargetPlatform; 3] = [
         TargetPlatform::Linux,
         TargetPlatform::MacOS,
@@ -4682,6 +4868,157 @@ mod selection_gesture_rule_tests {
                 TextSelectionGestures::shows_selection_toolbar(kind),
                 "{kind:?}"
             );
+        }
+    }
+
+    #[test]
+    fn how_many_times_you_tapped_first_decides_what_a_drag_selects() {
+        // One marks out a range, two grows it a word at a time, three a
+        // paragraph. The ladder is what the count is for.
+        let at = |taps| {
+            TextSelectionGestures2::drag(TargetPlatform::MacOS, PointerKind::Mouse, taps, true)
+        };
+        assert_eq!(at(1).selects, DragSelects::RangeFromTheAnchor);
+        assert_eq!(at(2).selects, DragSelects::WordsFromTheAnchor);
+        assert_eq!(at(3).selects, DragSelects::ParagraphsFromTheAnchor);
+    }
+
+    #[test]
+    fn linux_drags_by_the_line_where_the_other_desktops_drag_by_the_paragraph() {
+        // One arm of one switch, and the difference between selecting a
+        // wrapped paragraph and selecting the visual row under the pointer.
+        assert_eq!(
+            TextSelectionGestures2::drag(TargetPlatform::Linux, PointerKind::Mouse, 3, true)
+                .selects,
+            DragSelects::LinesFromTheAnchor
+        );
+        for platform in [TargetPlatform::Windows, TargetPlatform::MacOS] {
+            assert_eq!(
+                TextSelectionGestures2::drag(platform, PointerKind::Mouse, 3, true).selects,
+                DragSelects::ParagraphsFromTheAnchor,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_triple_tap_drag_needs_a_precise_pointer_on_the_touch_platforms() {
+        // "Triple tap to drag is not present on these platforms when using
+        // non-precise pointer devices at the moment."
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::IOS,
+        ] {
+            assert_eq!(
+                TextSelectionGestures2::drag(platform, PointerKind::Mouse, 3, true).selects,
+                DragSelects::ParagraphsFromTheAnchor,
+                "{platform:?}"
+            );
+            assert_eq!(
+                TextSelectionGestures2::drag(platform, PointerKind::Touch, 3, true).selects,
+                DragSelects::Nothing,
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_finger_on_android_drags_the_caret_and_selects_nothing() {
+        // `selectPositionAt(from: globalPosition)` with no `to` -- there is no
+        // anchor, so nothing is selected. Reading it as a range of length zero
+        // loses the distinction: one can grow into a selection and the other
+        // cannot.
+        let touch =
+            TextSelectionGestures2::drag(TargetPlatform::Android, PointerKind::Touch, 1, true);
+        assert_eq!(touch.selects, DragSelects::CaretAtTheFingerOnly);
+        assert!(touch.shows_magnifier, "with the magnifier over it");
+
+        // The same drag with a mouse marks out a range instead.
+        assert_eq!(
+            TextSelectionGestures2::drag(TargetPlatform::Android, PointerKind::Mouse, 1, true)
+                .selects,
+            DragSelects::RangeFromTheAnchor
+        );
+    }
+
+    #[test]
+    fn ios_gives_a_finger_drag_nothing_where_it_gives_a_mouse_a_range() {
+        // "With a mouse device, a drag should select the range from the origin
+        // of the drag to the current position of the drag. With a touch
+        // device, nothing should happen." -- and unlike Android there is no
+        // caret-follows-finger consolation.
+        assert_eq!(
+            TextSelectionGestures2::drag(TargetPlatform::IOS, PointerKind::Mouse, 1, true).selects,
+            DragSelects::RangeFromTheAnchor
+        );
+        for kind in [
+            PointerKind::Touch,
+            PointerKind::Stylus,
+            PointerKind::Unknown,
+        ] {
+            let update = TextSelectionGestures2::drag(TargetPlatform::IOS, kind, 1, true);
+            assert_eq!(update.selects, DragSelects::Nothing, "{kind:?}");
+            assert!(!update.shows_magnifier, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn an_unfocused_android_field_does_nothing_at_all_under_a_finger() {
+        // The drag that would focus it is this same gesture, and it has not
+        // finished.
+        assert_eq!(
+            TextSelectionGestures2::drag(TargetPlatform::Android, PointerKind::Touch, 1, false)
+                .selects,
+            DragSelects::Nothing
+        );
+    }
+
+    #[test]
+    fn a_stylus_counts_as_precise_for_a_plain_drag_and_not_for_a_double_tap_drag() {
+        // At one tap Android lists the stylus beside the mouse; at two the
+        // magnifier arm lists it beside the finger. The same device, sorted
+        // two ways by two different questions.
+        assert_eq!(
+            TextSelectionGestures2::drag(TargetPlatform::Android, PointerKind::Stylus, 1, true)
+                .selects,
+            DragSelects::RangeFromTheAnchor
+        );
+        assert!(
+            TextSelectionGestures2::drag(TargetPlatform::Android, PointerKind::Stylus, 2, true)
+                .shows_magnifier
+        );
+    }
+
+    #[test]
+    fn the_magnifier_is_for_a_fingertip_and_not_for_a_pointer() {
+        // It exists to show what a fingertip is covering; a pointer covers
+        // nothing.
+        for kind in [
+            PointerKind::Touch,
+            PointerKind::Stylus,
+            PointerKind::Unknown,
+        ] {
+            assert!(
+                TextSelectionGestures2::drag(TargetPlatform::MacOS, kind, 2, true).shows_magnifier,
+                "{kind:?}"
+            );
+        }
+        for kind in [PointerKind::Mouse, PointerKind::Trackpad] {
+            assert!(
+                !TextSelectionGestures2::drag(TargetPlatform::MacOS, kind, 2, true).shows_magnifier,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_that_does_not_select_ignores_the_drag_whatever_the_count() {
+        for taps in 1..=3 {
+            let update =
+                drag_selection_update(TargetPlatform::MacOS, false, PointerKind::Mouse, taps, true);
+            assert_eq!(update.selects, DragSelects::Nothing, "{taps} taps");
+            assert!(!update.shows_magnifier);
         }
     }
 

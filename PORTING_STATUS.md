@@ -21435,3 +21435,70 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 `_onSingleLongTapEndOrCancel` 收尾，而 `MoveUpdate` 里有这一族最硬的一段算术——
 手指按住不动、字段在底下滚动时，选区要跟的是**内容坐标**里的位置
 （`_dragStartViewportOffset` 那笔账）。先按行为查。
+
+## 第 305 轮：拖拽选什么，取决于你之前点了几下、拿什么拖、在哪个平台
+
+先撞了一件事：我上一轮写的"下一步"是**被名字误导的**。按名字算,
+`onSingleLongTapMoveUpdate` 在 crate 里没有对应物；打开一看,
+端口早就把它端成了 `long_press_move_update` **加上** `drag_anchor_correction`,
+连"两个滚动、轴还可能不同""`AxisDirection.left` 兜底其实无所谓"都写在文档里了。
+
+**那 18 个"没有对应物的成员"大半是改名的账**，和 `CupertinoLocalizations` 的 2/46 同源。
+按行为逐个核过去，真缺的是 `onDragSelectionUpdate` / `onDragSelectionEnd`、
+`onSingleLongTapCancel`、`onTapTrack*`。这一轮做最大的那个。
+
+### 粒度来自点击次数
+
+一下加拖 → 划一段；两下 → 一次一个词；三下 → 一次一段。用的是
+`effective_consecutive_tap_count` 而不是原始计数，所以第四下又是第一下，梯子从头再来。
+
+### Linux 按**行**拖，别的桌面按**段**拖
+
+```dart
+case TargetPlatform.linux:
+  return _selectLinesInRange(...);
+case TargetPlatform.windows:
+case TargetPlatform.macOS:
+  return _selectParagraphsInRange(...);
+```
+
+一个 switch 的一条臂，而它就是"选中一整个折行段落"和"只选中指针底下那一视觉行"的全部
+差别。
+
+### Android 上手指拖的是光标，不是范围
+
+别处凡是精确指针在拖，上游都传两端：`selectPositionAt(from: anchor, to: finger)`。
+Android/Fuchsia 上**手指**只传一端：
+
+```dart
+renderEditable.selectPositionAt(from: details.globalPosition, cause: ...);
+return _showMagnifierIfSupportedByPlatform(details.globalPosition);
+```
+
+**没有锚点，所以什么也没选中**——光标跟着手指走，放大镜跟在上面让人看清落点。
+把它读成"长度为零的范围"就丢了这个区别：**一个能靠继续拖长成选区，另一个不能。**
+而且只在字段**已经有焦点**时才发生；没焦点时什么也不做，因为会给它焦点的正是这同一个
+手势，而它还没结束。
+
+iOS 连这点安慰都没有：手指拖 → 什么也不发生。
+
+### 同一支笔，被两个问题分到两边
+
+一下拖时 Android 把触控笔和鼠标列在一起（算精确）；两下拖时放大镜那条臂又把它和手指列在
+一起。同一个设备，两个问题分出两种归类。
+
+### 改错扫描抓出我测试的一个洞
+
+九条里"iOS 让手指也能拖出范围"**零落红**——我只测了 iOS 的三击分支,
+单击那一支没测。补上之后九条全红。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6101 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：同一个类里按**行为**还缺的：`onDragSelectionUpdate` 的 shift 分支
+（`_dragStartSelection` 被反向拖过头时，Mac 和 iOS 会退回初始选区，别的平台不会——
+又一处只在两个平台成立的规则）、`onDragSelectionEnd`、`onSingleLongTapCancel`。
+先做 shift 分支那条反向规则。
