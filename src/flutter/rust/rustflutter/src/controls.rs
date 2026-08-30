@@ -366,6 +366,95 @@ mod radio_semantics_tests {
             .expect("a radio said it was one")
     }
 
+    /// What a reader hears from a dialog, in order.
+    fn dialog_read_as(
+        dialog: AlertDialog,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> Vec<String> {
+        crate::semantics::set_enabled(true);
+        let theme = crate::theme::ThemeData {
+            platform,
+            ..crate::theme::ThemeData::light()
+        };
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            crate::framework::component(dialog),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| node.properties.flags.names_route)
+            .map(|node| node.properties.label.clone())
+            .collect()
+    }
+
+    #[test]
+    fn a_dialog_announces_itself() {
+        // It said nothing at all: a reader was handed a page that had changed
+        // under them with no word that a modal had opened -- and
+        // `resolved_semantic_label`, the rule for what to call it, was written
+        // and called by nothing.
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            dialog_read_as(
+                AlertDialog::new().with_title("Delete this?"),
+                TargetPlatform::Android
+            ),
+            vec!["Alert".to_string()],
+            "an alert interrupts, and says so before its contents"
+        );
+    }
+
+    #[test]
+    fn a_dialog_with_its_own_words_uses_them() {
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            dialog_read_as(
+                AlertDialog::new()
+                    .with_title("Delete this?")
+                    .with_semantic_label("Confirm deletion"),
+                TargetPlatform::Android
+            ),
+            vec!["Confirm deletion".to_string()]
+        );
+    }
+
+    #[test]
+    fn apple_is_left_to_announce_the_dialog_itself() {
+        // Upstream's `label` is `semanticLabel` on Apple and
+        // `semanticLabel ?? alertDialogLabel` everywhere else, so an
+        // unlabelled dialog names no route there -- VoiceOver lands on the
+        // title and saying "Alert" as well would be one word too many.
+        use crate::editable_text::TargetPlatform;
+        assert!(
+            dialog_read_as(
+                AlertDialog::new().with_title("Delete this?"),
+                TargetPlatform::IOS
+            )
+            .is_empty(),
+            "nothing names the route, deliberately"
+        );
+        assert_eq!(
+            dialog_read_as(
+                AlertDialog::new()
+                    .with_title("Delete this?")
+                    .with_semantic_label("Confirm deletion"),
+                TargetPlatform::IOS
+            ),
+            vec!["Confirm deletion".to_string()],
+            "but a label the caller wrote is still used"
+        );
+    }
+
     /// What a reader hears from a tab bar, in order.
     fn tabs_read_as(selected: usize) -> Vec<String> {
         crate::semantics::set_enabled(true);
@@ -2839,6 +2928,7 @@ impl Default for AlertDialog {
 impl Component for AlertDialog {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
+        let platform = crate::theme::ThemeData::of(context).platform;
         let scale = crate::media_query::current_text_scale();
         let title = self.title.clone();
         let content = self.content.clone();
@@ -2858,7 +2948,7 @@ impl Component for AlertDialog {
         children.extend(icon);
         children.extend(actions);
 
-        many(children, move |mut boxed| {
+        let dialog = many(children, move |mut boxed| {
             let mut boxed = boxed.drain(..);
             let icon = if has_icon { boxed.next() } else { None };
             let actions: Vec<_> = boxed.take(action_count).collect();
@@ -2916,9 +3006,57 @@ impl Component for AlertDialog {
                 .with_color(background)
                 .with_corner_radius(28.0)
                 .with_child(column)
-        })
+        });
+
+        // A dialog said nothing at all: a reader was handed a page that had
+        // silently changed under them, the focus somewhere new, and no
+        // announcement that a modal had opened. Upstream wraps it in
+        // `Semantics(scopesRoute: true, explicitChildNodes: true,
+        // namesRoute: true, label: label)` -- and `resolved_semantic_label`,
+        // the platform-aware rule for what that label is, was written, tested
+        // and called by nothing.
+        //
+        // Two of upstream's four flags carry over and two do not:
+        //
+        // * `namesRoute` and the label **are** the announcement, and both are
+        //   here.
+        // * `explicitChildNodes` is a no-op in this walk. It asks that
+        //   descendants keep nodes of their own rather than folding into this
+        //   one, and that is already what happens -- folding happens only
+        //   where something asks for it (`RenderMergeSemanticsBox`).
+        // * **`scopesRoute` has no counterpart at all**: no field on
+        //   `SemanticsFlags`, no bit in `RfSemanticsNode`, nothing on the
+        //   engine's side of this branch. It is what tells a platform that
+        //   focus is now confined to this subtree, so what is missing is a
+        //   flag *and* its whole crossing -- the same shape as `is_link`, and
+        //   a round of its own rather than a line here.
+        match self.resolved_semantic_label(platform) {
+            Some(label) => crate::framework::single(dialog, move |inner| {
+                crate::semantics::RenderSemantics::new(
+                    crate::semantics::node_id_for(DIALOG_SEMANTICS_ID),
+                    crate::semantics::SemanticsProperties {
+                        flags: crate::semantics::SemanticsFlags {
+                            names_route: true,
+                            ..crate::semantics::SemanticsFlags::default()
+                        },
+                        ..crate::semantics::SemanticsProperties::label(label.clone())
+                    },
+                    inner,
+                )
+            }),
+            None => dialog,
+        }
     }
 }
+
+/// The identifier a dialog's own semantics node is keyed on.
+///
+/// A dialog has no caller-chosen id the way a button does -- it is a surface
+/// rather than a control -- so one is reserved here. It has to be **stable**:
+/// the platform keys its accessibility node on it, and an id that changed
+/// between frames would be, to a screen reader, a new dialog appearing every
+/// frame.
+const DIALOG_SEMANTICS_ID: u64 = 0xD1A_106;
 
 // -- The four chip variants ---------------------------------------------------
 
