@@ -526,6 +526,159 @@ You"
         );
     }
 
+    /// The colours a bar painted: its background, and each label's ink.
+    fn bar_colours(destinations: Vec<Destination>, selected: usize) -> (u32, Vec<u32>) {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(BottomNavigation::new(9810, destinations, selected)),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let calls = crate::engine_test_stubs::drawn();
+        let background = calls
+            .iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { argb, right, .. } if *right >= 400.0 => {
+                    Some(*argb)
+                }
+                _ => None,
+            })
+            .expect("the bar painted no background");
+        let inks = calls
+            .iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. }
+                    if text.starts_with("Page") =>
+                {
+                    Some(*argb)
+                }
+                _ => None,
+            })
+            .collect();
+        (background, inks)
+    }
+
+    fn pages(count: usize) -> Vec<Destination> {
+        (0..count)
+            .map(|index| Destination::new(format!("Page {index}"), "M"))
+            .collect()
+    }
+
+    #[test]
+    fn the_themes_own_colours_reach_the_destinations() {
+        // `ResolvedBottomNavigationBar` works the two ends out from the
+        // widget, then the theme, then a default that depends on the bar's
+        // type -- and nothing drew from them. This took `theme.primary` and
+        // `theme.text_muted` straight, so a theme naming its own selected
+        // colour was ignored.
+        //
+        // Asserted against the theme's **own** values rather than merely
+        // "different from each other": swapping the two ends leaves them
+        // different too, and a bar that paints the selected destination in the
+        // unselected colour looks like a bar with the wrong page open.
+        let light = crate::theme::ThemeData::light();
+        let (_, inks) = bar_colours(pages(3), 1);
+        assert_eq!(inks.len(), 3);
+        assert_eq!(
+            inks[1], light.color_scheme.primary.0,
+            "the selected destination is not in the theme's selected colour"
+        );
+        assert_eq!(
+            (inks[0], inks[2]),
+            (
+                light.unselected_widget_color.0,
+                light.unselected_widget_color.0
+            ),
+            "the unselected ones are not in the theme's unselected colour"
+        );
+    }
+
+    #[test]
+    fn a_shifting_bar_takes_the_chosen_destinations_colour() {
+        // Upstream repaints the **whole bar** in the selected item's
+        // `backgroundColor`, which is the only thing telling a shifting bar's
+        // destinations apart: the resolver gives both ends the same ink for
+        // exactly that reason. Without the per-item colour this port could not
+        // use the resolved pair at all -- two identical colours on an
+        // unchanging background is a bar with no visible selection.
+        const CHOSEN: Color = Color(0xff123456);
+        let mut destinations = pages(5);
+        destinations[2] = destinations[2].clone().with_background(CHOSEN);
+        let (background, _) = bar_colours(destinations.clone(), 2);
+        assert_eq!(background, CHOSEN.0);
+
+        // And only while that destination is the chosen one.
+        let (elsewhere, _) = bar_colours(destinations, 0);
+        assert_ne!(elsewhere, CHOSEN.0);
+    }
+
+    #[test]
+    fn the_bar_theme_can_name_the_background() {
+        // Upstream's chain is the item's colour (shifting only), then the
+        // widget's, then `BottomNavigationBarThemeData.backgroundColor`, then
+        // the surface. The middle step had nowhere to land: this drew
+        // `theme.surface` outright.
+        const THEMED: Color = Color(0xff654321);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::component_themes::BottomNavigationBarTheme::new(
+                crate::component_themes::BottomNavigationBarThemeData::new()
+                    .with_background_color(THEMED),
+                crate::framework::component(BottomNavigation::new(9811, pages(3), 0)),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        assert!(
+            crate::engine_test_stubs::drawn()
+                .iter()
+                .any(|call| matches!(
+                    call,
+                    crate::engine_test_stubs::Drawn::Rect { argb, right, .. }
+                        if *argb == THEMED.0 && *right >= 400.0
+                )),
+            "the bar ignored the theme's background"
+        );
+    }
+
+    #[test]
+    fn a_fixed_bar_never_takes_a_destinations_colour() {
+        // Upstream reads `_backgroundColor` from the selected item only for a
+        // shifting bar; a fixed one keeps a single background whatever is
+        // selected. Three destinations is fixed by the count-based default.
+        const CHOSEN: Color = Color(0xff123456);
+        let mut destinations = pages(3);
+        destinations[1] = destinations[1].clone().with_background(CHOSEN);
+        let (background, _) = bar_colours(destinations, 1);
+        assert_ne!(background, CHOSEN.0);
+    }
+
     #[test]
     fn a_hidden_label_is_still_read_out() {
         // `bottom_bars` says it in as many words --
@@ -2530,6 +2683,21 @@ pub struct Destination {
     /// A one- or two-character mark standing in for an icon. There is no icon
     /// font yet, and a missing glyph would draw nothing at all.
     pub mark: String,
+    /// Upstream's `BottomNavigationBarItem.backgroundColor`: the colour the
+    /// **whole bar** takes while this destination is the selected one.
+    ///
+    /// Only a *shifting* bar uses it, and that is the point of the type: a
+    /// shifting bar draws its items in one colour and tells them apart by
+    /// repainting the bar behind the selected one. Which is why
+    /// [`crate::component_themes::ResolvedBottomNavigationBar`] resolves both
+    /// item colours to `colorScheme.surface` for a shifting bar -- "the
+    /// contrast comes from the background rather than the ink", as its own doc
+    /// says.
+    ///
+    /// Without this field the resolved pair could not be used at all: two
+    /// identical colours on an unchanging background is a bar with no way to
+    /// see which destination you are on.
+    pub background: Option<Color>,
 }
 
 impl Destination {
@@ -2537,7 +2705,14 @@ impl Destination {
         Destination {
             label: label.into(),
             mark: mark.into(),
+            background: None,
         }
+    }
+
+    /// Upstream's `backgroundColor`.
+    pub fn with_background(mut self, background: Color) -> Destination {
+        self.background = Some(background);
+        self
     }
 }
 
@@ -2648,16 +2823,6 @@ impl Component for BottomNavigation {
         let handlers = self.handlers.borrow().clone();
         let destinations = self.destinations.clone();
         let count = destinations.len();
-        let surface = theme.surface;
-        let outline = theme.outline;
-        let primary = theme.primary;
-        let muted = theme.text_muted;
-        // The bar grows by whatever the gesture bar covers and pads its
-        // contents up by the same amount, so the destinations stay reachable
-        // and the surface still reaches the bottom edge of the screen.
-        // Upstream's `BottomNavigationBar` calls this `additionalBottomPadding`
-        // and takes it from `viewPadding` rather than `padding`: the gesture
-        // bar is there whether or not a keyboard is over it.
         // The metrics for this bar, which `bottom_bars` has had all along and
         // nothing drew from: whether an item's label is written depends on the
         // bar's type, and upstream's count-based default makes a bar of four
@@ -2666,7 +2831,43 @@ impl Component for BottomNavigation {
         let policy =
             crate::bottom_bars::BottomNavigationBar::new(self.destinations.len(), self.selected);
         let resolved = policy.resolved(context);
-        let shows_label = move |index: usize| policy.shows_label(index, &resolved);
+        let selected_item_color = resolved.selected_item_color;
+        let unselected_item_color = resolved.unselected_item_color;
+        // A **shifting** bar is told apart by its background rather than by its
+        // ink: upstream repaints the whole bar in the selected item's
+        // `backgroundColor`, which is why the resolver gives a shifting bar the
+        // same colour for both ends. A fixed bar keeps one background
+        // throughout, and upstream reads `_backgroundColor` only from the
+        // selected item, so a fixed bar never reaches for one.
+        let shifting = matches!(
+            resolved.bar_type,
+            crate::bottom_bars::BottomNavigationBarType::Shifting
+        );
+        let chosen_background = shifting
+            .then(|| {
+                self.destinations
+                    .get(self.selected)
+                    .and_then(|destination| destination.background)
+            })
+            .flatten();
+        // Decided here, once per destination, rather than by keeping the
+        // resolved bar alive into the closure: the answer is a handful of
+        // bools and the resolver is not `Clone`.
+        let labels_written: Vec<bool> = (0..self.destinations.len())
+            .map(|index| policy.shows_label(index, &resolved))
+            .collect();
+
+        let surface = chosen_background
+            .or(resolved.background_color)
+            .unwrap_or(theme.surface);
+        let outline = theme.outline;
+        let primary = theme.primary;
+        // The bar grows by whatever the gesture bar covers and pads its
+        // contents up by the same amount, so the destinations stay reachable
+        // and the surface still reaches the bottom edge of the screen.
+        // Upstream's `BottomNavigationBar` calls this `additionalBottomPadding`
+        // and takes it from `viewPadding` rather than `padding`: the gesture
+        // bar is there whether or not a keyboard is over it.
 
         let bottom = crate::media_query::media_query_of(context)
             .view_padding
@@ -2678,7 +2879,14 @@ impl Component for BottomNavigation {
                 .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
             for (index, destination) in destinations.iter().enumerate() {
                 let active = index == selected;
-                let color = if active { primary } else { muted };
+                // The resolved pair, which nothing drew from: this took
+                // `theme.primary` and `theme.text_muted` directly, so a theme
+                // naming its own selected colour was ignored.
+                let color = if active {
+                    selected_item_color
+                } else {
+                    unselected_item_color
+                };
                 let item = Container::new().with_child(Center::new(
                     // `MainAxisSize.min` is upstream's own choice here:
                     // `_BottomNavigationTile.build` wraps its icon and label
@@ -2719,7 +2927,7 @@ impl Component for BottomNavigation {
                             Text::new(destination.label.clone())
                                 .with_size(11.0)
                                 .with_weight(if active { 700 } else { 500 })
-                                .with_color(if shows_label(index) {
+                                .with_color(if labels_written[index] {
                                     color
                                 } else {
                                     Color::TRANSPARENT

@@ -26677,3 +26677,50 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 如果本项目的这条 M2 条**没有画那个彩色背景**，直接接上去会得到
 **两个一样的颜色、一条看不出选中项的条**。
 所以先查这条条画不画 `shifting` 的背景，再决定是接颜色还是先补背景。
+
+---
+
+## 第 399 轮：先补背景，再接颜色——顺序反了会得到一条看不出选中项的条
+
+按“下一步”先查那件事，**查对了**：shifting 条的两个 item 颜色
+在解析器里**双双落到 `colorScheme.surface`**（2487、2494 行），
+而本项目这条条的背景是写死的 `theme.surface`——
+**直接接上去就是两个一样的颜色画在同一块底上，选中项彻底看不出来。**
+
+原因在于缺一样东西：`Destination` 没有上游的
+`BottomNavigationBarItem.backgroundColor`。
+上游 shifting 条的对比**来自背景**——整条 bar 重绘成**选中那个目的地的颜色**，
+解析器那句"contrast comes from the background rather than the ink"说的就是这个。
+
+所以这一轮的顺序是：**先补 `Destination::with_background`
+和"shifting 时整条取选中项的颜色"，再接两个 item 颜色。**
+反过来做会先制造一次回退。
+
+背景的链条也补齐了：**选中项的色（仅 shifting）→ 主题的 → surface**。
+中间那一步此前**无处落地**——这条条直接画 `theme.surface`。
+
+### 变异扫描 6 个，第一遍 3 红、2 绿 + 1 个 BUILD ERROR
+
+* **“两端互换”绿**——我只断言了"选中的和别的不一样"，
+  而**互换之后它们照样不一样**。改成对着主题**自己的值**断言
+  （`color_scheme.primary` 与 `unselected_widget_color`）：
+  一条把选中项画成未选颜色的 bar，看起来像开错了页。
+* **“主题的背景没被查”绿**——没有测试装过 `BottomNavigationBarThemeData`。
+* BUILD ERROR 那条是我把变异写成了引用已删掉的绑定，重写成能编译的等价物。
+
+第二遍**六个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6421 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+清单未变。
+
+**下一步**：`bottom_bars` 这条线索还剩两处解析好没人用的：
+`selected_label_style` / `unselected_label_style`（`Option<TextStyle>`）
+和 `selected_icon_theme` / `unselected_icon_theme`。
+**先做 label style**，因为图标那一对接不了——本项目**没有图标字体**
+（`Destination.mark` 的注释写着"没有图标字体，缺字形会画不出任何东西"），
+`IconThemeData` 里的 size/opacity 没有东西可以套上去。
+**动手前先确认一件事**：这条条现在写死 `with_size(11.0)` 和
+`with_weight(700/500)`，而 `TextStyle` 是整套字体设定——
+接上去要判断"主题没给 style 时"的回退是否还等于现在这两个数，
+否则会**悄悄改变每一条现有底栏的字号**。
