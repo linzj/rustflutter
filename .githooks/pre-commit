@@ -27,7 +27,12 @@ for f in $files; do
         *.rs)
             # Covered by the crate-wide check above.
             case "$f" in src/flutter/rust/rustflutter/*) continue ;; esac
-            if ! rustfmt --check --edition 2021 "$repo_root/$f" >/dev/null 2>&1; then
+            # 2024, because that is what the build compiles these with:
+            # `rust_edition = "2024"` in build/toolchain/rust.gni, and the
+            # framework crate's own rustfmt.toml says the same. The two
+            # editions disagree about import order, so a stale number here
+            # rejects every file written the way the compiler wants it.
+            if ! rustfmt --check --edition 2024 "$repo_root/$f" >/dev/null 2>&1; then
                 echo "pre-commit: rustfmt: $f" >&2
                 fail=1
             fi

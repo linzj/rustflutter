@@ -71,7 +71,11 @@ impl StatefulComponent for Showcase {
             component(Page {
                 light,
                 pressed: state.pressed,
-                volume: if state.volume == 0.0 { 0.4 } else { state.volume },
+                volume: if state.volume == 0.0 {
+                    0.4
+                } else {
+                    state.volume
+                },
                 notifications: state.notifications,
                 taps: state.taps,
                 handle,
@@ -97,7 +101,11 @@ impl Component for Page {
 
         let app_bar = component(
             AppBar::new("Components")
-                .with_subtitle(if self.light { "light theme" } else { "dark theme" })
+                .with_subtitle(if self.light {
+                    "light theme"
+                } else {
+                    "dark theme"
+                })
                 .with_trailing(component(
                     Switch::new(ID_THEME_SWITCH, self.light)
                         .wired(handle.clone(), |state| state.light = !state.light),
@@ -188,24 +196,22 @@ impl Component for Body {
                         .with_subtitle("delivered while the app is closed")
                         .with_accent(theme.primary)
                         .with_trailing(component(
-                            Switch::new(ID_NOTIFICATIONS, self.notifications).wired(
-                                handle.clone(),
-                                |state| state.notifications = !state.notifications,
-                            ),
+                            Switch::new(ID_NOTIFICATIONS, self.notifications)
+                                .wired(handle.clone(), |state| {
+                                    state.notifications = !state.notifications
+                                }),
                         )),
                 ),
-                component(Divider),
+                component(Divider::new()),
                 gap(0.5),
                 component(Label::muted(format!(
                     "Volume {}%",
                     (self.volume * 100.0).round() as i32
                 ))),
-                component(
-                    SliderRow {
-                        value: self.volume,
-                        handle: handle.clone(),
-                    },
-                ),
+                component(SliderRow {
+                    value: self.volume,
+                    handle: handle.clone(),
+                }),
                 gap(0.5),
                 component(Label::muted("Progress follows the slider")),
                 component(ProgressRow { value: self.volume }),
@@ -228,7 +234,11 @@ impl Component for Body {
                         TextSpan::new(" to select a range, or ", body.clone()),
                         TextSpan::new(
                             "Esc",
-                            TextStyle { color: accent, font_weight: 700, ..body.clone() },
+                            TextStyle {
+                                color: accent,
+                                font_weight: 700,
+                                ..body.clone()
+                            },
                         ),
                         TextSpan::new(" to give up. One paragraph, three styles.", body.clone()),
                     ])
@@ -303,20 +313,26 @@ impl Component for Body {
                         .push(Baseline::new(28.0, swatch(48.0, 12.0, danger)))
                         .push(Baseline::new(28.0, swatch(24.0, 20.0, demuted)))
                 }),
-                component(Label::muted("FractionallySizedBox is half its child's size")),
+                component(Label::muted(
+                    "FractionallySizedBox is half its child's size",
+                )),
                 leaf(move || {
                     FractionallySizedBox::new(swatch(60.0, 24.0, primary))
                         .with_width_factor(0.5)
                         .with_height_factor(1.0)
                 }),
-                component(Label::muted("OverflowBox lets a 200px bar out of a 96px frame")),
+                component(Label::muted(
+                    "OverflowBox lets a 200px bar out of a 96px frame",
+                )),
                 leaf(move || {
                     RenderConstrainedBox::tight(96.0, 36.0).with_child(
                         OverflowBox::new(swatch(200.0, 12.0, danger))
                             .with_alignment(Alignment::CENTER),
                     )
                 }),
-                component(Label::muted("SizedOverflowBox is 64 wide, its child is not")),
+                component(Label::muted(
+                    "SizedOverflowBox is 64 wide, its child is not",
+                )),
                 leaf(move || {
                     SizedOverflowBox::new(Size::new(64.0, 32.0), swatch(140.0, 10.0, primary))
                         .with_alignment(Alignment::CENTER)
@@ -426,15 +442,17 @@ fn sliver_row(index: usize, body: TextStyle) -> impl RenderBox {
         .with_cross_axis_alignment(CrossAxisAlignment::Center)
         .with_spacing(10.0)
         .push(
-            RenderConstrainedBox::tight(6.0, 24.0).with_child(
-                RenderDecoratedBox::new().with_color(SLIVER_BANDS[(index / 100) % 5]),
-            ),
+            RenderConstrainedBox::tight(6.0, 24.0)
+                .with_child(RenderDecoratedBox::new().with_color(SLIVER_BANDS[(index / 100) % 5])),
         )
         .push(Text::rich_spans(vec![
             TextSpan::new(format!("Item {index:04}"), body.clone()),
             TextSpan::new(
                 "  the window is a screenful, not a thousand",
-                TextStyle { color: Color::rgb(120, 120, 120), ..body },
+                TextStyle {
+                    color: Color::rgb(120, 120, 120),
+                    ..body
+                },
             ),
         ]))
 }
@@ -459,7 +477,9 @@ impl Component for SliverPage {
             .with_item_extent(40.0)
             // Padding so the page exercises the SliverPadding in front of the
             // SliverList, exactly as upstream's `ListView(padding:)` builds.
-            .with_padding(rustflutter::render::EdgeInsets::only(16.0, 24.0, 16.0, 24.0))
+            .with_padding(rustflutter::render::EdgeInsets::only(
+                16.0, 24.0, 16.0, 24.0,
+            ))
             .with_offset(self.scroll),
         )
     }
@@ -470,7 +490,10 @@ fn render_png_sliver(path: &str, scroll: f32) -> c_int {
 
     let theme = Theme::light();
     let mut tree = ElementTree::new();
-    tree.rebuild(component(SliverPage { scroll, body: theme.body() }));
+    tree.rebuild(component(SliverPage {
+        scroll,
+        body: theme.body(),
+    }));
     tree.rebuild_dirty();
 
     let mut root = tree.build_render_tree().expect("the tree has a root");
@@ -505,11 +528,17 @@ struct ShowcaseApp {
 
 impl WidgetApplication for ShowcaseApp {
     fn background(&self) -> Color {
-        if self.light { Theme::light().background } else { Theme::dark().background }
+        if self.light {
+            Theme::light().background
+        } else {
+            Theme::dark().background
+        }
     }
 
     fn build(&mut self, _context: &BuildContext) -> AnyWidget {
-        component(SafeArea::new(stateful(Showcase { start_light: self.light })))
+        component(SafeArea::new(stateful(Showcase {
+            start_light: self.light,
+        })))
     }
 }
 
@@ -558,7 +587,11 @@ fn render_png(path: &str, light: bool) -> c_int {
     let mut root = tree.build_render_tree().expect("the tree has a root");
     root.layout(BoxConstraints::tight(WIDTH as f32, HEIGHT as f32));
 
-    let background = if light { Theme::light().background } else { Theme::dark().background };
+    let background = if light {
+        Theme::light().background
+    } else {
+        Theme::dark().background
+    };
     let mut layer_tree = rustflutter::app::compose_frame(
         WIDTH,
         HEIGHT,
@@ -570,7 +603,10 @@ fn render_png(path: &str, light: bool) -> c_int {
 
     match layer_tree.write_png(std::path::Path::new(path)) {
         Ok(()) => {
-            println!("showcase: wrote {path} ({})", if light { "light" } else { "dark" });
+            println!(
+                "showcase: wrote {path} ({})",
+                if light { "light" } else { "dark" }
+            );
             0
         }
         Err(err) => {
@@ -597,7 +633,10 @@ fn collect_args(argc: c_int, argv: *const *const c_char) -> Vec<String> {
             if ptr.is_null() {
                 None
             } else {
-                std::ffi::CStr::from_ptr(ptr).to_str().ok().map(str::to_string)
+                std::ffi::CStr::from_ptr(ptr)
+                    .to_str()
+                    .ok()
+                    .map(str::to_string)
             }
         })
         .collect()
