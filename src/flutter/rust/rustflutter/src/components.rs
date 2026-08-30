@@ -1431,6 +1431,17 @@ impl Slider {
     /// That is why this no longer builds the handlers: it used to, and the
     /// widget therefore took every tap and every drag whatever the theme
     /// said.
+    /// Upstream's `onChanged`, as the closure it is.
+    ///
+    /// [`Slider::wired`] is the convenience over this one for the common case
+    /// of writing straight into a state; this is what it builds. A slider with
+    /// nothing here is upstream's `onChanged: null`, which is what makes a
+    /// slider disabled -- to a reader as well as to a finger.
+    pub fn with_on_change(mut self, on_change: impl Fn(f32) + 'static) -> Self {
+        self.on_change = Some(std::rc::Rc::new(on_change));
+        self
+    }
+
     pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, set: fn(&mut S, f32)) -> Self {
         self.on_change = Some(std::rc::Rc::new(move |value: f32| {
             handle.set_state(move |state| set(state, value));
@@ -1665,13 +1676,60 @@ impl Component for Slider {
         } else {
             None
         };
+        // What a reader is told this is, and what changing it does. Nothing
+        // in this port declared a slider until now, so one arrived as a plain
+        // box -- no role, no value read out, and no way to move it. The
+        // semantics id is the hit-test id, for the reason the button gives.
+        // Upstream reads `_platform` off `Theme.of(context)`, which is what
+        // the theme's `platform` override is for -- a desktop asked to behave
+        // like a phone gets the phone's step too.
+        let platform = crate::theme::ThemeData::of(context).platform;
+        let described = {
+            let properties = crate::semantics::SemanticsProperties::slider(
+                self.value,
+                self.min,
+                self.max,
+                self.divisions,
+                self.label.as_deref(),
+                self.on_change.is_some(),
+                platform,
+            );
+            let on_change = self.on_change.clone();
+            let unit =
+                crate::semantics::SemanticsProperties::slider_action_unit(self.divisions, platform);
+            // The step is in normalised units, so it is scaled back into the
+            // caller's range before being handed over -- and clamped there,
+            // the same way the value read aloud was.
+            let (min, max, current) = (self.min, self.max, self.value);
+            let node = crate::semantics::node_id_for(id);
+            move |inner: AnyWidget| {
+                let on_change = on_change.clone();
+                crate::semantics::semantics_with_action(
+                    node,
+                    properties.clone(),
+                    inner,
+                    move |action| {
+                        let Some(on_change) = &on_change else {
+                            return;
+                        };
+                        let step = unit * (max - min);
+                        let next = match action {
+                            crate::semantics::SemanticsAction::Increase => current + step,
+                            crate::semantics::SemanticsAction::Decrease => current - step,
+                            _ => return,
+                        };
+                        on_change(next.clamp(min, max));
+                    },
+                )
+            }
+        };
         let track = slider.inactive_track_color;
         let fill = slider.active_track_color;
         let knob = slider.thumb_color;
         let track_height = slider.track_height;
         let thumb = slider.thumb_size;
 
-        leaf(move || {
+        let body = leaf(move || {
             let filled = (width * value).clamp(0.0, width);
             // The hit area is the taller of the thumb and a finger's worth of
             // slack over the track, so that a Material 3 bar thumb -- which
@@ -1721,7 +1779,8 @@ impl Component for Slider {
                 )
                 .with_handlers(handlers.clone()),
             )
-        })
+        });
+        described(body)
     }
 }
 
@@ -6018,6 +6077,117 @@ mod tests {
             .map(|node| node.properties.label.clone())
             .filter(|label| !label.is_empty())
             .collect()
+    }
+
+    /// The node a slider produces, through the real walk.
+    fn slider_node(slider: Slider) -> crate::semantics::SemanticsNode {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(slider),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .find(|node| node.properties.flags.is_slider)
+            .cloned()
+            .expect("a slider said it was one")
+    }
+
+    #[test]
+    fn a_slider_says_what_it_is_and_what_it_is_set_to() {
+        // Nothing in this port declared a slider, so one reached a screen
+        // reader as a plain box -- while the `is_slider` bit and the three
+        // value strings had been crossing the FFI since they were written.
+        let node = slider_node(Slider::new(1, 0.5).with_on_change(|_| {}));
+        assert!(node.properties.flags.is_slider);
+        assert_eq!(node.properties.value, "50%", "the value, as a percentage");
+        assert!(
+            node.properties
+                .has(crate::semantics::SemanticsAction::Increase)
+        );
+        assert!(
+            node.properties
+                .has(crate::semantics::SemanticsAction::Decrease)
+        );
+    }
+
+    #[test]
+    fn a_slider_says_where_one_swipe_would_take_it() {
+        // The point of `increasedValue` and `decreasedValue`: a reader is told
+        // where they are and where each gesture goes, before making it. The
+        // default step is a twentieth away from Apple's platforms.
+        let node = slider_node(Slider::new(1, 0.5).with_on_change(|_| {}));
+        assert_eq!(node.properties.increased_value, "55%");
+        assert_eq!(node.properties.decreased_value, "45%");
+    }
+
+    #[test]
+    fn a_slider_near_its_end_does_not_promise_more_than_it_has() {
+        // Upstream clamps *before* speaking:
+        // `clampDouble(value + unit, 0.0, 1.0)`. A slider at 97% with a 5%
+        // step says its next value is 100%, not 102% -- otherwise a reader is
+        // promised somewhere it cannot go, and then not taken there.
+        let node = slider_node(Slider::new(1, 0.97).with_on_change(|_| {}));
+        assert_eq!(node.properties.value, "97%");
+        assert_eq!(node.properties.increased_value, "100%", "clamped, not 102%");
+
+        let bottom = slider_node(Slider::new(1, 0.02).with_on_change(|_| {}));
+        assert_eq!(bottom.properties.decreased_value, "0%", "and not -3%");
+    }
+
+    #[test]
+    fn a_divided_slider_steps_by_a_division() {
+        // A slider that can only hold its divisions must not offer a step that
+        // lands between two of them. Upstream: `divisions != null ? 1.0 /
+        // divisions : _adjustmentUnit`.
+        let node = slider_node(Slider::new(1, 0.5).with_divisions(4).with_on_change(|_| {}));
+        assert_eq!(node.properties.increased_value, "75%", "a quarter, not 5%");
+        assert_eq!(node.properties.decreased_value, "25%");
+    }
+
+    #[test]
+    fn a_slider_reports_a_percentage_of_its_own_range() {
+        // The value crossing to the platform is normalised, so a slider from
+        // 100 to 200 sitting at 150 is "50%" and not "150%". Upstream's
+        // default formatter reads the *fraction*, which is the only number
+        // that means anything without knowing the range.
+        let node = slider_node(
+            Slider::new(1, 150.0)
+                .with_range(100.0, 200.0)
+                .with_on_change(|_| {}),
+        );
+        assert_eq!(node.properties.value, "50%");
+    }
+
+    #[test]
+    fn a_slider_nobody_can_move_says_so_and_offers_nothing() {
+        // Upstream sets `isEnabled = isInteractive` and gates both actions on
+        // it. Offering "swipe up to increase" on a slider with no handler
+        // tells a reader the control works.
+        let node = slider_node(Slider::new(1, 0.5));
+        assert!(node.properties.flags.is_slider);
+        assert!(!node.properties.flags.is_enabled, "and it says it is not");
+        assert!(node.properties.flags.has_enabled_state);
+        assert!(
+            !node
+                .properties
+                .has(crate::semantics::SemanticsAction::Increase)
+        );
+        assert!(
+            !node
+                .properties
+                .has(crate::semantics::SemanticsAction::Decrease)
+        );
     }
 
     #[test]

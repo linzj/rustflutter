@@ -2165,6 +2165,92 @@ impl SemanticsProperties {
         }
     }
 
+    /// How far a screen reader's increase or decrease moves a slider.
+    ///
+    /// Upstream's `_SliderState._adjustmentUnit`, in **normalised** units:
+    /// a tenth on Apple's platforms and a twentieth everywhere else, each
+    /// matching what that platform's own slider does. A divided slider
+    /// overrides both with one division, because the only values it can hold
+    /// are the divisions and a smaller step would land between them.
+    pub fn slider_action_unit(
+        divisions: Option<u32>,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> f32 {
+        use crate::editable_text::TargetPlatform;
+        match divisions {
+            Some(divisions) if divisions > 0 => 1.0 / divisions as f32,
+            _ => match platform {
+                TargetPlatform::IOS | TargetPlatform::MacOS => 0.1,
+                _ => 0.05,
+            },
+        }
+    }
+
+    /// Something a reader can set to a value along a range.
+    ///
+    /// Upstream's `_RenderSlider.describeSemanticsConfiguration`. Nothing in
+    /// this port declared it, so every slider reached a screen reader as a
+    /// plain box: no role, no value read out, and no way to change it -- while
+    /// the flag bit and the three value strings had been crossing the FFI
+    /// since they were written.
+    ///
+    /// # The three values, and why they are strings
+    ///
+    /// `value`, `increasedValue` and `decreasedValue` are what the platform
+    /// reads aloud now, and what it would read after one swipe each way. They
+    /// are text rather than numbers because only the widget knows what the
+    /// number *means* -- upstream lets a caller replace all three with a
+    /// `semanticFormatterCallback`, and the default it falls back to is a
+    /// percentage of the range rather than the raw value.
+    ///
+    /// # The step is clamped before it is spoken, not after
+    ///
+    /// `clampDouble(value + unit, 0.0, 1.0)` upstream: a slider at 97% with a
+    /// 5% step says its next value is **100%**, not 102%. Reading the
+    /// unclamped number would promise a reader somewhere the slider cannot
+    /// go, and then not go there.
+    pub fn slider(
+        value: f32,
+        min: f32,
+        max: f32,
+        divisions: Option<u32>,
+        label: Option<&str>,
+        interactive: bool,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> SemanticsProperties {
+        let span = max - min;
+        let normalised = if span == 0.0 {
+            0.0
+        } else {
+            ((value - min) / span).clamp(0.0, 1.0)
+        };
+        let unit = SemanticsProperties::slider_action_unit(divisions, platform);
+        let percent = |fraction: f32| format!("{}%", (fraction * 100.0).round() as i32);
+        // Upstream offers the two actions only on an interactive slider. A
+        // reader handed "swipe up to increase" on a disabled one has been
+        // told the control works.
+        let actions = if interactive {
+            SemanticsAction::Increase as i32 | SemanticsAction::Decrease as i32
+        } else {
+            0
+        };
+        SemanticsProperties {
+            label: label.unwrap_or_default().to_string(),
+            value: percent(normalised),
+            increased_value: percent((normalised + unit).clamp(0.0, 1.0)),
+            decreased_value: percent((normalised - unit).clamp(0.0, 1.0)),
+            text_direction: Some(crate::direction::current_direction()),
+            actions,
+            flags: SemanticsFlags {
+                is_slider: true,
+                has_enabled_state: true,
+                is_enabled: interactive,
+                ..SemanticsFlags::default()
+            },
+            ..SemanticsProperties::default()
+        }
+    }
+
     /// Which way a reader may scroll from **where they are now**.
     ///
     /// Upstream's `ScrollPosition._updateSemanticActions`, whose own doc says
