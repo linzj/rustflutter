@@ -2579,6 +2579,14 @@ impl Component for ListTile {
         // target that ignores what it is told.
         let id = self.enabled.then_some(self.id).flatten();
         let handlers = self.handlers.clone();
+        // Upstream's `button: onTap != null || onLongPress != null` -- and it
+        // is about whether anybody is *listening*, not about the tile being
+        // enabled: a disabled tile with a handler is still a button, and says
+        // so along with saying it is disabled. Announcing a plain text row as
+        // a button would invite a press that does nothing.
+        let pressable = self.handlers.on_tap.is_some();
+        let selected = self.selected;
+        let enabled = self.enabled;
         let leading = self.leading.borrow().clone();
         let trailing = self.trailing.borrow().clone();
         let spacing = theme.spacing;
@@ -2819,12 +2827,42 @@ impl Component for ListTile {
                 max_height: f32::INFINITY,
             })
             .with_child(padded);
-            match id {
+            let hittable = match id {
                 Some(id) => crate::render::RenderRef::new(
                     Pointer::new(id, padded).with_handlers(handlers.clone()),
                 ),
                 None => crate::render::RenderRef::new(padded),
-            }
+            };
+            // Upstream wraps the tile in
+            // `Semantics(button: onTap != null || onLongPress != null,
+            // selected: selected, enabled: enabled)`, and a tile said none of
+            // it: a row a reader could press was announced as a row of text,
+            // and a **selected** row -- the one in a master/detail list that
+            // says which item you are looking at -- sounded exactly like the
+            // others.
+            //
+            // One stop, folded, because a tile's words come from the `Text`s
+            // inside it: a title and a subtitle met separately are two things
+            // to land on where the screen shows one row. That is what the
+            // merging box is for, and it carries the flags on the folded node
+            // (round 364) so they land where the words are.
+            crate::render::RenderMergeSemanticsBox::new(hittable).with_properties(
+                crate::semantics::SemanticsProperties {
+                    actions: if pressable {
+                        crate::semantics::SemanticsAction::Tap as i32
+                    } else {
+                        0
+                    },
+                    flags: crate::semantics::SemanticsFlags {
+                        is_button: pressable,
+                        selected: crate::semantics::SemanticsTristate::of(selected),
+                        has_enabled_state: pressable,
+                        is_enabled: enabled,
+                        ..crate::semantics::SemanticsFlags::default()
+                    },
+                    ..crate::semantics::SemanticsProperties::default()
+                },
+            )
         })
     }
 }
@@ -6143,6 +6181,81 @@ mod tests {
             .find(|node| node.properties.flags.is_slider)
             .cloned()
             .expect("a slider said it was one")
+    }
+
+    /// The node a list tile produces, through the real walk.
+    fn tile_node(tile: ListTile) -> crate::semantics::SemanticsNode {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(tile),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 300.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 300.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .find(|node| node.properties.label.contains("Inbox"))
+            .cloned()
+            .expect("the tile said its words")
+    }
+
+    #[test]
+    fn a_tile_is_one_stop_saying_both_its_lines() {
+        // A title and a subtitle met separately are two things to land on
+        // where the screen shows one row.
+        let node = tile_node(ListTile::new("Inbox").with_subtitle("12 unread"));
+        assert_eq!(
+            node.properties.label,
+            "Inbox
+12 unread"
+        );
+    }
+
+    #[test]
+    fn a_selected_tile_sounds_different_from_the_others() {
+        // The row in a master/detail list that says which item you are looking
+        // at. Without `selected` it is the same announcement as every other
+        // row -- the filter chip's problem, on the control that says where you
+        // are.
+        use crate::semantics::SemanticsTristate;
+        assert_eq!(
+            tile_node(ListTile::new("Inbox").with_selected(true))
+                .properties
+                .flags
+                .selected,
+            SemanticsTristate::True
+        );
+        assert_eq!(
+            tile_node(ListTile::new("Inbox")).properties.flags.selected,
+            SemanticsTristate::False
+        );
+    }
+
+    #[test]
+    fn a_tile_nobody_listens_to_is_not_announced_as_a_button() {
+        // Upstream's `button: onTap != null || onLongPress != null`. A row of
+        // plain text announced as a button invites a press that does nothing.
+        let plain = tile_node(ListTile::new("Inbox"));
+        assert!(!plain.properties.flags.is_button);
+        assert!(!plain.properties.has(crate::semantics::SemanticsAction::Tap));
+
+        let pressable =
+            tile_node(ListTile::new("Inbox").tappable(9, PointerHandlers::new().with_tap(|_| {})));
+        assert!(pressable.properties.flags.is_button);
+        assert!(
+            pressable
+                .properties
+                .has(crate::semantics::SemanticsAction::Tap)
+        );
+        assert!(pressable.properties.flags.is_enabled);
     }
 
     #[test]
