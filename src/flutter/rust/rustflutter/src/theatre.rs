@@ -3002,6 +3002,65 @@ mod tests {
     }
 
     #[test]
+    fn escape_takes_the_tooltip_down_first_and_leaves_the_dialog_standing() {
+        // The order is upstream's and it is not the obvious one. Its tooltip
+        // `Focus` sits *inside* the `Shortcuts` that maps escape to
+        // `DismissIntent`, and a key travels up from the focused node -- so
+        // the tooltip handler gets it first and stops it there.
+        //
+        // Read the other way round, this is the rule a user feels: a tooltip
+        // showing over a dialog's button does not cost them the dialog when
+        // they press escape to get rid of it.
+        crate::raw_tooltip::reset_tooltip_scope();
+        let (mut tree, handle) = modal_tree();
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        tree.rebuild_dirty();
+
+        let mut tip =
+            crate::raw_tooltip::RawTooltipState::new(412, crate::raw_tooltip::RawTooltip::new());
+        tip.ensure_tooltip_visible();
+        tip.finish_animation();
+        assert!(tip.is_showing());
+        crate::raw_tooltip::with_tooltip_scope(|scope| scope.add(tip));
+
+        assert!(crate::app::escape_dismisses(), "the key was taken");
+        assert!(
+            modal.is_showing(),
+            "by the tooltip -- the dialog is still there"
+        );
+        // Its model is reversed at once; the bubble itself leaves the screen
+        // on the tooltip's own next frame, which is the one-frame lag the
+        // scope's callers all have. Nothing is advancing a tooltip here, so
+        // the observable is the status.
+        assert!(
+            crate::raw_tooltip::with_tooltip_scope(|scope| !scope
+                .get(412)
+                .expect("registered")
+                .status()
+                .is_forward_or_completed()),
+            "and the tooltip is on its way out"
+        );
+
+        // The frame that follows, which is where the reversal actually lands
+        // and the bubble leaves. Upstream is the same shape: an entry stays in
+        // `_openedTooltips` until its animation reports dismissed, so two
+        // presses inside one frame would both be taken by the tooltip there
+        // too.
+        crate::raw_tooltip::with_tooltip_scope(|scope| scope.finish_animations());
+
+        // The second press has nothing to dismiss above the dialog, so it
+        // falls through to it. That fall-through is what
+        // `dismissAllToolTips` returning a bool is for.
+        assert!(crate::app::escape_dismisses());
+        assert!(!modal.is_showing(), "the second press closes the dialog");
+        assert!(
+            !crate::app::escape_dismisses(),
+            "and then escape means whatever the application wants it to"
+        );
+    }
+
+    #[test]
     fn escape_does_not_close_a_modal_that_refuses_to_be_dismissed() {
         let (mut tree, handle) = modal_tree();
         let modal = show_modal(

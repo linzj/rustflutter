@@ -27403,3 +27403,62 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 收不收 `on_key_event`，还是说按键只到 `shortcuts.rs` 的 `Shortcuts`/`Actions` 那一层。
 如果按键根本到不了一个"根级监听者"，那这一轮真正该补的是**那条路**，
 而不是在没有路的地方挂一个回调。
+
+---
+
+## 第 412 轮：Escape 有两个主张者，而**它们的先后是上游定的，不是偏好**
+
+按"下一步"先查按键怎么走。**路是通的**：`RfApp::on_key`（`app.rs`）
+就是根级监听者，而且它**已经在**处理 Escape——用来关最上面那个模态框。
+所以这一轮不是补路，是补路上少的那一段，而查下来少的那段比预想的有意思。
+
+上游把 `Focus(canRequestFocus: false, onKeyEvent: esc -> dismissAllToolTips)`
+放在 `WidgetsApp` **里面**、包住 routing；
+而"Escape 变成 `DismissIntent`"这条映射在 `WidgetsApp.defaultShortcuts` 里，
+在那个 `Focus` **上面**的 `Shortcuts` 上（`app.dart:1270`），
+真正处理它的 `Actions` 在 `_ModalScope`（`routes.dart:1198`）。
+
+**按键是从获得焦点的节点往上走的**，所以那个 tooltip 的 `Focus` **先看到**，
+一旦它赶走了什么就报 handled，键**根本到不了**那条会产出 `DismissIntent` 的映射。
+
+写成一句用户能感觉到的话：
+**对话框上的按钮弹着 tooltip 时，第一次 Escape 只收 tooltip、对话框还在；第二次才关对话框。**
+`dismissAllToolTips` 之所以**返回 bool**，就是为了这个落空穿透——
+没东西可收时，Escape 就还是它本来的意思。
+
+本项目原来的顺序**正好相反**（先关模态框，tooltip 从来收不到）。这一轮改过来。
+
+顺带把那个顺序抽成 `escape_dismisses()`：**顺序本身就是那个主张，主张要有地方被测**。
+`RfApp` 在测试里造不出来，三行埋在 `on_key` 里就等于没测。
+
+### 变异扫描 6 个，第一遍 4 红、2 绿
+
+两条绿都落在守卫 `event.is_down() && logical == ESCAPE` 上——
+因为它同样埋在 `on_key` 里，**这一段在这一轮之前也一直没被测过**。
+抽成 `is_escape_press(event)` 之后补测，第二遍全红。
+
+守卫那两半各有说法，一并记下：
+- **重复算按下**——上游的条件是 `event is! KeyDownEvent && event is! KeyRepeatEvent`，
+  而本项目 `KeyEvent::is_down()` 本来就是 `Down | Repeat`，这一处**本来就对**。
+- **抬起不算**——Escape 会发一个按下和一个抬起，
+  两个都收的话，一次按键就会**按下时收掉 tooltip、抬起时关掉它后面的对话框**，
+  看上去就像"对话框扛不住一次 Escape"。
+
+还有一条如实记下的时序：`dismiss_all` 看的是 `is_showing()`（`overlay_shown`），
+它要到 tooltip 自己的下一帧才翻。**上游是同一个形状**——
+条目留在 `_openedTooltips` 里直到动画报 dismissed——
+所以同一帧内连按两次，两次都会被 tooltip 吃掉。测试里就按"中间过了一帧"写。
+
+尺子：十六把全部 exit 0。门：Rust 6465 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：`on_key` 现在是"根级 Focus + 根级 Shortcuts"两层压在一起的手写版本，
+而 `shortcuts.rs` 里的 `Shortcuts`/`ShortcutActivator`/`intent_for` 是**纯逻辑移植、没有消费者**，
+`actions.rs` 同理——注释里自己写着"等它们活了就换成 `DismissIntent`"。
+所以下一轮该去接那条：让 `on_key` 里的 Escape 走
+`Shortcuts::intent_for` → `DismissIntent` → `Actions`。
+但**先查一件事**：`actions.rs` 的 `Actions` 是**怎么找到处理者**的——
+是像上游那样沿 element 树往上找 `Actions` widget，
+还是一个 thread local 注册表。
+如果它根本没有"沿树查找"这一步，那这一轮真正该补的是**那个查找**，
+而不是在没有分发的地方硬造一个 Intent——那会造出第三个没人用的机制。

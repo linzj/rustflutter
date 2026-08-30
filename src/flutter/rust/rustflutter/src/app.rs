@@ -758,19 +758,23 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
     }
 
     fn on_key(&mut self, event: &KeyEvent, keyboard: &Keyboard) -> bool {
-        // Escape takes down the topmost dismissible modal, before the
-        // application sees it. Upstream this is a `DismissIntent` travelling
-        // the actions system to the `ModalRoute`; `actions.rs` and
-        // `shortcuts.rs` are still pure-logic ports, so the key is routed
-        // directly here and this becomes a `DismissIntent` when they are live.
+        // Escape has two claimants, and **the order between them is
+        // upstream's, not a preference.**
         //
-        // Before the application, because a modal is *modal*: while a dialog is
-        // up, the page behind it should not be acting on keys any more than it
-        // should be acting on presses.
-        if event.is_down()
-            && event.logical == crate::keyboard::LogicalKey::ESCAPE
-            && crate::theatre::dismiss_topmost_modal()
-        {
+        // Upstream puts a `Focus(canRequestFocus: false, onKeyEvent: esc ->
+        // dismissAllToolTips)` around the routing inside `WidgetsApp`, while
+        // the escape-to-`DismissIntent` mapping lives in
+        // `WidgetsApp.defaultShortcuts` -- in the `Shortcuts` widget
+        // **above** that `Focus`. A key event travels up from the focused
+        // node, so the tooltip handler sees it first and, if it dismissed
+        // anything, reports `handled` and the key never reaches the mapping
+        // that would have produced a `DismissIntent` for the modal.
+        //
+        // So: **with a tooltip up inside a dialog, the first escape takes the
+        // tooltip down and leaves the dialog; the second closes the dialog.**
+        // That is what `dismissAllToolTips` returning a bool is for -- with
+        // nothing to dismiss it falls straight through.
+        if is_escape_press(event) && escape_dismisses() {
             return true;
         }
         self.app.on_key(event, keyboard)
@@ -959,6 +963,60 @@ impl FrameTimings {
 /// subtree at. A scale hidden inside a display list would have it cache at the
 /// wrong size and then stretch.
 ///
+/// Whether this is the key press [`escape_dismisses`] answers.
+///
+/// Upstream's guard is
+///
+/// ```dart
+/// if ((event is! KeyDownEvent && event is! KeyRepeatEvent) || event.logicalKey != escape)
+/// ```
+///
+/// -- so a **repeat counts**, which is what [`KeyEvent::is_down`] already
+/// means here, and a key **coming up** does not. That second half matters:
+/// escape sends a down and an up, and a handler taking both would dismiss the
+/// tooltip on the way down and then the dialog behind it on the way up, from
+/// one press.
+pub fn is_escape_press(event: &KeyEvent) -> bool {
+    event.is_down() && event.logical == crate::keyboard::LogicalKey::ESCAPE
+}
+
+/// What one press of escape takes down, and **in which order**.
+///
+/// The order is upstream's rather than a preference here, and it is not the
+/// order it looks like it should be.
+///
+/// Upstream puts a `Focus(canRequestFocus: false, onKeyEvent: esc ->
+/// dismissAllToolTips)` around the routing inside `WidgetsApp`, while the
+/// escape-to-`DismissIntent` mapping that closes a dialog lives in
+/// `WidgetsApp.defaultShortcuts` -- in the `Shortcuts` widget **above** that
+/// `Focus`. A key event travels *up* from the focused node, so the tooltip
+/// handler sees it first, and when it dismissed something it reports handled
+/// and the key never reaches the mapping that would have made the
+/// `DismissIntent`.
+///
+/// So, concretely: **with a tooltip up inside a dialog, the first escape takes
+/// the tooltip down and leaves the dialog standing; the second closes the
+/// dialog.** That is what `dismissAllToolTips` returning a bool is for -- with
+/// nothing to dismiss it falls straight through, and escape means what it
+/// otherwise would.
+///
+/// A function rather than three lines inside `on_key` because the order is the
+/// claim, and a claim wants somewhere to be tested.
+pub fn escape_dismisses() -> bool {
+    if crate::raw_tooltip::dismiss_all_tooltips() {
+        return true;
+    }
+    // Then the topmost dismissible modal, before the application sees the key.
+    // Upstream this is the `DismissIntent` reaching `ModalRoute`; `actions.rs`
+    // and `shortcuts.rs` are still pure-logic ports, so the key is routed
+    // directly here and this becomes a `DismissIntent` when they are live.
+    //
+    // Before the application, because a modal is *modal*: while a dialog is
+    // up, the page behind it should not be acting on keys any more than it
+    // should be acting on presses.
+    crate::theatre::dismiss_topmost_modal()
+}
+
 /// It lives here, rather than at each call site, so that the windowed path and
 /// the headless one cannot come to disagree about what a frame is -- which
 /// would make every screenshot a picture of something the user never sees.
@@ -2328,6 +2386,43 @@ mod tests {
         // pointers above, which is the whole point of keeping them.
         assert_eq!(moved_again.strings.len(), 3 * super::STRINGS_PER_NODE);
         assert_eq!(moved_again.children.len(), 3);
+    }
+
+    fn key_event(change: crate::keyboard::KeyChange, logical: u64) -> crate::keyboard::KeyEvent {
+        crate::keyboard::KeyEvent {
+            change,
+            physical: crate::keyboard::PhysicalKey(0),
+            logical: crate::keyboard::LogicalKey(logical),
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        }
+    }
+
+    #[test]
+    fn only_escape_dismisses_and_only_on_the_way_down() {
+        use crate::keyboard::{KeyChange, LogicalKey};
+        // The release half is the one worth having a test for. Escape sends a
+        // down and an up; a guard that took both would dismiss the tooltip on
+        // the way down and the dialog behind it on the way up, off one press,
+        // and it would look exactly like a dialog that cannot survive an
+        // escape.
+        assert!(super::is_escape_press(&key_event(
+            KeyChange::Down,
+            LogicalKey::ESCAPE.0
+        )));
+        assert!(
+            super::is_escape_press(&key_event(KeyChange::Repeat, LogicalKey::ESCAPE.0)),
+            "upstream takes a repeat too -- `event is KeyRepeatEvent`"
+        );
+        assert!(
+            !super::is_escape_press(&key_event(KeyChange::Up, LogicalKey::ESCAPE.0)),
+            "but not a release"
+        );
+        assert!(
+            !super::is_escape_press(&key_event(KeyChange::Down, LogicalKey::ENTER.0)),
+            "and not some other key going down"
+        );
     }
 
     const BACKGROUND: Color = Color(0xff101418);
