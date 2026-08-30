@@ -267,7 +267,16 @@ impl AnyWidget {
 
     /// Whether `self` can be updated in place to become `other`, which is the
     /// question the whole reconciliation turns on.
-    fn can_update(&self, other: &AnyWidget) -> bool {
+    ///
+    /// Upstream's `Widget.canUpdate` is a **public static**, and deliberately:
+    /// widgets outside the framework ask it about children they were handed.
+    /// [`crate::crossfade::AnimatedSwitcher`] is the reason it is public here
+    /// too -- it has to know whether a new child is *the same child changed*
+    /// or *a different child*, because only the second one animates, and that
+    /// distinction is this method and nothing else.
+    ///
+    /// Symmetric, so it does not matter which of the two is the older.
+    pub fn can_update(&self, other: &AnyWidget) -> bool {
         self.type_id == other.type_id && self.key == other.key
     }
 }

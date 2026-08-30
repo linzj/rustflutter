@@ -933,6 +933,18 @@ pub enum Drawn {
         right: f32,
         bottom: f32,
     },
+    /// An opacity layer, with the alpha it carries.
+    ///
+    /// [`LayerCalls`] counted these, which made "faded to a tenth" and "faded
+    /// to a ninth" the same observation -- and, worse, made "half faded" and
+    /// "fully opaque" *nearly* the same, because a fully opaque child skips
+    /// the layer entirely and a test counting layers sees one number either
+    /// way. A paragraph's recorded colour is its own and an opacity layer
+    /// never touches it, so before this there was no way for a test to see how
+    /// far a fade had got.
+    OpacityLayer {
+        alpha: u8,
+    },
     /// A rounded clip pushed as a compositor layer.
     ///
     /// [`LayerCalls`] counted these and nothing recorded their shape, so
@@ -1299,6 +1311,8 @@ impl Drawn {
             // A layer's own translation is what moves; translating it again
             // would be counting the same movement twice.
             Drawn::OffsetLayer { .. } => self,
+            // An alpha is not a position.
+            Drawn::OpacityLayer { .. } => self,
         }
     }
 }
@@ -1457,6 +1471,7 @@ pub unsafe extern "C" fn rf_layer_tree_push_opacity(
     offset_y: f32,
 ) {
     note(|calls| calls.opacities += 1);
+    record(Drawn::OpacityLayer { alpha });
     open_container();
 }
 

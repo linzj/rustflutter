@@ -9,11 +9,28 @@
 //! knows when the second has arrived.
 //!
 //! The recurring decision is what happens to the child on its way **out**, and
-//! all three answer it the same way: it keeps being painted and stops being
-//! anything else. It takes no taps, is not announced to a screen reader, and
-//! usually stops animating. A reader watching a fade should not be able to tap
-//! a button that is halfway gone, and should certainly not hear it read out
-//! alongside the one replacing it.
+//! the three do **not** answer it the same way, which is worth knowing before
+//! reaching for one of them.
+//!
+//! `AnimatedCrossFade` takes the outgoing child out of everything except the
+//! paint: no taps, no semantics, tickers off. A reader watching that fade
+//! cannot tap a button that is halfway gone and never hears it read out
+//! alongside the one replacing it -- see
+//! [`AnimatedCrossFade::bottom_treatment`].
+//!
+//! `AnimatedSwitcher` does **none** of that. Its outgoing children stay in the
+//! stack as ordinary widgets, still hit-testable and still announced, and the
+//! class's own documentation does not mention it. That is not an oversight to
+//! be tidied up here: a switcher is given one child at a time and does not know
+//! that the thing leaving and the thing arriving are two versions of the same
+//! thing, so it has no grounds for silencing either. A caller who wants the
+//! cross-fade's behaviour has to say so.
+//!
+//! `FadeInImage` sidesteps the question. Both of its images are built with
+//! `excludeFromSemantics: true` and one `Semantics` node is put around the
+//! pair, so there is never a second announcement to suppress.
+
+use crate::framework::{AnyWidget, StatefulComponent};
 
 /// Upstream `CrossFadeState`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -300,11 +317,31 @@ impl AnimatedSwitcher {
     /// length. The fix is a key, which is why nearly every example in the
     /// wild has one.
     pub fn decide(old: Option<SwitcherChild>, new: Option<SwitcherChild>) -> SwitchOutcome {
-        match (old, new) {
-            (None, None) => SwitchOutcome::Nothing,
-            (Some(_), None) | (None, Some(_)) => SwitchOutcome::Switched,
-            (Some(old), Some(new)) => {
-                if new.can_update(&old) {
+        AnimatedSwitcher::outcome(old.is_some(), new.is_some(), || {
+            new.expect("checked").can_update(&old.expect("checked"))
+        })
+    }
+
+    /// The same decision over real widgets, which is the one the widget below
+    /// actually makes.
+    ///
+    /// [`AnimatedSwitcher::decide`] models a child as a type name and a key
+    /// because that is what upstream's `Widget.canUpdate` compares; an
+    /// [`AnyWidget`] answers the question about itself, so this asks it
+    /// directly rather than describing it a second time.
+    pub fn decide_widgets(old: Option<&AnyWidget>, new: Option<&AnyWidget>) -> SwitchOutcome {
+        AnimatedSwitcher::outcome(old.is_some(), new.is_some(), || {
+            new.expect("checked").can_update(old.expect("checked"))
+        })
+    }
+
+    /// The rule the two entry points above share, so it exists once.
+    fn outcome(has_old: bool, has_new: bool, can_update: impl FnOnce() -> bool) -> SwitchOutcome {
+        match (has_old, has_new) {
+            (false, false) => SwitchOutcome::Nothing,
+            (true, false) | (false, true) => SwitchOutcome::Switched,
+            (true, true) => {
+                if can_update() {
                     SwitchOutcome::UpdatedInPlace
                 } else {
                     SwitchOutcome::Switched
@@ -341,6 +378,280 @@ impl AnimatedSwitcher {
     /// backwards.
     pub fn outgoing_runs_in_reverse() -> bool {
         true
+    }
+
+    /// The widget: hand it one child at a time and it fades between them.
+    ///
+    /// Everything above this was policy with no consumer. The reason it stayed
+    /// that way one round longer than [`AnimatedCrossFade::widget`] is that a
+    /// switcher **cannot** be a function of its arguments: it is given one
+    /// child and has to compare it with the one it was given last time, so it
+    /// needs somewhere to remember. That is [`AnimatedSwitcherState`], and it
+    /// is why this is a [`StatefulComponent`] where the cross-fade is not.
+    ///
+    /// `duration_micros` is the fade in; the fade out is
+    /// `reverse_duration_micros` when set, and the same duration otherwise --
+    /// upstream's `reverseDuration ?? duration`. Both curves default to linear
+    /// upstream, which is what this does, so nothing is missing for the
+    /// default case.
+    ///
+    /// A child of `None` is upstream's `child: null`: whatever is showing
+    /// fades out and nothing replaces it.
+    pub fn widget(&self, child: Option<AnyWidget>) -> AnyWidget {
+        crate::framework::stateful(Switching {
+            switcher: *self,
+            child,
+            key: None,
+        })
+    }
+
+    /// [`AnimatedSwitcher::widget`] with a key, for two switchers that would
+    /// otherwise sit in the same position and share each other's memory.
+    pub fn keyed_widget(&self, key: u64, child: Option<AnyWidget>) -> AnyWidget {
+        crate::framework::stateful(Switching {
+            switcher: *self,
+            child,
+            key: Some(key),
+        })
+    }
+}
+
+/// One child on its way out, and where its fade has got to.
+///
+/// `number` is upstream's `_childNumber`, the counter it wraps each entry's
+/// transition in a `KeyedSubtree` with. It is not decoration: without it the
+/// children of the stack are matched by position, so an entry dropping off the
+/// front would hand its element to the entry behind it and a half-faded child
+/// would jump.
+struct OutgoingChild {
+    number: u64,
+    child: AnyWidget,
+    /// Where the reversing controller started, which is **not** always 1.
+    ///
+    /// [`AnimatedSwitcher::outgoing_runs_in_reverse`] is the whole reason:
+    /// upstream reverses the entry's own controller, so a child interrupted
+    /// halfway in starts its way out from halfway, not from opaque.
+    from_opacity: f32,
+    /// The frame the reversal began, stamped by the next `advance`.
+    started_micros: Option<i64>,
+}
+
+/// What a switcher remembers between builds.
+///
+/// The current child is **not** in here -- it is on the widget, where the
+/// caller put it. Upstream keeps a `_currentEntry` because its child has to
+/// carry an `AnimationController` that outlives any one build; here the only
+/// thing about the current child that outlives a build is where its fade has
+/// got to, which is two numbers.
+#[derive(Default)]
+pub struct AnimatedSwitcherState {
+    outgoing: Vec<OutgoingChild>,
+    /// The current child's `_childNumber`.
+    current_number: u64,
+    next_number: u64,
+    /// When the current child's fade in began, or `None` once it is fully in.
+    ///
+    /// Starts `None`, which is upstream's `_addEntryForNewChild(animate:
+    /// false)` in `initState`: the first child a switcher is ever given is
+    /// simply there. Nothing fades in from nowhere on the first frame.
+    current_started_micros: Option<i64>,
+    /// Set when a switch is decided, cleared when the next frame stamps it.
+    current_pending: bool,
+    /// The frame clock, so `build` can evaluate without being handed the time.
+    now_micros: i64,
+}
+
+impl AnimatedSwitcherState {
+    /// The current child's opacity this frame.
+    fn arriving_opacity(&self, duration_micros: i64) -> f32 {
+        let Some(started) = self.current_started_micros else {
+            // Settled, or never faded in at all.
+            return 1.0;
+        };
+        if duration_micros <= 0 {
+            return 1.0;
+        }
+        (((self.now_micros - started).max(0) as f32) / duration_micros as f32).clamp(0.0, 1.0)
+    }
+}
+
+impl OutgoingChild {
+    /// This child's opacity at `now_micros`.
+    ///
+    /// A reversing controller falls at one over its duration per microsecond,
+    /// which is why this subtracts rather than interpolating: an entry that
+    /// began its exit from 0.4 reaches zero in 40% of the reverse duration,
+    /// not in all of it.
+    fn opacity(&self, now_micros: i64, reverse_micros: i64) -> f32 {
+        let Some(started) = self.started_micros else {
+            return self.from_opacity;
+        };
+        if reverse_micros <= 0 {
+            return 0.0;
+        }
+        let fallen = (now_micros - started).max(0) as f32 / reverse_micros as f32;
+        (self.from_opacity - fallen).clamp(0.0, 1.0)
+    }
+}
+
+/// The component behind [`AnimatedSwitcher::widget`].
+struct Switching {
+    switcher: AnimatedSwitcher,
+    child: Option<AnyWidget>,
+    key: crate::framework::Key,
+}
+
+impl Switching {
+    fn reverse_micros(&self) -> i64 {
+        // Upstream's `reverseDuration ?? duration`.
+        self.switcher
+            .reverse_duration_micros
+            .unwrap_or(self.switcher.duration_micros)
+    }
+}
+
+impl StatefulComponent for Switching {
+    type State = AnimatedSwitcherState;
+
+    fn key(&self) -> crate::framework::Key {
+        self.key
+    }
+
+    /// Upstream's `didUpdateWidget`, which is where the whole class lives.
+    ///
+    /// The decision is [`AnimatedSwitcher::decide_widgets`] and nothing else:
+    /// a child that *can update* the old one is the same child with new
+    /// contents, and nothing animates. That is the trap the ported `decide`
+    /// already documented, and this is the code it was documenting.
+    ///
+    /// Following [`crate::implicit::Animated`], the switch is **decided** here
+    /// and **stamped** by the next `advance`, because the frame clock arrives
+    /// there and not here.
+    fn did_update_widget(&self, old: &Self, state: &mut Self::State) {
+        if AnimatedSwitcher::decide_widgets(old.child.as_ref(), self.child.as_ref())
+            != SwitchOutcome::Switched
+        {
+            return;
+        }
+        if let Some(leaving) = old.child.clone() {
+            let from_opacity = state.arriving_opacity(old.switcher.duration_micros);
+            state.outgoing.push(OutgoingChild {
+                number: state.current_number,
+                child: leaving,
+                from_opacity,
+                started_micros: None,
+            });
+        }
+        state.next_number += 1;
+        state.current_number = state.next_number;
+        state.current_pending = true;
+        state.current_started_micros = None;
+    }
+
+    fn advance(&self, state: &mut Self::State, frame_time_micros: i64) -> bool {
+        state.now_micros = frame_time_micros;
+        for entry in &mut state.outgoing {
+            if entry.started_micros.is_none() {
+                entry.started_micros = Some(frame_time_micros);
+            }
+        }
+        if state.current_pending {
+            state.current_pending = false;
+            state.current_started_micros = Some(frame_time_micros);
+        }
+
+        let reverse_micros = self.reverse_micros();
+        let before = state.outgoing.len();
+        // Upstream removes an entry from `_outgoingEntries` when its animation
+        // reports dismissed, and disposes it there.
+        let now = state.now_micros;
+        state
+            .outgoing
+            .retain(|entry| entry.opacity(now, reverse_micros) > 0.0);
+        let dropped = state.outgoing.len() != before;
+
+        let mut wants_another = !state.outgoing.is_empty() || dropped;
+        if let Some(started) = state.current_started_micros {
+            // The frame that lands still has to be drawn, so this asks for one
+            // more and settles at the same time; the frame after it is idle.
+            wants_another = true;
+            if frame_time_micros - started >= self.switcher.duration_micros {
+                state.current_started_micros = None;
+            }
+        }
+        wants_another
+    }
+
+    /// Upstream's `build`: `layoutBuilder(currentTransition, outgoing)`, which
+    /// by default is a `Stack` centred on itself with the previous children
+    /// underneath -- see [`AnimatedSwitcher::paint_order`].
+    ///
+    /// The outgoing children are painted and otherwise left alone: unlike the
+    /// cross-fade, a switcher does not take them out of the hit test or the
+    /// semantics walk. See the module comment for why that is upstream's
+    /// answer and not an omission here.
+    fn build(
+        &self,
+        state: &Self::State,
+        _handle: crate::framework::StateHandle<Self::State>,
+        _context: &mut crate::framework::BuildContext,
+    ) -> AnyWidget {
+        let reverse_micros = self.reverse_micros();
+        let mut entries: Vec<(u64, AnyWidget, f32)> = state
+            .outgoing
+            .iter()
+            .map(|entry| {
+                (
+                    entry.number,
+                    entry.child.clone(),
+                    entry.opacity(state.now_micros, reverse_micros),
+                )
+            })
+            .collect();
+        if let Some(child) = &self.child {
+            entries.push((
+                state.current_number,
+                child.clone(),
+                state.arriving_opacity(self.switcher.duration_micros),
+            ));
+        }
+
+        let previous: Vec<u64> = state.outgoing.iter().map(|entry| entry.number).collect();
+        let order = AnimatedSwitcher::paint_order(
+            &previous,
+            self.child.as_ref().map(|_| state.current_number),
+        );
+        let mut children = Vec::with_capacity(order.len());
+        for number in order {
+            let (_, child, opacity) = entries
+                .iter()
+                .find(|(candidate, _, _)| *candidate == number)
+                .expect("every number in the paint order is an entry");
+            let opacity = *opacity;
+            // Upstream's `KeyedSubtree.wrap(builder(child, animation),
+            // _childNumber)`, in one call: the fade is the wrapper and the
+            // entry's number is the wrapper's key, so an entry keeps its
+            // element while the ones in front of it come and go -- and the
+            // child's own key, which the caller may be relying on, is left
+            // alone underneath.
+            children.push(crate::framework::keyed_single(
+                number,
+                child.clone(),
+                move |child| crate::render::RenderOpacity::new(opacity, child),
+            ));
+        }
+
+        crate::framework::many(children, move |rendered| {
+            let mut stack = crate::render::RenderStack::new()
+                // Upstream's `defaultLayoutBuilder` centres them on each
+                // other, so a shorter child leaving and a taller one arriving
+                // stay on the same middle instead of both hanging from the top.
+                .with_alignment(crate::render::Alignment::CENTER);
+            for child in rendered {
+                stack = stack.push(child);
+            }
+            stack
+        })
     }
 }
 
@@ -505,6 +816,38 @@ impl ImageIcon {
 #[cfg(test)]
 mod tests {
 
+    /// The text that reached the canvas, as `(text, alpha)` in paint order,
+    /// where the alpha is the **opacity layer** around it and not the text's
+    /// own colour.
+    ///
+    /// Worth spelling out, because reading the paragraph's colour instead --
+    /// which is the obvious thing to do, and what this file did for a round --
+    /// reports 255 through every fade there has ever been. A paragraph's
+    /// colour is its own and an opacity layer never touches it.
+    ///
+    /// Every fade in this file wraps each child in exactly one opacity layer,
+    /// so the alpha pushed immediately before a paragraph is that paragraph's.
+    /// A paragraph with no layer in front of it is fully opaque, because
+    /// `RenderOpacity` skips the layer entirely at one -- and skips the whole
+    /// child at zero, which is why a child that has finished leaving is
+    /// absent from this list rather than present at nought.
+    fn text_alphas(drawn: Vec<crate::engine_test_stubs::Drawn>) -> Vec<(String, u32)> {
+        let mut alphas = Vec::new();
+        let mut pending: Option<u32> = None;
+        for call in drawn {
+            match call {
+                crate::engine_test_stubs::Drawn::OpacityLayer { alpha } => {
+                    pending = Some(alpha as u32);
+                }
+                crate::engine_test_stubs::Drawn::Paragraph { text, .. } => {
+                    alphas.push((text, pending.take().unwrap_or(255)));
+                }
+                _ => {}
+            }
+        }
+        alphas
+    }
+
     /// What the two children were drawn at, as `(label, alpha)`.
     fn faded(cross: AnimatedCrossFade, progress: f32) -> Vec<(String, u32)> {
         let mut tree = crate::framework::ElementTree::new();
@@ -527,15 +870,7 @@ mod tests {
             );
             crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
         }
-        crate::engine_test_stubs::drawn()
-            .into_iter()
-            .filter_map(|call| match call {
-                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. } => {
-                    Some((text, argb >> 24))
-                }
-                _ => None,
-            })
-            .collect()
+        text_alphas(crate::engine_test_stubs::drawn())
     }
 
     #[test]
@@ -572,7 +907,13 @@ mod tests {
             .iter()
             .find(|(text, _)| text == "second")
             .expect("the arriving child");
-        assert!(leaving.1 > 0 && arriving.1 > 0, "{middle:?}");
+        // Halfway means halfway: both layers carry about half an alpha.
+        // Asserting merely that both are on the canvas would pass at any
+        // opacity either of them happened to be given.
+        assert!(
+            (leaving.1 as i64 - 128).abs() < 24 && (arriving.1 as i64 - 128).abs() < 24,
+            "{middle:?}"
+        );
     }
 
     #[test]
@@ -833,6 +1174,248 @@ mod tests {
     fn the_outgoing_child_runs_the_same_animation_backwards() {
         // Which is what makes reverseDuration and switchOutCurve apply to it.
         assert!(AnimatedSwitcher::outgoing_runs_in_reverse());
+    }
+
+    // -- The switcher's widget ----------------------------------------------
+
+    /// A `Text` child.
+    ///
+    /// Every label goes through the *same* closure, so two of these have the
+    /// same type and can update each other unless they are given different
+    /// keys -- which is exactly the distinction the switcher turns on, and
+    /// exactly the trap upstream's documentation warns about.
+    fn switcher_child(label: &str, key: Option<u64>) -> AnyWidget {
+        let label = label.to_string();
+        let child = crate::framework::leaf(move || crate::widgets::Text::new(label.clone()));
+        match key {
+            Some(key) => crate::framework::keyed_subtree(key, child),
+            None => child,
+        }
+    }
+
+    /// What reached the canvas, as `(text, alpha)` **in paint order**.
+    ///
+    /// A fully transparent layer is never painted at all, so a child missing
+    /// from this list is a child that has finished leaving.
+    fn switcher_painted(tree: &mut crate::framework::ElementTree) -> Vec<(String, u32)> {
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(400, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(400.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        text_alphas(crate::engine_test_stubs::drawn())
+    }
+
+    #[test]
+    fn the_first_child_a_switcher_is_ever_given_is_simply_there() {
+        // Upstream's `initState` calls `_addEntryForNewChild(animate: false)`
+        // and sets the controller straight to one. Nothing fades in from
+        // nowhere on the frame a switcher is mounted.
+        let switcher = AnimatedSwitcher::new(200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        assert!(
+            !tree.advance_frame(1_000_000),
+            "a switcher showing its first child has nothing to animate"
+        );
+        tree.rebuild_dirty();
+        assert_eq!(
+            switcher_painted(&mut tree),
+            vec![("one".to_string(), 255)],
+            "the first child should be fully there at once"
+        );
+    }
+
+    #[test]
+    fn a_different_child_fades_in_over_the_one_it_replaces() {
+        let switcher = AnimatedSwitcher::new(200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+
+        // A different key, so the new child cannot update the old one.
+        tree.rebuild(switcher.widget(Some(switcher_child("two", Some(2)))));
+        assert!(tree.advance_frame(2_000_000), "a switch should want frames");
+        tree.rebuild_dirty();
+
+        tree.advance_frame(2_100_000);
+        tree.rebuild_dirty();
+        let painted = switcher_painted(&mut tree);
+        assert_eq!(
+            painted
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["one", "two"],
+            "the child leaving is painted underneath the one arriving"
+        );
+        for (text, alpha) in &painted {
+            assert!(
+                (*alpha as i64 - 128).abs() < 24,
+                "halfway through, {text} should be about half painted, not {alpha}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_same_child_with_new_contents_does_not_animate_at_all() {
+        // The trap the class is famous for, and the one `decide` documents:
+        // two children of the same type with no keys can update each other, so
+        // the text simply changes and nothing fades.
+        let switcher = AnimatedSwitcher::new(200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", None))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+
+        tree.rebuild(switcher.widget(Some(switcher_child("two", None))));
+        assert!(
+            !tree.advance_frame(2_000_000),
+            "an unkeyed child replacing an unkeyed child of the same type is \
+             not a switch, so nothing should be animating"
+        );
+        tree.rebuild_dirty();
+        assert_eq!(
+            switcher_painted(&mut tree),
+            vec![("two".to_string(), 255)],
+            "the new contents should just be there, with nothing left behind"
+        );
+    }
+
+    #[test]
+    fn the_child_that_has_finished_leaving_stops_being_built() {
+        let switcher = AnimatedSwitcher::new(200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+
+        tree.rebuild(switcher.widget(Some(switcher_child("two", Some(2)))));
+        tree.advance_frame(2_000_000);
+        tree.rebuild_dirty();
+
+        tree.advance_frame(2_200_000);
+        tree.rebuild_dirty();
+        assert_eq!(
+            switcher_painted(&mut tree),
+            vec![("two".to_string(), 255)],
+            "once the reverse duration is up the old entry is gone, not \
+             sitting invisible in the stack for ever"
+        );
+        assert!(
+            !tree.advance_frame(2_400_000),
+            "and a settled switcher stops asking for frames"
+        );
+    }
+
+    #[test]
+    fn a_child_interrupted_halfway_in_leaves_from_halfway() {
+        // `outgoing_runs_in_reverse` in the only place it can be seen:
+        // upstream reverses the entry's own controller, so a child caught at
+        // 0.5 falls to nothing in *half* the reverse duration rather than
+        // starting again from opaque.
+        let switcher = AnimatedSwitcher::new(200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+
+        tree.rebuild(switcher.widget(Some(switcher_child("two", Some(2)))));
+        tree.advance_frame(2_000_000);
+        tree.rebuild_dirty();
+
+        // "two" is halfway in when it is interrupted.
+        tree.advance_frame(2_100_000);
+        tree.rebuild_dirty();
+        tree.rebuild(switcher.widget(Some(switcher_child("three", Some(3)))));
+        tree.advance_frame(2_101_000);
+        tree.rebuild_dirty();
+
+        // A hundred milliseconds later "two" has fallen the 0.5 it had, and
+        // "one" -- which left from opaque at 2_000_000 -- has run out too.
+        tree.advance_frame(2_210_000);
+        tree.rebuild_dirty();
+        assert_eq!(
+            switcher_painted(&mut tree)
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["three"],
+            "a child that only ever reached half opacity should not take a \
+             whole reverse duration to leave"
+        );
+    }
+
+    #[test]
+    fn a_child_taken_away_fades_out_with_nothing_behind_it() {
+        // Upstream's `child: null`: whatever is showing leaves and nothing
+        // replaces it.
+        let switcher = AnimatedSwitcher::new(200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+
+        tree.rebuild(switcher.widget(None));
+        assert!(
+            tree.advance_frame(2_000_000),
+            "a child being taken away is a switch too"
+        );
+        tree.rebuild_dirty();
+        tree.advance_frame(2_100_000);
+        tree.rebuild_dirty();
+        let painted = switcher_painted(&mut tree);
+        assert_eq!(painted.len(), 1, "the child on its way out is still drawn");
+        assert!(
+            (painted[0].1 as i64 - 128).abs() < 24,
+            "and drawn half gone, not {}",
+            painted[0].1
+        );
+
+        tree.advance_frame(2_200_000);
+        tree.rebuild_dirty();
+        assert!(
+            switcher_painted(&mut tree).is_empty(),
+            "and then there is nothing left"
+        );
+    }
+
+    #[test]
+    fn the_fade_out_can_be_given_a_length_of_its_own() {
+        // Upstream's `reverseDuration ?? duration`.
+        let mut switcher = AnimatedSwitcher::new(200_000);
+        switcher.reverse_duration_micros = Some(400_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(switcher.widget(Some(switcher_child("one", Some(1)))));
+        tree.advance_frame(1_000_000);
+        tree.rebuild_dirty();
+
+        tree.rebuild(switcher.widget(Some(switcher_child("two", Some(2)))));
+        tree.advance_frame(2_000_000);
+        tree.rebuild_dirty();
+
+        // The arriving child has landed; the leaving one is only halfway out.
+        tree.advance_frame(2_200_000);
+        tree.rebuild_dirty();
+        let painted = switcher_painted(&mut tree);
+        assert_eq!(painted.len(), 2, "the old child is still on its way out");
+        assert_eq!(painted[0].0, "one");
+        assert!(
+            (painted[0].1 as i64 - 128).abs() < 24,
+            "half of the longer reverse duration should be half gone, not {}",
+            painted[0].1
+        );
+        assert_eq!(painted[1].1, 255, "while the new one has fully arrived");
     }
 
     // -- The fading image ----------------------------------------------------

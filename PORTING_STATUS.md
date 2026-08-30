@@ -27118,3 +27118,72 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 所以它需要"记住上一批"的状态，而 `widget(...)` 那种无状态两段式接不了。
 **先确认本项目的 `StatefulComponent` 能不能在这里担起那个记忆**，
 不能的话这一轮就该先补那个，而不是硬套上一轮的形状。
+
+---
+
+## 第 408 轮：切换器终于能记住上一个孩子——先查的那件事，答案是"能，但差一把钥匙"
+
+上一轮留的问题：`AnimatedSwitcher` 需要"记住上一批孩子"的状态，
+本项目的 `StatefulComponent` 担得起吗？**担得起**——
+`did_update_widget(&self, old: &Self, state)` 拿得到被替换掉的那个 widget，
+`advance` 拿得到帧钟，`build` 读状态，正是 `implicit::Animated` 已经在走的那条路。
+
+**但少一样东西**：切换器要问的那个问题是
+"新孩子是**同一个孩子换了内容**，还是**另一个孩子**"，
+而这个答案在本项目里是 `AnyWidget::can_update`——**私有的**。
+上游的 `Widget.canUpdate` 是**公开静态方法**，而且 `AnimatedSwitcher` 自己就在直接调它。
+所以这一轮先把它公开（连同为什么要公开的注释），
+`decide` 那个用 `widget_type: &'static str` 描述孩子的模型也就不必再描述第二遍——
+新加的 `decide_widgets` 直接问 widget 本人，两个入口共用同一份规则 `outcome(...)`。
+
+### 于是 `AnimatedSwitcher::widget(child)` 成型
+
+`OutgoingChild { number, child, from_opacity, started_micros }` 是上游的 `_ChildEntry`，
+`number` 就是 `_childNumber`——**不是装饰**：没有它，栈里的孩子按位置配对，
+队头一个走掉就会把自己的 element 交给后面那个，一个淡到一半的孩子会**跳**。
+包法用 `keyed_single(number, child, |c| RenderOpacity::new(opacity, c))`，
+正是上游 `KeyedSubtree.wrap(builder(child, animation), _childNumber)` 的形状，
+**孩子自己的 key 留在下面没被覆盖**。
+
+`outgoing_runs_in_reverse()` 这条策略也终于有了能看见它的地方：
+上游倒放的是**那一条自己的控制器**，所以一个只淡入到 0.5 就被打断的孩子
+**从 0.5 往下掉**，用掉的是**半个** reverse duration，不是重新从不透明开始。
+`opacity()` 因此是减法而不是插值。
+
+### 顺手改掉一条**写错的模块注释**
+
+原来的模块头写着"三个类对**正在离开的孩子**的处理是一样的：只画，不接手指、不进语义"。
+去上游对了一遍：**只有 `AnimatedCrossFade` 是这样**。
+`AnimatedSwitcher` 对离开的孩子**什么都不做**——照样可点、照样被读出来；
+`FadeInImage` 则是两张图都 `excludeFromSemantics: true`、外面套一个 `Semantics`，
+**根本没有第二次播报要压**。三个不一样，注释按事实重写了，
+并写明切换器那样做**不是这里的疏漏**：它一次只被交一个孩子，
+根本不知道走的和来的是同一样东西的两个版本，没有立场让谁闭嘴。
+
+### 测试写完是绿的，而那是**仪器瞎了**
+
+六个新测试里有三个失败，报的是"半程时 one 应该画到一半，实际 255"。
+查下去不是实现的问题：**opacity 是一层 layer，段落记录的 argb 是段落自己的颜色**，
+两者从不相干。而 `engine_test_stubs` 对 `push_opacity` **只数个数、不记 alpha**——
+和第 400 轮"存根不记段落字号"是同一族。加了 `Drawn::OpacityLayer { alpha }`。
+
+加完立刻照出**上一轮自己留下的一条空断言**：
+第 407 轮那句 `assert!(leaving.1 > 0 && arriving.1 > 0)` 读的就是段落颜色，
+**在任何透明度下都是 255**，所以它一直恒真。一并改成"两边都在 128 附近"。
+
+变异扫描 9 个，**第一遍全红**——包括"存根不记 alpha"这一条本身（4 红）。
+
+尺子：十六把全部 exit 0。门：Rust 6442 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+`shells.py`：155 个 build（原 154）。
+
+**下一步**：`AnimatedSwitcher` 结构体上**没有 `switchInCurve` / `switchOutCurve`**。
+默认两条都是 `Curves.linear`，所以默认行为一点没差，这一轮没有假装补上。
+但曲线是这个类**最常被改的参数**（`fastOutSlowIn` 几乎是标配），
+而本项目 `Curve` 类型已经有了、`implicit::Animated` 也已经在用它。
+所以下一轮把两条曲线加上去——**但先查一件事**：
+上游的 `CurvedAnimation` 有 `reverseCurve`，倒放时走的是**另一条曲线**，
+本项目的 `Curve::transform` 是单向的。
+**先确认倒放那一半该怎么取值**（是 `switchOutCurve.transform(t)` 还是
+`1 - switchOutCurve.transform(1 - t)`），查上游 `CurvedAnimation.value` 的实际算法，
+不要照着直觉写——这正是第 389 轮那种"三个测试的名字断言了错误的规则"的入口。
