@@ -37,8 +37,16 @@ use std::time::Duration;
 pub enum Curve {
     #[default]
     Linear,
-    /// Decelerating, matching upstream's `Curves.decelerate`.
+    /// Decelerating, matching upstream's `Curves.decelerate`: `1 - (1 - t)^2`.
     Decelerate,
+    /// `t^2`: starts slowly and ends fast.
+    ///
+    /// **Upstream has no name for this one.** It is what
+    /// `FlippedCurve(Curves.decelerate)` computes, and it is here because
+    /// [`Curve::flipped`] answers a closed form per variant rather than
+    /// wrapping -- without somewhere to send it, decelerate had no flip and
+    /// quietly answered itself.
+    Accelerate,
     /// A cubic Bezier easing, given its two control points.
     ///
     /// This is what almost every named curve upstream is -- `Curves.easeIn` is
@@ -122,6 +130,26 @@ impl Curve {
     pub const EASE_IN_OUT_SINE: Curve = Curve::Cubic(0.445, 0.05, 0.55, 0.95);
     pub const EASE_IN_OUT_QUAD: Curve = Curve::Cubic(0.455, 0.03, 0.515, 0.955);
     pub const EASE_IN_OUT_CUBIC: Curve = Curve::Cubic(0.645, 0.045, 0.355, 1.0);
+    /// Upstream's `Curves.easeInOutCubicEmphasized`: Material 3's emphasized
+    /// easing, and the curve a navigation destination's label fades and slides
+    /// on (see
+    /// [`crate::navigation_destinations::destination_label_animation`]).
+    ///
+    /// A `ThreePointCubic` rather than a cubic, and the shape says why. It
+    /// barely moves for the first tenth of its time, then covers a quarter to
+    /// two thirds of the distance between t=0.15 and t=0.20, and is 95% of the
+    /// way there by the half-way point -- so **the entire second half is the
+    /// last five per cent arriving**. The join sits at (0.166, 0.4), in the
+    /// middle of that burst: 40% of the distance in 17% of the time. A single
+    /// cubic through (0,0) and (1,1) cannot both hesitate that long and then
+    /// accelerate that hard.
+    pub const EASE_IN_OUT_CUBIC_EMPHASIZED: Curve = Curve::ThreePointCubic(ThreePointCubic::new(
+        (0.05, 0.0),
+        (0.133333, 0.06),
+        (0.166666, 0.4),
+        (0.208333, 0.82),
+        (0.25, 1.0),
+    ));
     pub const EASE_IN_OUT_QUART: Curve = Curve::Cubic(0.77, 0.0, 0.175, 1.0);
     pub const EASE_IN_OUT_QUINT: Curve = Curve::Cubic(0.86, 0.0, 0.07, 1.0);
     pub const EASE_IN_OUT_EXPO: Curve = Curve::Cubic(1.0, 0.0, 0.0, 1.0);
@@ -163,6 +191,7 @@ impl Curve {
                 let inverted = 1.0 - t;
                 1.0 - inverted * inverted
             }
+            Curve::Accelerate => t * t,
             Curve::Cubic(a, b, c, d) => cubic(a, b, c, d, t),
             Curve::ThreePointCubic(shape) => shape.transform(t),
             Curve::ElasticIn(period) => {
@@ -206,6 +235,8 @@ impl Curve {
         match self {
             Curve::Cubic(a, b, c, d) => Curve::Cubic(1.0 - c, 1.0 - d, 1.0 - a, 1.0 - b),
             Curve::ThreePointCubic(shape) => Curve::ThreePointCubic(shape.flipped()),
+            Curve::Decelerate => Curve::Accelerate,
+            Curve::Accelerate => Curve::Decelerate,
             Curve::BounceIn => Curve::BounceOut,
             Curve::BounceOut => Curve::BounceIn,
             Curve::ElasticIn(period) => Curve::ElasticOut(period),
@@ -1007,6 +1038,91 @@ mod tests {
         );
         assert!(ease_in_out.transform(0.25) < 0.25, "still easing in");
         assert!(ease_in_out.transform(0.75) > 0.75, "already easing out");
+    }
+
+    #[test]
+    fn every_curve_flips_to_what_the_definition_says() {
+        // `flipped` answers a closed form per variant rather than wrapping,
+        // which is exact where the family is closed under flipping and wrong
+        // the moment it is not. This holds every variant to
+        // `flipped(t) == 1 - curve(1 - t)`, which is the whole of what
+        // upstream's `FlippedCurve` computes -- so a variant added later
+        // without a flip of its own is caught here rather than in a widget.
+        let curves = [
+            Curve::Linear,
+            Curve::Decelerate,
+            Curve::Accelerate,
+            Curve::EASE_IN,
+            Curve::EASE_OUT,
+            Curve::EASE_IN_OUT_CUBIC_EMPHASIZED,
+            Curve::ElasticIn(0.4),
+            Curve::ElasticOut(0.4),
+            Curve::ElasticInOut(0.4),
+            Curve::BounceIn,
+            Curve::BounceOut,
+            Curve::BounceInOut,
+        ];
+        for curve in curves {
+            for step in 0..=20 {
+                let t = step as f32 / 20.0;
+                let want = 1.0 - curve.transform(1.0 - t);
+                let got = curve.flipped().transform(t);
+                assert!(
+                    (want - got).abs() < 2e-3,
+                    "{curve:?} at {t}: flipped gave {got}, the definition says {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decelerating_run_backwards_is_accelerating() {
+        // Not itself. `decelerate` is `1 - (1 - t)^2`, so its flip is `t^2` --
+        // a curve that starts slowly and ends fast, which is the opposite
+        // shape. Upstream has no name for it and writes
+        // `FlippedCurve(Curves.decelerate)`.
+        assert_eq!(Curve::Decelerate.flipped(), Curve::Accelerate);
+        assert_eq!(Curve::Accelerate.flipped(), Curve::Decelerate);
+        assert_ne!(
+            Curve::Decelerate.flipped(),
+            Curve::Decelerate,
+            "it is not its own flip"
+        );
+
+        // t squared, and the halfway point is where the two differ most.
+        assert!((Curve::Accelerate.transform(0.5) - 0.25).abs() < 1e-5);
+        assert!((Curve::Decelerate.transform(0.5) - 0.75).abs() < 1e-5);
+        assert!(
+            (Curve::Accelerate.transform(0.5) - Curve::Decelerate.transform(0.5)).abs() > 0.49,
+            "half a unit apart in the middle"
+        );
+    }
+
+    #[test]
+    fn the_emphasized_easing_leaves_late_and_arrives_early() {
+        // Material 3's emphasized curve is two cubics joined at (0.25, 1): it
+        // reaches its destination a quarter of the way through and spends the
+        // rest settling. That is why it is a ThreePointCubic and not a cubic.
+        let curve = Curve::EASE_IN_OUT_CUBIC_EMPHASIZED;
+        // Slow for the first tenth, then a burst: a quarter to two thirds of
+        // the way between t=0.15 and t=0.20.
+        assert!(curve.transform(0.1) < 0.1, "{}", curve.transform(0.1));
+        assert!(curve.transform(0.15) < 0.3);
+        assert!(curve.transform(0.2) > 0.6, "{}", curve.transform(0.2));
+
+        // Already 95% there at the half-way point, and the whole second half
+        // is the last five per cent arriving.
+        assert!(curve.transform(0.5) > 0.94, "{}", curve.transform(0.5));
+        assert!(
+            curve.transform(1.0) - curve.transform(0.5) < 0.06,
+            "half the time for a twentieth of the distance"
+        );
+
+        // The join is at the midpoint upstream names -- 40% of the distance
+        // in 17% of the time, in the middle of the burst.
+        assert!((curve.transform(0.166_666) - 0.4).abs() < 0.02);
+        assert_eq!(curve.transform(0.0), 0.0);
+        assert_eq!(curve.transform(1.0), 1.0);
     }
 
     #[test]

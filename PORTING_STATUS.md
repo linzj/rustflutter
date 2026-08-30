@@ -22336,3 +22336,58 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 包装，而 `easeInOutCubicEmphasized` 是上游用两段三次贝塞尔拼出来的、Material 3 的强调缓动。
 先跑 `python tools/unwalked.py` 看 `Curve` 那一行（上一轮它还在报 `ElasticIn, ElasticOut,
 ElasticInOut` 没被走到），再按行为查这两样在不在。
+
+---
+
+## 第 322 轮：减速曲线倒过来放不是它自己，而上一轮我把连接点写错了
+
+上一轮把“回程用 `flipped`”写进了文档却**没有验证本项目能不能表示它**。这一轮去验，
+两样都查出了问题。
+
+**一、`Curve::flipped` 对 `Decelerate` 是错的，而且错得很大。**
+
+本项目的 `flipped()` 不是像上游 `FlippedCurve` 那样包一层，而是**逐个变体给闭式解**，
+最后一条 `other => other` 兜底。这在“这一族对翻折封闭”时是精确的，一旦不封闭就悄悄错掉——
+`Decelerate` 就落在兜底里，于是它的翻折答成了它自己。
+
+`decelerate` 是 `1 - (1-t)^2`，按定义 `1 - curve(1-t)` 翻过来是 `t^2`，一条**先慢后快**的
+曲线，形状正好相反。**t=0.5 处两者差 0.5**——整整半个单位。
+
+不靠猜：写了一段探针，对每个变体逐点比 `flipped().transform(t)` 与 `1 - transform(1-t)`。
+结果是 `Decelerate` 误差 0.5，**其余全部为 0**——包括 ElasticIn/Out 的对调、
+ElasticInOut、BounceInOut，那些原本我也怀疑的都是精确的。探针没有删掉，而是留成了
+一条常驻测试 `every_curve_flips_to_what_the_definition_says`：它把**每个变体**按定义钉住，
+所以以后新加一个没写翻折的变体，会在这里被抓住，而不是在某个控件里。
+
+修法是加一个 `Accelerate` 变体（`t^2`）——**上游没有名字给它**，上游写的是
+`FlippedCurve(Curves.decelerate)`；这里必须有个地方可去，否则 decelerate 无处可翻。
+
+**二、`Curves.easeInOutCubicEmphasized` 本项目没有**，而那正是上一轮
+`onlyShowSelected` 用的曲线。`ThreePointCubic` 这个形状早就在了，缺的是这条具体的常量。
+补上五个控制点。
+
+**顺带纠正上一轮／本轮我自己写错的一句。** 我在文档里说这条曲线“连接点在 (0.25, 1)，
+所以四分之一时间就走完了”。不对：`ThreePointCubic(a1, b1, midpoint, a2, b2)` 里
+**(0.25, 1) 是 b2**，连接点是 **(0.166666, 0.4)**。断言按这句写出来直接红了
+（t=0.25 实测 0.771，不是 >0.9）。采样了 21 个点重写：**前十分之一几乎不动，
+t=0.15 到 0.20 之间从四分之一冲到三分之二，半程时已经到了 95%——整个后半程是最后那 5%
+在落地。** 连接点 (0.166, 0.4) 正在这一冲的中间：17% 的时间走 40% 的路。
+这才是 Material 3 “emphasized” 的性格，也是它非得是两段拼接的原因。
+
+**变异扫描 12 个，全红。** 包括：decelerate 重新变回自己的翻折、只翻一半、
+accelerate 写成 decelerate／线性／三次方、elastic 与 bounce 停止对调、
+cubic 翻折忘了交换两对控制点、three-point cubic 不再翻折、
+emphasized 的连接点挪到远端／失去后半段的落地／改成一上来就快。
+
+**副产品**：`tools/unwalked.py` 原本报 `Curve` 的 `ElasticIn, ElasticOut, ElasticInOut`
+没被走到，那条定义测试构造了每一个变体，这一行现在从报告里消失了。
+
+尺子：十六把全部 exit 0。门：6208 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`flipped()` 这种“逐变体闭式解 + 兜底”的写法值得再查一处同构的地方——
+`animation.rs` 里 `ReverseAnimation`、`ReverseTween`、`FlippedTweenSequence` 都是同一个
+“倒过来”的主题，而它们各自倒的是**不同的东西**（状态、值、区间顺序）。
+先按行为查 `FlippedTweenSequence`：上游的 `flipped` 不只是把区间列表反转，
+每一段的 `begin`／`end` 也要跟着换，而且权重的累计方向也变了——漏掉任何一样都会得到一条
+“看起来在倒放、其实走错路”的动画。
