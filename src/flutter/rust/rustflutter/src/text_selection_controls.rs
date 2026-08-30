@@ -39,7 +39,7 @@
 //! which puts the handles and the toolbar on the screen. This section used to
 //! say it did not exist.
 
-use crate::engine::Rect;
+use crate::engine::{Color, Rect};
 use crate::render::{EdgeInsets, Offset, Size};
 
 /// Upstream `TextSelectionHandleType` (`rendering/selection.dart`).
@@ -690,6 +690,95 @@ impl CupertinoTextSelectionToolbarButton {
     /// between them and no icons, so the height is what gives each word a
     /// target; a Material menu is a row of chips that already have their own.
     pub const PADDING: EdgeInsets = EdgeInsets::symmetric(16.0, 18.0);
+
+    /// Upstream's `_kToolbarTextColor`: black on light, white on dark.
+    pub const TEXT_COLOR: crate::cupertino::CupertinoDynamicColor =
+        crate::cupertino::CupertinoDynamicColor::with_brightness(
+            crate::cupertino::CupertinoColors::BLACK,
+            crate::cupertino::CupertinoColors::WHITE,
+        );
+
+    /// Upstream's `_kToolbarPressedColor`: `0x10000000` on light,
+    /// `0x10FFFFFF` on dark.
+    ///
+    /// **Six per cent of an alpha, and the colour under it is the toolbar's
+    /// own.** It is a wash rather than a fill, so a pressed button reads as
+    /// the same button darkened and not as a new surface.
+    pub const PRESSED_COLOR: crate::cupertino::CupertinoDynamicColor =
+        crate::cupertino::CupertinoDynamicColor::with_brightness(
+            Color::argb(0x10, 0x00, 0x00, 0x00),
+            Color::argb(0x10, 0xFF, 0xFF, 0xFF),
+        );
+
+    /// Upstream's `_kToolbarButtonFontStyle`.
+    ///
+    /// Upstream writes `inherit: false`, which is the part worth naming: the
+    /// toolbar's text takes **nothing** from the ambient style. A selection
+    /// menu floats over whatever the reader was reading, and inheriting from
+    /// it would size the menu's own words by the paragraph underneath.
+    pub const FONT_SIZE: f32 = 15.0;
+    /// Negative -- the letters are pulled *together*, which is how iOS sets
+    /// this row of short words.
+    pub const LETTER_SPACING: f32 = -0.15;
+    pub const FONT_WEIGHT: i32 = 400;
+
+    /// Whether the button's own opacity fades while it is held down.
+    ///
+    /// **It does not.** Upstream passes `pressedOpacity: 1.0` to switch off
+    /// the fade a `CupertinoButton` would otherwise do, and darkens the
+    /// background instead: "There's no foreground fade on iOS toolbar
+    /// anymore, just the background is darkened."
+    ///
+    /// The two are not interchangeable. Fading the foreground would take the
+    /// *label* with it, so the word the reader is pressing would be the
+    /// hardest one on the row to read at the moment they press it.
+    pub const PRESSED_OPACITY: f32 = 1.0;
+
+    /// The background while the button is held, and while it is not.
+    ///
+    /// Transparent at rest **and** transparent when disabled -- upstream
+    /// passes `disabledColor: CupertinoColors.transparent` -- so a disabled
+    /// button is distinguished only by its grey text. There is no third
+    /// background.
+    pub fn background(pressed: bool, dark: bool) -> Color {
+        if !pressed {
+            return crate::cupertino::CupertinoColors::TRANSPARENT;
+        }
+        let color = CupertinoTextSelectionToolbarButton::PRESSED_COLOR;
+        if dark { color.dark_color } else { color.color }
+    }
+
+    /// The label's colour, which is the one thing that marks a disabled
+    /// button: upstream chooses `CupertinoColors.inactiveGray` when
+    /// `onPressed` is null.
+    pub fn label_color(enabled: bool, dark: bool) -> Color {
+        if !enabled {
+            let grey = crate::cupertino::CupertinoColors::INACTIVE_GRAY;
+            return if dark { grey.dark_color } else { grey.color };
+        }
+        let color = CupertinoTextSelectionToolbarButton::TEXT_COLOR;
+        if dark { color.dark_color } else { color.color }
+    }
+
+    /// Whether the button listens for taps at all.
+    ///
+    /// # The button's own `onPressed` does not handle the tap
+    ///
+    /// Upstream builds a `CupertinoButton` with `onPressed` **only so that it
+    /// enables and disables correctly** -- its own comment says so -- and then
+    /// wraps it in a `GestureDetector` that does the work, because the press
+    /// has to change a background colour rather than an opacity and only the
+    /// outer detector can see `onTapDown`, `onTapUp` and `onTapCancel`
+    /// separately.
+    ///
+    /// The wrapper is added **only when there is something to press**. A
+    /// disabled button is returned bare, so it has no gesture arena entry at
+    /// all -- it does not merely ignore taps, it never competes for them, and
+    /// a scroll starting on top of a disabled menu button is not delayed by
+    /// one.
+    pub fn wraps_in_gesture_detector(enabled: bool) -> bool {
+        enabled
+    }
 }
 
 /// Upstream `CupertinoDesktopTextSelectionToolbar`.
@@ -1151,6 +1240,82 @@ mod tests {
         assert!(
             CupertinoTextSelectionToolbar::ARROW_WIDTH
                 > CupertinoTextSelectionToolbar::ARROW_HEIGHT
+        );
+    }
+
+    #[test]
+    fn a_pressed_menu_button_darkens_its_background_and_does_not_fade() {
+        // Fading the foreground would take the label with it, so the word the
+        // reader is pressing would be the hardest one on the row to read at
+        // the moment they press it.
+        type Button = CupertinoTextSelectionToolbarButton;
+        assert_eq!(Button::PRESSED_OPACITY, 1.0, "the fade is switched off");
+
+        let resting = Button::background(false, false);
+        let pressed = Button::background(true, false);
+        assert_eq!(resting, crate::cupertino::CupertinoColors::TRANSPARENT);
+        assert_ne!(pressed, resting, "the background is what changes");
+    }
+
+    #[test]
+    fn the_press_is_a_wash_over_the_toolbar_rather_than_a_new_surface() {
+        // Six per cent of an alpha, and opposite colours by brightness: the
+        // button reads as itself darkened, not as something laid on top.
+        type Button = CupertinoTextSelectionToolbarButton;
+        let light = Button::background(true, false);
+        let dark = Button::background(true, true);
+        assert_eq!(light, crate::engine::Color::argb(0x10, 0x00, 0x00, 0x00));
+        assert_eq!(dark, crate::engine::Color::argb(0x10, 0xFF, 0xFF, 0xFF));
+        assert_ne!(light, dark, "black on light, white on dark");
+    }
+
+    #[test]
+    fn a_disabled_menu_button_is_marked_only_by_its_grey_text() {
+        // `disabledColor: transparent`, so there is no third background --
+        // disabled and resting look the same behind the word.
+        type Button = CupertinoTextSelectionToolbarButton;
+        assert_eq!(
+            Button::background(false, false),
+            crate::cupertino::CupertinoColors::TRANSPARENT
+        );
+
+        let enabled = Button::label_color(true, false);
+        let disabled = Button::label_color(false, false);
+        assert_ne!(enabled, disabled);
+        assert_eq!(
+            disabled,
+            crate::cupertino::CupertinoColors::INACTIVE_GRAY.color
+        );
+        assert_eq!(enabled, crate::cupertino::CupertinoColors::BLACK);
+        assert_eq!(
+            Button::label_color(true, true),
+            crate::cupertino::CupertinoColors::WHITE,
+            "and white on dark"
+        );
+    }
+
+    #[test]
+    fn a_disabled_menu_button_never_enters_the_gesture_arena() {
+        // Upstream returns the bare button when `onPressed` is null rather
+        // than a detector that ignores taps, so a scroll starting on top of a
+        // disabled button is not delayed by one.
+        type Button = CupertinoTextSelectionToolbarButton;
+        assert!(Button::wraps_in_gesture_detector(true));
+        assert!(!Button::wraps_in_gesture_detector(false));
+    }
+
+    #[test]
+    fn the_menu_text_takes_nothing_from_the_page_underneath() {
+        // Upstream's `inherit: false`. A selection menu floats over whatever
+        // was being read, and inheriting would size its words by that
+        // paragraph.
+        type Button = CupertinoTextSelectionToolbarButton;
+        assert_eq!(Button::FONT_SIZE, 15.0);
+        assert_eq!(Button::FONT_WEIGHT, 400);
+        assert!(
+            Button::LETTER_SPACING < 0.0,
+            "pulled together, not apart: {}",
+            Button::LETTER_SPACING
         );
     }
 

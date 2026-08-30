@@ -22597,3 +22597,49 @@ AlwaysStopped 与两个常量）走完了。
 `CupertinoLocalizations`、`TextSelectionGestureDetectorBuilder`、`MagnifierController`
 三次都证明了那个比值有很大一块是改名造成的，所以先读上游那一个类的**行为**，
 再决定值不值得做一轮。
+
+---
+
+## 第 327 轮：按下去暗的是背景不是前景，而禁用的按钮压根不进手势竞技场
+
+回队头。`CupertinoTextSelectionToolbarButton`（0.29，2/7）这次**不是改名造成的**：
+标签映射（`getButtonLabel` 那张表）在 `icon_data.rs` 里端得很齐，但按钮**自己的决定**
+在本项目里只有一个 `PADDING`。
+
+四件按名字猜不到的事：
+
+1. **按下去不淡出，是背景变暗。** 上游给 `CupertinoButton` 传 `pressedOpacity: 1.0`，
+   **把它本来会做的淡出关掉**，改成在透明与 `_kToolbarPressedColor` 之间换背景色；
+   注释写着“iOS 工具条上已经没有前景淡出了，只是背景变暗”。
+   两者不能互换：淡前景会把**标签一起淡掉**，于是读者正按着的那个词，会在他按下的那一刻
+   变成整排里最难看清的一个。
+2. **那层暗色是 6% 的 alpha，压在工具条自己的颜色上**（浅色 `0x10000000`、
+   深色 `0x10FFFFFF`）。是一层水洗而不是一块填充，所以按下的按钮读起来是**它自己变暗了**，
+   不是上面盖了个新面。
+3. **禁用只由灰字体现。** `disabledColor: CupertinoColors.transparent`——
+   静止和禁用的背景是同一个透明，没有第三种背景；变的只有文字，从黑/白变成 `inactiveGray`。
+4. **禁用的按钮连手势竞技场都不进。** 上游只在 `onPressed != null` 时才把按钮包进
+   `GestureDetector`，否则**原样返回裸按钮**。而且传给 `CupertinoButton` 的 `onPressed`
+   **并不处理点击**——上游注释明说它只是为了让按钮正确地启用/禁用，真正干活的是外面那个
+   detector，因为按下要改的是背景色而不是不透明度，只有外层能分别看到
+   `onTapDown`／`onTapUp`／`onTapCancel`。
+   于是禁用的按钮不是“收到点击但不理”，而是**从来不去争这个点击**：一个从禁用菜单按钮上
+   起手的滑动，不会被它拖慢一拍。
+
+字体那条也记下：`inherit: false`——工具条的字**一点都不从环境样式继承**。
+选择菜单浮在读者正在读的东西上面，继承会让菜单自己的词按下面那段正文的字号来排。
+15pt、w400、字距 **-0.15（负的，往一起收）**。
+
+**变异扫描 12 个，第一遍十一个红，一个漏是我的模式不唯一**（`-0.15` 在文件里出现两次，
+Material 那个按钮也有），把上一行文档带进模式后转红。其余包括：按下改回淡前景、
+静止背景不透明、按下不换背景、两个亮度用同一个颜色、水洗改成不透明、亮度读反、
+禁用保留启用时的文字色、标签不看亮度、禁用也进竞技场、字距变正、字重变粗、字号小一号。
+
+尺子：十六把全部 exit 0。门：6228 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：同一个文件里还剩一样没端——`liveTextInput` 是**唯一一个内容不是文字的按钮**，
+上游给它 `SizedBox.square` 里放一个图标而不是 `Text`（`_getContentWidget` 的 switch 里
+只有它单独一支）。而第 316 轮已经查明 `liveTextInput` 在 `getButtonLabel` 里答的是空串——
+两件事正好对上：**它没有标签，是因为它根本不显示标签**。先按行为确认本项目
+`icon_data.rs` 那条“空串”注释有没有把这层理由写进去，再决定要不要把图标那一支端过来。
