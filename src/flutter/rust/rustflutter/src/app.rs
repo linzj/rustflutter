@@ -315,6 +315,94 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
     bits
 }
 
+/// One frame's semantics tree, packed for the C ABI and still owning what the
+/// pointers point at.
+///
+/// # Why this is a struct and not a loop inside `send_semantics`
+///
+/// It was a loop, and that made the whole of it untestable: `send_semantics`
+/// needs an `AppInstance` and a host callback, so nothing ever ran the twenty
+/// lines that copy a [`crate::semantics::SemanticsNode`] into an
+/// [`RfSemanticsNode`]. That was measured rather than assumed -- making every
+/// node cross with `left: 0.0` left the entire suite green. The pure packers
+/// each had tests and the walk that produces the nodes had many; the code
+/// between them, which is the only place a field can be read off the wrong
+/// node or written into the wrong slot, had none.
+///
+/// # The pointers are why it is one struct
+///
+/// `raw` holds borrowed pointers into `strings` and `children`, so the three
+/// have to travel together and be dropped together. Moving this struct is safe
+/// and that is not an accident of it being small: what the pointers address is
+/// each `CString`'s and each inner `Vec`'s own heap allocation, and moving the
+/// outer `Vec` moves the handles rather than the buffers.
+struct PackedSemantics {
+    raw: Vec<RfSemanticsNode>,
+    /// Five per node, in the order the fields are read back out.
+    strings: Vec<std::ffi::CString>,
+    children: Vec<Vec<i32>>,
+}
+
+impl PackedSemantics {
+    fn of(nodes: &[crate::semantics::SemanticsNode]) -> PackedSemantics {
+        // A string the framework knows cannot contain a NUL, since it came
+        // from Rust `String`s -- but an interior NUL would truncate a label
+        // rather than crash, so it is replaced instead of unwrapped.
+        let owned =
+            |text: &str| std::ffi::CString::new(text.replace('\0', " ")).unwrap_or_default();
+
+        let mut strings: Vec<std::ffi::CString> = Vec::with_capacity(nodes.len() * 5);
+        let mut children: Vec<Vec<i32>> = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            strings.push(owned(&node.properties.label));
+            strings.push(owned(&node.properties.value));
+            strings.push(owned(&node.properties.hint));
+            strings.push(owned(&node.properties.increased_value));
+            strings.push(owned(&node.properties.decreased_value));
+            children.push(node.children.clone());
+        }
+
+        let raw: Vec<RfSemanticsNode> = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let base = index * 5;
+                RfSemanticsNode {
+                    id: node.id,
+                    flags: pack_semantics_flags(&node.properties.flags),
+                    actions: node.properties.actions,
+                    left: node.left,
+                    top: node.top,
+                    right: node.right,
+                    bottom: node.bottom,
+                    label: strings[base].as_ptr(),
+                    value: strings[base + 1].as_ptr(),
+                    hint: strings[base + 2].as_ptr(),
+                    increased_value: strings[base + 3].as_ptr(),
+                    decreased_value: strings[base + 4].as_ptr(),
+                    scroll_position: node.properties.scroll_position as f64,
+                    scroll_extent_min: node.properties.scroll_extent_min as f64,
+                    scroll_extent_max: node.properties.scroll_extent_max as f64,
+                    children: children[index].as_ptr(),
+                    child_count: children[index].len(),
+                    text_direction: pack_text_direction(node.properties.text_direction),
+                    // -1 rather than 0, because the engine's fields are plain
+                    // `int32_t` with no null: row 0 is a real answer and a
+                    // zero must not be mistaken for "this is not a list".
+                    scroll_index: pack_scroll_count(node.properties.scroll_index),
+                    scroll_children: pack_scroll_count(node.properties.scroll_child_count),
+                }
+            })
+            .collect();
+
+        PackedSemantics {
+            raw,
+            strings,
+            children,
+        }
+    }
+}
+
 /// Packs one of the two scroll counts into the ABI's `int32_t`.
 ///
 /// `flutter::SemanticsNode::scrollIndex` and `scrollChildren` are plain
@@ -1059,77 +1147,27 @@ impl AppInstance {
     /// wants before returning, which is what upstream's `SemanticsUpdate` does
     /// too. The `CString`s are held in a vector for exactly as long as the
     /// pointers into them are on the other side of the call.
-    /// # Nothing here is covered by a test
+    /// # What is covered here and what is not
     ///
-    /// Measured, not assumed: making every node cross with `left: 0.0` turns
-    /// the whole suite green, and so does dropping both scroll counts. The
-    /// pure packers this calls -- [`pack_semantics_flags`],
-    /// [`pack_text_direction`], [`pack_scroll_count`] -- are each pinned by
-    /// their own tests, and the walk that produces the nodes is pinned by many.
-    /// **The twenty lines that copy one into the other are pinned by none**,
-    /// which is the one place a field can be read off the wrong node, or off
-    /// the right node and into the wrong slot.
-    ///
-    /// What is needed is a fixture: an [`RfAppHost`] whose `update_semantics`
-    /// records what it was handed, so a frame can be flushed and the bytes
-    /// inspected. That is a round of its own rather than a note, but the note
-    /// belongs here until then.
+    /// The packing is [`PackedSemantics::of`], which is a free function so
+    /// that it can be run without an `AppInstance` -- and it is run, against
+    /// three nodes that disagree in every field. What is left in this method
+    /// is the call itself: the null check, the view id, and the length. **That
+    /// much is still uncovered**, because reaching it needs a host, and it is
+    /// three lines rather than twenty.
     fn send_semantics(&self, view_id: i64, nodes: &[crate::semantics::SemanticsNode]) {
         let Some(update) = self.host.update_semantics else {
             return;
         };
-
-        // A string the framework knows cannot contain a NUL, since it came
-        // from Rust `String`s -- but an interior NUL would truncate a label
-        // rather than crash, so it is replaced instead of unwrapped.
-        let owned =
-            |text: &str| std::ffi::CString::new(text.replace('\0', " ")).unwrap_or_default();
-
-        let mut strings: Vec<std::ffi::CString> = Vec::with_capacity(nodes.len() * 5);
-        let mut children: Vec<Vec<i32>> = Vec::with_capacity(nodes.len());
-        for node in nodes {
-            strings.push(owned(&node.properties.label));
-            strings.push(owned(&node.properties.value));
-            strings.push(owned(&node.properties.hint));
-            strings.push(owned(&node.properties.increased_value));
-            strings.push(owned(&node.properties.decreased_value));
-            children.push(node.children.clone());
-        }
-
-        let raw: Vec<RfSemanticsNode> = nodes
-            .iter()
-            .enumerate()
-            .map(|(index, node)| {
-                let base = index * 5;
-                RfSemanticsNode {
-                    id: node.id,
-                    flags: pack_semantics_flags(&node.properties.flags),
-                    actions: node.properties.actions,
-                    left: node.left,
-                    top: node.top,
-                    right: node.right,
-                    bottom: node.bottom,
-                    label: strings[base].as_ptr(),
-                    value: strings[base + 1].as_ptr(),
-                    hint: strings[base + 2].as_ptr(),
-                    increased_value: strings[base + 3].as_ptr(),
-                    decreased_value: strings[base + 4].as_ptr(),
-                    scroll_position: node.properties.scroll_position as f64,
-                    scroll_extent_min: node.properties.scroll_extent_min as f64,
-                    scroll_extent_max: node.properties.scroll_extent_max as f64,
-                    children: children[index].as_ptr(),
-                    child_count: children[index].len(),
-                    text_direction: pack_text_direction(node.properties.text_direction),
-                    // -1 rather than 0, because the engine's fields are plain
-                    // `int32_t` with no null: row 0 is a real answer and a
-                    // zero must not be mistaken for "this is not a list".
-                    scroll_index: pack_scroll_count(node.properties.scroll_index),
-                    scroll_children: pack_scroll_count(node.properties.scroll_child_count),
-                }
-            })
-            .collect();
-
-        unsafe { update(self.host.user_data, view_id, raw.as_ptr(), raw.len()) };
+        let packed = PackedSemantics::of(nodes);
+        unsafe {
+            update(
+                self.host.user_data,
+                view_id,
+                packed.raw.as_ptr(),
+                packed.raw.len(),
+            )
+        };
     }
 
     /// Routes one event to the tree that was painted for its view.
@@ -1963,11 +2001,211 @@ mod abi {
 
 #[cfg(test)]
 mod tests {
-    use super::{compose_frame, pack_text_direction};
+    use super::{PackedSemantics, compose_frame, pack_text_direction};
     use crate::direction::TextDirection;
     use crate::engine::Color;
     use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
     use crate::render::Size;
+    use crate::semantics::{SemanticsNode, SemanticsProperties};
+
+    // -- What crosses to the platform ----------------------------------------------
+
+    /// Reads a NUL-terminated string back out of a packed node, the way the
+    /// C++ side does.
+    ///
+    /// # Safety
+    ///
+    /// The pointer is one the packer filled in, and the [`PackedSemantics`]
+    /// that owns the bytes must still be alive -- which is exactly the
+    /// invariant the struct exists to hold, so a test that gets this wrong is
+    /// a test of the thing being tested.
+    fn read(ptr: *const std::ffi::c_char) -> String {
+        assert!(!ptr.is_null(), "the ABI promises never NULL");
+        unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Two nodes that differ in **every** field, so that a value taken from
+    /// the wrong one of them cannot look right by coincidence.
+    fn two_unlike_nodes() -> Vec<SemanticsNode> {
+        let first = SemanticsNode {
+            id: 11,
+            properties: SemanticsProperties {
+                label: "first label".to_string(),
+                value: "first value".to_string(),
+                hint: "first hint".to_string(),
+                increased_value: "first up".to_string(),
+                decreased_value: "first down".to_string(),
+                text_direction: Some(TextDirection::Ltr),
+                actions: 5,
+                scroll_position: 12.0,
+                scroll_extent_min: 1.0,
+                scroll_extent_max: 100.0,
+                scroll_index: Some(3),
+                scroll_child_count: Some(40),
+                ..SemanticsProperties::default()
+            },
+            left: 1.0,
+            top: 2.0,
+            right: 3.0,
+            bottom: 4.0,
+            children: vec![22],
+            is_merged_into_parent: false,
+            index_in_parent: None,
+        };
+        let second = SemanticsNode {
+            id: 22,
+            properties: SemanticsProperties {
+                label: "second label".to_string(),
+                value: "second value".to_string(),
+                hint: "second hint".to_string(),
+                increased_value: "second up".to_string(),
+                decreased_value: "second down".to_string(),
+                text_direction: Some(TextDirection::Rtl),
+                actions: 6,
+                ..SemanticsProperties::label("second label")
+            },
+            left: 5.0,
+            top: 6.0,
+            right: 7.0,
+            bottom: 8.0,
+            children: vec![33],
+            is_merged_into_parent: false,
+            index_in_parent: None,
+        };
+        // A third, so that the second is not the last: a child pointer taken
+        // from the wrong node is invisible while the only other node is a leaf
+        // with nothing to read.
+        let third = SemanticsNode {
+            id: 33,
+            properties: SemanticsProperties::label("third label"),
+            left: 9.0,
+            top: 10.0,
+            right: 11.0,
+            bottom: 12.0,
+            children: Vec::new(),
+            is_merged_into_parent: false,
+            index_in_parent: None,
+        };
+        vec![first, second, third]
+    }
+
+    #[test]
+    fn every_field_crosses_from_the_node_it_belongs_to() {
+        // The twenty lines nothing ran. The two nodes disagree in every field,
+        // so reading one off its neighbour -- or out of the wrong slot of the
+        // same node -- shows up as a value that belongs somewhere else rather
+        // than as a plausible number.
+        let nodes = two_unlike_nodes();
+        let packed = PackedSemantics::of(&nodes);
+        assert_eq!(packed.raw.len(), 3);
+
+        let first = &packed.raw[0];
+        assert_eq!(first.id, 11);
+        assert_eq!(first.actions, 5);
+        assert_eq!((first.left, first.top), (1.0, 2.0));
+        assert_eq!((first.right, first.bottom), (3.0, 4.0));
+        // The five strings, in the order the struct lists them. Their slots
+        // are the easiest thing here to transpose and the hardest to notice:
+        // a hint read as a value is announced, just in the wrong voice.
+        assert_eq!(read(first.label), "first label");
+        assert_eq!(read(first.value), "first value");
+        assert_eq!(read(first.hint), "first hint");
+        assert_eq!(read(first.increased_value), "first up");
+        assert_eq!(read(first.decreased_value), "first down");
+        assert_eq!(first.scroll_position, 12.0);
+        assert_eq!(first.scroll_extent_min, 1.0);
+        assert_eq!(first.scroll_extent_max, 100.0);
+        assert_eq!(first.scroll_index, 3);
+        assert_eq!(first.scroll_children, 40);
+        assert_eq!(
+            first.text_direction,
+            pack_text_direction(Some(TextDirection::Ltr))
+        );
+
+        let second = &packed.raw[1];
+        assert_eq!(second.id, 22);
+        assert_eq!(second.actions, 6);
+        assert_eq!((second.left, second.top), (5.0, 6.0));
+        assert_eq!((second.right, second.bottom), (7.0, 8.0));
+        assert_eq!(read(second.label), "second label");
+        assert_eq!(read(second.value), "second value");
+        assert_eq!(read(second.hint), "second hint");
+        assert_eq!(read(second.increased_value), "second up");
+        assert_eq!(read(second.decreased_value), "second down");
+        assert_eq!(
+            second.text_direction,
+            pack_text_direction(Some(TextDirection::Rtl))
+        );
+        // Not a list, so both counts are the absence rather than a zero.
+        assert_eq!(second.scroll_index, -1);
+        assert_eq!(second.scroll_children, -1);
+        assert!(
+            second.scroll_position.is_nan(),
+            "NaN is the ABI's no answer"
+        );
+    }
+
+    #[test]
+    fn a_child_list_crosses_as_a_pointer_and_a_length_that_agree() {
+        // Two fields that have to be read together, and the pair the C++ side
+        // walks with `assign(in.children, in.children + in.child_count)`. A
+        // length off by one there reads past the end of the allocation.
+        let nodes = two_unlike_nodes();
+        let packed = PackedSemantics::of(&nodes);
+
+        let first = &packed.raw[0];
+        assert_eq!(first.child_count, 1);
+        let read_back =
+            unsafe { std::slice::from_raw_parts(first.children, first.child_count) }.to_vec();
+        assert_eq!(read_back, vec![22], "and it is the child the node named");
+
+        let second = &packed.raw[1];
+        assert_eq!(second.child_count, 1);
+        let second_children =
+            unsafe { std::slice::from_raw_parts(second.children, second.child_count) }.to_vec();
+        assert_eq!(
+            second_children,
+            vec![33],
+            "its own child, not the one the node before it named"
+        );
+
+        assert_eq!(packed.raw[2].child_count, 0, "a leaf claims no children");
+    }
+
+    #[test]
+    fn a_label_with_a_nul_in_it_arrives_shortened_and_not_truncated() {
+        // A `String` may hold a NUL; a C string may not. Unwrapping would
+        // panic on a label the framework had every right to build, and
+        // passing it through would silently cut the label at the NUL -- so
+        // the byte is replaced and the words after it survive.
+        let mut nodes = two_unlike_nodes();
+        nodes[0].properties.label = "before\0after".to_string();
+        let packed = PackedSemantics::of(&nodes);
+        assert_eq!(read(packed.raw[0].label), "before after");
+    }
+
+    #[test]
+    fn the_packed_bytes_outlive_the_move_that_returns_them() {
+        // `raw` points into `strings` and `children`, and the packer hands all
+        // three back by value -- so every pointer in it survives a move. It
+        // does, because what they address is each `CString`'s own allocation
+        // rather than the `Vec`'s buffer, but "it does" is the kind of claim
+        // that should be run rather than reasoned about.
+        let packed = Box::new(PackedSemantics::of(&two_unlike_nodes()));
+        let moved = *packed;
+        let moved_again = moved;
+        assert_eq!(read(moved_again.raw[0].label), "first label");
+        assert_eq!(read(moved_again.raw[1].hint), "second hint");
+        let children =
+            unsafe { std::slice::from_raw_parts(moved_again.raw[0].children, 1) }.to_vec();
+        assert_eq!(children, vec![22]);
+        // Named so the fields are not "never read" -- they are read, by the
+        // pointers above, which is the whole point of keeping them.
+        assert_eq!(moved_again.strings.len(), 15);
+        assert_eq!(moved_again.children.len(), 3);
+    }
 
     const BACKGROUND: Color = Color(0xff101418);
     const MARK: Color = Color(0xffcc0000);
