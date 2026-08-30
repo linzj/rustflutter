@@ -25596,3 +25596,72 @@ C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建
 **排序状态是孩子扛不动的**——先查本项目的表有没有排序这回事）；
 以及 `SimpleDialogOption -> "Delete"`（**它是个按钮**，却没有 `+flags`）。
 两个里**先做 `SimpleDialogOption`**：它更小、损失更直接（一个选项听起来像一行字）。
+
+---
+
+## 第 381 轮：水波纹按不动——读屏用户能读到它，却没有办法按下去
+
+按“下一步”查 `SimpleDialogOption`。上游它**只是一个 `InkWell` 加内边距**，
+自己不带任何 semantics。真正给东西的是 `ink_well.dart:1401`：
+
+```dart
+child: Semantics(
+  onTap: widget.excludeFromSemantics || widget.onTap == null ? null : simulateTap,
+```
+
+**没有 `button` 标志**（一个水波纹是“怎么按”，不是“它是什么”），
+**但有 Tap 动作**。本项目的 `InkResponse` 一个都没有——
+于是每一个建在水波纹上的控件（对话框的选项、表格的行）
+读屏用户都**读得到、按不动**。这不是命名差异，是一条走不通的路。
+
+### 第一版接错了地方，而且比原来更糟
+
+我先用 `semantics::tappable` 给它做了个注解节点。清单当场显示：
+
+```
+SimpleDialogOption -> "" +actions, "Delete"
+```
+
+**两站**：一个空白的、能按的，压在一个有字的、按不动的上面。
+比原来的沉默更糟——读屏用户会停在一个不知道是什么的东西上。
+
+原因是本项目里“带字”有两条路，而我选了不适用的那条：
+**注解**自己说出词（复选框、标签页——它们被交了一个字符串），
+**折叠**把底下的词收上来（`RenderMergeSemanticsBox`）。
+水波纹被交的是一个 *builder*，**它根本不知道自己包着什么**，只能折叠。
+上游不用做这个选择，因为它的非 container `Semantics` 靠配置合并进孩子；
+在这里，折叠就是那句话的写法。
+
+而在这一轮之前，**折叠出来的节点是按不动的**：它的编号是 `take_text_id()`
+现编的，而动作是engine按编号送回来的。于是补了一条
+`RenderBox::merged_node_action`（默认 `None`，三处转发），
+让折叠可以拿一个稳定编号和一个处理函数；
+`find_handler` 也多看一眼折叠——否则会广播一个永远送不到的动作。
+
+**`simulateTap` 而不是 `onTap`**：上游先 `_startSplash` 再 `handleTap`。
+不是装饰——读屏用户旁边常有人看着屏幕，
+一次“回调跑了但屏幕上什么都没发生”的按压，看起来就是丢了。
+
+### 变异扫描 9 个，第一遍 5 红、4 个绿——四个全是真窟窿
+
+* **禁用的水波纹照样说自己能按**（`filter(|_| self.enabled)` 拿掉）——没测。
+* **水波从角落而不是中心长出来**——我的测试只数了有没有圆，没看在哪。
+* **被裁掉的折叠仍然能按**——`find_handler` 那条 clip 检查没人守。
+* **重建后折叠留着上一版的处理函数**——`update_from` 没接 `properties`/`node`
+  （`properties` 是顺带发现的：它本来就没接过）。
+
+四条测试补齐，第二遍**九个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6361 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+清单这一行现在读作 `SimpleDialogOption -> "Delete" +actions`。
+
+**顺带修了清单自己的一个毛病**：那一行原来构造的是**没有回调的**选项，
+也就是一个死控件——第 377 轮 `Badge` 那类错误又来了一次。加上回调。
+
+**下一步**：清单上还剩两行没查，先做 `TooltipTrigger -> "Save"`。
+上游 `tooltip.dart` 给 `Semantics(label: excludeFromSemantics ? null : _tooltipMessage)`——
+**提示语本身要说出来**，而这里只说了触发它的那个词，
+提示的内容对读屏用户完全不存在（提示只在悬停/长按时出现，
+而读屏用户两样都不做，所以这是**唯一**的一条路）。
+`DataTable -> "Name", "Size"` 留到之后：那要先查本项目的表有没有排序这回事。

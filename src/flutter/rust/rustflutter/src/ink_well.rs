@@ -665,7 +665,44 @@ impl StatefulComponent for InkResponse {
         let border_radius = self.border_radius;
         let custom_border = self.custom_border.clone();
 
-        single(child, move |child| {
+        // Upstream's `Semantics(onTap: simulateTap)` in `_InkResponseState.build`,
+        // and it is the whole reason a screen reader can press anything built
+        // out of an ink well. Assembled here rather than at the call sites for
+        // the reason [`crate::semantics::tappable`] gives: the two ways in must
+        // not be able to disagree about what pressing does.
+        //
+        // **`simulateTap`, not `onTap`.** Upstream's handler is
+        // `_startSplash(context: context); handleTap();` -- it puts a real
+        // splash on the surface first. That is not decoration: a reader
+        // activating a control is often sitting beside someone watching the
+        // screen, and a press that fires the callback with nothing visible
+        // happening looks like the press was lost.
+        //
+        // No `button` flag, because upstream's does not set one. An ink well is
+        // how a thing is pressed, not what it is; a `Chip` or a `ListTile` says
+        // what it is for itself, and a well that called everything a button
+        // would put the word on rows and cards that are not.
+        let semantics_tap = self.on_tap.clone().filter(|_| self.enabled).map(|on_tap| {
+            let tap_handle = handle.clone();
+            let tap_sink = Rc::clone(&size_sink);
+            std::rc::Rc::new(move |_: crate::gestures::TapEvent| {
+                let on_tap = on_tap.clone();
+                let size = tap_sink.get();
+                tap_handle.set_state(move |state| {
+                    let now = state.now_micros;
+                    // The centre, because a reader activated the control and
+                    // not a point on it -- upstream's `_startSplash` with no
+                    // details reaches for the same middle.
+                    let centre = Offset::new(size.width / 2.0, size.height / 2.0);
+                    state.start_splash(factory.create(size, centre, splash_color, contained, now));
+                    state.confirm_splash(now);
+                    on_tap();
+                });
+            }) as std::rc::Rc<dyn Fn(crate::gestures::TapEvent)>
+        });
+        let node = crate::semantics::node_id_for(self.id);
+
+        let responsive = single(child, move |child| {
             // **Passthrough**, not the stack's default of loose. Upstream
             // paints ink features from `_RenderInkFeatures`, a
             // `RenderProxyBox`, so the constraints a caller was given reach
@@ -747,6 +784,42 @@ impl StatefulComponent for InkResponse {
                     crate::render::RenderRef::new(crate::render::RenderClipRect::new(region))
                 }
             }
+        });
+
+        // A well with nothing to run is left alone: an empty node saying a
+        // reader may press something that does nothing is worse than saying
+        // nothing at all, and upstream's `onTap` is null in exactly that case.
+        let Some(tap) = semantics_tap else {
+            return responsive;
+        };
+        // **A fold, not an annotation**, and the first version of this got it
+        // wrong. An annotation says its own words, and a well has none: it is
+        // handed a builder, not a string. That version produced two stops --
+        // a blank one a reader could press and a "Delete" one they could not,
+        // which is a worse place to stand than the silence it replaced.
+        // Upstream needs no such choice because a non-container `Semantics`
+        // merges into its child by configuration; folding is how that is said
+        // here.
+        //
+        // The action bit is set as well as the handler, because the two are
+        // separate: the handler answers a press, the bit is what a reader is
+        // told they may do. With only the handler the control accepts a press
+        // nobody knows to make.
+        crate::framework::single(responsive, move |inner| {
+            let tap = tap.clone();
+            crate::render::RenderMergeSemanticsBox::new(inner)
+                .with_properties(
+                    crate::semantics::SemanticsProperties::label("")
+                        .with_action(crate::semantics::SemanticsAction::Tap),
+                )
+                .with_action(node, move |action| {
+                    if action == crate::semantics::SemanticsAction::Tap {
+                        tap(crate::gestures::TapEvent {
+                            local_position: Offset::ZERO,
+                            pointer_id: 0,
+                        });
+                    }
+                })
         })
     }
 }
@@ -1129,5 +1202,256 @@ mod tests {
             })
             .expect("the child painted");
         assert_eq!(filled, (0.0, 200.0));
+    }
+
+    // -- What a reader who cannot see the splash is offered -----------------
+
+    /// Mounts `widget` and hands back the tree, the root and what a screen
+    /// reader would be given.
+    fn mounted(
+        widget: AnyWidget,
+    ) -> (
+        crate::framework::ElementTree,
+        crate::render::BoxedRender,
+        Vec<crate::semantics::SemanticsNode>,
+    ) {
+        use crate::framework::ElementTree;
+        use crate::render::BoxConstraints;
+
+        crate::semantics::set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            widget,
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::loose(400.0, 400.0));
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(Size::new(400.0, 400.0), &root).unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        (tree, root, nodes)
+    }
+
+    /// A well around the word "Delete".
+    fn delete_well(on_tap: Option<Rc<dyn Fn()>>) -> InkResponse {
+        let mut well = InkWell::new(9304, || {
+            crate::framework::component(crate::components::Label::new("Delete"))
+        });
+        if let Some(on_tap) = on_tap {
+            well = well.with_on_tap(move || on_tap());
+        }
+        well
+    }
+
+    fn well_saying_delete(
+        on_tap: Option<Rc<dyn Fn()>>,
+    ) -> (
+        crate::framework::ElementTree,
+        crate::render::BoxedRender,
+        Vec<crate::semantics::SemanticsNode>,
+    ) {
+        mounted(crate::framework::stateful(delete_well(on_tap)))
+    }
+
+    #[test]
+    fn a_well_with_something_to_do_is_one_stop_that_says_what_it_does() {
+        // The gap this closed: an ink well published no action at all, so
+        // every control built on one -- a simple dialog's options, a table's
+        // rows -- was a thing a screen reader could read and not press.
+        //
+        // **One** stop, not two. The first attempt annotated the well, and an
+        // annotation says its own words while a well has none: that produced a
+        // blank node a reader could press sitting above a "Delete" they could
+        // not, which is worse than the silence it replaced.
+        let (_tree, _root, nodes) = well_saying_delete(Some(Rc::new(|| {})));
+        let pressable: Vec<_> = nodes
+            .iter()
+            .filter(|node| node.properties.actions != 0)
+            .collect();
+        assert_eq!(pressable.len(), 1, "one stop, not two: {nodes:?}");
+        assert_eq!(pressable[0].properties.label, "Delete");
+        assert_eq!(
+            pressable[0].properties.actions,
+            crate::semantics::SemanticsAction::Tap as i32
+        );
+        assert!(
+            !pressable[0].properties.flags.is_button,
+            "a well is how a thing is pressed, not what it is"
+        );
+    }
+
+    #[test]
+    fn a_well_with_nothing_to_do_offers_nothing() {
+        // Upstream's `onTap` is null and its `Semantics.onTap` with it. A node
+        // advertising an action that goes nowhere sends a reader to press
+        // something that will not answer.
+        let (_tree, _root, nodes) = well_saying_delete(None);
+        assert!(
+            nodes.iter().all(|node| node.properties.actions == 0),
+            "{nodes:?}"
+        );
+    }
+
+    #[test]
+    fn pressing_that_node_runs_the_callback_a_finger_would_have_run() {
+        let ran = Rc::new(std::cell::Cell::new(false));
+        let sink = Rc::clone(&ran);
+        let (_tree, root, nodes) = well_saying_delete(Some(Rc::new(move || sink.set(true))));
+        let node = nodes
+            .iter()
+            .find(|node| node.properties.actions != 0)
+            .expect("a pressable node");
+        assert!(crate::semantics::perform_action(
+            &root,
+            node.id,
+            crate::semantics::SemanticsAction::Tap
+        ));
+        assert!(ran.get(), "the reader's press reached the callback");
+    }
+
+    #[test]
+    fn pressing_it_leaves_the_same_mark_on_the_surface_a_finger_leaves() {
+        // Upstream's handler is `simulateTap`, which is
+        // `_startSplash(context: context); handleTap();` -- the splash first
+        // and the callback second. Skipping the splash would be invisible to
+        // the reader who pressed and plainly wrong to whoever is watching the
+        // screen beside them: the press would look like it was swallowed.
+        let (mut tree, root, nodes) = well_saying_delete(Some(Rc::new(|| {})));
+        let node = nodes
+            .iter()
+            .find(|node| node.properties.actions != 0)
+            .expect("a pressable node");
+        assert!(crate::semantics::perform_action(
+            &root,
+            node.id,
+            crate::semantics::SemanticsAction::Tap
+        ));
+
+        // A frame later, because a splash starts at nothing and grows: asked
+        // at the instant of the press it has no radius yet and paints nothing,
+        // which is true of a finger's splash too.
+        tree.rebuild_dirty();
+        assert!(
+            tree.advance_frame(100 * MS),
+            "a splash is an animation and wants frames"
+        );
+        // Rebuilt *after* the frame, not before: what is painted is decided
+        // during the build, so a build that ran before the clock moved would
+        // paint the splash at the radius it had when it started -- nothing.
+        tree.rebuild_dirty();
+        let mut after = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut after,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 400.0));
+            crate::render::RenderBox::paint(&after, &mut context, Offset::ZERO);
+        }
+        // The splash is drawn as a rounded box, so a round-cornered rectangle
+        // in the calls is the mark itself. **Where** it is matters as much as
+        // that it exists: a mutation moving the splash's origin to the
+        // top-left corner survived a test that only counted the circles, and a
+        // splash spreading from a corner is the wrong picture of what a reader
+        // did -- they activated the control, not its edge.
+        let (left, top, right, bottom) = crate::engine_test_stubs::drawn()
+            .iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::RRect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    ..
+                } => Some((*left, *top, *right, *bottom)),
+                _ => None,
+            })
+            .expect("the press put no ink on the surface");
+        let well = 42.0_f32;
+        assert!(
+            ((left + right) / 2.0 - well / 2.0).abs() < 1.0,
+            "the splash grew from {left}..{right}, not the middle of the well"
+        );
+        assert!(
+            ((top + bottom) / 2.0 - 16.8 / 2.0).abs() < 1.0,
+            "the splash grew from {top}..{bottom}, not the middle of the well"
+        );
+    }
+
+    #[test]
+    fn a_well_that_cannot_be_used_does_not_say_it_can() {
+        // `enabled: false` is upstream's `_primaryEnabled` false, and its
+        // `Semantics.onTap` goes with it. Told otherwise, a reader is sent to
+        // press a thing that has already been switched off -- and hears
+        // nothing back, because there is nothing to hear.
+        let (_tree, _root, nodes) = mounted(crate::framework::stateful(
+            delete_well(Some(Rc::new(|| {}))).with_enabled(false),
+        ));
+        assert!(
+            nodes.iter().all(|node| node.properties.actions == 0),
+            "{nodes:?}"
+        );
+    }
+
+    #[test]
+    fn a_well_the_clips_cut_away_cannot_be_pressed() {
+        // The rule `find_handler` was written for, now that a fold answers
+        // there too: a node a reader was never told about is not one they can
+        // activate. Without the clip check on this branch, an ink well
+        // scrolled out of its viewport would still run its callback on a stale
+        // identifier.
+        let ran = Rc::new(std::cell::Cell::new(false));
+        let sink = Rc::clone(&ran);
+        let well = crate::framework::stateful(delete_well(Some(Rc::new(move || sink.set(true)))));
+        // Nothing gets through a zero-sized clip.
+        let (_tree, root, _nodes) = mounted(crate::framework::single(well, |inner| {
+            crate::render::RenderClipRect::new(
+                crate::render::RenderConstrainedBox::tight(0.0, 0.0).with_child(inner),
+            )
+        }));
+        assert!(
+            !crate::semantics::perform_action(
+                &root,
+                crate::semantics::node_id_for(9304),
+                crate::semantics::SemanticsAction::Tap
+            ),
+            "a node nobody could reach answered a press"
+        );
+        assert!(!ran.get());
+    }
+
+    #[test]
+    fn a_rebuilt_well_presses_the_callback_the_last_build_meant() {
+        // A handler closes over the build that made it. Keeping the first
+        // one -- which is what happens if the render object does not take the
+        // fresh object's on update -- means a dialog whose option changed
+        // still runs the old option's callback for anyone using a reader,
+        // while a finger runs the new one.
+        let which = Rc::new(std::cell::Cell::new(0));
+
+        let first = Rc::clone(&which);
+        let mut tree = {
+            let (tree, _root, _nodes) = well_saying_delete(Some(Rc::new(move || first.set(1))));
+            tree
+        };
+        let second = Rc::clone(&which);
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::stateful(delete_well(Some(Rc::new(move || second.set(2))))),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        assert!(crate::semantics::perform_action(
+            &root,
+            crate::semantics::node_id_for(9304),
+            crate::semantics::SemanticsAction::Tap
+        ));
+        assert_eq!(which.get(), 2, "the press reached the build before last");
     }
 }

@@ -913,9 +913,16 @@ mod radio_semantics_tests {
         println!(
             "SPOKEN {:<20} -> {}",
             "SimpleDialogOption",
-            spoken_by(component(super::SimpleDialogOption::new(90, || component(
-                Label::new("Delete")
-            ))))
+            // **With a callback**, because an option without one is not a
+            // choice a reader can make and the census would be measuring a
+            // dead control. The first version of this row left it off and so
+            // reported a bare "Delete" for a shape that never occurs in a
+            // dialog -- the same way round 377's `Badge` row answered a
+            // question nobody had asked.
+            spoken_by(component(
+                super::SimpleDialogOption::new(90, || component(Label::new("Delete")))
+                    .with_on_pressed(|| {})
+            ))
             .join(", ")
         );
         println!(

@@ -1449,6 +1449,27 @@ pub trait RenderBox: AsAny {
         None
     }
 
+    /// The identifier and handler of a **folded node a reader can operate**.
+    ///
+    /// A merging box normally has no need of either: it exists to gather other
+    /// people's words, and the walk invents an identifier for the node it
+    /// opens. But a node that offers an action needs a *stable* identifier,
+    /// because the engine sends the action back by number long after the walk
+    /// that produced it -- and it needs somewhere to send the action to.
+    ///
+    /// This is the difference between the two ways a node can carry words in
+    /// this port. An annotation ([`RenderBox::describe_semantics`]) says the
+    /// words itself, which suits a control that was given a label -- a
+    /// checkbox, a tab. A fold takes the words from below, which is the only
+    /// thing available to a wrapper that does not know what it wraps: an ink
+    /// well is handed a builder, not a string. Upstream needs no such split
+    /// because its annotations merge into their children by configuration;
+    /// here, folding is how that is spelled, and until this method existed a
+    /// fold could not be pressed.
+    fn merged_node_action(&self) -> Option<(i32, crate::semantics::ActionHandler)> {
+        None
+    }
+
     /// What this box says about itself to a screen reader, if anything.
     ///
     /// Upstream's `describeSemanticsConfiguration`, which fills in a
@@ -2793,6 +2814,10 @@ impl RenderBox for RenderRef {
     fn merged_node_properties(&self) -> Option<crate::semantics::SemanticsProperties> {
         self.render.borrow().merged_node_properties()
     }
+
+    fn merged_node_action(&self) -> Option<(i32, crate::semantics::ActionHandler)> {
+        self.render.borrow().merged_node_action()
+    }
     fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         self.render.borrow().visit_children_for_semantics(visit)
     }
@@ -3001,6 +3026,10 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     }
     fn merged_node_properties(&self) -> Option<crate::semantics::SemanticsProperties> {
         (**self).merged_node_properties()
+    }
+
+    fn merged_node_action(&self) -> Option<(i32, crate::semantics::ActionHandler)> {
+        (**self).merged_node_action()
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         (**self).layout(constraints)
@@ -8671,6 +8700,9 @@ pub struct RenderMergeSemanticsBox {
     /// platform announces **the node that has the words**, so the flag has to
     /// ride on that node and not on one wrapped around it.
     properties: Option<crate::semantics::SemanticsProperties>,
+    /// See [`RenderBox::merged_node_action`]: the identifier the folded node
+    /// takes instead of an invented one, and where its actions go.
+    node: Option<(i32, crate::semantics::ActionHandler)>,
 }
 
 impl RenderMergeSemanticsBox {
@@ -8680,6 +8712,7 @@ impl RenderMergeSemanticsBox {
             child: RenderRef::new(child),
             size: Size::ZERO,
             properties: None,
+            node: None,
         }
     }
 
@@ -8698,6 +8731,23 @@ impl RenderMergeSemanticsBox {
         self
     }
 
+    /// Makes the folded node **something a reader can activate**, under an
+    /// identifier of the caller's choosing.
+    ///
+    /// The identifier has to come from the caller because the engine sends an
+    /// action back by number: an invented one changes from walk to walk, and a
+    /// press would arrive for a node that no longer exists. See
+    /// [`RenderBox::merged_node_action`] for why a fold rather than an
+    /// annotation is what carries an action here.
+    pub fn with_action(
+        mut self,
+        id: i32,
+        handler: impl Fn(crate::semantics::SemanticsAction) + 'static,
+    ) -> RenderMergeSemanticsBox {
+        self.node = Some((id, std::rc::Rc::new(handler)));
+        self
+    }
+
     /// What the folded node opens with.
     pub fn node_properties(&self) -> crate::semantics::SemanticsProperties {
         self.properties
@@ -8713,6 +8763,13 @@ impl RenderBox for RenderMergeSemanticsBox {
             .downcast_mut::<RenderMergeSemanticsBox>()?;
         let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
         self.child = fresh.child.clone();
+        // Taken from the fresh object, for the reason `RenderSemantics` gives
+        // where it does the same: a handler closes over the state of the build
+        // that made it, and the kept object's is a build old. A reader
+        // activating this node must reach the callback the last build meant,
+        // not the one before it.
+        self.properties = fresh.properties.take();
+        self.node = fresh.node.take();
         Some(effect)
     }
 
@@ -8744,6 +8801,10 @@ impl RenderBox for RenderMergeSemanticsBox {
 
     fn merged_node_properties(&self) -> Option<crate::semantics::SemanticsProperties> {
         self.properties.clone()
+    }
+
+    fn merged_node_action(&self) -> Option<(i32, crate::semantics::ActionHandler)> {
+        self.node.clone()
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {

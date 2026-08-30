@@ -1388,8 +1388,16 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
             .merged_node_properties()
             .unwrap_or_else(|| SemanticsProperties::label(""));
         let own_label = std::mem::take(&mut properties.label);
+        // A fold that offers an action names itself; one that only gathers
+        // words takes an invented number. The difference is that an action
+        // comes *back* from the engine by number, so a node that can be
+        // pressed cannot be renumbered between walks.
+        let id = match render.merged_node_action() {
+            Some((id, _)) => id,
+            None => take_text_id(),
+        };
         let merged = open(
-            take_text_id(),
+            id,
             properties,
             (rect.left, rect.top, rect.right, rect.bottom),
         );
@@ -1662,6 +1670,17 @@ fn find_handler_in(
         clips.applied_to(Rect::xywh(offset.dx, offset.dy, size.width, size.height))?;
         if annotation.id == node_id {
             return annotation.on_action;
+        }
+    }
+    // A folded node answers here too. It is a second place to look because a
+    // fold is not an annotation -- it has no words of its own to describe, only
+    // an identifier and somewhere to send the press. Missing this branch, an
+    // ink well would publish an action the engine could never deliver.
+    if let Some((id, handler)) = render.merged_node_action() {
+        let size = render.size();
+        clips.applied_to(Rect::xywh(offset.dx, offset.dy, size.width, size.height))?;
+        if id == node_id {
+            return Some(handler);
         }
     }
     let mut found = None;
