@@ -2017,6 +2017,59 @@ impl SemanticsProperties {
         .with_action(SemanticsAction::Tap)
     }
 
+    /// A **chip**: a compact thing that is pressed, and may be one of a set
+    /// that is chosen from.
+    ///
+    /// Upstream's `RawChip.build`:
+    ///
+    /// ```dart
+    /// Semantics(
+    ///   button: widget.tapEnabled,
+    ///   container: true,
+    ///   selected: kIsWeb ? null : widget.selected,
+    ///   checked: kIsWeb ? widget.selected : null,
+    ///   enabled: widget.tapEnabled ? canTap : null,
+    /// )
+    /// ```
+    ///
+    /// # `selected`, not `checked`
+    ///
+    /// Upstream splits those two on `kIsWeb`, and its own comment says why:
+    /// `aria-selected` works only for a few ARIA roles, so on the web the
+    /// engine would drop it and `aria-checked` carries the meaning instead.
+    /// **That is a fact about a platform this port does not build for**, so
+    /// the non-web arm is the whole of it here -- and if a web target ever
+    /// lands, this is where the other arm goes.
+    ///
+    /// # A chip that cannot be pressed is not a button
+    ///
+    /// `button: tapEnabled` rather than a constant: a chip used as a plain
+    /// label should not be announced as something to press. `enabled` is null
+    /// in that case too, which is a third answer again -- "this has no enabled
+    /// state" rather than "this is disabled".
+    pub fn chip(
+        label: impl Into<String>,
+        selected: bool,
+        tappable: bool,
+        can_tap: bool,
+    ) -> SemanticsProperties {
+        SemanticsProperties {
+            actions: if tappable && can_tap {
+                SemanticsAction::Tap as i32
+            } else {
+                0
+            },
+            flags: SemanticsFlags {
+                is_button: tappable,
+                selected: SemanticsTristate::of(selected),
+                has_enabled_state: tappable,
+                is_enabled: tappable && can_tap,
+                ..SemanticsFlags::default()
+            },
+            ..SemanticsProperties::label(label)
+        }
+    }
+
     /// A **checkbox**: a thing a reader is told is checked, not checked, or
     /// partly checked.
     ///

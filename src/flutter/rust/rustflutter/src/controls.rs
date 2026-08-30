@@ -366,6 +366,103 @@ mod radio_semantics_tests {
             .expect("a radio said it was one")
     }
 
+    /// The node a chip produces, through the real walk.
+    fn chip_node(style: ChipStyle, tappable: bool) -> crate::semantics::SemanticsNode {
+        crate::semantics::set_enabled(true);
+        let mut chip = Chip::new(3, "Sport").with_style(style);
+        if tappable {
+            chip = chip.on_tap(|_| {});
+        }
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(chip),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(300.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .find(|node| node.properties.label.contains("Sport"))
+            .cloned()
+            .expect("a chip said its word")
+    }
+
+    #[test]
+    fn a_chosen_chip_sounds_different_from_an_unchosen_one() {
+        // A chip had no semantics at all, so a filter that is on and one that
+        // is off reached a reader as the same plain box with the same word in
+        // it -- which is the one distinction a filter chip exists to make.
+        use crate::semantics::SemanticsTristate;
+        assert_eq!(
+            chip_node(ChipStyle::Selected, true)
+                .properties
+                .flags
+                .selected,
+            SemanticsTristate::True
+        );
+        assert_eq!(
+            chip_node(ChipStyle::Filter, true).properties.flags.selected,
+            SemanticsTristate::False
+        );
+    }
+
+    #[test]
+    fn a_chip_nobody_listens_to_is_not_announced_as_a_button() {
+        // Upstream's `button: widget.tapEnabled`. A chip used as a plain label
+        // should not invite a press that does nothing -- and it has no enabled
+        // state either, which is a third answer rather than "disabled".
+        let pressable = chip_node(ChipStyle::Action, true);
+        assert!(pressable.properties.flags.is_button);
+        assert!(
+            pressable
+                .properties
+                .has(crate::semantics::SemanticsAction::Tap)
+        );
+        assert!(pressable.properties.flags.is_enabled);
+
+        let label = chip_node(ChipStyle::Action, false);
+        assert!(!label.properties.flags.is_button);
+        assert!(!label.properties.has(crate::semantics::SemanticsAction::Tap));
+        assert!(
+            !label.properties.flags.has_enabled_state,
+            "no enabled state at all, rather than disabled"
+        );
+    }
+
+    #[test]
+    fn a_chip_is_one_stop() {
+        // `container: true`. The word inside a chip is what the chip says, not
+        // a separate thing beside it.
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(Chip::new(3, "Sport").on_tap(|_| {})),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(300.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        let spoken: Vec<&str> = nodes
+            .iter()
+            .map(|node| node.properties.label.as_str())
+            .filter(|label| !label.is_empty())
+            .collect();
+        assert_eq!(spoken, vec!["Sport"], "one stop: {spoken:?}");
+    }
+
     /// The node a checkbox produces, through the real walk.
     fn checkbox_node(checked: bool, enabled: bool) -> crate::semantics::SemanticsNode {
         crate::semantics::set_enabled(true);
@@ -534,6 +631,17 @@ impl Chip {
         })
     }
 
+    /// What pressing it does, as the closure it is.
+    ///
+    /// [`Chip::wired`] is the convenience over this for the common case of
+    /// writing into a state; this is what it builds. A chip with nothing here
+    /// is a label rather than a button, and says so to a reader -- see
+    /// [`crate::semantics::SemanticsProperties::chip`].
+    pub fn on_tap(mut self, on_tap: impl Fn(crate::gestures::TapEvent) + 'static) -> Self {
+        self.handlers = PointerHandlers::new().with_tap(on_tap);
+        self
+    }
+
     pub fn wired<S: 'static>(mut self, handle: StateHandle<S>, action: fn(&mut S)) -> Self {
         self.handlers = PointerHandlers::new().with_tap(move |_| {
             handle.set_state(move |state| action(state));
@@ -576,7 +684,37 @@ impl Component for Chip {
         };
         let size = theme.body_size - 1.0;
 
-        leaf(move || {
+        // A chip had no semantics at all: it reached a screen reader as a
+        // plain box with a word in it, so a filter that is on and one that is
+        // off sounded the same. Upstream wraps it in `Semantics(button:
+        // tapEnabled, container: true, selected: ..., enabled: ...)`.
+        //
+        // `tapEnabled` here is "somebody is listening": a chip built with no
+        // handler is a label, and announcing it as a button would invite a
+        // press that does nothing.
+        let tappable = self.handlers.on_tap.is_some();
+        let described = {
+            let properties = crate::semantics::SemanticsProperties::chip(
+                self.label.clone(),
+                matches!(self.style, ChipStyle::Selected),
+                tappable,
+                tappable,
+            );
+            let tap = self.handlers.on_tap.clone();
+            let node = crate::semantics::node_id_for(id);
+            move |inner: crate::framework::AnyWidget| {
+                // `container: true` needs nothing extra here, and reaching for
+                // a merge box is how that goes wrong: wrapping the annotation
+                // in one folds its **flags** away, because the folded node
+                // takes only labels. A chip carries its own label, so the
+                // enclosing-label rule already keeps the `Text` inside it from
+                // being read a second time -- one stop, and the flags stay on
+                // it. The `Card` needed merging because it labels nothing.
+                crate::semantics::tappable(node, properties.clone(), inner, tap.clone())
+            }
+        };
+
+        let chip_body = leaf(move || {
             let mut container = Container::new()
                 .with_height(32.0)
                 .with_color(fill)
@@ -605,7 +743,8 @@ impl Component for Chip {
                 container = container.with_border(width, color);
             }
             Pointer::new(id, container).with_handlers(handlers.clone())
-        })
+        });
+        described(chip_body)
     }
 }
 

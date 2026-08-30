@@ -1181,20 +1181,11 @@ impl Component for Switch {
         // and not whether it is on. The label is left to whatever is beside
         // it -- upstream's `Switch` has none of its own either, because a
         // switch with no context is not a thing a reader can act on.
-        crate::semantics::semantics_with_action(
+        crate::semantics::tappable(
             crate::semantics::node_id_for(id),
             crate::semantics::SemanticsProperties::toggle("", value),
             switch,
-            move |action| {
-                if action == crate::semantics::SemanticsAction::Tap {
-                    if let Some(tap) = &tap {
-                        tap(crate::gestures::TapEvent {
-                            local_position: crate::render::Offset::ZERO,
-                            pointer_id: 0,
-                        });
-                    }
-                }
-            },
+            tap,
         )
     }
 }
