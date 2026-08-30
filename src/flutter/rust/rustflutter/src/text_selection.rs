@@ -1273,6 +1273,80 @@ pub fn shift_drag_selection(
     }
 }
 
+/// What upstream's `onDragSelectionEnd` leaves behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DragSelectionEnd {
+    pub shows_toolbar: bool,
+    /// `_dragStartSelection = null`, and **only when shift was held**.
+    pub clears_the_drag_start_selection: bool,
+    pub hides_magnifier: bool,
+    /// Always `false`, and it is the difference from
+    /// [`long_press_finish`] worth having a field for. See below.
+    pub resets_the_drag_anchors: bool,
+}
+
+/// Upstream's `onDragSelectionEnd`, which is three lines and three different
+/// conditions:
+///
+/// ```dart
+/// void onDragSelectionEnd(TapDragEndDetails details) {
+///   if (_shouldShowSelectionToolbar &&
+///       _getEffectiveConsecutiveTapCount(details.consecutiveTapCount) == 2) {
+///     editableText.showToolbar();
+///   }
+///   if (_isShiftPressed) {
+///     _dragStartSelection = null;
+///   }
+///   _hideMagnifierIfSupportedByPlatform();
+/// }
+/// ```
+///
+/// # The menu belongs to the double-tap drag alone
+///
+/// **`== 2`, not `>= 2`.** A drag that grew the selection word by word ends
+/// with the toolbar; one that placed a caret does not, and neither does the
+/// triple-tap drag that selected whole paragraphs. Reading the condition as
+/// "two or more" would put a menu up after a paragraph drag, which upstream
+/// does not do.
+///
+/// The flag is still asked first, so a mouse that dragged out words gets no
+/// toolbar -- it has a right-click menu instead. That is the flag
+/// [`TextSelectionGestures::flags_for`] describes.
+///
+/// # The drag start selection is cleared only on the path that read it
+///
+/// `_dragStartSelection` is taken by every `onDragSelectionStart`, and read by
+/// exactly one thing: the shift branch of [`shift_drag_update`]. So it is
+/// released on exactly that path. A plain drag leaves its value behind, which
+/// is harmless because the next drag's start overwrites it -- upstream is
+/// tidying the thing it borrowed, not clearing state that would be wrong.
+///
+/// # And it does *not* zero the scroll anchors, where the long press does
+///
+/// [`long_press_finish`] sets both `_dragStartViewportOffset` and
+/// `_dragStartScrollOffset` back to zero. This does not, and the difference is
+/// not that one gesture needs it and the other does not: **both starts take
+/// both anchors afresh**, so neither reading survives into a gesture that
+/// would misuse it.
+///
+/// The one place the long press's zeroing has anything to do is a field that
+/// does not select, where `onSingleLongTapStart` returns before it reaches the
+/// two assignments -- so the press takes no anchors and the end puts them back
+/// to zero rather than leaving the last gesture's. Ported as written, with the
+/// asymmetry named rather than smoothed away.
+pub fn drag_selection_end(
+    should_show_selection_toolbar: bool,
+    effective_consecutive_tap_count: u32,
+    shift_pressed: bool,
+) -> DragSelectionEnd {
+    DragSelectionEnd {
+        shows_toolbar: should_show_selection_toolbar && effective_consecutive_tap_count == 2,
+        clears_the_drag_start_selection: shift_pressed,
+        hides_magnifier: true,
+        resets_the_drag_anchors: false,
+    }
+}
+
 /// What a drag does to the selection, once the corrections of
 /// [`drag_anchor_correction`] have been applied to its anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5051,6 +5125,65 @@ mod selection_gesture_rule_tests {
                 "{kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_menu_after_a_drag_belongs_to_the_double_tap_alone() {
+        // `== 2`, not `>= 2`. Reading it as "two or more" would put a menu up
+        // after a triple-tap drag, which upstream does not do.
+        assert!(drag_selection_end(true, 2, false).shows_toolbar);
+        for taps in [1, 3, 4] {
+            assert!(
+                !drag_selection_end(true, taps, false).shows_toolbar,
+                "{taps} taps"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pointer_that_never_earned_a_toolbar_gets_none_from_a_drag_either() {
+        // The flag is asked first, so a mouse that dragged out words gets no
+        // toolbar -- it has a right-click menu instead.
+        assert!(!drag_selection_end(false, 2, false).shows_toolbar);
+    }
+
+    #[test]
+    fn the_drag_start_selection_is_released_only_on_the_path_that_read_it() {
+        // Taken by every drag start, read by exactly one thing -- the shift
+        // branch -- and so released on exactly that path.
+        assert!(drag_selection_end(true, 2, true).clears_the_drag_start_selection);
+        assert!(!drag_selection_end(true, 2, false).clears_the_drag_start_selection);
+    }
+
+    #[test]
+    fn a_drag_hides_the_magnifier_whatever_else_it_did() {
+        // Outside both conditions, at the end.
+        for taps in 1..=3 {
+            for shift in [false, true] {
+                assert!(drag_selection_end(false, taps, shift).hides_magnifier);
+            }
+        }
+    }
+
+    #[test]
+    fn the_two_gestures_end_differently_and_the_anchors_are_where() {
+        // The long press zeroes both scroll anchors; the drag does not. Both
+        // starts take them afresh, so this is upstream's housekeeping rather
+        // than a difference in behaviour -- named here rather than smoothed
+        // into agreement.
+        let press = long_press_finish(
+            LongPressFinish::Ended,
+            TargetPlatform::IOS,
+            true,
+            true,
+            true,
+            true,
+        );
+        let drag = drag_selection_end(true, 2, false);
+        assert!(press.resets_the_drag_anchors);
+        assert!(!drag.resets_the_drag_anchors);
+        // And both hide the magnifier, which is the part they agree on.
+        assert!(press.hides_magnifier && drag.hides_magnifier);
     }
 
     #[test]

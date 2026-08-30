@@ -21616,3 +21616,51 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 先做 `onDragSelectionEnd`：它读 `_shouldShowSelectionToolbar` **并且**还要问拖动是不是
 真的拖过（`_dragStartSelection` 那一族状态的收尾），和这一轮的长按收尾是对称的一对,
 正好接着读。
+
+## 第 308 轮：拖动结束时的菜单只归双击拖拽，而且是"恰好两下"
+
+`onDragSelectionEnd`。三行代码，三个互不相干的条件。
+
+### 一、`== 2`，不是 `>= 2`
+
+```dart
+if (_shouldShowSelectionToolbar &&
+    _getEffectiveConsecutiveTapCount(details.consecutiveTapCount) == 2) {
+  editableText.showToolbar();
+}
+```
+
+**逐词拖出来的选区收尾时弹菜单；放光标的那种不弹，三击拖出整段的那种也不弹。**
+把这个条件读成"两下或更多"，会在段落拖拽之后弹出一个上游不会弹的菜单。
+
+而且标志还是要先问一句——所以一只拖出了词的鼠标**得不到**这个工具栏,
+它有自己的右键菜单。就是第 304 轮那个标志。
+
+### 二、`_dragStartSelection` 只在读过它的那条路上释放
+
+它由**每一次**拖动开始时取，而读它的只有一个地方：第 306 轮那条 shift 分支。所以它也
+**只在那条路上**被置空。普通拖动把值留着——无害，因为下一次拖动的开始会覆盖它。
+上游在这里收拾的是它借用过的东西，不是在清一份会出错的状态。
+
+### 三、它**不**清零滚动锚点，而长按会
+
+第 307 轮那个收尾把 `_dragStartViewportOffset` 和 `_dragStartScrollOffset` 都归零,
+这里没有。而差别**不是**"一个需要另一个不需要"——**两个手势的开始都会重新取这两个锚点**,
+所以哪一次的读数都活不到会被误用的下一次手势里。
+
+唯一让长按那次清零有事可做的地方：`onSingleLongTapStart` 在 `!selectionEnabled` 时
+**提前返回，走不到那两行赋值**——于是那次按下一个锚点也没取，而收尾把它们放回零,
+而不是留着上一次手势的。按原样端过来，把这处不对称**点出来而不是抹平**。
+
+**七条承重规则强制改错，七条一次全红**（含"两下或更多都弹菜单"、"不再问那个标志"、
+"每次拖动都清 `_dragStartSelection`"、"让拖动也像长按那样清锚点"）。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6118 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：这个类按行为只剩 `onTapTrackStart` / `onTapTrackReset` 这一对——它们管的是
+**连击计数什么时候归零**，而这一族这几轮反复在读那个计数（双击拖拽、三击拖拽、
+收尾弹不弹菜单都由它决定）。把定义它的那一对补上，这个类就按行为清完了。先按行为查。
