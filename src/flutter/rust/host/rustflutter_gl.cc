@@ -151,6 +151,18 @@ std::unique_ptr<ImpellerGlContext> ImpellerGlContext::Create() {
   // Twenty-four bits of depth was the same in miniature. Nothing here draws
   // with depth; the eight upstream asks for are what the stencil is packed
   // beside.
+  //
+  // What was here before was upstream too -- `AndroidContextGLImpeller`, line
+  // for line, down to the GLES2 retry and the single-sample fallback. Upstream
+  // asks Android for 4x and Windows for one, and the difference is the GPU
+  // rather than the taste. A tiler resolves multisamples inside tile memory
+  // and writes one sample per pixel out to the framebuffer, so 4x on a phone
+  // costs bandwidth it was spending anyway and no memory at all. ANGLE on
+  // D3D11 is immediate-mode: the 4x buffers are real, whole-window
+  // allocations, and a desktop window is four times the phone's pixels to
+  // begin with. Android's config on a Windows window is the one platform
+  // where that choice has a price, which is presumably why upstream does not
+  // make it there.
   impeller::egl::ConfigDescriptor desc;
   desc.api = impeller::egl::API::kOpenGLES3;
   desc.color_format = impeller::egl::ColorFormat::kRGBA8888;
