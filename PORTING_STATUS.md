@@ -24181,3 +24181,71 @@ flutter_gallery_unittests、rust_ffi_unittests 全部重建。
 先按行为确认一件事：这 17 个里有几个是**纯转换**（像这一轮这样，不需要 controller 就能调），
 **有就照这两轮的办法接，没有就说清楚它们各自卡在哪一层依赖上**。
 不要先写尺子——第 341/346 轮两次都没通过校准。
+
+---
+
+## 第 356 轮：一条说“这里有测试”的注释，而那里一条测试也没有
+
+按上一轮的“下一步”去数 `RfAppInterface` 里有几个纯转换。**答案是零**——
+`rust_app_interface.cc` 只有 47 行，是个注册表；那 17 个函数的实现全在 Rust 侧
+（`app.rs` 的 `rf_app_*`）。上一轮那个问法本身是错的。
+
+但翻到 `mod abi` 头上时，撞见了这一轮真正的东西：
+
+```rust
+// The functions are exercised end to end by rust_ffi_unittests
+// instead, which does link it.
+#[cfg(not(test))]
+mod abi {
+```
+
+`grep -c "rf_app_" ffi_unittests.cc` → **0**。
+
+这条注释**不是过时，是从一开始就不成立**。而它比没有注释更糟：
+它明确告诉读者“这里已经有覆盖了，不用看了”。
+`#[cfg(not(test))]` 的理由是真的（`#[test]` 二进制不链 C++ 引擎，
+留着这些 `#[no_mangle]` 会让每个 rf_* 符号未定义），
+**但它给出的补偿是假的**。
+
+这一轮把它变成真的，而不是把它删掉。
+
+### 补了 6 条 gtest，一条脊梁加一圈护栏
+
+* create 拒绝空 host；create／destroy 走一遍。
+* **加一个 view 会去要一帧**——这条顺带跑了**反方向**：
+  框架通过 `RfAppHost::schedule_frame` 回调出去，
+  正是第 354 轮在 `send_semantics` 上记为“仍未覆盖”的那一半。
+* 空 metrics 什么也不改（而不是读穿指针）。
+* launch 的两种失败：-1（没有 app）和 -3（有 app、没注册框架）。
+* **十七个入口全部拒绝空 app**，而不是把它 cast 成 `AppInstance`。
+
+### 一个不能两全的事实，写进了注释
+
+`-2`（已经 launch 过）需要先 launch 成功，而 launch 成功需要
+`register_application`——那是个**进程级 `OnceLock`**。
+所以**一个能走到成功路径的进程，就再也观察不到 -3**。
+这不是疏忽，是一个岔路口，**要的是第二个二进制，不是更聪明的测试**。
+
+### 变异扫描 7 个，全红，其中两个是崩
+
+用上了上一轮吃过亏才加的那道自检：跑变异前先验基线绿。
+
+* “create 接受空 host” → **二进制直接崩**。
+* “把 `instance()` 里的空指针检查去掉” → **二进制直接崩**。
+
+这两个正是那条护栏测试自己写的那句话：
+**这种错只会以崩溃的形式出现**。它们崩了，就是它在起作用。
+
+尺子：十六把全部 exit 0。门：Rust 6296 通过、`cargo fmt --check` 干净；
+**C++ 34 个 gtest 全过**（上一轮 28，新增 6）；clang-format 跑过；
+三个输出目录的 rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、
+flutter_gallery_unittests、rust_ffi_unittests 全部重建。
+
+**下一步**：这一轮撞见的是**一条声称有覆盖、实际没有的注释**，
+而 `stale_notes.py` 这把尺子**没有报它**。先别急着改尺子——
+先手查一遍：仓库里还有多少句“is covered by / is exercised by / see the test in”
+这类**指向某个测试的断言**，逐条去看那个测试**存不存在**。
+这是可以用 grep 起头、用眼睛收尾的活，**样本量小就当场数清楚**。
+如果假的不止这一条，那才谈得上尺子该抓什么；
+**如果只有这一条，就说明它是个偶然，别为它造仪器**——
+第 341/346 轮两次造尺子都没过校准，原因都是先造后校准。

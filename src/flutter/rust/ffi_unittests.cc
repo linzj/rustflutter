@@ -1070,5 +1070,151 @@ TEST(RustSemantics, AnEmptyTreeConvertsToAnEmptyUpdate) {
   EXPECT_TRUE(update.empty());
 }
 
+// -- The application ABI
+// -------------------------------------------------------
+
+namespace {
+
+// What the shell would have done, counted instead.
+//
+// Every rf_app_* entry point that changes something the shell can see asks for
+// a frame on the way out, and asking is a call back through RfAppHost. So a
+// host that counts its calls is enough to tell "the framework took this in"
+// from "the framework ignored this", without a window or a rasterizer.
+struct RecordingHost {
+  int frames_requested = 0;
+
+  static void ScheduleFrame(void* user_data) {
+    static_cast<RecordingHost*>(user_data)->frames_requested++;
+  }
+
+  RfAppHost AsHost() {
+    RfAppHost host = {};
+    host.user_data = this;
+    host.schedule_frame = &RecordingHost::ScheduleFrame;
+    return host;
+  }
+};
+
+RfViewMetrics MetricsOf(double width, double height) {
+  RfViewMetrics metrics = {};
+  metrics.width = width;
+  metrics.height = height;
+  metrics.device_pixel_ratio = 1.0;
+  return metrics;
+}
+
+}  // namespace
+
+// The crate's own #[test] binary excludes `mod abi` -- it does not link the
+// engine, so keeping the #[no_mangle] symbols would leave every rf_* undefined.
+// That exclusion is what leaves these seventeen functions to be covered here,
+// which is the only binary that links both halves.
+TEST(RustAppABI, CreateRefusesAHostThatIsNotThere) {
+  // A shell that hands over nothing gets nothing back, rather than an app
+  // holding a null host it will call on the first frame.
+  EXPECT_EQ(rf_app_create(nullptr), nullptr);
+}
+
+TEST(RustAppABI, AnAppIsCreatedAndDestroyed) {
+  RecordingHost recorder;
+  RfAppHost host = recorder.AsHost();
+  RfApp* app = rf_app_create(&host);
+  ASSERT_NE(app, nullptr);
+  rf_app_destroy(app);
+}
+
+TEST(RustAppABI, AddingAViewAsksForAFrame) {
+  // The first thing the shell does after creating the app, and the reason the
+  // ABI has a schedule_frame at all: a view that was just added has nothing on
+  // it, and nothing will be drawn until somebody asks for a vsync.
+  //
+  // This also runs the other direction of the boundary -- the framework
+  // calling out through RfAppHost -- which is the half `send_semantics` in
+  // app.rs still notes as uncovered.
+  RecordingHost recorder;
+  RfAppHost host = recorder.AsHost();
+  RfApp* app = rf_app_create(&host);
+  ASSERT_NE(app, nullptr);
+  EXPECT_EQ(recorder.frames_requested, 0) << "creating one asks for nothing";
+
+  RfViewMetrics metrics = MetricsOf(400, 300);
+  rf_app_add_view(app, 1, &metrics);
+  EXPECT_EQ(recorder.frames_requested, 1);
+
+  // Changing the size of a view it already has is news too: the same window at
+  // a new size has to be laid out again.
+  RfViewMetrics resized = MetricsOf(500, 300);
+  rf_app_set_view_metrics(app, 1, &resized);
+  EXPECT_GT(recorder.frames_requested, 1);
+
+  rf_app_destroy(app);
+}
+
+TEST(RustAppABI, AddingAViewWithoutMetricsChangesNothing) {
+  // Null metrics is a shell bug, and the framework declines rather than
+  // reading through the pointer -- a view added with no size would be laid out
+  // into nothing on the next frame.
+  RecordingHost recorder;
+  RfAppHost host = recorder.AsHost();
+  RfApp* app = rf_app_create(&host);
+  ASSERT_NE(app, nullptr);
+  rf_app_add_view(app, 1, nullptr);
+  EXPECT_EQ(recorder.frames_requested, 0);
+  rf_app_destroy(app);
+}
+
+TEST(RustAppABI, LaunchSaysWhyItCouldNotRun) {
+  // Three numbered answers, and this binary can reach two of them. The third
+  // (-2, already launched) needs a successful launch first, and a successful
+  // launch needs an application registered through register_application --
+  // which is a process-wide OnceLock. **No test can have it both ways**: a
+  // process where the factory is set cannot also observe -3. This binary is
+  // the one where nothing is registered, so it is the one that can say what
+  // happens to a shell with no framework behind it.
+  EXPECT_EQ(rf_app_launch(nullptr), -1) << "no app at all";
+
+  RecordingHost recorder;
+  RfAppHost host = recorder.AsHost();
+  RfApp* app = rf_app_create(&host);
+  ASSERT_NE(app, nullptr);
+  EXPECT_EQ(rf_app_launch(app), -3) << "an app, but no framework registered";
+  rf_app_destroy(app);
+}
+
+TEST(RustAppABI, EveryEntryPointSurvivesANullApp) {
+  // Seventeen functions, each of which casts its first argument back to an
+  // AppInstance. The shell holds a null RfApp between destroy and the next
+  // create, and any of these arriving in that window must decline rather than
+  // dereference. Nothing here asserts an answer beyond "it returned" -- that
+  // is the whole claim, and it is one that only shows up as a crash.
+  rf_app_destroy(nullptr);
+  EXPECT_EQ(rf_app_launch(nullptr), -1);
+
+  RfViewMetrics metrics = MetricsOf(100, 100);
+  rf_app_add_view(nullptr, 1, &metrics);
+  rf_app_remove_view(nullptr, 1);
+  rf_app_set_view_metrics(nullptr, 1, &metrics);
+
+  rf_app_set_user_settings(nullptr, "{}", 2);
+  const char* locale[] = {"en", "US", "", ""};
+  rf_app_set_locales(nullptr, locale, 1);
+
+  rf_app_begin_frame(nullptr, 0, 1);
+  rf_app_draw_frame(nullptr);
+  rf_app_run_tasks(nullptr);
+
+  rf_app_dispatch_pointers(nullptr, nullptr, 0);
+  RfKeyEvent key = {};
+  EXPECT_FALSE(rf_app_dispatch_key(nullptr, &key));
+  rf_app_dispatch_platform_message(nullptr, "flutter/system", nullptr, 0, 0);
+  rf_app_complete_platform_message_reply(nullptr, 0, nullptr, 0);
+
+  rf_app_set_semantics_enabled(nullptr, true);
+  EXPECT_FALSE(rf_app_dispatch_semantics_action(nullptr, 1, 1));
+
+  SUCCEED() << "every entry point declined a null app without dereferencing it";
+}
+
 }  // namespace testing
 }  // namespace flutter

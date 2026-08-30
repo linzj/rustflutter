@@ -1373,8 +1373,30 @@ mod android_entry {
 // alive whether or not anything calls them, and each one reaches the engine FFI
 // in rust/ffi. The crate's own `#[test]` binary is built by rustc directly and
 // does not link the C++ engine, so retaining them would leave every rf_* symbol
-// undefined. The functions are exercised end to end by rust_ffi_unittests
-// instead, which does link it.
+// undefined.
+//
+// # Where these are covered, and how much of them
+//
+// In `rust/ffi_unittests.cc`, under `RustAppABI` -- the only binary that links
+// both halves. This note used to say they were "exercised end to end" there,
+// and that was **not true**: nothing in that file so much as named `rf_app_`.
+// A comment that tells a reader coverage exists is worse than no comment,
+// because it stops the reader looking.
+//
+// What is covered now is the spine and the guard rails: create and destroy,
+// adding and resizing a view (which also runs the other direction, the
+// framework calling back out through `RfAppHost::schedule_frame`), the two
+// launch failures this binary can reach, and **every one of the seventeen
+// declining a null app** rather than casting it to an `AppInstance`. That last
+// one is worth its own sentence: a wrong guard there shows up only as a crash,
+// and a mutation sweep confirms it -- removing the null check in `instance`
+// takes the test binary down rather than turning an assertion red.
+//
+// What is still not covered is what a *running* app does through these:
+// `launch` succeeding needs `register_application`, whose `OnceLock` is
+// process-wide, so a process that can reach the success path cannot also
+// observe the `-3` that this binary asserts. That is a real fork in the road
+// rather than an oversight, and it wants a second binary, not a cleverer test.
 #[cfg(not(test))]
 mod abi {
     use super::*;
