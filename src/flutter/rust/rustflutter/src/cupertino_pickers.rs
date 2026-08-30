@@ -529,9 +529,14 @@ impl CupertinoDatePicker {
                 }
                 texts
             }
-            PickerColumnType::Month => (1..=12)
-                .map(|month| L10n::date_picker_month(month).to_string())
-                .collect(),
+            // The form measured has to be the form shown, or the column is
+            // sized for words it will not display -- upstream threads the
+            // same `standaloneMonth` flag into its width pass for exactly
+            // this reason.
+            PickerColumnType::Month => {
+                let form = MonthNameForm::for_mode(self.mode);
+                (1..=12).map(|month| form.name(month).to_string()).collect()
+            }
             PickerColumnType::Year => vec![L10n::date_picker_year(2018)],
             PickerColumnType::TimeSeparator => vec![":".to_string()],
         };
@@ -613,6 +618,52 @@ pub enum PickerColumnType {
     Minute,
     DayPeriod,
     TimeSeparator,
+}
+
+/// Which of upstream's two month names a column wants.
+///
+/// The choice exists as a value, and not as a call buried in each of the two
+/// places that needs it, because **in English the two names are the same
+/// string**: `DefaultCupertinoLocalizations` returns `_months[i - 1]` from
+/// both. Nothing downstream of the call can tell which was asked for, so a
+/// test written on the output cannot see the rule at all -- and a port that
+/// got it backwards would look perfectly correct.
+///
+/// Naming the decision is what makes it checkable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MonthNameForm {
+    /// `datePickerMonth` -- the month has a day beside it.
+    WithDay,
+    /// `datePickerStandaloneMonth` -- the month stands alone.
+    Standalone,
+}
+
+impl MonthNameForm {
+    /// Upstream's condition, written the same way at all three of its call
+    /// sites:
+    ///
+    /// ```dart
+    /// final String monthName = (widget.mode == CupertinoDatePickerMode.monthYear)
+    ///     ? localizations.datePickerStandaloneMonth(month)
+    ///     : localizations.datePickerMonth(month);
+    /// ```
+    ///
+    /// One mode against all the others, because `monthYear` is the only one
+    /// with no day column for the month to lean on.
+    pub fn for_mode(mode: CupertinoDatePickerMode) -> MonthNameForm {
+        match mode {
+            CupertinoDatePickerMode::MonthYear => MonthNameForm::Standalone,
+            _ => MonthNameForm::WithDay,
+        }
+    }
+
+    /// The name itself.
+    pub fn name(self, month: usize) -> &'static str {
+        match self {
+            MonthNameForm::WithDay => L10n::date_picker_month(month),
+            MonthNameForm::Standalone => L10n::date_picker_standalone_month(month),
+        }
+    }
 }
 
 impl PickerColumnType {
@@ -1132,6 +1183,7 @@ impl CupertinoDatePicker {
             PickerColumnType::Month => {
                 let year = state.selected_year;
                 let day_controller = state.day_controller.clone();
+                let form = MonthNameForm::for_mode(self.mode);
                 (
                     12,
                     Box::new(move |index| {
@@ -1140,10 +1192,7 @@ impl CupertinoDatePicker {
                             .is_some_and(|min| min.date.year == year && min.date.month > month)
                             || maximum
                                 .is_some_and(|max| max.date.year == year && max.date.month < month);
-                        (
-                            L10n::date_picker_month(month as usize).to_string(),
-                            !is_invalid,
-                        )
+                        (form.name(month as usize).to_string(), !is_invalid)
                     }),
                     Box::new(move |index| {
                         let day_controller = day_controller.clone();
@@ -2589,6 +2638,68 @@ mod cupertino_menu_item_tests {
             CupertinoMenuItem::new().disabled(),
         ] {
             assert!(!item.is_divider());
+        }
+    }
+}
+
+#[cfg(test)]
+mod month_name_form_tests {
+    use super::{CupertinoDatePickerMode, MonthNameForm};
+    use crate::cupertino_app::CupertinoLocalizationEn as L10n;
+
+    #[test]
+    fn only_the_month_year_mode_asks_for_the_standalone_name() {
+        // The one mode with no day column for the month to lean on.
+        assert_eq!(
+            MonthNameForm::for_mode(CupertinoDatePickerMode::MonthYear),
+            MonthNameForm::Standalone
+        );
+        for mode in [
+            CupertinoDatePickerMode::Date,
+            CupertinoDatePickerMode::Time,
+            CupertinoDatePickerMode::DateAndTime,
+        ] {
+            assert_eq!(
+                MonthNameForm::for_mode(mode),
+                MonthNameForm::WithDay,
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_forms_are_the_same_word_in_english_and_that_is_the_point() {
+        // This is the assertion that explains why `MonthNameForm` is a value
+        // at all. Nothing downstream can tell the two calls apart, so a test
+        // written on the output cannot see the rule -- and a port that had it
+        // backwards would look perfectly correct in the only language it can
+        // be run against here.
+        for month in 1..=12 {
+            assert_eq!(
+                MonthNameForm::WithDay.name(month),
+                MonthNameForm::Standalone.name(month),
+                "month {month}"
+            );
+            assert_eq!(
+                MonthNameForm::WithDay.name(month),
+                L10n::date_picker_month(month)
+            );
+        }
+    }
+
+    #[test]
+    fn a_standalone_month_is_already_sentence_cased_here() {
+        // `GlobalCupertinoLocalizations` runs its standalone name through
+        // `toBeginningOfSentenceCase`. This crate's names are a fixed
+        // already-capitalised array, so the pass would be a no-op and is
+        // recorded in the doc rather than written -- but the property it
+        // guarantees is still worth stating.
+        for month in 1..=12 {
+            let name = MonthNameForm::Standalone.name(month);
+            assert!(
+                name.chars().next().is_some_and(|c| c.is_uppercase()),
+                "{name} begins its own phrase"
+            );
         }
     }
 }

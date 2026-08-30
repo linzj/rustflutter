@@ -372,6 +372,59 @@ impl DefaultCupertinoLocalizations {
         DefaultCupertinoLocalizations::MONTHS[month_index - 1]
     }
 
+    /// Upstream `datePickerStandaloneMonth`, the month name for
+    /// `CupertinoDatePickerMode.monthYear` -- where the month has no day in
+    /// front of it.
+    ///
+    /// **In English this returns exactly what
+    /// [`Self::date_picker_month`] returns**, and upstream's default class
+    /// says so by writing the same line twice:
+    ///
+    /// ```dart
+    /// String datePickerMonth(int monthIndex) => _months[monthIndex - 1];
+    /// String datePickerStandaloneMonth(int monthIndex) => _months[monthIndex - 1];
+    /// ```
+    ///
+    /// So this is a distinction that **cannot be seen in the output a port
+    /// built against English would ever look at**, which is exactly why it is
+    /// worth having: upstream's doc names the case it is for --
+    ///
+    /// > This is distinct from [datePickerMonth] because in some languages,
+    /// > like Russian, the name of a month takes a different form depending on
+    /// > whether it is preceded by a day or whether it stands alone.
+    ///
+    /// -- Russian's January is `января` after a day and `Январь` on its own.
+    /// A port that called `datePickerMonth` in `monthYear` mode would not be
+    /// wrong in English and would be wrong in Russian, and nothing in English
+    /// would ever say so. Keeping the two names apart is the whole of it; the
+    /// bodies agreeing is a fact about English, not about the port.
+    ///
+    /// The real class differs in **two** ways, both invisible here.
+    /// `GlobalCupertinoLocalizations` reads a different symbol table *and*
+    /// runs the result through a capitalisation pass:
+    ///
+    /// ```dart
+    /// String datePickerMonth(int i) => _fullYearFormat.dateSymbols.MONTHS[i - 1];
+    ///
+    /// String datePickerStandaloneMonth(int i) =>
+    ///     intl.toBeginningOfSentenceCase(
+    ///       _fullYearFormat.dateSymbols.STANDALONEMONTHS[i - 1]) ?? ...;
+    /// ```
+    ///
+    /// with the reason written beside it: *"Because this will be used without
+    /// specifying any day of month, in most cases it should be capitalized"*.
+    /// A month standing on its own begins a phrase; a month after a day is in
+    /// the middle of one.
+    ///
+    /// No capitalisation step is written here. This crate's month names are a
+    /// fixed English array that is already sentence-cased, so the pass could
+    /// only ever be a no-op, and a transformation that provably never
+    /// transforms anything is the sort of thing `hollow.py` exists to catch.
+    /// The rule is recorded rather than performed.
+    pub fn date_picker_standalone_month(month_index: usize) -> &'static str {
+        DefaultCupertinoLocalizations::MONTHS[month_index - 1]
+    }
+
     /// Upstream `datePickerYear`, which is `yearIndex.toString()` -- no padding,
     /// where the Material `formatCompactDate` pads to four digits.
     pub fn date_picker_year(year_index: i32) -> String {
@@ -682,6 +735,16 @@ impl CupertinoLocalizationEn {
     /// `_fullYearFormat.dateSymbols.MONTHS[monthIndex - 1]`, which for English
     /// is the same list [`DefaultCupertinoLocalizations`] carries.
     pub fn date_picker_month(month_index: usize) -> &'static str {
+        DefaultCupertinoLocalizations::MONTHS[month_index - 1]
+    }
+
+    /// The generated English class inherits `datePickerStandaloneMonth` from
+    /// `GlobalCupertinoLocalizations`, which reads `STANDALONEMONTHS` and
+    /// sentence-cases it. English's two symbol tables hold the same twelve
+    /// already-capitalised names, so both paths land on the same word --
+    /// see [`DefaultCupertinoLocalizations::date_picker_standalone_month`]
+    /// for the two differences and why neither is written out here.
+    pub fn date_picker_standalone_month(month_index: usize) -> &'static str {
         DefaultCupertinoLocalizations::MONTHS[month_index - 1]
     }
 

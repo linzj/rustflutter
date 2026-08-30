@@ -20888,3 +20888,71 @@ hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engi
 主格（"январь"），所以上游把它和 `datePickerMonth` 分成两个词；英语两者同形,
 `monthYear` 模式下的那一列因此在英语里怎么写都对——**这正是照着英语抄会漏掉的那种**。
 先按行为查：`CupertinoDatePickerMode::monthYear` 的月份列现在读的是哪一个。
+
+## 第 296 轮：英语看不出的那一条，和把"看不出"变成可判定
+
+`datePickerStandaloneMonth`。上游把它和 `datePickerMonth` 分成两个成员，理由写在它自己的
+doc 里：
+
+> This is distinct from [datePickerMonth] because in some languages, like
+> Russian, the name of a month takes a different form depending on whether it
+> is preceded by a day or whether it stands alone.
+
+俄语的一月，跟在日后面是 `января`（属格），独立时是 `Январь`（主格）。而
+`DefaultCupertinoLocalizations` 把同一行写了两遍：
+
+    String datePickerMonth(int i)           => _months[i - 1];
+    String datePickerStandaloneMonth(int i) => _months[i - 1];
+
+**英语两者全同。** 端口两处调用点——宽度测量和显示——都无条件用 `date_picker_month`,
+没有任何模式判断。在英语下**这个错误看不出来**。
+
+### global 类里还有第二处差别，比换词表更硬
+
+    String datePickerMonth(int i) => _fullYearFormat.dateSymbols.MONTHS[i - 1];
+
+    String datePickerStandaloneMonth(int i) =>
+        intl.toBeginningOfSentenceCase(
+          _fullYearFormat.dateSymbols.STANDALONEMONTHS[i - 1]) ?? ...;
+
+不只是**另一张符号表**，还多一道**句首大写**，理由就写在旁边：*"Because this will be
+used without specifying any day of month, in most cases it should be
+capitalized"*。**独立的月份自成一句，跟在日后面的是句中。**
+
+这一道大写在这里没有写出来：本 crate 的月名是一个已经首字母大写的固定英文数组,
+这一步只可能是空操作，而"证明什么都不做的变换"正是 `hollow.py` 存在的理由。规则记进
+文档，不写成代码——但它保证的那条性质（独立形以大写开头）还是钉了测试。
+
+### 关键的一步：把"看不出"变成可判定
+
+两个函数返回同一个串，所以**任何写在输出上的测试都看不见这条规则**——把它接反的端口
+在这里能跑的唯一语言下看着完全正确。第 293、295 两轮已经各撞过一次这种"英语等价"。
+
+这一轮换个做法：**把选择本身做成一个值。**
+
+    pub enum MonthNameForm { WithDay, Standalone }
+    MonthNameForm::for_mode(mode)   // monthYear 独一份
+
+规则从此可判定，跟字符串是否相同无关。两处调用点都走它——**测量的形和显示的形必须是
+同一个**，上游把同一个 `standaloneMonth` 标志也穿进它的宽度测量，正是这个道理。
+
+### 六条改错，其中三条**事先声明**为等价
+
+* 把规则接反 → 红；把 `monthYear` 当成普通模式 → 红；把独立形改成小写 → 红。
+* 两个形解析到同一个函数 → **绿，预期如此**；显示处绕过 form → **绿**；宽度处量另一个形
+  → **绿**。这三条在英语里是**真等价**，不是"差别真实但工具够不着"。
+
+和第 295 轮那条要分清：那里 "Search" 和 "" 是真不同，只是渲染树走不到；**这里两个词
+本来就是同一个词**。前者是测试设施的洞，后者是语言的事实。**这一轮把三条等价预先写进
+扫描并断言它们必须绿**，而不是跑完被幸存者将一军。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 2,
+hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engines 全部不
+落后。十六把尺子全部 exit 0。
+门：6066 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`CupertinoLocalizations` 只剩 2 个——`noSpellCheckReplacementsLabel` 与
+`backButtonLabel`。先做 `noSpellCheckReplacementsLabel`：它是拼写检查建议工具栏在
+**一个建议都没有**时显示的那句话，而"没有建议"这个状态本身就容易被端口整个漏掉——
+端口有 `CupertinoSpellCheckSuggestionsToolbar` 吗，它在空的时候画什么？先按行为查。
