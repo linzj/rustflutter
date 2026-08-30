@@ -2165,18 +2165,69 @@ impl SemanticsProperties {
         }
     }
 
+    /// Which way a reader may scroll from **where they are now**.
+    ///
+    /// Upstream's `ScrollPosition._updateSemanticActions`, whose own doc says
+    /// what it is for: "If the scroll view has been scrolled all the way to
+    /// the top, the action to scroll further up needs to be removed as the
+    /// scroll view cannot be scrolled in that direction anymore."
+    ///
+    /// ```dart
+    /// final actions = <SemanticsAction>{
+    ///   if (pixels > minScrollExtent) backward,
+    ///   if (pixels < maxScrollExtent) forward,
+    /// };
+    /// ```
+    ///
+    /// # "Scroll up" is the one that takes you down the list
+    ///
+    /// The pair is chosen by the **axis direction**, and the naming inverts on
+    /// the way: for a plain downward list, `forward` -- the action that carries
+    /// you further into the content -- is `scrollUp`, because it is the finger
+    /// movement, not the travel. So the action offered when there is more list
+    /// below is `ScrollUp`, and a list read the other way round would offer a
+    /// reader at the top the one gesture that does nothing.
+    ///
+    /// An `AxisDirection::Up` list (a chat pinned to the bottom) swaps them,
+    /// which is why this takes a direction rather than an axis.
+    pub fn scroll_actions(
+        axis_direction: crate::render::AxisDirection,
+        pixels: f32,
+        min: f32,
+        max: f32,
+    ) -> i32 {
+        use crate::render::AxisDirection;
+        let (forward, backward) = match axis_direction {
+            AxisDirection::Up => (SemanticsAction::ScrollDown, SemanticsAction::ScrollUp),
+            AxisDirection::Down => (SemanticsAction::ScrollUp, SemanticsAction::ScrollDown),
+            AxisDirection::Left => (SemanticsAction::ScrollRight, SemanticsAction::ScrollLeft),
+            AxisDirection::Right => (SemanticsAction::ScrollLeft, SemanticsAction::ScrollRight),
+        };
+        let mut actions = 0;
+        if pixels > min {
+            actions |= backward as i32;
+        }
+        if pixels < max {
+            actions |= forward as i32;
+        }
+        actions
+    }
+
     /// Something that scrolls, and how far down it is.
     ///
-    /// # The extents are told; the actions are only offered when there is room
+    /// # The extents are told; the actions depend on where you are
     ///
     /// Upstream writes `scrollPosition`, `scrollExtentMax` and
-    /// `scrollExtentMin` whenever the position `haveDimensions`, but guards the
-    /// action behind a second condition on the next line:
-    /// `if (position.maxScrollExtent > position.minScrollExtent)`. The two are
-    /// different claims and it matters which is which -- "this is a list, and
-    /// you are at the top of it" is true of a list that fits on screen, while
-    /// "you can scroll this" is not, and a reader that is offered a scroll
+    /// `scrollExtentMin` whenever the position `haveDimensions`, and decides
+    /// the actions separately in [`SemanticsProperties::scroll_actions`]. The
+    /// two are different claims and it matters which is which -- "this is a
+    /// list, and you are at the top of it" is true of a list that fits on
+    /// screen, while "you can scroll this" is not, and a reader offered a
     /// gesture that does nothing has been told a small lie about the page.
+    ///
+    /// This used to gate the actions on `max > min` alone and then offer
+    /// **both** directions, which is a smaller lie of the same kind: at the
+    /// top of a list it said you could scroll back up.
     ///
     /// `child_count` is upstream's `semanticChildCount`: how many items the
     /// list has in total, not how many are built or on screen. `None` is a
@@ -2186,16 +2237,10 @@ impl SemanticsProperties {
         offset: f32,
         min: f32,
         max: f32,
-        vertical: bool,
+        axis_direction: crate::render::AxisDirection,
         child_count: Option<i32>,
     ) -> SemanticsProperties {
-        let actions = if max <= min {
-            0
-        } else if vertical {
-            SemanticsAction::ScrollUp as i32 | SemanticsAction::ScrollDown as i32
-        } else {
-            SemanticsAction::ScrollLeft as i32 | SemanticsAction::ScrollRight as i32
-        };
+        let actions = SemanticsProperties::scroll_actions(axis_direction, offset, min, max);
         SemanticsProperties {
             actions,
             scroll_position: offset,
@@ -5226,13 +5271,25 @@ mod tests {
         // the parameter is exercised here directly rather than through a walk
         // -- a lazy list that knows its length is what will pass a number, and
         // when one does this is the behaviour it will get.
-        let counted = SemanticsProperties::scrollable(0.0, 0.0, 100.0, true, Some(40));
+        let counted = SemanticsProperties::scrollable(
+            0.0,
+            0.0,
+            100.0,
+            crate::render::AxisDirection::Down,
+            Some(40),
+        );
         assert_eq!(counted.scroll_child_count, Some(40));
         assert_eq!(
             counted.scroll_index, None,
             "and the other half is still the walk's to find"
         );
-        let uncounted = SemanticsProperties::scrollable(0.0, 0.0, 100.0, true, None);
+        let uncounted = SemanticsProperties::scrollable(
+            0.0,
+            0.0,
+            100.0,
+            crate::render::AxisDirection::Down,
+            None,
+        );
         assert_eq!(uncounted.scroll_child_count, None);
     }
 
@@ -5303,11 +5360,88 @@ mod tests {
             0.0,
         );
         assert_eq!(node.properties.scroll_extent_max, 300.0);
+        // At the left edge, and the axis picks the pair: the gesture that
+        // reveals what is further right is offered, the one that would go back
+        // past the start is not.
         assert!(node.properties.has(SemanticsAction::ScrollLeft));
-        assert!(node.properties.has(SemanticsAction::ScrollRight));
+        assert!(!node.properties.has(SemanticsAction::ScrollRight));
         assert!(!node.properties.has(SemanticsAction::ScrollUp));
         assert!(!node.properties.has(SemanticsAction::ScrollDown));
         set_enabled(false);
+    }
+
+    #[test]
+    fn a_reader_at_the_top_of_a_list_is_not_offered_the_way_back_up() {
+        // Upstream's `_updateSemanticActions`, whose own doc gives the reason:
+        // "If the scroll view has been scrolled all the way to the top, the
+        // action to scroll further up needs to be removed as the scroll view
+        // cannot be scrolled in that direction anymore."
+        //
+        // This port used to offer both directions whenever there was any room
+        // at all, so a reader at the top of a list was handed a gesture that
+        // does nothing -- and at the bottom, another one.
+        set_enabled(true);
+        let content = Size::new(100.0, 500.0);
+
+        let top = scroll_node(crate::render::Axis::Vertical, content, 0.0);
+        assert!(
+            top.properties.has(SemanticsAction::ScrollUp),
+            "there is more list below, and the gesture for it is `ScrollUp`"
+        );
+        assert!(
+            !top.properties.has(SemanticsAction::ScrollDown),
+            "and nothing above to go back to"
+        );
+
+        let middle = scroll_node(crate::render::Axis::Vertical, content, 150.0);
+        assert!(
+            middle.properties.has(SemanticsAction::ScrollUp),
+            "both ways"
+        );
+        assert!(middle.properties.has(SemanticsAction::ScrollDown));
+
+        let bottom = scroll_node(crate::render::Axis::Vertical, content, 300.0);
+        assert!(
+            !bottom.properties.has(SemanticsAction::ScrollUp),
+            "nothing further down"
+        );
+        assert!(bottom.properties.has(SemanticsAction::ScrollDown));
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_list_that_runs_the_other_way_swaps_the_two_gestures() {
+        // A chat pinned to the bottom is `AxisDirection::Up`, and upstream
+        // swaps the pair for it. Taking the *axis* rather than the direction
+        // would give a reader at the start of such a list the one gesture that
+        // does nothing -- which is the same bug as the one above, wearing a
+        // different hat.
+        use crate::render::AxisDirection;
+        let at_start = SemanticsProperties::scroll_actions(AxisDirection::Up, 0.0, 0.0, 300.0);
+        assert_eq!(
+            at_start,
+            SemanticsAction::ScrollDown as i32,
+            "an upward list moves on with `ScrollDown`"
+        );
+        let downward = SemanticsProperties::scroll_actions(AxisDirection::Down, 0.0, 0.0, 300.0);
+        assert_eq!(
+            downward,
+            SemanticsAction::ScrollUp as i32,
+            "and a downward one with `ScrollUp`, which is the opposite gesture"
+        );
+    }
+
+    #[test]
+    fn a_list_with_nowhere_to_go_offers_nothing() {
+        // The case round 352 got right and this rule has to keep: a list that
+        // fits on screen still says it is a list, and offers no gesture. Here
+        // it falls out of the same two comparisons rather than needing a
+        // guard of its own -- with `min == max == pixels`, neither holds.
+        use crate::render::AxisDirection;
+        assert_eq!(
+            SemanticsProperties::scroll_actions(AxisDirection::Down, 0.0, 0.0, 0.0),
+            0
+        );
     }
 
     #[test]
@@ -6213,7 +6347,13 @@ mod tests {
 
     #[test]
     fn a_scrollable_says_how_far_down_it_is() {
-        let scroller = SemanticsProperties::scrollable(120.0, 0.0, 900.0, true, None);
+        let scroller = SemanticsProperties::scrollable(
+            120.0,
+            0.0,
+            900.0,
+            crate::render::AxisDirection::Down,
+            None,
+        );
         assert!(scroller.has(SemanticsAction::ScrollUp));
         assert!(scroller.has(SemanticsAction::ScrollDown));
         assert!(!scroller.has(SemanticsAction::ScrollLeft));

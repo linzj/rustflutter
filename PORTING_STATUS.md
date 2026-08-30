@@ -24505,3 +24505,72 @@ C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建
 **还有哪几个模型仍然只被自己的测试建过**（第 346 轮数过八个，已接四个），
 **逐个问一句“今天还接不上吗”**——有能接的就接，
 接不上的就把理由**重新写一遍**，因为旧理由可能已经不是真的了。
+
+---
+
+## 第 361 轮：列表顶上不再假装还能往回滚
+
+按上一轮的“下一步”走第 346 轮那八个模型里**还没接活的四个**，
+逐个问“今天还接不上吗”。四个是 `RenderSemanticsGestureHandler`、
+`RenderSemanticsAnnotations`、`RenderAnnotatedRegion`、`RenderSliverSemanticsAnnotations`。
+
+从第一个开始读，它的 `advertised_actions()` 建模的是上游
+`RenderSemanticsGestureHandler.describeSemanticsConfiguration` 里那圈
+`_isValidAction` 过滤，文档里已经把 `validActions` 的要点抄下来了：
+
+> 关于同一个动作有**两件独立的事**——它有没有被接上，以及它**现在可不可能**——
+> 只有第二件会随滚动变化。
+
+**顺着这句话去查“第二件在活路径上是谁在管”，撞上真缺口。**
+
+上游 `ScrollPosition._updateSemanticActions`（`scroll_position.dart:754`）：
+
+```dart
+final actions = <SemanticsAction>{
+  if (pixels > minScrollExtent) backward,
+  if (pixels < maxScrollExtent) forward,
+};
+```
+
+它自己的文档写得明明白白：
+“如果滚动视图已经滚到最顶，**继续往上滚这个动作就得被拿掉**，因为那个方向已经滚不动了。”
+
+而第 352 轮我接的 `SemanticsProperties::scrollable` 是：
+`max > min` 就把**两个方向一起给出去**。
+于是**列表顶上的读屏用户被递了一个什么都不做的手势**，底部同理。
+第 352 轮那条 `max <= min` 的门是对的，只是**它只挡住了整段路都走不了的情况**，
+没挡住“这一头走不了”。
+
+### 命名是反的，这点写进了文档
+
+方向对是靠 `axisDirection` 挑的，而**名字在路上翻了个个儿**：
+对一个普通向下的列表，`forward`（带你更深入内容的那个）是 **`ScrollUp`**——
+因为它说的是**手指的动作，不是内容的行程**。
+所以“下面还有货”时给的是 `ScrollUp`；反过来给就正好把唯一没用的那个递给顶上的人。
+`AxisDirection::Up`（钉在底部的聊天列表）整对交换——
+**所以这个函数要的是方向，不是轴**。原来的签名是 `vertical: bool`，
+连“哪一头”都表达不了。
+
+`RenderViewport` 本来就存着 `axis_direction`，改一行就传上了。
+
+### 变异扫描 8 个，全红
+
+包括“两个方向照旧一起给”（5 红）、“比较写成非严格，两端各漏一个”（5 红）、
+`forward`/`backward` 互换（2 红）、上行列表当下行读（1 红）、
+横向那对互换（1 红），以及 viewport 传了个自己编的方向（2 红）。
+
+顺带：第 352 轮那条“装得下的列表不给手势”**不再需要单独的门**——
+`min == max == pixels` 时两个比较都不成立，它从同一条规则里掉出来。
+补了一条测试钉住这一点，免得下次有人以为那是漏了。
+
+尺子：十六把全部 exit 0。门：Rust 6305 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：这一轮是**从一个没接活的模型的文档里**读出来的缺口——
+模型本身仍然没接（`RenderSemanticsGestureHandler` 还是只有自己的测试建它），
+但它文档里那句话指向了活路径上的一个真错误。这说明**那四个模型值得逐个读完**，
+不是为了接它们，而是因为**它们的文档是上游行为的笔记，而活路径可能没照着做**。
+下一个读 `RenderSemanticsAnnotations`（八个里最大的一个，
+`Semantics` 控件的全部属性都从它下去）——
+**按行为逐条对**：它建模的那些属性，活路径的 `SemanticsAnnotation` 有几条真的送到了平台，
+哪几条像这一轮的方向一样，**送了但送错**。
