@@ -122,6 +122,20 @@ static_assert(sizeof(RfAppHost) == sizeof(void*) * 9,
 static_assert(sizeof(RfAppInterface) == sizeof(void*) * 17,
               "RfAppInterface has drifted from its Rust mirror in app.rs");
 
+// The struct that had no check at all until now, and the one that needed it
+// most: unlike the two above it mixes int32_t, float, double, pointer and
+// size_t, so a field present on one side only does not shift everything by a
+// pointer -- it shifts part of it, and OnUpdateSemantics reads on into the
+// next field's bytes. A screen reader would be told a scroll extent made of
+// half a pointer.
+//
+// Spelled out rather than counted, because the fields are of four widths and
+// the padding between them is part of the answer. Only asserted where the two
+// 64-bit ABIs this builds for agree; app.rs skips it on 32-bit for the same
+// reason and carries the matching number.
+static_assert(sizeof(void*) != 8 || sizeof(RfSemanticsNode) == 128,
+              "RfSemanticsNode has drifted from its Rust mirror in app.rs");
+
 bool RuntimeController::LaunchApplication() {
   if (app_ != nullptr) {
     FML_LOG(ERROR) << "The application is already running.";
@@ -604,6 +618,16 @@ void RuntimeController::OnUpdateSemantics(void* user_data,
     // with nothing to read crosses as unknown -- the same null that upstream
     // sends through SemanticsUpdateBuilder.updateNode.
     out.textDirection = in.text_direction;
+    // -1 is the framework's "no answer" for both; the engine's fields have no
+    // null, so what it means is left as the zero they already default to. A
+    // list that does not know how long it is says nothing rather than saying
+    // it has no rows.
+    if (in.scroll_index >= 0) {
+      out.scrollIndex = in.scroll_index;
+    }
+    if (in.scroll_children >= 0) {
+      out.scrollChildren = in.scroll_children;
+    }
 
     if (in.children != nullptr) {
       out.childrenInTraversalOrder.assign(in.children,

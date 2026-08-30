@@ -168,6 +168,21 @@ const _: () = assert!(
 
 /// One semantics node, as the C ABI carries it. Mirrors `RfSemanticsNode` in
 /// `rust_app_api.h`; the two have to agree field for field.
+///
+/// # Nobody was watching this one
+///
+/// [`RfAppHost`] above has a size assertion on both sides of the boundary.
+/// This struct had neither, and it is the more dangerous of the two: its
+/// fields are of four different widths, so a field added to one side and not
+/// the other does not shift everything by a pointer -- it shifts *some* of it,
+/// and the reader carries on into the next field's bytes. `ffi_tables.py` does
+/// not cover this either; that ruler compares hand-written **enum number
+/// tables**, which is a different question about a different file.
+///
+/// What the assertion below catches is exactly that: a field on one side and
+/// not the other. What it does not catch is two fields of the same width
+/// swapped, which changes no size. That is worth saying out loud rather than
+/// leaving a reader to assume the check is stronger than it is.
 #[repr(C)]
 pub struct RfSemanticsNode {
     pub id: i32,
@@ -192,7 +207,27 @@ pub struct RfSemanticsNode {
     /// engine's `SemanticsNode::textDirection` holds. A node with nothing to
     /// read crosses as 0.
     pub text_direction: i32,
+    /// Which item of the list is showing first, and how many there are. -1 is
+    /// upstream's null for both: `SemanticsNode::scrollIndex` and
+    /// `scrollChildren` are plain `int32_t` in the engine and default to 0, so
+    /// "no answer" cannot be a zero -- row 0 of a list is a real answer.
+    pub scroll_index: i32,
+    pub scroll_children: i32,
 }
+
+/// The layout the C header must produce for the struct above. Written out
+/// where the two 64-bit ABIs this port builds for agree, and skipped elsewhere
+/// rather than asserted wrongly: a 32-bit target packs the pointers and the
+/// `size_t` differently and would fail this for a reason that is not drift.
+///
+/// `runtime_controller.cc` carries the matching `static_assert`, so the pair
+/// only means something while both are present -- one alone says a struct is
+/// the size it is.
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(
+    size_of::<RfSemanticsNode>() == 128,
+    "RfSemanticsNode has drifted from rust_app_api.h"
+);
 
 /// Bit positions of `RfSemanticsNode::flags`, matching `rust_app_api.h`.
 mod semantics_bits {
@@ -278,6 +313,19 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
         set(&mut bits, state == SemanticsTristate::True, is);
     }
     bits
+}
+
+/// Packs one of the two scroll counts into the ABI's `int32_t`.
+///
+/// `flutter::SemanticsNode::scrollIndex` and `scrollChildren` are plain
+/// `int32_t` that default to **0**, so the engine has no null to receive and
+/// zero cannot be borrowed as one: row 0 of a list is a real answer, and a
+/// list showing its first row would otherwise be indistinguishable from a box
+/// that is not a list at all. -1 is the value chosen to mean "no answer", and
+/// `runtime_controller.cc` drops anything negative rather than assigning it --
+/// so a node that says nothing leaves the engine's own default alone.
+pub fn pack_scroll_count(value: Option<i32>) -> i32 {
+    value.unwrap_or(-1)
 }
 
 /// Packs the framework's reading direction into the ABI's.
@@ -1011,6 +1059,21 @@ impl AppInstance {
     /// wants before returning, which is what upstream's `SemanticsUpdate` does
     /// too. The `CString`s are held in a vector for exactly as long as the
     /// pointers into them are on the other side of the call.
+    /// # Nothing here is covered by a test
+    ///
+    /// Measured, not assumed: making every node cross with `left: 0.0` turns
+    /// the whole suite green, and so does dropping both scroll counts. The
+    /// pure packers this calls -- [`pack_semantics_flags`],
+    /// [`pack_text_direction`], [`pack_scroll_count`] -- are each pinned by
+    /// their own tests, and the walk that produces the nodes is pinned by many.
+    /// **The twenty lines that copy one into the other are pinned by none**,
+    /// which is the one place a field can be read off the wrong node, or off
+    /// the right node and into the wrong slot.
+    ///
+    /// What is needed is a fixture: an [`RfAppHost`] whose `update_semantics`
+    /// records what it was handed, so a frame can be flushed and the bytes
+    /// inspected. That is a round of its own rather than a note, but the note
+    /// belongs here until then.
     fn send_semantics(&self, view_id: i64, nodes: &[crate::semantics::SemanticsNode]) {
         let Some(update) = self.host.update_semantics else {
             return;
@@ -1057,6 +1120,11 @@ impl AppInstance {
                     children: children[index].as_ptr(),
                     child_count: children[index].len(),
                     text_direction: pack_text_direction(node.properties.text_direction),
+                    // -1 rather than 0, because the engine's fields are plain
+                    // `int32_t` with no null: row 0 is a real answer and a
+                    // zero must not be mistaken for "this is not a list".
+                    scroll_index: pack_scroll_count(node.properties.scroll_index),
+                    scroll_children: pack_scroll_count(node.properties.scroll_child_count),
                 }
             })
             .collect();

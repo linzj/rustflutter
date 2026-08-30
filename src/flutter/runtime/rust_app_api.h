@@ -132,6 +132,13 @@ typedef struct RfSemanticsNode {
   // FlutterTextDirection encoding: 0 = unknown, 1 = rtl, 2 = ltr. A node
   // with nothing to read aloud crosses as 0.
   int32_t text_direction;
+  // Which item of the list is showing first, and how many items there are --
+  // the two halves of the "row 3 of 40" a screen reader announces. -1 is "no
+  // answer" for both: flutter::SemanticsNode carries these as plain int32_t
+  // that default to 0, and row 0 of a list is a real answer, so a zero cannot
+  // be the null.
+  int32_t scroll_index;
+  int32_t scroll_children;
 } RfSemanticsNode;
 
 // Mirrors flutter::ViewportMetrics. Physical pixels throughout, matching the

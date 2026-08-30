@@ -10375,6 +10375,12 @@ impl RenderBox for RenderViewport {
                 0.0,
                 self.max_scroll_extent(),
                 self.axis() == Axis::Vertical,
+                // Upstream's `semanticChildCount`, which a `ListView.builder`
+                // is told and a plain scrolling box is not. This viewport
+                // takes one child of whatever size, so there is no count to
+                // declare and `None` is the honest answer -- see the note on
+                // the field.
+                None,
             ),
             None,
         ))

@@ -532,12 +532,33 @@ pub struct SemanticsProperties {
     pub flags: SemanticsFlags,
     /// The actions this node accepts, as a bit set.
     pub actions: i32,
-    /// Where the reader is inside a scrollable, for the "row 3 of 40" a screen
-    /// reader announces. `NaN` for a node that does not scroll, which is what
-    /// upstream uses for the same "no answer".
+    /// How far down a scrollable the reader is, **in pixels**. `NaN` for a
+    /// node that does not scroll, which is what upstream uses for the same "no
+    /// answer".
+    ///
+    /// This used to say it was what a screen reader announces as "row 3 of
+    /// 40". It is not, and the difference is the point of the two fields
+    /// below: pixels are what the list moved by, items are what the reader is
+    /// counting. "340 of 1200" is not a sentence anybody wants read aloud.
     pub scroll_position: f32,
     pub scroll_extent_max: f32,
     pub scroll_extent_min: f32,
+    /// Which item of the list is the first one showing, and how many there are
+    /// -- the two halves of "row 3 of 40".
+    ///
+    /// Upstream's `scrollIndex` and `scrollChildCount`, and they arrive from
+    /// two different places, which is why they are two fields and not a pair.
+    /// The **count** is declared: `scrollable.dart` writes
+    /// `config.scrollChildCount = semanticChildCount` on the same line as the
+    /// extents, because only the list knows how long it is. The **index** is
+    /// discovered: `assembleSemanticsNode` walks the children it was handed
+    /// and takes `firstVisibleIndex ??= child.indexInParent` off the first one
+    /// that is not hidden, because only the walk knows which of them survived.
+    ///
+    /// `None` is upstream's null for both: a node that is not a list, or a
+    /// list that never said how long it is.
+    pub scroll_child_count: Option<i32>,
+    pub scroll_index: Option<i32>,
 }
 
 /// Two of these are the same when a reader would be told the same thing.
@@ -568,6 +589,13 @@ impl PartialEq for SemanticsProperties {
             && same(self.scroll_position, other.scroll_position)
             && same(self.scroll_extent_max, other.scroll_extent_max)
             && same(self.scroll_extent_min, other.scroll_extent_min)
+            // Ordinary equality: these two say "no answer" with `None` rather
+            // than with a value that is not equal to itself, so they need no
+            // help. They are compared all the same -- a list whose first
+            // showing row changed has something new to tell a reader even when
+            // every label on the screen is the same as it was.
+            && self.scroll_child_count == other.scroll_child_count
+            && self.scroll_index == other.scroll_index
     }
 }
 
@@ -1721,6 +1749,26 @@ fn block_previously_painted() {
 fn close(index: usize) {
     COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
+        // A list learns which of its rows is showing only once its rows have
+        // been walked, which is here and not where it described itself.
+        //
+        // Upstream's `assembleSemanticsNode` does the same thing at the same
+        // moment: `firstVisibleIndex ??= child.indexInParent`, skipping the
+        // children whose `isHidden` flag is set. The skip is already done by
+        // the time the loop below runs -- a node that was not on the glass
+        // never opened at all (see [`Clips::applied_to`]) -- so what survives
+        // in `nodes` *is* upstream's not-hidden list.
+        //
+        // The walk is depth first and nodes are pushed in the order they are
+        // opened, so a node at `index` owns exactly `index + 1..`; the first
+        // one there carrying an index is the first showing row. This is the
+        // same contiguity `block_previously_painted` relies on.
+        if !collector.nodes[index].properties.scroll_position.is_nan() {
+            let first = collector.nodes[index + 1..]
+                .iter()
+                .find_map(|node| node.index_in_parent);
+            collector.nodes[index].properties.scroll_index = first;
+        }
         if !collector.nodes[index].properties.label.is_empty() {
             collector.labelled_depth = collector.labelled_depth.saturating_sub(1);
         }
@@ -2129,7 +2177,18 @@ impl SemanticsProperties {
     /// you are at the top of it" is true of a list that fits on screen, while
     /// "you can scroll this" is not, and a reader that is offered a scroll
     /// gesture that does nothing has been told a small lie about the page.
-    pub fn scrollable(offset: f32, min: f32, max: f32, vertical: bool) -> SemanticsProperties {
+    ///
+    /// `child_count` is upstream's `semanticChildCount`: how many items the
+    /// list has in total, not how many are built or on screen. `None` is a
+    /// list that does not know -- upstream's null, and the reason
+    /// `semanticChildCount` is a parameter callers may leave out.
+    pub fn scrollable(
+        offset: f32,
+        min: f32,
+        max: f32,
+        vertical: bool,
+        child_count: Option<i32>,
+    ) -> SemanticsProperties {
         let actions = if max <= min {
             0
         } else if vertical {
@@ -2142,6 +2201,12 @@ impl SemanticsProperties {
             scroll_position: offset,
             scroll_extent_min: min,
             scroll_extent_max: max,
+            scroll_child_count: child_count,
+            // Not knowable here, and deliberately left for the walk: which
+            // item is showing depends on which of them survived, and nothing
+            // has been walked yet when a render object describes itself. See
+            // [`close`].
+            scroll_index: None,
             ..SemanticsProperties::default()
         }
     }
@@ -3442,6 +3507,8 @@ impl SemanticsConfiguration {
             scroll_position: self.scroll_position.unwrap_or(f32::NAN),
             scroll_extent_max: self.scroll_extent_max.unwrap_or(f32::NAN),
             scroll_extent_min: self.scroll_extent_min.unwrap_or(f32::NAN),
+            scroll_child_count: self.scroll_child_count,
+            scroll_index: self.scroll_index,
         }
     }
 }
@@ -4987,6 +5054,226 @@ mod tests {
         set_enabled(false);
     }
 
+    /// A list of `count` rows of 50, each carrying its index, in a viewport
+    /// scrolled to `offset` and clipped to the 200 the harness lays out into.
+    fn scrolled_rows(count: i32, offset: f32) -> SemanticsNode {
+        let nodes = spoken_nodes(leaf(move || {
+            let mut column =
+                crate::widgets::Column::new().with_main_axis_size(crate::render::MainAxisSize::Min);
+            for index in 0..count {
+                column = column.push(crate::render::RenderIndexedSemanticsBox::new(
+                    index as i64,
+                    RenderSemantics::new(
+                        700 + index,
+                        SemanticsProperties::label(format!("row {index}")),
+                        crate::widgets::SizedBox::new(100.0, 50.0),
+                    ),
+                ));
+            }
+            crate::render::RenderViewport::new(crate::render::Axis::Vertical, column)
+                .with_offset(offset)
+        }));
+        nodes
+            .iter()
+            .find(|node| !node.properties.scroll_position.is_nan())
+            .cloned()
+            .expect("a list said it was one")
+    }
+
+    #[test]
+    fn a_scrolled_list_says_which_row_is_showing() {
+        // The end of the chain that runs back through three rounds: a box
+        // declares an index (349's family, wired in 351), a node that is not on
+        // the glass is dropped rather than shipped (350), and the list itself
+        // finally speaks (352). Here they meet -- the list reports the index of
+        // the first row that survived, which is upstream's
+        // `firstVisibleIndex ??= child.indexInParent` over the children that
+        // are not hidden.
+        //
+        // Eight rows of 50 in a 200 window, so 400 of content and 200 of room
+        // to scroll. Scrolled by 0 the first showing row is 0; by 120 the first
+        // two rows are wholly above the clip, so it is row 2 -- and *not* row
+        // 0, which is what counting the survivors from zero would have said.
+        // At the bottom of the list it is row 4, still counted in the list
+        // rather than in what is left of it.
+        set_enabled(true);
+        assert_eq!(scrolled_rows(8, 0.0).properties.scroll_index, Some(0));
+        assert_eq!(
+            scrolled_rows(8, 120.0).properties.scroll_index,
+            Some(2),
+            "two rows above the clip, so the third is the one showing"
+        );
+        assert_eq!(
+            scrolled_rows(8, 200.0).properties.scroll_index,
+            Some(4),
+            "scrolled to the end: rows 4 to 7 are the window"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_list_counts_only_the_rows_inside_it() {
+        // The search starts below the list's own node and not at the top of
+        // the tree. The walk pushes nodes in the order it opens them, so
+        // everything painted *before* the list is already sitting in the same
+        // array -- and an indexed thing among them would be read as the list's
+        // first showing row, which is a row number belonging to something that
+        // is not in the list.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            crate::widgets::Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                // Painted first, indexed, and nothing to do with the list.
+                .push(crate::render::RenderIndexedSemanticsBox::new(
+                    99,
+                    crate::widgets::Text::new("a chip above the list"),
+                ))
+                .push(
+                    crate::render::RenderViewport::new(
+                        crate::render::Axis::Vertical,
+                        crate::render::RenderIndexedSemanticsBox::new(
+                            4,
+                            RenderSemantics::new(
+                                710,
+                                SemanticsProperties::label("the row"),
+                                crate::widgets::SizedBox::new(100.0, 400.0),
+                            ),
+                        ),
+                    )
+                    .with_offset(0.0),
+                )
+        }));
+        let list = nodes
+            .iter()
+            .find(|node| !node.properties.scroll_position.is_nan())
+            .expect("a list said it was one");
+        assert_eq!(
+            list.properties.scroll_index,
+            Some(4),
+            "the row inside it, not the chip painted before it"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_list_showing_a_different_row_is_something_new_to_say() {
+        // Both gates that decide whether a frame reaches the platform compare
+        // properties -- `RenderSemantics::update_from` and `flush`'s third gate
+        // -- so a field left out of the comparison is a field whose changes are
+        // silently swallowed. Two lists identical in every other way, scrolled
+        // to the same pixel, showing rows numbered differently: a reader being
+        // told "row 4" instead of "row 104" is not the same announcement.
+        set_enabled(true);
+        let laid = |base: i32| {
+            let nodes = spoken_nodes(leaf(move || {
+                let mut column = crate::widgets::Column::new()
+                    .with_main_axis_size(crate::render::MainAxisSize::Min);
+                for step in 0..8 {
+                    column = column.push(crate::render::RenderIndexedSemanticsBox::new(
+                        (base + step) as i64,
+                        RenderSemantics::new(
+                            800 + step,
+                            // The same words in both, so the row number is the
+                            // only difference the comparison can see.
+                            SemanticsProperties::label("a row"),
+                            crate::widgets::SizedBox::new(100.0, 50.0),
+                        ),
+                    ));
+                }
+                crate::render::RenderViewport::new(crate::render::Axis::Vertical, column)
+                    .with_offset(120.0)
+            }));
+            nodes
+                .iter()
+                .find(|node| !node.properties.scroll_position.is_nan())
+                .cloned()
+                .expect("a list said it was one")
+        };
+
+        let here = laid(0);
+        let further = laid(100);
+        assert_eq!(here.properties.scroll_index, Some(2));
+        assert_eq!(further.properties.scroll_index, Some(102));
+        assert_eq!(
+            here.properties.scroll_position, further.properties.scroll_position,
+            "same pixel, so the floats cannot be what tells them apart"
+        );
+        assert_ne!(
+            here.properties, further.properties,
+            "a changed row number has to survive the comparison"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn the_engine_has_no_null_so_minus_one_is_the_one_we_send() {
+        use crate::app::pack_scroll_count;
+        // Zero is unavailable as a null: `scrollIndex` and `scrollChildren`
+        // are plain `int32_t` on the engine's node and default to 0, and row 0
+        // of a list is a real answer. Sending 0 for "not a list" would make
+        // every plain box claim to be showing the first row of itself.
+        assert_eq!(pack_scroll_count(Some(0)), 0, "row zero is an answer");
+        assert_eq!(pack_scroll_count(Some(41)), 41);
+        assert_eq!(pack_scroll_count(None), -1, "and this is the absence");
+    }
+
+    #[test]
+    fn a_list_that_knows_how_long_it_is_says_so() {
+        // The count is the declared half, and nothing in this port declares one
+        // yet: `RenderViewport` shows one child of whatever size and honestly
+        // passes `None` (see
+        // `a_list_that_never_said_how_long_it_is_says_nothing_about_it`). So
+        // the parameter is exercised here directly rather than through a walk
+        // -- a lazy list that knows its length is what will pass a number, and
+        // when one does this is the behaviour it will get.
+        let counted = SemanticsProperties::scrollable(0.0, 0.0, 100.0, true, Some(40));
+        assert_eq!(counted.scroll_child_count, Some(40));
+        assert_eq!(
+            counted.scroll_index, None,
+            "and the other half is still the walk's to find"
+        );
+        let uncounted = SemanticsProperties::scrollable(0.0, 0.0, 100.0, true, None);
+        assert_eq!(uncounted.scroll_child_count, None);
+    }
+
+    #[test]
+    fn a_list_that_never_said_how_long_it_is_says_nothing_about_it() {
+        // Two different questions with two different answers. The count is
+        // *declared* by whoever built the list -- upstream's
+        // `semanticChildCount`, which a plain scrolling box has no value for --
+        // while the index is *discovered* by the walk. A viewport onto one
+        // child of some size knows the second and not the first, and saying
+        // "row 3 of 0" would be worse than saying nothing.
+        set_enabled(true);
+        let node = scrolled_rows(8, 120.0);
+        assert_eq!(node.properties.scroll_index, Some(2), "discovered");
+        assert_eq!(node.properties.scroll_child_count, None, "never declared");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_box_that_does_not_scroll_is_not_given_a_row_number() {
+        // The index is only looked for under a node that said it scrolls.
+        // Otherwise every ancestor of an indexed box -- the view's own node
+        // included -- would take the first index it found underneath it and
+        // report itself as a list showing row 3.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            crate::render::RenderIndexedSemanticsBox::new(
+                3,
+                crate::widgets::Text::new("not in a list"),
+            )
+        }));
+        for node in &nodes {
+            assert_eq!(
+                node.properties.scroll_index, None,
+                "node {} claimed to be a list",
+                node.id
+            );
+        }
+        set_enabled(false);
+    }
+
     #[test]
     fn a_list_that_fits_is_a_list_but_not_a_scrollable_one() {
         // Upstream's two conditions on two lines: the extents are written
@@ -5926,7 +6213,7 @@ mod tests {
 
     #[test]
     fn a_scrollable_says_how_far_down_it_is() {
-        let scroller = SemanticsProperties::scrollable(120.0, 0.0, 900.0, true);
+        let scroller = SemanticsProperties::scrollable(120.0, 0.0, 900.0, true, None);
         assert!(scroller.has(SemanticsAction::ScrollUp));
         assert!(scroller.has(SemanticsAction::ScrollDown));
         assert!(!scroller.has(SemanticsAction::ScrollLeft));
