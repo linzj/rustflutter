@@ -22739,3 +22739,57 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 `Slider::gestures()` 直接返回 handlers，没有走树。先查 `framework.rs` 里 build 之后的产物
 是什么形状、有没有一个能按 id 找 `Pointer` 节点的口子——**先按行为查，确认做不做得到**，
 做得到就是一轮，做不到就把这个结论写进 PORTING_STATUS 并回队头。
+
+---
+
+## 第 330 轮：接线**是**能测的——一测就发现清空按钮根本收不到点击
+
+接上一轮的“下一步”：去查“建好的控件树上能不能在测试里拿到点击”。
+
+**能。** `editable.rs` 一直就是这么测它自己的点击的：
+
+```rust
+let mut router = crate::gestures::GestureRouter::new();
+router.dispatch(&root, &event(PointerChange::Down, x, y));
+router.dispatch(&root, &event(PointerChange::Up,   x, y));
+```
+
+把树 `rebuild` → `build_render_tree` → `layout` → **paint**，然后把 Down/Up 送进去就行。
+所以**第 329 轮那句“埋在 build 闭包里的点击处理器在这里够不着”是错的**，
+已经就地改掉了那条注释。
+
+**但把这套用上去之后，发现的东西比缺一条测试严重。**
+
+搭了一个完整的实验：`ElementTree` 里建搜索框、300×44 布局并绘制、
+`crate::focus::focus(1)` 之后按 `editable.rs` 的老路从 `flutter/textinput` 通道投递一条
+`TextInputClient.updateEditingState` 把 "hello" 打进去——这一步是成功的，
+字段自己的 `on_changed` 收到了 "hello"。然后在框内扫点。
+
+结果：
+
+* build 里探针打出 **`text="hello" show_clear=true`**——**清空按钮确实建出来了**；
+* 点击处理器里的探针**一次都没打印**；
+* 在布好的 300×44 盒子里扫了十个点（右缘 285/295、上下 5/11/22/40、中间 150、左端 20），
+  **没有一个点让它跑起来**。
+
+也就是说：**这个清空按钮画得出来，但根本不响应点击。** 上一轮补的那条通知因此在真机上也
+不会发生——不是“少一条测试”，那只是症状。
+
+排除掉的假设：**不是共用 pointer region id**（清空按钮和内层字段都用搜索框的 `id`，
+把它改成一个不冲突的值，行为不变）；**不是没绘制**（补上 paint 之后一样）；
+**不是坐标算错**（根就是 300×44，扫的点都在里面）；**不是没建出来**（`show_clear=true`）。
+`RenderPointerRegion` 的默认 `HitTestBehavior` 是 `Opaque`，`hit_test_self` 该答 true，
+所以问题多半在这条路径上更靠上的某处——但**这一轮没查到根因，不装作查到了**。
+
+按纪律，实验代码没有留下：探针和半成品测试全部回滚，只留下那条被改正的注释，
+它现在写明了实验做过什么、发现了什么、排除了什么。
+
+尺子：十六把全部 exit 0。门：6236 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：把根因查出来并修掉——这是一个**真的用户可见的 bug**，不是覆盖率问题。
+路线很明确：从 `RenderPointerRegion::hit_test` 往上，逐层确认 `Row`／`Padding`／
+`Container`／`many()` 的 `hit_test` 是不是都把 `position` 按子节点的偏移换算过了。
+最省事的探针是先写一个**最小复现**：`Row` 里放一个 `Pointer` 包着的固定尺寸盒子，
+不带搜索框的其他东西，看它收不收得到点击——**如果最小复现也收不到，那这是布局族的 bug
+而不是搜索框的**，影响面比一个按钮大得多。先做这个最小复现。

@@ -3881,12 +3881,24 @@ impl StatefulComponent for CupertinoSearchTextField {
                     // [`CupertinoSearchTextField::suffix_tap`].
                     //
                     // These four lines are not covered: mutations that stop
-                    // announcing, or announce the old text, stay green,
-                    // because a tap handler buried in a build closure cannot
-                    // be reached from a test here (see the note on
-                    // `effective_placeholder`). Folding the payload into
-                    // `suffix_tap` moved as much as could be moved behind an
-                    // assertion; what is left is the call itself.
+                    // announcing, or announce the old text, stay green.
+                    //
+                    // Tick 329 said the reason was that a tap handler in a
+                    // build closure cannot be reached from a test. **That was
+                    // wrong** -- tick 330 built this field in an
+                    // `ElementTree`, laid it out, painted it and sent a real
+                    // Down/Up through `GestureRouter::dispatch`, which is how
+                    // `editable.rs` has tested its own taps all along.
+                    //
+                    // What that experiment found instead is worse and is
+                    // written up in PORTING_STATUS: with text in the field
+                    // this button **is built** (the build reports
+                    // `show_clear=true`) and the handler below **still never
+                    // runs**, at any point inside the laid-out 300x44 box. So
+                    // the clear button does not respond to taps at all, and
+                    // the missing coverage is a symptom rather than the
+                    // problem. Sharing a pointer-region id with the field was
+                    // ruled out; the cause is not yet known.
                     let announcement = CupertinoSearchTextField::suffix_tap(&text_before);
 
                     // `_clearText`: empty the field through its own handle,
