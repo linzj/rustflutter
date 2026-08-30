@@ -21785,3 +21785,58 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 **下一步**：同一个类里，把这个区分用到手柄上——`handlesAreVisible` 是
 `_handles != null && handlesVisible` 的**合取**，而端口只有后一半；再看 `showHandles`
 在手柄还没造出来时做什么。这和这一轮是同一条线索的另一头。先按行为查。
+
+## 第 311 轮：三个可见性，三种算法，没有两个是一样的
+
+接上一轮"存在 vs 可见"的另一头：手柄。上游在
+`_updateTextSelectionOverlayVisibilities` 里一口气算出三个值,
+而**没有两个是用同样的方式合成的**：
+
+```dart
+_effectiveStartHandleVisibility.value = _handlesVisible && startInViewport;
+_effectiveEndHandleVisibility.value   = _handlesVisible && endInViewport;
+_effectiveToolbarVisibility.value     = startInViewport || endInViewport;
+```
+
+**每个手柄只看自己那一端。** 把选区滚到只剩开头在字段里，起始手柄留着、结束手柄走人——
+它们不是一个一起来一起走的控件，也不能是：**还在屏幕上的那个仍然是可以拖的。**
+
+**工具栏用 `||`，手柄用 `&&`。** 它作用于整段选区，而一段有一头滚出视野的选区仍然值得
+复制。
+
+**而工具栏那一行完全不提 `handlesVisible`。** 把手柄关掉的调用方**仍然留着菜单**——
+这正是那个属性的用途，上游文档写着 "use this property to show or hide the handle
+without rebuilding them"，它只管手柄。
+
+### 建 与 显示，是两个轴上的两个动词
+
+`showHandles` 的文档是 "**Builds** the handles by inserting them into the overlay"、
+`hideHandles` 是 "**Destroys** the handles by removing them"，守卫都是 `_handles != null`
+——和上一轮放大镜那一对同一个形状、同一个理由。而 `handlesVisible` 是"显示/隐藏**已经
+建好的**"。`handlesAreVisible` 是两者的合取。
+
+`hideHandles` **不碰** `handlesVisible`：一个让它顺手清掉标志的端口,
+会留下一个再也显示不出手柄的字段，除非有人把标志设回去。
+
+### 改错扫描抓出的是我自己的不忠实
+
+九条里"让工具栏不看自己的标志"**零落红**——查下来不是漏了测试那么简单：**上游那一行根本
+没有这个合取项**。`_effectiveToolbarVisibility` 只是一个交给工具栏的**可见性信号**,
+"有没有工具栏"由别处记（`_toolbar != null` 或那个上下文菜单控制器），**上屏的是两者相与**。
+
+我加的那一项对这个端口是对的（它的 `toolbar_visible` 同时担着这两件事,
+和上面 `handles_built && handles_visible` 对称），但**既没说明也没测**。两样都补上,
+九条全红。
+
+（这是第三轮由改错扫描抓出我这边的问题，前两次是测试只测了同解的一侧,
+这次是代码多了一项没人验的条件。）
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6135 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：同一个类里还剩 `update` / `updateForScroll` / `dispose` 这一族——
+**滚动时overlay 怎么跟**。`updateForScroll` 是单独一个方法而不是 `update` 的一支,
+这件事本身就值得读：滚动改变的是位置，不是选区，而这两者上游是分开更新的。先按行为查。

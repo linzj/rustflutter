@@ -2803,6 +2803,71 @@ impl SelectionOverlay {
         self.toolbar_visible = visible;
     }
 
+    /// Upstream's `_updateTextSelectionOverlayVisibilities`.
+    ///
+    /// `handles_built` is `_handles != null` -- whether `showHandles` has put
+    /// anything in the overlay. It is a separate axis from
+    /// [`Self::handles_visible`], and upstream keeps them apart on purpose:
+    /// `showHandles`/`hideHandles` **build and destroy** ("Builds the handles
+    /// by inserting them into the overlay", "Destroys the handles by removing
+    /// them"), while `handlesVisible` shows and hides what is already built.
+    /// `handlesAreVisible` is the conjunction, `_handles != null &&
+    /// handlesVisible`.
+    ///
+    /// The toolbar has no such second axis here: it is built when shown, so
+    /// this crate's `toolbar_visible` stands in for both. Upstream's line is
+    /// the two viewport readings **alone** --
+    /// `_effectiveToolbarVisibility.value = startInViewport || endInViewport`
+    /// -- because that is a *visibility signal* handed to a toolbar whose
+    /// existence is tracked elsewhere (`_toolbar != null`, or the context menu
+    /// controller). What reaches the screen is that signal and that existence
+    /// together, which is what the conjunct here spells out. The mutation
+    /// sweep found it unasserted; it is the same shape as `handles_built &&
+    /// handles_visible` one line above.
+    pub fn visibilities(
+        &self,
+        handles_built: bool,
+        in_viewport: (bool, bool),
+    ) -> OverlayVisibilities {
+        let (start_in_viewport, end_in_viewport) = in_viewport;
+        let wanted = handles_built && self.handles_visible;
+        OverlayVisibilities {
+            start_handle: wanted && start_in_viewport,
+            end_handle: wanted && end_in_viewport,
+            // Neither `handlesVisible` nor whether the handles were built.
+            toolbar: self.toolbar_visible && (start_in_viewport || end_in_viewport),
+        }
+    }
+
+    /// Upstream's `showHandles`, which **builds** rather than reveals:
+    ///
+    /// ```dart
+    /// void showHandles() {
+    ///   if (_handles != null) {
+    ///     return;
+    ///   }
+    ///   ...
+    /// ```
+    ///
+    /// The same guard as `showMagnifier` and for the same reason -- a second
+    /// call would insert a second pair over the first. Returns whether
+    /// anything was built.
+    pub fn show_handles(handles_built: bool) -> bool {
+        !handles_built
+    }
+
+    /// Upstream's `hideHandles`, which **destroys**: it removes both entries,
+    /// disposes them and drops the pair. Returns whether there was anything to
+    /// take down.
+    ///
+    /// Note what it does *not* do: it leaves `handlesVisible` alone. Hiding
+    /// and destroying are different verbs on different axes, and a port that
+    /// made `hideHandles` clear the flag would leave a field that could never
+    /// show its handles again without somebody setting it back.
+    pub fn hide_handles(handles_built: bool) -> bool {
+        handles_built
+    }
+
     /// Upstream's `hide`, which takes **both** away.
     ///
     /// The pair is hidden together because a toolbar without handles is a
@@ -2813,6 +2878,41 @@ impl SelectionOverlay {
         self.toolbar_visible = false;
         self.magnifier.hide();
     }
+}
+
+/// What the overlay actually puts on screen, from the two viewport readings
+/// and the one wish.
+///
+/// Upstream computes all three in `_updateTextSelectionOverlayVisibilities`,
+/// and **no two of them combine the inputs the same way**:
+///
+/// ```dart
+/// _effectiveStartHandleVisibility.value =
+///     _handlesVisible && renderObject.selectionStartInViewport.value;
+/// _effectiveEndHandleVisibility.value =
+///     _handlesVisible && renderObject.selectionEndInViewport.value;
+/// _effectiveToolbarVisibility.value =
+///     renderObject.selectionStartInViewport.value || renderObject.selectionEndInViewport.value;
+/// ```
+///
+/// **Each handle is gated by its own end.** Scroll a selection until only its
+/// beginning is in the field and the start handle stays while the end handle
+/// goes -- they are not one control that appears and disappears together, and
+/// they must not be, because the one still on screen is still draggable.
+///
+/// **The toolbar takes `||` where the handles take `&&`.** It stays up while
+/// *either* end is in view, because it acts on the selection as a whole and a
+/// selection with one end scrolled away is still a selection worth copying.
+///
+/// **And the toolbar does not consult `handlesVisible` at all.** A caller that
+/// turns the handles off keeps the menu. That is what the property is for:
+/// upstream's doc says "use this property to show or hide the handle without
+/// rebuilding them", and it is about the handles alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayVisibilities {
+    pub start_handle: bool,
+    pub end_handle: bool,
+    pub toolbar: bool,
 }
 
 /// Upstream keeps **two** questions about the magnifier and answers them from
@@ -4651,6 +4751,92 @@ two";
         });
         assert!(!does_not.handles_force_press());
         assert!(does_not.handles_selection());
+    }
+
+    fn shown(handles_visible: bool, toolbar: bool) -> SelectionOverlay {
+        let mut overlay = SelectionOverlay::new().with_handles_visible(handles_visible);
+        overlay.set_toolbar_visible(toolbar);
+        overlay
+    }
+
+    #[test]
+    fn a_toolbar_nobody_put_up_is_not_on_screen_however_visible_the_selection() {
+        // Upstream's effective-visibility line is the two viewport readings
+        // alone; existence is tracked separately, and what reaches the screen
+        // is both. Here `toolbar_visible` carries both, so it has to be asked.
+        let overlay = shown(true, false);
+        assert!(!overlay.visibilities(true, (true, true)).toolbar);
+        // The handles are unaffected by it in either direction.
+        let visible = overlay.visibilities(true, (true, true));
+        assert!(visible.start_handle && visible.end_handle);
+    }
+
+    #[test]
+    fn each_handle_is_gated_by_its_own_end_of_the_selection() {
+        // Scroll a selection until only its beginning is in the field and the
+        // start handle stays while the end handle goes. They are not one
+        // control that comes and goes together -- the one still on screen is
+        // still draggable.
+        let overlay = shown(true, true);
+        let only_start = overlay.visibilities(true, (true, false));
+        assert!(only_start.start_handle);
+        assert!(!only_start.end_handle);
+
+        let only_end = overlay.visibilities(true, (false, true));
+        assert!(!only_end.start_handle);
+        assert!(only_end.end_handle);
+    }
+
+    #[test]
+    fn the_toolbar_takes_either_end_where_the_handles_take_their_own() {
+        // `||` against the handles' `&&`: it acts on the selection as a whole,
+        // and a selection with one end scrolled away is still worth copying.
+        let overlay = shown(true, true);
+        for ends in [(true, false), (false, true), (true, true)] {
+            assert!(overlay.visibilities(true, ends).toolbar, "{ends:?}");
+        }
+        assert!(
+            !overlay.visibilities(true, (false, false)).toolbar,
+            "both ends gone and the menu goes with them"
+        );
+    }
+
+    #[test]
+    fn turning_the_handles_off_leaves_the_toolbar_alone() {
+        // The toolbar's line does not mention `handlesVisible`. That is what
+        // the property is for -- showing and hiding the handles without
+        // touching anything else.
+        let overlay = shown(false, true);
+        let visible = overlay.visibilities(true, (true, true));
+        assert!(!visible.start_handle && !visible.end_handle);
+        assert!(visible.toolbar, "the menu stays");
+    }
+
+    #[test]
+    fn handles_that_were_never_built_are_not_visible_however_much_they_are_wanted() {
+        // `handlesAreVisible` is the conjunction `_handles != null &&
+        // handlesVisible`, and this is the half the port used to be missing.
+        let overlay = shown(true, true);
+        let unbuilt = overlay.visibilities(false, (true, true));
+        assert!(!unbuilt.start_handle && !unbuilt.end_handle);
+        assert!(unbuilt.toolbar, "and the toolbar does not care either way");
+    }
+
+    #[test]
+    fn building_and_showing_are_different_verbs_on_different_axes() {
+        // `showHandles` builds and returns early if they are there;
+        // `hideHandles` destroys and returns early if they are not. Neither
+        // touches `handlesVisible`.
+        assert!(SelectionOverlay::show_handles(false), "nothing there yet");
+        assert!(
+            !SelectionOverlay::show_handles(true),
+            "a second call would insert a second pair"
+        );
+        assert!(
+            SelectionOverlay::hide_handles(true),
+            "there is a pair to destroy"
+        );
+        assert!(!SelectionOverlay::hide_handles(false));
     }
 
     #[test]
