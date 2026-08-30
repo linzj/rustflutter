@@ -27071,3 +27071,50 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 `AnimatedCrossFade`、`AnimatedSwitcher`、`Autocomplete` 这些真控件）。
 若将来还要量"更新还是替换"，**探针必须抓住那个 `ListView` 本身**——
 比如在 `update_from` 里记一个计数器，而不是比较树根。
+
+---
+
+## 第 407 轮：两个孩子终于能互相淡入淡出——策略齐全，此前没有任何东西在渐变
+
+回 `shells.py` 的表，挑中 `AnimatedCrossFade`。`crossfade.rs` 整个文件**全是策略**：
+`layers()`（谁在上、谁在下）、`top_treatment()`、`bottom_treatment()`、
+`bottom_is_stretched_horizontally()`、`animates_size()`——**都有文档、都有测试、
+一个消费者都没有**。也就是说：规则完整，而这个 crate 里**没有任何东西能把两样东西渐变开**。
+
+补上 `AnimatedCrossFade::widget(progress, first, second)`
+（两段式，第 393 轮那种；`shells.py` 现在认得这条传递路径）。
+`progress` 由调用者驱动——上游从 `AnimationController` 拿，这里没有控制器，
+和 `Spinner`、`TabBarView` 是同一个安排。
+
+**不对称的那一半才是重点**，而它全部来自已有的 `bottom_treatment`：
+正在离开的那个孩子**不接受手指、退出语义走查**——
+上游自己的注释是"永远排除正在淡出那个控件的语义"，
+否则读屏用户会同时遇到同一样东西的两个版本，**越像越糟**。
+
+一处**如实记下的缺席**：`animates_size()` 说上游总是包一层 `AnimatedSize`，
+本项目没有这个控件，所以外围布局是一步跳到新尺寸而不是缓动。
+规则仍然写着 `true`，因为那是上游的事实——**缺的是宿主，不是这里做的决定**。
+
+### 变异扫描 5 个，第一遍 4 红
+
+绿的那条是"离开的孩子不被拉宽"——**因为我的两个孩子一样大**。
+上游 `defaultLayoutBuilder` 给下层设 `left/top/right`、给上层什么都不设，
+于是**离开的那个被拉到到来者的宽度**，盒子朝新内容长过去而不是跳过去。
+两个孩子做成 50 和 200 宽之后转红。
+
+顺带记一条在写测试时量到的事实：**全透明的那一层根本不会被画**，
+所以在渐变的两端只有一个孩子上画布——**两端的 alpha 无法互相比较**，
+断言得改成"这一端画的是谁"。
+
+尺子：十六把全部 exit 0。门：Rust 6435 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+`shells.py`：154 个 build（原 153）。
+
+**下一步**：同一个文件里 `AnimatedSwitcher` 是**同样的形状**——
+`decide()`、`transition_key()`、`paint_order()`、`outgoing_runs_in_reverse()`
+全是策略，没有消费者。
+但**先查一件事再动手**：它和 `AnimatedCrossFade` 的差别在于
+**旧孩子可以有好几个同时在淡出**（`paint_order` 收的是一个 `previous: &[u64]`），
+所以它需要"记住上一批"的状态，而 `widget(...)` 那种无状态两段式接不了。
+**先确认本项目的 `StatefulComponent` 能不能在这里担起那个记忆**，
+不能的话这一轮就该先补那个，而不是硬套上一轮的形状。

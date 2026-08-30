@@ -141,6 +141,91 @@ impl AnimatedCrossFade {
     pub fn animates_size(&self) -> bool {
         true
     }
+
+    /// The widget: the two children stacked, one fading into the other.
+    ///
+    /// Everything above this had been ported and had **no consumer** --
+    /// `layers`, the two treatments, the stretch rule -- so the policy was
+    /// complete and nothing in the crate could actually cross-fade anything.
+    ///
+    /// `progress` runs 0 to 1 in the direction the state names, which is what
+    /// upstream takes from its `AnimationController`. There is no controller
+    /// here; the caller drives it, the way [`crate::controls::Spinner`] and
+    /// [`crate::tabs::TabBarView`] are driven.
+    ///
+    /// The asymmetry is all from [`AnimatedCrossFade::bottom_treatment`]: the
+    /// outgoing child ignores pointers and leaves the semantics walk, so a
+    /// reader never meets two versions of the same thing and a finger never
+    /// lands on the one that is leaving.
+    ///
+    /// **Not** wrapped in an animated size, which
+    /// [`AnimatedCrossFade::animates_size`] says upstream always does: this
+    /// crate has no `AnimatedSize`, so the stack takes the top child's size
+    /// and the surrounding layout moves in one step rather than easing. The
+    /// rule is left saying `true` because it is upstream's, and this is the
+    /// piece that is missing rather than a decision taken here.
+    pub fn widget(
+        &self,
+        progress: f32,
+        first: crate::framework::AnyWidget,
+        second: crate::framework::AnyWidget,
+    ) -> crate::framework::AnyWidget {
+        let cross = *self;
+        let progress = progress.clamp(0.0, 1.0);
+        // Upstream's `_controller.status.isForwardOrCompleted`, which for a
+        // caller-driven progress is "on the way to, or arrived at, the second".
+        let forward = matches!(self.state, CrossFadeState::ShowSecond);
+        let animating = progress > 0.0 && progress < 1.0;
+        let layers = self.layers(forward);
+        crate::framework::many(vec![first, second], move |mut rendered| {
+            let second = rendered.pop().expect("two children");
+            let first = rendered.pop().expect("two children");
+            let pick = |which: CrossFadeState| match which {
+                CrossFadeState::ShowFirst => first.clone(),
+                CrossFadeState::ShowSecond => second.clone(),
+            };
+            // The top child is the one arriving, so it takes the progress; the
+            // bottom is the one leaving, and takes what is left.
+            let (top_opacity, bottom_opacity) = if forward {
+                (progress, 1.0 - progress)
+            } else {
+                (1.0 - progress, progress)
+            };
+            let bottom = cross.bottom_treatment(animating);
+            let mut leaving: crate::render::BoxedRender = crate::render::RenderRef::new(
+                crate::render::RenderOpacity::new(bottom_opacity, pick(layers.bottom)),
+            );
+            if bottom.ignores_pointer {
+                leaving =
+                    crate::render::RenderRef::new(crate::render::RenderIgnorePointer::new(leaving));
+            }
+            if bottom.excludes_semantics {
+                leaving = crate::render::RenderRef::new(
+                    crate::semantics_markers::ExcludeSemantics::new().wrapping(leaving),
+                );
+            }
+            crate::render::RenderRef::new(
+                crate::render::RenderStack::new()
+                    // The outgoing child is stretched to the incoming one's
+                    // width while the incoming one sizes itself -- upstream's
+                    // `defaultLayoutBuilder`, and what makes the box grow
+                    // towards the new content instead of jumping to it.
+                    .push_positioned(
+                        leaving,
+                        crate::render::StackPosition {
+                            left: Some(0.0),
+                            top: Some(0.0),
+                            right: Some(0.0),
+                            ..Default::default()
+                        },
+                    )
+                    .push(crate::render::RenderOpacity::new(
+                        top_opacity,
+                        pick(layers.top),
+                    )),
+            )
+        })
+    }
 }
 
 /// Upstream `AnimatedSwitcher`.
@@ -419,6 +504,195 @@ impl ImageIcon {
 
 #[cfg(test)]
 mod tests {
+
+    /// What the two children were drawn at, as `(label, alpha)`.
+    fn faded(cross: AnimatedCrossFade, progress: f32) -> Vec<(String, u32)> {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(cross.widget(
+            progress,
+            crate::framework::leaf(|| crate::widgets::Text::new("first".to_string())),
+            crate::framework::leaf(|| crate::widgets::Text::new("second".to_string())),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(400, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(400.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .into_iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { text, argb, .. } => {
+                    Some((text, argb >> 24))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_child_fades_in_while_the_other_fades_out() {
+        // Everything this needed had been ported and had no consumer: the
+        // layer order, both treatments, the stretch rule. The policy was
+        // complete and nothing in the crate could cross-fade anything.
+        let cross = AnimatedCrossFade::new(CrossFadeState::ShowSecond, 200_000);
+
+        // At either end only one of them is drawn at all: a fully transparent
+        // layer is not painted, which is the opacity's own doing and worth
+        // knowing -- the alphas cannot be compared where one of the two never
+        // reaches the canvas.
+        let start: Vec<String> = faded(cross, 0.0)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(start, vec!["first".to_string()], "at rest, before the fade");
+
+        let finish: Vec<String> = faded(cross, 1.0)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(finish, vec!["second".to_string()], "at rest, after it");
+
+        // And halfway both are on the canvas -- which is what makes it a
+        // cross-fade rather than a swap.
+        let middle = faded(cross, 0.5);
+        let leaving = middle
+            .iter()
+            .find(|(text, _)| text == "first")
+            .expect("the leaving child");
+        let arriving = middle
+            .iter()
+            .find(|(text, _)| text == "second")
+            .expect("the arriving child");
+        assert!(leaving.1 > 0 && arriving.1 > 0, "{middle:?}");
+    }
+
+    #[test]
+    fn the_child_that_is_leaving_is_stretched_to_the_one_arriving() {
+        // Upstream's `defaultLayoutBuilder` positions the bottom child with
+        // `left/top/right` set and the top child with none of them, so the
+        // outgoing child takes the incoming one's width while the incoming one
+        // sizes itself. That is what makes the box grow *towards* the new
+        // content instead of jumping to it -- and it can only be seen when the
+        // two are different sizes.
+        const LEAVING: crate::engine::Color = crate::engine::Color(0xffff0000);
+        let cross = AnimatedCrossFade::new(CrossFadeState::ShowSecond, 200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(cross.widget(
+            0.5,
+            crate::framework::leaf(|| {
+                crate::widgets::Container::new()
+                    .with_size(50.0, 20.0)
+                    .with_color(LEAVING)
+            }),
+            crate::framework::leaf(|| crate::widgets::Container::new().with_size(200.0, 20.0)),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(400, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(400.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let (left, right) = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect {
+                    left, right, argb, ..
+                } if argb == LEAVING.0 => Some((left, right)),
+                _ => None,
+            })
+            .expect("the leaving child was not painted");
+        assert_eq!(
+            (left, right),
+            (0.0, 200.0),
+            "the leaving child kept its own width"
+        );
+    }
+
+    #[test]
+    fn the_child_that_is_leaving_leaves_the_readers_way_first() {
+        // Upstream's own comment: "always exclude the semantics of the widget
+        // that's fading out". Without it a reader meets both versions of the
+        // same thing at once, which is worse the more alike they are.
+        crate::semantics::set_enabled(true);
+        let cross = AnimatedCrossFade::new(CrossFadeState::ShowSecond, 200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(cross.widget(
+            0.5,
+            crate::framework::leaf(|| crate::widgets::Text::new("first".to_string())),
+            crate::framework::leaf(|| crate::widgets::Text::new("second".to_string())),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let said: Vec<String> =
+            crate::semantics::flush(crate::render::Size::new(200.0, 200.0), &root)
+                .unwrap_or_default()
+                .iter()
+                .filter(|node| !node.properties.label.is_empty())
+                .map(|node| node.properties.label.clone())
+                .collect();
+        crate::semantics::set_enabled(false);
+        assert!(said.iter().any(|words| words == "second"), "{said:?}");
+        assert!(
+            !said.iter().any(|words| words == "first"),
+            "both versions were offered at once: {said:?}"
+        );
+    }
+
+    #[test]
+    fn a_finger_never_lands_on_the_child_that_is_leaving() {
+        // The other half of the same asymmetry: the outgoing child ignores
+        // pointers however solid it still looks.
+        const LEAVING: u64 = 4071;
+        let cross = AnimatedCrossFade::new(CrossFadeState::ShowSecond, 200_000);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(cross.widget(
+            0.5,
+            crate::framework::leaf(|| {
+                crate::widgets::Pointer::new(
+                    LEAVING,
+                    crate::widgets::Container::new().with_size(200.0, 200.0),
+                )
+            }),
+            crate::framework::leaf(|| crate::widgets::Container::new().with_size(200.0, 200.0)),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 200.0),
+        );
+        let mut result = crate::render::HitTestResult::default();
+        crate::render::RenderBox::hit_test(
+            &root,
+            crate::render::Offset::new(100.0, 100.0),
+            &mut result,
+        );
+        assert!(
+            !result.path.iter().any(|entry| entry.target == LEAVING),
+            "the outgoing child answered a finger"
+        );
+    }
+
     use super::*;
 
     // -- The cross-fade ------------------------------------------------------
