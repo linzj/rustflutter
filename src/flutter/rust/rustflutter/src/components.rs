@@ -6207,6 +6207,60 @@ mod tests {
             .expect("the tile said its words")
     }
 
+    /// What a reader hears from a badge sitting on a tile, in order.
+    fn badge_read_as(visible: bool) -> Vec<String> {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(
+                Badge::new("3")
+                    .with_label_visible(visible)
+                    .with_child(component(ListTile::new("Inbox"))),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 300.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 300.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .map(|node| node.properties.label.clone())
+            .filter(|label| !label.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn a_badge_is_read_beside_what_it_sits_on() {
+        // Checked rather than assumed: a survey of which components mention
+        // `semantics` in their `build` put `Badge` among the silent ones, and
+        // it is not silent -- its count is a `Text`, which the walk annotates
+        // on its own. **Mentioning semantics and reaching a reader are two
+        // different things**, and the survey counts the first.
+        //
+        // Two stops rather than one is upstream's arrangement too: its badge
+        // is a `Stack` over the child with no `Semantics` wrapper, so a reader
+        // hears the thing and then the count.
+        assert_eq!(
+            badge_read_as(true),
+            vec!["Inbox".to_string(), "3".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_badge_that_is_hidden_is_not_read_out() {
+        // `isLabelVisible: false` is what a count going to zero does, and it
+        // hides the badge **without taking the child with it**. A reader still
+        // being told "3" after the badge has gone would be told about
+        // something that is no longer on the screen.
+        assert_eq!(badge_read_as(false), vec!["Inbox".to_string()]);
+    }
+
     #[test]
     fn a_tile_is_one_stop_saying_both_its_lines() {
         // A title and a subtitle met separately are two things to land on

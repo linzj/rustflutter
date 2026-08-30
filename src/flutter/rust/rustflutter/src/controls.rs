@@ -733,6 +733,68 @@ mod radio_semantics_tests {
     }
 
     #[test]
+    fn each_destination_says_where_it_is_and_which_one_you_are_on() {
+        // The tab bar's loss on a phone's primary navigation. Same rule, and
+        // deliberately the same function -- two bars of choose-one-of-N should
+        // not drift into announcing themselves differently.
+        use crate::semantics::SemanticsTristate;
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(BottomNavigation::new(
+                60,
+                vec![
+                    // `new(label, mark)`: the words first, the glyph second.
+                    Destination::new("Home", "H"),
+                    Destination::new("Saved", "S"),
+                ],
+                1,
+            )),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let heard: Vec<(String, SemanticsTristate)> = nodes
+            .iter()
+            .filter(|node| node.properties.label.contains("Tab "))
+            .map(|node| {
+                (
+                    node.properties.label.clone(),
+                    node.properties.flags.selected,
+                )
+            })
+            .collect();
+        assert_eq!(
+            heard,
+            vec![
+                (
+                    "Tab 1 of 2
+H
+Home"
+                        .to_string(),
+                    SemanticsTristate::False
+                ),
+                (
+                    "Tab 2 of 2
+S
+Saved"
+                        .to_string(),
+                    SemanticsTristate::True
+                ),
+            ],
+            "one stop each, and the second is the one you are on"
+        );
+    }
+
+    #[test]
     fn each_tab_says_where_it_is_in_the_set() {
         // `tab_label` was written, documented and called by nothing, so a bar
         // of tabs reached a reader as three words with no positions.
@@ -1307,9 +1369,7 @@ impl Component for TabBar {
                 // the chip's: a tab's words come from the `Text` inside it, so
                 // there is no annotation of its own for them to fold into --
                 // the folded node is where both the words and the flags meet.
-                let region = crate::render::RenderMergeSemanticsBox::new(region).with_properties(
-                    crate::semantics::SemanticsProperties::tab(index, count, active),
-                );
+                let region = one_of_many(region, index, count, active);
                 row = row.push_flex(FlexChild::expanded(region, 1));
             }
             Container::new().with_height(46.0).with_child(row)
@@ -1335,6 +1395,25 @@ impl Destination {
             mark: mark.into(),
         }
     }
+}
+
+/// Wraps one choice in a bar of them -- a tab, a navigation destination -- in
+/// the node that says **which one it is and whether it is the one you are on**.
+///
+/// Two bars of choose-one-of-N should not drift into announcing themselves
+/// differently, and they had already been written twice word for word by the
+/// time this was pulled out. The merge is what carries the flags to the node
+/// that holds the words: a choice's words come from the `Text` inside it, so
+/// there is no annotation of its own for them to fold into.
+fn one_of_many(
+    region: impl crate::render::RenderBox + 'static,
+    index: usize,
+    count: usize,
+    active: bool,
+) -> crate::render::RenderMergeSemanticsBox {
+    crate::render::RenderMergeSemanticsBox::new(region).with_properties(
+        crate::semantics::SemanticsProperties::tab(index, count, active),
+    )
 }
 
 /// A bar of destinations along the bottom.
@@ -1376,6 +1455,7 @@ impl Component for BottomNavigation {
         let first_id = self.first_id;
         let handlers = self.handlers.borrow().clone();
         let destinations = self.destinations.clone();
+        let count = destinations.len();
         let surface = theme.surface;
         let outline = theme.outline;
         let primary = theme.primary;
@@ -1435,6 +1515,16 @@ impl Component for BottomNavigation {
                     }
                     None => Pointer::new(first_id + index as u64, item),
                 };
+                // The same loss the tab bar had, on the control that is a
+                // phone's primary navigation: without `selected`, every
+                // destination in the bar makes an identical announcement and a
+                // reader cannot tell which page they are on.
+                //
+                // One stop each, folded, because a destination's words come
+                // from the `Text` inside it -- the mark and the label met
+                // separately are two things to land on where the screen shows
+                // one button.
+                let region = one_of_many(region, index, count, active);
                 row = row.push_flex(FlexChild::expanded(region, 1));
             }
             Container::new()
