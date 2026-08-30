@@ -23112,3 +23112,77 @@ fn layout(&mut self, constraints: BoxConstraints) -> Size {
 **所以它们很可能正好落在那条早退上**。先去读那段早退的条件，确认新对象初始是“干净”还是“脏”；
 如果是干净的，那修法要么是 `compose` 出来的新节点一律标脏，要么是
 `update_from` 里换掉 `composed` 之后显式 `mark_needs_layout()`。**先确认再改，别又猜一个。**
+
+---
+
+## 第 337 轮：**根本没有 bug** —— 是我自己的测试没按帧的方式布局
+
+按上一轮的“下一步”，先确认再改。确认的结果是：**要改的不是产品代码，是我前面六轮的方法。**
+
+一步步来。先读那条早退：
+
+```rust
+if !self.state.needs_layout.get() && self.state.constraints.get() == Some(constraints) {
+    return self.state.size.get();
+}
+```
+
+猜的是“新建的节点初始不脏，所以被早退掉”。**查了，猜错了**——
+`needs_layout` 初值是 `true`（render.rs:2026）。没改，接着量。
+
+打点之后，重建那一轮的现场是这样的：
+
+```
+PROBE Container::update_from reached
+PROBE mark_needs_layout boundary=true
+PROBE early-return size=200×40 constraints=tight(200,40)
+```
+
+`update_from` 走到了，`mark_needs_layout` 也叫了，标在一个**重布局边界**上——
+然后从根往下的那次 `layout` 在**最上面**就早退了，**压根没走到被标记的那个节点**。
+
+而 `app.rs` 里那段注释早就把这件事写清楚了：
+
+> “没有 walk 可以退而求其次，因为 walk 做不了这件事：**一个标记停在边界上、把它上面每一层都留成干净的，
+> 所以从根往下的下降会在遇到的第一个干净对象那里早退，永远到不了。**”
+
+真正的帧是这么做的（`app.rs:950`）：
+
+```rust
+crate::render::schedule_root_layout(&root, view_constraints);
+crate::render::flush_layout();
+```
+
+**而第 330 到 336 轮的每一个实验、以及第 335 轮那条测试，用的都是 `root.layout(..)`。**
+换成 `schedule_root_layout` + `flush_layout` 之后再跑同一个用例：
+
+```
+rebuilt: ... 200×40, 200×40, 200×40, 16×16, 10×10   ← 尺寸全都在
+```
+
+**所以：搜索框的清空按钮没坏，重建也没有丢尺寸，那个“影响所有会重建的控件”的结论是假的。**
+第 329 轮补的那条通知是真的缺口、真的修好了；330–336 追的是我自己测试脚手架的错。
+
+**这一轮把该有的东西补上了。** 那条从第 329 轮起就想写的接线测试现在写出来了，而且是绿的：
+建搜索框 → 按帧的方式布局 → 从 IME 打进 "hello" → 点右缘 → 断言
+`on_changed` 收到一次、且收到的是**空串**；再断言**字段本身**也空了
+（看线上最后一条 `TextInput.setEditingState`），以及清空按钮跟着文字一起消失。
+
+**变异扫描 7 个，5 个红**（不再通知、通知旧文本、清空之后才问、镜像不清、按钮不建）。
+**2 个没红，如实写进了测试文档**：只删字段自己的 `clear()`（按钮由镜像决定，照样消失，
+线上那条编辑状态也分辨不出这两者）；以及 `show_clear` 去掉 `enabled` 那一项
+（这里没有构造过禁用的字段）。
+
+三处写错的注释（`cupertino.rs` 两处、`framework.rs` 一处）全部就地改正，
+明写“**没有 bug**，错的是布局方式”，并且把错误版本留在文字里——
+`root.layout(..)` 加一次重建**确实**会报 0×0，读起来就像一个布局 bug。
+
+尺子：十六把全部 exit 0。门：6242 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：这条教训值得立刻兑现成一把尺子或一条约定，否则下一个人（或下一个我）还会踩。
+`editable.rs`、`gestures.rs`、`cupertino.rs` 里还有多少测试是用 `root.layout(..)`
+布局一棵**重建过**的树的？先数一遍（`grep` 出所有 `build_render_tree` 之后直接 `layout` 的
+调用点），逐个看它们有没有跨越 rebuild。**只在首次构建后布局的是安全的**，
+跨了 rebuild 的就跟这几轮一样在测一个假象。数完再决定：是改测试，还是给
+`schedule_root_layout`／`flush_layout` 加一条“测试里该用哪个”的文档。

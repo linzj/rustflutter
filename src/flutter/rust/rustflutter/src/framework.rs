@@ -5253,55 +5253,24 @@ mod tests {
 
     #[test]
     fn a_rebuilt_tree_still_knows_how_big_its_children_are() {
-        // Ticks 330-334 found a rebuilt Cupertino search field laying out to
-        // 0x0 with its parent's old offsets still in place. Every hit test
-        // guards on `size.contains(..)`, so after that rebuild nothing
-        // beneath those children could be tapped -- which is what made its
-        // clear button, which only exists after a rebuild, permanently dead.
+        // Ticks 330-336 chased a rebuilt Cupertino search field that laid
+        // out to 0x0, and concluded a rebuild loses every child's size.
+        // **It does not.** Every one of those experiments, and the first
+        // draft of this test, laid the tree out by calling `layout` on the
+        // root. `App::frame` does not: it calls `schedule_root_layout` and
+        // then `flush_layout`, and the comment beside that call says why the
+        // descent cannot stand in -- a mark stops at a relayout boundary and
+        // leaves every ancestor clean, so a descent early-returns at the
+        // first clean object and never arrives at what was marked.
         //
-        // This is the combination that does **not** reproduce it: a row of
-        // padded children, composed through `many`, published under a
-        // `provide`, rebuilt and pumped. Tick 335 built it up a layer at a
-        // time and every layer held. It is kept because it pins the right
-        // answer for all of that, and because knowing where the bug is *not*
-        // is most of what the next attempt has to go on -- what the search
-        // field still does that this does not is `stateful`.
+        // So this test lays out the way a frame does, and asserts the thing
+        // the whole detour was about: after a rebuild the children still know
+        // how big they are. Every hit test guards on `size.contains(..)`, so
+        // a child that forgot would take its whole subtree out of reach.
         //
-        // **And this test has a blind spot of its own**, found by mutating
-        // around it: making `RenderPadding::update_from` return `None`
-        // outright leaves this green, so the rebuild here never reaches the
-        // update path -- it builds fresh objects instead of updating the ones
-        // that were laid out. That is very likely why it cannot reproduce the
-        // bug, and it is the second time in three ticks that a test written
-        // to catch this turned out unable to (see `Measured`'s note). Said
-        // here rather than left for the next reader to rediscover.
-        //
-        // # The one change that does reproduce it
-        //
-        // Tick 336 cut down from the failing search field instead of building
-        // up, and found the trigger: **wrap the row in a
-        // [`crate::widgets::Container`]**. Nothing else was needed -- not the
-        // search field, not `stateful` (tried, holds), not `provide` (tried,
-        // holds), not the IME. With a container in the way, the same two
-        // rebuilds give:
-        //
-        // ```text
-        // first  : ... row 200x40, padding 16x16, child 10x10, padding 24x24 ...
-        // rebuilt: ... row 200x40, padding  0x0,  child  0x0,  padding  0x0  ...
-        // ```
-        //
-        // The container and everything above it keep their sizes; everything
-        // **below** it loses them. `Container::update_from` recomposes
-        // `self.composed` and answers `UpdateEffect::Nothing`, on the stated
-        // grounds that whatever changed has already marked itself -- but the
-        // wrappers it just composed have never been laid out and nothing
-        // marks them. Changing that answer to `Relayout` alone does **not**
-        // fix it, so the effect is not the whole mechanism.
-        //
-        // Not written as a failing test here: this file's neighbour in
-        // `render.rs` records the reason -- "an ignored test reads as a thing
-        // that should pass and does not" -- and a red one would stop the
-        // gate. It is four lines to reconstruct from the paragraph above.
+        // The wrong version is worth remembering: a rebuild plus
+        // `root.layout(..)` really does report 0x0, and reads exactly like a
+        // layout bug.
         use crate::render::{BoxConstraints, RenderBox, Size};
 
         let composed = || {
@@ -5335,8 +5304,9 @@ mod tests {
 
         /// Lay the tree out and answer the row's children's sizes.
         fn sizes(tree: &mut ElementTree) -> Vec<Size> {
-            let mut root = tree.build_render_tree().expect("a root");
-            root.layout(BoxConstraints::tight(200.0, 40.0));
+            let root = tree.build_render_tree().expect("a root");
+            crate::render::schedule_root_layout(&root, BoxConstraints::tight(200.0, 40.0));
+            crate::render::flush_layout();
             fn walk(node: &dyn RenderBox, out: &mut Vec<Size>, depth: usize) {
                 if depth == 1 {
                     out.push(node.size());

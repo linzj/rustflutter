@@ -3880,35 +3880,26 @@ impl StatefulComponent for CupertinoSearchTextField {
                     // it the field is empty either way -- see
                     // [`CupertinoSearchTextField::suffix_tap`].
                     //
-                    // These four lines are not covered: mutations that stop
-                    // announcing, or announce the old text, stay green.
+                    // Covered by
+                    // `tapping_the_clear_button_tells_the_application_the_field_is_empty`.
                     //
-                    // Tick 329 said the reason was that a tap handler in a
-                    // build closure cannot be reached from a test. **That was
-                    // wrong** -- tick 330 built this field in an
-                    // `ElementTree`, laid it out, painted it and sent a real
-                    // Down/Up through `GestureRouter::dispatch`, which is how
-                    // `editable.rs` has tested its own taps all along.
+                    // Ticks 329-336 got this wrong twice over and the record
+                    // is worth keeping. Tick 329 said a tap handler in a build
+                    // closure could not be reached from a test; tick 330
+                    // disproved that, then found the handler never running and
+                    // concluded the button was dead -- and ticks 332-334
+                    // widened that to "a rebuilt tree lays out to 0x0, so
+                    // nothing under it can be tapped", a general bug.
                     //
-                    // What that experiment found instead is worse and is
-                    // written up in PORTING_STATUS: with text in the field
-                    // this button **is built** (the build reports
-                    // `show_clear=true`) and the handler below **still never
-                    // runs**, at any point inside the laid-out 300x44 box.
-                    //
-                    // Ticks 332-334 traced it out of this widget entirely.
-                    // Laying out a freshly built tree gives its children real
-                    // sizes (26x36, 274x36.4); **rebuilding the tree and
-                    // laying that out gives 0x0**, with the old offsets still
-                    // in place. Every hit test guards on
-                    // `size.contains(..)`, so after a rebuild nothing under
-                    // those children can be tapped.
-                    //
-                    // This button only ever exists *after* a rebuild -- it
-                    // needs text to appear -- which is why it looked like its
-                    // own bug. It is not: it is a symptom of a general one
-                    // that reaches every widget that rebuilds. See
-                    // PORTING_STATUS tick 334.
+                    // **There was no bug.** Every one of those experiments
+                    // laid the tree out by calling `layout` on the root, and
+                    // `App::frame` does not: it calls `schedule_root_layout`
+                    // and then `flush_layout`. The comment beside that call
+                    // says why the descent cannot work -- a mark stops at a
+                    // relayout boundary and leaves every ancestor clean, so a
+                    // descent early-returns at the first clean object and
+                    // never arrives. Laid out the way a frame does it, the
+                    // sizes are there and the tap lands.
                     let announcement = CupertinoSearchTextField::suffix_tap(&text_before);
 
                     // `_clearText`: empty the field through its own handle,
@@ -7754,6 +7745,157 @@ mod tab_bar_tests {
                 .with_placeholder("Find a demo")
                 .effective_placeholder(),
             "Find a demo"
+        );
+    }
+
+    #[test]
+    fn tapping_the_clear_button_tells_the_application_the_field_is_empty() {
+        // The wiring tick 329 could not test and ticks 330-336 mistook for a
+        // bug. A tap does reach it; what did not was a test that laid the
+        // tree out by descending from the root. See the note on the handler.
+        //
+        // Two mutations still survive this, and neither is covered anywhere
+        // else. Deleting the field's own `clear()` while leaving the mirror's
+        // stays green: the button is built from the mirror, so it still
+        // vanishes, and the editing state the platform is told about does not
+        // discriminate the two. Dropping the `enabled` term from `show_clear`
+        // stays green because nothing here builds a disabled field. Said
+        // rather than left for a reader to find by mutating.
+        use crate::render::{BoxConstraints, RenderBox};
+
+        let messenger = crate::services::tests_support::install();
+        let heard: std::rc::Rc<RefCell<Vec<String>>> = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&heard);
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            CupertinoTheme::dark(),
+            stateful(
+                CupertinoSearchTextField::new(1)
+                    .with_on_changed(move |text| sink.borrow_mut().push(text.to_string())),
+            ),
+        ));
+
+        let pump = |tree: &mut ElementTree| {
+            tree.rebuild_dirty();
+            let root = tree.build_render_tree().expect("a root");
+            // As `App::frame` does. Descending from the root instead stops at
+            // the first clean object and never arrives.
+            crate::render::schedule_root_layout(&root, BoxConstraints::tight(300.0, 44.0));
+            crate::render::flush_layout();
+            root
+        };
+        let event = |change, x: f32| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 1,
+            time_stamp_micros: 0,
+            position: Offset::new(x, 22.0),
+            delta: Offset::ZERO,
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: Offset::new(x, 22.0),
+        };
+
+        let root = pump(&mut tree);
+        assert!(crate::focus::focus(1));
+
+        // Type, so the clear button exists at all.
+        let id = {
+            use crate::services::codec::MethodCodec;
+            let mut found = None;
+            for (channel, bytes, _) in messenger.sent() {
+                if channel != "flutter/textinput" {
+                    continue;
+                }
+                let call = crate::services::codec::JsonMethodCodec
+                    .decode_method_call(&bytes)
+                    .expect("a well-formed call");
+                if call.method == "TextInput.setClient" {
+                    found = call.arguments.as_list().expect("arguments")[0].as_i64();
+                }
+            }
+            found.expect("the field claimed a client")
+        };
+        {
+            use crate::services::codec::{JsonMethodCodec, MethodCall, MethodCodec, Value};
+            let message = JsonMethodCodec
+                .encode_method_call(&MethodCall::new(
+                    "TextInputClient.updateEditingState",
+                    Value::List(vec![
+                        Value::I64(id),
+                        Value::map([
+                            ("selectionAffinity", Value::from("TextAffinity.downstream")),
+                            ("selectionBase", Value::I64(5)),
+                            ("selectionExtent", Value::I64(5)),
+                            ("selectionIsDirectional", Value::Bool(false)),
+                            ("composingBase", Value::I64(-1)),
+                            ("composingExtent", Value::I64(-1)),
+                            ("text", Value::from("hello")),
+                        ]),
+                    ]),
+                ))
+                .expect("encodes");
+            messenger.deliver("flutter/textinput", &message, 0);
+        }
+        drop(root);
+        let root = pump(&mut tree);
+        heard.borrow_mut().clear();
+
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Down, 285.0));
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Up, 285.0));
+
+        assert_eq!(
+            heard.borrow().as_slice(),
+            &[String::new()],
+            "announced once, with the new text rather than the old"
+        );
+
+        // The *field* was emptied too, not just the mirror the button is
+        // built from. Those are two different pieces of state and they can
+        // disagree; what settles it is that emptying the field tells the
+        // platform, so the last editing state on the wire is the empty one.
+        {
+            use crate::services::codec::MethodCodec;
+            let mut last = None;
+            for (channel, bytes, _) in messenger.sent() {
+                if channel != "flutter/textinput" {
+                    continue;
+                }
+                let call = crate::services::codec::JsonMethodCodec
+                    .decode_method_call(&bytes)
+                    .expect("a well-formed call");
+                if call.method == "TextInput.setEditingState" {
+                    last = call
+                        .arguments
+                        .get("text")
+                        .and_then(|text| text.as_str())
+                        .map(str::to_string);
+                }
+            }
+            assert_eq!(
+                last.as_deref(),
+                Some(""),
+                "the field itself was emptied, not only the mirror"
+            );
+        }
+
+        // And the button is built only while there is text, so once the text
+        // is gone the same tap has nothing to hit and says nothing.
+        drop(root);
+        let root = pump(&mut tree);
+        heard.borrow_mut().clear();
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Down, 285.0));
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Up, 285.0));
+        assert!(
+            heard.borrow().is_empty(),
+            "the clear button went with the text it cleared: {:?}",
+            heard.borrow()
         );
     }
 
