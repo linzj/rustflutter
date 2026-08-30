@@ -2957,6 +2957,74 @@ mod tests {
         stack
     }
 
+    /// The same region inside a `Row`, and inside a `Container` around that
+    /// -- the arrangement tick 330 found unreachable in the Cupertino search
+    /// field.
+    fn contained_row(handlers: PointerHandlers) -> crate::widgets::Container {
+        use crate::render::FlexChild;
+        let row = crate::render::RenderFlex::row()
+            // A fixed leading child, an expanded middle one, and the region
+            // last: the search field's shape, so the region's position is
+            // decided by the flex rather than written down.
+            .push(Sized(Size::square(40.0)))
+            .push_flex(FlexChild::expanded(Sized(Size::square(10.0)), 1))
+            .push(RenderPointerRegion::new(7, Sized(Size::square(40.0))).with_handlers(handlers));
+        let mut container = crate::widgets::Container::new()
+            .with_color(crate::engine::Color::BLACK)
+            .with_corner_radius(9.0)
+            .with_child(row);
+        container.layout(BoxConstraints::tight(200.0, 40.0));
+        container
+    }
+
+    #[test]
+    fn a_region_at_the_end_of_a_row_inside_a_container_still_takes_taps() {
+        // Tick 330 found the Cupertino search field's clear button built and
+        // unreachable, and asked whether the layout family was at fault. It
+        // is not: every layer between here and the region -- the flex, the
+        // expanded sibling that decides where the region lands, and the
+        // container around them -- passes the hit test through.
+        //
+        // Kept as a test rather than thrown away with the experiment, because
+        // the answer is a fact about this crate worth holding still: whatever
+        // ails the search field, it is not this.
+        let taps = Rc::new(RefCell::new(Vec::new()));
+        let sink = taps.clone();
+        let root = contained_row(PointerHandlers::new().with_tap(move |tap| {
+            sink.borrow_mut().push(tap.local_position);
+        }));
+
+        let mut router = GestureRouter::new();
+        router.dispatch(&root, &event(PointerChange::Down, 180.0, 20.0, 0.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Up, 180.0, 20.0, 0.0, 0.0));
+
+        // In the region's own coordinates: it starts at 160, so 180 is 20 in.
+        assert_eq!(taps.borrow().as_slice(), &[Offset::new(20.0, 20.0)]);
+    }
+
+    #[test]
+    fn the_expanded_sibling_keeps_the_taps_that_are_its_own() {
+        // The other half of the same fact: the region takes what lands on it
+        // and nothing more, so a hit in the middle of the row is not silently
+        // credited to the last child.
+        let taps = Rc::new(RefCell::new(0));
+        let sink = taps.clone();
+        let root = contained_row(PointerHandlers::new().with_tap(move |_| {
+            *sink.borrow_mut() += 1;
+        }));
+
+        let mut router = GestureRouter::new();
+        for x in [10.0f32, 100.0, 155.0] {
+            router.dispatch(&root, &event(PointerChange::Down, x, 20.0, 0.0, 0.0));
+            router.dispatch(&root, &event(PointerChange::Up, x, 20.0, 0.0, 0.0));
+        }
+        assert_eq!(*taps.borrow(), 0, "none of those are on the region");
+
+        router.dispatch(&root, &event(PointerChange::Down, 165.0, 20.0, 0.0, 0.0));
+        router.dispatch(&root, &event(PointerChange::Up, 165.0, 20.0, 0.0, 0.0));
+        assert_eq!(*taps.borrow(), 1, "and this one is");
+    }
+
     #[test]
     fn a_press_and_release_in_place_is_a_tap() {
         let taps = Rc::new(RefCell::new(Vec::new()));

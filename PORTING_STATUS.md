@@ -22793,3 +22793,50 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 最省事的探针是先写一个**最小复现**：`Row` 里放一个 `Pointer` 包着的固定尺寸盒子，
 不带搜索框的其他东西，看它收不收得到点击——**如果最小复现也收不到，那这是布局族的 bug
 而不是搜索框的**，影响面比一个按钮大得多。先做这个最小复现。
+
+---
+
+## 第 331 轮：最小复现**收得到**点击——所以问题比上一轮担心的窄，不是布局族的
+
+接上一轮的“下一步”：做最小复现，判断这是搜索框自己的 bug 还是布局族的 bug。
+上一轮写下的判据是“如果最小复现也收不到，那影响面比一个按钮大得多”。
+
+**复现收得到。** 逐层加，每一层都正常：
+
+| 结构 | 结果 |
+|---|---|
+| `Stack` + `Pointer`（已有测试） | 收得到 |
+| `Row[Sized, Pointer]` | 收得到，局部坐标正确 |
+| `Row[Sized, Expanded, Pointer]` | 收得到——**位置由 flex 决定**，不是写死的 |
+| `Container(圆角) → Row[Sized, Expanded, Pointer]` | 收得到 |
+
+也就是说 `RenderFlex`、被 flex 撑开的兄弟节点、`Container`、`RenderPointerRegion`
+这一路的 `hit_test` 全都正确转发。**布局族没有问题，影响面比上一轮担心的窄。**
+
+顺带查清并排除了另外两个怀疑：`RenderRef::hit_test` 是**逐条转发**给内层的
+（不是走默认实现丢掉 handlers），`Container::hit_test` 也**转发给 `composed`**。
+`RenderPointerRegion` 的默认 `HitTestBehavior` 是 `Opaque`，`hit_test_self` 答 true。
+
+**实验没有丢掉，转成了两条常驻回归测试**：一条钉住“行尾的区域、位置由 flex 决定、
+外面还套着 Container，照样收得到点击，且局部坐标正确”；另一条钉住反面——
+行首和中间的点**不会**被算到最后那个孩子头上。这个 crate 之前没有这条断言。
+
+**变异扫描 5 个，全红**：Container 不再向下转发、区域不再随身携带 handlers
+（改成 `result.add`，正是上一轮怀疑过的那种失效方式）、区域不再认领自己的面积、
+区域在自己边界外也被击中、`RenderRef` 不再转发。其中三个把 40 多条测试打红——
+说明这条路径整个 crate 都在依赖它。
+
+**还没查到的**：搜索框的清空按钮为什么收不到。剩下的差别只在**控件／元素那一层**——
+`many()`、`stateful`、`provide`，以及经由 `ElementTree::build_render_tree` 组装出来的树。
+不装作已经查到。
+
+尺子：十六把全部 exit 0。门：6238 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：继续往上一层夹逼，但**先做一个更基本的判别**：在第 330 轮那棵搜索框的真树上，
+**有没有任何一个** pointer region 收到过点击？上一轮唯一的观测量是 `on_changed`，
+而且 `focus` 在探测前已经是 `Some(1)`，所以“字段有没有收到点击”当时是分辨不出来的。
+换一个干净的观测量重做一次：先 `focus` 一个别的 id（或确认初始无焦点），
+再点在字段中间，看焦点会不会落到 1。
+**如果连字段都收不到，那问题在 `ElementTree::build_render_tree` 装出来的树上，
+而不在搜索框的 build 里**——这个判别一步就能把范围减半。
