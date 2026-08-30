@@ -1289,15 +1289,19 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
     // to be a node to fold into.
     if render.merges_descendant_semantics() {
         let size = render.size();
+        let bounds = Rect::xywh(offset.dx, offset.dy, size.width, size.height);
+        // The same question the annotated branch below asks, for the same
+        // reason: a folded node is still a node, and one with no rect on the
+        // glass is a stop nobody can point at. Its descendants leave with it --
+        // they have no nodes of their own to be left behind in, which is what
+        // folding means.
+        let Some(rect) = clips.applied_to(bounds) else {
+            return;
+        };
         let merged = open(
             take_text_id(),
             SemanticsProperties::label(""),
-            (
-                offset.dx,
-                offset.dy,
-                offset.dx + size.width,
-                offset.dy + size.height,
-            ),
+            (rect.left, rect.top, rect.right, rect.bottom),
         );
         if let Some(index) = merged {
             COLLECTOR.with(|collector| collector.borrow_mut().merging.push(index));
@@ -1427,14 +1431,28 @@ impl Clips {
     /// puts coordinates outside the window onto the glass, so it is dropped
     /// too.
     ///
-    /// With neither clip present the rect is reported as it lies, empty or
-    /// not. Upstream drops an empty rect as `isInvisible` wherever it came
-    /// from; here an empty rect usually means the test engine shaped no text,
-    /// and a paragraph that says something is still worth reading.
+    /// # An empty rect is dropped wherever it came from
+    ///
+    /// Upstream's `isInvisible` is `rect.isEmpty` and does not care which clip,
+    /// if any, made it empty; `_RenderObjectSemantics.shouldDrop` is that
+    /// predicate and `children.removeWhere(shouldDrop)` is where it lands. The
+    /// reason upstream gives is the one that matters: an invisible node "can be
+    /// safely dropped ... without losing semantic information that is relevant
+    /// for describing the content currently shown on screen". A stop a reader
+    /// cannot point at, focus, or draw a highlight around is not a stop.
+    ///
+    /// This used to have a shortcut -- with neither clip present the rect was
+    /// reported as it lay, empty or not -- and the reason written down for it
+    /// was that "an empty rect usually means the test engine shaped no text,
+    /// and a paragraph that says something is still worth reading". **That
+    /// reason has since expired.** The stub paragraph "returned a hard zero
+    /// until now, so every string in the crate measured nought by nought" (see
+    /// [`crate::engine_test_stubs`]) and was given a width model; text measures
+    /// wider the longer it is. So the shortcut was keeping a whole class of
+    /// nodes alive to protect a case that no longer occurs, and doing it
+    /// asymmetrically: the *same* empty rect was dropped when it happened to
+    /// fall inside a clip and shipped when it did not.
     fn applied_to(&self, bounds: Rect) -> Option<Rect> {
-        if self.paint.is_none() && self.semantics.is_none() {
-            return Some(bounds);
-        }
         let mut rect = self
             .semantics
             .map_or(bounds, |clip| intersect(bounds, clip));
@@ -4756,6 +4774,198 @@ mod tests {
             .filter(|label| !label.is_empty())
             .collect();
         assert_eq!(labels, vec!["first\nsecond\nthird"]);
+        set_enabled(false);
+    }
+
+    /// Lays a tree out, flushes semantics, and returns the nodes.
+    fn spoken_nodes(widget: crate::framework::AnyWidget) -> Vec<SemanticsNode> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(widget);
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        flush(Size::new(200.0, 200.0), &root).expect("somebody asked")
+    }
+
+    #[test]
+    fn a_stop_nobody_can_point_at_does_not_cross_to_the_platform() {
+        // Upstream's `shouldDrop`, which is `isInvisible`, which is an empty
+        // rect. The words are not the whole of a semantics node: a reader
+        // focuses it, the platform draws a highlight around it, and a touch
+        // explorer finds it by where it is. A node with no rect has none of
+        // that, so upstream drops it and everything that came with it.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            crate::widgets::Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .push(RenderSemantics::new(
+                    901,
+                    SemanticsProperties::label("nowhere"),
+                    crate::widgets::SizedBox::new(0.0, 0.0),
+                ))
+                .push(crate::widgets::Text::new("somewhere"))
+        }));
+        let heard: Vec<&str> = nodes
+            .iter()
+            .map(|node| node.properties.label.as_str())
+            .filter(|label| !label.is_empty())
+            .collect();
+        assert_eq!(
+            heard,
+            vec!["somewhere"],
+            "the sized one is read and the sizeless one is gone"
+        );
+        assert!(
+            !nodes.iter().any(|node| node.id == 901),
+            "and it is not in the tree under any other name"
+        );
+        // The parent must not be left pointing at a node that is not there.
+        let ids: Vec<i32> = nodes.iter().map(|node| node.id).collect();
+        for node in &nodes {
+            for child in &node.children {
+                assert!(ids.contains(child), "dangling child {child} on {}", node.id);
+            }
+        }
+        set_enabled(false);
+    }
+
+    #[test]
+    fn the_same_empty_rect_is_dropped_whether_or_not_a_clip_made_it_empty() {
+        // The bug the drop fixes was not "empty rects are kept" -- it was that
+        // an empty rect inside a clip was dropped and the identical empty rect
+        // outside one was shipped. One rule, one answer, however the rect got
+        // that way.
+        set_enabled(true);
+        fn sizeless() -> RenderSemantics {
+            RenderSemantics::new(
+                902,
+                SemanticsProperties::label("nowhere"),
+                crate::widgets::SizedBox::new(0.0, 0.0),
+            )
+        }
+        // The visible sibling differs between the two trees on purpose. With
+        // the sizeless node dropped they would otherwise flush to identical
+        // node sets, and the second `flush` would answer `None` for "nothing
+        // changed since the last walk" -- gate three -- rather than for
+        // anything this test is asking about.
+        let bare = spoken_nodes(leaf(|| {
+            crate::widgets::Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .push(sizeless())
+                .push(crate::widgets::Text::new("bare"))
+        }));
+        let clipped = spoken_nodes(leaf(|| {
+            crate::widgets::Column::new()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .push(crate::render::RenderClipRect::new(sizeless()))
+                .push(crate::widgets::Text::new("clipped"))
+        }));
+        let said =
+            |nodes: &[SemanticsNode]| nodes.iter().any(|node| node.properties.label == "nowhere");
+        assert!(
+            bare.iter().any(|node| node.properties.label == "bare"),
+            "the control is there, so the walk really ran"
+        );
+        assert!(
+            clipped
+                .iter()
+                .any(|node| node.properties.label == "clipped")
+        );
+        assert!(!said(&bare), "unclipped and empty: dropped");
+        assert!(!said(&clipped), "clipped and empty: dropped, as before");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn what_was_under_a_dropped_stop_leaves_with_it() {
+        // Upstream drops a node from its parent's child list
+        // (`children.removeWhere(shouldDrop)`), and a child list is the only
+        // way a node's subtree is reachable -- so the descendants are not
+        // orphaned onto the grandparent, they are gone. Getting this wrong
+        // would be worse than keeping the empty node: a reader would meet the
+        // inner stop with no idea what it belonged to.
+        //
+        // `RenderSizedOverflowBox` is the case in one box: it takes the size it
+        // was asked for and lays its child against the constraints that came
+        // in, so the annotated box around it has no rect while the box inside
+        // it has a real one.
+        set_enabled(true);
+        let nodes = spoken_nodes(leaf(|| {
+            RenderSemantics::new(
+                903,
+                SemanticsProperties::label("the empty one"),
+                crate::render::RenderSizedOverflowBox::new(
+                    Size::ZERO,
+                    RenderSemantics::new(
+                        904,
+                        SemanticsProperties::label("the one inside"),
+                        crate::widgets::SizedBox::new(40.0, 20.0),
+                    ),
+                ),
+            )
+        }));
+        let outer = nodes.iter().find(|node| node.id == 903);
+        assert!(outer.is_none(), "the sizeless stop is dropped");
+        assert!(
+            nodes.iter().all(|node| node.id != 904),
+            "and the stop under it went with it rather than moving up a level"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_merged_stop_past_the_clip_is_not_read_either() {
+        // The merging branch opens a node of its own, so it has to ask the same
+        // question every other opener asks. It did not, for one round: a folded
+        // button scrolled off the end of a list would still have been read out,
+        // at coordinates off the glass.
+        set_enabled(true);
+        let clipped_at = |top: f32| {
+            spoken_nodes(leaf(move || {
+                crate::render::RenderClipRect::new(
+                    crate::render::RenderStack::new().push_positioned(
+                        crate::render::RenderMergeSemanticsBox::new(
+                            crate::widgets::Column::new()
+                                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                                .push(crate::widgets::Text::new("Save"))
+                                .push(crate::widgets::Text::new("Ctrl S")),
+                        ),
+                        crate::render::StackPosition {
+                            left: Some(10.0),
+                            top: Some(top),
+                            ..Default::default()
+                        },
+                    ),
+                )
+            }))
+        };
+        let heard = |nodes: &[SemanticsNode]| {
+            nodes
+                .iter()
+                .any(|node| node.properties.label.contains("Save"))
+        };
+        assert!(heard(&clipped_at(10.0)), "inside the clip: read");
+
+        // The label alone would not catch this. A folded descendant is dropped
+        // by its *own* clip check on the way in, so the words go missing
+        // whether or not the merging box asks anything -- what leaks is the
+        // merging box's own node, sitting on the tree at coordinates off the
+        // glass with nothing in it. So the assertion is about where the nodes
+        // are, not about what they say.
+        let past = clipped_at(400.0);
+        assert!(!heard(&past), "wholly past the clip: not read");
+        let stray: Vec<(i32, f32)> = past
+            .iter()
+            .filter(|node| node.top >= 200.0)
+            .map(|node| (node.id, node.top))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "a node was reported off the glass: {stray:?}"
+        );
         set_enabled(false);
     }
 
