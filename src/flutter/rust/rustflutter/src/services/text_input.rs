@@ -1601,6 +1601,193 @@ pub trait SystemContextMenuClient {
     fn handle_custom_context_menu_action(&self, action_id: &str);
 }
 
+/// Upstream `IOSSystemContextMenuItemData` (`services/text_input.dart` 3156):
+/// one button of the iOS system context menu, in the shape the method channel
+/// wants it.
+///
+/// # The name on the wire is not always the name in the code
+///
+/// Eight of the nine serialise as the lower-camel of their own name. The ninth
+/// does not: **live text serialises as `captureTextFromCamera`**, because the
+/// engine names the button after what it does to get the text rather than
+/// after the feature. A port that derived these strings from the variant names
+/// would send `liveText`, the engine would not recognise it, and the button
+/// would silently not appear.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IOSSystemContextMenuItemData {
+    /// `copy`.
+    Copy,
+    /// `cut`.
+    Cut,
+    /// `paste`.
+    Paste,
+    /// `selectAll`.
+    SelectAll,
+    /// `lookUp`. Its title is the application's, because the platform has no
+    /// name for what is being looked up.
+    LookUp(String),
+    /// `searchWeb`, likewise titled.
+    SearchWeb(String),
+    /// `share`, likewise.
+    Share(String),
+    /// `captureTextFromCamera` -- see the note above.
+    LiveText,
+    /// `custom`: an application's own button, with its own title and its own
+    /// id to call back on.
+    Custom { title: String, callback_id: i64 },
+}
+
+impl IOSSystemContextMenuItemData {
+    // Named constants rather than bare arms so that `tools/wire_strings.py`
+    // reads them: its docstring records that match arms producing strings are
+    // outside what it can tell from prose, and nine strings the engine matches
+    // by name are worth having inside a ruler rather than beside one.
+    pub const TYPE_COPY: &'static str = "copy";
+    pub const TYPE_CUT: &'static str = "cut";
+    pub const TYPE_PASTE: &'static str = "paste";
+    pub const TYPE_SELECT_ALL: &'static str = "selectAll";
+    pub const TYPE_LOOK_UP: &'static str = "lookUp";
+    pub const TYPE_SEARCH_WEB: &'static str = "searchWeb";
+    pub const TYPE_SHARE: &'static str = "share";
+    /// Not `liveText` -- see the note on the enum.
+    pub const TYPE_LIVE_TEXT: &'static str = "captureTextFromCamera";
+    pub const TYPE_CUSTOM: &'static str = "custom";
+
+    /// Upstream's `_jsonType`.
+    pub fn json_type(&self) -> &'static str {
+        match self {
+            IOSSystemContextMenuItemData::Copy => IOSSystemContextMenuItemData::TYPE_COPY,
+            IOSSystemContextMenuItemData::Cut => IOSSystemContextMenuItemData::TYPE_CUT,
+            IOSSystemContextMenuItemData::Paste => IOSSystemContextMenuItemData::TYPE_PASTE,
+            IOSSystemContextMenuItemData::SelectAll => {
+                IOSSystemContextMenuItemData::TYPE_SELECT_ALL
+            }
+            IOSSystemContextMenuItemData::LookUp(_) => IOSSystemContextMenuItemData::TYPE_LOOK_UP,
+            IOSSystemContextMenuItemData::SearchWeb(_) => {
+                IOSSystemContextMenuItemData::TYPE_SEARCH_WEB
+            }
+            IOSSystemContextMenuItemData::Share(_) => IOSSystemContextMenuItemData::TYPE_SHARE,
+            IOSSystemContextMenuItemData::LiveText => IOSSystemContextMenuItemData::TYPE_LIVE_TEXT,
+            IOSSystemContextMenuItemData::Custom { .. } => {
+                IOSSystemContextMenuItemData::TYPE_CUSTOM
+            }
+        }
+    }
+
+    /// Upstream's `title`, which is null for the built-ins whose label the
+    /// platform supplies.
+    pub fn title(&self) -> Option<&str> {
+        match self {
+            IOSSystemContextMenuItemData::LookUp(title)
+            | IOSSystemContextMenuItemData::SearchWeb(title)
+            | IOSSystemContextMenuItemData::Share(title)
+            | IOSSystemContextMenuItemData::Custom { title, .. } => Some(title),
+            _ => None,
+        }
+    }
+
+    /// Upstream's `_json`.
+    ///
+    /// **The title key is absent, not null, when there is none.** Upstream
+    /// writes the map with Dart's null-aware element on the title entry, which
+    /// leaves the entry out of the map entirely rather than writing a null.
+    /// Sending an explicit null instead would have the engine read a title
+    /// that is present and empty.
+    pub fn to_value(&self) -> Value {
+        let mut entries: Vec<(&str, Value)> = vec![(
+            "callbackId",
+            Value::I64(match self {
+                IOSSystemContextMenuItemData::Custom { callback_id, .. } => *callback_id,
+                _ => 0,
+            }),
+        )];
+        if let Some(title) = self.title() {
+            entries.push(("title", Value::String(title.to_string())));
+        }
+        entries.push(("type", Value::String(self.json_type().to_string())));
+        Value::map(entries)
+    }
+}
+
+/// Upstream `SystemContextMenu.getDefaultItems`
+/// (`widgets/system_context_menu.dart` 158): which iOS buttons a field gets,
+/// derived from the Flutter-drawn menu's own buttons.
+///
+/// # Two of the ten kinds have no iOS button, and they are dropped for
+/// different reasons
+///
+/// Upstream's comment says the generic model is "the single source of truth",
+/// so the order is the Flutter menu's order and nothing is invented here. But
+/// the map is **not onto**:
+///
+/// * **Delete** is dropped because iOS has no native delete button in this
+///   menu. There is nothing to ask the platform for.
+/// * **Custom** is dropped because custom buttons arrive through
+///   `SystemContextMenu.items` explicitly, not through the defaults. Mapping
+///   them here would show each custom button twice.
+///
+/// So a field whose Flutter menu has cut/copy/paste/delete yields **three**
+/// iOS items, not four.
+pub fn ios_default_items(
+    buttons: &[crate::icon_data::ContextMenuButtonType],
+    look_up: &str,
+    search_web: &str,
+    share: &str,
+) -> Vec<IOSSystemContextMenuItemData> {
+    use crate::icon_data::ContextMenuButtonType;
+    buttons
+        .iter()
+        .filter_map(|button| match button {
+            ContextMenuButtonType::Copy => Some(IOSSystemContextMenuItemData::Copy),
+            ContextMenuButtonType::Cut => Some(IOSSystemContextMenuItemData::Cut),
+            ContextMenuButtonType::Paste => Some(IOSSystemContextMenuItemData::Paste),
+            ContextMenuButtonType::SelectAll => Some(IOSSystemContextMenuItemData::SelectAll),
+            ContextMenuButtonType::LookUp => {
+                Some(IOSSystemContextMenuItemData::LookUp(look_up.to_string()))
+            }
+            ContextMenuButtonType::SearchWeb => Some(IOSSystemContextMenuItemData::SearchWeb(
+                search_web.to_string(),
+            )),
+            ContextMenuButtonType::Share => {
+                Some(IOSSystemContextMenuItemData::Share(share.to_string()))
+            }
+            ContextMenuButtonType::LiveTextInput => Some(IOSSystemContextMenuItemData::LiveText),
+            ContextMenuButtonType::Delete | ContextMenuButtonType::Custom => None,
+        })
+        .collect()
+}
+
+/// Upstream `SystemContextMenu.isSupported`: whether this device can show the
+/// system menu at all.
+///
+/// Two conditions, and the second is **nullable, defaulting to false**:
+/// upstream asks `MediaQuery.maybeSupportsShowingSystemContextMenu(context)`,
+/// and a view that has not said either way counts as no. Guessing yes would
+/// leave a field with no menu at all -- it would have stood down its own
+/// toolbar in favour of one the platform never draws.
+pub fn ios_system_menu_is_supported(
+    platform: crate::editable_text::TargetPlatform,
+    view_supports: Option<bool>,
+) -> bool {
+    platform == crate::editable_text::TargetPlatform::IOS && view_supports.unwrap_or(false)
+}
+
+/// Upstream `SystemContextMenu.isSupportedByField`.
+///
+/// A **read-only** field is refused even on a device that supports the menu,
+/// and the reason is in upstream's doc rather than its code: the system menu
+/// currently requires a live `TextInputConnection`, and a read-only field has
+/// none. So it falls back to the Flutter-drawn toolbar -- which is why this is
+/// a separate question from [`ios_system_menu_is_supported`] rather than one
+/// more clause inside it.
+pub fn ios_system_menu_is_supported_by_field(
+    read_only: bool,
+    platform: crate::editable_text::TargetPlatform,
+    view_supports: Option<bool>,
+) -> bool {
+    !read_only && ios_system_menu_is_supported(platform, view_supports)
+}
+
 /// Upstream `SystemContextMenuController`: shows and hides the platform's own
 /// context menu.
 ///
@@ -1614,6 +1801,7 @@ pub trait SystemContextMenuClient {
 pub struct SystemContextMenuController {
     on_system_hide: Option<Rc<dyn Fn()>>,
     last_target_rect: RefCell<Option<Rect>>,
+    last_items: RefCell<Vec<IOSSystemContextMenuItemData>>,
     visible: Cell<bool>,
 }
 
@@ -1631,6 +1819,7 @@ impl SystemContextMenuController {
         SystemContextMenuController {
             on_system_hide: None,
             last_target_rect: RefCell::new(None),
+            last_items: RefCell::new(Vec::new()),
             visible: Cell::new(false),
         }
     }
@@ -1666,6 +1855,66 @@ impl SystemContextMenuController {
                     ("height", Value::F64(target_rect.height() as f64)),
                 ]),
             )]),
+        );
+    }
+
+    /// Upstream's `showWithItems`, which replaced `show` -- upstream marks
+    /// `show` deprecated after v3.29.0-0.3.pre and this crate keeps both for
+    /// the same reason upstream does.
+    ///
+    /// # The early return needs the buttons too, and that is the whole point
+    ///
+    /// [`SystemContextMenuController::show`] returns early when the rectangle
+    /// has not moved. That test is not enough once the menu has buttons:
+    /// upstream compares `_lastTargetRect == targetRect && listEquals(_lastItems, items)`.
+    /// The case it catches is ordinary -- the reader selects a word without
+    /// the selection rectangle moving enough to matter, and *copy* and *cut*
+    /// have to appear. Comparing the rectangle alone, the menu would keep
+    /// showing the buttons it had before the selection existed.
+    ///
+    /// An **empty list shows nothing rather than an empty menu**: upstream
+    /// asserts it in `showWithItems` and its widget guards with
+    /// `if (widget.items.isNotEmpty)` before ever calling. A menu with no
+    /// buttons is a rectangle of nothing sitting over the text.
+    /// Whether [`SystemContextMenuController::show_with_items`] would send
+    /// anything, which is upstream's two guards read as one question.
+    ///
+    /// Separated out because it is the whole rule and the send itself is a
+    /// line of plumbing: the message goes to a platform that is not there in a
+    /// unit test, so the decision is what can be held to account.
+    pub fn would_send(&self, target_rect: Rect, items: &[IOSSystemContextMenuItemData]) -> bool {
+        if items.is_empty() {
+            return false;
+        }
+        !(self.visible.get()
+            && *self.last_target_rect.borrow() == Some(target_rect)
+            && self.last_items.borrow().as_slice() == items)
+    }
+
+    pub fn show_with_items(&self, target_rect: Rect, items: &[IOSSystemContextMenuItemData]) {
+        if !self.would_send(target_rect, items) {
+            return;
+        }
+        *self.last_target_rect.borrow_mut() = Some(target_rect);
+        *self.last_items.borrow_mut() = items.to_vec();
+        self.visible.set(true);
+        PLATFORM.invoke(
+            SystemContextMenuController::SHOW_METHOD,
+            Value::map([
+                (
+                    "targetRect",
+                    Value::map([
+                        ("x", Value::F64(target_rect.left as f64)),
+                        ("y", Value::F64(target_rect.top as f64)),
+                        ("width", Value::F64(target_rect.width() as f64)),
+                        ("height", Value::F64(target_rect.height() as f64)),
+                    ]),
+                ),
+                (
+                    "items",
+                    Value::List(items.iter().map(|item| item.to_value()).collect()),
+                ),
+            ]),
         );
     }
 
@@ -1785,6 +2034,223 @@ mod input_surface_tests {
         assert_eq!(count.get(), 0);
         control.show();
         assert_eq!(count.get(), 1);
+    }
+
+    // -- The iOS system menu's buttons, tick 315 -----------------------------
+
+    fn button_types() -> Vec<crate::icon_data::ContextMenuButtonType> {
+        use crate::icon_data::ContextMenuButtonType::*;
+        vec![
+            Cut,
+            Copy,
+            Paste,
+            SelectAll,
+            Delete,
+            LookUp,
+            SearchWeb,
+            Share,
+            LiveTextInput,
+            Custom,
+        ]
+    }
+
+    #[test]
+    fn live_text_goes_out_under_a_name_it_does_not_have_here() {
+        // The engine names the button after what it does to get the text.
+        // Deriving the wire string from the variant would send "liveText",
+        // and the button would silently not appear.
+        assert_eq!(
+            IOSSystemContextMenuItemData::LiveText.json_type(),
+            "captureTextFromCamera"
+        );
+        assert_ne!(
+            IOSSystemContextMenuItemData::LiveText.json_type(),
+            "liveText"
+        );
+    }
+
+    #[test]
+    fn the_other_eight_wire_names_are_the_ones_upstream_writes() {
+        for (item, name) in [
+            (IOSSystemContextMenuItemData::Copy, "copy"),
+            (IOSSystemContextMenuItemData::Cut, "cut"),
+            (IOSSystemContextMenuItemData::Paste, "paste"),
+            (IOSSystemContextMenuItemData::SelectAll, "selectAll"),
+            (
+                IOSSystemContextMenuItemData::LookUp(String::new()),
+                "lookUp",
+            ),
+            (
+                IOSSystemContextMenuItemData::SearchWeb(String::new()),
+                "searchWeb",
+            ),
+            (IOSSystemContextMenuItemData::Share(String::new()), "share"),
+            (
+                IOSSystemContextMenuItemData::Custom {
+                    title: String::new(),
+                    callback_id: 1,
+                },
+                "custom",
+            ),
+        ] {
+            assert_eq!(item.json_type(), name);
+        }
+    }
+
+    #[test]
+    fn a_built_in_button_sends_no_title_key_at_all() {
+        // Dart's null-aware element leaves the entry out of the map. An
+        // explicit null would have the engine read a title that is present
+        // and empty, rather than one the platform supplies.
+        let built_in = IOSSystemContextMenuItemData::Copy.to_value();
+        assert_eq!(built_in.get("title"), None, "absent, not null");
+        assert_eq!(
+            built_in.get("type"),
+            Some(&Value::String("copy".to_string()))
+        );
+
+        let titled = IOSSystemContextMenuItemData::LookUp("Look Up".to_string()).to_value();
+        assert_eq!(
+            titled.get("title"),
+            Some(&Value::String("Look Up".to_string())),
+            "and the ones the platform has no name for do carry theirs"
+        );
+    }
+
+    #[test]
+    fn two_of_the_ten_flutter_buttons_have_no_ios_button() {
+        // Delete has no native iOS button; custom items arrive through
+        // `items` explicitly and would otherwise appear twice.
+        let items = ios_default_items(&button_types(), "Look Up", "Search Web", "Share...");
+        assert_eq!(items.len(), 8, "ten in, eight out");
+        assert!(
+            !items
+                .iter()
+                .any(|item| item.json_type() == "custom" || item.json_type() == "delete"),
+            "neither dropped kind got through under any name"
+        );
+    }
+
+    #[test]
+    fn the_order_is_the_flutter_menus_order_and_nothing_is_invented() {
+        use crate::icon_data::ContextMenuButtonType::*;
+        let items = ios_default_items(&[Paste, Cut, Copy], "", "", "");
+        assert_eq!(
+            items,
+            vec![
+                IOSSystemContextMenuItemData::Paste,
+                IOSSystemContextMenuItemData::Cut,
+                IOSSystemContextMenuItemData::Copy,
+            ],
+            "not a canonical order of this port's own choosing"
+        );
+        assert!(ios_default_items(&[], "", "", "").is_empty());
+    }
+
+    #[test]
+    fn a_field_with_a_delete_button_loses_exactly_that_one() {
+        use crate::icon_data::ContextMenuButtonType::*;
+        assert_eq!(
+            ios_default_items(&[Cut, Copy, Paste, Delete], "", "", ""),
+            vec![
+                IOSSystemContextMenuItemData::Cut,
+                IOSSystemContextMenuItemData::Copy,
+                IOSSystemContextMenuItemData::Paste,
+            ],
+            "three, not four"
+        );
+    }
+
+    #[test]
+    fn a_view_that_has_not_said_whether_it_supports_the_menu_counts_as_no() {
+        use crate::editable_text::TargetPlatform;
+        assert!(!ios_system_menu_is_supported(TargetPlatform::IOS, None));
+        assert!(ios_system_menu_is_supported(
+            TargetPlatform::IOS,
+            Some(true)
+        ));
+        assert!(!ios_system_menu_is_supported(
+            TargetPlatform::IOS,
+            Some(false)
+        ));
+        // And the platform clause on its own: a view that says yes elsewhere
+        // still gets nothing, because there is no such menu to show.
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::MacOS,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+            TargetPlatform::Fuchsia,
+        ] {
+            assert!(!ios_system_menu_is_supported(platform, Some(true)));
+        }
+    }
+
+    #[test]
+    fn a_read_only_field_keeps_the_flutter_toolbar_on_a_device_that_supports_the_menu() {
+        // The system menu needs a live text input connection and a read-only
+        // field has none, so this is a separate question from whether the
+        // device can show one at all.
+        use crate::editable_text::TargetPlatform;
+        assert!(ios_system_menu_is_supported(
+            TargetPlatform::IOS,
+            Some(true)
+        ));
+        assert!(!ios_system_menu_is_supported_by_field(
+            true,
+            TargetPlatform::IOS,
+            Some(true)
+        ));
+        assert!(ios_system_menu_is_supported_by_field(
+            false,
+            TargetPlatform::IOS,
+            Some(true)
+        ));
+    }
+
+    #[test]
+    fn the_menu_is_resent_when_its_buttons_change_under_a_rectangle_that_did_not_move() {
+        // The reader selects a word without moving the selection rectangle
+        // enough to matter, and cut and copy have to appear. Comparing the
+        // rectangle alone, the menu would keep the buttons it had from before
+        // there was a selection.
+        let controller = SystemContextMenuController::new();
+        let rect = Rect::ltrb(0.0, 0.0, 10.0, 10.0);
+        let before = [IOSSystemContextMenuItemData::Paste];
+        let after = [
+            IOSSystemContextMenuItemData::Cut,
+            IOSSystemContextMenuItemData::Copy,
+            IOSSystemContextMenuItemData::Paste,
+        ];
+        assert!(controller.would_send(rect, &before));
+        controller.show_with_items(rect, &before);
+        assert!(controller.is_visible());
+        assert!(
+            !controller.would_send(rect, &before),
+            "the same menu in the same place goes out once"
+        );
+        assert!(
+            controller.would_send(rect, &after),
+            "the same place, different buttons"
+        );
+        controller.show_with_items(rect, &after);
+        assert!(!controller.would_send(rect, &after));
+        assert!(
+            controller.would_send(Rect::ltrb(0.0, 0.0, 20.0, 10.0), &after),
+            "and a move still counts, buttons unchanged"
+        );
+    }
+
+    #[test]
+    fn a_menu_with_no_buttons_is_not_shown_as_an_empty_one() {
+        // Upstream asserts it in showWithItems and its widget guards before
+        // ever calling. A menu with no buttons is a rectangle of nothing
+        // sitting over the text.
+        let controller = SystemContextMenuController::new();
+        let rect = Rect::ltrb(0.0, 0.0, 10.0, 10.0);
+        assert!(!controller.would_send(rect, &[]));
+        controller.show_with_items(rect, &[]);
+        assert!(!controller.is_visible(), "nothing was shown");
     }
 
     #[test]

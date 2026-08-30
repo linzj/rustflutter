@@ -21990,3 +21990,60 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 `system_context_menu.dart`（74 行）：它拿同一对 `getGlyphHeights` 去算 iOS 系统菜单的锚点矩形，
 但**传给平台的是另一种坐标**，而且有一条“菜单显示期间选区变了要不要重发”的规则。
 先查本项目 `SystemContextMenu` 有没有这个东西，按行为查，不要按名字查。
+
+---
+
+## 第 315 轮：live text 在线上叫 captureTextFromCamera，而十种按钮里有两种拿不到 iOS 按钮
+
+接上一轮的“下一步”查 `widgets/system_context_menu.dart`。本项目里
+`SystemContextMenuController`（通道那一侧）早就在了，`ContextMenuButtonType` 也在，缺的是
+中间那一层：**iOS 系统菜单的按钮清单**——`IOSSystemContextMenuItemData` 这一族、
+`SystemContextMenu.getDefaultItems` 的映射、两道支持性闸门，以及 `showWithItems`。
+
+四件按名字猜不到的事：
+
+1. **九个线上类型串里有一个跟变量名对不上：live text 发出去是 `captureTextFromCamera`。**
+   引擎是按“怎么把文字弄进来”命名这个按钮的，不是按功能名。照着变体名推导线上串的移植会发
+   `liveText`，引擎不认，按钮就那么**悄悄不出现**——没有报错，没有日志。
+2. **十种 Flutter 按钮映射到八个 iOS 项，掉的两种理由还不一样。** `delete` 掉是因为 iOS 这
+   个菜单里根本没有原生删除按钮，没有东西可以向平台要；`custom` 掉是因为自定义按钮走
+   `SystemContextMenu.items` 显式传入，在默认项里再映射一次会让每个自定义按钮**出现两遍**。
+   所以一个 Flutter 菜单是 cut/copy/paste/delete 的字段，拿到的是**三**个 iOS 项而不是四个。
+   顺序是 Flutter 菜单的顺序——上游注释说通用模型是“单一事实来源”，这里不另立规矩。
+3. **内建按钮不发 `title` 这个键，而不是发一个 null。** 上游写的是 Dart 的 null-aware
+   element（`'title': ?title`），条目整个不进这个 map。发一个显式 null，引擎读到的是“有标题
+   且为空”，而不是“标题由平台给”。
+4. **两道闸门是分开的两个问题。** `isSupported` 是 iOS **且** view 说它支持，而后者是可空的
+   `?? false`——没表态算不支持。猜“支持”的后果是字段既撤下了自己的工具条、平台又不画，
+   读者一个菜单都没有。`isSupportedByField` 再加一条 `!readOnly`：系统菜单要一条活的
+   `TextInputConnection`，只读字段没有，所以退回 Flutter 自绘的工具条。
+
+顺手补上了一个**已有代码里的行为缺口**：原来的 `show` 只比较矩形就提前返回，而上游的
+`showWithItems` 比较的是 `_lastTargetRect == targetRect && listEquals(_lastItems, items)`。
+漏掉后一半会撞上一个很常见的情形——读者选中一个词、选区矩形没怎么动，但 *cut* 和 *copy*
+必须冒出来；只比矩形的话，菜单会一直挂着“还没有选区”时的那几个按钮。空清单则一条都不发
+（上游在 `showWithItems` 里 assert，widget 里用 `if (widget.items.isNotEmpty)` 先挡一道）：
+没有按钮的菜单是一块盖在文字上的空矩形。
+
+判定被单独提成 `would_send`，因为单测里平台不在，能被追责的是那个决定而不是那次发送。
+
+**顺带修了一把尺子的盲区。** 九个新串一开始一个都没进 `wire_strings.py`——它的文档里写明
+match 分支产出的串它读不出来（分支的值“只是按约定”是协议串，没有模式能把它和普通消息分开），
+这类表由各自的测试来走。这次把九个串提成具名 `pub const`，尺子就读到了：**122 → 131**，
+九个全部仍在上游。原来那条盲区说明仍然成立，只是这九个不再落在里面。
+
+**变异扫描 15 个，全红。** 包括：live text 改回 `liveText`、selectAll 丢掉驼峰、searchWeb
+改名、内建按钮发空标题、lookUp 不带标题、delete 拿到一个 iOS 按钮、custom 也进默认项、
+live text 跟 delete 一起被丢、未表态算支持、平台不再起作用、只读字段也给系统菜单、
+重发判定各自丢掉按钮／矩形那一半、空菜单照发、发完不记住这次的按钮。
+
+尺子：十六把全部 exit 0（wire_strings 131/0）。门：6165 通过；`cargo fmt --check` 干净；
+三个输出目录的 rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、
+flutter_gallery_unittests 全部重建。
+
+**下一步**：`getDefaultItems` 的输入 `contextMenuButtonItems` 本身还没查过——上游
+`EditableTextState.contextMenuButtonItems`（`widgets/editable_text.dart`）决定**哪些按钮
+根本不出现**：没有选区就没有 copy／cut，剪贴板为空（或者还没问出来）就没有 paste，
+只读字段没有 cut／paste，`obscureText` 的字段连 copy 都没有。这一串条件本项目有没有、
+是不是这几条，先按行为查，不要按名字查。查完再决定接不接线到
+`selection_host.rs` 那个还在收外部 `selection_rect` 的调用点。
