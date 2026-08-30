@@ -732,6 +732,279 @@ mod radio_semantics_tests {
             .collect()
     }
 
+    /// What each component actually says to a screen reader.
+    ///
+    /// # A report, not a check
+    ///
+    /// It asserts nothing and cannot fail, which is deliberate and is the shape
+    /// `tools/descent.py` already has. The survey in tick 369 counted the wrong
+    /// thing -- whether a component's `build` mentions `semantics` -- and tick
+    /// 377 found `Badge` on that list while being perfectly audible: its count
+    /// is a `Text`, which the walk annotates by itself. **Mentioning semantics
+    /// and reaching a reader are different questions**, and only the second
+    /// matters.
+    ///
+    /// So this mounts each one, runs the real walk, and prints what comes out.
+    /// Silence is a gap only where a component has a **role or state its
+    /// children cannot carry**: a container saying nothing of its own is
+    /// correct, and a `Scaffold` announcing itself would be noise.
+    ///
+    /// Read it with `python tools/spoken.py`.
+    #[test]
+    fn spoken_census() {
+        use crate::components::{Badge, CircleAvatar, Label, ListTile, ProgressBar, Scaffold};
+        use crate::framework::component;
+        let d = super::Destination::new;
+
+        /// One mounted widget, and every node the walk gives back that says
+        /// anything at all -- words, a value, a flag or an action.
+        fn spoken_by(widget: crate::framework::AnyWidget) -> Vec<String> {
+            crate::semantics::set_enabled(true);
+            let mut tree = crate::framework::ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::light(),
+                widget,
+            ));
+            let said = match tree.build_render_tree() {
+                Some(mut root) => {
+                    crate::render::RenderBox::layout(
+                        &mut root,
+                        crate::render::BoxConstraints::loose(400.0, 400.0),
+                    );
+                    crate::semantics::mark_needs_update();
+                    crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|node| {
+                            !node.properties.label.is_empty()
+                                || !node.properties.value.is_empty()
+                                || node.properties.flags != Default::default()
+                                || node.properties.actions != 0
+                        })
+                        .map(|node| {
+                            let mut what = format!("{:?}", node.properties.label);
+                            if !node.properties.value.is_empty() {
+                                what.push_str(&format!(" ={:?}", node.properties.value));
+                            }
+                            if node.properties.flags != Default::default() {
+                                what.push_str(" +flags");
+                            }
+                            if node.properties.actions != 0 {
+                                what.push_str(" +actions");
+                            }
+                            what
+                        })
+                        .collect()
+                }
+                None => vec!["did not mount".to_string()],
+            };
+            crate::semantics::set_enabled(false);
+            said
+        }
+
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Badge on a tile",
+            spoken_by(component(
+                Badge::new("3").with_child(component(ListTile::new("Inbox")))
+            ))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Scaffold",
+            spoken_by(component(Scaffold::new(component(ListTile::new("Body"))))).join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "CircleAvatar",
+            spoken_by(component(CircleAvatar::new().label_of("AB"))).join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "ListTile",
+            spoken_by(component(ListTile::new("Inbox").with_subtitle("12 unread"))).join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Chip",
+            spoken_by(component(super::Chip::new(1, "Sport"))).join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Checkbox",
+            spoken_by(component(
+                super::Checkbox::new(2, true).with_label("Remember me")
+            ))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Radio",
+            spoken_by(component(super::Radio::new(3, true).with_label("Medium"))).join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "TabBar",
+            spoken_by(component(super::TabBar::new(
+                40,
+                vec!["Home".to_string(), "You".to_string()],
+                0
+            )))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "BottomNavigation",
+            spoken_by(component(super::BottomNavigation::new(
+                60,
+                vec![d("Home", "H"), d("Saved", "S")],
+                0
+            )))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "NavigationRail",
+            spoken_by(component(super::NavigationRail::new(
+                70,
+                vec![d("Home", "H"), d("Saved", "S")],
+                0
+            )))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Snackbar",
+            spoken_by(component(super::Snackbar::new(80, "Saved"))).join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Banner",
+            spoken_by(component(super::Banner::new("You are offline"))).join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "DataTable",
+            spoken_by(component(super::DataTable::new(vec![
+                "Name".to_string(),
+                "Size".to_string()
+            ])))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Section",
+            spoken_by(component(super::Section::new(
+                "Settings",
+                component(ListTile::new("Wi-Fi"))
+            )))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "SimpleDialogOption",
+            spoken_by(component(super::SimpleDialogOption::new(90, || component(
+                Label::new("Delete")
+            ))))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "TooltipTrigger",
+            spoken_by(component(super::TooltipTrigger::new(
+                100,
+                component(Label::new("Save"))
+            )))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "Spinner",
+            spoken_by(component(
+                super::Spinner::new(0.4).with_semantic_label("Loading")
+            ))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
+            "ProgressBar",
+            spoken_by(component(ProgressBar::new(0.6))).join(", ")
+        );
+    }
+
+    #[test]
+    fn all_three_bars_of_one_of_n_announce_themselves_alike() {
+        // The rail was the one that drifted: four bare stops, no position and
+        // no sense of which page you are on, while the tab bar and the bottom
+        // bar had both been wired. `spoken_census` found it on its first run,
+        // which is what that report is for.
+        use crate::semantics::SemanticsTristate;
+        let heard = |widget: crate::framework::AnyWidget| {
+            crate::semantics::set_enabled(true);
+            let mut tree = crate::framework::ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::light(),
+                widget,
+            ));
+            let mut root = tree.build_render_tree().expect("mounted");
+            crate::render::RenderBox::layout(
+                &mut root,
+                crate::render::BoxConstraints::loose(400.0, 400.0),
+            );
+            crate::semantics::mark_needs_update();
+            let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+                .unwrap_or_default();
+            crate::semantics::set_enabled(false);
+            nodes
+                .iter()
+                .filter(|node| node.properties.label.starts_with("Tab "))
+                // The position as well as the flag: asserting only which one
+                // is current lets a bar number its choices backwards and say
+                // nothing about it.
+                .map(|node| {
+                    (
+                        node.properties
+                            .label
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .to_string(),
+                        node.properties.flags.selected,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = vec![
+            ("Tab 1 of 2".to_string(), SemanticsTristate::False),
+            ("Tab 2 of 2".to_string(), SemanticsTristate::True),
+        ];
+        let rail = crate::framework::component(NavigationRail::new(
+            70,
+            vec![
+                Destination::new("Home", "H"),
+                Destination::new("Saved", "S"),
+            ],
+            1,
+        ));
+        assert_eq!(heard(rail), expected, "the rail");
+        let bar = crate::framework::component(BottomNavigation::new(
+            60,
+            vec![
+                Destination::new("Home", "H"),
+                Destination::new("Saved", "S"),
+            ],
+            1,
+        ));
+        assert_eq!(heard(bar), expected, "the bottom bar");
+        let tabs = crate::framework::component(TabBar::new(
+            40,
+            vec!["Home".to_string(), "Saved".to_string()],
+            1,
+        ));
+        assert_eq!(heard(tabs), expected, "the tab bar");
+    }
+
     #[test]
     fn each_destination_says_where_it_is_and_which_one_you_are_on() {
         // The tab bar's loss on a phone's primary navigation. Same rule, and
@@ -1601,6 +1874,7 @@ impl Component for NavigationRail {
         let extended = self.extended;
         let handlers = self.handlers.borrow().clone();
         let destinations = self.destinations.clone();
+        let count = destinations.len();
         let surface = theme.surface;
         let outline = theme.outline;
         let primary = theme.primary;
@@ -1661,7 +1935,12 @@ impl Component for NavigationRail {
                     }
                     None => Pointer::new(first_id + index as u64, item),
                 };
-                column = column.push(region);
+                // The third bar of choose-one-of-N, and the one that had
+                // drifted: it announced four bare stops -- the glyph and the
+                // words of each destination, separately, with no sense of
+                // which one you are on. The census in `spoken_census` is what
+                // caught it, on its first run.
+                column = column.push(one_of_many(region, index, count, active));
             }
             Container::new()
                 // Upstream `NavigationRail`'s widths: 80 collapsed, 256 with
@@ -4768,7 +5047,7 @@ mod bottom_sheet_theme_tests {
             crate::components::Theme::dark(),
             BottomSheetTheme::new(
                 data,
-                component(Reader {
+                crate::framework::component(Reader {
                     sheet: std::cell::RefCell::new(Some(sheet)),
                     is_modal,
                     seen: std::rc::Rc::clone(&seen),
@@ -5069,7 +5348,9 @@ mod dialog_theme_tests {
                     }),
                     ..DialogThemeData::new()
                 },
-                component(Dialog::new("Discard?").with_body("This cannot be undone.")),
+                crate::framework::component(
+                    Dialog::new("Discard?").with_body("This cannot be undone."),
+                ),
             ),
         ));
         let mut root = tree.build_render_tree().expect("a root");
@@ -5320,7 +5601,7 @@ mod tab_bar_theme_tests {
                     unselected_label_color: Some(QUIET),
                     ..TabBarThemeData::new()
                 },
-                component(TabBar::new(
+                crate::framework::component(TabBar::new(
                     1,
                     vec![String::from("Mail"), String::from("Files")],
                     0,
@@ -5495,7 +5776,7 @@ mod navigation_rail_theme_tests {
             crate::components::Theme::dark(),
             NavigationRailTheme::new(
                 data,
-                component(Reader {
+                crate::framework::component(Reader {
                     extended,
                     seen: std::rc::Rc::clone(&seen),
                 }),
