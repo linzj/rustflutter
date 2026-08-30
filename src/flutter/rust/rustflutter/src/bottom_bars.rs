@@ -215,7 +215,10 @@ impl NavigationBar {
 /// is the notch. A floating action button docked over this bar has a hole cut
 /// for it, and the hole is the bar's job because only the bar knows its own
 /// outline.
-#[derive(Clone, Debug, PartialEq)]
+/// Not `Debug`/`PartialEq` any more: it holds a child now, and a widget is
+/// neither printable nor comparable. The metrics it used to be compared on
+/// live on [`crate::component_themes::ResolvedBottomAppBar`], which still is.
+#[derive(Clone)]
 pub struct BottomAppBar {
     /// The outline the notch is cut from, or `None` to defer.
     ///
@@ -234,6 +237,149 @@ pub struct BottomAppBar {
     /// The gap left between the button and the edge of the hole, so the two do
     /// not touch.
     pub notch_margin: f32,
+    child: std::cell::RefCell<Option<crate::framework::AnyWidget>>,
+    /// See [`BottomAppBar::docked_at`].
+    docked: Option<crate::engine::Rect>,
+}
+
+/// The bar's surface: a filled shape that is a plain rectangle until a docked
+/// button gives it something to cut around.
+///
+/// A render object rather than a `Container` with a clip, because **the path
+/// depends on the bar's own size**, which is not known until layout. Building
+/// it from a size reported by the previous frame is the arrangement
+/// [`crate::ink_well`] is stuck with for its splashes, and it costs a frame of
+/// the wrong picture; a bar that is laid out and then painted has the size in
+/// hand at the moment it needs it.
+impl crate::framework::Component for BottomAppBar {
+    fn build(&self, context: &mut crate::framework::BuildContext) -> crate::framework::AnyWidget {
+        let bar = self.resolved(context);
+        let child = self
+            .child
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
+        let color = bar.color;
+        let padding = bar.padding;
+        let height = bar.height;
+        // The shape says a notch is *possible*; a docked button is what makes
+        // one happen. `cuts_a_notch` is the same two conditions, and asking it
+        // rather than repeating them keeps the answer in one place.
+        let shape = bar
+            .shape
+            .clone()
+            .filter(|_| bar.cuts_a_notch(self.docked.is_some()));
+        // Grown by the margin here rather than in the painter, because it is a
+        // property of *this bar* -- upstream's `_BottomAppBarClipper` inflates
+        // the button's rectangle by `notchMargin` for the same reason: the gap
+        // belongs to the bar that leaves it, not to the button.
+        let guest = self.notch_rect();
+
+        crate::framework::single(child, move |inner| {
+            let mut content = crate::widgets::Container::new()
+                .with_padding(padding)
+                .with_child(inner);
+            if let Some(height) = height {
+                content = content.with_height(height);
+            }
+            NotchedSurface {
+                color,
+                shape: shape.clone(),
+                guest,
+                child: crate::render::RenderRef::new(content),
+                size: crate::render::Size::ZERO,
+            }
+        })
+    }
+}
+
+struct NotchedSurface {
+    color: crate::engine::Color,
+    shape: Option<crate::borders::NotchedShape>,
+    /// Where the docked button is, in this bar's coordinates, already grown by
+    /// the notch margin. `None` is a bar with nothing docked over it, which is
+    /// upstream's condition too: `_BottomAppBarClipper` cuts nothing when the
+    /// scaffold's geometry reports no button.
+    guest: Option<crate::engine::Rect>,
+    child: crate::render::BoxedRender,
+    size: crate::render::Size,
+}
+
+impl NotchedSurface {
+    /// Where the hole goes on the canvas: the docked rectangle, which is in
+    /// the bar's own coordinates, moved to where the bar is being painted.
+    ///
+    /// A named step for the same reason [`BottomAppBar::notch_rect`] is one --
+    /// **the canvas cannot show it**. The notch dips inward, so the drawn
+    /// path's bounding box is the bar's rectangle wherever the hole ends up;
+    /// a painter that forgot the offset would cut at the top of the window and
+    /// every test watching the paint calls would still see `(0, 0, 400, 80)`.
+    fn guest_at(&self, offset: crate::render::Offset) -> Option<crate::engine::Rect> {
+        self.guest.map(|guest| {
+            crate::engine::Rect::ltrb(
+                guest.left + offset.dx,
+                guest.top + offset.dy,
+                guest.right + offset.dx,
+                guest.bottom + offset.dy,
+            )
+        })
+    }
+}
+
+impl crate::render::RenderBox for NotchedSurface {
+    fn layout(&mut self, constraints: crate::render::BoxConstraints) -> crate::render::Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> crate::render::Size {
+        self.size
+    }
+
+    fn visit_children(
+        &self,
+        visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
+    ) {
+        visit(&self.child, crate::render::Offset::ZERO);
+    }
+
+    fn visit_children_for_semantics(
+        &self,
+        visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
+    ) {
+        visit(&self.child, crate::render::Offset::ZERO);
+    }
+
+    fn hit_test(
+        &self,
+        position: crate::render::Offset,
+        result: &mut crate::render::HitTestResult,
+    ) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn paint(&self, context: &mut crate::render::PaintContext, offset: crate::render::Offset) {
+        let host = crate::engine::Rect::ltrb(
+            offset.dx,
+            offset.dy,
+            offset.dx + self.size.width,
+            offset.dy + self.size.height,
+        );
+        let paint = crate::engine::Paint::new(self.color);
+        match &self.shape {
+            // The notch is cut only when there is a button to cut around.
+            // `shape` alone means one is *possible* -- a default Material 3
+            // bar always carries a shape -- which is the distinction
+            // `ResolvedBottomAppBar::cuts_a_notch` exists to draw.
+            Some(shape) => {
+                context
+                    .canvas()
+                    .draw_path(&shape.outer_path(host, self.guest_at(offset)), &paint);
+            }
+            None => context.canvas().draw_rect(host, &paint),
+        }
+        self.child.paint(context, offset);
+    }
 }
 
 impl BottomAppBar {
@@ -245,7 +391,59 @@ impl BottomAppBar {
         BottomAppBar {
             shape: None,
             notch_margin: BottomAppBar::DEFAULT_NOTCH_MARGIN,
+            child: std::cell::RefCell::new(None),
+            docked: None,
         }
+    }
+
+    /// What the bar holds -- upstream's `child`, normally a row of actions.
+    pub fn with_child(self, child: crate::framework::AnyWidget) -> Self {
+        *self.child.borrow_mut() = Some(child);
+        self
+    }
+
+    /// Where the docked button sits, in the bar's own coordinates.
+    ///
+    /// Upstream's bar does not work this out either: it **reads** the button's
+    /// rectangle off `Scaffold.geometryOf(context)`, a listenable the scaffold
+    /// writes after it has laid the button out, and hands it to
+    /// `_BottomAppBarClipper`. That channel is not ported -- this crate's
+    /// [`crate::fab_location`] computes where a button goes but nothing
+    /// publishes the result -- so the caller says. Everything downstream of
+    /// knowing the rectangle is the same either way, which is why this is the
+    /// seam: when the geometry channel lands it fills this in instead of
+    /// replacing anything.
+    ///
+    /// `None` is a bar with nothing docked over it, and it cuts no notch --
+    /// which is upstream's condition, not merely a default: a hole with no
+    /// button behind it is a hole in the bar.
+    pub fn docked_at(mut self, guest: crate::engine::Rect) -> Self {
+        self.docked = Some(guest);
+        self
+    }
+
+    /// The rectangle the notch is actually cut around: the docked button grown
+    /// by [`BottomAppBar::notch_margin`] on every side.
+    ///
+    /// Upstream's `_BottomAppBarClipper.getClip` does the same inflation
+    /// before handing the rectangle to the shape, and the gap is the point --
+    /// a notch traced exactly on the button leaves the two touching, which
+    /// reads as the button having grown a collar rather than sitting in a
+    /// hole.
+    ///
+    /// Named rather than inlined because it is the one part of the geometry a
+    /// picture cannot show: the drawn path's *bounding box* is the bar either
+    /// way, since the notch dips inward, so a margin that stopped being
+    /// applied would repaint identically to any test watching the canvas.
+    pub fn notch_rect(&self) -> Option<crate::engine::Rect> {
+        self.docked.map(|guest| {
+            crate::engine::Rect::ltrb(
+                guest.left - self.notch_margin,
+                guest.top - self.notch_margin,
+                guest.right + self.notch_margin,
+                guest.bottom + self.notch_margin,
+            )
+        })
     }
 
     /// Upstream's usual shape, `CircularNotchedRectangle`.
@@ -282,6 +480,242 @@ impl Default for BottomAppBar {
 
 #[cfg(test)]
 mod tests {
+
+    /// What the compositor was told to draw for this bar.
+    fn bar_calls(bar: BottomAppBar) -> Vec<crate::engine_test_stubs::Drawn> {
+        bar_calls_at(bar, 0.0)
+    }
+
+    /// The same, with the bar pushed `down` pixels from the top, so a painter
+    /// that ignored its offset can be told from one that does not.
+    fn bar_calls_at(bar: BottomAppBar, down: f32) -> Vec<crate::engine_test_stubs::Drawn> {
+        let body = if down > 0.0 {
+            crate::framework::leaf(move || {
+                crate::render::RenderFlex::column()
+                    .with_main_axis_size(crate::render::MainAxisSize::Min)
+                    .push(crate::widgets::Container::new().with_size(1.0, down))
+            })
+        } else {
+            crate::framework::leaf(|| crate::widgets::Empty)
+        };
+        let _ = &body;
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            if down > 0.0 {
+                crate::framework::single(crate::framework::component(bar), move |inner| {
+                    crate::render::RenderPadding::new(
+                        crate::render::EdgeInsets::only(0.0, down, 0.0, 0.0),
+                        inner,
+                    )
+                })
+            } else {
+                crate::framework::component(bar)
+            },
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        // **Tight** across, which is what a scaffold hands a bottom bar: it
+        // spans the window. Laid out loose the bar shrink-wraps to its padding
+        // -- 32 pixels wide with an empty child -- and a button docked at 180
+        // is nowhere near it, so nothing is cut and two different margins
+        // produce the same picture. That is how the first version of the
+        // margin test came out green-looking and meant nothing.
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::new(400.0, 400.0, 0.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    #[test]
+    fn a_bottom_app_bar_reaches_the_screen_at_all() {
+        // Found by `tools/shells.py`: both halves of the notch were ported and
+        // tested -- `NotchedShape::outer_path` draws it, `cuts_a_notch` says
+        // when -- and **nothing painted a bar**, so neither could be seen.
+        let calls = bar_calls(BottomAppBar::new());
+        assert!(
+            !calls.is_empty(),
+            "the bar painted nothing at all: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_bar_with_nothing_docked_over_it_is_a_plain_rectangle() {
+        // The condition is upstream's, not a default: `_BottomAppBarClipper`
+        // cuts nothing when the scaffold's geometry reports no button, because
+        // a hole with no button behind it is a hole in the bar. A Material 3
+        // bar carries a shape regardless, so the shape alone must not decide.
+        let calls = bar_calls(BottomAppBar::new().with_notch());
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::Rect { .. })),
+            "a bar with no docked button was not drawn as a rectangle: {calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::Path { .. })),
+            "it cut a notch around nothing: {calls:?}"
+        );
+    }
+
+    fn only_path(calls: &[crate::engine_test_stubs::Drawn]) -> (f32, f32, f32, f32) {
+        calls
+            .iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Path {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    ..
+                } => Some((*left, *top, *right, *bottom)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no notched outline was drawn: {calls:?}"))
+    }
+
+    fn docked_bar(margin: f32) -> BottomAppBar {
+        let mut bar = BottomAppBar::new()
+            .with_notch()
+            .docked_at(crate::engine::Rect::ltrb(180.0, -28.0, 236.0, 28.0));
+        bar.notch_margin = margin;
+        bar
+    }
+
+    #[test]
+    fn a_docked_button_gets_a_hole_cut_for_it() {
+        only_path(&bar_calls(docked_bar(BottomAppBar::DEFAULT_NOTCH_MARGIN)));
+    }
+
+    #[test]
+    fn the_notch_leaves_the_margin_the_bar_asked_for() {
+        // Upstream inflates the button's rectangle by `notchMargin` before
+        // cutting, so the hole is wider than the button and the two never
+        // touch. Without it the notch traces the button exactly.
+        //
+        // Asserted on `notch_rect` rather than on the canvas, and that is not
+        // a shortcut: the notch dips *into* the bar, so the drawn path's
+        // bounding box is the bar's own rectangle whatever margin was left.
+        // A test watching the paint calls sees `(0, 0, 400, 80)` for every
+        // margin -- which is exactly what the first version of this test did
+        // before the sweep asked what it was measuring.
+        let button = crate::engine::Rect::ltrb(180.0, -28.0, 236.0, 28.0);
+        assert_eq!(
+            docked_bar(0.0).notch_rect(),
+            Some(button),
+            "no margin should leave the button's own rectangle"
+        );
+        assert_eq!(
+            docked_bar(20.0).notch_rect(),
+            Some(crate::engine::Rect::ltrb(160.0, -48.0, 256.0, 48.0)),
+            "the margin is left on every side"
+        );
+        assert_eq!(
+            BottomAppBar::new().notch_rect(),
+            None,
+            "a bar with nothing docked has no hole to describe"
+        );
+    }
+
+    #[test]
+    fn the_hole_moves_with_the_bar() {
+        // The painter is told where it is, and the docked rectangle is in the
+        // bar's own coordinates, so the two have to be added -- otherwise a
+        // bar anywhere but the top of the window cuts its hole somewhere else
+        // entirely.
+        //
+        // Asserted on the step rather than the canvas, for the same reason the
+        // margin is: the hole is inside the bar's outline, so moving it does
+        // not move the drawn path's bounding box, and the paint calls are the
+        // same either way. What the canvas *can* still show is that the bar
+        // itself moved, so that much is checked here too.
+        let surface = NotchedSurface {
+            color: crate::engine::Color(0xff000000),
+            shape: None,
+            guest: Some(crate::engine::Rect::ltrb(180.0, -28.0, 236.0, 28.0)),
+            child: crate::render::RenderRef::new(crate::widgets::Empty),
+            size: crate::render::Size::ZERO,
+        };
+        // **Both axes**, because one of them alone leaves half the line
+        // untested: the first version moved the bar only downwards, and a
+        // painter that dropped the horizontal offset went unnoticed.
+        assert_eq!(
+            surface.guest_at(crate::render::Offset::new(0.0, 40.0)),
+            Some(crate::engine::Rect::ltrb(180.0, 12.0, 236.0, 68.0))
+        );
+        assert_eq!(
+            surface.guest_at(crate::render::Offset::new(10.0, 40.0)),
+            Some(crate::engine::Rect::ltrb(190.0, 12.0, 246.0, 68.0))
+        );
+        assert_eq!(
+            NotchedSurface {
+                guest: None,
+                ..surface
+            }
+            .guest_at(crate::render::Offset::new(0.0, 40.0)),
+            None
+        );
+
+        let at_origin = only_path(&bar_calls_at(
+            docked_bar(BottomAppBar::DEFAULT_NOTCH_MARGIN),
+            0.0,
+        ));
+        let pushed_down = only_path(&bar_calls_at(
+            docked_bar(BottomAppBar::DEFAULT_NOTCH_MARGIN),
+            40.0,
+        ));
+        assert_ne!(at_origin.1, pushed_down.1, "the bar stayed behind");
+    }
+
+    #[test]
+    fn the_bar_paints_what_it_holds() {
+        // A surface that drew itself and stopped would be a coloured strip
+        // where a row of actions should be.
+        const MARK: crate::engine::Color = crate::engine::Color(0xff00ff00);
+        let calls = bar_calls(BottomAppBar::new().with_child(crate::framework::leaf(|| {
+            crate::widgets::Container::new()
+                .with_size(24.0, 24.0)
+                .with_color(MARK)
+        })));
+        assert!(
+            calls.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::Rect { argb, .. } if *argb == MARK.0
+            )),
+            "the child was not painted: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn the_bar_is_as_tall_as_the_theme_says() {
+        // Material 3 gives the bar a height of its own; Material 2 leaves it
+        // as tall as its child. Ignoring the resolved height silently returns
+        // every bar to the Material 2 behaviour.
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(BottomAppBar::new()),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        let size = crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        let expected = crate::component_themes::ResolvedBottomAppBar::M3_HEIGHT;
+        assert_eq!(size.height, expected);
+    }
+
     use super::*;
 
     // -- The count decides the layout ------------------------------------------

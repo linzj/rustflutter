@@ -160,9 +160,13 @@ def main():
         for match in PORT_STRUCT.finditer(text):
             declared.setdefault(match.group(1), where)
         for pattern in (
-            r'impl(?:<[^>]*>)?\s+Component\s+for\s+(\w+)',
-            r'impl(?:<[^>]*>)?\s+StatefulComponent\s+for\s+(\w+)',
-            r'impl(?:<[^>]*>)?\s+RenderBox\s+for\s+(\w+)',
+            # Paths tolerated on the trait, for the reason `ClipOval` taught
+            # on the return type: `impl crate::framework::Component for X` is
+            # the same statement as `impl Component for X`, and reading only
+            # the bare form under-reports whichever files happen to qualify.
+            r'impl(?:<[^>]*>)?\s+[\w:]*Component\s+for\s+(\w+)',
+            r'impl(?:<[^>]*>)?\s+[\w:]*StatefulComponent\s+for\s+(\w+)',
+            r'impl(?:<[^>]*>)?\s+[\w:]*RenderBox\s+for\s+(\w+)',
         ):
             for match in re.finditer(pattern, text):
                 builds.add(match.group(1))
