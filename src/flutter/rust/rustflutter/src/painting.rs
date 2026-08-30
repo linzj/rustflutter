@@ -1408,11 +1408,13 @@ pub fn image_cache_evict(key: &str) -> bool {
 
 /// Upstream `ImageCache.statusForKey`, in the three states the slot has.
 pub fn image_cache_status(key: &str) -> crate::image::ImageCacheStatus {
-    with_images(|images| match images.entries.get(key).map(|entry| &entry.slot) {
-        Some(Slot::Decoding) => crate::image::ImageCacheStatus::Pending,
-        Some(Slot::Done(Some(_))) => crate::image::ImageCacheStatus::Live,
-        _ => crate::image::ImageCacheStatus::Uncached,
-    })
+    with_images(
+        |images| match images.entries.get(key).map(|entry| &entry.slot) {
+            Some(Slot::Decoding) => crate::image::ImageCacheStatus::Pending,
+            Some(Slot::Done(Some(_))) => crate::image::ImageCacheStatus::Live,
+            _ => crate::image::ImageCacheStatus::Uncached,
+        },
+    )
 }
 
 /// Whether any image asked for is still being decoded.
@@ -4182,7 +4184,10 @@ mod image_tests {
             );
             images.bytes += each;
         }
-        assert!(images.entries.len() < MAX_CACHE_ENTRIES, "the count must not bind");
+        assert!(
+            images.entries.len() < MAX_CACHE_ENTRIES,
+            "the count must not bind"
+        );
         images.evict();
         assert!(
             images.bytes <= MAX_CACHE_BYTES,
