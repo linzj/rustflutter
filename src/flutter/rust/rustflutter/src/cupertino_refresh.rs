@@ -4,6 +4,7 @@
 //!
 //! The last four classes of the sweep.
 
+use crate::editable_text::TargetPlatform;
 use crate::render::AxisDirection;
 
 /// Upstream `RefreshIndicatorMode`.
@@ -175,10 +176,41 @@ impl CupertinoExpansionTile {
     /// [`crate::material_app::DefaultMaterialLocalizations::expansion_tile_hint`]
     /// for why the two halves are chosen the way they are.
     ///
-    /// Upstream attaches these on iOS and macOS only, which is this widget's
-    /// whole audience.
-    pub fn semantics_hint(&self) -> String {
-        crate::material_app::DefaultMaterialLocalizations::expansion_tile_hint(self.expanded)
+    /// Read from the **Cupertino** localizations, which is where upstream's
+    /// `CupertinoExpansionTile` reads it -- `CupertinoLocalizations.of(context)`.
+    /// The Material class declares the same six words, and taking them from
+    /// there is right in English and wrong in general: the two classes are
+    /// separate contracts and a locale supplies each on its own.
+    ///
+    /// Upstream attaches this on iOS and macOS only:
+    ///
+    /// ```dart
+    /// switch (defaultTargetPlatform) {
+    ///   case TargetPlatform.iOS:
+    ///   case TargetPlatform.macOS:
+    ///     semanticsHint = ...;
+    ///   case TargetPlatform.android:
+    ///   case ...:
+    ///     break;
+    /// }
+    /// ```
+    ///
+    /// -- so on Android the hint is **absent**, not empty. The tap hint below
+    /// is attached on every platform; only the state half is conditional,
+    /// because on Android the platform announces expansion state itself and
+    /// saying it again would double it.
+    pub fn semantics_hint(&self, platform: TargetPlatform) -> Option<String> {
+        matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS).then(|| {
+            crate::cupertino_app::DefaultCupertinoLocalizations::expansion_tile_hint(self.expanded)
+        })
+    }
+
+    /// Upstream's `onTapHint`, a **different** semantics field from the hint
+    /// above and attached unconditionally.
+    ///
+    /// It is also the one that is **not** crossed: expanded gives "Collapse".
+    pub fn on_tap_hint(&self) -> &'static str {
+        crate::cupertino_app::DefaultCupertinoLocalizations::expansion_tile_tap_hint(self.expanded)
     }
 
     pub fn needs_an_overlay(&self) -> bool {
@@ -500,14 +532,86 @@ mod empty_direction_tests {
 #[cfg(test)]
 mod expansion_hint_tests {
     use super::CupertinoExpansionTile;
+    use crate::cupertino_app::DefaultCupertinoLocalizations as CupertinoL10n;
+    use crate::editable_text::TargetPlatform;
     use crate::material_app::DefaultMaterialLocalizations as L10n;
+
+    /// The hint a tile shows on the platforms that get one at all.
+    fn hint(tile: &CupertinoExpansionTile) -> String {
+        tile.semantics_hint(TargetPlatform::IOS).unwrap()
+    }
 
     #[test]
     fn the_hint_is_the_state_and_then_what_a_tap_does() {
+        // Upstream joins the two halves with `\n ` -- a newline and then a
+        // space -- so a screen reader pauses between the state and the
+        // action rather than running them together.
         let mut tile = CupertinoExpansionTile::new();
-        assert_eq!(tile.semantics_hint(), "Collapsed double tap to expand");
+        assert_eq!(hint(&tile), "Collapsed\n double tap to expand");
         tile.expanded = true;
-        assert_eq!(tile.semantics_hint(), "Expanded double tap to collapse");
+        assert_eq!(hint(&tile), "Expanded\n double tap to collapse");
+    }
+
+    #[test]
+    fn the_state_half_is_absent_off_ios_rather_than_empty() {
+        // Upstream's switch leaves `semanticsHint` null on Android, Fuchsia,
+        // Linux and Windows: those platforms announce expansion state
+        // themselves, and saying it again would double it.
+        let tile = CupertinoExpansionTile::new();
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert!(tile.semantics_hint(platform).is_some(), "{platform:?}");
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert_eq!(tile.semantics_hint(platform), None, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn the_tap_hint_is_a_second_field_and_is_not_crossed() {
+        // `onTapHint` is not `hint`, and the crossing above does not apply to
+        // it: an expanded tile offers "Collapse". Carrying the crossing over
+        // out of symmetry would tell the reader that tapping an open tile
+        // opens it.
+        let mut tile = CupertinoExpansionTile::new();
+        assert_eq!(tile.on_tap_hint(), "Expand for more details");
+        tile.expanded = true;
+        assert_eq!(tile.on_tap_hint(), "Collapse");
+    }
+
+    #[test]
+    fn the_tap_hint_is_attached_on_every_platform() {
+        // Only the state half is platform-conditional upstream; `onTapHint`
+        // is passed to `Semantics` outside the switch.
+        let tile = CupertinoExpansionTile::new();
+        assert_eq!(tile.semantics_hint(TargetPlatform::Android), None);
+        assert_eq!(tile.on_tap_hint(), "Expand for more details");
+    }
+
+    #[test]
+    fn the_cupertino_tile_reads_the_cupertino_words() {
+        // Upstream's tile calls `CupertinoLocalizations.of(context)`. The two
+        // classes carry the same English today and are separate contracts, so
+        // this asserts both the agreement and where the tile looks.
+        let mut tile = CupertinoExpansionTile::new();
+        for expanded in [false, true] {
+            tile.expanded = expanded;
+            assert_eq!(hint(&tile), CupertinoL10n::expansion_tile_hint(expanded));
+            assert_eq!(
+                tile.on_tap_hint(),
+                CupertinoL10n::expansion_tile_tap_hint(expanded)
+            );
+            // ... and that the Material class still says the same thing, which
+            // is the fact that makes reading the wrong one invisible.
+            assert_eq!(
+                CupertinoL10n::expansion_tile_hint(expanded),
+                L10n::expansion_tile_hint(expanded)
+            );
+        }
     }
 
     #[test]
@@ -519,16 +623,13 @@ mod expansion_hint_tests {
         // worth asserting is the sentence, not the constants.
         let mut tile = CupertinoExpansionTile::new();
         assert!(
-            tile.semantics_hint().starts_with("Collapsed"),
+            hint(&tile).starts_with("Collapsed"),
             "a shut tile says it is shut"
         );
-        assert!(
-            tile.semantics_hint().ends_with("expand"),
-            "and that a tap opens it"
-        );
+        assert!(hint(&tile).ends_with("expand"), "and that a tap opens it");
         tile.expanded = true;
-        assert!(tile.semantics_hint().starts_with("Expanded"));
-        assert!(tile.semantics_hint().ends_with("collapse"));
+        assert!(hint(&tile).starts_with("Expanded"));
+        assert!(hint(&tile).ends_with("collapse"));
     }
 
     #[test]

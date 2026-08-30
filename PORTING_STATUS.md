@@ -20679,3 +20679,75 @@ hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engi
 数字 "3" 单独念是没有意义的）、`clearButtonLabel` / `noSpellCheckReplacementsLabel` /
 `searchTextFieldPlaceholderLabel` / `backButtonLabel`。这五个控件端口里都已经有了,
 现在它们没有话可说。先按行为查：从读屏器那一组开始。
+
+## 第 293 轮：交叉的那一对和不交叉的那一对，就挨在一起
+
+接着清 `CupertinoLocalizations` 的读屏器一组。上游 `CupertinoExpansionTile` 只用两行
+就把这一轮的全部内容摆了出来：
+
+```dart
+final String onTapHint = _tileController.isExpanded
+    ? localizations.expansionTileExpandedTapHint
+    : localizations.expansionTileCollapsedTapHint;
+...
+semanticsHint = _tileController.isExpanded
+    ? '${localizations.collapsedHint}\n ${localizations.expansionTileExpandedHint}'
+    : '${localizations.expandedHint}\n ${localizations.expansionTileCollapsedHint}';
+```
+
+**下面那对是交叉的，上面那对不是。**
+
+### 为什么下面那对必须交叉
+
+上游 `expandedHint` 的值是 `'Collapsed'`，`collapsedHint` 的值是 `'Expanded'`——名字和
+值本身就是反的。调用处再反一次（展开时取 `collapsedHint`），两次反转抵消，读屏器听到的
+是对的：「Expanded / double tap to collapse」。端口早就把这条做对并写明了。
+
+### 为什么上面那对**不能**跟着交叉
+
+`onTapHint` 是 `Semantics` 上**另一个字段**，它的名字和值是一致的：
+`expansionTileExpandedTapHint` 就是 `'Collapse'`，就是展开时该说的话。**照着下面那对的
+对称性把它也交叉过来，就会告诉读屏器"轻点这个已经打开的东西可以打开它"。**
+这两个字段挨着写在同一个函数里，隔了六行，一个交叉一个不交叉——这一轮的价值就在这里。
+
+端口这边这两条**整个不存在**。补上了，并且钉了一条改错：把它交叉，两条测试落红。
+
+### 顺出来的两处
+
+**一、分隔符是 `\n `，不是空格。** 上游写的是 `'${state}\n ${action}'`——换行**加**一个
+空格。读屏器在换行处停顿，状态和动作是两句话；端口拼的是一个空格，两句连成一句。改了,
+两处（Cupertino 与 Material）各钉一条改错。
+
+**二、状态那半在 Android 上是"没有"，不是"空"。** 上游的 `switch` 只在 iOS 和 macOS 赋值,
+其余平台 `break`，`semanticsHint` 保持 null——那些平台自己会播报展开状态，再说一遍就是
+说了两遍。而 `onTapHint` 在 switch 外面，**每个平台都挂**。端口原来的 `semantics_hint()`
+不接平台参数，一律返回。改成 `Option<String>`，两条改错（多给 Android、少给 macOS）
+各自落红。
+
+### 一条真等价的改错，如实记下
+
+上游把这六个词**同时**声明在 `CupertinoLocalizations` 和 `MaterialLocalizations` 上,
+而 Cupertino 的 tile 读的是 Cupertino 那份。端口只有 Material 那份，Cupertino 的 tile
+从 Material 类里取——**英文下正确，一般情况下不正确**：两个类是各自独立的契约,
+一个语言分别提供，翻译完全可以让两边措辞不同而彼此不知道。
+
+按上游把六个词也声明到 Cupertino 类上，tile 改读那一份。然后把它**改回去读 Material
+那份**当改错跑——**零条落红**。这不是测试的洞：两个类今天的英文一字不差，换读哪一份都
+观察不到，除非伪造数据去制造差异。**这一半是移植保真度，今天没有行为后果**，如实写在
+这里而不是编一条假测试盖过去。
+
+**九条承重规则强制改错：八条如设计，第九条真等价并记明。**
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 2,
+hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engines 全部不
+落后。十六把尺子全部 exit 0。
+门：6049 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+（`CupertinoLocalizations` 的 2/46 仍然不动，原因见上一轮：`depth.py` 按 Rust 类型名归属
+成员，而这些成员按上游的形状落在具体类上。）
+
+**下一步**：读屏器这一组还剩三条，都是"数字单独念出来没有意义"那一类——
+`datePickerHourSemanticsLabel`（`"$hour o'clock"`）、`datePickerMinuteSemanticsLabel`
+（`1` 说 "1 minute"，其余说 "$minute minutes"，是这一组里唯一变形的）、
+`tabSemanticsLabel`（`tabIndex`/`tabCount` 都必须 ≥ 1，上游断言在此）。三条都有对应的
+控件已经在端口里。先按行为查：`CupertinoDatePicker` 的时分两列现在报给语义树的是什么。

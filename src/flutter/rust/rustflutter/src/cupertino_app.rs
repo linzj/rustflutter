@@ -469,6 +469,64 @@ impl DefaultCupertinoLocalizations {
     pub const TIMER_PICKER_MINUTE_LABELS: [&'static str; 1] = ["min."];
     pub const TIMER_PICKER_SECOND_LABELS: [&'static str; 1] = ["sec."];
 
+    // -- What a screen reader is told about an expansion tile --------------
+    //
+    // Upstream declares these six on `CupertinoLocalizations` **and** on
+    // `MaterialLocalizations`, with the same English values, and
+    // `CupertinoExpansionTile` reads the Cupertino ones:
+    //
+    //     final CupertinoLocalizations localizations = CupertinoLocalizations.of(context);
+    //
+    // They are the same words today and two independent contracts, because a
+    // locale supplies each class separately -- so a translation could give the
+    // Cupertino tile a different phrasing from the Material one and neither
+    // class would know. Reading the Material copy from a Cupertino widget
+    // happens to be right in English and is not the thing upstream wrote.
+    //
+    // The crossing between the names and the values is explained where the
+    // pairing happens, at
+    // [`crate::material_app::DefaultMaterialLocalizations::expansion_tile_hint`].
+
+    /// Upstream's `expandedHint`, which describes the **expanded** state and
+    /// whose value is "Collapsed".
+    pub const EXPANDED_HINT: &'static str = "Collapsed";
+    /// Upstream's `collapsedHint`, which describes the **collapsed** state and
+    /// whose value is "Expanded".
+    pub const COLLAPSED_HINT: &'static str = "Expanded";
+    pub const EXPANSION_TILE_EXPANDED_HINT: &'static str = "double tap to collapse";
+    pub const EXPANSION_TILE_COLLAPSED_HINT: &'static str = "double tap to expand";
+    /// Not crossed -- see
+    /// [`crate::material_app::DefaultMaterialLocalizations::EXPANSION_TILE_EXPANDED_TAP_HINT`].
+    pub const EXPANSION_TILE_EXPANDED_TAP_HINT: &'static str = "Collapse";
+    pub const EXPANSION_TILE_COLLAPSED_TAP_HINT: &'static str = "Expand for more details";
+
+    /// Upstream's `'${state}\n ${action}'`, on iOS and macOS only.
+    pub fn expansion_tile_hint(expanded: bool) -> String {
+        if expanded {
+            format!(
+                "{}\n {}",
+                Self::COLLAPSED_HINT,
+                Self::EXPANSION_TILE_EXPANDED_HINT
+            )
+        } else {
+            format!(
+                "{}\n {}",
+                Self::EXPANDED_HINT,
+                Self::EXPANSION_TILE_COLLAPSED_HINT
+            )
+        }
+    }
+
+    /// Upstream's `onTapHint`, which is a separate semantics field and is
+    /// **not** crossed.
+    pub fn expansion_tile_tap_hint(expanded: bool) -> &'static str {
+        if expanded {
+            Self::EXPANSION_TILE_EXPANDED_TAP_HINT
+        } else {
+            Self::EXPANSION_TILE_COLLAPSED_TAP_HINT
+        }
+    }
+
     /// Whether the three lists above really cover what the three functions
     /// above can return, over `0..=count`.
     ///

@@ -736,25 +736,54 @@ impl DefaultMaterialLocalizations {
     /// Upstream's `expansionTileCollapsedHint`.
     pub const EXPANSION_TILE_COLLAPSED_HINT: &'static str = "double tap to expand";
 
+    /// Upstream's `expansionTileExpandedTapHint` and
+    /// `expansionTileCollapsedTapHint`, which go to a **different** semantics
+    /// field: `Semantics.onTapHint`, not `Semantics.hint`.
+    ///
+    /// **These two are not crossed**, and that is the point of stating them
+    /// separately. `expansionTileExpandedTapHint` is "Collapse" -- what a tap
+    /// on an already-expanded tile will do -- and it is chosen when the tile
+    /// is expanded. Reading the pair above and assuming the same crossing
+    /// applies here, out of symmetry, inverts it and the reader is told a tap
+    /// will expand a tile that is already open.
+    pub const EXPANSION_TILE_EXPANDED_TAP_HINT: &'static str = "Collapse";
+    pub const EXPANSION_TILE_COLLAPSED_TAP_HINT: &'static str = "Expand for more details";
+
     /// The whole hint for an expansion tile on iOS and macOS, which is the
     /// state followed by what a tap will do.
     ///
     /// The crossing lives here and nowhere else. `expanded` picks
     /// `collapsedHint` for the first half and `expansionTileExpandedHint` for
     /// the second, which reads backwards twice and comes out forwards.
+    ///
+    /// The separator is upstream's `'$state\n $action'` -- **a newline and
+    /// then a space**, not a space. A screen reader pauses at the newline, so
+    /// the state and the action arrive as two phrases rather than one run-on
+    /// sentence; collapsing it to a space is a silent change to what the
+    /// reader hears.
     pub fn expansion_tile_hint(expanded: bool) -> String {
         if expanded {
             format!(
-                "{} {}",
+                "{}\n {}",
                 Self::COLLAPSED_HINT,
                 Self::EXPANSION_TILE_EXPANDED_HINT
             )
         } else {
             format!(
-                "{} {}",
+                "{}\n {}",
                 Self::EXPANDED_HINT,
                 Self::EXPANSION_TILE_COLLAPSED_HINT
             )
+        }
+    }
+
+    /// What upstream passes as `onTapHint`, alongside but separate from
+    /// [`Self::expansion_tile_hint`]. Uncrossed -- see the constants.
+    pub fn expansion_tile_tap_hint(expanded: bool) -> &'static str {
+        if expanded {
+            Self::EXPANSION_TILE_EXPANDED_TAP_HINT
+        } else {
+            Self::EXPANSION_TILE_COLLAPSED_TAP_HINT
         }
     }
 
