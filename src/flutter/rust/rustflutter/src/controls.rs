@@ -419,6 +419,67 @@ mod radio_semantics_tests {
         );
     }
 
+    /// The node a spinner produces, through the real walk.
+    fn spinner_node(spinner: Spinner) -> crate::semantics::SemanticsNode {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(spinner),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(200.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .find(|node| node.id == crate::semantics::node_id_for(SPINNER_SEMANTICS_ID))
+            .cloned()
+            .expect("the spinner")
+    }
+
+    #[test]
+    fn a_spinner_says_what_the_waiting_is_for() {
+        // It said nothing, so a reader had no way to know the application was
+        // busy: an arc that turns says "wait" only to people who can see it.
+        let node = spinner_node(Spinner::new(0.4).with_semantic_label("Loading photos"));
+        assert_eq!(node.properties.label, "Loading photos");
+    }
+
+    #[test]
+    fn a_spinner_never_reads_its_rotation_out_as_progress() {
+        // The trap this round existed to avoid. `Spinner::value` is the phase
+        // of the rotation -- the constructor's doc says to feed it from a
+        // looping controller -- so announcing it would report "40", then
+        // "88", then "4": a progress report on nothing, and **worse than
+        // silence**, because a reader would act on it.
+        for phase in [0.0, 0.4, 0.88] {
+            let node = spinner_node(Spinner::new(phase).with_semantic_label("Loading"));
+            assert_eq!(
+                node.properties.value, "",
+                "the phase must not become a value: phase = {phase}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_caller_may_still_say_where_in_a_sequence_it_is() {
+        // Upstream keeps `semanticsValue` on the indeterminate branch too: the
+        // widget cannot work progress out, but the caller may know it. "Step 2
+        // of 5" while the arc spins is a thing worth saying.
+        let node = spinner_node(
+            Spinner::new(0.4)
+                .with_semantic_label("Importing")
+                .with_semantic_value("Step 2 of 5"),
+        );
+        assert_eq!(node.properties.value, "Step 2 of 5");
+    }
+
     #[test]
     fn a_sheets_drag_handle_can_be_found_and_says_what_it_does() {
         // Without this a reader met a 32-by-4 rectangle with nothing to say:
@@ -2433,6 +2494,12 @@ impl Component for TooltipTrigger {
 pub struct Spinner {
     value: f32,
     size: f32,
+    /// Upstream's `semanticsLabel`: what the waiting is *for*.
+    semantic_label: Option<String>,
+    /// Upstream's `semanticsValue`, which a caller may set even on an
+    /// indeterminate indicator -- "step 2 of 5" while the arc spins. It is
+    /// **never derived** here; see [`Spinner::semantic_value`].
+    semantic_value: Option<String>,
 }
 
 impl Spinner {
@@ -2442,12 +2509,54 @@ impl Spinner {
         Spinner {
             value: value.clamp(0.0, 1.0),
             size: 36.0,
+            semantic_label: None,
+            semantic_value: None,
         }
     }
 
     pub fn with_size(mut self, size: f32) -> Self {
         self.size = size;
         self
+    }
+
+    /// Upstream's `semanticsLabel`.
+    pub fn with_semantic_label(mut self, label: impl Into<String>) -> Self {
+        self.semantic_label = Some(label.into());
+        self
+    }
+
+    /// Upstream's `semanticsValue`, for a caller who has something to say
+    /// about progress that this widget cannot work out.
+    pub fn with_semantic_value(mut self, value: impl Into<String>) -> Self {
+        self.semantic_value = Some(value.into());
+        self
+    }
+
+    /// What a reader is told about how far along this is: **only what a caller
+    /// said**, and never a number derived from [`Spinner::value`].
+    ///
+    /// # Why this is not the progress bar's rule
+    ///
+    /// Upstream's indicators take `value: double?`, and the null is the whole
+    /// distinction: null means indeterminate and spins, a number means
+    /// determinate and shows an arc. `_buildSemanticsWrapper` branches on
+    /// exactly that -- a determinate one sends `'${(value * 100).round()}'`
+    /// with bounds beside it, an indeterminate one sends only what the caller
+    /// gave.
+    ///
+    /// **This `Spinner` cannot make that distinction.** Its `value` is not
+    /// progress; the constructor's own doc says to feed it from a looping
+    /// [`crate::animation::Controller`], so it is the *phase of the rotation*.
+    /// Reading it out would announce a spinner as "0", then "37", then "88",
+    /// then "4" -- a progress report on nothing, and **worse than silence**,
+    /// because a reader would act on it.
+    ///
+    /// So the determinate branch is not merely unported, it is
+    /// **unreachable**: there is no state of this widget that means "60% done".
+    /// Giving it one means giving `value` an `Option`, which changes every
+    /// caller and is a round of its own.
+    pub fn semantic_value(&self) -> Option<&str> {
+        self.semantic_value.as_deref()
     }
 }
 
@@ -2458,15 +2567,39 @@ impl Component for Spinner {
         let size = self.size;
         let track = theme.surface_variant;
         let fill = theme.primary;
-        leaf(move || ArcSpinner {
+        // A spinner said nothing, so a reader had no way to know the
+        // application was busy at all -- and an arc that turns says "wait"
+        // only to people who can see it turning.
+        //
+        // The label and a caller's value; never the phase. See
+        // [`Spinner::semantic_value`].
+        let properties = crate::semantics::SemanticsProperties {
+            value: self.semantic_value().unwrap_or_default().to_string(),
+            ..crate::semantics::SemanticsProperties::label(
+                self.semantic_label.clone().unwrap_or_default(),
+            )
+        };
+        let arc = leaf(move || ArcSpinner {
             value,
             extent: size,
             track,
             fill,
             laid_out: Size::ZERO,
+        });
+        crate::framework::single(arc, move |inner| {
+            crate::semantics::RenderSemantics::new(
+                crate::semantics::node_id_for(SPINNER_SEMANTICS_ID),
+                properties.clone(),
+                inner,
+            )
         })
     }
 }
+
+/// The identifier a spinner's semantics node is keyed on. Reserved for the
+/// reason [`DIALOG_SEMANTICS_ID`] is: the platform keys its node on this, so
+/// it has to be the same on every frame.
+const SPINNER_SEMANTICS_ID: u64 = 0x5719;
 
 /// The arc itself. A render object rather than a composition because an arc is
 /// one draw call and there is no widget that draws one.
