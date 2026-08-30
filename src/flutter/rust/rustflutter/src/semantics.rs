@@ -1397,7 +1397,20 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
         // Text that something above already speaks for. Its children are still
         // walked -- suppressing what a node says is not suppressing what is
         // under it -- though a paragraph has none.
-        Some(annotation) if annotation.yields_to_a_label && inside_labelled() => None,
+        //
+        // **Not inside a merge**, and that exception is the whole point of a
+        // merge: folding exists to collect the words below, so a merging node
+        // that happens to carry a label of its own would otherwise swallow the
+        // very text it was opened to gather. A tab is the case in hand -- its
+        // node says "Tab 3 of 5" and its words come from the `Text` inside it,
+        // and with this rule missing a reader heard the position and never the
+        // tab. Round 349's own tests all used a merging node with an empty
+        // label, so nothing noticed.
+        Some(annotation)
+            if annotation.yields_to_a_label && inside_labelled() && !inside_merge() =>
+        {
+            None
+        }
         Some(annotation) => {
             let size = render.size();
             let bounds = Rect::xywh(offset.dx, offset.dy, size.width, size.height);
@@ -1624,6 +1637,11 @@ fn find_handler_in(
 /// Whether the walk is inside something that already has a label.
 fn inside_labelled() -> bool {
     COLLECTOR.with(|collector| collector.borrow().labelled_depth > 0)
+}
+
+/// Whether the walk is inside a box that is folding its descendants.
+fn inside_merge() -> bool {
+    COLLECTOR.with(|collector| !collector.borrow().merging.is_empty())
 }
 
 /// Hands out an identifier for a node that has none of its own.
@@ -2015,6 +2033,50 @@ impl SemanticsProperties {
             ..SemanticsProperties::label(label)
         }
         .with_action(SemanticsAction::Tap)
+    }
+
+    /// One **tab** in a bar of them: which one it is, and whether it is the
+    /// one you are on.
+    ///
+    /// Upstream wraps each tab in
+    /// `MergeSemantics(Semantics(selected: index == current, label:
+    /// localizations.tabLabel(...)))`. Two things a reader needs and this port
+    /// gave neither: **which tab is current** -- without it every tab in the
+    /// bar sounds identical, which is the same loss a filter chip had -- and
+    /// **where in the set this one sits**, which is what
+    /// [`crate::material_app::DefaultMaterialLocalizations::tab_label`] says
+    /// as "Tab 3 of 5". That function was written, documented and called by
+    /// nothing.
+    ///
+    /// # The words come out in the other order from upstream's
+    ///
+    /// Upstream puts its `Semantics` beside the tab inside a `Stack`, so the
+    /// merge takes the tab's own words first and the position second: "Home,
+    /// Tab 3 of 5". Here the folded node's own label comes first and the
+    /// descendants' words are appended, so it is "Tab 3 of 5, Home".
+    ///
+    /// Both say the same two things and neither is wrong; getting upstream's
+    /// order would need the position to be a *later sibling*, and a sibling
+    /// with no size is dropped before it can be folded (see
+    /// [`Clips::applied_to`]). Written down rather than left for a reader of
+    /// this code to wonder whether it was noticed.
+    pub fn tab(index: usize, count: usize, selected: bool) -> SemanticsProperties {
+        SemanticsProperties {
+            // One-based for the reader, zero-based for the code -- the
+            // conversion is here so that it happens once, and `tab_label`
+            // refuses anything else.
+            label: crate::material_app::DefaultMaterialLocalizations::tab_label(
+                index as u32 + 1,
+                count as u32,
+            )
+            .unwrap_or_default(),
+            actions: SemanticsAction::Tap as i32,
+            flags: SemanticsFlags {
+                selected: SemanticsTristate::of(selected),
+                ..SemanticsFlags::default()
+            },
+            ..SemanticsProperties::default()
+        }
     }
 
     /// A **chip**: a compact thing that is pressed, and may be one of a set

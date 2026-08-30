@@ -366,6 +366,102 @@ mod radio_semantics_tests {
             .expect("a radio said it was one")
     }
 
+    /// What a reader hears from a tab bar, in order.
+    fn tabs_read_as(selected: usize) -> Vec<String> {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(TabBar::new(
+                40,
+                vec!["Home".to_string(), "Search".to_string(), "You".to_string()],
+                selected,
+            )),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .map(|node| node.properties.label.clone())
+            .filter(|label| !label.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn each_tab_says_where_it_is_in_the_set() {
+        // `tab_label` was written, documented and called by nothing, so a bar
+        // of tabs reached a reader as three words with no positions.
+        let heard = tabs_read_as(0);
+        assert_eq!(
+            heard,
+            vec![
+                "Tab 1 of 3
+Home"
+                    .to_string(),
+                "Tab 2 of 3
+Search"
+                    .to_string(),
+                "Tab 3 of 3
+You"
+                .to_string(),
+            ],
+            "one stop each, position and words together"
+        );
+    }
+
+    #[test]
+    fn the_tab_you_are_on_sounds_different_from_the_others() {
+        // The loss this fixes: without `selected` every tab in the bar is the
+        // same announcement, so a reader cannot tell which page they are on --
+        // the filter chip's problem, on a control that navigates.
+        use crate::semantics::SemanticsTristate;
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(TabBar::new(
+                40,
+                vec!["Home".to_string(), "Search".to_string()],
+                1,
+            )),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let chosen: Vec<(bool, SemanticsTristate)> = nodes
+            .iter()
+            .filter(|node| node.properties.label.contains("Tab "))
+            .map(|node| {
+                (
+                    node.properties.label.contains("Search"),
+                    node.properties.flags.selected,
+                )
+            })
+            .collect();
+        assert_eq!(
+            chosen,
+            vec![
+                (false, SemanticsTristate::False),
+                (true, SemanticsTristate::True)
+            ],
+            "the second one is the one you are on"
+        );
+    }
+
     /// The node a chip produces, through the real walk.
     fn chip_node(style: ChipStyle, tappable: bool) -> crate::semantics::SemanticsNode {
         crate::semantics::set_enabled(true);
@@ -814,6 +910,8 @@ impl Component for TabBar {
         let outline = theme.outline;
         let size = theme.body_size;
 
+        let count = labels.len();
+
         leaf(move || {
             // Stretch on the cross axis fills whatever height the bar is
             // offered, which for a top-level tab bar is the whole page. The
@@ -866,6 +964,14 @@ impl Component for TabBar {
                     }
                     None => Pointer::new(first_id + index as u64, tab),
                 };
+                // One stop per tab, carrying which tab it is and whether it is
+                // the current one. The merge is genuinely needed here, unlike
+                // the chip's: a tab's words come from the `Text` inside it, so
+                // there is no annotation of its own for them to fold into --
+                // the folded node is where both the words and the flags meet.
+                let region = crate::render::RenderMergeSemanticsBox::new(region).with_properties(
+                    crate::semantics::SemanticsProperties::tab(index, count, active),
+                );
                 row = row.push_flex(FlexChild::expanded(region, 1));
             }
             Container::new().with_height(46.0).with_child(row)
