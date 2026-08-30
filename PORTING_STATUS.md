@@ -22685,3 +22685,57 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 （`suffixVisibility` 之类）——清除按钮什么时候出现（有文字时？聚焦时？两者都要？），
 以及它被按下时是清空文字还是同时收键盘。先按行为查本项目 `cupertino_text_field.rs`／
 `search_field` 有没有这一套，不要按成员名比。
+
+---
+
+## 第 329 轮：清空按钮把字清掉了，却从来没告诉任何人
+
+接上一轮的“下一步”查 `CupertinoSearchTextField`。`OverlayVisibilityMode` 那套在
+`cupertino_text_field.rs` 里端得很齐，本项目的 `show_clear` 也就是 `editing` 这一档的行为。
+真缺口在**按下之后**：上游的 `_defaultOnSuffixTap` 六行里有三件事，本项目**一件都没有**。
+
+```dart
+void _defaultOnSuffixTap() {
+  final bool textChanged = _effectiveController.text.isNotEmpty;
+  _effectiveController.clear();
+  if (widget.onChanged != null && textChanged) {
+    widget.onChanged!(_effectiveController.text);
+  }
+}
+```
+
+* **`textChanged` 在清空之前读。** 清完之后字段两种情况下都是空的，这个问题就再也问不出来了。
+* **本来就是空的，清了不吭声。** 默认 `suffixMode` 是 `editing`，按钮根本不在，这道闸看着像死的
+  ——但 `suffixMode` 是调用方的选择，`always` 那一档按钮就坐在一个空字段上。少了这道闸，
+  一个随打随搜的应用会在每次点一个什么都没做的按钮时重跑一遍搜索。
+* **`onChanged` 收到的是清空**之后**读出来的文本**，也就是空串，不是原来那串。
+  它是一条变更通知，带的是新值。
+
+本项目原来的处理是：清字段、清镜像，**然后什么都不做**——`on_changed` 一次都没被调用。
+一个随打随搜的应用会看到字段空了，却从没被告知，结果列表继续显示着已经不存在的那串字的匹配。
+
+判定端成了 `suffix_tap(text_before) -> Option<&'static str>`——**答“要宣布什么”而不是
+“要不要宣布”**，让那个空串跟着判定一起走。这是这段 Dart 最容易写歪的地方：controller 就在手边，
+`onChanged(oldText)` 读起来毫无破绽。
+
+**变异扫描 8 个，判定那 5 个全红**（从不宣布／总是宣布／闸取反／空白字符不算文本／
+宣布的是一个空格而不是空串）。**接线那 3 个不红，如实记下**：
+点击处理器埋在 build 闭包里，这里的测试够不着它。把负载折进判定已经把能挪到断言后面的
+都挪过去了，剩下的就是那一次调用本身；在代码里就地写了这句，而不是假装。
+
+**顺手改了同一个文件里一条陈旧且错误的注释。** `effective_placeholder` 上面写着
+“`RenderBox::visit_children` 默认是空实现，所以从根走下去只到两个叶子就停了”——
+**第 299 轮已经查明这是错的**：走查其实到得了每一个节点，障碍是每个节点都裹在 `RenderRef` 里，
+downcast 步步答 `None`，而 `render::unwrapped` 就是那一轮为此加的。真正还挡在中间的是更窄的
+一件事：这个控件的决定落在**控件树**里（一个占位串、一个点击处理器），渲染树的走查不带它们。
+`stale_notes.py` 按它自己写明的规则对这条注释是瞎的（它没有反引号主语），这条也是手工发现的。
+
+尺子：十六把全部 exit 0。门：6236 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：这一轮撞上的“接线够不着”已经是第三次了（第 292 轮、`effective_placeholder`、
+这一轮）。与其再绕一次，不如去看能不能把它解决掉：本项目有没有办法在测试里**拿到一棵建好的
+控件树上的 `PointerHandlers`**？`components.rs` 的 `tap_at` 能测 Slider，是因为
+`Slider::gestures()` 直接返回 handlers，没有走树。先查 `framework.rs` 里 build 之后的产物
+是什么形状、有没有一个能按 id 找 `Pointer` 节点的口子——**先按行为查，确认做不做得到**，
+做得到就是一轮，做不到就把这个结论写进 PORTING_STATUS 并回队头。

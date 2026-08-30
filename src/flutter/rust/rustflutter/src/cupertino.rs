@@ -3666,15 +3666,20 @@ impl CupertinoSearchTextField {
     /// back to "Search", while a placeholder explicitly set to the empty
     /// string is a caller asking for a blank well and gets one.
     ///
-    /// **The build below is the only caller, and no test can prove it.**
+    /// **The build below is the only caller, and no test here proves it.**
     /// Replacing that one line with the old `if let Some(..)` -- reinstating
     /// the empty well -- turns nothing red: this decision is tested, its use
-    /// is not. Reading the built tree back would settle it, and cannot here,
-    /// because `RenderBox::visit_children` is a no-op by default and most of
-    /// the nodes between the root and the `RenderEditable` never override it,
-    /// so a walk from the root reaches two leaves and stops. Whoever gives
-    /// those nodes a `visit_children` gets this assertion for free; until
-    /// then it is written down rather than faked.
+    /// is not.
+    ///
+    /// The reason given here used to be that `RenderBox::visit_children` is a
+    /// no-op by default, so a walk from the root reached two leaves and
+    /// stopped. **That was wrong**, and tick 299 found out why: the walk does
+    /// reach every node, but each one arrives wrapped in a `RenderRef`, so a
+    /// downcast answers `None` at every step. [`crate::render::unwrapped`]
+    /// exists now and lifts that. What still stands between here and the
+    /// assertion is narrower: this widget's decisions land in the *widget*
+    /// tree -- a placeholder string, a tap handler -- and the render walk does
+    /// not carry them.
     pub fn effective_placeholder(&self) -> String {
         self.placeholder.clone().unwrap_or_else(|| {
             crate::cupertino_app::DefaultCupertinoLocalizations::SEARCH_TEXT_FIELD_PLACEHOLDER_LABEL
@@ -3703,6 +3708,52 @@ impl CupertinoSearchTextField {
     pub fn with_on_submitted(mut self, submitted: impl Fn(&str) + 'static) -> Self {
         self.on_submitted = Some(Rc::new(submitted));
         self
+    }
+
+    /// Upstream's `_defaultOnSuffixTap`: whether tapping the clear button
+    /// should announce the change, given what was in the field.
+    ///
+    /// ```dart
+    /// void _defaultOnSuffixTap() {
+    ///   final bool textChanged = _effectiveController.text.isNotEmpty;
+    ///   _effectiveController.clear();
+    ///   if (widget.onChanged != null && textChanged) {
+    ///     widget.onChanged!(_effectiveController.text);
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// # Three things in six lines, and this port had none of them
+    ///
+    /// * **`textChanged` is read before the clear.** After it, the field is
+    ///   empty either way and the question cannot be asked any more.
+    /// * **Clearing an already-empty field announces nothing.** With the
+    ///   default `suffixMode` of `editing` the button is not there to tap, so
+    ///   this guard looks dead -- but `suffixMode` is a caller's choice, and
+    ///   under `always` the button sits on an empty field. An application
+    ///   searching as the reader types would otherwise re-run its search on
+    ///   every tap of a button that did nothing.
+    /// * **`onChanged` is given the text read *after* clearing** -- the empty
+    ///   string, not what was there. It is a change notification, so it
+    ///   carries the new value.
+    ///
+    /// The clear itself is unconditional; only the announcement is guarded.
+    ///
+    /// Answers **what to announce** rather than whether to, so the empty
+    /// string travels with the decision: a caller cannot pass the old text by
+    /// mistake, which is the shape the Dart makes easy to get wrong -- the
+    /// controller is right there, and `onChanged(oldText)` reads fine.
+    pub fn suffix_tap(text_before: &str) -> Option<&'static str> {
+        if text_before.is_empty() {
+            return None;
+        }
+        Some("")
+    }
+
+    /// Whether tapping clear announces anything at all, which is
+    /// [`CupertinoSearchTextField::suffix_tap`] read as a question.
+    pub fn suffix_tap_announces(text_before: &str) -> bool {
+        CupertinoSearchTextField::suffix_tap(text_before).is_some()
     }
 
     /// Runs `changed` with the state and the new text on every change, and
@@ -3749,6 +3800,7 @@ impl StatefulComponent for CupertinoSearchTextField {
         let mut style = theme.text_style();
         let own_handle = handle.clone();
         let on_changed = self.on_changed.clone();
+        let on_changed_for_clear = self.on_changed.clone();
         let mut field = crate::editable::TextField::new(self.id)
             .with_style(style.clone())
             .with_state_sink(self.field_sink.clone())
@@ -3780,6 +3832,7 @@ impl StatefulComponent for CupertinoSearchTextField {
         }));
         children.push(stateful(field));
         let show_clear = !state.text.is_empty() && self.enabled;
+        let show_clear_text = state.text.clone();
         if show_clear {
             children.push(leaf(move || ClearGlyph {
                 color: item_color,
@@ -3811,17 +3864,43 @@ impl StatefulComponent for CupertinoSearchTextField {
             if let Some(clear_mark) = clear_mark {
                 let clear_handle = handle.clone();
                 let sink = sink.clone();
+                let on_changed_for_clear = on_changed_for_clear.clone();
+                // Read at build time rather than in the handler: `set_state`
+                // may defer, so the state cannot be read back synchronously
+                // from inside a tap. This is the same text the button's own
+                // presence was decided from a few lines above.
+                let text_before = show_clear_text.clone();
                 let clear = Pointer::new(
                     id,
                     crate::widgets::Padding::new(EdgeInsets::only(0.0, 8.0, 5.0, 8.0), clear_mark),
                 )
                 .with_handlers(PointerHandlers::new().with_tap(move |_| {
+                    // Upstream's `_defaultOnSuffixTap`. Whether to announce is
+                    // decided from the text *before* the clear, because after
+                    // it the field is empty either way -- see
+                    // [`CupertinoSearchTextField::suffix_tap`].
+                    //
+                    // These four lines are not covered: mutations that stop
+                    // announcing, or announce the old text, stay green,
+                    // because a tap handler buried in a build closure cannot
+                    // be reached from a test here (see the note on
+                    // `effective_placeholder`). Folding the payload into
+                    // `suffix_tap` moved as much as could be moved behind an
+                    // assertion; what is left is the call itself.
+                    let announcement = CupertinoSearchTextField::suffix_tap(&text_before);
+
                     // `_clearText`: empty the field through its own handle,
                     // which also tells the IME, and empty the mirror.
                     if let Some(field_handle) = &*sink.borrow() {
                         field_handle.set_state(|state| state.clear());
                     }
                     clear_handle.set_state(|state| state.text.clear());
+
+                    // With the *new* text, which is the empty string: this is
+                    // a change notification and it carries the new value.
+                    if let (Some(text), Some(on_changed)) = (announcement, &on_changed_for_clear) {
+                        on_changed(text);
+                    }
                 }));
                 row = row.push(clear);
             }
@@ -7653,6 +7732,48 @@ mod tab_bar_tests {
                 .with_placeholder("Find a demo")
                 .effective_placeholder(),
             "Find a demo"
+        );
+    }
+
+    #[test]
+    fn clearing_a_field_that_had_text_announces_the_change() {
+        // The field emptied itself and never told anyone, so an application
+        // searching as the reader types would keep showing matches for text
+        // that is gone.
+        assert!(CupertinoSearchTextField::suffix_tap_announces("hello"));
+        assert!(CupertinoSearchTextField::suffix_tap_announces(" "));
+    }
+
+    #[test]
+    fn clearing_a_field_that_was_already_empty_announces_nothing() {
+        // Under the default `suffixMode` of `editing` the button is not there
+        // to tap, so this guard cannot fire -- but `suffixMode` is a caller's
+        // choice, and under `always` the button sits on an empty field.
+        // Without the guard, every tap of a button that did nothing would
+        // re-run the application's search.
+        assert!(!CupertinoSearchTextField::suffix_tap_announces(""));
+    }
+
+    #[test]
+    fn the_announcement_carries_the_new_text_and_not_the_old() {
+        // It is a change notification, so it says what the field now holds.
+        // Handing back the old text is the mistake the shape invites -- the
+        // controller is in scope and `onChanged(oldText)` reads fine.
+        assert_eq!(CupertinoSearchTextField::suffix_tap("hello"), Some(""));
+        assert_eq!(CupertinoSearchTextField::suffix_tap(""), None);
+    }
+
+    #[test]
+    fn the_question_is_asked_of_the_text_that_was_there_and_not_of_the_answer() {
+        // `textChanged` is read before the clear. Asked afterwards it is
+        // always the empty string, so the guard would never let anything
+        // through and the notification would never arrive at all.
+        let before = "hello";
+        let after = "";
+        assert!(CupertinoSearchTextField::suffix_tap_announces(before));
+        assert!(
+            !CupertinoSearchTextField::suffix_tap_announces(after),
+            "which is why it cannot be asked of the cleared field"
         );
     }
 
