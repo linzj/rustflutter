@@ -12438,6 +12438,7 @@ impl ResolvedMaterialBanner {
 ///
 /// Upstream `Divider`'s build: `themeData.color ?? theme.dividerColor`,
 /// `themeData.space ?? 16`, `themeData.thickness ?? 0`.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedDivider {
     pub color: Color,
     pub space: f32,
@@ -12451,7 +12452,62 @@ pub struct ResolvedDivider {
     pub radius: Option<BorderRadiusGeometry>,
 }
 
+/// What one divider was told about itself, before the theme is consulted.
+///
+/// Upstream's chain is `widget.x ?? dividerTheme.x ?? defaults.x`, so these sit
+/// **in front** of everything [`ResolvedDivider::of`] already resolves. They are
+/// one struct rather than six fields on each of the two widgets because the two
+/// take the same six and must not drift -- upstream keeps them in step by
+/// having written them twice in one file, which is a promise this side cannot
+/// make.
+///
+/// `space` is upstream's `height` on a [`crate::components::Divider`] and its
+/// `width` on a [`crate::components::VerticalDivider`]: the same measurement
+/// across whichever axis the rule is not. Each widget's builder is named after
+/// upstream's field so a call site reads the way the Dart does.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DividerOverrides {
+    pub space: Option<f32>,
+    pub thickness: Option<f32>,
+    pub indent: Option<f32>,
+    pub end_indent: Option<f32>,
+    pub color: Option<Color>,
+    pub radius: Option<BorderRadiusGeometry>,
+}
+
 impl ResolvedDivider {
+    /// The theme's answers with a caller's on top.
+    ///
+    /// Upstream asserts each of the four measurements is null or non-negative
+    /// (`assert(width == null || width >= 0.0)` and its three siblings), and
+    /// **asserts is all it does** -- a release build passes the negative
+    /// straight to the layout.
+    ///
+    /// The first version here clamped as well, on the reasoning that there is
+    /// nothing sensible to draw for a rule reserving minus eight pixels. That
+    /// added behaviour upstream does not have, and the clamp was unreachable
+    /// from any test: the debug assertion fires first in every profile the
+    /// tests run in, so the branch could only ever be argued for, never shown
+    /// to work. Matching upstream leaves one rule instead of two.
+    pub fn overridden_by(self, overrides: &DividerOverrides) -> ResolvedDivider {
+        let checked = |value: Option<f32>, what: &str| {
+            value.inspect(|value| {
+                debug_assert!(*value >= 0.0, "a divider's {what} cannot be negative");
+            })
+        };
+        ResolvedDivider {
+            color: overrides.color.unwrap_or(self.color),
+            space: checked(overrides.space, "space").unwrap_or(self.space),
+            thickness: checked(overrides.thickness, "thickness").unwrap_or(self.thickness),
+            indent: checked(overrides.indent, "indent").unwrap_or(self.indent),
+            end_indent: checked(overrides.end_indent, "end indent").unwrap_or(self.end_indent),
+            // Upstream's `radius ?? dividerTheme.radius ?? defaults.radius`,
+            // where the defaults set none -- so a caller's wins, then the
+            // theme's, then nothing.
+            radius: overrides.radius.or(self.radius),
+        }
+    }
+
     pub fn of(context: &mut BuildContext) -> ResolvedDivider {
         let data = DividerTheme::of(context);
         let theme = ThemeData::of(context);

@@ -2877,9 +2877,60 @@ impl Component for ListTile {
 /// A hairline rule. Upstream reserves sixteen logical pixels and centers a
 /// zero-thickness (device-pixel) line in it; one logical pixel is this
 /// renderer's hairline at unit scale.
-pub struct Divider;
+pub struct Divider {
+    overrides: crate::component_themes::DividerOverrides,
+}
 
 impl Divider {
+    pub fn new() -> Divider {
+        Divider {
+            overrides: crate::component_themes::DividerOverrides::default(),
+        }
+    }
+
+    /// Upstream's `height`: the space the rule reserves across the layout, with
+    /// the line centred in it. Named after upstream's field rather than after
+    /// the shared `space` it resolves to, so a call site reads like the Dart.
+    pub fn with_height(mut self, height: f32) -> Self {
+        self.overrides.space = Some(height);
+        self
+    }
+
+    /// Upstream's `thickness`: the width of the line drawn inside that space.
+    pub fn with_thickness(mut self, thickness: f32) -> Self {
+        self.overrides.thickness = Some(thickness);
+        self
+    }
+
+    /// Upstream's `indent`: how far the line starts in from the leading edge.
+    pub fn with_indent(mut self, indent: f32) -> Self {
+        self.overrides.indent = Some(indent);
+        self
+    }
+
+    /// Upstream's `endIndent`: how far it stops short of the trailing edge.
+    pub fn with_end_indent(mut self, end_indent: f32) -> Self {
+        self.overrides.end_indent = Some(end_indent);
+        self
+    }
+
+    /// Upstream's `color`.
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.overrides.color = Some(color);
+        self
+    }
+
+    /// Upstream's `radius`.
+    pub fn with_radius(mut self, radius: crate::borders::BorderRadiusGeometry) -> Self {
+        self.overrides.radius = Some(radius);
+        self
+    }
+
+    /// This divider's metrics, with its own answers over the theme's.
+    pub fn resolved(&self, context: &mut BuildContext) -> crate::component_themes::ResolvedDivider {
+        crate::component_themes::ResolvedDivider::of(context).overridden_by(&self.overrides)
+    }
+
     /// Upstream's static `Divider.createBorderSide(context)`: the side a
     /// caller draws when it wants *a divider's* edge rather than a divider --
     /// a header's bottom rule, a card's outline. It reads the same theme the
@@ -2905,8 +2956,10 @@ impl Component for Divider {
         // Upstream's `Divider.build`: the space, the thickness, the colour
         // and the two indents each come off `DividerTheme.of(context)` and
         // fall back to `ThemeData` and then to upstream's own defaults --
-        // `ResolvedDivider` is those three steps.
-        let divider = crate::component_themes::ResolvedDivider::of(context);
+        // `ResolvedDivider` is those three steps, and `resolved` puts this
+        // divider's own answers in front of them, which is where upstream's
+        // `widget.height ?? ...` chain starts.
+        let divider = self.resolved(context);
         let color = divider.color;
         let space = divider.space;
         let thickness = divider
@@ -5108,14 +5161,14 @@ mod tests {
 
         // Upstream's defaults, where no theme said otherwise: sixteen of
         // space with a hairline in the middle of it.
-        assert_eq!(height_of(component(Divider)), 16.0);
+        assert_eq!(height_of(component(Divider::new())), 16.0);
 
         // The nearest installed theme moves it -- the three-step fallback
         // reaching a control's geometry, which is the whole point of it.
         assert_eq!(
             height_of(DividerTheme::new(
                 DividerThemeData::new().with_space(40.0),
-                component(Divider),
+                component(Divider::new()),
             )),
             40.0
         );
@@ -5124,9 +5177,121 @@ mod tests {
         let themed = crate::theme::MaterialTheme::new(
             crate::theme::ThemeData::light()
                 .with_divider_theme(DividerThemeData::new().with_space(24.0)),
-            component(Divider),
+            component(Divider::new()),
         );
         assert_eq!(height_of(themed), 24.0);
+
+        // **And the divider's own answer beats all three**, which is where
+        // upstream's chain starts: `widget.height ?? dividerTheme.height ??
+        // defaults`. Until round 390 this port's `Divider` took no arguments
+        // at all, so every rule on the screen had to be identical and
+        // upstream's commonest use -- `Divider(height: 1)` between the rows of
+        // a list -- could not be written.
+        assert_eq!(
+            height_of(DividerTheme::new(
+                DividerThemeData::new().with_space(40.0),
+                component(Divider::new().with_height(1.0)),
+            )),
+            1.0,
+            "the theme won over the caller"
+        );
+    }
+
+    #[test]
+    fn a_dividers_own_answers_come_before_the_themes_one_by_one() {
+        use crate::component_themes::{DividerOverrides, ResolvedDivider};
+        let themed = ResolvedDivider {
+            color: Color::WHITE,
+            space: 40.0,
+            thickness: 4.0,
+            indent: 5.0,
+            end_indent: 6.0,
+            radius: None,
+        };
+        // Nothing said: the theme stands, field for field.
+        assert_eq!(
+            themed.overridden_by(&DividerOverrides::default()),
+            themed,
+            "an empty override changed something"
+        );
+        // Each one on its own, so a field wired to the wrong slot shows up as
+        // the wrong measurement rather than as nothing at all.
+        let over = |set: fn(&mut DividerOverrides)| {
+            let mut overrides = DividerOverrides::default();
+            set(&mut overrides);
+            themed.overridden_by(&overrides)
+        };
+        assert_eq!(over(|o| o.space = Some(1.0)).space, 1.0);
+        assert_eq!(over(|o| o.thickness = Some(2.0)).thickness, 2.0);
+        assert_eq!(over(|o| o.indent = Some(72.0)).indent, 72.0);
+        assert_eq!(over(|o| o.end_indent = Some(8.0)).end_indent, 8.0);
+        assert_eq!(over(|o| o.color = Some(Color::BLACK)).color, Color::BLACK);
+        // Radius needs a theme that already has one, or `or` would answer the
+        // same whichever way round it is written.
+        let rounded = ResolvedDivider {
+            radius: Some(crate::borders::BorderRadiusGeometry::circular(2.0)),
+            ..themed
+        };
+        assert_eq!(
+            rounded
+                .overridden_by(&DividerOverrides {
+                    radius: Some(crate::borders::BorderRadiusGeometry::circular(9.0)),
+                    ..DividerOverrides::default()
+                })
+                .radius,
+            Some(crate::borders::BorderRadiusGeometry::circular(9.0)),
+            "the theme's corner won over the caller's"
+        );
+        // And a caller who says nothing keeps the theme's.
+        assert_eq!(
+            rounded.overridden_by(&DividerOverrides::default()).radius,
+            rounded.radius
+        );
+        // And setting one leaves the rest to the theme.
+        let only_indent = over(|o| o.indent = Some(72.0));
+        assert_eq!((only_indent.space, only_indent.thickness), (40.0, 4.0));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot be negative")]
+    fn a_negative_measurement_is_a_callers_mistake_and_says_so() {
+        // Upstream's four asserts, and asserting is all upstream does -- see
+        // `ResolvedDivider::overridden_by`. A rule that reserves minus eight
+        // pixels is not a state to render; it is a call site to fix, and
+        // saying so at the moment it happens is the difference between that
+        // and a layout that quietly folds up somewhere else.
+        use crate::component_themes::{DividerOverrides, ResolvedDivider};
+        let themed = ResolvedDivider {
+            color: Color::WHITE,
+            space: 16.0,
+            thickness: 0.0,
+            indent: 0.0,
+            end_indent: 0.0,
+            radius: None,
+        };
+        themed.overridden_by(&DividerOverrides {
+            indent: Some(-8.0),
+            ..DividerOverrides::default()
+        });
+    }
+
+    #[test]
+    fn a_vertical_divider_reserves_its_width_the_way_the_horizontal_one_reserves_its_height() {
+        // Upstream keeps these as two classes because `space` means width on
+        // one and height on the other, and one widget with an axis would have
+        // to explain the reversal at every call site. The two builders are
+        // named after upstream's fields for the same reason.
+        fn width_of(widget: AnyWidget) -> f32 {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::loose(200.0, 200.0)).width
+        }
+        assert_eq!(width_of(component(VerticalDivider::new())), 16.0);
+        assert_eq!(
+            width_of(component(VerticalDivider::new().with_width(3.0))),
+            3.0
+        );
     }
 
     /// A fixed box standing in for an action or a message: the engine stubs
@@ -5896,9 +6061,9 @@ mod tests {
             ..crate::component_themes::DividerThemeData::default()
         };
         let line = if vertical {
-            component(VerticalDivider)
+            component(VerticalDivider::new())
         } else {
-            component(Divider)
+            component(Divider::new())
         };
         crate::theme::MaterialTheme::new(
             crate::theme::ThemeData::light(),
@@ -7072,11 +7237,64 @@ Taken in June"
 /// makes it one: the two read the *same* theme fields, and `space` means
 /// width here where it means height there. One widget with an axis would
 /// have to explain that reversal at every call site.
-pub struct VerticalDivider;
+pub struct VerticalDivider {
+    overrides: crate::component_themes::DividerOverrides,
+}
+
+impl VerticalDivider {
+    pub fn new() -> VerticalDivider {
+        VerticalDivider {
+            overrides: crate::component_themes::DividerOverrides::default(),
+        }
+    }
+
+    /// Upstream's `width`: the space the rule reserves, the same measurement
+    /// [`Divider::with_height`] names -- which is exactly why upstream keeps
+    /// them as two classes rather than one with an axis.
+    pub fn with_width(mut self, width: f32) -> Self {
+        self.overrides.space = Some(width);
+        self
+    }
+
+    /// Upstream's `thickness`: the width of the line drawn inside that space.
+    pub fn with_thickness(mut self, thickness: f32) -> Self {
+        self.overrides.thickness = Some(thickness);
+        self
+    }
+
+    /// Upstream's `indent`: how far the line starts in from the leading edge.
+    pub fn with_indent(mut self, indent: f32) -> Self {
+        self.overrides.indent = Some(indent);
+        self
+    }
+
+    /// Upstream's `endIndent`: how far it stops short of the trailing edge.
+    pub fn with_end_indent(mut self, end_indent: f32) -> Self {
+        self.overrides.end_indent = Some(end_indent);
+        self
+    }
+
+    /// Upstream's `color`.
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.overrides.color = Some(color);
+        self
+    }
+
+    /// Upstream's `radius`.
+    pub fn with_radius(mut self, radius: crate::borders::BorderRadiusGeometry) -> Self {
+        self.overrides.radius = Some(radius);
+        self
+    }
+
+    /// This divider's metrics, with its own answers over the theme's.
+    pub fn resolved(&self, context: &mut BuildContext) -> crate::component_themes::ResolvedDivider {
+        crate::component_themes::ResolvedDivider::of(context).overridden_by(&self.overrides)
+    }
+}
 
 impl Component for VerticalDivider {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
-        let divider = crate::component_themes::ResolvedDivider::of(context);
+        let divider = self.resolved(context);
         let color = divider.color;
         // Upstream's `space` is the width it reserves, and `thickness` the
         // width of the line inside it -- the same two fields as the

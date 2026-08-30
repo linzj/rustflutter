@@ -459,7 +459,7 @@ impl StatefulComponent for ListDrawer {
             })
         };
 
-        let mut children = vec![header, component(Divider)];
+        let mut children = vec![header, component(Divider::new())];
         for index in 0..NUM_ITEMS {
             children.push(Self::item(
                 index,

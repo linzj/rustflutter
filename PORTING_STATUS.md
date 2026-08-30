@@ -26156,3 +26156,66 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 还是它整体属于一个尚未移植的机制（`childConfigurationsDelegate` 那一套）。
 **查清楚再决定是接上它还是删掉它**：一条没有生产者的路径，
 要么是缺口，要么是死码，而这两者的处置正好相反。
+
+---
+
+## 第 390 轮：分隔线终于能被调用者指定——顺带给上一轮的问题一个确定答案
+
+先把“下一步”那个问题问完：`SemanticsConfiguration::absorb` 是缺口还是死码？
+**都不是。** 上游 `absorb` 的**唯一**调用者是
+`rendering/object.dart:6357` 的 `_mergeSiblingGroup`——
+也就是 `childConfigurationsDelegate` 那套**兄弟合并**机制，
+和第 389 轮接的"后代折叠"是两回事（那条走的是 `SemanticsNode.updateWith`）。
+
+本项目把这套机制的**数据模型**移得挺全：`SemanticsConfiguration`、`absorb`、
+`is_compatible_with`、`ChildSemanticsConfigurationsResult` 和它的 builder，
+**缺的是走查那一半**——没有任何 render object 有
+`describe_semantics_configuration` 钩子，所以永远没有 config 被产出。
+上游真正用这个 delegate 的只有两处（`input_decorator.dart` 让前后缀成为
+**兄弟节点**而不是折进输入框、`paragraph.dart` 处理行内内容），
+两处都要求走查先能收集子 config——**那是一轮装不下的机制移植**。
+所以答案是"先记账"，别再重复问。
+
+### 这一轮的活：`depth.py` 队头的 `VerticalDivider`
+
+两个 Divider 在本项目里都是**没有字段的单元结构体**，全部读主题。
+上游给了六个逐实例覆盖（`height`/`width`、`thickness`、`indent`、
+`endIndent`、`color`、`radius`），链条是 `widget.x ?? theme.x ?? defaults`。
+也就是说：**屏幕上每一条分隔线都必须长得一模一样**，
+而上游最常见的写法 `Divider(height: 1)`、`Divider(indent: 72)` 在这里根本写不出来。
+
+gallery 里就有现成的证据：`bottom_sheet_demo.rs` 的注释写着
+"`const Divider(thickness: 1)`。框架的 Divider 是同样的发丝线"——
+其实不是：主题默认 thickness 是 0，也就是**一个设备像素**，
+在任何 ratio > 1 的屏幕上都比上游细。现在能写了，那一行也改成了 `.with_thickness(1.0)`。
+
+六个覆盖抽成一个共用的 `DividerOverrides`（两个控件拿的是同一组，
+上游靠"在同一个文件里写了两遍"保持一致，这一侧给不了这个保证），
+外加 `ResolvedDivider::overridden_by`。
+两个 builder **按上游各自的字段名**叫 `with_height` / `with_width`——
+同一个测量，两个名字，这正是上游宁可留两个类也不做成一个带轴参数的控件的原因。
+
+### 变异扫描 8 个，第一遍 6 红、2 绿
+
+* **radius 的优先级**没测：主题那侧本来是 `None`，`or` 怎么写答案都一样。
+  补一个"两边都有"的用例。
+* **负数那条**——我第一版是"debug 断言 + release 夹到 0"。
+  变异把夹的那一半去掉，全绿：**因为测试跑的每个 profile 里断言都先炸，
+  那个分支永远到不了**，只能被论证、无法被证明。
+  而且上游**只断言、不夹**，release 就是把负数原样交给布局。
+  于是删掉夹的那一半（少一条规则，且与上游一致），
+  改成一条 `#[should_panic]` 把断言本身钉住。
+
+第二遍**八个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6390 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过（9 处调用点随之更新）；
+三个输出目录与三个测试二进制全部重建。
+
+**下一步**：`depth.py` 队头往下是 `MagnifierController`（2/8）。
+但**先查一件事再决定**：本项目有没有真正的放大镜（`RawMagnifier` / 那一套
+`MagnifierDecoration`、`loupe` 的绘制），还是只有一个 controller 壳子——
+第 386、388、390 轮各遇到一次"只有数据没有控件"，
+`MagnifierController` 这个名字听起来正是同一类。
+**若只有壳子就跳过它，改看 `SelectableText`（8/34）**：那是个真控件，
+而且它和第 381 轮刚接上的 ink well 语义、以及文本选择工具条都相邻。

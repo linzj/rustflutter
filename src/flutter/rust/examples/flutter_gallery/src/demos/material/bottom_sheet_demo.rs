@@ -215,9 +215,11 @@ impl StatefulComponent for BottomSheetContent {
                 ))
         });
 
-        // `const Divider(thickness: 1)`. The framework's Divider is the same
-        // hairline centred in sixteen pixels.
-        let divider: AnyWidget = component(Divider);
+        // `const Divider(thickness: 1)`, and it can now say so: until round 390
+        // this port's `Divider` took no arguments at all, so this drew the
+        // theme's default thickness of 0 -- a one-device-pixel hairline, which
+        // is thinner than upstream's line on every screen with a ratio above 1.
+        let divider: AnyWidget = component(Divider::new().with_thickness(1.0));
 
         // The scroll gestures, with the same signs as `app::scroll_handlers`:
         // a drag says where the content went, a wheel where the reader wants
