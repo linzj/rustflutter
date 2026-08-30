@@ -25971,3 +25971,66 @@ C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建
 **弹出菜单本身是不是一个控件**（还是像 `TabBarView` 那样只有度量），
 以及 `menuItemCheckbox` 这一支——上游注释说它"带勾选状态和按钮标志"，
 本项目的 Checkbox 已有 flag，**别把两套状态写重**。
+
+---
+
+## 第 387 轮：弹出菜单此前是三段纯文本——不是菜单、按不动、看不出勾选和禁用
+
+按“下一步”查 `popup_menu`。两个前置问题都问对了：
+
+* **是不是控件？** 是。`menu.rs` 里 `PopupMenuItem`、`CheckedPopupMenuItem`、
+  `PopupMenu` 都是真会 build 的 Component——不是 `TabBarView` 那种纯度量结构体。
+* **会不会和 Checkbox 的状态写重？** 不会，因为**它们此前一个字都没说**：
+  没有 role、没有 button 标志、没有 enabled、没有勾选状态。
+  读屏用户遇到一个弹出菜单，得到的是三段普通文字。
+
+上游把这件事写成**一个可被子类覆盖的方法**：
+`PopupMenuItemState.buildSemantics` 给 `role: menuItem, enabled:, button: true`（477 行），
+`_CheckedPopupMenuItemState` 覆盖成 `menuItemCheckbox` 并多一个 `checked:`（626 行），
+外面 `Semantics(role: SemanticsRole.menu)` 套住整张列表（765 行）。
+这里照同样的形状写成一个 `as_a_menu_entry`——
+**`checked: None` 是基类方法，`Some` 是那个覆盖**，共用的部分因此不会走散。
+
+菜单面用**注解**、条目用**折叠**——和第 385 轮标签条一样的取舍：
+折起来整张菜单会变成一站，条目就不再是可以逐个走过去的东西。
+
+上游的 `buildSemantics` 里没有 tap 动作，因为它的条目坐在 `InkWell` 里、
+由那边提供（第 381 轮已接）。**本项目的条目是裸 `Pointer`**，
+所以这里得自己给，否则读屏用户会被告知"这是个按钮"然后没有任何办法按下去。
+
+### 测试当场抓到一个我写的 bug
+
+第一版用了 `SemanticsCheckState::of(checked)`。但 `of` 收的是**复选框**的
+`Option<bool>`，那里的 `None` 意思是 **mixed**——"它代表的若干项里有的开有的关"。
+一个普通菜单项**根本不是可勾选的东西**，那是第四个值。
+照原样发出去，**每张菜单的每个普通条目都会被念成"部分勾选"**。
+
+### 变异扫描 10 个，第一遍 7 红、2 绿 + 1 条我自己写坏的
+
+* 两个绿都补了测试：条目没断言 `button`；
+  以及**先 `wired` 再 `with_enabled(false)`** 这个顺序——
+  `wired` 只在"当时已禁用"时才不挂 handler，反过来的顺序它管不着，
+  全靠 `as_a_menu_entry` 里那道 `filter(|_| enabled)`。
+* 第三条（"条目不折叠"）我用 `RenderIgnorePointer` 包了一层，
+  那**根本不影响折叠**——名字说的事它没测。
+  **删掉，而不是留着一个没有意义的绿。**
+  条目折叠本身由那条逐项断言的向量测试守着：不折叠的话标签会空、
+  文字会另成一站，那条测试对结构是敏感的（"菜单折叠"那条 3 红就是证据）。
+
+第二遍**九个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6382 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+清单加了一行（现在 20 个）：
+`PopupMenu -> "" role=Menu, "Share" role=MenuItem +flags +actions,
+"Pin" role=MenuItemCheckbox +flags +actions, "Delete" role=MenuItem +flags`
+——**禁用那条没有 `+actions`，在清单上一眼可见**。
+清单里的条目是 `wired` 过的（用 `StateHandle::detached()`），
+否则又是在量一个死控件（第 377/381/384 轮各栽过一次）。
+
+**下一步**：上游 role 还剩两处有对应控件。
+`dropdown.dart:245/347` 的 `menuItem`/`menu` 看着和这一轮一样，
+**但先确认本项目 `dropdown.rs` 的 `DropdownMenuItem` 是不是真会 build**
+（它旁边的 `DropdownMenuEntry` 可能只是数据），以及能不能**直接复用
+`as_a_menu_entry`**——如果能，那就是一次去重而不是第二份实现；
+如果它的条目已经坐在 ink well 上，tap 那半就已经有了，**别写第二遍**。

@@ -226,6 +226,8 @@ impl<T: 'static> Component for PopupMenuItem<T> {
         let height = self.height;
         let id = self.id;
         let handlers = self.handlers.clone();
+        let enabled = self.enabled;
+        let tap = self.handlers.on_tap.clone();
         // Upstream's M3 label style (`_PopupMenuDefaultsM3.labelTextStyle`):
         // onSurface, or onSurface at 0.38 when disabled. The crate's Theme has
         // no onSurface; `text` is the color that reads against `surface`.
@@ -251,8 +253,94 @@ impl<T: 'static> Component for PopupMenuItem<T> {
                 f32::INFINITY,
             ))
             .with_child(content);
-            Pointer::new(id, sized).with_handlers(handlers.clone())
+            let region = Pointer::new(id, sized).with_handlers(handlers.clone());
+            as_a_menu_entry(region, id, enabled, None, tap.clone())
         })
+    }
+}
+
+/// The identifier a popup menu's own semantics node is keyed on.
+///
+/// Reserved the way [`crate::controls::DIALOG_SEMANTICS_ID`] is: a menu is a
+/// surface rather than a control, so no caller ever chose an id for it, and the
+/// platform keys its accessibility node on whatever crosses.
+const MENU_SEMANTICS_ID: u64 = 0x_A_E_2;
+
+/// Wraps one entry of a menu in the node that says **it is an item of a menu**,
+/// whether it can be used, and -- for the checked kind -- whether it is on.
+///
+/// Upstream writes this as a method a subclass overrides:
+/// `PopupMenuItemState.buildSemantics` returns `Semantics(role: menuItem,
+/// enabled:, button: true)`, and `_CheckedPopupMenuItemState` overrides it with
+/// `role: menuItemCheckbox` and a `checked:` beside the rest. `checked` of
+/// `None` here is the base method and `Some` is the override -- one function
+/// for the same reason upstream has one method: the parts they share must not
+/// drift.
+///
+/// **A fold**, for the reason round 381 gives: an entry's words come from the
+/// `Text` inside it, so there is no annotation of its own for them to land on,
+/// and a node with the flags but no words would be a stop that says only
+/// "button".
+///
+/// The tap action goes on the same node. Upstream does not put one in
+/// `buildSemantics` because its entry sits in an `InkWell`, which supplies it
+/// (`ink_well.dart:1401`, wired here in round 381); this port's entries are
+/// built on a bare [`Pointer`], so without this a reader would be told they had
+/// found a button and given no way to press it.
+fn as_a_menu_entry(
+    region: impl crate::render::RenderBox + 'static,
+    id: u64,
+    enabled: bool,
+    checked: Option<bool>,
+    on_tap: Option<std::rc::Rc<dyn Fn(crate::gestures::TapEvent)>>,
+) -> crate::render::RenderMergeSemanticsBox {
+    let mut properties = crate::semantics::SemanticsProperties {
+        role: match checked {
+            Some(_) => crate::semantics::SemanticsRole::MenuItemCheckbox,
+            None => crate::semantics::SemanticsRole::MenuItem,
+        },
+        flags: crate::semantics::SemanticsFlags {
+            is_button: true,
+            has_enabled_state: true,
+            is_enabled: enabled,
+            // This crate spells the checked state as a tristate rather than
+            // a pair of bools, which is upstream's `SemanticsData.isChecked`
+            // plus `hasCheckedState`.
+            //
+            // **Not `SemanticsCheckState::of(checked)`**, which was the first
+            // version and was wrong: `of` takes the `Option<bool>` of a
+            // checkbox, where `None` means *mixed* -- a tick standing for
+            // several things, some on and some off. A plain menu item is not
+            // an unticked or partly ticked checkbox, it is **not a checkable
+            // thing at all**, which is the fourth value. Left as `of`, every
+            // ordinary entry of every menu would have been announced as
+            // partially checked.
+            checked: match checked {
+                Some(checked) => crate::semantics::SemanticsCheckState::of(Some(checked)),
+                None => crate::semantics::SemanticsCheckState::None,
+            },
+            ..crate::semantics::SemanticsFlags::default()
+        },
+        ..crate::semantics::SemanticsProperties::label("")
+    };
+    // A disabled entry advertises nothing to do, which is upstream's
+    // `enabled: false` reaching the platform: a reader sent to press something
+    // already switched off hears nothing back.
+    let tap = on_tap.filter(|_| enabled);
+    if tap.is_some() {
+        properties.actions |= crate::semantics::SemanticsAction::Tap as i32;
+    }
+    let folded = crate::render::RenderMergeSemanticsBox::new(region).with_properties(properties);
+    match tap {
+        Some(tap) => folded.with_action(crate::semantics::node_id_for(id), move |action| {
+            if action == crate::semantics::SemanticsAction::Tap {
+                tap(crate::gestures::TapEvent {
+                    local_position: crate::render::Offset::ZERO,
+                    pointer_id: 0,
+                });
+            }
+        }),
+        None => folded,
     }
 }
 
@@ -307,6 +395,8 @@ impl<T: 'static> Component for CheckedPopupMenuItem<T> {
         let id = self.item.id;
         let handlers = self.item.handlers.clone();
         let checked = self.checked;
+        let enabled = self.item.enabled;
+        let tap = self.item.handlers.on_tap.clone();
         // The same disabled treatment as PopupMenuItem.
         let mut style = theme.body();
         if !self.item.enabled {
@@ -349,7 +439,8 @@ impl<T: 'static> Component for CheckedPopupMenuItem<T> {
                 f32::INFINITY,
             ))
             .with_child(content);
-            Pointer::new(id, sized).with_handlers(handlers.clone())
+            let region = Pointer::new(id, sized).with_handlers(handlers.clone());
+            as_a_menu_entry(region, id, enabled, Some(checked), tap.clone())
         })
     }
 }
@@ -455,12 +546,28 @@ impl<T: PartialEq + 'static> Component for PopupMenu<T> {
                 f32::INFINITY,
             ))
             .with_child(intrinsic);
+            // Upstream's `_PopupMenuState.build` wraps the whole list in
+            // `Semantics(role: SemanticsRole.menu)` (`popup_menu.dart:765`).
+            //
+            // **An annotation, not a fold** -- the same way round 385 wrapped a
+            // tab bar. Folded, a menu would become one stop and its entries
+            // would stop being separate things to step through, which is the
+            // opposite of what a menu is for. The entries below still fold,
+            // each being one thing made of a mark and a word.
+            let listed = crate::semantics::RenderSemantics::new(
+                crate::semantics::node_id_for(MENU_SEMANTICS_ID),
+                crate::semantics::SemanticsProperties {
+                    role: crate::semantics::SemanticsRole::Menu,
+                    ..crate::semantics::SemanticsProperties::label("")
+                },
+                constrained,
+            );
             Box::new(
                 Container::new()
                     .with_color(surface)
                     .with_corner_radius(4.0)
                     .with_elevation(3)
-                    .with_child(constrained),
+                    .with_child(listed),
             )
         })
     }
@@ -1252,5 +1359,198 @@ mod popup_menu_theme_tests {
             crate::menu::PopupMenuPosition::Over
         );
         assert!(m3(PopupMenuThemeData::new()).enable_feedback);
+    }
+
+    /// Every stop a menu offers, as `(label, role, checked, enabled, pressable)`.
+    fn menu_stops(
+        widget: crate::framework::AnyWidget,
+    ) -> Vec<(
+        String,
+        crate::semantics::SemanticsRole,
+        crate::semantics::SemanticsCheckState,
+        bool,
+        bool,
+    )> {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            widget,
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| node.properties.role.is_set())
+            .map(|node| {
+                (
+                    node.properties.label.clone(),
+                    node.properties.role,
+                    node.properties.flags.checked,
+                    node.properties.flags.is_enabled,
+                    node.properties.has(crate::semantics::SemanticsAction::Tap),
+                )
+            })
+            .collect()
+    }
+
+    /// The flags on the stop with this label.
+    fn flags_of(
+        widget: &crate::framework::AnyWidget,
+        label: &str,
+    ) -> crate::semantics::SemanticsFlags {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            widget.clone(),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| node.properties.role.is_set())
+            .find(|node| node.properties.label == label)
+            .map(|node| node.properties.flags)
+            .unwrap_or_default()
+    }
+
+    fn a_menu() -> crate::framework::AnyWidget {
+        crate::framework::component(
+            PopupMenu::<u32>::new()
+                .push(
+                    PopupMenuItem::new(130, "Share", 1)
+                        .wired(crate::framework::StateHandle::<()>::detached(), |_, _| {}),
+                )
+                .push(
+                    CheckedPopupMenuItem::new(131, "Pin", 2, true)
+                        .wired(crate::framework::StateHandle::<()>::detached(), |_, _| {}),
+                )
+                .push(
+                    PopupMenuItem::new(132, "Delete", 3)
+                        .with_enabled(false)
+                        .wired(crate::framework::StateHandle::<()>::detached(), |_, _| {}),
+                ),
+        )
+    }
+
+    #[test]
+    fn a_menu_says_it_is_a_menu_and_its_entries_say_they_are_entries() {
+        // None of this crossed before: a reader met a popup menu as three runs
+        // of plain text -- not a menu, not pressable, with no way to know that
+        // "Pin" was ticked or that "Delete" was switched off.
+        //
+        // Upstream writes the entry half as a method a subclass overrides:
+        // `PopupMenuItemState.buildSemantics` gives `role: menuItem, enabled:,
+        // button: true` (`popup_menu.dart:477`) and
+        // `_CheckedPopupMenuItemState` overrides it with `menuItemCheckbox`
+        // and a `checked:` (626). The surface half is
+        // `Semantics(role: SemanticsRole.menu)` around the list (765).
+        use crate::semantics::{SemanticsCheckState, SemanticsRole};
+        assert_eq!(
+            menu_stops(a_menu()),
+            vec![
+                (
+                    String::new(),
+                    SemanticsRole::Menu,
+                    SemanticsCheckState::None,
+                    false,
+                    false
+                ),
+                (
+                    "Share".to_string(),
+                    SemanticsRole::MenuItem,
+                    SemanticsCheckState::None,
+                    true,
+                    true
+                ),
+                (
+                    "Pin".to_string(),
+                    SemanticsRole::MenuItemCheckbox,
+                    SemanticsCheckState::Checked,
+                    true,
+                    true
+                ),
+                // Switched off: still an entry, still says what it is, and
+                // offers nothing to do. A reader sent to press it would hear
+                // nothing back.
+                (
+                    "Delete".to_string(),
+                    SemanticsRole::MenuItem,
+                    SemanticsCheckState::None,
+                    false,
+                    false
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_entry_says_it_can_be_pressed_and_the_surface_does_not() {
+        // `button: true` is in upstream's `buildSemantics` beside the role,
+        // and both overrides carry it. The menu itself does not: a menu is
+        // where the buttons are, not one of them.
+        assert!(
+            !flags_of(&a_menu(), "").is_button,
+            "the surface called itself a button"
+        );
+        for label in ["Share", "Pin", "Delete"] {
+            assert!(
+                flags_of(&a_menu(), label).is_button,
+                "{label} did not say it can be pressed"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_an_entry_off_after_wiring_it_still_takes_its_action_away() {
+        // The builder takes these in either order, and only one of them is
+        // guarded at the source: `wired` skips the handlers when the item is
+        // already disabled, so `with_enabled(false).wired(..)` is safe by
+        // construction. The other order is not -- the handlers are already
+        // there when `enabled` goes false -- and without the filter in
+        // `as_a_menu_entry` a reader would be offered an action on an entry
+        // that a finger cannot use.
+        let stops = menu_stops(crate::framework::component(
+            PopupMenu::<u32>::new().push(
+                PopupMenuItem::new(140, "Delete", 1)
+                    .wired(crate::framework::StateHandle::<()>::detached(), |_, _| {})
+                    .with_enabled(false),
+            ),
+        ));
+        let entry = stops
+            .iter()
+            .find(|stop| stop.0 == "Delete")
+            .expect("the entry");
+        assert!(!entry.4, "a switched-off entry offered its action");
+        assert!(!entry.3, "and it says it is switched off");
+    }
+
+    #[test]
+    fn the_menu_is_a_container_and_not_a_fold() {
+        // The same choice round 385 made for a tab bar: folded, the whole menu
+        // would become one stop and the entries would stop being separate
+        // things to step through -- which is the opposite of what a menu is
+        // for. The entries below still fold, each being one thing made of a
+        // mark and a word.
+        assert_eq!(
+            menu_stops(a_menu()).len(),
+            4,
+            "one stop for the menu and one per entry"
+        );
     }
 }

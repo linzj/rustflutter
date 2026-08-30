@@ -1173,6 +1173,32 @@ You"
         );
         println!(
             "SPOKEN {:<20} -> {}",
+            "PopupMenu",
+            // **Wired**, because an entry with nothing to run publishes no
+            // action and the row would be measuring a dead control -- the
+            // mistake rounds 377, 381 and 384 each caught in a different
+            // place. A detached handle is enough: what is being shown is that
+            // the entry offers the action, not where it goes.
+            spoken_by(component(
+                crate::menu::PopupMenu::<u32>::new()
+                    .push(
+                        crate::menu::PopupMenuItem::new(130, "Share", 1)
+                            .wired(crate::framework::StateHandle::<()>::detached(), |_, _| {},)
+                    )
+                    .push(
+                        crate::menu::CheckedPopupMenuItem::new(131, "Pin", 2, true)
+                            .wired(crate::framework::StateHandle::<()>::detached(), |_, _| {},),
+                    )
+                    .push(
+                        crate::menu::PopupMenuItem::new(132, "Delete", 3)
+                            .with_enabled(false)
+                            .wired(crate::framework::StateHandle::<()>::detached(), |_, _| {}),
+                    )
+            ))
+            .join(", ")
+        );
+        println!(
+            "SPOKEN {:<20} -> {}",
             "Spinner",
             spoken_by(component(
                 super::Spinner::new(0.4).with_semantic_label("Loading")
