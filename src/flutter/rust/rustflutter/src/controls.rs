@@ -420,6 +420,79 @@ mod radio_semantics_tests {
     }
 
     #[test]
+    fn a_sheets_drag_handle_can_be_found_and_says_what_it_does() {
+        // Without this a reader met a 32-by-4 rectangle with nothing to say:
+        // the one affordance for putting the sheet away was the one thing they
+        // could not find. A bar that says "drag me" says it only to people who
+        // can see it.
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(BottomSheet::new(crate::framework::leaf(|| {
+                crate::widgets::SizedBox::new(10.0, 10.0)
+            }))),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let handle = nodes
+            .iter()
+            .find(|node| node.properties.flags.is_button)
+            .expect("the handle is something to press");
+        assert_eq!(
+            handle.properties.label,
+            crate::material_app::DefaultMaterialLocalizations::MODAL_BARRIER_DISMISS_LABEL,
+            "the barrier's word, because dismissing is what it does -- upstream              reuses the string rather than inventing a second name for one action"
+        );
+    }
+
+    #[test]
+    fn the_handle_keeps_the_same_identity_between_frames() {
+        // What the reserved constant is *for*. The platform keys its own
+        // accessibility node on this id, so an id drawn from a counter --
+        // `take_text_id`, say -- would be a different handle every frame: the
+        // node a reader had focused would vanish under them each time the
+        // sheet rebuilt.
+        //
+        // A mutation swapping the constant for another constant does not
+        // break this and should not: the value is arbitrary, the *stability*
+        // is the claim, and that is what this asserts.
+        let ids = |_: ()| {
+            crate::semantics::set_enabled(true);
+            let mut tree = crate::framework::ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::light(),
+                crate::framework::component(BottomSheet::new(crate::framework::leaf(|| {
+                    crate::widgets::SizedBox::new(10.0, 10.0)
+                }))),
+            ));
+            let mut root = tree.build_render_tree().expect("mounted");
+            crate::render::RenderBox::layout(
+                &mut root,
+                crate::render::BoxConstraints::loose(400.0, 400.0),
+            );
+            crate::semantics::mark_needs_update();
+            let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+                .unwrap_or_default();
+            crate::semantics::set_enabled(false);
+            nodes
+                .iter()
+                .find(|node| node.properties.flags.is_button)
+                .map(|node| node.id)
+                .expect("the handle")
+        };
+        assert_eq!(ids(()), ids(()), "the same handle, frame after frame");
+    }
+
+    #[test]
     fn the_third_surface_announces_itself_as_a_dialog_not_an_alert() {
         // `Dialog` here is not upstream's `Dialog`. Upstream's is a bare
         // container that names no route because whatever it wraps does; this
@@ -1655,6 +1728,13 @@ impl Component for Dialog {
     }
 }
 
+/// The identifier a bottom sheet's drag handle is keyed on.
+///
+/// Reserved for the same reason [`DIALOG_SEMANTICS_ID`] is: the handle is part
+/// of the sheet's furniture rather than a control a caller named, and the
+/// platform keys its accessibility node on this.
+const DRAG_HANDLE_SEMANTICS_ID: u64 = 0xD_2A6;
+
 /// A panel anchored to the bottom edge.
 pub struct BottomSheet {
     title: Option<String>,
@@ -1728,6 +1808,9 @@ impl Component for BottomSheet {
         let outline = theme.outline;
         let spacing = theme.spacing;
         let title_style = theme.title();
+        let handle_label =
+            crate::material_app::DefaultMaterialLocalizations::MODAL_BARRIER_DISMISS_LABEL
+                .to_string();
 
         crate::framework::single(child, move |inner| {
             let mut column = RenderFlex::column()
@@ -1737,12 +1820,34 @@ impl Component for BottomSheet {
             // The grab handle: a short bar that says the sheet can be dragged,
             // even though dragging it is the caller's to wire up. Thirty-two
             // by four is upstream's drag handle.
-            column = column.push(Box::new(Align::new(
-                Alignment::CENTER,
-                Container::new()
-                    .with_size(32.0, 4.0)
-                    .with_color(outline)
-                    .with_corner_radius(2.0),
+            //
+            // Upstream wraps it in `Semantics(label: modalBarrierDismissLabel,
+            // container: true, button: true, onTap: ...)`, and without that a
+            // reader meets a 32-by-4 rectangle with nothing to say -- the one
+            // affordance for putting the sheet away is the one thing they
+            // cannot find. **A bar that says "you may drag me" says it only to
+            // people who can see it**, so the words are what carry the same
+            // affordance to everyone else.
+            //
+            // The label is the barrier's, not a word of its own: dismissing is
+            // what the handle does, and upstream reuses the string rather than
+            // inventing a second name for one action.
+            column = column.push(Box::new(crate::semantics::RenderSemantics::new(
+                crate::semantics::node_id_for(DRAG_HANDLE_SEMANTICS_ID),
+                crate::semantics::SemanticsProperties {
+                    flags: crate::semantics::SemanticsFlags {
+                        is_button: true,
+                        ..crate::semantics::SemanticsFlags::default()
+                    },
+                    ..crate::semantics::SemanticsProperties::label(handle_label.clone())
+                },
+                Align::new(
+                    Alignment::CENTER,
+                    Container::new()
+                        .with_size(32.0, 4.0)
+                        .with_color(outline)
+                        .with_corner_radius(2.0),
+                ),
             )));
             if let Some(title) = &title {
                 column = column.push(Box::new(
