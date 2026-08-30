@@ -210,7 +210,7 @@ impl KeyboardLockMode {
 /// release can report the logical key the *press* had. Rotating the layout
 /// while a key is held would otherwise produce a press of one key and a release
 /// of another, and leave the first stuck down forever.
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Keyboard {
     pressed: HashMap<PhysicalKey, LogicalKey>,
     /// Upstream's `HardwareKeyboard.lockModesEnabled`.
@@ -314,35 +314,92 @@ pub struct Modifiers {
 }
 
 thread_local! {
-    static MODIFIERS: std::cell::Cell<Modifiers> = const { std::cell::Cell::new(Modifiers {
-        control: false,
-        shift: false,
-        alt: false,
-        meta: false,
-    }) };
+    /// The whole keyboard, not four bits of it.
+    ///
+    /// This used to hold a [`Modifiers`] and nothing else, which was enough
+    /// for the one caller it had -- a text field asking whether C was Ctrl+C.
+    /// It is not enough for a shortcut: `ShortcutActivator::KeySet` asks
+    /// **which keys are held**, and compares the size of the whole pressed set
+    /// so that Ctrl+A does not fire while Ctrl+Shift+A is what is down. Four
+    /// bools cannot answer that, so nothing could evaluate a shortcut from
+    /// inside a key handler -- which is where keys are handled.
+    ///
+    /// Upstream's `HardwareKeyboard.instance` is the whole keyboard too, and
+    /// exposes `logicalKeysPressed`, `physicalKeysPressed` and
+    /// `lockModesEnabled`. This is that singleton.
+    static AMBIENT: std::cell::RefCell<Keyboard> =
+        std::cell::RefCell::new(Keyboard::new());
+}
+
+/// Reads the keyboard as it was when the key now being handled arrived.
+///
+/// Borrowed rather than returned, because a `Keyboard` owns a map and handing
+/// out clones per keystroke would be paying for a copy nobody keeps.
+pub fn with_keyboard<R>(read: impl FnOnce(&Keyboard) -> R) -> R {
+    AMBIENT.with(|keyboard| read(&keyboard.borrow()))
 }
 
 /// What was held when the key now being handled arrived.
 pub fn modifiers() -> Modifiers {
-    MODIFIERS.with(|held| held.get())
+    with_keyboard(|keyboard| Modifiers {
+        control: keyboard.control(),
+        shift: keyboard.shift(),
+        alt: keyboard.alt(),
+        meta: keyboard.meta(),
+    })
 }
 
-/// Records the modifier state, called by the binding once per key, right after
-/// the keyboard itself has been updated.
-pub fn note_modifiers(keyboard: &Keyboard) {
-    MODIFIERS.with(|held| {
-        held.set(Modifiers {
-            control: keyboard.control(),
-            shift: keyboard.shift(),
-            alt: keyboard.alt(),
-            meta: keyboard.meta(),
-        })
-    });
+/// Records the keyboard, called by the binding once per key, right after the
+/// keyboard itself has been updated.
+pub fn note_keyboard(keyboard: &Keyboard) {
+    AMBIENT.with(|ambient| *ambient.borrow_mut() = keyboard.clone());
+}
+
+/// Empties the ambient keyboard. For tests, which would otherwise inherit
+/// whatever keys the last one left held.
+#[cfg(test)]
+pub fn reset_keyboard() {
+    AMBIENT.with(|ambient| *ambient.borrow_mut() = Keyboard::new());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ambient_modifiers_are_the_ambient_keyboards() {
+        // `modifiers()` is the narrow view of the singleton, not a second
+        // piece of state -- so it has to move when the keyboard does. Its one
+        // caller is a text field asking whether C was Ctrl+C, and a view that
+        // answered "nothing held" would make every shortcut in a field look
+        // like a plain keystroke.
+        reset_keyboard();
+        assert_eq!(modifiers(), Modifiers::default());
+
+        let mut keyboard = Keyboard::new();
+        keyboard.record(&mut KeyEvent {
+            change: KeyChange::Down,
+            // The physical key, which is what `control()` reads -- it is a
+            // different constant from the logical one, and using the logical
+            // value here reports no modifier at all.
+            physical: PhysicalKey::CONTROL_LEFT,
+            logical: LogicalKey::CONTROL_LEFT,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        });
+        note_keyboard(&keyboard);
+        assert!(modifiers().control, "control is held");
+        assert!(!modifiers().shift);
+
+        // And the whole keyboard is there too, which four bools could never
+        // have carried: a shortcut asks which keys are down, not just which
+        // modifiers.
+        assert!(with_keyboard(
+            |keyboard| keyboard.is_logical_pressed(LogicalKey::CONTROL_LEFT)
+        ));
+        assert_eq!(with_keyboard(|keyboard| keyboard.pressed().count()), 1);
+    }
 
     fn event(change: KeyChange, physical: PhysicalKey, logical: LogicalKey) -> KeyEvent {
         KeyEvent {

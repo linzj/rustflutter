@@ -5,16 +5,16 @@
 //! module gives them meanings, and the action dispatcher (actions.rs)
 //! already knows what to do with those.
 //!
-//! Recorded divergence (see PORTING_STATUS.md): upstream's `Shortcuts`
-//! widget scopes a registry to a subtree through the element tree; here a
-//! registry is a value the keyboard-handling region owns, the same seam
-//! `Focus::with_on_key` already is.
+//! [`shortcuts`] is upstream's `Shortcuts` widget: a focus node that is not a
+//! tab stop, whose key handler turns the key into an intent and hands it to
+//! the nearest [`crate::actions::Actions`] above it.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::actions::Intent;
 use crate::focus::KeyResult;
+use crate::framework::AnyWidget;
 use crate::keyboard::KeyboardLockMode;
 use crate::keyboard::{KeyEvent, Keyboard, LogicalKey};
 
@@ -837,5 +837,293 @@ mod lock_state_tests {
     #[test]
     fn a_shortcut_asks_nothing_of_the_lock_unless_told_to() {
         assert_eq!(LockState::default(), LockState::Ignored);
+    }
+}
+
+// -- The widget (upstream `Shortcuts`) ----------------------------------------
+
+/// Upstream `Shortcuts`: a registry scoped to a subtree, reached by keys.
+///
+/// Everything under it had been ported and had no way to meet: the registry
+/// knew which keystroke meant what, [`crate::actions`] knew what to do about
+/// an intent, and [`crate::focus`] already walked keys up from the focused
+/// node -- and **nothing joined them**, so no key in this crate has ever
+/// become an intent.
+///
+/// Three things had to exist first, and now do: an ancestor walk for actions,
+/// a [`crate::framework::CapturedContext`] so a handler outside a build can
+/// perform that walk, and an ambient [`crate::keyboard::Keyboard`] so an
+/// activator can ask which keys are held.
+///
+/// **Not a tab stop.** Upstream's is `Focus(canRequestFocus: false)` -- the
+/// node exists to be an *ancestor* of whatever has the focus, so its handler
+/// runs on the way up. Made traversable it would put a station in the tab
+/// order that nothing lives at.
+pub fn shortcuts(id: u64, registry: Rc<ShortcutRegistry>, child: AnyWidget) -> AnyWidget {
+    crate::framework::component(Shortcuts {
+        id,
+        registry,
+        child: std::cell::RefCell::new(Some(child)),
+    })
+}
+
+struct Shortcuts {
+    id: u64,
+    registry: Rc<ShortcutRegistry>,
+    child: std::cell::RefCell<Option<AnyWidget>>,
+}
+
+impl crate::framework::Component for Shortcuts {
+    fn build(&self, context: &mut crate::framework::BuildContext) -> AnyWidget {
+        let registry = Rc::clone(&self.registry);
+        // Taken here, in the build, and used from the key handler later --
+        // which is the only reason `captured` exists.
+        let captured = context.captured();
+        let child = self
+            .child
+            .borrow()
+            .clone()
+            .expect("a shortcuts scope has a child");
+        crate::framework::component(
+            crate::focus::Focus::new(self.id, child)
+                .with_traversable(false)
+                .with_on_key(move |event| {
+                    // The keyboard, not just the modifiers: an activator
+                    // compares the whole held set.
+                    let intent = crate::keyboard::with_keyboard(|keyboard| {
+                        registry.intent_for(event, keyboard).cloned()
+                    });
+                    let Some(intent) = intent else {
+                        return KeyResult::Ignored;
+                    };
+                    // A key that matched an activator but found no action is
+                    // **not** handled: upstream's `Shortcuts` returns
+                    // `KeyEventResult.ignored` when `Actions.invoke` finds
+                    // nothing, so the key carries on to whatever is above.
+                    captured
+                        .with(|context| {
+                            crate::actions::Actions::maybe_invoke_key(context, &intent, event)
+                        })
+                        .unwrap_or(KeyResult::Ignored)
+                }),
+        )
+    }
+}
+
+#[cfg(test)]
+mod widget_tests {
+    use super::*;
+    use crate::actions::{Action, ActionDispatcher, Actions};
+    use crate::framework::{ElementTree, leaf};
+    use crate::keyboard::{KeyChange, PhysicalKey};
+    use std::cell::{Cell, RefCell};
+
+    fn press(logical: u64) -> KeyEvent {
+        KeyEvent {
+            change: KeyChange::Down,
+            physical: PhysicalKey(logical),
+            logical: LogicalKey(logical),
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        }
+    }
+
+    /// Puts `logical` down on the ambient keyboard, the way the binding does
+    /// before it dispatches.
+    fn hold(keys: &[u64]) {
+        let mut keyboard = Keyboard::new();
+        for key in keys {
+            keyboard.record(&mut press(*key));
+        }
+        crate::keyboard::note_keyboard(&keyboard);
+    }
+
+    /// A page whose focused leaf sits inside a shortcuts scope inside an
+    /// actions scope -- upstream's arrangement, and the one the key has to
+    /// travel through.
+    fn page(
+        registry: Rc<ShortcutRegistry>,
+        dispatcher: Rc<ActionDispatcher>,
+        focus_id: u64,
+    ) -> crate::framework::AnyWidget {
+        Actions::scope(
+            dispatcher,
+            shortcuts(
+                9001,
+                registry,
+                crate::framework::component(crate::focus::Focus::new(
+                    focus_id,
+                    leaf(|| crate::widgets::SizedBox::new(1.0, 1.0)),
+                )),
+            ),
+        )
+    }
+
+    fn dispatcher_recording(ran: &Rc<Cell<bool>>) -> Rc<ActionDispatcher> {
+        let flag = Rc::clone(ran);
+        Rc::new(ActionDispatcher::new().with_action(
+            "Dismiss",
+            Action::callback(move |_intent| {
+                flag.set(true);
+                None
+            }),
+        ))
+    }
+
+    fn registry_for(key: u64) -> Rc<ShortcutRegistry> {
+        Rc::new(ShortcutRegistry::new().with(
+            ShortcutActivator::KeySet(LogicalKeySet::single(key)),
+            Intent::Dismiss,
+        ))
+    }
+
+    /// Mounts the page, focuses the leaf, and sends `event`. Answers whether
+    /// the key was taken.
+    fn send(
+        registry: Rc<ShortcutRegistry>,
+        dispatcher: Rc<ActionDispatcher>,
+        held: &[u64],
+        event: &KeyEvent,
+    ) -> bool {
+        crate::focus::reset_scopes();
+        crate::keyboard::reset_keyboard();
+        const FOCUSED: u64 = 9002;
+        let mut tree = ElementTree::new();
+        tree.rebuild(page(registry, dispatcher, FOCUSED));
+        tree.build_render_tree();
+        crate::focus::focus(FOCUSED);
+        hold(held);
+        crate::focus::dispatch_key(event)
+    }
+
+    #[test]
+    fn a_key_becomes_an_intent_and_reaches_the_action_above() {
+        // The three pieces this needed all existed and had never met: the
+        // registry knew what the keystroke meant, `Actions` knew what to do
+        // about the intent, and the focus layer already walked keys up from
+        // the focused node. Nothing joined them, so no key in this crate had
+        // ever become an intent.
+        let ran = Rc::new(Cell::new(false));
+        let taken = send(
+            registry_for(LogicalKey::ESCAPE.0),
+            dispatcher_recording(&ran),
+            &[LogicalKey::ESCAPE.0],
+            &press(LogicalKey::ESCAPE.0),
+        );
+        assert!(ran.get(), "the action above the shortcuts scope ran");
+        assert!(taken, "and the key was reported handled");
+    }
+
+    #[test]
+    fn a_key_no_activator_wants_is_left_alone() {
+        let ran = Rc::new(Cell::new(false));
+        let taken = send(
+            registry_for(LogicalKey::ESCAPE.0),
+            dispatcher_recording(&ran),
+            &[LogicalKey::ENTER.0],
+            &press(LogicalKey::ENTER.0),
+        );
+        assert!(!ran.get());
+        assert!(!taken, "it carries on to whatever would have seen it next");
+    }
+
+    #[test]
+    fn a_shortcut_whose_intent_nobody_serves_does_not_swallow_the_key() {
+        // Upstream returns `KeyEventResult.ignored` when `Actions.invoke`
+        // finds nothing. Reporting handled instead would let a scope eat every
+        // shortcut it names but cannot serve, and the key would vanish.
+        let ran = Rc::new(Cell::new(false));
+        let unrelated =
+            Rc::new(ActionDispatcher::new().with_action("Activate", Action::callback(|_| None)));
+        let taken = send(
+            registry_for(LogicalKey::ESCAPE.0),
+            unrelated,
+            &[LogicalKey::ESCAPE.0],
+            &press(LogicalKey::ESCAPE.0),
+        );
+        assert!(!ran.get());
+        assert!(!taken, "the key was left for somebody else");
+    }
+
+    #[test]
+    fn an_activator_reads_the_whole_held_set_and_not_just_the_modifiers() {
+        // This is why the ambient keyboard had to stop being four bools.
+        // `KeySet` compares the *size* of the pressed set, so a shortcut for
+        // Escape alone must not fire while Escape and Enter are both down --
+        // and no amount of modifier state can tell you that.
+        let ran = Rc::new(Cell::new(false));
+        let taken = send(
+            registry_for(LogicalKey::ESCAPE.0),
+            dispatcher_recording(&ran),
+            &[LogicalKey::ESCAPE.0, LogicalKey::ENTER.0],
+            &press(LogicalKey::ESCAPE.0),
+        );
+        assert!(
+            !ran.get(),
+            "a second key is held, so this is not that shortcut"
+        );
+        assert!(!taken);
+    }
+
+    #[test]
+    fn a_shortcuts_scope_is_not_a_stop_on_the_way_round() {
+        // Upstream's is `Focus(canRequestFocus: false)`. Made traversable it
+        // would put a station in the tab order that nothing lives at, and Tab
+        // would appear to do nothing every other press.
+        crate::focus::reset_scopes();
+        let ran = Rc::new(Cell::new(false));
+        let mut tree = ElementTree::new();
+        tree.rebuild(page(
+            registry_for(LogicalKey::ESCAPE.0),
+            dispatcher_recording(&ran),
+            9002,
+        ));
+        tree.build_render_tree();
+        // Tab, from the leaf. With one real stop in the tree it can only come
+        // back to the leaf; if the shortcuts scope were traversable it would
+        // be the other station and Tab would land there instead.
+        crate::focus::focus(9002);
+        crate::keyboard::reset_keyboard();
+        let mut keyboard = Keyboard::new();
+        keyboard.record(&mut press(LogicalKey::TAB.0));
+        crate::focus::handle_traversal_key(&press(LogicalKey::TAB.0), &keyboard);
+        assert_eq!(
+            crate::focus::focused(),
+            Some(9002),
+            "Tab found no other station to go to"
+        );
+    }
+
+    #[test]
+    fn the_handler_looks_the_action_up_when_the_key_arrives_not_when_it_built() {
+        // The scope is a place in the tree, not a snapshot of it. A rebuild
+        // that installs a different action is what the next key gets --
+        // otherwise a shortcut would act on a screen that had already changed.
+        crate::focus::reset_scopes();
+        crate::keyboard::reset_keyboard();
+        const FOCUSED: u64 = 9002;
+        let first = Rc::new(Cell::new(false));
+        let second = Rc::new(Cell::new(false));
+        let registry = registry_for(LogicalKey::ESCAPE.0);
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(page(
+            Rc::clone(&registry),
+            dispatcher_recording(&first),
+            FOCUSED,
+        ));
+        tree.build_render_tree();
+        crate::focus::focus(FOCUSED);
+        hold(&[LogicalKey::ESCAPE.0]);
+        crate::focus::dispatch_key(&press(LogicalKey::ESCAPE.0));
+        assert!(first.get() && !second.get());
+
+        // Same tree, a different action published in the same place.
+        tree.rebuild(page(registry, dispatcher_recording(&second), FOCUSED));
+        tree.build_render_tree();
+        crate::focus::focus(FOCUSED);
+        crate::focus::dispatch_key(&press(LogicalKey::ESCAPE.0));
+        assert!(second.get(), "the key found the action that is there now");
     }
 }

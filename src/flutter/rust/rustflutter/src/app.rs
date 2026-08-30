@@ -1296,7 +1296,7 @@ impl AppInstance {
         self.keyboard.record(event);
         // And published, so a focused widget's `on_key` -- which is handed the
         // event and nothing else -- can tell C from Ctrl+C.
-        crate::keyboard::note_modifiers(&self.keyboard);
+        crate::keyboard::note_keyboard(&self.keyboard);
 
         // The application first, then the focused widget, then Tab.
         //
