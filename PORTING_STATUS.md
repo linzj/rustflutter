@@ -22391,3 +22391,57 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 先按行为查 `FlippedTweenSequence`：上游的 `flipped` 不只是把区间列表反转，
 每一段的 `begin`／`end` 也要跟着换，而且权重的累计方向也变了——漏掉任何一样都会得到一条
 “看起来在倒放、其实走错路”的动画。
+
+---
+
+## 第 323 轮：翻折是转半圈，不是倒着放——而泛型正是那半圈写不出来的原因
+
+接上一轮的“下一步”查 `FlippedTweenSequence`。**上一轮我在“下一步”里的猜测是错的**：
+我写“上游的 flipped 不只是把区间列表反转，每一段的 begin／end 也要跟着换，权重累计方向也变”。
+上游**什么都没有重排**。它只有一行：
+
+```dart
+double transform(double t) => 1 - super.transform(1 - t);
+```
+
+而本项目是：
+
+```rust
+fn transform(&self, t: f32) -> T::Output {
+    self.sequence.transform(1.0 - t)
+}
+```
+
+**外面那个 `1 -` 没了。** 里面的 `1 - t` 把序列从后往前读，外面的 `1 -` 把值也上下翻过来，
+两者合起来是**转半圈**，不是照镜子。上游自己的句子写得很清楚：“flips the tween
+**both horizontally and vertically**”。
+
+只反时间是最自然会写出的那一半，得到的动画是：各段倒序播放，而每一段仍然朝它原来的方向走
+——**一段看起来像倒带、实际走错路的动画**。更直接的判据是两端：只反时间的话
+`t=0` 处的值是原来 `t=1` 处的值，也就是**一开始就已经结束了**。
+
+**为什么这一半写不出来：泛型。** 上游声明的是 `extends TweenSequence<double>`，
+文档里明说结果“必须是 0.0 到 1.0 之间的 double”。`1 - x` 对一个颜色或一个偏移没有意义，
+在单位区间之外也没有意义——原来那条测试用的序列跑 0 到 20，翻过来是 **-19**。
+本项目把它写成对输出类型泛型，于是外面那个 `1 -` 根本无从落笔，就被省掉了。
+这一轮把类型约束改成 `Tween<Output = f32>`，跟上游同样的限制，那一半才写得出来。
+
+原来那条测试断言的正是“只反时间”的行为（`flipped.transform(0.0) == 20.0`），
+而且用的序列在文档写明的定义域之外。换成一条真正在单位区间上的序列：
+前四分之一停着不动、后四分之三爬到 1。翻折之后**两端仍然落在 0 和 1**，
+而**那段停顿挪到了末尾**——形状反过来了，行进方向没有。最后再按定义
+`1 - f(1 - t)` 逐点对了九个点。
+
+**变异扫描 5 个，全红**：只反时间、只翻值、两个都不做、竖直翻折绕错轴（`-f` 而不是 `1-f`）、
+时间翻折绕错轴（`-t` 而不是 `1-t`）。
+
+尺子：十六把全部 exit 0。门：6209 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：这两轮连着在“倒过来”这个主题上抓到两个同型的错（`Curve::flipped` 的兜底、
+`FlippedTweenSequence` 缺的那一半），值得把这一族剩下的一次查完：
+`animation.rs` 里的 `ReverseAnimation` 与 `ReverseTween`。
+`ReverseAnimation` 上一轮已经顺带看过（状态映射是对的），但**它的 `value` 是不是
+`1 - parent.value()`、以及它转不转发监听器**还没查过——第 318 轮读到那一段时
+`add_listener`／`remove_listener` 是**两个空实现**，一个不转发监听的动画意味着
+依赖它的东西永远不会重建。先按行为查这一条。

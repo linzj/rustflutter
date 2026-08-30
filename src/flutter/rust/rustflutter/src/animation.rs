@@ -2234,16 +2234,38 @@ impl<T: Tween + Clone> Animatable for TweenSequence<T> {
     }
 }
 
-/// Upstream `FlippedTweenSequence`: the sequence read back to front.
-pub struct FlippedTweenSequence<T: Tween + Clone> {
+/// Upstream `FlippedTweenSequence`: the sequence turned through half a turn.
+///
+/// # Both axes, not just time
+///
+/// `1 - super.transform(1 - t)`. The inner `1 - t` reads the sequence back to
+/// front; the **outer `1 -`** turns its values upside down as well, and the
+/// two together are a rotation rather than a reflection. Upstream's own
+/// sentence is "flips the tween both horizontally and vertically".
+///
+/// Reversing only time is the natural half to write and gives an animation
+/// that plays its segments in reverse order while each one still runs the
+/// direction it always did -- a rewind that travels the wrong path.
+///
+/// # It is `f32`-valued because the vertical flip needs a number
+///
+/// Upstream declares `extends TweenSequence<double>` and says the result "has
+/// to be a double between 0.0 and 1.0". `1 - x` has no meaning for a colour or
+/// an offset, and no sense at all outside the unit interval -- flipping a
+/// sequence running 0 to 20 gives values down at -19.
+///
+/// This port was generic over the tween's output, which is exactly what made
+/// the outer `1 -` impossible to write, so it had been left out. The
+/// restriction is upstream's and it is what makes the operation definable.
+pub struct FlippedTweenSequence<T: Tween<Output = f32> + Clone> {
     pub sequence: TweenSequence<T>,
 }
 
-impl<T: Tween + Clone> Animatable for FlippedTweenSequence<T> {
-    type Output = T::Output;
+impl<T: Tween<Output = f32> + Clone> Animatable for FlippedTweenSequence<T> {
+    type Output = f32;
 
-    fn transform(&self, t: f32) -> T::Output {
-        self.sequence.transform(1.0 - t)
+    fn transform(&self, t: f32) -> f32 {
+        1.0 - self.sequence.transform(1.0 - t)
     }
 }
 
@@ -2402,10 +2424,62 @@ mod animation_graph_tests {
         assert_eq!(Animatable::transform(&sequence, 0.25), 10.0);
         assert_eq!(Animatable::transform(&sequence, 0.625), 15.0);
         assert_eq!(Animatable::transform(&sequence, 1.0), 20.0);
+    }
 
-        // Flipped reads it backwards.
-        let flipped = FlippedTweenSequence { sequence };
-        assert_eq!(Animatable::transform(&flipped, 0.0), 20.0);
+    #[test]
+    fn a_flipped_sequence_turns_through_half_a_turn_rather_than_playing_backwards() {
+        // A sequence over the unit interval, which is the only domain the
+        // vertical half of the flip makes sense on: a quarter of the time
+        // spent going nowhere, then three quarters climbing to 1.
+        let held_then_climbing = || {
+            TweenSequence::new(vec![
+                TweenSequenceItem::tween(
+                    FloatTween {
+                        begin: 0.0,
+                        end: 0.0,
+                    },
+                    1.0,
+                ),
+                TweenSequenceItem::tween(
+                    FloatTween {
+                        begin: 0.0,
+                        end: 1.0,
+                    },
+                    3.0,
+                ),
+            ])
+        };
+        let plain = held_then_climbing();
+        assert_eq!(Animatable::transform(&plain, 0.125), 0.0, "held");
+        assert_eq!(Animatable::transform(&plain, 1.0), 1.0);
+
+        let flipped = FlippedTweenSequence {
+            sequence: held_then_climbing(),
+        };
+
+        // Both ends still land where an animation's ends must land. Reversing
+        // time alone would put 1 at t=0 and 0 at t=1 -- an animation that
+        // starts finished.
+        assert_eq!(Animatable::transform(&flipped, 0.0), 0.0);
+        assert_eq!(Animatable::transform(&flipped, 1.0), 1.0);
+
+        // The pause has moved to the end, which is the whole point: the
+        // shape is reversed, the direction of travel is not.
+        assert_eq!(
+            Animatable::transform(&flipped, 0.875),
+            1.0,
+            "held at its destination for the last eighth"
+        );
+
+        // And it is the rotation, not either half on its own.
+        for step in 0..=8 {
+            let t = step as f32 / 8.0;
+            let want = 1.0 - Animatable::transform(&plain, 1.0 - t);
+            assert!(
+                (Animatable::transform(&flipped, t) - want).abs() < 1e-5,
+                "at {t}"
+            );
+        }
     }
 
     #[test]
