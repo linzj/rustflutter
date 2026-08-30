@@ -1359,6 +1359,30 @@ pub trait RenderBox: AsAny {
     /// tree.
     fn visit_children(&self, _visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {}
 
+    /// Lets go of what this object holds that the allocator will not take
+    /// back on its own -- a decoded image, and anything else that is a handle
+    /// to memory outside this process.
+    ///
+    /// Upstream's `RenderObject.dispose`, called from
+    /// `RenderObjectElement.unmount` the moment an element leaves the tree.
+    /// Upstream needs it because Dart's collector is not prompt about a
+    /// `ui.Image`; this framework needs it for a different reason, and a
+    /// sharper one. A render object here is reached through an `Rc`, and the
+    /// tree is not the only thing that can be holding one: a handle that
+    /// outlives the element -- kept by a stale layer, a hand-built subtree
+    /// somebody else is still pointing at -- keeps a decoded photograph and
+    /// its GPU texture alive with it, and 60 MB a photograph is not a leak
+    /// anybody finds by reading. Dropping the picture is not left to the
+    /// question of who else is holding the box.
+    ///
+    /// Called on the whole subtree: see [`RenderRef::dispose_subtree`], which
+    /// is where a hand-built subtree inside one element's render object is
+    /// reached. Idempotent, and an object that has been disposed of must
+    /// still answer every other question without panicking -- upstream's rule
+    /// too, which is why its `RenderImage` keeps drawing (nothing) after its
+    /// image is gone.
+    fn dispose(&self) {}
+
     /// The children a screen reader should meet, in reading order.
     ///
     /// Upstream's `visitChildrenForSemantics`, with the same default and the
@@ -1600,6 +1624,19 @@ impl RenderRepaintBoundary {
 }
 
 impl RenderBox for RenderRepaintBoundary {
+    /// Upstream's `RenderObject.dispose`, whose whole body is
+    /// `_layerHandle.layer = null`.
+    ///
+    /// The layer is where the recording lives, and a recording holds every
+    /// image it drew -- a photograph among them, which is a GPU texture and a
+    /// system-memory copy of it. A boundary that has left the tree will never
+    /// be composited again, so what it kept for the next frame is now only
+    /// weight. This is the reason upstream disposes render objects at all
+    /// rather than letting the collector find them.
+    fn dispose(&self) {
+        *self.layer.borrow_mut() = None;
+    }
+
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         // Reaching here at all means the answer was not already known -- the
         // handle would have returned it otherwise -- so whatever was drawn was
@@ -2491,9 +2528,26 @@ impl RenderRef {
             return false;
         };
         let mut fresh = cell.into_inner();
+        // What this object is holding before it is told about the new one, so
+        // that a child it stops holding can be disposed of below.
+        let before = child_handles(self);
         let Some(effect) = self.render.borrow_mut().update_from(&mut *fresh) else {
             return false;
         };
+        // The third way a render object leaves the tree, after an element
+        // unmounting and an element replacing it: a parent taking the fresh
+        // object's children in place of its own. `Drop` frees whichever of the
+        // old ones nobody else is holding; this is for the ones somebody is,
+        // and it is the same rule as the other two -- off the tree means the
+        // picture goes, whatever is still pointing at the box.
+        if !before.is_empty() {
+            let after = child_handles(self);
+            for child in before {
+                if !after.iter().any(|kept| kept.is(&child)) {
+                    child.dispose_subtree_except(&after);
+                }
+            }
+        }
         match effect {
             UpdateEffect::Nothing => {}
             UpdateEffect::Repaint => self.mark_needs_paint(),
@@ -2825,6 +2879,77 @@ impl RenderBox for RenderRef {
 
 /// What a parent stores for each of its children, and what a build closure
 /// hands back.
+impl RenderRef {
+    /// Disposes of this object and everything under it.
+    ///
+    /// Upstream unmounts one element at a time and each disposes of its own
+    /// render object, which reaches everything because upstream has one
+    /// element per render object. Here a single element's render object can
+    /// be a whole hand-built subtree -- a stack of grid cells, a viewer's
+    /// backdrop and picture -- so the walk has to go down: the objects in it
+    /// have no element of their own to be unmounted with.
+    ///
+    /// The walk goes through the handles, not around them: a child that is
+    /// itself a [`RenderRef`] is opened rather than described, which is the
+    /// same care [`crate::theatre`]'s subtree walk takes and for the same
+    /// reason -- a handle answers questions about itself, not about what it
+    /// holds.
+    pub fn dispose_subtree(&self) {
+        self.dispose_subtree_except(&[]);
+    }
+
+    /// [`RenderRef::dispose_subtree`], stopping at handles in `keep`.
+    ///
+    /// For the other way an object leaves the tree: the element it belongs to
+    /// is still mounted, but its widget described something this object could
+    /// not become -- a different type -- so the walk built a new one and put
+    /// it in place. The old object is off the tree from that moment and is
+    /// never asked anything again, which is exactly the state its picture
+    /// should not survive in.
+    ///
+    /// `keep` is what the new object was given: the render objects of this
+    /// element's *child elements*, which belong to those elements and are in
+    /// the new subtree as well. Everything else under the old object was
+    /// built by this element and goes with it. Upstream has no equivalent
+    /// because it has no equivalent problem -- `RenderObjectElement.update`
+    /// hands the new configuration to the object that is already there, and a
+    /// render object is never replaced under a live element.
+    pub fn dispose_subtree_except(&self, keep: &[RenderRef]) {
+        self.with(|object| dispose_object(object, keep));
+    }
+}
+
+/// The handles a render object is holding directly, for telling what it
+/// stopped holding across an update.
+fn child_handles(handle: &RenderRef) -> Vec<RenderRef> {
+    let mut children = Vec::new();
+    handle.with(|object| {
+        object.visit_children(&mut |child, _| {
+            if let Some(handle) = child.as_any().downcast_ref::<RenderRef>() {
+                children.push(handle.clone());
+            }
+        })
+    });
+    children
+}
+
+/// Disposes of `object` and its children, opening any handle on the way and
+/// turning back at the ones in `keep`.
+fn dispose_object(object: &dyn RenderBox, keep: &[RenderRef]) {
+    object.dispose();
+    object.visit_children(
+        &mut |child, _| match child.as_any().downcast_ref::<RenderRef>() {
+            Some(handle) => {
+                if keep.iter().any(|kept| kept.is(handle)) {
+                    return;
+                }
+                handle.with(|inner| dispose_object(inner, keep));
+            }
+            None => dispose_object(child, keep),
+        },
+    );
+}
+
 pub type BoxedRender = RenderRef;
 
 /// Whether two optional children are the same object -- the same one, not an
@@ -4499,8 +4624,41 @@ pub fn slice_border(image: Size, scale: f32, centre_slice: Size) -> Size {
     )
 }
 
+thread_local! {
+    /// How many [`RenderImage`] objects exist on this thread.
+    static LIVE_RENDER_IMAGES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many image render objects are alive on this thread. Diagnostic: each
+/// one holds a decoded image, so a count that grows with nothing new on screen
+/// is a subtree that left the tree without being dropped.
+pub fn live_render_images() -> usize {
+    LIVE_RENDER_IMAGES.try_with(|live| live.get()).unwrap_or(0)
+}
+
+impl Drop for RenderImage {
+    fn drop(&mut self) {
+        let _ = LIVE_RENDER_IMAGES.try_with(|live| live.set(live.get().saturating_sub(1)));
+        if std::env::var_os("RUSTFLUTTER_TRACE_IMAGES").is_some() {
+            if let Some(image) = self.image.borrow().as_ref() {
+                let (w, h) = image.size();
+                if w * h > 1_000_000 {
+                    eprintln!("RenderImage::drop {w}x{h} still holding it");
+                }
+            }
+        }
+    }
+}
+
 pub struct RenderImage {
-    image: Rc<Image>,
+    /// The decoded picture, until [`RenderBox::dispose`] lets it go.
+    ///
+    /// Optional for the reason upstream's `_image` is nullable: an object
+    /// whose element has unmounted has given the picture back, and everything
+    /// that still asks it a question has to get an answer. Upstream's
+    /// `RenderImage.paint` returns early on a null image and its `dispose`
+    /// nulls the field; both are here.
+    image: RefCell<Option<Rc<Image>>>,
     fit: BoxFit,
     alignment: Alignment,
     opacity: Option<f32>,
@@ -4577,8 +4735,15 @@ impl RenderImage {
     /// contain, the opt-in via `with_fit`, would grow the same picture to
     /// fill the same box.
     pub fn new(image: Rc<Image>) -> RenderImage {
+        let _ = LIVE_RENDER_IMAGES.try_with(|live| live.set(live.get() + 1));
+        if std::env::var_os("RUSTFLUTTER_TRACE_IMAGES").is_some() {
+            let (w, h) = image.size();
+            if w * h > 1_000_000 {
+                eprintln!("RenderImage::new {w}x{h} live={}", live_render_images());
+            }
+        }
         RenderImage {
-            image,
+            image: RefCell::new(Some(image)),
             centre_slice: None,
             fit: BoxFit::ScaleDown,
             alignment: Alignment::CENTER,
@@ -4685,7 +4850,10 @@ impl RenderImage {
     /// The picture's size **in image pixels**, which is what a source rect is
     /// measured in and what the scale divides.
     fn pixels(&self) -> Size {
-        let (w, h) = self.image.size();
+        let Some(image) = self.image.borrow().clone() else {
+            return Size::ZERO;
+        };
+        let (w, h) = image.size();
         Size::new(w as f32, h as f32)
     }
 
@@ -4717,7 +4885,10 @@ impl RenderImage {
     }
 
     fn natural(&self) -> Size {
-        let (w, h) = self.image.size();
+        let Some(image) = self.image.borrow().clone() else {
+            return Size::ZERO;
+        };
+        let (w, h) = image.size();
         if self.scale <= 0.0 {
             // Upstream asserts a positive scale rather than defending against
             // one; here a zero would make every size infinite and every
@@ -4838,8 +5009,13 @@ impl RenderBox for RenderImage {
         // The same pixels, not equal pixels: an `Image` is a handle to a
         // decoded bitmap, and comparing two of them any other way would mean
         // reading both.
-        let mut effect = UpdateEffect::relayout_if(!Rc::ptr_eq(&self.image, &fresh.image));
-        self.image = Rc::clone(&fresh.image);
+        let same = match (&*self.image.borrow(), &*fresh.image.borrow()) {
+            (Some(mine), Some(theirs)) => Rc::ptr_eq(mine, theirs),
+            (None, None) => true,
+            _ => false,
+        };
+        let mut effect = UpdateEffect::relayout_if(!same);
+        *self.image.borrow_mut() = fresh.image.borrow().clone();
         // The fit and the alignment decide the destination rect, which only
         // `paint` asks for.
         effect = effect.and(UpdateEffect::repaint_if(
@@ -4882,12 +5058,33 @@ impl RenderBox for RenderImage {
         // this read correctly until a scale existed to tell them apart. Taking
         // the source from `natural` at a scale of 2 would name the top-left
         // quarter of the picture and draw that, stretched, over the whole box.
+        let Some(image) = self.image.borrow().clone() else {
+            return;
+        };
         context.canvas().draw_image_rect(
-            &self.image,
+            &image,
             self.source_rect(),
             self.destination(offset),
             self.image_paint().as_ref(),
         );
+    }
+
+    /// Upstream's `RenderImage.dispose`: `_image?.dispose(); _image = null;`.
+    ///
+    /// The picture is the whole reason this object is expensive -- a
+    /// photograph is a GPU texture and, on a desktop driver, a system-memory
+    /// copy of the same size again -- and this is the moment it stops being
+    /// anybody's business.
+    fn dispose(&self) {
+        let gone = self.image.borrow_mut().take();
+        if std::env::var_os("RUSTFLUTTER_TRACE_IMAGES").is_some() {
+            if let Some(image) = gone {
+                let (w, h) = image.size();
+                if w * h > 1_000_000 {
+                    eprintln!("RenderImage::dispose {w}x{h}");
+                }
+            }
+        }
     }
 
     /// Upstream `RenderImage.hitTestSelf` is `true` (`image.dart`), for the box
@@ -6921,9 +7118,18 @@ impl RenderBox for RenderStack {
         );
     }
 
+    /// Every child, whether or not it has been placed yet.
+    ///
+    /// The offsets come from layout, and a walk can happen before one -- the
+    /// frame that unmounts a subtree reaches it without laying it out first.
+    /// Zipping the two lists dropped every child in that case, which made a
+    /// walk that has to be exhaustive (the dispose walk; the semantics walk
+    /// after a rebuild) quietly visit nothing. An unplaced child is at the
+    /// origin, which is where upstream's parent data starts too.
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
-        for (child, placement) in self.children.iter().zip(self.offsets.iter()) {
-            visit(&child.render, *placement);
+        for (index, child) in self.children.iter().enumerate() {
+            let placement = self.offsets.get(index).copied().unwrap_or(Offset::ZERO);
+            visit(&child.render, placement);
         }
     }
 

@@ -1946,6 +1946,17 @@ impl ElementTree {
             }
         }
         if let Some(node) = self.nodes[id.0].take() {
+            // Upstream's `RenderObjectElement.unmount`, which calls
+            // `renderObject.dispose()` on the way out. What that frees is not
+            // the object -- the allocator will do that when the last handle
+            // goes -- but what the object is *holding*: a decoded photograph
+            // is a GPU texture, and one that outlives the element that drew
+            // it is invisible on screen and enormous in memory. Doing it here
+            // rather than leaving it to the drop means a handle kept
+            // elsewhere costs a render object and not a photograph.
+            if let Some(render) = node.render.as_ref() {
+                render.dispose_subtree();
+            }
             // The widget says goodbye to its state before either is dropped --
             // upstream's `State.dispose`, called from `Element.unmount`. It
             // runs before the children are released so that a parent still
@@ -2920,11 +2931,20 @@ impl ElementTree {
             let WidgetKind::Render(render) = &node.widget.inner else {
                 unreachable!("checked above");
             };
-            render.create_render(child_renders)
+            render.create_render(child_renders.clone())
         };
         if let Some(node) = self.nodes[id.0].as_mut() {
-            node.render = Some(built.clone());
+            let replaced = node.render.replace(built.clone());
             node.render_dirty = false;
+            // The object that was here could not take the new configuration --
+            // a different type describes a different object -- so it has been
+            // replaced rather than updated, and it is off the tree for good.
+            // Its children's objects are not: those belong to the child
+            // elements, which are still mounted and gave the same handles to
+            // the new object, so the walk turns back at them.
+            if let Some(replaced) = replaced {
+                replaced.dispose_subtree_except(&child_renders);
+            }
         }
         (built, true)
     }
@@ -5250,6 +5270,222 @@ mod tests {
             _offset: crate::render::Offset,
         ) {
         }
+    }
+
+    thread_local! {
+        /// How many [`Counted`] render objects exist.
+        static COUNTED_LIVE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A render object that says whether it is still alive.
+    ///
+    /// A render object owns things a `Drop` has to reach: upstream's owns a
+    /// `ui.Image`, a `ui.Picture`, a `Layer`, and disposes each one in
+    /// `RenderObject.dispose` -- which `RenderObjectElement.unmount` calls
+    /// precisely so that leaving the tree frees them. Here `Drop` is that
+    /// call, so "did the object go away" is the whole question, and this is
+    /// how a test asks it.
+    struct Tallied;
+
+    impl Tallied {
+        fn new() -> Tallied {
+            COUNTED_LIVE.with(|live| live.set(live.get() + 1));
+            Tallied
+        }
+
+        fn live() -> usize {
+            COUNTED_LIVE.with(|live| live.get())
+        }
+    }
+
+    impl Drop for Tallied {
+        fn drop(&mut self) {
+            COUNTED_LIVE.with(|live| live.set(live.get() - 1));
+        }
+    }
+
+    impl crate::render::RenderBox for Tallied {
+        fn layout(&mut self, constraints: crate::render::BoxConstraints) -> crate::render::Size {
+            constraints.constrain(crate::render::Size::ZERO)
+        }
+        fn size(&self) -> crate::render::Size {
+            crate::render::Size::ZERO
+        }
+        fn paint(
+            &self,
+            _context: &mut crate::render::PaintContext,
+            _offset: crate::render::Offset,
+        ) {
+        }
+    }
+
+    #[test]
+    fn a_subtree_that_leaves_the_tree_drops_its_render_objects() {
+        // The album's leak: open a photograph, close it, and the grid's
+        // render objects -- one per visible thumbnail, each holding a decoded
+        // image -- were still alive with the grid off the screen. Every cycle
+        // added another set, and a browsing session ended up holding two
+        // gigabytes of textures nothing could draw.
+        //
+        // Upstream frees these in `RenderObjectElement.unmount`, which calls
+        // `renderObject.dispose()`; `Drop` is that here, so all this asks is
+        // that the object is actually let go of.
+        COUNTED_LIVE.with(|live| live.set(0));
+        let mut tree = ElementTree::new();
+
+        tree.rebuild(column(vec![
+            leaf(Tallied::new),
+            component(Static("beside it")),
+        ]));
+        let root = tree.build_render_tree().expect("a root");
+        assert_eq!(Tallied::live(), 1, "one render object for the one leaf");
+        drop(root);
+
+        // The leaf is gone from the build. Nothing else changed, and nothing
+        // was rebuilt into a new object -- which is exactly the case that
+        // used to keep it: a child that was *removed* remakes nothing.
+        tree.rebuild(column(vec![component(Static("beside it"))]));
+        let root = tree.build_render_tree().expect("a root");
+        drop(root);
+        assert_eq!(
+            Tallied::live(),
+            0,
+            "a render object whose element left the tree has to be dropped"
+        );
+    }
+
+    #[test]
+    fn a_released_element_lets_go_of_the_picture_it_was_drawing() {
+        // The album's two gigabytes: a photograph is a GPU texture and, on a
+        // desktop driver, a system-memory copy of the same size again, so a
+        // decoded image that outlives the element that drew it is the most
+        // expensive thing this framework can leave behind. It has to go when
+        // the element unmounts -- **whatever else is still holding the render
+        // object**, which is the difference between this and letting `Drop`
+        // do it. Upstream's `RenderObjectElement.unmount` calls
+        // `renderObject.dispose()` for the same reason, and its
+        // `RenderImage.dispose` is `_image?.dispose(); _image = null;`.
+        use crate::painting::Image;
+        use crate::render::{RenderImage, RenderRef, RenderStack, StackPosition};
+
+        let image = Rc::new(Image::from_pixels(&[0u8; 4], 1, 1).expect("the stub allocates"));
+        assert_eq!(Rc::strong_count(&image), 1, "only this test holds it");
+
+        let key = GlobalKey::new();
+        let drawn = Rc::clone(&image);
+        let page = move |with_picture: bool| {
+            let mut children = vec![component(Static("beside it"))];
+            if with_picture {
+                let drawn = Rc::clone(&drawn);
+                // Inside a hand-built subtree, the way the album's grid puts a
+                // thumbnail in a cell: one element, many render objects.
+                children.push(with_global_key(
+                    key,
+                    leaf(move || {
+                        RenderStack::new().push_positioned(
+                            RenderRef::new(RenderImage::new(Rc::clone(&drawn))),
+                            StackPosition {
+                                left: Some(0.0),
+                                top: Some(0.0),
+                                right: None,
+                                bottom: None,
+                                width: Some(1.0),
+                                height: Some(1.0),
+                            },
+                        )
+                    }),
+                ));
+            }
+            column(children)
+        };
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(page(false));
+        drop(tree.build_render_tree().expect("a root"));
+        // This test and the closure that builds the page each hold one; the
+        // question below is only about what the *tree* holds on top of that.
+        let idle = Rc::strong_count(&image);
+
+        tree.rebuild(page(true));
+        drop(tree.build_render_tree().expect("a root"));
+        assert!(
+            Rc::strong_count(&image) > idle,
+            "the tree is drawing the picture"
+        );
+
+        // Somebody outside the tree keeps a handle to the render object --
+        // the frame loop's last painted tree, a layer, a hand-built subtree
+        // another object is still pointing at. This is the case the whole
+        // change is about: `Drop` will not run while this is held, and the
+        // photograph must go anyway.
+        let element = tree.current_element(&key).expect("mounted under the key");
+        let stale = tree.render_of(element).expect("the element made one");
+
+        tree.rebuild(page(false));
+        drop(tree.build_render_tree().expect("a root"));
+        assert_eq!(
+            Rc::strong_count(&image),
+            idle,
+            "the element unmounted, so nothing in the tree may still be holding the picture"
+        );
+        drop(stale);
+    }
+
+    #[test]
+    fn a_hand_built_subtree_does_not_pile_up_as_the_page_changes() {
+        // The album's shape: one element whose render object is a whole
+        // subtree built by hand -- a stack of cells, each holding a decoded
+        // thumbnail -- rebuilt every frame, beside a sibling that comes and
+        // goes (the photograph viewer). What leaked was a set of cells per
+        // appearance of the sibling.
+        use crate::render::{RenderRef, RenderStack, Size, StackPosition};
+
+        const CELLS: usize = 3;
+        COUNTED_LIVE.with(|live| live.set(0));
+
+        fn page(with_overlay: bool) -> AnyWidget {
+            let cells = leaf(|| {
+                let mut stack = RenderStack::new();
+                for _ in 0..CELLS {
+                    stack = stack.push_positioned(
+                        RenderRef::new(Tallied::new()),
+                        StackPosition {
+                            left: Some(0.0),
+                            top: Some(0.0),
+                            right: None,
+                            bottom: None,
+                            width: Some(1.0),
+                            height: Some(1.0),
+                        },
+                    );
+                }
+                crate::render::RenderClipRect::new(stack)
+            });
+            let mut children = vec![cells];
+            if with_overlay {
+                children.push(component(Static("the viewer, over everything")));
+            }
+            column(children)
+        }
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(page(false));
+        drop(tree.build_render_tree().expect("a root"));
+        assert_eq!(Tallied::live(), CELLS, "one set of cells");
+
+        for _ in 0..5 {
+            tree.rebuild(page(true));
+            drop(tree.build_render_tree().expect("a root"));
+            tree.rebuild(page(false));
+            drop(tree.build_render_tree().expect("a root"));
+        }
+
+        assert_eq!(
+            Tallied::live(),
+            CELLS,
+            "one set of cells, not one per time the page changed shape"
+        );
+        let _ = Size::ZERO;
     }
 
     #[test]

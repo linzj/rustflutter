@@ -1464,15 +1464,19 @@ pub struct Image {
 }
 
 impl Image {
+    /// Takes ownership of an engine handle, counting it as live.
+    fn own(raw: *mut sys::RfImage) -> Option<Image> {
+        if raw.is_null() {
+            return None;
+        }
+        let _ = LIVE_IMAGES.try_with(|live| live.set(live.get() + 1));
+        Some(Image { raw })
+    }
+
     /// Decodes PNG, JPEG, WebP, GIF or BMP bytes. Returns None if the format
     /// was not recognised or the data was truncated.
     pub fn decode(data: &[u8]) -> Option<Image> {
-        let raw = unsafe { sys::rf_image_decode(data.as_ptr(), data.len()) };
-        if raw.is_null() {
-            None
-        } else {
-            Some(Image { raw })
-        }
+        Image::own(unsafe { sys::rf_image_decode(data.as_ptr(), data.len()) })
     }
 
     /// Wraps pixels somebody else decoded: `width * height * 4` bytes, tightly
@@ -1496,12 +1500,7 @@ impl Image {
         if pixels.len() < needed {
             return None;
         }
-        let raw = unsafe { sys::rf_image_from_pixels(pixels.as_ptr(), width, height) };
-        if raw.is_null() {
-            None
-        } else {
-            Some(Image { raw })
-        }
+        Image::own(unsafe { sys::rf_image_from_pixels(pixels.as_ptr(), width, height) })
     }
 
     pub fn width(&self) -> i32 {
@@ -1550,8 +1549,33 @@ impl Image {
 
 impl Drop for Image {
     fn drop(&mut self) {
+        // `try_with`, because a handle can be dropped while this thread's
+        // locals are being torn down, and saturating because it can be
+        // dropped on a thread that did not make it -- the count is a
+        // diagnostic and must not be the thing that brings an application
+        // down.
+        let _ = LIVE_IMAGES.try_with(|live| live.set(live.get().saturating_sub(1)));
         unsafe { sys::rf_image_free(self.raw) };
     }
+}
+
+thread_local! {
+    /// How many [`Image`] handles exist on this thread.
+    static LIVE_IMAGES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many decoded images are alive on this thread.
+///
+/// A decoded photograph is a GPU texture and, on a desktop driver, a
+/// system-memory copy of the same size again; a handle that outlives the
+/// widget that drew it is invisible in the picture and expensive everywhere
+/// else. Upstream exposes the same count through `ui.Image.onCreate` and
+/// `ui.Image.onDispose` -- hooks that exist for exactly this question -- and
+/// answers it with a counter kept by whoever is asking. `dart:ui` needs the
+/// hooks because `Image.dispose` is explicit; here `Drop` is the disposal, so
+/// the counter can live in the type itself.
+pub fn live_images() -> usize {
+    LIVE_IMAGES.try_with(|live| live.get()).unwrap_or(0)
 }
 
 // -- Canvas extensions --------------------------------------------------------
