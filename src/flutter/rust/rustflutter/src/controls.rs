@@ -4883,6 +4883,11 @@ const DIALOG_SEMANTICS_ID: u64 = 0xD1A_106;
 /// *combinations* rather than four near-copies.
 #[derive(Default)]
 pub struct ChipParts {
+    /// The identifier the chip is hit-tested and keyed on, the same one
+    /// [`Chip::new`] takes. Upstream's chips have none -- identity there is the
+    /// element tree -- so this is the port's, and every variant needs one for
+    /// the same reason `Chip` does: two chips sharing an id are one target.
+    pub id: u64,
     pub label: String,
     pub selected: bool,
     pub enabled: bool,
@@ -4902,13 +4907,130 @@ pub struct ChipParts {
 }
 
 impl ChipParts {
-    fn new(label: impl Into<String>) -> ChipParts {
+    fn new(id: u64, label: impl Into<String>) -> ChipParts {
         ChipParts {
+            id,
             label: label.into(),
             enabled: true,
             ..ChipParts::default()
         }
     }
+
+    /// The [`Chip`] that draws this variant.
+    ///
+    /// **One build for all four**, which is upstream's arrangement too: its
+    /// `ActionChip`, `ChoiceChip`, `FilterChip` and `InputChip` are each a
+    /// `StatelessWidget` that returns a `RawChip` with different arguments.
+    /// The four differ in what they are *for* -- which attribute mixins they
+    /// implement, and therefore which callback fires -- not in what they look
+    /// like, so four builds would be four copies of one and drift apart the
+    /// first time a chip's padding changed.
+    ///
+    /// `enabled` is the variant's own too, and passed in rather than read off
+    /// `self.enabled`. The two cannot currently be told apart -- wherever
+    /// `is_enabled()` is false and the field is true, the callback it derives
+    /// from is `None`, so there is no handler left for `filter` to remove --
+    /// and a mutation swapping them stays green for exactly that reason.
+    /// It is still what should be written, because the four **disagree about
+    /// what it means**:
+    /// upstream's `ActionChip.isEnabled` is `onPressed != null` -- derived, so
+    /// an action chip with nothing to do is disabled whatever anyone set --
+    /// while an `InputChip` carries the flag. Reading the field here would
+    /// have been a second definition of enabled sitting beside the taxonomy's.
+    ///
+    /// `on_tap` is the variant's own, because that is the real difference: an
+    /// action chip has `onPressed` and no selection to report, the two
+    /// selectable ones have `onSelected`, and a disabled chip has neither --
+    /// which also stops [`Chip`] announcing it as a button, since it reads
+    /// "somebody is listening" off the handlers.
+    fn drawn_as(&self, style: ChipStyle, enabled: bool, on_tap: Option<Rc<dyn Fn()>>) -> Chip {
+        let chip = Chip::new(self.id, self.label.clone()).with_style(style);
+        match on_tap.filter(|_| enabled) {
+            Some(on_tap) => chip.on_tap(move |_| on_tap()),
+            None => chip,
+        }
+    }
+
+    /// Which of [`Chip`]'s three styles a selectable variant is in.
+    ///
+    /// Upstream draws the difference with `selected` on a `RawChip`; this
+    /// port's `Chip` spells the same thing as a style, and `Filter` is its
+    /// unselected outline.
+    fn style_when_selectable(&self) -> ChipStyle {
+        if self.selected {
+            ChipStyle::Selected
+        } else {
+            ChipStyle::Filter
+        }
+    }
+}
+
+impl Component for ActionChip {
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+        // `ChipStyle::Action`, because an action chip has **no state to be
+        // in**: pressing it starts something and it looks the same afterwards.
+        // That is the whole distinction the attribute taxonomy draws, and
+        // drawing it selected would claim a state it does not have.
+        crate::framework::component(self.0.drawn_as(
+            ChipStyle::Action,
+            self.is_enabled(),
+            self.0.on_pressed.clone(),
+        ))
+    }
+}
+
+impl Component for ChoiceChip {
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+        crate::framework::component(self.0.drawn_as(
+            self.0.style_when_selectable(),
+            self.is_enabled(),
+            selection_toggle(&self.0),
+        ))
+    }
+}
+
+impl Component for FilterChip {
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+        crate::framework::component(self.0.drawn_as(
+            self.0.style_when_selectable(),
+            self.is_enabled(),
+            selection_toggle(&self.0),
+        ))
+    }
+}
+
+impl Component for InputChip {
+    fn build(&self, _context: &mut BuildContext) -> AnyWidget {
+        // An input chip has **both** `onPressed` and `onSelected` upstream,
+        // and they are not alternatives: pressing the chip body is one thing
+        // and choosing it is another. A press wins here because it is the one
+        // a finger on the body means; the delete affordance is
+        // `on_deleted`, which has no target to hang on until the chip grows a
+        // delete icon.
+        let tap = self
+            .0
+            .on_pressed
+            .clone()
+            .or_else(|| selection_toggle(&self.0));
+        crate::framework::component(self.0.drawn_as(
+            self.0.style_when_selectable(),
+            self.is_enabled(),
+            tap,
+        ))
+    }
+}
+
+/// The tap that reports a *selection*: it hands `onSelected` the state the chip
+/// would move to, which is the opposite of the one it is in.
+///
+/// Shared by the three selectable variants rather than written three times --
+/// the argument is the part that is easy to get backwards, and getting it
+/// backwards in one of three copies is the kind of difference nothing here
+/// would notice.
+fn selection_toggle(parts: &ChipParts) -> Option<Rc<dyn Fn()>> {
+    let on_selected = parts.on_selected.clone()?;
+    let selected = parts.selected;
+    Some(Rc::new(move || on_selected(!selected)))
 }
 
 /// Upstream `ActionChip` (`material/action_chip.dart`): a chip that *does*
@@ -4923,15 +5045,15 @@ impl ChipParts {
 pub struct ActionChip(pub ChipParts);
 
 impl ActionChip {
-    pub fn new(label: impl Into<String>) -> ActionChip {
-        ActionChip(ChipParts::new(label))
+    pub fn new(id: u64, label: impl Into<String>) -> ActionChip {
+        ActionChip(ChipParts::new(id, label))
     }
 
     /// Upstream's `ActionChip.elevated`.
-    pub fn elevated(label: impl Into<String>) -> ActionChip {
+    pub fn elevated(id: u64, label: impl Into<String>) -> ActionChip {
         ActionChip(ChipParts {
             elevated: true,
-            ..ChipParts::new(label)
+            ..ChipParts::new(id, label)
         })
     }
 
@@ -4991,14 +5113,14 @@ impl DisabledChipAttributes for ActionChip {
 pub struct ChoiceChip(pub ChipParts);
 
 impl ChoiceChip {
-    pub fn new(label: impl Into<String>) -> ChoiceChip {
-        ChoiceChip(ChipParts::new(label))
+    pub fn new(id: u64, label: impl Into<String>) -> ChoiceChip {
+        ChoiceChip(ChipParts::new(id, label))
     }
 
-    pub fn elevated(label: impl Into<String>) -> ChoiceChip {
+    pub fn elevated(id: u64, label: impl Into<String>) -> ChoiceChip {
         ChoiceChip(ChipParts {
             elevated: true,
-            ..ChipParts::new(label)
+            ..ChipParts::new(id, label)
         })
     }
 
@@ -5071,14 +5193,14 @@ impl DisabledChipAttributes for ChoiceChip {
 pub struct FilterChip(pub ChipParts);
 
 impl FilterChip {
-    pub fn new(label: impl Into<String>) -> FilterChip {
-        FilterChip(ChipParts::new(label))
+    pub fn new(id: u64, label: impl Into<String>) -> FilterChip {
+        FilterChip(ChipParts::new(id, label))
     }
 
-    pub fn elevated(label: impl Into<String>) -> FilterChip {
+    pub fn elevated(id: u64, label: impl Into<String>) -> FilterChip {
         FilterChip(ChipParts {
             elevated: true,
-            ..ChipParts::new(label)
+            ..ChipParts::new(id, label)
         })
     }
 
@@ -5162,8 +5284,8 @@ impl DisabledChipAttributes for FilterChip {
 pub struct InputChip(pub ChipParts);
 
 impl InputChip {
-    pub fn new(label: impl Into<String>) -> InputChip {
-        InputChip(ChipParts::new(label))
+    pub fn new(id: u64, label: impl Into<String>) -> InputChip {
+        InputChip(ChipParts::new(id, label))
     }
 
     pub fn with_selected(mut self, selected: bool) -> Self {
@@ -5259,6 +5381,179 @@ impl DisabledChipAttributes for InputChip {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every stop a chip variant leaves, as `(label, selected, pressable)`.
+    fn chip_stops(widget: crate::framework::AnyWidget) -> Vec<(String, bool, bool)> {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            widget,
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| !node.properties.label.is_empty())
+            .map(|node| {
+                (
+                    node.properties.label.clone(),
+                    node.properties.flags.selected == crate::semantics::SemanticsTristate::True,
+                    node.properties.has(crate::semantics::SemanticsAction::Tap),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn all_four_chip_variants_reach_the_screen() {
+        // Found by `tools/shells.py` on its first run: the four were
+        // `pub struct X(pub ChipParts)` with **no `Component` impl between
+        // them**, so each could be constructed, configured, and never appear.
+        // Only `controls::Chip` built.
+        let pressed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = std::rc::Rc::clone(&pressed);
+        assert_eq!(
+            chip_stops(crate::framework::component(
+                ActionChip::new(8100, "Undo").with_on_pressed(move || flag.set(true))
+            )),
+            vec![("Undo".to_string(), false, true)]
+        );
+        for selectable in [
+            crate::framework::component(
+                ChoiceChip::new(8101, "Small")
+                    .with_selected(true)
+                    .with_on_selected(|_| {}),
+            ),
+            crate::framework::component(
+                FilterChip::new(8102, "Small")
+                    .with_selected(true)
+                    .with_on_selected(|_| {}),
+            ),
+        ] {
+            assert_eq!(
+                chip_stops(selectable),
+                vec![("Small".to_string(), true, true)],
+                "a selectable variant did not say it was on"
+            );
+        }
+    }
+
+    #[test]
+    fn an_action_chip_is_never_drawn_as_a_chosen_one() {
+        // The taxonomy's whole point, now that it reaches the screen: an
+        // action chip implements no selectable attribute, so there is no state
+        // for it to be lit up in. Upstream draws it through a `RawChip` with
+        // `selected: false` for the same reason.
+        let stops = chip_stops(crate::framework::component(
+            ActionChip::new(8103, "Undo").with_on_pressed(|| {}),
+        ));
+        assert!(!stops[0].1, "an action chip claimed to be selected");
+    }
+
+    #[test]
+    fn a_switched_off_chip_offers_nothing_to_press() {
+        // `Chip` reads "somebody is listening" off its handlers to decide
+        // whether to announce a button, so a disabled variant has to withhold
+        // the handler rather than merely look faded -- otherwise a reader is
+        // sent to press something that will not answer.
+        // Both spellings of disabled, because the four variants disagree about
+        // which they use. An `InputChip` carries the flag:
+        let carried = chip_stops(crate::framework::component(
+            InputChip::new(8104, "someone@example.com")
+                .with_on_pressed(|| {})
+                .with_enabled(false),
+        ));
+        assert_eq!(
+            carried,
+            vec![("someone@example.com".to_string(), false, false)]
+        );
+        // and an `ActionChip` derives it from having nothing to do, which is
+        // upstream's `isEnabled => onPressed != null`.
+        let derived = chip_stops(crate::framework::component(ActionChip::new(8106, "Undo")));
+        assert_eq!(derived, vec![("Undo".to_string(), false, false)]);
+    }
+
+    #[test]
+    fn an_input_chip_with_both_callbacks_answers_the_press() {
+        // The one variant upstream gives **both** `onPressed` and
+        // `onSelected`, and they are not alternatives: pressing the body is
+        // one thing and choosing it is another. A finger on the body means the
+        // press, so the press wins -- and with the order reversed a tap would
+        // silently toggle the selection instead of running what the caller
+        // wrote.
+        let ran = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let press = std::rc::Rc::clone(&ran);
+        let select = std::rc::Rc::clone(&ran);
+        let chip = InputChip::new(8107, "tag")
+            .with_on_pressed(move || press.borrow_mut().push("pressed"))
+            .with_on_selected(move |_| select.borrow_mut().push("selected"));
+        let stops = chip_stops(crate::framework::component(chip));
+        assert_eq!(stops, vec![("tag".to_string(), false, true)]);
+
+        // Driven through the **built** chip, not by re-writing the expression
+        // the build uses: a test that reassembles `on_pressed.or_else(..)` by
+        // hand agrees with the code whichever way round the code has it, which
+        // is how the first version of this test stayed green under a mutation
+        // that swapped them.
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                InputChip::new(8108, "tag")
+                    .with_on_pressed({
+                        let ran = std::rc::Rc::clone(&ran);
+                        move || ran.borrow_mut().push("pressed")
+                    })
+                    .with_on_selected({
+                        let ran = std::rc::Rc::clone(&ran);
+                        move |_| ran.borrow_mut().push("selected")
+                    }),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root);
+        ran.borrow_mut().clear();
+        assert!(crate::semantics::perform_action(
+            &root,
+            crate::semantics::node_id_for(8108),
+            crate::semantics::SemanticsAction::Tap
+        ));
+        crate::semantics::set_enabled(false);
+        assert_eq!(*ran.borrow(), vec!["pressed"]);
+    }
+
+    #[test]
+    fn a_selection_reports_the_state_it_would_move_to() {
+        // The argument that is easy to get backwards: `onSelected` is handed
+        // where the chip is *going*, not where it is. Written out three times
+        // -- once per selectable variant -- one of the three could disagree
+        // and nothing here would notice, which is why `selection_toggle` is
+        // one function.
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        for selected in [false, true] {
+            let sink = std::rc::Rc::clone(&seen);
+            let chip = ChoiceChip::new(8105, "Small")
+                .with_selected(selected)
+                .with_on_selected(move |to| sink.borrow_mut().push(to));
+            let tap = selection_toggle(&chip.0).expect("a handler");
+            tap();
+        }
+        assert_eq!(*seen.borrow(), vec![true, false]);
+    }
     use super::*;
     use crate::components::Theme;
     use crate::framework::{ElementTree, component, provide};
@@ -5741,13 +6036,15 @@ mod tests {
         fn only_selectable<T: SelectableChipAttributes>(chip: &T) -> bool {
             chip.selected()
         }
-        assert!(!only_selectable(&ChoiceChip::new("A").with_selected(false)));
-        assert!(!only_selectable(&FilterChip::new("B")));
-        assert!(!only_selectable(&InputChip::new("C")));
+        assert!(!only_selectable(
+            &ChoiceChip::new(8001, "A").with_selected(false)
+        ));
+        assert!(!only_selectable(&FilterChip::new(8002, "B")));
+        assert!(!only_selectable(&InputChip::new(8003, "C")));
         // And the action chip is tappable, which the other question is about.
         let pressed = std::rc::Rc::new(std::cell::Cell::new(false));
         let flag = std::rc::Rc::clone(&pressed);
-        let action = ActionChip::new("Do it").with_on_pressed(move || flag.set(true));
+        let action = ActionChip::new(8004, "Do it").with_on_pressed(move || flag.set(true));
         action.on_pressed().expect("a callback")();
         assert!(pressed.get());
     }
@@ -5767,7 +6064,7 @@ mod tests {
                 + TappableChipAttributes,
         {
         }
-        needs_all_six(&InputChip::new("someone@example.com"));
+        needs_all_six(&InputChip::new(8005, "someone@example.com"));
     }
 
     #[test]
@@ -5777,9 +6074,9 @@ mod tests {
         // chosen one says the same thing twice; several filters can be on at
         // once, so the set has to be readable at a glance and colour alone is
         // not enough.
-        assert_eq!(ChoiceChip::new("Small").show_checkmark(), Some(false));
-        assert_eq!(FilterChip::new("Vegan").show_checkmark(), None);
-        assert_eq!(InputChip::new("tag").show_checkmark(), None);
+        assert_eq!(ChoiceChip::new(8006, "Small").show_checkmark(), Some(false));
+        assert_eq!(FilterChip::new(8007, "Vegan").show_checkmark(), None);
+        assert_eq!(InputChip::new(8008, "tag").show_checkmark(), None);
     }
 
     #[test]
@@ -5787,17 +6084,25 @@ mod tests {
         // The three derive `isEnabled` from having something to do; an input
         // chip carries it, because it is showing something the reader typed
         // whether or not it can still be acted on.
-        assert!(!ChoiceChip::new("A").is_enabled());
-        assert!(ChoiceChip::new("A").with_on_selected(|_| {}).is_enabled());
-        assert!(!FilterChip::new("B").is_enabled());
-        assert!(!ActionChip::new("C").is_enabled());
-        assert!(ActionChip::new("C").with_on_pressed(|| {}).is_enabled());
+        assert!(!ChoiceChip::new(8009, "A").is_enabled());
+        assert!(
+            ChoiceChip::new(8010, "A")
+                .with_on_selected(|_| {})
+                .is_enabled()
+        );
+        assert!(!FilterChip::new(8011, "B").is_enabled());
+        assert!(!ActionChip::new(8012, "C").is_enabled());
+        assert!(
+            ActionChip::new(8013, "C")
+                .with_on_pressed(|| {})
+                .is_enabled()
+        );
 
         assert!(
-            InputChip::new("D").is_enabled(),
+            InputChip::new(8014, "D").is_enabled(),
             "present and inert is a state"
         );
-        assert!(!InputChip::new("D").with_enabled(false).is_enabled());
+        assert!(!InputChip::new(8015, "D").with_enabled(false).is_enabled());
     }
 
     #[test]
@@ -5805,9 +6110,17 @@ mod tests {
         // A choice is one of a fixed set, so there is nothing to remove --
         // picking another is how you stop picking this one. An action chip
         // has nothing to remove either.
-        assert!(!FilterChip::new("A").is_deletable());
-        assert!(FilterChip::new("A").with_on_deleted(|| {}).is_deletable());
-        assert!(InputChip::new("B").with_on_deleted(|| {}).is_deletable());
+        assert!(!FilterChip::new(8016, "A").is_deletable());
+        assert!(
+            FilterChip::new(8017, "A")
+                .with_on_deleted(|| {})
+                .is_deletable()
+        );
+        assert!(
+            InputChip::new(8018, "B")
+                .with_on_deleted(|| {})
+                .is_deletable()
+        );
     }
 
     #[test]
@@ -5815,10 +6128,10 @@ mod tests {
         // Upstream's `.elevated` constructors, which are a shape rather than a
         // number: an elevated chip sits on its own surface instead of being an
         // outline on the page.
-        assert!(!ActionChip::new("A").0.elevated);
-        assert!(ActionChip::elevated("A").0.elevated);
-        assert!(ChoiceChip::elevated("B").0.elevated);
-        assert!(FilterChip::elevated("C").0.elevated);
+        assert!(!ActionChip::new(8019, "A").0.elevated);
+        assert!(ActionChip::elevated(8020, "A").0.elevated);
+        assert!(ChoiceChip::elevated(8021, "B").0.elevated);
+        assert!(FilterChip::elevated(8022, "C").0.elevated);
     }
 
     #[test]

@@ -26281,3 +26281,65 @@ ActionChip / ChoiceChip / FilterChip / InputChip   controls.rs
 能复用到什么程度——**四个变体上游的差别只有"选中态、删除键、能不能按"这几处**，
 所以很可能是**一个共用 build 加四组默认值**，而不是四份实现；
 如果写成四份，第 380 轮那条教训（造出重复之前先抽出来）就白学了。
+
+---
+
+## 第 392 轮：四个 Chip 变体终于能上屏——一份 build，四组默认值
+
+接上一轮 `tools/shells.py` 抓到的那条。按“下一步”先查 `ChipParts` 能复用多少，
+答案是**几乎全部**：上游的 `ActionChip`/`ChoiceChip`/`FilterChip`/`InputChip`
+各自都只是一个 `StatelessWidget`，返回一个参数不同的 `RawChip`。
+**四者的差别在于"它是干什么的"——实现哪几个 attribute mixin、因此哪个回调会响——
+而不在于长什么样。** 写成四份 build 就是一份的四个副本，
+等哪天 chip 的 padding 改了就开始各走各的。
+
+所以加了一个共用的 `ChipParts::drawn_as(style, enabled, on_tap)`，
+四个 `Component` impl 各自只决定三件事：
+
+| 变体 | 样式 | 谁响 |
+|---|---|---|
+| `ActionChip` | 恒为 `Action` | `on_pressed` |
+| `ChoiceChip` / `FilterChip` | 选中与否 | `on_selected` |
+| `InputChip` | 选中与否 | `on_pressed`，没有才轮到选择 |
+
+`ChipParts` 也补了一个 `id`：上游的 chip 没有标识（那边的身份是元素树），
+本项目的 `Chip::new(id, label)` 需要，**两个 chip 共用一个 id 就是同一个目标**。
+
+### 两处"同一件事有两个定义"，当场并掉
+
+* **enabled**：`drawn_as` 第一版直接读 `self.enabled`，
+  但四个变体**对它的含义并不一致**——上游 `ActionChip.isEnabled` 是
+  `onPressed != null`（**推导的**，没事可做的 action chip 无论谁怎么设都是禁用），
+  而 `InputChip` 是**带着**这个标志的。读字段等于在 taxonomy 旁边另立一个定义。
+  改成由各变体传自己的 `is_enabled()`。
+* **选择回调的参数**：`onSelected` 收到的是**它将要去的状态**，不是当前状态。
+  这个最容易写反，而写反其中一份、另外两份对，是这里没有任何东西会发现的差异。
+  抽成一个 `selection_toggle`。
+
+### 变异扫描 7 个，第一遍 3 红、1 绿 + 3 个 MISS（我自己的字符串没跟上 fmt）
+
+补齐后 6 红。两条值得记：
+
+* **“InputChip 优先响选择而不是按下”第一版是绿的**——因为我的测试
+  **把 build 里那个 `on_pressed.or_else(..)` 表达式照抄了一遍**，
+  代码怎么写它就怎么同意，这正是循环测试。
+  改成**走真实路径**：建树、flush、`perform_action(Tap)`，再看谁跑了。转红。
+* **“变体不用自己的 enabled 规则”仍然绿，而且是等价的**：
+  凡是 `is_enabled()` 与字段不同的地方，它推导所依据的那个回调本来就是 `None`，
+  于是 `filter` 已经没有 handler 可以摘了。**照实记账**，
+  和第 349、380、388 轮那几个等价变异同类；代码仍按该写的写，
+  并在文档里注明"目前分辨不出，但这是对的那一版"。
+
+`tools/shells.py` 现在不再列出这四个：140 → 144 个会 build。
+
+尺子：十六把全部 exit 0。门：Rust 6395 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：继续读 `shells.py` 的清单，但**按"上游那个类有没有真正的行为"筛**，
+别按字母序往下走——`AboutDialog`（三个 `Option<String>`）那种是**真控件**，
+而 `BottomNavigationBarTheme`、`CardTheme` 那类 `*Theme` 是
+**InheritedWidget，本项目用 `XxxTheme::of(context)` 的写法表达**，
+根本不该有 build，属于报告的误报候选。
+**先把 `*Theme` 这一类从报告里排掉**（它们在上游是 `InheritedWidget`，
+本项目有对应的 `of` 函数就算已实现），再看剩下的表还有多长——
+现在的 224 行里有相当一部分是这个。
