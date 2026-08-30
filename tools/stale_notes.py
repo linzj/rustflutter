@@ -52,6 +52,34 @@ A note making the same claim without naming a subject:
 There is no identifier to look up, so this ruler is silent. That hole is real
 and stated rather than papered over: the one in `tap_and_drag.rs` was found by
 hand in tick 286, and it had expired too.
+
+# The neighbouring ruler that was tried and thrown away (tick 358)
+
+There is a second kind of note that can expire: one claiming coverage exists.
+Three were found false by hand and fixed --
+
+    The functions are exercised end to end by rust_ffi_unittests     (app.rs)
+    under the stubs the protocol is exercised by the engine-backed runs
+                                                                  (render.rs)
+    The tree side is covered by `async_builder`'s own tests         (async.rs)
+
+-- and a detector for that shape was built against those three as a corpus,
+which is the calibration ticks 341 and 346 skipped. It reached 3 of 3, and
+then flagged 13 across the tree. **Every one of the other ten was already
+true**, and six were not claims at all: `covered by` and `pinned by` are
+ordinary English, and it cannot tell "covered by a test" from "covered by a
+transparent rectangle" or "pinned by their edges".
+
+So it found nothing, and it is not here. The reason is worth more than the
+tool: **the corpus had already been cleaned.** Rounds 356 and 357 found those
+three by hand and fixed them, so the only skill the detector demonstrated was
+recognising three sentences that no longer exist. A ruler calibrated on faults
+that are already fixed is calibrated on nothing.
+
+What would make it worth building is a corpus found *some other way* -- false
+coverage claims nobody has fixed yet. Until such a set exists, a hand pass over
+`covered by|exercised by|pinned by` is the whole of the technique, and it takes
+one round.
 """
 import io
 import os
