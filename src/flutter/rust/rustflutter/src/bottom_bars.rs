@@ -57,9 +57,28 @@ pub struct BottomNavigationBar {
     /// *resolved* type -- see
     /// [`crate::component_themes::ResolvedBottomNavigationBar`].
     pub show_unselected_labels: Option<bool>,
+    /// Upstream's `selectedFontSize`, whose default is **14**.
+    ///
+    /// A plain `f32` rather than an `Option`, because upstream's is: the two
+    /// sizes are the widget's own defaults and there is no theme field between
+    /// them and the constant. `BottomNavigationBarThemeData` carries label
+    /// *styles*, not sizes, and a style that names a size beats this -- see
+    /// [`crate::component_themes::ResolvedBottomNavigationBar::selected_label_text_style`].
+    pub selected_font_size: f32,
+    /// Upstream's `unselectedFontSize`, whose default is **12**.
+    ///
+    /// Two different numbers, and that is the point: a fixed bar shows which
+    /// page you are on twice over, once in colour and once in size. Drawn at
+    /// one size the selected destination is told apart by colour alone.
+    pub unselected_font_size: f32,
 }
 
 impl BottomNavigationBar {
+    /// Upstream's `selectedFontSize` default.
+    pub const SELECTED_FONT_SIZE: f32 = 14.0;
+    /// Upstream's `unselectedFontSize` default.
+    pub const UNSELECTED_FONT_SIZE: f32 = 12.0;
+
     pub fn new(item_count: usize, current_index: usize) -> BottomNavigationBar {
         BottomNavigationBar {
             item_count,
@@ -71,6 +90,8 @@ impl BottomNavigationBar {
             unselected_item_color: None,
             show_selected_labels: None,
             show_unselected_labels: None,
+            selected_font_size: BottomNavigationBar::SELECTED_FONT_SIZE,
+            unselected_font_size: BottomNavigationBar::UNSELECTED_FONT_SIZE,
         }
     }
 

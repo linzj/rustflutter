@@ -577,6 +577,112 @@ You"
             .collect()
     }
 
+    /// The font sizes a bar drew its destination labels at, in order.
+    fn label_font_sizes(destinations: usize, selected: usize) -> Vec<f32> {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(BottomNavigation::new(9812, pages(destinations), selected)),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .into_iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { text, size, .. }
+                    if text.starts_with("Page") =>
+                {
+                    Some(size)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_destination_you_are_on_is_written_larger() {
+        // Upstream's `selectedFontSize: 14` and `unselectedFontSize: 12`,
+        // neither of which was ported: this drew every label at a hard-coded
+        // 11, so a fixed bar showed the current page by colour alone where
+        // upstream shows it twice over.
+        //
+        // **The numbers written out**, not the constants: asserted against
+        // `SELECTED_FONT_SIZE` and `UNSELECTED_FONT_SIZE` the test agrees with
+        // whatever those say, so swapping the two constants swaps both sides
+        // and nothing fails.
+        assert_eq!(label_font_sizes(3, 1), vec![12.0, 14.0, 12.0]);
+    }
+
+    #[test]
+    fn a_theme_that_names_a_label_style_is_taken_whole() {
+        // Upstream fills the size in **only when the style does not name
+        // one** -- `textStyle.fontSize == null ? copyWith(fontSize:) :
+        // textStyle`. This crate's `TextStyle.font_size` is not optional, so
+        // the `Option` around the style is the only "unset" available: a style
+        // that was given has said everything, including its size. See
+        // `ResolvedBottomNavigationBar::selected_label_text_style`.
+        const THEMED_SIZE: f32 = 21.0;
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::component_themes::BottomNavigationBarTheme::new(
+                crate::component_themes::BottomNavigationBarThemeData::new().with_label_styles(
+                    crate::engine::TextStyle {
+                        font_size: THEMED_SIZE,
+                        ..crate::engine::TextStyle::default()
+                    },
+                    crate::engine::TextStyle {
+                        font_size: 12.0,
+                        ..crate::engine::TextStyle::default()
+                    },
+                ),
+                crate::framework::component(BottomNavigation::new(9813, pages(3), 1)),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 200.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(600, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(600.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        let sizes: Vec<f32> = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Paragraph { text, size, .. }
+                    if text.starts_with("Page") =>
+                {
+                    Some(size)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sizes,
+            vec![12.0, THEMED_SIZE, 12.0],
+            "the selected label did not take the theme's style"
+        );
+    }
+
     #[test]
     fn the_themes_own_colours_reach_the_destinations() {
         // `ResolvedBottomNavigationBar` works the two ends out from the
@@ -2833,6 +2939,15 @@ impl Component for BottomNavigation {
         let resolved = policy.resolved(context);
         let selected_item_color = resolved.selected_item_color;
         let unselected_item_color = resolved.unselected_item_color;
+        // Upstream's two sizes, **14 selected and 12 not**, which this drew as
+        // a single hard-coded 11: a fixed bar tells you which page you are on
+        // twice over, once in colour and once in size, and one size answered
+        // only half of that. The colour is put on afterwards, the way
+        // upstream's tile does it -- `customStyle.copyWith(fontSize:, color:)`
+        // -- because the colour comes from the item ends rather than from the
+        // style.
+        let selected_label_style = resolved.selected_label_text_style();
+        let unselected_label_style = resolved.unselected_label_text_style();
         // A **shifting** bar is told apart by its background rather than by its
         // ink: upstream repaints the whole bar in the selected item's
         // `backgroundColor`, which is why the resolver gives a shifting bar the
@@ -2924,14 +3039,18 @@ impl Component for BottomNavigation {
                             //
                             // Drawn transparent rather than omitted: invisible
                             // on the screen, present in the walk.
-                            Text::new(destination.label.clone())
-                                .with_size(11.0)
-                                .with_weight(if active { 700 } else { 500 })
-                                .with_color(if labels_written[index] {
+                            Text::new(destination.label.clone()).with_style(TextStyle {
+                                color: if labels_written[index] {
                                     color
                                 } else {
                                     Color::TRANSPARENT
-                                }),
+                                },
+                                ..if active {
+                                    selected_label_style.clone()
+                                } else {
+                                    unselected_label_style.clone()
+                                }
+                            }),
                         ),
                 ));
                 let region = match handlers.get(index) {

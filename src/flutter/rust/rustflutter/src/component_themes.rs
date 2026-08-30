@@ -2425,6 +2425,11 @@ pub struct ResolvedBottomNavigationBar {
     pub unselected_item_color: Color,
     pub selected_label_style: Option<TextStyle>,
     pub unselected_label_style: Option<TextStyle>,
+    /// The widget's two sizes, carried through so the effective styles are
+    /// worked out in one place. See
+    /// [`crate::bottom_bars::BottomNavigationBar::selected_font_size`].
+    pub selected_font_size: f32,
+    pub unselected_font_size: f32,
     pub selected_icon_theme: Option<IconThemeData>,
     pub unselected_icon_theme: Option<IconThemeData>,
     pub show_selected_labels: bool,
@@ -2446,6 +2451,44 @@ impl ResolvedBottomNavigationBar {
         match theme.brightness() {
             crate::platform::Brightness::Light => theme.color_scheme.primary,
             crate::platform::Brightness::Dark => theme.color_scheme.secondary,
+        }
+    }
+
+    /// Upstream's `_effectiveTextStyle(selectedLabelStyle, selectedFontSize)`,
+    /// as near as this port's `TextStyle` allows.
+    ///
+    /// ```dart
+    /// return textStyle.fontSize == null ? textStyle.copyWith(fontSize: fontSize) : textStyle;
+    /// ```
+    ///
+    /// **The condition cannot be asked here.** Upstream's `TextStyle.fontSize`
+    /// is nullable and the rule turns on exactly that null; this crate's is a
+    /// plain `f32`, so every style names a size and there is no telling one
+    /// that meant to from one that merely has a default. The `Option` around
+    /// the *style* is the only "unset" this port has, so that is what the rule
+    /// reads: no style at all means the font size decides, and a style that
+    /// was given means the caller has said everything.
+    ///
+    /// The consequence worth writing down: a theme that wants to set only a
+    /// family or a weight, leaving the size to `selectedFontSize`, cannot say
+    /// so -- it will carry whatever size its style was built with. That is a
+    /// missing `Option` on `TextStyle`, not a decision taken here.
+    pub fn selected_label_text_style(&self) -> TextStyle {
+        Self::effective_text_style(&self.selected_label_style, self.selected_font_size)
+    }
+
+    /// The same for the destinations you are not on.
+    pub fn unselected_label_text_style(&self) -> TextStyle {
+        Self::effective_text_style(&self.unselected_label_style, self.unselected_font_size)
+    }
+
+    fn effective_text_style(style: &Option<TextStyle>, font_size: f32) -> TextStyle {
+        match style {
+            Some(style) => style.clone(),
+            None => TextStyle {
+                font_size,
+                ..TextStyle::default()
+            },
         }
     }
 
@@ -2497,6 +2540,8 @@ impl ResolvedBottomNavigationBar {
             unselected_label_style: data.unselected_label_style.clone(),
             selected_icon_theme: data.selected_icon_theme.clone(),
             unselected_icon_theme: data.unselected_icon_theme.clone(),
+            selected_font_size: bar.selected_font_size,
+            unselected_font_size: bar.unselected_font_size,
             show_selected_labels: bar
                 .show_selected_labels
                 .or(data.show_selected_labels)
@@ -8071,6 +8116,17 @@ impl BottomNavigationBarThemeData {
     pub fn with_item_colors(mut self, selected: Color, unselected: Color) -> Self {
         self.selected_item_color = Some(selected);
         self.unselected_item_color = Some(unselected);
+        self
+    }
+
+    /// Upstream's `selectedLabelStyle` and `unselectedLabelStyle`.
+    ///
+    /// The pair had no setter at all, so the two fields the resolver reads
+    /// could only ever be `None` -- a theme could carry a label style in
+    /// principle and no caller could put one there.
+    pub fn with_label_styles(mut self, selected: TextStyle, unselected: TextStyle) -> Self {
+        self.selected_label_style = Some(selected);
+        self.unselected_label_style = Some(unselected);
         self
     }
 

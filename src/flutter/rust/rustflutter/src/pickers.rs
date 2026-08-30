@@ -6529,7 +6529,9 @@ mod dial_label_tests {
         drawn()
             .iter()
             .filter_map(|call| match call {
-                Drawn::Paragraph { text, x, y, argb } => Some((text.clone(), *x, *y, *argb)),
+                Drawn::Paragraph {
+                    text, x, y, argb, ..
+                } => Some((text.clone(), *x, *y, *argb)),
                 _ => None,
             })
             .collect()

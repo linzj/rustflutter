@@ -980,6 +980,16 @@ pub enum Drawn {
         /// enabled colour, a hint indistinguishable from the text beside it, a
         /// selected row's title in the wrong accent. Every one of those passed.
         argb: u32,
+        /// The size the style asked for.
+        ///
+        /// Recorded from round 400, and for the reason `argb` gives one field
+        /// up: the stub had the number all along -- `StubParagraph.font_size`
+        /// measures every line with it -- and dropped it on the way out, so
+        /// **no test in this crate could say what size any text was drawn
+        /// at**. A bottom bar drawing every label at one size where upstream
+        /// makes the selected one larger is the case that found it; a heading
+        /// at body size, or a caption at heading size, are the same shape.
+        size: f32,
     },
     /// An arc, which recorded **nothing at all** before: the stub's
     /// `rf_canvas_draw_arc` had an empty body, so a spinner's arc was not a
@@ -1194,11 +1204,18 @@ impl Drawn {
                 radius_x,
                 radius_y,
             },
-            Drawn::Paragraph { text, x, y, argb } => Drawn::Paragraph {
+            Drawn::Paragraph {
+                text,
+                x,
+                y,
+                argb,
+                size,
+            } => Drawn::Paragraph {
                 text,
                 x: x + dx,
                 y: y + dy,
                 argb,
+                size,
             },
             Drawn::Arc {
                 left,
@@ -1669,10 +1686,16 @@ pub unsafe extern "C" fn rf_canvas_draw_paragraph(
     x: f32,
     y: f32,
 ) {
-    let (text, argb) = unsafe { stub_paragraph(paragraph) }
-        .map(|paragraph| (paragraph.text.clone(), paragraph.argb))
+    let (text, argb, size) = unsafe { stub_paragraph(paragraph) }
+        .map(|paragraph| (paragraph.text.clone(), paragraph.argb, paragraph.font_size))
         .unwrap_or_default();
-    record(Drawn::Paragraph { text, x, y, argb });
+    record(Drawn::Paragraph {
+        text,
+        x,
+        y,
+        argb,
+        size,
+    });
 }
 
 #[unsafe(no_mangle)]
