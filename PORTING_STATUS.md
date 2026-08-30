@@ -25920,3 +25920,54 @@ C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建
 `controls::TabBar` 只画条，页面是谁在管、有没有一个"当前页"的容器，
 这决定了这是"加一行"还是"先补一个控件"——
 第 383 轮就是在这一步上把一轮的活认成了一行。
+
+---
+
+## 第 386 轮：两个进度指示器的 kind 由**值**决定，不由形状决定
+
+先按“下一步”查 `tabPanel`——**查完就停了，这是对的。**
+本项目的 `tabs::TabBarView` 是个**纯度量结构体**
+（`child_count` / `viewport_fraction` / `matches()`），
+它不建任何东西、不持有子节点，页面是应用自己拼的
+（`tabs_demo.rs:133` 就是这么写的）。
+所以 `tabPanel` 不是加一行，是**先移植一个控件**。这一轮换一个真缺口。
+
+### 换到 `progress_indicator.dart`，而那里的规则正好是个陷阱
+
+```dart
+role: isProgressBar ? SemanticsRole.progressBar : SemanticsRole.loadingSpinner,
+```
+
+`isProgressBar` 就是 `value != null`，而这段在 **`ProgressIndicator` 基类**里——
+线性和圆形共用。**决定 role 的不是形状**：
+带值的圆形指示器在上游是 progressBar，不带值的线性指示器是 loadingSpinner。
+按名字对应会**两处都错**，哪怕碰巧对了也是碰巧。
+
+按规则套，两个都落地，而且理由都不是名字：
+
+* `controls::Spinner` → **`LoadingSpinner`**。它的 `value` 是**转动的相位，不是进度**
+  ——这是第 383 轮那一轮已经写死并测过的事
+  （`a_spinner_never_reads_its_rotation_out_as_progress`：
+  把相位念成进度是"比沉默更糟，因为读屏用户会照着做"）。
+  **没有进度可报，正是上游那个 null。**
+* `components::ProgressBar` → **`ProgressBar`**。它的 `value` 是真进度，念作 "60"。
+
+也就是说：这两个控件此前已经把"值是什么"辨清楚了，
+这一轮只是把那个已经确立的事实接到 role 上——
+名字给出的答案恰好和规则给出的一致，但走的是规则那条路。
+
+变异扫描 4 个（每个控件两条：不给 kind、按形状给反），**第一遍全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6378 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+清单：`Spinner -> "Loading" role=LoadingSpinner`、
+`ProgressBar -> "" ="60" role=ProgressBar`。
+
+**下一步**：上游用到 role 的地方已经列全（23 处，横跨 12 个文件），
+剩下**本项目有对应控件**的只有两类：
+`popup_menu.dart` 的 `menu`/`menuItem`/`menuItemCheckbox`（还有 `dropdown.dart` 的两处），
+和 `radio_group.dart` 的 `radioGroup`。
+**先查 `popup_menu`**：本项目有 `menu_demo`，但要先确认
+**弹出菜单本身是不是一个控件**（还是像 `TabBarView` 那样只有度量），
+以及 `menuItemCheckbox` 这一支——上游注释说它"带勾选状态和按钮标志"，
+本项目的 Checkbox 已有 flag，**别把两套状态写重**。

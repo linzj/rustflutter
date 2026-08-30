@@ -1256,6 +1256,13 @@ impl Component for ProgressBar {
         // two that have a counterpart here are the label and the value.
         let described = {
             let properties = crate::semantics::SemanticsProperties {
+                // `progressBar`, by upstream's condition rather than by this
+                // widget's name: `ProgressIndicator._buildSemanticsWrapper`
+                // picks the role on `value != null`, and this bar's value is
+                // real progress -- 0 to 1, read out as "60". The sibling
+                // [`crate::controls::Spinner`] comes out the other way for the
+                // same reason, its value being rotation rather than progress.
+                role: crate::semantics::SemanticsRole::ProgressBar,
                 value: self.semantic_value(),
                 ..crate::semantics::SemanticsProperties::label(
                     self.semantic_label.clone().unwrap_or_default(),

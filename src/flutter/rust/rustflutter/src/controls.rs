@@ -640,6 +640,40 @@ You"
     }
 
     #[test]
+    fn the_two_indicators_take_the_roles_their_values_earn_them() {
+        // Upstream picks between the two roles on **one condition**, in the
+        // base class of both indicators
+        // (`progress_indicator.dart:155`):
+        //
+        //     role: isProgressBar ? SemanticsRole.progressBar
+        //                         : SemanticsRole.loadingSpinner
+        //
+        // with `isProgressBar == (value != null)`. It is **not** the shape of
+        // the widget: a circular indicator with a value is a progress bar
+        // upstream, and a linear one without a value is a loading spinner --
+        // so mapping these two by their names would be wrong twice over even
+        // where it happens to land right.
+        //
+        // Applied by the condition: this `Spinner`'s value is the phase of its
+        // rotation rather than progress (see `Spinner::semantic_value`), which
+        // is upstream's null; the bar's value is progress, read out as "60".
+        use crate::semantics::SemanticsRole;
+        assert_eq!(
+            spinner_node(Spinner::new(0.4).with_semantic_label("Loading"))
+                .properties
+                .role,
+            SemanticsRole::LoadingSpinner
+        );
+        let bar = roles_of(crate::framework::component(
+            crate::components::ProgressBar::new(0.6).with_semantic_label("Uploading"),
+        ));
+        assert_eq!(
+            bar,
+            vec![("Uploading".to_string(), SemanticsRole::ProgressBar)]
+        );
+    }
+
+    #[test]
     fn a_spinner_never_reads_its_rotation_out_as_progress() {
         // The trap this round existed to avoid. `Spinner::value` is the phase
         // of the rotation -- the constructor's doc says to feed it from a
@@ -3785,7 +3819,31 @@ impl Component for Spinner {
         //
         // The label and a caller's value; never the phase. See
         // [`Spinner::semantic_value`].
+        //
+        // # Why this one is the *loading spinner* and not the progress bar
+        //
+        // Upstream decides between the two roles on one condition, in
+        // `ProgressIndicator._buildSemanticsWrapper` -- the base class of both
+        // the linear and the circular indicator:
+        //
+        // ```dart
+        // role: isProgressBar ? SemanticsRole.progressBar : SemanticsRole.loadingSpinner,
+        // ```
+        //
+        // where `isProgressBar` is `value != null`. **It is not the shape of
+        // the widget**: a circular indicator with a value is a progress bar
+        // upstream, and a linear one without a value is a loading spinner. The
+        // names invite the opposite mapping, which is the trap rounds 384 and
+        // 385 walked into and out of.
+        //
+        // Applied here it comes out as `loadingSpinner`, and by the rule
+        // rather than by the name: this `Spinner`'s `value` is **the phase of
+        // the rotation, not progress** -- see [`Spinner::semantic_value`] for
+        // why, and for what it would take to give this widget a determinate
+        // state at all. Having no progress to report is exactly upstream's
+        // null.
         let properties = crate::semantics::SemanticsProperties {
+            role: crate::semantics::SemanticsRole::LoadingSpinner,
             value: self.semantic_value().unwrap_or_default().to_string(),
             ..crate::semantics::SemanticsProperties::label(
                 self.semantic_label.clone().unwrap_or_default(),
