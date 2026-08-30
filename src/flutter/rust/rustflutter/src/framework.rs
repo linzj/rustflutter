@@ -1562,6 +1562,29 @@ impl BuildContext {
         }
     }
 
+    /// A handle on this element that **outlives the build**.
+    ///
+    /// Upstream never needs one: there a `BuildContext` *is* the `Element`, so
+    /// a widget that keeps its context can look things up from a callback long
+    /// after `build` returned -- which is what `Shortcuts` does when a key
+    /// arrives, and `Actions.maybeInvoke(context, intent)` when a button is
+    /// pressed. Here a `BuildContext` is a temporary handed to `build` and
+    /// dropped, so a widget that wants to ask a question later has nowhere to
+    /// ask it from. That is the gap this closes.
+    ///
+    /// It does **not** keep the element alive, and deliberately: it carries
+    /// the same generation stamp [`ElementRef`] does, so a handle to an
+    /// element that has been unmounted -- or whose id has since been reused --
+    /// answers nothing rather than answering about a stranger.
+    pub fn captured(&self) -> CapturedContext {
+        CapturedContext {
+            shared: Rc::clone(&self.shared),
+            element: self.element_ref(),
+            depth: self.depth,
+            frame_time_micros: self.frame_time_micros,
+        }
+    }
+
     /// How deep in the element tree this build is. Useful for diagnostics.
     pub fn depth(&self) -> usize {
         self.depth
@@ -1778,6 +1801,59 @@ struct ElementNode {
 pub struct ElementRef {
     id: ElementId,
     generation: u64,
+}
+
+/// A [`BuildContext`] kept for later, from [`BuildContext::captured`].
+///
+/// The one thing it is for is asking the tree a question from **outside** a
+/// build: a key handler looking for an [`crate::actions::Actions`] scope, a
+/// callback reading an inherited value. Cheap to clone.
+#[derive(Clone)]
+pub struct CapturedContext {
+    shared: Rc<Shared>,
+    element: ElementRef,
+    depth: usize,
+    /// The frame the capture was taken in, **not** the frame it is used in.
+    ///
+    /// A captured context is for looking things up, and a lookup does not read
+    /// the clock. Handing back the capture's own frame time is the honest
+    /// answer -- inventing a fresher one would mean reading a clock this holds
+    /// no handle to, and reporting zero would read as "the first frame".
+    frame_time_micros: i64,
+}
+
+impl CapturedContext {
+    /// Whether the element this was taken from is still the element it was
+    /// taken from.
+    ///
+    /// The generation is the whole test, and it is enough because releasing an
+    /// element bumps it and reusing its slot bumps it again. So an unmounted
+    /// element and a slot handed to somebody else both answer false, and they
+    /// answer it for the same reason rather than by two rules that could come
+    /// to disagree.
+    pub fn is_live(&self) -> bool {
+        self.shared.generation(self.element.id) == self.element.generation
+    }
+
+    /// Runs `act` with a context for this element, or answers `None` because
+    /// the element has gone.
+    ///
+    /// **Not a build.** Nothing here marks anything dirty and nothing expects
+    /// a widget back; a lookup made through this registers a dependency the
+    /// same way a build's would, which is what makes a later rebuild notice
+    /// that what it read has changed.
+    pub fn with<R>(&self, act: impl FnOnce(&mut BuildContext) -> R) -> Option<R> {
+        if !self.is_live() {
+            return None;
+        }
+        let mut context = BuildContext {
+            shared: Rc::clone(&self.shared),
+            element: self.element.id,
+            depth: self.depth,
+            frame_time_micros: self.frame_time_micros,
+        };
+        Some(act(&mut context))
+    }
 }
 
 /// The persistent tree between widgets and render objects.
@@ -5720,5 +5796,158 @@ mod tests {
             tree.state::<MoverState, _>(handle.element(), |s| s.count),
             Some(0)
         );
+    }
+}
+
+#[cfg(test)]
+mod captured_context_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Clone, PartialEq)]
+    struct Word(&'static str);
+
+    /// Captures its context during build and parks it where the test can
+    /// reach it -- which is the whole point: the question is asked *after*
+    /// the build has returned.
+    struct Capturer(Rc<RefCell<Option<CapturedContext>>>);
+
+    impl Component for Capturer {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            *self.0.borrow_mut() = Some(context.captured());
+            leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    fn mounted(word: &'static str) -> (ElementTree, Rc<RefCell<Option<CapturedContext>>>) {
+        let slot: Rc<RefCell<Option<CapturedContext>>> = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(Word(word), component(Capturer(Rc::clone(&slot)))));
+        (tree, slot)
+    }
+
+    #[test]
+    fn a_captured_context_can_still_answer_after_the_build_returned() {
+        // Upstream never needs this because a `BuildContext` *is* the
+        // `Element` and outlives the build by construction. Here it is a
+        // temporary, so a key handler or a callback had nowhere to ask a
+        // question from -- which is exactly what stopped `Shortcuts` reaching
+        // `Actions`.
+        let (_tree, slot) = mounted("published");
+        let captured = slot.borrow().clone().expect("captured during build");
+        let found = captured
+            .with(|context| context.inherited::<Word>())
+            .expect("the element is still there");
+        assert_eq!(found.expect("the value is above it").0, "published");
+    }
+
+    #[test]
+    fn a_captured_context_asks_from_where_it_was_taken_and_not_from_the_root() {
+        // It is a handle on *that* element. With the value published twice --
+        // once high, once just above the capture -- the nearer one is the
+        // answer, and a capture that had quietly kept the root instead would
+        // report the far one and look right in every test where there is only
+        // one.
+        let slot: Rc<RefCell<Option<CapturedContext>>> = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            Word("outer"),
+            provide(Word("inner"), component(Capturer(Rc::clone(&slot)))),
+        ));
+        let captured = slot.borrow().clone().expect("captured");
+        assert_eq!(
+            captured
+                .with(|context| context.inherited::<Word>())
+                .flatten()
+                .expect("published")
+                .0,
+            "inner"
+        );
+    }
+
+    #[test]
+    fn a_captured_context_whose_element_has_gone_answers_nothing() {
+        // Not a stale answer and not a panic: the element was released, so
+        // there is no longer anywhere to ask from. Holding one of these must
+        // not keep a subtree alive either, which is why it carries a
+        // generation rather than a reference.
+        let (mut tree, slot) = mounted("published");
+        let captured = slot.borrow().clone().expect("captured during build");
+        assert!(captured.is_live());
+
+        // A different root: the old subtree is released.
+        tree.rebuild(leaf(|| crate::widgets::SizedBox::new(2.0, 2.0)));
+        assert!(!captured.is_live(), "the element it named has gone");
+        assert!(
+            captured
+                .with(|context| context.inherited::<Word>())
+                .is_none(),
+            "and asking through it answers nothing at all"
+        );
+    }
+
+    #[test]
+    fn a_captured_context_sees_what_was_published_when_it_is_asked() {
+        // It is a handle on a place in the tree, not a copy of what was there.
+        // A rebuild that publishes something else is what the next question
+        // gets -- otherwise a key handler would act on a screen that had
+        // already changed.
+        let slot: Rc<RefCell<Option<CapturedContext>>> = Rc::new(RefCell::new(None));
+        let mut tree = ElementTree::new();
+        let page = |word: &'static str, slot: &Rc<RefCell<Option<CapturedContext>>>| {
+            provide(Word(word), component(Capturer(Rc::clone(slot))))
+        };
+        tree.rebuild(page("first", &slot));
+        let captured = slot.borrow().clone().expect("captured");
+        assert_eq!(
+            captured
+                .with(|context| context.inherited::<Word>())
+                .flatten()
+                .expect("published")
+                .0,
+            "first"
+        );
+
+        tree.rebuild(page("second", &slot));
+        assert_eq!(
+            captured
+                .with(|context| context.inherited::<Word>())
+                .flatten()
+                .expect("published")
+                .0,
+            "second",
+            "the same place, asked again"
+        );
+    }
+
+    #[test]
+    fn an_action_can_be_found_through_a_captured_context() {
+        // The reason this round happened. `RfApp::on_key` runs outside any
+        // build, so routing a key through `Actions` needs a context that a
+        // widget kept -- and this is what one of those can do.
+        use crate::actions::{Action, ActionDispatcher, Actions, Intent};
+        let ran = Rc::new(std::cell::Cell::new(false));
+        let flag = Rc::clone(&ran);
+        let dispatcher = Rc::new(ActionDispatcher::new().with_action(
+            "Dismiss",
+            Action::callback(move |_intent| {
+                flag.set(true);
+                None
+            }),
+        ));
+
+        let slot: Rc<RefCell<Option<CapturedContext>>> = Rc::new(RefCell::new(None));
+        let mut _tree = ElementTree::new();
+        _tree.rebuild(Actions::scope(
+            dispatcher,
+            component(Capturer(Rc::clone(&slot))),
+        ));
+        let captured = slot.borrow().clone().expect("captured");
+
+        assert!(!ran.get(), "nothing has run yet");
+        captured
+            .with(|context| Actions::maybe_invoke(context, &Intent::Dismiss))
+            .expect("the element is live");
+        assert!(ran.get(), "the action above it ran, from outside any build");
     }
 }

@@ -27519,3 +27519,60 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 `ElementTree` 能不能从一个 element id 造出 `BuildContext`。
 接不上的话，这一轮该补的是那条"从焦点节点拿到 context"的路，
 而不是在根上硬塞一个假 context——那等于把刚做好的往上走退化成一次全局查表。
+
+---
+
+## 第 414 轮：`BuildContext` 用完就没了，所以**没有任何回调能问树一句话**
+
+按"下一步"查焦点到 context 这条路，查出来的东西比预想的更基础。
+
+先说好消息：**冒泡本来就有**。`focus.rs::dispatch_key` 已经从获得焦点的节点
+沿 `ancestors` 一路往上跑每个节点的 `on_key`——那就是上游 `Focus` 链。
+`FocusEntry` 也已经记着 `ElementRef`。
+
+真正断掉的是另一头：上游的 `Shortcuts` 在键到达时调
+`Actions.maybeInvoke(context, intent)`，用的是**它自己的 context**。
+而上游能这么写，是因为在那边 **`BuildContext` 就是 `Element` 本身**，
+`build` 返回之后它照样活着。
+
+**这里不是。** `BuildContext { shared, element, depth, frame_time_micros }`
+是递给 `build` 的一个临时值，用完就丢。
+于是这个 crate 里**任何在 build 之外运行的东西——键处理器、点击回调——
+都没有一个可以从那里发问的位置**。
+第 413 轮做的"往上走"因此接不上；第 412 轮的 Escape 只能手写，也是同一个原因。
+
+所以这一轮补的是那件事：`BuildContext::captured()` → `CapturedContext`，
+带 `with(|ctx| ...)`。
+
+两处按事实定的决定：
+
+1. **它不持有那个 element，只带一个 generation 戳**。
+   释放 element 会 bump generation，槽位被复用会再 bump 一次——
+   所以"已经卸载"和"这个 id 现在是别人的"**用同一条规则**答 false，
+   不是两条各写各的、将来会互相不一致。
+   拿着它也就不会把一棵子树吊着不放。
+2. **帧时间是抓取那一帧的，不是使用那一帧的**。
+   查找不读时钟；编一个新鲜的意味着去读一个它根本没有句柄的钟，
+   而报 0 会被读成"第一帧"。所以如实带着抓取时的那个值，并写明。
+
+### 变异扫描 5 个，第一遍 4 红
+
+活下来的是"抓取时记根节点、不记自己"——因为我测试里的值**都发布在根上**，
+从根查也照样查得到。补了一条：同一个类型**发布两层**（外层 "outer"、内层 "inner"），
+从抓取点问必须得到 "inner"。这条一加，那个变异转红。
+**"只有一个候选"的测试，测不出"找的是哪一个"**——和第 403 轮"偏移 0 处分不出绝对与相对序号"是同一族。
+
+尺子：十六把全部 exit 0。门：Rust 6476 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：三块都有了——冒泡（`focus.rs`）、往上找 action（第 413 轮）、
+build 之外能发问的 context（这一轮）。
+下一轮把 `Shortcuts` 造出来：一个焦点节点，`on_key` 里用
+`ShortcutActivator::intent_for` 把键变成 intent，再拿捕获的 context 交给 `Actions`。
+但**先查一件事**：`shortcuts.rs` 的 `intent_for` 收的是什么——
+是 `(KeyEvent, Keyboard)` 还是别的，
+以及 `focus.rs` 注册焦点节点的入口（`FocusNode` / `FocusTraversalGroup` 那一套）
+**允许注册一个不可聚焦、只收键的节点吗**——
+上游那个是 `Focus(canRequestFocus: false)`。
+如果每个焦点节点都必然是 Tab 的一站，那 `Shortcuts` 会往遍历顺序里塞进一堆空站，
+那这一轮真正该补的是"能收键但不接受焦点"的那种节点。
