@@ -5275,6 +5275,33 @@ mod tests {
         // bug, and it is the second time in three ticks that a test written
         // to catch this turned out unable to (see `Measured`'s note). Said
         // here rather than left for the next reader to rediscover.
+        //
+        // # The one change that does reproduce it
+        //
+        // Tick 336 cut down from the failing search field instead of building
+        // up, and found the trigger: **wrap the row in a
+        // [`crate::widgets::Container`]**. Nothing else was needed -- not the
+        // search field, not `stateful` (tried, holds), not `provide` (tried,
+        // holds), not the IME. With a container in the way, the same two
+        // rebuilds give:
+        //
+        // ```text
+        // first  : ... row 200x40, padding 16x16, child 10x10, padding 24x24 ...
+        // rebuilt: ... row 200x40, padding  0x0,  child  0x0,  padding  0x0  ...
+        // ```
+        //
+        // The container and everything above it keep their sizes; everything
+        // **below** it loses them. `Container::update_from` recomposes
+        // `self.composed` and answers `UpdateEffect::Nothing`, on the stated
+        // grounds that whatever changed has already marked itself -- but the
+        // wrappers it just composed have never been laid out and nothing
+        // marks them. Changing that answer to `Relayout` alone does **not**
+        // fix it, so the effect is not the whole mechanism.
+        //
+        // Not written as a failing test here: this file's neighbour in
+        // `render.rs` records the reason -- "an ignored test reads as a thing
+        // that should pass and does not" -- and a red one would stop the
+        // gate. It is four lines to reconstruct from the paragraph above.
         use crate::render::{BoxConstraints, RenderBox, Size};
 
         let composed = || {

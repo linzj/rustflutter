@@ -23048,3 +23048,67 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 另外顺手验一个更省事的判据：既然“测试里的 rebuild 不走 `update_from`”，
 那就先确认**搜索框那条路走不走** `update_from`——在里面放个计数器，用第 334 轮那个用例跑一遍。
 如果走了而这条测试没走，触发条件就找到一半了。
+
+---
+
+## 第 336 轮：触发条件是 `Container` —— 复现只要四行，跟搜索框无关
+
+按上一轮说的**改方向**：不再从下往上搭，改成从会坏的那一头往下砍。
+
+一刀一刀砍，前两刀都**没**复现：
+
+| 组合 | 结果 |
+|---|---|
+| `stateful(Holder)`（Holder 里就是 many + Row + Padding） | 绿 |
+| `provide(.., stateful(Holder))` | 绿 |
+| **`Container` 包住那个 Row** | **红** |
+
+```text
+first  : ... row 200×40, padding 16×16, child 10×10, padding 24×24 ...
+rebuilt: ... row 200×40, padding  0×0,  child  0×0,  padding  0×0  ...
+```
+
+**Container 自己和它上面的每一层尺寸都在；它下面的全部归零。**
+这和第 334 轮那棵真树的形状一模一样（根／L1／L2 都是 300×44，孩子 0×0）。
+
+**触发条件就是 `Container`。** 不需要搜索框，不需要 `stateful`，不需要 `provide`，
+不需要 IME。四行可复现。
+
+看代码，`Container::update_from` 的收尾是：
+
+```rust
+let root = self.compose(Some(&onto))?;
+self.composed = Some(root);
+// 变了的东西已经自己标记过了，标记会一路走到根……
+Some(UpdateEffect::Nothing)
+```
+
+它**重新组合了 `composed`**，然后回答“没有东西需要重新布局”。可它刚组合出来的那几层包装
+**从来没有被布局过**，也没有任何东西会去标记它们。注释里那句理由，对这批新对象不成立。
+
+**但把 `Nothing` 改成 `Relayout` 并不能修好**（试了，照红）。所以 effect 不是全部机制——
+多半还有一层：`composed.layout()` 之后，行自己是布局过的（200×40），
+而行的**孩子**没有，说明某处的“不脏就早退”把新组合出来的子树也一起早退掉了。
+
+**没有写成失败测试**，因为这个 crate 自己在 `render.rs` 里定了规矩：
+“一个被 ignore 的测试读起来像是‘本该通过却没通过’”。所以按它的惯例写成散文，
+放在第 335 轮那条（能通过的）测试的文档里——那里正好是“这条测试为什么复现不了”的下文，
+并且把能复现的那一刀、观测到的数字、以及已经排除的那个修法都写清楚了。
+
+尺子：十六把全部 exit 0。门：6241 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：修它。从 `Container::layout` 那一行往下看：
+
+```rust
+fn layout(&mut self, constraints: BoxConstraints) -> Size {
+    if self.composed.is_none() { self.composed = self.compose(None); }
+    self.composed.as_mut().unwrap().layout(constraints)
+}
+```
+
+`composed` 是一个 `RenderRef`。`RenderRef::layout`／`layout_child` 里有“不脏就早退”的那一段
+（第 334 轮读到过“Noted before the early return”）。新组合出来的包装从没被标记过脏，
+**所以它们很可能正好落在那条早退上**。先去读那段早退的条件，确认新对象初始是“干净”还是“脏”；
+如果是干净的，那修法要么是 `compose` 出来的新节点一律标脏，要么是
+`update_from` 里换掉 `composed` 之后显式 `mark_needs_layout()`。**先确认再改，别又猜一个。**
