@@ -23428,3 +23428,52 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 先在上游 `list_tile.dart` 里搜 `visualDensity` 的每一个使用点，逐个对照本项目有没有；
 **有用到而这里没接的就是下一个缺口，没有就把“水平那一半上游也没用在高度以外”写下来**，
 免得下次又对着 `.0` 那半边犯嘀咕。
+
+---
+
+## 第 343 轮：水平那一半上游**用了**，而且乘的是 2 不是 4
+
+接上一轮的“下一步”：把上游 `list_tile.dart` 里 `visualDensity` 的每一处使用点都走一遍，
+看水平那一半给了谁。**给了，一共还有两处**：
+
+```dart
+// 1417
+double get _effectiveHorizontalTitleGap => _horizontalTitleGap + visualDensity.horizontal * 2.0;
+
+// 1548
+maxHeight: (isDense ? 48.0 : 56.0) + visualDensity.baseSizeAdjustment.dy,
+```
+
+第一处就是这一轮端的东西，而且藏着一个**很容易踩的陷阱**：
+
+> **它不走 `baseSizeAdjustment`。** 那个方法乘的是 4（Material 的“四像素增量”），
+> 而这里乘的是 **`horizontal * 2.0`**，只有一半。
+
+也就是说：刚刚在第 342 轮用完 `.1` 去调高度，**最顺手的下一步就是伸手去拿 `.0`**——
+而那样会把这个间距**移动上游两倍的距离**。同一个 `VisualDensity` 的两半，
+**上游用得并不对称**。这一点写进了 `effective_horizontal_title_gap` 的文档，
+并且用一条断言把“错误答案”本身也钉住了（`base_size_adjustment().0` 是 −8，正确答案是 −4）。
+
+本项目原来是 `let title_gap = tile.horizontal_title_gap;`——**完全不随密度动**。
+现在走 `effective_horizontal_title_gap()`。另外记下：**上游不夹紧**，
+一个足够紧凑的密度可以把间距推成负数，标题就比标称间距更贴近前导控件——
+那正是“要紧凑”的意思。
+
+**变异扫描 6 个，5 个红**（改走 baseSizeAdjustment、不再随密度动、拿成竖直那一半、
+方向反了、夹到 0）。**第 6 个没红，如实记在代码里**：把 build 里那一行换回未调整的
+`tile.horizontal_title_gap`，全绿。规则本身有测试，但**build 用的是哪一个**看不出来——
+第 342 轮同样的接线能测到，是因为**高度**能从布好的行上读出来；
+两个孩子之间的**水平间距**读不出来：桩画布记的是矩形和裁剪，**不记文字绘制**，
+所以标题的位置根本到不了测试里。注释里写了：哪天桩把段落绘制连同偏移一起记下来，
+这条断言就白捡。
+
+尺子：十六把全部 exit 0。门：6256 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：上面第二处（`maxIconHeightConstraint`）还没查——
+`(isDense ? 48 : 56) + baseSizeAdjustment.dy`，注意它用的是**一行的那一行**，
+**不管有没有副标题、是不是三行**，上游注释说明了理由（一行的前导/尾随控件高度
+“不遵循 Material 规范，但可及性要求最小可点区域”）。
+先按行为查本项目 `ListTile` 有没有给前导／尾随控件加过这个高度上限；
+没有就是下一个缺口，有就核对它用的是不是**一行**那一行——
+**这正是第 341 轮那种“六选一里挑错行”的反面**：这里上游**故意**只用一行那一行。

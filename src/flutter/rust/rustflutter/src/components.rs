@@ -2435,7 +2435,20 @@ impl Component for ListTile {
             self.visual_density,
         );
         let content_padding = self.content_padding.unwrap_or(tile.content_padding);
-        let title_gap = tile.horizontal_title_gap;
+        // Upstream's `_effectiveHorizontalTitleGap`, which moves with the
+        // density -- by two pixels a unit, not the four `baseSizeAdjustment`
+        // uses for the height.
+        //
+        // **This line is not covered.** Replacing it with the unadjusted
+        // `tile.horizontal_title_gap` leaves the suite green: the rule itself
+        // is held by `effective_horizontal_title_gap`'s own tests, but
+        // nothing here can see *which* gap the build used. The height that
+        // tick 342 wired the same way is readable off a laid-out tile; a
+        // horizontal gap between two children is not -- the stub canvas
+        // records rectangles and clips, and no text draw, so the title's
+        // position never reaches a test. A stub that recorded paragraph
+        // draws with their offsets would get this assertion for free.
+        let title_gap = tile.effective_horizontal_title_gap();
         // Upstream's `_defaultTileHeight` is chosen by the tile's line count
         // as well as by `dense`, and only the tile knows that -- so a theme
         // that set a height outright still wins, and otherwise the six-way

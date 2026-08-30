@@ -6935,6 +6935,28 @@ impl ResolvedListTile {
     pub const MIN_TILE_HEIGHT: f32 = 56.0;
     pub const DENSE_MIN_TILE_HEIGHT: f32 = 48.0;
 
+    /// Upstream's `_RenderListTile._effectiveHorizontalTitleGap`:
+    /// `_horizontalTitleGap + visualDensity.horizontal * 2.0`.
+    ///
+    /// # Two pixels per unit here, four everywhere else
+    ///
+    /// This is the **other** half of the visual density, and it does not go
+    /// through `baseSizeAdjustment`. That method multiplies by 4 -- Material's
+    /// "four pixel increments" -- and upstream deliberately does not use it
+    /// here: the gap moves by `horizontal * 2.0`, half as far.
+    ///
+    /// So a port reaching for `base_size_adjustment().0`, which is the
+    /// obvious thing to reach for having just used `.1` for the height, moves
+    /// this gap **twice as far as upstream does**. The two halves of one
+    /// `VisualDensity` are not used symmetrically.
+    ///
+    /// A compact density can drive the gap negative, and upstream does not
+    /// clamp it -- the title simply sits nearer the leading widget than the
+    /// nominal gap, which is what asking for a compact layout means.
+    pub fn effective_horizontal_title_gap(&self) -> f32 {
+        self.horizontal_title_gap + self.visual_density.horizontal * 2.0
+    }
+
     /// Upstream's `_RenderListTile._defaultTileHeight`: the height a tile
     /// falls back to when nothing set `minTileHeight`.
     ///
@@ -14180,6 +14202,71 @@ mod tests {
             DividerTheme::of,
         );
         assert_eq!(seen.color, Some(Color::argb(255, 1, 2, 3)));
+    }
+
+    #[test]
+    fn the_title_gap_moves_half_as_far_as_the_height_does() {
+        // Both halves come off one `VisualDensity`, and they are *not* used
+        // symmetrically: the height goes through `baseSizeAdjustment`, which
+        // is four pixels a unit, while the gap is `horizontal * 2.0`.
+        // Reaching for `base_size_adjustment().0` here -- the obvious thing,
+        // having just used `.1` for the height -- moves the gap twice as far
+        // as upstream.
+        let density = VisualDensity {
+            horizontal: -2.0,
+            vertical: -2.0,
+        };
+        let tile = ResolvedListTile {
+            horizontal_title_gap: 16.0,
+            visual_density: density,
+            ..read_in(
+                |child| child,
+                |context| ResolvedListTile::of(context, false, None),
+            )
+        };
+
+        assert_eq!(tile.effective_horizontal_title_gap(), 16.0 - 4.0);
+        assert_eq!(
+            density.base_size_adjustment().0,
+            -8.0,
+            "which is what the wrong answer would have been"
+        );
+        assert_ne!(
+            tile.effective_horizontal_title_gap(),
+            16.0 + density.base_size_adjustment().0
+        );
+    }
+
+    #[test]
+    fn a_standard_density_leaves_the_title_gap_alone() {
+        let tile = ResolvedListTile {
+            horizontal_title_gap: 16.0,
+            visual_density: VisualDensity::STANDARD,
+            ..read_in(
+                |child| child,
+                |context| ResolvedListTile::of(context, false, None),
+            )
+        };
+        assert_eq!(tile.effective_horizontal_title_gap(), 16.0);
+    }
+
+    #[test]
+    fn a_compact_density_may_take_the_title_gap_below_zero() {
+        // Upstream does not clamp it. A gap of 2 at the most compact density
+        // is negative, and that is what asking for compact means.
+        let tile = ResolvedListTile {
+            horizontal_title_gap: 2.0,
+            visual_density: VisualDensity {
+                horizontal: -4.0,
+                vertical: 0.0,
+            },
+            ..read_in(
+                |child| child,
+                |context| ResolvedListTile::of(context, false, None),
+            )
+        };
+        assert_eq!(tile.effective_horizontal_title_gap(), 2.0 - 8.0);
+        assert!(tile.effective_horizontal_title_gap() < 0.0);
     }
 
     #[test]
