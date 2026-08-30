@@ -21894,3 +21894,49 @@ else { ... }
 
 折叠时两端都是 collapsed，非折叠时按方向分左右；而第 300 轮已经端了那个"洋葱"的旋转角
 （`handle_rotation`），却还没有决定**哪一端拿哪一种**的那一步。两头正好接上。先按行为查。
+
+---
+
+## 第 313 轮：折叠的选区有第三种手柄，而“开始”那一端并不总在左边
+
+接上一轮的“下一步”。上游 `packages/flutter/lib/src/widgets/text_selection.dart` 的
+`_updateSelectionOverlay`（550–600 行）里那一段，决定的是**两个手柄各画成什么形状**。
+第 300 轮已经端过那个“洋葱”按手柄种类转多少度（`handle_rotation`），但**哪一端拿哪一种**
+一直没人做。两头到这一轮才接上。
+
+读上游读出三件事，每一件都跟“照着名字猜”会得到的答案相反：
+
+1. **折叠的选区有第三种形状，不是“开始=左”。** 光标没有左右可言，上游不在两者里挑一个，
+   而是 `startHandleType = endHandleType = collapsed`。
+2. **两张表是反的，而且没有一张是恒等的。** `start` 是 `ltr => left, rtl => right`；
+   `end` 是 `ltr => right, rtl => left`。也就是说在从右往左的文字里，选区的**开始**那一端，
+   手柄画在**右边**。“start/end”说的是文字，“left/right”说的是屏幕，这两套坐标在 RTL 下互换。
+   照着写一张再复用给另一端，得到的是两个一模一样的手柄。
+3. **iOS 两端都按字段的方向，别的平台按各自端点的方向。** 上游写
+   `preferRenderObjectDirectionForSelectionHandles = defaultTargetPlatform == TargetPlatform.iOS`，
+   理由是注释里那句“UIKit 让选区手柄跟字段方向对齐”。
+   还有 `endpoints.length < 2` 那条退路——渲染还没跟上、边界落在一个字素中间、布局退化——
+   这时端点方向拿不到，回落到字段的方向。
+
+移到 `src/text_selection.rs`：`HandleTypes` 与 `handle_types(collapsed, platform,
+field_direction, endpoint_directions)`，端点方向用 `Option<(Option<_>, Option<_>)>`：
+外层的 `None` 是“不足两个端点”，内层的 `None` 是 `endpoints.first.direction ?? textDirection`。
+
+**变异扫描 9 个，全红——但第一遍不是。**
+“macOS 跟着 iOS 一起按字段方向”那一个活了下来。这不是等价变异：macOS 画的是同一套
+Cupertino 手柄，正是一个移植最容易顺手并进去的平台，而上游问的是 `== TargetPlatform.iOS`，
+理由是 UIKit，而 macOS 上没有 UIKit。补了一条把五个非 iOS 平台逐个钉住的断言之后转红。
+另外八个：两张表各自换成对方、方向不再起作用、光标拿左手柄、iOS 改按端点、所有平台都按字段、
+端点缺失时回落到 ltr 而不是字段、端点自身无方向时回落到 ltr。
+
+尺子：constants 208/0/0，wire_strings 122/0，unread_strings 0 disagreeing，
+stale_notes 13/0，unvaried 0，stale_engines 全部不落后，十六把尺子全部 exit 0。
+门：6145 通过；`cargo fmt --check` 干净；三个输出目录的 rustflutter_engine 与 rust_lib
+以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：同一段里紧接着的是手柄的**位置**——`_buildStartHandle` / `_buildEndHandle` 拿到
+的 `TextSelectionPoint` 除了方向还带一个 `point`，而上游在 `SelectionOverlay` 里把它跟
+`lineHeight`、`renderObject.preferredLineHeight` 一起算成手柄的锚点；还有
+`_getStartGlyphHeight` / `_getEndGlyphHeight` 那两个方法，处理选区两端字号不同的情况
+（一端是标题一端是正文，手柄该按各自那一端的字高走，而不是统一按字段的行高）。
+这一步本项目还没有。先按行为查：搜 glyph height 与 preferredLineHeight 在本项目里的去向。

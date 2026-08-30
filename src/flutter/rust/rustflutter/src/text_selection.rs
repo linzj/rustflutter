@@ -29,6 +29,7 @@ use crate::editable_text::TargetPlatform;
 use crate::engine::Color;
 use crate::gestures::PointerKind;
 use crate::render::{Offset, PaintContext, Size};
+use crate::text_selection_controls::TextSelectionHandleType;
 
 /// Upstream `ClipboardStatus`.
 ///
@@ -2964,6 +2965,96 @@ impl SelectionOverlay {
     }
 }
 
+/// Which handle shape each end of a selection gets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandleTypes {
+    pub start: TextSelectionHandleType,
+    pub end: TextSelectionHandleType,
+}
+
+/// Upstream's handle-type choice inside `_updateSelectionOverlay`.
+///
+/// # "start" and "end" are about the text; "left" and "right" are about the screen
+///
+/// ```dart
+/// startHandleType = switch (startHandleDirection) {
+///   TextDirection.ltr => TextSelectionHandleType.left,
+///   TextDirection.rtl => TextSelectionHandleType.right,
+/// };
+/// endHandleType = switch (endHandleDirection) {
+///   TextDirection.ltr => TextSelectionHandleType.right,
+///   TextDirection.rtl => TextSelectionHandleType.left,
+/// };
+/// ```
+///
+/// **The two maps are opposites, and neither is the identity.** In
+/// right-to-left text the selection's start is the handle on the *right*.
+/// Writing `start => left` because the names line up would put both handles on
+/// the wrong sides of every Arabic or Hebrew selection, and the onion each one
+/// draws would point away from the text it holds -- see
+/// [`crate::selection_host`], which rotates the shape by handle type.
+///
+/// # A collapsed selection gets a third shape, not one of the two
+///
+/// Both ends answer `collapsed`. An insertion point has no left and no right
+/// to be on, and upstream keeps a separate value rather than picking one
+/// arbitrarily.
+///
+/// # iOS orients both handles by the field
+///
+/// > UIKit keeps selection handles aligned with the field direction.
+///
+/// So a selection running through mixed-direction text gets handles from
+/// `renderObject.textDirection` on iOS and from **each endpoint's own**
+/// direction everywhere else. Same selection, same text, two different pairs
+/// of shapes.
+///
+/// # And fewer than two endpoints falls back the same way
+///
+/// Upstream names four causes, and they are worth keeping because each is a
+/// real moment rather than a defensive shrug: the overlay updated before the
+/// render object laid the new text out; a selection boundary fell inside a
+/// multi-code-unit cluster such as an emoji; the layout was momentarily
+/// squashed, with `preferredLineHeight` at zero during a fold transition. In
+/// all of them the endpoint directions are not available, so the field's
+/// direction stands in.
+///
+/// `endpoint_directions` is `None` for that case, and `Some((start, end))`
+/// otherwise, where each may itself be `None` -- upstream's
+/// `endpoints.first.direction ?? textDirection`.
+pub fn handle_types(
+    collapsed: bool,
+    platform: crate::editable_text::TargetPlatform,
+    field_direction: TextDirection,
+    endpoint_directions: Option<(Option<TextDirection>, Option<TextDirection>)>,
+) -> HandleTypes {
+    use crate::editable_text::TargetPlatform;
+    if collapsed {
+        return HandleTypes {
+            start: TextSelectionHandleType::Collapsed,
+            end: TextSelectionHandleType::Collapsed,
+        };
+    }
+    let prefer_field = platform == TargetPlatform::IOS;
+    let (start_direction, end_direction) = match endpoint_directions {
+        Some((start, end)) if !prefer_field => (
+            start.unwrap_or(field_direction),
+            end.unwrap_or(field_direction),
+        ),
+        _ => (field_direction, field_direction),
+    };
+    HandleTypes {
+        start: match start_direction {
+            TextDirection::Ltr => TextSelectionHandleType::Left,
+            TextDirection::Rtl => TextSelectionHandleType::Right,
+        },
+        end: match end_direction {
+            TextDirection::Ltr => TextSelectionHandleType::Right,
+            TextDirection::Rtl => TextSelectionHandleType::Left,
+        },
+    }
+}
+
 /// What an update did: whether the overlay's properties were refreshed from
 /// the render object, and whether a build was asked for on top of that.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4852,6 +4943,116 @@ two";
         let mut overlay = SelectionOverlay::new().with_handles_visible(handles_visible);
         overlay.set_toolbar_visible(toolbar);
         overlay
+    }
+
+    fn types(
+        collapsed: bool,
+        platform: TargetPlatform,
+        field: TextDirection,
+        endpoints: Option<(Option<TextDirection>, Option<TextDirection>)>,
+    ) -> HandleTypes {
+        handle_types(collapsed, platform, field, endpoints)
+    }
+
+    #[test]
+    fn the_start_handle_is_on_the_left_only_while_the_text_runs_that_way() {
+        // "start" and "end" are about the text; "left" and "right" are about
+        // the screen, and in right-to-left they swap.
+        let ltr = types(
+            false,
+            TargetPlatform::Android,
+            TextDirection::Ltr,
+            Some((None, None)),
+        );
+        assert_eq!(ltr.start, TextSelectionHandleType::Left);
+        assert_eq!(ltr.end, TextSelectionHandleType::Right);
+
+        let rtl = types(
+            false,
+            TargetPlatform::Android,
+            TextDirection::Rtl,
+            Some((None, None)),
+        );
+        assert_eq!(rtl.start, TextSelectionHandleType::Right);
+        assert_eq!(rtl.end, TextSelectionHandleType::Left);
+    }
+
+    #[test]
+    fn the_two_ends_never_take_the_same_shape_in_a_range() {
+        // The two switches are opposites. A port that wrote one and reused it
+        // for the other would give a selection two identical handles.
+        for field in [TextDirection::Ltr, TextDirection::Rtl] {
+            for platform in [TargetPlatform::IOS, TargetPlatform::Android] {
+                let both = types(false, platform, field, Some((None, None)));
+                assert_ne!(both.start, both.end, "{platform:?} {field:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_insertion_point_gets_a_shape_of_its_own() {
+        // It has no left and no right to be on, so upstream keeps a third
+        // value rather than picking one of the two.
+        for field in [TextDirection::Ltr, TextDirection::Rtl] {
+            let caret = types(true, TargetPlatform::Android, field, Some((None, None)));
+            assert_eq!(caret.start, TextSelectionHandleType::Collapsed);
+            assert_eq!(caret.end, TextSelectionHandleType::Collapsed);
+        }
+    }
+
+    #[test]
+    fn ios_orients_both_handles_by_the_field_and_the_others_by_each_endpoint() {
+        // "UIKit keeps selection handles aligned with the field direction."
+        // A selection running through mixed-direction text: the field is ltr,
+        // its start endpoint is rtl.
+        let mixed = Some((Some(TextDirection::Rtl), Some(TextDirection::Ltr)));
+
+        let ios = types(false, TargetPlatform::IOS, TextDirection::Ltr, mixed);
+        assert_eq!(ios.start, TextSelectionHandleType::Left, "the field's ltr");
+
+        // macOS is the near miss. It draws the same Cupertino handles as iOS,
+        // so a port that reached for "the Apple platforms" would fold it in
+        // here — but upstream asks `== TargetPlatform.iOS`, and the reason is
+        // UIKit, which macOS is not running.
+        for other in [
+            TargetPlatform::Android,
+            TargetPlatform::MacOS,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            let picked = types(false, other, TextDirection::Ltr, mixed);
+            assert_eq!(
+                picked.start,
+                TextSelectionHandleType::Right,
+                "{other:?} takes the endpoint's own rtl"
+            );
+            assert_ne!(ios.start, picked.start, "same text, two different shapes");
+        }
+    }
+
+    #[test]
+    fn an_endpoint_with_no_direction_of_its_own_borrows_the_fields() {
+        // `endpoints.first.direction ?? textDirection`.
+        let half = Some((None, Some(TextDirection::Rtl)));
+        let picked = types(false, TargetPlatform::Android, TextDirection::Ltr, half);
+        assert_eq!(picked.start, TextSelectionHandleType::Left, "borrowed ltr");
+        assert_eq!(picked.end, TextSelectionHandleType::Left, "its own rtl");
+    }
+
+    #[test]
+    fn fewer_than_two_endpoints_falls_back_to_the_field_as_ios_does() {
+        // Render lag, a boundary inside an emoji, a squashed layout mid-fold:
+        // the endpoint directions are not there, so the field's stands in.
+        let none = types(false, TargetPlatform::Android, TextDirection::Rtl, None);
+        let ios = types(
+            false,
+            TargetPlatform::IOS,
+            TextDirection::Rtl,
+            Some((Some(TextDirection::Ltr), Some(TextDirection::Ltr))),
+        );
+        assert_eq!(none, ios, "the same two shapes by two different routes");
+        assert_eq!(none.start, TextSelectionHandleType::Right);
     }
 
     #[test]
