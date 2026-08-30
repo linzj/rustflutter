@@ -280,6 +280,362 @@ impl CheckedModeBanner {
     pub fn describe(debug: bool) -> &'static str {
         if debug { "\"DEBUG\"" } else { "disabled" }
     }
+
+    /// The banner over `child`, or `child` untouched when this is not a debug
+    /// build.
+    ///
+    /// Upstream's whole `build` is inside `assert(() { ... }())`, so in
+    /// release the widget **is** its child and costs nothing. `debug` stands
+    /// in for that assert running, the same way
+    /// [`CheckedModeBanner::shows_banner`] already did -- what was missing was
+    /// anything for it to return.
+    pub fn widget(debug: bool, child: crate::framework::AnyWidget) -> crate::framework::AnyWidget {
+        if !CheckedModeBanner::shows_banner(debug) {
+            return child;
+        }
+        crate::framework::single(child, |child| {
+            RenderBanner::new(
+                // Upstream hard-codes both directions to left-to-right here,
+                // not just the text: `Banner(... textDirection: TextDirection.ltr,
+                // layoutDirection: TextDirection.ltr ...)`. So the label stays
+                // in the top right in an Arabic locale too, because it is for
+                // whoever is building the app rather than for whoever is using
+                // it.
+                BannerPainter::new(CheckedModeBanner::MESSAGE, CheckedModeBanner::LOCATION)
+                    .with_directions(
+                        crate::direction::TextDirection::Ltr,
+                        crate::direction::TextDirection::Ltr,
+                    ),
+                child,
+            )
+        })
+    }
+}
+
+// -- The banner itself (upstream `widgets/banner.dart`) -----------------------
+
+/// Upstream `BannerPainter`, which is where every number in a banner lives.
+///
+/// The class had no port at all: [`BannerLocation`] and [`CheckedModeBanner`]
+/// described *where* a banner goes and *what it says*, and nothing in the
+/// crate could draw one. So an app carrying
+/// `debug_show_checked_mode_banner: true` -- which all three of
+/// [`WidgetsApp`], `MaterialApp` and `CupertinoApp` do by default -- showed
+/// nothing, because there was nothing to show.
+///
+/// The shape is a ribbon across a corner at 45 degrees. Upstream draws it in a
+/// **translated and rotated** canvas, so all four corners are one rectangle
+/// and one text run with different transforms, and the arithmetic below is
+/// that transform rather than four sets of coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BannerPainter {
+    pub message: String,
+    /// Which way the *message* reads, for a bidirectional string.
+    pub text_direction: crate::direction::TextDirection,
+    pub location: BannerLocation,
+    /// Which way `location`'s start and end are read. Upstream keeps this
+    /// apart from `text_direction` on purpose: a banner can sit in the corner
+    /// the layout calls "end" while its text still reads left to right.
+    pub layout_direction: crate::direction::TextDirection,
+    pub color: crate::engine::Color,
+    pub text_style: crate::engine::TextStyle,
+    pub shadow: crate::painting::BoxShadow,
+}
+
+impl BannerPainter {
+    /// Distance from the corner to the bottom of the banner, measured along
+    /// the edge -- upstream's `_kOffset`.
+    pub const OFFSET: f32 = 40.0;
+    /// The ribbon's thickness, upstream's `_kHeight`.
+    pub const HEIGHT: f32 = 12.0;
+    /// Upstream's `_kColor`: a dark red, and **not** opaque -- the top byte is
+    /// `A0`, so whatever is underneath shows through the ribbon.
+    pub const COLOR: crate::engine::Color = crate::engine::Color(0xA0B7_1C1C);
+
+    /// Upstream's `_kBottomOffset`: the offset plus the ribbon's thickness
+    /// measured across the 45-degree diagonal, which is where the `sqrt(1/2)`
+    /// comes from. Only the bottom corners need it, because only they are
+    /// positioned from the far edge.
+    pub fn bottom_offset() -> f32 {
+        BannerPainter::OFFSET + std::f32::consts::FRAC_1_SQRT_2 * BannerPainter::HEIGHT
+    }
+
+    /// Upstream's `_kRect`, in the rotated frame: the ribbon is twice the
+    /// offset wide and centred on the corner, which is why its left edge is
+    /// negative.
+    pub fn rect() -> crate::engine::Rect {
+        crate::engine::Rect::xywh(
+            -BannerPainter::OFFSET,
+            BannerPainter::OFFSET - BannerPainter::HEIGHT,
+            BannerPainter::OFFSET * 2.0,
+            BannerPainter::HEIGHT,
+        )
+    }
+
+    /// Upstream's `_kTextStyle`: white, heavy, and `height: 1.0` so the line
+    /// box is the EM square and the text sits in the middle of a 12-pixel
+    /// ribbon rather than wherever the font's own metrics would put it.
+    pub fn default_text_style() -> crate::engine::TextStyle {
+        crate::engine::TextStyle {
+            font_size: BannerPainter::HEIGHT * 0.85,
+            font_weight: 900,
+            height: Some(1.0),
+            color: crate::engine::Color(0xFFFF_FFFF),
+            align: crate::engine::TextAlign::Center,
+            ..Default::default()
+        }
+    }
+
+    /// Upstream's `_kShadow`, which is a blur and no offset: the ribbon is
+    /// meant to look lifted off the corner rather than lit from a direction.
+    pub fn default_shadow() -> crate::painting::BoxShadow {
+        crate::painting::BoxShadow::new(crate::engine::Color(0x7F00_0000), 0.0, 0.0, 6.0, 0.0)
+    }
+
+    pub fn new(message: impl Into<String>, location: BannerLocation) -> BannerPainter {
+        BannerPainter {
+            message: message.into(),
+            text_direction: crate::direction::TextDirection::Ltr,
+            location,
+            layout_direction: crate::direction::TextDirection::Ltr,
+            color: BannerPainter::COLOR,
+            text_style: BannerPainter::default_text_style(),
+            shadow: BannerPainter::default_shadow(),
+        }
+    }
+
+    pub fn with_directions(
+        mut self,
+        text_direction: crate::direction::TextDirection,
+        layout_direction: crate::direction::TextDirection,
+    ) -> Self {
+        self.text_direction = text_direction;
+        self.layout_direction = layout_direction;
+        self
+    }
+
+    pub fn with_color(mut self, color: crate::engine::Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    /// Upstream's `_translationX`.
+    ///
+    /// The two top corners sit **on** the corner, and the two bottom ones are
+    /// pulled in by [`BannerPainter::bottom_offset`] -- the ribbon hangs off
+    /// the top corners and has to be brought back inside at the bottom.
+    pub fn translation_x(&self, width: f32) -> f32 {
+        use crate::direction::TextDirection::{Ltr, Rtl};
+        match (self.layout_direction, self.location) {
+            (Rtl, BannerLocation::TopStart) => width,
+            (Ltr, BannerLocation::TopStart) => 0.0,
+            (Rtl, BannerLocation::TopEnd) => 0.0,
+            (Ltr, BannerLocation::TopEnd) => width,
+            (Rtl, BannerLocation::BottomStart) => width - BannerPainter::bottom_offset(),
+            (Ltr, BannerLocation::BottomStart) => BannerPainter::bottom_offset(),
+            (Rtl, BannerLocation::BottomEnd) => BannerPainter::bottom_offset(),
+            (Ltr, BannerLocation::BottomEnd) => width - BannerPainter::bottom_offset(),
+        }
+    }
+
+    /// Upstream's `_translationY`, which does not depend on the direction: up
+    /// and down are the same in both.
+    pub fn translation_y(&self, height: f32) -> f32 {
+        match self.location {
+            BannerLocation::BottomStart | BannerLocation::BottomEnd => {
+                height - BannerPainter::bottom_offset()
+            }
+            BannerLocation::TopStart | BannerLocation::TopEnd => 0.0,
+        }
+    }
+
+    /// Upstream's `_rotation`: a quarter turn, and the sign is what puts the
+    /// ribbon across the corner it was sent to rather than off the screen.
+    pub fn rotation(&self) -> f32 {
+        use crate::direction::TextDirection::{Ltr, Rtl};
+        let sign = match (self.layout_direction, self.location) {
+            (Rtl, BannerLocation::TopStart | BannerLocation::BottomEnd) => 1.0,
+            (Ltr, BannerLocation::TopStart | BannerLocation::BottomEnd) => -1.0,
+            (Rtl, BannerLocation::BottomStart | BannerLocation::TopEnd) => -1.0,
+            (Ltr, BannerLocation::BottomStart | BannerLocation::TopEnd) => 1.0,
+        };
+        std::f32::consts::FRAC_PI_4 * sign
+    }
+
+    /// The ribbon on its own, in the rotated frame: the two rectangles and the
+    /// text, ready to be handed to a transform.
+    fn ribbon(&self) -> BannerRibbon {
+        BannerRibbon {
+            color: self.color,
+            shadow: self.shadow,
+            text: crate::render::RenderRef::new(
+                crate::render::RenderParagraph::new(self.message.clone())
+                    .with_style(self.text_style.clone())
+                    .with_text_direction(self.text_direction),
+            ),
+            size: crate::render::Size::ZERO,
+        }
+    }
+}
+
+/// The ribbon in its own coordinates, which is what upstream draws once the
+/// canvas has been translated and rotated for it.
+///
+/// It exists as a render object rather than as three canvas calls because a
+/// transform here takes a **child**, where upstream's canvas takes a matrix
+/// and keeps drawing. Same three draws, one level further in.
+struct BannerRibbon {
+    color: crate::engine::Color,
+    shadow: crate::painting::BoxShadow,
+    text: crate::render::BoxedRender,
+    size: crate::render::Size,
+}
+
+impl crate::render::RenderBox for BannerRibbon {
+    fn layout(&mut self, constraints: crate::render::BoxConstraints) -> crate::render::Size {
+        // The text is laid out at the ribbon's full width so that centring it
+        // means something -- upstream lays its painter out with `minWidth` and
+        // `maxWidth` both `_kOffset * 2`.
+        let width = BannerPainter::OFFSET * 2.0;
+        self.text.layout_child(
+            crate::render::BoxConstraints::new(width, width, 0.0, f32::INFINITY),
+            true,
+        );
+        self.size = constraints.constrain(crate::render::Size::new(width, BannerPainter::HEIGHT));
+        self.size
+    }
+
+    fn size(&self) -> crate::render::Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut crate::render::PaintContext, offset: crate::render::Offset) {
+        let rect = BannerPainter::rect();
+        let placed = crate::engine::Rect::ltrb(
+            rect.left + offset.dx,
+            rect.top + offset.dy,
+            rect.right + offset.dx,
+            rect.bottom + offset.dy,
+        );
+        let shadow = self.shadow.to_paint();
+        let banner = crate::engine::Paint::new(self.color);
+        {
+            let canvas = context.canvas();
+            canvas.draw_rect(placed, &shadow);
+            canvas.draw_rect(placed, &banner);
+        }
+        // Upstream centres the text vertically in the ribbon by hand rather
+        // than aligning it, because the painter has a rect and not a box.
+        let text_height = crate::render::RenderBox::size(&self.text).height;
+        context.paint_child(
+            &self.text,
+            crate::render::Offset::new(
+                placed.left,
+                placed.top + (BannerPainter::HEIGHT - text_height) / 2.0,
+            ),
+        );
+    }
+
+    fn visit_children(
+        &self,
+        visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
+    ) {
+        visit(&self.text, crate::render::Offset::ZERO);
+    }
+
+    /// Upstream's `BannerPainter.hitTest` returns false: a banner is drawn
+    /// over the app and takes nothing from it.
+    fn hit_test_children(
+        &self,
+        _position: crate::render::Offset,
+        _result: &mut crate::render::HitTestResult,
+    ) -> bool {
+        false
+    }
+}
+
+/// Upstream's `Banner`, which is a `CustomPaint` with the painter in
+/// **front** of the child.
+///
+/// There is no `Banner` widget struct here because the name is taken:
+/// [`crate::controls::Banner`] is upstream's `MaterialBanner`. What upstream's
+/// `Banner` adds over its painter is one thing -- painting the ribbon after
+/// the child instead of before it -- and that is this render object.
+pub struct RenderBanner {
+    child: crate::render::BoxedRender,
+    painter: BannerPainter,
+    ribbon: crate::render::BoxedRender,
+    size: crate::render::Size,
+}
+
+impl RenderBanner {
+    pub fn new(
+        painter: BannerPainter,
+        child: impl crate::render::RenderBox + 'static,
+    ) -> RenderBanner {
+        let ribbon = crate::render::RenderRef::new(painter.ribbon());
+        RenderBanner {
+            child: crate::render::RenderRef::new(child),
+            painter,
+            ribbon,
+            size: crate::render::Size::ZERO,
+        }
+    }
+
+    pub fn painter(&self) -> &BannerPainter {
+        &self.painter
+    }
+}
+
+impl crate::render::RenderBox for RenderBanner {
+    fn layout(&mut self, constraints: crate::render::BoxConstraints) -> crate::render::Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.ribbon.layout_child(
+            crate::render::BoxConstraints::loose(f32::INFINITY, f32::INFINITY),
+            true,
+        );
+        self.size
+    }
+
+    fn size(&self) -> crate::render::Size {
+        self.size
+    }
+
+    fn paint(&self, context: &mut crate::render::PaintContext, offset: crate::render::Offset) {
+        context.paint_child(&self.child, offset);
+        let rotation = self.painter.rotation();
+        let (sin, cos) = rotation.sin_cos();
+        // Upstream: `canvas..translate(tx, ty)..rotate(r)`. The translation
+        // rides in the offset and the matrix is the rotation, which is the
+        // same composition in the other order this context takes it.
+        context.push_transform(
+            [cos, sin, -sin, cos, 0.0, 0.0],
+            crate::render::Offset::ZERO,
+            crate::render::Offset::new(
+                offset.dx + self.painter.translation_x(self.size.width),
+                offset.dy + self.painter.translation_y(self.size.height),
+            ),
+            &self.ribbon,
+        );
+    }
+
+    fn visit_children(
+        &self,
+        visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
+    ) {
+        visit(&self.child, crate::render::Offset::ZERO);
+    }
+
+    /// The banner is not offered to the semantics walk or the hit test: only
+    /// the child is. A "DEBUG" ribbon read out to a screen-reader user, or
+    /// swallowing a tap in the corner of every screen, would both be faults.
+    fn hit_test_children(
+        &self,
+        position: crate::render::Offset,
+        result: &mut crate::render::HitTestResult,
+    ) -> bool {
+        self.child.hit_test(position, result)
+    }
 }
 
 /// Upstream `PerformanceOverlayOption`.
@@ -592,6 +948,203 @@ mod tests {
     }
 
     // -- The debug banner ---------------------------------------------------------
+
+    // -- The banner ----------------------------------------------------------
+
+    /// What a banner over a 200x100 child left on the canvas, in order.
+    fn banner_drawn(debug: bool) -> Vec<crate::engine_test_stubs::Drawn> {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(CheckedModeBanner::widget(
+            debug,
+            crate::framework::leaf(|| crate::widgets::Container::new().with_size(200.0, 100.0)),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 100.0),
+        );
+        let mut layers = crate::engine::LayerTree::new(400, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(400.0, 400.0),
+            );
+            crate::render::RenderBox::paint(&root, &mut context, crate::render::Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    #[test]
+    fn a_release_build_is_its_child_and_nothing_else() {
+        // Upstream's whole build sits inside an `assert(() {...}())`, which
+        // the release compiler removes. Nothing of the banner is left to cost
+        // anything -- not a transform, not a rectangle.
+        let calls = banner_drawn(false);
+        assert!(
+            !calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::TransformLayer { .. })),
+            "a release build should not even push the banner's transform: {calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::Paragraph { .. })),
+            "nor draw its text: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_debug_build_puts_the_word_debug_across_the_corner() {
+        let calls = banner_drawn(true);
+        assert!(
+            calls.iter().any(|call| matches!(
+                call,
+                crate::engine_test_stubs::Drawn::Paragraph { text, .. } if text == "DEBUG"
+            )),
+            "{calls:?}"
+        );
+        // Two rectangles, the shadow under the ribbon.
+        let rects: Vec<u32> = calls
+            .iter()
+            .filter_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { argb, .. } => Some(*argb),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            rects.contains(&BannerPainter::COLOR.0),
+            "the ribbon itself: {rects:?}"
+        );
+        assert!(
+            rects
+                .iter()
+                .position(|argb| *argb == BannerPainter::default_shadow().color.0)
+                < rects
+                    .iter()
+                    .position(|argb| *argb == BannerPainter::COLOR.0),
+            "and its shadow underneath it, not over it: {rects:?}"
+        );
+    }
+
+    #[test]
+    fn the_banner_is_rotated_a_quarter_turn_and_not_merely_moved() {
+        // The whole shape is the rotation. Reading only the counts -- which is
+        // all a test could do before the matrix was recorded -- cannot tell a
+        // ribbon across the corner from a bar along the top.
+        let calls = banner_drawn(true);
+        let transform = calls
+            .iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::TransformLayer { a, b, c, d, e, f } => {
+                    Some((*a, *b, *c, *d, *e, *f))
+                }
+                _ => None,
+            })
+            .expect("the banner pushes a transform");
+        let (sin, cos) = (std::f32::consts::FRAC_PI_4).sin_cos();
+        assert!(
+            (transform.0 - cos).abs() < 1e-4 && (transform.3 - cos).abs() < 1e-4,
+            "a quarter turn: {transform:?}"
+        );
+        assert!(
+            (transform.1 - sin).abs() < 1e-4,
+            "turned towards the top right corner, not away from it: {transform:?}"
+        );
+        // `topEnd` in a left-to-right layout is the top right, so the ribbon
+        // is translated the full width across and not down at all.
+        assert!(
+            (transform.4 - 200.0).abs() < 1e-4 && transform.5.abs() < 1e-4,
+            "put at the top right corner: {transform:?}"
+        );
+    }
+
+    #[test]
+    fn each_corner_gets_its_own_translation_and_its_own_sign() {
+        // Upstream's `_translationX`, `_translationY` and `_rotation`, which
+        // are three switches over the same pair and disagree with each other
+        // in ways no single rule would produce.
+        let ltr = crate::direction::TextDirection::Ltr;
+        let at = |location| BannerPainter::new("DEBUG", location).with_directions(ltr, ltr);
+        let quarter = std::f32::consts::FRAC_PI_4;
+
+        // The two top corners sit on the corner itself.
+        assert_eq!(at(BannerLocation::TopStart).translation_x(200.0), 0.0);
+        assert_eq!(at(BannerLocation::TopEnd).translation_x(200.0), 200.0);
+        assert_eq!(at(BannerLocation::TopStart).translation_y(100.0), 0.0);
+
+        // The two bottom ones are pulled back inside by the diagonal.
+        let inset = BannerPainter::bottom_offset();
+        assert!((inset - (40.0 + std::f32::consts::FRAC_1_SQRT_2 * 12.0)).abs() < 1e-4);
+        assert_eq!(at(BannerLocation::BottomStart).translation_x(200.0), inset);
+        assert_eq!(
+            at(BannerLocation::BottomEnd).translation_x(200.0),
+            200.0 - inset
+        );
+        assert_eq!(
+            at(BannerLocation::BottomStart).translation_y(100.0),
+            100.0 - inset
+        );
+
+        // And the sign flips along both diagonals, so opposite corners agree
+        // and adjacent ones do not.
+        assert!((at(BannerLocation::TopStart).rotation() + quarter).abs() < 1e-6);
+        assert!((at(BannerLocation::BottomEnd).rotation() + quarter).abs() < 1e-6);
+        assert!((at(BannerLocation::TopEnd).rotation() - quarter).abs() < 1e-6);
+        assert!((at(BannerLocation::BottomStart).rotation() - quarter).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_right_to_left_layout_swaps_the_corners_and_the_signs_together() {
+        // `layoutDirection` is what reads `location`, and it is deliberately
+        // not the same field as the one that reads the message.
+        let ltr = crate::direction::TextDirection::Ltr;
+        let rtl = crate::direction::TextDirection::Rtl;
+        let end = |layout| {
+            BannerPainter::new("DEBUG", BannerLocation::TopEnd).with_directions(ltr, layout)
+        };
+        assert_eq!(end(ltr).translation_x(200.0), 200.0, "top right");
+        assert_eq!(end(rtl).translation_x(200.0), 0.0, "top left");
+        assert!(
+            end(ltr).rotation() * end(rtl).rotation() < 0.0,
+            "and the ribbon turns the other way with it"
+        );
+    }
+
+    #[test]
+    fn the_banner_takes_no_taps_and_leaves_the_child_reachable() {
+        // Upstream's `BannerPainter.hitTest` returns false. A ribbon that
+        // swallowed the top-right corner of every screen would be a fault
+        // shipped in every debug build.
+        const CHILD: u64 = 4101;
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(CheckedModeBanner::widget(
+            true,
+            crate::framework::leaf(|| {
+                crate::widgets::Pointer::new(
+                    CHILD,
+                    crate::widgets::Container::new().with_size(200.0, 100.0),
+                )
+            }),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 100.0),
+        );
+        let mut result = crate::render::HitTestResult::default();
+        // Right in the middle of where the ribbon is drawn.
+        crate::render::RenderBox::hit_test(
+            &root,
+            crate::render::Offset::new(180.0, 20.0),
+            &mut result,
+        );
+        assert!(
+            result.path.iter().any(|entry| entry.target == CHILD),
+            "the child under the banner still answers"
+        );
+    }
 
     #[test]
     fn in_a_release_build_the_banner_widget_is_its_child() {

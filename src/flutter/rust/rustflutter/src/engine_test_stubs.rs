@@ -933,6 +933,23 @@ pub enum Drawn {
         right: f32,
         bottom: f32,
     },
+    /// A transform layer, with the affine it carries: `a`, `b`, `c`, `d` are
+    /// the linear part and `e`, `f` the translation.
+    ///
+    /// [`LayerCalls`] counted these, so "rotated a quarter turn into the
+    /// corner" and "rotated a quarter turn out of the screen" were the same
+    /// observation -- and a banner, a rotation transition and a flip are
+    /// *entirely* their matrix. Nothing downstream records it either: the
+    /// draw calls inside a transform layer are recorded in the layer's own
+    /// coordinates, so without this the rotation was invisible.
+    TransformLayer {
+        a: f32,
+        b: f32,
+        c: f32,
+        d: f32,
+        e: f32,
+        f: f32,
+    },
     /// An opacity layer, with the alpha it carries.
     ///
     /// [`LayerCalls`] counted these, which made "faded to a tenth" and "faded
@@ -1313,6 +1330,8 @@ impl Drawn {
             Drawn::OffsetLayer { .. } => self,
             // An alpha is not a position.
             Drawn::OpacityLayer { .. } => self,
+            // A layer's own transform is what moves; see `OffsetLayer`.
+            Drawn::TransformLayer { .. } => self,
         }
     }
 }
@@ -1388,6 +1407,7 @@ pub unsafe extern "C" fn rf_layer_tree_push_transform(
     f: f32,
 ) {
     note(|calls| calls.transforms += 1);
+    record(Drawn::TransformLayer { a, b, c, d, e, f });
     open_container();
 }
 

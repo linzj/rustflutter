@@ -2360,8 +2360,12 @@ mod tests {
         // after instead, the background covers the whole application; not
         // painted at all, whatever the last frame left behind shows through.
         let calls = frame(2.0);
+        // The first *draw*, not the first call: the device pixel ratio goes
+        // down as a transform layer before anything is painted into it.
         assert_eq!(
-            calls.first(),
+            calls
+                .iter()
+                .find(|call| !matches!(call, Drawn::TransformLayer { .. })),
             Some(&Drawn::Color { argb: BACKGROUND.0 }),
             "{calls:?}"
         );

@@ -27260,3 +27260,81 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 如果现成的 transition 都要 `Animation`，那这一轮真正该补的是
 "**把条目的进度包成一个 `Animation`**"这件事，而不是硬塞一个只收 f32 的回调。
 先确认，再决定形状。
+
+---
+
+## 第 410 轮：先查的那件事把上一轮的"下一步"否掉了——于是换了一个真缺口
+
+上一轮的"下一步"是把 `AnimatedSwitcher` 的 `transitionBuilder` 参数化，
+但要求**先查 `transitions.rs` 里现成的 transition 收什么**。查了：
+`FadeTransition`、`ScaleTransition`、`SlideTransition`、`SizeTransition`、
+`RotationTransition`、`MatrixTransition`……**无一例外收 `Rc<dyn Animation>`**。
+而切换器手里只有一个 `f32` 和帧钟，**没有 `Animation` 对象**。
+
+`AlwaysStoppedAnimation` 顶不上：它的 status **永远是 `Forward`**，
+而第 409 轮刚立的规矩正是"方向决定用哪条曲线"——
+拿它包一个正在**倒退**的条目，等于对下游撒谎。
+上游不需要这个类，因为上游的每个条目都有**真的 `AnimationController`**。
+把控制器接进 `StatefulComponent::advance` 是好几轮的活，**不是这一轮该硬塞的形状**。
+
+所以按"先确认，再决定形状"的话办：**不做**，换一个。
+
+### 换成：`widgets/banner.dart` 整个文件没有移植
+
+`shells.py` 表里 `CheckedModeBanner` 是个壳。查下去比"壳"更糟：
+
+- `BannerLocation`（四个角）、`CheckedModeBanner::MESSAGE / LOCATION / shows_banner` 都在；
+- `WidgetsApp`、`MaterialApp`、`CupertinoApp` **三个类都带着
+  `debug_show_checked_mode_banner: true`**；
+- 而 **`BannerPainter` 一行都没有**——这个 crate 里没有任何东西画得出一条横幅。
+
+也就是说：三处默认打开的开关，**没有任何读者**，因为没有东西可读。
+
+补上 `BannerPainter`（`OFFSET`/`HEIGHT`/`COLOR`/`_kRect`/`_kShadow`/`_kTextStyle`
+以及 `translation_x` / `translation_y` / `rotation` 三个开关）
+和 `RenderBanner`（先画孩子，再把缎带**盖在上面**——上游是
+`CustomPaint(foregroundPainter:)`），
+再让 `CheckedModeBanner::widget(debug, child)` 真的造出来。
+
+三件值得记的事实：
+
+1. **`bottom_offset` 里的 `sqrt(1/2)` 不是凑数**：缎带斜着 45 度，
+   两个**上**角贴着角本身放，两个**下**角要按对角线把厚度折算回来往里收。
+   四个角的 x、y、转向**三个开关互不一致**，不是一条规则能推出来的。
+2. 上游把横幅的**两个方向都写死成 ltr**——不只是文字方向。
+   阿拉伯语环境里 DEBUG 仍然在右上角，因为**它是给做 app 的人看的，不是给用 app 的人看的**。
+3. `BannerPainter.hitTest` 返回 false。每个 debug 版本的**右上角都吞手指**会是个真事故。
+
+命名上有个坑如实记下：`Banner` 这个名字**已经被占了**——
+`controls::Banner` 其实是上游的 `MaterialBanner`。
+所以这里没有 `Banner` 控件结构体，`RenderBanner` 就是上游 `Banner` 相对其画笔多出来的那一件事。
+
+### 又一次：**代码是对的，仪器是瞎的**
+
+和第 409 轮同一族。存根对 `push_transform` **只数个数、不记矩阵**，
+于是"斜着横过角"和"沿着顶边平铺"是**同一个观察**——
+而一条横幅**整个就是它的矩阵**。加了 `Drawn::TransformLayer { a..f }`。
+
+加完立刻照出一处：`app.rs` 有个测试断言"第一个调用是背景色"，
+而设备像素比是**先下一层 transform** 的。改成"第一个**绘制**"，
+并写明为什么——那条断言原本就把层和绘制混为一谈了。
+
+变异扫描 11 个，第一遍 10 红 + 1 个编译不过（`0.0` 类型推断不出来，
+改成 `0.0_f32` 后单独跑，**红**）。
+
+尺子：十六把全部 exit 0。门：Rust 6458 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+`shells.py`：156 个 build（原 155）。
+
+**下一步**：横幅能画了，但**三个 app 类仍然没有一个会 build**——
+`WidgetsApp`、`MaterialApp`、`CupertinoApp` 都只是数据，
+`debug_show_checked_mode_banner` 这个开关**还是没有读者**，
+只是现在"没读者"的原因从"没东西可读"变成了"没人在读"。
+下一轮去接这一段。
+但**先查一件事**：`MaterialApp` 上游的 `build` 会依次套上
+`Localizations`、`Directionality`、`Theme`、`ScrollConfiguration`、
+`HeroControllerScope`、`WidgetsApp` 这一整摞，
+而 gallery 现在是**自己搭的根**（`app.rs`）。
+**先弄清楚 gallery 的根到底套了哪几层、和上游那一摞差在哪**，
+再决定这一轮是"把 `MaterialApp` 造出来"还是"先补它缺的那一层"——
+否则很容易造出第二个没人用的根，那正是这些轮一直在拆的形状。
