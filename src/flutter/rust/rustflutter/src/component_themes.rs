@@ -6921,6 +6921,66 @@ impl ResolvedListTile {
     /// five are not carried here.
     pub const MIN_TILE_HEIGHT: f32 = 56.0;
     pub const DENSE_MIN_TILE_HEIGHT: f32 = 48.0;
+
+    /// Upstream's `_RenderListTile._defaultTileHeight`: the height a tile
+    /// falls back to when nothing set `minTileHeight`.
+    ///
+    /// # Six numbers, not two, and the choice is not only about `dense`
+    ///
+    /// ```dart
+    /// baseDensity.dy + switch ((isThreeLine, subtitle != null)) {
+    ///   (true, _)      => isDense ? 76.0 : 88.0,  // 3 lines
+    ///   (false, true)  => isDense ? 64.0 : 72.0,  // 2 lines
+    ///   (false, false) => isDense ? 48.0 : 56.0,  // 1 line
+    /// }
+    /// ```
+    ///
+    /// This crate carried the last row only, and
+    /// [`ResolvedListTile::of`] described it as though `dense ? 48 : 56` were
+    /// the whole rule. A tile with a subtitle therefore asked for **56 where
+    /// upstream asks 72**, and a three-line tile for 56 where upstream asks
+    /// 88 -- a row too short by half a line, which is the sort of thing that
+    /// shows up as clipped descenders rather than as anything obviously
+    /// broken.
+    ///
+    /// **Three lines wins over a subtitle**: the first arm ignores whether
+    /// there is one, because a tile declaring itself three-line has already
+    /// said how tall it is however its slots are filled.
+    ///
+    /// The visual density's `dy` is **added**, not multiplied, and it is
+    /// signed -- a compact density is negative and makes every row shorter by
+    /// the same amount rather than by a proportion.
+    pub fn default_tile_height(
+        is_three_line: bool,
+        has_subtitle: bool,
+        dense: bool,
+        density_dy: f32,
+    ) -> f32 {
+        let rows = match (is_three_line, has_subtitle) {
+            (true, _) => {
+                if dense {
+                    76.0
+                } else {
+                    88.0
+                }
+            }
+            (false, true) => {
+                if dense {
+                    64.0
+                } else {
+                    72.0
+                }
+            }
+            (false, false) => {
+                if dense {
+                    ResolvedListTile::DENSE_MIN_TILE_HEIGHT
+                } else {
+                    ResolvedListTile::MIN_TILE_HEIGHT
+                }
+            }
+        };
+        density_dy + rows
+    }
     /// Upstream's default `horizontalTitleGap`.
     pub const HORIZONTAL_TITLE_GAP: f32 = 16.0;
     /// Upstream's default `minVerticalPadding`.
@@ -6932,10 +6992,16 @@ impl ResolvedListTile {
     ///
     /// `dense_override` is the tile's own value, and it has to arrive *here*
     /// rather than being applied to the result, because `minTileHeight` is
-    /// `data.minTileHeight ?? (dense ? 48 : 56)`: a theme that set the height
-    /// explicitly wins outright and `dense` changes nothing, while a theme that
-    /// did not gets one of two constants chosen by `dense`. Adjusting the
-    /// height afterwards cannot tell those two cases apart.
+    /// `data.minTileHeight ?? default_tile_height(..)`: a theme that set the
+    /// height explicitly wins outright and `dense` changes nothing, while a
+    /// theme that did not gets one of **six** heights -- see
+    /// [`ResolvedListTile::default_tile_height`], which is chosen by the
+    /// tile's line count as well as by `dense`. Adjusting the height
+    /// afterwards cannot tell those two cases apart.
+    ///
+    /// What this answers is the **one-line** fallback, because the line count
+    /// is the tile's own and is not known here; `ListTile::build` asks
+    /// `default_tile_height` with the facts it has.
     pub fn of(
         context: &mut BuildContext,
         selected: bool,
@@ -14085,6 +14151,79 @@ mod tests {
             DividerTheme::of,
         );
         assert_eq!(seen.color, Some(Color::argb(255, 1, 2, 3)));
+    }
+
+    #[test]
+    fn a_tile_with_a_subtitle_asks_for_a_taller_row() {
+        // Six numbers, not two. This crate carried the one-line row only, so
+        // every tile asked for 56 -- sixteen short for a two-line one and
+        // thirty-two for three lines.
+        type Tile = ResolvedListTile;
+        assert_eq!(Tile::default_tile_height(false, false, false, 0.0), 56.0);
+        assert_eq!(Tile::default_tile_height(false, true, false, 0.0), 72.0);
+        assert_eq!(Tile::default_tile_height(true, true, false, 0.0), 88.0);
+
+        assert_eq!(Tile::default_tile_height(false, false, true, 0.0), 48.0);
+        assert_eq!(Tile::default_tile_height(false, true, true, 0.0), 64.0);
+        assert_eq!(Tile::default_tile_height(true, true, true, 0.0), 76.0);
+
+        // Dense is shorter in every row, and by a different amount in each --
+        // it is a table, not one subtraction.
+        for (three, subtitle) in [(false, false), (false, true), (true, true)] {
+            assert!(
+                Tile::default_tile_height(three, subtitle, true, 0.0)
+                    < Tile::default_tile_height(three, subtitle, false, 0.0)
+            );
+        }
+        // The dense saving is 8 for one and two lines but 12 for three, so
+        // it is a table rather than one subtraction applied everywhere.
+        assert_eq!(
+            56.0 - Tile::default_tile_height(false, false, true, 0.0),
+            8.0
+        );
+        assert_eq!(
+            72.0 - Tile::default_tile_height(false, true, true, 0.0),
+            8.0
+        );
+        assert_eq!(
+            88.0 - Tile::default_tile_height(true, true, true, 0.0),
+            12.0
+        );
+    }
+
+    #[test]
+    fn a_three_line_tile_does_not_care_whether_it_has_a_subtitle() {
+        // Upstream's first arm is `(true, _)`: a tile that declared itself
+        // three-line has already said how tall it is.
+        type Tile = ResolvedListTile;
+        assert_eq!(
+            Tile::default_tile_height(true, false, false, 0.0),
+            Tile::default_tile_height(true, true, false, 0.0)
+        );
+        assert_eq!(Tile::default_tile_height(true, false, false, 0.0), 88.0);
+    }
+
+    #[test]
+    fn the_visual_density_is_added_to_every_row_alike() {
+        // `baseDensity.dy + switch (..)`: added, not multiplied, and signed,
+        // so a compact density takes the same amount off each row rather than
+        // a proportion of it.
+        type Tile = ResolvedListTile;
+        for (three, subtitle, dense) in [
+            (false, false, false),
+            (false, true, false),
+            (true, true, true),
+        ] {
+            let plain = Tile::default_tile_height(three, subtitle, dense, 0.0);
+            assert_eq!(
+                Tile::default_tile_height(three, subtitle, dense, -4.0),
+                plain - 4.0
+            );
+            assert_eq!(
+                Tile::default_tile_height(three, subtitle, dense, 6.0),
+                plain + 6.0
+            );
+        }
     }
 
     #[test]

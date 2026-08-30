@@ -2420,7 +2420,21 @@ impl Component for ListTile {
         );
         let content_padding = self.content_padding.unwrap_or(tile.content_padding);
         let title_gap = tile.horizontal_title_gap;
-        let min_tile_height = tile.min_tile_height;
+        // Upstream's `_defaultTileHeight` is chosen by the tile's line count
+        // as well as by `dense`, and only the tile knows that -- so a theme
+        // that set a height outright still wins, and otherwise the six-way
+        // table decides. Reading `tile.min_tile_height` alone asked for a
+        // one-line height for every tile, 16 short for one with a subtitle.
+        let min_tile_height =
+            match crate::component_themes::ListTileTheme::of(context).min_tile_height {
+                Some(asked) => asked,
+                None => crate::component_themes::ResolvedListTile::default_tile_height(
+                    self.is_three_line,
+                    self.subtitle.is_some(),
+                    tile.dense,
+                    0.0,
+                ),
+            };
         let tile_color = tile.tile_color;
         let min_leading_width = self.min_leading_width.unwrap_or(tile.min_leading_width);
         // Upstream's `effectiveColor`: selected wins, then disabled, then the

@@ -1293,12 +1293,13 @@ mod tests {
     }
 
     #[test]
-    fn a_switch_is_taller_than_the_two_lines_beside_it() {
-        // The claim the test above leans on, checked rather than asserted in
-        // prose: the control sets the row's height, so a subtitle does not
-        // change it. Now that text has a size in tests, this can be asked --
-        // and the answer being "no change" is a fact about the tile rather
-        // than about the harness measuring nothing.
+    fn a_subtitle_makes_the_row_taller_even_under_a_switch() {
+        // This test used to assert the opposite -- that the control set the
+        // height and a subtitle cost nothing -- and it passed because tick
+        // 341 found every tile taking the *one-line* fallback of 56. Upstream
+        // chooses by line count: `_defaultTileHeight`'s `(false, true)` arm
+        // is 72, so a tile with a subtitle is a taller row before its
+        // contents are measured at all.
         let height = |tile: ControlTile| {
             let mut tree = ElementTree::new();
             tree.rebuild(provide(
@@ -1315,9 +1316,11 @@ mod tests {
                 .widget(TILE, "Wi-Fi")
                 .with_subtitle("Connected to Home"),
         );
-        assert_eq!(
-            plain, with_subtitle,
-            "the control is the taller of the two, so the subtitle costs nothing"
+        assert_eq!(plain, 56.0, "one line");
+        assert_eq!(with_subtitle, 72.0, "two lines, which is upstream's row");
+        assert!(
+            with_subtitle > plain,
+            "the subtitle buys a taller row: {plain} then {with_subtitle}"
         );
     }
 

@@ -23330,3 +23330,61 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 （`math.max(..)`、`?? `、`.clamp(`、`is TypeName` 之类），挑十来条到上游里核一遍，
 看这是孤例还是一片。**是孤例就记一笔收工，是一片就值得再做一把尺子**——
 但按第 339 轮的规矩，那把尺子要先在这一条已知的错上响一次，才准去跑全量。
+
+---
+
+## 第 341 轮：不是一片，但抽查时撞见一个更实的——带副标题的行矮了 16
+
+按上一轮的“下一步”查“注释引了上游不存在的表达式”是不是一片。
+
+**先说尺子：这一类查不出来。** 写了个探针，把文档注释里反引号包着、看起来像 Dart 代码的片段
+抽出来，去上游全文里找。结果 **369 条找到、355 条没找到**——而没找到的绝大多数是**正当的转述**：
+`1 - curve(1 - t)`（数学描述）、`ActionButton(kind: ...)`（省略号，明摆着是形状不是引文）、
+`_direction = isForwardOrCompleted ? reverse : forward`（省掉了枚举前缀）。
+精度太低，没法把“转述”和“编造”分开。按第 339 轮的规矩，**没有把它做成尺子**，探针也没有留下。
+
+**改成手工抽查十来条。** 抽到 `component_themes.rs:6935` 这一条：
+
+> `minTileHeight` 是 `data.minTileHeight ?? (dense ? 48 : 56)`
+
+去上游核，`_RenderListTile._defaultTileHeight` 是：
+
+```dart
+baseDensity.dy + switch ((isThreeLine, subtitle != null)) {
+  (true, _)      => isDense ? 76.0 : 88.0,  // 3 行
+  (false, true)  => isDense ? 64.0 : 72.0,  // 2 行
+  (false, false) => isDense ? 48.0 : 56.0,  // 1 行
+}
+```
+
+**`48 : 56` 只是最后一行**——那条注释把六选一里的一行当成了全部规则。
+这不是编造，是**部分引用冒充全部**，而且它掩着一个真的行为缺口：本项目
+`min_tile_height` 的默认只按 `dense` 二选一，**从不看有没有副标题、是不是三行**。
+于是带副标题的行要 56 而上游要 **72（矮 16）**，三行的要 56 而上游要 88（矮 32）——
+这种矮法不会“看起来坏掉”，只会把字母的下伸部裁掉一点。
+
+（那两个常量自己的文档其实老实写着“这是六个里的一个，另外五个没有端过来”——
+但另一处注释又把它说成了全部。两处互相矛盾，这一轮一起改正。）
+
+端了完整的表 `ResolvedListTile::default_tile_height(is_three_line, has_subtitle, dense, density_dy)`，
+并在 `ListTile::build` 里接上——那里才知道自己有没有副标题。三件事写进文档：
+**三行胜过副标题**（上游第一支是 `(true, _)`，declare 了三行就已经说完了高度）；
+**视觉密度是加不是乘**，而且带符号；**主题显式设的高度仍然一票通过**。
+
+**顺手改正了一条把旧 bug 钉住的测试。** `a_switch_is_taller_than_the_two_lines_beside_it`
+断言“开关比两行高，所以副标题不要钱”——它能通过只是因为**每个行都拿 56**。
+上游两行就是 72，副标题**确实**要钱。测试改名、改断言，并写明它当初为什么会绿。
+
+**变异扫描 9 个，全红**（每个行都回到一行的高度、副标题不再起作用、三行等于两行、
+密度改成乘／丢掉、两行的 dense 与宽松对调、tile 不再问表、tile 忘了自己有副标题、
+主题高度不再优先）。另有一个变异**类型系统直接拒绝**：把 `(true, _)` 收窄成 `(true, true)`
+会让匹配不完全而编译失败——记为不可表示，不计入。
+
+尺子：十六把全部 exit 0。门：6249 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`default_tile_height` 现在收 `density_dy`，而 `ListTile::build` 传的是
+**硬编码的 0.0**——上游那里是 `visualDensity.baseSizeAdjustment.dy`。
+先按行为查本项目有没有 `VisualDensity`／`base_size_adjustment`（`grep`），
+有就把它接上（那是这一轮留下的唯一一处“参数在、来源没接”），没有就把这个缺口
+写进 `default_tile_height` 的文档里说明为什么传零。**别把它留成一个没人说清的 0.0。**
