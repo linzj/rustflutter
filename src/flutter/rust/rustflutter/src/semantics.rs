@@ -2118,8 +2118,21 @@ impl SemanticsProperties {
     }
 
     /// Something that scrolls, and how far down it is.
+    ///
+    /// # The extents are told; the actions are only offered when there is room
+    ///
+    /// Upstream writes `scrollPosition`, `scrollExtentMax` and
+    /// `scrollExtentMin` whenever the position `haveDimensions`, but guards the
+    /// action behind a second condition on the next line:
+    /// `if (position.maxScrollExtent > position.minScrollExtent)`. The two are
+    /// different claims and it matters which is which -- "this is a list, and
+    /// you are at the top of it" is true of a list that fits on screen, while
+    /// "you can scroll this" is not, and a reader that is offered a scroll
+    /// gesture that does nothing has been told a small lie about the page.
     pub fn scrollable(offset: f32, min: f32, max: f32, vertical: bool) -> SemanticsProperties {
-        let actions = if vertical {
+        let actions = if max <= min {
+            0
+        } else if vertical {
             SemanticsAction::ScrollUp as i32 | SemanticsAction::ScrollDown as i32
         } else {
             SemanticsAction::ScrollLeft as i32 | SemanticsAction::ScrollRight as i32
@@ -4929,6 +4942,84 @@ mod tests {
         );
         assert!(!said(&bare), "unclipped and empty: dropped");
         assert!(!said(&clipped), "clipped and empty: dropped, as before");
+        set_enabled(false);
+    }
+
+    /// A viewport onto content of `content`, scrolled to `offset`, and what
+    /// the walk says about it. The viewport fills the 200x200 the harness lays
+    /// out into, so the room to scroll is `content` less 200 along the axis.
+    fn scroll_node(axis: crate::render::Axis, content: Size, offset: f32) -> SemanticsNode {
+        let nodes = spoken_nodes(leaf(move || {
+            crate::render::RenderViewport::new(
+                axis,
+                crate::widgets::SizedBox::new(content.width, content.height),
+            )
+            .with_offset(offset)
+        }));
+        nodes
+            .iter()
+            .find(|node| !node.properties.scroll_position.is_nan())
+            .cloned()
+            .expect("a list said it was one")
+    }
+
+    #[test]
+    fn a_list_tells_a_reader_that_it_is_a_list_and_where_in_it_they_are() {
+        // What was missing was not the field but the speaker: all three scroll
+        // numbers already crossed the FFI, and `SemanticsProperties::scrollable`
+        // was built by one test and by nothing else. So every list in this port
+        // reached a screen reader as a plain box -- no announcement that it
+        // scrolls, no sense of position in it, no gesture offered.
+        set_enabled(true);
+        let node = scroll_node(
+            crate::render::Axis::Vertical,
+            Size::new(100.0, 500.0),
+            120.0,
+        );
+        assert_eq!(node.properties.scroll_position, 120.0);
+        assert_eq!(node.properties.scroll_extent_min, 0.0);
+        assert_eq!(
+            node.properties.scroll_extent_max, 300.0,
+            "the content beyond the window: 500 of content in 200 of glass"
+        );
+        assert!(node.properties.has(SemanticsAction::ScrollUp));
+        assert!(node.properties.has(SemanticsAction::ScrollDown));
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_list_that_fits_is_a_list_but_not_a_scrollable_one() {
+        // Upstream's two conditions on two lines: the extents are written
+        // whenever the position `haveDimensions`, the action only when
+        // `maxScrollExtent > minScrollExtent`. Offering a scroll gesture that
+        // cannot move anything tells a reader the page has more on it.
+        set_enabled(true);
+        let node = scroll_node(crate::render::Axis::Vertical, Size::new(100.0, 60.0), 0.0);
+        assert_eq!(node.properties.scroll_extent_max, 0.0, "nowhere to go");
+        assert_eq!(
+            node.properties.scroll_position, 0.0,
+            "and it still says it is a list, sitting at the top of itself"
+        );
+        assert!(!node.properties.has(SemanticsAction::ScrollUp));
+        assert!(!node.properties.has(SemanticsAction::ScrollDown));
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_sideways_list_offers_the_sideways_gestures() {
+        // The axis picks the pair. A reader flicking up on a row of cards
+        // would be reaching for a gesture the list never claimed to have.
+        set_enabled(true);
+        let node = scroll_node(
+            crate::render::Axis::Horizontal,
+            Size::new(500.0, 100.0),
+            0.0,
+        );
+        assert_eq!(node.properties.scroll_extent_max, 300.0);
+        assert!(node.properties.has(SemanticsAction::ScrollLeft));
+        assert!(node.properties.has(SemanticsAction::ScrollRight));
+        assert!(!node.properties.has(SemanticsAction::ScrollUp));
+        assert!(!node.properties.has(SemanticsAction::ScrollDown));
         set_enabled(false);
     }
 

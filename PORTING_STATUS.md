@@ -23919,3 +23919,77 @@ flutter_gallery_unittests 全部重建。
 `ffi_tables.py` 这把尺子管不管 `RfSemanticsNode` 的字段对齐——
 **管的话它应该已经在报警，没报警就说明这把尺子有个盲区**，
 那就先把盲区说清楚，再决定是补尺子还是只补字段。
+
+---
+
+## 第 352 轮：列表第一次告诉读屏软件它是个列表——以及上一轮那个“下一步”本身是错的
+
+**先说上一轮的“下一步”错在哪。** 我打算给 `RfSemanticsNode` 加
+`index_in_parent` 字段。查了才发现**上游根本不发这个值**：
+引擎侧的 `SemanticsNode`（`lib/ui/semantics/semantics_node.h`）里没有 `indexInParent`，
+只有 `scrollChildren` 和 `scrollIndex`。`indexInParent` 是**纯框架侧**的量，
+只有两个消费者：`cupertino/picker.dart` 拿它重排孩子，
+以及 `widgets/scrollable.dart:1750` 那一行——
+
+```dart
+if (!child.flagsCollection.isHidden) {
+  firstVisibleIndex ??= child.indexInParent;
+}
+config.scrollIndex = firstVisibleIndex;
+```
+
+**加那个字段会是一次偏离上游，不是一次对齐。** 幸好动手前先查了。
+
+**顺着 `scrollIndex` 往回摸，撞上一个大得多的洞。** 本项目的
+`SemanticsProperties::scrollable` —— **只被一个测试构造过**。
+全仓库 grep `scroll_position`，除了 `semantics.rs` 自己和 `app.rs` 那行 FFI 打包，
+**没有任何渲染对象声明过自己会滚**。
+
+也就是说：**这个 port 里每一个列表，到读屏软件那里都是一个普通方块。**
+不说它会滚，不说你在第几屏，也不给你滚动手势。
+而三个数（position / extent_min / extent_max）**早就一路铺到 FFI 了**——
+`RfSemanticsNode` 有字段，`runtime_controller.cc` 有赋值。
+**管子是通的，只是没人往里放水。**
+
+这一轮放水：`RenderViewport::describe_semantics`，对应上游
+`_RenderScrollSemantics.describeSemanticsConfiguration`。
+`max_scroll_extent()` 和 `axis()` 本来就有，所以是一段短代码加一段长文档。
+
+**上游那两行的分寸写进了 `scrollable` 的文档**：
+extents 在 `haveDimensions` 时就写，**手势**却压在下一行的第二个条件上——
+`if (position.maxScrollExtent > position.minScrollExtent)`。
+这是两句不同的话：“这是个列表，你在它顶上”对一个装得下的列表**是真的**，
+“你可以滚它”**不是**。给一个滚不动的东西挂上滚动手势，
+等于告诉读屏用户这页下面还有东西。所以 `scrollable` 现在在 `max <= min` 时**不给动作**。
+
+`min` 写死 0，理由也写下来了：这个 viewport 自己的算术就是这么假设的
+（`set_offset` 往 `0..=max_scroll_extent()` 里夹）。上游读 `minScrollExtent`
+是因为 `ScrollPosition` 可以是负的（还没回弹完的过冲、居中的 sliver 列表）；
+这个不会，**把这个 0 写明白，比留一个只会返回 0 的 `min_scroll_extent()` 更好改**。
+
+三条测试走真遍历：装不下的竖列表报 120/0/300 并给出上下手势；
+装得下的**仍然说自己是列表、仍然报位置**，但**不给手势**；
+横列表给的是左右而不是上下。
+
+**变异扫描 7 个，第一遍 7 个全红。** 写测试时踩了一脚：
+`RenderSizedOverflowBox` 只定自己的尺寸，孩子仍按**进来的**约束排，
+所以 viewport 没有被约束成 100——量出来 200。把辅助函数简化成
+“viewport 铺满 200×200”，数字就自洽了。
+
+尺子：十六把全部 exit 0。门：6280 通过；`cargo fmt --check` 干净；
+三个输出目录的 rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、
+flutter_gallery_unittests 全部重建。
+
+**顺带回答上一轮问的那个尺子问题**：`ffi_tables.py` **管不着这件事**，
+它比的是两侧手写的**枚举数字表**，不是结构体字段。
+而 `RfSemanticsNode` **也没有** `RfAppHost` 那样的 `size_of` 静态断言——
+所以这个结构体的字段对齐，目前**两边都没人在看**。这是个真盲区，先记在这里。
+
+**下一步**：把 `scrollIndex` / `scrollChildren` 接上，这才是第 351 轮那个下标真正的去处。
+它跟这一轮不一样，**FFI 那一侧是空的**：`RfSemanticsNode` 没有这两个字段，
+而引擎的 `SemanticsNode` 有。所以一轮要做穿的是四段：
+`SemanticsProperties` 加两个字段、走查在关一个滚动节点时把
+**第一个幸存后代的下标**填进去（上游 `firstVisibleIndex ??= child.indexInParent`，
+而“幸存”这件事第 350 轮才成立）、`rust_app_api.h` 与 `app.rs` 同步、
+`runtime_controller.cc` 赋值。**动手前先补上那条 `size_of` 断言**——
+既然这一轮刚发现没人看着这个结构体，那就别在没人看着的时候去改它。

@@ -10347,6 +10347,39 @@ impl RenderBox for RenderViewport {
         })
     }
 
+    /// Says that this is a list, where in it the reader is, and how far it
+    /// runs.
+    ///
+    /// Upstream's `_RenderScrollSemantics.describeSemanticsConfiguration`,
+    /// which writes `scrollPosition`, `scrollExtentMax` and `scrollExtentMin`
+    /// off the `ScrollPosition`. All three exist here already and cross the FFI
+    /// already (`RfSemanticsNode::scroll_position` and its two neighbours) --
+    /// **what was missing was anybody saying them.** Until now
+    /// [`crate::semantics::SemanticsProperties::scrollable`] was built by one
+    /// test and by nothing else, so a screen reader met every list in this port
+    /// as a plain box: no announcement that it scrolls, no "you are a third of
+    /// the way down", and no scroll gesture offered.
+    ///
+    /// The minimum is a literal zero because that is what this viewport's own
+    /// arithmetic assumes -- [`RenderViewport::set_offset`] clamps into
+    /// `0..=max_scroll_extent()`. Upstream reads `minScrollExtent` off the
+    /// position because a `ScrollPosition` can start below zero (an overscroll
+    /// that is still settling, a centred sliver list); this one cannot, and
+    /// writing the zero down here is cheaper to correct later than a
+    /// `min_scroll_extent()` that only ever returns it.
+    fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
+        Some(crate::semantics::SemanticsAnnotation::new(
+            crate::semantics::take_text_id(),
+            crate::semantics::SemanticsProperties::scrollable(
+                self.offset,
+                0.0,
+                self.max_scroll_extent(),
+                self.axis() == Axis::Vertical,
+            ),
+            None,
+        ))
+    }
+
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child
             .hit_test(position.minus(self.scroll_offset()), result)
