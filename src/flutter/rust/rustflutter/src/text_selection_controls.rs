@@ -779,6 +779,81 @@ impl CupertinoTextSelectionToolbarButton {
     pub fn wraps_in_gesture_detector(enabled: bool) -> bool {
         enabled
     }
+
+    /// Upstream's `SizedBox.square(dimension: 13.0)` around the live-text
+    /// icon.
+    ///
+    /// **The one button whose content is not text.** Every other kind falls to
+    /// the same `Text` widget; `liveTextInput` gets its own arm of upstream's
+    /// switch and a drawn glyph instead. That joins up with the label table,
+    /// where `liveTextInput` answers the empty string: it has no label
+    /// **because it shows no label**, not because one was left out.
+    pub const LIVE_TEXT_ICON_DIMENSION: f32 = 13.0;
+
+    /// Upstream's `_LiveTextIconPainter` stroke: round caps, round joins,
+    /// width 1, stroke rather than fill.
+    pub const LIVE_TEXT_ICON_STROKE_WIDTH: f32 = 1.0;
+}
+
+/// Upstream `_LiveTextIconPainter`: the viewfinder-with-lines glyph on the
+/// live-text button, drawn rather than looked up.
+///
+/// # One corner, drawn four times, with the canvas turned between
+///
+/// Upstream builds a single path -- an arm, a rounded right-angle, another arm
+/// -- and then draws it four times, rotating the **canvas** by a quarter turn
+/// each time rather than recomputing the path. The canvas is translated to the
+/// centre first, so the rotation is about the middle of the square; `origin`
+/// then walks back out to the top-left corner.
+///
+/// Doing it the other way -- writing out four corners -- is where the mistakes
+/// live: the four have to agree about the arc's direction as well as its
+/// place, and three of them are the first one read backwards in some axis.
+pub struct LiveTextIconPainter;
+
+impl LiveTextIconPainter {
+    /// How far each arm of a corner reaches from the corner itself.
+    pub const ARM: f32 = 3.5;
+    /// The radius of the rounded turn between the two arms.
+    pub const CORNER_RADIUS: f32 = 1.0;
+    /// Upstream draws the corner path four times, a quarter turn apart.
+    pub const CORNERS: usize = 4;
+
+    /// The three lines of "text" inside the viewfinder, as (start, end) pairs
+    /// in the centred coordinate space.
+    ///
+    /// **The last one is short.** Two run the full `-3..3` and the third stops
+    /// at 1. That is a ragged last line of a paragraph, and it is what makes
+    /// the glyph read as *text* rather than as three rules or an equals sign.
+    /// It is also the detail a redraw from memory loses first.
+    pub fn lines() -> [(Offset, Offset); 3] {
+        [
+            (Offset::new(-3.0, -3.0), Offset::new(3.0, -3.0)),
+            (Offset::new(-3.0, 0.0), Offset::new(3.0, 0.0)),
+            (Offset::new(-3.0, 3.0), Offset::new(1.0, 3.0)),
+        ]
+    }
+
+    /// The corner path's four points, from the top-left `origin` of a square
+    /// of `size`: down the left arm to the turn, round it, and out along the
+    /// top arm.
+    ///
+    /// Answered as points rather than as a built path because a
+    /// [`crate::painting::RenderPath`] is an engine allocation -- the same
+    /// split [`crate::animated_icons`] makes, and for the same reason.
+    pub fn corner(size: f32) -> (Offset, Offset, Offset, Offset) {
+        let origin = Offset::new(-size / 2.0, -size / 2.0);
+        (
+            // The far end of the vertical arm.
+            Offset::new(origin.dx, origin.dy + LiveTextIconPainter::ARM),
+            // Where the turn begins.
+            Offset::new(origin.dx, origin.dy + LiveTextIconPainter::CORNER_RADIUS),
+            // Where it ends.
+            Offset::new(origin.dx + LiveTextIconPainter::CORNER_RADIUS, origin.dy),
+            // The far end of the horizontal arm.
+            Offset::new(origin.dx + LiveTextIconPainter::ARM, origin.dy),
+        )
+    }
 }
 
 /// Upstream `CupertinoDesktopTextSelectionToolbar`.
@@ -1240,6 +1315,97 @@ mod tests {
         assert!(
             CupertinoTextSelectionToolbar::ARROW_WIDTH
                 > CupertinoTextSelectionToolbar::ARROW_HEIGHT
+        );
+    }
+
+    #[test]
+    fn the_last_line_of_the_live_text_glyph_is_short() {
+        // A ragged last line is what makes the three strokes read as a
+        // paragraph rather than as three rules. It is the detail a redraw
+        // from memory loses first.
+        let lines = LiveTextIconPainter::lines();
+        let widths: Vec<f32> = lines.iter().map(|(a, b)| b.dx - a.dx).collect();
+        assert_eq!(widths[0], widths[1], "the first two are the same length");
+        assert!(
+            widths[2] < widths[0],
+            "and the third is shorter: {widths:?}"
+        );
+
+        // All three start at the same left edge, so it is the end that is
+        // pulled in rather than the line being centred and shrunk.
+        assert!(lines.iter().all(|(start, _)| start.dx == -3.0));
+
+        // Evenly spaced down the middle.
+        assert_eq!(lines[0].0.dy, -3.0);
+        assert_eq!(lines[1].0.dy, 0.0);
+        assert_eq!(lines[2].0.dy, 3.0);
+    }
+
+    #[test]
+    fn the_corner_is_drawn_once_and_turned_four_times() {
+        // Writing out four corners is where the mistakes live: they have to
+        // agree about the arc's direction as well as its place.
+        assert_eq!(LiveTextIconPainter::CORNERS, 4);
+
+        // The two numbers themselves, since every relationship below is
+        // written in terms of them and would hold for any pair.
+        assert_eq!(LiveTextIconPainter::ARM, 3.5);
+        assert_eq!(LiveTextIconPainter::CORNER_RADIUS, 1.0);
+        assert!(
+            LiveTextIconPainter::CORNER_RADIUS < LiveTextIconPainter::ARM,
+            "the turn has to fit inside the arm it turns from"
+        );
+
+        let size = CupertinoTextSelectionToolbarButton::LIVE_TEXT_ICON_DIMENSION;
+        let (arm_end, turn_start, turn_end, other_arm_end) = LiveTextIconPainter::corner(size);
+
+        // The path starts at the far end of one arm and finishes at the far
+        // end of the other, both `ARM` from the corner.
+        let corner = Offset::new(-size / 2.0, -size / 2.0);
+        assert_eq!(arm_end.dy - corner.dy, LiveTextIconPainter::ARM);
+        assert_eq!(other_arm_end.dx - corner.dx, LiveTextIconPainter::ARM);
+        assert_eq!(arm_end.dx, corner.dx, "the vertical arm is vertical");
+        assert_eq!(other_arm_end.dy, corner.dy, "and the horizontal one is not");
+
+        // The turn is one radius in from the corner on each side, which is
+        // what makes it a quarter circle rather than a chamfer.
+        assert_eq!(
+            turn_start.dy - corner.dy,
+            LiveTextIconPainter::CORNER_RADIUS
+        );
+        assert_eq!(turn_end.dx - corner.dx, LiveTextIconPainter::CORNER_RADIUS);
+        assert_eq!(turn_start.dx, corner.dx);
+        assert_eq!(turn_end.dy, corner.dy);
+    }
+
+    #[test]
+    fn the_corner_is_placed_from_the_centre_so_the_turns_are_about_the_middle() {
+        // Upstream translates to the centre before rotating, so the corner is
+        // expressed as an offset from there. A bigger square pushes the
+        // corner out by half the difference, and the arms keep their length.
+        let small = LiveTextIconPainter::corner(13.0);
+        let large = LiveTextIconPainter::corner(20.0);
+        assert!(large.0.dx < small.0.dx, "further out from the centre");
+        assert_eq!(
+            large.3.dx - large.0.dx,
+            small.3.dx - small.0.dx,
+            "and the same size of corner either way"
+        );
+    }
+
+    #[test]
+    fn live_text_is_the_one_button_that_shows_no_words() {
+        // It answers the empty label because it draws a glyph, not because a
+        // label was left out.
+        use crate::icon_data::ContextMenuButtonType;
+        assert_eq!(ContextMenuButtonType::LiveTextInput.cupertino_label(), "");
+        assert_eq!(
+            CupertinoTextSelectionToolbarButton::LIVE_TEXT_ICON_DIMENSION,
+            13.0
+        );
+        assert!(
+            !ContextMenuButtonType::Copy.cupertino_label().is_empty(),
+            "while a button that does show words has some"
         );
     }
 
