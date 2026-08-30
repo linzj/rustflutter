@@ -22840,3 +22840,63 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 再点在字段中间，看焦点会不会落到 1。
 **如果连字段都收不到，那问题在 `ElementTree::build_render_tree` 装出来的树上，
 而不在搜索框的 build 里**——这个判别一步就能把范围减半。
+
+---
+
+## 第 332 轮：行的孩子布局完之后 `size()` 是 0×0，而它们的 dry layout 答 6×16
+
+接上一轮的“下一步”：先做那个一步减半的判别——**真树上到底有没有任何一个 region 收到过点击**。
+
+**收到了。** 换了干净的观测量（先 `unfocus()` 确认 `focused() == None`，再点字段中间）：
+
+```
+PROBE focus before = None
+PROBE down-hit = true, focus after = Some(1)
+```
+
+所以 `ElementTree::build_render_tree` 装出来的树**是能派发点击的**，元素／控件那一层没问题。
+上一轮排除了布局族，这一轮排除了元素层——范围又减半。
+
+然后把真树整棵递归打出来（`visit_children` 逐层，带 offset、size 和 `hit_test_id`），
+问题当场露出来。行是 300×44，它的两个孩子：
+
+```
+Offset(0,  4.0)  size=0×0      ← 里面那层 6,8 也是 0×0
+Offset(26, 3.8)  size=0×0      ← 里面那层 5.5,8 是 263×20.4，字段 id=1 在其中
+```
+
+**孩子自己是 0×0，孙子却有真实尺寸。** 而且 flex 明明量过它们——它把第二个孩子放在
+**dx=26**，说明它认为第一个宽 26。再问同一个对象一次 dry layout：
+
+```
+PROBE row child at (0,4)  size=0×0  dry=6×16
+PROBE row child at (26,3.8) size=0×0  dry=11×16
+```
+
+**`size()` 答 0×0，`compute_dry_layout()` 答 6×16 和 11×16。**
+也就是说这些节点的 `self.size` **根本没被写进去**，尽管 flex 量过它们。
+
+这解释了从第 330 轮起看到的一切：**每一次命中判定都要过
+`self.size.contains(position)`**（`RenderPointerRegion::hit_test` 是这样，
+默认的 `hit_test` 也是这样），所以**一个 0×0 的祖先会让它底下的一切都点不到**。
+清空按钮点不到不是清空按钮的问题，是这个的症状。
+
+`RenderPadding::layout` 本身看着是对的（deflate → 量孩子 → 加回内边距 → constrain → 写
+`self.size`），所以问题多半在**谁被 layout、谁被 dump** 不是同一个对象，
+或者 flex 走的是 `layout_child` 的某条路径而没有把尺寸落到这些节点上。**这一轮没查到那一步，
+不装作查到了。**
+
+按纪律实验代码没有留下：探针全部回滚，只把这段诊断写进了 `cupertino.rs` 里那条注释——
+它现在给出的是可复现的判据（`size()` 0×0 对 `dry` 6×16，flex 却把下一个孩子放在 dx=26），
+而不是“原因未知”。
+
+尺子：十六把全部 exit 0。门：6238 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：把“谁没被写 size”钉死。最直接的一步：在 `RenderFlex::layout` 里看它对每个孩子
+调的是什么——`layout_child(constraints, parent_uses_size)` 还是别的；
+如果它走的是 `compute_dry_layout` 之类**只算不落**的路径，那 `self.size` 自然是 0。
+第 331 轮的最小复现里孩子是 `Sized(...)`，它的 `size()` 大概是**从构造参数直接答**的，
+不依赖 layout 写入——**所以最小复现测不出这个 bug**。
+先确认这一点（给最小复现换成 `RenderPadding` 包一个 `Sized`，看它是不是也变成 0×0），
+**如果是，那就有了一个不依赖搜索框的、两行就能复现的失败测试**，然后再修。

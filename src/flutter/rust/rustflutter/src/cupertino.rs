@@ -3894,11 +3894,18 @@ impl StatefulComponent for CupertinoSearchTextField {
                     // written up in PORTING_STATUS: with text in the field
                     // this button **is built** (the build reports
                     // `show_clear=true`) and the handler below **still never
-                    // runs**, at any point inside the laid-out 300x44 box. So
-                    // the clear button does not respond to taps at all, and
-                    // the missing coverage is a symptom rather than the
-                    // problem. Sharing a pointer-region id with the field was
-                    // ruled out; the cause is not yet known.
+                    // runs**, at any point inside the laid-out 300x44 box.
+                    //
+                    // Tick 332 traced it to something under this widget
+                    // rather than in it. After the row is laid out, its
+                    // children answer `size()` of **0x0** while their own
+                    // `compute_dry_layout` answers 6x16 and 11x16 -- the
+                    // stored size was never written, though the flex clearly
+                    // measured them, because it placed the second child at
+                    // dx=26. Every hit test guards on `size.contains(..)`, so
+                    // a zero-sized ancestor makes everything beneath it
+                    // unreachable. That is the bug to fix; this button is one
+                    // of its symptoms.
                     let announcement = CupertinoSearchTextField::suffix_tap(&text_before);
 
                     // `_clearText`: empty the field through its own handle,
