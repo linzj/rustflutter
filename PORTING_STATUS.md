@@ -22196,3 +22196,57 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 “开着”和“开着或正在开”，这两者在关闭动画进行中是不同的答案；`navigation_bar.dart` 476、499、864
 用它在选中／未选中图标之间切换——**切换发生在动画开始的那一帧，不是过半时**。
 先查本项目 `menu_anchor.rs` 与 `navigation_bar.rs` 里这两处是怎么写的，按行为比，不要按名字比。
+
+---
+
+## 第 319 轮：正在关的父菜单挡住子菜单，已经关上的那个不挡
+
+接上一轮的“下一步”，查 `isForwardOrCompleted` 的调用点。本项目 `raw_menu_anchor.rs` 里
+菜单的开合是一个**布尔 `is_open`**，没有动画状态这回事，所以上游
+`_handleMenuOpenRequest` / `_handleMenuCloseRequest` 那两道闸整个没有。
+
+先看清楚：上游在**同样四个状态**上有**三个**不同的谓词，而且三者两两不同集：
+
+| | dismissed | forward | reverse | completed |
+|---|---|---|---|---|
+| `isForwardOrCompleted` | 假 | **真** | 假 | 真 |
+| `isClosingOrClosed` | 真 | 假 | 真 | 假 |
+| `isClosing` | **假** | 假 | 真 | 假 |
+
+后两者只在 `dismissed` 上分家，而**那一格正是父菜单那道闸打开的地方**：
+
+```dart
+if (_parent?.isClosing ?? false) { return; }
+```
+
+用的是**窄的那个**——只有 `reverse`。乍看是反的：一个已经彻底关上的父菜单，难道不比一个还
+半挂在屏幕上的更该拦？但上游的注释说明了它是干什么的——“父菜单开始关闭之后，子菜单不应该再
+打开；这防止子菜单在父菜单已经开始关闭之后调用 `MenuController.open()`”。**它拦的是一场竞态，
+不是一个状态**。正在关的父菜单马上要把孩子一起带下去，这时候开出来的子菜单会闪一下就没;
+而一个 dismissed 的父菜单只是一个菜单，正在开子菜单的那个东西也会把它开出来。
+
+另外两件：
+
+* **`showOverlay()` 在闸之前无条件执行**，之后才跳过动画。把两者并成一个提前返回是最自然的
+  简化，会丢掉“浮层被撤了而动画还停在终点”那一种情形。
+* **关到一半的菜单会重新打开，而不是被当成“已经开着”。** `reverse` 不是 forward-or-completed，
+  所以它从当前位置被 `forward()` 回去。改成问“它现在看得见吗”会答“看得见”，然后让它继续关。
+
+关闭那道闸是开的镜像，镜像本身就是规则：**已经在关的菜单不再理会关闭请求**——重启 reverse 会
+让它跳回全尺寸，而且 `whenComplete(hideOverlay)` 会被第二次挂上；**已经关上的**同理，
+没有浮层可撤，从零点往回倒也放不出任何东西。测试里加了一条“两道闸是严格镜像”：四个状态里
+每一个要么开要么关，不会两个都做也不会两个都不做。
+
+**变异扫描 12 个，第一遍全红。** 包括：`is_closing` 放宽成 `is_closing_or_closed` / 放宽成
+`is_animating`、`is_closing_or_closed` 收窄成只有 reverse、父闸改用宽谓词 / 改成没有父菜单
+也拦 / 父菜单不再起作用、浮层跟着动画一起被跳过、关到一半算已开、开动画无条件运行、
+关闸放宽成“非 dismissed” / 收窄成只有 completed / 整个取反。
+
+尺子：十六把全部 exit 0。门：6193 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`isForwardOrCompleted` 的另一族调用点还没查——`navigation_bar.dart` 476、499、864
+与 `navigation_drawer.dart` 290、305 用它在**选中／未选中的图标和文字样式之间切换**。
+关键在于这个切换发生在**动画的第一帧**而不是过半时：手指一抬，图标立刻变成选中态，
+然后指示器才慢慢长出来；照 `animation.value > 0.5` 写会晚半拍，而且回退时也会晚半拍。
+先查本项目 `navigation_destinations.rs` 里这两处是怎么写的，按行为比。

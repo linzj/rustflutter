@@ -131,6 +131,96 @@ impl MenuAcceleratorLabel {
     }
 }
 
+// -- Opening and closing, and the three ways to read the same four states -----
+
+/// Upstream `_MenuAnchorState.isClosing`: the menu is **running its close
+/// animation right now**.
+///
+/// Only `reverse`. A menu that has finished closing is not closing -- it is
+/// closed, and that is a different answer to a different question. See
+/// [`is_closing_or_closed`] for the other one.
+pub fn is_closing(status: crate::animation::AnimationStatus) -> bool {
+    status == crate::animation::AnimationStatus::Reverse
+}
+
+/// Upstream `_MenuAnchorState.isClosingOrClosed`: `dismissed` or `reverse`.
+///
+/// This is exactly the complement of
+/// [`crate::animation::AnimationStatus::is_forward_or_completed`], written out
+/// upstream as its own switch because the menu code reads better asking it
+/// this way round.
+pub fn is_closing_or_closed(status: crate::animation::AnimationStatus) -> bool {
+    !status.is_forward_or_completed()
+}
+
+/// What an open request does, from upstream's `_handleMenuOpenRequest`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuOpenRequest {
+    /// Whether the overlay is put up. Upstream calls `showOverlay()`
+    /// **before** looking at the animation at all.
+    pub shows_overlay: bool,
+    /// Whether the open animation is started. Skipped for a menu already open
+    /// or already opening.
+    pub starts_animation: bool,
+}
+
+/// Upstream's `_handleMenuOpenRequest`.
+///
+/// # A parent that is *closing* blocks the child; a parent that is *closed*
+/// does not
+///
+/// The guard is `_parent?.isClosing ?? false`, and it is the narrow predicate
+/// -- `reverse` alone, not [`is_closing_or_closed`]. That reads backwards for
+/// a moment: surely a parent that is entirely shut is worse than one still
+/// half on screen? But the comment says what it is for -- "if this menu's
+/// parent is closing, submenus should not open. This prevents a submenu
+/// calling `MenuController.open()` after a parent menu has started closing."
+/// It is a **race**, not a state check. A closing parent is on its way to
+/// taking the child down with it, so a child opening now would flash and
+/// vanish. A dismissed parent is just a menu, and whatever is opening the
+/// child will open it too.
+///
+/// # The overlay goes up even when the animation does not
+///
+/// `showOverlay()` runs unconditionally, then the animation is skipped for a
+/// menu that is already forward or completed. Folding the two together --
+/// returning early before showing the overlay -- would be the natural
+/// simplification and would lose the case where the entry was taken down
+/// while the animation stayed at its end.
+///
+/// # A closing menu re-opens rather than counting as open
+///
+/// `reverse` is not forward-or-completed, so a menu caught mid-close is sent
+/// `forward()` from wherever it got to. Asking "is it visible?" instead would
+/// have said yes and left it closing.
+pub fn menu_open_request(
+    parent_status: Option<crate::animation::AnimationStatus>,
+    status: crate::animation::AnimationStatus,
+) -> MenuOpenRequest {
+    if parent_status.is_some_and(is_closing) {
+        return MenuOpenRequest {
+            shows_overlay: false,
+            starts_animation: false,
+        };
+    }
+    MenuOpenRequest {
+        shows_overlay: true,
+        starts_animation: !status.is_forward_or_completed(),
+    }
+}
+
+/// Upstream's `_handleMenuCloseRequest`: whether to run the close animation
+/// and, when it finishes, take the overlay down.
+///
+/// The mirror of the open guard, and the mirror matters. A menu **already
+/// closing** is left alone: restarting the reverse would jump it back to full
+/// size, and `whenComplete(hideOverlay)` would be armed a second time. A menu
+/// already **closed** is likewise left alone -- there is no overlay left to
+/// hide, and reversing from zero animates nothing.
+pub fn menu_close_request(status: crate::animation::AnimationStatus) -> bool {
+    status.is_forward_or_completed()
+}
+
 /// Upstream `MenuStyle`'s alignment offset and the flags a menu carries --
 /// the configuration half of [`MenuAnchor`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -431,6 +521,101 @@ mod tests {
 
     fn stripped(label: &str) -> (String, Option<usize>) {
         MenuAcceleratorLabel::strip_accelerator_markers(label)
+    }
+
+    // -- Opening and closing, tick 319 -------------------------------------
+
+    use crate::animation::AnimationStatus::{Completed, Dismissed, Forward, Reverse};
+
+    const EVERY_STATE: [crate::animation::AnimationStatus; 4] =
+        [Dismissed, Forward, Reverse, Completed];
+
+    #[test]
+    fn a_menu_that_has_finished_closing_is_not_closing() {
+        // Three predicates over the same four states, and no two of them are
+        // the same set.
+        assert!(is_closing(Reverse));
+        assert!(!is_closing(Dismissed), "closed, which is not closing");
+        assert!(!is_closing(Forward) && !is_closing(Completed));
+
+        assert!(is_closing_or_closed(Dismissed) && is_closing_or_closed(Reverse));
+        assert!(!is_closing_or_closed(Forward) && !is_closing_or_closed(Completed));
+
+        // The two differ on exactly one state, which is the one the parent
+        // guard turns on.
+        let differ: Vec<_> = EVERY_STATE
+            .iter()
+            .filter(|status| is_closing(**status) != is_closing_or_closed(**status))
+            .collect();
+        assert_eq!(differ, vec![&Dismissed]);
+    }
+
+    #[test]
+    fn a_closing_parent_blocks_a_submenu_and_a_closed_one_does_not() {
+        // It is a race, not a state check: a closing parent is on its way to
+        // taking the child down with it. A dismissed parent is just a menu.
+        let blocked = menu_open_request(Some(Reverse), Dismissed);
+        assert!(!blocked.shows_overlay && !blocked.starts_animation);
+
+        let allowed = menu_open_request(Some(Dismissed), Dismissed);
+        assert!(
+            allowed.shows_overlay && allowed.starts_animation,
+            "a shut parent is not an obstacle"
+        );
+
+        for parent in [Forward, Completed] {
+            assert!(menu_open_request(Some(parent), Dismissed).shows_overlay);
+        }
+        assert!(
+            menu_open_request(None, Dismissed).shows_overlay,
+            "no parent"
+        );
+    }
+
+    #[test]
+    fn the_overlay_goes_up_even_when_the_animation_is_skipped() {
+        // showOverlay() runs before the animation is looked at. Folding the
+        // two into one early return is the natural simplification and loses
+        // the case where the entry was taken down while the animation stayed
+        // at its end.
+        let already = menu_open_request(None, Completed);
+        assert!(already.shows_overlay, "still shown");
+        assert!(!already.starts_animation, "but not animated again");
+    }
+
+    #[test]
+    fn a_menu_caught_mid_close_re_opens_from_where_it_got_to() {
+        // `reverse` is not forward-or-completed. Asking "is it visible?"
+        // would have said yes and left it closing.
+        let reopened = menu_open_request(None, Reverse);
+        assert!(reopened.starts_animation);
+        assert!(
+            !menu_open_request(None, Forward).starts_animation,
+            "and one already opening is left to finish"
+        );
+    }
+
+    #[test]
+    fn closing_something_already_closing_does_nothing_at_all() {
+        // Restarting the reverse would jump it back to full size, and the
+        // completion callback that hides the overlay would be armed twice.
+        assert!(!menu_close_request(Reverse));
+        assert!(!menu_close_request(Dismissed), "nothing left to hide");
+        assert!(menu_close_request(Forward), "caught mid-open, so turn back");
+        assert!(menu_close_request(Completed));
+    }
+
+    #[test]
+    fn the_open_and_close_guards_are_exact_mirrors() {
+        // Every state either starts an open or starts a close, never both and
+        // never neither -- which is what makes the pair total.
+        for status in EVERY_STATE {
+            assert_ne!(
+                menu_open_request(None, status).starts_animation,
+                menu_close_request(status),
+                "{status:?}"
+            );
+        }
     }
 
     #[test]
