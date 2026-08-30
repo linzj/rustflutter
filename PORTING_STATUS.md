@@ -24374,3 +24374,76 @@ C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建
 `CupertinoLocalizations` 0.04（第 3xx 轮查明多半是改名，要**按行为**复核而不是按名字数）。
 所以**不要照着比值从上往下拿**，而是从队列里找**第一个比值低且确实是行为缺失**的类，
 按老规矩：读上游 Dart → 找一个真缺口 → 带文档移植 → 测试 → 变异扫描（基线先验绿）。
+
+---
+
+## 第 359 轮：一个关起来的时候会凭空消失的面板——以及一个抄错了邻居的默认值
+
+回到移植。`depth.py` 队头仍是 `Icons`／`CupertinoIcons`（字模表，不是行为），
+按上一轮说好的**不照比值从上往下拿**，挑了 `Expansible`（3/11，
+`widgets/expansible.dart`）——小到一轮能做穿，而且是 `ExpansionTile` 的机芯。
+
+读上游读出**两个真缺口**，都跟“面板关起来那一刻”有关。
+
+### 一、`maintainState` 的默认值抄了邻居的
+
+本项目 `Expansible` 用 `#[derive(Default)]`，`maintain_state` 是 **false**，
+而且文档给了个理由：“跟 `Visibility` 一样，收起来的面板留着子树是在为没人看得见的东西付钱。”
+
+上游 `expansible.dart:265`：`this.maintainState = true`，
+字段文档也白纸黑字写着 “Defaults to true”。
+
+理由从哪来的？`expansion_tile.dart:131`：`this.maintainState = false`。
+**那句解释是对的，但它说的是另一个类。** 上游这两个默认值不一样不是疏忽：
+tile 是列表行，可能有几百个、大多数是关着的；
+`Expansible` 是调用者直接拿来用的机芯，丢掉 body 就是丢掉里面填了一半的表单、
+滚到一半的位置——上游宁可付那份子树的钱，也不肯悄悄把它清零。
+
+### 二、`closed` 是两个条件，少一个面板就不是关上而是消失
+
+上游 `build`：
+
+```dart
+final bool closed = !widget.controller.isExpanded && _animationController.isDismissed;
+final bool shouldRemoveBody = closed && !widget.maintainState;
+```
+
+本项目原来是 `builds_body(expanded) = expanded || maintain_state`——**只问了第一个条件**。
+从点下去到动画播完，`isExpanded` 已经是 false 而 `isDismissed` 还不是，
+所以这条规则会在**关闭动画的第一帧**就把 body 拿走：
+面板不是滑上去的，是**凭空不见的**，然后动画对着空气播完。
+
+一起接上的还有 `Offstage(offstage: closed)` 与 `TickerMode(enabled: !closed)`——
+`maintain_state` 买的是**子树，不是屏幕**：留下来的 body 照样下台、照样停表。
+
+外加 `animationStyle` 那三个 `??`：上游是**逐字段**覆盖，
+所以只给了 duration 的 style **不会**顺手把 curve 改掉。
+
+### 变异扫描 11 个，10 红，1 个绿得有道理
+
+活下来的那个是**“`closed` 只问动画、不问 expanded”**。查上游查出了原因：
+`build` 第一行就是
+
+```dart
+assert(!_animationController.isDismissed || !widget.controller.isExpanded);
+```
+
+**在这条不变式下两种写法完全等价**，所以它变不红是对的，不是测试有洞。
+于是把这条断言本身也接了（`state_is_coherent`），并在 `is_closed` 上写清楚：
+两个条件冗余、**这是量出来的**、上游照样两个都写、这里也照写——
+因为**断言是关于代码的主张，不是类型的性质**：
+哪天有人只动控制器不驱动动画，写两个条件的那版最多多显示一帧，
+只写一个的那版会显示一个**开着却空无一物**的面板。
+
+（另有一个变异第一遍因为模式不唯一被跳过——**跳过不是通过**，补上下文重跑才算。）
+
+尺子：十六把全部 exit 0。门：Rust 6301 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：这一轮的教训可以直接再用一次——**默认值是最容易抄错邻居的东西**，
+因为它不出现在任何调用点上。`Expansible`／`ExpansionTile` 这一对刚被抓到，
+而 `depth.py` 队列里还有一对同样的关系：`Card`（0.25，3/12）
+与它的 `material/card.dart` 邻居。第 345 轮已经记过 `Card` 缺 `semanticContainer`
+和 `margin`（本项目用的是 `padding`）——**先按行为核对这两个的默认值和语义，
+而不是按名字数成员**：`margin` 与 `padding` 不是同一个东西，
+一个在边框外一个在边框内，抄错了整张卡片的阴影位置都是错的。

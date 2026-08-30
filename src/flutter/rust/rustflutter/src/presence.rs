@@ -10,8 +10,10 @@
 //! separately choosable, and then constrains them into a ladder -- because
 //! most of the combinations are not coherent.
 
+use crate::animation::{AnimationStyle, Curve};
 use crate::engine::Color;
 use crate::services::system::ApplicationSwitcherDescription;
+use std::time::Duration;
 
 /// Upstream `Visibility`: hide a child, with six independent decisions about
 /// what "hidden" means.
@@ -247,13 +249,53 @@ impl ExpansibleController {
 /// `ExpansionTile` so that Material and Cupertino could share the mechanism
 /// without sharing the look. What is left is the state, the controller, and
 /// the animation's shape.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Expansible {
-    /// Whether the body is built while collapsed. Upstream's
-    /// `maintainState`, false by default for the same reason
-    /// [`Visibility`]'s is: a collapsed panel that keeps its subtree is paying
-    /// for something nobody can see.
+    /// Whether the body is kept in the tree while collapsed. Upstream's
+    /// `maintainState`, and **true by default**.
+    ///
+    /// This used to default to false here, with a confident reason attached:
+    /// "for the same reason [`Visibility`]'s is -- a collapsed panel that
+    /// keeps its subtree is paying for something nobody can see". That reason
+    /// is sound and it is about a *different class*.
+    /// `ExpansionTile.maintainState` is false (`expansion_tile.dart:131`);
+    /// `Expansible.maintainState` is **true** (`expansible.dart:265`, and its
+    /// own doc says "Defaults to true"). The tile is the one that throws the
+    /// body away; the mechanism it was extracted from keeps it.
+    ///
+    /// The difference is not an oversight upstream. A tile is a list row that
+    /// may exist by the hundred, and most are shut. `Expansible` is the
+    /// machinery a caller reaches for directly, where losing the body means
+    /// losing whatever state was in it -- a half-filled form, a scroll
+    /// position -- and upstream would rather charge for the subtree than
+    /// silently reset it.
     pub maintain_state: bool,
+    /// How long the reveal takes when [`Expansible::animation_style`] does not
+    /// say. Upstream's default is 200ms.
+    pub duration: Duration,
+    /// Upstream's `curve`, defaulting to `Curves.ease`.
+    pub curve: Curve,
+    /// Upstream's `reverseCurve`. `None` means the forward curve is used in
+    /// both directions, which is `CurvedAnimation`'s own rule rather than
+    /// anything this widget decides.
+    pub reverse_curve: Option<Curve>,
+    /// An override for all three of the above. Upstream reads it as
+    /// `animationStyle?.duration ?? duration` and the same for both curves --
+    /// **field by field, not all or nothing**, so a style that sets only a
+    /// duration leaves the curves alone.
+    pub animation_style: Option<AnimationStyle>,
+}
+
+impl Default for Expansible {
+    fn default() -> Expansible {
+        Expansible {
+            maintain_state: true,
+            duration: Duration::from_millis(200),
+            curve: Curve::EASE,
+            reverse_curve: None,
+            animation_style: None,
+        }
+    }
 }
 
 impl Expansible {
@@ -261,9 +303,96 @@ impl Expansible {
         Expansible::default()
     }
 
+    /// Upstream's `closed`: **shut and finished shutting**.
+    ///
+    /// Two conditions, and the second is the one that is easy to drop:
+    /// `!controller.isExpanded && _animationController.isDismissed`. Between
+    /// the tap that collapses a panel and the end of its animation the first
+    /// is already true and the second is not, so a rule that asked only
+    /// whether it is expanded would take the body away **at the start of the
+    /// closing animation** -- the panel would vanish instead of sliding shut,
+    /// and the animation would play over nothing.
+    /// # The two conditions are redundant, and both are written anyway
+    ///
+    /// Measured rather than assumed: a mutation reducing this to
+    /// `animation_dismissed` alone turns **nothing** red, and that is correct
+    /// rather than a hole in the tests. The only state where the two forms
+    /// disagree is expanded-and-dismissed, and
+    /// [`Expansible::state_is_coherent`] is upstream's assertion that the
+    /// state never occurs.
+    ///
+    /// Upstream writes both conditions all the same, and so does this. An
+    /// assertion is a claim about the code, not a property of the type: it
+    /// holds while the controller and the animation are driven together, and
+    /// the day something drives one without the other, the form that reads
+    /// both degrades into showing a body a frame too long, while the form that
+    /// reads one shows an expanded panel with nothing in it.
+    pub fn is_closed(expanded: bool, animation_dismissed: bool) -> bool {
+        !expanded && animation_dismissed
+    }
+
+    /// Upstream's assertion at the top of `build`:
+    /// `assert(!_animationController.isDismissed || !widget.controller.isExpanded)`.
+    ///
+    /// Expanded means the animation has been sent forward, and dismissed means
+    /// it is resting at zero -- so together they describe a panel that says it
+    /// is open and is drawn at no height. It is reachable only by moving the
+    /// controller without driving the animation, which is why upstream states
+    /// it where a build would first read them together.
+    pub fn state_is_coherent(expanded: bool, animation_dismissed: bool) -> bool {
+        !animation_dismissed || !expanded
+    }
+
     /// Whether the body exists in the tree.
-    pub fn builds_body(&self, expanded: bool) -> bool {
-        expanded || self.maintain_state
+    ///
+    /// Upstream's `shouldRemoveBody = closed && !maintainState`, answered the
+    /// other way up.
+    pub fn builds_body(&self, expanded: bool, animation_dismissed: bool) -> bool {
+        !Expansible::is_closed(expanded, animation_dismissed) || self.maintain_state
+    }
+
+    /// Whether the body is hidden and not being laid out. Upstream wraps it in
+    /// `Offstage(offstage: closed)`.
+    ///
+    /// A body that is kept for its state is still taken off the stage, which
+    /// is what makes `maintain_state` cost a subtree rather than a screen.
+    pub fn body_is_offstage(expanded: bool, animation_dismissed: bool) -> bool {
+        Expansible::is_closed(expanded, animation_dismissed)
+    }
+
+    /// Whether the body's animations run. Upstream's
+    /// `TickerMode(enabled: !closed)`.
+    ///
+    /// Separate from being offstage because they answer different bills: a
+    /// kept body that still ticked would drive an animation nobody can see,
+    /// and ask for a frame every time it did.
+    pub fn body_ticks(expanded: bool, animation_dismissed: bool) -> bool {
+        !Expansible::is_closed(expanded, animation_dismissed)
+    }
+
+    /// The duration in force, upstream's `animationStyle?.duration ?? duration`.
+    pub fn resolved_duration(&self) -> Duration {
+        self.animation_style
+            .and_then(|style| style.duration)
+            .unwrap_or(self.duration)
+    }
+
+    /// The curve in force, upstream's `animationStyle?.curve ?? curve`.
+    pub fn resolved_curve(&self) -> Curve {
+        self.animation_style
+            .and_then(|style| style.curve)
+            .unwrap_or(self.curve)
+    }
+
+    /// The reverse curve in force, upstream's
+    /// `animationStyle?.reverseCurve ?? reverseCurve`.
+    ///
+    /// Both sides may be `None`, and the answer is then `None` -- which
+    /// `CurvedAnimation` reads as "use the forward curve backwards".
+    pub fn resolved_reverse_curve(&self) -> Option<Curve> {
+        self.animation_style
+            .and_then(|style| style.reverse_curve)
+            .or(self.reverse_curve)
     }
 }
 
@@ -681,16 +810,143 @@ mod tests {
     }
 
     #[test]
-    fn a_collapsed_panel_does_not_build_its_body_unless_told_to() {
-        // A collapsed panel keeping its subtree is paying for something nobody
-        // can see.
-        let plain = Expansible::new();
-        assert!(!plain.builds_body(false));
-        assert!(plain.builds_body(true));
+    fn the_mechanism_keeps_its_body_where_the_tile_throws_it_away() {
+        // Two classes, two defaults, and this port had the wrong one. Upstream
+        // `Expansible.maintainState` is true (`expansible.dart:265`);
+        // `ExpansionTile.maintainState` is false
+        // (`expansion_tile.dart:131`). A tile is a list row that exists by the
+        // hundred and is mostly shut; `Expansible` is the machinery, where
+        // dropping the body drops whatever was typed into it.
+        assert!(
+            Expansible::new().maintain_state,
+            "the default upstream states twice, in the constructor and the doc"
+        );
 
-        let mut kept = Expansible::new();
-        kept.maintain_state = true;
-        assert!(kept.builds_body(false));
+        let mut thrown_away = Expansible::new();
+        thrown_away.maintain_state = false;
+        assert!(
+            !thrown_away.builds_body(false, true),
+            "shut, finished shutting, and not asked to keep it"
+        );
+        assert!(thrown_away.builds_body(true, false), "open");
+    }
+
+    #[test]
+    fn a_panel_still_closing_keeps_its_body_to_close_with() {
+        // Upstream's `closed` is two conditions and the second is the one that
+        // is easy to lose: `!isExpanded && isDismissed`. Between the tap and
+        // the end of the animation the panel is not expanded *and* not
+        // dismissed, so it is not closed -- the body is still there to slide
+        // shut. A rule that asked only "is it expanded" would take the body
+        // away on the first frame of the closing animation and play the
+        // animation over nothing.
+        let mut tile_like = Expansible::new();
+        tile_like.maintain_state = false;
+
+        assert!(
+            tile_like.builds_body(false, false),
+            "collapsing: not expanded, but the animation has not finished"
+        );
+        assert!(
+            !tile_like.builds_body(false, true),
+            "collapsed: and now it may go"
+        );
+
+        // The two halves of `closed` are also what the stage and the tickers
+        // are read from, and they answer opposite ways round.
+        assert!(!Expansible::body_is_offstage(false, false));
+        assert!(
+            Expansible::body_ticks(false, false),
+            "it is still animating"
+        );
+        assert!(Expansible::body_is_offstage(false, true));
+        assert!(!Expansible::body_ticks(false, true));
+    }
+
+    #[test]
+    fn a_panel_cannot_be_open_and_at_no_height_at_once() {
+        // Upstream states this where a build first reads the two together:
+        // `assert(!isDismissed || !isExpanded)`. Expanded means the animation
+        // was sent forward; dismissed means it is resting at zero. Both at
+        // once is a panel that says it is open and is drawn with no height.
+        assert!(
+            !Expansible::state_is_coherent(true, true),
+            "open and at zero height is the state the assertion forbids"
+        );
+        assert!(Expansible::state_is_coherent(true, false), "open, moving");
+        assert!(Expansible::state_is_coherent(false, true), "shut, at rest");
+        assert!(
+            Expansible::state_is_coherent(false, false),
+            "shut, still closing"
+        );
+    }
+
+    #[test]
+    fn a_kept_body_is_still_taken_off_the_stage() {
+        // `maintainState` buys the subtree, not the screen. A body kept for
+        // its state is offstage and its tickers are off, exactly as a thrown
+        // away one would have been -- otherwise keeping state would cost a
+        // laid-out, animating, invisible panel.
+        let kept = Expansible::new();
+        assert!(kept.builds_body(false, true), "kept");
+        assert!(
+            Expansible::body_is_offstage(false, true),
+            "and still not drawn"
+        );
+        assert!(
+            !Expansible::body_ticks(false, true),
+            "and still not ticking"
+        );
+    }
+
+    #[test]
+    fn an_animation_style_overrides_field_by_field() {
+        // Upstream reads it as three separate `??`, so a style that sets only
+        // one of the three leaves the other two alone. Read as all-or-nothing
+        // it would silently reset a caller's curve whenever they asked for a
+        // different duration.
+        let mut panel = Expansible::new();
+        panel.duration = Duration::from_millis(500);
+        panel.curve = Curve::Decelerate;
+        panel.reverse_curve = Some(Curve::Accelerate);
+
+        assert_eq!(panel.resolved_duration(), Duration::from_millis(500));
+        assert_eq!(panel.resolved_curve(), Curve::Decelerate);
+        assert_eq!(panel.resolved_reverse_curve(), Some(Curve::Accelerate));
+
+        panel.animation_style = Some(AnimationStyle {
+            duration: Some(Duration::from_millis(50)),
+            ..AnimationStyle::default()
+        });
+        assert_eq!(
+            panel.resolved_duration(),
+            Duration::from_millis(50),
+            "the style wins where it speaks"
+        );
+        assert_eq!(
+            panel.resolved_curve(),
+            Curve::Decelerate,
+            "and is silent about the curve, which is left alone"
+        );
+        assert_eq!(
+            panel.resolved_reverse_curve(),
+            Some(Curve::Accelerate),
+            "and about the reverse curve"
+        );
+    }
+
+    #[test]
+    fn the_defaults_are_upstreams_own() {
+        // 200ms and `Curves.ease`, from the constructor. Numbers a caller
+        // never passes are the ones nobody notices going wrong.
+        let panel = Expansible::new();
+        assert_eq!(panel.resolved_duration(), Duration::from_millis(200));
+        assert_eq!(panel.resolved_curve(), Curve::EASE);
+        assert_eq!(
+            panel.resolved_reverse_curve(),
+            None,
+            "no reverse curve means the forward one runs backwards, which is              `CurvedAnimation`'s rule and not this widget's"
+        );
     }
 
     // -- The two orientations ------------------------------------------------
