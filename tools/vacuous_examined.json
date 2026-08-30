@@ -80,6 +80,24 @@
       "file": "semantics.rs",
       "tick": 302,
       "finding": "A validator reporting no problems is the shape most at risk of meaning 'the validator does nothing', and here four sibling tests assert non-empty results from the same `invisible_nodes()` -- a zero-area node, an off-screen one, an invisible root, and one that names which of two children is at fault. The soundness case is the only one left over."
+    },
+    {
+      "test": "notifying_with_nobody_listening_does_nothing",
+      "file": "scroll_plumbing.rs",
+      "tick": 303,
+      "finding": "Two siblings assert `delivered() == &[1, 2]` from the same `notify`, one of them checking that a listener which stopped the notification kept it from reaching the third. The delivery path is proven; this row is the empty-listener edge of it."
+    },
+    {
+      "test": "closing_something_already_closed_says_nothing",
+      "file": "raw_menu_anchor.rs",
+      "tick": 303,
+      "finding": "`the_children_go_before_the_parent_does` closes an *open* menu and reads the same log back, asserting the closes arrive innermost first. Same `close`, same `log`, positive."
+    },
+    {
+      "test": "a_scope_with_no_id_publishes_nothing_and_the_subtree_stops_remembering",
+      "file": "services/restoration.rs",
+      "tick": 303,
+      "finding": "The strongest form of the shape: `a_scope_claims_a_child_of_the_bucket_above_it` is the same probe in the same tree with one knob flipped -- `RestorationScope::new(\"list\", ..)` where this has `disabled(..)` -- and asserts the probe *did* see a bucket and the root *was* claimed. The pair differ in one thing and assert opposite outcomes."
     }
   ]
 }

@@ -21326,3 +21326,56 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 `notifying_with_nobody_listening_does_nothing`、`raw_menu_anchor.rs` 的
 `closing_something_already_closed_says_nothing`、`services/restoration.rs` 的
 `a_scope_with_no_id_publishes_nothing_and_the_subtree_stops_remembering`。先按行为查。
+
+## 第 303 轮：想把判断自动化，量了一下，扔了
+
+按"能不能和'代码从没跑到'区分开"这条标准，读了投递那一组三条。**三条全部可接受**,
+而且其中一条是这个形状最强的样子：
+
+* `notifying_with_nobody_listening_does_nothing`——两个兄弟从同一个 `notify` 断言
+  `delivered() == &[1, 2]`，其中一个还验了"被拦下的通知到不了第三个"。
+* `closing_something_already_closed_says_nothing`——`the_children_go_before_the_parent_does`
+  关掉一个**开着的**菜单，读同一份 log，断言关闭顺序是由内向外。
+* `a_scope_with_no_id_publishes_nothing_and_the_subtree_stops_remembering`——
+  `a_scope_claims_a_child_of_the_bucket_above_it` 是**同一个探针、同一棵树,
+  只把一个旋钮拨了一下**（`disabled(..)` 换成 `new("list", ..)`），断言相反的结果。
+  两条测试只差一处，结论相反。
+
+### 于是想把这件事变成机器排的序
+
+判据看着很直接：对每条空断言测试，取它调用的机制名，再看**同模块其他测试**有没有对同一
+批名字做出正面断言；没有的排在前面，那才值得人去读。二十四条读一遍要好几轮,
+排好序就只读该读的。
+
+写了个原型，拿**已经亲手判过的那几条**去量——**它和其中三条不一致**。
+`neither_given_is_empty` 和 `a_scrim_with_no_colour_paints_nothing_at_all` 都被它标成
+"没有正面兄弟"，而这两条上一轮和这一轮刚验过是有的。
+
+原因是我只从**断言文本**里提机制名，而兄弟测试写的是
+
+    let calls = painted(Some(SCRIM), Offset::ZERO);
+    assert_eq!(calls.len(), 1);
+
+——`painted` 在 `let` 里，断言里只有 `calls`。**机制在准备阶段，主张在断言阶段。**
+
+**扔了。** 一个两个方向都会错的启发式比没有更糟：它会把已经判过没问题的测试重新推给
+下一个人，而"NO POSITIVE SIBLING"这个标签看起来又像结论。这和第 288、291、301 三轮
+拆掉的是同一种东西——**报出一个看着像答案的错数**。留下的是这段记录,
+不是那个工具。
+
+（要做对的话，得从整个测试体里提机制名而不是只从断言里提；那样噪声会大到把信号淹掉,
+这也是没有就地补救的原因。）
+
+`vacuous`：27 → 24（15 条已读入档）。这一轮没有代码改动——三条都对,
+**没有为了让数字动而造一个改动**。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6087 + 353 通过；doctest 绿。
+
+**下一步**：不再逐条读 vacuous——剩下的按批次读收益递减，而 `depth.py` 的真队列还有
+六百多个类没碰。回队头，跳过 `Icons`/`CupertinoIcons` 那两张纯图标表,
+从 `TextSelectionGestureDetectorBuilder` 6/27 开始（widgets/text_selection.dart）。
+先按行为查：那 27 个成员里，哪些是这个端口的手势链真的会走到的。
