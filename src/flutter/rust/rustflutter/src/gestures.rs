@@ -3025,6 +3025,99 @@ mod tests {
         assert_eq!(*taps.borrow(), 1, "and this one is");
     }
 
+    /// A box whose `size()` is whatever `layout` last wrote, unlike [`Sized`]
+    /// which answers the value it was built with.
+    ///
+    /// The distinction is not pedantic: tick 331 built a repro out of `Sized`
+    /// and concluded the layout family was sound, and tick 333 found that
+    /// repro **could not have failed** -- a box that answers from its
+    /// constructor cannot show a layout that forgot to store a size. The
+    /// tests below need a box that can.
+    #[derive(Default)]
+    struct Measured {
+        wanted: Size,
+        laid_out: Size,
+    }
+
+    impl Measured {
+        fn new(wanted: Size) -> Measured {
+            Measured {
+                wanted,
+                laid_out: Size::ZERO,
+            }
+        }
+    }
+
+    impl RenderBox for Measured {
+        fn layout(&mut self, constraints: BoxConstraints) -> Size {
+            self.laid_out = constraints.constrain(self.wanted);
+            self.laid_out
+        }
+        fn size(&self) -> Size {
+            self.laid_out
+        }
+        fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+    }
+
+    #[test]
+    fn a_padded_child_of_a_row_reports_the_size_it_was_laid_out_at() {
+        // Ticks 330-332: the Cupertino search field's row came out of layout
+        // with children reporting 0x0 while their own descendants had real
+        // sizes, and every hit test guards on `size.contains(..)`, so nothing
+        // under them could be tapped. This holds the primitives to the
+        // opposite: a padding in a row, measured rather than remembered,
+        // knows how big it is afterwards.
+        use crate::render::{EdgeInsets, FlexChild, RenderFlex, RenderPadding};
+
+        let mut row = RenderFlex::row()
+            .push(RenderPadding::new(
+                EdgeInsets::all(3.0),
+                Measured::new(Size::square(10.0)),
+            ))
+            .push_flex(FlexChild::expanded(Measured::new(Size::square(10.0)), 1))
+            .push(RenderPadding::new(
+                EdgeInsets::all(2.0),
+                Measured::new(Size::square(20.0)),
+            ));
+        row.layout(BoxConstraints::tight(200.0, 40.0));
+
+        let mut sizes = Vec::new();
+        row.visit_children(&mut |child, _| sizes.push(child.size()));
+        assert_eq!(sizes.len(), 3);
+        assert_eq!(sizes[0], Size::new(16.0, 16.0), "10 plus 3 each side");
+        assert_eq!(sizes[2], Size::new(24.0, 24.0), "20 plus 2 each side");
+        for size in &sizes {
+            assert!(
+                size.width > 0.0 && size.height > 0.0,
+                "a laid-out child that knows nothing of its size cannot be hit: {sizes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_handle_held_elsewhere_sees_the_size_the_row_gave_it() {
+        // The element tree hands the row `RenderRef` handles and keeps its
+        // own clones. If layout wrote through one and `size()` read another,
+        // the symptom would be exactly the 0x0 above -- so the sharing is
+        // worth an assertion rather than an assumption.
+        use crate::render::{EdgeInsets, RenderFlex, RenderPadding, RenderRef};
+
+        let held = RenderRef::new(RenderPadding::new(
+            EdgeInsets::all(3.0),
+            Measured::new(Size::square(10.0)),
+        ));
+        assert_eq!(held.size(), Size::ZERO, "nothing has been laid out yet");
+
+        let mut row = RenderFlex::row().push(held.clone());
+        row.layout(BoxConstraints::tight(200.0, 40.0));
+
+        assert_eq!(
+            held.size(),
+            Size::new(16.0, 16.0),
+            "the clone the caller kept sees what the row measured"
+        );
+    }
+
     #[test]
     fn a_press_and_release_in_place_is_a_tap() {
         let taps = Rc::new(RefCell::new(Vec::new()));

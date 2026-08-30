@@ -22900,3 +22900,51 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 不依赖 layout 写入——**所以最小复现测不出这个 bug**。
 先确认这一点（给最小复现换成 `RenderPadding` 包一个 `Sized`，看它是不是也变成 0×0），
 **如果是，那就有了一个不依赖搜索框的、两行就能复现的失败测试**，然后再修。
+
+---
+
+## 第 333 轮：第 331 轮那个最小复现**根本不可能失败**——它的尺寸不是布局写进去的
+
+接上一轮的“下一步”。先确认那个怀疑，**确认了，而且是关于我自己那把尺子的**：
+
+```rust
+struct Sized(Size);
+impl RenderBox for Sized {
+    fn layout(&mut self, c: BoxConstraints) -> Size { c.constrain(self.0) }
+    fn size(&self) -> Size { self.0 }          // ← 构造时给的值
+}
+```
+
+`Sized::size()` 答的是**构造参数**，跟 `layout` 写没写过没有关系。所以第 331 轮那个
+“`Row` 里放 `Pointer`，收得到点击”的最小复现，**对“布局忘了记尺寸”这类 bug 是瞎的**——
+它当时得出的“布局族没问题”这个结论，在这个具体问题上是**没有证据支撑的**。
+
+换成一个尺寸由 `layout` 写入、由 `size()` 读回的盒子（`Measured`）重做，逐个排除：
+
+* `RenderPadding` 在 `RenderFlex` 里 —— 尺寸**正确**（16×16、24×24）；
+* 外面还有人持有同一个 `RenderRef` 克隆 —— 那个克隆**也看得到** 16×16。
+
+所以 0×0 **不是** `Padding`、**不是** `RenderFlex`、**不是** `RenderRef` 共享出的问题。
+（`crate::widgets::Padding::new` 也查了，它就是 `RenderPadding::new`，不是另一个类型。）
+搜索框那棵树上的 0×0，只可能出在**它自己那两个自绘的 mark**，或者 `many()` 交给行的东西上。
+**这一轮没走到那一步，不装作走到了。**
+
+**实验留下了两条常驻测试**，而且留下的正是“当初缺了它、才让我造出一个不可能失败的复现”的那条断言：
+一条钉住“行里被 padding 包着的孩子，布局之后知道自己多大”（并说明为什么这不是废话——
+每一次命中判定都要过 `size.contains(..)`，一个不知道自己多大的孩子，底下的一切都点不到）；
+另一条钉住“外面持有的那个 handle 克隆，看得到行量出来的尺寸”。
+`Measured` 的文档里写明了它和 `Sized` 的区别，以及为什么这个区别不是吹毛求疵。
+
+**变异扫描 4 个，全红**：padding 不再把尺寸写回 `self.size`（这正是搜索框表现出的失效方式）、
+padding 只记孩子的尺寸、内边距只加了一边、handle 不再共享布局写入的尺寸。
+
+尺子：十六把全部 exit 0。门：6240 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：范围只剩搜索框自己那两个自绘 mark。第 332 轮的 dump 里，
+`Padding(search_mark)` 报 0×0，**而它的孩子（mark 本身）也报 0×0**——
+如果 mark 的 `size()` 像 `Sized` 那样答一个从没被 `layout` 写过的字段
+（build 里那个结构体确实有一个 `laid_out: Size::ZERO` 字段），那么 padding 拿到的
+`child_size` 就是 0，`0 + 内边距` 本该是 14×16 而不是 0×0——**所以这两件事对不上，
+还差一步**。直接去读 `cupertino.rs` 里那个 mark 的 `layout`／`size` 实现，
+按行为核对：它把量出来的尺寸写回去了吗？
