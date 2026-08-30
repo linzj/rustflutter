@@ -21840,3 +21840,57 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 **下一步**：同一个类里还剩 `update` / `updateForScroll` / `dispose` 这一族——
 **滚动时overlay 怎么跟**。`updateForScroll` 是单独一个方法而不是 `update` 的一支,
 这件事本身就值得读：滚动改变的是位置，不是选区，而这两者上游是分开更新的。先按行为查。
+
+## 第 312 轮：同样的两行，第二行在两处各有各的理由
+
+`update` 与 `updateForScroll`。跑的是**同样的两行**——刷新一遍属性,
+再显式要一次重建——而差别全在守卫和理由里。
+
+### `update` 有相等就返回的守卫，`updateForScroll` 一个也没有
+
+每一次编辑都从 `update` 走，所以那个 `if (_value == newValue) return;` 是它能被随便调用
+的前提。而 `updateForScroll` **没有值可比**：动的是渲染对象的文本度量,
+它只被告知"有东西动了"。
+
+### 而两处都自己再要一次重建，各写各的理由
+
+`_updateSelectionOverlay` 写的是**属性**，把一个属性写成它已经是的值,
+什么也不会重建。所以两个调用方都不把重建交给它，各自明写一句——各有各的场景：
+
+**`update`：为的是工具栏。**
+
+> `_updateSelectionOverlay` may not rebuild the selection overlay if the text
+> metrics and selection doesn't change even if the text has changed. This
+> rebuild is needed for the toolbar to update based on the latest text value.
+
+把一个词换成另一个同宽的词：端点没动、行高没动、选区没动——**属性一个都不变**,
+而一个还写着旧词的 "Look Up" 菜单会原样留着。
+
+**`updateForScroll`：为的是窗口。**
+
+> This method may be called due to windows metrics changes. In that case, non
+> of the properties in `_selectionOverlay` will change, but a rebuild is still
+> needed.
+
+**一个都不变**，而 overlay 画出来的东西依赖属性之外的东西。
+
+所以这一对是：**一个按值设防、为工具栏重建；一个不设防、为窗口重建。** 把它们并成一个
+`update(Option<value>)` 就得丢掉两个理由中的一个，而理由正是它们存在的意义。
+
+**五条承重规则强制改错，五条一次全红。**
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6139 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`_updateSelectionOverlay` 自己那一段还没读——它决定**两个手柄各是什么形状**:
+
+```dart
+if (_selection.isCollapsed) { start = end = collapsed; }
+else { ... }
+```
+
+折叠时两端都是 collapsed，非折叠时按方向分左右；而第 300 轮已经端了那个"洋葱"的旋转角
+（`handle_rotation`），却还没有决定**哪一端拿哪一种**的那一步。两头正好接上。先按行为查。

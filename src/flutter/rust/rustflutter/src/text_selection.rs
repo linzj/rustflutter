@@ -2868,6 +2868,90 @@ impl SelectionOverlay {
         handles_built
     }
 
+    /// What one of the two update paths did.
+    ///
+    /// `rebuilt` is upstream's `markNeedsBuild()`, and it is the interesting
+    /// half: `_updateSelectionOverlay` writes properties, and writing a
+    /// property that already holds that value rebuilds nothing. Both callers
+    /// therefore ask for a build outright, and **each has a different case in
+    /// mind**.
+    pub fn update_outcome(refreshed: bool, rebuilt: bool) -> OverlayUpdate {
+        OverlayUpdate { refreshed, rebuilt }
+    }
+
+    /// Upstream's `update(TextEditingValue newValue)`.
+    ///
+    /// ```dart
+    /// void update(TextEditingValue newValue) {
+    ///   if (_value == newValue) {
+    ///     return;
+    ///   }
+    ///   _value = newValue;
+    ///   _updateSelectionOverlay();
+    ///   // _updateSelectionOverlay may not rebuild the selection overlay if the
+    ///   // text metrics and selection doesn't change even if the text has changed.
+    ///   // This rebuild is needed for the toolbar to update based on the latest text
+    ///   // value.
+    ///   _selectionOverlay.markNeedsBuild();
+    /// }
+    /// ```
+    ///
+    /// **The equality guard is what lets this be called freely.** Every edit
+    /// funnels through here, and a value that has not moved does no work.
+    ///
+    /// **The explicit rebuild is for the toolbar.** Text can change without
+    /// the *metrics or the selection* changing -- replace a word with another
+    /// of the same width and the endpoints, the line heights and the selection
+    /// are all where they were -- so nothing `_updateSelectionOverlay` writes
+    /// is different, and a menu offering "Look Up" on the old word would stay
+    /// as it was. The comment upstream leaves is exactly that.
+    pub fn update(&mut self, value_changed: bool) -> OverlayUpdate {
+        if !value_changed {
+            return OverlayUpdate {
+                refreshed: false,
+                rebuilt: false,
+            };
+        }
+        OverlayUpdate {
+            refreshed: true,
+            rebuilt: true,
+        }
+    }
+
+    /// Upstream's `updateForScroll`.
+    ///
+    /// ```dart
+    /// void updateForScroll() {
+    ///   _updateSelectionOverlay();
+    ///   // This method may be called due to windows metrics changes. In that case,
+    ///   // non of the properties in _selectionOverlay will change, but a rebuild is
+    ///   // still needed.
+    ///   _selectionOverlay.markNeedsBuild();
+    /// }
+    /// ```
+    ///
+    /// The same two lines as [`Self::update`] and **no guard at all**, which
+    /// is the whole difference. There is no value to compare: what moved is
+    /// the render object's text metrics, and this method is told only that
+    /// something did.
+    ///
+    /// Its rebuild has a different reason from the other one. Upstream names
+    /// window-metrics changes, where **not one** property of the overlay comes
+    /// out different -- the selection is the same, the endpoints are the same
+    /// in the field's own coordinates -- and a build is still needed because
+    /// what the overlay draws depends on things outside those properties.
+    ///
+    /// So the pair is: one guarded on the value and rebuilding for the
+    /// toolbar, one unguarded and rebuilding for the window. Folding them into
+    /// a single `update(Option<value>)` would have to drop one of the two
+    /// reasons, and the reasons are what they are for.
+    pub fn update_for_scroll(&mut self) -> OverlayUpdate {
+        OverlayUpdate {
+            refreshed: true,
+            rebuilt: true,
+        }
+    }
+
     /// Upstream's `hide`, which takes **both** away.
     ///
     /// The pair is hidden together because a toolbar without handles is a
@@ -2878,6 +2962,17 @@ impl SelectionOverlay {
         self.toolbar_visible = false;
         self.magnifier.hide();
     }
+}
+
+/// What an update did: whether the overlay's properties were refreshed from
+/// the render object, and whether a build was asked for on top of that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayUpdate {
+    /// `_updateSelectionOverlay()` ran.
+    pub refreshed: bool,
+    /// `markNeedsBuild()` was called, which upstream does **in addition** at
+    /// both call sites and never leaves to the property writes.
+    pub rebuilt: bool,
 }
 
 /// What the overlay actually puts on screen, from the two viewport readings
@@ -4757,6 +4852,53 @@ two";
         let mut overlay = SelectionOverlay::new().with_handles_visible(handles_visible);
         overlay.set_toolbar_visible(toolbar);
         overlay
+    }
+
+    #[test]
+    fn a_value_that_did_not_move_does_no_work() {
+        // Every edit funnels through `update`, so the equality guard is what
+        // lets it be called freely.
+        let mut overlay = SelectionOverlay::new();
+        let unchanged = overlay.update(false);
+        assert!(!unchanged.refreshed);
+        assert!(!unchanged.rebuilt);
+    }
+
+    #[test]
+    fn a_changed_value_refreshes_and_then_asks_for_a_build_anyway() {
+        // Text can change without the metrics or the selection changing --
+        // swap a word for another of the same width -- so nothing
+        // `_updateSelectionOverlay` writes comes out different, and a menu
+        // offering "Look Up" on the old word would stay as it was.
+        let mut overlay = SelectionOverlay::new();
+        let changed = overlay.update(true);
+        assert!(changed.refreshed);
+        assert!(changed.rebuilt, "the toolbar needs the new text");
+    }
+
+    #[test]
+    fn a_scroll_has_no_value_to_compare_and_so_no_guard() {
+        // The same two lines as `update` and no early return: what moved is
+        // the render object's metrics, and this is told only that something
+        // did.
+        let mut overlay = SelectionOverlay::new();
+        let scrolled = overlay.update_for_scroll();
+        assert!(scrolled.refreshed);
+        assert!(scrolled.rebuilt);
+        // Twice in a row still works, where `update` would have stopped.
+        assert_eq!(overlay.update_for_scroll(), scrolled);
+        assert_ne!(overlay.update(false), scrolled);
+    }
+
+    #[test]
+    fn both_paths_ask_for_the_build_rather_than_leaving_it_to_the_properties() {
+        // Writing a property that already holds that value rebuilds nothing,
+        // and each caller has a case where none of them changed: the toolbar
+        // after an equal-metrics edit, and the window after a metrics change.
+        let mut overlay = SelectionOverlay::new();
+        for outcome in [overlay.update(true), overlay.update_for_scroll()] {
+            assert!(outcome.rebuilt, "asked for outright");
+        }
     }
 
     #[test]
