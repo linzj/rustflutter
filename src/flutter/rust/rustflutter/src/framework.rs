@@ -4616,7 +4616,8 @@ mod tests {
             counter.needs_layout(BoxConstraints::loose(200.0, 200.0)),
             "a render object that was just made has never been measured"
         );
-        root.layout(BoxConstraints::loose(200.0, 200.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 200.0));
+        crate::render::flush_layout();
         assert_eq!(layouts(), before, "and the watched leaf still was not");
     }
 
