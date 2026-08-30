@@ -4504,9 +4504,31 @@ pub struct RenderImage {
     /// image scaled whole -- see [`centre_slice_under`] for what it does and
     /// what it does not.
     centre_slice: Option<Rect>,
+    /// Upstream's `semanticLabel`: what a screen reader says this picture is.
+    ///
+    /// `None` is upstream's null, and it does **not** mean "say nothing" --
+    /// see [`RenderImage::describe_semantics`] for what it means here and
+    /// where that differs.
+    semantic_label: Option<String>,
+    /// Upstream's `excludeFromSemantics`, which drops the annotation
+    /// altogether: a picture that is pure decoration, where even the word
+    /// "image" is one word too many.
+    exclude_from_semantics: bool,
 }
 
 impl RenderImage {
+    /// What a screen reader should call this picture.
+    pub fn with_semantic_label(mut self, label: impl Into<String>) -> RenderImage {
+        self.semantic_label = Some(label.into());
+        self
+    }
+
+    /// Upstream's `excludeFromSemantics`.
+    pub fn with_exclude_from_semantics(mut self, exclude: bool) -> RenderImage {
+        self.exclude_from_semantics = exclude;
+        self
+    }
+
     /// The rectangle that may stretch. Setting one also changes what an
     /// unspecified fit means -- see [`fit_for`].
     pub fn with_centre_slice(mut self, centre_slice: Rect) -> RenderImage {
@@ -4547,6 +4569,8 @@ impl RenderImage {
             scale: 1.0,
             colour: None,
             colour_blend_mode: None,
+            semantic_label: None,
+            exclude_from_semantics: false,
         }
     }
 
@@ -4738,6 +4762,59 @@ impl RenderImage {
 }
 
 impl RenderBox for RenderImage {
+    /// Upstream's `_ImageState.build`, whose semantics wrapper is three lines
+    /// and two decisions:
+    ///
+    /// ```dart
+    /// if (!widget.excludeFromSemantics) {
+    ///   result = Semantics(
+    ///     container: widget.semanticLabel != null,
+    ///     image: true,
+    ///     label: widget.semanticLabel ?? '',
+    ///     child: result,
+    ///   );
+    /// }
+    /// ```
+    ///
+    /// Nothing in this port set `is_image` before -- the flag has crossed the
+    /// FFI since it was written, and no widget ever raised it -- so a
+    /// photograph reached a screen reader as an unnamed box.
+    ///
+    /// # Why the label gates the annotation here, where upstream gates only
+    /// the container
+    ///
+    /// Upstream marks `image: true` **whether or not** there is a label, and
+    /// uses `container` to decide whether that makes a stop of its own: with a
+    /// label it becomes one, without a label the flag is folded into whatever
+    /// node encloses it, so a decorative picture inside a button contributes
+    /// "image" to the button rather than becoming a second thing to land on.
+    ///
+    /// This walk has no config-merging step to fold a flag upwards with (see
+    /// the note on [`crate::semantics::SemanticsConfiguration`]), so an
+    /// annotation here is always a node. Annotating an unlabelled image would
+    /// therefore add a **stop with no words** to every decorative picture --
+    /// louder than upstream, not more faithful. So the flag is raised where
+    /// upstream would have made a stop, and the unlabelled case is left
+    /// alone. A caller who wants upstream's folding today can wrap the pair in
+    /// a [`RenderMergeSemanticsBox`], which is that rule spelled differently.
+    fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
+        if self.exclude_from_semantics {
+            return None;
+        }
+        let label = self.semantic_label.as_ref()?;
+        Some(crate::semantics::SemanticsAnnotation::new(
+            crate::semantics::take_text_id(),
+            crate::semantics::SemanticsProperties {
+                flags: crate::semantics::SemanticsFlags {
+                    is_image: true,
+                    ..crate::semantics::SemanticsFlags::default()
+                },
+                ..crate::semantics::SemanticsProperties::label(label.clone())
+            },
+            None,
+        ))
+    }
+
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderImage>()?;
         // The same pixels, not equal pixels: an `Image` is a handle to a

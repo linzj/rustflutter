@@ -5456,6 +5456,73 @@ mod tests {
         set_enabled(false);
     }
 
+    /// The nodes a laid-out image produces, through the real walk. Built by a
+    /// closure because `leaf` may call it more than once and a `RenderImage`
+    /// is not `Clone`.
+    fn image_nodes(
+        build: impl Fn(crate::render::RenderImage) -> crate::render::RenderImage + 'static,
+    ) -> Vec<SemanticsNode> {
+        spoken_nodes(leaf(move || {
+            let handle = std::rc::Rc::new(
+                crate::painting::Image::from_pixels(&[0u8; 4], 1, 1).expect("the stub allocates"),
+            );
+            build(crate::widgets::ImageView::new(handle))
+        }))
+    }
+
+    #[test]
+    fn a_named_picture_tells_a_reader_it_is_a_picture() {
+        // Nothing in this port raised `is_image` -- the bit has crossed the
+        // FFI since it was written and no widget ever set it -- so a
+        // photograph arrived as an unnamed box. Upstream's `Image` wraps
+        // itself in `Semantics(image: true, label: semanticLabel ?? '')`.
+        set_enabled(true);
+        let nodes = image_nodes(|image| image.with_semantic_label("Sunset over the bay"));
+        let picture = nodes
+            .iter()
+            .find(|node| node.properties.flags.is_image)
+            .expect("a picture said it was one");
+        assert_eq!(picture.properties.label, "Sunset over the bay");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn an_unnamed_picture_makes_no_stop_of_its_own() {
+        // Upstream marks `image: true` either way and uses
+        // `container: semanticLabel != null` to decide whether it becomes a
+        // stop. This walk turns every annotation into a node, so annotating an
+        // unlabelled picture would add a stop with **no words** to every piece
+        // of decoration -- louder than upstream rather than more faithful.
+        set_enabled(true);
+        let nodes = image_nodes(|image| image);
+        assert!(
+            !nodes.iter().any(|node| node.properties.flags.is_image),
+            "no words, so no stop"
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_picture_excluded_from_semantics_says_nothing_even_when_named() {
+        // `excludeFromSemantics` outranks the label: it is the parameter for a
+        // picture whose meaning is already carried by the text beside it,
+        // where even the word "image" is one word too many.
+        set_enabled(true);
+        let nodes = image_nodes(|image| {
+            image
+                .with_semantic_label("Sunset over the bay")
+                .with_exclude_from_semantics(true)
+        });
+        assert!(
+            !nodes
+                .iter()
+                .any(|node| node.properties.label.contains("Sunset")),
+            "excluded, so not read"
+        );
+        assert!(!nodes.iter().any(|node| node.properties.flags.is_image));
+        set_enabled(false);
+    }
+
     #[test]
     fn a_reader_at_the_top_of_a_list_is_not_offered_the_way_back_up() {
         // Upstream's `_updateSemanticActions`, whose own doc gives the reason:
