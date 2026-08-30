@@ -4,6 +4,27 @@
 //! The widget side of these went into `semantics_markers.rs` several ticks ago;
 //! these are the render objects underneath them, which the ruler noticed were
 //! still missing.
+//!
+//! # Nothing in the running program builds any of them
+//!
+//! Tick 346 checked all eight by hand: outside this file they appear only in
+//! other modules' doc comments, and inside it only in its own tests. They
+//! compile, they are tested, and no widget makes one.
+//!
+//! That is worth saying next to the sentence above, because the two are
+//! connected: `coverage.py` counts an upstream class as covered when a type
+//! of that name exists, so a module added to answer it goes green whether or
+//! not anything is wired to it. This is the second such case --
+//! [`crate::semantics::SemanticsConfiguration`] is the first, and its note
+//! records that upstream's one class is three things here with only the
+//! flagless one wired.
+//!
+//! Two attempts at a ruler for this failed their own calibration in tick 346
+//! and were not kept: the first counted a type's own `new()` as a use, so
+//! nothing was ever flagged; the second, corrected, flagged 906 of 2131
+//! types including ones the gallery plainly builds. The question is real and
+//! the instrument is not, which is why this is a paragraph rather than a
+//! seventeenth tool.
 
 use crate::render::HitTestBehavior;
 use crate::semantics::SemanticsAction;

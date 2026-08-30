@@ -23586,3 +23586,50 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 `RenderSemanticsAnnotations` 之外的类型，或 `SemanticsConfiguration` 的
 `is_compatible_with` 那一族），看它是不是同样只在测试里被构造。
 **两例就够说明这是一类而不是一处**；到那时再决定写不写尺子，以及那把尺子怎么标定。
+
+---
+
+## 第 346 轮：第二例确认了——整个 `render_semantics.rs` 没有一个类型被程序建过
+
+按上一轮的“下一步”：**先手工确认第二例**，再谈尺子。
+
+确认了，而且比预想的大。`render_semantics.rs` 里八个类型
+（`RenderSemanticsGestureHandler`、`RenderSemanticsAnnotations`、`RenderBlockSemantics`、
+`RenderMergeSemantics`、`RenderExcludeSemantics`、`RenderIndexedSemantics`、
+`RenderAnnotatedRegion`、`RenderSliverSemanticsAnnotations`）逐个查：
+**文件外只出现在别的模块的文档注释里，文件内只出现在它自己的测试里。**
+编译得过、测试齐全、**没有任何控件建过一个**。
+
+而这个模块自己的头部把因果写在那里了：
+
+> “这些是它们底下的渲染对象，**尺子注意到它们还缺着**。”
+
+也就是说：**`coverage.py` 数的是名字**——上游有这个类、这里有同名类型，就算覆盖。
+于是为了让尺子变绿而加进来的模块，绿了，也没接。这是第二例；
+第一例是 `SemanticsConfiguration`（第 345 轮）。**两例，是一类，不是一处。**
+
+**于是去做那把尺子，做了两版，两版都没通过自己的标定，都没留下。**
+
+* 第一版：找“只在测试里被构造的 pub 类型”。标定**当场失败**——
+  `pub fn new() -> Foo { Foo::default() }` 是一次非测试的构造，
+  所以**每个有构造函数的类型都显得是活的**，已知不活的三个一个都没被标出来。
+* 第二版：排除类型自己 `impl` 块里的构造。那三个终于标出来了，
+  但**标定又从另一头失败**——`Card` 被标了（gallery 建它，而尺子只扫 `src/`），
+  而且 2131 个类型里标出 **906** 个，还慢到十分钟跑不完。
+
+**问题是真的，仪器不是**，所以这一轮没有第十七把尺子。
+这正是第 339 轮那条规矩起作用的样子：两版都是**标定先响**，而不是我先信了一个数字再去解释它。
+
+留下的是一段写在 `render_semantics.rs` 头部的记录：八个都查过、结论是什么、
+为什么这跟“尺子数名字”有因果关系、以及两版尺子各自怎么failed——
+免得下一个人（或下一个我）从头再走一遍这两条死路。
+
+尺子：十六把全部 exit 0。门：6261 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：**别再追这条元线索了**——它已经吃掉两轮，产出是两段记录和两把没成的尺子。
+真正该做的是**把其中一个模型接上**，那才是缺口本身。挑最小的一个：
+`RenderExcludeSemantics`（只有一个 `exclude_semantics` 标志和 `visits_children()`）。
+先按行为查：本项目的语义遍历在哪里决定要不要下降到孩子，
+有没有一个地方可以让 `ExcludeSemantics` 控件真的挡住那次下降。
+**能接就接一个，接不上就说明活路径缺的是别的东西，那也是一个明确的答案。**
