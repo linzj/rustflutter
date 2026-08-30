@@ -1589,8 +1589,16 @@ impl ListView {
         if let Some(inset) = self.inset {
             flex = flex.push(spacer(self.axis, inset));
         }
-        for child in &self.children {
-            flex = flex.push(child.clone());
+        for (index, child) in self.children.iter().enumerate() {
+            // Numbered, which is upstream's `addSemanticIndexes` on the
+            // delegate a `ListView` builds by default. Without it a reader is
+            // told the list has forty rows and never which of them they are
+            // standing on -- and the number cannot be recovered from the walk,
+            // because the spacers at either end are children too.
+            flex = flex.push(crate::render::RenderIndexedSemanticsBox::new(
+                index as i64,
+                child.clone(),
+            ));
         }
         if let Some(inset) = self.inset {
             flex = flex.push(spacer(self.axis, inset));
@@ -1644,6 +1652,18 @@ impl RenderBox for ListView {
         // one's answer.
         let mut staged = RenderViewport::new(self.axis, flex)
             .with_offset(self.offset)
+            // How many rows went in, which only this list knows: the viewport
+            // was handed one column.
+            //
+            // **Untested, and said so rather than assumed.** A rebuild in the
+            // tests replaces this render object rather than updating it, so
+            // this branch is not reached and a mutation blanking it stays
+            // green -- as does one stopping `RenderViewport::update_from`
+            // taking the fresh count. Both are written the way the layout path
+            // below is written, and whether anything reaches them is a
+            // question about how a rebuilt `ListView` is matched, not about
+            // these two lines.
+            .with_semantic_child_count(Some(self.children.len() as i32))
             .with_axis_direction(self.axis_direction);
         if let Some(link) = &self.link {
             staged = staged.with_link(std::rc::Rc::clone(link));
@@ -1664,6 +1684,7 @@ impl RenderBox for ListView {
             self.flex = Some(flex.clone());
             let mut viewport = RenderViewport::new(self.axis, flex)
                 .with_offset(self.offset)
+                .with_semantic_child_count(Some(self.children.len() as i32))
                 .with_axis_direction(self.axis_direction);
             if let Some(link) = &self.link {
                 viewport = viewport.with_link(std::rc::Rc::clone(link));
@@ -1714,6 +1735,19 @@ impl RenderBox for ListView {
         if let Some(composed) = &self.composed {
             composed.visit_children(visit);
         }
+    }
+
+    /// The viewport's, for the reason the clip below gives: **the window is one
+    /// field in**, and `visit_children` hands the walk the column's children
+    /// rather than the viewport, so nothing else would ever ask it.
+    ///
+    /// Without this a `ListView` reached a reader as a plain box -- no word
+    /// that it scrolls, no position in it, no count, and no gesture offered --
+    /// while the viewport inside it had the answer to all four ready.
+    fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
+        self.composed
+            .as_ref()
+            .and_then(|composed| composed.describe_semantics())
     }
 
     /// The viewport's, for the same reason: what clips the column is the
@@ -2306,6 +2340,71 @@ impl ColoredBox {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_list_view_says_how_many_rows_it_has_and_which_one_each_is() {
+        // The half rounds 403 and 404 left: a `LazyList` is not a viewport and
+        // a `SliverListView` is the other kind, while **this** is what the
+        // gallery actually scrolls -- `ListView` over a `RenderViewport`. Its
+        // rows carried no index and its viewport declared no count, so a
+        // reader met a run of rows with no sense of how many or where.
+        //
+        // Upstream's `ListView(children:)` builds a `SliverChildListDelegate`,
+        // whose `addSemanticIndexes` is on by default and whose
+        // `semanticChildCount` is `children.length`.
+        use crate::framework::{ElementTree, component, leaf};
+        use crate::render::{BoxConstraints, RenderBox, Size};
+
+        crate::semantics::set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| {
+            let mut list = ListView::new().with_offset(0.0);
+            for index in 0..3 {
+                list = list.push(crate::render::RenderRef::new(crate::widgets::Text::new(
+                    format!("Row {index}"),
+                )));
+            }
+            list
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        RenderBox::layout(&mut root, BoxConstraints::tight(200.0, 400.0));
+        // **Rebuilt with a different length before it is read.** A list is
+        // rebuilt whenever its contents change, and the second build updates
+        // the viewport that is already there rather than making one -- so a
+        // count supplied only on the first layout, or a viewport that kept its
+        // first answer, would go on announcing three rows for a list of four.
+        // Round 404 found exactly that on the sliver side.
+        tree.rebuild(leaf(|| {
+            let mut list = ListView::new().with_offset(0.0);
+            for index in 0..4 {
+                list = list.push(crate::render::RenderRef::new(crate::widgets::Text::new(
+                    format!("Row {index}"),
+                )));
+            }
+            list
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        RenderBox::layout(&mut root, BoxConstraints::tight(200.0, 400.0));
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(Size::new(200.0, 400.0), &root).unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let listed = nodes
+            .iter()
+            .find(|node| node.properties.scroll_child_count.is_some())
+            .expect("no node said it was a list");
+        assert_eq!(listed.properties.scroll_child_count, Some(4));
+
+        for (label, index) in nodes
+            .iter()
+            .filter(|node| node.properties.label.starts_with("Row "))
+            .map(|node| (node.properties.label.clone(), node.index_in_parent))
+        {
+            let expected: i32 = label.trim_start_matches("Row ").parse().expect("a number");
+            assert_eq!(index, Some(expected), "{label} did not say which row it is");
+        }
+    }
+
     use super::*;
     use crate::framework::leaf;
 
