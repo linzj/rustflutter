@@ -394,6 +394,101 @@ mod radio_semantics_tests {
             .collect()
     }
 
+    /// The kinds every stop declares, with the label that goes with each.
+    fn kinds_on(
+        surface: crate::framework::AnyWidget,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> Vec<(crate::semantics::SemanticsRole, String)> {
+        crate::semantics::set_enabled(true);
+        let theme = crate::theme::ThemeData {
+            platform,
+            ..crate::theme::ThemeData::light()
+        };
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(theme, surface));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| node.properties.role.is_set())
+            .map(|node| (node.properties.role, node.properties.label.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn an_alert_says_it_is_an_alert_and_a_simple_dialog_says_it_is_a_dialog() {
+        // Checked against `dialog.dart` rather than guessed from the names.
+        // `Dialog.semanticsRole` defaults to `SemanticsRole.dialog` and
+        // `AlertDialog.build` is the **only** override in the file
+        // (`dialog.dart:953`); `SimpleDialog` returns a bare `Dialog`
+        // (`dialog.dart:1372`) and takes the default. There is no
+        // "simple dialog" role, and the pair of names invites the guess that
+        // there is.
+        //
+        // The difference is what a platform does with it: an alert interrupts,
+        // a dialog is somewhere the reader has been moved to.
+        use crate::semantics::SemanticsRole;
+        assert_eq!(
+            kinds_on(
+                crate::framework::component(AlertDialog::new().with_title("Delete this?")),
+                crate::editable_text::TargetPlatform::Android
+            ),
+            vec![(SemanticsRole::AlertDialog, "Alert".to_string())]
+        );
+        assert_eq!(
+            kinds_on(
+                crate::framework::component(SimpleDialog::new().with_title("Pick one")),
+                crate::editable_text::TargetPlatform::Android
+            ),
+            vec![(SemanticsRole::Dialog, "Dialog".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_dialog_nobody_named_is_still_a_dialog() {
+        // The case that made the role a separate test from the label. On Apple
+        // this port names no route -- VoiceOver's focus lands on the title, so
+        // saying the label too is one word too many -- and the whole node used
+        // to be skipped with it. Upstream puts `role:` on the `Dialog`'s own
+        // `Semantics` whatever names the route, so an unlabelled dialog is
+        // silent there but not shapeless. Folded into the label's branch it
+        // would have crossed as an anonymous box.
+        use crate::semantics::SemanticsRole;
+        assert_eq!(
+            kinds_on(
+                crate::framework::component(AlertDialog::new().with_title("Delete this?")),
+                crate::editable_text::TargetPlatform::IOS
+            ),
+            vec![(SemanticsRole::AlertDialog, String::new())],
+            "a kind with no words, which is what upstream leaves"
+        );
+    }
+
+    #[test]
+    fn a_surface_that_announces_itself_is_not_automatically_an_alert() {
+        // The wrapper is shared by three surfaces, so the kind has to be each
+        // caller's to say. This one is upstream's plain default -- and the
+        // test is here because the first version of this round asserted the
+        // rule about a `BottomSheet`, which never reaches this wrapper at all:
+        // a mutation making every surface an alert stayed green, because
+        // nothing was measuring a surface that goes through it.
+        use crate::semantics::SemanticsRole;
+        assert_eq!(
+            kinds_on(
+                crate::framework::component(Dialog::new("Sign in")),
+                crate::editable_text::TargetPlatform::Android
+            ),
+            vec![(SemanticsRole::Dialog, "Dialog".to_string())]
+        );
+    }
+
     #[test]
     fn the_two_dialogs_are_announced_by_their_own_names() {
         // Not one rule written twice: `modal_surface_label` is shared and the
@@ -2575,7 +2670,14 @@ impl Component for Dialog {
                     .with_child(column),
             )
         });
-        announced(surface_widget, self.resolved_semantic_label(platform))
+        // The plain kind, which is upstream's default: `Dialog.semanticsRole`
+        // is `SemanticsRole.dialog` unless a subclass says otherwise, and only
+        // `AlertDialog` does.
+        announced(
+            surface_widget,
+            self.resolved_semantic_label(platform),
+            crate::semantics::SemanticsRole::Dialog,
+        )
     }
 }
 
@@ -4100,7 +4202,15 @@ impl Component for SimpleDialog {
                 .with_corner_radius(28.0)
                 .with_child(column)
         });
-        announced(dialog, self.resolved_semantic_label(platform))
+        // `SemanticsRole::Dialog`, the plain one. Upstream's `SimpleDialog`
+        // returns a bare `Dialog` (`dialog.dart:1372`) and so takes that
+        // widget's default -- there is no "simple dialog" role, and the name
+        // invites the guess that there is.
+        announced(
+            dialog,
+            self.resolved_semantic_label(platform),
+            crate::semantics::SemanticsRole::Dialog,
+        )
     }
 }
 
@@ -4293,7 +4403,16 @@ impl Component for AlertDialog {
                 .with_child(column)
         });
 
-        announced(dialog, self.resolved_semantic_label(platform))
+        // `AlertDialog`, not `Dialog`: upstream's `AlertDialog.build` is the
+        // one place that overrides the default, passing
+        // `semanticsRole: SemanticsRole.alertDialog` (`dialog.dart:953`). The
+        // difference is what the platform does with it -- an alert interrupts,
+        // a dialog is somewhere the reader has been moved to.
+        announced(
+            dialog,
+            self.resolved_semantic_label(platform),
+            crate::semantics::SemanticsRole::AlertDialog,
+        )
     }
 }
 
@@ -4318,24 +4437,43 @@ impl Component for AlertDialog {
 ///   *and* its whole crossing -- the same shape as `is_link`, and a round of
 ///   its own rather than a line here.
 ///
-/// `None` is a surface that names no route, which upstream reaches on Apple
-/// for a dialog the caller did not label: VoiceOver's focus lands on the
-/// title, and saying the label as well is one word too many. The two callers
-/// differ only in what they fall back to -- "Alert" against "Dialog" -- and
-/// that difference belongs to them rather than here.
-fn announced(surface: AnyWidget, label: Option<String>) -> AnyWidget {
-    let Some(label) = label else {
+/// A `None` label is a surface that names no route, which upstream reaches on
+/// Apple for a dialog the caller did not label: VoiceOver's focus lands on the
+/// title, and saying the label as well is one word too many. The two dialog
+/// callers differ only in what they fall back to -- "Alert" against "Dialog" --
+/// and that difference belongs to them rather than here.
+///
+/// # The kind is not the announcement
+///
+/// `role` is separate from `label`, and **a role alone is enough to make the
+/// node**. Upstream puts `role: semanticsRole` on the `Dialog`'s own
+/// `Semantics` regardless of what names the route, so a dialog nobody labelled
+/// is still a dialog. Folded into the label's `if`, an unlabelled dialog on
+/// Apple would have crossed to the platform as an anonymous box -- silent
+/// *and* shapeless, where upstream leaves it only silent.
+///
+/// It is a parameter rather than a constant because not every surface that
+/// announces itself is a dialog: a [`BottomSheet`] passes
+/// [`crate::semantics::SemanticsRole::None`], which is upstream's answer too
+/// (`bottom_sheet.dart` names no role at all).
+fn announced(
+    surface: AnyWidget,
+    label: Option<String>,
+    role: crate::semantics::SemanticsRole,
+) -> AnyWidget {
+    if label.is_none() && !role.is_set() {
         return surface;
-    };
+    }
     crate::framework::single(surface, move |inner| {
         crate::semantics::RenderSemantics::new(
             crate::semantics::node_id_for(DIALOG_SEMANTICS_ID),
             crate::semantics::SemanticsProperties {
                 flags: crate::semantics::SemanticsFlags {
-                    names_route: true,
+                    names_route: label.is_some(),
                     ..crate::semantics::SemanticsFlags::default()
                 },
-                ..crate::semantics::SemanticsProperties::label(label.clone())
+                role,
+                ..crate::semantics::SemanticsProperties::label(label.clone().unwrap_or_default())
             },
             inner,
         )

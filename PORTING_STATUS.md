@@ -25807,3 +25807,56 @@ BUILD ERROR 那个（改判别式撞号）说明它**根本不该由测试来守
 **先做 Dialog**：它最靠近本轮的形状（一个已经在合并的节点上加一个 kind），
 而且 `AlertDialog` 与 `SimpleDialog` 上游给的是**两个不同的 role**——
 先去 `dialog.dart` 确认哪个给哪个，不要照着名字猜。
+
+---
+
+## 第 384 轮：三种模态面各说各的 kind——而"别照名字猜"这条提醒救了一次
+
+按“下一步”先查 `dialog.dart` 再动手。查得对：
+
+* `Dialog.semanticsRole` **默认 `SemanticsRole.dialog`**（84、98 行）；
+* `AlertDialog.build` 是全文件**唯一**的覆盖：`semanticsRole: SemanticsRole.alertDialog`（953 行）；
+* `SimpleDialog` 返回一个**裸 `Dialog`**（1372 行），拿默认值——
+  **没有"simple dialog"这个 role**，而这对名字正好会让人以为有。
+
+差别是平台拿它做什么：**alert 会打断，dialog 是读屏用户被移动过去的地方。**
+
+### 一个藏在共用包装里的分支
+
+本项目三种模态面共用 `announced(surface, label)`，而它在**没有 label 时直接返回原样**
+——Apple 上不给 label 是本项目已有的规则（VoiceOver 会落在标题上，再念一遍 label 多余）。
+
+上游的 `role:` 在 `Dialog` 自己的 `Semantics` 上，**跟谁命名路由无关**。
+如果顺手把 role 塞进那个 `if` 里，**Apple 上一个没命名的对话框会以匿名盒子过去**——
+上游只是让它*不出声*，不是让它*没形状*。改成"有 label 或有 role 就建节点"，
+`names_route` 单独跟着 label 走。
+
+### 变异扫描抓到的是我自己写错的东西
+
+“把面板说成对话框”那条**绿了**。查下去：我给那个调用点写的注释说它是 `BottomSheet`，
+**其实它是 `controls::Dialog`**——`BottomSheet` 根本不经过这个包装。
+于是我那条测试量的是一个**不走这段代码的控件**，
+和第 377 轮的 `Badge`、第 381 轮那个没有回调的选项是同一族。
+改正：`controls::Dialog` 拿上游的默认 `Dialog` role，测试换成量真正经过它的那个。
+
+### 一轮里三次"静默没匹配上"
+
+同一个失败模式今天出现了三次：
+第 383 轮校准尺子时替换没生效（看起来像"尺子不管用"），
+这一轮改扫描脚本时又两次——**报出来的绿只意味着"我没跑"**。
+第三次之后给扫描脚本加了一条 `assert old != new`，
+连同原有的 `assert count == 1`，两条一起把这个模式堵住。
+
+第二遍**六个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6375 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：继续补 role，下一个是 `Tab`/`TabBar`。
+上游在 `navigation_bar.dart:294/305` 给的是 **`tabBar` 套 `tab`**，
+两层都有——而本项目第 378 轮刚把三个"N 选一"的条统一到 `one_of_many`，
+所以**接口只有一处，三个条一起拿到**。
+但先确认一件事再动手：`TabBar`、`BottomNavigation`、`NavigationRail`
+上游是**三个不同的类**，`navigation_bar.dart` 只管其中一个——
+去 `tabs.dart` 和 `navigation_rail.dart` 各查一次给不给 role，
+**不要因为本项目把它们统一了就假设上游也一样。**
