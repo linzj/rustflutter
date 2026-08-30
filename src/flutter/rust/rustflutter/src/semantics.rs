@@ -1371,7 +1371,9 @@ fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
         };
         let merged = open(
             take_text_id(),
-            SemanticsProperties::label(""),
+            render
+                .merged_node_properties()
+                .unwrap_or_else(|| SemanticsProperties::label("")),
             (rect.left, rect.top, rect.right, rect.bottom),
         );
         if let Some(index) = merged {

@@ -1413,6 +1413,18 @@ pub trait RenderBox: AsAny {
         None
     }
 
+    /// What the node opened by [`RenderBox::merges_descendant_semantics`] says
+    /// about itself, before the descendants' words are folded into it.
+    ///
+    /// Only asked of a box that merges. `None` is an unadorned node, which is
+    /// what a plain `MergeSemantics` wants; a caller with something to add --
+    /// upstream's `Semantics(container: true, liveRegion: true, ...)` -- says
+    /// it here, because the flag has to land on the node that holds the words
+    /// rather than on one wrapped around it.
+    fn merged_node_properties(&self) -> Option<crate::semantics::SemanticsProperties> {
+        None
+    }
+
     /// What this box says about itself to a screen reader, if anything.
     ///
     /// Upstream's `describeSemanticsConfiguration`, which fills in a
@@ -2724,6 +2736,9 @@ impl RenderBox for RenderRef {
     fn index_in_parent_for_semantics(&self) -> Option<i32> {
         self.render.borrow().index_in_parent_for_semantics()
     }
+    fn merged_node_properties(&self) -> Option<crate::semantics::SemanticsProperties> {
+        self.render.borrow().merged_node_properties()
+    }
     fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         self.render.borrow().visit_children_for_semantics(visit)
     }
@@ -2858,6 +2873,9 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     }
     fn index_in_parent_for_semantics(&self) -> Option<i32> {
         (**self).index_in_parent_for_semantics()
+    }
+    fn merged_node_properties(&self) -> Option<crate::semantics::SemanticsProperties> {
+        (**self).merged_node_properties()
     }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         (**self).layout(constraints)
@@ -8441,6 +8459,12 @@ pub struct RenderMergeSemanticsBox {
     merging: crate::render_semantics::RenderMergeSemantics,
     child: BoxedRender,
     size: Size,
+    /// What the folded node says about itself besides the words folded into
+    /// it. Upstream's `Semantics(container: true, ...)` carries flags on the
+    /// same node it merges into -- a live region is the case in hand: the
+    /// platform announces **the node that has the words**, so the flag has to
+    /// ride on that node and not on one wrapped around it.
+    properties: Option<crate::semantics::SemanticsProperties>,
 }
 
 impl RenderMergeSemanticsBox {
@@ -8449,7 +8473,30 @@ impl RenderMergeSemanticsBox {
             merging: crate::render_semantics::RenderMergeSemantics,
             child: RenderRef::new(child),
             size: Size::ZERO,
+            properties: None,
         }
+    }
+
+    /// Gives the folded node something to say about itself.
+    ///
+    /// The label is still the descendants' -- whatever is passed here starts
+    /// the node off and the fold appends to it, so a caller who wants only the
+    /// flags passes properties with no words. This is upstream's
+    /// `Semantics(container: true, liveRegion: true, child: ...)`: one node,
+    /// flagged, saying what is inside it.
+    pub fn with_properties(
+        mut self,
+        properties: crate::semantics::SemanticsProperties,
+    ) -> RenderMergeSemanticsBox {
+        self.properties = Some(properties);
+        self
+    }
+
+    /// What the folded node opens with.
+    pub fn node_properties(&self) -> crate::semantics::SemanticsProperties {
+        self.properties
+            .clone()
+            .unwrap_or_else(|| crate::semantics::SemanticsProperties::label(""))
     }
 }
 
@@ -8487,6 +8534,10 @@ impl RenderBox for RenderMergeSemanticsBox {
     fn merges_descendant_semantics(&self) -> bool {
         let _ = &self.merging;
         crate::render_semantics::RenderMergeSemantics::is_merging_semantics_of_descendants()
+    }
+
+    fn merged_node_properties(&self) -> Option<crate::semantics::SemanticsProperties> {
+        self.properties.clone()
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {

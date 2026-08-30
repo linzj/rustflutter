@@ -24700,3 +24700,64 @@ C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建
 所以下一轮先按行为问一句：**谁会是 `is_link` 的宿主**——
 有现成的控件就照这一轮接；**没有的话就说清楚**，
 因为那时缺的不是一个标志，是一个控件，那是另一种大小的活，不该混进一轮里。
+
+---
+
+## 第 364 轮：弹出来的提示条终于会喊一声——而 `is_link` 的答案是“没有宿主”
+
+上一轮问的是：`is_link` 有没有宿主。**答案是没有。**
+
+上游 `paragraph.dart:1419` 把 `isLink` 设在**带点击识别器的文本片段**上：
+
+```dart
+case TapGestureRecognizer(onTap: final VoidCallback? handler):
+  if (handler != null) {
+    configuration.onTap = handler;
+    configuration.isLink = true;
+  }
+```
+
+而本项目的 `TextSpan` 只有 `text` / `style` / `semantics_label`——**没有识别器**。
+所以缺的**不是一个标志，是逐片段的手势识别**，那是控件级的活，
+按上一轮说好的**不混进这一轮**。
+（顺带核对：`TextSpan::semantics_label` 是**接上了**的，
+`RenderParagraph::describe_semantics` 经 `semantics_content` 读它。）
+
+于是换清单上下一个**有宿主**的：`is_live_region`。宿主是提示条，
+而 `messenger.rs::snack_bar_slot` 正是每一条都要过的那道门。
+
+上游把每一条都包进 `Semantics(container: true, liveRegion: true, ...)`，两半都重要：
+
+* **container**：一条提示是**一个可落脚的东西**，不是“Saved”和“Undo”两件互不相干的事。
+* **live region**：它**没人请求就自己出现了**。读屏用户可能正在页面别处，
+  必须被告知；四秒后它就没了——**树里有字而没人指，等于没人听见**。
+
+### 一个不得不先补的机件
+
+标志必须落在**有字的那个节点**上——一个空的 live region 什么也不会播报。
+而第 349 轮的 `RenderMergeSemanticsBox` 造的正是那个节点，**但它不带任何属性**。
+所以先给它加一层：`with_properties(...)`，
+配套新钩子 `RenderBox::merged_node_properties()`——
+**三处转发一处不少**（trait 默认、`RenderRef`、`Box<R>`），这是第 348 轮的规矩。
+
+这样 `Semantics(container: true, <flags>)` 这个组合**在这个 port 里第一次可表达**，
+而第 360 轮的 Card 想要的也正是同一个形状。
+
+测试走真遍历：一条含 "Saved" 与 "Undo" 的提示条，
+断言**只有一站**、标签是 `"Saved\nUndo"`、且 `is_live_region` 在**那一站**上。
+
+**变异扫描 6 个，全红**：不是 live region、不是一站、
+合并节点丢掉属性、走查不再询问属性、两处转发各自断掉。
+（其中一个第一遍因为选择串没对上格式被跳过——**跳过不是通过**，改对了重跑才算。）
+
+尺子：十六把全部 exit 0。门：Rust 6315 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：这一轮为了接一个标志，先补了 `merged_node_properties` 这个机件，
+而它**立刻解锁了别的**。第 360 轮的 `Card` 现在可以把
+`semanticContainer` 之外的东西也放到那个折叠节点上；
+更值得先看的是清单上还剩的 `is_header` 与 `names_route`——
+它们各自只有 1 个调用者（`route_header`），
+**先按行为查那一个调用者是谁、是不是真的活路径**，
+如果只是某个测试或某段死代码，那它们就跟今天的 `is_image` 一样是“有规则没生产者”，
+接法也一样；如果是活的，就转去数 `hint` 与 `is_read_only`（同样 0 生产者）。

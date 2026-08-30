@@ -298,7 +298,26 @@ pub fn snack_bar_slot(bar: AnyWidget) -> AnyWidget {
     many(vec![bar], |mut rendered| {
         RenderAlign::new(
             Alignment::new(0.0, 1.0),
-            rendered.pop().expect("the snack bar"),
+            // Upstream wraps every bar in
+            // `Semantics(container: true, liveRegion: true, ...)`, and both
+            // halves matter. **Container**: a bar is one thing to land on, not
+            // a message and a button that a reader meets separately.
+            // **Live region**: the bar arrives without anyone asking for it,
+            // so a reader who is somewhere else on the page has to be told;
+            // without the flag the words are in the tree and nothing draws
+            // attention to them, which for a four-second bar means they are
+            // gone before anyone finds them.
+            //
+            // The flag rides on the merged node because that is the node with
+            // the words -- a live region with nothing in it announces nothing.
+            crate::render::RenderMergeSemanticsBox::new(rendered.pop().expect("the snack bar"))
+                .with_properties(crate::semantics::SemanticsProperties {
+                    flags: crate::semantics::SemanticsFlags {
+                        is_live_region: true,
+                        ..crate::semantics::SemanticsFlags::default()
+                    },
+                    ..crate::semantics::SemanticsProperties::label("")
+                }),
         )
     })
 }
@@ -312,6 +331,49 @@ mod tests {
         RenderPointerRegion, RenderRef, Size,
     };
     use crate::theatre::overlay;
+
+    #[test]
+    fn a_bar_that_appears_is_announced_as_one_thing() {
+        // Two halves of upstream's one wrapper, and both matter.
+        //
+        // **Live region**: the bar arrives without anyone asking, so a reader
+        // elsewhere on the page has to be told. Four seconds later it is gone;
+        // words in the tree that nothing points at are words nobody hears.
+        //
+        // **Container**: one stop, so "Saved" and "Undo" are met together
+        // rather than as two unrelated things at the bottom of the screen.
+        crate::semantics::set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(snack_bar_slot(crate::framework::single(
+            crate::framework::leaf(|| crate::widgets::SizedBox::new(0.0, 0.0)),
+            |_inner| {
+                crate::widgets::Column::new()
+                    .with_main_axis_size(crate::render::MainAxisSize::Min)
+                    .push(crate::widgets::Text::new("Saved"))
+                    .push(crate::widgets::Text::new("Undo"))
+            },
+        )));
+        let mut root = tree.build_render_tree().expect("mounted");
+        RenderBox::layout(&mut root, BoxConstraints::loose(300.0, 300.0));
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(Size::new(300.0, 300.0), &root).unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let spoken: Vec<&crate::semantics::SemanticsNode> = nodes
+            .iter()
+            .filter(|node| !node.properties.label.is_empty())
+            .collect();
+        assert_eq!(spoken.len(), 1, "one stop, not two: {spoken:?}");
+        assert_eq!(
+            spoken[0].properties.label,
+            "Saved
+Undo"
+        );
+        assert!(
+            spoken[0].properties.flags.is_live_region,
+            "and the flag is on the node that has the words"
+        );
+    }
 
     const PAGE_TARGET: u64 = 7001;
     const BAR_TARGET: u64 = 7002;
