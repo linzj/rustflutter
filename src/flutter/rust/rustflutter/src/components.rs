@@ -1196,6 +1196,11 @@ impl Component for Switch {
 pub struct ProgressBar {
     value: f32,
     width: f32,
+    /// Upstream's `semanticsLabel`: what the waiting is *for*. `None` is a bar
+    /// that reports a number and no purpose, which is upstream's default and
+    /// is worth a caller's attention rather than a fallback -- "60" on its own
+    /// tells a reader how far through something they were never told about.
+    semantic_label: Option<String>,
 }
 
 impl ProgressBar {
@@ -1203,12 +1208,38 @@ impl ProgressBar {
         ProgressBar {
             value: value.clamp(0.0, 1.0),
             width: 200.0,
+            semantic_label: None,
         }
     }
 
     pub fn with_width(mut self, width: f32) -> Self {
         self.width = width;
         self
+    }
+
+    /// Upstream's `semanticsLabel`.
+    pub fn with_semantic_label(mut self, label: impl Into<String>) -> Self {
+        self.semantic_label = Some(label.into());
+        self
+    }
+
+    /// Upstream's `expandedSemanticsValue`: `semanticsValue ??
+    /// '${(value * 100).round()}'`.
+    ///
+    /// **No percent sign**, and that is upstream's, not an omission here. The
+    /// slider writes one (`'${...}%'`) and this does not, because a progress
+    /// bar also sends `minValue: '0'` and `maxValue: '100'` alongside -- the
+    /// platform has the range and says the units itself, where a slider hands
+    /// over one number that has to carry its own.
+    ///
+    /// Those two bounds have **no counterpart here**: `SemanticsProperties`
+    /// has no `min_value`/`max_value` and `RfSemanticsNode` no field for
+    /// them, so what crosses is the number without the range. Upstream's
+    /// `role` -- `progressBar` against `loadingSpinner` -- is missing for the
+    /// same reason. Both are flags-and-crossings of their own, the shape
+    /// `scopesRoute` and `is_link` are in.
+    pub fn semantic_value(&self) -> String {
+        format!("{}", (self.value * 100.0).round() as i32)
     }
 }
 
@@ -1219,7 +1250,31 @@ impl Component for ProgressBar {
         let width = self.width;
         let track = theme.surface_variant;
         let fill = theme.primary;
-        leaf(move || {
+        // A progress bar said nothing at all: a reader was left with no way to
+        // know that something was under way, let alone how far. Upstream wraps
+        // it in `Semantics(label:, value:, role:, minValue:, maxValue:)`; the
+        // two that have a counterpart here are the label and the value.
+        let described = {
+            let properties = crate::semantics::SemanticsProperties {
+                value: self.semantic_value(),
+                ..crate::semantics::SemanticsProperties::label(
+                    self.semantic_label.clone().unwrap_or_default(),
+                )
+            };
+            move |inner: AnyWidget| {
+                crate::framework::single(inner, {
+                    let properties = properties.clone();
+                    move |child| {
+                        crate::semantics::RenderSemantics::new(
+                            crate::semantics::node_id_for(PROGRESS_SEMANTICS_ID),
+                            properties.clone(),
+                            child,
+                        )
+                    }
+                })
+            }
+        };
+        let bar = leaf(move || {
             // Align hands its child loose constraints, which is what stops a
             // stretching parent from widening the bar past `width`.
             Align::new(
@@ -1248,9 +1303,15 @@ impl Component for ProgressBar {
                             ),
                     ),
             )
-        })
+        });
+        described(bar)
     }
 }
+
+/// The identifier a progress bar's semantics node is keyed on. Reserved for
+/// the reason [`crate::controls::DIALOG_SEMANTICS_ID`] is: the platform keys
+/// its node on this, so it has to be the same on every frame.
+const PROGRESS_SEMANTICS_ID: u64 = 0x9206;
 
 // -- Slider -------------------------------------------------------------------
 
@@ -6082,6 +6143,52 @@ mod tests {
             .find(|node| node.properties.flags.is_slider)
             .cloned()
             .expect("a slider said it was one")
+    }
+
+    #[test]
+    fn a_progress_bar_says_how_far_along_it_is() {
+        // It said nothing at all: a reader had no way to know that something
+        // was under way, let alone how far through it they were.
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(ProgressBar::new(0.6).with_semantic_label("Uploading")),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(300.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+
+        let bar = nodes
+            .iter()
+            .find(|node| node.properties.label == "Uploading")
+            .expect("the bar said what it is for");
+        assert_eq!(
+            bar.properties.value, "60",
+            "no percent sign: upstream sends the bounds alongside and lets the              platform say the units"
+        );
+    }
+
+    #[test]
+    fn a_progress_value_is_a_bare_number_where_a_sliders_is_a_percentage() {
+        // The two look alike and are not. A slider hands over one number that
+        // has to carry its own units; a progress bar sends `minValue: '0'` and
+        // `maxValue: '100'` beside it, so upstream leaves the sign off. Copying
+        // one into the other would have a platform read "60%%" or "60".
+        assert_eq!(ProgressBar::new(0.6).semantic_value(), "60");
+        assert_eq!(ProgressBar::new(0.0).semantic_value(), "0");
+        assert_eq!(ProgressBar::new(1.0).semantic_value(), "100");
+        assert_eq!(
+            ProgressBar::new(0.615).semantic_value(),
+            "62",
+            "rounded, as upstream rounds"
+        );
     }
 
     #[test]
