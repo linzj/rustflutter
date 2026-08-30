@@ -26219,3 +26219,65 @@ C++ 34 个 gtest 全过；gallery 354 通过（9 处调用点随之更新）；
 `MagnifierController` 这个名字听起来正是同一类。
 **若只有壳子就跳过它，改看 `SelectableText`（8/34）**：那是个真控件，
 而且它和第 381 轮刚接上的 ink well 语义、以及文本选择工具条都相邻。
+
+---
+
+## 第 391 轮：一张“哪些类只有数据、没有控件”的清单——第一次跑就抓到四个 Chip
+
+按“下一步”先查 `MagnifierController`：**果然又是一个壳子。**
+`magnifier.rs` 有 `RawMagnifier`、`MagnifierDecoration`、
+`MagnifierController::shift_within_bounds`，**全项目没有任何东西显示放大镜**
+（`cupertino.rs` 里那些 magnifier 是滚轮选择器的放大带，不是这个）。
+备选的 `SelectableText` 同样：一个 `String`、一个 `max_lines`、一个 `is_editable()`，
+没有 build。
+
+**这是第 386、388、390、391 连续四轮，开场都在重新发现"只有数据没有控件"。**
+`depth.py` 按"上游成员数"排队，它分不出控件和一袋数字——
+而这个区别**改变一轮能做什么**："把缺的六个成员补上"
+和"把这些成员所描述的那个控件移植过来"是两件不同大小的事。
+
+于是写了 `tools/shells.py`：读上游哪些类 `extends ...Widget`，
+再问本项目对应的类型有没有任何"能上屏"的迹象。
+**不接进那十六把尺子、不参与门禁、永远 exit 0**，和 `descent.py`、`spoken.py` 同一个身份。
+
+### 前两版都没通过校准，而且是同一个形状的错
+
+**本项目没有单一的"控件"写法。**
+
+* v1 只认 `impl Component` / `impl RenderBox` / 返回 `AnyWidget` 的自由函数，
+  于是把 `Align`、`ClipOval`、`ColoredBox` 全报成"只有数据"——
+  它们是**门面**：`pub struct Align;` 加 `Align::new(..) -> RenderAlign`，
+  **一个 trait 都不涉及**。368 个里报了 301 个，这不是差一点，是量错了东西。
+* v2 认了门面，`ClipOval` 还是被误报——它的 `new` 返回
+  `crate::render::RenderClipOval`，**同一个形状写成了带路径的**。
+
+第三版对 14 个已知会 build 的类型**一个都不误报**，
+5 个已知壳子中列出 4 个；唯一漏的 `DropdownMenuItem` 漏在**上游那一侧**
+（它继承的是私有的 `_DropdownMenuItemContainer`，不是 widget 类），
+这条限制写进文件头了。三次尝试的失败也一并留着——
+**下一个人不必再走一遍**。
+
+### 第一次跑就抓到一个真东西
+
+```
+ActionChip / ChoiceChip / FilterChip / InputChip   controls.rs
+```
+
+四个都是 `pub struct X(pub ChipParts)`，**四个之间一个 `Component` impl 都没有**。
+只有 `controls::Chip` 会 build。也就是说：这四个上游 Chip 变体
+**可以被构造、可以被配置，然后永远不出现在屏幕上**。
+
+这正是这份报告存在的理由——**在一轮开始之前知道，而不是之后**。
+（和 `spoken.py` 第一次跑抓到导航栏是同一件事；
+按本项目的规矩，没亲眼见它抓过真错的仪器只给数字不给事实，
+所以这一条是它被留下的条件，不是附带收获。）
+
+尺子：十六把全部 exit 0（这一轮没动它们）。
+三份报告 `spoken`、`shells`、`descent` 全部 exit 0。
+门：Rust 6390 通过、`cargo fmt --check` 干净。
+
+**下一步**：就做报告抓到的那个——**给四个 Chip 变体接上 build**。
+先查一件事：`ChipParts` 里已经有哪些字段、`controls::Chip` 的 build
+能复用到什么程度——**四个变体上游的差别只有"选中态、删除键、能不能按"这几处**，
+所以很可能是**一个共用 build 加四组默认值**，而不是四份实现；
+如果写成四份，第 380 轮那条教训（造出重复之前先抽出来）就白学了。
