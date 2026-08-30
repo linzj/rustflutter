@@ -341,17 +341,37 @@ impl SemanticsTristate {
         self != SemanticsTristate::None
     }
 
-    /// The union, said for three values.
+    /// The union, said for three values: **on wins, then off, then no
+    /// opinion**.
     ///
-    /// A node with no opinion takes the other's. Two that disagree keep the
-    /// first, because unlike the check state there is no fourth value to
-    /// escape into -- upstream has no "partly on" -- and first-wins is the
-    /// rule every other singular slot on a merged node follows.
+    /// Upstream's `Tristate.merge` (`semantics.dart:1136`), and it is
+    /// deliberately not first-wins:
+    ///
+    /// ```dart
+    /// if (this == Tristate.isTrue || other == Tristate.isTrue) return Tristate.isTrue;
+    /// if (this == Tristate.isFalse || other == Tristate.isFalse) return Tristate.isFalse;
+    /// return Tristate.none;
+    /// ```
+    ///
+    /// This used to keep the first and say so in prose -- "two that disagree
+    /// keep the first, because it is the rule every other singular slot
+    /// follows". That reasoning was about this crate rather than about
+    /// upstream, and it is wrong: a merged node stands for **everything folded
+    /// into it**, so if any part of it is selected, the node a reader lands on
+    /// is selected. First-wins would have made the answer depend on which
+    /// child the walk happened to reach first.
+    ///
+    /// It could not be observed while nothing reached it -- see
+    /// [`SemanticsConfiguration::absorb`] -- and round 389 is what gave it a
+    /// caller.
     pub fn merge(self, other: SemanticsTristate) -> SemanticsTristate {
-        match self {
-            SemanticsTristate::None => other,
-            _ => self,
+        if self == SemanticsTristate::True || other == SemanticsTristate::True {
+            return SemanticsTristate::True;
         }
+        if self == SemanticsTristate::False || other == SemanticsTristate::False {
+            return SemanticsTristate::False;
+        }
+        SemanticsTristate::None
     }
 }
 
@@ -407,11 +427,26 @@ impl SemanticsCheckState {
     /// that is partly checked, and saying "checked" or "unchecked" there
     /// would be picking one of them at random.
     pub fn merge(self, other: SemanticsCheckState) -> SemanticsCheckState {
-        match (self, other) {
-            (SemanticsCheckState::None, state) | (state, SemanticsCheckState::None) => state,
-            (a, b) if a == b => a,
-            _ => SemanticsCheckState::Mixed,
+        // Upstream's `CheckedState.merge` (`semantics.dart:1101`), in its
+        // order: **mixed, then checked, then unchecked, then none**.
+        //
+        // The rule this replaced said that two checkable things which disagree
+        // fold into *mixed*, which sounds right and is not upstream's. Mixed
+        // is what a control says when **it** is partly ticked -- a parent
+        // checkbox over some ticked children -- not what two separate nodes
+        // become by disagreeing. Announcing a merged row as "partially
+        // checked" because a ticked and an unticked thing ended up inside it
+        // describes a control that does not exist.
+        if self == SemanticsCheckState::Mixed || other == SemanticsCheckState::Mixed {
+            return SemanticsCheckState::Mixed;
         }
+        if self == SemanticsCheckState::Checked || other == SemanticsCheckState::Checked {
+            return SemanticsCheckState::Checked;
+        }
+        if self == SemanticsCheckState::Unchecked || other == SemanticsCheckState::Unchecked {
+            return SemanticsCheckState::Unchecked;
+        }
+        SemanticsCheckState::None
     }
 }
 
@@ -1852,6 +1887,23 @@ fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) ->
         // Inside a merge, a descendant says its piece into the merging node
         // rather than becoming a stop of its own.
         if let Some(&into) = collector.merging.last() {
+            // Upstream's `SemanticsNode.updateWith`: `flags =
+            // flags.merge(node._flags)`. **A folded node makes the claims of
+            // everything folded into it** -- it is not a container over them,
+            // it replaced them, so a button folded into a row leaves a row
+            // that can be pressed and nothing that says so would be a stop
+            // saying only its words.
+            //
+            // Carried by [`SemanticsFlags::merge`], which had no caller at all
+            // until this line: the walk folded the label, then the tooltip,
+            // then the role, and never the flags. Giving it one is also what
+            // made its two tristate rules observable, and both were wrong --
+            // see [`SemanticsTristate::merge`] and
+            // [`SemanticsCheckState::merge`].
+            if properties.flags != SemanticsFlags::default() {
+                let node = &mut collector.nodes[into];
+                node.properties.flags = node.properties.flags.merge(&properties.flags);
+            }
             // Upstream's merge, same rule as the tip and for the same
             // reason: `if (role == SemanticsRole.none) role = node._role`. A
             // merging node is one thing, so it has one kind, and the nearest
@@ -4656,17 +4708,22 @@ mod tests {
     }
 
     #[test]
-    fn a_focused_node_folded_into_an_unfocused_one_keeps_the_first_answer() {
-        // `merge` is first-wins for a tristate, and a union would have said
-        // "focused" about a row containing a focused field -- which is a
-        // different claim: the row is not what holds the keyboard.
+    fn a_row_holding_the_focused_field_is_the_focused_stop() {
+        // This test used to assert the opposite, under the name
+        // "...keeps_the_first_answer", with the reasoning that a row is not
+        // what holds the keyboard. That reasoning is about a row that has
+        // children; a **folded** node has none -- it *is* the field, as far as
+        // a reader is concerned, because the field stopped being a stop of its
+        // own. Upstream merges the tristate as true-beats-false
+        // (`semantics.dart:1136`), and first-wins would have made the answer
+        // depend on which child the walk reached first.
         let mut row = said("Row");
         row.flags.focused = SemanticsTristate::False;
         let mut field = said("Name");
         field.flags.focused = SemanticsTristate::True;
         assert_eq!(
             row.flags.merge(&field.flags).focused,
-            SemanticsTristate::False
+            SemanticsTristate::True
         );
         // And a row with no opinion takes the field's.
         let plain = said("Row");
@@ -4768,17 +4825,18 @@ mod tests {
     }
 
     #[test]
-    fn a_tristate_merges_by_first_wins_where_the_check_state_goes_mixed() {
-        // Unlike the check state there is no fourth value to escape into, so
-        // two that disagree keep the first -- the rule every other singular
-        // slot on a merged node follows.
+    fn a_tristate_merges_on_first_then_off_then_no_opinion() {
+        // Upstream's order (`semantics.dart:1136`), and **symmetric** -- which
+        // is the point. The rule here used to be first-wins, so the same two
+        // nodes gave different answers depending on which was folded into
+        // which; these two assertions were `True` and `False` before.
         assert_eq!(
             SemanticsTristate::True.merge(SemanticsTristate::False),
             SemanticsTristate::True
         );
         assert_eq!(
             SemanticsTristate::False.merge(SemanticsTristate::True),
-            SemanticsTristate::False
+            SemanticsTristate::True
         );
         // And a node with no opinion takes the other's.
         assert_eq!(
@@ -4790,12 +4848,12 @@ mod tests {
             SemanticsTristate::True
         );
 
-        // The contrast, said in one place: the same disagreement produces
-        // different answers for the two kinds, and each is right for its
-        // kind.
+        // The two kinds now agree on a disagreement, which is upstream's
+        // shape: the check state has a fourth value, but it is reserved for a
+        // control that is itself partly ticked rather than reached by folding.
         assert_eq!(
             SemanticsCheckState::Checked.merge(SemanticsCheckState::Unchecked),
-            SemanticsCheckState::Mixed
+            SemanticsCheckState::Checked
         );
     }
 
@@ -4887,17 +4945,27 @@ mod tests {
     }
 
     #[test]
-    fn two_boxes_that_disagree_merge_into_a_mixed_one() {
-        // Not the union the rest of the flags use. `||` on the old booleans
-        // gave "checked" whenever *either* was, so folding a checked row and
-        // an unchecked one produced a node claiming to be checked -- picking
-        // one of the two at random. Mixed is what that node actually is.
+    fn mixed_is_what_a_box_says_about_itself_and_not_what_disagreement_makes() {
+        // This asserted the opposite, under the name
+        // "two_boxes_that_disagree_merge_into_a_mixed_one", and the reasoning
+        // read well: a checked and an unchecked thing folded together are not
+        // simply "checked". But it is not upstream's
+        // (`semantics.dart:1101`, mixed > checked > unchecked > none), and
+        // upstream is right about what the value *means*: **mixed is what a
+        // control says about itself** when it stands over some ticked and some
+        // unticked children -- a parent checkbox. Reaching it by disagreement
+        // announces a partly-ticked control that does not exist.
         assert_eq!(
             SemanticsCheckState::Checked.merge(SemanticsCheckState::Unchecked),
-            SemanticsCheckState::Mixed
+            SemanticsCheckState::Checked
         );
         assert_eq!(
             SemanticsCheckState::Unchecked.merge(SemanticsCheckState::Checked),
+            SemanticsCheckState::Checked
+        );
+        // And a control that really is mixed keeps saying so.
+        assert_eq!(
+            SemanticsCheckState::Mixed.merge(SemanticsCheckState::Checked),
             SemanticsCheckState::Mixed
         );
 
@@ -6277,6 +6345,131 @@ mod tests {
             .filter(|label| !label.is_empty())
             .collect();
         assert_eq!(heard, vec!["You are offline"], "once, not twice");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_folded_button_leaves_a_stop_that_can_still_be_pressed() {
+        // The gap round 388 found and this round closed. The walk's fold
+        // carried a descendant's label, then its tooltip, then its role, and
+        // **never its flags** -- so a button folded into a row left a stop
+        // that said the button's words and nothing about being pressable, and
+        // a checkbox folded into one stopped saying whether it was ticked.
+        // Upstream unions them in `SemanticsNode.updateWith`:
+        // `flags = flags.merge(node._flags)`.
+        set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| {
+            crate::render::RenderMergeSemanticsBox::new(RenderSemantics::new(
+                7,
+                SemanticsProperties {
+                    flags: SemanticsFlags {
+                        is_button: true,
+                        checked: SemanticsCheckState::Checked,
+                        ..SemanticsFlags::default()
+                    },
+                    ..SemanticsProperties::label("Save")
+                },
+                crate::widgets::Text::new("Save"),
+            ))
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 100.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = flush(Size::new(200.0, 100.0), &root).expect("somebody asked");
+        let folded = nodes
+            .iter()
+            .find(|node| node.properties.label == "Save")
+            .expect("the folded stop");
+        assert!(
+            folded.properties.flags.is_button,
+            "it stopped being a button"
+        );
+        assert_eq!(
+            folded.properties.flags.checked,
+            SemanticsCheckState::Checked
+        );
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_fold_adds_to_what_it_already_claimed_rather_than_replacing_it() {
+        // The merging node has flags of its own -- a banner's live region is
+        // the everyday case -- and a descendant's have to be **added** to
+        // them. Written as an assignment the two agree in every test where the
+        // merging node starts empty, and then the day a live region folds a
+        // button, the announcement stops being an announcement.
+        set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| {
+            crate::render::RenderMergeSemanticsBox::new(RenderSemantics::new(
+                8,
+                SemanticsProperties {
+                    flags: SemanticsFlags {
+                        is_button: true,
+                        ..SemanticsFlags::default()
+                    },
+                    ..SemanticsProperties::label("Undo")
+                },
+                crate::widgets::Text::new("Undo"),
+            ))
+            .with_properties(SemanticsProperties {
+                flags: SemanticsFlags {
+                    is_live_region: true,
+                    ..SemanticsFlags::default()
+                },
+                ..SemanticsProperties::label("")
+            })
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 100.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = flush(Size::new(200.0, 100.0), &root).expect("somebody asked");
+        let folded = nodes
+            .iter()
+            .find(|node| node.properties.label == "Undo")
+            .expect("the folded stop");
+        assert!(
+            folded.properties.flags.is_live_region,
+            "the fold overwrote what the merging node already claimed"
+        );
+        assert!(folded.properties.flags.is_button, "and it kept the button");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_fold_over_nothing_in_particular_claims_nothing() {
+        // The other half: a merge over plain text picks up no flags, so
+        // ordinary rows do not start announcing themselves as controls. This
+        // is why the census came out **byte for byte identical** when the fold
+        // landed -- everything it folds is text.
+        set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| {
+            crate::render::RenderMergeSemanticsBox::new(
+                crate::widgets::Column::new()
+                    .push(crate::widgets::Text::new("Inbox"))
+                    .push(crate::widgets::Text::new("12 unread")),
+            )
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 100.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = flush(Size::new(200.0, 100.0), &root).expect("somebody asked");
+        let folded = nodes
+            .iter()
+            .find(|node| node.properties.label.starts_with("Inbox"))
+            .expect("the folded stop");
+        assert_eq!(folded.properties.flags, SemanticsFlags::default());
         set_enabled(false);
     }
 

@@ -26096,3 +26096,63 @@ C++ 34 个 gtest 全过（两侧 FFI 测试都加了这个位，一端置位一�
 另外先确认一件事：`is_hidden` 和 `is_enabled` 这类**并集会说谎**的位
 ——两个折在一起、一个 enabled 一个不 enabled，`||` 会说"能用"——
 上游 `SemanticsFlags.merge` 对它们是怎么写的，**别照抄 `||` 就完事**。
+
+---
+
+## 第 389 轮：折叠终于把后代的 flags 带上来——顺带发现两条合并规则都写反了
+
+接上一轮照出来的缺口。先按“下一步”查那个担心的地方，**查完发现担心错了**：
+
+上游 `SemanticsFlags.merge`（`semantics.dart:1416`）里，
+tristate 走 `.merge()`、纯 bool 走 `||`，而 `isEnabled` **是个 tristate**。
+本项目把它拆成 `has_enabled_state` + `is_enabled` 一对 bool，
+逐个情形对下来，**`||` 恰好复现了上游的 tristate 语义**：
+
+* none + isFalse → isFalse：`has = false||true`、`is = false||false` ✓
+* isTrue + isFalse → isTrue：`is = true||false` ✓
+
+所以"`||` 会说谎"这个顾虑不成立。**查了才知道，不查就会去改一个没坏的东西。**
+
+### 但另外两条真的写反了
+
+* **`SemanticsTristate::merge` 是"先到先得"**，上游是
+  `isTrue > isFalse > none`（`semantics.dart:1136`）。
+  先到先得意味着**同样两个节点，谁折进谁，答案不一样**。
+* **`SemanticsCheckState::merge` 让"两个不一致"变成 mixed**，
+  上游是 `mixed > checked > unchecked > none`（1101 行）。
+  **mixed 是一个控件说自己的话**——一个盖着若干半勾选子项的父复选框——
+  **不是两个节点因为不一致而变成的东西**。照原样会报出一个并不存在的"部分勾选"控件。
+
+两条都**只在配置那条没人走的路径上**，所以一直观察不到；
+这一轮给它们接上调用者，也就必须先改对——否则等于开始广播错误的判断。
+
+**三条既有测试把错的规则钉成了事实**（名字里就写着 `keeps_the_first_answer`、
+`merges_by_first_wins`、`two_boxes_that_disagree_merge_into_a_mixed_one`），
+连同它们那些"读起来很有道理"的注释一起改了，并把**原来错在哪、为什么听起来对**留在里面。
+
+### 清单逐字未变，而这正是预期
+
+按“下一步”存档后逐行对比：**20 行一个字节都没变。**
+原因可查：清单里所有被折叠的东西**都是纯文本，本来就没有 flags**。
+所以专门写了直接的测试：把一个带 `is_button` 和"已勾选"的注解折进去——
+以前折完这两样全丢，现在留着。
+另加一条反向的：折纯文本**不会**平白多出 flags，普通行不会开始自称控件。
+
+### 变异扫描 7 个，第一遍 5 红、2 绿，两个都是真的
+
+* **“折叠时直接赋值而不是并集”**绿——因为我的测试里合并节点自身没有 flags。
+  真实情形是有的：**提示条的 live region 折进一个按钮**，赋值会把宣告抹掉。补了测试。
+* **“折叠时丢掉 scopesRoute”**绿——那正是上一轮**被迫删掉的那条断言**。
+  现在能通过了，把它放了回去，并在注释里写明它当初为什么不能在。
+
+第二遍**七个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6387 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：`SemanticsConfiguration::absorb` 现在是**唯一还没有生产者**的那条路径
+（第 382、383 轮的 tooltip 和 role 都在那里各留了一条直接测 seam 的测试）。
+先查清楚它到底**打算**由谁调用——是 `describe_subtree` 的某条分支该改走它，
+还是它整体属于一个尚未移植的机制（`childConfigurationsDelegate` 那一套）。
+**查清楚再决定是接上它还是删掉它**：一条没有生产者的路径，
+要么是缺口，要么是死码，而这两者的处置正好相反。

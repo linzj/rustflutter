@@ -597,25 +597,21 @@ You"
             )
             .is_empty()
         );
-        // **It does not survive being folded**, and that is a gap this round
-        // found rather than one it closed. A dialog put inside something that
-        // merges for its own reasons loses its scoping entirely:
-        //
-        //     scoping(announces_itself(AlertDialog::new().with_title(..)))  ==  []
-        //
-        // The cause is not this flag. The walk's fold (`semantics::open`'s
-        // merging branch) carries the label, the tooltip and the role up from
-        // a folded descendant and **carries no flags at all**, so a folded
-        // button stops saying it is a button too. Upstream's merge unions them
-        // -- `flags = flags.merge(node._flags)` in `SemanticsNode.updateWith`
-        // -- and this crate does own that rule, on
-        // `SemanticsConfiguration::absorb`, which is the upstream-shaped path
-        // **nothing in the walk reaches**. Rule present, producer absent, for
-        // the third time in these rounds.
-        //
-        // Written down here rather than fixed in passing: unioning flags on
-        // every fold changes what a good many existing stops say, and that is
-        // a round with its own mutation sweep.
+        // And it survives being folded, which it did **not** when this test
+        // was written: round 388 had to leave the assertion out, because the
+        // walk's fold carried a descendant's label, tooltip and role and no
+        // flags at all. Round 389 gave `SemanticsFlags::merge` its first
+        // caller, so a dialog folded into something that merges for its own
+        // reasons keeps confining the reader.
+        assert_eq!(
+            scoping(
+                crate::semantics::announces_itself(crate::framework::component(
+                    AlertDialog::new().with_title("Delete this?")
+                )),
+                crate::editable_text::TargetPlatform::Android
+            ),
+            vec!["Alert".to_string()]
+        );
     }
 
     #[test]
