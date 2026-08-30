@@ -420,6 +420,42 @@ mod radio_semantics_tests {
     }
 
     #[test]
+    fn the_third_surface_announces_itself_as_a_dialog_not_an_alert() {
+        // `Dialog` here is not upstream's `Dialog`. Upstream's is a bare
+        // container that names no route because whatever it wraps does; this
+        // one has a title, a body and actions of its own and nothing wraps it,
+        // so it is a modal surface in its own right. A name that promises a
+        // container and delivers a dialog is exactly the trap this port keeps
+        // meeting.
+        use crate::editable_text::TargetPlatform;
+        assert_eq!(
+            routes_named(
+                crate::framework::component(Dialog::new("Sign in")),
+                TargetPlatform::Android
+            ),
+            vec!["Dialog".to_string()],
+            "it asks rather than interrupts, so not \"Alert\""
+        );
+        assert_eq!(
+            routes_named(
+                crate::framework::component(
+                    Dialog::new("Sign in").with_semantic_label("Sign in to continue")
+                ),
+                TargetPlatform::Android
+            ),
+            vec!["Sign in to continue".to_string()]
+        );
+        assert!(
+            routes_named(
+                crate::framework::component(Dialog::new("Sign in")),
+                TargetPlatform::IOS
+            )
+            .is_empty(),
+            "and the same Apple rule, because the wrapper is shared"
+        );
+    }
+
+    #[test]
     fn a_simple_dialog_follows_the_same_apple_rule() {
         // The shared wrapper, so the Apple branch cannot drift between the
         // two: an unlabelled dialog names no route there because VoiceOver
@@ -1460,9 +1496,46 @@ pub struct Dialog {
     body: Option<String>,
     actions: RefCell<Vec<AnyWidget>>,
     width: f32,
+    /// Upstream's `semanticLabel`, falling back to "Dialog" rather than
+    /// "Alert" -- see [`Dialog::resolved_semantic_label`].
+    semantic_label: Option<String>,
 }
 
 impl Dialog {
+    /// What a screen reader is told this surface is.
+    pub fn with_semantic_label(mut self, label: impl Into<String>) -> Dialog {
+        self.semantic_label = Some(label.into());
+        self
+    }
+
+    /// Upstream's `semanticLabel ?? dialogLabel`, with the platform rule in
+    /// [`crate::material_app::DefaultMaterialLocalizations::modal_surface_label`].
+    ///
+    /// **"Dialog" and not "Alert"**: this surface asks rather than interrupts,
+    /// the same distinction [`SimpleDialog`] makes and the opposite of
+    /// [`AlertDialog`]'s.
+    ///
+    /// # This is not upstream's `Dialog`
+    ///
+    /// Upstream's `Dialog` is a bare container -- a shape and a shadow with a
+    /// child in it -- and it names no route, because whatever it wraps does:
+    /// `AlertDialog` and `SimpleDialog` each add their own. **This one is a
+    /// composite**, with a title, a body and actions of its own; nothing wraps
+    /// it and nothing in this crate builds one inside another dialog. So it is
+    /// a modal surface in its own right and announces itself like one.
+    ///
+    /// The name is the trap. Comparing the two by name would promise a
+    /// container and deliver a dialog -- the "same name, different thing" this
+    /// port keeps meeting, written down here rather than left to be
+    /// rediscovered.
+    pub fn resolved_semantic_label(
+        &self,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> Option<String> {
+        use crate::material_app::DefaultMaterialLocalizations as L10n;
+        L10n::modal_surface_label(platform, self.semantic_label.as_deref(), L10n::DIALOG_LABEL)
+    }
+
     pub fn new(title: impl Into<String>) -> Dialog {
         Dialog {
             title: title.into(),
@@ -1471,6 +1544,7 @@ impl Dialog {
             // Material 3's dialog is 280 across at the least; a wider one is
             // `with_width`'s to ask for.
             width: 280.0,
+            semantic_label: None,
         }
     }
 
@@ -1503,6 +1577,7 @@ impl Dialog {
 impl Component for Dialog {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         let theme = theme_of(context);
+        let platform = crate::theme::ThemeData::of(context).platform;
         let title = self.title.clone();
         let body = self.body.clone();
         let width = self.width;
@@ -1541,7 +1616,7 @@ impl Component for Dialog {
         })];
         children.extend(actions);
 
-        many(children, move |mut rendered| {
+        let surface_widget = many(children, move |mut rendered| {
             let header = if rendered.is_empty() {
                 crate::render::RenderRef::new(Empty) as crate::widgets::BoxedWidget
             } else {
@@ -1575,7 +1650,8 @@ impl Component for Dialog {
                     .with_padding(EdgeInsets::all(spacing * 2.5))
                     .with_child(column),
             )
-        })
+        });
+        announced(surface_widget, self.resolved_semantic_label(platform))
     }
 }
 
