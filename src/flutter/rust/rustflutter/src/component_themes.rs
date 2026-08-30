@@ -12314,11 +12314,43 @@ impl ResolvedDivider {
         }
     }
 
-    /// The height of the line itself: upstream draws a hairline for a
-    /// thickness of zero, which is what `math.max(thickness, 0.0)` on a
-    /// device pixel comes to.
+    /// The width of the line itself, in logical pixels, on a screen of
+    /// `device_pixel_ratio`.
+    ///
+    /// # A thickness of zero is a hairline, and a hairline is one *device*
+    /// pixel
+    ///
+    /// Upstream's default thickness is **0**, and it keeps it: neither
+    /// `Divider.createBorderSide` nor either `build` clamps, so a
+    /// `BorderSide` of width 0 reaches the painter, where it means the
+    /// thinnest line the screen can draw -- one device pixel, which is
+    /// `1 / devicePixelRatio` logical ones.
+    ///
+    /// **This used to answer `thickness.max(1.0)`**, under a doc claiming
+    /// that was "`math.max(thickness, 0.0)` on a device pixel". There is no
+    /// such expression upstream -- the doc cited something that does not
+    /// exist, and the code did not even match the doc it cited. On a 3x
+    /// screen the difference is a rule three times too heavy: a hairline
+    /// there is 0.333 logical pixels, not 1.
+    ///
+    /// A **positive** thickness is taken as it is; only zero means "as thin
+    /// as this screen can manage". A ratio of zero or less answers a single
+    /// logical pixel rather than dividing by it.
+    pub fn line_thickness_for(&self, device_pixel_ratio: f32) -> f32 {
+        if self.thickness > 0.0 {
+            return self.thickness;
+        }
+        if device_pixel_ratio > 0.0 {
+            1.0 / device_pixel_ratio
+        } else {
+            1.0
+        }
+    }
+
+    /// [`ResolvedDivider::line_thickness_for`] on a screen with square
+    /// pixels, for the callers that have no view to ask.
     pub fn line_thickness(&self) -> f32 {
-        self.thickness.max(1.0)
+        self.line_thickness_for(1.0)
     }
 }
 
@@ -14053,6 +14085,86 @@ mod tests {
             DividerTheme::of,
         );
         assert_eq!(seen.color, Some(Color::argb(255, 1, 2, 3)));
+    }
+
+    #[test]
+    fn a_hairline_is_one_device_pixel_and_not_one_logical_one() {
+        // Upstream's default thickness is 0 and it keeps it: nothing clamps,
+        // so `BorderSide(width: 0)` reaches the painter meaning "the thinnest
+        // this screen can draw". This used to answer a flat 1.0 -- on a 3x
+        // screen a rule three times too heavy.
+        let plain = read_in(|child| child, ResolvedDivider::of);
+        assert_eq!(plain.thickness, 0.0, "upstream's default");
+
+        assert_eq!(plain.line_thickness_for(1.0), 1.0);
+        assert!((plain.line_thickness_for(3.0) - 1.0 / 3.0).abs() < 1e-6);
+        assert_eq!(plain.line_thickness_for(2.0), 0.5);
+        assert!(
+            plain.line_thickness_for(3.0) < plain.line_thickness_for(1.0),
+            "a denser screen draws a finer hairline, not the same one"
+        );
+    }
+
+    #[test]
+    fn a_thickness_somebody_asked_for_is_not_a_hairline() {
+        // Only zero means "as thin as possible"; a positive thickness is a
+        // measurement and the screen does not get to reinterpret it.
+        let data =
+            ThemeData::light().with_divider_theme(DividerThemeData::new().with_thickness(2.0));
+        let installed = data.clone();
+        let asked = read_in(
+            move |child| MaterialTheme::new(installed, child),
+            ResolvedDivider::of,
+        );
+        assert_eq!(asked.line_thickness_for(1.0), 2.0);
+        assert_eq!(asked.line_thickness_for(3.0), 2.0, "the same on any screen");
+
+        // Including a thickness thinner than a logical pixel, which upstream
+        // allows and which a `max(1.0)` would quietly round up to a rule
+        // twice what was asked for.
+        let fine =
+            ThemeData::light().with_divider_theme(DividerThemeData::new().with_thickness(0.5));
+        let installed = fine.clone();
+        let hairline_ish = read_in(
+            move |child| MaterialTheme::new(installed, child),
+            ResolvedDivider::of,
+        );
+        assert_eq!(hairline_ish.line_thickness_for(1.0), 0.5);
+        assert_eq!(hairline_ish.line_thickness_for(3.0), 0.5);
+    }
+
+    #[test]
+    fn the_border_side_a_divider_hands_out_asks_the_screen_too() {
+        // `create_border_side` is the other way a divider's width reaches a
+        // painter -- a drawer's edge takes one. It has to read the same
+        // screen the component build does, or the two disagree on the same
+        // page.
+        let side = read_in(
+            |child| {
+                crate::media_query::MediaQuery::new(
+                    crate::media_query::MediaQueryData {
+                        device_pixel_ratio: 3.0,
+                        ..crate::media_query::MediaQueryData::default()
+                    },
+                    child,
+                )
+            },
+            crate::components::Divider::create_border_side,
+        );
+        assert!(
+            (side.width - 1.0 / 3.0).abs() < 1e-6,
+            "a hairline on a 3x screen, not a whole logical pixel: {}",
+            side.width
+        );
+    }
+
+    #[test]
+    fn a_screen_that_reports_no_ratio_still_gets_a_line() {
+        // Dividing by it would answer infinity, and a rule of infinite width
+        // is worse than one logical pixel.
+        let plain = read_in(|child| child, ResolvedDivider::of);
+        assert_eq!(plain.line_thickness_for(0.0), 1.0);
+        assert_eq!(plain.line_thickness_for(-2.0), 1.0);
     }
 
     #[test]

@@ -2621,9 +2621,10 @@ impl Divider {
     /// thickness means the thinnest line the device can draw, not no line.
     pub fn create_border_side(context: &mut BuildContext) -> crate::borders::BorderSide {
         let divider = crate::component_themes::ResolvedDivider::of(context);
+        let ratio = crate::media_query::media_query_of(context).device_pixel_ratio;
         crate::borders::BorderSide {
             color: divider.color,
-            width: divider.line_thickness(),
+            width: divider.line_thickness_for(ratio),
             ..crate::borders::BorderSide::default()
         }
     }
@@ -2638,7 +2639,8 @@ impl Component for Divider {
         let divider = crate::component_themes::ResolvedDivider::of(context);
         let color = divider.color;
         let space = divider.space;
-        let thickness = divider.line_thickness();
+        let thickness = divider
+            .line_thickness_for(crate::media_query::media_query_of(context).device_pixel_ratio);
         let insets = crate::render::EdgeInsets {
             left: divider.indent,
             right: divider.end_indent,
@@ -6216,7 +6218,8 @@ impl Component for VerticalDivider {
         // width of the line inside it -- the same two fields as the
         // horizontal rule, measured across the other axis.
         let space = divider.space;
-        let thickness = divider.line_thickness();
+        let thickness = divider
+            .line_thickness_for(crate::media_query::media_query_of(context).device_pixel_ratio);
         // And the indents run down rather than across: upstream's
         // `EdgeInsetsDirectional.only(top: indent, bottom: endIndent)`.
         let insets = crate::render::EdgeInsets {

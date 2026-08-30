@@ -23277,3 +23277,56 @@ flutter_gallery_unittests 全部重建。
 **先把它放下，回队头做实际的对齐**——`python tools/depth.py` 看现在的队头是什么。
 `tools/descent.py` 留在那里，文件头写清了已排除什么、下一步该试什么；
 等哪一轮真撞上一个“测试通过但行为不对”的怀疑，再拿它当起点，比现在空转有价值。
+
+---
+
+## 第 340 轮：发丝线是**一个设备像素**，不是一个逻辑像素——而那条注释引的上游表达式并不存在
+
+回队头。`VerticalDivider`（0.25，2/8）按行为查，结构上确实端过了（`space` 是宽、
+`thickness` 是线宽、indent 走上下、圆角同源），但顺着 `line_thickness()` 摸到一个真缺口，
+**而且是横竖两种分割线共用的那一处**。
+
+原来是：
+
+```rust
+/// 上游对 thickness 为零画一条发丝线，也就是 `math.max(thickness, 0.0)` 落到一个设备像素上。
+pub fn line_thickness(&self) -> f32 {
+    self.thickness.max(1.0)
+}
+```
+
+两个问题：
+
+1. **它引的那个 `math.max(thickness, 0.0)` 上游根本没有。** `Divider.createBorderSide` 是
+   `width ?? dividerTheme?.thickness ?? defaults?.thickness ?? 0.0`，两个 `build` 也一样，
+   **全程不夹紧**。注释引了一个不存在的表达式。
+2. **代码跟它自己引的那句都对不上**——注释说 `max(.., 0.0)`，代码写的是 `max(1.0)`。
+
+而上游的 0 是有意义的：`BorderSide(width: 0)` 交到画笔手里，意思是“这块屏幕能画的最细的线”，
+也就是**一个设备像素** = `1 / devicePixelRatio` 个逻辑像素。夹成 1.0 之后，
+**在 3 倍屏上这条线粗了三倍**（发丝线该是 0.333 逻辑像素）。
+
+改成 `line_thickness_for(device_pixel_ratio)`：thickness 为正就照原样用（**只有零**才表示
+“越细越好”），为零则答 `1/dpr`，而 dpr ≤ 0 时答一个逻辑像素而不是去除它。
+三个真实调用点（`Divider`、`VerticalDivider` 的 build，以及 `Divider::create_border_side`）
+改成向 `media_query_of(context)` 要那个比例。`line_thickness()` 留作 dpr=1 的简写。
+
+**变异扫描 7 个，第一遍 5 个红，2 个是真窟窿：**
+
+* **“正的 thickness 也夹到 1.0”没红**——我的测试只用了 2.0，本来就 ≥1。
+  补了 **0.5** 这个比一个逻辑像素还细的厚度：上游允许，`max(1.0)` 会悄悄把它加粗一倍。
+* **“create_border_side 不再问屏幕”没红**——没有任何测试在非 1 的 dpr 下走过它
+  （`drawer.rs` 那条断言的是 `side.width == divider.line_thickness()`，跟着一起错也不会红）。
+  补了一条：在 dpr=3 的 `MediaQuery` 下取边，宽度必须是 1/3。
+
+补完全部转红。
+
+尺子：十六把全部 exit 0。门：6246 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：这一轮暴露的是一类问题——**注释引用了一个上游并不存在的表达式**，
+而 `stale_notes.py` 只查“某某不在这里”这类断言，查不到这种。
+先按行为抽查同类：`grep` 出文档注释里带反引号的、看起来像 Dart 表达式的片段
+（`math.max(..)`、`?? `、`.clamp(`、`is TypeName` 之类），挑十来条到上游里核一遍，
+看这是孤例还是一片。**是孤例就记一笔收工，是一片就值得再做一把尺子**——
+但按第 339 轮的规矩，那把尺子要先在这一条已知的错上响一次，才准去跑全量。
