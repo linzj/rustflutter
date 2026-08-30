@@ -232,7 +232,51 @@ impl Component for Radio {
         let inner = resolved.inner_radius;
         let background = resolved.background;
 
-        leaf(move || {
+        // What a reader is told: that this is one of a set of choices, which
+        // one is chosen, and -- on Apple's platforms only -- the hint that
+        // tells an unselected one apart from a control that does nothing.
+        //
+        // The rule is `SemanticsProperties::radio`, written and tested since
+        // it landed and reaching nothing: a radio arrived at a screen reader
+        // as a plain box with a word beside it. The platform comes from the
+        // theme for the reason the slider's does -- a desktop asked to behave
+        // like a phone gets the phone's vocabulary too.
+        let described = {
+            use crate::localizations::WidgetsLocalizations;
+            let properties = crate::semantics::SemanticsProperties::radio(
+                label.clone().unwrap_or_default(),
+                selected,
+                crate::theme::ThemeData::of(context).platform,
+                crate::localizations::DefaultWidgetsLocalizations.radio_button_unselected_label(),
+            );
+            let mut properties = properties;
+            properties.flags.is_enabled = enabled;
+            if !enabled {
+                properties.actions = 0;
+            }
+            let tap = self.handlers.on_tap.clone();
+            let node = crate::semantics::node_id_for(id);
+            move |inner: crate::framework::AnyWidget| {
+                let tap = tap.clone();
+                crate::semantics::semantics_with_action(
+                    node,
+                    properties.clone(),
+                    inner,
+                    move |action| {
+                        if action == crate::semantics::SemanticsAction::Tap {
+                            if let Some(tap) = &tap {
+                                tap(crate::gestures::TapEvent {
+                                    local_position: crate::render::Offset::ZERO,
+                                    pointer_id: 0,
+                                });
+                            }
+                        }
+                    },
+                )
+            }
+        };
+
+        let body = leaf(move || {
             // The dot's size is the resolved radius doubled, and an unselected
             // radio resolves to zero -- so there is one path here and not two.
             let dot = Container::new()
@@ -264,7 +308,104 @@ impl Component for Radio {
                     .with_child(content),
             )
             .with_handlers(handlers.clone())
-        })
+        });
+        described(body)
+    }
+}
+
+// -- What a reader hears from a radio -----------------------------------------
+
+#[cfg(test)]
+mod radio_semantics_tests {
+    use super::*;
+
+    /// The node a radio produces, through the real walk.
+    fn radio_node(
+        selected: bool,
+        enabled: bool,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> crate::semantics::SemanticsNode {
+        crate::semantics::set_enabled(true);
+        let theme = crate::theme::ThemeData {
+            platform,
+            ..crate::theme::ThemeData::light()
+        };
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            crate::framework::component(
+                Radio::new(1, selected)
+                    .with_label("Medium")
+                    .with_enabled(enabled),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 200.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(300.0, 200.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .find(|node| node.properties.flags.is_in_mutually_exclusive_group)
+            .cloned()
+            .expect("a radio said it was one")
+    }
+
+    #[test]
+    fn a_radio_says_it_is_one_of_a_set() {
+        // The rule has been written and tested since `RawRadio` landed and
+        // reached nothing: `SemanticsProperties::radio` had only its own tests
+        // for callers, so a radio arrived at a screen reader as a plain box
+        // with a word beside it.
+        use crate::editable_text::TargetPlatform;
+        let node = radio_node(true, true, TargetPlatform::Android);
+        assert!(node.properties.flags.is_in_mutually_exclusive_group);
+        assert_eq!(node.properties.label, "Medium");
+        assert_eq!(
+            node.properties.flags.checked,
+            crate::semantics::SemanticsCheckState::Checked
+        );
+    }
+
+    #[test]
+    fn only_apple_hears_selected_and_the_hint() {
+        // The same fact in two properties, because the two screen readers read
+        // different ones -- and setting `selected` everywhere is not neutral:
+        // TalkBack would announce a radio as selected *and* checked.
+        use crate::editable_text::TargetPlatform;
+        let android = radio_node(false, true, TargetPlatform::Android);
+        assert_eq!(
+            android.properties.flags.selected,
+            crate::semantics::SemanticsTristate::None,
+            "silence, not `false`"
+        );
+        assert_eq!(android.properties.hint, "", "and no hint");
+
+        let apple = radio_node(false, true, TargetPlatform::IOS);
+        assert_eq!(
+            apple.properties.flags.selected,
+            crate::semantics::SemanticsTristate::False
+        );
+        assert_eq!(
+            apple.properties.hint, "Not selected",
+            "the unselected one needs telling; silence there reads as a              control that does nothing"
+        );
+
+        let apple_chosen = radio_node(true, true, TargetPlatform::IOS);
+        assert_eq!(apple_chosen.properties.hint, "", "said once, not twice");
+    }
+
+    #[test]
+    fn a_radio_that_cannot_be_chosen_says_so_and_offers_nothing() {
+        use crate::editable_text::TargetPlatform;
+        let node = radio_node(false, false, TargetPlatform::Android);
+        assert!(!node.properties.flags.is_enabled);
+        assert!(node.properties.flags.has_enabled_state);
+        assert!(!node.properties.has(crate::semantics::SemanticsAction::Tap));
     }
 }
 
