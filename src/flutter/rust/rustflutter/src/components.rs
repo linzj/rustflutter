@@ -2094,7 +2094,7 @@ impl Component for AppBar {
 }
 
 /// A title bar over a body, on the theme's background.
-/// The page with a floating action button placed over it.
+/// The page, the bar along its bottom, and the button placed over both.
 ///
 /// A render object because **where the button goes depends on two measured
 /// sizes** -- the scaffold's and the button's -- and upstream works it out in
@@ -2102,19 +2102,49 @@ impl Component for AppBar {
 /// decides the offset is already ported and tested in
 /// [`crate::fab_location`]; until now nothing called it, because this
 /// scaffold had no button to place.
-struct FloatingButtonOver {
+struct ScaffoldFloor {
     page: crate::render::BoxedRender,
-    button: crate::render::BoxedRender,
+    /// Upstream's `bottomNavigationBar` slot: full width, along the bottom,
+    /// with the page shortened to sit above it.
+    bar: Option<crate::render::BoxedRender>,
+    button: Option<crate::render::BoxedRender>,
     location: crate::fab_location::FloatingActionButtonLocation,
     /// What the keyboard is standing on, which upstream folds into `minInsets`
     /// so a button rises above it rather than hiding behind it.
     bottom_inset: f32,
     text_direction: crate::direction::TextDirection,
     size: Size,
+    bar_height: f32,
     button_offset: crate::render::Offset,
 }
 
-impl FloatingButtonOver {
+impl ScaffoldFloor {
+    /// The y the bar's top edge sits at: hard against the bottom.
+    fn bar_top(&self) -> f32 {
+        (self.size.height - self.bar_height).max(0.0)
+    }
+
+    /// The three children in **paint order** -- page, then bar, then button --
+    /// which is upstream's stacking order and the reverse of the order a
+    /// finger is answered in.
+    ///
+    /// One list rather than three, because painting, visiting and describing
+    /// have to agree about where each child is: a hit test that disagreed with
+    /// the paint by a bar's height is a control that answers somewhere it is
+    /// not drawn.
+    fn visit_floor(
+        &self,
+        visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
+    ) {
+        visit(&self.page, crate::render::Offset::ZERO);
+        if let Some(bar) = &self.bar {
+            visit(bar, crate::render::Offset::new(0.0, self.bar_top()));
+        }
+        if let Some(button) = &self.button {
+            visit(button, self.button_offset);
+        }
+    }
+
     /// Upstream's `ScaffoldPrelayoutGeometry`, filled in from what has been
     /// measured.
     ///
@@ -2126,11 +2156,19 @@ impl FloatingButtonOver {
     /// read it. The same missing measurement is why
     /// [`Scaffold::extend_body_behind_app_bar`] cannot raise the body's
     /// padding either; one `LayoutBuilder`-shaped hole, two symptoms.
-    fn geometry(&self, button: Size) -> crate::fab_location::ScaffoldPrelayoutGeometry {
+    fn geometry(&self, button: Size, bar: f32) -> crate::fab_location::ScaffoldPrelayoutGeometry {
+        // Upstream's `contentBottom`:
+        //
+        //     math.max(0.0, bottom - math.max(minInsets.bottom, bottomWidgetsHeight))
+        //
+        // The **max**, not the sum: a keyboard covers the bar rather than
+        // stacking on top of it, so a button asked to clear both clears the
+        // taller one. Added together, a docked button would float a bar's
+        // height above the keyboard with nothing in between.
         crate::fab_location::ScaffoldPrelayoutGeometry {
             floating_action_button_size: button,
             bottom_sheet_size: Size::ZERO,
-            content_bottom: (self.size.height - self.bottom_inset).max(0.0),
+            content_bottom: (self.size.height - self.bottom_inset.max(bar)).max(0.0),
             content_top: 0.0,
             min_insets: EdgeInsets::only(0.0, 0.0, 0.0, self.bottom_inset),
             min_view_padding: EdgeInsets::default(),
@@ -2142,18 +2180,48 @@ impl FloatingButtonOver {
     }
 }
 
-impl crate::render::RenderBox for FloatingButtonOver {
+impl crate::render::RenderBox for ScaffoldFloor {
     fn layout(&mut self, constraints: crate::render::BoxConstraints) -> Size {
-        self.size = self.page.layout_child(constraints, true);
-        // Loose, so the button is its own size rather than the page's --
-        // upstream lays the button out with `BoxConstraints.loose(size)` for
-        // exactly that.
-        let button = self.button.layout_child(
-            crate::render::BoxConstraints::loose(self.size.width, self.size.height),
+        let full = constraints.biggest();
+        // The bar first, at full width and its own height -- upstream lays it
+        // out before anything that has to clear it, for the same reason: its
+        // height is what the others are measured against.
+        let bar_height = match &mut self.bar {
+            Some(bar) => {
+                bar.layout_child(
+                    crate::render::BoxConstraints::new(full.width, full.width, 0.0, full.height),
+                    true,
+                )
+                .height
+            }
+            None => 0.0,
+        };
+        self.bar_height = bar_height;
+        // The page takes what is left above it.
+        self.size = self.page.layout_child(
+            crate::render::BoxConstraints::new(
+                constraints.min_width,
+                constraints.max_width,
+                (constraints.min_height - bar_height).max(0.0),
+                (constraints.max_height - bar_height).max(0.0),
+            ),
             true,
         );
-        use crate::fab_location::StandardFabLocation;
-        self.button_offset = self.location.get_offset(&self.geometry(button));
+        self.size = Size::new(
+            self.size.width.max(full.width),
+            self.size.height + bar_height,
+        );
+        if let Some(button) = &mut self.button {
+            // Loose, so the button is its own size rather than the page's --
+            // upstream lays the button out with `BoxConstraints.loose(size)`
+            // for exactly that.
+            let button = button.layout_child(
+                crate::render::BoxConstraints::loose(self.size.width, self.size.height),
+                true,
+            );
+            use crate::fab_location::StandardFabLocation;
+            self.button_offset = self.location.get_offset(&self.geometry(button, bar_height));
+        }
         self.size
     }
 
@@ -2165,16 +2233,14 @@ impl crate::render::RenderBox for FloatingButtonOver {
         &self,
         visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
     ) {
-        visit(&self.page, crate::render::Offset::ZERO);
-        visit(&self.button, self.button_offset);
+        self.visit_floor(visit);
     }
 
     fn visit_children_for_semantics(
         &self,
         visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
     ) {
-        visit(&self.page, crate::render::Offset::ZERO);
-        visit(&self.button, self.button_offset);
+        self.visit_floor(visit);
     }
 
     fn hit_test(
@@ -2182,27 +2248,34 @@ impl crate::render::RenderBox for FloatingButtonOver {
         position: crate::render::Offset,
         result: &mut crate::render::HitTestResult,
     ) -> bool {
-        // The button first: it is painted over the page, so it is what a
-        // finger on it means.
-        let local = crate::render::Offset::new(
-            position.dx - self.button_offset.dx,
-            position.dy - self.button_offset.dy,
-        );
-        if self.button.hit_test(local, result) {
-            return true;
+        // Topmost first, which is the order they are painted in reverse: the
+        // button is over the bar, and the bar is over nothing the page has at
+        // that height.
+        if let Some(button) = &self.button {
+            let local = crate::render::Offset::new(
+                position.dx - self.button_offset.dx,
+                position.dy - self.button_offset.dy,
+            );
+            if button.hit_test(local, result) {
+                return true;
+            }
+        }
+        if let Some(bar) = &self.bar {
+            let local = crate::render::Offset::new(position.dx, position.dy - self.bar_top());
+            if bar.hit_test(local, result) {
+                return true;
+            }
         }
         self.page.hit_test(position, result)
     }
 
     fn paint(&self, context: &mut crate::render::PaintContext, offset: crate::render::Offset) {
-        self.page.paint(context, offset);
-        self.button.paint(
-            context,
-            crate::render::Offset::new(
-                offset.dx + self.button_offset.dx,
-                offset.dy + self.button_offset.dy,
-            ),
-        );
+        self.visit_floor(&mut |child, at| {
+            child.paint(
+                context,
+                crate::render::Offset::new(offset.dx + at.dx, offset.dy + at.dy),
+            );
+        });
     }
 }
 
@@ -2251,6 +2324,9 @@ pub struct Scaffold {
     /// Upstream's `floatingActionButtonLocation`, whose default is
     /// `endFloat` -- the corner every Material application's button sits in.
     fab_location: crate::fab_location::FloatingActionButtonLocation,
+    /// Upstream's `Scaffold.bottomNavigationBar`: the strip along the bottom
+    /// that the body sits above rather than behind.
+    bottom_navigation_bar: std::cell::RefCell<Option<AnyWidget>>,
 }
 
 impl Scaffold {
@@ -2267,6 +2343,7 @@ impl Scaffold {
             extend_body_behind_app_bar: false,
             floating_action_button: std::cell::RefCell::new(None),
             fab_location: crate::fab_location::FloatingActionButtonLocation::END_FLOAT,
+            bottom_navigation_bar: std::cell::RefCell::new(None),
         }
     }
 
@@ -2276,6 +2353,15 @@ impl Scaffold {
     /// page rather than in it.
     pub fn with_floating_action_button(self, button: AnyWidget) -> Self {
         *self.floating_action_button.borrow_mut() = Some(button);
+        self
+    }
+
+    /// Upstream's `bottomNavigationBar`: a strip along the bottom of the
+    /// scaffold, with the body given the height above it rather than the whole
+    /// window. Anything may go here -- upstream's own examples put a
+    /// `BottomNavigationBar` or a [`crate::bottom_bars::BottomAppBar`] in it.
+    pub fn with_bottom_navigation_bar(self, bar: AnyWidget) -> Self {
+        *self.bottom_navigation_bar.borrow_mut() = Some(bar);
         self
     }
 
@@ -2414,6 +2500,7 @@ impl Component for Scaffold {
         // Upstream's `_BodyBuilder` is unconditional for the same reason.
         let resizes = self.resize_to_avoid_bottom_inset;
         let floating_action_button = self.floating_action_button.borrow().clone();
+        let bottom_navigation_bar = self.bottom_navigation_bar.borrow().clone();
         let location = self.fab_location;
         let text_direction = crate::direction::direction_of(context);
         let body = if has_app_bar || resizes {
@@ -2437,9 +2524,13 @@ impl Component for Scaffold {
             children.push(app_bar);
         }
         children.push(body);
-        // **After the body, before the drawer pair**, because the closure
-        // below pulls them out in this order: a button pushed later would be
-        // taken for the scrim.
+        // **After the body, before the drawer pair**, and the bar before the
+        // button, because the closure below pulls them out in exactly this
+        // order: anything pushed out of turn is taken for its neighbour.
+        let has_bar = bottom_navigation_bar.is_some();
+        if let Some(bar) = bottom_navigation_bar {
+            children.push(bar);
+        }
         let has_button = floating_action_button.is_some();
         if let Some(button) = floating_action_button {
             children.push(button);
@@ -2521,18 +2612,22 @@ impl Component for Scaffold {
             // filter on its result, so asking unconditionally and discarding
             // the answer takes the scrim instead and the drawer loses its
             // backdrop.
+            let bar = if has_bar { rendered.next() } else { None };
             let button = if has_button { rendered.next() } else { None };
-            let page: crate::render::BoxedRender = match button {
-                None => page,
-                Some(button) => RenderRef::new(FloatingButtonOver {
+            let page: crate::render::BoxedRender = if bar.is_none() && button.is_none() {
+                page
+            } else {
+                RenderRef::new(ScaffoldFloor {
                     page,
+                    bar,
                     button,
                     location,
                     bottom_inset,
                     text_direction,
                     size: Size::ZERO,
+                    bar_height: 0.0,
                     button_offset: crate::render::Offset::ZERO,
-                }),
+                })
             };
 
             if !drawer_open {
@@ -5381,6 +5476,235 @@ mod tests {
             })
             .expect("the button was not painted");
         assert_eq!(top, 800.0 - keyboard - 56.0 - 16.0);
+    }
+
+    /// Where the scaffold put a marked strip along its bottom.
+    fn bar_corner(scaffold: Scaffold, height: f32) -> (f32, f32) {
+        const BAR: Color = Color(0xff0000ff);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(scaffold.with_bottom_navigation_bar(leaf(move || {
+                Container::new().with_height(height).with_color(BAR)
+            }))),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect {
+                    left, top, argb, ..
+                } if argb == BAR.0 => Some((left, top)),
+                _ => None,
+            })
+            .expect("the bar was not painted")
+    }
+
+    #[test]
+    fn a_bottom_bar_sits_along_the_bottom() {
+        // The scaffold had no slot for one at all, so a bottom bar could only
+        // be put in the body -- where it scrolls away with the content and the
+        // keyboard shortens it along with everything else.
+        assert_eq!(
+            bar_corner(Scaffold::new(leaf(|| Empty)), 56.0),
+            (0.0, 744.0)
+        );
+    }
+
+    #[test]
+    fn the_body_gets_the_height_above_the_bar() {
+        // Upstream shortens the body by `bottomWidgetsHeight` rather than
+        // painting the bar over it. A body given the whole window would put
+        // its last row behind the bar, which is exactly the row a list ends
+        // on.
+        const BODY: Color = Color(0xffff0000);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(
+                Scaffold::new(leaf(|| Container::new().with_color(BODY)))
+                    .with_bottom_navigation_bar(leaf(|| Container::new().with_height(56.0))),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let bottom = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { bottom, argb, .. } if argb == BODY.0 => {
+                    Some(bottom)
+                }
+                _ => None,
+            })
+            .expect("the body was not painted");
+        assert_eq!(bottom, 800.0 - 56.0);
+    }
+
+    #[test]
+    fn a_button_clears_the_bar_it_floats_over() {
+        // Upstream's `contentBottom` is measured against `bottomWidgetsHeight`,
+        // so a floating button rises above the bar instead of overlapping it.
+        const MARK: Color = Color(0xff00ff00);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(
+                Scaffold::new(leaf(|| Empty))
+                    .with_bottom_navigation_bar(leaf(|| Container::new().with_height(56.0)))
+                    .with_floating_action_button(leaf(|| {
+                        Container::new().with_size(56.0, 56.0).with_color(MARK)
+                    })),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let top = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { top, argb, .. } if argb == MARK.0 => {
+                    Some(top)
+                }
+                _ => None,
+            })
+            .expect("the button was not painted");
+        assert_eq!(top, 800.0 - 56.0 - 56.0 - 16.0);
+    }
+
+    #[test]
+    fn a_keyboard_over_a_bar_is_not_the_two_added_together() {
+        // Upstream's `contentBottom` takes `math.max(minInsets.bottom,
+        // bottomWidgetsHeight)`. A keyboard **covers** the bar rather than
+        // stacking on it, so a button that cleared their sum would float a
+        // bar's height above the keyboard with a gap under it.
+        const MARK: Color = Color(0xff00ff00);
+        let keyboard = 300.0;
+        let data = crate::media_query::MediaQueryData {
+            view_insets: EdgeInsets::only(0.0, 0.0, 0.0, keyboard),
+            ..crate::media_query::MediaQueryData::default()
+        };
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::media_query::MediaQuery::new(
+                data,
+                component(
+                    Scaffold::new(leaf(|| Empty))
+                        .with_bottom_navigation_bar(leaf(|| Container::new().with_height(56.0)))
+                        .with_floating_action_button(leaf(|| {
+                            Container::new().with_size(56.0, 56.0).with_color(MARK)
+                        })),
+                ),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let top = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { top, argb, .. } if argb == MARK.0 => {
+                    Some(top)
+                }
+                _ => None,
+            })
+            .expect("the button was not painted");
+        assert_eq!(top, 800.0 - keyboard - 56.0 - 16.0, "the two were added");
+    }
+
+    #[test]
+    fn the_bar_spans_the_scaffold() {
+        // Upstream lays it out with `fullWidthConstraints`. Given a loose
+        // minimum it would shrink to whatever it holds, leaving a strip of
+        // page showing beside it -- and a bar that does not reach both edges
+        // is not a bar.
+        const BAR: Color = Color(0xff0000ff);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(
+                Scaffold::new(leaf(|| Empty)).with_bottom_navigation_bar(leaf(|| {
+                    Container::new().with_height(56.0).with_color(BAR)
+                })),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let (left, right) = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect {
+                    left, right, argb, ..
+                } if argb == BAR.0 => Some((left, right)),
+                _ => None,
+            })
+            .expect("the bar was not painted");
+        assert_eq!((left, right), (0.0, 400.0));
+    }
+
+    #[test]
+    fn a_finger_on_the_bar_reaches_the_bar() {
+        // The bar is painted over the page, so it has to be answered before
+        // it -- and at the offset it was painted at. A hit test that
+        // disagreed with the paint by the bar's height is a control that
+        // answers somewhere it is not drawn.
+        const BAR_ID: u64 = 9601;
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(
+                Scaffold::new(leaf(|| Empty)).with_bottom_navigation_bar(leaf(|| {
+                    Pointer::new(BAR_ID, Container::new().with_height(56.0))
+                })),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut result = crate::render::HitTestResult::default();
+        crate::render::RenderBox::hit_test(&root, Offset::new(200.0, 780.0), &mut result);
+        assert!(
+            result.path.iter().any(|entry| entry.target == BAR_ID),
+            "the bar did not answer a finger on it: {:?}",
+            result
+                .path
+                .iter()
+                .map(|entry| entry.target)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
