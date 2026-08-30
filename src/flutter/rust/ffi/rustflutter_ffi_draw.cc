@@ -661,10 +661,18 @@ void rf_canvas_draw_image(RfCanvas* canvas,
                           float x,
                           float y,
                           const RfPaint* paint) {
-  if (canvas == nullptr || image == nullptr || image->image == nullptr) {
+  if (canvas == nullptr || image == nullptr) {
     return;
   }
-  canvas->builder.DrawImage(image->image, flutter::DlPoint(x, y),
+  // Through `ImageFor` like its sibling below, rather than reaching for the
+  // Skia view: under Impeller that view is the wrong representation to record,
+  // and the dispatcher does not survive being handed it -- it calls
+  // asImpellerImage() and dereferences the result without checking.
+  const sk_sp<flutter::DlImage>& drawable = ImageFor(image);
+  if (drawable == nullptr) {
+    return;
+  }
+  canvas->builder.DrawImage(drawable, flutter::DlPoint(x, y),
                             flutter::DlImageSampling::kLinear,
                             paint != nullptr ? &paint->paint : nullptr);
 }
