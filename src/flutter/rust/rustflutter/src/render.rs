@@ -1369,6 +1369,17 @@ pub trait RenderBox: AsAny {
         self.visit_children(visit)
     }
 
+    /// Upstream's `RenderBlockSemantics.blocking`: whether reaching this box
+    /// takes away what was described *before* it.
+    ///
+    /// **Paint order, not tree order.** What it blocks is whatever was drawn
+    /// earlier under the same parent, which is what a modal wants: a dialog
+    /// is painted after the page it covers, and the page is not its ancestor,
+    /// so tree order would have hidden the wrong things.
+    fn blocks_previously_painted_semantics(&self) -> bool {
+        false
+    }
+
     /// What this box says about itself to a screen reader, if anything.
     ///
     /// Upstream's `describeSemanticsConfiguration`, which fills in a
@@ -2671,6 +2682,9 @@ impl RenderBox for RenderRef {
     fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         self.render.borrow().visit_children(visit)
     }
+    fn blocks_previously_painted_semantics(&self) -> bool {
+        self.render.borrow().blocks_previously_painted_semantics()
+    }
     fn visit_children_for_semantics(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
         self.render.borrow().visit_children_for_semantics(visit)
     }
@@ -2788,6 +2802,18 @@ pub(crate) fn same_callback<T: ?Sized>(a: &Option<Rc<T>>, b: &Option<Rc<T>>) -> 
 
 /// So a boxed render object works anywhere an unboxed one does.
 impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
+    /// **Every trait method with a default needs a line here.** This impl
+    /// forwards one by one rather than deriving, so a method left out falls
+    /// through to the trait's default and the boxed object is never asked --
+    /// silently, because a default that answers "no" looks like an answer.
+    ///
+    /// Tick 348 lost an afternoon to exactly that: a new semantics hook was
+    /// overridden on a render object and forwarded by [`RenderRef`], and still
+    /// answered false, because `RenderRef` holds a `Box<dyn RenderBox>` and
+    /// the box stopped the question here.
+    fn blocks_previously_painted_semantics(&self) -> bool {
+        (**self).blocks_previously_painted_semantics()
+    }
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
         (**self).layout(constraints)
     }
@@ -8153,6 +8179,99 @@ impl RenderBox for RenderExcludeSemanticsBox {
         if self.excluding.visits_children() {
             visit(&self.child, Offset::ZERO);
         }
+    }
+
+    fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {
+        self.child.hit_test(position, result)
+    }
+
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
+
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
+}
+
+/// Hides what was painted *before* it from a screen reader -- the widget
+/// [`crate::semantics_markers::BlockSemantics`] had no render object for.
+///
+/// # The opposite direction of travel from `RenderExcludeSemanticsBox`
+///
+/// Upstream calls these the interesting pair, and they run opposite ways.
+/// Exclusion drops **itself and its own descendants** and leaves everything
+/// else alone. Blocking says nothing about its own subtree -- it and its
+/// children are described normally -- and takes away **the siblings painted
+/// before it**.
+///
+/// That is what a modal wants. A dialog is painted after the page it covers,
+/// so blocking the previously painted nodes hides the page and nothing else.
+/// Tree order could not express it: the dialog is not the page's ancestor.
+pub struct RenderBlockSemanticsBox {
+    blocking: crate::render_semantics::RenderBlockSemantics,
+    child: BoxedRender,
+    size: Size,
+}
+
+impl RenderBlockSemanticsBox {
+    pub fn new(blocking: bool, child: impl RenderBox + 'static) -> RenderBlockSemanticsBox {
+        RenderBlockSemanticsBox {
+            blocking: crate::render_semantics::RenderBlockSemantics::new(blocking),
+            child: RenderRef::new(child),
+            size: Size::ZERO,
+        }
+    }
+}
+
+impl RenderBox for RenderBlockSemanticsBox {
+    fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
+        let fresh = fresh
+            .as_any_mut()
+            .downcast_mut::<RenderBlockSemanticsBox>()?;
+        let effect = UpdateEffect::relayout_if(!self.child.is(&fresh.child));
+        self.blocking = fresh.blocking;
+        self.child = fresh.child.clone();
+        Some(effect)
+    }
+
+    fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        self.size = self.child.layout_child(constraints, true);
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        self.child.dry_layout(constraints)
+    }
+
+    fn paint(&self, context: &mut PaintContext, offset: Offset) {
+        context.paint_child(&self.child, offset);
+    }
+
+    fn visit_children(&self, visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {
+        visit(&self.child, Offset::ZERO);
+    }
+
+    /// Its own subtree is described as usual -- the blocking is about what came
+    /// before, not about what is inside.
+    fn blocks_previously_painted_semantics(&self) -> bool {
+        self.blocking.blocking()
     }
 
     fn hit_test(&self, position: Offset, result: &mut HitTestResult) -> bool {

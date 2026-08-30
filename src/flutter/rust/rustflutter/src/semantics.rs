@@ -1263,6 +1263,10 @@ pub fn flush(size: Size, root: &dyn RenderBox) -> Option<Vec<SemanticsNode>> {
 /// node opens stays open until its children have been described, so the nesting
 /// of the render tree becomes the nesting a reader is handed.
 fn describe_subtree(render: &dyn RenderBox, offset: Offset, clips: Clips) {
+    if render.blocks_previously_painted_semantics() {
+        block_previously_painted();
+    }
+
     let opened = match render.describe_semantics() {
         // Text that something above already speaks for. Its children are still
         // walked -- suppressing what a node says is not suppressing what is
@@ -1538,6 +1542,41 @@ fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) ->
         }
         Some(index)
     })
+}
+
+/// Upstream's `RenderBlockSemantics`: everything described so far under the
+/// node currently open goes away.
+///
+/// # Why a truncation is the whole of it
+///
+/// `nodes` is filled in paint order and the walk is depth first, so once a
+/// parent has opened at index `p`, its children and their descendants occupy
+/// exactly `p + 1 ..` and nothing else does. Whatever was painted before the
+/// blocker, under that parent, is that contiguous run -- so dropping it is a
+/// truncation and a cleared child list, not a search.
+///
+/// The parent's own node stays: blocking hides what was painted *below a
+/// common boundary*, and the boundary itself is not below itself.
+///
+/// The empty-stack arm is **unreachable today** and is written as a return
+/// rather than an `unwrap`: [`flush`] opens the root node before the walk and
+/// closes it after, so a blocker always has something open above it.
+/// Replacing the guard with `unwrap_or(0)` leaves the suite green, which is
+/// the honest reason it is recorded here rather than tested -- the arm exists
+/// so that a future caller walking a subtree on its own gets nothing taken
+/// away instead of an index into an empty list.
+fn block_previously_painted() {
+    COLLECTOR.with(|collector| {
+        let mut collector = collector.borrow_mut();
+        if !collector.enabled {
+            return;
+        }
+        let Some(parent) = collector.open.last().copied() else {
+            return;
+        };
+        collector.nodes.truncate(parent + 1);
+        collector.nodes[parent].children.clear();
+    });
 }
 
 fn close(index: usize) {
@@ -4496,6 +4535,118 @@ mod tests {
         });
         assert_eq!(ordinary, 1, "the child is still there");
         assert_eq!(for_semantics, 0, "and only the reader is turned away");
+        set_enabled(false);
+    }
+
+    #[test]
+    fn a_dialog_takes_the_page_under_it_out_of_the_reading() {
+        // `BlockSemantics` is the other half of upstream's interesting pair,
+        // and it runs the opposite way from exclusion: it says nothing about
+        // its own subtree and takes away the siblings **painted before it**.
+        // Until tick 348 the widget had no render object, so a modal left the
+        // page behind it fully readable.
+        set_enabled(true);
+        let laid = |widget| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(widget);
+            let mut root = tree.build_render_tree().expect("mounted");
+            crate::render::RenderBox::layout(
+                &mut root,
+                crate::render::BoxConstraints::loose(200.0, 100.0),
+            );
+            root
+        };
+        let labels = |root: &crate::render::BoxedRender| {
+            crate::semantics::mark_needs_update();
+            flush(Size::new(200.0, 100.0), root)
+                .unwrap_or_default()
+                .iter()
+                .map(|node| node.properties.label.clone())
+                .filter(|label| !label.is_empty())
+                .collect::<Vec<_>>()
+        };
+
+        // A page, then a dialog painted over it.
+        let page_then_dialog = |blocking| {
+            leaf(move || {
+                crate::widgets::Column::new()
+                    .push(crate::widgets::Text::new("the page"))
+                    .push(crate::render::RenderBlockSemanticsBox::new(
+                        blocking,
+                        crate::widgets::Text::new("the dialog"),
+                    ))
+            })
+        };
+
+        let open = laid(page_then_dialog(true));
+        let heard = labels(&open);
+        assert!(
+            heard.iter().any(|label| label.contains("the dialog")),
+            "the dialog speaks for itself: {heard:?}"
+        );
+        assert!(
+            !heard.iter().any(|label| label.contains("the page")),
+            "and the page under it is gone: {heard:?}"
+        );
+
+        // The same tree with the block off is the control: both are read.
+        let shut = laid(page_then_dialog(false));
+        let both = labels(&shut);
+        assert!(both.iter().any(|label| label.contains("the dialog")));
+        assert!(
+            both.iter().any(|label| label.contains("the page")),
+            "nothing blocking, nothing hidden: {both:?}"
+        );
+    }
+
+    #[test]
+    fn blocking_takes_what_came_before_and_not_what_comes_after() {
+        // Paint order is the whole rule. A sibling painted *after* the
+        // blocker is still read -- otherwise this would be "hide everything
+        // else", which is a different widget.
+        set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(leaf(|| {
+            crate::widgets::Column::new()
+                .push(crate::widgets::Text::new("before"))
+                .push(crate::render::RenderBlockSemanticsBox::new(
+                    true,
+                    crate::widgets::Text::new("blocker"),
+                ))
+                .push(crate::widgets::Text::new("after"))
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 100.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = flush(Size::new(200.0, 100.0), &root).expect("somebody asked");
+        let heard: Vec<String> = nodes
+            .iter()
+            .map(|node| node.properties.label.clone())
+            .filter(|label| !label.is_empty())
+            .collect();
+
+        assert!(!heard.iter().any(|l| l.contains("before")), "{heard:?}");
+        assert!(heard.iter().any(|l| l.contains("blocker")), "{heard:?}");
+        assert!(
+            heard.iter().any(|l| l.contains("after")),
+            "painted later, so untouched: {heard:?}"
+        );
+
+        // The tree the reader is handed has to be *whole*, not merely short of
+        // the blocked label: the node the survivors hang from is still there,
+        // and it lists exactly them. Dropping the nodes without mending the
+        // child list leaves ids pointing at things that no longer exist, and
+        // taking the parent as well leaves the survivors hanging from nothing
+        // -- neither shows up in a list of labels.
+        let root_node = nodes.first().expect("a root node survived the blocking");
+        let ids: Vec<i32> = nodes.iter().skip(1).map(|node| node.id).collect();
+        assert_eq!(
+            root_node.children, ids,
+            "every child id still names a node that is there"
+        );
         set_enabled(false);
     }
 
