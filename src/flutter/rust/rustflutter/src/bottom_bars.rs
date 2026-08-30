@@ -265,15 +265,33 @@ impl crate::framework::Component for BottomAppBar {
         // The shape says a notch is *possible*; a docked button is what makes
         // one happen. `cuts_a_notch` is the same two conditions, and asking it
         // rather than repeating them keeps the answer in one place.
+        // The scaffold's channel, if this bar is in one. Looked up at build
+        // time -- which is when a context is available -- and *read* at paint
+        // time, which is when the answer exists.
+        let geometry = context.inherited::<crate::components::ScaffoldGeometry>();
+        let docked = self.docked.is_some()
+            || geometry
+                .as_ref()
+                .map(|geometry| geometry.floating_action_button_area().is_some())
+                .unwrap_or(false);
+        // The shape says a notch is *possible*; a docked button is what makes
+        // one happen. `cuts_a_notch` is the same two conditions, and asking it
+        // rather than repeating them keeps the answer in one place.
+        //
+        // **Kept when the bar is in a scaffold at all**, even if no button has
+        // been placed yet: the first layout has not run when this builds, so a
+        // shape dropped here could never come back and the notch would depend
+        // on which happened first.
         let shape = bar
             .shape
             .clone()
-            .filter(|_| bar.cuts_a_notch(self.docked.is_some()));
+            .filter(|_| bar.cuts_a_notch(docked || geometry.is_some()));
         // Grown by the margin here rather than in the painter, because it is a
         // property of *this bar* -- upstream's `_BottomAppBarClipper` inflates
         // the button's rectangle by `notchMargin` for the same reason: the gap
         // belongs to the bar that leaves it, not to the button.
         let guest = self.notch_rect();
+        let margin = self.notch_margin;
 
         crate::framework::single(child, move |inner| {
             let mut content = crate::widgets::Container::new()
@@ -286,6 +304,8 @@ impl crate::framework::Component for BottomAppBar {
                 color,
                 shape: shape.clone(),
                 guest,
+                geometry: geometry.as_deref().cloned(),
+                notch_margin: margin,
                 child: crate::render::RenderRef::new(content),
                 size: crate::render::Size::ZERO,
             }
@@ -301,6 +321,14 @@ struct NotchedSurface {
     /// upstream's condition too: `_BottomAppBarClipper` cuts nothing when the
     /// scaffold's geometry reports no button.
     guest: Option<crate::engine::Rect>,
+    /// The scaffold's channel, read at **paint** time -- see
+    /// [`crate::components::ScaffoldGeometry`]. `None` when the bar is not in
+    /// a scaffold, which is when `guest` is the only source.
+    geometry: Option<crate::components::ScaffoldGeometry>,
+    /// How much of the button's rectangle to leave clear, kept for the same
+    /// late reading: the scaffold publishes the button's own bounds, and the
+    /// margin is this bar's to add.
+    notch_margin: f32,
     child: crate::render::BoxedRender,
     size: crate::render::Size,
 }
@@ -315,6 +343,27 @@ impl NotchedSurface {
     /// a painter that forgot the offset would cut at the top of the window and
     /// every test watching the paint calls would still see `(0, 0, 400, 80)`.
     fn guest_at(&self, offset: crate::render::Offset) -> Option<crate::engine::Rect> {
+        // **The scaffold's answer first.** A bar inside a scaffold learns
+        // where the button actually landed; `guest` is what a caller said by
+        // hand, which is the only source for a bar standing on its own.
+        // Upstream's clipper is the same order of preference -- it uses the
+        // geometry when the scaffold published one and falls back otherwise.
+        if let Some(published) = self
+            .geometry
+            .as_ref()
+            .and_then(|geometry| geometry.floating_action_button_area())
+        {
+            // Already in the same coordinates this paint is working in, so the
+            // margin is all that is left to add -- the gap belongs to the bar
+            // that leaves it, not to the button.
+            let margin = self.notch_margin;
+            return Some(crate::engine::Rect::ltrb(
+                published.left - margin,
+                published.top - margin,
+                published.right + margin,
+                published.bottom + margin,
+            ));
+        }
         self.guest.map(|guest| {
             crate::engine::Rect::ltrb(
                 guest.left + offset.dx,
@@ -366,7 +415,17 @@ impl crate::render::RenderBox for NotchedSurface {
             offset.dy + self.size.height,
         );
         let paint = crate::engine::Paint::new(self.color);
-        match &self.shape {
+        // **A notch needs both**: a shape to cut it with and a button to cut it
+        // around. Deciding here rather than at build time is what lets the
+        // scaffold's answer arrive late -- when the bar was built, the first
+        // layout had not run and there was no button to hear about yet.
+        //
+        // Without a button the outline is a plain rectangle, and it is drawn
+        // as one: `outer_path` would trace the same shape, but a rectangle
+        // drawn as a path is indistinguishable from a notched one to anything
+        // watching the canvas, and this is the difference the tests are for.
+        let guest = self.guest_at(offset);
+        match self.shape.as_ref().filter(|_| guest.is_some()) {
             // The notch is cut only when there is a button to cut around.
             // `shape` alone means one is *possible* -- a default Material 3
             // bar always carries a shape -- which is the distinction
@@ -374,7 +433,7 @@ impl crate::render::RenderBox for NotchedSurface {
             Some(shape) => {
                 context
                     .canvas()
-                    .draw_path(&shape.outer_path(host, self.guest_at(offset)), &paint);
+                    .draw_path(&shape.outer_path(host, guest), &paint);
             }
             None => context.canvas().draw_rect(host, &paint),
         }
@@ -629,6 +688,37 @@ mod tests {
     }
 
     #[test]
+    fn the_scaffolds_rectangle_is_grown_by_this_bars_margin() {
+        // The scaffold publishes the button's **own** bounds -- it does not
+        // know what gap this bar wants around it, and two bars in one
+        // application may want different ones. So the margin is added on this
+        // side, on the published rectangle as much as on a hand-written one.
+        //
+        // Asserted on `guest_at` for the reason round 394 found: the notch
+        // dips inward, so the drawn path's bounding box is the bar's outline
+        // whatever margin was left, and the canvas cannot tell the two apart.
+        let geometry = crate::components::ScaffoldGeometry::default();
+        let surface = NotchedSurface {
+            color: crate::engine::Color(0xff000000),
+            shape: None,
+            guest: None,
+            geometry: Some(geometry.clone()),
+            notch_margin: 4.0,
+            child: crate::render::RenderRef::new(crate::widgets::Empty),
+            size: crate::render::Size::ZERO,
+        };
+        // Nothing placed yet: nothing to cut around.
+        assert_eq!(surface.guest_at(crate::render::Offset::ZERO), None);
+
+        geometry.publish_for_tests(Some(crate::engine::Rect::ltrb(180.0, 700.0, 236.0, 756.0)));
+        assert_eq!(
+            surface.guest_at(crate::render::Offset::ZERO),
+            Some(crate::engine::Rect::ltrb(176.0, 696.0, 240.0, 760.0)),
+            "the published rectangle reached the shape without this bar's gap"
+        );
+    }
+
+    #[test]
     fn the_hole_moves_with_the_bar() {
         // The painter is told where it is, and the docked rectangle is in the
         // bar's own coordinates, so the two have to be added -- otherwise a
@@ -644,6 +734,8 @@ mod tests {
             color: crate::engine::Color(0xff000000),
             shape: None,
             guest: Some(crate::engine::Rect::ltrb(180.0, -28.0, 236.0, 28.0)),
+            geometry: None,
+            notch_margin: 0.0,
             child: crate::render::RenderRef::new(crate::widgets::Empty),
             size: crate::render::Size::ZERO,
         };

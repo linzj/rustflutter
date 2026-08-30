@@ -2094,6 +2094,62 @@ impl Component for AppBar {
 }
 
 /// A title bar over a body, on the theme's background.
+/// Upstream `ScaffoldGeometry`, as much of it as this port fills in: **where
+/// the floating action button ended up**, in the scaffold's coordinates.
+///
+/// Published by [`Scaffold`] and read by [`crate::bottom_bars::BottomAppBar`],
+/// which is upstream's arrangement -- `Scaffold.geometryOf(context)` hands back
+/// a listenable and `_BottomAppBarClipper` reads it.
+///
+/// # Why a shared cell and not a value
+///
+/// The rectangle is not known when the bar is *built*: it depends on the
+/// button's measured size and the scaffold's, and both arrive at layout. The
+/// obvious reading -- that the bar is therefore always a frame behind -- is
+/// wrong, and upstream shows why: its clipper reads the geometry inside
+/// `getClip`, which runs during layout and paint rather than during build.
+/// **Layout precedes paint in the same frame**, so a cell written by the
+/// scaffold's layout and read by the bar's paint is current, not stale.
+///
+/// That is the difference between this and [`crate::ink_well`]'s size sink,
+/// which really is a frame late: a splash is *built* from the size, and a
+/// build cannot wait for the layout it precedes.
+#[derive(Clone, Default)]
+pub struct ScaffoldGeometry {
+    area: std::rc::Rc<std::cell::Cell<Option<crate::engine::Rect>>>,
+}
+
+impl ScaffoldGeometry {
+    /// Upstream's `floatingActionButtonArea`. `None` is a scaffold with no
+    /// button, which is also a bar with nothing to cut around.
+    pub fn floating_action_button_area(&self) -> Option<crate::engine::Rect> {
+        self.area.get()
+    }
+
+    fn set_floating_action_button_area(&self, area: Option<crate::engine::Rect>) {
+        self.area.set(area);
+    }
+
+    /// Publishes an area without a scaffold, so a bar can be tested against
+    /// the channel rather than against a hand-written rectangle.
+    #[cfg(test)]
+    pub fn publish_for_tests(&self, area: Option<crate::engine::Rect>) {
+        self.set_floating_action_button_area(area);
+    }
+}
+
+/// Two geometries are the same inherited value when they share the cell.
+///
+/// Compared by identity rather than by content, and that is the point: the
+/// content changes every time the button moves, and a scaffold that republished
+/// on each change would rebuild the whole subtree during layout. Upstream keeps
+/// the same `ValueListenable` and notifies through it for the same reason.
+impl PartialEq for ScaffoldGeometry {
+    fn eq(&self, other: &ScaffoldGeometry) -> bool {
+        std::rc::Rc::ptr_eq(&self.area, &other.area)
+    }
+}
+
 /// The page, the bar along its bottom, and the button placed over both.
 ///
 /// A render object because **where the button goes depends on two measured
@@ -2116,6 +2172,9 @@ struct ScaffoldFloor {
     size: Size,
     bar_height: f32,
     button_offset: crate::render::Offset,
+    /// Where the button ended up is published here for the bar underneath --
+    /// see [`ScaffoldGeometry`].
+    geometry: ScaffoldGeometry,
 }
 
 impl ScaffoldFloor {
@@ -2156,7 +2215,7 @@ impl ScaffoldFloor {
     /// read it. The same missing measurement is why
     /// [`Scaffold::extend_body_behind_app_bar`] cannot raise the body's
     /// padding either; one `LayoutBuilder`-shaped hole, two symptoms.
-    fn geometry(&self, button: Size, bar: f32) -> crate::fab_location::ScaffoldPrelayoutGeometry {
+    fn prelayout(&self, button: Size, bar: f32) -> crate::fab_location::ScaffoldPrelayoutGeometry {
         // Upstream's `contentBottom`:
         //
         //     math.max(0.0, bottom - math.max(minInsets.bottom, bottomWidgetsHeight))
@@ -2220,7 +2279,29 @@ impl crate::render::RenderBox for ScaffoldFloor {
                 true,
             );
             use crate::fab_location::StandardFabLocation;
-            self.button_offset = self.location.get_offset(&self.geometry(button, bar_height));
+            self.button_offset = self
+                .location
+                .get_offset(&self.prelayout(button, bar_height));
+            // Published **during layout**, so the bar's paint -- which comes
+            // after every layout in the same frame -- reads where the button
+            // actually is rather than where it was.
+            self.geometry
+                .set_floating_action_button_area(Some(crate::engine::Rect::ltrb(
+                    self.button_offset.dx,
+                    self.button_offset.dy,
+                    self.button_offset.dx + button.width,
+                    self.button_offset.dy + button.height,
+                )));
+        } else {
+            // A scaffold with no button leaves nothing for a bar to cut around.
+            //
+            // **Defensive rather than reachable today**: each build makes a
+            // fresh cell, so a scaffold whose button was taken away is already
+            // publishing nothing before this runs -- a mutation deleting the
+            // line stays green. It is kept because the day the cell outlives a
+            // build (upstream keeps one per scaffold *state*, which is what
+            // spares it these rebuilds) a stale rectangle would have a bar
+            // cutting a hole around a button that is no longer there.
         }
         self.size
     }
@@ -2501,6 +2582,11 @@ impl Component for Scaffold {
         let resizes = self.resize_to_avoid_bottom_inset;
         let floating_action_button = self.floating_action_button.borrow().clone();
         let bottom_navigation_bar = self.bottom_navigation_bar.borrow().clone();
+        // One cell per built scaffold, published above the whole page so the
+        // bar can find it however deep it sits. Upstream's `Scaffold` puts its
+        // `ValueListenable` in an inherited widget for the same reason: the
+        // bar is the caller's widget and the scaffold cannot reach into it.
+        let geometry = ScaffoldGeometry::default();
         let location = self.fab_location;
         let text_direction = crate::direction::direction_of(context);
         let body = if has_app_bar || resizes {
@@ -2551,121 +2637,130 @@ impl Component for Scaffold {
             children.push(drawer.expect("checked above"));
         }
 
-        many(children, move |rendered| {
-            let mut column = RenderFlex::column()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
-            let mut rendered = rendered.into_iter();
-            let mut floating_bar = None;
-            if has_app_bar {
-                if let Some(bar) = rendered.next() {
-                    if behind_bar {
-                        // Kept back, to go over the body rather than above it.
-                        floating_bar = Some(bar);
-                    } else {
-                        column = column.push(bar);
+        // Published **around** the assembled page rather than inside it: the
+        // bar is one of `children` and is built before this closure runs, so
+        // the provider has to be an ancestor of the whole lot.
+        crate::framework::provide(
+            geometry.clone(),
+            many(children, move |rendered| {
+                let mut column = RenderFlex::column()
+                    .with_main_axis_size(MainAxisSize::Max)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+                let mut rendered = rendered.into_iter();
+                let mut floating_bar = None;
+                if has_app_bar {
+                    if let Some(bar) = rendered.next() {
+                        if behind_bar {
+                            // Kept back, to go over the body rather than above it.
+                            floating_bar = Some(bar);
+                        } else {
+                            column = column.push(bar);
+                        }
                     }
                 }
-            }
-            if let Some(body) = rendered.next() {
-                // The body takes everything the bar left, less whatever the
-                // keyboard is standing on. The padding is inside the flex
-                // child, so the child is still handed the whole of the
-                // remaining height and gives this much of it back -- which is
-                // upstream's `contentBottom` arrived at from the other side.
-                let body: crate::render::RenderRef = if resizes {
-                    RenderRef::new(RenderPadding::new(
-                        EdgeInsets::only(0.0, 0.0, 0.0, bottom_inset),
-                        body,
-                    ))
+                if let Some(body) = rendered.next() {
+                    // The body takes everything the bar left, less whatever the
+                    // keyboard is standing on. The padding is inside the flex
+                    // child, so the child is still handed the whole of the
+                    // remaining height and gives this much of it back -- which is
+                    // upstream's `contentBottom` arrived at from the other side.
+                    let body: crate::render::RenderRef = if resizes {
+                        RenderRef::new(RenderPadding::new(
+                            EdgeInsets::only(0.0, 0.0, 0.0, bottom_inset),
+                            body,
+                        ))
+                    } else {
+                        body
+                    };
+                    column = column.push_flex(crate::render::FlexChild::expanded(body, 1));
+                }
+                // The page: the body, and over it the bar when it floats. The bar
+                // goes on last, which is what makes it paint over the body --
+                // upstream's `_ScaffoldSlot.appBar` comes after the body in the
+                // stacking order for the same reason, and its comment says so.
+                let page: crate::render::BoxedRender = match floating_bar {
+                    None => RenderRef::new(column),
+                    Some(bar) => RenderRef::new(
+                        RenderStack::new()
+                            .with_fit(StackFit::Expand)
+                            .push(column)
+                            .push_positioned(
+                                bar,
+                                StackPosition {
+                                    left: Some(0.0),
+                                    top: Some(0.0),
+                                    right: Some(0.0),
+                                    ..StackPosition::default()
+                                },
+                            ),
+                    ),
+                };
+
+                // The button goes over the page and **under the drawer**, which is
+                // upstream's stacking order: a drawer that has been pulled out
+                // covers everything the scaffold was showing, button included.
+                // Pulled **only when one was pushed**: `next()` runs before any
+                // filter on its result, so asking unconditionally and discarding
+                // the answer takes the scrim instead and the drawer loses its
+                // backdrop.
+                let bar = if has_bar { rendered.next() } else { None };
+                let button = if has_button { rendered.next() } else { None };
+                let page: crate::render::BoxedRender = if bar.is_none() && button.is_none() {
+                    page
                 } else {
-                    body
+                    RenderRef::new(ScaffoldFloor {
+                        page,
+                        bar,
+                        button,
+                        location,
+                        bottom_inset,
+                        text_direction,
+                        size: Size::ZERO,
+                        bar_height: 0.0,
+                        button_offset: crate::render::Offset::ZERO,
+                        geometry: geometry.clone(),
+                    })
                 };
-                column = column.push_flex(crate::render::FlexChild::expanded(body, 1));
-            }
-            // The page: the body, and over it the bar when it floats. The bar
-            // goes on last, which is what makes it paint over the body --
-            // upstream's `_ScaffoldSlot.appBar` comes after the body in the
-            // stacking order for the same reason, and its comment says so.
-            let page: crate::render::BoxedRender = match floating_bar {
-                None => RenderRef::new(column),
-                Some(bar) => RenderRef::new(
-                    RenderStack::new()
-                        .with_fit(StackFit::Expand)
-                        .push(column)
-                        .push_positioned(
-                            bar,
-                            StackPosition {
-                                left: Some(0.0),
-                                top: Some(0.0),
-                                right: Some(0.0),
-                                ..StackPosition::default()
-                            },
-                        ),
-                ),
-            };
 
-            // The button goes over the page and **under the drawer**, which is
-            // upstream's stacking order: a drawer that has been pulled out
-            // covers everything the scaffold was showing, button included.
-            // Pulled **only when one was pushed**: `next()` runs before any
-            // filter on its result, so asking unconditionally and discarding
-            // the answer takes the scrim instead and the drawer loses its
-            // backdrop.
-            let bar = if has_bar { rendered.next() } else { None };
-            let button = if has_button { rendered.next() } else { None };
-            let page: crate::render::BoxedRender = if bar.is_none() && button.is_none() {
-                page
-            } else {
-                RenderRef::new(ScaffoldFloor {
-                    page,
-                    bar,
-                    button,
-                    location,
-                    bottom_inset,
-                    text_direction,
-                    size: Size::ZERO,
-                    bar_height: 0.0,
-                    button_offset: crate::render::Offset::ZERO,
-                })
-            };
+                if !drawer_open {
+                    return RenderRef::new(
+                        Container::new().with_color(background).with_child(page),
+                    );
+                }
+                let scrim = rendered.next();
+                let drawer = rendered.next();
 
-            if !drawer_open {
-                return RenderRef::new(Container::new().with_color(background).with_child(page));
-            }
-            let scrim = rendered.next();
-            let drawer = rendered.next();
-
-            // The page is the stack's unpositioned child and fills it; the
-            // scrim fills it by position; the drawer is pinned to its edge and
-            // stretched top to bottom, which is the `Align` of
-            // `_drawerOuterAlignment` plus the `widthFactor: 1.0` of a fully
-            // open drawer.
-            let mut stack = RenderStack::new()
-                .with_fit(StackFit::Expand)
-                .push(Container::new().with_color(background).with_child(page));
-            if let Some(scrim) = scrim {
-                stack = stack.push_positioned(scrim, StackPosition::fill());
-            }
-            if let Some(drawer) = drawer {
-                // Which physical edge `start` is depends on the reading
-                // direction, resolved now -- the same moment upstream's build
-                // reads `Directionality.of(context)`.
-                let on_left = crate::drawer::drawer_on_left(
-                    drawer_alignment,
-                    crate::direction::current_direction(),
-                );
-                let position = StackPosition {
-                    left: on_left.then_some(0.0),
-                    right: (!on_left).then_some(0.0),
-                    top: Some(0.0),
-                    bottom: Some(0.0),
-                    ..Default::default()
-                };
-                stack = stack.push_positioned(drawer, position);
-            }
-            RenderRef::new(stack)
-        })
+                // The page is the stack's unpositioned child and fills it; the
+                // scrim fills it by position; the drawer is pinned to its edge and
+                // stretched top to bottom, which is the `Align` of
+                // `_drawerOuterAlignment` plus the `widthFactor: 1.0` of a fully
+                // open drawer.
+                let mut stack = RenderStack::new()
+                    .with_fit(StackFit::Expand)
+                    .push(Container::new().with_color(background).with_child(page));
+                if let Some(scrim) = scrim {
+                    stack = stack.push_positioned(scrim, StackPosition::fill());
+                }
+                if let Some(drawer) = drawer {
+                    // Which physical edge `start` is depends on the reading
+                    // direction, resolved now -- the same moment upstream's build
+                    // reads `Directionality.of(context)`.
+                    let on_left = crate::drawer::drawer_on_left(
+                        drawer_alignment,
+                        crate::direction::current_direction(),
+                    );
+                    let position = StackPosition {
+                        left: on_left.then_some(0.0),
+                        right: (!on_left).then_some(0.0),
+                        top: Some(0.0),
+                        bottom: Some(0.0),
+                        ..Default::default()
+                    };
+                    stack = stack.push_positioned(drawer, position);
+                }
+                RenderRef::new(stack)
+            }),
+        )
     }
 }
 
@@ -5704,6 +5799,78 @@ mod tests {
                 .iter()
                 .map(|entry| entry.target)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_scaffold_tells_its_bar_where_the_button_landed() {
+        // The channel rounds 394 to 396 built each half of: the bar could cut
+        // a notch and the scaffold could place a button, and **nothing joined
+        // them**, so the notch only appeared for a caller who worked out the
+        // rectangle by hand.
+        //
+        // Nothing here calls `docked_at`. The scaffold publishes where the
+        // button landed during layout; the bar reads it during paint, which
+        // comes after every layout in the same frame -- so the hole is cut
+        // this frame, not next.
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(
+                Scaffold::new(leaf(|| Empty))
+                    .with_bottom_navigation_bar(component(
+                        crate::bottom_bars::BottomAppBar::new().with_notch(),
+                    ))
+                    .with_floating_action_button(leaf(|| Container::new().with_size(56.0, 56.0))),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let calls = crate::engine_test_stubs::drawn();
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::Path { .. })),
+            "the bar drew no notched outline, so it never heard about the button: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_bar_in_a_scaffold_with_no_button_still_draws_a_plain_rectangle() {
+        // The other half of the same condition: the scaffold publishes `None`
+        // when there is nothing to place, and a hole with no button behind it
+        // is a hole in the bar.
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(
+                Scaffold::new(leaf(|| Empty)).with_bottom_navigation_bar(component(
+                    crate::bottom_bars::BottomAppBar::new().with_notch(),
+                )),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let calls = crate::engine_test_stubs::drawn();
+        assert!(
+            !calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::Path { .. })),
+            "it cut a notch around nothing: {calls:?}"
         );
     }
 

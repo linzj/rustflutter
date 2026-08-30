@@ -26563,3 +26563,60 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 是给 `BottomAppBar` 一个可写的共享单元（像 `ink_well` 的 `size_sink`，
 代价是晚一帧），还是让 `ScaffoldFloor` 直接把缺口画在底栏上方。
 **两条路大小不同，选之前要看清楚。**
+
+---
+
+## 第 397 轮：缺口自己出现了——而"晚一帧"这个担心是错的
+
+按“下一步”先解决时机问题，而**查上游把问题解散了**：
+`_BottomAppBarClipper` 读 geometry 是在 **`getClip` 里**（布局/绘制期），
+不是在 build 里。而**同一帧内布局先于绘制**——
+所以"scaffold 布局时写、底栏绘制时读"的共享格子**是当帧准确的，不是晚一帧**。
+
+这和 `ink_well` 的 `size_sink` 真晚一帧不同，差别写进了 `ScaffoldGeometry` 的文档：
+水波纹是**从尺寸 build 出来的**，而 build 等不到它后面的那次布局。
+
+于是第 394 轮备下的缝终于两端齐全：
+
+* `ScaffoldGeometry`（上游 `ScaffoldGeometry` 的一部分：按钮落在哪），
+  由 `Scaffold` 用 `provide` 发布在整页之上——
+  **底栏是调用者的 widget，scaffold 伸不进去**，上游用 inherited 也是这个理由；
+* `ScaffoldFloor::layout` 摆完按钮就写进去；
+* `BottomAppBar` build 时**查到**这个通道（那时有 context），
+  绘制时才**读**（那时才有答案）。
+
+测试里**没有任何一处调用 `docked_at`**，缺口自己出现了。
+
+### 一条测试失败教了一件事
+
+"没有按钮就不该开洞"那条一开始红了：底栏**把自己的轮廓也画成了 path**，
+所以"没有 Path 调用"根本不是"没有洞"的代理。
+改成**画的时候要求两个条件**（有形状 *且* 有按钮），
+没有按钮就老老实实 `draw_rect`——
+这既让"有没有洞"在画布上看得出来，也让形状可以在 build 时保留：
+**build 的时候第一次布局还没跑，那时按钮还不存在**。
+
+### 变异扫描 6 个，第一遍 4 红、2 绿
+
+* **发布的矩形丢了 margin**：scaffold 发布的是按钮**自己**的边界——
+  它不知道这条底栏想留多大的空隙，两条底栏也可以想要不同的。
+  所以 margin 是这一侧加的。用 `guest_at` 断言（画布看不见，第 394 轮的老问题）。
+* **"从不清空上一次的答案"绿，而且今天到不了**：每次 build 都是新格子，
+  没有按钮时它本来就是空的。**如实记账**并留着那一行——
+  等哪天格子活过一次 build（上游是每个 scaffold *state* 一个），
+  一个陈旧的矩形就会让底栏围着一个已经不在的按钮开洞。
+
+第二遍**五个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6415 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：`shells.py` 的表里挑下一个。`BottomNavigationBar`（`bottom_bars.rs`）
+现在特别顺：scaffold 有了底栏槽位，而 `bottom_bars.rs` 里已经有
+`BottomNavigationBar` 的**度量**（`ResolvedBottomNavigationBar`、
+`shows_label`、type/shifting 那一套）却**没有 Component**——
+和这几轮反复遇到的形状一样。**先确认一件事**：
+`controls::BottomNavigation` 已经在画一条 M2 的底栏了（第 385 轮查过），
+所以这可能是**同名两份**而不是缺口——
+**先比对两者的字段，判断是该给 `bottom_bars::BottomNavigationBar` 补 build，
+还是把 `controls::BottomNavigation` 认作它的实现并把度量接上去。**
