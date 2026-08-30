@@ -5227,6 +5227,120 @@ mod tests {
         assert_eq!(initial_states_of("mover"), 1);
     }
 
+    /// A box whose size is what `layout` last wrote, so a layout that never
+    /// ran is visible. See tick 333: a box answering from its constructor
+    /// cannot show this.
+    struct Measured {
+        wanted: crate::render::Size,
+        laid_out: crate::render::Size,
+    }
+
+    impl crate::render::RenderBox for Measured {
+        fn layout(&mut self, constraints: crate::render::BoxConstraints) -> crate::render::Size {
+            self.laid_out = constraints.constrain(self.wanted);
+            self.laid_out
+        }
+        fn size(&self) -> crate::render::Size {
+            self.laid_out
+        }
+        fn paint(
+            &self,
+            _context: &mut crate::render::PaintContext,
+            _offset: crate::render::Offset,
+        ) {
+        }
+    }
+
+    #[test]
+    fn a_rebuilt_tree_still_knows_how_big_its_children_are() {
+        // Ticks 330-334 found a rebuilt Cupertino search field laying out to
+        // 0x0 with its parent's old offsets still in place. Every hit test
+        // guards on `size.contains(..)`, so after that rebuild nothing
+        // beneath those children could be tapped -- which is what made its
+        // clear button, which only exists after a rebuild, permanently dead.
+        //
+        // This is the combination that does **not** reproduce it: a row of
+        // padded children, composed through `many`, published under a
+        // `provide`, rebuilt and pumped. Tick 335 built it up a layer at a
+        // time and every layer held. It is kept because it pins the right
+        // answer for all of that, and because knowing where the bug is *not*
+        // is most of what the next attempt has to go on -- what the search
+        // field still does that this does not is `stateful`.
+        //
+        // **And this test has a blind spot of its own**, found by mutating
+        // around it: making `RenderPadding::update_from` return `None`
+        // outright leaves this green, so the rebuild here never reaches the
+        // update path -- it builds fresh objects instead of updating the ones
+        // that were laid out. That is very likely why it cannot reproduce the
+        // bug, and it is the second time in three ticks that a test written
+        // to catch this turned out unable to (see `Measured`'s note). Said
+        // here rather than left for the next reader to rediscover.
+        use crate::render::{BoxConstraints, RenderBox, Size};
+
+        let composed = || {
+            many(
+                vec![
+                    leaf(|| Measured {
+                        wanted: Size::square(10.0),
+                        laid_out: Size::ZERO,
+                    }),
+                    leaf(|| Measured {
+                        wanted: Size::square(20.0),
+                        laid_out: Size::ZERO,
+                    }),
+                ],
+                |rendered| {
+                    let mut it = rendered.into_iter();
+                    let a = it.next().unwrap();
+                    let b = it.next().unwrap();
+                    crate::widgets::Row::new()
+                        .push(crate::widgets::Padding::new(
+                            crate::render::EdgeInsets::all(3.0),
+                            a,
+                        ))
+                        .push(crate::widgets::Padding::new(
+                            crate::render::EdgeInsets::all(2.0),
+                            b,
+                        ))
+                },
+            )
+        };
+
+        /// Lay the tree out and answer the row's children's sizes.
+        fn sizes(tree: &mut ElementTree) -> Vec<Size> {
+            let mut root = tree.build_render_tree().expect("a root");
+            root.layout(BoxConstraints::tight(200.0, 40.0));
+            fn walk(node: &dyn RenderBox, out: &mut Vec<Size>, depth: usize) {
+                if depth == 1 {
+                    out.push(node.size());
+                    return;
+                }
+                node.visit_children(&mut |child, _| walk(child, out, depth + 1));
+            }
+            let mut out = Vec::new();
+            walk(&root, &mut out, 0);
+            out
+        }
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(7u32, composed()));
+        let first = sizes(&mut tree);
+        assert_eq!(
+            first,
+            vec![Size::new(16.0, 16.0), Size::new(24.0, 24.0)],
+            "a freshly built tree lays out to real sizes"
+        );
+
+        // The same widget again, which is what a state change produces.
+        tree.rebuild(provide(7u32, composed()));
+        tree.rebuild_dirty();
+        let rebuilt = sizes(&mut tree);
+        assert_eq!(
+            rebuilt, first,
+            "and a rebuilt one must still know, or nothing under it can be hit"
+        );
+    }
+
     #[test]
     fn an_unclaimed_parked_element_is_released_at_the_end_of_the_rebuild() {
         // Dropped, with nothing claiming the key in the same rebuild: the
