@@ -423,6 +423,99 @@ mod radio_semantics_tests {
     }
 
     #[test]
+    fn a_tab_bar_says_what_its_tabs_are_tabs_of() {
+        // Upstream's pair, both levels: `tabs.dart:2112` wraps the strip in
+        // `Semantics(role: SemanticsRole.tabBar)` around tabs carrying
+        // `SemanticsRole.tab` (2090). Both or neither -- a reader told
+        // "tab 2 of 5" with nothing saying what they are 5 *of* has half the
+        // sentence.
+        //
+        // The strip is an **annotation**, not a fold: folded, the whole bar
+        // would become one stop and the tabs would stop being separate things
+        // to step through, which is the opposite of what a tab bar is for.
+        use crate::semantics::SemanticsRole;
+        let stops = roles_of(crate::framework::component(TabBar::new(
+            700,
+            vec!["Home".to_string(), "You".to_string()],
+            0,
+        )));
+        assert_eq!(
+            stops,
+            vec![
+                (String::new(), SemanticsRole::TabBar),
+                (
+                    "Tab 1 of 2
+Home"
+                        .to_string(),
+                    SemanticsRole::Tab
+                ),
+                (
+                    "Tab 2 of 2
+You"
+                    .to_string(),
+                    SemanticsRole::Tab
+                ),
+            ],
+            "three stops, not one: {stops:?}"
+        );
+    }
+
+    #[test]
+    fn the_other_two_bars_of_choices_claim_no_kind() {
+        // Checked one upstream file at a time, because this crate writes all
+        // three bars through `one_of_many` and that is **no evidence** about
+        // upstream's three separate classes. `navigation_rail.dart` and
+        // `bottom_navigation_bar.dart` name no role; only `tabs.dart` and
+        // `navigation_bar.dart` do.
+        //
+        // `BottomNavigation` is the one worth spelling out: its `Destination`
+        // reads like Material 3's `NavigationBar`, which *does* get the roles,
+        // but its height is `kBottomNavigationBarHeight` and its tile cites
+        // `_BottomNavigationTile` -- it is Material 2's bar, which gets none.
+        use crate::semantics::SemanticsRole;
+        let destinations = || {
+            vec![
+                Destination::new("Home", "H"),
+                Destination::new("Saved", "S"),
+            ]
+        };
+        for stops in [
+            roles_of(crate::framework::component(BottomNavigation::new(
+                710,
+                destinations(),
+                0,
+            ))),
+            roles_of(crate::framework::component(NavigationRail::new(
+                720,
+                destinations(),
+                0,
+            ))),
+        ] {
+            assert!(
+                stops.iter().all(|(_, role)| *role == SemanticsRole::None),
+                "{stops:?}"
+            );
+            assert_eq!(stops.len(), 2, "still two stops, one per destination");
+        }
+        // Counted **unfiltered** as well, because the wrapper's early return
+        // is invisible to any filter: without it a bar with no kind would
+        // still be given a node, and a node with no words and no kind is a
+        // stop the reader lands on to hear nothing.
+        assert_eq!(
+            stop_count(crate::framework::component(NavigationRail::new(
+                721,
+                destinations(),
+                0
+            ))),
+            // Three: the walk's own root plus one per destination. The
+            // number is written out rather than derived so that a node
+            // appearing from anywhere shows up here.
+            3,
+            "an empty stop was added around the rail"
+        );
+    }
+
+    #[test]
     fn an_alert_says_it_is_an_alert_and_a_simple_dialog_says_it_is_a_dialog() {
         // Checked against `dialog.dart` rather than guessed from the names.
         // `Dialog.semanticsRole` defaults to `SemanticsRole.dialog` and
@@ -1133,9 +1226,36 @@ mod radio_semantics_tests {
         crate::semantics::set_enabled(false);
         nodes
             .iter()
-            .filter(|node| !node.properties.label.is_empty())
+            // A kind with no words counts: a tab bar's own node is exactly
+            // that, and a filter that dropped it would have reported the
+            // strip as missing when it was there.
+            .filter(|node| !node.properties.label.is_empty() || node.properties.role.is_set())
             .map(|node| (node.properties.label.clone(), node.properties.role))
             .collect()
+    }
+
+    /// How many stops a reader would meet in all -- **including the silent
+    /// ones**, which is the point. A node with no words and no kind is still
+    /// somewhere the reader lands and hears nothing, and every other helper
+    /// here filters exactly those away.
+    fn stop_count(widget: crate::framework::AnyWidget) -> usize {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            widget,
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let count = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default()
+            .len();
+        crate::semantics::set_enabled(false);
+        count
     }
 
     #[test]
@@ -2158,10 +2278,24 @@ impl Component for TabBar {
                 // the chip's: a tab's words come from the `Text` inside it, so
                 // there is no annotation of its own for them to fold into --
                 // the folded node is where both the words and the flags meet.
-                let region = one_of_many(region, index, count, active);
+                let region = one_of_many(
+                    region,
+                    index,
+                    count,
+                    active,
+                    crate::semantics::SemanticsRole::Tab,
+                );
                 row = row.push_flex(FlexChild::expanded(region, 1));
             }
-            Container::new().with_height(46.0).with_child(row)
+            Container::new()
+                .with_height(46.0)
+                // Upstream's `tabs.dart:2112`: the strip says it is a tab bar
+                // around tabs that say they are tabs.
+                .with_child(a_bar_of_choices(
+                    row,
+                    first_id,
+                    crate::semantics::SemanticsRole::TabBar,
+                ))
         })
     }
 }
@@ -2194,15 +2328,63 @@ impl Destination {
 /// time this was pulled out. The merge is what carries the flags to the node
 /// that holds the words: a choice's words come from the `Text` inside it, so
 /// there is no annotation of its own for them to fold into.
+///
+/// `role` is a parameter because **upstream does not give one to every bar of
+/// choices**, and this crate's having written the three of them through one
+/// function is no evidence about upstream's three classes. Checked one file at
+/// a time: `tabs.dart:2090` and `navigation_bar.dart:305` say
+/// `SemanticsRole.tab`; `navigation_rail.dart` and `bottom_navigation_bar.dart`
+/// name **no role at all**. A rail that called its destinations tabs would be
+/// announced as a thing the reader can page between, which a rail is not.
 fn one_of_many(
     region: impl crate::render::RenderBox + 'static,
     index: usize,
     count: usize,
     active: bool,
+    role: crate::semantics::SemanticsRole,
 ) -> crate::render::RenderMergeSemanticsBox {
     crate::render::RenderMergeSemanticsBox::new(region).with_properties(
-        crate::semantics::SemanticsProperties::tab(index, count, active),
+        crate::semantics::SemanticsProperties {
+            role,
+            ..crate::semantics::SemanticsProperties::tab(index, count, active)
+        },
     )
+}
+
+/// Wraps a whole bar of choices in the node that says **it is a bar of them**.
+///
+/// Upstream's outer half of the same pair: `tabs.dart:2112` and
+/// `navigation_bar.dart:294` wrap the strip in
+/// `Semantics(role: SemanticsRole.tabBar)` around the tabs that carry
+/// `SemanticsRole.tab`. Both levels or neither -- a reader told "tab 2 of 5"
+/// with nothing saying what they are 5 of has half the sentence.
+///
+/// **An annotation, not a fold**, and this is the one place in these rounds
+/// where that is the right way round. A fold would gather the whole strip into
+/// a single stop and the tabs would stop being separate things to step
+/// through, which is the opposite of what a tab bar is for. The tabs below
+/// still fold, because each of them is one thing made of a mark and a word.
+///
+/// The identifier is the bar's own `first_id`: the bar as a whole is what that
+/// identifier names, and the tabs' nodes are folds, which take generated ids
+/// from the walk rather than their pointer ids -- so there is nothing here for
+/// it to collide with.
+fn a_bar_of_choices(
+    row: impl crate::render::RenderBox + 'static,
+    first_id: u64,
+    role: crate::semantics::SemanticsRole,
+) -> crate::render::BoxedRender {
+    if !role.is_set() {
+        return crate::render::RenderRef::new(row);
+    }
+    crate::render::RenderRef::new(crate::semantics::RenderSemantics::new(
+        crate::semantics::node_id_for(first_id),
+        crate::semantics::SemanticsProperties {
+            role,
+            ..crate::semantics::SemanticsProperties::label("")
+        },
+        row,
+    ))
 }
 
 /// A bar of destinations along the bottom.
@@ -2313,7 +2495,21 @@ impl Component for BottomNavigation {
                 // from the `Text` inside it -- the mark and the label met
                 // separately are two things to land on where the screen shows
                 // one button.
-                let region = one_of_many(region, index, count, active);
+                // **No role**, and the evidence is in this function rather
+                // than in the name. `Destination` reads like Material 3's
+                // `NavigationBar`, which upstream *does* give `tab`/`tabBar`
+                // (`navigation_bar.dart:294`) -- but the height below is
+                // `kBottomNavigationBarHeight` and the tile comment above
+                // cites `_BottomNavigationTile.build`, both of which are
+                // Material 2's `BottomNavigationBar`. That file names no role
+                // at all, so neither does this.
+                let region = one_of_many(
+                    region,
+                    index,
+                    count,
+                    active,
+                    crate::semantics::SemanticsRole::None,
+                );
                 row = row.push_flex(FlexChild::expanded(region, 1));
             }
             Container::new()
@@ -2323,7 +2519,16 @@ impl Component for BottomNavigation {
                 .with_color(surface)
                 .with_border(1.0, outline)
                 .with_padding(EdgeInsets::only(0.0, 0.0, 0.0, bottom))
-                .with_child(row)
+                // Through the same wrapper as the other two bars, with the
+                // kind Material 2's bar is given upstream: none. Passing it
+                // through rather than skipping the call is what makes the
+                // absence a decision this bar took rather than a line nobody
+                // wrote.
+                .with_child(a_bar_of_choices(
+                    row,
+                    first_id,
+                    crate::semantics::SemanticsRole::None,
+                ))
         })
     }
 }
@@ -2456,7 +2661,18 @@ impl Component for NavigationRail {
                 // words of each destination, separately, with no sense of
                 // which one you are on. The census in `spoken_census` is what
                 // caught it, on its first run.
-                column = column.push(one_of_many(region, index, count, active));
+                // **No role.** `navigation_rail.dart` names none, and this
+                // crate's having written the three bars through one function
+                // is no evidence about upstream's three classes. A rail whose
+                // destinations called themselves tabs would be announced as
+                // something the reader can page between.
+                column = column.push(one_of_many(
+                    region,
+                    index,
+                    count,
+                    active,
+                    crate::semantics::SemanticsRole::None,
+                ));
             }
             Container::new()
                 // Upstream `NavigationRail`'s widths: 80 collapsed, 256 with
@@ -2465,7 +2681,11 @@ impl Component for NavigationRail {
                 .with_color(surface)
                 .with_border(1.0, outline)
                 .with_padding(EdgeInsets::symmetric(0.0, spacing))
-                .with_child(column)
+                .with_child(a_bar_of_choices(
+                    column,
+                    first_id,
+                    crate::semantics::SemanticsRole::None,
+                ))
         })
     }
 }
