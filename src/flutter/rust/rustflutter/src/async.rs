@@ -262,16 +262,40 @@ mod tests {
                 crate::framework::leaf(crate::render::RenderFullWidth::new)
             },
         );
-        // The widget is not mounted here -- what this checks is the half that
-        // does not need an element tree: the future runs, and the cell the
-        // poll reads moves from waiting to done. The tree side is covered by
-        // `async_builder`'s own tests.
-        let _ = widget;
+        // Mounted, and rebuilt after the future lands, because the claim is
+        // that a snapshot moves from waiting to done and a reader only ever
+        // sees that through a build. The comment here used to say exactly that
+        // and the assertions did not check it: the widget was dropped with
+        // `let _ = widget` and the only claim made was that no task was left
+        // pending, which is true of a future that resolved to anything at all.
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(widget.clone());
+        tree.build_render_tree().expect("it mounted");
+        assert_eq!(
+            seen.borrow()
+                .last()
+                .map(|snapshot| snapshot.connection_state),
+            Some(ConnectionState::Waiting),
+            "nothing has arrived yet"
+        );
 
         crate::task::run_until_stalled();
         sender.send(Ok(7));
         crate::task::run_until_stalled();
         assert_eq!(crate::task::pending(), 0, "the future finished");
+
+        // A resolved future schedules no build of its own -- `future_builder`
+        // says so where it spawns: "No frame is asked for here.
+        // `rf_app_run_tasks` schedules one when anything ran." The poll is
+        // read *during* a build, which is what makes this a poll rather than a
+        // subscription. So the next frame has to be driven, and a frame in
+        // this port is the whole tree rebuilt from the same widget.
+        tree.rebuild(widget);
+        tree.build_render_tree().expect("still mounted");
+
+        let last = seen.borrow().last().cloned().expect("a snapshot");
+        assert_eq!(last.data, Some(7), "and the value reached the builder");
+        assert_eq!(last.connection_state, ConnectionState::Done);
         crate::task::detach();
     }
 
@@ -320,6 +344,12 @@ mod tests {
 
     #[test]
     fn a_builder_polls_and_shows_what_it_gets() {
+        // Mounted, because the claim is about what the *builder* is handed and
+        // that only happens during a build. This test used to construct the
+        // widget, throw it away with `let _ = widget`, and assert
+        // `(*poll)().data == Some(7)` -- which calls the closure the test
+        // itself wrote and touches `async_builder` not at all. It passed
+        // whatever the widget did.
         let poll: AsyncPoll<i32> = Rc::new(|| AsyncSnapshot::with_data(ConnectionState::Active, 7));
         let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
         let builder = {
@@ -329,10 +359,22 @@ mod tests {
                 crate::framework::leaf(crate::render::RenderFullWidth::new)
             }
         };
-        let widget = async_builder(Rc::clone(&poll), AsyncSnapshot::waiting(), builder);
-        let _ = widget;
-        // The poll itself answers; the build pass drives it through the
-        // element tree in the framework tests.
-        assert_eq!((*poll)().data, Some(7));
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(async_builder(
+            Rc::clone(&poll),
+            AsyncSnapshot::waiting(),
+            builder,
+        ));
+        tree.build_render_tree().expect("it mounted");
+
+        let seen = seen.borrow();
+        assert!(!seen.is_empty(), "the builder was never called");
+        let last = seen.last().expect("a snapshot reached the builder");
+        assert_eq!(
+            last.data,
+            Some(7),
+            "the builder is handed what the poll answered, not the initial              snapshot it was given"
+        );
+        assert_eq!(last.connection_state, ConnectionState::Active);
     }
 }

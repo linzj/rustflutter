@@ -24249,3 +24249,68 @@ flutter_gallery_unittests、rust_ffi_unittests 全部重建。
 如果假的不止这一条，那才谈得上尺子该抓什么；
 **如果只有这一条，就说明它是个偶然，别为它造仪器**——
 第 341/346 轮两次造尺子都没过校准，原因都是先造后校准。
+
+---
+
+## 第 357 轮：把“这里有测试”这句话逐条证伪
+
+按上一轮的“下一步”：手查仓库里所有**指向某个测试的断言**，一条条去看那个测试在不在。
+grep 起头，眼睛收尾，**不先造尺子**。
+
+grep 出 26 条。多数是“the tests below”这类**同文件内**的说法，一眼可验。
+真正可证伪的那几条，用的是这个项目自己的标准：
+**把注释声称被钉住的行为改坏，看有没有测试变红。绿的，就是假的。**
+
+### 三条“pinned by a test / a regression line”——全真
+
+| 声称 | 改坏之后 |
+| --- | --- |
+| `component_themes.rs:611` 五个 tooltip 字段在中点整体切换 | 6 红 |
+| `multitap.rs:122` 零延时表示**永不**触发，不是立刻 | 1 红，`a_zero_long_tap_delay_means_never_rather_than_at_once` |
+| `fab_location.rs:484` 旋转按代码而非按注释实现 | 1 红，`the_rotation_does_the_opposite_of_what_its_comment_says` |
+
+红的名字正好就是该出现的那几个。**这是个好结果，如实记下来：大部分声称是真的。**
+
+### 两条假的，都指向**文件之外**
+
+* **`render.rs`**：“under the stubs the protocol is exercised by the engine-backed runs”。
+  `grep -ci shadermask ffi_unittests.cc` → **0**。而且这个借口**根本不必要**：
+  shader mask 画的时候就是 `canvas().save_layer(...)`，
+  **打桩画布正好记录这个**。
+* **`async.rs`**：“The tree side is covered by `async_builder`'s own tests”。
+  `async_builder` 的测试就在同一个文件里，而 `grep -c "ElementTree::new\|rebuild("` → **0**。
+  **一棵树都没挂过。**
+
+顺着第二条还揪出更难看的一层：那两个测试都写着 `let _ = widget;`——
+**造出控件、扔掉、然后断言自己写的那个闭包**。
+`a_builder_polls_and_shows_what_it_gets` 断言的是 `(*poll)().data == Some(7)`，
+`async_builder` 一次都没被碰过。它**无论控件干什么都会绿**。
+（`vacuous.py` 这把尺子没报它。）
+
+### 修的是“把话变成真的”，不是把话删掉
+
+* `a_builder_polls_and_shows_what_it_gets`：真的挂树，断言 **builder 拿到的是 poll 的答案**
+  而不是它被给的初始快照。
+* `a_future_builder_waits_then_shows_what_the_future_gave`：挂树、断言先看到 `Waiting`，
+  future 落地后**再推一帧**，断言看到 `Done` 和值。
+  中途踩了一脚：`rebuild_dirty()` 推不动它——因为**没有人把它标脏**。
+  `future_builder` 自己的注释就写着“No frame is asked for here”，
+  而这个 port 里**一帧就是整棵树用同一个控件重建**（`AnyWidget` 是 `Clone` 的）。
+  这条弄明白之后，测试和注释才对上。
+* `a_shader_mask_paints_without_panicking` → `..._opens_a_layer_the_size_of_itself`：
+  真的画，断言**开了一层**，并且**shader 被问的是它所在的位置**
+  （`(10,20,50,50)` 而不是原点）——一个被喂错矩形的渐变会糊在屏幕的错误位置上。
+
+**5 个变异全红**（基线先验绿，这道自检是第 355 轮吃过亏才加的）。
+其中两个第一遍因为模式不唯一被跳过，**跳过不是通过**，补上下文重跑才算数。
+
+尺子：十六把全部 exit 0。门：Rust 6296 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：三条假声称（连上第 356 轮那条 `app.rs` 的）现在是一个**已知的坏样本集**，
+而它们有一个共同形状：**都指向本文件之外**——另一个二进制、另一个模块的测试。
+真的那些指的都是**同文件内**。这正好是第 341/346 轮两次造尺子时缺的东西：
+**先有坏样本，才谈得上校准。**
+下一轮拿这三条当校准集去试一把尺子：只报“指向文件外部的覆盖声称”。
+**先在这三条上验它会响，再看它在全仓库报多少条**——
+如果它连这三条都抓不全，或者报出几百条，就当场丢掉，别留。

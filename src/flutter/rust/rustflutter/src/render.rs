@@ -22748,14 +22748,45 @@ mod proxy_visual_tests {
     }
 
     #[test]
-    fn a_shader_mask_paints_without_panicking() {
+    fn a_shader_mask_opens_a_layer_the_size_of_itself() {
+        // This test used to lay the mask out, assert its size, and say the
+        // paint protocol was "exercised by the engine-backed runs" -- which
+        // was not true: `rust_ffi_unittests` does not mention a shader mask,
+        // and it never did. Nor was the excuse needed. A shader mask paints by
+        // opening a layer with the paint its shader answered, and the stub
+        // canvas records exactly that.
+        let asked: Rc<std::cell::RefCell<Vec<Rect>>> = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&asked);
         let shader: Rc<dyn Fn(Rect, crate::painting::BlendMode) -> Paint> =
-            Rc::new(|_bounds, blend| Paint::new(Color::WHITE).with_blend_mode(blend));
+            Rc::new(move |bounds, blend| {
+                recorded.borrow_mut().push(bounds);
+                Paint::new(Color::WHITE).with_blend_mode(blend)
+            });
         let mut masked = RenderShaderMask::new(shader, super::tests::FixedBox::new(50.0, 50.0));
         masked.layout(BoxConstraints::tight(50.0, 50.0));
-        // Painting needs a paint context; under the stubs the protocol is
-        // exercised by the engine-backed runs. Here: the mask built.
         assert_eq!(masked.size(), Size::new(50.0, 50.0));
+
+        let mut layers = LayerTree::new(100, 100);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(100.0, 100.0));
+            masked.paint(&mut context, Offset::new(10.0, 20.0));
+        }
+        let calls = crate::engine_test_stubs::drawn();
+        assert!(
+            calls
+                .iter()
+                .any(|call| matches!(call, crate::engine_test_stubs::Drawn::SaveLayer { .. })),
+            "the mask opens a layer to composite through: {calls:?}"
+        );
+        // The shader is asked about the bounds the mask actually occupies, at
+        // the offset it was painted at -- a gradient handed the wrong
+        // rectangle is stretched across the wrong part of the screen.
+        assert_eq!(
+            *asked.borrow(),
+            vec![Rect::xywh(10.0, 20.0, 50.0, 50.0)],
+            "asked once, about where it is"
+        );
     }
 }
 
