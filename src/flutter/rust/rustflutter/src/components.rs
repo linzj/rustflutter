@@ -2150,6 +2150,13 @@ impl PartialEq for ScaffoldGeometry {
     }
 }
 
+/// The identifier the drawer's barrier is keyed on when the caller named none.
+///
+/// Reserved for the reason [`crate::controls::DIALOG_SEMANTICS_ID`] is: the
+/// scrim is furniture rather than a control anyone named, and the platform
+/// keys its accessibility node on whatever crosses.
+const DRAWER_BARRIER_SEMANTICS_ID: u64 = 0xD_2A9;
+
 /// The page, the bar along its bottom, and the button placed over both.
 ///
 /// A render object because **where the button goes depends on two measured
@@ -2582,6 +2589,16 @@ impl Component for Scaffold {
         let resizes = self.resize_to_avoid_bottom_inset;
         let floating_action_button = self.floating_action_button.borrow().clone();
         let bottom_navigation_bar = self.bottom_navigation_bar.borrow().clone();
+        // Upstream's `platformHasBackButton`, read where a context is
+        // available and used inside the closure below.
+        let excluded_barrier =
+            crate::drawer::platform_has_back_button(crate::theme::ThemeData::of(context).platform);
+        // The barrier's own words, which upstream takes from the same string
+        // the bottom sheet's drag handle borrows: dismissing is what it does,
+        // and there is no second name for one action.
+        let barrier_label =
+            crate::material_app::DefaultMaterialLocalizations::MODAL_BARRIER_DISMISS_LABEL
+                .to_string();
         // One cell per built scaffold, published above the whole page so the
         // bar can find it however deep it sits. Upstream's `Scaffold` puts its
         // `ValueListenable` in an inherited widget for the same reason: the
@@ -2639,12 +2656,49 @@ impl Component for Scaffold {
                 // what this crate's `semantics_markers` module doc opens with,
                 // and nothing had ever acted on it.
                 crate::semantics_markers::BlockSemantics::new().wrapping(
-                    // `Colors.black54`, the drawer barrier's default color.
-                    Pointer::new(
-                        scrim_id.unwrap_or(0),
-                        Container::new().with_color(crate::drawer::DRAWER_SCRIM),
-                    )
-                    .with_handlers(handlers.clone()),
+                    // Excluded **on Android only**, which is upstream's
+                    // `excluding: platformHasBackButton` and the comment beside
+                    // it: "On Android, the back button is used to dismiss a
+                    // modal." Everywhere else the scrim *is* the way out, and a
+                    // reader who could not find it would be shut inside the
+                    // drawer -- the page behind it having just been blocked.
+                    crate::semantics_markers::ExcludeSemantics::with_excluding(excluded_barrier)
+                        .wrapping(
+                            // A **button with the barrier's words**, so the way
+                            // out is one a reader can find and press. Upstream's
+                            // `GestureDetector(onTap: close)` around
+                            // `Semantics(label: modalBarrierDismissLabel)`; here
+                            // the scrim was a bare `Pointer`, which a reader
+                            // cannot see at all.
+                            crate::semantics::RenderSemantics::new(
+                                crate::semantics::node_id_for(
+                                    scrim_id.unwrap_or(DRAWER_BARRIER_SEMANTICS_ID),
+                                ),
+                                crate::semantics::SemanticsProperties::button(
+                                    barrier_label.clone(),
+                                ),
+                                // `Colors.black54`, the drawer barrier's
+                                // default color.
+                                Pointer::new(
+                                    scrim_id.unwrap_or(0),
+                                    Container::new().with_color(crate::drawer::DRAWER_SCRIM),
+                                )
+                                .with_handlers(handlers.clone()),
+                            )
+                            .with_on_action({
+                                let handlers = handlers.clone();
+                                move |action| {
+                                    if action == crate::semantics::SemanticsAction::Tap {
+                                        if let Some(tap) = &handlers.on_tap {
+                                            tap(crate::gestures::TapEvent {
+                                                local_position: Offset::ZERO,
+                                                pointer_id: 0,
+                                            });
+                                        }
+                                    }
+                                }
+                            }),
+                        ),
                 )
             }));
             children.push(drawer.expect("checked above"));
@@ -5921,6 +5975,134 @@ mod tests {
             .filter(|node| !node.properties.label.is_empty())
             .map(|node| node.properties.label.clone())
             .collect()
+    }
+
+    /// Every word a reader would meet, on a named platform.
+    fn scaffold_words_on(
+        scaffold: Scaffold,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> Vec<String> {
+        crate::semantics::set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData {
+                platform,
+                ..crate::theme::ThemeData::light()
+            },
+            component(scaffold),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(Size::new(400.0, 800.0), &root).unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| !node.properties.label.is_empty())
+            .map(|node| node.properties.label.clone())
+            .collect()
+    }
+
+    fn drawer_scaffold() -> Scaffold {
+        Scaffold::new(component(crate::components::Label::new("Inbox")))
+            .with_drawer(component(crate::components::Label::new("Settings")))
+            .with_drawer_open(true)
+    }
+
+    #[test]
+    fn the_way_out_of_a_drawer_is_one_a_reader_can_find() {
+        // The scrim was a bare `Pointer`: a finger could close the drawer and a
+        // reader could not, and round 401 had just taken the page behind it out
+        // of the walk -- so on a platform with no back button they were shut
+        // in. Upstream's barrier is a `GestureDetector(onTap: close)` around
+        // `Semantics(label: modalBarrierDismissLabel)`.
+        let dismiss =
+            crate::material_app::DefaultMaterialLocalizations::MODAL_BARRIER_DISMISS_LABEL;
+        let words = scaffold_words_on(drawer_scaffold(), crate::editable_text::TargetPlatform::IOS);
+        assert!(
+            words.iter().any(|said| said == dismiss),
+            "no way out was offered: {words:?}"
+        );
+    }
+
+    #[test]
+    fn android_leaves_the_way_out_to_its_own_back_button() {
+        // Upstream's `excluding: platformHasBackButton`, and its comment: "On
+        // Android, the back button is used to dismiss a modal." A second
+        // dismiss target in the reader's path is one affordance too many.
+        let dismiss =
+            crate::material_app::DefaultMaterialLocalizations::MODAL_BARRIER_DISMISS_LABEL;
+        let words = scaffold_words_on(
+            drawer_scaffold(),
+            crate::editable_text::TargetPlatform::Android,
+        );
+        assert!(
+            !words.iter().any(|said| said == dismiss),
+            "Android was offered a second way out: {words:?}"
+        );
+        // And the drawer is still there -- excluding the barrier must not take
+        // what it sits behind.
+        assert!(
+            words.iter().any(|said| said == "Settings"),
+            "the drawer went with the barrier: {words:?}"
+        );
+    }
+
+    #[test]
+    fn pressing_the_barrier_closes_the_drawer() {
+        // The words are only half of it: a labelled node that does nothing
+        // when pressed is a way out that is not one.
+        //
+        // What the press *does* is reach the caller's state, so the observable
+        // is that something became dirty -- `set_state` is what a wired drawer
+        // calls, and a handler that ran nothing leaves the tree clean.
+        struct Reader {
+            handle: std::rc::Rc<std::cell::RefCell<Option<StateHandle<bool>>>>,
+        }
+        impl crate::framework::StatefulComponent for Reader {
+            type State = bool;
+            fn build(
+                &self,
+                _state: &bool,
+                handle: StateHandle<bool>,
+                _context: &mut BuildContext,
+            ) -> AnyWidget {
+                *self.handle.borrow_mut() = Some(handle.clone());
+                component(
+                    Scaffold::new(component(crate::components::Label::new("Inbox")))
+                        .with_drawer(component(crate::components::Label::new("Settings")))
+                        .with_drawer_open(true)
+                        .wired_drawer(77, handle, |shut| *shut = true),
+                )
+            }
+        }
+
+        crate::semantics::set_enabled(true);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData {
+                platform: crate::editable_text::TargetPlatform::IOS,
+                ..crate::theme::ThemeData::light()
+            },
+            crate::framework::stateful(Reader {
+                handle: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            }),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        crate::semantics::mark_needs_update();
+        crate::semantics::flush(Size::new(400.0, 800.0), &root);
+        assert_eq!(tree.rebuild_dirty(), 0, "nothing was dirty to begin with");
+        assert!(crate::semantics::perform_action(
+            &root,
+            crate::semantics::node_id_for(77),
+            crate::semantics::SemanticsAction::Tap
+        ));
+        crate::semantics::set_enabled(false);
+        assert!(
+            tree.rebuild_dirty() > 0,
+            "the barrier answered the press and did nothing with it"
+        );
     }
 
     #[test]

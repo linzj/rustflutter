@@ -110,6 +110,24 @@ impl ExcludeSemantics {
     pub fn with_excluding(excluding: bool) -> ExcludeSemantics {
         ExcludeSemantics { excluding }
     }
+
+    /// The widget: `child` and **everything under it** taken out of the walk.
+    ///
+    /// The inward-looking half of the pair this module opens by contrasting.
+    /// Like [`BlockSemantics::wrapping`] it was the missing middle: the render
+    /// object did the work and the struct held the flag, with nothing joining
+    /// them.
+    ///
+    /// An `excluding` of false still wraps, for the reason its sibling gives:
+    /// the answer changes with the platform or with a route's state, and a
+    /// widget that came and went would rebuild its subtree each way.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn wrapping(
+        &self,
+        child: impl RenderBox + 'static,
+    ) -> crate::render::RenderExcludeSemanticsBox {
+        crate::render::RenderExcludeSemanticsBox::new(self.excluding, child)
+    }
 }
 
 impl Default for ExcludeSemantics {

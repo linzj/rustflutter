@@ -201,6 +201,30 @@ impl Component for Drawer {
 /// [`crate::controls::Scrim`] paints.)
 pub(crate) const DRAWER_SCRIM: crate::engine::Color = crate::engine::Color::argb(0x8A, 0, 0, 0);
 
+/// Whether the platform closes a modal with a **back button** of its own.
+///
+/// Upstream's `platformHasBackButton`, in `DrawerController.build`:
+///
+/// ```dart
+/// final bool platformHasBackButton = switch (defaultTargetPlatform) {
+///   TargetPlatform.android => true,
+///   TargetPlatform.iOS || macOS || fuchsia || linux || windows => false,
+/// };
+/// ```
+///
+/// It decides one thing: whether the scrim behind an open drawer is taken out
+/// of the semantics tree. On Android the system's own back gesture puts the
+/// drawer away, so a second "dismiss" target in the reader's path is one
+/// affordance too many; everywhere else the scrim **is** the way out, and
+/// hiding it leaves a reader inside a drawer with no way back.
+///
+/// A plain mapping over the platform rather than a new fact to discover, which
+/// is why it can be ported at all: nothing here has to know whether a
+/// particular device has a physical key.
+pub fn platform_has_back_button(platform: crate::editable_text::TargetPlatform) -> bool {
+    matches!(platform, crate::editable_text::TargetPlatform::Android)
+}
+
 /// The height a [`DrawerHeader`] reserves below the status bar. Upstream's
 /// `_kDrawerHeaderHeight`, whose `+ 1.0` is written there as `// bottom edge`:
 /// the hairline the header draws under itself is counted in, so the content

@@ -26827,3 +26827,59 @@ Android 上遮罩自己不出现在无障碍树里（因为返回键就能关抽
 以及本项目有没有 `platformHasBackButton` 这个判断
 （`TargetPlatform` 有了，但"有没有返回键"是另一回事）——
 **没有的话就不要照抄那个条件**，宁可先接无条件的排除并写明差别。
+
+---
+
+## 第 402 轮：拉开抽屉之后，读屏用户终于有路出来——而 Android 那条路留给返回键
+
+按“下一步”查两件事，两件都有答案：
+
+* `ExcludeSemantics` 和上一轮的 `BlockSemantics` **一模一样**：
+  渲染对象在（只有自己的测试用）、`excluding` 字段在、**中间没有包装**；
+* `platformHasBackButton` **接得了**——上游那段是纯粹的平台映射
+  （`android => true`，其余 `=> false`），**不需要"这台设备有没有物理键"这种新事实**。
+  所以照抄是安全的，写成 `drawer::platform_has_back_button`。
+
+而查上游那几行时，露出了一个**比排除更要紧的缺口**：
+
+```dart
+ExcludeSemantics(
+  excluding: platformHasBackButton,
+  child: GestureDetector(
+    onTap: widget.drawerBarrierDismissible ? close : null,
+    child: Semantics(label: modalBarrierDismissLabel, child: drawerScrim),
+```
+
+本项目的遮罩是一个**光秃秃的 `Pointer`**——手指能关抽屉，**读屏用户不能**。
+而第 401 轮刚刚把它后面那一页从走查里拿掉了：
+在没有返回键的平台上，**读屏用户被关在抽屉里**。
+
+所以这一轮接的是**一整条出路**：遮罩成为一个带"关闭"字样、能按的按钮
+（字串和底部弹层的抓手共用同一个 `MODAL_BARRIER_DISMISS_LABEL`——
+上游不给一个动作起第二个名字），外面再套上按平台决定的排除。
+
+### 变异扫描 6 个，第一遍 5 红
+
+唯一的绿是**“答应了却什么都不做”**：我的测试只断言 `perform_action` 返回 true。
+按下去**做了什么**才是重点——它要抵达调用者的 state。
+于是改成观察那件事本身：`set_state` 会把元素弄脏，
+所以**按之前 `rebuild_dirty() == 0`、按之后 `> 0`**。
+（原本想用一个记录用的 flag，但 `wired_drawer` 要的是 `fn` 指针加 `StateHandle`，
+而 detached 的 handle 上 `set_state` 什么都不做——**那样的测试会永远通过**。）
+
+第二遍**六个全红**。
+
+尺子：十六把全部 exit 0。门：Rust 6428 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+`shells.py`：153 个 build（原 152）。
+
+**下一步**：`semantics_markers.rs` 四个里还剩两个——`MergeSemantics` 和
+`IndexedSemantics`。**先查它们是不是同一个形状**（很可能是），
+但更要紧的是**先查有没有人需要它们**：
+`RenderMergeSemanticsBox` 这几轮被大量使用（chip、tab、菜单条目都靠它），
+所以 `MergeSemantics` 这个 widget 壳很可能**根本没有调用者在等**——
+那就只是补一个包装函数，不是缺口。
+`IndexedSemantics` 相反：第 380 轮的 `pending_index` 注释说
+`RenderIndexedSemanticsBox` 会在下行时放一个序号，
+**而"谁来放"这件事本项目有没有生产者，要查**——
+如果没有，那才是真缺口（列表项的"第几项"从哪来）。
