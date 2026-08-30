@@ -1165,6 +1165,114 @@ pub fn drag_selection_start(
     }
 }
 
+/// What upstream's `onDragSelectionUpdate` does on the path where shift **is**
+/// held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShiftDragUpdate {
+    /// `_extendSelection(globalPosition)` -- the loose end follows the finger
+    /// and the anchor stays where it was.
+    Extend,
+    /// The selection pivots to the far end of the one the drag started from:
+    /// `(base: dragStart.extent, extent: nextExtent)`.
+    PivotToTheFarEnd,
+    /// It pivots back: `(base: dragStart.base, extent: nextExtent)`.
+    PivotBack,
+}
+
+/// Upstream's shift branch of `onDragSelectionUpdate`, and **the whole of it
+/// applies to two platforms only**:
+///
+/// ```dart
+/// if (_dragStartSelection!.isCollapsed ||
+///     (defaultTargetPlatform != TargetPlatform.iOS &&
+///         defaultTargetPlatform != TargetPlatform.macOS)) {
+///   return _extendSelection(details.globalPosition, SelectionChangedCause.drag);
+/// }
+/// // If the drag inverts the selection, Mac and iOS revert to the initial
+/// // selection.
+/// ```
+///
+/// Two conditions, and either one alone sends the drag down the ordinary path:
+/// the drag must have **started from a range** rather than a caret, and the
+/// platform must be Apple.
+///
+/// # What "inverts" means
+///
+/// Not "the loose end passed the fixed end" -- it is measured against the
+/// **base the drag started with**, whichever direction that original selection
+/// ran in:
+///
+/// ```dart
+/// final bool isShiftTapDragSelectionForward =
+///     _dragStartSelection!.baseOffset < _dragStartSelection!.extentOffset;
+/// final bool isInverted = isShiftTapDragSelectionForward
+///     ? nextExtent.offset < _dragStartSelection!.baseOffset
+///     : nextExtent.offset > _dragStartSelection!.baseOffset;
+/// ```
+///
+/// So a selection made right-to-left inverts by going *right* past its base,
+/// and one made left-to-right inverts by going *left* past it. A port that
+/// tested `nextExtent < base` unconditionally would have the rule backwards
+/// for every selection the reader made backwards.
+///
+/// # And what it does about it
+///
+/// Ordinary extending would drop everything on the far side of the crossing
+/// and grow a fresh range from there. Apple instead **keeps the original
+/// selection whole and pivots**: the anchor becomes the original selection's
+/// *other* end, so dragging back past the start swings the range around rather
+/// than shrinking it to nothing and re-growing. Cross back and it pivots back.
+///
+/// # The two guards are what make it idempotent
+///
+/// `selection.baseOffset == _dragStartSelection!.baseOffset` on the first arm
+/// and `!=` on the second. They fire on the **transition** and not on every
+/// move event: once pivoted, the base no longer equals the original base, so
+/// the first arm stops matching and further movement is ordinary extending.
+///
+/// `already_pivoted` is that comparison, and `next_extent` is where the finger
+/// is in the text.
+pub fn shift_drag_update(
+    platform: crate::editable_text::TargetPlatform,
+    drag_start_selection: (i32, i32),
+    next_extent: i32,
+    already_pivoted: bool,
+) -> ShiftDragUpdate {
+    use crate::editable_text::TargetPlatform;
+    let (base, extent) = drag_start_selection;
+    let apple = matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS);
+    if base == extent || !apple {
+        return ShiftDragUpdate::Extend;
+    }
+    let forward = base < extent;
+    let inverted = if forward {
+        next_extent < base
+    } else {
+        next_extent > base
+    };
+    if inverted && !already_pivoted {
+        ShiftDragUpdate::PivotToTheFarEnd
+    } else if !inverted && next_extent != base && already_pivoted {
+        ShiftDragUpdate::PivotBack
+    } else {
+        ShiftDragUpdate::Extend
+    }
+}
+
+/// The selection [`shift_drag_update`] asks for, for the two pivoting answers.
+pub fn shift_drag_selection(
+    outcome: ShiftDragUpdate,
+    drag_start_selection: (i32, i32),
+    next_extent: i32,
+) -> Option<(i32, i32)> {
+    let (base, extent) = drag_start_selection;
+    match outcome {
+        ShiftDragUpdate::PivotToTheFarEnd => Some((extent, next_extent)),
+        ShiftDragUpdate::PivotBack => Some((base, next_extent)),
+        ShiftDragUpdate::Extend => None,
+    }
+}
+
 /// What a drag does to the selection, once the corrections of
 /// [`drag_anchor_correction`] have been applied to its anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4869,6 +4977,131 @@ mod selection_gesture_rule_tests {
                 "{kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn only_apple_pivots_and_only_from_a_range() {
+        // Two guards, either one alone sending the drag down the ordinary
+        // path. `(4, 9)` is a forward range; dragging to 1 crosses its base.
+        for platform in [TargetPlatform::IOS, TargetPlatform::MacOS] {
+            assert_eq!(
+                shift_drag_update(platform, (4, 9), 1, false),
+                ShiftDragUpdate::PivotToTheFarEnd,
+                "{platform:?}"
+            );
+        }
+        for platform in [
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+        ] {
+            assert_eq!(
+                shift_drag_update(platform, (4, 9), 1, false),
+                ShiftDragUpdate::Extend,
+                "{platform:?}"
+            );
+        }
+        // A caret rather than a range: nothing to pivot around. The side
+        // matters -- dragging *left* of a caret answers `Extend` with or
+        // without the guard, because a collapsed selection reads as
+        // backwards and going left is not inverting it. Dragging right is
+        // what the guard is actually for.
+        for next_extent in [1, 7] {
+            assert_eq!(
+                shift_drag_update(TargetPlatform::MacOS, (4, 4), next_extent, false),
+                ShiftDragUpdate::Extend,
+                "caret, dragged to {next_extent}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_backwards_selection_inverts_by_going_the_other_way() {
+        // Measured against the base the drag started with, whichever way that
+        // selection ran. A port testing `next < base` unconditionally would
+        // have this backwards for every selection made right-to-left.
+        let forward = (4, 9);
+        assert_eq!(
+            shift_drag_update(TargetPlatform::MacOS, forward, 1, false),
+            ShiftDragUpdate::PivotToTheFarEnd,
+            "left past the base of a forward selection"
+        );
+        assert_eq!(
+            shift_drag_update(TargetPlatform::MacOS, forward, 12, false),
+            ShiftDragUpdate::Extend,
+            "and right of it is just extending"
+        );
+
+        let backward = (9, 4);
+        assert_eq!(
+            shift_drag_update(TargetPlatform::MacOS, backward, 12, false),
+            ShiftDragUpdate::PivotToTheFarEnd,
+            "right past the base of a backward selection"
+        );
+        assert_eq!(
+            shift_drag_update(TargetPlatform::MacOS, backward, 1, false),
+            ShiftDragUpdate::Extend
+        );
+    }
+
+    #[test]
+    fn the_pivot_keeps_the_original_range_whole_and_swings_it() {
+        // Ordinary extending would drop everything past the crossing and grow
+        // a fresh range from there. The pivot anchors on the original
+        // selection's *other* end instead, so 4..9 dragged back to 1 becomes
+        // 9..1 -- the whole of it still selected, plus the new part.
+        let outcome = shift_drag_update(TargetPlatform::MacOS, (4, 9), 1, false);
+        assert_eq!(
+            shift_drag_selection(outcome, (4, 9), 1),
+            Some((9, 1)),
+            "anchored on the far end"
+        );
+    }
+
+    #[test]
+    fn crossing_back_pivots_back_to_the_original_base() {
+        let outcome = shift_drag_update(TargetPlatform::MacOS, (4, 9), 12, true);
+        assert_eq!(outcome, ShiftDragUpdate::PivotBack);
+        assert_eq!(shift_drag_selection(outcome, (4, 9), 12), Some((4, 12)));
+    }
+
+    #[test]
+    fn the_pivot_fires_on_the_crossing_and_not_on_every_move_after_it() {
+        // `selection.baseOffset == _dragStartSelection.baseOffset` is what
+        // makes this idempotent: once pivoted the base is no longer the
+        // original one, so the arm stops matching and further movement is
+        // ordinary extending.
+        assert_eq!(
+            shift_drag_update(TargetPlatform::MacOS, (4, 9), 1, false),
+            ShiftDragUpdate::PivotToTheFarEnd
+        );
+        assert_eq!(
+            shift_drag_update(TargetPlatform::MacOS, (4, 9), 0, true),
+            ShiftDragUpdate::Extend,
+            "still inverted, but already pivoted"
+        );
+    }
+
+    #[test]
+    fn landing_exactly_on_the_original_base_is_not_a_pivot_back() {
+        // `nextExtent.offset != _dragStartSelection!.baseOffset` -- pivoting
+        // back to a selection of zero length would collapse it, and upstream
+        // falls through to extending instead.
+        assert_eq!(
+            shift_drag_update(TargetPlatform::MacOS, (4, 9), 4, true),
+            ShiftDragUpdate::Extend
+        );
+    }
+
+    #[test]
+    fn an_extend_asks_for_no_selection_of_its_own() {
+        // `_extendSelection` moves the loose end and leaves the anchor alone;
+        // the pivoting arms are the only two that name a whole selection.
+        assert_eq!(
+            shift_drag_selection(ShiftDragUpdate::Extend, (4, 9), 1),
+            None
+        );
     }
 
     #[test]

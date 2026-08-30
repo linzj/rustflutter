@@ -21502,3 +21502,65 @@ stale_engines 全部不落后。十六把尺子全部 exit 0。
 （`_dragStartSelection` 被反向拖过头时，Mac 和 iOS 会退回初始选区，别的平台不会——
 又一处只在两个平台成立的规则）、`onDragSelectionEnd`、`onSingleLongTapCancel`。
 先做 shift 分支那条反向规则。
+
+## 第 306 轮：拖过头时，苹果不重来，它绕到另一头去
+
+`onDragSelectionUpdate` 按住 shift 的那一支。**整支只对两个平台成立**，而且要两个条件
+同时满足：
+
+```dart
+if (_dragStartSelection!.isCollapsed ||
+    (defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.macOS)) {
+  return _extendSelection(details.globalPosition, SelectionChangedCause.drag);
+}
+```
+
+拖必须是**从一段选区**而不是从光标开始的，平台必须是苹果。任一条不满足,
+就是普通的"松的那头跟着手指走"。
+
+### "反向"不是"越过了固定那头"
+
+它量的是**这次拖开始时的 base**，而且看原选区当初是往哪个方向拉的：
+
+```dart
+final bool isShiftTapDragSelectionForward =
+    _dragStartSelection!.baseOffset < _dragStartSelection!.extentOffset;
+final bool isInverted = isShiftTapDragSelectionForward
+    ? nextExtent.offset < _dragStartSelection!.baseOffset
+    : nextExtent.offset > _dragStartSelection!.baseOffset;
+```
+
+**从右往左拉出来的选区，是往右越过 base 才算反向。** 一个无条件写
+`next < base` 的端口，对读者每一次反着拉出来的选区都会把这条规则搞反。
+
+### 反向了它做什么
+
+普通的 extend 会把交叉点另一侧的东西全丢掉，从交叉点重新长一段。苹果**保住整段原选区
+再绕过去**：锚点换成原选区的**另一头**，所以往回拖是把这一段**甩过去**,
+而不是先缩成零再重新长。再拖回来，它再绕回来。
+
+### 两个守卫是让它幂等的东西
+
+`selection.baseOffset == _dragStartSelection!.baseOffset` 和第二臂上的 `!=`。
+它们只在**跨过去的那一下**触发：一旦绕过去了，base 就不再等于原来的 base,
+第一臂不再匹配，之后的移动就是普通 extend。
+
+### 改错扫描又抓出我测试的一个洞
+
+九条里"让光标也能 pivot"**零落红**。查下来：我那条测试用的 `next_extent = 1`,
+而**对折叠选区来说往左拖两条路恰好同解**——折叠选区读作"反向"，往左不算越过。
+能区分的是往**右**拖。补上 `next_extent = 7` 之后九条全红。
+
+（这是连续第二轮由改错扫描抓出我自己测试的盲点，两次都是"只测了同解的那一侧"。）
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 0,
+hollow 67/0，stale_notes 13/0，vacuous 24/15 已读，unread_theme_fields 2,
+stale_engines 全部不落后。十六把尺子全部 exit 0。
+门：6108 + 354 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：这个类按行为还差 `onDragSelectionEnd`（它读 `_shouldShowSelectionToolbar`,
+正好接上第 304 轮那两个标志）和 `onSingleLongTapCancel`（与 `onSingleLongTapEnd`
+共用上游一个 `_onSingleLongTapEndOrCancel` 收尾，而两者对工具栏的处理不同）。
+先做长按的收尾那一对。
