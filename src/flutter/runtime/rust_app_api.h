@@ -100,6 +100,12 @@ enum {
   // same as leaving a node out, which removes it -- a hidden node keeps its
   // place, so "3 of 40" still counts it.
   kRfSemanticsIsHidden = 1 << 25,
+  // Focus lives inside this subtree now. The companion of
+  // kRfSemanticsNamesRoute and a different claim: that one says what to
+  // announce when a route arrives, this one says where the reader is confined
+  // to while it is up. A modal without it can be walked straight out of, into
+  // the page it was meant to block.
+  kRfSemanticsScopesRoute = 1 << 26,
 };
 
 typedef struct RfSemanticsNode {

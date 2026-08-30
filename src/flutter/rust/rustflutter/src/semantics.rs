@@ -433,6 +433,22 @@ pub struct SemanticsFlags {
     /// screen, and upstream sets it on exactly one line per route -- an app
     /// bar's title, a dialog's title, a bottom sheet's.
     pub names_route: bool,
+    /// Upstream's `scopesRoute`: **focus lives inside this subtree now**.
+    ///
+    /// Its companion, and not the same claim. `names_route` says *what to
+    /// announce* when a route arrives; this says *where the reader now is* --
+    /// a platform confines exploration to the scoped subtree, so the page
+    /// underneath a dialog stops being reachable by swiping past it. Without
+    /// it a reader can walk straight out of a modal into the page it was
+    /// meant to block, and be dealing with a screen that is not listening.
+    ///
+    /// Upstream sets it on every modal surface: both Material dialogs
+    /// (`dialog.dart:935` and `1365`), the bottom sheet, the drawer, the
+    /// dropdown menu, and every page route (`page.dart:194`). In the dialogs
+    /// it sits **inside `if (label != null)`** alongside `namesRoute` -- so
+    /// unlike the role, it rides with the label rather than standing on its
+    /// own.
+    pub scopes_route: bool,
     /// Upstream's `isHidden`: in the tree and not on the screen.
     ///
     /// Covered by something, or scrolled past. **Not the same as excluding a
@@ -503,6 +519,7 @@ impl SemanticsFlags {
             is_text_field: self.is_text_field || other.is_text_field,
             is_header: self.is_header || other.is_header,
             names_route: self.names_route || other.names_route,
+            scopes_route: self.scopes_route || other.scopes_route,
             is_hidden: self.is_hidden || other.is_hidden,
             is_image: self.is_image || other.is_image,
             is_link: self.is_link || other.is_link,

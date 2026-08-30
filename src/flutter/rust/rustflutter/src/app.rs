@@ -270,6 +270,7 @@ mod semantics_bits {
     pub const HAS_FOCUSED_STATE: i32 = 1 << 23;
     pub const NAMES_ROUTE: i32 = 1 << 24;
     pub const IS_HIDDEN: i32 = 1 << 25;
+    pub const SCOPES_ROUTE: i32 = 1 << 26;
 }
 
 /// Packs the framework's flags into the ABI's bit set.
@@ -285,6 +286,7 @@ pub fn pack_semantics_flags(flags: &crate::semantics::SemanticsFlags) -> i32 {
     set(&mut bits, flags.is_text_field, IS_TEXT_FIELD);
     set(&mut bits, flags.is_header, IS_HEADER);
     set(&mut bits, flags.names_route, NAMES_ROUTE);
+    set(&mut bits, flags.scopes_route, SCOPES_ROUTE);
     set(&mut bits, flags.is_hidden, IS_HIDDEN);
     set(&mut bits, flags.is_image, IS_IMAGE);
     set(&mut bits, flags.is_link, IS_LINK);
@@ -2087,6 +2089,10 @@ mod tests {
                 increased_value: "first up".to_string(),
                 decreased_value: "first down".to_string(),
                 tooltip: "first tip".to_string(),
+                flags: crate::semantics::SemanticsFlags {
+                    scopes_route: true,
+                    ..crate::semantics::SemanticsFlags::default()
+                },
                 role: crate::semantics::SemanticsRole::ColumnHeader,
                 text_direction: Some(TextDirection::Ltr),
                 actions: 5,
@@ -2145,6 +2151,60 @@ mod tests {
     }
 
     #[test]
+    fn no_two_flag_bits_are_the_same_bit() {
+        // Every one of these is a hand-written mirror of a `kRfSemantics*` in
+        // `rust_app_api.h`, and **nothing was checking them**. A constant
+        // given the wrong power of two does not fail to cross -- it crosses as
+        // its neighbour, so a dialog that scopes the reader arrives claiming
+        // to name the route instead, and every test on either side stays
+        // green: the Rust ones read the same wrong constant they wrote, and
+        // the C++ FFI test builds its structs from the *C++* constants and
+        // never touches these at all. That was found by mutating
+        // `SCOPES_ROUTE` onto `NAMES_ROUTE`'s bit in round 388 and watching
+        // the whole gate pass.
+        //
+        // Pairwise distinctness is not the whole contract -- agreeing with the
+        // header is -- but it is the half that can be checked from here, and
+        // it is the half a slip actually takes.
+        use super::semantics_bits::*;
+        let named: [(&str, i32); 27] = [
+            ("IS_BUTTON", IS_BUTTON),
+            ("IS_TEXT_FIELD", IS_TEXT_FIELD),
+            ("IS_HEADER", IS_HEADER),
+            ("IS_IMAGE", IS_IMAGE),
+            ("IS_LINK", IS_LINK),
+            ("IS_SLIDER", IS_SLIDER),
+            ("IS_OBSCURED", IS_OBSCURED),
+            ("IS_READ_ONLY", IS_READ_ONLY),
+            ("IS_LIVE_REGION", IS_LIVE_REGION),
+            ("HAS_ENABLED_STATE", HAS_ENABLED_STATE),
+            ("IS_ENABLED", IS_ENABLED),
+            ("IS_SELECTED", IS_SELECTED),
+            ("IS_FOCUSED", IS_FOCUSED),
+            ("HAS_CHECKED_STATE", HAS_CHECKED_STATE),
+            ("IS_CHECKED", IS_CHECKED),
+            ("IS_CHECK_STATE_MIXED", IS_CHECK_STATE_MIXED),
+            ("HAS_TOGGLED_STATE", HAS_TOGGLED_STATE),
+            ("IS_TOGGLED", IS_TOGGLED),
+            ("HAS_EXPANDED_STATE", HAS_EXPANDED_STATE),
+            ("IS_EXPANDED", IS_EXPANDED),
+            ("HAS_REQUIRED_STATE", HAS_REQUIRED_STATE),
+            ("IS_REQUIRED", IS_REQUIRED),
+            ("HAS_SELECTED_STATE", HAS_SELECTED_STATE),
+            ("HAS_FOCUSED_STATE", HAS_FOCUSED_STATE),
+            ("NAMES_ROUTE", NAMES_ROUTE),
+            ("IS_HIDDEN", IS_HIDDEN),
+            ("SCOPES_ROUTE", SCOPES_ROUTE),
+        ];
+        for (index, (name, bit)) in named.iter().enumerate() {
+            assert_eq!(bit.count_ones(), 1, "{name} is not a single bit");
+            for (other_name, other) in named.iter().skip(index + 1) {
+                assert_ne!(bit, other, "{name} and {other_name} are the same bit");
+            }
+        }
+    }
+
+    #[test]
     fn every_field_crosses_from_the_node_it_belongs_to() {
         // The twenty lines nothing ran. The two nodes disagree in every field,
         // so reading one off its neighbour -- or out of the wrong slot of the
@@ -2168,6 +2228,12 @@ mod tests {
         assert_eq!(read(first.increased_value), "first up");
         assert_eq!(read(first.decreased_value), "first down");
         assert_eq!(read(first.tooltip), "first tip");
+        // The bit added in round 388, checked from both ends: set on the node
+        // that claims it and clear on the one that does not, so a constant
+        // that landed on the wrong power of two shows up as the wrong node
+        // scoping the reader rather than as nothing at all.
+        assert_ne!(first.flags & super::semantics_bits::SCOPES_ROUTE, 0);
+        assert_eq!(packed.raw[1].flags & super::semantics_bits::SCOPES_ROUTE, 0);
         assert_eq!(first.role, 9);
         assert_eq!(first.scroll_position, 12.0);
         assert_eq!(first.scroll_extent_min, 1.0);

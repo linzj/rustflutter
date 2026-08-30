@@ -545,6 +545,80 @@ You"
     }
 
     #[test]
+    fn a_named_dialog_keeps_the_reader_inside_it() {
+        // The gap round 384 wrote down and deferred: `scopesRoute` had no
+        // field, no bit and no crossing here, so **every modal this port put
+        // up could be walked straight out of** -- a reader swiping past the
+        // last control of a dialog carried on into the page the dialog was
+        // meant to block, and was then dealing with a screen that is not
+        // listening.
+        //
+        // It rides with the label rather than standing alone, which is checked
+        // rather than assumed: upstream's `dialog.dart:935` and `1365` put
+        // `scopesRoute` **inside** `if (label != null)` beside `namesRoute`,
+        // while the role in the very same function is set unconditionally.
+        let scoping = |surface, platform| {
+            crate::semantics::set_enabled(true);
+            let theme = crate::theme::ThemeData {
+                platform,
+                ..crate::theme::ThemeData::light()
+            };
+            let mut tree = crate::framework::ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(theme, surface));
+            let mut root = tree.build_render_tree().expect("mounted");
+            crate::render::RenderBox::layout(
+                &mut root,
+                crate::render::BoxConstraints::loose(400.0, 400.0),
+            );
+            crate::semantics::mark_needs_update();
+            let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+                .unwrap_or_default();
+            crate::semantics::set_enabled(false);
+            nodes
+                .iter()
+                .filter(|node| node.properties.flags.scopes_route)
+                .map(|node| node.properties.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            scoping(
+                crate::framework::component(AlertDialog::new().with_title("Delete this?")),
+                crate::editable_text::TargetPlatform::Android
+            ),
+            vec!["Alert".to_string()]
+        );
+        // On Apple this port names no route, and the scoping goes with it --
+        // upstream's `if` covers both. The dialog still says it is a dialog,
+        // which is the round-384 rule and a different claim.
+        assert!(
+            scoping(
+                crate::framework::component(AlertDialog::new().with_title("Delete this?")),
+                crate::editable_text::TargetPlatform::IOS
+            )
+            .is_empty()
+        );
+        // **It does not survive being folded**, and that is a gap this round
+        // found rather than one it closed. A dialog put inside something that
+        // merges for its own reasons loses its scoping entirely:
+        //
+        //     scoping(announces_itself(AlertDialog::new().with_title(..)))  ==  []
+        //
+        // The cause is not this flag. The walk's fold (`semantics::open`'s
+        // merging branch) carries the label, the tooltip and the role up from
+        // a folded descendant and **carries no flags at all**, so a folded
+        // button stops saying it is a button too. Upstream's merge unions them
+        // -- `flags = flags.merge(node._flags)` in `SemanticsNode.updateWith`
+        // -- and this crate does own that rule, on
+        // `SemanticsConfiguration::absorb`, which is the upstream-shaped path
+        // **nothing in the walk reaches**. Rule present, producer absent, for
+        // the third time in these rounds.
+        //
+        // Written down here rather than fixed in passing: unioning flags on
+        // every fold changes what a good many existing stops say, and that is
+        // a round with its own mutation sweep.
+    }
+
+    #[test]
     fn a_dialog_nobody_named_is_still_a_dialog() {
         // The case that made the role a separate test from the label. On Apple
         // this port names no route -- VoiceOver's focus lands on the title, so
@@ -4734,12 +4808,14 @@ impl Component for AlertDialog {
 ///   keep nodes of their own rather than folding into this one, and that is
 ///   already what happens -- folding happens only where something asks for it
 ///   ([`crate::render::RenderMergeSemanticsBox`]).
-/// * **`scopesRoute` has no counterpart at all**: no field on
-///   [`crate::semantics::SemanticsFlags`], no bit in `RfSemanticsNode`,
-///   nothing on the engine's side of this branch. It is what tells a platform
-///   that focus is now confined to this subtree, so what is missing is a flag
-///   *and* its whole crossing -- the same shape as `is_link`, and a round of
-///   its own rather than a line here.
+/// * **`scopesRoute`** was the third, and it landed in round 388 -- flag, bit,
+///   conversion and all. The note that stood here said it had "nothing on the
+///   engine's side of this branch", and **that half was wrong**: the engine has
+///   carried `SemanticsFlags::scopesRoute` all along
+///   (`lib/ui/semantics/semantics_flags.h:37`), and everything missing was on
+///   this port's side. Worth leaving written down, because a note that
+///   over-states how much is missing is how a one-round job gets deferred
+///   indefinitely.
 ///
 /// A `None` label is a surface that names no route, which upstream reaches on
 /// Apple for a dialog the caller did not label: VoiceOver's focus lands on the
@@ -4774,6 +4850,12 @@ fn announced(
             crate::semantics::SemanticsProperties {
                 flags: crate::semantics::SemanticsFlags {
                     names_route: label.is_some(),
+                    // Rides with the label, unlike the role above. Upstream's
+                    // `dialog.dart:935` and `1365` put `scopesRoute` **inside**
+                    // `if (label != null)`, next to `namesRoute` -- checked
+                    // rather than assumed, because the role in the same
+                    // function goes the other way.
+                    scopes_route: label.is_some(),
                     ..crate::semantics::SemanticsFlags::default()
                 },
                 role,

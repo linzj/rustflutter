@@ -547,6 +547,7 @@ SemanticsNodeUpdates RustSemanticsNodesToUpdates(const RfSemanticsNode* nodes,
     out.flags.isTextField = (in.flags & kRfSemanticsIsTextField) != 0;
     out.flags.isHeader = (in.flags & kRfSemanticsIsHeader) != 0;
     out.flags.namesRoute = (in.flags & kRfSemanticsNamesRoute) != 0;
+    out.flags.scopesRoute = (in.flags & kRfSemanticsScopesRoute) != 0;
     out.flags.isHidden = (in.flags & kRfSemanticsIsHidden) != 0;
     out.flags.isImage = (in.flags & kRfSemanticsIsImage) != 0;
     out.flags.isLink = (in.flags & kRfSemanticsIsLink) != 0;
