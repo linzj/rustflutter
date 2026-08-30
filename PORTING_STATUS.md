@@ -23477,3 +23477,53 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 先按行为查本项目 `ListTile` 有没有给前导／尾随控件加过这个高度上限；
 没有就是下一个缺口，有就核对它用的是不是**一行**那一行——
 **这正是第 341 轮那种“六选一里挑错行”的反面**：这里上游**故意**只用一行那一行。
+
+---
+
+## 第 344 轮：图标高度上限**永远是一行那一行**——第 341 轮那个错的镜像
+
+接上一轮的“下一步”查 `maxIconHeightConstraint`。本项目**完全没有**这个东西：
+`children.insert(0, leading)`，前导控件不带任何高度约束就进了行——
+**一个过高的前导控件会把整行撑高**，而不是自己被压下来。
+
+上游：
+
+```dart
+BoxConstraints get maxIconHeightConstraint => BoxConstraints(
+  maxHeight: (isDense ? 48.0 : 56.0) + visualDensity.baseSizeAdjustment.dy,
+);
+// 用法：looseConstraints.enforce(maxIconHeightConstraint)，只作用于 leading 和 trailing
+```
+
+**这正是第 341 轮那个错的镜像。** 那一轮是：文档把 `_defaultTileHeight` 六选一里的
+**一行那一行**当成了全部规则，代码对两行、三行的行都是错的。
+**这一轮反过来**——上游**故意**对每一个行都用一行那一行，注释给了理由：
+
+> 一行的前导／尾随控件高度不遵循 Material 规范，但这个尺寸是为了满足
+> **最小可点区域的可及性要求**；两行和三行的尾随控件高度才按规范约束。
+
+所以两者长得像、意思相反：**行自己的高度随行数长，这个上限不随**。
+三行行上的一个头像，跟单行行上的一样被压到 56。
+
+还有两条：它是**最大值**、压在已经放松过的约束之上（小图标不受影响，只有过大的被压下来）；
+它随密度移动，走的是 **`baseSizeAdjustment`（一单位四像素）**——
+跟隔壁那个一单位两像素的标题间距**不一样**。
+
+**变异扫描 8 个，第一遍 5 个红，3 个是真窟窿，而且各不相同：**
+
+* **“上限跟着行数走”**没红——把它换成 `self.min_tile_height`，在默认解析下**两者恰好都是 56**，
+  是个近乎等价的变异。补了一条：主题把 `min_tile_height` 设成 120，**上限必须还是 56**。
+* **“上限不理会 dense”**没红——没有测试量过 dense 的上限。补了（48）。
+* **“尾随控件不加上限”**没红——没有测试用过 trailing。补了。
+
+补完全部转红。这一轮的接线**能测**（跟第 343 轮那个测不了的标题间距不同），
+因为过高的前导控件影响的是**行高**，而行高从布好的树上读得出来。
+
+尺子：十六把全部 exit 0。门：6261 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`ListTile` 这条线走到这里，`visualDensity` 的三处使用点全部端完
+（高度、标题间距、图标上限）。回队头：`python tools/depth.py` 看现在的队头，
+按老规矩**先读上游行为再决定值不值得做一轮**——前面
+`CupertinoLocalizations`、`TextSelectionGestureDetectorBuilder`、`MagnifierController`
+三次都证明了低比值有很大一块是改名造成的。

@@ -2559,13 +2559,31 @@ impl Component for ListTile {
             }
             row.push(column)
         })];
+        // Upstream caps the leading and trailing widgets' height and nothing
+        // else's: `looseConstraints.enforce(maxIconHeightConstraint)`. It is
+        // a maximum over loose constraints, so a small icon is untouched and
+        // an oversized one is brought down rather than stretching the row.
+        let icon_cap = tile.max_icon_height();
+        let capped = move |child: AnyWidget| {
+            crate::framework::single(child, move |inner| {
+                crate::widgets::ConstrainedBox::new(
+                    BoxConstraints {
+                        min_width: 0.0,
+                        max_width: f32::INFINITY,
+                        min_height: 0.0,
+                        max_height: icon_cap,
+                    },
+                    inner,
+                )
+            })
+        };
         if let Some(leading) = leading {
             // Before the title, and first in the list so the row below can
             // tell it from the trailing.
-            children.insert(0, leading);
+            children.insert(0, capped(leading));
         }
         if let Some(trailing) = trailing {
-            children.push(trailing);
+            children.push(capped(trailing));
         }
 
         many(children, move |mut rendered| {
@@ -5238,6 +5256,119 @@ mod tests {
             },
         )
         .height
+    }
+
+    #[test]
+    fn an_oversized_leading_widget_is_brought_down_rather_than_stretching_the_row() {
+        // Upstream's `maxIconHeightConstraint`, which this port did not have:
+        // the leading widget went into the row unconstrained, so a tall one
+        // grew the tile instead of being capped.
+        let tall_leading = ListTile::new("Wi-Fi")
+            .with_leading(leaf(|| crate::widgets::SizedBox::new(24.0, 200.0)));
+        assert_eq!(
+            tile_height_themed(tall_leading, crate::theme::ThemeData::light()),
+            56.0,
+            "a 200-tall leading widget does not make a 200-tall row"
+        );
+
+        // A small one is left alone -- it is a maximum, not a size.
+        let small_leading =
+            ListTile::new("Wi-Fi").with_leading(leaf(|| crate::widgets::SizedBox::new(24.0, 24.0)));
+        assert_eq!(
+            tile_height_themed(small_leading, crate::theme::ThemeData::light()),
+            56.0
+        );
+    }
+
+    #[test]
+    fn the_icon_cap_stays_at_the_one_line_row_however_many_lines_the_tile_has() {
+        // The mirror image of tick 341: there a one-line row was quoted as
+        // the whole table by mistake, here upstream means the one-line row
+        // for every tile -- for the accessibility reason its comment gives.
+        // So the row grows with the line count and the cap does not.
+        let three_line = ListTile::new("Wi-Fi")
+            .with_subtitle("Connected")
+            .with_three_line(true)
+            .with_leading(leaf(|| crate::widgets::SizedBox::new(24.0, 200.0)));
+        assert_eq!(
+            tile_height_themed(three_line, crate::theme::ThemeData::light()),
+            88.0,
+            "the row is three lines tall, from its own table"
+        );
+
+        // And the cap itself did not follow it up there.
+        let tile = read_tile(crate::theme::ThemeData::light());
+        assert_eq!(tile.max_icon_height(), 56.0);
+
+        // Nor does it follow a theme that raised the row outright: the cap
+        // reads the one-line constant, not the resolved `min_tile_height`,
+        // and those two agree only by coincidence at the default.
+        let tall_rows = read_tile(crate::theme::ThemeData::light().with_list_tile_theme(
+            crate::component_themes::ListTileThemeData::new().with_min_tile_height(120.0),
+        ));
+        assert_eq!(tall_rows.min_tile_height, 120.0);
+        assert_eq!(tall_rows.max_icon_height(), 56.0, "the cap stayed put");
+    }
+
+    #[test]
+    fn a_dense_tile_caps_its_icons_lower() {
+        // The cap takes the dense row for the same reason the tile does.
+        let dense = read_tile(crate::theme::ThemeData::light().with_list_tile_theme(
+            crate::component_themes::ListTileThemeData::new().with_dense(true),
+        ));
+        assert_eq!(dense.max_icon_height(), 48.0);
+    }
+
+    #[test]
+    fn the_trailing_widget_is_capped_as_the_leading_one_is() {
+        // Upstream lays both out against the same `iconConstraints`.
+        let tall_trailing = ListTile::new("Wi-Fi")
+            .with_trailing(leaf(|| crate::widgets::SizedBox::new(24.0, 200.0)));
+        assert_eq!(
+            tile_height_themed(tall_trailing, crate::theme::ThemeData::light()),
+            56.0
+        );
+    }
+
+    /// The resolved tile theme under a Material theme.
+    fn read_tile(theme: crate::theme::ThemeData) -> crate::component_themes::ResolvedListTile {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        struct Reader {
+            seen:
+                std::rc::Rc<std::cell::RefCell<Option<crate::component_themes::ResolvedListTile>>>,
+        }
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.seen.borrow_mut() = Some(crate::component_themes::ResolvedListTile::of(
+                    context, false, None,
+                ));
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            theme,
+            component(Reader { seen: seen.clone() }),
+        ));
+        let taken = seen.borrow_mut().take();
+        taken.expect("built")
+    }
+
+    #[test]
+    fn the_density_moves_the_icon_cap_by_four_pixels_a_unit() {
+        // Unlike the title gap next door, which moves by two.
+        let compact = read_tile(crate::theme::ThemeData::light().with_visual_density(
+            crate::theme::VisualDensity {
+                horizontal: 0.0,
+                vertical: -2.0,
+            },
+        ));
+        assert_eq!(compact.max_icon_height(), 56.0 - 8.0);
+        assert_eq!(
+            compact.effective_horizontal_title_gap(),
+            compact.horizontal_title_gap,
+            "the horizontal half was zero here, so the gap did not move"
+        );
     }
 
     #[test]

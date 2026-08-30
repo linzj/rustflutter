@@ -6935,6 +6935,40 @@ impl ResolvedListTile {
     pub const MIN_TILE_HEIGHT: f32 = 56.0;
     pub const DENSE_MIN_TILE_HEIGHT: f32 = 48.0;
 
+    /// Upstream's `_RenderListTile.maxIconHeightConstraint`, as a height:
+    /// `(isDense ? 48.0 : 56.0) + visualDensity.baseSizeAdjustment.dy`.
+    ///
+    /// # Always the one-line row, whatever the tile's line count
+    ///
+    /// This is the **mirror image** of the mistake tick 341 fixed. There, a
+    /// doc quoted the one-line row of `_defaultTileHeight` as though it were
+    /// the whole six-way table, and the code was wrong for two- and
+    /// three-line tiles. Here upstream *means* the one-line row for every
+    /// tile, and its comment says why:
+    ///
+    /// > One-line trailing and leading widget heights do not follow Material
+    /// > specifications, but this sizing is required to adhere to
+    /// > accessibility requirements for smallest tappable widget. Two- and
+    /// > three-line trailing widget heights are constrained properly
+    /// > according to the Material spec.
+    ///
+    /// So the two look alike and are not: the row's own height grows with the
+    /// line count, and this cap does not. A leading avatar on a three-line
+    /// tile is held to the same 56 as one on a single-line tile.
+    ///
+    /// It is a **maximum**, applied over already-loosened constraints
+    /// (`looseConstraints.enforce(..)`), so a small icon stays small and only
+    /// an oversized one is brought down. The density's `dy` moves it, by the
+    /// four-pixel unit -- unlike the title gap next door, which moves by two.
+    pub fn max_icon_height(&self) -> f32 {
+        let row = if self.dense {
+            ResolvedListTile::DENSE_MIN_TILE_HEIGHT
+        } else {
+            ResolvedListTile::MIN_TILE_HEIGHT
+        };
+        row + self.visual_density.base_size_adjustment().1
+    }
+
     /// Upstream's `_RenderListTile._effectiveHorizontalTitleGap`:
     /// `_horizontalTitleGap + visualDensity.horizontal * 2.0`.
     ///
