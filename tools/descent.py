@@ -23,6 +23,20 @@ could as easily have been measuring nothing.  This project has been here
 three times (ticks 288, 291, 301) and the rule earned there is that an
 instrument nobody has seen catch a real fault reports a number, not a fact.
 
+Tick 339 held it to that and it failed: rebuilt beside the known-bad case (a
+`Container` over a `Row`, rebuilt, laid out by descent), the probe printed
+`descent begins, 0 queued` on the very descent that then produced 0x0.  So
+**a queued boundary is not the hazard signal** -- by the time the descent
+starts the queue is already empty -- and tick 338's zero meant nothing, as
+suspected.  Criterion retired; do not propose it again.
+
+What is left to try, stated so the next attempt starts further along: the
+hazard is *a node that needs layout sitting under an ancestor that will
+early-return*, so the signal to look for is a descent whose root satisfies
+the early return (`!needs_layout` and unchanged constraints) while some
+descendant answers true to `RenderBox::needs_layout(constraints)`.  That is a
+walk rather than a counter, which is why it was not the first thing tried.
+
   python tools/descent.py        # the list; always exit 0
 """
 import io

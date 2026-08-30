@@ -23229,3 +23229,51 @@ rustflutter_unittests、flutter_gallery_unittests 全部重建。
 标定不过就说明判据选错了（多半是“排队的边界”不是正确的危险信号，
 真正的危险信号是“**被标记的节点在一个干净祖先之下**”），换判据重标。
 **先让尺子在已知的错上响一次，再信它在别处的沉默。**
+
+---
+
+## 第 339 轮：标定失败——“排队的边界”看不见那个已知的错，所以上一轮的零确实是空的
+
+按上一轮的“下一步”：**先标定再用**。把第 337 轮那个已知会坏的用例
+（`Container` 包住 `Row`，重建之后用 `root.layout(..)`）放回去当标定样本，
+让探针在它上面响一次。
+
+**它没响。**
+
+```
+PROBE --- first layout ---
+PROBE descent begins, 0 queued
+PROBE first   [16×16]
+PROBE --- descent after rebuild (the known-bad one) ---
+PROBE descent begins, 0 queued        ← 就是这一次下降产出了 0×0
+PROBE rebuilt [0×0]
+```
+
+在**那一次会坏的下降**开始时，`DIRTY_BOUNDARIES` 里是**空的**。
+所以“排队的边界”**根本不是危险信号**——等下降开始，队列早就空了；
+第 338 轮跑全量得到的那个零，如猜测的一样，**什么都没量**。
+
+这条判据作废，并且写进了 `tools/descent.py` 的文件头，注明“**不要再提**”，
+免得下一个人（或下一个我）再花一轮把它重新发明一遍。
+
+同时把**下一次该试什么**也写进去了，让下一次从更靠前的地方起步：真正的危险是
+**“一个需要布局的节点，压在一个会早退的祖先底下”**，所以该找的信号是——
+某次下降的根满足早退条件（`!needs_layout` 且约束没变），而它的某个后代对
+`RenderBox::needs_layout(constraints)` 答 true。那是一次**遍历**而不是一个计数器，
+这也正是它当初没被优先试的原因。
+
+**顺带记一次门禁的真实报警。** 这一轮 `stale_engines` 报了 exit 1——
+不是假警：上一轮 rebase 带进来的两个提交动了引擎侧的图像代码，
+而引擎库还停在旧的 FFI 源之前。跑完三个输出目录的 ninja 重建之后复查，
+`every engine library is at or ahead of the FFI sources`，恢复 exit 0。
+这把尺子这次确实抓到了东西，值得记一笔。
+
+尺子：十六把全部 exit 0（重建之后）。门：6242 通过；`cargo fmt --check` 干净；
+三个输出目录的 rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、
+flutter_gallery_unittests 全部重建。
+
+**下一步**：这条线（“哪些测试的下降法在骗人”）已经连着两轮只产出否定结果，
+而它本来就是第 337 轮那个**已经查清、已经没有 bug** 的问题的余波。
+**先把它放下，回队头做实际的对齐**——`python tools/depth.py` 看现在的队头是什么。
+`tools/descent.py` 留在那里，文件头写清了已排除什么、下一步该试什么；
+等哪一轮真撞上一个“测试通过但行为不对”的怀疑，再拿它当起点，比现在空转有价值。
