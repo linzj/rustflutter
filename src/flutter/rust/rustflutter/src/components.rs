@@ -763,7 +763,7 @@ pub struct ButtonGroupState {
 // -- Card ---------------------------------------------------------------------
 
 /// A surface with a border and padding, for grouping.
-/// # Two of upstream's parameters are missing, for two different reasons
+/// # `semanticContainer` is here now; `margin` still is not
 ///
 /// * **`semanticContainer`** (default true) is used *twice* upstream, and the
 ///   second use is negated: `Semantics(container: semanticContainer)` outside
@@ -773,13 +773,16 @@ pub struct ButtonGroupState {
 ///   exposed. Setting only one of the pair gives a card that is both or
 ///   neither.
 ///
-///   Not portable here yet: the two flags it would set exist on
-///   [`crate::semantics::SemanticsConfiguration`] and on
-///   [`crate::render_semantics::RenderSemanticsAnnotations`], and **neither
-///   of those is what the tree builds** -- see the note on the former. The
-///   render object a `Semantics` widget really makes carries properties and
-///   an action handler and no such flag, folding the whole distinction into
-///   one `yields_to_a_label`.
+///   This note used to say it was "not portable here yet", because the flags
+///   it would set live on [`crate::semantics::SemanticsConfiguration`] and
+///   [`crate::render_semantics::RenderSemanticsAnnotations`], neither of which
+///   the tree builds. **That reason expired.** What the pair of flags means
+///   between them is "fold everything below into one node", and
+///   [`crate::render::RenderMergeSemanticsBox`] does exactly that on the live
+///   walk. So the card wraps itself in one when `semantic_container` is set,
+///   and one wrapper says both halves -- which is closer to upstream's intent
+///   than two flags would have been, since upstream's two can be set
+///   inconsistently and this one cannot.
 ///
 /// * **`margin`** (default `EdgeInsets.all(4)`) is space *outside* the
 ///   material, between one card and the next. What this struct has is
@@ -792,6 +795,7 @@ pub struct ButtonGroupState {
 pub struct Card {
     child: std::cell::RefCell<Option<AnyWidget>>,
     padding: Option<EdgeInsets>,
+    semantic_container: bool,
 }
 
 impl Card {
@@ -799,11 +803,27 @@ impl Card {
         Card {
             child: std::cell::RefCell::new(Some(child)),
             padding: None,
+            // Upstream's default, and the one that matters: a card is a thing,
+            // not a pile of things.
+            semantic_container: true,
         }
     }
 
     pub fn with_padding(mut self, padding: EdgeInsets) -> Self {
         self.padding = Some(padding);
+        self
+    }
+
+    /// Upstream's `semanticContainer`: whether the card is **one stop for a
+    /// reader** or a transparent grouping its children are read through.
+    ///
+    /// True is right for a card that is a single idea -- a photograph with a
+    /// caption is "photograph, caption", one thing to land on. False is right
+    /// for a card that is a container of separately interesting things, where
+    /// folding them together would produce one enormous sentence and no way to
+    /// reach any part of it.
+    pub fn with_semantic_container(mut self, container: bool) -> Self {
+        self.semantic_container = container;
         self
     }
 }
@@ -840,10 +860,11 @@ impl Component for Card {
         let elevation = card
             .elevation
             .map_or(1, |elevation| elevation.round().max(0.0) as u32);
+        let semantic_container = self.semantic_container;
         crate::framework::single(child, move |inner| {
             // Full width, so a column of cards has one left edge and one right
             // edge rather than one pair per card.
-            Box::new(crate::widgets::FullWidth::new(
+            let surface = crate::widgets::FullWidth::new(
                 Container::new()
                     .with_color(surface)
                     .with_corner_radius(radius)
@@ -851,7 +872,20 @@ impl Component for Card {
                     .with_border(1.0, outline)
                     .with_padding(padding)
                     .with_child(inner),
-            ))
+            );
+            // Upstream sets one flag in two places and negates the second:
+            // `Semantics(container: semanticContainer)` outside the material
+            // and `Semantics(explicitChildNodes: !semanticContainer)` inside
+            // it. Both halves say the same thing -- either the card is one
+            // node with its children folded into it, or it is no node at all
+            // and its children stand on their own -- which is exactly what a
+            // merging box is here, so one wrapper says both.
+            if semantic_container {
+                Box::new(crate::render::RenderMergeSemanticsBox::new(surface))
+                    as Box<dyn crate::render::RenderBox>
+            } else {
+                Box::new(surface) as Box<dyn crate::render::RenderBox>
+            }
         })
     }
 }
@@ -5938,6 +5972,87 @@ mod tests {
                 crate::widgets::SizedBox::new(10.0, 10.0)
             }))),
         ))
+    }
+
+    /// The labels a reader is handed for a card holding `words`, in order.
+    /// `container` of `None` leaves the card's own default alone, which is the
+    /// only way to test a default: it appears at no call site.
+    fn card_is_read_as(container: bool, words: &[&str]) -> Vec<String> {
+        card_labels(Some(container), words)
+    }
+
+    fn card_labels(container: Option<bool>, words: &[&str]) -> Vec<String> {
+        crate::semantics::set_enabled(true);
+        // Built fresh inside the closure: `single` may call it more than once,
+        // and a `RenderFlex` is not `Clone`.
+        let words: Vec<String> = words.iter().map(|word| word.to_string()).collect();
+        let card = Card::new(crate::framework::single(
+            crate::framework::leaf(|| crate::widgets::SizedBox::new(0.0, 0.0)),
+            move |_inner| {
+                let mut column = crate::widgets::Column::new()
+                    .with_main_axis_size(crate::render::MainAxisSize::Min);
+                for word in &words {
+                    column = column.push(crate::widgets::Text::new(word.clone()));
+                }
+                column
+            },
+        ));
+        let card = match container {
+            Some(container) => card.with_semantic_container(container),
+            None => card,
+        };
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(component(card));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 300.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(300.0, 300.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .map(|node| node.properties.label.clone())
+            .filter(|label| !label.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn a_card_is_one_stop_for_a_reader_unless_told_otherwise() {
+        // Upstream sets `semanticContainer` in two places and negates the
+        // second, so the pair says one thing: either the card is one node with
+        // its children folded into it, or it is no node and they stand alone.
+        // A photograph with a caption is one thing to land on; a card that is
+        // a container of separately interesting things is not.
+        assert_eq!(
+            card_is_read_as(true, &["Sunset", "Taken in June"]),
+            vec![
+                "Sunset
+Taken in June"
+                    .to_string()
+            ],
+            "one stop, saying both"
+        );
+        assert_eq!(
+            card_is_read_as(false, &["Sunset", "Taken in June"]),
+            vec!["Sunset".to_string(), "Taken in June".to_string()],
+            "two stops, each reachable"
+        );
+        // And the default, which is the half a test that always passes the
+        // flag never reaches: a mutation flipping `semantic_container: true`
+        // to false in the constructor survived until this line existed.
+        assert_eq!(
+            card_labels(None, &["Sunset", "Taken in June"]),
+            vec![
+                "Sunset
+Taken in June"
+                    .to_string()
+            ],
+            "a card nobody configured is still one thing"
+        );
     }
 
     #[test]
