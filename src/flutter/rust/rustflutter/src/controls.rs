@@ -778,6 +778,11 @@ mod radio_semantics_tests {
                         .filter(|node| {
                             !node.properties.label.is_empty()
                                 || !node.properties.value.is_empty()
+                                // The tip counts, for the reason the value was
+                                // added in round 378: a report that shows a
+                                // control with something to say as a blank
+                                // line is the sort of table it replaced.
+                                || !node.properties.tooltip.is_empty()
                                 || node.properties.flags != Default::default()
                                 || node.properties.actions != 0
                         })
@@ -785,6 +790,9 @@ mod radio_semantics_tests {
                             let mut what = format!("{:?}", node.properties.label);
                             if !node.properties.value.is_empty() {
                                 what.push_str(&format!(" ={:?}", node.properties.value));
+                            }
+                            if !node.properties.tooltip.is_empty() {
+                                what.push_str(&format!(" tip={:?}", node.properties.tooltip));
                             }
                             if node.properties.flags != Default::default() {
                                 what.push_str(" +flags");
@@ -928,10 +936,13 @@ mod radio_semantics_tests {
         println!(
             "SPOKEN {:<20} -> {}",
             "TooltipTrigger",
-            spoken_by(component(super::TooltipTrigger::new(
-                100,
-                component(Label::new("Save"))
-            )))
+            // **With a message**, the way round 381 learned to build the
+            // census's controls: a trigger with no tip is not a tooltip, and a
+            // row measuring one answers a question nobody asked.
+            spoken_by(component(
+                super::TooltipTrigger::new(100, component(Label::new("Save")))
+                    .with_message("Save to your drive")
+            ))
             .join(", ")
         );
         println!(
@@ -971,6 +982,196 @@ mod radio_semantics_tests {
             .filter(|node| node.properties.flags.is_live_region)
             .map(|node| node.properties.label.clone())
             .collect()
+    }
+
+    /// Every stop a reader would meet, as `(label, tooltip)`.
+    fn stops_of(widget: crate::framework::AnyWidget) -> Vec<(String, String)> {
+        crate::semantics::set_enabled(true);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            widget,
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(400.0, 400.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(400.0, 400.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        nodes
+            .iter()
+            .filter(|node| !node.properties.label.is_empty() || !node.properties.tooltip.is_empty())
+            .map(|node| {
+                (
+                    node.properties.label.clone(),
+                    node.properties.tooltip.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tip_is_said_beside_the_thing_it_is_about() {
+        // The gap: a screen reader **neither hovers nor long-presses**, so
+        // every way this widget offers to raise the bubble is a way the reader
+        // does not have. Upstream's answer is `Semantics(tooltip: message)` on
+        // the trigger itself (`raw_tooltip.dart`), which stands the tip beside
+        // the control whether or not the bubble is on screen. Without it the
+        // tip's words existed only for people who could see them.
+        assert_eq!(
+            stops_of(crate::framework::component(
+                TooltipTrigger::new(
+                    1,
+                    crate::framework::component(crate::components::Label::new("Save"))
+                )
+                .with_message("Save to your drive")
+            )),
+            vec![("Save".to_string(), "Save to your drive".to_string())],
+            "one stop, carrying both"
+        );
+    }
+
+    #[test]
+    fn a_tip_is_not_the_controls_name() {
+        // The reason it is a field of its own rather than more label: a reader
+        // announces the two separately, and a tip run onto the label would be
+        // read out as what the control is called -- "Save Save to your drive".
+        let stops = stops_of(crate::framework::component(
+            TooltipTrigger::new(
+                1,
+                crate::framework::component(crate::components::Label::new("Save")),
+            )
+            .with_message("Save to your drive"),
+        ));
+        assert_eq!(stops[0].0, "Save");
+    }
+
+    #[test]
+    fn a_trigger_with_nothing_to_add_adds_nothing() {
+        // Upstream's `RawTooltip.build` returns the bare child for an empty
+        // message, and treats null and empty alike when deciding to exclude.
+        // A node with an empty tip tells a reader there is more to hear and
+        // then says nothing.
+        for trigger in [
+            TooltipTrigger::new(
+                1,
+                crate::framework::component(crate::components::Label::new("Save")),
+            ),
+            TooltipTrigger::new(
+                1,
+                crate::framework::component(crate::components::Label::new("Save")),
+            )
+            .with_message(""),
+            TooltipTrigger::new(
+                1,
+                crate::framework::component(crate::components::Label::new("Save")),
+            )
+            .with_message("Save to your drive")
+            .excluded_from_semantics(true),
+        ] {
+            assert_eq!(
+                stops_of(crate::framework::component(trigger)),
+                vec![("Save".to_string(), String::new())]
+            );
+        }
+    }
+
+    #[test]
+    fn a_trigger_with_nothing_to_add_does_not_reshape_the_tree_either() {
+        // The stronger half of the rule above, and the one a node-by-node
+        // check cannot see: the tip is carried by a **fold**, so publishing an
+        // empty one would not merely say nothing -- it would gather two
+        // separate stops into one. A reader who had two things to step through
+        // would find one.
+        // A shape the census already shows as two stops: `Section -> "Settings",
+        // "Wi-Fi"`.
+        let two_stops = || {
+            crate::framework::component(Section::new(
+                "Settings",
+                crate::framework::component(crate::components::ListTile::new("Wi-Fi")),
+            ))
+        };
+        let expected = vec![
+            ("Settings".to_string(), String::new()),
+            ("Wi-Fi".to_string(), String::new()),
+        ];
+        assert_eq!(
+            stops_of(crate::framework::component(TooltipTrigger::new(
+                1,
+                two_stops()
+            ))),
+            expected,
+            "an untipped trigger left the tree alone"
+        );
+        assert_eq!(
+            stops_of(crate::framework::component(
+                TooltipTrigger::new(1, two_stops()).with_message("")
+            )),
+            expected,
+            "an empty message folded two stops into one"
+        );
+    }
+
+    #[test]
+    fn a_tip_inside_a_merge_rises_to_the_stop_that_holds_it() {
+        // A trigger does not have to be the outermost thing. Folded into a
+        // region that merges for its own reasons -- a banner, say -- the tip
+        // has to travel up to the node that ends up holding the words, or the
+        // control keeps a tip on a node that no longer exists.
+        assert_eq!(
+            stops_of(crate::semantics::announces_itself(
+                crate::framework::component(
+                    TooltipTrigger::new(
+                        1,
+                        crate::framework::component(crate::components::Label::new("Save"))
+                    )
+                    .with_message("Save to your drive")
+                )
+            )),
+            vec![("Save".to_string(), "Save to your drive".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_config_carries_its_tip_across_the_seam_to_the_collector() {
+        // `SemanticsConfiguration::to_properties` is the hand-off between the
+        // upstream-shaped config and the collector this crate walks with, and
+        // it listed every string but this one -- so a tip that survived every
+        // merge rule above would be dropped on the way out. Tested directly
+        // because no widget reaches the collector through that seam yet: the
+        // rule is real, the producer is still to come, and a test that pretends
+        // otherwise would be measuring nothing.
+        let mut config = crate::semantics::SemanticsConfiguration::default();
+        config.tooltip = "Save to your drive".to_string();
+        assert_eq!(config.to_properties().tooltip, "Save to your drive");
+    }
+
+    #[test]
+    fn the_nearer_tip_is_the_one_a_reader_hears() {
+        // Upstream's `SemanticsConfiguration.absorb` takes a child's tooltip
+        // only when it has none of its own, and does **not** join two the way
+        // it joins labels: a tip is one sentence about one control, and a pair
+        // run together would be a sentence about neither.
+        let stops = stops_of(crate::framework::component(
+            TooltipTrigger::new(
+                1,
+                crate::framework::component(
+                    TooltipTrigger::new(
+                        2,
+                        crate::framework::component(crate::components::Label::new("Save")),
+                    )
+                    .with_message("the inner tip"),
+                ),
+            )
+            .with_message("the outer tip"),
+        ));
+        assert_eq!(
+            stops,
+            vec![("Save".to_string(), "the outer tip".to_string())]
+        );
     }
 
     #[test]
@@ -2910,6 +3111,24 @@ pub struct TooltipTrigger {
     child: RefCell<Option<AnyWidget>>,
     trigger_mode: TooltipTriggerMode,
     on_show: Option<Rc<dyn Fn(bool)>>,
+    /// Upstream's `Tooltip.message`, kept here even though the words are
+    /// painted by [`TooltipBubble`], because this is the only place they can
+    /// be *said*.
+    ///
+    /// A screen reader neither hovers nor long-presses, so every trigger this
+    /// widget offers is a way in the reader does not have. Upstream's answer
+    /// is `Semantics(tooltip: message)` on the trigger itself
+    /// (`raw_tooltip.dart`), which puts the tip beside the control whether or
+    /// not the bubble is on screen. Without it the tip's words exist only for
+    /// people who can see them.
+    message: Option<String>,
+    /// Upstream's `Tooltip.excludeFromSemantics`, defaulting to false.
+    ///
+    /// It is for an application that says the same thing itself in a better
+    /// place -- upstream's doc calls it "going to provide its own custom
+    /// semantics label" -- and it exists so that saying it twice is a choice
+    /// rather than the only option.
+    excluded_from_semantics: bool,
 }
 
 impl TooltipTrigger {
@@ -2919,6 +3138,8 @@ impl TooltipTrigger {
             child: RefCell::new(Some(child)),
             trigger_mode: TooltipTriggerMode::default(),
             on_show: None,
+            message: None,
+            excluded_from_semantics: false,
         }
     }
 
@@ -2926,6 +3147,35 @@ impl TooltipTrigger {
     pub fn with_trigger_mode(mut self, mode: TooltipTriggerMode) -> Self {
         self.trigger_mode = mode;
         self
+    }
+
+    /// Upstream's `Tooltip.message`: the words the tip says. See
+    /// [`TooltipTrigger::message`] for why the trigger holds them when the
+    /// bubble paints them.
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// Upstream's `Tooltip.excludeFromSemantics`.
+    pub fn excluded_from_semantics(mut self, excluded: bool) -> Self {
+        self.excluded_from_semantics = excluded;
+        self
+    }
+
+    /// What a screen reader is told the tip says, or `None` for a trigger with
+    /// nothing to add.
+    ///
+    /// Empty is the same as absent, which is upstream's rule twice over:
+    /// `RawTooltip.build` returns the bare child when the message is empty,
+    /// and treats a null and an empty string alike when deciding whether to
+    /// exclude. A node carrying an empty tip would tell a reader there is
+    /// something more to hear and then say nothing.
+    pub fn semantic_tooltip(&self) -> Option<&str> {
+        if self.excluded_from_semantics {
+            return None;
+        }
+        self.message.as_deref().filter(|words| !words.is_empty())
     }
 
     /// Runs `show(state, visible)` when the tooltip should appear or
@@ -2977,8 +3227,24 @@ impl Component for TooltipTrigger {
         // Upstream wraps the child in a `_ExclusiveMouseRegion` around a
         // `Listener(onPointerDown:)`; the trigger gestures here arrive through
         // the region's own handlers, so the wrapper is the region.
-        single(child, move |inner| {
+        let triggered = single(child, move |inner| {
             Pointer::new(id, inner).with_handlers(handlers.clone())
+        });
+        let Some(message) = self.semantic_tooltip() else {
+            return triggered;
+        };
+        // **A fold, not an annotation**, for the reason round 381 learned on
+        // the ink well: a tip belongs *to* the control it describes, and an
+        // annotation with no words of its own would stand a blank node beside
+        // the labelled one rather than adding to it. Upstream reaches the same
+        // single node by config merging -- its `Semantics(tooltip: ...)` is
+        // not a container.
+        let properties = crate::semantics::SemanticsProperties {
+            tooltip: message.to_string(),
+            ..crate::semantics::SemanticsProperties::label("")
+        };
+        single(triggered, move |inner| {
+            crate::render::RenderMergeSemanticsBox::new(inner).with_properties(properties.clone())
         })
     }
 }

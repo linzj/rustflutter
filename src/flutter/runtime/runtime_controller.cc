@@ -134,7 +134,7 @@ static_assert(sizeof(RfAppInterface) == sizeof(void*) * 17,
 // the padding between them is part of the answer. Only asserted where the two
 // 64-bit ABIs this builds for agree; app.rs skips it on 32-bit for the same
 // reason and carries the matching number.
-static_assert(sizeof(void*) != 8 || sizeof(RfSemanticsNode) == 128,
+static_assert(sizeof(void*) != 8 || sizeof(RfSemanticsNode) == 136,
               "RfSemanticsNode has drifted from its Rust mirror in app.rs");
 
 bool RuntimeController::LaunchApplication() {
@@ -600,6 +600,7 @@ SemanticsNodeUpdates RustSemanticsNodesToUpdates(const RfSemanticsNode* nodes,
     out.hint = text(in.hint);
     out.increasedValue = text(in.increased_value);
     out.decreasedValue = text(in.decreased_value);
+    out.tooltip = text(in.tooltip);
 
     out.rect = SkRect::MakeLTRB(in.left, in.top, in.right, in.bottom);
     out.scrollPosition = in.scroll_position;

@@ -121,6 +121,11 @@ typedef struct RfSemanticsNode {
   const char* hint;
   const char* increased_value;
   const char* decreased_value;
+  // What the control's tip says -- flutter::SemanticsNode::tooltip. Kept apart
+  // from the label because a screen reader announces it apart: the label is
+  // what the thing is, the tip is the extra sentence written for whoever
+  // hovers over it.
+  const char* tooltip;
   // NaN for a node that does not scroll, which is what upstream uses for the
   // same "no answer".
   double scroll_position;

@@ -518,6 +518,20 @@ pub struct SemanticsProperties {
     /// What the value would become if increased or decreased.
     pub increased_value: String,
     pub decreased_value: String,
+    /// What the control's tip says -- upstream's `SemanticsConfiguration.tooltip`,
+    /// which its `Semantics(tooltip: ...)` fills in and `raw_tooltip.dart` is
+    /// the only widget in the framework to use.
+    ///
+    /// **Not part of the label**, and that is the whole reason it is a field
+    /// of its own: the label is what the thing is and the tip is the extra
+    /// sentence somebody wrote for whoever hovers over it. Appended to the
+    /// label it would be read out as the control's name.
+    ///
+    /// It sat on `SemanticsConfiguration` and `SemanticsData` from the day
+    /// those were ported and never on this struct, so nothing a widget could
+    /// write reached either of them -- the shape of a rule with no producer
+    /// these rounds keep turning up.
+    pub tooltip: String,
     /// The reading direction of everything said above: `label`, `value`,
     /// `hint`, and the two value forecasts.
     ///
@@ -1747,6 +1761,16 @@ fn open(id: i32, properties: SemanticsProperties, rect: (f32, f32, f32, f32)) ->
         // Inside a merge, a descendant says its piece into the merging node
         // rather than becoming a stop of its own.
         if let Some(&into) = collector.merging.last() {
+            // Upstream's `SemanticsConfiguration.absorb`: the tip is taken
+            // only if the merging node has none. Unlike the label, two tips
+            // are not joined -- a tip is one sentence about one control, and
+            // a pair run together would be a sentence about neither.
+            if !properties.tooltip.is_empty() {
+                let node = &mut collector.nodes[into];
+                if node.properties.tooltip.is_empty() {
+                    node.properties.tooltip = properties.tooltip;
+                }
+            }
             let label = properties.label;
             if !label.is_empty() {
                 let node = &mut collector.nodes[into];
@@ -3885,6 +3909,10 @@ impl SemanticsConfiguration {
             hint: self.hint.string().to_string(),
             increased_value: self.increased_value.string().to_string(),
             decreased_value: self.decreased_value.string().to_string(),
+            // Dropped here until now, which is the other half of the same
+            // hole: a config could carry a tip through every merge rule above
+            // and this seam would throw it away on the way to the collector.
+            tooltip: self.tooltip.clone(),
             text_direction: self.text_direction,
             flags: self.flags,
             actions: self

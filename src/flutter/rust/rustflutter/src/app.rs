@@ -197,6 +197,13 @@ pub struct RfSemanticsNode {
     pub hint: *const c_char,
     pub increased_value: *const c_char,
     pub decreased_value: *const c_char,
+    /// Upstream's `SemanticsNode.tooltip`: what the control's tip says.
+    ///
+    /// A separate string rather than part of the label because a screen
+    /// reader announces it separately -- the label is what the thing is, the
+    /// tip is the extra sentence somebody wrote for whoever hovers. Folded
+    /// into the label it would be read as the control's name.
+    pub tooltip: *const c_char,
     pub scroll_position: f64,
     pub scroll_extent_min: f64,
     pub scroll_extent_max: f64,
@@ -225,7 +232,7 @@ pub struct RfSemanticsNode {
 /// the size it is.
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
-    size_of::<RfSemanticsNode>() == 128,
+    size_of::<RfSemanticsNode>() == 136,
     "RfSemanticsNode has drifted from rust_app_api.h"
 );
 
@@ -343,6 +350,18 @@ struct PackedSemantics {
     children: Vec<Vec<i32>>,
 }
 
+/// How many strings each node contributes to [`PackedSemantics::strings`], and
+/// the reason it is a name rather than a `5` written twice.
+///
+/// The two places that had the number -- the reserve and the stride into the
+/// flat vector -- have to agree with the number of `push` calls below or every
+/// node after the first reads its neighbour's words. Adding the tooltip in
+/// round 382 broke exactly that: the pushes went to six and the stride stayed
+/// at five, and what a reader would have heard is the *previous* control's
+/// label. The FFI test caught it, and this constant is so that the next field
+/// cannot ask the same question.
+const STRINGS_PER_NODE: usize = 6;
+
 impl PackedSemantics {
     fn of(nodes: &[crate::semantics::SemanticsNode]) -> PackedSemantics {
         // A string the framework knows cannot contain a NUL, since it came
@@ -351,7 +370,8 @@ impl PackedSemantics {
         let owned =
             |text: &str| std::ffi::CString::new(text.replace('\0', " ")).unwrap_or_default();
 
-        let mut strings: Vec<std::ffi::CString> = Vec::with_capacity(nodes.len() * 5);
+        let mut strings: Vec<std::ffi::CString> =
+            Vec::with_capacity(nodes.len() * STRINGS_PER_NODE);
         let mut children: Vec<Vec<i32>> = Vec::with_capacity(nodes.len());
         for node in nodes {
             strings.push(owned(&node.properties.label));
@@ -359,6 +379,7 @@ impl PackedSemantics {
             strings.push(owned(&node.properties.hint));
             strings.push(owned(&node.properties.increased_value));
             strings.push(owned(&node.properties.decreased_value));
+            strings.push(owned(&node.properties.tooltip));
             children.push(node.children.clone());
         }
 
@@ -366,7 +387,7 @@ impl PackedSemantics {
             .iter()
             .enumerate()
             .map(|(index, node)| {
-                let base = index * 5;
+                let base = index * STRINGS_PER_NODE;
                 RfSemanticsNode {
                     id: node.id,
                     flags: pack_semantics_flags(&node.properties.flags),
@@ -380,6 +401,7 @@ impl PackedSemantics {
                     hint: strings[base + 2].as_ptr(),
                     increased_value: strings[base + 3].as_ptr(),
                     decreased_value: strings[base + 4].as_ptr(),
+                    tooltip: strings[base + 5].as_ptr(),
                     scroll_position: node.properties.scroll_position as f64,
                     scroll_extent_min: node.properties.scroll_extent_min as f64,
                     scroll_extent_max: node.properties.scroll_extent_max as f64,
@@ -2059,6 +2081,7 @@ mod tests {
                 hint: "first hint".to_string(),
                 increased_value: "first up".to_string(),
                 decreased_value: "first down".to_string(),
+                tooltip: "first tip".to_string(),
                 text_direction: Some(TextDirection::Ltr),
                 actions: 5,
                 scroll_position: 12.0,
@@ -2084,6 +2107,7 @@ mod tests {
                 hint: "second hint".to_string(),
                 increased_value: "second up".to_string(),
                 decreased_value: "second down".to_string(),
+                tooltip: "second tip".to_string(),
                 text_direction: Some(TextDirection::Rtl),
                 actions: 6,
                 ..SemanticsProperties::label("second label")
@@ -2136,6 +2160,7 @@ mod tests {
         assert_eq!(read(first.hint), "first hint");
         assert_eq!(read(first.increased_value), "first up");
         assert_eq!(read(first.decreased_value), "first down");
+        assert_eq!(read(first.tooltip), "first tip");
         assert_eq!(first.scroll_position, 12.0);
         assert_eq!(first.scroll_extent_min, 1.0);
         assert_eq!(first.scroll_extent_max, 100.0);
@@ -2156,6 +2181,7 @@ mod tests {
         assert_eq!(read(second.hint), "second hint");
         assert_eq!(read(second.increased_value), "second up");
         assert_eq!(read(second.decreased_value), "second down");
+        assert_eq!(read(second.tooltip), "second tip");
         assert_eq!(
             second.text_direction,
             pack_text_direction(Some(TextDirection::Rtl))
@@ -2225,7 +2251,7 @@ mod tests {
         assert_eq!(children, vec![22]);
         // Named so the fields are not "never read" -- they are read, by the
         // pointers above, which is the whole point of keeping them.
-        assert_eq!(moved_again.strings.len(), 15);
+        assert_eq!(moved_again.strings.len(), 3 * super::STRINGS_PER_NODE);
         assert_eq!(moved_again.children.len(), 3);
     }
 

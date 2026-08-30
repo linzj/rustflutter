@@ -883,11 +883,13 @@ struct SemanticsFixture {
   std::string first_hint = "first hint";
   std::string first_up = "first up";
   std::string first_down = "first down";
+  std::string first_tip = "first tip";
   std::string second_label = "second label";
   std::string second_value = "second value";
   std::string second_hint = "second hint";
   std::string second_up = "second up";
   std::string second_down = "second down";
+  std::string second_tip = "second tip";
   std::vector<int32_t> first_children = {22};
   std::vector<int32_t> second_children = {};
 
@@ -906,6 +908,7 @@ struct SemanticsFixture {
     first.hint = first_hint.c_str();
     first.increased_value = first_up.c_str();
     first.decreased_value = first_down.c_str();
+    first.tooltip = first_tip.c_str();
     first.scroll_position = 12.0;
     first.scroll_extent_min = 1.0;
     first.scroll_extent_max = 100.0;
@@ -928,6 +931,7 @@ struct SemanticsFixture {
     second.hint = second_hint.c_str();
     second.increased_value = second_up.c_str();
     second.decreased_value = second_down.c_str();
+    second.tooltip = second_tip.c_str();
     second.children = nullptr;
     second.child_count = 0;
     second.text_direction = 1;
@@ -966,6 +970,7 @@ TEST(RustSemantics, EveryFieldArrivesFromTheNodeItBelongsTo) {
   EXPECT_EQ(first.hint, "first hint");
   EXPECT_EQ(first.increasedValue, "first up");
   EXPECT_EQ(first.decreasedValue, "first down");
+  EXPECT_EQ(first.tooltip, "first tip");
   EXPECT_EQ(first.scrollPosition, 12.0);
   EXPECT_EQ(first.scrollExtentMin, 1.0);
   EXPECT_EQ(first.scrollExtentMax, 100.0);
@@ -982,6 +987,7 @@ TEST(RustSemantics, EveryFieldArrivesFromTheNodeItBelongsTo) {
   EXPECT_EQ(second.hint, "second hint");
   EXPECT_EQ(second.increasedValue, "second up");
   EXPECT_EQ(second.decreasedValue, "second down");
+  EXPECT_EQ(second.tooltip, "second tip");
   EXPECT_EQ(second.textDirection, 1);
   EXPECT_TRUE(second.flags.isHeader);
   EXPECT_FALSE(second.flags.isButton);

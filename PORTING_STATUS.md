@@ -25665,3 +25665,77 @@ C++ 34 个 gtest 全过；三个输出目录与三个测试二进制全部重建
 提示的内容对读屏用户完全不存在（提示只在悬停/长按时出现，
 而读屏用户两样都不做，所以这是**唯一**的一条路）。
 `DataTable -> "Name", "Size"` 留到之后：那要先查本项目的表有没有排序这回事。
+
+---
+
+## 第 382 轮：提示语只对看得见的人存在——一路从控件补到 engine
+
+按“下一步”读 `tooltip.dart`。先纠正我上一轮写下的判断：
+上游给的**不是 `label`，是 `tooltip`**（`raw_tooltip.dart:902`）：
+
+```dart
+Widget result = Semantics(
+  tooltip: excludeFromSemantics ? null : widget.semanticsTooltip,
+  child: widget.child,
+);
+```
+
+**分开的字段，因为读屏器分开念**：label 是“这是什么”，
+tip 是“有人为悬停的人多写的一句”。拼进 label 会被当成控件的名字念出来。
+
+而缺口比一个属性大：读屏用户**既不悬停也不长按**，
+所以这个控件提供的每一种触发方式，对他们都不是路。
+`Semantics(tooltip:)` 是**唯一**的一条。本项目一句都没有。
+
+### 一条规则，三层都没有生产者
+
+* `TooltipTrigger` **根本不存 message**（本项目把上游的 `Tooltip` 拆成了
+  画泡泡的 `TooltipBubble` 和管手势的 `TooltipTrigger`）。
+* `SemanticsProperties`（控件面向的那个结构）**没有 `tooltip` 字段**——
+  而 `SemanticsConfiguration` 和 `SemanticsData` 从移植第一天就有。
+  也就是说下面两层的规则齐备，**上面没有任何东西能写进去**。
+  连接两者的 `to_properties` 也逐字段抄漏了这一个。
+* FFI 那一层 `RfSemanticsNode` 没有这个字符串，
+  engine 的 `SemanticsNode::tooltip` 一直空着。
+
+四处一起补：控件（`with_message` / `excluded_from_semantics`）、
+`SemanticsProperties`、`to_properties`、以及 FFI
+（结构体 + `rust_app_api.h` + `runtime_controller.cc` + 两侧 `static_assert` 128→136）。
+折叠时按上游 `absorb` 的规则吸收：**空才拿，且两条 tip 不拼接**——
+label 拼起来还是一句话，两条 tip 拼起来是一句关于两个控件的话。
+
+**沿用第 381 轮的教训**：用折叠而不是注解。tip 属于它描述的那个控件。
+
+### 一个 `5` 差点把每个节点的话都错位
+
+FFI 打包处 `let base = index * 5;` 是个字面量，
+而我把每节点的字符串推到了 6 个。**第二个节点开始读到的是上一个控件的 label。**
+FFI 测试当场抓住。改成具名常量 `STRINGS_PER_NODE`，
+两处引用和 push 的条数从此只能一起改。
+
+### 变异扫描 9 个，第一遍 6 红、3 绿——三个都是真窟窿
+
+* **空 message 也发布**——节点层面看不出差别，
+  但 tip 是靠**折叠**带的：空 tip 会把两个站**并成一个**。
+  换成一个本来两站的形状（`Section`）来断言。
+* **seam 处把 tip 扔掉**——`to_properties` 目前**没有生产者**，
+  所以直接测这条 seam，并在注释里如实写明“规则先到、生产者未到”。
+* **折叠的 tip 不上浮**——我的测试里 tip 都在最外层。
+  补一条：把带 tip 的触发器放进一个因为别的原因而合并的区域里。
+
+第二遍**九个全红**。
+
+尺子：十六把全部 exit 0——`stale_engines` 在 ninja 之前**先红了一次**，
+因为我刚改完 `runtime_controller.cc`，这正是它该报的。重建后干净。
+门：Rust 6368 通过、`cargo fmt --check` 干净；C++ 34 个 gtest 全过
+（FFI 测试两侧都加了 tip 字段）；三个输出目录与三个测试二进制全部重建。
+清单：`TooltipTrigger -> "Save" tip="Save to your drive"`，
+并给清单加上了显示 tip 的能力——它此前**看不见** tip，
+和第 378 轮 `ProgressBar` 的 value 是同一个盲区。
+
+**下一步**：清单只剩 `DataTable -> "Name", "Size"` 没查。
+上游 `DataTable` 的表头带 `sortColumnIndex`/`sortAscending`/`onSort`，
+读屏用户需要知道**这一列是不是当前排序列、朝哪个方向**——
+这是**孩子扛不动的状态**（一个 `Text("Name")` 不知道自己是表头，
+更不知道排序）。先查本项目的 `DataTable` 有没有排序这回事：
+**没有的话这一轮就不是接 semantics，而是先补排序**，两者大小完全不同。
