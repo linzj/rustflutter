@@ -26465,3 +26465,53 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 这一轮就是**把它传下去**（`docked_at` 已经备好了缝）。
 **如果 Scaffold 根本还没摆 FAB**，那就是另一件事、另一个大小，
 届时改做"Scaffold 摆放 FAB"而不是硬接通道。
+
+---
+
+## 第 395 轮：Scaffold 终于有了浮动按钮——十九种摆法算好了，从来没人调用
+
+按“下一步”先查 `Scaffold` 怎么摆 FAB。**它根本没有 FAB**——
+没有这个字段，也没有底栏字段。所以那条通道接不了，
+**这一轮的活不是通道，是按钮本身**。
+
+`fab_location.rs` 里东西全齐：`ScaffoldPrelayoutGeometry`、
+`StandardFabLocation::get_offset`、上游十九种摆法的常量，**而且都有测试**。
+也就是说：**位置算得对，却没有任何应用能把按钮放到屏幕上**——
+和上一轮底栏那个缺口是同一个形状，两端齐全、中间没人接。
+
+写了个 `FloatingButtonOver` 渲染对象：布局页面、**松约束**布局按钮
+（上游 `BoxConstraints.loose`，否则按钮会被撑成整页），
+用量到的两个尺寸拼出 geometry，交给 location 算偏移。
+命中测试按钮优先——它画在页面之上，手指落在上面就是它。
+
+**记一条真实的限制**：geometry 的 `content_top` 传的是 0 而不是 app bar 的高度，
+因为**那个高度量不到**——它在被交进来的那棵页面里。
+于是六个 `*_TOP` 摆法会贴在 scaffold 顶部而不是 bar 下沿；
+另外十三种（包括默认的 `END_FLOAT`）不读它。
+这和 `extend_body_behind_app_bar` 抬不起 body 内边距**是同一个洞**
+（缺一个 `LayoutBuilder` 形状的东西），两个症状写在一起了。
+
+### 一个自己造的 bug，被既有测试当场抓住
+
+孩子列表是 `[app_bar?, body, 按钮?, scrim?, drawer?]`，闭包按顺序取。
+我第一版写的是 `rendered.next().filter(|_| has_button)`——
+**`next()` 在 filter 之前就已经取走了**，于是没有按钮时它偷走了 scrim，
+抽屉失去背板。`an_open_drawer_covers_the_page_behind_a_scrim` 立刻红。
+改成"推了才取"。
+
+### 变异扫描 5 个，第一遍 4 红
+
+唯一的绿是**键盘**：上游把键盘的 inset 折进 `minInsets`，
+所以按钮会**跟着键盘往上升**，而不是被挡住一半——
+恰恰在填表单的时候。本项目的 scaffold 已经会为键盘缩短 *body*，
+但浮在页面上的按钮不会自己动。补了测试，转红：五个全红。
+
+尺子：十六把全部 exit 0。门：Rust 6406 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：现在两端都在手上了——**把上一轮备好的那道缝接上**：
+`Scaffold` 把按钮的矩形交给底栏，让 `docked_at` 有人调用。
+但**先确认一件事**：`Scaffold` 目前**没有底栏槽位**
+（没有 `bottomNavigationBar` 字段），所以"scaffold 同时摆按钮和底栏"这件事
+本身还不成立。**先补底栏槽位**，再谈把矩形传下去——
+否则又会像这一轮开头那样，接一条没有两端的通道。

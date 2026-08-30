@@ -2094,6 +2094,118 @@ impl Component for AppBar {
 }
 
 /// A title bar over a body, on the theme's background.
+/// The page with a floating action button placed over it.
+///
+/// A render object because **where the button goes depends on two measured
+/// sizes** -- the scaffold's and the button's -- and upstream works it out in
+/// `_ScaffoldLayout.performLayout` for the same reason. Everything that
+/// decides the offset is already ported and tested in
+/// [`crate::fab_location`]; until now nothing called it, because this
+/// scaffold had no button to place.
+struct FloatingButtonOver {
+    page: crate::render::BoxedRender,
+    button: crate::render::BoxedRender,
+    location: crate::fab_location::FloatingActionButtonLocation,
+    /// What the keyboard is standing on, which upstream folds into `minInsets`
+    /// so a button rises above it rather than hiding behind it.
+    bottom_inset: f32,
+    text_direction: crate::direction::TextDirection,
+    size: Size,
+    button_offset: crate::render::Offset,
+}
+
+impl FloatingButtonOver {
+    /// Upstream's `ScaffoldPrelayoutGeometry`, filled in from what has been
+    /// measured.
+    ///
+    /// `content_top` is **0 rather than the app bar's height**, and that is a
+    /// real limitation rather than a simplification: the bar's measured height
+    /// is not available here -- it is inside the page this object was handed --
+    /// so the six `*_TOP` placements sit at the top of the scaffold instead of
+    /// just under the bar. The other thirteen, including every default, do not
+    /// read it. The same missing measurement is why
+    /// [`Scaffold::extend_body_behind_app_bar`] cannot raise the body's
+    /// padding either; one `LayoutBuilder`-shaped hole, two symptoms.
+    fn geometry(&self, button: Size) -> crate::fab_location::ScaffoldPrelayoutGeometry {
+        crate::fab_location::ScaffoldPrelayoutGeometry {
+            floating_action_button_size: button,
+            bottom_sheet_size: Size::ZERO,
+            content_bottom: (self.size.height - self.bottom_inset).max(0.0),
+            content_top: 0.0,
+            min_insets: EdgeInsets::only(0.0, 0.0, 0.0, self.bottom_inset),
+            min_view_padding: EdgeInsets::default(),
+            scaffold_size: self.size,
+            snack_bar_size: Size::ZERO,
+            material_banner_size: Size::ZERO,
+            text_direction: self.text_direction,
+        }
+    }
+}
+
+impl crate::render::RenderBox for FloatingButtonOver {
+    fn layout(&mut self, constraints: crate::render::BoxConstraints) -> Size {
+        self.size = self.page.layout_child(constraints, true);
+        // Loose, so the button is its own size rather than the page's --
+        // upstream lays the button out with `BoxConstraints.loose(size)` for
+        // exactly that.
+        let button = self.button.layout_child(
+            crate::render::BoxConstraints::loose(self.size.width, self.size.height),
+            true,
+        );
+        use crate::fab_location::StandardFabLocation;
+        self.button_offset = self.location.get_offset(&self.geometry(button));
+        self.size
+    }
+
+    fn size(&self) -> Size {
+        self.size
+    }
+
+    fn visit_children(
+        &self,
+        visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
+    ) {
+        visit(&self.page, crate::render::Offset::ZERO);
+        visit(&self.button, self.button_offset);
+    }
+
+    fn visit_children_for_semantics(
+        &self,
+        visit: &mut dyn FnMut(&dyn crate::render::RenderBox, crate::render::Offset),
+    ) {
+        visit(&self.page, crate::render::Offset::ZERO);
+        visit(&self.button, self.button_offset);
+    }
+
+    fn hit_test(
+        &self,
+        position: crate::render::Offset,
+        result: &mut crate::render::HitTestResult,
+    ) -> bool {
+        // The button first: it is painted over the page, so it is what a
+        // finger on it means.
+        let local = crate::render::Offset::new(
+            position.dx - self.button_offset.dx,
+            position.dy - self.button_offset.dy,
+        );
+        if self.button.hit_test(local, result) {
+            return true;
+        }
+        self.page.hit_test(position, result)
+    }
+
+    fn paint(&self, context: &mut crate::render::PaintContext, offset: crate::render::Offset) {
+        self.page.paint(context, offset);
+        self.button.paint(
+            context,
+            crate::render::Offset::new(
+                offset.dx + self.button_offset.dx,
+                offset.dy + self.button_offset.dy,
+            ),
+        );
+    }
+}
+
 pub struct Scaffold {
     app_bar: std::cell::RefCell<Option<AnyWidget>>,
     body: std::cell::RefCell<Option<AnyWidget>>,
@@ -2134,6 +2246,11 @@ pub struct Scaffold {
     /// which is a `LayoutBuilder` upstream and has no counterpart here; a page
     /// using this pads its own content down instead.
     extend_body_behind_app_bar: bool,
+    /// Upstream's `Scaffold.floatingActionButton`.
+    floating_action_button: std::cell::RefCell<Option<AnyWidget>>,
+    /// Upstream's `floatingActionButtonLocation`, whose default is
+    /// `endFloat` -- the corner every Material application's button sits in.
+    fab_location: crate::fab_location::FloatingActionButtonLocation,
 }
 
 impl Scaffold {
@@ -2148,11 +2265,29 @@ impl Scaffold {
             drawer_handlers: PointerHandlers::new(),
             resize_to_avoid_bottom_inset: true,
             extend_body_behind_app_bar: false,
+            floating_action_button: std::cell::RefCell::new(None),
+            fab_location: crate::fab_location::FloatingActionButtonLocation::END_FLOAT,
         }
     }
 
     /// Whether the body reaches up behind the app bar.
     /// Upstream's `Scaffold.extendBodyBehindAppBar`.
+    /// Upstream's `floatingActionButton`: the round button that sits over the
+    /// page rather than in it.
+    pub fn with_floating_action_button(self, button: AnyWidget) -> Self {
+        *self.floating_action_button.borrow_mut() = Some(button);
+        self
+    }
+
+    /// Upstream's `floatingActionButtonLocation`. Defaults to `END_FLOAT`.
+    pub fn with_fab_location(
+        mut self,
+        location: crate::fab_location::FloatingActionButtonLocation,
+    ) -> Self {
+        self.fab_location = location;
+        self
+    }
+
     pub fn with_extend_body_behind_app_bar(mut self, extend: bool) -> Self {
         self.extend_body_behind_app_bar = extend;
         self
@@ -2278,6 +2413,9 @@ impl Component for Scaffold {
         // from nothing -- including the focused field's editing session.
         // Upstream's `_BodyBuilder` is unconditional for the same reason.
         let resizes = self.resize_to_avoid_bottom_inset;
+        let floating_action_button = self.floating_action_button.borrow().clone();
+        let location = self.fab_location;
+        let text_direction = crate::direction::direction_of(context);
         let body = if has_app_bar || resizes {
             let data = *crate::media_query::media_query_of(context);
             let data = if has_app_bar {
@@ -2299,6 +2437,13 @@ impl Component for Scaffold {
             children.push(app_bar);
         }
         children.push(body);
+        // **After the body, before the drawer pair**, because the closure
+        // below pulls them out in this order: a button pushed later would be
+        // taken for the scrim.
+        let has_button = floating_action_button.is_some();
+        if let Some(button) = floating_action_button {
+            children.push(button);
+        }
         if drawer_open {
             // The two overlay layers, in paint order: the scrim over the page,
             // the drawer over the scrim. Upstream's `Stack` in
@@ -2367,6 +2512,27 @@ impl Component for Scaffold {
                             },
                         ),
                 ),
+            };
+
+            // The button goes over the page and **under the drawer**, which is
+            // upstream's stacking order: a drawer that has been pulled out
+            // covers everything the scaffold was showing, button included.
+            // Pulled **only when one was pushed**: `next()` runs before any
+            // filter on its result, so asking unconditionally and discarding
+            // the answer takes the scrim instead and the drawer loses its
+            // backdrop.
+            let button = if has_button { rendered.next() } else { None };
+            let page: crate::render::BoxedRender = match button {
+                None => page,
+                Some(button) => RenderRef::new(FloatingButtonOver {
+                    page,
+                    button,
+                    location,
+                    bottom_inset,
+                    text_direction,
+                    size: Size::ZERO,
+                    button_offset: crate::render::Offset::ZERO,
+                }),
             };
 
             if !drawer_open {
@@ -5109,6 +5275,130 @@ mod tests {
 
     /// An open drawer is hit at its own edge; everything else on the page is
     /// behind the scrim, and a closed drawer is not there at all.
+    /// Where the scaffold put its button, by finding the mark it paints.
+    fn button_corner(scaffold: Scaffold) -> (f32, f32) {
+        const MARK: Color = Color(0xff00ff00);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(scaffold.with_floating_action_button(leaf(|| {
+                Container::new().with_size(56.0, 56.0).with_color(MARK)
+            }))),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect {
+                    left, top, argb, ..
+                } if argb == MARK.0 => Some((left, top)),
+                _ => None,
+            })
+            .expect("the button was not painted")
+    }
+
+    #[test]
+    fn a_scaffold_places_its_floating_action_button() {
+        // The gap: `fab_location.rs` works out where every one of upstream's
+        // nineteen placements goes, and is tested doing it -- and **nothing
+        // called it**, because this scaffold had no button. So the maths was
+        // right and no application could put a button on the screen.
+        //
+        // `END_FLOAT` is upstream's default and the corner nearly every
+        // Material application uses: 16 in from the right, 16 up from the
+        // bottom.
+        let (left, top) = button_corner(Scaffold::new(leaf(|| Empty)));
+        assert_eq!(left, 400.0 - 56.0 - 16.0);
+        assert_eq!(top, 800.0 - 56.0 - 16.0);
+    }
+
+    #[test]
+    fn the_location_decides_the_corner() {
+        // Not one placement hard-coded: the scaffold asks the location, which
+        // is the whole point of the nineteen constants already ported.
+        let centred = button_corner(
+            Scaffold::new(leaf(|| Empty))
+                .with_fab_location(crate::fab_location::FloatingActionButtonLocation::CENTER_FLOAT),
+        );
+        assert_eq!(centred.0, (400.0 - 56.0) / 2.0);
+
+        let started = button_corner(
+            Scaffold::new(leaf(|| Empty))
+                .with_fab_location(crate::fab_location::FloatingActionButtonLocation::START_FLOAT),
+        );
+        assert_eq!(started.0, 16.0);
+    }
+
+    #[test]
+    fn the_button_rises_above_the_keyboard() {
+        // Upstream folds the keyboard's inset into `minInsets`, so a floating
+        // button climbs with the keyboard instead of sitting behind it. This
+        // scaffold already shortens its *body* for the keyboard; the button
+        // floats over the page and would otherwise stay where it was, half
+        // covered, exactly when a form is being filled in.
+        const MARK: Color = Color(0xff00ff00);
+        let keyboard = 300.0;
+        let data = crate::media_query::MediaQueryData {
+            view_insets: EdgeInsets::only(0.0, 0.0, 0.0, keyboard),
+            ..crate::media_query::MediaQueryData::default()
+        };
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::media_query::MediaQuery::new(
+                data,
+                component(
+                    Scaffold::new(leaf(|| Empty)).with_floating_action_button(leaf(|| {
+                        Container::new().with_size(56.0, 56.0).with_color(MARK)
+                    })),
+                ),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        let mut layers = crate::engine::LayerTree::new(600, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(600.0, 900.0));
+            crate::render::RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let top = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                crate::engine_test_stubs::Drawn::Rect { top, argb, .. } if argb == MARK.0 => {
+                    Some(top)
+                }
+                _ => None,
+            })
+            .expect("the button was not painted");
+        assert_eq!(top, 800.0 - keyboard - 56.0 - 16.0);
+    }
+
+    #[test]
+    fn a_scaffold_with_no_button_is_left_exactly_as_it_was() {
+        // The positioner is only wrapped around the page when there is
+        // something to place, and the scaffold's other slots keep their
+        // positions in the list either way -- the first version pulled the
+        // button unconditionally and took the drawer's scrim instead.
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            component(Scaffold::new(leaf(|| Empty))),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        let size = crate::render::RenderBox::layout(&mut root, BoxConstraints::tight(400.0, 800.0));
+        assert_eq!(size, Size::new(400.0, 800.0));
+    }
+
     #[test]
     fn an_open_drawer_covers_the_page_behind_a_scrim() {
         const SCRIM: u64 = 41;
