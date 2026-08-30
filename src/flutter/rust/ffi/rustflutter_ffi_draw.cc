@@ -42,6 +42,9 @@
 #include "impeller/core/formats.h"
 #include "impeller/core/texture_descriptor.h"
 #include "impeller/display_list/dl_image_impeller.h"
+#include "impeller/renderer/blit_pass.h"
+#include "impeller/renderer/command_buffer.h"
+#include "impeller/renderer/command_queue.h"
 #include "impeller/renderer/context.h"
 #include "third_party/skia/include/codec/SkBmpDecoder.h"
 #include "third_party/skia/include/codec/SkCodec.h"
@@ -249,7 +252,17 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
     descriptor.storage_mode = impeller::StorageMode::kHostVisible;
     descriptor.format = impeller::PixelFormat::kR8G8B8A8UNormInt;
     descriptor.size = {info.width(), info.height()};
-    descriptor.mip_count = 1;
+    // A full mip chain, which is what upstream gives a decoded image:
+    // `ImageDecoderImpeller::UnsafeUploadTextureToPrivate` sets
+    // `mip_count = size.MipCount()` and generates the levels below.
+    //
+    // Without them a photograph drawn smaller than it is samples four texels
+    // where it needs hundreds, and the result is not soft but *aliased* -- an
+    // image that is measurably sharper than a correct downscale of itself,
+    // because what it gains is detail that is not there. A 4096-pixel photo in
+    // a 760-pixel window carried 160% of the gradient energy of the same photo
+    // resampled properly, which is the arithmetic of undersampling.
+    descriptor.mip_count = descriptor.size.MipCount();
 
     std::shared_ptr<impeller::Texture> texture =
         context->GetResourceAllocator()->CreateTexture(descriptor);
@@ -269,6 +282,37 @@ class RfDeferredImpellerImage final : public impeller::DlImageImpeller {
       FML_LOG(ERROR) << "rf_image: could not upload pixels to the texture.";
       return nullptr;
     }
+    // The levels below the base, filled from it on the GPU. Upstream does this
+    // in the same breath as the upload -- `image_decoder_impeller.cc:503`, a
+    // blit pass whose only command is this one -- and so does this, for the
+    // same reason and at the same moment: the image is being uploaded off the
+    // raster thread, and the levels are wanted before it is ever drawn.
+    //
+    // A failure here is not fatal. The texture is complete without its mip
+    // levels; drawing it minified will alias, which is what it did before
+    // there were any.
+    if (descriptor.mip_count > 1) {
+      std::shared_ptr<impeller::CommandBuffer> command_buffer =
+          context->CreateCommandBuffer();
+      if (command_buffer == nullptr) {
+        FML_LOG(ERROR) << "rf_image: no command buffer for mipmap generation.";
+      } else {
+        command_buffer->SetLabel("Mipmap Command Buffer");
+        std::shared_ptr<impeller::BlitPass> blit_pass =
+            command_buffer->CreateBlitPass();
+        if (blit_pass == nullptr) {
+          FML_LOG(ERROR) << "rf_image: no blit pass for mipmap generation.";
+        } else {
+          blit_pass->SetLabel("Mipmap Blit Pass");
+          blit_pass->GenerateMipmap(texture);
+          blit_pass->EncodeCommands();
+          if (!context->GetCommandQueue()->Submit({command_buffer}).ok()) {
+            FML_LOG(ERROR) << "rf_image: could not generate mipmaps.";
+          }
+        }
+      }
+    }
+
     ReportUpload(started, descriptor.GetByteSizeOfBaseMipLevel(), ahead);
     texture_ = std::move(texture);
 
@@ -734,7 +778,7 @@ void rf_canvas_draw_image(RfCanvas* canvas,
     return;
   }
   canvas->builder.DrawImage(drawable, flutter::DlPoint(x, y),
-                            flutter::DlImageSampling::kLinear,
+                            flutter::DlImageSampling::kMipmapLinear,
                             paint != nullptr ? &paint->paint : nullptr);
 }
 
@@ -759,7 +803,7 @@ void rf_canvas_draw_image_rect(RfCanvas* canvas,
   canvas->builder.DrawImageRect(
       drawable, Rect(src_left, src_top, src_right, src_bottom),
       Rect(dst_left, dst_top, dst_right, dst_bottom),
-      flutter::DlImageSampling::kLinear,
+      flutter::DlImageSampling::kMipmapLinear,
       paint != nullptr ? &paint->paint : nullptr);
 }
 
