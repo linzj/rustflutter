@@ -10377,16 +10377,6 @@ pub struct RenderViewport {
     /// `_paintOffsetForPosition` and the one place the four cases are written.
     axis_direction: AxisDirection,
     offset: f32,
-    /// Upstream's `semanticChildCount`. See
-    /// [`RenderSliverViewport::semantic_child_count`] for why a viewport
-    /// cannot work this out for itself.
-    ///
-    /// This used to be a hard-coded `None` in `describe_semantics`, with a
-    /// note saying a viewport takes one child of whatever size and so has no
-    /// count to declare. True of the *render object*, and not of what goes in
-    /// it: a `ListView` hands this viewport a column and knows exactly how
-    /// many rows went into it.
-    semantic_child_count: Option<i32>,
     /// How hard the compositor works on the window's edge. Upstream's
     /// `clipBehavior`, defaulting to `Clip.hardEdge` -- and `Clip.none` is
     /// what turns the clip off rather than only blunting it, see
@@ -10429,7 +10419,6 @@ impl RenderViewport {
         RenderViewport {
             axis_direction,
             offset: 0.0,
-            semantic_child_count: None,
             clip_behavior: ClipBehavior::HardEdge,
             link: None,
             child: RenderRef::new(child),
@@ -10539,12 +10528,6 @@ impl RenderViewport {
         self
     }
 
-    /// Upstream's `semanticChildCount`. See the field.
-    pub fn with_semantic_child_count(mut self, count: Option<i32>) -> Self {
-        self.semantic_child_count = count;
-        self
-    }
-
     /// What the window's edge is like. `ClipBehavior::None` lets the content
     /// paint outside the window entirely, as upstream's `Clip.none` does.
     pub fn with_clip_behavior(mut self, behavior: ClipBehavior) -> Self {
@@ -10641,12 +10624,6 @@ impl RenderBox for RenderViewport {
         ));
         self.axis_direction = fresh.axis_direction;
         self.offset = fresh.offset;
-        // Taken from the fresh object, the way round 404 found the sliver
-        // viewport was not doing: a list whose length changed publishes a new
-        // count, and a kept viewport that ignored it would go on announcing
-        // the old one. Not part of `changed` -- the count is what a reader is
-        // told, not a measurement.
-        self.semantic_child_count = fresh.semantic_child_count;
         self.clip_behavior = fresh.clip_behavior;
         // Carried without being compared: it is a handle to the same `Scroll`
         // either way, and nothing about the geometry changes when it is
@@ -10795,11 +10772,13 @@ impl RenderBox for RenderViewport {
                 // The direction, not the axis: which of the two gestures is
                 // "further into the list" depends on which end it starts from.
                 self.axis_direction,
-                // Upstream's `semanticChildCount`, which a `ListView` is
-                // told and a plain scrolling box is not. `None` stays the
-                // honest answer for a box that was handed one child and never
-                // told what went into it; a `ListView` does tell it.
-                self.semantic_child_count,
+                // Upstream's `semanticChildCount`, which a `ListView` is told
+                // and a plain scrolling box is not. `None` is the honest
+                // answer *here*: this object was handed one child of whatever
+                // size and never told what went into it. A `ListView` knows,
+                // and fills it in over this one -- see
+                // `ListView::describe_semantics`.
+                None,
             ),
             None,
         ))

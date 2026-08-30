@@ -1652,18 +1652,6 @@ impl RenderBox for ListView {
         // one's answer.
         let mut staged = RenderViewport::new(self.axis, flex)
             .with_offset(self.offset)
-            // How many rows went in, which only this list knows: the viewport
-            // was handed one column.
-            //
-            // **Untested, and said so rather than assumed.** A rebuild in the
-            // tests replaces this render object rather than updating it, so
-            // this branch is not reached and a mutation blanking it stays
-            // green -- as does one stopping `RenderViewport::update_from`
-            // taking the fresh count. Both are written the way the layout path
-            // below is written, and whether anything reaches them is a
-            // question about how a rebuilt `ListView` is matched, not about
-            // these two lines.
-            .with_semantic_child_count(Some(self.children.len() as i32))
             .with_axis_direction(self.axis_direction);
         if let Some(link) = &self.link {
             staged = staged.with_link(std::rc::Rc::clone(link));
@@ -1684,7 +1672,6 @@ impl RenderBox for ListView {
             self.flex = Some(flex.clone());
             let mut viewport = RenderViewport::new(self.axis, flex)
                 .with_offset(self.offset)
-                .with_semantic_child_count(Some(self.children.len() as i32))
                 .with_axis_direction(self.axis_direction);
             if let Some(link) = &self.link {
                 viewport = viewport.with_link(std::rc::Rc::clone(link));
@@ -1745,9 +1732,22 @@ impl RenderBox for ListView {
     /// that it scrolls, no position in it, no count, and no gesture offered --
     /// while the viewport inside it had the answer to all four ready.
     fn describe_semantics(&self) -> Option<crate::semantics::SemanticsAnnotation> {
-        self.composed
+        let mut annotation = self
+            .composed
             .as_ref()
-            .and_then(|composed| composed.describe_semantics())
+            .and_then(|composed| composed.describe_semantics())?;
+        // **The count comes from here, not from the viewport**, and it is one
+        // source rather than two on purpose.
+        //
+        // It was first threaded into the viewport at both the layout and the
+        // update path, which is where a `ListView` builds one. Measured, the
+        // update path's copy turned out not to be what the walk read -- a
+        // mutation blanking it changed nothing, and the viewport still
+        // answered with the right number. Two writers where one is never read
+        // is the shape these rounds keep finding; the answer is to ask the
+        // list, which cannot be stale because it *is* the children.
+        annotation.properties.scroll_child_count = Some(self.children.len() as i32);
+        Some(annotation)
     }
 
     /// The viewport's, for the same reason: what clips the column is the
