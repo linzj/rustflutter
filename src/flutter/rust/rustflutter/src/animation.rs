@@ -637,13 +637,49 @@ impl Controller {
         }
     }
 
+    /// The status this controller would report: upstream's `status`, derived
+    /// rather than stored.
+    ///
+    /// Upstream keeps `_status` as a field written by `_checkStatusChanged`;
+    /// here it falls out of the value and the direction last asked for. The
+    /// wrapper's `derived_status` says the same thing from outside, and this
+    /// exists so that [`Controller::toggle`] can ask without one.
+    pub fn status(&self) -> AnimationStatus {
+        if self.running {
+            return match self.direction {
+                Direction::Forward => AnimationStatus::Forward,
+                Direction::Reverse => AnimationStatus::Reverse,
+            };
+        }
+        match (self.value, self.direction) {
+            (value, _) if value >= 1.0 => AnimationStatus::Completed,
+            (value, _) if value <= 0.0 => AnimationStatus::Dismissed,
+            (_, Direction::Forward) => AnimationStatus::Forward,
+            (_, Direction::Reverse) => AnimationStatus::Reverse,
+        }
+    }
+
     /// Goes the other way from wherever it is. What a toggle wants: an
     /// interrupted animation continues from where it got to rather than
     /// snapping.
+    ///
+    /// # It asks the status, not the direction, and the two disagree at rest
+    ///
+    /// Upstream is `_direction = isForwardOrCompleted ? reverse : forward`.
+    /// This port asked `self.direction` instead, which is the direction last
+    /// *requested* and outlives the run that requested it. The two agree while
+    /// something is moving and part company at the ends:
+    ///
+    /// **A fresh controller sits at 0.0 with the direction still forward.**
+    /// Its status is `dismissed`, whose aim is away from completion, so
+    /// upstream's toggle runs it **forward**. Reading the direction gave
+    /// `reverse` -- and reversing something already at zero plays nothing at
+    /// all. The first toggle of a controller nobody had run yet did nothing.
     pub fn toggle(&mut self) {
-        match self.direction {
-            Direction::Forward => self.reverse(),
-            Direction::Reverse => self.forward(),
+        if self.status().is_forward_or_completed() {
+            self.reverse();
+        } else {
+            self.forward();
         }
     }
 
@@ -1076,6 +1112,120 @@ mod tests {
         assert!((controller.value() - 0.2).abs() < 1e-5);
     }
 
+    // -- Which way the animation is aiming, tick 318 -----------------------
+
+    /// An animation that reports a status and nothing else, so the four
+    /// states can be walked without driving a controller into each.
+    struct FixedStatusAnimation {
+        status: AnimationStatus,
+    }
+
+    impl Animation for FixedStatusAnimation {
+        fn value(&self) -> f32 {
+            0.0
+        }
+
+        fn status(&self) -> AnimationStatus {
+            self.status
+        }
+
+        fn add_listener(&self, _listener: AnimationListener) {}
+        fn remove_listener(&self, _listener: &AnimationListener) {}
+    }
+
+    #[test]
+    fn the_aim_cuts_the_four_states_along_the_other_diagonal() {
+        // Not the negation of is_animating, and not of is_dismissed: forward
+        // pairs with completed, reverse with dismissed.
+        assert!(AnimationStatus::Forward.is_forward_or_completed());
+        assert!(AnimationStatus::Completed.is_forward_or_completed());
+        assert!(!AnimationStatus::Reverse.is_forward_or_completed());
+        assert!(!AnimationStatus::Dismissed.is_forward_or_completed());
+
+        // The two moving states fall on opposite sides, though both are
+        // equally "animating".
+        assert_eq!(
+            AnimationStatus::Forward.is_animating(),
+            AnimationStatus::Reverse.is_animating()
+        );
+        assert_ne!(
+            AnimationStatus::Forward.is_forward_or_completed(),
+            AnimationStatus::Reverse.is_forward_or_completed()
+        );
+    }
+
+    #[test]
+    fn a_first_toggle_of_a_controller_nobody_ran_plays_it_forward() {
+        // It sits at 0.0 with the direction still forward, so reading the
+        // direction says "reverse" -- and reversing something already at zero
+        // plays nothing at all. The status is `dismissed`, whose aim is away
+        // from completion, so the toggle runs it forward.
+        let mut controller = Controller::new(Duration::from_millis(100));
+        assert_eq!(controller.direction(), Direction::Forward, "never run");
+        assert_eq!(controller.status(), AnimationStatus::Dismissed);
+
+        controller.toggle();
+        assert_eq!(controller.direction(), Direction::Forward);
+        controller.tick(Duration::from_millis(50));
+        assert!(
+            controller.value() > 0.0,
+            "it moved, rather than sitting at zero"
+        );
+    }
+
+    #[test]
+    fn an_animation_run_backwards_aims_the_other_way() {
+        // `ReverseAnimation` maps the four states across exactly the diagonal
+        // this predicate cuts along, so its aim is always the opposite of its
+        // parent's -- which is what makes it worth asking here rather than
+        // asking the status by hand at every call site.
+        for status in [
+            AnimationStatus::Dismissed,
+            AnimationStatus::Forward,
+            AnimationStatus::Reverse,
+            AnimationStatus::Completed,
+        ] {
+            let parent = Rc::new(FixedStatusAnimation { status });
+            let reversed = ReverseAnimation::new(parent.clone());
+            assert_eq!(
+                parent.is_forward_or_completed(),
+                !reversed.is_forward_or_completed(),
+                "{status:?}"
+            );
+        }
+
+        // And one absolute reading, so the pairing above cannot be satisfied
+        // by both sides being wrong together.
+        assert!(
+            !AlwaysStoppedAnimation { value: 0.5 }.is_forward_or_completed(),
+            "a stopped animation reports dismissed, whose aim is away"
+        );
+    }
+
+    #[test]
+    fn a_toggle_at_the_far_end_comes_back() {
+        let mut controller = Controller::new(Duration::from_millis(100));
+        controller.forward();
+        controller.tick(Duration::from_millis(100));
+        assert_eq!(controller.status(), AnimationStatus::Completed);
+
+        controller.toggle();
+        assert_eq!(controller.direction(), Direction::Reverse);
+        controller.tick(Duration::from_millis(50));
+        assert!(controller.value() < 1.0);
+    }
+
+    #[test]
+    fn a_controller_stopped_part_way_keeps_the_direction_it_was_sent_in() {
+        // Mid-flight the status and the direction agree, which is why the
+        // interrupted-toggle case above was never wrong.
+        let mut controller = Controller::new(Duration::from_millis(100));
+        controller.forward();
+        controller.tick(Duration::from_millis(30));
+        assert_eq!(controller.status(), AnimationStatus::Forward);
+        assert!(controller.status().is_forward_or_completed());
+    }
+
     #[test]
     fn looping_wraps_rather_than_stopping() {
         let mut controller = Controller::new(Duration::from_millis(100)).with_repeat(Repeat::Loop);
@@ -1181,6 +1331,33 @@ impl AnimationStatus {
     pub fn is_animating(&self) -> bool {
         matches!(self, AnimationStatus::Forward | AnimationStatus::Reverse)
     }
+
+    /// Upstream's `isForwardOrCompleted`: "whether the current aim of the
+    /// animation is toward completion."
+    ///
+    /// # It is about the aim, not about the picture
+    ///
+    /// The two moving statuses fall on opposite sides, and neither matches
+    /// what is on the screen at the moment it is asked:
+    ///
+    /// * **Forward is true from its first frame**, when the thing is barely
+    ///   there at all.
+    /// * **Reverse is false from its first frame**, when the thing is still
+    ///   fully drawn.
+    ///
+    /// That is the point. Upstream's `MagnifierController.shown` is written on
+    /// this, so a magnifier part-way through its exit already counts as not
+    /// shown -- and a second `show` during that exit replaces it rather than
+    /// deciding one is already up. Reading the pixels instead would have the
+    /// answer flip in the middle of each animation.
+    ///
+    /// Note it is not the negation of [`AnimationStatus::is_animating`] nor of
+    /// [`AnimationStatus::is_dismissed`]: it cuts the four states along the
+    /// other diagonal, pairing forward with completed and reverse with
+    /// dismissed.
+    pub fn is_forward_or_completed(&self) -> bool {
+        matches!(self, AnimationStatus::Forward | AnimationStatus::Completed)
+    }
 }
 
 /// One listener on an animation: its value callback, and optionally its
@@ -1206,6 +1383,13 @@ pub trait Animation {
     /// from the other side: a stopped animation never tells.
     fn is_animating(&self) -> bool {
         self.status().is_animating()
+    }
+
+    /// Upstream `Animation.isForwardOrCompleted`, which is the same question
+    /// asked of the animation's status. See
+    /// [`AnimationStatus::is_forward_or_completed`].
+    fn is_forward_or_completed(&self) -> bool {
+        self.status().is_forward_or_completed()
     }
 }
 
@@ -1439,19 +1623,9 @@ impl AnimationController {
     /// same answer falls out of the direction it was last sent in, which is
     /// what `Controller::direction` holds.
     fn derived_status(&self) -> AnimationStatus {
-        let controller = self.controller.borrow();
-        if controller.is_running() {
-            return match controller.direction() {
-                Direction::Forward => AnimationStatus::Forward,
-                Direction::Reverse => AnimationStatus::Reverse,
-            };
-        }
-        match (controller.value(), controller.direction()) {
-            (value, _) if value >= 1.0 => AnimationStatus::Completed,
-            (value, _) if value <= 0.0 => AnimationStatus::Dismissed,
-            (_, Direction::Forward) => AnimationStatus::Forward,
-            (_, Direction::Reverse) => AnimationStatus::Reverse,
-        }
+        // One copy of the rule, on the controller itself, because
+        // [`Controller::toggle`] has to ask it from the inside.
+        self.controller.borrow().status()
     }
 
     /// Tells the status listeners, if the status moved. Upstream's

@@ -22143,3 +22143,56 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 `CupertinoSwitch`（0.31，8/26）。先跑一遍 depth 看看队头有没有变，再照老规矩**按行为查**
 而不是按成员名差——前面 `CupertinoLocalizations` 与 `TextSelectionGestureDetectorBuilder`
 两次都证明了那个比值有很大一块是改名造成的。
+
+---
+
+## 第 318 轮：动画的“朝向”把四个状态沿另一条对角线切开，而没人跑过的控制器第一次 toggle 什么都不放
+
+回队头。`python tools/depth.py` 里 `MagnifierController`（2/8）看着像个缺口，
+**查下来又是改名造成的**：`shiftWithinBounds` 在 `magnifier.rs` 里逐条对得上，
+其余的（`overlayEntry` 的生命周期、`shown`、`hide(removeFromOverlay)`、`removeFromOverlay`）
+在 `magnifier_host.rs` 里，连“为什么默认要移除”和“为什么不加那道 `overlayEntry == null` 闸”
+都已经写了老实话。这是第三次证明那个比值有很大一块不是行为差距。
+
+但顺着 `MagnifierController.shown` 的那一行摸到了一个真缺口：
+
+```dart
+bool get shown => overlayEntry != null && (animationController?.isForwardOrCompleted ?? true);
+```
+
+**`isForwardOrCompleted` 本项目没有。** 它是上游 `AnimationStatus` 上的一个谓词，用得很广
+（`menu_anchor`、`nav_bar`、`navigation_bar`、`navigation_drawer`、`AnimationController.toggle`
+……），而且**它把四个状态沿另一条对角线切开**：forward 与 completed 为真，reverse 与 dismissed
+为假。它既不是 `is_animating` 的反面，也不是 `is_dismissed` 的反面。
+
+**关键在于它问的是“朝向”，不是画面。** 两个运动中的状态落在相反的两边，而且**都跟此刻屏幕上
+的样子对不上**：forward 从**第一帧**起就为真——那时候东西几乎还没显出来；reverse 从**第一帧**起
+就为假——那时候东西还画得满满的。这正是上游要的：放大镜退场退到一半就已经算“不显示”，
+于是这期间再来一次 `show` 是替换它，而不是认为已经有一个在了。照像素判断的话，答案会在每一段
+动画中间翻一次。
+
+**顺着它查出了本项目一个真实的行为分歧。** 上游 `AnimationController.toggle` 写的是
+`_direction = isForwardOrCompleted ? reverse : forward`——问的是**状态**；本项目的
+`Controller::toggle` 问的是 `self.direction`，那是**上一次被要求**的方向，比那一次运行活得更久。
+两者在运动中一致，在两端分家：
+
+> **一个刚建好的控制器停在 0.0，方向仍然是 forward。** 它的状态是 `dismissed`，朝向是背离
+> 完成的，所以上游的 toggle 把它**往前**放。读方向得到的是 `reverse`——而把一个已经在零点的
+> 东西往回倒，什么都不放。**没人跑过的控制器，第一次 toggle 是个空动作。**
+
+改成问状态之后顺手把规则收成一份：`Controller::status()` 落在控制器自己身上（toggle 要从里面
+问），外层的 `derived_status` 改成转调它，原来那份重复的推导删掉。
+
+**变异扫描 10 个，第一遍九个红，第一个漏的是真窟窿**：`Animation::is_forward_or_completed`
+这个 trait 默认方法没有任何测试碰过，把它改成恒真也全绿。补的测试用 `ReverseAnimation`——
+它对四个状态的映射恰好就是这条对角线的翻转，所以它的朝向永远与父的相反；再加一条绝对读数
+（`AlwaysStoppedAnimation` 报 dismissed，朝向为假），免得两边一起错也能配平。
+
+尺子：十六把全部 exit 0。门：6187 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`isForwardOrCompleted` 现在有了，但**上游那十几个调用点本项目还没有一个在问它**。
+按行为查一遍：`material/menu_anchor.dart` 的 `isOpen`／`isOpenOrOpening`（651、659 行）区分的是
+“开着”和“开着或正在开”，这两者在关闭动画进行中是不同的答案；`navigation_bar.dart` 476、499、864
+用它在选中／未选中图标之间切换——**切换发生在动画开始的那一帧，不是过半时**。
+先查本项目 `menu_anchor.rs` 与 `navigation_bar.rs` 里这两处是怎么写的，按行为比，不要按名字比。
