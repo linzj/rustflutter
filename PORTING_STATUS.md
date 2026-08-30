@@ -24125,3 +24125,59 @@ flutter_gallery_unittests 全部重建。
 而这一轮刚给它加了两个新字段。先按行为确认：`rustflutter_unittests` 里
 有没有测过 `runtime_controller.cc` 的东西——**有就照这一轮的办法接，
 没有就说清楚 C++ 侧的测试入口卡在哪**，那也是一个明确的答案。
+
+---
+
+## 第 355 轮：C++ 那一半也被跑过了——同一条教训，第二次用
+
+上一轮的教训是：**“够不着”和“没测”是两回事**，前者能靠挪代码解决。这一轮把它用在对称的那一半。
+
+**先回答上一轮问的问题。** `rustflutter_unittests` 其实是个 Rust 测试跑法
+（`run_rust_tests.py`），不是 C++ gtest。但翻出输出目录时找到了
+**`rust_ffi_unittests.exe`——一个真的 C++ gtest 二进制**，
+`flutter/rust/ffi_unittests.cc`，22 个 TEST，链接了 `rust_lib`、FFI 和 host。
+它只测绘图和文本那套 FFI，**从没碰过 `runtime_controller.cc`**。
+而 host 已经依赖 `//flutter/runtime`，所以**测试入口本来就在，没人走过去**。
+
+`RuntimeController::OnUpdateSemantics` 里那四十行——把 `RfSemanticsNode` 抄进
+`flutter::SemanticsNode`——抽成自由函数 `RustSemanticsNodesToUpdates(nodes, count)`。
+理由和上一轮一模一样：**它从来不需要 controller**，只看自己的参数。
+
+**中途撞上一件事，值得记：** 一开始把声明放进 `runtime_controller.h`，编译炸了——
+那个头文件顺着 `runtime_delegate.h` 一路拉到 `txt/font_collection.h`，
+而一个只想转换几个结构体的测试二进制没有那条 include 路径。
+于是新开了一个小头文件 `runtime/rust_semantics.h`，**只包含它真正需要的两个头**。
+这不是整洁癖：**一个头文件的依赖面就是它的可测面**。
+
+C++ 侧补了 6 条 gtest。除了逐字段核对，还钉住了三件上游语义：
+**行 0 是一个真答案**（-1 才是空值，所以 `scrollIndex = 0` 必须活下来）、
+**mixed 压过 checked 且 has-checked 是闸门**（一个从来不可勾选的东西不能被念成“未勾选”）、
+**空树是一棵树**（全都消失的那一帧要作为空更新到达，否则平台还显示着已经不在的东西）。
+
+### 一次差点被我信了的假结果
+
+变异扫描第一遍脚本崩在一个 Windows 路径上，**崩之前已经把第一个变异写进了文件、没来得及还原**。
+第二遍启动时把**已经带着变异的文件**存成了 .bak——于是整个基线是坏的：
+`out.id = nodes[0].id` 让两个节点撞成一个 id，
+**每一个变异都会报红，不管它改了什么**。十二行“红”全是假的。
+
+按 `MEMORY.md` 里那条规矩（一把没人见过它抓到真故障的尺子，报的是数字不是事实），
+恢复基线、重建、确认 6 条全绿，然后**在脚本里加了一道自检**：
+跑变异之前先跑一次基线，`assert status == '0 red'`，不绿就拒绝开工。
+重跑之后**十二个全红，而且这次的红是真的**。
+
+尺子：十六把全部 exit 0（`stale_engines` 因为改了运行时先报陈旧，重建后转 0）。
+门：Rust 6296 通过、`cargo fmt --check` 干净；**C++ 28 个 gtest 全过**（原来 22，新增 6）；
+三个输出目录的 rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、
+flutter_gallery_unittests、rust_ffi_unittests 全部重建。
+
+语义这条路现在两头都被钉住了：框架侧 `PackedSemantics::of`（第 354 轮），
+引擎侧 `RustSemanticsNodesToUpdates`（这一轮），中间那个 128 字节的结构体
+两侧都有断言（第 353 轮）。
+
+**下一步**：`ffi_unittests.cc` 这个入口刚被证明是通的，**下一个该走过去的是它旁边那扇门**——
+`rust_app_interface.cc`／`rust_app_interface.h` 定义的 `RfAppInterface`（17 个函数指针，
+`app.rs` 有配对断言但**没有任何测试调用过它们**）。
+先按行为确认一件事：这 17 个里有几个是**纯转换**（像这一轮这样，不需要 controller 就能调），
+**有就照这两轮的办法接，没有就说清楚它们各自卡在哪一层依赖上**。
+不要先写尺子——第 341/346 轮两次都没通过校准。

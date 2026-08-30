@@ -21,6 +21,7 @@ source_set("runtime") {
     "rust_app_api.h",
     "rust_app_interface.cc",
     "rust_app_interface.h",
+    "rust_semantics.h",
   ]
 
   public_configs = [ "//flutter:config" ]

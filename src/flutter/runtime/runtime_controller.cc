@@ -12,6 +12,7 @@
 #include "flutter/fml/make_copyable.h"
 #include "flutter/fml/trace_event.h"
 #include "flutter/runtime/rust_app_interface.h"
+#include "flutter/runtime/rust_semantics.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 
 namespace flutter {
@@ -528,16 +529,8 @@ void RuntimeController::OnRespondToPlatformMessage(void* user_data,
       std::vector<uint8_t>(reply, reply + length)));
 }
 
-void RuntimeController::OnUpdateSemantics(void* user_data,
-                                          int64_t view_id,
-                                          const RfSemanticsNode* nodes,
-                                          size_t count) {
-  auto* controller = static_cast<RuntimeController*>(user_data);
-  if (controller == nullptr || (nodes == nullptr && count > 0)) {
-    return;
-  }
-  TRACE_EVENT0("flutter", "RuntimeController::OnUpdateSemantics");
-
+SemanticsNodeUpdates RustSemanticsNodesToUpdates(const RfSemanticsNode* nodes,
+                                                 size_t count) {
   // Copied rather than referenced: everything the framework passed is valid
   // only for the duration of this call, and what is built here travels to the
   // platform thread. Upstream's SemanticsUpdate does the same copying, one
@@ -638,8 +631,20 @@ void RuntimeController::OnUpdateSemantics(void* user_data,
     }
     update.emplace(out.id, std::move(out));
   }
+  return update;
+}
 
-  controller->client_.UpdateSemantics(view_id, std::move(update), {});
+void RuntimeController::OnUpdateSemantics(void* user_data,
+                                          int64_t view_id,
+                                          const RfSemanticsNode* nodes,
+                                          size_t count) {
+  auto* controller = static_cast<RuntimeController*>(user_data);
+  if (controller == nullptr || (nodes == nullptr && count > 0)) {
+    return;
+  }
+  TRACE_EVENT0("flutter", "RuntimeController::OnUpdateSemantics");
+  controller->client_.UpdateSemantics(
+      view_id, RustSemanticsNodesToUpdates(nodes, count), {});
 }
 
 void RuntimeController::OnSendChannelUpdate(void* user_data,

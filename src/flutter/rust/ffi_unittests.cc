@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "flutter/runtime/rust_semantics.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/testing/testing.h"
@@ -82,7 +83,8 @@ TEST(RustFFI, RasterizesALayerTreeThroughTheEngine) {
   rf_layer_tree_add_display_list(tree, display_list, 0, 0);
 
   std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * kHeight * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()),
+            0);
 
   // Outside the rect is the background; inside it is the fill.
   EXPECT_EQ(PixelAt(pixels, kWidth, 2, 2), kBackground);
@@ -104,17 +106,16 @@ TEST(RustFFI, ShapesTextAndReportsItsMetrics) {
   ASSERT_EQ(rf_initialize(nullptr), 0);
 
   const char kText[] = "Hello, World!";
-  RfParagraph* paragraph =
-      rf_paragraph_new(kText, std::strlen(kText), nullptr,
-                       /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0,
-                       24.0f, 400, /*italic=*/false,
-                       /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
-                       /*height=*/1.0f, /*has_height=*/false,
-                       /*decoration=*/0,
-                       /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
-                       /*feature_count=*/0,
-                       0xFF000000, /*text_align=*/0, /*text_direction=*/0,
-                       /*max_lines=*/0, /*ellipsis=*/false);
+  RfParagraph* paragraph = rf_paragraph_new(
+      kText, std::strlen(kText), nullptr,
+      /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0, 24.0f, 400,
+      /*italic=*/false,
+      /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
+      /*height=*/1.0f, /*has_height=*/false,
+      /*decoration=*/0,
+      /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
+      /*feature_count=*/0, 0xFF000000, /*text_align=*/0, /*text_direction=*/0,
+      /*max_lines=*/0, /*ellipsis=*/false);
   ASSERT_NE(paragraph, nullptr);
 
   rf_paragraph_layout(paragraph, 400.0f);
@@ -239,17 +240,16 @@ TEST(RustFFI, PaintsTextIntoTheSurface) {
   constexpr uint32_t kBackground = 0xFF000000;
 
   const char kText[] = "Hello";
-  RfParagraph* paragraph =
-      rf_paragraph_new(kText, std::strlen(kText), nullptr,
-                       /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0,
-                       32.0f, 700, /*italic=*/false,
-                       /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
-                       /*height=*/1.0f, /*has_height=*/false,
-                       /*decoration=*/0,
-                       /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
-                       /*feature_count=*/0,
-                       0xFFFFFFFF, /*text_align=*/0, /*text_direction=*/0,
-                       /*max_lines=*/0, /*ellipsis=*/false);
+  RfParagraph* paragraph = rf_paragraph_new(
+      kText, std::strlen(kText), nullptr,
+      /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0, 32.0f, 700,
+      /*italic=*/false,
+      /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
+      /*height=*/1.0f, /*has_height=*/false,
+      /*decoration=*/0,
+      /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
+      /*feature_count=*/0, 0xFFFFFFFF, /*text_align=*/0, /*text_direction=*/0,
+      /*max_lines=*/0, /*ellipsis=*/false);
   ASSERT_NE(paragraph, nullptr);
   rf_paragraph_layout(paragraph, static_cast<float>(kWidth));
 
@@ -262,7 +262,8 @@ TEST(RustFFI, PaintsTextIntoTheSurface) {
   rf_layer_tree_add_display_list(tree, display_list, 0, 0);
 
   std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * kHeight * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()),
+            0);
 
   size_t lit = 0;
   for (int32_t y = 0; y < kHeight; ++y) {
@@ -322,17 +323,16 @@ TEST(RustFFI, ResolvesStartAlignmentAgainstDirection) {
   rf_canvas_draw_color(canvas, kBackground);
   RfParagraph* paragraphs[2] = {nullptr, nullptr};
   for (int i = 0; i < 2; ++i) {
-    paragraphs[i] =
-        rf_paragraph_new(kText, std::strlen(kText), nullptr,
-                         /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0,
-                         20.0f, 400, /*italic=*/false,
-                         /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
-                         /*height=*/1.0f, /*has_height=*/false,
-                         /*decoration=*/0,
-                         /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
-                         /*feature_count=*/0,
-                         0xFFFFFFFF, /*text_align=*/3 /* start */,
-                         kDirections[i], /*max_lines=*/0, /*ellipsis=*/false);
+    paragraphs[i] = rf_paragraph_new(
+        kText, std::strlen(kText), nullptr,
+        /*font_fallbacks=*/nullptr, /*font_fallback_count=*/0, 20.0f, 400,
+        /*italic=*/false,
+        /*letter_spacing=*/0.0f, /*word_spacing=*/0.0f,
+        /*height=*/1.0f, /*has_height=*/false,
+        /*decoration=*/0,
+        /*feature_tags=*/nullptr, /*feature_values=*/nullptr,
+        /*feature_count=*/0, 0xFFFFFFFF, /*text_align=*/3 /* start */,
+        kDirections[i], /*max_lines=*/0, /*ellipsis=*/false);
     ASSERT_NE(paragraphs[i], nullptr);
     rf_paragraph_layout(paragraphs[i], static_cast<float>(kWidth));
     rf_canvas_draw_paragraph(canvas, paragraphs[i], 0.0f, kBandTop[i]);
@@ -341,7 +341,8 @@ TEST(RustFFI, ResolvesStartAlignmentAgainstDirection) {
   std::vector<uint8_t> pixels = Rasterize(display_list, kWidth, kHeight);
 
   // The ink extents of each band: which edge the line hugged.
-  auto ink_extents = [&](int32_t y0, int32_t y1, int32_t* min_x, int32_t* max_x) {
+  auto ink_extents = [&](int32_t y0, int32_t y1, int32_t* min_x,
+                         int32_t* max_x) {
     *min_x = kWidth;
     *max_x = -1;
     for (int32_t y = y0; y < y1; ++y) {
@@ -500,7 +501,8 @@ TEST(RustFFI, ComposesThroughTheLayerStack) {
   rf_layer_tree_pop(tree);
 
   std::vector<uint8_t> pixels(static_cast<size_t>(kSize) * kSize * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()),
+            0);
 
   // The square is where the transform put it, not where it was recorded.
   EXPECT_EQ(PixelAt(pixels, kSize, 8, 8), 0xFF000000);
@@ -545,7 +547,8 @@ TEST(RustFFI, KeepsALayerAcrossTwoTrees) {
   rf_layer_tree_pop(first);
 
   std::vector<uint8_t> pixels(static_cast<size_t>(kSize) * kSize * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, pixels.data(), pixels.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, pixels.data(), pixels.size()),
+            0);
   EXPECT_EQ(PixelAt(pixels, kSize, 10, 10), 0xFFFFFFFF)
       << "the layer did not draw where it was put";
   EXPECT_NE(PixelAt(pixels, kSize, 42, 42), 0xFFFFFFFF);
@@ -555,7 +558,8 @@ TEST(RustFFI, KeepsALayerAcrossTwoTrees) {
   rf_layer_tree_add_retained(second, kept, 8, 40);
 
   std::vector<uint8_t> moved(static_cast<size_t>(kSize) * kSize * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(second, moved.data(), moved.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(second, moved.data(), moved.size()),
+            0);
   EXPECT_EQ(PixelAt(moved, kSize, 10, 42), 0xFFFFFFFF)
       << "the kept layer did not move with its new offset";
   EXPECT_NE(PixelAt(moved, kSize, 10, 10), 0xFFFFFFFF)
@@ -615,7 +619,8 @@ TEST(RustFFI, RerecordsIntoTheLayerItKept) {
   rf_layer_tree_pop(first);
 
   std::vector<uint8_t> pixels(static_cast<size_t>(kSize) * kSize * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, pixels.data(), pixels.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, pixels.data(), pixels.size()),
+            0);
   EXPECT_EQ(PixelAt(pixels, kSize, 10, 10), 0xFFFF0000)
       << "the layer did not draw what it was recorded with";
 
@@ -629,7 +634,8 @@ TEST(RustFFI, RerecordsIntoTheLayerItKept) {
 
   std::vector<uint8_t> nowhere(static_cast<size_t>(kSize) * kSize * 4u);
   ASSERT_EQ(
-      rf_layer_tree_rasterize_bgra(rerecorded, nowhere.data(), nowhere.size()), 0);
+      rf_layer_tree_rasterize_bgra(rerecorded, nowhere.data(), nowhere.size()),
+      0);
   EXPECT_EQ(PixelAt(nowhere, kSize, 10, 10), 0u)
       << "a re-record attached the layer to the tree it was recorded in";
 
@@ -638,7 +644,8 @@ TEST(RustFFI, RerecordsIntoTheLayerItKept) {
   // This is the whole mechanism -- an enclosing boundary's repaint becomes
   // visible without anything above it recording again.
   std::vector<uint8_t> shared(static_cast<size_t>(kSize) * kSize * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, shared.data(), shared.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(first, shared.data(), shared.size()),
+            0);
   EXPECT_EQ(PixelAt(shared, kSize, 10, 10), 0xFF0000FF)
       << "the tree holding the layer did not see the re-record";
   EXPECT_NE(PixelAt(shared, kSize, 10, 10), 0xFFFF0000)
@@ -649,7 +656,8 @@ TEST(RustFFI, RerecordsIntoTheLayerItKept) {
   RfLayerTree* next = rf_layer_tree_new(kSize, kSize);
   rf_layer_tree_add_retained(next, kept, 8, 8);
   std::vector<uint8_t> carried(static_cast<size_t>(kSize) * kSize * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(next, carried.data(), carried.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(next, carried.data(), carried.size()),
+            0);
   EXPECT_EQ(PixelAt(carried, kSize, 10, 10), 0xFF0000FF)
       << "the layer handed to a later frame lost the re-recorded picture";
 
@@ -692,7 +700,8 @@ TEST(RustFFI, ScalesAFrameToPhysicalPixels) {
   rf_layer_tree_pop(tree);
 
   std::vector<uint8_t> pixels(static_cast<size_t>(kPhysical) * kPhysical * 4u);
-  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()), 0);
+  ASSERT_EQ(rf_layer_tree_rasterize_bgra(tree, pixels.data(), pixels.size()),
+            0);
 
   // Every corner of the physical surface, including the far one that only the
   // scale can reach.
@@ -857,6 +866,208 @@ TEST(RustFFI, RejectsPixelsThatCannotDescribeAnImage) {
   EXPECT_EQ(rf_image_from_pixels(pixel, 0, 1), nullptr);
   EXPECT_EQ(rf_image_from_pixels(pixel, 1, 0), nullptr);
   EXPECT_EQ(rf_image_from_pixels(pixel, -1, -1), nullptr);
+}
+
+// -- The semantics tree, coming back out of the C ABI
+// --------------------------
+
+namespace {
+
+// Two nodes that disagree in every field, so that a value taken from the wrong
+// one of them shows up as something belonging elsewhere rather than as a
+// plausible number. The strings are owned here because RfSemanticsNode only
+// borrows them.
+struct SemanticsFixture {
+  std::string first_label = "first label";
+  std::string first_value = "first value";
+  std::string first_hint = "first hint";
+  std::string first_up = "first up";
+  std::string first_down = "first down";
+  std::string second_label = "second label";
+  std::string second_value = "second value";
+  std::string second_hint = "second hint";
+  std::string second_up = "second up";
+  std::string second_down = "second down";
+  std::vector<int32_t> first_children = {22};
+  std::vector<int32_t> second_children = {};
+
+  std::vector<RfSemanticsNode> Nodes() {
+    RfSemanticsNode first = {};
+    first.id = 11;
+    first.flags = kRfSemanticsIsButton | kRfSemanticsHasCheckedState |
+                  kRfSemanticsIsChecked;
+    first.actions = 5;
+    first.left = 1.0f;
+    first.top = 2.0f;
+    first.right = 3.0f;
+    first.bottom = 4.0f;
+    first.label = first_label.c_str();
+    first.value = first_value.c_str();
+    first.hint = first_hint.c_str();
+    first.increased_value = first_up.c_str();
+    first.decreased_value = first_down.c_str();
+    first.scroll_position = 12.0;
+    first.scroll_extent_min = 1.0;
+    first.scroll_extent_max = 100.0;
+    first.children = first_children.data();
+    first.child_count = first_children.size();
+    first.text_direction = 2;
+    first.scroll_index = 3;
+    first.scroll_children = 40;
+
+    RfSemanticsNode second = {};
+    second.id = 22;
+    second.flags = kRfSemanticsIsHeader;
+    second.actions = 6;
+    second.left = 5.0f;
+    second.top = 6.0f;
+    second.right = 7.0f;
+    second.bottom = 8.0f;
+    second.label = second_label.c_str();
+    second.value = second_value.c_str();
+    second.hint = second_hint.c_str();
+    second.increased_value = second_up.c_str();
+    second.decreased_value = second_down.c_str();
+    second.children = nullptr;
+    second.child_count = 0;
+    second.text_direction = 1;
+    // The framework's "no answer" for both, which must not become a zero.
+    second.scroll_index = -1;
+    second.scroll_children = -1;
+    return {first, second};
+  }
+};
+
+}  // namespace
+
+// The other half of the pair tested in app.rs. Forty lines of field-by-field
+// copying that nothing ran until now: the conversion used to live inside
+// RuntimeController::OnUpdateSemantics, which needs a controller and a
+// delegate to reach.
+TEST(RustSemantics, EveryFieldArrivesFromTheNodeItBelongsTo) {
+  SemanticsFixture fixture;
+  std::vector<RfSemanticsNode> nodes = fixture.Nodes();
+  SemanticsNodeUpdates update =
+      RustSemanticsNodesToUpdates(nodes.data(), nodes.size());
+
+  ASSERT_EQ(update.size(), 2u);
+  ASSERT_EQ(update.count(11), 1u);
+  ASSERT_EQ(update.count(22), 1u);
+
+  const SemanticsNode& first = update.at(11);
+  EXPECT_EQ(first.id, 11);
+  EXPECT_EQ(first.actions, 5);
+  EXPECT_EQ(first.rect, SkRect::MakeLTRB(1.0f, 2.0f, 3.0f, 4.0f));
+  // The five strings, in the order the struct lists them. Their slots are the
+  // easiest thing here to transpose and the hardest to notice: a hint read as
+  // a value is still announced, just in the wrong voice.
+  EXPECT_EQ(first.label, "first label");
+  EXPECT_EQ(first.value, "first value");
+  EXPECT_EQ(first.hint, "first hint");
+  EXPECT_EQ(first.increasedValue, "first up");
+  EXPECT_EQ(first.decreasedValue, "first down");
+  EXPECT_EQ(first.scrollPosition, 12.0);
+  EXPECT_EQ(first.scrollExtentMin, 1.0);
+  EXPECT_EQ(first.scrollExtentMax, 100.0);
+  EXPECT_EQ(first.textDirection, 2);
+  EXPECT_TRUE(first.flags.isButton);
+  EXPECT_FALSE(first.flags.isHeader);
+
+  const SemanticsNode& second = update.at(22);
+  EXPECT_EQ(second.id, 22);
+  EXPECT_EQ(second.actions, 6);
+  EXPECT_EQ(second.rect, SkRect::MakeLTRB(5.0f, 6.0f, 7.0f, 8.0f));
+  EXPECT_EQ(second.label, "second label");
+  EXPECT_EQ(second.value, "second value");
+  EXPECT_EQ(second.hint, "second hint");
+  EXPECT_EQ(second.increasedValue, "second up");
+  EXPECT_EQ(second.decreasedValue, "second down");
+  EXPECT_EQ(second.textDirection, 1);
+  EXPECT_TRUE(second.flags.isHeader);
+  EXPECT_FALSE(second.flags.isButton);
+}
+
+// The pair added in the round before this one, and the reason -1 is the null:
+// the engine's fields are plain int32_t that default to 0, and row 0 of a list
+// is a real answer. A framework that says "not a list" must leave the zero
+// alone rather than assign one.
+TEST(RustSemantics, TheAbsentScrollCountsLeaveTheEngineDefaultsAlone) {
+  SemanticsFixture fixture;
+  std::vector<RfSemanticsNode> nodes = fixture.Nodes();
+  SemanticsNodeUpdates update =
+      RustSemanticsNodesToUpdates(nodes.data(), nodes.size());
+
+  EXPECT_EQ(update.at(11).scrollIndex, 3);
+  EXPECT_EQ(update.at(11).scrollChildren, 40);
+  EXPECT_EQ(update.at(22).scrollIndex, 0);
+  EXPECT_EQ(update.at(22).scrollChildren, 0);
+}
+
+// Row 0 is an answer and has to survive as one. This is the case the -1 null
+// exists to keep distinguishable from the node above it.
+TEST(RustSemantics, RowZeroIsAnAnswerAndNotAnAbsence) {
+  SemanticsFixture fixture;
+  std::vector<RfSemanticsNode> nodes = fixture.Nodes();
+  nodes[0].scroll_index = 0;
+  nodes[0].scroll_children = 0;
+  SemanticsNodeUpdates update =
+      RustSemanticsNodesToUpdates(nodes.data(), nodes.size());
+  EXPECT_EQ(update.at(11).scrollIndex, 0);
+  EXPECT_EQ(update.at(11).scrollChildren, 0);
+}
+
+// The children cross as a pointer and a length that have to be read together,
+// and both orders are filled from the one list: nothing here separates reading
+// order from hit-test order, and saying so is what keeps them equal.
+TEST(RustSemantics, ChildrenArriveInBothOrdersAndTheSameOne) {
+  SemanticsFixture fixture;
+  std::vector<RfSemanticsNode> nodes = fixture.Nodes();
+  SemanticsNodeUpdates update =
+      RustSemanticsNodesToUpdates(nodes.data(), nodes.size());
+
+  const SemanticsNode& first = update.at(11);
+  EXPECT_EQ(first.childrenInTraversalOrder, std::vector<int32_t>({22}));
+  EXPECT_EQ(first.childrenInHitTestOrder, first.childrenInTraversalOrder);
+
+  // A null child pointer is a leaf, not a crash: the framework sends one for
+  // every node that has nothing under it.
+  const SemanticsNode& second = update.at(22);
+  EXPECT_TRUE(second.childrenInTraversalOrder.empty());
+  EXPECT_TRUE(second.childrenInHitTestOrder.empty());
+}
+
+// Three bits for four states. The mixed bit outranks the checked one, and the
+// "has a checked state at all" bit gates both -- so a node that was never
+// checkable must not be announced as unchecked.
+TEST(RustSemantics, TheFourthCheckStateSurvivesThreeBits) {
+  SemanticsFixture fixture;
+  const auto state_for = [&fixture](int32_t flags) {
+    std::vector<RfSemanticsNode> nodes = fixture.Nodes();
+    nodes[0].flags = flags;
+    SemanticsNodeUpdates update =
+        RustSemanticsNodesToUpdates(nodes.data(), nodes.size());
+    return update.at(11).flags.isChecked;
+  };
+
+  EXPECT_EQ(state_for(0), SemanticsCheckState::kNone);
+  EXPECT_EQ(state_for(kRfSemanticsHasCheckedState),
+            SemanticsCheckState::kFalse);
+  EXPECT_EQ(state_for(kRfSemanticsHasCheckedState | kRfSemanticsIsChecked),
+            SemanticsCheckState::kTrue);
+  EXPECT_EQ(state_for(kRfSemanticsHasCheckedState | kRfSemanticsIsChecked |
+                      kRfSemanticsIsCheckStateMixed),
+            SemanticsCheckState::kMixed)
+      << "mixed outranks checked";
+  EXPECT_EQ(state_for(kRfSemanticsIsChecked), SemanticsCheckState::kNone)
+      << "checked without a checked state is not checkable";
+}
+
+// An empty tree is a tree: a frame in which everything went away has to arrive
+// as an empty update rather than as no update at all, or the platform keeps
+// showing what is no longer there.
+TEST(RustSemantics, AnEmptyTreeConvertsToAnEmptyUpdate) {
+  SemanticsNodeUpdates update = RustSemanticsNodesToUpdates(nullptr, 0);
+  EXPECT_TRUE(update.empty());
 }
 
 }  // namespace testing
