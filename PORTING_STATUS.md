@@ -22047,3 +22047,51 @@ flutter_gallery_unittests 全部重建。
 只读字段没有 cut／paste，`obscureText` 的字段连 copy 都没有。这一串条件本项目有没有、
 是不是这几条，先按行为查，不要按名字查。查完再决定接不接线到
 `selection_host.rs` 那个还在收外部 `selection_rect` 的调用点。
+
+---
+
+## 第 316 轮：share 按钮在 Android 上站在另一个位置，而剪贴板没问出来时整份菜单都不出
+
+按上一轮的“下一步”查 `contextMenuButtonItems`。**八个 `xxxEnabled` 判定本项目全都在**，
+而且逐条对得上上游（包括 `selectAllEnabled` 那个按平台分叉的 switch、`lookUp`／`searchWeb`
+的 iOS-only 加“选中的不能全是空白”、`shareEnabled` 的 Android+iOS）。缺的是**装配那一步**：
+`EditableText.getEditableButtonItems`——把八个判定变成一份**有序**的菜单。判定回答“哪些按钮
+在”，装配回答“按什么顺序、什么时候整份都不给”，是两个问题。
+
+三件按名字猜不到的事：
+
+1. **share 在 Android 上排在 select all 之前，在别的平台排在 search web 之后。**
+   上游写成一个 flag 查两次，同一个按钮写进列表的两个位置。按钮本身没变、做的事没变，变的只是
+   邻居。移植时挑一个位置钉死，会在**恰好一个平台上**是错的，在其余每个平台上看起来都对。
+   完整顺序：cut, copy, paste, [share], select all, look up, search web, [share], live text。
+2. **剪贴板状态未知时，被拦下的不是 paste 一个按钮，是整个第一组。**
+   上游的闸是 `onPaste == null || clipboardStatus != unknown`，包住整组，注释写着“在剪贴板状态
+   已知之前不要渲染任何东西”。所以一个能粘贴的字段，在剪贴板还没问出来的那一帧，**一个按钮
+   都不给**——cut 和 copy 明明已经就绪也不给。工具条要么不出，要么一次出全，而不是先出四个、
+   下一帧再在读者手指底下长出一个 paste。
+   两个推论：**粘不了的字段不等**（只读字段的菜单不会被一个没人会去问的剪贴板拖住）；
+   **live text 加在闸的外面**，是唯一一个，所以未知剪贴板可以产出一份只有一个按钮的菜单。
+3. **这道闸在“现代路径”上永远不会触发**——写下来是因为它太容易被当成死代码。带手柄控件时
+   `paste_enabled` 本身就要求 `Pasteable`，所以 paste 开着就意味着剪贴板已知。这道闸只在
+   **已废弃的 `toolbarOptions` 路径**上是活的：那条路上 paste 由配置决定，没人问过剪贴板。
+   那才是它被写出来针对的情形，也是这个函数为什么把状态当参数收而不是自己推。
+
+**变异扫描 15 个，第一遍三个没红，两个是真窟窿。**
+
+* “live text 跟着一起被拦”那条是我自己写坏的变异（花括号不配对，编译不过），重写后转红；
+  顺手补了一条“live text 排到最前”。
+* **“字段问 copy 而不是 cut”没红**——我那条走字段的测试用的是遮蔽字段（cut 和 copy 都是假）
+  和普通字段（都是真），两个判定在测试里从没分开过。补了一条只读字段：**有 copy，没有 cut**。
+* **“字段不管实际状态一律上报剪贴板可粘贴”没红**——这一条把我逼出了上面第 3 点。测试全走
+  现代路径，那条路上这个变异是等价的。补了一条走 `toolbarOptions` 路径、剪贴板未知的测试：
+  菜单整份为空，剪贴板一答复就不空。变异随即转红。
+
+尺子：十六把全部 exit 0。门：6175 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`contextMenuButtonItems` 还差最后一截没端——`_textProcessingActionButtonItems`
+（`widgets/editable_text.dart` 3294）。它把 Android 的 `ProcessText` 活动（第三方应用注册的
+“翻译”“定义”之类）追加在八个标准按钮**之后**，而且带一道**自己的**闸：
+`obscureText || !selection.isValid || selection.isCollapsed` 就整组不给——注意这道闸跟
+逐按钮那八条是分开的一套，条件也不完全一样。本项目 `services/process_text.rs` 已经在了，
+先查那边有什么、这道闸和这个追加顺序在不在，按行为查。

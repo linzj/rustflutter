@@ -29,6 +29,7 @@
 //! configuration objects, and the decisions `EditableTextState` makes that do
 //! not need a tree.
 
+use crate::icon_data::ContextMenuButtonType;
 use crate::services::text_input::TextEditingValue;
 use crate::text_selection::{ClipboardStatus, LiveTextInputStatus};
 
@@ -538,6 +539,104 @@ impl EditableText {
     }
 }
 
+/// Which of the eight selection-menu buttons a field would offer at all.
+///
+/// Upstream passes these into `getEditableButtonItems` as eight **nullable
+/// callbacks**, and reads each one only for whether it is null. Eight booleans
+/// say the same thing without pretending the callback matters here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EnabledButtons {
+    pub copy: bool,
+    pub cut: bool,
+    pub paste: bool,
+    pub select_all: bool,
+    pub look_up: bool,
+    pub search_web: bool,
+    pub share: bool,
+    pub live_text_input: bool,
+}
+
+/// Upstream `EditableText.getEditableButtonItems`: the eight predicates turned
+/// into an ordered menu.
+///
+/// # An unknown clipboard hides **every** button, not just paste
+///
+/// The guard upstream writes is `onPaste == null || clipboardStatus != unknown`,
+/// and it wraps the whole first group. Its comment: "If the paste button is
+/// enabled, don't render anything until the state of the clipboard is known."
+/// So a field that could paste, on the frame before the clipboard has been
+/// read, offers **no buttons at all** -- not cut, not copy, not select-all.
+/// The toolbar appears once and appears complete, rather than growing a paste
+/// button under the reader's finger a frame later.
+///
+/// Two things follow that a narrower reading would miss:
+///
+/// * A field where **paste is already impossible** does not wait. A read-only
+///   field's menu is not held back by a clipboard nobody is going to ask about.
+/// * **Live Text is added outside the guard**, and is the only button that is.
+///   It does not depend on the clipboard, so an unknown clipboard can yield a
+///   menu holding exactly one button.
+///
+/// A third thing follows that is worth writing down because it is easy to
+/// mistake for dead code: **on the modern path the guard can never bite.**
+/// [`EditableTextState::paste_enabled`] already requires
+/// [`ClipboardStatus::Pasteable`] there, so paste being enabled implies the
+/// clipboard is known. The guard is live only on the deprecated
+/// `toolbarOptions` path, where paste is enabled by configuration alone and
+/// nobody has asked the clipboard anything. That is the case it was written
+/// for, and it is why this takes the status as an argument rather than
+/// deriving it.
+///
+/// # Share sits in two different places
+///
+/// **On Android share comes before select-all; everywhere else it comes after
+/// search-web.** Upstream spells this as one flag consulted twice, with the
+/// same item written into the list in two positions. It is the same button
+/// doing the same thing -- only its neighbours change -- so a port that picked
+/// one position and kept it would be wrong on exactly one platform and look
+/// right on every other.
+///
+/// The rest of the order is fixed: cut, copy, paste, [share], select all,
+/// look up, search web, [share], live text.
+pub fn editable_button_items(
+    platform: TargetPlatform,
+    clipboard_status: ClipboardStatus,
+    enabled: EnabledButtons,
+) -> Vec<ContextMenuButtonType> {
+    let mut items = Vec::new();
+    if !enabled.paste || clipboard_status != ClipboardStatus::Unknown {
+        let share_before_select_all = platform == TargetPlatform::Android;
+        if enabled.cut {
+            items.push(ContextMenuButtonType::Cut);
+        }
+        if enabled.copy {
+            items.push(ContextMenuButtonType::Copy);
+        }
+        if enabled.paste {
+            items.push(ContextMenuButtonType::Paste);
+        }
+        if enabled.share && share_before_select_all {
+            items.push(ContextMenuButtonType::Share);
+        }
+        if enabled.select_all {
+            items.push(ContextMenuButtonType::SelectAll);
+        }
+        if enabled.look_up {
+            items.push(ContextMenuButtonType::LookUp);
+        }
+        if enabled.search_web {
+            items.push(ContextMenuButtonType::SearchWeb);
+        }
+        if enabled.share && !share_before_select_all {
+            items.push(ContextMenuButtonType::Share);
+        }
+    }
+    if enabled.live_text_input {
+        items.push(ContextMenuButtonType::LiveTextInput);
+    }
+    items
+}
+
 /// Upstream `EditableTextState`, reduced to the decisions it makes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditableTextState {
@@ -716,6 +815,30 @@ impl EditableTextState {
             && !self.has_selection()
     }
 
+    /// Upstream's `contextMenuButtonItems`, less the deprecated
+    /// `buttonItemsForToolbarOptions` short circuit: which buttons this field
+    /// offers, in the order they are offered.
+    ///
+    /// The eight predicates above answer *whether* each button belongs. This
+    /// answers *where*, and it is a separate question with rules of its own --
+    /// see [`editable_button_items`].
+    pub fn context_menu_button_items(&self) -> Vec<ContextMenuButtonType> {
+        editable_button_items(
+            self.platform,
+            self.clipboard_status,
+            EnabledButtons {
+                copy: self.copy_enabled(),
+                cut: self.cut_enabled(),
+                paste: self.paste_enabled(),
+                select_all: self.select_all_enabled(),
+                look_up: self.look_up_enabled(),
+                search_web: self.search_web_enabled(),
+                share: self.share_enabled(),
+                live_text_input: self.live_text_input_enabled(),
+            },
+        )
+    }
+
     /// Upstream's reveal condition inside `updateEditingValue`.
     ///
     /// The `length + 1` test is what makes this a *typing* affordance and
@@ -835,6 +958,256 @@ mod tests {
 
     fn state(widget: EditableText) -> EditableTextState {
         EditableTextState::new(widget).with_value(value("hello world", 0, 5))
+    }
+
+    // -- Which buttons the menu offers, and in what order, tick 316 --------
+
+    fn all_but_live_text() -> EnabledButtons {
+        EnabledButtons {
+            copy: true,
+            cut: true,
+            paste: true,
+            select_all: true,
+            look_up: true,
+            search_web: true,
+            share: true,
+            live_text_input: false,
+        }
+    }
+
+    #[test]
+    fn share_stands_before_select_all_on_android_and_after_search_web_elsewhere() {
+        use ContextMenuButtonType::*;
+        let android = editable_button_items(
+            TargetPlatform::Android,
+            ClipboardStatus::Pasteable,
+            all_but_live_text(),
+        );
+        assert_eq!(
+            android,
+            vec![Cut, Copy, Paste, Share, SelectAll, LookUp, SearchWeb]
+        );
+
+        let ios = editable_button_items(
+            TargetPlatform::IOS,
+            ClipboardStatus::Pasteable,
+            all_but_live_text(),
+        );
+        assert_eq!(
+            ios,
+            vec![Cut, Copy, Paste, SelectAll, LookUp, SearchWeb, Share]
+        );
+
+        // Same buttons, different order -- so nothing here is about which
+        // buttons a platform offers.
+        let mut android_sorted = android.clone();
+        let mut ios_sorted = ios.clone();
+        android_sorted.sort_by_key(|button| format!("{button:?}"));
+        ios_sorted.sort_by_key(|button| format!("{button:?}"));
+        assert_eq!(android_sorted, ios_sorted);
+        assert_ne!(android, ios);
+    }
+
+    #[test]
+    fn only_android_moves_share_forward() {
+        use ContextMenuButtonType::*;
+        for platform in [
+            TargetPlatform::IOS,
+            TargetPlatform::MacOS,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+            TargetPlatform::Fuchsia,
+        ] {
+            let items =
+                editable_button_items(platform, ClipboardStatus::Pasteable, all_but_live_text());
+            assert_eq!(items.last(), Some(&Share), "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_clipboard_holds_back_every_button_and_not_only_paste() {
+        // "Don't render anything until the state of the clipboard is known,
+        // since it's used to determine if paste is shown." The toolbar
+        // appears once and appears complete, rather than growing a paste
+        // button under the reader's finger a frame later.
+        let held = editable_button_items(
+            TargetPlatform::IOS,
+            ClipboardStatus::Unknown,
+            all_but_live_text(),
+        );
+        assert!(held.is_empty(), "not even cut and copy, which are ready");
+
+        // The same buttons, once the clipboard has answered.
+        assert_eq!(
+            editable_button_items(
+                TargetPlatform::IOS,
+                ClipboardStatus::NotPasteable,
+                all_but_live_text()
+            )
+            .len(),
+            7
+        );
+    }
+
+    #[test]
+    fn a_field_that_cannot_paste_does_not_wait_for_the_clipboard() {
+        // A read-only field's menu is not held back by a clipboard nobody is
+        // going to ask about.
+        use ContextMenuButtonType::*;
+        let no_paste = EnabledButtons {
+            paste: false,
+            ..all_but_live_text()
+        };
+        assert_eq!(
+            editable_button_items(TargetPlatform::IOS, ClipboardStatus::Unknown, no_paste),
+            vec![Cut, Copy, SelectAll, LookUp, SearchWeb, Share],
+            "offered in full while the clipboard is still unknown"
+        );
+    }
+
+    #[test]
+    fn live_text_is_the_one_button_an_unknown_clipboard_does_not_hold_back() {
+        use ContextMenuButtonType::*;
+        let items = editable_button_items(
+            TargetPlatform::IOS,
+            ClipboardStatus::Unknown,
+            EnabledButtons {
+                live_text_input: true,
+                ..all_but_live_text()
+            },
+        );
+        assert_eq!(
+            items,
+            vec![LiveTextInput],
+            "a menu of exactly one button, added outside the guard"
+        );
+    }
+
+    #[test]
+    fn live_text_comes_last_even_when_it_is_not_alone() {
+        use ContextMenuButtonType::*;
+        let items = editable_button_items(
+            TargetPlatform::Android,
+            ClipboardStatus::Pasteable,
+            EnabledButtons {
+                live_text_input: true,
+                ..all_but_live_text()
+            },
+        );
+        assert_eq!(
+            items,
+            vec![
+                Cut,
+                Copy,
+                Paste,
+                Share,
+                SelectAll,
+                LookUp,
+                SearchWeb,
+                LiveTextInput
+            ]
+        );
+    }
+
+    #[test]
+    fn a_button_that_is_not_enabled_is_absent_rather_than_disabled() {
+        use ContextMenuButtonType::*;
+        let items = editable_button_items(
+            TargetPlatform::IOS,
+            ClipboardStatus::Pasteable,
+            EnabledButtons {
+                cut: false,
+                copy: true,
+                paste: true,
+                ..EnabledButtons::default()
+            },
+        );
+        assert_eq!(items, vec![Copy, Paste]);
+        assert!(
+            editable_button_items(
+                TargetPlatform::IOS,
+                ClipboardStatus::Pasteable,
+                EnabledButtons::default()
+            )
+            .is_empty(),
+            "a field offering nothing has an empty menu, not a menu of greyed entries"
+        );
+    }
+
+    #[test]
+    fn the_field_asks_its_own_predicates_for_the_menu() {
+        // An obscured field: no copy, no cut, no look up, no search web, no
+        // share -- and select all survives, because it is not read-only.
+        use ContextMenuButtonType::*;
+        let obscured = EditableTextState::new(EditableText::new().with_obscure_text(true))
+            .with_value(value("hunter2", 0, 7))
+            .with_platform(TargetPlatform::IOS);
+        let obscured = EditableTextState {
+            clipboard_status: ClipboardStatus::NotPasteable,
+            ..obscured
+        };
+        let items = obscured.context_menu_button_items();
+        assert!(!items.contains(&Copy), "a password is not copied out");
+        assert!(!items.contains(&Cut));
+        assert!(!items.contains(&LookUp));
+        assert!(!items.contains(&Share));
+
+        let plain = EditableTextState::new(EditableText::new())
+            .with_value(value("hunter2", 0, 7))
+            .with_platform(TargetPlatform::IOS);
+        let plain = EditableTextState {
+            clipboard_status: ClipboardStatus::NotPasteable,
+            ..plain
+        };
+        assert!(
+            plain.context_menu_button_items().contains(&Copy),
+            "and the same field unobscured does offer it"
+        );
+    }
+
+    #[test]
+    fn a_read_only_field_offers_copy_without_cut() {
+        // The two predicates differ in exactly one clause, so a field where
+        // they disagree is what catches the menu asking one of them twice.
+        use ContextMenuButtonType::*;
+        let read_only = EditableTextState::new(EditableText::new().with_read_only(true))
+            .with_value(value("hello world", 0, 5))
+            .with_platform(TargetPlatform::IOS);
+        let items = read_only.context_menu_button_items();
+        assert!(
+            items.contains(&Copy),
+            "reading and copying is what it is for"
+        );
+        assert!(!items.contains(&Cut), "but there is nothing to cut into");
+    }
+
+    #[test]
+    fn the_clipboard_guard_bites_on_the_toolbar_options_path() {
+        // On the modern path `paste_enabled` already requires Pasteable, so
+        // paste being on implies the clipboard is known and the guard can
+        // never fire. It is live here, where paste is enabled by
+        // configuration and nobody has asked the clipboard anything.
+        let field =
+            EditableTextState::new(EditableText::new().with_toolbar_options(ToolbarOptions {
+                copy: true,
+                cut: true,
+                paste: true,
+                select_all: true,
+            }))
+            .with_value(value("hello world", 0, 5))
+            .with_platform(TargetPlatform::IOS);
+        assert!(field.paste_enabled(), "by configuration, not by clipboard");
+        assert_eq!(field.clipboard_status, ClipboardStatus::Unknown);
+        assert!(
+            field.context_menu_button_items().is_empty(),
+            "held back whole until the clipboard answers"
+        );
+
+        let answered = EditableTextState {
+            clipboard_status: ClipboardStatus::NotPasteable,
+            ..field
+        };
+        assert!(!answered.context_menu_button_items().is_empty());
     }
 
     // -- The controller ----------------------------------------------------
