@@ -20956,3 +20956,67 @@ hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engi
 `backButtonLabel`。先做 `noSpellCheckReplacementsLabel`：它是拼写检查建议工具栏在
 **一个建议都没有**时显示的那句话，而"没有建议"这个状态本身就容易被端口整个漏掉——
 端口有 `CupertinoSpellCheckSuggestionsToolbar` 吗，它在空的时候画什么？先按行为查。
+
+## 第 297 轮：两种"没有"，只有一种配得上一个工具栏
+
+`noSpellCheckReplacementsLabel`。它单独看只是一句话——"No Replacements Found"——
+但它所在的那个函数有**三个**出口，而不是两个：
+
+```dart
+if (spanAtCursorIndex == null) {
+  return null;                                    // 1
+}
+if (spanAtCursorIndex.suggestions.isEmpty) {
+  return <ContextMenuButtonItem>[
+    ContextMenuButtonItem(onPressed: null,        // 2
+                          label: localizations.noSpellCheckReplacementsLabel),
+  ];
+}
+... suggestions.take(_kMaxSuggestions) ...        // 3
+```
+
+**1 和 2 是两种不同的"没有"。**
+
+* "光标下这个词拼写没问题" → **根本不给工具栏**。
+* "这个词是错的，但我拿不出替换" → **给一个工具栏，让它把这件事说出来**。
+
+把任一边并进另一边，都是看得见的 bug，而且方向相反：把 2 并进 1,
+长按一个划了红线的词什么也不发生——读者会读成"这个应用不理我"；把 1 并进 2,
+每一个拼对的词都会冒出一个工具栏宣布自己没有更正。
+
+端口有这个工具栏的两条 assert，**没有这个三分支**。补上了，返回类型照抄上游的
+`List<ContextMenuButtonItem>?`——可空的列表，`None` 与 `Some(非空)` 的区别就在类型里。
+
+### 那句话穿着按钮的衣服，但按不动
+
+`onPressed: null`。它在列表里，所以工具栏有东西可以排版和绘制；它是禁用的,
+所以**唯一摆在那里的东西拿不走**。端口的 `ContextMenuButtonItem` 早就把这个可空回调
+建模对了，连"为什么是可空回调而不是单独的 enabled 标志"都写了：*一个无事可做的条目和
+一个被关掉的条目是同一件事*。这一轮只是第一次真正用上它。
+
+### 截断，不是断言
+
+`take(_kMaxSuggestions)` 会**丢掉**多余的建议，而构造器那条
+`assert(buttonItems.length <= _kMaxSuggestions)` 会**炸**。同一个常数，两种态度,
+因为来源不同：**调用方交给控件六个按钮项是编程错误；拼写检查器交给框架六个替换词不是。**
+
+### 一条不变式，把两种"没有"钉死
+
+    the_builder_never_answers_with_an_empty_toolbar
+
+`Some(vec![])` 是这个函数**任何输入都产生不了**的状态。这条比逐个 case 的断言更强:
+它说的是两种"没有"在类型层面不会重合。
+
+**八条承重规则逐条强制改错，八条全红**（含两条方向相反的折叠、把那句话变成可按的、
+把真建议变成按不动的、把上限抬高、把上限变成下限、把顺序颠倒）。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 2,
+hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engines 全部不
+落后。十六把尺子全部 exit 0。
+门：6073 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：`CupertinoLocalizations` 最后一个——`backButtonLabel`（"Back"）。它是
+`CupertinoNavigationBarBackButton` 在**没有上一页标题可用**时说的话，所以真正要查的不是
+这个字符串，是**那条回退链**：上游先用上一页的 `previousPageTitle`，再退到上一页的
+`middle`，最后才退到这个词。端口的返回按钮现在在这三级里走到哪一级？先按行为查。

@@ -321,6 +321,14 @@ impl DefaultCupertinoLocalizations {
     /// names, which is why the per-widget override is a
     /// `clearButtonSemanticLabel` rather than a `clearButtonText`.
     pub const CLEAR_BUTTON_LABEL: &'static str = "Clear";
+    /// Upstream `noSpellCheckReplacementsLabel`, the sentence a Cupertino
+    /// spell-check toolbar shows **instead of** suggestions.
+    ///
+    /// It is a label on a `ContextMenuButtonItem` with `onPressed: null`, so
+    /// it arrives wearing a button's clothes and cannot be pressed. See
+    /// [`crate::cupertino_refresh::CupertinoSpellCheckSuggestionsToolbar::build_button_items`]
+    /// for the three-way choice it belongs to.
+    pub const NO_SPELL_CHECK_REPLACEMENTS_LABEL: &'static str = "No Replacements Found";
     /// Upstream `searchTextFieldPlaceholderLabel`, and **the opposite case**:
     /// this one is painted.
     ///

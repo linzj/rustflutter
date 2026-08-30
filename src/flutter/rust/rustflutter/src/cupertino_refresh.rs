@@ -5,6 +5,7 @@
 //! The last four classes of the sweep.
 
 use crate::editable_text::TargetPlatform;
+use crate::icon_data::{ContextMenuButtonItem, ContextMenuButtonType};
 use crate::render::AxisDirection;
 
 /// Upstream `RefreshIndicatorMode`.
@@ -284,6 +285,72 @@ impl CupertinoSpellCheckSuggestionsToolbar {
         CupertinoSpellCheckSuggestionsToolbar::accepts_button_items(self.button_item_count)
     }
 
+    /// Upstream `buildButtonItems`, whose return type is
+    /// `List<ContextMenuButtonItem>?` and whose **three** outcomes are the
+    /// whole of it:
+    ///
+    /// ```dart
+    /// if (spanAtCursorIndex == null) {
+    ///   return null;
+    /// }
+    /// if (spanAtCursorIndex.suggestions.isEmpty) {
+    ///   return <ContextMenuButtonItem>[
+    ///     ContextMenuButtonItem(onPressed: null, label: localizations.noSpellCheckReplacementsLabel),
+    ///   ];
+    /// }
+    /// ... suggestions.take(_kMaxSuggestions) ...
+    /// ```
+    ///
+    /// `suggestions` is `None` when there is no misspelled span under the
+    /// cursor, and `Some(&[])` when there is one the checker had nothing to
+    /// offer for.
+    ///
+    /// **Those two are not the same nothing.** "This word is spelled fine"
+    /// gets *no toolbar at all*; "this word is wrong and I have no idea" gets
+    /// a toolbar that says so. Collapsing them either way is a visible bug in
+    /// opposite directions: fold the empty case into `null` and long-pressing
+    /// a red-underlined word does nothing, which reads as the application
+    /// ignoring the reader; fold the null case into the empty one and every
+    /// correctly-spelled word sprouts a toolbar announcing it has no
+    /// corrections.
+    ///
+    /// The sentence is carried as a button item with **no callback**, which
+    /// upstream spells `onPressed: null` and this crate spells
+    /// [`ContextMenuButtonItem::on_pressed`] being `None`. It is in the list so
+    /// the toolbar has something to lay out and paint; it is disabled so that
+    /// the one thing on offer cannot be taken.
+    ///
+    /// At most [`Self::MAX_SUGGESTIONS`] suggestions are kept -- upstream's
+    /// `take(_kMaxSuggestions)`, which **truncates rather than asserting**.
+    /// The assert on the constructor is about what a caller hands the widget;
+    /// this is about what the spell checker hands the framework, and a
+    /// checker that offers six replacements is not a programming error.
+    pub fn build_button_items(
+        suggestions: Option<&[String]>,
+    ) -> Option<Vec<ContextMenuButtonItem>> {
+        let suggestions = suggestions?;
+        if suggestions.is_empty() {
+            return Some(vec![ContextMenuButtonItem::new(
+                ContextMenuButtonType::Custom,
+            )
+            .with_label(
+                crate::cupertino_app::DefaultCupertinoLocalizations::NO_SPELL_CHECK_REPLACEMENTS_LABEL,
+            )]);
+        }
+        Some(
+            suggestions
+                .iter()
+                .take(CupertinoSpellCheckSuggestionsToolbar::MAX_SUGGESTIONS)
+                .map(|suggestion| {
+                    let replacement = suggestion.clone();
+                    ContextMenuButtonItem::new(ContextMenuButtonType::Custom)
+                        .with_label(replacement)
+                        .with_on_pressed(|| {})
+                })
+                .collect(),
+        )
+    }
+
     /// Upstream's build-time
     /// `assert(!editableTextState.widget.readOnly && !editableTextState.widget.obscureText)`.
     ///
@@ -530,10 +597,95 @@ mod empty_direction_tests {
 }
 
 #[cfg(test)]
+mod spell_check_button_item_tests {
+    use super::CupertinoSpellCheckSuggestionsToolbar as Toolbar;
+    use crate::cupertino_app::DefaultCupertinoLocalizations as L10n;
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_correctly_spelled_word_gets_no_toolbar_at_all() {
+        // `spanAtCursorIndex == null` -> `return null`. Not an empty list:
+        // there is nothing to show, so nothing is built.
+        assert!(Toolbar::build_button_items(None).is_none());
+    }
+
+    #[test]
+    fn a_misspelling_with_nothing_to_offer_gets_a_toolbar_that_says_so() {
+        // The other nothing. A red-underlined word the checker has no
+        // replacement for still opens a toolbar -- one that states the fact.
+        let items = Toolbar::build_button_items(Some(&[])).expect("a toolbar");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].label.as_deref(),
+            Some(L10n::NO_SPELL_CHECK_REPLACEMENTS_LABEL)
+        );
+        assert_eq!(items[0].label.as_deref(), Some("No Replacements Found"));
+    }
+
+    #[test]
+    fn the_two_nothings_are_kept_apart() {
+        // The whole point of the nullable list. Folding either into the other
+        // is a visible bug in opposite directions: no toolbar on a word the
+        // reader was told is wrong, or a toolbar on every word that is right.
+        assert!(Toolbar::build_button_items(None).is_none());
+        assert!(Toolbar::build_button_items(Some(&[])).is_some());
+    }
+
+    #[test]
+    fn the_sentence_wears_a_buttons_clothes_and_cannot_be_pressed() {
+        // `onPressed: null`. It is in the list so the toolbar has something
+        // to lay out; it is disabled so the one thing on offer cannot be
+        // taken.
+        let items = Toolbar::build_button_items(Some(&[])).expect("a toolbar");
+        assert!(items[0].on_pressed.is_none());
+        // Where a real suggestion can be.
+        let real = Toolbar::build_button_items(Some(&words(&["their"]))).expect("a toolbar");
+        assert!(real[0].on_pressed.is_some());
+    }
+
+    #[test]
+    fn no_more_than_three_suggestions_survive_and_the_rest_are_dropped() {
+        // `take(_kMaxSuggestions)` truncates; it does not assert. A checker
+        // offering six replacements is not a programming error, unlike a
+        // caller handing the widget six button items.
+        let many = words(&["one", "two", "three", "four", "five", "six"]);
+        let items = Toolbar::build_button_items(Some(&many)).expect("a toolbar");
+        assert_eq!(items.len(), Toolbar::MAX_SUGGESTIONS);
+        assert_eq!(items.len(), 3);
+        let labels: Vec<&str> = items.iter().filter_map(|i| i.label.as_deref()).collect();
+        assert_eq!(labels, ["one", "two", "three"], "the first three, in order");
+        // And what survives is something the constructor would accept.
+        assert!(Toolbar::accepts_button_items(items.len()));
+    }
+
+    #[test]
+    fn a_shorter_list_is_not_padded_out_to_three() {
+        let items =
+            Toolbar::build_button_items(Some(&words(&["there", "their"]))).expect("a toolbar");
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn the_builder_never_answers_with_an_empty_toolbar() {
+        // The invariant that keeps the two nothings apart: `Some(vec![])` is
+        // not a state this function can produce, for any input.
+        for suggestions in [None, Some(&[][..]), Some(&words(&["a"])[..])] {
+            if let Some(items) = Toolbar::build_button_items(suggestions) {
+                assert!(!items.is_empty(), "{suggestions:?}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod expansion_hint_tests {
     use super::CupertinoExpansionTile;
     use crate::cupertino_app::DefaultCupertinoLocalizations as CupertinoL10n;
     use crate::editable_text::TargetPlatform;
+    use crate::icon_data::{ContextMenuButtonItem, ContextMenuButtonType};
     use crate::material_app::DefaultMaterialLocalizations as L10n;
 
     /// The hint a tile shows on the platforms that get one at all.
