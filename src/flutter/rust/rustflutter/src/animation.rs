@@ -1290,6 +1290,82 @@ mod tests {
     }
 
     #[test]
+    fn a_listener_on_a_reversed_animation_hears_the_reversed_status() {
+        // The value callback takes no argument and is forwarded as it is; the
+        // status one has to be wrapped. Unwrapped it compiles, runs, and
+        // reports the parent's status -- so something listening to a reversed
+        // animation would be told "forward" at the moment its own animation
+        // began reversing.
+        let parent = AnimationController::new(Duration::from_millis(100));
+        let reversed = ReverseAnimation::new(parent.clone());
+
+        let heard: Rc<RefCell<Vec<AnimationStatus>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&heard);
+        let ticks = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&ticks);
+        reversed.add_listener(AnimationListener {
+            on_value: Rc::new(move || counter.set(counter.get() + 1)),
+            on_status: Some(Rc::new(move |status| sink.borrow_mut().push(status))),
+        });
+
+        parent.forward();
+        parent.tick(Duration::from_millis(50));
+        assert!(ticks.get() > 0, "the value listener was forwarded at all");
+        assert_eq!(
+            heard.borrow().as_slice(),
+            &[AnimationStatus::Reverse],
+            "the parent went forward, so this one is going backwards"
+        );
+        assert_eq!(parent.status(), AnimationStatus::Forward, "and it did");
+    }
+
+    #[test]
+    fn removing_a_listener_from_a_reversed_animation_finds_the_wrapped_one() {
+        // The wrapper makes a new status callback, so removal has to match on
+        // the half that was forwarded unchanged.
+        let parent = AnimationController::new(Duration::from_millis(100));
+        let reversed = ReverseAnimation::new(parent.clone());
+        let ticks = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&ticks);
+        let listener = AnimationListener {
+            on_value: Rc::new(move || counter.set(counter.get() + 1)),
+            on_status: Some(Rc::new(|_| {})),
+        };
+
+        reversed.add_listener(listener.clone());
+        parent.forward();
+        parent.tick(Duration::from_millis(20));
+        let heard = ticks.get();
+        assert!(heard > 0);
+
+        reversed.remove_listener(&listener);
+        parent.tick(Duration::from_millis(20));
+        assert_eq!(ticks.get(), heard, "silent after removal");
+    }
+
+    #[test]
+    fn a_curved_animation_passes_its_listeners_through_untouched() {
+        // A curve bends the value and leaves the status alone, so unlike the
+        // reversed one there is nothing to wrap.
+        let parent = AnimationController::new(Duration::from_millis(100));
+        let curved = CurvedAnimation::new(parent.clone(), Curve::EASE_IN);
+
+        let heard: Rc<RefCell<Vec<AnimationStatus>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&heard);
+        let ticks = Rc::new(Cell::new(0u32));
+        let counter = Rc::clone(&ticks);
+        curved.add_listener(AnimationListener {
+            on_value: Rc::new(move || counter.set(counter.get() + 1)),
+            on_status: Some(Rc::new(move |status| sink.borrow_mut().push(status))),
+        });
+
+        parent.forward();
+        parent.tick(Duration::from_millis(50));
+        assert!(ticks.get() > 0, "forwarded rather than dropped");
+        assert_eq!(heard.borrow().as_slice(), &[AnimationStatus::Forward]);
+    }
+
+    #[test]
     fn an_animation_run_backwards_aims_the_other_way() {
         // `ReverseAnimation` maps the four states across exactly the diagonal
         // this predicate cuts along, so its aim is always the opposite of its
@@ -1856,22 +1932,60 @@ impl ReverseAnimation {
     }
 }
 
+/// Upstream's `ReverseAnimation._reverseStatus`, pulled out because **two**
+/// places need it and they must not drift: the status getter, and the status
+/// callback handed to the parent.
+fn reverse_status(status: AnimationStatus) -> AnimationStatus {
+    match status {
+        AnimationStatus::Dismissed => AnimationStatus::Completed,
+        AnimationStatus::Forward => AnimationStatus::Reverse,
+        AnimationStatus::Reverse => AnimationStatus::Forward,
+        AnimationStatus::Completed => AnimationStatus::Dismissed,
+    }
+}
+
 impl Animation for ReverseAnimation {
     fn value(&self) -> f32 {
         1.0 - self.parent.value()
     }
 
     fn status(&self) -> AnimationStatus {
-        match self.parent.status() {
-            AnimationStatus::Dismissed => AnimationStatus::Completed,
-            AnimationStatus::Forward => AnimationStatus::Reverse,
-            AnimationStatus::Reverse => AnimationStatus::Forward,
-            AnimationStatus::Completed => AnimationStatus::Dismissed,
-        }
+        reverse_status(self.parent.status())
     }
 
-    fn add_listener(&self, _listener: AnimationListener) {}
-    fn remove_listener(&self, _listener: &AnimationListener) {}
+    /// Upstream's `addListener` and `didStartListening` together.
+    ///
+    /// # The value listener is passed on as it is; the status one is wrapped
+    ///
+    /// Upstream forwards `addListener` straight to the parent -- a value
+    /// callback takes no argument, so there is nothing to reverse -- but
+    /// registers status through `_statusChangeHandler`, which calls
+    /// `notifyStatusListeners(_reverseStatus(status))`.
+    ///
+    /// The asymmetry is the whole of it. Handing the status callback to the
+    /// parent unwrapped compiles, runs, and delivers the **parent's** status:
+    /// something listening to a reversed animation would be told "forward"
+    /// at the exact moment its own animation began reversing. Every value
+    /// would still be right, so nothing would look wrong until something
+    /// branched on the status -- which, since round 318, several things do.
+    ///
+    /// Removal still works on the original listener because
+    /// [`Listeners::remove`] matches on the value callback's identity, and
+    /// that half is forwarded unchanged.
+    fn add_listener(&self, listener: AnimationListener) {
+        let on_status = listener.on_status.clone().map(|inner| {
+            Rc::new(move |status: AnimationStatus| inner(reverse_status(status)))
+                as Rc<dyn Fn(AnimationStatus)>
+        });
+        self.parent.add_listener(AnimationListener {
+            on_value: listener.on_value,
+            on_status,
+        });
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.parent.remove_listener(listener);
+    }
 }
 
 /// Upstream `CurvedAnimation`: the parent's value through a curve, with
@@ -1919,8 +2033,19 @@ impl Animation for CurvedAnimation {
         self.parent.status()
     }
 
-    fn add_listener(&self, _listener: AnimationListener) {}
-    fn remove_listener(&self, _listener: &AnimationListener) {}
+    /// Upstream gets these from `AnimationWithParentMixin`, which forwards all
+    /// four registration methods to the parent unchanged.
+    ///
+    /// Nothing is wrapped here, unlike [`ReverseAnimation::add_listener`]: a
+    /// curve bends the *value* and leaves the status alone, so a listener
+    /// hears exactly what the parent says.
+    fn add_listener(&self, listener: AnimationListener) {
+        self.parent.add_listener(listener);
+    }
+
+    fn remove_listener(&self, listener: &AnimationListener) {
+        self.parent.remove_listener(listener);
+    }
 }
 
 /// Upstream `AnimationMean`: the average of two.

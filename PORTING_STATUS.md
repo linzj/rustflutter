@@ -22445,3 +22445,55 @@ rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery
 `1 - parent.value()`、以及它转不转发监听器**还没查过——第 318 轮读到那一段时
 `add_listener`／`remove_listener` 是**两个空实现**，一个不转发监听的动画意味着
 依赖它的东西永远不会重建。先按行为查这一条。
+
+---
+
+## 第 324 轮：值监听照原样转发，状态监听必须包一层——不包也能跑，只是说反话
+
+接上一轮的“下一步”。第 318 轮读 `ReverseAnimation` 时顺眼看到
+`add_listener`／`remove_listener` 是**两个空实现**，这一轮去查。`value` 是
+`1 - parent.value()`、状态映射也对，**缺的就是监听转发**——一个不转发监听的派生动画，
+依赖它的东西永远不会重建。
+
+上游的写法里藏着一处不对称：
+
+```dart
+void addListener(VoidCallback listener) { didRegisterListener(); parent.addListener(listener); }
+void didStartListening() { parent.addStatusListener(_statusChangeHandler); }
+void _statusChangeHandler(AnimationStatus status) { notifyStatusListeners(_reverseStatus(status)); }
+```
+
+**值监听直接交给父级**——值回调不带参数，没有什么可反的；**状态监听必须包一层**，
+包的那层把状态先反过来再往下发。
+
+这一处不对称是这一轮的全部。把状态回调原样交给父级，**编译得过、跑得起来、
+发出去的是父级的状态**：一个监听着“反向动画”的东西，会在自己这条动画**开始倒退的那一刻
+被告知“正在前进”**。每一个**值**都仍然是对的，所以在有人拿状态去分支之前，
+什么都不会显得不对——而自第 318 轮起，拿状态去分支的地方已经有好几处了。
+
+实现上有个能落地的细节：包一层会造出一个**新的**状态回调，而
+`Listeners::remove` 是按**值回调的指针身份**匹配的，值那一半是原样转发的，
+所以拿原来的 listener 去 `remove_listener` 仍然找得到。
+
+顺手把 `reverse_status` 提成自由函数：**两个地方**要用它（状态 getter 和交给父级的那层包装），
+分开写迟早会漂。
+
+同一轮里把 `CurvedAnimation` 的两个空实现也补了——上游它拿的是
+`AnimationWithParentMixin`，四个注册方法原样转发。**这里什么都不包**：曲线弯的是值，
+状态它不碰，所以监听者听到的就是父级说的。两者放在一起，正好把“什么时候要包、什么时候不要”
+钉住。
+
+**变异扫描 8 个，全红。** 包括：反向动画重新丢掉监听、状态回调原样转发（就是那条 bug 本身）、
+包装反了两次、只留值丢掉状态、移除不再到达父级、状态映射少一对、
+曲线动画重新丢掉监听、曲线动画**也**去反状态。
+
+尺子：十六把全部 exit 0。门：6212 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：同一族里还剩 `AnimationMean`／`AnimationMax`／`AnimationMin` 三个，
+它们的 `add_listener`／`remove_listener` 也还是空的。但它们**不是**简单转发：
+上游 `CompoundAnimation` 要同时挂到 `first` 和 `next` 两个父级上，而且有
+`_maybeNotifyListeners`／`_maybeNotifyStatusListeners` 两道**去重**闸
+（`_lastValue`／`_lastStatus`）——两个父级在同一帧都变了，监听者只应该被叫一次。
+另外它的 `status` 不是随便取一个：`next.status.isAnimating ? next.status : first.status`，
+**动着的那个说了算，都不动才轮到 first**。先按行为查本项目这三个的 `status` 是怎么写的。
