@@ -2058,6 +2058,36 @@ impl RenderRef {
         f(&**self.render.borrow())
     }
 
+    /// Runs `f` on whatever `node` really is, stepping past a handle if that
+    /// is what it is.
+    ///
+    /// **Every node a visitor receives is a handle.** Children are stored as
+    /// [`RenderRef`], `RenderRef` implements `RenderBox` by forwarding, and
+    /// `visit_children` hands out `&self.child` -- so a walk over the tree
+    /// sees `RenderRef` at every step and `as_any().downcast_ref::<Text>()`
+    /// answers `None` at every step, however faithfully the walk itself
+    /// works.
+    ///
+    /// That is not a bug in any one render object. Upstream has no handle at
+    /// all -- a child *is* a `RenderObject`, and `visitChildren` hands out the
+    /// thing itself -- so the wrapper is this port's own, and this is the one
+    /// place its cost is paid rather than being paid again at each caller.
+    ///
+    /// Three rounds of this port ended with an assertion written down instead
+    /// of written: whether a widget's `build` really used the value it had
+    /// decided on could not be checked, because the built tree could not be
+    /// read back. This is what they were waiting for.
+    ///
+    /// One level, because that is all there ever is: the element tree wraps
+    /// each render object once, and a handle holding a handle is not a shape
+    /// anything here builds.
+    pub fn unwrapped<R>(node: &dyn RenderBox, f: impl FnOnce(&dyn RenderBox) -> R) -> R {
+        match node.as_any().downcast_ref::<RenderRef>() {
+            Some(handle) => handle.with(f),
+            None => f(node),
+        }
+    }
+
     // -- Where this object is ------------------------------------------------
     //
     // Upstream keeps `applyPaintTransform` on every `RenderObject` and composes
@@ -12206,6 +12236,32 @@ impl RenderCustomPaint {
     }
 }
 
+/// Upstream `RenderCustomPaint._paintWithPainter`: the painter is given a
+/// canvas whose origin is *its own* top left, and whatever it does to the
+/// canvas is undone afterwards.
+///
+/// Both halves matter and neither was here. A painter draws in the
+/// coordinates its own doc promises -- "the canvas' origin is this box's top
+/// left" -- so without the translate every `CustomPaint` that is not at the
+/// window's origin painted in the wrong place; the notch on Reply's bottom app
+/// bar was drawn across the top of the screen, which is how this was found.
+/// And a painter that leaves a transform or a clip behind would otherwise
+/// corrupt everything painted after it, which is what upstream's `save`/
+/// `restore` pair is for -- upstream even asserts the save count came back.
+fn paint_with_painter(
+    context: &mut PaintContext,
+    offset: Offset,
+    size: Size,
+    painter: &dyn CustomPainter,
+) {
+    context.canvas().saved(|canvas| {
+        if offset != Offset::ZERO {
+            canvas.translate(offset.dx, offset.dy);
+        }
+        painter.paint(canvas, size);
+    });
+}
+
 impl RenderBox for RenderCustomPaint {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderCustomPaint>()?;
@@ -12253,13 +12309,13 @@ impl RenderBox for RenderCustomPaint {
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let size = self.size;
         if let Some(painter) = &self.painter {
-            painter.paint(context.canvas(), size);
+            paint_with_painter(context, offset, size, painter.as_ref());
         }
         if let Some(child) = &self.child {
             context.paint_child(child, offset);
         }
         if let Some(foreground) = &self.foreground_painter {
-            foreground.paint(context.canvas(), size);
+            paint_with_painter(context, offset, size, foreground.as_ref());
         }
     }
 

@@ -8383,3 +8383,147 @@ mod activity_tick_tests {
         assert!(!CupertinoTheme::dark().apply_theme_to_all);
     }
 }
+
+#[cfg(test)]
+mod built_tree_tests {
+    use super::*;
+    use crate::editable::RenderEditable;
+    use crate::framework::{AnyWidget, ElementTree, component, provide, stateful};
+    use crate::render::{BoxConstraints, Offset, RenderBox, RenderRef};
+
+    /// Walks the built tree and hands each **concrete** render object to
+    /// `look`, stopping at the first `Some`.
+    ///
+    /// `RenderRef::unwrapped` is what makes this possible: every node a
+    /// visitor receives is a handle, so a downcast without it answers `None`
+    /// at every step.
+    fn find<T>(widget: AnyWidget, look: impl Fn(&dyn RenderBox) -> Option<T> + Copy) -> Option<T> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(CupertinoTheme::dark(), widget));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(300.0, 200.0));
+
+        fn walk<T>(
+            node: &dyn RenderBox,
+            look: impl Fn(&dyn RenderBox) -> Option<T> + Copy,
+        ) -> Option<T> {
+            if let Some(found) = RenderRef::unwrapped(node, look) {
+                return Some(found);
+            }
+            let mut found = None;
+            node.visit_children(&mut |child: &dyn RenderBox, _: Offset| {
+                if found.is_none() {
+                    found = walk(child, look);
+                }
+            });
+            found
+        }
+        root.with(|node| walk(node, look))
+    }
+
+    fn placeholder_of(widget: AnyWidget) -> Option<String> {
+        find(widget, |node| {
+            node.as_any()
+                .downcast_ref::<RenderEditable>()
+                .map(|editable| editable.placeholder().to_string())
+        })
+    }
+
+    #[test]
+    fn the_search_field_hands_its_editable_the_word_it_decided_on() {
+        // The assertion round 295 wrote down instead of writing. Testing
+        // `effective_placeholder()` tests the decision; this tests that the
+        // build used it, which is the part that was actually broken.
+        assert_eq!(
+            placeholder_of(stateful(CupertinoSearchTextField::new(1))).as_deref(),
+            Some("Search")
+        );
+        assert_eq!(
+            placeholder_of(stateful(
+                CupertinoSearchTextField::new(2).with_placeholder("Find a demo")
+            ))
+            .as_deref(),
+            Some("Find a demo")
+        );
+    }
+
+    /// Every string the built tree will paint, in walk order.
+    fn painted_strings(widget: AnyWidget) -> Vec<String> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(CupertinoTheme::dark(), widget));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(300.0, 200.0));
+
+        fn walk(node: &dyn RenderBox, out: &mut Vec<String>) {
+            RenderRef::unwrapped(node, |concrete| {
+                if let Some(paragraph) = concrete
+                    .as_any()
+                    .downcast_ref::<crate::render::RenderParagraph>()
+                {
+                    out.push(paragraph.content().to_string());
+                }
+            });
+            node.visit_children(&mut |child: &dyn RenderBox, _: Offset| walk(child, out));
+        }
+        let mut out = Vec::new();
+        root.with(|node| walk(node, &mut out));
+        out
+    }
+
+    #[test]
+    fn the_nav_bar_paints_the_word_when_the_previous_title_is_too_long() {
+        // Round 298's deferred assertion. `label_for` decides; this checks
+        // that the bar's build used the decision -- a long title is replaced
+        // by "Back", not ellipsized.
+        let long = "Notification Settings";
+        assert!(long.encode_utf16().count() > 12);
+        let painted = painted_strings(component(
+            CupertinoNavigationBar::new().with_back(7, Some(long.to_string())),
+        ));
+        assert!(
+            painted.iter().any(|s| s == "Back"),
+            "expected the generic word, painted: {painted:?}"
+        );
+        assert!(
+            !painted.iter().any(|s| s == long),
+            "and not the title itself: {painted:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_previous_title_is_painted_as_itself() {
+        let painted = painted_strings(component(
+            CupertinoNavigationBar::new().with_back(7, Some("Inbox".to_string())),
+        ));
+        assert!(painted.iter().any(|s| s == "Inbox"), "{painted:?}");
+    }
+
+    #[test]
+    fn a_walk_without_unwrapping_the_handle_finds_nothing() {
+        // Why `RenderRef::unwrapped` has to exist, stated as a test rather
+        // than as a paragraph: the same walk, downcasting the node it is
+        // handed, never sees a single render object.
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            CupertinoTheme::dark(),
+            stateful(CupertinoSearchTextField::new(1)),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(300.0, 200.0));
+
+        fn walk_naively(node: &dyn RenderBox, seen: &mut usize, editables: &mut usize) {
+            *seen += 1;
+            if node.as_any().downcast_ref::<RenderEditable>().is_some() {
+                *editables += 1;
+            }
+            node.visit_children(&mut |child: &dyn RenderBox, _: Offset| {
+                walk_naively(child, seen, editables)
+            });
+        }
+        let (mut seen, mut editables) = (0, 0);
+        root.with(|node| walk_naively(node, &mut seen, &mut editables));
+
+        assert!(seen > 1, "the walk itself works: {seen} nodes");
+        assert_eq!(editables, 0, "and every one of them is a handle");
+    }
+}

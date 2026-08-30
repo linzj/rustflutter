@@ -427,6 +427,17 @@ pub struct RenderEditable {
 }
 
 impl RenderEditable {
+    /// The word drawn while the field is empty, as it reached the render
+    /// object.
+    ///
+    /// This is the built tree's answer rather than the widget's: what will
+    /// actually be painted, not what the widget would have decided. The two
+    /// are different questions and only the first catches a build that
+    /// decided correctly and then wired something else.
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
     pub fn new(value: TextEditingValue) -> RenderEditable {
         RenderEditable {
             value,

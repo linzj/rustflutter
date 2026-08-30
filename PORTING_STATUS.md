@@ -21100,3 +21100,67 @@ hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engi
 才能被测试看见。先按行为查：`RenderBox::visit_children` 有默认空实现，哪些节点覆盖了
 它、哪些没有；从 `CupertinoSearchTextField` 那条路径（Row / Padding / Pointer /
 ConstrainedBox）上缺的那几个开始，第 295 轮那条断言就是白捡的。
+
+## 第 299 轮：欠了三轮的那条断言——洞不在渲染对象里，在句柄上
+
+第 295、296、298 三轮都在同一处停下：**测得了决策，测不了它有没有被 build 用上**。
+第 295 轮把这个限制写进了代码，诊断是"`RenderBox::visit_children` 默认是空实现,
+根到叶之间大部分节点没覆盖它"。
+
+**这个诊断是错的。** 这一轮先量：
+
+* 上游 `visitChildren` **默认也是空实现**，注释写着"有子节点的子类要覆盖它"——端口的默认
+  没错；
+* crate 里有 88 处 `visit_children` 实现；
+* 真走一遍搜索框的树：**11 个节点全部走到了**，一个没漏。
+
+走是走得通的。挂在**两种** TypeId 上——而其中一种是 `RenderRef`,
+另一种也是 `RenderRef`。
+
+### 每一个交到访问者手里的节点都是句柄
+
+子节点存的是 `RenderRef`，`RenderRef` 靠转发实现 `RenderBox`，`visit_children` 交出去的
+是 `&self.child`——于是走多深都只见句柄，`as_any().downcast_ref::<RenderEditable>()`
+每一步都答 `None`，**不管这趟走得多正确**。
+
+而 `as_any` 是 `impl<T: Any> AsAny for T` 的全覆盖实现，`RenderRef` 拿到的就是它自己。
+
+**这不是任何一个渲染对象的毛病。** 上游根本没有这层句柄——子节点**就是**
+`RenderObject`，`visitChildren` 交出去的是东西本身。所以包装是这个端口自己的,
+`RenderRef::unwrapped` 就是把这笔差价**在一个地方付掉**，而不是每个调用点各付一次。
+
+    pub fn unwrapped<R>(node: &dyn RenderBox, f: impl FnOnce(&dyn RenderBox) -> R) -> R {
+        match node.as_any().downcast_ref::<RenderRef>() {
+            Some(handle) => handle.with(f),
+            None => f(node),
+        }
+    }
+
+### 两条欠账，当场还清
+
+第 295 轮那条（搜索框 build 有没有真用 `effective_placeholder`）和第 298 轮那条
+（导航栏 build 有没有真用 `label_for`）现在都写成了真测试，读的是**建出来的树将要画的
+东西**，不是控件本来打算画的东西。
+
+**把它们当改错跑：那两条当初幸存的改动，现在各自落红。**
+
+还多了一条把"为什么需要 `unwrapped`"钉成测试而不是段落的：同一趟走法，不剥句柄,
+`seen > 1` 而 `editables == 0`——**走遍了整棵树，一个渲染对象也没见到。**
+
+### 一条自己写坏的改错，不算证据
+
+"unwrapped 也去解开不是句柄的东西"那条我加的是个不可达分支，**行为一点没变**,
+自然不落红。这不是洞，是一条什么也没改的改错，如实丢掉。
+
+其余四条全红（两条欠账、把 `unwrapped` 退回 `f(node)`、让 editable 谎报占位符）。
+
+尺子：coverage 2107/0 MISSING，constants 208/0/0，wire_strings 122/0，wire_enums 4/0/0,
+ffi_tables 0 problems，unwired 48/0，unvaried 0，unread_strings 44+16+10/0，unpainted 2,
+hollow 67/0，stale_notes 13/0，vacuous 10，unread_theme_fields 2，stale_engines 全部不
+落后。十六把尺子全部 exit 0。
+门：6082 + 353 通过；doctest 绿；三个输出目录的 rustflutter_engine 与 rust_lib 全部重建。
+
+**下一步**：这件工具刚做好，先用它去查一处**没人查过**的接线，而不是继续往下清成员。
+`unpainted.py` 常年报 2——"两处 draw 调用坐在没人观察的文件里"。以前"观察"只能靠画布
+回读；现在可以走建出来的树。先按行为查：那两处是哪两个文件、画的是什么,
+`RenderRef::unwrapped` 够不够得着它们。
