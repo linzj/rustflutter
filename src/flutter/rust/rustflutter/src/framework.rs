@@ -1261,6 +1261,31 @@ impl Shared {
         None
     }
 
+    /// Every element at or above `start` that published a value of `wanted`,
+    /// **nearest first**.
+    ///
+    /// [`Shared::lookup`] answers with the nearest and stops, which is what an
+    /// inherited value means: a `Theme` inside a `Theme` is the one you get.
+    /// Some things are not like that. Upstream's `Actions` walks *past* a
+    /// scope that has nothing enabled for the intent and keeps asking further
+    /// up, which is what lets an application-wide action map still be reached
+    /// from inside a widget that installed a few actions of its own.
+    fn lookup_ancestors(&self, start: ElementId, wanted: TypeId) -> Vec<(ElementId, Rc<dyn Any>)> {
+        let parents = self.parents.borrow();
+        let provided = self.provided.borrow();
+        let mut found = Vec::new();
+        let mut current = Some(start);
+        while let Some(id) = current {
+            if let Some(entry) = provided.get(&id) {
+                if entry.type_id == wanted {
+                    found.push((id, Rc::clone(&entry.value)));
+                }
+            }
+            current = parents.get(&id).copied().flatten();
+        }
+        found
+    }
+
     /// Offers `notification` to the listener at `from` and then to each
     /// listener above it, nearest first, until one says it handled the
     /// notification or the root runs out.
@@ -1577,6 +1602,39 @@ impl BuildContext {
     pub fn inherited_or_default<T: Default + 'static>(&self) -> Rc<T> {
         self.inherited::<T>()
             .unwrap_or_else(|| Rc::new(T::default()))
+    }
+
+    /// The published values of this type above this element, offered
+    /// **nearest first** until `take` accepts one.
+    ///
+    /// Upstream's `Actions._visitActionsAncestors`, and the difference from
+    /// [`BuildContext::inherited`] is the whole point: that one takes the
+    /// nearest and is done, while this one keeps going up past a scope that
+    /// said no. An `Actions` that handles two intents must not hide the
+    /// application's map from a third.
+    ///
+    /// The dependency is registered on the element that **accepted**, not on
+    /// every one asked -- upstream calls `dependOnInheritedElement` once, on
+    /// the one whose action it took. Depending on the ones that declined would
+    /// rebuild this widget whenever any scope above it changed, which is most
+    /// of them.
+    pub fn inherited_ancestor<T: 'static>(
+        &self,
+        mut take: impl FnMut(&T) -> bool,
+    ) -> Option<Rc<T>> {
+        for (provider, value) in self
+            .shared
+            .lookup_ancestors(self.element, TypeId::of::<T>())
+        {
+            let Ok(value) = value.downcast::<T>() else {
+                continue;
+            };
+            if take(&value) {
+                self.shared.depend(provider, self.element);
+                return Some(value);
+            }
+        }
+        None
     }
 
     /// [`BuildContext::inherited`], qualified by one aspect of the value.

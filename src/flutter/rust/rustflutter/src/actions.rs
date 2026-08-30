@@ -6,9 +6,6 @@
 //!
 //! Recorded divergences (see PORTING_STATUS.md):
 //!
-//! * `Actions` the widget scopes an action map through the element tree;
-//!   here the map is a value handed to the dispatcher, and the widget
-//!   spelling arrives with the widget wave that needs it.
 //! * `Action.overridable`'s context lookup has no context to look through
 //!   yet -- the default action is used directly.
 
@@ -151,6 +148,12 @@ impl ActionDispatcher {
                 .get(intent.action_name())
                 .filter(|action| action.is_enabled(intent)),
         }
+    }
+
+    /// Whether this map has an enabled action for `intent`, which is the
+    /// question [`Actions::maybe_find`] asks of each scope on its way up.
+    pub fn has_enabled(&self, intent: &Intent) -> bool {
+        self.first_enabled(intent).is_some()
     }
 
     /// Upstream `invokeAction`: run the action for this intent if there is
@@ -340,5 +343,269 @@ mod tests {
             synthesized: false,
             time_stamp_micros: 0,
         }
+    }
+}
+
+// -- The widget (upstream `Actions`) ------------------------------------------
+
+/// Upstream `Actions`: an action map scoped to a subtree.
+///
+/// Until this existed, [`ActionDispatcher`] was a map somebody had to be
+/// holding: every rule in this file was ported and there was **no way to find
+/// an action from inside a widget**, so nothing in the crate could raise an
+/// intent and have it answered. That is why `app.rs` routes escape by hand
+/// instead of turning it into a [`Intent::Dismiss`].
+///
+/// Upstream is an `InheritedWidget` (`_ActionsScope`) and this is the same
+/// thing spelled with [`crate::framework::provide`].
+#[derive(Clone, Default)]
+pub struct ActionsScope {
+    pub dispatcher: Rc<ActionDispatcher>,
+}
+
+/// Two scopes are the same scope when they are the **same map**, not when
+/// they hold equal maps.
+///
+/// An action is a closure and closures do not compare, so there is no deep
+/// equality to be had here. That is not a shortcut: upstream's
+/// `_ActionsScope.updateShouldNotify` compares `actions != oldWidget.actions`,
+/// and a Dart `Map` compares by identity too unless somebody made it not.
+/// Same idiom as [`crate::components::ScaffoldGeometry`].
+impl PartialEq for ActionsScope {
+    fn eq(&self, other: &ActionsScope) -> bool {
+        Rc::ptr_eq(&self.dispatcher, &other.dispatcher)
+    }
+}
+
+/// Upstream `Actions`, as its static half: the lookup and the invoke.
+pub struct Actions;
+
+impl Actions {
+    /// Publishes `dispatcher` over `child`.
+    pub fn scope(
+        dispatcher: Rc<ActionDispatcher>,
+        child: crate::framework::AnyWidget,
+    ) -> crate::framework::AnyWidget {
+        crate::framework::provide(ActionsScope { dispatcher }, child)
+    }
+
+    /// The nearest **enabled** action for `intent`, upstream's
+    /// `Actions.maybeFindAction` walk.
+    ///
+    /// The word doing the work is *enabled*. A scope that has no entry for the
+    /// intent, or one whose action says it is not enabled right now, does not
+    /// stop the search: it carries on upwards. So a dialog that installs its
+    /// own `Dismiss` action shadows the application's only while that action
+    /// is enabled, and the moment it is not, escape means what it meant
+    /// before -- which is a behaviour, not an implementation detail.
+    pub fn maybe_find(
+        context: &crate::framework::BuildContext,
+        intent: &Intent,
+    ) -> Option<Rc<ActionDispatcher>> {
+        context
+            .inherited_ancestor::<ActionsScope>(|scope| scope.dispatcher.has_enabled(intent))
+            .map(|scope| Rc::clone(&scope.dispatcher))
+    }
+
+    /// Upstream `Actions.maybeInvoke`: find the action and run it, or answer
+    /// `None` because nothing above wanted this intent.
+    pub fn maybe_invoke(
+        context: &crate::framework::BuildContext,
+        intent: &Intent,
+    ) -> Option<InvokeResult> {
+        Actions::maybe_find(context, intent)?.invoke_action(intent)
+    }
+
+    /// The key-event half, upstream's `Actions.handler` reaching a `Shortcuts`
+    /// callback: run it and say whether the key was taken.
+    pub fn maybe_invoke_key(
+        context: &crate::framework::BuildContext,
+        intent: &Intent,
+        event: &KeyEvent,
+    ) -> KeyResult {
+        match Actions::maybe_find(context, intent) {
+            Some(dispatcher) => dispatcher.maybe_invoke(intent, event),
+            // Nothing above claims it, so the key belongs to whoever is next.
+            None => KeyResult::Ignored,
+        }
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    /// Runs `look` during a build, so the lookup happens with a real
+    /// `BuildContext` in a real tree -- which is the only place an ancestor
+    /// walk means anything.
+    struct Probe<F>(F);
+
+    impl<F: Fn(&mut crate::framework::BuildContext) + 'static> crate::framework::Component
+        for Probe<F>
+    {
+        fn build(
+            &self,
+            context: &mut crate::framework::BuildContext,
+        ) -> crate::framework::AnyWidget {
+            (self.0)(context);
+            crate::framework::leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+        }
+    }
+
+    /// A one-action map that pushes `mark` when invoked.
+    fn scope_that(
+        intent_name: &str,
+        mark: &'static str,
+        log: &Rc<RefCell<Vec<&'static str>>>,
+        enabled: bool,
+    ) -> Rc<ActionDispatcher> {
+        let log = Rc::clone(log);
+        let mut action = Action::callback(move |_intent| {
+            log.borrow_mut().push(mark);
+            None
+        });
+        action.is_enabled = Rc::new(move |_| enabled);
+        Rc::new(ActionDispatcher::new().with_action(intent_name, action))
+    }
+
+    /// Nests `scopes` outermost-first and invokes `intent` from inside them
+    /// all. Answers whether an action was found, and what ran.
+    fn ask(scopes: Vec<Rc<ActionDispatcher>>, intent: Intent) -> (bool, Vec<&'static str>) {
+        let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
+        let found = Rc::new(Cell::new(false));
+        let seen = Rc::clone(&found);
+        let mut child = crate::framework::component(Probe(move |context: &mut _| {
+            seen.set(Actions::maybe_find(context, &intent).is_some());
+            Actions::maybe_invoke(context, &intent);
+        }));
+        for dispatcher in scopes.into_iter().rev() {
+            child = Actions::scope(dispatcher, child);
+        }
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(child);
+        let marks = log.borrow().clone();
+        (found.get(), marks)
+    }
+
+    /// The maps above share one log, so `ask` can only report what its own
+    /// scopes pushed. Rebuilt per call, so the tests do not share state.
+    fn logged(
+        pairs: Vec<(&str, &'static str, bool)>,
+    ) -> (Vec<Rc<ActionDispatcher>>, Rc<RefCell<Vec<&'static str>>>) {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let scopes = pairs
+            .into_iter()
+            .map(|(intent, mark, enabled)| scope_that(intent, mark, &log, enabled))
+            .collect();
+        (scopes, log)
+    }
+
+    #[test]
+    fn an_intent_nobody_claims_is_not_taken() {
+        let (scopes, log) = logged(vec![("Activate", "activate", true)]);
+        let mut child = crate::framework::component(Probe(move |context: &mut _| {
+            assert!(Actions::maybe_find(context, &Intent::Dismiss).is_none());
+            Actions::maybe_invoke(context, &Intent::Dismiss);
+        }));
+        for dispatcher in scopes.into_iter().rev() {
+            child = Actions::scope(dispatcher, child);
+        }
+        crate::framework::ElementTree::new().rebuild(child);
+        assert!(log.borrow().is_empty(), "nothing ran: {:?}", log.borrow());
+    }
+
+    #[test]
+    fn the_nearest_scope_that_can_take_it_does() {
+        let (scopes, log) = logged(vec![("Dismiss", "outer", true), ("Dismiss", "inner", true)]);
+        let (found, _) = ask(scopes, Intent::Dismiss);
+        assert!(found);
+        assert_eq!(
+            log.borrow().clone(),
+            vec!["inner"],
+            "the inner one shadows the outer"
+        );
+    }
+
+    #[test]
+    fn a_scope_that_does_not_handle_it_does_not_stop_the_search() {
+        // The whole reason this needed a walk rather than a lookup. An
+        // `Actions` that installs two intents must not hide the application's
+        // map from a third -- and an inherited lookup, which takes the nearest
+        // scope of the type and stops, would have done exactly that.
+        let (scopes, log) = logged(vec![
+            ("Dismiss", "application", true),
+            ("Activate", "dialog", true),
+        ]);
+        let (found, _) = ask(scopes, Intent::Dismiss);
+        assert!(found, "the application's map is still reachable");
+        assert_eq!(log.borrow().clone(), vec!["application"]);
+    }
+
+    #[test]
+    fn a_scope_whose_action_is_disabled_is_walked_past_too() {
+        // Upstream asks `isEnabled`, not merely "is there an entry". So a
+        // dialog that installs a Dismiss action shadows the application's only
+        // while its own is enabled, and the moment it is not, the intent means
+        // what it meant before. That is a behaviour rather than a detail.
+        let (scopes, log) = logged(vec![
+            ("Dismiss", "application", true),
+            ("Dismiss", "dialog", false),
+        ]);
+        let (found, _) = ask(scopes, Intent::Dismiss);
+        assert!(found);
+        assert_eq!(
+            log.borrow().clone(),
+            vec!["application"],
+            "the disabled one was passed over rather than taken"
+        );
+    }
+
+    #[test]
+    fn a_key_reaching_no_action_is_left_for_whoever_is_next() {
+        // `Ignored` and not `Handled`: an intent nobody claimed has to let the
+        // key carry on, or the first `Actions` in the tree would swallow every
+        // shortcut it had never heard of.
+        let (scopes, log) = logged(vec![("Activate", "activate", true)]);
+        let result = Rc::new(Cell::new(KeyResult::Handled));
+        let seen = Rc::clone(&result);
+        let child = crate::framework::component(Probe(move |context: &mut _| {
+            seen.set(Actions::maybe_invoke_key(
+                context,
+                &Intent::Dismiss,
+                &crate::keyboard::KeyEvent {
+                    change: crate::keyboard::KeyChange::Down,
+                    physical: crate::keyboard::PhysicalKey(0),
+                    logical: crate::keyboard::LogicalKey::ESCAPE,
+                    character: None,
+                    synthesized: false,
+                    time_stamp_micros: 0,
+                },
+            ));
+        }));
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(Actions::scope(Rc::clone(&scopes[0]), child));
+        assert_eq!(result.get(), KeyResult::Ignored);
+        assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn two_scopes_holding_the_same_map_are_the_same_scope() {
+        // An action is a closure and closures do not compare, so identity is
+        // all there is -- and it is what upstream compares too.
+        let (scopes, _) = logged(vec![("Dismiss", "one", true), ("Dismiss", "two", true)]);
+        let same = ActionsScope {
+            dispatcher: Rc::clone(&scopes[0]),
+        };
+        assert!(
+            same == ActionsScope {
+                dispatcher: Rc::clone(&scopes[0])
+            }
+        );
+        assert!(
+            same != ActionsScope {
+                dispatcher: Rc::clone(&scopes[1])
+            }
+        );
     }
 }

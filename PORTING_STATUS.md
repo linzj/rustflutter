@@ -27462,3 +27462,60 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试
 还是一个 thread local 注册表。
 如果它根本没有"沿树查找"这一步，那这一轮真正该补的是**那个查找**，
 而不是在没有分发的地方硬造一个 Intent——那会造出第三个没人用的机制。
+
+---
+
+## 第 413 轮：`Actions` 缺的不是 widget 外壳，是**往上找**这件事
+
+按"下一步"先查 `actions.rs` 怎么找处理者。**它不找**——
+`ActionDispatcher` 就是一张被人递进来的 map，
+模块头自己写着"`Actions` 那个 widget 把 map 作用到子树，这里 map 是递给 dispatcher 的值"。
+也就是说：Intent、Action、dispatcher、十二种 intent 全都在，
+**而 crate 里没有任何一个地方能从一个 widget 里问出一个 action 来**。
+所以第 412 轮 `app.rs` 才只能手写 Escape，而不是发一个 `Intent::Dismiss`。
+
+于是这一轮补的就是那件事，而它**不是**"包一层 `provide`"那么简单。
+
+### 关键在于：这不是一次继承查找
+
+上游 `Actions.maybeFindAction` 用的是 `_visitActionsAncestors`——
+**一层层往上走，走到第一个对这个 intent 有 enabled action 的 scope 为止**。
+本项目的 `Shared::lookup` 取**最近**的一个就停，那正是"继承值"的语义
+（`Theme` 里套 `Theme`，拿到的是里面那个）。
+
+两者的差别是个真行为：一个装了两个 intent 的 `Actions`
+**不能因此挡住应用级那张 map 上的第三个 intent**。
+用最近查找的话，它就会挡住。
+
+所以框架里加了 `Shared::lookup_ancestors` 和
+`BuildContext::inherited_ancestor(take)`——**逐个往上问，直到有人接**，
+并且**只对接下的那个登记依赖**（上游也只 `dependOnInheritedElement` 一次）。
+对沿途拒绝的都登记依赖的话，上面任何一个 scope 变了都要重建这个 widget，而那是大多数。
+
+`Actions::scope / maybe_find / maybe_invoke / maybe_invoke_key` 接在这上面。
+
+还有一条上游写着而容易漏的：往上走时问的是 **`isEnabled`**，不是"有没有这一项"。
+于是"对话框装了自己的 Dismiss action"只在**它自己启用着的时候**才盖住应用的那个，
+一旦不启用，这个 intent 就还是原来的意思——**这是行为，不是实现细节**。
+
+`ActionsScope` 的相等按 `Rc::ptr_eq`：action 是闭包，闭包不可比，
+identity 就是全部——而**上游比的也是 identity**
+（`_ActionsScope.updateShouldNotify` 比 `actions != oldWidget.actions`，
+Dart 的 `Map` 不特意实现的话也是按 identity 比）。和 `ScaffoldGeometry` 同一个套路。
+
+变异扫描 7 个，**第一遍全红**——包括"改用最近查找"和"有这一项就算数（不看 enabled）"这两条，
+它们正是这一轮存在的理由。
+
+尺子：十六把全部 exit 0。门：Rust 6471 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个输出目录与三个测试二进制全部重建。
+
+**下一步**：分发有了，`app.rs` 那条手写 Escape 现在**可以**变成
+`Shortcuts::intent_for` → `Intent::Dismiss` → `Actions`。
+但**先查一件事**：`RfApp::on_key` 手里**没有 `BuildContext`**——
+它在树外面，而 `Actions::maybe_find` 要一个 context 才能往上走。
+上游那里键是从**获得焦点的那个节点**往上冒的，
+所以真正对应的问题是"**焦点节点对应哪个 element**"。
+先去看 `focus.rs` 的 `MANAGER` 记不记 element id、
+`ElementTree` 能不能从一个 element id 造出 `BuildContext`。
+接不上的话，这一轮该补的是那条"从焦点节点拿到 context"的路，
+而不是在根上硬塞一个假 context——那等于把刚做好的往上走退化成一次全局查表。
