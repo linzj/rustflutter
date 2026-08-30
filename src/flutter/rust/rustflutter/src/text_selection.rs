@@ -3383,6 +3383,144 @@ impl TextSelectionPoint {
     }
 }
 
+/// The two line heights that size a selection's rectangle: upstream's
+/// `startGlyphHeight` / `endGlyphHeight`, from `EditableTextState.getGlyphHeights`
+/// and `TextSelectionOverlay._getStartGlyphHeight` / `_getEndGlyphHeight`.
+///
+/// # Why the two ends are measured separately
+///
+/// Not for symmetry. A selection dragged from a heading into the paragraph
+/// under it has ends set in different sizes, and each handle has to be as tall
+/// as *its own* end -- a handle sized by the field's line height would stand
+/// off the small end and be swallowed by the large one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphHeights {
+    pub start: f32,
+    pub end: f32,
+}
+
+/// Upstream's `getGlyphHeights`.
+///
+/// # Three ways out, and all three answer the field's line height
+///
+/// Upstream measures the first and last glyph of the selection, but only after
+/// getting past a guard that refuses in three cases -- and the guard is the
+/// part worth porting, because each clause is there for a different accident:
+///
+/// * **`prevText != currText`** -- the render object is the *previous frame's*.
+///   Measuring a range against text that has since changed is not a smaller
+///   answer, it is a wrong one, and upstream's comment says
+///   `getRectForComposingRange` "might fail" outright.
+/// * **the selection is invalid** -- `(-1, -1)`, a field that has never been
+///   placed in. There is no first glyph to measure.
+/// * **the selection is collapsed** -- a caret selects no glyph at all. Note
+///   this is not the same as the previous clause: a collapsed selection at
+///   offset 4 is perfectly valid, and still has nothing to measure.
+///
+/// Past the guard there is a fourth fallback, and it is **per end**:
+/// `startCharacterRect?.height ?? preferredLineHeight`. One end may measure
+/// while the other does not.
+///
+/// The `Option<Rect>` arguments are what [`crate::editable::ComposingRegion::rect`]
+/// answers for the range covering that end's glyph. Upstream takes the first
+/// and last *extended grapheme cluster* of the selection rather than the first
+/// and last code unit -- an emoji or a combining mark at the boundary would
+/// otherwise be cut in half and measured wrong. This crate has no grapheme
+/// segmenter (see the note in `services::text_boundary`), so the range is the
+/// caller's to build; what is ported here is the choosing.
+pub fn glyph_heights(
+    text_unchanged: bool,
+    selection_valid: bool,
+    collapsed: bool,
+    start_rect: Option<crate::engine::Rect>,
+    end_rect: Option<crate::engine::Rect>,
+    preferred_line_height: f32,
+) -> GlyphHeights {
+    if !text_unchanged || !selection_valid || collapsed {
+        return GlyphHeights {
+            start: preferred_line_height,
+            end: preferred_line_height,
+        };
+    }
+    GlyphHeights {
+        start: start_rect.map_or(preferred_line_height, |rect| rect.height()),
+        end: end_rect.map_or(preferred_line_height, |rect| rect.height()),
+    }
+}
+
+/// Upstream's `TextSelectionToolbarAnchors.getSelectionRect`: the rectangle a
+/// selection covers, in global coordinates, which is what
+/// [`crate::text_selection_controls::TextSelectionToolbarAnchors::from_selection`]
+/// then points the toolbar at.
+///
+/// # A selection over two lines is as wide as the field, not as wide as its ends
+///
+/// The endpoints of a wrapped selection say nothing useful about its width: the
+/// first is somewhere in the middle of one line, the last somewhere in the
+/// middle of another, and the *lines between them run edge to edge*. So once
+/// the selection is multiline upstream throws both `dx` away and spans the
+/// whole editing region. The toolbar then centres over the field rather than
+/// over an arbitrary pair of columns.
+///
+/// # Multiline is decided by half of the **end** glyph's height
+///
+/// `last.dy - first.dy > endGlyphHeight / 2`. Three things about that:
+///
+/// * It is a **vertical distance**, not a line index -- there is no line number
+///   to hand at this point, only two points.
+/// * The **half** is the tolerance. Two ends on the same line need not share a
+///   `dy` exactly; a superscript or a taller run shifts one of them, and a bare
+///   `> 0` would call an ordinary one-line selection multiline.
+/// * It is the **end**'s height, not the start's and not their larger. Dragging
+///   from a heading down into small text, the threshold is the small text's.
+///
+/// # The top walks up and the bottom does not
+///
+/// `top = first.dy - startGlyphHeight`, `bottom = last.dy`. The asymmetry is
+/// not a bug to be tidied: a `TextSelectionPoint`'s `dy` is the *bottom* of its
+/// line, so the bottom edge is already right and only the top has to climb a
+/// glyph to reach the top of the first line. And it climbs by the **start**'s
+/// height, the other half of the pair.
+///
+/// A `NaN` anywhere in the editing region answers an empty rectangle rather
+/// than propagating -- a NaN in a `Rect` would go on to poison every comparison
+/// the toolbar layout makes, and `Rect::ZERO` is the value `from_selection`
+/// already reads as "there is nothing to point at".
+pub fn selection_rect(
+    editing_region: crate::engine::Rect,
+    endpoints: &[TextSelectionPoint],
+    heights: GlyphHeights,
+) -> crate::engine::Rect {
+    let empty = crate::engine::Rect::ltrb(0.0, 0.0, 0.0, 0.0);
+    if editing_region.left.is_nan()
+        || editing_region.top.is_nan()
+        || editing_region.right.is_nan()
+        || editing_region.bottom.is_nan()
+    {
+        return empty;
+    }
+    let (first, last) = match (endpoints.first(), endpoints.last()) {
+        (Some(first), Some(last)) => (first, last),
+        _ => return empty,
+    };
+
+    let multiline = last.point.dy - first.point.dy > heights.end / 2.0;
+    crate::engine::Rect::ltrb(
+        if multiline {
+            editing_region.left
+        } else {
+            editing_region.left + first.point.dx
+        },
+        editing_region.top + first.point.dy - heights.start,
+        if multiline {
+            editing_region.right
+        } else {
+            editing_region.left + last.point.dx
+        },
+        editing_region.top + last.point.dy,
+    )
+}
+
 /// Upstream `DesktopTextSelectionToolbarLayoutDelegate`: where a desktop
 /// selection toolbar goes.
 ///
@@ -4943,6 +5081,225 @@ two";
         let mut overlay = SelectionOverlay::new().with_handles_visible(handles_visible);
         overlay.set_toolbar_visible(toolbar);
         overlay
+    }
+
+    fn rect(l: f32, t: f32, r: f32, b: f32) -> crate::engine::Rect {
+        crate::engine::Rect::ltrb(l, t, r, b)
+    }
+
+    fn point(dx: f32, dy: f32) -> TextSelectionPoint {
+        TextSelectionPoint::new(Offset::new(dx, dy), None)
+    }
+
+    #[test]
+    fn each_end_of_the_selection_is_measured_on_its_own() {
+        // A selection dragged from a heading into the paragraph below it.
+        let heights = glyph_heights(
+            true,
+            true,
+            false,
+            Some(rect(0.0, 0.0, 10.0, 32.0)),
+            Some(rect(0.0, 0.0, 10.0, 14.0)),
+            20.0,
+        );
+        assert_eq!(heights.start, 32.0);
+        assert_eq!(heights.end, 14.0);
+        assert_ne!(heights.start, heights.end, "not one height used twice");
+    }
+
+    #[test]
+    fn one_end_may_measure_while_the_other_does_not() {
+        // `startCharacterRect?.height ?? preferredLineHeight` is written per
+        // end, so the fallback is per end too.
+        let heights = glyph_heights(
+            true,
+            true,
+            false,
+            None,
+            Some(rect(0.0, 0.0, 10.0, 14.0)),
+            20.0,
+        );
+        assert_eq!(heights.start, 20.0, "the field's");
+        assert_eq!(heights.end, 14.0, "its own");
+    }
+
+    #[test]
+    fn three_separate_reasons_to_refuse_to_measure_at_all() {
+        // Stale text, an invalid selection, and a caret. Each clause on its
+        // own, with the other two satisfied, so none of them can be carried by
+        // its neighbour.
+        let tall = Some(rect(0.0, 0.0, 10.0, 32.0));
+        let field = 20.0;
+        for (name, heights) in [
+            (
+                "last frame's text",
+                glyph_heights(false, true, false, tall, tall, field),
+            ),
+            (
+                "never placed in",
+                glyph_heights(true, false, false, tall, tall, field),
+            ),
+            (
+                "a caret selects no glyph",
+                glyph_heights(true, true, true, tall, tall, field),
+            ),
+        ] {
+            assert_eq!(heights.start, field, "{name}");
+            assert_eq!(heights.end, field, "{name}");
+        }
+        // And with all three satisfied the same rects are measured, so the
+        // test above is watching the guard and not an unreachable path.
+        assert_eq!(
+            glyph_heights(true, true, false, tall, tall, field).start,
+            32.0
+        );
+    }
+
+    #[test]
+    fn a_wrapped_selection_is_as_wide_as_the_field() {
+        // The lines between the two endpoints run edge to edge, so neither
+        // endpoint's dx says anything about the selection's width.
+        let region = rect(100.0, 50.0, 400.0, 250.0);
+        let ends = [point(200.0, 20.0), point(30.0, 60.0)];
+        let wide = selection_rect(
+            region,
+            &ends,
+            GlyphHeights {
+                start: 14.0,
+                end: 14.0,
+            },
+        );
+        assert_eq!(wide.left, 100.0, "the region's left, not 100 + 200");
+        assert_eq!(wide.right, 400.0, "the region's right, not 100 + 30");
+        // Note the endpoints even run backwards here (200 then 30), which on
+        // one line would give a rectangle with negative width.
+        assert!(wide.width() > 0.0);
+    }
+
+    #[test]
+    fn a_selection_on_one_line_is_as_wide_as_its_two_ends() {
+        let region = rect(100.0, 50.0, 400.0, 250.0);
+        let ends = [point(30.0, 20.0), point(200.0, 20.0)];
+        let narrow = selection_rect(
+            region,
+            &ends,
+            GlyphHeights {
+                start: 14.0,
+                end: 14.0,
+            },
+        );
+        assert_eq!(
+            narrow.left, 130.0,
+            "the region's left plus the endpoint's dx"
+        );
+        assert_eq!(narrow.right, 300.0);
+    }
+
+    #[test]
+    fn multiline_is_half_the_end_glyph_and_not_any_drop_at_all() {
+        // A superscript or a taller run nudges one endpoint's dy without
+        // starting a new line, so a bare `> 0` would call a one-line
+        // selection multiline.
+        let region = rect(100.0, 50.0, 400.0, 250.0);
+        let nudged = [point(30.0, 20.0), point(200.0, 24.0)];
+        let heights = GlyphHeights {
+            start: 14.0,
+            end: 14.0,
+        };
+        assert!(4.0 > 0.0 && 4.0 <= 14.0 / 2.0, "inside the tolerance");
+        assert_eq!(
+            selection_rect(region, &nudged, heights).left,
+            130.0,
+            "still one line"
+        );
+
+        let wrapped = [point(30.0, 20.0), point(200.0, 28.0)];
+        assert!(8.0 > 14.0 / 2.0);
+        assert_eq!(selection_rect(region, &wrapped, heights).left, 100.0);
+    }
+
+    #[test]
+    fn the_end_glyph_decides_the_wrap_and_the_start_glyph_does_not() {
+        // Same two points, same pair of heights, swapped between the ends.
+        let region = rect(100.0, 50.0, 400.0, 250.0);
+        let ends = [point(30.0, 20.0), point(200.0, 26.0)];
+        let small_end = selection_rect(
+            region,
+            &ends,
+            GlyphHeights {
+                start: 40.0,
+                end: 8.0,
+            },
+        );
+        let big_end = selection_rect(
+            region,
+            &ends,
+            GlyphHeights {
+                start: 8.0,
+                end: 40.0,
+            },
+        );
+        assert_eq!(small_end.left, 100.0, "6 > 4: multiline");
+        assert_eq!(big_end.left, 130.0, "6 < 20: one line");
+    }
+
+    #[test]
+    fn the_top_climbs_a_glyph_and_the_bottom_stays_put() {
+        // An endpoint's dy is the bottom of its line, so only the top has to
+        // walk up -- and it walks up by the start's height, not the end's.
+        let region = rect(100.0, 50.0, 400.0, 250.0);
+        let ends = [point(30.0, 20.0), point(200.0, 20.0)];
+        let box_ = selection_rect(
+            region,
+            &ends,
+            GlyphHeights {
+                start: 14.0,
+                end: 9.0,
+            },
+        );
+        assert_eq!(box_.top, 50.0 + 20.0 - 14.0, "the start's height");
+        assert_eq!(box_.bottom, 50.0 + 20.0, "no height subtracted or added");
+    }
+
+    #[test]
+    fn a_region_with_a_nan_edge_has_no_rectangle_rather_than_a_poisoned_one() {
+        // Left to propagate, the NaN would reach every comparison the toolbar
+        // layout makes. Rect::ZERO is what `from_selection` already reads as
+        // "nothing to point at".
+        let ends = [point(30.0, 20.0), point(200.0, 20.0)];
+        let heights = GlyphHeights {
+            start: 14.0,
+            end: 14.0,
+        };
+        let zero = rect(0.0, 0.0, 0.0, 0.0);
+        for region in [
+            rect(f32::NAN, 50.0, 400.0, 250.0),
+            rect(100.0, f32::NAN, 400.0, 250.0),
+            rect(100.0, 50.0, f32::NAN, 250.0),
+            rect(100.0, 50.0, 400.0, f32::NAN),
+        ] {
+            assert_eq!(selection_rect(region, &ends, heights), zero);
+        }
+        assert_ne!(
+            selection_rect(rect(100.0, 50.0, 400.0, 250.0), &ends, heights),
+            zero,
+            "and a whole region does answer"
+        );
+    }
+
+    #[test]
+    fn a_selection_with_no_endpoints_has_no_rectangle() {
+        assert_eq!(
+            selection_rect(
+                rect(100.0, 50.0, 400.0, 250.0),
+                &[],
+                GlyphHeights {
+                    start: 14.0,
+                    end: 14.0
+                }
+            ),
+            rect(0.0, 0.0, 0.0, 0.0)
+        );
     }
 
     fn types(

@@ -21940,3 +21940,53 @@ stale_notes 13/0，unvaried 0，stale_engines 全部不落后，十六把尺子�
 `_getStartGlyphHeight` / `_getEndGlyphHeight` 那两个方法，处理选区两端字号不同的情况
 （一端是标题一端是正文，手柄该按各自那一端的字高走，而不是统一按字段的行高）。
 这一步本项目还没有。先按行为查：搜 glyph height 与 preferredLineHeight 在本项目里的去向。
+
+---
+
+## 第 314 轮：跨行的选区跟字段一样宽，而“跨行”是拿末端那个字高的一半量出来的
+
+接上一轮的“下一步”。上游把选区矩形交给工具条之前，先要算出这个矩形本身：
+`TextSelectionToolbarAnchors.getSelectionRect`（`widgets/text_selection_toolbar_anchors.dart`）
+与喂给它的 `EditableTextState.getGlyphHeights`（`widgets/editable_text.dart` 3192 行）
+／`TextSelectionOverlay._getStartGlyphHeight`、`_getEndGlyphHeight`。
+
+本项目里 `TextSelectionToolbarAnchors::from_selection` 早就在了，但它**收的是一个已经算好的
+`selection_rect`**——真正有规则的那一步，一直没人做，每个调用方自己变一个矩形出来。这一轮补的
+就是这一步。
+
+`get_selection_rect` 里四条规则，没有一条是照着名字能猜到的：
+
+1. **一旦跨行，两个端点的 `dx` 全部丢掉，矩形横跨整个编辑区。** 折行选区的两个端点一个在某行
+   中间、一个在另一行中间，而**它们之间的那些行是从头铺到尾的**——端点的横坐标压根不描述这个
+   选区有多宽。测试里那对端点甚至是倒着的（200 然后 30），按一行算会得到负宽度。
+2. **“跨行”由 `last.dy - first.dy > endGlyphHeight / 2` 判定。** 三点：它量的是**垂直距离**
+   而不是行号（这里手上根本没有行号）；那个**二分之一是容差**，同一行上的两端 `dy` 不必分毫不差，
+   一个上标就能错开，写成 `> 0` 会把普通的单行选区判成跨行；用的是**末端**那个字高，不是首端的，
+   也不是两者取大——从大标题往下拖进小字，门槛按小字算。
+3. **上边沿往上爬一个字高，下边沿原地不动。** `top = first.dy - startGlyphHeight`，
+   `bottom = last.dy`。这个不对称不是待整理的瑕疵：`TextSelectionPoint` 的 `dy` 是**那一行的
+   底**，所以下边沿本来就对，只有上边沿要爬到首行的顶；而且爬的是**首端**那个字高——一对字高，
+   一个管跨行判定，一个管上边沿，各管各的。
+4. **编辑区任一边是 NaN 就答一个空矩形。** 放它过去，这个 NaN 会流进工具条布局的每一次比较；
+   而 `Rect::ZERO` 正是 `from_selection` 已经在读的那个“没有可指的东西”。
+
+`glyph_heights` 那边是三条各自独立的退路，全部回落到字段的行高：**上一帧的文本已经变了**
+（渲染对象是上一帧的，拿它去量已经改过的文本不是答得粗一点而是答错，上游注释说
+`getRectForComposingRange` 会直接失败）、**选区无效**、**选区折叠**。第三条不能被第二条带过去：
+偏移 4 处的光标是完全有效的选区，照样没有字可量。过了这道闸还有第四条退路，而且是**按端分别**的：
+一端量到了、另一端没量到，是允许的。上游取的是选区首尾的**扩展字素簇**而不是首尾码元（边界上
+的表情符号或组合记号否则会被劈开量错）——本 crate 没有字素分段器（`services::text_boundary`
+里早有记录），所以范围由调用方给，这里端的是**怎么选**。
+
+**变异扫描 15 个，第一遍全红。** 包括：首端字高被两端共用、缺失矩形回落到 0 而不是行高、
+三条闸各自删掉、跨行判定改成任意下沉／改看首端字高／容差改成整个字高、跨行时保留端点列、
+右边沿不理跨行、上边沿改爬末端字高／不爬、下边沿也爬、NaN 只查一条边、没有端点也照样出矩形。
+
+尺子：十六把全部 exit 0。门：6155 通过；`cargo fmt --check` 干净；三个输出目录的
+rustflutter_engine 与 rust_lib、以及 rustflutter_unittests、flutter_gallery_unittests 全部重建。
+
+**下一步**：`selection_rect` 现在还没接到 `from_selection` 的调用方去——`selection_host.rs:466`
+仍然收一个外部给的 `selection_rect`。但比接线更该先查的是上游同一族里的
+`system_context_menu.dart`（74 行）：它拿同一对 `getGlyphHeights` 去算 iOS 系统菜单的锚点矩形，
+但**传给平台的是另一种坐标**，而且有一条“菜单显示期间选区变了要不要重发”的规则。
+先查本项目 `SystemContextMenu` 有没有这个东西，按行为查，不要按名字查。
