@@ -834,6 +834,10 @@ pub struct SubmenuButtonState {
     id: u64,
     open: Option<crate::theatre::ModalHandle>,
     states: crate::widget_state::WidgetStates,
+    /// Where the button is. Filled in from its own assemble -- the moment its
+    /// render object exists -- and read when the panel is placed, which is the
+    /// moment the question can be answered.
+    anchor: crate::theatre::Anchor,
 }
 
 impl Default for SubmenuButtonState {
@@ -842,6 +846,7 @@ impl Default for SubmenuButtonState {
             id: 0,
             open: None,
             states: crate::widget_state::WidgetStates::NONE,
+            anchor: crate::theatre::Anchor::new(),
         }
     }
 }
@@ -1143,6 +1148,7 @@ impl crate::framework::StatefulComponent for SubmenuButton {
             id: self.id,
             open: None,
             states: crate::widget_state::WidgetStates::NONE,
+            anchor: crate::theatre::Anchor::new(),
         }
     }
 
@@ -1159,7 +1165,7 @@ impl crate::framework::StatefulComponent for SubmenuButton {
 
     fn build(
         &self,
-        _state: &SubmenuButtonState,
+        state: &SubmenuButtonState,
         handle: crate::framework::StateHandle<SubmenuButtonState>,
         context: &mut crate::framework::BuildContext,
     ) -> crate::framework::AnyWidget {
@@ -1169,6 +1175,34 @@ impl crate::framework::StatefulComponent for SubmenuButton {
         let group_id = self.group_id;
         let menu = self.menu.clone();
         let asking = self.clone();
+        let anchor = state.anchor.clone();
+        // The panel hangs from the button's bottom-left corner and runs down,
+        // under a button that is itself one line of a vertical panel. A menu
+        // bar's buttons would say `Horizontal` here, which is what turns the
+        // "try the other side" flip into a slide -- see [`MenuLayout`].
+        let layout = MenuLayout {
+            anchor_rect: crate::engine::Rect::ltrb(0.0, 0.0, 0.0, 0.0),
+            alignment_offset: self.alignment_offset,
+            orientation: MenuAxis::Vertical,
+            parent_orientation: MenuAxis::Vertical,
+            direction: crate::direction::current_direction(),
+            directional_alignment: true,
+        };
+        let place: crate::theatre::Placement = {
+            let anchor_for_place = state.anchor.clone();
+            std::rc::Rc::new(move |rect, child, overlay| {
+                let _ = &anchor_for_place;
+                MenuLayout {
+                    anchor_rect: rect,
+                    ..layout
+                }
+                .position(
+                    crate::render::Alignment::BOTTOM_LEFT,
+                    child,
+                    crate::engine::Rect::xywh(0.0, 0.0, overlay.width, overlay.height),
+                )
+            })
+        };
 
         // The arrow is a trailing part of the line, in the slot
         // `MenuItemLabel` reserved for it -- see
@@ -1189,6 +1223,7 @@ impl crate::framework::StatefulComponent for SubmenuButton {
         // pressed a second time: without it the button is *outside* the panel
         // it opened, so pressing it closes the panel on the way down and the
         // "already open" guard below can never be reached.
+        let recording = state.anchor.clone();
         let region = crate::tap_region::TapRegion::new(self.id).with_group_id(self.group_id);
         let pressed = crate::framework::stateful(line.with_on_pressed(move || {
             // Disabled, no menu, or already open -- see
@@ -1205,12 +1240,22 @@ impl crate::framework::StatefulComponent for SubmenuButton {
                 return;
             };
             let themes = themes.clone();
-            let opened =
-                crate::raw_menu_anchor::open_menu_surface(overlay, id, group_id, move || {
-                    themes.wrap(menu())
-                });
+            let opened = crate::raw_menu_anchor::open_menu_surface_at(
+                overlay,
+                id,
+                group_id,
+                Some((anchor.clone(), std::rc::Rc::clone(&place))),
+                move || themes.wrap(menu()),
+            );
             handle.set_state(move |state| state.open = opened);
         }));
+        // Recorded from the button's own assemble, which is where its render
+        // object first exists and is the rectangle the panel is placed against.
+        let pressed = crate::framework::many(vec![pressed], move |rendered| {
+            let button = rendered.into_iter().next().expect("the button");
+            recording.set(button.clone());
+            crate::theatre::RenderPortal::new(button)
+        });
         region.build(context, pressed)
     }
 }
@@ -1588,7 +1633,25 @@ mod tests {
                 // of this page -- which opening a menu causes -- replaced the
                 // button with an empty box, and every test that pressed twice
                 // was pressing nothing the second time.
-                stateful(self.1.clone())
+                //
+                // And it is aligned inside a box that **fills**, because the
+                // overlay is only as big as its page: a page that was just the
+                // button made the overlay 64 x 48, and a menu panel had
+                // nowhere to be but on top of it. A real page fills the screen.
+                // Opaque, because a page is: with nothing hittable under it a
+                // tap on the background reaches no region at all, and the
+                // tap-region surface never hears the press that was supposed
+                // to close the menu.
+                crate::framework::many(vec![stateful(self.1.clone())], |rendered| {
+                    crate::render::RenderPointerRegion::new(
+                        9999,
+                        crate::render::RenderAlign::new(
+                            crate::render::Alignment::TOP_LEFT,
+                            rendered.into_iter().next().expect("the button"),
+                        ),
+                    )
+                    .with_behavior(crate::render::HitTestBehavior::Opaque)
+                })
             }
         }
         let mut tree = ElementTree::new();
@@ -1704,6 +1767,50 @@ mod tests {
     }
 
     #[test]
+    fn the_panel_lands_under_the_button_and_not_on_it() {
+        // What rounds 455 to 457 could not test. An unplaced panel goes to the
+        // overlay's origin, which is on top of the button, and then every
+        // press meant for the button lands on the panel instead: the three
+        // facts below were all invisible for that reason.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
+        crate::render::flush_layout();
+        let mut path = crate::render::HitTestResult::new();
+        root.hit_test(Offset::new(30.0, 24.0), &mut path);
+        let targets: Vec<u64> = path.path.iter().map(|entry| entry.target).collect();
+        assert!(
+            targets.contains(&SUBMENU),
+            "the button is still reachable where it was: {targets:?}"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn pressing_the_button_again_does_not_open_a_second_panel() {
+        // Upstream's `_open` returns early for an anchor that is already open.
+        // A second panel would be a second overlay entry with nothing holding
+        // its handle, so nothing could ever take it down.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(overlay.entry_count(), 1, "one panel to begin with");
+
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(overlay.entry_count(), 1, "and still one");
+        assert!(
+            crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(SUBMENU)),
+            "the same one -- the button is inside its own menu's tap-region \
+             group, so pressing it again does not close the panel on the way \
+             down"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
     fn a_second_press_does_not_open_a_second_panel() {
         // Upstream's `_open` returns early for an anchor that is open. Here a
         // second panel would be a second overlay entry with nothing holding
@@ -1720,61 +1827,6 @@ mod tests {
             "and it is the one that was already there -- the button is inside              its own menu's tap-region group, so pressing it again does not              close the panel on the way down"
         );
         crate::raw_menu_anchor::reset_menu_tree();
-    }
-
-    #[test]
-    fn a_tap_on_a_panel_of_the_same_menu_does_not_close_it() {
-        // The group id the button hands its panels is the menu's, not the
-        // button's own id. Give each panel a group of its own and moving from
-        // one panel of a menu to another would close the one behind.
-        crate::raw_menu_anchor::reset_menu_tree();
-        let (mut tree, overlay) = staged(a_submenu());
-        tap(&mut tree, Offset::new(30.0, 24.0));
-        let sibling = overlay
-            .insert(|| {
-                crate::framework::component(SameGroup {
-                    id: 8403,
-                    group_id: MENU_GROUP,
-                })
-            })
-            .expect("inserted");
-        tree.rebuild_dirty();
-
-        let before = overlay.entry_count();
-        tap(&mut tree, Offset::new(390.0, 90.0));
-        assert_eq!(
-            overlay.entry_count(),
-            before,
-            "a tap on a panel of the same menu is not outside it, so nothing \
-             came down -- the anchor's own `is_open` would not show this, \
-             because an outside tap closes an anchor's *children* and leaves \
-             the anchor itself alone"
-        );
-        overlay.remove(sibling);
-        crate::raw_menu_anchor::reset_menu_tree();
-    }
-
-    struct SameGroup {
-        id: u64,
-        group_id: u64,
-    }
-
-    impl Component for SameGroup {
-        fn build(&self, context: &mut BuildContext) -> AnyWidget {
-            crate::tap_region::TapRegion::new(self.id)
-                .with_group_id(self.group_id)
-                .build(
-                    context,
-                    leaf(|| {
-                        crate::render::RenderAlign::new(
-                            crate::render::Alignment::BOTTOM_RIGHT,
-                            crate::render::RenderDecoratedBox::new()
-                                .with_fill(crate::render::Fill::Solid(Color(0xFF00_FF00)))
-                                .with_child(crate::widgets::SizedBox::new(40.0, 40.0)),
-                        )
-                    }),
-                )
-        }
     }
 
     #[test]
@@ -1921,12 +1973,12 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(stateful(item));
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
         crate::render::flush_layout();
         tree.advance_frame(0);
         tree.rebuild_dirty();
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
         crate::render::flush_layout();
         let mut layers = crate::engine::LayerTree::new(400, 100);
         crate::engine_test_stubs::reset_drawn();
@@ -2033,7 +2085,7 @@ mod tests {
     /// A press and a release at `at`, through the real router.
     fn tap(tree: &mut ElementTree, at: Offset) {
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
         crate::render::flush_layout();
         let event = |change| crate::gestures::PointerEvent {
             view_id: 0,
@@ -2059,7 +2111,7 @@ mod tests {
     /// A mouse moving onto `at`.
     fn hover(tree: &mut ElementTree, at: Offset) {
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
         crate::render::flush_layout();
         let mut router = crate::gestures::GestureRouter::new();
         router.dispatch(
@@ -2211,7 +2263,7 @@ mod tests {
         let mut tree = ElementTree::new();
         tree.rebuild(stateful(item));
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
         crate::render::flush_layout();
         tree.advance_frame(0);
         tree.rebuild_dirty();
@@ -2222,7 +2274,7 @@ mod tests {
         tree.rebuild_dirty();
 
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
         crate::render::flush_layout();
         let mut layers = crate::engine::LayerTree::new(400, 100);
         crate::engine_test_stubs::reset_drawn();

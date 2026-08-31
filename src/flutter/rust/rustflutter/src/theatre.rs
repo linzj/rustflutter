@@ -1753,6 +1753,25 @@ pub fn show_tap_dismissed(
     group_id: u64,
     content: impl Fn() -> AnyWidget + 'static,
 ) -> Option<ModalHandle> {
+    show_tap_dismissed_at(overlay, region_id, group_id, None, content)
+}
+
+/// [`show_tap_dismissed`], with the surface placed against an anchor.
+///
+/// # The positioner goes outside and the region inside
+///
+/// [`RenderAnchored`] fills the overlay and paints its child at the offset the
+/// placement chose, so wrapping the *region* in it leaves the region the size
+/// of the panel. The other way round -- a region around the positioner -- would
+/// make the region as big as the overlay, and a menu whose tap region covers
+/// the screen is the barrier this whole arrangement exists to avoid.
+pub fn show_tap_dismissed_at(
+    overlay: Rc<OverlayHandle>,
+    region_id: u64,
+    group_id: u64,
+    placed: Option<(Anchor, Placement)>,
+    content: impl Fn() -> AnyWidget + 'static,
+) -> Option<ModalHandle> {
     let content: Rc<dyn Fn() -> AnyWidget> = Rc::new(content);
     // The handle has to exist before the region that dismisses through it, and
     // the entry before the handle -- the same knot `show_modal` ties, with the
@@ -1786,13 +1805,18 @@ pub fn show_tap_dismissed(
     let entry_id = {
         let content = Rc::clone(&content);
         let dismiss = Rc::clone(&dismiss);
+        let placed = placed.clone();
         overlay.insert(move || {
-            crate::framework::component(TapDismissedSurface {
+            let surface = crate::framework::component(TapDismissedSurface {
                 region_id,
                 group_id,
                 content: Rc::clone(&content),
                 dismiss: Rc::clone(&dismiss),
-            })
+            });
+            match &placed {
+                Some((anchor, place)) => anchored(anchor.clone(), Rc::clone(place), surface),
+                None => surface,
+            }
         })?
     };
     pending.set(entry_id);

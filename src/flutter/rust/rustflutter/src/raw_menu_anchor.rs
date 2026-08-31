@@ -605,6 +605,25 @@ pub fn open_menu_surface(
     group_id: u64,
     content: impl Fn() -> crate::framework::AnyWidget + 'static,
 ) -> Option<crate::theatre::ModalHandle> {
+    open_menu_surface_at(overlay, anchor, group_id, None, content)
+}
+
+/// [`open_menu_surface`], with the panel placed against the button that opened
+/// it.
+///
+/// `placed` is the button's [`crate::theatre::Anchor`] together with the
+/// placement to use -- normally
+/// [`crate::menu_anchor::MenuLayout::position`] wrapped up. Without it the
+/// panel lands at the overlay's origin, which is on top of the button in every
+/// arrangement where the button is near the top left, and the panel then eats
+/// the presses meant for it.
+pub fn open_menu_surface_at(
+    overlay: std::rc::Rc<crate::theatre::OverlayHandle>,
+    anchor: u64,
+    group_id: u64,
+    placed: Option<(crate::theatre::Anchor, crate::theatre::Placement)>,
+    content: impl Fn() -> crate::framework::AnyWidget + 'static,
+) -> Option<crate::theatre::ModalHandle> {
     with_menu_tree_mut(|tree| tree.open(anchor));
     // **A fresh region id, not the anchor's.** The anchor is itself a tap
     // region -- upstream's `RawMenuAnchor` wraps its child in one so that
@@ -613,7 +632,8 @@ pub fn open_menu_surface(
     // registry under one id. The registry keys on it, so "was 8401 hit" then
     // means "was either of them hit", and the two cannot be told apart.
     let region_id = crate::theatre::next_surface_id();
-    let shown = crate::theatre::show_tap_dismissed(overlay, region_id, group_id, content)?;
+    let shown =
+        crate::theatre::show_tap_dismissed_at(overlay, region_id, group_id, placed, content)?;
     shown.on_dismissed(move || {
         with_menu_tree_mut(|tree| tree.handle_outside_tap(anchor));
     });
