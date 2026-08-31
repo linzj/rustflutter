@@ -46,6 +46,11 @@ source_set("host") {
       "rustflutter_host_a11y_win.h",
       "rustflutter_host_win.cc",
 
+      # Impeller on Vulkan directly, without the ANGLE translation the GL path
+      # goes through. Opt-in at run time through RUSTFLUTTER_BACKEND=vulkan.
+      "rustflutter_vk.cc",
+      "rustflutter_vk.h",
+
       # Generated. See tools/gen_key_map.py.
       "rustflutter_key_map_win.cc",
       "rustflutter_key_map_win.h",
@@ -94,8 +99,17 @@ source_set("host") {
     deps += [
       "//flutter/impeller",
       "//flutter/impeller/renderer/backend/gles",
+      "//flutter/impeller/renderer/backend/vulkan",
       "//flutter/impeller/toolkit/egl",
       "//flutter/shell/gpu:gpu_surface_gl",
+      "//flutter/shell/gpu:gpu_surface_vulkan",
+
+      # The SPIR-V blobs Impeller's Vulkan backend is built from. Groups that
+      # carry the vk variant only when impeller_enable_vulkan, which is on for
+      # Windows by default.
+      "//flutter/impeller/entity:entity_shaders",
+      "//flutter/impeller/entity:framebuffer_blend_entity_shaders",
+      "//flutter/impeller/entity:modern_entity_shaders",
 
       # libEGL_static MUST come before libGLESv2_static: reversed, the linker
       # reports DllMain already defined in LIBCMTD.lib.
