@@ -1234,15 +1234,17 @@ mod tests {
         > = std::rc::Rc::new(std::cell::RefCell::new(None));
         struct Finder(
             std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>>,
-            std::cell::RefCell<Option<SubmenuButton>>,
+            SubmenuButton,
         );
         impl Component for Finder {
             fn build(&self, context: &mut BuildContext) -> AnyWidget {
                 *self.0.borrow_mut() = crate::theatre::OverlayHandle::of(context);
-                match self.1.borrow_mut().take() {
-                    Some(button) => stateful(button),
-                    None => leaf(|| crate::widgets::SizedBox::new(1.0, 1.0)),
-                }
+                // The button is **rebuilt** each time, not handed over once. A
+                // first draft `take()`d it out of a cell, so the second build
+                // of this page -- which opening a menu causes -- replaced the
+                // button with an empty box, and every test that pressed twice
+                // was pressing nothing the second time.
+                stateful(self.1.clone())
             }
         }
         let mut tree = ElementTree::new();
@@ -1250,7 +1252,7 @@ mod tests {
             8400,
             crate::theatre::overlay(crate::framework::component(Finder(
                 std::rc::Rc::clone(&found),
-                std::cell::RefCell::new(Some(button)),
+                button,
             ))),
         ));
         tree.build_render_tree();
