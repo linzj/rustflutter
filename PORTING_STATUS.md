@@ -1009,3 +1009,57 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
 如果本项目的 `TextField` 把装饰焊死在里面，那这一轮该补的是
 "能不能要一个没有装饰的字段"，而不是把一个带下划线的输入框
 当成一段可选文本交出去——那看起来就不对。
+
+---
+
+## 第 429 轮：`SelectableText` 真的能上屏了
+
+先查那件事：`TextField` 有没有把装饰焊死在里面。**没有。**
+它的 build 从里到外是 `RenderEditable` → 指针区域 → `Focus` →
+`TextFieldTapRegion` → 语义，**没有边框、没有下划线、没有内边距、没有容器**。
+gallery 里那些下划线和标签全部来自演示自己的 `field_group`。
+
+也就是说本项目的 `TextField` 本来就是上游称作 `EditableText` 的那个光板，
+而上游 `SelectableText` 正是直接建 `EditableText`、**不经过 `InputDecorator`** 的。
+所以可以直接造。
+
+### 造出来了
+
+`SelectableText::widget(id)` = `stateful(TextField::new(id)
+.with_read_only(true).with_initial_text(data))`，行数按自己的字段映射过去。
+
+一处如实记下的缺席：**`show_cursor` 没有被照做**。
+上游默认 false，而本项目没有办法压掉一个获得焦点的字段的光标，
+所以被点过的可选文本会显示光标。缺的那块在字段里，不在这里。
+
+### 顺带补上自己上一轮留的尾巴
+
+第 427 轮加了 `read_only`，却**没有把它接进语义**。
+上游 `RenderEditable` 是 `..isReadOnly = readOnly`，
+而 `SemanticsProperties.flags.is_read_only` 本项目早就有了、一直没人写。
+补上：读屏用户遇到只读字段会被**告知**，而不是靠往里打字才发现。
+
+### 变异扫描 6 个，第一遍 3 红，两轮补测才全红
+
+- "行数映射成一行"两条活着：测试只看了**文字**有没有出来，
+  没看行数模式。行数活在 widget 上、状态里读不到——
+  抽成 `field_max_lines()` 并直接断言三种映射，转红。
+- 抽完之后又有一条活着：**映射对了不等于 widget 照做了**。
+  `Growing => field.multiline()` 那一臂被删掉照样过。
+  加了一条从**布局高度**看的测试：同一段放不进 60 像素的文字，
+  按"生长"排版比按"一行"排版**更高**——这是从外面唯一看得见这个差别的地方。
+  第三遍全红。
+
+这两步是同一个教训的两半：**先测到"映射"，再测到"映射被用上"**。
+
+尺子：十六把全部 exit 0。门：Rust 6507 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：`SelectableText` 上屏了，但**没有任何调用者**——
+和这些轮反复拆的"规则齐了、生产者缺席"是同一个形状，只是这次反过来：
+生产者有了、消费者没有。
+回 `depth.py` 队头挑下一个之前，**先查一件事**：
+gallery 里有没有现成的地方本该用它（比如演示页的说明文字、about 对话框里的许可证文本），
+有的话接一个真实调用者比再造一个新控件值钱。
+没有的话就回队头，`TextSelectionOverlay`（0.24，6/25）和
+`SearchAnchor`（0.24，8/33）是下两个真控件。

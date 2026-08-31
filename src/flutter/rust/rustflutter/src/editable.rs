@@ -4034,6 +4034,11 @@ impl StatefulComponent for TextField {
             state.value.text.clone(),
         );
         properties.flags.is_obscured = self.obscure;
+        // Upstream's `RenderEditable` semantics: `..isReadOnly = readOnly`.
+        // A reader meeting a read-only field is told so rather than being left
+        // to discover it by typing into something that refuses -- which is the
+        // whole reason the flag exists next to `isTextField`.
+        properties.flags.is_read_only = self.read_only;
         // A text field can hold the keyboard, so it says which -- "not
         // focused" and not silence. That distinction is what the boolean here
         // could not make.

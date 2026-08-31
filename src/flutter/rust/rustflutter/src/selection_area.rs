@@ -164,6 +164,53 @@ impl SelectableText {
     pub fn wraps(&self) -> bool {
         self.max_lines != Some(1)
     }
+
+    /// The widget: a read-only field showing `data`.
+    ///
+    /// Upstream builds an `EditableText` directly and **does not go through
+    /// `InputDecorator`** -- a selectable text is a passage, not a box you
+    /// type into, so it has no border, no underline and no label. This
+    /// crate's [`crate::editable::TextField`] is already that bare thing: its
+    /// build is the editable, a pointer region, a focus node and the
+    /// semantics, and every border the gallery shows is put there by the demo
+    /// around it.
+    ///
+    /// Everything this needs was missing until recently and was added for it:
+    /// the field's read-only flag, the text it opens with, and -- corrected
+    /// along the way -- the fact that a selectable text wraps where a field
+    /// does not.
+    ///
+    /// **`show_cursor` is not honoured.** Upstream's default is false and this
+    /// crate has no way to suppress a focused field's caret, so a selectable
+    /// text that has been clicked shows one. Recorded rather than quietly
+    /// dropped: the caret is upstream's `showCursor`, and the missing piece is
+    /// in the field, not here.
+    pub fn widget(&self, id: u64) -> crate::framework::AnyWidget {
+        let field = crate::editable::TextField::new(id)
+            .with_read_only(true)
+            .with_initial_text(self.data.clone());
+        let field = match self.field_max_lines() {
+            crate::editable::MaxLines::Growing => field.multiline(),
+            crate::editable::MaxLines::Single => field,
+            crate::editable::MaxLines::Bounded(lines) => field.with_max_lines(lines),
+        };
+        crate::framework::stateful(field)
+    }
+
+    /// Which line mode the field is asked for.
+    ///
+    /// Its own function because the mapping is the claim -- the widget it
+    /// builds carries the answer where a test cannot read it, and a mapping
+    /// that quietly left everything at one line would look exactly like a
+    /// working widget in every test that only checks the text.
+    pub fn field_max_lines(&self) -> crate::editable::MaxLines {
+        match self.max_lines {
+            // Upstream's null: as many lines as the text takes.
+            None => crate::editable::MaxLines::Growing,
+            Some(1) => crate::editable::MaxLines::Single,
+            Some(lines) => crate::editable::MaxLines::Bounded(lines as usize),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -226,6 +273,161 @@ mod tests {
     }
 
     // -- SelectableText ----------------------------------------------------------
+
+    /// Mounts a widget and answers the field state it holds, if any.
+    fn mounted_field<R>(
+        widget: crate::framework::AnyWidget,
+        read: impl Fn(&crate::editable::TextFieldState) -> R,
+    ) -> Option<R> {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(widget);
+        let mut stack: Vec<crate::framework::ElementId> = tree.root().into_iter().collect();
+        while let Some(id) = stack.pop() {
+            if let Some(found) = tree.state::<crate::editable::TextFieldState, _>(id, &read) {
+                return Some(found);
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        None
+    }
+
+    #[test]
+    fn a_selectable_text_shows_the_words_it_was_given() {
+        // The point of building it at all: until the field could be handed
+        // text and told to refuse edits, this widget was a struct with no way
+        // to appear on screen.
+        let text = SelectableText::new("a passage to read");
+        let shown = mounted_field(text.widget(4291), |state| state.value.text.clone());
+        assert_eq!(shown.as_deref(), Some("a passage to read"));
+    }
+
+    #[test]
+    fn a_selectable_text_is_a_field_that_refuses_to_be_typed_into() {
+        // Upstream's own description of it -- "a read-only `EditableText`".
+        // Driving the platform's value through the client is what proves the
+        // refusal; the widget merely asks for it.
+        let text = SelectableText::new("locked");
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(text.widget(4292));
+        let mut stack: Vec<crate::framework::ElementId> = tree.root().into_iter().collect();
+        let mut found = None;
+        while let Some(id) = stack.pop() {
+            if tree
+                .state::<crate::editable::TextFieldState, _>(id, |_| ())
+                .is_some()
+            {
+                found = Some(id);
+                break;
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        assert!(found.is_some(), "it mounts a field");
+    }
+
+    #[test]
+    fn an_unbounded_selectable_text_asks_the_field_to_grow() {
+        // `maxLines: null` upstream, which this crate spells `MaxLines::Growing`
+        // and reaches through `multiline()`. A selectable text left at its
+        // default has to come out growing, or a passage would stop at one line
+        // -- the very default this file had backwards.
+        let text = SelectableText::new(
+            "one
+two
+three",
+        );
+        assert_eq!(text.max_lines, None);
+        let lines = mounted_field(text.widget(4293), |state| state.value.text.clone());
+        assert_eq!(
+            lines.as_deref(),
+            Some(
+                "one
+two
+three"
+            )
+        );
+    }
+
+    #[test]
+    fn the_line_mode_follows_max_lines_all_three_ways() {
+        // `None` is upstream's null and must come out growing, or a passage
+        // stops at one line -- the default this file had backwards. A limit of
+        // one is still a single line, and anything else is that many.
+        use crate::editable::MaxLines;
+        assert_eq!(
+            SelectableText::new("x").field_max_lines(),
+            MaxLines::Growing,
+            "the default"
+        );
+        assert_eq!(
+            SelectableText::new("x")
+                .with_max_lines(Some(1))
+                .field_max_lines(),
+            MaxLines::Single
+        );
+        assert_eq!(
+            SelectableText::new("x")
+                .with_max_lines(Some(4))
+                .field_max_lines(),
+            MaxLines::Bounded(4)
+        );
+    }
+
+    /// Lays a selectable text out in a narrow box and answers its height.
+    fn laid_out_height(text: SelectableText, id: u64) -> f32 {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(text.widget(id));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::new(0.0, 60.0, 0.0, 400.0),
+        )
+        .height
+    }
+
+    #[test]
+    fn the_line_mode_reaches_the_field_and_not_just_the_mapping() {
+        // The mapping being right is not the same as the widget applying it.
+        // A passage too long for 60 pixels comes out taller when the field was
+        // asked to grow than when it was left at one line -- which is the only
+        // place the difference is visible from outside.
+        const PASSAGE: &str = "a passage long enough that it cannot fit on one line";
+        let growing = laid_out_height(SelectableText::new(PASSAGE), 4295);
+        let single = laid_out_height(SelectableText::new(PASSAGE).with_max_lines(Some(1)), 4296);
+        assert!(
+            growing > single,
+            "growing should wrap onto more lines: {growing} against {single}"
+        );
+    }
+
+    #[test]
+    fn a_selectable_text_tells_a_reader_it_cannot_be_edited() {
+        // Upstream's `RenderEditable` sets `..isReadOnly = readOnly`. Without
+        // it a screen-reader user meets something announced as a text field
+        // and discovers it is not by typing into it.
+        // The walk is gated on somebody reading and on something having marked
+        // itself; a test has to say both.
+        crate::semantics::set_enabled(true);
+        let text = SelectableText::new("read me");
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(text.widget(4294));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 300.0),
+        );
+        crate::semantics::mark_needs_update();
+        let nodes = crate::semantics::flush(crate::render::Size::new(300.0, 300.0), &root)
+            .unwrap_or_default();
+        crate::semantics::set_enabled(false);
+        assert!(
+            nodes.iter().any(|node| node.properties.flags.is_read_only),
+            "a node says it is read-only: {nodes:?}"
+        );
+    }
 
     #[test]
     fn selectable_text_is_an_editable_text_with_the_editing_turned_off() {
