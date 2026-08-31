@@ -891,6 +891,77 @@ mod tests {
         tree
     }
 
+    /// Lays the demo out at a desktop-ish size and hit-tests a grid over it,
+    /// answering how many probed points reached a region that wants each kind
+    /// of gesture.
+    ///
+    /// A grid rather than a coordinate, because a coordinate that misses
+    /// proves nothing -- and a coordinate is exactly what went wrong when this
+    /// was chased through the running window.
+    fn gestures_reachable() -> (usize, usize, usize) {
+        use rustflutter::render::{BoxConstraints, HitTestResult, Offset, RenderBox};
+        let mut tree = mounted();
+        let root = tree.build_render_tree().expect("a mounted root");
+        RenderBox::layout(&mut root.clone(), BoxConstraints::tight(460.0, 764.0));
+
+        let (mut tapped, mut long_pressed, mut secondary) = (0, 0, 0);
+        let mut y = 4.0;
+        while y < 764.0 {
+            let mut x = 4.0;
+            while x < 460.0 {
+                let mut result = HitTestResult::new();
+                root.hit_test(Offset::new(x, y), &mut result);
+                for entry in &result.path {
+                    let Some(handlers) = &entry.handlers else {
+                        continue;
+                    };
+                    if handlers.on_tap.is_some() {
+                        tapped += 1;
+                    }
+                    if handlers.on_long_press.is_some() {
+                        long_pressed += 1;
+                    }
+                    if handlers.on_secondary_tap.is_some() {
+                        secondary += 1;
+                    }
+                }
+                x += 8.0;
+            }
+            y += 8.0;
+        }
+        (tapped, long_pressed, secondary)
+    }
+
+    #[test]
+    fn a_right_click_somewhere_on_this_page_reaches_a_text_field() {
+        // The user-visible report: right-clicking a field shows no context
+        // menu. The Windows host was dropping the button entirely (fixed), and
+        // with it arriving the menu still did not open -- because the field's
+        // own `RenderPointerRegion`, the one carrying `on_secondary_tap`, is
+        // never on the hit path.
+        //
+        // Sweeping the whole page is what makes this a fact rather than a
+        // guess about coordinates: if no point anywhere reaches a region that
+        // wants a secondary tap, no right-click on this page can ever open a
+        // menu.
+        let (tapped, long_pressed, secondary) = gestures_reachable();
+        assert!(
+            tapped > 0,
+            "something on this page takes a tap, or the sweep itself is wrong"
+        );
+        assert!(
+            long_pressed > 0,
+            "the fields want long presses too, and they come from the same \
+             region as the secondary tap: {long_pressed}"
+        );
+        assert!(
+            secondary > 0,
+            "no point on the page reaches a region wanting a right-click, so \
+             the context menu cannot open anywhere: tap={tapped} \
+             long={long_pressed} secondary={secondary}"
+        );
+    }
+
     #[test]
     fn focusing_the_phone_field_keeps_the_field_that_was_focused() {
         // The bug this guards: the phone field grows a `+1 ` prefix when it
