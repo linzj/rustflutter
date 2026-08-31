@@ -2388,9 +2388,16 @@ struct WindowState {
   /// so it is re-armed by the next hover.
   bool tracking_mouse_leave = false;
 
-  /// Whether the primary button is currently down, so a WM_MOUSEMOVE can be
+  /// Whether any mouse button is currently down, so a WM_MOUSEMOVE can be
   /// told apart from a drag.
   bool pressed = false;
+  /// **Which** buttons are down, as `kPointerButtonMouse*` bits.
+  ///
+  /// Not derivable from `pressed`: the framework routes a secondary press to
+  /// different handlers -- `onSecondaryTap` is what opens a text field's
+  /// context menu -- so a press reported without its button is a right click
+  /// that arrives as a left one.
+  int64_t buttons = 0;
   /// Where the pointer was last seen, for the delta that Move carries.
   double last_x = 0.0;
   double last_y = 0.0;
@@ -2503,7 +2510,7 @@ PointerData MakePointerData(WindowState* state,
   data.physical_y = y;
   data.physical_delta_x = x - state->last_x;
   data.physical_delta_y = y - state->last_y;
-  data.buttons = state->pressed ? kPointerButtonMousePrimary : 0;
+  data.buttons = state->buttons;
   data.pressure = state->pressed ? 1.0 : 0.0;
   data.pressure_max = 1.0;
   data.view_id = kFlutterImplicitViewId;
@@ -3221,6 +3228,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     }
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
     case WM_MOUSEMOVE:
     case WM_MOUSELEAVE: {
       if (state == nullptr || state->platform_view == nullptr) {
@@ -3230,22 +3239,35 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
       const double y = static_cast<double>(GET_Y_LPARAM(lparam));
 
       switch (msg) {
-        case WM_LBUTTONDOWN: {
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN: {
           // Capture so a drag that leaves the window still reports its up,
           // which is what keeps a button from getting stuck pressed.
           SetCapture(hwnd);
           state->pressed = true;
+          state->buttons |= (msg == WM_RBUTTONDOWN)
+                                ? kPointerButtonMouseSecondary
+                                : kPointerButtonMousePrimary;
           state->last_x = x;
           state->last_y = y;
           state->platform_view->SendPointer(
               MakePointerData(state, PointerData::Change::kDown, x, y));
           break;
         }
-        case WM_LBUTTONUP: {
+        case WM_LBUTTONUP:
+        case WM_RBUTTONUP: {
+          // The up still carries the button that is being released: the
+          // framework reads which button a tap was from the *down*, and a
+          // release reporting nothing held is what ends the gesture.
           state->platform_view->SendPointer(
               MakePointerData(state, PointerData::Change::kUp, x, y));
-          state->pressed = false;
-          ReleaseCapture();
+          state->buttons &=
+              ~((msg == WM_RBUTTONUP) ? kPointerButtonMouseSecondary
+                                      : kPointerButtonMousePrimary);
+          state->pressed = state->buttons != 0;
+          if (!state->pressed) {
+            ReleaseCapture();
+          }
           break;
         }
         case WM_MOUSEMOVE: {
@@ -3285,6 +3307,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             state->platform_view->SendPointer(
                 MakePointerData(state, PointerData::Change::kCancel, x, y));
             state->pressed = false;
+            state->buttons = 0;
           } else {
             // Nothing is under the pointer any more. Remove is what the
             // framework reads as "this pointer is gone", and is what upstream
