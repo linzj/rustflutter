@@ -833,6 +833,142 @@ impl SearchDelegate {
     }
 }
 
+/// Opens the search view as a real route: upstream's `_SearchViewRoute`,
+/// pushed onto the theatre the way this crate pushes every other route-shaped
+/// thing.
+///
+/// # The barrier is there and invisible, and both halves matter
+///
+/// Upstream's route sets `barrierColor = Colors.transparent` with
+/// `barrierDismissible = true` and `barrierLabel = 'Dismiss'`. So the sheet
+/// between the view and the page **paints nothing** -- a search view is a
+/// panel that has grown out of a bar, and dimming the page behind it would
+/// make it read as a dialog -- while still catching the tap that closes it and
+/// still announcing itself to a screen reader as something to dismiss.
+///
+/// # What this does not do yet: the close is instant
+///
+/// Upstream reverses the same animation to close, and re-runs `updateTweens`
+/// first because the bar may have moved while the view was up. Here the modal
+/// comes down the moment it is dismissed, which is what every other
+/// `show_*` in this crate does today -- see
+/// [`crate::dialogs::show_cupertino_modal_popup`], whose sheet also only
+/// animates in. Recorded rather than hidden: the closing half needs a place to
+/// hang a reversal on `ModalHandle`, and that does not exist.
+pub fn show_search_view(
+    overlay: std::rc::Rc<crate::theatre::OverlayHandle>,
+    placement: SearchViewTransition,
+    constraints: crate::render::BoxConstraints,
+    content: impl Fn() -> crate::framework::AnyWidget + 'static,
+) -> Option<crate::theatre::ModalHandle> {
+    let content: std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget> = std::rc::Rc::new(content);
+    crate::theatre::show_modal(overlay, search_view_barrier(), move || {
+        crate::framework::stateful(SearchViewOpening {
+            placement,
+            constraints,
+            content: std::rc::Rc::clone(&content),
+        })
+    })
+}
+
+/// The sheet between the view and the page: upstream's `barrierColor`,
+/// `barrierDismissible` and `barrierLabel`, together.
+///
+/// It is its own function because those three are the whole of what makes a
+/// search view's barrier different from a dialog's, and they are easier to
+/// check where they are stated than where they are used.
+pub fn search_view_barrier() -> crate::modal_barrier::ModalBarrier {
+    // No colour: `Colors.transparent`. The label is upstream's `barrierLabel`,
+    // and `dismissible` is `ModalBarrier`'s own default of true.
+    crate::modal_barrier::ModalBarrier::new().with_semantics_label("Dismiss")
+}
+
+/// The growing half of [`show_search_view`]: upstream's `buildPage` builder
+/// together with `_ViewContentState.build`'s placement.
+struct SearchViewOpening {
+    placement: SearchViewTransition,
+    /// The view's resolved constraints, which are **not** the rectangle it is
+    /// drawn in -- see `build` for why both are needed.
+    constraints: crate::render::BoxConstraints,
+    content: std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>,
+}
+
+/// How far into the opening the view is. The transition is a pure function of
+/// the elapsed time, so all that is kept is the clock.
+#[derive(Default)]
+pub struct SearchViewOpeningState {
+    elapsed_micros: i64,
+    last_frame_micros: Option<i64>,
+}
+
+impl crate::framework::StatefulComponent for SearchViewOpening {
+    type State = SearchViewOpeningState;
+
+    fn advance(&self, state: &mut SearchViewOpeningState, frame_time_micros: i64) -> bool {
+        // Clamped for the reason every on-demand animation in this crate
+        // clamps: the previous frame may be a page-load away, and an unclamped
+        // step would put the whole opening into one frame.
+        const MAX_FRAME_MICROS: i64 = 50_000;
+        if let Some(previous) = state.last_frame_micros {
+            state.elapsed_micros += (frame_time_micros - previous).clamp(0, MAX_FRAME_MICROS);
+        }
+        state.last_frame_micros = Some(frame_time_micros);
+        state.elapsed_micros < SearchViewTransition::OPEN_MICROS
+    }
+
+    fn build(
+        &self,
+        state: &SearchViewOpeningState,
+        _handle: crate::framework::StateHandle<SearchViewOpeningState>,
+        _context: &mut crate::framework::BuildContext,
+    ) -> crate::framework::AnyWidget {
+        use crate::animation::AnimationStatus;
+
+        let t = (state.elapsed_micros as f32 / SearchViewTransition::OPEN_MICROS as f32)
+            .clamp(0.0, 1.0);
+        let placement = self.placement;
+        let constraints = self.constraints;
+        crate::framework::many(vec![(self.content)()], move |rendered| {
+            let child = rendered.into_iter().next().expect("the view's content");
+            let rect = placement.rect_at(t, AnimationStatus::Forward);
+            let opacity = SearchViewTransition::fade_at(
+                SearchViewTransition::view_fade(),
+                t,
+                AnimationStatus::Forward,
+            );
+            // Upstream's `_ViewContentState.build`: the *maxima* are the
+            // animated rectangle and the *minima* are the resolved constraints
+            // **clamped down to it** -- `math.min(effectiveConstraints
+            // .minWidth, _viewRect.width)`.
+            //
+            // That `min` is the whole reason both are passed in. For most of
+            // the opening the rectangle is smaller than the view's own minimum
+            // (360 x 240), and a minimum left unclamped would be larger than
+            // the maximum beside it: the view would jump straight to full size
+            // on the first frame and the growth would never be seen.
+            let sized = crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints {
+                min_width: constraints.min_width.min(rect.width()),
+                max_width: rect.width(),
+                min_height: constraints.min_height.min(rect.height()),
+                max_height: rect.height(),
+            })
+            .with_child(child);
+            crate::render::RenderOpacity::new(
+                opacity,
+                crate::render::RenderAlign::new(
+                    crate::render::Alignment::TOP_LEFT,
+                    // `Transform.translate(offset: _viewRect.topLeft)`, which
+                    // moves the panel without laying it out anywhere else.
+                    crate::render::RenderTransform::new(
+                        [1.0, 0.0, 0.0, 1.0, rect.left, rect.top],
+                        sized,
+                    ),
+                ),
+            )
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1947,5 +2083,389 @@ mod search_view_transition_tests {
         assert_eq!(SearchViewTransition::OPEN_MICROS, 600_000);
         assert_eq!(SearchViewTransition::ANCHOR_FADE_MICROS, 150_000);
         assert!(SearchViewTransition::ANCHOR_FADE_MICROS < SearchViewTransition::OPEN_MICROS / 2);
+    }
+}
+
+#[cfg(test)]
+mod search_view_route_tests {
+    use super::*;
+    use crate::animation::AnimationStatus;
+    use crate::component_themes::ResolvedSearchView;
+    use crate::engine::{Color, Rect};
+    use crate::engine_test_stubs::Drawn;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::{BoxConstraints, Offset, RenderBox, Size};
+    use crate::theatre::{ModalHandle, OverlayHandle, overlay};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    const SCREEN: Size = Size {
+        width: 800.0,
+        height: 900.0,
+    };
+
+    fn constraints() -> BoxConstraints {
+        BoxConstraints {
+            min_width: ResolvedSearchView::MIN_WIDTH,
+            max_width: f32::INFINITY,
+            min_height: ResolvedSearchView::MIN_HEIGHT,
+            max_height: f32::INFINITY,
+        }
+    }
+
+    fn placement() -> SearchViewTransition {
+        let anchor = Rect::xywh(20.0, 40.0, 400.0, 56.0);
+        SearchViewTransition {
+            anchor,
+            view: SearchAnchor::view_rect(
+                anchor,
+                SCREEN,
+                constraints(),
+                false,
+                crate::direction::TextDirection::Ltr,
+            ),
+            full_screen: false,
+        }
+    }
+
+    /// A tree with an overlay in it, and the handle a descendant found.
+    fn staged() -> (ElementTree, Rc<OverlayHandle>) {
+        let found: Rc<RefCell<Option<Rc<OverlayHandle>>>> = Rc::new(RefCell::new(None));
+        struct Finder(Rc<RefCell<Option<Rc<OverlayHandle>>>>);
+        impl Component for Finder {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = OverlayHandle::of(context);
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(component(Finder(Rc::clone(&found)))));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+        (tree, handle)
+    }
+
+    /// A panel that takes the **smallest** size it is offered rather than the
+    /// largest, so that a test can see the minimum the view was constrained
+    /// with. The bare panel below cannot: a decorated box with no child takes
+    /// `constraints.biggest()`, and a minimum it never reads is a minimum no
+    /// assertion about its rectangle can catch.
+    fn minimum_sized_panel() -> AnyWidget {
+        leaf(|| {
+            crate::render::RenderDecoratedBox::new()
+                .with_fill(crate::render::Fill::Solid(Color::argb(255, 0, 0, 255)))
+                .with_child(crate::render::RenderConstrainedBox::new(BoxConstraints {
+                    min_width: 0.0,
+                    max_width: f32::INFINITY,
+                    min_height: 0.0,
+                    max_height: f32::INFINITY,
+                }))
+        })
+    }
+
+    /// The panel the view's content paints, so a test can watch it grow.
+    fn panel() -> AnyWidget {
+        leaf(|| {
+            crate::render::RenderDecoratedBox::new()
+                .with_fill(crate::render::Fill::Solid(Color::argb(255, 0, 0, 255)))
+        })
+    }
+
+    /// Opens the view, runs the clock to `micros`, and answers the rectangle
+    /// the panel reached the canvas as, plus any opacity layer over it.
+    fn opened_at(micros: i64) -> (Option<(f32, f32, f32, f32)>, Vec<u8>, Option<(f32, f32)>) {
+        opened_with(placement(), panel, micros)
+    }
+
+    fn opened_with(
+        placement: SearchViewTransition,
+        content: fn() -> AnyWidget,
+        micros: i64,
+    ) -> (Option<(f32, f32, f32, f32)>, Vec<u8>, Option<(f32, f32)>) {
+        let (mut tree, handle) = staged();
+        let shown =
+            show_search_view(Rc::clone(&handle), placement, constraints(), content).expect("shown");
+        // Stepped rather than jumped. `advance` clamps each frame to 50ms --
+        // every on-demand animation in this crate does, so that a page-load
+        // between frames cannot put a whole transition into one of them -- so
+        // a test that set the clock to 600ms in one call would see 50.
+        // Built before the clock starts: an element that is not mounted yet
+        // takes no `advance`, and its first one would then be the frame that
+        // establishes its zero -- leaving the whole opening one frame behind.
+        tree.rebuild_dirty();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        let mut now = 0;
+        while now < micros {
+            now = (now + 16_000).min(micros);
+            tree.advance_frame(now);
+            tree.rebuild_dirty();
+        }
+
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(
+            &root,
+            BoxConstraints::tight(SCREEN.width, SCREEN.height),
+        );
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(800, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(&mut layers, SCREEN);
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let drawn = crate::engine_test_stubs::drawn();
+        shown.dismiss();
+        let panel = drawn.iter().find_map(|call| match call {
+            Drawn::Rect {
+                left,
+                top,
+                right,
+                bottom,
+                argb,
+                ..
+            } if Color(*argb) == Color::argb(255, 0, 0, 255) => {
+                Some((*left, *top, *right, *bottom))
+            }
+            _ => None,
+        });
+        let alphas = drawn
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::OpacityLayer { alpha } => Some(*alpha),
+                _ => None,
+            })
+            .collect();
+        // The panel's position is not in its own rectangle: a `Transform`
+        // paints through a layer, so the rectangle reaching the canvas is the
+        // one before the translation and the offset is on the layer.
+        let moved = drawn.iter().find_map(|call| match call {
+            Drawn::TransformLayer { e, f, .. } => Some((*e, *f)),
+            _ => None,
+        });
+        (panel, alphas, moved)
+    }
+
+    #[test]
+    fn the_view_starts_the_size_of_the_bar_and_ends_the_size_of_the_view() {
+        // The route is the thing this round added: the geometry and the curve
+        // were already there, and nothing put them on screen.
+        // Nothing at all on the frame the route is pushed: the view's fade
+        // starts at zero, and a fully transparent subtree paints nothing.
+        assert_eq!(opened_at(0).0, None, "the first frame is empty");
+
+        // One frame in, it is the bar: at the bar's corner, at the bar's size.
+        let (start, _, moved) = opened_at(16_000);
+        let start = start.expect("the panel painted");
+        let moved = moved.expect("the panel was moved into place");
+        assert!(
+            (moved.0 - 20.0).abs() < 0.01 && (moved.1 - 40.0).abs() < 0.01,
+            "it opens over the bar: {moved:?}"
+        );
+        assert!(
+            start.2 - start.0 == 400.0 && start.3 - start.1 - 56.0 < 5.0,
+            "and at the bar's size: {start:?}"
+        );
+
+        let (end, _, _) = opened_at(SearchViewTransition::OPEN_MICROS * 2);
+        let end = end.expect("the panel painted");
+        let view = placement().view;
+        assert!(
+            (end.2 - end.0 - view.width()).abs() < 1.0
+                && (end.3 - end.1 - view.height()).abs() < 1.0,
+            "it ends at the view's rectangle: {end:?} against {view:?}"
+        );
+    }
+
+    #[test]
+    fn the_minimum_is_clamped_down_to_the_animated_rectangle() {
+        // The `math.min(effectiveConstraints.minWidth, _viewRect.width)` that
+        // `_ViewContentState.build` applies. The view's own minimum is 360 x
+        // 240 and the bar is 400 x 56 -- so on the first frame an unclamped
+        // minimum height would be four times the maximum beside it, and the
+        // panel would appear full-size instead of growing.
+        let (start, _, _) = opened_with(placement(), minimum_sized_panel, 16_000);
+        let start = start.expect("the panel painted");
+        assert!(
+            start.3 - start.1 < ResolvedSearchView::MIN_HEIGHT,
+            "the first frame is the bar's height, not the view's minimum: {start:?}"
+        );
+        assert!(
+            (start.2 - start.0 - ResolvedSearchView::MIN_WIDTH).abs() < 1.0,
+            "across, the bar is wider than the minimum, so the minimum stands: {start:?}"
+        );
+
+        // And the same clamp across, which needs a bar **narrower** than the
+        // view's minimum to show at all: with a 400-wide bar the width is over
+        // the 360 minimum from the first frame, so clamping it changes
+        // nothing. A 200-wide bar opens a 360-wide view, and every frame
+        // before the last is narrower than the minimum it is being given.
+        let narrow = Rect::xywh(20.0, 40.0, 200.0, 56.0);
+        let placement = SearchViewTransition {
+            anchor: narrow,
+            view: SearchAnchor::view_rect(
+                narrow,
+                SCREEN,
+                constraints(),
+                false,
+                crate::direction::TextDirection::Ltr,
+            ),
+            full_screen: false,
+        };
+        let (start, _, _) = opened_with(placement, minimum_sized_panel, 16_000);
+        let start = start.expect("the panel painted");
+        assert!(
+            start.2 - start.0 < ResolvedSearchView::MIN_WIDTH,
+            "it starts at the bar's width, not the view's minimum: {start:?}"
+        );
+    }
+
+    #[test]
+    fn a_view_that_was_pulled_back_onto_the_screen_opens_towards_where_it_goes() {
+        // The panel is moved to the tween's rectangle each frame, not parked
+        // at the bar. It only shows up when the two corners differ, which is
+        // exactly the case `view_rect` moves: a bar near the bottom of the
+        // screen opens a view that has been pulled upwards.
+        let anchor = Rect::xywh(20.0, 800.0, 400.0, 56.0);
+        let placement = SearchViewTransition {
+            anchor,
+            view: SearchAnchor::view_rect(
+                anchor,
+                SCREEN,
+                constraints(),
+                false,
+                crate::direction::TextDirection::Ltr,
+            ),
+            full_screen: false,
+        };
+        assert_ne!(
+            placement.view.top, anchor.top,
+            "the case would not test anything otherwise"
+        );
+
+        let (_, _, moved) = opened_with(placement, panel, SearchViewTransition::OPEN_MICROS * 2);
+        let moved = moved.expect("the panel was moved into place");
+        assert!(
+            (moved.1 - placement.view.top).abs() < 1.0,
+            "it arrives where the view goes, not where the bar was: {moved:?}"
+        );
+    }
+
+    #[test]
+    fn a_frame_that_arrives_late_moves_the_opening_on_by_one_frame_and_no_more() {
+        // Every on-demand animation in this crate clamps its step, and the
+        // reason is what a long frame means: the app was busy, not that time
+        // should be skipped. Without the clamp a single 600ms hitch would put
+        // the whole opening into one frame and there would be no animation at
+        // all -- the view would simply appear.
+        let (mut tree, handle) = staged();
+        let shown =
+            show_search_view(Rc::clone(&handle), placement(), constraints(), panel).expect("shown");
+        tree.rebuild_dirty();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        // One frame, a whole opening long.
+        tree.advance_frame(SearchViewTransition::OPEN_MICROS);
+        assert!(
+            tree.advance_frame(SearchViewTransition::OPEN_MICROS),
+            "50ms of the 600 have passed, so it is still opening"
+        );
+        shown.dismiss();
+    }
+
+    #[test]
+    fn the_barrier_is_transparent_dismissible_and_named() {
+        // Upstream's three: `barrierColor: Colors.transparent`,
+        // `barrierDismissible: true`, `barrierLabel: 'Dismiss'`. The first is
+        // what keeps a search view from reading as a dialog, and the second is
+        // the only way out that does not need a keyboard.
+        let barrier = search_view_barrier();
+        assert!(!barrier.paints(), "a dimmed page would read as a dialog");
+        assert!(barrier.dismissible);
+        assert_eq!(barrier.semantics_label.as_deref(), Some("Dismiss"));
+    }
+
+    #[test]
+    fn the_view_fades_in_over_the_first_half_and_is_not_faded_after_it() {
+        // The route's `FadeTransition`, driven by `_kViewFadeOnInterval`. A
+        // fully opaque child pushes no layer at all, which is how the two
+        // states are told apart.
+        let quarter = SearchViewTransition::OPEN_MICROS / 4;
+        let (_, part_way, _) = opened_at(quarter);
+        assert_eq!(
+            part_way,
+            vec![
+                (SearchViewTransition::fade_at(
+                    SearchViewTransition::view_fade(),
+                    0.25,
+                    AnimationStatus::Forward
+                ) * 255.0)
+                    .round() as u8
+            ],
+            "half faded at a quarter of the way, since the fade takes half the time"
+        );
+
+        let (_, arrived, _) = opened_at(SearchViewTransition::OPEN_MICROS);
+        assert_eq!(arrived, Vec::<u8>::new(), "and not faded once it is in");
+    }
+
+    #[test]
+    fn the_barrier_is_invisible_and_still_closes_the_view() {
+        // Upstream's `barrierColor: Colors.transparent` with
+        // `barrierDismissible: true`. Dimming the page would make a panel that
+        // grew out of a bar read as a dialog; not catching the tap would leave
+        // no way out but the keyboard.
+        let (mut tree, handle) = staged();
+        let shown: ModalHandle =
+            show_search_view(Rc::clone(&handle), placement(), constraints(), panel).expect("shown");
+        tree.rebuild_dirty();
+        assert!(shown.is_showing());
+
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(
+            &root,
+            BoxConstraints::tight(SCREEN.width, SCREEN.height),
+        );
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(800, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(&mut layers, SCREEN);
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let painted_full_screen = crate::engine_test_stubs::drawn().into_iter().any(|call| {
+            matches!(
+                call,
+                Drawn::Rect { left, top, right, bottom, .. }
+                    if left == 0.0 && top == 0.0 && right == SCREEN.width && bottom == SCREEN.height
+            )
+        });
+        assert!(!painted_full_screen, "the barrier paints nothing");
+
+        shown.dismiss();
+        tree.rebuild_dirty();
+        assert!(!shown.is_showing());
+    }
+
+    #[test]
+    fn the_opening_asks_for_frames_until_it_is_over_and_then_stops() {
+        // An animation that keeps asking is a device that never sleeps.
+        let (mut tree, handle) = staged();
+        let shown =
+            show_search_view(Rc::clone(&handle), placement(), constraints(), panel).expect("shown");
+        tree.rebuild_dirty();
+        tree.advance_frame(0);
+        assert!(
+            tree.advance_frame(SearchViewTransition::OPEN_MICROS / 4),
+            "still opening"
+        );
+        for step in 1..40 {
+            tree.advance_frame(step * SearchViewTransition::OPEN_MICROS / 20);
+        }
+        assert!(
+            !tree.advance_frame(SearchViewTransition::OPEN_MICROS * 4),
+            "and done"
+        );
+        shown.dismiss();
     }
 }

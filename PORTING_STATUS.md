@@ -1505,3 +1505,73 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 （`updateTweens(anchorKey.currentContext!)`）——
 因为 bar 可能已经不在原处了。看这个 crate 的 modal 关闭有没有
 一个能挂这件事的地方，没有就得先想清楚放哪儿。
+
+---
+
+## 第 438 轮：search view 终于是一条真的 route 了
+
+上一轮留的两件事：
+
+**查一**：`ModalBarrier` 的 `color: None` 就是"挡得住但不画"，
+`dismissible` 默认 true——上游那对
+`barrierColor: transparent` + `barrierDismissible: true` **表达得出来**。
+**查二**：`ModalHandle` 上**没有**能挂"关闭时重算一次 tween"的地方。
+
+所以这一轮做打开那半边，关闭那半边如实记在文档里（见下）。
+
+### `show_search_view`
+
+barrier 那三样单独提成 `search_view_barrier()`：
+不画、可点掉、名字是 "Dismiss"。三样合起来才是"search view 的遮罩
+和 dialog 的遮罩不一样"这件事，放在它们被写下来的地方比放在被用的地方好查。
+
+面板本身是一个 `StatefulComponent`，按这个 crate 里 `show_*` 的老规矩：
+`advance` 推时钟、`build` 用 `SearchViewTransition` 算这一帧。
+
+摆放照 `_ViewContentState.build`：
+**最大值是动画中的那个矩形，最小值是解析出来的约束再 `min` 到矩形上**。
+那个 `min` 是两个都要传进来的全部理由——
+开场大半程里矩形比 view 自己的最小值（360×240）还小，
+不 clamp 的话最小值会大过旁边的最大值，
+面板第一帧就是全尺寸，"长出来"根本看不见。
+
+### 明写下来的一处未做
+
+上游关闭时是把同一个动画倒着放，而且**先重算一次 tween**
+（bar 可能已经移位了）。这里是点掉就立刻收——
+这个 crate 里今天每个 `show_*` 都是这样（`show_cupertino_modal_popup`
+的 sheet 也只有进场动画）。记下来而不是藏着：
+倒放需要 `ModalHandle` 上有个地方挂，而那个地方不存在。
+
+### 变异扫描 14 个，第一遍 5 条没红，五条各不相同
+
+这一批很值得记，因为**五条里只有一条是"测试写少了"**：
+
+1. **"面板永远按 anchor 摆"**——我的用例里 view 的左上角**恰好**就是
+   anchor 的左上角（bar 不靠边，不会被回拉）。补了一个靠底边的用例。
+2. **"最小高度不 clamp"**、3. **"最小宽度不 clamp"**——
+   探针错了。裸的 `RenderDecoratedBox` 没有子节点时取 `constraints.biggest()`，
+   **根本不读最小值**，所以"最小值被违反"在画布上看不见。
+   换了一个取 `smallest()` 的探针才测得到。
+   宽度那条还多一层：bar 400 宽 > 最小 360，**clamp 与不 clamp 同一个答案**，
+   得用一个 200 宽的 bar 才咬得住。
+4. **"每帧不 clamp 时钟"**——我的用例每步 16ms，从来没超过 50ms 上限。
+   补了一个"一帧就迟到 600ms"的用例。
+5. **"遮罩点不掉"**——测试里我一直是直接 `dismiss()`，从没碰过遮罩。
+   提出 `search_view_barrier()` 之后直接对它断言。
+
+补完 14 条全红。
+
+尺子：十六把全部 exit 0。门：Rust 6557 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：route 有了，**里面还是空的**——`show_search_view` 收一个
+`content` 闭包，谁也没给它内容。上游的 `_ViewContent` 是
+header（一个 search bar）+ divider + 建议列表。
+下一轮做 header 那一层。**先查两件事**：
+(1) 全屏 view 的 header 高度是 `fullScreenBarHeight: 72`，
+停靠的是 `ResolvedSearchView::header_height`（默认 `None`，即"多高算多高"）——
+确认这两个数在 `ResolvedSearchView` 里都取得到，别把 72 硬写进 widget。
+(2) header 里那个输入框和第 435 轮做的 `SearchBar` 是不是同一个东西——
+看上游 `_ViewContent` 用的是 `SearchBar` 还是直接一个 `TextField`，
+**决定这一层是复用还是新写**。
