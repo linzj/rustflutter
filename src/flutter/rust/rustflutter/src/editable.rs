@@ -2903,6 +2903,15 @@ pub struct TextField {
     /// [`crate::selection_area::SelectableText`] is built on -- upstream's own
     /// description of it is "a read-only `EditableText`".
     read_only: bool,
+    /// The text the field starts with, used **once**.
+    ///
+    /// Upstream's `TextFormField.initialValue`, and its one-shot nature is
+    /// upstream's too: a field's text is its *state*, so a rebuild carrying a
+    /// different initial value does not overwrite what the reader has typed.
+    /// Anything wanting to drive the text after that wants a controller, which
+    /// upstream says in those words and this crate has as
+    /// [`TextField::with_state_sink`].
+    initial_text: Option<String>,
     max_lines: MaxLines,
     /// Upstream's `minLines`: how many lines the field is tall before it has
     /// any text in it. `None` is upstream's null.
@@ -3071,6 +3080,7 @@ impl TextField {
             action: TextInputAction::Done,
             obscure: false,
             read_only: false,
+            initial_text: None,
             max_lines: MaxLines::Single,
             min_lines: None,
             expands: false,
@@ -3087,6 +3097,13 @@ impl TextField {
     /// Upstream's `readOnly`. See the field.
     pub fn with_read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
+        self
+    }
+
+    /// The text the field opens with. See [`TextField::initial_text`]'s field
+    /// documentation for why it is used only once.
+    pub fn with_initial_text(mut self, text: impl Into<String>) -> Self {
+        self.initial_text = Some(text.into());
         self
     }
 
@@ -3170,6 +3187,29 @@ impl StatefulComponent for TextField {
 
     fn key(&self) -> Key {
         Some(self.id)
+    }
+
+    /// Seeds the editing value from `initial_text`, once.
+    ///
+    /// `initial_state` is the right place precisely because it runs once: a
+    /// rebuild does not come back through here, so a field whose widget is
+    /// rebuilt with different text keeps what the reader has. That is
+    /// upstream's rule for `initialValue` and not an accident of where this
+    /// happens to be written.
+    ///
+    /// The caret is left at the end, which is where a reader arriving at
+    /// pre-filled text would expect it -- upstream's `TextEditingController`
+    /// constructor does the same, `selection: TextSelection.collapsed(offset:
+    /// text.length)`.
+    fn initial_state(&self) -> TextFieldState {
+        let mut state = TextFieldState::default();
+        if let Some(text) = &self.initial_text {
+            let caret = text.chars().count() as i32;
+            state.value = TextEditingValue::new(text);
+            state.value.selection_base = caret;
+            state.value.selection_extent = caret;
+        }
+        state
     }
 
     /// Upstream's `EditableTextState.dispose`, which disposes the selection
@@ -5449,6 +5489,91 @@ mod tests {
             (downstream.start, downstream.end),
             (upstream.start, upstream.end)
         );
+    }
+
+    /// The text a mounted field is holding.
+    fn field_text(tree: &crate::framework::ElementTree) -> Option<String> {
+        let mut stack: Vec<crate::framework::ElementId> = tree.root().into_iter().collect();
+        while let Some(id) = stack.pop() {
+            if let Some(text) =
+                tree.state::<TextFieldState, _>(id, |state| state.value.text.clone())
+            {
+                return Some(text);
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        None
+    }
+
+    #[test]
+    fn a_field_can_be_given_the_text_it_opens_with() {
+        // Until this there was no way to put text into a field at all: its
+        // text lives in its state and `new(id)` took none, so every field
+        // started empty and `SelectableText` -- upstream's "read-only
+        // `EditableText`" -- had nothing it could show.
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(
+            TextField::new(4281).with_initial_text("already here"),
+        ));
+        assert_eq!(field_text(&tree).as_deref(), Some("already here"));
+    }
+
+    #[test]
+    fn the_caret_starts_at_the_end_of_the_text_it_was_given() {
+        // Upstream's `TextEditingController` constructor:
+        // `selection: TextSelection.collapsed(offset: text.length)`. A caret
+        // parked at the start would put the next keystroke before the text
+        // rather than after it.
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(
+            TextField::new(4282).with_initial_text("abcd"),
+        ));
+        let mut stack: Vec<crate::framework::ElementId> = tree.root().into_iter().collect();
+        let mut caret = None;
+        while let Some(id) = stack.pop() {
+            if let Some(found) = tree.state::<TextFieldState, _>(id, |state| {
+                (state.value.selection_base, state.value.selection_extent)
+            }) {
+                caret = Some(found);
+                break;
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        assert_eq!(caret, Some((4, 4)));
+    }
+
+    #[test]
+    fn a_rebuild_with_different_text_does_not_take_what_was_typed() {
+        // Upstream's rule for `initialValue`, and the reason it belongs in
+        // `initial_state`: a field's text is its **state**. A widget rebuilt
+        // with new initial text overwriting the reader's typing is the classic
+        // way to lose a form, and it is exactly what would happen if this were
+        // read on every build.
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(
+            TextField::new(4283).with_initial_text("first"),
+        ));
+        assert_eq!(field_text(&tree).as_deref(), Some("first"));
+
+        tree.rebuild(crate::framework::stateful(
+            TextField::new(4283).with_initial_text("second"),
+        ));
+        assert_eq!(
+            field_text(&tree).as_deref(),
+            Some("first"),
+            "the state kept what it had"
+        );
+    }
+
+    #[test]
+    fn a_field_given_no_text_still_starts_empty() {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(TextField::new(4284)));
+        assert_eq!(field_text(&tree).as_deref(), Some(""));
     }
 
     #[test]

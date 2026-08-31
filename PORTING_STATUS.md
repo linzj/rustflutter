@@ -955,3 +955,57 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
 2. `SelectableText` 的 `max_lines` 默认是 `Some(1)`，而它有个 `wraps()` 谓词——
    确认上游 `SelectableText` 的 `maxLines` 默认到底是不是 1
    （`TextField` 是 1，但只读文本块常常不是），别照抄错。
+
+---
+
+## 第 428 轮：字段终于能被交给一段文字——顺带改掉一条**测试写反了的规则**
+
+上一轮留的两个"先查"，两个都查出了东西。
+
+### 查一：`maxLines` 的默认，**本项目抄错了**
+
+上游 `TextField` 写的是 `this.maxLines = 1`（显式默认一行）；
+而 `SelectableText` 写的是 `this.maxLines`，**没有默认**——
+它是 `int?`，到手是 null，build 里再退到 `defaultTextStyle.maxLines`（通常也是 null）。
+
+本项目 `SelectableText::new` 却填了 `max_lines: Some(1)`。
+更糟的是**有一条测试在断言这个错的规则**：
+`one_line_is_the_default_and_none_means_as_many_as_it_takes` 里
+`assert!(!single.wraps())`——把"默认一行"当成了事实。
+和第 389 轮"三条测试的名字断言了错误的规则"是同一族。
+
+改掉了：默认 `None`，补 `with_max_lines`，测试重写成
+`a_selectable_text_wraps_by_default_where_a_field_does_not`，
+并把两者的差别写进字段文档——**这个差别就是这个控件的用途**：
+字段是拿来打字的一行，可选文本是拿来读的一段，
+一段读到第一行就断的文字，几乎对所有用法都是错的形状。
+
+### 查二：`TextField` **根本没法被交一段文字**
+
+它没有 `initial_state`，所以永远从 `TextFieldState::default()`（空）开始，
+而 `new(id)` 不收文本。也就是说
+`SelectableText`——上游称之为"只读的 `EditableText`"——**没有东西可显示**。
+
+补上 `with_initial_text`，并且**放在 `initial_state` 里**，
+这一点是规则不是位置：字段的文本是它的**状态**，
+所以重建时带着不同的初始文本**不会**覆盖读者已经打的字。
+上游 `initialValue` 就是这条规则，而"每次 build 都读一遍"正是丢表单的经典写法。
+光标停在末尾，跟上游 `TextEditingController` 的
+`selection: TextSelection.collapsed(offset: text.length)` 一致。
+
+变异扫描 6 个，**第一遍全红**——包括"每次 build 都读"那一条
+（加一个 `did_update_widget` 去覆盖状态，测试立刻转红）。
+
+尺子：十六把全部 exit 0。门：Rust 6501 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：地基齐了（只读 + 初始文本 + 正确的 `maxLines`），
+下一轮把 `SelectableText` 真正造出来：
+`stateful(TextField::new(id).with_read_only(true).with_initial_text(data))`，
+`max_lines` 按自己的字段传下去，不带装饰、不带占位符。
+但**先查一件事**：`TextField` 的 build 里那一圈**装饰**——
+`RenderEditable` 外面是不是套着边框、下划线、内边距之类只属于输入框的东西。
+上游 `SelectableText` 是直接建 `EditableText`、**不经过 `InputDecorator`** 的。
+如果本项目的 `TextField` 把装饰焊死在里面，那这一轮该补的是
+"能不能要一个没有装饰的字段"，而不是把一个带下划线的输入框
+当成一段可选文本交出去——那看起来就不对。

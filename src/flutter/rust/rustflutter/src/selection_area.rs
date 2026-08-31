@@ -107,6 +107,18 @@ pub struct SelectableText {
     /// documentation: it is a long press on mobile and a double tap elsewhere,
     /// so it competes with the gestures around it.
     pub show_cursor: bool,
+    /// Upstream's `maxLines`, and **its default is not one**.
+    ///
+    /// `TextField` declares `this.maxLines = 1`; `SelectableText` declares
+    /// `this.maxLines` with no default at all, so it arrives null and the
+    /// build falls back to `defaultTextStyle.maxLines` -- also usually null.
+    /// The difference is the point of the widget: a field is a line you type
+    /// into, a selectable text is a passage you read, and a passage that
+    /// stopped at one line would be the wrong shape for almost every use of
+    /// it.
+    ///
+    /// This crate has no `DefaultTextStyle.maxLines` to fall back to, so null
+    /// is as far as the fallback goes.
     pub max_lines: Option<u32>,
     /// A selectable text is never editable, which is the one thing that makes
     /// it different from the field it is built on.
@@ -118,7 +130,7 @@ impl SelectableText {
         SelectableText {
             data: data.into(),
             show_cursor: false,
-            max_lines: Some(1),
+            max_lines: None,
             editable: false,
         }
     }
@@ -128,13 +140,19 @@ impl SelectableText {
         SelectableText {
             data: String::new(),
             show_cursor: false,
-            max_lines: Some(1),
+            max_lines: None,
             editable: false,
         }
         .with_span_count(spans)
     }
 
     fn with_span_count(self, _spans: usize) -> Self {
+        self
+    }
+
+    /// Upstream's `maxLines`. `None` is upstream's null: as many as it takes.
+    pub fn with_max_lines(mut self, lines: Option<u32>) -> Self {
+        self.max_lines = lines;
         self
     }
 
@@ -226,17 +244,22 @@ mod tests {
     }
 
     #[test]
-    fn one_line_is_the_default_and_none_means_as_many_as_it_takes() {
-        let single = SelectableText::new("hello");
+    fn a_selectable_text_wraps_by_default_where_a_field_does_not() {
+        // The rule this file had backwards. `TextField` declares
+        // `this.maxLines = 1`; `SelectableText` declares `this.maxLines` with
+        // **no default**, so it is null and the text runs as long as it needs
+        // to. A passage that stopped at one line would be the wrong shape for
+        // nearly every use of it -- and the old test asserted exactly that.
+        let default = SelectableText::new("hello");
+        assert_eq!(default.max_lines, None, "upstream's null");
+        assert!(default.wraps());
+
+        // A caller who wants one line still says so, and then it does not.
+        let single = SelectableText::new("hello").with_max_lines(Some(1));
         assert!(!single.wraps());
 
-        let mut wrapping = SelectableText::new("hello");
-        wrapping.max_lines = None;
-        assert!(wrapping.wraps());
-
-        let mut three = SelectableText::new("hello");
-        three.max_lines = Some(3);
-        assert!(three.wraps());
+        let three = SelectableText::new("hello").with_max_lines(Some(3));
+        assert!(three.wraps(), "any limit above one still wraps");
     }
 
     #[test]
