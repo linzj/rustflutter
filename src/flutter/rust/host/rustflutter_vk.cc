@@ -38,6 +38,17 @@ std::unique_ptr<ImpellerVkContext> ImpellerVkContext::Create() {
     return nullptr;
   }
 
+  // The loader has to outlive every Vulkan object dialed through it, and some
+  // of those objects outlive this context: the FFI layer's upload target holds
+  // the Impeller context in a static, and decoded-image textures sit in
+  // Rust-side caches that only let go at process exit. A FreeLibrary under
+  // live driver objects is the one thing the loader does not promise to
+  // survive, so one reference is leaked on purpose -- the OS reclaims the
+  // mapping with the process.
+  static auto* const leaked_library =
+      new fml::RefPtr<fml::NativeLibrary>(self->vulkan_library_);
+  (void)leaked_library;
+
   // The shaders Impeller's entity renderer is built out of, as SPIR-V blobs
   // compiled into the binary. Vulkan cannot compile GLSL at runtime without
   // shaderc, which is why these are baked in rather than shipped as sources.

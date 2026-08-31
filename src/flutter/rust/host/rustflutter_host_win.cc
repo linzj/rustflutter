@@ -1955,6 +1955,18 @@ class HostPlatformView final : public PlatformView,
     return nullptr;
   }
 
+  // |PlatformView|
+  //
+  // Called on the IO thread while the shell is coming down, right after the IO
+  // manager lets its reference go. The upload target set above lives in an FFI
+  // static, and a static outlives everything the shell owns -- including, on
+  // the Vulkan path, the loader the context's entry points were resolved out
+  // of. Releasing the reference here keeps the context's teardown inside the
+  // shell's own ordering instead of at static destruction.
+  void ReleaseResourceContext() const override {
+    RfSetImageUploadTarget(nullptr, nullptr);
+  }
+
   /// Rebuilds whatever the frames are presented to after a resize. An EGL
   /// surface does not follow a window that changed size, so it is remade; a
   /// Vulkan swapchain rebuilds itself on the next frame once it knows the new
