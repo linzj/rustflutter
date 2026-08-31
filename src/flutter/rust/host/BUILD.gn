@@ -7,6 +7,16 @@
 # because there is no plugin registrar and no embedder C API to serve -- only a
 # window, the thread model, the shell, and the two platform channels the engine
 # itself defines.
+if (is_linux && !is_android) {
+  import("//build/config/linux/pkg_config.gni")
+
+  # The window layer. Resolved against the sysroot, which carries the GTK3
+  # development headers so nothing has to be installed on the machine.
+  pkg_config("gtk3") {
+    packages = [ "gtk+-3.0" ]
+  }
+}
+
 if (is_android) {
   # What tells the host where the application's entry point is. Separate from
   # `host` because it belongs to the *application*: it names
@@ -33,7 +43,7 @@ source_set("host") {
 
   # Impeller on EGL, which is the same file on every platform that has EGL --
   # only where the EGL comes from differs, and this does not name it.
-  if (is_win || is_android) {
+  if (is_win || is_android || is_linux) {
     sources += [
       "rustflutter_gl.cc",
       "rustflutter_gl.h",
@@ -65,6 +75,14 @@ source_set("host") {
       "rustflutter_key_map_mac.cc",
       "rustflutter_key_map_mac.h",
     ]
+  } else if (is_linux) {
+    sources += [
+      "rustflutter_host_linux.cc",
+
+      # Generated. See tools/gen_key_map_linux.py.
+      "rustflutter_key_map_linux.cc",
+      "rustflutter_key_map_linux.h",
+    ]
   } else {
     sources += [ "rustflutter_host_stub.cc" ]
   }
@@ -87,8 +105,8 @@ source_set("host") {
 
     # `flutter/platform` speaks JSON, and this is the JSON the engine already
     # vendors and parses its own channels with (shell/common/engine.cc).
-    "//flutter/third_party/rapidjson",
     "//flutter/shell/platform/common:common_cpp_input",
+    "//flutter/third_party/rapidjson",
 
     # `flutter/mousecursor` speaks the binary standard codec, and this is the
     # engine's own implementation of it rather than a second one.
@@ -157,6 +175,23 @@ source_set("host") {
       # FML_LOG goes to logcat, which is where a device's output is read from.
       "log",
     ]
+  }
+
+  if (is_linux) {
+    deps += [
+      "//flutter/impeller",
+      "//flutter/impeller/renderer/backend/gles",
+      "//flutter/impeller/toolkit/egl",
+      "//flutter/shell/gpu:gpu_surface_gl",
+    ]
+
+    configs += [ ":gtk3" ]
+
+    # EGL only, and deliberately not GLESv2: Impeller resolves every GL symbol
+    # through eglGetProcAddress, so libGLESv2.so is never a load-time
+    # dependency -- and a machine without it (Mesa's GLES front-end is its own
+    # package) can still run the software path.
+    libs = [ "EGL" ]
   }
 
   if (is_mac) {

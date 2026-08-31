@@ -263,10 +263,9 @@ pub fn is_open(window: Hwnd) -> bool {
 /// message that says "light" on a machine set to dark is a bug in the host's
 /// reader, and nothing inside the framework could tell.
 pub fn prefers_dark_theme() -> Option<bool> {
-    let subkey: Vec<u16> =
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
-            .encode_utf16()
-            .collect();
+    let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+        .encode_utf16()
+        .collect();
     let value: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
     let mut light: u32 = 0;
     let mut size = std::mem::size_of::<u32>() as u32;

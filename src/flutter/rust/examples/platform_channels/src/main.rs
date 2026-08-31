@@ -33,6 +33,7 @@ use rustflutter::services::{MethodChannel, StandardMethodCodec};
 // platform it is on.
 #[cfg_attr(windows, path = "win32.rs")]
 #[cfg_attr(target_os = "android", path = "android.rs")]
+#[cfg_attr(target_os = "linux", path = "linux.rs")]
 mod probe;
 
 /// What the process exits with. Set from the UI thread before the window
@@ -313,10 +314,13 @@ impl Probe {
         // A channel nobody serves. The answer is "not implemented" -- an empty
         // reply -- and the point is that it arrives rather than leaving the
         // caller waiting.
-        MethodChannel::new("com.example/absent", StandardMethodCodec::new())
-            .invoke_with_reply("anything", Value::Null, |reply| {
+        MethodChannel::new("com.example/absent", StandardMethodCodec::new()).invoke_with_reply(
+            "anything",
+            Value::Null,
+            |reply| {
                 record(|results| results.absent = Some(reply == Ok(None)));
-            });
+            },
+        );
 
         // An error envelope, built by the host and unpacked here.
         system::PLATFORM.invoke_with_reply(
@@ -420,7 +424,11 @@ fn finish() {
     EXIT_CODE.store(failures, Ordering::SeqCst);
     println!(
         "{}",
-        if failures == 0 { "platform_channels: PASS" } else { "platform_channels: FAILED" }
+        if failures == 0 {
+            "platform_channels: PASS"
+        } else {
+            "platform_channels: FAILED"
+        }
     );
     // The last thing this checks. A required exit is not a question, so the
     // host closes the window without asking -- which is why this gets past the
@@ -440,7 +448,9 @@ fn check(results: &Results) -> i32 {
     match results.lifecycle.first() {
         // Sent before a handler existed, so this also proves the buffering.
         Some(system::AppLifecycleState::Resumed) => {}
-        Some(other) => fail(&format!("the first lifecycle state was {other:?}, not Resumed")),
+        Some(other) => fail(&format!(
+            "the first lifecycle state was {other:?}, not Resumed"
+        )),
         None => fail("no lifecycle state arrived"),
     }
 
@@ -503,9 +513,7 @@ fn check(results: &Results) -> i32 {
         // exercises the same WM_IME_* messages a reader typing pinyin would.
         match results.composition_started {
             Some(false) => {
-                println!(
-                    "  SKIP composition: this machine has no input context to compose in"
-                );
+                println!("  SKIP composition: this machine has no input context to compose in");
             }
             Some(true) => {
                 match results.composing_text.as_deref() {
@@ -597,7 +605,10 @@ fn check(results: &Results) -> i32 {
             fail("a locale arrived with no language code");
         }
         if locale.to_language_tag().starts_with('-') {
-            fail(&format!("the tag {:?} is missing its language", locale.to_language_tag()));
+            fail(&format!(
+                "the tag {:?} is missing its language",
+                locale.to_language_tag()
+            ));
         }
     }
 
@@ -605,7 +616,9 @@ fn check(results: &Results) -> i32 {
     // protocol: without it an application could not stop to save.
     match results.exit_requested {
         Some(system::AppExitType::Cancelable) => {}
-        Some(other) => fail(&format!("the close was reported as {other:?}, not cancelable")),
+        Some(other) => fail(&format!(
+            "the close was reported as {other:?}, not cancelable"
+        )),
         None => fail("the close button never reached the framework"),
     }
     match results.survived_refusal {

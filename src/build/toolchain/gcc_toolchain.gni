@@ -126,9 +126,11 @@ template("gcc_toolchain") {
     # This is what lets a Windows host drive a GCC-style toolchain at all, which
     # is what cross-compiling to Android needs.
     needs_shim = host_os == "win"
-    shim = "\"$python_path\" " +
-           rebase_path("//build/toolchain/gcc_toolchain_shim.py",
-                       root_build_dir)
+    if (needs_shim) {
+      shim = "\"$python_path\" " +
+             rebase_path("//build/toolchain/gcc_toolchain_shim.py",
+                         root_build_dir)
+    }
 
     coverage_flags = ""
     if (enable_coverage) {
@@ -187,6 +189,20 @@ template("gcc_toolchain") {
       } else {
         rust_abi_target = ""
       }
+    } else if (invoker.toolchain_os == "linux") {
+      if (invoker.toolchain_cpu == "x64" ||
+          invoker.toolchain_cpu == "x86_64") {
+        rust_abi_target = "x86_64-unknown-linux-gnu"
+      } else if (invoker.toolchain_cpu == "arm64" ||
+                 invoker.toolchain_cpu == "aarch64") {
+        rust_abi_target = "aarch64-unknown-linux-gnu"
+      } else if (invoker.toolchain_cpu == "arm") {
+        rust_abi_target = "armv7-unknown-linux-gnueabihf"
+      } else if (invoker.toolchain_cpu == "x86") {
+        rust_abi_target = "i686-unknown-linux-gnu"
+      } else {
+        rust_abi_target = ""
+      }
     } else {
       rust_abi_target = ""
     }
@@ -210,6 +226,18 @@ template("gcc_toolchain") {
         description = "RUST(STATICLIB) {{output}}"
         outputs = [ "{{output_dir}}/lib{{target_output_name}}.a" ]
         default_output_dir = "{{target_out_dir}}"
+      }
+
+      # A bin links, which the Android crate types above never do; only the
+      # Linux host runs standalone Rust test drivers, so only it declares one.
+      if (invoker.toolchain_os == "linux") {
+        tool("rust_bin") {
+          depfile = "{{output}}.d"
+          command = "$rustc_path --crate-name {{crate_name}} {{source}} --crate-type bin $rust_common"
+          description = "RUST(BIN) {{output}}"
+          outputs = [ "{{output_dir}}/{{target_output_name}}" ]
+          default_output_dir = "{{root_out_dir}}"
+        }
       }
     }
 

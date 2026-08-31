@@ -122,8 +122,13 @@ std::unique_ptr<ImpellerGlContext> ImpellerGlContext::Create() {
 
   self->display_ = std::make_unique<impeller::egl::Display>();
   if (!self->display_->IsValid()) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    FML_LOG(ERROR) << "Could not open an EGL display. On Linux this is Mesa's; "
+                      "check that libEGL and its GLES driver are installed.";
+#else
     FML_LOG(ERROR) << "Could not open an EGL display. ANGLE is linked "
                       "statically, so this normally means no D3D11 device.";
+#endif
     return nullptr;
   }
 
@@ -238,9 +243,9 @@ std::unique_ptr<ImpellerGlContext> ImpellerGlContext::Create() {
   }
 
   // Which EGL answered is worth saying: on Windows it is ANGLE on top of D3D11,
-  // and on Android it is the device's own driver, so the same message from the
-  // same code means two different stacks underneath.
-#if defined(__ANDROID__)
+  // on Android it is the device's own driver, and on Linux it is Mesa, so the
+  // same message from the same code means three different stacks underneath.
+#if defined(__ANDROID__) || defined(__linux__)
   FML_LOG(IMPORTANT) << "Rendering with Impeller (OpenGL ES).";
 #else
   FML_LOG(IMPORTANT) << "Rendering with Impeller (OpenGL ES via ANGLE).";
@@ -435,7 +440,24 @@ void MaybeCaptureFrame() {
   // size and that is the one worth looking at.
 
   GLint viewport[4] = {0, 0, 0, 0};
-  glGetIntegerv(GL_VIEWPORT, viewport);
+#if defined(__linux__) && !defined(__ANDROID__)
+  // GLESv2 is deliberately not a load-time dependency on Linux (see BUILD.gn):
+  // Impeller resolves every GL symbol through eglGetProcAddress, and these two
+  // calls are the only direct ones in the file, so they resolve the same way.
+  static const auto gl_get_integerv =
+      reinterpret_cast<void (*)(GLenum, GLint*)>(
+          eglGetProcAddress("glGetIntegerv"));
+  static const auto gl_read_pixels =
+      reinterpret_cast<void (*)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum,
+                                void*)>(eglGetProcAddress("glReadPixels"));
+  if (gl_get_integerv == nullptr || gl_read_pixels == nullptr) {
+    return;
+  }
+#else
+  const auto gl_get_integerv = &glGetIntegerv;
+  const auto gl_read_pixels = &glReadPixels;
+#endif
+  gl_get_integerv(GL_VIEWPORT, viewport);
   const int width = viewport[2];
   const int height = viewport[3];
   if (width <= 0 || height <= 0) {
@@ -443,7 +465,7 @@ void MaybeCaptureFrame() {
   }
 
   std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4u);
-  glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+  gl_read_pixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
 
   // GL reads bottom-up; flip into an SkPixmap that is top-down.
   std::vector<uint8_t> flipped(pixels.size());
