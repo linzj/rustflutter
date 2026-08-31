@@ -289,6 +289,25 @@ pub struct InkResponse {
     highlight_color: Option<Color>,
     hover_color: Option<Color>,
     focus_color: Option<Color>,
+    /// Upstream's `onFocusChange`, told when the keyboard arrives or leaves.
+    on_focus_change: Option<Rc<dyn Fn(bool)>>,
+    /// The focus node this response is, when it is one -- upstream's
+    /// `focusNode`/`canRequestFocus`.
+    ///
+    /// # Why it has to be named rather than made up
+    ///
+    /// Upstream's default is `canRequestFocus: true` with an internal node the
+    /// widget creates for itself. This crate's focus registry is keyed by
+    /// caller-chosen ids, so an internal node would need an id out of thin air
+    /// -- and a well already shares its `id` with whatever it wraps, which for
+    /// a search bar is a text field that has a focus node of its own. Two
+    /// nodes under one id is worse than none.
+    ///
+    /// So focus is opted into with an id the caller owns. `None` is a well
+    /// that cannot be reached by the keyboard, which is right for a well
+    /// wrapped around something else focusable and wrong for one that *is* the
+    /// control.
+    focus_id: Option<u64>,
     splash_factory: Option<InteractiveInkFeatureFactory>,
     hover_micros: Option<i64>,
     enabled: bool,
@@ -369,6 +388,8 @@ impl InkResponse {
             highlight_color: None,
             hover_color: None,
             focus_color: None,
+            on_focus_change: None,
+            focus_id: None,
             splash_factory: None,
             hover_micros: None,
             enabled: true,
@@ -434,6 +455,20 @@ impl InkResponse {
 
     pub fn with_focus_color(mut self, color: Color) -> Self {
         self.focus_color = Some(color);
+        self
+    }
+
+    /// Upstream's `onFocusChange`. Only ever called for a response that is a
+    /// focus node -- see [`InkResponse::with_focus`].
+    pub fn with_on_focus_change(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        self.on_focus_change = Some(Rc::new(handler));
+        self
+    }
+
+    /// Makes this response a focus node, so that the keyboard can reach it and
+    /// it says so. See [`InkResponse::focus_id`].
+    pub fn with_focus(mut self, focus_id: u64) -> Self {
+        self.focus_id = Some(focus_id);
         self
     }
 
@@ -701,6 +736,44 @@ impl StatefulComponent for InkResponse {
             }) as std::rc::Rc<dyn Fn(crate::gestures::TapEvent)>
         });
         let node = crate::semantics::node_id_for(self.id);
+
+        // Upstream's `_handleFocusUpdate`: `updateHighlight(_HighlightType
+        // .focus, value: hasFocus)`. The focus highlight had a colour, a fade
+        // length and a slot in the state, and **nothing raised it** -- so a
+        // menu line reached by Tab looked exactly like one nobody had reached.
+        //
+        // It is the same call the pointer makes for hover, with the same
+        // guard, because being under the pointer and being under the keyboard
+        // are the same kind of statement: neither is an action the reader
+        // took, both have to keep up with something already moving.
+        let child = match self.focus_id {
+            None => child,
+            Some(focus_id) => {
+                let focus_handle = handle.clone();
+                let focus_colour = self.highlight_color_for(HighlightType::Focus, &theme);
+                let on_focus_change = self.on_focus_change.clone();
+                crate::framework::component(
+                    crate::focus::Focus::new(focus_id, child).with_on_focus_change(
+                        move |focused| {
+                            let on_focus_change = on_focus_change.clone();
+                            focus_handle.set_state(move |state| {
+                                let now = state.now_micros;
+                                if state.update_highlight(
+                                    HighlightType::Focus,
+                                    focused,
+                                    now,
+                                    || make(HighlightType::Focus, focus_colour, now),
+                                ) {
+                                    if let Some(on_focus_change) = &on_focus_change {
+                                        on_focus_change(focused);
+                                    }
+                                }
+                            });
+                        },
+                    ),
+                )
+            }
+        };
 
         let responsive = single(child, move |child| {
             // **Passthrough**, not the stack's default of loose. Upstream
@@ -1453,5 +1526,327 @@ mod tests {
             crate::semantics::SemanticsAction::Tap
         ));
         assert_eq!(which.get(), 2, "the press reached the build before last");
+    }
+}
+
+#[cfg(test)]
+mod ink_focus_tests {
+    use super::*;
+    use crate::engine_test_stubs::Drawn;
+    use crate::framework::{ElementTree, leaf, stateful};
+    use crate::render::{BoxConstraints, Offset, RenderBox, Size};
+
+    const INK: u64 = 7401;
+    const FOCUS: u64 = 7402;
+    const OTHER: u64 = 7403;
+    const FOCUS_COLOUR: Color = Color(0xFF00_FF00);
+
+    fn body() -> AnyWidget {
+        leaf(|| crate::widgets::SizedBox::new(80.0, 40.0))
+    }
+
+    /// A response that can be reached by the keyboard, with a focus highlight
+    /// nobody could mistake for anything else.
+    fn focusable() -> InkResponse {
+        InkResponse::new(INK, body)
+            .with_focus(FOCUS)
+            .with_focus_color(FOCUS_COLOUR)
+            .with_on_tap(|| {})
+    }
+
+    /// What the response painted, after `frames` frames of its own clock.
+    fn painted(widget: AnyWidget, frames: &[i64]) -> Vec<Drawn> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(widget);
+        // Laid out **first**. A highlight is sized from the response's own
+        // rectangle, which a build only knows once a layout has happened, so a
+        // test that never laid out would watch nothing appear and could not
+        // tell that from nothing being asked for.
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 100.0));
+        crate::render::flush_layout();
+        for at in frames {
+            tree.advance_frame(*at);
+            tree.rebuild_dirty();
+        }
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 100.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(200.0, 100.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    fn painted_in(drawn: &[Drawn], wanted: Color) -> bool {
+        drawn.iter().any(|call| match call {
+            Drawn::Rect { argb, .. } | Drawn::RRect { argb, .. } | Drawn::Oval { argb, .. } => {
+                Color(*argb).red() == wanted.red()
+                    && Color(*argb).green() == wanted.green()
+                    && Color(*argb).blue() == wanted.blue()
+                    && Color(*argb).alpha() > 0
+            }
+            Drawn::Circle { argb, .. } => {
+                Color(*argb).red() == wanted.red()
+                    && Color(*argb).green() == wanted.green()
+                    && Color(*argb).blue() == wanted.blue()
+                    && Color(*argb).alpha() > 0
+            }
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn a_response_the_keyboard_reached_says_so() {
+        // `HighlightType::Focus` had a colour, a fade length and a slot in the
+        // state, and **nothing raised it**. So a menu line reached by Tab
+        // looked exactly like one nobody had reached -- which for a keyboard
+        // reader is the whole of the feedback.
+        crate::focus::unfocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(focusable()));
+        // Laid out **before** the focus arrives: the splash and the highlight
+        // are sized from the response's own rectangle, which a build only
+        // knows after a layout has happened. A first draft focused first and
+        // watched a highlight of size zero not appear.
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 100.0));
+        crate::render::flush_layout();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+
+        crate::focus::focus(FOCUS);
+        tree.rebuild_dirty();
+        // Past the 50ms the focus highlight fades in over.
+        tree.advance_frame(100_000);
+        tree.rebuild_dirty();
+
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 100.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(200.0, 100.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        assert!(
+            painted_in(&crate::engine_test_stubs::drawn(), FOCUS_COLOUR),
+            "the focus highlight reached the canvas"
+        );
+        crate::focus::unfocus();
+    }
+
+    #[test]
+    fn a_response_nobody_reached_paints_no_highlight() {
+        crate::focus::unfocus();
+        assert!(
+            !painted_in(&painted(stateful(focusable()), &[0, 100_000]), FOCUS_COLOUR),
+            "nothing to show"
+        );
+    }
+
+    #[test]
+    fn the_highlight_goes_when_the_keyboard_moves_on() {
+        // The other half of the same call: `updateHighlight(focus, value:
+        // hasFocus)` with `hasFocus` false. A highlight that only ever came on
+        // would leave a trail of lit-up menu lines behind the cursor.
+        crate::focus::unfocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                stateful(focusable()),
+                crate::framework::component(crate::focus::Focus::new(OTHER, body())),
+            ],
+            |rendered| {
+                let mut column = crate::render::RenderFlex::column();
+                for child in rendered {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 200.0));
+        crate::render::flush_layout();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+
+        crate::focus::focus(FOCUS);
+        tree.rebuild_dirty();
+        tree.advance_frame(100_000);
+        tree.rebuild_dirty();
+
+        // It was there first, or the assertion below is about nothing.
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 200.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(200, 200);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        assert!(
+            painted_in(&crate::engine_test_stubs::drawn(), FOCUS_COLOUR),
+            "lit while the keyboard was on it"
+        );
+
+        crate::focus::focus(OTHER);
+        tree.rebuild_dirty();
+        tree.advance_frame(200_000);
+        tree.rebuild_dirty();
+
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 200.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(200, 200);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(200.0, 200.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        assert!(
+            !painted_in(&crate::engine_test_stubs::drawn(), FOCUS_COLOUR),
+            "the highlight went with the keyboard"
+        );
+        crate::focus::unfocus();
+    }
+
+    #[test]
+    fn a_response_with_no_focus_of_its_own_does_not_answer_to_its_own_id() {
+        // The default has to be *no node*, not "a node under the response's
+        // own id". A well wrapped around a text field shares that id with it,
+        // and two nodes under one id is worse than none -- so a well that
+        // helpfully registered itself would break the thing it wraps.
+        crate::focus::unfocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(
+            InkResponse::new(INK, body)
+                .with_focus_color(FOCUS_COLOUR)
+                .with_on_tap(|| {}),
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 100.0));
+        crate::render::flush_layout();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+
+        crate::focus::focus(INK);
+        tree.rebuild_dirty();
+        tree.advance_frame(100_000);
+        tree.rebuild_dirty();
+
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 100.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(200.0, 100.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        assert!(
+            !painted_in(&crate::engine_test_stubs::drawn(), FOCUS_COLOUR),
+            "nothing claimed the id"
+        );
+        crate::focus::unfocus();
+    }
+
+    #[test]
+    fn the_keyboards_highlight_is_its_own_and_does_not_take_the_pointers() {
+        // Three highlights, three slots. Raising the focus one in the hover
+        // one's place would look identical on screen -- same colour, same
+        // shape -- and then a pointer resting on a focused line would find the
+        // slot already taken, or take it away.
+        crate::focus::unfocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(focusable()));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(200.0, 100.0));
+        crate::render::flush_layout();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+
+        crate::focus::focus(FOCUS);
+        tree.rebuild_dirty();
+
+        let mut stack: Vec<crate::framework::ElementId> = tree.root().into_iter().collect();
+        let mut slots = None;
+        while let Some(id) = stack.pop() {
+            if let Some(found) = tree.state::<InkResponseState, _>(id, |state| {
+                (
+                    state.highlight(HighlightType::Focus).is_some(),
+                    state.highlight(HighlightType::Hover).is_some(),
+                    state.highlight(HighlightType::Pressed).is_some(),
+                )
+            }) {
+                slots = Some(found);
+                break;
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        assert_eq!(
+            slots,
+            Some((true, false, false)),
+            "the keyboard filled its own slot and left the others alone"
+        );
+        crate::focus::unfocus();
+    }
+
+    #[test]
+    fn a_response_that_is_not_a_focus_node_is_not_one() {
+        // The default, and it is the right default here: a well wrapped around
+        // something that has a focus node of its own -- a search bar's field --
+        // would otherwise register a second node under the same id.
+        assert!(InkResponse::new(INK, body).focus_id.is_none());
+        assert_eq!(focusable().focus_id, Some(FOCUS));
+    }
+
+    #[test]
+    fn the_caller_is_told_when_the_keyboard_arrives_and_leaves() {
+        // Upstream's `onFocusChange`, which a menu item uses to close its
+        // children when the focus walks off it.
+        crate::focus::unfocus();
+        let heard: Rc<std::cell::RefCell<Vec<bool>>> = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = Rc::clone(&heard);
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                stateful(
+                    focusable()
+                        .with_on_focus_change(move |focused| sink.borrow_mut().push(focused)),
+                ),
+                crate::framework::component(crate::focus::Focus::new(OTHER, body())),
+            ],
+            |rendered| {
+                let mut column = crate::render::RenderFlex::column();
+                for child in rendered {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        tree.build_render_tree();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+
+        crate::focus::focus(FOCUS);
+        tree.rebuild_dirty();
+        crate::focus::focus(OTHER);
+        tree.rebuild_dirty();
+
+        assert_eq!(*heard.borrow(), vec![true, false]);
+        crate::focus::unfocus();
     }
 }

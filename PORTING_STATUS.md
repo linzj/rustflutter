@@ -2300,3 +2300,61 @@ overlay 才是反馈）、最小尺寸 64×48、`AlignmentDirectional.centerStar
 其中 pressed 和 focused 同值。确认 `InkResponse` 有没有 focus 那一路
 （`with_focus_color` 好像有），没有的话要先看清楚 focus 的反馈从哪儿来，
 别把三态硬塞进两态。
+
+---
+
+## 第 451 轮：墨水响应会说键盘在哪儿
+
+上一轮留的问题——"`InkResponse` 有没有 focus 那一路"——答案比预想的糟：
+`focus_color` 有，`HighlightType::Focus` 有，连它的淡入时长和槽位都有，
+**但全 crate 没有任何地方 `update_highlight(Focus, ...)`**。
+一个有颜色、有时长、有槽位、**没有触发者**的高亮。
+
+所以这一轮不是"把三态塞进两态"，是**先让第三态到得了**。
+
+### 焦点节点要点名，不能凭空造
+
+上游默认 `canRequestFocus: true`，widget 自己造一个内部节点。
+这个 crate 的焦点注册表是**按调用者给的 id** 记的，
+而一个 well 的 `id` 常常和它包着的东西共用——
+search bar 的 well 和它里面的 `TextField` 就是同一个 id。
+**一个 id 底下两个节点比没有节点更糟。**
+
+所以焦点是**显式加入**的：`with_focus(id)`。
+`None` 是"键盘够不到这个 well"，对于包着别的可聚焦控件的 well 是对的，
+对于本身就是控件的 well 是错的——由调用者决定，而不是由 well 猜。
+
+### 测试里踩到的一处：没布局的高亮是零尺寸的
+
+第一版四个测试里三个通过、一个失败。查下去发现失败那个是对的，
+**另外两个是空的**：高亮是按 well 自己的矩形定尺寸的，
+而尺寸只有布局之后 build 才知道。我在最后才布局，
+所以整个过程里高亮一直是零尺寸——
+"什么都没画出来"的断言在两种情况下都成立。
+
+改成**先布局再走时钟**，并给"高亮会消失"那条加上"它先亮过"的断言，
+否则那条测的是"一直没亮"。
+
+### 变异扫描 7 个，第一遍 2 条没红
+
+- **"焦点去抢悬停的槽位" 0 红**：颜色一样、形状一样，**画出来一模一样**，
+  差别只在槽位。补了一个直接读三个槽位的测试
+  （`(focus, hover, pressed)` = `(true, false, false)`）——
+  不然一个悬停在已聚焦行上的指针会发现槽被占了，或者把它抢走。
+- **"每个 well 都是焦点节点"（拿自己的 id 当 focus id）0 红**：
+  我只断言了字段，没断言树。补了一个"聚焦 well 自己的 id，它不该亮"的用例。
+
+尺子：十六把全部 exit 0。门：Rust 6654 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：三态齐了，可以做上一轮想做的 widget 了——
+`MenuItemButton` 用 `ResolvedMenuButton` 上色（前景 `onSurface`、
+图标 `onSurfaceVariant`、**反馈全在 overlay 上**）、
+最小尺寸 64×48、`AlignmentDirectional.centerStart`，
+布局用第 450 轮的 `MenuItemLabel`。
+**先查一件事**：`ResolvedMenuButton::overlay_for` 的三个 arm
+（pressed 0.1 / hovered 0.08 / focused 0.1）要分别喂给
+`with_highlight_color` / `with_hover_color` / `with_focus_color`——
+确认 `InkResponse::highlight_color_for` 在**禁用**时对这三个做了什么
+（它那儿有一段关于"禁用时高亮仍然存在"的注释），
+别让禁用的菜单行在键盘走过时亮起来。
