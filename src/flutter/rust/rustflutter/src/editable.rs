@@ -2976,6 +2976,16 @@ pub struct TextField {
     /// keyboard: the rect handed to the reveal is the caret's, grown by this,
     /// so the scroll overshoots by twenty and the line is readable.
     scroll_padding: crate::render::EdgeInsets,
+    /// Upstream's `InputDecorator` seat. The box an application draws around
+    /// the editable -- fill, border, floated label, prefix -- built *inside*
+    /// the field's own gesture region, the way upstream's `TextField.build`
+    /// puts the `InputDecorator` inside
+    /// `_selectionGestureDetectorBuilder.buildGestureDetector`
+    /// (`material/text_field.dart`). That placement is what makes the whole
+    /// decorated box answer the pointer: a tap on the padding focuses and
+    /// places the caret, a drag over it selects, a right-click on it opens
+    /// the toolbar. Without it only the text line itself is hittable.
+    decoration: Option<Rc<dyn Fn(crate::framework::AnyWidget) -> crate::framework::AnyWidget>>,
 }
 
 impl TextField {
@@ -3121,6 +3131,7 @@ impl TextField {
             on_focus_change: None,
             state_sink: None,
             scroll_padding: TextField::SCROLL_PADDING,
+            decoration: None,
         }
     }
 
@@ -3217,6 +3228,24 @@ impl TextField {
         sink: Rc<RefCell<Option<StateHandle<TextFieldState>>>>,
     ) -> Self {
         self.state_sink = Some(sink);
+        self
+    }
+
+    /// The box drawn around the editable -- upstream's `InputDecoration`.
+    ///
+    /// `decorate` receives the editable and returns it wrapped in whatever
+    /// the application draws around it: fill, border, floated label, prefix
+    /// text. The field builds the result *inside* its own gesture region, as
+    /// upstream's `TextField.build` puts the `InputDecorator` inside
+    /// `_selectionGestureDetectorBuilder.buildGestureDetector`
+    /// (`material/text_field.dart`) -- so a press anywhere on the box
+    /// focuses, places the caret, selects, and right-clicks the field, and a
+    /// press on the box no longer reads as a tap *outside* the field.
+    pub fn with_decoration(
+        mut self,
+        decorate: impl Fn(crate::framework::AnyWidget) -> crate::framework::AnyWidget + 'static,
+    ) -> Self {
+        self.decoration = Some(Rc::new(decorate));
         self
     }
 }
@@ -3677,9 +3706,248 @@ impl StatefulComponent for TextField {
             reveal_handle.set_state(|state| state.reveal = None);
         });
 
+        // Where the editable last painted, in view coordinates: written by
+        // the placement report inside the leaf below, read by the press
+        // handlers. The region the handlers sit on covers the whole decorated
+        // box, so a press arrives in view coordinates and is converted here
+        // the way upstream hands `details.globalPosition` to
+        // `renderEditable.globalToLocal` (`widgets/text_selection.dart`).
+        let editable_origin: Rc<std::cell::Cell<Offset>> =
+            Rc::new(std::cell::Cell::new(Offset::ZERO));
+
+        // The position under the pointer, which three gestures ask for: a
+        // tap, a finger sliding over the text without lifting, and a mouse
+        // drag marking out a run. Made once and shared. `None` until the
+        // field has painted, the lines being what the walk reads.
+        let position_sink = lines_sink.clone();
+        let position_shown = shown.text.clone();
+        let position_real = real_text.clone();
+        let position_at: Rc<dyn Fn(Offset) -> Option<i32>> =
+            Rc::new(move |local: Offset| -> Option<i32> {
+                let layout = position_sink.borrow().clone()?;
+                // The pointer's place in the field is its place in the
+                // content once the scroll is added back: paint drew the
+                // content `scroll` up and to the left of the field.
+                let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
+                let measure = |run: &str| {
+                    // The field's own measurement, so the position under
+                    // the pointer is the position on screen.
+                    if run.is_empty() {
+                        0.0
+                    } else {
+                        painting::shape(
+                            run,
+                            &layout.style,
+                            None,
+                            false,
+                            f32::MAX / 4.0,
+                            layout.text_scale,
+                        )
+                        .max_intrinsic_width()
+                    }
+                };
+                let byte = caret_position_at(
+                    &position_shown,
+                    &layout.lines,
+                    layout.line_height,
+                    at,
+                    &measure,
+                );
+                // The lines are ranges of the text as drawn -- bullets,
+                // for an obscured field -- while the platform counts
+                // UTF-16 units of the text as typed. The two have a
+                // character for each of the other's characters, so the
+                // character index crosses and the units are counted on the
+                // real text.
+                let character = position_shown[..byte].chars().count();
+                Some(
+                    position_real
+                        .chars()
+                        .take(character)
+                        .map(|c| c.len_utf16() as i32)
+                        .sum(),
+                )
+            });
+
+        // The tap handler, made fresh on every build because the region
+        // consumes it. A tap does what upstream's `handleTap` ->
+        // `selectPosition` does: the caret goes to the position under the
+        // finger, and the field takes the keyboard.
+        let tap_state = tap_handle.clone();
+        // Placing the caret, which two gestures ask for: a tap, and a
+        // finger sliding over the text without lifting.
+        let caret_at = Rc::clone(&position_at);
+        let place_caret: Rc<dyn Fn(Offset)> = Rc::new(move |local: Offset| {
+            let Some(position) = caret_at(local) else {
+                return;
+            };
+            // The selection first and the focus second: a field that was
+            // not being edited opens its session from the state as it now
+            // stands, so the caret is where the reader tapped from the
+            // session's very first frame.
+            tap_state.set_state(move |state| {
+                state.value.selection_base = position;
+                state.value.selection_extent = position;
+                // Upstream's `onSingleTapUp`, which calls
+                // `editableText.hideToolbar()` before it moves the caret:
+                // a bar acting on a selection the tap just threw away
+                // would act on nothing.
+                state.toolbar_shown = false;
+                if let Some(connection) = &state.connection {
+                    if connection.is_attached() {
+                        connection.set_editing_state(&state.value);
+                    }
+                }
+            });
+            crate::focus::focus(id);
+        });
+
+        // Selecting the run a mouse drag spans -- upstream's
+        // `onDragSelectionStart`/`onDragSelectionUpdate` for a precise
+        // pointer, which is the same on every desktop platform:
+        //
+        //     renderEditable.selectPositionAt(
+        //         from: dragStartGlobalPosition, to: details.globalPosition,
+        //         cause: SelectionChangedCause.drag);
+        //
+        // The base pins where the press began and the extent follows the
+        // pointer, which is what highlights. A touch does the opposite --
+        // the caret slides and the selection stays collapsed -- and keeps
+        // its own handler below.
+        let drag_at = Rc::clone(&position_at);
+        let drag_state = handle.clone();
+        let select_from_press: Rc<dyn Fn(Offset, Offset)> =
+            Rc::new(move |origin: Offset, local: Offset| {
+                let (Some(base), Some(extent)) = (drag_at(origin), drag_at(local)) else {
+                    return;
+                };
+                drag_state.set_state(move |state| {
+                    state.value.selection_base = base;
+                    state.value.selection_extent = extent;
+                    // A drag replaces the selection the way a tap throws
+                    // it away: the bar goes down with the old one.
+                    state.toolbar_shown = false;
+                    if let Some(connection) = &state.connection {
+                        if connection.is_attached() {
+                            connection.set_editing_state(&state.value);
+                        }
+                    }
+                });
+                crate::focus::focus(id);
+            });
+
+        // Selecting the word under a long press. Upstream's Android arm
+        // of `TextSelectionGestureDetectorBuilder.onSingleLongTapStart`:
+        //
+        //     case TargetPlatform.android:
+        //       renderEditable.selectWord(cause: longPress);
+        //       Feedback.forLongPress(_state.context);
+        //
+        // -- and `onSingleLongTapEnd` shows the toolbar when the finger
+        // lifts. There is no long-press-*end* callback in this crate's
+        // gesture set, so the toolbar goes up with the selection instead
+        // of a moment later. What a reader sees is the same two things;
+        // what they lose is the chance to slide the finger and take more
+        // words before the bar appears, which is upstream's
+        // `onSingleLongTapMoveUpdate` and is not ported either.
+        let word_sink = lines_sink.clone();
+        let word_state = handle.clone();
+        let word_shown = shown.text.clone();
+        let word_real = real_text.clone();
+        let select_word: Rc<dyn Fn(Offset)> = Rc::new(move |local: Offset| {
+            let Some(layout) = word_sink.borrow().clone() else {
+                return;
+            };
+            let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
+            let measure = |run: &str| {
+                if run.is_empty() {
+                    0.0
+                } else {
+                    painting::shape(
+                        run,
+                        &layout.style,
+                        None,
+                        false,
+                        f32::MAX / 4.0,
+                        layout.text_scale,
+                    )
+                    .max_intrinsic_width()
+                }
+            };
+            let byte =
+                caret_position_at(&word_shown, &layout.lines, layout.line_height, at, &measure);
+            // The words are the *shown* text's, which for an obscured
+            // field is a row of bullets -- and `WordSelection` answers
+            // "all of it" for those without asking the breaker anything.
+            let paragraph = painting::shape(
+                &word_shown,
+                &layout.style,
+                None,
+                false,
+                f32::MAX / 4.0,
+                layout.text_scale,
+            );
+            let words = WordSelection {
+                text: &word_shown,
+                obscured,
+                read_only,
+                // Upstream asks `Theme.of(context).platform`, whose own
+                // default is the host. There is no field on this crate's
+                // `Theme` to override it with, so the host it is.
+                platform: crate::editable_text::TargetPlatform::host(),
+            };
+            let word = words.at_offset(byte as isize, false, &|offset| {
+                engine_word_boundary(&word_shown, &paragraph, offset)
+            });
+
+            // Both ends cross from the shown text's bytes to the real
+            // text's UTF-16 units, the way the tap handler crosses one.
+            let cross = |byte: isize| -> i32 {
+                let byte = floor_char_boundary(&word_shown, byte.max(0) as usize);
+                let character = word_shown[..byte].chars().count();
+                word_real
+                    .chars()
+                    .take(character)
+                    .map(|c| c.len_utf16() as i32)
+                    .sum()
+            };
+            let base = cross(word.start);
+            let extent = cross(word.end);
+            word_state.set_state(move |state| {
+                state.value.selection_base = base;
+                state.value.selection_extent = extent;
+                // Upstream's `onSingleLongTapEnd`: `showToolbar()`, with
+                // no question asked about what got selected. A long press
+                // that landed past the end of the text selects nothing and
+                // still earns a bar -- with Paste on it, which is the only
+                // way to reach a paste into an empty field.
+                state.toolbar_shown = true;
+                if let Some(connection) = &state.connection {
+                    if connection.is_attached() {
+                        connection.set_editing_state(&state.value);
+                    }
+                }
+            });
+            crate::focus::focus(id);
+            // Upstream's `Feedback.forLongPress`, which on Android is the
+            // buzz that says the press was taken as a long one.
+            crate::feedback::Feedback::for_long_press(
+                id as i32,
+                crate::editable_text::TargetPlatform::host(),
+            );
+        });
+
+        let origin_at_paint = Rc::clone(&editable_origin);
         let editable = leaf(move || {
             let report_connection = connection;
+            let origin_sink = Rc::clone(&origin_at_paint);
             let report: ReportPlacement = Rc::new(move |offset, _size, caret| {
+                // Where the editable landed, noted before the connection
+                // question: the press handlers need it whether or not a
+                // session is open, to convert a view-coordinate press into
+                // the editable's own coordinates -- upstream's
+                // `renderEditable.globalToLocal`.
+                origin_sink.set(offset);
                 let Some(connection) = report_connection else {
                     return;
                 };
@@ -3695,232 +3963,7 @@ impl StatefulComponent for TextField {
                 );
             });
 
-            // The position under the pointer, which three gestures ask for: a
-            // tap, a finger sliding over the text without lifting, and a mouse
-            // drag marking out a run. Made once and shared. `None` until the
-            // field has painted, the lines being what the walk reads.
-            let position_sink = lines_sink.clone();
-            let position_shown = shown.text.clone();
-            let position_real = real_text.clone();
-            let position_at: Rc<dyn Fn(Offset) -> Option<i32>> =
-                Rc::new(move |local: Offset| -> Option<i32> {
-                    let layout = position_sink.borrow().clone()?;
-                    // The pointer's place in the field is its place in the
-                    // content once the scroll is added back: paint drew the
-                    // content `scroll` up and to the left of the field.
-                    let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
-                    let measure = |run: &str| {
-                        // The field's own measurement, so the position under
-                        // the pointer is the position on screen.
-                        if run.is_empty() {
-                            0.0
-                        } else {
-                            painting::shape(
-                                run,
-                                &layout.style,
-                                None,
-                                false,
-                                f32::MAX / 4.0,
-                                layout.text_scale,
-                            )
-                            .max_intrinsic_width()
-                        }
-                    };
-                    let byte = caret_position_at(
-                        &position_shown,
-                        &layout.lines,
-                        layout.line_height,
-                        at,
-                        &measure,
-                    );
-                    // The lines are ranges of the text as drawn -- bullets,
-                    // for an obscured field -- while the platform counts
-                    // UTF-16 units of the text as typed. The two have a
-                    // character for each of the other's characters, so the
-                    // character index crosses and the units are counted on the
-                    // real text.
-                    let character = position_shown[..byte].chars().count();
-                    Some(
-                        position_real
-                            .chars()
-                            .take(character)
-                            .map(|c| c.len_utf16() as i32)
-                            .sum(),
-                    )
-                });
-
-            // The tap handler, made fresh on every build because the region
-            // consumes it. A tap does what upstream's `handleTap` ->
-            // `selectPosition` does: the caret goes to the position under the
-            // finger, and the field takes the keyboard.
-            let tap_state = tap_handle.clone();
-            // Placing the caret, which two gestures ask for: a tap, and a
-            // finger sliding over the text without lifting.
-            let caret_at = Rc::clone(&position_at);
-            let place_caret: Rc<dyn Fn(Offset)> = Rc::new(move |local: Offset| {
-                let Some(position) = caret_at(local) else {
-                    return;
-                };
-                // The selection first and the focus second: a field that was
-                // not being edited opens its session from the state as it now
-                // stands, so the caret is where the reader tapped from the
-                // session's very first frame.
-                tap_state.set_state(move |state| {
-                    state.value.selection_base = position;
-                    state.value.selection_extent = position;
-                    // Upstream's `onSingleTapUp`, which calls
-                    // `editableText.hideToolbar()` before it moves the caret:
-                    // a bar acting on a selection the tap just threw away
-                    // would act on nothing.
-                    state.toolbar_shown = false;
-                    if let Some(connection) = &state.connection {
-                        if connection.is_attached() {
-                            connection.set_editing_state(&state.value);
-                        }
-                    }
-                });
-                crate::focus::focus(id);
-            });
-
-            // Selecting the run a mouse drag spans -- upstream's
-            // `onDragSelectionStart`/`onDragSelectionUpdate` for a precise
-            // pointer, which is the same on every desktop platform:
-            //
-            //     renderEditable.selectPositionAt(
-            //         from: dragStartGlobalPosition, to: details.globalPosition,
-            //         cause: SelectionChangedCause.drag);
-            //
-            // The base pins where the press began and the extent follows the
-            // pointer, which is what highlights. A touch does the opposite --
-            // the caret slides and the selection stays collapsed -- and keeps
-            // its own handler below.
-            let drag_at = Rc::clone(&position_at);
-            let drag_state = handle.clone();
-            let select_from_press: Rc<dyn Fn(Offset, Offset)> =
-                Rc::new(move |origin: Offset, local: Offset| {
-                    let (Some(base), Some(extent)) = (drag_at(origin), drag_at(local)) else {
-                        return;
-                    };
-                    drag_state.set_state(move |state| {
-                        state.value.selection_base = base;
-                        state.value.selection_extent = extent;
-                        // A drag replaces the selection the way a tap throws
-                        // it away: the bar goes down with the old one.
-                        state.toolbar_shown = false;
-                        if let Some(connection) = &state.connection {
-                            if connection.is_attached() {
-                                connection.set_editing_state(&state.value);
-                            }
-                        }
-                    });
-                    crate::focus::focus(id);
-                });
-
-            // Selecting the word under a long press. Upstream's Android arm
-            // of `TextSelectionGestureDetectorBuilder.onSingleLongTapStart`:
-            //
-            //     case TargetPlatform.android:
-            //       renderEditable.selectWord(cause: longPress);
-            //       Feedback.forLongPress(_state.context);
-            //
-            // -- and `onSingleLongTapEnd` shows the toolbar when the finger
-            // lifts. There is no long-press-*end* callback in this crate's
-            // gesture set, so the toolbar goes up with the selection instead
-            // of a moment later. What a reader sees is the same two things;
-            // what they lose is the chance to slide the finger and take more
-            // words before the bar appears, which is upstream's
-            // `onSingleLongTapMoveUpdate` and is not ported either.
-            let word_sink = lines_sink.clone();
-            let word_state = handle.clone();
-            let word_shown = shown.text.clone();
-            let word_real = real_text.clone();
-            let select_word: Rc<dyn Fn(Offset)> = Rc::new(move |local: Offset| {
-                let Some(layout) = word_sink.borrow().clone() else {
-                    return;
-                };
-                let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
-                let measure = |run: &str| {
-                    if run.is_empty() {
-                        0.0
-                    } else {
-                        painting::shape(
-                            run,
-                            &layout.style,
-                            None,
-                            false,
-                            f32::MAX / 4.0,
-                            layout.text_scale,
-                        )
-                        .max_intrinsic_width()
-                    }
-                };
-                let byte =
-                    caret_position_at(&word_shown, &layout.lines, layout.line_height, at, &measure);
-                // The words are the *shown* text's, which for an obscured
-                // field is a row of bullets -- and `WordSelection` answers
-                // "all of it" for those without asking the breaker anything.
-                let paragraph = painting::shape(
-                    &word_shown,
-                    &layout.style,
-                    None,
-                    false,
-                    f32::MAX / 4.0,
-                    layout.text_scale,
-                );
-                let words = WordSelection {
-                    text: &word_shown,
-                    obscured,
-                    read_only,
-                    // Upstream asks `Theme.of(context).platform`, whose own
-                    // default is the host. There is no field on this crate's
-                    // `Theme` to override it with, so the host it is.
-                    platform: crate::editable_text::TargetPlatform::host(),
-                };
-                let word = words.at_offset(byte as isize, false, &|offset| {
-                    engine_word_boundary(&word_shown, &paragraph, offset)
-                });
-
-                // Both ends cross from the shown text's bytes to the real
-                // text's UTF-16 units, the way the tap handler crosses one.
-                let cross = |byte: isize| -> i32 {
-                    let byte = floor_char_boundary(&word_shown, byte.max(0) as usize);
-                    let character = word_shown[..byte].chars().count();
-                    word_real
-                        .chars()
-                        .take(character)
-                        .map(|c| c.len_utf16() as i32)
-                        .sum()
-                };
-                let base = cross(word.start);
-                let extent = cross(word.end);
-                word_state.set_state(move |state| {
-                    state.value.selection_base = base;
-                    state.value.selection_extent = extent;
-                    // Upstream's `onSingleLongTapEnd`: `showToolbar()`, with
-                    // no question asked about what got selected. A long press
-                    // that landed past the end of the text selects nothing and
-                    // still earns a bar -- with Paste on it, which is the only
-                    // way to reach a paste into an empty field.
-                    state.toolbar_shown = true;
-                    if let Some(connection) = &state.connection {
-                        if connection.is_attached() {
-                            connection.set_editing_state(&state.value);
-                        }
-                    }
-                });
-                crate::focus::focus(id);
-                // Upstream's `Feedback.forLongPress`, which on Android is the
-                // buzz that says the press was taken as a long one.
-                crate::feedback::Feedback::for_long_press(
-                    id as i32,
-                    crate::editable_text::TargetPlatform::host(),
-                );
-            });
-
-            // The field's own pointer region: the tap that places the caret
-            // and takes the keyboard, on the same id the `Focus` around it is
-            // registered under.
-            let field = RenderEditable::new(shown.clone())
+            RenderEditable::new(shown.clone())
                 .with_style(style.clone())
                 .with_placeholder(placeholder.clone(), placeholder_style.clone())
                 .with_caret(caret_color, caret_shown)
@@ -3929,24 +3972,80 @@ impl StatefulComponent for TextField {
                 .with_report(report)
                 .with_report_caret(report_caret.clone())
                 .with_report_selection(report_selection.clone())
-                .with_lines_sink(lines_sink.clone());
-            // The press's origin, so a slide can be told from a scroll by the
-            // shape of the travel rather than by who won the gesture, and so a
-            // mouse drag knows where its selection began.
-            let press_origin: Rc<std::cell::Cell<Option<Offset>>> =
-                Rc::new(std::cell::Cell::new(None));
-            let down_origin = Rc::clone(&press_origin);
-            let move_origin = Rc::clone(&press_origin);
-            let dragged = Rc::clone(&place_caret);
-            let tapped = Rc::clone(&place_caret);
-            let long_pressed = Rc::clone(&select_word);
-            let mouse_dragged = Rc::clone(&select_from_press);
-            let secondary_caret = Rc::clone(&place_caret);
-            let secondary_state = handle.clone();
-            RenderPointerRegion::new(id, field).with_handlers(
+                .with_lines_sink(lines_sink.clone())
+        });
+
+        // The field is a focus node, which is what makes Tab reach it and what
+        // opens and closes its session. Upstream `TextField` wraps its
+        // `EditableText` in a `Focus` for the same reason. The tap that
+        // focuses is the editable's own -- placing the caret is half of what
+        // a tap on a field means -- so this one carries no pointer handler of
+        // its own and the two never compete for the gesture.
+        // The leaf's handle, recorded as it is built. The same trick
+        // [`crate::theatre::Anchor`] plays for a tooltip's target, and for the
+        // same reason: what a walk up the tree needs is a handle, and the only
+        // place one exists is the assemble that made it.
+        let anchor_at_build = Rc::clone(&reveal_anchor);
+        let editable = crate::framework::many(vec![editable], move |mut rendered| {
+            let leaf = rendered.pop().expect("the editable");
+            *anchor_at_build.borrow_mut() = Some(leaf.clone());
+            // A yielding wrapper rather than the bare handle: a handle
+            // delegates `visit_children` *through* the editable, so with the
+            // pointer region above the decoration nothing would ever hand
+            // the editable itself to a visitor, and a walk over the built
+            // tree could not find it. `RenderMetaData` under `DeferToChild`
+            // changes nothing else, and id 0 never enters a hit path.
+            Box::new(crate::render::RenderMetaData::new(0, leaf))
+        });
+
+        // Upstream's `TextField.build` puts the `InputDecorator` *inside*
+        // `_selectionGestureDetectorBuilder.buildGestureDetector`
+        // (`material/text_field.dart`), so the whole decorated box answers
+        // the pointer -- and a press on the box is a press *inside* the
+        // field's tap region, not the tap-outside that closes its keyboard.
+        // The decoration is built inside the region here for the same reason.
+        let content = match &self.decoration {
+            Some(decorate) => decorate(editable),
+            None => editable,
+        };
+
+        // The press's origin, so a slide can be told from a scroll by the
+        // shape of the travel rather than by who won the gesture, and so a
+        // mouse drag knows where its selection began. In view coordinates,
+        // as upstream's `dragStartGlobalPosition` is.
+        let press_origin: Rc<std::cell::Cell<Option<Offset>>> = Rc::new(std::cell::Cell::new(None));
+        let region_place_caret = Rc::clone(&place_caret);
+        let region_select_word = Rc::clone(&select_word);
+        let region_select_from_press = Rc::clone(&select_from_press);
+        let region_origin = Rc::clone(&editable_origin);
+        let region_press = Rc::clone(&press_origin);
+        let region_handle = handle.clone();
+        // The field's own pointer region: the tap that places the caret and
+        // takes the keyboard, on the same id the `Focus` around it is
+        // registered under. The handlers are made fresh on every assemble
+        // because the region consumes them. Every position they are handed
+        // arrives in view coordinates and crosses into the editable's own
+        // through the painted origin -- the region is the decorated box, and
+        // the box is bigger than the text.
+        let editable = crate::framework::single(content, move |rendered| {
+            let down_origin = Rc::clone(&region_press);
+            let move_origin = Rc::clone(&region_press);
+            let dragged = Rc::clone(&region_place_caret);
+            let tapped = Rc::clone(&region_place_caret);
+            let long_pressed = Rc::clone(&region_select_word);
+            let mouse_dragged = Rc::clone(&region_select_from_press);
+            let secondary_caret = Rc::clone(&region_place_caret);
+            let secondary_state = region_handle.clone();
+            let tap_origin = Rc::clone(&region_origin);
+            let long_press_origin = Rc::clone(&region_origin);
+            let secondary_origin = Rc::clone(&region_origin);
+            let move_editable_origin = Rc::clone(&region_origin);
+            RenderPointerRegion::new(id, rendered).with_handlers(
                 PointerHandlers::new()
-                    .with_tap(move |tap: TapEvent| tapped(tap.local_position))
-                    .with_long_press(move |press: TapEvent| long_pressed(press.local_position))
+                    .with_tap(move |tap: TapEvent| tapped(tap.position.minus(tap_origin.get())))
+                    .with_long_press(move |press: TapEvent| {
+                        long_pressed(press.position.minus(long_press_origin.get()))
+                    })
                     // Upstream's `onSecondaryTap`, the Android/Fuchsia/Linux/
                     // Windows arm: place the caret if the field did not have
                     // the keyboard, then `toggleToolbar()`. A right-click on a
@@ -3955,14 +4054,14 @@ impl StatefulComponent for TextField {
                     // offer to copy it rather than throwing it away first.
                     .with_secondary_tap(move |tap: TapEvent| {
                         if !crate::focus::has_focus(id) {
-                            secondary_caret(tap.local_position);
+                            secondary_caret(tap.position.minus(secondary_origin.get()));
                         }
                         secondary_state.set_state(|state| {
                             state.toolbar_shown = !state.toolbar_shown;
                         });
                     })
                     .with_pointer_down(move |event| {
-                        down_origin.set(Some(event.local_position));
+                        down_origin.set(Some(event.position));
                     })
                     // What a slide over the text does depends on the pointer.
                     //
@@ -4015,48 +4114,35 @@ impl StatefulComponent for TextField {
                         let Some(origin) = move_origin.get() else {
                             return;
                         };
+                        let editable_at = move_editable_origin.get();
                         match event.kind {
                             crate::gestures::PointerKind::Touch => {
                                 if !crate::focus::has_focus(id) {
                                     return;
                                 }
                                 let travel = Offset::new(
-                                    event.local_position.dx - origin.dx,
-                                    event.local_position.dy - origin.dy,
+                                    event.position.dx - origin.dx,
+                                    event.position.dy - origin.dy,
                                 );
                                 if travel.dx.abs() <= travel.dy.abs() {
                                     return;
                                 }
-                                dragged(event.local_position);
+                                dragged(event.position.minus(editable_at));
                             }
                             crate::gestures::PointerKind::Mouse
                             | crate::gestures::PointerKind::Trackpad => {
                                 if event.buttons & 1 == 0 {
                                     return;
                                 }
-                                mouse_dragged(origin, event.local_position);
+                                mouse_dragged(
+                                    origin.minus(editable_at),
+                                    event.position.minus(editable_at),
+                                );
                             }
                             _ => {}
                         }
                     }),
             )
-        });
-
-        // The field is a focus node, which is what makes Tab reach it and what
-        // opens and closes its session. Upstream `TextField` wraps its
-        // `EditableText` in a `Focus` for the same reason. The tap that
-        // focuses is the editable's own -- placing the caret is half of what
-        // a tap on a field means -- so this one carries no pointer handler of
-        // its own and the two never compete for the gesture.
-        // The leaf's handle, recorded as it is built. The same trick
-        // [`crate::theatre::Anchor`] plays for a tooltip's target, and for the
-        // same reason: what a walk up the tree needs is a handle, and the only
-        // place one exists is the assemble that made it.
-        let anchor_at_build = Rc::clone(&reveal_anchor);
-        let editable = crate::framework::many(vec![editable], move |mut rendered| {
-            let leaf = rendered.pop().expect("the editable");
-            *anchor_at_build.borrow_mut() = Some(leaf.clone());
-            Box::new(leaf)
         });
 
         let focused = crate::framework::component(

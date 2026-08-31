@@ -889,6 +889,7 @@ impl StatefulComponent for InkResponse {
                     if action == crate::semantics::SemanticsAction::Tap {
                         tap(crate::gestures::TapEvent {
                             local_position: Offset::ZERO,
+                            position: Offset::ZERO,
                             pointer_id: 0,
                         });
                     }

@@ -2864,6 +2864,7 @@ pub fn tappable(
         // `onTap` no coordinates either.
         on_tap(crate::gestures::TapEvent {
             local_position: crate::render::Offset::ZERO,
+            position: crate::render::Offset::ZERO,
             pointer_id: 0,
         });
     })

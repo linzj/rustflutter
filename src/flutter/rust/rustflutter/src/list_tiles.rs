@@ -1254,6 +1254,7 @@ mod tests {
                     if let Some(tap) = &handlers.on_tap {
                         tap(crate::gestures::TapEvent {
                             local_position: crate::render::Offset::ZERO,
+                            position: crate::render::Offset::ZERO,
                             pointer_id: 0,
                         });
                     }

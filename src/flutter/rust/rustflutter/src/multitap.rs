@@ -214,6 +214,7 @@ impl MultiTapGestureRecognizer {
         if let Some(on_tap_down) = &self.on_tap_down {
             on_tap_down(TapEvent {
                 local_position: event.position,
+                position: event.position,
                 pointer_id: event.pointer_id,
             });
         }
@@ -315,6 +316,7 @@ impl MultiTapGestureRecognizer {
         if let Some(on_tap_up) = &self.on_tap_up {
             on_tap_up(TapEvent {
                 local_position: position,
+                position,
                 pointer_id: pointer,
             });
         }
@@ -344,6 +346,7 @@ impl MultiTapGestureRecognizer {
             if let Some(on_long_tap_down) = &self.on_long_tap_down {
                 on_long_tap_down(TapEvent {
                     local_position: position,
+                    position,
                     pointer_id: pointer,
                 });
             }

@@ -30,18 +30,18 @@
 
 use std::rc::Rc;
 
-use rustflutter::framework::{component, leaf, single, stateful, BuildContext, StateHandle};
+use rustflutter::framework::{BuildContext, StateHandle, component, leaf, single, stateful};
 use rustflutter::gestures::PointerHandlers;
 use rustflutter::prelude::*;
 use rustflutter::render::{Alignment, CrossAxisAlignment, MainAxisSize, RenderFlex, StackPosition};
 use rustflutter::semantics::{SemanticsAction, SemanticsProperties};
 use rustflutter::widgets::{Align, Center, Pointer};
 
-use crate::app::{ids, GalleryState};
+use crate::app::{GalleryState, ids};
 use crate::data::demos as catalog;
 use crate::themes::material_demo_theme_data::COLOR_SCHEME;
 
-use super::{caption, column, DemoState};
+use super::{DemoState, caption, column};
 
 /// Hit-test ids, from the demo-local block (PORTING.md: fixed bases, no
 /// counters). Two per style section (plain, icon), three for the toggle
@@ -363,6 +363,7 @@ impl Component for IconDemoButton {
                         if let Some(tap) = &tap {
                             tap(rustflutter::gestures::TapEvent {
                                 local_position: rustflutter::render::Offset::ZERO,
+                                position: rustflutter::render::Offset::ZERO,
                                 pointer_id: 0,
                             });
                         }

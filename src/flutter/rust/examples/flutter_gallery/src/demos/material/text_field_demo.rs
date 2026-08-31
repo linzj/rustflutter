@@ -310,24 +310,23 @@ fn material_icon(glyph: &'static str, color: Color) -> AnyWidget {
     })
 }
 
-/// One field with its decoration: the label floated inside the box, the
-/// leading icon beside it, the note (error or helper) and the character
-/// counter below. The error wins the note slot, as upstream's `errorText`
-/// replaces `helperText`.
-fn field_group(
+/// The decorated box upstream's `InputDecoration` draws: the label floated
+/// inside the box, the filled or outlined box around it, and -- for a filled
+/// box -- the underline flush beneath. Built by [`field_decoration`] inside
+/// the field's own gesture region, so a press anywhere on the box reaches
+/// the field; the disabled email field, which has no field to press, builds
+/// it directly.
+fn decorated_box(
     label: &'static str,
-    icon: Option<&'static str>,
-    content: AnyWidget,
     kind: BoxKind,
     focused: bool,
-    error: Option<String>,
-    helper: Option<String>,
-    counter: Option<String>,
+    has_error: bool,
     colors: FieldColors,
+    content: AnyWidget,
 ) -> AnyWidget {
     // The label's colour answers focus and error before anything else does,
     // upstream's `InputDecorator`'s labelStyle resolution.
-    let label_color = if error.is_some() {
+    let label_color = if has_error {
         colors.danger
     } else if focused {
         colors.primary
@@ -345,7 +344,7 @@ fn field_group(
     // underline flush beneath (the two are one shape upstream, split here
     // because a `Container` border is all four sides); outlined is a border
     // rounded all round.
-    let edge_color = if error.is_some() {
+    let edge_color = if has_error {
         colors.danger
     } else if focused {
         colors.primary
@@ -364,7 +363,7 @@ fn field_group(
         };
         Box::new(container.with_child(inner))
     });
-    let decorated = if kind == BoxKind::Filled {
+    if kind == BoxKind::Filled {
         let underline_color = edge_color;
         let underline = leaf(move || {
             Container::new()
@@ -374,7 +373,37 @@ fn field_group(
         column(vec![boxed, underline], 0.0)
     } else {
         boxed
-    };
+    }
+}
+
+/// The box as a `TextField` decoration. `wrap` puts whatever sits beside the
+/// editable *inside* the box -- the phone field's prefix, the salary's `USD`,
+/// the password's eye -- which is where upstream's `prefixText` and
+/// `suffixIcon` live: inside the decorator, inside the gesture region.
+fn field_decoration(
+    label: &'static str,
+    kind: BoxKind,
+    focused: bool,
+    has_error: bool,
+    colors: FieldColors,
+    wrap: impl Fn(AnyWidget) -> AnyWidget + 'static,
+) -> impl Fn(AnyWidget) -> AnyWidget + 'static {
+    move |editable| decorated_box(label, kind, focused, has_error, colors, wrap(editable))
+}
+
+/// One field with what sits *outside* its box: the leading icon beside it,
+/// the note (error or helper) and the character counter below. The error
+/// wins the note slot, as upstream's `errorText` replaces `helperText`.
+/// `boxed` is the field carrying its box -- see [`field_decoration`].
+fn field_group(
+    icon: Option<&'static str>,
+    boxed: AnyWidget,
+    error: Option<String>,
+    helper: Option<String>,
+    counter: Option<String>,
+    colors: FieldColors,
+) -> AnyWidget {
+    let decorated = boxed;
 
     // The leading icon, centred against the box as upstream's `icon:` is.
     let body = if let Some(glyph) = icon {
@@ -551,7 +580,6 @@ impl StatefulComponent for TextFormFieldDemo {
 
         // Name. Upstream's `textCapitalization: words` has no counterpart.
         children.push(field_group(
-            "Name*",
             Some(catalog::icon::PERSON),
             stateful(
                 TextField::new(base)
@@ -562,10 +590,16 @@ impl StatefulComponent for TextFormFieldDemo {
                         |s, text| s.name = text.to_string(),
                         |e| &mut e.name,
                         |s| validate_name(&s.name),
+                    ))
+                    .with_decoration(field_decoration(
+                        "Name*",
+                        BoxKind::Filled,
+                        rustflutter::focus::has_focus(base),
+                        state.errors.name.is_some(),
+                        colors,
+                        |editable| editable,
                     )),
             ),
-            BoxKind::Filled,
-            rustflutter::focus::has_focus(base),
             state.errors.name.map(str::to_string),
             None,
             None,
@@ -575,6 +609,23 @@ impl StatefulComponent for TextFormFieldDemo {
         // Phone number. The digits-only filter runs here; the US formatter
         // runs at validation. Upstream's `prefixText: '+1 '` shows with the
         // field focused or filled.
+        let phone_focused = rustflutter::focus::has_focus(base + 1);
+        // The prefix comes and goes, but the row it sits in does not: it is
+        // the prefix's *text* that empties, not the row that disappears.
+        //
+        // Upstream's `prefixText` lives inside the field's own
+        // `InputDecoration`, and so does this one -- the row is part of the
+        // decoration the field builds inside its gesture region. It is built
+        // whether the prefix has anything to say or not: a row that came and
+        // went would re-parent the editable, and a re-parented editable is a
+        // new element -- the session the field's state holds would be pulled
+        // out from under the keyboard in the very frame focus asked for it.
+        let prefix_text = if phone_focused || !state.phone.is_empty() {
+            "+1 "
+        } else {
+            ""
+        };
+        let prefix_style = text_style.clone();
         let phone_field = stateful(
             TextField::new(base + 1)
                 .with_placeholder("Where can we reach you?")
@@ -584,50 +635,40 @@ impl StatefulComponent for TextFormFieldDemo {
                     |s, text| s.phone = digits_only(text),
                     |e| &mut e.phone,
                     |s| validate_phone(&s.phone),
+                ))
+                .with_decoration(field_decoration(
+                    "Phone number*",
+                    BoxKind::Filled,
+                    phone_focused,
+                    state.errors.phone.is_some(),
+                    colors,
+                    move |editable| {
+                        let prefix_style = prefix_style.clone();
+                        many(
+                            vec![
+                                leaf(move || {
+                                    Text::new(prefix_text).with_style(prefix_style.clone())
+                                }),
+                                editable,
+                            ],
+                            |mut rendered| {
+                                let field = rendered.pop().expect("the field");
+                                let prefix = rendered.pop().expect("the prefix");
+                                Box::new(
+                                    RenderFlex::row()
+                                        .with_main_axis_size(MainAxisSize::Max)
+                                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                        .push(prefix)
+                                        .push_flex(FlexChild::expanded(field, 1)),
+                                )
+                            },
+                        )
+                    },
                 )),
         );
-        let phone_focused = rustflutter::focus::has_focus(base + 1);
-        // The prefix comes and goes, but the row it sits in does not: it is
-        // the prefix's *text* that empties, not the row that disappears.
-        //
-        // Upstream's `prefixText` lives inside the field's own
-        // `InputDecoration`, so showing it moves nothing. Here the prefix is
-        // a sibling, and a sibling that appears re-parents the field -- into
-        // this row on focus, out of it again on blur. A re-parented widget is
-        // a new element with a new `TextFieldState`, and a `TextField`'s
-        // editing session lives in that state: the field would take the
-        // keyboard, open a session, and then be rebuilt out from under the
-        // session in the very frame the focus asked for. Focus said the field
-        // had the keyboard; nothing could be typed into it.
-        let prefix_text = if phone_focused || !state.phone.is_empty() {
-            "+1 "
-        } else {
-            ""
-        };
-        let prefix_style = text_style.clone();
-        let phone_content: AnyWidget = many(
-            vec![
-                leaf(move || Text::new(prefix_text).with_style(prefix_style.clone())),
-                phone_field,
-            ],
-            |mut rendered| {
-                let field = rendered.pop().expect("the field");
-                let prefix = rendered.pop().expect("the prefix");
-                Box::new(
-                    RenderFlex::row()
-                        .with_main_axis_size(MainAxisSize::Max)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .push(prefix)
-                        .push_flex(FlexChild::expanded(field, 1)),
-                )
-            },
-        );
         children.push(field_group(
-            "Phone number*",
             Some(catalog::icon::PHONE),
-            phone_content,
-            BoxKind::Filled,
-            phone_focused,
+            phone_field,
             state.errors.phone.map(str::to_string),
             None,
             None,
@@ -636,7 +677,6 @@ impl StatefulComponent for TextFormFieldDemo {
 
         // Email. Upstream validates nothing on it; neither does this.
         children.push(field_group(
-            "Email",
             Some(catalog::icon::EMAIL),
             stateful(
                 TextField::new(base + 2)
@@ -648,10 +688,16 @@ impl StatefulComponent for TextFormFieldDemo {
                             let text = text.to_string();
                             handle.set_state(move |s| s.email = text);
                         }
-                    }),
+                    })
+                    .with_decoration(field_decoration(
+                        "Email",
+                        BoxKind::Filled,
+                        rustflutter::focus::has_focus(base + 2),
+                        false,
+                        colors,
+                        |editable| editable,
+                    )),
             ),
-            BoxKind::Filled,
-            rustflutter::focus::has_focus(base + 2),
             None,
             None,
             None,
@@ -663,11 +709,15 @@ impl StatefulComponent for TextFormFieldDemo {
         // input at all -- which is what `enabled: false` means upstream.
         let muted_hint = note_style.clone();
         children.push(field_group(
-            "Email",
             Some(catalog::icon::EMAIL),
-            leaf(move || Text::new("Your email address").with_style(muted_hint.clone())),
-            BoxKind::Filled,
-            false,
+            decorated_box(
+                "Email",
+                BoxKind::Filled,
+                false,
+                false,
+                colors,
+                leaf(move || Text::new("Your email address").with_style(muted_hint.clone())),
+            ),
             None,
             None,
             None,
@@ -676,7 +726,6 @@ impl StatefulComponent for TextFormFieldDemo {
 
         // Life story: upstream's three-line outlined field.
         children.push(field_group(
-            "Life story",
             None,
             stateful(
                 TextField::new(base + 4)
@@ -684,53 +733,75 @@ impl StatefulComponent for TextFormFieldDemo {
                         "Tell us about yourself (e.g., write down what you do or what hobbies you have)",
                     )
                     .with_on_focus_change(rebuild_on_focus(&handle))
-                    .with_max_lines(3),
+                    .with_max_lines(3)
+                    .with_decoration(field_decoration(
+                        "Life story",
+                        BoxKind::Outlined,
+                        rustflutter::focus::has_focus(base + 4),
+                        false,
+                        colors,
+                        |editable| editable,
+                    )),
             ),
-            BoxKind::Outlined,
-            rustflutter::focus::has_focus(base + 4),
             None,
             Some("Keep it short, this is just a demo.".to_string()),
             None,
             colors,
         ));
 
-        // Salary: outlined, with the "USD" suffix alongside the field.
+        // Salary: outlined, with the "USD" suffix alongside the field --
+        // upstream's `suffixText`, inside the decoration, inside the
+        // field's gesture region.
         let usd_style = note_style.clone();
-        let salary = many(
-            vec![
-                stateful(TextField::new(base + 5).with_on_focus_change(rebuild_on_focus(&handle))),
-                leaf(move || Text::new("USD").with_style(usd_style.clone())),
-            ],
-            |mut rendered| {
-                let suffix = rendered.pop().expect("the suffix");
-                let field = rendered.pop().expect("the field");
-                Box::new(
-                    RenderFlex::row()
-                        .with_main_axis_size(MainAxisSize::Max)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_spacing(8.0)
-                        .push_flex(FlexChild::expanded(field, 1))
-                        .push(suffix),
-                )
-            },
+        let salary = stateful(
+            TextField::new(base + 5)
+                .with_on_focus_change(rebuild_on_focus(&handle))
+                .with_decoration(field_decoration(
+                    "Salary",
+                    BoxKind::Outlined,
+                    rustflutter::focus::has_focus(base + 5),
+                    false,
+                    colors,
+                    move |editable| {
+                        let usd_style = usd_style.clone();
+                        many(
+                            vec![
+                                editable,
+                                leaf(move || Text::new("USD").with_style(usd_style.clone())),
+                            ],
+                            |mut rendered| {
+                                let suffix = rendered.pop().expect("the suffix");
+                                let field = rendered.pop().expect("the field");
+                                Box::new(
+                                    RenderFlex::row()
+                                        .with_main_axis_size(MainAxisSize::Max)
+                                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                        .with_spacing(8.0)
+                                        .push_flex(FlexChild::expanded(field, 1))
+                                        .push(suffix),
+                                )
+                            },
+                        )
+                    },
+                )),
         );
-        children.push(field_group(
-            "Salary",
-            None,
-            salary,
-            BoxKind::Outlined,
-            rustflutter::focus::has_focus(base + 5),
-            None,
-            None,
-            None,
-            colors,
-        ));
+        children.push(field_group(None, salary, None, None, None, colors));
 
         // Password. Upstream's `maxLength: 8` is not enforceable here, but
         // its counter is drawn below. The field's text is tracked as it
         // changes: upstream's `_validatePassword` reads the field's value,
         // which is this. The visibility `IconButton` is the eye glyph inside
-        // the box.
+        // the box -- upstream's `suffixIcon`, inside the decoration. It stays
+        // its own pointer region: the region is inner to the field's, so the
+        // arena hands it the tap, as upstream's `IconButton` wins over the
+        // field's own detector.
+        let toggle_glyph = if state.obscure_password {
+            catalog::icon::VISIBILITY
+        } else {
+            catalog::icon::VISIBILITY_OFF
+        };
+        let toggle_color = colors.muted;
+        let toggle_handle = handle.clone();
         let password_field = TextField::new(base + 6)
             .with_on_focus_change(rebuild_on_focus(&handle))
             .with_on_changed({
@@ -739,62 +810,64 @@ impl StatefulComponent for TextFormFieldDemo {
                     let text = text.to_string();
                     handle.set_state(move |s| s.password = text);
                 }
-            });
+            })
+            .with_decoration(field_decoration(
+                "Password*",
+                BoxKind::Filled,
+                rustflutter::focus::has_focus(base + 6),
+                false,
+                colors,
+                move |editable| {
+                    let toggle = leaf({
+                        let handle = toggle_handle.clone();
+                        move || {
+                            Pointer::new(
+                                base + 8,
+                                Container::new()
+                                    .with_size(40.0, 40.0)
+                                    .with_child(Align::new(
+                                        Alignment::CENTER,
+                                        Text::new(toggle_glyph)
+                                            .with_font_family(catalog::MATERIAL_ICONS)
+                                            .with_size(24.0)
+                                            .with_color(toggle_color),
+                                    )),
+                            )
+                            .with_handlers(
+                                PointerHandlers::new().with_tap({
+                                    let handle = handle.clone();
+                                    move |_| {
+                                        handle.set_state(|s| {
+                                            s.obscure_password = !s.obscure_password;
+                                        });
+                                    }
+                                }),
+                            )
+                        }
+                    });
+                    many(vec![editable, toggle], |mut rendered| {
+                        let toggle = rendered.pop().expect("the toggle");
+                        let field = rendered.pop().expect("the field");
+                        Box::new(
+                            RenderFlex::row()
+                                .with_main_axis_size(MainAxisSize::Max)
+                                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                                .with_spacing(8.0)
+                                .push_flex(FlexChild::expanded(field, 1))
+                                .push(toggle),
+                        )
+                    })
+                },
+            ));
         let password_field: AnyWidget = if state.obscure_password {
             stateful(password_field.obscured())
         } else {
             stateful(password_field)
         };
-        let toggle_glyph = if state.obscure_password {
-            catalog::icon::VISIBILITY
-        } else {
-            catalog::icon::VISIBILITY_OFF
-        };
-        let toggle_color = colors.muted;
-        let toggle = leaf({
-            let handle = handle.clone();
-            move || {
-                Pointer::new(
-                    base + 8,
-                    Container::new()
-                        .with_size(40.0, 40.0)
-                        .with_child(Align::new(
-                            Alignment::CENTER,
-                            Text::new(toggle_glyph)
-                                .with_font_family(catalog::MATERIAL_ICONS)
-                                .with_size(24.0)
-                                .with_color(toggle_color),
-                        )),
-                )
-                .with_handlers(PointerHandlers::new().with_tap({
-                    let handle = handle.clone();
-                    move |_| {
-                        handle.set_state(|s| {
-                            s.obscure_password = !s.obscure_password;
-                        });
-                    }
-                }))
-            }
-        });
-        let password_content = many(vec![password_field, toggle], |mut rendered| {
-            let toggle = rendered.pop().expect("the toggle");
-            let field = rendered.pop().expect("the field");
-            Box::new(
-                RenderFlex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_spacing(8.0)
-                    .push_flex(FlexChild::expanded(field, 1))
-                    .push(toggle),
-            )
-        });
         let password_counter = format!("{}/8", state.password.chars().count());
         children.push(field_group(
-            "Password*",
             None,
-            password_content,
-            BoxKind::Filled,
-            rustflutter::focus::has_focus(base + 6),
+            password_field,
             None,
             Some("No more than 8 characters.".to_string()),
             Some(password_counter),
@@ -805,7 +878,6 @@ impl StatefulComponent for TextFormFieldDemo {
         // `onFieldSubmitted: (value) { _handleSubmitted(); }`.
         let retype_counter = format!("{}/8", state.retype.chars().count());
         children.push(field_group(
-            "Re-type password*",
             None,
             stateful(
                 TextField::new(base + 7)
@@ -822,10 +894,16 @@ impl StatefulComponent for TextFormFieldDemo {
                         move |_text: &str| {
                             handle.set_state(|s| s.handle_submitted());
                         }
-                    }),
+                    })
+                    .with_decoration(field_decoration(
+                        "Re-type password*",
+                        BoxKind::Filled,
+                        rustflutter::focus::has_focus(base + 7),
+                        state.errors.retype.is_some(),
+                        colors,
+                        |editable| editable,
+                    )),
             ),
-            BoxKind::Filled,
-            rustflutter::focus::has_focus(base + 7),
             state.errors.retype.map(str::to_string),
             None,
             Some(retype_counter),
@@ -1112,12 +1190,19 @@ mod tests {
             danger: theme.danger,
         };
         let build = |error: Option<String>| {
+            let has_error = error.is_some();
             field_group(
-                "Name*",
                 None,
-                stateful(TextField::new(ids::DEMO_LOCAL)),
-                BoxKind::Filled,
-                false,
+                stateful(
+                    TextField::new(ids::DEMO_LOCAL).with_decoration(field_decoration(
+                        "Name*",
+                        BoxKind::Filled,
+                        false,
+                        has_error,
+                        colors,
+                        |editable| editable,
+                    )),
+                ),
                 error,
                 None,
                 None,

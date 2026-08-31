@@ -215,6 +215,13 @@ impl PointerEvent {
 pub struct TapEvent {
     /// Where the finger came up, in the target's local coordinates.
     pub local_position: Offset,
+    /// The same point in the view's coordinates -- upstream's
+    /// `TapUpDetails.globalPosition`. A handler whose region is larger than
+    /// the object it steers (a text field's decorated box around its
+    /// editable) subtracts that object's own origin from this, the way
+    /// upstream hands `details.globalPosition` to
+    /// `renderEditable.globalToLocal`.
+    pub position: Offset,
     pub pointer_id: i64,
 }
 
@@ -1495,6 +1502,7 @@ impl GestureRouter {
             let was_pressed = pointer.pressed;
             pointer.pressed = false;
             let local = target.local_origin;
+            let global = pointer.origin;
             // The press has been claimed, so whatever was showing it as held
             // stops. Upstream this is the tap recogniser losing the arena.
             if was_pressed {
@@ -1505,6 +1513,7 @@ impl GestureRouter {
             if let Some(long_press) = &target.handlers.on_long_press {
                 long_press(TapEvent {
                     local_position: local,
+                    position: global,
                     pointer_id: id,
                 });
             }
@@ -2651,6 +2660,7 @@ impl GestureRouter {
                 self.pending_tap = Some(PendingTap {
                     event: TapEvent {
                         local_position: target.local_origin.plus(travel),
+                        position: event.position,
                         pointer_id: event.pointer_id,
                     },
                     pointer_id: event.pointer_id,
@@ -2686,6 +2696,7 @@ impl GestureRouter {
                 if let Some(tap) = &target.handlers.on_tap {
                     tap(TapEvent {
                         local_position: target.local_origin.plus(travel),
+                        position: event.position,
                         pointer_id: event.pointer_id,
                     });
                 }
@@ -2696,6 +2707,7 @@ impl GestureRouter {
                 if let Some(secondary) = &target.handlers.on_secondary_tap {
                     secondary(TapEvent {
                         local_position: target.local_origin.plus(travel),
+                        position: event.position,
                         pointer_id: event.pointer_id,
                     });
                 }
@@ -2704,6 +2716,7 @@ impl GestureRouter {
                 if let Some(target) = &active.double {
                     let tap_event = TapEvent {
                         local_position: target.local_origin.plus(travel),
+                        position: event.position,
                         pointer_id: event.pointer_id,
                     };
                     if let Some(double) = &target.handlers.on_double_tap {

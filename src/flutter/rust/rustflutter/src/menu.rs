@@ -336,6 +336,7 @@ fn as_a_menu_entry(
             if action == crate::semantics::SemanticsAction::Tap {
                 tap(crate::gestures::TapEvent {
                     local_position: crate::render::Offset::ZERO,
+                    position: crate::render::Offset::ZERO,
                     pointer_id: 0,
                 });
             }

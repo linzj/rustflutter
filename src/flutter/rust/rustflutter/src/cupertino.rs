@@ -763,6 +763,7 @@ impl Component for CupertinoButton {
                         if let Some(tap) = &tap {
                             tap(crate::gestures::TapEvent {
                                 local_position: Offset::ZERO,
+                                position: Offset::ZERO,
                                 pointer_id: 0,
                             });
                         }

@@ -82,12 +82,18 @@
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
 #include "flutter/shell/platform/common/client_wrapper/include/flutter/standard_method_codec.h"
+#include "flutter/shell/platform/common/text_input_model.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
 #include "third_party/skia/include/core/SkSurface.h"
 
 @class RfContentView;
+
+/// Tells the view's input context to drop whatever the IME was composing, on
+/// the main thread, where input contexts live. Defined below the view's
+/// interface; the platform view that calls it is defined above it.
+static void RfDiscardMarkedText(RfContentView* view);
 
 namespace flutter {
 namespace {
@@ -98,6 +104,7 @@ namespace {
 /// out.
 constexpr char kKeyDataChannel[] = "flutter/keydata";
 constexpr char kPlatformChannel[] = "flutter/platform";
+constexpr char kTextInputChannel[] = "flutter/textinput";
 constexpr char kLifecycleChannel[] = "flutter/lifecycle";
 constexpr char kSettingsChannel[] = "flutter/settings";
 constexpr char kLocalizationChannel[] = "flutter/localization";
@@ -107,8 +114,7 @@ constexpr char kClipboardError[] = "Clipboard error";
 constexpr char kUnknownClipboardFormatMessage[] = "Unknown clipboard format";
 constexpr char kTextPlainFormat[] = "text/plain";
 constexpr char kExitRequestError[] = "ExitApplication error";
-constexpr char kInvalidExitRequestMessage[] =
-    "Invalid application exit request";
+constexpr char kInvalidExitRequestMessage[] = "Invalid application exit request";
 constexpr char kExitTypeCancelable[] = "cancelable";
 
 //------------------------------------------------------------------------------
@@ -119,10 +125,7 @@ constexpr char kExitTypeCancelable[] = "cancelable";
 /// is being drawn is a torn frame.
 class FrameBuffer {
  public:
-  void Store(const void* pixels,
-             int32_t width,
-             int32_t height,
-             bool blue_first) {
+  void Store(const void* pixels, int32_t width, int32_t height, bool blue_first) {
     if (pixels == nullptr || width <= 0 || height <= 0) {
       return;
     }
@@ -157,22 +160,19 @@ class FrameBuffer {
     // BGRA is `premultipliedFirst` with little-endian words; RGBA is
     // `premultipliedLast` with big-endian ones, which is CoreGraphics' way of
     // spelling "in memory order".
-    const uint32_t channels =
-        blue_first_ ? static_cast<uint32_t>(kCGImageAlphaPremultipliedFirst) |
-                          static_cast<uint32_t>(kCGBitmapByteOrder32Little)
-                    : static_cast<uint32_t>(kCGImageAlphaPremultipliedLast) |
-                          static_cast<uint32_t>(kCGBitmapByteOrder32Big);
+    const uint32_t channels = blue_first_ ? static_cast<uint32_t>(kCGImageAlphaPremultipliedFirst) |
+                                                static_cast<uint32_t>(kCGBitmapByteOrder32Little)
+                                          : static_cast<uint32_t>(kCGImageAlphaPremultipliedLast) |
+                                                static_cast<uint32_t>(kCGBitmapByteOrder32Big);
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-    CGContextRef bitmap =
-        CGBitmapContextCreate(pixels_.data(), width_, height_, 8,
-                              static_cast<size_t>(width_) * 4, space, channels);
+    CGContextRef bitmap = CGBitmapContextCreate(pixels_.data(), width_, height_, 8,
+                                                static_cast<size_t>(width_) * 4, space, channels);
     bool painted = false;
     if (bitmap != nullptr) {
       CGImageRef image = CGBitmapContextCreateImage(bitmap);
       if (image != nullptr) {
         CGContextSaveGState(context);
-        CGContextTranslateCTM(context, 0,
-                              CGRectGetMaxY(bounds) + CGRectGetMinY(bounds));
+        CGContextTranslateCTM(context, 0, CGRectGetMaxY(bounds) + CGRectGetMinY(bounds));
         CGContextScaleCTM(context, 1, -1);
         // The frame is in physical pixels and the bounds are in points; the
         // scale between them is the backing scale factor, and letting
@@ -212,10 +212,10 @@ class FrameBuffer {
     }
 
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-    CGContextRef canvas = CGBitmapContextCreate(
-        nullptr, width, height, 8, 0, space,
-        static_cast<uint32_t>(kCGImageAlphaPremultipliedLast) |
-            static_cast<uint32_t>(kCGBitmapByteOrder32Big));
+    CGContextRef canvas =
+        CGBitmapContextCreate(nullptr, width, height, 8, 0, space,
+                              static_cast<uint32_t>(kCGImageAlphaPremultipliedLast) |
+                                  static_cast<uint32_t>(kCGBitmapByteOrder32Big));
     CGColorSpaceRelease(space);
     if (canvas == nullptr) {
       return false;
@@ -237,8 +237,7 @@ class FrameBuffer {
       if (image != nullptr) {
         NSURL* url = [NSURL fileURLWithPath:@(path)];
         CGImageDestinationRef destination = CGImageDestinationCreateWithURL(
-            (__bridge CFURLRef)url, (__bridge CFStringRef)UTTypePNG.identifier,
-            1, nullptr);
+            (__bridge CFURLRef)url, (__bridge CFStringRef)UTTypePNG.identifier, 1, nullptr);
         if (destination != nullptr) {
           CGImageDestinationAddImage(destination, image, nullptr);
           written = CGImageDestinationFinalize(destination);
@@ -354,8 +353,7 @@ class VsyncWaiterMac final : public VsyncWaiter {
   // |VsyncWaiter|
   void AwaitVSync() override {
     const fml::TimeDelta interval = FrameInterval();
-    const fml::TimePoint frame_start_time =
-        SnapToNextTick(fml::TimePoint::Now(), phase_, interval);
+    const fml::TimePoint frame_start_time = SnapToNextTick(fml::TimePoint::Now(), phase_, interval);
     const fml::TimePoint frame_target_time = frame_start_time + interval;
 
     std::weak_ptr<VsyncWaiterMac> weak_this =
@@ -403,8 +401,7 @@ std::string ErrorEnvelope(const char* code, const std::string& message) {
   rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
   writer.StartArray();
   writer.String(code);
-  writer.String(message.c_str(),
-                static_cast<rapidjson::SizeType>(message.size()));
+  writer.String(message.c_str(), static_cast<rapidjson::SizeType>(message.size()));
   writer.Null();
   writer.EndArray();
   return buffer.GetString();
@@ -429,8 +426,7 @@ std::string ClipboardText() {
 
 bool ClipboardHasText() {
   NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
-  return [pasteboard canReadObjectForClasses:@[ [NSString class] ]
-                                     options:@{}] == YES;
+  return [pasteboard canReadObjectForClasses:@[ [NSString class] ] options:@{}] == YES;
 }
 
 void SetClipboardText(const std::string& text) {
@@ -438,6 +434,419 @@ void SetClipboardText(const std::string& text) {
   [pasteboard clearContents];
   [pasteboard setString:@(text.c_str()) forType:NSPasteboardTypeString];
 }
+
+//------------------------------------------------------------------------------
+// Text input.
+//
+// `flutter/textinput` is the channel a text field talks to the platform on.
+// The framework opens an editing session (`TextInput.setClient`) and from then
+// on the *platform* owns the editing: every key the reader types is applied to
+// a model here and reported back as `TextInputClient.updateEditingState`.
+// Without this half, a focused field waits forever -- which is exactly what
+// typing on this host did before it existed.
+//
+// The editing model is the engine's own `flutter::TextInputModel`, the same
+// class the Windows host edits (`rustflutter_host_win.cc`, whose handler this
+// is a trimmed copy of). What is trimmed is the IME: upstream's macOS plugin
+// (`FlutterTextInputPlugin.mm`) is an `NSTextInputClient` with marked text and
+// candidate windows; this host takes the committed character off the key event
+// and no more, as its header states.
+//
+// Channel calls arrive on the platform thread and keys on the main thread, so
+// the model sits behind a mutex, as it does on Windows.
+
+/// The framework's text field, as the platform sees it.
+class TextInputHandler {
+ public:
+  /// How a state update leaves here. Set once, by the platform view.
+  using Sender = std::function<void(const std::string& method, const std::string& arguments_json)>;
+
+  void SetSender(Sender sender) { sender_ = std::move(sender); }
+
+  /// True once the framework has attached a field. Everything typed while
+  /// this is false goes nowhere, which is correct: there is nothing to type
+  /// into.
+  bool attached() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return model_ != nullptr;
+  }
+
+  /// Handles one call on `flutter/textinput`. Platform thread.
+  std::optional<std::string> HandleMethodCall(const std::string& method,
+                                              const rapidjson::Value* args) {
+    if (method == "TextInput.show" || method == "TextInput.hide") {
+      // No-ops, as upstream: there is no on-screen keyboard to raise.
+      return NullEnvelope();
+    }
+
+    if (method == "TextInput.setClient") {
+      // `[clientId, config]`. The config carries the action and the type.
+      if (args == nullptr || !args->IsArray() || args->Size() < 2) {
+        return ErrorEnvelope("TextInput.badArgument",
+                             "setClient needs a client id and a configuration");
+      }
+      const rapidjson::Value& client = (*args)[0];
+      const rapidjson::Value& config = (*args)[1];
+      if (!client.IsInt()) {
+        return ErrorEnvelope("TextInput.badArgument", "the client id is not a number");
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      client_id_ = client.GetInt();
+      input_action_.clear();
+      input_type_.clear();
+      if (config.IsObject()) {
+        auto action = config.FindMember("inputAction");
+        if (action != config.MemberEnd() && action->value.IsString()) {
+          input_action_ = action->value.GetString();
+        }
+        auto type = config.FindMember("inputType");
+        if (type != config.MemberEnd() && type->value.IsObject()) {
+          auto name = type->value.FindMember("name");
+          if (name != type->value.MemberEnd() && name->value.IsString()) {
+            input_type_ = name->value.GetString();
+          }
+        }
+      }
+      model_ = std::make_unique<TextInputModel>();
+      return NullEnvelope();
+    }
+
+    if (method == "TextInput.clearClient") {
+      std::lock_guard<std::mutex> lock(mutex_);
+      model_.reset();
+      return NullEnvelope();
+    }
+
+    if (method == "TextInput.setEditingState") {
+      if (args == nullptr || !args->IsObject()) {
+        return ErrorEnvelope("TextInput.badArgument", "setEditingState needs a state");
+      }
+      auto text = args->FindMember("text");
+      if (text == args->MemberEnd() || !text->value.IsString()) {
+        return ErrorEnvelope("TextInput.badArgument", "the state has no text");
+      }
+      auto number = [args](const char* key, int fallback) {
+        auto found = args->FindMember(key);
+        return found != args->MemberEnd() && found->value.IsInt() ? found->value.GetInt()
+                                                                  : fallback;
+      };
+      const int base = number("selectionBase", -1);
+      const int extent = number("selectionExtent", -1);
+
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (model_ == nullptr) {
+        return ErrorEnvelope("TextInput.noClient",
+                             "the editing state was set with no client attached");
+      }
+      // The framework is the authority here: this is it telling the platform
+      // what the field now holds, which is how a programmatic edit -- a
+      // paste, a tap moving the caret -- reaches the model.
+      model_->SetText(text->value.GetString(),
+                      TextRange(static_cast<size_t>(base < 0 ? 0 : base),
+                                static_cast<size_t>(extent < 0 ? 0 : extent)));
+      return NullEnvelope();
+    }
+
+    if (method == "TextInput.setMarkedTextRect") {
+      // Where the caret is, in the editable's own coordinates. This plus the
+      // transform is where an IME's candidate window goes.
+      if (args == nullptr || !args->IsObject()) {
+        return ErrorEnvelope("TextInput.badArgument", "Method invoked without args");
+      }
+      auto number = [args](const char* key, bool* found_it) {
+        auto found = args->FindMember(key);
+        *found_it = found != args->MemberEnd() && found->value.IsNumber();
+        return *found_it ? found->value.GetDouble() : 0.0;
+      };
+      bool ok[4] = {};
+      const double x = number("x", &ok[0]);
+      const double y = number("y", &ok[1]);
+      const double width = number("width", &ok[2]);
+      const double height = number("height", &ok[3]);
+      if (!ok[0] || !ok[1] || !ok[2] || !ok[3]) {
+        return ErrorEnvelope("TextInput.badArgument", "Composing rect values invalid.");
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      marked_x_ = x;
+      marked_y_ = y;
+      marked_width_ = width;
+      marked_height_ = height;
+      caret_valid_ = true;
+      return NullEnvelope();
+    }
+
+    if (method == "TextInput.setEditableSizeAndTransform") {
+      // A 4x4 matrix, row-major; only its translation is used, which is
+      // entries 12 and 13 -- a candidate window cannot be rotated.
+      if (args == nullptr || !args->IsObject()) {
+        return ErrorEnvelope("TextInput.badArgument", "Method invoked without args");
+      }
+      auto transform = args->FindMember("transform");
+      if (transform == args->MemberEnd() || !transform->value.IsArray() ||
+          transform->value.Size() != 16) {
+        return ErrorEnvelope("TextInput.badArgument", "EditableText transform invalid.");
+      }
+      const rapidjson::Value& matrix = transform->value;
+      if (!matrix[12].IsNumber() || !matrix[13].IsNumber()) {
+        return ErrorEnvelope("TextInput.badArgument",
+                             "EditableText transform contains null value.");
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      transform_x_ = matrix[12].GetDouble();
+      transform_y_ = matrix[13].GetDouble();
+      caret_valid_ = true;
+      return NullEnvelope();
+    }
+
+    if (method == "TextInput.setCaretRect") {
+      return NullEnvelope();
+    }
+
+    return std::nullopt;
+  }
+
+  // -- The IME's half, through `NSTextInputClient` -----------------------------
+
+  /// Committed text -- `insertText:replacementRange:`. During a composition
+  /// this is the IME cashing in the marked text; outside one it is a plain
+  /// keystroke arriving through `interpretKeyEvents:`.
+  void OnInsertText(const std::u16string& text) {
+    if (Edit([&text](TextInputModel& model) {
+          if (model.composing()) {
+            model.UpdateComposingText(text);
+            model.CommitComposing();
+            model.EndComposing();
+          } else {
+            model.AddText(text);
+          }
+          return true;
+        })) {
+      SendStateUpdate();
+    }
+  }
+
+  /// The composition as it stands -- `setMarkedText:selectedRange:...`.
+  /// `cursor` is where the IME's own caret sits inside the marked text.
+  void OnSetMarkedText(const std::u16string& text, long cursor, long length) {
+    if (Edit([&](TextInputModel& model) {
+          if (!model.composing()) {
+            model.BeginComposing();
+          }
+          const size_t base = cursor < 0 ? 0 : static_cast<size_t>(cursor);
+          const size_t extent = base + (length < 0 ? 0 : static_cast<size_t>(length));
+          model.UpdateComposingText(text, TextRange(base, extent));
+          return true;
+        })) {
+      SendStateUpdate();
+    }
+  }
+
+  /// `unmarkText`: the composition is taken as it stands.
+  void OnUnmarkText() {
+    if (Edit([](TextInputModel& model) {
+          if (!model.composing()) {
+            return false;
+          }
+          model.CommitComposing();
+          model.EndComposing();
+          return true;
+        })) {
+      SendStateUpdate();
+    }
+  }
+
+  bool Composing() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return model_ != nullptr && model_->composing();
+  }
+
+  /// The marked range in the text, UTF-16 units; `location` is -1 when
+  /// nothing is being composed. `NSRange`'s own units, which is the point.
+  void GetMarkedRange(long* location, long* length) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (model_ == nullptr || !model_->composing()) {
+      *location = -1;
+      *length = 0;
+      return;
+    }
+    const TextRange range = model_->composing_range();
+    *location = static_cast<long>(range.start());
+    *length = static_cast<long>(range.length());
+  }
+
+  void GetSelectedRange(long* location, long* length) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (model_ == nullptr) {
+      *location = -1;
+      *length = 0;
+      return;
+    }
+    const TextRange range = model_->selection();
+    *location = static_cast<long>(range.start());
+    *length = static_cast<long>(range.length());
+  }
+
+  /// Where the caret is in the view, logical pixels: the marked rectangle's
+  /// origin put through the editable's transform, both reported by the
+  /// framework at paint. What `firstRectForCharacterRange:` answers with.
+  bool GetCaretRect(double* x, double* y, double* width, double* height) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!caret_valid_) {
+      return false;
+    }
+    *x = marked_x_ + transform_x_;
+    *y = marked_y_ + transform_y_;
+    *width = marked_width_;
+    *height = marked_height_;
+    return true;
+  }
+
+  /// An editing key: backspace, forward delete, the arrows, home and end.
+  /// `key_code` is the AppKit virtual key code.
+  ///
+  /// Returns true if the field used it.
+  bool OnEditingKey(unsigned short key_code, bool shift) {
+    bool changed = false;
+    const bool handled = Edit([&](TextInputModel& model) {
+      switch (key_code) {
+        case 0x33:  // Delete (backspace).
+          changed = model.Backspace();
+          return true;
+        case 0x75:  // Forward delete.
+          changed = model.Delete();
+          return true;
+        case 0x7B:  // Left arrow.
+          changed = model.MoveCursorBack();
+          return true;
+        case 0x7C:  // Right arrow.
+          changed = model.MoveCursorForward();
+          return true;
+        case 0x73:  // Home.
+          changed = shift ? model.SelectToBeginning() : model.MoveCursorToBeginning();
+          return true;
+        case 0x77:  // End.
+          changed = shift ? model.SelectToEnd() : model.MoveCursorToEnd();
+          return true;
+        default:
+          return false;
+      }
+    });
+    if (changed) {
+      SendStateUpdate();
+    }
+    return handled;
+  }
+
+  /// Return, which submits rather than edits -- except in a multiline field
+  /// whose action is newline, which gets both, upstream's `EnterPressed`.
+  void OnAction() {
+    int client_id = 0;
+    std::string action;
+    bool newline = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (model_ == nullptr) {
+        return;
+      }
+      client_id = client_id_;
+      action = input_action_.empty() ? "TextInputAction.done" : input_action_;
+      newline = input_type_ == "TextInputType.multiline" && action == "TextInputAction.newline";
+      if (newline) {
+        model_->AddText(std::u16string(u"\n"));
+      }
+    }
+    if (newline) {
+      SendStateUpdate();
+    }
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartArray();
+    writer.Int(client_id);
+    writer.String(action.c_str());
+    writer.EndArray();
+    if (sender_) {
+      sender_("TextInputClient.performAction", std::string(buffer.GetString(), buffer.GetSize()));
+    }
+  }
+
+ private:
+  /// Runs `edit` against the model, if there is one. Returns what it
+  /// returned, or false when no client is attached.
+  bool Edit(const std::function<bool(TextInputModel&)>& edit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (model_ == nullptr) {
+      return false;
+    }
+    return edit(*model_);
+  }
+
+  void SendStateUpdate() {
+    int client_id = 0;
+    std::string text;
+    int selection_base = 0;
+    int selection_extent = 0;
+    int composing_base = -1;
+    int composing_extent = -1;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (model_ == nullptr) {
+        return;
+      }
+      client_id = client_id_;
+      text = model_->GetText();
+      selection_base = static_cast<int>(model_->selection().base());
+      selection_extent = static_cast<int>(model_->selection().extent());
+      if (model_->composing()) {
+        composing_base = static_cast<int>(model_->composing_range().base());
+        composing_extent = static_cast<int>(model_->composing_range().extent());
+      }
+    }
+
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartArray();
+    writer.Int(client_id);
+    writer.StartObject();
+    // The keys, and their order, are upstream's. A field the framework does
+    // not find is a field it substitutes a default for, silently.
+    writer.Key("selectionAffinity");
+    writer.String("TextAffinity.downstream");
+    writer.Key("selectionBase");
+    writer.Int(selection_base);
+    writer.Key("selectionExtent");
+    writer.Int(selection_extent);
+    writer.Key("selectionIsDirectional");
+    writer.Bool(false);
+    writer.Key("composingBase");
+    writer.Int(composing_base);
+    writer.Key("composingExtent");
+    writer.Int(composing_extent);
+    writer.Key("text");
+    writer.String(text.c_str(), static_cast<rapidjson::SizeType>(text.size()));
+    writer.EndObject();
+    writer.EndArray();
+
+    if (sender_) {
+      sender_("TextInputClient.updateEditingState",
+              std::string(buffer.GetString(), buffer.GetSize()));
+    }
+  }
+
+  mutable std::mutex mutex_;
+  std::unique_ptr<TextInputModel> model_;
+  int client_id_ = 0;
+  std::string input_action_;
+  std::string input_type_;
+  double marked_x_ = 0;
+  double marked_y_ = 0;
+  double marked_width_ = 0;
+  double marked_height_ = 0;
+  double transform_x_ = 0;
+  double transform_y_ = 0;
+  bool caret_valid_ = false;
+  Sender sender_;
+};
 
 /// Handles one call on `flutter/platform`.
 ///
@@ -462,8 +871,7 @@ std::optional<std::string> HandlePlatformCall(ExitRequester* requester,
       return ErrorEnvelope(kExitRequestError, kInvalidExitRequestMessage);
     }
     const int exit_code = code->value.GetInt();
-    const bool cancelable =
-        std::string(type->value.GetString()) == kExitTypeCancelable;
+    const bool cancelable = std::string(type->value.GetString()) == kExitTypeCancelable;
 
     if (!cancelable) {
       requester->QuitApplication(exit_code);
@@ -524,8 +932,7 @@ std::optional<std::string> HandlePlatformCall(ExitRequester* requester,
     return SuccessEnvelope([&text](auto& writer) {
       writer.StartObject();
       writer.Key("text");
-      writer.String(text.c_str(),
-                    static_cast<rapidjson::SizeType>(text.size()));
+      writer.String(text.c_str(), static_cast<rapidjson::SizeType>(text.size()));
       writer.EndObject();
     });
   }
@@ -622,8 +1029,7 @@ struct CursorRequest {
   NSCursor* cursor = nil;
 };
 
-std::vector<uint8_t> HandleMouseCursorCall(CursorRequest* request,
-                                           const MethodCall<>& call) {
+std::vector<uint8_t> HandleMouseCursorCall(CursorRequest* request, const MethodCall<>& call) {
   auto& codec = StandardMethodCodec::GetInstance();
   if (call.method_name() != "activateSystemCursor") {
     return *codec.EncodeErrorEnvelope("unimplemented", "", nullptr);
@@ -633,8 +1039,7 @@ std::vector<uint8_t> HandleMouseCursorCall(CursorRequest* request,
     return *codec.EncodeErrorEnvelope("error", "Missing arguments", nullptr);
   }
   auto kind = arguments->find(EncodableValue("kind"));
-  if (kind == arguments->end() ||
-      !std::holds_alternative<std::string>(kind->second)) {
+  if (kind == arguments->end() || !std::holds_alternative<std::string>(kind->second)) {
     return *codec.EncodeErrorEnvelope("error", "Missing 'kind'", nullptr);
   }
   const std::string name = std::get<std::string>(kind->second);
@@ -670,9 +1075,8 @@ bool PrefersDarkTheme() {
   if (appearance == nil) {
     return false;
   }
-  NSAppearanceName name = [appearance bestMatchFromAppearancesWithNames:@[
-    NSAppearanceNameAqua, NSAppearanceNameDarkAqua
-  ]];
+  NSAppearanceName name = [appearance
+      bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]];
   return [name isEqualToString:NSAppearanceNameDarkAqua];
 }
 
@@ -681,10 +1085,9 @@ bool PrefersDarkTheme() {
 /// macOS has no switch for this: the answer is a property of the locale's own
 /// time format, which is what upstream's `FlutterEngine` reads too.
 bool AlwaysUse24HourFormat() {
-  NSString* format =
-      [NSDateFormatter dateFormatFromTemplate:@"j"
-                                      options:0
-                                       locale:[NSLocale currentLocale]];
+  NSString* format = [NSDateFormatter dateFormatFromTemplate:@"j"
+                                                     options:0
+                                                      locale:[NSLocale currentLocale]];
   return format != nil && [format rangeOfString:@"a"].location == NSNotFound;
 }
 
@@ -744,8 +1147,7 @@ class HostPlatformMessageResponse : public PlatformMessageResponse {
  public:
   using Handler = std::function<void(const uint8_t*, size_t)>;
 
-  HostPlatformMessageResponse(fml::RefPtr<fml::TaskRunner> runner,
-                              Handler handler)
+  HostPlatformMessageResponse(fml::RefPtr<fml::TaskRunner> runner, Handler handler)
       : runner_(std::move(runner)), handler_(std::move(handler)) {}
 
   void Complete(std::unique_ptr<fml::Mapping> data) override {
@@ -753,8 +1155,7 @@ class HostPlatformMessageResponse : public PlatformMessageResponse {
       CompleteEmpty();
       return;
     }
-    std::vector<uint8_t> reply(data->GetMapping(),
-                               data->GetMapping() + data->GetSize());
+    std::vector<uint8_t> reply(data->GetMapping(), data->GetMapping() + data->GetSize());
     Post(std::move(reply));
   }
 
@@ -767,9 +1168,8 @@ class HostPlatformMessageResponse : public PlatformMessageResponse {
     }
     is_complete_ = true;
     auto handler = handler_;
-    runner_->PostTask(fml::MakeCopyable([handler, reply = std::move(reply)]() {
-      handler(reply.data(), reply.size());
-    }));
+    runner_->PostTask(fml::MakeCopyable(
+        [handler, reply = std::move(reply)]() { handler(reply.data(), reply.size()); }));
   }
 
   fml::RefPtr<fml::TaskRunner> runner_;
@@ -792,10 +1192,24 @@ struct WindowState {
   /// The mouse's last position, in physical pixels, for the pointer deltas.
   double last_x = 0.0;
   double last_y = 0.0;
+  /// Whether any mouse button is currently down, so a move can be told apart
+  /// from a drag.
   bool pressed = false;
+  /// **Which** buttons are down, as `kPointerButtonMouse*` bits — upstream
+  /// FlutterViewController's `MouseState.buttons`.
+  ///
+  /// Not derivable from `pressed`: the framework routes a secondary press to
+  /// different handlers -- `onSecondaryTap` is what opens a text field's
+  /// context menu -- so a press reported without its button is a right click
+  /// that arrives as a left one.
+  int64_t buttons = 0;
   /// Which modifier bits were set last time, so a `flagsChanged` can say which
   /// key moved and in which direction.
   uint64_t modifier_flags = 0;
+  /// The platform half of `flutter/textinput`: the editing model typing is
+  /// applied to. Channel calls reach it on the platform thread, keys on the
+  /// main thread; it locks internally.
+  TextInputHandler text_input;
   RfContentView* view = nil;
   NSWindow* window = nil;
 };
@@ -850,13 +1264,13 @@ class HostPlatformView final : public PlatformView,
   void SendPointer(const PointerData& data) {
     auto packet = std::make_unique<PointerDataPacket>(1);
     packet->SetPointerData(0, data);
-    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
-        [weak = GetWeakPtr(), packet = std::move(packet)]() mutable {
-          if (weak) {
-            static_cast<HostPlatformView*>(weak.get())
-                ->DispatchPointerDataPacket(std::move(packet));
-          }
-        }));
+    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable([weak = GetWeakPtr(),
+                                                                       packet = std::move(
+                                                                           packet)]() mutable {
+      if (weak) {
+        static_cast<HostPlatformView*>(weak.get())->DispatchPointerDataPacket(std::move(packet));
+      }
+    }));
   }
 
   /// Sends one key event to the framework.
@@ -873,11 +1287,10 @@ class HostPlatformView final : public PlatformView,
   void SendKey(const KeyData& data, const std::string& character) {
     KeyDataPacket packet(data, character.empty() ? nullptr : character.c_str());
     auto message = std::make_unique<PlatformMessage>(
-        kKeyDataChannel,
-        fml::MallocMapping::Copy(packet.data().data(), packet.data().size()),
+        kKeyDataChannel, fml::MallocMapping::Copy(packet.data().data(), packet.data().size()),
         /*response=*/nullptr);
-    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
-        [weak = GetWeakPtr(), message = std::move(message)]() mutable {
+    task_runners_.GetPlatformTaskRunner()->PostTask(
+        fml::MakeCopyable([weak = GetWeakPtr(), message = std::move(message)]() mutable {
           if (weak) {
             weak->DispatchPlatformMessage(std::move(message));
           }
@@ -889,6 +1302,23 @@ class HostPlatformView final : public PlatformView,
     if (auto locales = LocalizationPayload()) {
       SendOnChannel(kLocalizationChannel, *locales);
     }
+  }
+
+  /// Sends a JSON method call the framework listens for --
+  /// `TextInputClient.updateEditingState` is the caller that made this exist.
+  void SendMethodCall(const char* channel,
+                      const std::string& method,
+                      const std::string& arguments_json) {
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    writer.StartObject();
+    writer.Key("method");
+    writer.String(method.c_str());
+    writer.Key("args");
+    // Already JSON, so it goes in as it is rather than through the writer.
+    writer.RawValue(arguments_json.c_str(), arguments_json.size(), rapidjson::kArrayType);
+    writer.EndObject();
+    SendOnChannel(channel, std::string(buffer.GetString(), buffer.GetSize()));
   }
 
   /// Tells the framework what the application is doing. One bare string on
@@ -904,30 +1334,35 @@ class HostPlatformView final : public PlatformView,
   // where an embedder's plugins are dispatched to; here it is the two channels
   // this host serves. Anything else falls through to an empty reply, which the
   // framework reads as "nobody implements this".
-  void HandlePlatformMessage(
-      std::unique_ptr<PlatformMessage> message) override {
+  void HandlePlatformMessage(std::unique_ptr<PlatformMessage> message) override {
     const auto& data = message->data();
     std::optional<std::vector<uint8_t>> reply;
 
     if (message->channel() == kMouseCursorChannel) {
-      auto call = StandardMethodCodec::GetInstance().DecodeMethodCall(
-          data.GetMapping(), data.GetSize());
+      auto call =
+          StandardMethodCodec::GetInstance().DecodeMethodCall(data.GetMapping(), data.GetSize());
       if (call) {
         reply = HandleMouseCursorCall(&state_->cursor, *call);
       }
-    } else if (message->channel() == kPlatformChannel) {
+    } else if (message->channel() == kPlatformChannel || message->channel() == kTextInputChannel) {
+      const bool editing = message->channel() == kTextInputChannel;
       rapidjson::Document document;
-      document.Parse(reinterpret_cast<const char*>(data.GetMapping()),
-                     data.GetSize());
+      document.Parse(reinterpret_cast<const char*>(data.GetMapping()), data.GetSize());
       if (!document.HasParseError() && document.IsObject()) {
         auto method = document.FindMember("method");
         if (method != document.MemberEnd() && method->value.IsString()) {
           auto args = document.FindMember("args");
-          const rapidjson::Value* arguments =
-              args != document.MemberEnd() ? &args->value : nullptr;
-          if (auto answer = HandlePlatformCall(this, method->value.GetString(),
-                                               arguments)) {
+          const rapidjson::Value* arguments = args != document.MemberEnd() ? &args->value : nullptr;
+          const std::string method_name = method->value.GetString();
+          auto answer = editing ? state_->text_input.HandleMethodCall(method_name, arguments)
+                                : HandlePlatformCall(this, method_name.c_str(), arguments);
+          if (answer) {
             reply = std::vector<uint8_t>(answer->begin(), answer->end());
+          }
+          if (editing && method_name == "TextInput.clearClient") {
+            // The IME may still be composing into the field that just went
+            // away; the input context lives on the main thread.
+            RfDiscardMarkedText(state_->view);
           }
         }
       }
@@ -952,8 +1387,8 @@ class HostPlatformView final : public PlatformView,
     auto message = std::make_unique<PlatformMessage>(
         channel, fml::MallocMapping::Copy(payload.data(), payload.size()),
         /*response=*/nullptr);
-    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
-        [weak = GetWeakPtr(), message = std::move(message)]() mutable {
+    task_runners_.GetPlatformTaskRunner()->PostTask(
+        fml::MakeCopyable([weak = GetWeakPtr(), message = std::move(message)]() mutable {
           if (weak) {
             weak->DispatchPlatformMessage(std::move(message));
           }
@@ -972,10 +1407,7 @@ class HostPlatformView final : public PlatformView,
 /// macOS reports a single system mouse, so device and pointer identity are both
 /// constant. Coordinates arrive in points and are converted to the physical
 /// pixels the engine works in.
-PointerData MakePointerData(WindowState* state,
-                            PointerData::Change change,
-                            double x,
-                            double y) {
+PointerData MakePointerData(WindowState* state, PointerData::Change change, double x, double y) {
   PointerData data;
   data.Clear();
   data.time_stamp = fml::TimePoint::Now().ToEpochDelta().ToMicroseconds();
@@ -988,7 +1420,7 @@ PointerData MakePointerData(WindowState* state,
   data.physical_y = y;
   data.physical_delta_x = x - state->last_x;
   data.physical_delta_y = y - state->last_y;
-  data.buttons = state->pressed ? kPointerButtonMousePrimary : 0;
+  data.buttons = state->buttons;
   data.pressure = state->pressed ? 1.0 : 0.0;
   data.pressure_max = 1.0;
   data.view_id = kFlutterImplicitViewId;
@@ -1002,11 +1434,7 @@ PointerData MakePointerData(WindowState* state,
 /// It is not its own change: the pointer did not go anywhere, and a recogniser
 /// that read the change would see a mouse being moved. The signal is what says
 /// otherwise.
-PointerData MakeScrollData(WindowState* state,
-                           double x,
-                           double y,
-                           double delta_x,
-                           double delta_y) {
+PointerData MakeScrollData(WindowState* state, double x, double y, double delta_x, double delta_y) {
   PointerData data = MakePointerData(state, PointerData::Change::kHover, x, y);
   data.signal_kind = PointerData::SignalKind::kScroll;
   data.scroll_delta_x = delta_x;
@@ -1025,12 +1453,11 @@ void SendViewportMetrics(WindowState* state, int32_t width, int32_t height) {
   metrics.physical_max_width_constraint = width;
   metrics.physical_max_height_constraint = height;
 
-  state->platform_task_runner->PostTask(
-      [view = state->shell->GetPlatformView(), metrics]() {
-        if (view) {
-          view->SetViewportMetrics(kFlutterImplicitViewId, metrics);
-        }
-      });
+  state->platform_task_runner->PostTask([view = state->shell->GetPlatformView(), metrics]() {
+    if (view) {
+      view->SetViewportMetrics(kFlutterImplicitViewId, metrics);
+    }
+  });
 }
 
 void SendLifecycle(WindowState* state, const char* next) {
@@ -1061,9 +1488,15 @@ std::string DefaultIcuDataPath() {
 // Cocoa objects cannot live in a namespace, so these sit at file scope with a
 // prefix and hold a pointer to the state the C++ half owns.
 
-@interface RfContentView : NSView
+@interface RfContentView : NSView <NSTextInputClient>
 @property(nonatomic, assign) flutter::WindowState* state;
 @end
+
+static void RfDiscardMarkedText(RfContentView* view) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[view inputContext] discardMarkedText];
+  });
+}
 
 @implementation RfContentView
 
@@ -1101,12 +1534,10 @@ std::string DefaultIcuDataPath() {
 
 // -- pointers ----------------------------------------------------------------
 
-- (flutter::PointerData)pointerFor:(NSEvent*)event
-                            change:(flutter::PointerData::Change)change {
+- (flutter::PointerData)pointerFor:(NSEvent*)event change:(flutter::PointerData::Change)change {
   NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
   const double scale = _state->device_pixel_ratio;
-  return flutter::MakePointerData(_state, change, point.x * scale,
-                                  point.y * scale);
+  return flutter::MakePointerData(_state, change, point.x * scale, point.y * scale);
 }
 
 - (void)send:(const flutter::PointerData&)data {
@@ -1118,27 +1549,66 @@ std::string DefaultIcuDataPath() {
 - (void)mouseDown:(NSEvent*)event {
   // The button state is set before the event is built: `MakePointerData` reads
   // it, and a down that reported no buttons would be a hover as far as the
-  // gesture recognisers are concerned.
+  // gesture recognisers are concerned. Upstream's `mouseDown:`
+  // (FlutterViewController.mm) sets `_mouseState.buttons` the same way.
+  _state->buttons |= flutter::kPointerButtonMousePrimary;
   _state->pressed = true;
-  [self send:[self pointerFor:event
-                       change:flutter::PointerData::Change::kDown]];
+  [self send:[self pointerFor:event change:flutter::PointerData::Change::kDown]];
 }
 
 - (void)mouseUp:(NSEvent*)event {
-  flutter::PointerData data =
-      [self pointerFor:event change:flutter::PointerData::Change::kUp];
-  _state->pressed = false;
+  // The up still carries the button that is being released: the framework
+  // reads which button a tap was from the *down*, and a release reporting
+  // nothing held is what ends the gesture.
+  flutter::PointerData data = [self pointerFor:event change:flutter::PointerData::Change::kUp];
+  _state->buttons &= ~static_cast<int64_t>(flutter::kPointerButtonMousePrimary);
+  _state->pressed = _state->buttons != 0;
   [self send:data];
 }
 
 - (void)mouseDragged:(NSEvent*)event {
-  [self send:[self pointerFor:event
-                       change:flutter::PointerData::Change::kMove]];
+  [self send:[self pointerFor:event change:flutter::PointerData::Change::kMove]];
+}
+
+- (void)rightMouseDown:(NSEvent*)event {
+  _state->buttons |= flutter::kPointerButtonMouseSecondary;
+  _state->pressed = true;
+  [self send:[self pointerFor:event change:flutter::PointerData::Change::kDown]];
+}
+
+- (void)rightMouseUp:(NSEvent*)event {
+  flutter::PointerData data = [self pointerFor:event change:flutter::PointerData::Change::kUp];
+  _state->buttons &= ~static_cast<int64_t>(flutter::kPointerButtonMouseSecondary);
+  _state->pressed = _state->buttons != 0;
+  [self send:data];
+}
+
+- (void)rightMouseDragged:(NSEvent*)event {
+  [self send:[self pointerFor:event change:flutter::PointerData::Change::kMove]];
+}
+
+// A third button's bit is its AppKit button number, which is what upstream's
+// `otherMouseDown:` uses too -- number 2, the wheel, lands on
+// `kPointerButtonMouseMiddle`.
+- (void)otherMouseDown:(NSEvent*)event {
+  _state->buttons |= (1 << event.buttonNumber);
+  _state->pressed = true;
+  [self send:[self pointerFor:event change:flutter::PointerData::Change::kDown]];
+}
+
+- (void)otherMouseUp:(NSEvent*)event {
+  flutter::PointerData data = [self pointerFor:event change:flutter::PointerData::Change::kUp];
+  _state->buttons &= ~static_cast<int64_t>(1 << event.buttonNumber);
+  _state->pressed = _state->buttons != 0;
+  [self send:data];
+}
+
+- (void)otherMouseDragged:(NSEvent*)event {
+  [self send:[self pointerFor:event change:flutter::PointerData::Change::kMove]];
 }
 
 - (void)mouseMoved:(NSEvent*)event {
-  [self send:[self pointerFor:event
-                       change:flutter::PointerData::Change::kHover]];
+  [self send:[self pointerFor:event change:flutter::PointerData::Change::kHover]];
 }
 
 - (void)mouseEntered:(NSEvent*)event {
@@ -1146,8 +1616,7 @@ std::string DefaultIcuDataPath() {
 }
 
 - (void)mouseExited:(NSEvent*)event {
-  [self send:[self pointerFor:event
-                       change:flutter::PointerData::Change::kRemove]];
+  [self send:[self pointerFor:event change:flutter::PointerData::Change::kRemove]];
 }
 
 - (void)scrollWheel:(NSEvent*)event {
@@ -1164,8 +1633,8 @@ std::string DefaultIcuDataPath() {
     delta_x *= 100.0 / 3.0;
     delta_y *= 100.0 / 3.0;
   }
-  [self send:flutter::MakeScrollData(_state, point.x * scale, point.y * scale,
-                                     -delta_x * scale, -delta_y * scale)];
+  [self send:flutter::MakeScrollData(_state, point.x * scale, point.y * scale, -delta_x * scale,
+                                     -delta_y * scale)];
 }
 
 // -- keys --------------------------------------------------------------------
@@ -1177,15 +1646,12 @@ static uint32_t FirstCodePoint(NSString* text) {
   }
   const unichar first = [text characterAtIndex:0];
   if (CFStringIsSurrogateHighCharacter(first) && text.length > 1) {
-    return CFStringGetLongCharacterForSurrogatePair(first,
-                                                    [text characterAtIndex:1]);
+    return CFStringGetLongCharacterForSurrogatePair(first, [text characterAtIndex:1]);
   }
   return first;
 }
 
-- (void)sendKey:(NSEvent*)event
-           type:(flutter::KeyEventType)type
-    synthesized:(BOOL)synthesized {
+- (void)sendKey:(NSEvent*)event type:(flutter::KeyEventType)type synthesized:(BOOL)synthesized {
   if (_state == nullptr || _state->platform_view == nullptr) {
     return;
   }
@@ -1202,15 +1668,13 @@ static uint32_t FirstCodePoint(NSString* text) {
   data.timestamp = static_cast<uint64_t>(event.timestamp * 1000000.0);
   data.type = type;
   data.physical = flutter::PhysicalKeyForKeyCode(event.keyCode);
-  data.logical =
-      flutter::LogicalKeyForKeyCode(event.keyCode, FirstCodePoint(unmodified));
+  data.logical = flutter::LogicalKeyForKeyCode(event.keyCode, FirstCodePoint(unmodified));
   data.synthesized = synthesized ? 1 : 0;
 
   // The character is what the key produced, and only a press produces one. A
   // repeat carries it too, which is what makes held keys type.
   std::string text;
-  if (type != flutter::KeyEventType::kUp && characters != nil &&
-      characters.length > 0) {
+  if (type != flutter::KeyEventType::kUp && characters != nil && characters.length > 0) {
     const uint32_t code_point = FirstCodePoint(characters);
     // Control characters are what a key *is*, not what it typed: enter is not
     // a carriage return in a text field, it is an action.
@@ -1225,6 +1689,170 @@ static uint32_t FirstCodePoint(NSString* text) {
   [self sendKey:event
            type:(event.isARepeat ? flutter::KeyEventType::kRepeat
                                  : flutter::KeyEventType::kDown)synthesized:NO];
+
+  // The editing half: the framework owns the session, the platform owns the
+  // typing (see `TextInputHandler`). A key with command or control on it is a
+  // shortcut -- the framework's clipboard handlers among them -- and is not
+  // typed. This host does not wait for the framework's verdict the way the
+  // Windows host redispatches; the only text-bearing keys the framework
+  // consumes are those shortcuts, and they are skipped here.
+  if (_state == nullptr ||
+      (event.modifierFlags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) != 0) {
+    return;
+  }
+  if (!_state->text_input.attached()) {
+    return;
+  }
+  // Outside a composition the editing keys belong to the field: Return
+  // submits, backspace deletes, the arrows move the caret. *Inside* one they
+  // belong to the input method -- Return takes the composition, the arrows
+  // walk the candidate list -- so everything goes through
+  // `interpretKeyEvents:`, which is what hands the event to the IME and calls
+  // back on the `NSTextInputClient` methods below. A plain key with no IME
+  // engaged comes straight back as `insertText:`, which is how ordinary
+  // typing arrives too.
+  if (!_state->text_input.Composing()) {
+    if (event.keyCode == 0x24 || event.keyCode == 0x4C) {  // Return, keypad Enter.
+      _state->text_input.OnAction();
+      return;
+    }
+    if (_state->text_input.OnEditingKey(event.keyCode,
+                                        (event.modifierFlags & NSEventModifierFlagShift) != 0)) {
+      return;
+    }
+  }
+  [self interpretKeyEvents:@[ event ]];
+}
+
+// -- NSTextInputClient --------------------------------------------------------
+//
+// The half an input method talks to. Upstream this is
+// `FlutterTextInputPlugin.mm`, an `NSTextInputClient` over the same editing
+// model; this is that shape with the committed and marked text and the caret
+// rectangle, and none of the attributed-string detail -- the framework draws
+// the text, so the attributes have nowhere to go.
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+  if (_state == nullptr) {
+    return;
+  }
+  NSString* text =
+      [string isKindOfClass:[NSAttributedString class]] ? [string string] : (NSString*)string;
+  if (text == nil || text.length == 0) {
+    return;
+  }
+  std::u16string units;
+  units.reserve(text.length);
+  for (NSUInteger i = 0; i < text.length; i++) {
+    const unichar unit = [text characterAtIndex:i];
+    // AppKit spells arrows, F-keys and friends as code points in the Unicode
+    // function-key block; those are keys, not text. Control characters are
+    // what a key *is*, not what it typed.
+    if (unit < 0x20 || unit == 0x7F || (unit >= 0xF700 && unit <= 0xF8FF)) {
+      return;
+    }
+    units.push_back(unit);
+  }
+  _state->text_input.OnInsertText(units);
+}
+
+- (void)setMarkedText:(id)string
+        selectedRange:(NSRange)selectedRange
+     replacementRange:(NSRange)replacementRange {
+  if (_state == nullptr) {
+    return;
+  }
+  NSString* text =
+      [string isKindOfClass:[NSAttributedString class]] ? [string string] : (NSString*)string;
+  if (text == nil) {
+    return;
+  }
+  std::u16string units;
+  units.reserve(text.length);
+  for (NSUInteger i = 0; i < text.length; i++) {
+    units.push_back([text characterAtIndex:i]);
+  }
+  _state->text_input.OnSetMarkedText(
+      units,
+      selectedRange.location == NSNotFound ? static_cast<long>(units.size())
+                                           : static_cast<long>(selectedRange.location),
+      selectedRange.location == NSNotFound ? 0 : static_cast<long>(selectedRange.length));
+}
+
+- (void)unmarkText {
+  if (_state != nullptr) {
+    _state->text_input.OnUnmarkText();
+  }
+}
+
+- (BOOL)hasMarkedText {
+  return _state != nullptr && _state->text_input.Composing();
+}
+
+- (NSRange)markedRange {
+  long location = -1;
+  long length = 0;
+  if (_state != nullptr) {
+    _state->text_input.GetMarkedRange(&location, &length);
+  }
+  if (location < 0) {
+    return NSMakeRange(NSNotFound, 0);
+  }
+  return NSMakeRange(static_cast<NSUInteger>(location), static_cast<NSUInteger>(length));
+}
+
+- (NSRange)selectedRange {
+  long location = -1;
+  long length = 0;
+  if (_state != nullptr) {
+    _state->text_input.GetSelectedRange(&location, &length);
+  }
+  if (location < 0) {
+    return NSMakeRange(NSNotFound, 0);
+  }
+  return NSMakeRange(static_cast<NSUInteger>(location), static_cast<NSUInteger>(length));
+}
+
+- (NSAttributedString*)attributedSubstringForProposedRange:(NSRange)range
+                                               actualRange:(NSRangePointer)actualRange {
+  return nil;
+}
+
+- (NSArray<NSAttributedStringKey>*)validAttributesForMarkedText {
+  return @[];
+}
+
+/// Where the candidate window goes: the caret's rectangle, reported by the
+/// framework at paint in logical pixels, converted view -> window -> screen.
+- (NSRect)firstRectForCharacterRange:(NSRange)range actualRange:(NSRangePointer)actualRange {
+  double x = 0;
+  double y = 0;
+  double width = 0;
+  double height = 0;
+  if (_state == nullptr || !_state->text_input.GetCaretRect(&x, &y, &width, &height)) {
+    return NSZeroRect;
+  }
+  const NSRect local = NSMakeRect(x, y, width, height);
+  const NSRect in_window = [self convertRect:local toView:nil];
+  return [self.window convertRectToScreen:in_window];
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+  return NSNotFound;
+}
+
+/// The selectors `interpretKeyEvents:` sends for keys that are not text.
+/// Everything this host answers is already handled before the event was
+/// offered to the IME (see `keyDown:`), except Return committing through with
+/// no composition open -- and the rest must not fall through to `NSView`,
+/// whose answer is the system beep.
+- (void)doCommandBySelector:(SEL)selector {
+  if (_state == nullptr) {
+    return;
+  }
+  if (selector == @selector(insertNewline:)) {
+    _state->text_input.OnAction();
+  }
 }
 
 - (void)keyUp:(NSEvent*)event {
@@ -1248,9 +1876,9 @@ static uint32_t FirstCodePoint(NSString* text) {
   const uint64_t flags = static_cast<uint64_t>(event.modifierFlags);
   const bool now_down = (flags & bit) != 0;
   _state->modifier_flags = flags;
-  [self sendKey:event
-           type:(now_down ? flutter::KeyEventType::kDown
-                          : flutter::KeyEventType::kUp)synthesized:NO];
+  [self
+      sendKey:event
+         type:(now_down ? flutter::KeyEventType::kDown : flutter::KeyEventType::kUp)synthesized:NO];
 }
 
 // -- geometry ----------------------------------------------------------------
@@ -1259,14 +1887,12 @@ static uint32_t FirstCodePoint(NSString* text) {
   if (_state == nullptr) {
     return;
   }
-  const double scale =
-      self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 1.0;
+  const double scale = self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 1.0;
   _state->device_pixel_ratio = scale;
   const NSSize size = self.bounds.size;
   _state->physical_width = static_cast<int32_t>(size.width * scale);
   _state->physical_height = static_cast<int32_t>(size.height * scale);
-  flutter::SendViewportMetrics(_state, _state->physical_width,
-                               _state->physical_height);
+  flutter::SendViewportMetrics(_state, _state->physical_width, _state->physical_height);
 }
 
 - (void)setFrameSize:(NSSize)size {
@@ -1285,12 +1911,12 @@ static uint32_t FirstCodePoint(NSString* text) {
   for (NSTrackingArea* area in [self.trackingAreas copy]) {
     [self removeTrackingArea:area];
   }
-  NSTrackingArea* area = [[NSTrackingArea alloc]
-      initWithRect:self.bounds
-           options:(NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved |
-                    NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect)
-             owner:self
-          userInfo:nil];
+  NSTrackingArea* area =
+      [[NSTrackingArea alloc] initWithRect:self.bounds
+                                   options:(NSTrackingMouseEnteredAndExited | NSTrackingMouseMoved |
+                                            NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect)
+                                     owner:self
+                                  userInfo:nil];
   [self addTrackingArea:area];
   [super updateTrackingAreas];
 }
@@ -1368,11 +1994,9 @@ bool HostPlatformView::PresentBackingStore(sk_sp<SkSurface> backing_store) {
   static bool reported = false;
   if (!reported) {
     reported = true;
-    FML_LOG(IMPORTANT) << "Presenting " << (blue_first ? "BGRA" : "RGBA")
-                       << " frames.";
+    FML_LOG(IMPORTANT) << "Presenting " << (blue_first ? "BGRA" : "RGBA") << " frames.";
   }
-  state_->frame_buffer.Store(pixmap.addr(), pixmap.width(), pixmap.height(),
-                             blue_first);
+  state_->frame_buffer.Store(pixmap.addr(), pixmap.width(), pixmap.height(), blue_first);
 
   // The first frame, to a file, when asked. See FrameBuffer::WritePng.
   static bool dumped = false;
@@ -1380,8 +2004,7 @@ bool HostPlatformView::PresentBackingStore(sk_sp<SkSurface> backing_store) {
     if (const char* path = std::getenv("RUSTFLUTTER_DUMP_FRAME")) {
       dumped = true;
       FML_LOG(IMPORTANT) << "Wrote the first frame to " << path << ": "
-                         << (state_->frame_buffer.WritePng(path) ? "ok"
-                                                                 : "failed");
+                         << (state_->frame_buffer.WritePng(path) ? "ok" : "failed");
     }
   }
   // Wakes the main thread, which repaints from the buffer. `dispatch_async`
@@ -1414,8 +2037,7 @@ void HostPlatformView::RequestAppExit(bool cancelable, int exit_code) {
   const std::string payload = buffer.GetString();
 
   auto response = fml::MakeRefCounted<HostPlatformMessageResponse>(
-      task_runners_.GetPlatformTaskRunner(),
-      [](const uint8_t* reply, size_t length) {
+      task_runners_.GetPlatformTaskRunner(), [](const uint8_t* reply, size_t length) {
         // A reply of `["exit"]`-shaped JSON means go; anything else, including
         // no reply at all, means stay. Parsing is deliberately forgiving: the
         // only decision is whether the word "exit" is in the answer.
@@ -1429,11 +2051,10 @@ void HostPlatformView::RequestAppExit(bool cancelable, int exit_code) {
       });
 
   auto message = std::make_unique<PlatformMessage>(
-      kPlatformChannel,
-      fml::MallocMapping::Copy(payload.data(), payload.size()),
+      kPlatformChannel, fml::MallocMapping::Copy(payload.data(), payload.size()),
       std::move(response));
-  task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
-      [weak = GetWeakPtr(), message = std::move(message)]() mutable {
+  task_runners_.GetPlatformTaskRunner()->PostTask(
+      fml::MakeCopyable([weak = GetWeakPtr(), message = std::move(message)]() mutable {
         if (weak) {
           weak->DispatchPlatformMessage(std::move(message));
         }
@@ -1472,16 +2093,14 @@ int32_t rf_host_run(const RfHostOptions* options) {
     // The application's preference is read and reported rather than silently
     // ignored, so an app that asked for Impeller learns it did not get it.
     if (options->enable_impeller != 0) {
-      FML_LOG(IMPORTANT)
-          << "Impeller was requested; this host renders with the Skia software "
-             "surface. See rustflutter_host_mac.mm.";
+      FML_LOG(IMPORTANT) << "Impeller was requested; this host renders with the Skia software "
+                            "surface. See rustflutter_host_mac.mm.";
     }
     settings.enable_impeller = false;
     settings.enable_software_rendering = true;
     settings.icu_initialization_required = true;
-    settings.icu_data_path = options->icu_data_path != nullptr
-                                 ? std::string(options->icu_data_path)
-                                 : DefaultIcuDataPath();
+    settings.icu_data_path = options->icu_data_path != nullptr ? std::string(options->icu_data_path)
+                                                               : DefaultIcuDataPath();
     // Nothing to prefetch and nothing to warn about: there is no Dart snapshot,
     // and the Impeller opt-out warning is aimed at applications that still have
     // a choice.
@@ -1502,16 +2121,13 @@ int32_t rf_host_run(const RfHostOptions* options) {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
     const NSRect frame = NSMakeRect(0, 0, options->width, options->height);
-    NSWindow* window =
-        [[NSWindow alloc] initWithContentRect:frame
-                                    styleMask:(NSWindowStyleMaskTitled |
-                                               NSWindowStyleMaskClosable |
-                                               NSWindowStyleMaskMiniaturizable |
-                                               NSWindowStyleMaskResizable)
-                                      backing:NSBackingStoreBuffered
-                                        defer:NO];
-    [window
-        setTitle:@(options->title != nullptr ? options->title : "rustflutter")];
+    NSWindow* window = [[NSWindow alloc]
+        initWithContentRect:frame
+                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                             NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    [window setTitle:@(options->title != nullptr ? options->title : "rustflutter")];
     [window center];
 
     RfContentView* view = [[RfContentView alloc] initWithFrame:frame];
@@ -1525,21 +2141,16 @@ int32_t rf_host_run(const RfHostOptions* options) {
 
     state.window = window;
     state.view = view;
-    state.device_pixel_ratio =
-        window.backingScaleFactor > 0 ? window.backingScaleFactor : 1.0;
-    state.physical_width =
-        static_cast<int32_t>(options->width * state.device_pixel_ratio);
-    state.physical_height =
-        static_cast<int32_t>(options->height * state.device_pixel_ratio);
+    state.device_pixel_ratio = window.backingScaleFactor > 0 ? window.backingScaleFactor : 1.0;
+    state.physical_width = static_cast<int32_t>(options->width * state.device_pixel_ratio);
+    state.physical_height = static_cast<int32_t>(options->height * state.device_pixel_ratio);
 
     // -- Threads --------------------------------------------------------------
 
-    ThreadHost thread_host(
-        "rf", ThreadHost::Type::kPlatform | ThreadHost::Type::kUi |
-                  ThreadHost::Type::kRaster | ThreadHost::Type::kIo);
+    ThreadHost thread_host("rf", ThreadHost::Type::kPlatform | ThreadHost::Type::kUi |
+                                     ThreadHost::Type::kRaster | ThreadHost::Type::kIo);
 
-    TaskRunners task_runners("rustflutter",
-                             thread_host.platform_thread->GetTaskRunner(),
+    TaskRunners task_runners("rustflutter", thread_host.platform_thread->GetTaskRunner(),
                              thread_host.raster_thread->GetTaskRunner(),
                              thread_host.ui_thread->GetTaskRunner(),
                              thread_host.io_thread->GetTaskRunner());
@@ -1550,12 +2161,15 @@ int32_t rf_host_run(const RfHostOptions* options) {
     std::unique_ptr<Shell> shell = Shell::Create(
         platform_data, task_runners, settings,
         [&state](Shell& shell) {
-          auto view = std::make_unique<HostPlatformView>(
-              shell, shell.GetTaskRunners(), &state);
+          auto view = std::make_unique<HostPlatformView>(shell, shell.GetTaskRunners(), &state);
           // The window needs to reach the view to send pointers and keys. The
           // shell owns it and outlives the run loop, so a raw pointer is
           // enough.
           state.platform_view = view.get();
+          state.text_input.SetSender(
+              [sender = view.get()](const std::string& method, const std::string& arguments) {
+                sender->SendMethodCall(kTextInputChannel, method, arguments);
+              });
           return view;
         },
         [](Shell& shell) { return std::make_unique<Rasterizer>(shell); });
@@ -1583,11 +2197,10 @@ int32_t rf_host_run(const RfHostOptions* options) {
           // a guess.
           std::vector<std::unique_ptr<Display>> displays;
           displays.push_back(std::make_unique<Display>(
-              /*display_id=*/0, DisplayRefreshRate(), state.physical_width,
-              state.physical_height, state.device_pixel_ratio));
+              /*display_id=*/0, DisplayRefreshRate(), state.physical_width, state.physical_height,
+              state.device_pixel_ratio));
           shell->OnDisplayUpdates(std::move(displays));
-          SendViewportMetrics(&state, state.physical_width,
-                              state.physical_height);
+          SendViewportMetrics(&state, state.physical_width, state.physical_height);
           // Before the first frame, so that an application choosing between the
           // light and the dark theme in its first `build` chooses correctly
           // rather than showing one frame of the wrong one.

@@ -2741,3 +2741,132 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 确认 `RenderAnchored` 传进来的第一个参数就是**overlay 坐标系里的**锚点矩形
 （第 444 轮 `Anchor::rect()` 的注释说"走到根，正好是 theatre 条目布局所在的系"），
 是的话直接接；不是的话先看清楚要换算什么。
+## 第 459 轮：macOS 这边把 Text fields 修到能用——整盒可点、右键、打字、输入法
+
+这一轮在 macOS 上做，与第 418-425 轮（Windows 侧）平行发生、rebase 时合流。
+用户报的还是那三件：无法输入、无法选择、右键菜单不弹。
+
+### 命中下降是通的——第 425 轮"幻影"结论在 mac 上独立复核了一遍
+
+把探针（临时打在默认 `hit_test` 上，逐层打印类型、尺寸与结果）
+打进整棵 gallery 树（挂载真实 app 到 text-field 页、460×820 布局），看到：
+
+    RenderEditable pos=(160.0,0.4) size=342x17 hit=true
+    RenderPointerRegion id=10001 behavior=Opaque size=342x17 hit=true
+    ...（一路到根，全部命中）
+
+下降是通的——和第 425 轮在 Windows 上的结论一致。第 417 轮 y=200..237 的
+扫描全部落空，是因为**那条带恰好没盖住 17px 高的编辑行**：`editable.rs` 的 `RenderPointerRegion` 恰好只包着裸的
+`RenderEditable`（342×17），demo 的 51px 字段盒子（浮标签、留白、填充）
+全在区域外。点盒子不但落空，还落在 `TextFieldTapRegion` 之外——
+**把刚拿到的焦点又弹掉**。"无法输入、无法选择、右键不弹"三个症状同源。
+
+### 对照上游，修了三处
+
+**一、TextField 的手势区域包住装饰盒**（`editable.rs`）。上游
+`TextField.build`（`material/text_field.dart`）把 `InputDecorator` 放在
+`_selectionGestureDetectorBuilder.buildGestureDetector` **里面**——整个装饰盒
+都是手势区。这里加了 `TextField::with_decoration(...)`：应用把盒子交给字段，
+字段把它建在自己的 `RenderPointerRegion` 里面。坐标照上游走全局：
+`TapEvent` 加了 `position`（上游 `TapUpDetails.globalPosition`，`gestures.rs`），
+editable 在 paint 时把窗口原点写进一个槽（借已有的 `ReportPlacement`），
+handler 用 `event.position - origin` 换算——上游
+`renderEditable.globalToLocal`（`widgets/text_selection.dart:780`）的同一笔账。
+越界位置由 `caret_position_at` 收到最近行/字符，等价上游
+`getPositionForOffset`。指针区域挪到装饰外面之后，editable 不再被任何父节点
+交给访问者，树的读回（`RenderRef::unwrapped` 一层的约定）就找不到它了——
+锚点包装从裸 handle 换成 `RenderMetaData`（DeferToChild，id 0 不进命中路径），
+这是本仓库现成的"只交出孩子、别的什么都不改"的代理。
+
+**二、demo 的字段盒子搬进 decoration**（`text_field_demo.rs`）。
+`field_group` 拆成三份：`decorated_box`（盒子本体，禁用的 email 直接用）、
+`field_decoration`（交给 `with_decoration` 的闭包，行内的电话前缀、工资 USD、
+密码眼睛都进盒子——上游 `prefixText`/`suffixText`/`suffixIcon` 本来就在
+decoration 里），`field_group` 只留区域外的东西（leading icon、错误/帮助/
+计数行）。眼睛仍是自己的内层区域，竞技场按最内层裁决——上游 `IconButton`
+赢过字段自己的 detector，同一回事。
+
+**三、macOS host 补右键**（`rustflutter_host_mac.mm`）。和第 416 轮修
+Windows 是同一个病：只有 `mouseDown/Up/Dragged`，`buttons` 写死 primary。
+照上游 engine `FlutterViewController.mm:907-947` 补齐：`MouseState.buttons`
+位掩码、`rightMouseDown/Up/Dragged`、`otherMouseDown/Up/Dragged`
+（`1 << buttonNumber`），up 先带着位发再清位，`pressed = buttons != 0`。
+
+### 验证
+
+- 新回归测试 `every_text_field_box_answers_the_pointer_over_its_whole_height`
+  （gallery `app.rs`）：挂载 text-field 页，沿表单中线 2px 步进扫描，
+  断言七个字段各自整个盒子（>40px）都命中自己的 id，禁用字段不命中。
+  修之前这个测试只在 17px 的行上命中。
+- `flutter_gallery_unittests` 341 全过；`rustflutter_unittests` 6485 过、
+  3 个失败与本轮无关（`center_title`、`names_route`、slider 语义——
+  平台相关断言，**在本轮改动之前的基线上就已经在 macOS 上失败**，
+  它们写下时跑在 Windows 上）。
+- 临时探针（默认 `hit_test` 的 RF_HIT_TRACE、app.rs 的 probe 测试）已移除。
+
+### 遗留
+
+- 右键菜单外观这件（417 的第三件）**不用再做**：rebase 合进来的第 426 轮
+  已经按平台选 `DesktopTextSelectionControls`。
+- 上游把 helper/error/counter 也放在 InputDecorator 里（点它们也聚焦字段）；
+  这里留在区域外，注在 `field_group` 的文档里。
+
+### 追加（同一轮）：打字打不进去的真因——macOS host 没有 `flutter/textinput` 的平台半边
+
+用户在修完命中区域后实测：点击能聚焦、**Cmd+V 能粘贴**、但打字无效。
+这组症状把范围钉死了：聚焦通（本轮修的）、剪贴板快捷键通（框架侧
+`clipboard_shortcuts` 直接改状态、走 `flutter/platform` 的剪贴板方法，
+mac host 实现了），而**普通按键的文本没人处理**——编辑是平台的活
+（`editable.rs` 文件头写着：Backspace、方向键、选择与组合都在平台侧的
+模型里），Windows host 有完整的 `TextInputHandler`（engine 自带的
+`flutter::TextInputModel` + `flutter/textinput` 通道 +
+`TextInputClient.updateEditingState` 回传），mac host 里**一行都没有**：
+框架开了会话就永远等不到第一次状态回传。
+
+照 Windows host 的做法移植（`rustflutter_host_mac.mm`）：
+
+- `TextInputHandler`：同一个 `TextInputModel`（dep `common_cpp_input`
+  本来就在），`setClient/clearClient/setEditingState/show/hide` 照答，
+  IME 相关的三个方法礼貌地空答（这个 host 声明过没有 IME）；
+- `HandlePlatformMessage` 把 `flutter/textinput` 与 `flutter/platform`
+  同一套 JSON 方法调用解析分开路由；
+- `SendMethodCall`（win :2124 的镜像）把 `updateEditingState` /
+  `performAction` 发回框架；
+- `keyDown:`：Return/小键盘 Enter → `OnAction`（多行且 action 是
+  newline 的字段先插 `\n`，上游 `EnterPressed`）；退格/前删/左右/
+  Home/End 按 keyCode 走 `OnEditingKey`（Home/End 带 Shift 选择）；
+  其余键取 `characters` 作为已提交文本 `OnText`——**跳过** Cmd/Ctrl
+  组合（那是快捷键，框架的剪贴板 handler 在等它们）与 AppKit 用
+  0xF700–0xF8FF 拼写的功能键码位。与 win 的差别照实记下：win 等框架
+  对每个键的裁决再补发（redispatch），mac 这里不等——框架会消费的
+  带文本按键只有那几个快捷键，已经按修饰键跳过了。
+
+### 再追加（同一轮）：输入法（微信输入法等）不工作——视图没有实现 `NSTextInputClient`
+
+上一节的 keyDown 直插只覆盖无 IME 的键入：输入法要工作，视图必须实现
+`NSTextInputClient` 并把按键交给 `interpretKeyEvents:`，否则组合根本开始
+不了，拼音直接以字母上屏。上游的样子就是 `FlutterTextInputPlugin.mm`：
+一个 `NSTextInputClient` 盖在同一个编辑模型上。照它补齐
+（`rustflutter_host_mac.mm`）：
+
+- `RfContentView` 采纳 `NSTextInputClient`：`insertText:`（已提交文本，
+  组合中则先 `UpdateComposingText` 再 commit）、`setMarkedText:`
+  （`BeginComposing`/`UpdateComposingText`，IME 光标带过去）、
+  `unmarkText`、`hasMarkedText`/`markedRange`/`selectedRange`
+  （UTF-16，与 `NSRange` 同单位）、`firstRectForCharacterRange:`
+  （候选框位置：框架 paint 时上报的 `setMarkedTextRect` +
+  `setEditableSizeAndTransform` 平移，视图→窗口→屏幕转换；这两个方法
+  也从"礼貌空答"改成了真存值，win host 同款解析）、
+  `doCommandBySelector:`（只答 `insertNewline:`，其余不落回 NSView 的
+  蜂鸣）。
+- `keyDown:` 改为：无组合时编辑键（退格/方向/Home/End/Enter）仍直达
+  模型——组合中这些键属于 IME（Enter 取字、方向键走候选）——其余一律
+  `interpretKeyEvents:`；无 IME 的普通键会原路从 `insertText:` 回来，
+  上一节的直插路径由它取代（`OnText` 删除）。
+- `TextInput.clearClient` 到达时向主线程投递 `discardMarkedText`：
+  焦点走掉时 IME 不能还对着一个不存在的字段组词。
+- `updateEditingState` 现在带真实的 `composingBase/Extent`。
+
+组合中的下划线样式框架侧还没有画（`TextEditingValue` 的 composing 字段
+带到了，编辑器未用它加下划线），组词过程文本可见、可取字；样式是后续
+的活。

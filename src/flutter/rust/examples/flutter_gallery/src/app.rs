@@ -16,9 +16,9 @@ use std::time::Duration;
 use rustflutter::animation::Controller;
 use rustflutter::components::Theme;
 use rustflutter::framework::{
-    component, leaf, many, provide, AnyWidget, BuildContext, StateHandle,
+    AnyWidget, BuildContext, StateHandle, component, leaf, many, provide,
 };
-use rustflutter::media_query::{media_query_of, MediaQuery};
+use rustflutter::media_query::{MediaQuery, media_query_of};
 use rustflutter::navigation::{Navigator, Route, RouteArgs, Transition};
 use rustflutter::prelude::*;
 use rustflutter::render::{CrossAxisAlignment, MainAxisSize, RenderFlex, StackPosition};
@@ -552,11 +552,7 @@ pub fn cycle(now_micros: i64, period_micros: i64) -> f32 {
 /// 0 to 1 and back, once per `period`.
 pub fn ping_pong(now_micros: i64, period_micros: i64) -> f32 {
     let t = cycle(now_micros, period_micros);
-    if t <= 0.5 {
-        t * 2.0
-    } else {
-        (1.0 - t) * 2.0
-    }
+    if t <= 0.5 { t * 2.0 } else { (1.0 - t) * 2.0 }
 }
 
 /// Builds the current screen, and the outgoing one if a transition is running.
@@ -1111,6 +1107,66 @@ mod tests {
         assert!(
             two < 0.5,
             "16ms frames should not advance like 50ms ones: {two}"
+        );
+    }
+
+    /// Round 418's bug: on the Text fields demo, a press anywhere on a
+    /// field's decorated box must reach that field's pointer region. It used
+    /// to reach only the bare editable -- a 17px text line inside a 51px box
+    /// -- so clicking the box did nothing, and worse, read as a tap outside
+    /// the field and took its keyboard away. The box now rides
+    /// `TextField::with_decoration`, inside the field's region, as upstream's
+    /// `InputDecorator` sits inside the field's gesture detector.
+    #[test]
+    fn every_text_field_box_answers_the_pointer_over_its_whole_height() {
+        use rustflutter::framework::{ElementTree, stateful};
+        use rustflutter::render::{BoxConstraints, HitTestResult, Offset, Size};
+        use std::collections::HashMap;
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(Gallery {
+            theme_mode: Some(ThemeMode::Dark),
+            route: routes::DEMO,
+            slug: Some("text-field".to_string()),
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        // Tall enough that the whole form is on screen: the page scrolls,
+        // and a field below the fold answers nothing however its box is
+        // wired.
+        root.layout(BoxConstraints::tight_for(Size::new(460.0, 1200.0)));
+
+        // A 2px-step scan down the middle of the form, counting which field
+        // each press lands on. The demo's local ids: 10000..=10007, with
+        // 10003 the disabled field (no TextField, so no region) and 10008
+        // the password eye.
+        let mut hits: HashMap<u64, u32> = HashMap::new();
+        let mut y = 150.0_f32;
+        while y < 1200.0 {
+            let mut result = HitTestResult::new();
+            root.hit_test(Offset::new(233.0, y), &mut result);
+            if let Some(entry) = result.path.first() {
+                if (10_000..10_010).contains(&entry.target) {
+                    *hits.entry(entry.target).or_default() += 1;
+                }
+            }
+            y += 2.0;
+        }
+
+        for id in [10_000_u64, 10_001, 10_002, 10_004, 10_005, 10_006, 10_007] {
+            let count = hits.get(&id).copied().unwrap_or(0);
+            // The box with its floated label is ~51px tall; the bare
+            // editable was 17px. Requiring more than 20 rows of 2px proves
+            // the whole box answers, not just the text line.
+            assert!(
+                count > 20,
+                "field {id} should be hittable across its whole box, \
+                 got {count} rows of 2px ({}px)",
+                count * 2
+            );
+        }
+        assert!(
+            !hits.contains_key(&10_003),
+            "the disabled field has no region to hit"
         );
     }
 }

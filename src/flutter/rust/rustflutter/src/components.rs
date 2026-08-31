@@ -2761,6 +2761,7 @@ impl Component for Scaffold {
                                         if let Some(tap) = &handlers.on_tap {
                                             tap(crate::gestures::TapEvent {
                                                 local_position: Offset::ZERO,
+                                                position: Offset::ZERO,
                                                 pointer_id: 0,
                                             });
                                         }
@@ -4357,6 +4358,7 @@ mod tests {
                     if let Some(tap) = &handlers.on_tap {
                         tap(crate::gestures::TapEvent {
                             local_position: crate::render::Offset::ZERO,
+                            position: crate::render::Offset::ZERO,
                             pointer_id: 0,
                         });
                     }
@@ -7023,6 +7025,7 @@ mod tests {
         let handler = handlers.on_tap.clone().expect("a tap handler");
         handler(crate::gestures::TapEvent {
             local_position: Offset::new(dx, 0.0),
+            position: Offset::new(dx, 0.0),
             pointer_id: 1,
         });
     }
@@ -7993,6 +7996,7 @@ Taken in June"
         // Three-tenths along a two-hundred-wide track.
         handler(crate::gestures::TapEvent {
             local_position: Offset::new(60.0, 0.0),
+            position: Offset::new(60.0, 0.0),
             pointer_id: 1,
         });
         assert_eq!(
