@@ -1386,3 +1386,65 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
 布尔值，谁来把它变成一次真正的 route push？看 `navigator.rs` 里
 现成的 push 是什么签名。(2) 全屏与停靠两种 view 的**位置**由谁算——
 `ResolvedSearchView` 里有没有，没有就得先补，不然只能糊一个位置。
+
+---
+
+## 第 436 轮：打开的 search view 落在哪儿
+
+上一轮留了两件事要先查。
+
+**查一**：`navigator.rs` 的 `push(route: u64)` 只收一个 id，
+没有"把一棵子树推成一条 route"的东西。
+**查二**：`ResolvedSearchView` 十三个字段里**没有位置**——
+没有 rect、没有 anchor。上一轮自己写的：
+"没有就得先补，不然只能糊一个位置"。所以这一轮补它。
+
+上游是 `_SearchViewRoute.updateTweens` 里的 `_rectTween.end`。
+`begin` 是 anchor 自己的 rect——view 是从被点的那个 bar **长出来**的，
+不是盖在它上面，眼睛跟着一个东西走而不是丢了 bar 又找到一块面板。
+
+### 两个尺寸来自两个地方
+
+- **宽是 anchor 的**（clamp 到约束）：view 是那个输入框的延续。
+- **高是屏幕的三分之二**（clamp 到约束），和 anchor 无关：
+  一个 56 高的 bar 说不出一列结果要多少地方，能随窗口缩放的答案是分数。
+
+### 越界时动的是角，不是尺寸
+
+上游那段注释写着 *"If the window is smaller than the view, then we resize
+the view to fit the window"*——**它的代码不 resize**。
+`min` 落在角的位置上，`endSize` 原样是 `Size(viewWidth, viewHeight)`。
+**照代码抄，不照注释抄**：错的是注释，一个悄悄"修好"它的移植
+会在没人找得到原因的地方把窗口排得和上游不一样。测试把这条钉住了。
+
+### RTL 那个 `if` 是死的
+
+上游 RTL 分支里写了左右镜像的那次回拉：
+`if (viewRightToScreenLeft < viewWidth) topLeft = Offset(0.0, ...)`。
+条件就是 `anchorRect.right < viewWidth`，而上一行的
+`max(right - width, 0)` 在这种情况下**已经是 0 了**。
+**没有输入能让这个分支改变答案。**
+
+所以没有照抄，并在代码里写明为什么：
+**一个到不了的分支是一个测试按不住的分支**——变异扫描打它会一直绿，
+而那个绿看起来像"覆盖不够"，其实是"这里没有东西"。
+（这也是变异扫描第一遍抓出来的：那条变异 0 红，
+查下去才发现不是测试少写，是被测的东西不存在。）
+
+### 变异扫描 11 个，第一遍一条 0 红是真缺口
+
+"回拉不再限定 LTR"那条第一遍 0 红——这一条是**真的没测到**：
+我的 RTL 用例里 bar 都不靠右，两种算法碰巧同一个答案。
+补了"RTL 下靠右的 bar 不该被回拉"（540 而不是 640），11 个全红。
+
+尺子：十六把全部 exit 0。门：Rust 6540 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：位置有了，**动画还没有**——`begin` 是 anchor rect、
+`end` 是这一轮算出来的，中间要一个 `RectTween` 和一条曲线。
+下一轮做这个。**先查两件事**：(1) 这个 crate 里有没有 `Rect` 的
+lerp / `RectTween`（`animation.rs` 或 `tween.rs` 里找），没有就先补它，
+因为"两个矩形之间的插值"是别处也要用的东西，不该埋在 search 里。
+(2) 上游 `_SearchViewRoute` 用的是哪条曲线、多长时间——
+看 `buildPage` 里那个 `CurvedAnimation` 的 `curve` 和 route 的
+`transitionDuration`，别猜。

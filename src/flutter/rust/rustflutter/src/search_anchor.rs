@@ -145,6 +145,85 @@ impl SearchAnchor {
     pub fn view_is_a_route() -> bool {
         true
     }
+
+    /// Where the opened view ends up: upstream's `_SearchViewRoute
+    /// .updateTweens`, whose `_rectTween.end` this is.
+    ///
+    /// **The tween's `begin` is `anchor` itself**, which is the whole idea:
+    /// the view grows out of the bar that was tapped rather than appearing
+    /// over it, so a reader's eye follows one object instead of losing the bar
+    /// and finding a panel.
+    ///
+    /// # The two sizes come from different places, and that is deliberate
+    ///
+    /// The width is the **anchor's**, clamped: a view that opens under a bar
+    /// should be the width of that bar, because it is the same field
+    /// continued. The height is **two thirds of the screen**, clamped, and has
+    /// nothing to do with the anchor -- a 56-tall bar cannot say how much room
+    /// a list of suggestions wants, and the answer that scales is a fraction
+    /// of the window.
+    ///
+    /// # Off the edge: the corner moves, the size does not
+    ///
+    /// When there is not enough room to the right (or below) for the view, its
+    /// top-left corner is pulled back so that it fits. Upstream's comment
+    /// there says *"If the window is smaller than the view, then we resize the
+    /// view to fit the window"* -- **its code does not resize**. The `min` is
+    /// applied to the corner's position and `endSize` stays
+    /// `Size(viewWidth, viewHeight)`, so a view wider than the window starts
+    /// at the window's edge and runs off the far side. Ported as written
+    /// rather than as described: the comment is the thing that is wrong, and a
+    /// port that quietly "fixed" it would lay windows out differently from
+    /// upstream for a reason nobody could find later.
+    ///
+    /// # A full-screen view ignores all of it
+    ///
+    /// It is the screen. It has no anchor to grow from in any meaningful
+    /// sense, which is also why [`SearchAnchor::on_window_resized`] lets it
+    /// live through a resize while a docked one has to go.
+    pub fn view_rect(
+        anchor: crate::engine::Rect,
+        screen: crate::render::Size,
+        constraints: crate::render::BoxConstraints,
+        full_screen: bool,
+        direction: crate::direction::TextDirection,
+    ) -> crate::engine::Rect {
+        if full_screen {
+            return crate::engine::Rect::xywh(0.0, 0.0, screen.width, screen.height);
+        }
+        let width = anchor
+            .width()
+            .clamp(constraints.min_width, constraints.max_width);
+        let height =
+            (screen.height * 2.0 / 3.0).clamp(constraints.min_height, constraints.max_height);
+
+        let mut left = match direction {
+            crate::direction::TextDirection::Ltr => anchor.left,
+            // Anchored by its right edge instead, and never past the left one.
+            //
+            // Upstream then writes the mirror of the left-to-right correction
+            // below -- `if (viewRightToScreenLeft < viewWidth) topLeft =
+            // Offset(0.0, topLeft.dy)` -- and **it cannot change the answer**.
+            // Its condition is `anchorRect.right < viewWidth`, and in exactly
+            // that case the `max` above has already produced zero. It is not
+            // ported, because a branch that no input can reach is a branch no
+            // test can hold: a sweep that mutates it stays green, and the
+            // green would look like missing coverage rather than what it is.
+            crate::direction::TextDirection::Rtl => (anchor.right - width).max(0.0),
+        };
+        let mut top = anchor.top;
+
+        // Left-to-right only, per the above.
+        if matches!(direction, crate::direction::TextDirection::Ltr)
+            && screen.width - anchor.left < width
+        {
+            left = screen.width - width.min(screen.width);
+        }
+        if screen.height - anchor.top < height {
+            top = screen.height - height.min(screen.height);
+        }
+        crate::engine::Rect::xywh(left, top, width, height)
+    }
 }
 
 impl Default for SearchAnchor {
@@ -1372,5 +1451,166 @@ mod search_bar_widget_tests {
             "the text is a padding away from the icon, not against it: \
              icon ends at {icon_right}, text starts at {hint_x}"
         );
+    }
+}
+
+#[cfg(test)]
+mod search_view_rect_tests {
+    use super::*;
+    use crate::component_themes::ResolvedSearchView;
+    use crate::direction::TextDirection;
+    use crate::engine::Rect;
+    use crate::render::{BoxConstraints, Size};
+
+    /// The defaults `ResolvedSearchView::of` hands out with no theme: at least
+    /// 360 wide and 240 tall, with no maximum of either.
+    fn defaults() -> BoxConstraints {
+        BoxConstraints {
+            min_width: ResolvedSearchView::MIN_WIDTH,
+            max_width: f32::INFINITY,
+            min_height: ResolvedSearchView::MIN_HEIGHT,
+            max_height: f32::INFINITY,
+        }
+    }
+
+    fn docked(anchor: Rect, screen: Size) -> Rect {
+        SearchAnchor::view_rect(anchor, screen, defaults(), false, TextDirection::Ltr)
+    }
+
+    #[test]
+    fn the_view_is_as_wide_as_the_bar_and_two_thirds_of_the_screen_tall() {
+        // The two measurements come from different places on purpose: the
+        // width continues the field that was tapped, and the height is a
+        // fraction of the window because a 56-tall bar cannot say how much
+        // room a list of results wants.
+        let rect = docked(
+            Rect::xywh(20.0, 40.0, 500.0, 56.0),
+            Size::new(1000.0, 900.0),
+        );
+        assert_eq!(rect.width(), 500.0, "the bar's width");
+        assert_eq!(rect.height(), 600.0, "two thirds of 900, not of the bar");
+        assert_eq!(
+            (rect.left, rect.top),
+            (20.0, 40.0),
+            "it opens where the bar is"
+        );
+    }
+
+    #[test]
+    fn a_narrow_bar_still_opens_a_view_wide_enough_to_read() {
+        // `clamp` against the resolved constraints, which is what stops a
+        // 100-wide bar from opening a 100-wide list of results.
+        let rect = docked(Rect::xywh(0.0, 0.0, 100.0, 56.0), Size::new(1000.0, 900.0));
+        assert_eq!(rect.width(), ResolvedSearchView::MIN_WIDTH);
+    }
+
+    #[test]
+    fn a_short_screen_does_not_give_a_view_shorter_than_its_minimum() {
+        // Two thirds of 300 is 200, below the 240 minimum. The clamp wins, and
+        // the view is then taller than two thirds of the window.
+        let rect = docked(Rect::xywh(0.0, 0.0, 400.0, 56.0), Size::new(1000.0, 300.0));
+        assert_eq!(rect.height(), ResolvedSearchView::MIN_HEIGHT);
+    }
+
+    #[test]
+    fn a_bar_near_the_right_edge_pulls_the_view_back_onto_the_screen() {
+        // 800 - 700 = 100 of room for a 400-wide view, so the corner moves to
+        // 800 - 400 rather than the view hanging off the side.
+        let rect = docked(
+            Rect::xywh(700.0, 10.0, 400.0, 56.0),
+            Size::new(800.0, 900.0),
+        );
+        assert_eq!(rect.left, 400.0);
+        assert_eq!(rect.right, 800.0, "it ends exactly at the edge");
+    }
+
+    #[test]
+    fn a_bar_near_the_bottom_pulls_the_view_up() {
+        // The same rule downwards, and it is a separate `if` upstream: a bar
+        // in the bottom-right corner is moved on both axes.
+        let rect = docked(
+            Rect::xywh(10.0, 800.0, 400.0, 56.0),
+            Size::new(1000.0, 900.0),
+        );
+        assert_eq!(rect.top, 300.0, "900 - 600");
+        assert_eq!(rect.left, 10.0, "and across, nothing moved");
+    }
+
+    #[test]
+    fn a_view_wider_than_the_window_starts_at_the_edge_and_keeps_its_width() {
+        // Upstream's comment says it resizes the view to fit the window. Its
+        // code does not: the `min` lands on the corner and `endSize` is left
+        // alone. Ported as written -- see `view_rect`'s documentation.
+        let rect = docked(Rect::xywh(50.0, 0.0, 900.0, 56.0), Size::new(600.0, 900.0));
+        assert_eq!(rect.left, 0.0, "pulled back to the window's edge");
+        assert_eq!(rect.width(), 900.0, "and still wider than the window");
+    }
+
+    #[test]
+    fn a_right_to_left_view_hangs_from_the_bars_right_edge() {
+        // Not a mirror of the whole rectangle: the anchoring edge changes, so
+        // a view wider than its bar grows leftwards from the bar's right side.
+        let anchor = Rect::xywh(500.0, 20.0, 200.0, 56.0);
+        let rect = SearchAnchor::view_rect(
+            anchor,
+            Size::new(1000.0, 900.0),
+            defaults(),
+            false,
+            TextDirection::Rtl,
+        );
+        assert_eq!(
+            rect.width(),
+            ResolvedSearchView::MIN_WIDTH,
+            "200 clamped to 360"
+        );
+        assert_eq!(rect.right, 700.0, "its right edge is the bar's right edge");
+        assert_eq!(rect.left, 340.0, "700 - 360");
+    }
+
+    #[test]
+    fn a_right_to_left_bar_near_the_right_edge_is_not_pulled_back() {
+        // The left-to-right correction asks how much room there is to the
+        // *right* of the bar, and in this direction that is the wrong
+        // question: the view hangs leftwards from the bar's right edge, so a
+        // bar near the right edge already fits. Applying the correction anyway
+        // would shove the view left by 100 for no reason.
+        let rect = SearchAnchor::view_rect(
+            Rect::xywh(800.0, 20.0, 100.0, 56.0),
+            Size::new(1000.0, 900.0),
+            defaults(),
+            false,
+            TextDirection::Rtl,
+        );
+        assert_eq!(rect.right, 900.0, "still hanging from the bar's right edge");
+        assert_eq!(rect.left, 540.0, "900 - 360, not 1000 - 360");
+    }
+
+    #[test]
+    fn a_right_to_left_view_with_no_room_to_its_left_starts_at_zero() {
+        // The mirror of the left-to-right edge rule, and the reason it is
+        // written as `0.0` rather than `screen.width - width`: in this
+        // direction the edge that runs out is the near one.
+        let rect = SearchAnchor::view_rect(
+            Rect::xywh(0.0, 20.0, 200.0, 56.0),
+            Size::new(1000.0, 900.0),
+            defaults(),
+            false,
+            TextDirection::Rtl,
+        );
+        assert_eq!(rect.left, 0.0);
+    }
+
+    #[test]
+    fn a_full_screen_view_is_the_screen_and_asks_the_anchor_nothing() {
+        // Every rule above is skipped. A bar in the corner of a small window
+        // would otherwise produce something quite different.
+        let rect = SearchAnchor::view_rect(
+            Rect::xywh(700.0, 800.0, 100.0, 56.0),
+            Size::new(400.0, 850.0),
+            defaults(),
+            true,
+            TextDirection::Ltr,
+        );
+        assert_eq!(rect, Rect::xywh(0.0, 0.0, 400.0, 850.0));
     }
 }
