@@ -2690,3 +2690,54 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 （`anchorRect`、`overlaySize`、`position`），以及
 `menu_anchor.dart` 里 `MenuAnchor` 的 `alignmentOffset` 怎么用——
 `SubmenuButton` 已经有一个 `alignment_offset` 字段在那儿等着，**没人读**。
+
+---
+
+## 第 458 轮：一块菜单面板该放在哪儿
+
+上一轮量出来"面板没有位置"，这一轮把位置规则补上——
+照上游 `_MenuLayout._positionChild` 抄，不自己编。
+
+想要的位置只有一行：**锚点上的一个点**
+（`alignment.withinRect(anchorRect)`）加上 `alignmentOffset`。
+剩下的全是"放不下"，而上游的四个答案里有两个不是第一反应会写的：
+
+- **横向放不下的面板贴左边**，不居中也不缩小。能看见多少算多少，
+  从头开始——菜单是从前缘读起的。
+- **越界时先试按钮的另一侧**：右边放不下的子菜单开到父项左边，
+  另一侧也放不下才沿边滑。先滑的话面板会压在它自己出来的那一行上。
+- **除非父菜单方向不同。** 挂在菜单**栏**下面的面板没有"另一侧"可试——
+  栏是横的、面板是竖的——所以上游直接推。
+  这就是 `parentOrientation != orientation` 那一支，
+  它看着像特例，其实不是。
+- **`alignmentOffset.dy` 只在越过横向父菜单往上翻时被减掉。**
+  别处的翻转是精确的；这里调用者原本要的"栏下面那点空隙"，
+  翻上去之后得重新加一遍。
+
+### 一处我自己写错的期望
+
+RTL 那条第一版我按 x=100 的锚点算出 -58，实际是 168。
+**代码是对的，期望是错的**——从 x=100 往左挂一块 150 宽的面板会出屏，
+所以走的是"翻到另一侧"。把锚点挪到 400（两边都宽裕）之后，
+读的才是偏移本身而不是某条越界修正。把这件事写进了注释。
+
+### 变异扫描 16 个，第一遍 2 条没红
+
+一条是 fmt 之后搜索串失效；另一条"越界时滑而不翻"是**真缺口**——
+我只测了"右边放不下往左翻"，没测左边那一支。
+补了一个 RTL 的用例（以及"另一侧也放不下时确实会滑"），全红。
+
+尺子：十六把全部 exit 0。门：Rust 6695 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：`MenuLayout::position` **还没有调用者**——
+把它接到面板上，第 457 轮那三条按不住的变异就该能红了。
+`open_menu_surface` 现在把内容原样塞进 overlay；改成用
+`theatre.rs` 的 `anchored(anchor, place, surface)` 包一层，
+`place` 就是 `MenuLayout::position`。
+**先查一件事**：`Placement` 的签名是
+`Fn(锚点矩形, 面板尺寸, overlay 尺寸) -> Offset`，
+而 `MenuLayout::position` 要的是 `(alignment, child, allowed)`——
+确认 `RenderAnchored` 传进来的第一个参数就是**overlay 坐标系里的**锚点矩形
+（第 444 轮 `Anchor::rect()` 的注释说"走到根，正好是 theatre 条目布局所在的系"），
+是的话直接接；不是的话先看清楚要换算什么。

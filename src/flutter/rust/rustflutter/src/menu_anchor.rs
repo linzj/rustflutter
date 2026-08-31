@@ -1215,10 +1215,354 @@ impl crate::framework::StatefulComponent for SubmenuButton {
     }
 }
 
+/// Which way a menu's lines run, which is also which way its *parent's* ran:
+/// upstream's `Axis` on `_MenuLayout`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuAxis {
+    /// A menu bar: its entries sit side by side.
+    Horizontal,
+    /// A panel: its lines are stacked.
+    Vertical,
+}
+
+/// Where a menu panel goes: upstream's `_MenuLayout._positionChild`.
+///
+/// # The ideal place, and then four ways of not fitting
+///
+/// The wanted position is a point on the anchor -- `alignment.withinRect(
+/// anchorRect)` -- shifted by `alignmentOffset`. Everything after that is the
+/// panel not fitting, and upstream's answers are worth stating because two of
+/// them are not what a first attempt would write:
+///
+/// * **A panel too wide for the screen is put at the left edge**, not
+///   centred and not shrunk. As much of it as will fit is shown, from the
+///   start, because a menu is read from its leading edge.
+/// * **Off one side, it tries the other side of the button first** -- a
+///   submenu that will not fit to the right of its parent opens to the left of
+///   it -- and only slides along the edge if that fails too. Sliding first
+///   would leave the panel overlapping the button it came from.
+/// * **Except when the parent runs the other way.** A panel hanging off a menu
+///   *bar* has no "other side of the button" worth trying: the bar is
+///   horizontal and the panel is vertical, so upstream pushes it along instead.
+///   That is the `parentOrientation != orientation` arm, and it is the one
+///   that reads like a special case and is not.
+/// * **`alignmentOffset.dy` is subtracted only when moving up past a
+///   horizontal parent.** Everywhere else the flip is exact; here the gap the
+///   caller asked for below the bar has to be re-applied above it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenuLayout {
+    /// The button the panel hangs off, in the overlay's coordinates.
+    pub anchor_rect: crate::engine::Rect,
+    /// Upstream's `alignmentOffset`, whose sign is flipped across in
+    /// right-to-left when the alignment is a directional one.
+    pub alignment_offset: Offset,
+    /// This menu's own axis.
+    pub orientation: MenuAxis,
+    /// The axis of the menu this one hangs off. Equal to `orientation` for a
+    /// submenu of a panel; different for the first panel under a menu bar.
+    pub parent_orientation: MenuAxis,
+    pub direction: crate::direction::TextDirection,
+    /// Whether `alignment_offset` came from an `AlignmentDirectional`, which
+    /// is what decides whether its `dx` flips in right-to-left.
+    pub directional_alignment: bool,
+}
+
+impl MenuLayout {
+    /// Upstream's `_positionChild`, with `menuPosition` null -- the case where
+    /// the panel is placed against its anchor rather than at a point the
+    /// caller named.
+    ///
+    /// `alignment` is resolved against the anchor; `allowed` is the rectangle
+    /// the panel has to stay inside, which upstream takes from the display
+    /// feature sub-screen nearest the anchor's centre and which is the whole
+    /// overlay when there are no display features.
+    pub fn position(
+        &self,
+        alignment: crate::render::Alignment,
+        child: crate::render::Size,
+        allowed: crate::engine::Rect,
+    ) -> Offset {
+        let anchor = self.anchor_rect;
+        let within = Offset::new(
+            anchor.left + (alignment.x + 1.0) / 2.0 * anchor.width(),
+            anchor.top + (alignment.y + 1.0) / 2.0 * anchor.height(),
+        );
+        let directional = match (self.directional_alignment, self.direction) {
+            (true, crate::direction::TextDirection::Rtl) => {
+                Offset::new(-self.alignment_offset.dx, self.alignment_offset.dy)
+            }
+            _ => self.alignment_offset,
+        };
+        let mut x = within.dx + directional.dx;
+        let mut y = within.dy + directional.dy;
+        if self.direction == crate::direction::TextDirection::Rtl {
+            x -= child.width;
+        }
+
+        let off_left = |x: f32| x < allowed.left;
+        let off_right = |x: f32| x + child.width > allowed.right;
+        let off_top = |y: f32| y < allowed.top;
+        let off_bottom = |y: f32| y + child.height > allowed.bottom;
+
+        if child.width >= allowed.width() {
+            // It just does not fit: as much on the screen as possible, from
+            // the leading edge.
+            x = allowed.left;
+        } else if off_left(x) {
+            if self.parent_orientation != self.orientation {
+                x = allowed.left;
+            } else {
+                let flipped = anchor.right + self.alignment_offset.dx;
+                x = if off_right(flipped) {
+                    allowed.left
+                } else {
+                    flipped
+                };
+            }
+        } else if off_right(x) {
+            if self.parent_orientation != self.orientation {
+                x = allowed.right - child.width;
+            } else {
+                let flipped = anchor.left - child.width - self.alignment_offset.dx;
+                x = if off_left(flipped) {
+                    allowed.right - child.width
+                } else {
+                    flipped
+                };
+            }
+        }
+
+        if child.height >= allowed.height() {
+            y = allowed.top;
+        } else if off_top(y) {
+            let below = anchor.bottom;
+            y = if off_bottom(below) {
+                allowed.top
+            } else {
+                below
+            };
+        } else if off_bottom(y) {
+            let above = anchor.top - child.height;
+            if off_top(above) {
+                y = allowed.bottom - child.height;
+            } else if self.parent_orientation == MenuAxis::Horizontal {
+                // The gap asked for below a bar has to be re-applied above it.
+                y = above - self.alignment_offset.dy;
+            } else {
+                y = above;
+            }
+        }
+        Offset::new(x, y)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::component_themes::ResolvedMenuButton;
+
+    // -- Where a menu panel goes ---------------------------------------------
+
+    use crate::engine::Rect;
+    use crate::render::Alignment;
+
+    const SCREEN: Rect = Rect {
+        left: 0.0,
+        top: 0.0,
+        right: 800.0,
+        bottom: 600.0,
+    };
+
+    fn under(anchor: Rect) -> MenuLayout {
+        MenuLayout {
+            anchor_rect: anchor,
+            alignment_offset: Offset::ZERO,
+            orientation: MenuAxis::Vertical,
+            parent_orientation: MenuAxis::Vertical,
+            direction: crate::direction::TextDirection::Ltr,
+            directional_alignment: true,
+        }
+    }
+
+    #[test]
+    fn a_panel_starts_where_the_alignment_points_on_the_anchor() {
+        // `alignment.withinRect(anchorRect)`: bottom-left of the button is
+        // where a menu hanging under it begins.
+        let layout = under(Rect::xywh(100.0, 100.0, 60.0, 40.0));
+        assert_eq!(
+            layout.position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), SCREEN),
+            Offset::new(100.0, 140.0)
+        );
+        assert_eq!(
+            layout.position(Alignment::TOP_RIGHT, Size::new(150.0, 200.0), SCREEN),
+            Offset::new(160.0, 100.0),
+            "and the other corner is the other corner"
+        );
+    }
+
+    #[test]
+    fn the_offset_moves_it_and_flips_across_in_right_to_left() {
+        // Upstream flips `dx` and leaves `dy` alone, and only for a
+        // *directional* alignment: an `Alignment` written in absolute terms
+        // means the same thing in both directions.
+        // Well inside the screen on both sides, so that what is being read
+        // here is the offset and not one of the off-screen corrections. A
+        // first draft anchored at x = 100 and measured 168 -- which is right,
+        // and is the *flip*: a 150-wide panel hanging leftwards from there
+        // runs off the edge.
+        let mut layout = under(Rect::xywh(400.0, 100.0, 60.0, 40.0));
+        layout.alignment_offset = Offset::new(8.0, 4.0);
+        assert_eq!(
+            layout.position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), SCREEN),
+            Offset::new(408.0, 144.0)
+        );
+
+        let mut rtl = layout;
+        rtl.direction = crate::direction::TextDirection::Rtl;
+        // Right-to-left also hangs the panel from its right edge, so the width
+        // comes off as well: 400 - 8 - 150.
+        assert_eq!(
+            rtl.position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), SCREEN),
+            Offset::new(242.0, 144.0)
+        );
+
+        let mut absolute = rtl;
+        absolute.directional_alignment = false;
+        assert_eq!(
+            absolute.position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), SCREEN),
+            Offset::new(258.0, 144.0),
+            "an absolute alignment does not flip the offset"
+        );
+    }
+
+    #[test]
+    fn a_panel_that_will_not_fit_across_starts_at_the_leading_edge() {
+        // Not centred and not shrunk: as much as fits, from the start, because
+        // a menu is read from its leading edge.
+        let layout = under(Rect::xywh(400.0, 100.0, 60.0, 40.0));
+        assert_eq!(
+            layout
+                .position(Alignment::BOTTOM_LEFT, Size::new(900.0, 200.0), SCREEN)
+                .dx,
+            SCREEN.left
+        );
+    }
+
+    #[test]
+    fn a_submenu_off_the_right_opens_to_the_left_of_its_parent() {
+        // The flip upstream tries *before* sliding: a submenu that will not
+        // fit to the right of its parent opens on the other side of it.
+        // Sliding first would leave the panel over the line it came from.
+        let mut layout = under(Rect::xywh(700.0, 100.0, 60.0, 40.0));
+        layout.alignment_offset = Offset::new(4.0, 0.0);
+        let x = layout
+            .position(Alignment::BOTTOM_LEFT, Size::new(200.0, 100.0), SCREEN)
+            .dx;
+        assert_eq!(x, 700.0 - 200.0 - 4.0, "left of the anchor, by the offset");
+    }
+
+    #[test]
+    fn a_submenu_off_the_left_opens_to_the_right_of_its_parent() {
+        // The mirror of the flip above, and the one a right-to-left menu takes
+        // first: a panel hanging leftwards from a button near the left edge
+        // opens to the *right* of it rather than sliding to the margin.
+        let mut layout = under(Rect::xywh(100.0, 100.0, 60.0, 40.0));
+        layout.direction = crate::direction::TextDirection::Rtl;
+        layout.alignment_offset = Offset::new(8.0, 4.0);
+        let x = layout
+            .position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), SCREEN)
+            .dx;
+        assert_eq!(
+            x,
+            160.0 + 8.0,
+            "the anchor's right edge plus the offset, not the screen's margin"
+        );
+
+        // And when the other side does not fit either, it does slide.
+        let narrow = Rect::xywh(0.0, 0.0, 200.0, 600.0);
+        let x = layout
+            .position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), narrow)
+            .dx;
+        assert_eq!(x, narrow.left, "nowhere else to go");
+    }
+
+    #[test]
+    fn a_panel_under_a_menu_bar_is_pushed_along_instead_of_flipped() {
+        // `parentOrientation != orientation`. A panel hanging off a *bar* has
+        // no other side of the button worth trying -- the bar runs across and
+        // the panel runs down -- so it slides to the edge.
+        let mut layout = under(Rect::xywh(700.0, 100.0, 60.0, 40.0));
+        layout.parent_orientation = MenuAxis::Horizontal;
+        let x = layout
+            .position(Alignment::BOTTOM_LEFT, Size::new(200.0, 100.0), SCREEN)
+            .dx;
+        assert_eq!(x, SCREEN.right - 200.0, "slid to the edge, not flipped");
+    }
+
+    #[test]
+    fn a_panel_that_does_not_fit_below_goes_above() {
+        let layout = under(Rect::xywh(100.0, 520.0, 60.0, 40.0));
+        let y = layout
+            .position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), SCREEN)
+            .dy;
+        assert_eq!(y, 520.0 - 200.0, "its bottom on the anchor's top");
+    }
+
+    #[test]
+    fn moving_up_past_a_bar_re_applies_the_gap_that_was_asked_for_below_it() {
+        // The one place the flip is not exact. A caller who asked for four
+        // pixels of air under the bar wants four above it too; everywhere else
+        // the offset is already in the number being flipped.
+        let mut layout = under(Rect::xywh(100.0, 520.0, 60.0, 40.0));
+        layout.alignment_offset = Offset::new(0.0, 4.0);
+        layout.parent_orientation = MenuAxis::Horizontal;
+        let y = layout
+            .position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), SCREEN)
+            .dy;
+        assert_eq!(y, 520.0 - 200.0 - 4.0);
+
+        let mut under_a_panel = layout;
+        under_a_panel.parent_orientation = MenuAxis::Vertical;
+        assert_eq!(
+            under_a_panel
+                .position(Alignment::BOTTOM_LEFT, Size::new(150.0, 200.0), SCREEN)
+                .dy,
+            520.0 - 200.0,
+            "and under a panel it is not re-applied"
+        );
+    }
+
+    #[test]
+    fn a_panel_taller_than_the_screen_starts_at_the_top() {
+        let layout = under(Rect::xywh(100.0, 300.0, 60.0, 40.0));
+        assert_eq!(
+            layout
+                .position(Alignment::BOTTOM_LEFT, Size::new(150.0, 700.0), SCREEN)
+                .dy,
+            SCREEN.top
+        );
+    }
+
+    #[test]
+    fn a_panel_that_would_start_above_the_screen_drops_below_the_anchor() {
+        // The mirror of "does not fit below": upstream tries the anchor's
+        // bottom before giving up and pinning to the top.
+        let layout = under(Rect::xywh(100.0, 10.0, 60.0, 40.0));
+        let y = layout
+            .position(Alignment::TOP_LEFT, Size::new(150.0, 100.0), SCREEN)
+            .dy;
+        assert_eq!(y, 10.0, "the anchor's own top already fits");
+
+        let mut above = under(Rect::xywh(100.0, 10.0, 60.0, 40.0));
+        above.alignment_offset = Offset::new(0.0, -60.0);
+        assert_eq!(
+            above
+                .position(Alignment::TOP_LEFT, Size::new(150.0, 100.0), SCREEN)
+                .dy,
+            50.0,
+            "pushed off the top, it takes the anchor's bottom instead"
+        );
+    }
 
     // -- A submenu button opens its menu -------------------------------------
 
