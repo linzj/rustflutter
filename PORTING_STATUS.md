@@ -1165,3 +1165,57 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
 以前记成"结构性测不到"的那几处（第 412 轮 `on_key` 守卫、
 第 416 轮帧里那次调用、第 426 轮 builder 那一行），
 有没有哪一处其实也只是"没想到怎么挂起来"。
+
+---
+
+## 第 432 轮：查了 `SearchAnchor`，**决定不动它**；改去还上一笔"测不到"的债
+
+### 查的结果：`search_anchor.rs` 是又一个 765 行的纯策略文件
+
+`SearchController`（attach / open_view / close_view）、
+`SearchAnchor`（全屏解析、窗口改变尺寸时怎么收）、
+`SearchBar::resolved`、`SearchDelegate`（suggestions / results 两页状态机）——
+**全都在，一个 `build` 都没有**。外观也已经解析好了：
+`ResolvedSearchBar` 带着背景色、elevation、shape、padding、hint 样式、约束。
+
+看起来只差组装。**但差一样东西**：`ShapeBorder` → 容器圆角的映射
+这个 crate 里**还没有**（`SearchBar` 默认是 `StadiumBorder`）。
+没有它就只能对形状糊一个近似，而"糊一个近似"正是这些轮里反复拆掉的东西。
+
+所以**这一轮不动它**：与其起一个半成品控件，不如把它留到能一次做穿。
+`ShapeBorder` → 圆角这件事本身值一轮，而且不止 `SearchBar` 会用。
+
+### 改去做的事：还第 426 轮那笔债
+
+第 426 轮我把 `toolbar_builder` 里"按平台选工具条"那一行记成
+**结构性测不到**——"它在闭包里，需要一个活的 `StateHandle`"。
+
+**又错了。** `toolbar_builder` 是个自由函数，
+而 `StateHandle::detached()` 就是个完全合法的实参。
+直接调它、把返回的闭包建出来、量宽度：
+Windows 得到 222 的固定宽菜单，Android 不是。
+第 426 轮那条活下来的变异，现在转红。
+
+连同第 431 轮的那两条，**"测不到"这个说法我已经错了三次**，
+三次都是同一个形状：**没想到怎么把那一段单独立起来**。
+所以现在的规矩是：写下"结构性测不到"之前，
+先问一句"这段代码能不能被直接调用/单独挂起来"，
+答不上来才算数。
+
+（第 412 轮 `on_key` 那个守卫已经在当轮抽成 `is_escape_press` 测掉了；
+第 416 轮"帧里有没有调 `apply_pending_autofocus`"是真的要 `RfApp`，
+那一条暂时还立着。）
+
+尺子：十六把全部 exit 0。门：Rust 6513 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：`ShapeBorder` → 容器圆角的映射。
+先查两件事再动手：
+1. `borders.rs` 里 `RoundedRectangleBorder` / `StadiumBorder` 各自拿什么表示圆角
+   （`BorderRadius`？还是只有 side？），`StadiumBorder` 的"半高"要在哪一层算——
+   它依赖尺寸，所以多半得在渲染对象里而不是在 widget 里。
+2. 这个 crate 现在**怎么画一个带 shape 的表面**——
+   `Container::with_border_radius` 只收一个 `BorderRadius`，
+   那 `Material` 那一层（`controls.rs:4553` 的 `fn shape`）现在拿它做什么？
+   如果已经有一条"shape 变成绘制"的路，那这一轮就是把它接出来给别人用，
+   而不是新造一套。

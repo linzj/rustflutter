@@ -1685,6 +1685,9 @@ fn toolbar_builder(
                 )
             })
             .collect();
+        // Tested through `toolbar_builder` directly -- see
+        // `the_builder_puts_up_the_menu_or_the_bar_by_the_platform_it_was_handed`.
+        //
         // Upstream's `TextField` picks its controls on `theme.platform`
         // (`material/text_field.dart`, the switch around line 1607):
         // `desktopTextSelectionHandleControls` on Linux and Windows,
@@ -5666,6 +5669,55 @@ mod tests {
             ..ranged
         };
         assert!(toolbar_commands(false, true, collapsed).contains(&ToolbarCommand::SelectAll));
+    }
+
+    #[test]
+    fn the_builder_puts_up_the_menu_or_the_bar_by_the_platform_it_was_handed() {
+        // Round 426 recorded this line as out of a test's reach because it
+        // lives in a closure needing a live `StateHandle`. It is not:
+        // `toolbar_builder` is a free function and a detached handle is a
+        // perfectly good argument. The same mistake as the handle gestures --
+        // "untestable" meaning "I had not thought how".
+        //
+        // Asserting the platform predicate alone would not do: a builder that
+        // ignored it and always made the bar would still pass.
+        let theme = crate::components::Theme::dark();
+        let ranged = crate::text_selection_controls::SelectionState {
+            cut_enabled: true,
+            copy_enabled: true,
+            paste_enabled: true,
+            select_all_enabled: true,
+            is_collapsed: false,
+            has_text: true,
+        };
+        let width_for = |platform| {
+            let build = toolbar_builder(
+                StateHandle::detached(),
+                &theme,
+                false,
+                false,
+                platform,
+                ranged,
+            );
+            let mut tree = crate::framework::ElementTree::new();
+            tree.rebuild(build());
+            let mut root = tree.build_render_tree().expect("mounted");
+            crate::render::RenderBox::layout(
+                &mut root,
+                crate::render::BoxConstraints::loose(1000.0, 1000.0),
+            )
+            .width
+        };
+        assert_eq!(
+            width_for(crate::editable_text::TargetPlatform::Windows),
+            crate::text_selection_controls::DesktopTextSelectionToolbar::WIDTH,
+            "a desktop field gets the fixed-width menu"
+        );
+        assert_ne!(
+            width_for(crate::editable_text::TargetPlatform::Android),
+            crate::text_selection_controls::DesktopTextSelectionToolbar::WIDTH,
+            "and a touch one does not"
+        );
     }
 
     #[test]
