@@ -458,6 +458,110 @@ impl CardTheme {
     }
 }
 
+/// Which of Material 3's three cards this is: upstream's `Card`,
+/// `Card.filled` and `Card.outlined`.
+///
+/// The three are one widget with three default tables, and what separates them
+/// is **how the card is told apart from the page behind it**: an elevated card
+/// by a shadow, a filled one by being a different colour, an outlined one by a
+/// line. Exactly one of those three at a time -- an elevated card that also
+/// had an outline would be saying it twice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CardVariant {
+    /// `_CardDefaultsM3`: `surfaceContainerLow` at elevation 1, no outline.
+    #[default]
+    Elevated,
+    /// `_FilledCardDefaultsM3`: `surfaceContainerHighest`, flat, no outline.
+    Filled,
+    /// `_OutlinedCardDefaultsM3`: `surface`, flat, outlined in
+    /// `outlineVariant`.
+    Outlined,
+}
+
+/// What a card is drawn with, from upstream's three `_*CardDefaultsM3` tables
+/// under `CardTheme.of`.
+///
+/// # The M2 fall-back is a different colour, not the same one
+///
+/// `_CardDefaultsM2` answers `Theme.of(context).cardColor` where M3 answers a
+/// surface role, and that is kept: an application that has set `cardColor` and
+/// not turned Material 3 on is asking for that colour and would otherwise get
+/// a role it never mentioned.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedCard {
+    pub color: Color,
+    pub shadow_color: Color,
+    pub surface_tint_color: Color,
+    pub elevation: f32,
+    pub margin: EdgeInsets,
+    pub shape: ShapeBorder,
+}
+
+impl ResolvedCard {
+    /// Upstream's `_CardDefaultsM3.shape`, shared by all three: a rounded
+    /// rectangle of 12. Only the *side* differs, and only for the outlined
+    /// one.
+    pub const RADIUS: f32 = 12.0;
+    /// `EdgeInsets.all(4.0)` in every one of the three tables. It is a
+    /// **margin**, outside the surface: a column of cards has a gap between
+    /// them, and it belongs to neither.
+    pub const MARGIN: f32 = 4.0;
+
+    pub fn of(context: &mut BuildContext, variant: CardVariant) -> ResolvedCard {
+        let theme = ThemeData::of(context);
+        let scheme = theme.color_scheme;
+        let data = CardTheme::of(context);
+        let default_color = match (variant, theme.use_material3) {
+            (_, false) => theme.card_color,
+            (CardVariant::Elevated, true) => scheme.surface_container_low(),
+            (CardVariant::Filled, true) => scheme.surface_container_highest(),
+            (CardVariant::Outlined, true) => scheme.surface,
+        };
+        let default_elevation = match variant {
+            CardVariant::Elevated => 1.0,
+            CardVariant::Filled | CardVariant::Outlined => 0.0,
+        };
+        let side = match variant {
+            CardVariant::Outlined => BorderSide {
+                color: scheme.outline_variant(),
+                width: 1.0,
+                style: crate::borders::BorderStyle::Solid,
+                stroke_align: crate::borders::STROKE_ALIGN_INSIDE,
+            },
+            _ => BorderSide::NONE,
+        };
+        ResolvedCard {
+            color: data.color.unwrap_or(default_color),
+            shadow_color: data.shadow_color.unwrap_or_else(|| scheme.shadow()),
+            // Transparent in all three tables: a card does not tint with its
+            // elevation, it just casts a shadow.
+            surface_tint_color: data.surface_tint_color.unwrap_or(Color::TRANSPARENT),
+            elevation: data.elevation.unwrap_or(default_elevation),
+            margin: data
+                .margin
+                .map(|margin| margin.resolve(crate::direction::current_direction()))
+                .unwrap_or(EdgeInsets::all(ResolvedCard::MARGIN)),
+            shape: data.shape.clone().unwrap_or_else(|| {
+                ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
+                    side,
+                    crate::borders::BorderRadiusGeometry::circular(ResolvedCard::RADIUS),
+                ))
+            }),
+        }
+    }
+
+    /// The outline the card draws, or nothing. Taken off the shape so that a
+    /// theme that sets one gets it -- upstream's outlined card is exactly a
+    /// shape with a side.
+    pub fn side(&self) -> Option<BorderSide> {
+        match &self.shape {
+            ShapeBorder::Rounded(shape) if shape.side.width > 0.0 => Some(shape.side),
+            ShapeBorder::Outline(shape) if shape.side.width > 0.0 => Some(shape.side),
+            _ => None,
+        }
+    }
+}
+
 // -- Badge (upstream `badge_theme.dart`) --------------------------------------
 
 /// Upstream `BadgeThemeData`.

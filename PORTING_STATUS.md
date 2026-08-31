@@ -2123,3 +2123,67 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 `search_anchor.dart` 剩下的（`SearchDelegate` 的四个 builder、
 `_SearchAnchorWithSearchBar`）都要先确认是不是真缺口，
 还是说队列里有更浅的。
+
+---
+
+## 第 448 轮：三种 card，各用各的办法和背景分开
+
+按上一轮说的**先跑 `depth.py` 重看队头**，`SearchAnchor` 已经掉下去了。
+队头几个先看了一遍再挑：
+
+- `Icons` / `CupertinoIcons` / 两个 `Localizations` 是**数据表**，比例低是自然的；
+- `MagnifierController` 2/8 **不是缺口**——它在这儿只留了
+  `shift_within_bounds`，其余是 `MagnifierHost` 的，文档里早写明了；
+- `AnimatedModalBarrier` 3/9 里最有内容的是 `clipDetailsNotifier`
+  （把遮罩的**语义矩形**裁掉一块，好让 sheet 盖住的地方不被读屏当成"点击关闭"），
+  但这个 crate **没有 `semantic_bounds` 这个概念**，补它不止一轮；
+- `Card` 4/12 是真的。
+
+### `Card` 只有一种，而上游有三种
+
+上游 `Card` / `Card.filled` / `Card.outlined` 是一个 widget 配三张默认表，
+区别在于**一张卡片靠什么和背景分开**：抬起的靠阴影，填充的靠颜色，
+描边的靠一条线。**一次只用一种。**
+
+这儿的 card 三样占了两样还多一样：它在**每一张**卡上画 1px 描边，
+同时又给了 elevation 1。所以抬起的那张说了两遍，
+而"应该只靠颜色区分"的填充卡根本还不存在。
+
+补了 `CardVariant` 和 `ResolvedCard`，三张表照抄：
+`surfaceContainerLow`/1、`surfaceContainerHighest`/0、`surface`/0，
+描边只有第三张有，颜色是 `outlineVariant`（不是 `outline`——
+后者是给控件用的更重的线）。
+
+顺带接上了主题里一直没人读的几个字段：`shape`（圆角从它来）、
+`margin`（`EdgeInsets.all(4)`，**卡外面**的空隙，之前完全没有，
+所以一列卡片是一整块板）、`shadow_color`、`surface_tint_color`。
+
+M2 的回退保留：`_CardDefaultsM2` 答的是 `Theme.of(context).cardColor`，
+一个设了 `cardColor` 又没开 M3 的应用要的就是那个颜色。
+
+**记下来的一处不对齐**：这儿的 `Card` 有个 `padding`，上游没有
+（上游卡片的内边距是里面的 `ListTile` 自带的）。老调用者一直靠它，
+留着并在字段上写明它不是上游的东西。
+
+### 变异扫描 15 个，第一遍 3 条没红
+
+- **"没有卡片描边"** 是 BUILD ERROR（我在结构体字面量里把 `width` 写了两遍）。
+  **BUILD ERROR 不算通过**，改成整个换成 `BorderSide::NONE`，2 红。
+- **"margin 没接上"** MISS：`with_margin` 在这个文件里出现两次，加上下文才唯一。
+- **"圆角退回 crate 主题"** 0 红：**等价变异**——`theme.radius` 默认就是 12，
+  和卡片形状的 12 一样。真缺口是**没有任何测试读过主题里的 `shape`**，
+  补了一个把 `CardTheme` 的圆角设成 4 再看画布的用例，1 红。
+
+尺子：十六把全部 exit 0。门：Rust 6632 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：`Card` 还有两个上游字段没接：`borderOnForeground`
+（描边画在子节点**上面**还是下面——默认 true，即画在上面，
+所以一张贴到边的图片不会盖住卡的轮廓）和 `clipBehavior`
+（默认 `Clip.none`，但 `Card` 的形状一旦有圆角，
+不裁的话贴边的图片会从圆角里探出来）。
+**先查一件事**：`Container` 现在能不能表达"边框画在子节点之上"——
+看 `RenderDecoratedBox` 的 `DecorationPosition`
+（第 434 轮见过 `Background`/`Foreground` 两个值），
+能就直接用，那这一轮就是把两个字段接上；
+不能就得先看清楚边框是在哪一层画的。

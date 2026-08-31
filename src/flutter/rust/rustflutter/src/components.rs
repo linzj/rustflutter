@@ -784,11 +784,19 @@ pub struct ButtonGroupState {
 ///   than done in passing.
 pub struct Card {
     child: std::cell::RefCell<Option<AnyWidget>>,
+    /// **Not an upstream field.** Upstream's card has no padding of its own --
+    /// what is inside it brings its own, usually a `ListTile`. This crate's
+    /// callers have relied on it since before the theme was ported, so it
+    /// stays, with a default rather than upstream's nothing. Upstream's
+    /// `margin`, which *is* a field, is a different thing and lives on
+    /// [`crate::component_themes::ResolvedCard`].
     padding: Option<EdgeInsets>,
     semantic_container: bool,
+    variant: crate::component_themes::CardVariant,
 }
 
 impl Card {
+    /// Upstream's `Card`: the elevated one.
     pub fn new(child: AnyWidget) -> Card {
         Card {
             child: std::cell::RefCell::new(Some(child)),
@@ -796,6 +804,24 @@ impl Card {
             // Upstream's default, and the one that matters: a card is a thing,
             // not a pile of things.
             semantic_container: true,
+            variant: crate::component_themes::CardVariant::Elevated,
+        }
+    }
+
+    /// Upstream's `Card.filled`: told apart from the page by its colour rather
+    /// than by a shadow.
+    pub fn filled(child: AnyWidget) -> Card {
+        Card {
+            variant: crate::component_themes::CardVariant::Filled,
+            ..Card::new(child)
+        }
+    }
+
+    /// Upstream's `Card.outlined`: told apart by a line, and flat.
+    pub fn outlined(child: AnyWidget) -> Card {
+        Card {
+            variant: crate::component_themes::CardVariant::Outlined,
+            ..Card::new(child)
         }
     }
 
@@ -827,42 +853,44 @@ impl Component for Card {
             .borrow()
             .clone()
             .unwrap_or_else(|| leaf(|| Empty));
-        // Upstream `Card.build`: `color`, `elevation` and `shape` come off
-        // `CardTheme.of(context)` before the control's own defaults.
-        let card = crate::component_themes::CardTheme::of(context);
-        // Upstream's `color ?? cardTheme.color ?? defaults.color`, where the
-        // default is **not one colour**: `_CardDefaultsM3` answers
-        // `surfaceContainerLow` and `_CardDefaultsM2` answers
-        // `Theme.of(context).cardColor`. This stopped at the component
-        // theme's own surface, so `ThemeData::card_color` reached nothing and
-        // a Material 2 application could not colour its cards at all.
-        let material = crate::theme::ThemeData::of(context);
-        let surface = card.color.unwrap_or(if material.use_material3 {
-            material.color_scheme.surface_container_low()
-        } else {
-            material.card_color
-        });
-        let outline = theme.outline;
-        let radius = theme.radius;
-        // Material 3's elevated card sits one step off the page; a theme that
-        // says otherwise says it in whole elevation steps, as the crate's
-        // shadow table is indexed by them.
-        let elevation = card
-            .elevation
-            .map_or(1, |elevation| elevation.round().max(0.0) as u32);
+        let card = crate::component_themes::ResolvedCard::of(context, self.variant);
+        let surface = card.color;
+        // The rounding comes off the **shape**, which is where upstream puts
+        // it: a theme that sets `shape` moves the corners, and one that does
+        // not gets the 12 all three tables agree on. `corner_radius` answers
+        // `None` for a shape that is not a rounded rectangle -- a stadium
+        // card, say -- and then there is nothing to round by.
+        let radius = card
+            .shape
+            .corner_radius(crate::render::Size::ZERO)
+            .map(|radius| radius.top_left.x)
+            .unwrap_or(0.0);
+        // **Only the outlined card is outlined.** This used to draw a hairline
+        // on every card, so the elevated one said "not the page" twice -- with
+        // a shadow and with a line -- and the filled one, which is supposed to
+        // be told apart by its colour alone, wore a border it never asked for.
+        let side = card.side();
+        // The crate's shadow table is indexed by whole elevation steps.
+        let elevation = card.elevation.round().max(0.0) as u32;
+        let margin = card.margin;
         let semantic_container = self.semantic_container;
         crate::framework::single(child, move |inner| {
+            let mut container = Container::new()
+                .with_color(surface)
+                .with_corner_radius(radius)
+                .with_elevation(elevation)
+                .with_padding(padding)
+                // Upstream's `margin`: space **outside** the surface, so a
+                // column of cards has a gap between them that belongs to
+                // neither.
+                .with_margin(margin)
+                .with_child(inner);
+            if let Some(side) = side {
+                container = container.with_border(side.width, side.color);
+            }
             // Full width, so a column of cards has one left edge and one right
             // edge rather than one pair per card.
-            let surface = crate::widgets::FullWidth::new(
-                Container::new()
-                    .with_color(surface)
-                    .with_corner_radius(radius)
-                    .with_elevation(elevation)
-                    .with_border(1.0, outline)
-                    .with_padding(padding)
-                    .with_child(inner),
-            );
+            let surface = crate::widgets::FullWidth::new(container);
             // Upstream sets one flag in two places and negates the second:
             // `Semantics(container: semanticContainer)` outside the material
             // and `Semantics(explicitChildNodes: !semanticContainer)` inside
@@ -8647,5 +8675,278 @@ impl Component for CircleAvatar {
                     .with_corner_radius(diameter / 2.0)
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod card_variant_tests {
+    use super::*;
+    use crate::component_themes::{CardThemeData, CardVariant, ResolvedCard};
+    use crate::engine::Color;
+    use crate::engine_test_stubs::Drawn;
+    use crate::framework::{ElementTree, leaf, provide};
+    use crate::render::{BoxConstraints, Offset, RenderBox, Size};
+
+    fn resolved(variant: CardVariant) -> ResolvedCard {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        struct Reader(
+            std::rc::Rc<std::cell::RefCell<Option<ResolvedCard>>>,
+            CardVariant,
+        );
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = Some(ResolvedCard::of(context, self.1));
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::component(Reader(
+            std::rc::Rc::clone(&seen),
+            variant,
+        )));
+        let read = seen.borrow_mut().take().expect("built once");
+        read
+    }
+
+    /// What a card paints, laid out in 300x200.
+    fn painted(card: Card) -> Vec<Drawn> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::component(card));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(300.0, 200.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(300, 200);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(300.0, 200.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    fn body() -> AnyWidget {
+        leaf(|| crate::widgets::SizedBox::new(60.0, 40.0))
+    }
+
+    /// The strokes a card drew, as `(width, colour)`.
+    fn strokes(drawn: &[Drawn]) -> Vec<(f32, Color)> {
+        drawn
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Rect {
+                    stroke: Some(width),
+                    argb,
+                    ..
+                } => Some((*width, Color(*argb))),
+                Drawn::RRect {
+                    stroke: Some(width),
+                    argb,
+                    ..
+                } => Some((*width, Color(*argb))),
+                Drawn::Path {
+                    stroke: Some(width),
+                    argb,
+                    ..
+                } => Some((*width, Color(*argb))),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn only_the_outlined_card_is_outlined() {
+        // What separates the three is *how a card is told apart from the page*:
+        // an elevated one by its shadow, a filled one by its colour, an
+        // outlined one by a line. Exactly one at a time. This crate used to
+        // draw a hairline on all three, so the elevated card said it twice and
+        // the filled card wore a border it never asked for.
+        assert_eq!(strokes(&painted(Card::new(body()))), Vec::new());
+        assert_eq!(strokes(&painted(Card::filled(body()))), Vec::new());
+        assert_eq!(
+            strokes(&painted(Card::outlined(body()))).len(),
+            1,
+            "and the outlined one has exactly one"
+        );
+    }
+
+    #[test]
+    fn the_outline_is_the_schemes_outline_variant() {
+        // `_OutlinedCardDefaultsM3`: `side: BorderSide(color: outlineVariant)`.
+        // Not `outline`, which is a stronger line meant for controls.
+        let scheme = crate::theme::ThemeData::default().color_scheme;
+        assert_eq!(
+            strokes(&painted(Card::outlined(body()))),
+            vec![(1.0, scheme.outline_variant())]
+        );
+        assert_ne!(scheme.outline_variant(), scheme.outline(), "two colours");
+    }
+
+    #[test]
+    fn the_three_have_three_surfaces_and_two_elevations() {
+        let scheme = crate::theme::ThemeData::default().color_scheme;
+        assert_eq!(
+            resolved(CardVariant::Elevated).color,
+            scheme.surface_container_low()
+        );
+        assert_eq!(
+            resolved(CardVariant::Filled).color,
+            scheme.surface_container_highest()
+        );
+        assert_eq!(resolved(CardVariant::Outlined).color, scheme.surface);
+
+        assert_eq!(resolved(CardVariant::Elevated).elevation, 1.0);
+        assert_eq!(resolved(CardVariant::Filled).elevation, 0.0);
+        assert_eq!(
+            resolved(CardVariant::Outlined).elevation,
+            0.0,
+            "a line instead of a shadow, not both"
+        );
+    }
+
+    #[test]
+    fn only_the_elevated_card_casts_a_shadow() {
+        // The elevation, seen where it shows: the shadow table is indexed by
+        // whole steps, so one is a shadow and zero is none.
+        // A rounded box paints its shadows as rounded rectangles, one per
+        // layer of the elevation table, and then its own surface as one more.
+        // So the count is "the surface" for a flat card and "the surface plus
+        // the shadow's layers" for a raised one.
+        let fills = |card: Card| {
+            painted(card)
+                .into_iter()
+                .filter(|call| matches!(call, Drawn::RRect { stroke: None, .. }))
+                .count()
+        };
+        let flat = fills(Card::filled(body()));
+        assert_eq!(flat, 1, "the surface and nothing under it");
+        assert_eq!(fills(Card::outlined(body())), 1);
+        assert_eq!(
+            fills(Card::new(body())),
+            1 + crate::painting::elevation_shadows(1).len(),
+            "the surface and the elevation's own layers"
+        );
+    }
+
+    #[test]
+    fn a_card_keeps_a_margin_outside_its_surface() {
+        // `EdgeInsets.all(4)` in all three tables, and it is a **margin**: the
+        // gap between two cards in a column belongs to neither of them. The
+        // card had none at all, so a list of cards was a single slab.
+        assert_eq!(
+            resolved(CardVariant::Elevated).margin,
+            EdgeInsets::all(ResolvedCard::MARGIN)
+        );
+        let drawn = painted(Card::filled(body()));
+        let surface = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::RRect { left, top, .. } => Some((*left, *top)),
+                Drawn::Rect {
+                    left,
+                    top,
+                    stroke: None,
+                    ..
+                } => Some((*left, *top)),
+                _ => None,
+            })
+            .expect("the surface painted");
+        assert_eq!(surface, (4.0, 4.0), "inset by the margin");
+    }
+
+    #[test]
+    fn a_themed_shape_moves_the_corners() {
+        // The rounding comes off the **shape**, which is where upstream keeps
+        // it. Reading the crate theme's own `radius` instead looks right --
+        // both are 12 by default -- and stops a `CardTheme` that sets a shape
+        // from having any effect at all.
+        let data = CardThemeData::new().with_shape(crate::borders::ShapeBorder::Rounded(
+            crate::borders::RoundedRectangleBorder::new(
+                crate::borders::BorderSide::NONE,
+                crate::borders::BorderRadiusGeometry::circular(4.0),
+            ),
+        ));
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            data,
+            crate::framework::component(Card::filled(body())),
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(300.0, 200.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(300, 200);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(300.0, 200.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let radius = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                Drawn::RRect { radius, .. } => Some(radius),
+                _ => None,
+            })
+            .expect("the surface painted");
+        assert_eq!(radius, 4.0, "the theme's shape, not the crate theme's 12");
+    }
+
+    #[test]
+    fn a_theme_moves_all_three_and_the_variant_still_decides_the_rest() {
+        // The theme goes in front of the defaults, one field at a time -- it
+        // is an override, not a table swap.
+        let data = CardThemeData::new().with_color(Color::argb(255, 1, 2, 3));
+        let read = |variant| {
+            let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+            struct Reader(
+                std::rc::Rc<std::cell::RefCell<Option<ResolvedCard>>>,
+                CardVariant,
+            );
+            impl Component for Reader {
+                fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                    *self.0.borrow_mut() = Some(ResolvedCard::of(context, self.1));
+                    leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+                }
+            }
+            let mut tree = ElementTree::new();
+            tree.rebuild(provide(
+                data.clone(),
+                crate::framework::component(Reader(std::rc::Rc::clone(&seen), variant)),
+            ));
+            seen.borrow_mut().take().expect("built once")
+        };
+        assert_eq!(read(CardVariant::Elevated).color, Color::argb(255, 1, 2, 3));
+        assert_eq!(read(CardVariant::Outlined).color, Color::argb(255, 1, 2, 3));
+        assert_eq!(
+            read(CardVariant::Elevated).elevation,
+            1.0,
+            "the colour moved and the elevation did not"
+        );
+        assert_eq!(read(CardVariant::Outlined).elevation, 0.0);
+    }
+
+    #[test]
+    fn a_material_two_card_still_gets_the_colour_the_theme_names() {
+        // `_CardDefaultsM2` answers `Theme.of(context).cardColor`, and an
+        // application that set it and left Material 3 off is asking for that
+        // colour rather than for a surface role it never mentioned.
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        struct Reader(std::rc::Rc<std::cell::RefCell<Option<ResolvedCard>>>);
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = Some(ResolvedCard::of(context, CardVariant::Elevated));
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut theme = crate::theme::ThemeData::default();
+        theme.use_material3 = false;
+        theme.card_color = Color::argb(255, 9, 8, 7);
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            theme,
+            crate::framework::component(Reader(std::rc::Rc::clone(&seen))),
+        ));
+        let read = seen.borrow_mut().take().expect("built once");
+        assert_eq!(read.color, Color::argb(255, 9, 8, 7));
     }
 }
