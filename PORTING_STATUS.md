@@ -1882,3 +1882,63 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
    `raw_menu_anchor.rs` 里那个 `AnchorRect` 是怎么拿到的，照它办。
 (2) `SearchViewContent.screen` 和 `media_top` 要从 MediaQuery 取——
    确认 `MediaQuery` 在这个 crate 里叫什么、怎么在 build 里读到尺寸和上边距。
+
+---
+
+## 第 444 轮：点一下 bar，view 真的开了
+
+上一轮留的两件事都有：
+`theatre.rs` 的 `Anchor`（`set` 在 assemble 里记下渲染对象，`rect()` 给全局矩形，
+`popup.rs` 就是这么用的），`media_query_of(context)` 给 `size` 和 `padding.top`。
+只差一样：主题的 `TargetPlatform` 和滚动层的 `ScrollPlatform` 是**同样六个名字的两个枚举**，
+之间没有转换。补了一个 `From`，并写清楚为什么是两个而不是一个。
+
+`SearchAnchor` 现在是个 widget：建 bar → bar 的 assemble 把自己记到 `Anchor` 上
+→ 点击时取矩形、算 `view_rect`、`open_search_view`。
+主题在**这里**捕获（`capture_themes`），因为 view 建在 overlay 里，
+而 overlay 不在这些主题下面——上游在同一个地方做同一件事。
+
+### 一处"本来想写的守卫，其实到不了"
+
+第一版在点击处理里加了"已经开着就别再开"。测试一跑，第二次点击的结果是
+**0 个 modal 而不是 1 个**——view 的遮罩盖在 bar 上，第二次点击**根本到不了 bar**，
+它落在遮罩上把 view 关掉了。
+
+所以那个守卫是一条**没有输入能到达的分支**（第 436 轮记过这种形状：
+变异扫描按不住它，而那个绿看起来像覆盖不够，其实是那儿没东西）。
+删掉，改成测真实行为："点回 bar 的位置会关掉盖在它上面的 view"。
+
+顺带把 `state.open` 也删了：守卫没了之后它是**写了没人读**的状态。
+上游 `SearchController.closeView` 确实能从外面关，但那需要一个调用者持有的
+controller，而这个 crate 的 `SearchController` 还没接上——记下来，不留死状态。
+
+### 测试里踩到的坑：没有 MediaQuery 的屏幕是 0×0
+
+变异扫描里"view 永远全屏 / 永远不全屏"两条都不红，查下去发现根子在
+**我的测试树里没有 `MediaQuery`**。于是 `media.size` 是默认的零，
+`view_rect` 把宽高一路 clamp 到最小值，面板里的东西按
+`min(view_width, 0)` 布局——一个 360×240 的面板，里面什么都是 0 宽。
+测试"通过"了，因为它们只断言"有东西画出来"。
+
+加上 MediaQuery 之后，再补两个测试：**跑完整个 600ms** 再看落点。
+早期几帧里面板还是 bar 的矩形，**无论它要去哪儿**——
+只看第一帧的测试分不出停靠和全屏。
+
+九条有效变异全红。
+
+尺子：十六把全部 exit 0。门：Rust 6604 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：`SearchController` 现在是个**没接线的纯数据**——
+`open_view` / `close_view` 只改自己的布尔值，而真正开关 view 的是
+`SearchAnchor` 的点击和遮罩。上游那条线是：controller 持有 route，
+`closeView` 先写文字再 pop。下一轮把 controller 接上：
+让 `SearchAnchor` 收一个调用者的 controller，把 `ModalHandle` 交给它保管。
+**先查两件事**：
+(1) `SearchController` 现在是 `#[derive(Clone, Debug, Default, PartialEq)]` 的纯值，
+   而 widget 之间共享状态要 `Rc<RefCell<..>>`。看这个 crate 里别的 controller
+   （`ScrollController`？`TabController`？）是怎么被 widget 共享的，照它办，
+   **别自己发明一种**。
+(2) 上游 `closeView(selectedText)` 是"先设文字再 pop"，而这里的 bar 和 header
+   是同一个 `TextField`（同一个 id）——确认关掉 view 之后 bar 里还留着那段文字，
+   还是说 `TextField` 的状态会随 overlay 一起没掉。这决定第 (1) 步要不要连文字一起搬。

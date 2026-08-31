@@ -84,18 +84,86 @@ pub enum ViewDismissal {
 }
 
 /// Upstream `SearchAnchor`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct SearchAnchor {
+    /// Identifies the bar, its field and its header, so that the text somebody
+    /// typed into the bar is still there in the view that grew out of it.
+    pub id: u64,
     /// `None` means "decide from the platform". Upstream shows the view full
     /// screen on mobile only.
     pub is_full_screen: Option<bool>,
+    /// Upstream's `viewHintText`, which the bar and the view's header share.
+    pub hint_text: Option<String>,
+    /// Upstream's `suggestionsBuilder`. Absent means an empty view -- which is
+    /// what a search with nothing typed into it shows anyway.
+    suggestions: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+}
+
+impl std::fmt::Debug for SearchAnchor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchAnchor")
+            .field("id", &self.id)
+            .field("is_full_screen", &self.is_full_screen)
+            .field("hint_text", &self.hint_text)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The parts a reader can see. The suggestions builder is left out for the
+/// reason [`SearchBar`]'s callbacks are: a closure made afresh each build is
+/// never equal to the last one.
+impl PartialEq for SearchAnchor {
+    fn eq(&self, other: &SearchAnchor) -> bool {
+        self.id == other.id
+            && self.is_full_screen == other.is_full_screen
+            && self.hint_text == other.hint_text
+    }
+}
+
+/// What an anchor keeps between builds.
+///
+/// # Only the anchor, and what is not kept
+///
+/// The [`crate::theatre::ModalHandle`] the tap gets back is **dropped**. That
+/// is deliberate: nothing here can use it. The view is dismissed through its
+/// own barrier, and a second tap where the bar was lands on that barrier
+/// rather than on the bar, so there is no "already open" to guard against.
+///
+/// Upstream's `SearchController.closeView` *does* close a view from the
+/// outside, and porting it needs somebody to hold the handle -- a controller
+/// the caller owns, which this crate's `SearchController` is not wired to yet.
+/// Keeping the handle here in the meantime would be state that is written
+/// every open and read by nothing.
+#[derive(Default)]
+pub struct SearchAnchorState {
+    /// Where the bar is. Filled in from the bar's own assemble, which is the
+    /// moment its render object exists, and read when the bar is tapped --
+    /// which is the moment the question can be answered.
+    anchor: crate::theatre::Anchor,
 }
 
 impl SearchAnchor {
-    pub fn new() -> SearchAnchor {
+    pub fn new(id: u64) -> SearchAnchor {
         SearchAnchor {
+            id,
             is_full_screen: None,
+            hint_text: None,
+            suggestions: None,
         }
+    }
+
+    pub fn with_hint_text(mut self, hint: impl Into<String>) -> Self {
+        self.hint_text = Some(hint.into());
+        self
+    }
+
+    /// Upstream's `suggestionsBuilder`.
+    pub fn with_suggestions(
+        mut self,
+        suggestions: impl Fn() -> crate::framework::AnyWidget + 'static,
+    ) -> Self {
+        self.suggestions = Some(std::rc::Rc::new(suggestions));
+        self
     }
 
     pub fn with_full_screen(mut self, full: bool) -> Self {
@@ -228,7 +296,104 @@ impl SearchAnchor {
 
 impl Default for SearchAnchor {
     fn default() -> Self {
-        SearchAnchor::new()
+        SearchAnchor::new(0)
+    }
+}
+
+impl crate::framework::StatefulComponent for SearchAnchor {
+    type State = SearchAnchorState;
+
+    fn key(&self) -> crate::framework::Key {
+        Some(self.id)
+    }
+
+    fn build(
+        &self,
+        state: &SearchAnchorState,
+        _handle: crate::framework::StateHandle<SearchAnchorState>,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::framework::AnyWidget {
+        // Everything the view will need is read **here**, under the anchor's
+        // own themes, and carried into the tap. The view is built in the
+        // overlay, which is not below them -- upstream takes the same capture
+        // at the same place, `InheritedTheme.capture(from: context, ...)`.
+        let full_screen =
+            self.resolve_full_screen(crate::theme::ThemeData::of(context).platform.into());
+        let view = crate::component_themes::ResolvedSearchView::of(context, full_screen);
+        let media = crate::media_query::media_query_of(context);
+        let overlay = crate::theatre::OverlayHandle::of(context);
+        let themes = context.capture_themes();
+        let direction = crate::direction::current_direction();
+
+        let anchor = state.anchor.clone();
+        let id = self.id;
+        let hint_text = self.hint_text.clone();
+        let suggestions = self.suggestions.clone();
+
+        let mut bar = SearchBar::new(id);
+        bar.is_anchor_child = true;
+        if let Some(hint) = &hint_text {
+            bar = bar.with_hint_text(hint.clone());
+        }
+        let bar = bar.with_on_tap(move || {
+            // There is no guard here against opening a second view, and there
+            // is nothing to guard: while a view is up its barrier is over the
+            // bar, so the bar cannot be tapped at all. A tap where the bar is
+            // *closes* the view instead -- which is the behaviour a reader
+            // expects and is covered by
+            // `tapping_where_the_bar_was_closes_the_view_over_it`.
+            //
+            // A guard would read as caution and be a branch no input can
+            // reach, which is the shape round 436 recorded: a mutation sweep
+            // cannot hold it, and the green would look like missing coverage
+            // rather than like nothing being there.
+            let (Some(overlay), Some(rect)) = (overlay.clone(), anchor.rect()) else {
+                return;
+            };
+            let screen = media.size;
+            let placement = SearchViewTransition {
+                anchor: rect,
+                view: SearchAnchor::view_rect(
+                    rect,
+                    screen,
+                    view.constraints,
+                    full_screen,
+                    direction,
+                ),
+                full_screen,
+            };
+            let content = SearchViewContent {
+                placement,
+                view: view.clone(),
+                constraints: view.constraints,
+                screen,
+                // Nothing has been typed yet, so upstream's
+                // `result.isNotEmpty` is false on the frame the view opens.
+                has_results: false,
+                media_top: media.padding.top,
+                header_id: id,
+                hint_text: hint_text.clone(),
+            };
+            let suggestions = suggestions.clone();
+            let themes = themes.clone();
+            open_search_view(overlay, content, move || {
+                let built = match &suggestions {
+                    Some(suggestions) => suggestions(),
+                    None => crate::framework::leaf(|| crate::widgets::SizedBox::new(0.0, 0.0)),
+                };
+                themes.wrap(built)
+            });
+        });
+
+        let anchor = state.anchor.clone();
+        crate::framework::many(vec![crate::framework::stateful(bar)], move |rendered| {
+            let bar = rendered.into_iter().next().expect("the bar");
+            // Recorded from the bar's own assemble: this is where its render
+            // object first exists, and the rectangle it will be asked for is
+            // the one the view grows out of.
+            anchor.set(bar.clone());
+            crate::theatre::RenderPortal::new(bar)
+        })
     }
 }
 
@@ -1532,7 +1697,7 @@ mod tests {
 
     #[test]
     fn the_view_is_full_screen_on_a_phone_and_docked_on_a_desktop() {
-        let anchor = SearchAnchor::new();
+        let anchor = SearchAnchor::new(1);
         assert!(anchor.resolve_full_screen(ScrollPlatform::Android));
         assert!(anchor.resolve_full_screen(ScrollPlatform::IOS));
         assert!(!anchor.resolve_full_screen(ScrollPlatform::MacOS));
@@ -1542,12 +1707,12 @@ mod tests {
     #[test]
     fn saying_so_outright_overrules_the_platform() {
         assert!(
-            SearchAnchor::new()
+            SearchAnchor::new(1)
                 .with_full_screen(true)
                 .resolve_full_screen(ScrollPlatform::Windows)
         );
         assert!(
-            !SearchAnchor::new()
+            !SearchAnchor::new(1)
                 .with_full_screen(false)
                 .resolve_full_screen(ScrollPlatform::Android)
         );
@@ -1558,7 +1723,7 @@ mod tests {
         // A docked view is positioned against an anchor whose place on screen
         // just changed and has nowhere to be. A full-screen one was never
         // anchored, so rotating only lays it out again.
-        let anchor = SearchAnchor::new();
+        let anchor = SearchAnchor::new(1);
         assert_eq!(
             anchor.on_window_resized(ScrollPlatform::Windows),
             ViewDismissal::WindowResizedWhileDocked
@@ -4294,6 +4459,313 @@ mod search_view_content_tests {
         assert_eq!(
             root.size().height,
             ResolvedSearchView::FULL_SCREEN_BAR_HEIGHT
+        );
+    }
+}
+
+#[cfg(test)]
+mod search_anchor_widget_tests {
+    use super::*;
+    use crate::engine::Color;
+    use crate::engine_test_stubs::Drawn;
+    use crate::framework::{AnyWidget, ElementTree, leaf, stateful};
+    use crate::render::{BoxConstraints, Offset, RenderBox, Size};
+    use crate::theatre::overlay;
+
+    const SCREEN: Size = Size {
+        width: 800.0,
+        height: 900.0,
+    };
+    const SUGGESTION: Color = Color(0xFFFF_0000);
+
+    /// An anchor mounted under an overlay **and a `MediaQuery`**, laid out at
+    /// the screen's size.
+    ///
+    /// The media query is not decoration. The anchor reads the window's size
+    /// from it to work out where the view goes, and its top inset to know what
+    /// a full-screen view has to clear -- so without one the whole opening
+    /// happens against a zero-sized screen: the view is clamped up to its
+    /// minimum, and everything inside it is laid out `min(view_width, 0)`
+    /// wide. A first draft of these tests had no media query and watched a
+    /// 360x240 panel with nothing visible in it.
+    fn staged(anchor: SearchAnchor) -> ElementTree {
+        let mut tree = ElementTree::new();
+        let data = crate::media_query::MediaQueryData {
+            size: SCREEN,
+            ..crate::media_query::MediaQueryData::default()
+        };
+        tree.rebuild(crate::media_query::MediaQuery::new(
+            data,
+            overlay(stateful(anchor)),
+        ));
+        tree.build_render_tree();
+        tree
+    }
+
+    fn laid_out(tree: &mut ElementTree) -> crate::render::RenderRef {
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(
+            &root,
+            BoxConstraints::tight(SCREEN.width, SCREEN.height),
+        );
+        crate::render::flush_layout();
+        root
+    }
+
+    fn painted(tree: &mut ElementTree) -> Vec<Drawn> {
+        let root = laid_out(tree);
+        let mut layers = crate::engine::LayerTree::new(800, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(&mut layers, SCREEN);
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    /// A press and a release at `at`, through the real router.
+    fn tap(tree: &mut ElementTree, at: Offset) {
+        let root = laid_out(tree);
+        let event = |change| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 1,
+            time_stamp_micros: 0,
+            position: at,
+            delta: Offset::ZERO,
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: at,
+        };
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Down));
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Up));
+        tree.rebuild_dirty();
+    }
+
+    fn an_anchor() -> SearchAnchor {
+        SearchAnchor::new(1)
+            .with_full_screen(false)
+            .with_hint_text("Search")
+            .with_suggestions(|| {
+                leaf(|| {
+                    crate::render::RenderDecoratedBox::new()
+                        .with_fill(crate::render::Fill::Solid(SUGGESTION))
+                })
+            })
+    }
+
+    #[test]
+    fn an_anchor_is_a_bar_until_it_is_tapped() {
+        // The whole chain now has a caller, and this is the first frame of it:
+        // a search bar on the page, and nothing over it.
+        let mut tree = staged(an_anchor());
+        let drawn = painted(&mut tree);
+        assert!(
+            drawn.iter().any(|call| matches!(
+                call,
+                Drawn::Paragraph { text, .. } if text == "Search"
+            )),
+            "the bar's hint"
+        );
+        assert!(
+            !drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Rect { argb, .. } if Color(*argb) == SUGGESTION)),
+            "and no view"
+        );
+        assert_eq!(crate::theatre::modal_count(), 0);
+    }
+
+    #[test]
+    fn tapping_the_bar_opens_the_view_it_grows_into() {
+        let mut tree = staged(an_anchor());
+        // The bar is 56 tall at the top of the screen; the middle of it.
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        assert_eq!(crate::theatre::modal_count(), 1, "a route went up");
+
+        // Run the opening out, stepping because `advance` clamps each frame.
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        let mut now = 0;
+        while now < SearchViewTransition::OPEN_MICROS {
+            now = (now + 16_000).min(SearchViewTransition::OPEN_MICROS);
+            tree.advance_frame(now);
+            tree.rebuild_dirty();
+        }
+
+        let drawn = painted(&mut tree);
+        assert!(
+            drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Rect { argb, .. } if Color(*argb) == SUGGESTION)),
+            "the caller's suggestions are on screen"
+        );
+        crate::theatre::dismiss_topmost_modal();
+    }
+
+    #[test]
+    fn tapping_where_the_bar_was_closes_the_view_over_it() {
+        // The view's barrier covers the bar, so the second tap never reaches
+        // the anchor: it dismisses instead. That is why the tap handler has no
+        // "already open" guard -- there is no input that would reach one.
+        let mut tree = staged(an_anchor());
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        assert_eq!(crate::theatre::modal_count(), 1);
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        assert_eq!(
+            crate::theatre::modal_count(),
+            0,
+            "the barrier took it, and one view did not become two"
+        );
+    }
+
+    #[test]
+    fn the_view_opens_at_the_bar_and_not_at_the_corner_of_the_screen() {
+        // The anchor's whole job on the tap: the bar's rectangle, taken from
+        // the render object the bar's own assemble recorded. Without it the
+        // view would grow out of (0, 0) whatever the bar's place on the page.
+        let mut tree = ElementTree::new();
+        // The bar is pushed down and across, so a view that ignored the anchor
+        // would be visibly in the wrong place.
+        tree.rebuild(overlay(crate::framework::many(
+            vec![stateful(an_anchor())],
+            |rendered| {
+                crate::render::RenderPadding::new(
+                    crate::render::EdgeInsets::only(30.0, 120.0, 0.0, 0.0),
+                    rendered.into_iter().next().expect("the anchor"),
+                )
+            },
+        )));
+        tree.build_render_tree();
+        tap(&mut tree, Offset::new(230.0, 148.0));
+        assert_eq!(crate::theatre::modal_count(), 1, "the tap landed");
+
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        tree.advance_frame(16_000);
+        tree.rebuild_dirty();
+
+        let drawn = painted(&mut tree);
+        let moved = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::TransformLayer { e, f, .. } => Some((*e, *f)),
+                _ => None,
+            })
+            .expect("the panel was moved into place");
+        assert!(
+            (moved.0 - 30.0).abs() < 1.0 && (moved.1 - 120.0).abs() < 1.0,
+            "the view starts where the bar is: {moved:?}"
+        );
+        crate::theatre::dismiss_topmost_modal();
+    }
+
+    /// Opens the view and runs the whole 600ms, then answers where the panel
+    /// ended up and how big it is.
+    fn opened_fully(anchor: SearchAnchor, at: Offset) -> ((f32, f32), (f32, f32)) {
+        let mut tree = staged(anchor);
+        tap(&mut tree, at);
+        assert_eq!(crate::theatre::modal_count(), 1, "the tap landed");
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        let mut now = 0;
+        while now < SearchViewTransition::OPEN_MICROS {
+            now = (now + 16_000).min(SearchViewTransition::OPEN_MICROS);
+            tree.advance_frame(now);
+            tree.rebuild_dirty();
+        }
+        let drawn = painted(&mut tree);
+        crate::theatre::dismiss_topmost_modal();
+        let moved = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::TransformLayer { e, f, .. } => Some((*e, *f)),
+                _ => None,
+            })
+            .expect("the panel was moved into place");
+        // Measured from the **suggestions**, which fill what is left of the
+        // panel below the header and the rule. The panel's own surface is a
+        // path among several -- the shadows are paths too, and so is the
+        // page's own bar behind the view -- and picking one of those out by
+        // position would be guessing.
+        let list = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Rect {
+                    left,
+                    right,
+                    bottom,
+                    argb,
+                    ..
+                } if Color(*argb) == SUGGESTION => Some((*right - *left, *bottom)),
+                _ => None,
+            })
+            .expect("the suggestions painted");
+        (moved, list)
+    }
+
+    #[test]
+    fn a_docked_view_settles_over_the_bar_and_two_thirds_down_the_screen() {
+        // Where `view_rect` put it, reached all the way through the widget:
+        // the bar's corner, the bar's width, two thirds of the screen's
+        // height. The frame this is read on matters -- early in the opening
+        // the panel is still the bar's rectangle whatever its destination, so
+        // a test that looked at the first frame could not tell a docked view
+        // from a full-screen one.
+        let (moved, list) = opened_fully(an_anchor(), Offset::new(200.0, 28.0));
+        assert_eq!(moved, (0.0, 0.0), "the bar is at the screen's corner here");
+        assert!(
+            (list.0 - SCREEN.width).abs() < 1.0,
+            "as wide as the bar, which fills the page: {list:?}"
+        );
+        assert!(
+            (list.1 - SCREEN.height * 2.0 / 3.0).abs() < 1.0,
+            "and reaching two thirds down the screen, not all of it: {list:?}"
+        );
+    }
+
+    #[test]
+    fn a_full_screen_view_settles_over_the_whole_screen() {
+        let (moved, list) = opened_fully(
+            SearchAnchor::new(1)
+                .with_full_screen(true)
+                .with_hint_text("Search")
+                .with_suggestions(|| {
+                    leaf(|| {
+                        crate::render::RenderDecoratedBox::new()
+                            .with_fill(crate::render::Fill::Solid(SUGGESTION))
+                    })
+                }),
+            Offset::new(200.0, 28.0),
+        );
+        assert_eq!(moved, (0.0, 0.0));
+        assert!(
+            (list.0 - SCREEN.width).abs() < 1.0 && (list.1 - SCREEN.height).abs() < 1.0,
+            "all the way to the bottom of the screen: {list:?}"
+        );
+    }
+
+    #[test]
+    fn the_platform_decides_full_screen_when_nobody_says() {
+        // `resolve_full_screen`'s rule, reached through the conversion the
+        // widget needs: a theme's `TargetPlatform` and the scroll tier's
+        // `ScrollPlatform` are the same six names.
+        use crate::editable_text::TargetPlatform;
+        let anchor = SearchAnchor::new(1);
+        assert!(anchor.resolve_full_screen(TargetPlatform::Android.into()));
+        assert!(anchor.resolve_full_screen(TargetPlatform::IOS.into()));
+        assert!(!anchor.resolve_full_screen(TargetPlatform::MacOS.into()));
+        assert!(!anchor.resolve_full_screen(TargetPlatform::Windows.into()));
+        assert!(
+            !SearchAnchor::new(1)
+                .with_full_screen(false)
+                .resolve_full_screen(TargetPlatform::Android.into()),
+            "saying so outright overrules the platform"
         );
     }
 }

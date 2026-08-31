@@ -31,6 +31,28 @@ pub enum ScrollPlatform {
     Windows,
 }
 
+/// The same six names, from the tier that spells them
+/// [`crate::editable_text::TargetPlatform`].
+///
+/// Two enums rather than one because they are read for different questions --
+/// a theme's `platform` decides which *look* a widget adapts to, and this one
+/// decides which scroll physics and which text-selection gestures apply -- and
+/// upstream keeps them apart the same way. The conversion is total and
+/// name-for-name, which is why it can be written down rather than decided.
+impl From<crate::editable_text::TargetPlatform> for ScrollPlatform {
+    fn from(platform: crate::editable_text::TargetPlatform) -> ScrollPlatform {
+        use crate::editable_text::TargetPlatform;
+        match platform {
+            TargetPlatform::Android => ScrollPlatform::Android,
+            TargetPlatform::Fuchsia => ScrollPlatform::Fuchsia,
+            TargetPlatform::IOS => ScrollPlatform::IOS,
+            TargetPlatform::Linux => ScrollPlatform::Linux,
+            TargetPlatform::MacOS => ScrollPlatform::MacOS,
+            TargetPlatform::Windows => ScrollPlatform::Windows,
+        }
+    }
+}
+
 /// Which physics family a platform gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhysicsFamily {
