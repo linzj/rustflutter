@@ -2243,3 +2243,60 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 上游是两套不同的东西，混起来会把一套的规则安到另一套上。
 看清楚了再决定 `MenuItemButton` 是"补一个新 widget"还是
 "给现有的补字段"。
+
+---
+
+## 第 450 轮：一条菜单行里各部分之间的空隙
+
+上一轮说的"先分清是哪条线"救了这一轮一次。
+
+`menu.rs` 的文件头第一行写着 *"Popup menus, ported from
+`material/popup_menu.dart`"*——是 **M2 那条线**。
+`MenuItemButton` / `SubmenuButton` 是 `material/menu_anchor.dart`，**另一套**。
+我本来已经把新代码写进 `menu.rs` 了，查完才发现放错地方，退掉重来。
+
+再查一步：**`menu_anchor.rs` 已经存在**，里面有 `MenuItemButton`、
+`SubmenuButton`、`MenuBar`，但它们都是**只有配置、没有布局**的结构体，
+文件头自己写着"ported is the configuration those widgets carry"。
+而 `ResolvedMenuButton`（`_MenuButtonDefaultsM3`）**在自己的文件外没有任何读者**。
+
+### 补的是 `_MenuItemLabel` 的几何
+
+一条菜单行怎么摆，是这两个 widget 共用的东西——
+和 `_MenuButtonDefaultsM3` 被它们共用的方式一模一样。
+
+- **一个间距，只花在两样东西相接的地方**：标签前（**仅当有前置图标时**）、
+  尾部图标前、快捷键前、子菜单箭头前。外缘没有——那是按钮自己的内边距。
+  所以一行没有前置图标时，它的文字起点正好是有图标那行的图标起点，
+  一列菜单项只有一条左边缘而不是两条。
+- **间距按密度的两倍走**：`12 + density.horizontal * 2`。
+  横向的收紧从这儿来，纵向的从按钮最小尺寸来；两个方向同速会让横向先撑不住。
+- **下限 4 恰好是最密时算出来的数**（-4 时 12-8=4）。
+  所以任何合法密度都够不到这个下限——它是防常数变动的，
+  两个常数处在这个关系上本身才是值得钉住的事实。
+- **菜单栏里快捷键和箭头一起消失，尾部图标不消失**：
+  后两样是菜单自己的家具，图标是调用者要的。
+  这也是为什么菜单栏顶层是一排光秃秃的词，尽管每一个都会打开子菜单。
+
+`MenuItemButton::label` 和 `SubmenuButton::label` 各自造一条，
+唯一的差别是 `has_submenu`——上游也是这一个差别。
+
+### 变异扫描 15 个，第一遍 4 条 MISS
+
+四条都在 `spacing` 上，全是 fmt 之后把两行并成一行、搜索串失效。
+改对之后 15 条全红。
+
+尺子：十六把全部 exit 0。门：Rust 6647 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：`ResolvedMenuButton` 现在**还是没有读者**——
+这一轮补的是几何，不是外观。下一轮把 `MenuItemButton` 做成真 widget：
+按 `ResolvedMenuButton` 上色（前景 `onSurface`、图标 `onSurfaceVariant`、
+overlay 才是反馈）、最小尺寸 64×48、`AlignmentDirectional.centerStart`，
+布局用这一轮的 `MenuItemLabel`。
+**先查一件事**：这条行的反馈全在 overlay 上，而 `InkResponse`
+（第 435 轮 `SearchBar` 用过）收的是 hover/highlight 两个颜色。
+`ResolvedMenuButton::overlay_for` 有 pressed / hovered / focused **三个**arm，
+其中 pressed 和 focused 同值。确认 `InkResponse` 有没有 focus 那一路
+（`with_focus_color` 好像有），没有的话要先看清楚 focus 的反馈从哪儿来，
+别把三态硬塞进两态。

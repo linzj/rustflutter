@@ -383,6 +383,26 @@ impl MenuItemButton {
         self.enabled = enabled;
         self
     }
+
+    /// The line this item lays out: upstream's `_MenuItemLabel` with
+    /// `hasSubmenu: false`.
+    ///
+    /// `horizontal` is the anchor's orientation, which upstream reads off the
+    /// enclosing anchor rather than off the item -- a line does not know
+    /// whether it is in a bar until it is in one.
+    pub fn label(
+        &self,
+        leading: bool,
+        trailing: bool,
+        shortcut: bool,
+        horizontal: bool,
+    ) -> MenuItemLabel {
+        MenuItemLabel::new()
+            .with_leading_icon(leading)
+            .with_trailing_icon(trailing)
+            .with_shortcut(shortcut)
+            .in_a_horizontal_bar(horizontal)
+    }
 }
 
 /// Upstream `CheckboxMenuButton`: a menu item with a checkbox in its leading
@@ -508,6 +528,29 @@ impl SubmenuButton {
         self
     }
 
+    /// The line this submenu lays out: the same `_MenuItemLabel` an item
+    /// builds, with `hasSubmenu: true`.
+    ///
+    /// So the arrow is a **trailing part like any other** and takes the same
+    /// gap -- and in a horizontal bar it is suppressed with the shortcut,
+    /// which is why a menu bar's top-level entries are bare words even though
+    /// every one of them opens a submenu.
+    pub fn label(
+        &self,
+        leading: bool,
+        trailing: bool,
+        shortcut: bool,
+        horizontal: bool,
+    ) -> MenuItemLabel {
+        let mut label = MenuItemLabel::new()
+            .with_leading_icon(leading)
+            .with_trailing_icon(trailing)
+            .with_shortcut(shortcut)
+            .in_a_horizontal_bar(horizontal);
+        label.has_submenu = self.has_submenu_icon;
+        label
+    }
+
     /// The binding a submenu publishes to its label: it has a submenu, so its
     /// accelerator opens rather than invokes.
     pub fn accelerator_binding(&self) -> MenuAcceleratorCallbackBinding {
@@ -515,9 +558,315 @@ impl SubmenuButton {
     }
 }
 
+/// How a menu line lays its parts out: upstream's `_MenuItemLabel`.
+///
+/// Kept apart from the buttons for the reason every other rule in this crate
+/// is: it can be asked without building anything, and what it answers is a
+/// number a test can hold. Both [`MenuItemButton`] and [`SubmenuButton`] build
+/// one -- upstream's `_MenuItemLabel` is shared by them in exactly the same
+/// way `_MenuButtonDefaultsM3` is.
+///
+/// # One spacing, and only where two things meet
+///
+/// Upstream computes a single `horizontalPadding` and spends it in four
+/// places: before the label (**only when there is a leading icon**), before
+/// the trailing icon, before the shortcut, and before the submenu arrow. There
+/// is none at the outer edges -- the button's own padding does that -- so a
+/// line with no leading icon starts its text exactly where a line with one
+/// starts its icon, and a column of menu items has one left edge rather than
+/// two.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenuItemLabel {
+    pub has_leading_icon: bool,
+    pub has_trailing_icon: bool,
+    pub has_shortcut: bool,
+    pub has_submenu: bool,
+    /// Upstream's `showDecoration`, false for a line in a horizontal menu bar:
+    /// a bar's items show neither their shortcut nor a submenu arrow, because
+    /// a bar is a row of words and either would turn it into a table.
+    pub show_decoration: bool,
+}
+
+impl MenuItemLabel {
+    /// Upstream's `_kLabelItemDefaultSpacing`.
+    pub const DEFAULT_SPACING: f32 = 12.0;
+    /// Upstream's `_kLabelItemMinSpacing`, the floor a negative density cannot
+    /// push through.
+    pub const MIN_SPACING: f32 = 4.0;
+
+    pub fn new() -> MenuItemLabel {
+        MenuItemLabel {
+            has_leading_icon: false,
+            has_trailing_icon: false,
+            has_shortcut: false,
+            has_submenu: false,
+            show_decoration: true,
+        }
+    }
+
+    pub fn with_leading_icon(mut self, has: bool) -> Self {
+        self.has_leading_icon = has;
+        self
+    }
+
+    pub fn with_trailing_icon(mut self, has: bool) -> Self {
+        self.has_trailing_icon = has;
+        self
+    }
+
+    pub fn with_shortcut(mut self, has: bool) -> Self {
+        self.has_shortcut = has;
+        self
+    }
+
+    /// Upstream's `showDecoration`, which
+    /// [`MenuItemLabel::in_a_horizontal_bar`] names the case for.
+    pub fn with_decoration(mut self, show: bool) -> Self {
+        self.show_decoration = show;
+        self
+    }
+
+    /// A line in a menu bar: upstream passes `showDecoration: _orientation ==
+    /// Axis.vertical`, so a horizontal bar suppresses both decorations.
+    pub fn in_a_horizontal_bar(mut self, horizontal: bool) -> Self {
+        self.show_decoration = !horizontal;
+        self
+    }
+
+    /// Upstream's `horizontalPadding`:
+    /// `math.max(_kLabelItemMinSpacing, _kLabelItemDefaultSpacing + density.horizontal * 2)`.
+    ///
+    /// **Twice the density**, not once. A denser menu closes the gaps between
+    /// a line's parts at twice the rate the density itself moves, which is how
+    /// a compact menu stays readable while getting smaller: the vertical
+    /// squeeze comes from the button's minimum size and the horizontal one
+    /// from here.
+    ///
+    /// The floor is the half worth stating. At the minimum density of -4 the
+    /// arithmetic gives `12 - 8 = 4`, exactly the floor -- so the floor is not
+    /// reachable from below by any legal density, and it is there to stop the
+    /// gap going negative if either constant ever moves.
+    pub fn spacing(density: crate::theme::VisualDensity) -> f32 {
+        (MenuItemLabel::DEFAULT_SPACING + density.horizontal * 2.0).max(MenuItemLabel::MIN_SPACING)
+    }
+
+    /// The gap before the label, which exists only when something is in front
+    /// of it.
+    pub fn leading_gap(&self, density: crate::theme::VisualDensity) -> f32 {
+        if self.has_leading_icon {
+            MenuItemLabel::spacing(density)
+        } else {
+            0.0
+        }
+    }
+
+    /// What follows the label, in the order upstream builds it: the trailing
+    /// icon, then the shortcut, then the submenu arrow, each preceded by the
+    /// same gap.
+    ///
+    /// The two decorations are **suppressed together** and the trailing icon is
+    /// not: a caller who put an icon there asked for it, where the shortcut and
+    /// the arrow are the menu's own furniture.
+    pub fn trailing_parts(&self) -> Vec<MenuItemPart> {
+        let mut parts = Vec::new();
+        if self.has_trailing_icon {
+            parts.push(MenuItemPart::TrailingIcon);
+        }
+        if self.show_decoration && self.has_shortcut {
+            parts.push(MenuItemPart::Shortcut);
+        }
+        if self.show_decoration && self.has_submenu {
+            parts.push(MenuItemPart::SubmenuIcon);
+        }
+        parts
+    }
+
+    /// How wide the line's gaps come to altogether: one before the label when
+    /// there is a leading icon, and one before each trailing part.
+    ///
+    /// A line's own width is its parts plus this, which is what a menu panel
+    /// needs in order to be as wide as its widest line.
+    pub fn total_gaps(&self, density: crate::theme::VisualDensity) -> f32 {
+        let spacing = MenuItemLabel::spacing(density);
+        self.leading_gap(density) + spacing * self.trailing_parts().len() as f32
+    }
+}
+
+impl Default for MenuItemLabel {
+    fn default() -> MenuItemLabel {
+        MenuItemLabel::new()
+    }
+}
+
+/// One of the things that can sit after a menu line's label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuItemPart {
+    TrailingIcon,
+    Shortcut,
+    SubmenuIcon,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- The line's geometry ------------------------------------------------
+
+    use crate::theme::VisualDensity;
+
+    fn density(horizontal: f32) -> VisualDensity {
+        VisualDensity {
+            horizontal,
+            vertical: 0.0,
+        }
+    }
+
+    #[test]
+    fn the_gap_moves_at_twice_the_density() {
+        // `_kLabelItemDefaultSpacing + density.horizontal * 2`. Twice, not
+        // once: the horizontal squeeze of a compact menu comes from here while
+        // the vertical one comes from the button's minimum size, and a menu
+        // that tightened at the same rate in both directions would run out of
+        // room across long before it did down.
+        assert_eq!(MenuItemLabel::spacing(density(0.0)), 12.0);
+        assert_eq!(MenuItemLabel::spacing(density(1.0)), 14.0);
+        assert_eq!(MenuItemLabel::spacing(density(-1.0)), 10.0);
+    }
+
+    #[test]
+    fn the_gap_has_a_floor_that_the_densest_menu_lands_exactly_on() {
+        // At the minimum density of -4 the arithmetic gives 12 - 8 = 4, which
+        // is `_kLabelItemMinSpacing` to the pixel. So the floor is not
+        // reachable from below by any legal density -- it is there to stop the
+        // gap going negative if either constant moves, and the two numbers
+        // being in that relationship is the fact worth pinning.
+        assert_eq!(
+            MenuItemLabel::spacing(density(VisualDensity::MINIMUM)),
+            MenuItemLabel::MIN_SPACING
+        );
+        assert_eq!(
+            MenuItemLabel::spacing(density(VisualDensity::MINIMUM - 1.0)),
+            MenuItemLabel::MIN_SPACING,
+            "and past it the floor holds"
+        );
+    }
+
+    #[test]
+    fn the_label_is_only_padded_when_something_is_in_front_of_it() {
+        // The gap is between two things, not an inset. A line with no leading
+        // icon starts its text exactly where a line with one starts its icon,
+        // so a column of items has one left edge rather than two.
+        let plain = MenuItemLabel::new();
+        assert_eq!(plain.leading_gap(density(0.0)), 0.0);
+        assert_eq!(
+            plain.with_leading_icon(true).leading_gap(density(0.0)),
+            MenuItemLabel::DEFAULT_SPACING
+        );
+    }
+
+    #[test]
+    fn what_follows_the_label_comes_in_upstreams_order() {
+        let full = MenuItemLabel::new()
+            .with_trailing_icon(true)
+            .with_shortcut(true);
+        let mut full = full;
+        full.has_submenu = true;
+        assert_eq!(
+            full.trailing_parts(),
+            vec![
+                MenuItemPart::TrailingIcon,
+                MenuItemPart::Shortcut,
+                MenuItemPart::SubmenuIcon
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bar_hides_the_shortcut_and_the_arrow_and_keeps_the_icon() {
+        // `showDecoration: _orientation == Axis.vertical`. The two decorations
+        // go together because both are the menu's own furniture; a trailing
+        // icon is the caller's and stays.
+        let mut line = MenuItemLabel::new()
+            .with_trailing_icon(true)
+            .with_shortcut(true);
+        line.has_submenu = true;
+
+        assert_eq!(line.in_a_horizontal_bar(false).trailing_parts().len(), 3);
+        assert_eq!(
+            line.in_a_horizontal_bar(true).trailing_parts(),
+            vec![MenuItemPart::TrailingIcon],
+            "the icon stays and the furniture goes"
+        );
+    }
+
+    #[test]
+    fn the_gaps_add_up_to_one_per_join() {
+        // What a panel needs in order to be as wide as its widest line: the
+        // parts plus a gap at each place two of them meet.
+        let bare = MenuItemLabel::new();
+        assert_eq!(bare.total_gaps(density(0.0)), 0.0, "a label on its own");
+
+        let mut busy = MenuItemLabel::new()
+            .with_leading_icon(true)
+            .with_trailing_icon(true)
+            .with_shortcut(true);
+        busy.has_submenu = true;
+        assert_eq!(
+            busy.total_gaps(density(0.0)),
+            4.0 * MenuItemLabel::DEFAULT_SPACING,
+            "one before the label and one before each of the three after it"
+        );
+        assert_eq!(
+            busy.in_a_horizontal_bar(true).total_gaps(density(0.0)),
+            2.0 * MenuItemLabel::DEFAULT_SPACING,
+            "and in a bar, one before the label and one before the icon"
+        );
+    }
+
+    #[test]
+    fn an_item_never_has_a_submenu_and_a_submenu_button_does() {
+        // The one difference between the two lines upstream builds from the
+        // same `_MenuItemLabel`.
+        assert!(
+            !MenuItemButton::new()
+                .label(false, false, false, false)
+                .has_submenu
+        );
+        assert!(
+            SubmenuButton::new()
+                .label(false, false, false, false)
+                .has_submenu
+        );
+        assert!(
+            !SubmenuButton {
+                has_submenu_icon: false,
+                ..SubmenuButton::new()
+            }
+            .label(false, false, false, false)
+            .has_submenu,
+            "a submenu with no arrow slot has no arrow"
+        );
+    }
+
+    #[test]
+    fn a_submenus_arrow_takes_the_same_gap_as_anything_else_after_the_label() {
+        // The arrow is a trailing part like the others, not a special case
+        // with a spacing of its own.
+        let submenu = SubmenuButton::new().label(false, false, false, false);
+        assert_eq!(submenu.trailing_parts(), vec![MenuItemPart::SubmenuIcon]);
+        assert_eq!(
+            submenu.total_gaps(density(0.0)),
+            MenuItemLabel::DEFAULT_SPACING
+        );
+        assert_eq!(
+            SubmenuButton::new()
+                .label(false, false, false, true)
+                .total_gaps(density(0.0)),
+            0.0,
+            "and in a bar it is not there at all -- which is why a menu bar's \
+             top-level entries are bare words though every one opens a submenu"
+        );
+    }
 
     fn stripped(label: &str) -> (String, Option<usize>) {
         MenuAcceleratorLabel::strip_accelerator_markers(label)
