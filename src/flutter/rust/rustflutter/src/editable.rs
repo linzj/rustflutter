@@ -3563,6 +3563,10 @@ impl StatefulComponent for TextField {
                         host.set_on_drag_start(Rc::new(move |_end, grab: Offset| {
                             began.borrow_mut().begin_handle_drag(grab);
                         }));
+                        let ended = Rc::clone(&grabbed);
+                        host.set_on_drag_end(Rc::new(move |_end| {
+                            ended.borrow_mut().end_handle_drag();
+                        }));
                         host.set_on_drag(drag_handle_to(
                             handle.clone(),
                             Rc::clone(&reveal_anchor),

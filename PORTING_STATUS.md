@@ -1119,3 +1119,49 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
 下一轮接完：`selection_host` 补一个 `on_drag_end`（`with_pointer_up`），
 `editable.rs` 里调 `end_handle_drag`。
 接完之后再回 `depth.py` 队头——`SearchAnchor`（0.24，8/33）是下一个真控件。
+
+---
+
+## 第 431 轮：把手柄拖动那条线接完——顺带把"测不到"这个借口拆掉一半
+
+先查上游是不是真的在拖动结束时清状态。**是**：
+`_handleStartHandleDragEnd` 里 `_isDraggingStartHandle = false;`、
+`_startHandleDragInProgress = false;`，下一次拖动从自己的抓取点开始。
+
+于是补上 `on_drag_end`（`with_pointer_up`），`editable.rs` 里调
+`TextSelectionOverlay::end_handle_drag()`。手指抬起，抓取点就还回去。
+
+### 更值得记的是这一轮把"结构性测不到"戳破了一半
+
+第 430 轮我把"手柄按下的接线"记成了**测不到**：
+"手柄是在 overlay entry 里建的，要碰到它得先立起一个 overlay"。
+这一轮回头看，**那句话是错的**——`HandleEntry` 就是个普通的
+`StatefulComponent`，可以**单独挂起来**，布局一下，再用
+`GestureRouter` 派发一次真实的按下/移动/抬起。不需要 overlay。
+
+于是补了 `handle_gesture_tests` 三条，直接按在手柄上：
+按下报出**局部**抓取点、移动被报出、抬起被报出。
+上一轮和这一轮各有一条"接线没测到"的变异，**现在都转红了**。
+
+顺手把 `selection_host.rs` 里那条写错的注释改掉了——
+它说这一段测不到，而它现在测得到，留着就是一条会误导下一个人的说明。
+
+**教训**：把一处代码记成"结构性测不到"之前，先确认它**真的**够不着。
+这些轮里我记过好几处，其中至少这一处只是**我没想到把它单独挂起来**。
+
+剩下**一条**仍然没覆盖：`editable.rs` 里
+`host.set_on_drag_start / set_on_drag_end` 那两次调用本身——
+它们在字段 build 的闭包里，要碰到得挂一个带选择覆盖层的真字段。
+这一条是真的重，如实记着。
+
+尺子：十六把全部 exit 0。门：Rust 6512 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：手柄这条线接完了。回 `depth.py` 队头，
+`SearchAnchor`（0.24，8/33）是下一个真控件。
+但**先查一件事**：`search_anchor.rs` 里现在有什么——
+是纯数据壳，还是已经有 `SearchBar` / `SearchAnchor` 的 build。
+另外顺带用这一轮的办法回头看看：
+以前记成"结构性测不到"的那几处（第 412 轮 `on_key` 守卫、
+第 416 轮帧里那次调用、第 426 轮 builder 那一行），
+有没有哪一处其实也只是"没想到怎么挂起来"。

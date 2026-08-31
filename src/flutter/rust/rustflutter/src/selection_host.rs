@@ -130,6 +130,14 @@ struct OverlayGeometry {
     /// moves were reported here before, so there was nothing that *could*
     /// know where the grab was.
     on_drag_start: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, Offset)>>>>,
+    /// The finger has left the handle.
+    ///
+    /// Upstream's `_handleStartHandleDragEnd` clears the drag state so the
+    /// next drag begins from its own grab rather than the last one's. Without
+    /// this the grab outlives the finger: harmless in practice, because a
+    /// press always precedes a move and overwrites it, but a line half
+    /// connected is a line that will surprise somebody.
+    on_drag_end: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd)>>>>,
     /// What tells the three entries the cells above changed. One between them,
     /// because a handle moving and the toolbar moving are the same frame's
     /// work and there is nothing to gain from waking them separately.
@@ -150,6 +158,7 @@ impl Default for OverlayGeometry {
             handle_color: Rc::new(Cell::new(crate::engine::Color(0))),
             on_drag: Rc::default(),
             on_drag_start: Rc::default(),
+            on_drag_end: Rc::default(),
             refresh: EntryRefresh::default(),
         }
     }
@@ -287,6 +296,7 @@ impl StatefulComponent for HandleEntry {
         let end = self.end;
         let on_drag = self.geometry.on_drag.borrow().clone();
         let on_drag_start = self.geometry.on_drag_start.borrow().clone();
+        let on_drag_end = self.geometry.on_drag_end.borrow().clone();
         crate::framework::leaf(move || {
             let onion = crate::render::RenderCustomPaint::new(RenderConstrainedBox::tight(
                 size.width,
@@ -304,17 +314,20 @@ impl StatefulComponent for HandleEntry {
             let turned = crate::render::RenderTransform::rotate(handle_rotation(kind), onion);
             let mut handlers = crate::gestures::PointerHandlers::new();
             if let Some(on_drag_start) = on_drag_start.clone() {
-                // The **local** position: where in the handle the finger is,
-                // which is the whole point of reporting the press separately
-                // from the moves.
-                // Untested wiring, said so rather than left looking covered:
-                // a handle is built inside an overlay entry, so reaching this
-                // handler from a test means standing up an overlay and
-                // dispatching a real press through it. The rule it feeds --
-                // `TextSelectionOverlay`'s grab -- is tested on its own.
+                // The **local** position: where in the handle the finger is.
+                // Tested by mounting a `HandleEntry` on its own and pressing
+                // it -- see `handle_gesture_tests`. An earlier note here said
+                // this was out of a test's reach; it is not, because a handle
+                // is an ordinary component and needs no overlay to stand up.
                 let started = Rc::clone(&on_drag_start);
                 handlers = handlers.with_pointer_down(move |event| {
                     started(end, event.local_position);
+                });
+            }
+            if let Some(on_drag_end) = on_drag_end.clone() {
+                let ended = Rc::clone(&on_drag_end);
+                handlers = handlers.with_pointer_up(move |_event| {
+                    ended(end);
                 });
             }
             if let Some(on_drag) = on_drag.clone() {
@@ -538,6 +551,12 @@ impl SelectionHost {
     /// [`SelectionGeometryShared::on_drag_start`].
     pub fn set_on_drag_start(&mut self, on_drag_start: Rc<dyn Fn(HandleEnd, Offset)>) {
         *self.geometry.on_drag_start.borrow_mut() = Some(on_drag_start);
+    }
+
+    /// Told when a handle drag finishes. See
+    /// [`SelectionGeometryShared::on_drag_end`].
+    pub fn set_on_drag_end(&mut self, on_drag_end: Rc<dyn Fn(HandleEnd)>) {
+        *self.geometry.on_drag_end.borrow_mut() = Some(on_drag_end);
     }
 
     pub fn set_on_drag(&mut self, on_drag: Rc<dyn Fn(HandleEnd, Offset)>) {
@@ -1689,5 +1708,120 @@ mod tests {
         host.dismiss();
         assert_eq!(overlay.entry_count(), before);
         drop(tree);
+    }
+}
+
+#[cfg(test)]
+mod handle_gesture_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// A handle mounted on its own, laid out, so a real press can reach it.
+    ///
+    /// The four callbacks around a handle drag are wiring, and wiring inside a
+    /// component's `build` is what has gone untested round after round here.
+    /// A `HandleEntry` is a component like any other, so it can simply be
+    /// mounted -- no overlay needed.
+    fn pressed_handle(
+        geometry: OverlayGeometry,
+        at: crate::render::Offset,
+    ) -> Vec<crate::gestures::PointerEvent> {
+        const HIT: u64 = 4310;
+        geometry.handles_visible.set(true);
+        geometry
+            .start_size
+            .set(crate::render::Size::new(24.0, 24.0));
+        geometry.start_at.set(crate::render::Offset::ZERO);
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(HandleEntry {
+            end: HandleEnd::Start,
+            geometry,
+            hit_id: HIT,
+        }));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(200.0, 200.0),
+        );
+        let mut router = crate::gestures::GestureRouter::new();
+        let events = vec![
+            pointer(crate::gestures::PointerChange::Down, at),
+            pointer(crate::gestures::PointerChange::Move, at),
+            pointer(crate::gestures::PointerChange::Up, at),
+        ];
+        for event in &events {
+            router.dispatch(&root, event);
+        }
+        events
+    }
+
+    fn pointer(
+        change: crate::gestures::PointerChange,
+        position: crate::render::Offset,
+    ) -> crate::gestures::PointerEvent {
+        crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: crate::gestures::PRIMARY_BUTTON,
+            time_stamp_micros: 0,
+            position,
+            delta: crate::render::Offset::ZERO,
+            scroll_delta: crate::render::Offset::ZERO,
+            pressure: 1.0,
+            local_position: crate::render::Offset::ZERO,
+        }
+    }
+
+    #[test]
+    fn a_press_on_a_handle_reports_where_inside_it_the_finger_landed() {
+        // The wiring the grab rule depends on: without a press being reported
+        // there is nothing that *could* know where the handle was taken, and
+        // the field falls back to guessing the middle.
+        let geometry = OverlayGeometry::default();
+        let seen: Rc<RefCell<Vec<Offset>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&seen);
+        *geometry.on_drag_start.borrow_mut() = Some(Rc::new(move |_end, grab: Offset| {
+            recorded.borrow_mut().push(grab)
+        }));
+
+        pressed_handle(geometry, crate::render::Offset::new(7.0, 5.0));
+        let grabs = seen.borrow().clone();
+        assert_eq!(grabs.len(), 1, "one press, one report: {grabs:?}");
+        assert!(
+            grabs[0] != Offset::ZERO,
+            "and it is where in the handle the finger was, not the origin: {:?}",
+            grabs[0]
+        );
+    }
+
+    #[test]
+    fn lifting_the_finger_lets_the_grab_go() {
+        // The other half. Upstream's `_handleStartHandleDragEnd` clears its
+        // drag state so the next drag begins from its own grab; a release that
+        // reported nothing would leave the last grab in force.
+        let geometry = OverlayGeometry::default();
+        let releases = Rc::new(std::cell::Cell::new(0u32));
+        let counted = Rc::clone(&releases);
+        *geometry.on_drag_end.borrow_mut() =
+            Some(Rc::new(move |_end| counted.set(counted.get() + 1)));
+
+        pressed_handle(geometry, crate::render::Offset::new(7.0, 5.0));
+        assert_eq!(releases.get(), 1, "the lift was reported once");
+    }
+
+    #[test]
+    fn a_handle_that_is_dragged_reports_every_move() {
+        let geometry = OverlayGeometry::default();
+        let moves = Rc::new(std::cell::Cell::new(0u32));
+        let counted = Rc::clone(&moves);
+        *geometry.on_drag.borrow_mut() =
+            Some(Rc::new(move |_end, _at| counted.set(counted.get() + 1)));
+
+        pressed_handle(geometry, crate::render::Offset::new(7.0, 5.0));
+        assert!(moves.get() >= 1, "the drag was reported");
     }
 }
