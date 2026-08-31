@@ -157,6 +157,19 @@ pub struct SearchAnchorState {
     /// Upstream's `_internalSearchController`, used when the caller did not
     /// bring one.
     controller: SharedSearchController,
+    /// The bar's field, published from its own build, so that the query can be
+    /// put back into it when the view closes.
+    ///
+    /// In the state rather than made per build, which is where this crate puts
+    /// a sink -- the same place the [`crate::theatre::Anchor`] above it lives.
+    /// **A per-build sink would behave identically today** and a mutation
+    /// sweep says so: the tap's closure would hold the sink from its own
+    /// build, and the handle in it stays good as long as the element does, so
+    /// the query still arrives. It stops being identical only when the bar's
+    /// element is replaced rather than rebuilt -- and by then the text it held
+    /// is gone too, so there is nothing to put back. Kept in the state because
+    /// one sink for one bar is the thing being described.
+    field: FieldSink,
 }
 
 impl SearchAnchor {
@@ -198,7 +211,19 @@ impl SearchAnchor {
     /// `build` needs a live tree to run: a bar built here can be asked whether
     /// typing into it reaches the controller.
     pub fn bar_for(&self, controller: &SharedSearchController) -> SearchBar {
+        self.bar_into(controller, None)
+    }
+
+    /// [`SearchAnchor::bar_for`], with the bar's field published into `sink`.
+    pub fn bar_into(
+        &self,
+        controller: &SharedSearchController,
+        sink: Option<FieldSink>,
+    ) -> SearchBar {
         let mut bar = SearchBar::new(self.id);
+        if let Some(sink) = sink {
+            bar = bar.with_state_sink(sink);
+        }
         bar.is_anchor_child = true;
         if let Some(hint) = &self.hint_text {
             bar = bar.with_hint_text(hint.clone());
@@ -392,7 +417,9 @@ impl crate::framework::StatefulComponent for SearchAnchor {
         let hint_text = self.hint_text.clone();
         let suggestions = self.suggestions.clone();
         let controller = self.controller_for(state);
-        let bar = self.bar_for(&controller);
+        let field = std::rc::Rc::clone(&state.field);
+        let bar = self.bar_into(&controller, Some(std::rc::Rc::clone(&field)));
+        let controller_for_close = std::rc::Rc::clone(&controller);
         let bar = bar.with_on_tap(move || {
             // There is no guard here against opening a second view, and there
             // is nothing to guard: while a view is up its barrier is over the
@@ -435,13 +462,25 @@ impl crate::framework::StatefulComponent for SearchAnchor {
             };
             let suggestions = suggestions.clone();
             let themes = themes.clone();
-            open_search_view(overlay, content, move || {
+            let shown = open_search_view(overlay, content, move || {
                 let built = match &suggestions {
                     Some(suggestions) => suggestions(),
                     None => crate::framework::leaf(|| crate::widgets::SizedBox::new(0.0, 0.0)),
                 };
                 themes.wrap(built)
             });
+            // Whatever the reader ended up with goes back into the bar, and it
+            // has to happen **when the view comes down** rather than when
+            // somebody closes it: the usual way out is a tap on the barrier,
+            // which nothing here is told about otherwise. That is what
+            // `ModalHandle::on_dismissed` is for.
+            if let Some(shown) = shown {
+                let controller = std::rc::Rc::clone(&controller_for_close);
+                let field = std::rc::Rc::clone(&field);
+                shown.on_dismissed(move || {
+                    put_query_back(&field, &controller.borrow().text);
+                });
+            }
         });
 
         let anchor = state.anchor.clone();
@@ -660,6 +699,32 @@ impl SearchBarOverrides {
     }
 }
 
+/// Puts `text` into a published field, with the caret at the end.
+///
+/// # Why not just rebuild the bar with a new `initial_text`
+///
+/// Because `initial_text` is spent once, when the field first appears -- it is
+/// upstream's *initial* value and nothing else. The field the view was opened
+/// from is still mounted and still holds the text it had, so the only way to
+/// change it is to reach the state that exists. That is what the sink is for.
+///
+/// Nothing happens when the sink is empty or the handle is stale: a bar that
+/// has gone away has no text to put anything into, and upstream's controller
+/// is equally quiet about it.
+pub fn put_query_back(field: &FieldSink, text: &str) -> bool {
+    let Some(handle) = field.borrow().clone() else {
+        return false;
+    };
+    let value = crate::services::text_input::TextEditingValue::new(text);
+    handle.set_state(move |state| state.value = value)
+}
+
+/// A published handle on a bar's text field: the crate's sink idiom, spelled
+/// once.
+pub type FieldSink = std::rc::Rc<
+    std::cell::RefCell<Option<crate::framework::StateHandle<crate::editable::TextFieldState>>>,
+>;
+
 /// Upstream `SearchBar`: the field an anchor usually puts in front of its view.
 ///
 /// It is a widget in its own right rather than part of the anchor, because a
@@ -693,6 +758,10 @@ pub struct SearchBar {
     on_submitted: Option<std::rc::Rc<dyn Fn(&str)>>,
     on_tap: Option<std::rc::Rc<dyn Fn()>>,
     overrides: SearchBarOverrides,
+    /// Where the bar publishes its field's [`crate::framework::StateHandle`],
+    /// so that something outside the bar can put text into it after it has
+    /// been built. See [`SearchBar::with_state_sink`].
+    state_sink: Option<FieldSink>,
 }
 
 impl std::fmt::Debug for SearchBar {
@@ -771,7 +840,18 @@ impl SearchBar {
             on_submitted: None,
             on_tap: None,
             overrides: SearchBarOverrides::default(),
+            state_sink: None,
         }
+    }
+
+    /// Publishes the bar's field, the way
+    /// [`crate::editable::TextField::with_state_sink`] does -- and for the same
+    /// reason. `initial_text` is spent when the field is first built; a bar
+    /// that has to show text chosen somewhere else *afterwards* needs to reach
+    /// the field that already exists.
+    pub fn with_state_sink(mut self, sink: FieldSink) -> Self {
+        self.state_sink = Some(sink);
+        self
     }
 
     /// Upstream's per-instance appearance arguments, all at once. See
@@ -939,6 +1019,7 @@ impl crate::framework::StatefulComponent for SearchBar {
         // callbacks, so it is made fresh each time rather than cloned.
         let id = self.id;
         let initial_text = self.initial_text.clone();
+        let state_sink = self.state_sink.clone();
         let hint_style = resolved.hint_style.clone().unwrap_or_default();
         let text_style = resolved.text_style.clone();
         let hint_text = self.hint_text.clone();
@@ -952,6 +1033,9 @@ impl crate::framework::StatefulComponent for SearchBar {
             let mut field = crate::editable::TextField::new(id).with_hint_style(hint_style.clone());
             if let Some(text) = &initial_text {
                 field = field.with_initial_text(text.clone());
+            }
+            if let Some(sink) = &state_sink {
+                field = field.with_state_sink(std::rc::Rc::clone(sink));
             }
             if let Some(style) = text_style.clone() {
                 field = field.with_style(style);
@@ -4949,6 +5033,146 @@ mod search_anchor_widget_tests {
                 .iter()
                 .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "Search")),
             "the header's hint is still there"
+        );
+    }
+
+    #[test]
+    fn what_the_view_was_left_holding_goes_back_into_the_bar() {
+        // The half round 445 left open. The reader types in the view, taps the
+        // barrier to close it, and the bar shows what they searched for --
+        // upstream gets this for free, because there the bar's field and the
+        // view's header are one field with one controller.
+        let controller = SharedSearchController::default();
+        let mut tree = staged(
+            SearchAnchor::new(1)
+                .with_full_screen(false)
+                .with_hint_text("Search")
+                .with_controller(std::rc::Rc::clone(&controller)),
+        );
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        assert_eq!(crate::theatre::modal_count(), 1);
+
+        // What the reader typed into the view.
+        controller.borrow_mut().text = "carbonara".to_string();
+        assert!(crate::theatre::dismiss_topmost_modal(), "the barrier's tap");
+        tree.rebuild_dirty();
+
+        let drawn = painted(&mut tree);
+        assert!(
+            drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "carbonara")),
+            "the bar shows the query: {drawn:?}"
+        );
+        assert!(
+            !drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "Search")),
+            "and the hint has given way to it"
+        );
+
+        // And the caret is after the query, not before it: the next keystroke
+        // continues the search rather than typing in front of it. Upstream's
+        // controller collapses to `text.length` for the same reason.
+        let mut stack: Vec<crate::framework::ElementId> = tree.root().into_iter().collect();
+        let mut caret = None;
+        while let Some(id) = stack.pop() {
+            if let Some(found) = tree.state::<crate::editable::TextFieldState, _>(id, |state| {
+                (
+                    state.value.text.clone(),
+                    state.value.selection_base,
+                    state.value.selection_extent,
+                )
+            }) {
+                caret = Some(found);
+                break;
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        assert_eq!(caret, Some(("carbonara".to_string(), 9, 9)));
+    }
+
+    #[test]
+    fn a_page_that_rebuilds_while_the_view_is_open_still_gets_its_query_back() {
+        // The sink lives in the anchor's **state**, not in its build. One made
+        // per build would leave the tap's closure holding the sink from the
+        // build the tap happened on, while the bar published into a newer one
+        // -- and the handle in the old sink is stale, so the query would
+        // quietly fail to come back. A page rebuilding while a search view is
+        // open is ordinary.
+        let controller = SharedSearchController::default();
+        let anchor = || {
+            SearchAnchor::new(1)
+                .with_full_screen(false)
+                .with_hint_text("Search")
+                .with_controller(std::rc::Rc::clone(&controller))
+        };
+        let mut tree = staged(anchor());
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        assert_eq!(crate::theatre::modal_count(), 1);
+
+        // The whole page again, from the top.
+        let data = crate::media_query::MediaQueryData {
+            size: SCREEN,
+            ..crate::media_query::MediaQueryData::default()
+        };
+        tree.rebuild(crate::media_query::MediaQuery::new(
+            data,
+            overlay(stateful(anchor())),
+        ));
+        tree.rebuild_dirty();
+
+        controller.borrow_mut().text = "carbonara".to_string();
+        assert!(crate::theatre::dismiss_topmost_modal());
+        tree.rebuild_dirty();
+
+        let drawn = painted(&mut tree);
+        assert!(
+            drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "carbonara")),
+            "the query still made it back: {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn a_view_closed_with_nothing_typed_leaves_the_bar_as_it_was() {
+        let mut tree = staged(an_anchor());
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        assert!(crate::theatre::dismiss_topmost_modal());
+        tree.rebuild_dirty();
+
+        let drawn = painted(&mut tree);
+        assert!(
+            drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "Search")),
+            "the hint is back, not an empty box"
+        );
+    }
+
+    #[test]
+    fn putting_a_query_into_a_bar_that_is_not_there_does_nothing() {
+        // The sink is empty before the bar's first build, and stale after the
+        // bar has gone. Neither is an error: upstream's controller is equally
+        // quiet about being set while nothing is listening.
+        let empty: FieldSink = std::rc::Rc::new(std::cell::RefCell::new(None));
+        assert!(!put_query_back(&empty, "carbonara"));
+    }
+
+    #[test]
+    fn a_query_put_back_leaves_the_caret_at_its_end() {
+        // Counted in the units the platform counts in. A caret measured in
+        // `chars` lands mid-surrogate on anything outside the basic plane, and
+        // a caret that is not on a character boundary is not drawn at all.
+        let value = crate::services::text_input::TextEditingValue::new("a\u{1F600}");
+        assert_eq!(value.selection_base, 3, "one unit plus a surrogate pair");
+        assert_eq!(value.selection_extent, 3);
+        assert!(
+            value.caret_bytes().is_some(),
+            "and it is on a character boundary"
         );
     }
 

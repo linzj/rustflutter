@@ -2067,3 +2067,59 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 是不是 `pub`（`search_anchor.rs` 是另一个模块，不是 `pub` 就够不着）。
 够不着的话，是给 `TextField` 补一个"跟着外部值走"的入口，
 还是把这段写回放进 `editable.rs`，先看清楚再动。
+
+---
+
+## 第 447 轮：view 里搜的那句话，回到了 bar 里
+
+上一轮留的问题：`TextFieldState.value` **是 `pub` 的**，
+`StateHandle::set_state` 也是。所以路是通的——
+用第 446 轮那个 `on_dismissed` 口子，关掉时把 controller 的文字写回字段。
+
+`initial_text` 不行，它是**开场值**，只在字段第一次出现时用一次。
+要改的是**已经存在**的那份状态，于是照这个 crate 的 sink 老规矩
+（`TextField::with_state_sink`）给 `SearchBar` 也加了一个，
+`SearchAnchor` 在自己的 state 里存这个 sink。
+
+### 顺手抓到的一个真 bug
+
+`TextField::initial_state` 原来是：
+
+```rust
+let caret = text.chars().count() as i32;
+state.value = TextEditingValue::new(text);
+state.value.selection_base = caret;
+```
+
+而 `TextEditingValue::new` **本来就把光标放在末尾**，
+并且是按 **UTF-16 单位**数的——平台数的就是这个。
+后面那两行用 `chars().count()` 覆盖掉它，
+两个数只在基本平面内相等。**给字段塞一个 emoji，光标就短一格**，
+落在代理对中间；`caret_bytes` 对它返回 `None`，于是**什么都不画**。
+
+之前没有测试能看见它，因为 crate 里每一个被塞过文字的字段装的都是 ASCII。
+删掉那两行，补了一个带 emoji 的测试。
+
+### 变异扫描 11 个，10 条红，1 条是等价变异
+
+三条第一遍没红，两条是**我把缩进写错了**（`put_query_back` 是自由函数，
+四个空格不是八个），改对即红——其中"光标放回开头"那条还顺带说明
+之前没有任何东西看过写回之后的光标，补了断言。
+
+第三条"每次 build 新造一个 sink" **是等价变异**：
+tap 的闭包握着自己那次 build 的 sink，而里面那个 handle
+只要元素还在就一直有效——所以查询照样送到。
+只有元素被**替换**而不是重建时才不同，而到那时字段里的文字也没了，
+本来就没什么可送回的。写进字段的文档里，说明为什么仍然放在 state 里
+（一个 bar 一个 sink，这才是要描述的东西），而不是假装它红过。
+
+尺子：十六把全部 exit 0。门：Rust 6624 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：`SearchAnchor` 这条线到此闭合了（bar → view → 回到 bar）。
+回队头看看：`python tools/depth.py` 现在第二名是
+`CupertinoLocalizations`（2/46），而 `SearchAnchor` 应该已经掉下去了。
+下一轮**先跑 depth.py 重新看队头**，不要惯性往下接——
+`search_anchor.dart` 剩下的（`SearchDelegate` 的四个 builder、
+`_SearchAnchorWithSearchBar`）都要先确认是不是真缺口，
+还是说队列里有更浅的。

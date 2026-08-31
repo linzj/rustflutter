@@ -3243,10 +3243,14 @@ impl StatefulComponent for TextField {
     fn initial_state(&self) -> TextFieldState {
         let mut state = TextFieldState::default();
         if let Some(text) = &self.initial_text {
-            let caret = text.chars().count() as i32;
+            // `TextEditingValue::new` already puts the caret at the end, and
+            // it counts in the units the platform counts in: **UTF-16**. This
+            // used to overwrite the selection with `text.chars().count()`,
+            // which is the same number only while the text is inside the basic
+            // plane. Seed a field with an emoji and the caret landed one unit
+            // short -- in the middle of a surrogate pair -- where
+            // `caret_bytes` answers `None` and nothing is drawn at all.
             state.value = TextEditingValue::new(text);
-            state.value.selection_base = caret;
-            state.value.selection_extent = caret;
         }
         state
     }
@@ -5620,6 +5624,41 @@ mod tests {
             stack.extend(children);
         }
         assert_eq!(caret, Some((4, 4)));
+    }
+
+    #[test]
+    fn the_caret_is_counted_in_the_units_the_platform_counts_in() {
+        // UTF-16, not characters. The two agree for everything in the basic
+        // plane and part company at the first emoji, and the way they part is
+        // silent: a caret one unit short lands in the middle of a surrogate
+        // pair, `caret_bytes` answers `None` for it, and **nothing is drawn**.
+        // No test could have seen it, because every seeded field in the crate
+        // held ASCII.
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(
+            TextField::new(4284).with_initial_text("a\u{1F600}"),
+        ));
+        let mut stack: Vec<crate::framework::ElementId> = tree.root().into_iter().collect();
+        let mut value = None;
+        while let Some(id) = stack.pop() {
+            if let Some(found) = tree.state::<TextFieldState, _>(id, |state| state.value.clone()) {
+                value = Some(found);
+                break;
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        let value = value.expect("the field");
+        assert_eq!(
+            (value.selection_base, value.selection_extent),
+            (3, 3),
+            "one unit for the 'a' and two for the pair, not two for both"
+        );
+        assert!(
+            value.caret_bytes().is_some(),
+            "and the caret is on a character boundary, so it can be drawn"
+        );
     }
 
     #[test]
