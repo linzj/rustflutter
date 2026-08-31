@@ -1177,10 +1177,34 @@ struct FieldClient {
     /// The last value seen, so an action can report the text it was submitted
     /// with. The platform sends the action on its own, without the text.
     last: TextEditingValue,
+    /// Upstream's `readOnly`: keep the caret and the selection, refuse the
+    /// text.
+    read_only: bool,
 }
 
 impl TextInputClient for FieldClient {
     fn update_editing_value(&mut self, value: TextEditingValue) {
+        if self.read_only {
+            // The selection still moves -- a read-only field is selectable,
+            // which is its whole point -- but the text does not, and
+            // `on_changed` is not called for a change that did not happen.
+            // Upstream reaches the same place from the other side: it never
+            // opens a connection for a read-only field on most platforms, so
+            // no value ever arrives to apply.
+            let (base, extent) = (value.selection_base, value.selection_extent);
+            self.last.selection_base = base;
+            self.last.selection_extent = extent;
+            // `last` above is the half a test can see; this is the same two
+            // numbers reaching the widget state. A test drives the client with
+            // a detached handle, whose `set_state` does nothing by design, so a
+            // mutation deleting this line survives -- said here rather than
+            // left to look like a gap somebody should close.
+            self.handle.set_state(move |state| {
+                state.value.selection_base = base;
+                state.value.selection_extent = extent;
+            });
+            return;
+        }
         if let Some(changed) = &self.on_changed {
             changed(&value.text);
         }
@@ -1523,6 +1547,7 @@ fn engine_word_boundary(
 /// only in English.
 fn toolbar_commands(
     obscured: bool,
+    read_only: bool,
     state: crate::text_selection_controls::SelectionState,
 ) -> Vec<ToolbarCommand> {
     use crate::text_selection_controls::{MaterialTextSelectionControls, TextSelectionControls};
@@ -1531,13 +1556,19 @@ fn toolbar_commands(
     // An obscured field offers neither cut nor copy: upstream's
     // `copySelection` and `cutSelection` both return early on `obscureText`,
     // so a button for either would be a button that does nothing.
-    if controls.can_cut(state) && !obscured {
+    //
+    // Read-only takes away **cut and paste but not copy** -- upstream's
+    // `cutEnabled` and `pasteEnabled` both begin `!widget.readOnly` while
+    // `copyEnabled` does not. Taking copy away too would be the obvious
+    // symmetry and the wrong one: reading text you cannot change is exactly
+    // when you want to copy it.
+    if controls.can_cut(state) && !obscured && !read_only {
         commands.push(ToolbarCommand::Cut);
     }
     if controls.can_copy(state) && !obscured {
         commands.push(ToolbarCommand::Copy);
     }
-    if controls.can_paste(state) {
+    if controls.can_paste(state) && !read_only {
         commands.push(ToolbarCommand::Paste);
     }
     if controls.can_select_all(state) {
@@ -1592,10 +1623,13 @@ fn selection_state(state: &TextFieldState) -> crate::text_selection_controls::Se
 fn toolbar_extent(
     theme: &crate::components::Theme,
     obscured: bool,
+    read_only: bool,
     _platform: crate::editable_text::TargetPlatform,
     state: crate::text_selection_controls::SelectionState,
 ) -> crate::render::Size {
-    let commands = toolbar_commands(obscured, state);
+    // The same command set the bar will be built from -- measuring a different
+    // one would place a bar of the wrong width.
+    let commands = toolbar_commands(obscured, read_only, state);
     if commands.is_empty() {
         return crate::render::Size::ZERO;
     }
@@ -1620,10 +1654,11 @@ fn toolbar_builder(
     handle: StateHandle<TextFieldState>,
     theme: &crate::components::Theme,
     obscured: bool,
+    read_only: bool,
     platform: crate::editable_text::TargetPlatform,
     state: crate::text_selection_controls::SelectionState,
 ) -> impl Fn() -> crate::framework::AnyWidget + 'static {
-    let commands = toolbar_commands(obscured, state);
+    let commands = toolbar_commands(obscured, read_only, state);
     // Upstream's `_TextSelectionToolbarContainer` colours, "taken from a
     // screenshot of a Pixel 6 emulator running Android API level 34" -- the
     // theme's surface, which is what a default scheme resolves those to.
@@ -2859,6 +2894,15 @@ pub struct TextField {
     input_type: TextInputType,
     action: TextInputAction,
     obscure: bool,
+    /// Upstream's `readOnly`: the text can be selected and copied but not
+    /// changed.
+    ///
+    /// **Not the same as disabled.** A disabled field takes no focus and is
+    /// drawn dimmed; a read-only one keeps the caret, the selection and the
+    /// keyboard focus, and only refuses to take input. That is what
+    /// [`crate::selection_area::SelectableText`] is built on -- upstream's own
+    /// description of it is "a read-only `EditableText`".
+    read_only: bool,
     max_lines: MaxLines,
     /// Upstream's `minLines`: how many lines the field is tall before it has
     /// any text in it. `None` is upstream's null.
@@ -3026,6 +3070,7 @@ impl TextField {
             input_type: TextInputType::Text,
             action: TextInputAction::Done,
             obscure: false,
+            read_only: false,
             max_lines: MaxLines::Single,
             min_lines: None,
             expands: false,
@@ -3037,6 +3082,12 @@ impl TextField {
             state_sink: None,
             scroll_padding: TextField::SCROLL_PADDING,
         }
+    }
+
+    /// Upstream's `readOnly`. See the field.
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
     }
 
     pub fn with_placeholder(mut self, text: impl Into<String>) -> Self {
@@ -3278,6 +3329,8 @@ impl StatefulComponent for TextField {
         let focus_handle = field_handle.clone();
         let user_on_focus_change = self.on_focus_change.clone();
         let max_lines = self.max_lines;
+        // Copied out before the focus closure, which outlives `&self`.
+        let read_only = self.read_only;
         let on_focus_change = move |has_focus: bool| {
             // The application's listener runs first: it may rebuild an
             // ancestor, and the session work below must see the field's own
@@ -3310,6 +3363,7 @@ impl StatefulComponent for TextField {
                 on_submitted: on_submitted.clone(),
                 multiline: !matches!(max_lines, MaxLines::Single),
                 last: TextEditingValue::default(),
+                read_only,
             };
             let opened = text_input::attach(Box::new(client), configuration.clone());
             // The platform starts from whatever the field already holds, so a
@@ -3417,6 +3471,7 @@ impl StatefulComponent for TextField {
                             handle.clone(),
                             &theme,
                             obscured,
+                            read_only,
                             platform,
                             selection_state(state),
                         ),
@@ -3456,7 +3511,13 @@ impl StatefulComponent for TextField {
         // object -- see `OverlayHandle::surface`.
         let host_slot = Rc::clone(&state.selection_overlay);
         let overlay_for_geometry = overlay.clone();
-        let toolbar_size = toolbar_extent(&theme, obscured, platform, selection_state(state));
+        let toolbar_size = toolbar_extent(
+            &theme,
+            obscured,
+            read_only,
+            platform,
+            selection_state(state),
+        );
         let report_selection: ReportSelection = Rc::new(move |geometry: SelectionGeometry| {
             let Some(surface) = overlay_for_geometry
                 .as_ref()
@@ -3704,10 +3765,7 @@ impl StatefulComponent for TextField {
                 let words = WordSelection {
                     text: &word_shown,
                     obscured,
-                    // Upstream reads `widget.readOnly`; this crate has no
-                    // read-only field yet, so the flag is what a field that
-                    // can be typed into would say.
-                    read_only: false,
+                    read_only,
                     // Upstream asks `Theme.of(context).platform`, whose own
                     // default is the host. There is no field on this crate's
                     // `Theme` to override it with, so the host it is.
@@ -4125,7 +4183,7 @@ mod tests {
         let mut state = SelectionState::editable();
         state.is_collapsed = false;
         assert_eq!(
-            toolbar_commands(false, state),
+            toolbar_commands(false, false, state),
             vec![
                 ToolbarCommand::Cut,
                 ToolbarCommand::Copy,
@@ -4136,7 +4194,7 @@ mod tests {
         // A caret in some text: paste and select-all, nothing to cut or copy.
         let state = SelectionState::editable();
         assert_eq!(
-            toolbar_commands(false, state),
+            toolbar_commands(false, false, state),
             vec![ToolbarCommand::Paste, ToolbarCommand::SelectAll]
         );
 
@@ -4144,12 +4202,18 @@ mod tests {
         // would move the hidden text off the field are gone.
         let mut state = SelectionState::editable();
         state.is_collapsed = false;
-        assert_eq!(toolbar_commands(true, state), vec![ToolbarCommand::Paste]);
+        assert_eq!(
+            toolbar_commands(true, false, state),
+            vec![ToolbarCommand::Paste]
+        );
 
         // An empty field has nothing to select all of.
         let mut state = SelectionState::editable();
         state.has_text = false;
-        assert_eq!(toolbar_commands(false, state), vec![ToolbarCommand::Paste]);
+        assert_eq!(
+            toolbar_commands(false, false, state),
+            vec![ToolbarCommand::Paste]
+        );
     }
 
     // -- The caret's rectangle, tick 281 -------------------------------------
@@ -5388,6 +5452,113 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_field_offers_copy_but_not_cut_or_paste() {
+        // Upstream's `cutEnabled` and `pasteEnabled` both open with
+        // `!widget.readOnly`; `copyEnabled` does not. Taking copy away too
+        // would be the obvious symmetry and the wrong one -- reading text you
+        // cannot change is exactly when you want to copy it.
+        let ranged = crate::text_selection_controls::SelectionState {
+            cut_enabled: true,
+            copy_enabled: true,
+            paste_enabled: true,
+            select_all_enabled: true,
+            is_collapsed: false,
+            has_text: true,
+        };
+        assert_eq!(
+            toolbar_commands(false, true, ranged),
+            vec![ToolbarCommand::Copy],
+            "read-only keeps copy"
+        );
+        assert_eq!(
+            toolbar_commands(false, false, ranged),
+            vec![
+                ToolbarCommand::Cut,
+                ToolbarCommand::Copy,
+                ToolbarCommand::Paste
+            ],
+            "and an editable field keeps all three"
+        );
+        // Select all belongs to a *collapsed* selection -- `can_select_all`
+        // asks for `is_collapsed`, because with a range already up there is
+        // nothing left to select. Read-only keeps it; upstream's
+        // `selectAllEnabled` is not gated on `readOnly` alone.
+        let collapsed = crate::text_selection_controls::SelectionState {
+            is_collapsed: true,
+            ..ranged
+        };
+        assert!(toolbar_commands(false, true, collapsed).contains(&ToolbarCommand::SelectAll));
+    }
+
+    #[test]
+    fn the_bar_is_measured_from_the_commands_it_will_actually_show() {
+        // Two commands rather than four is a narrower bar. Measuring the
+        // editable set for a read-only field would place a bar wider than the
+        // one drawn, and the toolbar is positioned from this number.
+        let theme = crate::components::Theme::dark();
+        let ranged = crate::text_selection_controls::SelectionState {
+            cut_enabled: true,
+            copy_enabled: true,
+            paste_enabled: true,
+            select_all_enabled: true,
+            is_collapsed: false,
+            has_text: true,
+        };
+        let platform = crate::editable_text::TargetPlatform::Android;
+        let read_only = toolbar_extent(&theme, false, true, platform, ranged);
+        let editable = toolbar_extent(&theme, false, false, platform, ranged);
+        assert!(
+            read_only.width < editable.width,
+            "two buttons are narrower than four: {read_only:?} against {editable:?}"
+        );
+        assert_eq!(read_only.height, editable.height, "and the same height");
+    }
+
+    #[test]
+    fn a_read_only_field_keeps_the_selection_and_refuses_the_text() {
+        // The two halves of `readOnly`, and they pull opposite ways: the
+        // selection has to move -- a read-only field is selectable, which is
+        // the whole point of one -- while the text must not.
+        let changed = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let recorded = Rc::clone(&changed);
+        let mut client = FieldClient {
+            handle: StateHandle::detached(),
+            on_changed: Some(Rc::new(move |text: &str| {
+                recorded.borrow_mut().push(text.to_string())
+            })),
+            on_submitted: None,
+            multiline: false,
+            last: TextEditingValue::new("locked"),
+            read_only: true,
+        };
+
+        let mut typed = TextEditingValue::new("lockedX");
+        typed.selection_base = 7;
+        typed.selection_extent = 7;
+        client.update_editing_value(typed);
+        assert_eq!(
+            client.last.text, "locked",
+            "the text the platform sent was refused"
+        );
+        assert!(
+            changed.borrow().is_empty(),
+            "and `on_changed` did not fire for a change that did not happen: {:?}",
+            changed.borrow()
+        );
+
+        let mut selected = TextEditingValue::new("anything at all");
+        selected.selection_base = 1;
+        selected.selection_extent = 4;
+        client.update_editing_value(selected);
+        assert_eq!(
+            (client.last.selection_base, client.last.selection_extent),
+            (1, 4),
+            "while the selection moved"
+        );
+        assert_eq!(client.last.text, "locked", "and the text still did not");
+    }
+
+    #[test]
     fn only_a_read_only_android_field_reaches_back_for_the_previous_word() {
         // Upstream's Android arm has **no `break`** when the field is
         // editable, so it falls out of the switch to the same answer every
@@ -6183,6 +6354,7 @@ mod tests {
                 on_submitted: None,
                 multiline: false,
                 last: TextEditingValue::default(),
+                read_only: false,
             }),
             TextInputConfiguration::default(),
         );
@@ -6195,6 +6367,7 @@ mod tests {
                 on_submitted: None,
                 multiline: false,
                 last: TextEditingValue::default(),
+                read_only: false,
             }),
             TextInputConfiguration::default(),
         );
@@ -6219,6 +6392,7 @@ mod tests {
             on_submitted: None,
             multiline: false,
             last: TextEditingValue::default(),
+            read_only: false,
         };
         client.update_editing_value(value("zh", 2, (0, 2)));
         client.update_editing_value(value("\u{4e2d}", 1, (-1, -1)));
@@ -6246,6 +6420,7 @@ mod tests {
             })),
             multiline: false,
             last: TextEditingValue::default(),
+            read_only: false,
         };
         client.update_editing_value(value("done", 4, (-1, -1)));
         client.perform_action(TextInputAction::Done);
@@ -6274,6 +6449,7 @@ mod tests {
             })),
             multiline: true,
             last: TextEditingValue::new("a line\n"),
+            read_only: false,
         };
         multiline_client.perform_action(TextInputAction::Newline);
         assert!(
@@ -6298,6 +6474,7 @@ mod tests {
             })),
             multiline: false,
             last: TextEditingValue::new("one line"),
+            read_only: false,
         };
         single_client.perform_action(TextInputAction::Newline);
         assert_eq!(submitted.borrow().as_slice(), &["one line".to_string()]);
@@ -6583,6 +6760,7 @@ mod tests {
                 on_submitted: None,
                 multiline: false,
                 last: TextEditingValue::default(),
+                read_only: false,
             }),
             TextInputConfiguration::default(),
         ));

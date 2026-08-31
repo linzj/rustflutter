@@ -896,3 +896,62 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
 队列已经很久没看过了。
 另外把这一条写进复现步骤并**照做**：
 **任何"点了没反应"的结论，先用左键在同一坐标验证控件确实在那里。**
+
+---
+
+## 第 427 轮：字段可以只读了——这是 `SelectableText` 缺的那块地基
+
+回到队列。`depth.py` 队头仍然是几张数据表（`Icons` 8826 行、`CupertinoIcons`、
+两份 localizations），头一个真控件是 **`SelectableText`（0.24，8/34）**。
+
+查下去它是个**纯数据壳**：字段、两个谓词，**没有 build**。
+而它自己的文档写得很清楚：
+"A read-only `EditableText` …… 选择机制、手柄、工具条、放大镜都已经为编辑存在了，
+可选而不可改的文本就是把'改'关掉的同一套机制。"
+
+### 按"先查再动手"，查出的地基是缺的
+
+`editable::TextField` **没有 `read_only`**。
+`editable.rs:3710` 那里构造选词规则时是写死的 `read_only: false`，
+注释还留着"本项目还没有只读字段"。
+
+所以这一轮不是造 `SelectableText`，是补它要站的那块地基：**字段的只读**。
+
+### 三处，一处是行为、两处是它带来的后果
+
+1. `TextField::with_read_only(bool)`，并且传进选词规则
+   （Android 上只读字段的**回捞上一个词**那条规则本来就在等这个值）。
+2. **工具条的按钮集合**：只读拿掉 **cut 和 paste，但不拿掉 copy**。
+   上游 `cutEnabled` / `pasteEnabled` 都以 `!widget.readOnly` 开头，
+   而 `copyEnabled` 没有。对称地把 copy 也拿掉是"看起来更整齐"的那个选择，
+   也是**错的**——读一段改不了的文字，正是最想复制它的时候。
+3. `toolbar_extent` 也得按同一个集合量：只读只有两个按钮，
+   拿可编辑的四个去量，画出来的条会比放置用的尺寸窄。
+
+还有输入本身：`FieldClient::update_editing_value` 在只读时
+**收下选区、退回文本**，并且**不触发 `on_changed`**——没有发生的改变不该报告。
+这两半是相反方向的：只读字段**必须**可选（那是它的全部意义），但**不能**被改。
+
+### 变异扫描 7 个，第一遍 5 红
+
+两条活着的都是同一个结构性限制，**如实记进代码注释**：
+测试用 `StateHandle::detached()` 驱动 client，而 detached 的 `set_state`
+**按设计什么都不做**，所以"把选区写进 widget state"那一行、
+以及"把标志传给 client"那一行（在聚焦闭包里）都看不见。
+和第 412 轮 `on_key` 的守卫、第 416 轮帧里那次调用、第 426 轮 builder 里那一行是同一族。
+`client.last` 是这条路上测得到的那一半，测试断言的就是它。
+
+尺子：十六把全部 exit 0。门：Rust 6497 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：地基有了，下一轮把 `SelectableText` 造出来——
+`stateful(TextField::new(id).with_read_only(true))`，
+不带装饰、不带占位符，`data` 作为初始文本。
+但**先查两件事**：
+1. `TextField` 现在**怎么拿到初始文本**？看下来它的文本活在
+   `TextFieldState.value` 里，而 `new(id)` 不收文本——
+   所以多半还缺一个"以某段文字开局"的入口（上游是 `controller` 或 `initialValue`）。
+   缺的话，那才是下一轮真正该补的，`SelectableText` 再往后排一轮。
+2. `SelectableText` 的 `max_lines` 默认是 `Some(1)`，而它有个 `wraps()` 谓词——
+   确认上游 `SelectableText` 的 `maxLines` 默认到底是不是 1
+   （`TextField` 是 1，但只读文本块常常不是），别照抄错。
