@@ -284,6 +284,10 @@ pub struct Container {
     decoration: Option<crate::decoration::Decoration>,
     border_width: f32,
     border_color: Color,
+    /// Whether the border is stroked over the child or under it. True is
+    /// upstream's default; see
+    /// [`crate::render::RenderDecoratedBox::with_border_on_foreground`].
+    border_on_foreground: bool,
     shadows: Vec<crate::painting::BoxShadow>,
     padding: EdgeInsets,
     margin: EdgeInsets,
@@ -306,6 +310,7 @@ impl Container {
             decoration: None,
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
+            border_on_foreground: true,
             shadows: Vec::new(),
             padding: EdgeInsets::ZERO,
             margin: EdgeInsets::ZERO,
@@ -358,6 +363,13 @@ impl Container {
     pub fn with_border(mut self, width: f32, color: Color) -> Self {
         self.border_width = width;
         self.border_color = color;
+        self
+    }
+
+    /// Upstream `Material.borderOnForeground`, forwarded to the decoration.
+    /// See [`crate::render::RenderDecoratedBox::with_border_on_foreground`].
+    pub fn with_border_on_foreground(mut self, on_foreground: bool) -> Self {
+        self.border_on_foreground = on_foreground;
         self
     }
 
@@ -493,7 +505,8 @@ impl Container {
                         let mut decorated = RenderDecoratedBox::new()
                             .with_corner_radius(self.corner_radius)
                             .with_shadows(self.shadows.clone())
-                            .with_border(self.border_width, self.border_color);
+                            .with_border(self.border_width, self.border_color)
+                            .with_border_on_foreground(self.border_on_foreground);
                         if let Some(radius) = self.border_radius {
                             decorated = decorated.with_border_radius(radius);
                         }

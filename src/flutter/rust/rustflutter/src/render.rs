@@ -3527,6 +3527,16 @@ pub struct RenderDecoratedBox {
     /// Upstream's `RenderDecoratedBox.position`: which side of the child the
     /// whole decoration is painted on.
     position: DecorationPosition,
+    /// Upstream `Material.borderOnForeground`: whether the border is stroked
+    /// **over** the child or under it.
+    ///
+    /// True is upstream's default and the interesting one. A card's outline is
+    /// drawn on top of whatever is inside it, so an image that fills the card
+    /// to its edges does not swallow the line that says where the card stops.
+    /// False puts the border behind, which is what a caller wants when the
+    /// child is meant to sit *outside* the frame -- upstream's own example is
+    /// a `Material` whose child overflows on purpose.
+    border_on_foreground: bool,
     border_width: f32,
     border_color: Color,
     /// Painted under the box, in order. Empty for anything sitting flat on the
@@ -3545,6 +3555,7 @@ impl RenderDecoratedBox {
             corners: None,
             decoration: None,
             position: DecorationPosition::Background,
+            border_on_foreground: true,
             border_width: 0.0,
             border_color: Color::TRANSPARENT,
             shadows: Vec::new(),
@@ -3585,6 +3596,12 @@ impl RenderDecoratedBox {
 
     /// Upstream `RenderDecoratedBox.position`: a foreground decoration paints
     /// over the child rather than under it.
+    /// Upstream `borderOnForeground`. See the field.
+    pub fn with_border_on_foreground(mut self, on_foreground: bool) -> Self {
+        self.border_on_foreground = on_foreground;
+        self
+    }
+
     pub fn with_position(mut self, position: DecorationPosition) -> Self {
         self.position = position;
         self
@@ -3742,6 +3759,7 @@ impl RenderBox for RenderDecoratedBox {
                 || self.corners != fresh.corners
                 || self.shape != fresh.shape
                 || self.decoration != fresh.decoration
+                || self.border_on_foreground != fresh.border_on_foreground
                 || self.position != fresh.position
                 || self.border_width != fresh.border_width
                 || self.border_color != fresh.border_color
@@ -3752,6 +3770,7 @@ impl RenderBox for RenderDecoratedBox {
         self.corners = fresh.corners;
         self.shape = fresh.shape.take();
         self.decoration = fresh.decoration.take();
+        self.border_on_foreground = fresh.border_on_foreground;
         self.position = fresh.position;
         self.border_width = fresh.border_width;
         self.border_color = fresh.border_color;
@@ -3850,10 +3869,10 @@ impl RenderBox for RenderDecoratedBox {
                 context.canvas().draw_rect(rect, &paint);
             }
         }
-        if let Some(child) = &self.child {
-            context.paint_child(child, offset);
-        }
-        if self.border_width > 0.0 {
+        let stroke_border = |context: &mut PaintContext| {
+            if self.border_width <= 0.0 {
+                return;
+            }
             // Stroked on the boundary, so half the width falls outside. Insetting
             // by half keeps the border inside the box, which is what a caller who
             // sized the box expects.
@@ -3880,6 +3899,15 @@ impl RenderBox for RenderDecoratedBox {
             } else {
                 context.canvas().draw_rect(inset, &paint);
             }
+        };
+        if !self.border_on_foreground {
+            stroke_border(context);
+        }
+        if let Some(child) = &self.child {
+            context.paint_child(child, offset);
+        }
+        if self.border_on_foreground {
+            stroke_border(context);
         }
     }
 
@@ -13649,6 +13677,21 @@ mod tests {
             Some(crate::borders::BorderRadius::circular(4.0)),
             "the stadium was let go"
         );
+    }
+
+    #[test]
+    fn a_rebuilt_box_takes_the_new_side_of_its_child_to_stroke_on() {
+        // The same rule as the shape above, for the other field `update_from`
+        // has to carry: a card told to put its outline behind its child would
+        // otherwise keep stroking it in front for ever.
+        let mut live = RenderDecoratedBox::new().with_border_on_foreground(true);
+        let mut fresh = RenderDecoratedBox::new().with_border_on_foreground(false);
+        live.update_from(&mut fresh);
+        assert!(!live.border_on_foreground, "the new answer was taken");
+
+        let mut back = RenderDecoratedBox::new().with_border_on_foreground(true);
+        live.update_from(&mut back);
+        assert!(live.border_on_foreground, "and back again");
     }
 
     #[test]

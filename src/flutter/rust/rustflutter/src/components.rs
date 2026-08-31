@@ -793,6 +793,13 @@ pub struct Card {
     padding: Option<EdgeInsets>,
     semantic_container: bool,
     variant: crate::component_themes::CardVariant,
+    /// Upstream's `borderOnForeground`, **true** by default: the outline is
+    /// stroked over whatever is inside the card, so a picture that fills it
+    /// does not swallow the line that says where the card stops.
+    border_on_foreground: bool,
+    /// Upstream's `clipBehavior`. `None` falls through to the theme and then
+    /// to `Clip.none`.
+    clip_behavior: Option<crate::painting::ClipBehavior>,
 }
 
 impl Card {
@@ -805,7 +812,24 @@ impl Card {
             // not a pile of things.
             semantic_container: true,
             variant: crate::component_themes::CardVariant::Elevated,
+            border_on_foreground: true,
+            clip_behavior: None,
         }
+    }
+
+    /// Upstream's `borderOnForeground`. See the field.
+    pub fn with_border_on_foreground(mut self, on_foreground: bool) -> Self {
+        self.border_on_foreground = on_foreground;
+        self
+    }
+
+    /// Upstream's `clipBehavior`. Anything but
+    /// [`crate::painting::ClipBehavior::None`] clips the child to the card's
+    /// own corners -- which is what a card holding an image wants, and what a
+    /// card holding a list tile does not need to pay for.
+    pub fn with_clip_behavior(mut self, clip: crate::painting::ClipBehavior) -> Self {
+        self.clip_behavior = Some(clip);
+        self
     }
 
     /// Upstream's `Card.filled`: told apart from the page by its colour rather
@@ -870,12 +894,29 @@ impl Component for Card {
         // a shadow and with a line -- and the filled one, which is supposed to
         // be told apart by its colour alone, wore a border it never asked for.
         let side = card.side();
+        let border_on_foreground = self.border_on_foreground;
+        let clip = self.clip_behavior.unwrap_or(card.clip_behavior);
+        let shape = card.shape.clone();
         // The crate's shadow table is indexed by whole elevation steps.
         let elevation = card.elevation.round().max(0.0) as u32;
         let margin = card.margin;
         let semantic_container = self.semantic_container;
         crate::framework::single(child, move |inner| {
+            // The clip goes **inside** the card's own decoration: a clip
+            // outside would cut the shadow off at the card's edge, and a
+            // shadow that stops at the thing casting it is not a shadow. The
+            // rounding follows the shape at the size the card is laid out at,
+            // for the reason every shape in this crate does -- a stadium's is
+            // half its shorter side.
+            let inner: crate::render::BoxedRender = match clip {
+                crate::painting::ClipBehavior::None => inner,
+                _ => crate::render::RenderRef::new(
+                    crate::render::RenderClipRRect::new(crate::borders::BorderRadius::ZERO, inner)
+                        .with_shape(shape.clone()),
+                ),
+            };
             let mut container = Container::new()
+                .with_border_on_foreground(border_on_foreground)
                 .with_color(surface)
                 .with_corner_radius(radius)
                 .with_elevation(elevation)
@@ -8948,5 +8989,155 @@ mod card_variant_tests {
         ));
         let read = seen.borrow_mut().take().expect("built once");
         assert_eq!(read.color, Color::argb(255, 9, 8, 7));
+    }
+
+    /// A card whose child fills it in `colour`, so a test can see which of the
+    /// two -- the child or the outline -- reached the canvas last.
+    fn filled_child(colour: Color) -> AnyWidget {
+        leaf(move || {
+            crate::render::RenderDecoratedBox::new().with_fill(crate::render::Fill::Solid(colour))
+        })
+    }
+
+    /// The order things reached the canvas, as a list of "child" / "border".
+    fn order(card: Card, child_colour: Color) -> Vec<&'static str> {
+        painted(card)
+            .into_iter()
+            .filter_map(|call| match call {
+                Drawn::Rect {
+                    stroke: None, argb, ..
+                } if Color(argb) == child_colour => Some("child"),
+                Drawn::RRect {
+                    stroke: Some(_), ..
+                }
+                | Drawn::Path {
+                    stroke: Some(_), ..
+                } => Some("border"),
+                Drawn::Rect {
+                    stroke: Some(_), ..
+                } => Some("border"),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_cards_outline_is_stroked_over_what_is_inside_it() {
+        // Upstream's `borderOnForeground`, true by default. A picture that
+        // fills the card to its edges would otherwise paint over the line that
+        // says where the card stops.
+        let green = Color::argb(255, 0, 255, 0);
+        assert_eq!(
+            order(Card::outlined(filled_child(green)), green),
+            vec!["child", "border"]
+        );
+    }
+
+    #[test]
+    fn a_card_can_put_its_outline_behind_its_child_instead() {
+        // The other value, which upstream offers for a child that is meant to
+        // sit outside the frame.
+        let green = Color::argb(255, 0, 255, 0);
+        assert_eq!(
+            order(
+                Card::outlined(filled_child(green)).with_border_on_foreground(false),
+                green
+            ),
+            vec!["border", "child"]
+        );
+    }
+
+    #[test]
+    fn a_card_does_not_clip_unless_it_is_asked_to() {
+        // `Clip.none` in all three `_CardDefaults` tables. Clipping costs a
+        // layer on every card, and most cards hold a list tile that never
+        // reaches the corner.
+        let clips = |card: Card| {
+            painted(card)
+                .into_iter()
+                .any(|call| matches!(call, Drawn::ClipPathLayer { .. }))
+        };
+        assert!(!clips(Card::new(body())));
+        assert!(clips(
+            Card::new(body()).with_clip_behavior(crate::painting::ClipBehavior::AntiAlias)
+        ));
+    }
+
+    #[test]
+    fn a_theme_can_turn_clipping_on_for_every_card() {
+        let data = CardThemeData::new().with_clip_behavior(crate::painting::ClipBehavior::HardEdge);
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            data,
+            crate::framework::component(Card::new(body())),
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(300.0, 200.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(300, 200);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(300.0, 200.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        assert!(
+            crate::engine_test_stubs::drawn()
+                .into_iter()
+                .any(|call| matches!(call, Drawn::ClipPathLayer { .. })),
+            "the theme reached the card"
+        );
+    }
+
+    #[test]
+    fn a_cards_own_clip_beats_the_themes() {
+        // Upstream's `clipBehavior ?? cardTheme.clipBehavior ?? defaults`, in
+        // that order.
+        let data =
+            CardThemeData::new().with_clip_behavior(crate::painting::ClipBehavior::AntiAlias);
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            data,
+            crate::framework::component(
+                Card::new(body()).with_clip_behavior(crate::painting::ClipBehavior::None),
+            ),
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(300.0, 200.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(300, 200);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(300.0, 200.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        assert!(
+            !crate::engine_test_stubs::drawn()
+                .into_iter()
+                .any(|call| matches!(call, Drawn::ClipPathLayer { .. })),
+            "the card said no and meant it"
+        );
+    }
+
+    #[test]
+    fn the_clip_is_inside_the_shadow_that_the_card_casts() {
+        // A clip outside the decoration would cut the card's own shadow off at
+        // its edge, and a shadow that stops at the thing casting it is not a
+        // shadow.
+        let drawn =
+            painted(Card::new(body()).with_clip_behavior(crate::painting::ClipBehavior::AntiAlias));
+        let clip_at = drawn
+            .iter()
+            .position(|call| matches!(call, Drawn::ClipPathLayer { .. }))
+            .expect("it clipped");
+        let shadows_before = drawn[..clip_at]
+            .iter()
+            .filter(|call| matches!(call, Drawn::RRect { stroke: None, .. }))
+            .count();
+        assert!(
+            shadows_before > 1,
+            "the shadow's layers and the surface were painted before the clip: {drawn:?}"
+        );
     }
 }

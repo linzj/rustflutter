@@ -395,6 +395,16 @@ pub struct CardThemeData {
     pub elevation: Option<f32>,
     pub margin: Option<EdgeInsetsGeometry>,
     pub shape: Option<ShapeBorder>,
+    /// Upstream's `clipBehavior`, whose default in all three `_CardDefaults`
+    /// tables is `Clip.none`.
+    ///
+    /// **Not clipping is the default and it is a real choice.** A card is
+    /// rounded, so a child that paints to its edges shows square corners
+    /// poking out of the rounded ones -- and upstream still leaves it off,
+    /// because clipping costs a layer on every card and most cards hold a list
+    /// tile that never reaches the corner. The caller who puts an image in one
+    /// turns it on.
+    pub clip_behavior: Option<crate::painting::ClipBehavior>,
 }
 
 impl CardThemeData {
@@ -406,7 +416,13 @@ impl CardThemeData {
             elevation: None,
             margin: None,
             shape: None,
+            clip_behavior: None,
         }
+    }
+
+    pub fn with_clip_behavior(mut self, clip: crate::painting::ClipBehavior) -> Self {
+        self.clip_behavior = Some(clip);
+        self
     }
 
     pub fn with_color(mut self, color: Color) -> Self {
@@ -438,6 +454,15 @@ impl CardThemeData {
             elevation: lerp_f32(a.elevation, b.elevation, t),
             margin: EdgeInsetsGeometry::lerp(a.margin, b.margin, t),
             shape: ShapeBorder::lerp(a.shape.clone(), b.shape.clone(), t),
+            // A clip is not a number and cannot be interpolated: half way
+            // between clipping and not clipping is one or the other, and
+            // upstream's own `lerp` switches at the half the way every
+            // non-interpolable field here does.
+            clip_behavior: if t < 0.5 {
+                a.clip_behavior
+            } else {
+                b.clip_behavior
+            },
         }
     }
 }
@@ -495,6 +520,7 @@ pub struct ResolvedCard {
     pub elevation: f32,
     pub margin: EdgeInsets,
     pub shape: ShapeBorder,
+    pub clip_behavior: crate::painting::ClipBehavior,
 }
 
 impl ResolvedCard {
@@ -541,6 +567,9 @@ impl ResolvedCard {
                 .margin
                 .map(|margin| margin.resolve(crate::direction::current_direction()))
                 .unwrap_or(EdgeInsets::all(ResolvedCard::MARGIN)),
+            clip_behavior: data
+                .clip_behavior
+                .unwrap_or(crate::painting::ClipBehavior::None),
             shape: data.shape.clone().unwrap_or_else(|| {
                 ShapeBorder::Rounded(crate::borders::RoundedRectangleBorder::new(
                     side,
