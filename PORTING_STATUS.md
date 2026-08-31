@@ -1720,3 +1720,63 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
    在做什么——它让内容按**最终**宽度布局而不是按动画中的宽度，
    否则文字会在开场时重排。确认这个 crate 有没有 `RenderOverflowBox`，
    没有的话这一轮就得先补它，别糊过去。
+
+---
+
+## 第 441 轮：面板本身——Padding / Material / OverflowBox
+
+上一轮留的两件事都是"有"：`RenderOverflowBox` 带 `OverflowBoxFit`
+（在 `render.rs:8207`，`interactive_viewer.rs` 已经在用），
+`RenderClipRRect` 也在。只差一件：`RenderClipRRect` 收的是**固定半径**，
+而 `Material(clipBehavior:, shape:)` 裁的是形状的轮廓。
+按第 434 轮给 `RenderDecoratedBox` 加 `shape` 的同一个办法，
+给它也加了一个 `shape` + `rounding()`：**量完自己再取圆角**。
+
+### 内容按 view **最终**的宽度布局
+
+这是整个 view 里最不显眼的一处，也是 `OverflowBox` 存在的全部理由。
+它的 `maxWidth` 是 `min(viewMaxWidth, screenSize.width)`，
+而 `viewMaxWidth` 是 `_rectTween.end!.width`——**结束时的宽度，不是动画中的**。
+
+没有它，列会按正在长大的矩形去量，里面每一行字**每帧都要重新折行**：
+看上去不是面板在长大，是内容在乱跳。有了它，内容按最终宽度量一次，
+然后随着矩形追上来被**逐渐露出**——所以这个盒子必须允许子节点溢出，
+而下面那层裁剪就是"不让溢出被看见"的那一半。
+
+对屏幕取 `min` 是给 `view_rect` 特意放过的那种情况兜底：
+比窗口还宽的 view 会保留自己的宽度（第 436 轮记过），
+这一行不让**内容**也跟着跑到屏幕外面去。
+
+### 裁剪在表面**里面**，不在外面
+
+外面裁会把面板自己的阴影齐着边切掉，而一个到了投影者边缘就没了的阴影不是阴影。
+
+### 变异扫描 15 个，第一遍 4 条没红，三条是探针不对
+
+- **"内容不许比面板窄" 0 红**：我的内容探针本来就要多少拿多少，
+  最小值咬不到它。补一个固定 50 宽的探针。
+- **"溢出盒按父节点定尺寸" 0 红**：我一直用 **tight** 约束布局面板，
+  tight 之下 `Max` 和 `DeferToChild` 是同一个答案。
+  而真实情形里 view 到位之后**竖直方向是松的**
+  （min 240、max 600），差别就在那儿。补一个松高度的用例。
+- **"裁剪忽略形状" 0 红**：存根只记 clip path 的**边界**、不记圆角，
+  所以"它裁了"和"它裁成 28"在画布上一模一样（第 410 轮就写过这条）。
+  改成照 `theatre.rs` 里 `find_theatre` 的办法在树里找到那个
+  `RenderClipRRect` 再问它 `rounding()`。
+- 第四条是 fmt 之后搜索串失效。
+
+补完 15 条全红。
+
+尺子：十六把全部 exit 0。门：Rust 6584 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：`_ViewContent` 的三层现在**各自都在，但没有一根线把它们串起来**——
+`search_view_panel` / `search_view_column` / `search_view_header` 谁也不调用谁，
+`show_search_view` 的 `content` 参数还是调用者随便给的。
+下一轮做收口：一个 `search_view_content(...)`，
+从 `ResolvedSearchView` 一路搭到建议列表，然后让 `show_search_view` 默认用它。
+**先查一件事**：`SearchViewBody.min_height` 要的是**已 clamp 的**那个
+（`min(constraints.min_height, rect.height)`），而 rect 是**每帧都在变**的——
+所以 body 不能在 route 建立时算一次，得在 `SearchViewOpening::build` 里
+每帧重算。确认 `SearchViewOpening` 现在拿不拿得到 `ResolvedSearchView`
+（它现在只收 `BoxConstraints`），拿不到就要先把它传进去。

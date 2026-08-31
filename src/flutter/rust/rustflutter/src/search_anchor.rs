@@ -1128,6 +1128,82 @@ pub fn search_view_column(
     crate::render::RenderOpacity::new(fade(SearchViewTransition::icons_fade()), column)
 }
 
+/// The panel itself: the `Padding` / `Material` / `OverflowBox` that
+/// `_ViewContent.build` puts between the animated rectangle and the column.
+///
+/// # The content is laid out at the width the view will *end* at
+///
+/// That is what the `OverflowBox` is for, and it is the least obvious part of
+/// the whole view. Its `maxWidth` is `math.min(viewMaxWidth, screenSize.width)`
+/// where `viewMaxWidth` is `_rectTween.end!.width` -- **the finished width, not
+/// the animated one** -- with `minWidth: 0` and `fit: deferToChild`, aligned to
+/// the top left.
+///
+/// Without it the column would be measured against the growing rectangle, and
+/// every line of text inside it would re-wrap on every frame of the opening:
+/// the panel would not appear to grow, it would appear to reflow. With it the
+/// content is laid out once at its final width and merely *revealed* as the
+/// rectangle catches up -- which is why the box has to let its child overflow,
+/// and why the clip below it is what stops the overflow being seen.
+///
+/// The `min` against the screen is the guard for the case
+/// [`SearchAnchor::view_rect`] leaves alone: a view wider than the window
+/// keeps its width there, and this stops the *content* from being laid out
+/// wider than the screen as well.
+///
+/// # Padding, and the one case that has none
+///
+/// A full-screen view gets `EdgeInsets.zero` however the theme is set. It is
+/// the screen; an inset would leave a strip of the page showing around
+/// something that is supposed to have replaced it.
+///
+/// # The clip is the shape, not a rectangle
+///
+/// Upstream's `Material(clipBehavior: Clip.antiAlias, shape: effectiveShape)`
+/// clips to the shape's own outline. The docked default is a
+/// `RoundedRectangleBorder` of 28 and the full-screen one is the same shape
+/// with a radius of zero, so the corners come from the theme rather than from
+/// a constant here -- and they are resolved at the laid-out size, because a
+/// shape's rounding is not a number until then.
+pub fn search_view_panel(
+    view: &crate::component_themes::ResolvedSearchView,
+    full_screen: bool,
+    view_max_width: f32,
+    screen_width: f32,
+    column: crate::render::BoxedRender,
+) -> crate::render::BoxedRender {
+    let content = crate::render::RenderOverflowBox::boxed(column)
+        .with_alignment(crate::render::Alignment::TOP_LEFT)
+        .with_fit(crate::render::OverflowBoxFit::DeferToChild)
+        .with_min_width(0.0)
+        .with_max_width(view_max_width.min(screen_width));
+
+    let surface = crate::render::RenderDecoratedBox::new()
+        .with_fill(crate::render::Fill::Solid(
+            crate::elevation_overlay::ElevationOverlay::apply_surface_tint(
+                view.background_color,
+                Some(view.surface_tint_color),
+                view.elevation,
+            ),
+        ))
+        .with_shadows(crate::painting::elevation_shadows(view.elevation.max(0.0) as u32).to_vec())
+        .with_shape(view.shape.clone())
+        // The clip goes *inside* the surface rather than around it: a clip
+        // outside would cut the panel's own shadow off at its edge, and a
+        // shadow that stops at the thing casting it is not a shadow.
+        .with_child(
+            crate::render::RenderClipRRect::new(crate::borders::BorderRadius::ZERO, content)
+                .with_shape(view.shape.clone()),
+        );
+
+    let padding = if full_screen {
+        crate::render::EdgeInsets::ZERO
+    } else {
+        view.padding.unwrap_or(crate::render::EdgeInsets::ZERO)
+    };
+    crate::render::RenderRef::new(crate::render::RenderPadding::new(padding, surface))
+}
+
 /// The sheet between the view and the page: upstream's `barrierColor`,
 /// `barrierDismissible` and `barrierLabel`, together.
 ///
@@ -3253,5 +3329,305 @@ mod search_view_body_tests {
         // is the whole assertion: three curves, all arrived.
         let (_, alphas) = painted(body(), 1.0, 0.0);
         assert_eq!(alphas, Vec::<u8>::new());
+    }
+}
+
+#[cfg(test)]
+mod search_view_panel_tests {
+    use super::*;
+    use crate::borders::{
+        BorderRadius, BorderRadiusGeometry, BorderSide, RoundedRectangleBorder, ShapeBorder,
+    };
+    use crate::component_themes::ResolvedSearchView;
+    use crate::engine::Color;
+    use crate::engine_test_stubs::Drawn;
+    use crate::render::{BoxConstraints, EdgeInsets, Offset, RenderBox, RenderRef, Size};
+
+    const CONTENT: Color = Color(0xFFFF_00FF);
+
+    fn a_view() -> ResolvedSearchView {
+        ResolvedSearchView {
+            background_color: Color::argb(255, 0, 0, 255),
+            elevation: ResolvedSearchView::ELEVATION,
+            surface_tint_color: Color::TRANSPARENT,
+            side: None,
+            shape: ShapeBorder::Rounded(RoundedRectangleBorder::new(
+                BorderSide::NONE,
+                BorderRadiusGeometry::circular(ResolvedSearchView::RADIUS),
+            )),
+            header_height: None,
+            header_text_style: None,
+            header_hint_style: None,
+            constraints: BoxConstraints {
+                min_width: ResolvedSearchView::MIN_WIDTH,
+                max_width: f32::INFINITY,
+                min_height: ResolvedSearchView::MIN_HEIGHT,
+                max_height: f32::INFINITY,
+            },
+            padding: None,
+            bar_padding: EdgeInsets::symmetric(8.0, 0.0),
+            shrink_wrap: false,
+            divider_color: Color::argb(255, 128, 128, 128),
+        }
+    }
+
+    /// A block that takes everything it is offered, so a test can read back
+    /// the constraints the panel handed its content.
+    fn content() -> crate::render::BoxedRender {
+        RenderRef::new(
+            crate::render::RenderDecoratedBox::new().with_fill(crate::render::Fill::Solid(CONTENT)),
+        )
+    }
+
+    /// Lays a panel out in `at` and answers everything drawn.
+    fn painted(
+        view: &ResolvedSearchView,
+        full_screen: bool,
+        view_max_width: f32,
+        screen_width: f32,
+        at: Size,
+    ) -> Vec<Drawn> {
+        let mut panel =
+            search_view_panel(view, full_screen, view_max_width, screen_width, content());
+        RenderBox::layout(&mut panel, BoxConstraints::tight(at.width, at.height));
+        let mut layers = crate::engine::LayerTree::new(1000, 1000);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(1000.0, 1000.0));
+            RenderBox::paint(&panel, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    fn content_width(drawn: &[Drawn]) -> f32 {
+        drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Rect {
+                    left, right, argb, ..
+                } if Color(*argb) == CONTENT => Some(*right - *left),
+                _ => None,
+            })
+            .expect("the content painted")
+    }
+
+    #[test]
+    fn the_content_is_laid_out_at_the_width_the_view_will_end_at() {
+        // The whole reason for the `OverflowBox`. Halfway through the opening
+        // the panel is 200 wide and the content is already 500 -- so the text
+        // inside it was wrapped once, at the final width, and is merely being
+        // revealed. Measuring it against the growing rectangle would re-wrap
+        // every line on every frame.
+        let drawn = painted(&a_view(), false, 500.0, 1000.0, Size::new(200.0, 300.0));
+        assert_eq!(content_width(&drawn), 500.0);
+    }
+
+    #[test]
+    fn the_content_is_never_laid_out_wider_than_the_screen() {
+        // `math.min(viewMaxWidth, screenSize.width)`. `view_rect` deliberately
+        // lets a view be wider than the window -- it moves the corner and
+        // leaves the size -- and this is what stops the *content* from
+        // following it out there.
+        let drawn = painted(&a_view(), false, 900.0, 600.0, Size::new(200.0, 300.0));
+        assert_eq!(content_width(&drawn), 600.0);
+    }
+
+    #[test]
+    fn the_panel_is_clipped_to_its_shape_at_the_size_it_was_laid_out_at() {
+        // `Material(clipBehavior: Clip.antiAlias, shape:)`. Without it the
+        // content, which is wider than the panel by design, would be seen
+        // hanging out of the rounded corners.
+        let drawn = painted(&a_view(), false, 500.0, 1000.0, Size::new(200.0, 300.0));
+        let clipped = drawn.iter().any(|call| {
+            matches!(
+                call,
+                Drawn::ClipPathLayer { .. } | Drawn::ClipRRectLayer { .. }
+            )
+        });
+        assert!(clipped, "the panel clips: {drawn:?}");
+    }
+
+    #[test]
+    fn a_shape_decides_the_clip_and_a_stadium_needs_the_size_to_do_it() {
+        // The clip follows the shape rather than a constant, and it is
+        // resolved after layout for the same reason the surface's rounding is:
+        // a stadium is half the shorter side.
+        // Asked directly rather than through a `RenderRef`: a boxed handle
+        // does not downcast back to the object inside it, which round 434
+        // recorded after a test passed for that reason and not for the right
+        // one.
+        let mut stadium = crate::render::RenderClipRRect::new(
+            BorderRadius::ZERO,
+            crate::widgets::SizedBox::new(200.0, 56.0),
+        )
+        .with_shape(ShapeBorder::Stadium(
+            crate::borders::StadiumBorder::default(),
+        ));
+        RenderBox::layout(&mut stadium, BoxConstraints::tight(200.0, 56.0));
+        assert_eq!(stadium.rounding(), BorderRadius::circular(28.0));
+
+        let mut taller = crate::render::RenderClipRRect::new(
+            BorderRadius::ZERO,
+            crate::widgets::SizedBox::new(200.0, 120.0),
+        )
+        .with_shape(ShapeBorder::Stadium(
+            crate::borders::StadiumBorder::default(),
+        ));
+        RenderBox::layout(&mut taller, BoxConstraints::tight(200.0, 120.0));
+        assert_eq!(taller.rounding(), BorderRadius::circular(60.0));
+    }
+
+    #[test]
+    fn a_shape_that_is_not_a_rounded_rectangle_leaves_the_given_radius_alone() {
+        // `corner_radius` answers nothing for a circle, and the fallback is
+        // the radius the caller set rather than square corners.
+        let mut clip = crate::render::RenderClipRRect::new(
+            BorderRadius::circular(9.0),
+            crate::widgets::SizedBox::new(100.0, 100.0),
+        )
+        .with_shape(ShapeBorder::Circle(crate::borders::CircleBorder::default()));
+        RenderBox::layout(&mut clip, BoxConstraints::tight(100.0, 100.0));
+        assert_eq!(clip.rounding(), BorderRadius::circular(9.0));
+    }
+
+    #[test]
+    fn a_docked_panel_takes_the_themes_padding_and_a_full_screen_one_takes_none() {
+        // A full-screen view is the screen: an inset would leave a strip of
+        // the page showing around the thing that replaced it.
+        let mut view = a_view();
+        view.padding = Some(EdgeInsets::all(12.0));
+
+        // The **last** path, not the first: a decorated box paints its
+        // shadows before its fill, and a shadow is offset and spread, so the
+        // first path is at neither the panel's corner nor anywhere useful.
+        let surface_of = |drawn: Vec<Drawn>| {
+            drawn
+                .iter()
+                .filter_map(|call| match call {
+                    Drawn::Path { left, top, .. } => Some((*left, *top)),
+                    _ => None,
+                })
+                .next_back()
+                .expect("the surface painted")
+        };
+        assert_eq!(
+            surface_of(painted(
+                &view,
+                false,
+                500.0,
+                1000.0,
+                Size::new(400.0, 300.0)
+            )),
+            (12.0, 12.0),
+            "inset by the theme's padding"
+        );
+        assert_eq!(
+            surface_of(painted(&view, true, 500.0, 1000.0, Size::new(400.0, 300.0))),
+            (0.0, 0.0),
+            "a screen has no margin"
+        );
+    }
+
+    /// A block of a fixed size, for the cases where the panel's own choices
+    /// only show when the content does *not* want everything on offer.
+    fn small_content() -> crate::render::BoxedRender {
+        RenderRef::new(
+            crate::render::RenderDecoratedBox::new()
+                .with_fill(crate::render::Fill::Solid(CONTENT))
+                .with_child(crate::widgets::SizedBox::new(50.0, 150.0)),
+        )
+    }
+
+    /// Every render object of one type in a laid-out tree, innermost last.
+    fn walk(root: &crate::render::RenderRef, visit: &mut dyn FnMut(&crate::render::RenderRef)) {
+        let children: Vec<crate::render::RenderRef> = root.with(|object| {
+            let mut found = Vec::new();
+            object.visit_children(&mut |child, _| {
+                if let Some(handle) = child.as_any().downcast_ref::<crate::render::RenderRef>() {
+                    found.push(handle.clone());
+                }
+            });
+            found
+        });
+        for child in children {
+            visit(&child);
+            walk(&child, visit);
+        }
+    }
+
+    #[test]
+    fn content_that_wants_to_be_narrow_is_allowed_to_be() {
+        // `minWidth: 0`. The overflow box replaces the panel's constraints
+        // outright, so without this a list of short suggestions would be
+        // stretched to the view's whole width and the panel would have no way
+        // to say otherwise.
+        let mut panel = search_view_panel(&a_view(), false, 500.0, 1000.0, small_content());
+        RenderBox::layout(&mut panel, BoxConstraints::tight(200.0, 300.0));
+        let mut layers = crate::engine::LayerTree::new(1000, 1000);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(1000.0, 1000.0));
+            RenderBox::paint(&panel, &mut context, Offset::ZERO);
+        }
+        assert_eq!(content_width(&crate::engine_test_stubs::drawn()), 50.0);
+    }
+
+    #[test]
+    fn the_panel_takes_its_height_from_its_content_when_it_is_given_a_choice() {
+        // `fit: deferToChild`, which upstream notes "cannot be sizedByParent".
+        // It only shows where the panel has room to spare: the rectangle it is
+        // laid out in is tight across and loose down once the view has
+        // arrived, and a panel that ignored its child would be 600 tall around
+        // 150 of suggestions.
+        let mut panel = search_view_panel(&a_view(), false, 500.0, 1000.0, small_content());
+        let height = RenderBox::layout(
+            &mut panel,
+            crate::render::BoxConstraints::new(400.0, 400.0, 0.0, 600.0),
+        )
+        .height;
+        assert_eq!(height, 150.0, "the content's height, not the room's");
+    }
+
+    #[test]
+    fn the_panels_clip_takes_the_views_shape() {
+        // Found in the tree rather than asserted on the drawing, because the
+        // stub records a clip path's bounds and not its rounding -- so "it
+        // clips" and "it clips to 28" look the same on the canvas.
+        let mut panel = search_view_panel(&a_view(), false, 500.0, 1000.0, content());
+        RenderBox::layout(&mut panel, BoxConstraints::tight(400.0, 300.0));
+        let mut rounding = None;
+        walk(&panel, &mut |handle| {
+            handle.with(|object| {
+                if let Some(clip) = object
+                    .as_any()
+                    .downcast_ref::<crate::render::RenderClipRRect>()
+                {
+                    rounding = Some(clip.rounding());
+                }
+            });
+        });
+        assert_eq!(
+            rounding,
+            Some(BorderRadius::circular(ResolvedSearchView::RADIUS)),
+            "the theme's 28, not a square corner"
+        );
+    }
+
+    #[test]
+    fn the_panel_casts_the_shadow_its_elevation_asks_for() {
+        // `Material(elevation:)`. Six, shared with the bar.
+        let drawn = painted(&a_view(), false, 500.0, 1000.0, Size::new(400.0, 300.0));
+        let shadows = crate::painting::elevation_shadows(ResolvedSearchView::ELEVATION as u32);
+        assert!(!shadows.is_empty(), "or there is nothing to look for");
+        let paths = drawn
+            .iter()
+            .filter(|call| matches!(call, Drawn::Path { .. }))
+            .count();
+        assert!(
+            paths > shadows.len(),
+            "one path per shadow and one for the surface: {paths}"
+        );
     }
 }

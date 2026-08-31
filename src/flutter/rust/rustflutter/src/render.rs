@@ -18811,6 +18811,15 @@ impl RenderBox for RenderListBody {
 /// Upstream `RenderClipRRect`: clips the child to a rounded rectangle.
 pub struct RenderClipRRect {
     border_radius: crate::borders::BorderRadius,
+    /// A shape to take the rounding from instead, resolved at the size this
+    /// was laid out at -- upstream's `Material(clipBehavior:, shape:)`, whose
+    /// clip is the shape's own outline.
+    ///
+    /// Here for the reason [`RenderDecoratedBox::shape`] is: a `StadiumBorder`
+    /// is half the shorter side, so a shape's rounding is not a number anybody
+    /// has until the box has been measured. A caller who does know the radius
+    /// keeps passing one.
+    shape: Option<crate::borders::ShapeBorder>,
     child: BoxedRender,
     size: Size,
 }
@@ -18822,13 +18831,34 @@ impl RenderClipRRect {
     ) -> RenderClipRRect {
         RenderClipRRect {
             border_radius,
+            shape: None,
             child: RenderRef::new(child),
             size: Size::ZERO,
         }
     }
 
+    /// Clips to `shape`'s rounding rather than to a fixed radius. See the
+    /// field.
+    pub fn with_shape(mut self, shape: crate::borders::ShapeBorder) -> Self {
+        self.shape = Some(shape);
+        self
+    }
+
+    /// The rounding in force at the size this was laid out at: the shape's
+    /// when it has one and answers, and the fixed radius otherwise.
+    ///
+    /// A shape that is not a rounded rectangle -- a circle, a star -- answers
+    /// nothing, and the fixed radius stands rather than the clip silently
+    /// becoming square.
+    pub fn rounding(&self) -> crate::borders::BorderRadius {
+        self.shape
+            .as_ref()
+            .and_then(|shape| shape.corner_radius(self.size))
+            .unwrap_or(self.border_radius)
+    }
+
     fn local_clip(&self) -> crate::borders::RRect {
-        self.border_radius
+        self.rounding()
             .to_rrect(Rect::xywh(0.0, 0.0, self.size.width, self.size.height))
     }
 }
@@ -18836,8 +18866,11 @@ impl RenderClipRRect {
 impl RenderBox for RenderClipRRect {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderClipRRect>()?;
-        let mut effect = UpdateEffect::repaint_if(self.border_radius != fresh.border_radius);
+        let mut effect = UpdateEffect::repaint_if(
+            self.border_radius != fresh.border_radius || self.shape != fresh.shape,
+        );
         self.border_radius = fresh.border_radius;
+        self.shape = fresh.shape.take();
         effect = effect.and(UpdateEffect::relayout_if(!self.child.is(&fresh.child)));
         self.child = fresh.child.clone();
         Some(effect)
@@ -18858,7 +18891,7 @@ impl RenderBox for RenderClipRRect {
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let bounds = Rect::xywh(offset.dx, offset.dy, self.size.width, self.size.height);
-        let rrect = self.border_radius.to_rrect(bounds);
+        let rrect = self.rounding().to_rrect(bounds);
         let path = rrect.to_path();
         context.push_clip_path(&path, ClipBehavior::AntiAlias, &self.child, offset);
     }
