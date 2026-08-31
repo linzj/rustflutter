@@ -3512,6 +3512,15 @@ pub struct RenderDecoratedBox {
     /// set it takes precedence over [`RenderDecoratedBox::corner_radius`],
     /// which stays as the uniform-radius shorthand.
     corners: Option<crate::borders::BorderRadius>,
+    /// A shape whose rounding is taken **at the measured size**, upstream's
+    /// `Material(shape:)` and `ShapeDecoration`.
+    ///
+    /// Separate from `corners` because it cannot be reduced to one at build
+    /// time: a `StadiumBorder` is half the shorter side, so its corners are
+    /// not known until the box has been laid out. Takes precedence over
+    /// `corners` when it answers, and falls back to it when the shape is not a
+    /// rounded rectangle -- see [`crate::borders::ShapeBorder::corner_radius`].
+    shape: Option<crate::borders::ShapeBorder>,
     /// A whole `Decoration`, upstream's `RenderDecoratedBox.decoration`.
     /// When set it takes the place of the individual fields above.
     decoration: Option<crate::decoration::Decoration>,
@@ -3531,6 +3540,7 @@ impl RenderDecoratedBox {
     pub fn new() -> RenderDecoratedBox {
         RenderDecoratedBox {
             fill: None,
+            shape: None,
             corner_radius: 0.0,
             corners: None,
             decoration: None,
@@ -3580,15 +3590,36 @@ impl RenderDecoratedBox {
         self
     }
 
+    /// Upstream's `Material(shape:)`: a shape whose corners are measured
+    /// rather than given. See the field.
+    pub fn with_shape(mut self, shape: crate::borders::ShapeBorder) -> Self {
+        self.shape = Some(shape);
+        self
+    }
+
+    /// The rounding in force over `rect`: the shape's when it has one, and
+    /// the fixed corners otherwise.
+    ///
+    /// The shape is asked about **`rect`** rather than the box's own size,
+    /// because the two differ for a shadow, which is grown by its spread. A
+    /// stadium's radius has to follow the rectangle actually being drawn, or
+    /// the shadow comes out a different shape from the thing casting it.
+    pub fn rounding(&self, rect: Rect) -> Option<crate::borders::BorderRadius> {
+        self.shape
+            .as_ref()
+            .and_then(|shape| shape.corner_radius(Size::new(rect.width(), rect.height())))
+            .or(self.corners)
+    }
+
     /// The per-corner rounding over `rect`, when there is one.
     fn corner_rrect(&self, rect: Rect) -> Option<crate::borders::RRect> {
-        self.corners.map(|radius| radius.to_rrect(rect))
+        self.rounding(rect).map(|radius| radius.to_rrect(rect))
     }
 
     /// The shadow's shape: the corner rounding grown by the spread, the
     /// per-corner counterpart of `(corner_radius + spread).max(0.0)`.
-    fn shadow_rrect(&self, rect: Rect, spread: f32) -> Option<crate::borders::RRect> {
-        self.corners.map(|radius| {
+    pub fn shadow_rrect(&self, rect: Rect, spread: f32) -> Option<crate::borders::RRect> {
+        self.rounding(rect).map(|radius| {
             crate::borders::BorderRadius::only(
                 radius.top_left + crate::borders::Radius::circular(spread),
                 radius.top_right + crate::borders::Radius::circular(spread),
@@ -3702,6 +3733,7 @@ impl RenderBox for RenderDecoratedBox {
             self.fill != fresh.fill
                 || self.corner_radius != fresh.corner_radius
                 || self.corners != fresh.corners
+                || self.shape != fresh.shape
                 || self.decoration != fresh.decoration
                 || self.position != fresh.position
                 || self.border_width != fresh.border_width
@@ -3711,6 +3743,7 @@ impl RenderBox for RenderDecoratedBox {
         self.fill = fresh.fill.take();
         self.corner_radius = fresh.corner_radius;
         self.corners = fresh.corners;
+        self.shape = fresh.shape.take();
         self.decoration = fresh.decoration.take();
         self.position = fresh.position;
         self.border_width = fresh.border_width;
@@ -13511,6 +13544,148 @@ impl RenderAbstractViewport for RenderViewport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stadium_shape_is_rounded_from_the_size_it_was_measured_at() {
+        // The reason the shape lives on the render object rather than being
+        // reduced to a radius by whoever built it: a `StadiumBorder` is half
+        // the shorter side, and the side is not known until layout. The same
+        // box asked about two rectangles has to answer with two roundings.
+        //
+        // Asserted through `rounding` rather than through the paint: a filled
+        // rounded box goes to the canvas as a **path**, and the stub keeps
+        // only a path's bounds -- so the radius is not visible from there.
+        let stadium = RenderDecoratedBox::new()
+            .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                0xFF00_00FF,
+            )))
+            .with_shape(crate::borders::ShapeBorder::Stadium(
+                crate::borders::StadiumBorder::default(),
+            ));
+        assert_eq!(
+            stadium.rounding(Rect::xywh(0.0, 0.0, 200.0, 56.0)),
+            Some(crate::borders::BorderRadius::circular(28.0))
+        );
+        assert_eq!(
+            stadium.rounding(Rect::xywh(0.0, 0.0, 200.0, 120.0)),
+            Some(crate::borders::BorderRadius::circular(60.0)),
+            "the same box over a taller rectangle rounds by more"
+        );
+    }
+
+    #[test]
+    fn a_shadows_rounding_follows_the_rectangle_it_is_drawn_over() {
+        // A shadow is the box grown by its spread, so it is a different
+        // rectangle -- and a stadium's radius has to follow it, or the shadow
+        // comes out a different shape from the thing casting it.
+        let stadium = RenderDecoratedBox::new()
+            .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                0xFF00_00FF,
+            )))
+            .with_shape(crate::borders::ShapeBorder::Stadium(
+                crate::borders::StadiumBorder::default(),
+            ));
+        let box_rounding = stadium.rounding(Rect::xywh(0.0, 0.0, 200.0, 56.0));
+        let grown = stadium.rounding(Rect::xywh(-4.0, -4.0, 208.0, 64.0));
+        assert_eq!(
+            box_rounding,
+            Some(crate::borders::BorderRadius::circular(28.0))
+        );
+        assert_eq!(grown, Some(crate::borders::BorderRadius::circular(32.0)));
+    }
+
+    #[test]
+    fn a_shape_that_answers_beats_the_corners_that_were_set() {
+        // Precedence, not fallback. A caller setting both means the shape --
+        // upstream's `Material(shape:)` overrides `borderRadius` rather than
+        // deferring to it, and a stadium that quietly lost to a fixed 9 would
+        // be square-ish where it should be a pill.
+        let both = RenderDecoratedBox::new()
+            .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                0xFF00_00FF,
+            )))
+            .with_border_radius(crate::borders::BorderRadius::circular(9.0))
+            .with_shape(crate::borders::ShapeBorder::Stadium(
+                crate::borders::StadiumBorder::default(),
+            ));
+        assert_eq!(
+            both.rounding(Rect::xywh(0.0, 0.0, 200.0, 56.0)),
+            Some(crate::borders::BorderRadius::circular(28.0)),
+            "the stadium, not the 9"
+        );
+    }
+
+    #[test]
+    fn a_rebuilt_box_takes_the_new_shape() {
+        // `update_from` copies configuration across rather than replacing the
+        // object, so a field it forgets keeps the last build's value for ever
+        // -- a box that stopped being a stadium would stay one.
+        //
+        // Both sides are plain objects: wrapping either in a `RenderRef` makes
+        // the downcast inside `update_from` fail, and the test then passes by
+        // changing nothing at all.
+        let mut live = RenderDecoratedBox::new()
+            .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                0xFF00_00FF,
+            )))
+            .with_shape(crate::borders::ShapeBorder::Stadium(
+                crate::borders::StadiumBorder::default(),
+            ));
+        let mut fresh = RenderDecoratedBox::new()
+            .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                0xFF00_00FF,
+            )))
+            .with_border_radius(crate::borders::BorderRadius::circular(4.0));
+        live.update_from(&mut fresh);
+        assert_eq!(
+            live.rounding(Rect::xywh(0.0, 0.0, 200.0, 56.0)),
+            Some(crate::borders::BorderRadius::circular(4.0)),
+            "the stadium was let go"
+        );
+    }
+
+    #[test]
+    fn the_shadow_is_rounded_over_its_own_grown_rectangle() {
+        // A shadow is the box grown by its spread, so a stadium's radius has
+        // to be taken over *that* rectangle -- reading the box's own corners
+        // instead would cast a shadow of a different shape from the thing
+        // casting it.
+        let stadium = RenderDecoratedBox::new()
+            .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                0xFF00_00FF,
+            )))
+            .with_shape(crate::borders::ShapeBorder::Stadium(
+                crate::borders::StadiumBorder::default(),
+            ));
+        let shadow = stadium
+            .shadow_rrect(Rect::xywh(-4.0, -4.0, 208.0, 64.0), 4.0)
+            .expect("a stadium rounds");
+        // 64 tall -> 32, grown by the 4 of spread.
+        assert!(
+            (shadow.top_left.x - 36.0).abs() < 1e-4,
+            "{:?}",
+            shadow.top_left
+        );
+    }
+
+    #[test]
+    fn a_shape_that_is_not_a_rounded_rectangle_leaves_the_given_corners_alone() {
+        // `corner_radius` answers `None` for a circle, and the fallback is the
+        // radius the caller set rather than square corners -- dropping it
+        // would silently unround every box that had both.
+        let with_both = RenderDecoratedBox::new()
+            .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                0xFF00_00FF,
+            )))
+            .with_border_radius(crate::borders::BorderRadius::circular(9.0))
+            .with_shape(crate::borders::ShapeBorder::Circle(
+                crate::borders::CircleBorder::default(),
+            ));
+        assert_eq!(
+            with_both.rounding(Rect::xywh(0.0, 0.0, 200.0, 56.0)),
+            Some(crate::borders::BorderRadius::circular(9.0))
+        );
+    }
 
     /// Upstream `_paintImage` only hands the engine a paint when the image
     /// has something to say about it, and an opacity says it as a black paint

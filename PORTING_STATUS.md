@@ -1274,3 +1274,56 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
 所以要么 `SearchBar` 用固定高度（`ResolvedSearchBar.constraints` 里有没有？）
 把尺寸提前算出来，要么需要一个"在布局后取圆角"的渲染对象。
 **先确认约束里给不给得出高度**，给得出就用它，给不出这一轮就该补那个渲染对象。
+
+---
+
+## 第 434 轮：一个盒子可以被交一个**形状**，圆角等量完自己再算
+
+先查上一轮的问题：`ResolvedSearchBar.constraints` 给不给得出高度？
+**给不出**——`min_height: 56`、`max_height: f32::INFINITY`。
+所以 stadium 的半径**确实要等布局之后**才知道，
+不能在 build 的时候折成一个 `BorderRadius` 交给 `Container`。
+
+按上一轮自己写的判断：那这一轮就该补那个"量完再取圆角"的东西。
+
+### 没有新造类型
+
+`RenderDecoratedBox` 本来就带 `corners: Option<BorderRadius>` 和阴影。
+所以只加一个 `shape: Option<ShapeBorder>`，并把两处读圆角的地方
+（`corner_rrect` 和 `shadow_rrect`）收拢到一个 `rounding(rect)`：
+**形状答得上就用形状的，答不上退回固定圆角。**
+
+两处按事实定的细节：
+
+- **`rounding` 收的是 `rect` 而不是自己的 size**。
+  阴影是盒子按 spread 涨出来的**另一个矩形**，
+  stadium 的半径必须跟着实际要画的那个矩形走，
+  否则影子的形状和投影子的东西对不上。
+- **是覆盖不是回退**：设了形状又设了圆角时，形状赢。
+  上游 `Material(shape:)` 就是压过 `borderRadius` 的。
+
+### 变异扫描 5 个，第一遍 2 红，补完测试全红
+
+三条活着的分别是：优先级（测试里从来没有"两个都设"）、
+阴影用哪个矩形、以及 `update_from` 忘记拷贝。三条都补了测试。
+
+写这三条时又踩到两个"测试用错了对象"的坑，都记在测试注释里：
+
+- 画出来的圆角矩形在存根里是一条 **Path**，而**存根只留 path 的边界、不留半径**
+  （第 410 轮就写下过这件事）。所以圆角**从画布上看不见**，
+  断言得走 `rounding` 本身——于是把它和 `shadow_rrect` 都公开了，
+  理由和上游把 `getOuterPath` 公开是同一个。
+- `update_from` 里要下转型，**任何一边包在 `RenderRef` 里都会让下转型失败**，
+  于是"什么都没改"被当成通过。两边都用裸对象才测到真东西。
+
+尺子：十六把全部 exit 0。门：Rust 6522 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：`with_shape` 现在还没有消费者。
+下一轮把 `SearchBar` 的 widget 造出来——第 432 轮因为缺圆角没动、
+第 433 轮补了 `corner_radius`、这一轮补了"量完再取"，路已经通了。
+但**先查一件事**：`Container` 有没有办法把 `ShapeBorder` 传到底下那个
+`RenderDecoratedBox`（它现在只有 `with_border_radius`）。
+没有的话，`SearchBar` 要么直接建 `RenderDecoratedBox`、
+要么先给 `Container` 补一个 `with_shape` ——
+**先看清楚 `Container` 是怎么把配置交给它那几层包装的**，再决定哪条更小。
