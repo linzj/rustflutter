@@ -400,3 +400,63 @@ gallery **355** 通过（新增那一条）；三个目录默认目标全部编�
 看哪一层收到了 contains=true 却没有把位置传下去。
 另外别忘了第三件事仍然挂着：桌面上该用
 `DesktopTextSelectionControls` 而不是写死的 `MaterialTextSelectionControls`。
+
+---
+
+## 第 419 轮：往下追了一层，排除了三个嫌疑，**没有定位到**——并且换掉复现的办法
+
+这一轮**没有改产品代码**。把结果如实记下来，包括没做到的部分。
+
+### 找到了包裹演示页的那一层
+
+`pages/demo.rs::demo_wrapper` 的最外面是：
+
+    Container::new()
+        .with_padding(EdgeInsets::only(16, 0, 16, 16))
+        .with_child(ClipRRect::new(10.0, rendered))
+
+里面依次是 `provide(theme)` → `app::with_overlay` → `DemoArea`（一个
+`ConstrainedBox`，`min_height = 页高 - 56 - 16`，max 是 `INFINITY`）→ 演示自己的 `stage()`。
+
+### 读代码排除的三个
+
+- `RenderPadding::hit_test_children` **是减了内边距的**
+  （`position.translate(-insets.left, -insets.top)`），没问题。
+- `RenderClipRect::hit_test_children` 直接下传，没问题。
+- `RenderClipRRect` 同样没问题。
+
+### 一个浪费了一轮探针的事实，记下来免得再犯
+
+`widgets::ClipRRect::new(radius, child)` 返回的是 **`RenderClipRect`**，
+不是 `RenderClipRRect`——那是另一个类型。
+我第一次把探针打在 `RenderClipRRect` 上，跑出来 `count=0`，
+差点据此断定"裁剪层根本没被走到"。**打错了类型的探针，报的是零，不是事实。**
+和之前那些"仪器瞎了"的教训是同一族。
+
+### 复现办法本身也得换
+
+对着窗口点这件事**不可靠**：每次重启后列表的滚动量都不一样，
+同样的 `--sclick 300,782` 这一轮进的是 Text fields、下一轮进的是 App bar，
+我已经因此作废过两次测量。这一轮虽然加了"点之前先截图确认"的步骤，
+但每验证一次就要多跑一遍应用，代价太高。
+
+**正确的做法是把整个 gallery 装进单元测试里**：
+第 418 轮那条网格命中测试证明了这条路可行（装 `stage()`、按 460×764 布局、
+整页打网格），只是装的是**演示自己的根**，没有装外面那层包裹。
+下一轮应当装 `pages::demo::page(...)`——它要一个
+`GalleryState` 和 `StateHandle<GalleryState>`，
+`GalleryState::default()` 有了，handle 得从一个 stateful 元素里拿，
+所以多半要把整个 `GalleryApp` 装起来再导航到 demo 路由。
+一旦装起来，网格扫描会**立刻**告诉我 secondary 计数是不是掉到零，
+然后就可以在测试里一层层往下二分，秒级迭代，不用再开窗口。
+
+尺子：十六把全部 exit 0。门：Rust 6488 通过；gallery 355 通过；
+C++ 34 个 gtest 全过；三个目录默认目标全部编过。探针已全部还原。
+
+**下一步**：把 `GalleryApp` 装进 `flutter_gallery_unittests`、导航到
+`routes::DEMO` + slug `text-field`，跑第 418 轮那个网格扫描。
+预期：`secondary` 会是 0（现在装光秃秃的 `stage()` 时不是 0）。
+拿到这个"红"的测试之后，再从 `demo_wrapper` 往里逐层二分——
+每一层加一个临时断言即可，不必再碰运行中的窗口。
+另外仍然挂着第三件事：桌面上应当用 `DesktopTextSelectionControls`
+而不是写死的 `MaterialTextSelectionControls`。
