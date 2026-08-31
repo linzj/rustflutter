@@ -2413,3 +2413,64 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 子菜单和 dialog 不一样：点外面**只关自己不关父菜单**
 （`raw_menu_anchor.rs` 开头第一条就写着这个），
 而 `show_modal` 的遮罩是一层盖住全部的。够不够，先看清楚再动。
+
+---
+
+## 第 453 轮：菜单不该用遮罩，该用 tap region
+
+上一轮的问题查下来答案很清楚：**`show_modal` 是错的工具**。
+
+遮罩是盖住一切的一层：它接住了那次点击，而接住就意味着底下的东西收不到。
+对 dialog 是对的（页面本来就该出局），对菜单错在两处：
+
+- **菜单不挡页面。** 上游 `RawMenuAnchor` 根本不放遮罩，菜单开着时页面照样滚、
+  按钮照样能按。
+- **子菜单必须能把一次点击输给父菜单。** 有遮罩的话，子菜单开着时点菜单栏，
+  点击落在遮罩上——子菜单关了，而菜单栏没听见那次本该打开下一个菜单的点击。
+
+上游的机制是 `TapRegion`，而这个 crate **早就有** `tap_region.rs`，
+`RawMenuOverlayInfo` 里也早就存着 `tap_region_group_id`——
+**只是没有任何东西读它**。
+
+### `show_tap_dismissed`
+
+一个不带遮罩的浮层：进了这个 region（或**同组**任何一个 region）的点击算"里面"，
+其余算"外面"并把它撤掉。组就是把子菜单和它长出来的那个菜单绑在一起的东西，
+所以从菜单的一行点到另一行，不算"在两块面板外面"。
+
+### 一个知识点：dismissal 只能有一条
+
+第一版把 region 的 `on_tap_outside` 接到"裸的撤除"上，
+而监听器挂在 handle 那条上——于是**被点掉的浮层谁也没告诉**，
+正是第 446 轮那个洞。region 拿不到 handle（handle 要等 entry，
+而 entry 是带着 region 一起建的），所以两边共用的必须是**同一个闭包**。
+
+### 变异扫描 12 个，第一遍 4 条没红
+
+- 三条 MISS：`with_group_id(self.group_id)` 在这个文件里出现两次
+  （一次在实现里，一次在测试的同组兄弟里），加上下文才唯一。
+- 一条是**我写的空变异**（`let _ = region_id;` 什么都没改）——
+  又一次印证第 449 轮那条：`assert old != new` 只挡字面相同。
+  换成"每个浮层用同一个 region id"，红了。
+- 剩下一条 **`consume_outside_taps` 置真仍然 0 红**，
+  但这不是缺口：`tap_region.rs` 的文件头把它记成**已知偏差**——
+  这个 crate 存下并报告这个标志，但**不阻止**那次点击
+  （上游是往手势竞技场里塞一个假赢家，而这里的竞技场在 router 内部，没有入口）。
+  一个按文档就没有效果的开关，改它当然不会红。
+
+测试里还踩到一处：`panel()` 一开始是个空的 `ConstrainedBox`，
+**不是命中目标**，于是"点在里面"其实点在了空处、被判成外面——
+那条测试会因为错的理由通过。改成填了色的装饰盒。
+
+尺子：十六把全部 exit 0。门：Rust 6670 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：浮层有了，但**还没有菜单坐进去**。
+`MenuAnchorTree::handle_outside_tap(id)` 这条规则早就在
+（"往下关：子菜单走，父菜单留"），也一样没有调用者。
+下一轮把两头接上：一个 `RawMenuAnchor` 打开时用 `show_tap_dismissed` 放浮层，
+`on_tap_outside` 调 `handle_outside_tap`。
+**先查一件事**：树是 `MenuAnchorTree` 的一个实例，而 widget 拿不到它——
+看这个 crate 里这类"整棵树的状态"放在哪儿
+（`focus.rs` 用 thread_local 注册表，`theatre.rs` 的 `MODALS` 也是），
+照最近的那个办，别新造一种。

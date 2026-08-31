@@ -1718,6 +1718,115 @@ pub fn show_modal(
     })
 }
 
+/// Puts a surface over the page that comes down when something **outside its
+/// group** is tapped, and that blocks nothing in the meantime.
+///
+/// # Why a menu cannot use [`show_modal`]
+///
+/// A modal's barrier is one sheet over everything: it catches the tap that
+/// dismisses, and in catching it stops the tap reaching whatever was under it.
+/// That is right for a dialog, whose whole point is that the page behind is
+/// out of bounds, and wrong for a menu twice over:
+///
+/// * **A menu does not block the page.** Upstream's `RawMenuAnchor` puts no
+///   barrier up at all; the page keeps scrolling and its buttons keep working
+///   while a menu is open.
+/// * **A submenu has to be able to lose a tap to its parent.** With a barrier,
+///   clicking the menu bar while a submenu is open would hit the barrier and
+///   nothing else -- the submenu would close and the bar would not hear the
+///   click that was meant to open the next one.
+///
+/// So the mechanism is upstream's: a [`crate::tap_region::TapRegion`]. A tap
+/// that went through the region -- or through any other region in the same
+/// **group** -- is inside and changes nothing; anything else is outside and
+/// takes the surface down. The group is what ties a submenu to the menu it
+/// grew from, so that clicking from one line of a menu to another is not
+/// "outside" every panel it passes over.
+///
+/// `region_id` identifies this surface's region to the tap-region surface;
+/// `group_id` is the menu tree's, which
+/// [`crate::raw_menu_anchor::RawMenuOverlayInfo::tap_region_group_id`] carries
+/// and which nothing read until now.
+pub fn show_tap_dismissed(
+    overlay: Rc<OverlayHandle>,
+    region_id: u64,
+    group_id: u64,
+    content: impl Fn() -> AnyWidget + 'static,
+) -> Option<ModalHandle> {
+    let content: Rc<dyn Fn() -> AnyWidget> = Rc::new(content);
+    // The handle has to exist before the region that dismisses through it, and
+    // the entry before the handle -- the same knot `show_modal` ties, with the
+    // same answer.
+    let dismissed = Rc::new(Cell::new(false));
+    let on_dismissed: Dismissals = Rc::new(RefCell::new(Vec::new()));
+    let pending: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+    // **One dismissal**, the same one the handle hands out and the same one
+    // the tap region reaches for. The region cannot be given the handle -- the
+    // handle does not exist until the entry does, and the entry is built with
+    // the region in it -- so the closure is what both share. Two of them would
+    // mean a surface taken down by a tap told nobody, which is exactly the
+    // hole round 446 was for.
+    let dismiss: Rc<dyn Fn()> = {
+        let overlay = Rc::clone(&overlay);
+        let dismissed = Rc::clone(&dismissed);
+        let pending = Rc::clone(&pending);
+        let on_dismissed = Rc::clone(&on_dismissed);
+        Rc::new(move || {
+            if dismissed.replace(true) {
+                return;
+            }
+            overlay.remove(pending.get());
+            let listeners: Vec<Rc<dyn Fn()>> = on_dismissed.borrow().clone();
+            for listener in listeners {
+                listener();
+            }
+        })
+    };
+
+    let entry_id = {
+        let content = Rc::clone(&content);
+        let dismiss = Rc::clone(&dismiss);
+        overlay.insert(move || {
+            crate::framework::component(TapDismissedSurface {
+                region_id,
+                group_id,
+                content: Rc::clone(&content),
+                dismiss: Rc::clone(&dismiss),
+            })
+        })?
+    };
+    pending.set(entry_id);
+    Some(ModalHandle {
+        dismissed,
+        dismiss,
+        on_dismissed,
+    })
+}
+
+/// The overlay entry [`show_tap_dismissed`] inserts: the content in a tap
+/// region.
+///
+/// A component rather than a plain widget because
+/// [`crate::tap_region::TapRegion::build`] wants a `BuildContext` -- the
+/// registry it registers with is read out of the tree, and an overlay entry's
+/// builder is handed no context.
+struct TapDismissedSurface {
+    region_id: u64,
+    group_id: u64,
+    content: Rc<dyn Fn() -> AnyWidget>,
+    dismiss: Rc<dyn Fn()>,
+}
+
+impl crate::framework::Component for TapDismissedSurface {
+    fn build(&self, context: &mut BuildContext) -> AnyWidget {
+        let dismiss = Rc::clone(&self.dismiss);
+        crate::tap_region::TapRegion::new(self.region_id)
+            .with_group_id(self.group_id)
+            .with_on_tap_outside(move |_| dismiss())
+            .build(context, (self.content)())
+    }
+}
+
 /// Upstream's `DismissIntent` reaching the topmost modal.
 ///
 /// Returns whether anything took it. The plan routes this through `app.rs`'s
@@ -3684,5 +3793,199 @@ mod modal_dismissal_tests {
         assert_eq!(heard.get(), 1);
         let _ = BoxConstraints::tight(1.0, 1.0);
         let _ = BARRIER;
+    }
+}
+
+#[cfg(test)]
+mod tap_dismissed_tests {
+    use super::*;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::BoxConstraints;
+    use std::cell::RefCell as StdRefCell;
+
+    const REGION: u64 = 9301;
+    const GROUP: u64 = 9302;
+    const SIBLING: u64 = 9303;
+    const PAGE: u64 = 9304;
+
+    /// A page under a tap-region surface and an overlay, with a handle to the
+    /// overlay and a record of whether the page was pressed.
+    fn staged() -> (ElementTree, Rc<OverlayHandle>, Rc<Cell<u32>>) {
+        let found: Rc<StdRefCell<Option<Rc<OverlayHandle>>>> = Rc::new(StdRefCell::new(None));
+        struct Finder(Rc<StdRefCell<Option<Rc<OverlayHandle>>>>, Rc<Cell<u32>>);
+        impl Component for Finder {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = OverlayHandle::of(context);
+                let pressed = Rc::clone(&self.1);
+                leaf(move || {
+                    let pressed = Rc::clone(&pressed);
+                    crate::render::RenderPointerRegion::new(PAGE, RenderScrim::new(None))
+                        .with_behavior(crate::render::HitTestBehavior::Opaque)
+                        .with_handlers(
+                            crate::gestures::PointerHandlers::new()
+                                .with_tap(move |_| pressed.set(pressed.get() + 1)),
+                        )
+                })
+            }
+        }
+        let pressed = Rc::new(Cell::new(0u32));
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::tap_region::TapRegionSurface::new(
+            9300,
+            overlay(component(Finder(Rc::clone(&found), Rc::clone(&pressed)))),
+        ));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+        (tree, handle, pressed)
+    }
+
+    /// A panel that fills the top-left corner, so a tap can be aimed inside or
+    /// outside it.
+    fn panel() -> AnyWidget {
+        // Filled, not empty. A bare `ConstrainedBox` is not a hit-test target,
+        // so a tap "inside" it would land on nothing and read as outside --
+        // and the test would pass for the wrong reason.
+        leaf(|| {
+            crate::render::RenderAlign::new(
+                crate::render::Alignment::TOP_LEFT,
+                crate::render::RenderDecoratedBox::new()
+                    .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                        0xFF00_00FF,
+                    )))
+                    .with_child(crate::widgets::SizedBox::new(100.0, 100.0)),
+            )
+        })
+    }
+
+    fn tap(tree: &mut ElementTree, at: Offset) {
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::tight(800.0, 600.0));
+        crate::render::flush_layout();
+        let event = |change| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 1,
+            time_stamp_micros: 0,
+            position: at,
+            delta: Offset::ZERO,
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: at,
+        };
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Down));
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Up));
+        tree.rebuild_dirty();
+    }
+
+    #[test]
+    fn a_tap_outside_takes_the_surface_down() {
+        let (mut tree, overlay, _) = staged();
+        let shown = show_tap_dismissed(overlay, REGION, GROUP, panel).expect("shown");
+        tree.rebuild_dirty();
+        assert!(shown.is_showing());
+
+        tap(&mut tree, Offset::new(400.0, 400.0));
+        assert!(!shown.is_showing(), "the tap was outside the panel");
+    }
+
+    #[test]
+    fn a_tap_inside_leaves_it_alone() {
+        let (mut tree, overlay, _) = staged();
+        let shown = show_tap_dismissed(overlay, REGION, GROUP, panel).expect("shown");
+        tree.rebuild_dirty();
+
+        tap(&mut tree, Offset::new(50.0, 50.0));
+        assert!(shown.is_showing(), "the tap landed on the panel");
+    }
+
+    #[test]
+    fn the_page_underneath_keeps_working_while_it_is_up() {
+        // The whole reason a menu cannot use `show_modal`: a barrier would
+        // swallow this press, and a menu is not supposed to put the page out
+        // of bounds.
+        let (mut tree, overlay, pressed) = staged();
+        let shown = show_tap_dismissed(overlay, REGION, GROUP, panel).expect("shown");
+        tree.rebuild_dirty();
+
+        tap(&mut tree, Offset::new(400.0, 400.0));
+        assert_eq!(
+            pressed.get(),
+            1,
+            "the press reached the page as well as closing the panel"
+        );
+        assert!(!shown.is_showing());
+    }
+
+    #[test]
+    fn a_tap_on_another_region_in_the_same_group_is_inside() {
+        // What ties a submenu to the menu it grew from: moving from one panel
+        // of a menu to another is not "outside" either of them.
+        let (mut tree, overlay, _) = staged();
+        let shown = show_tap_dismissed(Rc::clone(&overlay), REGION, GROUP, panel).expect("shown");
+        // A second region of the same group, elsewhere on the page.
+        let sibling = overlay
+            .insert(|| {
+                component(GroupMember {
+                    id: SIBLING,
+                    group_id: GROUP,
+                })
+            })
+            .expect("inserted");
+        tree.rebuild_dirty();
+
+        tap(&mut tree, Offset::new(700.0, 500.0));
+        assert!(
+            shown.is_showing(),
+            "a tap on a sibling of the same group is not outside"
+        );
+        overlay.remove(sibling);
+    }
+
+    struct GroupMember {
+        id: u64,
+        group_id: u64,
+    }
+
+    impl Component for GroupMember {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            crate::tap_region::TapRegion::new(self.id)
+                .with_group_id(self.group_id)
+                .build(
+                    context,
+                    leaf(|| {
+                        crate::render::RenderAlign::new(
+                            crate::render::Alignment::BOTTOM_RIGHT,
+                            crate::render::RenderDecoratedBox::new()
+                                .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                                    0xFF00_FF00,
+                                )))
+                                .with_child(crate::widgets::SizedBox::new(200.0, 200.0)),
+                        )
+                    }),
+                )
+        }
+    }
+
+    #[test]
+    fn a_surface_taken_down_by_a_tap_tells_its_listeners() {
+        // The dismissal a caller was never told about is the one round 446's
+        // hook exists for, and this is the second way in: not the barrier, not
+        // Escape, but a tap somewhere else entirely.
+        let (mut tree, overlay, _) = staged();
+        let shown = show_tap_dismissed(overlay, REGION, GROUP, panel).expect("shown");
+        let heard = Rc::new(Cell::new(0u32));
+        let count = Rc::clone(&heard);
+        shown.on_dismissed(move || count.set(count.get() + 1));
+        tree.rebuild_dirty();
+
+        tap(&mut tree, Offset::new(400.0, 400.0));
+        assert_eq!(heard.get(), 1);
+        assert!(!shown.dismiss(), "and it was already down");
+        assert_eq!(heard.get(), 1, "told once");
     }
 }
