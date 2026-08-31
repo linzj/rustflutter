@@ -1667,23 +1667,67 @@ mod tests {
         (tree, handle)
     }
 
+    /// [`staged`], with the button pushed `down` pixels from the top.
+    fn staged_at(
+        button: SubmenuButton,
+        down: f32,
+    ) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
+        let found: std::rc::Rc<
+            std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>,
+        > = std::rc::Rc::new(std::cell::RefCell::new(None));
+        struct Finder(
+            std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>>,
+            SubmenuButton,
+            f32,
+        );
+        impl Component for Finder {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = crate::theatre::OverlayHandle::of(context);
+                let down = self.2;
+                crate::framework::many(vec![stateful(self.1.clone())], move |rendered| {
+                    crate::render::RenderPointerRegion::new(
+                        9998,
+                        crate::render::RenderAlign::new(
+                            crate::render::Alignment::TOP_LEFT,
+                            crate::render::RenderPadding::new(
+                                crate::render::EdgeInsets::only(0.0, down, 0.0, 0.0),
+                                rendered.into_iter().next().expect("the button"),
+                            ),
+                        ),
+                    )
+                    .with_behavior(crate::render::HitTestBehavior::Opaque)
+                })
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::tap_region::TapRegionSurface::new(
+            8400,
+            crate::theatre::overlay(crate::framework::component(Finder(
+                std::rc::Rc::clone(&found),
+                button,
+                down,
+            ))),
+        ));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+        (tree, handle)
+    }
+
     fn a_submenu() -> SubmenuButton {
         SubmenuButton::new()
             .with_id(SUBMENU)
             .with_label("File")
             .with_group_id(MENU_GROUP)
             .with_menu(|| {
-                // Away from the button, which sits at the top left. A panel
-                // over the button would take the second tap in the
-                // "opens once" test below, and that test would pass without
-                // the guard it is about.
+                // Shrink-wrapped, with no alignment of its own: a panel that
+                // filled the overlay and placed itself would draw in the same
+                // spot whatever the placement said, and every test about
+                // *where* it went would be about the panel's own `Align`
+                // instead. A real menu panel is the size of its lines.
                 leaf(|| {
-                    crate::render::RenderAlign::new(
-                        crate::render::Alignment::BOTTOM_RIGHT,
-                        crate::render::RenderDecoratedBox::new()
-                            .with_fill(crate::render::Fill::Solid(PANEL))
-                            .with_child(crate::widgets::SizedBox::new(100.0, 100.0)),
-                    )
+                    crate::render::RenderDecoratedBox::new()
+                        .with_fill(crate::render::Fill::Solid(PANEL))
+                        .with_child(crate::widgets::SizedBox::new(100.0, 100.0))
                 })
             })
     }
@@ -1827,6 +1871,124 @@ mod tests {
             "and it is the one that was already there -- the button is inside              its own menu's tap-region group, so pressing it again does not              close the panel on the way down"
         );
         crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn the_panel_is_drawn_at_the_buttons_bottom_left_corner() {
+        // Where the panel actually *is*, read off the canvas rather than off
+        // the hit path. Round 459 wired the placement and could not tell
+        // whether it was doing anything: every test it had passed with the
+        // placement removed, because a hit path only says what was reachable,
+        // not where anything was drawn.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        let drawn = painted_tree(&mut tree);
+        let panel = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Rect {
+                    left, top, argb, ..
+                } if Color(*argb) == PANEL => Some((*left, *top)),
+                _ => None,
+            })
+            .expect("the panel painted");
+        // The button is at the top left and is 48 tall -- a menu button's
+        // minimum height -- so its bottom-left corner is (0, 48).
+        assert_eq!(
+            panel,
+            (0.0, ResolvedMenuButton::MINIMUM_SIZE.height),
+            "under the button, not at the overlay's origin"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_button_lower_down_the_page_carries_its_panel_with_it() {
+        // The placement is read from the button's own rectangle, not from a
+        // constant: a button that is not at the origin opens its panel under
+        // *itself*.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged_at(a_submenu(), 60.0);
+        tap(&mut tree, Offset::new(30.0, 84.0));
+        let drawn = painted_tree(&mut tree);
+        let panel = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Rect {
+                    left, top, argb, ..
+                } if Color(*argb) == PANEL => Some((*left, *top)),
+                _ => None,
+            })
+            .expect("the panel painted");
+        assert_eq!(
+            panel,
+            (0.0, 60.0 + ResolvedMenuButton::MINIMUM_SIZE.height),
+            "sixty lower down, so the panel is sixty lower down"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_tap_on_a_panel_of_the_same_menu_does_not_close_it() {
+        // The group id the button hands its panels is the menu's, not the
+        // button's own id. Give each panel a group of its own and moving from
+        // one panel of a menu to another would close the one behind.
+        //
+        // The assertion is the **overlay's entry count**, not the anchor's
+        // `is_open`: an outside tap closes an anchor's *children* and leaves
+        // the anchor itself alone, so `is_open` cannot fail here and a test
+        // written on it would pass whatever happened to the panel.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        let sibling = overlay
+            .insert(|| {
+                crate::framework::component(SameGroup {
+                    id: 8403,
+                    group_id: MENU_GROUP,
+                })
+            })
+            .expect("inserted");
+        tree.rebuild_dirty();
+        let before = overlay.entry_count();
+        assert_eq!(before, 2, "the panel and the sibling");
+
+        // Inside the sibling, which fills the bottom right of the 400 x 300
+        // these tests lay out in.
+        tap(&mut tree, Offset::new(380.0, 280.0));
+        assert_eq!(
+            overlay.entry_count(),
+            before,
+            "a tap on a panel of the same menu is not outside it"
+        );
+        overlay.remove(sibling);
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    /// A second tap region of the same group, somewhere else on screen: what a
+    /// submenu's panel is to the menu it grew from.
+    struct SameGroup {
+        id: u64,
+        group_id: u64,
+    }
+
+    impl Component for SameGroup {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            crate::tap_region::TapRegion::new(self.id)
+                .with_group_id(self.group_id)
+                .build(
+                    context,
+                    leaf(|| {
+                        crate::render::RenderAlign::new(
+                            crate::render::Alignment::BOTTOM_RIGHT,
+                            crate::render::RenderDecoratedBox::new()
+                                .with_fill(crate::render::Fill::Solid(Color(0xFF00_FF00)))
+                                .with_child(crate::widgets::SizedBox::new(200.0, 200.0)),
+                        )
+                    }),
+                )
+        }
     }
 
     #[test]
