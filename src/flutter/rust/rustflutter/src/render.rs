@@ -3597,6 +3597,13 @@ impl RenderDecoratedBox {
         self
     }
 
+    /// The shadows this box casts, in the order they are painted. Upstream's
+    /// `BoxDecoration.boxShadow` is readable for the same reason: a caller
+    /// that composed the decoration wants to check what it composed.
+    pub fn shadows(&self) -> &[crate::painting::BoxShadow] {
+        &self.shadows
+    }
+
     /// The rounding in force over `rect`: the shape's when it has one, and
     /// the fixed corners otherwise.
     ///

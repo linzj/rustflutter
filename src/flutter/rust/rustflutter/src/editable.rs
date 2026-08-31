@@ -2917,6 +2917,8 @@ pub enum TextFieldError {
 pub struct TextField {
     id: u64,
     placeholder: Option<String>,
+    /// Upstream's `InputDecoration.hintStyle`. `None` mutes `style` instead.
+    hint_style: Option<TextStyle>,
     style: Option<TextStyle>,
     input_type: TextInputType,
     action: TextInputAction,
@@ -3102,6 +3104,7 @@ impl TextField {
         TextField {
             id,
             placeholder: None,
+            hint_style: None,
             style: None,
             input_type: TextInputType::Text,
             action: TextInputAction::Done,
@@ -3136,6 +3139,15 @@ impl TextField {
 
     pub fn with_placeholder(mut self, text: impl Into<String>) -> Self {
         self.placeholder = Some(text.into());
+        self
+    }
+
+    /// Upstream's `InputDecoration.hintStyle`: how the placeholder is drawn,
+    /// separately from the text. Without one the field mutes its own style,
+    /// which is the right answer for a plain field and the wrong one wherever
+    /// the hint has a colour of its own.
+    pub fn with_hint_style(mut self, style: TextStyle) -> Self {
+        self.hint_style = Some(style);
         self
     }
 
@@ -3355,8 +3367,16 @@ impl StatefulComponent for TextField {
             style.color = theme.text;
             style
         });
-        let mut placeholder_style = style.clone();
-        placeholder_style.color = theme.text_muted;
+        // Upstream's hint takes `InputDecoration.hintStyle` when there is one
+        // and otherwise the field's own style in a muted colour. A caller who
+        // gives one is usually saying the hint is a *different* colour from
+        // the text -- a search bar's is `onSurfaceVariant` against the text's
+        // `onSurface` -- which the muted default would get merely close to.
+        let placeholder_style = self.hint_style.clone().unwrap_or_else(|| {
+            let mut placeholder_style = style.clone();
+            placeholder_style.color = theme.text_muted;
+            placeholder_style
+        });
 
         let editing = state.connection.is_some_and(|c| c.is_attached());
         let connection = state.connection;

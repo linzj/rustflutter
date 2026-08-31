@@ -1327,3 +1327,62 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
 没有的话，`SearchBar` 要么直接建 `RenderDecoratedBox`、
 要么先给 `Container` 补一个 `with_shape` ——
 **先看清楚 `Container` 是怎么把配置交给它那几层包装的**，再决定哪条更小。
+
+---
+
+## 第 435 轮：`SearchBar` 从一条规则变成一个看得见、打得进字的东西
+
+上一轮留的问题是"`Container` 能不能把 `ShapeBorder` 递下去"。查的时候
+先撞见一件更该先说的事：**第 433 轮说"`impl ShapeBorder` 里只有
+`dimensions()`"是错的**——`outer_path` / `inner_path` 一直都在，
+`ShapeDecoration` 也在，`Decoration::Shape` 也接得上 `RenderDecoratedBox`。
+`corner_radius` 仍然有它自己的用处（画表面走的是圆角矩形而不是 path），
+但当时那句"画不出来"是查漏了。
+
+真正的缺口不在容器那边：**`SearchBar` 是一个没有 `build` 的结构体**。
+`ResolvedSearchBar` 十二个字段全都解析好了，没有任何东西把它们画出来。
+
+### 按上游的层次一层层搭
+
+`ConstrainedBox` → `Opacity` → `Material` → `IgnorePointer` → `InkWell`
+→ `Padding` → `Row[leading?, Expanded(Padding(field)), trailing?]`。
+
+几处按事实定下来的：
+
+- **形状交给渲染对象，不在 build 里折成半径**。默认是 `StadiumBorder`，
+  半径是较短边的一半，而 `maxHeight` 是无穷——量完之前没人知道。
+  这是第 434 轮那个 `with_shape` 的第一个消费者。
+- **阴影取主题的色、留自己的 alpha**。三层的 alpha 本来就不同
+  （umbra 比 ambient 深），压成一个数，阴影就变成一圈灰晕。
+- **禁用是"整块淡下去"而不是"每一处换个颜色"**。所以这个 bar 里
+  从头到尾没有 `WidgetState::Disabled`：底色、阴影、提示、图标
+  一起按 0.38 淡，分开解析会让它们各走各的。淡只是看上去的，
+  真正挡住指针的是 `IgnorePointer`——两件事，两个测试。
+- **padding 上了两次**，上游也是：一次围着整行，一次单围着输入框。
+  少了里面那次，第一个字母就贴着 leading 图标。
+- **`constraints` 是 `extra.enforce(incoming)`**，顺序是上游的顺序，
+  所以外面给 200 宽时 bar 就是 200 宽，而不是自己的最小值 360。
+  第一版测试断言反了，是测试错不是实现错。
+
+### 顺手补的一处：`TextField` 的 `hintStyle`
+
+`TextField` 原来把 placeholder 一律画成"自己的 style 调暗"。
+search bar 的提示是 `onSurfaceVariant`、正文是 `onSurface`——
+"调暗"只能调到附近，调不到那个颜色上。加了 `with_hint_style`，
+没给的时候仍然走原来的调暗。
+
+### 变异扫描 9 个，全红
+
+一个第一遍是 BUILD ERROR（写了个不存在的 `BoxConstraints::UNBOUNDED`）——
+**BUILD ERROR 不算通过**，换成真的无约束重跑，2 红。
+
+尺子：十六把全部 exit 0。门：Rust 6530 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：`SearchAnchor` 现在还是纯规则——它有 `resolve_full_screen`、
+`on_window_resized`、`resolved_view`，但没有任何东西把 bar 和 view 连起来：
+点 bar 不会开 view。下一轮做这条线。
+**先查两件事**：(1) `SearchController` 是纯数据，`open_view` 只改自己的
+布尔值，谁来把它变成一次真正的 route push？看 `navigator.rs` 里
+现成的 push 是什么签名。(2) 全屏与停靠两种 view 的**位置**由谁算——
+`ResolvedSearchView` 里有没有，没有就得先补，不然只能糊一个位置。

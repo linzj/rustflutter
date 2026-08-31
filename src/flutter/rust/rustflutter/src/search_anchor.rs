@@ -160,18 +160,148 @@ impl Default for SearchAnchor {
 /// may return an icon instead, in which case, as upstream notes, *"we don't
 /// have to explicitly call `SearchController.openView`"*: an untappable widget
 /// gets the tap handling for free.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone)]
 pub struct SearchBar {
+    /// Identifies the bar's field and its ink, so that a rebuilt bar keeps the
+    /// text somebody was typing.
+    pub id: u64,
     pub hint_text: Option<String>,
     pub has_leading: bool,
     pub has_trailing: bool,
     /// Whether this bar is the thing an anchor taps through.
     pub is_anchor_child: bool,
+    /// Upstream's `enabled`. A disabled bar is dimmed and takes no pointers;
+    /// it is *not* a `WidgetState::Disabled` on the states controller, because
+    /// upstream never puts one there -- see [`SearchBar::DISABLED_OPACITY`].
+    pub enabled: bool,
+    /// Upstream's `leading` and `trailing`. Closures rather than widgets
+    /// because a widget is built per build, and these are rebuilt with the
+    /// bar; `has_leading`/`has_trailing` say whether they are there without
+    /// running them.
+    leading: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+    trailing: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+    on_changed: Option<std::rc::Rc<dyn Fn(&str)>>,
+    on_submitted: Option<std::rc::Rc<dyn Fn(&str)>>,
+    on_tap: Option<std::rc::Rc<dyn Fn()>>,
+}
+
+impl std::fmt::Debug for SearchBar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchBar")
+            .field("id", &self.id)
+            .field("hint_text", &self.hint_text)
+            .field("has_leading", &self.has_leading)
+            .field("has_trailing", &self.has_trailing)
+            .field("is_anchor_child", &self.is_anchor_child)
+            .field("enabled", &self.enabled)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Two bars are the same bar when the parts a reader can see are the same.
+/// The callbacks are deliberately left out: a closure built afresh each build
+/// is never equal to the last one, so comparing them would make every bar
+/// differ from itself and defeat the point of asking.
+impl PartialEq for SearchBar {
+    fn eq(&self, other: &SearchBar) -> bool {
+        self.id == other.id
+            && self.hint_text == other.hint_text
+            && self.has_leading == other.has_leading
+            && self.has_trailing == other.has_trailing
+            && self.is_anchor_child == other.is_anchor_child
+            && self.enabled == other.enabled
+    }
+}
+
+impl Default for SearchBar {
+    fn default() -> SearchBar {
+        SearchBar::new(0)
+    }
+}
+
+/// What a [`SearchBar`] remembers between builds: which states it is in.
+///
+/// Upstream keeps this in a `MaterialStatesController` that the `InkWell`
+/// writes and the build reads, and the whole reason the bar owns one is that
+/// its *surface* has to change with the pointer -- the ink alone would tint
+/// only the ink's own rectangle, and the bar wants the hover to read as the
+/// whole pill lighting up.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchBarState {
+    pub states: crate::widget_state::WidgetStates,
 }
 
 impl SearchBar {
-    pub fn new() -> SearchBar {
-        SearchBar::default()
+    /// Upstream's `_kDisableSearchBarOpacity`.
+    ///
+    /// A disabled bar is drawn at this opacity rather than in a disabled
+    /// colour, which is why there is no `WidgetState::Disabled` anywhere in
+    /// the bar: the fade is applied over the finished bar, so the background,
+    /// the shadow, the hint and any leading icon all dim together and by the
+    /// same amount. Resolving a disabled colour per part would have let them
+    /// drift.
+    pub const DISABLED_OPACITY: f32 = 0.38;
+
+    pub fn new(id: u64) -> SearchBar {
+        SearchBar {
+            id,
+            hint_text: None,
+            has_leading: false,
+            has_trailing: false,
+            is_anchor_child: false,
+            enabled: true,
+            leading: None,
+            trailing: None,
+            on_changed: None,
+            on_submitted: None,
+            on_tap: None,
+        }
+    }
+
+    pub fn with_hint_text(mut self, hint: impl Into<String>) -> Self {
+        self.hint_text = Some(hint.into());
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Upstream's `leading`, typically an icon.
+    pub fn with_leading(
+        mut self,
+        leading: impl Fn() -> crate::framework::AnyWidget + 'static,
+    ) -> Self {
+        self.leading = Some(std::rc::Rc::new(leading));
+        self.has_leading = true;
+        self
+    }
+
+    /// Upstream's `trailing`, which is a list there. One is enough here until
+    /// something asks for more, and the row takes them the same way.
+    pub fn with_trailing(
+        mut self,
+        trailing: impl Fn() -> crate::framework::AnyWidget + 'static,
+    ) -> Self {
+        self.trailing = Some(std::rc::Rc::new(trailing));
+        self.has_trailing = true;
+        self
+    }
+
+    pub fn with_on_changed(mut self, changed: impl Fn(&str) + 'static) -> Self {
+        self.on_changed = Some(std::rc::Rc::new(changed));
+        self
+    }
+
+    pub fn with_on_submitted(mut self, submitted: impl Fn(&str) + 'static) -> Self {
+        self.on_submitted = Some(std::rc::Rc::new(submitted));
+        self
+    }
+
+    pub fn with_on_tap(mut self, tap: impl Fn() + 'static) -> Self {
+        self.on_tap = Some(std::rc::Rc::new(tap));
+        self
     }
 
     /// This bar's appearance, with the theme and the M3 defaults folded in.
@@ -186,6 +316,194 @@ impl SearchBar {
     /// Whether the anchor has to wire up a tap itself.
     pub fn anchor_supplies_tap_handling(builder_returns_tappable: bool) -> bool {
         !builder_returns_tappable
+    }
+
+    /// The bar's surface, as upstream's `Material(elevation:, shadowColor:,
+    /// color:, surfaceTintColor:, shape:)` around everything else.
+    ///
+    /// The shape goes onto the render object rather than being reduced to a
+    /// radius here, because the default is a `StadiumBorder` and a stadium's
+    /// radius is half the shorter side -- which nobody knows until the bar has
+    /// been laid out inside `constraints`, whose `maxHeight` is unbounded.
+    fn surface(
+        resolved: &crate::component_themes::ResolvedSearchBar,
+        child: impl crate::render::RenderBox + 'static,
+    ) -> crate::render::RenderDecoratedBox {
+        // Upstream's `Material` tints its colour by its elevation when a
+        // surface tint is given; the search bar's default tint is transparent,
+        // so at the default this is the background unchanged.
+        let background = crate::elevation_overlay::ElevationOverlay::apply_surface_tint(
+            resolved.background_color,
+            Some(resolved.surface_tint_color),
+            resolved.elevation,
+        );
+        // The elevation shadows are shaped by the elevation and coloured by
+        // `shadowColor`: each keeps the alpha its layer was defined with -- the
+        // umbra is denser than the ambient, and that difference is what makes
+        // the shadow read as a shadow -- and takes its hue from the theme.
+        let shadows = crate::painting::elevation_shadows(resolved.elevation.max(0.0) as u32)
+            .iter()
+            .map(|shadow| crate::painting::BoxShadow {
+                color: resolved.shadow_color.with_alpha(shadow.color.alpha()),
+                ..*shadow
+            })
+            .collect::<Vec<_>>();
+        crate::render::RenderDecoratedBox::new()
+            .with_fill(crate::render::Fill::Solid(background))
+            .with_shadows(shadows)
+            .with_shape(resolved.shape.clone())
+            .with_child(child)
+    }
+}
+
+impl crate::framework::StatefulComponent for SearchBar {
+    type State = SearchBarState;
+
+    fn key(&self) -> crate::framework::Key {
+        Some(self.id)
+    }
+
+    fn build(
+        &self,
+        state: &SearchBarState,
+        handle: crate::framework::StateHandle<SearchBarState>,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::framework::AnyWidget {
+        use crate::widget_state::WidgetState;
+
+        let resolved = self.resolved(context, state.states);
+        // Upstream hands the whole `overlayColor` property to the `InkWell`,
+        // which resolves it per state as the pointer moves. Resolving it here
+        // for each state separately is the same thing said in this crate's
+        // shape: the ink takes one colour per state, not a property.
+        let hovered = self
+            .resolved(context, state.states.with(WidgetState::Hovered))
+            .overlay;
+        let pressed = self
+            .resolved(context, state.states.with(WidgetState::Pressed))
+            .overlay;
+
+        // The field is built inside the closure rather than outside it: the
+        // ink runs this every time it rebuilds, and a `TextField` holds
+        // callbacks, so it is made fresh each time rather than cloned.
+        let id = self.id;
+        let hint_style = resolved.hint_style.clone().unwrap_or_default();
+        let text_style = resolved.text_style.clone();
+        let hint_text = self.hint_text.clone();
+        let on_changed = self.on_changed.clone();
+        let on_submitted = self.on_submitted.clone();
+
+        let leading = self.leading.clone();
+        let trailing = self.trailing.clone();
+        let padding = resolved.padding;
+        let row = move || {
+            let mut field = crate::editable::TextField::new(id).with_hint_style(hint_style.clone());
+            if let Some(style) = text_style.clone() {
+                field = field.with_style(style);
+            }
+            if let Some(hint) = &hint_text {
+                field = field.with_placeholder(hint.clone());
+            }
+            if let Some(changed) = &on_changed {
+                let changed = changed.clone();
+                field = field.with_on_changed(move |text| changed(text));
+            }
+            if let Some(submitted) = &on_submitted {
+                let submitted = submitted.clone();
+                field = field.with_on_submitted(move |text| submitted(text));
+            }
+
+            let mut children = Vec::new();
+            let has_leading = leading.is_some();
+            if let Some(leading) = &leading {
+                children.push(leading());
+            }
+            children.push(crate::framework::stateful(field));
+            let has_trailing = trailing.is_some();
+            if let Some(trailing) = &trailing {
+                children.push(trailing());
+            }
+            crate::framework::many(children, move |rendered| {
+                let mut rendered = rendered.into_iter();
+                let mut row = crate::widgets::Row::new()
+                    .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Center);
+                if has_leading {
+                    row = row.push(rendered.next().expect("the leading widget"));
+                }
+                // The padding is applied twice on purpose, and upstream does
+                // the same: once around the whole row, and again around the
+                // field alone. That is what keeps the text off the leading
+                // icon -- without the inner one, an icon and the first letter
+                // would touch.
+                row = row.push_flex(crate::widgets::FlexChild::expanded(
+                    crate::widgets::Padding::new(padding, rendered.next().expect("the field")),
+                    1,
+                ));
+                if has_trailing {
+                    row = row.push(rendered.next().expect("the trailing widget"));
+                }
+                crate::widgets::Padding::new(padding, row)
+            })
+        };
+
+        let shape = resolved.shape.clone();
+        let on_tap = self.on_tap.clone();
+        let ink = crate::ink_well::InkResponse::new(self.id, row)
+            // Upstream's `customBorder: effectiveShape`: the splash is clipped
+            // to the pill rather than to the box around it, so a tap near a
+            // rounded end does not flash into the corner outside the bar.
+            .with_custom_border(shape)
+            .with_enabled(self.enabled)
+            .with_hover_color(hovered)
+            .with_highlight_color(pressed)
+            .with_on_hover({
+                let handle = handle.clone();
+                move |hovering| {
+                    handle.set_state(move |state| {
+                        state.states.update(WidgetState::Hovered, hovering);
+                    });
+                }
+            })
+            .with_on_highlight_changed({
+                let handle = handle.clone();
+                move |pressed| {
+                    handle.set_state(move |state| {
+                        state.states.update(WidgetState::Pressed, pressed);
+                    });
+                }
+            })
+            .with_on_tap(move || {
+                if let Some(tap) = &on_tap {
+                    tap();
+                }
+            });
+
+        let constraints = resolved.constraints;
+        let enabled = self.enabled;
+        crate::framework::many(vec![crate::framework::stateful(ink)], move |rendered| {
+            let ink = rendered.into_iter().next().expect("the ink");
+            // Upstream's `IgnorePointer(ignoring: !widget.enabled)`, which sits
+            // between the surface and the ink: the bar is still drawn, and
+            // still takes up its space, but nothing under it can be reached.
+            // The ink's own `enabled` stops the splash; this stops the field
+            // below it from taking the tap that the ink declined.
+            let ink: crate::render::BoxedRender = if enabled {
+                ink
+            } else {
+                crate::render::RenderRef::new(crate::render::RenderIgnorePointer::boxed(ink))
+            };
+            let surface = SearchBar::surface(&resolved, ink);
+            crate::render::RenderConstrainedBox::new(constraints).with_child(
+                crate::render::RenderOpacity::new(
+                    if enabled {
+                        1.0
+                    } else {
+                        SearchBar::DISABLED_OPACITY
+                    },
+                    surface,
+                ),
+            )
+        })
     }
 }
 
@@ -760,6 +1078,299 @@ mod search_field_label_tests {
         assert_eq!(
             delegate.query, "carbonara",
             "the query moved, the label did not"
+        );
+    }
+}
+
+#[cfg(test)]
+mod search_bar_widget_tests {
+    use super::*;
+    use crate::borders::{ShapeBorder, StadiumBorder};
+    use crate::component_themes::ResolvedSearchBar;
+    use crate::engine::Color;
+    use crate::engine_test_stubs::Drawn;
+    use crate::framework::{AnyWidget, ElementTree, leaf, stateful};
+    use crate::render::{BoxConstraints, EdgeInsets, Offset, RenderBox, Size};
+    use crate::widgets::SizedBox;
+
+    /// A bar's appearance built by hand, so that a test says what it is
+    /// looking at instead of depending on whatever the theme happens to be.
+    fn resolved() -> ResolvedSearchBar {
+        ResolvedSearchBar {
+            background_color: Color::argb(255, 0, 0, 255),
+            elevation: ResolvedSearchBar::ELEVATION,
+            shadow_color: Color::argb(255, 255, 0, 0),
+            surface_tint_color: Color::TRANSPARENT,
+            overlay: Color::TRANSPARENT,
+            side: None,
+            shape: ShapeBorder::Stadium(StadiumBorder::default()),
+            padding: EdgeInsets::symmetric(ResolvedSearchBar::PADDING, 0.0),
+            text_style: None,
+            hint_style: None,
+            constraints: BoxConstraints {
+                min_width: ResolvedSearchBar::MIN_WIDTH,
+                max_width: ResolvedSearchBar::MAX_WIDTH,
+                min_height: ResolvedSearchBar::MIN_HEIGHT,
+                max_height: f32::INFINITY,
+            },
+            text_capitalization: crate::component_themes::TextCapitalization::None,
+        }
+    }
+
+    /// What a bar painted, laid out the way a frame lays it out.
+    fn painted(widget: AnyWidget, width: f32, height: f32) -> Vec<Drawn> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(widget);
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(width, height));
+        crate::render::flush_layout();
+
+        let mut layers = crate::engine::LayerTree::new(width as i32, height as i32);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(width, height));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    fn laid_out(widget: AnyWidget, width: f32, height: f32) -> Size {
+        let mut tree = ElementTree::new();
+        tree.rebuild(widget);
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(width, height));
+        crate::render::flush_layout();
+        root.size()
+    }
+
+    #[test]
+    fn the_surface_is_rounded_by_the_height_it_ended_up_at() {
+        // The whole reason the shape reaches the render object instead of
+        // being turned into a radius at build time. A `StadiumBorder` is half
+        // the shorter side, the bar's `maxHeight` is unbounded, and so the
+        // radius is not knowable until the bar has been measured.
+        let resolved = resolved();
+        let at = |height: f32| {
+            let mut surface = SearchBar::surface(&resolved, SizedBox::new(200.0, height));
+            RenderBox::layout(&mut surface, BoxConstraints::tight(200.0, height));
+            surface
+                .rounding(crate::engine::Rect::ltrb(0.0, 0.0, 200.0, height))
+                .map(|radius| radius.top_left.x)
+        };
+        assert_eq!(at(56.0), Some(28.0), "a bar at its minimum height");
+        assert_eq!(
+            at(120.0),
+            Some(60.0),
+            "the same bar, taller, is rounded by more"
+        );
+    }
+
+    #[test]
+    fn the_shadow_is_the_themes_colour_at_each_layers_own_alpha() {
+        // Upstream's `Material(shadowColor:)`. The alphas differ between the
+        // three layers on purpose -- the umbra is denser than the ambient, and
+        // flattening them to one would turn a shadow into a grey halo -- so
+        // the colour is taken and the alpha is left alone.
+        let surface = SearchBar::surface(&resolved(), SizedBox::new(200.0, 56.0));
+        let expected = crate::painting::elevation_shadows(ResolvedSearchBar::ELEVATION as u32);
+        let shadows = surface.shadows();
+        assert_eq!(shadows.len(), expected.len(), "one per layer");
+        assert!(
+            shadows.iter().all(|shadow| shadow.color.red() == 255
+                && shadow.color.green() == 0
+                && shadow.color.blue() == 0),
+            "every layer takes the theme's hue: {shadows:?}"
+        );
+        assert_eq!(
+            shadows
+                .iter()
+                .map(|shadow| shadow.color.alpha())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|shadow| shadow.color.alpha())
+                .collect::<Vec<_>>(),
+            "and keeps its own alpha"
+        );
+    }
+
+    #[test]
+    fn a_bar_is_no_narrower_and_no_wider_than_it_is_allowed() {
+        // `ResolvedSearchBar.constraints`: 360 to 800 wide, 56 tall at the
+        // least. A bar offered more than it may take is capped, and one
+        // offered less than its minimum still asks for the minimum.
+        let roomy = laid_out(stateful(SearchBar::new(1)), 1000.0, 400.0);
+        assert_eq!(roomy.width, ResolvedSearchBar::MAX_WIDTH, "{roomy:?}");
+        assert!(roomy.height >= ResolvedSearchBar::MIN_HEIGHT, "{roomy:?}");
+
+        // And a bar in a space narrower than its own minimum takes the space
+        // rather than the minimum. Upstream's `ConstrainedBox` is
+        // `_additionalConstraints.enforce(constraints)` in that order, so the
+        // incoming constraints always win -- a widget that overflowed its
+        // parent because its own defaults said 360 would be worse than one
+        // that is merely small.
+        let cramped = laid_out(stateful(SearchBar::new(1)), 200.0, 400.0);
+        assert_eq!(cramped.width, 200.0, "{cramped:?}");
+    }
+
+    #[test]
+    fn a_disabled_bar_is_dimmed_rather_than_recoloured() {
+        // Upstream fades the finished bar rather than resolving a disabled
+        // colour per part, which is why there is no `WidgetState::Disabled`
+        // anywhere in it. An opacity layer is the observable difference.
+        let alphas = |bar: SearchBar| {
+            painted(stateful(bar), 400.0, 200.0)
+                .into_iter()
+                .filter_map(|call| match call {
+                    Drawn::OpacityLayer { alpha } => Some(alpha),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            alphas(SearchBar::new(1)),
+            Vec::<u8>::new(),
+            "an enabled bar is not faded at all"
+        );
+        assert_eq!(
+            alphas(SearchBar::new(1).with_enabled(false)),
+            vec![97],
+            "0.38 of 255"
+        );
+    }
+
+    #[test]
+    fn a_disabled_bar_cannot_be_reached_through() {
+        // The fade is only what it looks like; `IgnorePointer` is what stops
+        // the field underneath from taking the tap. Without it a bar could be
+        // drawn at 38% and still be typed into.
+        let hits = |bar: SearchBar| {
+            let mut tree = ElementTree::new();
+            tree.rebuild(stateful(bar));
+            let root = tree.build_render_tree().expect("a root");
+            crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+            crate::render::flush_layout();
+            let mut result = crate::render::HitTestResult::new();
+            root.hit_test(Offset::new(100.0, 20.0), &mut result);
+            result.path.len()
+        };
+        let enabled = hits(SearchBar::new(1));
+        assert!(enabled > 0, "an enabled bar is hittable");
+        assert_eq!(hits(SearchBar::new(1).with_enabled(false)), 0);
+    }
+
+    #[test]
+    fn the_hint_is_drawn_in_the_hint_colour_and_not_the_texts() {
+        // The two are different by default -- `onSurfaceVariant` for the hint
+        // against `onSurface` for the text -- and the field would otherwise
+        // have muted its own style, which lands somewhere near but not on it.
+        let theme = crate::theme::ThemeData::default();
+        let hint_colour = theme.color_scheme.on_surface_variant();
+        let text_colour = theme.color_scheme.on_surface;
+        assert_ne!(hint_colour, text_colour, "there would be nothing to see");
+
+        let drawn = painted(
+            stateful(SearchBar::new(1).with_hint_text("Search")),
+            400.0,
+            200.0,
+        );
+        let hint = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Paragraph { text, argb, .. } if text == "Search" => Some(*argb),
+                _ => None,
+            })
+            .expect("the hint reached the canvas");
+        assert_eq!(Color(hint), hint_colour);
+    }
+
+    #[test]
+    fn the_leading_widget_comes_before_the_field_and_the_trailing_after() {
+        // The row's order, and the reason the bar carries the two separately
+        // rather than as one list of children.
+        let marker = |colour: Color| {
+            move || -> AnyWidget {
+                leaf(move || {
+                    crate::render::RenderDecoratedBox::new()
+                        .with_fill(crate::render::Fill::Solid(colour))
+                        .with_child(SizedBox::new(20.0, 20.0))
+                })
+            }
+        };
+        let lead = Color::argb(255, 0, 255, 0);
+        let trail = Color::argb(255, 255, 0, 255);
+        let drawn = painted(
+            stateful(
+                SearchBar::new(1)
+                    .with_hint_text("Search")
+                    .with_leading(marker(lead))
+                    .with_trailing(marker(trail)),
+            ),
+            400.0,
+            200.0,
+        );
+        let x_of = |wanted: Color| {
+            drawn
+                .iter()
+                .find_map(|call| match call {
+                    Drawn::Rect { left, argb, .. } if Color(*argb) == wanted => Some(*left),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{wanted:?} was not painted"))
+        };
+        let hint_x = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Paragraph { text, x, .. } if text == "Search" => Some(*x),
+                _ => None,
+            })
+            .expect("the hint");
+        assert!(x_of(lead) < hint_x, "the leading widget is before the text");
+        assert!(x_of(trail) > hint_x, "and the trailing one after it");
+    }
+
+    #[test]
+    fn the_padding_is_applied_once_around_the_row_and_once_around_the_field() {
+        // Upstream applies `effectivePadding` twice, and the inner one is what
+        // keeps the first letter off the leading icon. Dropping it puts the
+        // text against the icon; the leading widget's own edge does not move.
+        let marker = || -> AnyWidget {
+            leaf(|| {
+                crate::render::RenderDecoratedBox::new()
+                    .with_fill(crate::render::Fill::Solid(Color::argb(255, 0, 255, 0)))
+                    .with_child(SizedBox::new(20.0, 20.0))
+            })
+        };
+        let drawn = painted(
+            stateful(
+                SearchBar::new(1)
+                    .with_hint_text("Search")
+                    .with_leading(marker),
+            ),
+            400.0,
+            200.0,
+        );
+        let icon_right = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Rect { right, argb, .. } if Color(*argb) == Color::argb(255, 0, 255, 0) => {
+                    Some(*right)
+                }
+                _ => None,
+            })
+            .expect("the leading widget");
+        let hint_x = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Paragraph { text, x, .. } if text == "Search" => Some(*x),
+                _ => None,
+            })
+            .expect("the hint");
+        assert!(
+            hint_x - icon_right >= ResolvedSearchBar::PADDING,
+            "the text is a padding away from the icon, not against it: \
+             icon ends at {icon_right}, text starts at {hint_x}"
         );
     }
 }
