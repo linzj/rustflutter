@@ -232,6 +232,151 @@ impl Default for SearchAnchor {
     }
 }
 
+/// How the view gets from the bar to where [`SearchAnchor::view_rect`] put it:
+/// upstream's `_SearchViewRoute.buildPage` and the five constants above it.
+///
+/// # One animation, six curves off it
+///
+/// The route runs a single 600ms animation, and everything the view does is a
+/// different curve over **that same parent**. That is the part worth keeping
+/// straight, because it is what makes the opening read as one movement with
+/// things arriving inside it rather than as six animations that happen to
+/// start together:
+///
+/// * the **rectangle** grows on `easeInOutCubicEmphasized`, which is 95% of
+///   the way there by the half-way point -- so the view is essentially in
+///   place while the second half is still running,
+/// * the **view itself** fades in over the first half (`Interval(0, 1/2)`),
+/// * the **divider** over the first sixth, the **icons** over the second
+///   sixth, and the **list** from 133ms to 233ms.
+///
+/// The staggering is why the intervals are read off the *raw* animation and
+/// not off the eased one. Upstream builds each as `CurvedAnimation(parent:
+/// animation, curve: <interval>)`, with `animation` -- not `curvedAnimation`
+/// -- as the parent. Feeding them the emphasized value instead would compress
+/// all four fades into the first fifth of the time, because that is where the
+/// emphasized curve spends its distance, and the staggering would collapse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SearchViewTransition {
+    /// Where the bar is: the tween's `begin`.
+    pub anchor: crate::engine::Rect,
+    /// Where the view goes, from [`SearchAnchor::view_rect`].
+    pub view: crate::engine::Rect,
+    pub full_screen: bool,
+}
+
+impl SearchViewTransition {
+    /// Upstream's `_kOpenViewMilliseconds`, which is also the denominator of
+    /// the list's interval -- the 133 and 233 below are milliseconds, written
+    /// upstream as fractions of this.
+    pub const OPEN_MILLISECONDS: i64 = 600;
+    pub const OPEN_MICROS: i64 = SearchViewTransition::OPEN_MILLISECONDS * 1000;
+    /// Upstream's `_kAnchorFadeDuration`: how long the *bar* takes to fade out
+    /// under the opening view. Not the same 600 -- the bar is gone long before
+    /// the view has finished arriving.
+    pub const ANCHOR_FADE_MICROS: i64 = 150 * 1000;
+
+    /// Upstream's `curve: Curves.easeInOutCubicEmphasized` on the rect.
+    pub const CURVE: crate::animation::Curve =
+        crate::animation::Curve::EASE_IN_OUT_CUBIC_EMPHASIZED;
+
+    /// Upstream's `_kViewFadeOnInterval`.
+    pub fn view_fade() -> crate::curves2d::Interval {
+        crate::curves2d::Interval::new(0.0, 1.0 / 2.0)
+    }
+
+    /// Upstream's `_kViewIconsFadeOnInterval`. It **starts after** the divider
+    /// has finished: the frame the panel's edge is drawn on is not the frame
+    /// its buttons appear on.
+    pub fn icons_fade() -> crate::curves2d::Interval {
+        crate::curves2d::Interval::new(1.0 / 6.0, 2.0 / 6.0)
+    }
+
+    /// Upstream's `_kViewDividerFadeOnInterval`.
+    pub fn divider_fade() -> crate::curves2d::Interval {
+        crate::curves2d::Interval::new(0.0, 1.0 / 6.0)
+    }
+
+    /// Upstream's `_kViewListFadeOnInterval`, written there as
+    /// `133 / _kOpenViewMilliseconds` to `233 / _kOpenViewMilliseconds`.
+    ///
+    /// The odd numbers are the point: this one is specified in milliseconds
+    /// rather than in sixths, so it is the only one that would change meaning
+    /// if the duration ever did.
+    pub fn list_fade() -> crate::curves2d::Interval {
+        crate::curves2d::Interval::new(
+            133.0 / SearchViewTransition::OPEN_MILLISECONDS as f32,
+            233.0 / SearchViewTransition::OPEN_MILLISECONDS as f32,
+        )
+    }
+
+    /// The emphasized curve at `t`, flipped when the route is closing.
+    ///
+    /// Upstream passes `reverseCurve: Curves.easeInOutCubicEmphasized.flipped`
+    /// for the reason every reversing animation does: a curve that leaves
+    /// slowly should also *arrive* slowly when played backwards, and replaying
+    /// the forward curve would make the close snap away and drift in.
+    pub fn eased(t: f32, direction: crate::animation::AnimationStatus) -> f32 {
+        crate::animation::curve_for_direction(
+            direction,
+            SearchViewTransition::CURVE,
+            Some(SearchViewTransition::CURVE.flipped()),
+        )
+        .transform(t)
+    }
+
+    /// One of the four fades at `t`, flipped when the route is closing.
+    ///
+    /// `Interval` is not a [`crate::animation::Curve`] here, so the flip is
+    /// written out: upstream's `FlippedCurve.transform` is `1 - curve(1 - t)`,
+    /// evaluated at the animation's current value rather than at a reversed
+    /// clock.
+    pub fn fade_at(
+        fade: crate::curves2d::Interval,
+        t: f32,
+        direction: crate::animation::AnimationStatus,
+    ) -> f32 {
+        match direction {
+            crate::animation::AnimationStatus::Reverse => 1.0 - fade.transform(1.0 - t),
+            _ => fade.transform(t),
+        }
+    }
+
+    /// Where the view is at `t`: upstream's `_rectTween.evaluate`.
+    pub fn rect_at(
+        &self,
+        t: f32,
+        direction: crate::animation::AnimationStatus,
+    ) -> crate::engine::Rect {
+        use crate::animation::Animatable;
+        crate::animation::RectTween {
+            begin: self.anchor,
+            end: self.view,
+        }
+        .transform(SearchViewTransition::eased(t, direction))
+    }
+
+    /// The inset the view keeps clear at the top, which only a full-screen
+    /// view has: upstream's `showFullScreenView ? lerpDouble(0.0,
+    /// MediaQuery.paddingOf(context).top, curvedAnimation.value) : 0.0`.
+    ///
+    /// It grows with the view rather than being there from the start, and the
+    /// reason is what the inset is *for*: it holds content out from under the
+    /// status bar, and a view that is still a small rectangle floating over
+    /// the middle of the screen is not under the status bar yet.
+    pub fn top_padding_at(
+        &self,
+        t: f32,
+        direction: crate::animation::AnimationStatus,
+        media_top: f32,
+    ) -> f32 {
+        if !self.full_screen {
+            return 0.0;
+        }
+        media_top * SearchViewTransition::eased(t, direction)
+    }
+}
+
 /// Upstream `SearchBar`: the field an anchor usually puts in front of its view.
 ///
 /// It is a widget in its own right rather than part of the anchor, because a
@@ -1612,5 +1757,195 @@ mod search_view_rect_tests {
             TextDirection::Ltr,
         );
         assert_eq!(rect, Rect::xywh(0.0, 0.0, 400.0, 850.0));
+    }
+}
+
+#[cfg(test)]
+mod search_view_transition_tests {
+    use super::*;
+    use crate::animation::AnimationStatus;
+    use crate::engine::Rect;
+
+    fn opening() -> SearchViewTransition {
+        SearchViewTransition {
+            anchor: Rect::xywh(20.0, 40.0, 400.0, 56.0),
+            view: Rect::xywh(20.0, 40.0, 400.0, 600.0),
+            full_screen: false,
+        }
+    }
+
+    #[test]
+    fn the_view_starts_as_the_bar_and_ends_where_it_was_put() {
+        // The tween's two ends. The view grows out of the bar that was tapped
+        // rather than appearing over it.
+        let opening = opening();
+        assert_eq!(
+            opening.rect_at(0.0, AnimationStatus::Forward),
+            opening.anchor
+        );
+        assert_eq!(opening.rect_at(1.0, AnimationStatus::Forward), opening.view);
+    }
+
+    #[test]
+    fn the_rectangle_is_nearly_arrived_by_the_half_way_point() {
+        // The emphasized curve's own shape, and the reason it is the one on
+        // the rect: the panel is essentially in place while the second half of
+        // the 600ms is still running, so the things fading in inside it are
+        // fading into a panel that has stopped moving.
+        let opening = opening();
+        let half = opening.rect_at(0.5, AnimationStatus::Forward);
+        let arrived = opening.view.height() - opening.anchor.height();
+        let travelled = half.height() - opening.anchor.height();
+        assert!(
+            travelled / arrived > 0.9,
+            "{}% of the way at the half",
+            travelled / arrived * 100.0
+        );
+    }
+
+    #[test]
+    fn the_four_fades_take_their_turns() {
+        // The staggering upstream spells out in four constants. At a sixth of
+        // the way in the divider is done, the icons are only starting, and the
+        // list has not begun -- 133/600 is 0.22, past a sixth.
+        let sixth = 1.0 / 6.0;
+        let at = |fade| SearchViewTransition::fade_at(fade, sixth, AnimationStatus::Forward);
+        assert_eq!(
+            at(SearchViewTransition::divider_fade()),
+            1.0,
+            "the divider is in"
+        );
+        assert_eq!(
+            at(SearchViewTransition::icons_fade()),
+            0.0,
+            "the icons start here"
+        );
+        assert_eq!(
+            at(SearchViewTransition::list_fade()),
+            0.0,
+            "the list has not begun"
+        );
+        assert!(
+            at(SearchViewTransition::view_fade()) > 0.3
+                && at(SearchViewTransition::view_fade()) < 0.4,
+            "and the view itself is a third faded in"
+        );
+    }
+
+    #[test]
+    fn the_list_fades_on_milliseconds_and_not_on_sixths() {
+        // The only one of the four written in milliseconds upstream, and the
+        // one that would change meaning if the 600 ever did. A sixth to two
+        // sixths is 100ms to 200ms, and the list actually runs 133 to 233 --
+        // so at 200ms in, sixths would have it fully arrived and it is in fact
+        // two thirds of the way.
+        let at = |ms: f32| {
+            SearchViewTransition::fade_at(
+                SearchViewTransition::list_fade(),
+                ms / SearchViewTransition::OPEN_MILLISECONDS as f32,
+                AnimationStatus::Forward,
+            )
+        };
+        assert_eq!(at(133.0), 0.0, "it starts at 133ms, not at 100");
+        assert_eq!(at(233.0), 1.0, "and is done at 233ms, not at 200");
+        let two_hundred = at(200.0);
+        assert!(
+            (two_hundred - 0.67).abs() < 0.01,
+            "at 200ms it is two thirds in, not finished: {two_hundred}"
+        );
+    }
+
+    #[test]
+    fn the_view_is_fully_faded_in_by_the_half_and_the_list_well_before_it() {
+        let half = |fade| SearchViewTransition::fade_at(fade, 0.5, AnimationStatus::Forward);
+        assert_eq!(half(SearchViewTransition::view_fade()), 1.0);
+        assert_eq!(
+            half(SearchViewTransition::list_fade()),
+            1.0,
+            "233ms of 600 is well inside the half"
+        );
+    }
+
+    #[test]
+    fn the_fades_are_read_off_the_plain_animation_and_not_the_eased_one() {
+        // The mistake this guards against: feeding the intervals the
+        // emphasized value. That curve is 95% done by the half, so every fade
+        // would finish inside the first fifth and the staggering would
+        // collapse into one instant.
+        let sixth = 1.0 / 6.0;
+        let eased = SearchViewTransition::eased(sixth, AnimationStatus::Forward);
+        assert!(
+            eased > 0.35,
+            "the emphasized curve is already well along: {eased}"
+        );
+        assert_eq!(
+            SearchViewTransition::fade_at(
+                SearchViewTransition::list_fade(),
+                sixth,
+                AnimationStatus::Forward
+            ),
+            0.0,
+            "the list still has not started, so the interval saw {sixth} and not {eased}"
+        );
+    }
+
+    #[test]
+    fn closing_runs_the_curves_flipped_rather_than_backwards() {
+        // Upstream's `reverseCurve: ....flipped`. A curve that leaves slowly
+        // should arrive slowly played backwards; replaying the forward curve
+        // would make the close snap away and then drift in.
+        let opening = opening();
+        let forward = opening.rect_at(0.5, AnimationStatus::Forward).height();
+        let closing = opening.rect_at(0.5, AnimationStatus::Reverse).height();
+        assert!(
+            closing < forward,
+            "half way through a close the view is still large: {closing} vs {forward}"
+        );
+
+        let fade = SearchViewTransition::view_fade();
+        assert_eq!(
+            SearchViewTransition::fade_at(fade, 1.0, AnimationStatus::Reverse),
+            1.0,
+            "a close begins fully visible"
+        );
+        assert_eq!(
+            SearchViewTransition::fade_at(fade, 0.5, AnimationStatus::Reverse),
+            0.0,
+            "and is gone by the half, which is the mirror of the first half in"
+        );
+    }
+
+    #[test]
+    fn only_a_full_screen_view_grows_a_top_inset() {
+        // A docked panel never reaches the status bar, so it has nothing to
+        // hold its content out from.
+        let docked = opening();
+        assert_eq!(
+            docked.top_padding_at(1.0, AnimationStatus::Forward, 44.0),
+            0.0
+        );
+
+        let full = SearchViewTransition {
+            full_screen: true,
+            ..docked
+        };
+        assert_eq!(
+            full.top_padding_at(1.0, AnimationStatus::Forward, 44.0),
+            44.0
+        );
+        assert_eq!(
+            full.top_padding_at(0.0, AnimationStatus::Forward, 44.0),
+            0.0,
+            "a view that is still a small rectangle is not under the status bar"
+        );
+    }
+
+    #[test]
+    fn the_bar_fades_out_in_a_quarter_of_the_time_the_view_takes_to_open() {
+        // Two durations, and they are deliberately different: the bar is gone
+        // long before the view has finished arriving.
+        assert_eq!(SearchViewTransition::OPEN_MICROS, 600_000);
+        assert_eq!(SearchViewTransition::ANCHOR_FADE_MICROS, 150_000);
+        assert!(SearchViewTransition::ANCHOR_FADE_MICROS < SearchViewTransition::OPEN_MICROS / 2);
     }
 }

@@ -1448,3 +1448,60 @@ lerp / `RectTween`（`animation.rs` 或 `tween.rs` 里找），没有就先补�
 (2) 上游 `_SearchViewRoute` 用的是哪条曲线、多长时间——
 看 `buildPage` 里那个 `CurvedAnimation` 的 `curve` 和 route 的
 `transitionDuration`，别猜。
+
+---
+
+## 第 437 轮：view 从 bar 长出来的那 600 毫秒
+
+上一轮留的两件事都查了，两件都是"已经有了"：
+`RectTween` 在 `animation.rs:2857`，`Interval` 在 `curves2d.rs:41`，
+`EASE_IN_OUT_CUBIC_EMPHASIZED` 在 `animation.rs:133`，
+`curve_for_direction` 也在。**所以这一轮不用先造零件**，
+直接把上游 `_SearchViewRoute.buildPage` 和它上面那五个常量搬过来。
+
+### 一个动画，六条曲线挂在上面
+
+route 只跑**一个** 600ms 的动画，view 里每样东西都是这同一个 parent 上的
+另一条曲线。这件事是整段动效的关键：它看上去是"一个动作里陆续有东西到位"，
+而不是"六个动画碰巧同时开始"。
+
+- **矩形**走 emphasized，到一半时已经走完 95%——
+  所以后半程里，往里淡入的东西是淡进一块**已经不动了的**面板。
+- **view 自己**在前一半淡入，**分隔线**第一个六分之一，
+  **图标**第二个六分之一，**列表**是 133ms 到 233ms。
+
+### 关键的一处：这四条 interval 挂在**原始**动画上，不是缓动后的值上
+
+上游写的是 `CurvedAnimation(parent: animation, curve: <interval>)`，
+parent 是 `animation` 而**不是** `curvedAnimation`。
+喂缓动后的值进去，四条淡入会全被压进前五分之一
+（emphasized 的距离都花在那儿），错落就塌成一瞬间。
+这条专门写了一个测试盯着。
+
+### 列表那条是用毫秒写的
+
+其余三条是六分之一、三分之一、二分之一，只有列表写成
+`133 / _kOpenViewMilliseconds`。所以它是**唯一一条会随时长改变含义**的。
+变异扫描里"把它也写成六分之一"第一遍 0 红——
+我的用例都取在两种写法答案相同的点上（1/6 处都是 0，0.5 处都是 1）。
+补了一个按毫秒取点的测试：200ms 时真值是三分之二，六分之一写法会说"已经结束"。
+
+关的时候用 `flipped` 而不是倒放：一条慢慢起步的曲线倒着放也该慢慢到站，
+照原曲线重放会让关闭"猛地弹开再飘回来"。
+
+### 变异扫描 12 个，补完那一条后全红
+
+尺子：十六把全部 exit 0。门：Rust 6549 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：位置有了、动画有了，**还是没有一条真的 route**。
+`SearchController::open_view` 到今天为止只改自己那个布尔值。
+下一轮把这条接上。**先查两件事**：
+(1) `theatre.rs` 的 `show_modal` 收什么、返回什么——
+上游 `_SearchViewRoute` 是一条 `PopupRoute`，
+`barrierDismissible = true` 而 `barrierColor = transparent`，
+看这个 crate 的 modal 能不能表达"能点外面关掉、但不画遮罩"。
+(2) 关掉时上游走 `didPop` 并且**重新算一次 tween**
+（`updateTweens(anchorKey.currentContext!)`）——
+因为 bar 可能已经不在原处了。看这个 crate 的 modal 关闭有没有
+一个能挂这件事的地方，没有就得先想清楚放哪儿。
