@@ -520,3 +520,64 @@ C++ 34 个 gtest 全过；三个目录默认目标全部编过。探针已全部
 先装 `route=HOME`，再走一次 `push_screen` 到 demo，跑同一个扫描——
 预期 `secondary` 掉到 0。拿到红的那一条，就可以在测试里改一行验一次了。
 另外仍然挂着：桌面上应当用 `DesktopTextSelectionControls`。
+
+---
+
+## 第 421 轮：过渡也洗清了——**被命中测试的那棵树，和最后一次构建出来的不是同一棵**
+
+这一轮没有改产品代码。把上一轮指向的那个嫌疑查了个干净，结果是**它无罪**，
+而洗清它的过程把假设逼到了一个更具体、也更值得查的位置。
+
+### 三件读出来的事实
+
+- `Presentation::offsets()` 在 `!is_transitioning()` 时直接返回 `SETTLED`，
+  偏移和不透明度全是零/一。
+- `page_stack` 在过渡结束后**直接返回 `current`**，
+  `TransitionStack` 根本不进树。
+- `TransitionStack::hit_test` 本身**是对的**：先按 `current_offset * size`
+  把位置反算回去，再下传给 `current`。
+
+### 一件在运行中的 app 里量到的事实
+
+在 `page_stack` 里打点，从首页点进 Text fields，日志最后一行是：
+
+    PROBE page_stack transitioning=false progress=1 motion=Pushing
+      offsets=TransitionOffsets { current_dx: 0.0, ..., previous_opacity: 1.0 }
+
+**过渡确实收敛了。** 所以稳定之后，app 里的 widget 树形状
+和第 420 轮那条绿测试装的是同一棵。
+
+### 于是矛盾就很尖锐了
+
+第 418 轮在同一个 app 里量到的是：点演示页任意位置，
+只有 `id=302` 和 `id=40005` 两个区域跑过 `hit_test`，**都是页面大小的**，
+底下再没有任何区域被问到。
+
+而"两个页面大小的区域嵌在一起"正是 `TransitionStack`（previous + current）的形状——
+可过渡已经结束、`TransitionStack` 已经不在树里了。
+
+**所以指向变了**：不是过渡算错了，而是**被拿去做命中测试的那棵渲染树，
+不是最后一次构建产出的那一棵**。看得见的页面是稳定后的（画出来的是新树），
+而手指问到的是别的东西。
+
+`RfApp` 把树存在 `self.painted`（`app.rs:1234`，每帧 `insert`），
+`dispatch_pointer` 从这里取。下一步要查的就是这条：
+**存进去的 `root` 到底是不是这一帧构建出来的那棵。**
+
+### 这一轮为什么没有直接量到底
+
+预算用在了排除过渡上。剩下的那一步需要在 `dispatch_pointer`
+和存树的地方各打一个点，比对同一帧的两棵树——是一次干净的实验，只是没跑成。
+
+尺子：十六把全部 exit 0。门：gallery 356 通过；三个目录默认目标全部编过；
+探针已全部还原。
+
+**下一步**：只做一件事——**证明或推翻"命中用的树是旧的"**。
+在 `RfApp::frame` 存树那一行前面打一个点，打出这一帧 `root` 里
+`RenderPointerRegion` 的数量；在 `dispatch_pointer` 里打出
+`self.painted` 里同样的数量。两个数字在稳定之后应当相等。
+如果不相等，故障就是"存的树不对"，与文本框、右键、演示页统统无关，
+而是一个会影响**所有**页面切换之后交互的框架级缺陷。
+如果相等，那就得回头怀疑"两个 460x764 区域"的身份——
+它们可能根本不是 previous/current，我此前一直是这么假设的，从没验证过。
+另外仍然挂着：桌面上应当用 `DesktopTextSelectionControls`。
