@@ -1239,9 +1239,30 @@ pub struct SearchViewContent {
     /// `MediaQuery.paddingOf(context).top`, which only a full-screen view
     /// keeps clear -- see [`SearchViewTransition::top_padding_at`].
     pub media_top: f32,
+    /// Identifies the header's field, so that the text somebody is typing
+    /// survives the rebuild every frame of the opening causes.
+    pub header_id: u64,
+    /// Upstream's `viewHintText`.
+    pub hint_text: Option<String>,
 }
 
 impl SearchViewContent {
+    /// The bar at the top of the panel, as this view styles it.
+    ///
+    /// # What is not here yet
+    ///
+    /// Upstream also gives the header a `defaultLeading` -- a `BackButton`
+    /// that pops the route -- and a `defaultTrailing` of one close button,
+    /// present only while there is text to clear. Neither is built here: a
+    /// back button needs the route to pop, and this crate's view is dismissed
+    /// through its barrier, so wiring one to nothing would be worse than
+    /// leaving the space empty. Recorded rather than quietly omitted.
+    pub fn header(&self) -> SearchBar {
+        let mut header = search_view_header(&self.view, self.placement.full_screen, self.header_id);
+        header.hint_text = self.hint_text.clone();
+        header
+    }
+
     /// What is in the panel on the frame at `t`. See the type's documentation
     /// for why this is a function of `t` at all.
     pub fn body_at(&self, t: f32, direction: crate::animation::AnimationStatus) -> SearchViewBody {
@@ -1305,21 +1326,47 @@ impl SearchViewContent {
 pub fn open_search_view(
     overlay: std::rc::Rc<crate::theatre::OverlayHandle>,
     content: SearchViewContent,
-    header: impl Fn() -> crate::framework::AnyWidget + 'static,
-    divider: impl Fn() -> crate::framework::AnyWidget + 'static,
     list: impl Fn() -> crate::framework::AnyWidget + 'static,
 ) -> Option<crate::theatre::ModalHandle> {
     let placement = content.placement;
     let constraints = content.constraints;
     show_search_view(overlay, placement, constraints, move |t| {
+        // Only the suggestions are the caller's. The header and the rule are
+        // the view's own -- upstream builds both inside `_ViewContent`, and a
+        // caller who supplied them could give the panel a header that was not
+        // the bar it grew out of.
         content.build(
             t,
             crate::animation::AnimationStatus::Forward,
-            header(),
-            divider(),
+            crate::framework::stateful(content.header()),
+            search_view_divider(&content.view),
             list(),
         )
     })
+}
+
+/// The rule under the header: upstream's
+/// `DividerTheme(data: dividerTheme.copyWith(color: effectiveDividerColor),
+/// child: const Divider(height: 1))`.
+///
+/// A `Divider` of height **one**, not of the theme's usual sixteen. Upstream's
+/// default divider reserves space around its line so that a rule between two
+/// list items has air on both sides; the one under a search header is a seam
+/// between two parts of the same surface, and air around it would read as a
+/// gap in the panel.
+///
+/// The colour is the view's own `dividerColor` laid over the divider theme
+/// rather than taken from it, which is why it is set on the widget here: a
+/// search view's rule follows the *view's* theme, and an app that has restyled
+/// its dividers elsewhere should not restyle this one by accident.
+pub fn search_view_divider(
+    view: &crate::component_themes::ResolvedSearchView,
+) -> crate::framework::AnyWidget {
+    crate::framework::component(
+        crate::components::Divider::new()
+            .with_color(view.divider_color)
+            .with_height(1.0),
+    )
 }
 
 /// The sheet between the view and the page: upstream's `barrierColor`,
@@ -3829,6 +3876,8 @@ mod search_view_content_tests {
             screen: SCREEN,
             has_results: false,
             media_top: 44.0,
+            header_id: 1,
+            hint_text: Some("Search".to_string()),
         }
     }
 
@@ -4102,14 +4151,8 @@ mod search_view_content_tests {
         tree.build_render_tree();
         let handle = found.borrow().clone().expect("a descendant found it");
 
-        let shown = open_search_view(
-            Rc::clone(&handle),
-            content(),
-            || block(HEADER, 400.0, 56.0),
-            || block(DIVIDER, 400.0, 1.0),
-            || block(LIST, 400.0, 200.0),
-        )
-        .expect("shown");
+        let shown = open_search_view(Rc::clone(&handle), content(), || block(LIST, 400.0, 200.0))
+            .expect("shown");
 
         // Stepped, because `advance` clamps each frame to 50ms.
         tree.rebuild_dirty();
@@ -4136,9 +4179,121 @@ mod search_view_content_tests {
         }
         let drawn = crate::engine_test_stubs::drawn();
         shown.dismiss();
-        let colours = colours(&drawn);
-        assert!(colours.contains(&HEADER), "{colours:?}");
-        assert!(colours.contains(&DIVIDER));
-        assert!(colours.contains(&LIST));
+
+        // The list is the caller's; the other two are the view's own, so they
+        // are looked for as what they *are* rather than as marker blocks.
+        assert!(colours(&drawn).contains(&LIST), "the suggestions");
+        assert!(
+            drawn.iter().any(|call| matches!(
+                call,
+                Drawn::Paragraph { text, .. } if text == "Search"
+            )),
+            "the header's hint, which means the header is the view's own bar"
+        );
+        let divider_colour = a_view().divider_color;
+        assert!(
+            drawn.iter().any(|call| match call {
+                Drawn::Rect {
+                    argb, top, bottom, ..
+                } => Color(*argb) == divider_colour && *bottom - *top <= 1.0,
+                _ => false,
+            }),
+            "and a one-pixel rule in the view's divider colour: {drawn:?}"
+        );
+    }
+
+    #[test]
+    fn the_views_rule_is_one_pixel_tall_and_the_views_colour() {
+        // Upstream's `Divider(height: 1)` under a `DividerTheme` whose colour
+        // is the view's. The default divider reserves sixteen -- air on both
+        // sides of a rule between two list items -- and here that air would
+        // read as a gap in the panel's surface.
+        let mut tree = ElementTree::new();
+        tree.rebuild(search_view_divider(&a_view()));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 400.0));
+        crate::render::flush_layout();
+        assert_eq!(root.size().height, 1.0, "not the theme's sixteen");
+
+        let mut layers = crate::engine::LayerTree::new(400, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(400.0, 400.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let painted = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                Drawn::Rect { argb, .. } => Some(Color(argb)),
+                _ => None,
+            })
+            .expect("the rule painted");
+        assert_eq!(painted, a_view().divider_color);
+    }
+
+    #[test]
+    fn a_rule_follows_the_view_it_was_built_from_and_not_a_constant() {
+        let mut recoloured = a_view();
+        recoloured.divider_color = Color::argb(255, 7, 8, 9);
+        let mut tree = ElementTree::new();
+        tree.rebuild(search_view_divider(&recoloured));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 400.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(400, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(400.0, 400.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let painted = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                Drawn::Rect { argb, .. } => Some(Color(argb)),
+                _ => None,
+            })
+            .expect("the rule painted");
+        assert_eq!(painted, Color::argb(255, 7, 8, 9));
+    }
+
+    #[test]
+    fn the_header_the_content_builds_is_the_views_own_bar() {
+        // The same overrides `search_view_header` applies, plus the view's
+        // hint text -- so a caller cannot hand the panel a header that is not
+        // the bar it grew out of.
+        let content = content();
+        let header = content.header();
+        assert_eq!(header.id, content.header_id, "the field keeps its identity");
+        assert_eq!(header.hint_text, content.hint_text);
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::stateful(header));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 400.0));
+        crate::render::flush_layout();
+        assert_eq!(
+            root.size().height,
+            56.0,
+            "a docked header is the bar's own height"
+        );
+    }
+
+    #[test]
+    fn a_full_screen_views_header_is_the_taller_one() {
+        // The header follows the view it belongs to rather than a flag passed
+        // beside it: `full_screen` lives on the placement.
+        let mut full = content();
+        full.placement.full_screen = true;
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::stateful(full.header()));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 400.0));
+        crate::render::flush_layout();
+        assert_eq!(
+            root.size().height,
+            ResolvedSearchView::FULL_SCREEN_BAR_HEIGHT
+        );
     }
 }

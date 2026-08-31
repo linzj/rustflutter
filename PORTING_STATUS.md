@@ -1835,3 +1835,50 @@ child: const Divider(height: 1))`）。
 建出来的东西能直接当 `AnyWidget` 用（看 `components.rs` 里
 `Divider` 是怎么被别处放进树里的），能就直接用，
 不能就得先看清楚它要怎么包。
+
+---
+
+## 第 443 轮：header 和分隔线归 view 自己管
+
+上一轮留的问题：`Divider` 是个 `Component`，
+`component(Divider::new().with_color(..).with_height(1.0))` 直接就是 `AnyWidget`。
+路是通的。
+
+### `open_search_view` 现在只收一个闭包
+
+只有建议列表还是调用者的。header 和分隔线上游都在 `_ViewContent` 里建，
+而一个能自己传 header 进来的调用者，可以给面板配一个**不是它长出来的那个** bar。
+
+### 一像素的线
+
+上游是 `Divider(height: 1)`，不是主题默认的十六。
+默认那条要在上下留出空气——两个列表项之间的分隔线需要；
+而 header 底下这条是**同一块表面上的一道缝**，留空气就成了面板上的一道豁口。
+
+颜色是把 view 的 `dividerColor` 盖在 divider 主题上，不是从主题里取：
+搜索视图的线跟着**view 的**主题走，
+一个在别处改过分隔线样式的 app 不该顺手把这条也改了。
+
+### 明写下来的两处未做
+
+上游 header 还有 `defaultLeading`（一个 pop 路由的返回按钮）
+和 `defaultTrailing`（有字时才出现的清除按钮）。两个都没建：
+返回按钮要有路由可 pop，而这个 crate 的 view 是从遮罩关掉的，
+接一个通向空处的按钮比留着空位更糟。记下来，不是悄悄漏掉。
+
+### 变异扫描 9 个，第一遍全红
+
+尺子：十六把全部 exit 0。门：Rust 6597 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：整条链现在通了，但**没有人调用它**——
+`open_search_view` 在 crate 里是个孤儿，`SearchAnchor` 自己也不会开 view。
+下一轮把 `SearchAnchor` 做成 widget：它建 bar（第 435 轮），
+点 bar 时算出 `view_rect`（第 436 轮）并 `open_search_view`。
+**先查两件事**：
+(1) `SearchAnchor` 要拿到 bar 在**屏幕上**的矩形才能算 anchor rect
+   （上游是 `searchBarBox.localToGlobal(Offset.zero, ancestor: navigator...)` 加 `size`）。
+   确认这个 crate 里一个 widget 怎么问"我现在在屏幕上的哪儿"——
+   `raw_menu_anchor.rs` 里那个 `AnchorRect` 是怎么拿到的，照它办。
+(2) `SearchViewContent.screen` 和 `media_top` 要从 MediaQuery 取——
+   确认 `MediaQuery` 在这个 crate 里叫什么、怎么在 build 里读到尺寸和上边距。
