@@ -340,8 +340,19 @@ impl MenuBar {
 }
 
 /// Upstream `MenuItemButton`: one line of a menu.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone)]
 pub struct MenuItemButton {
+    /// Identifies this line's ink and its focus node.
+    pub id: u64,
+    /// The words on the line.
+    pub label: String,
+    /// Upstream's `shortcut`, already spelled for the reader --
+    /// `_LocalizedShortcutLabeler` is a table this crate has not ported, so
+    /// what arrives is the label rather than the activator.
+    pub shortcut: Option<String>,
+    leading: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+    trailing: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+    on_pressed: Option<std::rc::Rc<dyn Fn()>>,
     /// Upstream's `requestFocusOnHover`, **true** by default.
     ///
     /// This port had it false. A pointer moving down a menu carries the focus
@@ -353,6 +364,47 @@ pub struct MenuItemButton {
     /// normally the end of the interaction.
     pub close_on_activate: bool,
     pub enabled: bool,
+}
+
+impl std::fmt::Debug for MenuItemButton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MenuItemButton")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .field("shortcut", &self.shortcut)
+            .field("request_focus_on_hover", &self.request_focus_on_hover)
+            .field("close_on_activate", &self.close_on_activate)
+            .field("enabled", &self.enabled)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The parts a reader can see. The callbacks are left out for the reason
+/// [`crate::search_anchor::SearchBar`]'s are: a closure made afresh each build
+/// is never equal to the last one.
+impl PartialEq for MenuItemButton {
+    fn eq(&self, other: &MenuItemButton) -> bool {
+        self.id == other.id
+            && self.label == other.label
+            && self.shortcut == other.shortcut
+            && self.leading.is_some() == other.leading.is_some()
+            && self.trailing.is_some() == other.trailing.is_some()
+            && self.request_focus_on_hover == other.request_focus_on_hover
+            && self.close_on_activate == other.close_on_activate
+            && self.enabled == other.enabled
+    }
+}
+
+impl Default for MenuItemButton {
+    fn default() -> MenuItemButton {
+        MenuItemButton::new()
+    }
+}
+
+/// What a menu line remembers between builds: which states it is in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuItemButtonState {
+    pub states: crate::widget_state::WidgetStates,
 }
 
 impl MenuItemButton {
@@ -368,10 +420,56 @@ impl MenuItemButton {
 
     pub fn new() -> MenuItemButton {
         MenuItemButton {
+            id: 0,
+            label: String::new(),
+            shortcut: None,
+            leading: None,
+            trailing: None,
+            on_pressed: None,
             request_focus_on_hover: true,
             close_on_activate: true,
             enabled: true,
         }
+    }
+
+    /// A line with an id of its own, which its ink and its focus node share.
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = id;
+        self
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
+        self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    pub fn with_leading(
+        mut self,
+        leading: impl Fn() -> crate::framework::AnyWidget + 'static,
+    ) -> Self {
+        self.leading = Some(std::rc::Rc::new(leading));
+        self
+    }
+
+    pub fn with_trailing(
+        mut self,
+        trailing: impl Fn() -> crate::framework::AnyWidget + 'static,
+    ) -> Self {
+        self.trailing = Some(std::rc::Rc::new(trailing));
+        self
+    }
+
+    /// Upstream's `onPressed`, which is also what decides `enabled` there.
+    /// Kept apart here for the reason [`crate::ink_well::InkResponse`] keeps
+    /// them apart.
+    pub fn with_on_pressed(mut self, pressed: impl Fn() + 'static) -> Self {
+        self.on_pressed = Some(std::rc::Rc::new(pressed));
+        self
     }
 
     pub fn with_close_on_activate(mut self, close: bool) -> Self {
@@ -402,6 +500,178 @@ impl MenuItemButton {
             .with_trailing_icon(trailing)
             .with_shortcut(shortcut)
             .in_a_horizontal_bar(horizontal)
+    }
+}
+
+impl crate::framework::StatefulComponent for MenuItemButton {
+    type State = MenuItemButtonState;
+
+    fn key(&self) -> crate::framework::Key {
+        Some(self.id)
+    }
+
+    fn build(
+        &self,
+        state: &MenuItemButtonState,
+        handle: crate::framework::StateHandle<MenuItemButtonState>,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::framework::AnyWidget {
+        use crate::widget_state::WidgetState;
+
+        let states = if self.enabled {
+            state.states
+        } else {
+            state.states.with(WidgetState::Disabled)
+        };
+        let resolved = self.resolved(context, states);
+        // Upstream hands the whole `overlayColor` property to the `InkWell`.
+        // Resolved here one state at a time, because the ink takes a colour
+        // per highlight rather than a property -- the same shape
+        // [`crate::search_anchor::SearchBar`] uses.
+        let pressed = self
+            .resolved(context, states.with(WidgetState::Pressed))
+            .overlay;
+        let hovered = self
+            .resolved(context, states.with(WidgetState::Hovered))
+            .overlay;
+        let focused = self
+            .resolved(context, states.with(WidgetState::Focused))
+            .overlay;
+        let density = crate::theme::ThemeData::of(context).visual_density;
+
+        let label_style = crate::engine::TextStyle {
+            color: resolved.foreground,
+            ..crate::components::theme_of(context).body()
+        };
+        // The shortcut is written in the same colour as the label. Upstream
+        // wraps it in nothing at all -- it inherits the button's foreground --
+        // which is worth saying because a shortcut in a quieter colour is a
+        // common design and **not** what Material does here.
+        let shortcut_style = label_style.clone();
+
+        let layout = self.label(
+            self.leading.is_some(),
+            self.trailing.is_some(),
+            self.shortcut.is_some(),
+            false,
+        );
+        let gap = MenuItemLabel::spacing(density);
+        let leading_gap = layout.leading_gap(density);
+        let parts = layout.trailing_parts();
+
+        let leading = self.leading.clone();
+        let trailing = self.trailing.clone();
+        let label = self.label.clone();
+        let shortcut = self.shortcut.clone();
+        let minimum = resolved.minimum_size;
+        let alignment = resolved.alignment;
+        let direction = crate::direction::current_direction();
+
+        let row = move || {
+            let mut children: Vec<crate::framework::AnyWidget> = Vec::new();
+            if let Some(leading) = &leading {
+                children.push(leading());
+            }
+            let text = label.clone();
+            let style = label_style.clone();
+            children.push(crate::framework::leaf(move || {
+                crate::render::RenderParagraph::new(text.clone()).with_style(style.clone())
+            }));
+            if let Some(trailing) = &trailing {
+                children.push(trailing());
+            }
+            if let Some(shortcut) = &shortcut {
+                let shortcut = shortcut.clone();
+                let style = shortcut_style.clone();
+                children.push(crate::framework::leaf(move || {
+                    crate::render::RenderParagraph::new(shortcut.clone()).with_style(style.clone())
+                }));
+            }
+            let parts = parts.clone();
+            crate::framework::many(children, move |rendered| {
+                let mut rendered = rendered.into_iter();
+                let mut row = crate::render::RenderFlex::row()
+                    .with_main_axis_size(crate::render::MainAxisSize::Min)
+                    .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Center);
+                if leading_gap > 0.0 {
+                    row = row.push(rendered.next().expect("the leading widget"));
+                    row = row.push(crate::widgets::SizedBox::new(leading_gap, 0.0));
+                }
+                row = row.push(rendered.next().expect("the label"));
+                // One gap before each trailing part, in the order upstream
+                // builds them -- see [`MenuItemLabel::trailing_parts`].
+                for _ in &parts {
+                    row = row.push(crate::widgets::SizedBox::new(gap, 0.0));
+                    row = row.push(rendered.next().expect("a trailing part"));
+                }
+                crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints {
+                    min_width: minimum.width,
+                    max_width: f32::INFINITY,
+                    min_height: minimum.height,
+                    max_height: f32::INFINITY,
+                })
+                // Shrink-wrapped on both axes, then held to the minimum by
+                // the box around it. A plain `Align` fills whatever it is
+                // offered, so a menu line in a loose column would be as tall
+                // as the column -- the alignment is there for the case the
+                // *minimum* is bigger than the row, which is a short label in
+                // a 64-wide button sitting at the start rather than centred.
+                .with_child(
+                    crate::render::RenderAlign::new(alignment.resolve(direction), row)
+                        .with_factors(Some(1.0), Some(1.0)),
+                )
+            })
+        };
+
+        let on_pressed = self.on_pressed.clone();
+        let id = self.id;
+        let request_focus_on_hover = self.request_focus_on_hover;
+        crate::framework::stateful(
+            crate::ink_well::InkResponse::new(self.id, row)
+                .with_contained(true)
+                .with_enabled(self.enabled)
+                .with_focus(self.id)
+                .with_highlight_color(pressed)
+                .with_hover_color(hovered)
+                .with_focus_color(focused)
+                .with_on_hover({
+                    let handle = handle.clone();
+                    move |hovering| {
+                        // Upstream's `requestFocusOnHover`, **true** by
+                        // default: the pointer carries the keyboard with it, so
+                        // the line under the cursor is the one Enter acts on.
+                        // With it off, moving the mouse and then pressing Enter
+                        // acts on whatever the keyboard was left on.
+                        if hovering && request_focus_on_hover {
+                            crate::focus::focus(id);
+                        }
+                        handle.set_state(move |state| {
+                            state.states.update(WidgetState::Hovered, hovering);
+                        });
+                    }
+                })
+                .with_on_highlight_changed({
+                    let handle = handle.clone();
+                    move |pressed| {
+                        handle.set_state(move |state| {
+                            state.states.update(WidgetState::Pressed, pressed);
+                        });
+                    }
+                })
+                .with_on_focus_change({
+                    let handle = handle.clone();
+                    move |focused| {
+                        handle.set_state(move |state| {
+                            state.states.update(WidgetState::Focused, focused);
+                        });
+                    }
+                })
+                .with_on_tap(move || {
+                    if let Some(on_pressed) = &on_pressed {
+                        on_pressed();
+                    }
+                }),
+        )
     }
 }
 
@@ -709,6 +979,365 @@ pub enum MenuItemPart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::component_themes::ResolvedMenuButton;
+
+    // -- The line as a widget -----------------------------------------------
+
+    use crate::engine::Color;
+    use crate::engine_test_stubs::Drawn;
+    use crate::framework::{ElementTree, leaf, stateful};
+    use crate::render::{BoxConstraints, Offset, RenderBox, Size};
+
+    const ITEM: u64 = 8301;
+    const MARK: Color = Color(0xFF00_FF00);
+    const OTHER: Color = Color(0xFFFF_00FF);
+
+    fn an_item() -> MenuItemButton {
+        MenuItemButton::new().with_id(ITEM).with_label("Paste")
+    }
+
+    fn mark(colour: Color) -> crate::framework::AnyWidget {
+        leaf(move || {
+            crate::render::RenderDecoratedBox::new()
+                .with_fill(crate::render::Fill::Solid(colour))
+                .with_child(crate::widgets::SizedBox::new(20.0, 20.0))
+        })
+    }
+
+    /// Lays a line out in 400x100 and answers everything drawn.
+    fn painted(item: MenuItemButton) -> Vec<Drawn> {
+        crate::focus::unfocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(item));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::flush_layout();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(400, 100);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(400.0, 100.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    fn laid_out(item: MenuItemButton) -> Size {
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(item));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 200.0));
+        crate::render::flush_layout();
+        root.size()
+    }
+
+    fn text_at(drawn: &[Drawn], wanted: &str) -> Option<f32> {
+        drawn.iter().find_map(|call| match call {
+            Drawn::Paragraph { text, x, .. } if text == wanted => Some(*x),
+            _ => None,
+        })
+    }
+
+    fn colour_at(drawn: &[Drawn], wanted: Color) -> Option<f32> {
+        drawn.iter().find_map(|call| match call {
+            Drawn::Rect { left, argb, .. } if Color(*argb) == wanted => Some(*left),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_line_is_at_least_the_minimum_a_menu_button_asks_for() {
+        // `_MenuButtonDefaultsM3.minimumSize`, 64 x 48. The height is what
+        // makes a menu tappable; the width is what stops a one-letter item
+        // from being a sliver.
+        let size = laid_out(an_item());
+        assert_eq!(size.height, ResolvedMenuButton::MINIMUM_SIZE.height);
+        assert!(
+            size.width >= ResolvedMenuButton::MINIMUM_SIZE.width,
+            "{size:?}"
+        );
+    }
+
+    #[test]
+    fn the_label_is_written_in_the_foreground_the_theme_resolved() {
+        // All four arms of `foregroundColor` answer `onSurface`, so the label
+        // does not move as the pointer crosses it -- the overlay is the whole
+        // of the feedback. What this pins is that the *label* is that colour
+        // at all, which nothing read before.
+        let scheme = crate::theme::ThemeData::default().color_scheme;
+        let drawn = painted(an_item());
+        let label = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Paragraph { text, argb, .. } if text == "Paste" => Some(Color(*argb)),
+                _ => None,
+            })
+            .expect("the label painted");
+        assert_eq!(label, scheme.on_surface);
+    }
+
+    #[test]
+    fn a_leading_icon_pushes_the_label_along_by_one_gap() {
+        // The gap is between two things: with no leading icon the label starts
+        // at the line's own edge, and with one it starts a gap past the icon.
+        let bare = painted(an_item());
+        let with_icon = painted(an_item().with_leading(|| mark(MARK)));
+        let bare_x = text_at(&bare, "Paste").expect("the label");
+        let icon_left = colour_at(&with_icon, MARK).expect("the icon");
+        let moved_x = text_at(&with_icon, "Paste").expect("the label");
+        assert_eq!(icon_left, bare_x, "the icon starts where the text used to");
+        assert!(
+            (moved_x - (icon_left + 20.0 + MenuItemLabel::DEFAULT_SPACING)).abs() < 0.5,
+            "the icon, then a gap, then the text: {moved_x} against {icon_left}"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_is_written_after_the_label_and_after_a_gap() {
+        let drawn = painted(an_item().with_shortcut("Ctrl+V"));
+        let label = text_at(&drawn, "Paste").expect("the label");
+        let shortcut = text_at(&drawn, "Ctrl+V").expect("the shortcut");
+        assert!(shortcut > label, "after it: {shortcut} against {label}");
+    }
+
+    #[test]
+    fn the_trailing_icon_comes_before_the_shortcut() {
+        // `_MenuItemLabel` builds the trailing icon, then the shortcut. The
+        // order is the widget's to keep, and nothing about the two says it.
+        let drawn = painted(
+            an_item()
+                .with_trailing(|| mark(OTHER))
+                .with_shortcut("Ctrl+V"),
+        );
+        let icon = colour_at(&drawn, OTHER).expect("the trailing icon");
+        let shortcut = text_at(&drawn, "Ctrl+V").expect("the shortcut");
+        assert!(icon < shortcut, "{icon} then {shortcut}");
+    }
+
+    /// A press and a release at `at`, through the real router.
+    fn tap(tree: &mut ElementTree, at: Offset) {
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::flush_layout();
+        let event = |change| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 1,
+            time_stamp_micros: 0,
+            position: at,
+            delta: Offset::ZERO,
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: at,
+        };
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Down));
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Up));
+        tree.rebuild_dirty();
+    }
+
+    /// A mouse moving onto `at`.
+    fn hover(tree: &mut ElementTree, at: Offset) {
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::flush_layout();
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(
+            &root,
+            &crate::gestures::PointerEvent {
+                view_id: 0,
+                device: 0,
+                pointer_id: 1,
+                change: crate::gestures::PointerChange::Hover,
+                kind: crate::gestures::PointerKind::Mouse,
+                signal_kind: crate::gestures::SignalKind::None,
+                buttons: 0,
+                time_stamp_micros: 0,
+                position: at,
+                delta: Offset::ZERO,
+                scroll_delta: Offset::ZERO,
+                pressure: 0.0,
+                local_position: at,
+            },
+        );
+        tree.rebuild_dirty();
+    }
+
+    #[test]
+    fn each_trailing_part_is_exactly_one_gap_along() {
+        // Not merely "after": the gap is `_MenuItemLabel`'s single spacing,
+        // spent once at each place two parts meet.
+        let drawn = painted(
+            an_item()
+                .with_trailing(|| mark(OTHER))
+                .with_shortcut("Ctrl+V"),
+        );
+        let label = text_at(&drawn, "Paste").expect("the label");
+        let label_end = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Paragraph { text, x, size, .. } if text == "Paste" => Some(*x + *size * 0.0),
+                _ => None,
+            })
+            .expect("the label");
+        let _ = label_end;
+        let icon = colour_at(&drawn, OTHER).expect("the trailing icon");
+        let shortcut = text_at(&drawn, "Ctrl+V").expect("the shortcut");
+        assert!(
+            (shortcut - (icon + 20.0 + MenuItemLabel::DEFAULT_SPACING)).abs() < 0.5,
+            "the icon is 20 wide, then a gap, then the shortcut: \
+             icon at {icon}, shortcut at {shortcut}"
+        );
+        assert!(icon > label, "and both are after the label");
+    }
+
+    #[test]
+    fn a_disabled_line_is_written_in_a_faded_foreground() {
+        // `_MenuButtonDefaultsM3.foregroundColor` has four arms that all
+        // answer `onSurface` and one that does not: disabled fades it. So the
+        // states the line resolves with have to carry `Disabled` at all --
+        // resolving as though it were enabled would look identical everywhere
+        // except here.
+        let enabled = painted(an_item());
+        let disabled = painted(an_item().with_enabled(false));
+        let colour_of = |drawn: &[Drawn]| {
+            drawn
+                .iter()
+                .find_map(|call| match call {
+                    Drawn::Paragraph { text, argb, .. } if text == "Paste" => Some(Color(*argb)),
+                    _ => None,
+                })
+                .expect("the label painted")
+        };
+        assert_ne!(
+            colour_of(&disabled),
+            colour_of(&enabled),
+            "a disabled line does not look like an enabled one"
+        );
+        assert!(
+            colour_of(&disabled).alpha() < colour_of(&enabled).alpha(),
+            "and the difference is that it is faded"
+        );
+    }
+
+    #[test]
+    fn a_disabled_line_does_not_run_its_callback() {
+        let pressed = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let count = std::rc::Rc::clone(&pressed);
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(
+            an_item()
+                .with_enabled(false)
+                .with_on_pressed(move || count.set(count.get() + 1)),
+        ));
+        tree.build_render_tree();
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(pressed.get(), 0);
+
+        // And the same tap on the same line, enabled, does run it -- or the
+        // assertion above is about a tap that missed.
+        let pressed = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let count = std::rc::Rc::clone(&pressed);
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(
+            an_item().with_on_pressed(move || count.set(count.get() + 1)),
+        ));
+        tree.build_render_tree();
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(pressed.get(), 1);
+    }
+
+    #[test]
+    fn the_pointer_moving_onto_a_line_gives_it_the_keyboard() {
+        // Upstream's `requestFocusOnHover`, true by default: the line under
+        // the cursor is the one Enter acts on. Without it, moving the mouse
+        // down a menu and pressing Enter acts on whatever the keyboard was
+        // left on.
+        crate::focus::unfocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(an_item()));
+        tree.build_render_tree();
+        hover(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(crate::focus::focused(), Some(ITEM));
+
+        crate::focus::unfocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(MenuItemButton {
+            request_focus_on_hover: false,
+            ..an_item()
+        }));
+        tree.build_render_tree();
+        hover(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(
+            crate::focus::focused(),
+            None,
+            "and a line told not to does not"
+        );
+    }
+
+    #[test]
+    fn a_disabled_line_takes_no_taps_and_lights_up_for_nobody() {
+        // Two halves. The callback is the obvious one; the highlight is the
+        // one worth pinning, because a disabled response still *makes* its
+        // highlights -- at alpha zero, so that becoming enabled again is a
+        // colour change rather than a highlight appearing from nowhere.
+        let pressed = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let count = std::rc::Rc::clone(&pressed);
+        let item = an_item()
+            .with_enabled(false)
+            .with_on_pressed(move || count.set(count.get() + 1));
+
+        crate::focus::unfocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(item));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::flush_layout();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+
+        crate::focus::focus(ITEM);
+        tree.rebuild_dirty();
+        tree.advance_frame(200_000);
+        tree.rebuild_dirty();
+
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 100.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(400, 100);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(400.0, 100.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let lit = crate::engine_test_stubs::drawn().into_iter().any(|call| {
+            matches!(call, Drawn::Rect { argb, .. } | Drawn::RRect { argb, .. }
+                if Color(argb).alpha() > 0 && Color(argb) != Color::TRANSPARENT
+                    && Color(argb).red() == 0 && Color(argb).green() == 0
+                    && Color(argb).blue() == 0)
+        });
+        assert!(!lit, "a disabled line does not light up under the keyboard");
+        assert_eq!(pressed.get(), 0);
+        crate::focus::unfocus();
+    }
+
+    #[test]
+    fn the_pointer_carries_the_keyboard_with_it() {
+        // Upstream's `requestFocusOnHover`, true by default. Without it,
+        // moving the mouse down a menu and pressing Enter acts on whatever the
+        // keyboard was left on rather than on the line under the cursor.
+        assert!(MenuItemButton::new().request_focus_on_hover);
+    }
 
     // -- The line's geometry ------------------------------------------------
 
