@@ -712,3 +712,60 @@ C++ 34 个 gtest 全过；三个目录默认目标全部编过。探针已全部
 挑出来之后与首页那个列表用的对象比对：
 如果是同一个类型，那就去看它在两处的构造差别；如果是两个类型，
 那就是其中一个没有把 `hit_test_children` 补上。
+
+---
+
+## 第 424 轮：挡路的那一层**点名了**——是演示表单那个 `RenderFlex` 列
+
+在默认的 `RenderBox::hit_test` 里加了一个**只挑一种情形**的探针：
+盒子包含这个点、**有孩子**、而 `hit_test_children` 仍然返回 false。
+这正好把"够得着自己、却把孩子全挡在外面"的那一层单独捞出来。
+
+在确认过的 Text fields 页上按右键，捞出来两层：
+
+    blocked size=394x938 pos=(167,148) children=11 first=394x56   <- 最内层
+    blocked size=428x972 pos=(184,165) children=1  first=394x938
+
+**394x938、11 个孩子、第一个 394x56** —— 就是演示表单那个列：
+`demos/material/mod.rs::column`，它建的是
+`RenderFlex::column().with_main_axis_size(Min).with_cross_axis_alignment(Start)`。
+
+所以：**`RenderFlex` 拿到了那个点，却对 11 个孩子一个都没命中。**
+
+### 一个看着很像、但被实测否掉的猜想
+
+`RenderFlex::hit_test_children` 是
+
+    for (child, placement) in self.children.iter().zip(self.offsets.iter()).rev()
+
+`zip` 在两边长度不等时**静默取短的那一边**——offsets 空了就一个孩子都测不到。
+而 `update_from` 里 `self.children = mem::take(&mut fresh.children);`
+**并不动 `offsets`**，注释写着"下一次 layout 会重建它"。
+看上去是完美的嫌疑。
+
+**实测否掉了。** 加了一条"两者长度不等就打印"的探针，
+整场跑下来 **0 次**。长度是一致的。
+
+所以问题不在**个数**，只可能在**偏移的值**、或者孩子自己的盒子上。
+
+### 这一轮没做到的，以及又栽的那一跤
+
+想打印那个 11 孩子列的偏移值，结果最后一次抓到的是**首页**的两个 flex
+（n=25、行高 78，偏移 0/78/156/234 —— 完全正确）。
+原因是我**这一次又省掉了"点完先截图确认"那一步**，
+而这正是第 422 轮刚写进流程、第 423 轮照做才拿到正确数据的那一条。
+同一个坑，这一轮第五次。
+
+尺子：十六把全部 exit 0。门：Rust 6488 通过；gallery 356 通过；
+三个目录默认目标全部编过；探针已全部还原。
+
+**下一步**：只差一步，而且不许再省流程。
+1. 滚动 → 截图确认 → 点击 → **截图确认停在 Text fields**；
+2. 在 `RenderFlex::hit_test_children` 里，只对 `children.len() == 11` 的那个列
+   打印**全部 11 个偏移**和**全部 11 个孩子的 size**，以及传进来的 position；
+3. 对照着看：`pos=(167,148)` 落在哪一个孩子的 `[offset, offset+size)` 区间里，
+   而那个孩子的 `hit_test` 为什么返回 false。
+
+两种可能的收尾：偏移值是旧的（layout 没在 update 之后跑）——
+那就去查那个 relayout 标记为什么没生效；
+或者偏移是对的而孩子自己拒绝——那就再往里一层。
