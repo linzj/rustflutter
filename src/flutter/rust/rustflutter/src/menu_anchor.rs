@@ -350,6 +350,21 @@ pub struct MenuItemButton {
     /// `_LocalizedShortcutLabeler` is a table this crate has not ported, so
     /// what arrives is the label rather than the activator.
     pub shortcut: Option<String>,
+    /// The menu tree group this line belongs to, the same one its panel and
+    /// the button that opened it use.
+    ///
+    /// Without it a press on the line is a tap **outside** the panel the line
+    /// is in, so the panel closes on the way down and the press arrives at a
+    /// menu that is already gone.
+    pub group_id: u64,
+    /// The anchor this line sits in, which is what
+    /// [`MenuItemButton::close_on_activate`] closes from.
+    ///
+    /// Upstream reads it out of the tree -- `_MenuAnchorState._maybeOf(context)`
+    /// -- and this crate has no inherited lookup for the menu tree, so the
+    /// caller says which anchor. `None` means the line closes nothing, which
+    /// is right for a line that is not in a menu at all.
+    pub anchor_id: Option<u64>,
     leading: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
     trailing: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
     on_pressed: Option<std::rc::Rc<dyn Fn()>>,
@@ -372,6 +387,8 @@ impl std::fmt::Debug for MenuItemButton {
             .field("id", &self.id)
             .field("label", &self.label)
             .field("shortcut", &self.shortcut)
+            .field("group_id", &self.group_id)
+            .field("anchor_id", &self.anchor_id)
             .field("request_focus_on_hover", &self.request_focus_on_hover)
             .field("close_on_activate", &self.close_on_activate)
             .field("enabled", &self.enabled)
@@ -387,6 +404,8 @@ impl PartialEq for MenuItemButton {
         self.id == other.id
             && self.label == other.label
             && self.shortcut == other.shortcut
+            && self.group_id == other.group_id
+            && self.anchor_id == other.anchor_id
             && self.leading.is_some() == other.leading.is_some()
             && self.trailing.is_some() == other.trailing.is_some()
             && self.request_focus_on_hover == other.request_focus_on_hover
@@ -423,6 +442,8 @@ impl MenuItemButton {
             id: 0,
             label: String::new(),
             shortcut: None,
+            group_id: 0,
+            anchor_id: None,
             leading: None,
             trailing: None,
             on_pressed: None,
@@ -445,6 +466,14 @@ impl MenuItemButton {
 
     pub fn with_shortcut(mut self, shortcut: impl Into<String>) -> Self {
         self.shortcut = Some(shortcut.into());
+        self
+    }
+
+    /// The menu this line belongs to: its tap-region group and the anchor a
+    /// press closes from. See the two fields.
+    pub fn in_menu(mut self, anchor_id: u64, group_id: u64) -> Self {
+        self.anchor_id = Some(anchor_id);
+        self.group_id = group_id;
         self
     }
 
@@ -626,7 +655,9 @@ impl crate::framework::StatefulComponent for MenuItemButton {
         let on_pressed = self.on_pressed.clone();
         let id = self.id;
         let request_focus_on_hover = self.request_focus_on_hover;
-        crate::framework::stateful(
+        let closes = self.close_on_activate.then_some(self.anchor_id).flatten();
+        let region = crate::tap_region::TapRegion::new(self.id).with_group_id(self.group_id);
+        let line = crate::framework::stateful(
             crate::ink_well::InkResponse::new(self.id, row)
                 .with_contained(true)
                 .with_enabled(self.enabled)
@@ -670,8 +701,22 @@ impl crate::framework::StatefulComponent for MenuItemButton {
                     if let Some(on_pressed) = &on_pressed {
                         on_pressed();
                     }
+                    // Upstream's `_handleSelect`: `_anchor?._root
+                    // ._menuController.close()`. **The root**, not this level
+                    // -- choosing an item is the end of the whole
+                    // interaction, not of one panel of it, which is why it
+                    // reaches for the same place Escape does.
+                    //
+                    // After the callback, not before: upstream runs
+                    // `widget.onPressed?.call()` first, and a handler that
+                    // wanted to look at the menu it was chosen from would
+                    // otherwise find it gone.
+                    if let Some(anchor) = closes {
+                        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.dismiss(anchor));
+                    }
                 }),
-        )
+        );
+        region.build(context, line)
     }
 }
 
@@ -939,6 +984,11 @@ impl SubmenuButton {
             .with_id(self.id)
             .with_label(self.label.clone())
             .with_enabled(self.enabled);
+        // The same tap-region group, so that pressing the button is not a tap
+        // outside the panel it opened. **No anchor**, though: a line with one
+        // closes the menu when it is chosen, and a submenu button is the one
+        // line in a menu that does the opposite.
+        line.group_id = self.group_id;
         if let Some(leading) = &self.leading {
             let leading = std::rc::Rc::clone(leading);
             line = line.with_leading(move || leading());
@@ -1224,7 +1274,6 @@ impl crate::framework::StatefulComponent for SubmenuButton {
         // it opened, so pressing it closes the panel on the way down and the
         // "already open" guard below can never be reached.
         let recording = state.anchor.clone();
-        let region = crate::tap_region::TapRegion::new(self.id).with_group_id(self.group_id);
         let pressed = crate::framework::stateful(line.with_on_pressed(move || {
             // Disabled, no menu, or already open -- see
             // [`SubmenuButton::should_open`]. A second panel would be a second
@@ -1251,12 +1300,11 @@ impl crate::framework::StatefulComponent for SubmenuButton {
         }));
         // Recorded from the button's own assemble, which is where its render
         // object first exists and is the rectangle the panel is placed against.
-        let pressed = crate::framework::many(vec![pressed], move |rendered| {
+        crate::framework::many(vec![pressed], move |rendered| {
             let button = rendered.into_iter().next().expect("the button");
             recording.set(button.clone());
             crate::theatre::RenderPortal::new(button)
-        });
-        region.build(context, pressed)
+        })
     }
 }
 
@@ -2114,6 +2162,8 @@ mod tests {
     use crate::render::{BoxConstraints, Offset, RenderBox, Size};
 
     const ITEM: u64 = 8301;
+    const BAR: u64 = 8302;
+    const NESTED: u64 = 8303;
     const MARK: Color = Color(0xFF00_FF00);
     const OTHER: Color = Color(0xFFFF_00FF);
 
@@ -2173,6 +2223,137 @@ mod tests {
             Drawn::Rect { left, argb, .. } if Color(*argb) == wanted => Some(*left),
             _ => None,
         })
+    }
+
+    #[test]
+    fn choosing_a_line_closes_the_whole_menu_and_not_one_panel_of_it() {
+        // Upstream's `_handleSelect`: `_anchor?._root._menuController.close()`.
+        // **The root.** Choosing an item is the end of the interaction, not of
+        // one panel of it, which is why it reaches the same place Escape does.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(BAR));
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(NESTED));
+            tree.set_parent(NESTED, Some(BAR))
+                .expect("a child of the bar");
+            tree.open(BAR);
+            tree.open(NESTED);
+        });
+
+        let chosen = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let count = std::rc::Rc::clone(&chosen);
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(
+            an_item()
+                .in_menu(NESTED, MENU_GROUP)
+                .with_on_pressed(move || count.set(count.get() + 1)),
+        ));
+        tree.build_render_tree();
+        tap(&mut tree, Offset::new(30.0, 24.0));
+
+        assert_eq!(chosen.get(), 1, "the callback ran");
+        assert!(
+            !crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(BAR)),
+            "and the root went, not just the panel the line was in"
+        );
+        assert!(!crate::raw_menu_anchor::with_menu_tree(
+            |tree| tree.is_open(NESTED)
+        ));
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_line_told_not_to_close_leaves_the_menu_up() {
+        // Upstream's `closeOnActivate: false`, for an item that is a toggle
+        // rather than a choice -- the reader is expected to press another.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(BAR));
+            tree.open(BAR);
+        });
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(
+            an_item()
+                .in_menu(BAR, MENU_GROUP)
+                .with_close_on_activate(false)
+                .with_on_pressed(|| {}),
+        ));
+        tree.build_render_tree();
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert!(crate::raw_menu_anchor::with_menu_tree(
+            |tree| tree.is_open(BAR)
+        ));
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_line_that_is_in_no_menu_closes_nothing() {
+        // `anchor_id` is `None` for a line built on its own -- a menu item in
+        // a gallery page, say. Closing "the root" of nothing would be reaching
+        // into whatever menu happened to be open elsewhere.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(BAR));
+            tree.open(BAR);
+        });
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(an_item().with_on_pressed(|| {})));
+        tree.build_render_tree();
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert!(
+            crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(BAR)),
+            "somebody else's menu is not this line's to close"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn pressing_a_line_does_not_close_the_panel_it_is_in() {
+        // The tap region. Without it a press on a line is a tap *outside* the
+        // panel the line sits in, so the panel comes down on the way and the
+        // press arrives at a menu that is already gone.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(overlay.entry_count(), 1, "the panel is up");
+
+        // A line of that panel, in the same group, somewhere the panel is not.
+        let chosen = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let count = std::rc::Rc::clone(&chosen);
+        let line = overlay
+            .insert(move || {
+                let count = std::rc::Rc::clone(&count);
+                crate::framework::many(
+                    vec![stateful(
+                        MenuItemButton::new()
+                            .with_id(8405)
+                            .with_label("Paste")
+                            .in_menu(SUBMENU, MENU_GROUP)
+                            .with_close_on_activate(false)
+                            .with_on_pressed(move || count.set(count.get() + 1)),
+                    )],
+                    |rendered| {
+                        crate::render::RenderAlign::new(
+                            crate::render::Alignment::BOTTOM_RIGHT,
+                            rendered.into_iter().next().expect("the line"),
+                        )
+                    },
+                )
+            })
+            .expect("inserted");
+        tree.rebuild_dirty();
+
+        tap(&mut tree, Offset::new(380.0, 280.0));
+        assert_eq!(chosen.get(), 1, "the line was pressed");
+        assert_eq!(
+            overlay.entry_count(),
+            2,
+            "and the panel it belongs to is still up"
+        );
+        overlay.remove(line);
+        crate::raw_menu_anchor::reset_menu_tree();
     }
 
     #[test]

@@ -2986,3 +2986,54 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录默认目标 exit 0�
 **先查一件事**：`close_on_activate` 这个字段已经在 `MenuItemButton` 上了，
 **没人读**——确认上游关的是哪一个（`MenuController.close` 走的是根，
 还是只关自己那一层），照 `MenuAnchorTree` 里现成的方法选，别新写规则。
+
+---
+
+## 第 461 轮：选一行菜单，关掉的是整棵菜单
+
+先查上一轮那件事：上游 `_handleSelect` 是
+`_anchor?._root._menuController.close()`——**根**，不是这一层。
+所以选一项和按 Escape 到的是同一个地方，
+而 `MenuAnchorTree::dismiss(id)`（`close(root_of(id))`）正是那条现成的规则，
+不用新写。
+
+这一轮给 `MenuItemButton` 补两样：
+
+- **`group_id`**：一条菜单行要在它所在菜单的 tap-region 组里。
+  没有的话，按这一行就是"点在面板外面"——面板在按下的路上关掉，
+  而这次按压到达的是一个已经不在的菜单。
+- **`anchor_id`**：`close_on_activate` 从哪个 anchor 往上关。
+  上游是从树里查（`_MenuAnchorState._maybeOf(context)`），
+  这个 crate 没有菜单树的继承查找，所以由调用者说。
+  `None` 就是"这一行不在任何菜单里"，什么也不关——
+  否则它会伸手去关别处碰巧开着的菜单。
+
+回调**先跑，关在后面**：上游也是这个顺序，
+一个想看看自己是从哪个菜单被选中的处理函数，反过来就只能看到已经没了的菜单。
+
+### 一处因此简化掉的重复
+
+第 455 轮给 `SubmenuButton` 单独包过一层 region，而它的行现在自带一层——
+**同一个 id 两个 region**，而且后加的那层 `group_id` 是 0，
+于是按下子菜单按钮反而把面板关了（两个测试当场变红，正是这么发现的）。
+去掉 `SubmenuButton` 自己那层，改成把 `group_id` 交给行。
+行**不**拿 `anchor_id`：一条会在被选中时关掉菜单的行，
+正是子菜单按钮唯一不该做的事。
+
+### 变异扫描 10 个，第一遍全红
+
+其中"回调排在关闭之后" 10 红——顺序是被四条测试同时按住的。
+
+尺子：十六把全部 exit 0（这一轮把 `ninja` 排在尺子前面，
+上一轮的教训）。门：Rust 6703 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录默认目标 exit 0。
+
+**下一步**：`MenuBar` 还是个空壳（`menu_anchor.rs:312` 起，只有
+`resolved_panel`）。它是这条线上最后一块：一排 `SubmenuButton`，
+横着排，`parent_orientation` 是 `Horizontal`——
+而那正是第 458 轮 `MenuLayout` 里"不翻转、往边上推"的那一支，
+现在**只有单元测试在用，没有真调用者**。
+**先查一件事**：菜单栏的每一项按下时，上游是打开还是"如果已有别的开着就切换"
+（看 `_MenuBarState` / `MenuAnchor` 的 `_focusButton` 与
+`SubmenuButton._handleHover`：菜单栏开着时，**指针划过**另一项就换过去，
+不用再按一下）。确认这条再决定 `MenuBar` 要不要自己拿状态。
