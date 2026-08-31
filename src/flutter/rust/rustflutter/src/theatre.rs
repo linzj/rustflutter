@@ -1642,6 +1642,11 @@ pub fn show_modal(
     pending.set(entry_id);
 
     crate::focus::trap_focus(focus_root);
+    // Upstream's `_ModalScope` is a `FocusScope(autofocus: true)`: a route that
+    // comes up takes the keyboard. Not a nicety -- key handlers are reached by
+    // walking up from the focused node, so a dialog nobody focused is a dialog
+    // whose own handlers never run.
+    crate::focus::autofocus_in(focus_root);
     MODALS.with(|modals| {
         modals.borrow_mut().push(ModalRecord {
             entry_id,
@@ -2973,6 +2978,134 @@ mod tests {
         );
         outer.dismiss();
         assert_eq!(crate::focus::active_trap(), None);
+    }
+
+    // -- Autofocus -----------------------------------------------------------
+
+    /// A modal whose content is one focusable node, plus a second focusable
+    /// node out on the page behind it.
+    fn modal_with_focusables() -> (ElementTree, Rc<crate::theatre::OverlayHandle>) {
+        crate::focus::reset_scopes();
+        crate::focus::reset_pending_autofocus();
+        modal_tree()
+    }
+
+    #[test]
+    fn a_dialog_that_comes_up_takes_the_keyboard() {
+        // Upstream's `_ModalScope` is `FocusScope(autofocus: true)`. Without
+        // it the keyboard stays wherever it was -- and because key handlers
+        // are reached by walking up from the focused node, none of the
+        // dialog's handlers run until the reader presses Tab.
+        let (mut tree, handle) = modal_with_focusables();
+        assert_eq!(crate::focus::focused(), None, "nothing has the keyboard");
+
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), || {
+            crate::framework::component(crate::focus::Focus::new(4161, leaf(10.0, 10.0)))
+        })
+        .expect("shown");
+        tree.rebuild_dirty();
+        // The request is pending, not granted: the node it names registered in
+        // that rebuild and did not exist when the modal asked.
+        crate::focus::apply_pending_autofocus();
+
+        assert_eq!(
+            crate::focus::focused(),
+            Some(4161),
+            "the dialog's own node has it"
+        );
+        modal.dismiss();
+    }
+
+    #[test]
+    fn a_dialog_does_not_fight_a_node_that_already_asked() {
+        // Upstream's autofocus "focuses only if the scope has no focus yet".
+        // A dialog whose text field asked for the keyboard itself keeps it,
+        // rather than being yanked back to whatever happens to be first.
+        let (mut tree, handle) = modal_with_focusables();
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), || {
+            crate::framework::many(
+                vec![
+                    crate::framework::component(crate::focus::Focus::new(4162, leaf(10.0, 10.0))),
+                    crate::framework::component(crate::focus::Focus::new(4163, leaf(10.0, 10.0))),
+                ],
+                |rendered| {
+                    let mut column = crate::render::RenderFlex::column();
+                    for child in rendered {
+                        column = column.push(child);
+                    }
+                    column
+                },
+            )
+        })
+        .expect("shown");
+        tree.rebuild_dirty();
+
+        // The second one asks first, the way a field with its own autofocus
+        // would.
+        assert!(crate::focus::focus(4163));
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(
+            crate::focus::focused(),
+            Some(4163),
+            "it was not pulled back to the first stop"
+        );
+        modal.dismiss();
+    }
+
+    #[test]
+    fn a_dialog_dismissed_before_the_frame_does_not_pull_the_focus_anywhere() {
+        // The request outlives the modal by a frame, and `traversal_order`
+        // with no trap in force answers with the *page's* stops -- so a
+        // request granted late would put the keyboard on the page behind a
+        // dialog the reader had already closed.
+        let (mut tree, handle) = modal_with_focusables();
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), || {
+            crate::framework::component(crate::focus::Focus::new(4164, leaf(10.0, 10.0)))
+        })
+        .expect("shown");
+        tree.rebuild_dirty();
+        modal.dismiss();
+        tree.rebuild_dirty();
+
+        assert!(!crate::focus::apply_pending_autofocus());
+        assert_eq!(crate::focus::focused(), None, "nothing was grabbed");
+    }
+
+    #[test]
+    fn the_inner_dialog_is_the_one_that_gets_the_keyboard() {
+        // Two requests pending in one frame. Only the trap in force may claim
+        // it, so an outer modal that came up in the same frame does not take
+        // the keyboard out of the one on top of it.
+        let (mut tree, handle) = modal_with_focusables();
+        let outer = show_modal(Rc::clone(&handle), ModalBarrier::new(), || {
+            crate::framework::component(crate::focus::Focus::new(4165, leaf(10.0, 10.0)))
+        })
+        .expect("shown");
+        let inner = show_modal(Rc::clone(&handle), ModalBarrier::new(), || {
+            crate::framework::component(crate::focus::Focus::new(4166, leaf(10.0, 10.0)))
+        })
+        .expect("shown");
+        tree.rebuild_dirty();
+        crate::focus::apply_pending_autofocus();
+
+        assert_eq!(crate::focus::focused(), Some(4166), "the inner one");
+        inner.dismiss();
+        outer.dismiss();
+    }
+
+    #[test]
+    fn a_dialog_with_nothing_focusable_in_it_leaves_the_keyboard_alone() {
+        // A confirmation with only text in it has no stop to give the
+        // keyboard to. Focusing *something* anyway would reach past the trap
+        // and land on the page the dialog is covering.
+        let (mut tree, handle) = modal_with_focusables();
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), || leaf(10.0, 10.0))
+            .expect("shown");
+        tree.rebuild_dirty();
+
+        assert!(!crate::focus::apply_pending_autofocus());
+        assert_eq!(crate::focus::focused(), None);
+        modal.dismiss();
     }
 
     // -- Escape ------------------------------------------------------------------

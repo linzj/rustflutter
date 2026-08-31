@@ -855,6 +855,12 @@ impl<W: WidgetApplication> Application for WidgetHost<W> {
             self.tree.rebuild_dirty() > 0 || republished || relocalised
         };
 
+        // The nodes a modal wants to focus have only just registered, in the
+        // build above -- so this is where a pending autofocus can be granted
+        // and not before. Upstream's `applyFocusChangesIfNeeded` sits at the
+        // same point for the same reason.
+        crate::focus::apply_pending_autofocus();
+
         // Anything built this frame has never been asked whether it wants to
         // move, because advancing happens before building. One more frame gives
         // it the chance; if it says no, that is where the loop stops. Without

@@ -1301,6 +1301,78 @@ pub fn active_trap() -> Option<u64> {
     TRAPS.with(|traps| traps.borrow().last().copied())
 }
 
+thread_local! {
+    /// Traps that have asked for the focus and have not had it yet.
+    ///
+    /// Upstream's `FocusManager._pendingAutofocuses`, and it is a *pending*
+    /// list for the reason upstream's is: a `FocusScope(autofocus: true)` says
+    /// what it wants while it is being built, and at that moment none of the
+    /// nodes it would focus have registered yet. Focusing there would find an
+    /// empty tree and do nothing at all.
+    static PENDING_AUTOFOCUS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Asks for the focus to be put inside `trap` once its nodes exist.
+///
+/// Upstream's `FocusScope(autofocus: true)`, which every route carries
+/// (`_ModalScope`). Without it a dialog comes up with the keyboard still
+/// wherever it was -- and since [`dispatch_key`] starts from the focused node,
+/// **none of the dialog's key handlers run** until the reader presses Tab.
+pub fn autofocus_in(trap: u64) {
+    PENDING_AUTOFOCUS.with(|pending| pending.borrow_mut().push(trap));
+}
+
+/// Grants the pending autofocus requests. Called once per frame, **after** the
+/// build that registers the nodes.
+///
+/// Upstream's `applyFocusChangesIfNeeded` does the same at the same point in
+/// the frame, and for the same reason.
+///
+/// Returns whether the focus moved.
+pub fn apply_pending_autofocus() -> bool {
+    let pending: Vec<u64> =
+        PENDING_AUTOFOCUS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+    if pending.is_empty() {
+        return false;
+    }
+    // Only the trap actually in force may claim the focus. An outer modal's
+    // request is superseded by an inner one, and a modal dismissed before the
+    // frame arrived must not pull the focus into a dialog that has gone --
+    // without this, its request would be granted against the *page's* stops,
+    // because that is what `traversal_order` answers with no trap.
+    let Some(active) = active_trap() else {
+        return false;
+    };
+    // Belt and braces, and said so rather than left to look like coverage:
+    // a mutation dropping this line survives every test here, because the only
+    // way the trap in force is one that never asked is with an *older* modal
+    // still up -- and then the focus is already inside it, so `already_inside`
+    // below refuses anyway. Kept because the two say different things.
+    if !pending.contains(&active) {
+        return false;
+    }
+    let (already_inside, first) = MANAGER.with(|manager| {
+        let manager = manager.borrow();
+        let stops = traversal_order(&manager);
+        let inside = manager.focused.is_some_and(|id| stops.contains(&id));
+        (inside, stops.first().copied())
+    });
+    // Upstream's autofocus "does not fight a scope that already chose": a
+    // dialog whose field asked for the focus itself keeps it.
+    if already_inside {
+        return false;
+    }
+    match first {
+        Some(id) => focus(id),
+        None => false,
+    }
+}
+
+/// Forgets the pending requests. For tests, and for a view being torn down.
+pub fn reset_pending_autofocus() {
+    PENDING_AUTOFOCUS.with(|pending| pending.borrow_mut().clear());
+}
+
 /// Whether a node is reachable under the trap in force.
 fn within_trap(manager: &FocusManager, id: u64) -> bool {
     let Some(trap) = active_trap() else {

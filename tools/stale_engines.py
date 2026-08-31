@@ -38,8 +38,50 @@ FFI = [
 LIBS = ['rustflutter_engine.lib', 'librustflutter_engine.a']
 
 
-def newest_source():
-    """When the FFI last changed, and which file it was."""
+# Host sources only one platform compiles. Judging every engine against all of
+# them makes a ruler that **cannot be cleared**: editing the Windows host marks
+# the Android engines stale, and no rebuild fixes it because no Android target
+# ever compiled that file. A permanently red instrument is worse than none --
+# it trains the reader to ignore it.
+PLATFORM_ONLY = {
+    'win': ('_win.cc', '_win.h'),
+    'mac': ('_mac.mm', '_mac.cc', '_mac.h'),
+    'android': ('_android.cc', '_android.h'),
+}
+
+
+def platform_of(out_dir):
+    """Which platform an output directory builds for, by its name."""
+    name = out_dir.lower()
+    if 'android' in name:
+        return 'android'
+    if 'mac' in name or 'ios' in name:
+        return 'mac'
+    # A host build on this machine is the Windows one; a checkout on Linux has
+    # no platform-only host sources of its own to exclude.
+    return 'win'
+
+
+def compiled_for(path, platform):
+    """Whether `path` is a source that `platform` actually builds."""
+    name = os.path.basename(path)
+    for other, suffixes in PLATFORM_ONLY.items():
+        if other == platform:
+            continue
+        if name.endswith(suffixes):
+            return False
+    # Anything under host/android/ is the Android host's alone.
+    normalised = path.replace(os.sep, '/')
+    if '/host/android/' in normalised and platform != 'android':
+        return False
+    return True
+
+
+def newest_source(platform=None):
+    """When the FFI last changed, and which file it was.
+
+    With a `platform`, only the sources that platform compiles are looked at.
+    """
     newest, which = 0.0, None
     for entry in FFI:
         if os.path.isfile(entry):
@@ -54,6 +96,8 @@ def newest_source():
         else:
             continue
         for path in paths:
+            if platform is not None and not compiled_for(path, platform):
+                continue
             stamp = os.path.getmtime(path)
             if stamp > newest:
                 newest, which = stamp, path
@@ -77,7 +121,7 @@ def engines():
 
 
 def main():
-    newest, which = newest_source()
+    overall, which = newest_source()
     if which is None:
         print('no FFI sources found')
         return 0
@@ -90,10 +134,16 @@ def main():
 
     stale = []
     for name, path, stamp in built:
-        state = 'stale' if stamp < newest else 'ok'
+        # Each engine is judged against **its own** platform's sources.
+        newest, source = newest_source(platform_of(name))
+        state = 'stale' if source is not None and stamp < newest else 'ok'
         if state == 'stale':
             stale.append(name)
-        print('  %-24s %s' % (name, state))
+            print('  %-24s %s (%s)'
+                  % (name, state,
+                     os.path.relpath(source, SRC).replace(os.sep, '/')))
+        else:
+            print('  %-24s %s' % (name, state))
 
     if stale:
         print()

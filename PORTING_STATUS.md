@@ -202,3 +202,76 @@ resize / images_arrived 时重建（第 405 轮量过一次，答案是后者）
 如果是后者，那么根上的 `Actions` 里那些 action 闭包**捕获的是哪一帧的东西**就要想清楚——
 捕获了 `&mut self` 里的东西会在下一帧过期。
 先确认根树重建的条件，再决定 action 该怎么拿到它要动的状态。
+
+---
+
+## 第 416 轮：对话框弹出来时**没人拿键盘**，所以它自己的按键处理器一个都不跑
+
+按"下一步"查根树重建条件，顺着往下查，撞到的是更基础的一条。
+
+上游 `KeyEventManager` 的分发是
+`[primaryFocus!, ...primaryFocus!.ancestors]`——**从获得焦点的节点往上走**。
+那个 `!` 不是疏忽：`FocusManager` 保证 primaryFocus 非空
+（`_primaryFocus == null && _markedForFocus == null` 时回落到 `rootScope`）。
+而真正让 app 根上的 `Shortcuts` 能收到键的，是**路由自己抢了焦点**——
+`_ModalScope` 是 `FocusScope(node: ..., autofocus: true)`。
+
+本项目 `focus.rs::dispatch_key` 在 `manager.focused` 是 `None` 时**直接返回空链**，
+而 `theatre::show_modal` 只调 `trap_focus`（装个陷阱），**从不移动焦点**。
+于是：**弹出一个对话框，键盘还在原地（多半是 None），
+对话框自己的 `on_key` 一个都不会跑，直到用户按一下 Tab。**
+
+补上上游那套**待批的 autofocus**：
+`autofocus_in(trap)` 记下请求，`apply_pending_autofocus()` 批准。
+是"待批"而不是当场生效，理由和上游 `_pendingAutofocuses` 一样——
+`FocusScope(autofocus: true)` 是在**构建时**说出愿望的，
+而那一刻它要聚焦的节点**一个都还没注册**（这个框架里焦点节点是靠 build 注册的）。
+所以批准点在 `RfApp::frame` 的 **build 之后**，正对上游
+`applyFocusChangesIfNeeded` 在帧里的位置。
+
+三条按事实定的规矩：
+- **只有正在生效的那个陷阱可以领**——否则一个在帧到达前就被关掉的对话框，
+  它的请求会拿**页面**的停靠点去批（没有陷阱时 `traversal_order` 答的就是整页），
+  把键盘塞到用户已经关掉的对话框后面那一页上。
+- **不跟已经选好的抢**——上游 autofocus 的原话是"只在该 scope 还没有焦点时才聚焦"。
+- **一个可聚焦停靠点都没有的对话框，不动键盘**——
+  只有文字的确认框没有可给的地方，硬给会越过陷阱落到它盖住的那一页上。
+
+变异扫描 7 个，第一遍 5 红。两条活的都**如实记下、没有编测试去糊**：
+- "外层对话框把键盘从内层抢走"：那条 `pending.contains(&active)` 守卫
+  **在现有规则下推不出可观察差异**——唯一能让"生效的陷阱没提过请求"的情形，
+  是更外层的对话框还开着，而那时焦点已经在它里面，下面的 `already_inside` 照样拒绝。
+  写进代码注释了。
+- "帧里根本不批准"：`RfApp` 在测试里造不出来，
+  `apply_pending_autofocus()` 这个函数本身测得很透，
+  但"帧里有没有调它"这条接线**测不到**——和第 412 轮 `on_key` 那个守卫同一族。
+
+### 顺带修了一把**永远清不掉的尺子**
+
+改了 `rustflutter_host_win.cc` 之后 `stale_engines` 报两个 android 引擎陈旧，
+而 `ninja` 说"无事可做"——因为那是**只有 Windows 才编的文件**，
+android 目标从来没编过它，**任何重建都清不掉这个红**。
+一把永远红的仪器比没有更糟：它训练人忽略它。
+改成**每个引擎只和自己平台编的源比**，并做了标定：
+碰共享的 `rust_app_api.h` → 三个全红；碰 android 专属源 → 只有两个 android 红。
+
+尺子：十六把全部 exit 0。门：Rust 6488 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 354 通过；三个目录默认目标全部编过；三个引擎重建。
+
+**下一步**：用户报了一个真缺陷，已经查到底了，下一轮修它。
+右键点文本框：Windows host 此前**根本不转发右键**（已修，见 `72df0b8`），
+现在事件带着 `buttons=2` 到达框架了，但菜单**还是不出来**。
+探针打出命中路径：
+
+    path target=40005 tap=true secondary=false   <- 吃掉了这次按下
+    path target=302   tap=false secondary=false
+
+`editable.rs:3727` 那个带 `on_secondary_tap` 的区域**根本不在路径上**，
+而 `focus.rs:1649` 的 `Focus` 用**同一个 id** 也建了一个 `RenderPointerRegion`，
+它只有 `on_tap`。**两个区域共用一个 id，外面那个把里面那个的处理器盖住了。**
+先查清楚这两个区域的嵌套关系和 `RenderPointerRegion` 的命中规则
+（为什么内层没有出现在路径里），再决定是合并成一个区域、还是让命中把两层都收进来。
+另外还有第三件事，是同一个报告里的**外观**问题：
+本项目写死 `MaterialTextSelectionControls`（手机上那种药丸条），
+而上游桌面用的是 `DesktopTextSelectionControls`（截图里那种方角菜单）——
+`text_selection_controls.rs` 里那些类现在还是没有生产者的数据。
