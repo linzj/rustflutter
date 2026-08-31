@@ -1802,12 +1802,28 @@ fn clipboard_shortcuts(
 /// sets base or extent from it, leaving the *other* end where it was. The
 /// handle arrives in global coordinates because it lives in the overlay, so
 /// the first thing done with it is to bring it back into the field.
+/// How far above the finger the selection point sits during a handle drag.
+///
+/// The grab when there is one -- upstream keeps where in the handle the finger
+/// landed for the whole drag, so a handle taken by its edge does not jump to
+/// put its middle under the finger. Half a line when there is not: a drag with
+/// no press behind it (a synthetic move, or one begun before the press was
+/// reported) has no grab to honour, and the old constant is the honest answer
+/// rather than zero, which would put the point at the handle's tip.
+fn handle_lift(grab: Option<Offset>, line_height: f32) -> f32 {
+    match grab {
+        Some(grab) => grab.dy,
+        None => line_height / 2.0,
+    }
+}
+
 fn drag_handle_to(
     handle: StateHandle<TextFieldState>,
     anchor: Rc<RefCell<Option<crate::render::RenderRef>>>,
     lines: LinesSink,
     shown: String,
     real: String,
+    grabbed: Rc<RefCell<crate::text_selection::TextSelectionOverlay>>,
 ) -> Rc<dyn Fn(crate::selection_host::HandleEnd, Offset)> {
     Rc::new(move |end, global: Offset| {
         let Some(field) = anchor.borrow().clone() else {
@@ -1817,12 +1833,20 @@ fn drag_handle_to(
             return;
         };
         let local = field.global_to_local(global, None);
-        // A handle is dragged by its tip, which hangs a line below the text it
-        // holds -- so the point the reader means is a line height above the
-        // finger. Upstream reaches the same place through the handle's anchor.
+        // A handle hangs below the text it holds, so the point the reader
+        // means is above the finger -- and **how far** above is where in the
+        // handle they grabbed it.
+        //
+        // This was a constant half a line, with a comment claiming upstream
+        // reached the same place through the handle's anchor. It does not:
+        // `_handleSelectionStartHandleDragStart` records the grab and keeps it
+        // for the whole drag, so a handle taken by its edge does not jump to
+        // put its middle under the finger. `TextSelectionOverlay` had that
+        // rule ported and nothing calling it; this is the call.
+        let lift = handle_lift(grabbed.borrow().grab_offset(), layout.line_height);
         let at = Offset::new(
             local.dx + layout.scroll.dx,
-            local.dy + layout.scroll.dy - layout.line_height / 2.0,
+            local.dy + layout.scroll.dy - lift,
         );
         let measure = |run: &str| {
             if run.is_empty() {
@@ -3530,12 +3554,22 @@ impl StatefulComponent for TextField {
                         // colorScheme.primary`; this crate's theme has the
                         // second of those.
                         host.set_handle_color(theme.primary);
+                        // One overlay object shared by the two callbacks:
+                        // the press records the grab, every move reads it.
+                        let grabbed = Rc::new(RefCell::new(
+                            crate::text_selection::TextSelectionOverlay::new(),
+                        ));
+                        let began = Rc::clone(&grabbed);
+                        host.set_on_drag_start(Rc::new(move |_end, grab: Offset| {
+                            began.borrow_mut().begin_handle_drag(grab);
+                        }));
                         host.set_on_drag(drag_handle_to(
                             handle.clone(),
                             Rc::clone(&reveal_anchor),
                             Rc::clone(&lines_sink),
                             shown.text.clone(),
                             real_text.clone(),
+                            grabbed,
                         ));
                         *state.selection_overlay.borrow_mut() = Some(host);
                     }
@@ -5510,6 +5544,16 @@ mod tests {
             stack.extend(children);
         }
         None
+    }
+
+    #[test]
+    fn the_lift_during_a_handle_drag_is_the_grab_when_there_is_one() {
+        // With a grab the point follows where the handle was taken; without
+        // one it falls back to half a line rather than to zero, which would
+        // put the selection at the handle's tip.
+        assert_eq!(handle_lift(Some(Offset::new(3.0, 2.0)), 20.0), 2.0);
+        assert_eq!(handle_lift(Some(Offset::new(3.0, 17.0)), 20.0), 17.0);
+        assert_eq!(handle_lift(None, 20.0), 10.0, "half a line");
     }
 
     #[test]

@@ -122,6 +122,14 @@ struct OverlayGeometry {
     /// Where a finger on a handle is reported. The field installs it; the
     /// entries read it when they build.
     on_drag: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, Offset)>>>>,
+    /// Where inside the handle the finger landed, reported once when it does.
+    ///
+    /// Upstream's `_handleSelectionStartHandleDragStart` records this and
+    /// keeps it for the whole drag, which is what stops the selection jumping
+    /// to the handle's middle the moment a reader grabs it near an edge. Only
+    /// moves were reported here before, so there was nothing that *could*
+    /// know where the grab was.
+    on_drag_start: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, Offset)>>>>,
     /// What tells the three entries the cells above changed. One between them,
     /// because a handle moving and the toolbar moving are the same frame's
     /// work and there is nothing to gain from waking them separately.
@@ -141,6 +149,7 @@ impl Default for OverlayGeometry {
             toolbar_visible: Rc::default(),
             handle_color: Rc::new(Cell::new(crate::engine::Color(0))),
             on_drag: Rc::default(),
+            on_drag_start: Rc::default(),
             refresh: EntryRefresh::default(),
         }
     }
@@ -277,6 +286,7 @@ impl StatefulComponent for HandleEntry {
         let color = self.geometry.handle_color.get();
         let end = self.end;
         let on_drag = self.geometry.on_drag.borrow().clone();
+        let on_drag_start = self.geometry.on_drag_start.borrow().clone();
         crate::framework::leaf(move || {
             let onion = crate::render::RenderCustomPaint::new(RenderConstrainedBox::tight(
                 size.width,
@@ -293,6 +303,20 @@ impl StatefulComponent for HandleEntry {
             // rotation is nought.
             let turned = crate::render::RenderTransform::rotate(handle_rotation(kind), onion);
             let mut handlers = crate::gestures::PointerHandlers::new();
+            if let Some(on_drag_start) = on_drag_start.clone() {
+                // The **local** position: where in the handle the finger is,
+                // which is the whole point of reporting the press separately
+                // from the moves.
+                // Untested wiring, said so rather than left looking covered:
+                // a handle is built inside an overlay entry, so reaching this
+                // handler from a test means standing up an overlay and
+                // dispatching a real press through it. The rule it feeds --
+                // `TextSelectionOverlay`'s grab -- is tested on its own.
+                let started = Rc::clone(&on_drag_start);
+                handlers = handlers.with_pointer_down(move |event| {
+                    started(end, event.local_position);
+                });
+            }
             if let Some(on_drag) = on_drag.clone() {
                 // Raw pointer moves rather than a drag recogniser: a handle
                 // sits in the overlay, above whatever is scrolling underneath,
@@ -510,6 +534,12 @@ impl SelectionHost {
     /// Where a finger dragging a handle is reported, so the field can move the
     /// selection's edge to follow it. Upstream's
     /// `TextSelectionOverlay._handleSelectionHandleDragUpdate`.
+    /// Told where inside a handle a drag began. See
+    /// [`SelectionGeometryShared::on_drag_start`].
+    pub fn set_on_drag_start(&mut self, on_drag_start: Rc<dyn Fn(HandleEnd, Offset)>) {
+        *self.geometry.on_drag_start.borrow_mut() = Some(on_drag_start);
+    }
+
     pub fn set_on_drag(&mut self, on_drag: Rc<dyn Fn(HandleEnd, Offset)>) {
         *self.geometry.on_drag.borrow_mut() = Some(on_drag);
         self.geometry.touch();

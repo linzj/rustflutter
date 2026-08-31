@@ -3269,6 +3269,15 @@ impl TextSelectionOverlay {
         self.drag_offset = None;
     }
 
+    /// Where inside the handle the finger landed, if a drag is under way.
+    ///
+    /// The grab is what stops a handle jumping under the finger: upstream
+    /// keeps it for the whole drag rather than re-deriving a position from
+    /// the handle's middle each move.
+    pub fn grab_offset(&self) -> Option<Offset> {
+        self.drag_offset
+    }
+
     pub fn is_dragging_handle(&self) -> bool {
         self.drag_offset.is_some()
     }
@@ -5882,6 +5891,43 @@ two";
         assert_eq!(
             overlay.line_height_at_end, 32.0,
             "the two ends can be on lines of different size"
+        );
+    }
+
+    #[test]
+    fn a_handle_grabbed_near_its_edge_does_not_jump_to_its_middle() {
+        // Upstream's `_handleSelectionStartHandleDragStart` records where in
+        // the handle the finger landed and keeps it for the whole drag. The
+        // rule was ported here and had nothing calling it; the field used a
+        // constant half a line instead, so a handle taken by its top edge
+        // moved the selection as though it had been taken by its middle.
+        let mut overlay = TextSelectionOverlay::new();
+        assert_eq!(overlay.grab_offset(), None, "nothing grabbed yet");
+
+        overlay.begin_handle_drag(Offset::new(3.0, 2.0));
+        assert_eq!(overlay.grab_offset(), Some(Offset::new(3.0, 2.0)));
+
+        // The same finger position means two different selection points
+        // depending on where the handle was grabbed -- which is the whole
+        // difference between this and a constant.
+        let finger = Offset::new(100.0, 50.0);
+        assert_eq!(
+            overlay.handle_drag_position(finger),
+            Offset::new(97.0, 48.0)
+        );
+        overlay.begin_handle_drag(Offset::new(3.0, 18.0));
+        assert_eq!(
+            overlay.handle_drag_position(finger),
+            Offset::new(97.0, 32.0),
+            "grabbed lower down, the selection point is higher up"
+        );
+
+        overlay.end_handle_drag();
+        assert_eq!(overlay.grab_offset(), None, "and the grab is let go");
+        assert_eq!(
+            overlay.handle_drag_position(finger),
+            finger,
+            "with nothing grabbed the finger is taken as it is"
         );
     }
 

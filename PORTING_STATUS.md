@@ -1063,3 +1063,59 @@ gallery 里有没有现成的地方本该用它（比如演示页的说明文字
 有的话接一个真实调用者比再造一个新控件值钱。
 没有的话就回队头，`TextSelectionOverlay`（0.24，6/25）和
 `SearchAnchor`（0.24，8/33）是下两个真控件。
+
+---
+
+## 第 430 轮：拖手柄终于记得**是从哪儿抓住它的**
+
+先查上一轮留的问题：gallery 里有没有地方本该用 `SelectableText`。
+**答案是没有，而且这不是缺口**——去上游框架里搜，
+`SelectableText` 只在文档交叉引用里出现，**框架自己一次都不用它**。
+它是给写 app 的人用的公开控件。硬在 gallery 里塞一个消费者，
+是在造上游没有的用法。如实记下，回队头。
+
+### 队头挑到 `TextSelectionOverlay`（0.24，6/25），查下去是"规则齐了、没人调"
+
+`text_selection.rs::TextSelectionOverlay` 是个小结构：记下抓取点、
+`handle_drag_position` 按它换算。**只有自己的测试在用它。**
+真正在跑的是 `selection_host.rs`（1663 行）+ `editable.rs::drag_handle_to`。
+
+而那条真路径是这么算的：
+
+    local.dy + scroll.dy - layout.line_height / 2.0
+    // 注释：Upstream reaches the same place through the handle's anchor.
+
+**那条注释不对。** 上游 `_handleSelectionStartHandleDragStart`
+把"手指落在手柄里的哪个位置"记下来、整个拖动过程都用它，
+所以**从边缘抓住手柄不会让它跳到手指底下把中心对上去**。
+本项目用的是"半行"这个常数——抓哪儿都当成抓中间。
+
+再往下查，发现真路径**根本没机会知道**：`selection_host` 给手柄挂的只有
+`with_pointer_move`，**没有 `with_pointer_down`**，按下那一刻的位置从来没被报出来过。
+
+### 于是这一轮把这条线接通
+
+1. `selection_host` 新增 `on_drag_start`，在手柄的指针按下时报出
+   **局部**位置——那正是"抓在手柄里的哪儿"。
+2. `editable.rs` 把它喂给 `TextSelectionOverlay::begin_handle_drag`，
+   拖动时读 `grab_offset()`——**那条移植好却没人调的规则，现在有了调用者**。
+3. 换算抽成 `handle_lift(grab, line_height)`：有抓取点就用它，
+   没有就退回半行——**不是退回 0**，那会把选择点放到手柄的尖上。
+
+### 变异扫描 7 个，第一遍 4 红，抽出 `handle_lift` 后 6 红
+
+活着的最后一条是 `selection_host` 里那个按下处理器的接线：
+手柄是在 overlay entry 里建的，要从测试碰到它得先把一个 overlay 立起来、
+再从里面派发一次真实按下。**写进代码注释了**，
+它喂的那条规则本身是单独测过的。
+
+尺子：十六把全部 exit 0。门：Rust 6509 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：手柄拖动这条线还差一头——**没有人调 `end_handle_drag`**。
+按下记住了、移动用上了，但手指抬起时那个抓取点**不会被清掉**，
+所以下一次拖动会先沿用上一次的抓取点，直到第一次 `pointer_down` 覆盖它。
+实际影响很小（按下总是先于移动），但它是**一条半接完的线**，
+下一轮接完：`selection_host` 补一个 `on_drag_end`（`with_pointer_up`），
+`editable.rs` 里调 `end_handle_drag`。
+接完之后再回 `depth.py` 队头——`SearchAnchor`（0.24，8/33）是下一个真控件。
