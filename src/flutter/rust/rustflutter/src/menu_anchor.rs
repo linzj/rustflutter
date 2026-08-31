@@ -368,6 +368,7 @@ pub struct MenuItemButton {
     leading: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
     trailing: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
     on_pressed: Option<std::rc::Rc<dyn Fn()>>,
+    on_hover: Option<std::rc::Rc<dyn Fn(bool)>>,
     /// Upstream's `requestFocusOnHover`, **true** by default.
     ///
     /// This port had it false. A pointer moving down a menu carries the focus
@@ -447,6 +448,7 @@ impl MenuItemButton {
             leading: None,
             trailing: None,
             on_pressed: None,
+            on_hover: None,
             request_focus_on_hover: true,
             close_on_activate: true,
             enabled: true,
@@ -498,6 +500,18 @@ impl MenuItemButton {
     /// them apart.
     pub fn with_on_pressed(mut self, pressed: impl Fn() + 'static) -> Self {
         self.on_pressed = Some(std::rc::Rc::new(pressed));
+        self
+    }
+
+    /// Upstream's `onHover`, told when the pointer arrives and leaves.
+    ///
+    /// Upstream hangs it on `MouseRegion.onHover` rather than `onEnter`, and
+    /// says why: *"onEnter and TextButton.onHover are called if a button is
+    /// hovered after scrolling. This interferes with focus traversal and
+    /// scroll position."* A list that scrolled under a still pointer would
+    /// otherwise move the focus by itself.
+    pub fn with_on_hover(mut self, hover: impl Fn(bool) + 'static) -> Self {
+        self.on_hover = Some(std::rc::Rc::new(hover));
         self
     }
 
@@ -653,6 +667,7 @@ impl crate::framework::StatefulComponent for MenuItemButton {
         };
 
         let on_pressed = self.on_pressed.clone();
+        let on_hover = self.on_hover.clone();
         let id = self.id;
         let request_focus_on_hover = self.request_focus_on_hover;
         let closes = self.close_on_activate.then_some(self.anchor_id).flatten();
@@ -675,6 +690,9 @@ impl crate::framework::StatefulComponent for MenuItemButton {
                         // acts on whatever the keyboard was left on.
                         if hovering && request_focus_on_hover {
                             crate::focus::focus(id);
+                        }
+                        if let Some(on_hover) = &on_hover {
+                            on_hover(hovering);
                         }
                         handle.set_state(move |state| {
                             state.states.update(WidgetState::Hovered, hovering);
@@ -826,6 +844,14 @@ pub struct SubmenuButton {
     /// [`crate::theatre::show_tap_dismissed`] uses to tell a tap on a sibling
     /// panel from a tap outside the whole menu.
     pub group_id: u64,
+    /// Which way the menu this button sits in runs: `Horizontal` for an entry
+    /// of a menu **bar**, `Vertical` for a line of a panel.
+    ///
+    /// It decides two different things, which is why it is one field and not
+    /// two: where this button's own panel is placed (see [`MenuLayout`]) and
+    /// whether hovering opens it (see
+    /// [`SubmenuButton::opens_on_hover`]).
+    pub parent_orientation: MenuAxis,
     /// The panel this button opens. `None` opens nothing, which is a button
     /// that looks like a submenu and is not one -- worth being able to build,
     /// and worth being obvious.
@@ -842,6 +868,7 @@ impl std::fmt::Debug for SubmenuButton {
             .field("has_submenu_icon", &self.has_submenu_icon)
             .field("enabled", &self.enabled)
             .field("group_id", &self.group_id)
+            .field("parent_orientation", &self.parent_orientation)
             .finish_non_exhaustive()
     }
 }
@@ -854,6 +881,7 @@ impl PartialEq for SubmenuButton {
             && self.has_submenu_icon == other.has_submenu_icon
             && self.enabled == other.enabled
             && self.group_id == other.group_id
+            && self.parent_orientation == other.parent_orientation
             && self.menu.is_some() == other.menu.is_some()
             && self.leading.is_some() == other.leading.is_some()
     }
@@ -915,9 +943,43 @@ impl SubmenuButton {
             has_submenu_icon: true,
             enabled: true,
             group_id: 0,
+            parent_orientation: MenuAxis::Vertical,
             menu: None,
             leading: None,
         }
+    }
+
+    /// Marks this button as an entry of a menu **bar**. See
+    /// [`SubmenuButton::parent_orientation`].
+    pub fn in_a_bar(mut self, in_a_bar: bool) -> Self {
+        self.parent_orientation = if in_a_bar {
+            MenuAxis::Horizontal
+        } else {
+            MenuAxis::Vertical
+        };
+        self
+    }
+
+    /// Whether the pointer arriving on this button should open its menu.
+    ///
+    /// Upstream's rule, quoted from `handlePointerHover`:
+    ///
+    /// > Don't open the root menu bar menus on hover unless a sibling menu is
+    /// > already open. This means that the user has to first click to open a
+    /// > menu on the menu bar before hovering allows them to traverse it.
+    ///
+    /// So a menu bar is **inert to the pointer until somebody clicks it**, and
+    /// afterwards the whole bar tracks the pointer. Without the first half, a
+    /// pointer crossing the top of a window on its way somewhere else would
+    /// drop menus open behind it.
+    ///
+    /// A button inside a panel has no such condition: its parent menu is by
+    /// definition already open, or the button would not be on screen.
+    pub fn opens_on_hover(&self) -> bool {
+        if self.parent_orientation != MenuAxis::Horizontal {
+            return true;
+        }
+        crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(tree.root_of(self.id)))
     }
 
     pub fn with_id(mut self, id: u64) -> Self {
@@ -1226,15 +1288,15 @@ impl crate::framework::StatefulComponent for SubmenuButton {
         let menu = self.menu.clone();
         let asking = self.clone();
         let anchor = state.anchor.clone();
-        // The panel hangs from the button's bottom-left corner and runs down,
-        // under a button that is itself one line of a vertical panel. A menu
-        // bar's buttons would say `Horizontal` here, which is what turns the
-        // "try the other side" flip into a slide -- see [`MenuLayout`].
+        // The panel hangs from the button's bottom-left corner and runs down.
+        // Whether its parent runs across or down is the button's own
+        // `parent_orientation`, and it is what turns the "try the other side"
+        // flip into a slide -- see [`MenuLayout`].
         let layout = MenuLayout {
             anchor_rect: crate::engine::Rect::ltrb(0.0, 0.0, 0.0, 0.0),
             alignment_offset: self.alignment_offset,
             orientation: MenuAxis::Vertical,
-            parent_orientation: MenuAxis::Vertical,
+            parent_orientation: self.parent_orientation,
             direction: crate::direction::current_direction(),
             directional_alignment: true,
         };
@@ -1274,7 +1336,7 @@ impl crate::framework::StatefulComponent for SubmenuButton {
         // it opened, so pressing it closes the panel on the way down and the
         // "already open" guard below can never be reached.
         let recording = state.anchor.clone();
-        let pressed = crate::framework::stateful(line.with_on_pressed(move || {
+        let open: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || {
             // Disabled, no menu, or already open -- see
             // [`SubmenuButton::should_open`]. A second panel would be a second
             // entry in the overlay with nothing holding its handle, so nothing
@@ -1297,7 +1359,23 @@ impl crate::framework::StatefulComponent for SubmenuButton {
                 move || themes.wrap(menu()),
             );
             handle.set_state(move |state| state.open = opened);
-        }));
+        });
+        let hovering = std::rc::Rc::clone(&open);
+        let asking_hover = self.clone();
+        let pressed = crate::framework::stateful(
+            line.with_on_pressed({
+                let open = std::rc::Rc::clone(&open);
+                move || open()
+            })
+            .with_on_hover(move |entered| {
+                // Upstream's `handlePointerHover`: the pointer opens the
+                // menu it arrives on, **except** on a bar nobody has
+                // clicked yet -- see [`SubmenuButton::opens_on_hover`].
+                if entered && asking_hover.opens_on_hover() {
+                    hovering();
+                }
+            }),
+        );
         // Recorded from the button's own assemble, which is where its render
         // object first exists and is the rectangle the panel is placed against.
         crate::framework::many(vec![pressed], move |rendered| {
@@ -1663,6 +1741,7 @@ mod tests {
 
     const SUBMENU: u64 = 8401;
     const MENU_GROUP: u64 = 8402;
+    const BAR_ROOT: u64 = 8404;
     const PANEL: Color = Color(0xFF00_00AA);
 
     fn staged(button: SubmenuButton) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
@@ -1720,6 +1799,15 @@ mod tests {
         button: SubmenuButton,
         down: f32,
     ) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
+        staged_inset(button, 0.0, down)
+    }
+
+    /// [`staged`], with the button inset `across` and `down` from the corner.
+    fn staged_inset(
+        button: SubmenuButton,
+        across: f32,
+        down: f32,
+    ) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
         let found: std::rc::Rc<
             std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>,
         > = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -1727,18 +1815,19 @@ mod tests {
             std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>>,
             SubmenuButton,
             f32,
+            f32,
         );
         impl Component for Finder {
             fn build(&self, context: &mut BuildContext) -> AnyWidget {
                 *self.0.borrow_mut() = crate::theatre::OverlayHandle::of(context);
-                let down = self.2;
+                let (across, down) = (self.2, self.3);
                 crate::framework::many(vec![stateful(self.1.clone())], move |rendered| {
                     crate::render::RenderPointerRegion::new(
                         9998,
                         crate::render::RenderAlign::new(
                             crate::render::Alignment::TOP_LEFT,
                             crate::render::RenderPadding::new(
-                                crate::render::EdgeInsets::only(0.0, down, 0.0, 0.0),
+                                crate::render::EdgeInsets::only(across, down, 0.0, 0.0),
                                 rendered.into_iter().next().expect("the button"),
                             ),
                         ),
@@ -1753,6 +1842,7 @@ mod tests {
             crate::theatre::overlay(crate::framework::component(Finder(
                 std::rc::Rc::clone(&found),
                 button,
+                across,
                 down,
             ))),
         ));
@@ -1778,6 +1868,170 @@ mod tests {
                         .with_child(crate::widgets::SizedBox::new(100.0, 100.0))
                 })
             })
+    }
+
+    #[test]
+    fn a_bar_is_inert_to_the_pointer_until_somebody_clicks_it() {
+        // Upstream's rule, in its own words: *"Don't open the root menu bar
+        // menus on hover unless a sibling menu is already open. This means
+        // that the user has to first click to open a menu on the menu bar
+        // before hovering allows them to traverse it."*
+        //
+        // Without the first half, a pointer crossing the top of a window on
+        // its way somewhere else would drop menus open behind it.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(SUBMENU))
+        });
+        let entry = a_submenu().in_a_bar(true);
+        assert!(!entry.opens_on_hover(), "nobody has opened the bar yet");
+
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SUBMENU));
+        assert!(
+            entry.opens_on_hover(),
+            "and once it is open the whole bar tracks the pointer"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_line_of_a_panel_opens_on_hover_with_no_such_condition() {
+        // A button inside a panel has no condition to meet: its parent menu is
+        // by definition already open, or the button would not be on screen.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(SUBMENU))
+        });
+        assert!(a_submenu().opens_on_hover(), "closed, and still opens");
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_bar_entry_asks_about_the_root_and_not_about_itself() {
+        // `_MenuAnchorState._maybeOf(context)!._root`. A sibling being open is
+        // what makes the bar live; this entry's own menu is precisely the one
+        // that is not open yet.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(BAR_ROOT));
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(SUBMENU));
+            tree.set_parent(SUBMENU, Some(BAR_ROOT))
+                .expect("an entry of the bar");
+            tree.open(BAR_ROOT);
+        });
+        let entry = a_submenu().in_a_bar(true);
+        assert!(
+            !crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(SUBMENU)),
+            "this entry's own menu is shut"
+        );
+        assert!(
+            entry.opens_on_hover(),
+            "but the bar it belongs to is open, so the pointer may traverse it"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn hovering_a_bar_entry_that_is_live_opens_it() {
+        // End to end, through a real pointer: the rule above, reached by the
+        // hover the line reports.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged(a_submenu().in_a_bar(true));
+        hover(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(
+            overlay.entry_count(),
+            0,
+            "a bar nobody has clicked stays shut under the pointer"
+        );
+
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SUBMENU));
+        hover(&mut tree, Offset::new(200.0, 200.0));
+        hover(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(
+            overlay.entry_count(),
+            0,
+            "and an entry whose own menu is already open opens nothing more"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn the_pointer_leaving_a_button_does_not_open_it() {
+        // The `entered` half of the guard. A hover callback fires twice -- once
+        // arriving, once leaving -- and a rule that read only "may this open"
+        // would open the menu as the pointer walked *off* it.
+        //
+        // Staged so that the leaving is the only chance to open: the pointer
+        // arrives while the bar is still shut, the bar opens under it, and then
+        // the pointer leaves. Arriving opened nothing, so anything on screen at
+        // the end got there by departing.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged(a_submenu().in_a_bar(true));
+        let mut router = crate::gestures::GestureRouter::new();
+        hover_using(&mut router, &mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(overlay.entry_count(), 0, "a shut bar ignores the pointer");
+
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(BAR_ROOT));
+            tree.set_parent(SUBMENU, Some(BAR_ROOT))
+                .expect("an entry of the bar");
+            tree.open(BAR_ROOT);
+        });
+        hover_using(&mut router, &mut tree, Offset::new(300.0, 250.0));
+        assert_eq!(
+            overlay.entry_count(),
+            0,
+            "leaving is not arriving, and opens nothing"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_bar_entry_near_the_edge_slides_its_panel_instead_of_flipping_it() {
+        // The button's `parent_orientation` reaches the placement: a panel
+        // hanging off a *bar* has no other side of the button worth trying, so
+        // it slides to the edge rather than opening to the left of it. A line
+        // of a panel in the same place does flip.
+        let panel_left = |entry: SubmenuButton| {
+            crate::raw_menu_anchor::reset_menu_tree();
+            let (mut tree, _overlay) = staged_inset(entry, 750.0, 0.0);
+            tap_in(&mut tree, Offset::new(770.0, 24.0), 800.0, 600.0);
+            let drawn = painted_tree(&mut tree);
+            let left = drawn
+                .iter()
+                .find_map(|call| match call {
+                    Drawn::Rect { left, argb, .. } if Color(*argb) == PANEL => Some(*left),
+                    _ => None,
+                })
+                .expect("the panel painted");
+            crate::raw_menu_anchor::reset_menu_tree();
+            left
+        };
+        // The paint happens in 800 x 600, so a 100-wide panel hanging from a
+        // button at x = 750 runs off the right. A line of a panel flips to the
+        // other side of the button; a bar entry slides to the edge.
+        assert_eq!(
+            panel_left(a_submenu()),
+            750.0 - 100.0,
+            "a line of a panel flips to the button's left"
+        );
+        assert_eq!(
+            panel_left(a_submenu().in_a_bar(true)),
+            800.0 - 100.0,
+            "and a bar entry slides to the screen's edge"
+        );
+    }
+
+    #[test]
+    fn hovering_a_line_of_a_panel_opens_its_submenu() {
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged(a_submenu());
+        hover(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(overlay.entry_count(), 1, "the pointer opened it");
+        assert!(crate::raw_menu_anchor::with_menu_tree(
+            |tree| tree.is_open(SUBMENU)
+        ));
+        crate::raw_menu_anchor::reset_menu_tree();
     }
 
     #[test]
@@ -2427,8 +2681,15 @@ mod tests {
 
     /// A press and a release at `at`, through the real router.
     fn tap(tree: &mut ElementTree, at: Offset) {
+        tap_in(tree, at, 400.0, 300.0);
+    }
+
+    /// [`tap`], in a window of the given size. The size matters: a press
+    /// outside the laid-out root reaches nothing, and a test aimed there
+    /// measures a tap that missed.
+    fn tap_in(tree: &mut ElementTree, at: Offset, width: f32, height: f32) {
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(width, height));
         crate::render::flush_layout();
         let event = |change| crate::gestures::PointerEvent {
             view_id: 0,
@@ -2449,6 +2710,43 @@ mod tests {
         router.dispatch(&root, &event(crate::gestures::PointerChange::Down));
         router.dispatch(&root, &event(crate::gestures::PointerChange::Up));
         tree.rebuild_dirty();
+    }
+
+    /// A mouse moving onto `at`, through a router the caller keeps.
+    ///
+    /// The router is the caller's because an exit is a memory: a fresh one has
+    /// never seen the pointer anywhere, so it reports arrivals and never
+    /// departures, and a test that wants to watch something leave gets nothing
+    /// at all.
+    fn hover_using(
+        router: &mut crate::gestures::GestureRouter,
+        tree: &mut ElementTree,
+        at: Offset,
+    ) {
+        {
+            let root = tree.build_render_tree().expect("a root");
+            crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
+            crate::render::flush_layout();
+            router.dispatch(
+                &root,
+                &crate::gestures::PointerEvent {
+                    view_id: 0,
+                    device: 0,
+                    pointer_id: 1,
+                    change: crate::gestures::PointerChange::Hover,
+                    kind: crate::gestures::PointerKind::Mouse,
+                    signal_kind: crate::gestures::SignalKind::None,
+                    buttons: 0,
+                    time_stamp_micros: 0,
+                    position: at,
+                    delta: Offset::ZERO,
+                    scroll_delta: Offset::ZERO,
+                    pressure: 0.0,
+                    local_position: at,
+                },
+            );
+            tree.rebuild_dirty();
+        }
     }
 
     /// A mouse moving onto `at`.

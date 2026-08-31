@@ -3037,3 +3037,71 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录默认目标 exit 0�
 （看 `_MenuBarState` / `MenuAnchor` 的 `_focusButton` 与
 `SubmenuButton._handleHover`：菜单栏开着时，**指针划过**另一项就换过去，
 不用再按一下）。确认这条再决定 `MenuBar` 要不要自己拿状态。
+
+---
+
+## 第 462 轮：菜单栏在有人点它之前，对指针是无感的
+
+上一轮留的问题查清楚了。上游 `handlePointerHover` 自己写着：
+
+> Don't open the root menu bar menus on hover unless a sibling menu is
+> already open. This means that the user has to first click to open a menu
+> on the menu bar before hovering allows them to traverse it.
+
+所以菜单栏是**两态**的：没人点过之前，指针从它上面划过什么也不开；
+一旦开了一个，整条栏就跟着指针走，划到哪一项换到哪一项，不用再按。
+少了前半句，一个只是路过窗口顶端的指针会在身后拉开一串菜单。
+
+这一轮把这条规则接通，需要三样，缺一样都不成立：
+
+- **`MenuItemButton::with_on_hover`**——上游的 `onHover`。
+  挂在 `MouseRegion.onHover` 而不是 `onEnter`，上游给了理由：
+  *"onEnter and TextButton.onHover are called if a button is hovered after
+  scrolling. This interferes with focus traversal and scroll position."*
+  一个在静止指针下自己滚动的列表，否则会自己移动焦点。
+- **`SubmenuButton::parent_orientation`**（`in_a_bar(true)`）——
+  这个按钮所在的那层菜单是横着排还是竖着排。
+  一个字段管两件事，所以是一个字段不是两个：它既决定这个按钮的面板摆在哪
+  （第 458 轮的 `MenuLayout`），也决定悬停开不开。
+- **`opens_on_hover()`**——问的是**根**，不是自己：
+  `_MenuAnchorState._maybeOf(context)!._root`。
+  让栏活过来的是**兄弟**开着，而这一项自己的菜单恰恰正是还没开的那个。
+  面板里的一行没有这个条件：它的父菜单按定义已经开着，否则这行不在屏幕上。
+
+按下和悬停共用同一个 `open` 闭包——两条路进同一扇门。
+
+### 第 458 轮那条分支，现在有真调用者了
+
+`MenuLayout` 里"菜单栏的面板不翻到按钮另一边，而是推到屏幕边上"那一支，
+上一轮记的是"只有单元测试在用"。`parent_orientation` 接上以后它有了真路径，
+并且由一个走完整绘制的测试按住：把按钮放在 x=750、面板 100 宽的地方，
+面板会跑出 800 宽的屏幕——面板里的一行翻到按钮左边（650），
+菜单栏的一项推到屏幕边（700）。两个数不一样，这条线才算被读到。
+
+### 一个空转的测试，和一把学不会"离开"的仪器
+
+想按住 `entered &&` 里的 `entered`（离开也算一次回调）花了三次。
+
+第一次写的测试是"打开、点外面关掉、再把指针移开"——**三个都不红**。
+原因是每次 `hover()` 都新建一个 `GestureRouter`：
+**离开是一种记忆**，一个刚出生的路由器没在任何地方见过指针，
+它只会报到达，永远报不出离开。于是"移开"这一步根本不是事件。
+改成 `hover_using(router, ...)`，路由器由调用方拿着，跨两次移动。
+
+第二次仍然不红：路线的第一站就把菜单开了，最后的断言在基线里也是 1，
+突变改不了它——**一个两边都成立的断言按不住任何东西**。
+最后把场景摆成"离开是唯一的机会"：
+指针在栏还关着的时候到达（什么也不开），栏在指针底下被打开，然后指针离开。
+到达开不了东西,所以结束时屏幕上但凡有东西,都是"离开"放上去的。
+
+变异扫描 9 个，全红（其中"什么都不在悬停时打开" 5 红）。
+尺子：十六把全部 exit 0。门：Rust 6710 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录默认目标 exit 0。
+
+**下一步**：`MenuBar` 仍是空壳（`menu_anchor.rs:312` 起，只有
+`resolved_panel`）。零件现在齐了——`SubmenuButton::in_a_bar`、
+`MenuAxis::Horizontal` 的摆放、悬停规则——差的是把一排按钮横着放进去的那个
+组件本身。**先查一件事**：上游 `MenuBar` 是 `_MenuBarAnchor`
+（`MenuAnchor` 的子类，`_isOpen` 被重写成"任何一个孩子开着"），
+还是自己拿状态。这决定 `MenuBar` 要不要进菜单树、
+以及 `opens_on_hover` 里的 `root_of` 在真装配下指到谁。
