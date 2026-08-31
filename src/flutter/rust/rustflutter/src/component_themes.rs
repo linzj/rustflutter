@@ -3703,6 +3703,7 @@ impl ResolvedSearchBar {
 /// This is the one default that depends on something that is neither the theme
 /// nor the widget: `isFullScreen` is a constructor argument of the defaults
 /// class itself, the way `context` is.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedSearchView {
     pub background_color: Color,
     pub elevation: f32,

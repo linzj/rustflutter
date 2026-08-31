@@ -1780,3 +1780,58 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 所以 body 不能在 route 建立时算一次，得在 `SearchViewOpening::build` 里
 每帧重算。确认 `SearchViewOpening` 现在拿不拿得到 `ResolvedSearchView`
 （它现在只收 `BoxConstraints`），拿不到就要先把它传进去。
+
+---
+
+## 第 442 轮：把 `_ViewContent` 那四层接成一条线
+
+上一轮留的问题：`SearchViewOpening` 只收 `BoxConstraints`，
+**拿不到 `ResolvedSearchView`**。所以这一轮先把它传进去。
+
+### 内容闭包要知道自己在第几帧
+
+`show_search_view` 原来收的是 `Fn() -> AnyWidget`，改成 `Fn(f32)`。
+理由是**面板里面的东西也在动**：divider 和列表各有自己的淡入，
+而"它们在不在"这件事读的是**动画中的**矩形。
+一个只建一次的内容只能被揭开，不能被打开。
+
+### body 的判断每帧都要重算
+
+上游的 `minHeight` 是 `min(effectiveConstraints.minHeight, _viewRect.height)`，
+而 `_viewRect` 是**动画中的**那个。所以"有没有分隔线"不是 view 的属性，
+**是这一帧的属性**。t=0 时它是 bar 的 56（从 240 clamp 下来），
+t=1 时才是 240。
+
+### 变异扫描 12 个，第一遍 4 条没红，三条真缺口一条坏变异
+
+- **"body 不看有没有结果"**、**"body 不看是不是全屏"** 0 红：
+  真缺口。我的用例里从来没有"只靠这一条打开面板"的情形——
+  四条件的或，得让另外三条都关着才测得到某一条。各补了一个。
+- **"面板按动画中的宽度布局"** 0 红：探针不对。
+  `content()` 里 bar 是 400 宽，而 `view_rect` 保留 bar 的宽度，
+  所以 view 也是 400——**两个值相等**。换成 200 宽的 bar
+  （开出 360 宽的 view）才咬得住。
+- **"header 和 list 换位"** 0 红：**坏变异**。
+  我换的只是 `rendered.next().expect("...")` 里的**字符串**，
+  而 `next()` 按顺序取，跟标签无关，所以那根本没换任何东西。
+  改成先收进具名变量再按不同顺序传，2 条都红——
+  同时也补了一个"三样按给的顺序进列"的测试
+  （原来只断言三样都在，而三样都在跟顺序无关）。
+
+11 条有效变异全红。
+
+尺子：十六把全部 exit 0。门：Rust 6593 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：`open_search_view` 现在收三个闭包（header / divider / list），
+**divider 那个还是调用者给的**——而它本该由 view 自己按
+`ResolvedSearchView::divider_color` 画出来（上游是
+`DividerTheme(data: dividerTheme.copyWith(color: effectiveDividerColor),
+child: const Divider(height: 1))`）。
+下一轮把它收回来，并把 header 也默认成第 439 轮的 `search_view_header`，
+让 `open_search_view` 只剩下"建议列表"一个闭包。
+**先查一件事**：`Divider` 是一个 `Component`，它的颜色走
+`DividerOverrides`——确认 `Divider::new().with_color(...).with_height(1.0)`
+建出来的东西能直接当 `AnyWidget` 用（看 `components.rs` 里
+`Divider` 是怎么被别处放进树里的），能就直接用，
+不能就得先看清楚它要怎么包。

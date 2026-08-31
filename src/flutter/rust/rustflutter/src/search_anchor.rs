@@ -935,9 +935,10 @@ pub fn show_search_view(
     overlay: std::rc::Rc<crate::theatre::OverlayHandle>,
     placement: SearchViewTransition,
     constraints: crate::render::BoxConstraints,
-    content: impl Fn() -> crate::framework::AnyWidget + 'static,
+    content: impl Fn(f32) -> crate::framework::AnyWidget + 'static,
 ) -> Option<crate::theatre::ModalHandle> {
-    let content: std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget> = std::rc::Rc::new(content);
+    let content: std::rc::Rc<dyn Fn(f32) -> crate::framework::AnyWidget> =
+        std::rc::Rc::new(content);
     crate::theatre::show_modal(overlay, search_view_barrier(), move || {
         crate::framework::stateful(SearchViewOpening {
             placement,
@@ -1204,6 +1205,123 @@ pub fn search_view_panel(
     crate::render::RenderRef::new(crate::render::RenderPadding::new(padding, surface))
 }
 
+/// Everything inside the growing rectangle: upstream's `_ViewContent`, joined
+/// up.
+///
+/// The four pieces the last four rounds built each answered one question and
+/// none of them called another. This is the thing that calls them, and it
+/// exists as a struct rather than a nine-argument function because six of
+/// those arguments do not change between frames and one does.
+///
+/// # The body's decision is remade every frame
+///
+/// [`SearchViewBody::min_height`] is upstream's `minHeight`, which is
+/// `math.min(effectiveConstraints.minHeight, _viewRect.height)` -- and
+/// `_viewRect` is the **animated** rectangle. So the answer to "is there a
+/// divider" is not a property of the view; it is a property of the frame.
+///
+/// It matters at exactly one moment, and it is the first one: a view whose
+/// rectangle is still the bar's has a clamped minimum of the bar's height, and
+/// a shrink-wrapping docked view with nothing to show would therefore open as
+/// a bare field and grow a divider as the rectangle passes zero. Computing it
+/// once, at the top, would get that frame wrong in the other direction.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchViewContent {
+    pub placement: SearchViewTransition,
+    pub view: crate::component_themes::ResolvedSearchView,
+    /// The view's resolved constraints, which the body clamps against the
+    /// animated rectangle. Not the rectangle.
+    pub constraints: crate::render::BoxConstraints,
+    /// The window, for the cap on how wide the content may be laid out.
+    pub screen: crate::render::Size,
+    /// Upstream's `result.isNotEmpty`.
+    pub has_results: bool,
+    /// `MediaQuery.paddingOf(context).top`, which only a full-screen view
+    /// keeps clear -- see [`SearchViewTransition::top_padding_at`].
+    pub media_top: f32,
+}
+
+impl SearchViewContent {
+    /// What is in the panel on the frame at `t`. See the type's documentation
+    /// for why this is a function of `t` at all.
+    pub fn body_at(&self, t: f32, direction: crate::animation::AnimationStatus) -> SearchViewBody {
+        let rect = self.placement.rect_at(t, direction);
+        SearchViewBody {
+            full_screen: self.placement.full_screen,
+            shrink_wrap: self.view.shrink_wrap,
+            min_height: self.constraints.min_height.min(rect.height()),
+            has_results: self.has_results,
+        }
+    }
+
+    /// The panel and everything in it, on the frame at `t`.
+    ///
+    /// `header`, `divider` and `list` are widgets rather than render objects
+    /// because they are rebuilt with the view -- the header is a live
+    /// `SearchBar` with a field in it, and the list is whatever the caller's
+    /// suggestions builder returned this frame.
+    pub fn build(
+        &self,
+        t: f32,
+        direction: crate::animation::AnimationStatus,
+        header: crate::framework::AnyWidget,
+        divider: crate::framework::AnyWidget,
+        list: crate::framework::AnyWidget,
+    ) -> crate::framework::AnyWidget {
+        let body = self.body_at(t, direction);
+        let view = self.view.clone();
+        let full_screen = self.placement.full_screen;
+        // The panel's content is laid out at the width the view *ends* at, not
+        // the one it is passing through -- see [`search_view_panel`].
+        let view_width = self.placement.view.width();
+        let screen_width = self.screen.width;
+        let top_padding = self.placement.top_padding_at(t, direction, self.media_top);
+
+        crate::framework::many(vec![header, divider, list], move |rendered| {
+            let mut rendered = rendered.into_iter();
+            let column = search_view_column(
+                body,
+                t,
+                direction,
+                top_padding,
+                rendered.next().expect("the header"),
+                rendered.next().expect("the divider"),
+                rendered.next().expect("the list"),
+            );
+            crate::render::RenderRef::new(search_view_panel(
+                &view,
+                full_screen,
+                view_width,
+                screen_width,
+                crate::render::RenderRef::new(column),
+            ))
+        })
+    }
+}
+
+/// Opens a search view with the panel this crate builds, rather than with
+/// whatever the caller hands over: [`show_search_view`] with its `content`
+/// filled in.
+pub fn open_search_view(
+    overlay: std::rc::Rc<crate::theatre::OverlayHandle>,
+    content: SearchViewContent,
+    header: impl Fn() -> crate::framework::AnyWidget + 'static,
+    divider: impl Fn() -> crate::framework::AnyWidget + 'static,
+    list: impl Fn() -> crate::framework::AnyWidget + 'static,
+) -> Option<crate::theatre::ModalHandle> {
+    let placement = content.placement;
+    let constraints = content.constraints;
+    show_search_view(overlay, placement, constraints, move |t| {
+        content.build(
+            t,
+            crate::animation::AnimationStatus::Forward,
+            header(),
+            divider(),
+            list(),
+        )
+    })
+}
+
 /// The sheet between the view and the page: upstream's `barrierColor`,
 /// `barrierDismissible` and `barrierLabel`, together.
 ///
@@ -1223,7 +1341,12 @@ struct SearchViewOpening {
     /// The view's resolved constraints, which are **not** the rectangle it is
     /// drawn in -- see `build` for why both are needed.
     constraints: crate::render::BoxConstraints,
-    content: std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>,
+    /// Rebuilt every frame with the fraction of the opening that has passed,
+    /// because what is *inside* the panel changes with it too -- the divider
+    /// and the results have fades of their own, and the decision about
+    /// whether they are there at all reads the animated rectangle. A content
+    /// built once could only be revealed, not opened.
+    content: std::rc::Rc<dyn Fn(f32) -> crate::framework::AnyWidget>,
 }
 
 /// How far into the opening the view is. The transition is a pure function of
@@ -1261,7 +1384,7 @@ impl crate::framework::StatefulComponent for SearchViewOpening {
             .clamp(0.0, 1.0);
         let placement = self.placement;
         let constraints = self.constraints;
-        crate::framework::many(vec![(self.content)()], move |rendered| {
+        crate::framework::many(vec![(self.content)(t)], move |rendered| {
             let child = rendered.into_iter().next().expect("the view's content");
             let rect = placement.rect_at(t, AnimationStatus::Forward);
             let opacity = SearchViewTransition::fade_at(
@@ -2516,8 +2639,10 @@ mod search_view_route_tests {
         micros: i64,
     ) -> (Option<(f32, f32, f32, f32)>, Vec<u8>, Option<(f32, f32)>) {
         let (mut tree, handle) = staged();
-        let shown =
-            show_search_view(Rc::clone(&handle), placement, constraints(), content).expect("shown");
+        let shown = show_search_view(Rc::clone(&handle), placement, constraints(), move |_| {
+            content()
+        })
+        .expect("shown");
         // Stepped rather than jumped. `advance` clamps each frame to 50ms --
         // every on-demand animation in this crate does, so that a page-load
         // between frames cannot put a whole transition into one of them -- so
@@ -2692,8 +2817,8 @@ mod search_view_route_tests {
         // the whole opening into one frame and there would be no animation at
         // all -- the view would simply appear.
         let (mut tree, handle) = staged();
-        let shown =
-            show_search_view(Rc::clone(&handle), placement(), constraints(), panel).expect("shown");
+        let shown = show_search_view(Rc::clone(&handle), placement(), constraints(), |_| panel())
+            .expect("shown");
         tree.rebuild_dirty();
         tree.advance_frame(0);
         tree.rebuild_dirty();
@@ -2750,7 +2875,8 @@ mod search_view_route_tests {
         // no way out but the keyboard.
         let (mut tree, handle) = staged();
         let shown: ModalHandle =
-            show_search_view(Rc::clone(&handle), placement(), constraints(), panel).expect("shown");
+            show_search_view(Rc::clone(&handle), placement(), constraints(), |_| panel())
+                .expect("shown");
         tree.rebuild_dirty();
         assert!(shown.is_showing());
 
@@ -2784,8 +2910,8 @@ mod search_view_route_tests {
     fn the_opening_asks_for_frames_until_it_is_over_and_then_stops() {
         // An animation that keeps asking is a device that never sleeps.
         let (mut tree, handle) = staged();
-        let shown =
-            show_search_view(Rc::clone(&handle), placement(), constraints(), panel).expect("shown");
+        let shown = show_search_view(Rc::clone(&handle), placement(), constraints(), |_| panel())
+            .expect("shown");
         tree.rebuild_dirty();
         tree.advance_frame(0);
         assert!(
@@ -3629,5 +3755,390 @@ mod search_view_panel_tests {
             paths > shadows.len(),
             "one path per shadow and one for the surface: {paths}"
         );
+    }
+}
+
+#[cfg(test)]
+mod search_view_content_tests {
+    use super::*;
+    use crate::animation::AnimationStatus;
+    use crate::borders::{BorderRadiusGeometry, BorderSide, RoundedRectangleBorder, ShapeBorder};
+    use crate::component_themes::ResolvedSearchView;
+    use crate::engine::{Color, Rect};
+    use crate::engine_test_stubs::Drawn;
+    use crate::framework::{AnyWidget, ElementTree, leaf};
+    use crate::render::{BoxConstraints, EdgeInsets, Offset, RenderBox, Size};
+    use crate::theatre::{OverlayHandle, overlay};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    const SCREEN: Size = Size {
+        width: 800.0,
+        height: 900.0,
+    };
+    const HEADER: Color = Color(0xFF00_00FF);
+    const DIVIDER: Color = Color(0xFF00_FF00);
+    const LIST: Color = Color(0xFFFF_0000);
+
+    fn constraints() -> BoxConstraints {
+        BoxConstraints {
+            min_width: ResolvedSearchView::MIN_WIDTH,
+            max_width: f32::INFINITY,
+            min_height: ResolvedSearchView::MIN_HEIGHT,
+            max_height: f32::INFINITY,
+        }
+    }
+
+    fn a_view() -> ResolvedSearchView {
+        ResolvedSearchView {
+            background_color: Color::argb(255, 0, 0, 128),
+            elevation: ResolvedSearchView::ELEVATION,
+            surface_tint_color: Color::TRANSPARENT,
+            side: None,
+            shape: ShapeBorder::Rounded(RoundedRectangleBorder::new(
+                BorderSide::NONE,
+                BorderRadiusGeometry::circular(ResolvedSearchView::RADIUS),
+            )),
+            header_height: None,
+            header_text_style: None,
+            header_hint_style: None,
+            constraints: constraints(),
+            padding: None,
+            bar_padding: EdgeInsets::symmetric(8.0, 0.0),
+            shrink_wrap: false,
+            divider_color: Color::argb(255, 128, 128, 128),
+        }
+    }
+
+    fn content() -> SearchViewContent {
+        let anchor = Rect::xywh(20.0, 40.0, 400.0, 56.0);
+        SearchViewContent {
+            placement: SearchViewTransition {
+                anchor,
+                view: SearchAnchor::view_rect(
+                    anchor,
+                    SCREEN,
+                    constraints(),
+                    false,
+                    crate::direction::TextDirection::Ltr,
+                ),
+                full_screen: false,
+            },
+            view: a_view(),
+            constraints: constraints(),
+            screen: SCREEN,
+            has_results: false,
+            media_top: 44.0,
+        }
+    }
+
+    fn block(color: Color, width: f32, height: f32) -> AnyWidget {
+        leaf(move || {
+            crate::render::RenderDecoratedBox::new()
+                .with_fill(crate::render::Fill::Solid(color))
+                .with_child(crate::widgets::SizedBox::new(width, height))
+        })
+    }
+
+    /// Everything the content paints at `t`, laid out in the whole screen.
+    fn painted(content: &SearchViewContent, t: f32) -> Vec<Drawn> {
+        let mut tree = ElementTree::new();
+        tree.rebuild(content.build(
+            t,
+            AnimationStatus::Forward,
+            block(HEADER, 400.0, 56.0),
+            block(DIVIDER, 400.0, 1.0),
+            block(LIST, 400.0, 200.0),
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(
+            &root,
+            BoxConstraints::tight(SCREEN.width, SCREEN.height),
+        );
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(800, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(&mut layers, SCREEN);
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
+
+    fn colours(drawn: &[Drawn]) -> Vec<Color> {
+        drawn
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Rect { argb, .. } => Some(Color(*argb)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_content_is_a_panel_with_a_header_a_rule_and_a_list_in_it() {
+        // The join itself: four functions that did not call one another until
+        // now, and one call that reaches all four.
+        let drawn = painted(&content(), 1.0);
+        let colours = colours(&drawn);
+        assert!(colours.contains(&HEADER), "the header");
+        assert!(colours.contains(&DIVIDER), "the rule");
+        assert!(colours.contains(&LIST), "the results");
+        assert!(
+            drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::ClipPathLayer { .. })),
+            "and the panel that clips them"
+        );
+    }
+
+    #[test]
+    fn the_bodys_decision_is_remade_every_frame() {
+        // `minHeight` is `math.min(effectiveConstraints.minHeight,
+        // _viewRect.height)` and `_viewRect` is the animated rectangle, so
+        // this is a property of the frame and not of the view. At t = 0 the
+        // rectangle is the bar's 56; at t = 1 it is the view's 600, which is
+        // over the 240 minimum and clamps to it.
+        let content = content();
+        assert_eq!(
+            content.body_at(0.0, AnimationStatus::Forward).min_height,
+            56.0,
+            "the bar's height, clamped down from 240"
+        );
+        assert_eq!(
+            content.body_at(1.0, AnimationStatus::Forward).min_height,
+            ResolvedSearchView::MIN_HEIGHT,
+            "and the view's minimum once there is room for it"
+        );
+    }
+
+    #[test]
+    fn a_shrink_wrapping_docked_view_with_nothing_to_show_never_grows_a_rule() {
+        // The one case where the body's guard closes, and the reason the
+        // clamped minimum has to be the animated one: a view whose minimum is
+        // zero has a clamped minimum of zero on every frame, so the answer is
+        // the same all the way through rather than flipping partway.
+        let mut content = content();
+        content.view.shrink_wrap = true;
+        content.constraints.min_height = 0.0;
+        for t in [0.0, 0.25, 0.5, 1.0] {
+            assert!(
+                !content
+                    .body_at(t, AnimationStatus::Forward)
+                    .shows_the_list(),
+                "at {t}"
+            );
+        }
+        let colours = colours(&painted(&content, 1.0));
+        assert!(colours.contains(&HEADER));
+        assert!(!colours.contains(&DIVIDER));
+    }
+
+    #[test]
+    fn the_three_go_into_the_column_in_the_order_they_were_given() {
+        // Nothing above says which is which: three blocks all present is the
+        // same observation whichever order they were handed over in, and a
+        // header under the results would look like a bug in the column rather
+        // than in the wiring here.
+        let drawn = painted(&content(), 1.0);
+        let top_of = |wanted: Color| {
+            drawn
+                .iter()
+                .find_map(|call| match call {
+                    Drawn::Rect { top, argb, .. } if Color(*argb) == wanted => Some(*top),
+                    _ => None,
+                })
+                .expect("painted")
+        };
+        assert!(top_of(HEADER) < top_of(DIVIDER), "the field is at the top");
+        assert!(
+            top_of(DIVIDER) < top_of(LIST),
+            "then the rule, then the results"
+        );
+    }
+
+    #[test]
+    fn results_alone_are_enough_to_open_a_panel_that_would_otherwise_be_bare() {
+        // The fourth of the body's four conditions, reached through the
+        // content rather than by hand: only this one has anything to do with
+        // whether something has been typed.
+        let mut bare = content();
+        bare.view.shrink_wrap = true;
+        bare.constraints.min_height = 0.0;
+        assert!(!bare.body_at(1.0, AnimationStatus::Forward).shows_the_list());
+
+        let mut with_results = bare.clone();
+        with_results.has_results = true;
+        assert!(
+            with_results
+                .body_at(1.0, AnimationStatus::Forward)
+                .shows_the_list()
+        );
+        assert!(colours(&painted(&with_results, 1.0)).contains(&DIVIDER));
+    }
+
+    #[test]
+    fn a_full_screen_view_opens_its_panel_even_when_it_shrink_wraps() {
+        // The third condition. A screen has room below the header whether or
+        // not the view was asked to wrap around its content.
+        let mut bare = content();
+        bare.view.shrink_wrap = true;
+        bare.constraints.min_height = 0.0;
+        assert!(!bare.body_at(1.0, AnimationStatus::Forward).shows_the_list());
+
+        let mut full = bare.clone();
+        full.placement.full_screen = true;
+        assert!(full.body_at(1.0, AnimationStatus::Forward).shows_the_list());
+        assert!(colours(&painted(&full, 1.0)).contains(&DIVIDER));
+    }
+
+    #[test]
+    fn a_narrow_bar_still_lays_its_panel_out_at_the_views_width() {
+        // The panel's content is measured at `_rectTween.end!.width`, and the
+        // case that shows it is a bar narrower than the view's minimum: a
+        // 200-wide bar opens a 360-wide view, so measuring against the bar
+        // would wrap every line 160 pixels too soon and then re-wrap them as
+        // the panel grew.
+        let anchor = Rect::xywh(20.0, 40.0, 200.0, 56.0);
+        let mut narrow = content();
+        narrow.placement.anchor = anchor;
+        narrow.placement.view = SearchAnchor::view_rect(
+            anchor,
+            SCREEN,
+            constraints(),
+            false,
+            crate::direction::TextDirection::Ltr,
+        );
+        assert_eq!(narrow.placement.view.width(), ResolvedSearchView::MIN_WIDTH);
+
+        // Measured from a header that takes everything it is offered.
+        let mut tree = ElementTree::new();
+        // At the end of the opening, but laid out in the *bar's* rectangle:
+        // the two are independent, and it is the second that the overflow box
+        // is answering. (At t = 0 nothing paints at all -- the column's own
+        // fade has not started -- which is a fact about the fades, not about
+        // the width.)
+        tree.rebuild(narrow.build(
+            1.0,
+            AnimationStatus::Forward,
+            leaf(|| {
+                crate::render::RenderDecoratedBox::new()
+                    .with_fill(crate::render::Fill::Solid(HEADER))
+            }),
+            block(DIVIDER, 400.0, 1.0),
+            block(LIST, 400.0, 200.0),
+        ));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(
+            &root,
+            BoxConstraints::tight(anchor.width(), anchor.height()),
+        );
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(800, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(&mut layers, SCREEN);
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let width = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                Drawn::Rect {
+                    left, right, argb, ..
+                } if Color(argb) == HEADER => Some(right - left),
+                _ => None,
+            })
+            .expect("the header painted");
+        assert_eq!(
+            width,
+            ResolvedSearchView::MIN_WIDTH,
+            "laid out at the view's width though the panel is the bar's"
+        );
+    }
+
+    #[test]
+    fn only_a_full_screen_view_pushes_its_header_down_for_the_status_bar() {
+        let top_of = |content: &SearchViewContent, wanted: Color| {
+            painted(content, 1.0)
+                .into_iter()
+                .find_map(|call| match call {
+                    Drawn::Rect { top, argb, .. } if Color(argb) == wanted => Some(top),
+                    _ => None,
+                })
+                .expect("painted")
+        };
+        let docked = content();
+        let mut full = content();
+        full.placement.full_screen = true;
+        full.placement.view = Rect::xywh(0.0, 0.0, SCREEN.width, SCREEN.height);
+
+        // Local coordinates: `build` is everything *inside* the animated
+        // rectangle, and the move to the rectangle's corner is the route's
+        // transform, a layer above this one.
+        assert_eq!(top_of(&docked, HEADER), 0.0, "a docked header sits flush");
+        assert_eq!(
+            top_of(&full, HEADER),
+            full.media_top,
+            "a full-screen header clears the status bar"
+        );
+    }
+
+    #[test]
+    fn a_view_opened_through_the_route_paints_its_own_panel() {
+        // `open_search_view` is `show_search_view` with the content filled in,
+        // and the point of it is that a caller no longer supplies one.
+        let found: Rc<RefCell<Option<Rc<OverlayHandle>>>> = Rc::new(RefCell::new(None));
+        struct Finder(Rc<RefCell<Option<Rc<OverlayHandle>>>>);
+        impl crate::framework::Component for Finder {
+            fn build(&self, context: &mut crate::framework::BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = OverlayHandle::of(context);
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(crate::framework::component(Finder(Rc::clone(
+            &found,
+        )))));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+
+        let shown = open_search_view(
+            Rc::clone(&handle),
+            content(),
+            || block(HEADER, 400.0, 56.0),
+            || block(DIVIDER, 400.0, 1.0),
+            || block(LIST, 400.0, 200.0),
+        )
+        .expect("shown");
+
+        // Stepped, because `advance` clamps each frame to 50ms.
+        tree.rebuild_dirty();
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        let mut now = 0;
+        while now < SearchViewTransition::OPEN_MICROS {
+            now = (now + 16_000).min(SearchViewTransition::OPEN_MICROS);
+            tree.advance_frame(now);
+            tree.rebuild_dirty();
+        }
+
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(
+            &root,
+            BoxConstraints::tight(SCREEN.width, SCREEN.height),
+        );
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(800, 900);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(&mut layers, SCREEN);
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let drawn = crate::engine_test_stubs::drawn();
+        shown.dismiss();
+        let colours = colours(&drawn);
+        assert!(colours.contains(&HEADER), "{colours:?}");
+        assert!(colours.contains(&DIVIDER));
+        assert!(colours.contains(&LIST));
     }
 }
