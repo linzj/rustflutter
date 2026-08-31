@@ -765,13 +765,85 @@ impl<T: PartialEq + Copy> RadioMenuButton<T> {
 }
 
 /// Upstream `SubmenuButton`: a menu item that opens another menu.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone)]
 pub struct SubmenuButton {
+    /// Identifies this button's ink, its focus node **and its node in the menu
+    /// tree**. One number, because they are one thing: the anchor a submenu
+    /// hangs off is the button the reader pressed.
+    pub id: u64,
+    pub label: String,
     pub alignment_offset: Offset,
     /// Upstream's `submenuIcon` slot being present at all is what makes a
     /// submenu look different from an item.
     pub has_submenu_icon: bool,
     pub enabled: bool,
+    /// The menu tree group this button's panels belong to -- what
+    /// [`crate::theatre::show_tap_dismissed`] uses to tell a tap on a sibling
+    /// panel from a tap outside the whole menu.
+    pub group_id: u64,
+    /// The panel this button opens. `None` opens nothing, which is a button
+    /// that looks like a submenu and is not one -- worth being able to build,
+    /// and worth being obvious.
+    menu: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+    leading: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+}
+
+impl std::fmt::Debug for SubmenuButton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubmenuButton")
+            .field("id", &self.id)
+            .field("label", &self.label)
+            .field("alignment_offset", &self.alignment_offset)
+            .field("has_submenu_icon", &self.has_submenu_icon)
+            .field("enabled", &self.enabled)
+            .field("group_id", &self.group_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for SubmenuButton {
+    fn eq(&self, other: &SubmenuButton) -> bool {
+        self.id == other.id
+            && self.label == other.label
+            && self.alignment_offset == other.alignment_offset
+            && self.has_submenu_icon == other.has_submenu_icon
+            && self.enabled == other.enabled
+            && self.group_id == other.group_id
+            && self.menu.is_some() == other.menu.is_some()
+            && self.leading.is_some() == other.leading.is_some()
+    }
+}
+
+impl Default for SubmenuButton {
+    fn default() -> SubmenuButton {
+        SubmenuButton::new()
+    }
+}
+
+/// What a submenu button keeps between builds.
+///
+/// # The node goes into the tree once, not once a frame
+///
+/// [`crate::raw_menu_anchor::MenuAnchorTree::insert`] asserts that an anchor is
+/// added once -- an anchor added twice would be two nodes under one id and
+/// closing one of them would leave the other half attached. A `build` runs
+/// every frame, so the insert cannot live there; it lives here, in
+/// `initial_state`, which is upstream's `initState`. Coming out again is
+/// `dispose`, upstream's.
+pub struct SubmenuButtonState {
+    id: u64,
+    open: Option<crate::theatre::ModalHandle>,
+    states: crate::widget_state::WidgetStates,
+}
+
+impl Default for SubmenuButtonState {
+    fn default() -> SubmenuButtonState {
+        SubmenuButtonState {
+            id: 0,
+            open: None,
+            states: crate::widget_state::WidgetStates::NONE,
+        }
+    }
 }
 
 impl SubmenuButton {
@@ -787,10 +859,86 @@ impl SubmenuButton {
 
     pub fn new() -> SubmenuButton {
         SubmenuButton {
+            id: 0,
+            label: String::new(),
             alignment_offset: Offset::ZERO,
             has_submenu_icon: true,
             enabled: true,
+            group_id: 0,
+            menu: None,
+            leading: None,
         }
+    }
+
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = id;
+        self
+    }
+
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    /// The menu tree group this button's panels belong to. See the field.
+    pub fn with_group_id(mut self, group_id: u64) -> Self {
+        self.group_id = group_id;
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn with_leading(
+        mut self,
+        leading: impl Fn() -> crate::framework::AnyWidget + 'static,
+    ) -> Self {
+        self.leading = Some(std::rc::Rc::new(leading));
+        self
+    }
+
+    /// Upstream's `menuChildren`, as one panel rather than a list -- the
+    /// arranging is the panel's, and this crate has
+    /// [`crate::component_themes::ResolvedMenuPanel`] for that.
+    pub fn with_menu(mut self, menu: impl Fn() -> crate::framework::AnyWidget + 'static) -> Self {
+        self.menu = Some(std::rc::Rc::new(menu));
+        self
+    }
+
+    /// Whether pressing this button should open anything: upstream's `_open`,
+    /// which returns early for a disabled anchor and for one that is already
+    /// open.
+    ///
+    /// A method rather than three lines inside the tap handler, because a
+    /// handler built in a `build` cannot be asked anything from outside. The
+    /// third condition in particular is invisible from a test that only taps:
+    /// what a second press does depends on tap regions, overlay stacking and
+    /// hit order, and a test that got any of those wrong would pass while
+    /// proving nothing.
+    pub fn should_open(&self) -> bool {
+        self.enabled
+            && self.menu.is_some()
+            && !crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(self.id))
+    }
+
+    /// The line this button draws: a menu item's, with the arrow.
+    ///
+    /// Built out of [`MenuItemButton`] so that the two cannot drift. Upstream
+    /// has them share `_MenuItemLabel` and `_MenuButtonDefaultsM3` for the
+    /// same reason -- a submenu line that looked different from an item line
+    /// in the same panel would read as a different kind of thing.
+    pub fn line(&self) -> MenuItemButton {
+        let mut line = MenuItemButton::new()
+            .with_id(self.id)
+            .with_label(self.label.clone())
+            .with_enabled(self.enabled);
+        if let Some(leading) = &self.leading {
+            let leading = std::rc::Rc::clone(leading);
+            line = line.with_leading(move || leading());
+        }
+        line
     }
 
     pub fn with_alignment_offset(mut self, offset: Offset) -> Self {
@@ -976,10 +1124,427 @@ pub enum MenuItemPart {
     SubmenuIcon,
 }
 
+impl crate::framework::StatefulComponent for SubmenuButton {
+    type State = SubmenuButtonState;
+
+    fn key(&self) -> crate::framework::Key {
+        Some(self.id)
+    }
+
+    /// Upstream's `initState`: the anchor joins the tree once. See
+    /// [`SubmenuButtonState`].
+    fn initial_state(&self) -> SubmenuButtonState {
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            if tree.node(self.id).is_none() {
+                tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(self.id));
+            }
+        });
+        SubmenuButtonState {
+            id: self.id,
+            open: None,
+            states: crate::widget_state::WidgetStates::NONE,
+        }
+    }
+
+    /// Upstream's `dispose`, which takes the anchor out of the tree. A node
+    /// left behind is an anchor the tree still believes in: Escape would reach
+    /// for a root that is not on screen, and a later button with the same id
+    /// would trip the "added once" assert.
+    fn dispose(&self, state: &mut SubmenuButtonState) {
+        if let Some(open) = state.open.take() {
+            open.dismiss();
+        }
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.dispose(state.id));
+    }
+
+    fn build(
+        &self,
+        _state: &SubmenuButtonState,
+        handle: crate::framework::StateHandle<SubmenuButtonState>,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::framework::AnyWidget {
+        let overlay = crate::theatre::OverlayHandle::of(context);
+        let themes = context.capture_themes();
+        let id = self.id;
+        let group_id = self.group_id;
+        let menu = self.menu.clone();
+        let asking = self.clone();
+
+        // The arrow is a trailing part of the line, in the slot
+        // `MenuItemLabel` reserved for it -- see
+        // [`MenuItemLabel::trailing_parts`]. Drawn as the text upstream draws
+        // an icon into, because this crate has no icon font yet: what matters
+        // for the layout is that something occupies the slot and takes the
+        // gap.
+        let mut line = self.line();
+        if self.has_submenu_icon {
+            line = line.with_trailing(|| {
+                crate::framework::leaf(|| crate::render::RenderParagraph::new("\u{25B8}"))
+            });
+        }
+
+        // **The button is in its own menu's tap-region group.** Upstream's
+        // `RawMenuAnchor` wraps its child in a `TapRegion` with the same group
+        // id its panels use, and the reason shows up the moment the button is
+        // pressed a second time: without it the button is *outside* the panel
+        // it opened, so pressing it closes the panel on the way down and the
+        // "already open" guard below can never be reached.
+        let region = crate::tap_region::TapRegion::new(self.id).with_group_id(self.group_id);
+        let pressed = crate::framework::stateful(line.with_on_pressed(move || {
+            // Disabled, no menu, or already open -- see
+            // [`SubmenuButton::should_open`]. A second panel would be a second
+            // entry in the overlay with nothing holding its handle, so nothing
+            // could ever take it down.
+            if !asking.should_open() {
+                return;
+            }
+            let Some(overlay) = overlay.clone() else {
+                return;
+            };
+            let Some(menu) = menu.clone() else {
+                return;
+            };
+            let themes = themes.clone();
+            let opened =
+                crate::raw_menu_anchor::open_menu_surface(overlay, id, group_id, move || {
+                    themes.wrap(menu())
+                });
+            handle.set_state(move |state| state.open = opened);
+        }));
+        region.build(context, pressed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::component_themes::ResolvedMenuButton;
+
+    // -- A submenu button opens its menu -------------------------------------
+
+    use crate::framework::{AnyWidget, BuildContext, Component};
+
+    const SUBMENU: u64 = 8401;
+    const MENU_GROUP: u64 = 8402;
+    const PANEL: Color = Color(0xFF00_00AA);
+
+    fn staged(button: SubmenuButton) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
+        let found: std::rc::Rc<
+            std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>,
+        > = std::rc::Rc::new(std::cell::RefCell::new(None));
+        struct Finder(
+            std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>>,
+            std::cell::RefCell<Option<SubmenuButton>>,
+        );
+        impl Component for Finder {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = crate::theatre::OverlayHandle::of(context);
+                match self.1.borrow_mut().take() {
+                    Some(button) => stateful(button),
+                    None => leaf(|| crate::widgets::SizedBox::new(1.0, 1.0)),
+                }
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::tap_region::TapRegionSurface::new(
+            8400,
+            crate::theatre::overlay(crate::framework::component(Finder(
+                std::rc::Rc::clone(&found),
+                std::cell::RefCell::new(Some(button)),
+            ))),
+        ));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+        (tree, handle)
+    }
+
+    fn a_submenu() -> SubmenuButton {
+        SubmenuButton::new()
+            .with_id(SUBMENU)
+            .with_label("File")
+            .with_group_id(MENU_GROUP)
+            .with_menu(|| {
+                // Away from the button, which sits at the top left. A panel
+                // over the button would take the second tap in the
+                // "opens once" test below, and that test would pass without
+                // the guard it is about.
+                leaf(|| {
+                    crate::render::RenderAlign::new(
+                        crate::render::Alignment::BOTTOM_RIGHT,
+                        crate::render::RenderDecoratedBox::new()
+                            .with_fill(crate::render::Fill::Solid(PANEL))
+                            .with_child(crate::widgets::SizedBox::new(100.0, 100.0)),
+                    )
+                })
+            })
+    }
+
+    #[test]
+    fn a_submenu_button_joins_the_tree_once_and_leaves_when_it_goes() {
+        // `MenuAnchorTree::insert` asserts an anchor is added once, and a
+        // `build` runs every frame -- so the insert has to be in
+        // `initial_state`. A second build must not add a second node.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu());
+        assert!(
+            crate::raw_menu_anchor::with_menu_tree(|tree| tree.node(SUBMENU).is_some()),
+            "the anchor is in the tree"
+        );
+        tree.rebuild_dirty();
+        tree.rebuild_dirty();
+        assert!(
+            crate::raw_menu_anchor::with_menu_tree(|tree| tree.node(SUBMENU).is_some()),
+            "and still exactly one after two more builds"
+        );
+
+        // Taken away, and the tree forgets it: a node left behind is an anchor
+        // the tree still believes in.
+        tree.rebuild(leaf(|| crate::widgets::SizedBox::new(1.0, 1.0)));
+        tree.build_render_tree();
+        assert!(crate::raw_menu_anchor::with_menu_tree(|tree| tree
+            .node(SUBMENU)
+            .is_none()));
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn pressing_a_submenu_button_opens_its_panel() {
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert!(
+            crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(SUBMENU)),
+            "the tree says the anchor is open"
+        );
+        let drawn = painted_tree(&mut tree);
+        assert!(
+            drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Rect { argb, .. } if Color(*argb) == PANEL)),
+            "and the panel is on screen"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_button_says_when_a_press_should_open_nothing() {
+        // The three early returns upstream's `_open` makes, asked where they
+        // can be asked. Reaching them through a tap depends on tap regions,
+        // overlay stacking and hit order; a test that got any of those wrong
+        // would pass while proving nothing about the rule.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(SUBMENU))
+        });
+        assert!(a_submenu().should_open(), "closed, enabled, with a menu");
+        assert!(
+            !a_submenu().with_enabled(false).should_open(),
+            "a disabled button opens nothing"
+        );
+        assert!(
+            !SubmenuButton::new()
+                .with_id(SUBMENU)
+                .with_group_id(MENU_GROUP)
+                .should_open(),
+            "and neither does one with no menu"
+        );
+
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SUBMENU));
+        assert!(
+            !a_submenu().should_open(),
+            "an anchor that is already open is not opened again"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_second_press_does_not_open_a_second_panel() {
+        // Upstream's `_open` returns early for an anchor that is open. Here a
+        // second panel would be a second overlay entry with nothing holding
+        // its handle, so nothing could ever take it down.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        let first = _overlay.entry_count();
+        assert_eq!(first, 1, "one panel to begin with");
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(_overlay.entry_count(), first, "still one panel");
+        assert!(
+            crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(SUBMENU)),
+            "and it is the one that was already there -- the button is inside              its own menu's tap-region group, so pressing it again does not              close the panel on the way down"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_tap_on_a_panel_of_the_same_menu_does_not_close_it() {
+        // The group id the button hands its panels is the menu's, not the
+        // button's own id. Give each panel a group of its own and moving from
+        // one panel of a menu to another would close the one behind.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        let sibling = overlay
+            .insert(|| {
+                crate::framework::component(SameGroup {
+                    id: 8403,
+                    group_id: MENU_GROUP,
+                })
+            })
+            .expect("inserted");
+        tree.rebuild_dirty();
+
+        let before = overlay.entry_count();
+        tap(&mut tree, Offset::new(390.0, 90.0));
+        assert_eq!(
+            overlay.entry_count(),
+            before,
+            "a tap on a panel of the same menu is not outside it, so nothing \
+             came down -- the anchor's own `is_open` would not show this, \
+             because an outside tap closes an anchor's *children* and leaves \
+             the anchor itself alone"
+        );
+        overlay.remove(sibling);
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    struct SameGroup {
+        id: u64,
+        group_id: u64,
+    }
+
+    impl Component for SameGroup {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            crate::tap_region::TapRegion::new(self.id)
+                .with_group_id(self.group_id)
+                .build(
+                    context,
+                    leaf(|| {
+                        crate::render::RenderAlign::new(
+                            crate::render::Alignment::BOTTOM_RIGHT,
+                            crate::render::RenderDecoratedBox::new()
+                                .with_fill(crate::render::Fill::Solid(Color(0xFF00_FF00)))
+                                .with_child(crate::widgets::SizedBox::new(40.0, 40.0)),
+                        )
+                    }),
+                )
+        }
+    }
+
+    #[test]
+    fn a_button_with_no_menu_opens_nothing() {
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(
+            SubmenuButton::new()
+                .with_id(SUBMENU)
+                .with_label("File")
+                .with_group_id(MENU_GROUP),
+        );
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert!(
+            !crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(SUBMENU)),
+            "nothing to open"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_disabled_submenu_button_opens_nothing() {
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu().with_enabled(false));
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert!(!crate::raw_menu_anchor::with_menu_tree(
+            |tree| tree.is_open(SUBMENU)
+        ));
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_submenu_button_taken_away_takes_its_panel_with_it() {
+        // `dispose` dismisses what it opened. A panel left in the overlay
+        // belongs to a button that no longer exists: nothing holds its handle,
+        // so nothing can ever take it down.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged(a_submenu());
+        tap(&mut tree, Offset::new(30.0, 24.0));
+        assert_eq!(overlay.entry_count(), 1, "the panel is up");
+
+        tree.rebuild(leaf(|| crate::widgets::SizedBox::new(1.0, 1.0)));
+        tree.build_render_tree();
+        assert_eq!(overlay.entry_count(), 0, "and it went with the button");
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_submenu_line_is_written_the_way_a_menu_item_is() {
+        // Built out of `MenuItemButton` so the two cannot drift: the label is
+        // the button's, and a disabled one fades exactly as an item's does.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu());
+        let enabled = painted_tree(&mut tree);
+        let colour_of = |drawn: &[Drawn]| {
+            drawn
+                .iter()
+                .find_map(|call| match call {
+                    Drawn::Paragraph { text, argb, .. } if text == "File" => Some(Color(*argb)),
+                    _ => None,
+                })
+                .expect("the label painted")
+        };
+        let lit = colour_of(&enabled);
+
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu().with_enabled(false));
+        let faded = colour_of(&painted_tree(&mut tree));
+        assert!(
+            faded.alpha() < lit.alpha(),
+            "a disabled submenu line is faded: {faded:?} against {lit:?}"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_submenu_line_carries_the_arrow_and_an_item_line_does_not() {
+        // The one difference between the two lines, in the slot
+        // `MenuItemLabel` reserved for it -- and it takes the same gap as any
+        // other trailing part.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(a_submenu());
+        let drawn = painted_tree(&mut tree);
+        let arrow = drawn
+            .iter()
+            .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "\u{25B8}"));
+        assert!(arrow, "the submenu's arrow: {drawn:?}");
+
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(SubmenuButton {
+            has_submenu_icon: false,
+            ..a_submenu()
+        });
+        let drawn = painted_tree(&mut tree);
+        assert!(
+            !drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "\u{25B8}")),
+            "and a button with no arrow slot has no arrow"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    /// Everything a staged tree paints, at the screen's size.
+    fn painted_tree(tree: &mut ElementTree) -> Vec<Drawn> {
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::tight(800.0, 600.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(800, 600);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(800.0, 600.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        crate::engine_test_stubs::drawn()
+    }
 
     // -- The line as a widget -----------------------------------------------
 
