@@ -27,7 +27,7 @@
 //!   (`adaptive_layout::is_display_foldable` is always false).
 
 use rustflutter::framework::{
-    component, leaf, many, provide, single, AnyWidget, BuildContext, StateHandle,
+    AnyWidget, BuildContext, StateHandle, component, leaf, many, provide, single,
 };
 use rustflutter::gestures::PointerHandlers;
 use rustflutter::media_query::size_of;
@@ -38,7 +38,7 @@ use rustflutter::render::{
 };
 use rustflutter::widgets::{Align, ClipRRect, Container, Empty, Pointer};
 
-use crate::app::{self, ids, GalleryState};
+use crate::app::{self, GalleryState, ids};
 use crate::constants::DESKTOP_DISPLAY1_FONT_DELTA;
 use crate::data::demos as catalog;
 use crate::data::demos::Demo;
@@ -47,7 +47,7 @@ use crate::demos::material as demos;
 use crate::demos::reference;
 use crate::l10n::gallery_localizations::GalleryLocalizations;
 use crate::pages::splash;
-use crate::themes::gallery_theme_data::{text, Scheme};
+use crate::themes::gallery_theme_data::{Scheme, text};
 use crate::themes::material_demo_theme_data::MaterialDemoThemeData;
 
 /// Upstream's `_DemoState`.
@@ -640,6 +640,99 @@ impl Component for DemoArea {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Sweeps a grid of hit tests over a laid-out render tree and counts how
+    /// many probed points reach a region wanting each kind of gesture.
+    ///
+    /// A grid rather than one coordinate: chasing this through the running
+    /// window wasted three measurements on clicks that landed somewhere other
+    /// than intended, and a coordinate that misses proves nothing.
+    fn gestures_reachable_in(
+        root: &rustflutter::render::RenderRef,
+        size: (f32, f32),
+    ) -> (usize, usize, usize) {
+        use rustflutter::render::{HitTestResult, Offset, RenderBox};
+        let (mut tapped, mut long_pressed, mut secondary) = (0, 0, 0);
+        let mut y = 4.0;
+        while y < size.1 {
+            let mut x = 4.0;
+            while x < size.0 {
+                let mut result = HitTestResult::new();
+                root.hit_test(Offset::new(x, y), &mut result);
+                for entry in &result.path {
+                    let Some(handlers) = &entry.handlers else {
+                        continue;
+                    };
+                    if handlers.on_tap.is_some() {
+                        tapped += 1;
+                    }
+                    if handlers.on_long_press.is_some() {
+                        long_pressed += 1;
+                    }
+                    if handlers.on_secondary_tap.is_some() {
+                        secondary += 1;
+                    }
+                }
+                x += 8.0;
+            }
+            y += 8.0;
+        }
+        (tapped, long_pressed, secondary)
+    }
+
+    #[test]
+    fn every_control_on_a_demo_page_can_be_reached_by_a_pointer() {
+        // The user-visible report was "right-clicking a text field shows no
+        // context menu". Chasing it found something larger: in the running
+        // app, a click anywhere inside a demo page reaches only two
+        // page-sized regions and nothing below them -- so the back arrow, the
+        // password eye and all seven fields take no pointer at all.
+        //
+        // Mounting the whole `Gallery` straight onto the demo route is what
+        // the headless renderer already does, and it is the only way to get
+        // the real wrapper (`pages::demo::demo_wrapper`) around the demo.
+        // Mounting the demo's own `stage()` alone does *not* reproduce it.
+        use rustflutter::framework::{ElementTree, stateful};
+        use rustflutter::render::{BoxConstraints, RenderBox};
+
+        // The size the running app actually uses, published the way `RfApp`
+        // publishes it: `DemoArea` reads it to give the card a minimum
+        // height, so a tree mounted without one lays the page out differently
+        // from the app -- which is why the first version of this test passed
+        // while the app was broken.
+        const PAGE: (f32, f32) = (475.0, 857.0);
+        let mut data = rustflutter::media_query::MediaQueryData::default();
+        data.size = rustflutter::render::Size::new(PAGE.0, PAGE.1);
+        let mut tree = ElementTree::new();
+        let app = stateful(crate::app::Gallery {
+            theme_mode: Some(crate::data::gallery_options::ThemeMode::Dark),
+            route: crate::app::routes::DEMO,
+            slug: Some("text-field".to_string()),
+        });
+        // The two wrappers `RfApp::frame` puts between the MediaQuery and the
+        // application, in its order.
+        let app = rustflutter::theatre::overlay(app);
+        let app = rustflutter::tap_region::TapRegionSurface::new(77_000, app);
+        tree.rebuild(rustflutter::media_query::MediaQuery::new(data, app));
+        let mut root = tree.build_render_tree().expect("a mounted root");
+        RenderBox::layout(&mut root, BoxConstraints::tight(PAGE.0, PAGE.1));
+
+        let (tapped, long_pressed, secondary) = gestures_reachable_in(&root, PAGE);
+        assert!(
+            tapped > 0,
+            "something takes a tap, or the sweep itself is wrong"
+        );
+        assert!(
+            long_pressed > 0,
+            "the fields want long presses, from the same region as the \
+             secondary tap: tap={tapped} long={long_pressed}"
+        );
+        assert!(
+            secondary > 0,
+            "no point on the demo page reaches a region wanting a \
+             right-click, so no context menu can open anywhere: \
+             tap={tapped} long={long_pressed} secondary={secondary}"
+        );
+    }
 
     #[test]
     fn the_default_section_is_normal() {

@@ -460,3 +460,63 @@ C++ 34 个 gtest 全过；三个目录默认目标全部编过。探针已全部
 每一层加一个临时断言即可，不必再碰运行中的窗口。
 另外仍然挂着第三件事：桌面上应当用 `DesktopTextSelectionControls`
 而不是写死的 `MaterialTextSelectionControls`。
+
+---
+
+## 第 420 轮：把复现搬进单元测试，**排除了一整排嫌疑**——故障需要"导航"这一步
+
+按"下一步"把整个 `Gallery` 装进 `flutter_gallery_unittests`，跑第 418 轮那个网格扫描。
+迭代从"开一次窗口 + 手动确认落在哪一页"变成秒级。
+
+`Gallery { theme_mode, route, slug }` 本来就能**直接开在 demo 路由上**
+（无头渲染器就是这么用的），所以装起来很便宜。
+
+### 一层层加上去，`secondary` 始终不掉
+
+    只装 stage()                                  secondary > 0
+    装整个 Gallery（route=DEMO, slug=text-field） secondary > 0
+    + MediaQuery（475x857，app 的真实尺寸）        secondary = 1009
+    + theatre::overlay                            secondary = 1009
+    + TapRegionSurface                            secondary = 1009
+
+`MediaQuery` 那一步是特意加的：`DemoArea` 要读它算卡片的最小高度，
+**不给 MediaQuery 的树和 app 里的树布局不一样**——
+第 418 轮那个测试之所以是绿的，一部分原因就在这儿。补上之后仍然是绿的。
+
+也就是说：`demo_wrapper` 那一整条链
+（`Container(padding)` → `ClipRRect` → `provide(theme)` → `with_overlay` →
+`DemoArea` → `stage()`），加上 `RfApp` 外面那两层，**全都不是元凶**。
+
+### 中途验了一次"构建到底跑没跑"
+
+连着两次 `ninja: no work to do` 而数字一模一样，按自己的备忘录去查了——
+把打印的前缀从 `SWEEP` 改成 `SWEEP2`，新前缀出现了，**构建是真的在跑**，
+数字一样是因为**那两层确实没影响**。没有据"没变化"就下结论。
+
+### 剩下的唯一差别：**app 是导航进去的，测试是直接开在那儿的**
+
+`push_screen` 用的是 `navigator.push(route, Transition::SlideFromRight)`。
+而真机日志里的形状正好对得上：**两个页面大小的区域嵌在一起**
+（栈里的首页 + 进来的 demo 页），命中在最上面那个就停住。
+
+一个滑入过渡会把页面包在一层平移里。如果那一层**画的时候偏移了、测的时候没有反算回去**，
+或者过渡结束后把离场页留在了上面还继续接指针，下面整片就都够不着——
+和观察到的现象完全吻合。
+
+### 这一轮留下的东西
+
+`pages/demo.rs` 里那条网格扫描测试留下了（356 通过）。它现在是**绿**的，
+作用是把"这条链没问题"钉住：将来谁改了 `demo_wrapper` 把命中弄坏，它会红。
+放在 `pages/demo.rs` 而不是 `app.rs`，因为 `app.rs` 工作区里
+还压着一行别人未提交的改动（`reply_scroll.advance`），不该被我顺手带进提交。
+
+尺子：十六把全部 exit 0。门：gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：直奔 `navigation.rs` 的 `Transition::SlideFromRight`。
+先读它的渲染：过渡用什么包页面（平移？`RenderStack`？），
+那个包装的 `hit_test` 有没有把位置反算回去，
+以及**过渡结束之后离场的那一页有没有被摘掉**。
+然后在 `pages/demo.rs` 那条测试旁边加一条：
+先装 `route=HOME`，再走一次 `push_screen` 到 demo，跑同一个扫描——
+预期 `secondary` 掉到 0。拿到红的那一条，就可以在测试里改一行验一次了。
+另外仍然挂着：桌面上应当用 `DesktopTextSelectionControls`。
