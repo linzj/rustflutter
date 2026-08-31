@@ -2629,3 +2629,64 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
     看它的 `hit_test`/`size`：`DeferToChild` 的 region 只有在子节点被命中时
     才上路径，而它的 size 可能在重建后成了零。
 **先量出来哪一种，再动手**——这一轮已经证明了猜是没用的。
+
+---
+
+## 第 457 轮：量出来了——面板盖住了按钮
+
+按上一轮列的两条逐层排，答案是第二条，而且比预想的直白。
+
+### (1) region 还建不建？建。
+
+在 `TapRegion::build` 和它的 assemble 里各打一行：
+
+```
+TapRegion::build id=8401 registry=true     <- 第一次
+  assemble id=8401
+--- tap ---
+TapRegion::build id=8401 registry=true     <- 点击之后又建了两次
+TapRegion::build id=8401 registry=true
+--- after ---
+  assemble id=8401
+  assemble id=8401
+AFTER [8401, 8400]
+```
+
+**建了，也装配了，就是不在命中路径上。** 所以不是"没包"。
+
+### (2) 顺手撞见的一个真缺陷：两个 region 用了同一个 id
+
+`open_menu_surface` 把 **anchor 的 id** 当成面板 region 的 id 传下去，
+而按钮自己（第 455 轮补的）也是一个 id 相同的 region。
+注册表按 id 记，于是"8401 被点到了吗"变成"这两个里有一个被点到了吗"，
+两者分不开。改成给面板要一个新的 `next_surface_id()`。
+
+改完再量，路径变成 `AFTER [2, 8400]`——**2 就是面板的新 region id**。
+
+### (3) 所以真正的原因是：面板压在按钮上
+
+点 (30,24) 落在**面板**身上。把测试面板从"填满的 Align"换成
+一个 100×100 的实心盒子再量一遍，**照旧** `[2, 8400]`——
+因为条目就放在 overlay 的原点，(30,24) 在 100×100 里面。
+
+**面板没有位置。** 第 455 轮把定位推到了下一轮，这就是它的代价：
+一个没被摆放的面板落在原点，盖住了打开它的按钮。
+第 455 轮那三条按不住的变异，全都是这一件事的下游——
+第二次点击落在面板上，所以"再按一次"、"面板入组"、"按钮入组"
+三条都观察不到。
+
+**记下来而不是当成通过。** 这一轮交的是：一个真的 id 冲突修好了，
+和一个量出来的原因。
+
+尺子：十六把全部 exit 0。门：Rust 6685 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：给面板一个位置——这是现在挡着三条变异的唯一一件事。
+`theatre.rs` 的 `anchored(anchor, place, surface)` 和
+`Anchor`（第 444 轮 `SearchAnchor` 用过：assemble 里 `anchor.set(target)`，
+`rect()` 给全局矩形）就是工具。
+**位置规则照上游抄，别自己编**：看 `raw_menu_anchor.dart` 里
+`RawMenuAnchor` 传给 overlay 的 `RawMenuOverlayInfo`
+（`anchorRect`、`overlaySize`、`position`），以及
+`menu_anchor.dart` 里 `MenuAnchor` 的 `alignmentOffset` 怎么用——
+`SubmenuButton` 已经有一个 `alignment_offset` 字段在那儿等着，**没人读**。

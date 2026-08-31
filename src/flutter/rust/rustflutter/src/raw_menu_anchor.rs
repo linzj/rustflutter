@@ -606,7 +606,14 @@ pub fn open_menu_surface(
     content: impl Fn() -> crate::framework::AnyWidget + 'static,
 ) -> Option<crate::theatre::ModalHandle> {
     with_menu_tree_mut(|tree| tree.open(anchor));
-    let shown = crate::theatre::show_tap_dismissed(overlay, anchor, group_id, content)?;
+    // **A fresh region id, not the anchor's.** The anchor is itself a tap
+    // region -- upstream's `RawMenuAnchor` wraps its child in one so that
+    // pressing the button does not count as a tap outside the menu it opened
+    // -- and handing the panel the same number puts two regions in the
+    // registry under one id. The registry keys on it, so "was 8401 hit" then
+    // means "was either of them hit", and the two cannot be told apart.
+    let region_id = crate::theatre::next_surface_id();
+    let shown = crate::theatre::show_tap_dismissed(overlay, region_id, group_id, content)?;
     shown.on_dismissed(move || {
         with_menu_tree_mut(|tree| tree.handle_outside_tap(anchor));
     });
