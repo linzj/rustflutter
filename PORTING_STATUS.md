@@ -275,3 +275,70 @@ C++ 34 个 gtest 全过；gallery 354 通过；三个目录默认目标全部编
 本项目写死 `MaterialTextSelectionControls`（手机上那种药丸条），
 而上游桌面用的是 `DesktopTextSelectionControls`（截图里那种方角菜单）——
 `text_selection_controls.rs` 里那些类现在还是没有生产者的数据。
+
+---
+
+## 第 417 轮：右键菜单这条路查到底了——**文本框自己的指针区域根本不在命中路径上**
+
+这一轮**没有改代码**，是一轮诊断。用户报的缺陷分成三件事，第一件上一轮已修，
+这一轮把第二件钉死到了具体位置。
+
+### 已确认（第 416 轮修的那件）
+
+Windows host（`rustflutter_host_win.cc`）**只处理 `WM_LBUTTONDOWN/UP`**，
+`MakePointerData` 里 `data.buttons` 写死成 primary。右键**根本不产生指针事件**。
+已修（`72df0b8`），并用探针验证：修之前什么都没有，修之后
+`Down buttons=2` 确实到达框架。同时给 `tools/grab_window.py` 加了 `--srclick`，
+这条路以后可复现。
+
+### 这一轮钉死的第二件
+
+事件到了，菜单**还是不出来**。把探针打进命中路径，在 Text fields 演示的
+Name 字段上、沿 y 从 200 到 237 逻辑像素**扫了一遍**，每一次路径都一样：
+
+    target=40005  tap=true long=false down=false secondary=false   <- 最内层
+    target=302    ...
+    target=128516096 ...
+
+`editable.rs:3727` 那个区域挂着 `with_tap` + `with_long_press` +
+`with_pointer_down` + `with_secondary_tap` 四样，
+而命中到的这个**只有 tap**——所以它不是文本框的区域。
+
+再把探针打进 `RenderPointerRegion::hit_test` 本身，只打 id 40005：
+
+    region 40005 size=460x764 pos=(233, 544) contains=true secondary=false
+
+**460×764 是整页的尺寸**，不是一个文本框。而且整个进程里 id 40005 的区域**只有这一个**。
+
+所以结论是确定的：**`TextField` 自己的 `RenderPointerRegion` 一次都没有出现在命中路径上。**
+`RenderPointerRegion::hit_test` 的写法是
+`hit_target = self.child.hit_test(..) || self.hit_test_self(..)`，
+而路径里 40005 **排在最前**（路径是从内往外记的），
+说明它的**孩子那一侧压根没命中**，它是靠自己 Opaque 才进的路径。
+也就是说：**在这个页面上，那个页面级 Focus 区域底下的东西，命中测试走不下去。**
+
+上一轮"两个区域共用一个 id、外面盖住里面"的猜测**是错的**，如实更正：
+根本不是遮盖，是**下降在更上面就停了**。
+
+### 没有确认的，不写成确认
+
+- 这个演示页里**其它控件**（比如密码那个眼睛）是否也点不动——
+  我跑了一次像素差对比，得到 0，但事后看截图发现那一跑**导航落在了 App bar 演示上**，
+  点的根本不是眼睛。**这条不算数**，下一轮重做。
+- 具体是哪一个祖先停住了下降，还没定位。
+
+### 第三件（同一份报告里的外观问题）
+
+上游桌面用 `DesktopTextSelectionControls`（截图里那种方角菜单），
+本项目 `editable.rs` 写死 `MaterialTextSelectionControls`（手机上的药丸条），
+`TargetPlatform::host()` 只被用来选按钮集合、没被用来选工具条形状。
+`text_selection_controls.rs` 里那些桌面类目前仍是没有生产者的数据。
+
+**下一步**：先把"这一页还有什么点得动"这件事**重做一遍并做对**——
+导航要先截图确认落在了 Text fields 上再点，
+然后点密码的眼睛、点 Life story 那个多行框，各做一次像素差。
+这决定了故障有多大：如果整页都点不动，那这就不是右键的问题，
+而是这一页的命中测试断了，右键菜单只是它的一个症状。
+确认之后再往上找那个停住下降的祖先——
+建议的探针是在 `HitTestResult` 记录时打印每一层的 id 与 size，
+从页面级那个 460×764 的区域往下追。
