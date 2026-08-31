@@ -1575,3 +1575,73 @@ header（一个 search bar）+ divider + 建议列表。
 (2) header 里那个输入框和第 435 轮做的 `SearchBar` 是不是同一个东西——
 看上游 `_ViewContent` 用的是 `SearchBar` 还是直接一个 `TextField`，
 **决定这一层是复用还是新写**。
+
+---
+
+## 第 439 轮：view 的 header 就是第 435 轮那个 `SearchBar`
+
+上一轮留的两件事：
+
+**查二**（先说这条，因为它决定了整轮）：上游 `_ViewContent` 里那个
+**就是 `SearchBar`**，不是另写一个 `TextField`。
+所以这一层是**复用**。这也正是前两轮那个动画的意义所在——
+bar 长成面板，面板顶上那个输入框就是刚才被点的那个，
+光标从头到尾没换过 widget。另写一个"长得像的"能跑，
+但错法只在两边漂移的那天才显出来。
+
+**查一**：`fullScreenBarHeight = 72` 和 `headerHeight` 两个数都在
+`ResolvedSearchView` 里，不用往 widget 里硬写。
+
+### `SearchBarOverrides`
+
+header 要把 bar 的底色、覆盖色、高度、两种字体、约束、内边距全改掉。
+上游每一项都是 `WidgetStateProperty`，这里是**普通值**——
+而这算忠实不算简化，理由在于**是谁在设**：
+header 每一项传的都是 `WidgetStatePropertyAll`，
+一个不看状态的 property。header 里的 bar 按下、悬停、静止都是透明的，
+因为要被看见的是它背后的面板。
+
+放在 `resolved()` 里统一叠加，这样一次 build 里的三次解析
+（静止/悬停/按下）不可能对它们各说各话。
+
+### header 的约束有三个答案
+
+- **写了高度**：`tightFor(height:)`，**是钉死不是下限**——
+  要 64 就是 64。
+- **没写且全屏**：下限 72、上不封顶（要让开状态栏，可能需要更多）。
+- **没写且停靠**：什么都不说，落回 bar 自己的 56。
+
+### 变异扫描三批，第一批 13 条里 8 条没红，逐条查下来只有 2 条是真缺口
+
+第一批有 4 条是 **BUILD ERROR**——我把结构体字面量里的字段整行删了，
+那不编译。**BUILD ERROR 不算通过**，改成置 `None` 重跑。
+
+剩下的：
+
+- **"header 沿用 bar 的内边距" 0 红**：不是漏测，是**坏变异**——
+  view 的 `barPadding` 和 bar 的 `padding` 默认**是同一个数**
+  （`symmetric(horizontal: 8)`，`ResolvedSearchView` 早就记着这是有意的）。
+  改成先把 view 的值改掉再断言，同时把两种字体也一起改掉断言，
+  否则"接线掉了一根"在默认值下看不见。
+- **"header 沿用 bar 的悬停覆盖色" 0 红**：**真缺口**。
+  我在 `WidgetStates::NONE` 上读，而 bar 自己静止时**本来**就是透明的。
+  改成按悬停读，先断言页面上的 bar 会亮起来，再断言 header 不会。
+- **"全屏下限压过写死的高度" 0 红**：又是**坏变异**——
+  `match` 的第一条臂是 `(Some(height), _)`，第二条写成 `(_, true)`
+  也永远轮不到。改成把全屏那条整个挪到前面，才真的换了顺序，1 红。
+
+三批加起来 13 条全红。
+
+尺子：十六把全部 exit 0。门：Rust 6566 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：header 有了，`show_search_view` 还是没人给它内容。
+下一轮把 `_ViewContent` 那一列拼起来：
+header + divider + 建议列表，外面套第 437 轮那三条 interval 的淡入。
+**先查两件事**：
+(1) 那三条淡入现在**没有消费者**——`icons_fade`/`divider_fade`/`list_fade`
+   谁都没读。确认列要怎么把每一段包进各自的透明度里
+   （`RenderOpacity` 是渲染对象，列是 `RenderFlex`，看现成的组合方式）。
+(2) 上游那个 `if (!effectiveShrinkWrap || minHeight > 0 || showFullScreenView
+   || result.isNotEmpty)` 决定 divider 和列表**在不在**——
+   四个条件的或，不是"有结果才显示"那么简单。抄之前先把四个条件各是什么读清楚。

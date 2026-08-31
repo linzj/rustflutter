@@ -377,6 +377,65 @@ impl SearchViewTransition {
     }
 }
 
+/// What a caller has said about a [`SearchBar`]'s appearance, overriding the
+/// theme.
+///
+/// # Why these are plain values and upstream's are properties
+///
+/// Upstream's `SearchBar` takes each of these as a
+/// `WidgetStateProperty<T>` -- a function of the states -- so that a bar can
+/// be a different colour while pressed. Here they are plain values, and the
+/// reason that is faithful rather than a simplification is who sets them:
+/// **the view's header passes `WidgetStatePropertyAll` for every one of
+/// them**, which is a property that ignores the states. A search bar used as
+/// a header is transparent pressed, hovered or idle, because the panel behind
+/// it is the thing being seen.
+///
+/// A caller that genuinely wants a state-dependent colour has the theme, whose
+/// fields *are* properties, and which this overrides rather than replaces.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchBarOverrides {
+    pub background_color: Option<crate::engine::Color>,
+    pub overlay: Option<crate::engine::Color>,
+    pub elevation: Option<f32>,
+    pub text_style: Option<crate::engine::TextStyle>,
+    pub hint_style: Option<crate::engine::TextStyle>,
+    pub constraints: Option<crate::render::BoxConstraints>,
+    pub padding: Option<crate::render::EdgeInsets>,
+}
+
+impl SearchBarOverrides {
+    /// Lays these over a resolved appearance. Anything not set is left alone,
+    /// which is what makes this an override and not a replacement.
+    pub fn apply(
+        &self,
+        mut resolved: crate::component_themes::ResolvedSearchBar,
+    ) -> crate::component_themes::ResolvedSearchBar {
+        if let Some(color) = self.background_color {
+            resolved.background_color = color;
+        }
+        if let Some(overlay) = self.overlay {
+            resolved.overlay = overlay;
+        }
+        if let Some(elevation) = self.elevation {
+            resolved.elevation = elevation;
+        }
+        if let Some(style) = &self.text_style {
+            resolved.text_style = Some(style.clone());
+        }
+        if let Some(style) = &self.hint_style {
+            resolved.hint_style = Some(style.clone());
+        }
+        if let Some(constraints) = self.constraints {
+            resolved.constraints = constraints;
+        }
+        if let Some(padding) = self.padding {
+            resolved.padding = padding;
+        }
+        resolved
+    }
+}
+
 /// Upstream `SearchBar`: the field an anchor usually puts in front of its view.
 ///
 /// It is a widget in its own right rather than part of the anchor, because a
@@ -407,6 +466,7 @@ pub struct SearchBar {
     on_changed: Option<std::rc::Rc<dyn Fn(&str)>>,
     on_submitted: Option<std::rc::Rc<dyn Fn(&str)>>,
     on_tap: Option<std::rc::Rc<dyn Fn()>>,
+    overrides: SearchBarOverrides,
 }
 
 impl std::fmt::Debug for SearchBar {
@@ -418,6 +478,7 @@ impl std::fmt::Debug for SearchBar {
             .field("has_trailing", &self.has_trailing)
             .field("is_anchor_child", &self.is_anchor_child)
             .field("enabled", &self.enabled)
+            .field("overrides", &self.overrides)
             .finish_non_exhaustive()
     }
 }
@@ -434,6 +495,7 @@ impl PartialEq for SearchBar {
             && self.has_trailing == other.has_trailing
             && self.is_anchor_child == other.is_anchor_child
             && self.enabled == other.enabled
+            && self.overrides == other.overrides
     }
 }
 
@@ -479,7 +541,15 @@ impl SearchBar {
             on_changed: None,
             on_submitted: None,
             on_tap: None,
+            overrides: SearchBarOverrides::default(),
         }
+    }
+
+    /// Upstream's per-instance appearance arguments, all at once. See
+    /// [`SearchBarOverrides`] for why they are plain values here.
+    pub fn with_overrides(mut self, overrides: SearchBarOverrides) -> Self {
+        self.overrides = overrides;
+        self
     }
 
     pub fn with_hint_text(mut self, hint: impl Into<String>) -> Self {
@@ -534,7 +604,13 @@ impl SearchBar {
         context: &mut crate::framework::BuildContext,
         states: crate::widget_state::WidgetStates,
     ) -> crate::component_themes::ResolvedSearchBar {
-        crate::component_themes::ResolvedSearchBar::of(context, states)
+        // The overrides go on here rather than at each use, so that the three
+        // resolutions a build does -- idle, hovered, pressed -- cannot
+        // disagree about them.
+        self.overrides
+            .apply(crate::component_themes::ResolvedSearchBar::of(
+                context, states,
+            ))
     }
 
     /// Whether the anchor has to wire up a tap itself.
@@ -869,6 +945,78 @@ pub fn show_search_view(
             content: std::rc::Rc::clone(&content),
         })
     })
+}
+
+/// The view's header: upstream's `_ViewContent.build`, whose header **is a
+/// `SearchBar`** -- the same widget the anchor puts on the page, not a
+/// look-alike built out of a `TextField`.
+///
+/// That is the whole point of the transition this crate spent two rounds on.
+/// The bar grows into the panel and the field at the top of the panel is the
+/// field that was tapped, so a reader's caret never moves from one widget to
+/// another. Building a second, similar field here would work and would be
+/// wrong in the way that only shows up when the two drift.
+///
+/// # What the header overrides, and why every one of them is a constant
+///
+/// Transparent background, transparent overlay, no elevation: the *panel* is
+/// the surface, and a bar drawing its own pill on top of it would be a raised
+/// shape inside a raised shape. The text and hint styles come from the view's
+/// own `headerTextStyle`/`headerHintStyle` rather than the bar's, and the
+/// padding is the view's `barPadding` -- which, as
+/// [`crate::component_themes::ResolvedSearchView`] records, is the same
+/// `EdgeInsets.symmetric(horizontal: 8)` the bar uses, because the header *is*
+/// the bar continued.
+pub fn search_view_header(
+    view: &crate::component_themes::ResolvedSearchView,
+    full_screen: bool,
+    id: u64,
+) -> SearchBar {
+    SearchBar::new(id).with_overrides(SearchBarOverrides {
+        background_color: Some(crate::engine::Color::TRANSPARENT),
+        overlay: Some(crate::engine::Color::TRANSPARENT),
+        elevation: Some(0.0),
+        text_style: view.header_text_style.clone(),
+        hint_style: view.header_hint_style.clone(),
+        constraints: search_view_header_constraints(view.header_height, full_screen),
+        padding: Some(view.bar_padding),
+    })
+}
+
+/// How tall the header is allowed to be: upstream's `headerConstraints ??
+/// (showFullScreenView ? BoxConstraints(minHeight: fullScreenBarHeight) :
+/// null)`.
+///
+/// Three answers, and the difference between the last two is the interesting
+/// part:
+///
+/// * a **stated** header height is *tight* -- `BoxConstraints.tightFor(height:)`
+///   -- so a caller who asks for 64 gets 64 and not "at least 64";
+/// * with none stated, a **full-screen** view has a floor of 72 and no
+///   ceiling, because a header under a status bar has to clear it and may need
+///   more room than a docked one;
+/// * a **docked** view says nothing at all, and the bar falls back to its own
+///   constraints -- 56 tall at the least, which is what a search bar is
+///   everywhere else.
+pub fn search_view_header_constraints(
+    header_height: Option<f32>,
+    full_screen: bool,
+) -> Option<crate::render::BoxConstraints> {
+    match (header_height, full_screen) {
+        (Some(height), _) => Some(crate::render::BoxConstraints {
+            min_width: 0.0,
+            max_width: f32::INFINITY,
+            min_height: height,
+            max_height: height,
+        }),
+        (None, true) => Some(crate::render::BoxConstraints {
+            min_width: 0.0,
+            max_width: f32::INFINITY,
+            min_height: crate::component_themes::ResolvedSearchView::FULL_SCREEN_BAR_HEIGHT,
+            max_height: f32::INFINITY,
+        }),
+        (None, false) => None,
+    }
 }
 
 /// The sheet between the view and the page: upstream's `barrierColor`,
@@ -2467,5 +2615,258 @@ mod search_view_route_tests {
             "and done"
         );
         shown.dismiss();
+    }
+}
+
+#[cfg(test)]
+mod search_view_header_tests {
+    use super::*;
+    use crate::component_themes::ResolvedSearchView;
+    use crate::engine::{Color, TextStyle};
+    use crate::engine_test_stubs::Drawn;
+    use crate::framework::{
+        AnyWidget, BuildContext, Component, ElementTree, component, leaf, stateful,
+    };
+    use crate::render::{BoxConstraints, Offset, RenderBox, Size};
+    use crate::widget_state::WidgetStates;
+
+    /// The view's appearance as `ResolvedSearchView::of` gives it with no
+    /// theme, read through a real build so the defaults are the real ones.
+    fn view(full_screen: bool) -> ResolvedSearchView {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        struct Reader(
+            std::rc::Rc<std::cell::RefCell<Option<ResolvedSearchView>>>,
+            bool,
+        );
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = Some(ResolvedSearchView::of(context, self.1));
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(Reader(std::rc::Rc::clone(&seen), full_screen)));
+        let read = seen.borrow_mut().take().expect("built once");
+        read
+    }
+
+    /// What a bar resolves to once its overrides are on, read through a build.
+    fn resolved_of(bar: SearchBar) -> crate::component_themes::ResolvedSearchBar {
+        resolved_in(bar, WidgetStates::NONE)
+    }
+
+    fn resolved_in(
+        bar: SearchBar,
+        states: WidgetStates,
+    ) -> crate::component_themes::ResolvedSearchBar {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        struct Reader(
+            std::rc::Rc<std::cell::RefCell<Option<crate::component_themes::ResolvedSearchBar>>>,
+            SearchBar,
+            WidgetStates,
+        );
+        impl Component for Reader {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = Some(self.1.resolved(context, self.2));
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(component(Reader(std::rc::Rc::clone(&seen), bar, states)));
+        let read = seen.borrow_mut().take().expect("built once");
+        read
+    }
+
+    #[test]
+    fn the_header_draws_no_surface_of_its_own() {
+        // The panel is the surface. A bar that kept its own background, its own
+        // elevation and its own hover overlay would be a raised pill sitting
+        // inside a raised panel, and every one of the three would show.
+        let plain = resolved_of(SearchBar::new(1));
+        assert_ne!(
+            plain.background_color,
+            Color::TRANSPARENT,
+            "a bar on the page has a surface, or there is nothing to override"
+        );
+        assert!(plain.elevation > 0.0);
+
+        let header = resolved_of(search_view_header(&view(false), false, 1));
+        assert_eq!(header.background_color, Color::TRANSPARENT);
+        assert_eq!(header.elevation, 0.0);
+
+        // The overlay has to be asked for **hovered**. Idle it is transparent
+        // anyway -- that is the bar's own fall-through -- so a check at rest
+        // would pass whether the override were there or not.
+        let hovered =
+            crate::widget_state::WidgetStates::of(&[crate::widget_state::WidgetState::Hovered]);
+        assert_ne!(
+            resolved_in(SearchBar::new(1), hovered).overlay,
+            Color::TRANSPARENT,
+            "a bar on the page lights up under the pointer"
+        );
+        assert_eq!(
+            resolved_in(search_view_header(&view(false), false, 1), hovered).overlay,
+            Color::TRANSPARENT,
+            "and a header does not"
+        );
+    }
+
+    #[test]
+    fn the_header_takes_the_views_text_styles_and_not_the_bars() {
+        // `headerTextStyle` and `headerHintStyle`, which a view theme can set
+        // separately from the bar's -- so the same bar reads one way on the
+        // page and another inside the panel.
+        let view = view(false);
+        let header = resolved_of(search_view_header(&view, false, 1));
+        assert_eq!(header.text_style, view.header_text_style);
+        assert_eq!(header.hint_style, view.header_hint_style);
+        assert!(header.text_style.is_some(), "or the check is vacuous");
+    }
+
+    #[test]
+    fn the_header_is_padded_the_way_the_view_pads_its_bar() {
+        // Read off a doctored view rather than the default one, because at the
+        // default the two are **the same numbers**: the view's `barPadding`
+        // and the bar's `padding` are both `symmetric(horizontal: 8)`, which
+        // `ResolvedSearchView` records as deliberate -- the header is the bar
+        // continued. A test against the default could not tell "the view's
+        // padding was used" from "the bar's own was left alone".
+        let mut view = view(false);
+        assert_eq!(
+            view.bar_padding,
+            crate::render::EdgeInsets::symmetric(
+                crate::component_themes::ResolvedSearchBar::PADDING,
+                0.0
+            ),
+            "the two agree by default, which is why this test doctors one"
+        );
+        view.bar_padding = crate::render::EdgeInsets::all(3.0);
+        let header = resolved_of(search_view_header(&view, false, 1));
+        assert_eq!(header.padding, crate::render::EdgeInsets::all(3.0));
+    }
+
+    #[test]
+    fn each_of_the_headers_overrides_comes_from_the_view_it_was_built_from() {
+        // The same doctoring for the rest of them at once: at the defaults
+        // several of these agree with the bar's own values, and a wiring that
+        // dropped one would go unseen.
+        let mut view = view(false);
+        view.header_text_style = Some(TextStyle {
+            color: Color::argb(255, 1, 2, 3),
+            ..TextStyle::default()
+        });
+        view.header_hint_style = Some(TextStyle {
+            color: Color::argb(255, 4, 5, 6),
+            ..TextStyle::default()
+        });
+        let header = resolved_of(search_view_header(&view, false, 1));
+        assert_eq!(header.text_style, view.header_text_style);
+        assert_eq!(header.hint_style, view.header_hint_style);
+        assert_ne!(header.text_style, header.hint_style, "two, not one twice");
+    }
+
+    #[test]
+    fn a_stated_header_height_is_tight_and_the_full_screen_floor_is_not() {
+        // The difference upstream draws between `tightFor(height:)` and
+        // `BoxConstraints(minHeight:)`. A caller who asks for 64 gets 64; a
+        // full-screen header with nothing asked gets "at least 72", because it
+        // has a status bar to clear and may need more.
+        let stated = search_view_header_constraints(Some(64.0), false).expect("stated");
+        assert_eq!((stated.min_height, stated.max_height), (64.0, 64.0));
+
+        let full = search_view_header_constraints(None, true).expect("a floor");
+        assert_eq!(full.min_height, ResolvedSearchView::FULL_SCREEN_BAR_HEIGHT);
+        assert_eq!(full.max_height, f32::INFINITY, "a floor, not a height");
+
+        assert_eq!(
+            search_view_header_constraints(None, false),
+            None,
+            "a docked header says nothing and the bar's own 56 stands"
+        );
+    }
+
+    #[test]
+    fn a_stated_height_beats_the_full_screen_floor() {
+        // The `??` order upstream: `headerConstraints ?? (showFullScreenView ?
+        // ... : null)`. A caller who states a height means it on a full-screen
+        // view too.
+        let stated = search_view_header_constraints(Some(40.0), true).expect("stated");
+        assert_eq!((stated.min_height, stated.max_height), (40.0, 40.0));
+    }
+
+    #[test]
+    fn a_full_screen_header_is_taller_than_a_docked_one() {
+        // The two constraints, seen through a laid-out bar rather than read off
+        // the struct: the docked header is the bar's own 56 and the full-screen
+        // one is the view's 72.
+        let laid_out = |full_screen: bool| {
+            let bar = search_view_header(&view(full_screen), full_screen, 1);
+            let mut tree = ElementTree::new();
+            tree.rebuild(stateful(bar));
+            let root = tree.build_render_tree().expect("a root");
+            crate::render::schedule_root_layout(&root, BoxConstraints::loose(500.0, 400.0));
+            crate::render::flush_layout();
+            root.size()
+        };
+        assert_eq!(laid_out(false).height, 56.0, "the bar's own minimum");
+        assert_eq!(
+            laid_out(true).height,
+            ResolvedSearchView::FULL_SCREEN_BAR_HEIGHT
+        );
+    }
+
+    #[test]
+    fn overriding_one_thing_leaves_the_rest_of_the_theme_alone() {
+        // It is an override, not a replacement. The mistake it guards against
+        // is a header that sets three colours and silently loses the shape,
+        // the constraints and the capitalisation with them.
+        let plain = resolved_of(SearchBar::new(1));
+        let tinted = resolved_of(SearchBar::new(1).with_overrides(SearchBarOverrides {
+            background_color: Some(Color::argb(255, 255, 0, 0)),
+            ..SearchBarOverrides::default()
+        }));
+        assert_eq!(tinted.background_color, Color::argb(255, 255, 0, 0));
+        assert_eq!(tinted.shape, plain.shape);
+        assert_eq!(tinted.elevation, plain.elevation);
+        assert_eq!(tinted.padding, plain.padding);
+    }
+
+    #[test]
+    fn a_header_paints_its_hint_in_the_views_hint_colour() {
+        // End to end: the override reaches the canvas rather than only the
+        // struct. The view's hint style and the bar's are both derived from
+        // `bodyLarge`, so this is checked by overriding it outright.
+        let view = view(false);
+        let mut header = search_view_header(&view, false, 1);
+        let marked = TextStyle {
+            color: Color::argb(255, 0, 200, 0),
+            ..view.header_hint_style.clone().unwrap_or_default()
+        };
+        header = header.with_overrides(SearchBarOverrides {
+            hint_style: Some(marked.clone()),
+            ..SearchBarOverrides::default()
+        });
+        header.hint_text = Some("Search".to_string());
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(stateful(header));
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(500.0, 400.0));
+        crate::render::flush_layout();
+        let mut layers = crate::engine::LayerTree::new(500, 400);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(500.0, 400.0));
+            RenderBox::paint(&root, &mut context, Offset::ZERO);
+        }
+        let hint = crate::engine_test_stubs::drawn()
+            .into_iter()
+            .find_map(|call| match call {
+                Drawn::Paragraph { text, argb, .. } if text == "Search" => Some(argb),
+                _ => None,
+            })
+            .expect("the hint reached the canvas");
+        assert_eq!(Color(hint), marked.color);
     }
 }
