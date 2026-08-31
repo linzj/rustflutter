@@ -1019,6 +1019,115 @@ pub fn search_view_header_constraints(
     }
 }
 
+/// What is in the panel below the header, and whether anything is:
+/// upstream's `_ViewContent.build` from the header down.
+///
+/// # The divider and the list are present or absent together
+///
+/// Upstream guards both with one condition, and it is an **or of four**:
+///
+/// ```dart
+/// if (!effectiveShrinkWrap || minHeight > 0 || showFullScreenView || result.isNotEmpty)
+/// ```
+///
+/// So they are there *unless every one of the four is against them*: the view
+/// shrink-wraps, it has no minimum height to fill, it is not full screen, and
+/// there is nothing to show. That is not "show the list when there are
+/// results" -- three of the four have nothing to do with results.
+///
+/// The reason is what a divider means. A rule under the header says *"there is
+/// more below"*, and in three of these cases there is: a view that has a
+/// minimum height, or fills the screen, has room below the header whether or
+/// not anything has been typed yet, and drawing the header with nothing under
+/// it would leave a rule pointing at blank space. Only the fourth case -- a
+/// shrink-wrapping docked view with no floor and no results -- is a panel that
+/// really is just a field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SearchViewBody {
+    pub full_screen: bool,
+    /// Upstream's `effectiveShrinkWrap`.
+    pub shrink_wrap: bool,
+    /// Upstream's `minHeight`, which is **already clamped**:
+    /// `math.min(effectiveConstraints.minHeight, _viewRect.height)`. The
+    /// clamped one is what the condition reads, so it is what this holds.
+    pub min_height: f32,
+    pub has_results: bool,
+}
+
+impl SearchViewBody {
+    /// Whether the divider and the list are in the column at all.
+    pub fn shows_the_list(&self) -> bool {
+        !self.shrink_wrap || self.min_height > 0.0 || self.full_screen || self.has_results
+    }
+
+    /// Whether the list must fill the room left over, upstream's
+    /// `fit: (effectiveShrinkWrap && !showFullScreenView) ? loose : tight`.
+    ///
+    /// **A shrink-wrapping view is the only one that lets it be shorter**, and
+    /// even then only while docked: a full-screen view has a screen to fill,
+    /// and a panel with a fixed height that left a gap under its list would
+    /// show the surface through it.
+    pub fn list_fills_the_room(&self) -> bool {
+        !(self.shrink_wrap && !self.full_screen)
+    }
+}
+
+/// The column upstream builds inside the panel: the header, then -- when
+/// [`SearchViewBody::shows_the_list`] says so -- a divider and the results.
+///
+/// # The fade named for the icons is over the whole column
+///
+/// Upstream wraps this entire column in `FadeTransition(opacity:
+/// viewIconsFadeCurve)`, and the divider and the list then carry a second
+/// fade each on top of it. So `_kViewIconsFadeOnInterval` is not the icons'
+/// fade at all -- it is *everything's*, and the name survives from whatever it
+/// used to wrap. Ported where it is applied rather than where it is named,
+/// because the name is the part that is wrong.
+///
+/// The result is that the divider and the list are multiplied by two curves:
+/// they arrive on their own schedule *within* a column that is itself still
+/// fading in.
+pub fn search_view_column(
+    body: SearchViewBody,
+    t: f32,
+    direction: crate::animation::AnimationStatus,
+    top_padding: f32,
+    header: crate::render::BoxedRender,
+    divider: crate::render::BoxedRender,
+    list: crate::render::BoxedRender,
+) -> crate::render::RenderOpacity {
+    let fade = |interval| SearchViewTransition::fade_at(interval, t, direction);
+
+    let mut column = crate::render::RenderFlex::column()
+        .with_main_axis_size(crate::render::MainAxisSize::Min)
+        // `crossAxisAlignment: stretch`: the divider is a full-width rule and
+        // the header is a full-width bar, so neither is centred.
+        .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Stretch);
+
+    // The top inset goes on the header alone rather than on the column,
+    // because it is the status bar's room and only the header is under it.
+    column = column.push(crate::render::RenderPadding::new(
+        crate::render::EdgeInsets::only(0.0, top_padding, 0.0, 0.0),
+        header,
+    ));
+
+    if body.shows_the_list() {
+        column = column.push(crate::render::RenderOpacity::new(
+            fade(SearchViewTransition::divider_fade()),
+            divider,
+        ));
+        let faded_list =
+            crate::render::RenderOpacity::new(fade(SearchViewTransition::list_fade()), list);
+        column = column.push_flex(if body.list_fills_the_room() {
+            crate::render::FlexChild::expanded(faded_list, 1)
+        } else {
+            crate::render::FlexChild::flexible(faded_list, 1)
+        });
+    }
+
+    crate::render::RenderOpacity::new(fade(SearchViewTransition::icons_fade()), column)
+}
+
 /// The sheet between the view and the page: upstream's `barrierColor`,
 /// `barrierDismissible` and `barrierLabel`, together.
 ///
@@ -2868,5 +2977,281 @@ mod search_view_header_tests {
             })
             .expect("the hint reached the canvas");
         assert_eq!(Color(hint), marked.color);
+    }
+}
+
+#[cfg(test)]
+mod search_view_body_tests {
+    use super::*;
+    use crate::animation::AnimationStatus;
+    use crate::engine::Color;
+    use crate::engine_test_stubs::Drawn;
+    use crate::render::{BoxConstraints, Offset, RenderBox, RenderRef, Size};
+
+    fn body() -> SearchViewBody {
+        SearchViewBody {
+            full_screen: false,
+            shrink_wrap: false,
+            min_height: 240.0,
+            has_results: false,
+        }
+    }
+
+    /// A coloured block that fills whatever it is given, so a test can find it
+    /// on the canvas and see how tall it was made.
+    fn block(color: Color) -> crate::render::BoxedRender {
+        RenderRef::new(
+            crate::render::RenderDecoratedBox::new().with_fill(crate::render::Fill::Solid(color)),
+        )
+    }
+
+    const HEADER: Color = Color(0xFF00_00FF);
+    const DIVIDER: Color = Color(0xFF00_FF00);
+    const LIST: Color = Color(0xFFFF_0000);
+
+    /// Lays the column out in a 400x600 panel and answers each block's
+    /// rectangle, plus the opacity layers in the order they were pushed.
+    fn painted(
+        body: SearchViewBody,
+        t: f32,
+        top_padding: f32,
+    ) -> (Vec<(Color, f32, f32, f32)>, Vec<u8>) {
+        let column = search_view_column(
+            body,
+            t,
+            AnimationStatus::Forward,
+            top_padding,
+            RenderRef::new(
+                crate::render::RenderDecoratedBox::new()
+                    .with_fill(crate::render::Fill::Solid(HEADER))
+                    .with_child(crate::widgets::SizedBox::new(400.0, 56.0)),
+            ),
+            // Deliberately narrower than the column: the divider is a rule
+            // across the whole panel, and it is the cross-axis *stretch* that
+            // makes it one. A 400-wide probe would be stretched and centred
+            // alike, and could not tell the two apart.
+            RenderRef::new(
+                crate::render::RenderDecoratedBox::new()
+                    .with_fill(crate::render::Fill::Solid(DIVIDER))
+                    .with_child(crate::widgets::SizedBox::new(100.0, 1.0)),
+            ),
+            block(LIST),
+        );
+        let mut column: crate::render::BoxedRender = RenderRef::new(column);
+        RenderBox::layout(&mut column, BoxConstraints::tight(400.0, 600.0));
+        let mut layers = crate::engine::LayerTree::new(400, 600);
+        crate::engine_test_stubs::reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(400.0, 600.0));
+            RenderBox::paint(&column, &mut context, Offset::ZERO);
+        }
+        let drawn = crate::engine_test_stubs::drawn();
+        let blocks = drawn
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Rect {
+                    left,
+                    right,
+                    top,
+                    bottom,
+                    argb,
+                    ..
+                } => Some((Color(*argb), *top, *bottom, *right - *left)),
+                _ => None,
+            })
+            .collect();
+        let alphas = drawn
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::OpacityLayer { alpha } => Some(*alpha),
+                _ => None,
+            })
+            .collect();
+        (blocks, alphas)
+    }
+
+    #[test]
+    fn a_view_with_room_below_the_header_shows_a_divider_and_a_list() {
+        let (blocks, _) = painted(body(), 1.0, 0.0);
+        let colours: Vec<Color> = blocks.iter().map(|block| block.0).collect();
+        assert!(colours.contains(&HEADER) && colours.contains(&DIVIDER));
+        assert!(colours.contains(&LIST));
+
+        // And the rule runs the whole width of the panel, though the widget
+        // handed in asked for a hundred: `crossAxisAlignment: stretch`.
+        let divider = blocks
+            .iter()
+            .find(|block| block.0 == DIVIDER)
+            .expect("the rule painted");
+        assert_eq!(divider.3, 400.0, "a rule that stops short is a dash");
+    }
+
+    #[test]
+    fn a_shrink_wrapping_docked_view_with_nothing_to_show_is_only_a_field() {
+        // The one case of the four where the guard closes: a rule under the
+        // header would be pointing at blank space.
+        let bare = SearchViewBody {
+            shrink_wrap: true,
+            min_height: 0.0,
+            full_screen: false,
+            has_results: false,
+        };
+        assert!(!bare.shows_the_list());
+        let (blocks, _) = painted(bare, 1.0, 0.0);
+        let colours: Vec<Color> = blocks.iter().map(|block| block.0).collect();
+        assert!(colours.contains(&HEADER));
+        assert!(!colours.contains(&DIVIDER), "no rule pointing at nothing");
+        assert!(!colours.contains(&LIST));
+    }
+
+    #[test]
+    fn any_one_of_the_four_is_enough_to_open_the_panel() {
+        // The guard is an or, and three of the four have nothing to do with
+        // whether anything has been typed.
+        let bare = SearchViewBody {
+            shrink_wrap: true,
+            min_height: 0.0,
+            full_screen: false,
+            has_results: false,
+        };
+        assert!(!bare.shows_the_list(), "the closed case");
+        assert!(
+            SearchViewBody {
+                shrink_wrap: false,
+                ..bare
+            }
+            .shows_the_list(),
+            "a view that does not shrink-wrap has room below the header"
+        );
+        assert!(
+            SearchViewBody {
+                min_height: 1.0,
+                ..bare
+            }
+            .shows_the_list(),
+            "so does one with a floor to fill"
+        );
+        assert!(
+            SearchViewBody {
+                full_screen: true,
+                ..bare
+            }
+            .shows_the_list(),
+            "and one that is the screen"
+        );
+        assert!(
+            SearchViewBody {
+                has_results: true,
+                ..bare
+            }
+            .shows_the_list(),
+            "and one that has something to say"
+        );
+    }
+
+    #[test]
+    fn only_a_docked_shrink_wrapping_view_lets_its_list_be_short() {
+        // `fit: (shrinkWrap && !fullScreen) ? loose : tight`. A full-screen
+        // view has a screen to fill even when it shrink-wraps.
+        assert!(body().list_fills_the_room(), "the ordinary view");
+        assert!(
+            !SearchViewBody {
+                shrink_wrap: true,
+                ..body()
+            }
+            .list_fills_the_room()
+        );
+        assert!(
+            SearchViewBody {
+                shrink_wrap: true,
+                full_screen: true,
+                ..body()
+            }
+            .list_fills_the_room(),
+            "a screen is a screen"
+        );
+    }
+
+    #[test]
+    fn a_list_that_must_fill_the_room_takes_all_of_what_is_left() {
+        // Seen through the layout rather than off the flag: 600 tall, 56 of
+        // header and 1 of divider, so a tight list is 543 and a loose one --
+        // a block that would take everything offered -- is the same here, so
+        // the difference is asked for with a list that wants nothing.
+        let (blocks, _) = painted(body(), 1.0, 0.0);
+        let list = blocks
+            .iter()
+            .find(|block| block.0 == LIST)
+            .expect("the list painted");
+        assert!(
+            (list.2 - list.1 - 543.0).abs() < 1.0,
+            "600 - 56 - 1: {list:?}"
+        );
+    }
+
+    #[test]
+    fn the_top_inset_pads_the_header_and_moves_everything_below_it() {
+        let (flush, _) = painted(body(), 1.0, 0.0);
+        let (inset, _) = painted(body(), 1.0, 44.0);
+        let top_of = |blocks: &Vec<(Color, f32, f32, f32)>, wanted: Color| {
+            blocks
+                .iter()
+                .find(|block| block.0 == wanted)
+                .expect("painted")
+                .1
+        };
+        assert_eq!(top_of(&flush, HEADER), 0.0);
+        assert_eq!(top_of(&inset, HEADER), 44.0, "the header moved down");
+        assert_eq!(
+            top_of(&inset, DIVIDER) - top_of(&flush, DIVIDER),
+            44.0,
+            "and so did the rule under it"
+        );
+    }
+
+    #[test]
+    fn the_column_carries_three_fades_that_are_not_the_same_fade() {
+        // The one named for the icons is over the whole column, and the other
+        // two are inside it -- so the divider and the list are multiplied by
+        // two curves each. At a fifth of the way in the three are all
+        // different, which is the whole of the staggering.
+        // No moment has all three part-way: the divider's sixth is over
+        // before the column's own fade even starts, which is the staggering
+        // stated as a fact about the constants. At 0.3 the divider is done --
+        // and a finished fade pushes **no layer at all** -- while the column
+        // and the list are each part-way, and by different amounts.
+        let t = 0.3;
+        let (_, alphas) = painted(body(), t, 0.0);
+        let expect = |interval| {
+            (SearchViewTransition::fade_at(interval, t, AnimationStatus::Forward) * 255.0).round()
+                as u8
+        };
+        assert_eq!(
+            SearchViewTransition::fade_at(
+                SearchViewTransition::divider_fade(),
+                t,
+                AnimationStatus::Forward
+            ),
+            1.0,
+            "the rule is already in"
+        );
+        assert_eq!(
+            alphas,
+            vec![
+                expect(SearchViewTransition::icons_fade()),
+                expect(SearchViewTransition::list_fade()),
+            ],
+            "outermost first: the column, then the results inside it"
+        );
+        assert_ne!(alphas[0], alphas[1], "two curves, not one twice");
+    }
+
+    #[test]
+    fn nothing_is_faded_once_the_opening_is_over() {
+        // A fully opaque subtree pushes no layer at all, so an empty list here
+        // is the whole assertion: three curves, all arrived.
+        let (_, alphas) = painted(body(), 1.0, 0.0);
+        assert_eq!(alphas, Vec::<u8>::new());
     }
 }

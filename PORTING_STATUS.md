@@ -1645,3 +1645,78 @@ header + divider + 建议列表，外面套第 437 轮那三条 interval 的淡�
 (2) 上游那个 `if (!effectiveShrinkWrap || minHeight > 0 || showFullScreenView
    || result.isNotEmpty)` 决定 divider 和列表**在不在**——
    四个条件的或，不是"有结果才显示"那么简单。抄之前先把四个条件各是什么读清楚。
+
+---
+
+## 第 440 轮：面板里那一列
+
+上一轮留的两件事。
+
+**查一**：三条淡入怎么接——`RenderOpacity` 是渲染对象，
+列是 `RenderFlex`，直接把每一段包起来就行；
+`FlexChild::expanded`（tight）和 `FlexChild::flexible`（loose）都现成。
+
+**查二**：那个四条件的或，读清楚之后是这一轮最值得写下来的东西。
+
+### divider 和列表是一起有、一起没有的
+
+```dart
+if (!effectiveShrinkWrap || minHeight > 0 || showFullScreenView || result.isNotEmpty)
+```
+
+**四个条件全都不成立时才收起来**。这不是"有结果才显示列表"——
+四个里有三个跟有没有结果毫无关系。
+
+理由在于分隔线是什么意思：**它说"下面还有"**。
+而这三种情况下面确实还有——一个有最小高度的、或者占满屏幕的 view，
+不管有没有人打字，header 底下都有地方。画一条指着空白的线更糟。
+只有第四种（会收缩、停靠、无下限、无结果）才真的只是一个输入框。
+
+其中 `minHeight` 是**已经 clamp 过的**那个
+（`min(effectiveConstraints.minHeight, _viewRect.height)`），
+条件读的就是它，所以结构体里存的也是它。
+
+### 名字叫 icons 的那条淡入，罩的是整列
+
+上游 `FadeTransition(opacity: viewIconsFadeCurve, child: Column(...))`——
+`_kViewIconsFadeOnInterval` 根本不是图标的淡入，是**所有东西的**，
+名字大概是从它以前罩着的东西留下来的。
+按**它作用在哪儿**抄，不按它叫什么抄，因为名字才是错的那一半。
+
+结果是 divider 和列表各自被**两条曲线相乘**：
+它们在一列**自己还在淡入**的东西里面，按自己的节奏到位。
+
+### 变异扫描 17 个，第一遍 2 条没红
+
+- **"整列不 stretch" 0 红**：探针错了。我给 divider 的探针是 400 宽，
+  和列一样宽，**stretch 和 center 画出来一模一样**。
+  换成 100 宽的探针——分隔线是一条横贯面板的线，
+  而让它横贯的正是 stretch；宽度一样的探针分不出"拉满"和"居中"。
+- 另一条是 fmt 之后搜索串失效，改对即红。
+
+还有一处是写测试时先撞上的：我本来想找一个三条淡入**同时都在半路**的时刻，
+**没有这样的时刻**——divider 那六分之一在整列自己的淡入开始之前就结束了。
+这本身就是错落的定义，于是改成断言 0.3 处 divider 已经到位
+（**到位的淡入不推图层**），而整列和列表各自在半路、且数值不同。
+
+17 条全红。
+
+尺子：十六把全部 exit 0。门：Rust 6574 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：列有了、header 有了、route 有了，**还没接到一起**——
+`show_search_view` 的 `content` 参数至今是调用者随便给的。
+下一轮把 `_ViewContent` 收口：一个函数，收 `ResolvedSearchView`、
+`SearchViewBody` 和建议列表，吐出 route 要的那个 content 闭包，
+包括外面那层 `Material`（形状、底色、elevation、`clipBehavior: antiAlias`）。
+**先查两件事**：
+(1) `clipBehavior: Clip.antiAlias` 配 `shape` ——
+   这个 crate 里有没有"按 `ShapeBorder` 裁剪"的渲染对象？
+   `RenderClipRRect` 收的是 `BorderRadius`，而第 433 轮的
+   `corner_radius` 正好能把 view 的圆角形状转成半径（默认是
+   `RoundedRectangleBorder`，答得上）。确认这条路通不通，通就用它。
+(2) 上游那个 `OverflowBox(alignment: topLeft, maxWidth:
+   math.min(viewMaxWidth, screenSize.width), minWidth: 0, fit: deferToChild)`
+   在做什么——它让内容按**最终**宽度布局而不是按动画中的宽度，
+   否则文字会在开场时重排。确认这个 crate 有没有 `RenderOverflowBox`，
+   没有的话这一轮就得先补它，别糊过去。
