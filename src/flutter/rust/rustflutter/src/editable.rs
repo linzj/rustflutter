@@ -1650,8 +1650,48 @@ fn toolbar_builder(
                 )
             })
             .collect();
-        crate::text_toolbars::material_selection_toolbar(buttons, surface, ink, style.clone())
+        // Upstream's `TextField` picks its controls on `theme.platform`
+        // (`material/text_field.dart`, the switch around line 1607):
+        // `desktopTextSelectionHandleControls` on Linux and Windows,
+        // `materialTextSelectionHandleControls` on Android and Fuchsia, and
+        // the two Cupertino sets on the Apple platforms. The toolbar follows
+        // the same split, which is why this is one decision and not two.
+        selection_toolbar_for(platform, buttons, surface, ink, style.clone())
     }
+}
+
+/// The selection toolbar this platform puts up: a desktop menu or the Material
+/// bar.
+///
+/// A function rather than an `if` inside the builder because **the choice is
+/// the claim**, and a claim wants somewhere to be tested -- the builder itself
+/// needs a live `StateHandle` and cannot be called from a test.
+pub fn selection_toolbar_for(
+    platform: crate::editable_text::TargetPlatform,
+    buttons: Vec<crate::text_toolbars::ToolbarButton>,
+    surface: crate::engine::Color,
+    ink: crate::engine::Color,
+    style: crate::engine::TextStyle,
+) -> crate::framework::AnyWidget {
+    if platform_uses_desktop_selection(platform) {
+        crate::text_toolbars::desktop_selection_toolbar(buttons, surface, ink, style)
+    } else {
+        crate::text_toolbars::material_selection_toolbar(buttons, surface, ink, style)
+    }
+}
+
+/// Whether this platform gets the desktop selection treatment: a menu of
+/// commands listed downwards, and no drag handles.
+///
+/// Upstream splits Linux and Windows from Android and Fuchsia in
+/// `TextField`'s platform switch. macOS and iOS take the Cupertino sets, which
+/// this crate has as data and does not yet build -- so they stay on the
+/// Material bar rather than being given a desktop menu that is not theirs.
+pub fn platform_uses_desktop_selection(platform: crate::editable_text::TargetPlatform) -> bool {
+    matches!(
+        platform,
+        crate::editable_text::TargetPlatform::Linux | crate::editable_text::TargetPlatform::Windows
+    )
 }
 
 /// The keyboard half of the clipboard: Ctrl+X, Ctrl+C, Ctrl+V and Ctrl+A --
@@ -3360,9 +3400,19 @@ impl StatefulComponent for TextField {
         if wants_overlay {
             if state.selection_overlay.borrow().is_none() {
                 if let Some(overlay) = overlay.clone() {
+                    // A mouse drags a selection directly, so the desktop
+                    // controls answer `Size::ZERO` for the handle and none is
+                    // drawn. Handing the Material controls to a desktop would
+                    // put two touch grips on a selection nobody can grab.
+                    let controls: Rc<dyn crate::text_selection_controls::TextSelectionControls> =
+                        if platform_uses_desktop_selection(platform) {
+                            Rc::new(crate::text_selection_controls::DesktopTextSelectionControls)
+                        } else {
+                            Rc::new(crate::text_selection_controls::MaterialTextSelectionControls)
+                        };
                     let host = crate::selection_host::show_selection_overlay(
                         overlay,
-                        Rc::new(crate::text_selection_controls::MaterialTextSelectionControls),
+                        controls,
                         toolbar_builder(
                             handle.clone(),
                             &theme,
@@ -3373,7 +3423,13 @@ impl StatefulComponent for TextField {
                     );
                     if let Some(mut host) = host {
                         host.set_toolbar_visible(true);
-                        host.set_handles_visible(true);
+                        // Upstream's desktop controls draw no handle at all.
+                        // Belt and braces, and said so rather than left to look
+                        // like coverage: the desktop controls already answer
+                        // `Size::ZERO` for the handle, so passing `true` here
+                        // would draw nothing either. A mutation flipping this
+                        // survives every test, and that is the truth about it.
+                        host.set_handles_visible(!platform_uses_desktop_selection(platform));
                         // Upstream's `buildHandle` reads
                         // `TextSelectionTheme.selectionHandleColor ??
                         // colorScheme.primary`; this crate's theme has the

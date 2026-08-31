@@ -141,6 +141,92 @@ pub fn material_selection_toolbar(
     })
 }
 
+/// Upstream `DesktopTextSelectionToolbar`: the card a right-click puts up on
+/// Windows and Linux.
+///
+/// Three things make it a different object from the Material bar rather than a
+/// restyling of it, and all three come from upstream's
+/// `_defaultToolbarBuilder` and `build`:
+///
+/// * **A fixed width**, `_kToolbarWidth` = 222, whose comment says it was
+///   measured from a screenshot of TextEdit. Fixed so the menu keeps its shape
+///   as commands come and go with the selection, where the Material bar shrinks
+///   to its buttons.
+/// * **A column, not a row.** A desktop menu lists its commands downwards.
+/// * **Square-ish corners**, radius 7, against the Material bar's radius of
+///   half its height -- which is what makes that one a pill.
+///
+/// A mouse also needs no drag handles, which is
+/// [`crate::text_selection_controls::DesktopTextSelectionControls`]' whole
+/// content: it answers `Size::ZERO` for the handle.
+pub fn desktop_selection_toolbar(
+    buttons: Vec<ToolbarButton>,
+    surface: crate::engine::Color,
+    ink: crate::engine::Color,
+    label_style: crate::engine::TextStyle,
+) -> crate::framework::AnyWidget {
+    use crate::borders::{BorderRadius, Radius};
+    use crate::framework::{AnyWidget, leaf, many};
+    use crate::render::{CrossAxisAlignment, EdgeInsets, MainAxisSize, RenderFlex};
+    use crate::text_selection_controls::{
+        DesktopTextSelectionToolbar, DesktopTextSelectionToolbarButton,
+    };
+    use crate::widgets::{Container, Pointer, Text};
+
+    let children: Vec<AnyWidget> = buttons
+        .into_iter()
+        .map(|button| {
+            let mut style = label_style.clone();
+            style.color = ink;
+            style.font_size = DesktopTextSelectionToolbarButton::FONT_SIZE;
+            // Upstream's `letterSpacing: -0.15`, which is negative: the labels
+            // are tightened to fit a width that does not grow.
+            style.letter_spacing = Some(DesktopTextSelectionToolbarButton::LETTER_SPACING);
+            leaf(move || {
+                Pointer::new(
+                    button.id,
+                    Container::new()
+                        .with_height(DesktopTextSelectionToolbarButton::MIN_HEIGHT)
+                        .with_padding(DesktopTextSelectionToolbarButton::PADDING)
+                        .with_child(crate::widgets::Align::new(
+                            // Left, not centred: a menu's labels line up down
+                            // their leading edge.
+                            crate::render::Alignment::CENTER_LEFT,
+                            Text::new(button.label.clone()).with_style(style.clone()),
+                        )),
+                )
+                .with_handlers({
+                    let on_pressed = Rc::clone(&button.on_pressed);
+                    crate::gestures::PointerHandlers::new().with_tap(move |_| on_pressed())
+                })
+            })
+        })
+        .collect();
+
+    many(children, move |rendered| {
+        let mut column = RenderFlex::column()
+            .with_main_axis_size(MainAxisSize::Min)
+            // Stretch, so every button fills the fixed width and the whole row
+            // is clickable rather than just the label.
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch);
+        for child in rendered {
+            column = column.push(child);
+        }
+        Box::new(
+            Container::new()
+                .with_color(surface)
+                .with_width(DesktopTextSelectionToolbar::WIDTH)
+                .with_border_radius(BorderRadius::all(Radius::circular(
+                    DesktopTextSelectionToolbar::CORNER_RADIUS,
+                )))
+                // Upstream's `elevation: 1.0` on a `MaterialType.card`, the
+                // same as the Material bar's.
+                .with_elevation(1)
+                .with_child(column),
+        )
+    })
+}
+
 /// The platforms these toolbars distinguish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolbarPlatform {
@@ -645,5 +731,180 @@ mod tests {
             button_padding(0, 1),
             (BUTTON_END_PADDING, BUTTON_END_PADDING)
         );
+    }
+}
+
+#[cfg(test)]
+mod desktop_toolbar_tests {
+    use super::*;
+    use crate::engine::Color;
+
+    fn button(id: u64, label: &str) -> ToolbarButton {
+        ToolbarButton::new(id, label.to_string(), Rc::new(|| {}))
+    }
+
+    fn three() -> Vec<ToolbarButton> {
+        vec![button(1, "Cut"), button(2, "Copy"), button(3, "Select all")]
+    }
+
+    /// Lays a toolbar out and answers the box it came to.
+    fn measured(toolbar: crate::framework::AnyWidget) -> crate::render::Size {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(toolbar);
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(1000.0, 1000.0),
+        )
+    }
+
+    #[test]
+    fn the_desktop_menu_keeps_one_width_however_many_commands_it_has() {
+        // Upstream's `_kToolbarWidth`, whose comment says it was measured off
+        // a screenshot of TextEdit. Fixed rather than fitted so the menu does
+        // not change shape as commands come and go with the selection -- which
+        // is exactly what the Material bar does instead.
+        let style = crate::engine::TextStyle::default();
+        let wide = measured(desktop_selection_toolbar(
+            three(),
+            Color(0xFFFF_FFFF),
+            Color(0xFF00_0000),
+            style.clone(),
+        ));
+        let narrow = measured(desktop_selection_toolbar(
+            vec![button(1, "Paste")],
+            Color(0xFFFF_FFFF),
+            Color(0xFF00_0000),
+            style,
+        ));
+        assert_eq!(
+            wide.width,
+            crate::text_selection_controls::DesktopTextSelectionToolbar::WIDTH
+        );
+        assert_eq!(
+            narrow.width, wide.width,
+            "one command and three come to the same width"
+        );
+    }
+
+    #[test]
+    fn the_desktop_menu_lists_its_commands_downwards() {
+        // A column, not a row: three commands make it taller, not wider.
+        // The Material bar is the other way round, which is the difference
+        // between a menu and a bar.
+        let style = crate::engine::TextStyle::default();
+        let one = measured(desktop_selection_toolbar(
+            vec![button(1, "Paste")],
+            Color(0xFFFF_FFFF),
+            Color(0xFF00_0000),
+            style.clone(),
+        ));
+        let three_tall = measured(desktop_selection_toolbar(
+            three(),
+            Color(0xFFFF_FFFF),
+            Color(0xFF00_0000),
+            style,
+        ));
+        assert!(
+            three_tall.height > one.height * 2.0,
+            "three commands stack: {} against {}",
+            three_tall.height,
+            one.height
+        );
+        assert_eq!(three_tall.width, one.width, "and do not widen it");
+    }
+
+    #[test]
+    fn the_material_bar_grows_the_other_way() {
+        // The contrast, asserted rather than described: the same two button
+        // sets through the Material builder widen the bar and leave its height
+        // alone. Without this the test above could pass on a toolbar that
+        // simply had a minimum size.
+        let style = crate::engine::TextStyle::default();
+        let one = measured(material_selection_toolbar(
+            vec![button(1, "Paste")],
+            Color(0xFFFF_FFFF),
+            Color(0xFF00_0000),
+            style.clone(),
+        ));
+        let three_wide = measured(material_selection_toolbar(
+            three(),
+            Color(0xFFFF_FFFF),
+            Color(0xFF00_0000),
+            style,
+        ));
+        assert!(
+            three_wide.width > one.width,
+            "the bar widens: {} against {}",
+            three_wide.width,
+            one.width
+        );
+        assert_eq!(three_wide.height, one.height, "and keeps its height");
+    }
+
+    #[test]
+    fn a_desktop_selection_has_no_handles_to_grab() {
+        // `DesktopTextSelectionControls` answers `Size::ZERO`, and the field
+        // asks for no handles at all on those platforms -- a mouse drags the
+        // selection directly, so a grip would be a touch affordance nobody
+        // needs and one more thing to catch a stray click.
+        use crate::text_selection_controls::TextSelectionControls;
+        assert_eq!(
+            crate::text_selection_controls::DesktopTextSelectionControls.handle_size(20.0),
+            crate::render::Size::ZERO
+        );
+        assert_ne!(
+            crate::text_selection_controls::MaterialTextSelectionControls.handle_size(20.0),
+            crate::render::Size::ZERO,
+            "while a touch platform still has them"
+        );
+    }
+
+    #[test]
+    fn a_windows_field_puts_up_the_menu_and_an_android_one_the_bar() {
+        // The choice reaching the thing it chooses. Asserting only that the
+        // predicate answers true for Windows would leave the wiring untested:
+        // a builder that ignored it and always made the bar would still pass.
+        let style = crate::engine::TextStyle::default();
+        let menu = measured(crate::editable::selection_toolbar_for(
+            crate::editable_text::TargetPlatform::Windows,
+            three(),
+            Color(0xFFFF_FFFF),
+            Color(0xFF00_0000),
+            style.clone(),
+        ));
+        let bar = measured(crate::editable::selection_toolbar_for(
+            crate::editable_text::TargetPlatform::Android,
+            three(),
+            Color(0xFFFF_FFFF),
+            Color(0xFF00_0000),
+            style,
+        ));
+        assert_eq!(
+            menu.width,
+            crate::text_selection_controls::DesktopTextSelectionToolbar::WIDTH,
+            "Windows gets the fixed-width menu"
+        );
+        assert!(
+            bar.width != menu.width && bar.height < menu.height,
+            "and Android gets the bar, which is wider than it is tall:              bar={bar:?} menu={menu:?}"
+        );
+    }
+
+    #[test]
+    fn which_platforms_take_the_desktop_treatment() {
+        // Upstream's `TextField` switch: Linux and Windows take the desktop
+        // controls; Android and Fuchsia take the Material ones. macOS and iOS
+        // take the Cupertino sets, which this crate has as data and does not
+        // build -- so they stay on the Material bar rather than being handed a
+        // desktop menu that is not theirs.
+        use crate::editable::platform_uses_desktop_selection as desktop;
+        use crate::editable_text::TargetPlatform;
+        assert!(desktop(TargetPlatform::Windows));
+        assert!(desktop(TargetPlatform::Linux));
+        assert!(!desktop(TargetPlatform::Android));
+        assert!(!desktop(TargetPlatform::Fuchsia));
+        assert!(!desktop(TargetPlatform::MacOS));
+        assert!(!desktop(TargetPlatform::IOS));
     }
 }

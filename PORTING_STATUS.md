@@ -832,3 +832,67 @@ C++ 34 个 gtest 全过；三个目录默认目标全部编过。探针已全部
 3. 桌面工具条与手机工具条**在按钮集合上的差别**
    （桌面有 Select all、没有拖拽手柄；手机相反），以及手柄该不该跟着平台关掉。
 另外把"先用左键验证坐标有效"写进复现步骤，别再省。
+
+---
+
+## 第 426 轮：桌面上终于弹的是**桌面那套**选择控件
+
+用户报告里的第三件事——"长得不一样"——这一轮修掉了。
+
+### 先查的三件事
+
+1. `text_selection_controls.rs` 里 `DesktopTextSelectionControls` **在**，
+   而且已经是对的：`handle_size` 返回 `Size::ZERO`，注释写明"桌面有鼠标，
+   选区直接拖，手柄是没人需要的触摸补偿、还多一个能被误点的东西"。
+   `DesktopTextSelectionToolbar` / `Button` 也在，但**只有常量、没有 build**。
+2. 上游在**哪一层**按平台选：`material/text_field.dart` 那个
+   `switch (theme.platform)`（1607 行附近）——
+   Linux/Windows 用 `desktopTextSelectionHandleControls`，
+   Android/Fuchsia 用 `materialTextSelectionHandleControls`，
+   两个 Apple 平台用 Cupertino 那两套。
+3. 形状差在哪：上游 `_defaultToolbarBuilder` 是
+   `SizedBox(width: 222) → Material(radius 7, elevation 1, card) → Column(min)`。
+
+### 三处差别，都是**结构性**的
+
+- **固定宽度 222**（`_kToolbarWidth`，上游注释说是照着 TextEdit 的截图量的）。
+  固定而不是随内容——命令随选区增减时菜单不改变形状；Material 那条是缩到刚好包住按钮。
+- **是列不是行**。桌面菜单把命令**往下**排。
+- **圆角 7**，而 Material 那条的圆角是自身高度的一半——那才是它成为药丸的原因。
+
+补上 `text_toolbars::desktop_selection_toolbar`，
+并在 `editable.rs` 里按平台选控件与工具条（抽成 `selection_toolbar_for`，
+因为**选择本身就是那个主张**，而 `toolbar_builder` 要一个活的 `StateHandle`、测试里造不出来）。
+
+### 变异扫描 7 个，第一遍 5 红、2 绿，处理如下
+
+- "菜单从来不被选中"活了：因为那个分支埋在 `toolbar_builder` 的闭包里，测不到。
+  抽成 `selection_toolbar_for` 之后补了一条"Windows 得到 222 宽的菜单、
+  Android 得到又宽又矮的条"的测试——**光断言谓词返回 true 是不够的**，
+  一个无视谓词、永远造 bar 的 builder 照样能过。转红。
+- "builder 无视传进来的平台"**仍然活着，如实记下**：
+  那一行在闭包里，需要活的 `StateHandle` 才能调，和第 412 轮 `on_key` 那个守卫、
+  第 416 轮帧里那次调用是同一族的结构性不可测。
+- "桌面选区仍然画手柄"也活着，而这条**是被包含的**：
+  桌面控件的 `handle_size` 本来就是 `Size::ZERO`，
+  所以 `set_handles_visible(true)` 也画不出东西。写进代码注释了。
+
+### 在真机上验了，而且这次先证明了坐标
+
+按第 425 轮的教训，**先用左键点 (300,275)、确认字段获得焦点**（紫色标签、
+紫色下划线、光标都出来了），证明这个点确实落在控件上；**再**按右键。
+弹出来的是**方角卡片、命令竖排、没有拖拽手柄**——和用户截图里上游那个形状一致。
+（命令是 Paste / Select all 而不是 Cut / Copy / Select all，因为字段是空的、
+没有选区——`toolbar_commands` 本来就按选区决定按钮集合。）
+
+尺子：十六把全部 exit 0。门：Rust 6494 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：用户报告的三件事全部结清了
+（右键不出菜单 = host 不转发，第 416 轮修；"命中测试坏了" = 我的坐标问题，
+第 425 轮澄清；外观 = 这一轮）。
+回到 `shells.py` 的表继续挑下一个真缺口。
+挑之前先跑 `python tools/depth.py` 看队头——这几轮一直在追一个报告，
+队列已经很久没看过了。
+另外把这一条写进复现步骤并**照做**：
+**任何"点了没反应"的结论，先用左键在同一坐标验证控件确实在那里。**
