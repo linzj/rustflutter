@@ -2474,3 +2474,54 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 看这个 crate 里这类"整棵树的状态"放在哪儿
 （`focus.rs` 用 thread_local 注册表，`theatre.rs` 的 `MODALS` 也是），
 照最近的那个办，别新造一种。
+
+---
+
+## 第 454 轮：菜单树终于有人拿得到了
+
+上一轮留的问题：这个 crate 把"属于视图而不属于某一个 widget"的状态
+放在 `thread_local!` 里——`focus.rs` 用了六次，`theatre.rs` 两次。
+照最近的那个办，不新造一种。
+
+`MenuAnchorTree` 的每条规则都是 `&mut self`，而**谁都没有一棵树**——
+所以一个想问"刚才那次点击关掉我的子菜单了吗"的 widget，没有树可问。
+现在树在那儿了，`with_menu_tree` / `with_menu_tree_mut` 是两个入口。
+
+它是**树不是栈**，这也是和 `MODALS` 的差别：
+一个开着两个子菜单的菜单栏是三个节点一个根，
+Escape 要够到根，而点击外面只够到孩子。
+
+### `open_menu_surface`：一次点击有两个答案
+
+浮层的 dismissal 把**面板**撤掉；菜单**树**里发生的是
+`handle_outside_tap`——关掉这个 anchor 的**孩子**，anchor 自己留着，
+因为从子菜单点开的读者没打算连菜单栏一起丢掉。
+
+两件事都要做，顺序固定，而且不是一件事说两遍：
+一个说的是 overlay 里的一块面板，另一个说的是树里哪些 anchor 还开着。
+只接第一件，树会以为有个菜单开着而谁也看不见。
+
+### 变异扫描 7 个，第一遍 1 条没红
+
+"浮层自成一组"（把 `group_id` 换成 `anchor`）不红——
+我的用例里从来没有第二个同组 region。
+补了一个"同一个菜单的另一块面板"：点它，菜单不关。
+没有这条的话，从菜单栏走到它刚打开的子菜单，路上就会把子菜单关掉。
+
+尺子：十六把全部 exit 0。门：Rust 6675 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：`open_menu_surface` 现在**没有调用者**——
+`RawMenuAnchor` 还是配置结构体，`SubmenuButton` 也是。
+下一轮把 `SubmenuButton` 做成 widget（像第 452 轮对 `MenuItemButton` 那样），
+点它时 `open_menu_surface` 放出子菜单，箭头用第 450 轮
+`MenuItemLabel` 已经留好的那个位置。
+**先查两件事**：
+(1) 子菜单要放在**按钮旁边**，而 `show_tap_dismissed` 现在是把内容原样塞进
+   overlay——位置由内容自己决定。看 `theatre.rs` 的 `RenderAnchored` /
+   `Placement`（第 453 轮见过 `anchored`）能不能直接用来把面板贴到按钮上，
+   能就用，那这一轮只是接线。
+(2) `SubmenuButton` 打开的是**自己的** anchor 还是父 anchor 的一个孩子——
+   看 `MenuAnchorTree::set_parent` 的调用时机：节点要先 insert 再 set_parent，
+   而 widget 的 build 每帧都跑。确认重复 insert 是幂等的，
+   不是的话得先看清楚节点该在什么时候进树。

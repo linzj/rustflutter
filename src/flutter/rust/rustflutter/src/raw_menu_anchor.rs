@@ -546,9 +546,295 @@ impl DismissMenuAction {
     }
 }
 
+// -- The tree every anchor shares --------------------------------------------
+
+thread_local! {
+    /// One menu tree per UI thread.
+    ///
+    /// Every rule in [`MenuAnchorTree`] was written to take `&mut self`, and
+    /// nothing owned one -- so a widget that wanted to ask "did this tap close
+    /// my submenu" had no tree to ask. This is where the tree lives, in the
+    /// shape this crate already uses for state that belongs to the view rather
+    /// than to any one widget: [`crate::focus`]'s manager and
+    /// [`crate::theatre`]'s modal stack are both thread-locals for the same
+    /// reason.
+    ///
+    /// It is a tree and not a stack, which is the difference from `MODALS`: a
+    /// menu bar with two open submenus is three nodes and one root, and Escape
+    /// has to reach the root while a tap outside reaches only the children.
+    static TREE: std::cell::RefCell<MenuAnchorTree> =
+        std::cell::RefCell::new(MenuAnchorTree::new());
+}
+
+/// Reads the ambient tree.
+pub fn with_menu_tree<R>(read: impl FnOnce(&MenuAnchorTree) -> R) -> R {
+    TREE.with(|tree| read(&tree.borrow()))
+}
+
+/// Changes the ambient tree.
+pub fn with_menu_tree_mut<R>(change: impl FnOnce(&mut MenuAnchorTree) -> R) -> R {
+    TREE.with(|tree| change(&mut tree.borrow_mut()))
+}
+
+/// Empties it. Tests only: the tree outlives one test otherwise, and an anchor
+/// left open by one would be open at the start of the next.
+#[cfg(test)]
+pub fn reset_menu_tree() {
+    TREE.with(|tree| *tree.borrow_mut() = MenuAnchorTree::new());
+}
+
+/// Puts an anchor's menu on screen: upstream's `RawMenuAnchor` opening its
+/// `OverlayPortal`, with the tap-region surface
+/// [`crate::theatre::show_tap_dismissed`] provides.
+///
+/// # What the tap outside does, and what it does not
+///
+/// The surface's dismissal takes the *panel* down. What happens to the **menu
+/// tree** is [`MenuAnchorTree::handle_outside_tap`], and it is a different
+/// answer: it closes the anchor's **children** and leaves the anchor itself
+/// open, because a reader who clicked away from a submenu did not ask to lose
+/// the menu bar it hangs off.
+///
+/// Both run, in that order, and they are not the same thing said twice: one is
+/// about a panel in an overlay, the other about which anchors in the tree are
+/// still open. Wiring only the first would leave the tree believing a menu was
+/// up that nobody could see.
+pub fn open_menu_surface(
+    overlay: std::rc::Rc<crate::theatre::OverlayHandle>,
+    anchor: u64,
+    group_id: u64,
+    content: impl Fn() -> crate::framework::AnyWidget + 'static,
+) -> Option<crate::theatre::ModalHandle> {
+    with_menu_tree_mut(|tree| tree.open(anchor));
+    let shown = crate::theatre::show_tap_dismissed(overlay, anchor, group_id, content)?;
+    shown.on_dismissed(move || {
+        with_menu_tree_mut(|tree| tree.handle_outside_tap(anchor));
+    });
+    Some(shown)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- The tree every anchor shares ----------------------------------------
+
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::{BoxConstraints, Offset};
+    use std::cell::RefCell as StdRefCell;
+    use std::rc::Rc;
+
+    const BAR: u64 = 9601;
+    const SUB: u64 = 9602;
+    const GROUP: u64 = 9603;
+
+    fn staged() -> (ElementTree, Rc<crate::theatre::OverlayHandle>) {
+        let found: Rc<StdRefCell<Option<Rc<crate::theatre::OverlayHandle>>>> =
+            Rc::new(StdRefCell::new(None));
+        struct Finder(Rc<StdRefCell<Option<Rc<crate::theatre::OverlayHandle>>>>);
+        impl Component for Finder {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = crate::theatre::OverlayHandle::of(context);
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::tap_region::TapRegionSurface::new(
+            9600,
+            crate::theatre::overlay(component(Finder(Rc::clone(&found)))),
+        ));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+        (tree, handle)
+    }
+
+    fn panel() -> AnyWidget {
+        leaf(|| {
+            crate::render::RenderAlign::new(
+                crate::render::Alignment::TOP_LEFT,
+                crate::render::RenderDecoratedBox::new()
+                    .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                        0xFF00_00FF,
+                    )))
+                    .with_child(crate::widgets::SizedBox::new(100.0, 100.0)),
+            )
+        })
+    }
+
+    fn tap(tree: &mut ElementTree, at: Offset) {
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::tight(800.0, 600.0));
+        crate::render::flush_layout();
+        let event = |change| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 1,
+            time_stamp_micros: 0,
+            position: at,
+            delta: Offset::ZERO,
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: at,
+        };
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Down));
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Up));
+        tree.rebuild_dirty();
+    }
+
+    #[test]
+    fn the_tree_is_there_to_be_asked() {
+        // Every rule on `MenuAnchorTree` takes `&mut self`, and until now
+        // nothing owned one -- so a widget that wanted to ask "did that tap
+        // close my submenu" had no tree to ask.
+        reset_menu_tree();
+        with_menu_tree_mut(|tree| tree.insert(MenuAnchorNode::new(BAR)));
+        assert!(!with_menu_tree(|tree| tree.is_open(BAR)));
+        with_menu_tree_mut(|tree| tree.open(BAR));
+        assert!(with_menu_tree(|tree| tree.is_open(BAR)));
+        reset_menu_tree();
+        assert!(
+            with_menu_tree(|tree| tree.node(BAR).is_none()),
+            "and emptying it empties it"
+        );
+    }
+
+    #[test]
+    fn opening_a_menu_opens_its_anchor_in_the_tree() {
+        reset_menu_tree();
+        with_menu_tree_mut(|tree| tree.insert(MenuAnchorNode::new(BAR)));
+        let (mut tree, overlay) = staged();
+        let shown = open_menu_surface(overlay, BAR, GROUP, panel).expect("shown");
+        tree.rebuild_dirty();
+        assert!(with_menu_tree(|tree| tree.is_open(BAR)));
+        assert!(shown.is_showing());
+        shown.dismiss();
+        reset_menu_tree();
+    }
+
+    #[test]
+    fn a_tap_outside_closes_the_children_and_leaves_the_anchor() {
+        // Two answers, not one. The panel goes -- that is the surface's own
+        // dismissal -- and in the *tree* the anchor's children close while the
+        // anchor stays open, because a reader who clicked away from a submenu
+        // did not ask to lose the menu bar it hangs off.
+        reset_menu_tree();
+        with_menu_tree_mut(|tree| {
+            tree.insert(MenuAnchorNode::new(BAR));
+            tree.insert(MenuAnchorNode::new(SUB));
+            tree.set_parent(SUB, Some(BAR)).expect("a child of the bar");
+            tree.open(SUB);
+        });
+
+        let (mut tree, overlay) = staged();
+        let shown = open_menu_surface(overlay, BAR, GROUP, panel).expect("shown");
+        tree.rebuild_dirty();
+        assert!(
+            with_menu_tree(|tree| tree.is_open(SUB)),
+            "the submenu is up"
+        );
+
+        tap(&mut tree, Offset::new(400.0, 400.0));
+        assert!(!shown.is_showing(), "the panel went");
+        assert!(
+            !with_menu_tree(|tree| tree.is_open(SUB)),
+            "and the submenu went with it"
+        );
+        assert!(
+            with_menu_tree(|tree| tree.is_open(BAR)),
+            "but the bar it hangs off did not"
+        );
+        reset_menu_tree();
+    }
+
+    /// A second tap region of the same group, somewhere else on screen: what
+    /// a submenu's panel is to the menu it grew from.
+    struct GroupMember {
+        id: u64,
+        group_id: u64,
+    }
+
+    impl Component for GroupMember {
+        fn build(&self, context: &mut BuildContext) -> AnyWidget {
+            crate::tap_region::TapRegion::new(self.id)
+                .with_group_id(self.group_id)
+                .build(
+                    context,
+                    leaf(|| {
+                        crate::render::RenderAlign::new(
+                            crate::render::Alignment::BOTTOM_RIGHT,
+                            crate::render::RenderDecoratedBox::new()
+                                .with_fill(crate::render::Fill::Solid(crate::engine::Color(
+                                    0xFF00_FF00,
+                                )))
+                                .with_child(crate::widgets::SizedBox::new(200.0, 200.0)),
+                        )
+                    }),
+                )
+        }
+    }
+
+    #[test]
+    fn a_tap_on_a_sibling_panel_of_the_same_menu_is_not_outside() {
+        // The group id the anchor passes down is what ties the panels of one
+        // menu together. Give the surface a group of its own and moving from a
+        // menu bar to the submenu it just opened would close the submenu on
+        // the way.
+        reset_menu_tree();
+        with_menu_tree_mut(|tree| {
+            tree.insert(MenuAnchorNode::new(BAR));
+            tree.insert(MenuAnchorNode::new(SUB));
+            tree.set_parent(SUB, Some(BAR)).expect("a child of the bar");
+            tree.open(SUB);
+        });
+
+        let (mut tree, overlay) = staged();
+        let shown = open_menu_surface(Rc::clone(&overlay), BAR, GROUP, panel).expect("shown");
+        let sibling = overlay
+            .insert(|| {
+                component(GroupMember {
+                    id: 9604,
+                    group_id: GROUP,
+                })
+            })
+            .expect("inserted");
+        tree.rebuild_dirty();
+
+        tap(&mut tree, Offset::new(700.0, 500.0));
+        assert!(shown.is_showing(), "the sibling is in the same menu");
+        assert!(with_menu_tree(|tree| tree.is_open(SUB)));
+        overlay.remove(sibling);
+        shown.dismiss();
+        reset_menu_tree();
+    }
+
+    #[test]
+    fn a_tap_inside_leaves_the_tree_alone() {
+        reset_menu_tree();
+        with_menu_tree_mut(|tree| {
+            tree.insert(MenuAnchorNode::new(BAR));
+            tree.insert(MenuAnchorNode::new(SUB));
+            tree.set_parent(SUB, Some(BAR)).expect("a child of the bar");
+            tree.open(SUB);
+        });
+
+        let (mut tree, overlay) = staged();
+        let shown = open_menu_surface(overlay, BAR, GROUP, panel).expect("shown");
+        tree.rebuild_dirty();
+
+        tap(&mut tree, Offset::new(50.0, 50.0));
+        assert!(shown.is_showing(), "the tap landed on the panel");
+        assert!(
+            with_menu_tree(|tree| tree.is_open(SUB)),
+            "and nothing in the tree moved"
+        );
+        shown.dismiss();
+        reset_menu_tree();
+    }
 
     /// A menu bar (1) with two submenus (2, 3), and a sub-submenu (4) under 2.
     fn menu_tree() -> MenuAnchorTree {
