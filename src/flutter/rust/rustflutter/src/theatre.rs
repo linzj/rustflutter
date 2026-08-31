@@ -935,11 +935,31 @@ pub fn next_surface_id() -> u64 {
 /// [`show_modal`] -- a drawer, which brings its own barrier because its barrier
 /// has to fade with it.
 pub fn modal_from_entry(overlay: Rc<OverlayHandle>, entry_id: u64) -> ModalHandle {
+    let dismissed = Rc::new(Cell::new(false));
+    let on_dismissed: Dismissals = Rc::new(RefCell::new(Vec::new()));
+    let dismiss: Rc<dyn Fn()> = {
+        let dismissed = Rc::clone(&dismissed);
+        let on_dismissed = Rc::clone(&on_dismissed);
+        // No focus trap and no `MODALS` record: this entry put itself up, so
+        // there is nothing registered here to unregister. What it does share
+        // with `show_modal`'s is the guard and the listeners, which is what
+        // makes a handle from an entry answer `is_showing` and `on_dismissed`
+        // the same way any other does.
+        Rc::new(move || {
+            if dismissed.replace(true) {
+                return;
+            }
+            overlay.remove(entry_id);
+            let listeners: Vec<Rc<dyn Fn()>> = on_dismissed.borrow().clone();
+            for listener in listeners {
+                listener();
+            }
+        })
+    };
     ModalHandle {
-        entry_id,
-        focus_root: 0,
-        overlay,
-        dismissed: Rc::new(Cell::new(false)),
+        dismissed,
+        dismiss,
+        on_dismissed,
     }
 }
 
@@ -1554,33 +1574,57 @@ thread_local! {
     static MODALS: RefCell<Vec<ModalRecord>> = const { RefCell::new(Vec::new()) };
 }
 
+/// What to run when a modal comes down, shared by everything that can take one
+/// down.
+type Dismissals = Rc<RefCell<Vec<Rc<dyn Fn()>>>>;
+
 /// A modal that is up, and the way to take it down.
 #[derive(Clone)]
 pub struct ModalHandle {
-    entry_id: u64,
-    focus_root: u64,
-    overlay: Rc<OverlayHandle>,
     dismissed: Rc<Cell<bool>>,
+    /// The **same** closure the barrier and Escape reach for. There used to be
+    /// a second copy of the take-down here -- release the trap, forget the
+    /// record, remove the entry -- and two copies of a sequence is two things
+    /// that can drift. Now there is one, and every way out runs it.
+    dismiss: Rc<dyn Fn()>,
+    on_dismissed: Dismissals,
 }
 
 impl ModalHandle {
     /// Takes the modal down. Idempotent: a barrier tap and an Escape arriving
     /// together should close one dialog, not two.
     pub fn dismiss(&self) -> bool {
-        if self.dismissed.replace(true) {
-            return false;
-        }
-        crate::focus::release_trap(self.focus_root);
-        MODALS.with(|modals| {
-            modals
-                .borrow_mut()
-                .retain(|record| record.entry_id != self.entry_id)
-        });
-        self.overlay.remove(self.entry_id)
+        // The flag is read for the *answer* and not as a guard: the guard is
+        // inside the closure, and it has to be, because every other way out
+        // goes straight there. Two guards would mean the one that matters
+        // could be removed with every test still green.
+        let was_showing = !self.dismissed.get();
+        (self.dismiss)();
+        was_showing
     }
 
     pub fn is_showing(&self) -> bool {
         !self.dismissed.get()
+    }
+
+    /// Runs `listener` when this modal comes down, **however it comes down** --
+    /// a tap on the barrier, Escape, the back button, or [`ModalHandle::dismiss`].
+    ///
+    /// # Why the caller cannot just do it themselves
+    ///
+    /// A caller who calls `dismiss` knows the modal went away. A caller whose
+    /// modal was dismissed by the reader does not: the barrier's tap goes
+    /// straight to the theatre and nothing comes back. So anything that has to
+    /// happen *when the modal ends* rather than *when I end it* -- carrying a
+    /// search view's query back to the bar it grew out of, playing a closing
+    /// animation, telling a caller which item was chosen -- has had nowhere to
+    /// live. This is that place.
+    ///
+    /// Listeners run after the modal is off the screen, in the order they were
+    /// added, and exactly once: the dismissal that runs them is itself guarded
+    /// by the flag it sets.
+    pub fn on_dismissed(&self, listener: impl Fn() + 'static) {
+        self.on_dismissed.borrow_mut().push(Rc::new(listener));
     }
 }
 
@@ -1597,6 +1641,7 @@ pub fn show_modal(
     let barrier_id = next_overlay_id();
     let dismissed = Rc::new(Cell::new(false));
     let dismissible = barrier.dismissible;
+    let on_dismissed: Dismissals = Rc::new(RefCell::new(Vec::new()));
 
     // The handle has to exist before the builder that uses it, and the entry id
     // before the handle -- so the id is filled in once it is known.
@@ -1605,6 +1650,7 @@ pub fn show_modal(
         let overlay = Rc::clone(&overlay);
         let dismissed = Rc::clone(&dismissed);
         let pending = Rc::clone(&pending);
+        let on_dismissed = Rc::clone(&on_dismissed);
         Rc::new(move || {
             if dismissed.replace(true) {
                 return;
@@ -1617,6 +1663,15 @@ pub fn show_modal(
                     .retain(|record| record.entry_id != entry_id)
             });
             overlay.remove(entry_id);
+            // After the modal is gone, not before: a listener that looks at
+            // what is on screen should see the page it was put back on. The
+            // list is copied out first, because a listener is allowed to add
+            // another -- or to open a second modal, which would be holding the
+            // same borrow.
+            let listeners: Vec<Rc<dyn Fn()>> = on_dismissed.borrow().clone();
+            for listener in listeners {
+                listener();
+            }
         })
     };
 
@@ -1657,10 +1712,9 @@ pub fn show_modal(
     });
 
     Some(ModalHandle {
-        entry_id,
-        focus_root,
-        overlay,
         dismissed,
+        dismiss: dismiss_target,
+        on_dismissed,
     })
 }
 
@@ -3451,5 +3505,184 @@ mod scrim_paint_tests {
                 stroke: None,
             }]
         );
+    }
+}
+
+#[cfg(test)]
+mod modal_dismissal_tests {
+    use super::*;
+    use crate::framework::{AnyWidget, BuildContext, Component, ElementTree, component, leaf};
+    use crate::render::BoxConstraints;
+    use std::cell::RefCell as StdRefCell;
+
+    const BARRIER: u64 = 9101;
+
+    fn staged() -> (ElementTree, Rc<OverlayHandle>) {
+        let found: Rc<StdRefCell<Option<Rc<OverlayHandle>>>> = Rc::new(StdRefCell::new(None));
+        struct Finder(Rc<StdRefCell<Option<Rc<OverlayHandle>>>>);
+        impl Component for Finder {
+            fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                *self.0.borrow_mut() = OverlayHandle::of(context);
+                leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))
+            }
+        }
+        let mut tree = ElementTree::new();
+        tree.rebuild(overlay(component(Finder(Rc::clone(&found)))));
+        tree.build_render_tree();
+        let handle = found.borrow().clone().expect("a descendant found it");
+        (tree, handle)
+    }
+
+    fn body() -> AnyWidget {
+        leaf(|| crate::widgets::SizedBox::new(50.0, 50.0))
+    }
+
+    #[test]
+    fn a_listener_hears_a_dismissal_the_caller_asked_for() {
+        let (_tree, handle) = staged();
+        let heard = Rc::new(Cell::new(0u32));
+        let modal = show_modal(handle, ModalBarrier::new(), body).expect("shown");
+        let count = Rc::clone(&heard);
+        modal.on_dismissed(move || count.set(count.get() + 1));
+
+        assert_eq!(heard.get(), 0, "not before");
+        modal.dismiss();
+        assert_eq!(heard.get(), 1);
+    }
+
+    #[test]
+    fn a_listener_hears_a_dismissal_nobody_told_it_about() {
+        // The reason the hook exists. A modal the reader dismissed -- through
+        // the barrier, through Escape, through the back button -- goes away
+        // without the caller who put it up being told, so anything that has to
+        // happen when the modal *ends* had nowhere to live.
+        let (_tree, handle) = staged();
+        let heard = Rc::new(Cell::new(0u32));
+        let modal = show_modal(handle, ModalBarrier::new(), body).expect("shown");
+        let count = Rc::clone(&heard);
+        modal.on_dismissed(move || count.set(count.get() + 1));
+
+        assert!(dismiss_topmost_modal(), "Escape reached it");
+        assert_eq!(heard.get(), 1);
+        assert!(!modal.is_showing(), "and the handle agrees");
+    }
+
+    #[test]
+    fn a_listener_runs_once_however_many_ways_out_are_tried() {
+        // Two ways out arriving together should close one modal, and tell its
+        // listener once.
+        let (_tree, handle) = staged();
+        let heard = Rc::new(Cell::new(0u32));
+        let modal = show_modal(handle, ModalBarrier::new(), body).expect("shown");
+        let count = Rc::clone(&heard);
+        modal.on_dismissed(move || count.set(count.get() + 1));
+
+        assert!(dismiss_topmost_modal());
+        assert!(!modal.dismiss(), "already down");
+        assert!(!dismiss_topmost_modal(), "and no longer on the stack");
+        assert_eq!(heard.get(), 1);
+    }
+
+    #[test]
+    fn a_listener_may_add_another_from_inside_the_dismissal() {
+        // The list is copied before it is run, and this is what that is for. A
+        // listener that reaches back into the same modal -- to add another, or
+        // to dismiss it again -- would otherwise find the list still borrowed
+        // and panic.
+        //
+        // The one added during the dismissal does **not** run this time: it
+        // was not on the list when the copy was taken, and a listener that
+        // fired for a dismissal it was registered after would be firing for
+        // something that had already happened.
+        //
+        // The handle inside its own listener is a cycle and leaks; that is the
+        // test's problem, not the theatre's.
+        let (_tree, handle) = staged();
+        let modal = show_modal(handle, ModalBarrier::new(), body).expect("shown");
+        let heard = Rc::new(Cell::new(0u32));
+        let late = Rc::new(Cell::new(0u32));
+
+        let count = Rc::clone(&heard);
+        let late_count = Rc::clone(&late);
+        let again = modal.clone();
+        modal.on_dismissed(move || {
+            count.set(count.get() + 1);
+            let late_count = Rc::clone(&late_count);
+            again.on_dismissed(move || late_count.set(late_count.get() + 1));
+            again.dismiss();
+        });
+
+        modal.dismiss();
+        assert_eq!(heard.get(), 1, "the second dismissal found it already down");
+        assert_eq!(late.get(), 0, "and the late listener did not fire");
+    }
+
+    #[test]
+    fn listeners_run_in_the_order_they_were_added() {
+        let (_tree, handle) = staged();
+        let order: Rc<StdRefCell<Vec<u32>>> = Rc::new(StdRefCell::new(Vec::new()));
+        let modal = show_modal(handle, ModalBarrier::new(), body).expect("shown");
+        for step in 1..=3 {
+            let order = Rc::clone(&order);
+            modal.on_dismissed(move || order.borrow_mut().push(step));
+        }
+        modal.dismiss();
+        assert_eq!(*order.borrow(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_listener_sees_the_page_the_modal_was_taken_off() {
+        // The listeners run *after* the entry is gone, which is what lets one
+        // of them look at what is on screen -- or put a second modal up in the
+        // first one's place.
+        let (tree, handle) = staged();
+        let tree = Rc::new(StdRefCell::new(tree));
+        let seen = Rc::new(Cell::new(usize::MAX));
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), body).expect("shown");
+        assert_eq!(modal_count(), 1);
+        let count = Rc::clone(&seen);
+        modal.on_dismissed(move || count.set(modal_count()));
+        modal.dismiss();
+        assert_eq!(seen.get(), 0, "gone by the time the listener ran");
+        drop(tree);
+    }
+
+    #[test]
+    fn a_listener_may_open_another_modal_from_inside_the_dismissal() {
+        // The listener list is copied before it is run, so a listener that
+        // reaches back into the theatre is not holding a borrow of it.
+        let (_tree, handle) = staged();
+        let opener = Rc::clone(&handle);
+        let modal = show_modal(Rc::clone(&handle), ModalBarrier::new(), body).expect("shown");
+        let opened: Rc<StdRefCell<Option<ModalHandle>>> = Rc::new(StdRefCell::new(None));
+        let sink = Rc::clone(&opened);
+        modal.on_dismissed(move || {
+            *sink.borrow_mut() = show_modal(Rc::clone(&opener), ModalBarrier::new(), body);
+        });
+        modal.dismiss();
+        assert_eq!(modal_count(), 1, "the second one is up");
+        opened.borrow().as_ref().expect("opened").dismiss();
+    }
+
+    #[test]
+    fn an_entry_wrapped_as_a_modal_answers_the_same_way() {
+        // `modal_from_entry` used to be a second copy of the take-down. It is
+        // the same guard and the same listeners now, which is what makes a
+        // drawer's handle behave like any other.
+        let (mut tree, handle) = staged();
+        let entry = handle.insert(body).expect("inserted");
+        tree.rebuild_dirty();
+        let modal = modal_from_entry(Rc::clone(&handle), entry);
+        let heard = Rc::new(Cell::new(0u32));
+        let count = Rc::clone(&heard);
+        modal.on_dismissed(move || count.set(count.get() + 1));
+
+        assert!(modal.is_showing());
+        assert!(modal.dismiss());
+        assert_eq!(heard.get(), 1);
+        assert!(!modal.dismiss(), "and only once");
+        assert_eq!(heard.get(), 1);
+        let _ = BoxConstraints::tight(1.0, 1.0);
+        let _ = BARRIER;
     }
 }
