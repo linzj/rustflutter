@@ -3105,3 +3105,78 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录默认目标 exit 0�
 （`MenuAnchor` 的子类，`_isOpen` 被重写成"任何一个孩子开着"），
 还是自己拿状态。这决定 `MenuBar` 要不要进菜单树、
 以及 `opens_on_hover` 里的 `root_of` 在真装配下指到谁。
+## 第 463 轮：iOS host——gallery 在 iPhone 模拟器上渲染、触摸、弹键盘
+
+win/mac/android 之外的第四个 host。范围定在**模拟器 + 软件渲染**:无签名
+即可跑通与自动验证;真机(签名)与 Metal/Impeller 留给后续。
+
+### 构建链(此前 iOS 根本编不出对的东西)
+
+- `build/toolchain/mac/BUILD.gn` 的三个 iOS toolchain 声明的是
+  `toolchain_os="mac"`、`toolchain_cpu="arm"`,模板里按 os/cpu 推 rust
+  `--target` 的分支**永远推不中**——设备版拿不到 target(静默用宿主架构)、
+  模拟器版也没有 `aarch64-apple-ios-sim` 可推。修法:toolchain 可以直接
+  声明 `rust_abi_target`,三个 iOS toolchain 各自写明。
+- `tools/gn` 对 iOS **强制 slimpeller**,而 slimpeller 下软件渲染是死路
+  (`flow/surface_frame.cc` 对带 SkSurface 的帧直接 FATAL)。解除强制,
+  显式 `--slimpeller` 仍然生效;iOS 于是拿到与 mac 相同的 Skia-CPU 配置。
+  Metal shader(IMPELLERC_METAL)在模拟器构建下照常编过,没踩到坑。
+- `common/settings.h`:上游把 iOS 的 `enable_impeller` 钉成 const true
+  (它的 iOS embedder 只有 Impeller),而 `Shell::Create` 有
+  `FML_CHECK(!software || !impeller)`——软件渲染的 host 必须能把它关掉。
+  const 只在 SLIMPELLER 下保留,默认值照旧。这是对 engine 头文件的第一处
+  行为性修改,理由写在注释里。
+- `rustup target add aarch64-apple-ios-sim`;
+  `vpython3 flutter/tools/gn --ios --simulator --simulator-cpu arm64
+  --unoptimized --no-rbe` → out/ios_debug_sim_unopt_arm64,全量 ninja 绿
+  (platform_channels 的探针模块给 iOS 挂了 android 那份"不能自驱输入"的
+  被动版,原因也相同:平台不许应用给自己注入输入)。
+
+### host(rustflutter_host_ios.mm,mac 骨架裁剪)
+
+- `rf_host_run` 把选项存进文件级 state 后交给 `UIApplicationMain`,
+  **不返回**——iOS 进程没有退出路径,mac 在 `[NSApp run]` 之后做的清理
+  在这里没有对应物。宽/高/标题被接受并忽略:手机的窗口就是屏幕。
+- AppDelegate 起 UIWindow + RfHostView,ThreadHost 四线程 + Shell::Create
+  与 mac 同构;`GPUSurfaceSoftware` + FrameBuffer(mac 的原文)→ 主线程
+  `setNeedsDisplay` → `drawRect:` CGImage blit。vsync 仍是 mac 的
+  snapped-timer(纯 fml),频率取 `UIScreen.maximumFramesPerSecond`。
+- 触摸照上游 `FlutterViewController`:device = UITouch 指针值(多指天然
+  区分)、坐标×contentScaleFactor、kind=kTouch、Ended/Cancelled 后补
+  kRemove;delta 记账是 android host 的。
+- viewport:safeAreaInsets×scale → `physical_padding_*`(刘海与状态栏,
+  framework 的 SafeArea 读到的就是它);键盘 frame 通知 →
+  `physical_view_inset_bottom`。
+- 通道:platform(UIPasteboard 剪贴板、SystemChrome/SystemSound 礼貌空答)、
+  lifecycle(UIApplicationDelegate 五回调 → 上游四状态)、settings
+  (深浅色、24h)、localization(与 mac 同一段 NSLocale 代码)。
+
+### 文本输入(与 mac 共享一半)
+
+- mac 上一轮落地的 `TextInputHandler`(engine 自己的 `TextInputModel`,
+  `flutter/textinput` 全套方法)抽成 `host/rustflutter_text_input.h`,
+  mac/iOS 共用;iOS 需要的部分补进去:setClient 的 `obscureText`/
+  `autocorrect` 也存下来(键盘 traits 要)、`OnSetSelection`/
+  `OnReplaceRange`/`OnDeleteBackward`(UITextInput 的三个动词)、
+  框架改状态时的回调钩子(键盘要被告知重读文本)。
+- iOS 侧照上游 `FlutterTextInputPlugin` 的形:一个隐藏的
+  `RfTextInputView : UIView<UITextInput>`,`TextInput.show/hide` 驱动
+  becomeFirstResponder/resign;position/range 是 UTF-16 下标(与 NSRange
+  同单位);marked text 走共享 handler 的组合方法,系统拼音键盘的组词
+  由此进模型;traits 按 setClient 的配置映射(email/number/phone/url
+  键盘、return 键文案、secureTextEntry、autocorrect)。**没做**的照实记:
+  逐字符 selectionRects、浮动光标、scribble、dictation 占位。
+  文件在 MRC 下编译,per-call 的 position/range 对象走 autorelease。
+
+### 打包与验证
+
+- `host/tools/build_ios_apps.py`(仿 build_apks.py):`Foo.app/{Foo,
+  Info.plist, icudtl.dat}`——资产全部 `include_bytes!` 内嵌,bundle 只要
+  这三样;`UILaunchScreen={}` 防 letterbox;ad-hoc 签名,模拟器不验;
+  `--run` 直接 boot/install/launch,launch 参数原样带给应用
+  (`--route demo --slug text-field` 这类)。
+- 验证:counter 与 flutter_gallery 均在 iPhone 模拟器上渲染正确
+  (深浅色跟随系统、SafeArea 生效、色序无误,截图确认);触摸与键盘的
+  交互半边等真人过一遍——模拟器里鼠标即触摸。
+- mac 回归:gallery 343 全过;框架 6692 过,3 个失败为此前记录过的
+  mac 平台性断言,与本轮无关。

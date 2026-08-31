@@ -483,7 +483,7 @@ group("rust") {
   # a rustflutter_app(), so it does not get the unwinder the Rust standard
   # library needs on Android -- see rustflutter_app.gni -- and a device build
   # that kept it failed on a dozen `_Unwind_*` symbols.
-  if (!is_android) {
+  if (!is_android && !is_ios) {
     deps += [ "//flutter/rust/cli:rustflutter_cli" ]
   }
 

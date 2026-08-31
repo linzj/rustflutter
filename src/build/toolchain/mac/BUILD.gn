@@ -187,7 +187,16 @@ template("mac_toolchain") {
     # building `clang_x64`, or anything building for iOS, is a cross-compile,
     # and rustc's default would quietly produce the wrong architecture. Neither
     # crate type links, so no linker is passed.
-    if (invoker.toolchain_os == "ios") {
+    #
+    # A toolchain may say its triple outright. The iOS toolchains below have
+    # to: they declare `toolchain_os = "mac"` and `toolchain_cpu = "arm"`, so
+    # the inference under this never fires for them -- the device toolchain
+    # would get no `--target` at all (the host's own arch, silently) and the
+    # simulator one has no inferable spelling anyway, `aarch64-apple-ios-sim`
+    # being its own triple rather than a cpu/os pair.
+    if (defined(invoker.rust_abi_target)) {
+      rust_abi_target = invoker.rust_abi_target
+    } else if (invoker.toolchain_os == "ios") {
       if (invoker.toolchain_cpu == "arm64") {
         rust_abi_target = "aarch64-apple-ios"
       } else if (invoker.toolchain_cpu == "x64") {
@@ -488,6 +497,7 @@ if (is_ios) {
     objc = "${objc_prefix}${prefix}/clang++"
     ld = "${link_prefix}${prefix}/clang++"
     is_clang = true
+    rust_abi_target = "aarch64-apple-ios"
 
     sysroot_rel = rebase_path(ios_sdk_path, root_build_dir)
     sysroot_flags =
@@ -506,6 +516,7 @@ if (is_ios) {
     objc = "${objc_prefix}${prefix}/clang++"
     ld = "${link_prefix}${prefix}/clang++"
     is_clang = true
+    rust_abi_target = "aarch64-apple-ios-sim"
 
     sysroot_rel = rebase_path(ios_sdk_path, root_build_dir)
     sysroot_flags = "-isysroot $sysroot_rel -mios-simulator-version-min=$ios_deployment_target"
@@ -523,6 +534,7 @@ if (is_ios) {
     objc = "${objc_prefix}${prefix}/clang++"
     ld = "${link_prefix}${prefix}/clang++"
     is_clang = true
+    rust_abi_target = "x86_64-apple-ios"
 
     sysroot_rel = rebase_path(ios_sdk_path, root_build_dir)
     sysroot_flags = "-isysroot $sysroot_rel -mios-simulator-version-min=$ios_deployment_target"

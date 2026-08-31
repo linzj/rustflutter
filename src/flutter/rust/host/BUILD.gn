@@ -83,6 +83,8 @@ source_set("host") {
       "rustflutter_key_map_linux.cc",
       "rustflutter_key_map_linux.h",
     ]
+  } else if (is_ios) {
+    sources += [ "rustflutter_host_ios.mm" ]
   } else {
     sources += [ "rustflutter_host_stub.cc" ]
   }
@@ -211,6 +213,20 @@ source_set("host") {
       # says which encoder. See FrameBuffer::WritePng.
       "ImageIO.framework",
       "UniformTypeIdentifiers.framework",
+    ]
+  }
+
+  if (is_ios) {
+    frameworks = [
+      # The window, the view, the touches and the pasteboard.
+      "UIKit.framework",
+
+      # The bitmap the software surface is blitted through.
+      "CoreGraphics.framework",
+
+      "CoreFoundation.framework",
+      "Foundation.framework",
+      "QuartzCore.framework",
     ]
   }
 }

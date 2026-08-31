@@ -123,6 +123,29 @@ host 以前声明 `rustflutter_app_main` 并调用它，那是一个从引擎里
 `--features shared-engine` 之后，除最后一样外都不再需要：
 那时引擎已经是独立的库，它的符号根本不经过 rustc 的 version script。
 
+## iOS（模拟器）
+
+还是同一个引擎、同一个框架 crate、同一批示例，跑在 UIKit host 上——见
+`flutter/rust/host/rustflutter_host_ios.mm`。模拟器不需要签名证书；
+真机需要，尚未接通。
+
+```sh
+cd src
+rustup target add aarch64-apple-ios-sim
+
+vpython3 flutter/tools/gn --ios --simulator --simulator-cpu arm64 --unoptimized --no-rbe
+ninja -C out/ios_debug_sim_unopt_arm64
+
+# 每个可执行文件出一个 .app；--run 会启动模拟器、安装并运行。
+python3 flutter/rust/host/tools/build_ios_apps.py \
+    --out out/ios_debug_sim_unopt_arm64 --run flutter_gallery
+```
+
+一个 bundle 只有三个文件——可执行文件、`Info.plist`、`icudtl.dat`——
+因为资产都编进了二进制。触摸、软键盘（`UITextInput`，输入法可用）与
+安全区已接通；选择菜单的平台样式、无障碍与 Metal 还没有。渲染走的是
+和 macOS host 相同的 Skia 软件表面。
+
 
 ## 应用
 

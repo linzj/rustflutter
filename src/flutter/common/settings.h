@@ -222,11 +222,15 @@ struct Settings {
   // Enable the Impeller renderer on supported platforms. Ignored if Impeller is
   // not supported on the platform.
 #if FML_OS_ANDROID || FML_OS_IOS || FML_OS_IOS_SIMULATOR
-  // On iOS devices, Impeller is the default with no opt-out and this field is
-  // const.
-#if FML_OS_IOS || FML_OS_IOS_SIMULATOR || SLIMPELLER
+  // Upstream pins this const on iOS -- its iOS embedder is Impeller with no
+  // opt-out. This fork's iOS host renders through the Skia software surface,
+  // and `Shell::Create` checks that software rendering and Impeller are not
+  // both on, so the host must be able to turn this off. The default stays
+  // upstream's; only the constness goes (except under SLIMPELLER, where there
+  // is no Skia to fall back to).
+#if SLIMPELLER
   static constexpr const
-#endif                              // FML_OS_IOS && !FML_OS_IOS_SIMULATOR
+#endif                              // SLIMPELLER
       bool enable_impeller = true;  // NOLINT(readability-identifier-naming)
 #else
   bool enable_impeller = false;

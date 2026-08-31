@@ -497,7 +497,12 @@ def to_gn_args(args):
     gn_args['is_clang'] = True
   else:
     gn_args['is_clang'] = args.clang
-  if args.target_os == 'ios' or args.slimpeller:
+  # rustflutter: upstream forces slimpeller for every iOS build, but this
+  # fork's iOS host draws through `GPUSurfaceSoftware`, and a software
+  # `SurfaceFrame` under SLIMPELLER is a FML_LOG(FATAL) (flow/surface_frame.cc)
+  # -- the same Skia-CPU configuration the macOS host builds with is what iOS
+  # needs. An explicit --slimpeller still applies.
+  if args.slimpeller:
     gn_args['skia_enable_graphite'] = False
     gn_args['skia_enable_ganesh'] = False
     gn_args['slimpeller'] = True

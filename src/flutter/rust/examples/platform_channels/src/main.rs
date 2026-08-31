@@ -30,9 +30,11 @@ use rustflutter::services::{MethodChannel, StandardMethodCodec};
 // The half of this example that drives the host's own window. What it can do
 // is a property of the platform, not of the framework, so there is one module
 // per platform and main.rs asks `probe::DRIVES_INPUT` rather than asking which
-// platform it is on.
+// platform it is on. iOS shares Android's answer for Android's reasons: an
+// application may not inject input into itself, so the gesture half reports
+// SKIP and the channel half still runs.
 #[cfg_attr(windows, path = "win32.rs")]
-#[cfg_attr(target_os = "android", path = "android.rs")]
+#[cfg_attr(any(target_os = "android", target_os = "ios"), path = "android.rs")]
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 mod probe;
 

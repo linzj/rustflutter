@@ -138,6 +138,30 @@ pointing at an Android output directory. `--features shared-engine` needs none
 of them beyond the last: the engine is a library of its own by then, so its
 symbols never pass through rustc's version script at all.
 
+## iOS (simulator)
+
+The same engine, framework crate and examples again, on a UIKit host — see
+`flutter/rust/host/rustflutter_host_ios.mm`. The simulator needs no signing
+identity; a device build does, and is not wired up yet.
+
+```sh
+cd src
+rustup target add aarch64-apple-ios-sim
+
+vpython3 flutter/tools/gn --ios --simulator --simulator-cpu arm64 --unoptimized --no-rbe
+ninja -C out/ios_debug_sim_unopt_arm64
+
+# One .app per executable; --run boots a simulator, installs and launches.
+python3 flutter/rust/host/tools/build_ios_apps.py \
+    --out out/ios_debug_sim_unopt_arm64 --run flutter_gallery
+```
+
+A bundle is three files — the executable, an `Info.plist`, `icudtl.dat` —
+because the assets are compiled in. Touch, the software keyboard
+(`UITextInput`, input methods included) and the safe area are wired; the
+selection toolbar's platform styling, accessibility and Metal are not yet.
+Rendering is the same Skia software surface the macOS host uses.
+
 
 ## Applications
 
