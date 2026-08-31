@@ -2858,6 +2858,51 @@ pub enum ShapeBorder {
 }
 
 impl ShapeBorder {
+    /// The rounding this shape gives a rectangle of `size`, when it is one.
+    ///
+    /// Upstream's shapes answer with a whole `Path` (`getOuterPath`), which is
+    /// what lets a star be a star. This crate paints a surface as a rounded
+    /// rectangle, so the question it can actually act on is narrower: **what
+    /// radius do the corners take**. `None` means "not a rounded rectangle at
+    /// any size", and a caller that gets it should draw a plain rectangle
+    /// rather than guess.
+    ///
+    /// It takes a `size` because one of the answers depends on it:
+    /// a [`StadiumBorder`] is `Radius.circular(rect.shortestSide / 2)`
+    /// upstream, so its corners are only known once the box is measured. That
+    /// is why this is not a plain accessor on the shape.
+    ///
+    /// **What is deliberately `None`:**
+    ///
+    /// * `Circle`, `Oval`, `Star`, `Linear`, `Underline`, `Outline` -- not
+    ///   rectangles, or not closed shapes at all.
+    /// * `Beveled`, `Continuous` and `Superellipse` -- rectangles with
+    ///   *corners*, but not circular ones: a bevel is a straight cut, and the
+    ///   other two are squircles. Each carries a radius, and handing it back
+    ///   would draw the wrong curve confidently -- worse than drawing none.
+    ///   `Superellipse` is the one to watch, because it has a `border_radius`
+    ///   field of exactly the right type and reads as though it belongs here.
+    /// * The three interpolating shapes and `Compound` -- each is two shapes
+    ///   with a `t` between them, and picking one end would be a lie about
+    ///   the other.
+    pub fn corner_radius(&self, size: crate::render::Size) -> Option<BorderRadius> {
+        match self {
+            ShapeBorder::Rounded(shape) => Some(
+                shape
+                    .border_radius
+                    .resolve(crate::direction::current_direction()),
+            ),
+            // Upstream: `Radius.circular(rect.shortestSide / 2.0)`. The
+            // shorter side, not the height -- a stadium turned on its side is
+            // still a pill, and halving the longer one would round the corners
+            // past each other.
+            ShapeBorder::Stadium(_) => Some(BorderRadius::circular(
+                size.width.min(size.height).max(0.0) / 2.0,
+            )),
+            _ => None,
+        }
+    }
+
     /// Upstream `ShapeBorder.dimensions` -- how far a rectangle insets to
     /// keep clear of the border.
     pub fn dimensions(&self) -> EdgeInsetsGeometry {
@@ -5462,6 +5507,83 @@ fn circular_notched_path(host: Rect, guest: Option<Rect>, inverted: bool) -> Ren
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- What rounding a shape gives a rectangle ---------------------------------
+
+    #[test]
+    fn a_stadium_is_half_the_shorter_side_whichever_side_that_is() {
+        // Upstream: `Radius.circular(rect.shortestSide / 2.0)`. The shorter
+        // side and not the height -- a stadium turned on its side is still a
+        // pill, and halving the longer one would round the corners past each
+        // other and stop being a rectangle at all.
+        let stadium = ShapeBorder::Stadium(StadiumBorder::default());
+        assert_eq!(
+            stadium.corner_radius(crate::render::Size::new(200.0, 56.0)),
+            Some(BorderRadius::circular(28.0)),
+            "a wide bar rounds by its height"
+        );
+        assert_eq!(
+            stadium.corner_radius(crate::render::Size::new(40.0, 300.0)),
+            Some(BorderRadius::circular(20.0)),
+            "and a tall one by its width"
+        );
+        assert_eq!(
+            stadium.corner_radius(crate::render::Size::ZERO),
+            Some(BorderRadius::circular(0.0)),
+            "an unmeasured box rounds by nothing rather than by a negative"
+        );
+    }
+
+    #[test]
+    fn a_rounded_rectangle_keeps_the_radius_it_was_given() {
+        // And does not depend on the size, which is the difference from a
+        // stadium and the reason the size is an argument rather than a field.
+        let shape = ShapeBorder::Rounded(RoundedRectangleBorder {
+            side: BorderSide::NONE,
+            border_radius: BorderRadiusGeometry::Absolute(BorderRadius::circular(12.0)),
+        });
+        assert_eq!(
+            shape.corner_radius(crate::render::Size::new(200.0, 56.0)),
+            Some(BorderRadius::circular(12.0))
+        );
+        assert_eq!(
+            shape.corner_radius(crate::render::Size::new(20.0, 20.0)),
+            Some(BorderRadius::circular(12.0)),
+            "the same radius at any size"
+        );
+    }
+
+    #[test]
+    fn the_shapes_that_are_not_rounded_rectangles_say_so() {
+        // `None` is the useful answer: a caller told "no radius" draws a plain
+        // rectangle, where a caller handed a made-up radius draws the wrong
+        // curve and looks right until somebody compares it to upstream.
+        let size = crate::render::Size::new(100.0, 40.0);
+        assert_eq!(
+            ShapeBorder::Circle(CircleBorder::default()).corner_radius(size),
+            None
+        );
+        assert_eq!(
+            ShapeBorder::Oval(OvalBorder::default()).corner_radius(size),
+            None
+        );
+        // The two that carry a radius of exactly the right type and still are
+        // not circular-cornered -- the ones most likely to be waved through.
+        assert_eq!(
+            ShapeBorder::Superellipse(RoundedSuperellipseBorder {
+                side: BorderSide::NONE,
+                border_radius: BorderRadiusGeometry::Absolute(BorderRadius::circular(12.0)),
+            })
+            .corner_radius(size),
+            None,
+            "a squircle's corners are not arcs, whatever its field is called"
+        );
+        assert_eq!(
+            ShapeBorder::Beveled(BeveledRectangleBorder::default()).corner_radius(size),
+            None,
+            "a bevel is a straight cut"
+        );
+    }
 
     const RED: Color = Color(0xFF0000FF);
     const BLUE: Color = Color(0xFFFF0000);

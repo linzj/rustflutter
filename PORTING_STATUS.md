@@ -1219,3 +1219,58 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编
    那 `Material` 那一层（`controls.rs:4553` 的 `fn shape`）现在拿它做什么？
    如果已经有一条"shape 变成绘制"的路，那这一轮就是把它接出来给别人用，
    而不是新造一套。
+
+---
+
+## 第 433 轮：一个 `ShapeBorder` 终于说得出它把矩形圆成什么样
+
+先查上一轮留的两件事。
+
+**查一**：`controls.rs:4553` 那个 `fn shape()` 喂给谁？
+`widgets.rs` 里那两处 `.shape()` **是另一个东西**——是 `Container` 自己的
+"要套哪几层包装"的列表，和 `ShapeBorder` 毫无关系。**没有现成的路。**
+
+**查二**：`impl ShapeBorder` 里有什么？**只有 `dimensions()`。**
+十六个变体全是数据，唯一能问的问题是"边框往里收多少"。
+上游那边 `ShapeBorder` 有 `getOuterPath` / `getInnerPath` / `paint` / `scale` / `lerp`，
+这里一个都没有。**画不出来，也问不出圆角。**
+
+### 这一轮补最窄、也最有人要的那一片
+
+上游的答案是一条完整的 `Path`（所以星形能是星形）。
+这个 crate 画表面用的是圆角矩形，**能落地的问题因此更窄**：
+`corner_radius(size) -> Option<BorderRadius>`。
+
+两处值得记的设计：
+
+- **它收一个 `size`**，因为有一个答案依赖尺寸：
+  `StadiumBorder` 上游是 `Radius.circular(rect.shortestSide / 2.0)`——
+  **较短的那条边**，不是高。侧过来的胶囊还是胶囊，
+  按较长边取半会让两个圆角越过彼此、连矩形都不是了。
+  所以这不能是形状上的一个普通取值方法。
+- **`None` 是有用的答案**，不是"还没做"。
+  拿到 `None` 的调用者画直角矩形；拿到一个编出来的圆角的调用者
+  会画错的弧线，而且**看上去是对的**，直到有人和上游对一遍。
+
+### 自己抓到自己的一处不一致
+
+第一版我让 `Superellipse` 返回它的 `border_radius`，
+而文档里同一段又写着"`Continuous` 排除，因为它是 squircle"。
+**超椭圆按定义就是 squircle。** 改成一起排除，
+并在文档里点名它是最容易被放行的那一个——
+它有一个类型完全正确的 `border_radius` 字段，读起来就像该在这儿。
+
+变异扫描 6 个，**第一遍全红**，包括"把 squircle 当圆角放行"这一条。
+
+尺子：十六把全部 exit 0。门：Rust 6516 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标全部编过。
+
+**下一步**：`corner_radius` 现在**没有消费者**——
+和这些轮反复拆的形状一样，只是这次是我刚造的。
+下一轮把它接上：`SearchBar` 的 widget（第 432 轮就是因为缺它才没动），
+`Container` 那边可以直接 `with_border_radius(shape.corner_radius(size)?)`。
+但**先查一件事**：`Container::with_border_radius` 是在 build 时收半径的，
+而 stadium 的半径**要到布局之后才知道**。
+所以要么 `SearchBar` 用固定高度（`ResolvedSearchBar.constraints` 里有没有？）
+把尺寸提前算出来，要么需要一个"在布局后取圆角"的渲染对象。
+**先确认约束里给不给得出高度**，给得出就用它，给不出这一轮就该补那个渲染对象。
