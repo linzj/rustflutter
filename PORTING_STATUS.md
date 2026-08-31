@@ -3180,3 +3180,78 @@ win/mac/android 之外的第四个 host。范围定在**模拟器 + 软件渲染
   交互半边等真人过一遍——模拟器里鼠标即触摸。
 - mac 回归:gallery 343 全过;框架 6692 过,3 个失败为此前记录过的
   mac 平台性断言,与本轮无关。
+
+---
+
+## 第 463 轮：菜单栏装起来了，于是"根"变成了一个组
+
+上一轮留的问题查清楚了。上游 `_MenuBarAnchor extends MenuAnchor`，
+状态类只改两件事：`_orientation => Axis.horizontal`，
+以及把孩子放进 **`RawMenuAnchorGroup`** 而不是一个会开面板的 anchor。
+所以菜单栏在树里，但**它自己永远不开**——
+`isOpen` 是"任何一个孩子开着"。
+
+这件事一装上就露出了上一轮那条规则的一个真洞。
+第 462 轮的 `opens_on_hover` 问的是 `tree.is_open(root_of(id))`，
+在只有一个按钮的测试台上成立（它自己就是根）；
+可一旦有了真菜单栏，根就是那个**永不打开**的栏节点，
+这个问题会永远答"没有"——真实的菜单栏根本不会跟指针走。
+上游问的是 `root._menuController.isOpen`，而根是个组，
+所以它问的其实是"有没有哪个兄弟开着"。改成
+`RawMenuAnchorGroup::is_open(tree, root_of(id))`，
+这个第 435 轮就写好的函数**第一次有了真调用者**。
+
+`MenuBar` 现在是真组件：
+
+- 自己进树、离开时出树（留一个节点在树里，
+  下一个同 id 的栏会撞上"只加一次"的断言）。
+- `entry(at)` 把三件**栏知道而条目不知道**的事一次settle掉：
+  挂在栏底下、共用栏的 tap-region 组、所在菜单**横着**跑。
+  一个调用者没法只装一半。
+- 排成一行，外面按 `MenuBarTheme` 的
+  `_kTopLevelMenuHorizontalMinPadding` 留边——横向留、纵向不留：
+  一条栏只跟它的条目一样高。
+
+于是第 458 轮那条"栏下的面板推到屏幕边、不翻到按钮另一边"的分支，
+和第 462 轮的悬停规则，现在是同一个 `MenuAxis::Horizontal` 喂出来的。
+
+### 一个"点一下唤醒、之后指针随便走"的完整来回
+
+`a_click_wakes_the_bar_and_the_pointer_walks_it_from_there`：
+指针先划过 Edit——什么也不开；点一下 File——File 的面板上来；
+再划过 Edit——Edit 自己开了。
+
+写这条测试时第一版死活不过，查出来的是仪器不是代码：
+**一个没离开过的 ink 仍然是"正被悬停"的**，
+所以第二次移到同一个位置根本不是一次到达，什么也不问。
+（第一次调试还以为是命中测试没走到第二个按钮——
+其实第一次悬停的回调 id 就是 8412，走到了。）
+改成整条来回共用一个路由器，中间往别处走一步。
+
+### 十个变异全红，其中一个一开始是"等价变异"
+
+"条目保留自己的 tap-region 组"最初 0 红，而且**不是测试的问题**：
+去掉那一句以后整条栏连同面板都落在组 0，前后一致，行为一模一样。
+让它可观测的办法是让夹具**先说错**：给 Edit 一个 9999 的组，
+由栏改正。这样变异版里 Edit 的按压就成了 File 面板的"外面"，
+面板在按下的路上被关掉——差别这才是真的。
+
+尺子：十六把全部 exit 0。这一轮补记一条：
+`ninja -C <目录>` 的默认目标**不含** `rustflutter_engine`，
+`stale_engines` 因此报红一次；要点名build。
+门：Rust 6717 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过。
+
+顺带把测试台合并了：`staged` / `staged_at` / `staged_inset` 三份几乎一样的
+`Finder` 合成一个 `staged_page(body)`，新的 `staged_bar` 也从它来。
+overlay 要比按钮大、页面要可命中——这两条只学一次，
+不该每加一个测试台就重学一遍。
+
+**下一步**：菜单栏能开能走了，但**关不上**。上游
+`_MenuBarAnchorState` 的 `actions` 只有一条：
+`DismissIntent: DismissMenuAction(controller: _menuController)`，
+而 `DismissMenuAction` 这个 crate 里已经有了
+（`raw_menu_anchor.rs:525`），同样**没有真调用者**。
+**先查一件事**：栏上按 Escape 关的是整棵还是只关最里一层
+（看 `DismissMenuAction.invoke` 与 `MenuController.close` 在组上的行为——
+组的 `close` 是不是就是 `closeChildren`）。确认了再接。

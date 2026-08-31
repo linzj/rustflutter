@@ -308,19 +308,65 @@ impl MenuAnchor {
 /// Upstream's `clipBehavior` defaults to `Clip.none` here where
 /// [`MenuAnchor`]'s defaults to `hardEdge`, and the difference is the point: a
 /// bar's menus are *meant* to hang below it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct MenuBar {
+    /// Identifies the bar's own node in the menu tree. Every entry hangs under
+    /// it, which is what makes them siblings -- and siblings are what the
+    /// hover rule is about.
+    pub id: u64,
     pub clip: bool,
+    /// The tap-region group the whole bar and its panels share, so that a tap
+    /// on one entry is not a tap *outside* the panel another entry opened.
+    pub group_id: u64,
+    /// The bar's top-level menus, in order across.
+    pub entries: Vec<SubmenuButton>,
 }
 
 impl MenuBar {
     pub fn new() -> MenuBar {
-        MenuBar { clip: false }
+        MenuBar {
+            id: 0,
+            clip: false,
+            group_id: 0,
+            entries: Vec::new(),
+        }
     }
 
     pub fn with_clip(mut self, clip: bool) -> Self {
         self.clip = clip;
         self
+    }
+
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = id;
+        self
+    }
+
+    pub fn with_group_id(mut self, group_id: u64) -> Self {
+        self.group_id = group_id;
+        self
+    }
+
+    /// Adds one top-level menu.
+    pub fn push(mut self, entry: SubmenuButton) -> Self {
+        self.entries.push(entry);
+        self
+    }
+
+    /// One entry, as the bar builds it.
+    ///
+    /// Three things the bar knows and the entry does not, all of them settled
+    /// here so a caller cannot half-assemble a bar: it hangs under the bar, it
+    /// shares the bar's tap-region group, and the menu it sits in runs
+    /// **across**.
+    pub fn entry(&self, at: usize) -> Option<SubmenuButton> {
+        self.entries.get(at).map(|entry| {
+            entry
+                .clone()
+                .under(self.id)
+                .with_group_id(self.group_id)
+                .in_a_bar(true)
+        })
     }
 
     /// This bar's panel, resolved. A bar is the horizontal case, which is what
@@ -336,6 +382,69 @@ impl MenuBar {
             crate::component_themes::MenuPanelAxis::Horizontal,
             style,
         )
+    }
+}
+
+/// What the bar keeps: nothing but its own id, so that `dispose` knows which
+/// node to take out of the tree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuBarState {
+    id: u64,
+}
+
+impl crate::framework::StatefulComponent for MenuBar {
+    type State = MenuBarState;
+
+    fn key(&self) -> crate::framework::Key {
+        Some(self.id)
+    }
+
+    /// The bar joins the menu tree, once. Upstream's `_MenuBarAnchorState` is
+    /// a `_MenuAnchorState` like any other: it is in the tree, it just never
+    /// opens.
+    fn initial_state(&self) -> MenuBarState {
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            if tree.node(self.id).is_none() {
+                tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(self.id));
+            }
+        });
+        MenuBarState { id: self.id }
+    }
+
+    fn dispose(&self, state: &mut MenuBarState) {
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.dispose(state.id));
+    }
+
+    fn build(
+        &self,
+        _state: &MenuBarState,
+        _handle: crate::framework::StateHandle<MenuBarState>,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::framework::AnyWidget {
+        let panel = self.resolved(context, None);
+        let entries: Vec<crate::framework::AnyWidget> = (0..self.entries.len())
+            .filter_map(|at| self.entry(at))
+            .map(crate::framework::stateful)
+            .collect();
+        crate::framework::many(entries, move |rendered| {
+            // A row, because that is what a bar is -- and it is the same fact
+            // the entries were told as `MenuAxis::Horizontal`, which is why
+            // their panels slide to the screen's edge instead of flipping to
+            // the other side of the button.
+            let mut row = crate::render::RenderFlex::row()
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Center);
+            for child in rendered {
+                row = row.push(child);
+            }
+            let mut bar = crate::widgets::Container::new()
+                .with_padding(panel.padding)
+                .with_child(row);
+            if let Some(background) = panel.background_color {
+                bar = bar.with_color(background);
+            }
+            bar
+        })
     }
 }
 
@@ -844,6 +953,17 @@ pub struct SubmenuButton {
     /// [`crate::theatre::show_tap_dismissed`] uses to tell a tap on a sibling
     /// panel from a tap outside the whole menu.
     pub group_id: u64,
+    /// The anchor this button hangs under in the menu tree -- its **parent**.
+    ///
+    /// Upstream gets this from the element tree
+    /// (`_MenuAnchorState._maybeOf(context)`); this crate has no inherited
+    /// lookup for the menu tree, so the parent says. `None` is a button that
+    /// is its own root.
+    ///
+    /// It matters for more than bookkeeping: the hover rule asks about the
+    /// **root**, and a button with no parent *is* the root -- so an entry that
+    /// never joined its bar would ask about itself and answer wrongly.
+    pub parent_anchor: Option<u64>,
     /// Which way the menu this button sits in runs: `Horizontal` for an entry
     /// of a menu **bar**, `Vertical` for a line of a panel.
     ///
@@ -868,6 +988,7 @@ impl std::fmt::Debug for SubmenuButton {
             .field("has_submenu_icon", &self.has_submenu_icon)
             .field("enabled", &self.enabled)
             .field("group_id", &self.group_id)
+            .field("parent_anchor", &self.parent_anchor)
             .field("parent_orientation", &self.parent_orientation)
             .finish_non_exhaustive()
     }
@@ -881,6 +1002,7 @@ impl PartialEq for SubmenuButton {
             && self.has_submenu_icon == other.has_submenu_icon
             && self.enabled == other.enabled
             && self.group_id == other.group_id
+            && self.parent_anchor == other.parent_anchor
             && self.parent_orientation == other.parent_orientation
             && self.menu.is_some() == other.menu.is_some()
             && self.leading.is_some() == other.leading.is_some()
@@ -943,10 +1065,18 @@ impl SubmenuButton {
             has_submenu_icon: true,
             enabled: true,
             group_id: 0,
+            parent_anchor: None,
             parent_orientation: MenuAxis::Vertical,
             menu: None,
             leading: None,
         }
+    }
+
+    /// Hangs this button under `anchor` in the menu tree. See
+    /// [`SubmenuButton::parent_anchor`].
+    pub fn under(mut self, anchor: u64) -> Self {
+        self.parent_anchor = Some(anchor);
+        self
     }
 
     /// Marks this button as an entry of a menu **bar**. See
@@ -975,11 +1105,20 @@ impl SubmenuButton {
     ///
     /// A button inside a panel has no such condition: its parent menu is by
     /// definition already open, or the button would not be on screen.
+    ///
+    /// Upstream asks `root._menuController.isOpen`, and the root of a menu bar
+    /// is a **group** ([`crate::raw_menu_anchor::RawMenuAnchorGroup`]): a bar
+    /// is never itself open, so the question "is the root open" is really "is
+    /// any entry of the bar open". Asking the bar's own flag instead would
+    /// answer *no* forever, and a real menu bar would never track the pointer
+    /// at all.
     pub fn opens_on_hover(&self) -> bool {
         if self.parent_orientation != MenuAxis::Horizontal {
             return true;
         }
-        crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(tree.root_of(self.id)))
+        crate::raw_menu_anchor::with_menu_tree(|tree| {
+            crate::raw_menu_anchor::RawMenuAnchorGroup::is_open(tree, tree.root_of(self.id))
+        })
     }
 
     pub fn with_id(mut self, id: u64) -> Self {
@@ -1254,6 +1393,13 @@ impl crate::framework::StatefulComponent for SubmenuButton {
         crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
             if tree.node(self.id).is_none() {
                 tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(self.id));
+            }
+            // Upstream's `didChangeDependencies`, which re-parents the anchor
+            // once it can see the tree above it. Here the parent is told to
+            // the button, and this is the first moment its node exists to
+            // hang.
+            if let Some(parent) = self.parent_anchor {
+                let _ = tree.set_parent(self.id, Some(parent));
             }
         });
         SubmenuButtonState {
@@ -1742,39 +1888,39 @@ mod tests {
     const SUBMENU: u64 = 8401;
     const MENU_GROUP: u64 = 8402;
     const BAR_ROOT: u64 = 8404;
+    const SIBLING: u64 = 8405;
     const PANEL: Color = Color(0xFF00_00AA);
 
-    fn staged(button: SubmenuButton) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
+    /// A page with an overlay, holding whatever `body` builds.
+    ///
+    /// One harness rather than one per test: an overlay only as big as its
+    /// page would leave a menu panel nowhere to be but on top of the button,
+    /// and a page with nothing hittable under it never hears the tap that was
+    /// meant to close a menu. Both facts were learnt once, and every staging
+    /// below inherits them.
+    ///
+    /// `body` is called on **every** build, not handed over once: opening a
+    /// menu rebuilds this page, and a first draft that `take()`d its child out
+    /// of a cell replaced the button with an empty box the second time round.
+    fn staged_page(
+        body: impl Fn() -> AnyWidget + 'static,
+    ) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
         let found: std::rc::Rc<
             std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>,
         > = std::rc::Rc::new(std::cell::RefCell::new(None));
         struct Finder(
             std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>>,
-            SubmenuButton,
+            Box<dyn Fn() -> AnyWidget>,
         );
         impl Component for Finder {
             fn build(&self, context: &mut BuildContext) -> AnyWidget {
                 *self.0.borrow_mut() = crate::theatre::OverlayHandle::of(context);
-                // The button is **rebuilt** each time, not handed over once. A
-                // first draft `take()`d it out of a cell, so the second build
-                // of this page -- which opening a menu causes -- replaced the
-                // button with an empty box, and every test that pressed twice
-                // was pressing nothing the second time.
-                //
-                // And it is aligned inside a box that **fills**, because the
-                // overlay is only as big as its page: a page that was just the
-                // button made the overlay 64 x 48, and a menu panel had
-                // nowhere to be but on top of it. A real page fills the screen.
-                // Opaque, because a page is: with nothing hittable under it a
-                // tap on the background reaches no region at all, and the
-                // tap-region surface never hears the press that was supposed
-                // to close the menu.
-                crate::framework::many(vec![stateful(self.1.clone())], |rendered| {
+                crate::framework::many(vec![(self.1)()], |rendered| {
                     crate::render::RenderPointerRegion::new(
                         9999,
                         crate::render::RenderAlign::new(
                             crate::render::Alignment::TOP_LEFT,
-                            rendered.into_iter().next().expect("the button"),
+                            rendered.into_iter().next().expect("the page"),
                         ),
                     )
                     .with_behavior(crate::render::HitTestBehavior::Opaque)
@@ -1786,12 +1932,21 @@ mod tests {
             8400,
             crate::theatre::overlay(crate::framework::component(Finder(
                 std::rc::Rc::clone(&found),
-                button,
+                Box::new(body),
             ))),
         ));
         tree.build_render_tree();
         let handle = found.borrow().clone().expect("a descendant found it");
         (tree, handle)
+    }
+
+    fn staged(button: SubmenuButton) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
+        staged_page(move || stateful(button.clone()))
+    }
+
+    /// [`staged`], for a whole bar.
+    fn staged_bar(bar: MenuBar) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
+        staged_page(move || stateful(bar.clone()))
     }
 
     /// [`staged`], with the button pushed `down` pixels from the top.
@@ -1808,47 +1963,14 @@ mod tests {
         across: f32,
         down: f32,
     ) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
-        let found: std::rc::Rc<
-            std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>,
-        > = std::rc::Rc::new(std::cell::RefCell::new(None));
-        struct Finder(
-            std::rc::Rc<std::cell::RefCell<Option<std::rc::Rc<crate::theatre::OverlayHandle>>>>,
-            SubmenuButton,
-            f32,
-            f32,
-        );
-        impl Component for Finder {
-            fn build(&self, context: &mut BuildContext) -> AnyWidget {
-                *self.0.borrow_mut() = crate::theatre::OverlayHandle::of(context);
-                let (across, down) = (self.2, self.3);
-                crate::framework::many(vec![stateful(self.1.clone())], move |rendered| {
-                    crate::render::RenderPointerRegion::new(
-                        9998,
-                        crate::render::RenderAlign::new(
-                            crate::render::Alignment::TOP_LEFT,
-                            crate::render::RenderPadding::new(
-                                crate::render::EdgeInsets::only(across, down, 0.0, 0.0),
-                                rendered.into_iter().next().expect("the button"),
-                            ),
-                        ),
-                    )
-                    .with_behavior(crate::render::HitTestBehavior::Opaque)
-                })
-            }
-        }
-        let mut tree = ElementTree::new();
-        tree.rebuild(crate::tap_region::TapRegionSurface::new(
-            8400,
-            crate::theatre::overlay(crate::framework::component(Finder(
-                std::rc::Rc::clone(&found),
-                button,
-                across,
-                down,
-            ))),
-        ));
-        tree.build_render_tree();
-        let handle = found.borrow().clone().expect("a descendant found it");
-        (tree, handle)
+        staged_page(move || {
+            crate::framework::many(vec![stateful(button.clone())], move |rendered| {
+                crate::render::RenderPadding::new(
+                    crate::render::EdgeInsets::only(across, down, 0.0, 0.0),
+                    rendered.into_iter().next().expect("the button"),
+                )
+            })
+        })
     }
 
     fn a_submenu() -> SubmenuButton {
@@ -1880,18 +2002,32 @@ mod tests {
         // Without the first half, a pointer crossing the top of a window on
         // its way somewhere else would drop menus open behind it.
         crate::raw_menu_anchor::reset_menu_tree();
-        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
-            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(SUBMENU))
-        });
-        let entry = a_submenu().in_a_bar(true);
+        a_bar_of_two();
+        let entry = a_submenu().in_a_bar(true).under(BAR_ROOT);
         assert!(!entry.opens_on_hover(), "nobody has opened the bar yet");
 
-        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SUBMENU));
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SIBLING));
         assert!(
             entry.opens_on_hover(),
-            "and once it is open the whole bar tracks the pointer"
+            "and once a sibling is open the whole bar tracks the pointer"
         );
         crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    /// A bar in the tree with two entries under it: [`SUBMENU`] and
+    /// [`SIBLING`]. The shape is the point -- a bar is never itself open, so
+    /// what makes it live is one of its children.
+    fn a_bar_of_two() {
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(BAR_ROOT));
+            for entry in [SUBMENU, SIBLING] {
+                if tree.node(entry).is_none() {
+                    tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(entry));
+                }
+                tree.set_parent(entry, Some(BAR_ROOT))
+                    .expect("an entry of the bar");
+            }
+        });
     }
 
     #[test]
@@ -1912,14 +2048,9 @@ mod tests {
         // what makes the bar live; this entry's own menu is precisely the one
         // that is not open yet.
         crate::raw_menu_anchor::reset_menu_tree();
-        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
-            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(BAR_ROOT));
-            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(SUBMENU));
-            tree.set_parent(SUBMENU, Some(BAR_ROOT))
-                .expect("an entry of the bar");
-            tree.open(BAR_ROOT);
-        });
-        let entry = a_submenu().in_a_bar(true);
+        a_bar_of_two();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SIBLING));
+        let entry = a_submenu().in_a_bar(true).under(BAR_ROOT);
         assert!(
             !crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(SUBMENU)),
             "this entry's own menu is shut"
@@ -1944,7 +2075,8 @@ mod tests {
             "a bar nobody has clicked stays shut under the pointer"
         );
 
-        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SUBMENU));
+        a_bar_of_two();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SIBLING));
         hover(&mut tree, Offset::new(200.0, 200.0));
         hover(&mut tree, Offset::new(30.0, 24.0));
         assert_eq!(
@@ -1971,12 +2103,8 @@ mod tests {
         hover_using(&mut router, &mut tree, Offset::new(30.0, 24.0));
         assert_eq!(overlay.entry_count(), 0, "a shut bar ignores the pointer");
 
-        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
-            tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(BAR_ROOT));
-            tree.set_parent(SUBMENU, Some(BAR_ROOT))
-                .expect("an entry of the bar");
-            tree.open(BAR_ROOT);
-        });
+        a_bar_of_two();
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.open(SIBLING));
         hover_using(&mut router, &mut tree, Offset::new(300.0, 250.0));
         assert_eq!(
             overlay.entry_count(),
@@ -2031,6 +2159,246 @@ mod tests {
         assert!(crate::raw_menu_anchor::with_menu_tree(
             |tree| tree.is_open(SUBMENU)
         ));
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    // -- A menu bar, assembled ---------------------------------------------
+
+    const MENU_BAR: u64 = 8410;
+    const FILE_MENU: u64 = 8411;
+    const EDIT_MENU: u64 = 8412;
+    const EDIT_PANEL: Color = Color(0xFF00_AA00);
+
+    /// A bar with two menus on it, each with a panel of its own colour so a
+    /// test can say *which* one opened.
+    fn a_bar() -> MenuBar {
+        MenuBar::new()
+            .with_id(MENU_BAR)
+            .with_group_id(MENU_GROUP)
+            .push(
+                SubmenuButton::new()
+                    .with_id(FILE_MENU)
+                    .with_label("File")
+                    .with_menu(|| {
+                        leaf(|| {
+                            crate::render::RenderDecoratedBox::new()
+                                .with_fill(crate::render::Fill::Solid(PANEL))
+                                .with_child(crate::widgets::SizedBox::new(100.0, 100.0))
+                        })
+                    }),
+            )
+            .push(
+                SubmenuButton::new()
+                    .with_id(EDIT_MENU)
+                    .with_label("Edit")
+                    // Told the wrong group on purpose: the bar settles it,
+                    // whatever the entry said. See
+                    // [`a_bar_settles_the_group_its_entries_are_in`].
+                    .with_group_id(9999)
+                    .with_menu(|| {
+                        leaf(|| {
+                            crate::render::RenderDecoratedBox::new()
+                                .with_fill(crate::render::Fill::Solid(EDIT_PANEL))
+                                .with_child(crate::widgets::SizedBox::new(100.0, 100.0))
+                        })
+                    }),
+            )
+    }
+
+    /// Where the label `word` was drawn.
+    fn word_at(drawn: &[Drawn], word: &str) -> Offset {
+        drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Paragraph { text, x, y, .. } if text == word => Some(Offset::new(*x, *y)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{word} was not painted: {drawn:?}"))
+    }
+
+    fn a_panel_is_up(drawn: &[Drawn], colour: Color) -> bool {
+        drawn
+            .iter()
+            .any(|call| matches!(call, Drawn::Rect { argb, .. } if Color(*argb) == colour))
+    }
+
+    #[test]
+    fn a_menu_bar_hangs_its_entries_under_itself() {
+        // The whole point of the bar being in the tree at all. Upstream's
+        // `_MenuBarAnchorState` is a `_MenuAnchorState` like any other, and
+        // every top-level menu re-parents onto it in
+        // `didChangeDependencies`. Siblings are what the hover rule is about,
+        // and without the parent link there are no siblings -- each entry
+        // would be its own root.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (_tree, _overlay) = staged_bar(a_bar());
+        crate::raw_menu_anchor::with_menu_tree(|tree| {
+            assert_eq!(tree.root_of(FILE_MENU), MENU_BAR);
+            assert_eq!(tree.root_of(EDIT_MENU), MENU_BAR);
+            assert_eq!(
+                tree.node(MENU_BAR)
+                    .expect("the bar is in the tree")
+                    .children,
+                vec![FILE_MENU, EDIT_MENU],
+                "in the order they run across"
+            );
+        });
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_menu_bar_is_never_itself_open_and_is_live_when_an_entry_is() {
+        // Upstream's `RawMenuAnchorGroup`: a bar has no menu of its own to
+        // open, so `isOpen` means *any child is open*. It is why a bar cannot
+        // be dismissed the way a menu can -- there is nothing to dismiss.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged_bar(a_bar());
+        assert!(!crate::raw_menu_anchor::with_menu_tree(|tree| {
+            crate::raw_menu_anchor::RawMenuAnchorGroup::is_open(tree, MENU_BAR)
+        }));
+
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1, "File's panel is up");
+        crate::raw_menu_anchor::with_menu_tree(|tree| {
+            assert!(!tree.is_open(MENU_BAR), "the bar itself never opens");
+            assert!(
+                crate::raw_menu_anchor::RawMenuAnchorGroup::is_open(tree, MENU_BAR),
+                "but it is live, because one of its entries is"
+            );
+        });
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_click_wakes_the_bar_and_the_pointer_walks_it_from_there() {
+        // The rule of the previous round, now with a real bar under it: the
+        // pointer alone opens nothing, and after one click it opens everything
+        // it crosses. This is the pair of facts upstream describes as having
+        // to "first click to open a menu on the menu bar before hovering
+        // allows them to traverse it".
+        //
+        // One router for the whole walk, and a step off the button between the
+        // two visits: an ink that was never left is still hovered, so arriving
+        // on it again is not an arrival and asks nothing.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged_bar(a_bar());
+        let edit = word_at(&painted_tree(&mut tree), "Edit");
+        let on_edit = Offset::new(edit.dx + 2.0, edit.dy + 2.0);
+        let away = Offset::new(300.0, 250.0);
+        let mut router = crate::gestures::GestureRouter::new();
+        hover_using(&mut router, &mut tree, on_edit);
+        assert_eq!(overlay.entry_count(), 0, "a cold bar ignores the pointer");
+        hover_using(&mut router, &mut tree, away);
+
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert!(
+            a_panel_is_up(&painted_tree(&mut tree), PANEL),
+            "the click opened File"
+        );
+
+        hover_using(&mut router, &mut tree, on_edit);
+        assert!(
+            a_panel_is_up(&painted_tree(&mut tree), EDIT_PANEL),
+            "and now the pointer alone opens Edit"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_bar_settles_the_group_its_entries_are_in() {
+        // Every entry of a bar is in the bar's tap-region group, along with
+        // every panel those entries open. It is what makes a press on one
+        // entry *not* a tap outside the panel another entry has up: without
+        // it the open panel is dismissed on the way down, and the press lands
+        // in a menu that is already gone.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let bar = a_bar();
+        assert_eq!(
+            bar.entry(1).expect("the second entry").group_id,
+            MENU_GROUP,
+            "whatever the entry itself was told"
+        );
+
+        let (mut tree, overlay) = staged_bar(bar);
+        let edit = word_at(&painted_tree(&mut tree), "Edit");
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1, "File is up");
+        tap(&mut tree, Offset::new(edit.dx + 2.0, edit.dy + 2.0));
+        assert!(
+            a_panel_is_up(&painted_tree(&mut tree), PANEL),
+            "and pressing its neighbour did not dismiss it on the way down"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_menu_bar_lays_its_menus_out_across() {
+        // A bar is a row. The same fact reaches its entries as
+        // `MenuAxis::Horizontal`, which is what makes their panels slide to
+        // the screen's edge rather than flip to the other side of the button.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged_bar(a_bar());
+        let drawn = painted_tree(&mut tree);
+        let first = word_at(&drawn, "File");
+        let second = word_at(&drawn, "Edit");
+        assert!(
+            second.dx > first.dx,
+            "the second menu is to the right of the first: {first:?} then {second:?}"
+        );
+        assert_eq!(second.dy, first.dy, "and on the same line");
+        assert!(
+            crate::raw_menu_anchor::with_menu_tree(|_| a_bar()
+                .entry(1)
+                .expect("the second entry")
+                .parent_orientation
+                == MenuAxis::Horizontal),
+            "which is what the entries are told"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_menu_bar_keeps_its_entries_off_the_window_edge() {
+        // `_kTopLevelMenuHorizontalMinPadding`, through `MenuBarTheme`. A bar
+        // pads across and not down: it is as tall as its entries and no
+        // taller.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged_bar(a_bar());
+        let bare = word_at(&painted_tree(&mut tree), "File");
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged(
+            a_bar()
+                .entry(0)
+                .expect("the same button, on its own")
+                .with_menu(|| leaf(|| crate::widgets::SizedBox::new(1.0, 1.0))),
+        );
+        let alone = word_at(&painted_tree(&mut tree), "File");
+        assert_eq!(
+            bare.dx - alone.dx,
+            crate::component_themes::ResolvedMenuPanel::BAR_PADDING,
+            "the bar's padding, and nothing else, moved it across"
+        );
+        assert_eq!(bare.dy, alone.dy, "and nothing moved it down");
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_menu_bar_taken_away_leaves_the_tree() {
+        // A node left behind is an anchor the tree still believes in: a later
+        // bar with the same id would trip the "added once" assert, and Escape
+        // would reach for a root that is not on screen.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, _overlay) = staged_bar(a_bar());
+        assert!(crate::raw_menu_anchor::with_menu_tree(|tree| tree
+            .node(MENU_BAR)
+            .is_some()));
+
+        tree.rebuild(leaf(|| crate::widgets::SizedBox::new(1.0, 1.0)));
+        tree.build_render_tree();
+        crate::raw_menu_anchor::with_menu_tree(|tree| {
+            assert!(tree.node(MENU_BAR).is_none(), "the bar went");
+            assert!(tree.node(FILE_MENU).is_none(), "and so did its menus");
+        });
         crate::raw_menu_anchor::reset_menu_tree();
     }
 
