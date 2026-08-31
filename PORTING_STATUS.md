@@ -1942,3 +1942,69 @@ C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0�
 (2) 上游 `closeView(selectedText)` 是"先设文字再 pop"，而这里的 bar 和 header
    是同一个 `TextField`（同一个 id）——确认关掉 view 之后 bar 里还留着那段文字，
    还是说 `TextField` 的状态会随 overlay 一起没掉。这决定第 (1) 步要不要连文字一起搬。
+
+---
+
+## 第 445 轮：bar 里打的字，在长出来的 view 里还在
+
+上一轮留的两件事。
+
+**查一**：这个 crate 里**没有** widget 之间共享 controller 的现成机制——
+`TabController` 也是纯值。有的是 `TextField::with_state_sink` 那种
+`Rc<RefCell<..>>` 交给两头的做法。照它办，不另发明：
+`pub type SharedSearchController = Rc<RefCell<SearchController>>`。
+
+**查二**：bar 和 header 用同一个 `id`，但它们在**两棵不同的子树**里
+（页面 vs overlay），所以是两个元素、两份状态——文字不会自己过去。
+上游那边是同一个 `TextEditingController` 交给两头，这才是它"过得去"的原因。
+
+所以这一轮把那根线接上：bar 改文字就写进 controller，
+`SearchViewContent::header()` 用 controller 里的文字做 `initial_text`，
+header 改文字也写回同一处。
+
+### 只接了一个方向，另一个方向明写下来
+
+**view 开的时候拿得到 bar 的文字**；但**关掉之后 bar 不会更新成 view 里的文字**。
+后者需要一个"跟着 controller 走"的 `TextField`，而现在的
+`initial_text` 只在字段第一次出现时用一次。这是另一个缺口，记在下一步里。
+
+### 变异扫描 8 个，第一遍 3 条没红——三条都是"外面够不着"
+
+三条都跟**写**有关：写 controller 的是 `build` 里的闭包，
+测试从外面既拿不到那个 bar，也拿不到 anchor 自己的 controller。
+
+不是加桩，是**把该问的东西挪到问得到的地方**：
+
+- `SearchBar::notify_changed(text)`——跑这个 bar 的 `onChanged`，
+  也就是字段文字变化时做的事。公开它有正当理由：
+  bar 周围的接线**在它画的东西里完全看不见**，
+  而上游 `TextField` 在同一个点上调 `widget.onChanged`。
+- `SearchAnchor::bar_for(&controller)` 和 `controller_for(&state)`——
+  从 `build` 里拆出来。`build` 要活的树才能跑，而这两件事不用。
+
+拆完之后三条都测得到，8 条全红。其中
+"每次 build 新造一个 controller"那条现在由
+`Rc::ptr_eq(first, second)` 按住——上游的
+`_internalSearchController` 是 `initState` 里造一次的，
+在 `build` 里造的那个会被 bar 写进去然后在 view 读到之前就扔掉，
+唯一的症状是"一开 view，刚打的字没了"。
+
+### 又踩了一次同一个坑
+
+用 bash heredoc 改 Python 里的字符串字面量，`\n` 会被吃掉一层。
+第二次了。这次改用 `Write` 重写整个扫描文件才对。
+
+尺子：十六把全部 exit 0。门：Rust 6610 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 356 通过；三个目录默认目标 exit 0。
+
+**下一步**：把另一个方向补上——**关掉 view 之后 bar 显示 view 里的文字**。
+`TextField` 现在只有 `initial_text`（只用一次），
+上游是字段跟着 `TextEditingController` 走。
+**先查两件事**：
+(1) `TextField` 有没有办法在**已经存在**的时候被外面改文字——
+   看 `state_sink` 交出来的 `StateHandle<TextFieldState>` 能不能
+   直接 `set_state` 改 `value`，能就用它，这是现成的路。
+(2) 谁来触发？view 关掉是遮罩点掉的，而 `ModalHandle` 被丢掉了
+   （第 444 轮记过）。看 `show_modal` 有没有"关掉时回调"的口子，
+   没有的话这一轮得先给 `ModalHandle` 或 `show_modal` 补一个 `on_dismiss`——
+   这也是第 438 轮"关闭动画没地方挂"缺的同一样东西。

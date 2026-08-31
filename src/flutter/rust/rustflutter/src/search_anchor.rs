@@ -72,6 +72,17 @@ impl SearchController {
     }
 }
 
+/// A [`SearchController`] two widgets can hold at once.
+///
+/// Upstream's controller *is* a `TextEditingController`, and the bar and the
+/// view's header are given the same one -- which is the whole mechanism by
+/// which the words typed into the bar are already in the view that grows out
+/// of it. There is no shared-controller machinery in this crate to reach for:
+/// what there is, and what this follows, is the sink `TextField` already
+/// uses -- an `Rc<RefCell<..>>` handed to both ends
+/// ([`crate::editable::TextField::with_state_sink`]).
+pub type SharedSearchController = std::rc::Rc<std::cell::RefCell<SearchController>>;
+
 /// Why a search view closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewDismissal {
@@ -97,6 +108,9 @@ pub struct SearchAnchor {
     /// Upstream's `suggestionsBuilder`. Absent means an empty view -- which is
     /// what a search with nothing typed into it shows anyway.
     suggestions: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+    /// Upstream's `searchController`. `None` means the anchor keeps one of its
+    /// own, which is upstream's `_internalSearchController`.
+    controller: Option<SharedSearchController>,
 }
 
 impl std::fmt::Debug for SearchAnchor {
@@ -140,6 +154,9 @@ pub struct SearchAnchorState {
     /// moment its render object exists, and read when the bar is tapped --
     /// which is the moment the question can be answered.
     anchor: crate::theatre::Anchor,
+    /// Upstream's `_internalSearchController`, used when the caller did not
+    /// bring one.
+    controller: SharedSearchController,
 }
 
 impl SearchAnchor {
@@ -149,7 +166,52 @@ impl SearchAnchor {
             is_full_screen: None,
             hint_text: None,
             suggestions: None,
+            controller: None,
         }
+    }
+
+    /// Upstream's `searchController`, for a caller that wants to read the
+    /// query or set it.
+    pub fn with_controller(mut self, controller: SharedSearchController) -> Self {
+        self.controller = Some(controller);
+        self
+    }
+
+    /// The controller this anchor works through: the caller's when there is
+    /// one, and otherwise the anchor's own -- upstream's
+    /// `_internalSearchController`.
+    ///
+    /// **The internal one comes from the state**, so it is the same object on
+    /// every build. One made afresh in `build` would be written to by the bar
+    /// and thrown away before the view could read it, and the difference would
+    /// only show up as a query that goes missing on opening.
+    pub fn controller_for(&self, state: &SearchAnchorState) -> SharedSearchController {
+        self.controller
+            .clone()
+            .unwrap_or_else(|| std::rc::Rc::clone(&state.controller))
+    }
+
+    /// The bar this anchor puts on the page, wired to `controller` but not yet
+    /// to the tap that opens the view.
+    ///
+    /// Split out from `build` because the wiring is the interesting part and
+    /// `build` needs a live tree to run: a bar built here can be asked whether
+    /// typing into it reaches the controller.
+    pub fn bar_for(&self, controller: &SharedSearchController) -> SearchBar {
+        let mut bar = SearchBar::new(self.id);
+        bar.is_anchor_child = true;
+        if let Some(hint) = &self.hint_text {
+            bar = bar.with_hint_text(hint.clone());
+        }
+        // Typing in the bar writes to the controller, so that the view opens
+        // holding the same words. Upstream does not need this line: there, the
+        // bar's field *is* the controller's field.
+        let writing = std::rc::Rc::clone(controller);
+        let mut bar = bar.with_on_changed(move |text| {
+            writing.borrow_mut().text = text.to_string();
+        });
+        bar.initial_text = Some(controller.borrow().text.clone());
+        bar
     }
 
     pub fn with_hint_text(mut self, hint: impl Into<String>) -> Self {
@@ -329,12 +391,8 @@ impl crate::framework::StatefulComponent for SearchAnchor {
         let id = self.id;
         let hint_text = self.hint_text.clone();
         let suggestions = self.suggestions.clone();
-
-        let mut bar = SearchBar::new(id);
-        bar.is_anchor_child = true;
-        if let Some(hint) = &hint_text {
-            bar = bar.with_hint_text(hint.clone());
-        }
+        let controller = self.controller_for(state);
+        let bar = self.bar_for(&controller);
         let bar = bar.with_on_tap(move || {
             // There is no guard here against opening a second view, and there
             // is nothing to guard: while a view is up its barrier is over the
@@ -373,6 +431,7 @@ impl crate::framework::StatefulComponent for SearchAnchor {
                 media_top: media.padding.top,
                 header_id: id,
                 hint_text: hint_text.clone(),
+                controller: std::rc::Rc::clone(&controller),
             };
             let suggestions = suggestions.clone();
             let themes = themes.clone();
@@ -614,6 +673,8 @@ pub struct SearchBar {
     /// text somebody was typing.
     pub id: u64,
     pub hint_text: Option<String>,
+    /// What the field starts with. See [`SearchBar::with_initial_text`].
+    pub initial_text: Option<String>,
     pub has_leading: bool,
     pub has_trailing: bool,
     /// Whether this bar is the thing an anchor taps through.
@@ -639,6 +700,7 @@ impl std::fmt::Debug for SearchBar {
         f.debug_struct("SearchBar")
             .field("id", &self.id)
             .field("hint_text", &self.hint_text)
+            .field("initial_text", &self.initial_text)
             .field("has_leading", &self.has_leading)
             .field("has_trailing", &self.has_trailing)
             .field("is_anchor_child", &self.is_anchor_child)
@@ -656,6 +718,7 @@ impl PartialEq for SearchBar {
     fn eq(&self, other: &SearchBar) -> bool {
         self.id == other.id
             && self.hint_text == other.hint_text
+            && self.initial_text == other.initial_text
             && self.has_leading == other.has_leading
             && self.has_trailing == other.has_trailing
             && self.is_anchor_child == other.is_anchor_child
@@ -697,6 +760,7 @@ impl SearchBar {
         SearchBar {
             id,
             hint_text: None,
+            initial_text: None,
             has_leading: false,
             has_trailing: false,
             is_anchor_child: false,
@@ -719,6 +783,14 @@ impl SearchBar {
 
     pub fn with_hint_text(mut self, hint: impl Into<String>) -> Self {
         self.hint_text = Some(hint.into());
+        self
+    }
+
+    /// The text the bar's field opens with, upstream's `controller`'s value at
+    /// the moment the field is built. Used once, when the field first appears
+    /// -- see [`crate::editable::TextField::initial_text`].
+    pub fn with_initial_text(mut self, text: impl Into<String>) -> Self {
+        self.initial_text = Some(text.into());
         self
     }
 
@@ -756,6 +828,20 @@ impl SearchBar {
     pub fn with_on_submitted(mut self, submitted: impl Fn(&str) + 'static) -> Self {
         self.on_submitted = Some(std::rc::Rc::new(submitted));
         self
+    }
+
+    /// Runs this bar's `onChanged`, which is what its field does when the
+    /// text in it changes.
+    ///
+    /// Public because the wiring around a bar is a thing worth asking about
+    /// from outside it: an anchor hands the bar a handler that writes the
+    /// query into a shared controller, and whether that handler is actually
+    /// attached is not visible in anything the bar draws. Upstream's
+    /// `TextField` calls `widget.onChanged` at this same point.
+    pub fn notify_changed(&self, text: &str) {
+        if let Some(changed) = &self.on_changed {
+            changed(text);
+        }
     }
 
     pub fn with_on_tap(mut self, tap: impl Fn() + 'static) -> Self {
@@ -852,6 +938,7 @@ impl crate::framework::StatefulComponent for SearchBar {
         // ink runs this every time it rebuilds, and a `TextField` holds
         // callbacks, so it is made fresh each time rather than cloned.
         let id = self.id;
+        let initial_text = self.initial_text.clone();
         let hint_style = resolved.hint_style.clone().unwrap_or_default();
         let text_style = resolved.text_style.clone();
         let hint_text = self.hint_text.clone();
@@ -863,6 +950,9 @@ impl crate::framework::StatefulComponent for SearchBar {
         let padding = resolved.padding;
         let row = move || {
             let mut field = crate::editable::TextField::new(id).with_hint_style(hint_style.clone());
+            if let Some(text) = &initial_text {
+                field = field.with_initial_text(text.clone());
+            }
             if let Some(style) = text_style.clone() {
                 field = field.with_style(style);
             }
@@ -1409,6 +1499,12 @@ pub struct SearchViewContent {
     pub header_id: u64,
     /// Upstream's `viewHintText`.
     pub hint_text: Option<String>,
+    /// The query, shared with the bar this view grew out of.
+    ///
+    /// Upstream hands the same `SearchController` to both, so the view's
+    /// header opens holding whatever was typed into the bar -- and typing into
+    /// the header writes back to the same place.
+    pub controller: SharedSearchController,
 }
 
 impl SearchViewContent {
@@ -1425,7 +1521,14 @@ impl SearchViewContent {
     pub fn header(&self) -> SearchBar {
         let mut header = search_view_header(&self.view, self.placement.full_screen, self.header_id);
         header.hint_text = self.hint_text.clone();
-        header
+        // Seeded from the shared controller: the view opens holding what the
+        // bar held. Without this the panel grows out of a filled-in bar and
+        // arrives empty, which reads as the search having been thrown away.
+        header.initial_text = Some(self.controller.borrow().text.clone());
+        let controller = std::rc::Rc::clone(&self.controller);
+        header.with_on_changed(move |text| {
+            controller.borrow_mut().text = text.to_string();
+        })
     }
 
     /// What is in the panel on the frame at `t`. See the type's documentation
@@ -4022,7 +4125,7 @@ mod search_view_content_tests {
         }
     }
 
-    fn content() -> SearchViewContent {
+    pub(super) fn content() -> SearchViewContent {
         let anchor = Rect::xywh(20.0, 40.0, 400.0, 56.0);
         SearchViewContent {
             placement: SearchViewTransition {
@@ -4043,6 +4146,7 @@ mod search_view_content_tests {
             media_top: 44.0,
             header_id: 1,
             hint_text: Some("Search".to_string()),
+            controller: SharedSearchController::default(),
         }
     }
 
@@ -4766,6 +4870,129 @@ mod search_anchor_widget_tests {
                 .with_full_screen(false)
                 .resolve_full_screen(TargetPlatform::Android.into()),
             "saying so outright overrules the platform"
+        );
+    }
+
+    #[test]
+    fn the_view_opens_holding_what_the_bar_held() {
+        // The whole reason the two share a controller. The panel grows out of
+        // a filled-in bar; arriving empty would read as the search having been
+        // thrown away between one frame and the next.
+        let controller = SharedSearchController::default();
+        controller.borrow_mut().text = "carbonara".to_string();
+        let mut tree = staged(
+            SearchAnchor::new(1)
+                .with_full_screen(false)
+                .with_hint_text("Search")
+                .with_controller(std::rc::Rc::clone(&controller)),
+        );
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        assert_eq!(crate::theatre::modal_count(), 1);
+
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        let mut now = 0;
+        while now < SearchViewTransition::OPEN_MICROS {
+            now = (now + 16_000).min(SearchViewTransition::OPEN_MICROS);
+            tree.advance_frame(now);
+            tree.rebuild_dirty();
+        }
+        let drawn = painted(&mut tree);
+        crate::theatre::dismiss_topmost_modal();
+
+        let typed = drawn
+            .iter()
+            .filter(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "carbonara"))
+            .count();
+        assert!(typed > 0, "the query is in the view: {drawn:?}");
+        assert!(
+            !drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "Search")),
+            "and the hint is not shown over it"
+        );
+    }
+
+    #[test]
+    fn an_anchor_with_no_controller_keeps_one_of_its_own() {
+        // Upstream's `_internalSearchController`. An anchor nobody handed a
+        // controller still has to have somewhere to put the query, or the view
+        // could never open holding anything.
+        let mut tree = staged(an_anchor());
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        assert_eq!(
+            crate::theatre::modal_count(),
+            1,
+            "it opened, so it found a controller to build the content with"
+        );
+        crate::theatre::dismiss_topmost_modal();
+    }
+
+    #[test]
+    fn an_empty_controller_leaves_the_hint_showing() {
+        // The other half of the seeding: seeding with "" must not put an empty
+        // string where the hint goes.
+        let mut tree = staged(an_anchor());
+        tap(&mut tree, Offset::new(200.0, 28.0));
+        tree.advance_frame(0);
+        tree.rebuild_dirty();
+        let mut now = 0;
+        while now < SearchViewTransition::OPEN_MICROS {
+            now = (now + 16_000).min(SearchViewTransition::OPEN_MICROS);
+            tree.advance_frame(now);
+            tree.rebuild_dirty();
+        }
+        let drawn = painted(&mut tree);
+        crate::theatre::dismiss_topmost_modal();
+        assert!(
+            drawn
+                .iter()
+                .any(|call| matches!(call, Drawn::Paragraph { text, .. } if text == "Search")),
+            "the header's hint is still there"
+        );
+    }
+
+    #[test]
+    fn typing_in_the_bar_reaches_the_controller() {
+        // The wiring the bar draws nothing about: an anchor hands its bar a
+        // handler that writes the query into the shared controller, and
+        // whether it is attached is invisible on screen until the view opens.
+        let controller = SharedSearchController::default();
+        let anchor = SearchAnchor::new(1).with_controller(std::rc::Rc::clone(&controller));
+        anchor.bar_for(&controller).notify_changed("carbonara");
+        assert_eq!(controller.borrow().text, "carbonara");
+    }
+
+    #[test]
+    fn typing_in_the_header_reaches_the_same_controller() {
+        // The other end of the same thread. Without it the view would open
+        // holding the bar's words and then keep whatever was typed into it to
+        // itself -- and closing would put the old query back.
+        let content = super::search_view_content_tests::content();
+        content.header().notify_changed("pasta");
+        assert_eq!(content.controller.borrow().text, "pasta");
+    }
+
+    #[test]
+    fn an_anchor_without_a_controller_keeps_the_same_one_between_builds() {
+        // Upstream's `_internalSearchController` is created once in
+        // `initState`. One made in `build` instead would be written to by the
+        // bar and thrown away before the view could read it, and the only
+        // symptom would be a query that goes missing on opening.
+        let state = SearchAnchorState::default();
+        let anchor = SearchAnchor::new(1);
+        let first = anchor.controller_for(&state);
+        let second = anchor.controller_for(&state);
+        assert!(
+            std::rc::Rc::ptr_eq(&first, &second),
+            "the same controller, not two"
+        );
+
+        let mine = SharedSearchController::default();
+        let with_mine = SearchAnchor::new(1).with_controller(std::rc::Rc::clone(&mine));
+        assert!(
+            std::rc::Rc::ptr_eq(&with_mine.controller_for(&state), &mine),
+            "and a caller's own beats the internal one"
         );
     }
 }
