@@ -2834,8 +2834,19 @@ impl HandleDragState {
 pub struct SelectionOverlay {
     /// Upstream's `handlesVisible`.
     pub handles_visible: bool,
-    /// Whether the toolbar is up.
+    /// Whether the **selection** toolbar is up: upstream's
+    /// `_contextMenuController.isShown`, or `_toolbar != null` on the legacy
+    /// path. See [`Self::toolbar_is_visible`] for why that is not the whole
+    /// question.
     pub toolbar_visible: bool,
+    /// Whether the **spell check suggestions** menu is up: upstream's
+    /// `_spellCheckToolbarController.isShown`.
+    ///
+    /// A second, entirely separate toolbar living in the same overlay. It has
+    /// its own controller upstream and is raised by its own method, and the
+    /// two are never up at once in practice only because everything that
+    /// raises one takes the other down.
+    pub spell_check_toolbar_visible: bool,
     /// Upstream's `lineHeightAtStart` and `lineHeightAtEnd`, which size the
     /// handles: a handle on a line of large text is drawn larger, so it stays
     /// proportionate to what it is holding.
@@ -2851,6 +2862,7 @@ impl SelectionOverlay {
         SelectionOverlay {
             handles_visible: false,
             toolbar_visible: false,
+            spell_check_toolbar_visible: false,
             line_height_at_start: 0.0,
             line_height_at_end: 0.0,
             magnifier: OverlayMagnifier::default(),
@@ -2868,9 +2880,95 @@ impl SelectionOverlay {
         self
     }
 
-    /// Upstream's `showToolbar`/`hideToolbar` pair.
+    /// Upstream's `showToolbar`, and the half of `hideToolbar` that concerns
+    /// the selection toolbar. To take down whatever toolbar is up, whichever
+    /// it is, see [`Self::hide_toolbar`].
     pub fn set_toolbar_visible(&mut self, visible: bool) {
         self.toolbar_visible = visible;
+    }
+
+    /// Upstream's `SelectionOverlay.showSpellCheckSuggestionsToolbar`.
+    ///
+    /// ```dart
+    /// if (context == null) {
+    ///   return;
+    /// }
+    /// final renderBox = context.findRenderObject()! as RenderBox;
+    /// ```
+    ///
+    /// The guard is not politeness: the very next line asks the context for a
+    /// render box and would throw. `TextSelectionOverlay` never trips it --
+    /// it asserts `context.mounted` and passes its own -- so this is for the
+    /// other callers, and returning `false` says the menu was not raised.
+    pub fn show_spell_check_suggestions_toolbar(&mut self, has_context: bool) -> bool {
+        if !has_context {
+            return false;
+        }
+        self.spell_check_toolbar_visible = true;
+        true
+    }
+
+    /// Upstream's `toolbarIsVisible`, whose doc says what the name does not:
+    /// "Includes both the text selection toolbar and the spell check menu."
+    ///
+    /// ```dart
+    /// bool get toolbarIsVisible {
+    ///   return selectionControls is TextSelectionHandleControls
+    ///       ? _contextMenuController.isShown || _spellCheckToolbarController.isShown
+    ///       : _toolbar != null || _spellCheckToolbarController.isShown;
+    /// }
+    /// ```
+    ///
+    /// The conditional picks *which* selection toolbar to ask about -- the
+    /// context menu on the modern path, the inserted entry on the legacy one
+    /// -- and both arms then ask the spell check controller as well. Here
+    /// [`Self::toolbar_visible`] already stands for whichever of the two this
+    /// overlay has, so what is left is the `||`.
+    ///
+    /// It matters where it is read: `showMagnifier` asks *this*, not the
+    /// selection toolbar alone, so raising a magnifier over a misspelled word
+    /// takes the suggestions menu down too.
+    pub fn toolbar_is_visible(&self) -> bool {
+        self.toolbar_visible || self.spell_check_toolbar_visible
+    }
+
+    /// Upstream's `spellCheckToolbarIsVisible`, which its own doc distinguishes
+    /// from the one above: "only whether the spell check menu is visible".
+    pub fn spell_check_toolbar_is_visible(&self) -> bool {
+        self.spell_check_toolbar_visible
+    }
+
+    /// Upstream's `hideToolbar`, which takes down **both**:
+    ///
+    /// ```dart
+    /// void hideToolbar() {
+    ///   _contextMenuController.remove();
+    ///   _spellCheckToolbarController.remove();
+    ///   ...
+    /// ```
+    ///
+    /// Neither `remove` is guarded, because removing a controller that is not
+    /// showing is already nothing. So one method takes down whichever toolbar
+    /// is up, and a caller never has to know which of the two it was.
+    pub fn hide_toolbar(&mut self) {
+        self.toolbar_visible = false;
+        self.spell_check_toolbar_visible = false;
+    }
+
+    /// Upstream's `SelectionOverlay.showMagnifier`, with the toolbar question
+    /// asked the way upstream asks it -- `if (toolbarIsVisible) hideToolbar()`,
+    /// which is both toolbars, not just the selection one.
+    ///
+    /// [`OverlayMagnifier::show`] carries the rest of the sequence and its
+    /// reasons; this is the wiring that decides *what* gets taken down.
+    pub fn show_magnifier(&mut self, builder_gives_one: bool) -> ShowMagnifier {
+        let outcome = self
+            .magnifier
+            .show(self.toolbar_is_visible(), builder_gives_one);
+        if outcome.hides_toolbar {
+            self.hide_toolbar();
+        }
+        outcome
     }
 
     /// Upstream's `_updateTextSelectionOverlayVisibilities`.
@@ -2906,6 +3004,13 @@ impl SelectionOverlay {
             end_handle: wanted && end_in_viewport,
             // Neither `handlesVisible` nor whether the handles were built.
             toolbar: self.toolbar_visible && (start_in_viewport || end_in_viewport),
+            // The spell check menu is **not** given the signal. Upstream wraps
+            // the selection toolbar in a `_SelectionToolbarWrapper(visibility:
+            // toolbarVisible, ...)` and wraps the suggestions menu in one with
+            // no `visibility:` at all, so scrolling the selection out of the
+            // viewport takes the selection toolbar away and leaves the
+            // suggestions menu where it is.
+            spell_check_toolbar: self.spell_check_toolbar_visible,
         }
     }
 
@@ -3027,9 +3132,16 @@ impl SelectionOverlay {
     /// The pair is hidden together because a toolbar without handles is a
     /// toolbar acting on a selection the reader can no longer see the edges
     /// of.
+    ///
+    /// Upstream guards the last step -- `if (_toolbar != null ||
+    /// _contextMenuController.isShown || _spellCheckToolbarController.isShown)
+    /// hideToolbar()` -- which is the same list [`Self::toolbar_is_visible`]
+    /// asks and cannot change the outcome, since `hideToolbar` on nothing is
+    /// nothing. It is not written out here: a guard with no observable
+    /// difference is a comment, and this is the comment.
     pub fn hide(&mut self) {
         self.handles_visible = false;
-        self.toolbar_visible = false;
+        self.hide_toolbar();
         self.magnifier.hide();
     }
 }
@@ -3168,6 +3280,9 @@ pub struct OverlayVisibilities {
     pub start_handle: bool,
     pub end_handle: bool,
     pub toolbar: bool,
+    /// The spell check suggestions menu, which is in the overlay on its own
+    /// terms: see the note in [`SelectionOverlay::visibilities`].
+    pub spell_check_toolbar: bool,
 }
 
 /// Upstream keeps **two** questions about the magnifier and answers them from
@@ -3349,6 +3464,32 @@ impl TextSelectionOverlay {
 
     pub fn is_dragging_handle(&self) -> bool {
         self.drag_offset.is_some()
+    }
+
+    /// Upstream's `TextSelectionOverlay.showSpellCheckSuggestionsToolbar`:
+    ///
+    /// ```dart
+    /// void showSpellCheckSuggestionsToolbar(WidgetBuilder builder) {
+    ///   _updateSelectionOverlay();
+    ///   assert(context.mounted);
+    ///   _selectionOverlay.showSpellCheckSuggestionsToolbar(context: context, builder: builder);
+    ///   hideHandles();
+    /// }
+    /// ```
+    ///
+    /// The last line is what this is here for. **The suggestions menu points
+    /// at a misspelled word, not at a selection**, and it is raised by a tap
+    /// that leaves no selection to hold -- so the handles are taken down
+    /// rather than left standing over something the reader is no longer being
+    /// asked about.
+    ///
+    /// Note which verb: `hideHandles`, the one that *destroys*. It does not
+    /// touch `handlesVisible`, so a later `showHandles` builds them again with
+    /// the flag it always had -- see [`SelectionOverlay::hide_handles`].
+    /// Returns whether there were handles to take down.
+    pub fn show_spell_check_suggestions_toolbar(&mut self, handles_built: bool) -> bool {
+        self.overlay.show_spell_check_suggestions_toolbar(true);
+        SelectionOverlay::hide_handles(handles_built)
     }
 }
 
@@ -5598,6 +5739,114 @@ two";
         let unbuilt = overlay.visibilities(false, (true, true));
         assert!(!unbuilt.start_handle && !unbuilt.end_handle);
         assert!(unbuilt.toolbar, "and the toolbar does not care either way");
+    }
+
+    // -- The second toolbar --------------------------------------------------
+
+    #[test]
+    fn the_overlay_has_two_toolbars_and_one_question_that_covers_both() {
+        let mut overlay = SelectionOverlay::new();
+        assert!(!overlay.toolbar_is_visible());
+
+        overlay.set_toolbar_visible(true);
+        assert!(overlay.toolbar_is_visible());
+        assert!(
+            !overlay.spell_check_toolbar_is_visible(),
+            "the narrower question is not the same question"
+        );
+
+        overlay.set_toolbar_visible(false);
+        assert!(overlay.show_spell_check_suggestions_toolbar(true));
+        assert!(overlay.spell_check_toolbar_is_visible());
+        assert!(
+            overlay.toolbar_is_visible(),
+            "`toolbarIsVisible` includes the spell check menu"
+        );
+    }
+
+    #[test]
+    fn a_menu_needs_a_context_to_hang_from() {
+        // The line after the guard asks the context for a render box.
+        let mut overlay = SelectionOverlay::new();
+        assert!(!overlay.show_spell_check_suggestions_toolbar(false));
+        assert!(!overlay.toolbar_is_visible());
+    }
+
+    #[test]
+    fn hiding_the_toolbar_takes_down_whichever_one_is_up() {
+        // Both `remove()` calls are unguarded upstream, so the caller never has
+        // to know which of the two toolbars it was.
+        let mut overlay = SelectionOverlay::new();
+        overlay.show_spell_check_suggestions_toolbar(true);
+        overlay.hide_toolbar();
+        assert!(!overlay.toolbar_is_visible());
+
+        overlay.set_toolbar_visible(true);
+        overlay.show_spell_check_suggestions_toolbar(true);
+        overlay.hide_toolbar();
+        assert!(!overlay.toolbar_visible && !overlay.spell_check_toolbar_visible);
+    }
+
+    #[test]
+    fn hide_takes_the_suggestions_menu_with_it() {
+        let mut overlay = SelectionOverlay::new().with_handles_visible(true);
+        overlay.show_spell_check_suggestions_toolbar(true);
+        overlay.hide();
+        assert!(!overlay.handles_visible);
+        assert!(!overlay.toolbar_is_visible());
+    }
+
+    #[test]
+    fn a_magnifier_over_a_misspelled_word_takes_the_suggestions_menu_down() {
+        // `showMagnifier` asks `toolbarIsVisible`, which is both toolbars --
+        // so the suggestions menu goes even though the selection toolbar was
+        // never up.
+        let mut overlay = SelectionOverlay::new();
+        overlay.show_spell_check_suggestions_toolbar(true);
+
+        let shown = overlay.show_magnifier(true);
+        assert!(shown.hides_toolbar);
+        assert!(shown.inserts);
+        assert!(
+            !overlay.spell_check_toolbar_is_visible(),
+            "and it is actually taken down, not merely reported"
+        );
+    }
+
+    #[test]
+    fn scrolling_the_selection_away_leaves_the_suggestions_menu_alone() {
+        // The selection toolbar is wrapped with `visibility: toolbarVisible`
+        // and the suggestions menu is wrapped without it.
+        let mut overlay = SelectionOverlay::new();
+        overlay.set_toolbar_visible(true);
+        overlay.show_spell_check_suggestions_toolbar(true);
+
+        let gone = overlay.visibilities(true, (false, false));
+        assert!(!gone.toolbar, "both ends scrolled away");
+        assert!(
+            gone.spell_check_toolbar,
+            "the menu points at a word, not at the selection"
+        );
+    }
+
+    #[test]
+    fn the_suggestions_menu_takes_the_handles_down() {
+        let mut overlay = TextSelectionOverlay::new();
+        overlay.overlay.handles_visible = true;
+
+        assert!(
+            overlay.show_spell_check_suggestions_toolbar(true),
+            "there were handles to destroy"
+        );
+        assert!(overlay.overlay.spell_check_toolbar_is_visible());
+        assert!(
+            overlay.overlay.handles_visible,
+            "and `hideHandles` still leaves the flag alone"
+        );
+        assert!(
+            !overlay.show_spell_check_suggestions_toolbar(false),
+            "nothing built, nothing to take down"
+        );
     }
 
     #[test]

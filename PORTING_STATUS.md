@@ -4600,3 +4600,66 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6822 通�
 先分清哪些在 `SelectionOverlay` 上、这个 crate 的 `text_selection.rs` 与
 `selection_overlay`（如果有）各自放了什么，
 再决定是"在别处、记一笔"还是真缺口。
+
+---
+
+## 第 488 轮：这个 overlay 里有**两个**工具条
+
+队头第二名 `TextSelectionOverlay`（0.28，7/25）。按这三轮固定的第一步先分归属，
+结果又是一半映射：`showHandles`/`hideHandles`/`update`/`updateForScroll`/
+`hide`/`magnifierIsVisible`/`magnifierExists` 都在这个 crate 的
+`SelectionOverlay` 上，`_updateTextSelectionOverlayVisibilities` 那三行
+（每个手柄看自己那端在不在视口里、工具条看两端有没有一端在）第 4xx 轮就补过，
+`_getStartGlyphHeight`/`_getEndGlyphHeight` 是现成的 `glyph_heights`。
+
+但这次分完之后，剩下的**不是零**。上游的 `SelectionOverlay` 里有
+`_spellCheckToolbarController`——**第二个、完全独立的工具条**，
+而这个 crate 只有一个 `toolbar_visible: bool`。
+于是这一轮补的是"拼写建议菜单也是这个 overlay 的住户"，一条链上四处：
+
+- `toolbarIsVisible` 的文档说得很直白："Includes both the text selection
+  toolbar and the spell check menu"——它是 `||`，不是选择工具条本身；
+  `spellCheckToolbarIsVisible` 才是"只问拼写菜单"。
+- `hideToolbar` 两个 `remove()` 都**不加判断**，所以调用者从来不需要知道
+  当时立着的是哪一个。
+- `showMagnifier` 问的是 `toolbarIsVisible`——**所以在拼错的词上举起放大镜，
+  建议菜单也会被收走**，哪怕选择工具条根本没出现过。
+- `TextSelectionOverlay.showSpellCheckSuggestionsToolbar` 的最后一行是
+  `hideHandles()`：**建议菜单指的是一个拼错的词，不是一段选区**，
+  手柄留在那里就是在指一件读者已经不再被问的事。
+  注意用的是"销毁"那个动词，`handlesVisible` 一动不动
+  ——和第 4xx 轮记下的"两条轴"一致。
+
+### 一处不对称，只有并排放才看得出来
+
+选择工具条被包在 `_SelectionToolbarWrapper(visibility: toolbarVisible, ...)` 里，
+建议菜单那一个**没有 `visibility:`**。
+所以把选区滚出视口，选择工具条消失，建议菜单**留在原地**——
+它本来就不是跟着选区走的。`OverlayVisibilities` 因此多了一个字段，
+而且是唯一一个不与视口信号相乘的。
+
+`hide()` 上游那句 `if (_toolbar != null || ...isShown) hideToolbar()` 没有照抄：
+那串判断就是 `toolbarIsVisible` 问的同一串，而 `hideToolbar` 对着空气执行等于没执行。
+**一个没有可观察差别的判断是一句注释**，就写成注释了。
+
+### 变异 8 个，全红
+
+宽问题各丢掉一半（2 红 / 1 红）；`hideToolbar` 只收一个（3 红）；
+没有 context 也开菜单（1 红）；放大镜只问选择工具条（1 红）；
+放大镜报告了却没真收（1 红）；给建议菜单也乘上视口信号（1 红）；
+建议菜单不收手柄（1 红）。扫描后核对了树，七条新测试都在。
+
+尺子：十七把全部 exit 0。门：Rust 6829 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6829 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`TextSelectionOverlay` 这一遍读下来，只剩两处没落地，先做前者——
+`_getHandleDy` 与 `_handleSelectionEndHandleDragUpdate` 里的那段：
+拖手柄时 **dy 被吸附到行**（`_getHandleDy` 拿 `dragDy` 和 `handleDy` 比，
+让手柄一行一行地跳而不是连续滑），
+以及 `_dragStartSelection` 记住起手时的选区、
+用它决定拖动中**能不能越过另一个手柄**。
+这个 crate 的 `TextSelectionOverlay` 现在只有 `drag_offset` 那一半
+（抓点不跳），行吸附与越界规则都没有。
+**先查一件事**：`editable.rs` 里是否已经有"某个 dy 属于哪一行"的函数
+（`preferredLineHeight`/行盒那一带），有就复用，别在这边再算一遍。
