@@ -145,15 +145,384 @@ impl Default for CupertinoApp {
     }
 }
 
-/// Upstream `CupertinoLocalizations`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CupertinoLocalizations;
+/// Upstream `CupertinoLocalizations`: the strings the Cupertino widgets say.
+///
+/// # A bundle rather than a table
+///
+/// This was an empty struct with an `of` on it, and the strings sat as
+/// constants on [`DefaultCupertinoLocalizations`] with every widget reading
+/// them from there. That works and it is not what the class is *for*: reading
+/// a constant off the implementation means an application can never put its
+/// own bundle in front of it, which is the whole point of having an interface.
+///
+/// [`crate::material_app::MaterialLocalizations`] went through exactly this a
+/// while ago, and its own docs say why. Two localization layers in one crate
+/// modelled two different ways was the thing to fix; this is the second half.
+///
+/// # Not shared with the Material bundle
+///
+/// Four of these names also exist on `MaterialLocalizations` --
+/// `alert_dialog_label`, `cancel_button_label`, `menu_dismiss_label` and
+/// `modal_barrier_dismiss_label` -- and four out of forty-odd is not a shared
+/// interface, it is a coincidence of English. Upstream declares both classes
+/// independently, and a locale is free to word "Cancel" differently in a
+/// Cupertino alert than in a Material dialog. Sharing them here would make
+/// that impossible to express.
+///
+/// The constants stay, and are what the default implementation returns. They
+/// are the values; this is the interface.
+pub trait CupertinoLocalizations {
+    /// Upstream's `datePickerYear`.
+    fn date_picker_year(&self, year_index: i32) -> String;
 
-impl CupertinoLocalizations {
-    /// Upstream's `of` asserts `debugCheckHasCupertinoLocalizations` and then
-    /// force-unwraps, exactly as the Material one does.
-    pub fn of(present: bool) -> Option<CupertinoLocalizations> {
-        present.then_some(CupertinoLocalizations)
+    /// Upstream's `datePickerMonth`.
+    fn date_picker_month(&self, month_index: usize) -> &str;
+
+    /// Upstream's `datePickerStandaloneMonth`.
+    fn date_picker_standalone_month(&self, month_index: usize) -> &str;
+
+    /// Upstream's `datePickerDayOfMonth`, whose `weekDay` is optional -- a
+    /// picker showing the weekday alongside the day passes it and one that
+    /// does not, does not.
+    fn date_picker_day_of_month(&self, day_index: u32, week_day: Option<u32>) -> String;
+
+    /// Upstream's `datePickerMediumDate`.
+    fn date_picker_medium_date(&self, week_day: u32, month: usize, day: u32) -> String;
+
+    /// Upstream's `datePickerHour`.
+    fn date_picker_hour(&self, hour: u32) -> String;
+
+    /// Upstream's `datePickerHourSemanticsLabel`.
+    fn date_picker_hour_semantics_label(&self, hour: u32) -> String;
+
+    /// Upstream's `datePickerMinute`.
+    fn date_picker_minute(&self, minute: u32) -> String;
+
+    /// Upstream's `datePickerMinuteSemanticsLabel`.
+    fn date_picker_minute_semantics_label(&self, minute: u32) -> String;
+
+    /// Upstream's `datePickerDateOrder`.
+    fn date_picker_date_order(&self) -> DatePickerDateOrder;
+
+    /// Upstream's `datePickerDateTimeOrder`.
+    fn date_picker_date_time_order(&self) -> DatePickerDateTimeOrder;
+
+    /// Upstream's `anteMeridiemAbbreviation`.
+    fn ante_meridiem_abbreviation(&self) -> &str;
+
+    /// Upstream's `postMeridiemAbbreviation`.
+    fn post_meridiem_abbreviation(&self) -> &str;
+
+    /// Upstream's `todayLabel`.
+    fn today_label(&self) -> &str;
+
+    /// Upstream's `alertDialogLabel`.
+    fn alert_dialog_label(&self) -> &str;
+
+    /// Upstream's `tabSemanticsLabel`.
+    /// Upstream's `tabSemanticsLabel`, answering `None` for a tab index or
+    /// count that cannot be spoken -- this port's usual grounds, stated where
+    /// the implementation is: a wrong number is a bug to catch in a test, not
+    /// a reason to take the application down in front of somebody using a
+    /// screen reader.
+    fn tab_semantics_label(&self, tab_index: u32, tab_count: u32) -> Option<String>;
+
+    /// Upstream's `timerPickerHour`.
+    fn timer_picker_hour(&self, hour: u32) -> String;
+
+    /// Upstream's `timerPickerMinute`.
+    fn timer_picker_minute(&self, minute: u32) -> String;
+
+    /// Upstream's `timerPickerSecond`.
+    fn timer_picker_second(&self, second: u32) -> String;
+
+    /// Upstream's `timerPickerHourLabel`.
+    fn timer_picker_hour_label(&self, hour: u32) -> &str;
+
+    /// Upstream's `timerPickerHourLabels`, which is every form the label above
+    /// can take -- what a locale needs to know to size the column.
+    fn timer_picker_hour_labels(&self) -> &[&'static str];
+
+    /// Upstream's `timerPickerMinuteLabel`.
+    fn timer_picker_minute_label(&self, minute: u32) -> &str;
+
+    /// Upstream's `timerPickerMinuteLabels`.
+    fn timer_picker_minute_labels(&self) -> &[&'static str];
+
+    /// Upstream's `timerPickerSecondLabel`.
+    fn timer_picker_second_label(&self, second: u32) -> &str;
+
+    /// Upstream's `timerPickerSecondLabels`.
+    fn timer_picker_second_labels(&self) -> &[&'static str];
+
+    /// Upstream's `cutButtonLabel`.
+    fn cut_button_label(&self) -> &str;
+
+    /// Upstream's `copyButtonLabel`.
+    fn copy_button_label(&self) -> &str;
+
+    /// Upstream's `pasteButtonLabel`.
+    fn paste_button_label(&self) -> &str;
+
+    /// Upstream's `clearButtonLabel`.
+    fn clear_button_label(&self) -> &str;
+
+    /// Upstream's `noSpellCheckReplacementsLabel`.
+    fn no_spell_check_replacements_label(&self) -> &str;
+
+    /// Upstream's `selectAllButtonLabel`.
+    fn select_all_button_label(&self) -> &str;
+
+    /// Upstream's `lookUpButtonLabel`.
+    fn look_up_button_label(&self) -> &str;
+
+    /// Upstream's `searchWebButtonLabel`.
+    fn search_web_button_label(&self) -> &str;
+
+    /// Upstream's `shareButtonLabel`.
+    fn share_button_label(&self) -> &str;
+
+    /// Upstream's `searchTextFieldPlaceholderLabel`.
+    fn search_text_field_placeholder_label(&self) -> &str;
+
+    /// Upstream's `modalBarrierDismissLabel`.
+    fn modal_barrier_dismiss_label(&self) -> &str;
+
+    /// Upstream's `menuDismissLabel`.
+    fn menu_dismiss_label(&self) -> &str;
+
+    /// Upstream's `cancelButtonLabel`.
+    fn cancel_button_label(&self) -> &str;
+
+    /// Upstream's `backButtonLabel`.
+    fn back_button_label(&self) -> &str;
+
+    /// Upstream's `expansionTileExpandedHint`, one of the four that **have a
+    /// body on the abstract class** -- so a bundle that says nothing about
+    /// them still answers, in English. The default here is upstream's default,
+    /// not the default implementation's copy of it.
+    fn expansion_tile_expanded_hint(&self) -> &str {
+        "double tap to collapse"
+    }
+
+    /// Upstream's `expansionTileCollapsedHint`.
+    fn expansion_tile_collapsed_hint(&self) -> &str {
+        "double tap to expand"
+    }
+
+    /// Upstream's `expansionTileExpandedTapHint`.
+    fn expansion_tile_expanded_tap_hint(&self) -> &str {
+        "Collapse"
+    }
+
+    /// Upstream's `expansionTileCollapsedTapHint`.
+    fn expansion_tile_collapsed_tap_hint(&self) -> &str {
+        "Expand for more details"
+    }
+
+    /// Upstream's `expandedHint`.
+    ///
+    /// The wording is upstream's and reads backwards on purpose: `expandedHint`
+    /// is 'Collapsed'. It is what a screen reader says *about* the thing, and
+    /// the two are announced from the other side.
+    fn expanded_hint(&self) -> &str {
+        "Collapsed"
+    }
+
+    /// Upstream's `collapsedHint`.
+    fn collapsed_hint(&self) -> &str {
+        "Expanded"
+    }
+}
+
+/// The framework's English, as the interface.
+///
+/// Every member is written out rather than inherited -- upstream's
+/// `DefaultCupertinoLocalizations` `implements CupertinoLocalizations` for the
+/// same reason: a member added upstream breaks this loudly instead of
+/// inheriting something wrong. The four with bodies on the trait are the four
+/// upstream gives bodies to, and this bundle repeats them because it has its
+/// own constants for them and a reader looking here should find an answer, not
+/// a silence.
+impl CupertinoLocalizations for DefaultCupertinoLocalizations {
+    fn date_picker_year(&self, year_index: i32) -> String {
+        DefaultCupertinoLocalizations::date_picker_year(year_index)
+    }
+
+    fn date_picker_month(&self, month_index: usize) -> &str {
+        DefaultCupertinoLocalizations::date_picker_month(month_index)
+    }
+
+    fn date_picker_standalone_month(&self, month_index: usize) -> &str {
+        DefaultCupertinoLocalizations::date_picker_standalone_month(month_index)
+    }
+
+    fn date_picker_day_of_month(&self, day_index: u32, week_day: Option<u32>) -> String {
+        DefaultCupertinoLocalizations::date_picker_day_of_month(day_index, week_day)
+    }
+
+    fn date_picker_medium_date(&self, week_day: u32, month: usize, day: u32) -> String {
+        DefaultCupertinoLocalizations::date_picker_medium_date(week_day, month, day)
+    }
+
+    fn date_picker_hour(&self, hour: u32) -> String {
+        DefaultCupertinoLocalizations::date_picker_hour(hour)
+    }
+
+    fn date_picker_hour_semantics_label(&self, hour: u32) -> String {
+        DefaultCupertinoLocalizations::date_picker_hour_semantics_label(hour)
+    }
+
+    fn date_picker_minute(&self, minute: u32) -> String {
+        DefaultCupertinoLocalizations::date_picker_minute(minute)
+    }
+
+    fn date_picker_minute_semantics_label(&self, minute: u32) -> String {
+        DefaultCupertinoLocalizations::date_picker_minute_semantics_label(minute)
+    }
+
+    fn date_picker_date_order(&self) -> DatePickerDateOrder {
+        DefaultCupertinoLocalizations::date_picker_date_order()
+    }
+
+    fn date_picker_date_time_order(&self) -> DatePickerDateTimeOrder {
+        DefaultCupertinoLocalizations::date_picker_date_time_order()
+    }
+
+    fn ante_meridiem_abbreviation(&self) -> &str {
+        DefaultCupertinoLocalizations::ANTE_MERIDIEM_ABBREVIATION
+    }
+
+    fn post_meridiem_abbreviation(&self) -> &str {
+        DefaultCupertinoLocalizations::POST_MERIDIEM_ABBREVIATION
+    }
+
+    fn today_label(&self) -> &str {
+        DefaultCupertinoLocalizations::TODAY_LABEL
+    }
+
+    fn alert_dialog_label(&self) -> &str {
+        DefaultCupertinoLocalizations::ALERT_DIALOG_LABEL
+    }
+
+    fn tab_semantics_label(&self, tab_index: u32, tab_count: u32) -> Option<String> {
+        DefaultCupertinoLocalizations::tab_semantics_label(tab_index, tab_count)
+    }
+
+    fn timer_picker_hour(&self, hour: u32) -> String {
+        DefaultCupertinoLocalizations::timer_picker_hour(hour)
+    }
+
+    fn timer_picker_minute(&self, minute: u32) -> String {
+        DefaultCupertinoLocalizations::timer_picker_minute(minute)
+    }
+
+    fn timer_picker_second(&self, second: u32) -> String {
+        DefaultCupertinoLocalizations::timer_picker_second(second)
+    }
+
+    fn timer_picker_hour_label(&self, hour: u32) -> &str {
+        DefaultCupertinoLocalizations::timer_picker_hour_label(hour)
+    }
+
+    fn timer_picker_hour_labels(&self) -> &[&'static str] {
+        &DefaultCupertinoLocalizations::TIMER_PICKER_HOUR_LABELS
+    }
+
+    fn timer_picker_minute_label(&self, minute: u32) -> &str {
+        DefaultCupertinoLocalizations::timer_picker_minute_label(minute)
+    }
+
+    fn timer_picker_minute_labels(&self) -> &[&'static str] {
+        &DefaultCupertinoLocalizations::TIMER_PICKER_MINUTE_LABELS
+    }
+
+    fn timer_picker_second_label(&self, second: u32) -> &str {
+        DefaultCupertinoLocalizations::timer_picker_second_label(second)
+    }
+
+    fn timer_picker_second_labels(&self) -> &[&'static str] {
+        &DefaultCupertinoLocalizations::TIMER_PICKER_SECOND_LABELS
+    }
+
+    fn cut_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::CUT_BUTTON_LABEL
+    }
+
+    fn copy_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::COPY_BUTTON_LABEL
+    }
+
+    fn paste_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::PASTE_BUTTON_LABEL
+    }
+
+    fn clear_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::CLEAR_BUTTON_LABEL
+    }
+
+    fn no_spell_check_replacements_label(&self) -> &str {
+        DefaultCupertinoLocalizations::NO_SPELL_CHECK_REPLACEMENTS_LABEL
+    }
+
+    fn select_all_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::SELECT_ALL_BUTTON_LABEL
+    }
+
+    fn look_up_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::LOOK_UP_BUTTON_LABEL
+    }
+
+    fn search_web_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::SEARCH_WEB_BUTTON_LABEL
+    }
+
+    fn share_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::SHARE_BUTTON_LABEL
+    }
+
+    fn search_text_field_placeholder_label(&self) -> &str {
+        DefaultCupertinoLocalizations::SEARCH_TEXT_FIELD_PLACEHOLDER_LABEL
+    }
+
+    fn modal_barrier_dismiss_label(&self) -> &str {
+        DefaultCupertinoLocalizations::MODAL_BARRIER_DISMISS_LABEL
+    }
+
+    fn menu_dismiss_label(&self) -> &str {
+        DefaultCupertinoLocalizations::MENU_DISMISS_LABEL
+    }
+
+    fn cancel_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::CANCEL_BUTTON_LABEL
+    }
+
+    fn back_button_label(&self) -> &str {
+        DefaultCupertinoLocalizations::BACK_BUTTON_LABEL
+    }
+
+    fn expansion_tile_expanded_hint(&self) -> &str {
+        DefaultCupertinoLocalizations::EXPANSION_TILE_EXPANDED_HINT
+    }
+
+    fn expansion_tile_collapsed_hint(&self) -> &str {
+        DefaultCupertinoLocalizations::EXPANSION_TILE_COLLAPSED_HINT
+    }
+
+    fn expansion_tile_expanded_tap_hint(&self) -> &str {
+        DefaultCupertinoLocalizations::EXPANSION_TILE_EXPANDED_TAP_HINT
+    }
+
+    fn expansion_tile_collapsed_tap_hint(&self) -> &str {
+        DefaultCupertinoLocalizations::EXPANSION_TILE_COLLAPSED_TAP_HINT
+    }
+
+    fn expanded_hint(&self) -> &str {
+        DefaultCupertinoLocalizations::EXPANDED_HINT
+    }
+
+    fn collapsed_hint(&self) -> &str {
+        DefaultCupertinoLocalizations::COLLAPSED_HINT
     }
 }
 
@@ -285,6 +654,21 @@ impl DatePickerDateTimeOrder {
 pub struct DefaultCupertinoLocalizations;
 
 impl DefaultCupertinoLocalizations {
+    /// Upstream's `CupertinoLocalizations.of`, which asserts
+    /// `debugCheckHasCupertinoLocalizations` and then force-unwraps -- so a
+    /// missing delegate is a debug error with an explanation rather than a
+    /// null in release.
+    ///
+    /// It answers with the default bundle because that is the only one
+    /// registered; the signature is the shape upstream's has, so a lookup can
+    /// replace the body without moving the callers. It lives here rather than
+    /// on [`CupertinoLocalizations`] for the reason it lives on
+    /// `DefaultMaterialLocalizations` there: the interface is a trait now, and
+    /// a trait cannot hand back an instance of itself.
+    pub fn of(present: bool) -> Option<DefaultCupertinoLocalizations> {
+        present.then_some(DefaultCupertinoLocalizations)
+    }
+
     /// The same seven strings as `DefaultMaterialLocalizations`, indexed the
     /// same way, by `weekDay - DateTime.monday`.
     ///
@@ -321,6 +705,23 @@ impl DefaultCupertinoLocalizations {
     /// names, which is why the per-widget override is a
     /// `clearButtonSemanticLabel` rather than a `clearButtonText`.
     pub const CLEAR_BUTTON_LABEL: &'static str = "Clear";
+
+    /// Upstream's `alertDialogLabel`. It and the three below it are the four
+    /// names this bundle shares with `DefaultMaterialLocalizations`, and they
+    /// had never been written down here at all -- the Cupertino widgets that
+    /// wanted them reached across to the Material bundle, which is a locale
+    /// deciding one of these words for both designs at once. See
+    /// [`CupertinoLocalizations`].
+    pub const ALERT_DIALOG_LABEL: &'static str = "Alert";
+
+    /// Upstream's `modalBarrierDismissLabel`.
+    pub const MODAL_BARRIER_DISMISS_LABEL: &'static str = "Dismiss";
+
+    /// Upstream's `menuDismissLabel`.
+    pub const MENU_DISMISS_LABEL: &'static str = "Dismiss menu";
+
+    /// Upstream's `cancelButtonLabel`.
+    pub const CANCEL_BUTTON_LABEL: &'static str = "Cancel";
     /// Upstream `backButtonLabel`, and it does **two** jobs in the navigation
     /// bar that are worth keeping apart.
     ///
@@ -1230,8 +1631,8 @@ mod tests {
 
     #[test]
     fn localizations_are_fetched_through_a_check_rather_than_a_null() {
-        assert!(CupertinoLocalizations::of(true).is_some());
-        assert!(CupertinoLocalizations::of(false).is_none());
+        assert!(DefaultCupertinoLocalizations::of(true).is_some());
+        assert!(DefaultCupertinoLocalizations::of(false).is_none());
     }
 }
 
@@ -1381,5 +1782,231 @@ mod date_order_tests {
             DatePickerDateTimeOrder::default(),
             DatePickerDateTimeOrder::DateTimeDayPeriod
         );
+    }
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::{
+        CupertinoLocalizations, DatePickerDateOrder, DatePickerDateTimeOrder,
+        DefaultCupertinoLocalizations,
+    };
+
+    /// An application's own bundle, which is the whole reason the interface
+    /// exists. It answers for two strings and defers for the rest -- every
+    /// member still has to be written out, as upstream's `implements` forces
+    /// too, except the six the abstract class gives bodies to.
+    struct Loud;
+
+    impl CupertinoLocalizations for Loud {
+        fn date_picker_year(&self, year_index: i32) -> String {
+            DefaultCupertinoLocalizations::date_picker_year(year_index)
+        }
+        fn date_picker_month(&self, month_index: usize) -> &str {
+            DefaultCupertinoLocalizations::date_picker_month(month_index)
+        }
+        fn date_picker_standalone_month(&self, month_index: usize) -> &str {
+            DefaultCupertinoLocalizations::date_picker_standalone_month(month_index)
+        }
+        fn date_picker_day_of_month(&self, day_index: u32, week_day: Option<u32>) -> String {
+            DefaultCupertinoLocalizations::date_picker_day_of_month(day_index, week_day)
+        }
+        fn date_picker_medium_date(&self, week_day: u32, month: usize, day: u32) -> String {
+            DefaultCupertinoLocalizations::date_picker_medium_date(week_day, month, day)
+        }
+        fn date_picker_hour(&self, hour: u32) -> String {
+            DefaultCupertinoLocalizations::date_picker_hour(hour)
+        }
+        fn date_picker_hour_semantics_label(&self, hour: u32) -> String {
+            DefaultCupertinoLocalizations::date_picker_hour_semantics_label(hour)
+        }
+        fn date_picker_minute(&self, minute: u32) -> String {
+            DefaultCupertinoLocalizations::date_picker_minute(minute)
+        }
+        fn date_picker_minute_semantics_label(&self, minute: u32) -> String {
+            DefaultCupertinoLocalizations::date_picker_minute_semantics_label(minute)
+        }
+        fn date_picker_date_order(&self) -> DatePickerDateOrder {
+            DatePickerDateOrder::Ymd
+        }
+        fn date_picker_date_time_order(&self) -> DatePickerDateTimeOrder {
+            DefaultCupertinoLocalizations::date_picker_date_time_order()
+        }
+        fn ante_meridiem_abbreviation(&self) -> &str {
+            DefaultCupertinoLocalizations::ANTE_MERIDIEM_ABBREVIATION
+        }
+        fn post_meridiem_abbreviation(&self) -> &str {
+            DefaultCupertinoLocalizations::POST_MERIDIEM_ABBREVIATION
+        }
+        fn today_label(&self) -> &str {
+            DefaultCupertinoLocalizations::TODAY_LABEL
+        }
+        fn alert_dialog_label(&self) -> &str {
+            DefaultCupertinoLocalizations::ALERT_DIALOG_LABEL
+        }
+        fn tab_semantics_label(&self, tab_index: u32, tab_count: u32) -> Option<String> {
+            DefaultCupertinoLocalizations::tab_semantics_label(tab_index, tab_count)
+        }
+        fn timer_picker_hour(&self, hour: u32) -> String {
+            DefaultCupertinoLocalizations::timer_picker_hour(hour)
+        }
+        fn timer_picker_minute(&self, minute: u32) -> String {
+            DefaultCupertinoLocalizations::timer_picker_minute(minute)
+        }
+        fn timer_picker_second(&self, second: u32) -> String {
+            DefaultCupertinoLocalizations::timer_picker_second(second)
+        }
+        fn timer_picker_hour_label(&self, hour: u32) -> &str {
+            DefaultCupertinoLocalizations::timer_picker_hour_label(hour)
+        }
+        fn timer_picker_hour_labels(&self) -> &[&'static str] {
+            &DefaultCupertinoLocalizations::TIMER_PICKER_HOUR_LABELS
+        }
+        fn timer_picker_minute_label(&self, minute: u32) -> &str {
+            DefaultCupertinoLocalizations::timer_picker_minute_label(minute)
+        }
+        fn timer_picker_minute_labels(&self) -> &[&'static str] {
+            &DefaultCupertinoLocalizations::TIMER_PICKER_MINUTE_LABELS
+        }
+        fn timer_picker_second_label(&self, second: u32) -> &str {
+            DefaultCupertinoLocalizations::timer_picker_second_label(second)
+        }
+        fn timer_picker_second_labels(&self) -> &[&'static str] {
+            &DefaultCupertinoLocalizations::TIMER_PICKER_SECOND_LABELS
+        }
+        fn cut_button_label(&self) -> &str {
+            "CUT"
+        }
+        fn copy_button_label(&self) -> &str {
+            DefaultCupertinoLocalizations::COPY_BUTTON_LABEL
+        }
+        fn paste_button_label(&self) -> &str {
+            DefaultCupertinoLocalizations::PASTE_BUTTON_LABEL
+        }
+        fn clear_button_label(&self) -> &str {
+            DefaultCupertinoLocalizations::CLEAR_BUTTON_LABEL
+        }
+        fn no_spell_check_replacements_label(&self) -> &str {
+            DefaultCupertinoLocalizations::NO_SPELL_CHECK_REPLACEMENTS_LABEL
+        }
+        fn select_all_button_label(&self) -> &str {
+            DefaultCupertinoLocalizations::SELECT_ALL_BUTTON_LABEL
+        }
+        fn look_up_button_label(&self) -> &str {
+            DefaultCupertinoLocalizations::LOOK_UP_BUTTON_LABEL
+        }
+        fn search_web_button_label(&self) -> &str {
+            DefaultCupertinoLocalizations::SEARCH_WEB_BUTTON_LABEL
+        }
+        fn share_button_label(&self) -> &str {
+            DefaultCupertinoLocalizations::SHARE_BUTTON_LABEL
+        }
+        fn search_text_field_placeholder_label(&self) -> &str {
+            DefaultCupertinoLocalizations::SEARCH_TEXT_FIELD_PLACEHOLDER_LABEL
+        }
+        fn modal_barrier_dismiss_label(&self) -> &str {
+            DefaultCupertinoLocalizations::MODAL_BARRIER_DISMISS_LABEL
+        }
+        fn menu_dismiss_label(&self) -> &str {
+            DefaultCupertinoLocalizations::MENU_DISMISS_LABEL
+        }
+        fn cancel_button_label(&self) -> &str {
+            DefaultCupertinoLocalizations::CANCEL_BUTTON_LABEL
+        }
+        fn back_button_label(&self) -> &str {
+            "BACK"
+        }
+    }
+
+    #[test]
+    fn an_application_can_put_its_own_bundle_in_front_of_the_frameworks() {
+        // The point of the interface, and what an empty struct with an `of` on
+        // it could not do: the strings were constants on the implementation,
+        // so there was nothing for an application to stand in front of.
+        let framework: &dyn CupertinoLocalizations = &DefaultCupertinoLocalizations;
+        let theirs: &dyn CupertinoLocalizations = &Loud;
+        assert_eq!(framework.back_button_label(), "Back");
+        assert_eq!(theirs.back_button_label(), "BACK");
+        assert_eq!(framework.cut_button_label(), "Cut");
+        assert_eq!(theirs.cut_button_label(), "CUT");
+    }
+
+    #[test]
+    fn a_bundle_decides_the_order_the_date_columns_run_in() {
+        // Not only words. `datePickerDateOrder` is a locale's answer too, and
+        // it is what a date picker lays its columns out by -- so a bundle in
+        // front of the framework's moves the columns, not just their labels.
+        let framework: &dyn CupertinoLocalizations = &DefaultCupertinoLocalizations;
+        let theirs: &dyn CupertinoLocalizations = &Loud;
+        assert_eq!(framework.date_picker_date_order(), DatePickerDateOrder::Mdy);
+        assert_eq!(theirs.date_picker_date_order(), DatePickerDateOrder::Ymd);
+        assert_eq!(
+            theirs.date_picker_date_order().columns(),
+            [
+                super::DatePickerColumn::Year,
+                super::DatePickerColumn::Month,
+                super::DatePickerColumn::Day
+            ]
+        );
+    }
+
+    #[test]
+    fn the_default_bundle_answers_with_its_own_constants() {
+        // The constants are the values and the trait is the interface; a
+        // caller wanting the framework's English can still name either, and
+        // the two must not drift.
+        let bundle: &dyn CupertinoLocalizations = &DefaultCupertinoLocalizations;
+        assert_eq!(
+            bundle.search_text_field_placeholder_label(),
+            DefaultCupertinoLocalizations::SEARCH_TEXT_FIELD_PLACEHOLDER_LABEL
+        );
+        assert_eq!(
+            bundle.today_label(),
+            DefaultCupertinoLocalizations::TODAY_LABEL
+        );
+        assert_eq!(
+            bundle.timer_picker_hour_labels(),
+            DefaultCupertinoLocalizations::TIMER_PICKER_HOUR_LABELS
+        );
+    }
+
+    #[test]
+    fn the_four_strings_it_shares_a_name_with_material_are_its_own() {
+        // Four names out of forty-odd also exist on `MaterialLocalizations`,
+        // and four is a coincidence of English rather than a shared interface:
+        // upstream declares both classes independently, and a locale may word
+        // one of these differently in a Cupertino alert than in a Material
+        // dialog. They had never been written down on this side at all.
+        let bundle: &dyn CupertinoLocalizations = &DefaultCupertinoLocalizations;
+        assert_eq!(bundle.alert_dialog_label(), "Alert");
+        assert_eq!(bundle.modal_barrier_dismiss_label(), "Dismiss");
+        assert_eq!(bundle.menu_dismiss_label(), "Dismiss menu");
+        assert_eq!(bundle.cancel_button_label(), "Cancel");
+    }
+
+    #[test]
+    fn the_hints_an_abstract_class_answers_for_itself_are_answered_here_too() {
+        // Six of upstream's members have bodies on the abstract class, so a
+        // bundle that says nothing about them still answers. This one says
+        // nothing about them -- `Loud` never mentions them -- and the answers
+        // are upstream's own defaults.
+        let theirs: &dyn CupertinoLocalizations = &Loud;
+        assert_eq!(
+            theirs.expansion_tile_expanded_hint(),
+            "double tap to collapse"
+        );
+        assert_eq!(
+            theirs.expansion_tile_collapsed_hint(),
+            "double tap to expand"
+        );
+        assert_eq!(theirs.expansion_tile_expanded_tap_hint(), "Collapse");
+        assert_eq!(
+            theirs.expansion_tile_collapsed_tap_hint(),
+            "Expand for more details"
+        );
+        // And the pair that read backwards on purpose: what a screen reader
+        // says *about* the thing, announced from the other side.
+        assert_eq!(theirs.expanded_hint(), "Collapsed");
+        assert_eq!(theirs.collapsed_hint(), "Expanded");
     }
 }

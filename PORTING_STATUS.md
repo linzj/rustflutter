@@ -3772,3 +3772,57 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 有多少是 `MaterialLocalizations` 已经在这个 crate 里答过的同一批字串
 （两边的 `datePickerYear`、`alertDialogLabel` 之类），
 能共用的就别抄第二遍——确认了再决定从哪个入手。
+
+---
+
+## 第 472 轮：Cupertino 的字串终于有了一个可以被挡在前面的接口
+
+上一轮留的问题先查，答数出来了：上游 `CupertinoLocalizations` 的 41 个成员里，
+**只有 4 个**和这个 crate 的 `MaterialLocalizations` 同名——
+`alert_dialog_label`、`cancel_button_label`、`menu_dismiss_label`、
+`modal_barrier_dismiss_label`。四十几分之四不是"共用接口"，是英语的巧合：
+上游把两个类各自声明，一个语言完全可以把 Cupertino 警告框里的
+"取消"和 Material 对话框里的写成不同的词。共用会让这件事没法表达。
+所以不共用。
+
+而真正的缺口不是缺字串，是**缺接口**：
+`CupertinoLocalizations` 一直是个空结构体加一个 `of`，
+字串都是 `DefaultCupertinoLocalizations` 上的常量，每个 widget 直接去读。
+`MaterialLocalizations` 早就走过这一步，它自己的文档里写着为什么：
+"从实现上读常量，意味着应用永远没法把自己的 bundle 摆到它前面，
+而那正是有接口的全部意义"。一个 crate 里两层本地化用两种模型建模，
+才是要修的东西——这一轮是第二半。
+
+于是 `CupertinoLocalizations` 变成 trait（41 个成员，
+其中 6 个照上游在抽象类上就给了实现的，这里也给默认体），
+`DefaultCupertinoLocalizations` 实现它、每个成员都写出来
+（上游用 `implements` 而不是 `extends`，为的就是上游加一个成员时这里**响亮地**坏掉，
+而不是安静地继承到一个错的答案），`of` 搬到默认 bundle 上——
+trait 交不出一个自己的实例，这一点和 Material 那边一样。
+
+顺带补上四个**从来没写下来过**的字串：`ALERT_DIALOG_LABEL`、
+`MODAL_BARRIER_DISMISS_LABEL`、`MENU_DISMISS_LABEL`、`CANCEL_BUTTON_LABEL`。
+正是同名的那四个——想用它们的 Cupertino widget 只能伸手去拿 Material 的，
+那等于让一个语言替两种设计一起决定这个词。
+
+测试按 Material 那边的样子写：一个应用自己的 bundle（`Loud`）摆在前面，
+`back_button_label` 与 `cut_button_label` 换了词而其余不变；
+再加一条**不是词**的：`datePickerDateOrder` 也是 bundle 的答案，
+换一个 bundle 会把日期选择器的列顺序整个换掉（`Ymd` 的三列是年月日）。
+还有一条按住那 6 个默认体——`Loud` 从头到尾没提过它们，答案得是上游的默认值。
+
+变异扫描 10 个，全红。尺子：十七把全部 exit 0。
+门：Rust 6763 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+`depth.py` 队头上 `CupertinoLocalizations`（0.04，2/46）已经不在了。
+
+**下一步**：队头现在是 `CupertinoApp`（8/37）。
+但先记一件这一轮看见、没有动的事：
+`cupertino_app.rs` 里还有第二个 bundle —— `CupertinoLocalizationEn`
+（21 个成员，只有日期时间那一半），它**没有**实现这个新 trait。
+**先查一件事**：上游的 `CupertinoLocalizationEn` 在
+`flutter_localizations` 里是 `GlobalCupertinoLocalizations` 的子类、
+成员是全的；这个 crate 里的那份是照哪一份抄的、
+缺的那二十个是"还没抄"还是"故意只要这一半"——
+确认了再决定是补全它并实现 trait，还是把它记成一条 divergence。
