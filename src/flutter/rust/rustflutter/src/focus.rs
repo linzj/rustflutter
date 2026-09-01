@@ -1549,6 +1549,24 @@ pub fn dispatch_key(event: &KeyEvent) -> bool {
     false
 }
 
+/// Whether this key is the one that presses the focused control.
+///
+/// Asked of the same table the traversal asks, so Enter and Space mean here
+/// what they mean everywhere else, and a platform that ever spelled them
+/// differently would be answered from one place. Upstream's
+/// `WidgetsApp.defaultShortcuts` binds both to `ActivateIntent`, and its
+/// `ButtonActivateIntent` is the same key for a narrower audience.
+fn is_activation(event: &KeyEvent) -> bool {
+    let table =
+        crate::shortcuts::default_shortcuts(crate::editable_text::TargetPlatform::host(), false);
+    let intent =
+        crate::keyboard::with_keyboard(|keyboard| table.intent_for(event, keyboard).cloned());
+    matches!(
+        intent,
+        Some(crate::actions::Intent::Activate) | Some(crate::actions::Intent::ButtonActivate)
+    )
+}
+
 /// Handles Tab, if nothing else did.
 ///
 /// Upstream this is a `Shortcuts` widget installed by `WidgetsApp` mapping Tab
@@ -1603,6 +1621,23 @@ pub struct Focus {
     focus_on_tap: bool,
     /// Whether this node is a [`FocusTraversalGroup`] boundary.
     group: bool,
+    /// What Enter or Space does to this node. Upstream's `ActivateIntent`,
+    /// which a control registers an `ActivateAction` for.
+    ///
+    /// # Why it lives on `Focus` rather than in an `Actions` map
+    ///
+    /// Upstream's controls are wrapped in `FocusableActionDetector`, which is
+    /// a `Focus`, a `Shortcuts` and an `Actions` in one. This crate already
+    /// makes the same consolidation for the other key every control shares:
+    /// [`handle_traversal_key`] asks [`crate::shortcuts::default_shortcuts`]
+    /// directly rather than requiring an app-level `Shortcuts` scope above
+    /// every button. Activation follows it, and for the same reason -- a
+    /// control that needed a scope installed above it to answer Enter would
+    /// answer it in some apps and not others.
+    ///
+    /// The `Shortcuts` widget is still what a caller uses for *their own*
+    /// bindings. This is only the one binding every operable control has.
+    on_activate: Option<Rc<dyn Fn()>>,
     /// Upstream's `autofocus`: take the keyboard when this node first appears.
     ///
     /// Asked for on the build that *registers* the node and not on the ones
@@ -1625,7 +1660,39 @@ impl Focus {
             focus_on_tap: true,
             group: false,
             autofocus: false,
+            on_activate: None,
         }
+    }
+
+    /// What Enter or Space does here. See the field.
+    pub fn with_on_activate(mut self, activate: impl Fn() + 'static) -> Self {
+        self.on_activate = Some(Rc::new(activate));
+        self
+    }
+
+    /// The handler this node registers: the caller's own, and the activation
+    /// binding behind it.
+    ///
+    /// The caller's runs **first**, so a control that wants Enter for
+    /// something else can take it -- a text field's Enter submits, and it
+    /// must not also press the button the field happens to be inside.
+    fn key_handler(&self) -> Option<KeyHandler> {
+        let Some(activate) = self.on_activate.clone() else {
+            return self.on_key.clone();
+        };
+        let own = self.on_key.clone();
+        Some(Rc::new(move |event: &KeyEvent| {
+            if let Some(own) = &own {
+                if own(event) == KeyResult::Handled {
+                    return KeyResult::Handled;
+                }
+            }
+            if !is_activation(event) {
+                return KeyResult::Ignored;
+            }
+            activate();
+            KeyResult::Handled
+        }))
     }
 
     /// Upstream's `autofocus`. See the field.
@@ -1734,7 +1801,7 @@ impl Component for Focus {
             id: self.id,
             element: context.element_ref(),
             ancestors: scope,
-            on_key: self.on_key.clone(),
+            on_key: self.key_handler(),
             traversable: self.traversable,
             descendants_focusable: self.descendants_focusable,
             descendants_traversable: self.descendants_traversable,
@@ -1865,6 +1932,63 @@ mod tests {
             "shift+tab from the first wraps to the last"
         );
         assert!(!handle_traversal_key(&key(LogicalKey::ESCAPE), &plain));
+    }
+
+    #[test]
+    fn enter_and_space_press_the_focused_control() {
+        // Before this, nothing in the crate acted on `Intent::Activate`: the
+        // shortcut tables named it, the focus found the node, and no widget
+        // did anything. Every control was unpressable from the keyboard.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        reset();
+        reset_pending_autofocus();
+        let presses = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&presses);
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::component(
+            Focus::new(91, leaf(|| SizedBox::new(10.0, 10.0)))
+                .with_on_activate(move || counter.set(counter.get() + 1)),
+        ));
+        let _root = tree.build_render_tree().expect("mounted");
+        assert!(focus(91));
+
+        assert!(dispatch_key(&key(LogicalKey::ENTER)));
+        assert_eq!(presses.get(), 1);
+        assert!(dispatch_key(&key(LogicalKey::SPACE)));
+        assert_eq!(presses.get(), 2, "space presses it too");
+
+        // A key that is not an activation is not one.
+        assert!(!dispatch_key(&key(LogicalKey::KEY_A)));
+        assert_eq!(presses.get(), 2);
+    }
+
+    #[test]
+    fn a_control_that_wants_enter_for_itself_keeps_it() {
+        // A text field's Enter submits, and it must not also press whatever
+        // the field happens to sit inside. The caller's own handler runs
+        // first and can take the key.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        reset();
+        reset_pending_autofocus();
+        let pressed = Rc::new(Cell::new(false));
+        let flag = Rc::clone(&pressed);
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::component(
+            Focus::new(92, leaf(|| SizedBox::new(10.0, 10.0)))
+                .with_on_key(|_| KeyResult::Handled)
+                .with_on_activate(move || flag.set(true)),
+        ));
+        let _root = tree.build_render_tree().expect("mounted");
+        assert!(focus(92));
+
+        assert!(dispatch_key(&key(LogicalKey::ENTER)), "the key was used");
+        assert!(!pressed.get(), "but not to press the control");
     }
 
     #[test]

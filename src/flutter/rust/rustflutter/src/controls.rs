@@ -2299,6 +2299,37 @@ You"
     }
 
     #[test]
+    fn a_focused_chip_is_pressed_by_enter() {
+        // The whole point of being a stop. A chip the keyboard can reach but
+        // not press is a place the reader gets stuck.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+        let taps = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&taps);
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::component(
+            Chip::new(9105, "tappable").on_tap(move |_| counter.set(counter.get() + 1)),
+        ));
+        let _ = tree.build_render_tree();
+        assert!(crate::focus::focus(9105));
+
+        let enter = crate::keyboard::KeyEvent {
+            change: crate::keyboard::KeyChange::Down,
+            physical: crate::keyboard::PhysicalKey::ENTER,
+            logical: crate::keyboard::LogicalKey::ENTER,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        };
+        assert!(crate::focus::dispatch_key(&enter), "the chip took the key");
+        assert_eq!(taps.get(), 1, "and called the handler the pointer calls");
+    }
+
+    #[test]
     fn a_chip_that_does_something_is_somewhere_the_keyboard_can_go() {
         // Before this a filter chip could be tapped and could be read out, but
         // Tab walked straight past it: there was no focus node at all, so it
@@ -2734,18 +2765,36 @@ impl Component for Chip {
         // to do is the same case: a stop that answers no key is a place the
         // reader gets stuck for no reason.
         //
-        // What is still missing, and is missing for **every** control in this
-        // crate rather than for chips: nothing acts on `Intent::Activate`, so
-        // a focused chip does not respond to Enter or Space. The shortcut
-        // tables name the intent (`shortcuts.rs`) and no widget consumes it.
-        // Recorded here rather than solved here -- doing it for chips alone
-        // would give them a keyboard chips' neighbours do not have.
+        // Enter and Space press it, through the same handler the pointer
+        // would have called. `Focus::with_on_activate` is where that binding
+        // lives for every control, so a chip does not carry a keyboard its
+        // neighbours lack.
+        //
+        // The synthetic tap is at the origin: a key has no position, and
+        // upstream's `ActivateAction` calls `onPressed` rather than `onTap`
+        // for the same reason -- there is nothing to report. A handler that
+        // reads `local_position` sees zero and should treat a press as
+        // pressing the whole control, which is what it is.
         let body = described(chip_body);
         if !tappable {
             return body;
         }
+        let activate = self.handlers.on_tap.clone();
         crate::framework::component(
-            crate::focus::Focus::new(id, body).with_autofocus(self.autofocus),
+            crate::focus::Focus::new(id, body)
+                .with_autofocus(self.autofocus)
+                .with_on_activate(move || {
+                    if let Some(activate) = &activate {
+                        activate(crate::gestures::TapEvent {
+                            local_position: crate::render::Offset::ZERO,
+                            position: crate::render::Offset::ZERO,
+                            // Not a pointer at all. Upstream's synthetic taps
+                            // use a device id no real pointer has; -1 says
+                            // the same thing where this crate counts from 0.
+                            pointer_id: -1,
+                        });
+                    }
+                }),
         )
     }
 }

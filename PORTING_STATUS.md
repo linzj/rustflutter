@@ -6847,3 +6847,53 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6965 通�
 二是 `focus::dispatch_key` 走到焦点节点之后，
 `Focus::with_on_key` 的返回值怎么表示"我用掉了"——
 接激活的正确位置多半就在那里，而不是每个控件各写一遍。
+
+---
+
+## 第 526 轮：键盘上终于能按下一个控件了
+
+上一轮自己写下的那条：`Intent::Activate` 表里有、焦点有、意图有，
+**没有一个 widget 消费它**——整个 crate 里没有任何控件能用键盘按下。
+
+### 先查的两件事，答案决定了放在哪儿
+
+一是消费点：`shortcuts.rs` 的 `Shortcuts` widget 确实完整
+（键→意图→`Actions::maybe_invoke_key`），但它要求**上面装了 Actions 作用域**。
+二是 `Focus::with_on_key` 的返回值 `KeyResult::Handled` 就是"我用掉了"。
+
+于是放在 `Focus` 上：`with_on_activate`。理由写在原地——
+上游用 `FocusableActionDetector`（Focus + Shortcuts + Actions 三合一）；
+这个 crate **对每个控件共有的另一个键已经做过同样的合并**：
+`handle_traversal_key` 直接问 `default_shortcuts` 而不要求每个按钮上面装一层。
+激活跟着它走，**否则一个控件在有作用域的 app 里能按、在没有的里面不能按**。
+`Shortcuts` 仍然是调用方绑自己快捷键的地方，这里只管每个可操作控件都有的那一个绑定。
+
+**调用方自己的 on_key 先跑**。文本域的 Enter 是提交，
+它不能顺带把自己所在的按钮也按了。
+
+`is_activation` 问的是同一张表（`Intent::Activate` 或 `ButtonActivate`），
+所以 Enter 和 Space 在这里和在别处含义一致，
+**哪天某个平台改了拼法，只有一处要改**。
+
+### chip 接上
+
+上一轮刚给 chip 加了焦点节点却按不动；这一轮它调用**指针会调的同一个 handler**。
+合成的 tap 在原点、`pointer_id: -1`：**键没有位置**，
+上游 `ActivateAction` 调 `onPressed` 而不是 `onTap` 也是这个道理。
+这条写在注释里，免得下一个读者以为原点是个坐标。
+
+六个变异全部杀死，覆盖：处理器没注册、自己的 on_key 顺序反了、
+所有键都当激活、只认 Enter 不认 Space、按了却报告没用掉、chip 不接。
+
+尺子：十七把全部 exit 0。门：Rust 6968 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6968 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：机制有了，**用的人只有 chip 一个**。
+按钮、开关、单选、复选这些真正天天按的控件都还没接。
+**先查一件事**：`ink_well.rs` 的 `InkWell` 已经有 `focus_id` 和
+`Focus::new(focus_id, child)`（第 756 行那处），
+如果按钮系是建在 `InkWell` 上的，那么**在 `InkWell` 上接一次
+就等于给一大片控件同时接上**——先确认按钮走的是不是这条路，
+以及 `InkWell` 的 `on_tap` 是不是就是它要调的那个。
+接错地方就会变成每个控件各写一遍。
