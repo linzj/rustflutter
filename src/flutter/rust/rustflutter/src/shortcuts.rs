@@ -440,7 +440,21 @@ pub fn default_apple_shortcuts_table() -> ShortcutRegistry {
         )
 }
 
-/// Upstream's `WidgetsApp.defaultShortcuts` getter:
+/// Upstream's `WidgetsApp.defaultShortcuts` getter.
+///
+/// # Nothing feeds these tables from a host yet
+///
+/// Worth knowing before reading further: **no host in this repository calls
+/// `rf_app_dispatch_key`**. Keys reach an application today as *text* through
+/// the IME path and as a handful of *editing* keys straight into the text
+/// field; the framework's key pipeline -- these tables, `Focus`'s `on_key`,
+/// the traversal below -- is reached from `rf_app_dispatch_key` and from
+/// tests, and every host leaves that entry point alone. The rules are ported
+/// and checked; the wire from a keyboard to them is a host-side job that has
+/// not been done. Said here rather than left for the next reader to discover
+/// by wondering why Tab does nothing on Windows.
+///
+/// The getter itself:
 ///
 /// ```dart
 /// if (kIsWeb) {

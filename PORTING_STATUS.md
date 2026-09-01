@@ -6045,3 +6045,55 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6933 通�
 如果有，那就是给生成器再加一个来源，和这一轮同样的做法；
 如果 Android 那一侧根本不走这张表，那 `gameButtonA` 就是"这个 port 的宿主都送不出的键"，
 该记一笔而不是硬造一个名字。
+
+---
+
+## 第 513 轮：Tab 归表管；以及没有一个宿主在送键
+
+先查 Android 那侧有没有键映射：**没有**。
+`RustflutterActivity.onKeyDown` 只做三件事——编辑键送进文本域、
+Enter/NumpadEnter 触发 editor action、可打印字符当文本送上去。
+没有 keyCode→逻辑键的表，也没有把键送进框架的路。
+所以 `gameButtonA` 是"这个 port 的宿主都送不出的键"，该记一笔而不是硬造名字。
+
+**顺着这条线查出一件更大的事**：`rf_app_dispatch_key` 这个 FFI 入口
+**没有任何宿主调用**（只有 `ffi_unittests.cc` 调过）。
+也就是说框架的整条按键通路——三张快捷键表、`Focus` 的 `on_key`、Tab 遍历——
+**只有测试和这个入口能到达**。今天键盘到达应用的路只有两条：IME 的文本，
+和文本域的几个编辑键。这句话写进了 `default_shortcuts` 的文档，
+免得下一个读者去猜"为什么 Windows 上按 Tab 没反应"。
+
+### 这一轮做的那件事：Tab 不再自己判断
+
+`focus::handle_traversal_key` 原本自己写着 `logical == TAB` 并去问 `keyboard.shift()`
+——**同一条规则的第二份**，而且这一份不知道网页表的存在。
+改成去问 `default_shortcuts(host(), false)`，按回答的意图行动。
+
+变异扫描逼出了三条测试的不足，全是"两份规则等价所以看不出差别"那一类：
+
+- **Ctrl+Tab**：手写版只看 Tab、不管别的修饰键，所以 Ctrl+Tab 也会遍历；
+  `SingleActivator` 要求修饰键**完全一致**，所以它不是那一行。
+  这正是两份规则**真正不同**的地方，补了测试。
+- **Shift+Tab 真的往回走**：原来的测试只有两个节点，
+  一前一后绕回同一处，`previous()` 改成 `next()` 看不出来。换成三个。
+- **松开的键**：原来没有测试按下之外的事件。
+
+第四条变异（去掉 `is_down` 判断）活着，因为**它本来就是多余的**：
+每个 `ShortcutActivator::accepts` 开头就有同样的判断。
+于是把这行删了，并把这条理由写在原地——
+**一次没有可观察差别的删除，正是那行不值得留下的定义**。
+改成在 activator 那一层做同样的变异，测试立刻红。
+
+尺子：十七把全部 exit 0。门：Rust 6937 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6937 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：把这条通路接上——**从 Windows 宿主开始**，因为它已经在
+`rustflutter_host_win.cc` 里把 `WM_KEYDOWN` 拆成了 `event.editing_key`
+（第 2483/2888 行那一带），也就是说**键已经在手里了**，只是没往框架送。
+**先查一件事**：`RfKeyEvent` 这个结构在 FFI 头里长什么样
+（`grep -n "RfKeyEvent" -A12 src/flutter/rust/host/rustflutter_host.h` 或 ffi 头），
+以及 Windows 那边现成的 `key.virtual_key` / scan code 能不能直接喂
+`LogicalKeyForVirtualKey`（那个函数就在 `rustflutter_key_map_win.cc` 里，
+本轮之前就有）。如果能，这一轮的活就是"把已经算好的值送过去"，
+而不是重新做一套键映射。

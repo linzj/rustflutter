@@ -1255,13 +1255,13 @@ impl ExcludeFocus {
     }
 }
 
-/// The traversal order: every stop, in the order Tab visits them.
-///
-/// Upstream's `FocusTraversalPolicy._sortAllDescendants`, in the shape this
-/// registry has. Each group's members are sorted among themselves by
-/// [`OrderedTraversalPolicy`], and a group node stands in its parent's list
-/// for its whole subtree -- which is what keeps a group's stops together and
-/// keeps an order inside one group from jumping a node past another group's.
+// The traversal order: every stop, in the order Tab visits them.
+//
+// Upstream's `FocusTraversalPolicy._sortAllDescendants`, in the shape this
+// registry has. Each group's members are sorted among themselves by
+// [`OrderedTraversalPolicy`], and a group node stands in its parent's list
+// for its whole subtree -- which is what keeps a group's stops together and
+// keeps an order inside one group from jumping a node past another group's.
 thread_local! {
     /// The focus traps in force, innermost last.
     ///
@@ -1499,13 +1499,28 @@ pub fn dispatch_key(event: &KeyEvent) -> bool {
 /// default rather than a rule -- an application that wants Tab for something
 /// else handles it first, and this never sees it.
 pub fn handle_traversal_key(event: &KeyEvent, keyboard: &Keyboard) -> bool {
-    if !event.is_down() || event.logical != LogicalKey::TAB {
-        return false;
+    // No `is_down` test here: every `ShortcutActivator` begins with one, so a
+    // release never matches a row and a guard here would be the same question
+    // asked twice. The mutation sweep is what settled it -- removing this
+    // guard changed nothing, which is the definition of a line not worth
+    // keeping.
+    //
+    // Which key traverses is `WidgetsApp.defaultShortcuts`' business, not
+    // this function's: it used to test for Tab itself and read `shift` off the
+    // keyboard, which is the same rule written a second time -- and a second
+    // copy that knew nothing of the web table, where Tab is the same but the
+    // arrows are not.
+    //
+    // Shift still comes from the pressed set rather than from the event, and
+    // the activator is what reads it: an event says what changed, and whether
+    // another key is held is a question about something else.
+    let table =
+        crate::shortcuts::default_shortcuts(crate::editable_text::TargetPlatform::host(), false);
+    match table.intent_for(event, keyboard) {
+        Some(crate::actions::Intent::NextFocus) => next(),
+        Some(crate::actions::Intent::PreviousFocus) => previous(),
+        _ => false,
     }
-    // Shift comes from the pressed set rather than from the event: an event
-    // says what changed, and whether another key is held is a question about
-    // something else. See `Keyboard`.
-    if keyboard.shift() { previous() } else { next() }
 }
 
 /// A widget that can hold the keyboard.
@@ -1762,6 +1777,104 @@ mod tests {
             Some(2),
             "shift+tab from the first wraps to the last"
         );
+        assert!(!handle_traversal_key(&key(LogicalKey::ESCAPE), &plain));
+    }
+
+    #[test]
+    fn a_modifier_the_table_did_not_ask_for_is_not_traversal() {
+        // The difference the table makes over a hand-written `logical == TAB`:
+        // `SingleActivator` demands its modifiers **exactly**, so Ctrl+Tab is
+        // not the Tab row. A test for the key alone, reading `shift` off the
+        // keyboard, traverses on every combination -- and Ctrl+Tab belongs to
+        // whatever the application binds it to, usually a tab strip.
+        let _tree = two_fields();
+        let mut control = Keyboard::new();
+        let mut down = KeyEvent {
+            physical: PhysicalKey::CONTROL_LEFT,
+            logical: LogicalKey::CONTROL_LEFT,
+            ..key(LogicalKey::TAB)
+        };
+        control.record(&mut down);
+
+        assert!(!handle_traversal_key(&key(LogicalKey::TAB), &control));
+        assert_eq!(focused(), None, "nothing moved");
+    }
+
+    #[test]
+    fn traversal_answers_a_key_going_down_and_not_one_coming_up() {
+        // A release is not a press: acting on both would move the focus twice
+        // for one Tab.
+        let _tree = two_fields();
+        let plain = Keyboard::new();
+        let up = KeyEvent {
+            change: KeyChange::Up,
+            ..key(LogicalKey::TAB)
+        };
+        assert!(!handle_traversal_key(&up, &plain));
+        assert_eq!(focused(), None);
+
+        assert!(handle_traversal_key(&key(LogicalKey::TAB), &plain));
+        assert_eq!(focused(), Some(1));
+    }
+
+    #[test]
+    fn shift_and_tab_really_go_the_other_way() {
+        // Three nodes, because with two the wrap makes forwards and backwards
+        // land in the same place and a test cannot tell them apart -- which is
+        // what let a `PreviousFocus => next()` mutation through.
+        reset();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                focusable(1, leaf(|| SizedBox::new(10.0, 10.0))),
+                focusable(2, leaf(|| SizedBox::new(10.0, 10.0))),
+                focusable(3, leaf(|| SizedBox::new(10.0, 10.0))),
+            ],
+            |children| {
+                let mut column = Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        let _root = tree.build_render_tree().expect("mounted");
+
+        let plain = Keyboard::new();
+        assert!(handle_traversal_key(&key(LogicalKey::TAB), &plain));
+        assert!(handle_traversal_key(&key(LogicalKey::TAB), &plain));
+        assert_eq!(focused(), Some(2), "two forwards from nothing");
+        assert!(handle_traversal_key(&key(LogicalKey::TAB), &with_shift()));
+        assert_eq!(focused(), Some(1), "and one back is the one before it");
+    }
+
+    #[test]
+    fn the_traversal_key_is_whatever_the_default_table_says_it_is() {
+        // The rule used to be written twice: this function tested for Tab
+        // itself while `WidgetsApp.defaultShortcuts` also said Tab. It reads
+        // the table now, so a table that stopped binding Tab would stop this
+        // -- and, more to the point, so the two cannot disagree.
+        let table = crate::shortcuts::default_shortcuts(
+            crate::editable_text::TargetPlatform::host(),
+            false,
+        );
+        let plain = Keyboard::new();
+        let names = |event: &KeyEvent, keyboard: &Keyboard| {
+            table
+                .intent_for(event, keyboard)
+                .map(crate::actions::Intent::action_name)
+        };
+        assert_eq!(names(&key(LogicalKey::TAB), &plain), Some("NextFocus"));
+        assert_eq!(
+            names(&key(LogicalKey::TAB), &with_shift()),
+            Some("PreviousFocus")
+        );
+
+        // And a key the table gives another meaning is not traversal: escape
+        // dismisses, and this function leaves it alone rather than swallowing
+        // it.
+        assert_eq!(names(&key(LogicalKey::ESCAPE), &plain), Some("Dismiss"));
+        let _tree = two_fields();
         assert!(!handle_traversal_key(&key(LogicalKey::ESCAPE), &plain));
     }
 
