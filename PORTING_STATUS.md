@@ -4370,3 +4370,49 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 先数清楚"同名的有几个、名字不同但做同一件事的有几个"，
 免得又照着上游的名字造一份和现有规则重复的东西
 （第 474 轮那条被删掉的 `effective_brightness` 就是这么来的）。
+
+---
+
+## 第 484 轮：shift 是在手势**开始**时问一次的
+
+上一轮留的问题数完了，结果很干脆：上游
+`TextSelectionGestureDetectorBuilder` 的 17 个手势回调，
+**和这个 crate 现有的名字零重合**——一个都不叫 `on_*`——
+但**规则全都在**，只是叫 `single_tap_up`、`double_tap_down`、`multi_tap_down`、
+`long_press_start/move_update/end/finish`、`drag_selection_start/update/end`、
+`force_press_start/end`、`secondary_tap`、`shift_tap_down`、`shift_drag_update`。
+换句话说，7/27 又是一次**映射错位**（和上一轮的 `MagnifierController` 同类）：
+这个 crate 把它们建模成规则函数，而不是一个 builder 上的回调。
+
+逐个对完，真正缺的是一对小回调 `onTapTrackStart` / `onTapTrackReset`，
+以及它们维护的那个 `_isShiftPressed`。
+
+而它恰恰是这一整套 shift 规则的**来源**：
+`shift_tap_down`、`shift_drag_update`、`shift_is_usable` 全都收一个
+`shift_pressed` 而不自己决定它。这一轮补的就是那个决定：
+**键盘只在 tap track 开始时被问一次**，之后整个双击、三击序列都用那一次的答案。
+
+两个后果都得写对，因为两边看起来都像 bug：
+
+- 序列**开始之后**才按下 shift 的，不会得到 shift-扩选——他开始的是一次普通序列。
+- 中途**松开** shift 的，仍然会——他开始的是一次 shift 序列，
+  在第二下和第三下之间改主意，会选中他从没要过的东西。
+
+哪一边都可以争；不能争的是**每一下都去读一次键盘、同一个手势里给出不同答案**。
+
+`onTapTrackReset` 是清成 false 而不是"再问一次"：
+再问一次会让一个从没松手的读者把 shift 一直带到下一个无关的点击上去。
+
+变异扫描 4 个，全红。扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6813 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：连着两轮队头都是**映射错位**而不是真缺口
+（`MagnifierController` 2/8、`TextSelectionGestureDetectorBuilder` 7/27），
+两次都靠人工逐个比对才发现。
+**先查一件事**：`tools/depth.py` 的映射表是怎么记的
+（`coverage.py` 那边有 `mapped`/`mapped-concept` 的分类），
+能不能让 depth 也接受一条"这个类的成员在别处，按那边数"的记法——
+如果能，这两条就该记进去，下一轮的队头才是真的队头，
+而不是再花一轮去发现"其实早就做了"。

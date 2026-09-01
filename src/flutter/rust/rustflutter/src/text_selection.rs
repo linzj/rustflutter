@@ -349,6 +349,75 @@ pub trait TextSelectionGestureDetectorBuilderDelegate {
     fn selection_enabled(&self) -> bool;
 }
 
+/// Upstream's `_isShiftPressed`, and the pair of callbacks that maintain it:
+/// `onTapTrackStart` and `onTapTrackReset`.
+///
+/// ```dart
+/// void onTapTrackStart() {
+///   _isShiftPressed = HardwareKeyboard.instance.logicalKeysPressed
+///       .intersection(<LogicalKeyboardKey>{shiftLeft, shiftRight}).isNotEmpty;
+/// }
+///
+/// void onTapTrackReset() {
+///   _isShiftPressed = false;
+/// }
+/// ```
+///
+/// # Shift is sampled once, at the start of the tap sequence
+///
+/// Every shift rule in this file -- [`shift_tap_down`], [`shift_drag_update`],
+/// [`GestureHandler::shift_is_usable`] -- takes a `shift_pressed` it does not
+/// decide. **This is where that value comes from**, and where it stops being
+/// read: the keyboard is asked when the tap *track* begins and not again, so
+/// the whole of a double- or triple-tap runs on the answer the first press
+/// gave.
+///
+/// Two consequences the port has to get right, because they read as bugs
+/// either way round:
+///
+/// * A reader who presses shift **after** starting a multi-tap does not get a
+///   shift-extend from it. The sequence they began was an ordinary one.
+/// * A reader who **lets go** of shift part way through still does. The
+///   sequence they began was a shift one, and changing its mind between the
+///   second and third tap would select something they never asked for.
+///
+/// Either could be argued the other way; what cannot be argued is reading the
+/// keyboard live and getting a different answer on each tap of one gesture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TapTrackShift {
+    held: bool,
+}
+
+impl TapTrackShift {
+    pub fn new() -> TapTrackShift {
+        TapTrackShift::default()
+    }
+
+    /// Upstream's `onTapTrackStart`: ask the keyboard, once.
+    ///
+    /// `shift_now` is the intersection upstream computes -- **either** shift
+    /// key counts, which is why upstream tests a set of two rather than one
+    /// key.
+    pub fn track_started(&mut self, shift_now: bool) {
+        self.held = shift_now;
+    }
+
+    /// Upstream's `onTapTrackReset`: the sequence is over, and the next one
+    /// starts from no.
+    ///
+    /// Not "ask the keyboard again" -- a reset that re-sampled would leave
+    /// shift held between sequences for a reader who never let go, and the
+    /// next unrelated tap would extend a selection.
+    pub fn track_reset(&mut self) {
+        self.held = false;
+    }
+
+    /// What the shift rules should be told, for every tap of this sequence.
+    pub fn is_held(&self) -> bool {
+        self.held
+    }
+}
+
 /// Upstream `TextSelectionGestureDetector`: the callbacks a field wires up.
 ///
 /// Upstream has more than twenty, and the count is the point: a text field's
@@ -6040,6 +6109,68 @@ two";
                 (200.0, 301.0),
                 (200.0, 360.0)
             ))
+        );
+    }
+
+    // -- Where the shift flag comes from -------------------------------------
+
+    use super::TapTrackShift;
+
+    #[test]
+    fn shift_is_sampled_once_when_the_tap_sequence_starts() {
+        // `onTapTrackStart` asks the keyboard and `onTapTrackReset` clears it;
+        // nothing asks again in between. So the whole of a double- or
+        // triple-tap runs on the answer the first press gave.
+        let mut shift = TapTrackShift::new();
+        assert!(!shift.is_held(), "nothing held before a sequence starts");
+
+        shift.track_started(true);
+        assert!(shift.is_held());
+        // A reader who lets go part way through still gets the sequence they
+        // began: changing its mind between the second and third tap would
+        // select something nobody asked for.
+        assert!(shift.is_held(), "and it is not re-read for the second tap");
+
+        shift.track_reset();
+        assert!(!shift.is_held());
+    }
+
+    #[test]
+    fn shift_pressed_after_the_sequence_began_does_not_join_it() {
+        // The other way round, and the reason this is a rule rather than an
+        // accident: a reader who presses shift *after* starting a multi-tap
+        // does not get a shift-extend from it.
+        let mut shift = TapTrackShift::new();
+        shift.track_started(false);
+        assert!(!shift.is_held());
+        // The keyboard has changed under it; nothing asks.
+        assert!(!shift.is_held(), "still the answer the first press gave");
+
+        // Only the next sequence picks it up.
+        shift.track_reset();
+        shift.track_started(true);
+        assert!(shift.is_held());
+    }
+
+    #[test]
+    fn what_the_shift_rules_are_told_is_what_was_sampled() {
+        // The join: every shift rule in this file takes a `shift_pressed` it
+        // does not decide, and this is where that value comes from. A tap-down
+        // during a sequence that began with shift held expands or extends;
+        // the same tap in a sequence that did not, does nothing.
+        use crate::editable_text::TargetPlatform;
+        let mut shift = TapTrackShift::new();
+        shift.track_started(true);
+        assert_eq!(
+            shift_tap_down(TargetPlatform::Linux, shift.is_held(), true, true),
+            ShiftTapDown::Extend
+        );
+
+        shift.track_reset();
+        assert_eq!(
+            shift_tap_down(TargetPlatform::Linux, shift.is_held(), true, true),
+            ShiftTapDown::Nothing,
+            "the same tap, in a sequence that began without shift"
         );
     }
 }
