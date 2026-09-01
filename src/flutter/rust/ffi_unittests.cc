@@ -1645,6 +1645,54 @@ TEST(AndroidKeySync, TheLockKeysOwnEventIsLeftAlone) {
   EXPECT_TRUE(keyboard.IsLockEnabled(kCapsLockLogical));
 }
 
+TEST(AndroidKeySync, OneAndroidEventProducesExactlyOneUnsynthesizedEvent) {
+  // The contract the JNI layer is built on. Java claims every key, hands it a
+  // sequence number, and waits for one answer; the host asks for an answer
+  // only on the event whose `synthesized` flag is clear. If a single Android
+  // event could ever produce two of those, two answers would come back for one
+  // pending key and the second would find nothing waiting -- or worse, a later
+  // key that had been given the same number.
+  //
+  // So: however much has to be invented around it, exactly one event is the
+  // real one.
+  AndroidKeyboard keyboard;
+
+  const AndroidKeyEvent cases[] = {
+      // Plain.
+      Press(kTabKeyCode, kTabScanCode, 0),
+      // A modifier to invent before it.
+      Press(kTabKeyCode, kTabScanCode, kMetaShiftOn),
+      // A lock to invent a whole pair around.
+      Press(kTabKeyCode, kTabScanCode, kMetaCapsLockOn),
+      // The modifier's own press.
+      Press(kShiftLeftKeyCode, kShiftLeftScanCode, kMetaShiftOn),
+  };
+
+  for (const AndroidKeyEvent& event : cases) {
+    AndroidKeyboard fresh;
+    std::vector<Emitted> out;
+    ASSERT_TRUE(fresh.Handle(event, "", Collect(&out)));
+    int real = 0;
+    for (const Emitted& emitted : out) {
+      if (!emitted.synthesized) {
+        ++real;
+      }
+    }
+    EXPECT_EQ(real, 1) << "key code " << event.key_code << " produced "
+                       << out.size() << " events, " << real << " of them real";
+  }
+
+  // And an event that is dropped produces none at all, which is why `Handle`
+  // reports it: nothing would ever answer, and Java would hold the key
+  // forever.
+  std::vector<Emitted> out;
+  EXPECT_FALSE(keyboard.Handle(Release(kTabKeyCode, kTabScanCode, 0), "",
+                               Collect(&out)));
+  for (const Emitted& emitted : out) {
+    EXPECT_TRUE(emitted.synthesized) << "a dropped key emitted a real event";
+  }
+}
+
 TEST(AndroidKeySync, AnEventWithNoNumbersAtAllIsNotAKey) {
   AndroidKeyboard keyboard;
   std::vector<Emitted> out;

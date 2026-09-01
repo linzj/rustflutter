@@ -47,7 +47,11 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import android.util.SparseArray;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * The Android half of the rustflutter host.
@@ -120,6 +124,29 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
    * message, kept where the view can see it.
    */
   private static boolean sHasClient = false;
+
+  /**
+   * Keys sent to the framework and not yet answered for, by sequence number.
+   *
+   * <p>The event itself is kept because a key the framework declines has to be
+   * dispatched again, and only the original object will do.
+   */
+  private static final SparseArray<KeyEvent> sPendingKeys = new SparseArray<>();
+
+  /** Names the next key. Zero is reserved for "no answer wanted". */
+  private static int sKeySequence = 0;
+
+  /**
+   * Events this class put back into the activity, held by identity.
+   *
+   * <p>An {@link IdentityHashMap}-backed set rather than a {@link HashSet},
+   * because that is the question being asked: is this the very object that was
+   * redispatched? {@code KeyEvent} inherits {@code Object.equals}, so the two
+   * agree today -- but a set that says what it means will not quietly change
+   * behaviour if that ever stops being true.
+   */
+  private static final Set<KeyEvent> sRedispatched =
+      Collections.newSetFromMap(new IdentityHashMap<KeyEvent, Boolean>());
 
   /**
    * The focused field's configuration, as {@code TextInput.setClient} described
@@ -540,6 +567,43 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
             ? EditorInfo.IME_ACTION_NONE
             : EditorInfo.IME_ACTION_DONE;
     }
+  }
+
+  /**
+   * What the framework decided about one key.
+   *
+   * <p>Called from the platform thread, which is why the work is posted: a key
+   * event has to be dispatched from the thread the view lives on.
+   *
+   * <p>A key nobody wanted goes back to Android. Without this an application
+   * would swallow the volume keys, the media keys and anything else the system
+   * handles by default, because {@link #handleKey} has to claim every key
+   * before it can possibly know whether the framework wants it.
+   */
+  public static void onKeyResult(int sequenceId, boolean handled) {
+    final RustflutterActivity activity = sInstance;
+    if (activity == null || activity.mView == null) {
+      sPendingKeys.remove(sequenceId);
+      return;
+    }
+    activity.mView.post(
+        () -> {
+          final KeyEvent event = sPendingKeys.get(sequenceId);
+          sPendingKeys.remove(sequenceId);
+          if (event == null || handled) {
+            // Either the text field took it while the framework was thinking,
+            // or the framework wanted it. Nothing left to do.
+            return;
+          }
+          // Round again, from the top of the activity. The marker is what
+          // stops this becoming a loop: handleKey lets a marked event straight
+          // through to the default handling.
+          sRedispatched.add(event);
+          activity.dispatchKeyEvent(event);
+          if (sRedispatched.remove(event)) {
+            Log.w(TAG, "A redispatched key was consumed before it came back round");
+          }
+        });
   }
 
   /** The framework's editing state, on its way to the IME. */
@@ -995,10 +1059,20 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
      * Enter submits, and a printable key types.
      *
      * <p>The framework's verdict cannot be waited for here -- it arrives on the
-     * platform thread, and this method has to answer now -- so both happen,
-     * which is what the GTK host does too.
+     * platform thread, and this method has to answer now. So every key is
+     * claimed, and one the framework turns out not to want is dispatched into
+     * the activity a second time, where this method lets it through. See
+     * {@link #onKeyResult}.
      */
     private boolean handleKey(int keyCode, KeyEvent event, boolean down) {
+      // The second time around. This is the same object, not an equal one --
+      // {@code KeyEvent} does not override {@code equals}, and identity is
+      // exactly what is wanted: only the event this class put back is the one
+      // to let past.
+      if (sRedispatched.remove(event)) {
+        return down ? super.onKeyDown(keyCode, event) : super.onKeyUp(keyCode, event);
+      }
+
       // A key with no code is not a key. Upstream drops these before mapping,
       // and it has to: the physical key is synthesized from the key code when
       // there is no scan code, and a zero there would make every such event the
@@ -1017,6 +1091,12 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
       boolean shortcut = event.isCtrlPressed() || event.isAltPressed();
       String character = (printable && !shortcut) ? new String(Character.toChars(codePoint)) : null;
 
+      // Held until the framework answers for it. Registered before the key is
+      // sent, because a key the host drops outright is answered from inside
+      // this very call.
+      final int sequence = ++sKeySequence;
+      sPendingKeys.put(sequence, event);
+
       // The meta state travels with every event, and it is the only thing that
       // can tell the framework about a modifier press it never saw -- one held
       // since before this activity started, or released over another window.
@@ -1028,23 +1108,32 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
           down,
           event.getRepeatCount() > 0,
           event.getDeviceId() == KeyCharacterMap.VIRTUAL_KEYBOARD,
-          character);
+          character,
+          sequence);
 
-      if (!down) {
-        return true;
+      // The focused text field, which is this side of the FFI and answers now.
+      // A key it takes is settled here whatever the framework goes on to say,
+      // so the pending entry goes away and no redispatch can follow.
+      boolean consumedHere = false;
+      if (down) {
+        if (nativeEditingKey(keyCode, event.isShiftPressed())) {
+          consumedHere = true;
+        } else if (keyCode == KeyEvent.KEYCODE_ENTER
+            || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+          nativeEditorAction();
+          consumedHere = true;
+        } else if (character != null) {
+          nativeText(character);
+          consumedHere = true;
+        }
       }
-      if (nativeEditingKey(keyCode, event.isShiftPressed())) {
-        return true;
+      if (consumedHere) {
+        sPendingKeys.remove(sequence);
       }
-      if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
-        nativeEditorAction();
-        return true;
-      }
-      if (character != null) {
-        nativeText(character);
-        return true;
-      }
-      return super.onKeyDown(keyCode, event);
+      // Claimed either way. A key the framework turns out not to want comes
+      // back through onKeyResult, which sends it round again for Android's own
+      // handling -- otherwise this application would swallow the volume keys.
+      return true;
     }
   }
 
@@ -1697,7 +1786,8 @@ public class RustflutterActivity extends Activity implements SurfaceHolder.Callb
       boolean down,
       boolean repeat,
       boolean virtualKeyboard,
-      String character);
+      String character,
+      int sequenceId);
 
   private static native void nativeEditorAction();
 

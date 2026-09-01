@@ -242,9 +242,26 @@ class JavaBridge {
                                       "(Ljava/lang/String;IIII)V");
     semantics_ = env->GetStaticMethodID(class_, "onSemanticsUpdate",
                                         "(Ljava/lang/String;)V");
+    key_result_ = env->GetStaticMethodID(class_, "onKeyResult", "(IZ)V");
     FML_CHECK(request_ != nullptr && editing_ != nullptr &&
-              semantics_ != nullptr)
+              semantics_ != nullptr && key_result_ != nullptr)
         << "RustflutterActivity is missing a method the host calls.";
+  }
+
+  /// What the framework decided about one key.
+  ///
+  /// `handled` false means nothing in the application wanted it, and Java's
+  /// job is then to give it back to Android -- otherwise an application would
+  /// swallow the volume keys.
+  static void KeyResult(int32_t sequence_id, bool handled) {
+    if (class_ == nullptr) {
+      return;
+    }
+    JNIEnv* env = fml::jni::AttachCurrentThread();
+    env->CallStaticVoidMethod(class_, key_result_,
+                              static_cast<jint>(sequence_id),
+                              handled ? JNI_TRUE : JNI_FALSE);
+    fml::jni::CheckException(env);
   }
 
   /// Hands the semantics tree to Java, as JSON.
@@ -315,12 +332,14 @@ class JavaBridge {
   static jmethodID request_;
   static jmethodID editing_;
   static jmethodID semantics_;
+  static jmethodID key_result_;
 };
 
 jclass JavaBridge::class_ = nullptr;
 jmethodID JavaBridge::request_ = nullptr;
 jmethodID JavaBridge::editing_ = nullptr;
 jmethodID JavaBridge::semantics_ = nullptr;
+jmethodID JavaBridge::key_result_ = nullptr;
 
 //------------------------------------------------------------------------------
 /// Frames, from the display's own clock.
@@ -1337,20 +1356,38 @@ class HostPlatformView final : public PlatformView,
   /// the same bytes here as on Windows and Linux, and no key-shaped method
   /// exists on PlatformView to add one to.
   ///
-  /// No answer is asked for, the same as the GTK host and unlike the Windows
-  /// one. Windows waits so that a key the framework did not want can be handed
-  /// back to the system, and that matters there because the window proc is the
-  /// only thing between the key and the default handling. Android's `onKeyDown`
-  /// would have to answer before this call could return, and it cannot: the
-  /// framework's verdict arrives on the platform thread, long after. Upstream
-  /// solves that by redispatching the event into the activity a second time,
-  /// which is a mechanism of its own and is not here yet.
-  void SendKey(const KeyData& data, const std::string& character) {
+  /// `sequence_id` is Java's name for this key, and it travels out with the
+  /// message and comes back with the answer. Zero asks for no answer at all,
+  /// which is right for a key nothing could do about: a synthesized modifier
+  /// has no original event to hand back to the system.
+  ///
+  /// The answer is one byte: 1 if the framework consumed the key. An empty
+  /// reply -- no listener, or the runtime shutting down -- reads as "not
+  /// consumed", which is the safe way round: a key nobody wanted goes back to
+  /// Android rather than disappearing.
+  ///
+  /// It cannot be waited for. `onKeyDown` has to answer before this call could
+  /// possibly return, so Java says yes to every key and, when the answer comes
+  /// back "no", dispatches the event into the activity a second time. That is
+  /// upstream's arrangement too.
+  void SendKey(const KeyData& data,
+               const std::string& character,
+               int32_t sequence_id) {
     KeyDataPacket packet(data, character.empty() ? nullptr : character.c_str());
+    fml::RefPtr<PlatformMessageResponse> response;
+    if (sequence_id != 0) {
+      response = fml::MakeRefCounted<HostPlatformMessageResponse>(
+          task_runners_.GetPlatformTaskRunner(),
+          [sequence_id](const uint8_t* reply, size_t length) {
+            const bool handled =
+                length > 0 && reply != nullptr && reply[0] != 0;
+            JavaBridge::KeyResult(sequence_id, handled);
+          });
+    }
     auto message = std::make_unique<PlatformMessage>(
         kKeyDataChannel,
         fml::MallocMapping::Copy(packet.data().data(), packet.data().size()),
-        /*response=*/nullptr);
+        std::move(response));
     task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
         [weak = GetWeakPtr(), message = std::move(message)]() mutable {
           if (weak) {
@@ -2351,7 +2388,8 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeKey(
     jboolean down,
     jboolean repeat,
     jboolean virtual_keyboard,
-    jstring character) {
+    jstring character,
+    jint sequence_id) {
   auto& state = flutter::HostState::Get();
   if (state.platform_view == nullptr) {
     return;
@@ -2375,12 +2413,26 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeKey(
     text = fml::jni::JavaStringToString(env, character);
   }
 
+  // Only the real event carries the sequence id, and so only it is answered.
+  // The synthesized ones are this host's own invention -- there is no original
+  // Android event behind them to give back, so an answer would have nowhere to
+  // go. `synthesized` is what tells them apart, which is the same flag the
+  // framework reads them by.
   flutter::HostPlatformView* view = state.platform_view;
-  state.keyboard.Handle(
+  const int32_t sequence = static_cast<int32_t>(sequence_id);
+  const bool sent = state.keyboard.Handle(
       event, text,
-      [view](const flutter::KeyData& data, const std::string& character) {
-        view->SendKey(data, character);
+      [view, sequence](const flutter::KeyData& data,
+                       const std::string& character) {
+        view->SendKey(data, character, data.synthesized != 0 ? 0 : sequence);
       });
+  if (!sent && sequence != 0) {
+    // The event was dropped -- an abrupt release, or a key with no numbers at
+    // all. Nothing will ever answer for it, and Java is holding it waiting.
+    // The framework never saw it, so it did not handle it, and that is the
+    // answer.
+    flutter::JavaBridge::KeyResult(sequence, false);
+  }
 }
 
 JNIEXPORT jboolean JNICALL
