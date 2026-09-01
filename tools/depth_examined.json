@@ -125,6 +125,41 @@
       "file": "widgets/text_selection.dart",
       "tick": 282,
       "finding": "The drag lifecycle -- isDraggingStartHandle, isDraggingEndHandle, the six onStartHandleDrag*/onEndHandleDrag* callbacks, _canDragStartHandle and the two flags behind each handle -- is ported as HandleDragState beside SelectionOverlay rather than on it, with its own tests, which is why the ratio does not move. The three LayerLink fields (startHandleLayerLink, endHandleLayerLink, toolbarLayerLink) have no counterpart for the reason recorded for RenderEditable: this port positions handles and toolbar from computed endpoints rather than by following leader layers. capturedThemes and debugRequiredFor belong to Overlay's inherited-widget plumbing, which this port does not have. Reasoning in PORTING_STATUS.md tick 282."
+    },
+    {
+      "class": "Route",
+      "file": "widgets/navigator.dart",
+      "tick": 478,
+      "finding": "A mapping difference plus four ticks of real work, and the ratio counts neither. depth pairs upstream's `Route` with `navigation::Route`, which is a name and some arguments -- upstream's `RouteSettings`, not its `Route`. The lifecycle object the ratio is really asking about is `routes.rs`, spread over `OverlayRoute`/`TransitionRoute`/`ModalRoute` the way upstream spreads it over the same subclasses: install, didPush, didPop, didPopNext, dispose, willHandlePopInternally and popDisposition were already there. Ticks 478-482 closed what was genuinely missing: the four position questions (isCurrent, isFirst, isActive, hasActiveRouteBelow) over `RoutePosition` with the `_RouteLifecycle` ranges they need; didReplace, didChangeNext, didChangePrevious, changedInternalState and changedExternalState with the content upstream's subclasses give them; and popped / currentResult / didComplete as `RouteCompletion`, wired through `HistoryEntry::handle_pop` and `handle_complete` and then into the running stack's pop, replace and pop_to_root.",
+      "at": "src/flutter/rust/rustflutter/src/routes.rs (RoutePosition, RouteLifecycle, HistoryEntry, RouteCompletion) and src/navigation.rs; PORTING_STATUS.md ticks 478-482."
+    },
+    {
+      "class": "MagnifierController",
+      "file": "widgets/magnifier.dart",
+      "tick": 483,
+      "finding": "The overlay half of upstream's controller is `magnifier_host::MagnifierHost`, which `magnifier.rs`'s own module docs say outright: it holds the entry, moves it as the gesture moves, hides it, and takes it down -- overlayEntry, show, hide(removeFromOverlay:), removeFromOverlay and shown all answer there. `MagnifierController` keeps only shiftWithinBounds, which is the part that is a rule rather than a lifetime. Reading it member by member at tick 483 found one real gap and closed it: `shown`'s second half, `animationController?.isForwardOrCompleted ?? true` -- a loupe animating out is already not shown, and one with no entry animation is shown as soon as it exists.",
+      "at": "src/flutter/rust/rustflutter/src/magnifier_host.rs (MagnifierHost::is_shown, animation_status, hide) and the module docs at the top of src/magnifier.rs; PORTING_STATUS.md tick 483."
+    },
+    {
+      "class": "TextSelectionGestureDetectorBuilder",
+      "file": "widgets/text_selection.dart",
+      "tick": 484,
+      "finding": "Zero of upstream's seventeen `on*` callbacks share a name with anything in this crate, and all seventeen rules are present under other names: onSingleTapUp/onDoubleTapDown/onTripleTapDown are single_tap_up, double_tap_down and multi_tap_down; the four onSingleLongTap* are long_press_start/move_update/end/finish; onDragSelectionStart/Update/End are drag_selection_*; onForcePressStart/End, onSecondaryTap and onSecondaryTapDown keep their shape; the shift arms are shift_tap_down and shift_drag_update. This port models them as rule functions over a `SingleTapContext` rather than as callbacks on a builder, which is why the names do not line up. Reading it at tick 484 found one real gap and closed it: onTapTrackStart/onTapTrackReset and the `_isShiftPressed` they maintain -- the keyboard is sampled once when the tap track begins, and every shift rule in the file is handed that value rather than reading the keyboard itself.",
+      "at": "src/flutter/rust/rustflutter/src/text_selection.rs (TapTrackShift, and the shift_* rules it feeds); PORTING_STATUS.md tick 484."
+    },
+    {
+      "class": "Icons",
+      "file": "material/icons.dart",
+      "tick": 485,
+      "finding": "A generated table of codepoints, and the decision not to copy it is recorded where it was taken: `icons.rs`'s module docs say upstream's file is 29,454 lines holding 8,825 `static const IconData` declarations, all of it between `// BEGIN GENERATED ICONS` and `// Generated code: do not hand-edit.`, and that nine thousand codepoints add nothing a reader could not get from the font itself. What has anything to say is the machinery -- `MaterialIcon` with its `matchTextDirection`, the direction rule, the platform-adaptive lookup -- and that is ported, with a representative handful of icons to exercise it. The count itself is recorded as `Icons::UPSTREAM_ICON_COUNT`, so the shortfall is a number in the source rather than an omission. This ratio can only be closed by pasting the generated block, which would move the ratio and nothing else; it stays at the head of the list for ever otherwise.",
+      "at": "src/flutter/rust/rustflutter/src/icons.rs, module docs and Icons::UPSTREAM_ICON_COUNT."
+    },
+    {
+      "class": "CupertinoIcons",
+      "file": "cupertino/icons.dart",
+      "tick": 485,
+      "finding": "The same generated-table reading as `Icons`, on the Cupertino side: 1,322 codepoints, recorded as `CupertinoIcons::UPSTREAM_ICON_COUNT` rather than reproduced, with a test that holds it against Material's 8,825. This crate has no icon font at all -- `cupertino.rs`'s module docs lead with it -- so the glyphs the widgets actually need are *drawn* (`BackChevron`, `SearchGlyph`, `ClearGlyph`), which is why those exist as render objects and the codepoints do not.",
+      "at": "src/flutter/rust/rustflutter/src/cupertino_controls.rs (CupertinoIcons::UPSTREAM_ICON_COUNT and the test beside it); the 'No icon font' note at the top of src/cupertino.rs."
     }
   ]
 }

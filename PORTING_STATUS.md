@@ -4416,3 +4416,59 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 能不能让 depth 也接受一条"这个类的成员在别处，按那边数"的记法——
 如果能，这两条就该记进去，下一轮的队头才是真的队头，
 而不是再花一轮去发现"其实早就做了"。
+
+---
+
+## 第 485 轮：把读过的记下来，队头才是真的队头
+
+上一轮留的问题，答案是"**这个机制早就有**"：`depth.py` 一直读
+`tools/depth_examined.json`，它自己的说明写得很清楚——
+
+> 一行进这个文件的前提是，有人逐个成员比对过，并且能说清楚为什么这个缺口不是缺口。
+> `finding` 就是那个理由，而且必须**可核对**：要点名是什么机制回答了那些缺失的成员，
+> 不能只写"看过了，没问题"。
+
+所以问题不是"能不能记"，是**我前面几轮读完了却没记**。这一轮把它们补上，五条：
+
+- **`Route`**（0.25，6/24）——映射差异加四轮真活。depth 把上游的 `Route`
+  配到了 `navigation::Route`，而后者是"名字 + 参数"，对应的是上游的
+  `RouteSettings`；真正被问的那个生命周期对象在 `routes.rs`。
+  第 478–482 轮补掉的是位置四问、五个 `did*` 回调、以及 popped/currentResult/didComplete。
+- **`MagnifierController`**（0.25，2/8）——overlay 那一半住在 `MagnifierHost`，
+  `magnifier.rs` 的模块注释早就写明了；第 483 轮读出并补掉的真缺口是 `shown` 的后半句。
+- **`TextSelectionGestureDetectorBuilder`**（0.26，7/27）——十七个回调**零个同名**、
+  规则**全都在**，只是建模成规则函数而不是 builder 上的回调；
+  第 484 轮补掉的是 `_isShiftPressed` 的采样时机。
+- **`Icons`**（0.00，22/8826）与 **`CupertinoIcons`**（0.01，8/1324）——
+  生成的码点表。不抄的决定写在 `icons.rs` 的模块注释里，
+  数量记成了 `UPSTREAM_ICON_COUNT` 常量；这两条不记下来就会**永远**占着队头，
+  而唯一能"关掉"它们的办法是把生成块粘过来——那只会移动比值，别的什么也不会变。
+
+记完之后队头第一次是干净的：`ReorderableList`（0.28，8/29）、
+`TextSelectionOverlay`（0.28，7/25）。
+
+### 顺手修掉一处：这把尺子读不出自己最老的记录
+
+`--examined` 跑到 tick 184 那行就崩了——`at` 这个字段是后来才加的，
+早期几行没有，而打印器直接 `row["at"]`。
+一把在自己最老的条目上崩掉的尺子，就是一把没人会跑的尺子，
+而这个打印器是那些"读过了"唯一能被读回来的地方。改成有才打印。
+
+### 这一轮的变异扫描跑的是尺子，不是 cargo
+
+六个变异，全部改变了尺子的输出：把 `at` 的容错去掉 → `--examined` 崩；
+把这一轮记下的五行**逐条删掉** → 那个类**当场回到队头**。
+最后一条正是这五行的意义所在：它们不是压制列表，是"读过了，理由在这里"。
+
+尺子：十七把全部 exit 0。门：Rust 6813 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：队头 `ReorderableList`（8/29）。
+**先查一件事**：上游那 29 个成员里，`ReorderableList` 与
+`ReorderableListState` 是两个类，而 depth 只数前者——
+先分清哪些成员在 State 上（`startItemDragReorder`、`cancelReorder`…）、
+哪些是构造参数（`itemBuilder`、`onReorder`、`proxyDecorator`…），
+再看这个 crate 的 `reorderable_list.rs` 把它们放在了哪里；
+前几轮反复出现的教训是：**先分清"在别处"与"确实没有"**，
+不然又要花一轮去发现"其实早就做了"。

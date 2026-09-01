@@ -278,7 +278,12 @@ def main():
         for name, row in sorted(examined.items()):
             print(f'{chr(10)}  {name}  ({row["file"]}), tick {row["tick"]}')
             print(f'    {row["finding"]}')
-            print(f'    where: {row["at"]}')
+            # `at` arrived later than the first rows, so a few predate it. A
+            # ruler that crashes on its own oldest entries is a ruler nobody
+            # runs -- and this printer is the only place those readings can be
+            # read back.
+            if row.get('at'):
+                print(f'    where: {row["at"]}')
         return
 
     classes_by_file = coverage.upstream_classes()
