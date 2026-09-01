@@ -500,6 +500,19 @@ impl RenderBox for RenderPortal {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// A widget that builds `overlay_child` in its own place and renders it in the
@@ -2095,6 +2108,19 @@ impl RenderBox for RenderAnchored {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Wraps `surface` in a positioner that places it against `anchor`.
@@ -2133,6 +2159,25 @@ mod tests {
         );
         assert_eq!(anchored.max_intrinsic_width(f32::INFINITY), 52.0);
         assert_eq!(anchored.min_intrinsic_height(f32::INFINITY), 16.0);
+
+        // And the baseline, whose default `None` means "no baseline at all" --
+        // true of an empty box, false of one holding a line of text. See
+        // PORTING_STATUS.md, tick 468.
+        struct Lettered;
+        impl crate::render::RenderBox for Lettered {
+            fn layout(&mut self, constraints: crate::render::BoxConstraints) -> Size {
+                constraints.smallest()
+            }
+            fn size(&self) -> Size {
+                Size::ZERO
+            }
+            fn paint(&self, _context: &mut crate::render::PaintContext, _offset: Offset) {}
+            fn distance_to_baseline(&self) -> Option<f32> {
+                Some(9.0)
+            }
+        }
+        let lettered = RenderPortal::new(crate::render::RenderRef::new(Lettered));
+        assert_eq!(lettered.distance_to_baseline(), Some(9.0));
     }
     use super::*;
     use crate::framework::{BuildContext, Component, ElementTree, provide};

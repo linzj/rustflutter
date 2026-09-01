@@ -3536,3 +3536,71 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 **先查一件事**：`RenderBox` 上到底哪几个方法是"默认值对无孩子的盒子成立、
 对代理不成立"的（`compute_dry_layout` 的默认是什么？
 `distance_to_baseline` 呢？），确认了再决定要不要给它们加一把尺子。
+
+---
+
+## 第 468 轮：同一类洞的另一半，以及一把专管它的尺子
+
+上一轮留的问题：`RenderBox` 上还有哪几个默认实现"对没有孩子的盒子成立、
+对包装层不成立"。扫了一遍，答案是三类：
+四个 intrinsic（上一轮补了）、`distance_to_baseline`（默认 `None`）、
+以及 `compute_dry_layout`（默认 `Size::ZERO`）。
+其中 **`distance_to_baseline` 有 33 个包装层没写**。
+
+`None` 的意思是"这东西没有基线"——对空盒子成立，
+对一个只是裹着一行字的盒子不成立。
+按基线对齐的 Row 会把 `None` 的孩子当成没有基线、改按顶边对齐，
+于是 `Opacity` 或 clip 里的一个标签，会比它旁边的标签高出几像素，
+而且**没有任何东西会说话**。
+
+按上游两条规则补：
+
+- **纯代理**（`RenderProxyBox.computeDistanceToActualBaseline`）——
+  直接是孩子的。补了 25 个：各种 clip、`Opacity`、`Transform`、
+  `AspectRatio`、`IntrinsicWidth/Height`、`MetaData`、`IgnorePointer`、
+  `AbsorbPointer`、`TapRegion`、`Portal`、`Anchored` 等等。
+- **挪动了孩子的**（`RenderShiftedBox`）——孩子的基线**加上孩子被放在哪**。
+  基线是从自己顶边量起的距离，报孩子自己的数字等于宣称基线比字实际所在的位置高。
+
+### 一把尺子：`tools/proxy_holes.py`
+
+连着两轮撞同一形状的 bug，说明这不是运气问题。
+少实现一个 trait 方法不是编译错误、不是测试失败、不是警告——
+**它是一个答案，而且是个看起来合理的答案**，门里没有任何东西能看见。
+
+于是加了第十七把尺子：找出"有 child 字段却让默认值替它回答"的 render。
+真的默认值就是对的（sliver 走另一套协议、viewport 由父给多大就多大、
+`AnimatedSize` 正在两个尺寸之间），就写进 `EXCUSED` 并附理由——
+名字在那里是一个**主张**，不是一条待办。
+
+写它的那一遍就抓到一个真的：`RenderMetaData` 四个 intrinsic 一个都没有。
+
+而且它自己先被自己抓了一次：第一版 `blocks()` 图省事，
+把每个 impl 切到**下一个 impl**为止，于是一个 impl 后面跟着 inherent 块的类型，
+会把邻居的方法算成自己的答案——尺子于是报告它回答了从没回答过的问题。
+读邻居答案的仪器比没有还糟，改成数花括号。
+
+### 变异扫描 6 个 + 给尺子自己的 2 个
+
+代码那 6 个：5 个被测试按住，1 个（`RenderMetaData`）**被新尺子按住**——
+这正是加尺子的理由：那种洞本来就没有测试形状。
+给尺子的 2 个是反过来做的：**把尺子弄瞎，再挖一个真洞**，
+它必须看不见；两个都如此，说明那两行确实在干活。
+
+其中一条自找的弯路值得记：验证"挪动了孩子的盒子加对了轴"时，
+第一版夹具让 dx 和 dy 恰好相等（都是 15），
+于是"加错轴"这个变异照样通过——**两个数字相等的时候，用哪个都对**。
+把两个因子改成不同的（50×80 的孩子在 100×100 里居中，25 和 10）才立得住。
+
+尺子：十七把全部 exit 0。门：Rust 6747 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：这一类洞还剩两处没补——
+`compute_dry_layout`（默认 `Size::ZERO`：一个父想"先量不落地"时得到零）
+在 `Container` 和 `RenderSemantics` 上是空的；
+`hit_test_children`（默认 `false`）有 17 个包装层没写，
+但其中多数是**自己重写了整个 `hit_test`**，所以不能一刀切。
+**先查一件事**：那 17 个里哪些真的既没有 `hit_test` 也没有
+`hit_test_children`——那才是"看得见摸不着"的真洞；
+确认了再决定要不要把这两项也加进 `proxy_holes.py` 的 `WANTED`。

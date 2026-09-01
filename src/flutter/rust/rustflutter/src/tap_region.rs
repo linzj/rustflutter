@@ -354,6 +354,19 @@ impl RenderBox for RenderTapRegionSurface {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `RenderTapRegion`.
@@ -558,6 +571,19 @@ impl RenderBox for RenderTapRegion {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `TapRegionSurface`: installs a registry and the render object
@@ -729,6 +755,37 @@ mod tests {
         assert_eq!(region.min_intrinsic_width(f32::INFINITY), 64.0);
         assert_eq!(region.max_intrinsic_height(f32::INFINITY), 18.0);
         assert_eq!(region.min_intrinsic_height(f32::INFINITY), 18.0);
+    }
+
+    #[test]
+    fn a_tap_region_keeps_its_child_s_baseline() {
+        // The other default that lies for a wrapper: `None` means "no
+        // baseline", which is true of an empty box and false of one holding a
+        // line of text. A row aligning on the baseline lines a `None` child up
+        // by its top instead. See PORTING_STATUS.md, tick 468.
+        struct Lettered;
+        impl crate::render::RenderBox for Lettered {
+            fn layout(
+                &mut self,
+                constraints: crate::render::BoxConstraints,
+            ) -> crate::render::Size {
+                constraints.smallest()
+            }
+            fn size(&self) -> crate::render::Size {
+                crate::render::Size::ZERO
+            }
+            fn paint(
+                &self,
+                _context: &mut crate::render::PaintContext,
+                _offset: crate::render::Offset,
+            ) {
+            }
+            fn distance_to_baseline(&self) -> Option<f32> {
+                Some(11.0)
+            }
+        }
+        let region = RenderTapRegion::new(7002, Lettered);
+        assert_eq!(region.distance_to_baseline(), Some(11.0));
     }
     use super::*;
     use crate::framework::{Component, ElementTree, component, leaf};

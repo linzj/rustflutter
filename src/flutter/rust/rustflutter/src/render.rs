@@ -5373,6 +5373,21 @@ impl RenderBox for RenderFullWidth {
             .as_ref()
             .map_or(0.0, |child| child.max_intrinsic_height(width))
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child
+            .as_ref()
+            .and_then(|child| child.distance_to_baseline())
+    }
 }
 
 // -- Single child: constrained box --------------------------------------------
@@ -9167,6 +9182,19 @@ impl RenderBox for RenderIgnorePointer {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Passes its child through and writes down how big it turned out.
@@ -9956,6 +9984,19 @@ impl RenderBox for RenderAspectRatio {
             self.child.max_intrinsic_height(width)
         }
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 // -- Intrinsics ---------------------------------------------------------------
@@ -10038,6 +10079,19 @@ impl RenderBox for RenderIntrinsicWidth {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Sizes its child to the child's own preferred height. See
@@ -10112,6 +10166,19 @@ impl RenderBox for RenderIntrinsicHeight {
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
         self.child.max_intrinsic_width(height)
+    }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
     }
 }
 
@@ -10230,6 +10297,19 @@ impl RenderBox for RenderTransform {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Draws its child at a uniform opacity, through an offscreen group so that
@@ -10334,6 +10414,19 @@ impl RenderBox for RenderOpacity {
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
+    }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
     }
 }
 
@@ -10453,6 +10546,19 @@ impl RenderBox for RenderClipRect {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Clips its child to an arbitrary path, in the child's own coordinates.
@@ -10533,6 +10639,19 @@ impl RenderBox for RenderClipPath {
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
+    }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
     }
 }
 
@@ -14198,6 +14317,85 @@ mod tests {
         // difference so both baselines land on the same line.
         assert_eq!(offsets[0].dy, 0.0);
         assert_eq!(offsets[1].dy, 20.0);
+    }
+
+    #[test]
+    fn a_wrapped_child_keeps_its_baseline() {
+        // Upstream `RenderProxyBox.computeDistanceToActualBaseline`:
+        // `child?.getDistanceToActualBaseline(baseline)`. The trait's default
+        // is `None`, which means "no baseline at all" -- true of an empty box
+        // and false of one that merely wraps a line of text.
+        //
+        // A row aligning on the baseline lines a `None` child up by its top
+        // instead, so a label inside an opacity or a clip sat a few pixels off
+        // from the label beside it and nothing said why.
+        let wrapped = |wrap: fn(FixedBox) -> Box<dyn RenderBox>| {
+            let mut row = RenderFlex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Baseline)
+                .push(FixedBox::new(20.0, 40.0).with_baseline(30.0))
+                .push(wrap(FixedBox::new(20.0, 20.0).with_baseline(10.0)));
+            row.layout(BoxConstraints::tight(100.0, 50.0));
+            row.child_offsets()[1].dy
+        };
+        assert_eq!(
+            wrapped(|child| Box::new(RenderOpacity::new(0.5, child))),
+            20.0,
+            "an opacity is see-through in this sense too"
+        );
+        assert_eq!(
+            wrapped(|child| Box::new(RenderClipRect::new(child))),
+            20.0,
+            "and so is a clip"
+        );
+        assert_eq!(
+            wrapped(|child| Box::new(RenderIntrinsicWidth::new(child))),
+            20.0,
+            "and a box that only measures"
+        );
+        assert_eq!(
+            wrapped(|child| Box::new(RenderFullWidth::new().with_child(child))),
+            20.0,
+            "and one that widens without moving anything"
+        );
+        assert_eq!(
+            wrapped(|child| Box::new(RenderConstraintsTransformBox::new(
+                ConstraintsTransform::Unconstrained,
+                Alignment::TOP_LEFT,
+                child,
+            ))),
+            20.0,
+            "and one that lets go of the constraints, its child left at the top"
+        );
+    }
+
+    #[test]
+    fn a_box_that_moved_its_child_moves_the_baseline_with_it() {
+        // Upstream `RenderShiftedBox.computeDistanceToActualBaseline`: the
+        // child's baseline **plus where the child was put**. A baseline is a
+        // distance from this box's own top, so reporting the child's own
+        // number would claim a baseline higher up than the text actually sits.
+        let mut shifted = RenderFractionallySizedOverflowBox::new(
+            Alignment::CENTER,
+            FixedBox::new(20.0, 20.0).with_baseline(10.0),
+        )
+        .with_factors(Some(0.5), Some(0.8));
+        shifted.layout(BoxConstraints::tight(100.0, 100.0));
+        // The two factors differ on purpose. The box itself fills the hundred
+        // it was given and the **child** is sized by the factors -- 50 by 80 --
+        // so centring leaves 25 across and 10 down. A baseline that added the
+        // wrong one of those would still look right if they matched.
+        let mut where_the_child_went = Offset::ZERO;
+        shifted.visit_children(&mut |_child, offset| where_the_child_went = offset);
+        assert_eq!(
+            (where_the_child_went.dx, where_the_child_went.dy),
+            (25.0, 10.0),
+            "the child was moved, and by different amounts each way"
+        );
+        assert_eq!(
+            shifted.distance_to_baseline(),
+            Some(10.0 + where_the_child_went.dy),
+            "and the baseline came down with it"
+        );
     }
 
     #[test]
@@ -19083,6 +19281,19 @@ impl RenderBox for RenderClipRRect {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `RenderClipOval`: clips the child to the largest inscribed oval.
@@ -19164,6 +19375,19 @@ impl RenderBox for RenderClipOval {
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
+    }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
     }
 }
 
@@ -19280,6 +19504,19 @@ impl RenderBox for RenderFractionalTranslation {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `RenderShaderMask`: the child composited through a shader with
@@ -19377,6 +19614,19 @@ impl RenderBox for RenderShaderMask {
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
+    }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
     }
 }
 
@@ -19575,6 +19825,19 @@ impl RenderBox for RenderAbsorbPointer {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 // -- Custom clippers and the physical family (upstream proxy_box.dart) --------------
@@ -19702,6 +19965,19 @@ impl RenderBox for RenderCustomClipPath {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `RenderClipRSuperellipse`: the smooth-corner clip. Drawn with
@@ -19792,6 +20068,19 @@ impl RenderBox for RenderClipRSuperellipse {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `RenderBackdropFilter`: a filter applied to what is already
@@ -19873,6 +20162,19 @@ impl RenderBox for RenderBackdropFilter {
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
+    }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
     }
 }
 
@@ -20015,6 +20317,19 @@ impl RenderBox for RenderPhysicalModel {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `RenderPhysicalShape`: the `ShapeBorder` spelling of the
@@ -20143,6 +20458,19 @@ impl RenderBox for RenderPhysicalShape {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `RenderMetaData`: carries a payload onto the hit-test entry, so
@@ -20238,6 +20566,39 @@ impl RenderBox for RenderMetaData {
             result.add(self.meta_id, position);
         }
         hit
+    }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
+
+    /// Upstream `RenderProxyBox`: metadata is a label on a subtree, not a
+    /// change to it, so every intrinsic is the child's. See
+    /// PORTING_STATUS.md, tick 468 -- this one was found by
+    /// `tools/proxy_holes.py` on the run that wrote it.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
     }
 }
 
@@ -23088,6 +23449,20 @@ impl RenderBox for RenderConstraintsTransformBox {
             .map(|child| child.max_intrinsic_height(width))
             .unwrap_or(0.0)
     }
+
+    /// Upstream `RenderShiftedBox.computeDistanceToActualBaseline`: the
+    /// child's baseline **plus where the child was put**.
+    ///
+    /// A baseline is a distance from this box's own top, so a box that moved
+    /// its child down and reported the child's own number would claim a
+    /// baseline higher than the text actually sits. See PORTING_STATUS.md,
+    /// tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child
+            .as_ref()
+            .and_then(|child| child.distance_to_baseline())
+            .map(|baseline| baseline + self.child_offset.dy)
+    }
 }
 
 /// Upstream `RenderFractionallySizedOverflowBox`: the child sized to a
@@ -23267,6 +23642,20 @@ impl RenderBox for RenderFractionallySizedOverflowBox {
             |child, width| child.max_intrinsic_height(width),
             false,
         )
+    }
+
+    /// Upstream `RenderShiftedBox.computeDistanceToActualBaseline`: the
+    /// child's baseline **plus where the child was put**.
+    ///
+    /// A baseline is a distance from this box's own top, so a box that moved
+    /// its child down and reported the child's own number would claim a
+    /// baseline higher than the text actually sits. See PORTING_STATUS.md,
+    /// tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child
+            .as_ref()
+            .and_then(|child| child.distance_to_baseline())
+            .map(|baseline| baseline + self.child_offset.dy)
     }
 }
 

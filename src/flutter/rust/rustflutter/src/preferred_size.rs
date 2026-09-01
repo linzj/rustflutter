@@ -188,6 +188,19 @@ impl RenderBox for RenderSizeChangedWithCallback {
     fn max_intrinsic_height(&self, width: f32) -> f32 {
         self.child.max_intrinsic_height(width)
     }
+
+    /// Upstream `RenderProxyBox.computeDistanceToActualBaseline`, which is
+    /// `child?.getDistanceToActualBaseline(baseline)`.
+    ///
+    /// The default on the trait is `None`, which means "this box has no
+    /// baseline" -- true of a box with no text in it, and false of one that
+    /// merely wraps something with text. A row aligning on the baseline treats
+    /// a `None` child as having none and lines it up by its top instead, so a
+    /// label inside an `Opacity` or a clip sat a few pixels off from the label
+    /// beside it, and nothing said why. See PORTING_STATUS.md, tick 468.
+    fn distance_to_baseline(&self) -> Option<f32> {
+        self.child.distance_to_baseline()
+    }
 }
 
 /// Upstream `SizeChangedLayoutNotifier`.
