@@ -7205,3 +7205,80 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6983 通�
 以及 `Chip`/`Button` 是不是已经各自画了悬停色。
 **如果已经各画各的，那就是又一处"同一条规则五个家"**，
 该把它收进 `FocusHighlight`（那时它就该改名了），而不是再加第六处。
+
+---
+
+## 第 533 轮：真机跑通——第 515–532 轮那一整条键盘通路
+
+本轮开始时手上在做悬停高亮，中途用户说 adb 接上了三星（SM_F9360，arm64）。
+**第 515 轮起连着五轮记着"仍然没有真机"**，这条欠账比悬停值钱得多，
+于是把悬停的改动 `git checkout` 撤掉（脚本留在 scratchpad），改跑验证。
+
+### 两次"先验仪器，再信结论"
+
+**一、音量键测不了。** 第 518 轮记的方案是按音量键看还调不调得动音量。
+按下去音量纹丝不动——但**先别急着说 app 吞了键**：
+把 app 切到后台、回到桌面再按一次，**音量照样不动**。
+所以是 `input keyevent 24/25` 在这台机器上根本推不动音量，
+**仪器坏了，不是被测物坏了**。这条测不出结论，如实记下。
+
+**二、BACK 键不算数。** BACK 一按整屏变化，看着像"键到了 app"，
+但 BACK 走的是 `onBackPressed`，**不是 `onKeyDown`**，
+证明不了本轮要证的那条路。
+
+于是给 `handleKey` 和 `onKeyResult` 各加一行临时日志，重打 APK，
+**直接看那条路自己说话**。
+
+### 看到的东西
+
+    KEYPROBE handleKey code=61 scan=0 down=true  meta=0 seq=9
+    KEYPROBE result    seq=9  handled=true
+    KEYPROBE handleKey code=61 scan=0 down=false meta=0 seq=10
+    KEYPROBE result    seq=10 handled=false
+
+一行一行对上：
+
+- **`scan=0`**——正是第 515 轮照上游 `getPhysicalKey` 港的那条分支
+  （`adb shell input keyevent` 送出的键没有扫描码，物理键要从 keyCode 造）。
+- **按下和松开都到**——第 515 轮补的 `onKeyUp`。
+- **`handled=true` 只在按下那一次**，松开是 false——
+  第 513 轮定的规则（遍历只吃按下），单元测试里那条
+  `traversal_answers_a_key_going_down_and_not_one_coming_up` 说的就是这个，
+  **真机上是同一个答案**。
+- **答复回得来**——第 518 轮那趟 C++ → 框架 → 平台线程 → JNI → Java 的往返通了。
+
+然后按 Enter（keyevent 66）：`handled=true`，
+**截图里那个复选框从选中变成未选中**——
+第 526 轮"用指针会调的同一个 handler"在真机上兑现了。
+
+截图里还能看见**第 531 轮那个焦点高亮**：
+复选框外面一圈淡紫色圆盘，正是 `kRadialReactionRadius` 的形状。
+
+第一次按 Tab（在 gallery 首页）`handled=false`，**这不是 bug**：
+那一页没有可聚焦的停靠点。换到 Selection controls 页就 `true` 了——
+**同一个键在两页得到两个答案，恰恰说明它真的走到了遍历那一层**，
+而不是被谁一律吞掉或一律放过。
+
+### 收尾
+
+日志探针**撤掉**（`git checkout`），重打重装，
+再按一次 Tab 确认**出厂的那个包**行为一致——
+**验过的和装上去的必须是同一个东西**。
+
+尺子：十八把全部 exit 0。门：Rust 6983 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6983 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**本轮没有代码改动**，产出是"那五轮不再是纸面上的"这件事本身，
+外加两条方法论：**测不出来要说测不出来**，**验的和发的要是同一个包**。
+
+**下一步**：回到本轮开头被打断的活——**悬停高亮**。
+查过的结论先记在这里免得下轮重查：
+五个控件**都没有画悬停色**，所以不是"一条规则五个家"，是单纯缺；
+`PointerHandlers` 有 `with_hover_change`，`MouseRegion::transparent`
+正好是"听得见鼠标但不抢命中"的那个。
+**并且发现一处第 532 轮的错**：焦点高亮我用了
+`InkHighlight::FADE_MICROS`（200ms），而上游 `InkResponse.getFadeDurationForType`
+对 hover 和 focus **都是 50ms**，200ms 只给 pressed——
+`ink_well.rs` 的 `HighlightType::fade_micros` 早就是对的，
+下一轮该改成问它，而不是再抄一个数。
