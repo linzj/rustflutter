@@ -605,18 +605,19 @@ impl crate::framework::Component for MenuPanel {
             if let Some(background) = background {
                 surface = surface.with_color(background);
             }
-            // **Upstream's `_intrinsicCrossSize` is not here**, and the
-            // reason is a hole in this crate rather than a decision:
-            // `max_intrinsic_width` defaults to zero on `RenderBox` and the
-            // wrappers a menu line arrives in -- a pointer region, a portal,
-            // an ink -- do not forward it, so an `IntrinsicWidth` around this
-            // panel measured zero and drew a menu with no width at all.
+            // **Upstream's `_intrinsicCrossSize` is not here**, and the reason
+            // has changed since tick 466. It used to be that it *could* not
+            // be: intrinsics answered zero through the wrappers a menu line
+            // arrives in, so an `IntrinsicWidth` here drew a menu with no
+            // width. Tick 467 fixed that -- and with it fixed, the wrapper
+            // turns out to make no difference to any arrangement a test can
+            // build: the flex below shrink-wraps to its widest line already,
+            // and a start-aligned column does not stretch its children, so
+            // there is nothing for the tight width to change.
             //
-            // What upstream gets from it, a panel as wide as its widest line,
-            // the flex above already gives: a column's cross size is the
-            // widest child. What is missing is the *stretch* -- upstream's
-            // lines are all as wide as the panel. That returns when intrinsics
-            // reach through the wrappers.
+            // Left out rather than kept as decoration. It goes back in the day
+            // something inside the panel stretches to the width it is given --
+            // and now it will work when it does.
             let sized: crate::render::BoxedRender = crate::render::RenderRef::new(surface);
             let released: crate::render::BoxedRender = if unconstrained {
                 crate::render::RenderRef::new(crate::widgets::UnconstrainedBox::along(

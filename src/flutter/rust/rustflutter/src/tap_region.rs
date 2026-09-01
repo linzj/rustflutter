@@ -331,6 +331,29 @@ impl RenderBox for RenderTapRegionSurface {
         }
         hit_target
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Upstream `RenderTapRegion`.
@@ -512,6 +535,29 @@ impl RenderBox for RenderTapRegion {
     fn hit_test_id(&self) -> u64 {
         self.id
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Upstream `TapRegionSurface`: installs a registry and the render object
@@ -665,6 +711,25 @@ impl TextFieldTapRegion {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_tap_region_reports_the_intrinsics_of_what_it_wraps() {
+        // A region is a proxy: it hears about presses and changes nothing
+        // about size. Answering the trait's `0.0` default made an
+        // `IntrinsicWidth` above one measure nothing -- which is how a menu
+        // panel came to be drawn with no width at all. See PORTING_STATUS.md,
+        // tick 467.
+        let region = RenderTapRegion::new(
+            7001,
+            crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints::tight(
+                64.0, 18.0,
+            )),
+        );
+        assert_eq!(region.max_intrinsic_width(f32::INFINITY), 64.0);
+        assert_eq!(region.min_intrinsic_width(f32::INFINITY), 64.0);
+        assert_eq!(region.max_intrinsic_height(f32::INFINITY), 18.0);
+        assert_eq!(region.min_intrinsic_height(f32::INFINITY), 18.0);
+    }
     use super::*;
     use crate::framework::{Component, ElementTree, component, leaf};
     use crate::gestures::{GestureRouter, PointerChange, PointerKind, SignalKind};

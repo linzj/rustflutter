@@ -8042,6 +8042,29 @@ impl RenderBox for RenderBaseline {
             .distance_to_baseline()
             .map(|b| b + self.child_offset.dy)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Sizes its child to a fraction of itself.
@@ -8456,6 +8479,29 @@ impl RenderBox for RenderOverflowBox {
         self.child
             .distance_to_baseline()
             .map(|b| b + self.child_offset.dy)
+    }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
     }
 }
 
@@ -10464,6 +10510,29 @@ impl RenderBox for RenderClipPath {
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
+    }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
     }
 }
 
@@ -18991,6 +19060,29 @@ impl RenderBox for RenderClipRRect {
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Upstream `RenderClipOval`: clips the child to the largest inscribed oval.
@@ -19049,6 +19141,29 @@ impl RenderBox for RenderClipOval {
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
+    }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
     }
 }
 
@@ -19142,6 +19257,29 @@ impl RenderBox for RenderFractionalTranslation {
         let local = Offset::new(position.dx - shift.dx, position.dy - shift.dy);
         self.child.hit_test(local, result)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Upstream `RenderShaderMask`: the child composited through a shader with
@@ -19216,6 +19354,29 @@ impl RenderBox for RenderShaderMask {
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
+    }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
     }
 }
 
@@ -19391,6 +19552,29 @@ impl RenderBox for RenderAbsorbPointer {
         }
         self.child.hit_test(position, result)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 // -- Custom clippers and the physical family (upstream proxy_box.dart) --------------
@@ -19495,6 +19679,29 @@ impl RenderBox for RenderCustomClipPath {
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Upstream `RenderClipRSuperellipse`: the smooth-corner clip. Drawn with
@@ -19562,6 +19769,29 @@ impl RenderBox for RenderClipRSuperellipse {
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Upstream `RenderBackdropFilter`: a filter applied to what is already
@@ -19620,6 +19850,29 @@ impl RenderBox for RenderBackdropFilter {
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
+    }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
     }
 }
 
@@ -19739,6 +19992,29 @@ impl RenderBox for RenderPhysicalModel {
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Upstream `RenderPhysicalShape`: the `ShapeBorder` spelling of the
@@ -19843,6 +20119,29 @@ impl RenderBox for RenderPhysicalShape {
 
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
+    }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
     }
 }
 
@@ -22475,6 +22774,34 @@ impl RenderCustomSingleChildLayoutBox {
     fn delegate_size(&self, constraints: BoxConstraints) -> Size {
         constraints.constrain(self.delegate.get_size(constraints))
     }
+
+    /// Upstream's `BoxConstraints.tightForFinite` put through the delegate:
+    /// the named side is tight when it is a real number and free when it is
+    /// not.
+    fn delegate_intrinsic(&self, cross: Option<f32>, width: bool) -> f32 {
+        let tight = |value: Option<f32>| match value {
+            Some(value) if value.is_finite() => (value, value),
+            _ => (0.0, f32::INFINITY),
+        };
+        let (min_height, max_height) = if width {
+            tight(cross)
+        } else {
+            (0.0, f32::INFINITY)
+        };
+        let (min_width, max_width) = if width {
+            (0.0, f32::INFINITY)
+        } else {
+            tight(cross)
+        };
+        let size = self.delegate_size(BoxConstraints {
+            min_width,
+            max_width,
+            min_height,
+            max_height,
+        });
+        let answer = if width { size.width } else { size.height };
+        if answer.is_finite() { answer } else { 0.0 }
+    }
 }
 
 impl RenderBox for RenderCustomSingleChildLayoutBox {
@@ -22547,6 +22874,29 @@ impl RenderBox for RenderCustomSingleChildLayoutBox {
             .as_ref()
             .and_then(|c| c.distance_to_baseline())
             .map(|baseline| baseline + self.child_offset.dy)
+    }
+
+    /// Upstream's `RenderCustomSingleChildLayoutBox`: the **delegate** answers,
+    /// not the child. The delegate is what decides this box's size, so asking
+    /// the child would report a width nothing will use.
+    ///
+    /// A delegate that answers infinity is answering "as much as there is",
+    /// which is not an intrinsic width at all -- upstream returns zero rather
+    /// than passing an infinity up into somebody's arithmetic.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.delegate_intrinsic(Some(height), true)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.delegate_intrinsic(Some(height), true)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.delegate_intrinsic(Some(width), false)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.delegate_intrinsic(Some(width), false)
     }
 }
 
@@ -22703,6 +23053,41 @@ impl RenderBox for RenderConstraintsTransformBox {
         );
         child.hit_test(local, result)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map(|child| child.min_intrinsic_width(height))
+            .unwrap_or(0.0)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map(|child| child.max_intrinsic_width(height))
+            .unwrap_or(0.0)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map(|child| child.min_intrinsic_height(width))
+            .unwrap_or(0.0)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child
+            .as_ref()
+            .map(|child| child.max_intrinsic_height(width))
+            .unwrap_or(0.0)
+    }
 }
 
 /// Upstream `RenderFractionallySizedOverflowBox`: the child sized to a
@@ -22753,6 +23138,25 @@ impl RenderFractionallySizedOverflowBox {
             max_height = height;
         }
         BoxConstraints::new(min_width, max_width, min_height, max_height)
+    }
+
+    /// The shared half of the four intrinsics: measure the child against the
+    /// cross value scaled by the *other* factor, then divide by this one's.
+    fn scaled_intrinsic(
+        &self,
+        cross: f32,
+        measure: impl Fn(&BoxedRender, f32) -> f32,
+        width: bool,
+    ) -> f32 {
+        let (own, other) = if width {
+            (self.width_factor, self.height_factor)
+        } else {
+            (self.height_factor, self.width_factor)
+        };
+        let Some(child) = self.child.as_ref() else {
+            return 0.0;
+        };
+        measure(child, cross * other.unwrap_or(1.0)) / own.unwrap_or(1.0)
     }
 }
 
@@ -22821,6 +23225,48 @@ impl RenderBox for RenderFractionallySizedOverflowBox {
             position.dy - self.child_offset.dy,
         );
         child.hit_test(local, result)
+    }
+
+    /// Upstream's own rule, and not a proxy's: the child is measured against
+    /// the **scaled** cross value and the answer is divided by this box's own
+    /// factor.
+    ///
+    /// Both halves matter. A box that gives its child half the height must ask
+    /// the child what it needs at half the height, and a box that will report
+    /// half of whatever it is given must report twice the child's width for
+    /// the child to end up at its own. Upstream leans on infinity absorbing
+    /// multiplication for the unfactored case, which is why the missing factor
+    /// is `1.0` and not a branch.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.scaled_intrinsic(
+            height,
+            |child, height| child.min_intrinsic_width(height),
+            true,
+        )
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.scaled_intrinsic(
+            height,
+            |child, height| child.max_intrinsic_width(height),
+            true,
+        )
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.scaled_intrinsic(
+            width,
+            |child, width| child.min_intrinsic_height(width),
+            false,
+        )
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.scaled_intrinsic(
+            width,
+            |child, width| child.max_intrinsic_height(width),
+            false,
+        )
     }
 }
 
@@ -24792,6 +25238,162 @@ mod shifted_box_tests {
         let mut result = HitTestResult::new();
         assert!(custom.hit_test(Offset::new(55.0, 45.0), &mut result));
         assert!(!custom.hit_test(Offset::new(10.0, 10.0), &mut result));
+
+        // And the **delegate** answers the intrinsics, not the child: it is
+        // what decides this box's size, so the child's width is a number
+        // nothing will use. `tightForFinite` is what the named side is asked
+        // with -- and this delegate takes `biggest()`, which is infinite on
+        // the free side, so the answer upstream gives is zero rather than an
+        // infinity passed up into somebody's arithmetic.
+        assert_eq!(
+            custom.max_intrinsic_width(40.0),
+            0.0,
+            "the delegate wanted everything there was"
+        );
+
+        /// A delegate that wants a fixed square whatever it is offered.
+        struct Fixed;
+        impl SingleChildLayoutDelegate for Fixed {
+            fn get_size(&self, constraints: BoxConstraints) -> Size {
+                constraints.constrain(Size::new(36.0, 24.0))
+            }
+            fn get_constraints_for_child(&self, constraints: BoxConstraints) -> BoxConstraints {
+                constraints
+            }
+            fn get_position_for_child(&self, _size: Size, _child_size: Size) -> Offset {
+                Offset::ZERO
+            }
+            fn should_relayout(&self, old: &dyn SingleChildLayoutDelegate) -> bool {
+                old.as_any().downcast_ref::<Fixed>().is_none()
+            }
+            fn kind_id(&self) -> std::any::TypeId {
+                std::any::TypeId::of::<Fixed>()
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        let fixed = RenderCustomSingleChildLayoutBox::new(Rc::new(Fixed), asker(200.0, 200.0));
+        assert_eq!(fixed.max_intrinsic_width(24.0), 36.0);
+        assert_eq!(fixed.max_intrinsic_height(36.0), 24.0);
+
+        /// A delegate that answers with the room it was given, and wants more
+        /// height than there is.
+        struct Greedy;
+        impl SingleChildLayoutDelegate for Greedy {
+            fn get_size(&self, constraints: BoxConstraints) -> Size {
+                Size::new(constraints.max_height, f32::INFINITY)
+            }
+            fn get_constraints_for_child(&self, constraints: BoxConstraints) -> BoxConstraints {
+                constraints
+            }
+            fn get_position_for_child(&self, _size: Size, _child_size: Size) -> Offset {
+                Offset::ZERO
+            }
+            fn should_relayout(&self, old: &dyn SingleChildLayoutDelegate) -> bool {
+                old.as_any().downcast_ref::<Greedy>().is_none()
+            }
+            fn kind_id(&self) -> std::any::TypeId {
+                std::any::TypeId::of::<Greedy>()
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        let greedy = RenderCustomSingleChildLayoutBox::new(Rc::new(Greedy), asker(0.0, 0.0));
+        assert_eq!(
+            greedy.max_intrinsic_width(40.0),
+            40.0,
+            "the named side was asked tight, so the delegate saw the height"
+        );
+        assert_eq!(
+            greedy.max_intrinsic_height(40.0),
+            0.0,
+            "and an infinite answer is not an intrinsic height at all"
+        );
+    }
+
+    #[test]
+    fn a_proxy_reports_the_intrinsics_of_what_it_wraps() {
+        // Upstream `RenderProxyBox`: a box that wraps another without changing
+        // its size answers every intrinsic with the child's. The default on
+        // the trait is `0.0` -- right for a box with no child, and wrong for
+        // every one of these -- so a proxy that never overrode it made an
+        // `IntrinsicWidth` above it measure nothing at all.
+        let subject = || RenderConstrainedBox::new(BoxConstraints::tight(70.0, 30.0));
+        let wrapped: Vec<(&str, Box<dyn RenderBox>)> = vec![
+            (
+                "clip rrect",
+                Box::new(RenderClipRRect::new(
+                    crate::borders::BorderRadius::circular(8.0),
+                    subject(),
+                )),
+            ),
+            ("clip oval", Box::new(RenderClipOval::new(subject()))),
+            (
+                "absorb pointer",
+                Box::new(RenderAbsorbPointer::new(true, subject())),
+            ),
+            (
+                "fractional translation",
+                Box::new(RenderFractionalTranslation::new((0.5, 0.0), subject())),
+            ),
+            (
+                "constraints transform",
+                Box::new(RenderConstraintsTransformBox::new(
+                    ConstraintsTransform::Unconstrained,
+                    Alignment::CENTER,
+                    subject(),
+                )),
+            ),
+        ];
+        for (what, proxy) in wrapped {
+            assert_eq!(proxy.max_intrinsic_width(f32::INFINITY), 70.0, "{what}");
+            assert_eq!(proxy.min_intrinsic_width(f32::INFINITY), 70.0, "{what}");
+            assert_eq!(proxy.max_intrinsic_height(f32::INFINITY), 30.0, "{what}");
+            assert_eq!(proxy.min_intrinsic_height(f32::INFINITY), 30.0, "{what}");
+        }
+    }
+
+    #[test]
+    fn a_fractionally_sized_box_scales_the_intrinsic_it_reports() {
+        // Not a proxy's rule but its own: the child is measured against the
+        // **scaled** cross value, and the answer is divided by this box's own
+        // factor -- a box that will report half of whatever it is given has to
+        // report twice the child's width for the child to end up at its own.
+        let box_with = |width_factor: f32| {
+            RenderFractionallySizedOverflowBox::new(
+                Alignment::CENTER,
+                RenderConstrainedBox::new(BoxConstraints::tight(70.0, 30.0)),
+            )
+            .with_factors(Some(width_factor), None)
+        };
+        assert_eq!(box_with(0.5).max_intrinsic_width(f32::INFINITY), 140.0);
+        assert_eq!(box_with(2.0).max_intrinsic_width(f32::INFINITY), 35.0);
+
+        // And it is the **other** factor that scales what the child is asked
+        // about: a box that gives its child half the height must ask the child
+        // what it needs at half the height.
+        struct Echo;
+        impl RenderBox for Echo {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                constraints.smallest()
+            }
+            fn size(&self) -> Size {
+                Size::ZERO
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+            fn max_intrinsic_width(&self, height: f32) -> f32 {
+                height
+            }
+        }
+        let both = RenderFractionallySizedOverflowBox::new(Alignment::CENTER, Echo)
+            .with_factors(Some(2.0), Some(0.5));
+        assert_eq!(
+            both.max_intrinsic_width(80.0),
+            (80.0 * 0.5) / 2.0,
+            "the child heard about half the height, and the answer is halved again"
+        );
     }
 
     #[test]

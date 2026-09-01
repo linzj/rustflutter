@@ -481,6 +481,58 @@ impl Container {
         }
     }
 
+    /// One side's intrinsic, the way this container's own layers would build
+    /// it.
+    ///
+    /// Upstream never has to answer this: its `Container` is a stateless
+    /// widget and each wrapper it builds -- `Padding`, `ConstrainedBox`,
+    /// `Align` -- answers for itself. Here the wrappers are render objects
+    /// this one composes, and the composition does not exist until the first
+    /// layout, so the question has to be answered from the parts.
+    ///
+    /// The parts, in the order [`Container::shape`] stacks them: a fixed width
+    /// or height settles the answer outright, padding widens it on both sides
+    /// and narrows what the child is measured against on the other, and the
+    /// margin is added last because it is outside everything.
+    fn intrinsic(
+        &self,
+        cross: f32,
+        measure: impl Fn(&BoxedWidget, f32) -> f32,
+        width: bool,
+    ) -> f32 {
+        let padding = self.padding_including_decoration();
+        let (before, after, margin) = if width {
+            (
+                padding.left,
+                padding.right,
+                self.margin.left + self.margin.right,
+            )
+        } else {
+            (
+                padding.top,
+                padding.bottom,
+                self.margin.top + self.margin.bottom,
+            )
+        };
+        if let Some(fixed) = if width { self.width } else { self.height } {
+            return fixed + margin;
+        }
+        // What the child is measured against loses the padding on the *other*
+        // axis -- upstream's `RenderPadding`, which asks the child what it
+        // needs in the room that is actually left.
+        let across = if width {
+            padding.top + padding.bottom
+        } else {
+            padding.left + padding.right
+        };
+        let inner = self
+            .child
+            .as_ref()
+            .map(|child| measure(child, (cross - across).max(0.0)))
+            .unwrap_or(0.0);
+        inner + before + after + margin
+    }
+
     /// Builds one wrapper around `inner`, as this container is configured now.
     fn build_layer(&self, kind: Layer, inner: Option<BoxedWidget>) -> BoxedWidget {
         match kind {
@@ -709,28 +761,57 @@ impl RenderBox for Container {
             .is_some_and(|c| c.hit_test(position, result))
     }
 
+    /// The composed subtree answers -- **or, before there is one, the parts
+    /// it would be made of**.
+    ///
+    /// The fallback is the whole point. `composed` is built in `layout`, and
+    /// an intrinsic is asked *before* laying out: an `IntrinsicWidth` measures
+    /// its child and only then lays it out at that width. So a container that
+    /// answered zero until its first layout answered zero at the one moment
+    /// anybody asked, and the subject was laid out with no width at all. See
+    /// PORTING_STATUS.md, tick 467, and [`Container::intrinsic`].
     fn min_intrinsic_width(&self, height: f32) -> f32 {
-        self.composed
-            .as_ref()
-            .map_or(0.0, |c| c.min_intrinsic_width(height))
+        match &self.composed {
+            Some(composed) => composed.min_intrinsic_width(height),
+            None => self.intrinsic(
+                height,
+                |child, height| child.min_intrinsic_width(height),
+                true,
+            ),
+        }
     }
 
     fn max_intrinsic_width(&self, height: f32) -> f32 {
-        self.composed
-            .as_ref()
-            .map_or(0.0, |c| c.max_intrinsic_width(height))
+        match &self.composed {
+            Some(composed) => composed.max_intrinsic_width(height),
+            None => self.intrinsic(
+                height,
+                |child, height| child.max_intrinsic_width(height),
+                true,
+            ),
+        }
     }
 
     fn min_intrinsic_height(&self, width: f32) -> f32 {
-        self.composed
-            .as_ref()
-            .map_or(0.0, |c| c.min_intrinsic_height(width))
+        match &self.composed {
+            Some(composed) => composed.min_intrinsic_height(width),
+            None => self.intrinsic(
+                width,
+                |child, width| child.min_intrinsic_height(width),
+                false,
+            ),
+        }
     }
 
     fn max_intrinsic_height(&self, width: f32) -> f32 {
-        self.composed
-            .as_ref()
-            .map_or(0.0, |c| c.max_intrinsic_height(width))
+        match &self.composed {
+            Some(composed) => composed.max_intrinsic_height(width),
+            None => self.intrinsic(
+                width,
+                |child, width| child.max_intrinsic_height(width),
+                false,
+            ),
+        }
     }
 
     fn distance_to_baseline(&self) -> Option<f32> {
@@ -2353,6 +2434,83 @@ impl ColoredBox {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_container_asked_before_its_first_layout_answers_from_its_parts() {
+        // The composition is built in `layout`, and an intrinsic is asked
+        // *before* laying out -- an `IntrinsicWidth` measures its child and
+        // only then lays it out at that width. A container that answered zero
+        // until its first layout answered zero at the one moment anybody
+        // asked.
+        let container = || {
+            Container::new()
+                .with_padding(crate::render::EdgeInsets::symmetric(5.0, 3.0))
+                .with_margin(crate::render::EdgeInsets::all(2.0))
+                .with_child(crate::render::RenderConstrainedBox::new(
+                    crate::render::BoxConstraints::tight(40.0, 20.0),
+                ))
+        };
+        let fresh = container();
+        assert_eq!(
+            fresh.max_intrinsic_width(f32::INFINITY),
+            54.0,
+            "the child, five of padding each side, two of margin outside that"
+        );
+        assert_eq!(
+            fresh.max_intrinsic_height(f32::INFINITY),
+            30.0,
+            "and three above and below, plus the margin"
+        );
+
+        // What the child is measured *against* loses the padding on the other
+        // axis: upstream's `RenderPadding` asks the child what it needs in the
+        // room that is actually left, not in the room the container was
+        // offered.
+        struct Echo;
+        impl crate::render::RenderBox for Echo {
+            fn layout(&mut self, constraints: crate::render::BoxConstraints) -> Size {
+                constraints.smallest()
+            }
+            fn size(&self) -> Size {
+                Size::ZERO
+            }
+            fn paint(&self, _context: &mut crate::render::PaintContext, _offset: Offset) {}
+            fn max_intrinsic_width(&self, height: f32) -> f32 {
+                height
+            }
+        }
+        let echoing = Container::new()
+            .with_padding(crate::render::EdgeInsets::symmetric(5.0, 3.0))
+            .with_child(Echo);
+        assert_eq!(
+            echoing.max_intrinsic_width(100.0),
+            (100.0 - 6.0) + 10.0,
+            "the child heard about the room left after the padding"
+        );
+
+        // And once it has been laid out, the composed subtree answers -- with
+        // the same number, or the two would be a fork.
+        let mut laid_out = container();
+        laid_out.layout(crate::render::BoxConstraints::loose(400.0, 300.0));
+        assert_eq!(laid_out.max_intrinsic_width(f32::INFINITY), 54.0);
+        assert_eq!(laid_out.max_intrinsic_height(f32::INFINITY), 30.0);
+    }
+
+    #[test]
+    fn a_container_with_a_width_is_that_wide_however_it_is_asked() {
+        let fixed = Container::new()
+            .with_size(80.0, 24.0)
+            .with_margin(crate::render::EdgeInsets::all(4.0))
+            .with_child(crate::render::RenderConstrainedBox::new(
+                crate::render::BoxConstraints::tight(200.0, 200.0),
+            ));
+        assert_eq!(
+            fixed.max_intrinsic_width(f32::INFINITY),
+            88.0,
+            "the width it was given, and the margin outside it"
+        );
+        assert_eq!(fixed.max_intrinsic_height(f32::INFINITY), 32.0);
+    }
 
     #[test]
     fn a_list_view_says_how_many_rows_it_has_and_which_one_each_is() {

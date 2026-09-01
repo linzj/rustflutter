@@ -3466,3 +3466,73 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 哪些真的要自己算（`RenderPadding` 要加上自己的 padding，
 `RenderConstrainedBox` 要夹一遍），照上游 `RenderProxyBox` 与
 `RenderShiftedBox` 的分法来，别一刀切。
+
+---
+
+## 第 467 轮：intrinsics 终于能穿过包装层
+
+上一轮记下的洞：`RenderBox` 上四个 `*_intrinsic_*` 的默认实现都是 `0.0`，
+而一堆"只是套一层"的 render 从没重写过它们。
+`0.0` 对**没有孩子**的盒子是对的，对这些是错的——
+于是它们上面的 `IntrinsicWidth` 量出零，被量的东西以零宽度布局。
+
+按上游 `RenderProxyBox` / `RenderShiftedBox` 的分法来，不一刀切：
+
+- **19 个纯代理**——各种 clip、`ShaderMask`、`BackdropFilter`、
+  `AbsorbPointer`、`PhysicalModel/Shape`、`FractionalTranslation`、
+  `Baseline`、`OverflowBox`、`ConstraintsTransformBox`，
+  以及 `TapRegion`、`TapRegionSurface`、`Portal`、`Anchored`、
+  `SizeChangedWithCallback`——四个问题都转给孩子。
+- **`RenderFractionallySizedOverflowBox` 有自己的规则**：
+  拿**另一个**因子去缩放问孩子的那一维，答案再除以**自己**的因子。
+  两半都要：给孩子一半高度的盒子必须按一半高度去问它；
+  而一个"给我多少我报一半"的盒子，得报出孩子的两倍宽，孩子才落在自己的宽度上。
+- **`RenderCustomSingleChildLayoutBox` 问的是 delegate 不是孩子**——
+  决定这个盒子多大的是 delegate，问孩子会报出一个没人会用的宽度。
+  被点名的那一维按 `tightForFinite` 问；delegate 答无穷大就返回 0，
+  因为"有多少要多少"根本不是一个 intrinsic。
+
+### 真正挡住菜单的那一个，在 `Container` 里
+
+`Container` 的四个 intrinsic 早就写了，转给 `self.composed`——
+**而 `composed` 是在 `layout` 里造的**，intrinsic 恰恰是在布局**之前**问的
+（`IntrinsicWidth` 先量再按量出来的宽度布局）。
+于是它在唯一有人问的那一刻答 0。
+补了一条"还没合成时按零件回答"的后备：固定宽高一锤定音、
+内边距两边各加一份并从**另一维**扣掉再去问孩子、margin 最后加。
+两条路必须给同一个数，测试同时按住这一点。
+
+### 结果：菜单面板那层没有加回去
+
+修好之后把 `IntrinsicWidth` 加回 `MenuPanel`，测试全过——
+**然后把它拿掉，测试还是全过**。查下来是真的：
+下面的 flex 本来就收边到最宽的一行，而 start 对齐的列不会把孩子撑开，
+所以那层 tight 宽度改变不了任何测试能搭出来的排布。
+按这个项目自己的规矩，观察不到差别的代码不留——
+但原因换了，注释也照实换：从"这个 crate 做不到"改成
+"做得到了，只是此刻没有区别；等面板里有东西会撑满时再加回来"。
+
+### 一把尺子被别人的提交照红了
+
+`stale_engines` 报两个 Android 引擎陈旧，"陈旧"于
+`rustflutter_vk.cc`——上一轮 rebase 进来的 Vulkan 提交带的文件。
+可 `ninja -C out/android_release_arm64 rustflutter_engine` 答的是
+"no work to do"：Android 根本不编它，**再怎么重建都不会变绿**。
+这正是那把尺子自己开头写着的"永久红的仪器比没有还糟"，从新路口又来了一次。
+它已经有 `PLATFORM_ONLY` 这套机制，只是不认识 `_vk`、`_linux`、`_ios`：
+补上，并且 `platform_of` 的兜底改成问解释器——
+Linux 上的 host 构建，`_linux` 那些文件正是**要**算数的那批，
+在那里认成 win 会把最该看的文件排除掉。
+
+变异扫描 12 个，全红。尺子：十六把全部 exit 0。
+门：Rust 6742 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`unwalked` 这把尺子只盯 walk，
+而这一轮暴露的是**另一类**空洞：一个 render 少实现一个 trait 方法，
+没有任何尺子会说话——`min_intrinsic_*`、`distance_to_baseline`、
+`compute_dry_layout` 都是"不写就默认，默认就静静地错"。
+**先查一件事**：`RenderBox` 上到底哪几个方法是"默认值对无孩子的盒子成立、
+对代理不成立"的（`compute_dry_layout` 的默认是什么？
+`distance_to_baseline` 呢？），确认了再决定要不要给它们加一把尺子。

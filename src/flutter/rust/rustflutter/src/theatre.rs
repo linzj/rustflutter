@@ -477,6 +477,29 @@ impl RenderBox for RenderPortal {
         self.gate = fresh.gate.take();
         Some(UpdateEffect::relayout_if(changed))
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// A widget that builds `overlay_child` in its own place and renders it in the
@@ -2049,6 +2072,29 @@ impl RenderBox for RenderAnchored {
         // constraint check and a cached child layout.
         Some(UpdateEffect::Relayout)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Wraps `surface` in a positioner that places it against `anchor`.
@@ -2064,6 +2110,30 @@ pub fn anchored(anchor: Anchor, place: Placement, surface: AnyWidget) -> AnyWidg
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_portal_and_an_anchored_box_report_what_they_wrap() {
+        // Both are proxies: one gates where its child is painted, the other
+        // moves it. Neither changes its size, so both answer with the child's
+        // intrinsics -- and answering the trait's `0.0` default is what made a
+        // menu panel measure nothing. See PORTING_STATUS.md, tick 467.
+        let sized = || {
+            crate::render::RenderRef::new(crate::render::RenderConstrainedBox::new(
+                crate::render::BoxConstraints::tight(52.0, 16.0),
+            ))
+        };
+        let portal = RenderPortal::new(sized());
+        assert_eq!(portal.max_intrinsic_width(f32::INFINITY), 52.0);
+        assert_eq!(portal.max_intrinsic_height(f32::INFINITY), 16.0);
+
+        let anchored = RenderAnchored::new(
+            Anchor::new(),
+            std::rc::Rc::new(|_rect, _child, _overlay| Offset::ZERO),
+            sized(),
+        );
+        assert_eq!(anchored.max_intrinsic_width(f32::INFINITY), 52.0);
+        assert_eq!(anchored.min_intrinsic_height(f32::INFINITY), 16.0);
+    }
     use super::*;
     use crate::framework::{BuildContext, Component, ElementTree, provide};
     use crate::overlay::OverlayEntry as Entry;

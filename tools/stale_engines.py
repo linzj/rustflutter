@@ -44,27 +44,49 @@ LIBS = ['rustflutter_engine.lib', 'librustflutter_engine.a']
 # ever compiled that file. A permanently red instrument is worse than none --
 # it trains the reader to ignore it.
 PLATFORM_ONLY = {
+    # `_vk` is here with the host's own sources because only the host build
+    # compiles it: `ninja -C out/android_release_arm64 rustflutter_engine`
+    # answers "no work to do" while this ruler calls that library stale
+    # against `rustflutter_vk.cc` -- which is the permanently-red case above,
+    # arriving by a new route. Move it the day an Android config builds
+    # Vulkan.
     'win': ('_win.cc', '_win.h'),
-    'mac': ('_mac.mm', '_mac.cc', '_mac.h'),
+    'mac': ('_mac.mm', '_mac.cc', '_mac.h', '_ios.mm', '_ios.cc', '_ios.h'),
     'android': ('_android.cc', '_android.h'),
+    'linux': ('_linux.cc', '_linux.h'),
 }
+
+# Sources every **host** build compiles and no device build does. The Vulkan
+# backend is the case that brought this table its second entry: only the host
+# configuration builds `rustflutter_vk.cc`, and
+# `ninja -C out/android_release_arm64 rustflutter_engine` answering "no work
+# to do" while this ruler called that library stale against it is the
+# permanently-red case again, arriving by a new route. Move it the day an
+# Android configuration builds Vulkan.
+HOST_ONLY = ('_vk.cc', '_vk.h')
 
 
 def platform_of(out_dir):
-    """Which platform an output directory builds for, by its name."""
+    """Which platform an output directory builds for, by its name.
+
+    A host directory builds for **this** machine, which is why the last line
+    asks the interpreter rather than assuming Windows: on a Linux checkout the
+    host sources ending in `_linux` are the ones that *are* compiled, and
+    naming the wrong host there would exclude exactly the files that matter.
+    """
     name = out_dir.lower()
     if 'android' in name:
         return 'android'
     if 'mac' in name or 'ios' in name:
         return 'mac'
-    # A host build on this machine is the Windows one; a checkout on Linux has
-    # no platform-only host sources of its own to exclude.
-    return 'win'
+    return 'linux' if sys.platform.startswith('linux') else 'win'
 
 
 def compiled_for(path, platform):
     """Whether `path` is a source that `platform` actually builds."""
     name = os.path.basename(path)
+    if name.endswith(HOST_ONLY) and platform in ('android', 'mac'):
+        return False
     for other, suffixes in PLATFORM_ONLY.items():
         if other == platform:
             continue

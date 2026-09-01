@@ -165,6 +165,29 @@ impl RenderBox for RenderSizeChangedWithCallback {
     fn hit_test_children(&self, position: Offset, result: &mut HitTestResult) -> bool {
         self.child.hit_test(position, result)
     }
+
+    /// Upstream `RenderProxyBox`: a box that wraps another without changing
+    /// its size answers every intrinsic with the child's.
+    ///
+    /// The default on the trait is `0.0`, which is what a box with **no**
+    /// child should say -- and a proxy that never overrode it said the same,
+    /// so an `IntrinsicWidth` above one measured zero and laid its subject out
+    /// with no width at all. See PORTING_STATUS.md, tick 467.
+    fn min_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.min_intrinsic_width(height)
+    }
+
+    fn max_intrinsic_width(&self, height: f32) -> f32 {
+        self.child.max_intrinsic_width(height)
+    }
+
+    fn min_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.min_intrinsic_height(width)
+    }
+
+    fn max_intrinsic_height(&self, width: f32) -> f32 {
+        self.child.max_intrinsic_height(width)
+    }
 }
 
 /// Upstream `SizeChangedLayoutNotifier`.
