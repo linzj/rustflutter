@@ -978,6 +978,50 @@ impl SwitchOnOffLabels {
     }
 }
 
+/// constants.dart's `kCupertinoFocusColorOpacity`,
+/// `kCupertinoFocusColorBrightness` and `kCupertinoFocusColorSaturation`.
+///
+/// Not a colour but a **recipe for one**: whatever the control is coloured,
+/// its focus ring is that colour taken round to a fixed lightness and
+/// saturation. A ring of one fixed colour would disappear against some
+/// controls and shout against others; a ring that is simply the control's own
+/// colour would not read as a ring at all.
+pub const CUPERTINO_FOCUS_OPACITY: f32 = 0.80;
+pub const CUPERTINO_FOCUS_LIGHTNESS: f32 = 0.69;
+pub const CUPERTINO_FOCUS_SATURATION: f32 = 0.835;
+
+/// Upstream's default `focusColor`:
+///
+/// ```dart
+/// HSLColor.fromColor(activeColor.withOpacity(kCupertinoFocusColorOpacity))
+///     .withLightness(kCupertinoFocusColorBrightness)
+///     .withSaturation(kCupertinoFocusColorSaturation)
+///     .toColor()
+/// ```
+///
+/// **The hue is the only thing kept.** A blue switch gets a blue ring, a green
+/// one a green ring, and both rings are the same lightness and saturation --
+/// which is what makes the ring recognisable as a ring across a page of
+/// differently coloured controls. The opacity is applied *before* the round
+/// trip, so it survives it.
+pub fn cupertino_focus_color(active: Color) -> Color {
+    let faded = active.with_alpha((255.0 * CUPERTINO_FOCUS_OPACITY).round() as u8);
+    crate::painting::HSLColor::from_color(faded)
+        .with_lightness(CUPERTINO_FOCUS_LIGHTNESS)
+        .with_saturation(CUPERTINO_FOCUS_SATURATION)
+        .to_color()
+}
+
+/// The ring drawn round a focused switch's track: upstream's
+/// `trackRRect.inflate(1.75)` stroked at 3.5.
+///
+/// **The inflation is half the stroke**, which is what puts the ring's inner
+/// edge exactly on the track's outline: a stroke straddles the path it is
+/// drawn on, so half of 3.5 outside the inflated rectangle and half inside
+/// leaves the track itself untouched and the ring entirely outside it.
+pub const SWITCH_FOCUS_RING_INFLATE: f32 = 1.75;
+pub const SWITCH_FOCUS_RING_STROKE: f32 = 3.5;
+
 /// Draws the two accessibility marks over a switch's track.
 ///
 /// Upstream paints them in `_RenderCupertinoSwitch.paint`, between the track
@@ -986,7 +1030,11 @@ impl SwitchOnOffLabels {
 /// convenience -- a mark the thumb is about to cover fades instead of being
 /// clipped in half.
 struct SwitchLabelPainter {
-    labels: SwitchOnOffLabels,
+    labels: Option<SwitchOnOffLabels>,
+    /// The ring round a focused switch, if it has the keyboard. Painted with
+    /// the marks because both go under the thumb and over -- or in the ring's
+    /// case, around -- the track.
+    focus: Option<Color>,
     /// Where the track is inside the box being painted.
     track: Rect,
     position: f32,
@@ -996,6 +1044,26 @@ struct SwitchLabelPainter {
 
 impl crate::render::CustomPainter for SwitchLabelPainter {
     fn paint(&self, canvas: &mut crate::engine::Canvas, _size: Size) {
+        if let Some(focus) = self.focus {
+            // `trackRRect.inflate(1.75)`, stroked at 3.5.
+            let inflate = SWITCH_FOCUS_RING_INFLATE;
+            let ring = Rect::ltrb(
+                self.track.left - inflate,
+                self.track.top - inflate,
+                self.track.right + inflate,
+                self.track.bottom + inflate,
+            );
+            canvas.draw_rounded_rect(
+                ring,
+                ring.height() / 2.0,
+                &crate::engine::Paint::new(focus).with_style(crate::engine::Style::Stroke {
+                    width: SWITCH_FOCUS_RING_STROKE,
+                }),
+            );
+        }
+        let Some(labels) = self.labels else {
+            return;
+        };
         let (on_centre, off_centre) = SwitchOnOffLabels::centres(self.track, self.rtl);
         let (on_opacity, off_opacity) =
             SwitchOnOffLabels::opacities(self.position, self.reaction, self.rtl);
@@ -1014,12 +1082,12 @@ impl crate::render::CustomPainter for SwitchLabelPainter {
         );
         canvas.draw_rect(
             bar,
-            &crate::engine::Paint::new(alpha(self.labels.on_color, on_opacity)),
+            &crate::engine::Paint::new(alpha(labels.on_color, on_opacity)),
         );
 
         // The 'O': a stroked circle, not a filled one -- `PaintingStyle.stroke`
         // with `_kOffLabelWidth`.
-        let ring = crate::engine::Paint::new(alpha(self.labels.off_color, off_opacity)).with_style(
+        let off_ring = crate::engine::Paint::new(alpha(labels.off_color, off_opacity)).with_style(
             crate::engine::Style::Stroke {
                 width: SwitchOnOffLabels::OFF_STROKE,
             },
@@ -1028,7 +1096,7 @@ impl crate::render::CustomPainter for SwitchLabelPainter {
             off_centre.dx,
             off_centre.dy,
             SwitchOnOffLabels::OFF_RADIUS,
-            &ring,
+            &off_ring,
         );
     }
 
@@ -1036,6 +1104,7 @@ impl crate::render::CustomPainter for SwitchLabelPainter {
         match old.as_any().downcast_ref::<SwitchLabelPainter>() {
             Some(old) => {
                 old.labels != self.labels
+                    || old.focus != self.focus
                     || old.track != self.track
                     || old.position != self.position
                     || old.reaction != self.reaction
@@ -1195,6 +1264,9 @@ impl ResolvedSwitchColors {
 /// taken the thumb, and whether the thumb is held.
 #[derive(Default)]
 pub struct CupertinoSwitchState {
+    /// Whether this switch has the keyboard. Upstream reads it off
+    /// `WidgetState.focused`; here the `Focus` node reports it.
+    focused: bool,
     /// The value the current drag has flipped to, if a drag is in charge.
     /// switch.dart's `_dragValue`.
     drag_value: Option<bool>,
@@ -1226,6 +1298,11 @@ pub struct CupertinoSwitch {
     /// reader has asked for the marks.
     on_label_color: Option<Color>,
     off_label_color: Option<Color>,
+    /// Upstream's `focusColor`, defaulting to [`cupertino_focus_color`] of
+    /// whatever the on track is.
+    focus_color: Option<Color>,
+    /// Upstream's `onFocusChange`.
+    on_focus_change: Option<Rc<dyn Fn(bool)>>,
     /// Upstream's `applyTheme`, which is nullable on purpose: `None` means
     /// "whatever the theme says", not "no".
     apply_theme: Option<bool>,
@@ -1241,6 +1318,8 @@ impl CupertinoSwitch {
             colors: CupertinoSwitchColors::default(),
             on_label_color: None,
             off_label_color: None,
+            focus_color: None,
+            on_focus_change: None,
             apply_theme: None,
             on_changed: None,
         }
@@ -1285,6 +1364,24 @@ impl CupertinoSwitch {
     /// Upstream's `offLabelColor`.
     pub fn with_off_label_color(mut self, color: Color) -> Self {
         self.off_label_color = Some(color);
+        self
+    }
+
+    /// Upstream's `focusColor`.
+    pub fn with_focus_color(mut self, color: Color) -> Self {
+        self.focus_color = Some(color);
+        self
+    }
+
+    /// Upstream's `onFocusChange`.
+    ///
+    /// Upstream's `autofocus` is **not** here: this crate grants autofocus per
+    /// *scope* (`focus::autofocus_in`, applied once a frame after the build),
+    /// and a node asking for the keyboard as it first appears needs that
+    /// ordering worked out rather than a field nobody reads. Said here rather
+    /// than left as a parameter that does nothing.
+    pub fn with_on_focus_change(mut self, changed: impl Fn(bool) + 'static) -> Self {
+        self.on_focus_change = Some(Rc::new(changed));
         self
     }
 
@@ -1391,10 +1488,17 @@ impl StatefulComponent for CupertinoSwitch {
             self.off_label_color,
         );
         let rtl = crate::direction::current_direction() == crate::direction::TextDirection::Rtl;
+        // `if (isFocused) { ... }`: the ring is drawn only while this switch
+        // has the keyboard, in the colour derived from its own on track.
+        let focus_ring = state.focused.then(|| {
+            self.focus_color
+                .unwrap_or_else(|| cupertino_focus_color(resolved.active_track))
+        });
 
         // Where the thumb is: the value, or where the drag has flipped it to.
         // Upstream this is the position controller's value; the animated()
         // below is that controller, 200ms linear as switch.dart sets it.
+        let handle_for_focus = handle.clone();
         let position = if state.drag_value.unwrap_or(value) {
             1.0
         } else {
@@ -1454,6 +1558,8 @@ impl StatefulComponent for CupertinoSwitch {
         }
 
         let tap = self.on_changed.clone();
+        let focus_handle = handle_for_focus;
+        let on_focus_change = self.on_focus_change.clone();
         let switch = crate::implicit::animated(
             position,
             Duration::from_millis(200),
@@ -1506,7 +1612,7 @@ impl StatefulComponent for CupertinoSwitch {
                     // Between the track and the thumb, as upstream paints
                     // them: the thumb covers the mark it has reached, and
                     // `opacities` fades that mark out as it arrives.
-                    if let Some(labels) = labels {
+                    if labels.is_some() || focus_ring.is_some() {
                         stack = stack.push_positioned(
                             crate::render::RenderCustomPaint::new(crate::widgets::SizedBox::new(
                                 width, height,
@@ -1514,6 +1620,7 @@ impl StatefulComponent for CupertinoSwitch {
                             .with_painter(std::rc::Rc::new(
                                 SwitchLabelPainter {
                                     labels,
+                                    focus: focus_ring,
                                     track: track_rect,
                                     position,
                                     // The press widens the thumb over the marks,
@@ -1552,10 +1659,29 @@ impl StatefulComponent for CupertinoSwitch {
             },
         );
 
+        // Upstream's `focusNode`, `autofocus` and `onFocusChange`, which it
+        // hands to a `FocusableActionDetector` around the whole switch. Here
+        // that is a `Focus` around what `animated` builds -- the same move as
+        // the segmented control's per-segment nodes, and possible without
+        // restructuring because `animated` is itself a widget.
+        let focused = crate::framework::component(
+            crate::focus::Focus::new(id, switch)
+                .with_on_focus_change(move |focused| {
+                    if let Some(changed) = &on_focus_change {
+                        changed(focused);
+                    }
+                    focus_handle.set_state(move |state| state.focused = focused);
+                })
+                // A disabled switch is not a place the keyboard lands, the
+                // same gate the segments have.
+                .with_focus_on_tap(enabled)
+                .with_traversable(enabled),
+        );
+
         crate::semantics::semantics_with_action(
             crate::semantics::node_id_for(id),
             crate::semantics::SemanticsProperties::toggle("", value),
-            switch,
+            focused,
             move |action| {
                 if action == crate::semantics::SemanticsAction::Tap {
                     if let Some(changed) = &tap {
@@ -7348,6 +7474,131 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    // -- The ring round a focused switch ------------------------------------------
+
+    #[test]
+    fn a_focus_ring_keeps_the_hue_and_nothing_else() {
+        use crate::painting::HSLColor;
+        let blue = Color::argb(255, 0, 122, 255);
+        let green = Color::argb(255, 52, 199, 89);
+
+        let from_blue = HSLColor::from_color(cupertino_focus_color(blue));
+        let from_green = HSLColor::from_color(cupertino_focus_color(green));
+        assert!(
+            (from_blue.lightness - CUPERTINO_FOCUS_LIGHTNESS).abs() < 0.01
+                && (from_green.lightness - CUPERTINO_FOCUS_LIGHTNESS).abs() < 0.01,
+            "both rings are the same lightness: {from_blue:?} {from_green:?}"
+        );
+        assert!(
+            (from_blue.saturation - CUPERTINO_FOCUS_SATURATION).abs() < 0.01
+                && (from_green.saturation - CUPERTINO_FOCUS_SATURATION).abs() < 0.01,
+            "and the same saturation"
+        );
+        assert!(
+            (from_blue.hue - HSLColor::from_color(blue).hue).abs() < 1.0,
+            "but a blue switch keeps a blue ring: {} against {}",
+            from_blue.hue,
+            HSLColor::from_color(blue).hue
+        );
+        assert_ne!(
+            from_blue.hue.round(),
+            from_green.hue.round(),
+            "and a green one a green ring"
+        );
+    }
+
+    #[test]
+    fn the_ring_is_translucent_because_the_opacity_survives_the_round_trip() {
+        let blue = Color::argb(255, 0, 122, 255);
+        let ring = cupertino_focus_color(blue);
+        assert_eq!(
+            ring.alpha(),
+            (255.0 * CUPERTINO_FOCUS_OPACITY).round() as u8,
+            "the opacity is applied before the HSL round trip, so it is kept"
+        );
+    }
+
+    #[test]
+    fn the_ring_sits_outside_the_track_because_the_inflation_is_half_the_stroke() {
+        // A stroke straddles its path, so inflating by half of it puts the
+        // ring's inner edge exactly on the track's outline.
+        assert_eq!(SWITCH_FOCUS_RING_INFLATE * 2.0, SWITCH_FOCUS_RING_STROKE);
+    }
+
+    #[test]
+    fn tab_walks_past_a_switch_that_cannot_be_changed() {
+        // The same gate the segments have: a control that cannot be operated
+        // is not a stop on the way round.
+        crate::focus::reset_scopes();
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            CupertinoTheme::dark(),
+            crate::framework::many(
+                vec![
+                    stateful(CupertinoSwitch::new(9800, false).with_enabled(false)),
+                    stateful(CupertinoSwitch::new(9801, false)),
+                ],
+                |rendered| {
+                    let mut column = RenderFlex::column();
+                    for child in rendered {
+                        column = column.push(child);
+                    }
+                    column
+                },
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(120.0, 200.0));
+
+        assert!(crate::focus::next());
+        assert_eq!(
+            crate::focus::focused(),
+            Some(9801),
+            "straight to the switch that can be changed"
+        );
+    }
+
+    #[test]
+    fn a_switch_draws_the_ring_only_while_it_has_the_keyboard() {
+        crate::focus::reset_scopes();
+        let widget = || {
+            provide(
+                CupertinoTheme::dark(),
+                stateful(CupertinoSwitch::new(9700, true)),
+            )
+        };
+        let mut tree = ElementTree::new();
+        tree.rebuild(widget());
+        let before = painted_shape_count(&mut tree);
+
+        assert!(crate::focus::next(), "there is a node to focus");
+        assert_eq!(crate::focus::focused(), Some(9700));
+        // The node reports the change through `set_state`, which lands on the
+        // next build -- so ask for one, as a frame would.
+        tree.rebuild(widget());
+        let after = painted_shape_count(&mut tree);
+        assert!(
+            after > before,
+            "the ring is one more shape once the switch has the keyboard:              {after} against {before}"
+        );
+    }
+
+    /// Rebuilds and paints, counting the shapes drawn.
+    fn painted_shape_count(tree: &mut ElementTree) -> usize {
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(120.0, 60.0));
+        let mut layers = LayerTree::new(120, 60);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(120.0, 60.0));
+            root.paint(&mut context, Offset::ZERO);
+        }
+        drawn().len()
     }
 
     // -- The two marks on a switch ------------------------------------------------

@@ -5670,3 +5670,64 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6905 通�
 如果能，这一组就是把上一次的做法再用一次，不必再动结构；
 如果不能，就照分段控件那样把 `leaf` 拆成 widget 树，
 别在这里发明第三种写法。
+
+---
+
+## 第 506 轮：焦点环的颜色，只留下色相
+
+上一轮问的是能不能把 `Focus` 直接包在 `implicit::animated` 外面。
+查了：`animated` 返回的就是 `AnyWidget`，**可以**——
+所以这一组不用像分段控件那样拆结构，一层包裹就够，
+这正是"照着已有的那条路走"该有的样子。
+
+补的是 `focusColor` / `onFocusChange` 与那个**焦点环**：
+
+```dart
+HSLColor.fromColor(activeColor.withOpacity(kCupertinoFocusColorOpacity))
+    .withLightness(kCupertinoFocusColorBrightness)
+    .withSaturation(kCupertinoFocusColorSaturation)
+    .toColor()
+```
+
+**只留下色相。** 蓝开关得到蓝环、绿开关得到绿环，
+而两个环的明度和饱和度**完全一样**——
+这才让一页上颜色各异的控件的焦点环看起来是同一种东西。
+固定一个颜色的环会在某些控件上消失、在另一些上刺眼；
+直接用控件自己的颜色又根本不像一个环。
+透明度是在 HSL 往返**之前**加的，所以它活下来了——变异把它挪到之后，测试当场发现。
+
+环的几何也是一条：`trackRRect.inflate(1.75)` 描边 3.5——
+**膨胀量正好是线宽的一半**，于是描边跨在路径上时，
+内侧那一半刚好落在轨道的轮廓上，环整个在轨道之外，轨道本身一点不动。
+
+`Focus` 那一层顺带带来两件事：禁用的开关既不因点击取焦、也不是 Tab 停靠点
+（和第 502 轮分段控件同一个闸门）；焦点变化通过 `on_focus_change` 报出去，
+并写进状态——**环是画出来的，不是算出来的**，所以必须有人告诉这个 widget 它被聚焦了。
+
+### 一个没接上的参数，删掉而不是留着
+
+上游的 `autofocus` 我一开始加了字段，然后发现这个 crate 的自动聚焦是
+**按作用域**授予的（`focus::autofocus_in` + 每帧一次的 `apply_pending_autofocus`），
+节点级的"出现即取键盘"需要把顺序想清楚。
+于是把字段删了，在 `with_on_focus_change` 的文档里写明为什么没有——
+**留一个没人读的字段，比没有这个参数更坏**：尺子会放过它，读者会以为它管用。
+
+### 变异 7 个：先 6 红 1 活，补一条测试后全红
+
+活的是"禁用的开关仍是 Tab 停靠点"。补了两个开关排一列、
+按一次 Tab 直接落到能用的那个的测试。
+
+`CupertinoSwitch` 0.54 → **0.62（16/26）**。
+
+尺子：十七把全部 exit 0。门：Rust 6910 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6910 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`CupertinoSwitch` 还剩 `trackOutlineColor` / `trackOutlineWidth`
+（`WidgetStateProperty`，画在轨道外的另一圈线，默认 2.0）、
+`thumbIcon`、两张 `thumbImage` 和它们的错误回调、`mouseCursor`、`dragStartBehavior`。
+**先查一件事**：`trackOutline*` 是 `WidgetStateProperty<Color?>`，
+按状态解析——这个 crate 的 `StateProperty` 上一轮刚在分段控件的光标上用过。
+先确认 `WidgetStates` 里有没有 `Selected` 这个状态（上游的轨道轮廓正是按
+`selected` 分别解析成开/关两个值的），有就照那条路补，
+没有就先补状态本身，别在开关里手搓一个"开/关两个颜色"的字段对。
