@@ -158,11 +158,14 @@ impl CupertinoRadio {
     }
 }
 
-/// Why a sliding segmented control's construction was refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SegmentedControlError {
-    FewerThanTwoSegments,
-}
+/// Why a segmented control's construction was refused.
+///
+/// The same enum both controls answer with, because upstream writes the same
+/// assert in both -- `assert(children.length >= 2)` in
+/// `CupertinoSegmentedControl` and in `CupertinoSlidingSegmentedControl`.
+/// Two enums of the same name with a variant of the same name in the same
+/// crate is one rule with two homes, which is the shape a drift starts in.
+pub use crate::cupertino::SegmentedControlError;
 
 /// Upstream `CupertinoSlidingSegmentedControl`.
 #[derive(Clone, Copy, Debug, PartialEq)]

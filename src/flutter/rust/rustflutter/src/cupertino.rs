@@ -2579,9 +2579,13 @@ impl Component for CupertinoTabScaffold {
 
 // -- Segmented control --------------------------------------------------------
 //
-// Anchor: cupertino/segmented_control.dart, `CupertinoSegmentedControl` (the
-// iOS-12 style control; the iOS-13 `CupertinoSlidingSegmentedControl` is a
-// different widget and not part of this port).
+// Anchor: cupertino/segmented_control.dart, `CupertinoSegmentedControl` -- the
+// iOS-12 style control, filled segments inside a bordered box. The iOS-13
+// `CupertinoSlidingSegmentedControl` is a **different widget in a different
+// file**, and it is ported too: see `cupertino_controls.rs`, which carries its
+// thumb, insets and separators. The two share an error type and nothing else;
+// this note used to say the sliding one was not part of the port, which was
+// true when it was written and has not been for a long time.
 
 /// The least tall the control is. segmented_control.dart's
 /// `_kMinSegmentedControlHeight`.
@@ -2933,10 +2937,13 @@ impl SegmentButton {
 }
 
 /// Why a segmented control refused the way it was built.
+///
+/// Shared with [`crate::cupertino_controls::CupertinoSlidingSegmentedControl`],
+/// which asserts the same first thing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SegmentedControlError {
-    /// `assert(children.length >= 2)`. One segment is not a choice, and a
-    /// control that cannot be changed is a label.
+    /// `assert(children.length >= 2)`, in **both** controls. One segment is
+    /// not a choice, and a control that cannot be changed is a label.
     FewerThanTwoSegments,
     /// `assert(groupValue == null || children.keys.any(...))`: upstream keys
     /// its children by value, so a selection that is not one of them selects

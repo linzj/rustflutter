@@ -5502,3 +5502,56 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6896 通�
 `_SegmentButton` 的单选钮身份在 `SegmentButton` 上，
 以及**确实没有对应物**的那个——`CupertinoSlidingSegmentedControl` 是**另一个类**，
 模块注释里写着不在移植范围（depth 会不会把它也算进这一条，记之前顺手确认）。
+
+---
+
+## 第 503 轮：记账之前那一查，查出一句假话
+
+要记 `CupertinoSegmentedControl` 之前，按上一轮说的先确认 depth 会不会把
+sliding 那个类也算进来。一查——
+
+```
+python tools/depth.py --name CupertinoSlidingSegmentedControl
+  0.82     9   11  CupertinoSlidingSegmentedControl  (cupertino/sliding_segmented_control.dart)
+```
+
+**它早就移植了**，在 `cupertino_controls.rs` 里，带着 thumb 半径、插入量和分隔线。
+而 `cupertino.rs` 顶上的锚点注释写着"the iOS-13
+`CupertinoSlidingSegmentedControl` is a different widget and **not part of this
+port**"——写的时候是真的，现在是假的。
+如果不查这一下，我就会把这句假话原样抄进 `depth_examined.json`，
+那本账正是靠"可核对"活着的。
+
+顺着这条线还发现一件事：两个文件各有一个 **`SegmentedControlError`**，
+而且都有 `FewerThanTwoSegments` 这个同名变体——
+上游确实在两个控件里都写了 `assert(children.length >= 2)`，
+所以这是**同一条规则的两个住处**，正是第 489 轮记过的那种漂移起点。
+合成一个：`cupertino_controls.rs` 改成 `pub use crate::cupertino::SegmentedControlError;`。
+
+### 扫描
+
+两条，都不是 cargo 能测的那种：
+删掉这一轮记的那行 → `--examined` 里就没有它了；
+把共用的错误类型改回两个同名枚举 → **编译不过**
+（探针函数把一个当另一个用），也就是"共用"这件事有编译器盯着，不需要测试。
+
+### 记账
+
+`CupertinoSegmentedControl`（499–503）进账了，`finding` 点名：
+`children`→`labels`（上游按值作键、这里按下标，所以它的 groupValue 断言在这里是越界检查）、
+`groupValue`→`selected`、`onValueChanged`→`wired`；
+四轮补掉的四组真缺口；以及**确实没有对应物**的一处——
+`RadioGroup.maybeOf(context)` 这个继承式查找，这个 crate 没有那套注册表，
+所以 `set_enabled` 是把要加入的组当参数传进去的。
+
+尺子：十七把全部 exit 0。门：Rust 6896 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6896 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：新队头 `CupertinoSwitch`（0.31，8/26）。
+**先查一件事**：这一轮的教训直接用得上——先看 `cupertino_controls.rs` 与
+`cupertino.rs` 里**各有没有**一个开关（`grep -rn "CupertinoSwitch"`），
+以及 `component_themes.rs` 里有没有 `CupertinoSwitchThemeData`（`activeTrackColor`
+那一族）。上游 26 个成员里有一大半是颜色与主题参数，
+如果主题那半在 `component_themes.rs`，那它和第 495 轮 `ScrollView` 的情形一样：
+**住处已有，只是控件没住进去**，别在开关上再声明一遍。
