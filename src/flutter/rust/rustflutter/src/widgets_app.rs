@@ -42,6 +42,75 @@ pub struct RouteConfiguration {
     pub has_on_generate_initial_routes: bool,
     pub has_builder: bool,
     pub has_page_route_builder: bool,
+    /// Upstream's `navigatorKey`, `initialRoute` and `navigatorObservers`.
+    ///
+    /// They are here to be **forbidden**, not used: an application that routes
+    /// with nothing but a `builder` has no navigator for them to configure, so
+    /// upstream asserts they are still at their initial values. See
+    /// [`WidgetsApp::validate`].
+    pub has_navigator_key: bool,
+    pub has_initial_route: bool,
+    pub has_navigator_observers: bool,
+}
+
+/// How an application configured with `WidgetsApp.router` is wired: upstream's
+/// `routeInformationProvider`, `routeInformationParser`, `routerDelegate`,
+/// `backButtonDispatcher` and `routerConfig`.
+///
+/// A separate type from [`RouteConfiguration`] because upstream keeps them in
+/// separate **constructors**: an application takes one road or the other, and
+/// the asserts on each are about that road only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RouterConfiguration {
+    pub has_route_information_provider: bool,
+    pub has_route_information_parser: bool,
+    pub has_router_delegate: bool,
+    pub has_back_button_dispatcher: bool,
+    /// Upstream's `routerConfig`, which carries all four of the others at
+    /// once -- which is why giving it *and* any of them is an error rather
+    /// than a merge.
+    pub has_router_config: bool,
+}
+
+impl RouterConfiguration {
+    /// Upstream's `WidgetsApp.router` constructor asserts, all three.
+    ///
+    /// They are one idea in three parts: **say who routes, once**. A
+    /// `routerConfig` is the whole arrangement in one object, so nothing else
+    /// may be given alongside it; without one there has to be a
+    /// `routerDelegate`, because something must build the pages; and a
+    /// provider with no parser is a stream of route information nothing can
+    /// read.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.has_router_config {
+            if self.has_route_information_provider
+                || self.has_route_information_parser
+                || self.has_router_delegate
+                || self.has_back_button_dispatcher
+            {
+                return Err(
+                    "If the routerConfig is provided, all the other router delegates must not be provided",
+                );
+            }
+            return Ok(());
+        }
+        if !self.has_router_delegate {
+            return Err("Either one of routerDelegate or routerConfig must be provided");
+        }
+        if self.has_route_information_provider && !self.has_route_information_parser {
+            return Err(
+                "If routeInformationProvider is provided, routeInformationParser must also be provided",
+            );
+        }
+        Ok(())
+    }
+
+    /// Whether this application routes with a `Router` at all -- upstream's
+    /// `_usesRouter`, which both `MaterialApp` and `CupertinoApp` ask under
+    /// their own names.
+    pub fn is_configured(&self) -> bool {
+        self.has_router_delegate || self.has_router_config
+    }
 }
 
 /// What upstream wraps the application in to name it, at the end of
@@ -119,6 +188,24 @@ impl WidgetsApp {
         if !can_route && !routes.has_builder {
             return Err(
                 "Either home, a \"/\" route, onGenerateRoute, onUnknownRoute, or builder must be provided.",
+            );
+        }
+        // The **other half** of that assert, which this port had missing: a
+        // `builder` is allowed to be the only way to a route, but then the
+        // navigator's own settings have to be untouched. Upstream spells out
+        // which and what they must be -- *"namely navigatorKey, initialRoute,
+        // and navigatorObservers, must have their initial values (null, null,
+        // and the empty list, respectively)"* -- because an application that
+        // set one of them is describing a navigator it is not going to get,
+        // and nothing later would say so.
+        if !can_route
+            && (routes.has_navigator_key
+                || routes.has_initial_route
+                || routes.has_navigator_observers)
+        {
+            return Err(
+                "If no route is provided using home, routes, onGenerateRoute, or onUnknownRoute, \
+                 navigatorKey, initialRoute and navigatorObservers must have their initial values.",
             );
         }
         if !routes.has_builder && !routes.has_on_generate_route && !routes.has_page_route_builder {
@@ -1337,5 +1424,182 @@ mod tests {
             };
             assert_eq!(title.color, Color(0xFF00_7ACC));
         }
+    }
+
+    #[test]
+    fn a_builder_only_app_may_not_also_describe_a_navigator() {
+        // The half of upstream's assert this port had missing. A `builder` is
+        // allowed to be the only way to a route -- and then `navigatorKey`,
+        // `initialRoute` and `navigatorObservers` must still be at their
+        // initial values, *"(null, null, and the empty list, respectively)"*.
+        //
+        // An application that set one of them is describing a navigator it is
+        // not going to get, and nothing later in the frame would say so.
+        let builder_only = WidgetsApp {
+            routes: RouteConfiguration {
+                has_home: false,
+                routes_is_empty: true,
+                has_builder: true,
+                has_page_route_builder: true,
+                ..RouteConfiguration::default()
+            },
+            ..WidgetsApp::new()
+        };
+        assert_eq!(builder_only.validate(), Ok(()), "a builder alone is fine");
+
+        for (what, routes) in [
+            (
+                "a navigator key",
+                RouteConfiguration {
+                    has_navigator_key: true,
+                    ..builder_only.routes
+                },
+            ),
+            (
+                "an initial route",
+                RouteConfiguration {
+                    has_initial_route: true,
+                    ..builder_only.routes
+                },
+            ),
+            (
+                "an observer",
+                RouteConfiguration {
+                    has_navigator_observers: true,
+                    ..builder_only.routes
+                },
+            ),
+        ] {
+            let app = WidgetsApp {
+                routes,
+                ..WidgetsApp::new()
+            };
+            assert!(
+                app.validate().is_err(),
+                "a builder-only app that also brought {what} is refused"
+            );
+        }
+
+        // And an app that *does* have a route source may say all three: there
+        // is a navigator for them to configure.
+        let with_home = WidgetsApp {
+            routes: RouteConfiguration {
+                has_navigator_key: true,
+                has_initial_route: true,
+                has_navigator_observers: true,
+                ..WidgetsApp::new().routes
+            },
+            ..WidgetsApp::new()
+        };
+        assert_eq!(with_home.validate(), Ok(()));
+    }
+
+    #[test]
+    fn a_router_config_is_the_whole_arrangement_or_none_of_it() {
+        // `WidgetsApp.router`'s first assert: *"If the routerConfig is
+        // provided, all the other router delegates must not be provided"*. It
+        // carries all four of the others at once, so giving both is an
+        // ambiguity rather than a merge -- nothing says which would win.
+        let config_alone = RouterConfiguration {
+            has_router_config: true,
+            ..RouterConfiguration::default()
+        };
+        assert_eq!(config_alone.validate(), Ok(()));
+
+        for also in [
+            RouterConfiguration {
+                has_route_information_provider: true,
+                ..config_alone
+            },
+            RouterConfiguration {
+                has_route_information_parser: true,
+                ..config_alone
+            },
+            RouterConfiguration {
+                has_router_delegate: true,
+                ..config_alone
+            },
+            RouterConfiguration {
+                has_back_button_dispatcher: true,
+                ..config_alone
+            },
+        ] {
+            assert!(
+                also.validate().is_err(),
+                "a routerConfig alongside anything else is refused: {also:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_config_something_still_has_to_build_the_pages() {
+        // The second assert: *"Either one of routerDelegate or routerConfig
+        // must be provided"*. A router with neither has nowhere to get a page
+        // from.
+        assert!(RouterConfiguration::default().validate().is_err());
+        assert_eq!(
+            RouterConfiguration {
+                has_router_delegate: true,
+                ..RouterConfiguration::default()
+            }
+            .validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn route_information_needs_something_that_can_read_it() {
+        // The third: *"If routeInformationProvider is provided,
+        // routeInformationParser must also be provided"* -- a stream of route
+        // information with no parser is a stream nothing can read.
+        let provider_only = RouterConfiguration {
+            has_router_delegate: true,
+            has_route_information_provider: true,
+            ..RouterConfiguration::default()
+        };
+        assert!(provider_only.validate().is_err());
+        assert_eq!(
+            RouterConfiguration {
+                has_route_information_parser: true,
+                ..provider_only
+            }
+            .validate(),
+            Ok(())
+        );
+
+        // A parser without a provider is allowed: upstream's assert is one
+        // way round, and an application may hand a parser to a `routerConfig`
+        // it builds elsewhere.
+        assert_eq!(
+            RouterConfiguration {
+                has_router_delegate: true,
+                has_route_information_parser: true,
+                ..RouterConfiguration::default()
+            }
+            .validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_app_routes_with_a_router_when_either_piece_is_there() {
+        // Upstream's `_usesRouter`, which `MaterialApp` and `CupertinoApp` each
+        // ask under their own name -- and which is the same question, so it
+        // lives here with the rest of the router's rules.
+        assert!(!RouterConfiguration::default().is_configured());
+        assert!(
+            RouterConfiguration {
+                has_router_delegate: true,
+                ..RouterConfiguration::default()
+            }
+            .is_configured()
+        );
+        assert!(
+            RouterConfiguration {
+                has_router_config: true,
+                ..RouterConfiguration::default()
+            }
+            .is_configured()
+        );
     }
 }

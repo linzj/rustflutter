@@ -3937,3 +3937,49 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 还是在两个 App 各自的构造函数里——
 如果在 `WidgetsApp`，那这一条该补在 `widgets_app.rs`，
 两个 App 都受益，而不是抄两遍。
+
+---
+
+## 第 475 轮：一个应用走哪条导航的路，以及那条路禁止什么
+
+上一轮留的问题查清了：那些断言在**`WidgetsApp` 的两个构造函数**里，
+不在 `MaterialApp`/`CupertinoApp` 各自的构造函数里。
+所以补在 `widgets_app.rs`，两个 App 一起受益，不用抄两遍。
+
+补了两处。
+
+**一、导航那条断言的另一半，这个 port 一直缺着。**
+上游那条是：要么有 `home`/`routes`/`onGenerateRoute`/`onUnknownRoute` 之一，
+**要么**有 `builder` 且 `navigatorKey`、`initialRoute`、`navigatorObservers`
+统统还是初值。这个 crate 里只写了前半句（没路由就必须有 builder），
+后半句没有——于是一个"只有 builder，却还带着 navigatorKey"的应用
+在这里能通过，在上游会被拒绝。
+它描述的是一个自己根本拿不到的 navigator，而后面不会有任何东西提醒他。
+
+**二、`WidgetsApp.router` 的三条断言，一条都没有。**
+它们其实是同一件事的三面：**谁来路由，说一次**。
+`routerConfig` 是把四样东西打包成一个对象，所以它旁边再给任何一样都是歧义
+（不是合并——没有任何地方说过谁赢）；没有它就必须有 `routerDelegate`，
+否则没人造得出页面；而给了 `routeInformationProvider` 却不给 parser，
+是一条没人读得懂的路由信息流。
+
+顺带把 `_usesRouter` 挪到了这里（`RouterConfiguration::is_configured`）——
+`MaterialApp` 和 `CupertinoApp` 各自用自己的名字问同一个问题，
+而问题属于 router 那套配置。
+
+测试里有一条特意写成"**只一个方向**"的：parser 没有 provider 是允许的，
+上游那条断言只管一个方向。写反了会多拒一批合法应用，
+而这种多拒往往没人发现——因为没人会为"本该通过"写测试。
+
+变异扫描 9 个，全红。扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6777 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`MaterialApp`/`CupertinoApp` 现在各自还留着
+`has_router_delegate`/`has_router_config` 两个布尔和一个
+`router_is_configured`，和这一轮的 `RouterConfiguration` 是同一件事的两份说法。
+**先查一件事**：上游的 `MaterialApp.router` 构造函数是**自己**又写了一遍
+那三条断言，还是直接把参数转给 `WidgetsApp.router` 让它去断言——
+如果是后者，这两个 App 就该改成持有一个 `RouterConfiguration` 而不是两个布尔；
+如果上游真的各写各的，那这份重复是照抄上游，得在注释里说清楚它为什么在。
