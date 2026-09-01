@@ -2765,36 +2765,13 @@ impl Component for Chip {
         // to do is the same case: a stop that answers no key is a place the
         // reader gets stuck for no reason.
         //
-        // Enter and Space press it, through the same handler the pointer
-        // would have called. `Focus::with_on_activate` is where that binding
-        // lives for every control, so a chip does not carry a keyboard its
-        // neighbours lack.
-        //
-        // The synthetic tap is at the origin: a key has no position, and
-        // upstream's `ActivateAction` calls `onPressed` rather than `onTap`
-        // for the same reason -- there is nothing to report. A handler that
-        // reads `local_position` sees zero and should treat a press as
-        // pressing the whole control, which is what it is.
-        let body = described(chip_body);
-        if !tappable {
-            return body;
-        }
-        let activate = self.handlers.on_tap.clone();
-        crate::framework::component(
-            crate::focus::Focus::new(id, body)
-                .with_autofocus(self.autofocus)
-                .with_on_activate(move || {
-                    if let Some(activate) = &activate {
-                        activate(crate::gestures::TapEvent {
-                            local_position: crate::render::Offset::ZERO,
-                            position: crate::render::Offset::ZERO,
-                            // Not a pointer at all. Upstream's synthetic taps
-                            // use a device id no real pointer has; -1 says
-                            // the same thing where this crate counts from 0.
-                            pointer_id: -1,
-                        });
-                    }
-                }),
+        // A chip that does something is a keyboard stop that Enter presses.
+        // A chip with no handler is a label, and `operable` leaves it alone.
+        crate::focus::operable(
+            id,
+            self.autofocus,
+            self.handlers.on_tap.clone(),
+            described(chip_body),
         )
     }
 }

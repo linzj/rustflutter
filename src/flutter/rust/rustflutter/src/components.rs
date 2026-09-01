@@ -439,6 +439,8 @@ pub struct Button {
     enabled: bool,
     handlers: PointerHandlers,
     min_width: Option<f32>,
+    /// Upstream's `autofocus`: take the keyboard as soon as this appears.
+    autofocus: bool,
 }
 
 impl Button {
@@ -451,7 +453,15 @@ impl Button {
             enabled: true,
             handlers: PointerHandlers::new(),
             min_width: None,
+            autofocus: false,
         }
+    }
+
+    /// Upstream's `autofocus`. Ignored by a disabled button, which is not
+    /// somewhere the keyboard goes at all.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
+        self
     }
 
     pub fn with_style(mut self, style: ButtonVariant) -> Self {
@@ -709,20 +719,37 @@ impl Component for Button {
         };
 
         if !enabled {
+            // No focus node either. A disabled button is not a stop: upstream
+            // gates `canRequestFocus` on `isEnabled`, and a Tab that lands on
+            // something no key can operate is a dead end the reader has to
+            // Tab out of again.
             return described(face());
         }
         // The splash goes inside the button's own region, and hears the
         // pointer because raw pointer events reach every listener on the path
         // -- the tap still belongs to the button. Clipped to the button's
         // corners, which is what `containedInkWell` means upstream.
-        described(crate::framework::stateful(
-            // The same `radius` the face is drawn with. A stadium button
-            // whose ink is clipped square shows four wedges of splash colour
-            // outside the pill, and they grow with the ripple.
-            crate::ink::Ink::new(id.wrapping_add(INK_ID_OFFSET), face)
-                .with_color(splash_color)
-                .with_corner_radius(radius),
-        ))
+        // The keyboard can reach it and press it, through the same handler the
+        // finger calls -- the third path to "this button was pressed", after
+        // the pointer and the semantics action, and deliberately the same
+        // closure as both.
+        //
+        // Until this, **no button in this crate could be operated from the
+        // keyboard at all**: it had no focus node, so Tab walked past it and
+        // Enter had nothing to reach.
+        crate::focus::operable(
+            id,
+            self.autofocus,
+            self.handlers.on_tap.clone(),
+            described(crate::framework::stateful(
+                // The same `radius` the face is drawn with. A stadium button
+                // whose ink is clipped square shows four wedges of splash colour
+                // outside the pill, and they grow with the ripple.
+                crate::ink::Ink::new(id.wrapping_add(INK_ID_OFFSET), face)
+                    .with_color(splash_color)
+                    .with_corner_radius(radius),
+            )),
+        )
     }
 }
 
@@ -4561,6 +4588,95 @@ mod tests {
     }
 
     /// The colours a badge actually put on the glass: the pill and the label.
+    #[test]
+    fn a_button_can_be_reached_and_pressed_without_a_pointer() {
+        // Until this, no button in the crate could be operated from the
+        // keyboard: there was no focus node, so Tab walked past and Enter had
+        // nothing to reach. A button is the control this matters most for.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+        let presses = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&presses);
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                Button::new(7101, "Press me").with_handlers(
+                    crate::gestures::PointerHandlers::new()
+                        .with_tap(move |_| counter.set(counter.get() + 1)),
+                ),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+
+        assert!(crate::focus::focus(7101), "Tab can reach it");
+        let enter = crate::keyboard::KeyEvent {
+            change: crate::keyboard::KeyChange::Down,
+            physical: crate::keyboard::PhysicalKey::ENTER,
+            logical: crate::keyboard::LogicalKey::ENTER,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        };
+        assert!(crate::focus::dispatch_key(&enter));
+        assert_eq!(
+            presses.get(),
+            1,
+            "and pressed the same handler the finger would"
+        );
+    }
+
+    #[test]
+    fn a_disabled_button_is_not_a_place_the_keyboard_stops() {
+        // Upstream gates `canRequestFocus` on `isEnabled`. A stop no key can
+        // operate is a dead end the reader has to Tab out of again.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                Button::new(7102, "Nope")
+                    .with_enabled(false)
+                    .with_autofocus(true)
+                    .with_handlers(crate::gestures::PointerHandlers::new().with_tap(move |_| {})),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+
+        assert_eq!(
+            crate::focus::focused(),
+            None,
+            "it did not claim the keyboard"
+        );
+        assert!(!crate::focus::focus(7102), "and cannot be given it");
+    }
+
+    #[test]
+    fn a_button_asked_to_take_the_keyboard_takes_it() {
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                Button::new(7103, "First")
+                    .with_autofocus(true)
+                    .with_handlers(crate::gestures::PointerHandlers::new().with_tap(move |_| {})),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), Some(7103));
+    }
+
     #[test]
     fn a_buttons_ink_is_held_inside_the_pill_and_not_inside_its_bounding_box() {
         // The defect a downstream application saw: pressing a button drew a

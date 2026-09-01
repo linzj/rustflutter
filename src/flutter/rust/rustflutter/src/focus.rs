@@ -1549,6 +1549,45 @@ pub fn dispatch_key(event: &KeyEvent) -> bool {
     false
 }
 
+/// Makes `child` a keyboard stop that Enter and Space press.
+///
+/// The three things every operable control needs and none of them needs
+/// differently: a node so the traversal can reach it, `autofocus` so it can
+/// ask for the keyboard on arrival, and an activation bound to the same
+/// handler the pointer calls.
+///
+/// It takes the pointer's own callback rather than a second one, because the
+/// two must not be able to disagree about what pressing this does -- the same
+/// rule the semantics annotation already follows by passing `on_tap` through.
+///
+/// A control with no handler is returned untouched. Upstream's
+/// `canRequestFocus` is `isEnabled`, and a stop that answers nothing is
+/// somewhere the reader lands for no reason and has to leave again.
+pub fn operable(
+    id: u64,
+    autofocus: bool,
+    on_tap: Option<Rc<dyn Fn(crate::gestures::TapEvent)>>,
+    child: AnyWidget,
+) -> AnyWidget {
+    let Some(on_tap) = on_tap else {
+        return child;
+    };
+    component(
+        Focus::new(id, child)
+            .with_autofocus(autofocus)
+            .with_on_activate(move || {
+                // A key has no position. Upstream's `ActivateAction` calls
+                // `onPressed` rather than `onTap` for the same reason; here
+                // the origin and a pointer id no real pointer has say it.
+                on_tap(crate::gestures::TapEvent {
+                    local_position: crate::render::Offset::ZERO,
+                    position: crate::render::Offset::ZERO,
+                    pointer_id: -1,
+                });
+            }),
+    )
+}
+
 /// Whether this key is the one that presses the focused control.
 ///
 /// Asked of the same table the traversal asks, so Enter and Space mean here

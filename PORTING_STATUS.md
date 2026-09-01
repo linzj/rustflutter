@@ -6897,3 +6897,52 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6968 通�
 就等于给一大片控件同时接上**——先确认按钮走的是不是这条路，
 以及 `InkWell` 的 `on_tap` 是不是就是它要调的那个。
 接错地方就会变成每个控件各写一遍。
+
+---
+
+## 第 527 轮：按钮
+
+先查上一轮记的那件事：`InkWell` 在自己文件之外只有**三处**调用，
+**按钮系不在其中**。所以"在 InkWell 上接一次覆盖一大片"这条路是走不通的，
+查清楚才没有接错地方。
+
+真查出来的是：`Button` 和上一轮之前的 `Chip` **一模一样的形状**——
+`PointerHandlers`，没有焦点节点。也就是说
+**这个 crate 里的 Material 按钮根本不能用键盘操作**。
+这是同一个缺口，但爆炸半径大得多。
+
+### 一条规则，一个家
+
+第三次要写同样的包裹（chip、button，还会有更多），所以先提出来：
+`focus::operable(id, autofocus, on_tap, child)`——
+每个可操作控件都需要的三件事，且没有一个需要不同的做法：
+节点、autofocus、绑到**指针会调的同一个 handler** 的激活。
+
+**它收的是指针那个回调，不是第二个**。理由和 semantics 那层一样：
+两条路不能对"按下这个是什么意思"给出不同答案。
+
+没有 handler 的控件原样返回。禁用的按钮**连节点都不建**——
+上游 `canRequestFocus` 就是 `isEnabled`，
+**一个什么键都不答的停靠点，是读者白白落进去、还得再 Tab 出来的死胡同**。
+
+chip 改成调它，代码短了一大截；按钮接上，同时补了 `autofocus`。
+
+### 扫描里两个不编译的变异
+
+五个变异里有两个**根本不编译**——不编译的变异什么也证明不了，
+按第 516 轮定下的规矩重写成能编译的形式（一个把激活体换成空操作，
+一个用 `std::convert::identity` 把 `operable` 整个绕过去）。
+重写之后五个全死。
+
+尺子：十七把全部 exit 0。门：Rust 6971 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6971 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`operable` 现在有两个用户（chip、button），
+而**开关、单选、复选**这些天天按的还没接。
+**先查一件事**：它们的 tap 回调是不是也在 `PointerHandlers.on_tap` 里——
+如果是，那就是三处一样的两行；如果它们用的是别的形状
+（比如 `on_changed(bool)` 而不是 `on_tap`），
+那 `operable` 收的类型就需要想一想：
+**是让它们凑成 `on_tap`，还是 `operable` 再收一个"按下就调这个"的闭包**。
+后者更可能是对的——`ActivateAction` 调的本来就是 `onPressed` 而不是 `onTap`。
