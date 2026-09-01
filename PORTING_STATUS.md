@@ -5615,3 +5615,58 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6901 通�
 两个默认色）。**先查一件事**：`SwitchOnOffLabels` 现在是**谁在读**——
 如果只有常量没有画出来，那缺的是"画"；如果画了但没有那个 MediaQuery 开关，
 那缺的是"什么时候画"。两者要补的东西完全不同，别猜。
+
+---
+
+## 第 505 轮：竖线和圆圈，画在拇指下面
+
+上一轮问的是"缺的是画，还是什么时候画"。查了：
+`SwitchOnOffLabels::resolve`（那个 MediaQuery 闸门加两个默认色）**在**，还有测试；
+`ON_SIZE`/`OFF_RADIUS`/两个 padding 也都在。
+**缺的是画**——整个 crate 里没有一处读这些常量去画东西。
+
+补上，三条规则跟着一起进来：
+
+**一、两个内缩量不一样**（11 与 12），因为形状不一样：
+一根一像素宽的竖线和一个直径十的圆环，在同样的内缩下**看起来不一样深**。
+右到左时两个标记换端，别的不变。
+
+**二、每个标记随着拇指压到它身上而淡出**：
+
+```dart
+final double leftLabelOpacity = visualPosition * (1.0 - currentReactionValue);
+final double rightLabelOpacity = (1.0 - visualPosition) * (1.0 - currentReactionValue);
+```
+
+于是没有哪一个会被移动中的拇指切成一半——开着时竖线是实的、圆环在拇指底下已经没了。
+
+**三、第二个因子是"按住"**：拇指被按住时会朝轨道中间变宽，
+所以两个标记**一起**淡出，而不是被它裁掉。按住的开关一个标记也不显示。
+
+画的位置也照上游：**在轨道和拇指之间**。这正是第二条规则成立的前提——
+如果画在拇指上面，淡出就成了多余的装饰而不是必要的。
+圆环是 `PaintingStyle.stroke` 描边而不是填充，
+所以顺手补了 `_kOffLabelWidth` 这个常量（`OFF_STROKE`）——
+它和 `_kOnLabelWidth` 数值相同、意思不同：一个是线宽，一个是竖线的宽度。
+
+### 变异 7 个，全红
+
+两个标记同一内缩；右到左不换端；两个标记同时实心；按住仍然显示；
+透明度不随方向交换；不问 MediaQuery 一律画；干脆不画。
+最后两条是走一遍抓的——同一个开关在设置开与关时画出的图形数量不同。
+
+`CupertinoSwitch` 0.46 → **0.54（14/26）**。
+
+尺子：十七把全部 exit 0。门：Rust 6905 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6905 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`CupertinoSwitch` 还剩下的成员里，
+`focusNode`/`onFocusChange`/`autofocus`/`focusColor` 是一组——
+和第 501–502 轮分段控件走过的**完全同一条路**（那时是 `leaf` 里放不下 `Focus`，
+后来用 `many` 解决）。**先查一件事**：这个开关的 build 现在是
+`crate::implicit::animated(...)` 包着一个 `leaf`，
+`Focus` 能不能包在 `animated` **外面**（它返回的是 AnyWidget 吗）——
+如果能，这一组就是把上一次的做法再用一次，不必再动结构；
+如果不能，就照分段控件那样把 `leaf` 拆成 widget 树，
+别在这里发明第三种写法。

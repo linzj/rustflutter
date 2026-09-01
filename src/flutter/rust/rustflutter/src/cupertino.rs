@@ -892,6 +892,11 @@ impl SwitchOnOffLabels {
     pub const ON_SIZE: (f32, f32) = (1.0, 10.0);
     /// switch.dart's `_kOffLabelRadius`: the ring.
     pub const OFF_RADIUS: f32 = 5.0;
+    /// switch.dart's `_kOffLabelWidth`, which is the ring's **stroke** and not
+    /// its size: the off mark is drawn `PaintingStyle.stroke`, so this is how
+    /// thick the circle's line is. The on mark's `_kOnLabelWidth` is the same
+    /// number meaning something else -- the width of a filled bar.
+    pub const OFF_STROKE: f32 = 1.0;
     /// switch.dart's `_kOnLabelPaddingHorizontal`.
     pub const ON_PADDING: f32 = 11.0;
     /// switch.dart's `_kOffLabelPaddingHorizontal`, which is **not** the on
@@ -909,6 +914,54 @@ impl SwitchOnOffLabels {
     /// the same gap seen from a new place.
     pub const OFF_COLOR: Color = Color::argb(255, 179, 179, 179);
 
+    /// Where the two marks sit, given the track's rectangle -- upstream's two
+    /// `translate`s off `trackRect.centerLeft` and `centerRight`.
+    ///
+    /// **The two paddings are different numbers** (11 and 12), and the reason
+    /// is in the shapes: a bar one pixel wide and a ring ten across do not
+    /// look equally far in at the same inset.
+    ///
+    /// Right-to-left swaps which end each mark is at, and nothing else: the on
+    /// mark is always the one behind the thumb's *on* position, which is the
+    /// end the thumb travels towards.
+    pub fn centres(track: Rect, rtl: bool) -> (Offset, Offset) {
+        let (left, right) = (track.left, track.right);
+        let middle = (track.top + track.bottom) / 2.0;
+        if rtl {
+            (
+                Offset::new(right - Self::ON_PADDING, middle),
+                Offset::new(left + Self::OFF_PADDING, middle),
+            )
+        } else {
+            (
+                Offset::new(left + Self::ON_PADDING, middle),
+                Offset::new(right - Self::OFF_PADDING, middle),
+            )
+        }
+    }
+
+    /// How solid each mark is, from upstream's four lines:
+    ///
+    /// ```dart
+    /// final double leftLabelOpacity = visualPosition * (1.0 - currentReactionValue);
+    /// final double rightLabelOpacity = (1.0 - visualPosition) * (1.0 - currentReactionValue);
+    /// ```
+    ///
+    /// **Each mark fades as the thumb comes to cover it**, so neither is ever
+    /// half-hidden behind a moving thumb: the bar is at full strength when the
+    /// switch is on and the thumb is over the ring, and the reverse when it is
+    /// off.
+    ///
+    /// The second factor is the *press*: while the thumb is held it widens
+    /// towards the middle of the track, so both marks fade out together rather
+    /// than being clipped by it. A pressed switch shows no marks at all, which
+    /// is upstream's `1.0 - reaction`.
+    pub fn opacities(position: f32, reaction: f32, rtl: bool) -> (f32, f32) {
+        let left = position * (1.0 - reaction);
+        let right = (1.0 - position) * (1.0 - reaction);
+        if rtl { (right, left) } else { (left, right) }
+    }
+
     /// Upstream's pair, or `None` when the reader has not asked for the marks.
     pub fn resolve(
         on_off_switch_labels: bool,
@@ -922,6 +975,82 @@ impl SwitchOnOffLabels {
             on_color: on_color.unwrap_or(Color::WHITE),
             off_color: off_color.unwrap_or(SwitchOnOffLabels::OFF_COLOR),
         })
+    }
+}
+
+/// Draws the two accessibility marks over a switch's track.
+///
+/// Upstream paints them in `_RenderCupertinoSwitch.paint`, between the track
+/// and the thumb: **under** the thumb, which is what makes the fading in
+/// [`SwitchOnOffLabels::opacities`] the right answer rather than a
+/// convenience -- a mark the thumb is about to cover fades instead of being
+/// clipped in half.
+struct SwitchLabelPainter {
+    labels: SwitchOnOffLabels,
+    /// Where the track is inside the box being painted.
+    track: Rect,
+    position: f32,
+    reaction: f32,
+    rtl: bool,
+}
+
+impl crate::render::CustomPainter for SwitchLabelPainter {
+    fn paint(&self, canvas: &mut crate::engine::Canvas, _size: Size) {
+        let (on_centre, off_centre) = SwitchOnOffLabels::centres(self.track, self.rtl);
+        let (on_opacity, off_opacity) =
+            SwitchOnOffLabels::opacities(self.position, self.reaction, self.rtl);
+
+        let alpha = |colour: Color, opacity: f32| {
+            colour.with_alpha((colour.alpha() as f32 * opacity.clamp(0.0, 1.0)).round() as u8)
+        };
+
+        // The '|': a filled bar, one wide and ten tall, centred on its point.
+        let (bar_width, bar_height) = SwitchOnOffLabels::ON_SIZE;
+        let bar = Rect::ltrb(
+            on_centre.dx - bar_width / 2.0,
+            on_centre.dy - bar_height / 2.0,
+            on_centre.dx + bar_width / 2.0,
+            on_centre.dy + bar_height / 2.0,
+        );
+        canvas.draw_rect(
+            bar,
+            &crate::engine::Paint::new(alpha(self.labels.on_color, on_opacity)),
+        );
+
+        // The 'O': a stroked circle, not a filled one -- `PaintingStyle.stroke`
+        // with `_kOffLabelWidth`.
+        let ring = crate::engine::Paint::new(alpha(self.labels.off_color, off_opacity)).with_style(
+            crate::engine::Style::Stroke {
+                width: SwitchOnOffLabels::OFF_STROKE,
+            },
+        );
+        canvas.draw_circle(
+            off_centre.dx,
+            off_centre.dy,
+            SwitchOnOffLabels::OFF_RADIUS,
+            &ring,
+        );
+    }
+
+    fn should_repaint(&self, old: &dyn crate::render::CustomPainter) -> bool {
+        match old.as_any().downcast_ref::<SwitchLabelPainter>() {
+            Some(old) => {
+                old.labels != self.labels
+                    || old.track != self.track
+                    || old.position != self.position
+                    || old.reaction != self.reaction
+                    || old.rtl != self.rtl
+            }
+            None => true,
+        }
+    }
+
+    fn kind_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<SwitchLabelPainter>()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -1091,6 +1220,12 @@ pub struct CupertinoSwitch {
     enabled: bool,
     /// The four colours, defaulted per [`CupertinoSwitchColors::resolve`].
     colors: CupertinoSwitchColors,
+    /// Upstream's `onLabelColor` and `offLabelColor`, which colour the two
+    /// accessibility marks and nothing else. Both default inside
+    /// [`SwitchOnOffLabels::resolve`], and neither is drawn at all unless the
+    /// reader has asked for the marks.
+    on_label_color: Option<Color>,
+    off_label_color: Option<Color>,
     /// Upstream's `applyTheme`, which is nullable on purpose: `None` means
     /// "whatever the theme says", not "no".
     apply_theme: Option<bool>,
@@ -1104,6 +1239,8 @@ impl CupertinoSwitch {
             value,
             enabled: true,
             colors: CupertinoSwitchColors::default(),
+            on_label_color: None,
+            off_label_color: None,
             apply_theme: None,
             on_changed: None,
         }
@@ -1136,6 +1273,18 @@ impl CupertinoSwitch {
 
     pub fn with_colors(mut self, colors: CupertinoSwitchColors) -> Self {
         self.colors = colors;
+        self
+    }
+
+    /// Upstream's `onLabelColor`.
+    pub fn with_on_label_color(mut self, color: Color) -> Self {
+        self.on_label_color = Some(color);
+        self
+    }
+
+    /// Upstream's `offLabelColor`.
+    pub fn with_off_label_color(mut self, color: Color) -> Self {
+        self.off_label_color = Some(color);
         self
     }
 
@@ -1233,6 +1382,15 @@ impl StatefulComponent for CupertinoSwitch {
         // crate's `animated` moves the thumb while the colours change with the
         // value. The pair itself is the rule.
         let (track, thumb_color) = resolved.at(value);
+        // `MediaQuery.onOffSwitchLabelsOf(context)`: the marks are an
+        // accessibility setting, not a style, so they are read from the media
+        // query rather than taken as a parameter.
+        let labels = SwitchOnOffLabels::resolve(
+            crate::media_query::media_query_of(context).on_off_switch_labels,
+            self.on_label_color,
+            self.off_label_color,
+        );
+        let rtl = crate::direction::current_direction() == crate::direction::TextDirection::Rtl;
 
         // Where the thumb is: the value, or where the drag has flipped it to.
         // Upstream this is the position controller's value; the animated()
@@ -1331,6 +1489,12 @@ impl StatefulComponent for CupertinoSwitch {
                         .with_corner_radius(SWITCH_THUMB_RADIUS)
                         .with_shadows(switch_thumb_shadows());
 
+                    let track_rect = Rect::ltrb(
+                        track_left,
+                        track_top,
+                        track_left + track_width,
+                        track_top + track_height,
+                    );
                     let mut stack = RenderStack::new().push_positioned(
                         track_box,
                         StackPosition {
@@ -1339,6 +1503,32 @@ impl StatefulComponent for CupertinoSwitch {
                             ..Default::default()
                         },
                     );
+                    // Between the track and the thumb, as upstream paints
+                    // them: the thumb covers the mark it has reached, and
+                    // `opacities` fades that mark out as it arrives.
+                    if let Some(labels) = labels {
+                        stack = stack.push_positioned(
+                            crate::render::RenderCustomPaint::new(crate::widgets::SizedBox::new(
+                                width, height,
+                            ))
+                            .with_painter(std::rc::Rc::new(
+                                SwitchLabelPainter {
+                                    labels,
+                                    track: track_rect,
+                                    position,
+                                    // The press widens the thumb over the marks,
+                                    // so `extension` is this crate's reaction.
+                                    reaction: extension / THUMB_EXTENSION,
+                                    rtl,
+                                },
+                            )),
+                            StackPosition {
+                                left: Some(0.0),
+                                top: Some(0.0),
+                                ..Default::default()
+                            },
+                        );
+                    }
                     stack = stack.push_positioned(
                         thumb,
                         StackPosition {
@@ -7158,6 +7348,85 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    // -- The two marks on a switch ------------------------------------------------
+
+    #[test]
+    fn the_marks_sit_at_the_ends_of_the_track_and_swap_in_arabic() {
+        let track = Rect::ltrb(4.0, 4.0, 55.0, 35.0);
+        let (on, off) = SwitchOnOffLabels::centres(track, false);
+        assert_eq!(on, Offset::new(4.0 + 11.0, 19.5), "the bar, eleven in");
+        assert_eq!(off, Offset::new(55.0 - 12.0, 19.5), "the ring, twelve in");
+        assert_ne!(
+            SwitchOnOffLabels::ON_PADDING,
+            SwitchOnOffLabels::OFF_PADDING,
+            "a one-pixel bar and a ten-across ring do not look equally far in              at the same inset"
+        );
+
+        let (on, off) = SwitchOnOffLabels::centres(track, true);
+        assert_eq!(on, Offset::new(55.0 - 11.0, 19.5), "and they change ends");
+        assert_eq!(off, Offset::new(4.0 + 12.0, 19.5));
+    }
+
+    #[test]
+    fn each_mark_fades_as_the_thumb_comes_to_cover_it() {
+        // Off: the thumb is over the bar, so the bar is gone and the ring is
+        // solid. On: the reverse.
+        assert_eq!(SwitchOnOffLabels::opacities(0.0, 0.0, false), (0.0, 1.0));
+        assert_eq!(SwitchOnOffLabels::opacities(1.0, 0.0, false), (1.0, 0.0));
+        assert_eq!(SwitchOnOffLabels::opacities(0.5, 0.0, false), (0.5, 0.5));
+
+        // Right to left, the same two numbers land the other way round.
+        assert_eq!(SwitchOnOffLabels::opacities(1.0, 0.0, true), (0.0, 1.0));
+    }
+
+    #[test]
+    fn a_held_switch_shows_no_marks_at_all() {
+        // The thumb widens towards the middle while it is held, so both marks
+        // fade out together rather than being clipped by it.
+        assert_eq!(SwitchOnOffLabels::opacities(1.0, 1.0, false), (0.0, 0.0));
+        assert_eq!(SwitchOnOffLabels::opacities(0.0, 1.0, false), (0.0, 0.0));
+        let (on, off) = SwitchOnOffLabels::opacities(1.0, 0.5, false);
+        assert_eq!((on, off), (0.5, 0.0), "and halfway through the press");
+    }
+
+    #[test]
+    fn the_marks_are_drawn_only_when_the_reader_asked_for_them() {
+        // The gate is the media query, so the switch draws two more shapes
+        // with the setting on and none with it off.
+        let with = painted_shapes_of_switch(true);
+        let without = painted_shapes_of_switch(false);
+        assert!(
+            with > without,
+            "the marks are extra shapes: {with} against {without}"
+        );
+    }
+
+    /// How many shapes a plain off switch paints under this setting.
+    fn painted_shapes_of_switch(on_off_switch_labels: bool) -> usize {
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+
+        let mut data = crate::media_query::MediaQueryData::default();
+        data.on_off_switch_labels = on_off_switch_labels;
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::media_query::MediaQuery::new(
+            data,
+            provide(
+                CupertinoTheme::dark(),
+                stateful(CupertinoSwitch::new(9600, false)),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(120.0, 60.0));
+        let mut layers = LayerTree::new(120, 60);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(120.0, 60.0));
+            root.paint(&mut context, Offset::ZERO);
+        }
+        drawn().len()
     }
 
     // -- What colour a switch is --------------------------------------------------
