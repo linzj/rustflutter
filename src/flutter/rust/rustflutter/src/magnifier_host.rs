@@ -176,6 +176,13 @@ pub struct MagnifierHost {
     /// What the last placement decided, so a caller can ask without repeating
     /// the arithmetic.
     last: Option<MagnifierPlacement>,
+    /// Upstream's `MagnifierController.animationController`, as the only thing
+    /// [`MagnifierHost::is_shown`] reads from it: which way it is going.
+    ///
+    /// `None` is upstream's `animationController == null` -- a loupe with no
+    /// entry animation at all, which is the common case and the reason
+    /// `shown`'s second half ends in `?? true`.
+    animation: Option<crate::animation::AnimationStatus>,
 }
 
 impl MagnifierHost {
@@ -208,13 +215,47 @@ impl MagnifierHost {
         self.entry.is_some()
     }
 
-    /// Upstream's `MagnifierController.shown`.
+    /// Upstream's `MagnifierController.shown`:
     ///
-    /// An entry that has been removed is not shown whatever the last placement
-    /// decided -- upstream's `shown` leads with `overlayEntry != null` for the
-    /// same reason.
+    /// ```dart
+    /// bool get shown =>
+    ///     overlayEntry != null && (animationController?.isForwardOrCompleted ?? true);
+    /// ```
+    ///
+    /// Three things, and each one is a different way of not being shown:
+    ///
+    /// * An entry that has been removed is not shown whatever the last
+    ///   placement decided -- upstream's `shown` leads with
+    ///   `overlayEntry != null` for the same reason.
+    /// * A placement the platform said to hide is not shown either, though the
+    ///   entry stays mounted -- see [`MagnifierHost::exists`], which is the
+    ///   question that answers "is there one at all".
+    /// * **A loupe animating out is already not shown**, though it is still on
+    ///   screen and still fading. That is `isForwardOrCompleted`: `reverse` and
+    ///   `dismissed` are both false, so a caller asking "may I use it" is told
+    ///   no from the moment it starts leaving rather than when it has gone.
+    ///
+    /// And the `?? true`: a host with no entry animation is shown as soon as
+    /// it exists. Reading the missing controller as "not shown" would hide
+    /// every loupe that never animates, which is most of them.
     pub fn is_shown(&self) -> bool {
-        self.exists() && self.state.shown.get()
+        self.exists()
+            && self.state.shown.get()
+            && self
+                .animation
+                .map(|status| status.is_forward_or_completed())
+                .unwrap_or(true)
+    }
+
+    /// The entry animation's status, `None` when there is none.
+    pub fn animation_status(&self) -> Option<crate::animation::AnimationStatus> {
+        self.animation
+    }
+
+    /// Gives this host an entry animation, which
+    /// [`MagnifierHost::is_shown`] then reads.
+    pub fn set_animation_status(&mut self, status: Option<crate::animation::AnimationStatus>) {
+        self.animation = status;
     }
 
     /// The last placement, or `None` before the first gesture.
@@ -295,6 +336,14 @@ impl MagnifierHost {
     /// leave it out rather than keep a line that reads like a rule.
     pub fn hide(&mut self, remove_from_overlay: bool) {
         self.state.shown.set(false);
+        // Upstream's `hide` awaits `animationController?.reverse()`, so a host
+        // that has one starts going the other way here rather than at the
+        // moment the entry is taken out. The two are not the same instant, and
+        // `removeFromOverlay: false` is exactly the case where the second one
+        // never comes.
+        if self.animation.is_some() {
+            self.animation = Some(crate::animation::AnimationStatus::Reverse);
+        }
         self.state.refresh.refresh();
         if remove_from_overlay {
             self.remove_from_overlay();
@@ -347,6 +396,10 @@ pub fn show_magnifier(overlay: Rc<OverlayHandle>, style: MagnifierStyle) -> Opti
         state,
         previous: None,
         last: None,
+        // No entry animation: this crate draws the loupe's body without one,
+        // which is upstream's `animationController == null` case and the
+        // reason `shown` ends in `?? true`.
+        animation: None,
     })
 }
 
@@ -782,6 +835,70 @@ mod tests {
         assert_eq!(overlay.entry_count(), before + 1, "and this one keeps it");
         assert!(host.exists());
         assert!(!host.is_shown(), "kept is not the same as showing");
+        drop(tree);
+    }
+
+    #[test]
+    fn a_loupe_on_its_way_out_is_already_not_shown() {
+        // The half of `shown` this port had missing:
+        // `animationController?.isForwardOrCompleted ?? true`. A loupe
+        // animating out is still on screen and still fading, and it is
+        // **already** not shown -- `reverse` and `dismissed` are both false --
+        // so a caller asking "may I use it" is told no from the moment it
+        // starts leaving rather than when it has gone.
+        use crate::animation::AnimationStatus;
+        let (mut tree, overlay) = mounted();
+        let mut host =
+            show_magnifier(Rc::clone(&overlay), MagnifierStyle::Material).expect("an overlay");
+        tree.rebuild_dirty();
+        let root = laid_out(&mut tree);
+        let theatre = theatre_of(&root);
+        host.update(info_at(200.0, 320.0, 300.0), screen(), &theatre);
+
+        assert_eq!(host.animation_status(), None);
+        assert!(
+            host.is_shown(),
+            "no entry animation at all, which is the `?? true`"
+        );
+
+        host.set_animation_status(Some(AnimationStatus::Forward));
+        assert!(host.is_shown(), "coming in counts as shown");
+        host.set_animation_status(Some(AnimationStatus::Completed));
+        assert!(host.is_shown());
+
+        host.set_animation_status(Some(AnimationStatus::Reverse));
+        assert!(
+            !host.is_shown(),
+            "and going out does not, though it is still on screen"
+        );
+        assert!(host.exists(), "still in the overlay all the same");
+        host.set_animation_status(Some(AnimationStatus::Dismissed));
+        assert!(!host.is_shown());
+        drop(tree);
+    }
+
+    #[test]
+    fn hiding_a_loupe_that_animates_starts_it_going_the_other_way() {
+        // Upstream's `hide` awaits `animationController?.reverse()`, so a host
+        // that has one turns round *here* rather than when the entry is taken
+        // out -- and with `removeFromOverlay: false` the second moment never
+        // comes at all.
+        use crate::animation::AnimationStatus;
+        let (tree, overlay) = mounted();
+        let mut host =
+            show_magnifier(Rc::clone(&overlay), MagnifierStyle::Material).expect("an overlay");
+        host.set_animation_status(Some(AnimationStatus::Completed));
+        host.hide(false);
+        assert_eq!(host.animation_status(), Some(AnimationStatus::Reverse));
+        assert!(host.exists(), "kept, as asked");
+        assert!(!host.is_shown());
+
+        // And a host with no animation is left with none: there is nothing to
+        // turn round, and inventing a status would make `?? true` unreachable.
+        let mut plain =
+            show_magnifier(Rc::clone(&overlay), MagnifierStyle::Material).expect("an overlay");
+        plain.hide(false);
+        assert_eq!(plain.animation_status(), None);
         drop(tree);
     }
 

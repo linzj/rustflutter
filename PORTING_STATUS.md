@@ -4321,3 +4321,52 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 （`navigation.rs` 里似乎只有 push/pop/replace/pop_to_root）；
 没有的话，这一轮的规则就已经覆盖了它能做的全部动作，
 下一轮该回 `depth.py` 队头，而不是给这个栈加一个上游有、这里没人要的操作。
+
+---
+
+## 第 483 轮：正在退场的放大镜，已经不算"显示中"
+
+上一轮留的问题先查：`navigation.rs` 的栈只有
+push / push_expecting / pop / pop_with_result / replace / pop_to_root，
+**没有"抽掉中间某一条"**。所以上一轮那几条规则已经覆盖了它能做的全部动作，
+不该为了对齐上游的 `removeRoute` 家族给它加一个没人要的操作。回队头。
+
+队头（两张图标表之外）是 `MagnifierController`（2/8）。
+一看就知道那个 2/8 大半是**映射错位**：这个 crate 把上游控制器的
+overlay 生命周期放在 `MagnifierHost` 里，`magnifier.rs` 顶上的注释早写明了。
+逐个对下来，`shown`/`show`/`hide`/`removeFromOverlay`/`overlayEntry` 都在，
+真正缺的只有一个：**`shown` 的后半句**。
+
+```dart
+bool get shown =>
+    overlayEntry != null && (animationController?.isForwardOrCompleted ?? true);
+```
+
+这个 port 只实现了前半句。补上之后，"不显示"有三种各不相同的方式：
+条目被拿走了；平台说这一次要藏起来（条目还挂着）；
+以及**正在退场**——还在屏幕上、还在淡出，但已经不算显示中。
+`isForwardOrCompleted` 里 `reverse` 和 `dismissed` 都是假，
+所以问"我还能用它吗"的调用者从它**开始**离开的那一刻就被告知不能，
+而不是等它走完。
+
+`?? true` 那一半单独值得一条测试：没有入场动画的放大镜，一存在就是显示中。
+把缺失的控制器读成"不显示"，会把大多数（根本不做动画的）放大镜全藏掉。
+
+`hide` 也跟着改：上游 `hide` 里 await 的是 `animationController?.reverse()`，
+所以有动画的 host 在**这里**掉头，而不是在条目被拿走的时候——
+`removeFromOverlay: false` 那条路上，第二个时刻根本不会来。
+没有动画的 host 则保持没有：无中生有一个状态，会让 `?? true` 那条路永远走不到。
+
+变异扫描 6 个，全红（"没有动画就永不显示"一条打红 5 个测试，
+说明这条路径是许多测试的地基）。扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6810 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：队头下一个是 `TextSelectionGestureDetectorBuilder`（7/27）。
+**先查一件事**：它那 27 个成员里绝大多数是
+`onTapDown`/`onSingleTapUp`/`onDragSelectionStart`… 这一串手势回调，
+而这个 crate 的 `text_selection.rs` 里已经有一套选择手势的规则——
+先数清楚"同名的有几个、名字不同但做同一件事的有几个"，
+免得又照着上游的名字造一份和现有规则重复的东西
+（第 474 轮那条被删掉的 `effective_brightness` 就是这么来的）。
