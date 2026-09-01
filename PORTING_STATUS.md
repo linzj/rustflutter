@@ -5044,3 +5044,62 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6857 通�
 **这个 crate 的滚动参数没有一个统一的住处**，
 那就不该在 `ReorderableListView` 上再补一遍，而该看
 `scrolling.rs` 里有没有（或该不该有）一个"滚动视图的公共配置"。
+
+---
+
+## 第 495 轮：可重排列表是一个滚动视图，现在它这么说了
+
+队头 `ReorderableListView`（0.26，8/31）。按上一轮的"先查一件事"数了那 31 个成员：
+
+- **13 个**是重排本身的（itemBuilder、itemCount、四个回调、proxyDecorator、
+  buildDefaultDragHandles、三个 extent 来源、autoScrollerVelocityScalar、dragBoundaryProvider）；
+- **14 个**是 `ScrollView` 的参数，原样往下传（scrollDirection、reverse、
+  scrollController、primary、physics、shrinkWrap、anchor、cacheExtent、
+  scrollCacheExtent、dragStartBehavior、keyboardDismissBehavior、restorationId、
+  clipBehavior、padding）；
+- **3 个**是这个 Material 类自己的（header、footer、mouseCursor）。
+
+假设成立：**近一半的"缺口"是滚动视图的参数。**
+
+然后第二件事查出了一个更好的结果：**这个 crate 早就有 `scroll_view::ScrollView`**，
+上游 `ScrollView` 的四条断言、`physics` 的默认规则、`effectivePrimary`、
+`viewport_kind`、keyboard dismiss 全都在里面。
+也就是说不需要"造一个公共住处"——**住处早就有，只是这两个可重排列表没住进去**。
+
+所以这一轮不是再声明十四个字段，而是让两个类各持有一个 `ScrollView`：
+
+- `ReorderableListView::validate` 在自己的三条之后再问它一次；
+- `ReorderableList`（widgets 层）同样，并且 `with_scroll` 会把轴和方向带下去。
+
+### 顺序是有意义的，不是摆设
+
+Material 那三条断言在**写下这个 widget 的那一刻**触发，
+而滚动视图的断言是 `build` 造 `CustomScrollView` 时才触发。
+所以两处都错的列表，**先听到的是自己的那条**。这一条单独有测试钉着。
+
+### 一个轴，两个住处，这次是有理由的
+
+上游的 sliver 不带轴——它从约束里读回来。这个 crate 的 sliver 需要它做间隙运算，
+所以轴在 `scroll` 和 `sliver` 上各有一份。
+处理办法是**只留一个 setter**：`with_axis` 同时写两处，
+`with_scroll` 把整个滚动视图的轴带下去。
+变异扫描专门试了"只写一处"的三种写法，全部被抓。
+
+### 变异 7 个，全红
+
+两个类各自"不问滚动视图"（2 红）；把滚动视图的断言提到最前（1 红）；
+轴只到 scroll、只到 sliver、整个 scroll 换掉却不带轴、reverse 只到 sliver（4 红）。
+
+尺子：十七把全部 exit 0。门：Rust 6861 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6861 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`ReorderableListView` 现在 0.29（9/31）——比值几乎没动，
+因为**多出来的十四个成员是 `ScrollView` 的字段，depth 只数这个类身上的**。
+这正是 `depth_examined.json` 该记的那种情况，但**先别急着记**：
+剩下的三个 Material 成员 `header` / `footer` / `mouseCursor` 还没查过。
+**先查一件事**：上游 `ReorderableListView` 的 header/footer 不只是"多两个孩子"——
+它们参与 `_itemBuilder` 的**索引换算**（有 header 时孩子的 index 要减一），
+而且 `onReorder` 报的索引是**列表的**索引不是孩子的。
+先看这个 crate 的 `reorder_report` / `insert_index_for` 有没有这层换算，
+没有就是真缺口，有就连同 ScrollView 那十四个一起记。

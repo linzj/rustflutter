@@ -30,6 +30,7 @@ use crate::multidrag::{
     MultiDragGestureRecognizer,
 };
 use crate::render::{Axis, Offset};
+use crate::scroll_view::ScrollView;
 use crate::scrolling::{CacheExtentStyle, ScrollCacheExtent};
 
 /// Where a stationary row sits while another is being dragged past it.
@@ -506,6 +507,12 @@ pub enum ReorderableError {
     AChildWithoutAKey,
     BothCallbacks,
     NeitherCallback,
+    /// One of the scroll view's own asserts, carried with its message. A
+    /// reorderable list is a scroll view around a sliver, so everything
+    /// upstream's `ScrollView` refuses it refuses too -- and refuses *later*,
+    /// because the scroll view is built rather than constructed here. See
+    /// [`crate::scroll_view::ScrollView::validate`].
+    ScrollView(&'static str),
 }
 
 /// The part of a reorderable list's configuration that upstream asserts about,
@@ -660,6 +667,14 @@ impl SliverReorderableList {
 /// [`SliverReorderableList`].
 pub struct ReorderableList {
     pub sliver: SliverReorderableList,
+    /// The scroll view upstream's `ReorderableListState.build` puts around the
+    /// sliver, and everything it is configured with: upstream hands it
+    /// scrollDirection, reverse, controller, primary, physics, shrinkWrap,
+    /// anchor, dragStartBehavior, keyboardDismissBehavior, restorationId and
+    /// clipBehavior straight from this widget. Those are not this list's rules
+    /// -- they are [`ScrollView`]'s, already ported with its four asserts --
+    /// so they live in one here rather than being declared a second time.
+    pub scroll: ScrollView,
     /// Upstream's deprecated `cacheExtent`, a bare double. The sliver has no
     /// such field: the cache extent belongs to the scroll view around it.
     pub cache_extent: Option<f32>,
@@ -671,6 +686,7 @@ impl ReorderableList {
     pub fn new(item_count: usize) -> ReorderableList {
         ReorderableList {
             sliver: SliverReorderableList::new(item_count),
+            scroll: ScrollView::new(),
             cache_extent: None,
             scroll_cache_extent: None,
         }
@@ -703,19 +719,35 @@ impl ReorderableList {
         )
     }
 
+    /// Sets the axis on **both** halves, because upstream has one axis in two
+    /// places: the scroll view is given `scrollDirection`, and the sliver
+    /// reads the same thing back off the constraints it is laid out under. The
+    /// sliver's gap arithmetic needs it as a value here, so the two are kept in
+    /// step through this one setter rather than being settable apart.
     pub fn with_axis(mut self, axis: Axis) -> Self {
         self.sliver = self.sliver.with_axis(axis);
+        self.scroll.scroll_direction = axis;
         self
     }
 
+    /// The same again for `reverse`, and for the same reason.
     pub fn with_reverse(mut self, reverse: bool) -> Self {
         self.sliver = self.sliver.with_reverse(reverse);
+        self.scroll.reverse = reverse;
         self
     }
 
     pub fn with_config(mut self, config: ReorderableConfig) -> Self {
         self.sliver = self.sliver.with_config(config);
         self
+    }
+
+    /// Takes a whole scroll view, and carries its axis and direction down to
+    /// the sliver -- see [`Self::with_axis`] for why those two travel together.
+    pub fn with_scroll(mut self, scroll: ScrollView) -> Self {
+        self.scroll = scroll;
+        self.with_axis(scroll.scroll_direction)
+            .with_reverse(scroll.reverse)
     }
 
     /// Upstream's constructor asserts, which are the sliver's asserts asked a
@@ -726,7 +758,8 @@ impl ReorderableList {
     /// upstream's third assert -- `itemCount >= 0` -- is not asked at all,
     /// because a `usize` has already answered it.
     pub fn validate(&self) -> Result<(), ReorderableError> {
-        self.sliver.validate()
+        self.sliver.validate()?;
+        self.scroll.validate().map_err(ReorderableError::ScrollView)
     }
 
     /// Upstream's `createState`.
@@ -1187,6 +1220,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_axis_reaches_both_the_scroll_view_and_the_sliver() {
+        // Upstream has one axis in two places: the scroll view is told
+        // `scrollDirection` and the sliver reads the same thing off its
+        // constraints. Here the sliver holds it as a value, so the two have to
+        // be set together or the gaps open along the wrong axis.
+        let list = ReorderableList::new(4).with_axis(Axis::Horizontal);
+        assert_eq!(list.scroll.scroll_direction, Axis::Horizontal);
+        assert_eq!(list.sliver.axis, Axis::Horizontal);
+
+        let reversed = ReorderableList::new(4).with_reverse(true);
+        assert!(reversed.scroll.reverse && reversed.sliver.reverse);
+
+        // And a whole scroll view carries its own axis down with it.
+        let whole = ReorderableList::new(4).with_scroll(ScrollView::new().horizontal());
+        assert_eq!(whole.sliver.axis, Axis::Horizontal);
+        assert_eq!(whole.create_state().sliver.axis, Axis::Horizontal);
+    }
+
+    #[test]
+    fn the_scroll_view_refuses_what_a_scroll_view_refuses() {
+        let list = ReorderableList::new(4).with_scroll(
+            ScrollView::new()
+                .shrink_wrapped()
+                .with_primary(true)
+                .with_controller(),
+        );
+        assert!(matches!(
+            list.validate(),
+            Err(ReorderableError::ScrollView(_))
+        ));
+
+        // And the list's own asserts still come first.
+        let mut config = ReorderableConfig::new();
+        config.has_item_extent = true;
+        config.has_prototype_item = true;
+        let both_wrong = ReorderableList::new(4)
+            .with_config(config)
+            .with_scroll(ScrollView::new().with_primary(true).with_controller());
+        assert_eq!(
+            both_wrong.validate(),
+            Err(ReorderableError::MoreThanOneExtentSource)
+        );
+    }
+
     // -- Two ways of asking for a cache extent -------------------------------------
 
     #[test]
@@ -1263,6 +1341,10 @@ pub struct ReorderableListView {
     pub item_count: usize,
     /// The two asserts this shares with the widget-layer lists.
     pub config: ReorderableConfig,
+    /// The scroll view this builds around its sliver. Fourteen of upstream's
+    /// thirty-one members are its parameters, passed straight through, and
+    /// none of them is a rule of this class: see [`ReorderableList::scroll`].
+    pub scroll: ScrollView,
     /// Only the list constructor can answer this up front. See
     /// [`ReorderableListView::validate`].
     pub every_child_has_a_key: bool,
@@ -1274,6 +1356,7 @@ impl ReorderableListView {
         ReorderableListView {
             item_count,
             config: ReorderableConfig::new(),
+            scroll: ScrollView::new(),
             every_child_has_a_key: true,
             builds_default_drag_handles: true,
         }
@@ -1299,7 +1382,12 @@ impl ReorderableListView {
         if !self.every_child_has_a_key {
             return Err(ReorderableError::AChildWithoutAKey);
         }
-        self.config.check_callbacks()
+        self.config.check_callbacks()?;
+        // Last, because upstream's are not the same kind of check: these three
+        // are this constructor's asserts and fire as the widget is written,
+        // while the scroll view's fire when `build` constructs one. A list
+        // that gets both wrong hears about its own mistake first.
+        self.scroll.validate().map_err(ReorderableError::ScrollView)
     }
 
     /// What a drop reports, deferring to [`reorder_report`] for the arithmetic.
@@ -1395,6 +1483,45 @@ mod material_reorderable_tests {
         assert_eq!(list.validate(), Ok(()));
         list.every_child_has_a_key = false;
         assert_eq!(list.validate(), Err(ReorderableError::AChildWithoutAKey));
+    }
+
+    #[test]
+    fn a_reorderable_list_view_is_a_scroll_view_and_is_refused_like_one() {
+        // Fourteen of upstream's thirty-one members are the scroll view's, and
+        // its asserts come with them: a list that asks to be primary and hands
+        // over a controller is refused here as it would be there.
+        let mut list = ReorderableListView::new(3);
+        assert_eq!(list.validate(), Ok(()));
+
+        list.scroll = ScrollView::new().with_controller().with_primary(true);
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableError::ScrollView(
+                "You cannot both set primary to true and pass an explicit controller."
+            ))
+        );
+
+        list.scroll = ScrollView::new();
+        list.scroll.anchor = 1.5;
+        assert!(matches!(
+            list.validate(),
+            Err(ReorderableError::ScrollView(_))
+        ));
+    }
+
+    #[test]
+    fn the_lists_own_complaints_come_before_the_scroll_views() {
+        // Two different moments upstream: this constructor's asserts fire as
+        // the widget is written, the scroll view's when `build` makes one.
+        let mut list = ReorderableListView::new(3);
+        list.scroll = ScrollView::new().with_controller().with_primary(true);
+        list.config.has_item_extent = true;
+        list.config.has_prototype_item = true;
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableError::MoreThanOneExtentSource),
+            "a list that gets both wrong hears about its own mistake first"
+        );
     }
 
     #[test]
