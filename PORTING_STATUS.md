@@ -6989,3 +6989,69 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6975 通�
 还是能被 `operable` 直接用上——如果只在 InkWell 里，
 那要么把它提出来，要么 `operable` 自己画一层，
 **别在五个控件里各画一遍**。
+
+---
+
+## 第 529 轮：一个"读下来发现不是缺口"的类，读出了一个真 bug
+
+先查上一轮记的焦点高亮：`ink_well.rs` 那套高亮是
+`InkResponse` 内部的 ink feature（带淡入淡出、由 `Ink` 绘制），
+**不是能被 `operable` 直接拿来用的东西**；而且形状要各控件自己给
+（chip 是胶囊、radio 是圆、checkbox 是小方块），
+一个通用的矩形罩子画在单选钮上就是错的。
+所以这是一件**要拆开做的活**，不是一轮的量——**先记下来，不硬塞**。
+
+转 `depth.py` 队头：`SliverOffstage`（2/6）。
+
+### 读下来：它不是缺口
+
+行为本来就是全的——`RenderProxySliver` 的 `Offstage` 分支
+布局子节点、报 `SliverGeometry::ZERO`、不画、不命中，
+和上游 `RenderSliverOffstage` 一模一样。
+比值算作缺的那四个是 Dart 的 widget→render 桥
+（`createRenderObject`/`updateRenderObject`/`createElement`）和 `debugFillProperties`——
+**这个 crate 里 widget 就是 render object，没有那层桥可以港**。
+唯一有内容的 `debugVisitOnstageChildren`（inspector 跳过 offstage 子树）
+本 crate 一个都没有，**盒子版的 `Offstage` 也没有**，
+所以是一处缺席而不是两者之间的不一致。记进了 `depth_examined.json`。
+
+### 但读的过程里翻出一个真 bug
+
+`RenderProxySliver::update_from`：
+
+    let mut effect = UpdateEffect::repaint_if(self.behavior != fresh.behavior);
+    self.behavior = fresh.behavior;              // 先赋值
+    ... matches!(..., if self.behavior != fresh.behavior)   // 再比较自己和自己
+
+两处错：
+
+1. **赋值在比较之前**，所以 `ConstrainedCrossAxis` 那条 relayout 的守卫
+   永远为假——**横轴上限改了从来不会重新布局**，宽度还是旧的。
+2. **上下台只要了 repaint**。可 offstage 改的是**几何**：
+   零 ↔ 子节点的。只重绘的话，一个上了台的 sliver
+   还在报"我不占滚动范围"，然后**画在挤上来填了那块空的东西上面**。
+   上游那个 setter 叫 `markNeedsLayoutForSizedByParentChange`，就是为这个。
+
+改成先读后写，并把"哪些改动动几何"单列出来。
+
+### 测试与扫描
+
+三条测试。第一版**两条红的，而且是我的错**：辅助函数给两个代理造了
+**两个不同的子节点**，于是 `!self.child.is(...)` 恒真，
+每次都 relayout——**测到的是换了子节点，不是改了行为**。改成共用同一个子节点。
+
+四个变异全死。其中第一个是**把代码整个还原成本轮之前的样子**，
+两条测试立刻红——**这就是"这个 bug 是真的"的证据**，
+而不是我说它是。
+
+尺子：十七把全部 exit 0。门：Rust 6978 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6978 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`update_from` 里"先赋值后比较"这个错**很可能不止这一处**。
+它是静默的：编译过、测试过，只是永远走不到那条分支。
+**先查一件事**：把 `render.rs` 里所有 `update_from` 过一遍，
+找 `self.X = fresh.X;` 之后还出现 `self.X` 参与比较的地方
+（`grep -n "self\.\w* = fresh\." -A6` 再人眼看）。
+找到几处就补几处，找不到就把"查过了"记下来——
+**这类错查一次比等它咬人便宜得多**。

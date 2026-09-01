@@ -21485,8 +21485,8 @@ impl RenderBox for RenderFlow {
     }
 }
 
-/// The transforms the last paint assigned -- the paint borrow keeps them
-/// out of `self`, so they park here for the hit test that follows.
+// The transforms the last paint assigned -- the paint borrow keeps them
+// out of `self`, so they park here for the hit test that follows.
 thread_local! {
     static FLOW_TRANSFORMS: RefCell<(Vec<Option<crate::painting::Matrix4>>, Vec<usize>)> =
         const { RefCell::new((Vec::new(), Vec::new())) };
@@ -21728,17 +21728,43 @@ impl RenderProxySliver {
 impl RenderBox for RenderProxySliver {
     fn update_from(&mut self, fresh: &mut dyn RenderBox) -> Option<UpdateEffect> {
         let fresh = fresh.as_any_mut().downcast_mut::<RenderProxySliver>()?;
-        let mut effect = UpdateEffect::repaint_if(self.behavior != fresh.behavior);
-        self.behavior = fresh.behavior;
+        // Read before writing. The comparisons below all ask what *changed*,
+        // and assigning first makes every one of them compare a value with
+        // itself -- which is how the cross-axis relayout came to be asked for
+        // never: its guard was `self.behavior != fresh.behavior` evaluated
+        // after the two had been made equal.
+        let was = self.behavior;
+        let now = fresh.behavior;
+        self.behavior = now;
+
+        // Which changes need the geometry worked out again, rather than only
+        // redrawing.
+        //
+        // Upstream's `RenderSliverOffstage.offstage` setter calls
+        // `markNeedsLayoutForSizedByParentChange`, and its
+        // `RenderSliverConstrainedCrossAxis.maxExtent` setter calls
+        // `markNeedsLayout`. Both are laying out differently, not painting
+        // differently: an offstage sliver reports `SliverGeometry.zero` and
+        // an onstage one reports its child's, so a sliver that went onstage
+        // with only a repaint keeps reporting zero -- it draws itself on top
+        // of whatever moved up to fill the space it said it did not need.
+        let geometry_changed = matches!(was, ProxySliverBehavior::Offstage)
+            != matches!(now, ProxySliverBehavior::Offstage)
+            || match (was, now) {
+                (
+                    ProxySliverBehavior::ConstrainedCrossAxis(before),
+                    ProxySliverBehavior::ConstrainedCrossAxis(after),
+                ) => before != after,
+                (ProxySliverBehavior::ConstrainedCrossAxis(_), _)
+                | (_, ProxySliverBehavior::ConstrainedCrossAxis(_)) => true,
+                _ => false,
+            };
+
+        // The rest -- opacity, ignoring the pointer -- change what is drawn or
+        // what is hit, and the geometry is the same either way.
+        let mut effect = UpdateEffect::repaint_if(was != now);
         effect = effect.and(UpdateEffect::relayout_if(
-            !self.child.is(&fresh.child)
-                || matches!(
-                    (self.behavior, fresh.behavior),
-                    (
-                        ProxySliverBehavior::ConstrainedCrossAxis(_),
-                        ProxySliverBehavior::ConstrainedCrossAxis(_)
-                    ) if self.behavior != fresh.behavior
-                ),
+            !self.child.is(&fresh.child) || geometry_changed,
         ));
         self.child = fresh.child.clone();
         Some(effect)
@@ -22267,7 +22293,7 @@ impl RenderBox for RenderSliverFillViewport {
                 .iter()
                 .enumerate()
                 .find(|(slot, _)| self.first_index + slot == index)
-                .map(|(position, child)| child.clone());
+                .map(|(_position, child)| child.clone());
             let mut child = existing.unwrap_or_else(|| (self.build_child)(index));
             child.layout_child(
                 constraints.as_box_constraints(item_extent, item_extent, None),
@@ -24993,6 +25019,104 @@ mod proxy_sliver_tests {
             seen_cross: std::cell::Cell::new(0.0),
             hit,
         }
+    }
+
+    /// What `update_from` asked for when one proxy sliver was rebuilt as
+    /// another.
+    fn effect_of(before: ProxySliverBehavior, after: ProxySliverBehavior) -> UpdateEffect {
+        let mut old = RenderProxySliver::new(before, stub(500.0, true));
+        let mut new = RenderProxySliver::new(after, stub(500.0, true));
+        // The *same* child, or every answer here is `Relayout` for a reason
+        // that has nothing to do with the behaviour: a rebuild that swaps the
+        // child needs a relayout whatever else changed, and two separately
+        // built stubs are two children.
+        new.child = old.child.clone();
+        RenderBox::update_from(&mut old, &mut new).expect("same type")
+    }
+
+    #[test]
+    fn a_sliver_going_on_or_off_stage_is_laid_out_again() {
+        // Offstage changes the *geometry*: zero going one way, the child's
+        // going the other. A repaint alone leaves the stale answer -- a
+        // sliver that came onstage keeps reporting it needs no scroll extent,
+        // and draws itself over whatever moved up to fill the space.
+        //
+        // Upstream's setter calls `markNeedsLayoutForSizedByParentChange` for
+        // exactly this.
+        assert_eq!(
+            effect_of(
+                ProxySliverBehavior::Offstage,
+                ProxySliverBehavior::PassThrough
+            ),
+            UpdateEffect::Relayout
+        );
+        assert_eq!(
+            effect_of(
+                ProxySliverBehavior::PassThrough,
+                ProxySliverBehavior::Offstage
+            ),
+            UpdateEffect::Relayout
+        );
+    }
+
+    #[test]
+    fn a_cross_axis_limit_that_moved_is_laid_out_again() {
+        // This asked for a relayout and never got one: the guard compared
+        // `self.behavior` with `fresh.behavior` *after* the two had been made
+        // equal, so it was reliably false. The extent is read at layout, so a
+        // limit that changed with only a repaint is a sliver still as wide as
+        // it used to be.
+        assert_eq!(
+            effect_of(
+                ProxySliverBehavior::ConstrainedCrossAxis(100.0),
+                ProxySliverBehavior::ConstrainedCrossAxis(200.0),
+            ),
+            UpdateEffect::Relayout
+        );
+        // The same limit is no change at all.
+        assert_eq!(
+            effect_of(
+                ProxySliverBehavior::ConstrainedCrossAxis(100.0),
+                ProxySliverBehavior::ConstrainedCrossAxis(100.0),
+            ),
+            UpdateEffect::Nothing
+        );
+        // And arriving at or leaving a limit is a change of geometry too.
+        assert_eq!(
+            effect_of(
+                ProxySliverBehavior::PassThrough,
+                ProxySliverBehavior::ConstrainedCrossAxis(100.0),
+            ),
+            UpdateEffect::Relayout
+        );
+    }
+
+    #[test]
+    fn a_change_the_layout_does_not_read_only_repaints() {
+        // The other half: opacity and pointer-ignoring change what is drawn
+        // and what is hit, and the geometry is the same either way. Asking
+        // for a relayout there would be a frame's work for nothing.
+        assert_eq!(
+            effect_of(
+                ProxySliverBehavior::Opacity(1.0),
+                ProxySliverBehavior::Opacity(0.5)
+            ),
+            UpdateEffect::Repaint
+        );
+        assert_eq!(
+            effect_of(
+                ProxySliverBehavior::PassThrough,
+                ProxySliverBehavior::IgnorePointer
+            ),
+            UpdateEffect::Repaint
+        );
+        assert_eq!(
+            effect_of(
+                ProxySliverBehavior::PassThrough,
+                ProxySliverBehavior::PassThrough
+            ),
+            UpdateEffect::Nothing
+        );
     }
 
     #[test]
