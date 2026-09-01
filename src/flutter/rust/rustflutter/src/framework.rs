@@ -421,7 +421,12 @@ impl<W: RenderWidget> RenderWidgetObject for RenderObjectWidget<W> {
     }
 
     fn reconfigure(&self, target: &BoxedRender, children: Vec<BoxedRender>) -> bool {
-        target.reconfigure(self.0.create_render(children))
+        // The children go in twice on purpose: once to build the new
+        // configuration out of, and once as the list of objects the disposal
+        // inside may not touch, because they belong to the child elements
+        // rather than to this one.
+        let fresh = self.0.create_render(children.clone());
+        target.reconfigure_sparing(fresh, &children)
     }
 }
 
@@ -5572,6 +5577,137 @@ mod tests {
             "the element unmounted, so nothing in the tree may still be holding the picture"
         );
         drop(stale);
+    }
+
+    fn covering() -> crate::render::StackPosition {
+        crate::render::StackPosition {
+            left: Some(0.0),
+            top: Some(0.0),
+            right: None,
+            bottom: None,
+            width: Some(1.0),
+            height: Some(1.0),
+        }
+    }
+
+    #[test]
+    fn a_picture_reached_through_a_box_is_let_go_of_too() {
+        // The same photograph as the test above, placed the way the album's
+        // *viewer* places it rather than the way its grid does. A stack whose
+        // children are not all one type has to box them --
+        // `push_positioned` takes an `impl RenderBox` -- so the picture
+        // arrives inside a `Box<RenderImage>` rather than behind a handle.
+        //
+        // That was the whole difference and it was worth 50 MB an open:
+        // `Box<R>` forwards the trait one method at a time and `dispose` was
+        // not one of the lines, so the walk asked the box, the box answered
+        // the empty default, and the picture stayed. The walk cannot tell the
+        // two shapes apart and neither should this test.
+        use crate::painting::Image;
+        use crate::render::{RenderImage, RenderStack};
+
+        let image = Rc::new(Image::from_pixels(&[0u8; 4], 1, 1).expect("the stub allocates"));
+        let key = GlobalKey::new();
+        let drawn = Rc::clone(&image);
+        let page = move |with_picture: bool| {
+            let mut children = vec![component(Static("beside it"))];
+            if with_picture {
+                let drawn = Rc::clone(&drawn);
+                children.push(with_global_key(
+                    key,
+                    leaf(move || {
+                        RenderStack::new().push_positioned(
+                            Box::new(RenderImage::new(Rc::clone(&drawn))),
+                            covering(),
+                        )
+                    }),
+                ));
+            }
+            column(children)
+        };
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(page(false));
+        drop(tree.build_render_tree().expect("a root"));
+        let idle = Rc::strong_count(&image);
+
+        tree.rebuild(page(true));
+        drop(tree.build_render_tree().expect("a root"));
+        assert!(
+            Rc::strong_count(&image) > idle,
+            "the tree is drawing the picture"
+        );
+
+        // Held from outside, so `Drop` cannot be what frees the picture --
+        // the same trap the handle version sets, and the reason `dispose`
+        // exists at all.
+        let element = tree.current_element(&key).expect("mounted under the key");
+        let stale = tree.render_of(element).expect("the element made one");
+
+        tree.rebuild(page(false));
+        drop(tree.build_render_tree().expect("a root"));
+        assert_eq!(
+            Rc::strong_count(&image),
+            idle,
+            "a boxed picture goes the same way a handled one does"
+        );
+        drop(stale);
+    }
+
+    #[test]
+    fn a_rebuilt_parent_leaves_the_picture_under_it_alone() {
+        // The other half, and the reason the forward above could not simply be
+        // added on its own. The album's viewer: the page assembles a clip
+        // around a stack on every build, and the photograph inside belongs to
+        // a **child element** that did not rebuild -- so the very same render
+        // object is in the configuration being replaced and in the one
+        // replacing it, one layer below the handle the parent swaps.
+        //
+        // The walk turned back at the top of the new subtree and went straight
+        // down the old one into that shared object. Upstream's rule, on
+        // `RenderObject.dispose`: "It must not dispose of any children that
+        // were created by some other object, such as a RenderObjectElement.
+        // Those children will be disposed when that element unmounts."
+        use crate::painting::Image;
+        use crate::render::{RenderClipRect, RenderImage, RenderStack};
+        use crate::widgets::Empty;
+
+        let image = Rc::new(Image::from_pixels(&[0u8; 4], 1, 1).expect("the stub allocates"));
+        let drawn = Rc::clone(&image);
+        let page = move |with_note: bool| {
+            let drawn = Rc::clone(&drawn);
+            many(
+                vec![leaf(move || RenderImage::new(Rc::clone(&drawn)))],
+                move |children| {
+                    let mut stack = RenderStack::new();
+                    for child in children {
+                        stack = stack.push_positioned(child, covering());
+                    }
+                    if with_note {
+                        stack = stack.push_positioned(Box::new(Empty), covering());
+                    }
+                    // The layer this element builds for itself. It is what the
+                    // parent's handle holds, so the child element's object is a
+                    // step further down than the disposal used to look.
+                    RenderClipRect::new(stack)
+                },
+            )
+        };
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(page(false));
+        drop(tree.build_render_tree().expect("a root"));
+        let drawing = Rc::strong_count(&image);
+
+        // A rebuild that changes the stack around the picture. The stack is
+        // new; the picture's element did not rebuild, so its object is not.
+        tree.rebuild(page(true));
+        drop(tree.build_render_tree().expect("a root"));
+        assert_eq!(
+            Rc::strong_count(&image),
+            drawing,
+            "the picture belongs to a child element that is still mounted"
+        );
     }
 
     #[test]

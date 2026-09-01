@@ -2536,6 +2536,30 @@ impl RenderRef {
     /// rather than newly made. The caller then makes a new object, which is what
     /// it did before this existed.
     pub fn reconfigure(&self, fresh: RenderRef) -> bool {
+        self.reconfigure_sparing(fresh, &[])
+    }
+
+    /// [`RenderRef::reconfigure`], told which of the objects underneath it
+    /// belong to somebody else.
+    ///
+    /// `children` is what the element handed its widget to build with: the
+    /// render objects of its **child elements**. Those appear in the old
+    /// configuration and in the new one alike -- the elements that own them
+    /// did not rebuild, so both were handed the same handles -- and they are
+    /// the one thing the disposal below may not touch. Upstream says so on
+    /// `RenderObject.dispose`, in as many words:
+    ///
+    /// > If this render object has created any children directly, it must
+    /// > dispose of those children in this method as well. It must not dispose
+    /// > of any children that were created by some other object, such as a
+    /// > `RenderObjectElement`. Those children will be disposed when that
+    /// > element unmounts, which may be delayed if the element is moved to
+    /// > another part of the tree.
+    ///
+    /// Without it the walk turned back only at the *top* of the new subtree
+    /// and went straight down the old one into a child element's object,
+    /// disposing of a photograph the viewer was still showing.
+    pub fn reconfigure_sparing(&self, fresh: RenderRef, children: &[RenderRef]) -> bool {
         // The same handle, because whatever built `fresh` had nothing of its
         // own and handed back what it was given. There is no configuration here
         // to take, and taking one from itself would deadlock the cell.
@@ -2562,10 +2586,13 @@ impl RenderRef {
         // and it is the same rule as the other two -- off the tree means the
         // picture goes, whatever is still pointing at the box.
         if !before.is_empty() {
-            let after = child_handles(self);
+            // What the new configuration is holding, plus what was never this
+            // object's to let go of.
+            let mut kept = child_handles(self);
+            kept.extend_from_slice(children);
             for child in before {
-                if !after.iter().any(|kept| kept.is(&child)) {
-                    child.dispose_subtree_except(&after);
+                if !kept.iter().any(|keep| keep.is(&child)) {
+                    child.dispose_subtree_except(&kept);
                 }
             }
         }
@@ -3017,6 +3044,18 @@ impl<R: RenderBox + ?Sized + 'static> RenderBox for Box<R> {
     /// the box stopped the question here.
     fn blocks_previously_painted_semantics(&self) -> bool {
         (**self).blocks_previously_painted_semantics()
+    }
+    /// The next line the note above was written for. A photograph pushed into
+    /// a stack arrives as `Box<RenderImage>` -- `push_positioned` takes an
+    /// `impl RenderBox`, so a caller placing children of two different types
+    /// boxes them -- and without this the box answered the trait's empty
+    /// default while the picture inside was never asked to let go. The element
+    /// unmounted, the walk disposed of everything the box was not standing in
+    /// front of, and the photograph stayed: 50 MB of texture per
+    /// open-and-close of the album's viewer, with nothing on screen to show
+    /// for it.
+    fn dispose(&self) {
+        (**self).dispose()
     }
     fn merges_descendant_semantics(&self) -> bool {
         (**self).merges_descendant_semantics()
