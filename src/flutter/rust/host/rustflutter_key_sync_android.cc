@@ -134,6 +134,47 @@ void AndroidKeyboard::Synchronize(bool true_pressed,
   }
 }
 
+void AndroidKeyboard::SynchronizeToggling(bool true_enabled,
+                                          const TogglingGoal& goal,
+                                          uint64_t event_logical,
+                                          const AndroidKeyEvent& event,
+                                          const Emit& emit) {
+  // Not for the lock key's own events. Upstream's reason is ChromeOS, where
+  // CapsLock's own events set the bit as if it were a *held* modifier -- 1 on
+  // the way down, 0 on the way up -- while every other event sets it as the
+  // lock state it is meant to be. Reconciling against a bit that means
+  // something different on this one event would toggle the lock twice.
+  if (goal.logical == event_logical) {
+    return;
+  }
+  if (enabled_locks_.count(goal.logical) == (true_enabled ? 1u : 0u)) {
+    return;
+  }
+
+  // Two events, not one, and this is the crux of a lock. The framework flips
+  // the mode on each *key down* of the lock key -- that is what a lock is made
+  // of -- so a single synthesized event would either flip nothing (an up) or
+  // flip it and leave the key recorded as held forever (a down).
+  //
+  // Which comes first depends on where the key is now: if it is not held, the
+  // down is what flips the mode and the up puts it back; if it somehow is
+  // held, the up comes first and the down that follows does the flipping.
+  const bool first_is_down = pressing_records_.count(goal.physical) == 0;
+  if (true_enabled) {
+    enabled_locks_.insert(goal.logical);
+  } else {
+    enabled_locks_.erase(goal.logical);
+  }
+  Synthesize(first_is_down, goal.logical, goal.physical, event.timestamp_micros,
+             emit);
+  Synthesize(!first_is_down, goal.logical, goal.physical,
+             event.timestamp_micros, emit);
+}
+
+bool AndroidKeyboard::IsLockEnabled(uint64_t logical) const {
+  return enabled_locks_.count(logical) > 0;
+}
+
 bool AndroidKeyboard::Handle(const AndroidKeyEvent& event,
                              const std::string& character,
                              const Emit& emit) {
@@ -161,6 +202,13 @@ bool AndroidKeyboard::Handle(const AndroidKeyEvent& event,
     if (after) {
       release_after.push_back(&goals[index]);
     }
+  }
+
+  size_t toggle_count = 0;
+  const TogglingGoal* toggles = AndroidTogglingGoals(&toggle_count);
+  for (size_t index = 0; index < toggle_count; ++index) {
+    SynchronizeToggling((event.meta_state & toggles[index].mask) != 0,
+                        toggles[index], logical, event, emit);
   }
 
   KeyEventType type;
@@ -196,6 +244,25 @@ bool AndroidKeyboard::Handle(const AndroidKeyEvent& event,
       pressing_records_[physical] = logical;
     } else {
       pressing_records_.erase(physical);
+    }
+  }
+
+  // The lock key's own press flips the lock here rather than through the
+  // synchronisation above, which skipped this event on purpose. Down only: a
+  // release does not flip a lock, and neither does a repeat, or holding
+  // CapsLock would make it flicker.
+  if (type == KeyEventType::kDown) {
+    size_t toggle_count = 0;
+    const TogglingGoal* toggles = AndroidTogglingGoals(&toggle_count);
+    for (size_t index = 0; index < toggle_count; ++index) {
+      if (toggles[index].logical != logical) {
+        continue;
+      }
+      if (enabled_locks_.count(logical) > 0) {
+        enabled_locks_.erase(logical);
+      } else {
+        enabled_locks_.insert(logical);
+      }
     }
   }
 

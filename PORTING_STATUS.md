@@ -6316,3 +6316,61 @@ Java 用 javac 对 android.jar 编译通过。**仍然没有真机**。
 这条规则不读注释是抄不对的。
 另外框架那边 `Keyboard` 有 `lock` 状态（`keyboard/mod.rs` 第 218 行附近，
 注释说它不能从 pressed 推导），要确认合成事件到达时它是否真的会翻转。
+
+---
+
+## 第 517 轮：CapsLock——锁不是修饰键，所以要发一对事件
+
+接上一轮的"下一步"：`togglingGoals`。
+
+### 先读懂那两条规则，再动手
+
+**为什么发两个事件**：锁和修饰键的差别就在"没人碰它的键时它也开着"，
+所以框架读不出来——它是**在锁键的每一次按下时翻转**
+（`keyboard/mod.rs` 的 `record`，注释写着"A key down, not a key up, and not a
+repeat"）。于是单发一个合成事件都不行：发松开什么也不翻，
+发按下则翻了之后把 CapsLock 永远记成按着。必须一按一松成对。
+先按还是先松，看这个键此刻记录里是不是按着。
+
+**为什么跳过锁键自己的事件**：上游注释点名 ChromeOS——
+那里 CapsLock 自己的事件把这个位当**按住**语义用（按下为 1、松开为 0），
+而别的事件都把它当**锁定**语义用。拿一个在这一个事件上含义不同的位去对账，
+会把锁多翻一次。锁键自己的按下另走一条路翻转，就在决定完事件类型之后。
+
+**这两条不读注释是抄不对的**，这也是上一轮把它单独留给这一轮的原因。
+
+`getTogglingGoals()` 只有 CapsLock 一条。NumLock 和 ScrollLock 不在，
+上游说了原因：ChromeOS 上按它们根本不置位，
+盯一个永不变化的位的 goal 要么什么都不做，要么永远打架。
+这条也一并生成，掩码同样来自 `javap`。
+
+### 顺手记下的一件事
+
+CapsLock 的 scan code 是 0x3a，而 keyCode 0x3a 是 **altRight**。
+两个号码空间毫无关系，测试里把这句写在常量旁边——
+这正是"一个号码顶另一个用"最容易出事的地方。
+
+### 扫描
+
+六个变异全部杀死。其中"一个事件代替一对"和"先松后按"
+分别打中两条测试，说明这对事件的**顺序**和**数量**都真被看着。
+
+尺子：十七把全部 exit 0。门：Rust 6939 通过、`cargo fmt --check` 干净；
+C++ 51 个 gtest 全过（新增 3 个）；gallery 357 通过；
+`rustflutter_unittests` 6939 通过；三个目录 default 与 `rustflutter_engine` 都 exit 0；
+javac 对 android.jar 编译通过。**仍然没有真机**（`adb devices` 空）。
+
+顺带记一次老毛病：本轮又在 bash heredoc 里写 Python 字符串字面量，
+`"\n".join` 被吞成真换行，生成器直接语法错误。**第五次**。
+这条规则已经写过：**改脚本用 Write/Edit 工具，不要走 heredoc**。
+
+**下一步**：Android 键路还差最后一块——**框架不要的键要还给系统**。
+现在 `handleKey` 无论如何都 `return true`，于是硬键盘上的音量键、
+返回键之类会被应用吞掉。上游用的是"再投递一次"（redispatch）：
+`KeyboardManager` 把框架不要的事件重新塞回 `Activity.dispatchKeyEvent`，
+并用一个"这是我自己发回来的"标记避免死循环。
+**先读一件事**：`shell/platform/android/io/flutter/embedding/android/KeyboardManager.java`
+里那个重投递是怎么标记的（是不是靠一个 `redispatchedEvents` 集合），
+以及本 port 的 `SendKey` 现在**不等答复**——要接这条路，
+就得像 Windows 宿主那样带上 response 回调，那是这一轮真正的代价，
+需要先想清楚 `onKeyDown` 必须当场返回而答复晚到之间怎么办。

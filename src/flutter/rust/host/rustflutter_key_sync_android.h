@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 
 #include "flutter/lib/ui/window/key_data.h"
@@ -82,6 +83,9 @@ class AndroidKeyboard {
   /// Whether this physical key is recorded as held. For tests.
   bool IsPressed(uint64_t physical) const;
 
+  /// Whether this lock is recorded as on. For tests.
+  bool IsLockEnabled(uint64_t logical) const;
+
  private:
   void Synchronize(bool true_pressed,
                    const struct PressingGoal& goal,
@@ -90,6 +94,12 @@ class AndroidKeyboard {
                    const AndroidKeyEvent& event,
                    const Emit& emit,
                    bool* release_after);
+
+  void SynchronizeToggling(bool true_enabled,
+                           const struct TogglingGoal& goal,
+                           uint64_t event_logical,
+                           const AndroidKeyEvent& event,
+                           const Emit& emit);
 
   void Synthesize(bool down,
                   uint64_t logical,
@@ -102,6 +112,14 @@ class AndroidKeyboard {
   /// the layout changed in between -- otherwise the framework cannot match
   /// them.
   std::map<uint64_t, uint64_t> pressing_records_;
+
+  /// The locks this host believes are on, by logical key.
+  ///
+  /// A second piece of state rather than another question about the first, and
+  /// it has to be: a lock is on while nobody is touching its key, which is
+  /// exactly what the held set cannot express. The framework keeps the same
+  /// distinction for the same reason -- see `Keyboard::locks`.
+  std::set<uint64_t> enabled_locks_;
 };
 
 }  // namespace flutter

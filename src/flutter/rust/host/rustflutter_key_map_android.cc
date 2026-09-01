@@ -610,4 +610,20 @@ const PressingGoal* AndroidPressingGoals(size_t* count) {
   return kAndroidPressingGoals;
 }
 
+// The locks. A lock is on while nobody is touching its key, which is the whole
+// difference between it and a modifier, and why its state cannot be read off
+// the held set.
+//
+// CapsLock alone. Upstream leaves NumLock and ScrollLock out because on
+// ChromeOS their presses set no meta bit at all, and a goal watching a bit
+// that never changes would either do nothing or fight forever.
+constexpr TogglingGoal kAndroidTogglingGoals[] = {
+    {0x00100000, 0x00000070039, 0x00100000104},  // KeyEvent.META_CAPS_LOCK_ON
+};
+
+const TogglingGoal* AndroidTogglingGoals(size_t* count) {
+  *count = sizeof(kAndroidTogglingGoals) / sizeof(kAndroidTogglingGoals[0]);
+  return kAndroidTogglingGoals;
+}
+
 }  // namespace flutter

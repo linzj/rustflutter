@@ -1332,6 +1332,14 @@ constexpr uint32_t kTabKeyCode = 0x3d;
 constexpr uint32_t kTabScanCode = 0x0f;
 constexpr uint64_t kTabPhysical = 0x0007002b;
 constexpr int32_t kMetaShiftOn = 0x00000001;
+// CapsLock. Note that 0x3a is its *scan* code; as a key code, 0x3a is
+// altRight. The two numbers name different spaces and never stand in for one
+// another.
+constexpr uint32_t kCapsLockScanCode = 0x3a;
+constexpr uint32_t kCapsLockKeyCode = 0x73;
+constexpr uint64_t kCapsLockPhysical = 0x00070039;
+constexpr uint64_t kCapsLockLogical = 0x0100000104;
+constexpr int32_t kMetaCapsLockOn = 0x00100000;
 
 /// One emitted event, flattened to what the assertions read.
 struct Emitted {
@@ -1556,6 +1564,85 @@ TEST(AndroidKeySync, AReleaseCarriesNoCharacter) {
   ASSERT_TRUE(keyboard.Handle(Release(0x1d, 0x1e, 0), "a", Collect(&out)));
   ASSERT_EQ(out.size(), 1u);
   EXPECT_TRUE(out[0].character.empty());
+}
+
+TEST(AndroidKeySync, ALockThatWentOnUnseenIsToggledWithAPairOfEvents) {
+  // A lock is not a modifier: it is on while nobody is touching its key, so
+  // the framework has no held key to read it off. It flips its mode on each
+  // *key down* of the lock key, which is why one synthesized event cannot do
+  // this -- an up would flip nothing, and a lone down would flip it and leave
+  // CapsLock recorded as held for the rest of the session.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  ASSERT_FALSE(keyboard.IsLockEnabled(kCapsLockLogical));
+  EXPECT_TRUE(keyboard.Handle(Press(kTabKeyCode, kTabScanCode, kMetaCapsLockOn),
+                              "", Collect(&out)));
+
+  ASSERT_EQ(out.size(), 3u) << "a press and a release, then the real key";
+  EXPECT_EQ(out[0].type, KeyEventType::kDown);
+  EXPECT_EQ(out[0].physical, kCapsLockPhysical);
+  EXPECT_TRUE(out[0].synthesized);
+  EXPECT_EQ(out[1].type, KeyEventType::kUp);
+  EXPECT_EQ(out[1].physical, kCapsLockPhysical);
+  EXPECT_TRUE(out[1].synthesized);
+  EXPECT_EQ(out[2].physical, kTabPhysical);
+
+  EXPECT_TRUE(keyboard.IsLockEnabled(kCapsLockLogical));
+  EXPECT_FALSE(keyboard.IsPressed(kCapsLockPhysical))
+      << "the pair left the key as it found it";
+
+  // In step now, so the next key invents nothing.
+  out.clear();
+  ASSERT_TRUE(keyboard.Handle(
+      Release(kTabKeyCode, kTabScanCode, kMetaCapsLockOn), "", Collect(&out)));
+  EXPECT_EQ(out.size(), 1u);
+}
+
+TEST(AndroidKeySync, ALockThatWentOffUnseenIsToggledBack) {
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  ASSERT_TRUE(keyboard.Handle(Press(kTabKeyCode, kTabScanCode, kMetaCapsLockOn),
+                              "", Collect(&out)));
+  ASSERT_TRUE(keyboard.IsLockEnabled(kCapsLockLogical));
+
+  out.clear();
+  ASSERT_TRUE(keyboard.Handle(Release(kTabKeyCode, kTabScanCode, 0), "",
+                              Collect(&out)));
+  ASSERT_EQ(out.size(), 3u) << "off is as much a change as on";
+  EXPECT_EQ(out[0].type, KeyEventType::kDown) << "a down is what flips it";
+  EXPECT_EQ(out[1].type, KeyEventType::kUp);
+  EXPECT_FALSE(keyboard.IsLockEnabled(kCapsLockLogical));
+}
+
+TEST(AndroidKeySync, TheLockKeysOwnEventIsLeftAlone) {
+  // Upstream skips the lock's own events, and the reason is ChromeOS: there,
+  // CapsLock's own events carry the bit as though it were a held modifier --
+  // set on the way down, clear on the way up -- while every other event
+  // carries it as the lock state. Reconciling against it here would toggle the
+  // lock a second time on top of the press itself.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  EXPECT_TRUE(keyboard.Handle(
+      Press(kCapsLockKeyCode, kCapsLockScanCode, kMetaCapsLockOn), "",
+      Collect(&out)));
+  ASSERT_EQ(out.size(), 1u) << "nothing was invented around it";
+  EXPECT_FALSE(out[0].synthesized);
+  EXPECT_EQ(out[0].physical, kCapsLockPhysical);
+
+  // The press itself is what flipped the lock, exactly once.
+  EXPECT_TRUE(keyboard.IsLockEnabled(kCapsLockLogical));
+  EXPECT_TRUE(keyboard.IsPressed(kCapsLockPhysical));
+
+  // And the release does not flip it back.
+  out.clear();
+  ASSERT_TRUE(keyboard.Handle(
+      Release(kCapsLockKeyCode, kCapsLockScanCode, kMetaCapsLockOn), "",
+      Collect(&out)));
+  EXPECT_EQ(out.size(), 1u);
+  EXPECT_TRUE(keyboard.IsLockEnabled(kCapsLockLogical));
 }
 
 TEST(AndroidKeySync, AnEventWithNoNumbersAtAllIsNotAKey) {

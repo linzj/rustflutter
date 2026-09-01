@@ -74,6 +74,23 @@ struct PressingGoal {
 /// would send presses no other embedder sends.
 const PressingGoal* AndroidPressingGoals(size_t* count);
 
+//------------------------------------------------------------------------------
+/// A lock, whose state Android reports as a bit in `getMetaState()`.
+///
+/// A lock differs from a modifier in the way that matters here: it is on while
+/// nobody is touching its key. So there is only one key, not a pair, and the
+/// bit means "the lock is on" rather than "the key is held".
+struct TogglingGoal {
+  uint32_t mask;
+  uint64_t physical;
+  uint64_t logical;
+};
+
+//------------------------------------------------------------------------------
+/// CapsLock, and only CapsLock -- see the .cc for why NumLock and ScrollLock
+/// are not here.
+const TogglingGoal* AndroidTogglingGoals(size_t* count);
+
 }  // namespace flutter
 
 #endif  // FLUTTER_RUST_HOST_RUSTFLUTTER_KEY_MAP_ANDROID_H_

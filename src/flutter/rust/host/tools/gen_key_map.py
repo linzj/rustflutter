@@ -79,6 +79,7 @@ JAVA_ENTRY = re.compile(r"put\((0x[0-9a-f]+)L,\s*(0x[0-9a-f]+)L\);\s*//\s*(.*)")
 android_physical = []
 android_logical = []
 android_goals = []
+android_toggles = []
 if ANDROID_SRC:
     java_text = open(ANDROID_SRC, encoding="utf-8").read()
 
@@ -123,9 +124,23 @@ if ANDROID_SRC:
         android_goals.append((mask_name, META_MASKS[mask_name], pairs))
     assert len(android_goals) == 3, android_goals
 
+    # The toggling goals: a lock, which is on while nobody is touching its key.
+    # Upstream lists CapsLock alone. NumLock and ScrollLock are absent on
+    # purpose, and its comment says why: on ChromeOS their presses do not set
+    # the meta bit at all, so a goal for them would fight a bit that never
+    # changes.
+    TOGGLE = re.compile(
+        r"new TogglingGoal\(\s*KeyEvent\.(\w+),\s*(0x[0-9a-f]+)L,\s*(0x[0-9a-f]+)L\)")
+    for m in TOGGLE.finditer(java_text[java_text.index("getTogglingGoals"):]):
+        assert m.group(1) in META_MASKS, m.group(1)
+        android_toggles.append((m.group(1), META_MASKS[m.group(1)],
+                                int(m.group(2), 16), int(m.group(3), 16)))
+    assert len(android_toggles) == 1, android_toggles
+
     print(f"android scan->physical {len(android_physical)}  "
           f"keycode->logical {len(android_logical)}  "
-          f"pressing goals {len(android_goals)}")
+          f"pressing goals {len(android_goals)}  "
+          f"toggling goals {len(android_toggles)}")
 
 print(f"physical {len(physical)}  logical {len(logical)}  scan->logical {len(scan_logical)}")
 
@@ -284,6 +299,19 @@ def emit_goals(goals):
     return "\n".join(lines)
 
 
+def emit_toggles(toggles):
+    lines = ["constexpr TogglingGoal kAndroidTogglingGoals[] = {"]
+    rows = []
+    for mask_name, mask, physical, logical in toggles:
+        rows.append((f"    {{0x{mask:08x}, 0x{physical:011x}, 0x{logical:011x}}},",
+                     f"// KeyEvent.{mask_name}"))
+    width = max(len(row) for row, _comment in rows)
+    for row, comment in rows:
+        lines.append(f"{row.ljust(width)}  {comment}")
+    lines.append("};")
+    return "\n".join(lines)
+
+
 if ANDROID_SRC:
     ANDROID_OUT = CC_OUT.replace("_win.cc", "_android.cc")
     assert ANDROID_OUT != CC_OUT, CC_OUT
@@ -384,6 +412,20 @@ uint64_t LogicalKeyForAndroidKeyCode(uint32_t key_code) {{
 const PressingGoal* AndroidPressingGoals(size_t* count) {{
   *count = sizeof(kAndroidPressingGoals) / sizeof(kAndroidPressingGoals[0]);
   return kAndroidPressingGoals;
+}}
+
+// The locks. A lock is on while nobody is touching its key, which is the whole
+// difference between it and a modifier, and why its state cannot be read off
+// the held set.
+//
+// CapsLock alone. Upstream leaves NumLock and ScrollLock out because on
+// ChromeOS their presses set no meta bit at all, and a goal watching a bit
+// that never changes would either do nothing or fight forever.
+{emit_toggles(android_toggles)}
+
+const TogglingGoal* AndroidTogglingGoals(size_t* count) {{
+  *count = sizeof(kAndroidTogglingGoals) / sizeof(kAndroidTogglingGoals[0]);
+  return kAndroidTogglingGoals;
 }}
 
 }}  // namespace flutter
