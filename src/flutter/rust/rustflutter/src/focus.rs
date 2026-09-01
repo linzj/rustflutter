@@ -1717,49 +1717,52 @@ impl crate::framework::StatefulComponent for StateHighlight {
                 inner,
             ))
         });
-        // Nothing is drawn once both fades have run out, rather than a
-        // fully-transparent rectangle every frame for the rest of the
-        // application's life.
-        let overlay = state
-            .focus_opacity
-            .max(state.hover_opacity)
-            .max(state.press_opacity);
-        if overlay <= 0.0 {
+        // The three overlays, each in its own colour at its own opacity, in
+        // the order upstream stacks them.
+        //
+        // `ThemeData.focusColor` and `hoverColor` are black or white at 12%
+        // and 4%, and `highlightColor` is a grey of its own -- they are NOT
+        // three strengths of one colour, and a control under both the mouse
+        // and the keyboard is meant to look like two layers rather than like
+        // a third state. This crate has had all three, with upstream's own
+        // values, the whole time; nothing read them, and every state was
+        // painted in the same 12% of the primary.
+        let material = crate::theme::ThemeData::of(context);
+        let layers: Vec<(crate::engine::Color, f32)> = vec![
+            (material.hover_color, state.hover_opacity),
+            (material.focus_color, state.focus_opacity),
+            (material.highlight_color, state.press_opacity),
+        ];
+        // Nothing is drawn once the fades have run out, rather than three
+        // fully-transparent rectangles every frame for ever.
+        if layers.iter().all(|(_, opacity)| *opacity <= 0.0) {
             return child;
         }
-        // Upstream's `focusColor`, which defaults to the theme's own overlay
-        // rather than to a colour of its own: `ThemeData.focusColor`, the
-        // primary at 12%. A ring would be Cupertino's answer; Material fills.
-        let theme = crate::components::theme_of(context);
-        // Upstream fades a highlight by its *opacity*, so the colour's own
-        // alpha is what is scaled -- a focus colour that was already
-        // translucent stays as translucent as it was asked to be at the end
-        // of the fade.
-        //
-        // The two overlays are one rectangle at the stronger of the pair
-        // rather than two stacked: they are the same colour here -- upstream's
-        // `focusColor` and `hoverColor` both default to
-        // `ThemeData.focusColor`/`hoverColor`, which this crate resolves from
-        // one primary -- and two translucent layers of the same colour would
-        // read as a third, darker state that upstream never shows.
-        const OVERLAY_ALPHA: f32 = 0x1f as f32;
-        let alpha = (OVERLAY_ALPHA * overlay.clamp(0.0, 1.0)).round() as u8;
-        let colour = theme.primary.with_alpha(alpha);
+        // Upstream fades an overlay by its *opacity*, so the colour's own
+        // alpha is what is scaled -- a colour that was already translucent
+        // stays as translucent as it was asked to be at the end of the fade.
+        // A ring would be Cupertino's answer; Material fills.
         let shape = self.shape;
         crate::framework::single(child, move |inner| {
-            Box::new(
-                crate::render::RenderStack::new()
-                    .push(inner)
-                    .push(crate::render::RenderRef::new(match shape {
-                        FocusShape::Box { corner_radius } => crate::widgets::Container::new()
-                            .with_color(colour)
-                            .with_corner_radius(corner_radius),
-                        FocusShape::Circle { radius } => crate::widgets::Container::new()
-                            .with_color(colour)
-                            .with_size(radius * 2.0, radius * 2.0)
-                            .with_corner_radius(radius),
-                    })),
-            )
+            let mut stack = crate::render::RenderStack::new().push(inner);
+            for (colour, opacity) in &layers {
+                let opacity = opacity.clamp(0.0, 1.0);
+                if opacity <= 0.0 {
+                    continue;
+                }
+                let faded =
+                    colour.with_alpha((((colour.0 >> 24) & 0xff) as f32 * opacity).round() as u8);
+                stack = stack.push(crate::render::RenderRef::new(match shape {
+                    FocusShape::Box { corner_radius } => crate::widgets::Container::new()
+                        .with_color(faded)
+                        .with_corner_radius(corner_radius),
+                    FocusShape::Circle { radius } => crate::widgets::Container::new()
+                        .with_color(faded)
+                        .with_size(radius * 2.0, radius * 2.0)
+                        .with_corner_radius(radius),
+                }));
+            }
+            Box::new(stack)
         })
     }
 }
@@ -2396,6 +2399,74 @@ mod tests {
             root.paint(&mut context, crate::render::Offset::ZERO);
         }
         highlight_alpha(&drawn())
+    }
+
+    /// Every overlay rectangle drawn, as its full argb.
+    fn overlay_colours(tree: &mut ElementTree) -> Vec<u32> {
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+        use crate::render::RenderBox;
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a render tree");
+        root.layout(crate::render::BoxConstraints::tight(200.0, 100.0));
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(200.0, 100.0),
+            );
+            root.paint(&mut context, crate::render::Offset::ZERO);
+        }
+        drawn()
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::RRect { argb, .. } => Some(*argb),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_state_is_painted_in_its_own_colour() {
+        // `ThemeData` has carried `focusColor`, `hoverColor` and
+        // `highlightColor` -- with upstream's own values -- all along, and
+        // nothing read them: every state was drawn in the same 12% of the
+        // primary. They are not three strengths of one colour, so a control
+        // that is hovered looks different from one that is focused.
+        let light = crate::theme::ThemeData::light();
+        let (mut tree, root, mut router) = pressable(104);
+
+        // Hovered only.
+        router.dispatch(&root, &{
+            let mut e = pointer(crate::gestures::PointerChange::Hover, 20.0, 20.0);
+            e.kind = crate::gestures::PointerKind::Mouse;
+            e.buttons = 0;
+            e
+        });
+        let start = 9_000_000;
+        tree.advance_frame(start);
+        tree.advance_frame(start + OVERLAY_FADE_MICROS);
+        let hovered = overlay_colours(&mut tree);
+        assert_eq!(
+            hovered,
+            vec![light.hover_color.0],
+            "the mouse paints hoverColor and nothing else"
+        );
+
+        // Focused as well: two layers, each its own colour, hover under focus.
+        assert!(focus(104));
+        tree.advance_frame(start + OVERLAY_FADE_MICROS * 2);
+        tree.advance_frame(start + OVERLAY_FADE_MICROS * 3);
+        let both = overlay_colours(&mut tree);
+        assert_eq!(
+            both,
+            vec![light.hover_color.0, light.focus_color.0],
+            "two layers, not one blended answer"
+        );
+        assert_ne!(
+            light.hover_color.0, light.focus_color.0,
+            "and they are different colours, or the assertion above proves nothing"
+        );
     }
 
     #[test]
