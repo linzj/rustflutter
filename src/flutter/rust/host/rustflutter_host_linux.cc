@@ -23,10 +23,11 @@
 //     calls documented safe from any thread. Neither side touches the other's
 //     state directly.
 //
-// Rendering is Impeller over EGL when asked for -- Mesa's EGL, straight onto
-// the drawing area's X11 window, which is why the GDK backend is pinned to
-// X11 below -- and the Skia software surface otherwise, blitted through cairo
-// in the `draw` signal. The two attach at the same seam they do on Windows:
+// Rendering is Impeller when asked for -- on Vulkan when
+// RUSTFLUTTER_BACKEND=vulkan, otherwise over Mesa's EGL, straight onto the
+// drawing area's X11 window, which is why the GDK backend is pinned to X11
+// below -- and the Skia software surface otherwise, blitted through cairo in
+// the `draw` signal. The two attach at the same seam they do on Windows:
 // `HostPlatformView::CreateRenderingSurface`.
 //
 // What this host does not do yet, stated rather than implied: no
@@ -81,6 +82,7 @@
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_gl.h"
 #include "flutter/rust/host/rustflutter_key_map_linux.h"
+#include "flutter/rust/host/rustflutter_vk.h"
 #include "flutter/shell/common/display.h"
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/common/rasterizer.h"
@@ -91,6 +93,7 @@
 #include "flutter/shell/gpu/gpu_surface_gl_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
+#include "flutter/shell/gpu/gpu_surface_vulkan_impeller.h"
 #include "flutter/shell/platform/common/client_wrapper/include/flutter/standard_method_codec.h"
 #include "flutter/shell/platform/common/text_input_model.h"
 #include "flutter/shell/platform/common/text_range.h"
@@ -1313,6 +1316,16 @@ class HostPlatformMessageResponse : public PlatformMessageResponse {
 };
 
 //------------------------------------------------------------------------------
+/// Which GPU backend renders the frames.
+///
+/// kSoftware is the Skia bitmap surface, which needs nothing and works
+/// everywhere; kGles is Impeller through Mesa's EGL, the default; kVulkan is
+/// Impeller on the machine's Vulkan driver directly. The choice is made once
+/// from the environment in rf_host_run, and a failed Vulkan or GL context
+/// walks down the list rather than failing to start.
+enum class RenderBackend { kSoftware, kGles, kVulkan };
+
+//------------------------------------------------------------------------------
 /// What the window and the shell share. The window thread writes the geometry,
 /// the platform thread reads it.
 struct WindowState {
@@ -1343,6 +1356,9 @@ struct WindowState {
   GtkWidget* drawing_area = nullptr;
   GMainLoop* loop = nullptr;
   EGLNativeWindowType xid = 0;
+  /// The X11 Display* the window lives on, untyped because `Display` is also
+  /// a flutter:: name in this file. For the Vulkan surface.
+  void* xdisplay = nullptr;
 };
 
 /// Quits the window's main loop, from any thread.
@@ -1377,12 +1393,20 @@ class HostPlatformView final : public PlatformView,
   HostPlatformView(PlatformView::Delegate& delegate,
                    const TaskRunners& task_runners,
                    WindowState* state,
-                   bool prefer_impeller)
+                   RenderBackend backend)
       : PlatformView(delegate, task_runners),
         state_(state),
-        prefer_impeller_(prefer_impeller) {}
+        backend_(backend) {}
 
-  ~HostPlatformView() override = default;
+  ~HostPlatformView() override {
+    // The upload target holds a shared_ptr to the Impeller context. Left in
+    // place it would keep a Vulkan context alive past the unloading of the
+    // Vulkan library it calls through, and the context's own destructor --
+    // run at process exit -- would jump into unmapped memory.
+    if (vk_context_ || gl_context_) {
+      RfSetImageUploadTarget(nullptr, nullptr);
+    }
+  }
 
   // |PlatformView|
   //
@@ -1390,7 +1414,16 @@ class HostPlatformView final : public PlatformView,
   // Impeller context. That ordering is the reason this hook exists: the shell
   // publishes GetImpellerContext() to the IO thread right after this returns.
   void SetupImpellerContext() override {
-    if (prefer_impeller_ && !gl_context_) {
+    // Vulkan first when it was asked for: it is the more specific request,
+    // and a machine that cannot do it almost always still has the EGL stack
+    // the GL path wants.
+    if (backend_ == RenderBackend::kVulkan && !vk_context_) {
+      vk_context_ = ImpellerVkContext::Create();
+      if (!vk_context_) {
+        FML_LOG(IMPORTANT) << "Falling back to OpenGL ES; see the error above.";
+      }
+    }
+    if (backend_ != RenderBackend::kSoftware && !vk_context_ && !gl_context_) {
       gl_context_ = ImpellerGlContext::Create();
       if (!gl_context_) {
         FML_LOG(IMPORTANT)
@@ -1399,14 +1432,30 @@ class HostPlatformView final : public PlatformView,
     }
     // Text ops and images both have to be recorded for the backend that will
     // draw them, and this runs before the engine is launched, so the first
-    // frame already gets it right.
-    rf_set_impeller_backend(gl_context_ != nullptr ? 1 : 0);
+    // frame already gets it right. The recording is the same for both Impeller
+    // backends, so this only distinguishes Impeller from software.
+    rf_set_impeller_backend((vk_context_ || gl_context_) ? 1 : 0);
   }
 
   // |PlatformView|
   //
   // Also on the raster thread, after SetupImpellerContext.
   std::unique_ptr<Surface> CreateRenderingSurface() override {
+    if (vk_context_) {
+      if (auto surface = CreateVulkanSurface()) {
+        state_->gpu_active.store(true);
+        return surface;
+      }
+      // The context is up but the window would not take a swapchain. There is
+      // no reason GL would fare worse, and the raster thread is the right
+      // place to find out.
+      FML_LOG(IMPORTANT) << "Falling back to OpenGL ES; see the error above.";
+      vk_context_.reset();
+      gl_context_ = ImpellerGlContext::Create();
+      // A GL context that failed to come up falls through to software below,
+      // same as if it had failed in SetupImpellerContext.
+      rf_set_impeller_backend(gl_context_ != nullptr ? 1 : 0);
+    }
     if (gl_context_) {
       if (auto surface = CreateImpellerSurface()) {
         state_->gpu_active.store(true);
@@ -1421,6 +1470,9 @@ class HostPlatformView final : public PlatformView,
 
   // |PlatformView|
   std::shared_ptr<impeller::Context> GetImpellerContext() const override {
+    if (vk_context_) {
+      return vk_context_->GetImpellerContext();
+    }
     return gl_context_ ? gl_context_->GetImpellerContext() : nullptr;
   }
 
@@ -1431,6 +1483,14 @@ class HostPlatformView final : public PlatformView,
   // this thread and stays current, so texture uploads posted here have a
   // context to run in and the reactor knows this thread may issue GL commands.
   sk_sp<GrDirectContext> CreateResourceContext() const override {
+    if (vk_context_) {
+      // Vulkan has no "current context" to make on this thread -- command
+      // buffers go to queues from wherever they are built. So an upload posted
+      // to the IO runner needs only the runner and the context itself.
+      RfSetImageUploadTarget(task_runners_.GetIOTaskRunner(),
+                             vk_context_->GetImpellerContext());
+      return nullptr;
+    }
     if (!gl_context_) {
       return nullptr;
     }
@@ -1447,10 +1507,15 @@ class HostPlatformView final : public PlatformView,
     return nullptr;
   }
 
-  /// Remakes the EGL window surface after a resize. An EGL surface does not
-  /// follow a window that changed size; presenting to a stale one stretches
-  /// the frame.
+  /// Rebuilds whatever the frames are presented to after a resize. An EGL
+  /// surface does not follow a window that changed size, so it is remade; a
+  /// Vulkan swapchain rebuilds itself on the next frame once it knows the new
+  /// size. Presenting to either one stale stretches the frame.
   void OnWindowResized() {
+    if (vk_context_) {
+      vk_context_->UpdateSize(
+          impeller::ISize{state_->physical_width, state_->physical_height});
+    }
     if (gl_delegate_) {
       gl_delegate_->Resize();
     }
@@ -1724,6 +1789,31 @@ class HostPlatformView final : public PlatformView,
         }));
   }
 
+  /// Builds the Impeller Vulkan surface, or returns nullptr with a logged
+  /// reason.
+  std::unique_ptr<Surface> CreateVulkanSurface() {
+    if (state_->xid == 0 || state_->xdisplay == nullptr) {
+      FML_LOG(ERROR) << "No X11 window to put a Vulkan swapchain on.";
+      return nullptr;
+    }
+    if (!vk_context_->SetWindow(
+            state_->xdisplay, static_cast<uint64_t>(state_->xid),
+            impeller::ISize{state_->physical_width, state_->physical_height})) {
+      return nullptr;
+    }
+
+    // A null delegate is the self-managed path: GPUSurfaceVulkanImpeller pulls
+    // each frame's surface straight from the surface context's swapchain, the
+    // same arrangement as upstream's Android surface.
+    auto surface = std::make_unique<GPUSurfaceVulkanImpeller>(
+        /*delegate=*/nullptr, vk_context_->GetSurfaceContext());
+    if (!surface->IsValid()) {
+      FML_LOG(ERROR) << "The Impeller Vulkan surface came up invalid.";
+      return nullptr;
+    }
+    return surface;
+  }
+
   /// Builds the Impeller surface, or returns nullptr with a logged reason.
   std::unique_ptr<Surface> CreateImpellerSurface() {
     if (state_->xid == 0) {
@@ -1762,7 +1852,8 @@ class HostPlatformView final : public PlatformView,
   }
 
   WindowState* state_ = nullptr;
-  bool prefer_impeller_ = false;
+  RenderBackend backend_ = RenderBackend::kSoftware;
+  std::unique_ptr<ImpellerVkContext> vk_context_;
   std::unique_ptr<ImpellerGlContext> gl_context_;
   std::unique_ptr<ImpellerGlDelegate> gl_delegate_;
   sk_sp<SkSurface> backing_store_;
@@ -2253,11 +2344,30 @@ int32_t rf_host_run(const RfHostOptions* options) {
   const bool software_forced = force_software != nullptr &&
                                force_software[0] != '\0' &&
                                force_software[0] != '0';
-  settings.enable_impeller = options->enable_impeller != 0 && !software_forced;
+  RenderBackend backend = RenderBackend::kGles;
+  if (options->enable_impeller == 0 || software_forced) {
+    backend = RenderBackend::kSoftware;
+  } else {
+    // RUSTFLUTTER_BACKEND picks between the GPU backends: "vulkan" asks for
+    // Impeller on Vulkan, "software" is the software surface spelled the
+    // other way, and anything else -- including unset -- is the GLES default.
+    const char* requested = std::getenv("RUSTFLUTTER_BACKEND");
+    if (requested != nullptr) {
+      if (std::strcmp(requested, "vulkan") == 0) {
+        backend = RenderBackend::kVulkan;
+      } else if (std::strcmp(requested, "software") == 0) {
+        backend = RenderBackend::kSoftware;
+      } else if (std::strcmp(requested, "gles") != 0) {
+        FML_LOG(IMPORTANT) << "Unknown RUSTFLUTTER_BACKEND value \""
+                           << requested << "\"; using OpenGL ES.";
+      }
+    }
+  }
   if (software_forced) {
     FML_LOG(IMPORTANT) << "RUSTFLUTTER_SOFTWARE is set; using the software "
                           "surface.";
   }
+  settings.enable_impeller = backend != RenderBackend::kSoftware;
   settings.enable_software_rendering = !settings.enable_impeller;
   settings.icu_initialization_required = true;
   settings.icu_data_path = options->icu_data_path != nullptr
@@ -2368,6 +2478,7 @@ int32_t rf_host_run(const RfHostOptions* options) {
       // A C-style cast because EGLNativeWindowType is an unsigned long with
       // X11 headers in scope and a pointer without them.
       state.xid = (EGLNativeWindowType)GDK_WINDOW_XID(gdk_window);
+      state.xdisplay = GDK_WINDOW_XDISPLAY(gdk_window);
       // Cairo must not double-buffer over the GL swap. Deprecated because
       // GTK4 removed the alternative, not because GTK3 minds.
       G_GNUC_BEGIN_IGNORE_DEPRECATIONS
@@ -2398,13 +2509,12 @@ int32_t rf_host_run(const RfHostOptions* options) {
 
   // -- Shell ------------------------------------------------------------------
 
-  const bool prefer_impeller = settings.enable_impeller;
   PlatformData platform_data;
   std::unique_ptr<Shell> shell = Shell::Create(
       platform_data, task_runners, settings,
-      [&state, prefer_impeller](Shell& shell) {
+      [&state, backend](Shell& shell) {
         auto view = std::make_unique<HostPlatformView>(
-            shell, shell.GetTaskRunners(), &state, prefer_impeller);
+            shell, shell.GetTaskRunners(), &state, backend);
         // The window needs to reach the view to send pointers and keys. The
         // shell owns it and outlives the run loop, so a raw pointer is
         // enough.

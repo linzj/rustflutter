@@ -7,21 +7,25 @@
 
 // Impeller on the window, through Vulkan itself.
 //
-// The GL path next door (rustflutter_gl.h) renders through EGL, which on
-// Windows is ANGLE translating OpenGL ES onto D3D11. This one talks to the
-// machine's Vulkan driver directly and skips both translations. Unlike the GL
-// path it is Windows-only: there is no window-system-agnostic way to ask
-// Vulkan for a window, so the file names HWND where its sibling names
-// EGLNativeWindowType.
+// The GL path next door (rustflutter_gl.h) renders through EGL -- on Windows
+// that is ANGLE translating OpenGL ES onto D3D11, on Linux it is Mesa. This
+// one talks to the machine's Vulkan driver directly and skips the translation.
+// Unlike the GL path it cannot be window-system-agnostic: there is no neutral
+// way to ask Vulkan for a window, so SetWindow names HWND on Windows and an
+// X11 display and window id on Linux, where its sibling names
+// EGLNativeWindowType for both.
 //
 // One context rather than the GL path's two, because Vulkan has no "current
 // context" to begin with. Command buffers are submitted to queues from
 // whichever thread holds them, so the IO thread's texture uploads need nothing
 // made current -- only the context itself.
 
+#include <cstdint>
 #include <memory>
 
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 #include "flutter/fml/memory/ref_ptr.h"
 #include "flutter/fml/native_library.h"
@@ -60,10 +64,19 @@ class ImpellerVkContext {
     return surface_context_;
   }
 
+#if defined(_WIN32)
   /// Creates the Win32 surface for the window and builds the swapchain on it.
   /// Called once, before the first frame; a later resize only needs
   /// UpdateSize.
   bool SetWindow(HWND window, impeller::ISize size);
+#else
+  /// Creates the Xlib surface for the window and builds the swapchain on it.
+  /// `xdisplay` is the X11 Display* the window lives on, untyped so this
+  /// header does not drag Xlib -- and its macros -- into every includer.
+  /// Called once, before the first frame; a later resize only needs
+  /// UpdateSize.
+  bool SetWindow(void* xdisplay, uint64_t window, impeller::ISize size);
+#endif
 
   /// Marks the swapchain stale at the new size; the next frame rebuilds it.
   /// The swapchain owns the images sized to the window, and unlike an EGL

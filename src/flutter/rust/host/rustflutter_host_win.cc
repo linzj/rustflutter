@@ -176,8 +176,11 @@ class DpiApi {
 
   BOOL(WINAPI* set_process_dpi_awareness_context_)(HANDLE) = nullptr;
   UINT(WINAPI* get_dpi_for_window_)(HWND) = nullptr;
-  BOOL(WINAPI* adjust_window_rect_ex_for_dpi_)
-  (LPRECT, DWORD, BOOL, DWORD, UINT) = nullptr;
+  BOOL(WINAPI* adjust_window_rect_ex_for_dpi_)(LPRECT,
+                                               DWORD,
+                                               BOOL,
+                                               DWORD,
+                                               UINT) = nullptr;
 };
 
 // Posted by the raster thread once a frame has been presented -- copied into
@@ -1851,7 +1854,15 @@ class HostPlatformView final : public PlatformView,
         a11y_(a11y),
         backend_(backend) {}
 
-  ~HostPlatformView() override = default;
+  ~HostPlatformView() override {
+    // The upload target holds a shared_ptr to the Impeller context. Left in
+    // place it would keep a Vulkan context alive past the unloading of the
+    // Vulkan library it calls through, and the context's own destructor --
+    // run at process exit -- would jump into unmapped memory.
+    if (vk_context_ || gl_context_) {
+      RfSetImageUploadTarget(nullptr, nullptr);
+    }
+  }
 
   // |PlatformView|
   //

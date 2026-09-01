@@ -79,6 +79,11 @@ source_set("host") {
     sources += [
       "rustflutter_host_linux.cc",
 
+      # Impeller on Vulkan directly, without the Mesa GL translation the EGL
+      # path goes through. Opt-in at run time through RUSTFLUTTER_BACKEND=vulkan.
+      "rustflutter_vk.cc",
+      "rustflutter_vk.h",
+
       # Generated. See tools/gen_key_map_linux.py.
       "rustflutter_key_map_linux.cc",
       "rustflutter_key_map_linux.h",
@@ -183,16 +188,25 @@ source_set("host") {
     deps += [
       "//flutter/impeller",
       "//flutter/impeller/renderer/backend/gles",
+      "//flutter/impeller/renderer/backend/vulkan",
       "//flutter/impeller/toolkit/egl",
       "//flutter/shell/gpu:gpu_surface_gl",
+      "//flutter/shell/gpu:gpu_surface_vulkan",
+
+      # The SPIR-V blobs Impeller's Vulkan backend is built from. Groups that
+      # carry the vk variant only when impeller_enable_vulkan, which is on for
+      # Linux by default.
+      "//flutter/impeller/entity:entity_shaders",
+      "//flutter/impeller/entity:framebuffer_blend_entity_shaders",
+      "//flutter/impeller/entity:modern_entity_shaders",
     ]
 
     configs += [ ":gtk3" ]
 
-    # EGL only, and deliberately not GLESv2: Impeller resolves every GL symbol
-    # through eglGetProcAddress, so libGLESv2.so is never a load-time
-    # dependency -- and a machine without it (Mesa's GLES front-end is its own
-    # package) can still run the software path.
+    # EGL only, and deliberately not GLESv2 or vulkan: Impeller resolves every
+    # GL symbol through eglGetProcAddress and the Vulkan loader is dlopened by
+    # name, so neither is a load-time dependency -- and a machine without them
+    # can still run the software path.
     libs = [ "EGL" ]
   }
 
