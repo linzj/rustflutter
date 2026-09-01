@@ -6946,3 +6946,46 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6971 通�
 那 `operable` 收的类型就需要想一想：
 **是让它们凑成 `on_tap`，还是 `operable` 再收一个"按下就调这个"的闭包**。
 后者更可能是对的——`ActivateAction` 调的本来就是 `onPressed` 而不是 `onTap`。
+
+---
+
+## 第 528 轮：开关、复选、单选
+
+先查上一轮记的那件事：这三个的点击回调**都在 `PointerHandlers.on_tap` 里**，
+和 chip、button 同一个形状。所以 `operable` 收的类型不用改——
+上一轮担心的"要不要再收一个 onPressed 闭包"这个问题，**不存在**。
+查了才知道，没有先改签名再发现用不上。
+
+于是三处各两行：
+
+    crate::focus::operable(id, self.autofocus, self.handlers.on_tap.clone(), 已有的树)
+
+加上三个 `with_autofocus`。至此 `operable` 有五个用户
+（chip、button、switch、checkbox、radio），
+**这个 crate 里天天按的控件全都能用键盘操作了**。
+
+禁用的控件本来就没有 handler（上游是 `onChanged == null` 那套），
+所以 `operable` 自动把它们留在遍历之外，不用各自再写一遍闸。
+
+### 扫描活了一个：只测了一半的那种
+
+"复选框忽略自己的 autofocus"活着。原因：我只写了
+**禁用的复选框 autofocus 无效**，没写**启用的复选框 autofocus 有效**。
+于是"根本不 autofocus"和"禁用时不 autofocus"这两件事，
+测试分不出来——**一条只测否定面的测试，等于没测那条规则**。
+补上肯定面之后四个全死。
+
+尺子：十七把全部 exit 0。门：Rust 6975 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6975 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：键盘能按了，但**看不见按在哪儿**——
+`operable` 只建节点、绑激活，**没有焦点高亮**。
+上游每个控件聚焦时都有 `focusColor` 的一层。
+`ink_well.rs` 里已经有现成的：`HighlightType::Focus` 加
+`highlight_color_for(HighlightType::Focus, &theme)`（第 750 行那一带），
+而且是接在 `Focus::with_on_focus_change` 上的。
+**先查一件事**：那套高亮是不是只在 `InkWell` 内部可用，
+还是能被 `operable` 直接用上——如果只在 InkWell 里，
+那要么把它提出来，要么 `operable` 自己画一层，
+**别在五个控件里各画一遍**。

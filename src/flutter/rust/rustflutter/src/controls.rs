@@ -41,6 +41,8 @@ use crate::widgets::{Align, Center, Column, Container, Empty, Pointer, Row, Size
 /// A box that is ticked or not.
 pub struct Checkbox {
     id: u64,
+    /// Upstream's `autofocus`: take the keyboard as soon as this appears.
+    autofocus: bool,
     checked: bool,
     enabled: bool,
     label: Option<String>,
@@ -48,9 +50,18 @@ pub struct Checkbox {
 }
 
 impl Checkbox {
+    /// Upstream's `autofocus`. A disabled checkbox has no handler, so it is not
+    /// a stop and this does nothing -- upstream gates `canRequestFocus` on
+    /// `isEnabled` the same way.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
+        self
+    }
+
     pub fn new(id: u64, checked: bool) -> Checkbox {
         Checkbox {
             id,
+            autofocus: false,
             checked,
             enabled: true,
             label: None,
@@ -174,13 +185,23 @@ impl Component for Checkbox {
             )
             .with_handlers(handlers.clone())
         });
-        described(ticked)
+        // Enter and Space toggle it, through the handler the finger calls.
+        // A disabled box has no handlers at all, so `operable` leaves it out
+        // of the traversal -- which is upstream's `canRequestFocus`.
+        crate::focus::operable(
+            self.id,
+            self.autofocus,
+            self.handlers.on_tap.clone(),
+            described(ticked),
+        )
     }
 }
 
 /// One of a set, only one of which can be chosen.
 pub struct Radio {
     id: u64,
+    /// Upstream's `autofocus`: take the keyboard as soon as this appears.
+    autofocus: bool,
     selected: bool,
     /// A radio that cannot be chosen. Mirrors [`Checkbox`]: no handlers, the
     /// ring and dot drawn in the outline colour.
@@ -190,9 +211,18 @@ pub struct Radio {
 }
 
 impl Radio {
+    /// Upstream's `autofocus`. A disabled radio has no handler, so it is not
+    /// a stop and this does nothing -- upstream gates `canRequestFocus` on
+    /// `isEnabled` the same way.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
+        self
+    }
+
     pub fn new(id: u64, selected: bool) -> Radio {
         Radio {
             id,
+            autofocus: false,
             selected,
             enabled: true,
             label: None,
@@ -320,7 +350,12 @@ impl Component for Radio {
             )
             .with_handlers(handlers.clone())
         });
-        described(body)
+        crate::focus::operable(
+            self.id,
+            self.autofocus,
+            self.handlers.on_tap.clone(),
+            described(body),
+        )
     }
 }
 
@@ -2327,6 +2362,111 @@ You"
         };
         assert!(crate::focus::dispatch_key(&enter), "the chip took the key");
         assert_eq!(taps.get(), 1, "and called the handler the pointer calls");
+    }
+
+    #[test]
+    fn a_checkbox_and_a_radio_can_be_worked_without_a_pointer() {
+        // Both were pointer-only: no focus node, so Tab walked past and
+        // there was nothing for Enter to reach. A form of checkboxes that
+        // cannot be filled in from the keyboard is not a form everyone can
+        // fill in.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let enter = crate::keyboard::KeyEvent {
+            change: crate::keyboard::KeyChange::Down,
+            physical: crate::keyboard::PhysicalKey::ENTER,
+            logical: crate::keyboard::LogicalKey::ENTER,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        };
+
+        for (id, widget) in [
+            (9201u64, {
+                let hits = Rc::new(Cell::new(0));
+                (
+                    Rc::clone(&hits),
+                    crate::framework::component(Checkbox::new(9201, false).with_handlers(
+                        PointerHandlers::new().with_tap({
+                            let hits = Rc::clone(&hits);
+                            move |_| hits.set(hits.get() + 1)
+                        }),
+                    )),
+                )
+            }),
+            (9202u64, {
+                let hits = Rc::new(Cell::new(0));
+                (
+                    Rc::clone(&hits),
+                    crate::framework::component(Radio::new(9202, false).with_handlers(
+                        PointerHandlers::new().with_tap({
+                            let hits = Rc::clone(&hits);
+                            move |_| hits.set(hits.get() + 1)
+                        }),
+                    )),
+                )
+            }),
+        ] {
+            let (hits, widget) = widget;
+            crate::focus::reset();
+            crate::focus::reset_pending_autofocus();
+            let mut tree = crate::framework::ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::light(),
+                widget,
+            ));
+            let _ = tree.build_render_tree();
+
+            assert!(crate::focus::focus(id), "{id} is a stop");
+            assert!(crate::focus::dispatch_key(&enter), "{id} took the key");
+            assert_eq!(hits.get(), 1, "{id} called its handler");
+        }
+    }
+
+    #[test]
+    fn a_checkbox_asked_to_take_the_keyboard_takes_it() {
+        // The other half of the disabled case below: asking has to work when
+        // there is something to ask for, or "a disabled one does not" would
+        // pass for a checkbox that never autofocused at all.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                Checkbox::new(9204, false)
+                    .with_autofocus(true)
+                    .with_handlers(PointerHandlers::new().with_tap(|_| {})),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), Some(9204));
+    }
+
+    #[test]
+    fn a_disabled_checkbox_is_not_a_stop() {
+        // A disabled box has no handlers at all, so there is nothing to
+        // operate and nowhere for the keyboard to wait.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                Checkbox::new(9203, false)
+                    .with_enabled(false)
+                    .with_autofocus(true),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+
+        assert_eq!(crate::focus::focused(), None);
+        assert!(!crate::focus::focus(9203));
     }
 
     #[test]

@@ -1073,6 +1073,8 @@ pub struct Switch {
     id: u64,
     value: bool,
     handlers: PointerHandlers,
+    /// Upstream's `autofocus`: take the keyboard as soon as this appears.
+    autofocus: bool,
     /// Upstream's `onChanged == null`, which is how a switch is disabled --
     /// there is no separate flag.
     enabled: bool,
@@ -1087,9 +1089,18 @@ pub struct Switch {
 }
 
 impl Switch {
+    /// Upstream's `autofocus`. A disabled switch has no handler, so it is not
+    /// a stop and this does nothing -- upstream gates `canRequestFocus` on
+    /// `isEnabled` the same way.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
+        self
+    }
+
     pub fn new(id: u64, value: bool) -> Switch {
         Switch {
             id,
+            autofocus: false,
             value,
             handlers: PointerHandlers::new(),
             enabled: true,
@@ -1277,11 +1288,16 @@ impl Component for Switch {
         // and not whether it is on. The label is left to whatever is beside
         // it -- upstream's `Switch` has none of its own either, because a
         // switch with no context is not a thing a reader can act on.
-        crate::semantics::tappable(
-            crate::semantics::node_id_for(id),
-            crate::semantics::SemanticsProperties::toggle("", value),
-            switch,
-            tap,
+        crate::focus::operable(
+            id,
+            self.autofocus,
+            self.handlers.on_tap.clone(),
+            crate::semantics::tappable(
+                crate::semantics::node_id_for(id),
+                crate::semantics::SemanticsProperties::toggle("", value),
+                switch,
+                tap,
+            ),
         )
     }
 }
@@ -4588,6 +4604,45 @@ mod tests {
     }
 
     /// The colours a badge actually put on the glass: the pill and the label.
+    #[test]
+    fn a_switch_can_be_flipped_without_a_pointer() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+        let flips = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&flips);
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                Switch::new(7201, false).with_handlers(
+                    crate::gestures::PointerHandlers::new()
+                        .with_tap(move |_| counter.set(counter.get() + 1)),
+                ),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+
+        let enter = crate::keyboard::KeyEvent {
+            change: crate::keyboard::KeyChange::Down,
+            physical: crate::keyboard::PhysicalKey::ENTER,
+            logical: crate::keyboard::LogicalKey::ENTER,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        };
+        assert!(crate::focus::focus(7201), "a switch is a stop");
+        assert!(crate::focus::dispatch_key(&enter));
+        assert_eq!(
+            flips.get(),
+            1,
+            "and flips through the handler the finger uses"
+        );
+    }
+
     #[test]
     fn a_button_can_be_reached_and_pressed_without_a_pointer() {
         // Until this, no button in the crate could be operated from the
