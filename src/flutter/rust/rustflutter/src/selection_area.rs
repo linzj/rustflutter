@@ -123,6 +123,14 @@ pub struct SelectableText {
     /// A selectable text is never editable, which is the one thing that makes
     /// it different from the field it is built on.
     editable: bool,
+    /// Upstream's `textAlign`. `None` is upstream's null, which its build
+    /// turns into `TextAlign.start` -- the same default the field already has,
+    /// so nothing is passed for it and the two cannot disagree.
+    pub text_align: Option<crate::engine::TextAlign>,
+    /// Upstream's `textDirection`, which `TextAlign::Start` needs to mean
+    /// anything. `None` is upstream's null: the ambient direction, which this
+    /// crate takes as left-to-right.
+    pub text_direction: Option<crate::direction::TextDirection>,
     /// The styles `data` is set in, where it is not all one style.
     ///
     /// Empty for the plain constructor, which is upstream's `textSpan == null`.
@@ -140,6 +148,8 @@ impl SelectableText {
             show_cursor: false,
             max_lines: None,
             editable: false,
+            text_align: None,
+            text_direction: None,
             runs: Vec::new(),
         }
     }
@@ -161,11 +171,24 @@ impl SelectableText {
             show_cursor: false,
             max_lines: None,
             editable: false,
+            text_align: None,
+            text_direction: None,
             runs: spans
                 .into_iter()
                 .map(|span| (span.text, span.style))
                 .collect(),
         }
+    }
+
+    /// Upstream's `textAlign`, and the direction it is resolved against.
+    pub fn with_text_align(
+        mut self,
+        align: crate::engine::TextAlign,
+        direction: crate::direction::TextDirection,
+    ) -> Self {
+        self.text_align = Some(align);
+        self.text_direction = Some(direction);
+        self
     }
 
     /// Upstream's `maxLines`. `None` is upstream's null: as many as it takes.
@@ -211,7 +234,12 @@ impl SelectableText {
     pub fn widget(&self, id: u64) -> crate::framework::AnyWidget {
         let field = crate::editable::TextField::new(id)
             .with_read_only(true)
-            .with_show_cursor(self.show_cursor);
+            .with_show_cursor(self.show_cursor)
+            .with_text_align(
+                self.text_align.unwrap_or(crate::engine::TextAlign::Start),
+                self.text_direction
+                    .unwrap_or(crate::direction::TextDirection::Ltr),
+            );
         // `with_runs` sets the text from the runs themselves, so the two
         // constructors take different doors into the same field rather than
         // one of them handing over a string the other would contradict.
@@ -558,6 +586,53 @@ three"
 
         let three = SelectableText::new("hello").with_max_lines(Some(3));
         assert!(three.wraps(), "any limit above one still wraps");
+    }
+
+    #[test]
+    fn a_passages_alignment_reaches_the_glyphs() {
+        // Storing the alignment is not the point; the glyphs moving is. Both
+        // hops have to work -- the passage to the field, the field to the
+        // render object -- and a mutation removing either one survived a
+        // sweep until this existed.
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        let paragraph_x = |passage: SelectableText, id: u64| {
+            crate::focus::reset();
+            let mut tree = crate::framework::ElementTree::new();
+            tree.rebuild(passage.widget(id));
+            tree.rebuild_dirty();
+            let mut root = tree.build_render_tree().expect("a render tree");
+            root.layout(crate::render::BoxConstraints::tight(400.0, 100.0));
+            let mut layers = crate::engine::LayerTree::new(400, 100);
+            reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(400.0, 100.0),
+                );
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            drawn()
+                .iter()
+                .find_map(|call| match call {
+                    Drawn::Paragraph { text, x, .. } if text == "hello" => Some(*x),
+                    _ => None,
+                })
+                .expect("the passage was drawn")
+        };
+
+        let plain = paragraph_x(SelectableText::new("hello"), 4320);
+        assert_eq!(plain, 0.0, "the default is the leading edge");
+
+        let centred = paragraph_x(
+            SelectableText::new("hello").with_text_align(
+                crate::engine::TextAlign::Center,
+                crate::direction::TextDirection::Ltr,
+            ),
+            4321,
+        );
+        assert!(centred > plain, "centred started at {centred}");
     }
 
     #[test]

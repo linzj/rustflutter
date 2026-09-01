@@ -137,6 +137,14 @@ type ReportSelection = Rc<dyn Fn(SelectionGeometry)>;
 struct LineLayout {
     lines: Vec<VisualLine>,
     line_height: f32,
+    /// How far right each line was drawn, from `text_align`. One per line, in
+    /// step with `lines`.
+    ///
+    /// Carried rather than recomputed: the tap runs a frame after the paint,
+    /// and the width it would measure against is the width of *that* frame.
+    /// The finger points at what the reader can see, which is the frame that
+    /// was drawn.
+    shifts: Vec<f32>,
     scroll: Offset,
     /// The style and text scale the lines were measured with, so a tap
     /// measuring prefixes lands on the position it can see.
@@ -328,6 +336,7 @@ fn caret_line(lines: &[VisualLine], position: usize) -> usize {
 fn caret_position_at(
     text: &str,
     lines: &[VisualLine],
+    shifts: &[f32],
     line_height: f32,
     at: Offset,
     measure: &dyn Fn(std::ops::Range<usize>) -> f32,
@@ -342,9 +351,15 @@ fn caret_position_at(
     } else {
         0
     };
-    let Some(line) = lines.get(row.min(lines.len().saturating_sub(1))) else {
+    let row = row.min(lines.len().saturating_sub(1));
+    let Some(line) = lines.get(row) else {
         return 0;
     };
+    // The finger points at the glyphs, and the glyphs were moved right by the
+    // alignment. Measuring prefixes gives distances from the *line's* start,
+    // so the pointer is brought into that frame rather than every boundary
+    // being pushed out of it.
+    let at = Offset::new(at.dx - shifts.get(row).copied().unwrap_or(0.0), at.dy);
 
     // Every boundary on that line: its start, each character, its end. Ties
     // take the earlier boundary, which leans the caret to the character the
@@ -404,6 +419,17 @@ pub struct RenderEditable {
     selection_color: Color,
     /// How many lines the field shows. Upstream's `maxLines`.
     max_lines: MaxLines,
+    /// Which edge the lines are lined up against. Upstream's `textAlign`.
+    ///
+    /// `Start` by default, as upstream's `EditableText` has it -- not `Left`,
+    /// because the two differ in a right-to-left paragraph and a default that
+    /// silently means "left" would be wrong there rather than merely
+    /// unspecified.
+    text_align: crate::engine::TextAlign,
+    /// The reading direction the alignment is resolved against. Upstream's
+    /// `textDirection`, which `TextAlign::Start` and `TextAlign::End` are
+    /// meaningless without.
+    text_direction: crate::direction::TextDirection,
     /// The styles the text is set in, where it is not all one style.
     ///
     /// Empty is the ordinary case and means "all `style`". Upstream's
@@ -465,6 +491,8 @@ impl RenderEditable {
             caret_color: Color::BLACK,
             selection_color: DEFAULT_SELECTION,
             max_lines: MaxLines::Single,
+            text_align: crate::engine::TextAlign::Start,
+            text_direction: crate::direction::TextDirection::Ltr,
             runs: Vec::new(),
             show_caret: false,
             scroll: Cell::new(Offset::ZERO),
@@ -486,6 +514,18 @@ impl RenderEditable {
 
     pub fn with_style(mut self, style: TextStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Which edge to line the text up against, and the direction that makes
+    /// `Start` and `End` mean something.
+    pub fn with_text_align(
+        mut self,
+        align: crate::engine::TextAlign,
+        direction: crate::direction::TextDirection,
+    ) -> Self {
+        self.text_align = align;
+        self.text_direction = direction;
         self
     }
 
@@ -620,6 +660,10 @@ impl RenderEditable {
         }
         painting::shape_rich(
             &self.runs_in(range),
+            // The paragraph is shaped in isolation and positioned by
+            // `line_shifts`, so the shaper is told the text starts at its own
+            // left edge. Handing it the field's alignment as well would apply
+            // the same shift twice.
             crate::engine::TextAlign::Left,
             None,
             false,
@@ -694,16 +738,85 @@ impl RenderEditable {
     /// Where the caret is in content coordinates: which line, how far into
     /// it, and how tall that line is. `None` when the caret is not at a
     /// character boundary, which is not a position at all.
-    fn caret_rect(&self, lines: &[VisualLine], line_height: f32) -> Option<Rect> {
+    fn caret_rect(&self, lines: &[VisualLine], line_height: f32, shifts: &[f32]) -> Option<Rect> {
         let caret = self.value.caret_bytes()?;
         let index = caret_line(lines, caret);
         let line = lines[index];
         // Clamped rather than trusted: a caret the platform reports outside
         // every line is wrong, but it must not slice a character in two.
         let within = caret.clamp(line.start, line.end);
-        let x = self.measure(line.start..within);
+        // The caret goes where the text goes. Everything downstream of this
+        // -- the reveal that scrolls it into view, the rectangle the IME is
+        // told about -- reads content coordinates, so the shift belongs here
+        // rather than at the one place that draws it.
+        let x = shifts.get(index).copied().unwrap_or(0.0) + self.measure(line.start..within);
         let top = index as f32 * line_height;
         Some(Rect::ltrb(x, top, x + CARET_WIDTH, top + line_height))
+    }
+
+    /// How far right each line starts, to line them up as `text_align` asks.
+    ///
+    /// One number per line and computed once, at paint, because the widths it
+    /// needs have just been measured there anyway -- and because the tap
+    /// handler needs the same numbers a frame later and must not recompute
+    /// them from a different width. A shift computed twice is a caret that
+    /// lands where the text is not.
+    ///
+    /// Never negative: a line wider than the box is already scrolled rather
+    /// than pulled left, and shifting it further would hide its start with no
+    /// way to reach it.
+    fn line_shifts(&self, lines: &[VisualLine], viewport: f32) -> Vec<f32> {
+        if self.resolved_align() == crate::engine::TextAlign::Left {
+            // The shape everything else was written for. Saying so here is
+            // what keeps the ordinary field from measuring every line twice.
+            return vec![0.0; lines.len()];
+        }
+        lines
+            .iter()
+            .map(|line| self.align_shift(self.measure(line.start..line.end), viewport))
+            .collect()
+    }
+
+    /// `text_align` with `Start` and `End` resolved against the direction.
+    ///
+    /// They are not synonyms for `Left` and `Right`: in a right-to-left
+    /// paragraph they are the other way round, which is the whole reason
+    /// upstream's default is `Start` rather than `Left`.
+    fn resolved_align(&self) -> crate::engine::TextAlign {
+        use crate::direction::TextDirection;
+        use crate::engine::TextAlign;
+        let rtl = self.text_direction == TextDirection::Rtl;
+        match self.text_align {
+            TextAlign::Start if rtl => TextAlign::Right,
+            TextAlign::Start => TextAlign::Left,
+            TextAlign::End if rtl => TextAlign::Left,
+            TextAlign::End => TextAlign::Right,
+            // `Justify` stretches the spaces between words rather than moving
+            // the line, and this crate's shaper does not stretch anything. It
+            // is left where it starts rather than pretended at.
+            TextAlign::Justify => TextAlign::Left,
+            other => other,
+        }
+    }
+
+    /// How far right a line of `line_width` starts in a box `viewport` wide.
+    ///
+    /// Its own function because two things are aligned and they measure
+    /// differently: the text, whose width comes from the field's own runs, and
+    /// the placeholder, which is a different string in a different style. One
+    /// rule, asked twice.
+    ///
+    /// Never negative: a line wider than the box is already scrolled rather
+    /// than pulled left, and shifting it further would put its start out of
+    /// reach.
+    fn align_shift(&self, line_width: f32, viewport: f32) -> f32 {
+        use crate::engine::TextAlign;
+        let free = viewport - line_width;
+        match self.resolved_align() {
+            TextAlign::Right => free.max(0.0),
+            TextAlign::Center => (free / 2.0).max(0.0),
+            _ => 0.0,
+        }
     }
 
     /// The run from `range` as it appears on one line: how far into the line
@@ -817,7 +930,8 @@ impl RenderBox for RenderEditable {
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         let line_height = self.line_height();
         let lines = self.visual_lines(self.size.width);
-        let caret = self.caret_rect(&lines, line_height);
+        let shifts = self.line_shifts(&lines, self.size.width);
+        let caret = self.caret_rect(&lines, line_height, &shifts);
 
         // Keep the caret on screen. Upstream does this one frame late, from
         // `EditableText._showCaretOnScreen` through the `Scrollable`'s
@@ -870,6 +984,7 @@ impl RenderBox for RenderEditable {
             *sink.borrow_mut() = Some(LineLayout {
                 lines: lines.clone(),
                 line_height,
+                shifts: shifts.clone(),
                 scroll,
                 style: self.style.clone(),
                 text_scale: self.text_scale,
@@ -895,7 +1010,14 @@ impl RenderBox for RenderEditable {
                     self.size.width,
                     self.text_scale,
                 );
-                canvas.draw_paragraph(&hint, base, offset.dy + paint_offset.dy);
+                // The hint is aligned like the text it stands in for: a
+                // centred field whose placeholder sat on the left would jump
+                // as soon as the first character was typed. Its width is its
+                // own -- a different string in a different style -- so it is
+                // measured from the paragraph just shaped rather than from
+                // the field's text, which is empty here by definition.
+                let hint_shift = self.align_shift(hint.max_intrinsic_width(), self.size.width);
+                canvas.draw_paragraph(&hint, base + hint_shift, offset.dy + paint_offset.dy);
             }
 
             // The selection, before the text rather than after it. Upstream
@@ -908,6 +1030,11 @@ impl RenderBox for RenderEditable {
             let composing = self.value.composing_bytes();
             for (index, line) in lines.iter().enumerate() {
                 let top = offset.dy + paint_offset.dy + index as f32 * line_height;
+                // Where this line begins, which is the box's left edge only
+                // when the text is left-aligned. Everything on the line --
+                // the highlight, the glyphs, the composing underline -- moves
+                // together, because they are all describing the same glyphs.
+                let base = base + shifts.get(index).copied().unwrap_or(0.0);
 
                 if let Some(range) = &selection {
                     if let Some((start, width)) = self.line_extent(*line, range.clone()) {
@@ -2044,7 +2171,14 @@ fn drag_handle_to(
                 .max_intrinsic_width()
             }
         };
-        let byte = caret_position_at(&shown, &layout.lines, layout.line_height, at, &measure);
+        let byte = caret_position_at(
+            &shown,
+            &layout.lines,
+            &layout.shifts,
+            layout.line_height,
+            at,
+            &measure,
+        );
         let character = shown[..floor_char_boundary(&shown, byte)].chars().count();
         let position: i32 = real
             .chars()
@@ -3152,6 +3286,10 @@ pub struct TextField {
     /// upstream says in those words and this crate has as
     /// [`TextField::with_state_sink`].
     initial_text: Option<String>,
+    /// Upstream's `textAlign` and `textDirection`, which the render object
+    /// resolves together -- `Start` means nothing without a direction.
+    text_align: crate::engine::TextAlign,
+    text_direction: crate::direction::TextDirection,
     /// The text set in more than one style, as runs. See
     /// [`RenderEditable::with_runs`]; empty is "all one style".
     ///
@@ -3341,6 +3479,8 @@ impl TextField {
             read_only: false,
             show_cursor: None,
             initial_text: None,
+            text_align: crate::engine::TextAlign::Start,
+            text_direction: crate::direction::TextDirection::Ltr,
             runs: Vec::new(),
             max_lines: MaxLines::Single,
             min_lines: None,
@@ -3383,6 +3523,18 @@ impl TextField {
     /// documentation for why it is used only once.
     pub fn with_initial_text(mut self, text: impl Into<String>) -> Self {
         self.initial_text = Some(text.into());
+        self
+    }
+
+    /// Which edge the text lines up against. Upstream's `textAlign`, with the
+    /// `textDirection` that makes `Start` and `End` mean something.
+    pub fn with_text_align(
+        mut self,
+        align: crate::engine::TextAlign,
+        direction: crate::direction::TextDirection,
+    ) -> Self {
+        self.text_align = align;
+        self.text_direction = direction;
         self
     }
 
@@ -3772,6 +3924,8 @@ impl StatefulComponent for TextField {
         // outlives this call and the field's runs do not change while it is
         // mounted.
         let runs = self.runs.clone();
+        let text_align = self.text_align;
+        let text_direction = self.text_direction;
         let caret_color = theme.primary;
         // The theme's own colour, made translucent, as upstream's `TextField`
         // derives it. Opaque it would cover the glyphs it highlights.
@@ -4021,6 +4175,7 @@ impl StatefulComponent for TextField {
                 let byte = caret_position_at(
                     &position_shown,
                     &layout.lines,
+                    &layout.shifts,
                     layout.line_height,
                     at,
                     &measure,
@@ -4147,8 +4302,14 @@ impl StatefulComponent for TextField {
                     .max_intrinsic_width()
                 }
             };
-            let byte =
-                caret_position_at(&word_shown, &layout.lines, layout.line_height, at, &measure);
+            let byte = caret_position_at(
+                &word_shown,
+                &layout.lines,
+                &layout.shifts,
+                layout.line_height,
+                at,
+                &measure,
+            );
             // The words are the *shown* text's, which for an obscured
             // field is a row of bullets -- and `WordSelection` answers
             // "all of it" for those without asking the breaker anything.
@@ -4241,6 +4402,7 @@ impl StatefulComponent for TextField {
                 .with_placeholder(placeholder.clone(), placeholder_style.clone())
                 .with_caret(caret_color, caret_shown)
                 .with_runs(runs.clone())
+                .with_text_align(text_align, text_direction)
                 .with_selection_color(selection_color)
                 .with_max_lines(max_lines)
                 .with_report(report)
@@ -6051,6 +6213,7 @@ mod tests {
             crate::render::RenderRef::new(crate::render::RenderConstrainedBox::tight(400.0, 40.0)),
         )));
         let lines: LinesSink = Rc::new(RefCell::new(Some(LineLayout {
+            shifts: vec![0.0; visual_lines.len()],
             lines: visual_lines,
             line_height: 20.0,
             scroll: Offset::ZERO,
@@ -7634,7 +7797,7 @@ mod tests {
         // one line height down. Its x is the width of what precedes it on that
         // line, which the stub now measures -- so both halves are checkable.
         let caret = field
-            .caret_rect(&lines, 10.0)
+            .caret_rect(&lines, 10.0, &[0.0; 8])
             .expect("the caret is at a boundary");
         assert_eq!(caret.top, 10.0);
         assert_eq!(caret.height(), 10.0);
@@ -7684,6 +7847,7 @@ mod tests {
             caret_position_at(
                 "aaa bb",
                 &lines,
+                &[0.0; 8],
                 10.0,
                 Offset::new(24.0, 0.0),
                 &ten_a_character("aaa bb")
@@ -7695,6 +7859,7 @@ mod tests {
             caret_position_at(
                 "aaa bb",
                 &lines,
+                &[0.0; 8],
                 10.0,
                 Offset::new(26.0, 0.0),
                 &ten_a_character("aaa bb")
@@ -7708,6 +7873,7 @@ mod tests {
             caret_position_at(
                 "aaa bb",
                 &lines,
+                &[0.0; 8],
                 10.0,
                 Offset::new(25.0, 0.0),
                 &ten_a_character("aaa bb")
@@ -7720,11 +7886,42 @@ mod tests {
             caret_position_at(
                 "aaa bb",
                 &lines,
+                &[0.0; 8],
                 10.0,
                 Offset::new(100.0, 95.0),
                 &ten_a_character("aaa bb")
             ),
             6
+        );
+    }
+
+    #[test]
+    fn a_tap_on_aligned_text_lands_where_the_glyphs_are() {
+        // The half of alignment that is easy to forget: the finger points at
+        // the glyphs, and the glyphs moved. Measuring prefixes answers in the
+        // line's own frame, so the pointer has to be brought into it.
+        //
+        // Ten pixels a character, four characters, three hundred wide: the
+        // text is forty wide and centred it starts at 130.
+        let lines = wrap_lines("abcd", 500.0, &ten_a_character("abcd"));
+        let shifts = vec![130.0];
+        let at = |x: f32| {
+            caret_position_at(
+                "abcd",
+                &lines,
+                &shifts,
+                10.0,
+                Offset::new(x, 0.0),
+                &ten_a_character("abcd"),
+            )
+        };
+        assert_eq!(at(130.0), 0, "the start of the text, not of the box");
+        assert_eq!(at(150.0), 2, "two characters in");
+        assert_eq!(at(170.0), 4, "the end");
+        assert_eq!(
+            at(0.0),
+            0,
+            "a tap in the empty space to the left is the start"
         );
     }
 
@@ -8390,6 +8587,150 @@ mod painted_field_tests {
     /// turns wrapping off, so a test about wrapping has to ask for it.
     fn wrapping(text: &str, base: usize, extent: usize) -> RenderEditable {
         field(text, base, extent).with_max_lines(MaxLines::Growing)
+    }
+
+    #[test]
+    fn text_is_lined_up_against_the_edge_its_alignment_names() {
+        use crate::direction::TextDirection;
+        use crate::engine::TextAlign;
+
+        // The same text in the same box, three ways. The stub gives every
+        // glyph the same advance, so the widths are comparable even though
+        // the numbers are not the real font's.
+        let paragraph_x = |align: TextAlign, direction: TextDirection| {
+            let calls = painted(
+                field("hello", 0, 0).with_text_align(align, direction),
+                300.0,
+            );
+            calls
+                .iter()
+                .find_map(|call| match call {
+                    Drawn::Paragraph { text, x, .. } if text == "hello" => Some(*x),
+                    _ => None,
+                })
+                .expect("the text was drawn")
+        };
+
+        let left = paragraph_x(TextAlign::Left, TextDirection::Ltr);
+        let centre = paragraph_x(TextAlign::Center, TextDirection::Ltr);
+        let right = paragraph_x(TextAlign::Right, TextDirection::Ltr);
+        assert_eq!(left, 0.0, "left starts at the edge");
+        assert!(
+            centre > left && right > centre,
+            "left {left}, centre {centre}, right {right}"
+        );
+        // Centred means half the slack, which is the arithmetic rather than
+        // merely "somewhere in between".
+        assert!(
+            (centre - right / 2.0).abs() < 0.01,
+            "centre {centre} is not half of {right}"
+        );
+
+        // `Start` and `End` are not other names for left and right: they turn
+        // around with the direction, which is why upstream's default is
+        // `Start` and not `Left`.
+        assert_eq!(paragraph_x(TextAlign::Start, TextDirection::Ltr), left);
+        assert_eq!(paragraph_x(TextAlign::Start, TextDirection::Rtl), right);
+        assert_eq!(paragraph_x(TextAlign::End, TextDirection::Ltr), right);
+        assert_eq!(paragraph_x(TextAlign::End, TextDirection::Rtl), left);
+    }
+
+    #[test]
+    fn the_caret_moves_with_the_text_too() {
+        // Its own test because the highlight and the caret are never on
+        // screen together: no caret is drawn while a run is selected, so a
+        // test with a selection in it cannot see the caret at all. That is
+        // what let "the caret rectangle ignores the shift" survive a sweep.
+        use crate::direction::TextDirection;
+        use crate::engine::TextAlign;
+
+        let caret_x = |align: TextAlign| {
+            let calls = painted(
+                field("hello", 5, 5)
+                    .with_caret(CARET, true)
+                    .with_text_align(align, TextDirection::Ltr),
+                300.0,
+            );
+            rects(&calls)
+                .into_iter()
+                .find(|mark| mark.4 == CARET.0)
+                .map(|mark| mark.0)
+                .expect("the caret was drawn")
+        };
+
+        let left = caret_x(TextAlign::Left);
+        let right = caret_x(TextAlign::Right);
+        assert!(
+            right > left,
+            "the caret sits after the last glyph, so it moves with them: \
+             {left} then {right}"
+        );
+    }
+
+    #[test]
+    fn a_line_too_wide_for_the_box_is_not_pulled_off_its_left_edge() {
+        // A line with no slack has nowhere to go. Shifting it by a negative
+        // amount would put its start out of reach: the field scrolls to
+        // follow the caret, and it does not scroll to the left of zero.
+        use crate::direction::TextDirection;
+        use crate::engine::TextAlign;
+
+        let x = |align: TextAlign| {
+            let calls = painted(
+                field("a very long line indeed", 0, 0).with_text_align(align, TextDirection::Ltr),
+                10.0,
+            );
+            calls
+                .iter()
+                .find_map(|call| match call {
+                    Drawn::Paragraph { x, .. } => Some(*x),
+                    _ => None,
+                })
+                .expect("the text was drawn")
+        };
+        assert_eq!(x(TextAlign::Right), 0.0, "right, with no room to be right");
+        assert_eq!(x(TextAlign::Center), 0.0);
+        assert_eq!(x(TextAlign::Left), 0.0);
+    }
+
+    #[test]
+    fn the_caret_and_the_highlight_move_with_the_text() {
+        // Everything on a line describes the same glyphs, so a caret or a
+        // highlight left at the box's edge while the text moved would be
+        // pointing at nothing.
+        use crate::direction::TextDirection;
+        use crate::engine::TextAlign;
+
+        let marks = |align: TextAlign| {
+            let calls = painted(
+                field("hello", 1, 3).with_text_align(align, TextDirection::Ltr),
+                300.0,
+            );
+            let mut text_x = 0.0;
+            let mut rect_lefts = Vec::new();
+            for call in &calls {
+                match call {
+                    Drawn::Paragraph { text, x, .. } if text == "hello" => text_x = *x,
+                    Drawn::Rect { left, .. } => rect_lefts.push(*left),
+                    _ => {}
+                }
+            }
+            (text_x, rect_lefts)
+        };
+
+        let (left_text, left_rects) = marks(TextAlign::Left);
+        let (right_text, right_rects) = marks(TextAlign::Right);
+        assert!(!left_rects.is_empty(), "the selection was drawn");
+        assert_eq!(left_rects.len(), right_rects.len());
+
+        let moved = right_text - left_text;
+        assert!(moved > 0.0, "the text moved right at all");
+        for (before, after) in left_rects.iter().zip(right_rects.iter()) {
+            assert!(
+                (after - before - moved).abs() < 0.01,
+                "a mark stayed behind: {before} -> {after}, text moved {moved}"
+            );
+        }
     }
 
     fn painted(mut field: RenderEditable, width: f32) -> Vec<Drawn> {

@@ -6564,3 +6564,74 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6944 通�
 上面 `shape_range` 里我写死了 `TextAlign::Left`，
 如果字段本来就不支持对齐，那是个**本轮新写下的、写死的假设**，
 下一轮该先把它变成真的字段，而不是再往上堆。
+
+---
+
+## 第 521 轮：`textAlign`——先把上一轮自己写下的那个写死值变成真的
+
+上一轮 `shape_range` 里写死了 `TextAlign::Left`。查证：字段里
+**`text_align` 三个字一处都没有**，全文只有那一处写死。
+也就是说这不只是我留下的债，本来就是个缺口：
+`SelectableText.textAlign` / `TextField.textAlign` 都没有落点，
+每一行永远从盒子左边开始画。
+
+### 对齐是"每行往右挪多少"
+
+这个 port 里所有横向几何都从 `measure(range)` 加一个 `base` 得来，
+所以对齐就是**每行一个位移**：
+
+- `align_shift(line_width, viewport)` 是那条规则本身。
+  单独一个函数，因为**要对齐的有两样东西，而它们量法不同**：
+  正文按字段自己的 run 量，占位符是另一个字符串、另一套样式。
+  一条规则，问两次。
+- `resolved_align()` 把 `Start`/`End` 按方向解开。
+  **它们不是左右的别名**：RTL 段落里正好反过来，
+  这也正是上游默认值是 `Start` 而不是 `Left` 的全部原因。
+- `Justify` 是拉伸词间空白，本 crate 的 shaper 不拉伸任何东西，
+  所以当 `Left` 处理并写明——**不假装**。
+- 位移不为负：比盒子宽的行本来就靠滚动而不是靠左拉，
+  再挪就把行首挪到够不着的地方。
+
+绘制里每行的 `base` 加上自己的位移，**高亮、字形、拼写下划线一起动**——
+它们描述的是同一批字形。`caret_rect` 也加，因为下游（把光标滚进可视区、
+告诉 IME 光标矩形）读的都是内容坐标。
+
+**点击那一半最容易忘**：手指指的是字形，字形挪走了。
+位移随 `LineLayout` 一起交给点击处理器，而不是让它重算——
+点击发生在绘制的下一帧，重算会用**那一帧**的宽度，
+而手指指的是读者看见的那一帧。
+
+`shape_rich` 那里仍传 `Left`，但现在写明了理由：
+段落是孤立成形、由 `line_shifts` 摆位的，把对齐再喂给 shaper 会**挪两次**。
+
+### 扫描逼出四个漏洞，全是测试的
+
+九个变异，第一轮活了四个：
+
+- **比盒子宽的行**：根本没有测过没有余量的情况。
+- **光标矩形不加位移**：我那条测试用的是**选中区间**，
+  而选中时根本不画光标（`show_caret && !has_selection`）——
+  **一条看不见光标的测试，证明不了光标的任何事**。拆成独立一条，用折叠选区。
+- **字段不往下传** / **控件不往下传**：两跳都没有端到端测过。
+  补了一条从 `SelectableText` 一直到画布上那个 x 的测试。
+
+补完之后九个全死。
+
+尺子：十七把全部 exit 0。门：Rust 6950 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6950 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+顺带一条新的机械教训：**注释里带反引号的字符串不要经 bash 传**——
+这轮有一处 `python -c` 里的反引号被 shell 当成命令替换，
+把 `line_shifts` 三个字整段吃掉，留下 `// , so the shaper...`。
+和 heredoc 的 `\n` 是同一类：**shell 会读你的字符串**。规则不变：用 Write/Edit。
+
+**下一步**：`SelectableText` 的 `style`（`TextStyle?`）——
+和刚做完的两个是同一类，控件收下没有去处。
+**先查一件事**：字段的 `with_style` 已经有了，
+但 `SelectableText::widget` 现在**一次都没调过它**——
+如果是这样，这一轮就是一跳的活，比对齐小得多；
+真正要想清楚的是 `None` 该落到哪里：上游是
+`DefaultTextStyle.of(context).merge(style)`，而本 crate 的字段
+默认样式是从主题取的，**两者不是一回事**，要么接上 `DefaultTextStyle`，
+要么把差别写清楚。
