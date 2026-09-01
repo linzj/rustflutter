@@ -192,6 +192,10 @@ impl Component for Checkbox {
             self.id,
             self.autofocus,
             self.handlers.on_tap.clone(),
+            // `kRadialReactionRadius`: the disc a toggleable reacts inside,
+            // which is far larger than the ticked box it draws. A highlight
+            // the size of the box would read as a second, smaller control.
+            crate::focus::FocusShape::radial(),
             described(ticked),
         )
     }
@@ -354,6 +358,7 @@ impl Component for Radio {
             self.id,
             self.autofocus,
             self.handlers.on_tap.clone(),
+            crate::focus::FocusShape::radial(),
             described(body),
         )
     }
@@ -2425,6 +2430,79 @@ You"
     }
 
     #[test]
+    fn a_focused_checkbox_shows_a_disc_and_a_chip_shows_a_stadium() {
+        // Which shape each control names for its highlight. Testing
+        // `operable` with a shape handed to it directly says nothing about
+        // what the five controls pass -- a checkbox that asked for a small
+        // square would have passed every test until this one.
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        let highlight_of = |widget: crate::framework::AnyWidget, id: u64| {
+            crate::focus::reset();
+            crate::focus::reset_pending_autofocus();
+            let mut tree = crate::framework::ElementTree::new();
+            tree.rebuild(crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::light(),
+                widget,
+            ));
+            let _ = tree.build_render_tree();
+            assert!(crate::focus::focus(id), "{id} took the keyboard");
+            tree.rebuild_dirty();
+            let mut root = tree.build_render_tree().expect("a render tree");
+            root.layout(crate::render::BoxConstraints::tight(300.0, 100.0));
+            let mut layers = crate::engine::LayerTree::new(300, 100);
+            reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(300.0, 100.0),
+                );
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            drawn()
+                .iter()
+                .filter_map(|call| match call {
+                    Drawn::RRect {
+                        left,
+                        top,
+                        right,
+                        bottom,
+                        radius,
+                        ..
+                    } => Some((right - left, bottom - top, *radius)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let disc = highlight_of(
+            crate::framework::component(
+                Checkbox::new(9301, false).with_handlers(PointerHandlers::new().with_tap(|_| {})),
+            ),
+            9301,
+        );
+        let diameter = crate::focus::FocusShape::RADIAL_REACTION_RADIUS * 2.0;
+        assert!(
+            disc.iter().any(|(w, h, r)| (w - diameter).abs() < 0.01
+                && (h - diameter).abs() < 0.01
+                && (r - crate::focus::FocusShape::RADIAL_REACTION_RADIUS).abs() < 0.01),
+            "a checkbox reacts inside kRadialReactionRadius: {disc:?}"
+        );
+
+        let stadium = highlight_of(
+            crate::framework::component(Chip::new(9302, "filter").on_tap(|_| {})),
+            9302,
+        );
+        assert!(
+            stadium
+                .iter()
+                .any(|(_, h, r)| (r - 16.0).abs() < 0.01 && (h - 32.0).abs() < 0.01),
+            "a chip's highlight is its own stadium, not a disc: {stadium:?}"
+        );
+    }
+
+    #[test]
     fn a_checkbox_asked_to_take_the_keyboard_takes_it() {
         // The other half of the disabled case below: asking has to work when
         // there is something to ask for, or "a disabled one does not" would
@@ -2911,6 +2989,12 @@ impl Component for Chip {
             id,
             self.autofocus,
             self.handlers.on_tap.clone(),
+            // A stadium: the same 16 the chip's own container is rounded by,
+            // which is half its 32 of height. Upstream has no stadium shape
+            // either -- a stadium is a box rounded that far.
+            crate::focus::FocusShape::Box {
+                corner_radius: 16.0,
+            },
             described(chip_body),
         )
     }

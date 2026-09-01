@@ -741,6 +741,12 @@ impl Component for Button {
             id,
             self.autofocus,
             self.handlers.on_tap.clone(),
+            // The button's own radius, which is what its face and its ink are
+            // already clipped to -- a highlight rounded differently would
+            // show as a corner sticking out past the button it belongs to.
+            crate::focus::FocusShape::Box {
+                corner_radius: radius,
+            },
             described(crate::framework::stateful(
                 // The same `radius` the face is drawn with. A stadium button
                 // whose ink is clipped square shows four wedges of splash colour
@@ -1292,6 +1298,9 @@ impl Component for Switch {
             id,
             self.autofocus,
             self.handlers.on_tap.clone(),
+            // A switch is a toggleable, so it reacts inside the same disc a
+            // checkbox and a radio do.
+            crate::focus::FocusShape::radial(),
             crate::semantics::tappable(
                 crate::semantics::node_id_for(id),
                 crate::semantics::SemanticsProperties::toggle("", value),

@@ -7103,3 +7103,62 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6978 通�
 先不画任何东西——**形状说清楚了，画什么才有得谈**。
 先查一件事：`InkHighlightShape` 已经有 `Circle`/`Rectangle` 两种，
 胶囊（chip、button 是圆角）是不是要第三种，还是 `Rectangle` 带 radius 就够。
+
+---
+
+## 第 531 轮：焦点高亮——看得见键盘在哪儿
+
+先查上一轮记的那个问题：胶囊要不要第三种形状？**不要**。
+`InkHighlightShape` 就是上游的 `BoxShape`（矩形/圆），
+而圆角是**另一个参数** `borderRadius`——
+**胶囊就是圆角等于半个高度的矩形**，上游自己也没有第三种。
+
+### 形状和绘制一起做，不分两轮
+
+上一轮想的是"先加形状参数，下一轮再画"。想清楚了不行：
+**一个谁也不读的形状参数就是没有可观察差别的规则**，
+正是本项目反复删掉的那种东西。所以一轮做完。
+
+`focus::FocusShape` 两种，映射上游那一对；`operable` 多收一个参数，
+于是**五个调用点被编译器逼着各自说出自己的形状**：
+
+- chip：`Box { corner_radius: 16 }`——它自己的容器就是这个圆角，32 高的一半。
+- button：`Box { corner_radius: radius }`——它的脸和 ink 已经按这个裁了，
+  **高亮圆角不一样就会有个角支出去**。
+- checkbox / radio / switch：`FocusShape::radial()`，
+  即上游的 `kRadialReactionRadius = 20`。
+  **勾选框画在约十八像素里，反应范围是四十**——
+  高亮画成勾选框那么大，会像第一个控件里坐着第二个更小的控件。
+
+### 高亮为什么是"被告知"而不是"每次 build 去问"
+
+`has_focus(id)` 在任何 build 恰好发生时都答得对，
+但**键盘从一个控件移到另一个控件时，没有任何东西会引发一次 build**。
+靠问的控件会晚一帧才亮，或者一直亮着。
+所以焦点节点在 `on_focus_change` 里 `set_state`，高亮自己持有那个标志。
+
+它是独立 widget 而不是复用 `InkResponse` 的 ink feature：
+这五个控件在本 crate 里**都不是建在 `InkResponse` 上的**，
+为了一个高亮把它们各自包一层，会附带来一个没人要的水波和悬停。
+
+### 扫描
+
+六个变异。第一轮活了一个——"toggleable 用方形高亮"。
+原因：我在 focus.rs 里**直接把形状喂给 `operable`**，
+那证明不了**五个控件各自传的是什么**。
+补了一条从 `Checkbox`/`Chip` 一路画到画布的测试之后全死。
+
+又栽在 heredoc 的 `\n` 上，**第七次**。规则早写过：改脚本用 Write/Edit。
+
+尺子：十八把全部 exit 0。门：Rust 6981 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6981 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：高亮**不淡入淡出**，是瞬间出现和消失的。
+上游 `InkHighlight` 的 `_kDefaultHighlightFadeDuration` 是 200ms，
+`ink.rs` 里那个常量（`InkHighlight::FADE_MICROS`）**已经有了**。
+**先查一件事**：`FocusHighlight` 现在是个普通 stateful widget，
+要淡入淡出就得有个时钟——本 crate 的动画是靠 `advance_frame`
+（见 `TextField::advance` 那套）还是有更轻的办法（`AnimatedContainer` 之类）。
+**如果只能靠每帧推进，那要想清楚谁来要那一帧**：
+一个亮着却没人推进的高亮，比不淡入更糟。

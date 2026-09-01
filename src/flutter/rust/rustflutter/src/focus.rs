@@ -1549,6 +1549,105 @@ pub fn dispatch_key(event: &KeyEvent) -> bool {
     false
 }
 
+/// Draws the focus highlight over its child while the control has the
+/// keyboard.
+///
+/// Upstream this is one of `InkResponse`'s ink features, faded in and out with
+/// the hover and press highlights it shares a stack with. Here it is a widget
+/// of its own, because the controls that need it -- a chip, a button, the
+/// three toggleables -- are not built on `InkResponse` in this crate and
+/// wrapping each of them in one for the highlight alone would be a splash and
+/// a hover nobody asked for.
+struct FocusHighlight {
+    shape: FocusShape,
+    /// Where this publishes its handle, so the focus node above can tell it
+    /// the keyboard arrived.
+    sink: Rc<RefCell<Option<crate::framework::StateHandle<FocusHighlightState>>>>,
+    child: RefCell<Option<AnyWidget>>,
+}
+
+#[derive(Default)]
+struct FocusHighlightState {
+    focused: bool,
+}
+
+impl crate::framework::StatefulComponent for FocusHighlight {
+    type State = FocusHighlightState;
+
+    fn initial_state(&self) -> FocusHighlightState {
+        FocusHighlightState::default()
+    }
+
+    fn build(
+        &self,
+        state: &FocusHighlightState,
+        handle: crate::framework::StateHandle<FocusHighlightState>,
+        context: &mut crate::framework::BuildContext,
+    ) -> AnyWidget {
+        *self.sink.borrow_mut() = Some(handle);
+        let child = self
+            .child
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
+        if !state.focused {
+            return child;
+        }
+        // Upstream's `focusColor`, which defaults to the theme's own overlay
+        // rather than to a colour of its own: `ThemeData.focusColor`, the
+        // primary at 12%. A ring would be Cupertino's answer; Material fills.
+        let theme = crate::components::theme_of(context);
+        let colour = theme.primary.with_alpha(0x1f);
+        let shape = self.shape;
+        crate::framework::single(child, move |inner| {
+            Box::new(
+                crate::render::RenderStack::new()
+                    .push(inner)
+                    .push(crate::render::RenderRef::new(match shape {
+                        FocusShape::Box { corner_radius } => crate::widgets::Container::new()
+                            .with_color(colour)
+                            .with_corner_radius(corner_radius),
+                        FocusShape::Circle { radius } => crate::widgets::Container::new()
+                            .with_color(colour)
+                            .with_size(radius * 2.0, radius * 2.0)
+                            .with_corner_radius(radius),
+                    })),
+            )
+        })
+    }
+}
+
+/// Where a control's focus highlight is drawn.
+///
+/// Upstream keeps two things apart and so does this: `highlightShape` says
+/// box or circle, and the rounding of a box is `borderRadius`, a separate
+/// parameter. There is no third "stadium" shape -- a stadium is a box whose
+/// corner radius is half its height, which is what a chip and a button pass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FocusShape {
+    /// Upstream's `BoxShape.rectangle` with a `borderRadius`. The highlight
+    /// fills the control.
+    Box { corner_radius: f32 },
+    /// Upstream's `BoxShape.circle`: a disc of `radius`, centred on the
+    /// control. The toggleables use it because the box they draw is far
+    /// smaller than the area a finger is allowed to hit, and a highlight the
+    /// size of the tick would look like a second, smaller control.
+    Circle { radius: f32 },
+}
+
+impl FocusShape {
+    /// `kRadialReactionRadius`, upstream's constant for the disc a checkbox,
+    /// radio or switch reacts inside.
+    pub const RADIAL_REACTION_RADIUS: f32 = 20.0;
+
+    /// The shape the toggleables share.
+    pub fn radial() -> FocusShape {
+        FocusShape::Circle {
+            radius: FocusShape::RADIAL_REACTION_RADIUS,
+        }
+    }
+}
+
 /// Makes `child` a keyboard stop that Enter and Space press.
 ///
 /// The three things every operable control needs and none of them needs
@@ -1567,13 +1666,34 @@ pub fn operable(
     id: u64,
     autofocus: bool,
     on_tap: Option<Rc<dyn Fn(crate::gestures::TapEvent)>>,
+    shape: FocusShape,
     child: AnyWidget,
 ) -> AnyWidget {
     let Some(on_tap) = on_tap else {
         return child;
     };
+    // The highlight sits inside the focus node rather than outside it, so
+    // that what gains the focus and what shows it are the same subtree.
+    //
+    // It is told when the focus moves rather than asking at every build:
+    // `has_focus` would answer correctly whenever a build happened to run,
+    // and nothing makes one run when the keyboard moves from one control to
+    // another. A control that only repainted when something else rebuilt it
+    // would show the highlight late, or keep showing it.
+    let sink: Rc<RefCell<Option<crate::framework::StateHandle<FocusHighlightState>>>> =
+        Rc::default();
+    let child = crate::framework::stateful(FocusHighlight {
+        shape,
+        sink: Rc::clone(&sink),
+        child: RefCell::new(Some(child)),
+    });
     component(
         Focus::new(id, child)
+            .with_on_focus_change(move |focused| {
+                if let Some(handle) = sink.borrow().clone() {
+                    handle.set_state(move |state| state.focused = focused);
+                }
+            })
             .with_autofocus(autofocus)
             .with_on_activate(move || {
                 // A key has no position. Upstream's `ActivateAction` calls
@@ -1971,6 +2091,113 @@ mod tests {
             "shift+tab from the first wraps to the last"
         );
         assert!(!handle_traversal_key(&key(LogicalKey::ESCAPE), &plain));
+    }
+
+    /// Mounts an operable control, paints, and hands back what was drawn.
+    fn operable_drawn(
+        shape: FocusShape,
+        focus_first: bool,
+    ) -> Vec<crate::engine_test_stubs::Drawn> {
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        reset();
+        reset_pending_autofocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            operable(
+                95,
+                false,
+                Some(std::rc::Rc::new(|_| {})),
+                shape,
+                leaf(|| SizedBox::new(40.0, 40.0)),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+        if focus_first {
+            assert!(focus(95), "the control took the keyboard");
+        }
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a render tree");
+        root.layout(crate::render::BoxConstraints::tight(200.0, 100.0));
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(200.0, 100.0),
+            );
+            root.paint(&mut context, crate::render::Offset::ZERO);
+        }
+        drawn()
+    }
+
+    /// The rounded rectangles drawn, as (width, height, radius).
+    fn rounded(calls: &[crate::engine_test_stubs::Drawn]) -> Vec<(f32, f32, f32)> {
+        use crate::engine_test_stubs::Drawn;
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::RRect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    radius,
+                    ..
+                } => Some((right - left, bottom - top, *radius)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_control_shows_where_the_keyboard_is_and_only_while_it_is_there() {
+        // Five controls became keyboard stops over ticks 525-528 and none of
+        // them showed it: a reader tabbing through a form could operate every
+        // control and could not see which one they were on.
+        let unfocused = rounded(&operable_drawn(
+            FocusShape::Box {
+                corner_radius: 16.0,
+            },
+            false,
+        ));
+        assert!(
+            unfocused.is_empty(),
+            "nothing is drawn until the keyboard arrives: {unfocused:?}"
+        );
+
+        let focused = rounded(&operable_drawn(
+            FocusShape::Box {
+                corner_radius: 16.0,
+            },
+            true,
+        ));
+        assert_eq!(focused.len(), 1, "one highlight: {focused:?}");
+        assert!(
+            (focused[0].2 - 16.0).abs() < 0.01,
+            "rounded as the control is: {focused:?}"
+        );
+    }
+
+    #[test]
+    fn a_toggleable_is_highlighted_by_a_disc_and_not_by_its_box() {
+        // `kRadialReactionRadius`. A checkbox draws a tick in about eighteen
+        // pixels and reacts inside forty, so a highlight the size of the tick
+        // would look like a second, smaller control sitting inside the first.
+        let marks = rounded(&operable_drawn(FocusShape::radial(), true));
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        let (width, height, radius) = marks[0];
+        let diameter = FocusShape::RADIAL_REACTION_RADIUS * 2.0;
+        assert!(
+            (width - diameter).abs() < 0.01 && (height - diameter).abs() < 0.01,
+            "a disc forty across: {marks:?}"
+        );
+        assert!(
+            (radius - FocusShape::RADIAL_REACTION_RADIUS).abs() < 0.01,
+            "and rounded by its own radius, which is what makes it round"
+        );
     }
 
     #[test]
