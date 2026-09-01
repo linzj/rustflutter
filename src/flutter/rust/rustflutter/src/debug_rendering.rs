@@ -196,6 +196,19 @@ impl RenderBox for RenderErrorBox {
         painter.paint(context.canvas(), (offset.dx + at.dx, offset.dy + at.dy));
         self.painter.set(Some(()));
     }
+
+    /// Upstream `RenderErrorBox.computeDryLayout`:
+    /// `constraints.constrain(const Size(_kMaxWidth, _kMaxHeight))`.
+    ///
+    /// The rule was already here -- `layout` is one line and this is that same
+    /// line -- but the **trait** method was not, and the trait answers
+    /// `Size::ZERO` for anyone who asks without committing. An error box that
+    /// measured as nothing inside a flex is a failure that hides itself, which
+    /// is the one thing this box exists not to do. See PORTING_STATUS.md,
+    /// tick 470.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        RenderErrorBox::dry_layout(constraints)
+    }
 }
 
 // -- The stripes down the edge that overflowed --------------------------------
@@ -595,6 +608,25 @@ mod tests {
         // sizedByParent: an error box never argues about how much room it gets.
         let size = RenderErrorBox::dry_layout(BoxConstraints::tight_for(Size::new(300.0, 200.0)));
         assert_eq!(size, Size::new(300.0, 200.0));
+    }
+
+    #[test]
+    fn an_error_box_says_the_same_size_however_it_is_asked() {
+        // The rule was here -- `layout` is one line and it is this line -- but
+        // the **trait** method was not, and the trait answers `Size::ZERO` for
+        // anyone measuring without committing. An error box that measured as
+        // nothing inside a flex is a failure that hides itself, which is the
+        // one thing this box exists not to do.
+        let room = BoxConstraints::loose(300.0, 200.0);
+        let mut box_ = RenderErrorBox::new("something went wrong");
+        let dry = crate::render::RenderBox::compute_dry_layout(&box_, room);
+        assert_eq!(dry, RenderErrorBox::dry_layout(room));
+        assert_eq!(
+            crate::render::RenderBox::layout(&mut box_, room),
+            dry,
+            "and the dry answer is the wet one"
+        );
+        assert!(dry.width > 0.0 && dry.height > 0.0);
     }
 
     #[test]

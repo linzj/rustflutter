@@ -14320,6 +14320,81 @@ mod tests {
     }
 
     #[test]
+    fn a_list_body_measured_dry_adds_its_children_up() {
+        // Upstream `RenderListBody.computeDryLayout`. The default is
+        // `Size::ZERO`, and zero is the answer a parent believes: a list body
+        // inside anything that measures before it commits came out with no
+        // extent at all.
+        let body = |direction: AxisDirection| {
+            RenderListBody::new(
+                direction,
+                vec![
+                    RenderRef::new(FixedBox::new(30.0, 20.0)),
+                    RenderRef::new(FixedBox::new(50.0, 12.0)),
+                ],
+            )
+        };
+        let room = BoxConstraints::loose(200.0, 100.0);
+        assert_eq!(
+            body(AxisDirection::Down).compute_dry_layout(room),
+            Size::new(200.0, 32.0),
+            "down the page: the heights add up and the width is what was offered"
+        );
+        assert_eq!(
+            body(AxisDirection::Right).compute_dry_layout(room),
+            Size::new(80.0, 100.0),
+            "and across it, the other way round"
+        );
+
+        // Which end it starts from moves the children, not the box: a dry
+        // measurement never asks where anything went.
+        assert_eq!(
+            body(AxisDirection::Up).compute_dry_layout(room),
+            body(AxisDirection::Down).compute_dry_layout(room)
+        );
+        assert_eq!(
+            body(AxisDirection::Left).compute_dry_layout(room),
+            body(AxisDirection::Right).compute_dry_layout(room)
+        );
+
+        // And the dry answer is the wet one, which is the contract.
+        let mut wet = body(AxisDirection::Down);
+        assert_eq!(wet.layout(room), Size::new(200.0, 32.0));
+
+        // The children are measured in the room a list body gives them, which
+        // is **tight across**: a line of text is as tall as it is wide, and a
+        // child asked in the wrong room answers about a width it will never
+        // have. `Square` is that dependence, made small enough to state.
+        struct Square;
+        impl RenderBox for Square {
+            fn layout(&mut self, constraints: BoxConstraints) -> Size {
+                Size::new(constraints.min_width, constraints.min_width)
+            }
+            fn size(&self) -> Size {
+                Size::ZERO
+            }
+            fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+                Size::new(constraints.min_width, constraints.min_width)
+            }
+            fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
+        }
+        let squares = RenderListBody::new(
+            AxisDirection::Down,
+            vec![RenderRef::new(Square), RenderRef::new(Square)],
+        );
+        // Room enough for the answer to show: the body clamps its own height
+        // into what it was offered, and a hundred-tall allowance would report
+        // a hundred whatever the children said.
+        assert_eq!(
+            squares
+                .compute_dry_layout(BoxConstraints::loose(200.0, 1000.0))
+                .height,
+            400.0,
+            "each square was told it must be 200 wide, so each is 200 tall"
+        );
+    }
+
+    #[test]
     fn a_wrapped_child_keeps_its_baseline() {
         // Upstream `RenderProxyBox.computeDistanceToActualBaseline`:
         // `child?.getDistanceToActualBaseline(baseline)`. The trait's default
@@ -19152,6 +19227,43 @@ impl RenderBox for RenderListBody {
             }
         }
         false
+    }
+
+    /// Upstream `RenderListBody.computeDryLayout`: the children's extents
+    /// added up along the axis, and the room offered across it.
+    ///
+    /// The four directions are two: which way the list *runs* decides the
+    /// arithmetic, and which end it starts from decides only where each child
+    /// is put -- which a dry measurement never asks. Upstream's own switch
+    /// pairs them the same way.
+    ///
+    /// The children are asked with [`RenderRef::dry_layout`], never laid out:
+    /// a measurement that laid its children out would leave them sized against
+    /// constraints the parent has not committed to.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        let horizontal = matches!(
+            self.axis_direction,
+            AxisDirection::Right | AxisDirection::Left
+        );
+        let inner = if horizontal {
+            Self::cross_constraints_right(constraints)
+        } else {
+            Self::cross_constraints_down(constraints)
+        };
+        let mut main_extent = 0.0f32;
+        for child in &self.children {
+            let child_size = child.dry_layout(inner);
+            main_extent += if horizontal {
+                child_size.width
+            } else {
+                child_size.height
+            };
+        }
+        constraints.constrain(if horizontal {
+            Size::new(main_extent, constraints.max_height)
+        } else {
+            Size::new(constraints.max_width, main_extent)
+        })
     }
 }
 

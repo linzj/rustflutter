@@ -3665,3 +3665,54 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 （`RenderFlex` 用 `_computeSizes` 的 dry 分支，
 而有些干脆 `assert(debugCannotComputeDryLayout(...))` 拒绝回答）——
 分清"能干量"和"上游明说拒绝"，再决定这批各自属于哪一类。
+
+---
+
+## 第 470 轮：会布局的，就得说得出自己会布成多大
+
+上一轮留的问题先查上游：这四个到底是"能干量"还是"上游明说拒绝"。
+四个都能，而且上游都写了：
+
+- `RenderErrorBox` —— `constraints.constrain(Size(_kMaxWidth, _kMaxHeight))`
+- `RenderListWheelViewport` —— `constraints.biggest`
+- `RenderNavigationToolbar` —— 委托的 `getSize` 就是 `constraints.biggest`
+- `RenderListBody` —— 孩子沿轴加起来，横轴用给到的空间
+
+于是四个都补上。`RenderErrorBox` 那个尤其值得说：
+**规则本来就在**——它的 `layout` 只有一行，就是这一行——
+少的只是 trait 方法，而 trait 替它答 `Size::ZERO`。
+一个在 flex 里量出"没有大小"的错误框，是一个把自己藏起来的报错，
+而这只盒子存在的唯一理由就是别把错藏起来。
+
+`RenderListBody` 的四个方向其实是两个：**朝哪边跑**决定算术，
+**从哪头起**只决定每个孩子放在哪里——而干量从不问这个。
+上游自己的 switch 也是这样两两配对的。
+
+### 两个变异，逼出一个会依赖环境的孩子
+
+"在错误的空间里量孩子"和"用布局代替干量"两条一开始都不红：
+夹具里的孩子是 `FixedBox`，它多大跟给它什么约束无关，
+**于是问它的方式错了也看不出来**。
+换成一个"你要我多宽我就多高"的方块（列表体给孩子的横向约束是**紧**的），
+两条立刻红：正确时每个方块 200 宽 200 高、合计 400；
+一旦把约束放松，min_width 变 0，它们就都塌成 0。
+
+顺带又踩了一次自己的坑：第一版断言 400，实际拿到 100——
+列表体会把自己的高度夹进给它的空间，而我给的空间只有 100 高。
+**一个夹得太紧的量具，量什么都得到量具本身。**
+
+变异扫描 9 个，全红。这一轮的扫描脚本把还原放进了 `finally`——
+上一轮的教训，脚本半路死掉会把变异体留在树上。
+
+尺子：十七把全部 exit 0。门：Rust 6754 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`compute_dry_layout` 还差两处，都是大的：
+`RenderEditable`（上游 `computeDryLayout` 要跑一遍文本排版，
+`_adjustConstraints` + `layoutInlineChildren`）和 `GridHost`。
+**先查一件事**：上游 `RenderEditable.computeDryLayout` 用的是
+`_textIntrinsics` 这一份**独立于真正布局**的排版器——
+本 crate 的 `RenderEditable` 有没有一份可以不落地就跑的排版路径
+（`RenderParagraph` 那边是怎么做干量的），
+有就照它接，没有就先补 `GridHost`、把 editable 记成一条 divergence。

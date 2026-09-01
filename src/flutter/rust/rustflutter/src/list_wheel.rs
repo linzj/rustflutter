@@ -1518,6 +1518,16 @@ impl RenderBox for RenderListWheelViewport {
             );
         }
     }
+
+    /// Upstream `RenderListWheelViewport.computeDryLayout`, which is
+    /// `constraints.biggest` -- and `layout` above says the same thing the
+    /// long way, taking each side's maximum when it is bounded and its minimum
+    /// when it is not. That is what [`BoxConstraints::biggest`] is.
+    ///
+    /// See PORTING_STATUS.md, tick 470.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
 }
 
 #[cfg(test)]
@@ -1550,6 +1560,41 @@ mod tests {
         // And it really builds something there rather than falling off.
         assert!(wheel.build(-1).is_some());
         assert!(wheel.build(1_000_000).is_some());
+    }
+
+    #[test]
+    fn a_wheel_measured_dry_takes_the_room_it_would_take() {
+        // Upstream `RenderListWheelViewport.computeDryLayout`, which is
+        // `constraints.biggest` -- and `layout` says the same thing the long
+        // way. The trait's default is `Size::ZERO`, so a wheel measured by a
+        // parent that had not committed came out with no size, and a wheel
+        // with no size shows nothing.
+        let wheel = ListWheelViewport {
+            item_extent: 40.0,
+            ..ListWheelViewport::new(40.0)
+        };
+        let mut render = wheel.render(Vec::new(), 0, 0.0, Rc::new(Cell::new(0.0)));
+        let room = crate::render::BoxConstraints::loose(200.0, 300.0);
+        let dry = crate::render::RenderBox::compute_dry_layout(&render, room);
+        assert_eq!(dry, crate::render::Size::new(200.0, 300.0));
+        assert_eq!(
+            crate::render::RenderBox::layout(&mut render, room),
+            dry,
+            "and the dry answer is the wet one"
+        );
+
+        // Unbounded on one side, it takes the minimum there instead -- which
+        // is what `biggest` means when a maximum is infinite.
+        let endless = crate::render::BoxConstraints {
+            min_width: 30.0,
+            max_width: f32::INFINITY,
+            min_height: 0.0,
+            max_height: 120.0,
+        };
+        assert_eq!(
+            crate::render::RenderBox::compute_dry_layout(&render, endless),
+            crate::render::Size::new(30.0, 120.0)
+        );
     }
 
     #[test]

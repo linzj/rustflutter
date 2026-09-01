@@ -1184,6 +1184,13 @@ impl RenderBox for RenderNavigationToolbar {
         }
         false
     }
+
+    /// `MultiChildLayoutDelegate.getSize` is `constraints.biggest`, and that
+    /// is what `layout` takes -- so the dry answer is the same, and needs no
+    /// child measured to say it.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
 }
 
 // -- Positioning --------------------------------------------------------------
@@ -2518,6 +2525,20 @@ mod tests {
             wet.compute_dry_layout(loose),
             dry,
             "and it still agrees once there is a composition to ask"
+        );
+    }
+
+    #[test]
+    fn a_toolbar_measured_dry_takes_the_room_it_would_take() {
+        // `MultiChildLayoutDelegate.getSize` is `constraints.biggest`, and a
+        // toolbar takes it whether or not anybody has committed to laying it
+        // out. The default answer was zero.
+        let toolbar = crate::widgets::RenderNavigationToolbar::new();
+        let room = crate::render::BoxConstraints::loose(300.0, 56.0);
+        assert_eq!(
+            toolbar.compute_dry_layout(room),
+            Size::new(300.0, 56.0),
+            "all of it, and the same size `layout` takes"
         );
     }
 
