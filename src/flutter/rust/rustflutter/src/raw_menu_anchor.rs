@@ -544,6 +544,15 @@ impl DismissMenuAction {
             tree.dismiss(anchor);
         }
     }
+
+    /// [`DismissMenuAction::invoke`] with the screen included: the tree closes
+    /// and the panels come down. This is the one a widget wants; the other is
+    /// the tree half on its own, which is all a test of the tree can see.
+    pub fn dismiss_the_menus(&self) {
+        if let Some(anchor) = self.controller.anchor() {
+            close_menu(anchor);
+        }
+    }
 }
 
 // -- The tree every anchor shares --------------------------------------------
@@ -590,15 +599,20 @@ pub fn reset_menu_tree() {
 /// # What the tap outside does, and what it does not
 ///
 /// The surface's dismissal takes the *panel* down. What happens to the **menu
-/// tree** is [`MenuAnchorTree::handle_outside_tap`], and it is a different
-/// answer: it closes the anchor's **children** and leaves the anchor itself
-/// open, because a reader who clicked away from a submenu did not ask to lose
-/// the menu bar it hangs off.
+/// tree** is a second answer, and the two are not the same thing said twice:
+/// one is about a panel in an overlay, the other about which anchors are still
+/// open. Wiring only the first would leave the tree believing a menu was up
+/// that nobody could see.
 ///
-/// Both run, in that order, and they are not the same thing said twice: one is
-/// about a panel in an overlay, the other about which anchors in the tree are
-/// still open. Wiring only the first would leave the tree believing a menu was
-/// up that nobody could see.
+/// The tree answer here is **this anchor closes** -- upstream's panel wraps
+/// itself in `TapRegion(onTapOutside: () => anchor._menuController.close())`.
+/// It is not [`MenuAnchorTree::handle_outside_tap`], which closes the
+/// children and leaves the anchor open: that is the rule for the region
+/// around the **button**, where a reader who clicked away from a submenu did
+/// not ask to lose the menu bar it hangs off. Two regions, two rules, and
+/// giving the panel the button's rule leaves the anchor believing it is still
+/// open -- so pressing the button again does nothing at all, because
+/// [`crate::menu_anchor::SubmenuButton::should_open`] asks the tree.
 pub fn open_menu_surface(
     overlay: std::rc::Rc<crate::theatre::OverlayHandle>,
     anchor: u64,
@@ -634,10 +648,107 @@ pub fn open_menu_surface_at(
     let region_id = crate::theatre::next_surface_id();
     let shown =
         crate::theatre::show_tap_dismissed_at(overlay, region_id, group_id, placed, content)?;
+    note_menu_panel(anchor, &shown);
     shown.on_dismissed(move || {
-        with_menu_tree_mut(|tree| tree.handle_outside_tap(anchor));
+        forget_menu_panel(anchor);
+        with_panels_following(|tree| tree.close(anchor));
     });
     Some(shown)
+}
+
+thread_local! {
+    /// The panel each open anchor has on screen.
+    ///
+    /// # Why this had to exist
+    ///
+    /// The two halves of a menu -- the tree that knows which anchors are open
+    /// and the overlay that holds the panels -- were joined in **one
+    /// direction only**. A tap outside told the tree
+    /// ([`MenuAnchorTree::handle_outside_tap`]), and a button that opened a
+    /// panel kept its own handle. But nothing went the other way: closing a
+    /// node in the tree left its panel exactly where it was, on screen,
+    /// belonging to a menu the tree no longer believed in.
+    ///
+    /// Nothing noticed, because until now every close came *from* the panel.
+    /// Escape does not: it starts at the root and closes downwards, and the
+    /// panels it closes are ones nobody else is holding.
+    static PANELS: std::cell::RefCell<Vec<(u64, crate::theatre::ModalHandle)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Records the panel `anchor` has on screen.
+pub fn note_menu_panel(anchor: u64, shown: &crate::theatre::ModalHandle) {
+    PANELS.with(|panels| panels.borrow_mut().push((anchor, shown.clone())));
+}
+
+/// Forgets `anchor`'s panel, whatever took it down.
+pub fn forget_menu_panel(anchor: u64) {
+    PANELS.with(|panels| panels.borrow_mut().retain(|(id, _)| *id != anchor));
+}
+
+/// Takes `anchor`'s panel off the screen, if it has one.
+///
+/// It does **not** remove the entry: dismissing runs the panel's listeners and
+/// one of those is [`forget_menu_panel`], so the removal has exactly one
+/// place. Removing here as well would be a second copy of the same sequence,
+/// and the copy that mattered could then be deleted with every test still
+/// green -- every other way a panel comes down (a tap outside, a button being
+/// disposed) reaches the listener and never reaches this function.
+///
+/// The lookup borrows the list and lets go of it before dismissing, because
+/// the listener it is about to run borrows the same list.
+fn take_panel_down(anchor: u64) {
+    let held = PANELS.with(|panels| {
+        panels
+            .borrow()
+            .iter()
+            .find(|(id, _)| *id == anchor)
+            .map(|(_, held)| held.clone())
+    });
+    if let Some(held) = held {
+        held.dismiss();
+    }
+}
+
+/// Makes a change to the tree and **takes down the panel of everything that
+/// closed**.
+///
+/// Which anchors closed is read from the tree's own log rather than guessed
+/// from the shape of the tree afterwards: by the time the change returns, the
+/// children have already been unhooked, so walking the tree would find nothing
+/// to take down.
+///
+/// The panels are dismissed **outside** the tree borrow. A dismissal runs
+/// listeners, and one of those listeners changes the tree -- from inside
+/// `with_menu_tree_mut` that is a second borrow of the same cell, which is a
+/// panic and not a bug you find by reading.
+pub fn with_panels_following<R>(change: impl FnOnce(&mut MenuAnchorTree) -> R) -> R {
+    let (answer, closed) = with_menu_tree_mut(|tree| {
+        let before = tree.log().len();
+        let answer = change(tree);
+        let closed = tree.log()[before..]
+            .iter()
+            .filter(|(_, open)| !*open)
+            .map(|(id, _)| *id)
+            .collect::<Vec<u64>>();
+        (answer, closed)
+    });
+    for anchor in closed {
+        take_panel_down(anchor);
+    }
+    answer
+}
+
+/// Upstream's `DismissMenuAction.invoke` reaching all the way: the tree closes
+/// from the root and every panel that closed comes off the screen.
+pub fn close_menu(anchor: u64) {
+    with_panels_following(|tree| tree.dismiss(anchor));
+}
+
+/// Empties the panel list, for a test that wants a clean screen.
+#[cfg(test)]
+pub fn reset_menu_panels() {
+    PANELS.with(|panels| panels.borrow_mut().clear());
 }
 
 #[cfg(test)]
@@ -744,11 +855,16 @@ mod tests {
     }
 
     #[test]
-    fn a_tap_outside_closes_the_children_and_leaves_the_anchor() {
+    fn a_tap_outside_a_panel_closes_the_anchor_it_belongs_to() {
         // Two answers, not one. The panel goes -- that is the surface's own
-        // dismissal -- and in the *tree* the anchor's children close while the
-        // anchor stays open, because a reader who clicked away from a submenu
-        // did not ask to lose the menu bar it hangs off.
+        // dismissal -- and in the *tree* the anchor closes, because upstream's
+        // panel wraps itself in
+        // `TapRegion(onTapOutside: () => anchor._menuController.close())`.
+        //
+        // It used to close only the children here, which is the rule for the
+        // region around the **button** and not for the panel. The anchor was
+        // then left believing it was still open, and pressing the button again
+        // did nothing at all -- `should_open` asks the tree.
         reset_menu_tree();
         with_menu_tree_mut(|tree| {
             tree.insert(MenuAnchorNode::new(BAR));
@@ -772,8 +888,8 @@ mod tests {
             "and the submenu went with it"
         );
         assert!(
-            with_menu_tree(|tree| tree.is_open(BAR)),
-            "but the bar it hangs off did not"
+            !with_menu_tree(|tree| tree.is_open(BAR)),
+            "and so did the anchor whose panel it was"
         );
         reset_menu_tree();
     }

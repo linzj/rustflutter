@@ -3255,3 +3255,76 @@ overlay 要比按钮大、页面要可命中——这两条只学一次，
 **先查一件事**：栏上按 Escape 关的是整棵还是只关最里一层
 （看 `DismissMenuAction.invoke` 与 `MenuController.close` 在组上的行为——
 组的 `close` 是不是就是 `closeChildren`）。确认了再接。
+
+---
+
+## 第 464 轮：Escape 走通了，路上发现树和屏幕只连了一半
+
+上一轮留的问题先查：上游 `DismissMenuAction.invoke` 是
+`controller._anchor!.root.handleCloseRequest()`——**根**，整棵；
+而菜单栏这个根是个组，组的 `close` 就是 `closeChildren`。
+所以栏上按 Escape 关掉的是整排菜单，不是最里一层。
+
+这条路上的每一段这个 crate 里**早就都有**，而且从没见过面：
+`ShortcutRegistry` 知道 Escape 是 dismiss，
+`ActionDispatcher` 知道 intent 该干什么，
+`focus` 会把键从聚焦节点往上带，
+`DismissMenuAction` 知道从根关起——第 435 轮写的，一直没有真调用者。
+这一轮按上游的样子把它们串起来：
+`Actions(actions: {DismissIntent: DismissMenuAction})` 在外，
+`Shortcuts(_kMenuTraversalShortcuts)` 在内——顺序是规则不是口味：
+快捷键把键变成 intent 之后是**往上**找谁来服务它的。
+
+两张表在 `initial_state` 里**只造一次**：actions scope 按身份比较
+（`Rc::ptr_eq`），每帧换一个 dispatcher 就是每帧换一个 scope，
+依赖它的东西会永远重建。
+
+`_kMenuTraversalShortcuts` 只搬了这个 crate 能拼出来的两条：
+Escape 和 Tab。四个方向键是 `DirectionalFocusIntent`，
+本 crate 的 `Intent` 里没有方向可带，宁可不搬也不映射成别的意思。
+Tab 由谁服务不是栏的事（上游也是应用自己的 action 集），
+所以那条断言是对**表**的，不是对空页面上按一下 Tab 的。
+
+### 树关了，面板还在屏幕上
+
+写第一条测试时撞上的：**打开、点外面关掉、再点开——第二次打不开**。
+查下去是两件事：
+
+1. 树和屏幕只连了**一个方向**。点外面会告诉树，按钮自己攥着面板的 handle，
+   但反过来没有：在树里关掉一个节点，它的面板原封不动留在屏幕上。
+   一直没人发现，是因为到现在为止每一次关闭都是**从面板发起**的；
+   Escape 不是——它从根往下关，关到的面板没有别人攥着。
+   于是有了 `with_panels_following`：改树，然后照着树自己的 log
+   把凡是关掉的都从屏幕上摘下来。为什么读 log 而不是事后走树——
+   等改完再走，孩子早就摘干净了，什么也找不到。
+2. **面板那圈 tap region 用错了规则。**上游面板包的是
+   `TapRegion(onTapOutside: () => anchor._menuController.close())`——关**自己**；
+   而这里接的是 `handle_outside_tap`——关**孩子、留自己**。
+   后者是**按钮**那圈的规则（点开了别处，不代表想丢掉菜单栏）。
+   两圈 region、两条规则，给面板用了按钮的那条，
+   anchor 就一直以为自己开着——`should_open` 问的正是树，所以再按没反应。
+
+改对之后，第 461 轮那条"选一行关掉菜单"也跟着从半条变成整条：
+以前只写了树的一半，面板留在屏幕上。
+
+### 一次"等价变异"逼出来的简化
+
+"面板下来了却没被忘记" 一开始 0 红，而且不是测试的锅：
+`take_panel_down` 自己也从表里删，两条清理路径，删掉一条另一条兜住。
+两份同样的序列就是两个会各自漂移的东西——
+改成 `take_panel_down` 只查+只关，删除只在 dismiss 的监听器里做一次。
+现在把那次删除拿掉，每条路径都会漏，测试立刻红。
+
+变异扫描 12 个，全红。尺子：十六把全部 exit 0。
+门：Rust 6723 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：上面第 2 条只补了面板那圈，**按钮那圈还空着**——
+上游 `RawMenuAnchor.buildAnchor` 是
+`TapRegion(groupId: root.menuController, onTapOutside: handleOutsideTap)`，
+这个 crate 的按钮 region 没有 `on_tap_outside`，
+于是 `MenuAnchorTree::handle_outside_tap` 现在**只有单元测试在用**。
+**先查一件事**：两圈同时收到同一次外部按压时，上游的净效果是什么
+（面板关自己、按钮关孩子，顺序与去重），
+确认了再决定这条要不要单独可观测、怎么观测。

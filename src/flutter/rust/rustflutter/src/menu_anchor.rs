@@ -385,11 +385,62 @@ impl MenuBar {
     }
 }
 
-/// What the bar keeps: nothing but its own id, so that `dispose` knows which
-/// node to take out of the tree.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What the bar keeps: its own id, so that `dispose` knows which node to take
+/// out of the tree, and the two maps Escape travels through.
+///
+/// The maps are **made once**, in `initial_state`, and not rebuilt: an
+/// actions scope compares by identity ([`crate::actions::ActionsScope`]), so a
+/// fresh dispatcher every build would be a fresh scope every build, and
+/// everything that depends on it would rebuild for ever.
+#[derive(Clone)]
 pub struct MenuBarState {
     id: u64,
+    /// Upstream's `_menuController`, attached to the bar. It is what
+    /// [`crate::raw_menu_anchor::DismissMenuAction`] closes from, and what
+    /// makes the action *disabled* while there is no bar -- an Escape with no
+    /// menu open belongs to whatever is above, usually a dialog.
+    controller: crate::raw_menu_anchor::MenuController,
+    dispatcher: std::rc::Rc<crate::actions::ActionDispatcher>,
+    registry: std::rc::Rc<crate::shortcuts::ShortcutRegistry>,
+}
+
+/// An empty one, for the framework's sake. Every field is filled in by
+/// `initial_state`, which is the only place a bar's state is ever made.
+impl Default for MenuBarState {
+    fn default() -> MenuBarState {
+        MenuBarState {
+            id: 0,
+            controller: crate::raw_menu_anchor::MenuController::new(),
+            dispatcher: std::rc::Rc::new(crate::actions::ActionDispatcher::new()),
+            registry: std::rc::Rc::new(crate::shortcuts::ShortcutRegistry::new()),
+        }
+    }
+}
+
+impl MenuBar {
+    /// Upstream's `_kMenuTraversalShortcuts`, as far as this crate's intents
+    /// reach.
+    ///
+    /// Escape is here. Tab and shift-Tab are `NextFocusIntent` and
+    /// `PreviousFocusIntent`, which exist. The four arrows are
+    /// `DirectionalFocusIntent`, which does not exist yet -- there is no
+    /// direction in [`crate::actions::Intent`] to carry, so they are left out
+    /// rather than mapped to something that means a different thing.
+    pub fn traversal_shortcuts() -> crate::shortcuts::ShortcutRegistry {
+        crate::shortcuts::ShortcutRegistry::new()
+            .with(
+                crate::shortcuts::ShortcutActivator::KeySet(
+                    crate::shortcuts::LogicalKeySet::single(crate::keyboard::LogicalKey::ESCAPE.0),
+                ),
+                crate::actions::Intent::Dismiss,
+            )
+            .with(
+                crate::shortcuts::ShortcutActivator::KeySet(
+                    crate::shortcuts::LogicalKeySet::single(crate::keyboard::LogicalKey::TAB.0),
+                ),
+                crate::actions::Intent::NextFocus,
+            )
+    }
 }
 
 impl crate::framework::StatefulComponent for MenuBar {
@@ -408,16 +459,35 @@ impl crate::framework::StatefulComponent for MenuBar {
                 tree.insert(crate::raw_menu_anchor::MenuAnchorNode::new(self.id));
             }
         });
-        MenuBarState { id: self.id }
+        let mut controller = crate::raw_menu_anchor::MenuController::new();
+        controller.attach(self.id);
+        let action = crate::raw_menu_anchor::DismissMenuAction::new(controller);
+        MenuBarState {
+            id: self.id,
+            controller,
+            dispatcher: std::rc::Rc::new(crate::actions::ActionDispatcher::new().with_action(
+                "Dismiss",
+                crate::actions::Action {
+                    on_invoke: std::rc::Rc::new(move |_intent| {
+                        action.dismiss_the_menus();
+                        None
+                    }),
+                    is_enabled: std::rc::Rc::new(move |_intent| action.is_enabled()),
+                    consumes_key: true,
+                },
+            )),
+            registry: std::rc::Rc::new(MenuBar::traversal_shortcuts()),
+        }
     }
 
     fn dispose(&self, state: &mut MenuBarState) {
+        state.controller.detach(state.id);
         crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.dispose(state.id));
     }
 
     fn build(
         &self,
-        _state: &MenuBarState,
+        state: &MenuBarState,
         _handle: crate::framework::StateHandle<MenuBarState>,
         context: &mut crate::framework::BuildContext,
     ) -> crate::framework::AnyWidget {
@@ -426,7 +496,7 @@ impl crate::framework::StatefulComponent for MenuBar {
             .filter_map(|at| self.entry(at))
             .map(crate::framework::stateful)
             .collect();
-        crate::framework::many(entries, move |rendered| {
+        let row = crate::framework::many(entries, move |rendered| {
             // A row, because that is what a bar is -- and it is the same fact
             // the entries were told as `MenuAxis::Horizontal`, which is why
             // their panels slide to the screen's edge instead of flipping to
@@ -444,7 +514,16 @@ impl crate::framework::StatefulComponent for MenuBar {
                 bar = bar.with_color(background);
             }
             bar
-        })
+        });
+        // Upstream's `Actions(actions: {DismissIntent: DismissMenuAction})`
+        // around `Shortcuts(shortcuts: _kMenuTraversalShortcuts)`, in that
+        // order: the shortcut turns the key into an intent and then looks
+        // **upwards** for something that serves it, so the actions scope has
+        // to be the outer one.
+        crate::actions::Actions::scope(
+            std::rc::Rc::clone(&state.dispatcher),
+            crate::shortcuts::shortcuts(self.id, std::rc::Rc::clone(&state.registry), row),
+        )
     }
 }
 
@@ -839,7 +918,9 @@ impl crate::framework::StatefulComponent for MenuItemButton {
                     // wanted to look at the menu it was chosen from would
                     // otherwise find it gone.
                     if let Some(anchor) = closes {
-                        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.dismiss(anchor));
+                        // The panels too, not only the tree: see
+                        // [`crate::raw_menu_anchor::close_menu`].
+                        crate::raw_menu_anchor::close_menu(anchor);
                     }
                 }),
         );
@@ -2167,6 +2248,7 @@ mod tests {
     const MENU_BAR: u64 = 8410;
     const FILE_MENU: u64 = 8411;
     const EDIT_MENU: u64 = 8412;
+    const FILE_ITEM: u64 = 8413;
     const EDIT_PANEL: Color = Color(0xFF00_AA00);
 
     /// A bar with two menus on it, each with a panel of its own colour so a
@@ -2179,12 +2261,22 @@ mod tests {
                 SubmenuButton::new()
                     .with_id(FILE_MENU)
                     .with_label("File")
+                    // A real line inside, not a coloured box: a panel with
+                    // nothing to choose in it cannot show what choosing does.
                     .with_menu(|| {
-                        leaf(|| {
-                            crate::render::RenderDecoratedBox::new()
-                                .with_fill(crate::render::Fill::Solid(PANEL))
-                                .with_child(crate::widgets::SizedBox::new(100.0, 100.0))
-                        })
+                        crate::framework::many(
+                            vec![stateful(
+                                MenuItemButton::new()
+                                    .with_id(FILE_ITEM)
+                                    .with_label("Open")
+                                    .in_menu(FILE_MENU, MENU_GROUP),
+                            )],
+                            |rendered| {
+                                crate::render::RenderDecoratedBox::new()
+                                    .with_fill(crate::render::Fill::Solid(PANEL))
+                                    .with_child(rendered.into_iter().next().expect("the line"))
+                            },
+                        )
                     }),
             )
             .push(
@@ -2379,6 +2471,180 @@ mod tests {
             "the bar's padding, and nothing else, moved it across"
         );
         assert_eq!(bare.dy, alone.dy, "and nothing moved it down");
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    /// Escape, held and sent the way the binding sends it: the ambient
+    /// keyboard has to say the key is down, because an activator compares the
+    /// whole held set and not just the event.
+    fn escape() -> bool {
+        let event = crate::keyboard::KeyEvent {
+            change: crate::keyboard::KeyChange::Down,
+            physical: crate::keyboard::PhysicalKey::ESCAPE,
+            logical: crate::keyboard::LogicalKey::ESCAPE,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        };
+        crate::keyboard::reset_keyboard();
+        let mut keyboard = crate::keyboard::Keyboard::new();
+        let mut down = event.clone();
+        keyboard.record(&mut down);
+        crate::keyboard::note_keyboard(&keyboard);
+        crate::focus::dispatch_key(&event)
+    }
+
+    #[test]
+    fn escape_takes_the_bar_s_menus_off_the_screen() {
+        // Upstream's `_MenuBarAnchorState.actions`, which holds exactly one
+        // entry: `DismissIntent: DismissMenuAction(controller)`. Every piece
+        // of the path already existed -- the registry knew Escape meant
+        // dismiss, the dispatcher knew what to do with the intent, the focus
+        // layer walked keys up from the focused node, and the action knew how
+        // to close from the root -- and none of them had ever met.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::focus::reset_scopes();
+        let (mut tree, overlay) = staged_bar(a_bar());
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1, "File is up");
+
+        crate::focus::focus(FILE_MENU);
+        assert!(escape(), "the key was taken");
+        assert_eq!(overlay.entry_count(), 0, "and the panel came down");
+        assert!(!crate::raw_menu_anchor::with_menu_tree(
+            |tree| tree.is_open(FILE_MENU)
+        ));
+        crate::focus::unfocus();
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn escape_closes_from_the_root_and_not_one_level() {
+        // `controller._anchor!.root.handleCloseRequest()`. Escape means "I am
+        // done with this menu", not "one level, please" -- so two menus of the
+        // same bar both go, whichever of them the focus was in.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::focus::reset_scopes();
+        let (mut tree, overlay) = staged_bar(a_bar());
+        let edit = word_at(&painted_tree(&mut tree), "Edit");
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        tap(&mut tree, Offset::new(edit.dx + 2.0, edit.dy + 2.0));
+        assert_eq!(overlay.entry_count(), 2, "both menus are up");
+
+        crate::focus::focus(EDIT_MENU);
+        assert!(escape());
+        assert_eq!(overlay.entry_count(), 0, "and both came down");
+        crate::focus::unfocus();
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn the_bar_names_tab_as_well_as_escape() {
+        // The other half of `_kMenuTraversalShortcuts` this crate can spell.
+        // Who *serves* `NextFocusIntent` is not the bar: upstream it is the
+        // application's own action set, which is why this is a claim about the
+        // map and not about what a Tab does on a bare page.
+        //
+        // The four arrows are `DirectionalFocusIntent`, and this crate's
+        // `Intent` has no direction to carry, so they are left out rather than
+        // mapped to something that means a different thing.
+        let registry = MenuBar::traversal_shortcuts();
+        let told = |key: crate::keyboard::LogicalKey| {
+            let event = crate::keyboard::KeyEvent {
+                change: crate::keyboard::KeyChange::Down,
+                physical: crate::keyboard::PhysicalKey(key.0),
+                logical: key,
+                character: None,
+                synthesized: false,
+                time_stamp_micros: 0,
+            };
+            let mut keyboard = crate::keyboard::Keyboard::new();
+            let mut down = event.clone();
+            keyboard.record(&mut down);
+            registry
+                .intent_for(&event, &keyboard)
+                .map(|intent| intent.action_name().to_string())
+        };
+        assert_eq!(
+            told(crate::keyboard::LogicalKey::ESCAPE),
+            Some("Dismiss".to_string())
+        );
+        assert_eq!(
+            told(crate::keyboard::LogicalKey::TAB),
+            Some("NextFocus".to_string())
+        );
+        assert_eq!(told(crate::keyboard::LogicalKey::ENTER), None);
+    }
+
+    #[test]
+    fn a_menu_opened_twice_leaves_no_stale_panel_behind() {
+        // The panel list is keyed by anchor, so a panel that came down without
+        // being forgotten is an entry that will be taken down *instead of* the
+        // real one next time. The second Escape would then dismiss a handle to
+        // nothing and leave the menu on screen.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::focus::reset_scopes();
+        let (mut tree, overlay) = staged_bar(a_bar());
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        tap(&mut tree, Offset::new(300.0, 250.0));
+        assert_eq!(overlay.entry_count(), 0, "a tap outside took it down");
+
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1, "and it opens again");
+        crate::focus::focus(FILE_MENU);
+        assert!(escape());
+        assert_eq!(overlay.entry_count(), 0, "Escape reached the live panel");
+        crate::focus::unfocus();
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn choosing_a_line_takes_the_panel_off_the_screen() {
+        // `close_on_activate`, all the way. The tree closing is half of it:
+        // upstream's anchor hides its overlay portal when it closes, and a
+        // port that only wrote the tree half leaves the panel on screen,
+        // belonging to a menu nothing believes in any more.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let (mut tree, overlay) = staged_bar(a_bar());
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1, "the menu is up");
+
+        let line = word_at(&painted_tree(&mut tree), "Open");
+        tap(&mut tree, Offset::new(line.dx + 2.0, line.dy + 2.0));
+        assert_eq!(overlay.entry_count(), 0, "and choosing a line took it down");
+        assert!(!crate::raw_menu_anchor::with_menu_tree(
+            |tree| tree.is_open(FILE_MENU)
+        ));
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_key_the_bar_has_no_shortcut_for_is_left_alone() {
+        // The bar's scope names Escape and Tab. Anything else has to travel
+        // on: a menu that swallowed every key would take the letters a text
+        // field under it was waiting for.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::focus::reset_scopes();
+        let (mut tree, overlay) = staged_bar(a_bar());
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        crate::focus::focus(FILE_MENU);
+
+        let event = crate::keyboard::KeyEvent {
+            change: crate::keyboard::KeyChange::Down,
+            physical: crate::keyboard::PhysicalKey::ENTER,
+            logical: crate::keyboard::LogicalKey::ENTER,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        };
+        crate::keyboard::reset_keyboard();
+        let mut keyboard = crate::keyboard::Keyboard::new();
+        let mut down = event.clone();
+        keyboard.record(&mut down);
+        crate::keyboard::note_keyboard(&keyboard);
+        crate::focus::dispatch_key(&event);
+        assert_eq!(overlay.entry_count(), 1, "the menu is still up");
+        crate::focus::unfocus();
         crate::raw_menu_anchor::reset_menu_tree();
     }
 
