@@ -95,11 +95,14 @@ pub fn handle_position(
 /// Which of the two handles this is. Upstream chooses the *type* from the text
 /// direction, not from which end it is -- a right-to-left selection's start
 /// handle is the right-hand one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HandleEnd {
-    Start,
-    End,
-}
+///
+/// The same question [`crate::text_selection::SelectionHandleEnd`] asks, so it
+/// is that type rather than a second one shaped like it. It used to be its own
+/// enum, which meant a two-line translation stood between the handle a finger
+/// is holding and the rule that decides what the drag does -- and a
+/// translation with the two ends swapped is a mistake no test in this crate
+/// could see. Gone by construction is better than covered.
+pub use crate::text_selection::SelectionHandleEnd as HandleEnd;
 
 /// What the entries are showing. One cell per thing that can move, so a drag
 /// repositions a handle without touching the toolbar.

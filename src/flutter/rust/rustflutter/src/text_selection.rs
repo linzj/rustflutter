@@ -3425,6 +3425,25 @@ pub struct TextSelectionOverlay {
     pub overlay: SelectionOverlay,
     /// Where in the handle the finger landed, kept for the whole drag.
     drag_offset: Option<Offset>,
+    /// Upstream's `_dragStartSelection`: the selection as it was when this
+    /// drag began, kept **only on Apple platforms** and cleared by any drag
+    /// end. See [`Self::drag_selection`] for what it is for.
+    drag_start_selection: Option<(i32, i32)>,
+}
+
+/// What a handle drag makes of the selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandleDragOutcome {
+    /// `if (newSelection.baseOffset >= newSelection.extentOffset) return;` --
+    /// the move is dropped whole and the selection stays as it was.
+    Refused,
+    /// `TextSelection.fromPosition(position)`: there was no selection to
+    /// widen, so the drag carries the caret instead.
+    Caret(i32),
+    Selection {
+        base: i32,
+        extent: i32,
+    },
 }
 
 impl TextSelectionOverlay {
@@ -3432,6 +3451,7 @@ impl TextSelectionOverlay {
         TextSelectionOverlay {
             overlay: SelectionOverlay::new(),
             drag_offset: None,
+            drag_start_selection: None,
         }
     }
 
@@ -3449,8 +3469,113 @@ impl TextSelectionOverlay {
         }
     }
 
+    /// Upstream's `_handleAnyDragEnd`, whose first line is
+    /// `_dragStartSelection = null`. Every drag end clears it, whichever
+    /// handle was being dragged and whatever the drag did.
     pub fn end_handle_drag(&mut self) {
         self.drag_offset = None;
+        self.drag_start_selection = None;
+    }
+
+    /// Whether this platform remembers the selection a handle drag started
+    /// from. Upstream's comment on the line is the whole rule: "The drag start
+    /// selection is only utilized on Apple platforms."
+    pub fn keeps_a_drag_start_selection(platform: TargetPlatform) -> bool {
+        matches!(platform, TargetPlatform::IOS | TargetPlatform::MacOS)
+    }
+
+    /// Upstream's `_dragStartSelection ??= _selection`.
+    ///
+    /// The `??=` is the point: the selection is remembered as it was **when
+    /// the drag began**, and every later move is measured against that, not
+    /// against the selection the previous move just wrote. Recording it again
+    /// mid-drag would make the anchor chase the finger.
+    pub fn remember_drag_start_selection(
+        &mut self,
+        platform: TargetPlatform,
+        selection: (i32, i32),
+    ) {
+        if !Self::keeps_a_drag_start_selection(platform) {
+            return;
+        }
+        self.drag_start_selection.get_or_insert(selection);
+    }
+
+    /// The selection this drag began from, if this platform keeps one.
+    pub fn drag_start_selection(&self) -> Option<(i32, i32)> {
+        self.drag_start_selection
+    }
+
+    /// Upstream's `_handleSelection{Start,End}HandleDragUpdate`, reduced to
+    /// what the drag does to the selection.
+    ///
+    /// # The two platforms disagree about what a handle drag *is*
+    ///
+    /// Everywhere but Apple, dragging a handle moves that end of the **live**
+    /// selection and the other end stays, with one hard stop: upstream writes
+    /// `if (newSelection.baseOffset >= newSelection.extentOffset) return;` and
+    /// comments it "Don't allow order swapping". Drag the end handle back past
+    /// the start and nothing happens at all -- not a collapsed selection, not
+    /// a flipped one; the move is dropped and the selection stays where it
+    /// was. The handles cannot cross, so the one under the finger stays the
+    /// one the reader grabbed.
+    ///
+    /// On Apple the anchor is the far end of the **drag start** selection and
+    /// there is no such guard, which upstream introduces with "dragging the
+    /// base handle makes it the extent". Drag the end handle past the start
+    /// and the selection turns inside out and keeps growing the other way --
+    /// the handles swap, and the finger keeps the one it is holding. That is
+    /// why the drag start selection has to be remembered: after the first
+    /// frame of a crossing drag the live selection is already reversed, and
+    /// anchoring to it would leave the anchor walking backwards with the
+    /// finger.
+    ///
+    /// Both platforms agree on the collapsed case: a field with a caret and no
+    /// selection has nothing to widen, so the drag just carries the caret.
+    /// They ask different objects about it -- the drag start selection on
+    /// Apple, the live one elsewhere -- which is the same difference again.
+    pub fn drag_selection(
+        &self,
+        handle: SelectionHandleEnd,
+        platform: TargetPlatform,
+        selection: (i32, i32),
+        position: i32,
+    ) -> HandleDragOutcome {
+        if Self::keeps_a_drag_start_selection(platform) {
+            // Upstream asserts the drag start selection is there. A drag whose
+            // beginning was never seen -- a synthetic move, or one begun
+            // before the press was reported -- is answered from the live
+            // selection rather than by falling over.
+            let (base, extent) = self.drag_start_selection.unwrap_or(selection);
+            if base == extent {
+                return HandleDragOutcome::Caret(position);
+            }
+            // Not `isNormalized`, which upstream notes "always returns true
+            // for a TextSelection": a selection made by dragging backwards has
+            // its extent before its base, and that is the case this picks out.
+            let normalized = extent >= base;
+            let anchor = match (handle, normalized) {
+                (SelectionHandleEnd::End, true) | (SelectionHandleEnd::Start, false) => base,
+                (SelectionHandleEnd::End, false) | (SelectionHandleEnd::Start, true) => extent,
+            };
+            return HandleDragOutcome::Selection {
+                base: anchor,
+                extent: position,
+            };
+        }
+
+        let (base, extent) = selection;
+        if base == extent {
+            return HandleDragOutcome::Caret(position);
+        }
+        let (base, extent) = match handle {
+            SelectionHandleEnd::End => (base, position),
+            SelectionHandleEnd::Start => (position, extent),
+        };
+        if base >= extent {
+            return HandleDragOutcome::Refused;
+        }
+        HandleDragOutcome::Selection { base, extent }
     }
 
     /// Where inside the handle the finger landed, if a drag is under way.
@@ -5739,6 +5864,148 @@ two";
         let unbuilt = overlay.visibilities(false, (true, true));
         assert!(!unbuilt.start_handle && !unbuilt.end_handle);
         assert!(unbuilt.toolbar, "and the toolbar does not care either way");
+    }
+
+    // -- What a handle drag does to the selection -----------------------------
+
+    /// `hello world` with `world` selected forwards.
+    const WORLD: (i32, i32) = (6, 11);
+
+    #[test]
+    fn everywhere_but_apple_the_handles_may_not_cross() {
+        let overlay = TextSelectionOverlay::new();
+        assert_eq!(
+            overlay.drag_selection(SelectionHandleEnd::End, TargetPlatform::Android, WORLD, 9),
+            HandleDragOutcome::Selection { base: 6, extent: 9 },
+            "dragging the end handle back shortens the selection"
+        );
+        assert_eq!(
+            overlay.drag_selection(SelectionHandleEnd::End, TargetPlatform::Android, WORLD, 6),
+            HandleDragOutcome::Refused,
+            "and stops dead at the other handle rather than collapsing"
+        );
+        assert_eq!(
+            overlay.drag_selection(SelectionHandleEnd::End, TargetPlatform::Android, WORLD, 2),
+            HandleDragOutcome::Refused,
+            "past it, the move is dropped whole"
+        );
+        assert_eq!(
+            overlay.drag_selection(
+                SelectionHandleEnd::Start,
+                TargetPlatform::Android,
+                WORLD,
+                11
+            ),
+            HandleDragOutcome::Refused,
+            "and the same going the other way"
+        );
+    }
+
+    #[test]
+    fn the_other_end_stays_where_it_was() {
+        let overlay = TextSelectionOverlay::new();
+        assert_eq!(
+            overlay.drag_selection(SelectionHandleEnd::Start, TargetPlatform::Linux, WORLD, 0),
+            HandleDragOutcome::Selection {
+                base: 0,
+                extent: 11
+            },
+            "the start handle moves the base and leaves the extent"
+        );
+    }
+
+    #[test]
+    fn on_apple_the_handles_cross_and_the_selection_turns_inside_out() {
+        let mut overlay = TextSelectionOverlay::new();
+        overlay.remember_drag_start_selection(TargetPlatform::IOS, WORLD);
+
+        assert_eq!(
+            overlay.drag_selection(SelectionHandleEnd::End, TargetPlatform::IOS, WORLD, 2),
+            HandleDragOutcome::Selection { base: 6, extent: 2 },
+            "anchored at the far end of where the drag started, and reversed"
+        );
+        // The live selection is now backwards, and the next move must still be
+        // measured from the drag start rather than from it.
+        assert_eq!(
+            overlay.drag_selection(SelectionHandleEnd::End, TargetPlatform::IOS, (6, 2), 0),
+            HandleDragOutcome::Selection { base: 6, extent: 0 },
+            "the anchor does not walk backwards with the finger"
+        );
+    }
+
+    #[test]
+    fn a_drag_that_started_backwards_anchors_at_the_other_end() {
+        // `world` selected right to left: extent before base. Upstream picks
+        // this out by hand because `isNormalized` cannot.
+        let backwards = (11, 6);
+        let mut overlay = TextSelectionOverlay::new();
+        overlay.remember_drag_start_selection(TargetPlatform::MacOS, backwards);
+
+        assert_eq!(
+            overlay.drag_selection(SelectionHandleEnd::End, TargetPlatform::MacOS, backwards, 8),
+            HandleDragOutcome::Selection { base: 6, extent: 8 },
+            "a backwards selection's end handle is the one at 6"
+        );
+        assert_eq!(
+            overlay.drag_selection(
+                SelectionHandleEnd::Start,
+                TargetPlatform::MacOS,
+                backwards,
+                8
+            ),
+            HandleDragOutcome::Selection {
+                base: 11,
+                extent: 8
+            },
+            "the two handles take opposite anchors, whichever way round it is"
+        );
+    }
+
+    #[test]
+    fn only_apple_remembers_where_a_drag_started() {
+        let mut overlay = TextSelectionOverlay::new();
+        overlay.remember_drag_start_selection(TargetPlatform::Android, WORLD);
+        assert_eq!(overlay.drag_start_selection(), None);
+
+        overlay.remember_drag_start_selection(TargetPlatform::IOS, WORLD);
+        assert_eq!(overlay.drag_start_selection(), Some(WORLD));
+
+        // `??=`: the record is made once and every later move leaves it alone.
+        overlay.remember_drag_start_selection(TargetPlatform::IOS, (6, 9));
+        assert_eq!(overlay.drag_start_selection(), Some(WORLD));
+
+        overlay.end_handle_drag();
+        assert_eq!(
+            overlay.drag_start_selection(),
+            None,
+            "and any drag end clears it"
+        );
+    }
+
+    #[test]
+    fn a_drag_on_a_bare_caret_carries_the_caret() {
+        let caret = (4, 4);
+        for platform in [TargetPlatform::IOS, TargetPlatform::Windows] {
+            let mut overlay = TextSelectionOverlay::new();
+            overlay.remember_drag_start_selection(platform, caret);
+            assert_eq!(
+                overlay.drag_selection(SelectionHandleEnd::End, platform, caret, 7),
+                HandleDragOutcome::Caret(7),
+                "{platform:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_apple_drag_nobody_saw_begin_falls_back_to_the_live_selection() {
+        // Upstream asserts here. A synthetic move, or one begun before the
+        // press was reported, has no record to anchor to.
+        let overlay = TextSelectionOverlay::new();
+        assert_eq!(overlay.drag_start_selection(), None);
+        assert_eq!(
+            overlay.drag_selection(SelectionHandleEnd::End, TargetPlatform::IOS, WORLD, 2),
+            HandleDragOutcome::Selection { base: 6, extent: 2 }
+        );
     }
 
     // -- The second toolbar --------------------------------------------------

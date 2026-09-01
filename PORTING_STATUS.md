@@ -4663,3 +4663,74 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6829 通�
 （抓点不跳），行吸附与越界规则都没有。
 **先查一件事**：`editable.rs` 里是否已经有"某个 dy 属于哪一行"的函数
 （`preferredLineHeight`/行盒那一带），有就复用，别在这边再算一遍。
+
+---
+
+## 第 489 轮：拖一个手柄越过另一个，两个平台给出相反的答案
+
+接上一轮。`_handleSelection{Start,End}HandleDragUpdate` 读下来，
+里面藏着一条**平台分歧**，而这个 crate 的实时路径（`editable.rs` 的
+`drag_handle_to`）只有一句自己写的近似：
+
+```rust
+if position != state.value.selection_extent { state.value.selection_base = position; }
+```
+
+上游是这样的：
+
+- **Apple 以外**：动的是**当前**选区的那一端，另一端不动，且有一道硬门槛——
+  `if (newSelection.baseOffset >= newSelection.extentOffset) return;`
+  注释写着 "Don't allow order swapping"。
+  把尾手柄拖回首手柄之外，**整次更新被丢掉**——不是折叠、也不是反转，
+  选区原地不动。两个手柄不能交叉，读者手里的还是他抓住的那一个。
+- **Apple**：锚点是**起手那一刻**选区的远端（`_dragStartSelection`），
+  而且**没有那道门槛**——上游的注释是
+  "dragging the base handle makes it the extent"。
+  拖过头，选区翻个面继续朝另一边长，两个手柄互换，手指握住的还是同一个。
+
+`_dragStartSelection` 为什么非记不可，正在于此：
+**越过之后第一帧，当前选区已经是反的**，再拿它当锚点，锚点就会跟着手指往回走。
+`??=` 也因此不能写成直接赋值，`_handleAnyDragEnd` 的第一行是把它清掉。
+
+两个平台唯一一致的地方：选区是折叠的（只有一个光标）时没有东西可以拓宽，
+拖动就只是**带着光标走**——但一个问 drag-start 选区，另一个问当前选区，
+还是同一个分歧。
+
+这一轮把规则移到 `TextSelectionOverlay::drag_selection` 写一次，
+**并且让实时路径去问它**，那句近似删掉——不是加第二份。
+
+### 中途把自己造出来的第三个枚举收掉了
+
+写完发现我给"哪个手柄"新造了 `DraggedHandle`，
+而同一个文件里早就有 `SelectionHandleEnd`，`selection_host.rs` 里还有第三个 `HandleEnd`。
+一个概念三个类型，中间就得有翻译——而**把两端译反的翻译，这个 crate 里没有一条测试能看见**。
+所以 `HandleEnd` 改成 `pub use ... SelectionHandleEnd as HandleEnd`，
+`drag_handle_to` 直接把手柄传下去，翻译整个消失。
+**"按构造消失"比"被覆盖"好。**
+
+### 变异 10 个，9 红 1 活，活的那条据实记下
+
+九条规则变异全部有测试抓住（能不能交叉、门槛是 `>=` 还是 `>`、
+Apple 锚在远端还是近端、倒着选的 drag-start、锚点用不用 drag-start、
+`??=` 会不会被改写、哪些平台记、drag end 清不清、折叠时的分支）。
+
+活下来的那条是**实时路径**的：把传给规则的手柄写死成 `Start`，
+测试全绿——因为这个 crate 里**没有一条测试从挂载好的输入框上真拖一个手柄**。
+规则被从各个角度覆盖了，这一次调用没有。
+`editable.rs` 里按这个仓库的老规矩把这句真话写在了调用点旁边，
+而不是让它看起来像有覆盖。
+
+尺子：十七把全部 exit 0。门：Rust 6836 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6836 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：就把上面那条活的变异杀掉——
+`selection_host.rs` 的 `handle_gesture_tests` 已经证明
+**一个 `HandleEntry` 是普通组件，不需要 overlay 就能挂起来按**
+（`pressed_handle` 就是这么做的）。
+所以缺的只是把 `drag_handle_to` 返回的那个闭包接上去：
+给它一个真的 `StateHandle<TextFieldState>`、一个 `RenderRef` 锚点和 `LinesSink`，
+按下手柄、移动、抬起，断言选区按平台各走各的路。
+**先查一件事**：`editable.rs` 的测试里有没有现成的"挂一个输入框并拿到它的
+`RenderRef` 与 `lines_sink`"的辅助函数（`a_field_*` 那一批用的东西），
+有就复用，没有就先写那一个，别在测试里手搓一遍字段初始化。

@@ -1847,6 +1847,7 @@ fn drag_handle_to(
     shown: String,
     real: String,
     grabbed: Rc<RefCell<crate::text_selection::TextSelectionOverlay>>,
+    platform: crate::editable_text::TargetPlatform,
 ) -> Rc<dyn Fn(crate::selection_host::HandleEnd, Offset)> {
     Rc::new(move |end, global: Offset| {
         let Some(field) = anchor.borrow().clone() else {
@@ -1893,22 +1894,40 @@ fn drag_handle_to(
             .take(character)
             .map(|c| c.len_utf16() as i32)
             .sum();
+        let grabbed = Rc::clone(&grabbed);
         handle.set_state(move |state| {
             // Which end moves is which handle was grabbed, and the other end
             // stays: that is what makes a drag widen a selection rather than
-            // replace it. Upstream refuses to let them cross -- a selection
-            // whose ends swapped would hand the reader the other handle
-            // mid-drag -- so the moving end stops one position short.
-            match end {
-                crate::selection_host::HandleEnd::Start => {
-                    if position != state.value.selection_extent {
-                        state.value.selection_base = position;
-                    }
+            // replace it. The rest -- whether the ends may cross, and what a
+            // drag on a bare caret does -- is upstream's, asked of
+            // `TextSelectionOverlay::drag_selection` rather than restated
+            // here, because this used to be an approximation of the
+            // non-Apple half and there is no second copy to keep in step.
+            //
+            // Said plainly rather than left to look like coverage: no test in
+            // this crate drives a handle drag through a mounted field, so a
+            // mutation that passes a fixed `HandleEnd` here survives. The
+            // *rule* is covered from every angle; this call is not.
+            let live = (state.value.selection_base, state.value.selection_extent);
+            // Upstream records this in the drag *start* handler. The press
+            // itself never moves the selection, so recording it at the first
+            // move is the same selection -- and `??=` means every move after
+            // it leaves the record alone, which is the part that matters.
+            grabbed
+                .borrow_mut()
+                .remember_drag_start_selection(platform, live);
+            match grabbed
+                .borrow()
+                .drag_selection(end, platform, live, position)
+            {
+                crate::text_selection::HandleDragOutcome::Refused => return,
+                crate::text_selection::HandleDragOutcome::Caret(at) => {
+                    state.value.selection_base = at;
+                    state.value.selection_extent = at;
                 }
-                crate::selection_host::HandleEnd::End => {
-                    if position != state.value.selection_base {
-                        state.value.selection_extent = position;
-                    }
+                crate::text_selection::HandleDragOutcome::Selection { base, extent } => {
+                    state.value.selection_base = base;
+                    state.value.selection_extent = extent;
                 }
             }
             state.push_to_platform();
@@ -3650,6 +3669,7 @@ impl StatefulComponent for TextField {
                             shown.text.clone(),
                             real_text.clone(),
                             grabbed,
+                            platform,
                         ));
                         *state.selection_overlay.borrow_mut() = Some(host);
                     }
