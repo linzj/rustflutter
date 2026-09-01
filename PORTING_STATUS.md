@@ -5928,3 +5928,57 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6925 通�
 以及它是否按平台分。如果表在而 App 没接，那是"接上去"；
 如果表根本没有，那要先看清上游那张表有多大——
 它可能值好几轮，而不是一轮里塞进去。
+
+---
+
+## 第 511 轮：默认快捷键的三张表，以及 Tab 从来没有移动过焦点
+
+查 `shortcuts.rs` 有没有默认表：**没有**，只有一个
+`default_traversal_registry()`。而它的文档写着"Tab to next, Shift+Tab to
+previous"，代码里两条却都是 `Intent::Activate`——
+**Tab 什么也没移动，只是按下了当时有键盘的那个东西。**
+注释和代码各说各的，这一轮先把它改对。
+
+然后把上游那三张表补齐，它们的差别本身就是规则：
+
+- **桌面（Android/Fuchsia/Linux/Windows）**：方向键**移动焦点**，
+  Control+方向键才滚动。桌面上方向键属于当前有焦点的东西（列表、菜单、输入框），
+  所以滚页面得用修饰键来要。
+- **网页**：裸方向键**滚动**（浏览器里的每一页都这样，Flutter 页面要是拿方向键做遍历就是异类）；
+  **空格是两个意图按顺序**——先激活有键盘的东西，不行就翻一页，
+  这正是浏览器的行为，也是这张表里唯一一处一个键有两个意思；
+  **回车只按按钮**（`ButtonActivateIntent`），因为网页上输入框里的回车是换行或提交。
+- **Apple（iOS/macOS）**：和桌面那张一样，只是**Meta 取代 Control**——
+  滚动的修饰键跟平台的习惯走，而不是跟键盘上的字母走。
+
+选择器的形状也是规则：**先问是不是网页，再问平台**。
+Flutter 在网页上首先是网页、其次才是 macOS——
+一个 Mac 上用浏览器的读者应该得到浏览器的方向键和空格，
+反过来问会给他 Meta+方向键这种浏览器自己都不做的滚动。
+
+顺带补了 `Intent::DirectionalFocus`（这个 crate 之前没有这个意图，
+只有 `NextFocus`/`PreviousFocus`——**"下一个"是阅读顺序，"向下"是屏幕方向**，不是一回事）。
+
+### 变异 11 个：先 9 红 2 活，两条都是我的测试没测到点子上
+
+"Apple 走了 Control 那张表"活着——因为我在测 Apple 时直接调了
+`default_apple_shortcuts_table()`，**没有经过选择器**；改成从
+`default_shortcuts(MacOS, false)` 问 Meta 和 Control 之后就红了。
+另一条是格式化后字符串对不上，重写即可。
+
+### 又被同一个坑咬了
+
+heredoc 里的 `\n` 又被吃掉一次——上一轮我刚给自己写下这条规矩。
+这次连补丁脚本也改用编辑器写了。**记下来不算数，做到才算。**
+
+尺子：十七把全部 exit 0。门：Rust 6932 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6932 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：这三张表还差几行没抄——`gameButtonA` 与 `numpadEnter`
+（桌面表里的激活键），因为 `keys.rs` 里没找到对应的 `LogicalKey` 常量。
+**先查一件事**：`grep -n "GAME_BUTTON\|NUMPAD" keyboard/keys.rs` 看清楚
+**逻辑键**那一段有没有它们（物理键那一段是有 `NUMPAD_ENTER` 的）。
+如果逻辑常量缺失，那补的是键表而不是快捷键表——
+键表是从上游 `logical_key_data` 生成的，得看清是漏了几个还是整段没生成，
+再决定这是一轮的活还是一行的活。

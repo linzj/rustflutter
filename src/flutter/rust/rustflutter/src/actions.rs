@@ -45,6 +45,15 @@ pub enum Intent {
     NextFocus,
     /// `PreviousFocusIntent`.
     PreviousFocus,
+    /// `DirectionalFocusIntent`: move the keyboard to whatever lies that way.
+    ///
+    /// Not the same as [`Intent::NextFocus`]: next is the **reading order**
+    /// the traversal policy keeps, while this is a direction on the screen.
+    /// The arrows mean this one on every platform but the web, where they
+    /// scroll instead -- see `WidgetsApp::default_shortcuts`.
+    DirectionalFocus {
+        direction: crate::directional_traversal::TraversalDirection,
+    },
     /// `ScrollIntent`: scroll the nearest scrollable that way, by a line or
     /// a page.
     Scroll {
@@ -193,6 +202,7 @@ impl Intent {
             Intent::RequestFocus { .. } => "RequestFocus",
             Intent::NextFocus => "NextFocus",
             Intent::PreviousFocus => "PreviousFocus",
+            Intent::DirectionalFocus { .. } => "DirectionalFocus",
             Intent::Scroll { .. } => "Scroll",
         }
     }

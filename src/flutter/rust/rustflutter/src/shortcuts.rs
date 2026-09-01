@@ -207,11 +207,14 @@ impl ShortcutRegistry {
 
 /// The traversal shortcut every app has, upstream `WidgetsApp`'s `Shortcuts`:
 /// Tab to next, Shift+Tab to previous.
+///
+/// The intents used to be `Activate` for both, which is what the comment above
+/// never said: Tab moved nothing and activated whatever had the keyboard.
 pub fn default_traversal_registry() -> ShortcutRegistry {
     ShortcutRegistry::new()
         .with(
             ShortcutActivator::KeySet(LogicalKeySet::single(LogicalKey::TAB.0)),
-            Intent::Activate,
+            Intent::NextFocus,
         )
         // Shift+Tab: the held set is {shift, tab}.
         .with(
@@ -219,8 +222,249 @@ pub fn default_traversal_registry() -> ShortcutRegistry {
                 LogicalKey::SHIFT_LEFT.0,
                 LogicalKey::TAB.0,
             ])),
-            Intent::Activate,
+            Intent::PreviousFocus,
         )
+}
+
+/// One key with the modifiers upstream's `SingleActivator` demands, defaulting
+/// to none of them -- and `numLock` ignored, which is upstream's default too.
+fn single(key: LogicalKey) -> ShortcutActivator {
+    ShortcutActivator::Single {
+        key: key.0,
+        control: false,
+        shift: false,
+        alt: false,
+        meta: false,
+        num_lock: LockState::Ignored,
+    }
+}
+
+/// One key with no modifiers -- upstream's bare `SingleActivator(key)`.
+fn plain(key: LogicalKey) -> ShortcutActivator {
+    single(key)
+}
+
+/// One key with a modifier, for the scrolling rows.
+fn with_control(key: LogicalKey) -> ShortcutActivator {
+    match single(key) {
+        ShortcutActivator::Single { key, .. } => ShortcutActivator::Single {
+            key,
+            control: true,
+            shift: false,
+            alt: false,
+            meta: false,
+            num_lock: LockState::Ignored,
+        },
+        other => other,
+    }
+}
+
+fn with_meta(key: LogicalKey) -> ShortcutActivator {
+    match single(key) {
+        ShortcutActivator::Single { key, .. } => ShortcutActivator::Single {
+            key,
+            control: false,
+            shift: false,
+            alt: false,
+            meta: true,
+            num_lock: LockState::Ignored,
+        },
+        other => other,
+    }
+}
+
+fn with_shift(key: LogicalKey) -> ShortcutActivator {
+    match single(key) {
+        ShortcutActivator::Single { key, .. } => ShortcutActivator::Single {
+            key,
+            control: false,
+            shift: true,
+            alt: false,
+            meta: false,
+            num_lock: LockState::Ignored,
+        },
+        other => other,
+    }
+}
+
+fn scroll(direction: crate::render::AxisDirection) -> Intent {
+    Intent::Scroll {
+        direction,
+        increment_type: crate::scrollable_helpers::ScrollIncrementType::Line,
+    }
+}
+
+fn scroll_page(direction: crate::render::AxisDirection) -> Intent {
+    Intent::Scroll {
+        direction,
+        increment_type: crate::scrollable_helpers::ScrollIncrementType::Page,
+    }
+}
+
+fn arrow(direction: crate::directional_traversal::TraversalDirection) -> Intent {
+    Intent::DirectionalFocus { direction }
+}
+
+/// The rows every one of upstream's three tables shares: escape dismisses,
+/// Tab and Shift+Tab traverse, and the page keys scroll by a page.
+fn common_rows(registry: ShortcutRegistry) -> ShortcutRegistry {
+    use crate::render::AxisDirection;
+    registry
+        .with(plain(LogicalKey::ESCAPE), Intent::Dismiss)
+        .with(plain(LogicalKey::TAB), Intent::NextFocus)
+        .with(with_shift(LogicalKey::TAB), Intent::PreviousFocus)
+        .with(plain(LogicalKey::PAGE_UP), scroll_page(AxisDirection::Up))
+        .with(
+            plain(LogicalKey::PAGE_DOWN),
+            scroll_page(AxisDirection::Down),
+        )
+}
+
+/// Upstream's `_defaultShortcuts`: Android, Fuchsia, Linux and Windows.
+///
+/// **The arrows move the keyboard, and Control plus an arrow scrolls.** That
+/// is the division the other two tables rearrange: on a desktop the arrows
+/// belong to whatever has the focus -- a list, a menu, a text field -- so
+/// scrolling the page needs a modifier to ask for it.
+pub fn default_shortcuts_table() -> ShortcutRegistry {
+    use crate::directional_traversal::TraversalDirection;
+    use crate::render::AxisDirection;
+    common_rows(ShortcutRegistry::new())
+        .with(plain(LogicalKey::ENTER), Intent::Activate)
+        .with(plain(LogicalKey::SPACE), Intent::Activate)
+        .with(plain(LogicalKey::SELECT), Intent::Activate)
+        .with(
+            plain(LogicalKey::ARROW_LEFT),
+            arrow(TraversalDirection::Left),
+        )
+        .with(
+            plain(LogicalKey::ARROW_RIGHT),
+            arrow(TraversalDirection::Right),
+        )
+        .with(plain(LogicalKey::ARROW_UP), arrow(TraversalDirection::Up))
+        .with(
+            plain(LogicalKey::ARROW_DOWN),
+            arrow(TraversalDirection::Down),
+        )
+        .with(
+            with_control(LogicalKey::ARROW_UP),
+            scroll(AxisDirection::Up),
+        )
+        .with(
+            with_control(LogicalKey::ARROW_DOWN),
+            scroll(AxisDirection::Down),
+        )
+        .with(
+            with_control(LogicalKey::ARROW_LEFT),
+            scroll(AxisDirection::Left),
+        )
+        .with(
+            with_control(LogicalKey::ARROW_RIGHT),
+            scroll(AxisDirection::Right),
+        )
+}
+
+/// Upstream's `_defaultWebShortcuts`, which differs in three ways that are all
+/// about a page being a page.
+///
+/// * **Space is two intents in order**: activate what has the keyboard, and
+///   failing that scroll a page down. That is what a browser does, and
+///   `PrioritizedIntents` is the only place in this table where one key means
+///   two things -- see [`Intent::Prioritized`].
+/// * **Enter activates buttons only** (`ButtonActivateIntent`), because on the
+///   web enter in a text field means a newline or a submit, not "press the
+///   thing".
+/// * **The bare arrows scroll** rather than moving the focus, because that is
+///   what every other page in the browser does; a Flutter page that traversed
+///   on arrows would be the odd one out.
+pub fn default_web_shortcuts_table() -> ShortcutRegistry {
+    use crate::render::AxisDirection;
+    common_rows(ShortcutRegistry::new())
+        .with(
+            plain(LogicalKey::SPACE),
+            Intent::Prioritized {
+                intents: vec![Intent::Activate, scroll_page(AxisDirection::Down)],
+            },
+        )
+        .with(plain(LogicalKey::ENTER), Intent::ButtonActivate)
+        .with(plain(LogicalKey::ARROW_UP), scroll(AxisDirection::Up))
+        .with(plain(LogicalKey::ARROW_DOWN), scroll(AxisDirection::Down))
+        .with(plain(LogicalKey::ARROW_LEFT), scroll(AxisDirection::Left))
+        .with(plain(LogicalKey::ARROW_RIGHT), scroll(AxisDirection::Right))
+}
+
+/// Upstream's `_defaultAppleOsShortcuts`: iOS and macOS.
+///
+/// The same as the first table with **Meta where Control was** -- the scroll
+/// modifier follows the platform's own convention rather than the keyboard's
+/// label -- and without the game button and select rows, which are for
+/// televisions and no Apple platform Flutter runs on is one.
+pub fn default_apple_shortcuts_table() -> ShortcutRegistry {
+    use crate::directional_traversal::TraversalDirection;
+    use crate::render::AxisDirection;
+    common_rows(ShortcutRegistry::new())
+        .with(plain(LogicalKey::ENTER), Intent::Activate)
+        .with(plain(LogicalKey::SPACE), Intent::Activate)
+        .with(
+            plain(LogicalKey::ARROW_LEFT),
+            arrow(TraversalDirection::Left),
+        )
+        .with(
+            plain(LogicalKey::ARROW_RIGHT),
+            arrow(TraversalDirection::Right),
+        )
+        .with(plain(LogicalKey::ARROW_UP), arrow(TraversalDirection::Up))
+        .with(
+            plain(LogicalKey::ARROW_DOWN),
+            arrow(TraversalDirection::Down),
+        )
+        .with(with_meta(LogicalKey::ARROW_UP), scroll(AxisDirection::Up))
+        .with(
+            with_meta(LogicalKey::ARROW_DOWN),
+            scroll(AxisDirection::Down),
+        )
+        .with(
+            with_meta(LogicalKey::ARROW_LEFT),
+            scroll(AxisDirection::Left),
+        )
+        .with(
+            with_meta(LogicalKey::ARROW_RIGHT),
+            scroll(AxisDirection::Right),
+        )
+}
+
+/// Upstream's `WidgetsApp.defaultShortcuts` getter:
+///
+/// ```dart
+/// if (kIsWeb) {
+///   return _defaultWebShortcuts;
+/// }
+/// switch (defaultTargetPlatform) {
+///   android, fuchsia, linux, windows => _defaultShortcuts,
+///   iOS, macOS => _defaultAppleOsShortcuts,
+/// }
+/// ```
+///
+/// **The web is asked first and the platform second**, which is the whole
+/// shape of the rule: Flutter on the web is the web before it is macOS, so a
+/// reader on a Mac in a browser gets the browser's arrows and space, not the
+/// Mac's. Asking the platform first would give a Mac browser Meta+arrow
+/// scrolling that the browser itself does not do.
+pub fn default_shortcuts(
+    platform: crate::editable_text::TargetPlatform,
+    is_web: bool,
+) -> ShortcutRegistry {
+    use crate::editable_text::TargetPlatform;
+    if is_web {
+        return default_web_shortcuts_table();
+    }
+    match platform {
+        TargetPlatform::Android
+        | TargetPlatform::Fuchsia
+        | TargetPlatform::Linux
+        | TargetPlatform::Windows => default_shortcuts_table(),
+        TargetPlatform::IOS | TargetPlatform::MacOS => default_apple_shortcuts_table(),
+    }
 }
 
 /// Upstream `CallbackShortcuts`: a map of activators to plain callbacks,
@@ -243,6 +487,258 @@ impl CallbackShortcuts {
                 KeyResult::Handled
             }
             _ => KeyResult::Ignored,
+        }
+    }
+}
+
+#[cfg(test)]
+mod default_shortcut_tests {
+    use super::*;
+    use crate::directional_traversal::TraversalDirection;
+    use crate::editable_text::TargetPlatform;
+    use crate::render::AxisDirection;
+
+    /// The event and the keyboard a press of `key` with `held` down makes,
+    /// folded the way the real keyboard folds them.
+    /// The modifiers are given as **physical** keys, because that is what the
+    /// keyboard's `control()` and friends look for -- a modifier recorded by
+    /// its logical code is a key the keyboard has never heard of.
+    /// A modifier as **both** of its codes: the keyboard's `control()` looks
+    /// for the physical key while a `LogicalKeySet` holds logical ones, so a
+    /// modifier recorded with one code is invisible to whichever asks for the
+    /// other.
+    fn shift() -> (crate::keyboard::PhysicalKey, LogicalKey) {
+        (
+            crate::keyboard::PhysicalKey::SHIFT_LEFT,
+            LogicalKey::SHIFT_LEFT,
+        )
+    }
+
+    fn control() -> (crate::keyboard::PhysicalKey, LogicalKey) {
+        (
+            crate::keyboard::PhysicalKey::CONTROL_LEFT,
+            LogicalKey::CONTROL_LEFT,
+        )
+    }
+
+    fn meta() -> (crate::keyboard::PhysicalKey, LogicalKey) {
+        (
+            crate::keyboard::PhysicalKey::META_LEFT,
+            LogicalKey::META_LEFT,
+        )
+    }
+
+    fn press(
+        key: LogicalKey,
+        held: &[(crate::keyboard::PhysicalKey, LogicalKey)],
+    ) -> (KeyEvent, Keyboard) {
+        let mut keyboard = Keyboard::new();
+        for (physical, logical) in held {
+            let mut event = KeyEvent {
+                change: crate::keyboard::KeyChange::Down,
+                physical: *physical,
+                logical: *logical,
+                character: None,
+                synthesized: false,
+                time_stamp_micros: 0,
+            };
+            keyboard.record(&mut event);
+        }
+        let mut event = KeyEvent {
+            change: crate::keyboard::KeyChange::Down,
+            physical: crate::keyboard::PhysicalKey(key.0),
+            logical: key,
+            character: None,
+            synthesized: false,
+            time_stamp_micros: 0,
+        };
+        keyboard.record(&mut event);
+        (event, keyboard)
+    }
+
+    /// What a table answers, as a string -- `Intent` carries callbacks and so
+    /// cannot be compared, and its `name` alone would lose the direction that
+    /// half these rows are about.
+    fn describe(intent: Option<&Intent>) -> String {
+        let Some(intent) = intent else {
+            return "nothing".to_string();
+        };
+        match intent {
+            Intent::DirectionalFocus { direction } => format!("focus {direction:?}"),
+            Intent::Scroll {
+                direction,
+                increment_type,
+            } => format!("scroll {direction:?} by {increment_type:?}"),
+            Intent::Prioritized { intents } => format!(
+                "first of [{}]",
+                intents
+                    .iter()
+                    .map(|intent| describe(Some(intent)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            other => other.action_name().to_string(),
+        }
+    }
+
+    fn answer(
+        registry: &ShortcutRegistry,
+        key: LogicalKey,
+        held: &[(crate::keyboard::PhysicalKey, LogicalKey)],
+    ) -> String {
+        let (event, keyboard) = press(key, held);
+        describe(registry.intent_for(&event, &keyboard))
+    }
+
+    #[test]
+    fn tab_moves_the_keyboard_rather_than_pressing_what_has_it() {
+        // The registry said `Activate` for both while its own comment said
+        // "Tab to next, Shift+Tab to previous".
+        let registry = default_traversal_registry();
+        assert_eq!(answer(&registry, LogicalKey::TAB, &[]), "NextFocus");
+        assert_eq!(
+            answer(&registry, LogicalKey::TAB, &[shift()]),
+            "PreviousFocus"
+        );
+    }
+
+    #[test]
+    fn on_a_desktop_the_arrows_move_the_focus_and_control_scrolls() {
+        let table = default_shortcuts_table();
+        assert_eq!(
+            answer(&table, LogicalKey::ARROW_DOWN, &[]),
+            format!("focus {:?}", TraversalDirection::Down)
+        );
+        assert_eq!(
+            answer(&table, LogicalKey::ARROW_DOWN, &[control()]),
+            format!(
+                "scroll {:?} by {:?}",
+                AxisDirection::Down,
+                crate::scrollable_helpers::ScrollIncrementType::Line
+            ),
+            "the page is scrolled only when asked with a modifier"
+        );
+    }
+
+    #[test]
+    fn on_the_web_the_bare_arrows_scroll_because_every_other_page_does() {
+        let table = default_web_shortcuts_table();
+        assert_eq!(
+            answer(&table, LogicalKey::ARROW_DOWN, &[]),
+            format!(
+                "scroll {:?} by {:?}",
+                AxisDirection::Down,
+                crate::scrollable_helpers::ScrollIncrementType::Line
+            )
+        );
+    }
+
+    #[test]
+    fn on_the_web_space_means_two_things_in_order() {
+        // `PrioritizedIntents`: press what has the keyboard if anything can be
+        // pressed, otherwise scroll a page -- which is what a browser does.
+        let table = default_web_shortcuts_table();
+        assert_eq!(
+            answer(&table, LogicalKey::SPACE, &[]),
+            format!(
+                "first of [Activate, scroll {:?} by {:?}]",
+                AxisDirection::Down,
+                crate::scrollable_helpers::ScrollIncrementType::Page
+            )
+        );
+        assert_eq!(
+            answer(&table, LogicalKey::ENTER, &[]),
+            "ButtonActivate",
+            "and enter presses buttons only, not text fields"
+        );
+    }
+
+    #[test]
+    fn apple_scrolls_with_meta_where_the_others_use_control() {
+        let table = default_apple_shortcuts_table();
+        assert_eq!(
+            answer(&table, LogicalKey::ARROW_UP, &[meta()]),
+            format!(
+                "scroll {:?} by {:?}",
+                AxisDirection::Up,
+                crate::scrollable_helpers::ScrollIncrementType::Line
+            )
+        );
+        assert_eq!(
+            answer(&table, LogicalKey::ARROW_UP, &[control()]),
+            "nothing",
+            "control is not the modifier on a Mac"
+        );
+        assert_eq!(
+            answer(&table, LogicalKey::ARROW_UP, &[]),
+            format!("focus {:?}", TraversalDirection::Up),
+            "and the bare arrow still moves the keyboard"
+        );
+    }
+
+    #[test]
+    fn the_web_is_asked_before_the_platform() {
+        // A reader on a Mac in a browser gets the browser's arrows, not the
+        // Mac's: asking the platform first would give them Meta+arrow
+        // scrolling that the browser itself does not do.
+        let in_a_browser = default_shortcuts(TargetPlatform::MacOS, true);
+        assert_eq!(
+            answer(&in_a_browser, LogicalKey::ARROW_DOWN, &[]),
+            format!(
+                "scroll {:?} by {:?}",
+                AxisDirection::Down,
+                crate::scrollable_helpers::ScrollIncrementType::Line
+            )
+        );
+
+        let on_the_mac = default_shortcuts(TargetPlatform::MacOS, false);
+        assert_eq!(
+            answer(&on_the_mac, LogicalKey::ARROW_DOWN, &[]),
+            format!("focus {:?}", TraversalDirection::Down)
+        );
+        // And it is really the Apple table, not the other one: Meta scrolls
+        // and Control does not.
+        assert_eq!(
+            answer(&on_the_mac, LogicalKey::ARROW_DOWN, &[meta()]),
+            format!(
+                "scroll {:?} by {:?}",
+                AxisDirection::Down,
+                crate::scrollable_helpers::ScrollIncrementType::Line
+            )
+        );
+        assert_eq!(
+            answer(&on_the_mac, LogicalKey::ARROW_DOWN, &[control()]),
+            "nothing"
+        );
+
+        // A Windows app gets the other one, by the same two questions.
+        let on_windows = default_shortcuts(TargetPlatform::Windows, false);
+        assert_eq!(
+            answer(&on_windows, LogicalKey::ARROW_DOWN, &[control()]),
+            format!(
+                "scroll {:?} by {:?}",
+                AxisDirection::Down,
+                crate::scrollable_helpers::ScrollIncrementType::Line
+            )
+        );
+    }
+
+    #[test]
+    fn every_table_dismisses_on_escape_and_pages_on_the_page_keys() {
+        for table in [
+            default_shortcuts_table(),
+            default_web_shortcuts_table(),
+            default_apple_shortcuts_table(),
+        ] {
+            assert_eq!(answer(&table, LogicalKey::ESCAPE, &[]), "Dismiss");
+            assert_eq!(
+                answer(&table, LogicalKey::PAGE_DOWN, &[]),
+                format!(
+                    "scroll {:?} by {:?}",
+                    AxisDirection::Down,
+                    crate::scrollable_helpers::ScrollIncrementType::Page
+                )
+            );
         }
     }
 }
