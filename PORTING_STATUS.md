@@ -5555,3 +5555,63 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6896 通�
 那一族）。上游 26 个成员里有一大半是颜色与主题参数，
 如果主题那半在 `component_themes.rs`，那它和第 495 轮 `ScrollView` 的情形一样：
 **住处已有，只是控件没住进去**，别在开关上再声明一遍。
+
+---
+
+## 第 504 轮：关掉的开关，滑块还是那个颜色
+
+队头 `CupertinoSwitch`（0.31，8/26）。先查了主题那一半：
+`component_themes.rs` 里的 `active_track_color` 属于 **Material** 的 `Switch`，
+Cupertino 这边**没有**主题类——上游的 `CupertinoSwitch` 也确实没有
+`CupertinoSwitchThemeData`，它的颜色是**参数**加 `CupertinoTheme` 的两三个值。
+所以这不是第 495 轮那种"住处已有"，是真的缺参数：
+这个 crate 的开关只有 `active_track_color`，
+**关闭态的轨道和滑块颜色都是写死的**。
+
+补掉四个颜色和它们的默认链，其中一条值得单独说：
+
+```dart
+final Color effectiveInactiveThumbColor =
+    _resolveThumbColor(widget.inactiveThumbColor, inactiveStates) ??
+    _widgetThumbColor.resolve(inactiveStates) ??
+    effectiveActiveThumbColor;
+```
+
+**关闭态的滑块回退到打开态的滑块，而不是白色。**
+一个自定义了滑块颜色的开关，关掉时**保持那个颜色**；
+只有明确要求了不同的关闭态滑块才会有两个颜色。
+回退到白色的话，每个定制过的滑块都会在关掉的那一瞬间闪回白——
+而那正是读者盯着它看的时刻。
+
+还有一对"同一个东西两个名字"：`activeColor` 被改名为 `activeTrackColor`，
+`trackColor` 改名为 `inactiveTrackColor`，
+上游在初始化列表里**先断言不能都给，再把旧名折进新名**。
+两件事是一对：只折不断言的话，一个改名改到一半、两个名字给了两个颜色的调用者，
+会看到其中一个被悄悄丢掉；断言说明白这是哪一种错——
+不是"这个颜色不对"，而是"你把同一件事命名了两次"。
+
+### 变异 8 个：先 7 红 1 活，活的那条是我自己的设计问题
+
+活下来的是"widget 画主题而不是自己的颜色"。原因不在测试，在我写的
+`fn at(&self, on, resolved)`——**它根本没读 `self`**，
+于是把接收者换成任何一个同类型的值都看不出区别。
+一个不读接收者的方法就是一个乔装的自由函数。
+改成 `ResolvedSwitchColors::at(on)`（真正读自己那四个字段），
+变异就有了落点，重扫全红。
+
+走一遍的那条测试画了一个关着的、自定颜色的开关，
+从画布上读回轨道色和滑块色。
+
+`CupertinoSwitch` 0.31 → **0.46（12/26）**。
+
+尺子：十七把全部 exit 0。门：Rust 6901 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6901 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`CupertinoSwitch` 剩下的成员里，最像真规则的是
+`onLabelColor` / `offLabelColor` 与 `MediaQuery.onOffSwitchLabelsOf(context)`——
+**开关上的那两个小标记（竖线与圆圈）只在系统的辅助功能开关打开时才画**，
+而这个 crate 已经有 `SwitchOnOffLabels`（`ON_SIZE`、`OFF_RADIUS`、两个 padding、
+两个默认色）。**先查一件事**：`SwitchOnOffLabels` 现在是**谁在读**——
+如果只有常量没有画出来，那缺的是"画"；如果画了但没有那个 MediaQuery 开关，
+那缺的是"什么时候画"。两者要补的东西完全不同，别猜。

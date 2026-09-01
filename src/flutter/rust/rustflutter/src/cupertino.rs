@@ -936,6 +936,132 @@ fn switch_thumb_shadows() -> Vec<crate::painting::BoxShadow> {
     ]
 }
 
+/// Why a switch refused the colours it was given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwitchColorError {
+    /// `assert(activeTrackColor == null || activeColor == null)`.
+    TwoNamesForTheOnTrack,
+    /// `assert(inactiveTrackColor == null || trackColor == null)`.
+    TwoNamesForTheOffTrack,
+}
+
+/// The four colours upstream's `CupertinoSwitch` takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CupertinoSwitchColors {
+    /// `activeTrackColor`, which `activeColor` was renamed to.
+    pub active_track: Option<Color>,
+    /// `inactiveTrackColor`, which `trackColor` was renamed to.
+    pub inactive_track: Option<Color>,
+    pub thumb: Option<Color>,
+    pub inactive_thumb: Option<Color>,
+}
+
+/// What [`CupertinoSwitchColors::resolve`] worked out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedSwitchColors {
+    pub active_track: Color,
+    pub inactive_track: Color,
+    pub thumb: Color,
+    pub inactive_thumb: Color,
+}
+
+impl CupertinoSwitchColors {
+    /// Upstream's initialiser list, where the old names are folded into the
+    /// new ones before anything downstream can see two:
+    ///
+    /// ```dart
+    /// assert(activeTrackColor == null || activeColor == null),
+    /// assert(inactiveTrackColor == null || trackColor == null),
+    /// activeTrackColor = activeTrackColor ?? activeColor,
+    /// inactiveTrackColor = inactiveTrackColor ?? trackColor;
+    /// ```
+    ///
+    /// **The assert and the fold are a pair.** The fold alone would silently
+    /// prefer the new name and drop the old one, so a caller who set both --
+    /// most likely mid-rename, with two different colours -- would see one of
+    /// them ignored. The assert says which of the two mistakes it is: not
+    /// "that colour was wrong" but "you named the same thing twice".
+    pub fn from_names(
+        active_track: Option<Color>,
+        active_color: Option<Color>,
+        inactive_track: Option<Color>,
+        track_color: Option<Color>,
+    ) -> Result<CupertinoSwitchColors, SwitchColorError> {
+        if active_track.is_some() && active_color.is_some() {
+            return Err(SwitchColorError::TwoNamesForTheOnTrack);
+        }
+        if inactive_track.is_some() && track_color.is_some() {
+            return Err(SwitchColorError::TwoNamesForTheOffTrack);
+        }
+        Ok(CupertinoSwitchColors {
+            active_track: active_track.or(active_color),
+            inactive_track: inactive_track.or(track_color),
+            thumb: None,
+            inactive_thumb: None,
+        })
+    }
+
+    /// Upstream's four `effective*` colours in `build`.
+    ///
+    /// Three of them fall back to something fixed -- the on track to the
+    /// three-level chain in [`CupertinoSwitch::active_track_color`], the off
+    /// track to `secondarySystemFill`, the thumb to white -- and the fourth
+    /// does not:
+    ///
+    /// ```dart
+    /// final Color effectiveInactiveThumbColor =
+    ///     _resolveThumbColor(widget.inactiveThumbColor, inactiveStates) ??
+    ///     _widgetThumbColor.resolve(inactiveStates) ??
+    ///     effectiveActiveThumbColor;
+    /// ```
+    ///
+    /// **The off thumb falls back to the on thumb, not to white.** A switch
+    /// given a thumb colour of its own keeps it in both states; only a switch
+    /// that asks for a different off thumb gets one. Falling back to white
+    /// would make every custom thumb flicker back to white as the switch was
+    /// turned off, which is the one moment the reader is looking at it.
+    pub fn resolve(
+        &self,
+        apply_theme: Option<bool>,
+        theme_applies_to_all: bool,
+        theme_primary: Color,
+        system_green: Color,
+        secondary_system_fill: Color,
+    ) -> ResolvedSwitchColors {
+        let thumb = self.thumb.unwrap_or(CupertinoColors::WHITE);
+        ResolvedSwitchColors {
+            active_track: CupertinoSwitch::active_track_color(
+                self.active_track,
+                apply_theme,
+                theme_applies_to_all,
+                theme_primary,
+                system_green,
+            ),
+            inactive_track: self.inactive_track.unwrap_or(secondary_system_fill),
+            thumb,
+            inactive_thumb: self.inactive_thumb.unwrap_or(thumb),
+        }
+    }
+}
+
+impl ResolvedSwitchColors {
+    /// The pair a switch is drawn with at this moment: the track and the thumb
+    /// that go together.
+    ///
+    /// On the resolved colours rather than on the four optional ones, because
+    /// it reads none of those: a method that ignores its receiver is a free
+    /// function wearing a disguise, and a mutation swapping the receiver for
+    /// any other value of the same type cannot be told apart. The sweep found
+    /// exactly that.
+    pub fn at(&self, on: bool) -> (Color, Color) {
+        if on {
+            (self.active_track, self.thumb)
+        } else {
+            (self.inactive_track, self.inactive_thumb)
+        }
+    }
+}
+
 /// What a [`CupertinoSwitch`] remembers between frames: where a drag has
 /// taken the thumb, and whether the thumb is held.
 #[derive(Default)]
@@ -963,7 +1089,8 @@ pub struct CupertinoSwitch {
     id: u64,
     value: bool,
     enabled: bool,
-    active_track_color: Option<Color>,
+    /// The four colours, defaulted per [`CupertinoSwitchColors::resolve`].
+    colors: CupertinoSwitchColors,
     /// Upstream's `applyTheme`, which is nullable on purpose: `None` means
     /// "whatever the theme says", not "no".
     apply_theme: Option<bool>,
@@ -976,7 +1103,7 @@ impl CupertinoSwitch {
             id,
             value,
             enabled: true,
-            active_track_color: None,
+            colors: CupertinoSwitchColors::default(),
             apply_theme: None,
             on_changed: None,
         }
@@ -984,7 +1111,31 @@ impl CupertinoSwitch {
 
     /// Upstream's `activeTrackColor` (`activeColor` before it).
     pub fn with_active_track_color(mut self, color: Color) -> Self {
-        self.active_track_color = Some(color);
+        self.colors.active_track = Some(color);
+        self
+    }
+
+    /// Upstream's `inactiveTrackColor` (`trackColor` before it).
+    pub fn with_inactive_track_color(mut self, color: Color) -> Self {
+        self.colors.inactive_track = Some(color);
+        self
+    }
+
+    /// Upstream's `thumbColor`.
+    pub fn with_thumb_color(mut self, color: Color) -> Self {
+        self.colors.thumb = Some(color);
+        self
+    }
+
+    /// Upstream's `inactiveThumbColor`, which defaults to the on thumb rather
+    /// than to white -- see [`CupertinoSwitchColors::resolve`].
+    pub fn with_inactive_thumb_color(mut self, color: Color) -> Self {
+        self.colors.inactive_thumb = Some(color);
+        self
+    }
+
+    pub fn with_colors(mut self, colors: CupertinoSwitchColors) -> Self {
+        self.colors = colors;
         self
     }
 
@@ -1070,15 +1221,18 @@ impl StatefulComponent for CupertinoSwitch {
         // color because upstream's `applyTheme` path only takes over when the
         // ambient `CupertinoThemeData.applyThemeToAll` asks it to, and the
         // default is false.
-        let active_track = CupertinoSwitch::active_track_color(
-            self.active_track_color,
+        let resolved = self.colors.resolve(
             self.apply_theme,
             theme.apply_theme_to_all,
             theme.primary_color,
             theme.resolve(CupertinoColors::SYSTEM_GREEN),
+            theme.resolve(CupertinoColors::SECONDARY_SYSTEM_FILL),
         );
-        let inactive_track = theme.resolve(CupertinoColors::SECONDARY_SYSTEM_FILL);
-        let track = if value { active_track } else { inactive_track };
+        // Which pair is drawn is the switch's own value, not the animated
+        // position: upstream lerps the two as the thumb travels, and this
+        // crate's `animated` moves the thumb while the colours change with the
+        // value. The pair itself is the rule.
+        let (track, thumb_color) = resolved.at(value);
 
         // Where the thumb is: the value, or where the drag has flipped it to.
         // Upstream this is the position controller's value; the animated()
@@ -1172,8 +1326,8 @@ impl StatefulComponent for CupertinoSwitch {
                     let thumb = Container::new()
                         .with_size(thumb_width, SWITCH_THUMB_RADIUS * 2.0)
                         // thumb_painter.dart's `CupertinoThumbPainter.switchThumb`
-                        // default color.
-                        .with_color(CupertinoColors::WHITE)
+                        // default color, unless this switch was given one.
+                        .with_color(thumb_color)
                         .with_corner_radius(SWITCH_THUMB_RADIUS)
                         .with_shadows(switch_thumb_shadows());
 
@@ -7004,6 +7158,125 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    // -- What colour a switch is --------------------------------------------------
+
+    #[test]
+    fn an_off_thumb_follows_the_on_thumb_rather_than_going_white() {
+        let orange = Color::argb(255, 255, 149, 0);
+        let colors = CupertinoSwitchColors {
+            thumb: Some(orange),
+            ..CupertinoSwitchColors::default()
+        };
+        let resolved = colors.resolve(
+            None,
+            false,
+            Color::argb(255, 0, 122, 255),
+            Color::argb(255, 52, 199, 89),
+            Color::argb(120, 120, 120, 128),
+        );
+        assert_eq!(resolved.thumb, orange);
+        assert_eq!(
+            resolved.inactive_thumb, orange,
+            "a custom thumb keeps its colour when the switch goes off"
+        );
+
+        // Unless the caller asks for a different one, which is the only way to
+        // get two.
+        let grey = Color::argb(255, 200, 200, 200);
+        let two = CupertinoSwitchColors {
+            thumb: Some(orange),
+            inactive_thumb: Some(grey),
+            ..CupertinoSwitchColors::default()
+        }
+        .resolve(
+            None,
+            false,
+            Color::argb(255, 0, 122, 255),
+            Color::argb(255, 52, 199, 89),
+            Color::argb(120, 120, 120, 128),
+        );
+        assert_eq!((two.thumb, two.inactive_thumb), (orange, grey));
+    }
+
+    #[test]
+    fn a_plain_switch_is_green_over_the_system_fill_with_a_white_thumb() {
+        let green = Color::argb(255, 52, 199, 89);
+        let fill = Color::argb(120, 120, 120, 128);
+        let resolved = CupertinoSwitchColors::default().resolve(
+            None,
+            false,
+            Color::argb(255, 0, 122, 255),
+            green,
+            fill,
+        );
+        assert_eq!(resolved.active_track, green);
+        assert_eq!(resolved.inactive_track, fill);
+        assert_eq!(resolved.thumb, CupertinoColors::WHITE);
+        assert_eq!(resolved.inactive_thumb, CupertinoColors::WHITE);
+    }
+
+    #[test]
+    fn the_pair_a_switch_is_drawn_with_is_its_value() {
+        let colors = CupertinoSwitchColors::default();
+        let resolved = colors.resolve(
+            None,
+            false,
+            Color::argb(255, 0, 122, 255),
+            Color::argb(255, 52, 199, 89),
+            Color::argb(120, 120, 120, 128),
+        );
+        let _ = colors;
+        assert_eq!(resolved.at(true), (resolved.active_track, resolved.thumb));
+        assert_eq!(
+            resolved.at(false),
+            (resolved.inactive_track, resolved.inactive_thumb)
+        );
+    }
+
+    #[test]
+    fn the_same_track_may_not_be_named_twice() {
+        let orange = Color::argb(255, 255, 149, 0);
+        let grey = Color::argb(255, 200, 200, 200);
+
+        // The old name alone still works, folded into the new one.
+        let folded = CupertinoSwitchColors::from_names(None, Some(orange), None, Some(grey))
+            .expect("one name each");
+        assert_eq!(folded.active_track, Some(orange));
+        assert_eq!(folded.inactive_track, Some(grey));
+
+        assert_eq!(
+            CupertinoSwitchColors::from_names(Some(orange), Some(grey), None, None),
+            Err(SwitchColorError::TwoNamesForTheOnTrack),
+            "not `that colour is wrong` but `you named the same thing twice`"
+        );
+        assert_eq!(
+            CupertinoSwitchColors::from_names(None, None, Some(orange), Some(grey)),
+            Err(SwitchColorError::TwoNamesForTheOffTrack)
+        );
+    }
+
+    #[test]
+    fn a_switch_paints_the_colours_it_was_given() {
+        let orange = Color::argb(255, 255, 149, 0);
+        let painted = painted_rect_colors(
+            stateful(
+                CupertinoSwitch::new(9500, false)
+                    .with_inactive_track_color(orange)
+                    .with_thumb_color(Color::argb(255, 10, 20, 30)),
+            ),
+            120.0,
+            60.0,
+        );
+        assert!(
+            painted.contains(&orange.0),
+            "the off track is the colour it was given: {painted:02x?}"
+        );
+        assert!(
+            painted.contains(&Color::argb(255, 10, 20, 30).0),
+            "and the thumb keeps its own colour while off: {painted:02x?}"
+        );
     }
 
     #[test]
