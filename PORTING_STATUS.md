@@ -6157,3 +6157,88 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6939 通�
 下的 `KeyboardMap.g.java` 是怎么生成的（`keyCode`/`scanCode` 两张表），
 以及本 port 的 `gen_key_map.py` 能不能顺手多吐一张 Android 表——
 如果能，这一轮又是"把已经有的映射送过去"，而不是新做一套。
+
+---
+
+## 第 515 轮：Android 的键映射——上一轮点名的那个真缺口
+
+上一轮查清桌面宿主一直在送键，只有 Android 没有键路。这一轮补上映射那一半。
+
+### 表从哪来
+
+上游 `KeyboardMap.java` 由同一次 `gen_keycodes.dart` 生成，
+和 Windows 那张表是同一份数据的另一面，不是第二个真相来源。
+于是 `gen_key_map.py` 多收一个参数（第五个），吐出
+`rustflutter_key_map_android.cc`：`scanCodeToPhysical` 232 条、
+`keyCodeToLogical` 260 条，仍是排序数组加二分查找。
+`rustflutter_key_map_win.cc` 生成结果**逐字节不变**。
+
+规则照 `KeyEmbedderResponder.getPhysicalKey/getLogicalKey` 抄，不是猜的：
+
+- **scanCode 为 0** 不是键盘上的键，是根本没经过键盘的事件——
+  `adb shell input keyevent` 和模拟器都这样。此时从 keyCode 造物理键。
+  理由不是整洁：两个键共用一个物理值，一个的松开会取消另一个的按下，
+  框架就会以为有个没人按着的键还按着。
+- 表里没有的键，保留自己的号码并移进 Android 平面，
+  免得撞上真正的 Unicode 码点。
+- 逻辑键只要 keyCode——Android 送达前已经把布局解好了，
+  这点和 Windows 不同（Windows 要 scan code 才能分清左右 Shift 和小键盘）。
+
+### 一处险些酿成的重名
+
+Android 的表**给字母和数字起了名**，而生成器末尾又用算术补
+`KEY_A`/`DIGIT_0`。第一次生成出来是 `KEY_A` 声明两次（根本不编译）
+和 `DIGIT0` 与 `DIGIT_0` 并存（一个值两个名字，正是漂移的起点）。
+改法是把算术那段挪到按值合并**之前**，让它先占住这些值；
+并在末尾加一句对所有名字的断言：值不许重复、标识符不许重复。
+**生成器写错这两样都是静默的**，它会老老实实写出来。
+现在 keys.rs 有 157 个物理名、323 个逻辑名（上一轮 217）。
+
+### 接上宿主
+
+- Android 平台视图有了 `SendKey`，形状照 GTK 宿主：一条 `flutter/keydata`
+  平台消息，**不等答复**。Windows 等，是因为窗口过程是键与默认处理之间唯一的东西；
+  Android 的 `onKeyDown` 必须当场答复，而框架的裁决要晚得多才到平台线程。
+  上游用"把事件再投递一次"解决，那是另一套机制，还没有。
+- JNI `nativeKey(keyCode, scanCode, down, repeat, character)`。
+- Java 那侧 `onKeyDown`/**`onKeyUp`** 都走同一条 `handleKey`：
+  先把键送上去，再（仅按下时）做原来的编辑/回车/文字。
+  **`onKeyUp` 以前根本没有**——只有按下没有松开，框架会以为键一直按着。
+
+顺手修掉一个真 bug：原来 `getUnicodeChar() != 0` 就当文字送上去，
+而 Tab 的 unicode 是 0x09、Esc 是 0x1b——**硬键盘按 Tab 会往输入框里打一个制表符**。
+按 GTK 宿主同一条规则收紧：控制字符是"这个键是什么"，不是"它打出了什么"；
+按住 Ctrl/Alt 也一样，那是快捷键不是文字。
+
+### 扫描
+
+五个变异全部杀死，其中**两个是第二轮才杀死的**，都是我测试本身的漏洞：
+
+- 回退探针的 scanCode 和 keyCode **用了同一个数**，
+  于是"物理键回退用错另一个号码"这个变异看不出差别——
+  **在所有实现都一致的地方断言，什么也证明不了**。
+- 探针 0x1fff **在表的范围之外**，二分查找直接跑到末尾，
+  那个"找到的真是我要的吗"判断根本没被考。
+  补了一个**表中间的空洞**（scan 0x54、keyCode 0x4e），
+  查找会落在真实的邻居行上，只有那个判断挡着。
+
+**没有接设备**：这一轮 `adb devices` 是空的，所以 Java 与 JNI 那一半
+只做到"能编译"（javac 对 android.jar、arm64/x64 都过），
+键真正走完全程没有在真机上看过。这句话记在这里，免得下一轮当成已验证。
+
+尺子：十七把全部 exit 0。门：Rust 6939 通过、`cargo fmt --check` 干净；
+C++ 38 个 gtest 全过（新增 4 个）；gallery 357 通过；
+`rustflutter_unittests` 6939 通过；三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**已知重复，写下来而不是半做**：`kValueMask` 这个常数在四个 key map 头文件里各有一份。
+新的 Android 头**没有**再加一份（它是唯一到处都编译的，最可能撞上别人的那份），
+放进了 .cc。真正合并要动 mac 和 linux 的表，这台机器既不能编也不能跑它们。
+
+**下一步**：接一台设备，把这条路走完。
+**先做一件事**：`adb devices` 有没有那台三星（只有它收合成输入）；
+有的话用 `make_apk.py` 打一个 gallery 的 APK 装上去，
+`adb shell input keyevent 61`（KEYCODE_TAB，scanCode 为 0，正是本轮那条分支）
+看焦点框是否移动，`adb shell input keyevent 111`（ESCAPE）看是否**不再**往输入框里打字符。
+没有设备就换一条：Android 的**修饰键同步**（`pressingGoals`/`togglingGoals`）——
+`metaState` 说 Shift 按着而框架没收到过那次按下时，上游会补一个合成事件；
+本轮把 `metaState` 整个丢掉了，那是下一个真缺口。

@@ -333,11 +333,14 @@ constexpr KeyMapping kScanCodeToLogical[] = {
 
 /// Binary search over a table sorted by `from`. Returns `fallback` when absent.
 template <size_t N>
-uint64_t Lookup(const KeyMapping (&table)[N], uint32_t from, uint64_t fallback) {
+uint64_t Lookup(const KeyMapping (&table)[N],
+                uint32_t from,
+                uint64_t fallback) {
   const KeyMapping* end = table + N;
   const KeyMapping* found = std::lower_bound(
-      table, end, from,
-      [](const KeyMapping& entry, uint32_t value) { return entry.from < value; });
+      table, end, from, [](const KeyMapping& entry, uint32_t value) {
+        return entry.from < value;
+      });
   return (found != end && found->from == from) ? found->to : fallback;
 }
 

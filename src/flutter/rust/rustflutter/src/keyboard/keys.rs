@@ -569,122 +569,6 @@ impl LogicalKey {
     pub const ATTN: LogicalKey = LogicalKey(0x100000503);
     /// `play`
     pub const PLAY: LogicalKey = LogicalKey(0x10000050a);
-    /// `altGraph`
-    pub const ALT_GRAPH: LogicalKey = LogicalKey(0x100000103);
-    /// `hyper`
-    pub const HYPER: LogicalKey = LogicalKey(0x100000108);
-    /// `superKey`
-    pub const SUPER_KEY: LogicalKey = LogicalKey(0x10000010e);
-    /// `copy`
-    pub const COPY: LogicalKey = LogicalKey(0x100000402);
-    /// `cut`
-    pub const CUT: LogicalKey = LogicalKey(0x100000404);
-    /// `eraseEof`
-    pub const ERASE_EOF: LogicalKey = LogicalKey(0x100000405);
-    /// `exSel`
-    pub const EX_SEL: LogicalKey = LogicalKey(0x100000406);
-    /// `paste`
-    pub const PASTE: LogicalKey = LogicalKey(0x100000408);
-    /// `redo`
-    pub const REDO: LogicalKey = LogicalKey(0x100000409);
-    /// `undo`
-    pub const UNDO: LogicalKey = LogicalKey(0x10000040a);
-    /// `find`
-    pub const FIND: LogicalKey = LogicalKey(0x100000507);
-    /// `zoomIn`
-    pub const ZOOM_IN: LogicalKey = LogicalKey(0x10000050d);
-    /// `zoomOut`
-    pub const ZOOM_OUT: LogicalKey = LogicalKey(0x10000050e);
-    /// `brightnessDown`
-    pub const BRIGHTNESS_DOWN: LogicalKey = LogicalKey(0x100000601);
-    /// `brightnessUp`
-    pub const BRIGHTNESS_UP: LogicalKey = LogicalKey(0x100000602);
-    /// `eject`
-    pub const EJECT: LogicalKey = LogicalKey(0x100000604);
-    /// `logOff`
-    pub const LOG_OFF: LogicalKey = LogicalKey(0x100000605);
-    /// `powerOff`
-    pub const POWER_OFF: LogicalKey = LogicalKey(0x100000607);
-    /// `standby`
-    pub const STANDBY: LogicalKey = LogicalKey(0x10000060a);
-    /// `wakeUp`
-    pub const WAKE_UP: LogicalKey = LogicalKey(0x10000060b);
-    /// `codeInput`
-    pub const CODE_INPUT: LogicalKey = LogicalKey(0x100000703);
-    /// `groupFirst`
-    pub const GROUP_FIRST: LogicalKey = LogicalKey(0x100000707);
-    /// `groupLast`
-    pub const GROUP_LAST: LogicalKey = LogicalKey(0x100000708);
-    /// `groupNext`
-    pub const GROUP_NEXT: LogicalKey = LogicalKey(0x100000709);
-    /// `groupPrevious`
-    pub const GROUP_PREVIOUS: LogicalKey = LogicalKey(0x10000070a);
-    /// `previousCandidate`
-    pub const PREVIOUS_CANDIDATE: LogicalKey = LogicalKey(0x10000070e);
-    /// `singleCandidate`
-    pub const SINGLE_CANDIDATE: LogicalKey = LogicalKey(0x100000710);
-    /// `hangulMode`
-    pub const HANGUL_MODE: LogicalKey = LogicalKey(0x100000711);
-    /// `hanjaMode`
-    pub const HANJA_MODE: LogicalKey = LogicalKey(0x100000712);
-    /// `eisu`
-    pub const EISU: LogicalKey = LogicalKey(0x100000714);
-    /// `hankaku`
-    pub const HANKAKU: LogicalKey = LogicalKey(0x100000715);
-    /// `hiragana`
-    pub const HIRAGANA: LogicalKey = LogicalKey(0x100000716);
-    /// `hiraganaKatakana`
-    pub const HIRAGANA_KATAKANA: LogicalKey = LogicalKey(0x100000717);
-    /// `katakana`
-    pub const KATAKANA: LogicalKey = LogicalKey(0x10000071a);
-    /// `romaji`
-    pub const ROMAJI: LogicalKey = LogicalKey(0x10000071b);
-    /// `zenkaku`
-    pub const ZENKAKU: LogicalKey = LogicalKey(0x10000071c);
-    /// `zenkakuHankaku`
-    pub const ZENKAKU_HANKAKU: LogicalKey = LogicalKey(0x10000071d);
-    /// `close`
-    pub const CLOSE: LogicalKey = LogicalKey(0x100000a01);
-    /// `mailForward`
-    pub const MAIL_FORWARD: LogicalKey = LogicalKey(0x100000a02);
-    /// `mailReply`
-    pub const MAIL_REPLY: LogicalKey = LogicalKey(0x100000a03);
-    /// `mailSend`
-    pub const MAIL_SEND: LogicalKey = LogicalKey(0x100000a04);
-    /// `mediaTrackNext`
-    pub const MEDIA_TRACK_NEXT: LogicalKey = LogicalKey(0x100000a08);
-    /// `mediaTrackPrevious`
-    pub const MEDIA_TRACK_PREVIOUS: LogicalKey = LogicalKey(0x100000a09);
-    /// `newKey`
-    pub const NEW_KEY: LogicalKey = LogicalKey(0x100000a0a);
-    /// `open`
-    pub const OPEN: LogicalKey = LogicalKey(0x100000a0b);
-    /// `save`
-    pub const SAVE: LogicalKey = LogicalKey(0x100000a0d);
-    /// `spellCheck`
-    pub const SPELL_CHECK: LogicalKey = LogicalKey(0x100000a0e);
-    /// `launchCalendar`
-    pub const LAUNCH_CALENDAR: LogicalKey = LogicalKey(0x100000b02);
-    /// `launchScreenSaver`
-    pub const LAUNCH_SCREEN_SAVER: LogicalKey = LogicalKey(0x100000b07);
-    /// `launchPhone`
-    pub const LAUNCH_PHONE: LogicalKey = LogicalKey(0x100000b0d);
-    /// `mediaFastForward`
-    pub const MEDIA_FAST_FORWARD: LogicalKey = LogicalKey(0x100000d2c);
-    /// `mediaPause`
-    pub const MEDIA_PAUSE: LogicalKey = LogicalKey(0x100000d2e);
-    /// `mediaPlay`
-    pub const MEDIA_PLAY: LogicalKey = LogicalKey(0x100000d2f);
-    /// `mediaRecord`
-    pub const MEDIA_RECORD: LogicalKey = LogicalKey(0x100000d30);
-    /// `mediaRewind`
-    pub const MEDIA_REWIND: LogicalKey = LogicalKey(0x100000d31);
-    /// `suspend`
-    pub const SUSPEND: LogicalKey = LogicalKey(0x200000000);
-    /// `intlYen`
-    pub const INTL_YEN: LogicalKey = LogicalKey(0x200000022);
-    /// `numpadEnter`
-    pub const NUMPAD_ENTER: LogicalKey = LogicalKey(0x20000020d);
     /// `control`
     pub const CONTROL: LogicalKey = LogicalKey(0x2000001f0);
     /// `shift`
@@ -765,4 +649,332 @@ impl LogicalKey {
     pub const DIGIT_8: LogicalKey = LogicalKey(0x38);
     /// `9`
     pub const DIGIT_9: LogicalKey = LogicalKey(0x39);
+    /// `numberSign`
+    pub const NUMBER_SIGN: LogicalKey = LogicalKey(0x23);
+    /// `asterisk`
+    pub const ASTERISK: LogicalKey = LogicalKey(0x2a);
+    /// `add`
+    pub const ADD: LogicalKey = LogicalKey(0x2b);
+    /// `at`
+    pub const AT: LogicalKey = LogicalKey(0x40);
+    /// `altGraph`
+    pub const ALT_GRAPH: LogicalKey = LogicalKey(0x100000103);
+    /// `fn`
+    pub const FN: LogicalKey = LogicalKey(0x100000106);
+    /// `hyper`
+    pub const HYPER: LogicalKey = LogicalKey(0x100000108);
+    /// `superKey`
+    pub const SUPER_KEY: LogicalKey = LogicalKey(0x10000010e);
+    /// `symbol`
+    pub const SYMBOL: LogicalKey = LogicalKey(0x10000010f);
+    /// `copy`
+    pub const COPY: LogicalKey = LogicalKey(0x100000402);
+    /// `cut`
+    pub const CUT: LogicalKey = LogicalKey(0x100000404);
+    /// `eraseEof`
+    pub const ERASE_EOF: LogicalKey = LogicalKey(0x100000405);
+    /// `exSel`
+    pub const EX_SEL: LogicalKey = LogicalKey(0x100000406);
+    /// `paste`
+    pub const PASTE: LogicalKey = LogicalKey(0x100000408);
+    /// `redo`
+    pub const REDO: LogicalKey = LogicalKey(0x100000409);
+    /// `undo`
+    pub const UNDO: LogicalKey = LogicalKey(0x10000040a);
+    /// `find`
+    pub const FIND: LogicalKey = LogicalKey(0x100000507);
+    /// `zoomIn`
+    pub const ZOOM_IN: LogicalKey = LogicalKey(0x10000050d);
+    /// `zoomOut`
+    pub const ZOOM_OUT: LogicalKey = LogicalKey(0x10000050e);
+    /// `brightnessDown`
+    pub const BRIGHTNESS_DOWN: LogicalKey = LogicalKey(0x100000601);
+    /// `brightnessUp`
+    pub const BRIGHTNESS_UP: LogicalKey = LogicalKey(0x100000602);
+    /// `camera`
+    pub const CAMERA: LogicalKey = LogicalKey(0x100000603);
+    /// `eject`
+    pub const EJECT: LogicalKey = LogicalKey(0x100000604);
+    /// `logOff`
+    pub const LOG_OFF: LogicalKey = LogicalKey(0x100000605);
+    /// `power`
+    pub const POWER: LogicalKey = LogicalKey(0x100000606);
+    /// `powerOff`
+    pub const POWER_OFF: LogicalKey = LogicalKey(0x100000607);
+    /// `standby`
+    pub const STANDBY: LogicalKey = LogicalKey(0x10000060a);
+    /// `wakeUp`
+    pub const WAKE_UP: LogicalKey = LogicalKey(0x10000060b);
+    /// `codeInput`
+    pub const CODE_INPUT: LogicalKey = LogicalKey(0x100000703);
+    /// `groupFirst`
+    pub const GROUP_FIRST: LogicalKey = LogicalKey(0x100000707);
+    /// `groupLast`
+    pub const GROUP_LAST: LogicalKey = LogicalKey(0x100000708);
+    /// `groupNext`
+    pub const GROUP_NEXT: LogicalKey = LogicalKey(0x100000709);
+    /// `groupPrevious`
+    pub const GROUP_PREVIOUS: LogicalKey = LogicalKey(0x10000070a);
+    /// `nonConvert`
+    pub const NON_CONVERT: LogicalKey = LogicalKey(0x10000070d);
+    /// `previousCandidate`
+    pub const PREVIOUS_CANDIDATE: LogicalKey = LogicalKey(0x10000070e);
+    /// `singleCandidate`
+    pub const SINGLE_CANDIDATE: LogicalKey = LogicalKey(0x100000710);
+    /// `hangulMode`
+    pub const HANGUL_MODE: LogicalKey = LogicalKey(0x100000711);
+    /// `hanjaMode`
+    pub const HANJA_MODE: LogicalKey = LogicalKey(0x100000712);
+    /// `eisu`
+    pub const EISU: LogicalKey = LogicalKey(0x100000714);
+    /// `hankaku`
+    pub const HANKAKU: LogicalKey = LogicalKey(0x100000715);
+    /// `hiragana`
+    pub const HIRAGANA: LogicalKey = LogicalKey(0x100000716);
+    /// `hiraganaKatakana`
+    pub const HIRAGANA_KATAKANA: LogicalKey = LogicalKey(0x100000717);
+    /// `katakana`
+    pub const KATAKANA: LogicalKey = LogicalKey(0x10000071a);
+    /// `romaji`
+    pub const ROMAJI: LogicalKey = LogicalKey(0x10000071b);
+    /// `zenkaku`
+    pub const ZENKAKU: LogicalKey = LogicalKey(0x10000071c);
+    /// `zenkakuHankaku`
+    pub const ZENKAKU_HANKAKU: LogicalKey = LogicalKey(0x10000071d);
+    /// `close`
+    pub const CLOSE: LogicalKey = LogicalKey(0x100000a01);
+    /// `mailForward`
+    pub const MAIL_FORWARD: LogicalKey = LogicalKey(0x100000a02);
+    /// `mailReply`
+    pub const MAIL_REPLY: LogicalKey = LogicalKey(0x100000a03);
+    /// `mailSend`
+    pub const MAIL_SEND: LogicalKey = LogicalKey(0x100000a04);
+    /// `mediaTrackNext`
+    pub const MEDIA_TRACK_NEXT: LogicalKey = LogicalKey(0x100000a08);
+    /// `mediaTrackPrevious`
+    pub const MEDIA_TRACK_PREVIOUS: LogicalKey = LogicalKey(0x100000a09);
+    /// `newKey`
+    pub const NEW_KEY: LogicalKey = LogicalKey(0x100000a0a);
+    /// `open`
+    pub const OPEN: LogicalKey = LogicalKey(0x100000a0b);
+    /// `save`
+    pub const SAVE: LogicalKey = LogicalKey(0x100000a0d);
+    /// `spellCheck`
+    pub const SPELL_CHECK: LogicalKey = LogicalKey(0x100000a0e);
+    /// `launchCalendar`
+    pub const LAUNCH_CALENDAR: LogicalKey = LogicalKey(0x100000b02);
+    /// `launchMusicPlayer`
+    pub const LAUNCH_MUSIC_PLAYER: LogicalKey = LogicalKey(0x100000b05);
+    /// `launchScreenSaver`
+    pub const LAUNCH_SCREEN_SAVER: LogicalKey = LogicalKey(0x100000b07);
+    /// `launchWebBrowser`
+    pub const LAUNCH_WEB_BROWSER: LogicalKey = LogicalKey(0x100000b09);
+    /// `launchContacts`
+    pub const LAUNCH_CONTACTS: LogicalKey = LogicalKey(0x100000b0c);
+    /// `launchPhone`
+    pub const LAUNCH_PHONE: LogicalKey = LogicalKey(0x100000b0d);
+    /// `launchAssistant`
+    pub const LAUNCH_ASSISTANT: LogicalKey = LogicalKey(0x100000b0e);
+    /// `avrInput`
+    pub const AVR_INPUT: LogicalKey = LogicalKey(0x100000d08);
+    /// `avrPower`
+    pub const AVR_POWER: LogicalKey = LogicalKey(0x100000d09);
+    /// `channelDown`
+    pub const CHANNEL_DOWN: LogicalKey = LogicalKey(0x100000d0a);
+    /// `channelUp`
+    pub const CHANNEL_UP: LogicalKey = LogicalKey(0x100000d0b);
+    /// `colorF0Red`
+    pub const COLOR_F0_RED: LogicalKey = LogicalKey(0x100000d0c);
+    /// `colorF1Green`
+    pub const COLOR_F1_GREEN: LogicalKey = LogicalKey(0x100000d0d);
+    /// `colorF2Yellow`
+    pub const COLOR_F2_YELLOW: LogicalKey = LogicalKey(0x100000d0e);
+    /// `colorF3Blue`
+    pub const COLOR_F3_BLUE: LogicalKey = LogicalKey(0x100000d0f);
+    /// `closedCaptionToggle`
+    pub const CLOSED_CAPTION_TOGGLE: LogicalKey = LogicalKey(0x100000d12);
+    /// `guide`
+    pub const GUIDE: LogicalKey = LogicalKey(0x100000d22);
+    /// `info`
+    pub const INFO: LogicalKey = LogicalKey(0x100000d25);
+    /// `mediaFastForward`
+    pub const MEDIA_FAST_FORWARD: LogicalKey = LogicalKey(0x100000d2c);
+    /// `mediaLast`
+    pub const MEDIA_LAST: LogicalKey = LogicalKey(0x100000d2d);
+    /// `mediaPause`
+    pub const MEDIA_PAUSE: LogicalKey = LogicalKey(0x100000d2e);
+    /// `mediaPlay`
+    pub const MEDIA_PLAY: LogicalKey = LogicalKey(0x100000d2f);
+    /// `mediaRecord`
+    pub const MEDIA_RECORD: LogicalKey = LogicalKey(0x100000d30);
+    /// `mediaRewind`
+    pub const MEDIA_REWIND: LogicalKey = LogicalKey(0x100000d31);
+    /// `settings`
+    pub const SETTINGS: LogicalKey = LogicalKey(0x100000d43);
+    /// `stbInput`
+    pub const STB_INPUT: LogicalKey = LogicalKey(0x100000d45);
+    /// `stbPower`
+    pub const STB_POWER: LogicalKey = LogicalKey(0x100000d46);
+    /// `teletext`
+    pub const TELETEXT: LogicalKey = LogicalKey(0x100000d48);
+    /// `tv`
+    pub const TV: LogicalKey = LogicalKey(0x100000d49);
+    /// `tvInput`
+    pub const TV_INPUT: LogicalKey = LogicalKey(0x100000d4a);
+    /// `tvPower`
+    pub const TV_POWER: LogicalKey = LogicalKey(0x100000d4b);
+    /// `zoomToggle`
+    pub const ZOOM_TOGGLE: LogicalKey = LogicalKey(0x100000d4e);
+    /// `dvr`
+    pub const DVR: LogicalKey = LogicalKey(0x100000d4f);
+    /// `mediaAudioTrack`
+    pub const MEDIA_AUDIO_TRACK: LogicalKey = LogicalKey(0x100000d50);
+    /// `mediaSkipBackward`
+    pub const MEDIA_SKIP_BACKWARD: LogicalKey = LogicalKey(0x100000d51);
+    /// `mediaSkipForward`
+    pub const MEDIA_SKIP_FORWARD: LogicalKey = LogicalKey(0x100000d52);
+    /// `mediaStepBackward`
+    pub const MEDIA_STEP_BACKWARD: LogicalKey = LogicalKey(0x100000d53);
+    /// `mediaStepForward`
+    pub const MEDIA_STEP_FORWARD: LogicalKey = LogicalKey(0x100000d54);
+    /// `mediaTopMenu`
+    pub const MEDIA_TOP_MENU: LogicalKey = LogicalKey(0x100000d55);
+    /// `navigateIn`
+    pub const NAVIGATE_IN: LogicalKey = LogicalKey(0x100000d56);
+    /// `navigateNext`
+    pub const NAVIGATE_NEXT: LogicalKey = LogicalKey(0x100000d57);
+    /// `navigateOut`
+    pub const NAVIGATE_OUT: LogicalKey = LogicalKey(0x100000d58);
+    /// `navigatePrevious`
+    pub const NAVIGATE_PREVIOUS: LogicalKey = LogicalKey(0x100000d59);
+    /// `pairing`
+    pub const PAIRING: LogicalKey = LogicalKey(0x100000d5a);
+    /// `microphoneVolumeMute`
+    pub const MICROPHONE_VOLUME_MUTE: LogicalKey = LogicalKey(0x100000e09);
+    /// `appSwitch`
+    pub const APP_SWITCH: LogicalKey = LogicalKey(0x100001001);
+    /// `call`
+    pub const CALL: LogicalKey = LogicalKey(0x100001002);
+    /// `cameraFocus`
+    pub const CAMERA_FOCUS: LogicalKey = LogicalKey(0x100001003);
+    /// `endCall`
+    pub const END_CALL: LogicalKey = LogicalKey(0x100001004);
+    /// `goBack`
+    pub const GO_BACK: LogicalKey = LogicalKey(0x100001005);
+    /// `goHome`
+    pub const GO_HOME: LogicalKey = LogicalKey(0x100001006);
+    /// `headsetHook`
+    pub const HEADSET_HOOK: LogicalKey = LogicalKey(0x100001007);
+    /// `notification`
+    pub const NOTIFICATION: LogicalKey = LogicalKey(0x100001009);
+    /// `mannerMode`
+    pub const MANNER_MODE: LogicalKey = LogicalKey(0x10000100a);
+    /// `tv3DMode`
+    pub const TV3_DMODE: LogicalKey = LogicalKey(0x100001101);
+    /// `tvAntennaCable`
+    pub const TV_ANTENNA_CABLE: LogicalKey = LogicalKey(0x100001102);
+    /// `tvAudioDescription`
+    pub const TV_AUDIO_DESCRIPTION: LogicalKey = LogicalKey(0x100001103);
+    /// `tvAudioDescriptionMixDown`
+    pub const TV_AUDIO_DESCRIPTION_MIX_DOWN: LogicalKey = LogicalKey(0x100001104);
+    /// `tvAudioDescriptionMixUp`
+    pub const TV_AUDIO_DESCRIPTION_MIX_UP: LogicalKey = LogicalKey(0x100001105);
+    /// `tvContentsMenu`
+    pub const TV_CONTENTS_MENU: LogicalKey = LogicalKey(0x100001106);
+    /// `tvDataService`
+    pub const TV_DATA_SERVICE: LogicalKey = LogicalKey(0x100001107);
+    /// `tvInputComponent1`
+    pub const TV_INPUT_COMPONENT1: LogicalKey = LogicalKey(0x100001108);
+    /// `tvInputComponent2`
+    pub const TV_INPUT_COMPONENT2: LogicalKey = LogicalKey(0x100001109);
+    /// `tvInputComposite1`
+    pub const TV_INPUT_COMPOSITE1: LogicalKey = LogicalKey(0x10000110a);
+    /// `tvInputComposite2`
+    pub const TV_INPUT_COMPOSITE2: LogicalKey = LogicalKey(0x10000110b);
+    /// `tvInputHDMI1`
+    pub const TV_INPUT_HDMI1: LogicalKey = LogicalKey(0x10000110c);
+    /// `tvInputHDMI2`
+    pub const TV_INPUT_HDMI2: LogicalKey = LogicalKey(0x10000110d);
+    /// `tvInputHDMI3`
+    pub const TV_INPUT_HDMI3: LogicalKey = LogicalKey(0x10000110e);
+    /// `tvInputHDMI4`
+    pub const TV_INPUT_HDMI4: LogicalKey = LogicalKey(0x10000110f);
+    /// `tvInputVGA1`
+    pub const TV_INPUT_VGA1: LogicalKey = LogicalKey(0x100001110);
+    /// `tvNetwork`
+    pub const TV_NETWORK: LogicalKey = LogicalKey(0x100001112);
+    /// `tvNumberEntry`
+    pub const TV_NUMBER_ENTRY: LogicalKey = LogicalKey(0x100001113);
+    /// `tvRadioService`
+    pub const TV_RADIO_SERVICE: LogicalKey = LogicalKey(0x100001114);
+    /// `tvSatellite`
+    pub const TV_SATELLITE: LogicalKey = LogicalKey(0x100001115);
+    /// `tvSatelliteBS`
+    pub const TV_SATELLITE_BS: LogicalKey = LogicalKey(0x100001116);
+    /// `tvSatelliteCS`
+    pub const TV_SATELLITE_CS: LogicalKey = LogicalKey(0x100001117);
+    /// `tvSatelliteToggle`
+    pub const TV_SATELLITE_TOGGLE: LogicalKey = LogicalKey(0x100001118);
+    /// `tvTerrestrialAnalog`
+    pub const TV_TERRESTRIAL_ANALOG: LogicalKey = LogicalKey(0x100001119);
+    /// `tvTerrestrialDigital`
+    pub const TV_TERRESTRIAL_DIGITAL: LogicalKey = LogicalKey(0x10000111a);
+    /// `tvTimer`
+    pub const TV_TIMER: LogicalKey = LogicalKey(0x10000111b);
+    /// `suspend`
+    pub const SUSPEND: LogicalKey = LogicalKey(0x200000000);
+    /// `intlRo`
+    pub const INTL_RO: LogicalKey = LogicalKey(0x200000021);
+    /// `intlYen`
+    pub const INTL_YEN: LogicalKey = LogicalKey(0x200000022);
+    /// `numpadEnter`
+    pub const NUMPAD_ENTER: LogicalKey = LogicalKey(0x20000020d);
+    /// `numpadParenLeft`
+    pub const NUMPAD_PAREN_LEFT: LogicalKey = LogicalKey(0x200000228);
+    /// `numpadParenRight`
+    pub const NUMPAD_PAREN_RIGHT: LogicalKey = LogicalKey(0x200000229);
+    /// `gameButton1`
+    pub const GAME_BUTTON1: LogicalKey = LogicalKey(0x200000301);
+    /// `gameButton2`
+    pub const GAME_BUTTON2: LogicalKey = LogicalKey(0x200000302);
+    /// `gameButton3`
+    pub const GAME_BUTTON3: LogicalKey = LogicalKey(0x200000303);
+    /// `gameButton4`
+    pub const GAME_BUTTON4: LogicalKey = LogicalKey(0x200000304);
+    /// `gameButton5`
+    pub const GAME_BUTTON5: LogicalKey = LogicalKey(0x200000305);
+    /// `gameButton6`
+    pub const GAME_BUTTON6: LogicalKey = LogicalKey(0x200000306);
+    /// `gameButton7`
+    pub const GAME_BUTTON7: LogicalKey = LogicalKey(0x200000307);
+    /// `gameButtonA`
+    pub const GAME_BUTTON_A: LogicalKey = LogicalKey(0x200000311);
+    /// `gameButtonB`
+    pub const GAME_BUTTON_B: LogicalKey = LogicalKey(0x200000312);
+    /// `gameButtonC`
+    pub const GAME_BUTTON_C: LogicalKey = LogicalKey(0x200000313);
+    /// `gameButtonLeft1`
+    pub const GAME_BUTTON_LEFT1: LogicalKey = LogicalKey(0x200000314);
+    /// `gameButtonLeft2`
+    pub const GAME_BUTTON_LEFT2: LogicalKey = LogicalKey(0x200000315);
+    /// `gameButtonMode`
+    pub const GAME_BUTTON_MODE: LogicalKey = LogicalKey(0x200000316);
+    /// `gameButtonRight1`
+    pub const GAME_BUTTON_RIGHT1: LogicalKey = LogicalKey(0x200000317);
+    /// `gameButtonRight2`
+    pub const GAME_BUTTON_RIGHT2: LogicalKey = LogicalKey(0x200000318);
+    /// `gameButtonSelect`
+    pub const GAME_BUTTON_SELECT: LogicalKey = LogicalKey(0x200000319);
+    /// `gameButtonStart`
+    pub const GAME_BUTTON_START: LogicalKey = LogicalKey(0x20000031a);
+    /// `gameButtonThumbLeft`
+    pub const GAME_BUTTON_THUMB_LEFT: LogicalKey = LogicalKey(0x20000031b);
+    /// `gameButtonThumbRight`
+    pub const GAME_BUTTON_THUMB_RIGHT: LogicalKey = LogicalKey(0x20000031c);
+    /// `gameButtonX`
+    pub const GAME_BUTTON_X: LogicalKey = LogicalKey(0x20000031d);
+    /// `gameButtonY`
+    pub const GAME_BUTTON_Y: LogicalKey = LogicalKey(0x20000031e);
+    /// `gameButtonZ`
+    pub const GAME_BUTTON_Z: LogicalKey = LogicalKey(0x20000031f);
 }

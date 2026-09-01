@@ -13,6 +13,7 @@
 #include "flutter/runtime/rust_semantics.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
+#include "flutter/rust/host/rustflutter_key_map_android.h"
 #include "flutter/testing/testing.h"
 
 // Declared by //flutter/rust:rust_lib (flutter/rust/rustflutter/src/lib.rs).
@@ -1227,6 +1228,92 @@ TEST(RustAppABI, EveryEntryPointSurvivesANullApp) {
   EXPECT_FALSE(rf_app_dispatch_semantics_action(nullptr, 1, 1));
 
   SUCCEED() << "every entry point declined a null app without dereferencing it";
+}
+
+// -- The Android key map ------------------------------------------------------
+//
+// Checked here rather than on a device because this is where a test can run at
+// all: the table is compiled on every platform (see rust/host/BUILD.gn) and is
+// arithmetic over constant data, with no Android type anywhere in it.
+//
+// The values asserted below are read from upstream's KeyboardMap.java, not
+// from the generated file next door -- an expectation copied out of the code
+// it is checking proves only that copying worked.
+
+TEST(AndroidKeyMap, AKeyOnTheKeyboardIsTheKeyUpstreamSays) {
+  // Tab: evdev scan code 0x0f, Android keyCode 0x3d (KEYCODE_TAB). Physical is
+  // the USB HID usage 0x0007002b; logical is 0x0100000009 -- the control plane,
+  // not the bare 0x09, because Tab is a key that means something rather than a
+  // character that was typed.
+  EXPECT_EQ(PhysicalKeyForAndroidKey(0x0f, 0x3d), 0x0007002bu);
+  EXPECT_EQ(LogicalKeyForAndroidKeyCode(0x3d), 0x0100000009u);
+
+  // A letter, whose logical value is the lower-case character itself. Android
+  // does put these in its table, unlike Windows, so this is a lookup and not
+  // the arithmetic the Windows map falls back on.
+  EXPECT_EQ(PhysicalKeyForAndroidKey(0x1e, 0x1d), 0x00070004u);  // keyA
+  EXPECT_EQ(LogicalKeyForAndroidKeyCode(0x1d), 0x61u);           // 'a'
+
+  // Left and right Shift are one key code apart and are meant to stay apart:
+  // a shortcut that does not care still has to see a press and a release
+  // cancel each other, and that is the physical key's job.
+  EXPECT_EQ(PhysicalKeyForAndroidKey(0x2a, 0x3b), 0x000700e1u);  // shiftLeft
+  EXPECT_EQ(PhysicalKeyForAndroidKey(0x36, 0x3c), 0x000700e5u);  // shiftRight
+  EXPECT_NE(LogicalKeyForAndroidKeyCode(0x3b),
+            LogicalKeyForAndroidKeyCode(0x3c));
+}
+
+TEST(AndroidKeyMap, AKeyWithNoScanCodeIsStillTwoDifferentKeys) {
+  // `adb shell input keyevent` and the emulator both send a scan code of zero.
+  // Upstream synthesizes the physical key from the key code there, and the
+  // reason is not tidiness: two keys sharing one physical value means the
+  // release of one cancels the press of the other, and the framework then
+  // believes a key is still down that nobody is holding.
+  const uint64_t tab = PhysicalKeyForAndroidKey(0, 0x3d);
+  const uint64_t enter = PhysicalKeyForAndroidKey(0, 0x42);
+  EXPECT_EQ(tab, kAndroidPlane | 0x3d);
+  EXPECT_EQ(enter, kAndroidPlane | 0x42);
+  EXPECT_NE(tab, enter);
+
+  // The logical key does not need the scan code at all, so it is the same one
+  // a real keyboard would have produced -- which is what lets a synthetic Tab
+  // drive a shortcut.
+  EXPECT_EQ(LogicalKeyForAndroidKeyCode(0x3d), 0x0100000009u);
+}
+
+TEST(AndroidKeyMap, AKeyNobodyNamesKeepsItsOwnNumber) {
+  // 0x1fff is past the end of both tables. An unnamed key still has to be a
+  // *stable* identity, and it must not land on a real Unicode codepoint: 'a'
+  // is 0x61, and a key that reported 0x61 raw would otherwise be
+  // indistinguishable from the letter.
+  //
+  // The two numbers are deliberately different. With one number for both, the
+  // physical fallback could use the key code instead of the scan code and no
+  // assertion here could tell -- which is exactly what a mutation proved.
+  EXPECT_EQ(PhysicalKeyForAndroidKey(0x1fff, 0x1ffe), kAndroidPlane | 0x1fff);
+  EXPECT_EQ(LogicalKeyForAndroidKeyCode(0x1fff), kAndroidPlane | 0x1fff);
+  EXPECT_NE(LogicalKeyForAndroidKeyCode(0x61), 0x61u)
+      << "key code 0x61 is a game button, not the letter a";
+}
+
+TEST(AndroidKeyMap, AGapInTheMiddleOfTheTableIsStillAGap) {
+  // Past the end is the easy miss: the search runs off the end and there is
+  // nothing to return by mistake. A number *inside* the table's range with no
+  // entry of its own is the hard one -- the search lands on the next entry
+  // along, which is a real row with a real value, and only the "is this
+  // actually the key I asked for" check stops it being returned.
+  //
+  // Scan code 0x54 has no entry and sits between 0x53 and 0x56; key code 0x4e
+  // has none and sits between 0x4d and 0x4f.
+  EXPECT_EQ(PhysicalKeyForAndroidKey(0x54, 0x54), kAndroidPlane | 0x54);
+  EXPECT_NE(PhysicalKeyForAndroidKey(0x54, 0x54),
+            PhysicalKeyForAndroidKey(0x56, 0x56))
+      << "the gap took its neighbour's value";
+
+  EXPECT_EQ(LogicalKeyForAndroidKeyCode(0x4e), kAndroidPlane | 0x4e);
+  EXPECT_NE(LogicalKeyForAndroidKeyCode(0x4e),
+            LogicalKeyForAndroidKeyCode(0x4f))
+      << "the gap took its neighbour's value";
 }
 
 }  // namespace testing

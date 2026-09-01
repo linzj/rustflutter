@@ -71,6 +71,8 @@
 #include "flutter/fml/task_runner.h"
 #include "flutter/fml/time/time_point.h"
 #include "flutter/impeller/renderer/context.h"
+#include "flutter/lib/ui/window/key_data.h"
+#include "flutter/lib/ui/window/key_data_packet.h"
 #include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/lib/ui/window/pointer_data.h"
 #include "flutter/lib/ui/window/pointer_data_packet.h"
@@ -78,6 +80,7 @@
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_gl.h"
+#include "flutter/rust/host/rustflutter_key_map_android.h"
 #include "flutter/shell/common/display.h"
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/common/rasterizer.h"
@@ -104,6 +107,7 @@ constexpr char kNavigationChannel[] = "flutter/navigation";
 constexpr char kSettingsChannel[] = "flutter/settings";
 constexpr char kLocalizationChannel[] = "flutter/localization";
 constexpr char kTextInputChannel[] = "flutter/textinput";
+constexpr char kKeyDataChannel[] = "flutter/keydata";
 
 constexpr char kClipboardError[] = "Clipboard error";
 constexpr char kUnknownClipboardFormatMessage[] = "Unknown clipboard format";
@@ -1325,6 +1329,35 @@ class HostPlatformView final : public PlatformView,
     return presented;
   }
 
+  /// Sends one key event to the framework.
+  ///
+  /// Keys travel as a platform message rather than a call of their own, which
+  /// is what every Flutter embedder does: the packet on `flutter/keydata` is
+  /// the same bytes here as on Windows and Linux, and no key-shaped method
+  /// exists on PlatformView to add one to.
+  ///
+  /// No answer is asked for, the same as the GTK host and unlike the Windows
+  /// one. Windows waits so that a key the framework did not want can be handed
+  /// back to the system, and that matters there because the window proc is the
+  /// only thing between the key and the default handling. Android's `onKeyDown`
+  /// would have to answer before this call could return, and it cannot: the
+  /// framework's verdict arrives on the platform thread, long after. Upstream
+  /// solves that by redispatching the event into the activity a second time,
+  /// which is a mechanism of its own and is not here yet.
+  void SendKey(const KeyData& data, const std::string& character) {
+    KeyDataPacket packet(data, character.empty() ? nullptr : character.c_str());
+    auto message = std::make_unique<PlatformMessage>(
+        kKeyDataChannel,
+        fml::MallocMapping::Copy(packet.data().data(), packet.data().size()),
+        /*response=*/nullptr);
+    task_runners_.GetPlatformTaskRunner()->PostTask(fml::MakeCopyable(
+        [weak = GetWeakPtr(), message = std::move(message)]() mutable {
+          if (weak) {
+            weak->DispatchPlatformMessage(std::move(message));
+          }
+        }));
+  }
+
   /// Sends one pointer event to the engine.
   void SendPointer(const PointerData& data) {
     auto packet = std::make_unique<PointerDataPacket>(1);
@@ -2281,6 +2314,53 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeSetSelection(JNIEnv* env,
                                                                    jint start,
                                                                    jint end) {
   flutter::HostState::Get().text_input.OnSelection(start, end);
+}
+
+/// One hardware key, on its way to the framework's shortcut tables and focus
+/// traversal.
+///
+/// Android gives a key two numbers and this needs both: `key_code` is what the
+/// key means -- the layout is already applied by the time the event is
+/// delivered -- and `scan_code` is where it is, which is what makes a release
+/// cancel the right press when a layout changes mid-key.
+///
+/// `character` is what the key typed, or null for a key that typed nothing.
+/// Java computes it, because `KeyCharacterMap` is where the layout lives and
+/// there is no way to ask it from here.
+JNIEXPORT void JNICALL
+Java_io_flutter_rustflutter_RustflutterActivity_nativeKey(JNIEnv* env,
+                                                          jclass clazz,
+                                                          jint key_code,
+                                                          jint scan_code,
+                                                          jboolean down,
+                                                          jboolean repeat,
+                                                          jstring character) {
+  auto& state = flutter::HostState::Get();
+  if (state.platform_view == nullptr) {
+    return;
+  }
+
+  flutter::KeyData data;
+  data.Clear();
+  // Android's own event timestamp is in milliseconds since boot; the framework
+  // counts microseconds, and only differences between key events are ever read
+  // from it, so the epoch does not have to agree with anything.
+  data.timestamp = static_cast<uint64_t>(
+      fml::TimePoint::Now().ToEpochDelta().ToMicroseconds());
+  data.type = down ? (repeat ? flutter::KeyEventType::kRepeat
+                             : flutter::KeyEventType::kDown)
+                   : flutter::KeyEventType::kUp;
+  data.physical = flutter::PhysicalKeyForAndroidKey(
+      static_cast<uint32_t>(scan_code), static_cast<uint32_t>(key_code));
+  data.logical =
+      flutter::LogicalKeyForAndroidKeyCode(static_cast<uint32_t>(key_code));
+  data.synthesized = 0;
+
+  std::string text;
+  if (character != nullptr) {
+    text = fml::jni::JavaStringToString(env, character);
+  }
+  state.platform_view->SendKey(data, text);
 }
 
 JNIEXPORT jboolean JNICALL

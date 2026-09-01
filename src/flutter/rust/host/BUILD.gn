@@ -39,6 +39,16 @@ source_set("host") {
   sources = [
     "rustflutter_app_main.cc",
     "rustflutter_host.h",
+
+    # Generated. See tools/gen_key_map.py.
+    #
+    # Built everywhere, unlike the other key maps below, which are each listed
+    # only under the host that reads them. This one names no Android header and
+    # calls nothing -- it is a binary search over constant data -- and the only
+    # binary that can test it is the *desktop* test binary. A table compiled
+    # only into the build that cannot run the tests is a table nothing checks.
+    "rustflutter_key_map_android.cc",
+    "rustflutter_key_map_android.h",
   ]
 
   # Impeller on EGL, which is the same file on every platform that has EGL --
