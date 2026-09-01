@@ -5731,3 +5731,51 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6910 通�
 先确认 `WidgetStates` 里有没有 `Selected` 这个状态（上游的轨道轮廓正是按
 `selected` 分别解析成开/关两个值的），有就照那条路补，
 没有就先补状态本身，别在开关里手搓一个"开/关两个颜色"的字段对。
+
+---
+
+## 第 507 轮：轨道里面那圈线，以及"画布记下了、我没去读"
+
+先查了上一轮问的：`WidgetState::Selected` **在**（`widget_state.rs` 里就有），
+所以 `trackOutlineColor`/`trackOutlineWidth` 照 `StateProperty` 那条路补，
+不用在开关里手搓一对"开/关颜色"字段。
+
+于是有了 `CupertinoSwitch::states(value, focused, pressed, enabled)`：
+上游维护一个 `states` 集合，在每次解析前后加减 `selected`，
+**同一个属性因此能对开和关给出两个答案**——这正是它是状态属性而不是颜色的原因。
+焦点和按下也在同一个集合里，所以一个开关可以在被按住时描不一样的边。
+
+轮廓的几何有两条：
+- **`if (trackOutlineColor != null)`**：只给宽度不给颜色，什么也不画。
+- **内缩一像素**：描边跨在路径上，画在轨道自身的边上会有一半溢出到
+  "开关这个形状"之外；内缩一格之后，两像素宽的描边外沿正好落在边界上。
+  和上一轮焦点环的 `inflate(1.75) / stroke 3.5` 是同一道算术反过来用。
+
+### 变异 7 个：先 5 红 2 活，两条活的是同一个毛病
+
+活下来的是"忽略给定的线宽"和"画在轨道边上而不是里面"。
+原因不在实现，在**我的测试只从画布上读了颜色**——
+而 `Drawn::RRect` 一直记着 `left/top/right/bottom` 和 `stroke`。
+**画布记下了，我没去读。**
+
+改成把那两个圆角矩形取出来：填充的是轨道、红色的是轮廓，
+断言轮廓的线宽正是属性给的 6.0（不是默认的 2.0），
+四条边各比轨道内缩一格。补完全红。
+
+这一条和第 498 轮"断言挑的点恰好是所有实现都一致的点"是同一类：
+**测试读到的东西比可读的少，就会有一整类错误看不见。**
+
+`CupertinoSwitch` 0.62 → **0.73（19/26）**。
+
+尺子：十七把全部 exit 0。门：Rust 6915 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6915 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`CupertinoSwitch` 只剩 `thumbIcon`、两张 `thumbImage` 与它们的错误回调、
+`mouseCursor`、`dragStartBehavior` 了。
+**先查一件事**：`dragStartBehavior` 在这个 crate 里有没有落脚点——
+`gestures.rs` 里 `DragStartBehavior`（`start` 对 `down`：拖动是从**手指落下**那一点
+算起还是从**判定为拖动**那一刻算起）是否已经有类型和规则。
+如果有，开关这边只是把它接上去；如果没有，那它是一条**跨很多控件**的规则，
+应该补在 `gestures.rs` 而不是补在开关里——
+和第 495 轮"滚动参数该有一个统一住处"是同一个判断。

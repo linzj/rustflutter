@@ -1012,6 +1012,25 @@ pub fn cupertino_focus_color(active: Color) -> Color {
         .to_color()
 }
 
+/// The line drawn **inside** a switch's track, upstream's `trackOutlineColor`
+/// and `trackOutlineWidth`.
+///
+/// ```dart
+/// final outlineTrackRect = Rect.fromLTWH(
+///   trackPaintOffset.dx + 1, trackPaintOffset.dy + 1,
+///   _kTrackWidth - 2, _kTrackHeight - 2);
+/// ```
+///
+/// **One pixel in on every side, not on the track's edge.** A stroke centred
+/// on the track's own outline would spill half its width outside it, and the
+/// track is what the switch's shape *is*; inset by one, a two-wide stroke sits
+/// with its outer edge on the boundary and its body inside. The two paddings
+/// are of a piece with [`SWITCH_FOCUS_RING_INFLATE`], which does the same sum
+/// the other way for a ring that belongs outside.
+pub const SWITCH_TRACK_OUTLINE_INSET: f32 = 1.0;
+/// Upstream's `trackOutlineWidth ?? 2.0`.
+pub const SWITCH_TRACK_OUTLINE_WIDTH: f32 = 2.0;
+
 /// The ring drawn round a focused switch's track: upstream's
 /// `trackRRect.inflate(1.75)` stroked at 3.5.
 ///
@@ -1035,6 +1054,11 @@ struct SwitchLabelPainter {
     /// the marks because both go under the thumb and over -- or in the ring's
     /// case, around -- the track.
     focus: Option<Color>,
+    /// Upstream's track outline: a colour and a width, both resolved for the
+    /// state the switch is in. `None` when no colour was given -- upstream's
+    /// `if (trackOutlineColor != null)`, which is why a width on its own draws
+    /// nothing.
+    outline: Option<(Color, f32)>,
     /// Where the track is inside the box being painted.
     track: Rect,
     position: f32,
@@ -1059,6 +1083,25 @@ impl crate::render::CustomPainter for SwitchLabelPainter {
                 &crate::engine::Paint::new(focus).with_style(crate::engine::Style::Stroke {
                     width: SWITCH_FOCUS_RING_STROKE,
                 }),
+            );
+        }
+        if let Some((colour, width)) = self.outline {
+            let inset = SWITCH_TRACK_OUTLINE_INSET;
+            let inside = Rect::ltrb(
+                self.track.left + inset,
+                self.track.top + inset,
+                self.track.right - inset,
+                self.track.bottom - inset,
+            );
+            canvas.draw_rounded_rect(
+                inside,
+                // The radius stays the **track's**, not the inset
+                // rectangle's: upstream builds both round rects with the same
+                // `trackRadius`, so the outline follows the track's curve
+                // rather than a tighter one of its own.
+                self.track.height() / 2.0,
+                &crate::engine::Paint::new(colour)
+                    .with_style(crate::engine::Style::Stroke { width }),
             );
         }
         let Some(labels) = self.labels else {
@@ -1105,6 +1148,7 @@ impl crate::render::CustomPainter for SwitchLabelPainter {
             Some(old) => {
                 old.labels != self.labels
                     || old.focus != self.focus
+                    || old.outline != self.outline
                     || old.track != self.track
                     || old.position != self.position
                     || old.reaction != self.reaction
@@ -1301,6 +1345,12 @@ pub struct CupertinoSwitch {
     /// Upstream's `focusColor`, defaulting to [`cupertino_focus_color`] of
     /// whatever the on track is.
     focus_color: Option<Color>,
+    /// Upstream's `trackOutlineColor` and `trackOutlineWidth`, both
+    /// `WidgetStateProperty`: resolved against `{selected}` or `{}` so a
+    /// switch can outline its on and off states differently -- which is the
+    /// whole reason they are state properties rather than colours.
+    track_outline_color: Option<crate::widget_state::StateProperty<Option<Color>>>,
+    track_outline_width: Option<crate::widget_state::StateProperty<Option<f32>>>,
     /// Upstream's `onFocusChange`.
     on_focus_change: Option<Rc<dyn Fn(bool)>>,
     /// Upstream's `applyTheme`, which is nullable on purpose: `None` means
@@ -1319,6 +1369,8 @@ impl CupertinoSwitch {
             on_label_color: None,
             off_label_color: None,
             focus_color: None,
+            track_outline_color: None,
+            track_outline_width: None,
             on_focus_change: None,
             apply_theme: None,
             on_changed: None,
@@ -1371,6 +1423,56 @@ impl CupertinoSwitch {
     pub fn with_focus_color(mut self, color: Color) -> Self {
         self.focus_color = Some(color);
         self
+    }
+
+    /// Upstream's `trackOutlineColor`.
+    pub fn with_track_outline_color(
+        mut self,
+        color: crate::widget_state::StateProperty<Option<Color>>,
+    ) -> Self {
+        self.track_outline_color = Some(color);
+        self
+    }
+
+    /// Upstream's `trackOutlineWidth`, which is only read when a colour was
+    /// given: a width on its own draws nothing, because upstream's guard is
+    /// `if (trackOutlineColor != null)`.
+    pub fn with_track_outline_width(
+        mut self,
+        width: crate::widget_state::StateProperty<Option<f32>>,
+    ) -> Self {
+        self.track_outline_width = Some(width);
+        self
+    }
+
+    /// The states a switch is in, which is what its state properties are
+    /// resolved against.
+    ///
+    /// Upstream keeps a `states` set and adds or removes `selected` around
+    /// each resolve, so the on and off colours can be different values of one
+    /// property. Focus and press are in the same set, which is why a switch
+    /// can be outlined differently while it is held.
+    pub fn states(
+        value: bool,
+        focused: bool,
+        pressed: bool,
+        enabled: bool,
+    ) -> crate::widget_state::WidgetStates {
+        use crate::widget_state::{WidgetState, WidgetStates};
+        let mut states = WidgetStates::NONE;
+        if value {
+            states = states.with(WidgetState::Selected);
+        }
+        if focused {
+            states = states.with(WidgetState::Focused);
+        }
+        if pressed {
+            states = states.with(WidgetState::Pressed);
+        }
+        if !enabled {
+            states = states.with(WidgetState::Disabled);
+        }
+        states
     }
 
     /// Upstream's `onFocusChange`.
@@ -1490,6 +1592,22 @@ impl StatefulComponent for CupertinoSwitch {
         let rtl = crate::direction::current_direction() == crate::direction::TextDirection::Rtl;
         // `if (isFocused) { ... }`: the ring is drawn only while this switch
         // has the keyboard, in the colour derived from its own on track.
+        let states = CupertinoSwitch::states(value, state.focused, state.pressed, enabled);
+        // `if (trackOutlineColor != null)`: the width alone draws nothing, and
+        // the width's own default is upstream's `?? 2.0`.
+        let outline = self
+            .track_outline_color
+            .as_ref()
+            .and_then(|colour| colour.resolve(states))
+            .map(|colour| {
+                (
+                    colour,
+                    self.track_outline_width
+                        .as_ref()
+                        .and_then(|width| width.resolve(states))
+                        .unwrap_or(SWITCH_TRACK_OUTLINE_WIDTH),
+                )
+            });
         let focus_ring = state.focused.then(|| {
             self.focus_color
                 .unwrap_or_else(|| cupertino_focus_color(resolved.active_track))
@@ -1612,7 +1730,7 @@ impl StatefulComponent for CupertinoSwitch {
                     // Between the track and the thumb, as upstream paints
                     // them: the thumb covers the mark it has reached, and
                     // `opacities` fades that mark out as it arrives.
-                    if labels.is_some() || focus_ring.is_some() {
+                    if labels.is_some() || focus_ring.is_some() || outline.is_some() {
                         stack = stack.push_positioned(
                             crate::render::RenderCustomPaint::new(crate::widgets::SizedBox::new(
                                 width, height,
@@ -1621,6 +1739,7 @@ impl StatefulComponent for CupertinoSwitch {
                                 SwitchLabelPainter {
                                     labels,
                                     focus: focus_ring,
+                                    outline,
                                     track: track_rect,
                                     position,
                                     // The press widens the thumb over the marks,
@@ -7474,6 +7593,143 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    // -- The line inside the track ------------------------------------------------
+
+    #[test]
+    fn a_switch_is_in_the_states_its_appearance_is_resolved_against() {
+        use crate::widget_state::WidgetState;
+        let on = CupertinoSwitch::states(true, false, false, true);
+        assert!(on.contains(WidgetState::Selected));
+        assert!(!on.contains(WidgetState::Focused));
+
+        let held = CupertinoSwitch::states(false, true, true, false);
+        assert!(!held.contains(WidgetState::Selected));
+        assert!(held.contains(WidgetState::Focused));
+        assert!(held.contains(WidgetState::Pressed));
+        assert!(
+            held.contains(WidgetState::Disabled),
+            "a switch that cannot be changed says so, so a property can answer              differently for it"
+        );
+    }
+
+    #[test]
+    fn the_outline_can_differ_between_on_and_off() {
+        // Which is the whole reason it is a state property rather than a
+        // colour: one property, two answers.
+        use crate::widget_state::{StateProperty, WidgetState};
+        let on_colour = Color::argb(255, 255, 0, 0);
+        let off_colour = Color::argb(255, 0, 0, 255);
+        let property = StateProperty::resolve_with(move |states| {
+            Some(if states.contains(WidgetState::Selected) {
+                on_colour
+            } else {
+                off_colour
+            })
+        });
+
+        assert_eq!(
+            property.resolve(CupertinoSwitch::states(true, false, false, true)),
+            Some(on_colour)
+        );
+        assert_eq!(
+            property.resolve(CupertinoSwitch::states(false, false, false, true)),
+            Some(off_colour)
+        );
+    }
+
+    #[test]
+    fn an_outline_width_on_its_own_draws_nothing() {
+        // Upstream's guard is on the colour: `if (trackOutlineColor != null)`.
+        use crate::widget_state::StateProperty;
+        let width_only = CupertinoSwitch::new(9900, true)
+            .with_track_outline_width(StateProperty::all(Some(6.0)));
+        let painted = painted_rect_colors(stateful(width_only), 120.0, 60.0);
+        let plain = painted_rect_colors(stateful(CupertinoSwitch::new(9901, true)), 120.0, 60.0);
+        assert_eq!(
+            painted.len(),
+            plain.len(),
+            "a width with no colour is not an outline: {painted:02x?}"
+        );
+    }
+
+    #[test]
+    fn an_outlined_switch_draws_the_colour_width_and_inset_it_was_given() {
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+        use crate::widget_state::StateProperty;
+
+        let red = Color::argb(255, 255, 0, 0);
+        let outlined = CupertinoSwitch::new(9902, true)
+            .with_track_outline_color(StateProperty::all(Some(red)))
+            .with_track_outline_width(StateProperty::all(Some(6.0)));
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(CupertinoTheme::dark(), stateful(outlined)));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(120.0, 60.0));
+        let mut layers = LayerTree::new(120, 60);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(120.0, 60.0));
+            root.paint(&mut context, Offset::ZERO);
+        }
+
+        // The track itself, and the outline drawn inside it.
+        let rounds: Vec<(f32, f32, f32, f32, u32, Option<f32>)> = drawn()
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::RRect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    argb,
+                    stroke,
+                    ..
+                } => Some((*left, *top, *right, *bottom, *argb, *stroke)),
+                _ => None,
+            })
+            .collect();
+        let track = rounds
+            .iter()
+            .find(|call| call.5.is_none())
+            .copied()
+            .expect("the track is filled");
+        let outline = rounds
+            .iter()
+            .find(|call| call.4 == red.0)
+            .copied()
+            .expect("the outline is drawn in the colour the property answered");
+
+        assert_eq!(
+            outline.5,
+            Some(6.0),
+            "and at the width the other property answered, not the default"
+        );
+        assert_eq!(
+            (
+                outline.0 - track.0,
+                outline.1 - track.1,
+                track.2 - outline.2,
+                track.3 - outline.3
+            ),
+            (
+                SWITCH_TRACK_OUTLINE_INSET,
+                SWITCH_TRACK_OUTLINE_INSET,
+                SWITCH_TRACK_OUTLINE_INSET,
+                SWITCH_TRACK_OUTLINE_INSET
+            ),
+            "one pixel in on every side, so the stroke stays inside the shape              the switch is"
+        );
+    }
+
+    #[test]
+    fn the_outline_sits_inside_the_track_by_a_pixel() {
+        // A stroke centred on the track's own edge would spill half its width
+        // outside the shape the switch *is*.
+        assert_eq!(SWITCH_TRACK_OUTLINE_INSET * 2.0, SWITCH_TRACK_OUTLINE_WIDTH);
     }
 
     // -- The ring round a focused switch ------------------------------------------
