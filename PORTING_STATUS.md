@@ -4472,3 +4472,74 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 再看这个 crate 的 `reorderable_list.rs` 把它们放在了哪里；
 前几轮反复出现的教训是：**先分清"在别处"与"确实没有"**，
 不然又要花一轮去发现"其实早就做了"。
+
+---
+
+## 第 486 轮：同一条断言，写在上游写它的那一层
+
+队头第一次是真的：`ReorderableList` 8/29。按上一轮说的先分清成员归属，
+那 29 个里绝大多数是**构造参数**，而 `startItemDragReorder` / `cancelReorder`
+在 `ReorderableListState` 上——那两个这个 crate 早就有，转发给 sliver 的状态，
+和上游一模一样。真正没有的，是构造函数里的那两条断言。
+
+上游把它们**逐字写了三遍**：`ReorderableList`、`SliverReorderableList`、
+`ReorderableListView` 的构造函数各一份。
+
+```dart
+assert(
+  (itemExtent == null && prototypeItem == null) ||
+      (itemExtent == null && itemExtentBuilder == null) ||
+      (prototypeItem == null && itemExtentBuilder == null), ...);
+assert(
+  (onReorderItem != null && onReorder == null) ||
+      (onReorderItem == null && onReorder != null), ...);
+```
+
+这个 crate 只在 Material 那一层（`ReorderableListView::validate`）有，
+widgets 层的两个类**完全不检查**——而 `reorder_report` 恰恰收一个
+`has_on_reorder: bool`，也就是说"两个回调只能有一个"是它的**前提**，
+却没有任何地方验证过这个前提。
+
+### 但不能抄第三遍
+
+前面几轮记下过一条：**一串东西抄两份，就是两个会各自漂移的东西**。
+所以这一轮不是把断言复制到 sliver 上，而是把它**问一次**：
+新的 `ReorderableConfig` 持有五个字段（两个回调、三个 extent 来源），
+三个类都拿着它；`ReorderableListView` 原来的五个字段被它换掉，
+`ReorderableListViewError` 改名 `ReorderableError`，一个枚举管三个类。
+
+有一处细节决定了它不能只提供一个 `validate()`：
+Material 那层在两条断言**中间**还夹了一条 `children.every((w) => w.key != null)`。
+所以 `ReorderableConfig` 把两半也单独暴露出来
+（`check_extent_sources` / `check_callbacks`），
+Material 的 `validate` 按上游顺序把 key 那条夹在中间。
+顺序不是摆设：**一个同时犯了两个错的列表，被告知的是哪一个，由它决定**——
+两个 extent 来源 + 无 key 的孩子，报的是 extent。
+
+`itemCount >= 0` 那条**没有写**：`usize` 已经回答了它。
+（"没有可观察差别的规则不该写下来"，第 466/474/483 轮反复学到的。）
+
+### 变异扫描 7 个，全红，每个都点得出是哪条测试抓住的
+
+`given > 1` → `> 2`（5 红）；两个回调各自容忍（2 红 / 3 红）；
+config 的两条断言**换序**（1 红）；Material 把 key 提到最前（1 红）；
+外层 `ReorderableList::validate` 不问 sliver 直接 `Ok(())`（1 红）；
+新 config 默认两个回调都没有（5 红）。扫描后核对了树，五条新断言都在。
+
+顺手修了扫描脚本自己的一个读数错误：`cargo test` 失败时会打印
+`error: test failed`，脚本把它当成了"编译不过"。
+**一个变异是没被测到还是没编译过，是两件不同的事**，不能混。
+
+尺子：十七把全部 exit 0。门：Rust 6818 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6818 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：同一个文件里还剩一条真规则——
+`ReorderableListState._effectiveScrollCacheExtent`：
+`scrollCacheExtent` 优先，否则把**已废弃**的 `cacheExtent`（一个 double）
+当作 `ScrollCacheExtent.pixels` 解释，都没有就是 null。
+`scrolling.rs` 里 `ScrollCacheExtent` 和它的 `pixels` 构造子已经有了，
+所以这条是接得上的；**先查一件事**：这个 crate 里还有谁读 cache extent
+（`CustomScrollView` / `Viewport` 那条链），
+如果那条链上已经有一处做同样的"两个字段选一个"的解释，
+就该让它们共用，而不是在 reorderable 这边再写一遍——和这一轮同样的道理。

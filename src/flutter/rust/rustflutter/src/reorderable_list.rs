@@ -490,11 +490,122 @@ impl SliverReorderableListState {
     }
 }
 
+// -- The configuration all three constructors assert about --------------------
+
+/// Why a reorderable list refused the way it was built.
+///
+/// One enum for all three constructors, because upstream asks the same two
+/// questions in all three. `AChildWithoutAKey` is the exception: only
+/// [`ReorderableListView`] can be given children directly, so only it can be
+/// given one without a key, and [`ReorderableConfig::validate`] never returns
+/// that variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReorderableError {
+    MoreThanOneExtentSource,
+    AChildWithoutAKey,
+    BothCallbacks,
+    NeitherCallback,
+}
+
+/// The part of a reorderable list's configuration that upstream asserts about,
+/// *identically*, in `ReorderableList`, `SliverReorderableList` and
+/// `ReorderableListView`.
+///
+/// The three constructors carry the same two asserts word for word. Writing
+/// them out three times here would be three things that can drift, so they are
+/// asked once and the three lists hold one of these. Only the Material list
+/// wedges a third assert -- the child-key one -- between them, which is why
+/// this type offers the two halves separately as well as together: putting the
+/// key check in the middle is what upstream does, and the order decides which
+/// complaint a list with two mistakes reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReorderableConfig {
+    /// Upstream's `onReorderItem`, the callback that receives the *adjusted*
+    /// pair. See [`reorder_report`].
+    pub has_on_reorder_item: bool,
+    /// Upstream's deprecated `onReorder`, which receives the raw pair.
+    pub has_on_reorder: bool,
+    pub has_item_extent: bool,
+    pub has_prototype_item: bool,
+    pub has_item_extent_builder: bool,
+}
+
+impl ReorderableConfig {
+    /// A list with the modern callback and no fixed extent -- what the two
+    /// widget-layer constructors look like with nothing optional supplied.
+    pub fn new() -> ReorderableConfig {
+        ReorderableConfig {
+            has_on_reorder_item: true,
+            has_on_reorder: false,
+            has_item_extent: false,
+            has_prototype_item: false,
+            has_item_extent_builder: false,
+        }
+    }
+
+    /// Upstream's extent assert, which is written as three pairwise tests
+    /// rather than a count:
+    ///
+    /// ```dart
+    /// (itemExtent == null && prototypeItem == null) ||
+    ///     (itemExtent == null && itemExtentBuilder == null) ||
+    ///     (prototypeItem == null && itemExtentBuilder == null),
+    /// ```
+    ///
+    /// Each clause names the two that are *absent*, so the whole reads "some
+    /// two of the three were left out". Equivalent to "at most one given", and
+    /// it takes a minute to see why.
+    pub fn check_extent_sources(&self) -> Result<(), ReorderableError> {
+        let given = [
+            self.has_item_extent,
+            self.has_prototype_item,
+            self.has_item_extent_builder,
+        ]
+        .iter()
+        .filter(|given| **given)
+        .count();
+        if given > 1 {
+            Err(ReorderableError::MoreThanOneExtentSource)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Upstream's callback assert: **exactly one** of the two.
+    ///
+    /// Neither is refused rather than tolerated, which is worth noticing --
+    /// a reorderable list that reports nothing when a row is dropped looks like
+    /// a list that refuses to reorder, and the reader has no way to tell those
+    /// apart. Both is refused because the two callbacks are handed different
+    /// numbers for the same drop, and a list that fired both would be reporting
+    /// one move twice, in two conventions.
+    pub fn check_callbacks(&self) -> Result<(), ReorderableError> {
+        match (self.has_on_reorder_item, self.has_on_reorder) {
+            (true, true) => Err(ReorderableError::BothCallbacks),
+            (false, false) => Err(ReorderableError::NeitherCallback),
+            _ => Ok(()),
+        }
+    }
+
+    /// Both asserts, in the order the two widget-layer constructors write them.
+    pub fn validate(&self) -> Result<(), ReorderableError> {
+        self.check_extent_sources()?;
+        self.check_callbacks()
+    }
+}
+
+impl Default for ReorderableConfig {
+    fn default() -> ReorderableConfig {
+        ReorderableConfig::new()
+    }
+}
+
 /// Upstream `SliverReorderableList`: the sliver a reorderable list is made of.
 pub struct SliverReorderableList {
     pub item_count: usize,
     pub axis: Axis,
     pub reverse: bool,
+    pub config: ReorderableConfig,
     /// Upstream's `autoScrollerVelocityScalar`, whose default upstream calls
     /// `_kDefaultAutoScrollVelocityScalar` -- kept as a number even though the
     /// auto-scroller itself is not ported, so a caller configuring one is not
@@ -512,6 +623,7 @@ impl SliverReorderableList {
             axis: Axis::Vertical,
             reverse: false,
             auto_scroller_velocity_scalar: Self::DEFAULT_AUTO_SCROLL_VELOCITY_SCALAR,
+            config: ReorderableConfig::new(),
         }
     }
 
@@ -523,6 +635,16 @@ impl SliverReorderableList {
     pub fn with_reverse(mut self, reverse: bool) -> Self {
         self.reverse = reverse;
         self
+    }
+
+    pub fn with_config(mut self, config: ReorderableConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Upstream's constructor asserts.
+    pub fn validate(&self) -> Result<(), ReorderableError> {
+        self.config.validate()
     }
 
     /// Upstream's `createState`.
@@ -554,6 +676,22 @@ impl ReorderableList {
     pub fn with_reverse(mut self, reverse: bool) -> Self {
         self.sliver = self.sliver.with_reverse(reverse);
         self
+    }
+
+    pub fn with_config(mut self, config: ReorderableConfig) -> Self {
+        self.sliver = self.sliver.with_config(config);
+        self
+    }
+
+    /// Upstream's constructor asserts, which are the sliver's asserts asked a
+    /// second time: `ReorderableListState.build` hands every one of these
+    /// straight down to the `SliverReorderableList` it builds, so a
+    /// configuration this refuses is one the sliver would refuse anyway. It is
+    /// asked here because the reader who wrote the mistake wrote it *here*, and
+    /// upstream's third assert -- `itemCount >= 0` -- is not asked at all,
+    /// because a `usize` has already answered it.
+    pub fn validate(&self) -> Result<(), ReorderableError> {
+        self.sliver.validate()
     }
 
     /// Upstream's `createState`.
@@ -943,6 +1081,89 @@ mod tests {
         state.cancel_reorder();
         assert!(!state.sliver.is_dragging());
     }
+
+    // -- The two asserts, at the layer upstream writes them ------------------------
+
+    #[test]
+    fn the_sliver_refuses_more_than_one_source_of_extent() {
+        let mut config = ReorderableConfig::new();
+        assert_eq!(
+            SliverReorderableList::new(3).with_config(config).validate(),
+            Ok(()),
+            "none is fine"
+        );
+
+        config.has_prototype_item = true;
+        assert_eq!(
+            SliverReorderableList::new(3).with_config(config).validate(),
+            Ok(()),
+            "and one is fine"
+        );
+
+        config.has_item_extent_builder = true;
+        assert_eq!(
+            SliverReorderableList::new(3).with_config(config).validate(),
+            Err(ReorderableError::MoreThanOneExtentSource)
+        );
+    }
+
+    #[test]
+    fn the_sliver_refuses_both_callbacks_and_refuses_neither() {
+        let mut config = ReorderableConfig::new();
+        config.has_on_reorder = true;
+        assert_eq!(
+            SliverReorderableList::new(3).with_config(config).validate(),
+            Err(ReorderableError::BothCallbacks)
+        );
+
+        config.has_on_reorder_item = false;
+        assert_eq!(
+            SliverReorderableList::new(3).with_config(config).validate(),
+            Ok(()),
+            "the deprecated one alone still works"
+        );
+
+        config.has_on_reorder = false;
+        assert_eq!(
+            SliverReorderableList::new(3).with_config(config).validate(),
+            Err(ReorderableError::NeitherCallback),
+            "a list that reports nothing is a list that refuses to reorder"
+        );
+    }
+
+    #[test]
+    fn the_extent_complaint_comes_before_the_callback_one() {
+        // Both asserts fail; upstream writes the extent one first, so that is
+        // the one a reader is told about.
+        let config = ReorderableConfig {
+            has_on_reorder_item: false,
+            has_on_reorder: false,
+            has_item_extent: true,
+            has_prototype_item: true,
+            has_item_extent_builder: false,
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ReorderableError::MoreThanOneExtentSource)
+        );
+        assert_eq!(
+            config.check_callbacks(),
+            Err(ReorderableError::NeitherCallback)
+        );
+    }
+
+    #[test]
+    fn the_scroll_view_asks_the_same_question_as_the_sliver_it_builds() {
+        let mut config = ReorderableConfig::new();
+        config.has_item_extent = true;
+        config.has_item_extent_builder = true;
+        let list = ReorderableList::new(3).with_config(config);
+        assert_eq!(list.validate(), list.sliver.validate());
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableError::MoreThanOneExtentSource)
+        );
+    }
 }
 
 // -- material/reorderable_list.dart ------------------------------------------------
@@ -950,25 +1171,12 @@ mod tests {
 // The Material list on top of the widgets-layer machinery above. It reuses
 // `reorder_report` rather than restating it.
 
-/// Why a reorderable list view's construction was refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReorderableListViewError {
-    MoreThanOneExtentSource,
-    AChildWithoutAKey,
-    BothCallbacks,
-    NeitherCallback,
-}
-
 /// Upstream `ReorderableListView`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReorderableListView {
     pub item_count: usize,
-    pub has_on_reorder_item: bool,
-    /// Upstream's deprecated `onReorder`.
-    pub has_on_reorder: bool,
-    pub has_item_extent: bool,
-    pub has_prototype_item: bool,
-    pub has_item_extent_builder: bool,
+    /// The two asserts this shares with the widget-layer lists.
+    pub config: ReorderableConfig,
     /// Only the list constructor can answer this up front. See
     /// [`ReorderableListView::validate`].
     pub every_child_has_a_key: bool,
@@ -979,11 +1187,7 @@ impl ReorderableListView {
     pub fn new(item_count: usize) -> ReorderableListView {
         ReorderableListView {
             item_count,
-            has_on_reorder_item: true,
-            has_on_reorder: false,
-            has_item_extent: false,
-            has_prototype_item: false,
-            has_item_extent_builder: false,
+            config: ReorderableConfig::new(),
             every_child_has_a_key: true,
             builds_default_drag_handles: true,
         }
@@ -999,42 +1203,22 @@ impl ReorderableListView {
     /// is the moment it appears. The two constructors get the same rule and the
     /// only enforcement each of them can have.
     ///
-    /// The extent assert is written as three pairwise tests rather than a count:
-    ///
-    /// ```dart
-    /// (itemExtent == null && prototypeItem == null) ||
-    ///     (itemExtent == null && itemExtentBuilder == null) ||
-    ///     (prototypeItem == null && itemExtentBuilder == null),
-    /// ```
-    ///
-    /// Each clause names the two that are *absent*, so the whole reads "some two
-    /// of the three were left out". Equivalent to "at most one given", and it
-    /// takes a minute to see why.
-    pub fn validate(&self) -> Result<(), ReorderableListViewError> {
-        let extent_sources = [
-            self.has_item_extent,
-            self.has_prototype_item,
-            self.has_item_extent_builder,
-        ]
-        .iter()
-        .filter(|given| **given)
-        .count();
-        if extent_sources > 1 {
-            return Err(ReorderableListViewError::MoreThanOneExtentSource);
-        }
+    /// The other two are [`ReorderableConfig`]'s, and the key assert goes
+    /// *between* them because that is where upstream writes it -- a list built
+    /// with two fixed extents **and** a keyless child complains about the
+    /// extents, and one with a keyless child and no callback at all complains
+    /// about the child.
+    pub fn validate(&self) -> Result<(), ReorderableError> {
+        self.config.check_extent_sources()?;
         if !self.every_child_has_a_key {
-            return Err(ReorderableListViewError::AChildWithoutAKey);
+            return Err(ReorderableError::AChildWithoutAKey);
         }
-        match (self.has_on_reorder_item, self.has_on_reorder) {
-            (true, true) => Err(ReorderableListViewError::BothCallbacks),
-            (false, false) => Err(ReorderableListViewError::NeitherCallback),
-            _ => Ok(()),
-        }
+        self.config.check_callbacks()
     }
 
     /// What a drop reports, deferring to [`reorder_report`] for the arithmetic.
     pub fn report_drop(&self, old_index: usize, new_index: usize) -> ReorderReport {
-        reorder_report(old_index, new_index, self.has_on_reorder)
+        reorder_report(old_index, new_index, self.config.has_on_reorder)
     }
 
     /// Upstream wraps each item's key in a private global key keyed on the state
@@ -1124,9 +1308,31 @@ mod material_reorderable_tests {
         let mut list = ReorderableListView::new(3);
         assert_eq!(list.validate(), Ok(()));
         list.every_child_has_a_key = false;
+        assert_eq!(list.validate(), Err(ReorderableError::AChildWithoutAKey));
+    }
+
+    #[test]
+    fn the_key_complaint_sits_between_the_two_shared_ones() {
+        // Upstream wedges the key assert between the extent one and the
+        // callback one, and the order decides what a list with two mistakes is
+        // told about.
+        let mut list = ReorderableListView::new(3);
+        list.every_child_has_a_key = false;
+
+        list.config.has_item_extent = true;
+        list.config.has_prototype_item = true;
         assert_eq!(
             list.validate(),
-            Err(ReorderableListViewError::AChildWithoutAKey)
+            Err(ReorderableError::MoreThanOneExtentSource),
+            "the extents are asked about first"
+        );
+
+        list.config.has_prototype_item = false;
+        list.config.has_on_reorder_item = false;
+        assert_eq!(
+            list.validate(),
+            Err(ReorderableError::AChildWithoutAKey),
+            "but the key comes before the callbacks"
         );
     }
 
@@ -1135,21 +1341,21 @@ mod material_reorderable_tests {
         let mut list = ReorderableListView::new(3);
         assert_eq!(list.validate(), Ok(()), "none is fine");
 
-        list.has_item_extent = true;
+        list.config.has_item_extent = true;
         assert_eq!(list.validate(), Ok(()), "and one is fine");
 
-        list.has_prototype_item = true;
+        list.config.has_prototype_item = true;
         assert_eq!(
             list.validate(),
-            Err(ReorderableListViewError::MoreThanOneExtentSource)
+            Err(ReorderableError::MoreThanOneExtentSource)
         );
 
         // Every pair is refused, not just the first.
-        list.has_item_extent = false;
-        list.has_item_extent_builder = true;
+        list.config.has_item_extent = false;
+        list.config.has_item_extent_builder = true;
         assert_eq!(
             list.validate(),
-            Err(ReorderableListViewError::MoreThanOneExtentSource)
+            Err(ReorderableError::MoreThanOneExtentSource)
         );
     }
 
@@ -1158,24 +1364,18 @@ mod material_reorderable_tests {
         let mut list = ReorderableListView::new(3);
         assert_eq!(list.validate(), Ok(()));
 
-        list.has_on_reorder = true;
-        assert_eq!(
-            list.validate(),
-            Err(ReorderableListViewError::BothCallbacks)
-        );
+        list.config.has_on_reorder = true;
+        assert_eq!(list.validate(), Err(ReorderableError::BothCallbacks));
 
-        list.has_on_reorder_item = false;
+        list.config.has_on_reorder_item = false;
         assert_eq!(
             list.validate(),
             Ok(()),
             "the deprecated one alone still works"
         );
 
-        list.has_on_reorder = false;
-        assert_eq!(
-            list.validate(),
-            Err(ReorderableListViewError::NeitherCallback)
-        );
+        list.config.has_on_reorder = false;
+        assert_eq!(list.validate(), Err(ReorderableError::NeitherCallback));
     }
 
     #[test]
@@ -1195,8 +1395,8 @@ mod material_reorderable_tests {
         );
 
         let mut legacy = ReorderableListView::new(5);
-        legacy.has_on_reorder = true;
-        legacy.has_on_reorder_item = false;
+        legacy.config.has_on_reorder = true;
+        legacy.config.has_on_reorder_item = false;
         assert_eq!(
             legacy.report_drop(2, 3),
             ReorderReport::Raw {
