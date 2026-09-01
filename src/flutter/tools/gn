@@ -478,6 +478,13 @@ def to_gn_args(args):
   if args.no_enable_unittests:
     gn_args['enable_unittests'] = False
 
+  # rustflutter: the Linux desktop host resolves fallback fonts through
+  # fontconfig. Without it Skia falls back to the directory-scanning font
+  # manager, whose matchFamilyStyleCharacter returns nothing -- so any
+  # character outside the default families (CJK, for one) renders as a box.
+  if args.target_os == 'linux' or (is_host_build(args) and get_host_os() == 'linux'):
+    args.enable_fontconfig = True
+
   # Skia GN args.
   gn_args['skia_use_libpng_decode'] = True
   gn_args['skia_use_libpng_encode'] = True
