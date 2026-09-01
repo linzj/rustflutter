@@ -938,6 +938,39 @@ impl ScrollCacheExtent {
         value.is_some() || style == CacheExtentStyle::Pixel
     }
 
+    /// Upstream's `_effectiveScrollCacheExtent`: which of the two ways of
+    /// asking for a cache extent a widget actually meant.
+    ///
+    /// Upstream is midway through replacing a pair of loose parameters
+    /// (`cacheExtent`, a bare double, plus a separate `cacheExtentStyle`) with
+    /// the single [`ScrollCacheExtent`] above, so every widget on the way down
+    /// to the render viewport carries **both**, and each has to say which wins.
+    /// The answer is the same everywhere: the new field if it was given, else
+    /// the old double read in whatever unit that widget's style says, else
+    /// nothing at all.
+    ///
+    /// `None` here means **"the caller said nothing"**, not "use the default".
+    /// That distinction is the whole reason this returns an option: the widget
+    /// layer passes the nothing on, and the render viewport is where a missing
+    /// extent becomes [`DEFAULT_CACHE_EXTENT`] -- see [`Self::defaulted`],
+    /// which is that other question and must not be confused with this one.
+    ///
+    /// The `style` argument is `Pixel` for the widgets that never had a style
+    /// parameter to begin with. `ScrollView.buildViewport` and
+    /// `ReorderableListState` both write `ScrollCacheExtent.pixels(cacheExtent!)`
+    /// outright: a deprecated double arriving at a widget with no unit
+    /// attached is pixels, because pixels is what it always meant there.
+    pub fn effective(
+        scroll_cache_extent: Option<ScrollCacheExtent>,
+        cache_extent: Option<f32>,
+        style: CacheExtentStyle,
+    ) -> Option<ScrollCacheExtent> {
+        if scroll_cache_extent.is_some() {
+            return scroll_cache_extent;
+        }
+        cache_extent.map(|value| ScrollCacheExtent { value, style })
+    }
+
     /// What a viewport ends up with when no extent was given.
     pub fn defaulted(value: Option<f32>, style: CacheExtentStyle) -> Option<ScrollCacheExtent> {
         match (value, style) {
@@ -2047,7 +2080,16 @@ impl crate::render::RenderBox for RenderMeasuredItem {
 pub struct ShrinkWrappingViewport {
     pub axis_direction: crate::render::AxisDirection,
     pub cross_axis_direction: Option<crate::render::AxisDirection>,
+    /// Upstream's deprecated `cacheExtent`, a bare double whose unit is
+    /// [`Self::cache_extent_style`].
     pub cache_extent: Option<f32>,
+    /// Upstream's deprecated `cacheExtentStyle`. It means nothing on its own --
+    /// only [`Self::effective_scroll_cache_extent`] reads it, and only when the
+    /// deprecated double is the one being used.
+    pub cache_extent_style: CacheExtentStyle,
+    /// Upstream's `scrollCacheExtent`, which replaces the two above and wins
+    /// over them.
+    pub scroll_cache_extent: Option<ScrollCacheExtent>,
 }
 
 impl Default for ShrinkWrappingViewport {
@@ -2062,7 +2104,20 @@ impl ShrinkWrappingViewport {
             axis_direction,
             cross_axis_direction: None,
             cache_extent: None,
+            cache_extent_style: CacheExtentStyle::Pixel,
+            scroll_cache_extent: None,
         }
+    }
+
+    /// Upstream's `_effectiveScrollCacheExtent`. Unlike the two widgets that
+    /// hardcode pixels, a viewport does carry a `cacheExtentStyle`, so the
+    /// deprecated double can still be read as a multiple of the viewport.
+    pub fn effective_scroll_cache_extent(&self) -> Option<ScrollCacheExtent> {
+        ScrollCacheExtent::effective(
+            self.scroll_cache_extent,
+            self.cache_extent,
+            self.cache_extent_style,
+        )
     }
 
     /// The size the viewport takes on its main axis: what the content wanted,
@@ -2194,6 +2249,38 @@ mod tests {
         // question laziness declines to answer, so a shrink-wrap list builds
         // every child.
         assert!(!ShrinkWrappingViewport::default().accepts_unbounded_main_axis());
+    }
+
+    #[test]
+    fn a_viewport_reads_the_deprecated_double_in_its_own_unit() {
+        // This is where a viewport differs from the widgets that hardcode
+        // pixels: it kept a `cacheExtentStyle`, so the same double can mean
+        // half a viewport.
+        let mut viewport = ShrinkWrappingViewport::default();
+        assert_eq!(viewport.effective_scroll_cache_extent(), None);
+
+        viewport.cache_extent = Some(0.5);
+        assert_eq!(
+            viewport.effective_scroll_cache_extent(),
+            Some(ScrollCacheExtent::pixels(0.5)),
+            "half a pixel, until the style says otherwise"
+        );
+
+        viewport.cache_extent_style = CacheExtentStyle::Viewport;
+        assert_eq!(
+            viewport
+                .effective_scroll_cache_extent()
+                .map(|extent| extent.in_pixels(800.0)),
+            Some(400.0),
+            "and then it is half a screen"
+        );
+
+        viewport.scroll_cache_extent = Some(ScrollCacheExtent::pixels(30.0));
+        assert_eq!(
+            viewport.effective_scroll_cache_extent(),
+            Some(ScrollCacheExtent::pixels(30.0)),
+            "the new field wins, and brings its own unit with it"
+        );
     }
 
     use super::*;

@@ -30,6 +30,7 @@ use crate::multidrag::{
     MultiDragGestureRecognizer,
 };
 use crate::render::{Axis, Offset};
+use crate::scrolling::{CacheExtentStyle, ScrollCacheExtent};
 
 /// Where a stationary row sits while another is being dragged past it.
 ///
@@ -659,13 +660,47 @@ impl SliverReorderableList {
 /// [`SliverReorderableList`].
 pub struct ReorderableList {
     pub sliver: SliverReorderableList,
+    /// Upstream's deprecated `cacheExtent`, a bare double. The sliver has no
+    /// such field: the cache extent belongs to the scroll view around it.
+    pub cache_extent: Option<f32>,
+    /// Upstream's `scrollCacheExtent`, which replaces it.
+    pub scroll_cache_extent: Option<ScrollCacheExtent>,
 }
 
 impl ReorderableList {
     pub fn new(item_count: usize) -> ReorderableList {
         ReorderableList {
             sliver: SliverReorderableList::new(item_count),
+            cache_extent: None,
+            scroll_cache_extent: None,
         }
+    }
+
+    pub fn with_cache_extent(mut self, cache_extent: f32) -> Self {
+        self.cache_extent = Some(cache_extent);
+        self
+    }
+
+    pub fn with_scroll_cache_extent(mut self, extent: ScrollCacheExtent) -> Self {
+        self.scroll_cache_extent = Some(extent);
+        self
+    }
+
+    /// Upstream's `ReorderableListState._effectiveScrollCacheExtent`, which is
+    /// [`ScrollCacheExtent::effective`] with the unit fixed at pixels: a
+    /// `ReorderableList` never had a `cacheExtentStyle` to read one from, so
+    /// upstream writes `ScrollCacheExtent.pixels(cacheExtent!)` outright.
+    ///
+    /// The getter lives on the *state* upstream and is read in `build`, which
+    /// is not a detail: the list is what the reader configured, and the state
+    /// is what hands the answer to the `CustomScrollView` it builds. Here the
+    /// configuration is on the list, so the question is asked of the list.
+    pub fn effective_scroll_cache_extent(&self) -> Option<ScrollCacheExtent> {
+        ScrollCacheExtent::effective(
+            self.scroll_cache_extent,
+            self.cache_extent,
+            CacheExtentStyle::Pixel,
+        )
     }
 
     pub fn with_axis(mut self, axis: Axis) -> Self {
@@ -1149,6 +1184,57 @@ mod tests {
         assert_eq!(
             config.check_callbacks(),
             Err(ReorderableError::NeitherCallback)
+        );
+    }
+
+    // -- Two ways of asking for a cache extent -------------------------------------
+
+    #[test]
+    fn saying_nothing_about_the_cache_extent_stays_nothing() {
+        // Not the default: the widget layer passes the silence on, and the
+        // render viewport is where a missing extent becomes a number.
+        let list = ReorderableList::new(3);
+        assert_eq!(list.effective_scroll_cache_extent(), None);
+        assert_eq!(
+            ScrollCacheExtent::defaulted(None, CacheExtentStyle::Pixel),
+            Some(ScrollCacheExtent::pixels(
+                crate::scrolling::DEFAULT_CACHE_EXTENT
+            )),
+            "which is a different question, asked further down"
+        );
+    }
+
+    #[test]
+    fn the_deprecated_double_is_read_as_pixels_here() {
+        // A `ReorderableList` never had a `cacheExtentStyle`, so upstream
+        // writes `ScrollCacheExtent.pixels(cacheExtent!)` outright.
+        let list = ReorderableList::new(3).with_cache_extent(120.0);
+        assert_eq!(
+            list.effective_scroll_cache_extent(),
+            Some(ScrollCacheExtent::pixels(120.0))
+        );
+        assert_eq!(
+            list.effective_scroll_cache_extent()
+                .map(|extent| extent.in_pixels(800.0)),
+            Some(120.0),
+            "and a viewport of any size does not change it"
+        );
+    }
+
+    #[test]
+    fn the_new_field_wins_over_the_deprecated_one() {
+        let list = ReorderableList::new(3)
+            .with_cache_extent(120.0)
+            .with_scroll_cache_extent(ScrollCacheExtent::viewport(0.5));
+        assert_eq!(
+            list.effective_scroll_cache_extent(),
+            Some(ScrollCacheExtent::viewport(0.5))
+        );
+        assert_eq!(
+            list.effective_scroll_cache_extent()
+                .map(|extent| extent.in_pixels(800.0)),
+            Some(400.0),
+            "so the unit comes from the field that won, not from this widget"
         );
     }
 

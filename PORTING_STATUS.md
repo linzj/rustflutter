@@ -4543,3 +4543,60 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6818 通�
 （`CustomScrollView` / `Viewport` 那条链），
 如果那条链上已经有一处做同样的"两个字段选一个"的解释，
 就该让它们共用，而不是在 reorderable 这边再写一遍——和这一轮同样的道理。
+
+---
+
+## 第 487 轮：两种问法要一个缓存范围，谁说了算
+
+接上一轮的"下一步"。先按它说的查了一件事——**上游自己就有三份**：
+
+| 位置 | 弃用的 double 按什么单位读 |
+| --- | --- |
+| `Viewport` / `ShrinkWrappingViewport`（`widgets/viewport.dart`，两份） | 看该 widget 的 `cacheExtentStyle` |
+| `ScrollView.buildViewport` | **写死 pixels** |
+| `ReorderableListState`（上一轮那个文件） | **写死 pixels** |
+
+后两处写死 pixels 不是省事，是**它们根本没有 `cacheExtentStyle` 这个参数**：
+一个不带单位到达的 double，在那里就是像素。
+
+这个 crate 这边：`ScrollCacheExtent`、`CacheExtentStyle`、`in_pixels`、
+`is_legal`、`defaulted` 都在 `scrolling.rs`，
+而 `ShrinkWrappingViewport` 只有一个 `cache_extent: Option<f32>`
+——**弃用的那半留着，新的那半没有，也没人做这个二选一的解释**。
+
+所以这一轮补的是 `ScrollCacheExtent::effective`，一处，三个调用点各自带上自己的单位：
+`ShrinkWrappingViewport`（新增 `scroll_cache_extent` 与 `cache_extent_style`，
+读自己的 style）、`ReorderableList`（新增两个字段，写死 Pixel）。
+
+### 最容易写错的是它的返回值
+
+`None` 的意思是 **"调用者什么都没说"**，不是"用默认值"。
+widget 层把这份沉默原样传下去，`DEFAULT_CACHE_EXTENT` 是**渲染层**才发生的事
+——那是 `defaulted` 回答的另一个问题。两者签名相近、含义相反，
+所以测试里把它们并排断言了一次：同样是"没给"，
+`effective` 给 `None`，`defaulted` 给 250 像素。
+
+还有一点在测试里钉住了：`scroll_cache_extent` 赢的时候，
+**单位跟着赢的那个字段走**，而不是跟着这个 widget 的 style。
+一个 `ReorderableList`（写死 pixels）拿到
+`ScrollCacheExtent::viewport(0.5)`，在 800 的视口里就是 400 像素。
+
+### 变异 6 个，全红
+
+弃用的 double 反过来压过新字段（2 红）；double 被忽略（2 红）；
+`effective` 里丢掉 `style` 一律按 pixels（1 红，正是 viewport 那条）；
+viewport 不读自己的 style（1 红）；新建的 viewport 默认按 viewport 计（1 红）；
+reorderable 那边把写死的 Pixel 改成 Viewport（1 红）。扫描后核对了树，四条新测试都在。
+
+尺子：十七把全部 exit 0。门：Rust 6822 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6822 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`ReorderableList` 这一路已经走到"配置齐了"，
+回到 depth 队头的第二名 `TextSelectionOverlay`（0.28，7/25）。
+**先查一件事**（这两轮反复见效的那一步）：上游 `TextSelectionOverlay` 的成员里
+有一大半是转发给 `SelectionOverlay` 的
+（`showHandles`/`hideHandles`/`showToolbar`/`hideToolbar`/`update`/`dispose`…），
+先分清哪些在 `SelectionOverlay` 上、这个 crate 的 `text_selection.rs` 与
+`selection_overlay`（如果有）各自放了什么，
+再决定是"在别处、记一笔"还是真缺口。
