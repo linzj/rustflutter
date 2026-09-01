@@ -4734,3 +4734,64 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6836 通�
 **先查一件事**：`editable.rs` 的测试里有没有现成的"挂一个输入框并拿到它的
 `RenderRef` 与 `lines_sink`"的辅助函数（`a_field_*` 那一批用的东西），
 有就复用，没有就先写那一个，别在测试里手搓一遍字段初始化。
+
+---
+
+## 第 490 轮：把上一轮活下来的那条变异杀掉
+
+上一轮唯一活着的变异是实时路径的：把传给规则的手柄写死成 `Start`，全绿——
+因为这个 crate 里没有一条测试从**挂载好的输入框**上真拖一个手柄。
+这一轮就做这一件事。
+
+按"先查一件事"查了：需要的三样东西都是现成的，
+上一轮记的"这条闭包够不到"和第 426 轮那句一样，是**"我没想到怎么做"**：
+
+- **活的 `StateHandle`**——`StateHandle::detached()` 的 `set_state` 什么也改不到，
+  但 `TextField::with_state_sink` 就是这个字段自己公开句柄的办法，
+  挂一个 `TextField` 三行就够（`a_field_can_be_given_the_text_it_opens_with` 早就这么做）。
+- **`RenderRef` 锚点**——`RenderRef::new` 包一个 `RenderConstrainedBox` 即可；
+  没有父级时 `global_to_local` 就是恒等，正合用。
+- **`LineLayout`**——测试模块在同一个文件里，直接构造一行 `VisualLine` 就行。
+
+于是有了 `mounted_field` / `selection_of` / `field_handle_drag` 三个小辅助，
+和两条真走一遍的测试：
+
+- **Windows**：`Hello brave world` 选中 `brave`(6,11)，
+  把**首**手柄拖到最左 → (0,11)；把**尾**手柄拖到同一点 → **选区一动不动**，
+  因为两端不能交叉，整次更新被丢掉。
+- **iOS**：同一个手势 → (6,0)，选区翻面，锚在起手处。
+
+**同一个手势，两个平台，一个不动一个翻面**——这正是上一轮那条规则的意义，
+现在它是从输入框这一端被看见的，而不是只在规则函数上。
+
+### 变异 10 个，全红（上一轮是 9 红 1 活）
+
+上一轮那条"写死 Start"现在被两条新测试同时抓住；
+另外"能不能交叉""哪些平台记 drag-start""Apple 锚在哪一端"三条，
+除了原有的规则测试之外，**也**被走一遍的测试抓住了——
+这正是走一遍的价值：规则和调用点一起被钉住。
+
+同时把上一轮写在调用点旁边的那句话改了：它当时是真的，现在是假的。
+**一句过期的注释比没有注释更坏**，所以它现在指向那条测试的名字。
+
+尺子：十七把全部 exit 0。门：Rust 6838 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6838 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：回到 `TextSelectionOverlay` 剩下的最后一处——`_getHandleDy`：
+
+```dart
+final double distanceDragged = dragDy - handleDy;
+final dragDirection = distanceDragged < 0.0 ? -1 : 1;
+final int linesDragged = dragDirection * (distanceDragged.abs() / preferredLineHeight).floor();
+return handleDy + linesDragged * preferredLineHeight;
+```
+
+**手柄的 dy 是一行一行跳的，不是连着滑的**（横向仍然连续），
+而且 `preferredLineHeight <= 0` 或任一端非有限时返回 null——**这一次移动整个不算**。
+**先查一件事**：这条规则要成立，得有人记住 `_endHandleDragPosition`
+（每次移动都被吸附后的值写回去，下一次从它再算），
+而这个 crate 的实时路径每次 move 都是从零开始算的、没有这个状态。
+所以先确认：这份状态放在 `TextSelectionOverlay`（它已经存着 grab 和 drag-start 选区）
+还是放在 `selection_host` 的 geometry 上——
+选错地方就会变成第 489 轮那种"一个概念两个住处"。

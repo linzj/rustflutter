@@ -1904,10 +1904,12 @@ fn drag_handle_to(
             // here, because this used to be an approximation of the
             // non-Apple half and there is no second copy to keep in step.
             //
-            // Said plainly rather than left to look like coverage: no test in
-            // this crate drives a handle drag through a mounted field, so a
-            // mutation that passes a fixed `HandleEnd` here survives. The
-            // *rule* is covered from every angle; this call is not.
+            // This call is reached by a test now -- see
+            // `a_handle_dragged_to_the_start_moves_the_end_it_was_given`,
+            // which mounts a field, takes its published state handle and
+            // drives this closure with each handle in turn. It was written
+            // down here as uncovered for one round; a `with_state_sink` and
+            // three lines was the whole distance.
             let live = (state.value.selection_base, state.value.selection_extent);
             // Upstream records this in the drag *start* handler. The press
             // itself never moves the selection, so recording it at the first
@@ -5744,6 +5746,144 @@ mod tests {
         assert_eq!(handle_lift(Some(Offset::new(3.0, 2.0)), 20.0), 2.0);
         assert_eq!(handle_lift(Some(Offset::new(3.0, 17.0)), 20.0), 17.0);
         assert_eq!(handle_lift(None, 20.0), 10.0, "half a line");
+    }
+
+    /// A mounted field holding `text`, and its live state handle.
+    ///
+    /// A handle drag needs a handle whose `set_state` actually reaches a
+    /// state, which `StateHandle::detached` does not: `with_state_sink` is the
+    /// field's own way of publishing one, and mounting a `TextField` is three
+    /// lines. What used to look like "this closure cannot be reached from a
+    /// test" was this much work away.
+    fn mounted_field(
+        id: u64,
+        text: &str,
+    ) -> (crate::framework::ElementTree, StateHandle<TextFieldState>) {
+        let sink: Rc<RefCell<Option<StateHandle<TextFieldState>>>> = Rc::default();
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(
+            TextField::new(id)
+                .with_initial_text(text)
+                .with_state_sink(Rc::clone(&sink)),
+        ));
+        let handle = sink.borrow().clone().expect("the field published itself");
+        (tree, handle)
+    }
+
+    fn selection_of(tree: &crate::framework::ElementTree) -> Option<(i32, i32)> {
+        let mut stack: Vec<crate::framework::ElementId> = tree.root().into_iter().collect();
+        while let Some(id) = stack.pop() {
+            if let Some(found) = tree.state::<TextFieldState, _>(id, |state| {
+                (state.value.selection_base, state.value.selection_extent)
+            }) {
+                return Some(found);
+            }
+            let mut children = tree.children_of(id);
+            children.reverse();
+            stack.extend(children);
+        }
+        None
+    }
+
+    /// The drag callback the field hands its overlay, over `text` on one line.
+    fn field_handle_drag(
+        handle: StateHandle<TextFieldState>,
+        text: &str,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> Rc<dyn Fn(crate::selection_host::HandleEnd, Offset)> {
+        let anchor: Rc<RefCell<Option<crate::render::RenderRef>>> = Rc::new(RefCell::new(Some(
+            crate::render::RenderRef::new(crate::render::RenderConstrainedBox::tight(400.0, 20.0)),
+        )));
+        let lines: LinesSink = Rc::new(RefCell::new(Some(LineLayout {
+            lines: vec![VisualLine {
+                start: 0,
+                end: text.len(),
+            }],
+            line_height: 20.0,
+            scroll: Offset::ZERO,
+            style: TextStyle::default(),
+            text_scale: 1.0,
+        })));
+        drag_handle_to(
+            handle,
+            anchor,
+            lines,
+            text.to_string(),
+            text.to_string(),
+            Rc::new(RefCell::new(
+                crate::text_selection::TextSelectionOverlay::new(),
+            )),
+            platform,
+        )
+    }
+
+    #[test]
+    fn a_handle_dragged_to_the_start_moves_the_end_it_was_given() {
+        // The seam between the handle a finger is holding and the rule that
+        // decides what the drag does. A mutation passing a fixed handle here
+        // used to survive every test in the crate.
+        let text = "Hello brave world";
+        let platform = crate::editable_text::TargetPlatform::Windows;
+
+        let (tree, handle) = mounted_field(4901, text);
+        handle.set_state(|state| {
+            state.value.selection_base = 6;
+            state.value.selection_extent = 11;
+        });
+        assert_eq!(selection_of(&tree), Some((6, 11)), "`brave` selected");
+
+        // Dragging the *start* handle to the left edge takes the base with it
+        // and leaves the extent alone.
+        field_handle_drag(handle.clone(), text, platform)(
+            crate::selection_host::HandleEnd::Start,
+            Offset::new(0.0, 10.0),
+        );
+        assert_eq!(selection_of(&tree), Some((0, 11)));
+
+        // The *end* handle dragged to the same place would put the extent
+        // before the base, which off Apple is refused outright -- so the
+        // selection does not move at all.
+        let (tree, handle) = mounted_field(4902, text);
+        handle.set_state(|state| {
+            state.value.selection_base = 6;
+            state.value.selection_extent = 11;
+        });
+        field_handle_drag(handle.clone(), text, platform)(
+            crate::selection_host::HandleEnd::End,
+            Offset::new(0.0, 10.0),
+        );
+        assert_eq!(
+            selection_of(&tree),
+            Some((6, 11)),
+            "the handles may not cross, and the move is dropped whole"
+        );
+    }
+
+    #[test]
+    fn the_same_drag_on_an_apple_field_turns_the_selection_inside_out() {
+        // The platform split, through the field rather than over the rule
+        // alone: the same gesture that Windows refuses, iOS answers by
+        // reversing the selection and carrying on.
+        let text = "Hello brave world";
+        let (tree, handle) = mounted_field(4903, text);
+        handle.set_state(|state| {
+            state.value.selection_base = 6;
+            state.value.selection_extent = 11;
+        });
+
+        field_handle_drag(
+            handle.clone(),
+            text,
+            crate::editable_text::TargetPlatform::IOS,
+        )(
+            crate::selection_host::HandleEnd::End,
+            Offset::new(0.0, 10.0),
+        );
+        assert_eq!(
+            selection_of(&tree),
+            Some((6, 0)),
+            "anchored where the drag started, and now backwards"
+        );
     }
 
     #[test]
