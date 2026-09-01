@@ -180,14 +180,20 @@ impl SelectableText {
     /// along the way -- the fact that a selectable text wraps where a field
     /// does not.
     ///
-    /// **`show_cursor` is not honoured.** Upstream's default is false and this
-    /// crate has no way to suppress a focused field's caret, so a selectable
-    /// text that has been clicked shows one. Recorded rather than quietly
-    /// dropped: the caret is upstream's `showCursor`, and the missing piece is
-    /// in the field, not here.
+    /// `show_cursor` reaches the field as upstream's `showCursor`, which is
+    /// passed on to the `EditableText` the same way. Its default here is
+    /// false, so a passage that has been clicked shows no caret -- a blinking
+    /// bar in the middle of prose reads as a field somebody is about to type
+    /// into, which is exactly what this is not.
+    ///
+    /// Note that the field's *own* default is not false but `!read_only`, so
+    /// this has to be passed explicitly rather than left out: a read-only
+    /// field would already suppress the caret, but a selectable text says so
+    /// on its own account, and upstream lets `showCursor: true` put one back.
     pub fn widget(&self, id: u64) -> crate::framework::AnyWidget {
         let field = crate::editable::TextField::new(id)
             .with_read_only(true)
+            .with_show_cursor(self.show_cursor)
             .with_initial_text(self.data.clone());
         let field = match self.field_max_lines() {
             crate::editable::MaxLines::Growing => field.multiline(),
@@ -291,6 +297,71 @@ mod tests {
             stack.extend(children);
         }
         None
+    }
+
+    #[test]
+    fn a_selected_passage_blinks_nothing_at_the_reader() {
+        // `showCursor` defaults to false on a `SelectableText`, and it is
+        // passed to the field rather than left to the field's own default.
+        // Both halves matter: without it a clicked passage of prose blinks a
+        // bar in the middle of a paragraph, which is what a text box about to
+        // be typed into looks like.
+        //
+        // The count is taken from the widget the passage builds, not asserted
+        // about the flag, because the flag was already being stored correctly
+        // before this worked -- it simply went nowhere.
+        crate::focus::reset();
+        let quiet = SelectableText::new("a passage to read");
+        assert_eq!(painted_carets(quiet.widget(4301), 4301), 0);
+
+        crate::focus::reset();
+        let mut asked = SelectableText::new("a passage to read");
+        asked.show_cursor = true;
+        assert_eq!(
+            painted_carets(asked.widget(4302), 4302),
+            1,
+            "upstream lets a selectable text ask for a caret, and it means it"
+        );
+    }
+
+    /// Focuses the widget's field, paints one frame with the blink in its
+    /// shown half, and counts the carets.
+    ///
+    /// Reaching through the whole build is the point: a test that read
+    /// `show_cursor` back off the struct would have passed before this round,
+    /// when the flag was stored and then dropped on the floor.
+    fn painted_carets(widget: crate::framework::AnyWidget, id: u64) -> usize {
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(widget);
+
+        // Focus opens the editing session, and the session's first frame is
+        // the one the blink starts on -- shown. Running the real clock rather
+        // than setting the flag is what puts `advance` in the path too: a
+        // field with no caret never turns the flag on in the first place.
+        assert!(crate::focus::focus(id), "the passage's field took focus");
+        tree.advance_frame(10_000);
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a render tree");
+        root.layout(crate::render::BoxConstraints::tight(200.0, 100.0));
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(200.0, 100.0),
+            );
+            root.paint(&mut context, crate::render::Offset::ZERO);
+        }
+        drawn()
+            .iter()
+            .filter(|call| match call {
+                Drawn::Rect { left, right, .. } => (right - left - 2.0).abs() < 0.01,
+                _ => false,
+            })
+            .count()
     }
 
     #[test]

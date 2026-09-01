@@ -3024,6 +3024,19 @@ pub struct TextField {
     /// [`crate::selection_area::SelectableText`] is built on -- upstream's own
     /// description of it is "a read-only `EditableText`".
     read_only: bool,
+    /// Upstream's `EditableText.showCursor`: whether a caret is drawn at all.
+    ///
+    /// `None` is upstream's null, and its default is not a constant --
+    /// `showCursor = showCursor ?? !readOnly`. A field you type into shows
+    /// where the next character will go; a read-only one has no next
+    /// character, so by default it shows nothing. Passing `Some` overrides
+    /// that either way, which is how a read-only field can still be given a
+    /// caret and how an editable one can be denied one.
+    ///
+    /// This is what [`crate::selection_area::SelectableText`] needs: it is a
+    /// read-only field, and a passage of prose with a caret blinking in it
+    /// looks like a field somebody is about to type into.
+    show_cursor: Option<bool>,
     /// The text the field starts with, used **once**.
     ///
     /// Upstream's `TextFormField.initialValue`, and its one-shot nature is
@@ -3212,6 +3225,7 @@ impl TextField {
             action: TextInputAction::Done,
             obscure: false,
             read_only: false,
+            show_cursor: None,
             initial_text: None,
             max_lines: MaxLines::Single,
             min_lines: None,
@@ -3231,6 +3245,23 @@ impl TextField {
     pub fn with_read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
         self
+    }
+
+    /// Upstream's `showCursor`. See the field for why its default is not a
+    /// constant.
+    pub fn with_show_cursor(mut self, show: bool) -> Self {
+        self.show_cursor = Some(show);
+        self
+    }
+
+    /// `showCursor ?? !readOnly`, upstream's own line.
+    ///
+    /// Its own method because two places ask: the paint, which decides whether
+    /// to draw a caret, and the blink clock, which has nothing to do if the
+    /// answer is no. One home for the rule keeps them from disagreeing about
+    /// a field that is read-only *and* asked for a caret.
+    fn cursor_shown(&self) -> bool {
+        self.show_cursor.unwrap_or(!self.read_only)
     }
 
     /// The text the field opens with. See [`TextField::initial_text`]'s field
@@ -3416,6 +3447,13 @@ impl StatefulComponent for TextField {
         let editing = state
             .connection
             .is_some_and(|connection| connection.is_attached());
+        // A field with no caret has no blink. Upstream's `_startCursorBlink`
+        // returns before starting the timer for the same reason: a clock whose
+        // every tick changes nothing on screen is a frame asked for and
+        // wasted.
+        if !self.cursor_shown() {
+            return false;
+        }
         if !editing {
             // A session that ended without this field hearing about it -- the
             // platform moved to another client. The one frame that clears the
@@ -3618,8 +3656,9 @@ impl StatefulComponent for TextField {
         let lines_sink: LinesSink = Rc::new(RefCell::new(None));
         let real_text = state.value.text.clone();
         // Only the shown half of the blink draws a caret -- upstream's cursor
-        // opacity, with the `advance` clock flipping it every half second.
-        let caret_shown = editing && state.caret_blink_on;
+        // opacity, with the `advance` clock flipping it every half second --
+        // and only when the field is meant to have one at all.
+        let caret_shown = self.cursor_shown() && editing && state.caret_blink_on;
 
         // Spending a pending reveal.
         //
@@ -7553,6 +7592,167 @@ mod tests {
             ),
             6
         );
+    }
+
+    /// Rebuilds, lays out and paints, and hands back what the canvas
+    /// recorded. The caret is a rectangle, so it is in here or it is not on
+    /// screen.
+    fn pump_drawn(
+        tree: &mut crate::framework::ElementTree,
+    ) -> Vec<crate::engine_test_stubs::Drawn> {
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+        use crate::render::RenderBox;
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a render tree");
+        root.layout(BoxConstraints::tight(200.0, 100.0));
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        reset_drawn();
+        {
+            let mut context =
+                crate::render::PaintContext::new(&mut layers, Size::new(200.0, 100.0));
+            root.paint(&mut context, Offset::ZERO);
+        }
+        drawn()
+    }
+
+    /// How many carets the frame drew.
+    ///
+    /// A caret is asked for by its width rather than by its colour. Colour
+    /// would mean naming a theme, and which theme is ambient in a bare tree is
+    /// not what these tests are about -- a test that hard-codes one fails the
+    /// day the default changes, for a reason that has nothing to do with the
+    /// caret. `CARET_WIDTH` is the rule the paint itself follows.
+    fn carets(calls: &[crate::engine_test_stubs::Drawn]) -> usize {
+        use crate::engine_test_stubs::Drawn;
+        calls
+            .iter()
+            .filter(|call| match call {
+                Drawn::Rect { left, right, .. } => (right - left - CARET_WIDTH).abs() < 0.01,
+                _ => false,
+            })
+            .count()
+    }
+
+    /// A focused field, painted, with the blink forced to its shown half.
+    ///
+    /// The blink is set rather than run so that the test asks one question:
+    /// whether a caret is drawn at all. A test that waited for the clock
+    /// would fail for two different reasons and could not tell them apart.
+    fn caret_count_for(field: TextField) -> usize {
+        let sink: Rc<RefCell<Option<StateHandle<TextFieldState>>>> = Rc::default();
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(
+            field.with_state_sink(Rc::clone(&sink)),
+        ));
+        assert!(crate::focus::focus(1), "the field took focus");
+        let handle = sink.borrow().clone().expect("the field published itself");
+        handle.set_state(|state| state.caret_blink_on = true);
+        carets(&pump_drawn(&mut tree))
+    }
+
+    #[test]
+    fn a_read_only_field_shows_no_caret_and_a_writable_one_does() {
+        // Upstream's `showCursor ?? !readOnly`. A field you type into shows
+        // where the next character goes; a read-only one has no next
+        // character. This is the whole of what `SelectableText` needed: a
+        // passage of prose with a bar blinking in it reads as a field
+        // somebody is about to type into.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+        assert_eq!(
+            caret_count_for(TextField::new(1).with_initial_text("hello")),
+            1,
+            "a writable field draws its caret"
+        );
+
+        text_input::reset();
+        crate::focus::reset();
+        assert_eq!(
+            caret_count_for(
+                TextField::new(1)
+                    .with_read_only(true)
+                    .with_initial_text("hello")
+            ),
+            0,
+            "and a read-only one draws none"
+        );
+    }
+
+    #[test]
+    fn show_cursor_overrides_the_default_in_both_directions() {
+        // The default is not a constant, so `Some` has to be able to say both
+        // things: a read-only field asked for a caret gets one, and a
+        // writable field denied one goes without. Upstream passes the flag
+        // straight through to `EditableText`, which is what makes
+        // `SelectableText.showCursor: true` mean anything.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+        assert_eq!(
+            caret_count_for(
+                TextField::new(1)
+                    .with_read_only(true)
+                    .with_show_cursor(true)
+                    .with_initial_text("hello")
+            ),
+            1,
+            "read-only, but asked for a caret"
+        );
+
+        text_input::reset();
+        crate::focus::reset();
+        assert_eq!(
+            caret_count_for(
+                TextField::new(1)
+                    .with_show_cursor(false)
+                    .with_initial_text("hello")
+            ),
+            0,
+            "writable, but denied one"
+        );
+    }
+
+    #[test]
+    fn a_field_with_no_caret_runs_no_blink_clock() {
+        // Upstream's `_startCursorBlink` returns before starting its timer
+        // when `showCursor` is false. The saving is not the toggling, it is
+        // the frame: `advance` returning true is this crate's way of asking
+        // for another one, and a clock whose every tick changes nothing on
+        // screen would ask for a frame every half second, for ever.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+
+        let field = TextField::new(1).with_show_cursor(false);
+        let mut state = TextFieldState::default();
+        state.connection = Some(text_input::attach(
+            Box::new(FieldClient {
+                handle: StateHandle::detached(),
+                on_changed: None,
+                on_submitted: None,
+                multiline: false,
+                last: TextEditingValue::default(),
+                read_only: false,
+            }),
+            TextInputConfiguration::default(),
+        ));
+
+        assert!(
+            !field.advance(&mut state, 10_000),
+            "an editing session with no caret asks for no frame"
+        );
+        assert!(!state.caret_blink_on);
+        assert!(
+            !field.advance(&mut state, 600_000),
+            "nor half a second later"
+        );
+        assert!(!state.caret_blink_on);
+
+        // The same session, with a caret, does ask.
+        let writable = TextField::new(1);
+        assert!(writable.advance(&mut state, 10_000));
+        assert!(state.caret_blink_on);
     }
 
     #[test]

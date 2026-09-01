@@ -6437,3 +6437,61 @@ javac 对 android.jar 编译通过。**仍然没有真机**。
 也是最容易一试就露馅的一条。
 没有设备就换方向：`depth.py` 队头的 `SelectableText`（0.32，11/34），
 它和刚做完的选择/键盘那块是连着的。
+
+---
+
+## 第 519 轮：`showCursor`——代码自己招认的那个洞
+
+`adb devices` 还是空的，于是转 `depth.py` 队头的 `SelectableText`。
+不用找缺口：它的文档注释里明写着
+
+> **`show_cursor` is not honoured.** ... the missing piece is in the field, not here.
+
+**一个存下来却哪儿也不去的字段**。选中一段文章后，中间会闪一个光标——
+那正是"一个马上要被打字的输入框"的样子，而这个控件恰恰不是。
+
+### 上游的默认值不是常量
+
+`EditableText` 写的是 `showCursor = showCursor ?? !readOnly`。
+能打字的字段要指出下一个字符落在哪儿；只读的没有下一个字符。
+所以字段那侧加的是 `Option<bool>`，`None` 就是上游的 null，
+`cursor_shown()` 是那一行本身。
+
+**两处要问同一个问题**：绘制（画不画光标）和眨眼时钟（有没有事可做）。
+写成一个方法而不是两处判断，否则"只读但被要求显示光标"这种情况
+两边会给出不同答案。
+
+眨眼那一处也照上游做了：`_startCursorBlink` 在 `showCursor` 为假时
+**直接返回，不启动定时器**。这里对应的是 `advance` 返回 false——
+本 crate 里那就是"不要下一帧"。省的不是翻转，是**每半秒一帧、永远不停**。
+
+`SelectableText` 现在把自己的 `show_cursor` 传下去，而且**必须显式传**：
+字段自己的默认已经是 `!read_only`（对只读也是不显示），
+但这是两条不同的规则碰巧同值，而上游允许 `showCursor: true` 把光标要回来。
+
+### 测试里改对的一件事
+
+第一版 `carets()` 按颜色数——用了 `Theme::light().primary`，结果一个也没数到：
+裸树里的环境主题是 **dark**。改成按 **`CARET_WIDTH` 宽度**数：
+颜色要求测试点名一个主题，而哪个主题是默认跟光标毫无关系，
+**主题一改这测试就会为了不相干的理由变红**。宽度是绘制本身遵循的那条规则。
+
+`SelectableText` 那条测试**跑真的眨眼时钟**（`focus` 开会话、`advance_frame`
+走第一帧）而不是直接把标志设成 true——这样 `advance` 也在路径里，
+"没有光标的字段根本不会把标志打开"这件事顺带被看着。
+
+七个变异全部杀死，覆盖：绘制少判一次、时钟少判一次、默认值改成常量真、
+改成常量假、忽略显式值、控件不往下传、控件永远要光标。
+
+尺子：十七把全部 exit 0。门：Rust 6943 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6943 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`SelectableText` 还差得远（11/34），下一个真缺口按同样标准挑——
+**先看 `selection_area.rs` 里还有没有第二处"存了但不用"的字段**：
+`max_lines` 是用了的，`data` 是用的，但 `rich(spans)` 那条路
+（`with_span_count` 收下参数后**原样返回 self**）就是同一类东西，
+而且比 `show_cursor` 更彻底：它连字段都没有。
+**先查一件事**：本 crate 的 `TextSpan`（`painting.rs`）能不能真的喂给
+`RenderEditable`——如果字段那侧只认 `String`，那这一轮的活是在字段里，
+和这次一样；如果能，那就是把 `rich` 接上去。
