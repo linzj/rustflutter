@@ -63,6 +63,30 @@ EXAMINED = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'depth_examined.json')
 
 
+def check_paths(rows):
+    """Every Rust file a reading points at has to be there.
+
+    The rows are the only reason a class is hidden from the list, so a row that
+    has rotted hides a class for a reason nobody can check any more -- which is
+    exactly the suppression list this file says it is not.  Files get renamed
+    and modules get split; the pointer going stale is the normal case, not an
+    exotic one, so it is checked rather than trusted.
+
+    A path is accepted repo-relative or relative to the crate, because both
+    readings are useful to write and neither is wrong -- `src/text_selection.rs`
+    reads better in a row that is already about that crate, and the long form
+    reads better when the row names files in two of them.
+    """
+    stale = []
+    for row in rows:
+        for path in re.findall(r'src/[\w/]+\.rs', row.get('at', '')):
+            if os.path.exists(path) or os.path.exists(
+                    os.path.join(os.path.dirname(CRATE), path)):
+                continue
+            stale.append((row['class'], path))
+    return stale
+
+
 def load_examined():
     """Rows already read against upstream, by class name.
 
@@ -72,7 +96,15 @@ def load_examined():
     if not os.path.exists(EXAMINED):
         return {}
     with open(EXAMINED, encoding='utf-8') as handle:
-        return {row['class']: row for row in json.load(handle)['examined']}
+        rows = json.load(handle)['examined']
+    stale = check_paths(rows)
+    if stale:
+        print('depth_examined.json points at files that are not there:')
+        for name, path in stale:
+            print(f'  {name}: {path}')
+        print('A reading nobody can follow is a suppression, not a reading.')
+        sys.exit(1)
+    return {row['class']: row for row in rows}
 
 # Members that exist upstream because Dart needs them written out, and that a
 # Rust port answers with a derive or a trait impl.  Counting them would make

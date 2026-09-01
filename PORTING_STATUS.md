@@ -4990,3 +4990,57 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6857 通�
 有没有哪条的 `finding` 只写了"在别处"而没点名机制——
 这个文件的门槛是"可核对"，如果我自己这条写成一句话，
 那这个机制就开始退化成压制列表了。
+
+---
+
+## 第 494 轮：记下这一遍，顺便让这本账自己能被核对
+
+`TextSelectionOverlay` 那一遍（488–493）记进 `tools/depth_examined.json` 了。
+`finding` 按门槛写足：哪些成员在 `SelectionOverlay`、在 `OverlayMagnifier` 与
+`MagnifierHost`、在 `glyph_heights`、在 `visibilities`，
+哪些是构造时传过去而不存下来的（context、renderObject、selectionControls…），
+以及这六轮补掉的**五处真缺口**分别是什么（第 490 轮不算缺口，它补的是覆盖）。
+
+### 先查的那件事，答案有点出乎意料
+
+要查的是"有没有条目只写了'在别处'而不点名机制"。逐条读完：**没有**，
+每条都点了名。但发现了另一种烂法——**三条最老的行没有 `at` 字段**
+（它后来才加），其中两条把 PORTING_STATUS 的轮次写在正文里，
+读的人得自己去翻。补齐这三条时又发现 `HapticFeedback` 那条我差点写成
+`services/haptic_feedback.rs`——**这个文件不存在**，它在 `services/system.rs` 里。
+
+也就是说，这本账**最容易烂的地方不是理由写得空，而是指针指错**。
+文件会改名、模块会拆分，指针失效是常态而不是意外。
+
+所以这一轮给 `depth.py` 加了一条自检：加载时把每条 `at` 里出现的
+`src/....rs` 都验一遍，找不到就**打印出来并 exit 1**，
+仓库相对和 crate 相对两种写法都接受（两种在不同场合都更好读）。
+现有条目里有五处是 crate 相对的简写，正好被这条规则覆盖。
+
+> 一条没人能跟着走到的记录，就是一次压制，不是一次阅读。
+
+### 变异 6 个，全红——其中一条改变了我对自己这条记录的说法
+
+- 删掉 `TextSelectionOverlay` 这一行 → `--examined` 里就没有它了。
+  **注意这里我原本写错了**：本来打算断言"删掉它就回到队头"，结果不是——
+  这六轮把它从 0.28 做到了 **0.68（17/25）**，早就不在队头附近了。
+  所以这条记录**不是**让它隐身的东西，*工作本身*才是；
+  记录承担的是"剩下那 8 个成员的读数"。扫描逼我把这句话改对。
+- 三条不同的记录各自被改成指向一个不存在的文件 → 尺子拒绝加载（3 红）。
+- 去掉自检 → 那个本该被拒的文件顺利通过（1 红）。
+- 只接受仓库相对路径 → 现有的 crate 相对写法全部报错（1 红）。
+
+尺子：十七把全部 exit 0。门：Rust 6857 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6857 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：新的队头是 **`ReorderableListView`（0.26，8/31，material）**——
+第 486 轮刚动过它（`ReorderableConfig`），所以先别当成新地方。
+**先查一件事**：上游那 31 个成员里，有多少是
+`ReorderableListView.builder` 这个命名构造子带来的、有多少是
+`ScrollView` 一路传下去的滚动参数（`scrollDirection`、`padding`、`physics`、
+`primary`、`shrinkWrap`、`anchor`、`clipBehavior`、`restorationId`…）。
+如果绝大多数是后者，那这条和第 487 轮的 cache extent 是同一类问题：
+**这个 crate 的滚动参数没有一个统一的住处**，
+那就不该在 `ReorderableListView` 上再补一遍，而该看
+`scrolling.rs` 里有没有（或该不该有）一个"滚动视图的公共配置"。
