@@ -154,8 +154,10 @@ pub struct MaterialApp {
     pub has_home: bool,
     pub has_routes: bool,
     pub has_on_generate_route: bool,
-    pub has_router_delegate: bool,
-    pub has_router_config: bool,
+    /// Upstream's five router parameters, which `MaterialApp.router` takes and
+    /// hands straight to `WidgetsApp.router`. See
+    /// [`crate::widgets_app::RouterConfiguration`].
+    pub router: crate::widgets_app::RouterConfiguration,
     /// Upstream's `debugShowMaterialGrid`.
     pub debug_show_material_grid: bool,
     pub debug_show_checked_mode_banner: bool,
@@ -179,8 +181,7 @@ impl MaterialApp {
             has_home: true,
             has_routes: false,
             has_on_generate_route: false,
-            has_router_delegate: false,
-            has_router_config: false,
+            router: crate::widgets_app::RouterConfiguration::default(),
             debug_show_material_grid: false,
             debug_show_checked_mode_banner: true,
             theme_mode: Some(ThemeMode::System),
@@ -272,8 +273,13 @@ impl MaterialApp {
     /// An **at least one**, which is a third shape again after the exclusions
     /// and the implication -- a router with neither has no way to turn a URL
     /// into a screen.
+    /// It is **weaker** than the three `WidgetsApp.router` asserts, and that is
+    /// upstream's arrangement rather than an omission here: this constructor
+    /// checks the one thing it can check locally and forwards everything to
+    /// `WidgetsApp.router`, which checks the rest. See
+    /// [`crate::widgets_app::RouterConfiguration::validate`].
     pub fn router_is_configured(&self) -> bool {
-        self.has_router_delegate || self.has_router_config
+        self.router.is_configured()
     }
 
     /// Upstream wraps the app in a `GridPaper` **inside an `assert(() { ... }())`
@@ -1177,13 +1183,13 @@ mod tests {
         let mut app = MaterialApp::new();
         assert!(!app.router_is_configured());
 
-        app.has_router_delegate = true;
+        app.router.has_router_delegate = true;
         assert!(app.router_is_configured());
 
-        app.has_router_config = true;
+        app.router.has_router_config = true;
         assert!(app.router_is_configured(), "and both is allowed");
 
-        app.has_router_delegate = false;
+        app.router.has_router_delegate = false;
         assert!(app.router_is_configured());
     }
 
@@ -1203,6 +1209,50 @@ mod tests {
     fn localizations_are_fetched_through_a_check_rather_than_a_null() {
         assert!(DefaultMaterialLocalizations::of(true).is_some());
         assert!(DefaultMaterialLocalizations::of(false).is_none());
+    }
+
+    #[test]
+    fn an_app_checks_the_one_thing_it_can_and_the_widgets_app_checks_the_rest() {
+        // Upstream's layering, and it is worth stating because it looks like a
+        // gap from either end alone. `MaterialApp.router` carries **one**
+        // assert -- `routerDelegate != null || routerConfig != null` -- and
+        // then hands all five parameters to `WidgetsApp.router`, which carries
+        // the other three. `CupertinoApp.router` is the same, word for word.
+        //
+        // So an app can pass its own constructor and still be refused a moment
+        // later, and that is not a bug in either check.
+        let both = crate::widgets_app::RouterConfiguration {
+            has_router_config: true,
+            has_router_delegate: true,
+            ..crate::widgets_app::RouterConfiguration::default()
+        };
+        let app = MaterialApp {
+            router: both,
+            ..MaterialApp::new()
+        };
+        assert!(
+            app.router_is_configured(),
+            "the app's own assert is satisfied -- one of the two is there"
+        );
+        assert!(
+            both.validate().is_err(),
+            "and `WidgetsApp.router` refuses it: a routerConfig carries the              delegate already"
+        );
+
+        // The parameters this port used to drop on the floor: an app that
+        // passes a provider and no parser had nowhere to say so, and the
+        // refusal it earns had nothing to refuse.
+        let provider_only = crate::widgets_app::RouterConfiguration {
+            has_router_delegate: true,
+            has_route_information_provider: true,
+            ..crate::widgets_app::RouterConfiguration::default()
+        };
+        let app = MaterialApp {
+            router: provider_only,
+            ..MaterialApp::new()
+        };
+        assert!(app.router_is_configured());
+        assert!(provider_only.validate().is_err());
     }
 }
 

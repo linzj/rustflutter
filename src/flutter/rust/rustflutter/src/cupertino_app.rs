@@ -108,8 +108,14 @@ impl CupertinoScrollBehavior {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CupertinoApp {
     pub has_home: bool,
-    pub has_router_delegate: bool,
-    pub has_router_config: bool,
+    /// Upstream's five router parameters, which `CupertinoApp.router` takes and
+    /// hands straight to `WidgetsApp.router`.
+    ///
+    /// All five, not the two this port carried before: an application that
+    /// passes a `routeInformationProvider` and no parser is refused by
+    /// `WidgetsApp.router`, and an app that modelled only the delegate and the
+    /// config had nowhere to put the parameters that refusal is about.
+    pub router: crate::widgets_app::RouterConfiguration,
     pub debug_show_checked_mode_banner: bool,
 }
 
@@ -117,8 +123,7 @@ impl CupertinoApp {
     pub fn new() -> CupertinoApp {
         CupertinoApp {
             has_home: true,
-            has_router_delegate: false,
-            has_router_config: false,
+            router: crate::widgets_app::RouterConfiguration::default(),
             debug_show_checked_mode_banner: true,
         }
     }
@@ -126,8 +131,14 @@ impl CupertinoApp {
     /// Upstream's only constructor assert, on the `.router` form:
     /// `assert(routerDelegate != null || routerConfig != null)` -- the same "at
     /// least one" as `MaterialApp.router`.
+    ///
+    /// It is **weaker** than the three `WidgetsApp.router` asserts, and that
+    /// is upstream's arrangement rather than an omission here: this
+    /// constructor checks the one thing it can check locally and forwards
+    /// everything to `WidgetsApp.router`, which checks the rest. See
+    /// [`crate::widgets_app::RouterConfiguration::validate`].
     pub fn router_is_configured(&self) -> bool {
-        self.has_router_delegate || self.has_router_config
+        self.router.is_configured()
     }
 
     /// `MaterialApp` carries a `debugShowMaterialGrid` and wraps a `GridPaper`
@@ -1928,7 +1939,7 @@ mod tests {
     fn the_router_needs_at_least_one_of_its_two_configurations() {
         let mut app = CupertinoApp::new();
         assert!(!app.router_is_configured());
-        app.has_router_config = true;
+        app.router.has_router_config = true;
         assert!(app.router_is_configured());
     }
 
@@ -2739,5 +2750,42 @@ mod app_rules_tests {
         );
         assert!(!delegate.is_supported(&Locale::new("fr")));
         assert!(!delegate.should_reload(&DefaultCupertinoLocalizationsDelegate));
+    }
+
+    #[test]
+    fn a_cupertino_app_forwards_all_five_router_parameters() {
+        // `CupertinoApp.router` carries the same single assert `MaterialApp
+        // .router` does -- `routerDelegate != null || routerConfig != null` --
+        // and hands all five parameters to `WidgetsApp.router`, which carries
+        // the other three. This port used to model two of the five, so the
+        // parameters those three asserts are *about* had nowhere to live.
+        use crate::widgets_app::RouterConfiguration;
+        let app = CupertinoApp {
+            router: RouterConfiguration {
+                has_router_delegate: true,
+                has_route_information_provider: true,
+                ..RouterConfiguration::default()
+            },
+            ..CupertinoApp::new()
+        };
+        assert!(
+            app.router_is_configured(),
+            "its own assert is satisfied: there is a delegate"
+        );
+        assert!(
+            app.router.validate().is_err(),
+            "and the widgets app refuses it: a provider with no parser"
+        );
+
+        let sound = CupertinoApp {
+            router: RouterConfiguration {
+                has_router_delegate: true,
+                has_route_information_provider: true,
+                has_route_information_parser: true,
+                ..RouterConfiguration::default()
+            },
+            ..CupertinoApp::new()
+        };
+        assert_eq!(sound.router.validate(), Ok(()));
     }
 }

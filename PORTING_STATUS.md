@@ -3983,3 +3983,41 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 那三条断言，还是直接把参数转给 `WidgetsApp.router` 让它去断言——
 如果是后者，这两个 App 就该改成持有一个 `RouterConfiguration` 而不是两个布尔；
 如果上游真的各写各的，那这份重复是照抄上游，得在注释里说清楚它为什么在。
+
+---
+
+## 第 476 轮：两个 App 转发的那五个参数，之前只模型了两个
+
+上一轮留的问题查清了，而且答案是"两边都有一点"：
+`MaterialApp.router` 和 `CupertinoApp.router` **各自都写了一条**断言——
+`assert(routerDelegate != null || routerConfig != null)`——
+然后把五个参数**原样交给** `WidgetsApp.router`，由它断言其余三条。
+所以那份重复是上游的，不是这个 port 的；两个 App 的
+`router_is_configured` 文档里本来就写着它是"upstream's only constructor
+assert"，这一点原先就对。
+
+真正的缺口在别处：两个 App 各拿着 `has_router_delegate` /
+`has_router_config` **两个**布尔，而上游拿的是**五个**参数。
+少掉的三个正是上一轮那三条断言所**关于**的东西——
+于是"provider 给了却没给 parser"这种应用，在这个 port 里连表达都表达不出来，
+更谈不上被拒。改成两个 App 各持一个 `RouterConfiguration`，
+`router_is_configured` 转给它的 `is_configured`。
+
+两条测试把**分层**按住，因为单看任何一端都像是漏了：
+一个 app 可以通过自己构造函数那条断言，随即被 `WidgetsApp.router` 拒掉
+（给了 `routerConfig` 又给 `routerDelegate`：配置本来就带着 delegate），
+**这不是任何一边的 bug**。反过来，`provider` 没有 `parser` 的应用
+"自己那条"也照样通过——弱的那条只管它管得着的。
+
+变异扫描 4 个，全红。扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6779 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+`CupertinoApp`（0.22，8/37）也从 `depth.py` 队头下去了。
+
+**下一步**：队头现在是 `MaterialLocalizations`（36/158）——
+上游那 158 个成员里绝大多数是 `DefaultMaterialLocalizations` 的字串与格式化。
+**先查一件事**：这个 crate 的 `MaterialLocalizations` trait 有 36 个成员，
+而 `DefaultMaterialLocalizations` 上还挂着多少**没有进 trait**的常量
+（第 472 轮在 Cupertino 那边遇到的正是这个形状：值都在，接口只有一半）。
+数一下"常量有、trait 没有"的那批，就知道这一轮是补接口还是补字串。
