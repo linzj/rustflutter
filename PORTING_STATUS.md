@@ -5451,3 +5451,54 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6893 通�
 看它们是怎么解决的：是整个 build 改成 widget 树，
 还是有一个能包住渲染对象的焦点组件。**照着已有的那条路走**，
 别为这一个控件发明第三种做法——第 489 轮的教训是同一个概念多一个住处就多一处会漂移。
+
+---
+
+## 第 502 轮：把焦点真接上，然后发现自己接了两遍
+
+上一轮如实记下的那处"没接上"，这一轮接上了。按"先查一件事"看了先例：
+`ink_well.rs` 是把**一个 widget 孩子**包进 `crate::focus::Focus`，
+而 `cupertino.rs` 里到处用的 `many(children, |rendered| ...)`
+正是"孩子是 widget、布局仍然自己写"的办法。照这条路走：
+每一段变成自己的 widget（`leaf` 里只剩这一段的渲染对象），
+外面包一个 `Focus`，再用 `many` 把它们排成一行。
+
+### 然后变异扫描告诉我：焦点被接了两遍
+
+第一版我在点击回调里写了 `crate::focus::focus(node)`，
+结果"**把这一句整个删掉**"的变异**全绿**——因为 `Focus` 组件**本来就**
+`focus_on_tap: true`，它自己会在被点时取走键盘。
+也就是同一条规则有了两个执行者，而其中一个还是我刚加的。
+
+处理办法不是把测试写严，是**只留一个**：删掉显式那句，
+改成给节点自己的 `focus_on_tap` 加上**闸门**——
+`SegmentButton::request_focus()` 对禁用段答 `None`，
+于是 `with_focus_on_tap(takes_focus)` 与 `with_traversable(takes_focus)`
+同时关掉"点击取焦"和"Tab 停靠"。
+**上游把禁用段移出单选组，方向键和 Tab 必须口径一致。**
+
+顺带抓出一个真 bug：build 里创建 `SegmentButton` 时**从没告诉它自己是不是禁用的**
+（`enabled` 默认 true），所以禁用段照样吃掉了键盘。
+是"点一下禁用段"的走一遍测试把它逼出来的。
+
+### 变异 5 个（加上一轮的 6 个），全红
+
+节点不再随点击取焦；禁用段照样取焦；button 从不被告知禁用；
+禁用段仍是 Tab 停靠点；焦点 id 与指针 id 撞车。
+最后那条值得一提：两套 id 本来就该分开，撞车之后
+`Pointer` 和 `Focus` 会注册同一个数字——现在有测试盯着。
+
+三条走一遍的测试：点一段 → 键盘落在它上；点禁用段 → 键盘不动；
+Tab 走过三段 → **直接跳过中间那个禁用的**。
+
+尺子：十七把全部 exit 0。门：Rust 6896 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6896 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`CupertinoSegmentedControl` 这一遍（499–502）现在真的走完了，
+下一轮把它记进 `tools/depth_examined.json`：
+`finding` 要点名 `children`→`labels`、`groupValue`→`selected`、
+`onValueChanged`→`wired` 这三处映射，六个颜色参数与禁用集合在哪，
+`_SegmentButton` 的单选钮身份在 `SegmentButton` 上，
+以及**确实没有对应物**的那个——`CupertinoSlidingSegmentedControl` 是**另一个类**，
+模块注释里写着不在移植范围（depth 会不会把它也算进这一条，记之前顺手确认）。

@@ -3063,12 +3063,8 @@ impl StatefulComponent for CupertinoSegmentedControl {
         // Upstream gives each segment a `_SegmentButton` with a focus node of
         // its own, and `_onTap` moves the keyboard to the segment that was
         // chosen -- ported as `SegmentButton`, whose ids sit past the pointer
-        // ones so the two do not meet. The tap **asks** for the focus here;
-        // whether anything answers depends on a node being registered, and
-        // this control builds its segments as render objects inside `leaf`,
-        // where a `Focus` widget cannot go. Said plainly rather than left to
-        // look like coverage: the rule is ported and tested, the registration
-        // is not, and the build has to become a widget tree before it can be.
+        // ones so the two do not meet. The nodes are registered below, one
+        // `Focus` widget per segment.
         let focus_base = first_id.wrapping_add(1_000);
         let count = labels.len();
         if state.shown != Some(selected) {
@@ -3109,14 +3105,8 @@ impl StatefulComponent for CupertinoSegmentedControl {
             {
                 let tapped = on_selected.clone();
                 // `_onTap`: the already-selected segment does not re-report.
-                let button = SegmentButton::new(focus_base + index as u64, index);
+                // The focus half of `_onTap` is the node's own, below.
                 segment = segment.with_tap(move |_| {
-                    // `_onTap` focuses first and reports second, so the
-                    // keyboard is on the segment the reader chose even when
-                    // the choice itself changes nothing.
-                    if let Some(node) = button.request_focus() {
-                        crate::focus::focus(node);
-                    }
                     if index != selected {
                         tapped(index);
                     }
@@ -3136,15 +3126,15 @@ impl StatefulComponent for CupertinoSegmentedControl {
             handlers.push(segment);
         }
 
-        leaf(move || {
-            // Center, not stretch: the control is as tall as its tallest
-            // segment (the 28 minimum), where stretch would take whatever
-            // loose height it is offered. Upstream's
-            // `_RenderSegmentedControl` sizes to its children the same way.
-            let mut row = RenderFlex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center);
-            for (index, label) in labels.iter().enumerate() {
+        // Each segment is its own widget so that it can carry a focus node --
+        // upstream's `_SegmentButton` has one, and a node is a widget here.
+        // The segments were built inside a single `leaf` before, where nothing
+        // could be registered; `many` is how the rest of this file builds a row
+        // of widgets it still wants to lay out by hand.
+        let segments: Vec<AnyWidget> = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
                 let fade = fades
                     .get(index)
                     .filter(|fade| fade.is_animating(now))
@@ -3157,23 +3147,61 @@ impl StatefulComponent for CupertinoSegmentedControl {
                     fade,
                 );
                 let (fill, text_color) = (painted.background, painted.text);
-                let segment = Container::new()
-                    .with_height(SEGMENTED_CONTROL_MIN_HEIGHT)
-                    .with_color(fill)
-                    .with_child(Center::new(
-                        // Upstream imposes only the color on the segment's
-                        // text (`getTextColor`); the size is the caller's
-                        // Text's, which here is the crate's default.
-                        Text::new(label.clone())
-                            .with_color(text_color)
-                            .with_soft_wrap(false)
-                            .with_max_lines(1),
-                    ));
-                row = row.push_flex(FlexChild::expanded(
-                    Pointer::new(first_id + index as u64, segment)
-                        .with_handlers(handlers[index].clone()),
-                    1,
-                ));
+                let label = label.clone();
+                let handlers = handlers[index].clone();
+                let mut button = SegmentButton::new(focus_base + index as u64, index);
+                // Upstream's `didChangeDependencies`: a disabled segment is
+                // not in the group, which is also what keeps the keyboard off
+                // it.
+                button.set_enabled(!disabled.contains(&index), None);
+                let node = crate::focus::Focus::new(
+                    button.focus_id,
+                    leaf(move || {
+                        let segment = Container::new()
+                            .with_height(SEGMENTED_CONTROL_MIN_HEIGHT)
+                            .with_color(fill)
+                            .with_child(Center::new(
+                                // Upstream imposes only the color on the
+                                // segment's text (`getTextColor`); the size is
+                                // the caller's Text's, which here is the
+                                // crate's default.
+                                Text::new(label.clone())
+                                    .with_color(text_color)
+                                    .with_soft_wrap(false)
+                                    .with_max_lines(1),
+                            ));
+                        Pointer::new(first_id + index as u64, segment)
+                            .with_handlers(handlers.clone())
+                    }),
+                );
+                // `_onTap` calls `requestFocus()` before reporting the
+                // change, so choosing a segment leaves the keyboard on it.
+                // Here that is the node's own `focus_on_tap` rather than a
+                // second call beside it: a `Focus` already focuses itself when
+                // its subtree is tapped, and two mechanisms for one rule is
+                // how they come apart. What this adds is the **gate** --
+                // `SegmentButton::request_focus` answers `None` for a disabled
+                // segment, which is the same reason it is not a Tab stop
+                // either. Upstream takes it out of the radio group; the arrows
+                // and Tab have to agree.
+                let takes_focus = button.request_focus().is_some();
+                crate::framework::component(
+                    node.with_focus_on_tap(takes_focus)
+                        .with_traversable(takes_focus),
+                )
+            })
+            .collect();
+
+        many(segments, move |rendered| {
+            // Center, not stretch: the control is as tall as its tallest
+            // segment (the 28 minimum), where stretch would take whatever
+            // loose height it is offered. Upstream's
+            // `_RenderSegmentedControl` sizes to its children the same way.
+            let mut row = RenderFlex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center);
+            for segment in rendered {
+                row = row.push_flex(FlexChild::expanded(segment, 1));
             }
             // The border: the primary color, corners rounded 3 --
             // `_RenderSegmentedControl` rounds the two end segments' outer
@@ -6969,6 +6997,122 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn tapping_a_segment_moves_the_keyboard_onto_it() {
+        // The registration and the request, through the real thing: a node per
+        // segment, and a tap that leaves the keyboard on the one chosen.
+        crate::focus::reset_scopes();
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            CupertinoTheme::dark(),
+            stateful(CupertinoSegmentedControl::new(
+                9200,
+                vec!["One".into(), "Two".into()],
+                0,
+            )),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(300.0, 60.0));
+
+        let event = |change, x: f32| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: crate::gestures::PRIMARY_BUTTON,
+            time_stamp_micros: 0,
+            position: Offset::new(x, 14.0),
+            delta: Offset::ZERO,
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: Offset::ZERO,
+        };
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Down, 220.0));
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Up, 220.0));
+
+        assert_eq!(
+            crate::focus::focused(),
+            Some(9200 + 1_000 + 1),
+            "the keyboard is on the segment that was chosen, so the arrows              carry on from there"
+        );
+    }
+
+    #[test]
+    fn tapping_a_disabled_segment_leaves_the_keyboard_where_it_was() {
+        crate::focus::reset_scopes();
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            CupertinoTheme::dark(),
+            stateful(
+                CupertinoSegmentedControl::new(9300, vec!["One".into(), "Two".into()], 0)
+                    .with_disabled(vec![1]),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(300.0, 60.0));
+
+        let event = |change, x: f32| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: crate::gestures::PRIMARY_BUTTON,
+            time_stamp_micros: 0,
+            position: Offset::new(x, 14.0),
+            delta: Offset::ZERO,
+            scroll_delta: Offset::ZERO,
+            pressure: 1.0,
+            local_position: Offset::ZERO,
+        };
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Down, 220.0));
+        router.dispatch(&root, &event(crate::gestures::PointerChange::Up, 220.0));
+
+        assert_eq!(
+            crate::focus::focused(),
+            None,
+            "a segment that cannot be chosen is not somewhere the keyboard lands"
+        );
+    }
+
+    #[test]
+    fn tab_walks_past_a_disabled_segment() {
+        // The other half of the same gate: the arrows skip a segment that has
+        // left the radio group, and Tab has to agree with them.
+        crate::focus::reset_scopes();
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(
+            CupertinoTheme::dark(),
+            stateful(
+                CupertinoSegmentedControl::new(
+                    9400,
+                    vec!["One".into(), "Two".into(), "Three".into()],
+                    0,
+                )
+                .with_disabled(vec![1]),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(300.0, 60.0));
+
+        assert!(crate::focus::next(), "there is somewhere to go");
+        assert_eq!(crate::focus::focused(), Some(9400 + 1_000));
+        assert!(crate::focus::next());
+        assert_eq!(
+            crate::focus::focused(),
+            Some(9400 + 1_000 + 2),
+            "the middle segment is disabled, so Tab goes straight past it"
+        );
     }
 
     #[test]
