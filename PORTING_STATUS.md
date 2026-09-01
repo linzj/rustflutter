@@ -3880,3 +3880,60 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 `CupertinoPageRoute` 的默认过渡）——
 两个 App 类在这个 crate 里是各写各的还是共用一条装配路径，
 决定这一轮是"补字段"还是"接装配"。
+
+---
+
+## 第 474 轮：一个 CupertinoApp 在盖起任何东西之前先定下的几件事
+
+上一轮留的问题先查：两个 App 类在这个 crate 里**各写各的**，
+而且都不是装配器——它们是**规则对象**：`has_home`/`has_routes` 这种布尔
+代表"给没给"，方法把上游的断言和选择写成能问的问题
+（`MaterialApp::choose_theme`、`router_is_configured`）。
+所以这一轮不是"接装配"，是把 `CupertinoApp` 缺的那几条规则补上。
+
+从上游 `_CupertinoAppState.build` 和 `_buildWidgetApp` 里拿到四条：
+
+- **状态栏样式是反的。**`brightness == dark ? SystemUiOverlayStyle.light : dark`——
+  名字说的是**图标**什么色，不是它背后是什么色：深色应用要浅色图标。
+  把这对读成"深色应用配深色样式"，就会在黑条上摆黑图标。
+  测试还把同一个反转在下一层再说一遍：样式自己的 `statusBarBrightness`
+  描述的是它**期待的背景**，所以 light 样式期待一条深色的条——
+  一个把这个字段当成"这是哪个样式"来读的测试，会整个反过来而且照样通过。
+- **没指定颜色的应用，用主题的主色被认出来**（`widget.color ?? primaryColor`）。
+  这是交给操作系统放进任务切换器的那个颜色，所以回退到主题而不是常量。
+- **光标是主色，选区是它的五分之一**——一个颜色一个数字，
+  主题换了主色两个一起动，上游把它们写成同一个 widget 的两行也是这个道理。
+- **本地化 delegate 的顺序**：应用自己的在**前**，框架的**追加在后**。
+  上游注释写明了为什么："只有每个类型的第一个 delegate 会被加载，
+  所以 localizationsDelegates 参数可以用来覆盖 _CupertinoLocalizationsDelegate"。
+  把框架的放前面照样编译、照样加载，只是悄悄让那个参数失效。
+  顺带补上 `DefaultCupertinoLocalizationsDelegate` 本身
+  （照 `DefaultWidgetsLocalizationsDelegate` 的样子，
+  `isSupported` 是 `languageCode == 'en'`——默认 bundle 是美式英语并且直说，
+  而不是认领所有 locale 然后一律答英语）。
+
+### 一条写完又删掉的规则
+
+第一版还写了 `CupertinoApp::effective_brightness`——
+"主题说了算，没说就问平台"。写完发现
+`CupertinoThemeData::brightness_of` **早就是这条**（上游的
+`CupertinoTheme.brightnessOf`），我等于用第二个名字抄了第二遍。
+删掉，改成在 `overlay_style` 的文档里指过去，
+并把那条测试改成"这个问题是主题的，不是应用的"。
+同名两份会漂，不同名两份漂了还看不出来。
+
+变异扫描 9 个，全红。扫描后按上一轮的新习惯核对了树
+（跑测试 + grep 这一轮的常量还在）。
+尺子：十七把全部 exit 0。门：Rust 6772 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`CupertinoApp` 还差上游那条 `assert`——
+`home`/`routes`/`onGenerateRoute` 与 `routerDelegate`/`routerConfig`
+不能同时给（`MaterialApp` 这边已经有 `router_is_configured`，
+但**没有**那条"两套导航二选一"的断言本身）。
+**先查一件事**：上游那条断言在 `WidgetsApp` 的构造函数里
+（`assert(routerDelegate != null || routerConfig != null || ...)`）
+还是在两个 App 各自的构造函数里——
+如果在 `WidgetsApp`，那这一条该补在 `widgets_app.rs`，
+两个 App 都受益，而不是抄两遍。

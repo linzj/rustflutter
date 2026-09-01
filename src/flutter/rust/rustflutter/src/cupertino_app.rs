@@ -137,6 +137,91 @@ impl CupertinoApp {
     pub fn has_a_design_grid_overlay() -> bool {
         false
     }
+
+    /// The status bar style that goes with a brightness -- and it is the
+    /// **opposite** one.
+    ///
+    /// Which brightness is **not** here on purpose. Upstream's build reads
+    /// `effectiveThemeData.brightness ?? MediaQuery.platformBrightnessOf`, and
+    /// that is `CupertinoTheme.brightnessOf` -- already ported, as
+    /// [`crate::cupertino_theme::CupertinoThemeData::brightness_of`]. A second
+    /// copy under a second name is two rules that can drift, and the first
+    /// draft of this tick wrote exactly that before noticing.
+    ///
+    /// Upstream: `brightness == Brightness.dark ? SystemUiOverlayStyle.light :
+    /// SystemUiOverlayStyle.dark`. The name says what the *icons* are, not
+    /// what the interface behind them is: a dark app needs light icons over
+    /// it. Reading the pair as "dark app, dark style" is the mistake this
+    /// exists to make hard.
+    pub fn overlay_style(
+        brightness: crate::prelude::Brightness,
+    ) -> crate::services::system::SystemUiOverlayStyle {
+        match brightness {
+            crate::prelude::Brightness::Dark => {
+                crate::services::system::SystemUiOverlayStyle::LIGHT
+            }
+            crate::prelude::Brightness::Light => {
+                crate::services::system::SystemUiOverlayStyle::DARK
+            }
+        }
+    }
+
+    /// Upstream's `_buildWidgetApp`: `widget.color ?? effectiveThemeData
+    /// .primaryColor`, resolved.
+    ///
+    /// The colour an app hands the operating system for its task switcher
+    /// entry, which is why it falls back to the theme rather than to a
+    /// constant: an application that themed itself and said nothing about
+    /// `color` still wants to be recognised by its own colour.
+    pub fn app_color(
+        given: Option<u32>,
+        theme: &crate::cupertino_theme::CupertinoThemeData,
+    ) -> u32 {
+        given.unwrap_or_else(|| theme.primary_color())
+    }
+
+    /// Upstream's `DefaultSelectionStyle`: the cursor is the primary colour
+    /// and the selection is the same colour at a fifth.
+    ///
+    /// One colour and one number, so that a theme changing its primary colour
+    /// moves both -- upstream writes them as two lines of the same widget for
+    /// the same reason.
+    pub fn selection_style(
+        theme: &crate::cupertino_theme::CupertinoThemeData,
+    ) -> (crate::prelude::Color, crate::prelude::Color) {
+        let cursor = crate::prelude::Color(theme.primary_color());
+        (
+            crate::elevation_overlay::with_opacity(cursor, CupertinoApp::SELECTION_OPACITY),
+            cursor,
+        )
+    }
+
+    /// Upstream's `withOpacity(0.2)` on the selection colour.
+    pub const SELECTION_OPACITY: f32 = 0.2;
+
+    /// Upstream's `_localizationsDelegates`, and the order is the rule:
+    ///
+    /// ```dart
+    /// return <LocalizationsDelegate<dynamic>>[
+    ///   ...?widget.localizationsDelegates,
+    ///   DefaultCupertinoLocalizations.delegate,
+    /// ];
+    /// ```
+    ///
+    /// The application's own come **first**, and upstream's comment says why:
+    /// *"Only the first delegate of a particular LocalizationsDelegate.type is
+    /// loaded so the localizationsDelegate parameter can be used to override
+    /// _CupertinoLocalizationsDelegate."* Appending the framework's rather than
+    /// prepending it is the whole of an application's ability to replace the
+    /// framework's strings -- see [`crate::localizations`], which is where the
+    /// first-per-type rule lives.
+    pub fn localizations_delegates(
+        app: Vec<std::rc::Rc<dyn crate::localizations::LocalizationsDelegate>>,
+    ) -> Vec<std::rc::Rc<dyn crate::localizations::LocalizationsDelegate>> {
+        let mut delegates = app;
+        delegates.push(std::rc::Rc::new(DefaultCupertinoLocalizationsDelegate));
+        delegates
+    }
 }
 
 impl Default for CupertinoApp {
@@ -523,6 +608,35 @@ impl CupertinoLocalizations for DefaultCupertinoLocalizations {
 
     fn collapsed_hint(&self) -> &str {
         DefaultCupertinoLocalizations::COLLAPSED_HINT
+    }
+}
+
+/// Upstream's `_CupertinoLocalizationsDelegate`, the one
+/// `DefaultCupertinoLocalizations.delegate` hands out.
+///
+/// Modelled on [`crate::localizations::DefaultWidgetsLocalizationsDelegate`],
+/// which is the same thing for the widgets layer: supports every locale,
+/// loads without costing a frame, and never asks to be reloaded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DefaultCupertinoLocalizationsDelegate;
+
+impl crate::localizations::LocalizationsDelegate for DefaultCupertinoLocalizationsDelegate {
+    fn resource_type(&self) -> &'static str {
+        "CupertinoLocalizations"
+    }
+
+    /// Upstream: `bool isSupported(Locale locale) => locale.languageCode ==
+    /// 'en'` on `_CupertinoLocalizationsDelegate` -- the **default** bundle is
+    /// US English and says so, rather than claiming every locale and answering
+    /// in English.
+    fn is_supported(&self, locale: &crate::platform::Locale) -> bool {
+        locale.language_code == "en"
+    }
+
+    /// Upstream returns a `SynchronousFuture`: the framework's own strings are
+    /// already in hand, so they never cost a frame.
+    fn load(&self, _locale: &crate::platform::Locale) -> crate::localizations::LoadedResources {
+        crate::localizations::LoadedResources::synchronous("CupertinoLocalizations", "en_US")
     }
 }
 
@@ -2466,5 +2580,164 @@ mod bundle_tests {
             "`mdy` in English, from both -- the generated one says so in \
              `datePickerDateOrderString`"
         );
+    }
+}
+
+#[cfg(test)]
+mod app_rules_tests {
+    use super::{CupertinoApp, DefaultCupertinoLocalizationsDelegate};
+    use crate::cupertino_theme::CupertinoThemeData;
+    use crate::localizations::LocalizationsDelegate;
+    use crate::platform::Locale;
+    use crate::prelude::Brightness;
+
+    #[test]
+    fn the_brightness_question_is_the_themes_to_answer() {
+        // Upstream's build reads `effectiveThemeData.brightness ??
+        // MediaQuery.platformBrightnessOf(context)`, which is
+        // `CupertinoTheme.brightnessOf` -- and that is already ported. This
+        // says so rather than restating it: a second copy under a second name
+        // is two rules that can drift, and the first draft of this tick wrote
+        // one before noticing.
+        let unstated = CupertinoThemeData::new();
+        assert_eq!(unstated.brightness(), None, "nothing stated");
+        assert_eq!(
+            unstated.brightness_of(Brightness::Dark),
+            Brightness::Dark,
+            "so the platform answers"
+        );
+    }
+
+    #[test]
+    fn a_dark_app_asks_for_light_status_bar_icons() {
+        // `brightness == Brightness.dark ? SystemUiOverlayStyle.light :
+        // SystemUiOverlayStyle.dark` -- **the opposite one**. The name says
+        // what the icons are, not what is behind them, and reading the pair as
+        // "dark app, dark style" would leave black icons on a black bar.
+        use crate::services::system::SystemUiOverlayStyle;
+        assert_eq!(
+            CupertinoApp::overlay_style(Brightness::Dark),
+            SystemUiOverlayStyle::LIGHT,
+            "a dark app is topped by the light style"
+        );
+        assert_eq!(
+            CupertinoApp::overlay_style(Brightness::Light),
+            SystemUiOverlayStyle::DARK
+        );
+
+        // And the inversion said a second time, one level down: the style's
+        // own `statusBarBrightness` describes the **background** it expects,
+        // so the light style -- light icons -- expects a dark bar behind them.
+        // A test that read this field as "which style is it" would have the
+        // whole thing backwards and still pass.
+        assert_eq!(
+            SystemUiOverlayStyle::LIGHT.status_bar_brightness,
+            Some(Brightness::Dark)
+        );
+        assert_eq!(
+            SystemUiOverlayStyle::DARK.status_bar_brightness,
+            Some(Brightness::Light)
+        );
+    }
+
+    #[test]
+    fn an_app_that_named_no_colour_is_known_by_its_theme_s() {
+        // `widget.color ?? effectiveThemeData.primaryColor`. It is the colour
+        // handed to the operating system for the task switcher, so falling
+        // back to the theme rather than to a constant is what keeps a themed
+        // application recognisable as itself.
+        let theme = CupertinoThemeData::with_primary_color(0xFF11_2233);
+        assert_eq!(CupertinoApp::app_color(None, &theme), 0xFF11_2233);
+        assert_eq!(
+            CupertinoApp::app_color(Some(0xFF44_5566), &theme),
+            0xFF44_5566,
+            "and an app that named one keeps it"
+        );
+    }
+
+    #[test]
+    fn the_cursor_is_the_primary_colour_and_the_selection_is_a_fifth_of_it() {
+        // One colour and one number: a theme changing its primary colour moves
+        // both, which is why upstream writes them as two lines of the same
+        // `DefaultSelectionStyle`.
+        let theme = CupertinoThemeData::with_primary_color(0xFF00_7AFF);
+        let (selection, cursor) = CupertinoApp::selection_style(&theme);
+        assert_eq!(cursor.0, 0xFF00_7AFF, "the cursor is the colour itself");
+        assert_eq!(
+            selection.0 & 0x00FF_FFFF,
+            0x0000_7AFF,
+            "and the selection is the same colour"
+        );
+        assert!(
+            selection.alpha() < cursor.alpha(),
+            "at a fifth of the opacity: {:?} against {:?}",
+            selection.alpha(),
+            cursor.alpha()
+        );
+        assert_eq!(CupertinoApp::SELECTION_OPACITY, 0.2);
+    }
+
+    /// An application's own bundle for the same resource type, which is the
+    /// case the order exists for.
+    struct TheirOwn;
+
+    impl LocalizationsDelegate for TheirOwn {
+        fn resource_type(&self) -> &'static str {
+            "CupertinoLocalizations"
+        }
+        fn is_supported(&self, _locale: &Locale) -> bool {
+            true
+        }
+        fn load(&self, _locale: &Locale) -> crate::localizations::LoadedResources {
+            crate::localizations::LoadedResources::synchronous(
+                "CupertinoLocalizations",
+                "their own",
+            )
+        }
+    }
+
+    #[test]
+    fn an_applications_own_delegates_come_first() {
+        // Upstream's comment, and the whole of an application's ability to
+        // replace the framework's strings: *"Only the first delegate of a
+        // particular LocalizationsDelegate.type is loaded so the
+        // localizationsDelegate parameter can be used to override
+        // _CupertinoLocalizationsDelegate."*
+        //
+        // So the framework's is **appended**, not prepended. Prepending it
+        // would still compile, still load, and quietly make the parameter
+        // useless.
+        let delegates = CupertinoApp::localizations_delegates(vec![std::rc::Rc::new(TheirOwn)]);
+        assert_eq!(delegates.len(), 2);
+        assert_eq!(
+            delegates[0].load(&Locale::new("en")).value,
+            "their own",
+            "the application's own is asked first"
+        );
+        assert_eq!(delegates[1].load(&Locale::new("en")).value, "en_US");
+
+        // And an application that supplied none gets the framework's alone.
+        let bare = CupertinoApp::localizations_delegates(Vec::new());
+        assert_eq!(bare.len(), 1);
+        assert_eq!(bare[0].resource_type(), "CupertinoLocalizations");
+    }
+
+    #[test]
+    fn the_frameworks_cupertino_delegate_answers_for_english_only() {
+        // `_CupertinoLocalizationsDelegate.isSupported` is
+        // `locale.languageCode == 'en'`: the default bundle is US English and
+        // says so, rather than claiming every locale and answering in English
+        // anyway.
+        let delegate = DefaultCupertinoLocalizationsDelegate;
+        assert!(delegate.is_supported(&Locale::new("en")));
+        assert!(
+            delegate.is_supported(&Locale {
+                country_code: Some("GB".to_string()),
+                ..Locale::new("en")
+            }),
+            "a language, not a locale -- `en_GB` is still English"
+        );
+        assert!(!delegate.is_supported(&Locale::new("fr")));
+        assert!(!delegate.should_reload(&DefaultCupertinoLocalizationsDelegate));
     }
 }
