@@ -1261,6 +1261,279 @@ impl CupertinoLocalizationEn {
     pub fn date_picker_date_time_order() -> DatePickerDateTimeOrder {
         DatePickerDateTimeOrder::DateTimeDayPeriod
     }
+
+    // -- The strings `CupertinoLocalizationEn` declares -------------------
+    //
+    // Upstream generates this class from `cupertino_en.arb`, and it writes
+    // every one of these out even though `DefaultCupertinoLocalizations`
+    // already says the same words. That is not a redundancy to remove: the two
+    // are independently sourced, and they agree **in English only**. Writing
+    // them out here keeps that true rather than assumed -- see
+    // `the_two_bundles_agree_on_words_and_differ_on_numbers`, which is what
+    // says so out loud.
+
+    /// Upstream's `alertDialogLabel`.
+    pub const ALERT_DIALOG_LABEL: &'static str = "Alert";
+    /// Upstream's `backButtonLabel`.
+    pub const BACK_BUTTON_LABEL: &'static str = "Back";
+    /// Upstream's `cancelButtonLabel`.
+    pub const CANCEL_BUTTON_LABEL: &'static str = "Cancel";
+    /// Upstream's `clearButtonLabel`.
+    pub const CLEAR_BUTTON_LABEL: &'static str = "Clear";
+    /// Upstream's `copyButtonLabel`.
+    pub const COPY_BUTTON_LABEL: &'static str = "Copy";
+    /// Upstream's `cutButtonLabel`.
+    pub const CUT_BUTTON_LABEL: &'static str = "Cut";
+    /// Upstream's `pasteButtonLabel`.
+    pub const PASTE_BUTTON_LABEL: &'static str = "Paste";
+    /// Upstream's `lookUpButtonLabel`.
+    pub const LOOK_UP_BUTTON_LABEL: &'static str = "Look Up";
+    /// Upstream's `menuDismissLabel`.
+    pub const MENU_DISMISS_LABEL: &'static str = "Dismiss menu";
+    /// Upstream's `modalBarrierDismissLabel`.
+    pub const MODAL_BARRIER_DISMISS_LABEL: &'static str = "Dismiss";
+    /// Upstream's `noSpellCheckReplacementsLabel`.
+    pub const NO_SPELL_CHECK_REPLACEMENTS_LABEL: &'static str = "No Replacements Found";
+    /// Upstream's `searchTextFieldPlaceholderLabel`.
+    pub const SEARCH_TEXT_FIELD_PLACEHOLDER_LABEL: &'static str = "Search";
+    /// Upstream's `searchWebButtonLabel`.
+    pub const SEARCH_WEB_BUTTON_LABEL: &'static str = "Search Web";
+    /// Upstream's `selectAllButtonLabel`.
+    pub const SELECT_ALL_BUTTON_LABEL: &'static str = "Select All";
+    /// Upstream's `shareButtonLabel`.
+    pub const SHARE_BUTTON_LABEL: &'static str = "Share...";
+    /// Upstream's `expandedHint` -- and it reads backwards on purpose, here as
+    /// there: what a screen reader says *about* the thing.
+    pub const EXPANDED_HINT: &'static str = "Collapsed";
+    /// Upstream's `collapsedHint`.
+    pub const COLLAPSED_HINT: &'static str = "Expanded";
+    /// Upstream's `expansionTileExpandedHint`.
+    pub const EXPANSION_TILE_EXPANDED_HINT: &'static str = "double tap to collapse";
+    /// Upstream's `expansionTileCollapsedHint`.
+    pub const EXPANSION_TILE_COLLAPSED_HINT: &'static str = "double tap to expand";
+    /// Upstream's `expansionTileExpandedTapHint`.
+    pub const EXPANSION_TILE_EXPANDED_TAP_HINT: &'static str = "Collapse";
+    /// Upstream's `expansionTileCollapsedTapHint`.
+    pub const EXPANSION_TILE_COLLAPSED_TAP_HINT: &'static str = "Expand for more details";
+
+    /// Upstream's `datePickerHourSemanticsLabelOne` and `...Other`, which are
+    /// **the same string** in English -- so the plural has one arm here and
+    /// the count is still what chooses it in a locale where they differ.
+    pub fn date_picker_hour_semantics_label(hour: u32) -> String {
+        format!("{hour} o'clock")
+    }
+
+    /// Upstream's `datePickerMinuteSemanticsLabelOne` ('1 minute') and
+    /// `...Other` (r'$minute minutes'), which in English are **not** the same.
+    pub fn date_picker_minute_semantics_label(minute: u32) -> String {
+        if minute == 1 {
+            "1 minute".to_string()
+        } else {
+            format!("{minute} minutes")
+        }
+    }
+
+    /// Upstream's `tabSemanticsLabelRaw`, r'Tab $tabIndex of $tabCount', with
+    /// the two numbers put in -- and `None` where the numbers cannot be
+    /// spoken, on the grounds `DefaultCupertinoLocalizations` states.
+    pub fn tab_semantics_label(tab_index: u32, tab_count: u32) -> Option<String> {
+        if tab_index < 1 || tab_count < 1 {
+            return None;
+        }
+        Some(format!("Tab {tab_index} of {tab_count}"))
+    }
+}
+
+/// The bundle a real application runs, as the interface.
+///
+/// Written out member by member like the default one, and for the same reason:
+/// upstream's generated class `extends GlobalCupertinoLocalizations` and
+/// supplies every string, so a member added upstream has to be answered here
+/// rather than inherited from somewhere that happens to compile.
+///
+/// The date and time half is **this bundle's own**, and that is the whole
+/// point of there being two: `date_picker_hour` is `01` here and `1` on
+/// [`DefaultCupertinoLocalizations`]. The words agree, in English.
+impl CupertinoLocalizations for CupertinoLocalizationEn {
+    fn date_picker_year(&self, year_index: i32) -> String {
+        CupertinoLocalizationEn::date_picker_year(year_index)
+    }
+
+    fn date_picker_month(&self, month_index: usize) -> &str {
+        CupertinoLocalizationEn::date_picker_month(month_index)
+    }
+
+    fn date_picker_standalone_month(&self, month_index: usize) -> &str {
+        CupertinoLocalizationEn::date_picker_standalone_month(month_index)
+    }
+
+    fn date_picker_day_of_month(&self, day_index: u32, week_day: Option<u32>) -> String {
+        CupertinoLocalizationEn::date_picker_day_of_month(day_index, week_day)
+    }
+
+    fn date_picker_medium_date(&self, week_day: u32, month: usize, day: u32) -> String {
+        CupertinoLocalizationEn::date_picker_medium_date(week_day, month, day)
+    }
+
+    fn date_picker_hour(&self, hour: u32) -> String {
+        CupertinoLocalizationEn::date_picker_hour(hour)
+    }
+
+    fn date_picker_hour_semantics_label(&self, hour: u32) -> String {
+        CupertinoLocalizationEn::date_picker_hour_semantics_label(hour)
+    }
+
+    fn date_picker_minute(&self, minute: u32) -> String {
+        CupertinoLocalizationEn::date_picker_minute(minute)
+    }
+
+    fn date_picker_minute_semantics_label(&self, minute: u32) -> String {
+        CupertinoLocalizationEn::date_picker_minute_semantics_label(minute)
+    }
+
+    fn date_picker_date_order(&self) -> DatePickerDateOrder {
+        CupertinoLocalizationEn::date_picker_date_order()
+    }
+
+    fn date_picker_date_time_order(&self) -> DatePickerDateTimeOrder {
+        CupertinoLocalizationEn::date_picker_date_time_order()
+    }
+
+    fn ante_meridiem_abbreviation(&self) -> &str {
+        CupertinoLocalizationEn::ANTE_MERIDIEM_ABBREVIATION
+    }
+
+    fn post_meridiem_abbreviation(&self) -> &str {
+        CupertinoLocalizationEn::POST_MERIDIEM_ABBREVIATION
+    }
+
+    fn today_label(&self) -> &str {
+        CupertinoLocalizationEn::TODAY_LABEL
+    }
+
+    fn alert_dialog_label(&self) -> &str {
+        CupertinoLocalizationEn::ALERT_DIALOG_LABEL
+    }
+
+    fn tab_semantics_label(&self, tab_index: u32, tab_count: u32) -> Option<String> {
+        CupertinoLocalizationEn::tab_semantics_label(tab_index, tab_count)
+    }
+
+    fn timer_picker_hour(&self, hour: u32) -> String {
+        CupertinoLocalizationEn::timer_picker_hour(hour)
+    }
+
+    fn timer_picker_minute(&self, minute: u32) -> String {
+        CupertinoLocalizationEn::timer_picker_minute(minute)
+    }
+
+    fn timer_picker_second(&self, second: u32) -> String {
+        CupertinoLocalizationEn::timer_picker_second(second)
+    }
+
+    fn timer_picker_hour_label(&self, hour: u32) -> &str {
+        CupertinoLocalizationEn::timer_picker_hour_label(hour)
+    }
+
+    fn timer_picker_hour_labels(&self) -> &[&'static str] {
+        &CupertinoLocalizationEn::TIMER_PICKER_HOUR_LABELS
+    }
+
+    fn timer_picker_minute_label(&self, minute: u32) -> &str {
+        CupertinoLocalizationEn::timer_picker_minute_label(minute)
+    }
+
+    fn timer_picker_minute_labels(&self) -> &[&'static str] {
+        &CupertinoLocalizationEn::TIMER_PICKER_MINUTE_LABELS
+    }
+
+    fn timer_picker_second_label(&self, second: u32) -> &str {
+        CupertinoLocalizationEn::timer_picker_second_label(second)
+    }
+
+    fn timer_picker_second_labels(&self) -> &[&'static str] {
+        &CupertinoLocalizationEn::TIMER_PICKER_SECOND_LABELS
+    }
+
+    fn cut_button_label(&self) -> &str {
+        CupertinoLocalizationEn::CUT_BUTTON_LABEL
+    }
+
+    fn copy_button_label(&self) -> &str {
+        CupertinoLocalizationEn::COPY_BUTTON_LABEL
+    }
+
+    fn paste_button_label(&self) -> &str {
+        CupertinoLocalizationEn::PASTE_BUTTON_LABEL
+    }
+
+    fn clear_button_label(&self) -> &str {
+        CupertinoLocalizationEn::CLEAR_BUTTON_LABEL
+    }
+
+    fn no_spell_check_replacements_label(&self) -> &str {
+        CupertinoLocalizationEn::NO_SPELL_CHECK_REPLACEMENTS_LABEL
+    }
+
+    fn select_all_button_label(&self) -> &str {
+        CupertinoLocalizationEn::SELECT_ALL_BUTTON_LABEL
+    }
+
+    fn look_up_button_label(&self) -> &str {
+        CupertinoLocalizationEn::LOOK_UP_BUTTON_LABEL
+    }
+
+    fn search_web_button_label(&self) -> &str {
+        CupertinoLocalizationEn::SEARCH_WEB_BUTTON_LABEL
+    }
+
+    fn share_button_label(&self) -> &str {
+        CupertinoLocalizationEn::SHARE_BUTTON_LABEL
+    }
+
+    fn search_text_field_placeholder_label(&self) -> &str {
+        CupertinoLocalizationEn::SEARCH_TEXT_FIELD_PLACEHOLDER_LABEL
+    }
+
+    fn modal_barrier_dismiss_label(&self) -> &str {
+        CupertinoLocalizationEn::MODAL_BARRIER_DISMISS_LABEL
+    }
+
+    fn menu_dismiss_label(&self) -> &str {
+        CupertinoLocalizationEn::MENU_DISMISS_LABEL
+    }
+
+    fn cancel_button_label(&self) -> &str {
+        CupertinoLocalizationEn::CANCEL_BUTTON_LABEL
+    }
+
+    fn back_button_label(&self) -> &str {
+        CupertinoLocalizationEn::BACK_BUTTON_LABEL
+    }
+
+    fn expansion_tile_expanded_hint(&self) -> &str {
+        CupertinoLocalizationEn::EXPANSION_TILE_EXPANDED_HINT
+    }
+
+    fn expansion_tile_collapsed_hint(&self) -> &str {
+        CupertinoLocalizationEn::EXPANSION_TILE_COLLAPSED_HINT
+    }
+
+    fn expansion_tile_expanded_tap_hint(&self) -> &str {
+        CupertinoLocalizationEn::EXPANSION_TILE_EXPANDED_TAP_HINT
+    }
+
+    fn expansion_tile_collapsed_tap_hint(&self) -> &str {
+        CupertinoLocalizationEn::EXPANSION_TILE_COLLAPSED_TAP_HINT
+    }
+
+    fn expanded_hint(&self) -> &str {
+        CupertinoLocalizationEn::EXPANDED_HINT
+    }
+
+    fn collapsed_hint(&self) -> &str {
+        CupertinoLocalizationEn::COLLAPSED_HINT
+    }
 }
 
 #[cfg(test)]
@@ -1788,8 +2061,8 @@ mod date_order_tests {
 #[cfg(test)]
 mod bundle_tests {
     use super::{
-        CupertinoLocalizations, DatePickerDateOrder, DatePickerDateTimeOrder,
-        DefaultCupertinoLocalizations,
+        CupertinoLocalizationEn, CupertinoLocalizations, DatePickerDateOrder,
+        DatePickerDateTimeOrder, DefaultCupertinoLocalizations,
     };
 
     /// An application's own bundle, which is the whole reason the interface
@@ -2008,5 +2281,190 @@ mod bundle_tests {
         // says *about* the thing, announced from the other side.
         assert_eq!(theirs.expanded_hint(), "Collapsed");
         assert_eq!(theirs.collapsed_hint(), "Expanded");
+    }
+
+    #[test]
+    fn the_two_bundles_agree_on_words_and_differ_on_numbers() {
+        // Why there are two of these at all. `DefaultCupertinoLocalizations`
+        // is what an application gets with **no** delegates installed;
+        // `CupertinoLocalizationEn` is what every real one runs, and the
+        // gallery installs it.
+        //
+        // The words are the same in English -- upstream generates one set from
+        // `cupertino_en.arb` and writes the other by hand, and they agree
+        // because English is English. Stating it here is what keeps it a
+        // checked fact rather than an assumption: a locale is free to make
+        // them differ, and this test is what would notice if one of the two
+        // were edited alone.
+        let framework: &dyn CupertinoLocalizations = &DefaultCupertinoLocalizations;
+        let global: &dyn CupertinoLocalizations = &CupertinoLocalizationEn;
+        for (what, one, other) in [
+            (
+                "alert",
+                framework.alert_dialog_label(),
+                global.alert_dialog_label(),
+            ),
+            (
+                "back",
+                framework.back_button_label(),
+                global.back_button_label(),
+            ),
+            (
+                "cancel",
+                framework.cancel_button_label(),
+                global.cancel_button_label(),
+            ),
+            (
+                "cut",
+                framework.cut_button_label(),
+                global.cut_button_label(),
+            ),
+            (
+                "copy",
+                framework.copy_button_label(),
+                global.copy_button_label(),
+            ),
+            (
+                "paste",
+                framework.paste_button_label(),
+                global.paste_button_label(),
+            ),
+            (
+                "clear",
+                framework.clear_button_label(),
+                global.clear_button_label(),
+            ),
+            (
+                "look up",
+                framework.look_up_button_label(),
+                global.look_up_button_label(),
+            ),
+            (
+                "share",
+                framework.share_button_label(),
+                global.share_button_label(),
+            ),
+            (
+                "search web",
+                framework.search_web_button_label(),
+                global.search_web_button_label(),
+            ),
+            (
+                "select all",
+                framework.select_all_button_label(),
+                global.select_all_button_label(),
+            ),
+            (
+                "placeholder",
+                framework.search_text_field_placeholder_label(),
+                global.search_text_field_placeholder_label(),
+            ),
+            (
+                "no replacements",
+                framework.no_spell_check_replacements_label(),
+                global.no_spell_check_replacements_label(),
+            ),
+            (
+                "dismiss",
+                framework.modal_barrier_dismiss_label(),
+                global.modal_barrier_dismiss_label(),
+            ),
+            (
+                "dismiss menu",
+                framework.menu_dismiss_label(),
+                global.menu_dismiss_label(),
+            ),
+            ("today", framework.today_label(), global.today_label()),
+            (
+                "am",
+                framework.ante_meridiem_abbreviation(),
+                global.ante_meridiem_abbreviation(),
+            ),
+            (
+                "pm",
+                framework.post_meridiem_abbreviation(),
+                global.post_meridiem_abbreviation(),
+            ),
+            (
+                "expanded",
+                framework.expanded_hint(),
+                global.expanded_hint(),
+            ),
+            (
+                "collapsed",
+                framework.collapsed_hint(),
+                global.collapsed_hint(),
+            ),
+        ] {
+            assert_eq!(one, other, "the two bundles say the same {what} in English");
+        }
+
+        // And the numbers, which are the reason to install the delegate at
+        // all: an hour is padded under the global bundle and bare under the
+        // framework's, so a date picker reads `01` on one and `1` on the other.
+        assert_eq!(framework.date_picker_hour(1), "1");
+        assert_eq!(global.date_picker_hour(1), "01");
+        assert_eq!(framework.date_picker_minute(5), "05");
+        assert_eq!(global.date_picker_minute(5), "05");
+        assert_eq!(framework.timer_picker_hour(3), "3");
+        assert_eq!(global.timer_picker_hour(3), "03");
+    }
+
+    #[test]
+    fn the_global_bundle_speaks_the_semantics_labels_too() {
+        // The three the generated class supplies as raw templates --
+        // r"$hour o'clock", '1 minute' / r'$minute minutes', and
+        // r'Tab $tabIndex of $tabCount' -- which `GlobalCupertinoLocalizations`
+        // fills in. They had never been ported to this bundle: anything
+        // wanting them had to reach across to the framework's, which is a
+        // different locale's answer wearing this one's name.
+        let global: &dyn CupertinoLocalizations = &CupertinoLocalizationEn;
+        assert_eq!(global.date_picker_hour_semantics_label(4), "4 o'clock");
+        assert_eq!(
+            global.date_picker_minute_semantics_label(1),
+            "1 minute",
+            "the `one` arm, which English does spell differently"
+        );
+        assert_eq!(global.date_picker_minute_semantics_label(2), "2 minutes");
+        assert_eq!(
+            global.tab_semantics_label(2, 5),
+            Some("Tab 2 of 5".to_string())
+        );
+        assert_eq!(
+            global.tab_semantics_label(0, 5),
+            None,
+            "a tab index nobody can speak is not spoken"
+        );
+    }
+
+    #[test]
+    fn either_bundle_can_stand_where_the_interface_is_asked_for() {
+        // The point of last tick's trait, now with two real implementations
+        // behind it rather than one and a test double.
+        fn placeholder(bundle: &dyn CupertinoLocalizations) -> String {
+            bundle.search_text_field_placeholder_label().to_string()
+        }
+        assert_eq!(placeholder(&DefaultCupertinoLocalizations), "Search");
+        assert_eq!(placeholder(&CupertinoLocalizationEn), "Search");
+
+        // The three label lists, which a picker sizes its columns by: each is
+        // its own, and handing back a neighbour's would size the minutes
+        // column for the word "hours".
+        let global: &dyn CupertinoLocalizations = &CupertinoLocalizationEn;
+        assert_eq!(global.timer_picker_hour_labels(), ["hour", "hours"]);
+        assert_eq!(global.timer_picker_minute_labels(), ["min."]);
+        assert_eq!(global.timer_picker_second_labels(), ["sec."]);
+
+        // And the column order, which is a bundle's answer and not a word.
+        let both = [
+            DefaultCupertinoLocalizations.date_picker_date_order(),
+            CupertinoLocalizationEn.date_picker_date_order(),
+        ];
+        assert_eq!(
+            both,
+            [DatePickerDateOrder::Mdy, DatePickerDateOrder::Mdy],
+            "`mdy` in English, from both -- the generated one says so in \
+             `datePickerDateOrderString`"
+        );
     }
 }

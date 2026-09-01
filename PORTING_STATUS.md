@@ -3826,3 +3826,57 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 成员是全的；这个 crate 里的那份是照哪一份抄的、
 缺的那二十个是"还没抄"还是"故意只要这一半"——
 确认了再决定是补全它并实现 trait，还是把它记成一条 divergence。
+
+---
+
+## 第 473 轮：另一个 bundle 也把整个接口答完
+
+上一轮留的问题查清了：`CupertinoLocalizationEn` 缺的那二十来个成员是
+**"还没抄"**，不是"故意只要这一半"。上游那个类
+（`flutter_localizations` 的 `l10n/generated_cupertino_localizations.dart`，
+从 `cupertino_en.arb` 生成）把每一个字串都写了出来——
+`alertDialogLabel`、`cutButtonLabel`、`expandedHint`……一个不少。
+它们和 `DefaultCupertinoLocalizations` 的值**在英语里恰好相同**，
+所以谁也没注意到这边少了。
+
+于是这一轮把它们补齐，并让 `CupertinoLocalizationEn` 实现上一轮那个 trait。
+补的时候**没有**写成 `-> DefaultCupertinoLocalizations::XXX`：
+上游是两份各自来源的字串（一份生成、一份手写），
+写成转发等于宣称"它们按构造相同"，而事实是"它们在英语里相同"。
+差别不是文字游戏——一个语言完全可以只改其中一份。
+所以照上游那样各写各的，再用一条测试把"今天它们相同"变成**被检查的事实**：
+二十个词逐个对过去，哪一份被单独改了都会红。
+
+同一条测试的另一半是它们**不同**的地方，也就是装这个 delegate 的全部理由：
+`date_picker_hour(1)` 在框架那份是 `1`，在这份是 `01`；
+`timer_picker_hour(3)` 是 `3` 与 `03`。
+
+还补了三个从没搬过来的语义标签（生成类里是模板，由
+`GlobalCupertinoLocalizations` 填空）：
+`$hour o'clock`、`1 minute` / `$minute minutes`（英语里 one 和 other **确实**不同）、
+以及 `Tab $tabIndex of $tabCount`。以前想要它们的代码只能伸手去拿框架那份，
+那是"另一个 locale 的答案顶着这一个的名字"。
+
+### 一次扫描把我自己的编辑吃掉了
+
+这一轮的变异扫描留下过一处变异体（"an hour has no o'clock"），
+下一次扫描一开始就 `baseline is not green` 才发现；
+更糟的是随后一次扫描把我刚加的三条断言**一起还原掉了**——
+`.bak` 的快照与我手边的编辑交错了。第 469/470 轮记过"还原要放进 `finally`"，
+这一轮补上后半句：**扫描之后要核对树**。
+现在的收尾是两步：跑一遍 `cargo test`，再 `grep` 一下这一轮加的断言还在不在。
+（这也解释了当时那个"改对了却不红"的假象：断言根本已经不在文件里。）
+
+变异扫描 8 个，全红。尺子：十七把全部 exit 0。
+门：Rust 6766 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`depth.py` 队头是 `CupertinoApp`（8/37）。
+**先查一件事**：那 37 个成员里有多少是 `MaterialApp` 已经在这个 crate 里
+做过的同一批（`navigatorKey`、`routes`、`onGenerateRoute`、`builder`、
+`localizationsDelegates`、`shortcuts`/`actions` 等），
+以及 `CupertinoApp` 自己独有的是哪几个（`theme`、
+`CupertinoPageRoute` 的默认过渡）——
+两个 App 类在这个 crate 里是各写各的还是共用一条装配路径，
+决定这一轮是"补字段"还是"接装配"。
