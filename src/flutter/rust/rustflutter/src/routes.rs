@@ -659,6 +659,40 @@ impl TransitionRoute {
     pub fn set_current(&mut self, current: bool) {
         self.current = current;
     }
+
+    /// Upstream's `TransitionRoute.didReplace`:
+    ///
+    /// ```dart
+    /// if (oldRoute is TransitionRoute) {
+    ///   _controller!.value = oldRoute._controller!.value;
+    /// }
+    /// ```
+    ///
+    /// **The replacement takes over where the old route had got to.** A route
+    /// that replaces a half-open one at 0.4 opens from 0.4, not from nothing:
+    /// starting again would play an entrance the reader has already watched
+    /// most of, and the two screens would cross twice.
+    ///
+    /// `replacing` is `None` when the old route was not a transition route --
+    /// it has no value to take over, and this route keeps its own.
+    pub fn did_replace(&mut self, replacing: Option<f32>) {
+        if let Some(value) = replacing {
+            self.set_animation(value);
+        }
+    }
+
+    /// Upstream's `TransitionRoute.didChangeNext`, whose body is
+    /// `_updateSecondaryAnimation(nextRoute)`: **whether this route can be
+    /// pushed past by the one arriving above it**.
+    ///
+    /// The answer decides whether this route animates out of the way or sits
+    /// still while the next one covers it, and it is `canTransitionTo`'s to
+    /// give -- see [`TransitionRoute::can_transition_to`]. `None` for a route
+    /// with nothing above it, which is the same as "nothing to move for".
+    pub fn secondary_animates_for(&self, next: Option<&TransitionRoute>) -> bool {
+        next.map(|next| self.can_transition_to(next))
+            .unwrap_or(false)
+    }
 }
 
 impl PredictiveBackRoute for TransitionRoute {
@@ -737,6 +771,23 @@ impl RouteBarrierDetails {
 pub struct ModalRoute {
     pub transition: TransitionRoute,
     pub local_history: LocalHistoryRoute,
+    /// Upstream's `receivedTransition`: the transition the route **above**
+    /// this one handed down, for this one to play as it is covered.
+    ///
+    /// `None` is not "no animation" -- it is *this route does its own thing*,
+    /// which is what a route gets when the one above it either cannot be
+    /// transitioned to or delegates the same transition this one already has.
+    pub received_transition: Option<u64>,
+    /// This route's own `delegatedTransition`, which is what it hands **down**
+    /// to whatever it covers.
+    pub delegated_transition: Option<u64>,
+    /// How many times the barrier was marked for rebuilding.
+    barrier_rebuilds: usize,
+    /// How many times the page under the barrier was forced to rebuild.
+    page_rebuilds: usize,
+    /// What `maintainState` was last pushed into the scope, which is the only
+    /// way the scope hears about a change to it.
+    scope_maintains_state: bool,
     pub barrier_dismissible: bool,
     pub barrier_color: Option<Color>,
     pub barrier_label: Option<String>,
@@ -760,6 +811,11 @@ impl Default for ModalRoute {
 impl ModalRoute {
     pub fn new() -> ModalRoute {
         ModalRoute {
+            received_transition: None,
+            delegated_transition: None,
+            barrier_rebuilds: 0,
+            page_rebuilds: 0,
+            scope_maintains_state: true,
             transition: TransitionRoute::default(),
             local_history: LocalHistoryRoute::new(),
             barrier_dismissible: false,
@@ -770,6 +826,87 @@ impl ModalRoute {
             page_can_pop: true,
             pop_entries: Vec::new(),
         }
+    }
+
+    /// Upstream's `ModalRoute.didChangeNext`:
+    ///
+    /// ```dart
+    /// if (nextRoute is ModalRoute<T> &&
+    ///     canTransitionTo(nextRoute) &&
+    ///     nextRoute.delegatedTransition != delegatedTransition) {
+    ///   receivedTransition = nextRoute.delegatedTransition;
+    /// } else {
+    ///   receivedTransition = null;
+    /// }
+    /// ```
+    ///
+    /// **Three conditions, and the third is the one worth stopping at**: a
+    /// route above that delegates the *same* transition this one already has
+    /// hands down nothing. Taking it anyway would play the transition twice
+    /// over one screen -- once because this route has it and once because it
+    /// was given it -- which is the sort of doubling nobody reads back out of
+    /// a screenshot.
+    ///
+    /// It ends with `changedInternalState`, because what a route plays while
+    /// being covered is state its subtree can see.
+    pub fn did_change_next(&mut self, next: Option<&ModalRoute>, tree_is_locked: bool) {
+        self.received_transition = match next {
+            Some(next)
+                if self.transition.can_transition_to(&next.transition)
+                    && next.delegated_transition != self.delegated_transition =>
+            {
+                next.delegated_transition
+            }
+            _ => None,
+        };
+        self.changed_internal_state(tree_is_locked);
+    }
+
+    /// Upstream's `ModalRoute.didChangePrevious`, whose whole body is
+    /// `changedInternalState()` -- what is *below* this route changes nothing
+    /// this route draws, but the barrier's semantics say "dismiss to the thing
+    /// behind", so the barrier is rebuilt.
+    pub fn did_change_previous(&mut self, tree_is_locked: bool) {
+        self.changed_internal_state(tree_is_locked);
+    }
+
+    /// Upstream's `ModalRoute.changedInternalState`.
+    ///
+    /// Two things, and the guard belongs to only one of them: the barrier is
+    /// marked for rebuilding **unless the tree is locked** -- nothing may be
+    /// marked dirty during a build -- while `maintainState` is pushed into the
+    /// scope either way, because it is a value being assigned rather than a
+    /// rebuild being requested.
+    pub fn changed_internal_state(&mut self, tree_is_locked: bool) {
+        if !tree_is_locked {
+            self.barrier_rebuilds += 1;
+        }
+        self.scope_maintains_state = self.maintain_state;
+    }
+
+    /// Upstream's `ModalRoute.changedExternalState`: the barrier is rebuilt
+    /// **and** the page is forced to rebuild.
+    ///
+    /// The page too, and that is the difference from the internal one: the
+    /// navigator itself changed -- a new `MaterialApp` above it, say -- so
+    /// what the page built from that state is out of date, and marking only
+    /// the barrier would leave the screen showing the old one.
+    pub fn changed_external_state(&mut self) {
+        self.barrier_rebuilds += 1;
+        self.page_rebuilds += 1;
+    }
+
+    pub fn barrier_rebuilds(&self) -> usize {
+        self.barrier_rebuilds
+    }
+
+    pub fn page_rebuilds(&self) -> usize {
+        self.page_rebuilds
+    }
+
+    /// What the scope was last told `maintainState` is.
+    pub fn scope_maintains_state(&self) -> bool {
+        self.scope_maintains_state
     }
 
     pub fn with_barrier_dismissible(mut self, dismissible: bool) -> Self {
@@ -2255,5 +2392,112 @@ mod tests {
             !leaving.has_active_route_below(2, true),
             "the only thing under it is on its way out"
         );
+    }
+
+    // -- When the stack around a route changes -------------------------------
+
+    #[test]
+    fn a_replacement_opens_from_where_the_old_route_had_got_to() {
+        // `TransitionRoute.didReplace`: `_controller!.value = oldRoute
+        // ._controller!.value`. A route replacing a half-open one at 0.4 opens
+        // from 0.4 -- starting again would replay an entrance the reader has
+        // already watched most of, and the two screens would cross twice.
+        let mut arriving = TransitionRoute::new(300_000);
+        assert_eq!(arriving.animation(), 0.0);
+        arriving.did_replace(Some(0.4));
+        assert_eq!(arriving.animation(), 0.4);
+
+        // And a route replacing something that was not a transition route has
+        // nothing to take over, so it keeps its own.
+        let mut fresh = TransitionRoute::new(300_000);
+        fresh.set_animation(0.25);
+        fresh.did_replace(None);
+        assert_eq!(fresh.animation(), 0.25);
+    }
+
+    #[test]
+    fn a_route_moves_out_of_the_way_only_for_one_it_can_transition_to() {
+        // `didChangeNext` is `_updateSecondaryAnimation(nextRoute)`, and what
+        // it settles is whether this route animates as the next one covers it.
+        let covered = TransitionRoute::new(300_000);
+        let arriving = TransitionRoute::new(300_000);
+        assert!(covered.secondary_animates_for(Some(&arriving)));
+        assert!(
+            !covered.secondary_animates_for(None),
+            "with nothing above it there is nothing to move for"
+        );
+    }
+
+    #[test]
+    fn a_route_above_that_delegates_the_same_transition_hands_down_nothing() {
+        // The third of `ModalRoute.didChangeNext`'s three conditions:
+        // `nextRoute.delegatedTransition != delegatedTransition`. A route that
+        // already has this transition would otherwise play it twice over one
+        // screen -- once because it has it, once because it was given it.
+        let mut below = ModalRoute::new();
+        below.delegated_transition = Some(7);
+
+        let mut above = ModalRoute::new();
+        above.delegated_transition = Some(7);
+        below.did_change_next(Some(&above), false);
+        assert_eq!(
+            below.received_transition, None,
+            "the same transition, so nothing is handed down"
+        );
+
+        above.delegated_transition = Some(9);
+        below.did_change_next(Some(&above), false);
+        assert_eq!(below.received_transition, Some(9), "a different one is");
+
+        // And nothing above at all clears it again -- upstream's `else` arm.
+        below.did_change_next(None, false);
+        assert_eq!(below.received_transition, None);
+    }
+
+    #[test]
+    fn the_neighbours_changing_rebuilds_the_barrier_unless_the_tree_is_locked() {
+        // `changedInternalState` marks the barrier dirty, and upstream guards
+        // exactly that with the scheduler phase: nothing may be marked during
+        // a build. `maintainState` is pushed into the scope either way,
+        // because it is a value being assigned rather than a rebuild asked
+        // for -- which is why the guard sits inside the method and not around
+        // the call.
+        let mut route = ModalRoute::new();
+        route.maintain_state = false;
+
+        route.changed_internal_state(true);
+        assert_eq!(route.barrier_rebuilds(), 0, "the tree was locked");
+        assert!(
+            !route.scope_maintains_state(),
+            "and the scope was told anyway"
+        );
+
+        route.changed_internal_state(false);
+        assert_eq!(route.barrier_rebuilds(), 1);
+
+        // `didChangePrevious` is that method and nothing else: what is below
+        // changes nothing this route draws, but the barrier says "dismiss to
+        // the thing behind".
+        route.did_change_previous(false);
+        assert_eq!(route.barrier_rebuilds(), 2);
+    }
+
+    #[test]
+    fn an_external_change_rebuilds_the_page_as_well() {
+        // The difference between the two: `changedExternalState` also forces
+        // the page to rebuild, because the navigator itself changed -- a new
+        // `MaterialApp` above it, say -- so what the page built from that
+        // state is out of date. Marking only the barrier would leave the old
+        // page on screen.
+        let mut route = ModalRoute::new();
+        route.changed_internal_state(false);
+        assert_eq!(
+            (route.barrier_rebuilds(), route.page_rebuilds()),
+            (1, 0),
+            "an internal change leaves the page alone"
+        );
+
+        route.changed_external_state();
+        assert_eq!((route.barrier_rebuilds(), route.page_rebuilds()), (2, 1));
     }
 }

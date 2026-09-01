@@ -4122,3 +4122,51 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 `didAdd`（等一个 `TickerFuture` 再要焦点）——
 先确认哪几个在 `ModalRoute`/`TransitionRoute` 的**子类**里才有真实现，
 只搬空方法是搬了个签名，那种"补了却什么也没说"的东西这个项目不要。
+
+---
+
+## 第 479 轮：邻居变了，这条路由要做什么
+
+上一轮留的问题先查：那七个回调在 `Route` 上确实大多是 `{}`，
+**但真正的内容在子类里**，而且不少：
+
+- `TransitionRoute.didReplace` —— 把旧路由的动画值接过来。
+- `TransitionRoute.didChangeNext` —— `_updateSecondaryAnimation(nextRoute)`。
+- `ModalRoute.didChangeNext` —— 算 `receivedTransition`。
+- `ModalRoute.didChangePrevious` —— 整个方法体就是 `changedInternalState()`。
+- `ModalRoute.changedInternalState` / `changedExternalState` —— 各自标脏什么。
+
+所以不是"搬七个空方法"，是搬这五条规则。
+
+**替换的那条最有意思**：一条路由替掉一条开到 0.4 的路由时，
+它从 0.4 开始，不是从头。从头会把读者已经看过大半的入场动画重演一遍，
+两块屏幕交叉两次。旧路由不是 `TransitionRoute` 时没有值可接，
+这条路由保留自己的——这就是那个 `if (oldRoute is TransitionRoute)`。
+
+**`didChangeNext` 的三个条件里，第三个值得停一下**：
+上面那条路由如果 delegate 的是**同一个** transition，就什么也不往下传。
+照传的话，这块屏幕会把同一个 transition 演两遍——一遍因为它自己有，
+一遍因为别人给了它——这种重影从截图里读不回来。
+
+**两个 `changed*State` 的区别，和那个守卫的位置**：
+内部变化只标脏 barrier，而且**只在树没锁的时候**（构建期间不许标脏）；
+但 `maintainState` 是**照推不误**的，因为那是赋一个值而不是请求一次重建——
+所以上游把守卫写在方法**里面**而不是调用处。外部变化则连页面一起重建：
+navigator 自己变了（比如上面换了个 `MaterialApp`），
+页面依着旧状态建出来的东西已经过期，只标 barrier 会把旧页面留在屏幕上。
+
+变异扫描 10 个，全红——其中两个专门按住上面那两处：
+"树锁着也标脏"和"树锁着连 scope 也不告诉"，两个方向都红。
+扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6792 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`Route` 那批里还剩 `didAdd`、`didComplete` 两个有内容的。
+`didComplete` 是 `_popCompleter.complete(result ?? currentResult)`——
+**`??` 那一半是重点**：一条被关掉却没给结果的路由，交出的是它自己的
+`currentResult`，而不是空。
+**先查一件事**：这个 crate 里 `pop` 的结果走的是哪条路
+（`navigation.rs` 的栈？还是 `theatre.rs` 的 `ModalHandle`？），
+`currentResult` 在上游 `ModalRoute`/`PopupRoute` 上又是什么——
+确认了再决定这条规则挂在哪个类型上，别又造出第二份说法。
