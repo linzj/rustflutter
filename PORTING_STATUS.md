@@ -6794,3 +6794,56 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6962 通�
 如果是，那就是和这一轮同样的一跳；如果不是（比如它根本没有焦点节点），
 那这条注释仍然成立，**只该把 `autofocus` 从那串名单里摘掉**，
 而不是硬加一个没有节点可依附的参数。
+
+---
+
+## 第 525 轮：能点的 chip 现在是键盘走得到的地方
+
+接上一轮记的：`ChipAttributes` 那条注释把 `autofocus` 列进
+"这个 crate 没有类型可以回答"。先查那件事——**controls.rs 里一个 `Focus` 都没有**。
+
+于是问题不是"缺一个类型"，是**chip 根本没有焦点节点**：
+一个能点、也能被读屏读出来的 filter chip，**Tab 从它旁边直接走过去**，
+没有指针就完全操作不了。这才是真缺口，注释只是指错了地方。
+
+### 做的那件事
+
+能点的 chip 外面包一层 `focus::Focus`（节点在 semantics 外面，
+和上游 `RawChip` 把持有焦点节点的 `InkWell` 放在 `Semantics` 里面同序），
+并接上 `autofocus`。
+
+**没有 handler 的 chip 完全不包**。上游 chip 的 `canRequestFocus` 是 `isEnabled`；
+一个只当标签用的 chip 同理——**一个什么键都不答的停靠点，
+是读者白白落进去、还得再 Tab 出来的地方**。
+
+### 一件明写下来而不是顺手做掉的事
+
+**这个 crate 里没有任何控件响应 Enter/Space。**
+`shortcuts.rs` 里 `Intent::Activate` 有表项，但**没有一个 widget 消费它**——
+按钮、开关、chip 都一样。所以这一轮**没有**给 chip 单独做键盘激活：
+那会让 chip 有一套邻居们都没有的键盘行为。写在 `Chip::build` 的注释里，
+点名这是全 crate 的缺口而不是 chip 的。
+
+`ChipAttributes` 那条注释里把 `autofocus` 摘掉了，并写清它为什么
+**仍然不在这个 trait 里**：trait 说的是所有 chip 的共同点，
+而没有 handler 的 chip 没有节点可以 autofocus。
+
+### 扫描
+
+四个变异，第一轮活了一个："每个 chip 都自动抢焦点"。
+原因：我的测试里那个能点的 chip **从没跑过 autofocus 那一趟**——
+只验证了"能被 focus 到"，没验证"没要就不给"。
+补了一句：**可达不等于自荐**，否则每一页打开都是第一个 filter chip 被选中。
+补完四个全死。
+
+尺子：十七把全部 exit 0。门：Rust 6965 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6965 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：就是本轮写下的那条——**`Intent::Activate` 没有任何 widget 消费**。
+表里有、焦点有、意图有，就是没人动手，所以**键盘上没有一个控件能被按下**。
+**先查两件事**：一是 `actions.rs` 的 `dispatcher.maybe_invoke` 现在由谁调用
+（`shortcuts.rs:1434` 那处 `with_on_key` 是唯一的消费点吗）；
+二是 `focus::dispatch_key` 走到焦点节点之后，
+`Focus::with_on_key` 的返回值怎么表示"我用掉了"——
+接激活的正确位置多半就在那里，而不是每个控件各写一遍。

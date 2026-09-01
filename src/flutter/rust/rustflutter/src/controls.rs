@@ -2299,6 +2299,81 @@ You"
     }
 
     #[test]
+    fn a_chip_that_does_something_is_somewhere_the_keyboard_can_go() {
+        // Before this a filter chip could be tapped and could be read out, but
+        // Tab walked straight past it: there was no focus node at all, so it
+        // could not be operated without a pointer.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::component(
+            Chip::new(9101, "tappable").on_tap(|_| {}),
+        ));
+        let _ = tree.build_render_tree();
+
+        // Being reachable is not the same as helping itself: a chip that did
+        // not ask for the keyboard must not take it, or every page would open
+        // with its first filter chip focused.
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(
+            crate::focus::focused(),
+            None,
+            "it is a stop, and it waits to be walked to"
+        );
+
+        assert!(
+            crate::focus::focus(9101),
+            "a chip with a handler is a stop the keyboard can reach"
+        );
+        assert_eq!(crate::focus::focused(), Some(9101));
+    }
+
+    #[test]
+    fn a_chip_that_only_says_something_is_not_a_stop() {
+        // Upstream's `canRequestFocus` for a chip is `isEnabled`. A chip with
+        // no handler is a label, and a stop that answers nothing is somewhere
+        // the reader lands for no reason and has to Tab out of again.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::component(Chip::new(9102, "just a label")));
+        let _ = tree.build_render_tree();
+
+        assert!(!crate::focus::focus(9102), "there is no node to focus");
+        assert_eq!(crate::focus::focused(), None);
+    }
+
+    #[test]
+    fn a_chip_asked_to_take_the_keyboard_takes_it_only_if_it_does_something() {
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::component(
+            Chip::new(9103, "tappable")
+                .with_autofocus(true)
+                .on_tap(|_| {}),
+        ));
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), Some(9103));
+
+        // A label that asked gets nothing, because it has no node to give it
+        // to -- the request is not merely refused, it is never made.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+        let mut label = crate::framework::ElementTree::new();
+        label.rebuild(crate::framework::component(
+            Chip::new(9104, "just a label").with_autofocus(true),
+        ));
+        let _ = label.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), None);
+    }
+
+    #[test]
     fn a_chip_nobody_listens_to_is_not_announced_as_a_button() {
         // Upstream's `button: widget.tapEnabled`. A chip used as a plain label
         // should not invite a press that does nothing -- and it has no enabled
@@ -2487,6 +2562,9 @@ pub struct Chip {
     label: String,
     style: ChipStyle,
     handlers: PointerHandlers,
+    /// Upstream's `autofocus`: take the keyboard as soon as this chip
+    /// appears. Only a chip that does something can have it -- see the build.
+    autofocus: bool,
 }
 
 impl Chip {
@@ -2496,7 +2574,18 @@ impl Chip {
             label: label.into(),
             style: ChipStyle::default(),
             handlers: PointerHandlers::new(),
+            autofocus: false,
         }
+    }
+
+    /// Upstream's `autofocus`.
+    ///
+    /// Ignored by a chip with no `on_tap`, for the same reason such a chip is
+    /// not a traversal stop: it is a label, and the keyboard has no business
+    /// stopping on something that cannot be operated.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
+        self
     }
 
     pub fn with_style(mut self, style: ChipStyle) -> Self {
@@ -2629,7 +2718,35 @@ impl Component for Chip {
             }
             Pointer::new(id, container).with_handlers(handlers.clone())
         });
-        described(chip_body)
+
+        // A chip that does something is somewhere the keyboard can be. Before
+        // this it was not: a filter chip could be tapped and could be read out
+        // by a screen reader, but Tab walked straight past it, so it could not
+        // be operated without a pointer at all.
+        //
+        // The node goes *outside* the semantics wrapper, matching the order
+        // upstream builds in (`RawChip` puts its `InkWell`, which owns the
+        // focus node, inside the `Semantics`), so the annotated subtree is
+        // what gains and loses the focus.
+        //
+        // A chip with no handler is left alone entirely. Upstream's
+        // `canRequestFocus` for a chip is `isEnabled`, and a chip with nothing
+        // to do is the same case: a stop that answers no key is a place the
+        // reader gets stuck for no reason.
+        //
+        // What is still missing, and is missing for **every** control in this
+        // crate rather than for chips: nothing acts on `Intent::Activate`, so
+        // a focused chip does not respond to Enter or Space. The shortcut
+        // tables name the intent (`shortcuts.rs`) and no widget consumes it.
+        // Recorded here rather than solved here -- doing it for chips alone
+        // would give them a keyboard chips' neighbours do not have.
+        let body = described(chip_body);
+        if !tappable {
+            return body;
+        }
+        crate::framework::component(
+            crate::focus::Focus::new(id, body).with_autofocus(self.autofocus),
+        )
     }
 }
 
@@ -4531,8 +4648,13 @@ impl Component for Section {
 ///
 /// Upstream's `ChipAttributes` has twenty getters. The ones left out are
 /// those with no type in this crate to answer them: `avatar`, `focusNode`,
-/// `autofocus`, `visualDensity`, `iconTheme`, `avatarBoxConstraints` and
-/// `mouseCursor`. Naming them here is the same choice
+/// `visualDensity`, `iconTheme`, `avatarBoxConstraints` and `mouseCursor`.
+///
+/// `autofocus` used to be in that list and no longer belongs there: a
+/// tappable chip has a focus node now, and [`Chip::with_autofocus`] answers
+/// it. It is absent from *this trait* only because the trait describes what
+/// every chip has in common, and a chip with no handler has no node to
+/// autofocus. Naming them here is the same choice
 /// [`crate::pickers::CalendarDelegate`] makes about its formatting half --
 /// adding one later should be an addition, not a correction.
 pub trait ChipAttributes {
