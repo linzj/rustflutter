@@ -1549,66 +1549,105 @@ pub fn dispatch_key(event: &KeyEvent) -> bool {
     false
 }
 
-/// Draws the focus highlight over its child while the control has the
-/// keyboard.
+/// How far a highlight's mouse region sits from the control's own id.
 ///
-/// Upstream this is one of `InkResponse`'s ink features, faded in and out with
-/// the hover and press highlights it shares a stack with. Here it is a widget
-/// of its own, because the controls that need it -- a chip, a button, the
-/// three toggleables -- are not built on `InkResponse` in this crate and
-/// wrapping each of them in one for the highlight alone would be a splash and
-/// a hover nobody asked for.
-struct FocusHighlight {
+/// Ids are the caller's and a widget that invents one must not collide with
+/// them. The same trick, and the same reasoning, as `INK_ID_OFFSET` in
+/// components.rs -- a large fixed offset rather than a counter, so the id a
+/// control gets does not depend on how many were built before it.
+const HOVER_ID_OFFSET: u64 = 1 << 41;
+
+/// Moves `value` towards `target` by at most `step`.
+///
+/// Its own function because two fades run side by side and a copy each is a
+/// pair that can drift -- one clamping and one not, one stepping and one
+/// jumping.
+fn approach(value: &mut f32, target: f32, step: f32) {
+    if *value < target {
+        *value = (*value + step).min(target);
+    } else {
+        *value = (*value - step).max(target);
+    }
+}
+
+/// Draws the overlay that says what state a control is in: the keyboard is on
+/// it, or the mouse is over it.
+///
+/// Upstream these are two of `InkResponse`'s three ink features, stacked and
+/// faded independently. Here they are one widget, because the controls that
+/// need them -- a chip, a button, the three toggleables -- are not built on
+/// `InkResponse` in this crate, and wrapping each of them in one for the
+/// overlay alone would bring a splash nobody asked for.
+///
+/// **The two overlays are separate opacities, not one.** A reader whose mouse
+/// is over the control they are also tabbed to sees both, which is what
+/// upstream stacking gives and what a single "highlighted" flag could not:
+/// moving the mouse away would take the focus overlay with it.
+struct StateHighlight {
+    /// The control's own id, which the mouse region is derived from.
+    id: u64,
     shape: FocusShape,
     /// Where this publishes its handle, so the focus node above can tell it
     /// the keyboard arrived.
-    sink: Rc<RefCell<Option<crate::framework::StateHandle<FocusHighlightState>>>>,
+    sink: Rc<RefCell<Option<crate::framework::StateHandle<StateHighlightState>>>>,
     child: RefCell<Option<AnyWidget>>,
 }
 
 #[derive(Default)]
-struct FocusHighlightState {
+struct StateHighlightState {
+    /// Where each overlay is going: the keyboard is here, the mouse is here.
     focused: bool,
-    /// How far the fade has got, 0 to 1. Not derived from `focused`: it is
-    /// where the highlight *is*, where `focused` is where it is going.
-    opacity: f32,
-    /// The frame this fade was last moved on. `None` before the first, so the
+    hovered: bool,
+    /// How far each fade has got, 0 to 1. Not derived from the flags above:
+    /// these are where the overlays *are*, the flags are where they are going.
+    focus_opacity: f32,
+    hover_opacity: f32,
+    /// The frame the fades were last moved on. `None` before the first, so the
     /// first tick sets the clock instead of stepping by however long the
     /// application had been running.
     last_micros: Option<i64>,
 }
 
-impl crate::framework::StatefulComponent for FocusHighlight {
-    type State = FocusHighlightState;
+impl crate::framework::StatefulComponent for StateHighlight {
+    type State = StateHighlightState;
 
-    fn initial_state(&self) -> FocusHighlightState {
-        FocusHighlightState::default()
+    fn initial_state(&self) -> StateHighlightState {
+        StateHighlightState::default()
     }
 
-    /// Fades the highlight in and out over `_kDefaultHighlightFadeDuration`.
+    /// Fades both overlays towards where they are going.
+    ///
+    /// The duration is `HighlightType::fade_micros`, which is where this
+    /// crate already keeps upstream's answer: **50ms for hover and focus**,
+    /// and 200ms only for a press. `_kDefaultHighlightFadeDuration` is
+    /// `InkHighlight`'s own default and `InkResponse` overrides it for these
+    /// two -- an overlay that took a fifth of a second to admit the keyboard
+    /// had arrived would feel like the application had paused.
     ///
     /// Frames are on demand here, and this returns whether it wants another
     /// one -- so the widget that is animating is the widget that asks. A fade
     /// nobody advanced would be worse than no fade at all: it would stop
     /// half-drawn and stay there.
-    fn advance(&self, state: &mut FocusHighlightState, frame_time_micros: i64) -> bool {
-        let target = if state.focused { 1.0 } else { 0.0 };
+    fn advance(&self, state: &mut StateHighlightState, frame_time_micros: i64) -> bool {
         let last = state.last_micros.replace(frame_time_micros);
-        if (state.opacity - target).abs() < f32::EPSILON {
+        let focus_target = if state.focused { 1.0 } else { 0.0 };
+        let hover_target = if state.hovered { 1.0 } else { 0.0 };
+        let arrived = (state.focus_opacity - focus_target).abs() < f32::EPSILON
+            && (state.hover_opacity - hover_target).abs() < f32::EPSILON;
+        if arrived {
             return false;
         }
         // The first frame of a fade only starts the clock. Stepping by
-        // `frame_time - 0` would finish the fade before it was seen.
+        // `frame_time - 0` would finish the fade before it was seen -- and in
+        // a real application, whose clock did not start at zero, would finish
+        // it in one frame however long the fade was meant to be.
         let Some(last) = last else {
             return true;
         };
-        let step =
-            (frame_time_micros - last).max(0) as f32 / crate::ink::InkHighlight::FADE_MICROS as f32;
-        if state.opacity < target {
-            state.opacity = (state.opacity + step).min(target);
-        } else {
-            state.opacity = (state.opacity - step).max(target);
-        }
+        let elapsed = (frame_time_micros - last).max(0) as f32;
+        let step = elapsed / crate::ink_well::HighlightType::Focus.fade_micros(None) as f32;
+        approach(&mut state.focus_opacity, focus_target, step);
+        approach(&mut state.hover_opacity, hover_target, step);
         // The frame that arrives at the target is still asked for -- it is the
         // one that draws the finished state. The same rule as the ink splash's
         // last ring, and `animation::Controller::tick`'s.
@@ -1617,20 +1656,49 @@ impl crate::framework::StatefulComponent for FocusHighlight {
 
     fn build(
         &self,
-        state: &FocusHighlightState,
-        handle: crate::framework::StateHandle<FocusHighlightState>,
+        state: &StateHighlightState,
+        handle: crate::framework::StateHandle<StateHighlightState>,
         context: &mut crate::framework::BuildContext,
     ) -> AnyWidget {
-        *self.sink.borrow_mut() = Some(handle);
+        *self.sink.borrow_mut() = Some(handle.clone());
         let child = self
             .child
             .borrow()
             .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
-        // Nothing is drawn once the fade has run out, rather than a
+
+        // The mouse, heard translucently -- which here means "and let whatever
+        // is behind hear it too".
+        //
+        // **This is not what stops the overlay eating the control's taps**,
+        // and an earlier version of this comment said it was. The control is a
+        // *descendant* of this region, not something behind it, and hits go
+        // innermost first; `Opaque` blocks what is visually behind, which the
+        // control is not. A mutation making this region opaque survives every
+        // test in the crate, and that is the honest description of the
+        // difference: there isn't one, in any arrangement this crate builds.
+        //
+        // It stays translucent because that is what it means -- a region that
+        // only watches should not claim the events it watches -- and because
+        // a control layered over something that also wants the pointer would
+        // then behave as it reads.
+        let hover_id = self.id.wrapping_add(HOVER_ID_OFFSET);
+        let hover_handle = handle;
+        let child = crate::framework::single(child, move |inner| {
+            let hover_handle = hover_handle.clone();
+            Box::new(crate::widgets::MouseRegion::transparent(
+                hover_id,
+                crate::gestures::PointerHandlers::new().with_hover_change(move |hovered| {
+                    hover_handle.set_state(move |state| state.hovered = hovered);
+                }),
+                inner,
+            ))
+        });
+        // Nothing is drawn once both fades have run out, rather than a
         // fully-transparent rectangle every frame for the rest of the
         // application's life.
-        if state.opacity <= 0.0 {
+        let overlay = state.focus_opacity.max(state.hover_opacity);
+        if overlay <= 0.0 {
             return child;
         }
         // Upstream's `focusColor`, which defaults to the theme's own overlay
@@ -1641,8 +1709,15 @@ impl crate::framework::StatefulComponent for FocusHighlight {
         // alpha is what is scaled -- a focus colour that was already
         // translucent stays as translucent as it was asked to be at the end
         // of the fade.
-        const FOCUS_ALPHA: f32 = 0x1f as f32;
-        let alpha = (FOCUS_ALPHA * state.opacity.clamp(0.0, 1.0)).round() as u8;
+        //
+        // The two overlays are one rectangle at the stronger of the pair
+        // rather than two stacked: they are the same colour here -- upstream's
+        // `focusColor` and `hoverColor` both default to
+        // `ThemeData.focusColor`/`hoverColor`, which this crate resolves from
+        // one primary -- and two translucent layers of the same colour would
+        // read as a third, darker state that upstream never shows.
+        const OVERLAY_ALPHA: f32 = 0x1f as f32;
+        let alpha = (OVERLAY_ALPHA * overlay.clamp(0.0, 1.0)).round() as u8;
         let colour = theme.primary.with_alpha(alpha);
         let shape = self.shape;
         crate::framework::single(child, move |inner| {
@@ -1726,9 +1801,10 @@ pub fn operable(
     // and nothing makes one run when the keyboard moves from one control to
     // another. A control that only repainted when something else rebuilt it
     // would show the highlight late, or keep showing it.
-    let sink: Rc<RefCell<Option<crate::framework::StateHandle<FocusHighlightState>>>> =
+    let sink: Rc<RefCell<Option<crate::framework::StateHandle<StateHighlightState>>>> =
         Rc::default();
-    let child = crate::framework::stateful(FocusHighlight {
+    let child = crate::framework::stateful(StateHighlight {
+        id,
         shape,
         sink: Rc::clone(&sink),
         child: RefCell::new(Some(child)),
@@ -2142,6 +2218,14 @@ mod tests {
         assert!(!handle_traversal_key(&key(LogicalKey::ESCAPE), &plain));
     }
 
+    /// Upstream's fade for the hover and focus overlays, from
+    /// `_InkResponseState.getFadeDurationForType`: **50ms**, where a press
+    /// gets 200. Written out here rather than asked of
+    /// `HighlightType::fade_micros`, which is what the code under test uses --
+    /// a test that read the same expression would follow it anywhere,
+    /// including somewhere wrong.
+    const OVERLAY_FADE_MICROS: i64 = 50_000;
+
     /// Mounts an operable control, paints, and hands back what was drawn.
     fn operable_drawn(
         shape: FocusShape,
@@ -2169,7 +2253,7 @@ mod tests {
             // The highlight fades in, so the frames it asked for are run --
             // one to start its clock and one a full fade later.
             tree.advance_frame(0);
-            tree.advance_frame(crate::ink::InkHighlight::FADE_MICROS);
+            tree.advance_frame(OVERLAY_FADE_MICROS);
         }
         tree.rebuild_dirty();
         let mut root = tree.build_render_tree().expect("a render tree");
@@ -2212,6 +2296,170 @@ mod tests {
             Drawn::RRect { argb, .. } => Some(argb >> 24),
             _ => None,
         })
+    }
+
+    #[test]
+    fn the_mouse_lights_a_control_up_and_leaving_puts_it_out() {
+        // Before this the five operable controls showed nothing under the
+        // mouse at all -- upstream's `hoverColor` had no counterpart here.
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        reset();
+        reset_pending_autofocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            operable(
+                98,
+                false,
+                Some(std::rc::Rc::new(|_| {})),
+                FocusShape::Box { corner_radius: 4.0 },
+                leaf(|| SizedBox::new(60.0, 60.0)),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::tight(200.0, 100.0),
+        );
+
+        let hover = |x: f32, y: f32| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 1,
+            pointer_id: 1,
+            change: crate::gestures::PointerChange::Hover,
+            kind: crate::gestures::PointerKind::Mouse,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 0,
+            time_stamp_micros: 0,
+            position: crate::render::Offset::new(x, y),
+            delta: crate::render::Offset::ZERO,
+            scroll_delta: crate::render::Offset::ZERO,
+            pressure: 0.0,
+            local_position: crate::render::Offset::new(x, y),
+        };
+
+        let mut router = crate::gestures::GestureRouter::new();
+        let mut paint = |tree: &mut ElementTree| {
+            tree.rebuild_dirty();
+            let mut root = tree.build_render_tree().expect("a render tree");
+            root.layout(crate::render::BoxConstraints::tight(200.0, 100.0));
+            let mut layers = crate::engine::LayerTree::new(200, 100);
+            reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(200.0, 100.0),
+                );
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            highlight_alpha(&drawn())
+        };
+
+        assert_eq!(paint(&mut tree), None, "nothing before the mouse arrives");
+
+        // The mouse comes over it, and the fade runs.
+        router.dispatch(&root, &hover(20.0, 20.0));
+        let start = 3_000_000;
+        tree.advance_frame(start);
+        tree.advance_frame(start + OVERLAY_FADE_MICROS);
+        let lit = paint(&mut tree).expect("the mouse lit it up");
+
+        // And leaves. Well outside the laid-out box, not merely at its far
+        // corner: the region is translucent and fills what it was given, so a
+        // point still inside it is still a hover.
+        router.dispatch(&root, &hover(500.0, 500.0));
+        let mut at = start + OVERLAY_FADE_MICROS;
+        for _ in 0..3 {
+            at += OVERLAY_FADE_MICROS;
+            tree.advance_frame(at);
+        }
+        assert_eq!(
+            paint(&mut tree),
+            None,
+            "the mouse left, so did the overlay (it was {lit})"
+        );
+    }
+
+    #[test]
+    fn the_keyboard_and_the_mouse_do_not_take_each_others_overlay_away() {
+        // Two states, two opacities. A single "highlighted" flag would let
+        // the mouse leaving switch off an overlay the keyboard is holding --
+        // the reader tabs to a control, brushes the mouse across it, and the
+        // focus ring vanishes.
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        reset();
+        reset_pending_autofocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            operable(
+                99,
+                false,
+                Some(std::rc::Rc::new(|_| {})),
+                FocusShape::Box { corner_radius: 4.0 },
+                leaf(|| SizedBox::new(60.0, 60.0)),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::tight(200.0, 100.0),
+        );
+
+        let hover = |x: f32| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 1,
+            pointer_id: 1,
+            change: crate::gestures::PointerChange::Hover,
+            kind: crate::gestures::PointerKind::Mouse,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 0,
+            time_stamp_micros: 0,
+            position: crate::render::Offset::new(x, 20.0),
+            delta: crate::render::Offset::ZERO,
+            scroll_delta: crate::render::Offset::ZERO,
+            pressure: 0.0,
+            local_position: crate::render::Offset::new(x, 20.0),
+        };
+        let mut router = crate::gestures::GestureRouter::new();
+        let mut paint = |tree: &mut ElementTree| {
+            tree.rebuild_dirty();
+            let mut root = tree.build_render_tree().expect("a render tree");
+            root.layout(crate::render::BoxConstraints::tight(200.0, 100.0));
+            let mut layers = crate::engine::LayerTree::new(200, 100);
+            reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(200.0, 100.0),
+                );
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            highlight_alpha(&drawn())
+        };
+
+        // Focused *and* hovered, then the mouse leaves.
+        assert!(focus(99));
+        router.dispatch(&root, &hover(20.0));
+        let start = 4_000_000;
+        tree.advance_frame(start);
+        tree.advance_frame(start + OVERLAY_FADE_MICROS);
+        assert!(paint(&mut tree).is_some(), "lit by both");
+
+        router.dispatch(&root, &hover(500.0));
+        let mut at = start + OVERLAY_FADE_MICROS;
+        for _ in 0..3 {
+            at += OVERLAY_FADE_MICROS;
+            tree.advance_frame(at);
+        }
+        assert!(
+            paint(&mut tree).is_some(),
+            "the keyboard is still on it, so the overlay stays"
+        );
     }
 
     #[test]
@@ -2271,18 +2519,18 @@ mod tests {
             "nothing yet on the frame that only started the clock"
         );
 
-        let half = crate::ink::InkHighlight::FADE_MICROS / 2;
+        let half = OVERLAY_FADE_MICROS / 2;
         assert!(tree.advance_frame(start + half));
         let midway = highlight_alpha(&paint(&mut tree)).expect("half faded in");
 
-        assert!(tree.advance_frame(start + crate::ink::InkHighlight::FADE_MICROS));
+        assert!(tree.advance_frame(start + OVERLAY_FADE_MICROS));
         let full = highlight_alpha(&paint(&mut tree)).expect("faded in");
         assert!(midway < full, "it arrives gradually: {midway} then {full}");
 
         // And a frame after it has arrived is not asked for -- an animation
         // that never stops asking is a frame every 16ms for ever.
         assert!(
-            !tree.advance_frame(start + crate::ink::InkHighlight::FADE_MICROS * 2),
+            !tree.advance_frame(start + OVERLAY_FADE_MICROS * 2),
             "the fade stops asking once it is done"
         );
     }
@@ -2312,12 +2560,12 @@ mod tests {
         let _ = tree.build_render_tree();
         assert!(focus(97));
         tree.advance_frame(0);
-        tree.advance_frame(crate::ink::InkHighlight::FADE_MICROS);
+        tree.advance_frame(OVERLAY_FADE_MICROS);
 
         unfocus();
-        let mut at = crate::ink::InkHighlight::FADE_MICROS;
+        let mut at = OVERLAY_FADE_MICROS;
         for _ in 0..4 {
-            at += crate::ink::InkHighlight::FADE_MICROS / 2;
+            at += OVERLAY_FADE_MICROS / 2;
             tree.advance_frame(at);
         }
         tree.rebuild_dirty();
@@ -2338,7 +2586,7 @@ mod tests {
             "gone, and drawing nothing rather than a transparent rectangle"
         );
         assert!(
-            !tree.advance_frame(at + crate::ink::InkHighlight::FADE_MICROS),
+            !tree.advance_frame(at + OVERLAY_FADE_MICROS),
             "and no longer asking for frames"
         );
     }

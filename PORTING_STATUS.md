@@ -7282,3 +7282,63 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6983 通�
 对 hover 和 focus **都是 50ms**，200ms 只给 pressed——
 `ink_well.rs` 的 `HighlightType::fade_micros` 早就是对的，
 下一轮该改成问它，而不是再抄一个数。
+
+---
+
+## 第 534 轮：悬停高亮，外加改掉上一轮抄错的那个时长
+
+接上一轮被真机验证打断的活。
+
+### 先改错的那个数
+
+第 532 轮焦点淡入用了 `InkHighlight::FADE_MICROS`（200ms）。
+上游 `_InkResponseState.getFadeDurationForType` 写得很清楚：
+**hover 和 focus 都是 50ms，200ms 只给 pressed**。
+200ms 是 `InkHighlight` 自己的默认值，`InkResponse` 对这两种**覆盖掉了**。
+`ink_well.rs` 的 `HighlightType::fade_micros` 本来就是对的，
+所以改成**问它**，而不是再抄一个数进来。
+
+一改测试就红了——原来的测试推进 100ms 当"淡到一半"，
+而现在 50ms 就淡完了。**这正是这个错本来该被看见的地方**。
+
+测试里的时长写成字面量 50_000 并注明出处，**不去问代码用的那个表达式**：
+问同一个表达式的测试会跟着代码一起动，改错了也照样绿。
+
+### 悬停
+
+五个控件**一个都没画悬停色**——不是"一条规则五个家"，是单纯缺。
+收进同一个 widget（顺势改名 `StateHighlight`），
+`MouseRegion` 听鼠标，`PointerHandlers::with_hover_change` 报进出。
+
+**两个不透明度，不是一个**：读者的鼠标停在他刚 Tab 到的那个控件上时，
+两层都亮；一个"高亮中"的布尔量做不到——**鼠标一走会把焦点那层也带走**。
+专门写了一条测试守这件事。
+
+### 扫描里那个活下来的，结论是"我的注释写错了"
+
+"把鼠标区域改成不透明"这条变异**两轮都活着**。
+我原来的注释说"不透明的会把点击吃掉"。查 `HitTestBehavior` 的定义：
+`Opaque` 挡的是**它背后**的东西，而控件是它的**后代**，
+命中是由内向外的——**所以不透明根本挡不住自己的孩子**。
+
+也就是说：**两种行为在这个 crate 建出来的任何结构里都没有可观察差别**，
+我那句理由是错的。按本项目的规矩，
+**不为一个不存在的差别去编一条测试**，而是把注释改成实话：
+说清它们在这里没有差别、变异活着就是证据，
+以及仍然用 translucent 的真实理由（一个只负责看的区域不该声称占有它看的事件）。
+
+那条"点击要能穿过去"的测试**留着**——它守的是真东西
+（点击必须到达控件），只是不区分两种 behavior，注释里也这么写了。
+
+六个变异里五个杀死，第六个是**等价变异**，如实记下而不是含糊过去。
+
+尺子：十八把全部 exit 0。门：Rust 6986 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6986 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：三种高亮还差**按下**（`highlightColor`，200ms，
+和另外两个不同时长——这正是 `fade_micros` 那个函数存在的理由）。
+**先查一件事**：按下状态从哪儿来。悬停有 `with_hover_change`，
+焦点有 `on_focus_change`，按下呢——`PointerHandlers` 有没有
+`on_tap_down`/`on_tap_cancel` 这一对？
+**必须是成对的**：只有按下没有取消，手指按住滑走之后高亮会一直留着。

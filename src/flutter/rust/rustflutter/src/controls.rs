@@ -2339,6 +2339,59 @@ You"
     }
 
     #[test]
+    fn the_overlay_listens_for_the_mouse_without_taking_its_taps() {
+        // `operable` puts a mouse region over every control so the overlay
+        // knows when the pointer is there. Whatever that region's hit
+        // behaviour, the tap has to keep reaching the control -- this is the
+        // test that says so.
+        //
+        // It does **not** distinguish opaque from translucent: the control is
+        // a descendant of the region, and a descendant is hit first either
+        // way. See the note in `focus.rs`, which used to claim otherwise.
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+        let taps = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&taps);
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            crate::framework::component(
+                Chip::new(9401, "filter").on_tap(move |_| counter.set(counter.get() + 1)),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::loose(300.0, 200.0),
+        );
+
+        let at = |change, x: f32, y: f32| crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 1,
+            time_stamp_micros: 0,
+            position: crate::render::Offset::new(x, y),
+            delta: crate::render::Offset::ZERO,
+            scroll_delta: crate::render::Offset::ZERO,
+            pressure: 1.0,
+            local_position: crate::render::Offset::new(x, y),
+        };
+
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(&root, &at(crate::gestures::PointerChange::Down, 20.0, 16.0));
+        router.dispatch(&root, &at(crate::gestures::PointerChange::Up, 20.0, 16.0));
+        assert_eq!(taps.get(), 1, "the tap reached the chip, not the overlay");
+    }
+
+    #[test]
     fn a_focused_chip_is_pressed_by_enter() {
         // The whole point of being a stop. A chip the keyboard can reach but
         // not press is a place the reader gets stuck.
@@ -2449,7 +2502,9 @@ You"
             let _ = tree.build_render_tree();
             assert!(crate::focus::focus(id), "{id} took the keyboard");
             tree.advance_frame(0);
-            tree.advance_frame(crate::ink::InkHighlight::FADE_MICROS);
+            // Upstream's hover/focus fade: 50ms, not `InkHighlight`'s own
+            // 200ms default, which `InkResponse` overrides for these two.
+            tree.advance_frame(50_000);
             tree.rebuild_dirty();
             let mut root = tree.build_render_tree().expect("a render tree");
             root.layout(crate::render::BoxConstraints::tight(300.0, 100.0));
