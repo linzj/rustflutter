@@ -4214,3 +4214,55 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 `pushReplacement` 那条是在**被替换的路由**上调的（不是新的），
 而且是在 `didReplace` 之前还是之后——顺序决定被替换的路由
 交出的是替换前还是替换后的 `currentResult`。
+
+---
+
+## 第 481 轮：把结果接到搬运它的那个条目上
+
+上一轮留的问题查出来的答案，比问题本身更有用：
+上游**不是**在替换的地方调 `didComplete`，而是走**条目的生命周期**——
+`_RouteEntry.handlePop` 里由 `didPop` 顺带完成，
+或者进入 `complete` 状态后由 `handleComplete` 完成。
+两条路都紧接着一句 `pendingResult = null`。
+
+也就是说，值**不在路由身上，在条目身上**（`_RouteEntry.pendingResult`）：
+一条路由可以被 transition delegate 早早标记为待 pop，
+而真正问它 `didPop` 是后来的事，值得在中间等着。
+所以这一轮把上一轮那个 `RouteCompletion` 接到 `HistoryEntry` 上，
+并搬了 `handlePop` 与 `handleComplete` 两条规则。
+
+`handlePop` 里三处值得慢读：
+
+- **状态先变成 `popping`，然后才问路由**；路由拒绝了再退回 `idle`。
+  只在成功时设状态看着等价，其实不是：一条自己消化了 pop 的路由会重建，
+  而它在那一刻读到的自己是 `popping`。
+- **已经完成的路由被放过**，上游注释点名了那个场合，并且断言此时没有待交的值。
+  这一支**什么也不从条目里拿走**，"no further action" 就是这个意思。
+- **交出去之后把待交的值清掉**，于是同一个值递不了第二次。
+  加上 `RouteCompletion` 谢绝第二次完成，同一扇门上两把锁——上游也是两把。
+
+### 一条不可观察的注释，被改成可观察的
+
+第一版 `handle_pop` 收的是 `route_popped: bool`，
+于是"先设状态再问路由"这条**变异掉也不红**——先设还是后设，
+外面看到的最终状态一样，而"问的时候是什么状态"根本没人能看见。
+改成让它收一个闭包（那正是 `Route.didPop` 的位置），
+把状态**交给**那个闭包，规则就有了唯一的观察点，测试也就立得住。
+
+同一轮还有两个变异照出两处：`RouteLifecycle::default()` 没人测过
+（默认是 `idle`——"route is being harmless"，而不是 `staging`），
+以及"已完成"那一支没有测过它**不动**待交的值。都补上了。
+
+变异扫描 8 个，全红。扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6803 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`HistoryEntry` 现在会搬结果了，但 `navigation.rs` 的那个栈
+仍然自己 pop、自己丢结果，两边没有接上——
+`navigation::Navigator` 用的是 `Vec<StackEntry>`，
+而 `routes.rs` 这套是 `RoutePosition`/`HistoryEntry`。
+**先查一件事**：这两个栈在上游是**同一个** `_history`，
+还是这个 port 有意分成"给动画看的栈"和"给规则看的历史"两份——
+读 `navigation.rs` 顶部的模块注释，它多半已经说过为什么是两份；
+是有意的就把接口对上，不是的话就该并成一份。

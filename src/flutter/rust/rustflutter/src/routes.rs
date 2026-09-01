@@ -447,22 +447,107 @@ impl RouteLifecycle {
     }
 }
 
-/// One entry of the navigator's history, as much of it as
-/// [`RoutePosition`] needs: which route, and where that route is in its life.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One entry of the navigator's history: upstream's `_RouteEntry`.
+///
+/// It carries the route, where that route is in its life, and the **pending
+/// result** -- the value a pop is on its way to hand back. Upstream keeps the
+/// result here rather than on the route for a reason this port inherits: a
+/// route can be marked for popping by the transition delegate long before
+/// anything calls `didPop`, and the value has to wait somewhere in between.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryEntry {
     pub route: u64,
     pub state: RouteLifecycle,
+    /// Upstream's `_RouteEntry.pendingResult`.
+    pub pending_result: Option<String>,
+    /// The route's `popped` future -- see [`RouteCompletion`].
+    pub completion: RouteCompletion,
 }
 
 impl HistoryEntry {
     pub fn new(route: u64, state: RouteLifecycle) -> HistoryEntry {
-        HistoryEntry { route, state }
+        HistoryEntry {
+            route,
+            state,
+            pending_result: None,
+            completion: RouteCompletion::new(),
+        }
+    }
+
+    /// The value this pop is carrying, which arrives with the request and
+    /// waits here until the route is actually asked.
+    pub fn with_pending_result(mut self, result: impl Into<String>) -> HistoryEntry {
+        self.pending_result = Some(result.into());
+        self
+    }
+
+    /// The route's own `currentResult`, which is what a pop with no value
+    /// falls back to.
+    pub fn with_current_result(mut self, result: impl Into<String>) -> HistoryEntry {
+        self.completion = self.completion.with_current_result(result);
+        self
     }
 
     /// Upstream's `_RouteEntry.isPresentPredicate`.
     pub fn is_present(&self) -> bool {
         self.state.is_present()
+    }
+
+    /// Upstream's `_RouteEntry.handlePop`: *"A route can be marked for pop by
+    /// transition delegate or Navigator.pop, this method actually pops the
+    /// route by calling Route.didPop."*
+    ///
+    /// `ask_the_route` is `Route.didPop`: it answers `false` when the route
+    /// consumed the pop itself, which is what a route with local history does
+    /// (see [`LocalHistoryRoute::did_pop`]). It is handed **the state the
+    /// entry is in while it is being asked**, which is the point of the first
+    /// rule below.
+    ///
+    /// Three things worth reading slowly:
+    ///
+    /// * **The state goes to `popping` before the route is asked**, and comes
+    ///   back to `idle` if the route refuses. Setting it only on success would
+    ///   look equivalent and is not: a route consuming the pop rebuilds, and
+    ///   what it reads about itself while it does is `popping`.
+    /// * **An already-completed route is left alone.** Upstream's comment says
+    ///   which case that is -- *"a page-based route popped through the
+    ///   Navigator.pop. The didPop should have been called"* -- and asserts
+    ///   there is no pending result to lose. Nothing is taken from the entry
+    ///   in that branch, which is what "no further action" means.
+    /// * **The pending result is cleared on the way out**, so the value cannot
+    ///   be handed over a second time. Together with
+    ///   [`RouteCompletion::did_complete`] declining a second completion, that
+    ///   is two locks on the same door, which is upstream's arrangement too.
+    pub fn handle_pop(&mut self, ask_the_route: impl FnOnce(RouteLifecycle) -> bool) -> bool {
+        self.state = RouteLifecycle::Popping;
+        if self.completion.is_completed() {
+            return true;
+        }
+        if !ask_the_route(self.state) {
+            self.state = RouteLifecycle::Idle;
+            return false;
+        }
+        self.completion.did_complete(self.pending_result.take());
+        true
+    }
+
+    /// Upstream's `_RouteEntry.handleComplete`: complete the route's future
+    /// with whatever the pop was carrying, drop it, and move on to `remove`.
+    ///
+    /// The other way a route's future is completed -- `pushReplacement` takes
+    /// this road rather than `handlePop`, which is why the value lives on the
+    /// entry and not in a pop that never happened.
+    pub fn handle_complete(&mut self) {
+        self.completion.did_complete(self.pending_result.take());
+        self.state = RouteLifecycle::Remove;
+    }
+}
+
+impl Default for RouteLifecycle {
+    /// `idle` -- upstream's *"route is being harmless"*, which is what an
+    /// entry is whenever nothing is happening to it.
+    fn default() -> RouteLifecycle {
+        RouteLifecycle::Idle
     }
 }
 
@@ -2639,5 +2724,125 @@ mod tests {
         late.did_complete(None);
         late.did_complete(Some("too late".to_string()));
         assert_eq!(late.popped(), Some(Some("fallback")));
+    }
+
+    // -- The entry that carries the pop -------------------------------------
+
+    #[test]
+    fn a_pop_hands_over_what_it_was_carrying() {
+        // `handlePop` calls `didPop(pendingResult)` and then clears it. The
+        // value arrives with the request and waits on the entry, because a
+        // route can be marked for popping by the transition delegate long
+        // before anything calls `didPop`.
+        let mut entry = HistoryEntry::new(1, RouteLifecycle::Idle).with_pending_result("chosen");
+        assert!(entry.handle_pop(|_| true));
+        assert_eq!(entry.completion.popped(), Some(Some("chosen")));
+        assert_eq!(
+            entry.pending_result, None,
+            "and it cannot be handed over twice"
+        );
+        assert_eq!(entry.state, RouteLifecycle::Popping);
+    }
+
+    #[test]
+    fn a_pop_with_nothing_to_carry_falls_back_to_the_route_s_own() {
+        // The `??` from the other side: the entry has no pending result, so
+        // what the future completes with is the route's `currentResult`.
+        let mut entry = HistoryEntry::new(1, RouteLifecycle::Idle).with_current_result("selected");
+        assert!(entry.handle_pop(|_| true));
+        assert_eq!(entry.completion.popped(), Some(Some("selected")));
+    }
+
+    #[test]
+    fn the_route_is_asked_while_the_entry_is_already_popping() {
+        // The state goes to `popping` **before** the route is asked, not after
+        // it agrees. A route consuming the pop rebuilds while it does so, and
+        // what it reads about itself in that moment is `popping` -- so the
+        // order is observable from inside `didPop` and nowhere else, which is
+        // why the route is asked through a closure here.
+        let mut entry = HistoryEntry::new(1, RouteLifecycle::Idle);
+        let mut seen = None;
+        entry.handle_pop(|state| {
+            seen = Some(state);
+            true
+        });
+        assert_eq!(seen, Some(RouteLifecycle::Popping));
+    }
+
+    #[test]
+    fn an_entry_with_nothing_happening_to_it_is_idle() {
+        // `_RouteLifecycle.idle` is upstream's *"route is being harmless"*,
+        // and it is what an entry is by default -- not `staging`, which means
+        // the transition delegate has not ruled on it yet and is a state an
+        // entry is put into rather than born in.
+        assert_eq!(RouteLifecycle::default(), RouteLifecycle::Idle);
+        assert_eq!(HistoryEntry::default().state, RouteLifecycle::Idle);
+    }
+
+    #[test]
+    fn a_route_that_consumed_the_pop_puts_the_state_back() {
+        // The state goes to `popping` **before** the route is asked and comes
+        // back to `idle` when the route refuses -- a route with local history
+        // pops its own entry instead, and what it reads about itself while it
+        // rebuilds is `popping`. Setting the state only on success would look
+        // equivalent and would not be.
+        let mut entry = HistoryEntry::new(1, RouteLifecycle::Idle).with_pending_result("chosen");
+        assert!(!entry.handle_pop(|_| false), "the entry did not pop");
+        assert_eq!(entry.state, RouteLifecycle::Idle, "and it is idle again");
+        assert_eq!(
+            entry.pending_result.as_deref(),
+            Some("chosen"),
+            "the value is still waiting for the pop that does happen"
+        );
+        assert!(!entry.completion.is_completed());
+
+        // And when the route does pop, later, the value that waited is the
+        // one handed over.
+        assert!(entry.handle_pop(|_| true));
+        assert_eq!(entry.completion.popped(), Some(Some("chosen")));
+    }
+
+    #[test]
+    fn an_already_completed_route_is_left_alone() {
+        // Upstream's short circuit, whose comment names the case: *"This is a
+        // page-based route popped through the Navigator.pop. The didPop should
+        // have been called. No further action is needed."*
+        let mut entry =
+            HistoryEntry::new(1, RouteLifecycle::Idle).with_pending_result("never delivered");
+        entry.completion.did_complete(Some("already".to_string()));
+        let mut asked = false;
+        assert!(entry.handle_pop(|_| {
+            asked = true;
+            true
+        }));
+        assert!(!asked, "the route is not asked a second time");
+        assert_eq!(
+            entry.completion.popped(),
+            Some(Some("already")),
+            "nothing was completed a second time"
+        );
+        assert_eq!(
+            entry.pending_result.as_deref(),
+            Some("never delivered"),
+            "and nothing was taken from the entry -- \"no further action\" is              what it says"
+        );
+        assert_eq!(entry.state, RouteLifecycle::Popping);
+    }
+
+    #[test]
+    fn the_other_road_to_completion_is_the_lifecycle_itself() {
+        // `handleComplete` is what `pushReplacement` reaches -- a route whose
+        // future has to finish although no pop ever happened. It completes,
+        // drops the value, and moves the entry on to `remove`.
+        let mut entry =
+            HistoryEntry::new(1, RouteLifecycle::Complete).with_pending_result("replaced away");
+        entry.handle_complete();
+        assert_eq!(entry.completion.popped(), Some(Some("replaced away")));
+        assert_eq!(entry.pending_result, None);
+        assert_eq!(entry.state, RouteLifecycle::Remove);
+        assert!(
+            entry.state.is_present(),
+            "and `remove` is still present -- the route is on screen until it is `popping`"
+        );
     }
 }
