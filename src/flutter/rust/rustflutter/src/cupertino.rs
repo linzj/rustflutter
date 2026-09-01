@@ -2856,6 +2856,82 @@ pub fn segment_colors(
     }
 }
 
+/// Upstream `_SegmentButton`: one segment, as the keyboard sees it.
+///
+/// Upstream makes each segment a `RadioClient` with a `FocusNode` of its own,
+/// which is what makes a segmented control behave like the row of radios it
+/// is: the arrow keys walk it, space chooses, and the choice moves the
+/// keyboard with it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SegmentButton {
+    pub client: crate::radio_group::RadioClient<usize>,
+    /// The focus node upstream builds in `initState` and disposes of in
+    /// `dispose`.
+    pub focus_id: u64,
+}
+
+impl SegmentButton {
+    pub fn new(focus_id: u64, index: usize) -> SegmentButton {
+        SegmentButton {
+            // `tristate => false`: a segmented control always has exactly one
+            // segment chosen, so there is no third state to cycle through --
+            // which is the same fact as `_onTap` refusing to re-report the
+            // segment that is already selected.
+            client: crate::radio_group::RadioClient::new(focus_id, index, index as i32),
+            focus_id,
+        }
+    }
+
+    /// Upstream's `didChangeDependencies` and the `enabled` arm of
+    /// `didUpdateWidget`, which are the same line written twice:
+    ///
+    /// ```dart
+    /// registry = widget.enabled ? RadioGroup.maybeOf<T>(context) : null;
+    /// ```
+    ///
+    /// **A disabled segment leaves the group rather than staying in it as a
+    /// disabled member.** The difference shows on the keyboard: a radio that
+    /// is in the group but disabled is a stop the arrows have to skip *past*,
+    /// and one that has left is not there at all. Upstream repeats the line in
+    /// `didUpdateWidget` so that a segment enabled again rejoins -- a control
+    /// whose segments become available as a form is filled in would otherwise
+    /// stay unreachable for ever.
+    pub fn set_enabled(
+        &mut self,
+        enabled: bool,
+        group: Option<u64>,
+    ) -> crate::radio_group::RegistryChange {
+        self.client.enabled = enabled;
+        self.client.set_registry(if enabled { group } else { None })
+    }
+
+    /// Upstream's `dispose`, whose first line is `registry = null`.
+    ///
+    /// Leaving the group **before** the node goes away, not after: a group
+    /// holding a client whose focus node has been disposed of would hand the
+    /// keyboard to nothing.
+    pub fn dispose(&mut self) -> crate::radio_group::RegistryChange {
+        self.client.set_registry(None)
+    }
+
+    /// Upstream's `requestFocus`, which `_onTap` calls before reporting the
+    /// change:
+    ///
+    /// ```dart
+    /// void requestFocus() {
+    ///   if (widget.enabled) {
+    ///     _focusNode.requestFocus();
+    /// ```
+    ///
+    /// **Choosing a segment with the mouse leaves the keyboard on it**, so the
+    /// arrows carry on from where the reader was rather than from wherever the
+    /// keyboard happened to be. `None` when the segment is disabled: it cannot
+    /// be chosen, so it cannot be the place the keyboard is left either.
+    pub fn request_focus(&self) -> Option<u64> {
+        self.client.enabled.then_some(self.focus_id)
+    }
+}
+
 /// Why a segmented control refused the way it was built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SegmentedControlError {
@@ -2984,6 +3060,16 @@ impl StatefulComponent for CupertinoSegmentedControl {
         // being set up parks its segments at rest, while a control whose
         // selection *changed* starts them moving. Telling them apart is what
         // stops a control animating itself in as it first appears.
+        // Upstream gives each segment a `_SegmentButton` with a focus node of
+        // its own, and `_onTap` moves the keyboard to the segment that was
+        // chosen -- ported as `SegmentButton`, whose ids sit past the pointer
+        // ones so the two do not meet. The tap **asks** for the focus here;
+        // whether anything answers depends on a node being registered, and
+        // this control builds its segments as render objects inside `leaf`,
+        // where a `Focus` widget cannot go. Said plainly rather than left to
+        // look like coverage: the rule is ported and tested, the registration
+        // is not, and the build has to become a widget tree before it can be.
+        let focus_base = first_id.wrapping_add(1_000);
         let count = labels.len();
         if state.shown != Some(selected) {
             let previous = state.shown;
@@ -3023,7 +3109,14 @@ impl StatefulComponent for CupertinoSegmentedControl {
             {
                 let tapped = on_selected.clone();
                 // `_onTap`: the already-selected segment does not re-report.
+                let button = SegmentButton::new(focus_base + index as u64, index);
                 segment = segment.with_tap(move |_| {
+                    // `_onTap` focuses first and reports second, so the
+                    // keyboard is on the segment the reader chose even when
+                    // the choice itself changes nothing.
+                    if let Some(node) = button.request_focus() {
+                        crate::focus::focus(node);
+                    }
                     if index != selected {
                         tapped(index);
                     }
@@ -6876,6 +6969,60 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_disabled_segment_leaves_the_group_rather_than_sitting_in_it() {
+        // The difference is what the arrow keys do: a disabled radio still in
+        // the group is a stop to skip past, one that has left is not there.
+        let mut button = SegmentButton::new(700, 1);
+        assert_eq!(button.set_enabled(true, Some(9)).registered, Some(9));
+        assert_eq!(button.client.registry(), Some(9));
+
+        let left = button.set_enabled(false, Some(9));
+        assert_eq!(left.unregistered, Some(9));
+        assert_eq!(button.client.registry(), None);
+
+        // And it rejoins when it is enabled again -- upstream repeats the line
+        // in `didUpdateWidget` for exactly this.
+        assert_eq!(button.set_enabled(true, Some(9)).registered, Some(9));
+        assert_eq!(button.client.registry(), Some(9));
+    }
+
+    #[test]
+    fn choosing_a_segment_leaves_the_keyboard_on_it() {
+        let mut button = SegmentButton::new(701, 2);
+        assert_eq!(
+            button.request_focus(),
+            Some(701),
+            "so the arrows carry on from where the reader was"
+        );
+
+        button.set_enabled(false, Some(9));
+        assert_eq!(
+            button.request_focus(),
+            None,
+            "a segment that cannot be chosen cannot be where the keyboard is left"
+        );
+    }
+
+    #[test]
+    fn a_segment_is_never_toggleable() {
+        // `tristate => false`: there is always exactly one segment chosen, so
+        // there is no third state to cycle through -- the same fact as `_onTap`
+        // refusing to re-report the segment that is already selected.
+        assert!(!SegmentButton::new(702, 0).client.tristate);
+    }
+
+    #[test]
+    fn a_segment_leaves_the_group_before_it_goes_away() {
+        // `dispose`'s first line is `registry = null`, before the focus node
+        // is disposed of: a group holding a client whose node has gone would
+        // hand the keyboard to nothing.
+        let mut button = SegmentButton::new(703, 0);
+        button.set_enabled(true, Some(9));
+        assert_eq!(button.dispose().unregistered, Some(9));
+        assert_eq!(button.client.registry(), None);
     }
 
     #[test]
