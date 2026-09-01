@@ -3404,3 +3404,65 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 **先查一件事**：`crossAxisUnconstrained` 到底放松的是哪一维、
 是在 `_Submenu` 的哪一层（`ConstrainedBox` 还是
 `UnconstrainedBox(constrainedAxis:)`），确认了再动手。
+
+---
+
+## 第 466 轮：菜单终于有了自己的那只盒子
+
+上一轮留的问题先查清楚：`crossAxisUnconstrained` 那层是
+`UnconstrainedBox(constrainedAxis: widget.orientation)`——
+**被约束的那一维正是菜单自己的方向**，所以长度照旧听空间的，
+宽度放开。这就是"子菜单可以比父菜单旁边的空隙还宽"的出处
+（`DropdownMenu` 是唯一把它关掉的场合）。
+
+于是这一轮补 `_MenuPanel`。它是"这里有几行菜单"和"屏幕上一块面板"之间那一层，
+四条规则住在里面：孩子沿菜单自己的轴排（菜单向下、栏向右）、
+`MainAxisSize.min` 收边、`CrossAxisAlignment.start` 让一列菜单只有一条左边缘；
+外观走 `ResolvedMenuPanel`（竖向那半**第一次有真调用者**）；
+视觉密度**只加宽不缩窄**内边距——上游把 Material 团队的原话抄在那儿：
+compact 会把左右内边距压到 0；以及最后那圈约束，
+`fixedSize` **两个数各判各的**（只固定了宽度的调用者说的就是只固定宽度）。
+
+`MenuAnchor` 现在收 `menu_children`，自己铺成一块 `MenuPanel`。
+面板是在 `build` 里造的、不是在 `push` 里：第一稿在 `push` 时就把
+`cross_axis_unconstrained` 折进去，结果后写的那句旗子什么也不做。
+
+### 两处"看着像 bug，其实是仪器/空洞"
+
+- **画出来的面板是 `RRect` 不是 `Rect`**（它有圆角）。
+  第一版测试找 `Rect`，一个也找不到——那和"面板根本没画"长得一模一样。
+- **`IntrinsicWidth` 量出来是 0。**`RenderBox::max_intrinsic_width` 的默认实现
+  就是 `0.0`，而菜单行外面套的那几层——pointer region、portal、ink——
+  都没转发它。于是上游的 `_intrinsicCrossSize` 在这里量出零宽，
+  面板画成一条没有宽度的缝。
+  先在菜单栏上撞到同一件事（把 `MenuPanel` 也用给 `MenuBar`，
+  entries 立刻贴到顶边、栏高为零），于是**菜单栏这一轮不并过来**，
+  代码里把原因写在原地。
+  上游靠那层拿到的"面板和最宽的一行一样宽"，这里 flex 的横轴本来就是最宽的孩子；
+  少掉的是"每一行都被撑到面板那么宽"。等 intrinsics 能穿过那几层再补。
+
+### 三个变异照出的三条空断言
+
+- "密度也加宽上下内边距"不红——我只在 compact（不加宽）那一侧断言了 top。
+- "fixedSize 两个数一起用"不红——漏了 `min_height` 那一半，
+  被固定成无穷大也照样通过。
+- "面板没有内边距"不红——**菜单行自己也有内边距**，
+  于是"文字离边缘还有 8 像素"在两种情况下都成立。
+  改成量一块只装一个素盒子的面板：高 = 20 + 8×2，宽 = 20。
+  顺带发现这测试得**松约束**地量：根给的是紧约束，
+  一块被指定了大小的面板说明不了它想要多大。
+
+变异扫描 13 个，全红。尺子：十六把全部 exit 0。
+门：Rust 6736 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：就是上面那个洞——**intrinsics 穿不过包装层**。
+`RenderBox` 上四个 `*_intrinsic_*` 的默认实现都返回 0，
+而 `RenderPointerRegion` / `RenderPortal` / ink 那几层都不转发，
+所以 `IntrinsicWidth`、`IntrinsicHeight`、以及任何靠它们的布局
+（菜单面板的等宽行、菜单栏的等高项、表格列宽）在真 widget 上都失效。
+**先查一件事**：这几层里哪些是"单孩子透传"型（应当无条件转发）、
+哪些真的要自己算（`RenderPadding` 要加上自己的 padding，
+`RenderConstrainedBox` 要夹一遍），照上游 `RenderProxyBox` 与
+`RenderShiftedBox` 的分法来，别一刀切。

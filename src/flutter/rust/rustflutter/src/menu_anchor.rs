@@ -265,6 +265,15 @@ pub struct MenuAnchor {
     pub child: Option<
         std::rc::Rc<dyn Fn(crate::raw_menu_anchor::MenuController) -> crate::framework::AnyWidget>,
     >,
+    /// Upstream's `menuChildren`: the lines of the menu, which this anchor
+    /// lays into a [`MenuPanel`] of its own.
+    ///
+    /// Kept as children rather than as a built panel so that the flags the
+    /// panel needs -- `cross_axis_unconstrained` above all -- are read when
+    /// the panel is built and not when the caller happened to name them. A
+    /// first draft folded them in at `push` time, and setting the flag
+    /// afterwards then did nothing at all.
+    pub menu_children: Vec<crate::framework::AnyWidget>,
     /// Upstream's `onOpen`, called when the menu goes up.
     pub on_open: Option<std::rc::Rc<dyn Fn()>>,
     /// Upstream's `onClose`, called when it comes down **however** it comes
@@ -292,6 +301,7 @@ impl PartialEq for MenuAnchor {
             && self.id == other.id
             && self.group_id == other.group_id
             && self.menu.is_some() == other.menu.is_some()
+            && self.menu_children.len() == other.menu_children.len()
             && self.child.is_some() == other.child.is_some()
             && self.on_open.is_some() == other.on_open.is_some()
             && self.on_close.is_some() == other.on_close.is_some()
@@ -327,6 +337,7 @@ impl MenuAnchor {
             id: 0,
             group_id: 0,
             menu: None,
+            menu_children: Vec::new(),
             child: None,
             on_open: None,
             on_close: None,
@@ -347,6 +358,27 @@ impl MenuAnchor {
     pub fn with_menu(mut self, menu: impl Fn() -> crate::framework::AnyWidget + 'static) -> Self {
         self.menu = Some(std::rc::Rc::new(menu));
         self
+    }
+
+    /// One line of the menu. See [`MenuAnchor::menu_children`].
+    pub fn push(mut self, child: crate::framework::AnyWidget) -> Self {
+        self.menu_children.push(child);
+        self
+    }
+
+    /// The panel this anchor's children are laid into, or `None` if it was
+    /// given none.
+    pub fn panel(&self) -> Option<MenuPanel> {
+        if self.menu_children.is_empty() {
+            return None;
+        }
+        Some(MenuPanel {
+            orientation: MenuAxis::Vertical,
+            cross_axis_unconstrained: self.cross_axis_unconstrained,
+            clip: false,
+            style: None,
+            children: self.menu_children.clone(),
+        })
     }
 
     /// Upstream's `builder`. See [`MenuAnchor::child`].
@@ -400,6 +432,203 @@ impl MenuAnchor {
             crate::component_themes::MenuPanelAxis::Vertical,
             style,
         )
+    }
+}
+
+/// Upstream `_MenuPanel`: the box a menu's children are laid into.
+///
+/// It is the layer between "here are some menu items" and a panel on screen,
+/// and it is where four separate rules live:
+///
+/// * The children run **along the menu's own axis** -- down for a menu, across
+///   for a bar -- shrink-wrapped, and aligned to the leading edge so a column
+///   of items has one left edge rather than one per item.
+/// * The look comes from [`crate::component_themes::ResolvedMenuPanel`], which
+///   is `MenuTheme` for a vertical panel and `MenuBarTheme` for a horizontal
+///   one.
+/// * **Visual density widens the padding and never narrows it.** Upstream says
+///   why, in the Material team's own words: *"don't allow the VisualDensity
+///   adjustment to reduce the width of the left/right padding. If we did,
+///   VisualDensity.compact, the default for desktop/web, would reduce the
+///   horizontal padding to zero."*
+/// * **The cross axis can be let go.** `crossAxisUnconstrained` puts an
+///   `UnconstrainedBox` around the panel whose *constrained* axis is the
+///   menu's own -- so the length still obeys the space available and the
+///   width does not. That is what lets a submenu be wider than the gap beside
+///   its parent, and a menu item wrapped onto two lines is worse than one that
+///   overhangs. `DropdownMenu` is the case that turns it off.
+#[derive(Clone)]
+pub struct MenuPanel {
+    pub orientation: MenuAxis,
+    pub cross_axis_unconstrained: bool,
+    pub clip: bool,
+    pub style: Option<crate::component_themes::MenuStyle>,
+    pub children: Vec<crate::framework::AnyWidget>,
+}
+
+impl MenuPanel {
+    pub fn new(orientation: MenuAxis) -> MenuPanel {
+        MenuPanel {
+            orientation,
+            cross_axis_unconstrained: true,
+            clip: false,
+            style: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn with_cross_axis_unconstrained(mut self, unconstrained: bool) -> Self {
+        self.cross_axis_unconstrained = unconstrained;
+        self
+    }
+
+    pub fn with_clip(mut self, clip: bool) -> Self {
+        self.clip = clip;
+        self
+    }
+
+    pub fn with_style(mut self, style: crate::component_themes::MenuStyle) -> Self {
+        self.style = Some(style);
+        self
+    }
+
+    pub fn push(mut self, child: crate::framework::AnyWidget) -> Self {
+        self.children.push(child);
+        self
+    }
+
+    /// Which theme answers for this panel: `MenuBarTheme` across,
+    /// `MenuTheme` down.
+    pub fn axis(&self) -> crate::component_themes::MenuPanelAxis {
+        match self.orientation {
+            MenuAxis::Horizontal => crate::component_themes::MenuPanelAxis::Horizontal,
+            MenuAxis::Vertical => crate::component_themes::MenuPanelAxis::Vertical,
+        }
+    }
+
+    /// The padding, once visual density has had its say.
+    ///
+    /// Only the horizontal half moves, and only outwards -- see the type's
+    /// docs. A compact density would otherwise leave a menu's text against its
+    /// own edge.
+    pub fn resolved_padding(
+        &self,
+        resolved: &crate::component_themes::ResolvedMenuPanel,
+    ) -> crate::render::EdgeInsets {
+        let (horizontal, _vertical) = resolved.visual_density.base_size_adjustment();
+        let widened = horizontal.max(0.0);
+        crate::render::EdgeInsets {
+            left: resolved.padding.left + widened,
+            right: resolved.padding.right + widened,
+            ..resolved.padding
+        }
+    }
+
+    /// Upstream's `effectiveConstraints`: the minimum and maximum sizes from
+    /// the style, moved by the density, with a fixed size pinning **whichever
+    /// of its two numbers is finite**.
+    ///
+    /// A caller who fixed only the width means only the width; upstream checks
+    /// each side for being finite separately, and a port that took the pair
+    /// together would give a menu asked for a fixed width a height of infinity.
+    pub fn constraints(
+        &self,
+        resolved: &crate::component_themes::ResolvedMenuPanel,
+    ) -> crate::render::BoxConstraints {
+        let minimum = resolved.minimum_size.unwrap_or(crate::render::Size::ZERO);
+        let maximum = resolved
+            .maximum_size
+            .unwrap_or(crate::render::Size::new(f32::INFINITY, f32::INFINITY));
+        let mut constraints =
+            resolved
+                .visual_density
+                .effective_constraints(crate::render::BoxConstraints {
+                    min_width: minimum.width,
+                    min_height: minimum.height,
+                    max_width: maximum.width,
+                    max_height: maximum.height,
+                });
+        if let Some(fixed) = resolved.fixed_size {
+            let fixed = constraints.constrain(fixed);
+            if fixed.width.is_finite() {
+                constraints.min_width = fixed.width;
+                constraints.max_width = fixed.width;
+            }
+            if fixed.height.is_finite() {
+                constraints.min_height = fixed.height;
+                constraints.max_height = fixed.height;
+            }
+        }
+        constraints
+    }
+}
+
+impl crate::framework::Component for MenuPanel {
+    fn build(&self, context: &mut crate::framework::BuildContext) -> crate::framework::AnyWidget {
+        let resolved = crate::component_themes::ResolvedMenuPanel::of(
+            context,
+            self.axis(),
+            self.style.as_ref(),
+        );
+        let padding = self.resolved_padding(&resolved);
+        let constraints = self.constraints(&resolved);
+        let orientation = self.orientation;
+        let unconstrained = self.cross_axis_unconstrained;
+        // `corner_radius` answers `None` for a shape that is not a rounded
+        // rectangle -- a stadium menu, say -- and then upstream's own
+        // `_defaultMenuBorder` radius is the honest fallback.
+        let radius = resolved
+            .shape
+            .as_ref()
+            .and_then(|shape| shape.corner_radius(crate::render::Size::ZERO))
+            .map(|radius| radius.top_left.x)
+            .unwrap_or(crate::component_themes::ResolvedMenuPanel::RADIUS);
+        let background = resolved.background_color;
+        crate::framework::many(self.children.clone(), move |rendered| {
+            let axis = match orientation {
+                MenuAxis::Horizontal => crate::render::Axis::Horizontal,
+                MenuAxis::Vertical => crate::render::Axis::Vertical,
+            };
+            // Shrink-wrapped along its own axis and aligned to the leading
+            // edge across it: upstream's `Flex(mainAxisSize: min,
+            // crossAxisAlignment: start)`.
+            let mut flex = crate::render::RenderFlex::new(axis)
+                .with_main_axis_size(crate::render::MainAxisSize::Min)
+                .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Start);
+            for child in rendered {
+                flex = flex.push(child);
+            }
+            let mut surface = crate::widgets::Container::new()
+                .with_padding(padding)
+                .with_corner_radius(radius)
+                .with_child(flex);
+            if let Some(background) = background {
+                surface = surface.with_color(background);
+            }
+            // **Upstream's `_intrinsicCrossSize` is not here**, and the
+            // reason is a hole in this crate rather than a decision:
+            // `max_intrinsic_width` defaults to zero on `RenderBox` and the
+            // wrappers a menu line arrives in -- a pointer region, a portal,
+            // an ink -- do not forward it, so an `IntrinsicWidth` around this
+            // panel measured zero and drew a menu with no width at all.
+            //
+            // What upstream gets from it, a panel as wide as its widest line,
+            // the flex above already gives: a column's cross size is the
+            // widest child. What is missing is the *stretch* -- upstream's
+            // lines are all as wide as the panel. That returns when intrinsics
+            // reach through the wrappers.
+            let sized: crate::render::BoxedRender = crate::render::RenderRef::new(surface);
+            let released: crate::render::BoxedRender = if unconstrained {
+                crate::render::RenderRef::new(crate::widgets::UnconstrainedBox::along(
+                    axis,
+                    crate::render::Alignment::CENTER_LEFT,
+                    sized,
+                ))
+            } else {
+                sized
+            };
+            crate::render::RenderConstrainedBox::new(constraints).with_child(released)
+        })
     }
 }
 
@@ -477,7 +706,17 @@ impl crate::framework::StatefulComponent for MenuAnchor {
         let themes = context.capture_themes();
         let id = self.id;
         let group_id = self.group_id;
-        let menu = self.menu.clone();
+        // Either the caller's own panel or the one this anchor lays its
+        // children into. Built here rather than where the children arrived,
+        // so that a flag named afterwards still reaches it.
+        let menu: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>> =
+            match (self.menu.clone(), self.panel()) {
+                (Some(menu), _) => Some(menu),
+                (None, Some(panel)) => Some(std::rc::Rc::new(move || {
+                    crate::framework::component(panel.clone())
+                })),
+                (None, None) => None,
+            };
         let on_open = self.on_open.clone();
         let on_close = self.on_close.clone();
         let anchor = state.anchor.clone();
@@ -770,6 +1009,13 @@ impl crate::framework::StatefulComponent for MenuBar {
             // the entries were told as `MenuAxis::Horizontal`, which is why
             // their panels slide to the screen's edge instead of flipping to
             // the other side of the button.
+            //
+            // Not a [`MenuPanel`], though it is the same idea run across: that
+            // panel measures its cross axis with an `IntrinsicHeight`, and the
+            // wrappers an entry brings -- a pointer region, a portal -- answer
+            // nothing for an intrinsic height, so the bar came out zero tall
+            // and its words sat on the top edge. Recorded rather than worked
+            // around; the two join up when intrinsics reach through them.
             let mut row = crate::render::RenderFlex::row()
                 .with_main_axis_size(crate::render::MainAxisSize::Min)
                 .with_cross_axis_alignment(crate::render::CrossAxisAlignment::Center);
@@ -2773,6 +3019,285 @@ mod tests {
         crate::raw_menu_anchor::reset_menu_tree();
     }
 
+    // -- The panel a menu's children are laid into --------------------------
+
+    const FIRST_LINE: u64 = 8430;
+    const SECOND_LINE: u64 = 8431;
+
+    fn a_line(id: u64, label: &str) -> AnyWidget {
+        stateful(MenuItemButton::new().with_id(id).with_label(label))
+    }
+
+    /// An anchor whose menu is a real panel of two lines.
+    fn an_anchor_with_lines() -> MenuAnchor {
+        MenuAnchor::new()
+            .with_id(ANCHOR)
+            .with_group_id(MENU_GROUP)
+            .with_child(|controller| {
+                let mut button = MenuItemButton::new()
+                    .with_id(ANCHOR_BUTTON)
+                    .with_label("More")
+                    .with_on_pressed(move || controller.open_menu());
+                button.group_id = MENU_GROUP + 7;
+                stateful(button)
+            })
+            .push(a_line(FIRST_LINE, "Cut"))
+            .push(a_line(SECOND_LINE, "Paste and match style"))
+    }
+
+    #[test]
+    fn a_menus_lines_are_stacked_and_share_a_leading_edge() {
+        // Upstream's `_MenuPanel`: `Flex(direction: orientation, mainAxisSize:
+        // min, crossAxisAlignment: start)`. Down, because a menu is a column,
+        // and to one left edge rather than one per line.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::reset_menu_panels();
+        let (mut tree, overlay) = staged_anchor(an_anchor_with_lines(), 0.0, 0.0);
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1, "the menu is up");
+
+        let drawn = painted_tree(&mut tree);
+        let first = word_at(&drawn, "Cut");
+        let second = word_at(&drawn, "Paste and match style");
+        assert!(
+            second.dy > first.dy,
+            "the second line is below the first: {first:?} then {second:?}"
+        );
+        assert_eq!(second.dx, first.dx, "and they start at the same edge");
+
+        // And the panel's own padding is above the first of them: upstream's
+        // `_kMenuVerticalMinPadding`, which is what keeps a menu's first line
+        // off its own edge.
+        let top = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::RRect { top, left, .. } if *left == 0.0 => Some(*top),
+                _ => None,
+            })
+            .expect("the panel painted");
+        assert!(
+            first.dy - top >= crate::component_themes::ResolvedMenuPanel::MENU_PADDING,
+            "the first line is inside the padding: panel at {top}, line at {}",
+            first.dy
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_panel_is_its_lines_plus_the_padding_and_nothing_more() {
+        // Measured on a panel of one plain box, because a real menu line
+        // brings padding of its own and then the panel's own is not the only
+        // thing between the text and the edge -- which is exactly how a panel
+        // with *no* padding can still look padded.
+        crate::raw_menu_anchor::reset_menu_tree();
+        let mut tree = ElementTree::new();
+        // Aligned, so the panel is offered the room *loosely*: the root's
+        // constraints are tight, and a panel told exactly how big to be says
+        // nothing about what it wanted.
+        tree.rebuild(crate::framework::single(
+            crate::framework::component(
+                MenuPanel::new(MenuAxis::Vertical)
+                    .push(leaf(|| crate::widgets::SizedBox::new(20.0, 20.0))),
+            ),
+            |inner| crate::render::RenderAlign::new(crate::render::Alignment::TOP_LEFT, inner),
+        ));
+        let drawn = painted_in(&mut tree, 400.0, 300.0);
+        let panel = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::RRect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    ..
+                } => Some((*right - *left, *bottom - *top)),
+                _ => None,
+            })
+            .expect("the panel painted");
+        let padding = crate::component_themes::ResolvedMenuPanel::MENU_PADDING;
+        assert_eq!(
+            panel.1,
+            20.0 + padding * 2.0,
+            "as tall as its line plus the padding above and below"
+        );
+        assert_eq!(
+            panel.0, 20.0,
+            "and as wide as it, the horizontal padding being zero"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn a_menu_is_as_wide_as_its_widest_line() {
+        // `_intrinsicCrossSize`, an `IntrinsicWidth` for a menu. Without it
+        // the panel takes whatever width it is offered, and what a line says
+        // it needs makes no difference at all.
+        let panel_width = |anchor: MenuAnchor| {
+            crate::raw_menu_anchor::reset_menu_tree();
+            crate::raw_menu_anchor::reset_menu_panels();
+            let (mut tree, _overlay) = staged_anchor(anchor, 0.0, 0.0);
+            tap(&mut tree, Offset::new(20.0, 12.0));
+            let drawn = painted_tree(&mut tree);
+            let width = drawn
+                .iter()
+                .filter_map(|call| match call {
+                    // An `RRect`: the panel is rounded, so its fill is not a
+                    // plain rectangle. A first draft looked for `Rect` and
+                    // found nothing at all, which reads exactly like a menu
+                    // that was never painted.
+                    Drawn::RRect {
+                        left, right, top, ..
+                    } if *left == 0.0 && *top > 0.0 => Some(right - left),
+                    _ => None,
+                })
+                .fold(0.0f32, f32::max);
+            crate::raw_menu_anchor::reset_menu_tree();
+            width
+        };
+        let short = panel_width(
+            MenuAnchor::new()
+                .with_id(ANCHOR)
+                .with_group_id(MENU_GROUP)
+                .with_child(|controller| {
+                    let mut button = MenuItemButton::new()
+                        .with_id(ANCHOR_BUTTON)
+                        .with_label("More")
+                        .with_on_pressed(move || controller.open_menu());
+                    button.group_id = MENU_GROUP + 7;
+                    stateful(button)
+                })
+                .push(a_line(FIRST_LINE, "Cut")),
+        );
+        let long = panel_width(an_anchor_with_lines());
+        assert!(
+            long > short,
+            "the long line widened the menu: {long} against {short}"
+        );
+        assert!(
+            long < 800.0,
+            "and it is still the line's width, not the screen's: {long}"
+        );
+    }
+
+    #[test]
+    fn density_widens_a_menus_padding_and_never_narrows_it() {
+        // The Material team's own note, quoted in [`MenuPanel`]: a compact
+        // density would otherwise take the horizontal padding to zero and
+        // leave the text against the menu's edge.
+        let panel = MenuPanel::new(MenuAxis::Vertical);
+        let with_density = |horizontal: f32| {
+            let mut resolved = crate::component_themes::ResolvedMenuPanel::defaults(
+                crate::component_themes::MenuPanelAxis::Vertical,
+                &crate::color_scheme::ColorScheme::light(),
+            );
+            resolved.padding = crate::render::EdgeInsets::symmetric(6.0, 8.0);
+            resolved.visual_density = crate::theme::VisualDensity {
+                horizontal,
+                vertical: 0.0,
+            };
+            panel.resolved_padding(&resolved)
+        };
+        assert_eq!(with_density(0.0).left, 6.0, "standard density adds nothing");
+        assert!(
+            with_density(1.0).left > 6.0,
+            "a roomy density widens it: {:?}",
+            with_density(1.0)
+        );
+        assert_eq!(
+            with_density(-2.0).left,
+            6.0,
+            "and a compact one leaves it alone rather than eating it"
+        );
+        assert_eq!(
+            with_density(-2.0).top,
+            8.0,
+            "the vertical padding is not touched either way"
+        );
+        assert_eq!(
+            with_density(1.0).top,
+            8.0,
+            "not even by a density roomy enough to widen the sides"
+        );
+    }
+
+    #[test]
+    fn a_fixed_size_pins_whichever_of_its_two_numbers_is_finite() {
+        // Upstream checks the width and the height separately. A caller who
+        // fixed only the width means only the width, and a port that took the
+        // pair together would give that menu a height of infinity.
+        let panel = MenuPanel::new(MenuAxis::Vertical);
+        let mut resolved = crate::component_themes::ResolvedMenuPanel::defaults(
+            crate::component_themes::MenuPanelAxis::Vertical,
+            &crate::color_scheme::ColorScheme::light(),
+        );
+        resolved.fixed_size = Some(crate::render::Size::new(220.0, f32::INFINITY));
+        let constraints = panel.constraints(&resolved);
+        assert_eq!(constraints.min_width, 220.0);
+        assert_eq!(constraints.max_width, 220.0);
+        assert_eq!(
+            constraints.max_height,
+            f32::INFINITY,
+            "the height was never fixed, so it stays free"
+        );
+        assert_eq!(
+            constraints.min_height, 0.0,
+            "and not pinned to an infinity nothing can be"
+        );
+
+        resolved.fixed_size = None;
+        resolved.minimum_size = Some(crate::render::Size::new(112.0, 0.0));
+        resolved.maximum_size = Some(crate::render::Size::new(280.0, 400.0));
+        let constraints = panel.constraints(&resolved);
+        assert_eq!(constraints.min_width, 112.0);
+        assert_eq!(constraints.max_width, 280.0);
+        assert_eq!(constraints.max_height, 400.0);
+    }
+
+    #[test]
+    fn a_menu_may_be_wider_than_the_space_beside_it_unless_told_otherwise() {
+        // `crossAxisUnconstrained`, whose `UnconstrainedBox` names the menu's
+        // **own** axis as the constrained one -- so the length still obeys the
+        // space available and the width does not. A menu item wrapped onto two
+        // lines is worse than one that overhangs; `DropdownMenu` is the case
+        // that turns it off.
+        let width_of = |unconstrained: bool| {
+            crate::raw_menu_anchor::reset_menu_tree();
+            crate::raw_menu_anchor::reset_menu_panels();
+            let (mut tree, _overlay) = staged_anchor(
+                an_anchor_with_lines().with_cross_axis_unconstrained(unconstrained),
+                0.0,
+                0.0,
+            );
+            // A window narrower than the long line, so that the two answers
+            // differ: given room, both would simply take their natural width.
+            tap_in(&mut tree, Offset::new(20.0, 12.0), 120.0, 300.0);
+            let drawn = painted_in(&mut tree, 120.0, 300.0);
+            let widest = drawn
+                .iter()
+                .filter_map(|call| match call {
+                    // An `RRect`: the panel is rounded, so its fill is not a
+                    // plain rectangle. A first draft looked for `Rect` and
+                    // found nothing at all, which reads exactly like a menu
+                    // that was never painted.
+                    Drawn::RRect {
+                        left, right, top, ..
+                    } if *left == 0.0 && *top > 0.0 => Some(right - left),
+                    _ => None,
+                })
+                .fold(0.0f32, f32::max);
+            crate::raw_menu_anchor::reset_menu_tree();
+            widest
+        };
+        let free = width_of(true);
+        let held = width_of(false);
+        assert!(
+            free > 120.0,
+            "let go, the menu is wider than the window: {free}"
+        );
+        assert!(held <= 120.0, "held to it, it is not: {held}");
+    }
+
     // -- A menu bar, assembled ---------------------------------------------
 
     const MENU_BAR: u64 = 8410;
@@ -3559,14 +4084,20 @@ mod tests {
 
     /// Everything a staged tree paints, at the screen's size.
     fn painted_tree(tree: &mut ElementTree) -> Vec<Drawn> {
+        painted_in(tree, 800.0, 600.0)
+    }
+
+    /// [`painted_tree`] in a window of the given size. The size matters for a
+    /// menu: what a panel does when it does **not** fit is most of the rule.
+    fn painted_in(tree: &mut ElementTree, width: f32, height: f32) -> Vec<Drawn> {
         let root = tree.build_render_tree().expect("a root");
-        crate::render::schedule_root_layout(&root, BoxConstraints::tight(800.0, 600.0));
+        crate::render::schedule_root_layout(&root, BoxConstraints::tight(width, height));
         crate::render::flush_layout();
-        let mut layers = crate::engine::LayerTree::new(800, 600);
+        let mut layers = crate::engine::LayerTree::new(width as i32, height as i32);
         crate::engine_test_stubs::reset_drawn();
         {
             let mut context =
-                crate::render::PaintContext::new(&mut layers, Size::new(800.0, 600.0));
+                crate::render::PaintContext::new(&mut layers, Size::new(width, height));
             RenderBox::paint(&root, &mut context, Offset::ZERO);
         }
         crate::engine_test_stubs::drawn()
