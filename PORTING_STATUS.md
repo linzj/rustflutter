@@ -5982,3 +5982,66 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6932 通�
 如果逻辑常量缺失，那补的是键表而不是快捷键表——
 键表是从上游 `logical_key_data` 生成的，得看清是漏了几个还是整段没生成，
 再决定这是一轮的活还是一行的活。
+
+---
+
+## 第 512 轮：一个宿主能送上来、却没有名字的键
+
+上一轮问：`numpadEnter` / `gameButtonA` 的**逻辑键常量**在不在。
+查下来是一条比"缺两行"大得多的事：
+
+`keys.rs` 是 `gen_key_map.py` 从**Windows** 的 `flutter_key_map.g.cc` 生成的。
+Windows 把小键盘的 Enter 和主 Enter 报成**同一个逻辑键**（`enter`），
+所以 Windows 表里根本没有 `numpadEnter` 这个逻辑值——名字自然也就没有。
+
+但这个 port 还有 **GTK 宿主**。数了一下：
+GTK 的 `gtk_keyval_to_logical_key_map` 有 171 行，
+其中 **62 个逻辑值在 `keys.rs` 里没有名字**——
+`KP_Enter`、Copy、Paste、Redo、Super、Hyper、altGraph……
+**一个 Linux 读者按下的键，框架里没有名字，也就没有任何东西能给它绑快捷键。**
+
+### 补在生成器上，不是补在生成的文件里
+
+C 数组是"Windows 宿主拿 Windows 的键去查的表"，只该是 Windows 的；
+而 Rust 常量是"应用拿来绑快捷键的名字"，应用跑在**每一个**宿主上。
+所以生成器多收一个参数（GTK 的映射），**只取它的逻辑值**，
+名字则从上游 `keyboard_key.g.dart` 按**值**反查——
+GTK 注释里是 X11 的名字（`KP_Enter`、`3270_Copy`），不是 Flutter 的；
+上游没有名字的值就不给名字，**宁可留一个无名值，也不要一个我编的名字**。
+
+重新生成后：**C++ 那张表逐字节未变**（它本来就该只有 Windows），
+Rust 常量从 159 涨到 217。
+
+### 一处漂移，顺手收回生成器
+
+重新生成时发现四个手写的常量被冲掉了：`CONTROL`/`SHIFT`/`ALT`/`META`
+——那四个"不分左右"的同义键，没有哪个宿主会送，所以不在任何映射表里，
+当初是**手写进这个生成文件**的。`platform_menu_bar.rs` 正在用它们。
+手改生成文件就是这样：下一次生成把它抹掉。
+现在它们由生成器发出，`SYNONYMS` 那一段写明了为什么它们不在表里。
+
+### 三张快捷键表接上新名字
+
+`numpadEnter` 在桌面与 Apple 表里是 `Activate`、在网页表里是 `ButtonActivate`
+（和主 Enter 一致）。
+
+### 变异 4 个，全红
+
+生成器不读 GTK 映射 → 生成的文件里没有 `NUMPAD_ENTER`；
+去掉 `SYNONYMS` → 四个同义键消失；
+两张表各自去掉那一行 → 测试红。
+前两条是**跑生成器**去验的，不是跑 cargo——被测的是工具，就得考工具。
+
+尺子：十七把全部 exit 0（`stale_engines` 在重新生成后、重建之前红了一次，
+这正是它该做的：FFI 源比引擎新）。门：Rust 6933 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6933 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`gameButtonA` 仍然没有名字——GTK 也不送手柄按键，
+它来自 Android 的 `KeyEvent`。**先查一件事**：
+`src/flutter/rust/host` 下有没有 Android 那一侧的键映射
+（`ls src/flutter/rust/host | grep -i android`，或 embedding 里的 Java/Kotlin），
+以及它是不是也从某个 `.g.` 表生成。
+如果有，那就是给生成器再加一个来源，和这一轮同样的做法；
+如果 Android 那一侧根本不走这张表，那 `gameButtonA` 就是"这个 port 的宿主都送不出的键"，
+该记一笔而不是硬造一个名字。

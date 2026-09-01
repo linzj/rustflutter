@@ -493,16 +493,6 @@ impl LogicalKey {
     pub const NUMPAD_EQUAL: LogicalKey = LogicalKey(0x20000023d);
     /// `shiftRight`
     pub const SHIFT_RIGHT: LogicalKey = LogicalKey(0x200000103);
-    /// `control`, the synonym that stands for either side. Upstream keeps the
-    /// sided keys and these four synonyms apart because a keyboard reports a
-    /// side and a *shortcut* usually does not care which.
-    pub const CONTROL: LogicalKey = LogicalKey(0x2000001f0);
-    /// `shift`
-    pub const SHIFT: LogicalKey = LogicalKey(0x2000001f2);
-    /// `alt`
-    pub const ALT: LogicalKey = LogicalKey(0x2000001f4);
-    /// `meta`
-    pub const META: LogicalKey = LogicalKey(0x2000001f6);
     /// `controlRight`
     pub const CONTROL_RIGHT: LogicalKey = LogicalKey(0x200000101);
     /// `altLeft`
@@ -579,6 +569,130 @@ impl LogicalKey {
     pub const ATTN: LogicalKey = LogicalKey(0x100000503);
     /// `play`
     pub const PLAY: LogicalKey = LogicalKey(0x10000050a);
+    /// `altGraph`
+    pub const ALT_GRAPH: LogicalKey = LogicalKey(0x100000103);
+    /// `hyper`
+    pub const HYPER: LogicalKey = LogicalKey(0x100000108);
+    /// `superKey`
+    pub const SUPER_KEY: LogicalKey = LogicalKey(0x10000010e);
+    /// `copy`
+    pub const COPY: LogicalKey = LogicalKey(0x100000402);
+    /// `cut`
+    pub const CUT: LogicalKey = LogicalKey(0x100000404);
+    /// `eraseEof`
+    pub const ERASE_EOF: LogicalKey = LogicalKey(0x100000405);
+    /// `exSel`
+    pub const EX_SEL: LogicalKey = LogicalKey(0x100000406);
+    /// `paste`
+    pub const PASTE: LogicalKey = LogicalKey(0x100000408);
+    /// `redo`
+    pub const REDO: LogicalKey = LogicalKey(0x100000409);
+    /// `undo`
+    pub const UNDO: LogicalKey = LogicalKey(0x10000040a);
+    /// `find`
+    pub const FIND: LogicalKey = LogicalKey(0x100000507);
+    /// `zoomIn`
+    pub const ZOOM_IN: LogicalKey = LogicalKey(0x10000050d);
+    /// `zoomOut`
+    pub const ZOOM_OUT: LogicalKey = LogicalKey(0x10000050e);
+    /// `brightnessDown`
+    pub const BRIGHTNESS_DOWN: LogicalKey = LogicalKey(0x100000601);
+    /// `brightnessUp`
+    pub const BRIGHTNESS_UP: LogicalKey = LogicalKey(0x100000602);
+    /// `eject`
+    pub const EJECT: LogicalKey = LogicalKey(0x100000604);
+    /// `logOff`
+    pub const LOG_OFF: LogicalKey = LogicalKey(0x100000605);
+    /// `powerOff`
+    pub const POWER_OFF: LogicalKey = LogicalKey(0x100000607);
+    /// `standby`
+    pub const STANDBY: LogicalKey = LogicalKey(0x10000060a);
+    /// `wakeUp`
+    pub const WAKE_UP: LogicalKey = LogicalKey(0x10000060b);
+    /// `codeInput`
+    pub const CODE_INPUT: LogicalKey = LogicalKey(0x100000703);
+    /// `groupFirst`
+    pub const GROUP_FIRST: LogicalKey = LogicalKey(0x100000707);
+    /// `groupLast`
+    pub const GROUP_LAST: LogicalKey = LogicalKey(0x100000708);
+    /// `groupNext`
+    pub const GROUP_NEXT: LogicalKey = LogicalKey(0x100000709);
+    /// `groupPrevious`
+    pub const GROUP_PREVIOUS: LogicalKey = LogicalKey(0x10000070a);
+    /// `previousCandidate`
+    pub const PREVIOUS_CANDIDATE: LogicalKey = LogicalKey(0x10000070e);
+    /// `singleCandidate`
+    pub const SINGLE_CANDIDATE: LogicalKey = LogicalKey(0x100000710);
+    /// `hangulMode`
+    pub const HANGUL_MODE: LogicalKey = LogicalKey(0x100000711);
+    /// `hanjaMode`
+    pub const HANJA_MODE: LogicalKey = LogicalKey(0x100000712);
+    /// `eisu`
+    pub const EISU: LogicalKey = LogicalKey(0x100000714);
+    /// `hankaku`
+    pub const HANKAKU: LogicalKey = LogicalKey(0x100000715);
+    /// `hiragana`
+    pub const HIRAGANA: LogicalKey = LogicalKey(0x100000716);
+    /// `hiraganaKatakana`
+    pub const HIRAGANA_KATAKANA: LogicalKey = LogicalKey(0x100000717);
+    /// `katakana`
+    pub const KATAKANA: LogicalKey = LogicalKey(0x10000071a);
+    /// `romaji`
+    pub const ROMAJI: LogicalKey = LogicalKey(0x10000071b);
+    /// `zenkaku`
+    pub const ZENKAKU: LogicalKey = LogicalKey(0x10000071c);
+    /// `zenkakuHankaku`
+    pub const ZENKAKU_HANKAKU: LogicalKey = LogicalKey(0x10000071d);
+    /// `close`
+    pub const CLOSE: LogicalKey = LogicalKey(0x100000a01);
+    /// `mailForward`
+    pub const MAIL_FORWARD: LogicalKey = LogicalKey(0x100000a02);
+    /// `mailReply`
+    pub const MAIL_REPLY: LogicalKey = LogicalKey(0x100000a03);
+    /// `mailSend`
+    pub const MAIL_SEND: LogicalKey = LogicalKey(0x100000a04);
+    /// `mediaTrackNext`
+    pub const MEDIA_TRACK_NEXT: LogicalKey = LogicalKey(0x100000a08);
+    /// `mediaTrackPrevious`
+    pub const MEDIA_TRACK_PREVIOUS: LogicalKey = LogicalKey(0x100000a09);
+    /// `newKey`
+    pub const NEW_KEY: LogicalKey = LogicalKey(0x100000a0a);
+    /// `open`
+    pub const OPEN: LogicalKey = LogicalKey(0x100000a0b);
+    /// `save`
+    pub const SAVE: LogicalKey = LogicalKey(0x100000a0d);
+    /// `spellCheck`
+    pub const SPELL_CHECK: LogicalKey = LogicalKey(0x100000a0e);
+    /// `launchCalendar`
+    pub const LAUNCH_CALENDAR: LogicalKey = LogicalKey(0x100000b02);
+    /// `launchScreenSaver`
+    pub const LAUNCH_SCREEN_SAVER: LogicalKey = LogicalKey(0x100000b07);
+    /// `launchPhone`
+    pub const LAUNCH_PHONE: LogicalKey = LogicalKey(0x100000b0d);
+    /// `mediaFastForward`
+    pub const MEDIA_FAST_FORWARD: LogicalKey = LogicalKey(0x100000d2c);
+    /// `mediaPause`
+    pub const MEDIA_PAUSE: LogicalKey = LogicalKey(0x100000d2e);
+    /// `mediaPlay`
+    pub const MEDIA_PLAY: LogicalKey = LogicalKey(0x100000d2f);
+    /// `mediaRecord`
+    pub const MEDIA_RECORD: LogicalKey = LogicalKey(0x100000d30);
+    /// `mediaRewind`
+    pub const MEDIA_REWIND: LogicalKey = LogicalKey(0x100000d31);
+    /// `suspend`
+    pub const SUSPEND: LogicalKey = LogicalKey(0x200000000);
+    /// `intlYen`
+    pub const INTL_YEN: LogicalKey = LogicalKey(0x200000022);
+    /// `numpadEnter`
+    pub const NUMPAD_ENTER: LogicalKey = LogicalKey(0x20000020d);
+    /// `control`
+    pub const CONTROL: LogicalKey = LogicalKey(0x2000001f0);
+    /// `shift`
+    pub const SHIFT: LogicalKey = LogicalKey(0x2000001f2);
+    /// `alt`
+    pub const ALT: LogicalKey = LogicalKey(0x2000001f4);
+    /// `meta`
+    pub const META: LogicalKey = LogicalKey(0x2000001f6);
     /// `a`
     pub const KEY_A: LogicalKey = LogicalKey(0x61);
     /// `b`

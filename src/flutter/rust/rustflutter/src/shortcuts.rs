@@ -331,6 +331,11 @@ pub fn default_shortcuts_table() -> ShortcutRegistry {
     use crate::render::AxisDirection;
     common_rows(ShortcutRegistry::new())
         .with(plain(LogicalKey::ENTER), Intent::Activate)
+        // The numeric keypad's Enter is a **different logical key** from the
+        // main one on every host that can tell them apart -- Windows cannot
+        // and reports both as `enter`, which is why this name arrived with
+        // the GTK values rather than the Windows ones.
+        .with(plain(LogicalKey::NUMPAD_ENTER), Intent::Activate)
         .with(plain(LogicalKey::SPACE), Intent::Activate)
         .with(plain(LogicalKey::SELECT), Intent::Activate)
         .with(
@@ -387,6 +392,7 @@ pub fn default_web_shortcuts_table() -> ShortcutRegistry {
             },
         )
         .with(plain(LogicalKey::ENTER), Intent::ButtonActivate)
+        .with(plain(LogicalKey::NUMPAD_ENTER), Intent::ButtonActivate)
         .with(plain(LogicalKey::ARROW_UP), scroll(AxisDirection::Up))
         .with(plain(LogicalKey::ARROW_DOWN), scroll(AxisDirection::Down))
         .with(plain(LogicalKey::ARROW_LEFT), scroll(AxisDirection::Left))
@@ -404,6 +410,7 @@ pub fn default_apple_shortcuts_table() -> ShortcutRegistry {
     use crate::render::AxisDirection;
     common_rows(ShortcutRegistry::new())
         .with(plain(LogicalKey::ENTER), Intent::Activate)
+        .with(plain(LogicalKey::NUMPAD_ENTER), Intent::Activate)
         .with(plain(LogicalKey::SPACE), Intent::Activate)
         .with(
             plain(LogicalKey::ARROW_LEFT),
@@ -720,6 +727,26 @@ mod default_shortcut_tests {
                 AxisDirection::Down,
                 crate::scrollable_helpers::ScrollIncrementType::Line
             )
+        );
+    }
+
+    #[test]
+    fn the_numeric_keypads_enter_activates_too() {
+        // A different logical key from the main Enter on every host that can
+        // tell them apart. Windows cannot -- it reports both as `enter` --
+        // which is why this name only arrived once the generator read the GTK
+        // values as well.
+        for table in [default_shortcuts_table(), default_apple_shortcuts_table()] {
+            assert_eq!(answer(&table, LogicalKey::NUMPAD_ENTER, &[]), "Activate");
+        }
+        assert_eq!(
+            answer(
+                &default_web_shortcuts_table(),
+                LogicalKey::NUMPAD_ENTER,
+                &[]
+            ),
+            "ButtonActivate",
+            "and on the web it presses buttons only, as the main Enter does"
         );
     }
 

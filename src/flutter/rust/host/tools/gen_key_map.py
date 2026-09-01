@@ -6,12 +6,22 @@ flutter/flutter:dev/tools/gen_keycodes. Rerunning this after an engine roll is
 how the tables stay current, and is what keeps the C++ values and the Rust names
 from drifting -- they are two views of one table, not two tables.
 
+The **names** take one more source than the arrays do. The C arrays are what
+the Windows host looks a Windows key up in, so they are the Windows table and
+nothing else; the Rust constants are what an application binds a shortcut to,
+and an application runs on every host. GTK sends logical values Windows never
+does -- `KP_Enter`, Copy, Paste, Redo, Super -- and a value with no name is a
+key nothing can bind. So the fourth argument is the GTK map, read for its
+logical values only.
+
     python flutter/rust/host/tools/gen_key_map.py \\
         flutter/shell/platform/windows/flutter_key_map.g.cc \\
         flutter/rust/host/rustflutter_key_map_win.cc \\
-        flutter/rust/rustflutter/src/keyboard/keys.rs
+        flutter/rust/rustflutter/src/keyboard/keys.rs \\
+        flutter/shell/platform/linux/fl_key_mapping.g.cc
 """
 
+import os
 import re
 import sys
 
@@ -36,6 +46,18 @@ def table(name):
 physical = table("windowsToPhysicalMap_")
 logical = table("windowsToLogicalMap_")
 scan_logical = table("scanCodeToLogicalMap_")
+
+# Logical values only, from the other hosts. Their comments are the upstream
+# key names on the left-hand side (`KP_Enter`), so the name for the constant
+# comes from the value rather than from the comment -- see `gtk_names`.
+GTK_SRC = sys.argv[4] if len(sys.argv) > 4 else None
+gtk_logical = []
+if GTK_SRC:
+    gtk_text = open(GTK_SRC, encoding="utf-8").read()
+    start = gtk_text.index("gtk_keyval_to_logical_key_map")
+    end = gtk_text.index("};", start)
+    for m in ENTRY.finditer(gtk_text[start:end]):
+        gtk_logical.append((int(m.group(1), 16), int(m.group(2), 16), m.group(3).strip()))
 
 print(f"physical {len(physical)}  logical {len(logical)}  scan->logical {len(scan_logical)}")
 
@@ -178,6 +200,45 @@ def rust_consts(rows, kind, arrow):
 
 phys_consts = rust_consts(physical, "PhysicalKey", None)
 log_consts = rust_consts(logical, "LogicalKey", "->")
+
+# The GTK comments are X11 key names (`KP_Enter`, `3270_Copy`), not Flutter's,
+# so the name comes from upstream's own `keyboard_key.g.dart` by value. A value
+# that is not in that file has no upstream name either and is left unnamed --
+# better an unnamed value than one this script invented.
+if gtk_logical:
+    upstream_names = {}
+    dart = os.path.join(
+        os.path.dirname(SRC), "..", "..", "..", "..",
+        "flutter", "packages", "flutter", "lib", "src", "services",
+        "keyboard_key.g.dart",
+    )
+    dart = os.environ.get("FLUTTER_KEYBOARD_KEY_DART", dart)
+    if os.path.exists(dart):
+        for m in re.finditer(
+            r"static const LogicalKeyboardKey (\w+) = LogicalKeyboardKey\(0x([0-9a-f]+)\)",
+            open(dart, encoding="utf-8").read(),
+        ):
+            upstream_names.setdefault(int(m.group(2), 16), m.group(1))
+    named = {value for _ident, value, _name in log_consts}
+    for _keyval, value, _comment in sorted(gtk_logical, key=lambda row: row[1]):
+        if value in named or value not in upstream_names:
+            continue
+        name = upstream_names[value]
+        log_consts.append((camel(name), value, name))
+        named.add(value)
+
+# The four sided-modifier synonyms. No host sends them -- a keyboard always
+# reports a side -- so they are in no map, and they were hand-written into this
+# generated file until the generator started overwriting them. They belong
+# here: a *shortcut* usually does not care which Shift was pressed, and
+# upstream spells the same four in `keyboard_key.g.dart`.
+SYNONYMS = [
+    ("CONTROL", 0x2000001F0, "control"),
+    ("SHIFT", 0x2000001F2, "shift"),
+    ("ALT", 0x2000001F4, "alt"),
+    ("META", 0x2000001F6, "meta"),
+]
+log_consts.extend(SYNONYMS)
 
 # The letters and digits, whose logical value is the character itself. They are
 # not in the table because the rule that produces them is arithmetic.
