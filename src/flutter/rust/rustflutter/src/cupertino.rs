@@ -2671,6 +2671,115 @@ impl SegmentedControlColors {
     }
 }
 
+/// segmented_control.dart's `_kFadeDuration`.
+pub const SEGMENTED_CONTROL_FADE_MICROS: i64 = 165_000;
+
+/// Which of upstream's two background tweens a segment is running.
+///
+/// Both **end** at the selected colour; they differ only in where they start,
+/// and that difference is the whole design:
+///
+/// ```dart
+/// _forwardBackgroundColorTween = ColorTween(begin: _pressedColor, end: _selectedColor);
+/// _reverseBackgroundColorTween = ColorTween(begin: _unselectedColor, end: _selectedColor);
+/// ```
+///
+/// A segment that has just been **tapped** was under a finger a moment ago, so
+/// it fades from the held tint into the fill -- there is no flash back to
+/// empty in between. A segment that is **losing** the selection has no finger
+/// on it, so it fades back to plain unselected. Upstream picks between them by
+/// which side of the change a segment is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentTween {
+    /// `_forwardBackgroundColorTween`.
+    FromPressed,
+    /// `_reverseBackgroundColorTween`.
+    FromUnselected,
+}
+
+/// Where a segment is in its selection fade.
+///
+/// Upstream keeps an `AnimationController` per segment; this crate's animation
+/// is per-frame arithmetic over a value the state holds, the same shape as
+/// [`crate::ink::InkPhase`], so this is that value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SegmentFade {
+    pub tween: SegmentTween,
+    /// Where the fade was when it was last turned around.
+    pub from: f32,
+    /// Upstream's `forward()` against `reverse()`.
+    pub forward: bool,
+    pub started_micros: i64,
+}
+
+impl SegmentFade {
+    /// Upstream's `_updateAnimationControllers`, which is where a control
+    /// starts before anything has been tapped.
+    ///
+    /// **The tweens are assigned the opposite way round here**, and it is not
+    /// a slip: the selected segment is parked at 1 on the *reverse* tween, so
+    /// that when it later loses the selection it runs back to plain
+    /// unselected. Nothing has been pressed yet, so the pressed colour has no
+    /// business being either end of a resting segment's fade.
+    pub fn at_rest(is_selected: bool) -> SegmentFade {
+        SegmentFade {
+            tween: if is_selected {
+                SegmentTween::FromUnselected
+            } else {
+                SegmentTween::FromPressed
+            },
+            from: if is_selected { 1.0 } else { 0.0 },
+            forward: is_selected,
+            started_micros: 0,
+        }
+    }
+
+    /// Upstream's `didUpdateWidget`, the arm that runs when `groupValue`
+    /// changed: the newly selected segment takes the forward tween and runs
+    /// forward, every other takes the reverse tween and runs back.
+    pub fn on_selection_change(&self, is_now_selected: bool, now_micros: i64) -> SegmentFade {
+        SegmentFade {
+            tween: if is_now_selected {
+                SegmentTween::FromPressed
+            } else {
+                SegmentTween::FromUnselected
+            },
+            from: self.value(now_micros),
+            forward: is_now_selected,
+            started_micros: now_micros,
+        }
+    }
+
+    /// How far along the fade is, nought to one.
+    ///
+    /// **A fade turned around part way takes proportionally less time**, which
+    /// is what an `AnimationController` does: `forward()` from a half-open
+    /// segment has half as far to go and takes half as long, so the colour
+    /// moves at one speed however often the reader changes their mind. Timing
+    /// the full duration from wherever it was would make a quick second tap
+    /// crawl.
+    pub fn value(&self, now_micros: i64) -> f32 {
+        let target = if self.forward { 1.0 } else { 0.0 };
+        let distance = (target - self.from).abs();
+        if distance <= 0.0 {
+            return target;
+        }
+        let elapsed = (now_micros - self.started_micros).max(0) as f32;
+        let travelled = elapsed / (SEGMENTED_CONTROL_FADE_MICROS as f32 * distance);
+        if travelled >= 1.0 {
+            return target;
+        }
+        self.from + (target - self.from) * travelled
+    }
+
+    /// Whether the fade is still moving -- upstream's `isAnimating`, which is
+    /// the test `getBackgroundColor` uses before reading the tween at all.
+    pub fn is_animating(&self, now_micros: i64) -> bool {
+        let target = if self.forward { 1.0 } else { 0.0 };
+        self.value(now_micros) != target
+    }
+}
+
 /// What one segment looks like at the moment it is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SegmentColors {
@@ -2696,6 +2805,7 @@ pub fn segment_colors(
     selected: bool,
     pressed: bool,
     disabled: bool,
+    fade: Option<(SegmentTween, f32)>,
 ) -> SegmentColors {
     if disabled {
         return SegmentColors {
@@ -2705,6 +2815,29 @@ pub fn segment_colors(
                 colors.unselected_disabled
             },
             text: colors.disabled_text,
+        };
+    }
+    // Second, before the selection is even looked at: a segment mid-fade is
+    // between the two answers, and asking which side it is on would snap it to
+    // one of them. Both tweens end at the selected colour, so the same `t`
+    // reads correctly whichever way the segment is going.
+    if let Some((tween, t)) = fade {
+        let begin = match tween {
+            SegmentTween::FromPressed => colors.pressed,
+            SegmentTween::FromUnselected => colors.unselected,
+        };
+        return SegmentColors {
+            background: crate::animation::Tween::lerp(
+                &crate::animation::ColorTween::new(begin, colors.selected),
+                t,
+            ),
+            // `_textColorTween = ColorTween(begin: _selectedColor, end: _unselectedColor)`
+            // -- the ink crosses as the paint does, and in the opposite
+            // direction, because the two swap places.
+            text: crate::animation::Tween::lerp(
+                &crate::animation::ColorTween::new(colors.selected, colors.unselected),
+                t,
+            ),
         };
     }
     if selected {
@@ -2741,6 +2874,14 @@ pub enum SegmentedControlError {
 #[derive(Default)]
 pub struct CupertinoSegmentedControlState {
     pressed: Option<usize>,
+    /// One per segment, upstream's `_selectionControllers` and `_childTweens`
+    /// rolled into the value this crate's animations are made of.
+    fades: Vec<SegmentFade>,
+    /// Which segment these fades were last set up for. Upstream compares
+    /// `oldWidget.groupValue` in `didUpdateWidget`; the widget here is rebuilt
+    /// with a new `selected` rather than handed its old self, so the previous
+    /// one is remembered instead.
+    shown: Option<usize>,
 }
 
 /// A row of equal segments, the chosen one filled. Upstream's
@@ -2751,8 +2892,12 @@ pub struct CupertinoSegmentedControlState {
 /// width and holds every segment to it -- a difference only when a segment's
 /// content would overflow its share, which a short label never does.
 ///
-/// The per-segment selection fade (`_kFadeDuration`, 165ms) is not ported:
-/// the fill changes with the caller's state at the next frame.
+/// The per-segment selection fade is here: `_kFadeDuration` is
+/// [`SEGMENTED_CONTROL_FADE_MICROS`] and the three `ColorTween`s are
+/// [`SegmentFade`] and [`segment_colors`]'s animating arm. Upstream keeps an
+/// `AnimationController` per segment; this state keeps one value per segment
+/// and reads the frame clock, which is how animation is done throughout this
+/// crate.
 pub struct CupertinoSegmentedControl {
     first_id: u64,
     labels: Vec<String>,
@@ -2833,6 +2978,36 @@ impl StatefulComponent for CupertinoSegmentedControl {
             .colors
             .resolve(theme.primary_color, theme.primary_contrasting_color);
         let disabled = self.disabled.clone();
+        let now = context.frame_time_micros();
+
+        // Upstream's two entry points, and they are not the same: a control
+        // being set up parks its segments at rest, while a control whose
+        // selection *changed* starts them moving. Telling them apart is what
+        // stops a control animating itself in as it first appears.
+        let count = labels.len();
+        if state.shown != Some(selected) {
+            let previous = state.shown;
+            let fades = state.fades.clone();
+            handle.set_state(move |state| {
+                state.fades = (0..count)
+                    .map(|index| match previous {
+                        None => SegmentFade::at_rest(index == selected),
+                        Some(_) => fades
+                            .get(index)
+                            .copied()
+                            .unwrap_or_else(|| SegmentFade::at_rest(false))
+                            .on_selection_change(index == selected, now),
+                    })
+                    .collect();
+                state.shown = Some(selected);
+            });
+        }
+        let fades = state.fades.clone();
+        if fades.iter().any(|fade| fade.is_animating(now)) {
+            // A fade read off the clock has to ask for the frame that will
+            // move it on; nothing else here would.
+            context.request_frame();
+        }
 
         let count = labels.len();
         let mut handlers: Vec<PointerHandlers> = Vec::new();
@@ -2877,11 +3052,16 @@ impl StatefulComponent for CupertinoSegmentedControl {
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center);
             for (index, label) in labels.iter().enumerate() {
+                let fade = fades
+                    .get(index)
+                    .filter(|fade| fade.is_animating(now))
+                    .map(|fade| (fade.tween, fade.value(now)));
                 let painted = segment_colors(
                     colors,
                     index == selected,
                     pressed == Some(index),
                     disabled.contains(&index),
+                    fade,
                 );
                 let (fill, text_color) = (painted.background, painted.text);
                 let segment = Container::new()
@@ -6699,6 +6879,179 @@ mod tests {
     }
 
     #[test]
+    fn a_control_does_not_animate_itself_into_existence() {
+        // `_updateAnimationControllers` parks the selected segment at one and
+        // the rest at nought; only `didUpdateWidget` starts anything moving.
+        let resting = SegmentFade::at_rest(true);
+        assert_eq!(resting.value(0), 1.0);
+        assert!(!resting.is_animating(0));
+        assert_eq!(
+            resting.tween,
+            SegmentTween::FromUnselected,
+            "so that when it later loses the selection it fades back to plain"
+        );
+
+        let idle = SegmentFade::at_rest(false);
+        assert_eq!(idle.value(0), 0.0);
+        assert!(!idle.is_animating(0));
+    }
+
+    #[test]
+    fn the_tapped_segment_fades_from_the_colour_it_was_held_in() {
+        let was_idle = SegmentFade::at_rest(false);
+        let chosen = was_idle.on_selection_change(true, 1_000);
+        assert_eq!(chosen.tween, SegmentTween::FromPressed);
+        assert!(chosen.forward);
+
+        let was_chosen = SegmentFade::at_rest(true);
+        let leaving = was_chosen.on_selection_change(false, 1_000);
+        assert_eq!(
+            leaving.tween,
+            SegmentTween::FromUnselected,
+            "nothing is holding it, so it goes back to empty rather than to the tint"
+        );
+        assert!(!leaving.forward);
+    }
+
+    #[test]
+    fn a_fade_turned_around_part_way_takes_proportionally_less_time() {
+        let chosen = SegmentFade::at_rest(false).on_selection_change(true, 0);
+        assert_eq!(chosen.value(0), 0.0);
+        assert_eq!(
+            chosen.value(SEGMENTED_CONTROL_FADE_MICROS / 2),
+            0.5,
+            "a full fade takes the whole duration"
+        );
+        assert_eq!(chosen.value(SEGMENTED_CONTROL_FADE_MICROS), 1.0);
+        assert!(!chosen.is_animating(SEGMENTED_CONTROL_FADE_MICROS));
+        assert_eq!(
+            chosen.value(SEGMENTED_CONTROL_FADE_MICROS * 3),
+            1.0,
+            "and it stays there rather than running past the colour it was going to"
+        );
+
+        // Changed their mind halfway: the way back is half as far, so it takes
+        // half as long -- the colour moves at one speed throughout.
+        let turned = chosen.on_selection_change(false, SEGMENTED_CONTROL_FADE_MICROS / 2);
+        assert_eq!(turned.from, 0.5);
+        assert_eq!(turned.value(SEGMENTED_CONTROL_FADE_MICROS / 2), 0.5);
+        assert_eq!(turned.value(SEGMENTED_CONTROL_FADE_MICROS), 0.0);
+        assert!(!turned.is_animating(SEGMENTED_CONTROL_FADE_MICROS));
+    }
+
+    #[test]
+    fn a_segment_mid_fade_is_between_the_two_answers() {
+        let blue = Color::argb(255, 0, 122, 255);
+        let white = Color::argb(255, 255, 255, 255);
+        let colors = SegmentedControlColors::default().resolve(blue, white);
+
+        // Halfway from the held tint to the fill, on a segment whose
+        // `selected` flag already says it is the chosen one: without the
+        // animating arm this would snap straight to the fill.
+        let half = segment_colors(
+            colors,
+            true,
+            false,
+            false,
+            Some((SegmentTween::FromPressed, 0.5)),
+        );
+        assert_ne!(half.background, colors.selected);
+        assert_ne!(half.background, colors.pressed);
+        assert_eq!(
+            half.background,
+            crate::animation::Tween::lerp(
+                &crate::animation::ColorTween::new(colors.pressed, colors.selected),
+                0.5
+            )
+        );
+
+        // And the ink crosses the other way at the same time.
+        assert_eq!(
+            half.text,
+            crate::animation::Tween::lerp(
+                &crate::animation::ColorTween::new(colors.selected, colors.unselected),
+                0.5
+            )
+        );
+
+        // A disabled segment never animates: that test comes first.
+        let shut = segment_colors(
+            colors,
+            true,
+            false,
+            true,
+            Some((SegmentTween::FromPressed, 0.5)),
+        );
+        assert_eq!(shut.background, colors.selected_disabled);
+    }
+
+    #[test]
+    fn changing_the_selection_starts_the_fade_and_asks_for_a_frame() {
+        // The widget's half of the rule: notice that the selection moved,
+        // start the fades, and keep asking for frames while they run.
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+
+        let control = |selected: usize| {
+            provide(
+                CupertinoTheme::dark(),
+                stateful(CupertinoSegmentedControl::new(
+                    9102,
+                    vec!["One".into(), "Two".into()],
+                    selected,
+                )),
+            )
+        };
+        let mut tree = ElementTree::new();
+        tree.rebuild(control(0));
+        tree.build_render_tree().expect("a root");
+        // The fades are set up by the first build and applied after it, so
+        // settle before changing anything -- upstream does this in
+        // `initState`, where there is no frame to be in the middle of.
+        tree.rebuild(control(0));
+        tree.build_render_tree().expect("a root");
+        tree.clear_needs_frame();
+
+        // The selection moves, and the build that notices it starts the fades.
+        tree.rebuild(control(1));
+        tree.build_render_tree().expect("a root");
+        // Then a build with the fades in force. The clock has not moved, so
+        // each is exactly where it started -- which for the segment just
+        // chosen is the colour a finger leaves behind.
+        tree.rebuild(control(1));
+        let mut root = tree.build_render_tree().expect("a root");
+        tree.clear_needs_frame();
+        tree.rebuild(control(1));
+        assert!(
+            tree.needs_frame(),
+            "a fade read off the clock has to ask for the frame that moves it"
+        );
+
+        root.layout(BoxConstraints::loose(300.0, 60.0));
+        let mut layers = LayerTree::new(300, 60);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(300.0, 60.0));
+            root.paint(&mut context, Offset::ZERO);
+        }
+        let painted: Vec<u32> = drawn()
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Rect { argb, .. } => Some(*argb),
+                Drawn::RRect { argb, .. } => Some(*argb),
+                _ => None,
+            })
+            .collect();
+        let theme = CupertinoTheme::dark();
+        let colors = SegmentedControlColors::default()
+            .resolve(theme.primary_color, theme.primary_contrasting_color);
+        assert!(
+            painted.contains(&colors.pressed.0),
+            "the segment just chosen is still the colour it was held in: {painted:02x?}"
+        );
+    }
+
+    #[test]
     fn a_control_given_its_own_colours_paints_them() {
         // The rule is one thing; the widget asking it is another, and this is
         // the call. A control coloured by hand used to be impossible -- the
@@ -6804,9 +7157,9 @@ mod tests {
         let white = Color::argb(255, 255, 255, 255);
         let colors = SegmentedControlColors::default().resolve(blue, white);
 
-        let chosen = segment_colors(colors, true, false, false);
+        let chosen = segment_colors(colors, true, false, false, None);
         assert_eq!((chosen.background, chosen.text), (blue, white));
-        let other = segment_colors(colors, false, false, false);
+        let other = segment_colors(colors, false, false, false, None);
         assert_eq!((other.background, other.text), (white, blue));
     }
 
@@ -6818,9 +7171,12 @@ mod tests {
         let white = Color::argb(255, 255, 255, 255);
         let colors = SegmentedControlColors::default().resolve(blue, white);
 
-        assert_eq!(segment_colors(colors, true, true, false).background, blue);
         assert_eq!(
-            segment_colors(colors, false, true, false).background,
+            segment_colors(colors, true, true, false, None).background,
+            blue
+        );
+        assert_eq!(
+            segment_colors(colors, false, true, false, None).background,
             colors.pressed,
             "an unselected one does show the press"
         );
@@ -6832,14 +7188,14 @@ mod tests {
         let white = Color::argb(255, 255, 255, 255);
         let colors = SegmentedControlColors::default().resolve(blue, white);
 
-        let held_and_shut = segment_colors(colors, false, true, true);
+        let held_and_shut = segment_colors(colors, false, true, true, None);
         assert_eq!(
             held_and_shut.background, colors.unselected_disabled,
             "no press on a segment that cannot be pressed"
         );
         assert_eq!(held_and_shut.text, colors.disabled_text);
         assert_eq!(
-            segment_colors(colors, true, false, true).background,
+            segment_colors(colors, true, false, true, None).background,
             colors.selected_disabled
         );
     }

@@ -5331,3 +5331,65 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6884 通�
 有就把 `getBackgroundColor` 的 animating 分支补上——
 它正是这三条 tween 的读取点；没有就先补 `ColorTween`，
 别在这个控件里手搓一次颜色插值。
+
+---
+
+## 第 500 轮：165 毫秒，从手指底下的那个颜色开始
+
+`ColorTween` 查了：`animation.rs` 里就有，还实现了 `Tween`/`Animatable`。
+所以这一轮把上一轮明说"没做"的那部分补上——每段选中时的淡入。
+
+上游三条 tween，**两条背景色的终点相同、起点不同**，差别就是整个设计：
+
+```dart
+_forwardBackgroundColorTween = ColorTween(begin: _pressedColor, end: _selectedColor);
+_reverseBackgroundColorTween = ColorTween(begin: _unselectedColor, end: _selectedColor);
+```
+
+刚被**点中**的那一段，一瞬间之前还在手指底下，所以它从**按下的浅色**淡进填充色——
+中间不会闪回空白；正在**失去**选中的那一段没有手指压着，就淡回普通的未选中色。
+
+而且这两条 tween 在两个地方**分配得正好相反**，这不是笔误：
+
+- `_updateAnimationControllers`（初次建立）：选中的那段拿 **reverse** 并停在 1.0
+  ——它将来失去选中时正好一路退回空白；此时还没有任何按下，
+  "按下色"没有资格成为一个静止段落的任何一端。
+- `didUpdateWidget`（选中变了）：新选中的拿 **forward** 往前跑，其余拿 reverse 往回跑。
+
+**中途改主意的那一下也是规则**：`AnimationController.forward()` 从半开的位置出发，
+剩下的路只有一半，所以只花一半时间——颜色始终以同一个速度走。
+从当前值重新计时整段时长，会让第二次快速点击变得拖沓。
+
+分支顺序也补齐了：**禁用第一、动画第二**、然后才是选中/按下。
+动画排在选中之前，因为半途中的段落**介于两个答案之间**，
+先问"它属于哪一边"就会把它啪一下吸到某一边。
+
+### 变异 11 个：先 7 红 4 活，全部处理完再全红
+
+四条活的各说明一件事：
+
+1. **"淡入永不结束"**——我的断言只测到 `t = 时长` 那一点，
+   而那一点上"有没有夹紧"给出同样的值。补了一条 `3 倍时长`：**它得停在那里，不能冲过头**。
+2. **"禁用测试挪到动画之后"**——我第一版写的变异是 `fade.filter(|_| true)`，
+   那是个**等价变异**，不是覆盖缺口。换成真的挪顺序，当场被现有断言抓住。
+3+4. **widget 那一半没被观察**（不启动淡入、不请求下一帧）。
+   补了一条走一遍的测试：挂起来、改 `selected`、再建一帧，然后**真画一遍**——
+   刚被选中的那段画出来的是**按下色**（时钟没走，淡入正好在起点），
+   而且树还在要下一帧。三条变异被它一起杀掉。
+
+顺手把模块注释里"per-segment selection fade ... is not ported"改掉了——
+它现在是假的。**过期的注释比没有注释更坏**，第 490 轮记过一次。
+
+尺子：十七把全部 exit 0。门：Rust 6889 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6889 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`CupertinoSegmentedControl` 这一遍到底了（0.54，7/13，
+剩下的是 `children`/`groupValue`/`onValueChanged` 的映射差异与
+`_SegmentButton` 的焦点管理），下一轮把它记进 `depth_examined.json`。
+**先查一件事**：记之前先确认 `_SegmentButton` 那条——
+上游给每段一个 `GlobalKey<_SegmentButtonState>` 并在 `_onTap` 里
+`requestFocus()`，也就是**点一下会把焦点移到那一段**。
+这个 crate 的 `focus.rs` 有焦点节点，但这个控件一个也没建。
+如果确实没有，那它就是一处真缺口，这一遍还没走完——
+和第 493 轮 `_buildMagnifier` 的情形一模一样，别急着记。
