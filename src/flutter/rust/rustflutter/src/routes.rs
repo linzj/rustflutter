@@ -275,6 +275,200 @@ impl PopEntry {
     }
 }
 
+/// Upstream `_RouteLifecycle`: where an entry of the navigator's history is in
+/// its life, **in order**.
+///
+/// The order is the whole type. Every question the navigator asks about an
+/// entry -- is it present, will it be, should it be announced -- is a range
+/// over these variants, so a variant inserted in the wrong place silently
+/// moves several answers at once. Upstream writes them as one enum with the
+/// section comments below kept verbatim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RouteLifecycle {
+    /// *"we will wait for transition delegate to decide what to do with this
+    /// route."*
+    Staging,
+    // routes that are present:
+    /// *"a route created by onGenerateInitialRoutes or by the initial
+    /// widget.pages"*
+    Add,
+    /// *"we'll waiting for the future from didPush of top-most route to
+    /// complete"*
+    Adding,
+    // routes that are ready for transition.
+    /// *"a route added via push() and friends"*
+    Push,
+    /// *"a route added via pushReplace() and friends"*
+    PushReplace,
+    /// *"we're waiting for the future from didPush to complete"*
+    Pushing,
+    /// *"a route added via replace() and friends"*
+    Replace,
+    /// *"route is being harmless"*
+    Idle,
+    // routes that are not present:
+    /// *"we'll want to call didPop"*
+    Pop,
+    /// *"we'll want to call didComplete"*
+    Complete,
+    /// *"we'll want to run didReplace/didRemove etc"*
+    Remove,
+    /// *"we're waiting for the route to call finalizeRoute to switch to
+    /// dispose"*
+    Popping,
+    /// *"we are waiting for subsequent routes to be done animating"*
+    Removing,
+    Dispose,
+    /// *"The entry is waiting for its widget subtree to be disposed first."*
+    Disposing,
+    Disposed,
+}
+
+impl RouteLifecycle {
+    /// Upstream's `isPresent`: `add` through `remove`, **inclusive**.
+    ///
+    /// It reaches three variants past the `// routes that are not present:`
+    /// comment above `pop` -- a route being popped, completing, or being
+    /// removed is still *present* by this question, and only stops being so
+    /// once it is `popping`. The comment is about `willBePresent`, which stops
+    /// at `idle`; reading it as the boundary for this one is the mistake worth
+    /// naming, because a route that has just been popped is still on screen
+    /// and still the answer to "which route is current".
+    pub fn is_present(self) -> bool {
+        self >= RouteLifecycle::Add && self <= RouteLifecycle::Remove
+    }
+
+    /// Upstream's `willBePresent`: `add` through `idle` -- what will still be
+    /// there once everything settles.
+    pub fn will_be_present(self) -> bool {
+        self >= RouteLifecycle::Add && self <= RouteLifecycle::Idle
+    }
+
+    /// Upstream's `isPresentForRestoration`: everything up to and including
+    /// `idle`, **without** a lower bound -- so `staging` counts. A route the
+    /// transition delegate has not ruled on yet is still part of the state to
+    /// restore.
+    pub fn is_present_for_restoration(self) -> bool {
+        self <= RouteLifecycle::Idle
+    }
+
+    /// Upstream's `suitableForAnnouncement`: `push` through `removing`.
+    ///
+    /// A narrower window than [`RouteLifecycle::is_present`] at **both** ends:
+    /// a route that is only being added is not announced, and one that is
+    /// still animating out is.
+    pub fn suitable_for_announcement(self) -> bool {
+        self >= RouteLifecycle::Push && self <= RouteLifecycle::Removing
+    }
+}
+
+/// One entry of the navigator's history, as much of it as
+/// [`RoutePosition`] needs: which route, and where that route is in its life.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub route: u64,
+    pub state: RouteLifecycle,
+}
+
+impl HistoryEntry {
+    pub fn new(route: u64, state: RouteLifecycle) -> HistoryEntry {
+        HistoryEntry { route, state }
+    }
+
+    /// Upstream's `_RouteEntry.isPresentPredicate`.
+    pub fn is_present(&self) -> bool {
+        self.state.is_present()
+    }
+}
+
+/// Where a route stands in the navigator's history: upstream `Route`'s
+/// `isCurrent`, `isFirst`, `isActive` and `hasActiveRouteBelow`.
+///
+/// All four are questions about the **history**, not about the route -- which
+/// is why they are here as one type over a list of entries rather than four
+/// booleans on a route that would have to be kept in step. Upstream computes
+/// each one by walking `_navigator!._history` at the moment it is asked, for
+/// the same reason.
+///
+/// # Not installed is not "no"
+///
+/// Three of the four begin `if (!_installed) return false`, and the fourth
+/// answers through a null-aware navigator that gives the same. A route that
+/// has never been given to a navigator is not the current route, not the first
+/// one and not active -- it is not anywhere, and answering `false` is how
+/// upstream says so without a third value.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RoutePosition {
+    /// The navigator's history, bottom first -- the order upstream's `_history`
+    /// is in.
+    pub history: Vec<HistoryEntry>,
+}
+
+impl RoutePosition {
+    pub fn new(history: Vec<HistoryEntry>) -> RoutePosition {
+        RoutePosition { history }
+    }
+
+    /// Upstream's `isCurrent`: the **last** present entry is this route.
+    pub fn is_current(&self, route: u64, installed: bool) -> bool {
+        if !installed {
+            return false;
+        }
+        self.history
+            .iter()
+            .rev()
+            .find(|entry| entry.is_present())
+            .map(|entry| entry.route == route)
+            .unwrap_or(false)
+    }
+
+    /// Upstream's `isFirst`: the **first** present entry is this route.
+    pub fn is_first(&self, route: u64, installed: bool) -> bool {
+        if !installed {
+            return false;
+        }
+        self.history
+            .iter()
+            .find(|entry| entry.is_present())
+            .map(|entry| entry.route == route)
+            .unwrap_or(false)
+    }
+
+    /// Upstream's `isActive`: this route's **first** entry is present.
+    ///
+    /// Not "any entry of it is present": upstream takes the first entry for
+    /// this route and asks whether that one is present, which is the same
+    /// answer for a route in the history once and a different one for a route
+    /// that is in it twice.
+    pub fn is_active(&self, route: u64) -> bool {
+        self.history
+            .iter()
+            .find(|entry| entry.route == route)
+            .map(|entry| entry.is_present())
+            .unwrap_or(false)
+    }
+
+    /// Upstream's `hasActiveRouteBelow`: walking up from the bottom, is there
+    /// a present entry **before** this route's own?
+    ///
+    /// The walk stops at this route rather than counting everything present,
+    /// which is what makes it "below" rather than "elsewhere".
+    pub fn has_active_route_below(&self, route: u64, installed: bool) -> bool {
+        if !installed {
+            return false;
+        }
+        for entry in &self.history {
+            if entry.route == route {
+                return false;
+            }
+            if entry.is_present() {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 /// Upstream `PredictiveBackRoute`: what the platform's back gesture needs to
 /// know about a route, and what it does to one.
 pub trait PredictiveBackRoute {
@@ -1909,5 +2103,157 @@ mod tests {
     #[test]
     fn a_dialog_and_a_sheet_dim_the_page_by_the_same_amount() {
         assert_eq!(MODAL_BARRIER_ALPHA, 0x8A);
+    }
+
+    // -- Where a route stands in the history ---------------------------------
+
+    use super::{HistoryEntry, RouteLifecycle, RoutePosition};
+
+    /// Bottom first, as `_history` is.
+    fn history(entries: &[(u64, RouteLifecycle)]) -> RoutePosition {
+        RoutePosition::new(
+            entries
+                .iter()
+                .map(|(route, state)| HistoryEntry::new(*route, *state))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn present_reaches_three_variants_past_the_comment_that_says_it_does_not() {
+        // `isPresent` is `add..=remove`, and the `// routes that are not
+        // present:` comment sits above `pop` -- three variants inside the
+        // range. A route being popped, completing, or being removed is still
+        // present, and that is not a slip: it is still on screen and still the
+        // answer to "which route is current".
+        for state in [
+            RouteLifecycle::Add,
+            RouteLifecycle::Adding,
+            RouteLifecycle::Push,
+            RouteLifecycle::PushReplace,
+            RouteLifecycle::Pushing,
+            RouteLifecycle::Replace,
+            RouteLifecycle::Idle,
+            RouteLifecycle::Pop,
+            RouteLifecycle::Complete,
+            RouteLifecycle::Remove,
+        ] {
+            assert!(state.is_present(), "{state:?} is present");
+        }
+        for state in [
+            RouteLifecycle::Staging,
+            RouteLifecycle::Popping,
+            RouteLifecycle::Removing,
+            RouteLifecycle::Dispose,
+            RouteLifecycle::Disposing,
+            RouteLifecycle::Disposed,
+        ] {
+            assert!(!state.is_present(), "{state:?} is not");
+        }
+
+        // The three questions that are *not* the same range, each differing at
+        // one end -- which is the reason they are three questions.
+        assert!(
+            RouteLifecycle::Pop.is_present() && !RouteLifecycle::Pop.will_be_present(),
+            "a popped route is present now and will not be"
+        );
+        assert!(
+            RouteLifecycle::Staging.is_present_for_restoration()
+                && !RouteLifecycle::Staging.is_present(),
+            "a staged route is not present, and is still state to restore"
+        );
+        assert!(
+            !RouteLifecycle::Add.suitable_for_announcement(),
+            "a route only being added is not announced"
+        );
+        assert!(
+            RouteLifecycle::Removing.suitable_for_announcement(),
+            "and one still animating out is"
+        );
+    }
+
+    #[test]
+    fn the_current_route_is_the_last_one_that_is_present() {
+        // Not the last one in the list: a route that is `popping` is still in
+        // the history and is no longer present, so the route below it is
+        // current while the animation runs.
+        let stack = history(&[
+            (1, RouteLifecycle::Idle),
+            (2, RouteLifecycle::Idle),
+            (3, RouteLifecycle::Popping),
+        ]);
+        assert!(stack.is_current(2, true), "the one below the leaving route");
+        assert!(!stack.is_current(3, true));
+        assert!(!stack.is_current(1, true));
+    }
+
+    #[test]
+    fn the_first_route_is_the_bottom_one_that_is_present() {
+        let stack = history(&[
+            (1, RouteLifecycle::Removing),
+            (2, RouteLifecycle::Idle),
+            (3, RouteLifecycle::Idle),
+        ]);
+        assert!(stack.is_first(2, true), "the bottom-most present entry");
+        assert!(!stack.is_first(1, true), "a route on its way out is not");
+
+        // With one route on the navigator, it is both first and current --
+        // upstream says so in `isFirst`'s own documentation.
+        let alone = history(&[(9, RouteLifecycle::Idle)]);
+        assert!(alone.is_first(9, true) && alone.is_current(9, true));
+    }
+
+    #[test]
+    fn nothing_is_anywhere_until_it_is_installed() {
+        // Three of the four begin `if (!_installed) return false`. A route
+        // that has never been given to a navigator is not the current route,
+        // not the first, and has nothing below it -- it is not anywhere, and
+        // `false` is how upstream says that without a third value.
+        let stack = history(&[(1, RouteLifecycle::Idle)]);
+        assert!(!stack.is_current(1, false));
+        assert!(!stack.is_first(1, false));
+        assert!(!stack.has_active_route_below(1, false));
+    }
+
+    #[test]
+    fn a_route_is_active_by_its_first_entry_and_no_other() {
+        // `isActive` takes the **first** entry for this route and asks whether
+        // that one is present -- not "any entry of it". The two differ exactly
+        // when a route is in the history twice.
+        let twice = history(&[
+            (7, RouteLifecycle::Removing),
+            (8, RouteLifecycle::Idle),
+            (7, RouteLifecycle::Idle),
+        ]);
+        assert!(
+            !twice.is_active(7),
+            "the first entry for it is on its way out, so it is not active"
+        );
+        assert!(twice.is_active(8));
+        assert!(!twice.is_active(99), "a route that is not there at all");
+    }
+
+    #[test]
+    fn what_is_below_is_below_this_route_and_not_merely_elsewhere() {
+        // The walk stops at this route's own entry, which is what makes the
+        // question "below" rather than "anywhere in the history".
+        let stack = history(&[
+            (1, RouteLifecycle::Idle),
+            (2, RouteLifecycle::Idle),
+            (3, RouteLifecycle::Idle),
+        ]);
+        assert!(
+            !stack.has_active_route_below(1, true),
+            "nothing under the bottom"
+        );
+        assert!(stack.has_active_route_below(2, true));
+        assert!(stack.has_active_route_below(3, true));
+
+        // And only *present* entries count as being below.
+        let leaving = history(&[(1, RouteLifecycle::Popping), (2, RouteLifecycle::Idle)]);
+        assert!(
+            !leaving.has_active_route_below(2, true),
+            "the only thing under it is on its way out"
+        );
     }
 }

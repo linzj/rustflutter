@@ -4064,3 +4064,61 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 有多少是 `Route` 自己的生命周期（`install`、`didPush`、`didPop`、
 `didComplete`、`willDisposeAfterTransition`、`restorationScopeId`）——
 先分清"已在别处"与"确实没有"，再决定这一轮补哪一段。
+
+---
+
+## 第 478 轮：一条路由站在历史里的哪个位置
+
+上一轮留的问题先分清楚。上游 `Route` 那 24 个成员在这个 crate 里散在两处：
+
+- **已经有的**：`install`、`did_push`、`did_pop`、`did_pop_next`、`dispose`、
+  `will_handle_pop_internally`、`pop_disposition`——都在 `routes.rs` 的
+  `OverlayRoute`/`TransitionRoute`/`ModalRoute` 上。
+- **不是同一个东西**：`navigation.rs` 的 `Route` 是"名字 + 参数"，
+  对应的其实是上游的 `RouteSettings`，depth 把它当成 `Route` 来数才得出 6/24。
+- **确实没有的**：`didAdd`、`didReplace`、`didComplete`、`didChangeNext`、
+  `didChangePrevious`、`changedInternalState`、`changedExternalState`，
+  以及**位置那四问**——`isCurrent`、`isFirst`、`isActive`、`hasActiveRouteBelow`。
+
+这一轮做位置那四问，连同它们赖以成立的 `_RouteLifecycle`。
+
+### 顺序就是那个类型
+
+`_RouteLifecycle` 的每一个问题都是这串变体上的一个**区间**，
+所以变体插错位置会一次悄悄挪动好几个答案。照上游原样搬，连分段注释一起。
+
+而这里有一处值得单独写下来：**`isPresent` 是 `add..=remove`，
+它越过了那条写着 `// routes that are not present:` 的注释三个变体**。
+一条正在 pop、正在 complete、正在 remove 的路由**仍然是 present**——
+它还在屏幕上，还是"哪条是 current"的答案。
+那条注释说的是 `willBePresent`（到 `idle` 为止）；
+把它当成 `isPresent` 的边界，是这一段最容易犯的错，所以测试专门按住它。
+
+### 四问都是关于**历史**的，不是关于路由的
+
+所以它们是一个 `RoutePosition`（一串 `HistoryEntry`）上的四个方法，
+而不是路由身上四个需要各自保持同步的布尔——上游每次被问都现场走一遍
+`_navigator!._history`，是同一个道理。
+
+三处细节测试各按一条：
+current 是**最后一个 present 的**（不是最后一个——正在 popping 的还在列表里）；
+`isActive` 取的是这条路由的**第一个**条目问它 present 不 present
+（不是"任意一个条目"——两者只在一条路由在历史里出现两次时不同）；
+`hasActiveRouteBelow` 的遍历**停在自己这一条**，这才使它是"下面"而不是"别处"。
+还有一条按住"没装上就不在任何地方"：三个方法都以
+`if (!_installed) return false` 开头，用 `false` 说"它不在那儿"，
+而不是引入第三个值。
+
+变异扫描 10 个，全红。扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6787 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：上面列的"确实没有的"里还剩七个回调——
+`didAdd`、`didReplace`、`didComplete`、`didChangeNext`、`didChangePrevious`、
+`changedInternalState`、`changedExternalState`。
+**先查一件事**：它们在上游 `Route` 上大多是空实现（`{}`），
+真正有内容的只有 `didComplete`（完成 `_popCompleter`）和
+`didAdd`（等一个 `TickerFuture` 再要焦点）——
+先确认哪几个在 `ModalRoute`/`TransitionRoute` 的**子类**里才有真实现，
+只搬空方法是搬了个签名，那种"补了却什么也没说"的东西这个项目不要。
