@@ -1445,6 +1445,46 @@ impl CupertinoSwitch {
         self
     }
 
+    /// Upstream's `_defaultMouseCursor`, and what a given one is resolved
+    /// against:
+    ///
+    /// ```dart
+    /// if (states.contains(WidgetState.disabled)) {
+    ///   return MouseCursor.defer;
+    /// }
+    /// return kIsWeb ? SystemMouseCursors.click : MouseCursor.defer;
+    /// ```
+    ///
+    /// **`None` is upstream's `MouseCursor.defer`**, which is not "no cursor"
+    /// but "whatever is behind decides" -- the pointer keeps whatever the page
+    /// gave it. A native switch does not change the pointer at all, on any
+    /// desktop; only on the **web** does it take the hand, because there a
+    /// switch is one of a page of things a reader expects to click.
+    ///
+    /// The disabled arm defers on the web too, so a switch that cannot be
+    /// changed does not offer the hand it would otherwise answer with.
+    ///
+    /// Nothing draws this yet: `MouseTrackerAnnotation` carries a cursor in
+    /// [`crate::services::system`] and **no render object in this crate
+    /// attaches one**, so no widget can put a cursor on the screen. The rule
+    /// is here and tested, and said plainly to be unwired -- that plumbing is
+    /// a crate-wide piece of work rather than this widget's.
+    pub fn mouse_cursor(
+        given: Option<
+            &crate::widget_state::StateProperty<Option<crate::services::system::SystemMouseCursor>>,
+        >,
+        states: crate::widget_state::WidgetStates,
+        is_web: bool,
+    ) -> Option<crate::services::system::SystemMouseCursor> {
+        if let Some(given) = given {
+            return given.resolve(states);
+        }
+        if states.contains(crate::widget_state::WidgetState::Disabled) {
+            return None;
+        }
+        is_web.then_some(crate::services::system::SystemMouseCursor::Click)
+    }
+
     /// The states a switch is in, which is what its state properties are
     /// resolved against.
     ///
@@ -7593,6 +7633,58 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_switch_takes_the_hand_only_on_the_web() {
+        use crate::services::system::SystemMouseCursor;
+        let on = CupertinoSwitch::states(true, false, false, true);
+        assert_eq!(
+            CupertinoSwitch::mouse_cursor(None, on, false),
+            None,
+            "a native switch does not change the pointer at all"
+        );
+        assert_eq!(
+            CupertinoSwitch::mouse_cursor(None, on, true),
+            Some(SystemMouseCursor::Click),
+            "on the web it is one of a page of things a reader clicks"
+        );
+
+        let shut = CupertinoSwitch::states(true, false, false, false);
+        assert_eq!(
+            CupertinoSwitch::mouse_cursor(None, shut, true),
+            None,
+            "and a switch that cannot be changed does not offer the hand"
+        );
+    }
+
+    #[test]
+    fn a_cursor_of_ones_own_answers_for_every_state() {
+        // A given property replaces the whole default, disabled arm included:
+        // upstream's `widget.mouseCursor ?? _defaultMouseCursor` picks one or
+        // the other, it does not merge them.
+        use crate::services::system::SystemMouseCursor;
+        use crate::widget_state::{StateProperty, WidgetState};
+        let given = StateProperty::resolve_with(|states| {
+            Some(if states.contains(WidgetState::Disabled) {
+                SystemMouseCursor::Forbidden
+            } else {
+                SystemMouseCursor::Grab
+            })
+        });
+        let shut = CupertinoSwitch::states(true, false, false, false);
+        assert_eq!(
+            CupertinoSwitch::mouse_cursor(Some(&given), shut, false),
+            Some(SystemMouseCursor::Forbidden)
+        );
+        assert_eq!(
+            CupertinoSwitch::mouse_cursor(
+                Some(&given),
+                CupertinoSwitch::states(true, false, false, true),
+                false
+            ),
+            Some(SystemMouseCursor::Grab)
+        );
     }
 
     // -- The line inside the track ------------------------------------------------

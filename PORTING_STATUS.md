@@ -5779,3 +5779,56 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6915 通�
 如果有，开关这边只是把它接上去；如果没有，那它是一条**跨很多控件**的规则，
 应该补在 `gestures.rs` 而不是补在开关里——
 和第 495 轮"滚动参数该有一个统一住处"是同一个判断。
+
+---
+
+## 第 508 轮：指针的形状，以及一条根本没接线的管道
+
+上一轮问 `dragStartBehavior` 在哪。查了：**在 `tap_and_drag.rs`**，
+连"两者何时才有差别"的规则都在（无人竞争时识别器立刻获胜，两个位置相同）。
+而这个开关的拖动是**裸指针回调**，不是能接受一个 behaviour 的识别器——
+所以这个参数在这个 widget 上**没有可变的东西**。这是个读数，不是活。
+
+接着看 `mouseCursor`，查出一件更值得记的事：
+`MouseTrackerAnnotation` 带着 `cursor` 字段躺在 services 里，
+而**这个 crate 里没有任何渲染对象挂过一个**——`render.rs` 里连 cursor 这个词都没有。
+也就是说，**任何 widget 都还没法把一个指针形状送上屏幕**。
+
+所以这一轮补的是规则本身，并把"没接线"写在文档里：
+
+```dart
+if (states.contains(WidgetState.disabled)) return MouseCursor.defer;
+return kIsWeb ? SystemMouseCursors.click : MouseCursor.defer;
+```
+
+**`None` 是 `MouseCursor.defer`**，不是"没有光标"，而是"由背后的东西决定"。
+原生开关在**任何桌面上都不改变指针**；只有在**网页**上它才取那只手，
+因为在网页上开关是一页里读者预期要点的东西之一。禁用时连网页上也让开。
+调用者给了自己的属性就**整个替换**默认（包括禁用那一支），
+不是和默认合并——变异把它改成合并，当场被抓。
+
+按第 506 轮那条教训，这次不加没人读的字段：规则是自由函数，
+文档里点名"没有哪条管道能让它上屏"，并说明**那是整个 crate 的活，不是这个 widget 的**。
+
+### 记账
+
+`CupertinoSwitch`（504–508，0.31 → 0.73）记进 `depth_examined.json`，
+`finding` 三类分明：这五轮补掉的四组、在别处的两个（`dragStartBehavior`、`focusNode`）、
+**确实没有对应物**的三组（`mouseCursor` 缺管道、`thumbIcon` 与两张 thumbImage 缺图标字体与图片加载、
+`autofocus` 只在作用域一级）。
+
+变异 6 个全红（含"删掉这条记录，`--examined` 就没有它了"）。
+
+尺子：十七把全部 exit 0。门：Rust 6917 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6917 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：新队头 `WidgetsApp`（0.31，13/42）。
+第 475 轮补过它的 `RouteConfiguration`/`RouterConfiguration`，所以这不是新地方。
+**先查一件事**：那 42 个成员里有多少是**本地化与语言**那一族
+（`localizationsDelegates`、`supportedLocales`、`localeResolutionCallback`、
+`localeListResolutionCallback`、`onGenerateTitle`…）——
+第 472–477 轮刚给 Cupertino/Material 两个 App 补过 localizations delegate 那条链，
+如果 `WidgetsApp` 的这一族已经被那几轮覆盖，就该按"在别处"记；
+如果没有，那 locale 解析的**回退顺序**（先问回调、再逐个匹配语言/国家/脚本）
+是一条真规则，值得单独一轮。
