@@ -3286,6 +3286,13 @@ pub struct TextField {
     /// upstream says in those words and this crate has as
     /// [`TextField::with_state_sink`].
     initial_text: Option<String>,
+    /// Upstream's `autofocus`: take the focus when this field first appears.
+    ///
+    /// Asked for in [`TextField::initial_state`], which is this crate's
+    /// `initState` -- once per mount, not once per build. A field that asked
+    /// again every build would take the focus back from wherever the reader
+    /// had since moved it.
+    autofocus: bool,
     /// Upstream's `textAlign` and `textDirection`, which the render object
     /// resolves together -- `Start` means nothing without a direction.
     text_align: crate::engine::TextAlign,
@@ -3479,6 +3486,7 @@ impl TextField {
             read_only: false,
             show_cursor: None,
             initial_text: None,
+            autofocus: false,
             text_align: crate::engine::TextAlign::Start,
             text_direction: crate::direction::TextDirection::Ltr,
             runs: Vec::new(),
@@ -3523,6 +3531,13 @@ impl TextField {
     /// documentation for why it is used only once.
     pub fn with_initial_text(mut self, text: impl Into<String>) -> Self {
         self.initial_text = Some(text.into());
+        self
+    }
+
+    /// Upstream's `autofocus`. See the field for why asking is a once-per-
+    /// mount thing.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
         self
     }
 
@@ -3682,6 +3697,13 @@ impl StatefulComponent for TextField {
             // short -- in the middle of a surrogate pair -- where
             // `caret_bytes` answers `None` and nothing is drawn at all.
             state.value = TextEditingValue::new(text);
+        }
+        // Upstream asks in `initState`, through a post-frame callback, because
+        // the node does not exist until the build has run. Here the request is
+        // parked and granted by `focus::apply_pending_autofocus` after the
+        // build, which is the same moment by a different road.
+        if self.autofocus {
+            crate::focus::autofocus_node(self.id);
         }
         state
     }
@@ -8084,6 +8106,215 @@ mod tests {
         let writable = TextField::new(1);
         assert!(writable.advance(&mut state, 10_000));
         assert!(state.caret_blink_on);
+    }
+
+    /// Mounts a tree and runs the frame's autofocus pass, which is what the
+    /// application does after every build.
+    fn mount_and_settle(widget: crate::framework::AnyWidget) -> crate::framework::ElementTree {
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(widget);
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        tree
+    }
+
+    #[test]
+    fn a_field_that_asked_for_the_focus_gets_it_once_the_frame_is_over() {
+        // Upstream asks in `initState` and is granted by a post-frame
+        // callback, because the node does not exist during the build that
+        // creates it. The same shape here: the request is parked and granted
+        // after the build.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let _tree = mount_and_settle(crate::framework::stateful(
+            TextField::new(61).with_autofocus(true),
+        ));
+        assert_eq!(crate::focus::focused(), Some(61));
+    }
+
+    #[test]
+    fn a_field_that_did_not_ask_is_left_alone() {
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let _tree = mount_and_settle(crate::framework::stateful(TextField::new(62)));
+        assert_eq!(
+            crate::focus::focused(),
+            None,
+            "nothing asked, nothing moved"
+        );
+    }
+
+    #[test]
+    fn autofocus_does_not_take_the_focus_back_from_the_reader() {
+        // The mistake this is guarding: asking on every build instead of
+        // once. A field that did so would pull the keyboard back to itself
+        // every frame, and the reader could never leave it.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                crate::framework::stateful(TextField::new(63).with_autofocus(true)),
+                crate::focus::focusable(
+                    64,
+                    crate::framework::leaf(|| crate::widgets::SizedBox::new(10.0, 10.0)),
+                ),
+            ],
+            |children| {
+                let mut column = crate::widgets::Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), Some(63), "it asked, and got it");
+
+        // The reader moves on, and the field is rebuilt several times over.
+        assert!(crate::focus::focus(64));
+        for _ in 0..3 {
+            tree.rebuild_dirty();
+            let _ = tree.build_render_tree();
+            crate::focus::apply_pending_autofocus();
+        }
+        assert_eq!(
+            crate::focus::focused(),
+            Some(64),
+            "the field asked once, at its first mount, and never again"
+        );
+    }
+
+    #[test]
+    fn a_field_asking_for_a_focus_something_else_already_has_does_not_get_it() {
+        // Upstream's rule for autofocus, and the same one the scope-level
+        // request already follows: it does not fight a choice already made.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                crate::focus::focusable(
+                    65,
+                    crate::framework::leaf(|| crate::widgets::SizedBox::new(10.0, 10.0)),
+                ),
+                crate::framework::stateful(TextField::new(66).with_autofocus(true)),
+            ],
+            |children| {
+                let mut column = crate::widgets::Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        let _ = tree.build_render_tree();
+        assert!(crate::focus::focus(65), "something is focused first");
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), Some(65));
+    }
+
+    #[test]
+    fn a_field_behind_a_modal_does_not_pull_the_keyboard_out_of_it() {
+        // The case the trap check is for: a page's field asks for the focus,
+        // and by the time the frame ends a dialog is up. Granting it would put
+        // the keyboard behind the dialog, where the reader can neither see it
+        // nor get it back -- and every key would then be handled by the page
+        // rather than the thing in front of them.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                crate::framework::stateful(TextField::new(69).with_autofocus(true)),
+                crate::focus::focus_scope_widget(
+                    70,
+                    crate::focus::focusable(
+                        71,
+                        crate::framework::leaf(|| crate::widgets::SizedBox::new(10.0, 10.0)),
+                    ),
+                ),
+            ],
+            |children| {
+                let mut column = crate::widgets::Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        let _ = tree.build_render_tree();
+
+        // The dialog goes up between the build and the pass.
+        crate::focus::trap_focus(70);
+        crate::focus::apply_pending_autofocus();
+        assert_ne!(
+            crate::focus::focused(),
+            Some(69),
+            "the field is behind the modal and must not have the keyboard"
+        );
+        crate::focus::release_trap(70);
+    }
+
+    #[test]
+    fn a_request_that_could_not_be_granted_is_spent_rather_than_kept() {
+        // The pending requests are *taken*, not read. A list that kept them
+        // would fire again on some later frame -- and by then the reader has
+        // moved on, so the keyboard would jump back to a field that asked
+        // once, long ago, and lost.
+        let _messenger = install();
+        text_input::reset();
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                crate::focus::focusable(
+                    67,
+                    crate::framework::leaf(|| crate::widgets::SizedBox::new(10.0, 10.0)),
+                ),
+                crate::framework::stateful(TextField::new(68).with_autofocus(true)),
+            ],
+            |children| {
+                let mut column = crate::widgets::Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        let _ = tree.build_render_tree();
+
+        // Something else has the focus, so the request cannot be granted.
+        assert!(crate::focus::focus(67));
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), Some(67));
+
+        // The focus is given up. A kept request would now take it.
+        crate::focus::unfocus();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(
+            crate::focus::focused(),
+            None,
+            "the request was spent on the frame it was made for"
+        );
     }
 
     #[test]

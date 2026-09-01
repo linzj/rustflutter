@@ -123,6 +123,12 @@ pub struct SelectableText {
     /// A selectable text is never editable, which is the one thing that makes
     /// it different from the field it is built on.
     editable: bool,
+    /// Upstream's `autofocus`: take the focus as soon as the passage appears.
+    ///
+    /// False by default, as upstream has it. A passage is something to read,
+    /// and one that grabbed the keyboard on arrival would take it from
+    /// whatever the reader was actually working in.
+    pub autofocus: bool,
     /// Upstream's `style`. `None` is upstream's null.
     ///
     /// # What `None` falls back to, and how that differs from upstream
@@ -171,6 +177,7 @@ impl SelectableText {
             show_cursor: false,
             max_lines: None,
             editable: false,
+            autofocus: false,
             style: None,
             text_align: None,
             text_direction: None,
@@ -195,6 +202,7 @@ impl SelectableText {
             show_cursor: false,
             max_lines: None,
             editable: false,
+            autofocus: false,
             style: None,
             text_align: None,
             text_direction: None,
@@ -203,6 +211,12 @@ impl SelectableText {
                 .map(|span| (span.text, span.style))
                 .collect(),
         }
+    }
+
+    /// Upstream's `autofocus`.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
+        self
     }
 
     /// Upstream's `style`. See the field for what `None` means here.
@@ -265,6 +279,7 @@ impl SelectableText {
     pub fn widget(&self, id: u64) -> crate::framework::AnyWidget {
         let mut field = crate::editable::TextField::new(id)
             .with_read_only(true)
+            .with_autofocus(self.autofocus)
             .with_show_cursor(self.show_cursor)
             .with_text_align(
                 self.text_align.unwrap_or(crate::engine::TextAlign::Start),
@@ -709,6 +724,35 @@ three"
         let (text, colour, _) = painted_text(rich, 4332);
         assert_eq!(text, "hello");
         assert_eq!(colour, run_colour.0, "the run's colour, not the base one");
+    }
+
+    #[test]
+    fn a_passage_asked_to_take_the_focus_takes_it() {
+        // Both hops: the passage tells the field, and the field asks the
+        // focus manager at the one moment it is allowed to.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(
+            SelectableText::new("hello")
+                .with_autofocus(true)
+                .widget(4340),
+        );
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), Some(4340));
+
+        // And a passage that did not ask is left alone -- a page of prose
+        // that stole the keyboard on arrival would take it from whatever the
+        // reader was working in.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+        let mut quiet = crate::framework::ElementTree::new();
+        quiet.rebuild(SelectableText::new("hello").widget(4341));
+        let _ = quiet.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), None);
     }
 
     #[test]

@@ -1310,6 +1310,8 @@ thread_local! {
     /// nodes it would focus have registered yet. Focusing there would find an
     /// empty tree and do nothing at all.
     static PENDING_AUTOFOCUS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// Nodes that asked for the focus themselves, in the order they asked.
+    static PENDING_NODE_AUTOFOCUS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Asks for the focus to be put inside `trap` once its nodes exist.
@@ -1322,6 +1324,21 @@ pub fn autofocus_in(trap: u64) {
     PENDING_AUTOFOCUS.with(|pending| pending.borrow_mut().push(trap));
 }
 
+/// Asks for this node to take the focus once it exists.
+///
+/// Upstream's `Focus(autofocus: true)`, which `TextField.autofocus` and
+/// `SelectableText.autofocus` pass down. Distinct from [`autofocus_in`],
+/// which is a *scope* asking for the focus to land somewhere inside it: this
+/// one names the node.
+///
+/// **Asked once, not every frame.** Upstream registers it in `initState`, and
+/// the caller here is expected to do the same -- a field that asked again on
+/// every build would take the focus back from wherever the reader had moved
+/// it, which is worse than never having asked.
+pub fn autofocus_node(id: u64) {
+    PENDING_NODE_AUTOFOCUS.with(|pending| pending.borrow_mut().push(id));
+}
+
 /// Grants the pending autofocus requests. Called once per frame, **after** the
 /// build that registers the nodes.
 ///
@@ -1332,6 +1349,39 @@ pub fn autofocus_in(trap: u64) {
 pub fn apply_pending_autofocus() -> bool {
     let pending: Vec<u64> =
         PENDING_AUTOFOCUS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+    let nodes: Vec<u64> =
+        PENDING_NODE_AUTOFOCUS.with(|pending| std::mem::take(&mut *pending.borrow_mut()));
+
+    // Nodes first, and this order is the rule rather than an accident: a
+    // scope's request is "put the focus *somewhere* in here", a node's is
+    // "put it on me". Granting the scope first would satisfy it with whatever
+    // stop came first and leave the node that actually asked unfocused --
+    // upstream's `FocusScopeNode.autofocus` behaves the same way, holding a
+    // node's request and preferring it over its own first stop.
+    for node in nodes {
+        // Taken in the order asked, and only the first one that can have it:
+        // two fields both asking is a mistake in the tree, and upstream
+        // asserts on it. Here the first wins, which is at least stable.
+        if focused().is_some() {
+            break;
+        }
+        // A node belonging to a scope that is no longer the one in force --
+        // a dialog dismissed between the build that asked and this pass --
+        // must not pull the keyboard into a page the reader cannot see.
+        //
+        // There is deliberately no "does this node exist" check beside it:
+        // `focus` already refuses an unregistered id, and a second copy here
+        // would be the same rule in two places with no way to tell them
+        // apart. A mutation removing it survived every test, which is what
+        // that looks like from the outside.
+        if !within_active_trap(node) {
+            continue;
+        }
+        if focus(node) {
+            return true;
+        }
+    }
+
     if pending.is_empty() {
         return false;
     }
@@ -1371,6 +1421,13 @@ pub fn apply_pending_autofocus() -> bool {
 /// Forgets the pending requests. For tests, and for a view being torn down.
 pub fn reset_pending_autofocus() {
     PENDING_AUTOFOCUS.with(|pending| pending.borrow_mut().clear());
+    PENDING_NODE_AUTOFOCUS.with(|pending| pending.borrow_mut().clear());
+}
+
+/// Whether the node is reachable under whatever trap is in force. `true` when
+/// there is no trap, which is the ordinary page.
+fn within_active_trap(id: u64) -> bool {
+    MANAGER.with(|manager| within_trap(&manager.borrow(), id))
 }
 
 /// Whether a node is reachable under the trap in force.
