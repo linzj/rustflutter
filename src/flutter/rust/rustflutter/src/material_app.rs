@@ -425,6 +425,89 @@ pub trait MaterialLocalizations {
 
     /// Upstream's `deleteButtonTooltip`.
     fn delete_button_tooltip(&self) -> &str;
+
+    // -- The text-selection toolbar's words ---------------------------------
+    //
+    // Eight upstream members whose **values** were already here as constants
+    // and whose names were not on this interface at all. An application could
+    // therefore not put its own wording in front of them -- which is what the
+    // interface is for, and the same half-ported shape tick 472 found on the
+    // Cupertino side.
+
+    /// Upstream's `cutButtonLabel`.
+    fn cut_button_label(&self) -> &str;
+
+    /// Upstream's `copyButtonLabel`.
+    fn copy_button_label(&self) -> &str;
+
+    /// Upstream's `pasteButtonLabel`.
+    fn paste_button_label(&self) -> &str;
+
+    /// Upstream's `selectAllButtonLabel`.
+    fn select_all_button_label(&self) -> &str;
+
+    /// Upstream's `lookUpButtonLabel`.
+    fn look_up_button_label(&self) -> &str;
+
+    /// Upstream's `searchWebButtonLabel`.
+    fn search_web_button_label(&self) -> &str;
+
+    /// Upstream's `shareButtonLabel`.
+    fn share_button_label(&self) -> &str;
+
+    /// Upstream's `scanTextButtonLabel`.
+    fn scan_text_button_label(&self) -> &str;
+
+    /// Upstream's `expansionTileExpandedTapHint`.
+    fn expansion_tile_expanded_tap_hint(&self) -> &str;
+
+    /// Upstream's `expansionTileCollapsedTapHint`.
+    fn expansion_tile_collapsed_tap_hint(&self) -> &str;
+
+    // -- The ones that take an argument -------------------------------------
+    //
+    // Same story: the rules were written and tested, on the implementation.
+    // A locale that counts, orders or formats differently -- and most do --
+    // had no way to say so.
+
+    /// Upstream's `formatDecimal`.
+    fn format_decimal(&self, number: i64) -> String;
+
+    /// Upstream's `formatHour`, which answers an error rather than a string
+    /// for a format this bundle does not speak. See the implementation.
+    fn format_hour(
+        &self,
+        hour: u32,
+        always_use_24_hour_format: bool,
+    ) -> Result<String, &'static str>;
+
+    /// Upstream's `formatMinute`.
+    fn format_minute(&self, minute: u32) -> String;
+
+    /// Upstream's `formatCompactDate`, `None` for a date it cannot compact.
+    fn format_compact_date(&self, year: i32, month: u32, day: u32) -> Option<String>;
+
+    /// Upstream's `timeOfDayFormat`.
+    fn time_of_day_format(&self, always_use_24_hour_format: bool) -> TimeOfDayFormat;
+
+    /// Upstream's `narrowWeekdays`, indexed as
+    /// `_shortWeekdays[date.weekday - DateTime.monday]`.
+    fn short_weekday(&self, weekday: u32) -> &str;
+
+    /// Upstream's `tabLabel`, `None` where the numbers cannot be spoken.
+    fn tab_label(&self, tab_index: u32, tab_count: u32) -> Option<String>;
+
+    /// Upstream's `pageRowsInfoTitle`.
+    fn page_rows_info_title(
+        &self,
+        first_row: usize,
+        last_row: usize,
+        row_count: usize,
+        approximate: bool,
+    ) -> String;
+
+    /// Upstream's `selectedRowCountTitle`.
+    fn selected_row_count_title(&self, selected: usize) -> String;
 }
 
 /// Upstream `DefaultMaterialLocalizations`, whose own doc says what it is:
@@ -1913,11 +1996,102 @@ impl MaterialLocalizations for DefaultMaterialLocalizations {
     fn delete_button_tooltip(&self) -> &str {
         Self::DELETE_BUTTON_TOOLTIP
     }
+
+    fn cut_button_label(&self) -> &str {
+        DefaultMaterialLocalizations::CUT_BUTTON_LABEL
+    }
+
+    fn copy_button_label(&self) -> &str {
+        DefaultMaterialLocalizations::COPY_BUTTON_LABEL
+    }
+
+    fn paste_button_label(&self) -> &str {
+        DefaultMaterialLocalizations::PASTE_BUTTON_LABEL
+    }
+
+    fn select_all_button_label(&self) -> &str {
+        DefaultMaterialLocalizations::SELECT_ALL_BUTTON_LABEL
+    }
+
+    fn look_up_button_label(&self) -> &str {
+        DefaultMaterialLocalizations::LOOK_UP_BUTTON_LABEL
+    }
+
+    fn search_web_button_label(&self) -> &str {
+        DefaultMaterialLocalizations::SEARCH_WEB_BUTTON_LABEL
+    }
+
+    fn share_button_label(&self) -> &str {
+        DefaultMaterialLocalizations::SHARE_BUTTON_LABEL
+    }
+
+    fn scan_text_button_label(&self) -> &str {
+        DefaultMaterialLocalizations::SCAN_TEXT_BUTTON_LABEL
+    }
+
+    fn expansion_tile_expanded_tap_hint(&self) -> &str {
+        DefaultMaterialLocalizations::EXPANSION_TILE_EXPANDED_TAP_HINT
+    }
+
+    fn expansion_tile_collapsed_tap_hint(&self) -> &str {
+        DefaultMaterialLocalizations::EXPANSION_TILE_COLLAPSED_TAP_HINT
+    }
+
+    fn format_decimal(&self, number: i64) -> String {
+        DefaultMaterialLocalizations::format_decimal(number)
+    }
+
+    fn format_hour(
+        &self,
+        hour: u32,
+        always_use_24_hour_format: bool,
+    ) -> Result<String, &'static str> {
+        DefaultMaterialLocalizations::format_hour(hour, always_use_24_hour_format)
+    }
+
+    fn format_minute(&self, minute: u32) -> String {
+        DefaultMaterialLocalizations::format_minute(minute)
+    }
+
+    fn format_compact_date(&self, year: i32, month: u32, day: u32) -> Option<String> {
+        DefaultMaterialLocalizations::format_compact_date(year, month, day)
+    }
+
+    fn time_of_day_format(&self, always_use_24_hour_format: bool) -> TimeOfDayFormat {
+        DefaultMaterialLocalizations::time_of_day_format(always_use_24_hour_format)
+    }
+
+    fn short_weekday(&self, weekday: u32) -> &str {
+        DefaultMaterialLocalizations::short_weekday(weekday)
+    }
+
+    fn tab_label(&self, tab_index: u32, tab_count: u32) -> Option<String> {
+        DefaultMaterialLocalizations::tab_label(tab_index, tab_count)
+    }
+
+    fn page_rows_info_title(
+        &self,
+        first_row: usize,
+        last_row: usize,
+        row_count: usize,
+        approximate: bool,
+    ) -> String {
+        DefaultMaterialLocalizations::page_rows_info_title(
+            first_row,
+            last_row,
+            row_count,
+            approximate,
+        )
+    }
+
+    fn selected_row_count_title(&self, selected: usize) -> String {
+        DefaultMaterialLocalizations::selected_row_count_title(selected)
+    }
 }
 
 #[cfg(test)]
 mod material_localizations_trait_tests {
-    use super::{DefaultMaterialLocalizations, MaterialLocalizations};
+    use super::{DefaultMaterialLocalizations, MaterialLocalizations, TimeOfDayFormat};
 
     /// An application's own bundle, which is the whole reason the interface
     /// exists. It answers for one string and defers to nothing -- every member
@@ -2068,6 +2242,191 @@ mod material_localizations_trait_tests {
         fn delete_button_tooltip(&self) -> &str {
             DefaultMaterialLocalizations::DELETE_BUTTON_TOOLTIP
         }
+
+        fn cut_button_label(&self) -> &str {
+            "CUT"
+        }
+
+        fn copy_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::COPY_BUTTON_LABEL
+        }
+
+        fn paste_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::PASTE_BUTTON_LABEL
+        }
+
+        fn select_all_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::SELECT_ALL_BUTTON_LABEL
+        }
+
+        fn look_up_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::LOOK_UP_BUTTON_LABEL
+        }
+
+        fn search_web_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::SEARCH_WEB_BUTTON_LABEL
+        }
+
+        fn share_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::SHARE_BUTTON_LABEL
+        }
+
+        fn scan_text_button_label(&self) -> &str {
+            DefaultMaterialLocalizations::SCAN_TEXT_BUTTON_LABEL
+        }
+
+        fn expansion_tile_expanded_tap_hint(&self) -> &str {
+            DefaultMaterialLocalizations::EXPANSION_TILE_EXPANDED_TAP_HINT
+        }
+
+        fn expansion_tile_collapsed_tap_hint(&self) -> &str {
+            DefaultMaterialLocalizations::EXPANSION_TILE_COLLAPSED_TAP_HINT
+        }
+
+        /// A locale that groups its digits differently -- which is the point
+        /// of `formatDecimal` being on the interface at all.
+        fn format_decimal(&self, number: i64) -> String {
+            number.to_string()
+        }
+
+        fn format_hour(
+            &self,
+            hour: u32,
+            always_use_24_hour_format: bool,
+        ) -> Result<String, &'static str> {
+            DefaultMaterialLocalizations::format_hour(hour, always_use_24_hour_format)
+        }
+
+        fn format_minute(&self, minute: u32) -> String {
+            DefaultMaterialLocalizations::format_minute(minute)
+        }
+
+        fn format_compact_date(&self, year: i32, month: u32, day: u32) -> Option<String> {
+            DefaultMaterialLocalizations::format_compact_date(year, month, day)
+        }
+
+        fn time_of_day_format(&self, always_use_24_hour_format: bool) -> TimeOfDayFormat {
+            DefaultMaterialLocalizations::time_of_day_format(always_use_24_hour_format)
+        }
+
+        fn short_weekday(&self, weekday: u32) -> &str {
+            DefaultMaterialLocalizations::short_weekday(weekday)
+        }
+
+        fn tab_label(&self, tab_index: u32, tab_count: u32) -> Option<String> {
+            DefaultMaterialLocalizations::tab_label(tab_index, tab_count)
+        }
+
+        fn page_rows_info_title(
+            &self,
+            first_row: usize,
+            last_row: usize,
+            row_count: usize,
+            approximate: bool,
+        ) -> String {
+            DefaultMaterialLocalizations::page_rows_info_title(
+                first_row,
+                last_row,
+                row_count,
+                approximate,
+            )
+        }
+
+        fn selected_row_count_title(&self, selected: usize) -> String {
+            DefaultMaterialLocalizations::selected_row_count_title(selected)
+        }
+    }
+
+    #[test]
+    fn the_toolbar_words_and_the_formatters_are_the_interfaces_too() {
+        // Ten strings and nine rules whose **values** were here as constants
+        // and methods on the implementation, and whose names were not on this
+        // interface at all -- so an application could not put its own wording
+        // or its own digit grouping in front of them. The same half-ported
+        // shape tick 472 found on the Cupertino side, and the reason to write
+        // it down is that from the implementation's side nothing looks
+        // missing: every string is there, tested, and unreachable.
+        let framework: &dyn MaterialLocalizations = &DefaultMaterialLocalizations;
+        let theirs: &dyn MaterialLocalizations = &Shouty;
+        assert_eq!(framework.cut_button_label(), "Cut");
+        assert_eq!(theirs.cut_button_label(), "CUT");
+
+        // And a rule, not only a word: a locale that groups its digits
+        // differently answers differently, which is what `formatDecimal` is
+        // on the interface for.
+        assert_eq!(framework.format_decimal(1234567), "1,234,567");
+        assert_eq!(theirs.format_decimal(1234567), "1234567");
+    }
+
+    #[test]
+    fn the_bundle_behind_the_interface_is_the_one_with_the_constants() {
+        // The constants are the values and the trait is the interface; a
+        // caller wanting the framework's English can still name either, and
+        // the two must not drift.
+        let bundle: &dyn MaterialLocalizations = &DefaultMaterialLocalizations;
+        for (through, direct) in [
+            (
+                bundle.copy_button_label(),
+                DefaultMaterialLocalizations::COPY_BUTTON_LABEL,
+            ),
+            (
+                bundle.paste_button_label(),
+                DefaultMaterialLocalizations::PASTE_BUTTON_LABEL,
+            ),
+            (
+                bundle.select_all_button_label(),
+                DefaultMaterialLocalizations::SELECT_ALL_BUTTON_LABEL,
+            ),
+            (
+                bundle.look_up_button_label(),
+                DefaultMaterialLocalizations::LOOK_UP_BUTTON_LABEL,
+            ),
+            (
+                bundle.search_web_button_label(),
+                DefaultMaterialLocalizations::SEARCH_WEB_BUTTON_LABEL,
+            ),
+            (
+                bundle.share_button_label(),
+                DefaultMaterialLocalizations::SHARE_BUTTON_LABEL,
+            ),
+            (
+                bundle.scan_text_button_label(),
+                DefaultMaterialLocalizations::SCAN_TEXT_BUTTON_LABEL,
+            ),
+            (
+                bundle.expansion_tile_expanded_tap_hint(),
+                DefaultMaterialLocalizations::EXPANSION_TILE_EXPANDED_TAP_HINT,
+            ),
+            (
+                bundle.expansion_tile_collapsed_tap_hint(),
+                DefaultMaterialLocalizations::EXPANSION_TILE_COLLAPSED_TAP_HINT,
+            ),
+        ] {
+            assert_eq!(through, direct);
+        }
+
+        // The rules too, including the two that answer with "cannot": a
+        // format this bundle does not speak, and a tab index nobody can say.
+        assert_eq!(bundle.format_minute(5), "05");
+        assert_eq!(
+            bundle.short_weekday(1),
+            DefaultMaterialLocalizations::short_weekday(1)
+        );
+        assert_eq!(bundle.tab_label(0, 3), None);
+        assert_eq!(bundle.tab_label(1, 3), Some("Tab 1 of 3".to_string()));
+        assert_eq!(
+            bundle.format_compact_date(2024, 3, 7),
+            Some("03/07/2024".to_string())
+        );
+        assert_eq!(
+            bundle.page_rows_info_title(1, 10, 42, false),
+            DefaultMaterialLocalizations::page_rows_info_title(1, 10, 42, false)
+        );
+        assert_eq!(bundle.selected_row_count_title(1), "1 item selected");
+        assert_eq!(
+            bundle.time_of_day_format(true),
+            DefaultMaterialLocalizations::time_of_day_format(true)
+        );
     }
 
     #[test]

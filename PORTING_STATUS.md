@@ -4021,3 +4021,46 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 而 `DefaultMaterialLocalizations` 上还挂着多少**没有进 trait**的常量
 （第 472 轮在 Cupertino 那边遇到的正是这个形状：值都在，接口只有一半）。
 数一下"常量有、trait 没有"的那批，就知道这一轮是补接口还是补字串。
+
+---
+
+## 第 477 轮：Material 那半个接口，另一半补上
+
+上一轮留的问题数完了，答案和第 472 轮在 Cupertino 那边遇到的是同一个形状，
+而且更大：`DefaultMaterialLocalizations` 上有 **10 个常量**和 **9 个方法**
+是上游 `MaterialLocalizations` 的成员，却**一个都不在这个 crate 的 trait 上**。
+
+十个词是文本选择工具条那一排——剪切、复制、粘贴、全选、查找、网页搜索、
+分享、扫描文字——加上展开磁贴的两条点击提示。
+九个方法是数字分组、小时与分钟、紧凑日期、时间格式、星期缩写、
+标签页朗读、表格的"第几行到第几行"和"选中了几项"。
+
+从实现那一侧看，什么也不缺：每个字串都在、都有测试、都被用着。
+缺的是**它们够不着**——一个应用没法把自己的措辞或自己的数字分组摆到前面，
+而那正是接口存在的唯一理由。
+
+补完之后 trait 从 36 个成员变成 55 个。
+`Shouty`（那个测试用的自备 bundle）**当场编译不过**，
+这正是上游用 `implements` 而不是 `extends` 想要的效果：
+接口多一个成员，实现方要响亮地坏掉，而不是安静地继承到一个错答案。
+
+测试按住两件事：一个应用能换掉词（`cut` → `CUT`），
+也能换掉**规则**——`format_decimal(1234567)` 在框架是 `1,234,567`，
+在一个按自己方式分组的 bundle 里是 `1234567`。
+另一条把"接口答的就是常量"逐条对过去（十个词加九条规则），
+包括两个会答"不能"的：这个 bundle 不会说的时间格式，和没人念得出的标签页序号。
+
+变异扫描 9 个，全红。扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6781 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+`MaterialLocalizations`（0.23，36/158）也从 `depth.py` 队头下去了——
+队头现在只剩两张图标表，和 `MagnifierController`（2/8）、`Route`（6/24）。
+
+**下一步**：`Route`（`widgets/navigator.dart`，6/24）。
+**先查一件事**：上游 `Route` 那 24 个成员里，有多少是这个 crate 已经
+在别的名字下做过的（`routes.rs` 里的 `ModalRoute`/`PageRoute` 相关规则，
+以及 `theatre.rs` 的 `ModalHandle` 那套 dismiss/上下场），
+有多少是 `Route` 自己的生命周期（`install`、`didPush`、`didPop`、
+`didComplete`、`willDisposeAfterTransition`、`restorationScopeId`）——
+先分清"已在别处"与"确实没有"，再决定这一轮补哪一段。
