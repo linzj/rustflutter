@@ -4170,3 +4170,47 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 （`navigation.rs` 的栈？还是 `theatre.rs` 的 `ModalHandle`？），
 `currentResult` 在上游 `ModalRoute`/`PopupRoute` 上又是什么——
 确认了再决定这条规则挂在哪个类型上，别又造出第二份说法。
+
+---
+
+## 第 480 轮：一条路由走的时候交出什么
+
+上一轮留的问题查清了，两件事：
+
+- **上游 `currentResult` 在框架里没有任何子类重写**（`Route` 上是 `null`，
+  `lib/src` 全文只有这一处）。它是留给应用的扩展点：
+  一条有"当前选中项"的路由把它设上，之后无论怎么关，答的都是那一项。
+- **这个 crate 里根本没有结果这条通道**：`navigation::pop()` 返回 bool，
+  结果直接丢掉；`routes.rs` 只模型了 `did_pop` 的"这条路由 pop 了没有"，
+  没有"它完成时带出什么值"。
+
+所以这一轮补的是 `popped` / `currentResult` / `didComplete` 三个成员合起来
+的那一件事。两条规则值得写下来：
+
+**一、`result ?? currentResult`——`??` 就是全部。**
+一条没给结果就被关掉的路由，交出的不是空，而是它自己的 `currentResult`。
+这正是"点遮罩关掉的对话框答 null"和"答刚才选中的那一项"之间的差别。
+
+**二、`popped` 只完成一次。**上游的 `Completer` 被完成两次会抛，
+而 navigator 有两个调用点——`didPop` 和 `pushReplacement`——
+所以"第一次的算数"是一条规则而不是巧合。
+这里第二次调用是**谢绝**而不是致命，和 `ModalHandle::dismiss` 的立场一致：
+第二次是调用者该在测试里发现的错，不是在读者面前把应用关掉的理由。
+
+类型上一处小决定：`popped()` 返回 `Option<Option<&str>>`，**不摊平**。
+外层是"完成了没有"，内层是"交出东西了没有"，两个不同的问题；
+摊成一个 `Option` 会让"完成了但没东西可说"和"还没完成"变成同一个答案。
+一条测试专门按住这一点。
+
+变异扫描 5 个，全红。扫描后核对了树。
+尺子：十七把全部 exit 0。门：Rust 6796 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`RouteCompletion` 现在是个独立的类型，**还没有接到任何路由上**——
+`ModalRoute`/`TransitionRoute` 都不持有它，`navigation::pop()` 还是丢结果。
+这正是这几十轮反复挑的那个形状（规则写好了、没有真调用者），所以下一轮接它。
+**先查一件事**：上游 `didComplete` 的两个调用点里，
+`pushReplacement` 那条是在**被替换的路由**上调的（不是新的），
+而且是在 `didReplace` 之前还是之后——顺序决定被替换的路由
+交出的是替换前还是替换后的 `currentResult`。

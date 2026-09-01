@@ -275,6 +275,91 @@ impl PopEntry {
     }
 }
 
+/// Upstream `Route`'s `popped` future, `currentResult` and `didComplete`
+/// together: **what a route hands back when it goes**.
+///
+/// # The `??` is the whole of it
+///
+/// ```dart
+/// void didComplete(T? result) {
+///   _popCompleter.complete(result ?? currentResult);
+/// }
+/// ```
+///
+/// A route popped without a result does not hand back nothing -- it hands back
+/// its own `currentResult`. Upstream documents the pair from both ends
+/// (*"When this route is popped, if the result isn't specified or if it's
+/// null, this value will be used instead"*), and it is the difference between
+/// a dialog dismissed by tapping the barrier answering `null` and answering
+/// "whatever was selected when it closed".
+///
+/// `currentResult` is `null` on `Route` and **nothing in the framework
+/// overrides it**: it exists for applications. A route that has a current
+/// selection sets it, and then closing the route any which way still answers
+/// with that selection.
+///
+/// # The value, here
+///
+/// Upstream's result is `T?` for the route's own type parameter. This port
+/// carries a `String`, the way [`crate::localizations::LoadedResources`] does:
+/// what these rules are about is *which* value travels and *when*, and a
+/// string is enough to tell one from another.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RouteCompletion {
+    current_result: Option<String>,
+    completed: Option<Option<String>>,
+}
+
+impl RouteCompletion {
+    pub fn new() -> RouteCompletion {
+        RouteCompletion::default()
+    }
+
+    /// Upstream's `currentResult`, which an application overrides.
+    pub fn with_current_result(mut self, result: impl Into<String>) -> RouteCompletion {
+        self.current_result = Some(result.into());
+        self
+    }
+
+    pub fn current_result(&self) -> Option<&str> {
+        self.current_result.as_deref()
+    }
+
+    /// Upstream's `didComplete`: complete the `popped` future with `result`,
+    /// **or with `currentResult` when there is no result**.
+    ///
+    /// A second call is declined rather than fatal. Upstream's `Completer`
+    /// throws on being completed twice, and the navigator has two callers --
+    /// `didPop` and `pushReplacement` -- so "the first one wins" is a rule and
+    /// not an accident. Declining follows this crate's usual stance, the same
+    /// one [`crate::theatre::ModalHandle::dismiss`] takes: a second attempt is
+    /// a caller's mistake to find in a test, not a reason to take the
+    /// application down in front of a reader.
+    pub fn did_complete(&mut self, result: Option<String>) {
+        if self.completed.is_some() {
+            return;
+        }
+        self.completed = Some(result.or_else(|| self.current_result.clone()));
+    }
+
+    /// Upstream's `popped` future: `None` while the route is still on the
+    /// navigator, and `Some(value)` once it has gone -- where the value may
+    /// itself be `None`, for a route that had nothing to say and no
+    /// `currentResult` to fall back on.
+    ///
+    /// The two `None`s are different questions, which is why they are nested
+    /// rather than flattened: "has it finished" and "did it hand anything
+    /// back".
+    pub fn popped(&self) -> Option<Option<&str>> {
+        self.completed.as_ref().map(|result| result.as_deref())
+    }
+
+    /// Whether the future has been completed at all.
+    pub fn is_completed(&self) -> bool {
+        self.completed.is_some()
+    }
+}
+
 /// Upstream `_RouteLifecycle`: where an entry of the navigator's history is in
 /// its life, **in order**.
 ///
@@ -2499,5 +2584,60 @@ mod tests {
 
         route.changed_external_state();
         assert_eq!((route.barrier_rebuilds(), route.page_rebuilds()), (2, 1));
+    }
+
+    // -- What a route hands back when it goes --------------------------------
+
+    use super::RouteCompletion;
+
+    #[test]
+    fn a_route_popped_with_no_result_hands_back_its_own() {
+        // `_popCompleter.complete(result ?? currentResult)`, and the `??` is
+        // the whole of it: a dialog dismissed by tapping the barrier answers
+        // with whatever was selected when it closed, not with nothing.
+        let mut chooser = RouteCompletion::new().with_current_result("the third one");
+        assert_eq!(chooser.popped(), None, "still on the navigator");
+
+        chooser.did_complete(None);
+        assert_eq!(chooser.popped(), Some(Some("the third one")));
+    }
+
+    #[test]
+    fn a_result_that_was_given_wins_over_the_fallback() {
+        let mut chooser = RouteCompletion::new().with_current_result("the third one");
+        chooser.did_complete(Some("the second one".to_string()));
+        assert_eq!(chooser.popped(), Some(Some("the second one")));
+    }
+
+    #[test]
+    fn a_route_with_neither_hands_back_nothing_and_still_finishes() {
+        // The two `None`s are different questions, which is why they are
+        // nested: "has it finished" and "did it hand anything back". A route
+        // that answered nothing has still answered.
+        let mut plain = RouteCompletion::new();
+        assert!(!plain.is_completed());
+        plain.did_complete(None);
+        assert!(plain.is_completed());
+        assert_eq!(plain.popped(), Some(None), "finished, with nothing to say");
+    }
+
+    #[test]
+    fn the_first_completion_is_the_one_that_counts() {
+        // Upstream's `Completer` throws on being completed twice, and the
+        // navigator has two callers -- `didPop` and `pushReplacement` -- so
+        // "the first one wins" is a rule rather than an accident. A second
+        // call is declined here rather than fatal, the same stance
+        // `ModalHandle::dismiss` takes.
+        let mut route = RouteCompletion::new().with_current_result("fallback");
+        route.did_complete(Some("first".to_string()));
+        route.did_complete(Some("second".to_string()));
+        assert_eq!(route.popped(), Some(Some("first")));
+
+        // Including when the first one was the fallback, and the second one
+        // brought a real value: it is still too late.
+        let mut late = RouteCompletion::new().with_current_result("fallback");
+        late.did_complete(None);
+        late.did_complete(Some("too late".to_string()));
+        assert_eq!(late.popped(), Some(Some("fallback")));
     }
 }
