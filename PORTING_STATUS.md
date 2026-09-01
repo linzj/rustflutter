@@ -6739,3 +6739,58 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6959 通�
 能不能直接用上（它那里本来就有 `autofocus` 参数被记为"不支持"）。
 **一条留在原地的错记录比没有记录更糟**——这句话第 514 轮写过，
 这次是我自己刚制造的一条。
+
+---
+
+## 第 524 轮：把上一轮自己写错的那条注释改掉，顺手把 autofocus 放到该在的地方
+
+上一轮末尾自己记的：cupertino.rs 第 1520 行那条注释
+（"这个 crate 没有按节点的 autofocus，所以 `CupertinoSwitch` 不提供"）
+在上一轮之后**变成了假话**。这一轮第一件事就是去改它。
+
+但改注释不是终点。真正该问的是：**autofocus 应该住在哪儿**。
+上一轮加在了 `TextField` 上，而上游的 `autofocus` 是
+`Focus(autofocus:)` 的参数——**任何基于 `Focus` 的控件都该有**。
+于是搬家：`focus::Focus::with_autofocus`，
+`CupertinoSwitch` 只是把自己的那个传下去。
+`TextField` 那条路径保持不动（它不经过 `Focus` 组件，自己注册）。
+
+### "只在第一次 build 时要"这次怎么写的
+
+字段那边用的是 `initial_state`（每次挂载一次）。
+`Focus` 没有 state，`build` 每次都跑。
+判据用**注册表本身**：这个 id 还没有条目，就说明这是注册它的那次 build。
+`prune` 会在元素消失时把条目拿走，所以**重新挂载会重新要一次**——
+这正是上游的语义（新的 state 对象，`initState` 再跑一次）。
+
+禁用的开关不要键盘：`self.autofocus && enabled`，
+和已有的"点不到、Tab 不到"是同一道闸。
+**一个禁用控件抢走键盘，读者按什么都离不开它。**
+
+### 扫描活了一个，而它暴露的是测试在说谎
+
+"每次 build 都要"这条变异活着。原因：我在 focus.rs 写的那条测试
+`rebuild_dirty()` 时**没有任何东西是脏的**，所以 `Focus::build` 根本没再跑。
+**一条名字承诺"不在其它 build 上要"的测试，从没见过第二次 build。**
+
+补在 cupertino 那边：开关的 `on_focus_change` 会 `set_state`，
+所以焦点一变它就是脏的，`rebuild_dirty` 是**真的重建同一个元素**——
+这才是"只在第一次"这条规则真正立得住的地方。
+
+focus.rs 那条测试没有删，但**名字和注释都改成它实际看得见的东西**，
+并写明它看不见什么、该去哪儿看。
+**一条名不副实的测试，比没有测试更容易让人停止检查。**
+
+五个变异全部杀死。
+
+尺子：十七把全部 exit 0。门：Rust 6962 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6962 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`controls.rs` 第 4534 行 `ChipAttributes` 那条注释也点名了
+`autofocus`（连同 `focusNode`、`mouseCursor` 等）"没有类型可以回答"。
+`autofocus` 这一条**现在有了**。
+**先查一件事**：`Chip` 系列是不是也建在 `focus::Focus` 上——
+如果是，那就是和这一轮同样的一跳；如果不是（比如它根本没有焦点节点），
+那这条注释仍然成立，**只该把 `autofocus` 从那串名单里摘掉**，
+而不是硬加一个没有节点可依附的参数。

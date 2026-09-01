@@ -1353,6 +1353,8 @@ pub struct CupertinoSwitch {
     track_outline_width: Option<crate::widget_state::StateProperty<Option<f32>>>,
     /// Upstream's `onFocusChange`.
     on_focus_change: Option<Rc<dyn Fn(bool)>>,
+    /// Upstream's `autofocus`: take the keyboard as soon as this appears.
+    autofocus: bool,
     /// Upstream's `applyTheme`, which is nullable on purpose: `None` means
     /// "whatever the theme says", not "no".
     apply_theme: Option<bool>,
@@ -1365,6 +1367,7 @@ impl CupertinoSwitch {
             id,
             value,
             enabled: true,
+            autofocus: false,
             colors: CupertinoSwitchColors::default(),
             on_label_color: None,
             off_label_color: None,
@@ -1516,14 +1519,19 @@ impl CupertinoSwitch {
     }
 
     /// Upstream's `onFocusChange`.
-    ///
-    /// Upstream's `autofocus` is **not** here: this crate grants autofocus per
-    /// *scope* (`focus::autofocus_in`, applied once a frame after the build),
-    /// and a node asking for the keyboard as it first appears needs that
-    /// ordering worked out rather than a field nobody reads. Said here rather
-    /// than left as a parameter that does nothing.
     pub fn with_on_focus_change(mut self, changed: impl Fn(bool) + 'static) -> Self {
         self.on_focus_change = Some(Rc::new(changed));
+        self
+    }
+
+    /// Upstream's `autofocus`.
+    ///
+    /// This used to say autofocus was granted only per *scope* and so could
+    /// not be offered here. That stopped being true once `Focus` grew its own
+    /// (see `focus::Focus::autofocus`), and a note left saying otherwise
+    /// would send the next reader looking in the wrong place.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
         self
     }
 
@@ -1832,7 +1840,9 @@ impl StatefulComponent for CupertinoSwitch {
                     focus_handle.set_state(move |state| state.focused = focused);
                 })
                 // A disabled switch is not a place the keyboard lands, the
-                // same gate the segments have.
+                // same gate the segments have -- and that includes not
+                // claiming it on arrival.
+                .with_autofocus(self.autofocus && enabled)
                 .with_focus_on_tap(enabled)
                 .with_traversable(enabled),
         );
@@ -7472,6 +7482,54 @@ mod tests {
             size.height >= K_MIN_INTERACTIVE_DIMENSION_CUPERTINO,
             "{size:?}"
         );
+    }
+
+    #[test]
+    fn a_switch_asked_to_take_the_keyboard_takes_it_unless_it_is_disabled() {
+        // Both halves: the switch passes `autofocus` to its `Focus`, and a
+        // disabled switch refuses it -- the same gate that already stops a tap
+        // and a Tab landing there. A disabled control that grabbed the
+        // keyboard on arrival would be a stop the reader cannot leave by
+        // pressing anything.
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(crate::framework::stateful(
+            CupertinoSwitch::new(84, false).with_autofocus(true),
+        ));
+        let _ = tree.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), Some(84));
+
+        // And it does not ask again. The switch rebuilds whenever its focus
+        // changes -- `on_focus_change` calls `set_state` -- so this is a real
+        // rebuild of the same element, which is the case a "first build only"
+        // rule has to survive. Without it the keyboard would be dragged back
+        // here every time anything on the page changed.
+        crate::focus::unfocus();
+        for _ in 0..3 {
+            tree.rebuild_dirty();
+            let _ = tree.build_render_tree();
+            crate::focus::apply_pending_autofocus();
+        }
+        assert_eq!(
+            crate::focus::focused(),
+            None,
+            "it asked on the build that registered it, and never again"
+        );
+
+        crate::focus::reset();
+        crate::focus::reset_pending_autofocus();
+        let mut disabled = crate::framework::ElementTree::new();
+        disabled.rebuild(crate::framework::stateful(
+            CupertinoSwitch::new(85, false)
+                .with_autofocus(true)
+                .with_enabled(false),
+        ));
+        let _ = disabled.build_render_tree();
+        crate::focus::apply_pending_autofocus();
+        assert_eq!(crate::focus::focused(), None);
     }
 
     #[test]

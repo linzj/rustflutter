@@ -1603,6 +1603,13 @@ pub struct Focus {
     focus_on_tap: bool,
     /// Whether this node is a [`FocusTraversalGroup`] boundary.
     group: bool,
+    /// Upstream's `autofocus`: take the keyboard when this node first appears.
+    ///
+    /// Asked for on the build that *registers* the node and not on the ones
+    /// after it -- see the build, where "is there already an entry with this
+    /// id" is what tells the two apart. Upstream draws the same line by
+    /// asking in `initState` rather than in `build`.
+    autofocus: bool,
 }
 
 impl Focus {
@@ -1617,7 +1624,14 @@ impl Focus {
             descendants_traversable: true,
             focus_on_tap: true,
             group: false,
+            autofocus: false,
         }
+    }
+
+    /// Upstream's `autofocus`. See the field.
+    pub fn with_autofocus(mut self, autofocus: bool) -> Self {
+        self.autofocus = autofocus;
+        self
     }
 
     /// Marks this node as a traversal group boundary -- what
@@ -1700,6 +1714,22 @@ impl Component for Focus {
             .inherited::<FocusOrder>()
             .map(|order| (*order).clone());
         let group = enclosing_group(&scope);
+        // The first build of this node, as opposed to a rebuild: an entry
+        // exists only once `register` below has run for it, and `prune` takes
+        // it away again when the element goes. So a node that is remounted
+        // asks again, which is what upstream does too -- `initState` runs
+        // again for a new state object.
+        if self.autofocus
+            && !MANAGER.with(|manager| {
+                manager
+                    .borrow()
+                    .entries
+                    .iter()
+                    .any(|entry| entry.id == self.id)
+            })
+        {
+            autofocus_node(self.id);
+        }
         register(FocusEntry {
             id: self.id,
             element: context.element_ref(),
@@ -1835,6 +1865,65 @@ mod tests {
             "shift+tab from the first wraps to the last"
         );
         assert!(!handle_traversal_key(&key(LogicalKey::ESCAPE), &plain));
+    }
+
+    #[test]
+    fn a_focus_asking_for_the_keyboard_gets_it_on_the_frame_it_appears() {
+        // Upstream's `Focus(autofocus: true)`. Any widget built on `Focus`
+        // gets this, which is why it lives here and not in each of them.
+        reset();
+        reset_pending_autofocus();
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::component(
+            Focus::new(81, leaf(|| SizedBox::new(10.0, 10.0))).with_autofocus(true),
+        ));
+        let _root = tree.build_render_tree().expect("mounted");
+        apply_pending_autofocus();
+        assert_eq!(focused(), Some(81));
+    }
+
+    #[test]
+    fn a_granted_autofocus_is_not_granted_a_second_time() {
+        // Once given, the request is spent: the reader moves on and stays
+        // moved on.
+        //
+        // Note what this does *not* see. Nothing here marks the node dirty,
+        // so `Focus::build` never runs again -- a mutation asking on every
+        // build survives this test, and did. The case where a rebuild really
+        // happens is in cupertino.rs, where a switch rebuilds whenever its
+        // focus changes; that is the test the "first build only" rule
+        // actually rests on.
+        reset();
+        reset_pending_autofocus();
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                crate::framework::component(
+                    Focus::new(82, leaf(|| SizedBox::new(10.0, 10.0))).with_autofocus(true),
+                ),
+                focusable(83, leaf(|| SizedBox::new(10.0, 10.0))),
+            ],
+            |children| {
+                let mut column = Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        let _root = tree.build_render_tree().expect("mounted");
+        apply_pending_autofocus();
+        assert_eq!(focused(), Some(82), "it asked once, and was given it");
+
+        assert!(focus(83), "the reader moves on");
+        for _ in 0..3 {
+            tree.rebuild_dirty();
+            let _ = tree.build_render_tree();
+            apply_pending_autofocus();
+        }
+        assert_eq!(focused(), Some(83), "and is not dragged back");
     }
 
     #[test]
