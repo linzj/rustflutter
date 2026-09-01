@@ -29,7 +29,7 @@ use crate::multidrag::{
     DelayedMultiDragGestureRecognizer, ImmediateMultiDragGestureRecognizer,
     MultiDragGestureRecognizer,
 };
-use crate::render::{Axis, Offset};
+use crate::render::{Axis, EdgeInsets, Offset};
 use crate::scroll_view::ScrollView;
 use crate::scrolling::{CacheExtentStyle, ScrollCacheExtent};
 
@@ -1335,6 +1335,15 @@ mod tests {
 // The Material list on top of the widgets-layer machinery above. It reuses
 // `reorder_report` rather than restating it.
 
+/// How a reorderable list's padding is divided between its header, its list
+/// and its footer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReorderablePadding {
+    pub header: EdgeInsets,
+    pub list: EdgeInsets,
+    pub footer: EdgeInsets,
+}
+
 /// Upstream `ReorderableListView`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReorderableListView {
@@ -1345,6 +1354,13 @@ pub struct ReorderableListView {
     /// thirty-one members are its parameters, passed straight through, and
     /// none of them is a rule of this class: see [`ReorderableList::scroll`].
     pub scroll: ScrollView,
+    /// Upstream's `padding`, which is **not** simply handed to the scroll
+    /// view: see [`ReorderableListView::split_padding`].
+    pub padding: Option<EdgeInsets>,
+    /// Upstream's `header`: a row before the list that cannot be reordered.
+    pub has_header: bool,
+    /// Upstream's `footer`, the same after it.
+    pub has_footer: bool,
     /// Only the list constructor can answer this up front. See
     /// [`ReorderableListView::validate`].
     pub every_child_has_a_key: bool,
@@ -1357,6 +1373,9 @@ impl ReorderableListView {
             item_count,
             config: ReorderableConfig::new(),
             scroll: ScrollView::new(),
+            padding: None,
+            has_header: false,
+            has_footer: false,
             every_child_has_a_key: true,
             builds_default_drag_handles: true,
         }
@@ -1388,6 +1407,85 @@ impl ReorderableListView {
         // while the scroll view's fire when `build` constructs one. A list
         // that gets both wrong hears about its own mistake first.
         self.scroll.validate().map_err(ReorderableError::ScrollView)
+    }
+
+    /// Upstream's padding split, from `build`:
+    ///
+    /// ```dart
+    /// // If there is a header or footer we can't just apply the padding to the
+    /// // list, so we break it up into padding for the header, footer and
+    /// // padding for the list.
+    /// ```
+    ///
+    /// **The padding may only be spent once.** A list with a header is three
+    /// slivers, and putting the whole padding on each of them would put a gap
+    /// between the header and the first row that the reader never asked for,
+    /// and leave the header inset from the top *and* the list inset from the
+    /// header. So the side a header sits against keeps its padding, and the
+    /// same side of the list gives it up: the header takes the padding with
+    /// the edge it shares with the list zeroed, and the list takes the padding
+    /// with the edge it shares with the header zeroed.
+    ///
+    /// **A reversed list flips which side that is.** Upstream swaps `start`
+    /// and `end` before anything else, because in a reversed list the header
+    /// is at the bottom of the screen -- so it is the *bottom* padding it
+    /// keeps and the *top* it gives up.
+    ///
+    /// With neither a header nor a footer nothing is split: the whole padding
+    /// goes on the list, which is upstream's `when (start ?? end) == null`
+    /// guard -- one test for both, because that expression is null only when
+    /// both of them are.
+    ///
+    /// The cross axis is untouched throughout. Only the ends of the scroll are
+    /// shared between the three slivers; the sides belong to all of them.
+    pub fn split_padding(&self) -> ReorderablePadding {
+        let padding = self.padding.unwrap_or(EdgeInsets::ZERO);
+        let (mut start, mut end) = (
+            self.has_header.then_some(0.0),
+            self.has_footer.then_some(0.0),
+        );
+        if self.scroll.reverse {
+            (start, end) = (end, start);
+        }
+        if start.is_none() && end.is_none() {
+            return ReorderablePadding {
+                header: EdgeInsets::ZERO,
+                list: padding,
+                footer: EdgeInsets::ZERO,
+            };
+        }
+        let (start_padding, end_padding, list) = match self.scroll.scroll_direction {
+            Axis::Vertical => (
+                EdgeInsets::only(padding.left, 0.0, padding.right, padding.bottom),
+                EdgeInsets::only(padding.left, padding.top, padding.right, 0.0),
+                EdgeInsets::only(
+                    padding.left,
+                    start.unwrap_or(padding.top),
+                    padding.right,
+                    end.unwrap_or(padding.bottom),
+                ),
+            ),
+            Axis::Horizontal => (
+                EdgeInsets::only(0.0, padding.top, padding.right, padding.bottom),
+                EdgeInsets::only(padding.left, padding.top, 0.0, padding.bottom),
+                EdgeInsets::only(
+                    start.unwrap_or(padding.left),
+                    padding.top,
+                    end.unwrap_or(padding.right),
+                    padding.bottom,
+                ),
+            ),
+        };
+        let (header, footer) = if self.scroll.reverse {
+            (start_padding, end_padding)
+        } else {
+            (end_padding, start_padding)
+        };
+        ReorderablePadding {
+            header,
+            list,
+            footer,
+        }
     }
 
     /// What a drop reports, deferring to [`reorder_report`] for the arithmetic.
@@ -1483,6 +1581,96 @@ mod material_reorderable_tests {
         assert_eq!(list.validate(), Ok(()));
         list.every_child_has_a_key = false;
         assert_eq!(list.validate(), Err(ReorderableError::AChildWithoutAKey));
+    }
+
+    // -- The padding may only be spent once ---------------------------------------
+
+    /// Ten either side, twenty top and bottom.
+    fn inset() -> EdgeInsets {
+        EdgeInsets::only(10.0, 20.0, 10.0, 20.0)
+    }
+
+    #[test]
+    fn with_no_header_or_footer_the_padding_is_not_split_at_all() {
+        let mut list = ReorderableListView::new(3);
+        list.padding = Some(inset());
+        let split = list.split_padding();
+        assert_eq!(split.list, inset());
+        assert_eq!(split.header, EdgeInsets::ZERO);
+        assert_eq!(split.footer, EdgeInsets::ZERO);
+    }
+
+    #[test]
+    fn a_header_keeps_the_padding_at_its_own_end_and_the_list_gives_it_up() {
+        // Otherwise the reader gets the gap twice: once above the header and
+        // once between the header and the first row.
+        let mut list = ReorderableListView::new(3);
+        list.padding = Some(inset());
+        list.has_header = true;
+        let split = list.split_padding();
+
+        assert_eq!(
+            split.header,
+            EdgeInsets::only(10.0, 20.0, 10.0, 0.0),
+            "the header keeps the top and gives up the edge it shares"
+        );
+        assert_eq!(
+            split.list,
+            EdgeInsets::only(10.0, 0.0, 10.0, 20.0),
+            "and the list gives up the top, keeping the bottom it still owns"
+        );
+        assert_eq!(
+            (split.list.left, split.list.right),
+            (10.0, 10.0),
+            "the cross axis belongs to all three and is never split"
+        );
+    }
+
+    #[test]
+    fn a_reversed_list_puts_the_header_at_the_other_end() {
+        // In a reversed list the header is at the bottom of the screen, so it
+        // is the bottom padding it keeps.
+        let mut list = ReorderableListView::new(3);
+        list.padding = Some(inset());
+        list.has_header = true;
+        list.scroll.reverse = true;
+        let split = list.split_padding();
+
+        assert_eq!(split.header, EdgeInsets::only(10.0, 0.0, 10.0, 20.0));
+        assert_eq!(split.list, EdgeInsets::only(10.0, 20.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn with_both_the_list_gives_up_both_ends() {
+        let mut list = ReorderableListView::new(3);
+        list.padding = Some(inset());
+        list.has_header = true;
+        list.has_footer = true;
+        let split = list.split_padding();
+
+        assert_eq!(split.header, EdgeInsets::only(10.0, 20.0, 10.0, 0.0));
+        assert_eq!(split.footer, EdgeInsets::only(10.0, 0.0, 10.0, 20.0));
+        assert_eq!(split.list, EdgeInsets::only(10.0, 0.0, 10.0, 0.0));
+    }
+
+    #[test]
+    fn a_horizontal_list_splits_the_other_pair_of_edges() {
+        let mut list = ReorderableListView::new(3);
+        list.padding = Some(EdgeInsets::only(10.0, 20.0, 30.0, 40.0));
+        list.has_header = true;
+        list.scroll.scroll_direction = Axis::Horizontal;
+        let split = list.split_padding();
+
+        assert_eq!(
+            split.header,
+            EdgeInsets::only(10.0, 20.0, 0.0, 40.0),
+            "the header keeps the left and gives up the right"
+        );
+        assert_eq!(
+            split.list,
+            EdgeInsets::only(0.0, 20.0, 30.0, 40.0),
+            "and the top and bottom, which are the cross axis now, are untouched"
+        );
     }
 
     #[test]

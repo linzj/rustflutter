@@ -5103,3 +5103,59 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6861 通�
 而且 `onReorder` 报的索引是**列表的**索引不是孩子的。
 先看这个 crate 的 `reorder_report` / `insert_index_for` 有没有这层换算，
 没有就是真缺口，有就连同 ScrollView 那十四个一起记。
+
+---
+
+## 第 496 轮：内边距只能花一次
+
+上一轮让我先查 header/footer 有没有**索引换算**。查了：**没有**——
+我猜错了。上游把 header 和 footer 做成**各自独立的 sliver**
+（`SliverToBoxAdapter` 包在 `SliverPadding` 里），
+可重排的那个 sliver 的索引因此完全不受影响，`onReorder` 报的就是它自己的索引。
+先查这一步的价值正在于此：不查就会去补一个不存在的换算。
+
+但同一段 `build` 里有另一条真规则，上游自己给它写了注释：
+
+```dart
+// If there is a header or footer we can't just apply the padding to the
+// list, so we break it up into padding for the header, footer and
+// padding for the list.
+```
+
+**有了 header，内边距就不能整个交给列表**，否则读者会看到两遍：
+header 上方一次，header 与第一行之间又一次。
+所以 header 保留自己那一端、交出与列表相邻的那条边，列表反过来。
+
+三个细节都容易写错，也都各有测试：
+
+1. **反向列表整个翻过来**。上游在别的事情之前先 `(start, end) = (end, start)`：
+   反向时 header 在屏幕**下方**，于是它保留的是**下边距**。
+2. **`(start ?? end) == null` 是一个判断管两件事**——
+   这个表达式为 null 当且仅当 header 和 footer 都没有。
+   写成"没有 header 就不拆"会让只有 footer 的列表把内边距花两次。
+3. **横轴自始至终不动**。三个 sliver 共享的只有滚动方向的两端；
+   左右两边属于它们每一个。
+
+### 变异 7 个，全红
+
+反向不翻（1 红）；header/footer 不换回来（3 红）；只有 footer 当成没有（1 红）；
+列表保留整份内边距（3 红）；header 保留与列表相邻的那条边（2 红）；
+横向列表拆的是上下（1 红）；连横轴也拆（3 红）。
+
+`ReorderableListView` 从 0.26 走到 **0.42（13/31）**，两轮加了五个成员，
+每一个都带着规则进来，没有一个是"补个字段让比值好看"。
+
+尺子：十七把全部 exit 0。门：Rust 6866 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6866 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`ReorderableListView` 剩下的成员里，
+`mouseCursor` 是最后一个 Material 独有的，其余都是 `ScrollView` 的字段
+（depth 只数这个类身上的，所以比值还会停在这附近）。
+**先查一件事**：上游的 `mouseCursor` 不是直接挂在行上的——
+它进的是 `_ReorderableListViewChildGlobalKey` 那条路还是
+`ReorderableDragStartListener` 的 `MouseRegion`？
+读清楚**它作用在哪一块区域**（整行、还是只有拖动把手），
+再决定是补到 `ReorderableDragStartListener`（那里已经有 `enabled` 了）
+还是补到这个类上。如果它作用在把手上，那就该在 widgets 层，
+和第 486 轮"断言写在上游写它的那一层"是同一条道理。
