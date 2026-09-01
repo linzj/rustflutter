@@ -6635,3 +6635,52 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6950 通�
 `DefaultTextStyle.of(context).merge(style)`，而本 crate 的字段
 默认样式是从主题取的，**两者不是一回事**，要么接上 `DefaultTextStyle`，
 要么把差别写清楚。
+
+---
+
+## 第 522 轮：`SelectableText.style`——一跳的活，难在 `None` 落到哪里
+
+先查上一轮记下的那件事：字段的 `with_style` **早就有**
+（`TextField` 有 `style: Option<TextStyle>`），
+而 `SelectableText::widget` 一次都没调过。所以代码是一跳的活。
+
+真正要想清楚的是 `None`。上游写的是：
+
+    effectiveTextStyle = DefaultTextStyle.of(context).style
+                             .merge(style ?? textSpan.style)
+
+两件事，本 crate 各有各的答案：
+
+- **`DefaultTextStyle` 这个 crate 没有**（components.rs 第 8522 行的注释
+  早就写着"This crate has no such"）。所以 `None` 就照原样传下去，
+  由字段回退到主题的 body ——**环境默认本来也是从那儿来的**。
+  这里特意**不**在控件里解析一份主题样式再传下去：
+  那是把同一个答案写在第二个地方，而且主题一变它不会跟着变。
+- **merge 没有照抄**。上游允许只给一个"加粗"然后其余继承；
+  这里给了样式就是用这个样式。这跟本 crate `TextSpan` 早就写下的规则是同一条：
+  **继承是调用方的活**，因为跑到 shaper 面前时答案总归是一个解析好的样式。
+  差别写进了字段文档，不是含糊过去。
+
+### 一条反直觉的、值得单独写测试的事
+
+**富文本passage里，`with_style` 什么也改不了。**
+每个 run 自带解析好的样式，基础样式只覆盖最后一个 run 之后的文字，
+而 passage 没有那种文字。`with_style` 看上去像是"应该赢"的那个，
+实际上一点作用没有——所以这条单独写了测试，而不是留给下一个读者去猜。
+
+四个变异全部杀死：控件不往下传、`with_style` 不存、
+字段忽略给定样式只用主题、run 取基础样式而不是自己的。
+
+尺子：十七把全部 exit 0。门：Rust 6952 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6952 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`SelectableText` 还剩的成员里，`min_lines` 和 `autofocus`
+是最近三轮同一类里最后两个"控件收下没去处"的
+（字段两边都有：`min_lines` 在 `TextField` 里是有的，`autofocus` 要查）。
+**先查一件事**：`TextField` 有没有 autofocus——
+`crate::focus::focus(id)` 是现成的，但**谁来调、在哪一帧调**才是问题：
+上游是 `initState` 里 `SchedulerBinding.addPostFrameCallback`，
+本 crate 的等价时机要找准，否则会变成"每帧都抢焦点"，
+那比没有还糟。如果一时找不到干净的时机，就照 `show_cursor` 那轮的做法
+**明写下来**，别悄悄放着。

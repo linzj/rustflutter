@@ -123,6 +123,29 @@ pub struct SelectableText {
     /// A selectable text is never editable, which is the one thing that makes
     /// it different from the field it is built on.
     editable: bool,
+    /// Upstream's `style`. `None` is upstream's null.
+    ///
+    /// # What `None` falls back to, and how that differs from upstream
+    ///
+    /// Upstream resolves it as
+    /// `DefaultTextStyle.of(context).style.merge(style ?? textSpan.style)`:
+    /// the ambient style from the tree, with the given one laid over it. This
+    /// crate has no `DefaultTextStyle` -- see the note in components.rs -- so
+    /// `None` reaches the field as `None` and the field falls back to the
+    /// theme's body style, which is where an ambient default would have come
+    /// from anyway.
+    ///
+    /// **The difference that remains is merging.** Upstream lets a caller give
+    /// a style that says only "bold" and inherit the rest; here a style given
+    /// is a style used. That is the same rule this crate's
+    /// [`crate::widgets::TextSpan`] already states -- the inheriting is the
+    /// caller's job, because by the time a run reaches the shaper the answer
+    /// is one resolved style either way.
+    ///
+    /// For a passage built by [`SelectableText::rich`] this styles nothing
+    /// visible: every run carries its own style, and the field's base style
+    /// covers only text past the last run, of which a passage has none.
+    pub style: Option<crate::engine::TextStyle>,
     /// Upstream's `textAlign`. `None` is upstream's null, which its build
     /// turns into `TextAlign.start` -- the same default the field already has,
     /// so nothing is passed for it and the two cannot disagree.
@@ -148,6 +171,7 @@ impl SelectableText {
             show_cursor: false,
             max_lines: None,
             editable: false,
+            style: None,
             text_align: None,
             text_direction: None,
             runs: Vec::new(),
@@ -171,6 +195,7 @@ impl SelectableText {
             show_cursor: false,
             max_lines: None,
             editable: false,
+            style: None,
             text_align: None,
             text_direction: None,
             runs: spans
@@ -178,6 +203,12 @@ impl SelectableText {
                 .map(|span| (span.text, span.style))
                 .collect(),
         }
+    }
+
+    /// Upstream's `style`. See the field for what `None` means here.
+    pub fn with_style(mut self, style: crate::engine::TextStyle) -> Self {
+        self.style = Some(style);
+        self
     }
 
     /// Upstream's `textAlign`, and the direction it is resolved against.
@@ -232,7 +263,7 @@ impl SelectableText {
     /// field would already suppress the caret, but a selectable text says so
     /// on its own account, and upstream lets `showCursor: true` put one back.
     pub fn widget(&self, id: u64) -> crate::framework::AnyWidget {
-        let field = crate::editable::TextField::new(id)
+        let mut field = crate::editable::TextField::new(id)
             .with_read_only(true)
             .with_show_cursor(self.show_cursor)
             .with_text_align(
@@ -240,6 +271,13 @@ impl SelectableText {
                 self.text_direction
                     .unwrap_or(crate::direction::TextDirection::Ltr),
             );
+        if let Some(style) = self.style.clone() {
+            // Passed only when given. The field's own fallback is the theme's
+            // body style, and handing it a resolved copy of that would be the
+            // same answer written down in a second place -- and one that would
+            // not follow the theme when it changed.
+            field = field.with_style(style);
+        }
         // `with_runs` sets the text from the runs themselves, so the two
         // constructors take different doors into the same field rather than
         // one of them handing over a string the other would contradict.
@@ -586,6 +624,91 @@ three"
 
         let three = SelectableText::new("hello").with_max_lines(Some(3));
         assert!(three.wraps(), "any limit above one still wraps");
+    }
+
+    /// Paints one passage and hands back the first paragraph's text, colour
+    /// and size.
+    fn painted_text(passage: SelectableText, id: u64) -> (String, u32, f32) {
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        crate::focus::reset();
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(passage.widget(id));
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a render tree");
+        root.layout(crate::render::BoxConstraints::tight(400.0, 100.0));
+        let mut layers = crate::engine::LayerTree::new(400, 100);
+        reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(400.0, 100.0),
+            );
+            root.paint(&mut context, crate::render::Offset::ZERO);
+        }
+        drawn()
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Paragraph {
+                    text, argb, size, ..
+                } => Some((text.clone(), *argb, *size)),
+                _ => None,
+            })
+            .expect("the passage was drawn")
+    }
+
+    #[test]
+    fn a_passages_style_reaches_the_glyphs_and_its_absence_reaches_the_theme() {
+        // Upstream resolves this as
+        // `DefaultTextStyle.of(context).style.merge(style ?? textSpan.style)`.
+        // This crate has no `DefaultTextStyle`, so `None` is passed on as
+        // `None` and the field falls back to the theme's body -- which is
+        // where the ambient default would have come from. What is *not*
+        // ported is the merging: a style given here is the style used, not one
+        // laid over an inherited one. See the field's own documentation.
+        let styled = SelectableText::new("hello").with_style(crate::engine::TextStyle {
+            color: crate::engine::Color(0xff884422),
+            font_size: 33.0,
+            ..Default::default()
+        });
+        let (text, colour, size) = painted_text(styled, 4330);
+        assert_eq!(text, "hello");
+        assert_eq!(colour, 0xff884422, "the colour asked for");
+        assert!((size - 33.0).abs() < 0.01, "the size asked for: {size}");
+
+        // Without one, the theme decides -- and decides something else.
+        let (_, plain_colour, plain_size) = painted_text(SelectableText::new("hello"), 4331);
+        assert_ne!(plain_colour, 0xff884422);
+        assert!(
+            (plain_size - 33.0).abs() > 0.01,
+            "the theme's size, not the one above: {plain_size}"
+        );
+    }
+
+    #[test]
+    fn a_rich_passages_runs_outrank_the_style_it_was_given() {
+        // Every run carries its own resolved style, so the base style covers
+        // only text past the last run -- and a passage has none. Saying it in
+        // a test because the opposite is the natural guess: `with_style` looks
+        // like it should win, and for a rich passage it changes nothing at all.
+        let body = crate::engine::TextStyle::default();
+        let run_colour = crate::engine::Color(0xff112233);
+        let rich = SelectableText::rich(vec![crate::widgets::TextSpan::new(
+            "hello",
+            crate::engine::TextStyle {
+                color: run_colour,
+                ..body
+            },
+        )])
+        .with_style(crate::engine::TextStyle {
+            color: crate::engine::Color(0xffaabbcc),
+            ..Default::default()
+        });
+
+        let (text, colour, _) = painted_text(rich, 4332);
+        assert_eq!(text, "hello");
+        assert_eq!(colour, run_colour.0, "the run's colour, not the base one");
     }
 
     #[test]
