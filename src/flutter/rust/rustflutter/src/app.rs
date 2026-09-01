@@ -1462,6 +1462,60 @@ mod android_entry {
 
 // -- The C ABI ----------------------------------------------------------------
 
+/// Mirrors `RfKeyEvent` in runtime/rust_app_api.h.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RfKeyEvent {
+    pub time_stamp_micros: i64,
+    pub change: i32,
+    pub physical: u64,
+    pub logical: u64,
+    pub synthesized: bool,
+    pub character: *const std::os::raw::c_char,
+}
+
+/// The first step of the route a key takes: the `RfKeyEvent` a shell unpacked
+/// from a `flutter/keydata` message becomes the framework's [`KeyEvent`].
+///
+/// It sits out here rather than inside `mod abi` because it is a rule, not an
+/// ABI: `mod abi` is compiled away under `cfg(test)` -- the `#[no_mangle]`
+/// entry points would leave undefined symbols in a test binary that does not
+/// link the engine -- and a rule that only exists in the build nobody tests is
+/// a rule nobody checks.
+///
+/// **An empty character is `None`, not `Some("")`.** A key that produced no
+/// text and a key that produced the empty string are the same key, and the
+/// rest of the framework reads `character.is_some()` as "this typed
+/// something".
+///
+/// # Safety
+///
+/// `raw.character` must be null or a NUL-terminated string alive for the call.
+/// It is copied rather than borrowed on, because a handler may keep it; the
+/// conversion is lossy on purpose, since the shell built it from UTF-16 and
+/// invalid UTF-8 there means a bug rather than a user's input.
+unsafe fn key_event_from(raw: &RfKeyEvent) -> KeyEvent {
+    let character = if raw.character.is_null() {
+        None
+    } else {
+        let text = unsafe { std::ffi::CStr::from_ptr(raw.character) };
+        let text = text.to_string_lossy();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text.into_owned())
+        }
+    };
+    KeyEvent {
+        change: crate::keyboard::KeyChange::from_code(raw.change),
+        physical: crate::keyboard::PhysicalKey(raw.physical),
+        logical: crate::keyboard::LogicalKey(raw.logical),
+        character,
+        synthesized: raw.synthesized,
+        time_stamp_micros: raw.time_stamp_micros,
+    }
+}
+
 // Excluded from `cfg(test)`. These are `#[no_mangle]`, so the linker keeps them
 // alive whether or not anything calls them, and each one reaches the engine FFI
 // in rust/ffi. The crate's own `#[test]` binary is built by rustc directly and
@@ -1870,18 +1924,6 @@ mod abi {
         }
     }
 
-    /// Mirrors `RfKeyEvent` in runtime/rust_app_api.h.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct RfKeyEvent {
-        pub time_stamp_micros: i64,
-        pub change: i32,
-        pub physical: u64,
-        pub logical: u64,
-        pub synthesized: bool,
-        pub character: *const std::os::raw::c_char,
-    }
-
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn rf_app_dispatch_key(app: *mut RfApp, raw: *const RfKeyEvent) -> bool {
         let Some(instance) = instance(app) else {
@@ -1890,32 +1932,7 @@ mod abi {
         if raw.is_null() {
             return false;
         }
-        let raw = unsafe { &*raw };
-
-        // The character is the shell's, borrowed for the length of this call.
-        // It is copied rather than borrowed on because a handler may keep it,
-        // and a lossy conversion is right here: the shell produced it from
-        // UTF-16, so invalid UTF-8 means a bug rather than a user's input.
-        let character = if raw.character.is_null() {
-            None
-        } else {
-            let text = unsafe { std::ffi::CStr::from_ptr(raw.character) };
-            let text = text.to_string_lossy();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text.into_owned())
-            }
-        };
-
-        let mut event = KeyEvent {
-            change: crate::keyboard::KeyChange::from_code(raw.change),
-            physical: crate::keyboard::PhysicalKey(raw.physical),
-            logical: crate::keyboard::LogicalKey(raw.logical),
-            character,
-            synthesized: raw.synthesized,
-            time_stamp_micros: raw.time_stamp_micros,
-        };
+        let mut event = unsafe { key_event_from(&*raw) };
         instance.dispatch_key(&mut event)
     }
 
@@ -2403,6 +2420,110 @@ mod tests {
             synthesized: false,
             time_stamp_micros: 0,
         }
+    }
+
+    #[test]
+    fn the_shells_key_becomes_the_frameworks_key() {
+        // The first step of the route a key really takes: a host packs a
+        // `KeyData` into a `flutter/keydata` message, `RuntimeController::
+        // DispatchKeyDataPacket` unpacks it into an `RfKeyEvent`, and
+        // `rf_app_dispatch_key` turns that into this before handing it to the
+        // shortcut tables and the focus traversal.
+        //
+        // Tick 513 recorded that no host sent keys at all. That was wrong: the
+        // grep behind it never left `rust/`, and the call is in
+        // `runtime/runtime_controller.cc`. This is the test that claim should
+        // have had to survive.
+        use crate::keyboard::{KeyChange, LogicalKey, PhysicalKey};
+        use std::ffi::CString;
+
+        let typed = CString::new("A").unwrap();
+        let raw = super::RfKeyEvent {
+            time_stamp_micros: 99,
+            // `flutter::KeyEventType` on the C++ side: 0 down, 1 up, 2 repeat.
+            change: 2,
+            physical: PhysicalKey::KEY_A.0,
+            logical: LogicalKey::KEY_A.0,
+            synthesized: true,
+            character: typed.as_ptr(),
+        };
+        let event = unsafe { super::key_event_from(&raw) };
+        assert_eq!(event.change, KeyChange::Repeat);
+        assert_eq!(event.physical, PhysicalKey::KEY_A);
+        assert_eq!(event.logical, LogicalKey::KEY_A);
+        assert_eq!(event.character.as_deref(), Some("A"));
+        assert!(event.synthesized, "a made-up event says so");
+        assert_eq!(event.time_stamp_micros, 99);
+
+        // Tab is the case the traversal cares about, and it types nothing.
+        // Both ways a shell says "no text" -- a null pointer and an empty
+        // string -- have to arrive as `None`, because the framework reads
+        // `character.is_some()` as "this typed something", and a `Some("")`
+        // would insert nothing while claiming it did.
+        let empty = CString::new("").unwrap();
+        for character in [std::ptr::null(), empty.as_ptr()] {
+            let raw = super::RfKeyEvent {
+                time_stamp_micros: 0,
+                change: 0,
+                physical: PhysicalKey::TAB.0,
+                logical: LogicalKey::TAB.0,
+                synthesized: false,
+                character,
+            };
+            let event = unsafe { super::key_event_from(&raw) };
+            assert_eq!(event.change, KeyChange::Down);
+            assert_eq!(event.logical, LogicalKey::TAB);
+            assert!(!event.synthesized);
+            assert!(
+                event.character.is_none(),
+                "Tab typed nothing, however the shell said so"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_the_shell_sends_moves_the_focus() {
+        // The rest of that route, from the translated event onwards: this is
+        // what `rf_app_dispatch_key` hands to `AppInstance::dispatch_key`, and
+        // a Tab arriving from a host has to reach the traversal -- and answer
+        // `true`, which is what stops the host putting the key back into the
+        // platform's own queue.
+        use crate::framework::{ElementTree, leaf};
+        use crate::keyboard::{Keyboard, LogicalKey, PhysicalKey};
+        use crate::widgets::SizedBox;
+
+        crate::focus::reset_scopes();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::framework::many(
+            vec![
+                crate::focus::focusable(71, leaf(|| SizedBox::new(10.0, 10.0))),
+                crate::focus::focusable(72, leaf(|| SizedBox::new(10.0, 10.0))),
+            ],
+            |children| {
+                let mut column = crate::widgets::Column::new();
+                for child in children {
+                    column = column.push(child);
+                }
+                column
+            },
+        ));
+        let _root = tree.build_render_tree().expect("mounted");
+
+        let raw = super::RfKeyEvent {
+            time_stamp_micros: 0,
+            change: 0,
+            physical: PhysicalKey::TAB.0,
+            logical: LogicalKey::TAB.0,
+            synthesized: false,
+            character: std::ptr::null(),
+        };
+        let event = unsafe { super::key_event_from(&raw) };
+        let keyboard = Keyboard::new();
+        assert!(
+            crate::focus::handle_traversal_key(&event, &keyboard),
+            "the framework used the key"
+        );
+        assert_eq!(crate::focus::focused(), Some(71), "and Tab moved the focus");
     }
 
     #[test]

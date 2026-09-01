@@ -6056,6 +6056,10 @@ Enter/NumpadEnter 触发 editor action、可打印字符当文本送上去。
 没有 keyCode→逻辑键的表，也没有把键送进框架的路。
 所以 `gameButtonA` 是"这个 port 的宿主都送不出的键"，该记一笔而不是硬造名字。
 
+> **这一段是错的，第 514 轮更正。** 下面"没有任何宿主调用"一句不成立：
+> 调用点在 `runtime/runtime_controller.cc`，桌面宿主一直在送键。
+> 当时的 grep 只搜了 `rust/` 一个目录。
+
 **顺着这条线查出一件更大的事**：`rf_app_dispatch_key` 这个 FFI 入口
 **没有任何宿主调用**（只有 `ffi_unittests.cc` 调过）。
 也就是说框架的整条按键通路——三张快捷键表、`Focus` 的 `on_key`、Tab 遍历——
@@ -6097,3 +6101,59 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6937 通�
 `LogicalKeyForVirtualKey`（那个函数就在 `rustflutter_key_map_win.cc` 里，
 本轮之前就有）。如果能，这一轮的活就是"把已经算好的值送过去"，
 而不是重新做一套键映射。
+
+---
+
+## 第 514 轮：上一轮那句话是错的——键一直在到达框架
+
+上一轮写下"没有任何宿主调用 `rf_app_dispatch_key`"，并把这句话写进了
+`default_shortcuts` 的文档。**这句话不成立。** 顺着"下一步"去查 `RfKeyEvent`
+的结构，查出来的第一件事就是它的调用点：
+
+- `src/flutter/runtime/runtime_controller.cc` 的 `DispatchKeyDataPacket`
+  把 `flutter/keydata` 平台消息拆成 `RfKeyEvent`，
+  调 `RustApp().dispatch_key(app_, &event)`，再把返回值 `answer(handled)` 回去；
+- Windows 宿主 `rustflutter_host_win.cc` 的 `SendKeyEvent` 早就用
+  `PhysicalKeyForScanCode` / `LogicalKeyForVirtualKey` 填好了 `KeyData`
+  并发出那条消息，框架不要的键再 redispatch 回系统。
+
+也就是说：**桌面上按 Tab 是能走到三张快捷键表和焦点遍历的**，
+真正没有键路的只有 Android（`RustflutterActivity.onKeyDown` 仍旧只做编辑键）。
+上一轮那条 grep 只看了 `rust/` 一个目录，**漏掉一个目录的搜索，
+是关于这次搜索的结论，不是关于代码的结论**。
+
+### 这一轮做的那件事：把这条通路的第一步搬到能被检查的地方
+
+`RfKeyEvent` → `KeyEvent` 的翻译原本躺在 `mod abi` 里，
+而 `mod abi` 是 `#[cfg(not(test))]` 的——那些 `#[no_mangle]` 入口在不链接引擎的
+测试二进制里会留下未定义符号。于是**这条规则只存在于没有测试的那个 build 里**。
+把 `RfKeyEvent` 和新提出来的 `key_event_from` 挪出 `mod abi`：
+它是一条规则，不是 ABI；字符的取用（空串与空指针都折成 `None`）也一并收进去，
+`rf_app_dispatch_key` 剩下 null 检查和一次调用。
+
+规则本身写在原地：**空字符串就是没打出字**。框架各处拿
+`character.is_some()` 当"这一下敲出了东西"用，`Some("")` 会声称打了字却什么也不插。
+
+两条测试：一条走翻译本身（重复键、physical/logical、synthesized、时间戳，
+以及空指针和空串两种"没打字"的说法都必须变成 `None`），
+一条把翻译出来的 Tab 交给焦点遍历，断言它答 `true`（宿主据此不把键塞回系统队列）
+且焦点落到第一个节点。
+
+六个变异全部杀死。其中"不检查空指针"这一条**打崩了整个测试二进制**
+（0xc0000005），和隔壁那些 null-app 守卫是同一种形状：
+**这类守卫写错不会变红，会变成崩溃**——扫描能看见，正说明它值钱。
+
+上一轮那段错话在 `shortcuts.rs` 里换成了"# How a key gets here"，
+写清真实路线并点名 Android 是例外；`PORTING_STATUS.md` 第 513 轮那一段
+也当场加了更正框，**一条留在原地的错记录比没有记录更糟**。
+
+尺子：十七把全部 exit 0。门：Rust 6939 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6939 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：Android 的键路——真正的缺口在这里。
+`RustflutterActivity.onKeyDown` 现在只认编辑键，没有 keyCode→逻辑键的表。
+**先查一件事**：上游 `shell/platform/android/io/flutter/embedding/android/`
+下的 `KeyboardMap.g.java` 是怎么生成的（`keyCode`/`scanCode` 两张表），
+以及本 port 的 `gen_key_map.py` 能不能顺手多吐一张 Android 表——
+如果能，这一轮又是"把已经有的映射送过去"，而不是新做一套。

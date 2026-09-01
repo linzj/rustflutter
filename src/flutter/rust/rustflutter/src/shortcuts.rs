@@ -442,17 +442,24 @@ pub fn default_apple_shortcuts_table() -> ShortcutRegistry {
 
 /// Upstream's `WidgetsApp.defaultShortcuts` getter.
 ///
-/// # Nothing feeds these tables from a host yet
+/// # How a key gets here
 ///
-/// Worth knowing before reading further: **no host in this repository calls
-/// `rf_app_dispatch_key`**. Keys reach an application today as *text* through
-/// the IME path and as a handful of *editing* keys straight into the text
-/// field; the framework's key pipeline -- these tables, `Focus`'s `on_key`,
-/// the traversal below -- is reached from `rf_app_dispatch_key` and from
-/// tests, and every host leaves that entry point alone. The rules are ported
-/// and checked; the wire from a keyboard to them is a host-side job that has
-/// not been done. Said here rather than left for the next reader to discover
-/// by wondering why Tab does nothing on Windows.
+/// The desktop hosts do feed these tables, by the same route upstream uses: a
+/// `WM_KEYDOWN` (or a GTK key event) becomes a `KeyData`, goes out as a
+/// `flutter/keydata` platform message, and `RuntimeController::
+/// DispatchKeyDataPacket` unpacks it and calls `rf_app_dispatch_key`. The
+/// answer travels back the same way -- a key the framework consumes is not
+/// redispatched, which is what lets Tab move the focus out of a text field
+/// rather than being typed into it.
+///
+/// Android is the exception: its activity sends *text* and a handful of
+/// *editing* keys straight to the field and has no key path into the
+/// framework at all, so nothing on Android reaches these tables.
+///
+/// (Tick 513 recorded the opposite -- that no host called `dispatch_key` --
+/// because the grep behind it looked only under `rust/`, and the call is in
+/// `runtime/runtime_controller.cc`. A search that misses one directory is a
+/// finding about the search.)
 ///
 /// The getter itself:
 ///
