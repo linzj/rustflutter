@@ -1595,13 +1595,16 @@ struct StateHighlight {
 
 #[derive(Default)]
 struct StateHighlightState {
-    /// Where each overlay is going: the keyboard is here, the mouse is here.
+    /// Where each overlay is going: the keyboard is here, the mouse is here,
+    /// a finger is down on it.
     focused: bool,
     hovered: bool,
+    pressed: bool,
     /// How far each fade has got, 0 to 1. Not derived from the flags above:
     /// these are where the overlays *are*, the flags are where they are going.
     focus_opacity: f32,
     hover_opacity: f32,
+    press_opacity: f32,
     /// The frame the fades were last moved on. `None` before the first, so the
     /// first tick sets the clock instead of stepping by however long the
     /// application had been running.
@@ -1632,8 +1635,10 @@ impl crate::framework::StatefulComponent for StateHighlight {
         let last = state.last_micros.replace(frame_time_micros);
         let focus_target = if state.focused { 1.0 } else { 0.0 };
         let hover_target = if state.hovered { 1.0 } else { 0.0 };
+        let press_target = if state.pressed { 1.0 } else { 0.0 };
         let arrived = (state.focus_opacity - focus_target).abs() < f32::EPSILON
-            && (state.hover_opacity - hover_target).abs() < f32::EPSILON;
+            && (state.hover_opacity - hover_target).abs() < f32::EPSILON
+            && (state.press_opacity - press_target).abs() < f32::EPSILON;
         if arrived {
             return false;
         }
@@ -1645,9 +1650,15 @@ impl crate::framework::StatefulComponent for StateHighlight {
             return true;
         };
         let elapsed = (frame_time_micros - last).max(0) as f32;
-        let step = elapsed / crate::ink_well::HighlightType::Focus.fade_micros(None) as f32;
-        approach(&mut state.focus_opacity, focus_target, step);
-        approach(&mut state.hover_opacity, hover_target, step);
+        // Two speeds, which is the whole reason `fade_micros` takes a type: a
+        // press is 200ms and the other two are 50. Upstream's own comment for
+        // the split is that hover chases the mouse, so it has to keep up;
+        // a press is a deliberate act and can afford to be seen arriving.
+        let quick = elapsed / crate::ink_well::HighlightType::Focus.fade_micros(None) as f32;
+        let slow = elapsed / crate::ink_well::HighlightType::Pressed.fade_micros(None) as f32;
+        approach(&mut state.focus_opacity, focus_target, quick);
+        approach(&mut state.hover_opacity, hover_target, quick);
+        approach(&mut state.press_opacity, press_target, slow);
         // The frame that arrives at the target is still asked for -- it is the
         // one that draws the finished state. The same rule as the ink splash's
         // last ring, and `animation::Controller::tick`'s.
@@ -1688,16 +1699,31 @@ impl crate::framework::StatefulComponent for StateHighlight {
             let hover_handle = hover_handle.clone();
             Box::new(crate::widgets::MouseRegion::transparent(
                 hover_id,
-                crate::gestures::PointerHandlers::new().with_hover_change(move |hovered| {
-                    hover_handle.set_state(move |state| state.hovered = hovered);
-                }),
+                crate::gestures::PointerHandlers::new()
+                    .with_hover_change({
+                        let handle = hover_handle.clone();
+                        move |hovered| {
+                            handle.set_state(move |state| state.hovered = hovered);
+                        }
+                    })
+                    // Paired, and it has to be: `on_press_change` reports
+                    // false when the press ends, is cancelled, **or slides
+                    // off**. A press that only ever reported true would leave
+                    // a control lit up after a finger pressed it and moved
+                    // away without lifting.
+                    .with_press_change(move |pressed| {
+                        hover_handle.set_state(move |state| state.pressed = pressed);
+                    }),
                 inner,
             ))
         });
         // Nothing is drawn once both fades have run out, rather than a
         // fully-transparent rectangle every frame for the rest of the
         // application's life.
-        let overlay = state.focus_opacity.max(state.hover_opacity);
+        let overlay = state
+            .focus_opacity
+            .max(state.hover_opacity)
+            .max(state.press_opacity);
         if overlay <= 0.0 {
             return child;
         }
@@ -2226,6 +2252,9 @@ mod tests {
     /// including somewhere wrong.
     const OVERLAY_FADE_MICROS: i64 = 50_000;
 
+    /// And the press's, from the same function: **200ms**.
+    const PRESS_FADE_MICROS: i64 = 200_000;
+
     /// Mounts an operable control, paints, and hands back what was drawn.
     fn operable_drawn(
         shape: FocusShape,
@@ -2296,6 +2325,173 @@ mod tests {
             Drawn::RRect { argb, .. } => Some(argb >> 24),
             _ => None,
         })
+    }
+
+    /// A control mounted, laid out, and the router that drives it.
+    fn pressable(
+        id: u64,
+    ) -> (
+        ElementTree,
+        crate::render::BoxedRender,
+        crate::gestures::GestureRouter,
+    ) {
+        use crate::render::RenderBox;
+        reset();
+        reset_pending_autofocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            operable(
+                id,
+                false,
+                Some(std::rc::Rc::new(|_| {})),
+                FocusShape::Box { corner_radius: 4.0 },
+                leaf(|| SizedBox::new(60.0, 60.0)),
+            ),
+        ));
+        let mut root = tree.build_render_tree().expect("mounted");
+        RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::tight(200.0, 100.0),
+        );
+        (tree, root, crate::gestures::GestureRouter::new())
+    }
+
+    fn pointer(
+        change: crate::gestures::PointerChange,
+        x: f32,
+        y: f32,
+    ) -> crate::gestures::PointerEvent {
+        crate::gestures::PointerEvent {
+            view_id: 0,
+            device: 0,
+            pointer_id: 1,
+            change,
+            kind: crate::gestures::PointerKind::Touch,
+            signal_kind: crate::gestures::SignalKind::None,
+            buttons: 1,
+            time_stamp_micros: 0,
+            position: crate::render::Offset::new(x, y),
+            delta: crate::render::Offset::ZERO,
+            scroll_delta: crate::render::Offset::ZERO,
+            pressure: 1.0,
+            local_position: crate::render::Offset::new(x, y),
+        }
+    }
+
+    /// Paints one frame of `tree` and reports the overlay's alpha.
+    fn overlay_alpha(tree: &mut ElementTree) -> Option<u32> {
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+        use crate::render::RenderBox;
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a render tree");
+        root.layout(crate::render::BoxConstraints::tight(200.0, 100.0));
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(200.0, 100.0),
+            );
+            root.paint(&mut context, crate::render::Offset::ZERO);
+        }
+        highlight_alpha(&drawn())
+    }
+
+    #[test]
+    fn a_finger_on_a_control_lights_it_and_lifting_puts_it_out() {
+        let (mut tree, root, mut router) = pressable(101);
+        assert_eq!(overlay_alpha(&mut tree), None, "nothing before the press");
+
+        router.dispatch(
+            &root,
+            &pointer(crate::gestures::PointerChange::Down, 20.0, 20.0),
+        );
+        let start = 6_000_000;
+        tree.advance_frame(start);
+        // A press takes 200ms, not the 50 the other two take, so a frame that
+        // would have finished a hover leaves this one part way.
+        tree.advance_frame(start + PRESS_FADE_MICROS);
+        assert!(overlay_alpha(&mut tree).is_some(), "the finger lit it");
+
+        router.dispatch(
+            &root,
+            &pointer(crate::gestures::PointerChange::Up, 20.0, 20.0),
+        );
+        let mut at = start + PRESS_FADE_MICROS;
+        for _ in 0..3 {
+            at += PRESS_FADE_MICROS;
+            tree.advance_frame(at);
+        }
+        assert_eq!(overlay_alpha(&mut tree), None, "and lifting put it out");
+    }
+
+    #[test]
+    fn a_finger_that_slides_off_does_not_leave_the_control_lit() {
+        // The case a paired signal exists for. `on_press_change` reports false
+        // when the press ends, is cancelled, **or leaves the region** -- and
+        // without that last one a control pressed and slid away from stays
+        // lit with nothing holding it.
+        let (mut tree, root, mut router) = pressable(102);
+
+        router.dispatch(
+            &root,
+            &pointer(crate::gestures::PointerChange::Down, 20.0, 20.0),
+        );
+        let start = 7_000_000;
+        tree.advance_frame(start);
+        tree.advance_frame(start + PRESS_FADE_MICROS);
+        assert!(overlay_alpha(&mut tree).is_some(), "lit while held");
+
+        // The finger travels far outside without ever lifting.
+        //
+        // The move carries a **delta**, because that is what the router
+        // measures travel from -- a synthetic move with a zero delta has gone
+        // nowhere however far its position jumped, and the slop is never
+        // crossed. A shell always reports the delta; a test that forgets it
+        // is testing a gesture that never happened.
+        router.dispatch(
+            &root,
+            &crate::gestures::PointerEvent {
+                delta: crate::render::Offset::new(880.0, 880.0),
+                ..pointer(crate::gestures::PointerChange::Move, 900.0, 900.0)
+            },
+        );
+        let mut at = start + PRESS_FADE_MICROS;
+        for _ in 0..3 {
+            at += PRESS_FADE_MICROS;
+            tree.advance_frame(at);
+        }
+        assert_eq!(
+            overlay_alpha(&mut tree),
+            None,
+            "it slid away, so the control is not still being pressed"
+        );
+    }
+
+    #[test]
+    fn a_press_fades_more_slowly_than_a_hover() {
+        // Upstream gives a press 200ms and hover and focus 50 -- which is why
+        // `fade_micros` takes a type at all. Measured rather than asserted
+        // about the constant: at one hover-fade's worth of time, the press is
+        // only a quarter of the way in.
+        let (mut tree, root, mut router) = pressable(103);
+        router.dispatch(
+            &root,
+            &pointer(crate::gestures::PointerChange::Down, 20.0, 20.0),
+        );
+        let start = 8_000_000;
+        tree.advance_frame(start);
+        tree.advance_frame(start + OVERLAY_FADE_MICROS);
+        let after_one_hover = overlay_alpha(&mut tree).unwrap_or(0);
+
+        tree.advance_frame(start + PRESS_FADE_MICROS);
+        let after_a_full_press = overlay_alpha(&mut tree).expect("arrived");
+        assert!(
+            after_one_hover < after_a_full_press,
+            "a press is still arriving when a hover would have finished: \
+             {after_one_hover} then {after_a_full_press}"
+        );
     }
 
     #[test]

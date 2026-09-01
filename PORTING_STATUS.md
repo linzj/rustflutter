@@ -7342,3 +7342,49 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6986 通�
 焦点有 `on_focus_change`，按下呢——`PointerHandlers` 有没有
 `on_tap_down`/`on_tap_cancel` 这一对？
 **必须是成对的**：只有按下没有取消，手指按住滑走之后高亮会一直留着。
+
+---
+
+## 第 535 轮：按下高亮——三种齐了，各走各的时长
+
+先查上一轮记的那件事：按下状态从哪儿来，**是不是成对的**。
+`PointerHandlers` 有 `on_press_change: Fn(bool)`，
+而且 router 里**六处**在发它：抬起、取消、竞技场里输掉、
+以及**滑出去**（第 2414 行那处注释写着
+"Past the slop the press is no longer a tap candidate"）。
+成对，问题不存在。
+
+于是第三层接上：`press_opacity` 自己一份，
+**时长走 `HighlightType::Pressed.fade_micros(None)` = 200ms**，
+和另外两个的 50ms 不同——**这正是 `fade_micros` 要收一个类型参数的全部理由**。
+上游的分法也写在注释里：悬停要追着鼠标，得跟得上；
+按下是个有意为之的动作，看得见它到达反而是对的。
+
+### 一条测试红了，错在测试
+
+"手指按住滑走"那条一开始是红的。查之前先看 router：
+第 2414 行确实会在越过 pan slop 时发 `press_change(false)`。
+那为什么没发？——**因为我造的 Move 事件 `delta` 是零**。
+router 量的是累计 delta，位置跳多远都没用，slop 永远越不过。
+
+**真正的 shell 每个 move 都带 delta；忘了带 delta 的测试，
+测的是一个从没发生过的手势。** 补上 delta 就绿了，
+并把这句话写在测试里。
+
+六个变异第一轮全杀死（没听按下、不画、不推进、
+按下用了悬停的速度、悬停用了按下的速度、到达了还要帧）。
+
+尺子：十八把全部 exit 0。门：Rust 6989 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6989 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：三层都在了，但**颜色是同一个**——
+现在三种状态都画 `theme.primary` 的 12%，靠"取最大"叠成一层。
+上游是三个不同的颜色（`focusColor`/`hoverColor`/`highlightColor`），
+而且 `ThemeData` 里各有各的默认值。
+**先查一件事**：本 crate 的 `Theme`（components.rs）有没有这三个字段——
+`unread_theme_fields` 那把尺子正是管"主题字段没人读"的，
+如果字段已经有而没人读，这一轮就是接上去；
+如果根本没有，那要先想清楚**加三个字段值不值**——
+上游 M3 已经把它们统一成 `WidgetStateProperty<Color> overlayColor` 了，
+照 M3 做可能比照 M2 的三个字段更对。
