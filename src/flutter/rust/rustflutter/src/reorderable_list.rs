@@ -1335,6 +1335,97 @@ mod tests {
 // The Material list on top of the widgets-layer machinery above. It reuses
 // `reorder_report` rather than restating it.
 
+// -- The row that is being dragged --------------------------------------------
+
+/// The elevation upstream's default `proxyDecorator` lifts a dragged row to.
+pub const DRAG_PROXY_ELEVATION: f32 = 6.0;
+
+/// Upstream `ReorderableListView._proxyDecorator`:
+///
+/// ```dart
+/// final double animValue = Curves.easeInOut.transform(animation.value);
+/// final double elevation = lerpDouble(0, 6, animValue)!;
+/// return Material(elevation: elevation, child: child);
+/// ```
+///
+/// **The row lifts off the page rather than appearing above it.** The shadow
+/// grows in over the same animation that lifts the row out of the list, so the
+/// reader sees the row being picked up; a row that arrived already at six
+/// would read as a different row appearing.
+///
+/// `easeInOut` is the curve for a change that starts and ends at rest, which
+/// is what this is: the row is still before the drag and still once it is
+/// held. Note the *other* curve a few lines away in `_DragItemProxy` -- see
+/// [`drag_proxy_position`], which uses `easeOut` because a drop is not at rest
+/// at both ends.
+///
+/// This is only the **default**: `proxyDecorator` is the parameter that
+/// replaces it, which is why it is a function of the animation rather than a
+/// constant.
+pub fn drag_proxy_elevation(t: f32) -> f32 {
+    crate::animation::Curve::EASE_IN_OUT.transform(t) * DRAG_PROXY_ELEVATION
+}
+
+/// Upstream's `_DragItemProxy.build`, the position half:
+///
+/// ```dart
+/// Offset effectivePosition = position;
+/// final Offset? dropPosition = listState._finalDropPosition;
+/// if (dropPosition != null) {
+///   effectivePosition = Offset.lerp(
+///     dropPosition - overlayOrigin, effectivePosition,
+///     Curves.easeOut.transform(animation.value))!;
+/// }
+/// ```
+///
+/// While a drag is under way there is no drop position and the proxy is simply
+/// where the finger put it. **The moment the finger lifts, a destination
+/// appears and the animation runs back to zero**, so this lerp is read from
+/// the far end: at `t = 1` the proxy is still under the finger, at `t = 0` it
+/// is exactly where the row will be. The row flies home rather than vanishing
+/// and reappearing.
+///
+/// `easeOut`, not the `easeInOut` of [`drag_proxy_elevation`]: the flight
+/// starts at the speed the finger left it with and slows into place, which is
+/// one end at rest rather than two.
+///
+/// The drop position is in the list's coordinates and the proxy lives in the
+/// overlay, which is what `overlayOrigin` subtracts. Getting that wrong puts
+/// the row's flight off by however far the list is down the page -- and only
+/// on a scaffold with something above the list, which is why it is worth
+/// naming.
+pub fn drag_proxy_position(
+    position: Offset,
+    drop_position: Option<Offset>,
+    overlay_origin: Offset,
+    t: f32,
+) -> Offset {
+    let Some(drop) = drop_position else {
+        return position;
+    };
+    let eased = crate::animation::Curve::EASE_OUT.transform(t);
+    let from = Offset::new(drop.dx - overlay_origin.dx, drop.dy - overlay_origin.dy);
+    Offset::new(
+        from.dx + (position.dx - from.dx) * eased,
+        from.dy + (position.dy - from.dy) * eased,
+    )
+}
+
+/// Upstream's `OverflowBox(alignment: ...)` around the dragged row.
+///
+/// The proxy is given the row's own size, but the row was laid out under the
+/// list's constraints, which may be looser -- so it is allowed to overflow,
+/// and the alignment says which edge stays put while it does. **The edge that
+/// stays is the one the scroll runs from**: the left in a horizontal list, the
+/// top in a vertical one. A row that overflowed about its centre would appear
+/// to shift as it was picked up.
+pub fn drag_proxy_alignment(axis: Axis) -> crate::render::Alignment {
+    match axis {
+        Axis::Horizontal => crate::render::Alignment::CENTER_LEFT,
+        Axis::Vertical => crate::render::Alignment::TOP_CENTER,
+    }
+}
+
 /// What a `ReorderableListView` wraps each of its items in when it builds the
 /// drag handles itself.
 ///
@@ -1729,6 +1820,88 @@ mod material_reorderable_tests {
         assert_eq!(list.validate(), Ok(()));
         list.every_child_has_a_key = false;
         assert_eq!(list.validate(), Err(ReorderableError::AChildWithoutAKey));
+    }
+
+    // -- The row that is being dragged --------------------------------------------
+
+    #[test]
+    fn a_dragged_row_lifts_off_the_page_rather_than_appearing_above_it() {
+        assert_eq!(
+            drag_proxy_elevation(0.0),
+            0.0,
+            "flat while it is still a row"
+        );
+        assert_eq!(
+            drag_proxy_elevation(1.0),
+            DRAG_PROXY_ELEVATION,
+            "and six once it is being carried"
+        );
+        // easeInOut: slower at both ends than a straight line, so the middle
+        // of the animation is where most of the shadow arrives.
+        let half = drag_proxy_elevation(0.5);
+        assert!(
+            (half - DRAG_PROXY_ELEVATION / 2.0).abs() < 0.01,
+            "symmetric about the middle: {half}"
+        );
+        assert!(
+            drag_proxy_elevation(0.25) < DRAG_PROXY_ELEVATION * 0.25,
+            "and behind a straight line on the way up"
+        );
+    }
+
+    #[test]
+    fn a_dragged_row_stays_under_the_finger_until_there_is_somewhere_to_land() {
+        let under_the_finger = Offset::new(40.0, 120.0);
+        // At **any** point of the animation, not only at its end: the
+        // interpolation is not entered at all, so neither the curve nor the
+        // overlay's origin can move the row.
+        for t in [0.0, 0.3, 1.0] {
+            assert_eq!(
+                drag_proxy_position(under_the_finger, None, Offset::new(0.0, 56.0), t),
+                under_the_finger,
+                "at t = {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn on_release_the_row_flies_home() {
+        // The animation runs back to zero after the finger lifts, so the ends
+        // of this lerp are read the other way round: one is where the finger
+        // left it, nought is where the row belongs.
+        let under_the_finger = Offset::new(40.0, 120.0);
+        let drop = Offset::new(40.0, 300.0);
+        let overlay_origin = Offset::new(0.0, 56.0);
+
+        assert_eq!(
+            drag_proxy_position(under_the_finger, Some(drop), overlay_origin, 1.0),
+            under_the_finger
+        );
+        assert_eq!(
+            drag_proxy_position(under_the_finger, Some(drop), overlay_origin, 0.0),
+            Offset::new(40.0, 244.0),
+            "the drop position in the overlay's coordinates, not the list's"
+        );
+
+        // And it slows into place: easeOut is past halfway at the midpoint,
+        // which for this lerp means still nearer the finger.
+        let middle = drag_proxy_position(under_the_finger, Some(drop), overlay_origin, 0.5);
+        assert!(
+            middle.dy < 182.0,
+            "eased towards the finger's end at the midpoint: {middle:?}"
+        );
+    }
+
+    #[test]
+    fn the_proxy_overflows_from_the_edge_the_scroll_runs_from() {
+        assert_eq!(
+            drag_proxy_alignment(Axis::Vertical),
+            crate::render::Alignment::TOP_CENTER
+        );
+        assert_eq!(
+            drag_proxy_alignment(Axis::Horizontal),
+            crate::render::Alignment::CENTER_LEFT
+        );
     }
 
     // -- What the reader is given to drag -----------------------------------------

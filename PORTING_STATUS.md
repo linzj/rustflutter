@@ -5217,3 +5217,56 @@ depth 数不到）和三个 extent 来源（住在 `self.config` 上）。
 先看这个 crate 有没有"被拖起的行长什么样"的东西
 （`reorderable_list.rs` 里只有几何，没有外观；`material.rs` 的 elevation 那一带可能有），
 没有就补这条默认装饰，然后把 `ReorderableListView` 记进 `depth_examined.json`。
+
+---
+
+## 第 498 轮：被拖起来的那一行，怎么抬起来、怎么飞回去
+
+`_proxyDecorator` 查了：这个 crate 有拖动的**几何**（间隙、插入索引、落点分类），
+但**没有任何关于"被拖起的行长什么样、怎么动"的东西**。补掉三条，
+它们凑在一起就是"那一行"的全部：
+
+**一、抬起来**：`Material(elevation: lerpDouble(0, 6, Curves.easeInOut(t)))`。
+阴影是**跟着同一段动画长出来的**，读者看到的是这一行被拿起来；
+一上来就是 6 会读成"另一行冒出来了"。
+`easeInOut` 是两端都静止的曲线——拖之前静止，拿住之后也静止。
+
+**二、飞回去**：`_DragItemProxy` 里另一条 lerp，用的是 **`easeOut`**，不是同一条。
+手指抬起的那一刻才有落点，动画随即倒着跑回 0，
+所以这条 lerp 要**从远端读**：t=1 还在手指下，t=0 正好是行该在的地方。
+一端有速度、一端停住——所以是 easeOut。
+还有 `dropPosition - overlayOrigin`：落点是列表坐标、proxy 在 overlay 里，
+少减这一下，行就会按"列表离页面顶端多远"整个飞偏——
+而且只在列表上方还有东西的脚手架上才看得出来。
+
+**三、溢出对齐**：`OverflowBox` 的 alignment，横向 `centerLeft`、纵向 `topCenter`
+——**留住的是滚动出发的那条边**。绕中心溢出的话，行一被拿起就会看起来挪了一下。
+
+### 变异 8 个：先 7 红 1 活，测试改完全红
+
+活下来的是"没有落点也照飞"。原因在我的测试：它只在 **t = 1** 上断言，
+而那一点上 `lerp(x, position, 1) == position`，变异当然看不出来。
+改成在 `t ∈ {0, 0.3, 1}` 上都断言——**没有落点时，曲线和 overlay 原点都不该有机会插手**。
+这是第 493 轮那条教训的近亲：**断言挑的那个点，可能正好是所有实现都一致的点。**
+
+### 记账
+
+`ReorderableListView`（495–498）记进 `depth_examined.json` 了：
+十四个成员在 `self.scroll`、三个 extent 来源在 `self.config`、
+四个回调是两个标志加 `ReorderReport`，
+四轮补掉的四处真缺口，以及**确实没有对应物**的两个
+（`dragBoundaryProvider` 和自动滚动，因为 `EdgeDraggingAutoScroller` 没移植，
+这一条模块注释里早就写着）。
+比值 0.52，记录承担的是剩下那一半的读数。
+
+尺子：十七把全部 exit 0。门：Rust 6875 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6875 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：新队头 `CupertinoSegmentedControl`（0.31，4/13）。
+**先查一件事**：这个 crate 里 `cupertino_controls.rs` / `cupertino.rs` 有没有
+`CupertinoSlidingSegmentedControl`——上游是**两个**类
+（老的 `CupertinoSegmentedControl` 与新的 sliding 版），
+它们的规则大半不同（老的只有边框和填充，新的有滑块和 thumb 动画）。
+如果这个 crate 只做了 sliding 那一个，那 4/13 就是"另一个类没做"，
+是真缺口而不是映射；如果两个都在，就要分清 depth 把哪一个配给了它。
