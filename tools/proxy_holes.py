@@ -97,7 +97,49 @@ def blocks(source):
                 if depth == 0:
                     break
             index += 1
-        found.append((match.group(1), source[match.start():index]))
+        found.append((match.group(1), source[match.start():index], match.start()))
+    return found
+
+
+# Types whose `layout` has no `compute_dry_layout` beside it **on purpose**.
+# Slivers only: they are measured by the sliver protocol, where the question is
+# a `SliverConstraints` and the answer a `SliverGeometry`, and a box's dry
+# layout is not a question about them at all.
+DRY_EXCUSED = {
+    'RenderSliverToBoxAdapter': 'a sliver, measured by the sliver protocol',
+    'RenderSliverList': 'a sliver, measured by the sliver protocol',
+    'RenderSliverPadding': 'a sliver, measured by the sliver protocol',
+}
+
+
+def dry_holes():
+    """Each render object that lays itself out and cannot say what it would be.
+
+    A different question from [`holes`]: that one is about wrappers letting a
+    default answer for them, this one is about **any** box whose `layout`
+    computes a size that `compute_dry_layout` does not. The trait's default is
+    `Size::ZERO`, so a parent measuring without committing -- a flex working
+    out free space, an `IntrinsicWidth` measuring before it lays out -- is told
+    the box wants nothing.
+
+    Test doubles are not counted: everything after a file's `mod tests` is a
+    fixture, and a fixture that answers zero is answering about itself.
+    """
+    found = []
+    for root, _, files in os.walk(CRATE):
+        for name in sorted(files):
+            if not name.endswith('.rs'):
+                continue
+            path = os.path.join(root, name)
+            source = io.open(path, encoding='utf-8').read()
+            tests_at = source.find('\nmod tests {')
+            if tests_at < 0:
+                tests_at = len(source)
+            for kind, body, at in blocks(source):
+                if at > tests_at or kind in DRY_EXCUSED:
+                    continue
+                if 'fn layout' in body and 'fn compute_dry_layout' not in body:
+                    found.append((os.path.relpath(path, paths.REPO), kind))
     return found
 
 
@@ -114,7 +156,7 @@ def holes():
                 match.group(1): match.group(2)
                 for match in re.finditer(r'pub struct (\w+) \{(.*?)\n\}', source, re.S)
             }
-            for kind, body in blocks(source):
+            for kind, body, _at in blocks(source):
                 if not CHILD.search(structs.get(kind, '')):
                     continue
                 missing = [
@@ -142,10 +184,21 @@ def main():
         for _, kind, missing in excused:
             print('  %-38s %-28s %s' % (kind, ', '.join(missing)[:28], EXCUSED[kind]))
 
+    dry = dry_holes()
+    for path, kind in dry:
+        print('  %-38s %s' % (kind, 'compute_dry_layout'))
+        print('  %-38s %s' % ('', path))
+    if everything:
+        print()
+        print('Laying out without a dry layout on purpose:')
+        for kind, why in sorted(DRY_EXCUSED.items()):
+            print('  %-38s %s' % (kind, why))
+
     print()
-    print('%d wrappers, %d answering the default with no reason given'
-          % (len(found), len(red)))
-    if red:
+    print('%d wrappers, %d answering the default with no reason given; '
+          '%d boxes that lay out and cannot say what they would be'
+          % (len(found), len(red), len(dry)))
+    if red or dry:
         print()
         print('A wrapper that does not answer lets the trait answer for it, and')
         print('the trait answers for a box with no child: zero, and no baseline.')

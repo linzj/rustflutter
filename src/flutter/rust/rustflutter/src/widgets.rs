@@ -1774,6 +1774,27 @@ impl Default for ListView {
     }
 }
 
+impl ListView {
+    /// The viewport this list would compose, built for a question rather than
+    /// for the tree -- the same trick [`Container::rehearsed`] plays, and for
+    /// the same reason: the composition is made in `layout`, and a dry
+    /// measurement is asked *before* one.
+    ///
+    /// Nothing is kept. `layout` records what it builds so the next frame can
+    /// reconfigure it rather than replace it, and a rehearsal that recorded
+    /// itself would hand the next frame a viewport nobody laid out.
+    fn rehearsed_viewport(&self) -> crate::render::RenderViewport {
+        let flex = RenderRef::new(self.build_flex());
+        let mut viewport = crate::render::RenderViewport::new(self.axis, flex)
+            .with_offset(self.offset)
+            .with_axis_direction(self.axis_direction);
+        if let Some(link) = &self.link {
+            viewport = viewport.with_link(std::rc::Rc::clone(link));
+        }
+        viewport
+    }
+}
+
 impl RenderBox for ListView {
     /// Upstream a `ListView` is a widget as well, and the viewport and slivers
     /// under it are reconciled by the elements between them. Here the viewport
@@ -1848,6 +1869,19 @@ impl RenderBox for ListView {
 
     fn size(&self) -> Size {
         self.composed.as_ref().map_or(Size::ZERO, |v| v.size())
+    }
+
+    /// What `layout` would answer, without answering it: the viewport's own
+    /// dry layout, which measures the list's content and constrains it.
+    ///
+    /// The default was `Size::ZERO`, so a list measured by a parent that had
+    /// not committed -- a flex working out its free space -- reported no size
+    /// at all. See PORTING_STATUS.md, tick 471.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        match &self.composed {
+            Some(viewport) => viewport.compute_dry_layout(constraints),
+            None => self.rehearsed_viewport().compute_dry_layout(constraints),
+        }
     }
 
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
@@ -2525,6 +2559,34 @@ mod tests {
             wet.compute_dry_layout(loose),
             dry,
             "and it still agrees once there is a composition to ask"
+        );
+    }
+
+    #[test]
+    fn a_list_measured_before_it_is_built_measures_its_content() {
+        // A dry measurement happens *before* the first layout, and the first
+        // layout is where the viewport gets composed -- so the answer is
+        // rehearsed instead: the same builder, run for a question and thrown
+        // away. The default was `Size::ZERO`.
+        let list = || {
+            ListView::new()
+                .push(crate::render::RenderConstrainedBox::new(
+                    crate::render::BoxConstraints::tight(60.0, 30.0),
+                ))
+                .push(crate::render::RenderConstrainedBox::new(
+                    crate::render::BoxConstraints::tight(60.0, 30.0),
+                ))
+        };
+        let room = crate::render::BoxConstraints::loose(200.0, 400.0);
+        let dry = list().compute_dry_layout(room);
+        assert_eq!(dry.height, 60.0, "the two items, measured without a layout");
+
+        let mut wet = list();
+        assert_eq!(wet.layout(room), dry, "and the dry answer is the wet one");
+        assert_eq!(
+            wet.compute_dry_layout(room),
+            dry,
+            "and it still agrees once there is a viewport to ask"
         );
     }
 

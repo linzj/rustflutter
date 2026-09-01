@@ -1576,6 +1576,14 @@ impl RenderBox for ActivityIndicatorTicks {
     /// The ticks draw something a finger cannot land on; the default
     /// `hit_test_children`/`hit_test_self` (both false) is correct.
     fn visit_children(&self, _visit: &mut dyn FnMut(&dyn RenderBox, Offset)) {}
+
+    /// The same size `layout` takes. A glyph of a fixed size can say so
+    /// without being laid out, and the trait's default -- `Size::ZERO` -- is
+    /// what it said before: measured inside a row working out its free space,
+    /// it asked for nothing. See PORTING_STATUS.md, tick 471.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(Size::square(self.radius * 2.0))
+    }
 }
 
 // -- Alert dialog -------------------------------------------------------------
@@ -1983,6 +1991,14 @@ impl RenderBox for BackChevron {
 
     fn hit_test_self(&self, _position: Offset) -> bool {
         true
+    }
+
+    /// The same size `layout` takes. A glyph of a fixed size can say so
+    /// without being laid out, and the trait's default -- `Size::ZERO` -- is
+    /// what it said before: measured inside a row working out its free space,
+    /// it asked for nothing. See PORTING_STATUS.md, tick 471.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(Size::new(12.0, 20.0))
     }
 }
 
@@ -3547,6 +3563,14 @@ impl RenderBox for SearchGlyph {
     fn hit_test_self(&self, _position: Offset) -> bool {
         true
     }
+
+    /// The same size `layout` takes. A glyph of a fixed size can say so
+    /// without being laid out, and the trait's default -- `Size::ZERO` -- is
+    /// what it said before: measured inside a row working out its free space,
+    /// it asked for nothing. See PORTING_STATUS.md, tick 471.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(Size::new(SEARCH_FIELD_ITEM_SIZE, SEARCH_FIELD_ITEM_SIZE))
+    }
 }
 
 /// A clear mark, drawn. Upstream's suffix is `CupertinoIcons.xmark_circle_fill`;
@@ -3596,6 +3620,14 @@ impl RenderBox for ClearGlyph {
 
     fn hit_test_self(&self, _position: Offset) -> bool {
         true
+    }
+
+    /// The same size `layout` takes. A glyph of a fixed size can say so
+    /// without being laid out, and the trait's default -- `Size::ZERO` -- is
+    /// what it said before: measured inside a row working out its free space,
+    /// it asked for nothing. See PORTING_STATUS.md, tick 471.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.constrain(Size::new(SEARCH_FIELD_ITEM_SIZE, SEARCH_FIELD_ITEM_SIZE))
     }
 }
 
@@ -6229,6 +6261,34 @@ impl CupertinoCheckbox {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_glyph_measured_dry_is_the_size_it_would_be() {
+        // These four are fixed-size painters, and a fixed size can be stated
+        // without laying anything out. The trait's default is `Size::ZERO`, so
+        // measured inside a row working out its free space they asked for
+        // nothing -- and a glyph that asks for nothing is a glyph nobody sees.
+        let room = crate::render::BoxConstraints::loose(100.0, 100.0);
+        let mut chevron = BackChevron {
+            color: Color(0xFF00_0000),
+            mirror: false,
+            laid_out: crate::render::Size::ZERO,
+        };
+        let dry = crate::render::RenderBox::compute_dry_layout(&chevron, room);
+        assert_eq!(dry, crate::render::Size::new(12.0, 20.0));
+        assert_eq!(
+            crate::render::RenderBox::layout(&mut chevron, room),
+            dry,
+            "and the dry answer is the wet one"
+        );
+
+        // And it is still constrained: a chevron in a smaller box is smaller.
+        let tiny = crate::render::BoxConstraints::loose(8.0, 8.0);
+        assert_eq!(
+            crate::render::RenderBox::compute_dry_layout(&chevron, tiny),
+            crate::render::Size::new(8.0, 8.0)
+        );
+    }
     use super::*;
     use crate::framework::{ElementTree, component, provide};
     use crate::list_wheel::max_visible_radian;

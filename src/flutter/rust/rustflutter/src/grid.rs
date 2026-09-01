@@ -353,6 +353,17 @@ impl RenderBox for GridHost {
         self.viewport.as_ref().map_or(Size::ZERO, |v| v.size())
     }
 
+    /// A viewport is as big as it is offered, and this host is the viewport it
+    /// builds -- so the answer is the same whether or not that viewport exists
+    /// yet, and no scrolling has to be worked out to give it.
+    ///
+    /// It matters that the answer does not depend on the viewport being built,
+    /// because a dry measurement happens *before* the first layout, which is
+    /// where the building happens. See PORTING_STATUS.md, tick 471.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
+
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         if let Some(viewport) = &self.viewport {
             viewport.paint(context, offset);
@@ -675,6 +686,33 @@ impl crate::framework::Component for GridTileBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_grid_measured_before_it_is_built_takes_the_room_it_would_take() {
+        // A dry measurement happens *before* the first layout, and the first
+        // layout is where the viewport gets built -- so the answer had to be
+        // one that does not need it. It is: a viewport is as big as it is
+        // offered. The default was `Size::ZERO`, which is what a grid measured
+        // inside a flex reported before this.
+        let host = GridHost::new(GridView::count(2, 10, |_| {
+            RenderRef::new(render::RenderConstrainedBox::tight(50.0, 50.0))
+        }));
+        let room = render::BoxConstraints::loose(300.0, 400.0);
+        assert!(host.viewport.is_none(), "nothing built yet");
+        assert_eq!(
+            render::RenderBox::compute_dry_layout(&host, room),
+            render::Size::new(300.0, 400.0)
+        );
+
+        // And once it has been laid out, the wet answer is the same one.
+        let mut laid_out = GridHost::new(GridView::count(2, 10, |_| {
+            RenderRef::new(render::RenderConstrainedBox::tight(50.0, 50.0))
+        }));
+        assert_eq!(
+            render::RenderBox::layout(&mut laid_out, room),
+            render::RenderBox::compute_dry_layout(&host, room)
+        );
+    }
 
     #[test]
     fn a_grid_view_builds_only_the_window_it_is_asked_for() {

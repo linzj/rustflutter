@@ -661,6 +661,27 @@ impl RenderBox for RenderEditable {
     }
 
     fn layout(&mut self, constraints: BoxConstraints) -> Size {
+        // The size is worked out by `compute_dry_layout` and only *recorded*
+        // here. Upstream keeps the pair in step with an assert in debug builds;
+        // one description instead of two is the same guarantee without the
+        // assert.
+        self.size = RenderBox::compute_dry_layout(self, constraints);
+        self.size
+    }
+
+    /// What `layout` would answer, without answering it.
+    ///
+    /// Nothing about the arithmetic needs the field to be laid out: the line
+    /// height comes from the style, and wrapping the text is a measurement
+    /// this box can already do at any width -- upstream's own
+    /// `computeDryLayout` runs the same wrap through a `_textIntrinsics`
+    /// layout kept apart from the real one for exactly that reason.
+    ///
+    /// The default answer, before this existed, was `Size::ZERO`: a field
+    /// inside anything that measures before it commits -- a flex working out
+    /// free space -- was measured as having no size at all. See
+    /// PORTING_STATUS.md, tick 471.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
         let line_height = self.line_height();
         let width = if constraints.has_bounded_width() {
             constraints.max_width
@@ -674,11 +695,10 @@ impl RenderBox for RenderEditable {
         // Upstream's `performLayout` height: the wrapped text's height clamped
         // between `minLines ?? maxLines` and `maxLines` lines -- which for a
         // field with no `minLines` is its full height, empty or full.
-        self.size = constraints.constrain(Size::new(
+        constraints.constrain(Size::new(
             width,
             preferred_height(count, line_height, self.max_lines),
-        ));
-        self.size
+        ))
     }
 
     fn size(&self) -> Size {
@@ -5126,6 +5146,39 @@ mod tests {
         field.cursor_width = 5.0;
         assert_eq!(field.caret_margin(), 6.0, "it tracks the cursor's width");
         assert_eq!(FieldExtent::CARET_GAP, 1.0);
+    }
+
+    #[test]
+    fn a_field_measured_without_being_laid_out_answers_what_it_would_be() {
+        // The default `compute_dry_layout` is `Size::ZERO`, so a field inside
+        // anything that measures before it commits -- a flex working out its
+        // free space -- came out with no size at all. Nothing about the
+        // arithmetic needs the field laid out: the line height is the style's
+        // and the wrap is a measurement it can do at any width.
+        let mut field = RenderEditable::new(value("hello", 5, (-1, -1)));
+        field.max_lines = MaxLines::Single;
+        let room = BoxConstraints::loose(180.0, 400.0);
+        let dry = crate::render::RenderBox::compute_dry_layout(&field, room);
+        assert_eq!(dry.width, 180.0, "as wide as it is offered");
+        assert!(dry.height > 0.0, "and a line tall: {dry:?}");
+        assert_eq!(
+            crate::render::RenderBox::layout(&mut field, room),
+            dry,
+            "and the dry answer is the wet one -- upstream asserts exactly this"
+        );
+
+        // Unbounded, it falls back to the two hundred `layout` uses rather
+        // than an infinity.
+        let unbounded = BoxConstraints {
+            min_width: 0.0,
+            max_width: f32::INFINITY,
+            min_height: 0.0,
+            max_height: f32::INFINITY,
+        };
+        assert_eq!(
+            crate::render::RenderBox::compute_dry_layout(&field, unbounded).width,
+            200.0
+        );
     }
 
     #[test]

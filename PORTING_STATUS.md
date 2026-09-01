@@ -3716,3 +3716,59 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 本 crate 的 `RenderEditable` 有没有一份可以不落地就跑的排版路径
 （`RenderParagraph` 那边是怎么做干量的），
 有就照它接，没有就先补 `GridHost`、把 editable 记成一条 divergence。
+
+---
+
+## 第 471 轮：这一类洞补完了，并且交给尺子看着
+
+上一轮留的问题先查：本 crate 有没有一条"不落地就能排版"的路。
+有——`RenderParagraph` 的干量走的正是 `shape_at(width)`，
+一条不写回任何状态的排版。再看 `RenderEditable`：它的 `layout` 用的
+`line_height()`、`visual_lines(width)`、`preferred_height(...)` **全是 `&self`**，
+也就是说那段算术从来就不需要"已经布局过"。
+上游同样如此——`computeDryLayout` 跑的是一份与真正布局分开的
+`_textIntrinsics`。
+
+于是 `RenderEditable` 的干量不是新写一遍，而是**把那段算术挪进
+`compute_dry_layout`，让 `layout` 只负责记下来**。
+一份描述而不是两份：上游靠 debug 断言让两者保持一致，
+这里靠只有一份可保持。
+
+同一轮补完剩下的：`GridHost`（viewport 有多大由父给，
+所以答案不依赖"viewport 已经建好"——而干量恰恰发生在建好之前）、
+`ListView`（照 `Container` 那招**排练一份**再扔掉，
+用的正是 `layout` 用的 builder），以及四个固定尺寸的 cupertino 字形
+（`ActivityIndicatorTicks`、`BackChevron`、`SearchGlyph`、`ClearGlyph`——
+一个要不到尺寸的字形就是一个没人看得见的字形）。
+
+### 尺子从"包装层"扩到"所有会布局的盒子"
+
+`proxy_holes.py` 现在两问：
+包装层有没有让默认值替它回答（第 468 轮），
+以及**任何**有 `layout` 的盒子有没有 `compute_dry_layout`（这一轮）。
+只有三个 sliver 写进豁免——它们由 sliver 协议度量，
+一个盒子的干量对它们根本不是一个问题。
+测试替身不算：文件里 `mod tests` 之后的都是夹具，
+一个夹具答零是在说它自己。
+
+两把都验过：把尺子弄瞎、再挖一个真洞（拿掉 `GridHost` 的干量），
+它必须看不见；恢复之后，同一个洞必须被看见。
+
+变异扫描 8 个代码 + 1 个尺子的，全红。
+（"一个字形量出零"最初 0 红——四个字形一个测试也没有，
+这正是"补了却没人按住"的样子，补上测试才立住。）
+
+尺子：十七把全部 exit 0。门：Rust 6758 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：这条线（`RenderBox` 的默认值替谁答了什么）到此补完，
+回到 `depth.py` 的队头。上一次看队头时前几名是
+`Icons`/`CupertinoIcons`（图标表，8826 与 1324 个成员，
+本 crate 没有图标字体，是另一码事）、
+`CupertinoLocalizations`（2/46）、`CupertinoApp`（8/37）、
+`MaterialLocalizations`（36/158）。
+**先查一件事**：`CupertinoLocalizations` 那 46 个成员里，
+有多少是 `MaterialLocalizations` 已经在这个 crate 里答过的同一批字串
+（两边的 `datePickerYear`、`alertDialogLabel` 之类），
+能共用的就别抄第二遍——确认了再决定从哪个入手。
