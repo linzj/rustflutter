@@ -7162,3 +7162,46 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6981 通�
 （见 `TextField::advance` 那套）还是有更轻的办法（`AnimatedContainer` 之类）。
 **如果只能靠每帧推进，那要想清楚谁来要那一帧**：
 一个亮着却没人推进的高亮，比不淡入更糟。
+
+---
+
+## 第 532 轮：高亮淡入淡出，而且知道什么时候不再要帧
+
+先查上一轮记的那个问题——谁来要那一帧。答案就在 `StatefulComponent` 上：
+`fn advance(&self, state, frame_time) -> bool`，注释写着
+"Frames are on demand, so an animation that stops asking stops running"。
+**动的那个 widget 自己要帧**，不需要外面有人替它推。
+
+于是淡入淡出照 `_kDefaultHighlightFadeDuration`（200ms，
+`InkHighlight::FADE_MICROS` 早就有这个常量）做：
+
+- 状态里 `opacity` 和 `focused` **分开**——一个是"现在在哪儿"，
+  一个是"要去哪儿"。焦点变化只设目标，
+  **两个都设的话，淡入一半时键盘回来就是跳变而不是掉头**。
+- 到了目标就 `return false` 不再要帧；
+  **到达目标的那一帧仍然要画**（和水波最后一环、`Controller::tick` 同一条规则）。
+- 淡完之后**什么都不画**，而不是往后每帧画一个全透明矩形。
+
+### 扫描活了一个，暴露的又是"在所有实现都一致的点上断言"
+
+"第一帧就步进而不是只起表"这条变异活着。原因：我的测试**从 0 开始计时**，
+于是 `frame_time - 0 = 0`，步长为零——**错的实现和对的实现结果一样**。
+
+真实应用永远不是从 0 开始：跑了 5 秒才第一次聚焦，
+错的实现会算出 5_000_000/200_000 = 25 的步长，**一帧就淡完**。
+把测试的起始帧时间改成 5_000_000（并把注释写清为什么不能用 0）之后，
+六个变异全死。
+
+尺子：十八把全部 exit 0。门：Rust 6983 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6983 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：高亮现在只认焦点，**不认鼠标悬停也不认按下**。
+上游 `InkResponse` 三种高亮共用一个栈：`hoverColor`、`highlightColor`、
+`focusColor`，而且**淡入时长不同**（悬停要追着鼠标走，所以更短——
+`ink_well.rs` 的 `HighlightType::fade_micros(hover_micros)` 就是这条）。
+**先查一件事**：这五个控件的悬停现在是怎么处理的——
+`PointerHandlers` 有没有 `on_enter`/`on_exit`，
+以及 `Chip`/`Button` 是不是已经各自画了悬停色。
+**如果已经各画各的，那就是又一处"同一条规则五个家"**，
+该把它收进 `FocusHighlight`（那时它就该改名了），而不是再加第六处。

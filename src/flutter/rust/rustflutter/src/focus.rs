@@ -1569,6 +1569,13 @@ struct FocusHighlight {
 #[derive(Default)]
 struct FocusHighlightState {
     focused: bool,
+    /// How far the fade has got, 0 to 1. Not derived from `focused`: it is
+    /// where the highlight *is*, where `focused` is where it is going.
+    opacity: f32,
+    /// The frame this fade was last moved on. `None` before the first, so the
+    /// first tick sets the clock instead of stepping by however long the
+    /// application had been running.
+    last_micros: Option<i64>,
 }
 
 impl crate::framework::StatefulComponent for FocusHighlight {
@@ -1576,6 +1583,36 @@ impl crate::framework::StatefulComponent for FocusHighlight {
 
     fn initial_state(&self) -> FocusHighlightState {
         FocusHighlightState::default()
+    }
+
+    /// Fades the highlight in and out over `_kDefaultHighlightFadeDuration`.
+    ///
+    /// Frames are on demand here, and this returns whether it wants another
+    /// one -- so the widget that is animating is the widget that asks. A fade
+    /// nobody advanced would be worse than no fade at all: it would stop
+    /// half-drawn and stay there.
+    fn advance(&self, state: &mut FocusHighlightState, frame_time_micros: i64) -> bool {
+        let target = if state.focused { 1.0 } else { 0.0 };
+        let last = state.last_micros.replace(frame_time_micros);
+        if (state.opacity - target).abs() < f32::EPSILON {
+            return false;
+        }
+        // The first frame of a fade only starts the clock. Stepping by
+        // `frame_time - 0` would finish the fade before it was seen.
+        let Some(last) = last else {
+            return true;
+        };
+        let step =
+            (frame_time_micros - last).max(0) as f32 / crate::ink::InkHighlight::FADE_MICROS as f32;
+        if state.opacity < target {
+            state.opacity = (state.opacity + step).min(target);
+        } else {
+            state.opacity = (state.opacity - step).max(target);
+        }
+        // The frame that arrives at the target is still asked for -- it is the
+        // one that draws the finished state. The same rule as the ink splash's
+        // last ring, and `animation::Controller::tick`'s.
+        true
     }
 
     fn build(
@@ -1590,14 +1627,23 @@ impl crate::framework::StatefulComponent for FocusHighlight {
             .borrow()
             .clone()
             .unwrap_or_else(|| crate::framework::leaf(|| crate::widgets::Empty));
-        if !state.focused {
+        // Nothing is drawn once the fade has run out, rather than a
+        // fully-transparent rectangle every frame for the rest of the
+        // application's life.
+        if state.opacity <= 0.0 {
             return child;
         }
         // Upstream's `focusColor`, which defaults to the theme's own overlay
         // rather than to a colour of its own: `ThemeData.focusColor`, the
         // primary at 12%. A ring would be Cupertino's answer; Material fills.
         let theme = crate::components::theme_of(context);
-        let colour = theme.primary.with_alpha(0x1f);
+        // Upstream fades a highlight by its *opacity*, so the colour's own
+        // alpha is what is scaled -- a focus colour that was already
+        // translucent stays as translucent as it was asked to be at the end
+        // of the fade.
+        const FOCUS_ALPHA: f32 = 0x1f as f32;
+        let alpha = (FOCUS_ALPHA * state.opacity.clamp(0.0, 1.0)).round() as u8;
+        let colour = theme.primary.with_alpha(alpha);
         let shape = self.shape;
         crate::framework::single(child, move |inner| {
             Box::new(
@@ -1691,6 +1737,9 @@ pub fn operable(
         Focus::new(id, child)
             .with_on_focus_change(move |focused| {
                 if let Some(handle) = sink.borrow().clone() {
+                    // The target only. Where the highlight *is* is the fade's
+                    // business, and setting both here would make the keyboard
+                    // arriving mid-fade jump rather than turn around.
                     handle.set_state(move |state| state.focused = focused);
                 }
             })
@@ -2117,6 +2166,10 @@ mod tests {
         let _ = tree.build_render_tree();
         if focus_first {
             assert!(focus(95), "the control took the keyboard");
+            // The highlight fades in, so the frames it asked for are run --
+            // one to start its clock and one a full fade later.
+            tree.advance_frame(0);
+            tree.advance_frame(crate::ink::InkHighlight::FADE_MICROS);
         }
         tree.rebuild_dirty();
         let mut root = tree.build_render_tree().expect("a render tree");
@@ -2150,6 +2203,144 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The alpha of the highlight drawn, if one was.
+    fn highlight_alpha(calls: &[crate::engine_test_stubs::Drawn]) -> Option<u32> {
+        use crate::engine_test_stubs::Drawn;
+        calls.iter().find_map(|call| match call {
+            Drawn::RRect { argb, .. } => Some(argb >> 24),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_highlight_fades_rather_than_appearing_all_at_once() {
+        // `_kDefaultHighlightFadeDuration`, 200ms. Upstream fades because a
+        // highlight that blinks on reads as the control having changed rather
+        // than as the keyboard having arrived.
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        reset();
+        reset_pending_autofocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            operable(
+                96,
+                false,
+                Some(std::rc::Rc::new(|_| {})),
+                FocusShape::Box { corner_radius: 4.0 },
+                leaf(|| SizedBox::new(40.0, 40.0)),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+        assert!(focus(96));
+
+        let mut paint = |tree: &mut ElementTree| {
+            tree.rebuild_dirty();
+            let mut root = tree.build_render_tree().expect("a render tree");
+            root.layout(crate::render::BoxConstraints::tight(200.0, 100.0));
+            let mut layers = crate::engine::LayerTree::new(200, 100);
+            reset_drawn();
+            {
+                let mut context = crate::render::PaintContext::new(
+                    &mut layers,
+                    crate::render::Size::new(200.0, 100.0),
+                );
+                root.paint(&mut context, crate::render::Offset::ZERO);
+            }
+            drawn()
+        };
+
+        // The clock starts on the first frame and steps on the ones after, so
+        // the fade cannot finish before it has been seen.
+        //
+        // The frame times start where an application's would -- some seconds
+        // in -- and **not at zero**. At zero the first step is
+        // `frame_time - 0`, which is zero, so a fade that wrongly stepped on
+        // its first frame would look identical. Every real application
+        // reaches its first focus long after its clock started, and there the
+        // same mistake finishes the fade instantly.
+        let start = 5_000_000;
+        assert!(tree.advance_frame(start), "the fade asked for a frame");
+        assert_eq!(
+            highlight_alpha(&paint(&mut tree)),
+            None,
+            "nothing yet on the frame that only started the clock"
+        );
+
+        let half = crate::ink::InkHighlight::FADE_MICROS / 2;
+        assert!(tree.advance_frame(start + half));
+        let midway = highlight_alpha(&paint(&mut tree)).expect("half faded in");
+
+        assert!(tree.advance_frame(start + crate::ink::InkHighlight::FADE_MICROS));
+        let full = highlight_alpha(&paint(&mut tree)).expect("faded in");
+        assert!(midway < full, "it arrives gradually: {midway} then {full}");
+
+        // And a frame after it has arrived is not asked for -- an animation
+        // that never stops asking is a frame every 16ms for ever.
+        assert!(
+            !tree.advance_frame(start + crate::ink::InkHighlight::FADE_MICROS * 2),
+            "the fade stops asking once it is done"
+        );
+    }
+
+    #[test]
+    fn a_highlight_that_lost_the_keyboard_fades_out_and_stops() {
+        // The other direction, and the one that leaves rubbish on screen if
+        // it is wrong: a highlight that stopped being drawn without fading
+        // would blink out, and one that stopped *advancing* would stay lit on
+        // a control the reader has left.
+        use crate::engine_test_stubs::{drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        reset();
+        reset_pending_autofocus();
+        let mut tree = ElementTree::new();
+        tree.rebuild(crate::theme::MaterialTheme::new(
+            crate::theme::ThemeData::light(),
+            operable(
+                97,
+                false,
+                Some(std::rc::Rc::new(|_| {})),
+                FocusShape::Box { corner_radius: 4.0 },
+                leaf(|| SizedBox::new(40.0, 40.0)),
+            ),
+        ));
+        let _ = tree.build_render_tree();
+        assert!(focus(97));
+        tree.advance_frame(0);
+        tree.advance_frame(crate::ink::InkHighlight::FADE_MICROS);
+
+        unfocus();
+        let mut at = crate::ink::InkHighlight::FADE_MICROS;
+        for _ in 0..4 {
+            at += crate::ink::InkHighlight::FADE_MICROS / 2;
+            tree.advance_frame(at);
+        }
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a render tree");
+        root.layout(crate::render::BoxConstraints::tight(200.0, 100.0));
+        let mut layers = crate::engine::LayerTree::new(200, 100);
+        reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(200.0, 100.0),
+            );
+            root.paint(&mut context, crate::render::Offset::ZERO);
+        }
+        assert_eq!(
+            highlight_alpha(&drawn()),
+            None,
+            "gone, and drawing nothing rather than a transparent rectangle"
+        );
+        assert!(
+            !tree.advance_frame(at + crate::ink::InkHighlight::FADE_MICROS),
+            "and no longer asking for frames"
+        );
     }
 
     #[test]

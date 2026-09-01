@@ -2448,6 +2448,8 @@ You"
             ));
             let _ = tree.build_render_tree();
             assert!(crate::focus::focus(id), "{id} took the keyboard");
+            tree.advance_frame(0);
+            tree.advance_frame(crate::ink::InkHighlight::FADE_MICROS);
             tree.rebuild_dirty();
             let mut root = tree.build_render_tree().expect("a render tree");
             root.layout(crate::render::BoxConstraints::tight(300.0, 100.0));
