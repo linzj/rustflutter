@@ -5270,3 +5270,64 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6875 通�
 它们的规则大半不同（老的只有边框和填充，新的有滑块和 thumb 动画）。
 如果这个 crate 只做了 sliding 那一个，那 4/13 就是"另一个类没做"，
 是真缺口而不是映射；如果两个都在，就要分清 depth 把哪一个配给了它。
+
+---
+
+## 第 499 轮：一个分段控件可以被上色，也可以被关掉
+
+队头 `CupertinoSegmentedControl`（0.31，4/13）。先查了上一轮问的那件事：
+上游确实是**两个**类，而这个 crate 只做了老的那个——
+`cupertino.rs` 的锚点注释写得很清楚："the iOS-13 `CupertinoSlidingSegmentedControl`
+is a different widget and not part of this port"。所以 4/13 数的是老的这个，
+而它缺的 9 个里有一大半是**六个颜色参数和禁用集合**：
+这个 crate 的 build 直接读了四处主题，**应用根本没法给自己的颜色**。
+
+`_updateColors` 有两处不是"给了就用、没给用主题"那么简单：
+
+**一、`disabledColor` 一个参数、两个默认值，而且不对称**：
+
+```dart
+final Color selectedDisabledColor = widget.disabledColor ?? selectedColor.withOpacity(0.5);
+final Color unselectedDisabledColor = widget.disabledColor ?? unselectedColor;
+```
+
+被选中但禁用的那一段**淡到一半**——它仍然要读作"选中的那个"，同时说明改不了；
+未选中的那一段**原样不动**——它本来就是空的，把空的再淡一次什么也没说。
+给了这个参数，两边都变成它——那是调用者把这个判断收回去。
+
+**二、`disabledTextColor` 的默认值不是主题的**，是常量
+`Color.fromARGB(115, 122, 122, 122)`。整个控件里只有这一个颜色不跟主题走，
+道理也说得通："这个按不了"不是一句关于品牌的话。
+
+### 三个判断的顺序就是规则
+
+`getBackgroundColor` / `getTextColor` 的分支顺序：
+**禁用压过一切**（所以禁用的段不会显示按下）；
+**选中排在按下之前**（所以按已选中的那一段什么也不会变——
+这与 `_onTapDown` 从不把已选中的段标记为按下是同一件事）；
+文字永远是填充的反色——这里只有一对颜色，谁是墨取决于谁是漆。
+
+顺手补了两条构造断言：至少两段（一段不是选择，是标签）；
+选中项必须是其中之一（上游按 key 找，这里就是下标越界）。
+
+### 变异 12 个，全红——其中两条是走一遍的
+
+新加了 `painted_rect_colors`：把控件挂起来、布局、真画一遍，收集画出的矩形颜色。
+于是"widget 仍然读主题而不是读给的颜色"和"禁用段照常画"这两条变异
+**被画布抓住**，而不是只被规则函数抓住。
+
+`CupertinoSegmentedControl` 0.31 → **0.54（7/13）**。
+
+尺子：十七把全部 exit 0。门：Rust 6884 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6884 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：这个类还剩下的是 `children`（这里是 `labels`，映射差异）、
+`onValueChanged`（`wired`）、`groupValue`（`selected`）——都在，
+以及**真的没做的**：每段选中时 165ms 的淡入（`_kFadeDuration` 与三条
+`ColorTween`，模块注释里写着"not ported"）。
+**先查一件事**：这个 crate 有没有"一段颜色随动画在两个值之间走"的现成东西
+（`animation.rs` 的 `ColorTween`？`component_themes.rs` 里到处在 lerp 颜色），
+有就把 `getBackgroundColor` 的 animating 分支补上——
+它正是这三条 tween 的读取点；没有就先补 `ColorTween`，
+别在这个控件里手搓一次颜色插值。

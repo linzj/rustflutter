@@ -2592,6 +2592,150 @@ pub const SEGMENTED_CONTROL_MIN_HEIGHT: f32 = 28.0;
 /// a segment's own padding is its child's.
 pub const SEGMENTED_CONTROL_PADDING: f32 = 16.0;
 
+/// segmented_control.dart's `_kDisableTextColor`, the one colour here that
+/// does **not** come from the theme.
+///
+/// `Color.fromARGB(115, 122, 122, 122)`: a mid grey at not quite half alpha.
+/// Every other colour in this control is the theme's or a shade of it, so a
+/// disabled label reads the same whatever the app is coloured -- which is the
+/// point, since "you cannot press this" is not a statement about the brand.
+pub const SEGMENTED_CONTROL_DISABLED_TEXT: Color = Color::argb(115, 122, 122, 122);
+
+/// The six colours upstream's `CupertinoSegmentedControl` takes, all optional.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SegmentedControlColors {
+    pub selected: Option<Color>,
+    pub unselected: Option<Color>,
+    pub border: Option<Color>,
+    pub pressed: Option<Color>,
+    /// One parameter that fills **two** slots. See
+    /// [`SegmentedControlColors::resolve`].
+    pub disabled: Option<Color>,
+    pub disabled_text: Option<Color>,
+}
+
+/// What [`SegmentedControlColors::resolve`] worked out: seven colours from six
+/// parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedSegmentedControlColors {
+    pub selected: Color,
+    pub unselected: Color,
+    pub border: Color,
+    pub pressed: Color,
+    pub selected_disabled: Color,
+    pub unselected_disabled: Color,
+    pub disabled_text: Color,
+}
+
+impl SegmentedControlColors {
+    /// Upstream's `_updateColors`.
+    ///
+    /// Five of the six are "what you gave me, or the theme's": the selection
+    /// and the border are the primary colour, an unselected segment is the
+    /// primary *contrasting* colour -- the two are a pair by construction, so
+    /// a control given neither is legible in either brightness -- and a held
+    /// segment is the primary colour at a fifth, which is a tint of the fill
+    /// it is about to become rather than a colour of its own.
+    ///
+    /// **`disabledColor` is one parameter with two defaults**, and they are
+    /// not symmetric:
+    ///
+    /// ```dart
+    /// final Color selectedDisabledColor = widget.disabledColor ?? selectedColor.withOpacity(0.5);
+    /// final Color unselectedDisabledColor = widget.disabledColor ?? unselectedColor;
+    /// ```
+    ///
+    /// A disabled *selected* segment fades its fill to half, because it still
+    /// has to read as the chosen one while saying it cannot be changed. A
+    /// disabled *unselected* segment is left exactly as it was: it is already
+    /// empty, and fading an empty segment says nothing. Give the parameter and
+    /// both become it -- which is the caller taking that judgement back.
+    pub fn resolve(
+        &self,
+        primary: Color,
+        primary_contrasting: Color,
+    ) -> ResolvedSegmentedControlColors {
+        let selected = self.selected.unwrap_or(primary);
+        let unselected = self.unselected.unwrap_or(primary_contrasting);
+        ResolvedSegmentedControlColors {
+            selected,
+            unselected,
+            border: self.border.unwrap_or(primary),
+            pressed: self.pressed.unwrap_or(primary.with_alpha(0x33)),
+            selected_disabled: self.disabled.unwrap_or(selected.with_alpha(0x80)),
+            unselected_disabled: self.disabled.unwrap_or(unselected),
+            disabled_text: self
+                .disabled_text
+                .unwrap_or(SEGMENTED_CONTROL_DISABLED_TEXT),
+        }
+    }
+}
+
+/// What one segment looks like at the moment it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SegmentColors {
+    pub background: Color,
+    pub text: Color,
+}
+
+/// Upstream's `getBackgroundColor` and `getTextColor`, which are one question
+/// asked twice.
+///
+/// **The order of the tests is the rule.** Disabled comes first and beats
+/// everything, so a disabled segment never shows a press or a hover. Selected
+/// comes before pressed, so pressing the segment that is already chosen leaves
+/// it alone -- which agrees with `_onTapDown`, that never marks the selected
+/// segment as pressed in the first place.
+///
+/// **The text is the reverse of the fill.** A selected segment is filled with
+/// the selected colour and labelled in the unselected one, and vice versa;
+/// there is only one pair of colours here, and which of them is ink depends on
+/// which is paint.
+pub fn segment_colors(
+    colors: ResolvedSegmentedControlColors,
+    selected: bool,
+    pressed: bool,
+    disabled: bool,
+) -> SegmentColors {
+    if disabled {
+        return SegmentColors {
+            background: if selected {
+                colors.selected_disabled
+            } else {
+                colors.unselected_disabled
+            },
+            text: colors.disabled_text,
+        };
+    }
+    if selected {
+        return SegmentColors {
+            background: colors.selected,
+            text: colors.unselected,
+        };
+    }
+    SegmentColors {
+        background: if pressed {
+            colors.pressed
+        } else {
+            colors.unselected
+        },
+        text: colors.selected,
+    }
+}
+
+/// Why a segmented control refused the way it was built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentedControlError {
+    /// `assert(children.length >= 2)`. One segment is not a choice, and a
+    /// control that cannot be changed is a label.
+    FewerThanTwoSegments,
+    /// `assert(groupValue == null || children.keys.any(...))`: upstream keys
+    /// its children by value, so a selection that is not one of them selects
+    /// nothing and the control comes up blank. Here the key is the index, and
+    /// the same mistake is an index past the end.
+    SelectionIsNotASegment,
+}
+
 /// What a [`CupertinoSegmentedControl`] remembers: which segment is held.
 /// segmented_control.dart's `_pressedKey`.
 #[derive(Default)]
@@ -2614,6 +2758,11 @@ pub struct CupertinoSegmentedControl {
     labels: Vec<String>,
     selected: usize,
     on_selected: Option<Rc<dyn Fn(usize)>>,
+    /// Upstream's four colour parameters plus the two disabled ones, each
+    /// falling back to the theme. See [`SegmentedControlColors`].
+    colors: SegmentedControlColors,
+    /// Upstream's `disabledChildren`, by index rather than by key.
+    disabled: Vec<usize>,
 }
 
 impl CupertinoSegmentedControl {
@@ -2623,7 +2772,31 @@ impl CupertinoSegmentedControl {
             labels,
             selected,
             on_selected: None,
+            colors: SegmentedControlColors::default(),
+            disabled: Vec::new(),
         }
+    }
+
+    pub fn with_colors(mut self, colors: SegmentedControlColors) -> Self {
+        self.colors = colors;
+        self
+    }
+
+    /// Upstream's `disabledChildren`: the segments that cannot be chosen.
+    pub fn with_disabled(mut self, disabled: Vec<usize>) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Upstream's two constructor asserts.
+    pub fn validate(&self) -> Result<(), SegmentedControlError> {
+        if self.labels.len() < 2 {
+            return Err(SegmentedControlError::FewerThanTwoSegments);
+        }
+        if self.selected >= self.labels.len() {
+            return Err(SegmentedControlError::SelectionIsNotASegment);
+        }
+        Ok(())
     }
 
     /// `select` is given the state and the index that was tapped. Upstream's
@@ -2654,20 +2827,25 @@ impl StatefulComponent for CupertinoSegmentedControl {
         let labels = self.labels.clone();
         let selected = self.selected;
         let pressed = state.pressed;
-        // segmented_control.dart's `_updateColors`: selected fill is the
-        // primary color, unselected fill the primary contrasting color, the
-        // border the primary color, and a held segment the primary color at
-        // 20%. Text is the reverse of the fill: selected segments read in the
-        // contrasting color, unselected in the primary.
-        let selected_color = theme.primary_color;
-        let unselected_color = theme.primary_contrasting_color;
-        let pressed_color = theme.primary_color.with_alpha(0x33);
+        // segmented_control.dart's `_updateColors`, which is a rule rather
+        // than four reads of the theme: see `SegmentedControlColors::resolve`.
+        let colors = self
+            .colors
+            .resolve(theme.primary_color, theme.primary_contrasting_color);
+        let disabled = self.disabled.clone();
 
         let count = labels.len();
         let mut handlers: Vec<PointerHandlers> = Vec::new();
         for index in 0..count {
             let mut segment = PointerHandlers::new();
-            if let Some(on_selected) = &self.on_selected {
+            // `onTapDown: isEnabled ? ... : null` -- a disabled segment is
+            // given no handlers at all, so it neither reports a tap nor shows
+            // a press.
+            if let Some(on_selected) = self
+                .on_selected
+                .as_ref()
+                .filter(|_| !disabled.contains(&index))
+            {
                 let tapped = on_selected.clone();
                 // `_onTap`: the already-selected segment does not re-report.
                 segment = segment.with_tap(move |_| {
@@ -2699,19 +2877,13 @@ impl StatefulComponent for CupertinoSegmentedControl {
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_cross_axis_alignment(CrossAxisAlignment::Center);
             for (index, label) in labels.iter().enumerate() {
-                let is_selected = index == selected;
-                let fill = if is_selected {
-                    selected_color
-                } else if pressed == Some(index) {
-                    pressed_color
-                } else {
-                    unselected_color
-                };
-                let text_color = if is_selected {
-                    unselected_color
-                } else {
-                    selected_color
-                };
+                let painted = segment_colors(
+                    colors,
+                    index == selected,
+                    pressed == Some(index),
+                    disabled.contains(&index),
+                );
+                let (fill, text_color) = (painted.background, painted.text);
                 let segment = Container::new()
                     .with_height(SEGMENTED_CONTROL_MIN_HEIGHT)
                     .with_color(fill)
@@ -2739,7 +2911,7 @@ impl StatefulComponent for CupertinoSegmentedControl {
                 .with_child(
                     RenderClipRect::new(
                         Container::new()
-                            .with_border(1.0, selected_color)
+                            .with_border(1.0, colors.border)
                             .with_corner_radius(3.0)
                             .with_child(row),
                     )
@@ -6498,6 +6670,196 @@ mod tests {
         assert!(
             size.height >= SEGMENTED_CONTROL_MIN_HEIGHT && size.height <= 40.0,
             "{size:?}"
+        );
+    }
+
+    /// Every rectangle a widget paints, in the order it painted them.
+    fn painted_rect_colors(widget: AnyWidget, width: f32, height: f32) -> Vec<u32> {
+        use crate::engine::LayerTree;
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+
+        let mut tree = ElementTree::new();
+        tree.rebuild(provide(CupertinoTheme::dark(), widget));
+        let mut root = tree.build_render_tree().expect("a root");
+        root.layout(BoxConstraints::loose(width, height));
+        let mut layers = LayerTree::new(width as i32, height as i32);
+        reset_drawn();
+        {
+            let mut context = PaintContext::new(&mut layers, Size::new(width, height));
+            root.paint(&mut context, Offset::ZERO);
+        }
+        drawn()
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Rect { argb, .. } => Some(*argb),
+                Drawn::RRect { argb, .. } => Some(*argb),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_control_given_its_own_colours_paints_them() {
+        // The rule is one thing; the widget asking it is another, and this is
+        // the call. A control coloured by hand used to be impossible -- the
+        // build read the theme in four places.
+        let orange = Color::argb(255, 255, 149, 0);
+        let control = CupertinoSegmentedControl::new(9100, vec!["One".into(), "Two".into()], 0)
+            .with_colors(SegmentedControlColors {
+                selected: Some(orange),
+                ..SegmentedControlColors::default()
+            });
+        let painted = painted_rect_colors(stateful(control), 300.0, 60.0);
+        assert!(
+            painted.contains(&orange.0),
+            "the chosen segment is filled with the colour it was given: {painted:02x?}"
+        );
+    }
+
+    #[test]
+    fn a_disabled_segment_is_painted_shut() {
+        let control = CupertinoSegmentedControl::new(9101, vec!["One".into(), "Two".into()], 0)
+            .with_disabled(vec![0]);
+        let theme = CupertinoTheme::dark();
+        let expected = SegmentedControlColors::default()
+            .resolve(theme.primary_color, theme.primary_contrasting_color)
+            .selected_disabled;
+        let painted = painted_rect_colors(stateful(control), 300.0, 60.0);
+        assert!(
+            painted.contains(&expected.0),
+            "the chosen but disabled segment fades to half: {painted:02x?}"
+        );
+    }
+
+    #[test]
+    fn a_segmented_controls_colours_are_the_themes_until_they_are_given() {
+        let blue = Color::argb(255, 0, 122, 255);
+        let white = Color::argb(255, 255, 255, 255);
+        let plain = SegmentedControlColors::default().resolve(blue, white);
+        assert_eq!(plain.selected, blue);
+        assert_eq!(plain.unselected, white);
+        assert_eq!(plain.border, blue, "the border is the selection's colour");
+        assert_eq!(
+            plain.pressed,
+            blue.with_alpha(0x33),
+            "and a held segment is a fifth of the fill it is about to become"
+        );
+
+        let orange = Color::argb(255, 255, 149, 0);
+        let given = SegmentedControlColors {
+            selected: Some(orange),
+            ..SegmentedControlColors::default()
+        }
+        .resolve(blue, white);
+        assert_eq!(given.selected, orange);
+        assert_eq!(
+            given.border, blue,
+            "the border is its own parameter, not the selection's colour"
+        );
+    }
+
+    #[test]
+    fn one_disabled_colour_has_two_defaults_and_they_are_not_the_same_shape() {
+        let blue = Color::argb(255, 0, 122, 255);
+        let white = Color::argb(255, 255, 255, 255);
+        let plain = SegmentedControlColors::default().resolve(blue, white);
+        assert_eq!(
+            plain.selected_disabled,
+            blue.with_alpha(0x80),
+            "a chosen segment fades to half: still the chosen one, but shut"
+        );
+        assert_eq!(
+            plain.unselected_disabled, white,
+            "an empty segment is left alone -- fading nothing says nothing"
+        );
+
+        let grey = Color::argb(255, 200, 200, 200);
+        let given = SegmentedControlColors {
+            disabled: Some(grey),
+            ..SegmentedControlColors::default()
+        }
+        .resolve(blue, white);
+        assert_eq!(
+            (given.selected_disabled, given.unselected_disabled),
+            (grey, grey)
+        );
+    }
+
+    #[test]
+    fn the_disabled_label_is_the_one_colour_the_theme_does_not_reach() {
+        let plain = SegmentedControlColors::default().resolve(
+            Color::argb(255, 0, 122, 255),
+            Color::argb(255, 255, 255, 255),
+        );
+        assert_eq!(plain.disabled_text, SEGMENTED_CONTROL_DISABLED_TEXT);
+        assert_eq!(
+            SEGMENTED_CONTROL_DISABLED_TEXT,
+            Color::argb(115, 122, 122, 122)
+        );
+    }
+
+    #[test]
+    fn a_segments_text_is_the_reverse_of_its_fill() {
+        let blue = Color::argb(255, 0, 122, 255);
+        let white = Color::argb(255, 255, 255, 255);
+        let colors = SegmentedControlColors::default().resolve(blue, white);
+
+        let chosen = segment_colors(colors, true, false, false);
+        assert_eq!((chosen.background, chosen.text), (blue, white));
+        let other = segment_colors(colors, false, false, false);
+        assert_eq!((other.background, other.text), (white, blue));
+    }
+
+    #[test]
+    fn pressing_the_chosen_segment_does_not_change_it() {
+        // Selected is tested before pressed, which agrees with `_onTapDown`
+        // never marking the selected segment as held.
+        let blue = Color::argb(255, 0, 122, 255);
+        let white = Color::argb(255, 255, 255, 255);
+        let colors = SegmentedControlColors::default().resolve(blue, white);
+
+        assert_eq!(segment_colors(colors, true, true, false).background, blue);
+        assert_eq!(
+            segment_colors(colors, false, true, false).background,
+            colors.pressed,
+            "an unselected one does show the press"
+        );
+    }
+
+    #[test]
+    fn disabled_beats_everything_else() {
+        let blue = Color::argb(255, 0, 122, 255);
+        let white = Color::argb(255, 255, 255, 255);
+        let colors = SegmentedControlColors::default().resolve(blue, white);
+
+        let held_and_shut = segment_colors(colors, false, true, true);
+        assert_eq!(
+            held_and_shut.background, colors.unselected_disabled,
+            "no press on a segment that cannot be pressed"
+        );
+        assert_eq!(held_and_shut.text, colors.disabled_text);
+        assert_eq!(
+            segment_colors(colors, true, false, true).background,
+            colors.selected_disabled
+        );
+    }
+
+    #[test]
+    fn a_control_needs_two_segments_and_a_selection_among_them() {
+        let two = CupertinoSegmentedControl::new(1, vec!["One".into(), "Two".into()], 1);
+        assert_eq!(two.validate(), Ok(()));
+
+        let one = CupertinoSegmentedControl::new(1, vec!["Only".into()], 0);
+        assert_eq!(
+            one.validate(),
+            Err(SegmentedControlError::FewerThanTwoSegments),
+            "one segment is a label, not a choice"
+        );
+
+        let past_the_end = CupertinoSegmentedControl::new(1, vec!["One".into(), "Two".into()], 2);
+        assert_eq!(
+            past_the_end.validate(),
+            Err(SegmentedControlError::SelectionIsNotASegment)
         );
     }
 
