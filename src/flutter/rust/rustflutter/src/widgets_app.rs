@@ -12,6 +12,7 @@
 //! contract, the FFI the engine calls into. This is the widget.
 
 use crate::engine::Color;
+use crate::platform::Locale;
 use crate::presence::Title;
 
 /// Where a route came from. Upstream's error message spells the order out, and
@@ -133,7 +134,17 @@ pub struct WidgetsApp {
     pub routes: RouteConfiguration,
     /// Upstream asserts this is non-empty: an application that supports no
     /// locales has nothing to resolve the system's locale against.
-    pub supported_locales: Vec<String>,
+    ///
+    /// Real [`Locale`]s rather than the strings this used to hold: the
+    /// resolution algorithm matches on language, script and country
+    /// separately -- see [`crate::localizations::basic_locale_list_resolution`]
+    /// -- and a list of strings cannot be handed to it. Two homes for "which
+    /// languages does this application speak" is one too many.
+    pub supported_locales: Vec<Locale>,
+    /// Upstream's `locale`: the application's own choice, which **overrides
+    /// the platform's** and is still resolved against the supported list. See
+    /// [`WidgetsApp::localizations`].
+    pub locale: Option<Locale>,
     /// Upstream's `title`, which is nullable -- and whose null is *not* the
     /// same as `""`. See [`WidgetsApp::app_title`].
     pub title: Option<String>,
@@ -157,7 +168,8 @@ impl WidgetsApp {
                 routes_is_empty: true,
                 ..RouteConfiguration::default()
             },
-            supported_locales: vec!["en".to_string()],
+            supported_locales: vec![Locale::new("en")],
+            locale: None,
             title: None,
             color: Color::BLACK,
             show_performance_overlay: false,
@@ -219,6 +231,39 @@ impl WidgetsApp {
             return Err("supportedLocales must not be empty");
         }
         Ok(())
+    }
+
+    /// The resolver upstream's `_WidgetsAppState` builds from these fields:
+    ///
+    /// ```dart
+    /// late final LocalizationsResolver _localizationsResolver = LocalizationsResolver(
+    ///   locale: widget.locale,
+    ///   localeListResolutionCallback: widget.localeListResolutionCallback,
+    ///   localeResolutionCallback: widget.localeResolutionCallback,
+    ///   localizationsDelegates: widget.localizationsDelegates,
+    ///   supportedLocales: widget.supportedLocales,
+    /// );
+    /// ```
+    ///
+    /// It is built **from** the widget rather than kept in it, which is why
+    /// this returns one rather than storing one: the widget is rebuilt with
+    /// new fields and the resolver survives, holding the resolved locale
+    /// across those rebuilds -- upstream's `_updateLocalizations` hands it the
+    /// new fields instead of making another.
+    pub fn localizations(
+        &self,
+        platform_locales: &[Locale],
+        list_callback: Option<crate::localizations::LocaleListResolution>,
+        single_callback: Option<crate::localizations::LocaleResolution>,
+    ) -> crate::localizations::LocalizationsResolver {
+        let mut resolver = crate::localizations::LocalizationsResolver::new(
+            self.supported_locales.clone(),
+            platform_locales,
+            list_callback,
+            single_callback,
+        );
+        resolver.locale = self.locale.clone();
+        resolver
     }
 
     /// Upstream `_onGenerateRoute`, followed by `_onUnknownRoute`.
@@ -983,6 +1028,66 @@ mod tests {
         };
         assert_eq!(app.validate(), Ok(()));
         assert!(app.default_handler_is_usable());
+    }
+
+    #[test]
+    fn the_app_hands_its_locales_to_the_resolver_that_can_use_them() {
+        // The field held strings, which the resolution algorithm cannot match
+        // on -- it compares language, script and country separately.
+        use crate::platform::Locale;
+        let app = WidgetsApp {
+            supported_locales: vec![Locale::new("en"), Locale::new("fr")],
+            ..app()
+        };
+        let resolver = app.localizations(&[Locale::new("fr")], None, None);
+        assert_eq!(resolver.resolved(), Some(Locale::new("fr")));
+    }
+
+    #[test]
+    fn an_apps_own_locale_beats_the_platforms_and_is_still_resolved() {
+        use crate::platform::Locale;
+        let app = WidgetsApp {
+            supported_locales: vec![Locale::new("en"), Locale::new("fr")],
+            locale: Some(Locale::new("fr")),
+            ..app()
+        };
+        assert_eq!(
+            app.localizations(&[Locale::new("en")], None, None)
+                .resolved(),
+            Some(Locale::new("fr")),
+            "the application said French, so French it is"
+        );
+
+        // And a locale the application does not support falls back the same
+        // way a reader's would.
+        let asking_for_german = WidgetsApp {
+            locale: Some(Locale::new("de")),
+            ..app
+        };
+        assert_eq!(
+            asking_for_german
+                .localizations(&[Locale::new("en")], None, None)
+                .resolved(),
+            Some(Locale::new("en"))
+        );
+    }
+
+    #[test]
+    fn the_apps_callbacks_reach_the_resolver() {
+        use crate::platform::Locale;
+        fn swedish(_preferred: &[Locale], _supported: &[Locale]) -> Option<Locale> {
+            Some(Locale::new("sv"))
+        }
+        let app = WidgetsApp {
+            supported_locales: vec![Locale::new("en"), Locale::new("fr")],
+            ..app()
+        };
+        assert_eq!(
+            app.localizations(&[Locale::new("fr")], Some(swedish), None)
+                .resolved(),
+            Some(Locale::new("sv")),
+            "an application that wrote a callback is asked"
+        );
     }
 
     #[test]

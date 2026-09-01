@@ -5880,3 +5880,51 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6922 通�
 以及 `Locale` 是否 `Clone + PartialEq`（换字段类型时要用）。
 然后把这个字段换成 `Vec<Locale>` 并接上 `LocalizationsResolver`——
 这样"应用支持哪些语言"就只有一个住处，而不是一个字符串列表加一个真类型。
+
+---
+
+## 第 510 轮：一个应用支持哪些语言，只该有一个住处
+
+先查了上一轮的两件事：`WidgetsApp::validate` **确实**有
+`supportedLocales must not be empty` 这条；`Locale` 是 `Clone + PartialEq`。
+于是把 `supported_locales` 从 `Vec<String>` 换成 `Vec<Locale>`，
+补上 `locale` 字段，并加了 `WidgetsApp::localizations(...)`——
+上游 `_WidgetsAppState` 正是**从 widget 造出** resolver 而不是把它存在 widget 里，
+所以这里也返回一个：widget 每帧重建，resolver 活着并保存着已解析的 locale。
+
+### 一个构造顺序，被测试当场抓住
+
+第一版我写成 `LocalizationsResolver::new(...).with_callbacks(...)`，
+测试立刻红了：`new` 在**构造时**就解析了一遍平台 locale，
+而回调是**之后**才装上去的——第一次解析没有它们。
+上游的写法说明了原因：回调在**初始化列表**里赋值，构造函数体才解析，
+所以第一次就带着它们。
+
+改法不是"记得先装回调"，而是**把回调变成 `new` 的参数**，
+让那个顺序**不可表达**。这和第 489 轮把两个枚举合成一个是同一个动作：
+能被写错的顺序，最好让它无法写。
+
+### 变异 4 个，全红
+
+第一次解析绕过回调；app 不把自己的 locale 列表交出去；
+app 不传自己的 `locale`；app 把回调丢掉。
+
+`WidgetsApp` 0.31 → **0.36（15/42）**。
+
+尺子：十七把全部 exit 0。门：Rust 6925 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6925 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**顺手记一条给自己的规矩**：这一轮又被 heredoc 咬了一次——
+`bash <<'PY'` 里的 Python 字符串里写 `\n`，会被当成真正的换行，literal 就断了。
+第三次了。**变异脚本一律用编辑器写，不要用 heredoc。**
+
+**下一步**：`WidgetsApp` 剩下的 27 个里，`shortcuts` / `actions` 是最大的一族——
+上游的 `WidgetsApp.defaultShortcuts` 是一张**按平台分的**大表
+（`_defaultShortcuts` 加 `_defaultWebShortcuts` 加 macOS 的一套），
+`defaultActions` 是与之配对的意图表。
+**先查一件事**：`shortcuts.rs` 里有没有这张默认表
+（`grep -n "DEFAULT_SHORTCUTS\|default_shortcuts" shortcuts.rs`），
+以及它是否按平台分。如果表在而 App 没接，那是"接上去"；
+如果表根本没有，那要先看清上游那张表有多大——
+它可能值好几轮，而不是一轮里塞进去。

@@ -598,29 +598,34 @@ pub struct LocalizationsResolver {
 }
 
 impl LocalizationsResolver {
+    /// Upstream's constructor, whose **initialiser list sets the callbacks and
+    /// whose body then resolves**: the first resolution already has them.
+    ///
+    /// They are arguments rather than something set afterwards for exactly
+    /// that reason -- a builder that installed them after construction would
+    /// leave the first answer computed without them, and the mistake would
+    /// only show on an application that set a callback and never changed its
+    /// locales. The order is not something to remember; it is not expressible.
     pub fn new(
         supported_locales: Vec<Locale>,
         platform_locales: &[Locale],
-    ) -> LocalizationsResolver {
-        let resolved = basic_locale_list_resolution(platform_locales, &supported_locales);
-        LocalizationsResolver {
-            locale: None,
-            supported_locales,
-            list_callback: None,
-            single_callback: None,
-            resolved_locale: resolved,
-            notifications: 0,
-        }
-    }
-
-    pub fn with_callbacks(
-        mut self,
         list_callback: Option<LocaleListResolution>,
         single_callback: Option<LocaleResolution>,
     ) -> LocalizationsResolver {
-        self.list_callback = list_callback;
-        self.single_callback = single_callback;
-        self
+        let resolved = resolve_locales(
+            platform_locales,
+            &supported_locales,
+            list_callback,
+            single_callback,
+        );
+        LocalizationsResolver {
+            locale: None,
+            supported_locales,
+            list_callback,
+            single_callback,
+            resolved_locale: resolved,
+            notifications: 0,
+        }
     }
 
     pub fn notifications(&self) -> usize {
@@ -1204,6 +1209,8 @@ mod tests {
         let mut resolver = LocalizationsResolver::new(
             vec![with_country("en", "US"), locale("fr")],
             &[with_country("en", "US")],
+            None,
+            None,
         );
         assert_eq!(resolver.resolved(), Some(with_country("en", "US")));
 
@@ -1216,6 +1223,8 @@ mod tests {
         let mut resolver = LocalizationsResolver::new(
             vec![with_country("en", "US"), locale("fr")],
             &[with_country("en", "US")],
+            None,
+            None,
         );
         assert_eq!(resolver.notifications(), 0);
 
@@ -1237,7 +1246,8 @@ mod tests {
         // here; the supported set is what the cached resolution was computed
         // against.
         let platform = [locale("fr")];
-        let mut resolver = LocalizationsResolver::new(vec![with_country("en", "US")], &platform);
+        let mut resolver =
+            LocalizationsResolver::new(vec![with_country("en", "US")], &platform, None, None);
         assert_eq!(resolver.resolved(), Some(with_country("en", "US")));
 
         resolver.update(None, vec![with_country("en", "US")], None, None, &platform);
@@ -1279,9 +1289,12 @@ mod resolver_callback_tests {
     fn the_callbacks_are_asked_about_the_platforms_locales() {
         // The resolver held the locales and not the callbacks, so an
         // application that wrote one could never be asked.
-        let mut resolver =
-            LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[locale("fr")])
-                .with_callbacks(Some(always_swedish), None);
+        let mut resolver = LocalizationsResolver::new(
+            vec![locale("en"), locale("fr")],
+            &[locale("fr")],
+            Some(always_swedish),
+            None,
+        );
         resolver.did_change_locales(&[locale("en")]);
         assert_eq!(
             resolver.resolved(),
@@ -1294,8 +1307,12 @@ mod resolver_callback_tests {
     fn the_callbacks_are_asked_about_an_explicit_locale_too() {
         // `_resolveLocales(<Locale>[_locale!], supportedLocales)`: the
         // application's own locale goes through the same two chances.
-        let mut resolver = LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[])
-            .with_callbacks(None, Some(single_always_swedish));
+        let mut resolver = LocalizationsResolver::new(
+            vec![locale("en"), locale("fr")],
+            &[],
+            None,
+            Some(single_always_swedish),
+        );
         resolver.locale = Some(locale("fr"));
         assert_eq!(resolver.resolved(), Some(locale("sv")));
     }
@@ -1304,8 +1321,12 @@ mod resolver_callback_tests {
     fn an_explicit_locale_is_still_resolved_against_what_is_supported() {
         // Not used as given: an application that asks for a locale it does not
         // support falls back exactly as a reader asking for it would.
-        let mut resolver =
-            LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[locale("en")]);
+        let mut resolver = LocalizationsResolver::new(
+            vec![locale("en"), locale("fr")],
+            &[locale("en")],
+            None,
+            None,
+        );
         resolver.locale = Some(Locale::new("de"));
         assert_eq!(
             resolver.resolved(),
@@ -1316,8 +1337,8 @@ mod resolver_callback_tests {
 
     #[test]
     fn a_callback_that_says_nothing_leaves_the_algorithm_alone() {
-        let mut resolver = LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[])
-            .with_callbacks(Some(never), None);
+        let mut resolver =
+            LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[], Some(never), None);
         resolver.did_change_locales(&[locale("fr")]);
         assert_eq!(resolver.resolved(), Some(locale("fr")));
     }
@@ -1327,8 +1348,12 @@ mod resolver_callback_tests {
         // The asymmetry `update` leaves behind, which looks like a bug from
         // either side alone: the explicit path runs the callbacks on every
         // read, the platform path ran them when the locales last arrived.
-        let mut resolver =
-            LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[locale("fr")]);
+        let mut resolver = LocalizationsResolver::new(
+            vec![locale("en"), locale("fr")],
+            &[locale("fr")],
+            None,
+            None,
+        );
         assert_eq!(resolver.resolved(), Some(locale("fr")));
 
         resolver.update(
