@@ -533,6 +533,21 @@ impl Container {
         inner + before + after + margin
     }
 
+    /// The layers this container would compose, built for a question rather
+    /// than for the tree.
+    ///
+    /// Nothing is kept: [`Container::compose`] records what it builds so the
+    /// next frame can reconfigure it rather than replace it, and a rehearsal
+    /// that recorded itself would hand the next frame wrappers that were never
+    /// laid out.
+    fn rehearsed(&self) -> Option<BoxedWidget> {
+        let mut current: Option<BoxedWidget> = self.child.clone();
+        for kind in self.shape() {
+            current = Some(self.build_layer(kind, current.take()));
+        }
+        current
+    }
+
     /// Builds one wrapper around `inner`, as this container is configured now.
     fn build_layer(&self, kind: Layer, inner: Option<BoxedWidget>) -> BoxedWidget {
         match kind {
@@ -743,6 +758,28 @@ impl RenderBox for Container {
         self.composed.as_ref().map_or(Size::ZERO, |c| c.size())
     }
 
+    /// What `layout` would answer, without answering it.
+    ///
+    /// The composition answers when there is one. When there is not -- and
+    /// there is not until the first layout, while a dry measurement happens
+    /// *before* one -- the layers are built here and thrown away. Building
+    /// them is cheap and, more to the point, it is the **same** builder
+    /// `layout` uses: a hand-written formula beside it would be a second
+    /// description of the same box, free to drift from it.
+    ///
+    /// Upstream never faces this: its `Container` is a stateless widget whose
+    /// wrappers are separate render objects, each answering for itself. See
+    /// PORTING_STATUS.md, tick 469.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        match &self.composed {
+            Some(composed) => composed.dry_layout(constraints),
+            None => match self.rehearsed() {
+                Some(rehearsal) => rehearsal.dry_layout(constraints),
+                None => constraints.biggest(),
+            },
+        }
+    }
+
     fn paint(&self, context: &mut PaintContext, offset: Offset) {
         if let Some(composed) = &self.composed {
             composed.paint(context, offset);
@@ -863,6 +900,15 @@ impl RenderBox for Expand {
     fn size(&self) -> Size {
         self.size
     }
+
+    /// The same answer `layout` gives. Upstream asserts in debug builds that
+    /// the two agree; here the reason to write it is that the default is
+    /// `Size::ZERO`, which is a **plausible** wrong answer -- a parent
+    /// measuring without committing gets nothing where it should get
+    /// everything.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.biggest()
+    }
     fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
     fn hit_test(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
         false
@@ -886,6 +932,12 @@ impl RenderBox for Empty {
     }
     fn size(&self) -> Size {
         Size::ZERO
+    }
+
+    /// The same answer `layout` gives -- which is not always zero: a
+    /// constraint with a minimum takes that minimum.
+    fn compute_dry_layout(&self, constraints: BoxConstraints) -> Size {
+        constraints.smallest()
     }
     fn paint(&self, _context: &mut PaintContext, _offset: Offset) {}
     fn hit_test(&self, _position: Offset, _result: &mut HitTestResult) -> bool {
@@ -2434,6 +2486,57 @@ impl ColoredBox {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_container_measured_without_being_laid_out_answers_what_it_would_be() {
+        // `compute_dry_layout` is what a parent asks when it wants a size
+        // without committing to one -- a flex working out free space, an
+        // `IntrinsicWidth` measuring before it lays out. The default is
+        // `Size::ZERO`, and zero is a **plausible** wrong answer: nothing
+        // crashes, the box simply comes out with no size.
+        let container = || {
+            Container::new()
+                .with_padding(crate::render::EdgeInsets::symmetric(5.0, 3.0))
+                .with_margin(crate::render::EdgeInsets::all(2.0))
+                .with_child(crate::render::RenderConstrainedBox::new(
+                    crate::render::BoxConstraints::tight(40.0, 20.0),
+                ))
+        };
+        let loose = crate::render::BoxConstraints::loose(400.0, 300.0);
+        let dry = container().compute_dry_layout(loose);
+        assert_eq!(
+            dry,
+            Size::new(54.0, 30.0),
+            "the child, the padding, the margin"
+        );
+
+        // And it agrees with the wet answer, which is the whole contract:
+        // upstream asserts exactly this in debug builds.
+        let mut wet = container();
+        assert_eq!(wet.layout(loose), dry);
+        assert_eq!(
+            wet.compute_dry_layout(loose),
+            dry,
+            "and it still agrees once there is a composition to ask"
+        );
+    }
+
+    #[test]
+    fn an_expanding_box_measured_dry_takes_everything_it_would_take() {
+        // The pair either side of `Container`: one takes all the room, the
+        // other none. Both used to answer zero when asked without committing.
+        let loose = crate::render::BoxConstraints::loose(320.0, 240.0);
+        assert_eq!(
+            Expand::new().compute_dry_layout(loose),
+            Size::new(320.0, 240.0)
+        );
+        assert_eq!(Empty.compute_dry_layout(loose), Size::ZERO);
+        assert_eq!(
+            Empty.compute_dry_layout(crate::render::BoxConstraints::tight(10.0, 12.0)),
+            Size::new(10.0, 12.0),
+            "and a minimum is a minimum even for nothing"
+        );
+    }
 
     #[test]
     fn a_container_asked_before_its_first_layout_answers_from_its_parts() {

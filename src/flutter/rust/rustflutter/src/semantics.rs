@@ -2175,6 +2175,17 @@ impl RenderBox for RenderSemantics {
     fn distance_to_baseline(&self) -> Option<f32> {
         self.child.distance_to_baseline()
     }
+
+    /// Upstream `RenderProxyBox`: a description of a subtree is not a change
+    /// to it, so what this box would measure is what its child would. The
+    /// default is `Size::ZERO`, and a parent measuring without committing
+    /// would get nothing at all -- see PORTING_STATUS.md, tick 469.
+    fn compute_dry_layout(
+        &self,
+        constraints: crate::render::BoxConstraints,
+    ) -> crate::render::Size {
+        self.child.dry_layout(constraints)
+    }
 }
 
 // -- The widget ---------------------------------------------------------------
@@ -4517,6 +4528,40 @@ fn is_empty_rect(node: &SemanticsNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_semantics_node_measures_what_its_child_would() {
+        // A description of a subtree is not a change to it. The default
+        // `compute_dry_layout` is `Size::ZERO`, so a parent measuring without
+        // committing -- a flex working out free space, an `IntrinsicWidth`
+        // measuring before it lays out -- got nothing where it should have got
+        // the child's own size. See PORTING_STATUS.md, tick 469.
+        let described = RenderSemantics::new(
+            911,
+            SemanticsProperties::label("a button"),
+            crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints::tight(
+                48.0, 24.0,
+            )),
+        );
+        let room = crate::render::BoxConstraints::loose(300.0, 200.0);
+        assert_eq!(
+            described.compute_dry_layout(room),
+            crate::render::Size::new(48.0, 24.0)
+        );
+
+        // And the dry answer is the wet one, which is the contract.
+        let mut laid_out = RenderSemantics::new(
+            912,
+            SemanticsProperties::label("a button"),
+            crate::render::RenderConstrainedBox::new(crate::render::BoxConstraints::tight(
+                48.0, 24.0,
+            )),
+        );
+        assert_eq!(
+            crate::render::RenderBox::layout(&mut laid_out, room),
+            described.compute_dry_layout(room)
+        );
+    }
     use super::*;
     use crate::framework::{ElementTree, leaf, many};
     use crate::licenses::Unicode;

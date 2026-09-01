@@ -31,8 +31,18 @@ import paths
 CRATE = os.path.join(paths.REPO, 'src', 'flutter', 'rust', 'rustflutter', 'src')
 
 # What a box that wraps another has to answer for itself.
+#
+# `compute_dry_layout` joined the list at tick 469, and `Container` was what it
+# found: the default is `Size::ZERO`, so a parent measuring without committing
+# -- a flex working out its free space, an `IntrinsicWidth` measuring before it
+# lays out -- got nothing back for the most-used box in the crate.
+#
+# `hit_test_children` is deliberately **not** here. Thirteen wrappers do not
+# implement it and every one of them overrides `hit_test` itself instead, which
+# is the same job done a level up; a checker that could not tell those apart
+# would report thirteen findings and no bugs.
 WANTED = ['max_intrinsic_width', 'min_intrinsic_width', 'max_intrinsic_height',
-          'min_intrinsic_height', 'distance_to_baseline']
+          'min_intrinsic_height', 'distance_to_baseline', 'compute_dry_layout']
 
 # A field of one of these types is what makes a render object a wrapper.
 CHILD = re.compile(
@@ -56,6 +66,13 @@ EXCUSED = {
     # what it "would like" is a moving target rather than an intrinsic.
     'RenderAnimatedSize': 'between two sizes while it animates',
 }
+
+# Methods a particular type is excused from, where the rest of the list still
+# applies to it. Narrower than EXCUSED, and preferred to it: a whole type waved
+# through stops being watched for everything else too. Empty today -- the one
+# entry a first draft put here turned out to be an excuse for something that
+# was never missing, which is worse than no excuse at all.
+EXCUSED_METHOD = {}
 
 
 def blocks(source):
@@ -100,7 +117,11 @@ def holes():
             for kind, body in blocks(source):
                 if not CHILD.search(structs.get(kind, '')):
                     continue
-                missing = [method for method in WANTED if ('fn %s' % method) not in body]
+                missing = [
+                    method for method in WANTED
+                    if ('fn %s' % method) not in body
+                    and (kind, method) not in EXCUSED_METHOD
+                ]
                 if missing:
                     found.append((os.path.relpath(path, paths.REPO), kind, missing))
     return found

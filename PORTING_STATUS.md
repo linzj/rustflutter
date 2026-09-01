@@ -3604,3 +3604,64 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 **先查一件事**：那 17 个里哪些真的既没有 `hit_test` 也没有
 `hit_test_children`——那才是"看得见摸不着"的真洞；
 确认了再决定要不要把这两项也加进 `proxy_holes.py` 的 `WANTED`。
+
+---
+
+## 第 469 轮：先量后落地，而最常用的那只盒子量出来是零
+
+上一轮留的两个问题，先查，两个答案都不是原先猜的：
+
+- **`hit_test_children` 没有真洞。** 17 个包装层没写它，
+  但每一个都**自己重写了整个 `hit_test`**——同一件事在上一层做了。
+  真正两样都没有的只有四个 sliver，而它们本来就走另一套协议。
+  所以这一项**不**加进 `proxy_holes.py` 的 `WANTED`：
+  一把分不清这两种情况的尺子会报 13 条发现、0 个 bug。
+- **`compute_dry_layout` 有真洞，而且在最要命的地方**：`Container`。
+
+`compute_dry_layout` 是"父想先量一下、还不打算落地"时问的
+（flex 算剩余空间、`IntrinsicWidth` 量完再布局）。
+默认返回 `Size::ZERO`——又是那种**看起来合理的错**：不崩、不报错，
+盒子只是量出来没有大小。这个 crate 里有 60 处在调 `dry_layout`。
+
+补了四个：`Container`、`RenderSemantics`（纯代理，转给孩子）、
+以及 `Expand`（该占满却答零）和 `Empty`（该听最小值却答零）。
+
+`Container` 那个有意思：它的 `composed` 和 intrinsic 那次一样，
+**是在 `layout` 里造的**，而干量发生在布局之前。
+这次没有像上一轮那样手写一份公式——那等于把同一只盒子描述两遍，
+两份描述迟早会漂。改成**当场把层搭一遍、问完就扔**（`rehearsed`），
+用的正是 `layout` 用的那个 `build_layer`。
+搭出来的东西一个也不留：`compose` 会记下它建的层，好让下一帧
+改配置而不是重建，而一次"排练"如果记下了自己，
+下一帧拿到的就是一批从没被布局过的包装层。
+
+尺子加了第六项 `compute_dry_layout`，并且给它开了一个
+**按方法**豁免的位置（比整类豁免窄：一个类被整个放行，
+就连别的项也不再被看着了）。第一版往里塞了 `RenderViewport`，
+查了一下人家根本有这个方法——**为一件本来就没缺的事写豁免，比不写还糟**，
+删掉，位置留着，注释写明它今天是空的和为什么。
+
+### 一次被自己咬到的扫描
+
+上一次变异扫描中途 `assert` 挂掉，脚本死在"写进变异体之后、还原之前"——
+于是尺子被留在了瞎眼状态，下一轮扫描一开始就 MISS。
+（发现得早：MISS 报的是"这段文字找不到"，去看文件才知道是上一次留下的。）
+记在这里：**扫描脚本的还原要放在 `finally` 里**，
+半路退出的清理不能靠"后面一定会跑到"。
+
+变异扫描 5 个代码 + 1 个尺子的，全红。
+尺子那条是两头都验的：把它弄瞎、再挖一个真洞，它必须看不见；
+恢复之后，同一个洞必须被看见。
+
+尺子：十七把全部 exit 0。门：Rust 6750 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`compute_dry_layout` 在**非包装层**上还缺一批，
+尺子看不到它们（它只看有 child 字段的）——
+`RenderEditable`、`RenderListBody`、`RenderNavigationToolbar`、
+`GridHost`、`RenderListWheelViewport`、`RenderErrorBox`。
+**先查一件事**：上游对多孩子的 render 是怎么写 `computeDryLayout` 的
+（`RenderFlex` 用 `_computeSizes` 的 dry 分支，
+而有些干脆 `assert(debugCannotComputeDryLayout(...))` 拒绝回答）——
+分清"能干量"和"上游明说拒绝"，再决定这批各自属于哪一类。
