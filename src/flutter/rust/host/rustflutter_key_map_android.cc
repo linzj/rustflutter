@@ -577,4 +577,37 @@ uint64_t LogicalKeyForAndroidKeyCode(uint32_t key_code) {
                 KeyOfAndroidPlane(key_code));
 }
 
+// The modifiers whose held state Android reports as a bit in `getMetaState()`,
+// and the keys each bit stands for. Ctrl, Shift and Alt; upstream leaves Meta
+// out of this list, and so does this.
+//
+// Upstream uses only the unsided bits (META_SHIFT_ON, never META_SHIFT_LEFT_ON)
+// because ChromeOS reports a right-hand modifier as UNSIDED | LEFT_SIDE, which
+// makes the sided bits worse than useless.
+constexpr ModifierKeyPair kCtrlKeys[] = {
+    {0x000000700e0, 0x00200000100},  // ControlLeft
+    {0x000000700e4, 0x00200000101},  // ControlRight
+};
+
+constexpr ModifierKeyPair kShiftKeys[] = {
+    {0x000000700e1, 0x00200000102},  // ShiftLeft
+    {0x000000700e5, 0x00200000103},  // ShiftRight
+};
+
+constexpr ModifierKeyPair kAltKeys[] = {
+    {0x000000700e2, 0x00200000104},  // AltLeft
+    {0x000000700e6, 0x00200000105},  // AltRight
+};
+
+constexpr PressingGoal kAndroidPressingGoals[] = {
+    {0x00001000, kCtrlKeys, 2},   // KeyEvent.META_CTRL_ON
+    {0x00000001, kShiftKeys, 2},  // KeyEvent.META_SHIFT_ON
+    {0x00000002, kAltKeys, 2},    // KeyEvent.META_ALT_ON
+};
+
+const PressingGoal* AndroidPressingGoals(size_t* count) {
+  *count = sizeof(kAndroidPressingGoals) / sizeof(kAndroidPressingGoals[0]);
+  return kAndroidPressingGoals;
+}
+
 }  // namespace flutter

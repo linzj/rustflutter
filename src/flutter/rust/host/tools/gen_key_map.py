@@ -78,6 +78,7 @@ ANDROID_SRC = sys.argv[5] if len(sys.argv) > 5 else None
 JAVA_ENTRY = re.compile(r"put\((0x[0-9a-f]+)L,\s*(0x[0-9a-f]+)L\);\s*//\s*(.*)")
 android_physical = []
 android_logical = []
+android_goals = []
 if ANDROID_SRC:
     java_text = open(ANDROID_SRC, encoding="utf-8").read()
 
@@ -91,8 +92,40 @@ if ANDROID_SRC:
 
     android_physical = java_table("scanCodeToPhysical")
     android_logical = java_table("keyCodeToLogical")
+
+    # The pressing goals: which physical/logical pairs a meta bit stands for.
+    # Upstream lists three -- Ctrl, Shift, Alt -- and deliberately not Meta.
+    #
+    # The mask names are Android constants, and Java can spell them by name
+    # where C++ cannot. The values were read out of the platform jar rather
+    # than remembered:
+    #
+    #     javap -classpath <sdk>/platforms/android-36.1/android.jar \
+    #           -constants android.view.KeyEvent
+    META_MASKS = {
+        "META_SHIFT_ON": 0x00000001,
+        "META_ALT_ON": 0x00000002,
+        "META_CTRL_ON": 0x00001000,
+        "META_META_ON": 0x00010000,
+        "META_CAPS_LOCK_ON": 0x00100000,
+    }
+    GOAL = re.compile(
+        r"new PressingGoal\(\s*KeyEvent\.(\w+),\s*new KeyPair\[\]\s*\{(.*?)\}\)",
+        re.S)
+    PAIR = re.compile(r"new KeyPair\((0x[0-9a-f]+)L,\s*(0x[0-9a-f]+)L\),\s*//\s*(\w+)")
+    goals_start = java_text.index("pressingGoals")
+    for m in GOAL.finditer(java_text[goals_start:]):
+        mask_name = m.group(1)
+        assert mask_name in META_MASKS, mask_name
+        pairs = [(int(p.group(1), 16), int(p.group(2), 16), p.group(3))
+                 for p in PAIR.finditer(m.group(2))]
+        assert pairs, mask_name
+        android_goals.append((mask_name, META_MASKS[mask_name], pairs))
+    assert len(android_goals) == 3, android_goals
+
     print(f"android scan->physical {len(android_physical)}  "
-          f"keycode->logical {len(android_logical)}")
+          f"keycode->logical {len(android_logical)}  "
+          f"pressing goals {len(android_goals)}")
 
 print(f"physical {len(physical)}  logical {len(logical)}  scan->logical {len(scan_logical)}")
 
@@ -224,6 +257,33 @@ def dedupe(rows):
     return sorted(latest.values())
 
 
+def emit_goals(goals):
+    """The pressing goals, as a flat array of goals pointing at key pairs."""
+    lines = []
+    for mask_name, _mask, pairs in goals:
+        name = mask_name.replace("META_", "").replace("_ON", "").title()
+        lines.append(f"constexpr ModifierKeyPair k{name}Keys[] = {{")
+        for physical, logical, comment in pairs:
+            lines.append(f"    {{0x{physical:011x}, 0x{logical:011x}}},  // {comment}")
+        lines.append("};")
+        lines.append("")
+    lines.append("constexpr PressingGoal kAndroidPressingGoals[] = {")
+    # The rows are padded to a common width because clang-format aligns
+    # trailing comments within a block, and a generated file that the
+    # formatter would rewrite fails the commit hook on whoever regenerates it
+    # next.
+    rows = []
+    for mask_name, mask, pairs in goals:
+        name = mask_name.replace("META_", "").replace("_ON", "").title()
+        rows.append((f"    {{0x{mask:08x}, k{name}Keys, {len(pairs)}}},",
+                     f"// KeyEvent.{mask_name}"))
+    width = max(len(row) for row, _comment in rows)
+    for row, comment in rows:
+        lines.append(f"{row.ljust(width)}  {comment}")
+    lines.append("};")
+    return "\n".join(lines)
+
+
 if ANDROID_SRC:
     ANDROID_OUT = CC_OUT.replace("_win.cc", "_android.cc")
     assert ANDROID_OUT != CC_OUT, CC_OUT
@@ -310,6 +370,20 @@ uint64_t PhysicalKeyForAndroidKey(uint32_t scan_code, uint32_t key_code) {{
 uint64_t LogicalKeyForAndroidKeyCode(uint32_t key_code) {{
   return Lookup(kAndroidKeyCodeToLogical, key_code,
                 KeyOfAndroidPlane(key_code));
+}}
+
+// The modifiers whose held state Android reports as a bit in `getMetaState()`,
+// and the keys each bit stands for. Ctrl, Shift and Alt; upstream leaves Meta
+// out of this list, and so does this.
+//
+// Upstream uses only the unsided bits (META_SHIFT_ON, never META_SHIFT_LEFT_ON)
+// because ChromeOS reports a right-hand modifier as UNSIDED | LEFT_SIDE, which
+// makes the sided bits worse than useless.
+{emit_goals(android_goals)}
+
+const PressingGoal* AndroidPressingGoals(size_t* count) {{
+  *count = sizeof(kAndroidPressingGoals) / sizeof(kAndroidPressingGoals[0]);
+  return kAndroidPressingGoals;
 }}
 
 }}  // namespace flutter

@@ -14,6 +14,7 @@
 #include "flutter/rust/ffi/rustflutter_ffi.h"
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_key_map_android.h"
+#include "flutter/rust/host/rustflutter_key_sync_android.h"
 #include "flutter/testing/testing.h"
 
 // Declared by //flutter/rust:rust_lib (flutter/rust/rustflutter/src/lib.rs).
@@ -1314,6 +1315,255 @@ TEST(AndroidKeyMap, AGapInTheMiddleOfTheTableIsStillAGap) {
   EXPECT_NE(LogicalKeyForAndroidKeyCode(0x4e),
             LogicalKeyForAndroidKeyCode(0x4f))
       << "the gap took its neighbour's value";
+}
+
+// -- Android modifier synchronisation -----------------------------------------
+
+namespace {
+
+// Physical and logical values for the keys these tests press, read from
+// upstream's KeyboardMap.java rather than from the generated table.
+constexpr uint64_t kShiftLeftPhysical = 0x000700e1;
+constexpr uint64_t kShiftLeftLogical = 0x0200000102;
+constexpr uint64_t kShiftRightPhysical = 0x000700e5;
+constexpr uint32_t kShiftLeftKeyCode = 0x3b;
+constexpr uint32_t kShiftLeftScanCode = 0x2a;
+constexpr uint32_t kTabKeyCode = 0x3d;
+constexpr uint32_t kTabScanCode = 0x0f;
+constexpr uint64_t kTabPhysical = 0x0007002b;
+constexpr int32_t kMetaShiftOn = 0x00000001;
+
+/// One emitted event, flattened to what the assertions read.
+struct Emitted {
+  KeyEventType type;
+  uint64_t physical;
+  uint64_t logical;
+  bool synthesized;
+  std::string character;
+};
+
+/// Runs one event through and appends what came out.
+AndroidKeyboard::Emit Collect(std::vector<Emitted>* out) {
+  return [out](const KeyData& data, const std::string& character) {
+    out->push_back({data.type, data.physical, data.logical,
+                    data.synthesized != 0, character});
+  };
+}
+
+AndroidKeyEvent Press(uint32_t key_code, uint32_t scan_code, int32_t meta) {
+  AndroidKeyEvent event;
+  event.key_code = key_code;
+  event.scan_code = scan_code;
+  event.meta_state = meta;
+  event.down = true;
+  return event;
+}
+
+AndroidKeyEvent Release(uint32_t key_code, uint32_t scan_code, int32_t meta) {
+  AndroidKeyEvent event = Press(key_code, scan_code, meta);
+  event.down = false;
+  return event;
+}
+
+}  // namespace
+
+TEST(AndroidKeySync, AnOrdinaryKeyIsPassedStraightThrough) {
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  EXPECT_TRUE(
+      keyboard.Handle(Press(kTabKeyCode, kTabScanCode, 0), "", Collect(&out)));
+  ASSERT_EQ(out.size(), 1u) << "nothing needed inventing";
+  EXPECT_EQ(out[0].type, KeyEventType::kDown);
+  EXPECT_EQ(out[0].physical, kTabPhysical);
+  EXPECT_FALSE(out[0].synthesized);
+  EXPECT_TRUE(keyboard.IsPressed(kTabPhysical));
+
+  out.clear();
+  EXPECT_TRUE(keyboard.Handle(Release(kTabKeyCode, kTabScanCode, 0), "",
+                              Collect(&out)));
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].type, KeyEventType::kUp);
+  EXPECT_FALSE(keyboard.IsPressed(kTabPhysical));
+}
+
+TEST(AndroidKeySync, AModifierHeldSinceBeforeTheAppStartedIsPressedForIt) {
+  // The case this whole mechanism exists for. The user holds Shift, then
+  // presses Tab; the Shift press happened before this host was listening, so
+  // the framework has never seen it and Shift+Tab would traverse *forwards*.
+  // Android says otherwise on every event, in `getMetaState()`.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  ASSERT_FALSE(keyboard.IsPressed(kShiftLeftPhysical));
+  EXPECT_TRUE(keyboard.Handle(Press(kTabKeyCode, kTabScanCode, kMetaShiftOn),
+                              "", Collect(&out)));
+
+  ASSERT_EQ(out.size(), 2u) << "a Shift press had to be invented first";
+  EXPECT_EQ(out[0].type, KeyEventType::kDown);
+  EXPECT_EQ(out[0].physical, kShiftLeftPhysical);
+  EXPECT_EQ(out[0].logical, kShiftLeftLogical);
+  EXPECT_TRUE(out[0].synthesized)
+      << "nobody pressed this; the framework must know";
+  EXPECT_TRUE(out[0].character.empty()) << "an invented press types nothing";
+
+  EXPECT_EQ(out[1].type, KeyEventType::kDown);
+  EXPECT_EQ(out[1].physical, kTabPhysical);
+  EXPECT_FALSE(out[1].synthesized);
+
+  // And it stays held, so the next key does not get a second invented press.
+  // Tab is released first: a second press of a key still recorded as held is
+  // its own case, and would add an invented release that has nothing to do
+  // with the modifier.
+  EXPECT_TRUE(keyboard.IsPressed(kShiftLeftPhysical));
+  ASSERT_TRUE(keyboard.Handle(Release(kTabKeyCode, kTabScanCode, kMetaShiftOn),
+                              "", Collect(&out)));
+  out.clear();
+  EXPECT_TRUE(keyboard.Handle(Press(kTabKeyCode, kTabScanCode, kMetaShiftOn),
+                              "", Collect(&out)));
+  ASSERT_EQ(out.size(), 1u) << "already in step";
+  EXPECT_EQ(out[0].physical, kTabPhysical);
+}
+
+TEST(AndroidKeySync, AModifierReleasedOutOfSightIsReleasedForTheFramework) {
+  // The other direction, and the one that wedges a running app: the release
+  // went somewhere else -- another window, the system -- so the framework
+  // still believes Shift is down and every subsequent shortcut is wrong.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  ASSERT_TRUE(keyboard.Handle(
+      Press(kShiftLeftKeyCode, kShiftLeftScanCode, kMetaShiftOn), "",
+      Collect(&out)));
+  ASSERT_TRUE(keyboard.IsPressed(kShiftLeftPhysical));
+
+  out.clear();
+  // A plain Tab, with the Shift bit now clear.
+  EXPECT_TRUE(
+      keyboard.Handle(Press(kTabKeyCode, kTabScanCode, 0), "", Collect(&out)));
+  ASSERT_EQ(out.size(), 2u) << "the stale Shift had to be released first";
+  EXPECT_EQ(out[0].type, KeyEventType::kUp);
+  EXPECT_EQ(out[0].physical, kShiftLeftPhysical);
+  EXPECT_TRUE(out[0].synthesized);
+  EXPECT_EQ(out[1].physical, kTabPhysical);
+  EXPECT_FALSE(keyboard.IsPressed(kShiftLeftPhysical));
+}
+
+TEST(AndroidKeySync, AnOnScreenKeyboardIsBelievedRatherThanCorrected) {
+  // Gboard sets the Shift bit without ever sending a Shift key event. Inventing
+  // the press it implies would leave a modifier held that nothing ever
+  // releases -- the bit clears silently and no event carries the release.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  AndroidKeyEvent event = Press(kTabKeyCode, kTabScanCode, kMetaShiftOn);
+  event.virtual_keyboard = true;
+  EXPECT_TRUE(keyboard.Handle(event, "", Collect(&out)));
+
+  ASSERT_EQ(out.size(), 1u) << "no Shift press was invented";
+  EXPECT_EQ(out[0].physical, kTabPhysical);
+  EXPECT_FALSE(keyboard.IsPressed(kShiftLeftPhysical));
+}
+
+TEST(AndroidKeySync, AReleaseNobodySawThePressOfIsDropped) {
+  // Passing it on would ask the framework to take a key out of its held set
+  // that something else put there -- or that is not there at all.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  EXPECT_FALSE(keyboard.Handle(Release(kTabKeyCode, kTabScanCode, 0), "",
+                               Collect(&out)));
+  EXPECT_TRUE(out.empty());
+}
+
+TEST(AndroidKeySync, APressOfAKeyAlreadyHeldReleasesItFirst) {
+  // Two downs with no up between them and no repeat flag: the release was
+  // lost. Without the invented release the framework would record a second
+  // press of a key it already has down.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  ASSERT_TRUE(
+      keyboard.Handle(Press(kTabKeyCode, kTabScanCode, 0), "a", Collect(&out)));
+  out.clear();
+
+  EXPECT_TRUE(
+      keyboard.Handle(Press(kTabKeyCode, kTabScanCode, 0), "a", Collect(&out)));
+  ASSERT_EQ(out.size(), 2u);
+  EXPECT_EQ(out[0].type, KeyEventType::kUp);
+  EXPECT_TRUE(out[0].synthesized);
+  EXPECT_EQ(out[1].type, KeyEventType::kDown);
+  EXPECT_FALSE(out[1].synthesized);
+}
+
+TEST(AndroidKeySync, AHeldKeyRepeatsRatherThanPressingAgain) {
+  // A repeat is not a press: the framework's held set already has the key, and
+  // a second down would be a second keystroke. The distinction is drawn from
+  // the record, not from the repeat flag alone.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  ASSERT_TRUE(
+      keyboard.Handle(Press(kTabKeyCode, kTabScanCode, 0), "", Collect(&out)));
+  out.clear();
+
+  AndroidKeyEvent again = Press(kTabKeyCode, kTabScanCode, 0);
+  again.repeat = true;
+  EXPECT_TRUE(keyboard.Handle(again, "", Collect(&out)));
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].type, KeyEventType::kRepeat);
+
+  // A repeat flag on a key that is *not* recorded is still a first press --
+  // the record decides, not the flag.
+  AndroidKeyboard fresh;
+  out.clear();
+  AndroidKeyEvent orphan = Press(kTabKeyCode, kTabScanCode, 0);
+  orphan.repeat = true;
+  EXPECT_TRUE(fresh.Handle(orphan, "", Collect(&out)));
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].type, KeyEventType::kDown);
+}
+
+TEST(AndroidKeySync, TheEventsOwnModifierIsNotInventedAroundItself) {
+  // Pressing Shift itself, with the bit already set: the press *is* the thing
+  // that makes it true, so nothing should be invented before it, and exactly
+  // one event goes out.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  EXPECT_TRUE(keyboard.Handle(
+      Press(kShiftLeftKeyCode, kShiftLeftScanCode, kMetaShiftOn), "",
+      Collect(&out)));
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].physical, kShiftLeftPhysical);
+  EXPECT_FALSE(out[0].synthesized);
+
+  // The other side of the pair was never touched.
+  EXPECT_FALSE(keyboard.IsPressed(kShiftRightPhysical));
+}
+
+TEST(AndroidKeySync, AReleaseCarriesNoCharacter) {
+  // Android will map a key code to a character on the way up as readily as on
+  // the way down. Only a press types.
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  ASSERT_TRUE(keyboard.Handle(Press(0x1d, 0x1e, 0), "a", Collect(&out)));
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_EQ(out[0].character, "a");
+
+  out.clear();
+  ASSERT_TRUE(keyboard.Handle(Release(0x1d, 0x1e, 0), "a", Collect(&out)));
+  ASSERT_EQ(out.size(), 1u);
+  EXPECT_TRUE(out[0].character.empty());
+}
+
+TEST(AndroidKeySync, AnEventWithNoNumbersAtAllIsNotAKey) {
+  AndroidKeyboard keyboard;
+  std::vector<Emitted> out;
+
+  EXPECT_FALSE(keyboard.Handle(Press(0, 0, 0), "", Collect(&out)));
+  EXPECT_TRUE(out.empty());
 }
 
 }  // namespace testing

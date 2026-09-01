@@ -6242,3 +6242,77 @@ C++ 38 个 gtest 全过（新增 4 个）；gallery 357 通过；
 没有设备就换一条：Android 的**修饰键同步**（`pressingGoals`/`togglingGoals`）——
 `metaState` 说 Shift 按着而框架没收到过那次按下时，上游会补一个合成事件；
 本轮把 `metaState` 整个丢掉了，那是下一个真缺口。
+
+---
+
+## 第 516 轮：Android 的修饰键同步——框架以为按着的，和真按着的
+
+`adb devices` 仍然是空的，所以走上一轮记下的另一条：`metaState`。
+上一轮把它整个丢掉了。
+
+### 这为什么是个真缺口
+
+框架的按下集合完全由收到的事件建立，所以它**只能和事件流一样完整**——
+而 Android 的事件流不完整。应用启动时 Shift 已经按着、
+松开发生在别的窗口上、修饰键被系统吃掉：
+每一种都留下有按下没松开或有松开没按下。
+于是 Shift+Tab 往前走，或者松手之后每个快捷键都还带着 Shift。
+
+Android 每个事件都带 `getMetaState()`，说它认为哪些修饰键按着。
+所以每个事件都是一次对账的机会：先补上让两边一致的合成按下/松开，
+再发真事件。这就是上游 `KeyEmbedderResponder`，
+本轮把它连同 `pressingRecords` 一起搬进 `rustflutter_key_sync_android.cc`。
+
+**为什么记录放在宿主而不是问框架**：键是平台消息，在平台线程上处理，
+决定要发什么的时候够不到框架那份集合。上游同理，同因。
+
+### 表也是生成的
+
+`pressingGoals`（Ctrl/Shift/Alt 各两个键，**不含 Meta**——上游不做，这里也不做）
+一并由 `gen_key_map.py` 从 `KeyboardMap.java` 生成。
+掩码名字是 Android 常量，C++ 拼不出来，**值是从平台 jar 里读出来的，不是记出来的**：
+
+    javap -classpath <sdk>/platforms/android-36.1/android.jar \
+          -constants android.view.KeyEvent
+
+上游只用无侧别的位（`META_SHIFT_ON`，不用 `META_SHIFT_LEFT_ON`），
+因为 ChromeOS 把右修饰键报成 UNSIDED | LEFT_SIDE，侧别位比没有还糟。
+
+### 顺带纠正上一轮做错的三处主事件规则
+
+照 `handleEventImpl` 读下来，上一轮有三处是我自己想的，不是上游的：
+
+- **重复不由 `getRepeatCount()` 一个人说了算**：物理键不在记录里，
+  哪怕 repeatCount 大于零也是首次按下。
+- **没见过按下的松开要丢掉**，不能往上送——那会让框架从按下集合里
+  移走一个不是它放进去的键。
+- **同一个物理键连着两次按下**（且不是重复）说明松开丢了，
+  要先补一个松开，否则框架记下同一个键按了两次。
+
+还有一条上游明写的：**只有按下才打字**，松开不带字符。
+
+on-screen 键盘（Gboard）**相信而不纠正**：它把 Shift 位置上却从不发 Shift 事件，
+补出来的那次按下将永远等不到松开。
+
+### 扫描
+
+九个变异全部杀死。第九个第一次写成 `if (false)`，**根本不编译**——
+不编译的变异什么也不能证明，换成把条件反过来（`==` 代替 `!=`）才算数。
+
+一条测试是我自己写错的：第二次按 Tab 时前一次的 Tab 还记着按下，
+于是走了"已按着的键先补松开"那条分支，多出一个事件。
+**测试没写错的地方，是代码在做正确的事**——改成中间先松开 Tab。
+
+尺子：十七把全部 exit 0。门：Rust 6939 通过、`cargo fmt --check` 干净；
+C++ 48 个 gtest 全过（新增 10 个）；gallery 357 通过；
+`rustflutter_unittests` 6939 通过；三个目录 default 与 `rustflutter_engine` 都 exit 0。
+Java 用 javac 对 android.jar 编译通过。**仍然没有真机**。
+
+**下一步**：`togglingGoals`——CapsLock。本轮只做了按住类修饰键，
+锁定类一个没做，`KeyboardMap.getTogglingGoals()` 就在同一个文件里。
+**先读一件事**：`synchronizeTogglingKey` 为什么要**连发两个**事件
+（按下再松开，或松开再按下），以及它为什么**跳过 CapsLock 自己的事件**——
+上游注释说 ChromeOS 上 CapsLock 自己的事件 metaState 是"按住"语义而非"锁定"语义。
+这条规则不读注释是抄不对的。
+另外框架那边 `Keyboard` 有 `lock` 状态（`keyboard/mod.rs` 第 218 行附近，
+注释说它不能从 pressed 推导），要确认合成事件到达时它是否真的会翻转。

@@ -49,6 +49,10 @@ source_set("host") {
     # only into the build that cannot run the tests is a table nothing checks.
     "rustflutter_key_map_android.cc",
     "rustflutter_key_map_android.h",
+
+    # And the state machine that reads them, for the same reason.
+    "rustflutter_key_sync_android.cc",
+    "rustflutter_key_sync_android.h",
   ]
 
   # Impeller on EGL, which is the same file on every platform that has EGL --

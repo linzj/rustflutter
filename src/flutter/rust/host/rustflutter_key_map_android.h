@@ -5,6 +5,7 @@
 #ifndef FLUTTER_RUST_HOST_RUSTFLUTTER_KEY_MAP_ANDROID_H_
 #define FLUTTER_RUST_HOST_RUSTFLUTTER_KEY_MAP_ANDROID_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace flutter {
@@ -46,6 +47,32 @@ uint64_t PhysicalKeyForAndroidKey(uint32_t scan_code, uint32_t key_code);
 /// event is delivered, which is why -- unlike Windows -- no scan code is
 /// needed here to disambiguate.
 uint64_t LogicalKeyForAndroidKeyCode(uint32_t key_code);
+
+//------------------------------------------------------------------------------
+/// One side of a modifier: the two values that name the same key.
+struct ModifierKeyPair {
+  uint64_t physical;
+  uint64_t logical;
+};
+
+//------------------------------------------------------------------------------
+/// A modifier whose held state Android reports as a bit in `getMetaState()`.
+///
+/// The bit says only "some Shift is down". Which one has to come from the key
+/// events themselves, which is why the goal carries both keys: when the bit
+/// disagrees with what the host has seen, one of these is the key to invent a
+/// press or a release for.
+struct PressingGoal {
+  uint32_t mask;
+  const ModifierKeyPair* keys;
+  size_t count;
+};
+
+//------------------------------------------------------------------------------
+/// Ctrl, Shift and Alt -- the three upstream synchronizes. Not Meta: Android
+/// reports it, but upstream does not act on it, and a goal this host invented
+/// would send presses no other embedder sends.
+const PressingGoal* AndroidPressingGoals(size_t* count);
 
 }  // namespace flutter
 

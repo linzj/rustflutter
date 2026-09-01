@@ -81,6 +81,7 @@
 #include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_gl.h"
 #include "flutter/rust/host/rustflutter_key_map_android.h"
+#include "flutter/rust/host/rustflutter_key_sync_android.h"
 #include "flutter/shell/common/display.h"
 #include "flutter/shell/common/platform_view.h"
 #include "flutter/shell/common/rasterizer.h"
@@ -1701,6 +1702,11 @@ struct HostState {
   HostPlatformView* platform_view = nullptr;
   TextInputHandler text_input;
 
+  /// What this host has told the framework is held, and the machinery that
+  /// keeps it in step with what Android says. Touched only from the Android
+  /// UI thread, which is where every key event arrives.
+  AndroidKeyboard keyboard;
+
   /// Set by SendChannelUpdate once the framework is listening on
   /// `flutter/platform`, which is what makes a back press a question rather
   /// than an order.
@@ -2324,43 +2330,57 @@ Java_io_flutter_rustflutter_RustflutterActivity_nativeSetSelection(JNIEnv* env,
 /// delivered -- and `scan_code` is where it is, which is what makes a release
 /// cancel the right press when a layout changes mid-key.
 ///
+/// `meta_state` is which modifiers Android believes are held, which is not
+/// always what this host has told the framework; `AndroidKeyboard` invents
+/// whatever presses and releases make the two agree. `virtual_keyboard` says
+/// the event came from an on-screen keyboard, which is believed rather than
+/// corrected.
+///
 /// `character` is what the key typed, or null for a key that typed nothing.
 /// Java computes it, because `KeyCharacterMap` is where the layout lives and
 /// there is no way to ask it from here.
+///
+/// One event in can be several out, or none at all. See AndroidKeyboard.
 JNIEXPORT void JNICALL
-Java_io_flutter_rustflutter_RustflutterActivity_nativeKey(JNIEnv* env,
-                                                          jclass clazz,
-                                                          jint key_code,
-                                                          jint scan_code,
-                                                          jboolean down,
-                                                          jboolean repeat,
-                                                          jstring character) {
+Java_io_flutter_rustflutter_RustflutterActivity_nativeKey(
+    JNIEnv* env,
+    jclass clazz,
+    jint key_code,
+    jint scan_code,
+    jint meta_state,
+    jboolean down,
+    jboolean repeat,
+    jboolean virtual_keyboard,
+    jstring character) {
   auto& state = flutter::HostState::Get();
   if (state.platform_view == nullptr) {
     return;
   }
 
-  flutter::KeyData data;
-  data.Clear();
+  flutter::AndroidKeyEvent event;
+  event.key_code = static_cast<uint32_t>(key_code);
+  event.scan_code = static_cast<uint32_t>(scan_code);
+  event.meta_state = static_cast<int32_t>(meta_state);
+  event.down = down == JNI_TRUE;
+  event.repeat = repeat == JNI_TRUE;
+  event.virtual_keyboard = virtual_keyboard == JNI_TRUE;
   // Android's own event timestamp is in milliseconds since boot; the framework
   // counts microseconds, and only differences between key events are ever read
   // from it, so the epoch does not have to agree with anything.
-  data.timestamp = static_cast<uint64_t>(
+  event.timestamp_micros = static_cast<uint64_t>(
       fml::TimePoint::Now().ToEpochDelta().ToMicroseconds());
-  data.type = down ? (repeat ? flutter::KeyEventType::kRepeat
-                             : flutter::KeyEventType::kDown)
-                   : flutter::KeyEventType::kUp;
-  data.physical = flutter::PhysicalKeyForAndroidKey(
-      static_cast<uint32_t>(scan_code), static_cast<uint32_t>(key_code));
-  data.logical =
-      flutter::LogicalKeyForAndroidKeyCode(static_cast<uint32_t>(key_code));
-  data.synthesized = 0;
 
   std::string text;
   if (character != nullptr) {
     text = fml::jni::JavaStringToString(env, character);
   }
-  state.platform_view->SendKey(data, text);
+
+  flutter::HostPlatformView* view = state.platform_view;
+  state.keyboard.Handle(
+      event, text,
+      [view](const flutter::KeyData& data, const std::string& character) {
+        view->SendKey(data, character);
+      });
 }
 
 JNIEXPORT jboolean JNICALL
