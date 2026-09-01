@@ -211,6 +211,19 @@ source_set("host") {
   }
 
   if (is_mac) {
+    deps += [
+      "//flutter/impeller",
+      "//flutter/impeller/renderer/backend/metal",
+      "//flutter/shell/gpu:gpu_surface_metal",
+
+      # The metallib blobs Impeller's Metal backend builds its shader library
+      # from. The same targets the Windows and Linux hosts link for SPIR-V;
+      # on darwin they carry the Metal variant instead.
+      "//flutter/impeller/entity:entity_shaders",
+      "//flutter/impeller/entity:framebuffer_blend_entity_shaders",
+      "//flutter/impeller/entity:modern_entity_shaders",
+    ]
+
     frameworks = [
       # The window, the view, the events and the pasteboard.
       "Cocoa.framework",
@@ -226,11 +239,27 @@ source_set("host") {
       # Writing the frame dump: the PNG encoder, and the type identifier that
       # says which encoder. See FrameBuffer::WritePng.
       "ImageIO.framework",
+
+      # Impeller on Metal: the device, and the CAMetalLayer frames go through.
+      "Metal.framework",
+      "QuartzCore.framework",
       "UniformTypeIdentifiers.framework",
     ]
   }
 
   if (is_ios) {
+    deps += [
+      "//flutter/impeller",
+      "//flutter/impeller/renderer/backend/metal",
+      "//flutter/shell/gpu:gpu_surface_metal",
+
+      # The metallib blobs Impeller's Metal backend builds its shader library
+      # from; the same targets the other hosts link for their GPU variants.
+      "//flutter/impeller/entity:entity_shaders",
+      "//flutter/impeller/entity:framebuffer_blend_entity_shaders",
+      "//flutter/impeller/entity:modern_entity_shaders",
+    ]
+
     frameworks = [
       # The window, the view, the touches and the pasteboard.
       "UIKit.framework",
@@ -240,6 +269,10 @@ source_set("host") {
 
       "CoreFoundation.framework",
       "Foundation.framework",
+
+      # Impeller on Metal: the device, and the CAMetalLayer the view's layer
+      # is.
+      "Metal.framework",
       "QuartzCore.framework",
     ]
   }

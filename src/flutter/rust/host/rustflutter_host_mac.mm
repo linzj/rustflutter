@@ -22,25 +22,30 @@
 //     back with dispatch_async to the main queue. Neither side touches the
 //     other's state directly.
 //
-// Rendering is `GPUSurfaceSoftware` -- Skia rasterises into a bitmap and the
-// view blits it. That is the surface the shell brings with it and it needs
-// nothing from the platform, which is what makes this file a window and an
-// input pump rather than a graphics port. Impeller on macOS is Metal, and
-// Metal is a different `PlatformView` hook (`CreateRenderingSurface` returning
-// `GPUSurfaceMetalImpeller` over a `CAMetalLayer`) rather than more of this
-// one; the seam it would attach to is
-// `HostPlatformView::CreateRenderingSurface` below, exactly where the Windows
-// host attaches ANGLE.
+// Rendering is Impeller on Metal over a `CAMetalLayer`, with the Skia software
+// surface -- rasterised into a bitmap that the view blits -- as the fallback,
+// taken when the application asked for software, when the machine has no Metal
+// device, or when the Impeller context would not come up. That is the same
+// fallback chain the Linux and Windows hosts run, spelled for darwin: the GPU
+// surface attaches in `HostPlatformView::CreateRenderingSurface`, the context
+// in `SetupImpellerContext`, and the CAMetalLayer is installed on the view
+// before the shell exists, because a layer the window server presents through
+// cannot be swapped for the bitmap path's `drawRect:` one afterwards. A
+// software frame that arrives on a Metal layer (the context failed, the layer
+// stayed) is uploaded into the layer's drawable directly, so the fallback
+// needs nothing from the main thread.
 //
 // What this host does not do yet, stated rather than implied: no IME (a
-// composing input method gets the committed text and not the marked text), no
-// accessibility tree (the Windows host serves UI Automation; the macOS
-// counterpart is NSAccessibility and is its own file), and no Impeller.
+// composing input method gets the committed text and not the marked text) and
+// no accessibility tree (the Windows host serves UI Automation; the macOS
+// counterpart is NSAccessibility and is its own file).
 
 #include "flutter/rust/host/rustflutter_host.h"
 
 #import <Cocoa/Cocoa.h>
 #import <ImageIO/ImageIO.h>
+#import <Metal/Metal.h>
+#import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -60,10 +65,13 @@
 #include "flutter/common/task_runners.h"
 #include "flutter/fml/logging.h"
 #include "flutter/fml/make_copyable.h"
+#include "flutter/fml/mapping.h"
 #include "flutter/fml/message_loop.h"
 #include "flutter/fml/paths.h"
+#include "flutter/fml/synchronization/sync_switch.h"
 #include "flutter/fml/synchronization/waitable_event.h"
 #include "flutter/fml/task_runner.h"
+#include "flutter/impeller/renderer/backend/metal/context_mtl.h"
 #include "flutter/lib/ui/window/key_data.h"
 #include "flutter/lib/ui/window/key_data_packet.h"
 #include "flutter/lib/ui/window/platform_message.h"
@@ -71,6 +79,7 @@
 #include "flutter/lib/ui/window/pointer_data_packet.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
+#include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_key_map_mac.h"
 #include "flutter/rust/host/rustflutter_text_input.h"
 #include "flutter/shell/common/display.h"
@@ -80,9 +89,16 @@
 #include "flutter/shell/common/shell.h"
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/common/vsync_waiter.h"
+#include "flutter/shell/gpu/gpu_surface_metal_delegate.h"
+#include "flutter/shell/gpu/gpu_surface_metal_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
 #include "flutter/shell/platform/common/client_wrapper/include/flutter/standard_method_codec.h"
+#include "impeller/display_list/aiks_context.h"
+#include "impeller/entity/mtl/entity_shaders.h"
+#include "impeller/entity/mtl/framebuffer_blend_shaders.h"
+#include "impeller/entity/mtl/modern_shaders.h"
+#include "impeller/typographer/backends/skia/typographer_context_skia.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -804,30 +820,184 @@ struct WindowState {
   /// applied to. Channel calls reach it on the platform thread, keys on the
   /// main thread; it locks internally.
   TextInputHandler text_input;
+  /// The layer Impeller presents through; null on the software path, where
+  /// the view draws the FrameBuffer in `drawRect:` instead. Installed before
+  /// the shell exists and never swapped, which is what makes the backend a
+  /// decision the main thread makes once, up front.
+  CAMetalLayer* metal_layer = nil;
   RfContentView* view = nil;
   NSWindow* window = nil;
 };
 
 //------------------------------------------------------------------------------
+/// What `GPUSurfaceMetalImpeller` asks of the window: the layer to draw into.
+///
+/// This is upstream's `IOSSurfaceMetalImpeller` in miniature, with the same
+/// contract. `GetCAMetalLayer` runs on the raster thread once per frame and
+/// sizes the layer to the frame -- mutating a layer from off the main thread is
+/// exactly what upstream does there, and the only thread that may be holding a
+/// drawable is this one. The other three hooks belong to the kMTLTexture
+/// render-target type and are never called on the kCAMetalLayer one; upstream
+/// DCHECKs the fact, and returning false says the same thing without dying.
+class MetalLayerDelegate final : public GPUSurfaceMetalDelegate {
+ public:
+  explicit MetalLayerDelegate(CAMetalLayer* layer)
+      : GPUSurfaceMetalDelegate(MTLRenderTargetType::kCAMetalLayer), layer_(layer) {}
+
+  // |GPUSurfaceMetalDelegate|
+  GPUCAMetalLayerHandle GetCAMetalLayer(const DlISize& frame_info) const override {
+    const auto drawable_size = CGSizeMake(frame_info.width, frame_info.height);
+    if (!CGSizeEqualToSize(drawable_size, layer_.drawableSize)) {
+      layer_.drawableSize = drawable_size;
+    }
+    // Impeller reads back the color attachment for save layers and backdrop
+    // filters, which a framebuffer-only layer forbids.
+    layer_.framebufferOnly = NO;
+    return (__bridge GPUCAMetalLayerHandle)layer_;
+  }
+
+  // |GPUSurfaceMetalDelegate|
+  bool PresentDrawable(GrMTLHandle drawable) const override { return false; }
+
+  // |GPUSurfaceMetalDelegate|
+  GPUMTLTextureInfo GetMTLTexture(const DlISize& frame_info) const override {
+    GPUMTLTextureInfo info;
+    info.texture_id = -1;
+    info.texture = nullptr;
+    info.destruction_callback = nullptr;
+    info.destruction_context = nullptr;
+    return info;
+  }
+
+  // |GPUSurfaceMetalDelegate|
+  bool PresentTexture(GPUMTLTextureInfo texture) const override { return false; }
+
+ private:
+  /// The view owns the layer; this is the same raw-pointer arrangement the
+  /// WindowState itself is built on.
+  CAMetalLayer* layer_;
+};
+
+//------------------------------------------------------------------------------
 /// The platform view: the shell's window onto this host.
+///
+/// Lives on the platform thread. SetupImpellerContext and
+/// CreateRenderingSurface run on the raster thread, where the Impeller context
+/// and the surface it draws through belong; PresentBackingStore is called
+/// there too, on the software fallback.
 class HostPlatformView final : public PlatformView,
                                public GPUSurfaceSoftwareDelegate,
                                public ExitRequester {
  public:
   HostPlatformView(PlatformView::Delegate& delegate,
                    const TaskRunners& task_runners,
-                   WindowState* state)
-      : PlatformView(delegate, task_runners), state_(state) {}
+                   WindowState* state,
+                   std::shared_ptr<const fml::SyncSwitch> gpu_disabled_sync_switch)
+      : PlatformView(delegate, task_runners),
+        state_(state),
+        gpu_disabled_sync_switch_(std::move(gpu_disabled_sync_switch)) {
+    if (state_->metal_layer != nil) {
+      metal_delegate_ = std::make_unique<MetalLayerDelegate>(state_->metal_layer);
+    }
+  }
 
-  ~HostPlatformView() override = default;
+  ~HostPlatformView() override {
+    // The image upload target holds a shared_ptr to the Impeller context.
+    // Dropping it here rather than at process exit keeps the context's
+    // destructor from running after the threads it hands work to have gone.
+    if (context_mtl_) {
+      RfSetImageUploadTarget(nullptr, nullptr);
+    }
+  }
 
   // |PlatformView|
+  //
+  // Called on the raster thread during startup, before anything asks for the
+  // Impeller context -- the shell publishes GetImpellerContext() to the IO
+  // thread as soon as this returns, which is the ordering the whole scheme
+  // hangs on.
+  void SetupImpellerContext() override {
+    // No layer means the software path was chosen before the shell existed:
+    // the application asked for it, RUSTFLUTTER_SOFTWARE is set, or the
+    // machine had no Metal device to give.
+    if (metal_delegate_ == nullptr) {
+      rf_set_impeller_backend(0);
+      return;
+    }
+
+    // The three metallibs every Impeller Metal context is built from -- the
+    // same list `FlutterDarwinContextMetalImpeller` installs, and the Metal
+    // variants of the blobs the Windows and Linux hosts embed for their
+    // backends.
+    std::vector<std::shared_ptr<fml::Mapping>> shaders = {
+        std::make_shared<fml::NonOwnedMapping>(impeller_entity_shaders_data,
+                                               impeller_entity_shaders_length),
+        std::make_shared<fml::NonOwnedMapping>(impeller_modern_shaders_data,
+                                               impeller_modern_shaders_length),
+        std::make_shared<fml::NonOwnedMapping>(impeller_framebuffer_blend_shaders_data,
+                                               impeller_framebuffer_blend_shaders_length),
+    };
+
+    const Settings settings = delegate_.OnPlatformViewGetSettings();
+    auto context =
+        impeller::ContextMTL::Create(impeller::Flags{.use_sdfs = settings.impeller_use_sdfs},
+                                     shaders, gpu_disabled_sync_switch_, "Impeller Library");
+    if (!context || !context->IsValid()) {
+      // The layer is already installed and cannot be swapped, so the software
+      // surface below will present into it through its drawable instead of
+      // through drawRect:.
+      FML_LOG(IMPORTANT) << "Could not create the Metal Impeller context; "
+                            "falling back to software rendering.";
+      rf_set_impeller_backend(0);
+      return;
+    }
+
+    context_mtl_ = std::move(context);
+    aiks_context_ = std::make_shared<impeller::AiksContext>(
+        context_mtl_, impeller::TypographerContextSkia::Make());
+    if (!aiks_context_->IsValid()) {
+      FML_LOG(IMPORTANT) << "Could not create the Impeller Aiks context; "
+                            "falling back to software rendering.";
+      context_mtl_.reset();
+      aiks_context_.reset();
+      rf_set_impeller_backend(0);
+      return;
+    }
+
+    // The layer must hand out drawables from the device the context submits
+    // to; a mismatched pair is a texture the command queue cannot present.
+    // Before the first frame is the safe moment: nothing holds a drawable yet.
+    state_->metal_layer.device = context_mtl_->GetMTLDevice();
+
+    rf_set_impeller_backend(1);
+    FML_LOG(IMPORTANT) << "Rendering with Impeller (Metal).";
+  }
+
+  // |PlatformView|
+  //
+  // Also on the raster thread, after SetupImpellerContext.
   std::unique_ptr<Surface> CreateRenderingSurface() override {
-    // Where a Metal/Impeller surface would attach. The software surface needs
-    // nothing from the platform, which is why this host can be a window and an
-    // input pump and nothing else.
+    if (context_mtl_ && aiks_context_ && metal_delegate_ != nullptr) {
+      return std::make_unique<GPUSurfaceMetalImpeller>(metal_delegate_.get(), aiks_context_);
+    }
     return std::make_unique<GPUSurfaceSoftware>(this,
                                                 /*render_to_surface=*/true);
+  }
+
+  // |PlatformView|
+  std::shared_ptr<impeller::Context> GetImpellerContext() const override { return context_mtl_; }
+
+  // |PlatformView|
+  //
+  // Called on the IO thread, once, after the Impeller context is ready. Metal
+  // has no current-context concept to set up -- command buffers go to a queue
+  // from wherever they are built -- so all that remains is the side effect:
+  // texture uploads posted to this runner find the context in place.
+  sk_sp<GrDirectContext> CreateResourceContext() const override {
+    if (context_mtl_) {
+      RfSetImageUploadTarget(task_runners_.GetIOTaskRunner(), context_mtl_);
+    }
+    return nullptr;
   }
 
   // |PlatformView|
@@ -991,6 +1161,15 @@ class HostPlatformView final : public PlatformView,
 
   WindowState* state_ = nullptr;
   sk_sp<SkSurface> backing_store_;
+  /// What the raster thread hands the shell: the Impeller context and the
+  /// display-list renderer on top of it. Null on the software path.
+  std::shared_ptr<impeller::ContextMTL> context_mtl_;
+  std::shared_ptr<impeller::AiksContext> aiks_context_;
+  std::unique_ptr<GPUSurfaceMetalDelegate> metal_delegate_;
+  /// The switch the Impeller context observes, so a GPU the system took away
+  /// is one the context and the rasterizer agree on. The shell's own, handed
+  /// in at construction.
+  std::shared_ptr<const fml::SyncSwitch> gpu_disabled_sync_switch_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(HostPlatformView);
 };
@@ -1573,6 +1752,37 @@ static uint32_t FirstCodePoint(NSString* text) {
 namespace flutter {
 namespace {
 
+/// Presents one software frame through the Metal layer's own drawable.
+///
+/// The fallback of the fallback: Metal was asked for, so the view's layer is a
+/// CAMetalLayer -- a decision that cannot be revisited once the window server
+/// knows about it -- and then the Impeller context would not come up. A
+/// CAMetalLayer never calls `drawRect:`, so the bitmap has no other way in:
+/// it is copied into the drawable's texture and presented, which is the same
+/// upload a GPU readback path would do, just aimed the other way.
+///
+/// Skia's N32 is BGRA on darwin and the layer's default pixel format is
+/// BGRA8Unorm, so the bytes go in as they come out of `peekPixels`.
+bool PresentSoftwareThroughMetalLayer(CAMetalLayer* layer, const SkPixmap& pixmap) {
+  if (layer == nil) {
+    return false;
+  }
+  id<CAMetalDrawable> drawable = [layer nextDrawable];
+  if (drawable == nil) {
+    return false;
+  }
+  id<MTLTexture> texture = drawable.texture;
+  if (texture == nil) {
+    return false;
+  }
+  [texture replaceRegion:MTLRegionMake2D(0, 0, pixmap.width(), pixmap.height())
+             mipmapLevel:0
+               withBytes:pixmap.addr()
+             bytesPerRow:pixmap.rowBytes()];
+  [drawable present];
+  return true;
+}
+
 bool HostPlatformView::PresentBackingStore(sk_sp<SkSurface> backing_store) {
   if (backing_store == nullptr) {
     return false;
@@ -1581,6 +1791,11 @@ bool HostPlatformView::PresentBackingStore(sk_sp<SkSurface> backing_store) {
   if (!backing_store->peekPixels(&pixmap)) {
     return false;
   }
+
+  if (state_->metal_layer != nil) {
+    return PresentSoftwareThroughMetalLayer(state_->metal_layer, pixmap);
+  }
+
   const bool blue_first = pixmap.colorType() == kBGRA_8888_SkColorType;
   // Said once, because the alternative is a swapped-channel picture that still
   // looks like a picture -- and because which one Skia's N32 turns out to be is
@@ -1683,15 +1898,34 @@ int32_t rf_host_run(const RfHostOptions* options) {
 
   @autoreleasepool {
     Settings settings;
-    // Impeller on macOS would be Metal, and there is no Metal surface here yet.
-    // The application's preference is read and reported rather than silently
-    // ignored, so an app that asked for Impeller learns it did not get it.
-    if (options->enable_impeller != 0) {
-      FML_LOG(IMPORTANT) << "Impeller was requested; this host renders with the Skia software "
-                            "surface. See rustflutter_host_mac.mm.";
+    // The environment wins over the application's preference, so a rendering
+    // problem can be bisected without rebuilding: RUSTFLUTTER_SOFTWARE=1 forces
+    // the Skia software surface.
+    const char* force_software = std::getenv("RUSTFLUTTER_SOFTWARE");
+    const bool software_forced =
+        force_software != nullptr && force_software[0] != '\0' && force_software[0] != '0';
+    bool use_metal = options->enable_impeller != 0 && !software_forced;
+    if (software_forced) {
+      FML_LOG(IMPORTANT) << "RUSTFLUTTER_SOFTWARE is set; using the software "
+                            "surface.";
     }
-    settings.enable_impeller = false;
-    settings.enable_software_rendering = true;
+    // The only failure that can be known this early is the machine having no
+    // Metal device at all; the rest -- the shader library, the context -- is
+    // the raster thread's to discover, with the software surface to fall back
+    // on. Deciding the layer here is not premature: a CAMetalLayer cannot be
+    // swapped for the bitmap path's drawRect: backing once the window server
+    // has it, so the window has to be born knowing which one it is showing.
+    if (use_metal) {
+      id<MTLDevice> probe = MTLCreateSystemDefaultDevice();
+      const bool have_device = probe != nil;
+      [probe release];
+      if (!have_device) {
+        FML_LOG(IMPORTANT) << "No Metal device; using the software surface.";
+        use_metal = false;
+      }
+    }
+    settings.enable_impeller = use_metal;
+    settings.enable_software_rendering = !use_metal;
     settings.icu_initialization_required = true;
     settings.icu_data_path = options->icu_data_path != nullptr ? std::string(options->icu_data_path)
                                                                : DefaultIcuDataPath();
@@ -1701,7 +1935,8 @@ int32_t rf_host_run(const RfHostOptions* options) {
     settings.warn_on_impeller_opt_out = false;
 
     // Text and images are recorded for the backend that will draw them, and
-    // this is the software one.
+    // the raster thread says which that ended up being when the Impeller
+    // context -- or its failure -- is in.
     rf_set_impeller_backend(0);
 
     WindowState state;
@@ -1739,6 +1974,21 @@ int32_t rf_host_run(const RfHostOptions* options) {
     state.physical_width = static_cast<int32_t>(options->width * state.device_pixel_ratio);
     state.physical_height = static_cast<int32_t>(options->height * state.device_pixel_ratio);
 
+    // The layer Impeller presents through, installed now and never swapped.
+    // AppKit drives a layer-backed view's geometry, so the frame follows the
+    // window from here; the drawable size is set per frame by the delegate,
+    // from the raster thread, exactly as upstream's IOSSurfaceMetalImpeller
+    // does it. The device is filled in when the Impeller context exists, which
+    // is the only object that knows which one it picked.
+    if (use_metal) {
+      [view setWantsLayer:YES];
+      CAMetalLayer* layer = [[CAMetalLayer alloc] init];
+      layer.contentsScale = state.device_pixel_ratio;
+      view.layer = layer;
+      [layer release];
+      state.metal_layer = layer;
+    }
+
     // -- Threads --------------------------------------------------------------
 
     ThreadHost thread_host("rf", ThreadHost::Type::kPlatform | ThreadHost::Type::kUi |
@@ -1755,7 +2005,8 @@ int32_t rf_host_run(const RfHostOptions* options) {
     std::unique_ptr<Shell> shell = Shell::Create(
         platform_data, task_runners, settings,
         [&state](Shell& shell) {
-          auto view = std::make_unique<HostPlatformView>(shell, shell.GetTaskRunners(), &state);
+          auto view = std::make_unique<HostPlatformView>(shell, shell.GetTaskRunners(), &state,
+                                                         shell.GetIsGpuDisabledSyncSwitch());
           // The window needs to reach the view to send pointers and keys. The
           // shell owns it and outlives the run loop, so a raw pointer is
           // enough.

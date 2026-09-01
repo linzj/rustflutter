@@ -21,18 +21,23 @@
 //     platform task runner; everything the raster thread produces is posted
 //     back with dispatch_async to the main queue.
 //
-// Rendering is `GPUSurfaceSoftware` -- Skia rasterises into a bitmap and the
-// view blits it in `drawRect:`, the exact arrangement the macOS host uses.
-// Impeller on iOS is Metal (`GPUSurfaceMetalImpeller` over a `CAMetalLayer`),
-// and the seam it would attach to is `HostPlatformView::CreateRenderingSurface`
-// below.
+// Rendering is Impeller on Metal over the view's `CAMetalLayer` -- which is
+// what the layer *is*, when Metal was asked for, because `+layerClass` is
+// consulted before the view exists and cannot change its answer afterwards.
+// With the Skia software surface as the fallback, taken when the application
+// asked for software, when the simulator has no Metal device, or when the
+// Impeller context would not come up. A software frame on a Metal layer (the
+// context failed, the layer stayed) is uploaded into the layer's drawable
+// directly, since a CAMetalLayer never calls `drawRect:`.
 //
-// What this host does not do yet, stated rather than implied: no text input
-// (the `flutter/textinput` half arrives with the UITextInput work), no
-// hardware-keyboard key events, no accessibility tree, and no Impeller.
+// What this host does not do yet, stated rather than implied: no
+// hardware-keyboard key events and no accessibility tree. Text input is the
+// UITextInput implementation below.
 
 #include "flutter/rust/host/rustflutter_host.h"
 
+#import <Metal/Metal.h>
+#import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -54,14 +59,18 @@
 #include "flutter/common/task_runners.h"
 #include "flutter/fml/logging.h"
 #include "flutter/fml/make_copyable.h"
+#include "flutter/fml/mapping.h"
 #include "flutter/fml/message_loop.h"
 #include "flutter/fml/paths.h"
+#include "flutter/fml/synchronization/sync_switch.h"
 #include "flutter/fml/task_runner.h"
+#include "flutter/impeller/renderer/backend/metal/context_mtl.h"
 #include "flutter/lib/ui/window/platform_message.h"
 #include "flutter/lib/ui/window/pointer_data.h"
 #include "flutter/lib/ui/window/pointer_data_packet.h"
 #include "flutter/lib/ui/window/viewport_metrics.h"
 #include "flutter/rust/ffi/rustflutter_ffi.h"
+#include "flutter/rust/ffi/rustflutter_ffi_internal.h"
 #include "flutter/rust/host/rustflutter_text_input.h"
 #include "flutter/shell/common/display.h"
 #include "flutter/shell/common/platform_view.h"
@@ -70,8 +79,15 @@
 #include "flutter/shell/common/shell.h"
 #include "flutter/shell/common/thread_host.h"
 #include "flutter/shell/common/vsync_waiter.h"
+#include "flutter/shell/gpu/gpu_surface_metal_delegate.h"
+#include "flutter/shell/gpu/gpu_surface_metal_impeller.h"
 #include "flutter/shell/gpu/gpu_surface_software.h"
 #include "flutter/shell/gpu/gpu_surface_software_delegate.h"
+#include "impeller/display_list/aiks_context.h"
+#include "impeller/entity/mtl/entity_shaders.h"
+#include "impeller/entity/mtl/framebuffer_blend_shaders.h"
+#include "impeller/entity/mtl/modern_shaders.h"
+#include "impeller/typographer/backends/skia/typographer_context_skia.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -377,6 +393,10 @@ struct WindowState {
   /// applied to. Channel calls reach it on the platform thread, keyboard
   /// events on the main thread; it locks internally.
   TextInputHandler text_input;
+  /// The layer Impeller presents through -- the view's own layer, which is a
+  /// CAMetalLayer when Metal was asked for and null otherwise. Decided by
+  /// `+layerClass` before the view exists and never revisited.
+  CAMetalLayer* metal_layer = nil;
   RfHostView* view = nil;
   RfTextInputView* input_view = nil;
 };
@@ -394,6 +414,10 @@ WindowState* GlobalState() {
 /// pointers do not outlive the call.
 struct HeldOptions {
   bool enable_impeller = false;
+  /// Whether `+layerClass` should answer CAMetalLayer: the application's
+  /// preference, the environment's override, and the Metal device probe,
+  /// all decided before UIKit starts.
+  bool use_metal_layer = false;
   std::string icu_data_path;
 };
 
@@ -471,21 +495,185 @@ std::optional<std::string> LocalizationPayload() {
 }
 
 //------------------------------------------------------------------------------
+/// Presents one software frame through the Metal layer's own drawable.
+///
+/// The fallback of the fallback: Metal was asked for, so the view's layer is a
+/// CAMetalLayer -- `+layerClass` was consulted before the view existed and
+/// cannot change its answer -- and then the Impeller context would not come
+/// up. A CAMetalLayer never calls `drawRect:`, so the bitmap has no other way
+/// in: it is copied into the drawable's texture and presented.
+///
+/// Skia's N32 is BGRA on darwin and the layer's default pixel format is
+/// BGRA8Unorm, so the bytes go in as they come out of `peekPixels`.
+bool PresentSoftwareThroughMetalLayer(CAMetalLayer* layer, const SkPixmap& pixmap) {
+  if (layer == nil) {
+    return false;
+  }
+  id<CAMetalDrawable> drawable = [layer nextDrawable];
+  if (drawable == nil) {
+    return false;
+  }
+  id<MTLTexture> texture = drawable.texture;
+  if (texture == nil) {
+    return false;
+  }
+  [texture replaceRegion:MTLRegionMake2D(0, 0, pixmap.width(), pixmap.height())
+             mipmapLevel:0
+               withBytes:pixmap.addr()
+             bytesPerRow:pixmap.rowBytes()];
+  [drawable present];
+  return true;
+}
+
+//------------------------------------------------------------------------------
+/// What `GPUSurfaceMetalImpeller` asks of the window: the layer to draw into.
+///
+/// Upstream's `IOSSurfaceMetalImpeller` with the same contract -- `GetCAMetalLayer`
+/// runs on the raster thread once per frame and sizes the layer to the frame,
+/// which is the one place upstream also mutates the layer off the main thread.
+/// The other three hooks belong to the kMTLTexture render-target type and are
+/// never called on the kCAMetalLayer one.
+class MetalLayerDelegate final : public GPUSurfaceMetalDelegate {
+ public:
+  explicit MetalLayerDelegate(CAMetalLayer* layer)
+      : GPUSurfaceMetalDelegate(MTLRenderTargetType::kCAMetalLayer), layer_(layer) {}
+
+  // |GPUSurfaceMetalDelegate|
+  GPUCAMetalLayerHandle GetCAMetalLayer(const DlISize& frame_info) const override {
+    const auto drawable_size = CGSizeMake(frame_info.width, frame_info.height);
+    if (!CGSizeEqualToSize(drawable_size, layer_.drawableSize)) {
+      layer_.drawableSize = drawable_size;
+    }
+    // Impeller reads back the color attachment for save layers and backdrop
+    // filters, which a framebuffer-only layer forbids.
+    layer_.framebufferOnly = NO;
+    return (__bridge GPUCAMetalLayerHandle)layer_;
+  }
+
+  // |GPUSurfaceMetalDelegate|
+  bool PresentDrawable(GrMTLHandle drawable) const override { return false; }
+
+  // |GPUSurfaceMetalDelegate|
+  GPUMTLTextureInfo GetMTLTexture(const DlISize& frame_info) const override {
+    GPUMTLTextureInfo info;
+    info.texture_id = -1;
+    info.texture = nullptr;
+    info.destruction_callback = nullptr;
+    info.destruction_context = nullptr;
+    return info;
+  }
+
+  // |GPUSurfaceMetalDelegate|
+  bool PresentTexture(GPUMTLTextureInfo texture) const override { return false; }
+
+ private:
+  /// The view owns the layer; this is the same raw-pointer arrangement the
+  /// WindowState itself is built on.
+  CAMetalLayer* layer_;
+};
+
+//------------------------------------------------------------------------------
 /// The platform view: the shell's window onto this host.
+///
+/// Lives on the platform thread. SetupImpellerContext and
+/// CreateRenderingSurface run on the raster thread, where the Impeller context
+/// and the surface it draws through belong; PresentBackingStore is called
+/// there too, on the software fallback.
 class HostPlatformView final : public PlatformView, public GPUSurfaceSoftwareDelegate {
  public:
   HostPlatformView(PlatformView::Delegate& delegate,
                    const TaskRunners& task_runners,
-                   WindowState* state)
-      : PlatformView(delegate, task_runners), state_(state) {}
+                   WindowState* state,
+                   std::shared_ptr<const fml::SyncSwitch> gpu_disabled_sync_switch)
+      : PlatformView(delegate, task_runners),
+        state_(state),
+        gpu_disabled_sync_switch_(std::move(gpu_disabled_sync_switch)) {
+    if (state_->metal_layer != nil) {
+      metal_delegate_ = std::make_unique<MetalLayerDelegate>(state_->metal_layer);
+    }
+  }
 
   ~HostPlatformView() override = default;
 
   // |PlatformView|
+  //
+  // Called on the raster thread during startup, before anything asks for the
+  // Impeller context -- the shell publishes GetImpellerContext() to the IO
+  // thread as soon as this returns.
+  void SetupImpellerContext() override {
+    // No layer means the software path was chosen before the shell existed.
+    if (metal_delegate_ == nullptr) {
+      rf_set_impeller_backend(0);
+      return;
+    }
+
+    // The three metallibs every Impeller Metal context is built from, the same
+    // list `FlutterDarwinContextMetalImpeller` installs.
+    std::vector<std::shared_ptr<fml::Mapping>> shaders = {
+        std::make_shared<fml::NonOwnedMapping>(impeller_entity_shaders_data,
+                                               impeller_entity_shaders_length),
+        std::make_shared<fml::NonOwnedMapping>(impeller_modern_shaders_data,
+                                               impeller_modern_shaders_length),
+        std::make_shared<fml::NonOwnedMapping>(impeller_framebuffer_blend_shaders_data,
+                                               impeller_framebuffer_blend_shaders_length),
+    };
+
+    const Settings settings = delegate_.OnPlatformViewGetSettings();
+    auto context =
+        impeller::ContextMTL::Create(impeller::Flags{.use_sdfs = settings.impeller_use_sdfs},
+                                     shaders, gpu_disabled_sync_switch_, "Impeller Library");
+    if (!context || !context->IsValid()) {
+      // The view's layer is already a CAMetalLayer and stays one, so the
+      // software surface below will present into it through its drawable.
+      FML_LOG(IMPORTANT) << "Could not create the Metal Impeller context; "
+                            "falling back to software rendering.";
+      rf_set_impeller_backend(0);
+      return;
+    }
+
+    context_mtl_ = std::move(context);
+    aiks_context_ = std::make_shared<impeller::AiksContext>(
+        context_mtl_, impeller::TypographerContextSkia::Make());
+    if (!aiks_context_->IsValid()) {
+      FML_LOG(IMPORTANT) << "Could not create the Impeller Aiks context; "
+                            "falling back to software rendering.";
+      context_mtl_.reset();
+      aiks_context_.reset();
+      rf_set_impeller_backend(0);
+      return;
+    }
+
+    // The layer must hand out drawables from the device the context submits
+    // to. Before the first frame is the safe moment: nothing holds a drawable.
+    state_->metal_layer.device = context_mtl_->GetMTLDevice();
+
+    rf_set_impeller_backend(1);
+    FML_LOG(IMPORTANT) << "Rendering with Impeller (Metal).";
+  }
+
+  // |PlatformView|
+  //
+  // Also on the raster thread, after SetupImpellerContext.
   std::unique_ptr<Surface> CreateRenderingSurface() override {
-    // Where a Metal/Impeller surface would attach. The software surface needs
-    // nothing from the platform.
+    if (context_mtl_ && aiks_context_ && metal_delegate_ != nullptr) {
+      return std::make_unique<GPUSurfaceMetalImpeller>(metal_delegate_.get(), aiks_context_);
+    }
     return std::make_unique<GPUSurfaceSoftware>(this, /*render_to_surface=*/true);
+  }
+
+  // |PlatformView|
+  std::shared_ptr<impeller::Context> GetImpellerContext() const override { return context_mtl_; }
+
+  // |PlatformView|
+  //
+  // Called on the IO thread, once, after the Impeller context is ready. Metal
+  // has no current-context concept to set up, so all that remains is telling
+  // the image code where its uploads go.
+  sk_sp<GrDirectContext> CreateResourceContext() const override {
+    if (context_mtl_) {
+      RfSetImageUploadTarget(task_runners_.GetIOTaskRunner(), context_mtl_);
+    }
+    return nullptr;
   }
 
   // |PlatformView|
@@ -516,6 +704,11 @@ class HostPlatformView final : public PlatformView, public GPUSurfaceSoftwareDel
     if (!backing_store->peekPixels(&pixmap)) {
       return false;
     }
+
+    if (state_->metal_layer != nil) {
+      return PresentSoftwareThroughMetalLayer(state_->metal_layer, pixmap);
+    }
+
     const bool blue_first = pixmap.colorType() == kBGRA_8888_SkColorType;
     state_->frame_buffer.Store(pixmap.addr(), pixmap.width(), pixmap.height(), blue_first);
     RfHostView* view = state_->view;
@@ -624,6 +817,14 @@ class HostPlatformView final : public PlatformView, public GPUSurfaceSoftwareDel
 
   WindowState* state_ = nullptr;
   sk_sp<SkSurface> backing_store_;
+  /// What the raster thread hands the shell: the Impeller context and the
+  /// display-list renderer on top of it. Null on the software path.
+  std::shared_ptr<impeller::ContextMTL> context_mtl_;
+  std::shared_ptr<impeller::AiksContext> aiks_context_;
+  std::unique_ptr<GPUSurfaceMetalDelegate> metal_delegate_;
+  /// The switch the Impeller context observes; the shell's own, handed in at
+  /// construction.
+  std::shared_ptr<const fml::SyncSwitch> gpu_disabled_sync_switch_;
 
   FML_DISALLOW_COPY_AND_ASSIGN(HostPlatformView);
 };
@@ -692,6 +893,16 @@ RunningShell* GlobalShell() {
 @end
 
 @implementation RfHostView
+
+/// Metal was asked for, so the layer the window server hands this view is the
+/// one Impeller presents through. Answered before any instance exists and
+/// never revisited -- which is why the backend has to be decided before UIKit
+/// starts, in `rf_host_run`, and why the software fallback presents into the
+/// layer's drawable rather than through `drawRect:`, which a CAMetalLayer
+/// never calls.
++ (Class)layerClass {
+  return flutter::GlobalOptions()->use_metal_layer ? [CAMetalLayer class] : [CALayer class];
+}
 
 - (instancetype)initWithFrame:(CGRect)frame {
   self = [super initWithFrame:frame];
@@ -1331,6 +1542,14 @@ static void RfNotifyFrameworkStateChanged(RfTextInputView* view) {
 
   RfHostView* view = (RfHostView*)controller.view;
   state->view = view;
+  if (options->use_metal_layer) {
+    CAMetalLayer* layer = (CAMetalLayer*)view.layer;
+    // Points to physical pixels, which is what the drawable is sized in. The
+    // device is filled in when the Impeller context exists, which is the only
+    // object that knows which one it picked.
+    layer.contentsScale = view.contentScaleFactor > 0 ? view.contentScaleFactor : 1.0;
+    state->metal_layer = layer;
+  }
 
   // The hidden view the keyboard talks to. A subview so UIKit lets it become
   // first responder; hidden because the framework draws the text itself.
@@ -1376,19 +1595,22 @@ static void RfNotifyFrameworkStateChanged(RfTextInputView* view) {
   // -- Settings ---------------------------------------------------------------
 
   Settings settings;
-  if (options->enable_impeller) {
-    FML_LOG(IMPORTANT) << "Impeller was requested; this host renders with the Skia software "
-                          "surface. See rustflutter_host_ios.mm.";
-  }
-  settings.enable_impeller = false;
-  settings.enable_software_rendering = true;
+  // The environment's override and the device probe have already been applied
+  // -- `use_metal_layer` is the answer after both -- so the layer and the
+  // settings can only agree. The raster thread may still fall back to software
+  // if the Impeller context will not come up; the settings stay as they are,
+  // exactly as on the Linux and Windows hosts, because the rasterizer asks
+  // the surface, not the settings, what it is drawing through.
+  settings.enable_impeller = options->use_metal_layer;
+  settings.enable_software_rendering = !options->use_metal_layer;
   settings.icu_initialization_required = true;
   settings.icu_data_path =
       !options->icu_data_path.empty() ? options->icu_data_path : DefaultIcuDataPath();
   settings.warn_on_impeller_opt_out = false;
 
-  // Text and images are recorded for the backend that will draw them, and
-  // this is the software one.
+  // Text and images are recorded for the backend that will draw them; the
+  // raster thread says which that ended up being when the Impeller context --
+  // or its failure -- is in.
   rf_set_impeller_backend(0);
 
   // -- Threads ----------------------------------------------------------------
@@ -1409,7 +1631,8 @@ static void RfNotifyFrameworkStateChanged(RfTextInputView* view) {
   running->shell = Shell::Create(
       platform_data, task_runners, settings,
       [state](Shell& shell) {
-        auto view = std::make_unique<HostPlatformView>(shell, shell.GetTaskRunners(), state);
+        auto view = std::make_unique<HostPlatformView>(shell, shell.GetTaskRunners(), state,
+                                                       shell.GetIsGpuDisabledSyncSwitch());
         state->platform_view = view.get();
         state->text_input.SetSender(
             [sender = view.get()](const std::string& method, const std::string& arguments) {
@@ -1486,6 +1709,29 @@ int32_t rf_host_run(const RfHostOptions* options) {
     held->enable_impeller = options->enable_impeller != 0;
     if (options->icu_data_path != nullptr) {
       held->icu_data_path = options->icu_data_path;
+    }
+  }
+
+  // The backend, decided before UIKit starts because `+layerClass` is asked
+  // before the view exists and cannot change its answer afterwards: the
+  // application's preference, minus the environment's override, minus
+  // whatever a Metal device probe says the simulator does not have. The rest
+  // -- the shader library, the context -- is the raster thread's to discover,
+  // with the software surface to fall back on.
+  const char* force_software = std::getenv("RUSTFLUTTER_SOFTWARE");
+  const bool software_forced =
+      force_software != nullptr && force_software[0] != '\0' && force_software[0] != '0';
+  held->use_metal_layer = held->enable_impeller && !software_forced;
+  if (software_forced) {
+    FML_LOG(ERROR) << "RUSTFLUTTER_SOFTWARE is set; using the software surface.";
+  }
+  if (held->use_metal_layer) {
+    id<MTLDevice> probe = MTLCreateSystemDefaultDevice();
+    const bool have_device = probe != nil;
+    [probe release];
+    if (!have_device) {
+      FML_LOG(ERROR) << "No Metal device; using the software surface.";
+      held->use_metal_layer = false;
     }
   }
 
