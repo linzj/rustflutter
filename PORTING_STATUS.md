@@ -5832,3 +5832,51 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6917 通�
 如果 `WidgetsApp` 的这一族已经被那几轮覆盖，就该按"在别处"记；
 如果没有，那 locale 解析的**回退顺序**（先问回调、再逐个匹配语言/国家/脚本）
 是一条真规则，值得单独一轮。
+
+---
+
+## 第 509 轮：手里握着两个回调的人，从来没被问过
+
+按上一轮说的先查 `WidgetsApp` 那 42 个成员里的本地化一族。
+`localizations.rs` 里**全都在**：`Locale`、`basic_locale_list_resolution`
+（四张索引、倒序建表让**靠前**的受支持语言胜出）、
+`resolve_locales`（列表回调 → 单个回调 → 算法）、`LocalizationsResolver`
+（显式 locale 也要过一遍解析、`update` 只在受支持集合变了才重算、
+delegates 的追加顺序）。看起来是"在别处，记一笔"就完了。
+
+但把 `LocalizationsResolver` 逐行读下来，发现一处真缺口：
+**它两条路都直接调 `basic_locale_list_resolution`，绕过了 `resolve_locales`。**
+也就是说这个 resolver **根本不持有那两个回调**——
+上游 `_updateResolvedLocale` 和 `locale` getter 都走 `_resolveLocales`，
+应用写的 `localeResolutionCallback` 在这里**永远不会被调用一次**。
+`resolve_locales` 这个函数移植得很仔细、有测试，然后没有任何人用它。
+
+补上之后有三条规则被钉住：
+
+- **平台那条路**要问回调（现在会了）；
+- **显式 locale 那条路也要问**——上游是
+  `_resolveLocales(<Locale>[_locale!], supportedLocales)`：
+  应用自己的 locale 是一个**只有一项的偏好列表**，走同一套解析。
+  所以一个要求了自己不支持的语言的应用，得到的回退和读者要求它时**一模一样**；
+- `update` 只在受支持集合变了才重算，这留下一个**看起来像 bug 的不对称**：
+  换一个回调**立刻**改变显式 locale 的答案，却**完全不影响**平台那条路，
+  直到下一次系统语言到达。因为显式那条每次读都跑回调，平台那条在语言到达时跑过了。
+  这一条单独写了测试，免得下一个读者把它当成漏掉的刷新。
+
+### 变异 5 个，全红
+
+两条路各自绕过回调；显式 locale 直接照用不解析；
+`update` 丢掉传进来的回调；`update` 无条件重算。
+
+尺子：十七把全部 exit 0。门：Rust 6922 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6922 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`WidgetsApp` 自己身上还差一件与此直接相关的：
+它的 `supported_locales` 是 `Vec<String>`，而 `localizations.rs` 有真正的 `Locale`
+类型和上面这套解析——**这个 app 拿着字符串，没法把它们交给解析器**。
+**先查一件事**：`WidgetsApp::validate` 是否检查了
+`assert(supportedLocales.isNotEmpty)`（字段注释提到了这条断言，但要确认代码里真的有），
+以及 `Locale` 是否 `Clone + PartialEq`（换字段类型时要用）。
+然后把这个字段换成 `Vec<Locale>` 并接上 `LocalizationsResolver`——
+这样"应用支持哪些语言"就只有一个住处，而不是一个字符串列表加一个真类型。

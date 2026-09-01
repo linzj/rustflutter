@@ -585,6 +585,14 @@ pub struct LocalizationsResolver {
     /// an application that says "be in French" means it.
     pub locale: Option<Locale>,
     pub supported_locales: Vec<Locale>,
+    /// Upstream's `localeListResolutionCallback` and
+    /// `localeResolutionCallback`, which **both** paths consult: the resolver
+    /// runs `_resolveLocales` for the platform's list and again for an
+    /// application's explicit locale, and that function asks the callbacks
+    /// before the algorithm. A resolver that held the locales but not the
+    /// callbacks could never let an application intervene at all.
+    pub list_callback: Option<LocaleListResolution>,
+    pub single_callback: Option<LocaleResolution>,
     resolved_locale: Option<Locale>,
     notifications: usize,
 }
@@ -598,9 +606,21 @@ impl LocalizationsResolver {
         LocalizationsResolver {
             locale: None,
             supported_locales,
+            list_callback: None,
+            single_callback: None,
             resolved_locale: resolved,
             notifications: 0,
         }
+    }
+
+    pub fn with_callbacks(
+        mut self,
+        list_callback: Option<LocaleListResolution>,
+        single_callback: Option<LocaleResolution>,
+    ) -> LocalizationsResolver {
+        self.list_callback = list_callback;
+        self.single_callback = single_callback;
+        self
     }
 
     pub fn notifications(&self) -> usize {
@@ -610,9 +630,18 @@ impl LocalizationsResolver {
     /// Upstream's `locale` getter.
     pub fn resolved(&self) -> Option<Locale> {
         match &self.locale {
-            Some(forced) => {
-                basic_locale_list_resolution(std::slice::from_ref(forced), &self.supported_locales)
-            }
+            // `_resolveLocales(<Locale>[_locale!], supportedLocales)`: the
+            // application's own locale is a **preference list of one**, put
+            // through the same resolution as the platform's. So an application
+            // that asks for a locale it does not support gets the same
+            // fallback a reader asking for it would -- and its own callbacks
+            // get to see the request first.
+            Some(forced) => resolve_locales(
+                std::slice::from_ref(forced),
+                &self.supported_locales,
+                self.list_callback,
+                self.single_callback,
+            ),
             None => self.resolved_locale.clone(),
         }
     }
@@ -620,7 +649,12 @@ impl LocalizationsResolver {
     /// Upstream's `didChangeLocales`, arriving from the binding when the
     /// reader changes their system language.
     pub fn did_change_locales(&mut self, platform_locales: &[Locale]) {
-        let next = basic_locale_list_resolution(platform_locales, &self.supported_locales);
+        let next = resolve_locales(
+            platform_locales,
+            &self.supported_locales,
+            self.list_callback,
+            self.single_callback,
+        );
         if next != self.resolved_locale {
             self.resolved_locale = next;
             self.notifications += 1;
@@ -634,13 +668,23 @@ impl LocalizationsResolver {
     /// read on demand by the `locale` getter, so changing them needs no work
     /// here, while the supported set is what the cached platform resolution
     /// was computed against.
+    ///
+    /// It has a consequence worth stating, because it looks like a bug from
+    /// either side alone: **a new callback changes an explicit locale's answer
+    /// at once and the platform's not at all**, until something else
+    /// re-resolves. The explicit path runs the callbacks on every read; the
+    /// platform path ran them when the locales last arrived.
     pub fn update(
         &mut self,
         locale: Option<Locale>,
         supported_locales: Vec<Locale>,
+        list_callback: Option<LocaleListResolution>,
+        single_callback: Option<LocaleResolution>,
         platform_locales: &[Locale],
     ) {
         self.locale = locale;
+        self.list_callback = list_callback;
+        self.single_callback = single_callback;
         if self.supported_locales != supported_locales {
             self.supported_locales = supported_locales;
             self.did_change_locales(platform_locales);
@@ -1196,16 +1240,121 @@ mod tests {
         let mut resolver = LocalizationsResolver::new(vec![with_country("en", "US")], &platform);
         assert_eq!(resolver.resolved(), Some(with_country("en", "US")));
 
-        resolver.update(None, vec![with_country("en", "US")], &platform);
+        resolver.update(None, vec![with_country("en", "US")], None, None, &platform);
         assert_eq!(resolver.notifications(), 0, "nothing changed");
 
         resolver.update(
             None,
             vec![with_country("en", "US"), locale("fr")],
+            None,
+            None,
             &platform,
         );
         assert_eq!(resolver.notifications(), 1);
         assert_eq!(resolver.resolved(), Some(locale("fr")));
+    }
+}
+
+#[cfg(test)]
+mod resolver_callback_tests {
+    use super::*;
+
+    fn locale(language: &str) -> Locale {
+        Locale::new(language)
+    }
+
+    fn always_swedish(_preferred: &[Locale], _supported: &[Locale]) -> Option<Locale> {
+        Some(Locale::new("sv"))
+    }
+
+    fn never(_preferred: &[Locale], _supported: &[Locale]) -> Option<Locale> {
+        None
+    }
+
+    fn single_always_swedish(_first: Option<&Locale>, _supported: &[Locale]) -> Option<Locale> {
+        Some(Locale::new("sv"))
+    }
+
+    #[test]
+    fn the_callbacks_are_asked_about_the_platforms_locales() {
+        // The resolver held the locales and not the callbacks, so an
+        // application that wrote one could never be asked.
+        let mut resolver =
+            LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[locale("fr")])
+                .with_callbacks(Some(always_swedish), None);
+        resolver.did_change_locales(&[locale("en")]);
+        assert_eq!(
+            resolver.resolved(),
+            Some(locale("sv")),
+            "the callback has the last word, even over a supported locale"
+        );
+    }
+
+    #[test]
+    fn the_callbacks_are_asked_about_an_explicit_locale_too() {
+        // `_resolveLocales(<Locale>[_locale!], supportedLocales)`: the
+        // application's own locale goes through the same two chances.
+        let mut resolver = LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[])
+            .with_callbacks(None, Some(single_always_swedish));
+        resolver.locale = Some(locale("fr"));
+        assert_eq!(resolver.resolved(), Some(locale("sv")));
+    }
+
+    #[test]
+    fn an_explicit_locale_is_still_resolved_against_what_is_supported() {
+        // Not used as given: an application that asks for a locale it does not
+        // support falls back exactly as a reader asking for it would.
+        let mut resolver =
+            LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[locale("en")]);
+        resolver.locale = Some(Locale::new("de"));
+        assert_eq!(
+            resolver.resolved(),
+            Some(locale("en")),
+            "the first supported locale, as `basicLocaleListResolution` ends"
+        );
+    }
+
+    #[test]
+    fn a_callback_that_says_nothing_leaves_the_algorithm_alone() {
+        let mut resolver = LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[])
+            .with_callbacks(Some(never), None);
+        resolver.did_change_locales(&[locale("fr")]);
+        assert_eq!(resolver.resolved(), Some(locale("fr")));
+    }
+
+    #[test]
+    fn a_new_callback_moves_an_explicit_locale_at_once_and_the_platform_later() {
+        // The asymmetry `update` leaves behind, which looks like a bug from
+        // either side alone: the explicit path runs the callbacks on every
+        // read, the platform path ran them when the locales last arrived.
+        let mut resolver =
+            LocalizationsResolver::new(vec![locale("en"), locale("fr")], &[locale("fr")]);
+        assert_eq!(resolver.resolved(), Some(locale("fr")));
+
+        resolver.update(
+            None,
+            vec![locale("en"), locale("fr")],
+            Some(always_swedish),
+            None,
+            &[locale("fr")],
+        );
+        assert_eq!(
+            resolver.resolved(),
+            Some(locale("fr")),
+            "the platform's answer was settled before the callback existed"
+        );
+
+        resolver.locale = Some(locale("en"));
+        assert_eq!(
+            resolver.resolved(),
+            Some(locale("sv")),
+            "but an explicit locale asks it now"
+        );
+
+        // And the platform's answer follows the next time the locales arrive.
+        resolver.locale = None;
+        resolver.did_change_locales(&[locale("fr")]);
+        assert_eq!(resolver.resolved(), Some(locale("sv")));
     }
 }
 
