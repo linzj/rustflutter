@@ -4855,3 +4855,73 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6846 通�
 两者**取值不同**（上游用端点的行中心，这里用抓点），
 所以要么承认它是个真缺口、要么写清楚为什么这里的做法是等价的——
 不能含糊过去，那正是"记一笔"这个机制最容易被滥用的地方。
+
+---
+
+## 第 492 轮：拖手柄瞄的是行的中间，不是手柄的尖
+
+上一轮留了一个必须先答清楚的问题：`_endHandleDragTarget` 到底算不算已经落地？
+**答案是没有，而且这个 crate 原来的做法在边界上是错的。**
+
+上游 drag start：
+
+```dart
+final double centerOfLineLocal =
+    _selectionOverlay.selectionEndpoints.last.point.dy - renderObject.preferredLineHeight / 2;
+_endHandleDragTarget = centerOfLineGlobal - details.globalPosition.dy;
+```
+
+update 里命中测试用的是 `_endHandleDragPosition + _endHandleDragTarget`，
+上游还留了注释说明为什么："selection handles typically hang above or below
+the line that they point to"。
+而这个 crate 用的是 `handle_lift(grab, line_height)`：**按手指在手柄里的位置往上抬**。
+上游第 830 行恰好写着相反的话——
+"This is NOT the same as details.localPosition. That is relative to the selection
+handle" ——**上游根本不用手柄内坐标**。
+
+差别不是风格问题。端点是这一行的**底边**，
+底边是两行的交界、归下面那行；按抓点上抬会落在手柄的尖上，
+也就是那条交界线——**于是命中的是下一行**。
+上游的修正量是"行中心 − 按下位置"，加回去永远落在行的中间。
+而且这一个常量同时覆盖了三件事：手柄挂在行下、读者可能抓在任意位置、
+命中测试要的是行中间而不是边缘。
+
+所以这一轮：
+- `SelectionEndpoint::line_centre()`（`point.dy − line_height/2`）；
+- 手柄按下时报的东西从两个 `Offset` 收成一个 `HandlePress`
+  （抓点、按下位置、这个手柄所指那行的中心）——三个数原点不同，
+  混用其中两个就会把选区放到差一行的地方；
+- `TextSelectionOverlay::begin_handle_drag_at` / `handle_drag_point`
+  存下并施加那个修正量；
+- `editable.rs` 用它命中；`handle_lift` 降为**没有按下记录时**的退路
+  （合成移动那一种，`handle_lift` 本来就是为这种情况写的）。
+
+### 变异 10 个：先 6 红 4 活，补完测试后全红
+
+活下来的四条正好指出三处没测到的地方：
+`line_centre()` 本身没人测（两条变异都活）；
+"两个手柄共用一份修正"活着，因为我的测试只从一头看
+（设了 End 去问 Start）——**得两头都问**；
+还有一条是**装配**：drag-start 闭包里"三个数哪个给谁"没人能看见。
+
+第三条按这个仓库的老办法解决：把闭包体抽成自由函数 `record_handle_press`，
+于是它变成三个参数的普通调用，测试直接给三个**互不相同**的数，
+断言抓点、量起点、瞄准点各归其位。
+这也是第 490 轮那句话的又一次应验：**"够不到"往往是"我没想到怎么做"**。
+
+尺子：十七把全部 exit 0。门：Rust 6853 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6853 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`TextSelectionOverlay` 这一遍（第 488–492 轮）到此确实走完了，
+四处都补了：第二个工具条、拖动的平台分歧、行吸附、瞄准行中心。
+把它记进 `tools/depth_examined.json`——
+`finding` 要点名**是哪个机制回答了那些缺失成员**
+（`SelectionOverlay` 承接了转发的一半，`glyph_heights` 承接了两个字形高度，
+其余四条是这四轮补的），`at` 指向 `text_selection.rs` 与这几轮的记录。
+记完 `python tools/depth.py` 重看队头。
+**先查一件事**：`_buildMagnifier` 那一支（`MagnifierInfo` 的四个字段：
+`globalGesturePosition`、`caretRect`、`fieldBounds`、`currentLineBoundaries`）
+是不是已经在 `magnifier.rs` 里了——如果在，这一条也写进 finding；
+如果不在，那它就是 `TextSelectionOverlay` 剩下的**真缺口**，
+这一遍就还没走完，别急着记。

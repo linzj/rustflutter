@@ -74,6 +74,37 @@ impl SelectionEndpoint {
     pub fn new(point: Offset, line_height: f32) -> SelectionEndpoint {
         SelectionEndpoint { point, line_height }
     }
+
+    /// The middle of the line this endpoint sits at the end of, in global
+    /// coordinates -- upstream's `centerOfLineLocal`, which it works out as
+    /// `selectionEndpoints.first.point.dy - preferredLineHeight / 2`.
+    ///
+    /// A handle drag hit-tests **here** rather than at the handle, and
+    /// upstream says why: "selection handles typically hang above or below the
+    /// line that they point to". The point of the handle is at the line's
+    /// bottom edge, which is the boundary between two lines and belongs to
+    /// neither.
+    pub fn line_centre(&self) -> f32 {
+        self.point.dy - self.line_height / 2.0
+    }
+}
+
+/// What a press on a handle reports.
+///
+/// Three numbers rather than one because the rules that read them count from
+/// different origins, and confusing two of them puts the selection a line
+/// away from the finger.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HandlePress {
+    /// Where inside the handle the finger landed.
+    pub grab: Offset,
+    /// Where the press was, in global coordinates. Upstream's
+    /// `details.globalPosition`, which it records as the position this drag is
+    /// measured from.
+    pub at: Offset,
+    /// The centre of the line this handle points to, in global coordinates,
+    /// at the moment of the press. See [`SelectionEndpoint::line_centre`].
+    pub line_centre: f32,
 }
 
 /// Where a handle's box goes, given the endpoint it holds.
@@ -113,6 +144,11 @@ struct OverlayGeometry {
     toolbar_at: Rc<Cell<Offset>>,
     start_size: Rc<Cell<Size>>,
     end_size: Rc<Cell<Size>>,
+    /// The centre of the line each handle points to, in global coordinates.
+    /// Kept beside the handle's own position because a drag hit-tests against
+    /// the line rather than against the handle.
+    start_line_centre: Rc<Cell<f32>>,
+    end_line_centre: Rc<Cell<f32>>,
     handles_visible: Rc<Cell<bool>>,
     collapsed: Rc<Cell<bool>>,
     toolbar_visible: Rc<Cell<bool>>,
@@ -141,7 +177,7 @@ struct OverlayGeometry {
     /// `_endHandleDragPosition` and measures its line snapping against; a
     /// handle drag that had to guess its own origin would snap from wherever
     /// the first move happened to land.
-    on_drag_start: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, Offset, Offset)>>>>,
+    on_drag_start: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, HandlePress)>>>>,
     /// The finger has left the handle.
     ///
     /// Upstream's `_handleStartHandleDragEnd` clears the drag state so the
@@ -164,6 +200,8 @@ impl Default for OverlayGeometry {
             toolbar_at: Rc::default(),
             start_size: Rc::default(),
             end_size: Rc::default(),
+            start_line_centre: Rc::default(),
+            end_line_centre: Rc::default(),
             handles_visible: Rc::default(),
             collapsed: Rc::default(),
             toolbar_visible: Rc::default(),
@@ -306,6 +344,10 @@ impl StatefulComponent for HandleEntry {
         };
         let color = self.geometry.handle_color.get();
         let end = self.end;
+        let line_centre = match self.end {
+            HandleEnd::Start => self.geometry.start_line_centre.get(),
+            HandleEnd::End => self.geometry.end_line_centre.get(),
+        };
         let on_drag = self.geometry.on_drag.borrow().clone();
         let on_drag_start = self.geometry.on_drag_start.borrow().clone();
         let on_drag_end = self.geometry.on_drag_end.borrow().clone();
@@ -333,7 +375,14 @@ impl StatefulComponent for HandleEntry {
                 // is an ordinary component and needs no overlay to stand up.
                 let started = Rc::clone(&on_drag_start);
                 handlers = handlers.with_pointer_down(move |event| {
-                    started(end, event.local_position, event.position);
+                    started(
+                        end,
+                        HandlePress {
+                            grab: event.local_position,
+                            at: event.position,
+                            line_centre,
+                        },
+                    );
                 });
             }
             if let Some(on_drag_end) = on_drag_end.clone() {
@@ -492,6 +541,8 @@ impl SelectionHost {
         self.geometry
             .end_size
             .set(self.controls.handle_size(end.line_height));
+        self.geometry.start_line_centre.set(start.line_centre());
+        self.geometry.end_line_centre.set(end.line_centre());
         self.geometry.collapsed.set(collapsed);
         self.geometry
             .handles_visible
@@ -561,7 +612,7 @@ impl SelectionHost {
     /// `TextSelectionOverlay._handleSelectionHandleDragUpdate`.
     /// Told where inside a handle a drag began. See
     /// [`SelectionGeometryShared::on_drag_start`].
-    pub fn set_on_drag_start(&mut self, on_drag_start: Rc<dyn Fn(HandleEnd, Offset, Offset)>) {
+    pub fn set_on_drag_start(&mut self, on_drag_start: Rc<dyn Fn(HandleEnd, HandlePress)>) {
         *self.geometry.on_drag_start.borrow_mut() = Some(on_drag_start);
     }
 
@@ -1789,24 +1840,49 @@ mod handle_gesture_tests {
     }
 
     #[test]
+    fn an_endpoint_knows_the_middle_of_its_own_line() {
+        // The endpoint is the **bottom** of the selection at this edge, so the
+        // middle is half a line up. Upstream's `centerOfLineLocal`, and what a
+        // handle drag hit-tests against: the bottom edge itself is the
+        // boundary between two lines and belongs to the one below.
+        let endpoint = SelectionEndpoint::new(Offset::new(12.0, 40.0), 20.0);
+        assert_eq!(endpoint.line_centre(), 30.0);
+        assert_eq!(
+            SelectionEndpoint::new(Offset::new(0.0, 20.0), 20.0).line_centre(),
+            10.0,
+            "the first line's middle, not its top and not its bottom"
+        );
+    }
+
+    #[test]
     fn a_press_on_a_handle_reports_where_inside_it_the_finger_landed() {
-        // The wiring the grab rule depends on: without a press being reported
-        // there is nothing that *could* know where the handle was taken, and
-        // the field falls back to guessing the middle.
+        // The wiring the drag rules depend on: without a press being reported
+        // there is nothing that *could* know where the handle was taken, where
+        // the drag starts from, or which line it is holding.
         let geometry = OverlayGeometry::default();
-        let seen: Rc<RefCell<Vec<Offset>>> = Rc::new(RefCell::new(Vec::new()));
+        geometry.start_line_centre.set(63.0);
+        let seen: Rc<RefCell<Vec<HandlePress>>> = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&seen);
-        *geometry.on_drag_start.borrow_mut() = Some(Rc::new(move |_end, grab: Offset, _at| {
-            recorded.borrow_mut().push(grab)
+        *geometry.on_drag_start.borrow_mut() = Some(Rc::new(move |_end, press: HandlePress| {
+            recorded.borrow_mut().push(press)
         }));
 
         pressed_handle(geometry, crate::render::Offset::new(7.0, 5.0));
-        let grabs = seen.borrow().clone();
-        assert_eq!(grabs.len(), 1, "one press, one report: {grabs:?}");
+        let presses = seen.borrow().clone();
+        assert_eq!(presses.len(), 1, "one press, one report: {presses:?}");
         assert!(
-            grabs[0] != Offset::ZERO,
+            presses[0].grab != Offset::ZERO,
             "and it is where in the handle the finger was, not the origin: {:?}",
-            grabs[0]
+            presses[0].grab
+        );
+        assert_eq!(
+            presses[0].at,
+            Offset::new(7.0, 5.0),
+            "the press itself, in the coordinates the drag is measured in"
+        );
+        assert_eq!(
+            presses[0].line_centre, 63.0,
+            "and the line this handle is holding, which is what the drag aims at"
         );
     }
 

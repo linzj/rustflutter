@@ -3431,6 +3431,11 @@ pub struct TextSelectionOverlay {
     /// is also why upstream keeps two `isDragging*Handle` flags.
     start_handle_drag_dy: Option<f32>,
     end_handle_drag_dy: Option<f32>,
+    /// Upstream's `_startHandleDragTarget` and `_endHandleDragTarget`: how far
+    /// the point a drag hit-tests is from the drag's own position. See
+    /// [`TextSelectionOverlay::begin_handle_drag_at`].
+    start_handle_drag_target: Option<f32>,
+    end_handle_drag_target: Option<f32>,
     /// Upstream's `_dragStartSelection`: the selection as it was when this
     /// drag began, kept **only on Apple platforms** and cleared by any drag
     /// end. See [`Self::drag_selection`] for what it is for.
@@ -3496,6 +3501,8 @@ impl TextSelectionOverlay {
             drag_offset: None,
             start_handle_drag_dy: None,
             end_handle_drag_dy: None,
+            start_handle_drag_target: None,
+            end_handle_drag_target: None,
             drag_start_selection: None,
         }
     }
@@ -3521,6 +3528,8 @@ impl TextSelectionOverlay {
         self.drag_offset = None;
         self.start_handle_drag_dy = None;
         self.end_handle_drag_dy = None;
+        self.start_handle_drag_target = None;
+        self.end_handle_drag_target = None;
         self.drag_start_selection = None;
     }
 
@@ -3531,6 +3540,62 @@ impl TextSelectionOverlay {
             SelectionHandleEnd::Start => self.start_handle_drag_dy = Some(dy),
             SelectionHandleEnd::End => self.end_handle_drag_dy = Some(dy),
         }
+    }
+
+    /// Upstream's drag start, both halves of it:
+    ///
+    /// ```dart
+    /// _endHandleDragPosition = details.globalPosition.dy;
+    /// final double centerOfLineLocal =
+    ///     _selectionOverlay.selectionEndpoints.last.point.dy - renderObject.preferredLineHeight / 2;
+    /// final double centerOfLineGlobal = renderObject.localToGlobal(Offset(0.0, centerOfLineLocal)).dy;
+    /// _endHandleDragTarget = centerOfLineGlobal - details.globalPosition.dy;
+    /// ```
+    ///
+    /// **The target is a constant correction, fixed at the press.** Added back
+    /// to the drag position it gives the centre of the line -- at the press,
+    /// exactly the line the handle was pointing at, and after that the same
+    /// distance from wherever the drag has snapped to. So the two numbers say
+    /// "the finger is here, and the place this drag means is that far away",
+    /// and the correction covers everything at once: that a handle hangs below
+    /// its line, that the reader may have grabbed it anywhere, and that the
+    /// hit test wants a line's middle rather than its edge.
+    ///
+    /// The alternative this replaced was to lift the point by where inside the
+    /// handle the finger landed. That lands on the handle's *tip* -- the
+    /// bottom edge of the line, which is the boundary between two lines and
+    /// belongs to neither -- and upstream's own comment is the argument
+    /// against it: "Instead of finding the TextPosition at the handle's
+    /// location directly, use the vertical center of the line that it points
+    /// to."
+    pub fn begin_handle_drag_at(
+        &mut self,
+        end: SelectionHandleEnd,
+        press_dy: f32,
+        line_centre: f32,
+    ) {
+        self.begin_handle_drag_dy(end, press_dy);
+        let target = line_centre - press_dy;
+        match end {
+            SelectionHandleEnd::Start => self.start_handle_drag_target = Some(target),
+            SelectionHandleEnd::End => self.end_handle_drag_target = Some(target),
+        }
+    }
+
+    /// Upstream's `_endHandleDragPosition + _endHandleDragTarget`: the point a
+    /// drag at `drag_dy` means, once the correction taken at the press is put
+    /// back.
+    ///
+    /// `None` when no press was seen -- there is no correction to apply, and
+    /// applying none would hit-test at the finger, which is a handle's height
+    /// below the line it is holding. [`crate::editable`] falls back to its own
+    /// approximation there rather than to nothing.
+    pub fn handle_drag_point(&self, end: SelectionHandleEnd, drag_dy: f32) -> Option<f32> {
+        let target = match end {
+            SelectionHandleEnd::Start => self.start_handle_drag_target,
+            SelectionHandleEnd::End => self.end_handle_drag_target,
+        }?;
+        Some(drag_dy + target)
     }
 
     /// Where this handle's drag has got to, snapping included.
@@ -5996,6 +6061,74 @@ two";
         assert_eq!(snapped_handle_dy(f32::NAN, 100.0, 20.0), None);
         assert_eq!(snapped_handle_dy(f32::INFINITY, 100.0, 20.0), None);
         assert_eq!(snapped_handle_dy(120.0, f32::NAN, 20.0), None);
+    }
+
+    #[test]
+    fn a_drag_aims_at_the_middle_of_the_line_however_the_handle_was_grabbed() {
+        // A line from 0 to 20, so its middle is 10 and the handle's point sits
+        // at 20 -- and a handle hangs below that again. Wherever on it the
+        // finger lands, the press means the same place.
+        for press_dy in [21.0, 26.0, 30.0] {
+            let mut overlay = TextSelectionOverlay::new();
+            overlay.begin_handle_drag_at(SelectionHandleEnd::End, press_dy, 10.0);
+            assert_eq!(
+                overlay.handle_drag_point(SelectionHandleEnd::End, press_dy),
+                Some(10.0),
+                "pressed at {press_dy}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_correction_rides_along_with_the_drag() {
+        // Fixed at the press and added to wherever the drag has snapped to, so
+        // the point stays the same distance from the finger for the whole
+        // drag: a handle dragged a line down aims at the next line's middle.
+        let mut overlay = TextSelectionOverlay::new();
+        overlay.begin_handle_drag_at(SelectionHandleEnd::End, 26.0, 10.0);
+
+        let snapped = overlay
+            .advance_handle_drag_dy(SelectionHandleEnd::End, 47.0, 20.0)
+            .expect("a whole line down");
+        assert_eq!(snapped, 46.0);
+        assert_eq!(
+            overlay.handle_drag_point(SelectionHandleEnd::End, snapped),
+            Some(30.0),
+            "the middle of the line below"
+        );
+    }
+
+    #[test]
+    fn without_a_press_there_is_no_correction_to_apply() {
+        let mut overlay = TextSelectionOverlay::new();
+        assert_eq!(
+            overlay.handle_drag_point(SelectionHandleEnd::End, 40.0),
+            None
+        );
+
+        overlay.begin_handle_drag_at(SelectionHandleEnd::End, 26.0, 10.0);
+        assert_eq!(
+            overlay.handle_drag_point(SelectionHandleEnd::Start, 26.0),
+            None,
+            "and one handle's press is not the other's"
+        );
+
+        // The other way round as well, or one field standing for both would
+        // pass: two fingers can hold the two handles, on different lines.
+        let mut both = TextSelectionOverlay::new();
+        both.begin_handle_drag_at(SelectionHandleEnd::Start, 26.0, 10.0);
+        assert_eq!(
+            both.handle_drag_point(SelectionHandleEnd::Start, 26.0),
+            Some(10.0)
+        );
+        assert_eq!(both.handle_drag_point(SelectionHandleEnd::End, 26.0), None);
+
+        overlay.end_handle_drag();
+        assert_eq!(
+            overlay.handle_drag_point(SelectionHandleEnd::End, 26.0),
+            None,
+            "the lift clears it with everything else"
+        );
     }
 
     #[test]

@@ -1840,6 +1840,38 @@ fn handle_lift(grab: Option<Offset>, line_height: f32) -> f32 {
     }
 }
 
+/// What a press on a handle leaves behind for the drag that follows.
+///
+/// Upstream's `_handleSelection{Start,End}HandleDragStart`, minus the parts
+/// that belong to the magnifier: the grab, the position this drag will be
+/// measured from, and the correction that turns that position into a point on
+/// the line -- see `TextSelectionOverlay::begin_handle_drag_at`.
+///
+/// A free function rather than the body of the closure that installs it,
+/// because a closure inside a `build` is reachable only by standing a whole
+/// field up with an overlay, and this is three arguments. **The mistake worth
+/// catching is which of the press's three numbers goes where**, and a mutation
+/// swapping two of them survived when this was written inline.
+///
+/// Upstream records the global position and converts to the field's
+/// coordinates when it snaps, because a scale transformation scales the line
+/// height too. The conversion happens here instead, once, so that what is
+/// recorded and what is measured against it are already in the same
+/// coordinates -- the field's.
+fn record_handle_press(
+    overlay: &mut crate::text_selection::TextSelectionOverlay,
+    end: crate::selection_host::HandleEnd,
+    press: crate::selection_host::HandlePress,
+    field: Option<crate::render::RenderRef>,
+) {
+    overlay.begin_handle_drag(press.grab);
+    let Some(field) = field else {
+        return;
+    };
+    let local = |dy: f32| field.global_to_local(Offset::new(0.0, dy), None).dy;
+    overlay.begin_handle_drag_at(end, local(press.at.dy), local(press.line_centre));
+}
+
 fn drag_handle_to(
     handle: StateHandle<TextFieldState>,
     anchor: Rc<RefCell<Option<crate::render::RenderRef>>>,
@@ -1881,10 +1913,16 @@ fn drag_handle_to(
         else {
             return;
         };
-        let at = Offset::new(
-            local.dx + layout.scroll.dx,
-            snapped_dy + layout.scroll.dy - lift,
-        );
+        // Upstream hit-tests at `_endHandleDragPosition + _endHandleDragTarget`
+        // -- the centre of the line, not the handle's tip. The lift is what
+        // this crate did before there was a target to apply, and it stays as
+        // the answer for a drag whose press was never reported: see
+        // `TextSelectionOverlay::handle_drag_point`.
+        let point_dy = grabbed
+            .borrow()
+            .handle_drag_point(end, snapped_dy)
+            .unwrap_or(snapped_dy - lift);
+        let at = Offset::new(local.dx + layout.scroll.dx, point_dy + layout.scroll.dy);
         let measure = |run: &str| {
             if run.is_empty() {
                 0.0
@@ -3671,21 +3709,16 @@ impl StatefulComponent for TextField {
                         ));
                         let began = Rc::clone(&grabbed);
                         let began_anchor = Rc::clone(&reveal_anchor);
-                        host.set_on_drag_start(Rc::new(move |end, grab: Offset, at: Offset| {
-                            let mut overlay = began.borrow_mut();
-                            overlay.begin_handle_drag(grab);
-                            // Upstream records `details.globalPosition.dy`
-                            // and converts to the field's coordinates when
-                            // it snaps, because a scale transform scales
-                            // the line height too. The conversion is done
-                            // here instead, once, so what is recorded and
-                            // what is measured against it are already in
-                            // the same coordinates -- the field's.
-                            if let Some(field) = began_anchor.borrow().clone() {
-                                overlay
-                                    .begin_handle_drag_dy(end, field.global_to_local(at, None).dy);
-                            }
-                        }));
+                        host.set_on_drag_start(Rc::new(
+                            move |end, press: crate::selection_host::HandlePress| {
+                                record_handle_press(
+                                    &mut began.borrow_mut(),
+                                    end,
+                                    press,
+                                    began_anchor.borrow().clone(),
+                                );
+                            },
+                        ));
                         let ended = Rc::clone(&grabbed);
                         host.set_on_drag_end(Rc::new(move |_end| {
                             ended.borrow_mut().end_handle_drag();
@@ -5901,6 +5934,109 @@ mod tests {
             selection_of(&tree),
             Some((6, 11)),
             "the handles may not cross, and the move is dropped whole"
+        );
+    }
+
+    #[test]
+    fn a_press_hands_each_of_its_three_numbers_to_the_rule_that_wants_it() {
+        // The grab, the position the drag is measured from, and the line to
+        // aim at, all different numbers on purpose.
+        let mut overlay = crate::text_selection::TextSelectionOverlay::new();
+        let press = crate::selection_host::HandlePress {
+            grab: Offset::new(1.0, 2.0),
+            at: Offset::new(50.0, 26.0),
+            line_centre: 10.0,
+        };
+        record_handle_press(
+            &mut overlay,
+            crate::selection_host::HandleEnd::End,
+            press,
+            Some(crate::render::RenderRef::new(
+                crate::render::RenderConstrainedBox::tight(400.0, 40.0),
+            )),
+        );
+
+        assert_eq!(overlay.grab_offset(), Some(Offset::new(1.0, 2.0)));
+        assert_eq!(
+            overlay.handle_drag_dy(crate::selection_host::HandleEnd::End),
+            Some(26.0),
+            "the drag is measured from the press, not from the line"
+        );
+        assert_eq!(
+            overlay.handle_drag_point(crate::selection_host::HandleEnd::End, 26.0),
+            Some(10.0),
+            "and it aims at the line, not at the press"
+        );
+    }
+
+    #[test]
+    fn a_press_with_no_field_behind_it_still_records_the_grab() {
+        // The anchor is empty until the field has painted once.
+        let mut overlay = crate::text_selection::TextSelectionOverlay::new();
+        record_handle_press(
+            &mut overlay,
+            crate::selection_host::HandleEnd::End,
+            crate::selection_host::HandlePress {
+                grab: Offset::new(1.0, 2.0),
+                at: Offset::new(50.0, 26.0),
+                line_centre: 10.0,
+            },
+            None,
+        );
+        assert_eq!(overlay.grab_offset(), Some(Offset::new(1.0, 2.0)));
+        assert_eq!(
+            overlay.handle_drag_point(crate::selection_host::HandleEnd::End, 26.0),
+            None,
+            "and the drag falls back to the lift"
+        );
+    }
+
+    #[test]
+    fn a_handle_drag_aims_at_the_line_and_not_at_the_handles_tip() {
+        // Two lines of twenty pixels. The handle for a selection on the first
+        // line has its point at 20 -- the line's bottom edge, which belongs to
+        // the line *below* -- and the handle itself hangs below that. Pressing
+        // it and not moving must mean the line the handle is holding.
+        let text = "aaaa\nbbbb";
+        let lines = vec![
+            VisualLine { start: 0, end: 4 },
+            VisualLine { start: 5, end: 9 },
+        ];
+        let (tree, handle) = mounted_field(4905, text);
+        handle.set_state(|state| {
+            state.value.selection_base = 0;
+            state.value.selection_extent = 2;
+        });
+
+        let overlay = Rc::new(RefCell::new(
+            crate::text_selection::TextSelectionOverlay::new(),
+        ));
+        // Pressed two pixels into a handle whose top is at the line's bottom
+        // edge, holding a line whose middle is at 10.
+        overlay
+            .borrow_mut()
+            .begin_handle_drag(Offset::new(0.0, 2.0));
+        overlay.borrow_mut().begin_handle_drag_at(
+            crate::selection_host::HandleEnd::End,
+            22.0,
+            10.0,
+        );
+
+        field_handle_drag_over(
+            handle.clone(),
+            text,
+            crate::editable_text::TargetPlatform::Windows,
+            lines,
+            Rc::clone(&overlay),
+        )(
+            crate::selection_host::HandleEnd::End,
+            Offset::new(0.0, 22.0),
+        );
+        assert_eq!(
+            selection_of(&tree),
+            Some((0, 2)),
+            "the finger has not moved, so neither has the selection -- \
+             hit-testing at the handle instead would have found the line below"
         );
     }
 
