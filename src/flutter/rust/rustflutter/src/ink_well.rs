@@ -498,13 +498,24 @@ impl InkResponse {
     /// it looks wasteful until the lifecycle is the reason: the highlight has
     /// to exist so that becoming enabled again is a colour change rather than
     /// a highlight appearing from nowhere half way through a hover.
-    fn highlight_color_for(&self, kind: HighlightType, theme: &crate::components::Theme) -> Color {
+    /// The colour one of the three highlights is drawn in.
+    ///
+    /// `material` is the fallback, and it is the *theme's* answer rather than
+    /// one invented here: see `ThemeData::overlay_color`. This used to fall
+    /// back to the primary at 8% for all three states, which is upstream's
+    /// value for none of them and disagreed with what `focus::StateHighlight`
+    /// paints for the same three states.
+    fn highlight_color_for(
+        &self,
+        kind: HighlightType,
+        material: &crate::theme::ThemeData,
+    ) -> Color {
         let resolved = match kind {
             HighlightType::Pressed => self.highlight_color,
             HighlightType::Hover => self.hover_color,
             HighlightType::Focus => self.focus_color,
         }
-        .unwrap_or(theme.primary.with_alpha(0x14));
+        .unwrap_or_else(|| material.overlay_color(kind));
         if self.enabled {
             resolved
         } else {
@@ -551,6 +562,7 @@ impl StatefulComponent for InkResponse {
         context: &mut BuildContext,
     ) -> AnyWidget {
         let theme = theme_of(context);
+        let material = crate::theme::ThemeData::of(context);
         let splash_color = self.splash_color.unwrap_or(theme.primary.with_alpha(0x1f));
         let factory = self.splash_factory.unwrap_or_default();
         let contained = self.contained_ink_well;
@@ -558,8 +570,8 @@ impl StatefulComponent for InkResponse {
 
         // Everything the handlers need, captured rather than reached for: a
         // handler runs long after the build that made it.
-        let pressed_colour = self.highlight_color_for(HighlightType::Pressed, &theme);
-        let hover_colour = self.highlight_color_for(HighlightType::Hover, &theme);
+        let pressed_colour = self.highlight_color_for(HighlightType::Pressed, &material);
+        let hover_colour = self.highlight_color_for(HighlightType::Hover, &material);
         let shape = self.highlight_shape;
         let radius = self.radius;
         let hover_micros = self.hover_micros;
@@ -750,7 +762,7 @@ impl StatefulComponent for InkResponse {
             None => child,
             Some(focus_id) => {
                 let focus_handle = handle.clone();
-                let focus_colour = self.highlight_color_for(HighlightType::Focus, &theme);
+                let focus_colour = self.highlight_color_for(HighlightType::Focus, &material);
                 let on_focus_change = self.on_focus_change.clone();
                 crate::framework::component(
                     crate::focus::Focus::new(focus_id, child).with_on_focus_change(
@@ -1083,24 +1095,62 @@ mod tests {
     }
 
     #[test]
+    fn an_ink_well_takes_its_overlay_colours_from_the_theme() {
+        // Upstream falls back per state -- `highlightColor`, `focusColor`,
+        // `hoverColor` -- and this used to answer all three with the primary
+        // at 8%, a value upstream has for none of them. The three were also
+        // what `focus::StateHighlight` already painted, so one crate gave two
+        // answers to "what colour is a hover".
+        let material = crate::theme::ThemeData::light();
+        let plain = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty));
+
+        assert_eq!(
+            plain.highlight_color_for(HighlightType::Hover, &material),
+            material.hover_color
+        );
+        assert_eq!(
+            plain.highlight_color_for(HighlightType::Focus, &material),
+            material.focus_color
+        );
+        assert_eq!(
+            plain.highlight_color_for(HighlightType::Pressed, &material),
+            material.highlight_color
+        );
+
+        // The three are genuinely different, or the assertions above would
+        // hold for any implementation that returned one colour for all of
+        // them -- which is exactly what this used to do.
+        assert_ne!(material.hover_color, material.focus_color);
+        assert_ne!(material.focus_color, material.highlight_color);
+
+        // A colour given explicitly still wins over the theme's.
+        let told = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
+            .with_hover_color(INK);
+        assert_eq!(
+            told.highlight_color_for(HighlightType::Hover, &material),
+            INK
+        );
+    }
+
+    #[test]
     fn a_disabled_response_still_makes_its_highlights_at_alpha_zero() {
         // Upstream's `enabled ? resolved : resolved.withAlpha(0)`. It looks
         // wasteful until the lifecycle is the reason: the highlight has to
         // exist so that becoming enabled again is a colour change rather than
         // a highlight appearing from nowhere half way through a hover.
-        let theme = crate::components::Theme::dark();
+        let material = crate::theme::ThemeData::dark();
         let enabled = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
             .with_hover_color(INK);
         let disabled = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
             .with_hover_color(INK)
             .with_enabled(false);
         assert_eq!(
-            enabled.highlight_color_for(HighlightType::Hover, &theme),
+            enabled.highlight_color_for(HighlightType::Hover, &material),
             INK
         );
         assert_eq!(
             disabled
-                .highlight_color_for(HighlightType::Hover, &theme)
+                .highlight_color_for(HighlightType::Hover, &material)
                 .alpha(),
             0
         );

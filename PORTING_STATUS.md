@@ -7441,3 +7441,57 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6990 通�
 挂在 `Ink` 上绘制），后者是普通 widget。
 如果合不了，**要把"为什么两套都得在"写清楚**；
 如果合得了，那是一次值得的删代码。
+
+---
+
+## 第 537 轮：两套画法可以留，两个答案不能留
+
+上一轮记的问题：`ink_well.rs` 的三种 ink 高亮和 `focus.rs` 的三层，
+是不是重复实现、能不能合。
+
+### 查完的结论：机制不能合，规则必须合
+
+**机制合不了，而且理由是结构性的**：`InkResponse` 的高亮是 ink feature——
+有水波、有形状回调、由下面的 `Ink` 渲染对象绘制；
+`StateHighlight` 是普通 widget，因为那五个控件根本不建在 `InkResponse` 上。
+上游只有一套是因为它什么都过 `InkResponse`。
+把五个控件改建到 `InkWell` 上是另一件事，也会附带一个没人要的水波。
+
+**但规则重复了，而且已经漂移**。`InkResponse::highlight_color_for` 对
+**三种状态一律**回退到 `theme.primary` 的 8%——
+上游三种各有各的回退（`highlightColor`/`focusColor`/`hoverColor`），
+**8% 主色这个值上游一种都没有**。
+而上一轮 `StateHighlight` 刚接上那三个真颜色。
+于是同一个 crate 里，"悬停是什么颜色"有了两个答案。
+
+改法：`ThemeData::overlay_color(HighlightType)` 一处，
+上游那张三行的表就抄在它的文档里，两边都问它。
+`InkResponse` 的回退跟着变成对的——**这一轮顺手修好了一个真 bug，
+而不只是搬了搬代码**。
+
+`highlight_color_for` 的参数也从 `components::Theme` 换成 `ThemeData`：
+颜色本来就在后者身上，之前拿着前者，只能自己编一个。
+
+### 测试
+
+新测试断言三种状态各拿各的颜色，并且**末尾断言这三个颜色互不相等**——
+否则"每种拿对了"这句话，对一个"永远返回同一个颜色"的实现也成立，
+而那**正是改之前的实现**。
+
+四个变异全部杀死。前两个（主题只给一种颜色、悬停和焦点对调）
+**同时被两侧的测试抓住**——这正是"一个概念一个家"的收益：
+规则错一次，两处一起红。
+
+尺子：十八把全部 exit 0。门：Rust 6991 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6991 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：颜色统一了，**时长还没有**。
+`StateHighlight` 问的是 `HighlightType::fade_micros`，
+而 `InkResponse` 那边——`make_highlight` 收一个 `hover_micros: Option<i64>`
+再传给 `fade_micros`，看起来是同一个函数，但**谁传 `Some` 谁传 `None`、
+传的是什么**没查过。
+**先查一件事**：`hover_micros` 的来源是不是上游的 `hoverDuration`
+（`InkResponse.hoverDuration`），以及本 crate 有没有人真的传过非 None 的值——
+如果没人传，那它就是又一个"存了没人用"的参数，
+该按 `show_cursor` 那轮的办法处理：**要么接上，要么写明**。

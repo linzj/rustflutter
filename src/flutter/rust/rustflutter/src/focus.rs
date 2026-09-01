@@ -1728,10 +1728,20 @@ impl crate::framework::StatefulComponent for StateHighlight {
         // values, the whole time; nothing read them, and every state was
         // painted in the same 12% of the primary.
         let material = crate::theme::ThemeData::of(context);
+        use crate::ink_well::HighlightType;
         let layers: Vec<(crate::engine::Color, f32)> = vec![
-            (material.hover_color, state.hover_opacity),
-            (material.focus_color, state.focus_opacity),
-            (material.highlight_color, state.press_opacity),
+            (
+                material.overlay_color(HighlightType::Hover),
+                state.hover_opacity,
+            ),
+            (
+                material.overlay_color(HighlightType::Focus),
+                state.focus_opacity,
+            ),
+            (
+                material.overlay_color(HighlightType::Pressed),
+                state.press_opacity,
+            ),
         ];
         // Nothing is drawn once the fades have run out, rather than three
         // fully-transparent rectangles every frame for ever.

@@ -884,6 +884,31 @@ impl ThemeData {
 
     /// Upstream `Theme.of(context)`, which is this type rather than the
     /// widget: the nearest theme, or the fallback where nobody installed one.
+    /// The overlay colour for one interaction state.
+    ///
+    /// Upstream asks this three times over, in `_InkResponseState`:
+    ///
+    /// ```dart
+    /// _HighlightType.pressed => widget.highlightColor ?? Theme.of(context).highlightColor,
+    /// _HighlightType.focus   => widget.focusColor     ?? Theme.of(context).focusColor,
+    /// _HighlightType.hover   => widget.hoverColor     ?? Theme.of(context).hoverColor,
+    /// ```
+    ///
+    /// One method here rather than that table written out at each of the two
+    /// places this crate paints overlays -- `InkResponse`, which draws them as
+    /// ink features, and `focus::StateHighlight`, which stacks them as
+    /// widgets. The two mechanisms are different for a structural reason (see
+    /// `StateHighlight`); **which colour a state gets is not**, and it had
+    /// drifted: `InkResponse` answered all three with the primary at 8%, a
+    /// value upstream has for none of them.
+    pub fn overlay_color(&self, state: crate::ink_well::HighlightType) -> Color {
+        match state {
+            crate::ink_well::HighlightType::Pressed => self.highlight_color,
+            crate::ink_well::HighlightType::Focus => self.focus_color,
+            crate::ink_well::HighlightType::Hover => self.hover_color,
+        }
+    }
+
     pub fn of(context: &mut BuildContext) -> ThemeData {
         context
             .inherited::<ThemeData>()
