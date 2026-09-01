@@ -4656,8 +4656,15 @@ mod tests {
         // resolver's answer reach anything, and the bar wrapped it in nothing
         // -- so this is the assertion that would have been red all along.
         set_enabled(true);
+        // Pinned off Apple, because "names the page" is the non-Apple branch
+        // of the platform rule and `host()` is an Apple platform on the
+        // machines the suite runs on.
         let nodes = describe_tree(
-            crate::framework::component(crate::components::AppBar::new("Inbox")),
+            crate::theme::MaterialTheme::new(
+                crate::theme::ThemeData::fallback()
+                    .with_platform(crate::editable_text::TargetPlatform::Android),
+                crate::framework::component(crate::components::AppBar::new("Inbox")),
+            ),
             Size::new(400.0, 200.0),
         );
         set_enabled(false);

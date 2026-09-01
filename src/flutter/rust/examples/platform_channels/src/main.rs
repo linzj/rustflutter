@@ -36,6 +36,7 @@ use rustflutter::services::{MethodChannel, StandardMethodCodec};
 #[cfg_attr(windows, path = "win32.rs")]
 #[cfg_attr(any(target_os = "android", target_os = "ios"), path = "android.rs")]
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
+#[cfg_attr(target_os = "macos", path = "macos.rs")]
 mod probe;
 
 /// What the process exits with. Set from the UI thread before the window

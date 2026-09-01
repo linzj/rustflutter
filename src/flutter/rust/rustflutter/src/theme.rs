@@ -458,6 +458,14 @@ impl ThemeData {
         self
     }
 
+    /// Pins [`ThemeData::platform`], which is the one a test asks for when it
+    /// means a platform that is not the machine it is running on: `host()`
+    /// answers for the host, and the suite runs on more than one kind now.
+    pub fn with_platform(mut self, platform: TargetPlatform) -> ThemeData {
+        self.platform = platform;
+        self
+    }
+
     pub fn with_primary_color(mut self, primary_color: Color) -> ThemeData {
         self.primary_color = primary_color;
         self

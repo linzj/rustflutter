@@ -8,5 +8,8 @@ rustflutter_app("platform_channels") {
   sources = [
     "src/main.rs",
     "src/win32.rs",
+    "src/android.rs",
+    "src/linux.rs",
+    "src/macos.rs",
   ]
 }

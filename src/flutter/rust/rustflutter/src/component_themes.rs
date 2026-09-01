@@ -14997,9 +14997,19 @@ mod tests {
 
     #[test]
     fn an_app_bar_resolves_its_surface_and_its_height() {
+        // The reads run under a theme pinned off Apple -- the same fallback
+        // data, with only the platform named -- because two of the defaults
+        // below are platform rules and `host()` is an Apple platform on the
+        // machines the suite runs on.
+        let on_linux = |child: AnyWidget| {
+            MaterialTheme::new(
+                ThemeData::fallback().with_platform(TargetPlatform::Linux),
+                child,
+            )
+        };
         // Nothing said: the scheme's surface, `onSurface` on top of it, and
         // upstream's `kToolbarHeight`.
-        let plain = read_in(|child| child, ResolvedAppBar::of);
+        let plain = read_in(on_linux, ResolvedAppBar::of);
         let scheme = ThemeData::fallback().color_scheme;
         assert_eq!(plain.background, scheme.surface);
         assert_eq!(plain.foreground, scheme.on_surface);
@@ -15009,13 +15019,13 @@ mod tests {
 
         let themed = read_in(
             |child| {
-                AppBarTheme::new(
+                on_linux(AppBarTheme::new(
                     AppBarThemeData::new()
                         .with_background_color(Color::argb(255, 4, 4, 4))
                         .with_toolbar_height(72.0)
                         .with_center_title(true),
                     child,
-                )
+                ))
             },
             ResolvedAppBar::of,
         );

@@ -7450,8 +7450,13 @@ mod tests {
     fn slider_node(slider: Slider) -> crate::semantics::SemanticsNode {
         crate::semantics::set_enabled(true);
         let mut tree = crate::framework::ElementTree::new();
+        // The theme's platform is pinned off Apple because the nodes the
+        // tests below quote are the twentieth's: `host()` is an Apple
+        // platform on the machines the suite runs on, and a tenth there
+        // would move every one of these strings.
         tree.rebuild(crate::theme::MaterialTheme::new(
-            crate::theme::ThemeData::light(),
+            crate::theme::ThemeData::light()
+                .with_platform(crate::editable_text::TargetPlatform::Android),
             component(slider),
         ));
         let mut root = tree.build_render_tree().expect("mounted");
