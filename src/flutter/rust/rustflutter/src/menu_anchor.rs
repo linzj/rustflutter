@@ -223,7 +223,7 @@ pub fn menu_close_request(status: crate::animation::AnimationStatus) -> bool {
 
 /// Upstream `MenuStyle`'s alignment offset and the flags a menu carries --
 /// the configuration half of [`MenuAnchor`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct MenuAnchor {
     /// Upstream's `alignmentOffset`.
     pub alignment_offset: Offset,
@@ -248,11 +248,70 @@ pub struct MenuAnchor {
     pub use_root_overlay: bool,
     /// Upstream's `animated`.
     pub animated: bool,
+    /// Identifies this anchor: its node in the menu tree, its tap region, and
+    /// the key its opener is filed under.
+    pub id: u64,
+    /// The tap-region group this anchor and its panel share, so that a press
+    /// on the thing that opened the menu is not a press *outside* it.
+    pub group_id: u64,
+    /// Upstream's `menuChildren`, as the panel they are laid into.
+    pub menu: Option<std::rc::Rc<dyn Fn() -> crate::framework::AnyWidget>>,
+    /// Upstream's `builder(context, controller, child)`: the widget that marks
+    /// the place, built with the controller that opens the menu.
+    ///
+    /// The controller is handed over rather than looked up because a caller's
+    /// button is *outside* the anchor -- upstream's builder has the same
+    /// problem and the same answer.
+    pub child: Option<
+        std::rc::Rc<dyn Fn(crate::raw_menu_anchor::MenuController) -> crate::framework::AnyWidget>,
+    >,
+    /// Upstream's `onOpen`, called when the menu goes up.
+    pub on_open: Option<std::rc::Rc<dyn Fn()>>,
+    /// Upstream's `onClose`, called when it comes down **however** it comes
+    /// down -- a tap outside and Escape are not the caller's doing, and a
+    /// caller who only heard about their own closes would miss both.
+    pub on_close: Option<std::rc::Rc<dyn Fn()>>,
 }
 
 impl Default for MenuAnchor {
     fn default() -> MenuAnchor {
         MenuAnchor::new()
+    }
+}
+
+/// The closures are compared the only way closures can be: by whether there is
+/// one. Same idiom as [`SubmenuButton`]'s.
+impl PartialEq for MenuAnchor {
+    fn eq(&self, other: &MenuAnchor) -> bool {
+        self.alignment_offset == other.alignment_offset
+            && self.consume_outside_tap == other.consume_outside_tap
+            && self.anchor_tap_closes_menu == other.anchor_tap_closes_menu
+            && self.cross_axis_unconstrained == other.cross_axis_unconstrained
+            && self.use_root_overlay == other.use_root_overlay
+            && self.animated == other.animated
+            && self.id == other.id
+            && self.group_id == other.group_id
+            && self.menu.is_some() == other.menu.is_some()
+            && self.child.is_some() == other.child.is_some()
+            && self.on_open.is_some() == other.on_open.is_some()
+            && self.on_close.is_some() == other.on_close.is_some()
+    }
+}
+
+impl std::fmt::Debug for MenuAnchor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MenuAnchor")
+            .field("id", &self.id)
+            .field("group_id", &self.group_id)
+            .field("alignment_offset", &self.alignment_offset)
+            .field("consume_outside_tap", &self.consume_outside_tap)
+            .field("anchor_tap_closes_menu", &self.anchor_tap_closes_menu)
+            .field("cross_axis_unconstrained", &self.cross_axis_unconstrained)
+            .field("use_root_overlay", &self.use_root_overlay)
+            .field("animated", &self.animated)
+            .field("has_menu", &self.menu.is_some())
+            .field("has_child", &self.child.is_some())
+            .finish()
     }
 }
 
@@ -265,7 +324,48 @@ impl MenuAnchor {
             cross_axis_unconstrained: true,
             use_root_overlay: false,
             animated: false,
+            id: 0,
+            group_id: 0,
+            menu: None,
+            child: None,
+            on_open: None,
+            on_close: None,
         }
+    }
+
+    pub fn with_id(mut self, id: u64) -> Self {
+        self.id = id;
+        self
+    }
+
+    pub fn with_group_id(mut self, group_id: u64) -> Self {
+        self.group_id = group_id;
+        self
+    }
+
+    /// The panel this anchor opens.
+    pub fn with_menu(mut self, menu: impl Fn() -> crate::framework::AnyWidget + 'static) -> Self {
+        self.menu = Some(std::rc::Rc::new(menu));
+        self
+    }
+
+    /// Upstream's `builder`. See [`MenuAnchor::child`].
+    pub fn with_child(
+        mut self,
+        child: impl Fn(crate::raw_menu_anchor::MenuController) -> crate::framework::AnyWidget + 'static,
+    ) -> Self {
+        self.child = Some(std::rc::Rc::new(child));
+        self
+    }
+
+    pub fn with_on_open(mut self, on_open: impl Fn() + 'static) -> Self {
+        self.on_open = Some(std::rc::Rc::new(on_open));
+        self
+    }
+
+    pub fn with_on_close(mut self, on_close: impl Fn() + 'static) -> Self {
+        self.on_close = Some(std::rc::Rc::new(on_close));
+        self
     }
 
     pub fn with_alignment_offset(mut self, offset: Offset) -> Self {
@@ -300,6 +400,175 @@ impl MenuAnchor {
             crate::component_themes::MenuPanelAxis::Vertical,
             style,
         )
+    }
+}
+
+/// What a [`MenuAnchor`] keeps.
+#[derive(Clone)]
+pub struct MenuAnchorState {
+    id: u64,
+    /// Upstream's `_internalMenuController`, attached to this anchor. It is
+    /// what a caller's button is handed, and what Escape closes from.
+    controller: crate::raw_menu_anchor::MenuController,
+    /// Where the anchor is on screen, filled in by its own assemble and read
+    /// when the panel is placed -- the moment the question can be answered.
+    anchor: crate::theatre::Anchor,
+    open: Option<crate::theatre::ModalHandle>,
+}
+
+impl Default for MenuAnchorState {
+    fn default() -> MenuAnchorState {
+        MenuAnchorState {
+            id: 0,
+            controller: crate::raw_menu_anchor::MenuController::new(),
+            anchor: crate::theatre::Anchor::new(),
+            open: None,
+        }
+    }
+}
+
+impl crate::framework::StatefulComponent for MenuAnchor {
+    type State = MenuAnchorState;
+
+    fn key(&self) -> crate::framework::Key {
+        Some(self.id)
+    }
+
+    /// Upstream's `initState`: the anchor joins the tree and gets a controller
+    /// of its own.
+    fn initial_state(&self) -> MenuAnchorState {
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| {
+            if tree.node(self.id).is_none() {
+                let mut node = crate::raw_menu_anchor::MenuAnchorNode::new(self.id);
+                node.consume_outside_taps = self.consume_outside_tap;
+                node.use_root_overlay = self.use_root_overlay;
+                tree.insert(node);
+            }
+        });
+        let mut controller = crate::raw_menu_anchor::MenuController::new();
+        controller.attach(self.id);
+        MenuAnchorState {
+            id: self.id,
+            controller,
+            anchor: crate::theatre::Anchor::new(),
+            open: None,
+        }
+    }
+
+    /// Upstream's `dispose`. The opener goes too: a closure left behind holds
+    /// the overlay handle of a page that is gone, and a controller somebody
+    /// kept would open a menu into it.
+    fn dispose(&self, state: &mut MenuAnchorState) {
+        if let Some(open) = state.open.take() {
+            open.dismiss();
+        }
+        crate::raw_menu_anchor::forget_menu_opener(state.id);
+        state.controller.detach(state.id);
+        crate::raw_menu_anchor::with_menu_tree_mut(|tree| tree.dispose(state.id));
+    }
+
+    fn build(
+        &self,
+        state: &MenuAnchorState,
+        handle: crate::framework::StateHandle<MenuAnchorState>,
+        context: &mut crate::framework::BuildContext,
+    ) -> crate::framework::AnyWidget {
+        let overlay = crate::theatre::OverlayHandle::of(context);
+        let themes = context.capture_themes();
+        let id = self.id;
+        let group_id = self.group_id;
+        let menu = self.menu.clone();
+        let on_open = self.on_open.clone();
+        let on_close = self.on_close.clone();
+        let anchor = state.anchor.clone();
+        // A menu hangs from the anchor's bottom-left corner and runs down.
+        // `parent_orientation` is vertical: an anchor standing on its own is
+        // not an entry of a bar, so a panel that will not fit flips to the
+        // other side of it rather than sliding to the screen's edge.
+        let layout = MenuLayout {
+            anchor_rect: crate::engine::Rect::ltrb(0.0, 0.0, 0.0, 0.0),
+            alignment_offset: self.alignment_offset,
+            orientation: MenuAxis::Vertical,
+            parent_orientation: MenuAxis::Vertical,
+            direction: crate::direction::current_direction(),
+            directional_alignment: true,
+        };
+        let place: crate::theatre::Placement = std::rc::Rc::new(move |rect, child, overlay| {
+            MenuLayout {
+                anchor_rect: rect,
+                ..layout
+            }
+            .position(
+                crate::render::Alignment::BOTTOM_LEFT,
+                child,
+                crate::engine::Rect::xywh(0.0, 0.0, overlay.width, overlay.height),
+            )
+        });
+
+        let opener: std::rc::Rc<dyn Fn()> = std::rc::Rc::new(move || {
+            // Already open, or nothing to open. A second panel would be a
+            // second entry in the overlay with nothing holding its handle, so
+            // nothing could ever take it down.
+            if crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(id)) {
+                return;
+            }
+            let (Some(overlay), Some(menu)) = (overlay.clone(), menu.clone()) else {
+                return;
+            };
+            let themes = themes.clone();
+            let opened = crate::raw_menu_anchor::open_menu_surface_at(
+                overlay,
+                id,
+                group_id,
+                Some((anchor.clone(), std::rc::Rc::clone(&place))),
+                move || themes.wrap(menu()),
+            );
+            if let Some(opened) = &opened {
+                if let Some(on_close) = on_close.clone() {
+                    // On the panel's own dismissal, so that a tap outside and
+                    // an Escape are heard as well as a caller's own close.
+                    opened.on_dismissed(move || on_close());
+                }
+                if let Some(on_open) = &on_open {
+                    on_open();
+                }
+            }
+            handle.set_state(move |state| state.open = opened);
+        });
+        // Filed under the anchor's id **on every build**: the closure above
+        // captured this build's overlay handle and themes, and the one from
+        // the last build captured the last page's.
+        crate::raw_menu_anchor::note_menu_opener(self.id, std::rc::Rc::clone(&opener));
+
+        let child = match &self.child {
+            Some(child) => child(state.controller),
+            None => crate::framework::leaf(|| crate::widgets::SizedBox::new(0.0, 0.0)),
+        };
+        // Recorded from the anchor's own assemble, which is where its render
+        // object first exists and is the rectangle the panel is placed
+        // against.
+        let recording = state.anchor.clone();
+        let marked = crate::framework::many(vec![child], move |rendered| {
+            let child = rendered.into_iter().next().expect("the child");
+            recording.set(child.clone());
+            crate::theatre::RenderPortal::new(child)
+        });
+        // The anchor is in its own menu's tap-region group, so that pressing
+        // the thing that opened the menu is not a press outside it -- upstream
+        // wraps `buildAnchor` in exactly this.
+        //
+        // It swallows the tap that dismissed the menu only when asked to and
+        // only **while the menu is open** -- upstream's
+        // `consumeOutsideTaps: root.isOpen && widget.consumeOutsideTap`. An
+        // anchor that swallowed presses while shut would be a hole in the page
+        // the shape of a closed menu.
+        let region = crate::tap_region::TapRegion::new(self.id)
+            .with_group_id(self.group_id)
+            .with_consume_outside_taps(
+                self.consume_outside_tap
+                    && crate::raw_menu_anchor::with_menu_tree(|tree| tree.is_open(self.id)),
+            );
+        region.build(context, marked)
     }
 }
 
@@ -2243,6 +2512,267 @@ mod tests {
         crate::raw_menu_anchor::reset_menu_tree();
     }
 
+    // -- A menu anchor of one's own ----------------------------------------
+
+    const ANCHOR: u64 = 8420;
+    const ANCHOR_BUTTON: u64 = 8421;
+    const ELSEWHERE: u64 = 8422;
+    const ANCHOR_PANEL: Color = Color(0xFF00_00CC);
+
+    /// An anchor whose child is a button that opens it, which is what
+    /// upstream's `builder(context, controller, child)` is for.
+    fn an_anchor() -> MenuAnchor {
+        MenuAnchor::new()
+            .with_id(ANCHOR)
+            .with_group_id(MENU_GROUP)
+            .with_child(|controller| {
+                // A group of its **own**, not the menu's: upstream's builder
+                // child is any widget at all, and what puts it inside the
+                // menu's group is the anchor's own region around it. A child
+                // that carried the group itself would hide whether the anchor
+                // has one.
+                //
+                // No anchor id either: a line with one closes the menu when it
+                // is chosen, and the button that opens a menu is the one line
+                // that must not.
+                let mut button = MenuItemButton::new()
+                    .with_id(ANCHOR_BUTTON)
+                    .with_label("More")
+                    .with_on_pressed(move || controller.open_menu());
+                button.group_id = MENU_GROUP + 7;
+                stateful(button)
+            })
+            .with_menu(|| {
+                leaf(|| {
+                    crate::render::RenderDecoratedBox::new()
+                        .with_fill(crate::render::Fill::Solid(ANCHOR_PANEL))
+                        .with_child(crate::widgets::SizedBox::new(80.0, 60.0))
+                })
+            })
+    }
+
+    /// The anchor on a page, pushed `across` and `down` from the corner.
+    fn staged_anchor(
+        menu: MenuAnchor,
+        across: f32,
+        down: f32,
+    ) -> (ElementTree, std::rc::Rc<crate::theatre::OverlayHandle>) {
+        staged_page(move || {
+            crate::framework::many(vec![stateful(menu.clone())], move |rendered| {
+                crate::render::RenderPadding::new(
+                    crate::render::EdgeInsets::only(across, down, 0.0, 0.0),
+                    rendered.into_iter().next().expect("the anchor"),
+                )
+            })
+        })
+    }
+
+    #[test]
+    fn a_controller_opens_the_menu_it_is_attached_to() {
+        // Upstream's `builder(context, controller, child)` hands the caller a
+        // controller so that the thing which opens the menu can be any widget
+        // at all. Until now a `MenuController` could only reach the *tree*:
+        // it could say a menu was open while the screen stayed empty.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::reset_menu_panels();
+        let opened = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counting = std::rc::Rc::clone(&opened);
+        let (mut tree, overlay) = staged_anchor(
+            an_anchor().with_on_open(move || counting.set(counting.get() + 1)),
+            0.0,
+            0.0,
+        );
+        assert_eq!(overlay.entry_count(), 0, "nothing yet");
+
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1, "the button opened it");
+        assert_eq!(opened.get(), 1, "and `onOpen` was told once");
+        assert!(crate::raw_menu_anchor::with_menu_tree(
+            |tree| tree.is_open(ANCHOR)
+        ));
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn the_menu_hangs_off_the_anchor_and_not_off_the_corner() {
+        // The panel is placed against the anchor's own rectangle -- which is
+        // why the anchor records where it is from its assemble. A panel that
+        // ignored it would land at the overlay's origin, on top of the button
+        // that opened it.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::reset_menu_panels();
+        let (mut tree, _overlay) = staged_anchor(an_anchor(), 120.0, 40.0);
+        tap_in(&mut tree, Offset::new(140.0, 52.0), 800.0, 600.0);
+        let drawn = painted_tree(&mut tree);
+        let panel = drawn
+            .iter()
+            .find_map(|call| match call {
+                Drawn::Rect {
+                    left, top, argb, ..
+                } if Color(*argb) == ANCHOR_PANEL => Some(Offset::new(*left, *top)),
+                _ => None,
+            })
+            .expect("the panel painted");
+        assert_eq!(panel.dx, 120.0, "its left edge on the anchor's");
+        assert!(
+            panel.dy > 40.0,
+            "and below the anchor rather than over it: {panel:?}"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn closing_through_the_controller_takes_the_panel_down_and_tells_the_caller() {
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::reset_menu_panels();
+        let closed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counting = std::rc::Rc::clone(&closed);
+        let (mut tree, overlay) = staged_anchor(
+            an_anchor().with_on_close(move || counting.set(counting.get() + 1)),
+            0.0,
+            0.0,
+        );
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1);
+
+        let controller = crate::raw_menu_anchor::with_menu_tree(|_| {
+            let mut controller = crate::raw_menu_anchor::MenuController::new();
+            controller.attach(ANCHOR);
+            controller
+        });
+        controller.close_menu();
+        assert_eq!(overlay.entry_count(), 0, "the panel came down");
+        assert_eq!(closed.get(), 1, "and `onClose` was told");
+        assert!(!crate::raw_menu_anchor::with_menu_tree(
+            |tree| tree.is_open(ANCHOR)
+        ));
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn on_close_hears_a_tap_outside_as_well_as_a_caller() {
+        // Upstream hangs `onClose` on the anchor closing, not on the caller
+        // calling: a tap outside and an Escape are not the caller's doing, and
+        // a caller who only heard about their own closes would miss both.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::reset_menu_panels();
+        let closed = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counting = std::rc::Rc::clone(&closed);
+        let (mut tree, overlay) = staged_anchor(
+            an_anchor().with_on_close(move || counting.set(counting.get() + 1)),
+            0.0,
+            0.0,
+        );
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        tap(&mut tree, Offset::new(300.0, 250.0));
+        assert_eq!(overlay.entry_count(), 0, "the tap outside took it down");
+        assert_eq!(closed.get(), 1, "and the caller heard about it");
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn pressing_the_anchor_again_is_not_a_press_outside_its_menu() {
+        // The anchor is in its own menu's tap-region group. Without that, the
+        // second press is a tap *outside* the panel: the panel closes on the
+        // way **down** and the button's own tap, which arrives on the way up,
+        // opens it again.
+        //
+        // Counting entries cannot see that -- one panel goes and one arrives,
+        // and the total never changes. What sees it is the caller: a menu that
+        // was shut and reopened told them twice.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::reset_menu_panels();
+        let opens = std::rc::Rc::new(std::cell::Cell::new(0));
+        let closes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let (counting_open, counting_close) =
+            (std::rc::Rc::clone(&opens), std::rc::Rc::clone(&closes));
+        let (mut tree, overlay) = staged_anchor(
+            an_anchor()
+                .with_on_open(move || counting_open.set(counting_open.get() + 1))
+                .with_on_close(move || counting_close.set(counting_close.get() + 1)),
+            0.0,
+            0.0,
+        );
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1);
+
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1, "still one menu");
+        assert_eq!(opens.get(), 1, "and it is the same one that was already up");
+        assert_eq!(closes.get(), 0, "nothing closed on the way");
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
+    #[test]
+    fn an_anchor_told_to_claims_the_tap_that_dismissed_it() {
+        // Upstream's `consumeOutsideTap`, false by default and the default is
+        // the considered one: a reader dismissing a menu by tapping a button
+        // usually means only to dismiss it.
+        //
+        // What "consumed" means here is narrower than upstream, and the
+        // difference is `tap_region.rs`'s own recorded divergence: the claim
+        // is *reported* -- `TapRegionRegistry::last_dispatch_consumed` -- but
+        // it does not yet stop the press, because upstream stops it by putting
+        // a dummy member into the gesture arena and this crate's arena has no
+        // entry point for a claim from outside it. So this is a test of the
+        // claim the anchor makes, which is all of it that exists.
+        let claimed = |consume: bool| {
+            crate::raw_menu_anchor::reset_menu_tree();
+            crate::raw_menu_anchor::reset_menu_panels();
+            let found: std::rc::Rc<
+                std::cell::RefCell<Option<crate::tap_region::TapRegionRegistry>>,
+            > = std::rc::Rc::new(std::cell::RefCell::new(None));
+            struct Probe(
+                std::rc::Rc<std::cell::RefCell<Option<crate::tap_region::TapRegionRegistry>>>,
+                MenuAnchor,
+            );
+            impl Component for Probe {
+                fn build(&self, context: &mut BuildContext) -> AnyWidget {
+                    *self.0.borrow_mut() = Some(crate::tap_region::TapRegionRegistry::of(context));
+                    stateful(self.1.clone())
+                }
+            }
+            let menu = an_anchor().with_consume_outside_tap(consume);
+            let seen = std::rc::Rc::clone(&found);
+            let (mut tree, _overlay) = staged_page(move || {
+                crate::framework::component(Probe(std::rc::Rc::clone(&seen), menu.clone()))
+            });
+            tap(&mut tree, Offset::new(20.0, 12.0));
+            press_only(&mut tree, Offset::new(300.0, 250.0));
+            let registry = found.borrow().clone().expect("a descendant found it");
+            crate::raw_menu_anchor::reset_menu_tree();
+            registry.last_dispatch_consumed()
+        };
+        assert!(!claimed(false), "by default nothing is claimed");
+        assert!(claimed(true), "and told to, the anchor claims the press");
+    }
+
+    #[test]
+    fn an_anchor_taken_away_takes_its_menu_and_its_opener_with_it() {
+        // A closure left behind holds the overlay handle of a page that is
+        // gone, so a controller somebody kept would open a menu into it.
+        crate::raw_menu_anchor::reset_menu_tree();
+        crate::raw_menu_anchor::reset_menu_panels();
+        let (mut tree, overlay) = staged_anchor(an_anchor(), 0.0, 0.0);
+        tap(&mut tree, Offset::new(20.0, 12.0));
+        assert_eq!(overlay.entry_count(), 1);
+
+        tree.rebuild(leaf(|| crate::widgets::SizedBox::new(1.0, 1.0)));
+        tree.build_render_tree();
+        assert_eq!(overlay.entry_count(), 0, "the menu went with it");
+        assert!(crate::raw_menu_anchor::with_menu_tree(|tree| tree
+            .node(ANCHOR)
+            .is_none()));
+
+        crate::raw_menu_anchor::open_menu(ANCHOR);
+        assert_eq!(
+            overlay.entry_count(),
+            0,
+            "and nothing knows how to reopen it"
+        );
+        crate::raw_menu_anchor::reset_menu_tree();
+    }
+
     // -- A menu bar, assembled ---------------------------------------------
 
     const MENU_BAR: u64 = 8410;
@@ -3343,6 +3873,38 @@ mod tests {
         let mut router = crate::gestures::GestureRouter::new();
         router.dispatch(&root, &event(crate::gestures::PointerChange::Down));
         router.dispatch(&root, &event(crate::gestures::PointerChange::Up));
+        tree.rebuild_dirty();
+    }
+
+    /// A press at `at` with **no release**.
+    ///
+    /// The release matters for one reader: the tap-region surface records
+    /// whether the last dispatch was claimed, and the release is a dispatch
+    /// too -- one that claims nothing and overwrites the answer. A test asking
+    /// who claimed the press has to ask between the two.
+    fn press_only(tree: &mut ElementTree, at: Offset) {
+        let root = tree.build_render_tree().expect("a root");
+        crate::render::schedule_root_layout(&root, BoxConstraints::loose(400.0, 300.0));
+        crate::render::flush_layout();
+        let mut router = crate::gestures::GestureRouter::new();
+        router.dispatch(
+            &root,
+            &crate::gestures::PointerEvent {
+                view_id: 0,
+                device: 0,
+                pointer_id: 1,
+                change: crate::gestures::PointerChange::Down,
+                kind: crate::gestures::PointerKind::Touch,
+                signal_kind: crate::gestures::SignalKind::None,
+                buttons: 1,
+                time_stamp_micros: 0,
+                position: at,
+                delta: Offset::ZERO,
+                scroll_delta: Offset::ZERO,
+                pressure: 1.0,
+                local_position: at,
+            },
+        );
         tree.rebuild_dirty();
     }
 

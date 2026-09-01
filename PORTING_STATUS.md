@@ -3328,3 +3328,79 @@ C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
 **先查一件事**：两圈同时收到同一次外部按压时，上游的净效果是什么
 （面板关自己、按钮关孩子，顺序与去重），
 确认了再决定这条要不要单独可观测、怎么观测。
+
+---
+
+## 第 465 轮：`MenuAnchor` 本身——控制器第一次能真的打开一个菜单
+
+上一轮留的问题先查，结论是**不做**：上游按钮那圈
+`TapRegion(onTapOutside: handleOutsideTap)` 关的是孩子，
+而在这个 port 的排布里，凡是能触发它的那一次外部按压，
+同时也会到达面板自己那圈（关自己、连带关孩子），净效果一样。
+写一段无法被观察到差别的代码，正是这几轮一直在挑的毛病，
+所以记在这里，不写。
+
+改去做队列里更大的那块：`MenuAnchor` 和两轮前的 `MenuBar` 一样，
+是个**只有旗子没有身体**的壳——六个字段，没有孩子、没有菜单、
+不进树、什么也画不出来。而它是上游这条线的主角（每个下拉、
+每个右键菜单都是它）。
+
+这一轮把它做成真组件：进树、离开时出树、
+`builder(context, controller, child)` 把**控制器交给调用者**（
+上游也是这样，因为开菜单的那个按钮在 anchor 外面）、
+面板按 `MenuLayout` 挂在自己底下、`onOpen`/`onClose`、
+以及自己那圈 tap region。
+
+### 控制器以前只够到树，够不到屏幕
+
+`MenuController` 原来只能改树——它能说"菜单开着"而屏幕上空无一物，
+正是第 464 轮刚补掉的那种半截。可这里没法照上游的写法（
+上游的控制器攥着 anchor 的 `State`，直接调它的方法）：
+这个 crate 里没人攥着别人的 state，而开菜单要的东西——
+overlay handle、要包进去的主题、按钮此刻的位置——
+全是在 anchor 自己的 `build` 里捕获的。
+
+所以 anchor 把**那个知道这一切的闭包**留下（`OPENERS`，
+按 anchor id 存，每次 build 覆盖一次——上一次 build 的闭包
+攥着的是上一页的 overlay），控制器去叫它。
+`MenuController::open_menu()` / `close_menu()` 于是是真的开和关。
+
+### 三个自找的坑
+
+- **面板挡住了要点的按钮。**"外部按压还能不能落到别处"那条测试里，
+  另一个按钮就摆在 anchor 底下——面板正好盖住它，
+  于是"没被点到"根本不是被吞掉的证据。挪开 200 像素才成立。
+- **`consumeOutsideTap` 在这个 crate 里还吞不掉按压。**
+  `tap_region.rs` 顶上早就记着这条 divergence：认领被**记录**下来
+  （`last_dispatch_consumed`），但拦不住——上游是往手势竞技场里塞一个
+  必胜的成员，这里的竞技场在 router 里面，没有外部入口。
+  于是测试改成断言"anchor 认领了这一次按压"，那是现在真实存在的全部。
+- **认领这件事只在按下和抬起之间存在。**抬起也是一次 dispatch，
+  它谁也不认领，顺手把答案覆盖成 false。加了 `press_only`：
+  只按不放，在两者之间问。
+
+### 一个变异照出的"夹具替被测对象干了活"
+
+"anchor 的 region 换个组" 一开始 0 红。原因不是测试写得松，
+而是**夹具里那个孩子按钮自己带着菜单的组**——
+于是 anchor 有没有那圈 region 根本无所谓。
+上游 builder 的孩子是任意 widget，把它放进菜单组的正是 anchor 那圈。
+把孩子改成自己一个组之后，变异立刻红。
+（顺带另一条也换了断言：按第二次时"面板数"看不出差别——
+走一个、来一个，总数不变；能看出来的是调用者：
+被关掉又重开的菜单会告诉他两次。）
+
+变异扫描 13 个，全红。尺子：十六把全部 exit 0。
+门：Rust 6730 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；三个目录 default 与
+`rustflutter_engine` 都 exit 0。
+
+**下一步**：`MenuAnchor` 的面板现在是调用者给什么画什么，
+上游那一层 `_MenuPanel`（`menuChildren` 排成一列、
+`MenuTheme` 的背景与内边距、`clipBehavior`、
+`crossAxisUnconstrained` 让子菜单可以比父菜单宽）还没有。
+`ResolvedMenuPanel` 早就备好了（第 463 轮菜单栏用的是它的横向那半），
+**竖向那半至今没有真调用者**。
+**先查一件事**：`crossAxisUnconstrained` 到底放松的是哪一维、
+是在 `_Submenu` 的哪一层（`ConstrainedBox` 还是
+`UnconstrainedBox(constrainedAxis:)`），确认了再动手。

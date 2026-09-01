@@ -439,6 +439,24 @@ impl MenuController {
 
     /// Upstream's `closeChildren`, which shuts the submenus and leaves this
     /// menu open.
+    /// Upstream's `MenuController.open()`: the menu goes up, panel and all.
+    ///
+    /// The tree half is [`MenuController::open`], which is all a test of the
+    /// tree can see; this is the one a caller holding a controller wants.
+    pub fn open_menu(&self) {
+        if let Some(anchor) = self.anchor() {
+            open_menu(anchor);
+        }
+    }
+
+    /// Upstream's `MenuController.close()`, which closes this anchor and its
+    /// children and takes their panels down with them.
+    pub fn close_menu(&self) {
+        if let Some(anchor) = self.anchor() {
+            with_panels_following(|tree| tree.close(anchor));
+        }
+    }
+
     pub fn close_children(&self, tree: &mut MenuAnchorTree) {
         let anchor = self.anchor.expect("MenuController is not attached");
         tree.close_children(anchor, CloseKind::Requested);
@@ -749,6 +767,59 @@ pub fn close_menu(anchor: u64) {
 #[cfg(test)]
 pub fn reset_menu_panels() {
     PANELS.with(|panels| panels.borrow_mut().clear());
+    OPENERS.with(|openers| openers.borrow_mut().clear());
+}
+
+thread_local! {
+    /// How to put each anchor's menu on screen.
+    ///
+    /// # Why a widget cannot just be asked
+    ///
+    /// Upstream a [`MenuController`] holds its `_anchor`, a `State` object, and
+    /// `open()` calls a method on it. Nothing here holds another widget's
+    /// state: the overlay handle, the themes to wrap the panel in and the
+    /// button's position are all captured in the anchor's own `build`, and
+    /// they are the things opening needs. So the anchor leaves behind the one
+    /// closure that knows all of it, and the controller calls that.
+    ///
+    /// Without this the controller could only reach the **tree**, and a menu
+    /// that is open in the tree and absent from the screen is the same broken
+    /// half a tap outside used to leave behind.
+    static OPENERS: std::cell::RefCell<Vec<(u64, std::rc::Rc<dyn Fn()>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Records how to open `anchor`'s menu, replacing whatever was there: a
+/// rebuilt anchor captured a fresh overlay handle, and the old closure holds
+/// the previous one.
+pub fn note_menu_opener(anchor: u64, open: std::rc::Rc<dyn Fn()>) {
+    OPENERS.with(|openers| {
+        let mut openers = openers.borrow_mut();
+        openers.retain(|(id, _)| *id != anchor);
+        openers.push((anchor, open));
+    });
+}
+
+/// Forgets how to open `anchor`'s menu, for an anchor that has left the tree.
+pub fn forget_menu_opener(anchor: u64) {
+    OPENERS.with(|openers| openers.borrow_mut().retain(|(id, _)| *id != anchor));
+}
+
+/// Opens `anchor`'s menu, if something knows how.
+///
+/// The closure is cloned out from under the borrow before it runs: opening
+/// builds a widget, and a widget being built is entitled to ask about menus.
+pub fn open_menu(anchor: u64) {
+    let opener = OPENERS.with(|openers| {
+        openers
+            .borrow()
+            .iter()
+            .find(|(id, _)| *id == anchor)
+            .map(|(_, open)| std::rc::Rc::clone(open))
+    });
+    if let Some(opener) = opener {
+        opener();
+    }
 }
 
 #[cfg(test)]
