@@ -5159,3 +5159,61 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6866 通�
 再决定是补到 `ReorderableDragStartListener`（那里已经有 `enabled` 了）
 还是补到这个类上。如果它作用在把手上，那就该在 widgets 层，
 和第 486 轮"断言写在上游写它的那一层"是同一条道理。
+
+---
+
+## 第 497 轮：桌面上给一个把手，手机上整行就是把手
+
+上一轮让我先读清 `mouseCursor` 作用在哪。读了——它的文档写得很直白：
+*"The cursor for a mouse pointer when it enters or is hovering over the drag
+handle."* **只作用在内建的拖动把手上**。
+顺着它读 `_itemBuilder`，发现把手这一整块比一个光标大得多，而且这个 crate
+只有一个 `builds_default_drag_handles: bool`：
+
+**上游按平台给两种完全不同的东西**：
+
+- linux / windows / macOS：行上叠一个**看得见的把手**
+  （`Stack` + `Positioned.directional`），用 `ReorderableDragStartListener`，
+  **一按就拖**；
+- iOS / android / fuchsia：**没有把手**，整行套 `ReorderableDelayedDragStartListener`，
+  **长按才拖**。
+
+两半出自同一个事实：桌面读者有指针，一次落在行上的按下没有别的用途，
+所以给一个看得见的小目标更好；手机读者的按下**已经被滚动占用了**，
+所以拖动必须用一个滚动不认领的手势——长按就是那个手势。
+（这个 crate 的两个 listener 早就在，正是这一对。）
+
+把手的位置也是规则，不是随手写的数：
+**整条横轴 + 贴住主轴的尾端**。竖直列表里是沿右侧的一条通高长条、把手在中间；
+水平列表里是沿底边的一条通宽长条。长条是为了好按——读者在行的任意高度按下都能中；
+对齐是为了把手本身不乱跑。8 像素的内缩只加在**贴住的那条边**上，
+另一侧不加：加了就会从行内容那一侧把长条削窄。
+
+光标那条最后也补上了：**悬停是张开的手，按住是握起的手**；
+应用给了自己的光标时，仍然拿 `{dragged}` 去解析它，
+所以一个按状态给值的光标在拖动时仍然走它自己的 dragged 分支——
+不是被压成一个值。
+
+### 变异 8 个，全红
+
+每个平台都给把手 / macOS 算进手机那半（2 红）；不建把手也照建（1 红）；
+竖直把手不是长条（1 红）；把手贴到前缘（1 红）；
+水平列表按竖直的方式贴（1 红）；手永远不握起（1 红）；
+自带光标不按拖动状态解析（1 红）。
+
+`ReorderableListView` 走到 **0.52（16/31）**，三轮从 0.26 上来，
+每一步都是带着规则进来的成员。
+
+尺子：十七把全部 exit 0。门：Rust 6871 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6871 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`ReorderableListView` 这一遍差不多到底了——
+剩下的 15 个里绝大多数是 `ScrollView` 的字段（住在 `self.scroll` 上，
+depth 数不到）和三个 extent 来源（住在 `self.config` 上）。
+**先查一件事**：还有一个真的没查过的——`_proxyDecorator`：
+拖起来的那一行被包进 `Material(elevation: lerp(0, 6, Curves.easeInOut(t)))`。
+**这是默认的拖动外观**，而 `proxyDecorator` 参数只是让应用换掉它。
+先看这个 crate 有没有"被拖起的行长什么样"的东西
+（`reorderable_list.rs` 里只有几何，没有外观；`material.rs` 的 elevation 那一带可能有），
+没有就补这条默认装饰，然后把 `ReorderableListView` 记进 `depth_examined.json`。

@@ -1335,6 +1335,135 @@ mod tests {
 // The Material list on top of the widgets-layer machinery above. It reuses
 // `reorder_report` rather than restating it.
 
+/// What a `ReorderableListView` wraps each of its items in when it builds the
+/// drag handles itself.
+///
+/// **The two platforms are given different things to drag.** Upstream's
+/// `_itemBuilder` switches on `Theme.of(context).platform`: a desktop row gets
+/// a handle drawn over it and dragged the moment it is pressed, and a phone
+/// row gets no handle at all -- the whole row is the target, after a long
+/// press.
+///
+/// Both halves follow from the same fact. A desktop reader has a pointer and
+/// no other use for a press on a row, so a small target they can see is
+/// better; a phone reader's press is already spoken for by the scroll, so the
+/// gesture has to be one the scroll does not claim, and a long press is that
+/// gesture. The two listeners this crate already has are exactly this pair --
+/// see [`ReorderableDragStartListener`] and
+/// [`ReorderableDelayedDragStartListener`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultDragHandles {
+    /// Upstream's linux/windows/macOS arm.
+    Visible,
+    /// Upstream's iOS/android/fuchsia arm.
+    WholeRowOnLongPress,
+    /// `buildDefaultDragHandles: false`: the item is wrapped in a
+    /// `KeyedSubtree` and nothing else. The application is expected to put its
+    /// own listener somewhere inside the row.
+    None,
+}
+
+/// Upstream's `_itemBuilder` switch.
+pub fn default_drag_handles(
+    builds_default_drag_handles: bool,
+    platform: crate::editable_text::TargetPlatform,
+) -> DefaultDragHandles {
+    use crate::editable_text::TargetPlatform;
+    if !builds_default_drag_handles {
+        return DefaultDragHandles::None;
+    }
+    match platform {
+        TargetPlatform::Linux | TargetPlatform::Windows | TargetPlatform::MacOS => {
+            DefaultDragHandles::Visible
+        }
+        TargetPlatform::IOS | TargetPlatform::Android | TargetPlatform::Fuchsia => {
+            DefaultDragHandles::WholeRowOnLongPress
+        }
+    }
+}
+
+/// Where the built-in handle sits over the row.
+///
+/// Directional insets, `None` where upstream leaves the edge unconstrained.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DragHandleSpot {
+    pub start: Option<f32>,
+    pub end: Option<f32>,
+    pub top: Option<f32>,
+    pub bottom: Option<f32>,
+    pub alignment: crate::render::AlignmentDirectional,
+}
+
+/// Upstream's `Positioned.directional` around the handle, and the `Align`
+/// inside it.
+///
+/// **The handle is given the whole cross axis and pinned to the trailing edge
+/// of the main one.** In a vertical list that is a full-height strip down the
+/// end side, with the handle centred in it; in a horizontal list, a
+/// full-width strip along the bottom. The strip is what makes the handle easy
+/// to hit -- the reader can be anywhere along the row's height and still land
+/// on it -- while the alignment is what keeps the handle itself in one place.
+///
+/// The inset is [`DRAG_HANDLE_INSET`] on the pinned edge only. The other three
+/// are zero or unconstrained, which is not an oversight: an inset on the
+/// leading edge would shrink the strip from the side the row's own content is
+/// on.
+pub fn drag_handle_spot(axis: Axis) -> DragHandleSpot {
+    match axis {
+        Axis::Vertical => DragHandleSpot {
+            start: None,
+            end: Some(DRAG_HANDLE_INSET),
+            top: Some(0.0),
+            bottom: Some(0.0),
+            alignment: crate::render::AlignmentDirectional::CENTER_END,
+        },
+        Axis::Horizontal => DragHandleSpot {
+            start: Some(0.0),
+            end: Some(0.0),
+            top: None,
+            bottom: Some(DRAG_HANDLE_INSET),
+            alignment: crate::render::AlignmentDirectional::BOTTOM_CENTER,
+        },
+    }
+}
+
+/// How far the handle is held off the edge it is pinned to.
+pub const DRAG_HANDLE_INSET: f32 = 8.0;
+
+/// The cursor over the built-in handle.
+///
+/// ```dart
+/// widget.mouseCursor ??
+///     const WidgetStateMouseCursor.fromMap(<WidgetStatesConstraint, MouseCursor>{
+///       WidgetState.dragged: SystemMouseCursors.grabbing,
+///       WidgetState.any: SystemMouseCursors.grab,
+///     }),
+/// <WidgetState>{if (_dragging.value) WidgetState.dragged},
+/// ```
+///
+/// An open hand over the handle and a closed one while it is held: the two
+/// halves of the same gesture, and the only place in this list where the
+/// pointer is told what it may do before it does it. A cursor given by the
+/// application is resolved against the same state rather than replacing the
+/// idea, so an application that supplies a state-dependent cursor still gets
+/// its dragged arm during a drag.
+pub fn drag_handle_cursor(
+    given: Option<&crate::widget_state::StateProperty<crate::services::system::SystemMouseCursor>>,
+    dragging: bool,
+) -> crate::services::system::SystemMouseCursor {
+    use crate::services::system::SystemMouseCursor;
+    let states = if dragging {
+        crate::widget_state::WidgetStates::NONE.with(crate::widget_state::WidgetState::Dragged)
+    } else {
+        crate::widget_state::WidgetStates::NONE
+    };
+    match given {
+        Some(property) => property.resolve(states),
+        None if dragging => SystemMouseCursor::Grabbing,
+        None => SystemMouseCursor::Grab,
+    }
+}
+
 /// How a reorderable list's padding is divided between its header, its list
 /// and its footer.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1357,6 +1486,11 @@ pub struct ReorderableListView {
     /// Upstream's `padding`, which is **not** simply handed to the scroll
     /// view: see [`ReorderableListView::split_padding`].
     pub padding: Option<EdgeInsets>,
+    /// Upstream's `mouseCursor`, over the built-in drag handle only -- its own
+    /// doc says so: "The cursor for a mouse pointer when it enters or is
+    /// hovering over the drag handle." See [`drag_handle_cursor`].
+    pub mouse_cursor:
+        Option<crate::widget_state::StateProperty<crate::services::system::SystemMouseCursor>>,
     /// Upstream's `header`: a row before the list that cannot be reordered.
     pub has_header: bool,
     /// Upstream's `footer`, the same after it.
@@ -1374,6 +1508,7 @@ impl ReorderableListView {
             config: ReorderableConfig::new(),
             scroll: ScrollView::new(),
             padding: None,
+            mouse_cursor: None,
             has_header: false,
             has_footer: false,
             every_child_has_a_key: true,
@@ -1488,6 +1623,19 @@ impl ReorderableListView {
         }
     }
 
+    /// What each row is wrapped in on this platform.
+    pub fn drag_handles(
+        &self,
+        platform: crate::editable_text::TargetPlatform,
+    ) -> DefaultDragHandles {
+        default_drag_handles(self.builds_default_drag_handles, platform)
+    }
+
+    /// The cursor over the built-in handle, given whether a drag is under way.
+    pub fn handle_cursor(&self, dragging: bool) -> crate::services::system::SystemMouseCursor {
+        drag_handle_cursor(self.mouse_cursor.as_ref(), dragging)
+    }
+
     /// What a drop reports, deferring to [`reorder_report`] for the arithmetic.
     pub fn report_drop(&self, old_index: usize, new_index: usize) -> ReorderReport {
         reorder_report(old_index, new_index, self.config.has_on_reorder)
@@ -1581,6 +1729,111 @@ mod material_reorderable_tests {
         assert_eq!(list.validate(), Ok(()));
         list.every_child_has_a_key = false;
         assert_eq!(list.validate(), Err(ReorderableError::AChildWithoutAKey));
+    }
+
+    // -- What the reader is given to drag -----------------------------------------
+
+    #[test]
+    fn a_desktop_row_gets_a_handle_and_a_phone_row_is_one() {
+        use crate::editable_text::TargetPlatform;
+        for platform in [
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+            TargetPlatform::MacOS,
+        ] {
+            assert_eq!(
+                default_drag_handles(true, platform),
+                DefaultDragHandles::Visible,
+                "{platform:?}"
+            );
+        }
+        for platform in [
+            TargetPlatform::IOS,
+            TargetPlatform::Android,
+            TargetPlatform::Fuchsia,
+        ] {
+            assert_eq!(
+                default_drag_handles(true, platform),
+                DefaultDragHandles::WholeRowOnLongPress,
+                "{platform:?}: the scroll has already claimed a plain press"
+            );
+        }
+    }
+
+    #[test]
+    fn a_list_that_builds_no_handles_gets_none_on_any_platform() {
+        use crate::editable_text::TargetPlatform;
+        for platform in [TargetPlatform::MacOS, TargetPlatform::Android] {
+            assert_eq!(
+                default_drag_handles(false, platform),
+                DefaultDragHandles::None,
+                "{platform:?}"
+            );
+        }
+        let mut list = ReorderableListView::new(3);
+        assert_eq!(
+            list.drag_handles(TargetPlatform::MacOS),
+            DefaultDragHandles::Visible,
+            "and a list builds them by default"
+        );
+        list.builds_default_drag_handles = false;
+        assert_eq!(
+            list.drag_handles(TargetPlatform::MacOS),
+            DefaultDragHandles::None
+        );
+    }
+
+    #[test]
+    fn the_handle_takes_the_whole_cross_axis_and_hugs_the_trailing_edge() {
+        let down = drag_handle_spot(Axis::Vertical);
+        assert_eq!(
+            (down.top, down.bottom),
+            (Some(0.0), Some(0.0)),
+            "a full-height strip, so the reader can be anywhere down the row"
+        );
+        assert_eq!(down.end, Some(DRAG_HANDLE_INSET));
+        assert_eq!(down.start, None, "and nothing pinning its leading edge");
+        assert_eq!(
+            down.alignment,
+            crate::render::AlignmentDirectional::CENTER_END
+        );
+
+        let across = drag_handle_spot(Axis::Horizontal);
+        assert_eq!((across.start, across.end), (Some(0.0), Some(0.0)));
+        assert_eq!(across.bottom, Some(DRAG_HANDLE_INSET));
+        assert_eq!(across.top, None);
+        assert_eq!(
+            across.alignment,
+            crate::render::AlignmentDirectional::BOTTOM_CENTER
+        );
+    }
+
+    #[test]
+    fn an_open_hand_over_the_handle_and_a_closed_one_holding_it() {
+        use crate::services::system::SystemMouseCursor;
+        let list = ReorderableListView::new(3);
+        assert_eq!(list.handle_cursor(false), SystemMouseCursor::Grab);
+        assert_eq!(list.handle_cursor(true), SystemMouseCursor::Grabbing);
+    }
+
+    #[test]
+    fn a_cursor_of_ones_own_is_still_resolved_against_the_drag() {
+        // Upstream resolves whatever it is given with `{if (dragging)
+        // WidgetState.dragged}`, so a state-dependent cursor keeps its dragged
+        // arm rather than being flattened to one value.
+        use crate::services::system::SystemMouseCursor;
+        use crate::widget_state::{StateProperty, WidgetState};
+
+        let mut list = ReorderableListView::new(3);
+        list.mouse_cursor = Some(StateProperty::resolve_with(|states| {
+            if states.contains(WidgetState::Dragged) {
+                SystemMouseCursor::Move
+            } else {
+                SystemMouseCursor::Click
+            }
+        }));
+        assert_eq!(list.handle_cursor(false), SystemMouseCursor::Click);
+        assert_eq!(list.handle_cursor(true), SystemMouseCursor::Move);
     }
 
     // -- The padding may only be spent once ---------------------------------------
