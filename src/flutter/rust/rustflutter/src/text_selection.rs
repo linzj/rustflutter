@@ -3425,10 +3425,53 @@ pub struct TextSelectionOverlay {
     pub overlay: SelectionOverlay,
     /// Where in the handle the finger landed, kept for the whole drag.
     drag_offset: Option<Offset>,
+    /// Upstream's `_startHandleDragPosition` and `_endHandleDragPosition`: the
+    /// vertical position each handle's drag has reached, **after snapping**.
+    /// Two of them because two fingers can drag the two handles at once, which
+    /// is also why upstream keeps two `isDragging*Handle` flags.
+    start_handle_drag_dy: Option<f32>,
+    end_handle_drag_dy: Option<f32>,
     /// Upstream's `_dragStartSelection`: the selection as it was when this
     /// drag began, kept **only on Apple platforms** and cleared by any drag
     /// end. See [`Self::drag_selection`] for what it is for.
     drag_start_selection: Option<(i32, i32)>,
+}
+
+/// Upstream's `_getHandleDy`: where a handle drag's vertical position lands.
+///
+/// ```dart
+/// final double distanceDragged = dragDy - handleDy;
+/// final dragDirection = distanceDragged < 0.0 ? -1 : 1;
+/// final int linesDragged = dragDirection * (distanceDragged.abs() / preferredLineHeight).floor();
+/// return handleDy + linesDragged * preferredLineHeight;
+/// ```
+///
+/// **A selection handle moves down the text a whole line at a time.**
+/// Sideways it follows the finger exactly; vertically it stays on the line it
+/// is on until the finger has travelled a full line height, and then it jumps.
+/// A handle that slid smoothly would spend most of the drag pointing between
+/// two lines, and the position under it would flicker between them as the
+/// finger wandered by a pixel.
+///
+/// `floor` on the **absolute** distance with the sign put back afterwards is
+/// not the same as flooring the signed quotient: it truncates *towards the
+/// place the drag started* in both directions, so a drag of one and a half
+/// lines moves one line whichever way it goes. `(-1.5).floor()` would be `-2`,
+/// which would make an upward drag jump a line earlier than a downward one.
+///
+/// The guard answers `None` -- upstream returns before touching anything --
+/// when the line height is not positive or either position is not finite. That
+/// is a **move dropped entirely**, not a move of zero: the recorded position
+/// stays where it was, so the next move is still measured from the last good
+/// one.
+pub fn snapped_handle_dy(drag_dy: f32, handle_dy: f32, preferred_line_height: f32) -> Option<f32> {
+    if preferred_line_height <= 0.0 || !drag_dy.is_finite() || !handle_dy.is_finite() {
+        return None;
+    }
+    let distance_dragged = drag_dy - handle_dy;
+    let direction = if distance_dragged < 0.0 { -1.0 } else { 1.0 };
+    let lines_dragged = direction * (distance_dragged.abs() / preferred_line_height).floor();
+    Some(handle_dy + lines_dragged * preferred_line_height)
 }
 
 /// What a handle drag makes of the selection.
@@ -3451,6 +3494,8 @@ impl TextSelectionOverlay {
         TextSelectionOverlay {
             overlay: SelectionOverlay::new(),
             drag_offset: None,
+            start_handle_drag_dy: None,
+            end_handle_drag_dy: None,
             drag_start_selection: None,
         }
     }
@@ -3474,7 +3519,52 @@ impl TextSelectionOverlay {
     /// handle was being dragged and whatever the drag did.
     pub fn end_handle_drag(&mut self) {
         self.drag_offset = None;
+        self.start_handle_drag_dy = None;
+        self.end_handle_drag_dy = None;
         self.drag_start_selection = None;
+    }
+
+    /// Upstream's `_{start,end}HandleDragPosition = details.globalPosition.dy`,
+    /// set as the drag begins. Everything after it is measured from here.
+    pub fn begin_handle_drag_dy(&mut self, end: SelectionHandleEnd, dy: f32) {
+        match end {
+            SelectionHandleEnd::Start => self.start_handle_drag_dy = Some(dy),
+            SelectionHandleEnd::End => self.end_handle_drag_dy = Some(dy),
+        }
+    }
+
+    /// Where this handle's drag has got to, snapping included.
+    pub fn handle_drag_dy(&self, end: SelectionHandleEnd) -> Option<f32> {
+        match end {
+            SelectionHandleEnd::Start => self.start_handle_drag_dy,
+            SelectionHandleEnd::End => self.end_handle_drag_dy,
+        }
+    }
+
+    /// One move of a handle drag: [`snapped_handle_dy`] against where this
+    /// handle had got to, written back so the next move measures from it.
+    ///
+    /// `None` is upstream's early return -- the move is dropped entirely, and
+    /// the recorded position is left alone so the *next* move is still
+    /// measured from the last good one.
+    ///
+    /// A move that arrives with no beginning recorded takes **its own**
+    /// position as the origin. Upstream cannot reach that case at all --
+    /// `_endHandleDragPosition` is a `late double` set by the drag start -- but
+    /// this crate can: a synthetic move, or one begun before the press was
+    /// reported. [`crate::editable`]'s `handle_lift` already answers that case
+    /// rather than refusing it, and the two should agree about what a drag
+    /// with no press behind it is.
+    pub fn advance_handle_drag_dy(
+        &mut self,
+        end: SelectionHandleEnd,
+        drag_dy: f32,
+        preferred_line_height: f32,
+    ) -> Option<f32> {
+        let from = self.handle_drag_dy(end).unwrap_or(drag_dy);
+        let next = snapped_handle_dy(drag_dy, from, preferred_line_height)?;
+        self.begin_handle_drag_dy(end, next);
+        Some(next)
     }
 
     /// Whether this platform remembers the selection a handle drag started
@@ -5864,6 +5954,123 @@ two";
         let unbuilt = overlay.visibilities(false, (true, true));
         assert!(!unbuilt.start_handle && !unbuilt.end_handle);
         assert!(unbuilt.toolbar, "and the toolbar does not care either way");
+    }
+
+    // -- A handle moves a line at a time --------------------------------------
+
+    #[test]
+    fn a_handle_stays_on_its_line_until_a_whole_line_has_been_dragged() {
+        // Twenty-pixel lines, the handle sitting at 100.
+        for (drag_to, expected) in [
+            (100.0, 100.0),
+            (110.0, 100.0),
+            (119.9, 100.0),
+            (120.0, 120.0),
+            (139.0, 120.0),
+            (140.0, 140.0),
+        ] {
+            assert_eq!(
+                snapped_handle_dy(drag_to, 100.0, 20.0),
+                Some(expected),
+                "dragging to {drag_to}"
+            );
+        }
+    }
+
+    #[test]
+    fn upwards_and_downwards_are_mirror_images() {
+        // `floor` on the **absolute** distance with the sign put back is not
+        // `floor` on the signed one: `(-1.45).floor()` is -2, which would make
+        // an upward drag jump a line sooner than the same downward drag.
+        assert_eq!(snapped_handle_dy(129.0, 100.0, 20.0), Some(120.0));
+        assert_eq!(snapped_handle_dy(71.0, 100.0, 20.0), Some(80.0));
+        assert_eq!(snapped_handle_dy(81.0, 100.0, 20.0), Some(100.0));
+    }
+
+    #[test]
+    fn a_drag_with_nothing_to_measure_by_does_not_happen() {
+        // Upstream returns before touching anything, so the move is dropped
+        // whole rather than happening with no vertical part.
+        assert_eq!(snapped_handle_dy(120.0, 100.0, 0.0), None);
+        assert_eq!(snapped_handle_dy(120.0, 100.0, -20.0), None);
+        assert_eq!(snapped_handle_dy(f32::NAN, 100.0, 20.0), None);
+        assert_eq!(snapped_handle_dy(f32::INFINITY, 100.0, 20.0), None);
+        assert_eq!(snapped_handle_dy(120.0, f32::NAN, 20.0), None);
+    }
+
+    #[test]
+    fn coming_back_is_measured_from_where_the_handle_got_to() {
+        // The write-back is what makes this hysteresis rather than a fixed
+        // grid: having moved down a line, the finger has to come a whole line
+        // back up before the handle follows.
+        let mut overlay = TextSelectionOverlay::new();
+        overlay.begin_handle_drag_dy(SelectionHandleEnd::End, 100.0);
+
+        assert_eq!(
+            overlay.advance_handle_drag_dy(SelectionHandleEnd::End, 139.0, 20.0),
+            Some(120.0)
+        );
+        assert_eq!(
+            overlay.advance_handle_drag_dy(SelectionHandleEnd::End, 101.0, 20.0),
+            Some(120.0),
+            "nearly back where it started, and the handle has not moved"
+        );
+        assert_eq!(
+            overlay.advance_handle_drag_dy(SelectionHandleEnd::End, 99.0, 20.0),
+            Some(100.0),
+            "a whole line back up from 120, and it follows"
+        );
+    }
+
+    #[test]
+    fn the_two_handles_keep_their_own_drags() {
+        // Two fingers can hold both handles, which is why upstream has two
+        // fields and two `isDragging` flags rather than one of each.
+        let mut overlay = TextSelectionOverlay::new();
+        overlay.begin_handle_drag_dy(SelectionHandleEnd::Start, 100.0);
+        overlay.begin_handle_drag_dy(SelectionHandleEnd::End, 300.0);
+
+        assert_eq!(
+            overlay.advance_handle_drag_dy(SelectionHandleEnd::Start, 125.0, 20.0),
+            Some(120.0)
+        );
+        assert_eq!(
+            overlay.handle_drag_dy(SelectionHandleEnd::End),
+            Some(300.0),
+            "the other handle's drag is untouched"
+        );
+
+        overlay.end_handle_drag();
+        assert_eq!(overlay.handle_drag_dy(SelectionHandleEnd::Start), None);
+        assert_eq!(overlay.handle_drag_dy(SelectionHandleEnd::End), None);
+    }
+
+    #[test]
+    fn a_move_that_is_dropped_leaves_the_position_where_it_was() {
+        let mut overlay = TextSelectionOverlay::new();
+        overlay.begin_handle_drag_dy(SelectionHandleEnd::End, 100.0);
+        assert_eq!(
+            overlay.advance_handle_drag_dy(SelectionHandleEnd::End, 140.0, 0.0),
+            None
+        );
+        assert_eq!(
+            overlay.handle_drag_dy(SelectionHandleEnd::End),
+            Some(100.0),
+            "so the next move is still measured from the last good one"
+        );
+    }
+
+    #[test]
+    fn a_move_with_no_press_behind_it_starts_from_itself() {
+        // Upstream cannot reach this -- its drag position is a `late double`
+        // the drag start writes -- but a synthetic move can, and this crate
+        // already answers that case for the grab rather than refusing it.
+        let mut overlay = TextSelectionOverlay::new();
+        assert_eq!(
+            overlay.advance_handle_drag_dy(SelectionHandleEnd::End, 137.0, 20.0),
+            Some(137.0)
+        );
+        assert_eq!(overlay.handle_drag_dy(SelectionHandleEnd::End), Some(137.0));
     }
 
     // -- What a handle drag does to the selection -----------------------------

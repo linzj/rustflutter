@@ -4795,3 +4795,63 @@ return handleDy + linesDragged * preferredLineHeight;
 所以先确认：这份状态放在 `TextSelectionOverlay`（它已经存着 grab 和 drag-start 选区）
 还是放在 `selection_host` 的 geometry 上——
 选错地方就会变成第 489 轮那种"一个概念两个住处"。
+
+---
+
+## 第 491 轮：手柄是一行一行跳的
+
+上一轮的"先查一件事"有明确答案：`_startHandleDragPosition` / `_endHandleDragPosition`
+**上游就在 `TextSelectionOverlay` 上**，而这个 crate 的
+`TextSelectionOverlay` 已经存着 grab 和 drag-start 选区——同一个住处，不必新开。
+而且是**两个**字段而不是一个：两根手指可以同时拖两个手柄，
+上游的 `isDraggingStartHandle` / `isDraggingEndHandle` 也是两个。
+
+规则本身（`_getHandleDy`）：**横向跟着手指走，纵向要走满一整行才跳一行**。
+滑着走的手柄会大半时间指在两行之间，指下的位置会随着一两个像素来回闪。
+
+一处容易抄错的细节：`floor` 取在**绝对值**上、符号最后补回来，
+不等于对带符号的商取 `floor`——`(-1.45).floor()` 是 `-2`，
+那样向上拖会比同样距离的向下拖**早一行**跳。
+
+### 写回去，才有迟滞
+
+`advance_handle_drag_dy` 把吸附后的值写回记录，下一次从它再量。
+这不是可有可无的：从 100 拖到 139 → 落在 120；再回到 101，
+**手柄不动**（离 120 还差一行）；到 99 才跟着回到 100。
+不写回的话，回到 101 就直接弹回 100 了。测试正是钉这个来回。
+
+### 为了让它成立，按下时多报一个位置
+
+`_getHandleDy` 要有"从哪儿量"，也就是上游在 drag start 记的
+`details.globalPosition.dy`；而这个 crate 的 `on_drag_start` 只报了
+**手柄内部**的抓点。两个位置的原点不同、用途也不同：
+抓点是每次移动都要减掉的修正，全局位置是**这次拖动的起点**。
+所以回调签名从 `Fn(HandleEnd, Offset)` 变成 `Fn(HandleEnd, Offset, Offset)`，
+`editable.rs` 在按下时一次性把它换算进字段坐标记下来
+（上游是在吸附时才换算，因为缩放变换会把行高也缩放——换算一次、两边同坐标更省事且等价）。
+
+没有按下就来的移动（合成事件，或按下还没报上来），
+**以它自己的位置为起点**——上游根本到不了这个分支（`late double`），
+但这个 crate 到得了，而 `handle_lift` 早就为同一种情况给了同一种答案，两处得一致。
+
+### 变异 9 个，全红，其中两条是走一遍的测试抓的
+
+新的走一遍测试用了一个**偏心的抓点**（抓在手柄下 4 像素）——
+握在正中间的手柄，吸不吸附都落在同一行上，**看不出区别**；
+偏心之后，拖四分之三行：吸附的话选区一动不动，不吸附就已经跳到下一行了。
+"把手指位置直接当吸附结果"这条变异正是被它抓住的。
+
+尺子：十七把全部 exit 0。门：Rust 6846 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6846 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：`TextSelectionOverlay` 逐个成员这一遍到此走完了，
+把它记进 `tools/depth_examined.json`（连同这四轮补掉的东西：
+第二个工具条、拖动的平台分歧、行吸附、走一遍的测试），
+然后 `python tools/depth.py` 看新的队头。
+**先查一件事**：记之前先确认 `_endHandleDragTarget` / `_startHandleDragTarget`
+到底算不算已经落地——它是 `centerOfLineGlobal - details.globalPosition.dy`，
+而这个 crate 用 `handle_lift(grab, line_height)` 做同一件事（把点抬到行上）。
+两者**取值不同**（上游用端点的行中心，这里用抓点），
+所以要么承认它是个真缺口、要么写清楚为什么这里的做法是等价的——
+不能含糊过去，那正是"记一笔"这个机制最容易被滥用的地方。

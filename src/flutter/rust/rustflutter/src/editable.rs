@@ -1868,9 +1868,22 @@ fn drag_handle_to(
         // put its middle under the finger. `TextSelectionOverlay` had that
         // rule ported and nothing calling it; this is the call.
         let lift = handle_lift(grabbed.borrow().grab_offset(), layout.line_height);
+        // Sideways the handle follows the finger exactly; downwards it moves a
+        // whole line at a time. Upstream's `_getHandleDy`, against where this
+        // handle's drag had got to -- see
+        // `TextSelectionOverlay::advance_handle_drag_dy`, which also explains
+        // why `None` means this move does not happen at all rather than
+        // happening with no vertical part.
+        let Some(snapped_dy) =
+            grabbed
+                .borrow_mut()
+                .advance_handle_drag_dy(end, local.dy, layout.line_height)
+        else {
+            return;
+        };
         let at = Offset::new(
             local.dx + layout.scroll.dx,
-            local.dy + layout.scroll.dy - lift,
+            snapped_dy + layout.scroll.dy - lift,
         );
         let measure = |run: &str| {
             if run.is_empty() {
@@ -3657,8 +3670,21 @@ impl StatefulComponent for TextField {
                             crate::text_selection::TextSelectionOverlay::new(),
                         ));
                         let began = Rc::clone(&grabbed);
-                        host.set_on_drag_start(Rc::new(move |_end, grab: Offset| {
-                            began.borrow_mut().begin_handle_drag(grab);
+                        let began_anchor = Rc::clone(&reveal_anchor);
+                        host.set_on_drag_start(Rc::new(move |end, grab: Offset, at: Offset| {
+                            let mut overlay = began.borrow_mut();
+                            overlay.begin_handle_drag(grab);
+                            // Upstream records `details.globalPosition.dy`
+                            // and converts to the field's coordinates when
+                            // it snaps, because a scale transform scales
+                            // the line height too. The conversion is done
+                            // here instead, once, so what is recorded and
+                            // what is measured against it are already in
+                            // the same coordinates -- the field's.
+                            if let Some(field) = began_anchor.borrow().clone() {
+                                overlay
+                                    .begin_handle_drag_dy(end, field.global_to_local(at, None).dy);
+                            }
                         }));
                         let ended = Rc::clone(&grabbed);
                         host.set_on_drag_end(Rc::new(move |_end| {
@@ -5791,14 +5817,35 @@ mod tests {
         text: &str,
         platform: crate::editable_text::TargetPlatform,
     ) -> Rc<dyn Fn(crate::selection_host::HandleEnd, Offset)> {
-        let anchor: Rc<RefCell<Option<crate::render::RenderRef>>> = Rc::new(RefCell::new(Some(
-            crate::render::RenderRef::new(crate::render::RenderConstrainedBox::tight(400.0, 20.0)),
-        )));
-        let lines: LinesSink = Rc::new(RefCell::new(Some(LineLayout {
-            lines: vec![VisualLine {
+        field_handle_drag_over(
+            handle,
+            text,
+            platform,
+            vec![VisualLine {
                 start: 0,
                 end: text.len(),
             }],
+            Rc::new(RefCell::new(
+                crate::text_selection::TextSelectionOverlay::new(),
+            )),
+        )
+    }
+
+    /// The same, over lines the caller chooses and with an overlay it can
+    /// prepare -- a press records a grab and where the drag starts from, and
+    /// those are what the line snapping is measured against.
+    fn field_handle_drag_over(
+        handle: StateHandle<TextFieldState>,
+        text: &str,
+        platform: crate::editable_text::TargetPlatform,
+        visual_lines: Vec<VisualLine>,
+        grabbed: Rc<RefCell<crate::text_selection::TextSelectionOverlay>>,
+    ) -> Rc<dyn Fn(crate::selection_host::HandleEnd, Offset)> {
+        let anchor: Rc<RefCell<Option<crate::render::RenderRef>>> = Rc::new(RefCell::new(Some(
+            crate::render::RenderRef::new(crate::render::RenderConstrainedBox::tight(400.0, 40.0)),
+        )));
+        let lines: LinesSink = Rc::new(RefCell::new(Some(LineLayout {
+            lines: visual_lines,
             line_height: 20.0,
             scroll: Offset::ZERO,
             style: TextStyle::default(),
@@ -5810,9 +5857,7 @@ mod tests {
             lines,
             text.to_string(),
             text.to_string(),
-            Rc::new(RefCell::new(
-                crate::text_selection::TextSelectionOverlay::new(),
-            )),
+            grabbed,
             platform,
         )
     }
@@ -5856,6 +5901,57 @@ mod tests {
             selection_of(&tree),
             Some((6, 11)),
             "the handles may not cross, and the move is dropped whole"
+        );
+    }
+
+    #[test]
+    fn a_handle_dragged_less_than_a_line_stays_on_its_line() {
+        // Two lines of four characters, twenty pixels each. The handle is
+        // grabbed four pixels down -- an off-centre grab is what makes the
+        // snapping visible, because a handle held by its middle lands on the
+        // right line either way.
+        let text = "aaaa\nbbbb";
+        let lines = vec![
+            VisualLine { start: 0, end: 4 },
+            VisualLine { start: 5, end: 9 },
+        ];
+        let platform = crate::editable_text::TargetPlatform::Windows;
+
+        let dragged_to = |dy: f32| {
+            let (tree, handle) = mounted_field(4904, text);
+            handle.set_state(|state| {
+                state.value.selection_base = 0;
+                state.value.selection_extent = 2;
+            });
+            let overlay = Rc::new(RefCell::new(
+                crate::text_selection::TextSelectionOverlay::new(),
+            ));
+            overlay
+                .borrow_mut()
+                .begin_handle_drag(Offset::new(0.0, 4.0));
+            overlay
+                .borrow_mut()
+                .begin_handle_drag_dy(crate::selection_host::HandleEnd::End, 10.0);
+            field_handle_drag_over(
+                handle.clone(),
+                text,
+                platform,
+                lines.clone(),
+                Rc::clone(&overlay),
+            )(crate::selection_host::HandleEnd::End, Offset::new(0.0, dy));
+            selection_of(&tree)
+        };
+
+        assert_eq!(
+            dragged_to(25.0),
+            Some((0, 2)),
+            "three quarters of a line down: the handle has not moved, so the \
+             selection is what it was"
+        );
+        assert_eq!(
+            dragged_to(34.0),
+            Some((0, 5)),
+            "past a whole line, and the handle takes the extent to the line below"
         );
     }
 

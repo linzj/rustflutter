@@ -125,14 +125,23 @@ struct OverlayGeometry {
     /// Where a finger on a handle is reported. The field installs it; the
     /// entries read it when they build.
     on_drag: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, Offset)>>>>,
-    /// Where inside the handle the finger landed, reported once when it does.
+    /// Where inside the handle the finger landed, and where that was on the
+    /// screen, reported once when a press lands.
     ///
     /// Upstream's `_handleSelectionStartHandleDragStart` records this and
     /// keeps it for the whole drag, which is what stops the selection jumping
     /// to the handle's middle the moment a reader grabs it near an edge. Only
     /// moves were reported here before, so there was nothing that *could*
     /// know where the grab was.
-    on_drag_start: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, Offset)>>>>,
+    ///
+    /// **Two positions, because the two rules that need them count from
+    /// different origins.** The grab is inside the handle -- it is a
+    /// correction applied to every later move. The global position is where
+    /// the drag *starts from*, which upstream keeps as
+    /// `_endHandleDragPosition` and measures its line snapping against; a
+    /// handle drag that had to guess its own origin would snap from wherever
+    /// the first move happened to land.
+    on_drag_start: Rc<RefCell<Option<Rc<dyn Fn(HandleEnd, Offset, Offset)>>>>,
     /// The finger has left the handle.
     ///
     /// Upstream's `_handleStartHandleDragEnd` clears the drag state so the
@@ -324,7 +333,7 @@ impl StatefulComponent for HandleEntry {
                 // is an ordinary component and needs no overlay to stand up.
                 let started = Rc::clone(&on_drag_start);
                 handlers = handlers.with_pointer_down(move |event| {
-                    started(end, event.local_position);
+                    started(end, event.local_position, event.position);
                 });
             }
             if let Some(on_drag_end) = on_drag_end.clone() {
@@ -552,7 +561,7 @@ impl SelectionHost {
     /// `TextSelectionOverlay._handleSelectionHandleDragUpdate`.
     /// Told where inside a handle a drag began. See
     /// [`SelectionGeometryShared::on_drag_start`].
-    pub fn set_on_drag_start(&mut self, on_drag_start: Rc<dyn Fn(HandleEnd, Offset)>) {
+    pub fn set_on_drag_start(&mut self, on_drag_start: Rc<dyn Fn(HandleEnd, Offset, Offset)>) {
         *self.geometry.on_drag_start.borrow_mut() = Some(on_drag_start);
     }
 
@@ -1787,7 +1796,7 @@ mod handle_gesture_tests {
         let geometry = OverlayGeometry::default();
         let seen: Rc<RefCell<Vec<Offset>>> = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&seen);
-        *geometry.on_drag_start.borrow_mut() = Some(Rc::new(move |_end, grab: Offset| {
+        *geometry.on_drag_start.borrow_mut() = Some(Rc::new(move |_end, grab: Offset, _at| {
             recorded.borrow_mut().push(grab)
         }));
 
