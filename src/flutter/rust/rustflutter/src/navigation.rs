@@ -152,6 +152,15 @@ impl Presentation<'_> {
 struct Entry {
     route: Route,
     transition: Transition,
+    /// What this route hands back when it goes -- upstream's `Route.popped`
+    /// and `currentResult`, ported as
+    /// [`crate::routes::RouteCompletion`].
+    ///
+    /// It lives on the entry rather than on the [`Route`] for the reason
+    /// upstream keeps `pendingResult` on `_RouteEntry`: a `Route` here is a
+    /// name and some arguments, a value the application hands in and keeps,
+    /// and a result is something the *stack* delivers on its way out.
+    completion: crate::routes::RouteCompletion,
 }
 
 /// The route stack.
@@ -162,8 +171,14 @@ struct Entry {
 #[derive(Clone, Debug)]
 pub struct Navigator {
     stack: Vec<Entry>,
-    /// The route being animated away, kept alive until the transition ends.
-    outgoing: Option<Route>,
+    /// The **entry** being animated away, kept alive until the transition
+    /// ends.
+    ///
+    /// The whole entry rather than its route: what a leaving route handed back
+    /// is on the entry, and a caller usually asks for it in the same breath as
+    /// the pop -- while the animation is still running. Keeping only the route
+    /// dropped the answer at exactly the moment anyone wanted it.
+    outgoing: Option<Entry>,
     controller: Controller,
     /// The transition currently running, taken from whichever entry moved.
     transition: Transition,
@@ -181,6 +196,7 @@ impl Navigator {
             stack: vec![Entry {
                 route: root,
                 transition: Transition::None,
+                completion: crate::routes::RouteCompletion::new(),
             }],
             outgoing: None,
             controller: Controller::new(Duration::from_millis(300)).with_curve(Curve::EaseInOut),
@@ -227,43 +243,145 @@ impl Navigator {
     /// than queueing: the user asked for the newest destination, and animating
     /// through an intermediate screen they never see is worse than skipping it.
     pub fn push(&mut self, route: Route, transition: Transition) {
-        self.outgoing = Some(self.current().clone());
-        self.stack.push(Entry { route, transition });
+        self.outgoing = self.stack.last().cloned();
+        self.stack.push(Entry {
+            route,
+            transition,
+            completion: crate::routes::RouteCompletion::new(),
+        });
         self.begin(transition, Motion::Pushing);
+    }
+
+    /// [`Navigator::push`] for a screen that will hand something back, and the
+    /// value it hands back if it is dismissed without choosing.
+    ///
+    /// Upstream's `currentResult`: a picker closed by the back gesture answers
+    /// with whatever was selected at the time, not with nothing. See
+    /// [`crate::routes::RouteCompletion`].
+    pub fn push_expecting(
+        &mut self,
+        route: Route,
+        transition: Transition,
+        if_dismissed: impl Into<String>,
+    ) {
+        self.push(route, transition);
+        let entry = self.stack.last_mut().expect("just pushed");
+        entry.completion = entry.completion.clone().with_current_result(if_dismissed);
+    }
+
+    /// What the route at `depth` handed back, counting from the bottom.
+    ///
+    /// `None` while it is still on the stack, `Some(None)` once it has gone
+    /// with nothing to say -- the two are different questions, which is why
+    /// they are not flattened. See [`crate::routes::RouteCompletion::popped`].
+    ///
+    /// The answer survives the pop: the entry is kept until the transition
+    /// ends, and a caller that asks during the animation gets the same answer
+    /// it will get after.
+    pub fn result_at(&self, depth: usize) -> Option<Option<&str>> {
+        if let Some(entry) = self.stack.get(depth) {
+            return entry.completion.popped();
+        }
+        self.outgoing
+            .as_ref()
+            .filter(|_| depth == self.stack.len())
+            .and_then(|entry| entry.completion.popped())
     }
 
     /// Pops the top route. Returns false if only the root is left.
     pub fn pop(&mut self) -> bool {
+        self.pop_with_result(None).is_some()
+    }
+
+    /// [`Navigator::pop`] with the value the leaving screen hands back --
+    /// upstream's `Navigator.pop(context, result)`.
+    ///
+    /// A `None` here is not "nothing": the route's own `currentResult` is used
+    /// instead, if it named one when it was pushed. See
+    /// [`crate::routes::RouteCompletion::did_complete`].
+    /// Answers what the leaving screen handed back -- or `None` when the pop
+    /// was refused, which is the only reason nothing happened.
+    ///
+    /// The value is **returned** rather than only left on the entry, because
+    /// the entry does not always outlive the call: a pop with no transition
+    /// drops it in the same breath. Upstream's caller awaits a future and is
+    /// handed the value; this is the same handover without one.
+    pub fn pop_with_result(&mut self, result: Option<String>) -> Option<Option<String>> {
         if !self.can_pop() {
-            return false;
+            return None;
         }
-        let popped = self.stack.pop().expect("checked by can_pop");
+        let mut popped = self.stack.pop().expect("checked by can_pop");
         // A route leaves the way it arrived.
         let transition = popped.transition;
-        self.outgoing = Some(popped.route);
+        popped.completion.did_complete(result);
+        let handed_back = popped
+            .completion
+            .popped()
+            .expect("just completed")
+            .map(|value| value.to_string());
+        self.outgoing = Some(popped);
         self.begin(transition, Motion::Popping);
-        true
+        Some(handed_back)
     }
 
     /// Replaces the top route without changing the depth.
     pub fn replace(&mut self, route: Route, transition: Transition) {
-        let previous = self.stack.pop();
-        self.stack.push(Entry { route, transition });
-        self.outgoing = previous.map(|entry| entry.route);
+        let mut previous = self.stack.pop();
+        self.stack.push(Entry {
+            route,
+            transition,
+            completion: crate::routes::RouteCompletion::new(),
+        });
+        // Upstream reaches `didComplete` through the entry's lifecycle here
+        // too -- `pushReplacement` completes the route it replaced, with
+        // nothing, which is how a screen that is replaced rather than popped
+        // still finishes rather than hanging on a future nobody will complete.
+        if let Some(previous) = previous.as_mut() {
+            previous.completion.did_complete(None);
+        }
+        self.outgoing = previous;
         self.begin(transition, Motion::Pushing);
     }
 
-    /// Pops everything above the root.
-    pub fn pop_to_root(&mut self) -> bool {
+    /// Pops everything above the root, answering what each screen it took away
+    /// handed back -- bottom first, the top one last.
+    ///
+    /// `None` when there was nothing to pop. Every removed screen finishes,
+    /// not only the one on top, and the values are **returned** because the
+    /// buried entries do not survive the call: a screen nobody will see again
+    /// still has an answer somebody may be waiting for.
+    pub fn pop_to_root(&mut self) -> Option<Vec<Option<String>>> {
         if !self.can_pop() {
-            return false;
+            return None;
         }
-        let popped = self.stack.pop().expect("checked by can_pop");
-        self.stack.truncate(1);
+        let mut popped = self.stack.pop().expect("checked by can_pop");
+        // **Everything** taken away finishes, not only the one on top. The
+        // screens in the middle are never seen again either, and a future
+        // nobody completes is a wait that never ends -- upstream reaches
+        // `didComplete` for each removed entry through its lifecycle.
+        let mut answers = Vec::new();
+        for mut buried in self.stack.drain(1..) {
+            buried.completion.did_complete(None);
+            answers.push(
+                buried
+                    .completion
+                    .popped()
+                    .expect("just completed")
+                    .map(|value| value.to_string()),
+            );
+        }
         let transition = popped.transition;
-        self.outgoing = Some(popped.route);
+        popped.completion.did_complete(None);
+        answers.push(
+            popped
+                .completion
+                .popped()
+                .expect("just completed")
+                .map(|value| value.to_string()),
+        );
+        self.outgoing = Some(popped);
         self.begin(transition, Motion::Popping);
-        true
+        Some(answers)
     }
 
     fn begin(&mut self, transition: Transition, motion: Motion) {
@@ -305,7 +423,7 @@ impl Navigator {
     pub fn presentation(&self) -> Presentation<'_> {
         Presentation {
             current: self.current(),
-            previous: self.outgoing.as_ref(),
+            previous: self.outgoing.as_ref().map(|entry| &entry.route),
             progress: if self.outgoing.is_some() {
                 self.controller.curved()
             } else {
@@ -489,7 +607,7 @@ mod tests {
         nav.push(Route::new("b"), Transition::None);
         nav.push(Route::new("c"), Transition::None);
         assert_eq!(nav.depth(), 4);
-        assert!(nav.pop_to_root());
+        assert!(nav.pop_to_root().is_some());
         assert_eq!(nav.depth(), 1);
         assert_eq!(nav.current().name, "home");
     }
@@ -576,5 +694,133 @@ mod tests {
     fn ticking_a_settled_navigator_asks_for_nothing() {
         let mut nav = navigator();
         assert!(!nav.tick(Duration::from_millis(16)));
+    }
+
+    // -- What a screen hands back --------------------------------------------
+
+    #[test]
+    fn a_popped_screen_hands_its_answer_back() {
+        // Upstream's `Navigator.pop(context, result)` reaching the route's
+        // `popped` future. The stack had no channel for this at all: `pop`
+        // answered a bool and the value went nowhere.
+        let mut navigator = Navigator::new(Route::new("home"));
+        navigator.push(Route::new("picker"), Transition::None);
+        assert_eq!(navigator.result_at(1), None, "still open");
+
+        assert_eq!(
+            navigator.pop_with_result(Some("the second one".to_string())),
+            Some(Some("the second one".to_string()))
+        );
+
+        // And a pop that is refused answers `None` -- the outer one, which is
+        // "nothing happened" rather than "nothing was handed back". The two
+        // are told apart by the nesting, which is the whole reason for it.
+        assert_eq!(
+            navigator.pop_with_result(None),
+            None,
+            "only the root is left, so nothing was popped at all"
+        );
+    }
+
+    #[test]
+    fn a_screen_dismissed_without_choosing_hands_back_what_it_was_showing() {
+        // `result ?? currentResult`. A picker closed by the back gesture
+        // answers with whatever was selected at the time -- which is the
+        // difference between a caller seeing "nothing" and seeing the
+        // selection the reader was looking at.
+        let mut navigator = Navigator::new(Route::new("home"));
+        navigator.push_expecting(Route::new("picker"), Transition::None, "what was shown");
+        assert_eq!(
+            navigator.pop_with_result(None),
+            Some(Some("what was shown".to_string()))
+        );
+
+        // And a screen that named no fallback answers nothing -- while still
+        // having finished, which is the other question.
+        let mut plain = Navigator::new(Route::new("home"));
+        plain.push(Route::new("page"), Transition::None);
+        assert_eq!(
+            plain.pop_with_result(None),
+            Some(None),
+            "it finished, with nothing to say"
+        );
+    }
+
+    #[test]
+    fn the_answer_is_there_while_the_screen_is_still_sliding_away() {
+        // The entry is kept until the transition ends -- and a caller asks for
+        // the result in the same breath as the pop, which is *during* the
+        // animation. Keeping only the route dropped the answer at exactly the
+        // moment anyone wanted it, which is why `outgoing` holds the entry.
+        let mut navigator = Navigator::new(Route::new("home"));
+        navigator.push(Route::new("picker"), Transition::SlideFromRight);
+        assert_eq!(
+            navigator.pop_with_result(Some("chosen".to_string())),
+            Some(Some("chosen".to_string()))
+        );
+        assert!(navigator.is_transitioning(), "still on screen");
+        assert_eq!(
+            navigator.result_at(1),
+            Some(Some("chosen")),
+            "and already answered"
+        );
+    }
+
+    #[test]
+    fn popping_to_the_root_finishes_everything_it_takes_away() {
+        // The same rule as replacing, by the other road: a screen removed
+        // without being popped one at a time still has a future somebody may
+        // be waiting on. Leaving it uncompleted is a wait that never ends.
+        let mut navigator = Navigator::new(Route::new("home"));
+        navigator.push(Route::new("first"), Transition::None);
+        navigator.push(Route::new("second"), Transition::SlideFromRight);
+        // Two screens were taken away, and both finished -- the one in the
+        // middle nobody will ever see again included. Its answer has to come
+        // back here, because its entry does not survive the call.
+        let mut expecting = Navigator::new(Route::new("home"));
+        expecting.push_expecting(Route::new("first"), Transition::None, "the lower one");
+        expecting.push_expecting(Route::new("second"), Transition::None, "the upper one");
+        expecting.push(Route::new("third"), Transition::SlideFromRight);
+        assert_eq!(
+            expecting.pop_to_root(),
+            Some(vec![
+                Some("the lower one".to_string()),
+                Some("the upper one".to_string()),
+                None
+            ]),
+            "bottom first, the top one last -- two buried screens, in the              order they were stacked"
+        );
+
+        assert_eq!(
+            navigator.pop_to_root(),
+            Some(vec![None, None]),
+            "and screens with nothing to say still finish"
+        );
+        assert_eq!(
+            navigator.result_at(1),
+            Some(None),
+            "the one on top is still on screen, and already answered"
+        );
+    }
+
+    #[test]
+    fn a_replaced_screen_finishes_rather_than_hanging() {
+        // `pushReplacement` completes the route it replaced, with nothing.
+        // A screen that is replaced rather than popped still has a future
+        // somebody may be waiting on, and leaving it uncompleted is a wait
+        // that never ends.
+        let mut navigator = Navigator::new(Route::new("home"));
+        navigator.push(Route::new("first"), Transition::None);
+        navigator.replace(Route::new("second"), Transition::SlideFromRight);
+        assert_eq!(
+            navigator.result_at(1),
+            None,
+            "the entry at that depth is the new one, still open"
+        );
+        assert_eq!(
+            navigator.result_at(2),
+            Some(None),
+            "and the one it replaced has finished, with nothing to say"
+        );
     }
 }
