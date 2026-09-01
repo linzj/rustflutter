@@ -26,7 +26,7 @@
 
 use crate::direction::TextDirection;
 use crate::editable_text::TargetPlatform;
-use crate::engine::Color;
+use crate::engine::{Color, Rect};
 use crate::gestures::PointerKind;
 use crate::render::{Offset, PaintContext, Size};
 use crate::text_selection_controls::TextSelectionHandleType;
@@ -3773,6 +3773,99 @@ impl TextSelectionOverlay {
     }
 }
 
+// -- What the loupe is told about a gesture -----------------------------------
+//
+// Upstream's `TextSelectionOverlay._buildMagnifier`, which turns "the finger is
+// here, over that text position" into the four rectangles a
+// [`crate::magnifier::MagnifierInfo`] carries.
+
+/// Upstream's two `TextPosition`s for the line the loupe is over:
+///
+/// ```dart
+/// final positionAtEndOfLine = TextPosition(
+///   offset: lineAtOffset.extentOffset,
+///   affinity: TextAffinity.upstream,
+/// );
+/// // Default affinity is downstream.
+/// final positionAtBeginningOfLine = TextPosition(offset: lineAtOffset.baseOffset);
+/// ```
+///
+/// **The two ends take opposite affinities, and upstream comments the second
+/// one to say the first was deliberate.** The offset where a line wraps is two
+/// places on the screen -- the end of one line and the start of the next -- so
+/// asking for the end of a wrapped line with the default downstream affinity
+/// answers with a caret at the *beginning of the line below*. The loupe's
+/// bounds would then reach a line further down than the line it is over, and
+/// it would drift there as the finger neared the wrap.
+///
+/// The start needs no such care: a line's first offset is only ambiguous as the
+/// *previous* line's end, and downstream is the reading that puts it here.
+///
+/// See [`TextAffinity`], whose own doc has the general case.
+pub fn magnifier_line_ends(
+    line_start: usize,
+    line_end: usize,
+) -> ((usize, TextAffinity), (usize, TextAffinity)) {
+    (
+        (line_start, TextAffinity::Downstream),
+        (line_end, TextAffinity::Upstream),
+    )
+}
+
+/// Upstream's `localLineBoundaries`:
+///
+/// ```dart
+/// Rect.fromPoints(
+///   renderEditable.getLocalRectForCaret(positionAtBeginningOfLine).topCenter,
+///   renderEditable.getLocalRectForCaret(positionAtEndOfLine).bottomCenter,
+/// );
+/// ```
+///
+/// **Two carets, and a different corner of each.** The rectangle runs from the
+/// *top* of the caret at the line's start to the *bottom* of the caret at its
+/// end, so it is the full height of the line however the two carets are placed;
+/// taking the same corner of both would give a rectangle a line's height too
+/// short, and the loupe clamps itself horizontally against this.
+///
+/// The x of each is the caret's **centre**, not its edge, because a caret is a
+/// couple of pixels wide and neither edge is where the text begins or ends.
+///
+/// `Rect.fromPoints` normalises, so a right-to-left line -- where the start
+/// caret is to the right of the end one -- gives the same rectangle rather than
+/// an inside-out one.
+pub fn magnifier_line_boundaries(start_caret: Rect, end_caret: Rect) -> Rect {
+    let (start_x, _) = start_caret.center();
+    let (end_x, _) = end_caret.center();
+    Rect::ltrb(
+        start_x.min(end_x),
+        start_caret.top.min(end_caret.bottom),
+        start_x.max(end_x),
+        start_caret.top.max(end_caret.bottom),
+    )
+}
+
+/// Upstream's `overlayGesturePosition`:
+///
+/// ```dart
+/// final Offset overlayGesturePosition =
+///     overlay?.globalToLocal(globalGesturePosition) ?? globalGesturePosition;
+/// ```
+///
+/// Everything in a `MagnifierInfo` is in the **overlay's** coordinates -- the
+/// loupe lives in the overlay and is placed against the other three rectangles,
+/// which are transformed there too. This one has a fallback the others do not,
+/// because it is the only one that starts out global: with no overlay to ask,
+/// the global position is used unchanged rather than nothing being shown.
+pub fn magnifier_gesture_position(
+    global: Offset,
+    overlay: Option<&crate::render::RenderRef>,
+) -> Offset {
+    match overlay {
+        Some(overlay) => overlay.global_to_local(global, None),
+        None => global,
+    }
+}
+
 /// Upstream `TextSelectionToolbarLayoutDelegate`.
 ///
 /// Where a selection toolbar goes. It is given **two anchors, not one** --
@@ -6019,6 +6112,82 @@ two";
         let unbuilt = overlay.visibilities(false, (true, true));
         assert!(!unbuilt.start_handle && !unbuilt.end_handle);
         assert!(unbuilt.toolbar, "and the toolbar does not care either way");
+    }
+
+    // -- What the loupe is told --------------------------------------------------
+
+    #[test]
+    fn the_end_of_the_line_is_asked_for_upstream_and_the_start_downstream() {
+        // The offset where a line wraps is two places on the screen. Asking
+        // for the end of a wrapped line downstream answers with the beginning
+        // of the line below, and the loupe would follow it there.
+        let (start, end) = magnifier_line_ends(10, 24);
+        assert_eq!(start, (10, TextAffinity::Downstream));
+        assert_eq!(end, (24, TextAffinity::Upstream));
+    }
+
+    #[test]
+    fn the_line_bounds_run_from_one_carets_top_to_the_others_bottom() {
+        // Two carets, a different corner of each: the rectangle is a whole
+        // line tall however the two are placed.
+        let start = Rect::ltrb(10.0, 0.0, 12.0, 20.0);
+        let end = Rect::ltrb(100.0, 0.0, 102.0, 20.0);
+        let bounds = magnifier_line_boundaries(start, end);
+        assert_eq!(bounds.top, 0.0, "the top of the caret at the line's start");
+        assert_eq!(
+            bounds.bottom, 20.0,
+            "and the bottom of the one at its end -- a line's height, not nothing"
+        );
+        assert_eq!(
+            (bounds.left, bounds.right),
+            (11.0, 101.0),
+            "the middles of the two carets, not their edges"
+        );
+    }
+
+    #[test]
+    fn a_right_to_left_line_is_the_same_rectangle_the_other_way_round() {
+        // `Rect.fromPoints` normalises, so the start caret being to the right
+        // of the end one does not give an inside-out rectangle.
+        let left = Rect::ltrb(10.0, 0.0, 12.0, 20.0);
+        let right = Rect::ltrb(100.0, 0.0, 102.0, 20.0);
+        assert_eq!(
+            magnifier_line_boundaries(right, left),
+            magnifier_line_boundaries(left, right)
+        );
+    }
+
+    #[test]
+    fn with_no_overlay_the_gesture_keeps_its_global_position() {
+        // The only one of the four that starts out global, and the only one
+        // with a fallback: `overlay?.globalToLocal(...) ?? global`.
+        let global = Offset::new(120.0, 40.0);
+        assert_eq!(magnifier_gesture_position(global, None), global);
+
+        // An overlay that is actually somewhere. A bare render object sits at
+        // the origin, so asking it to convert a point answers the point --
+        // which is exactly what a port that never asked would answer, and a
+        // test written against one could not tell the two apart.
+        let overlay =
+            crate::render::RenderRef::new(crate::render::RenderConstrainedBox::tight(200.0, 200.0));
+        let mut root =
+            crate::render::RenderRef::new(crate::render::RenderStack::new().push_positioned(
+                overlay.clone(),
+                crate::render::StackPosition {
+                    left: Some(30.0),
+                    top: Some(25.0),
+                    ..crate::render::StackPosition::default()
+                },
+            ));
+        crate::render::RenderBox::layout(
+            &mut root,
+            crate::render::BoxConstraints::tight(400.0, 400.0),
+        );
+        assert_eq!(
+            magnifier_gesture_position(global, Some(&overlay)),
+            Offset::new(90.0, 15.0),
+            "and with one, the gesture is brought into its coordinates"
+        );
     }
 
     // -- A handle moves a line at a time --------------------------------------

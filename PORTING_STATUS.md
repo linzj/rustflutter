@@ -4925,3 +4925,68 @@ C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6853 通�
 是不是已经在 `magnifier.rs` 里了——如果在，这一条也写进 finding；
 如果不在，那它就是 `TextSelectionOverlay` 剩下的**真缺口**，
 这一遍就还没走完，别急着记。
+
+---
+
+## 第 493 轮：放大镜被告知的是哪一行
+
+上一轮说了：记 `depth_examined.json` 之前先查 `_buildMagnifier`。查了——
+**`MagnifierInfo` 这个类型在（四个字段齐全、被 `MagnifierHost` 和摆放规则消费），
+但没有任何地方按上游的规矩去*造*一个。**
+所以这一遍还没走完，这一轮补掉它，下一轮再记。
+
+`_buildMagnifier` 里有三条真规则：
+
+**一、行的两端取相反的 affinity。**
+
+```dart
+final positionAtEndOfLine = TextPosition(
+  offset: lineAtOffset.extentOffset, affinity: TextAffinity.upstream);
+// Default affinity is downstream.
+final positionAtBeginningOfLine = TextPosition(offset: lineAtOffset.baseOffset);
+```
+
+上游特意为第二行写了注释，就是为了说明第一行不是手滑。
+折行处的那个 offset 是屏幕上的**两个**位置；用默认的 downstream 去问一条折行的末尾，
+答的是**下一行的开头**——放大镜的边界就会伸到下面一行去，
+手指越靠近折行处漂得越远。
+
+**二、行的边界由两个光标矩形拼出来，而且各取不同的角**：
+起点光标的 `topCenter` 到终点光标的 `bottomCenter`。
+两个都取同一个角，得到的矩形会矮一整行。
+x 取的是光标的**中心**而不是边——光标有两三个像素宽，两条边都不是文字的起止处。
+`Rect.fromPoints` 会归一化，所以从右往左的行给出同一个矩形而不是反的。
+
+**三、手势位置有退路，另外三个没有**：
+`overlay?.globalToLocal(pos) ?? pos`。四样东西最后都在**overlay 的坐标系**里，
+只有这一个是从全局出发的，所以只有它需要"没有 overlay 就原样用"。
+
+### 一条差点混过去的测试
+
+`with_no_overlay_...` 的第二个断言我一开始写成
+`assert_eq!(f(global, Some(&overlay)), overlay.global_to_local(global, None))`
+——**拿被测对象的邻居去算期望值**，而且一个没挂进树里的 render object
+`global_to_local` 就是恒等，所以"根本没问 overlay"的变异照样绿。
+变异扫描当场把它抓了出来（8 条里唯一活着的一条）。
+改法是给 overlay 一个**真的位置**：塞进 `RenderStack` 的 `left: 30, top: 25` 里
+并且让根是个 `RenderRef` 走一遍 layout（父子关系是 `layout_child` 建立的），
+然后断言一个具体的数 `(90, 15)`。补完 8 条全红。
+
+这一条值得记住：**期望值不能由被测代码的邻居算出来**——
+第 47x 轮记过一次"读邻居答案的尺子不如没有"，这次是同一个错误换了个地方出现。
+
+尺子：十七把全部 exit 0。门：Rust 6857 通过、`cargo fmt --check` 干净；
+C++ 34 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6857 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**：现在 `TextSelectionOverlay` 这一遍（488–493）真的走完了，
+把它记进 `tools/depth_examined.json`：`finding` 要点名
+**是哪个机制回答了那些缺失成员**——转发的一半在 `SelectionOverlay`、
+两个字形高度在 `glyph_heights`、拖动状态与规则在 `TextSelectionOverlay` 自己身上、
+放大镜信息在 `magnifier_line_*` 与 `magnifier.rs`——
+并列出这六轮补掉的六处真缺口；`at` 指向 `text_selection.rs` 与 488–493 的记录。
+记完 `python tools/depth.py` 重看队头。
+**先查一件事**：`depth_examined.json` 的既有条目里，
+有没有哪条的 `finding` 只写了"在别处"而没点名机制——
+这个文件的门槛是"可核对"，如果我自己这条写成一句话，
+那这个机制就开始退化成压制列表了。
