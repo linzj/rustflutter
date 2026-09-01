@@ -205,7 +205,19 @@ fn preferred_height(line_count: usize, line_height: f32, max_lines: MaxLines) ->
 /// travel with it (so a caret among trailing spaces has somewhere to be), and
 /// a word too wide for the line on its own is broken by character, which is
 /// what a line breaker does to an unbreakable run it cannot show.
-fn wrap_lines(text: &str, width: f32, measure: &dyn Fn(&str) -> f32) -> Vec<VisualLine> {
+/// Where one style stops. The style before the first boundary starts at zero,
+/// and text past the last boundary takes the field's base style.
+#[derive(Clone, Debug)]
+struct StyleRun {
+    end: usize,
+    style: TextStyle,
+}
+
+fn wrap_lines(
+    text: &str,
+    width: f32,
+    measure: &dyn Fn(std::ops::Range<usize>) -> f32,
+) -> Vec<VisualLine> {
     let mut lines = Vec::new();
     // Hard breaks first: every '\n' ends its line, wherever the soft wrapping
     // would have put one.
@@ -225,7 +237,7 @@ fn wrap_hard_line(
     text: &str,
     hard: std::ops::Range<usize>,
     width: f32,
-    measure: &dyn Fn(&str) -> f32,
+    measure: &dyn Fn(std::ops::Range<usize>) -> f32,
     lines: &mut Vec<VisualLine>,
 ) {
     let mut line_start = hard.start;
@@ -240,7 +252,7 @@ fn wrap_hard_line(
             .find(|c: char| c != ' ')
             .map_or(hard.end, |i| word_end + i);
 
-        if cursor > line_start && measure(&text[line_start..unit_end]) > width {
+        if cursor > line_start && measure(line_start..unit_end) > width {
             // The unit does not fit on the line being built. The line ends
             // before its word, and the word starts the next one.
             lines.push(VisualLine {
@@ -249,7 +261,7 @@ fn wrap_hard_line(
             });
             line_start = cursor;
         }
-        if measure(&text[line_start..unit_end]) > width {
+        if measure(line_start..unit_end) > width {
             // Even alone on its line the unit is too wide, so it breaks by
             // character: the last resort of a real line breaker too, and the
             // only reason a URL does not push the rest of a paragraph away.
@@ -260,7 +272,7 @@ fn wrap_hard_line(
             boundaries.push(unit_end);
             let mut previous = line_start;
             for boundary in boundaries.into_iter().skip(1) {
-                if previous > line_start && measure(&text[line_start..boundary]) > width {
+                if previous > line_start && measure(line_start..boundary) > width {
                     lines.push(VisualLine {
                         start: line_start,
                         end: previous,
@@ -318,7 +330,7 @@ fn caret_position_at(
     lines: &[VisualLine],
     line_height: f32,
     at: Offset,
-    measure: &dyn Fn(&str) -> f32,
+    measure: &dyn Fn(std::ops::Range<usize>) -> f32,
 ) -> usize {
     // One line height per line, clamped to the field: a tap below the last
     // line is a tap on it, which is upstream's answer too, a position past
@@ -340,7 +352,7 @@ fn caret_position_at(
     let mut best = line.start;
     let mut best_distance = f32::INFINITY;
     let mut consider = |boundary: usize| {
-        let distance = (measure(&text[line.start..boundary]) - at.dx).abs();
+        let distance = (measure(line.start..boundary) - at.dx).abs();
         if distance < best_distance {
             best_distance = distance;
             best = boundary;
@@ -392,6 +404,12 @@ pub struct RenderEditable {
     selection_color: Color,
     /// How many lines the field shows. Upstream's `maxLines`.
     max_lines: MaxLines,
+    /// The styles the text is set in, where it is not all one style.
+    ///
+    /// Empty is the ordinary case and means "all `style`". Upstream's
+    /// `EditableText` builds a `TextSpan` tree for the same job; this is that
+    /// tree already flattened, which is what the shaper wants anyway.
+    runs: Vec<StyleRun>,
     show_caret: bool,
     /// How far into the content the field's viewport has been scrolled.
     ///
@@ -447,6 +465,7 @@ impl RenderEditable {
             caret_color: Color::BLACK,
             selection_color: DEFAULT_SELECTION,
             max_lines: MaxLines::Single,
+            runs: Vec::new(),
             show_caret: false,
             scroll: Cell::new(Offset::ZERO),
             report: None,
@@ -467,6 +486,25 @@ impl RenderEditable {
 
     pub fn with_style(mut self, style: TextStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// The text set in more than one style, as consecutive runs.
+    ///
+    /// The runs are given as (text, style) pairs and are laid end to end;
+    /// their lengths are what fixes the boundaries, so the caller does not
+    /// have to compute offsets and cannot get them out of step with the text.
+    /// A run's text is not itself stored -- the field's text already holds it
+    /// -- so what survives is where each style ends.
+    pub fn with_runs(mut self, runs: Vec<(String, TextStyle)>) -> Self {
+        let mut at = 0usize;
+        self.runs = runs
+            .into_iter()
+            .map(|(text, style)| {
+                at += text.len();
+                StyleRun { end: at, style }
+            })
+            .collect();
         self
     }
 
@@ -535,19 +573,90 @@ impl RenderEditable {
     /// Trailing spaces are part of a position even though they are not part
     /// of the ink, so the advance width is what is wanted rather than the
     /// tight box `width()` reports.
-    fn measure(&self, text: &str) -> f32 {
-        if text.is_empty() {
+    fn measure(&self, range: std::ops::Range<usize>) -> f32 {
+        let range = self.clamp_range(range);
+        if range.is_empty() {
             return 0.0;
         }
-        painting::shape(
-            text,
-            &self.style,
+        self.shape_range(range).max_intrinsic_width()
+    }
+
+    /// A byte range cut to what the text actually holds, and to character
+    /// boundaries.
+    ///
+    /// Slicing a `str` off a boundary panics, and the callers of `measure`
+    /// include ones working from platform-supplied offsets. Upstream clamps
+    /// selections for the same reason.
+    fn clamp_range(&self, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+        let text = &self.value.text;
+        let mut start = range.start.min(text.len());
+        let mut end = range.end.min(text.len()).max(start);
+        while start > 0 && !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
+        start..end
+    }
+
+    /// Shapes a range of the text, in one style or several.
+    ///
+    /// The two paths differ only in which shaper they call: [`painting::shape`]
+    /// takes one style, [`painting::shape_rich`] takes a list of runs. Going
+    /// through the rich shaper for a field with no runs would be the same
+    /// answer computed the slower way, and would defeat the shaping cache,
+    /// which is keyed on what it was asked.
+    fn shape_range(&self, range: std::ops::Range<usize>) -> std::rc::Rc<crate::engine::Paragraph> {
+        if self.runs.is_empty() {
+            return painting::shape(
+                &self.value.text[range],
+                &self.style,
+                None,
+                false,
+                f32::MAX / 4.0,
+                self.text_scale,
+            );
+        }
+        painting::shape_rich(
+            &self.runs_in(range),
+            crate::engine::TextAlign::Left,
             None,
             false,
             f32::MAX / 4.0,
             self.text_scale,
         )
-        .max_intrinsic_width()
+    }
+
+    /// The style runs covering a byte range, cut to it.
+    ///
+    /// **Text past the last run takes the base style.** The runs are given
+    /// once, at build, and the text they describe can move underneath them --
+    /// a field is editable and this render object does not rebuild to keep up.
+    /// Rather than refuse to draw, the part nobody described is drawn the way
+    /// an undescribed field is drawn. A `SelectableText`, which is what runs
+    /// exist for, never edits and so never reaches that case.
+    fn runs_in(&self, range: std::ops::Range<usize>) -> Vec<(String, TextStyle)> {
+        let text = &self.value.text;
+        let mut out = Vec::new();
+        let mut at = 0usize;
+        for run in &self.runs {
+            let end = run.end.min(text.len());
+            let from = at.max(range.start);
+            let to = end.min(range.end);
+            if from < to && text.is_char_boundary(from) && text.is_char_boundary(to) {
+                out.push((text[from..to].to_string(), run.style.clone()));
+            }
+            at = end;
+            if at >= range.end {
+                break;
+            }
+        }
+        let tail = at.max(range.start);
+        if tail < range.end && text.is_char_boundary(tail) {
+            out.push((text[tail..range.end].to_string(), self.style.clone()));
+        }
+        out
     }
 
     /// How far into the line the caret sits, by measuring the text before it.
@@ -562,7 +671,7 @@ impl RenderEditable {
         if caret == 0 {
             return 0.0;
         }
-        self.measure(&self.value.text[..caret.min(self.value.text.len())])
+        self.measure(0..caret)
     }
 
     /// The text broken into lines at `width`, or as one unwrapped line when
@@ -577,7 +686,7 @@ impl RenderEditable {
             }],
             _ => {
                 let text = &self.value.text;
-                wrap_lines(text, width, &|run: &str| self.measure(run))
+                wrap_lines(text, width, &|range| self.measure(range))
             }
         }
     }
@@ -592,7 +701,7 @@ impl RenderEditable {
         // Clamped rather than trusted: a caret the platform reports outside
         // every line is wrong, but it must not slice a character in two.
         let within = caret.clamp(line.start, line.end);
-        let x = self.measure(&self.value.text[line.start..within]);
+        let x = self.measure(line.start..within);
         let top = index as f32 * line_height;
         Some(Rect::ltrb(x, top, x + CARET_WIDTH, top + line_height))
     }
@@ -606,8 +715,8 @@ impl RenderEditable {
         if start >= end {
             return None;
         }
-        let from = self.measure(&self.value.text[line.start..start]);
-        let to = self.measure(&self.value.text[line.start..end]);
+        let from = self.measure(line.start..start);
+        let to = self.measure(line.start..end);
         Some((from, to - from))
     }
 }
@@ -718,7 +827,7 @@ impl RenderBox for RenderEditable {
         // multiline vertically, into a viewport the content just fills, with
         // no overscroll past either end.
         let content_width = match self.max_lines {
-            MaxLines::Single => self.measure(&self.value.text) + CARET_MARGIN,
+            MaxLines::Single => self.measure(0..self.value.text.len()) + CARET_MARGIN,
             // A wrapped line is never wider than the box it was wrapped at.
             _ => 0.0,
         };
@@ -810,16 +919,12 @@ impl RenderBox for RenderEditable {
                     }
                 }
 
-                let slice = &self.value.text[line.start..line.end];
-                if !slice.is_empty() {
-                    let text = painting::shape(
-                        slice,
-                        &self.style,
-                        None,
-                        false,
-                        f32::MAX / 4.0,
-                        self.text_scale,
-                    );
+                if line.end > line.start {
+                    // The same shaping the measurements went through, so what
+                    // is drawn is the width the wrap was computed from. Two
+                    // shapers here -- one for measuring, one for drawing --
+                    // is how a rich line ends up wrapped in the wrong place.
+                    let text = self.shape_range(line.start..line.end);
                     canvas.draw_paragraph(&text, base, top);
                 }
 
@@ -1923,7 +2028,8 @@ fn drag_handle_to(
             .handle_drag_point(end, snapped_dy)
             .unwrap_or(snapped_dy - lift);
         let at = Offset::new(local.dx + layout.scroll.dx, point_dy + layout.scroll.dy);
-        let measure = |run: &str| {
+        let measure = |range: std::ops::Range<usize>| {
+            let run = &shown[range];
             if run.is_empty() {
                 0.0
             } else {
@@ -3046,6 +3152,14 @@ pub struct TextField {
     /// upstream says in those words and this crate has as
     /// [`TextField::with_state_sink`].
     initial_text: Option<String>,
+    /// The text set in more than one style, as runs. See
+    /// [`RenderEditable::with_runs`]; empty is "all one style".
+    ///
+    /// Held as (text, style) pairs rather than as offsets so that the field's
+    /// opening text can be taken from the same list -- upstream's
+    /// `SelectableText.rich` passes a span tree and the text *is* the tree,
+    /// there being nowhere else for it to come from.
+    runs: Vec<(String, TextStyle)>,
     max_lines: MaxLines,
     /// Upstream's `minLines`: how many lines the field is tall before it has
     /// any text in it. `None` is upstream's null.
@@ -3227,6 +3341,7 @@ impl TextField {
             read_only: false,
             show_cursor: None,
             initial_text: None,
+            runs: Vec::new(),
             max_lines: MaxLines::Single,
             min_lines: None,
             expands: false,
@@ -3268,6 +3383,18 @@ impl TextField {
     /// documentation for why it is used only once.
     pub fn with_initial_text(mut self, text: impl Into<String>) -> Self {
         self.initial_text = Some(text.into());
+        self
+    }
+
+    /// The field's text, in runs of differing style.
+    ///
+    /// This sets the opening text too, from the runs themselves: a rich text
+    /// has no separate string to be handed, and two ways of saying what the
+    /// text is would be two things to keep in step. Anything already given to
+    /// [`TextField::with_initial_text`] is replaced.
+    pub fn with_runs(mut self, runs: Vec<(String, TextStyle)>) -> Self {
+        self.initial_text = Some(runs.iter().map(|(text, _)| text.as_str()).collect());
+        self.runs = runs;
         self
     }
 
@@ -3641,6 +3768,10 @@ impl StatefulComponent for TextField {
             opened.show();
         };
 
+        // Cloned once per build rather than per frame: the closure below
+        // outlives this call and the field's runs do not change while it is
+        // mounted.
+        let runs = self.runs.clone();
         let caret_color = theme.primary;
         // The theme's own colour, made translucent, as upstream's `TextField`
         // derives it. Opaque it would cover the glyphs it highlights.
@@ -3869,9 +4000,10 @@ impl StatefulComponent for TextField {
                 // content once the scroll is added back: paint drew the
                 // content `scroll` up and to the left of the field.
                 let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
-                let measure = |run: &str| {
+                let measure = |range: std::ops::Range<usize>| {
                     // The field's own measurement, so the position under
                     // the pointer is the position on screen.
+                    let run = &position_shown[range];
                     if run.is_empty() {
                         0.0
                     } else {
@@ -3999,7 +4131,8 @@ impl StatefulComponent for TextField {
                 return;
             };
             let at = Offset::new(local.dx + layout.scroll.dx, local.dy + layout.scroll.dy);
-            let measure = |run: &str| {
+            let measure = |range: std::ops::Range<usize>| {
+                let run = &word_shown[range];
                 if run.is_empty() {
                     0.0
                 } else {
@@ -4107,6 +4240,7 @@ impl StatefulComponent for TextField {
                 .with_style(style.clone())
                 .with_placeholder(placeholder.clone(), placeholder_style.clone())
                 .with_caret(caret_color, caret_shown)
+                .with_runs(runs.clone())
                 .with_selection_color(selection_color)
                 .with_max_lines(max_lines)
                 .with_report(report)
@@ -7436,39 +7570,39 @@ mod tests {
     /// "fits". The geometry is decided by the widths only through comparison,
     /// so a fake that makes them non-zero exercises every branch of the
     /// wrapping the real one would.
-    fn ten_a_character(text: &str) -> f32 {
-        text.chars().count() as f32 * 10.0
+    fn ten_a_character(text: &str) -> impl Fn(std::ops::Range<usize>) -> f32 + '_ {
+        move |range| text[range].chars().count() as f32 * 10.0
     }
 
     #[test]
     fn words_wrap_at_the_box_width_and_newlines_start_new_lines() {
         // A word moves whole: "aaa " fits in fifty, "aaa bb " does not, so
         // the second word starts the second line.
-        let lines = wrap_lines("aaa bb cc", 50.0, &ten_a_character);
+        let lines = wrap_lines("aaa bb cc", 50.0, &ten_a_character("aaa bb cc"));
         let ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.start, l.end)).collect();
         assert_eq!(ranges, vec![(0, 4), (4, 9)]);
 
         // A newline ends its line wherever the wrapping was, and the next
         // line starts after it.
-        let lines = wrap_lines("ab\ncd", 500.0, &ten_a_character);
+        let lines = wrap_lines("ab\ncd", 500.0, &ten_a_character("ab\ncd"));
         let ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.start, l.end)).collect();
         assert_eq!(ranges, vec![(0, 2), (3, 5)]);
 
         // An unbreakable run too wide for the line is broken by character:
         // three characters of ten pixels in thirty, twice.
-        let lines = wrap_lines("aaaaaa", 30.0, &ten_a_character);
+        let lines = wrap_lines("aaaaaa", 30.0, &ten_a_character("aaaaaa"));
         let ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.start, l.end)).collect();
         assert_eq!(ranges, vec![(0, 3), (3, 6)]);
 
         // The spaces after a word travel with it, so a caret placed among
         // them is at the end of the line they belong to.
-        let lines = wrap_lines("aa   bb", 50.0, &ten_a_character);
+        let lines = wrap_lines("aa   bb", 50.0, &ten_a_character("aa   bb"));
         let ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.start, l.end)).collect();
         assert_eq!(ranges, vec![(0, 5), (5, 7)]);
 
         // Empty text is one empty line: the caret still has a line to be on,
         // which is what keeps an empty growing field one line tall.
-        let lines = wrap_lines("", 50.0, &ten_a_character);
+        let lines = wrap_lines("", 50.0, &ten_a_character(""));
         let ranges: Vec<(usize, usize)> = lines.iter().map(|l| (l.start, l.end)).collect();
         assert_eq!(ranges, vec![(0, 0)]);
     }
@@ -7524,7 +7658,7 @@ mod tests {
         // defaults to `TextAffinity.downstream`, so a caret typed past the
         // last character of a wrapped line shows at the start of the next
         // line rather than trailing on the one that just filled.
-        let lines = wrap_lines("aaa bb", 50.0, &ten_a_character);
+        let lines = wrap_lines("aaa bb", 50.0, &ten_a_character("aaa bb"));
         assert_eq!(
             caret_line(&lines, 4),
             1,
@@ -7534,7 +7668,7 @@ mod tests {
         // And at a hard break the newline itself belongs to no line, so the
         // affinity has nothing to decide: before it is the end of "ab", after
         // it the start of "cd".
-        let lines = wrap_lines("ab\ncd", 500.0, &ten_a_character);
+        let lines = wrap_lines("ab\ncd", 500.0, &ten_a_character("ab\ncd"));
         assert_eq!(caret_line(&lines, 2), 0);
         assert_eq!(caret_line(&lines, 3), 1);
     }
@@ -7545,14 +7679,14 @@ mod tests {
         // boundaries sit at x = 0, 10, 20, 30, 40. Upstream
         // `getPositionForOffset` answers the closest text position to the
         // pointer; this is the same walk without the paragraph.
-        let lines = wrap_lines("aaa bb", 50.0, &ten_a_character);
+        let lines = wrap_lines("aaa bb", 50.0, &ten_a_character("aaa bb"));
         assert_eq!(
             caret_position_at(
                 "aaa bb",
                 &lines,
                 10.0,
                 Offset::new(24.0, 0.0),
-                &ten_a_character
+                &ten_a_character("aaa bb")
             ),
             2,
             "24 is nearer 20 than 30"
@@ -7563,7 +7697,7 @@ mod tests {
                 &lines,
                 10.0,
                 Offset::new(26.0, 0.0),
-                &ten_a_character
+                &ten_a_character("aaa bb")
             ),
             3,
             "26 is nearer 30"
@@ -7576,7 +7710,7 @@ mod tests {
                 &lines,
                 10.0,
                 Offset::new(25.0, 0.0),
-                &ten_a_character
+                &ten_a_character("aaa bb")
             ),
             2
         );
@@ -7588,7 +7722,7 @@ mod tests {
                 &lines,
                 10.0,
                 Offset::new(100.0, 95.0),
-                &ten_a_character
+                &ten_a_character("aaa bb")
             ),
             6
         );
@@ -8131,7 +8265,7 @@ mod tests {
     fn a_selection_covers_one_rectangle_per_line_it_crosses() {
         let field =
             RenderEditable::new(value("aaa bb", 0, (-1, -1))).with_max_lines(MaxLines::Growing);
-        let lines = wrap_lines("aaa bb", 50.0, &ten_a_character);
+        let lines = wrap_lines("aaa bb", 50.0, &ten_a_character("aaa bb"));
         // "aaa bb" selected whole: a rect on the wrapped first line and one
         // on the second. Which lines get a rect is the decision under test,
         // and the widths are now measurable too.

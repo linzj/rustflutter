@@ -6495,3 +6495,72 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6943 通�
 **先查一件事**：本 crate 的 `TextSpan`（`painting.rs`）能不能真的喂给
 `RenderEditable`——如果字段那侧只认 `String`，那这一轮的活是在字段里，
 和这次一样；如果能，那就是把 `rich` 接上去。
+
+---
+
+## 第 520 轮：`SelectableText.rich`——比上一轮那个洞更彻底的一个
+
+上一轮记下的：`rich(spans: usize)` 收一个**计数**，`with_span_count` 原样返回 self。
+比 `show_cursor` 更狠——那个至少还有字段，这个连字段都没有，
+`SelectableText::rich(3)` 画出来是**一个空字符串**。
+
+### 先查的那件事，答案是好消息
+
+`RenderEditable` 只认一个 `String` 加一个 `TextStyle`。
+但 `painting::shape_rich(&[(String, TextStyle)], ...)` **早就有了**，
+而且整个字段的文字只走**两个口子**：一个 `measure()`，
+每行一次 `draw_paragraph`。所以改动是收敛的，不是散的。
+
+### 一次机械但必要的重构
+
+`measure(&str)` 改成 `measure(Range<usize>)`。
+所有调用点本来就是 `measure(&text[a..b])` 这个形状，
+但**只有拿到范围才知道该用哪些 run 去量**。
+`wrap_lines` / `caret_position_at` 的测量闭包一并改成收范围。
+
+然后 `RenderEditable` 多一份 `runs: Vec<StyleRun>`（`{end, style}` 边界，空=单一样式）：
+
+- `shape_range(range)` —— 有 run 走 `shape_rich`，没有走 `shape`。
+  **不是统一走 rich**：那是同一个答案用更慢的方式算，还会打乱 shaping 缓存的键。
+- `runs_in(range)` 把 run 切到范围上。**最后一个 run 之后的文字取基础样式**：
+  run 是 build 时给的，而文字会在它们脚下变（字段可编辑，render object 不会跟着重建）。
+  与其拒绝绘制，不如把没人描述的那段按"没有描述的字段"来画。
+  `SelectableText` 从不编辑，永远走不到这条分支。
+- `clamp_range` 把范围收到字符边界：切 `str` 切在半个字符上会 panic，
+  而调用者里有拿平台报来的偏移量的。
+
+绘制那一处**用同一个 `shape_range`**。注释写在原地：
+量一套、画一套是"富文本行在错误的地方换行"的成因。
+
+### 接上去
+
+`TextField::with_runs` **顺带把开场文字也设了**，就从 run 里拼——
+富文本没有另一个字符串可给，而两处各说一遍文字是什么就是两处要同步的东西。
+`SelectableText::rich(Vec<TextSpan>)` 现在收真的 span，`data` 是它们拼起来的，
+`widget()` 按有没有 run 走两扇门进同一个字段。
+
+### 测试能证明什么，不能证明什么
+
+写在测试里而不是含糊过去：**打桩引擎每段落只保留最后一次 push 的样式**，
+所以这条测试能证明 run 确实走到了 `shape_rich`（画出来的颜色是**最后一个 run 的**，
+而不是基础样式的），**不能**证明每个 run 各自用了自己的样式——那是真 shaper 的事。
+**在这里断言"每段各有其样式"就是断言了没看见的东西。**
+
+七个变异全部杀死：绘制绕过 run、有 run 却当没有、边界全归零、
+字段不往下传、富文本文字另找来源、控件走平字段那扇门、`rich` 不留 run。
+
+尺子：十七把全部 exit 0。门：Rust 6944 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6944 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+又一次栽在 bash heredoc 上（第六次）：这回是 `"ab\ncd"` 里的 `\n`，
+外加一个正则里的转义括号。**改脚本一律用 Write/Edit 工具**——
+这条规则已经写了两轮，这轮才算真的照做（`fixmeasure.py`、`richtest.py` 都是写成文件跑的）。
+
+**下一步**：`SelectableText` 仍是 11/34，但下一个真缺口挑法不变——
+**`style` / `text_align` / `text_direction` 三个是同一类**：
+控件收下却没有任何去处，而字段那侧 `with_style` 是有的。
+**先查一件事**：`RenderEditable` 有没有 `text_align`——
+上面 `shape_range` 里我写死了 `TextAlign::Left`，
+如果字段本来就不支持对齐，那是个**本轮新写下的、写死的假设**，
+下一轮该先把它变成真的字段，而不是再往上堆。

@@ -123,6 +123,14 @@ pub struct SelectableText {
     /// A selectable text is never editable, which is the one thing that makes
     /// it different from the field it is built on.
     editable: bool,
+    /// The styles `data` is set in, where it is not all one style.
+    ///
+    /// Empty for the plain constructor, which is upstream's `textSpan == null`.
+    /// The concatenation of the runs is `data`, and both exist because every
+    /// other part of this widget asks the text a question -- how long it is,
+    /// what a reader hears -- that a list of runs would have to be flattened
+    /// to answer anyway.
+    runs: Vec<(String, crate::engine::TextStyle)>,
 }
 
 impl SelectableText {
@@ -132,22 +140,32 @@ impl SelectableText {
             show_cursor: false,
             max_lines: None,
             editable: false,
+            runs: Vec::new(),
         }
     }
 
-    /// Upstream's `SelectableText.rich` takes a span tree instead of a string.
-    pub fn rich(spans: usize) -> SelectableText {
+    /// Upstream's `SelectableText.rich`: a span tree instead of a string.
+    ///
+    /// The two constructors differ only in where the text comes from --
+    /// upstream asserts that exactly one of `data` and `textSpan` is given --
+    /// so `data` here is the runs joined, and it stays the string every other
+    /// part of this widget already reads.
+    ///
+    /// The runs are flattened: this crate's [`crate::widgets::TextSpan`] is
+    /// already a run rather than a tree, because a child inheriting what its
+    /// parent did not override is a question the caller can answer once and
+    /// the shaper only ever wants the resolved styles.
+    pub fn rich(spans: Vec<crate::widgets::TextSpan>) -> SelectableText {
         SelectableText {
-            data: String::new(),
+            data: spans.iter().map(|span| span.text.as_str()).collect(),
             show_cursor: false,
             max_lines: None,
             editable: false,
+            runs: spans
+                .into_iter()
+                .map(|span| (span.text, span.style))
+                .collect(),
         }
-        .with_span_count(spans)
-    }
-
-    fn with_span_count(self, _spans: usize) -> Self {
-        self
     }
 
     /// Upstream's `maxLines`. `None` is upstream's null: as many as it takes.
@@ -193,8 +211,15 @@ impl SelectableText {
     pub fn widget(&self, id: u64) -> crate::framework::AnyWidget {
         let field = crate::editable::TextField::new(id)
             .with_read_only(true)
-            .with_show_cursor(self.show_cursor)
-            .with_initial_text(self.data.clone());
+            .with_show_cursor(self.show_cursor);
+        // `with_runs` sets the text from the runs themselves, so the two
+        // constructors take different doors into the same field rather than
+        // one of them handing over a string the other would contradict.
+        let field = if self.runs.is_empty() {
+            field.with_initial_text(self.data.clone())
+        } else {
+            field.with_runs(self.runs.clone())
+        };
         let field = match self.field_max_lines() {
             crate::editable::MaxLines::Growing => field.multiline(),
             crate::editable::MaxLines::Single => field,
@@ -536,9 +561,78 @@ three"
     }
 
     #[test]
+    fn a_rich_passage_is_drawn_from_its_runs_and_not_from_one_style() {
+        // The runs have to reach the shaper, not merely be stored: before
+        // this round `rich` took a *count* and threw it away, so a rich
+        // passage drew an empty string.
+        //
+        // What the stubbed engine can show is limited and worth saying: it
+        // keeps one style per paragraph -- the last pushed -- so it can prove
+        // the runs went through `shape_rich` and cannot prove each run was
+        // set in its own style. The real shaper does that; a test here that
+        // claimed it would be claiming more than it saw.
+        use crate::engine_test_stubs::{Drawn, drawn, reset_drawn};
+        use crate::render::RenderBox;
+
+        let body = crate::engine::TextStyle::default();
+        let loud = crate::engine::TextStyle {
+            color: crate::engine::Color(0xff123456),
+            ..body.clone()
+        };
+        let rich = SelectableText::rich(vec![
+            crate::widgets::TextSpan::new("Hold ", body.clone()),
+            crate::widgets::TextSpan::new("Shift", loud),
+        ]);
+        assert_eq!(rich.data, "Hold Shift", "the text is the runs joined");
+
+        crate::focus::reset();
+        let mut tree = crate::framework::ElementTree::new();
+        tree.rebuild(rich.widget(4310));
+        tree.rebuild_dirty();
+        let mut root = tree.build_render_tree().expect("a render tree");
+        root.layout(crate::render::BoxConstraints::tight(400.0, 100.0));
+        let mut layers = crate::engine::LayerTree::new(400, 100);
+        reset_drawn();
+        {
+            let mut context = crate::render::PaintContext::new(
+                &mut layers,
+                crate::render::Size::new(400.0, 100.0),
+            );
+            root.paint(&mut context, crate::render::Offset::ZERO);
+        }
+
+        let paragraphs: Vec<(String, u32)> = drawn()
+            .iter()
+            .filter_map(|call| match call {
+                Drawn::Paragraph { text, argb, .. } => Some((text.clone(), *argb)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            paragraphs.len(),
+            1,
+            "one line, so one paragraph: {paragraphs:?}"
+        );
+        assert_eq!(paragraphs[0].0, "Hold Shift");
+        assert_eq!(
+            paragraphs[0].1, 0xff123456,
+            "the last run's colour, which is the stub's whole answer -- and \
+             which the base style is not: {paragraphs:?}"
+        );
+    }
+
+    #[test]
     fn the_rich_constructor_carries_spans_instead_of_a_string() {
-        let rich = SelectableText::rich(3);
-        assert!(rich.data.is_empty());
+        let body = crate::engine::TextStyle::default();
+        let rich = SelectableText::rich(vec![
+            crate::widgets::TextSpan::new("Hold ", body.clone()),
+            crate::widgets::TextSpan::bold("Shift", &body),
+            crate::widgets::TextSpan::new(" to select.", body),
+        ]);
+        // The text is the runs joined -- upstream asserts that exactly one of
+        // `data` and `textSpan` is given, so there is nowhere else for it to
+        // come from.
+        assert_eq!(rich.data, "Hold Shift to select.");
         assert!(!rich.is_editable());
     }
 }
