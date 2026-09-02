@@ -395,42 +395,95 @@ patched platform、`pkg/kernel`,全在 `bb17f25f...`。
 
 ---
 
-## 下一步:写 Kernel 前端
+## 第 8 轮:Kernel 前端,两个前端产出一致
 
-前置条件已全部验证,可以动手了。
+验收标准是上一轮定死的:**`ir.dart`、`backend_rust.dart`、27 个测试一行不改**,
+Kernel 前端产出的 Rust 要让它们全过。
 
-1. `lib/frontend_kernel.dart`:Kernel `Component` → 现有 `IrLibrary`
-2. `lib/ir.dart`、`lib/backend_rust.dart`、`testdata` 的 27 个测试 **一律不动**
-3. **验收标准**:同一个 `alignment.dart`,Kernel 前端产出的 Rust
-   要能让那 27 个测试全过。**同样的 IR 应当产出同样的 Rust**——
-   这是一个前端能不能替换掉另一个的唯一诚实检验。
+**达到了。**
 
-先做**一个类**跑通(建议 `Alignment`,已有 7 个测试盯着它),
-再铺开。别一上来写全量遍历。
+    analyzer  ok. 27 passed
+    kernel    ok. 27 passed
 
-要当心的两处,现在就记下:
+    212 行代码 vs 212 行,22 行不同
 
-- **Kernel 是脱糖过的**。`a + b` 是 `InstanceInvocation`,不是 `BinaryExpression`;
-  隐式转换是显式节点;`for-in` 已经展开成迭代器循环。
-  产出的 Rust 会比 analyzer 版**难看**,这是这条路的真实代价。
-- **Kernel 里没有私有/公开的区别**那么简单:`_x` 就是名字里带 `_` 的成员,
-  但它带 `Library` 归属。现在前端"跳过私有成员"的规则要重新想——
-  在整程序视角下,私有成员是**必须翻译**的(gallery 的实现全在私有 State 类里),
-  不能再跳过。**这会让拒绝数大涨,那是对的**,现在的低拒绝数有一部分是靠跳过换来的。
+而且那 22 行**全是同一个外观差异**:analyzer 产 `Alignment::new((-1.0), (-1.0))`
+(它看到的是 `IrUnary('-', 1.0)`),Kernel 产 `Alignment::new(-1.0, -1.0)`
+(常量求值直接给出负数)。两个都对,Kernel 的更干净。
 
-## 参考:analyzer 前端的队头(全 framework 7012 次拒绝)
+### 先 dump 节点,再写代码
 
-| 次数 | 要建的东西 |
-|---|---|
-| 499 | setter |
-| 367 | 后缀 `!` |
-| 285 | 赋值表达式 |
-| 212 | super 构造函数调用 |
-| 209 | 调用函数值(闭包) |
-| 197 | 字符串插值 |
-| 181 | `is` |
+Kernel 是脱糖过的,照 Dart 源码猜它的形状正是要避免的错误。
+所以先写了个探针把 `Alignment` 里**真正出现**的节点种类全印出来,照着写:
 
-换前端后要重新普查,这些是 analyzer 视角的数。
+- 算术**全是方法调用**:`x - other.x` 是 `InstanceInvocation(x, '-', [other.x])`,
+  `this.{Alignment.+}(other)` 也是。要**映射回二元表达式**,
+  否则会生成 `a.add(b)`——既不是上游写的,也不是后端运算符 trait 期待的。
+  这一步是两个前端 IR 能对上的关键。
+- 运算符方法是 `Procedure(kind: Operator)`,名字就是 `+`、`unary-`、`~/`
+- 字段读是 `InstanceGet`,`this.{Alignment.x}`
+- 局部变量声明是 `VariableStatement` 包着 `VariableDeclaration`
+- 名字访问器是 `cosmeticName`(人写的名字;CFE 造的临时变量没有,
+  或者以 `#` 开头)
 
-**"零拒绝"这个数系统性偏乐观**,别用它报进度。上次全量:
-347 零拒绝 → 254 能解析 → 235 不含未翻译 Dart 类型 → **验证过能编译的只有 2 个**。
+### Kernel 白给的东西
+
+- **super 调用带着已解析的目标**(`node.interfaceTarget.enclosingClass`)——
+  第 6 轮整轮在解决的问题,这里是现成的
+- **常量已求值**:`const Alignment(-1, -1)` 到手就是类加字段值。
+  重建成构造函数调用而不是结构体字面量,好让产出的 Rust 仍然读作
+  `Alignment::new(-1.0, -1.0)`——值一样,而源码形态还认得出
+- **默认参数值是表达式**,不像 analyzer 那边只能读源码文本再认字面量
+- 匿名 mixin 应用会被跳过(`isAnonymousMixin`),父类往上找到第一个真类
+
+### diff 抓到的一个真 bug
+
+`TextAlignVertical::new()`——**少了参数**。它的构造函数是
+`const TextAlignVertical({required this.y})`,而我的常量处理只走了
+`positionalParameters`。位置参数**和**具名参数都要走,顺序和
+`_lowerConstructor` 一致。
+
+**这个 bug 是 diff 发现的,不是测试**:两个前端的输出摆在一起才看得出来。
+
+### 真实损失:Kernel 里没有文档注释
+
+analyzer 版 492 行,Kernel 版 299 行,差的几乎全是 doc comment——
+dill 里不带它们。这是这条路要付的代价,记在这里而不是发现时再惊讶。
+
+### `agree.py`:把"两个前端一致"变成可重复的检查
+
+    python tools/dart2rust/bin/agree.py --dill <app.dill>
+
+它两个前端各生成一次、各跑一遍完整测试、再 diff 代码行(去掉注释,
+否则会被 analyzer 那一侧的 doc 淹没),最后把工作树还原。
+
+**做过一次的事和能重复的检查不是一回事**——这一条以后每轮都能跑。
+
+---
+
+## 下一步:把私有成员翻译出来
+
+Kernel 前端能用了,现在轮到那条**必须作废的规则**:两个前端都在**跳过私有成员**。
+
+在按文件翻译的世界里那是对的(库外没人能叫它的名字)。
+在整程序的世界里**是错的**,而且错得很要命:
+Flutter 每个 StatefulWidget 的实现都在私有 State 类里,
+gallery 自己的 689 个类同理。跳过私有成员,等于跳过这个程序的实质。
+
+这也是为什么"零拒绝"那个数一直偏乐观——`CupertinoApp` 报零拒绝,
+因为它的全部行为都在没被看的私有类里。
+
+**预期:拒绝数会大涨。那是对的。** 现在的低拒绝数有一部分是靠跳过换来的,
+把私有成员放进来是让尺子第一次量到真东西。
+
+具体:
+
+1. `frontend_kernel.dart` 里去掉 `_lowerField` / `_lowerProcedure` /
+   `_lowerConstructor` / `lowerLibrary` 的 `startsWith('_')` 跳过
+2. `_refusePrivate` 也要去掉——引用私有成员不再是拒绝理由
+3. Rust 里私有成员**不加 `pub`** 即可,名字不用改
+4. 重新普查,把新的队头量出来
+5. `agree.py` 必须仍然 AGREE(analyzer 那侧同步改)
+
+先在 `alignment.dart` 上做(`_MixedAlignment`、`_x`/`_start`/`_y`、`_stringify`
+都在那里等着),27 个测试要继续全过,再铺开。

@@ -67,3 +67,6 @@ try_*.log
 # dart2rust 的验证工程是独立 crate，不入 workspace，产物同样不入库
 /tools/dart2rust/testdata/target/
 /tools/dart2rust/testdata/Cargo.lock
+
+# agree.py 的中间产物
+/tools/dart2rust/.agree/
