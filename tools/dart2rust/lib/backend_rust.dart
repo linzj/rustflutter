@@ -1319,6 +1319,20 @@ class RustBackend {
     }
     _indent--;
     _line('}');
+    // An enhanced enum: its members go in an impl, where they lose nothing.
+    // Refusing the whole enum was right only while the alternative was
+    // emitting a plain one and dropping them.
+    final members = cls.methods.where((m) => m.operator == null).toList();
+    if (members.isNotEmpty) {
+      _line('');
+      _line('impl ${cls.name} {');
+      _indent++;
+      for (final method in members) {
+        _member('${cls.name}.${method.name}', () => _emitMethod(method));
+      }
+      _indent--;
+      _line('}');
+    }
     return _out.join('\n') + '\n';
   }
 

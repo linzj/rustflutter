@@ -799,21 +799,23 @@ mod tests {
     }
 
     #[test]
-    fn an_enhanced_enum_is_refused_rather_than_flattened() {
-        // `Season` carries a method, so it is a Rust enum *plus* an impl. This
-        // reads the generated file because the claim is about what the compiler
-        // emitted, and there is no `Season` type to make an assertion against --
-        // which is the point. Without this the refusal was untested, and a
-        // mutation deleting it survived the whole suite.
+    fn an_enhanced_enum_is_an_enum_plus_an_impl() {
+        // `Season` carries a method. It used to be refused, and that was right
+        // while the alternative was emitting a plain enum and dropping the
+        // method -- which is what this test asserted for twenty rounds. Rust
+        // has an enum *and* an impl, so nothing has to be dropped, and the
+        // assertion now says the thing that would go wrong if it were: the
+        // enum without its method.
         let emitted = include_str!("enums.rs");
         assert!(
-            emitted.contains("NOT TRANSLATED: `Season` is an enhanced enum"),
-            "expected Season to be refused, got:
+            emitted.contains("pub enum Season {"),
+            "Season was not emitted:
 {emitted}"
         );
         assert!(
-            !emitted.contains("enum Season {"),
-            "Season was emitted as a plain enum, dropping its method"
+            emitted.contains("impl Season {") && emitted.contains("fn is_warm"),
+            "Season was emitted as a plain enum, dropping its method:
+{emitted}"
         );
     }
 

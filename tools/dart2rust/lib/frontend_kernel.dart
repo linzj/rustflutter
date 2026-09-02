@@ -1471,15 +1471,17 @@ class KernelFrontend {
       '_enumToString',
       'compareTo',
     };
+    // An enhanced enum with *methods* is a Rust enum plus an impl, and that
+    // loses nothing -- which is what the old refusal was protecting against.
+    // Only per-variant **state** is out of reach: a Dart enum can give each
+    // value its own final fields, and a Rust enum would have to give every
+    // variant a payload to say the same. 16 of the 284 enums here are
+    // enhanced, and 5 of those carry fields.
     final enhanced =
         node.isEnum &&
-        (node.procedures.any(
-              (p) =>
-                  !implicitEnumMembers.contains(p.name.text) && !p.isSynthetic,
-            ) ||
-            node.fields.any(
-              (f) => !f.isStatic && !implicitEnumMembers.contains(f.name.text),
-            ));
+        node.fields.any(
+          (f) => !f.isStatic && !implicitEnumMembers.contains(f.name.text),
+        );
     // An enum's values are its static const fields -- except that in a real
     // dill they are not there at all. Measured in round 39: of the 200 enums
     // in `package:flutter/`, exactly **one** still has any field. Nothing
@@ -1667,10 +1669,12 @@ class KernelFrontend {
         '_enumToString',
         'compareTo',
       };
-      if (!implicit.contains(name) && !node.isSynthetic) {
-        throw Unsupported('enhanced enum member `$name`', cls.name);
+      if (implicit.contains(name) || node.isSynthetic) return;
+      // Not implicit: a method or getter the programmer wrote. It goes in the
+      // enum's `impl`, where it loses nothing.
+      if (cls.values.isEmpty) {
+        throw Unsupported('member of an enum with no values', cls.name);
       }
-      return;
     }
 
     final params = [

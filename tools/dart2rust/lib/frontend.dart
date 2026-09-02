@@ -1358,35 +1358,40 @@ class Frontend {
     );
   }
 
-  /// Lowers a plain enum. An enhanced one -- with fields, a constructor or
-  /// methods -- is refused: it is a Rust enum *plus* an impl, and emitting it
-  /// as a plain one would drop its members without saying so. Across
-  /// `package:flutter` 232 of 249 enums are plain.
+  /// Lowers an enum. An enhanced one -- with methods -- is a Rust enum plus an
+  /// impl, and that loses nothing; refusing it was right only while the
+  /// alternative was emitting a plain one and dropping the members.
+  ///
+  /// Per-variant **state** is still out of reach: a Dart enum can give each
+  /// value its own final fields, and a Rust enum would have to give every
+  /// variant a payload to say the same thing. 5 of the 284 enums here do.
   (IrClass, List<String>) lowerEnum(EnumDeclaration node) {
     final refused = <String>[];
-    final declared = node.members.where((m) {
-      if (m is MethodDeclaration) return true;
-      if (m is FieldDeclaration) return !m.isStatic;
-      if (m is ConstructorDeclaration) return true;
-      return false;
-    }).toList();
-    if (declared.isNotEmpty) {
-      refused.add(
-        'unsupported enhanced enum: ${declared.length} declared '
-        'member(s)',
-      );
-    }
-    return (
-      IrClass(
-        node.name.lexeme,
-        isEnum: true,
-        values: declared.isEmpty
-            ? [for (final c in node.constants) c.name.lexeme]
-            : const [],
-        doc: _doc(node),
-      ),
-      refused,
+    final stateful = node.members.any(
+      (m) => m is FieldDeclaration && !m.isStatic,
     );
+    if (stateful) {
+      refused.add('unsupported an enum whose values carry fields');
+    }
+    final cls = IrClass(
+      node.name.lexeme,
+      isEnum: true,
+      values: stateful
+          ? const []
+          : [for (final c in node.constants) c.name.lexeme],
+      doc: _doc(node),
+    );
+    if (!stateful) {
+      for (final member in node.members) {
+        if (member is! MethodDeclaration) continue;
+        try {
+          _lowerMethod(cls, member);
+        } on Unsupported catch (error) {
+          refused.add('${node.name.lexeme}.${member.name.lexeme}: $error');
+        }
+      }
+    }
+    return (cls, refused);
   }
 
   /// Lowers one class, collecting what it could not translate rather than
