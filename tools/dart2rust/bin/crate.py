@@ -58,7 +58,10 @@ def run(command, cwd=REPO, timeout=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('dill')
-    parser.add_argument('--prefix', default='package:flutter/')
+    # Everything the app is made of: every package in the dill, plus
+    # dart:ui, whose Color/Offset/Size/Rect were the four names the
+    # translated package reached for most and never found.
+    parser.add_argument('--prefix', default='package:,dart:ui')
     parser.add_argument('--fresh', action='store_true',
                         help='drop the incremental cache first')
     args = parser.parse_args()

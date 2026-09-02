@@ -37,6 +37,11 @@ import '../lib/frontend_kernel.dart';
 /// Flat, not nested: a nested module tree would need every `use` to know how
 /// far up to go, and nothing here needs the hierarchy.
 String moduleName(String uri) {
+  // `dart:ui` has no path at all, and `dart:async` would flatten to the same
+  // name as an `async.dart` in a package.
+  if (uri.startsWith('dart:')) {
+    return 'dart_${uri.substring('dart:'.length).replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_')}';
+  }
   var path = uri;
   final marker = path.indexOf('/src/');
   path = marker >= 0
@@ -70,6 +75,11 @@ Future<void> main(List<String> args) async {
   // Once for the whole component: an enum's variants live in the
   // constants that name them, which can be in any library.
   final enumValues = enumValuesIn(component);
+  // A comma-separated list: `package:flutter/,dart:ui`. `dart:ui` holds
+  // Color, Offset, Size and Rect, which round 39 measured as the four names
+  // the translated package reaches for most and never finds -- and it is in
+  // the same dill, with bodies.
+  final prefixes = args[1].split(',').where((p) => p.isNotEmpty).toList();
   final prefix = args[1];
   final out = Directory(args[2]);
   await out.create(recursive: true);
@@ -85,7 +95,7 @@ Future<void> main(List<String> args) async {
   final nameOf = <Library, String>{};
   for (final library in component.libraries) {
     final uri = library.importUri.toString();
-    if (!uri.startsWith(prefix)) continue;
+    if (!prefixes.any(uri.startsWith)) continue;
     var name = moduleName(uri);
     // Two libraries can flatten to one module name. The second keeps its own
     // file rather than overwriting the first, which is how a whole library

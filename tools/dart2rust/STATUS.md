@@ -2238,19 +2238,77 @@ Dart 允许循环 import,Rust 的 crate 不允许,所以一个循环必须同属
 
 ---
 
-## 下一步:拆 crate(为了并行),然后 `dart:ui`
+## 第 40 轮:`dart:ui` 一起翻,和一个"先量所以没做"的决定
 
-1. **按强连通分量拆 crate。** 整包编译一次 9 分 22 秒、只用一个核,而且
-   失败的 crate 没有增量可用。Dart 的 import 图有环,Rust 的 crate 图不能有,
-   所以一个 SCC 一个 crate,凝聚 DAG 就是 crate 依赖——cargo 才能铺开 32 核。
-   这不只是省时间:测量便宜了,每轮才敢多量几次。
-2. **`dart:ui` 的最小子集**,按 10701 个错误里的点名排:
-   `Color`(1297)、`Offset`(813)、`Size`(488)、`TextDirection`(353)、
-   `TextStyle`(352)、`Rect`(321)、`Matrix4`(205)。
-   再加 `dart:core` 的 `Object`(438)、泛型 `T`(384)、`Set`(166)。
+### 先量,然后决定不拆 crate
 
-三把尺子:`census_kernel.dart` 数发出的成员;`compiles.py` 数单库能否独立编
-(115/525);`crate.py` 数整包一起编有多少错(**10701**)。
+上一轮说要按强连通分量拆 crate 来吃并行。量了一下就不用做了:
+
+**525 个库,173 个 SCC,167 个是单点——但最大的两个装了 227 + 97 = 324 个库(62%)。**
+
+那两个是 cupertino+widgets 和 material。拆完之后关键路径还是那两个大 crate,
+**顶多 2 倍,不是 32 倍**。一次测量省下一整轮的实现。
+
+### 真正的墙是 `dart:ui`,而它就在同一个 dill 里
+
+| | |
+|---|---|
+| `dart:ui` | 175 类 / 1324 成员 |
+| `dart:core` | 108 类 / 1125 成员 |
+| `package:gallery`(目标 app 自己) | 620 类 / 226 库 |
+
+驱动改成接受**多个前缀**。加上 `dart:ui` 之后:
+
+| | |
+|---|---|
+| 只有 `package:flutter/` | 10701 个错误 |
+| **加上 `dart:ui`** | **6625(−4076)** |
+
+`Color`、`Offset`、`Size`、`Rect`、`TextDirection` 全部从缺失名单上消失。
+
+### 全程序:929 个库 / 4154 个类 / 7968 个错误
+
+再把**所有 package**(含 `package:gallery` 自己)一起翻:
+
+| | |
+|---|---|
+| 库 / 类 | 929 / 4154 |
+| 前端+后端拒绝 | 4987 |
+| **rustc 错误** | **7968** |
+
+比只翻 flutter+ui 的 6625 多,因为多了 404 个库;
+**按类算是变好的**(2918 类 6625 个错 → 4154 类 7968 个错)。
+
+### 现在缺的是 `dart:core` 和泛型
+
+| 缺的 | 次数 | 是什么 |
+|---|---|---|
+| `Object` | 542 | `dart:core` |
+| `T` | 434 | **泛型** |
+| `TextStyle` | 353 | `dart:ui` 里被拒的那个 |
+| `dynamic` / `Set` / `Duration` / `Future` / `DateTime` | 210 / 194 / 127 / 126 / 112 | `dart:core` |
+| `Matrix4` | 205 | `package:vector_math`,不在这个 dill 里 |
+
+**`dart:core` 不能整个照搬**:`String`、`int`、`double` 后端已经映射到 Rust 原生类型,
+再发一个 `String` 结构体会和它自己打架。要挑着来。
+
+**泛型(434)是一整块没做的语言特性**,不是缺一个类型。
+
+---
+
+## 下一步:泛型,和挑着来的 `dart:core`
+
+1. **泛型(`T` 出现 434 次)。** 这是一整块没做的语言特性——`IrType` 已经带
+   类型参数了(第 32 轮),但类和方法本身还不带参数。
+2. **`dart:core` 挑着翻**:`Object`(542)、`Set`(194)、`Duration`(127)、
+   `Future`(126)、`DateTime`(112)。**不能整个照搬**——`String`/`int`/`double`
+   后端已映射到 Rust 原生类型,再发一遍会自相矛盾。
+3. `Infinity`(183)是 `double.infinity`,一行的事。
+
+**不做**:按 SCC 拆 crate(第 40 轮量过,62% 在两个环里,顶多 2 倍)。
+
+三把尺子:`census_kernel.dart` 数发出的成员;`compiles.py` 数单库能否独立编;
+`crate.py` 数整包一起编有多少错(**全程序 929 库 / 4154 类 / 7968 错**)。
 
 ## 当前队头
 
