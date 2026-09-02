@@ -367,6 +367,24 @@ class Frontend {
 
   // -- Declarations -----------------------------------------------------------
 
+  /// Lowers every class in a compilation unit.
+  ///
+  /// The hierarchy is why this exists. `impl AlignmentGeometry for Alignment`
+  /// needs to know that `AlignmentGeometry` is abstract and what it requires,
+  /// and neither fact can be seen from inside `Alignment`.
+  (IrLibrary, List<String>) lowerLibrary(CompilationUnit unit) {
+    final classes = <IrClass>[];
+    final refused = <String>[];
+    for (final declaration in unit.declarations) {
+      if (declaration is! ClassDeclaration) continue;
+      if (declaration.name.lexeme.startsWith('_')) continue;
+      final (cls, problems) = lowerClass(declaration);
+      classes.add(cls);
+      refused.addAll(problems.map((p) => '${cls.name}: $p'));
+    }
+    return (IrLibrary(classes), refused);
+  }
+
   /// Lowers one class, collecting what it could not translate rather than
   /// stopping at the first refusal: a report of eleven unsupported members is
   /// worth more than a report of the first one.
@@ -375,6 +393,7 @@ class Frontend {
     final cls = IrClass(
       node.name.lexeme,
       superclass: node.extendsClause?.superclass.name.lexeme,
+      isAbstract: node.abstractKeyword != null,
       doc: _doc(node),
     );
     final refused = <String>[];
@@ -488,7 +507,6 @@ class Frontend {
     // in painting/ when the real number was far smaller. A queue whose head is
     // partly fiction sends the next round to build the wrong thing.
     if (member.name.lexeme.startsWith('_')) return;
-    if (member.isAbstract) throw Unsupported('abstract method', member.toSource());
     if (member.isSetter) throw Unsupported('setter', member.toSource());
 
     final params = <IrParam>[];
@@ -504,11 +522,14 @@ class Frontend {
     }
 
     final isOperator = member.operatorKeyword != null;
-    cls.methods.add(IrMethod(
+    // An abstract member has no body to lower, so it goes on a separate list:
+    // it is what the trait *requires*, not what the trait *provides*.
+    final target = member.isAbstract ? cls.abstractMethods : cls.methods;
+    target.add(IrMethod(
       member.name.lexeme,
       params,
       _type(member.returnType?.type),
-      body(member.body),
+      member.isAbstract ? const IrBlock([]) : body(member.body),
       isStatic: member.isStatic,
       isGetter: member.isGetter,
       operator: isOperator

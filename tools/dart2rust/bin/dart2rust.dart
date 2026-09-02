@@ -56,6 +56,33 @@ Future<void> main(List<String> args) async {
     exit(1);
   }
 
+  // Whole-file mode: every class, traits before the structs that implement
+  // them. This is the only mode in which a hierarchy can be emitted at all.
+  if (wanted == '--all') {
+    final frontend = Frontend('');
+    final (lib, refused) = frontend.lowerLibrary(resolved.unit);
+    String? rust;
+    try {
+      rust = RustBackend.emitLibrary(lib);
+    } on Unsupported catch (error) {
+      refused.add('backend: $error');
+    }
+    stderr.writeln('${lib.classes.length} classes '
+        '(${lib.classes.where((c) => c.isAbstract).length} abstract), '
+        '${refused.length} refused');
+    for (final r in refused.take(20)) {
+      stderr.writeln('  REFUSED $r');
+    }
+    if (rust == null) exit(1);
+    if (out != null) {
+      File(out).writeAsStringSync(rust);
+      stderr.writeln('-> $out');
+    } else {
+      stdout.write(rust);
+    }
+    return;
+  }
+
   ClassDeclaration? target;
   for (final declaration in resolved.unit.declarations) {
     if (declaration is ClassDeclaration && declaration.name.lexeme == wanted) {

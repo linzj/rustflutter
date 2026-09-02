@@ -61,7 +61,7 @@ pub enum TextDirection {
 }
 
 mod alignment;
-pub use alignment::Alignment;
+pub use alignment::{Alignment, AlignmentDirectional, AlignmentGeometry};
 
 mod named_args;
 pub use named_args::NamedArgs;
@@ -352,5 +352,59 @@ mod tests {
         let r = Rect::from_l_t_r_b(0.0, 0.0, 100.0, 100.0);
         let d = EdgeInsets::all(10.0).deflate_rect(r);
         assert_eq!((d.left, d.top, d.right, d.bottom), (10.0, 10.0, 90.0, 90.0));
+    }
+
+    // -- the class hierarchy --------------------------------------------------
+    //
+    // `AlignmentGeometry` is abstract upstream, so it becomes a trait, and its
+    // two concrete subclasses implement it. These go through `dyn` on purpose:
+    // calling `Alignment`'s own inherent method would not exercise the impl at
+    // all, and the impl is what this round built.
+
+    #[test]
+    fn a_subclass_can_be_used_through_the_base_trait() {
+        let a: Box<dyn AlignmentGeometry> = Box::new(Alignment::new(1.0, 2.0));
+        let scaled = a.op_mul(3.0);
+        // Back down to the concrete type to read the numbers. `resolve` is on
+        // the trait and returns Alignment, so it is the way through.
+        let got = scaled.resolve(None);
+        assert_eq!(got, Alignment::new(3.0, 6.0));
+    }
+
+    #[test]
+    fn the_trait_dispatches_to_the_right_subclass() {
+        // Two different implementors behind the same trait object type.
+        let items: Vec<Box<dyn AlignmentGeometry>> = vec![
+            Box::new(Alignment::new(1.0, 1.0)),
+            Box::new(AlignmentDirectional::new(1.0, 1.0)),
+        ];
+        // Negation is `impl Neg` on each struct; the trait method boxes it.
+        // Alignment resolves to itself; AlignmentDirectional's `resolve` did
+        // not translate, so only the first is asked for its numbers.
+        let negated = items[0].op_neg();
+        assert_eq!(negated.resolve(None), Alignment::new(-1.0, -1.0));
+    }
+
+    #[test]
+    fn a_covariant_return_is_boxed_at_the_trait_boundary() {
+        // Upstream's `Alignment operator -()` overrides one returning
+        // `AlignmentGeometry` -- legal in Dart, impossible in Rust. The inherent
+        // operator keeps the precise type for Rust callers...
+        let precise: Alignment = -Alignment::new(2.0, 3.0);
+        assert_eq!(precise, Alignment::new(-2.0, -3.0));
+        // ...and the trait method boxes the same value for callers who only
+        // know the base.
+        let base: &dyn AlignmentGeometry = &Alignment::new(2.0, 3.0);
+        assert_eq!(base.op_neg().resolve(None), Alignment::new(-2.0, -3.0));
+    }
+
+    #[test]
+    fn an_assert_bearing_constructor_is_still_const() {
+        // `TextAlignVertical` asserts in its constructor and has `static const`
+        // fields built from it. An earlier round dropped `const` from such
+        // constructors on a wrong assumption; these fields are the proof it was
+        // wrong, because they cannot exist without it.
+        assert_eq!(alignment::TextAlignVertical::TOP.y, -1.0);
+        assert_eq!(alignment::TextAlignVertical::BOTTOM.y, 1.0);
     }
 }

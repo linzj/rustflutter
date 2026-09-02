@@ -43,9 +43,12 @@ Future<void> main(List<String> args) async {
   final root = p.normalize(p.absolute(args[0]));
   final showExamples = args.contains('--examples');
   var limit = 25;
+  String? emitDir;
   for (var i = 1; i < args.length - 1; i++) {
     if (args[i] == '--limit') limit = int.parse(args[i + 1]);
+    if (args[i] == '--emit-dir') emitDir = args[i + 1];
   }
+  if (emitDir != null) Directory(emitDir).createSync(recursive: true);
 
   final files = <String>[];
   final entity = FileSystemEntity.typeSync(root);
@@ -94,12 +97,20 @@ Future<void> main(List<String> args) async {
       classesSeen++;
 
       final (cls, refused) = Frontend(name).lowerClass(declaration);
+      String? rust;
       try {
-        RustBackend(cls).emit();
+        rust = RustBackend(cls).emit();
       } on Unsupported catch (error) {
         refused.add('$error');
       } catch (error) {
         refused.add('backend crash: $error');
+      }
+      // Written out so the caller can check it *parses*. "Nothing was refused"
+      // and "the output is Rust" turned out to be very different claims:
+      // `CupertinoApp` refuses nothing and emits
+      // `Option<Route<dynamic>? Function(RouteSettings)?>` as a parameter type.
+      if (emitDir != null && rust != null && refused.isEmpty) {
+        File('$emitDir/$name.rs').writeAsStringSync(rust);
       }
       // Constructors count. Without them this round's work -- four named
       // constructors on EdgeInsets alone -- moved the number not at all, and a

@@ -280,15 +280,51 @@ class IrConstructor {
 }
 
 class IrClass {
-  IrClass(this.name, {this.superclass, this.doc});
+  IrClass(this.name, {this.superclass, this.isAbstract = false, this.doc});
 
   final String name;
   final String? superclass;
+
+  /// Whether Dart declared it `abstract`.
+  ///
+  /// This decides the whole shape of the output: an abstract class becomes a
+  /// **trait**, because that is what Rust has for "a set of operations with no
+  /// storage of its own". A concrete class becomes a struct, and one that
+  /// extends an abstract class also gets an `impl`.
+  final bool isAbstract;
+
   final String? doc;
   final List<IrFieldDecl> fields = [];
   final List<IrConstDecl> constants = [];
   final List<IrMethod> methods = [];
   final List<IrConstructor> constructors = [];
+
+  /// Members declared `abstract` -- no body, so they are the trait's required
+  /// methods rather than its defaults.
+  final List<IrMethod> abstractMethods = [];
+}
+
+/// Every class in one file, lowered together.
+///
+/// The compiler used to take one class at a time, which is enough while a class
+/// is a struct and nothing else. It is not enough for a hierarchy: to emit
+/// `impl AlignmentGeometry for Alignment` the backend has to know that
+/// `AlignmentGeometry` is abstract and what it requires, and neither fact is
+/// visible from inside `Alignment`.
+class IrLibrary {
+  IrLibrary(this.classes);
+
+  final List<IrClass> classes;
+
+  IrClass? operator [](String? name) {
+    if (name == null) return null;
+    for (final c in classes) {
+      if (c.name == name) return c;
+    }
+    return null;
+  }
+
+  bool isAbstract(String? name) => this[name]?.isAbstract ?? false;
 }
 
 /// Raised when the front end meets Dart it cannot lower.
