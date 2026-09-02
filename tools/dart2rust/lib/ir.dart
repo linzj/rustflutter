@@ -180,6 +180,27 @@ class IrExprStmt extends IrStmt {
   final IrExpr expr;
 }
 
+/// `assert(condition, message)`.
+///
+/// Dart's `assert` and Rust's `debug_assert!` are the same thing: a check that
+/// runs in debug builds and is compiled out of release ones. That correspondence
+/// is exact enough to translate rather than emulate.
+///
+/// [message] is the Dart source of the message expression when there was one and
+/// it was not a plain string. It is not translated -- see the backend for why --
+/// but it is carried so the emitted code can say what was dropped.
+class IrAssert extends IrStmt {
+  const IrAssert(this.condition, {this.literalMessage, this.message});
+
+  final IrExpr condition;
+
+  /// The message when it was a plain string literal, ready to emit.
+  final String? literalMessage;
+
+  /// The source of a message that was not a plain string.
+  final String? message;
+}
+
 // -- Declarations -------------------------------------------------------------
 
 class IrFieldDecl {
@@ -230,9 +251,18 @@ class IrMethod {
 }
 
 class IrConstructor {
-  const IrConstructor(this.params, this.fieldInits, {required this.isConst, this.doc});
+  const IrConstructor(
+    this.params,
+    this.fieldInits, {
+    required this.isConst,
+    this.asserts = const [],
+    this.doc,
+  });
 
   final List<IrParam> params;
+
+  /// `assert`s from the initialiser list, which run before the fields are set.
+  final List<IrAssert> asserts;
 
   /// Field name -> the expression it is initialised to. A `this.x` parameter
   /// contributes `x -> IrLocal('x')`.

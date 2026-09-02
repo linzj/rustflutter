@@ -48,6 +48,9 @@ pub use alignment::Alignment;
 mod named_args;
 pub use named_args::NamedArgs;
 
+mod asserts;
+pub use asserts::Asserts;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +157,38 @@ mod tests {
         // 1*1 + 10*2 + 100*4. Emitting `weigh()` here was a real bug: the
         // no-named-arguments shortcut skipped the defaults entirely.
         assert_eq!(p.all_defaults(), 421.0);
+    }
+
+    // -- asserts --------------------------------------------------------------
+    //
+    // Each of these has a partner that trips the check. Without one, "the
+    // assert was translated" and "the assert was silently dropped" are the same
+    // observation: every test that stays inside the condition passes either way.
+
+    #[test]
+    fn a_satisfied_assert_does_not_fire() {
+        assert_eq!(Asserts::new(8.0).halved(), 4.0);
+        assert_eq!(Asserts::new(3.0).squared(), 9.0);
+        assert_eq!(Asserts::new(4.0).doubled(), 8.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "value must not be negative")]
+    fn the_constructors_assert_still_fires() {
+        Asserts::new(-1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "halving zero is not useful")]
+    fn a_body_assert_still_fires_with_its_message() {
+        Asserts::new(0.0).halved();
+    }
+
+    #[test]
+    #[should_panic]
+    fn an_assert_whose_message_was_dropped_still_fires() {
+        // The message was an interpolation and is not translated; the condition
+        // is the contract and it is.
+        Asserts::new(5000.0).doubled();
     }
 }

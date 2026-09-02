@@ -122,12 +122,23 @@ class RustBackend {
     return '(${expr(left)} $op ${expr(right)})';
   }
 
+  /// A Dart string's contents, safe to sit inside a Rust `"..."`.
+  ///
+  /// The backslash has to be doubled *before* the quote is escaped, or the
+  /// backslash this step just added would be doubled by the next one. Only
+  /// these two characters need it: Rust and Dart agree on the rest.
+  String _escape(String text) =>
+      text.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+
   String _literal(String value, IrType t) {
     if (t.name == 'double') {
       // Rust needs the point: `1` is an integer literal even in an f32 context.
       return value.contains('.') || value.contains('e') ? value : '$value.0';
     }
-    if (t.name == 'String') return '"$value".to_string()';
+    // Escaped for the same reason the assert message is: a Dart string holding
+    // a quote or a backslash would otherwise end the Rust literal early or
+    // start an escape that was never in the source.
+    if (t.name == 'String') return '"${_escape(value)}".to_string()';
     if (t.name == 'Null') return 'None';
     return value;
   }
@@ -181,6 +192,21 @@ class RustBackend {
         }
       case IrExprStmt(:final expr):
         _line('${this.expr(expr)};');
+      case IrAssert(
+          :final condition,
+          :final literalMessage,
+          :final message,
+        ):
+        // `debug_assert!`, not `assert!`: Dart's assert runs in debug builds
+        // and is compiled out of release ones, and so is this. Using `assert!`
+        // would keep every one of upstream's checks in a release binary, which
+        // is a performance decision this compiler has no business making.
+        if (message != null) {
+          _line('// assert message, not translated: $message');
+        }
+        final text =
+            literalMessage == null ? '' : ', "${_escape(literalMessage)}"';
+        _line('debug_assert!(${expr(condition)}$text);');
     }
   }
 
@@ -224,8 +250,18 @@ class RustBackend {
         .join(', ');
     // `const fn` because the Dart constructor was `const`, which is what lets
     // the static constants below be associated consts rather than lazy statics.
-    _line('pub ${ctor.isConst ? "const " : ""}fn new($params) -> Self {');
+    // A constructor carrying asserts cannot stay `const fn`: `debug_assert!`
+    // expands to a branch on `cfg!(debug_assertions)`, and a `const fn` that
+    // could panic is only usable in a const context if the check passes at
+    // compile time -- which is exactly the constraint Dart's const constructors
+    // have, but Rust will not let the *definition* through. Dropping `const`
+    // keeps the check; keeping `const` would mean dropping the check.
+    final constable = ctor.isConst && ctor.asserts.isEmpty;
+    _line('pub ${constable ? "const " : ""}fn new($params) -> Self {');
     _indent++;
+    for (final check in ctor.asserts) {
+      stmt(check);
+    }
     _line('Self {');
     _indent++;
     for (final field in cls.fields) {

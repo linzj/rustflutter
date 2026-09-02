@@ -330,7 +330,29 @@ class Frontend {
     if (node is ExpressionStatement) {
       return IrExprStmt(expression(node.expression));
     }
+    if (node is AssertStatement) {
+      return _assert(node.condition, node.message);
+    }
     throw Unsupported('statement ${node.runtimeType}', node.toSource());
+  }
+
+  /// Lowers `assert(condition, message)`.
+  ///
+  /// The message is diagnostics, not contract: what an assert *means* is its
+  /// condition, and whether it fires does not depend on the message. So a
+  /// message that is a plain string is carried across, and one that is an
+  /// interpolation or a call is kept as source in a comment rather than
+  /// translated. Translating it would drag string formatting -- and everything
+  /// the message calls -- into the dependency set of every assert in the tree,
+  /// to change what a debug build prints when something has already gone wrong.
+  IrAssert _assert(Expression condition, Expression? message) {
+    if (message is SimpleStringLiteral) {
+      return IrAssert(expression(condition), literalMessage: message.value);
+    }
+    return IrAssert(
+      expression(condition),
+      message: message?.toSource(),
+    );
   }
 
   IrStmt body(FunctionBody node) {
@@ -378,6 +400,10 @@ class Frontend {
     for (final v in member.fields.variables) {
       final element = v.declaredFragment?.element;
       final type = _type(member.fields.type?.type ?? element?.type);
+      // Private first, for the reason given in `_lowerMethod`: a private
+      // `static final` was being refused as a non-const static field when it
+      // should simply have been skipped.
+      if (v.name.lexeme.startsWith('_')) continue;
       if (member.isStatic) {
         if (element is! FieldElement || !element.isConst) {
           throw Unsupported('non-const static field', v.toSource());
@@ -395,7 +421,6 @@ class Frontend {
           doc: _doc(member),
         ));
       } else {
-        if (v.name.lexeme.startsWith('_')) continue;
         cls.fields.add(IrFieldDecl(
           v.name.lexeme,
           type,
@@ -425,9 +450,12 @@ class Frontend {
         inits[name] = IrLocal(name);
       }
     }
+    final asserts = <IrAssert>[];
     for (final init in member.initializers) {
       if (init is ConstructorFieldInitializer) {
         inits[init.fieldName.name] = expression(init.expression);
+      } else if (init is AssertInitializer) {
+        asserts.add(_assert(init.condition, init.message));
       } else {
         throw Unsupported('initialiser ${init.runtimeType}', init.toSource());
       }
@@ -436,14 +464,21 @@ class Frontend {
       params,
       inits,
       isConst: member.constKeyword != null,
+      asserts: asserts,
       doc: _doc(member),
     ));
   }
 
   void _lowerMethod(IrClass cls, MethodDeclaration member) {
+    // Private first, and that ordering is the whole point. A private member is
+    // *skipped*, not refused -- nothing outside its library can name it. When
+    // this check came last, `double get _x;` was counted as an abstract method
+    // and `set _foo(v)` as a setter, so the census reported 74 abstract methods
+    // in painting/ when the real number was far smaller. A queue whose head is
+    // partly fiction sends the next round to build the wrong thing.
+    if (member.name.lexeme.startsWith('_')) return;
     if (member.isAbstract) throw Unsupported('abstract method', member.toSource());
     if (member.isSetter) throw Unsupported('setter', member.toSource());
-    if (member.name.lexeme.startsWith('_')) return;
 
     final params = <IrParam>[];
     for (final p in member.parameters?.parameters ?? const <FormalParameter>[]) {
