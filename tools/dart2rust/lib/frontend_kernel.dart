@@ -266,6 +266,24 @@ class KernelFrontend {
       return const IrLiteral('null', IrType('Null', nullable: true));
     }
     if (constant is InstanceConstant) {
+      // An enum value arrives as an instance of the enum class carrying the
+      // CFE's own `#index` and `_name` fields. Walking its constructor for
+      // those was 1125 refusals reading `const instance missing #index` -- a
+      // bug in work reported finished two rounds ago, and one only the Kernel
+      // census could see, because the analyzer front end never meets this
+      // shape at all.
+      if (constant.classNode.isEnum) {
+        for (final entry in constant.fieldValues.entries) {
+          if (entry.key.asField.name.text != '_name') continue;
+          final value = entry.value;
+          if (value is StringConstant) {
+            return IrStatic(constant.classNode.name, value.value,
+                isEnumValue: true);
+          }
+        }
+        throw Unsupported(
+            'enum constant with no `_name`', _sample(node));
+      }
       // `const Alignment(-1, -1)` arrives already evaluated, as the class plus
       // its field values. Rebuilt as a constructor call so the emitted Rust
       // still reads as `Alignment::new(-1.0, -1.0)` rather than as a literal
