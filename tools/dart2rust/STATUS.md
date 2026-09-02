@@ -2685,20 +2685,62 @@ file" —— 1300 个类**,占全部类的三成。
 
 ---
 
+## 第 52 轮:`late` 是什么,以及为什么这一轮没做它
+
+| | 第 51 轮 | 这一轮 |
+|---|---|---|
+| 拒绝 | 4114 | **4084** |
+| `field never initialised` | 438 | **410** |
+
+### 一条拒绝里其实有三种东西
+
+`field never initialised` 是 438 条,量完发现底下是三类:
+
+| | 数量 | Rust 里是什么 |
+|---|---|---|
+| **可空,没有初始化器** | 99 | **`None`——精确,不是替代品** |
+| **`late`,非空** | 480 | `Option<T>` + 读时 unwrap |
+| 其实由 `this.x` 构造参数设置 | 209 | 探针没算,编译器本来就处理了 |
+
+第一类做了:**Dart 里一个可空字段没有初始化器,它的值就是 null**,
+Rust 写成 `None` 是同一件事,不是近似。
+
+### 第二类没做,理由是量出来的
+
+`late` 的精确对应是 `Option<T>`,读的时候 unwrap——**panic 的位置正好是
+Dart 抛 late 读取错误的位置**。听起来一行就能改。
+
+量了那 480 个字段的类型:`AnimationController` 84、`Animation` 71、
+`CurvedAnimation` 32,基本类型只有 85 个。而 **`Animation` 是抽象类,
+翻出来是 `Box<dyn Animation>`,它不是 `Clone`**——所以"读的时候 unwrap"
+在多数情况下不是一行。
+
+**所以这条留着拒绝,并把理由写进代码**:不是"没想到",是"量过,读的那一侧
+不是一行,等做对了再说"。
+
+### 一件该说的:这一轮产出很小
+
+拒绝只降了 30。**先量清楚一条拒绝底下有几种东西**,比顺手改掉看起来最大的
+那个数字值钱——第 51 轮就是猜错了才发现是 inspector 探针。
+但这一轮的确没做多少事,记在这里。
+
+---
+
 ## 下一步
 
-拒绝 4114。**用拒绝的分类挑活,不要用错误总数**(第 50、51 轮各撞一次:
-少拒绝一批类,错误就涨,因为它们引用的东西还不全)。
+拒绝 4084。**用拒绝的分类挑活,不要用错误总数**(第 50、51 轮各撞一次)。
 
 | 拒绝理由 | 次数 |
 |---|---|
-| `field never initialised` | 438 |
-| `const instance of X, which is not in this file` | ~340(去掉 inspector 之后) |
+| `field never initialised`(**全是 `late`**) | 410 |
+| `const instance of X, which is not in this file` | ~340 |
 | `call to X, which was not translated` | 128 |
 | `operator X has no Rust name` | 121 |
 
-**下一轮**:`field never initialised`(438)——先量是哪些字段,
-多半是基类构造函数内联没覆盖到的路径(重定向构造?具名构造?)。
+**`late`(410)是最大的一条,而且现在知道该怎么做**:
+`Option<T>` + 读 unwrap,难在读的那一侧——`Box<dyn Trait>` 不是 `Clone`,
+所以读要用 `as_ref().unwrap()` 之类,而调用点期待的是值。
+**下一轮先把读的那一侧想清楚再动手**,别改一半。
 
 **不做**:按 SCC 拆 crate(第 40 轮);加 `dart:core`(第 44 轮,+10347)。
 

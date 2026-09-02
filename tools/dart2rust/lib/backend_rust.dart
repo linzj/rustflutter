@@ -2321,8 +2321,20 @@ class RustBackend {
     for (final field in _allFields(cls)) {
       // The constructor first, then the declaration's own value: Dart applies
       // the latter only where the former says nothing.
-      final init = inits[field.name] ?? field.initial;
+      var init = inits[field.name] ?? field.initial;
+      if (init == null && field.type.nullable) {
+        // A nullable Dart field with no initialiser *is* null. Rust needs the
+        // value written down, and `None` is exactly it -- not a stand-in.
+        init = const IrLiteral('null', IrType('Null', nullable: true));
+      }
       if (init == null) {
+        // What is left is Dart's `late`: no value until something assigns one,
+        // and reading before that is an error. Rust's counterpart is
+        // `Option<T>` with every read unwrapped -- which panics where Dart
+        // would have thrown. Not done here: measured in round 52, 480 of these
+        // and most are objects (AnimationController 84, Animation 71), and an
+        // `Animation` is `Box<dyn Animation>`, which is not `Clone` -- so the
+        // read side is not one line. Refused until it is done properly.
         throw Unsupported('field never initialised', field.name);
       }
       // A field whose declaration initialiser mentions `this`:
