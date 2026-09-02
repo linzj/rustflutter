@@ -2271,11 +2271,34 @@ class RustBackend {
     // one impl: 839 `E0201`s the moment mixins started being implemented. The
     // method wins, because it is the one that may have a body worth keeping.
     final taken = {for (final need in required) _methodName(need)};
+    // The base's field is only *this* class's field when this class inherited
+    // it. `class X extends A with M implements B` does not: a mixin's `on`
+    // clause puts its constraint on the extends chain, so `B` is reached as an
+    // ancestor while `X` satisfies it by implementing -- `viewId` there is a
+    // getter of X's own, forwarding to something else, and reading
+    // `self.view_id` names a field the struct does not have. 345 of those in
+    // `PointerEvent` alone.
+    final held = {for (final f in _allFields(cls)) f.name};
     for (final field in accessors) {
       if (taken.contains(snake(field.name))) continue;
+      final reads = held.contains(field.name)
+          ? 'self.${snake(field.name)}'
+          : cls.methods.any((m) => m.name == field.name && !m.isStatic)
+          ? 'self.${snake(field.name)}()'
+          : null;
+      if (reads == null) {
+        _member('impl ${base.name}::${field.name} for ${cls.name}', () {
+          throw Unsupported(
+            '`${cls.name}` has neither a field nor a getter `${field.name}`, '
+                'which `${base.name}` requires',
+            '${base.name}.${field.name}',
+          );
+        });
+        continue;
+      }
       _line('fn ${snake(field.name)}(&self) -> ${type(field.type)} {');
       _indent++;
-      _line('self.${snake(field.name)}');
+      _line(reads);
       _indent--;
       _line('}');
       _line('');

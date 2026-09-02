@@ -2017,7 +2017,13 @@ Map<String, Set<Library>> classNamesReferencedBy(Library library) {
   final visitor = _ReferenceCollector(<Library>{});
   library.accept(visitor);
   for (final cls in library.classes) {
-    _climb(cls, (node) => visitor._class(node));
+    // The same walk `librariesReferencedBy` does, for the same reason: a name
+    // that arrives by flattening has to be resolved like any other, and the
+    // two lists would drift if they were gathered differently.
+    _climb(cls, (node) {
+      visitor._class(node);
+      node.accept(visitor);
+    });
   }
   return visitor.namedClasses;
 }
@@ -2050,20 +2056,19 @@ Set<Library> librariesReferencedBy(Library library) {
     // abstract *ancestor*, so a grandparent two modules away is named in the
     // output even though nothing in the body mentions it -- 1008 "cannot find
     // trait" until this walked the chain.
-    final seen = <Class>{};
-    void climb(Class node) {
-      if (!seen.add(node)) return;
+    // And each ancestor's own *declarations*, not just the ancestor. Flattening
+    // copies a base's fields into the subclass, so `Widget`'s `Key? key` lands
+    // in every widget struct -- and `Key` lives in `foundation/key.dart`, which
+    // a widget library never names for itself. 1104 of the 1467 "cannot find
+    // trait" were that one field's type; 1463 of them were this in total.
+    //
+    // The whole ancestor is walked rather than just its field types: a method
+    // signature copied into an `impl` names types the same way, and one rule
+    // that covers both cannot disagree with itself.
+    _climb(cls, (node) {
       found.add(node.enclosingLibrary);
-      for (final type in [
-        if (node.supertype != null) node.supertype!,
-        if (node.mixedInType != null) node.mixedInType!,
-        ...node.implementedTypes,
-      ]) {
-        climb(type.classNode);
-      }
-    }
-
-    climb(cls);
+      node.accept(visitor);
+    });
   }
   found.remove(library);
   return found;
