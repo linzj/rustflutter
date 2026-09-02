@@ -40,7 +40,14 @@ const _binaryOperators = {
 };
 
 class KernelFrontend {
-  KernelFrontend(this.library, {this.enumValues = const {}});
+  KernelFrontend(
+    this.library, {
+    this.enumValues = const {},
+    this.abstractElsewhere = const {},
+  });
+
+  /// Abstract classes in the rest of the crate. See [IrLibrary].
+  final Set<String> abstractElsewhere;
 
   final Library library;
 
@@ -1398,7 +1405,12 @@ class KernelFrontend {
       refused.addAll(problems.map((p) => '${cls.name}: $p'));
     }
     return (
-      IrLibrary(classes, constants: constants, functions: functions),
+      IrLibrary(
+        classes,
+        constants: constants,
+        functions: functions,
+        abstractElsewhere: abstractElsewhere,
+      ),
       refused,
     );
   }
@@ -1789,4 +1801,21 @@ class _EnumConstantFinder extends RecursiveVisitor {
     _look(node.constant);
     super.visitConstantExpression(node);
   }
+}
+
+/// Every abstract class in the component, by name.
+///
+/// The backend decides `dyn Trait` against a plain struct from this. A library
+/// only knows its own classes, which was fine while one library was emitted at
+/// a time and is not once a whole package shares a crate.
+Set<String> abstractClassesIn(Component component, List<String> prefixes) {
+  final names = <String>{};
+  for (final library in component.libraries) {
+    final uri = library.importUri.toString();
+    if (!prefixes.any(uri.startsWith)) continue;
+    for (final cls in library.classes) {
+      if (cls.isAbstract && !cls.isAnonymousMixin) names.add(cls.name);
+    }
+  }
+  return names;
 }

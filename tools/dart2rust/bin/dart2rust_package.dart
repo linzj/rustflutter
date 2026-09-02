@@ -80,6 +80,9 @@ Future<void> main(List<String> args) async {
   // the translated package reaches for most and never finds -- and it is in
   // the same dill, with bodies.
   final prefixes = args[1].split(',').where((p) => p.isNotEmpty).toList();
+  // Which names are traits, across the whole crate. A library only knows its
+  // own, and a trait named without `dyn` was 802 of the errors.
+  final abstractNames = abstractClassesIn(component, prefixes);
   final prefix = args[1];
   final out = Directory(args[2]);
   await out.create(recursive: true);
@@ -133,6 +136,7 @@ Future<void> main(List<String> args) async {
     final (ir, refused) = KernelFrontend(
       library,
       enumValues: enumValues,
+      abstractElsewhere: abstractNames,
     ).lowerLibrary();
     final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);
     refusals += refused.length + more.length;

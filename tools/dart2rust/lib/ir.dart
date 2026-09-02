@@ -1042,7 +1042,18 @@ class IrLibrary {
     this.classes, {
     this.constants = const [],
     this.functions = const [],
+    this.abstractElsewhere = const {},
   });
+
+  /// Abstract classes declared in *other* libraries of the same crate.
+  ///
+  /// Whether a class is abstract decides whether its name is a struct or a
+  /// `dyn Trait`, and a library only knows its own classes. One library at a
+  /// time that was harmless -- a name from elsewhere was a hand-written stub
+  /// anyway. A whole package in one crate is a different matter: 802 `E0782`
+  /// errors, every one a trait named without `dyn`, because the library
+  /// holding the trait was not the library using it.
+  final Set<String> abstractElsewhere;
 
   final List<IrClass> classes;
 
@@ -1064,7 +1075,9 @@ class IrLibrary {
     return null;
   }
 
-  bool isAbstract(String? name) => this[name]?.isAbstract ?? false;
+  bool isAbstract(String? name) =>
+      this[name]?.isAbstract ??
+      (name != null && abstractElsewhere.contains(name));
 }
 
 /// Raised when the front end meets Dart it cannot lower.
