@@ -299,6 +299,9 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod pieces;
+pub use pieces::Label;
+
 mod branching;
 pub use branching::{Corner, Placement};
 
@@ -1353,5 +1356,41 @@ mod tests {
         assert_eq!(p.bounded(3.0), 7.0);
         assert_eq!(p.bounded(9.0), 9.0);
         assert_eq!(p.bounded(99.0), 13.0);
+    }
+
+    // -- interpolation, function values, local functions -----------------------
+
+    #[test]
+    fn interpolation_becomes_format() {
+        let l = Label::new("gauge".to_string(), 3);
+        assert_eq!(l.describe(), "gauge has 3");
+        // A literal brace has to survive `format!` reading braces.
+        assert_eq!(l.braced(), "{gauge}");
+    }
+
+    #[test]
+    fn a_static_method_used_as_a_value() {
+        // Read as a static *field* this came out as `Label::TWICE`, naming a
+        // constant nobody declared.
+        let l = Label::new("gauge".to_string(), 3);
+        assert_eq!(l.doubled(5.0), 10.0);
+    }
+
+    #[test]
+    fn a_local_function_is_a_closure_in_a_local() {
+        // Two steps, so a version that called it once would give 6.0.
+        let l = Label::new("gauge".to_string(), 3);
+        assert_eq!(l.stepped(5.0), 7.0);
+    }
+
+    #[test]
+    fn an_assignment_used_for_its_value() {
+        // 7.0 doubled is 14.0, plus the 7.0 the assignment left in `total`.
+        // Rust's assignment produces `()`, so a translation that forgot to
+        // keep the value would not compile; one that read the field back
+        // afterwards would give the same answer here and a different one if
+        // anything else had written it.
+        let l = Label::new("gauge".to_string(), 3);
+        assert_eq!(l.running(4.0), 21.0);
     }
 }

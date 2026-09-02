@@ -491,6 +491,39 @@ class IrIdentical extends IrExpr {
   final IrExpr right;
 }
 
+/// `'a $b c'` -- a string built from pieces.
+///
+/// Rust's `format!` is the same thing said differently: the literal pieces
+/// become the format string and the rest become its arguments. 99 of these.
+class IrInterpolation extends IrExpr {
+  const IrInterpolation(this.parts);
+
+  /// Literal text and expressions, in order. A literal part carries its text
+  /// in [IrLiteral.value].
+  final List<IrExpr> parts;
+}
+
+/// A function used as a value: `Alignment.lerp` or a top-level `describe`.
+///
+/// Not a closure -- Rust names the function itself, which is why this is
+/// separate from the tear-off of an *instance* method, where the receiver has
+/// to be captured and the ownership question starts. 111 of these.
+class IrFunctionRef extends IrExpr {
+  const IrFunctionRef(this.owner, this.name);
+
+  /// The class holding it, or null for a top-level function.
+  final String? owner;
+  final String name;
+}
+
+/// A local function: `void step() { .. }` written inside a body.
+class IrLocalFunction extends IrStmt {
+  const IrLocalFunction(this.name, this.closure);
+
+  final String name;
+  final IrClosure closure;
+}
+
 /// `switch (x) { case A: .. }`.
 ///
 /// 628 in `package:flutter/`, and the shape is friendly: almost all switch on
@@ -515,6 +548,15 @@ class IrCase {
   /// One arm may match several values: `case A: case B: ..` is `A | B =>`.
   final List<IrExpr> values;
   final IrStmt body;
+}
+
+/// `x = v` where the value of the assignment is wanted. The local's twin of
+/// [IrSetValue].
+class IrAssignValue extends IrExpr {
+  const IrAssignValue(this.name, this.value);
+
+  final String name;
+  final IrExpr value;
 }
 
 /// `a.b = v` where the value of the assignment is wanted.

@@ -144,6 +144,15 @@ class Frontend {
         _arguments(node.argumentList, node.element, node),
       );
     }
+    if (node is StringInterpolation) {
+      return IrInterpolation([
+        for (final element in node.elements)
+          if (element is InterpolationString)
+            IrLiteral(element.value, const IrType('String'))
+          else
+            expression((element as InterpolationExpression).expression),
+      ]);
+    }
     if (node is AssignmentExpression) return _assignmentValue(node);
     if (node is ThrowExpression) {
       // `a ?? throw StateError(..)`. Rust has no throw and does not need one:
@@ -243,6 +252,12 @@ class Frontend {
       );
     }
     if (target is ClassElement) {
+      // `Label.twice` is a *method* used as a value, not a static field read.
+      // Read as a field it came out as `Label::TWICE`, naming a constant that
+      // was never declared.
+      if (node.identifier.element is MethodElement) {
+        return IrFunctionRef(target.name ?? '?', node.identifier.name);
+      }
       return IrStatic(target.name ?? '?', node.identifier.name);
     }
     final accessor = node.identifier.element;
@@ -547,6 +562,11 @@ class Frontend {
     if (node.methodName.name == 'clampDouble' && args.length == 3) {
       return IrCall(args[0], 'clamp', [args[1], args[2]]);
     }
+    // A local function is a local holding a closure, so calling it is calling
+    // that value -- not a method on `this`, and not a top-level function.
+    if (element is LocalFunctionElement) {
+      return IrCallValue(IrLocal(node.methodName.name), args);
+    }
     // A top-level function is not a method on `this`. Without this check
     // `clampDouble(a, b, c)` came out as `self.clamp_double(a, b, c)`, which is
     // both wrong and a place the two front ends disagreed -- the Kernel one
@@ -650,6 +670,15 @@ class Frontend {
         throw Unsupported('switch case with no body', node.toSource());
       }
       return IrSwitch(expression(node.expression), cases, otherwise);
+    }
+    if (node is FunctionDeclarationStatement) {
+      // A named function written inside a body: a closure bound to a local,
+      // which is what Dart's is.
+      final function = node.functionDeclaration;
+      return IrLocalFunction(
+        function.name.lexeme,
+        _closure(function.functionExpression) as IrClosure,
+      );
     }
     if (node is WhileStatement) {
       final previous = _breakLeavesSwitch;
@@ -923,6 +952,9 @@ class Frontend {
         'compound assignment used for its value',
         node.toSource(),
       );
+    }
+    if (left is SimpleIdentifier && left.element is LocalVariableElement) {
+      return IrAssignValue(left.name, expression(node.rightHandSide));
     }
     if (left is PropertyAccess && left.target is ThisExpression) {
       final element = left.propertyName.element;

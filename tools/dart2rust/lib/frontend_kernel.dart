@@ -159,7 +159,30 @@ class KernelFrontend {
       return IrSuperCall(owner, node.name.text, _arguments(node.arguments));
     }
     if (node is VariableSet) {
-      throw Unsupported('assignment used for its value', _sample(node));
+      // `x = v` used for its value. Rust's assignment produces `()`, so the
+      // value is bound, assigned and produced -- the same shape a field write
+      // used for its value takes.
+      final written = node.variable.cosmeticName;
+      final known = _temporaries[node.variable];
+      if (known == null && (written == null || written.startsWith('#'))) {
+        throw Unsupported('assignment used for its value', _sample(node));
+      }
+      return IrAssignValue(known ?? written!, expression(node.value));
+    }
+    if (node is StringConcatenation) {
+      return IrInterpolation([for (final e in node.expressions) expression(e)]);
+    }
+    if (node is SuperPropertyGet) {
+      final owner = node.interfaceTarget?.enclosingClass?.name;
+      if (owner == null) {
+        throw Unsupported('super property with no owner', _sample(node));
+      }
+      if (node.interfaceTarget is Field) {
+        // A base field is copied into the subclass struct by the flattening,
+        // so `super.x` and `this.x` are the same storage.
+        return IrField(null, node.name.text);
+      }
+      return IrSuperCall(owner, node.name.text, const []);
     }
     if (node is Throw) {
       // `a ?? throw StateError(..)`. Rust has no throw, but it does have an
@@ -185,6 +208,12 @@ class KernelFrontend {
     }
     if (node is NullCheck) return IrNullCheck(expression(node.operand));
     if (node is AsExpression) return expression(node.operand);
+    if (node is StaticTearOff) {
+      return IrFunctionRef(
+        node.target.enclosingClass?.name,
+        node.target.name.text,
+      );
+    }
     if (node is ConstantExpression) return _constant(node.constant, node);
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
   }
@@ -571,6 +600,22 @@ class KernelFrontend {
         expression(positional[1]),
       ]);
     }
+    if (target.name.text == 'lerpDouble' && positional.length == 3) {
+      // `a + (b - a) * t`, which is what dart:ui's lerpDouble computes for
+      // non-null arguments. 67 calls.
+      final a = expression(positional[0]);
+      final b = expression(positional[1]);
+      return IrBinary(
+        '+',
+        a,
+        IrBinary('*', IrBinary('-', b, a), expression(positional[2])),
+      );
+    }
+    if (target.name.text == 'pow' && positional.length == 2) {
+      return IrCall(expression(positional[0]), 'powf', [
+        expression(positional[1]),
+      ]);
+    }
     if (target.name.text == 'clampDouble' && positional.length == 3) {
       return IrCall(expression(positional[0]), 'clamp', [
         expression(positional[1]),
@@ -670,6 +715,15 @@ class KernelFrontend {
     }
     if (constant is NullConstant) {
       return const IrLiteral('null', IrType('Null', nullable: true));
+    }
+    if (constant is StaticTearOffConstant) {
+      // A top-level or static function used as a value. Rust names the
+      // function; nothing is captured, so none of the ownership question that
+      // an *instance* tear-off raises applies here.
+      return IrFunctionRef(
+        constant.target.enclosingClass?.name,
+        constant.target.name.text,
+      );
     }
     if (constant is InstanceConstant) {
       // An enum value arrives as an instance of the enum class carrying the
@@ -915,6 +969,16 @@ class KernelFrontend {
       if (_breakTargets.containsKey(target))
         return IrBreak(_breakTargets[target]);
       return IrBreak(_labelFor(target));
+    }
+    if (node is FunctionDeclaration) {
+      // A named function written inside a body. Rust has no nested `fn` that
+      // can see the enclosing locals, so it becomes a closure bound to a
+      // local -- which is what Dart's is.
+      final name = node.variable.cosmeticName;
+      if (name == null || name.startsWith('#')) {
+        throw Unsupported('local function with no name', _sample(node));
+      }
+      return IrLocalFunction(name, _closure(node.function, node) as IrClosure);
     }
     if (node is SwitchStatement) {
       final cases = <IrCase>[];

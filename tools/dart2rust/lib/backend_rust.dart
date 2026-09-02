@@ -182,6 +182,16 @@ class RustBackend {
       IrIdentical(:final left, :final right) => _identical(left, right),
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
       IrThrowValue(:final value) => 'return Err(${expr(value)})',
+      IrInterpolation(:final parts) => _interpolation(parts),
+      // Boxed, because a function item is not a `Box<dyn Fn>` and that is what
+      // a function-typed field or local is here. A `Box<dyn Fn>` also
+      // implements `Fn`, so it still passes where `impl Fn` is wanted.
+      IrFunctionRef(:final owner, :final name) =>
+        owner == null
+            ? 'Box::new(${snake(name)})'
+            : 'Box::new($owner::${snake(name)})',
+      IrAssignValue(:final name, :final value) =>
+        '{ let __set = ${expr(value)}; ${snake(name)} = __set; __set }',
       IrSetValue(:final target, :final name, :final value) => _setValue(
         target,
         name,
@@ -632,6 +642,32 @@ class RustBackend {
         '$receiver.${snake(name)} = __set; __set }';
   }
 
+  /// `'a \$b c'` as `format!`.
+  ///
+  /// The literal pieces become the format string and the rest its arguments.
+  /// A literal's own braces are doubled, since `format!` reads them.
+  String _interpolation(List<IrExpr> parts) {
+    final pattern = StringBuffer();
+    final args = <String>[];
+    for (final part in parts) {
+      if (part is IrLiteral && part.type.name == 'String') {
+        pattern.write(part.value.replaceAll('{', '{{').replaceAll('}', '}}'));
+        continue;
+      }
+      pattern.write('{}');
+      args.add(expr(part));
+    }
+    // A backslash first, then a quote: doing it the other way round would
+    // escape the backslash this line just added.
+    final text = pattern
+        .toString()
+        .replaceAll(r'\', r'\\')
+        .replaceAll('"', r'\"');
+    return args.isEmpty
+        ? '"$text".to_string()'
+        : 'format!("$text", ${args.join(', ')})';
+  }
+
   /// `identical(a, b)`.
   ///
   /// Only with `this` on one side. That is the `operator ==` fast path -- 140
@@ -693,6 +729,12 @@ class RustBackend {
 
   Set<String> _assignedIn(IrStmt statement) {
     final found = <String>{};
+    // An assignment can also be an *expression* -- `f(total = x)` -- and the
+    // local it writes needs `mut` just the same. Walking only statements left
+    // one immutable and the file did not compile.
+    final inExpressions = _WalkSelf();
+    inExpressions.statement(statement);
+    found.addAll(inExpressions.assignedLocals);
     void walk(IrStmt s) {
       switch (s) {
         case IrAssign(:final name):
@@ -719,6 +761,7 @@ class RustBackend {
             walk(one.body);
           }
           if (otherwise != null) walk(otherwise);
+        case IrLocalFunction():
         case IrBreak():
         case IrContinue():
         case IrReturn():
@@ -869,6 +912,8 @@ class RustBackend {
         _line('}');
         _indent--;
         _line('}');
+      case IrLocalFunction(:final name, :final closure):
+        _line('let ${snake(name)} = ${expr(closure)};');
       case IrLabeled(:final label, :final body):
         _line("'$label: {");
         _indent++;
@@ -1127,6 +1172,16 @@ class RustBackend {
     _line('}');
     return _out.join('\n') + '\n';
   }
+
+  /// Whether a Rust type is `Copy`.
+  ///
+  /// Asked of the rendered text rather than the IR, because that is what the
+  /// derive has to be true of. Owning types are the ones that are not.
+  static bool _isCopy(String rust) =>
+      !rust.contains('String') &&
+      !rust.contains('Box<') &&
+      !rust.contains('Vec<') &&
+      !rust.contains('dyn ');
 
   /// The bodies of this abstract class's concrete methods, as free functions.
   ///
@@ -1429,6 +1484,12 @@ class RustBackend {
         go(right),
       ),
       IrThrowValue(:final value) => IrThrowValue(go(value)),
+      IrInterpolation(:final parts) => IrInterpolation(parts.map(go).toList()),
+      IrFunctionRef() => e,
+      IrAssignValue(:final name, :final value) => IrAssignValue(
+        name,
+        go(value),
+      ),
       IrSetValue(:final target, :final name, :final value) => IrSetValue(
         target == null ? null : go(target),
         name,
@@ -1600,7 +1661,11 @@ class RustBackend {
     _line('// hand-written re-expression. See tools/dart2rust/README.md.');
     _line('');
     _doc(cls.doc);
-    _line('#[derive(Clone, Copy, Debug, PartialEq)]');
+    // `Copy` only when every field is. A `String` field is not, and deriving
+    // it anyway does not compile -- which is loud, but the derive is this
+    // compiler's own line and it should not write one it knows is wrong.
+    final copyable = _allFields(cls).every((f) => _isCopy(type(f.type)));
+    _line('#[derive(Clone, ${copyable ? 'Copy, ' : ''}Debug, PartialEq)]');
     _line('${_vis(cls.name)}struct ${cls.name} {');
     _indent++;
     for (final field in _allFields(cls)) {
@@ -1974,6 +2039,9 @@ class _WalkSelf {
   bool writesFields = false;
   final selfCalls = <String>{};
 
+  /// Locals written by an assignment used for its value.
+  final assignedLocals = <String>{};
+
   void statement(IrStmt s) {
     switch (s) {
       case IrAssignField(:final target):
@@ -2024,6 +2092,8 @@ class _WalkSelf {
       case IrWhile(:final condition, :final body):
         expression(condition);
         statement(body);
+      case IrLocalFunction(:final closure):
+        expression(closure);
       case IrLabeled(:final body):
         statement(body);
       case IrSwitch(:final value, :final cases, :final otherwise):
@@ -2093,6 +2163,14 @@ class _WalkSelf {
         expression(right);
       case IrThrowValue(:final value):
         expression(value);
+      case IrInterpolation(:final parts):
+        parts.forEach(expression);
+      case IrFunctionRef():
+      case IrAssignValue():
+        if (e is IrAssignValue) {
+          assignedLocals.add(e.name);
+          expression(e.value);
+        }
       case IrSetValue(:final target, :final value):
         // Same rule as the statement form: only a write to `this` makes the
         // method mutating.
