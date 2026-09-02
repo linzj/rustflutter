@@ -794,13 +794,19 @@ class Frontend {
       );
     }
     if (target is SuperExpression) {
-      // Every Dart class extends `Object`, written or not. The Kernel front
-      // end sees that -- it resolves `super.toString()` to `Object.toString`
-      // and names the class -- while this one had only the `extends` clause,
-      // so a class without one refused a call the other side lowered. The
-      // backend is where `Object` is answered; both front ends now ask it.
-      final base = _superclass ?? 'Object';
-      return IrSuperCall(base, node.methodName.name, args);
+      // Which class the call lands in is the *resolved target's*, not the
+      // `extends` clause's. With `class X extends A with B`, a `super.foo()`
+      // that B declares belongs to B, and the clause says A. The Kernel front
+      // end reads it off the target for the same reason, and the mixin fixture
+      // is what holds the two together.
+      //
+      // Falling back to `Object` when nothing resolves: every Dart class
+      // extends it, written or not, and the backend answers it.
+      final target = node.methodName.element?.enclosingElement;
+      final base = target is InterfaceElement
+          ? target.name
+          : (_superclass ?? 'Object');
+      return IrSuperCall(base ?? 'Object', node.methodName.name, args);
     }
     return IrCall(
       target == null ? null : expression(target),
@@ -1454,6 +1460,9 @@ class Frontend {
           p.name.lexeme,
       ],
       superclass: node.extendsClause?.superclass.name.lexeme,
+      mixins: [
+        for (final t in node.withClause?.mixinTypes ?? const []) _type(t.type),
+      ],
       superclassArguments: [
         for (final t
             in node.extendsClause?.superclass.typeArguments?.arguments ??

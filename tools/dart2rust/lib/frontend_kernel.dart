@@ -184,7 +184,7 @@ class KernelFrontend {
     if (node is SuperMethodInvocation) {
       // The target member is already resolved -- this is the fact the analyzer
       // front end had to work out for itself.
-      final owner = node.interfaceTarget.enclosingClass?.name;
+      final owner = _realOwner(node.interfaceTarget, node.name.text)?.name;
       if (owner == null) {
         throw Unsupported('super call with no owner', '$node');
       }
@@ -355,6 +355,37 @@ class KernelFrontend {
     final finder = _ThisFinder();
     fn.accept(finder);
     return finder.found;
+  }
+
+  /// The class a `super` call really lands in.
+  ///
+  /// `class X extends A with B` becomes, in Kernel, `X extends _A&B extends A`
+  /// -- and `_A&B` is the CFE's, not anything upstream wrote, so this compiler
+  /// skips it. A `super.foo()` inside `X` resolves to a member of `_A&B`, so
+  /// asking the target which class encloses it gave a class that is not in the
+  /// output: 180 refusals reading `super call into `_MixinApplication12&Rende-
+  /// rBox&...`, which is not in this file`.
+  ///
+  /// The class a reader would name is the mixin that declares the member, or
+  /// the first real superclass above it if none does.
+  Class? _realOwner(Member target, String name) {
+    var owner = target.enclosingClass;
+    while (owner != null && owner.isAnonymousMixin) {
+      // Not `mixedInClass`: with `--target=flutter` the CFE *applies* the
+      // mixin, copying its members into this class and clearing `mixedInType`,
+      // so that getter is null by the time a dill is read. What survives is
+      // `implementedTypes` -- the applied mixins, in the order they were
+      // written -- which is how `is Scaled` still answers. Later mixins win, so
+      // the search runs backwards.
+      for (final applied in owner.implementedTypes.reversed) {
+        final mixin = applied.classNode;
+        if (mixin.members.any((m) => m.name.text == name && !m.isAbstract)) {
+          return mixin;
+        }
+      }
+      owner = owner.superclass;
+    }
+    return owner;
   }
 
   /// Whether a closure only *reads* fields of `this`.
@@ -1517,7 +1548,16 @@ class KernelFrontend {
     // Kernel's superclass may be a synthetic mixin application; the class a
     // reader would name is the first one above that is not.
     var base = node.superclass;
+    // The mixins are picked up on the way past: `Panel extends _Measured&Scal-
+    // ed extends Measured` puts each one in a synthetic class this compiler
+    // skips, and skipping it silently dropped the mixin too.
+    final mixins = <IrType>[];
     while (base != null && base.isAnonymousMixin) {
+      // `implementedTypes`, for the reason `_realOwner` gives: an applied
+      // mixin has already been copied in and `mixedInType` cleared.
+      for (final applied in base.implementedTypes) {
+        mixins.add(_type(applied.asInterfaceType));
+      }
       base = base.superclass;
     }
     // An enum's values are its static const fields, in declaration order,
@@ -1585,6 +1625,7 @@ class KernelFrontend {
       superclass: node.isEnum || base == null || base.name == 'Object'
           ? null
           : base.name,
+      mixins: node.isEnum ? const [] : mixins,
       isAbstract: node.isAbstract,
       isEnum: node.isEnum,
       values: recovered,

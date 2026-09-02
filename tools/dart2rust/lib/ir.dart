@@ -991,6 +991,7 @@ class IrClass {
     this.typeParameters = const [],
     this.superclass,
     this.superclassArguments = const [],
+    this.mixins = const [],
     this.isAbstract = false,
     this.isEnum = false,
     this.values = const [],
@@ -1002,6 +1003,19 @@ class IrClass {
   /// `class Foo<T>` -- the names, in order. See [IrTypeParams].
   final IrTypeParams typeParameters;
   final String? superclass;
+
+  /// The classes mixed in: `class Panel extends Measured with Scaled` -- the
+  /// `Scaled`. A mixin is a base like any other as far as Rust is concerned --
+  /// its methods have to be reachable through a trait the class implements --
+  /// but it does not sit on the `extends` chain, so nothing found it. Kernel
+  /// hides it further still: it writes `Panel extends _Measured&Scaled`, and
+  /// that synthetic class is skipped, taking the mixin with it.
+  /// Carried as types, not names: a mixin is often generic --
+  /// `ContainerRenderObjectMixin<ChildType, ParentDataType>` -- and the `impl`
+  /// needs the arguments as much as an extended class does. Recording only the
+  /// name refused 554 impls with "the base is generic and its arguments are
+  /// not known here", which was true and avoidable.
+  final List<IrType> mixins;
 
   /// `class _Linear extends ParametricCurve<double>` -- the `double`.
   ///

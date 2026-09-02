@@ -246,6 +246,9 @@ pub struct ViewPadding {
 mod edge_insets;
 pub use edge_insets::EdgeInsets;
 
+mod mixins;
+pub use mixins::{Measured, Panel, Scaled};
+
 mod supercalls;
 pub use supercalls::{Doubled, NamesItself, Shape, Untouched};
 
@@ -1073,6 +1076,16 @@ mod tests {
     fn super_to_string_on_object_names_the_class() {
         // What upstream Dart prints for a class that overrides nothing.
         assert_eq!(NamesItself::new().describe(), "Instance of 'NamesItself'");
+    }
+
+    #[test]
+    fn super_into_a_mixin_finds_the_mixin() {
+        // `Panel extends Measured with Scaled`, and both declare `base`. Kernel
+        // puts a synthetic `_Sized&Scaled` between them, and the `extends`
+        // clause says `Measured` -- answering from either would give 2.0. The
+        // mixin's body is the one Dart runs.
+        assert_eq!(Panel::new().from_mixin(), 5.0);
+        assert_eq!(Panel::new().from_mixin_only(), 3.0);
     }
 
     // -- cascades -------------------------------------------------------------

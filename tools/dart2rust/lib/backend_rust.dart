@@ -633,6 +633,14 @@ class RustBackend {
   static final _superFnProbes = <String, bool>{};
 
   bool _superFnEmits(IrClass baseClass, String name) {
+    // Only an abstract class writes them. `_emitSuperFns` is called from
+    // `_emitTrait` and nowhere else, because the free function is generic over
+    // the trait -- there is nothing to make it generic over when the base is a
+    // struct, since flattening copies the base's fields into each subclass
+    // rather than leaving them anywhere shared. Probing without asking this
+    // first said yes and the call named a function nobody wrote; the mixin
+    // fixture is what walked into it.
+    if (!baseClass.isAbstract) return false;
     final key = '${baseClass.name}.$name';
     final known = _superFnProbes[key];
     if (known != null) return known;
@@ -2149,10 +2157,26 @@ class RustBackend {
   }
 
   /// The abstract classes above this one, nearest first.
+  ///
+  /// Mixins count. `class Panel extends Measured with Scaled` has to implement
+  /// `Scaled` for `Scaled`'s methods to be reachable through it, exactly as it
+  /// implements an abstract superclass -- a mixin is a base that does not sit
+  /// on the `extends` chain, and looking only along that chain found none of
+  /// them.
   List<IrClass> _abstractAncestors(IrClass of) {
-    final above = library[of.superclass];
-    if (above == null) return const [];
-    return [if (above.isAbstract) above, ..._abstractAncestors(above)];
+    final found = <String, IrClass>{};
+    void climb(IrClass? from) {
+      if (from == null) return;
+      for (final name in [from.superclass, ...from.mixins.map((m) => m.name)]) {
+        final above = library[name];
+        if (above == null) continue;
+        if (above.isAbstract) found.putIfAbsent(above.name, () => above);
+        climb(above);
+      }
+    }
+
+    climb(of);
+    return found.values.toList();
   }
 
   /// `<f32>` for `impl ParametricCurve<f32> for _Linear`, or nothing.
@@ -2170,6 +2194,15 @@ class RustBackend {
     var current = cls;
     var bound = <String, IrType>{};
     while (true) {
+      // A mixin is a direct base of whichever class named it, so its arguments
+      // are read off the `with` clause rather than composed through a chain --
+      // with whatever this step has already bound substituted in.
+      for (final mixin in current.mixins) {
+        if (mixin.name != base.name) continue;
+        final passed = [for (final a in mixin.arguments) bound[a.name] ?? a];
+        if (passed.length != base.typeParameters.length) return null;
+        return '<${passed.map((a) => type(a)).join(', ')}>';
+      }
       final next = library[current.superclass];
       if (next == null) return null;
       final passed = [
@@ -2206,7 +2239,13 @@ class RustBackend {
     // subclass does not implement the trait at all -- so its inherited methods
     // are unreachable, which is how `area()` went missing.
     final accessors = ownFields;
-    if (required.isEmpty && accessors.isEmpty) return;
+    // No early return when both are empty. A Dart subclass *is* its base
+    // whether or not it changes anything, so the impl has to exist even with
+    // nothing in it -- `Panel extends Measured with Scaled` overrides neither
+    // and the mixin has no fields, and without `impl Scaled for Panel {}` the
+    // free function holding `Scaled`'s body cannot be called on a `Panel`:
+    // "the trait bound `Panel: Scaled` is not satisfied". An empty impl block
+    // is the whole statement that it is one.
 
     final arguments = _baseArguments(base);
     if (arguments == null) {

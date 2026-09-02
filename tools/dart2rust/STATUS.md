@@ -3048,6 +3048,61 @@ fixture 补了两个仍然该拒的:`twiceScaled`(在 `this` 上调方法)和
 
 ---
 
+## 第 61 轮:混入一直不在 IR 里,而 fixture 一写就全塌了
+
+那 ~180 个 `super call into _MixinApplicationN&A&B`。写了 `mixins.dart`
+之后,一连撞出四件事——**这一轮的价值全在那个 fixture 上**,
+它把四个各自独立、各自都能悄悄错下去的问题一次摆到了台面上。
+
+### 一、CFE **应用**了混入,`mixedInType` 是空的
+
+先猜"合成类的 `mixedInClass` 就是混入",错。探针打出来:
+
+    class _Panel&Measured&Scaled anon=true super=Measured mixedIn=null
+        implements=[Scaled] demangled=Measured with Scaled
+
+`--target=flutter` 会把混入**应用**掉:成员复制进合成类,`mixedInType` 清空。
+留下来的是 **`implementedTypes`**——`is Scaled` 靠的就是它。
+两个前端因此分歧了一轮:analyzer 说 `scaled_super_base`,Kernel 说
+`measured_super_base`,**而 Dart 跑的是前者**。fixture 抓住的。
+
+### 二、IR 里根本没有"混入"这回事
+
+只有 `superclass`。所以 `class Panel extends Measured with Scaled`
+从来不 `impl Scaled`,混入的方法在 Rust 里够不着——
+整个 flutter 的混入都这样。`IrClass.mixins` 加上了。
+
+### 三、空 `impl` 不写,就等于没继承
+
+`_emitImplFor` 在"没有要覆盖的方法、也没有字段"时直接返回。
+可是 Dart 的子类**总是** is-a 基类,`impl Scaled for Panel {}`
+哪怕是空的也必须在,否则 `the trait bound Panel: Scaled is not satisfied`。
+提早返回删了。
+
+### 四、具体基类的 `super` 调用一直在叫不存在的函数
+
+`superFn` 自由函数只在 `_emitTrait` 里生成,也就是只为抽象类。
+而 `_superFnEmits` 那个探针没问这一条,对具体基类回答"能",
+于是调用名了一个没人写的函数。**这个 bug 先前就在**,fixture 走进去的。
+现在具体基类的 super 调用如实被拒。
+
+### 数字
+
+拒绝 5554 → 5914 → **5502**。中间那个 5914 不是退步:
+加上混入之后多了一整类发射单位(每个混入一个 `impl`),
+其中 554 个当场被拒"基类是泛型,参数不知道"——因为我只记了混入的名字。
+把类型参数一起记下来(`IrClass.mixins` 是 `List<IrType>` 而不是名字),
+554 个就都发出来了。
+
+**记一条**:**新增一类发射单位之后,拒绝总数和之前不可比**。
+分母变了。这和第 58 轮那几把坏尺子是同一件事的另一面。
+
+顺带记一个没护栏的坑:fixture 里我把一个类叫 `Sized`,
+撞上 Rust 自己的 marker trait,`<S: Sized + ?Sized>` 直接不成话。
+Dart 里叫 `Sized`/`Copy`/`Clone`/`Drop` 的类都会这样,现在没有任何东西拦。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3068,9 +3123,9 @@ fixture 补了两个仍然该拒的:`twiceScaled`(在 `this` 上调方法)和
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:那 ~180 个 `_MixinApplicationN&A&B`。先量它们是不是真的
-不在 IR 里,再决定是"把它们也降下来"还是"super 调用穿过它们找到真正的基类"
-——后者更可能对,因为混入在 Rust 里对应的是 trait,不是一层结构体。
+**下一轮**:看 `cargo check` 的错误总数——这一轮真正的产出是
+"混入的 impl 现在存在了",那是 E0277/E0405 的事,不是拒绝数的事。
+然后按新的错误分布决定,而不是按旧的排名。
 
 **不做**:按 SCC 拆 crate(第 40 轮);加 `dart:core`(第 44 轮,+10347)。
 
