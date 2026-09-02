@@ -161,6 +161,23 @@ class IrNullCheck extends IrExpr {
   final IrExpr operand;
 }
 
+/// `x == null`.
+///
+/// Its own node because Rust asks the question differently: a nullable value is
+/// an `Option`, and the test is `x.is_none()` rather than a comparison against
+/// a null that does not exist.
+///
+/// Both front ends must land here, and that is the point of the node. Kernel
+/// hands over an `EqualsNull` -- the CFE has already recognised the shape --
+/// while analyzer gives an ordinary `==` against a null literal. Left alone the
+/// two would emit different Rust for the same Dart, and 2524 places in
+/// `package:flutter` would have found out.
+class IrIsNull extends IrExpr {
+  const IrIsNull(this.operand);
+
+  final IrExpr operand;
+}
+
 /// A reference to a top-level constant: `kMinInteractiveDimension`.
 ///
 /// Dart has module-level names and so does Rust, so this needs no owner. It is

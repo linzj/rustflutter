@@ -267,6 +267,9 @@ pub use enums::{Axis, Layout, MainAxisAlignment};
 mod toplevel;
 pub use toplevel::{K_DERIVED, K_MAX_ITEMS, K_SPACING, K_VERBOSE};
 
+mod nulltest;
+pub use nulltest::Maybe;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,5 +798,45 @@ mod tests {
 {emitted}"
         );
         assert!(!emitted.contains("const COMPUTED"));
+    }
+
+    // -- `x == null` ----------------------------------------------------------
+    //
+    // Rust asks this differently: a nullable value is an Option and the test is
+    // `is_none()`. Every case is paired with its opposite, since a test that
+    // only passes non-null values cannot tell `is_none` from `is_some`.
+
+    #[test]
+    fn a_null_test_answers_both_ways() {
+        assert!(Maybe::new(None, None).is_missing());
+        assert!(!Maybe::new(Some(1.0), None).is_missing());
+    }
+
+    #[test]
+    fn not_equal_null_is_the_opposite() {
+        assert!(Maybe::new(Some(1.0), None).is_present());
+        assert!(!Maybe::new(None, None).is_present());
+    }
+
+    #[test]
+    fn null_on_the_left_reads_the_same() {
+        assert!(Maybe::new(Some(1.0), None).missing_on_the_left());
+        assert!(!Maybe::new(Some(1.0), Some(2.0)).missing_on_the_left());
+    }
+
+    #[test]
+    fn both_operands_are_tested() {
+        assert!(Maybe::new(None, None).both_missing());
+        // Only the second is null: an implementation that looked at the first
+        // alone would say true here.
+        assert!(!Maybe::new(Some(1.0), None).both_missing());
+        assert!(!Maybe::new(None, Some(1.0)).both_missing());
+    }
+
+    #[test]
+    fn a_null_test_guarding_a_null_assertion() {
+        // The shape upstream uses most: test, then unwrap.
+        assert_eq!(Maybe::new(None, None).resolve(7.0), 7.0);
+        assert_eq!(Maybe::new(Some(3.0), None).resolve(7.0), 3.0);
     }
 }

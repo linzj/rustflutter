@@ -70,8 +70,22 @@ class Frontend {
     if (node is PropertyAccess) return _property(node);
 
     if (node is BinaryExpression) {
+      // `x == null` and `x != null` are their own thing in Rust, and Kernel
+      // already treats them so. Lowering them here as an ordinary comparison
+      // would leave the two front ends emitting different Rust for identical
+      // Dart -- in 2524 places.
+      final operator = node.operator.lexeme;
+      if (operator == '==' || operator == '!=') {
+        final left = node.leftOperand;
+        final right = node.rightOperand;
+        if (right is NullLiteral || left is NullLiteral) {
+          final value = right is NullLiteral ? left : right;
+          final test = IrIsNull(expression(value));
+          return operator == '==' ? test : IrUnary('!', test);
+        }
+      }
       return IrBinary(
-        node.operator.lexeme,
+        operator,
         expression(node.leftOperand),
         expression(node.rightOperand),
       );

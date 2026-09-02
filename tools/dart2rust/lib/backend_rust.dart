@@ -159,6 +159,7 @@ class RustBackend {
         _superCall(base, name, args),
       IrNullCheck(:final operand) => '${expr(operand)}.unwrap()',
       IrTopLevel(:final name) => screamingSnake(name),
+      IrIsNull(:final operand) => '${expr(operand)}.is_none()',
     };
   }
 
@@ -1102,6 +1103,8 @@ class _WalkSelf {
       case IrUnary(:final operand):
         expression(operand);
       case IrNullCheck(:final operand):
+        expression(operand);
+      case IrIsNull(:final operand):
         expression(operand);
       case IrConditional(:final condition, :final then, :final otherwise):
         expression(condition);

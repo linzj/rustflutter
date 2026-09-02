@@ -79,6 +79,7 @@ class KernelFrontend {
     if (node is InstanceGet) return _instanceGet(node);
     if (node is StaticGet) return _staticGet(node);
     if (node is InstanceInvocation) return _instanceInvocation(node);
+    if (node is EqualsNull) return IrIsNull(expression(node.expression));
     if (node is EqualsCall) {
       return IrBinary('==', expression(node.left), expression(node.right));
     }
