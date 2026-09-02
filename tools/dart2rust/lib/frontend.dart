@@ -794,10 +794,12 @@ class Frontend {
       );
     }
     if (target is SuperExpression) {
-      final base = _superclass;
-      if (base == null) {
-        throw Unsupported('super call with no superclass', node.toSource());
-      }
+      // Every Dart class extends `Object`, written or not. The Kernel front
+      // end sees that -- it resolves `super.toString()` to `Object.toString`
+      // and names the class -- while this one had only the `extends` clause,
+      // so a class without one refused a call the other side lowered. The
+      // backend is where `Object` is answered; both front ends now ask it.
+      final base = _superclass ?? 'Object';
       return IrSuperCall(base, node.methodName.name, args);
     }
     return IrCall(

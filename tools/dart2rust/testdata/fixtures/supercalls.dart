@@ -85,3 +85,15 @@ class UsesIt extends Untranslatable {
     return 5.0;
   }
 }
+
+/// `Object` is the one base that is never in any file: every Dart class
+/// already extends it, and there is nothing to emit for it. `super.toString()`
+/// was refused for 198 members on that ground, which was the wrong ground --
+/// Dart's own `Object.toString` returns `Instance of 'Foo'`, and so does this.
+class NamesItself {
+  const NamesItself();
+
+  String describe() {
+    return super.toString();
+  }
+}

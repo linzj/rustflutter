@@ -247,7 +247,7 @@ mod edge_insets;
 pub use edge_insets::EdgeInsets;
 
 mod supercalls;
-pub use supercalls::{Doubled, Shape, Untouched};
+pub use supercalls::{Doubled, NamesItself, Shape, Untouched};
 
 mod assignment;
 pub use assignment::Assignment;
@@ -1067,6 +1067,12 @@ mod tests {
         assert!(!emitted.contains("fn twice_scaled"));
         // Returned rather than passed: nothing bounds how long it lives.
         assert!(!emitted.contains("fn scaler"));
+    }
+
+    #[test]
+    fn super_to_string_on_object_names_the_class() {
+        // What upstream Dart prints for a class that overrides nothing.
+        assert_eq!(NamesItself::new().describe(), "Instance of 'NamesItself'");
     }
 
     // -- cascades -------------------------------------------------------------

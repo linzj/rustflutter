@@ -575,6 +575,20 @@ class RustBackend {
   }
 
   String _superCall(String base, String name, List<IrExpr> args) {
+    // `Object` is not a class this compiler has, and it never will be -- it is
+    // the root every Dart class already inherits from. So `super.toString()`
+    // was refused as "not in this file", 198 times, when the truth is that
+    // there is no file. Dart's own `Object.toString` returns
+    // `Instance of 'Foo'`, so that is what it translates to; upstream prints
+    // exactly this for a class that overrides nothing.
+    //
+    // Only `toString`. `super.hashCode` and `super.==` are identity on the
+    // object, which is a question about how objects are held -- the same
+    // ownership question as the closures -- and they are two calls between
+    // them, so they stay refused rather than guessed at.
+    if (base == 'Object' && name == 'toString' && args.isEmpty) {
+      return 'format!("Instance of \'{}\'", "${cls.name}")';
+    }
     final baseClass = library[base];
     if (baseClass == null) {
       throw Unsupported(
