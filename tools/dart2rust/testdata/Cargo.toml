@@ -1,0 +1,22 @@
+# A crate that exists to answer one question: does what dart2rust emits compile
+# and mean what the Dart meant?
+#
+# `src/alignment.rs` is generated output, checked in as a golden file. Regenerate
+# it with:
+#
+#     dart run --packages="E:/source/flutter/.dart_tool/package_config.json" \
+#         tools/dart2rust/bin/dart2rust.dart \
+#         E:/source/flutter/packages/flutter/lib/src/painting/alignment.dart \
+#         Alignment -o tools/dart2rust/testdata/src/alignment.rs
+#
+# then re-add the `use crate::{...}` line at the top, which the backend does not
+# emit yet because it does not track imports.
+#
+# Deliberately outside the workspace: it is the compiler's test fixture, not
+# part of the framework build.
+[package]
+name = "dart2rust_testdata"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
