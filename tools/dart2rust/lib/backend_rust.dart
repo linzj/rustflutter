@@ -2123,7 +2123,13 @@ class RustBackend {
     // only the direct base considered, `Padded` implemented nothing and
     // `Shape`'s methods were unreachable from it.
     for (final ancestor in _abstractAncestors(cls)) {
-      _emitImplFor(ancestor);
+      // Wrapped, like every other member. A `super` call or an `is` inside one
+      // delegating method used to travel out of `_emitStruct` and take the
+      // class with it -- the same gap round 53 found in the constructors.
+      _member(
+        'impl ${ancestor.name} for ${cls.name}',
+        () => _emitImplFor(ancestor),
+      );
     }
   }
 
@@ -2406,19 +2412,25 @@ class RustBackend {
   void _emitConstants() {
     for (final constant in cls.constants) {
       if (constant.isLazy) continue;
-      if (!_constable(type(constant.type))) {
-        _line('// NOT TRANSLATED: ${cls.name}.${constant.name}');
-        _line('//   a `const` cannot hold a collection');
-        _line('');
-        continue;
-      }
-      _doc(constant.doc);
-      _line(
-        '${_vis(constant.name)}const ${screamingSnake(constant.name)}: ${type(constant.type)} '
-        '= ${expr(constant.value)};',
-      );
+      // Each constant on its own: one that cannot be built is one constant
+      // missing, not a class.
+      _member('${cls.name}.${constant.name}', () => _emitConstant(constant));
     }
     if (cls.constants.isNotEmpty) _line('');
+  }
+
+  void _emitConstant(IrConstDecl constant) {
+    if (!_constable(type(constant.type))) {
+      throw Unsupported(
+        'a `const` cannot hold a collection',
+        '${cls.name}.${constant.name}',
+      );
+    }
+    _doc(constant.doc);
+    _line(
+      '${_vis(constant.name)}const ${screamingSnake(constant.name)}: '
+      '${type(constant.type)} = ${expr(constant.value)};',
+    );
   }
 
   void _emitMethods() {
