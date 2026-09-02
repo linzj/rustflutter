@@ -597,39 +597,20 @@ class Frontend {
       );
     }
     if (node is TryStatement) {
-      if (node.finallyBlock != null) {
-        // `finally` is a separate problem from `Result`: Rust says it with a
-        // `Drop` guard, and 73 of upstream's `try`s have one.
-        throw Unsupported('try/finally', node.toSource());
-      }
-      if (node.catchClauses.length != 1) {
-        throw Unsupported(
-          'try with ${node.catchClauses.length} catch clauses',
-          node.toSource(),
+      final finallyBlock = node.finallyBlock;
+      if (finallyBlock != null) {
+        // Kernel gives `try/catch/finally` as a TryFinally wrapping a TryCatch,
+        // so this side builds the same two nodes rather than one node with
+        // three parts -- otherwise the two front ends would disagree about the
+        // shape while agreeing about the meaning.
+        return IrTryFinally(
+          node.catchClauses.isEmpty
+              ? statement(node.body)
+              : _catches(node, node.catchClauses),
+          statement(finallyBlock),
         );
       }
-      final clause = node.catchClauses.single;
-      final stack = clause.stackTraceParameter;
-      if (stack != null && clause.body.toSource().contains(stack.name.lexeme)) {
-        throw Unsupported('catch reading its stack trace', node.toSource());
-      }
-      final early = _EarlyExit();
-      node.body.accept(early);
-      if (early.found) {
-        // See the Kernel front end: the try body becomes a closure, so a
-        // `return` inside it would stop at the closure and the method would
-        // carry on -- compiling, and wrong.
-        throw Unsupported('return inside a try body', node.toSource());
-      }
-      final guard = clause.exceptionType?.type;
-      final guardName = guard?.element?.name;
-      return IrTryCatch(
-        statement(node.body),
-        clause.exceptionParameter?.name.lexeme ?? 'error',
-        statement(clause.body),
-        errorType: guardName == 'Object' ? null : guardName,
-        stack: stack?.name.lexeme,
-      );
+      return _catches(node, node.catchClauses);
     }
     if (node is ExpressionStatement) {
       final value = node.expression;
@@ -642,6 +623,33 @@ class Frontend {
       return _assert(node.condition, node.message);
     }
     throw Unsupported('statement ${node.runtimeType}', node.toSource());
+  }
+
+  /// The catch half of a `try`, without its `finally`.
+  ///
+  /// Takes the clauses separately so a `try/catch/finally` can hand over just
+  /// its catch part without a synthetic AST node being built to hold it.
+  IrStmt _catches(TryStatement node, List<CatchClause> clauses) {
+    if (clauses.length != 1) {
+      throw Unsupported(
+        'try with ${clauses.length} catch clauses',
+        node.toSource(),
+      );
+    }
+    final clause = clauses.single;
+    final stack = clause.stackTraceParameter;
+    if (stack != null && clause.body.toSource().contains(stack.name.lexeme)) {
+      throw Unsupported('catch reading its stack trace', node.toSource());
+    }
+    final guard = clause.exceptionType?.type;
+    final guardName = guard?.element?.name;
+    return IrTryCatch(
+      statement(node.body),
+      clause.exceptionParameter?.name.lexeme ?? 'error',
+      statement(clause.body),
+      errorType: guardName == 'Object' ? null : guardName,
+      stack: stack?.name.lexeme,
+    );
   }
 
   /// Lowers `assert(condition, message)`.

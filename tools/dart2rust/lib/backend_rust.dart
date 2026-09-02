@@ -174,6 +174,10 @@ class RustBackend {
         args,
         constructor,
       ),
+      IrConstInstance(:final type, :final fields) => _constInstance(
+        type,
+        fields,
+      ),
       IrConditional(:final condition, :final then, :final otherwise) =>
         'if ${expr(condition)} { ${expr(then)} } else { ${expr(otherwise)} }',
       IrIs() => throw Unsupported(
@@ -504,12 +508,18 @@ class RustBackend {
     final text = expr(value);
     if (declared != null &&
         library.isAbstract(declared.name) &&
-        value is IrNew &&
-        !library.isAbstract(value.type.name)) {
+        (value is IrNew || value is IrConstInstance) &&
+        !library.isAbstract(_concreteType(value).name)) {
       return 'Box::new($text)';
     }
     return text;
   }
+
+  IrType _concreteType(IrExpr e) => switch (e) {
+    IrNew(:final type) => type,
+    IrConstInstance(:final type) => type,
+    _ => const IrType('void'),
+  };
 
   /// What `self` is called in the code currently being emitted.
   ///
@@ -536,9 +546,56 @@ class RustBackend {
     return '$receiver.${snake(name)}(${args.map(expr).join(', ')})$suffix';
   }
 
+  /// `Alignment { x: -1.0, y: -1.0 }`.
+  ///
+  /// Only for a class this file emits. The struct literal names fields, and the
+  /// only fields whose Rust names are known are the ones written here -- a
+  /// `Duration { _duration: 1000 }` would be naming a field of a hand-written
+  /// stub and would go wrong quietly the day the stub was spelled differently.
+  String _constInstance(IrType t, Map<String, IrExpr> fields) {
+    final cls = library[t.name];
+    if (cls == null) {
+      throw Unsupported(
+        'const instance of `${t.name}`, which is not in this file',
+        'const ${t.name}(..)',
+      );
+    }
+    final wanted = _allFields(cls).map((f) => f.name).toList();
+    final missing = wanted.where((f) => !fields.containsKey(f)).toList();
+    final extra = fields.keys.where((f) => !wanted.contains(f)).toList();
+    if (missing.isNotEmpty || extra.isNotEmpty) {
+      // The constant and the struct disagree about what the class holds. That
+      // is a fact about this compiler, not about the program, so it is said
+      // plainly rather than patched over with a default.
+      throw Unsupported(
+        'const instance of `${t.name}`: the struct '
+            '${missing.isEmpty ? "has no" : "wants"} '
+            '${missing.isEmpty ? extra.join(", ") : missing.join(", ")}',
+        'const ${t.name}(..)',
+      );
+    }
+    final parts = [
+      for (final field in wanted) '${snake(field)}: ${expr(fields[field]!)}',
+    ];
+    return '${t.name} { ${parts.join(', ')} }';
+  }
+
+  /// A constructor's Rust name. One function, used by both the definition and
+  /// the call, because two spellings of the same rule is how a call ends up
+  /// naming a function nobody wrote.
+  ///
+  /// Dart's `Foo._()` -- the private default constructor, and a common idiom --
+  /// snakes to `_`, which Rust reserves. It becomes `new_`: still recognisable
+  /// as the constructor, and a name Rust will take.
+  static String _ctorName(String? dartName) {
+    if (dartName == null) return 'new';
+    final name = snake(dartName);
+    return name == '_' ? 'new_' : name;
+  }
+
   String _new(IrType t, List<IrExpr> args, String? constructor) {
     final name = type(t);
-    final ctor = constructor == null ? 'new' : snake(constructor);
+    final ctor = _ctorName(constructor);
     return '$name::$ctor(${args.map(expr).join(', ')})';
   }
 
@@ -568,6 +625,9 @@ class RustBackend {
           // needs `mut` at its declaration outside it.
           walk(body);
           walk(handler);
+        case IrTryFinally(:final body, :final finalizer):
+          walk(body);
+          walk(finalizer);
         case IrReturn():
         case IrLocalDecl():
         case IrExprStmt():
@@ -596,16 +656,63 @@ class RustBackend {
         // the `Ok`, and leaving it off is a type error rather than a quiet
         // wrong answer, which is the one comfort here.
         final wrap = _failure != null;
-        if (value == null) {
-          final none = wrap ? 'Ok(())' : '';
-          _line(tail ? none : 'return ${wrap ? 'Ok(())' : ''};');
+        final returned = value == null
+            ? (wrap ? 'Ok(())' : '')
+            : (wrap ? 'Ok(${_returned(value)})' : _returned(value));
+        if (_inFlowClosure) {
+          // Inside the try closure this is not a return from the method yet --
+          // it is a value handed to the `match` outside, which does the real
+          // returning. `tail` does not apply: the closure's own tail is the
+          // `Ok(None)` that says the body fell off the end.
+          _line('return Ok(Some(${returned.isEmpty ? '()' : returned}));');
         } else {
-          final text = _returned(value);
-          final ok = wrap ? 'Ok($text)' : text;
-          _line(tail ? ok : 'return $ok;');
+          _line(tail ? returned : 'return $returned;');
         }
       case IrThrow(:final value):
         _line('return Err(${expr(value)});');
+      case IrTryFinally(:final body, :final finalizer):
+        // The finalizer has to run on the way out however the body leaves, so
+        // the body's exits are all collected into one value first and only
+        // dispatched after it has run. `Drop` is the usual Rust answer and is
+        // the wrong one here: a guard's `drop` cannot use `?` or `return`, and
+        // the finalizer often does neither but the *dispatch* does both.
+        //
+        // Nothing here catches: an `Err` is handed straight back on. A
+        // `try/catch/finally` is a TryCatch inside this node, so the catching
+        // has already happened by the time the value gets here.
+        final flows = _returnsEarly(body);
+        final carried = flows ? 'Option<${_rustReturns ?? '()'}>' : '()';
+        final failure =
+            _errorIn(body) ?? _failure ?? 'std::convert::Infallible';
+        _line('let __finally = (|| -> Result<$carried, $failure> {');
+        _indent++;
+        final wasFlowing = _inFlowClosure;
+        _inFlowClosure = flows;
+        stmt(body);
+        _inFlowClosure = wasFlowing;
+        _line('#[allow(unreachable_code)]');
+        _line(flows ? 'Ok(None)' : 'Ok(())');
+        _indent--;
+        _line('})();');
+        stmt(finalizer);
+        _line('match __finally {');
+        _indent++;
+        if (flows) {
+          _line('Ok(Some(__returned)) => return __returned,');
+          _line(
+            _alwaysReturns(body)
+                ? "Ok(None) => unreachable!(\"the try body always returns\"),"
+                : 'Ok(None) => {}',
+          );
+        } else {
+          _line('Ok(()) => {}');
+        }
+        // The failure keeps going. `_failing` already put `Result` on this
+        // method's signature, because a `finally` catches nothing and so the
+        // walk that spreads failure never stopped at it.
+        _line('Err(__failed) => return Err(__failed),');
+        _indent--;
+        _line('}');
       case IrTryCatch(
         :final body,
         :final error,
@@ -622,14 +729,46 @@ class RustBackend {
         // enclosing method: a method that catches does not fail, so it has no
         // error type of its own, and `Result<(), _>` cannot be inferred.
         final failure = errorType ?? _errorIn(body) ?? _failure ?? '_';
-        _line('match (|| -> Result<(), $failure> {');
+        // The closure catches `?`, and it would catch a `return` too: written
+        // plainly, `return x` in the body returns from the *closure* and the
+        // method carries on, which compiles and is wrong. So when the body
+        // returns, the closure carries the control flow out as a value --
+        // `Some(x)` for "the body returned x", `None` for "it fell off the
+        // end" -- and the match below does the returning for real.
+        final flows = _returnsEarly(body);
+        final carried = flows ? 'Option<${_rustReturns ?? '()'}>' : '()';
+        _line('match (|| -> Result<$carried, $failure> {');
         _indent++;
+        final outer = _inFlowClosure;
+        _inFlowClosure = flows;
         stmt(body);
-        _line('Ok(())');
+        _inFlowClosure = outer;
+        final always = flows && _alwaysReturns(body);
+        if (flows) {
+          // A body whose every path returns never reaches this, and Rust says
+          // so; the line is still needed for the bodies where some path does
+          // not.
+          _line('#[allow(unreachable_code)]');
+          _line('Ok(None)');
+        } else {
+          _line('Ok(())');
+        }
         _indent--;
         _line('})() {');
         _indent++;
-        _line('Ok(()) => {}');
+        if (flows) {
+          _line('Ok(Some(__returned)) => return __returned,');
+          // `{}` has type `()`, and when every path through the body returns
+          // there is nothing after the match to give the method its value --
+          // so the arm has to say it cannot happen rather than fall through.
+          _line(
+            always
+                ? "Ok(None) => unreachable!(\"the try body always returns\"),"
+                : 'Ok(None) => {}',
+          );
+        } else {
+          _line('Ok(()) => {}');
+        }
         _line('Err(${snake(error)}) => {');
         _indent++;
         stmt(handler);
@@ -1152,6 +1291,9 @@ class RustBackend {
         statements,
         go(value),
       ),
+      IrConstInstance(:final type, :final fields) => IrConstInstance(type, {
+        for (final entry in fields.entries) entry.key: go(entry.value),
+      }),
       IrClosure() ||
       IrLiteral() ||
       IrStatic() ||
@@ -1205,6 +1347,55 @@ class RustBackend {
     return failing;
   }
 
+  /// Whether a statement returns from the method it is written in.
+  ///
+  /// Not from a closure written inside it -- `IrClosure` is not descended into,
+  /// for the same reason the front ends' version skips nested functions.
+  bool _returnsEarly(IrStmt s) {
+    var found = false;
+    void walk(IrStmt s) {
+      if (found) return;
+      switch (s) {
+        case IrReturn():
+          found = true;
+        case IrBlock(:final statements):
+          statements.forEach(walk);
+        case IrIf(:final then, :final otherwise):
+          walk(then);
+          if (otherwise != null) walk(otherwise);
+        case IrTryCatch(:final body, :final handler):
+          walk(body);
+          walk(handler);
+        case IrTryFinally(:final body, :final finalizer):
+          walk(body);
+          walk(finalizer);
+        default:
+      }
+    }
+
+    walk(s);
+    return found;
+  }
+
+  /// Whether every path through a statement leaves the method.
+  ///
+  /// Deliberately conservative: it says yes only where it can see that it must
+  /// be so. Saying yes wrongly would emit an `unreachable!()` that is reached,
+  /// which is a panic at runtime; saying no wrongly costs nothing but a `{}`
+  /// arm the compiler then complains about, which is loud and cheap.
+  bool _alwaysReturns(IrStmt s) => switch (s) {
+    IrReturn() => true,
+    IrThrow() => true,
+    IrBlock(:final statements) => statements.any(_alwaysReturns),
+    IrIf(:final then, :final otherwise) =>
+      otherwise != null && _alwaysReturns(then) && _alwaysReturns(otherwise),
+    IrTryCatch(:final body, :final handler) =>
+      _alwaysReturns(body) && _alwaysReturns(handler),
+    IrTryFinally(:final body, :final finalizer) =>
+      _alwaysReturns(body) || _alwaysReturns(finalizer),
+    _ => false,
+  };
+
   /// The error type a statement can produce, taken from the failing methods of
   /// this class that it calls.
   String? _errorIn(IrStmt body) {
@@ -1216,6 +1407,18 @@ class RustBackend {
     }
     return null;
   }
+
+  /// The Rust return type of the method currently being emitted, as written in
+  /// its signature -- `Result<..>` and all. A `return` inside a try body has to
+  /// carry a value of exactly this type out of the closure.
+  String? _rustReturns;
+
+  /// Set while emitting a try body that contains a `return`.
+  ///
+  /// Inside one, `return x` cannot be a Rust `return`: it would return from the
+  /// closure, and the method would carry on. It becomes `Ok(Some(x))` instead,
+  /// which the `match` outside turns back into a real return.
+  bool _inFlowClosure = false;
 
   /// The error type of the method currently being emitted, if it can fail.
   String? _failure;
@@ -1409,7 +1612,7 @@ class RustBackend {
     // `EdgeInsets.all(8)` and `EdgeInsets::all(8.0)` are the same call, and the
     // unnamed one is `new` by Rust's convention. Nothing has to be encoded, so
     // nothing is: this is one of the places the two languages simply agree.
-    final name = ctor.name == null ? 'new' : snake(ctor.name!);
+    final name = _ctorName(ctor.name);
     _doc(ctor.doc);
     final params = ctor.params
         .map((p) => '${snake(p.name)}: ${type(p.type)}')
@@ -1487,6 +1690,7 @@ class RustBackend {
       // giving one a value would make `a.x = 1` an expression, which it is not.
       final returns = _returnType(method);
       _failure = _failing[_rustName(method)];
+      _rustReturns = returns;
       _line(
         '${_vis(method.name)}fn ${_rustName(method)}($params) -> $returns {',
       );
@@ -1655,6 +1859,12 @@ class _WalkSelf {
         statement(body);
         _caught--;
         statement(handler);
+      case IrTryFinally(:final body, :final finalizer):
+        // No `_caught` here, and that is the difference between the two nodes:
+        // a finalizer runs on the way past a failure, it does not stop one. A
+        // failing call in this body still makes the method fail.
+        statement(body);
+        statement(finalizer);
     }
   }
 
@@ -1706,6 +1916,8 @@ class _WalkSelf {
       case IrBlockValue(:final statements, :final value):
         statements.forEach(statement);
         expression(value);
+      case IrConstInstance(:final fields):
+        fields.values.forEach(expression);
       case IrLiteral():
       case IrLocal():
       case IrStatic():

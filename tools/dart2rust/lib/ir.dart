@@ -147,6 +147,26 @@ class IrNew extends IrExpr {
   final String? constructor;
 }
 
+/// A `const` instance given by its field values rather than by a constructor
+/// call: `Alignment { x: -1.0, y: -1.0 }`.
+///
+/// The Kernel front end meets constants already evaluated, and rebuilding them
+/// as `Alignment::new(-1.0, -1.0)` reads better -- so that is still tried
+/// first. But it depends on the constructor still being in the dill, and for a
+/// `const` instance nothing ever calls the constructor, so the compiler is
+/// free to delete it and does: 2965 of `package:flutter`'s 5602 const
+/// instances are of a class whose constructors are all gone. The field values
+/// are the one thing an `InstanceConstant` always carries.
+class IrConstInstance extends IrExpr {
+  const IrConstInstance(this.type, this.fields);
+
+  final IrType type;
+
+  /// Field name to value, by the field's Dart name. Order does not matter:
+  /// the backend emits them in the struct's own order.
+  final Map<String, IrExpr> fields;
+}
+
 class IrConditional extends IrExpr {
   const IrConditional(this.condition, this.then, this.otherwise);
 
@@ -413,6 +433,19 @@ class IrSetter extends IrStmt {
   final IrExpr? target;
   final String name;
   final IrExpr value;
+}
+
+/// `try { .. } finally { .. }`.
+///
+/// Separate from [IrTryCatch] because it answers a different question: a catch
+/// *stops* a failure, a finalizer only has to run on the way past. Kernel keeps
+/// them apart too -- `try/catch/finally` arrives as a TryFinally wrapping a
+/// TryCatch -- so nesting the two nodes is what the source said.
+class IrTryFinally extends IrStmt {
+  const IrTryFinally(this.body, this.finalizer);
+
+  final IrStmt body;
+  final IrStmt finalizer;
 }
 
 /// `try { .. } catch (e) { .. }`.

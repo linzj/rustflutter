@@ -299,8 +299,11 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod constinstance;
+pub use constinstance::{Inset, Spacing, Span};
+
 mod trycatch;
-pub use trycatch::Guarded;
+pub use trycatch::{Guarded, Tally};
 // The base trait, renamed on import:  has a  of its own.
 pub use superctor::Shape as GeometricShape;
 
@@ -1143,5 +1146,89 @@ mod tests {
         let g = Guarded::new(10.0);
         assert_eq!(g.uncaught(5.0), Ok(6.0));
         assert!(g.uncaught(50.0).is_err());
+    }
+
+    // -- a return inside a try body -------------------------------------------
+    //
+    // The try body is a closure, so a plain `return` in it would return from
+    // the closure and let the method carry on -- compiling, and wrong. These
+    // three assertions are what says it did not: a method that carried on
+    // would return the value after the try (0.0, or -1.0 from the handler),
+    // and every number below is different from those on purpose.
+
+    #[test]
+    fn a_return_inside_a_try_returns_from_the_method() {
+        let g = Guarded::new(10.0);
+        assert_eq!(g.returns_from_inside_try(6.0), 6.0);
+    }
+
+    #[test]
+    fn a_return_inside_a_try_still_lets_the_catch_catch() {
+        // The throw happens inside the same closure the return travels through.
+        let g = Guarded::new(10.0);
+        assert_eq!(g.returns_from_inside_try(50.0), -3.0);
+    }
+
+    #[test]
+    fn a_try_body_that_returns_on_only_one_path() {
+        // Three outcomes from one body: returned early, fell off the end, and
+        // threw. Without the `Ok(None)` case the first two cannot be told
+        // apart, which is the whole reason this method is here beside the one
+        // above.
+        let g = Guarded::new(10.0);
+        assert_eq!(g.returns_on_one_path(-2.0), -4.0); // returned early
+        assert_eq!(g.returns_on_one_path(7.0), 7.0); // fell off the end
+        assert_eq!(g.returns_on_one_path(50.0), -5.0); // threw, was caught
+    }
+
+    // -- try/finally ----------------------------------------------------------
+
+    #[test]
+    fn the_finalizer_runs_on_every_way_out() {
+        // Rust's usual answer is a `Drop` guard. It is the wrong one: a guard's
+        // `drop` can neither `?` nor `return`, and the dispatch below does
+        // both. The finalizer instead runs between collecting the body's exit
+        // and acting on it, which is one place rather than three.
+        let mut t = Tally::new(10.0);
+        assert_eq!(t.counted(6.0), Ok(6.0)); // fell through to a return
+        assert_eq!(t.runs, 1);
+        assert_eq!(t.counted(-1.0), Ok(-6.0)); // returned early
+        assert_eq!(t.runs, 2);
+        assert!(t.counted(50.0).is_err()); // threw, and nothing caught it
+        assert_eq!(t.runs, 3);
+    }
+
+    // -- const instances the constructor cannot rebuild ------------------------
+    //
+    // These come from the Kernel front end, which is the only one that meets an
+    // evaluated constant. Each class is one of the ways matching the
+    // constructor's parameter names against the field names fails, and each
+    // holds two constants with different values so that writing one where the
+    // other belongs cannot pass.
+
+    #[test]
+    fn a_class_with_only_a_named_constructor() {
+        assert_eq!(Spacing::TIGHT.amount, 3.0);
+        assert_eq!(Spacing::WIDE.amount, 17.0);
+        assert_eq!(Spacing::WIDE.twice(), 34.0);
+    }
+
+    #[test]
+    fn fields_the_base_holds_under_other_names() {
+        // `Inset(h, v)` names nothing: the values live on `InsetBase` as `_h`
+        // and `_v`. Upstream is `Offset(dx, dy)` storing `_dx`/`_dy`.
+        assert_eq!(Inset::SMALL.span(), 12.0);
+        assert_eq!(Inset::LARGE.span(), 52.0);
+    }
+
+    #[test]
+    fn a_field_the_initialiser_works_out() {
+        // `end` is `start + length`, and `length` is not a field at all -- so
+        // the constant carries a value no parameter names. 2 + 11 and 40 + 60,
+        // which no pairing of the two constants' numbers can produce by luck.
+        assert_eq!(Span::FIRST.end, 13);
+        assert_eq!(Span::FIRST.width(), 11);
+        assert_eq!(Span::SECOND.end, 100);
+        assert_eq!(Span::SECOND.width(), 60);
     }
 }

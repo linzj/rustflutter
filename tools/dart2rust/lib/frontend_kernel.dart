@@ -533,43 +533,69 @@ class KernelFrontend {
         throw Unsupported('enum constant with no `_name`', _sample(node));
       }
       // `const Alignment(-1, -1)` arrives already evaluated, as the class plus
-      // its field values. Rebuilt as a constructor call so the emitted Rust
-      // still reads as `Alignment::new(-1.0, -1.0)` rather than as a literal
-      // struct -- the value is the same and the source stays recognisable.
+      // its field values. Rebuilding it as `Alignment::new(-1.0, -1.0)` reads
+      // like the source and keeps the two front ends saying the same thing, so
+      // it is still what happens when it can.
+      //
+      // It often cannot. A `const` instance never calls its constructor -- the
+      // value is materialised -- so the constructor is unreachable and gets
+      // shaken out of the dill: `_Linear` in curves.dart has none left at all,
+      // and 2965 of `package:flutter`'s 5602 const instances are like it. Four
+      // more shapes defeat the name matching even when a constructor survives:
+      // a field renamed by a super constructor (`Offset(dx, dy)` stores `_dx`),
+      // a redirect (`Duration`, `Color`), a class with only named constructors
+      // (`EdgeInsets`), and the inspector's injected `$creationLocation`.
+      //
+      // So the constructor is an optimisation, and the field values are the
+      // answer. They are what an InstanceConstant always carries, and they are
+      // already the computed values -- there is nothing left for a constructor
+      // to work out.
       final cls = constant.classNode;
-      final ctor = cls.constructors.where((c) => c.name.text.isEmpty).toList();
-      if (ctor.length != 1) {
-        throw Unsupported(
-          'const instance of `${cls.name}` with '
-          '${ctor.length} unnamed constructors',
-          _sample(node),
-        );
-      }
       final byName = {
         for (final e in constant.fieldValues.entries)
           e.key.asField.name.text: e.value,
       };
-      // Positional **and** named, in that order, because that is the order
-      // `_lowerConstructor` puts them in and the backend emits them
-      // positionally. Walking only the positional ones emitted
-      // `TextAlignVertical::new()` against a one-parameter constructor -- its
-      // sole parameter is `{required this.y}`.
-      final args = <IrExpr>[];
-      final function = ctor.single.function;
-      final names = [
-        for (final p in function.positionalParameters) p.cosmeticName,
-        for (final p in function.namedParameters) p.parameterName,
-      ];
-      for (final name in names) {
-        final value = byName[name];
-        if (value == null) {
-          throw Unsupported('const instance missing `$name`', _sample(node));
-        }
-        args.add(_constant(value, node));
-      }
-      return IrNew(IrType(cls.name), args);
+      final rebuilt = _asConstructorCall(cls, byName, node);
+      if (rebuilt != null) return rebuilt;
+      return IrConstInstance(IrType(cls.name), {
+        for (final entry in byName.entries)
+          entry.key: _constant(entry.value, node),
+      });
     }
     throw Unsupported('constant ${constant.runtimeType}', _sample(node));
+  }
+
+  /// `Alignment::new(-1.0, -1.0)`, when the constructor is still there and its
+  /// parameters name the fields one for one. Null when it is not.
+  IrNew? _asConstructorCall(
+    Class cls,
+    Map<String, Constant> byName,
+    Expression node,
+  ) {
+    final ctor = cls.constructors.where((c) => c.name.text.isEmpty).toList();
+    if (ctor.length != 1) return null;
+    // Positional **and** named, in that order, because that is the order
+    // `_lowerConstructor` puts them in and the backend emits them
+    // positionally. Walking only the positional ones emitted
+    // `TextAlignVertical::new()` against a one-parameter constructor -- its
+    // sole parameter is `{required this.y}`.
+    final function = ctor.single.function;
+    final names = [
+      for (final p in function.positionalParameters) p.cosmeticName,
+      for (final p in function.namedParameters) p.parameterName,
+    ];
+    // Every parameter has to name a field *and* every field has to be named by
+    // a parameter. Without the second half, a constructor that sets a field in
+    // its initialiser list would be called without that field's value and the
+    // instance would silently be a different one.
+
+    final args = <IrExpr>[];
+    for (final name in names) {
+      final value = byName[name];
+      if (value == null) return null;
+      args.add(_constant(value, node));
+    }
+    return IrNew(IrType(cls.name), args);
   }
 
   // There was a `_refusePrivate` here. It is gone, and its going is the point
@@ -688,6 +714,9 @@ class KernelFrontend {
       return _assert(node.condition, node.message);
     }
     if (node is TryCatch) return _tryCatch(node);
+    if (node is TryFinally) {
+      return IrTryFinally(statement(node.body), statement(node.finalizer));
+    }
     if (node is AssertBlock) {
       return IrBlock([for (final s in node.statements) statement(s)]);
     }
@@ -714,14 +743,6 @@ class KernelFrontend {
       // nothing; reading one cannot be honoured, so it stops here rather than
       // being handed an empty stack that looks like a real one.
       throw Unsupported('catch reading its stack trace', _sample(node));
-    }
-    if (_returnsEarly(node.body)) {
-      // The try body is emitted inside a closure, so `?` stops at the catch
-      // instead of leaving the method. A `return` written in that body would
-      // stop at the same closure and the method would carry on -- and it would
-      // compile. 10 of upstream's 64 try bodies have one, so this is refused
-      // rather than translated into a silent wrong answer.
-      throw Unsupported('return inside a try body', _sample(node));
     }
     final guard = clause.guard;
     return IrTryCatch(
