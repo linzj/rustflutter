@@ -101,7 +101,11 @@ Future<void> main(List<String> args) async {
       } catch (error) {
         refused.add('backend crash: $error');
       }
-      membersTranslated += cls.methods.length + cls.constants.length;
+      // Constructors count. Without them this round's work -- four named
+      // constructors on EdgeInsets alone -- moved the number not at all, and a
+      // ruler that cannot see the work is a ruler that will be ignored.
+      membersTranslated +=
+          cls.methods.length + cls.constants.length + cls.constructors.length;
 
       if (refused.isEmpty) {
         classesClean++;

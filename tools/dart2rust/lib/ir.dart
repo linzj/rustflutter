@@ -255,9 +255,17 @@ class IrConstructor {
     this.params,
     this.fieldInits, {
     required this.isConst,
+    this.name,
     this.asserts = const [],
     this.doc,
   });
+
+  /// The named constructor's name, or null for the unnamed one.
+  ///
+  /// Dart's `EdgeInsets.all` and Rust's `EdgeInsets::all` are the same shape --
+  /// an associated function returning Self -- so this needs no encoding beyond
+  /// the name itself. The unnamed constructor becomes `new`.
+  final String? name;
 
   final List<IrParam> params;
 

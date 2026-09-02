@@ -81,7 +81,7 @@ class RustBackend {
       IrLocal(:final name) => snake(name),
       IrThis() => '*self',
       IrField(:final target, :final name) =>
-        target == null ? 'self.${snake(name)}' : '${expr(target)}.${snake(name)}',
+        '${_receiver(target)}.${snake(name)}',
       IrStatic(:final owner, :final name) => '$owner::${screamingSnake(name)}',
       IrBinary(:final op, :final left, :final right) => _binary(op, left, right),
       IrUnary(:final op, :final operand) => '($op${expr(operand)})',
@@ -143,8 +143,22 @@ class RustBackend {
     return value;
   }
 
+  /// The receiver of a field read or a call.
+  ///
+  /// `this` is two different things in Rust depending on where it stands. As a
+  /// *value* it is `*self`, a copy of the struct -- that is what `return this;`
+  /// wants. As the *target* of a field or a call it is `self`, because `*self.x`
+  /// parses as `*(self.x)` and dereferences the field instead of the receiver.
+  ///
+  /// Upstream's `copyWith` is where this surfaced: `left ?? this.left` became
+  /// `left.unwrap_or(*self.left)`, which does not compile. It was found by
+  /// building real upstream code rather than a fixture, which is the argument
+  /// for keeping real code in the test crate.
+  String _receiver(IrExpr? target) =>
+      (target == null || target is IrThis) ? 'self' : expr(target);
+
   String _call(IrExpr? target, String name, List<IrExpr> args) {
-    final receiver = target == null ? 'self' : expr(target);
+    final receiver = _receiver(target);
     // Dart's `toDouble` on a value already stored as one is a no-op here.
     if (name == 'toDouble' && args.isEmpty) return receiver;
     return '$receiver.${snake(name)}(${args.map(expr).join(', ')})';
@@ -232,7 +246,7 @@ class RustBackend {
 
     _line('impl ${cls.name} {');
     _indent++;
-    _emitConstructor();
+    _emitConstructors();
     _emitConstants();
     _emitMethods();
     _indent--;
@@ -241,9 +255,18 @@ class RustBackend {
     return _out.toString();
   }
 
-  void _emitConstructor() {
-    if (cls.constructors.isEmpty) return;
-    final ctor = cls.constructors.first;
+  void _emitConstructors() {
+    for (final ctor in cls.constructors) {
+      _emitConstructor(ctor);
+    }
+  }
+
+  void _emitConstructor(IrConstructor ctor) {
+    // Dart's named constructors are Rust's associated functions already --
+    // `EdgeInsets.all(8)` and `EdgeInsets::all(8.0)` are the same call, and the
+    // unnamed one is `new` by Rust's convention. Nothing has to be encoded, so
+    // nothing is: this is one of the places the two languages simply agree.
+    final name = ctor.name == null ? 'new' : snake(ctor.name!);
     _doc(ctor.doc);
     final params = ctor.params
         .map((p) => '${snake(p.name)}: ${type(p.type)}')
@@ -257,7 +280,7 @@ class RustBackend {
     // have, but Rust will not let the *definition* through. Dropping `const`
     // keeps the check; keeping `const` would mean dropping the check.
     final constable = ctor.isConst && ctor.asserts.isEmpty;
-    _line('pub ${constable ? "const " : ""}fn new($params) -> Self {');
+    _line('pub ${constable ? "const " : ""}fn $name($params) -> Self {');
     _indent++;
     for (final check in ctor.asserts) {
       stmt(check);

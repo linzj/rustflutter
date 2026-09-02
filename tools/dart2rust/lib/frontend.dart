@@ -432,10 +432,11 @@ class Frontend {
   }
 
   void _lowerConstructor(IrClass cls, ConstructorDeclaration member) {
-    if (member.name != null) {
-      throw Unsupported('named constructor', member.name!.lexeme);
-    }
+    final name = member.name?.lexeme;
+    if (name != null && name.startsWith('_')) return;
     if (member.factoryKeyword != null) {
+      // A factory may return a cached instance or a subclass, so it is not an
+      // associated function that builds Self -- it needs the hierarchy.
       throw Unsupported('factory constructor', member.toSource());
     }
     final params = <IrParam>[];
@@ -456,6 +457,15 @@ class Frontend {
         inits[init.fieldName.name] = expression(init.expression);
       } else if (init is AssertInitializer) {
         asserts.add(_assert(init.condition, init.message));
+      } else if (init is RedirectingConstructorInvocation) {
+        // `EdgeInsets.all(v) : this.fromLTRB(v, v, v, v)`. Nothing here
+        // prevents lowering it to a call to the other constructor -- but the
+        // other constructor's own field initialisers would then have to be
+        // reachable, and they are not yet, so this stops rather than emitting
+        // a constructor that sets no fields.
+        throw Unsupported('redirecting constructor', init.toSource());
+      } else if (init is SuperConstructorInvocation) {
+        throw Unsupported('super constructor call', init.toSource());
       } else {
         throw Unsupported('initialiser ${init.runtimeType}', init.toSource());
       }
@@ -464,6 +474,7 @@ class Frontend {
       params,
       inits,
       isConst: member.constKeyword != null,
+      name: name,
       asserts: asserts,
       doc: _doc(member),
     ));

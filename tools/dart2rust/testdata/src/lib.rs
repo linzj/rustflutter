@@ -22,6 +22,8 @@ pub struct Size {
 pub struct Rect {
     pub left: f32,
     pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
     pub width: f32,
     pub height: f32,
 }
@@ -30,8 +32,24 @@ impl Rect {
         Self {
             left,
             top,
+            right: left + width,
+            bottom: top + height,
             width,
             height,
+        }
+    }
+    // Upstream's `right`/`bottom`/`width`/`height` are getters; the translated
+    // code reads them as fields, so the stub makes them fields. Turning a Dart
+    // getter into a Rust method is a real difference and belongs to its own
+    // round -- see STATUS.md.
+    pub const fn from_l_t_r_b(left: f32, top: f32, right: f32, bottom: f32) -> Self {
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+            width: right - left,
+            height: bottom - top,
         }
     }
 }
@@ -50,6 +68,96 @@ pub use named_args::NamedArgs;
 
 mod asserts;
 pub use asserts::Asserts;
+
+/// Stubs for the geometry `EdgeInsets` calls into. Shapes only -- what is being
+/// tested is the translation, not whether Radius is right.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Radius {
+    pub x: f32,
+    pub y: f32,
+}
+impl Radius {
+    pub const ZERO: Radius = Radius { x: 0.0, y: 0.0 };
+    pub const fn elliptical(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+    pub fn clamp(&self, minimum: Radius, maximum: Option<Radius>) -> Radius {
+        let hi = maximum.unwrap_or(Radius {
+            x: f32::MAX,
+            y: f32::MAX,
+        });
+        Radius {
+            x: self.x.max(minimum.x).min(hi.x),
+            y: self.y.max(minimum.y).min(hi.y),
+        }
+    }
+}
+impl std::ops::Add for Radius {
+    type Output = Radius;
+    fn add(self, other: Radius) -> Radius {
+        Radius {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+}
+impl std::ops::Sub for Radius {
+    type Output = Radius;
+    fn sub(self, other: Radius) -> Radius {
+        Radius {
+            x: self.x - other.x,
+            y: self.y - other.y,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RRect {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub tl_radius: Radius,
+    pub tr_radius: Radius,
+    pub br_radius: Radius,
+    pub bl_radius: Radius,
+}
+impl RRect {
+    #[allow(clippy::too_many_arguments)]
+    pub const fn from_l_t_r_b_and_corners(
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        tl_radius: Radius,
+        tr_radius: Radius,
+        br_radius: Radius,
+        bl_radius: Radius,
+    ) -> Self {
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+            tl_radius,
+            tr_radius,
+            br_radius,
+            bl_radius,
+        }
+    }
+}
+
+/// `EdgeInsets.fromViewPadding` takes one of these.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewPadding {
+    pub left: f32,
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
+mod edge_insets;
+pub use edge_insets::EdgeInsets;
 
 #[cfg(test)]
 mod tests {
@@ -190,5 +298,59 @@ mod tests {
         // The message was an interpolation and is not translated; the condition
         // is the contract and it is.
         Asserts::new(5000.0).doubled();
+    }
+
+    // -- named constructors ---------------------------------------------------
+    //
+    // Real upstream EdgeInsets, not a fixture. Every expected value is read off
+    // upstream's own definitions in painting/edge_insets.dart.
+
+    #[test]
+    fn a_named_constructor_is_an_associated_function() {
+        let e = EdgeInsets::from_l_t_r_b(1.0, 2.0, 3.0, 4.0);
+        assert_eq!((e.left, e.top, e.right, e.bottom), (1.0, 2.0, 3.0, 4.0));
+    }
+
+    #[test]
+    fn all_sets_every_side() {
+        let e = EdgeInsets::all(8.0);
+        assert_eq!((e.left, e.top, e.right, e.bottom), (8.0, 8.0, 8.0, 8.0));
+    }
+
+    #[test]
+    fn symmetric_splits_the_two_axes() {
+        // `vertical` is top and bottom; `horizontal` is left and right.
+        let e = EdgeInsets::symmetric(2.0, 5.0);
+        assert_eq!((e.left, e.right), (5.0, 5.0));
+        assert_eq!((e.top, e.bottom), (2.0, 2.0));
+    }
+
+    #[test]
+    fn only_leaves_the_others_at_zero() {
+        let e = EdgeInsets::only(40.0, 0.0, 0.0, 0.0);
+        assert_eq!((e.left, e.top, e.right, e.bottom), (40.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn zero_is_a_const_built_from_a_named_constructor() {
+        // `static const EdgeInsets zero = EdgeInsets.only();` -- a const whose
+        // value comes from a named constructor with every argument defaulted.
+        // It compiles as an associated const, so the const-ness survived too.
+        const Z: EdgeInsets = EdgeInsets::ZERO;
+        assert_eq!((Z.left, Z.top, Z.right, Z.bottom), (0.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn copy_with_keeps_what_it_was_not_given() {
+        // `left ?? this.left` -- the expression that was emitting `*self.left`.
+        let e = EdgeInsets::all(4.0).copy_with(None, Some(9.0), None, None);
+        assert_eq!((e.left, e.top, e.right, e.bottom), (4.0, 9.0, 4.0, 4.0));
+    }
+
+    #[test]
+    fn deflate_rect_pulls_every_edge_inward() {
+        let r = Rect::from_l_t_r_b(0.0, 0.0, 100.0, 100.0);
+        let d = EdgeInsets::all(10.0).deflate_rect(r);
+        assert_eq!((d.left, d.top, d.right, d.bottom), (10.0, 10.0, 90.0, 90.0));
     }
 }
