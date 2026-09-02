@@ -286,6 +286,13 @@ class KernelFrontend {
     );
   }
 
+  /// Whether an expression is `this`, or a chain of field reads from it.
+  bool _rootedAtThis(Expression e) => switch (e) {
+    ThisExpression() => true,
+    InstanceGet(:final receiver) => _rootedAtThis(receiver),
+    _ => false,
+  };
+
   bool _reachesThis(FunctionNode fn) {
     final finder = _ThisFinder();
     fn.accept(finder);
@@ -879,9 +886,7 @@ class KernelFrontend {
         }
         if (value.receiver is! ThisExpression) {
           // Another object's *setter* is a call, which needs nothing from us
-          // beyond a `&mut` receiver at the call site; another object's *field*
-          // is a write through a reference, which does. So one is translated
-          // and the other still stops.
+          // beyond a `&mut` receiver at the call site.
           if (value.interfaceTarget is! Field) {
             return IrSetter(
               expression(value.receiver),
@@ -889,9 +894,21 @@ class KernelFrontend {
               expression(value.value),
             );
           }
-          throw Unsupported(
-            'assignment to a field of another object',
-            _sample(value),
+          // A *field* is a write through a reference. Through a chain rooted
+          // at `this` -- `this.child.x = v` -- that reference is `self`, and
+          // `&mut self` is a thing this compiler already works out. Through a
+          // parameter it would mean `&mut` on the parameter and on every call
+          // site, including ones in other files, so that one still stops.
+          if (!_rootedAtThis(value.receiver)) {
+            throw Unsupported(
+              'assignment to a field of another object',
+              _sample(value),
+            );
+          }
+          return IrAssignField(
+            value.name.text,
+            expression(value.value),
+            target: expression(value.receiver),
           );
         }
         if (value.interfaceTarget is! Field) {
@@ -1296,9 +1313,7 @@ class KernelFrontend {
       EmptyStatement() => const <Statement>[],
       _ => [body],
     };
-    if (statements.any((s) => s is! EmptyStatement)) {
-      throw Unsupported('constructor with a body', _sample(node));
-    }
+    final real = statements.where((s) => s is! EmptyStatement).toList();
     cls.constructors.add(
       IrConstructor(
         params,
@@ -1308,6 +1323,9 @@ class KernelFrontend {
         asserts: asserts,
         superBase: superBase,
         superArgs: superArgs,
+        body: real.isEmpty
+            ? null
+            : IrBlock([for (final s in real) statement(s)]),
       ),
     );
   }
@@ -1333,9 +1351,6 @@ class KernelFrontend {
         throw Unsupported('enhanced enum member `$name`', cls.name);
       }
       return;
-    }
-    if (node.isStatic && node.kind == ProcedureKind.Factory) {
-      throw Unsupported('factory constructor', name);
     }
 
     final params = [

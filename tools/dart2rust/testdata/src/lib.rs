@@ -299,6 +299,9 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod building;
+pub use building::{Shade, Slot};
+
 mod pieces;
 pub use pieces::Label;
 
@@ -1392,5 +1395,32 @@ mod tests {
         // anything else had written it.
         let l = Label::new("gauge".to_string(), 3);
         assert_eq!(l.running(4.0), 21.0);
+    }
+
+    // -- constructor bodies, factories, writes through a field -----------------
+
+    #[test]
+    fn a_constructor_body_runs_against_the_value_it_built() {
+        // 2.5 * 2 = 5.0. A dropped body would give 1.0 -- the declaration's
+        // value -- for every argument, and would compile, which is why it was
+        // refused before there was anywhere to put it.
+        assert_eq!(Shade::new(2.5).opacity, 5.0);
+        assert_eq!(Shade::new(0.5).opacity, 1.0); // not the default by luck
+    }
+
+    #[test]
+    fn a_factory_is_an_associated_function() {
+        // 0.05 doubled by the constructor body it calls.
+        assert_eq!(Shade::faint().opacity, 0.1);
+    }
+
+    #[test]
+    fn a_write_through_a_field_of_this() {
+        // `self.tint.opacity`, not `self.opacity`: the receiver has to survive
+        // the lowering, and losing it named a field of the wrong object.
+        let mut s = Slot::new(Shade::new(1.0));
+        assert_eq!(s.tint.opacity, 2.0);
+        s.fade(0.25);
+        assert_eq!(s.tint.opacity, 0.25);
     }
 }

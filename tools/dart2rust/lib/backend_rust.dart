@@ -1845,15 +1845,18 @@ class RustBackend {
     // It mattered: `TextAlignVertical` has asserts in its constructor and
     // `static const` fields built from it, and dropping `const` made those
     // fields uncompilable. The two rounds' rules only met on real code.
+    // A constructor with a body cannot be `const`: it builds the value into a
+    // local and runs statements against it, and a `const fn` may not.
+    final constness = ctor.isConst && ctor.body == null ? 'const ' : '';
     _line(
-      '${_vis(ctor.name ?? cls.name)}${ctor.isConst ? "const " : ""}fn $name($params) -> Self {',
+      '${_vis(ctor.name ?? cls.name)}${constness}fn $name($params) -> Self {',
     );
     _indent++;
     for (final check in ctor.asserts) {
       stmt(check);
     }
     final inits = {..._inheritedInits(ctor), ...ctor.fieldInits};
-    _line('Self {');
+    _line(ctor.body == null ? 'Self {' : 'let mut __new = Self {');
     _indent++;
     for (final field in _allFields(cls)) {
       // The constructor first, then the declaration's own value: Dart applies
@@ -1865,7 +1868,20 @@ class RustBackend {
       _line('${snake(field.name)}: ${expr(init)},');
     }
     _indent--;
-    _line('}');
+    final body = ctor.body;
+    if (body == null) {
+      _line('}');
+    } else {
+      _line('};');
+      // `this` inside the body is the value being built, not a `self` that
+      // does not exist yet. `_selfName` is the same lever a free function
+      // uses, so the body's `this.x = v` comes out as `__new.x = v`.
+      final saved = _selfName;
+      _selfName = '__new';
+      stmt(body);
+      _selfName = saved;
+      _line('__new');
+    }
     _indent--;
     _line('}');
     _line('');
@@ -2039,6 +2055,14 @@ class _WalkSelf {
   bool writesFields = false;
   final selfCalls = <String>{};
 
+  /// Whether a write target is `this`, or a chain of field reads from it.
+  static bool _rootedAtThis(IrExpr? e) => switch (e) {
+    null => true,
+    IrThis() => true,
+    IrField(:final target) => _rootedAtThis(target),
+    _ => false,
+  };
+
   /// Locals written by an assignment used for its value.
   final assignedLocals = <String>{};
 
@@ -2048,7 +2072,11 @@ class _WalkSelf {
         // Only a write to `this` makes the method mutating. A cascade writes a
         // *local* it just bound, which needs `let mut` and not `&mut self` --
         // and counting it made every method holding a cascade take `&mut self`.
-        if (target == null || target is IrThis) writesFields = true;
+        //
+        // A *chain* rooted at `this` counts too: `self.tint.opacity = v` is a
+        // write through `self`, and without this it came out `&self` and did
+        // not compile.
+        if (_rootedAtThis(target)) writesFields = true;
         expression(s.value);
       case IrAssign():
         expression(s.value);

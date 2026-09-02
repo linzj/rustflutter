@@ -752,7 +752,16 @@ class IrConstructor {
     this.superBase,
     this.superArgs = const [],
     this.doc,
+    this.body,
   });
+
+  /// Statements the constructor runs after the fields are set.
+  ///
+  /// Rust has no such phase, but it does not need one: the value is built into
+  /// a local, the body runs against that local, and the local is returned.
+  /// 84 of upstream's constructors have one, and they were refused rather than
+  /// dropped -- a dropped body compiles and ignores its arguments.
+  final IrStmt? body;
 
   /// The named constructor's name, or null for the unnamed one.
   ///

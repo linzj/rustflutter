@@ -972,6 +972,22 @@ class Frontend {
 
   IrStmt _assignment(AssignmentExpression node) {
     final target = node.leftHandSide;
+    // `tint.opacity = v` where `tint` is a field of `this`. Handled here and
+    // not through `_assignTarget`, which returns a name and loses the
+    // receiver -- so the write came out as `self.opacity = v`, naming a field
+    // of the wrong object and compiling if one happened to exist.
+    if (target is PrefixedIdentifier && _isFieldOfThis(target.prefix)) {
+      final receiver = IrField(null, target.prefix.name);
+      final name = target.identifier.name;
+      final value = expression(node.rightHandSide);
+      if (node.operator.lexeme != '=') {
+        throw Unsupported(
+          'compound assignment through a field',
+          node.toSource(),
+        );
+      }
+      return IrAssignField(name, value, target: receiver);
+    }
     final (name, onThis) = _assignTarget(node);
     final operator = node.operator.lexeme;
     final value = expression(node.rightHandSide);
@@ -1003,6 +1019,13 @@ class Frontend {
       );
     }
     return IrAssignField(name, combined(IrField(null, name)));
+  }
+
+  /// Whether an identifier names a field of `this` -- so that a write through
+  /// it is a write through `self`.
+  bool _isFieldOfThis(SimpleIdentifier prefix) {
+    final element = prefix.element;
+    return element is PropertyAccessorElement || element is FieldElement;
   }
 
   /// The name being assigned, and whether it is a field of `this`.
@@ -1202,11 +1225,6 @@ class Frontend {
 
   void _lowerConstructor(IrClass cls, ConstructorDeclaration member) {
     final name = member.name?.lexeme;
-    if (member.factoryKeyword != null) {
-      // A factory may return a cached instance or a subclass, so it is not an
-      // associated function that builds Self -- it needs the hierarchy.
-      throw Unsupported('factory constructor', member.toSource());
-    }
     final params = <IrParam>[];
     final inits = <String, IrExpr>{};
     for (final p in member.parameters.parameters) {
@@ -1218,6 +1236,23 @@ class Frontend {
       if (inner is FieldFormalParameter) {
         inits[name] = IrLocal(name);
       }
+    }
+    if (member.factoryKeyword != null) {
+      // A factory is an associated function returning Self, which is what
+      // Dart's is: `Tinted.faint()` and `Tinted::faint()` are the same call.
+      // A factory that returns a *subclass* or a cached instance needs the
+      // hierarchy and is refused where its body refuses.
+      cls.methods.add(
+        IrMethod(
+          name ?? 'new',
+          params,
+          IrType(cls.name),
+          this.body(member.body),
+          isStatic: true,
+          doc: _doc(member),
+        ),
+      );
+      return;
     }
     final asserts = <IrAssert>[];
     String? superBase;
@@ -1250,13 +1285,16 @@ class Frontend {
         throw Unsupported('initialiser ${init.runtimeType}', init.toSource());
       }
     }
-    // See `frontend_kernel.dart`: a constructor body is not lowered, and
-    // dropping it silently emits a constructor that ignores its arguments.
+    // See `frontend_kernel.dart`: the body runs against the value being built,
+    // which is a local here because Rust has no constructor phase. Dropping it
+    // silently would emit a constructor that ignores its arguments, which is
+    // why it was refused before there was anywhere to put it.
     final constructorBody = member.body;
-    if (constructorBody is BlockFunctionBody &&
-        constructorBody.block.statements.isNotEmpty) {
-      throw Unsupported('constructor with a body', member.toSource());
-    }
+    final IrStmt? body =
+        constructorBody is BlockFunctionBody &&
+            constructorBody.block.statements.isNotEmpty
+        ? statement(constructorBody.block)
+        : null;
     cls.constructors.add(
       IrConstructor(
         params,
@@ -1267,6 +1305,7 @@ class Frontend {
         superBase: superBase,
         superArgs: superArgs,
         doc: _doc(member),
+        body: body,
       ),
     );
   }
