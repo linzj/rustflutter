@@ -447,7 +447,15 @@ class RustBackend {
     final receiver = _receiver(target);
     // Dart's `toDouble` on a value already stored as one is a no-op here.
     if (name == 'toDouble' && args.isEmpty) return receiver;
-    return '$receiver.${snake(name)}(${args.map(expr).join(', ')})';
+    // A call to a method of this class that can fail carries the failure
+    // outward with `?`. That is the propagation the measurement counted, and
+    // the caller's own signature was widened by the same fixpoint, so the two
+    // always agree.
+    final suffix =
+        (target == null || target is IrThis) && _failing.containsKey(snake(name))
+            ? '?'
+            : '';
+    return '$receiver.${snake(name)}(${args.map(expr).join(', ')})$suffix';
   }
 
   String _new(IrType t, List<IrExpr> args, String? constructor) {
@@ -482,6 +490,7 @@ class RustBackend {
         case IrExprStmt():
         case IrAssert():
         case IrSetter():
+        case IrThrow():
         case IrAssignField():
       }
     }
@@ -500,12 +509,20 @@ class RustBackend {
           stmt(statements[i], tail: tail && i == statements.length - 1);
         }
       case IrReturn(:final value):
+        // In a failing method every ordinary return is a success: Rust needs
+        // the `Ok`, and leaving it off is a type error rather than a quiet
+        // wrong answer, which is the one comfort here.
+        final wrap = _failure != null;
         if (value == null) {
-          _line(tail ? '' : 'return;');
+          final none = wrap ? 'Ok(())' : '';
+          _line(tail ? none : 'return ${wrap ? 'Ok(())' : ''};');
         } else {
           final text = _returned(value);
-          _line(tail ? text : 'return $text;');
+          final ok = wrap ? 'Ok($text)' : text;
+          _line(tail ? ok : 'return $ok;');
         }
+      case IrThrow(:final value):
+        _line('return Err(${expr(value)});');
       case IrLocalDecl(:final name, :final type, :final init):
         final annotation = type == null ? '' : ': ${this.type(type)}';
         final mutable = _reassigned.contains(name) ? 'mut ' : '';
@@ -974,6 +991,61 @@ class RustBackend {
     };
   }
 
+
+  // -- Failure in the return value --------------------------------------------
+
+  /// Methods of this class whose Rust signature returns `Result`.
+  ///
+  /// Seeded with the ones that throw, then closed over calls, the same shape as
+  /// `_mutating`. Measured before it was built: across `package:flutter` 717
+  /// members throw directly and 5906 -- 20% of all members -- return `Result`
+  /// once that has spread. Not "almost everything", which is what made the
+  /// decision affordable.
+  ///
+  /// It stops at the class boundary here. A call into another class would carry
+  /// the failure further, and 20% is the whole-program figure; what this
+  /// computes is the part visible in one file. The rest waits for the compiler
+  /// to see more than a file at a time, which is the same wall the stubs are at.
+  late final Map<String, String> _failing = _computeFailing();
+
+  Map<String, String> _computeFailing() {
+    final failing = <String, String>{};
+    final calls = <String, Set<String>>{};
+    for (final method in cls.methods) {
+      final key = _rustName(method);
+      if (method.throws != null) failing[key] = method.throws!;
+      final found = _WalkSelf();
+      found.statement(method.body);
+      calls[key] = found.selfCalls;
+    }
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final entry in calls.entries) {
+        if (failing.containsKey(entry.key)) continue;
+        for (final callee in entry.value) {
+          final error = failing[callee];
+          if (error != null) {
+            failing[entry.key] = error;
+            changed = true;
+            break;
+          }
+        }
+      }
+    }
+    return failing;
+  }
+
+  /// The error type of the method currently being emitted, if it can fail.
+  String? _failure;
+
+  /// A method's return type, wrapped when it can fail.
+  String _returnType(IrMethod method) {
+    final error = _failing[_rustName(method)];
+    final value = method.isSetter ? '()' : type(method.returnType);
+    return error == null ? value : 'Result<$value, $error>';
+  }
+
   String _param(IrParam p, {bool owned = true}) =>
       '${_reassigned.contains(p.name) ? "mut " : ""}'
       '${snake(p.name)}: ${type(p.type, owned: owned)}';
@@ -1227,7 +1299,8 @@ class RustBackend {
       ].join(', ');
       // A setter returns nothing: Dart's `set x(v)` has no return type, and
       // giving one a value would make `a.x = 1` an expression, which it is not.
-      final returns = method.isSetter ? '()' : type(method.returnType);
+      final returns = _returnType(method);
+      _failure = _failing[_rustName(method)];
       _line('${_vis(method.name)}fn ${_rustName(method)}($params) -> $returns {');
       _indent++;
       _returns = method.returnType;
@@ -1382,6 +1455,8 @@ class _WalkSelf {
         expression(expr);
       case IrAssert(:final condition):
         expression(condition);
+      case IrThrow(:final value):
+        expression(value);
     }
   }
 

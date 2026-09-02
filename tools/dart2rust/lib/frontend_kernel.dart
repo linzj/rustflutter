@@ -137,6 +137,11 @@ class KernelFrontend {
     if (node is VariableSet) {
       throw Unsupported('assignment used for its value', _sample(node));
     }
+    if (node is Throw) {
+      // A `throw` used for its value -- `a ?? throw StateError(..)`. It has no
+      // value in Rust; the statement form is the one that translates.
+      throw Unsupported('throw used as an expression', _sample(node));
+    }
     if (node is NullCheck) return IrNullCheck(expression(node.operand));
     if (node is AsExpression) return expression(node.operand);
     if (node is ConstantExpression) return _constant(node.constant, node);
@@ -561,6 +566,14 @@ class KernelFrontend {
       return IrLocalDecl(
           name, _type(variable.type), init == null ? null : expression(init));
     }
+    if (node is ExpressionStatement && node.expression is Throw) {
+      // Before the general `ExpressionStatement` case below, not after: the
+      // general one lowers the expression, and a `throw` has no value to lower.
+      // Placed after, this check never ran and every throwing method was
+      // refused -- which the fixture comparison found at once, because the
+      // analyzer front end had it right.
+      return IrThrow(expression((node.expression as Throw).expression));
+    }
     if (node is ExpressionStatement) {
       // An assignment is a statement here, not an expression. Dart's `x = 1`
       // has the value 1 and Rust's has the value `()`, so one used for its
@@ -796,8 +809,18 @@ class KernelFrontend {
     // A constructor *body* is not lowered, and dropping it silently would emit
     // a constructor that ignores its arguments -- `Tinted(v) { opacity = v; }`
     // came out setting the declaration's default instead. Refusing says so.
+    // The CFE gives every constructor a body, empty or not, so "has a body" is
+    // not the question -- "has a statement in it" is. Asking the first refused
+    // every constructor in the corpus, which the fixture comparison caught
+    // immediately.
     final body = node.function.body;
-    if (body != null && !(body is Block && body.statements.isEmpty)) {
+    final statements = switch (body) {
+      null => const <Statement>[],
+      Block(:final statements) => statements,
+      EmptyStatement() => const <Statement>[],
+      _ => [body],
+    };
+    if (statements.any((s) => s is! EmptyStatement)) {
       throw Unsupported('constructor with a body', _sample(node));
     }
     cls.constructors.add(IrConstructor(
@@ -838,6 +861,16 @@ class KernelFrontend {
         IrParam(p.parameterName, _type(p.type), named: true),
     ];
     final isOperator = node.kind == ProcedureKind.Operator;
+    final thrown = <String>{};
+    if (!node.isAbstract) {
+      final finder = _ThrowFinder();
+      node.function.accept(finder);
+      thrown.addAll(finder.types);
+      if (thrown.length > 1) {
+        throw Unsupported(
+            'method throwing ${thrown.length} error types', name);
+      }
+    }
     final method = IrMethod(
       name,
       params,
@@ -847,6 +880,7 @@ class KernelFrontend {
       isGetter: node.kind == ProcedureKind.Getter,
       isSetter: node.kind == ProcedureKind.Setter,
       operator: isOperator ? name : null,
+      throws: thrown.isEmpty ? null : thrown.single,
     );
     (node.isAbstract ? cls.abstractMethods : cls.methods).add(method);
   }
@@ -860,5 +894,21 @@ class _ThisFinder extends RecursiveVisitor {
   void visitThisExpression(ThisExpression node) {
     found = true;
     super.visitThisExpression(node);
+  }
+}
+
+/// The error types a function body throws.
+class _ThrowFinder extends RecursiveVisitor {
+  final types = <String>{};
+
+  @override
+  void visitThrow(Throw node) {
+    final value = node.expression;
+    types.add(switch (value) {
+      ConstructorInvocation() => value.target.enclosingClass.name,
+      StaticInvocation() => value.target.enclosingClass?.name ?? 'Object',
+      _ => 'Object',
+    });
+    super.visitThrow(node);
   }
 }

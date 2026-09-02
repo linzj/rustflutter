@@ -143,6 +143,11 @@ class Frontend {
       return IrCallValue(expression(node.function),
           _arguments(node.argumentList, node.element, node));
     }
+    if (node is ThrowExpression) {
+      // A `throw` used for its value has none in Rust; the statement form is
+      // the one that translates.
+      throw Unsupported('throw used as an expression', node.toSource());
+    }
     if (node is CascadeExpression) return _cascade(node);
     if (node is FunctionExpression) return _closure(node);
     if (node is InstanceCreationExpression) return _construct(node);
@@ -559,6 +564,7 @@ class Frontend {
     if (node is ExpressionStatement) {
       final value = node.expression;
       if (value is AssignmentExpression) return _assignment(value);
+      if (value is ThrowExpression) return IrThrow(expression(value.expression));
       return IrExprStmt(expression(value));
     }
     if (node is AssertStatement) {
@@ -891,6 +897,13 @@ class Frontend {
     }
 
     final isOperator = member.operatorKeyword != null;
+    final finder = _ThrownTypes();
+    member.body.accept(finder);
+    if (finder.types.length > 1) {
+      throw Unsupported(
+          'method throwing ${finder.types.length} error types',
+          member.name.lexeme);
+    }
     // An abstract member has no body to lower, so it goes on a separate list:
     // it is what the trait *requires*, not what the trait *provides*.
     final target = member.isAbstract ? cls.abstractMethods : cls.methods;
@@ -907,6 +920,7 @@ class Frontend {
               ? 'unary-'
               : member.name.lexeme)
           : null,
+      throws: finder.types.isEmpty ? null : finder.types.single,
       doc: _doc(member),
     ));
   }
@@ -939,5 +953,17 @@ class _InstanceUse extends RecursiveAstVisitor<void> {
   void visitSimpleIdentifier(SimpleIdentifier node) {
     _check(node.element);
     super.visitSimpleIdentifier(node);
+  }
+}
+
+/// The error types a method body throws.
+class _ThrownTypes extends RecursiveAstVisitor<void> {
+  final types = <String>{};
+
+  @override
+  void visitThrowExpression(ThrowExpression node) {
+    final type = node.expression.staticType;
+    types.add(type?.element?.name ?? 'Object');
+    super.visitThrowExpression(node);
   }
 }

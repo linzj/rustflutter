@@ -284,6 +284,20 @@ pub use closures::Closures;
 
 mod cascade;
 pub use cascade::{Paint, Painter, Tinted};
+
+/// dart:core's RangeError, as far as the fixture needs it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RangeError {
+    pub message: String,
+}
+impl RangeError {
+    pub fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
+mod failure;
+pub use failure::Bounds;
 // The base trait, renamed on import:  has a  of its own.
 pub use superctor::Shape as GeometricShape;
 
@@ -1054,5 +1068,44 @@ mod tests {
         // `double width = 0.0;` with a constructor that says nothing about it.
         let p = Paint::new();
         assert_eq!((p.width, p.alpha, p.blur), (0.0, 0.0, 0.0));
+    }
+
+    // -- throw -> Result ------------------------------------------------------
+    //
+    // Failure travels in the return value. Which functions return one is
+    // computed, not written: nothing in 's Dart says it can fail. Each
+    // case is paired with a success, since a test that only fails cannot tell
+    // an  from a panic.
+
+    #[test]
+    fn a_throwing_method_returns_err() {
+        let b = Bounds::new(10.0);
+        assert_eq!(b.checked(5.0), Ok(5.0));
+        assert!(b.checked(50.0).is_err());
+    }
+
+    #[test]
+    fn failure_spreads_one_hop() {
+        let b = Bounds::new(10.0);
+        assert_eq!(b.doubled(4.0), Ok(8.0));
+        assert!(b.doubled(50.0).is_err());
+    }
+
+    #[test]
+    fn failure_spreads_two_hops() {
+        // One pass over the call graph would find  and leave
+        //  returning a bare f32 -- which would not compile, the
+        // same way it did not for  in round twelve.
+        let b = Bounds::new(10.0);
+        assert_eq!(b.quadrupled(2.0), Ok(8.0));
+        assert!(b.quadrupled(50.0).is_err());
+    }
+
+    #[test]
+    fn a_method_that_cannot_fail_is_left_alone() {
+        // Not : giving every method a Result it does not need would
+        // compile too, and this is the line that says it was not done.
+        let b = Bounds::new(10.0);
+        assert_eq!(b.halved(5.0), 2.5);
     }
 }
