@@ -176,8 +176,47 @@ class RustBackend {
       IrClosure() => _closure(e as IrClosure),
       IrCallValue(:final target, :final args) =>
         '(${expr(target)})(${args.map(expr).join(', ')})',
+      IrBlockValue() => _blockValue(e as IrBlockValue),
     };
   }
+
+  /// Statements then a value, as a Rust block expression.
+  ///
+  /// The binding is `mut` only when a step writes to it, for the reason
+  /// `let mut` is not applied everywhere: the test crate denies `unused_mut`,
+  /// so an unneeded one is a build error rather than a warning nobody reads.
+  String _blockValue(IrBlockValue node) {
+    final saved = _out.length;
+    final savedIndent = _indent;
+    final savedReassigned = _reassigned;
+    _indent = 0;
+    // A cascade's steps write fields of the binding, which is a write to the
+    // local rather than a reassignment of it -- so `_assignedIn` does not see
+    // it and the declaration has to be told separately.
+    _reassigned = {
+      ..._reassigned,
+      if (node.statements.any(_writesTheBinding)) _cascadeBinding,
+    };
+    for (final statement in node.statements) {
+      stmt(statement);
+    }
+    final body = _out.sublist(saved).map((l) => l.trim()).join(' ');
+    _out.removeRange(saved, _out.length);
+    _indent = savedIndent;
+    _reassigned = savedReassigned;
+    return '{ $body ${expr(node.value)} }';
+  }
+
+  /// The name the front ends give a cascade's receiver.
+  static const _cascadeBinding = 'cascaded';
+
+  bool _writesTheBinding(IrStmt s) => switch (s) {
+        IrAssignField(:final target) =>
+          target is IrLocal && target.name == _cascadeBinding,
+        IrSetter(:final target) =>
+          target is IrLocal && target.name == _cascadeBinding,
+        _ => false,
+      };
 
   /// A closure literal.
   ///
@@ -442,8 +481,8 @@ class RustBackend {
         case IrLocalDecl():
         case IrExprStmt():
         case IrAssert():
-        case IrAssignField():
         case IrSetter():
+        case IrAssignField():
       }
     }
 
@@ -474,8 +513,9 @@ class RustBackend {
             '${init == null ? "Default::default()" : expr(init)};');
       case IrAssign(:final name, :final value):
         _line('${snake(name)} = ${expr(value)};');
-      case IrAssignField(:final name, :final value):
-        _line('$_selfName.${snake(name)} = ${expr(value)};');
+      case IrAssignField(:final target, :final name, :final value):
+        final receiver = target == null ? _selfName : expr(target);
+        _line('$receiver.${snake(name)} = ${expr(value)};');
       case IrSetter(:final target, :final name, :final value):
         _line('${_receiver(target)}.set_${snake(name)}(${expr(value)});');
       case IrIf(:final condition, :final then, :final otherwise):
@@ -922,6 +962,8 @@ class RustBackend {
         IrIs(go(expr), type, negated: negated),
       IrCallValue(:final target, :final args) =>
         IrCallValue(go(target), args.map(go).toList()),
+      IrBlockValue(:final statements, :final value) =>
+        IrBlockValue(statements, go(value)),
       IrClosure() ||
       IrLiteral() ||
       IrStatic() ||
@@ -1138,7 +1180,9 @@ class RustBackend {
     _line('Self {');
     _indent++;
     for (final field in _allFields(cls)) {
-      final init = inits[field.name];
+      // The constructor first, then the declaration's own value: Dart applies
+      // the latter only where the former says nothing.
+      final init = inits[field.name] ?? field.initial;
       if (init == null) {
         throw Unsupported('field never initialised', field.name);
       }
@@ -1311,8 +1355,11 @@ class _WalkSelf {
 
   void statement(IrStmt s) {
     switch (s) {
-      case IrAssignField():
-        writesFields = true;
+      case IrAssignField(:final target):
+        // Only a write to `this` makes the method mutating. A cascade writes a
+        // *local* it just bound, which needs `let mut` and not `&mut self` --
+        // and counting it made every method holding a cascade take `&mut self`.
+        if (target == null || target is IrThis) writesFields = true;
         expression(s.value);
       case IrAssign():
         expression(s.value);
@@ -1378,6 +1425,9 @@ class _WalkSelf {
       case IrCallValue(:final target, :final args):
         expression(target);
         args.forEach(expression);
+      case IrBlockValue(:final statements, :final value):
+        statements.forEach(statement);
+        expression(value);
       case IrLiteral():
       case IrLocal():
       case IrStatic():

@@ -78,6 +78,9 @@ class KernelFrontend {
       // temporary from its own lowering.
       final bound = _bound;
       if (bound != null && node.variable == bound) return const IrBound();
+      if (_cascade != null && node.variable == _cascade) {
+        return const IrLocal(_cascadeName);
+      }
       final name = node.variable.cosmeticName;
       if (name == null || name.startsWith('#')) {
         throw Unsupported('synthetic variable', _sample(node));
@@ -87,6 +90,7 @@ class KernelFrontend {
     if (node is InstanceGet) return _instanceGet(node);
     if (node is StaticGet) return _staticGet(node);
     if (node is InstanceInvocation) return _instanceInvocation(node);
+    if (node is BlockExpression) return _blockValue(node);
     if (node is FunctionInvocation) {
       return IrCallValue(
           expression(node.receiver), _arguments(node.arguments));
@@ -139,6 +143,49 @@ class KernelFrontend {
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
   }
 
+  /// A cascade, restored.
+  ///
+  /// The CFE writes `Paint()..color = c` as "bind #0, write to #0, produce #0",
+  /// which is a Rust block expression exactly. Only that shape is taken: a
+  /// `BlockExpression` whose statements are a switch in disguise is a different
+  /// construct and waits for switch.
+  IrExpr _blockValue(BlockExpression node) {
+    final statements = node.body.statements;
+    final value = node.value;
+    if (statements.isEmpty) {
+      throw Unsupported('block expression with no statements', _sample(node));
+    }
+    final first = statements.first;
+    if (first is! VariableStatement) {
+      throw Unsupported('block expression not binding first', _sample(node));
+    }
+    final bound = first.declaration.variable;
+    if (!(value is VariableGet && value.variable == bound)) {
+      throw Unsupported('block expression not producing its binding',
+          _sample(node));
+    }
+    final initial = bound.initializer;
+    if (initial == null) {
+      throw Unsupported('cascade binding with no receiver', _sample(node));
+    }
+
+    final previous = _cascade;
+    _cascade = bound;
+    try {
+      final steps = <IrStmt>[
+        IrLocalDecl(_cascadeName, _type(bound.type), expression(initial)),
+        for (final s in statements.skip(1)) statement(s),
+      ];
+      return IrBlockValue(steps, const IrLocal(_cascadeName));
+    } finally {
+      _cascade = previous;
+    }
+  }
+
+  /// The receiver the enclosing cascade bound. Reads of it become a local.
+  Variable? _cascade;
+  static const _cascadeName = 'cascaded';
+
   /// A closure literal, when it captures nothing this compiler cannot give it.
   ///
   /// A closure reaching `this` is refused: it outlives the call that made it,
@@ -184,6 +231,29 @@ class KernelFrontend {
   /// and is the next shape, not this one.
   IrExpr _let(Let node) {
     final body = node.body;
+    // A cascade: the binding is on the `Let` and the steps are a block whose
+    // value is that binding. The standalone `BlockExpression` shape exists too,
+    // and the probe that measured these looked only at *it* -- so this shape,
+    // which is the one upstream actually produces, was missed until the fixture
+    // compared the two front ends.
+    if (body is BlockExpression &&
+        _isThe(body.value, node.variable)) {
+      final initial = node.variable.initializer;
+      if (initial == null) {
+        throw Unsupported('cascade binding with no receiver', _sample(node));
+      }
+      final previous = _cascade;
+      _cascade = node.variable;
+      try {
+        return IrBlockValue([
+          IrLocalDecl(
+              _cascadeName, _type(node.variable.type), expression(initial)),
+          for (final s in body.body.statements) statement(s),
+        ], const IrLocal(_cascadeName));
+      } finally {
+        _cascade = previous;
+      }
+    }
     if (body is ConditionalExpression) {
       final condition = body.condition;
       final otherwise = body.otherwise;
@@ -500,6 +570,19 @@ class KernelFrontend {
       if (value is InstanceSet) {
         // A field on `this`, and a field rather than a setter. Kernel names the
         // target outright, so neither has to be inferred.
+        // A write to the cascade's own binding: a local, so it needs a
+        // mutable local rather than a mutable `self`.
+        final receiver = value.receiver;
+        if (_cascade != null &&
+            receiver is VariableGet &&
+            receiver.variable == _cascade) {
+          if (value.interfaceTarget is! Field) {
+            return IrSetter(const IrLocal(_cascadeName), value.name.text,
+                expression(value.value));
+          }
+          return IrAssignField(value.name.text, expression(value.value),
+              target: const IrLocal(_cascadeName));
+        }
         if (value.receiver is! ThisExpression) {
           // Another object's *setter* is a call, which needs nothing from us
           // beyond a `&mut` receiver at the call site; another object's *field*
@@ -661,8 +744,10 @@ class KernelFrontend {
       cls.constants
           .add(IrConstDecl(name, _type(field.type), expression(init)));
     } else {
-      cls.fields.add(
-          IrFieldDecl(name, _type(field.type), isFinal: field.isFinal));
+      final initial = field.initializer;
+      cls.fields.add(IrFieldDecl(name, _type(field.type),
+          isFinal: field.isFinal,
+          initial: initial == null ? null : expression(initial)));
     }
   }
 
@@ -707,6 +792,13 @@ class KernelFrontend {
       } else {
         throw Unsupported('initialiser ${init.runtimeType}', _sample(init));
       }
+    }
+    // A constructor *body* is not lowered, and dropping it silently would emit
+    // a constructor that ignores its arguments -- `Tinted(v) { opacity = v; }`
+    // came out setting the declaration's default instead. Refusing says so.
+    final body = node.function.body;
+    if (body != null && !(body is Block && body.statements.isEmpty)) {
+      throw Unsupported('constructor with a body', _sample(node));
     }
     cls.constructors.add(IrConstructor(
       params,

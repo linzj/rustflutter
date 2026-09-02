@@ -197,6 +197,19 @@ class IrBound extends IrExpr {
   const IrBound();
 }
 
+/// Statements, then a value: what Rust calls a block expression.
+///
+/// Dart has no such thing to write, but the CFE makes them -- a cascade
+/// `Paint()..color = c..style = s` becomes "bind the receiver, do the steps,
+/// produce the binding". Rust says exactly that with `{ let mut it = ...; ...;
+/// it }`, so this is a translation rather than an encoding.
+class IrBlockValue extends IrExpr {
+  const IrBlockValue(this.statements, this.value);
+
+  final List<IrStmt> statements;
+  final IrExpr value;
+}
+
 /// Calling a function *value*: `f(x)`, where `f` is a variable.
 ///
 /// Distinct from [IrCall], which names a method on a receiver. Rust spells this
@@ -362,7 +375,15 @@ class IrAssign extends IrStmt {
 /// The split is measured, not guessed: across `package:flutter` 6220 field
 /// writes go through `this` and 3869 through another object.
 class IrAssignField extends IrStmt {
-  const IrAssignField(this.name, this.value);
+  const IrAssignField(this.name, this.value, {this.target});
+
+  /// The object written to, or null for `this`.
+  ///
+  /// A cascade writes another object's field, which needs a mutable receiver
+  /// rather than a mutable `self`. Inside a cascade that receiver is a local
+  /// the block just bound, so it is the one case of the 3869 "field of another
+  /// object" writes that needs nothing new.
+  final IrExpr? target;
 
   final String name;
   final IrExpr value;
@@ -409,11 +430,20 @@ class IrAssert extends IrStmt {
 // -- Declarations -------------------------------------------------------------
 
 class IrFieldDecl {
-  const IrFieldDecl(this.name, this.type, {required this.isFinal, this.doc});
+  const IrFieldDecl(this.name, this.type,
+      {required this.isFinal, this.initial, this.doc});
 
   final String name;
   final IrType type;
   final bool isFinal;
+
+  /// A value given at the declaration -- `double width = 0.0;`.
+  ///
+  /// Dart applies it to every constructor that does not set the field itself,
+  /// and Rust has no such thing, so the constructor has to write it out. Not
+  /// having this was 257 refusals reading "field never initialised".
+  final IrExpr? initial;
+
   final String? doc;
 }
 

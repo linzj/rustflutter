@@ -54,12 +54,17 @@ class Untouched extends Shape {
 abstract class Untranslatable {
   const Untranslatable();
 
-  /// Cascades are not translated yet, so this method is refused.
+  /// Uses a `for` loop, which is not translated yet, so this method is
+  /// refused. It was a cascade until round twenty-three made cascades work --
+  /// a fixture whose "untranslatable" construct becomes translatable stops
+  /// testing what it was for, and the two front ends disagreeing is what said
+  /// so.
   String describe() {
-    final buffer = StringBuffer()
-      ..write('a')
-      ..write('b');
-    return buffer.toString();
+    var out = '';
+    for (var i = 0; i < 2; i = i + 1) {
+      out = out + 'x';
+    }
+    return out;
   }
 
   double size();

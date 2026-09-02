@@ -143,6 +143,7 @@ class Frontend {
       return IrCallValue(expression(node.function),
           _arguments(node.argumentList, node.element, node));
     }
+    if (node is CascadeExpression) return _cascade(node);
     if (node is FunctionExpression) return _closure(node);
     if (node is InstanceCreationExpression) return _construct(node);
     if (node is MethodInvocation) return _invoke(node);
@@ -267,6 +268,60 @@ class Frontend {
     }
     return IrField(receiver, name.name);
   }
+
+  /// `a..b = 1..c()` -- bind the receiver, do the steps, produce the binding.
+  ///
+  /// Kernel has already lowered this to a block expression and the Kernel front
+  /// end restores it; here it is still written as itself. Both have to arrive
+  /// at the same IR, which is why this is not left to be refused.
+  IrExpr _cascade(CascadeExpression node) {
+    final previous = _cascadeTarget;
+    _cascadeTarget = node.target;
+    try {
+      final steps = <IrStmt>[
+        IrLocalDecl(_cascadeName, _type(node.target.staticType),
+            expression(node.target)),
+        for (final section in node.cascadeSections) _cascadeStep(section),
+      ];
+      return IrBlockValue(steps, const IrLocal(_cascadeName));
+    } finally {
+      _cascadeTarget = previous;
+    }
+  }
+
+  IrStmt _cascadeStep(Expression section) {
+    if (section is AssignmentExpression) {
+      final target = section.leftHandSide;
+      if (target is PropertyAccess && section.operator.lexeme == '=') {
+        final written = section.writeElement;
+        final value = expression(section.rightHandSide);
+        if (written != null && !written.isSynthetic) {
+          return IrSetter(const IrLocal(_cascadeName),
+              target.propertyName.name, value);
+        }
+        return IrAssignField(target.propertyName.name, value,
+            target: const IrLocal(_cascadeName));
+      }
+      throw Unsupported('cascade step ${target.runtimeType}',
+          section.toSource());
+    }
+    if (section is MethodInvocation) {
+      return IrExprStmt(IrCall(const IrLocal(_cascadeName),
+          section.methodName.name,
+          _arguments(section.argumentList,
+              section.methodName.element is ExecutableElement
+                  ? section.methodName.element as ExecutableElement
+                  : null,
+              section)));
+    }
+    throw Unsupported('cascade step ${section.runtimeType}',
+        section.toSource());
+  }
+
+  /// The receiver the enclosing cascade bound; its sections leave their target
+  /// implicit, so it has to be carried.
+  Expression? _cascadeTarget;
+  static const _cascadeName = 'cascaded';
 
   /// A closure literal, when it captures nothing this compiler cannot give it.
   ///
@@ -737,10 +792,12 @@ class Frontend {
           doc: _doc(member),
         ));
       } else {
+        final initial = v.initializer;
         cls.fields.add(IrFieldDecl(
           v.name.lexeme,
           type,
           isFinal: member.fields.isFinal,
+          initial: initial == null ? null : expression(initial),
           doc: _doc(member),
         ));
       }
@@ -794,6 +851,13 @@ class Frontend {
       } else {
         throw Unsupported('initialiser ${init.runtimeType}', init.toSource());
       }
+    }
+    // See `frontend_kernel.dart`: a constructor body is not lowered, and
+    // dropping it silently emits a constructor that ignores its arguments.
+    final constructorBody = member.body;
+    if (constructorBody is BlockFunctionBody &&
+        constructorBody.block.statements.isNotEmpty) {
+      throw Unsupported('constructor with a body', member.toSource());
     }
     cls.constructors.add(IrConstructor(
       params,

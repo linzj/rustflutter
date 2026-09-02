@@ -281,6 +281,9 @@ pub use superctor::{Padded, Rectangle, Square};
 
 mod closures;
 pub use closures::Closures;
+
+mod cascade;
+pub use cascade::{Paint, Painter, Tinted};
 // The base trait, renamed on import:  has a  of its own.
 pub use superctor::Shape as GeometricShape;
 
@@ -1006,5 +1009,50 @@ mod tests {
 {emitted}"
         );
         assert!(!emitted.contains("fn by_factor"));
+    }
+
+    // -- cascades -------------------------------------------------------------
+    //
+    // `Paint()..width = 2..alpha = 3` is, in Kernel, "bind, do the steps,
+    // produce the binding" -- a Rust block expression exactly. The steps set
+    // different fields to different values, so a dropped step and a duplicated
+    // one give different answers.
+
+    #[test]
+    fn a_one_step_cascade_returns_the_receiver() {
+        let p = Painter::new().thin();
+        assert_eq!(p.width, 1.0);
+        // The untouched fields keep their declaration-site values.
+        assert_eq!((p.alpha, p.blur), (0.0, 0.0));
+    }
+
+    #[test]
+    fn every_step_of_a_cascade_runs() {
+        let p = Painter::new().styled();
+        assert_eq!((p.width, p.alpha, p.blur), (2.0, 3.0, 4.0));
+    }
+
+    #[test]
+    fn a_cascade_may_call_as_well_as_write() {
+        // width = 5, then widen(2) makes it 7. A step that was dropped or run
+        // out of order gives 5 or 2.
+        let p = Painter::new().widened();
+        assert_eq!(p.width, 7.0);
+    }
+
+    #[test]
+    fn the_constructor_outranks_the_declaration() {
+        // Dart applies a declaration value only where the constructor says
+        // nothing. Without a field set both ways, the order is untested.
+        let t = Tinted::new(0.25);
+        assert_eq!(t.opacity, 0.25);
+        assert_eq!(t.tint, 0.5);
+    }
+
+    #[test]
+    fn a_field_initialised_at_its_declaration() {
+        // `double width = 0.0;` with a constructor that says nothing about it.
+        let p = Paint::new();
+        assert_eq!((p.width, p.alpha, p.blur), (0.0, 0.0, 0.0));
     }
 }
