@@ -19,6 +19,10 @@ class Frontend {
 
   final String className;
 
+  /// The superclass of the class currently being lowered, so a `super.foo()`
+  /// knows which class's body it means.
+  String? _superclass;
+
   IrType _type(DartType? type) {
     if (type == null) return const IrType('dynamic');
     final nullable = type.nullabilitySuffix.name == 'question';
@@ -290,7 +294,11 @@ class Frontend {
     }
     final target = node.target;
     if (target is SuperExpression) {
-      throw Unsupported('super call', node.toSource());
+      final base = _superclass;
+      if (base == null) {
+        throw Unsupported('super call with no superclass', node.toSource());
+      }
+      return IrSuperCall(base, node.methodName.name, args);
     }
     return IrCall(
       target == null ? null : expression(target),
@@ -396,6 +404,7 @@ class Frontend {
       isAbstract: node.abstractKeyword != null,
       doc: _doc(node),
     );
+    _superclass = cls.superclass;
     final refused = <String>[];
 
     for (final member in node.members) {

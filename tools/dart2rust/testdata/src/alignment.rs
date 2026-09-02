@@ -140,6 +140,9 @@ impl Alignment {
     /// The bottom right corner.
     pub const BOTTOM_RIGHT: Alignment = Alignment::new(1.0, 1.0);
 
+    // NOT TRANSLATED: Alignment.add
+    //   unsupported `is` in the value subset: `is` needs the class hierarchy, which this backend does not model yet
+
     /// Returns the offset that is this fraction in the direction of the given offset.
     pub fn along_offset(&self, other: Offset) -> Offset {
         let center_x: f32 = (other.dx / 2.0);
@@ -354,6 +357,9 @@ impl AlignmentDirectional {
     pub const BOTTOM_CENTER: AlignmentDirectional = AlignmentDirectional::new(0.0, 1.0);
     /// The bottom corner on the "end" side.
     pub const BOTTOM_END: AlignmentDirectional = AlignmentDirectional::new(1.0, 1.0);
+
+    // NOT TRANSLATED: AlignmentDirectional.add
+    //   unsupported `is` in the value subset: `is` needs the class hierarchy, which this backend does not model yet
 }
 
 /// Returns the difference between two [AlignmentDirectional]s.

@@ -58,14 +58,34 @@ class RustBackend {
   /// this type name an abstract class? If it is, a value of that type is not a
   /// struct -- it is `dyn Trait`, and has to be behind a reference or a Box.
   final IrLibrary library;
-  final _out = StringBuffer();
+  /// Lines, not a StringBuffer, so a member that turns out to be untranslatable
+  /// can be rolled back. See [_member].
+  final _out = <String>[];
   int _indent = 0;
 
   void _line(String text) {
-    if (text.isEmpty) {
-      _out.writeln();
-    } else {
-      _out.writeln('${'    ' * _indent}$text');
+    _out.add(text.isEmpty ? '' : '${'    ' * _indent}$text');
+  }
+
+  /// Emits one member, or a comment saying why it is missing.
+  ///
+  /// The front end has always refused member by member. The backend refused by
+  /// *class*, so one member it could not emit took the whole class with it --
+  /// and that only showed once super calls started working: `Alignment.add`
+  /// stopped being refused for its super call and began being refused for the
+  /// `is` beside it, which silently cost the entire class. Same lesson as the
+  /// per-class fix one level up: the unit of refusal should be the unit of work.
+  void _member(String what, void Function() body) {
+    final mark = _out.length;
+    final indent = _indent;
+    try {
+      body();
+    } on Unsupported catch (error) {
+      _out.removeRange(mark, _out.length);
+      _indent = indent;
+      _line('// NOT TRANSLATED: $what');
+      _line('//   $error');
+      _line('');
     }
   }
 
@@ -98,7 +118,7 @@ class RustBackend {
     return switch (e) {
       IrLiteral(:final value, :final type) => _literal(value, type),
       IrLocal(:final name) => snake(name),
-      IrThis() => '*self',
+      IrThis() => '*$_selfName',
       IrField(:final target, :final name) =>
         '${_receiver(target)}.${snake(name)}',
       IrStatic(:final owner, :final name) => '$owner::${screamingSnake(name)}',
@@ -113,6 +133,8 @@ class RustBackend {
         'if ${expr(condition)} { ${expr(then)} } else { ${expr(otherwise)} }',
       IrIs() => throw Unsupported('`is` in the value subset', '`is` needs the '
           'class hierarchy, which this backend does not model yet'),
+      IrSuperCall(:final base, :final name, :final args) =>
+        _superCall(base, name, args),
     };
   }
 
@@ -162,6 +184,35 @@ class RustBackend {
     return value;
   }
 
+  /// The free function that holds a base class's own body for `name`.
+  ///
+  /// Rust has no `super`. Once an impl overrides a trait's default method the
+  /// default is unreachable -- `Trait::name(self)` dispatches back to the
+  /// override and the program hangs. So every concrete method on an abstract
+  /// class is emitted twice: once as a free generic function holding the body,
+  /// and once as the trait default, which calls it. `super.name(..)` then names
+  /// the function, which is the one thing that cannot dispatch anywhere else.
+  static String superFn(String base, String name) =>
+      '${snake(base)}_super_${snake(name)}';
+
+  String _superCall(String base, String name, List<IrExpr> args) {
+    final baseClass = library[base];
+    if (baseClass == null) {
+      throw Unsupported('super call into `$base`, which is not in this file',
+          'super.$name(...)');
+    }
+    final provides = baseClass.methods.any(
+        (m) => m.operator == null && m.name == name && !m.isStatic);
+    if (!provides) {
+      // The base's own version was refused, or is abstract and has no body to
+      // call. Emitting the call anyway would name a function that was never
+      // written -- the `_stringify` shape from round one, one level up.
+      throw Unsupported('super call to `$base.$name`, which was not translated',
+          'super.$name(...)');
+    }
+    return '${superFn(base, name)}(${[_selfName, ...args.map(expr)].join(', ')})';
+  }
+
   /// The receiver of a field read or a call.
   ///
   /// `this` is two different things in Rust depending on where it stands. As a
@@ -173,8 +224,14 @@ class RustBackend {
   /// `left.unwrap_or(*self.left)`, which does not compile. It was found by
   /// building real upstream code rather than a fixture, which is the argument
   /// for keeping real code in the test crate.
+  /// What `self` is called in the code currently being emitted.
+  ///
+  /// A free function has no `self`, so while one is being written the receiver
+  /// is its first parameter instead.
+  String _selfName = 'self';
+
   String _receiver(IrExpr? target) =>
-      (target == null || target is IrThis) ? 'self' : expr(target);
+      (target == null || target is IrThis) ? _selfName : expr(target);
 
   String _call(IrExpr? target, String name, List<IrExpr> args) {
     final receiver = _receiver(target);
@@ -250,13 +307,25 @@ class RustBackend {
   /// Traits lead because a struct's `impl` mentions them, and a reader who
   /// meets `impl AlignmentGeometry for Alignment` before the trait has to
   /// scroll to find out what was promised.
-  static String emitLibrary(IrLibrary library) {
+  /// Returns the source, and what it could not emit.
+  ///
+  /// Per class, not all-or-nothing. The front end has always collected refusals
+  /// member by member; the backend did not, so one class it could not emit
+  /// threw away the whole file -- including the classes that were fine. A
+  /// compiler that produces nothing because of one bad class is much less
+  /// useful than one that produces the rest and says which is missing.
+  static (String, List<String>) emitLibrary(IrLibrary library) {
     final out = StringBuffer();
+    final refused = <String>[];
     for (final cls in library.classes) {
-      out.write(RustBackend(cls, library: library).emit());
-      out.writeln();
+      try {
+        out.write(RustBackend(cls, library: library).emit());
+        out.writeln();
+      } on Unsupported catch (error) {
+        refused.add('${cls.name}: $error');
+      }
     }
-    return out.toString();
+    return (out.toString(), refused);
   }
 
   String emit() {
@@ -293,13 +362,17 @@ class RustBackend {
       _line('fn ${_methodName(method)}(${_params(method)}) -> '
           '${type(method.returnType)} {');
       _indent++;
-      stmt(method.body, tail: true);
+      // The default delegates to the free function rather than holding the
+      // body, so that an override can still reach it. See `superFn`.
+      _line('${superFn(cls.name, method.name)}('
+          '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})');
       _indent--;
       _line('}');
       _line('');
     }
     _indent--;
     _line('}');
+    _emitSuperFns();
     if (cls.fields.isNotEmpty) {
       _line('');
       _line('// NOT TRANSLATED: `${cls.name}` declares '
@@ -308,7 +381,35 @@ class RustBackend {
         _line('//   ${field.name}: ${field.type}');
       }
     }
-    return _out.toString();
+    return _out.join('\n') + '\n';
+  }
+
+  /// The bodies of this abstract class's concrete methods, as free functions.
+  ///
+  /// Generic over the implementor and `?Sized`, so both the trait's own default
+  /// and a subclass's override can call it -- the default has an unsized `Self`,
+  /// and a subclass has a concrete one.
+  void _emitSuperFns() {
+    for (final method in cls.methods) {
+      if (method.isStatic) continue;
+      _line('');
+      _line('/// The body of `${cls.name}.${method.name}`, reachable from an');
+      _line('/// override the way Dart\'s `super.${method.name}` is.');
+      final params = [
+        'this_: &S',
+        ...method.params.map(
+            (p) => '${snake(p.name)}: ${type(p.type, owned: false)}'),
+      ].join(', ');
+      _line('pub fn ${superFn(cls.name, method.name)}'
+          '<S: ${cls.name} + ?Sized>($params) -> '
+          '${type(method.returnType)} {');
+      _indent++;
+      _selfName = 'this_';
+      stmt(method.body, tail: true);
+      _selfName = 'self';
+      _indent--;
+      _line('}');
+    }
   }
 
   /// A method's name, with Dart's operators mapped onto Rust's trait methods
@@ -356,7 +457,7 @@ class RustBackend {
     _line('}');
     _emitOperators();
     _emitBaseImpl();
-    return _out.toString();
+    return _out.join('\n') + '\n';
   }
 
   /// `impl Base for This`, when this class extends an abstract one.
@@ -374,13 +475,30 @@ class RustBackend {
   void _emitBaseImpl() {
     final base = library[cls.superclass];
     if (base == null || !base.isAbstract) return;
-    final required = base.abstractMethods;
+    // Not just the abstract ones. A class that overrides a *concrete* base
+    // method needs that override in the impl too, or dynamic dispatch reaches
+    // the trait's default instead -- the inherent method would still be right,
+    // so only a call through `dyn Base` can tell, which is why the tests make
+    // that call.
+    final overridden = base.methods
+        .where((m) => !m.isStatic && _matching(m) != null)
+        .toList();
+    final required = [...base.abstractMethods, ...overridden];
     if (required.isEmpty) return;
 
     _line('');
     _line('impl ${base.name} for ${cls.name} {');
     _indent++;
     for (final need in required) {
+      _member('impl ${base.name}::${need.operator ?? need.name} for ${cls.name}',
+          () => _emitBaseMethod(need));
+    }
+    _indent--;
+    _line('}');
+  }
+
+  void _emitBaseMethod(IrMethod need) {
+    {
       final have = _matching(need);
       final returns = type(need.returnType);
       _line('fn ${_methodName(need)}(${_params(need)}) -> $returns {');
@@ -400,8 +518,6 @@ class RustBackend {
       _line('}');
       _line('');
     }
-    _indent--;
-    _line('}');
   }
 
   /// This class's own version of a method the base requires.
@@ -496,6 +612,12 @@ class RustBackend {
   void _emitMethods() {
     for (final method in cls.methods) {
       if (method.operator != null) continue;
+      _member('${cls.name}.${method.name}', () => _emitMethod(method));
+    }
+  }
+
+  void _emitMethod(IrMethod method) {
+    {
       _doc(method.doc);
       final params = [
         if (!method.isStatic) '&self',
@@ -514,6 +636,12 @@ class RustBackend {
     for (final method in cls.methods) {
       final op = method.operator;
       if (op == null) continue;
+      _member('${cls.name} operator $op', () => _emitOperator(method, op));
+    }
+  }
+
+  void _emitOperator(IrMethod method, String op) {
+    {
       final mapping = _operatorTraits[op];
       if (mapping == null) {
         // `~/` has no Rust trait. Emitted as an inherent method rather than
@@ -533,7 +661,7 @@ class RustBackend {
         _line('}');
         _indent--;
         _line('}');
-        continue;
+        return;
       }
       final (trait, fn) = mapping;
       final rhs = method.params.isEmpty ? null : method.params.single;
@@ -557,6 +685,7 @@ class RustBackend {
       _line('}');
     }
   }
+
 
   String _operatorName(String op) => switch (op) {
         '~/' => 'int_div',

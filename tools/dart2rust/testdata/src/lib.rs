@@ -159,6 +159,9 @@ pub struct ViewPadding {
 mod edge_insets;
 pub use edge_insets::EdgeInsets;
 
+mod supercalls;
+pub use supercalls::{Doubled, Shape, Untouched};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +409,37 @@ mod tests {
         // wrong, because they cannot exist without it.
         assert_eq!(alignment::TextAlignVertical::TOP.y, -1.0);
         assert_eq!(alignment::TextAlignVertical::BOTTOM.y, 1.0);
+    }
+
+    // -- super ----------------------------------------------------------------
+    //
+    // Every call here goes through `dyn Shape`. Calling the inherent method
+    // instead would pass whether or not the trait impl carries the override,
+    // and whether the override is there is exactly what is being asked.
+
+    #[test]
+    fn super_reaches_the_base_body_not_the_override() {
+        let d: Box<dyn Shape> = Box::new(Doubled::new());
+        // Base says 100*scale; Doubled adds one. If `super.area` came back to
+        // the override this would recurse instead of returning 201.
+        assert_eq!(d.area(2.0), 201.0);
+    }
+
+    #[test]
+    fn a_class_that_overrides_nothing_gets_the_default() {
+        let u: Box<dyn Shape> = Box::new(Untouched::new());
+        assert_eq!(u.area(2.0), 200.0);
+        assert_eq!(u.perimeter(), 3.0);
+    }
+
+    #[test]
+    fn overriding_a_concrete_base_method_is_visible_through_the_trait() {
+        // The bug this catches: only abstract members were being put in the
+        // impl, so `Doubled`'s override of the concrete `area` was missing and
+        // dyn dispatch found the trait default. 200.0, not 201.0.
+        let shapes: Vec<Box<dyn Shape>> =
+            vec![Box::new(Doubled::new()), Box::new(Untouched::new())];
+        let areas: Vec<f32> = shapes.iter().map(|s| s.area(1.0)).collect();
+        assert_eq!(areas, vec![101.0, 100.0]);
     }
 }

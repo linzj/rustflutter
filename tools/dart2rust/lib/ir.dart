@@ -140,6 +140,24 @@ class IrThis extends IrExpr {
   const IrThis();
 }
 
+/// `super.name(args)`.
+///
+/// Kept as its own node rather than lowered to a call on `this`, because in
+/// Rust the two are not the same and the difference is a hang. Once an impl
+/// overrides a trait's default method there is no way to reach the default
+/// again -- `Trait::name(self)` dispatches straight back to the override. And
+/// calling super from inside an override of the same name is not an edge case
+/// in Flutter: every one of the 435 super calls in painting/ and rendering/
+/// is exactly that.
+class IrSuperCall extends IrExpr {
+  const IrSuperCall(this.base, this.name, this.args);
+
+  /// The class the call resolves into.
+  final String base;
+  final String name;
+  final List<IrExpr> args;
+}
+
 // -- Statements ---------------------------------------------------------------
 
 sealed class IrStmt {

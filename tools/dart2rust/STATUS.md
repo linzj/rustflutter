@@ -251,37 +251,123 @@ Rust 要求 impl **精确**返回 trait 声明的类型。
 
 ---
 
-## 当前队头(全 framework:685 文件 / 1931 个公开类 / 7012 次拒绝)
+## 第 6 轮:`super`,以及一个必须更正的记录
+
+### 更正:`package:kernel` 一直都在
+
+README 里"Kernel 取不到"那段理由**是错的**,现在已改。它在:
+
+    E:/source/flutter/engine/src/flutter/third_party/dart/pkg/kernel/
+
+我上次搜的是 `engine/src/third_party/`,而它在 `engine/src/**flutter**/third_party/dart`——
+从 `E:/source/flutter` 算是第 7 层,我用了 `-maxdepth 6`,**正好差一层**,
+然后据此写下了"取不到"。是用户指出 upstream 源码在 `engine/src` 才发现的。
+
+验证过它能用:拿 `pkg/kernel` 读 SDK 缓存里的 `dart2js_platform.dill`,
+报 `Unexpected Kernel Format Version 140 (expected 139)`——
+**说明它读到了文件、解析了头,只是版本差一个**。
+改读同一 checkout 里修订版匹配的
+`engine/src/out/host_release/flutter_patched_sdk/platform_strong.dill`:
+
+    libraries: 20   classes: 1374   procedures: 748
+    sample: AsyncError (abstract=false, super=Object), ...
+
+**Kernel 管线是通的**,而且同一 checkout 里有修订版匹配的
+`frontend_server_aot.dart.snapshot`,能产出配套的 app.dill。
+
+用户还指出了更重要的一点:**要发布只能走工具链构建好的 app.dill**。
+这是对的——app.dill 是**整个程序**,链接完毕、可达性确定、常量已求值、
+mixin 已展开,而按文件翻译源码永远只是在逼近它。
+
+### 本轮做的仍然是 `super`(692),而且它换前端也不作废
+
+Rust **没有 `super`**。一旦 impl 覆盖了 trait 的默认方法,默认实现就不可达了——
+`Trait::name(self)` 会派发回覆盖版。而"在覆盖 `X` 的方法里调 `super.X()`"
+**不是边缘情况**:painting/ 和 rendering/ 里 435 个 super 调用**全是**这个形状。
+
+所以每个抽象类的有实现方法生成**两份**:
+一个自由泛型函数持有函数体,trait 的默认方法调它。
+`super.X(..)` 就指那个函数——**唯一一个不可能派发到别处的东西**。
+
+Kernel 前端下这件事只会更容易(Kernel 的 super 调用已经解析到具体目标),
+Rust 这一侧的问题一模一样,所以这一轮的工作 100% 转移。
+
+### 两个粒度 bug,同一个教训
+
+1. **后端按类拒绝,前端按成员拒绝。** super 通了以后,`Alignment.add`
+   不再因 super 被拒,改为因旁边的 `is` 被拒——**整个 `Alignment` 类因此消失**。
+   现在后端也按成员拒绝,拒绝的那个成员在输出里留 `// NOT TRANSLATED` 和原因。
+2. 更早一步:`emitLibrary` 一个类失败就丢掉整个文件。也改成按类。
+
+**拒绝的粒度应该等于工作的粒度。** 两次都是这条。
+
+### 还有一个只有 `dyn` 才能发现的 bug
+
+`_emitBaseImpl` 原来只为**抽象**方法生成 override。
+子类覆盖基类的**有实现**方法时,impl 里没有这一项,
+于是走 `dyn Base` 会调到 trait 默认实现——**固有方法仍然是对的**,
+所以只有穿过 `dyn` 的调用能看出来。测试因此全部走 `dyn`。
+
+### 变异:四个,三杀一等价
+
+| 变异 | 结果 |
+|---|---|
+| `super` 降成 `self.method(..)` | **栈溢出**,两个测试崩溃 |
+| 覆盖基类有实现方法时不进 impl | 2 个测试失败 |
+| 对未翻译的基类方法照样生成 super 调用 | DOES NOT BUILD |
+| trait 默认方法内联 body 而不委托 | **存活** |
+
+第一个我的脚本报的是 `NO RESULT`,单独跑确认了是
+`thread ... has overflowed its stack`——**是杀死,不是无结果**,查清楚才记。
+
+第三个第一次跑时**存活**,因为语料里没有这种情况。补了 fixture
+(基类方法用了未支持的级联)之后它才被杀。**测不到的防护等于没有防护。**
+
+第四个是**真等价**:自由函数照样生成,`super` 走的是它,
+内联与否只是重复一份函数体,不改行为。
+
+### 结果
+
+测试 27 个全过,其中 3 个穿 `dyn Shape` 验 super。
+
+---
+
+## 下一步:换 Kernel 前端
+
+这是本轮发现之后**唯一该做的下一件事**,优先于队列上任何一项。
+
+理由:用户指出的发布路径论证成立——要发布只能从工具链构建好的
+app.dill 转,而不是按文件翻译源码。而且 Kernel 会**直接消掉**当前队列上的好几项
+(mixin 已展开、隐式转换已显式、常量已求值、泛型已具体化),
+继续在 analyzer 上做这些是在做会被丢掉的功。
+
+具体要做的:
+
+1. 用 `engine/src/out/host_release/gen/frontend_server_aot.dart.snapshot`
+   为 gallery 产出 `app.dill`(修订版必须和 `pkg/kernel` 对上,已验证是这一对)
+2. 新前端 `lib/frontend_kernel.dart`:Kernel `Component` → 现有 `IrLibrary`
+3. `lib/ir.dart`、`lib/backend_rust.dart`、`testdata`、`bin/census.dart` **不动**
+4. 用同一套 27 个测试验新前端——**同样的 IR 应当产出同样的 Rust**
+
+**先做第 1 步并确认能读出 gallery 自己的类**,再动前端。
+如果 gallery 的 dill 造不出来(依赖没 pub get、修订版对不上),
+那整条路走不通,要在写代码之前就知道。
+
+## 参考:当前队头(analyzer 前端,全 framework 7012 次拒绝)
 
 | 次数 | 要建的东西 |
 |---|---|
-| 692 | super 调用 |
 | 499 | setter |
 | 367 | 后缀 `!` |
 | 285 | 赋值表达式 |
 | 212 | super 构造函数调用 |
-| 209 | 调用一个函数值(闭包) |
+| 209 | 调用函数值(闭包) |
 | 197 | 字符串插值 |
 | 181 | `is` |
-| 177 | 枚举值引用 |
-| 138 | 闭包字面量 |
 
-**下一步**:`super` 调用(692,新队头)。它是本轮的直接延续——
-trait 有了默认方法,`super.add(other)` 就该降成
-`Base::add(self, other)`(显式调 trait 的默认实现)。
-这是 Rust 现成就有的东西,和本轮"两种语言在这里本来就一样"是同一条脉络。
+其中 setter(499)+ 赋值(285)是同一件事:**可变性**,要 `&mut self` 和一个模型。
+换前端之后要重新普查——这些数字是 analyzer 视角的,Kernel 视角会不一样。
 
-之后 `setter`(499)+ 赋值(285)= 784,是**同一件事**:
-可变性。需要 `&mut self` 和一个"什么时候可变"的模型,
-比 super 大,应该单独规划。
-
-**关于"零拒绝"这个数要留一句警告**:它现在是 438,但它**系统性偏乐观**。
-私有成员是**跳过**不是拒绝,而 Flutter 的实现几乎全在私有 State 类里,
-所以一个 widget 报"零拒绝"往往意味着"它的实质部分根本没被看"。
-`CupertinoApp` 就是这样:零拒绝,却生成了
-`Option<Route<dynamic>? Function(RouteSettings)?>` 这种根本不是 Rust 的东西。
-
-用 `--emit-dir` 可以把零拒绝的类写出来再用 rustfmt 验解析。
-上次全量测的结果:**347 个零拒绝里,254 个能解析,235 个不含未翻译的 Dart 类型,
-而真正验证过能编译的只有 2 个**(`Alignment`、`EdgeInsets`,还得手写桩)。
-**报进度时用后面这些数,不要用"零拒绝"。**
+**"零拒绝"这个数系统性偏乐观**,别用它报进度:私有成员是跳过不是拒绝,
+而 Flutter 的实现几乎全在私有类里。上次全量:347 零拒绝 → 254 能解析 →
+235 不含未翻译 Dart 类型 → **真正验证能编译的只有 2 个**。

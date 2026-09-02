@@ -61,19 +61,14 @@ Future<void> main(List<String> args) async {
   if (wanted == '--all') {
     final frontend = Frontend('');
     final (lib, refused) = frontend.lowerLibrary(resolved.unit);
-    String? rust;
-    try {
-      rust = RustBackend.emitLibrary(lib);
-    } on Unsupported catch (error) {
-      refused.add('backend: $error');
-    }
+    final (rust, backendRefused) = RustBackend.emitLibrary(lib);
+    refused.addAll(backendRefused);
     stderr.writeln('${lib.classes.length} classes '
         '(${lib.classes.where((c) => c.isAbstract).length} abstract), '
         '${refused.length} refused');
     for (final r in refused.take(20)) {
       stderr.writeln('  REFUSED $r');
     }
-    if (rust == null) exit(1);
     if (out != null) {
       File(out).writeAsStringSync(rust);
       stderr.writeln('-> $out');

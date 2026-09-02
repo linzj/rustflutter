@@ -99,7 +99,7 @@ Future<void> main(List<String> args) async {
       final (cls, refused) = Frontend(name).lowerClass(declaration);
       String? rust;
       try {
-        rust = RustBackend(cls).emit();
+        rust = RustBackend(cls, library: IrLibrary([cls])).emit();
       } on Unsupported catch (error) {
         refused.add('$error');
       } catch (error) {

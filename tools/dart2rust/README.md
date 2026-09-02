@@ -10,37 +10,45 @@ handle, not the object) and recording why at each divergence. This one
 translates. The two answer different questions and their outputs do not merge --
 see PORTING_STATUS.md for the argument.
 
-## Why the front end is `package:analyzer` and not `package:kernel`
+## The front end: analyzer today, Kernel next
 
-`dart2wasm` consumes Kernel (`.dill`), which is the right input: it is resolved,
-desugared, and constant-evaluated. It is also **not obtainable here**. Checked,
-in this order:
+`dart2wasm` consumes Kernel (`.dill`), which is the right input: resolved,
+desugared, constant-evaluated, and -- the part that matters for shipping -- a
+whole *program* rather than a pile of files. An app.dill is what the toolchain
+actually builds and what a release would be translated from.
 
-| where | result |
-|---|---|
-| Flutter's `.dart_tool/package_config.json` | 250 packages, no `kernel` |
-| pub.dev | the published `kernel` is an abandoned pre-null-safety squat |
-| `bin/cache/dart-sdk/` | binary SDK, ships no `pkg/` sources |
-| `engine/src/third_party/` | partially synced; no `dart` |
-| `github.com/dart-lang/sdk`, `dart.googlesource.com` | unreachable from this machine |
+**An earlier version of this file said Kernel was unobtainable here. That was
+wrong.** `package:kernel` is in the engine checkout:
 
-So the front end is `package:analyzer` (10.1.0), which **is** available and which
-has the precedent: DDC was analyzer-based for years before it moved to Kernel.
+    E:/source/flutter/engine/src/flutter/third_party/dart/pkg/kernel/
 
-A probe over `material/ink_well.dart` confirmed it supplies the three things a
-front end has to supply, before any of this was written:
+The earlier search looked under `engine/src/third_party/` and used a depth limit
+one level short of `engine/src/flutter/third_party/dart/pkg/kernel`, and the
+conclusion was written down as if it were a fact about the machine. It is
+recorded here rather than quietly deleted, because a wrong reason left in place
+is how a project keeps making the same choice.
 
-- **full resolution** -- 1273 identifiers resolved, 0 diagnostics
-- **constant evaluation** -- `_activationDuration` came back as
-  `Duration(inMicroseconds: 100000)`, evaluated down to the primitive. This is
-  the fact-class the hand port kept getting wrong by eye (50ms read as 200ms).
-- **resolved `super` targets** -- needed to flatten the class hierarchy
+Verified working, in this order:
 
-What analyzer does not do is desugar. Mixins are not applied, `async` is not
-lowered, implicit coercions are not made explicit. Those become this compiler's
-job rather than the front end's. That is a real cost, and it is also why the IR
-in `lib/ir.dart` is front-end agnostic: if `pkg/kernel` ever becomes reachable,
-the front end is the only part that has to be rewritten.
+1. `pkg/kernel` reading the SDK cache's `dart2js_platform.dill` fails with
+   `Unexpected Kernel Format Version 140 (expected 139)` -- it read the file and
+   parsed the header; the checkout is one revision behind the Flutter SDK.
+2. The same checkout has a revision-matched dill and toolchain:
+   `engine/src/out/host_release/flutter_patched_sdk/platform_strong.dill` reads
+   cleanly -- 20 libraries, 1374 classes, with `isAbstract` and resolved
+   superclasses -- and `engine/src/out/host_release/gen/frontend_server_aot.dart.snapshot`
+   can produce matching dills for an app.
+
+So the front end is `package:analyzer` **for now**, and the IR was written
+front-end agnostic from the first commit precisely so this swap costs only the
+front end. Everything in `lib/backend_rust.dart`, the census, and the tests
+carries over unchanged.
+
+What analyzer gives that Kernel does not: source-shaped output, which is easier
+to read and to check against upstream by eye. What Kernel gives that analyzer
+does not: the whole linked program, mixins applied, `async` lowered, implicit
+coercions explicit, and reachability -- so a release translates what the app
+uses instead of every class in the framework.
 
 ## Layout
 
