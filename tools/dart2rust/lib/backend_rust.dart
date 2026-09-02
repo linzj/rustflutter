@@ -180,6 +180,8 @@ class RustBackend {
         fields,
       ),
       IrIdentical(:final left, :final right) => _identical(left, right),
+      // `return Err(e)` has type `!`, so it fits where a value was wanted.
+      IrThrowValue(:final value) => 'return Err(${expr(value)})',
       IrConditional(:final condition, :final then, :final otherwise) =>
         'if ${expr(condition)} { ${expr(then)} } else { ${expr(otherwise)} }',
       IrIs() => throw Unsupported(
@@ -286,6 +288,15 @@ class RustBackend {
   ///   throws.
   String _ifNull(IrIfNull node) {
     final left = expr(node.left);
+    if (node.right is IrThrowValue) {
+      // `a ?? throw e`. The closure forms are wrong here for the reason a try
+      // body could not hold a `?`: the `return Err(e)` inside `unwrap_or_else`
+      // would return from the *closure*. A match has no closure to escape
+      // from, and the arm that throws simply diverges.
+      return 'match $left { '
+          'Some(__value) => __value, '
+          'None => ${expr(node.right)} }';
+    }
     final right = expr(node.right);
     if (node.nullableResult) {
       return node.eager ? '$left.or($right)' : '$left.or_else(|| $right)';
@@ -685,6 +696,10 @@ class RustBackend {
           walk(finalizer);
         case IrWhile(:final body):
           walk(body);
+        case IrLabeled(:final body):
+          walk(body);
+        case IrBreak():
+        case IrContinue():
         case IrReturn():
         case IrLocalDecl():
         case IrExprStmt():
@@ -833,8 +848,19 @@ class RustBackend {
         _line('}');
         _indent--;
         _line('}');
-      case IrWhile(:final condition, :final body):
-        _line('while ${expr(condition)} {');
+      case IrLabeled(:final label, :final body):
+        _line("'$label: {");
+        _indent++;
+        stmt(body);
+        _indent--;
+        _line('}');
+      case IrBreak(:final label):
+        _line(label == null ? 'break;' : "break '$label;");
+      case IrContinue():
+        _line('continue;');
+      case IrWhile(:final condition, :final body, :final label):
+        final head = label == null ? '' : "'" + label + ': ';
+        _line('${head}while ${expr(condition)} {');
         _indent++;
         stmt(body);
         _indent--;
@@ -1362,6 +1388,7 @@ class RustBackend {
         go(left),
         go(right),
       ),
+      IrThrowValue(:final value) => IrThrowValue(go(value)),
       IrClosure() ||
       IrLiteral() ||
       IrStatic() ||
@@ -1439,6 +1466,8 @@ class RustBackend {
           walk(finalizer);
         case IrWhile(:final body):
           walk(body);
+        case IrLabeled(:final body):
+          walk(body);
         default:
       }
     }
@@ -1463,6 +1492,9 @@ class RustBackend {
       _alwaysReturns(body) && _alwaysReturns(handler),
     IrTryFinally(:final body, :final finalizer) =>
       _alwaysReturns(body) || _alwaysReturns(finalizer),
+    // A labelled block can be left by its `break`, so it does not count as
+    // always returning even when its body would.
+    IrLabeled() => false,
     _ => false,
   };
 
@@ -1942,6 +1974,10 @@ class _WalkSelf {
       case IrWhile(:final condition, :final body):
         expression(condition);
         statement(body);
+      case IrLabeled(:final body):
+        statement(body);
+      case IrBreak():
+      case IrContinue():
     }
   }
 
@@ -1998,6 +2034,8 @@ class _WalkSelf {
       case IrIdentical(:final left, :final right):
         expression(left);
         expression(right);
+      case IrThrowValue(:final value):
+        expression(value);
       case IrLiteral():
       case IrLocal():
       case IrStatic():

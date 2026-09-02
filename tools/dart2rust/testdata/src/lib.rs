@@ -299,6 +299,9 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod control;
+pub use control::Sieve;
+
 mod loops;
 pub use loops::{Ladder, Rung};
 
@@ -1272,5 +1275,45 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.is_the(&a));
         assert!(!a.is_the(&b));
+    }
+
+    // -- throw as an expression, break, continue -------------------------------
+
+    #[test]
+    fn a_throw_where_a_value_was_wanted() {
+        // The `??` right side has to leave the *method*. Written as the closure
+        // `unwrap_or_else` wants, the `return Err(..)` would have left only the
+        // closure -- the same mistake a try body made with `?`.
+        let s = Sieve::new(10);
+        assert_eq!(s.at_least_one(Some(7)), Ok(7));
+        assert!(s.at_least_one(None).is_err());
+    }
+
+    #[test]
+    fn break_leaves_the_loop() {
+        // -2 is what the body sets on every pass that does not break, so a
+        // `break` that did not break would give -2 and a `break` that left one
+        // level too many would skip the assignment before it.
+        let s = Sieve::new(10);
+        assert_eq!(s.first_over(3), 4);
+        assert_eq!(s.first_over(99), -2); // never over the bound
+        assert_eq!(Sieve::new(0).first_over(3), -1); // loop never ran
+    }
+
+    #[test]
+    fn break_and_continue_in_the_same_loop() {
+        // 5 is the first odd number over 4. A `break` that could not cross the
+        // body's label would not compile; a `continue` that skipped the update
+        // would not stop.
+        let s = Sieve::new(10);
+        assert_eq!(s.first_odd_over(4), 5);
+        assert_eq!(s.first_odd_over(6), 7);
+        assert_eq!(s.first_odd_over(99), -1); // never over the bound
+    }
+
+    #[test]
+    fn continue_skips_the_rest_of_the_body() {
+        // 1+3+5+7+9. A `continue` translated as `break` would give 1.
+        assert_eq!(Sieve::new(10).odds_below(), 25);
     }
 }

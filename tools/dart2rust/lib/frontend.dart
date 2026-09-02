@@ -145,9 +145,9 @@ class Frontend {
       );
     }
     if (node is ThrowExpression) {
-      // A `throw` used for its value has none in Rust; the statement form is
-      // the one that translates.
-      throw Unsupported('throw used as an expression', node.toSource());
+      // `a ?? throw StateError(..)`. Rust has no throw and does not need one:
+      // `return Err(e)` has type `!`, which fits wherever a value was wanted.
+      return IrThrowValue(expression(node.expression));
     }
     if (node is CascadeExpression) return _cascade(node);
     if (node is FunctionExpression) return _closure(node);
@@ -591,6 +591,21 @@ class Frontend {
     if (node is WhileStatement) {
       return IrWhile(expression(node.condition), statement(node.body));
     }
+    if (node is BreakStatement) {
+      if (node.label != null) {
+        throw Unsupported('labelled break', node.toSource());
+      }
+      // Labelled when the loop's body is a labelled block, because Rust will
+      // not let a bare `break` cross one.
+      return IrBreak(_loopLabel);
+    }
+    if (node is ContinueStatement) {
+      if (node.label != null) {
+        throw Unsupported('labelled continue', node.toSource());
+      }
+      final label = _continueLabel;
+      return label == null ? const IrContinue() : IrBreak(label);
+    }
     if (node is ForStatement) {
       // The same three parts as Kernel's, but they arrive inside one `parts`
       // node here. `for (x in xs)` is a different part kind entirely on this
@@ -605,6 +620,11 @@ class Frontend {
         );
       }
       final condition = parts.condition;
+      // See the Kernel front end: Dart's `continue` in a `for` runs the
+      // updates and Rust's does not, so with updates present the body becomes
+      // a labelled block the `continue` breaks out of -- landing on the
+      // updates, which is where Dart would have been.
+      final (loopBody, label) = _forBody(node.body, parts.updaters.isNotEmpty);
       return IrBlock([
         for (final v in parts.variables.variables)
           IrLocalDecl(
@@ -617,7 +637,7 @@ class Frontend {
               ? const IrLiteral('true', IrType('bool'))
               : expression(condition),
           IrBlock([
-            statement(node.body),
+            loopBody,
             // `i = i + 1` is an assignment, and an assignment is a statement
             // on both sides of this compiler -- lowered as an expression it is
             // refused, which is what the fixture caught.
@@ -626,6 +646,7 @@ class Frontend {
                   ? _assignment(update)
                   : IrExprStmt(expression(update)),
           ]),
+          label: label,
         ),
       ]);
     }
@@ -682,6 +703,52 @@ class Frontend {
     final written = list.type;
     if (written != null) return _type(written.type);
     return _type(v.declaredFragment?.element.type);
+  }
+
+  /// The label a `continue` in the loop being lowered has to break out of.
+  ///
+  /// Null inside a `while`, where `continue` means what Rust's does.
+  String? _continueLabel;
+
+  /// The label on the loop being lowered, when it has one.
+  String? _loopLabel;
+  var _nextLabel = 0;
+
+  /// Whether a `for` body needs to become a labelled block.
+  ///
+  /// Only when the loop has updates *and* something in it continues: without a
+  /// `continue` the label would be a label nothing uses, and the two front ends
+  /// have to arrive at the same text.
+  bool _continues(Statement body) {
+    final finder = _ContinueFinder();
+    body.accept(finder);
+    return finder.found;
+  }
+
+  (IrStmt, String?) _forBody(Statement body, bool hasUpdates) {
+    final wraps = hasUpdates && _continues(body);
+    // Both labels are allocated only when something needs them, and the loop's
+    // before the body's -- which is the order the CFE allocates in, so the two
+    // front ends arrive at the same numbers as well as the same shape.
+    final loopLabel = wraps && _breaks(body) ? '__l${_nextLabel++}' : null;
+    final bodyLabel = wraps ? '__l${_nextLabel++}' : null;
+    final previousContinue = _continueLabel;
+    final previousLoop = _loopLabel;
+    _continueLabel = bodyLabel;
+    _loopLabel = loopLabel;
+    try {
+      final lowered = statement(body);
+      return (wraps ? IrLabeled(bodyLabel!, lowered) : lowered, loopLabel);
+    } finally {
+      _continueLabel = previousContinue;
+      _loopLabel = previousLoop;
+    }
+  }
+
+  bool _breaks(Statement body) {
+    final finder = _ContinueFinder(wanted: 'break');
+    body.accept(finder);
+    return finder.found;
   }
 
   /// The catch half of a `try`, without its `finally`.
@@ -1140,5 +1207,36 @@ class _EarlyExit extends RecursiveAstVisitor<void> {
   @override
   void visitReturnStatement(ReturnStatement node) {
     found = true;
+  }
+}
+
+/// Looks for a `continue` belonging to the loop being lowered -- not to one
+/// written inside it, and not to a closure's.
+class _ContinueFinder extends RecursiveAstVisitor<void> {
+  _ContinueFinder({this.wanted = 'continue'});
+
+  final String wanted;
+  bool found = false;
+
+  @override
+  void visitFunctionExpression(FunctionExpression node) {}
+
+  @override
+  void visitForStatement(ForStatement node) {}
+
+  @override
+  void visitWhileStatement(WhileStatement node) {}
+
+  @override
+  void visitDoStatement(DoStatement node) {}
+
+  @override
+  void visitContinueStatement(ContinueStatement node) {
+    if (wanted == 'continue') found = true;
+  }
+
+  @override
+  void visitBreakStatement(BreakStatement node) {
+    if (wanted == 'break') found = true;
   }
 }

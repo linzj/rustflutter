@@ -443,6 +443,40 @@ class IrSetter extends IrStmt {
   final IrExpr value;
 }
 
+/// A `throw` written where a value was wanted: `a ?? throw StateError(..)`.
+///
+/// Rust has no throw, and it does not need one: `return Err(e)` is an
+/// expression of type `!`, which fits wherever a value was expected. 151 of
+/// these in `package:flutter/`.
+class IrThrowValue extends IrExpr {
+  const IrThrowValue(this.value);
+
+  final IrExpr value;
+}
+
+/// A labelled block, and a `break` out of one.
+///
+/// Kernel's `break` points at a `LabeledStatement`, and Rust's labelled block
+/// is the same construct: `break 'l` leaves it. Dart's `break` out of a loop
+/// arrives wrapped this way, so this is also how a loop gets its `break`.
+class IrLabeled extends IrStmt {
+  const IrLabeled(this.label, this.body);
+
+  final String label;
+  final IrStmt body;
+}
+
+class IrBreak extends IrStmt {
+  const IrBreak([this.label]);
+
+  /// Null for a plain `break` out of the loop it is written in.
+  final String? label;
+}
+
+class IrContinue extends IrStmt {
+  const IrContinue();
+}
+
 /// `identical(a, b)` -- Dart's reference identity.
 ///
 /// 259 of these in `package:flutter/`, and 140 have `this` on one side: the
@@ -466,10 +500,17 @@ class IrIdentical extends IrExpr {
 /// compiler ever sees it: 405 of `package:flutter`'s 592 `for` statements are
 /// really that.
 class IrWhile extends IrStmt {
-  const IrWhile(this.condition, this.body);
+  const IrWhile(this.condition, this.body, {this.label});
 
   final IrExpr condition;
   final IrStmt body;
+
+  /// A label, when the loop needs one.
+  ///
+  /// It needs one exactly when its body is a labelled block -- which is how a
+  /// `continue` in a `for` reaches the updates -- because Rust will not let an
+  /// unlabelled `break` cross a labelled block.
+  final String? label;
 }
 
 /// `try { .. } finally { .. }`.

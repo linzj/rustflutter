@@ -162,9 +162,11 @@ class KernelFrontend {
       throw Unsupported('assignment used for its value', _sample(node));
     }
     if (node is Throw) {
-      // A `throw` used for its value -- `a ?? throw StateError(..)`. It has no
-      // value in Rust; the statement form is the one that translates.
-      throw Unsupported('throw used as an expression', _sample(node));
+      // `a ?? throw StateError(..)`. Rust has no throw, but it does have an
+      // expression that never produces a value: `return Err(e)` has type `!`,
+      // which fits wherever a value was wanted. So the expression form is the
+      // statement form, written where the value would have gone.
+      return IrThrowValue(expression(node.expression));
     }
     if (node is NullCheck) return IrNullCheck(expression(node.operand));
     if (node is AsExpression) return expression(node.operand);
@@ -185,19 +187,19 @@ class KernelFrontend {
       throw Unsupported('block expression with no statements', _sample(node));
     }
     final first = statements.first;
-    if (first is! VariableStatement) {
-      throw Unsupported('block expression not binding first', _sample(node));
-    }
-    final bound = first.declaration.variable;
-    if (!(value is VariableGet && value.variable == bound)) {
-      throw Unsupported(
-        'block expression not producing its binding',
-        _sample(node),
-      );
-    }
-    final initial = bound.initializer;
-    if (initial == null) {
-      throw Unsupported('cascade binding with no receiver', _sample(node));
+    final bound = first is VariableStatement
+        ? first.declaration.variable
+        : null;
+    final initial = bound?.initializer;
+    if (bound == null ||
+        initial == null ||
+        !(value is VariableGet && value.variable == bound)) {
+      // Not the cascade shape. It is still a block with a value, which is what
+      // Rust's block expression is, so it needs no shape recognised -- the same
+      // floor the general `Let` put under the three `Let` shapes.
+      return IrBlockValue([
+        for (final s in statements) statement(s),
+      ], expression(value));
     }
 
     final previous = _cascade;
@@ -358,13 +360,15 @@ class KernelFrontend {
   /// this Kernel, so they cannot go through `statement` -- and the rule about
   /// what a declaration becomes should be in one place regardless.
   IrStmt _declare(Variable variable, Node at) {
-    final name = variable.cosmeticName;
-    if (name == null || name.startsWith('#')) {
-      // A synthetic temporary from the CFE's own lowering. Translating one
-      // means translating the lowering it belongs to, which is a decision for
-      // whichever construct produced it, not for this statement.
-      throw Unsupported('synthetic variable', _sample(at));
-    }
+    final written = variable.cosmeticName;
+    // A temporary the CFE invented. It used to be refused, on the grounds that
+    // translating one means translating the lowering it belongs to -- but that
+    // was only true while there was nothing to call it. `_nameFor` gives it a
+    // name, `VariableGet` finds that name again, and the lowering it belongs to
+    // is then just the statements around it.
+    final name = (written == null || written.startsWith('#'))
+        ? _nameFor(variable)
+        : written;
     final init = variable.initializer;
     return IrLocalDecl(
       name,
@@ -385,6 +389,41 @@ class KernelFrontend {
 
   String _nameFor(Variable variable) =>
       _temporaries[variable] ??= '__t${_nextTemporary++}';
+
+  /// A Rust label for one of Kernel's labelled statements.
+  ///
+  /// Kept by identity, like the temporaries, because a labelled statement has
+  /// no name of its own -- a `break` points at the node.
+  final _labels = <LabeledStatement, String>{};
+  var _nextLabel = 0;
+
+  String _labelFor(LabeledStatement node) =>
+      _labels[node] ??= '__l${_nextLabel++}';
+
+  /// Labels the CFE put there to spell `continue` and `break`.
+  ///
+  /// `continue` is a `break` out of a label wrapped around the loop *body*, and
+  /// `break` is a `break` out of one wrapped around the loop itself. Both are
+  /// the CFE saying in its own words something Dart already had a word for, and
+  /// the analyzer front end sees the word -- so these are restored rather than
+  /// carried across as labelled blocks.
+  final _continueTargets = <LabeledStatement>{};
+
+  /// Labelled statements a `break` should leave, and the Rust label to use --
+  /// null when a bare `break` will do.
+  final _breakTargets = <LabeledStatement, String?>{};
+
+  /// The label to put on the loop about to be lowered, if it needs one.
+  String? _loopLabel;
+
+  IrStmt _loopBody(Statement body, bool hasUpdates) {
+    if (body is! LabeledStatement) return statement(body);
+    if (hasUpdates) {
+      return IrLabeled(_labelFor(body), statement(body.body));
+    }
+    _continueTargets.add(body);
+    return statement(body.body);
+  }
 
   // A `Let`'s variable is a `SyntheticVariable`, not a `VariableDeclaration`:
   // the CFE made it, so it has no declaration to point at.
@@ -493,6 +532,11 @@ class KernelFrontend {
   IrExpr _staticInvocation(StaticInvocation node) {
     final target = node.target;
     final positional = node.arguments.positional;
+    if (target.name.text == 'unsafeCast' && positional.length == 1) {
+      // The CFE's own cast, inserted where it has already proved the type. It
+      // does nothing at runtime and there is nothing for it to do here either.
+      return expression(positional.single);
+    }
     if (target.name.text == 'identical' && positional.length == 2) {
       return IrIdentical(expression(positional[0]), expression(positional[1]));
     }
@@ -771,8 +815,42 @@ class KernelFrontend {
     if (node is AssertStatement) {
       return _assert(node.condition, node.message);
     }
+    if (node is LabeledStatement) {
+      final body = node.body;
+      if (body is WhileStatement ||
+          body is ForStatement ||
+          body is DoStatement) {
+        // A label wrapped around a loop is how the CFE spells a plain `break`.
+        // Restored rather than transliterated: the analyzer front end sees the
+        // `break` the programmer wrote, and a labelled block here would be the
+        // same meaning in different words -- which is exactly what the two
+        // front ends compare.
+        //
+        // Unless the loop's own body ends up labelled, for the `continue`
+        // reason below. Rust will not let an unlabelled `break` cross a
+        // labelled block, so then the loop is labelled and the break says so.
+        final labelled =
+            body is ForStatement &&
+            body.updates.isNotEmpty &&
+            body.body is LabeledStatement;
+        _breakTargets[node] = labelled ? _labelFor(node) : null;
+        _loopLabel = labelled ? _labelFor(node) : null;
+        return statement(body);
+      }
+      // A label around anything else really is a labelled block, and Rust has
+      // one: `break 'l` leaves it.
+      return IrLabeled(_labelFor(node), statement(body));
+    }
+    if (node is BreakStatement) {
+      final target = node.target;
+      if (_continueTargets.contains(target)) return const IrContinue();
+      if (_breakTargets.containsKey(target))
+        return IrBreak(_breakTargets[target]);
+      return IrBreak(_labelFor(target));
+    }
     if (node is WhileStatement) {
-      return IrWhile(expression(node.condition), statement(node.body));
+      // No updates, so a `continue` really is Rust's `continue`.
+      return IrWhile(expression(node.condition), _loopBody(node.body, false));
     }
     if (node is ForStatement) {
       // Kernel's `for` is already the three parts kept apart, so the block is
@@ -780,6 +858,8 @@ class KernelFrontend {
       // arrives here too -- the CFE lowered it to an iterator loop long before
       // this -- which is 405 of the 592 in `package:flutter/`.
       final condition = node.condition;
+      final label = _loopLabel;
+      _loopLabel = null;
       return IrBlock([
         for (final v in node.variables) _declare(v.variable, node),
         IrWhile(
@@ -788,7 +868,13 @@ class KernelFrontend {
               ? const IrLiteral('true', IrType('bool'))
               : expression(condition),
           IrBlock([
-            statement(node.body),
+            // A `for` runs its updates after a `continue`; Rust's `continue`
+            // skips to the top of the loop, updates and all -- which is an
+            // infinite loop, and was one for as long as it took to run the
+            // test. So when there are updates the CFE's own shape is kept: the
+            // body is a labelled block and the `continue` leaves it, landing
+            // on the updates.
+            _loopBody(node.body, node.updates.isNotEmpty),
             // Through `statement`, not `expression`: `i = i + 1` is an
             // assignment, which is a statement on both sides of this compiler.
             // Lowered as an expression it was refused, and the fixture said so
@@ -796,6 +882,7 @@ class KernelFrontend {
             for (final update in node.updates)
               statement(ExpressionStatement(update)),
           ]),
+          label: label,
         ),
       ]);
     }
