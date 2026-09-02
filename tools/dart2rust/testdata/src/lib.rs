@@ -264,6 +264,9 @@ pub use setters::Temperature;
 mod enums;
 pub use enums::{Axis, Layout, MainAxisAlignment};
 
+mod toplevel;
+pub use toplevel::{K_DERIVED, K_MAX_ITEMS, K_SPACING, K_VERBOSE};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -748,5 +751,49 @@ mod tests {
             !emitted.contains("enum Season {"),
             "Season was emitted as a plain enum, dropping its method"
         );
+    }
+
+    // -- top-level constants --------------------------------------------------
+    //
+    // Dart has module-level names and so does Rust, so these need no owner on
+    // either side. Analyzer models a top-level `const` as a *synthetic* getter,
+    // which is how a stored constant is told from a computed `get foo => ...`
+    // -- the same distinction that separates a field from a real getter.
+
+    #[test]
+    fn top_level_constants_keep_their_values() {
+        assert_eq!(K_SPACING, 8.0);
+        assert_eq!(K_MAX_ITEMS, 10);
+        assert!(!K_VERBOSE);
+    }
+
+    #[test]
+    fn a_constant_may_be_built_from_another() {
+        // `final kDerived = kSpacing * 2.0` is still a module constant.
+        assert_eq!(K_DERIVED, 16.0);
+    }
+
+    #[test]
+    fn a_method_reads_the_right_constant() {
+        // Two different constants are read, so one standing in for the other
+        // would change an answer rather than pass unnoticed.
+        let l = toplevel::Layout::new(4);
+        assert_eq!(l.total_spacing(), 24.0);
+        assert!(!l.is_full());
+        assert!(toplevel::Layout::new(10).is_full());
+    }
+
+    #[test]
+    fn a_computed_getter_is_not_a_constant() {
+        // `get computed => ...` is a function, not a stored value, so the
+        // method reading it is refused rather than emitted against a constant
+        // that was never written.
+        let emitted = include_str!("toplevel.rs");
+        assert!(
+            emitted.contains("NOT TRANSLATED: Layout: unsupported top-level getter"),
+            "expected usesComputed to be refused, got:
+{emitted}"
+        );
+        assert!(!emitted.contains("const COMPUTED"));
     }
 }

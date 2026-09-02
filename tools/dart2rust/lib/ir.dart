@@ -161,6 +161,17 @@ class IrNullCheck extends IrExpr {
   final IrExpr operand;
 }
 
+/// A reference to a top-level constant: `kMinInteractiveDimension`.
+///
+/// Dart has module-level names and so does Rust, so this needs no owner. It is
+/// its own node rather than an [IrStatic] with an empty owner because a name
+/// with no owner is not a static field with a missing one.
+class IrTopLevel extends IrExpr {
+  const IrTopLevel(this.name);
+
+  final String name;
+}
+
 /// `this`.
 class IrThis extends IrExpr {
   const IrThis();
@@ -424,9 +435,14 @@ class IrClass {
 /// `AlignmentGeometry` is abstract and what it requires, and neither fact is
 /// visible from inside `Alignment`.
 class IrLibrary {
-  IrLibrary(this.classes);
+  IrLibrary(this.classes, {this.constants = const []});
 
   final List<IrClass> classes;
+
+  /// Top-level `const`s and `final`s. Dart puts 241 of them under
+  /// `package:flutter` alone -- `kMinInteractiveDimension`, `kIsWeb` -- and
+  /// they are referred to 507 times.
+  final List<IrConstDecl> constants;
 
   IrClass? operator [](String? name) {
     if (name == null) return null;

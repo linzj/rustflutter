@@ -145,6 +145,11 @@ class KernelFrontend {
     final target = node.target;
     final enclosing = target.enclosingClass;
     if (enclosing == null) {
+      // A top-level name. A `const` or `final` is a module constant in Rust
+      // too; a computed `get foo => ...` is a function and stops here.
+      if (target is Field && (target.isConst || target.isFinal)) {
+        return IrTopLevel(target.name.text);
+      }
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
     }
     return IrStatic(enclosing.name, target.name.text,
@@ -401,7 +406,19 @@ class KernelFrontend {
 
   (IrLibrary, List<String>) lowerLibrary() {
     final classes = <IrClass>[];
+    final constants = <IrConstDecl>[];
     final refused = <String>[];
+    for (final field in library.fields) {
+      if (!field.isConst && !field.isFinal) continue;
+      final init = field.initializer;
+      if (init == null) continue;
+      try {
+        constants.add(IrConstDecl(
+            field.name.text, _type(field.type), expression(init)));
+      } on Unsupported catch (error) {
+        refused.add('top-level ${field.name.text}: $error');
+      }
+    }
     for (final cls in library.classes) {
       // Anonymous mixin applications stay skipped: they are the CFE's own
       // synthetic classes, not something upstream wrote. Private classes do
@@ -411,7 +428,7 @@ class KernelFrontend {
       classes.add(lowered);
       refused.addAll(problems.map((p) => '${cls.name}: $p'));
     }
-    return (IrLibrary(classes), refused);
+    return (IrLibrary(classes, constants: constants), refused);
   }
 
   (IrClass, List<String>) lowerClass(Class node) {

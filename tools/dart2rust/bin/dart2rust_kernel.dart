@@ -53,7 +53,7 @@ Future<void> main(List<String> args) async {
   }
 
   final (lib, refused) = KernelFrontend(matches.first).lowerLibrary();
-  final (rust, backendRefused) = RustBackend.emitLibrary(lib);
+  final (rust, backendRefused) = RustBackend.emitLibrary(lib, frontEndRefusals: refused);
   refused.addAll(backendRefused);
 
   stderr.writeln('${lib.classes.length} classes '

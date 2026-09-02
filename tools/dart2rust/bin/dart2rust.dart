@@ -61,7 +61,7 @@ Future<void> main(List<String> args) async {
   if (wanted == '--all') {
     final frontend = Frontend('');
     final (lib, refused) = frontend.lowerLibrary(resolved.unit);
-    final (rust, backendRefused) = RustBackend.emitLibrary(lib);
+    final (rust, backendRefused) = RustBackend.emitLibrary(lib, frontEndRefusals: refused);
     refused.addAll(backendRefused);
     stderr.writeln('${lib.classes.length} classes '
         '(${lib.classes.where((c) => c.isAbstract).length} abstract), '

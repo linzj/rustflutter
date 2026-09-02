@@ -143,7 +143,46 @@ class Frontend {
     if (element is FormalParameterElement || element is LocalVariableElement) {
       return IrLocal(node.name);
     }
-    throw Unsupported('identifier of ${element.runtimeType}', node.toSource());
+    // A top-level `const`/`final` is a module constant in Rust too. Analyzer
+    // models one as a *synthetic* getter -- the same distinction that separates
+    // a field from a real getter -- so a non-synthetic top-level getter is a
+    // computed `get foo => ...` and still stops.
+    if (element is GetterElement &&
+        element.isSynthetic &&
+        (enclosingOf(element) == null)) {
+      return IrTopLevel(node.name);
+    }
+    // The refusal names *where* the thing is declared, not what analyzer's
+    // class for it happens to be called. "identifier of GetterElementImpl"
+    // says nothing about the work; "top-level getter" says it is a module
+    // constant and "getter on an extension" says it is something else again.
+    final enclosing = element.enclosingElement;
+    final where = switch (enclosing) {
+      null => 'top-level',
+      LibraryElement() => 'top-level',
+      LibraryFragment() => 'top-level',
+      ExtensionElement() => 'on an extension',
+      MixinElement() => 'on a mixin',
+      EnumElement() => 'on an enum',
+      InterfaceElement() => 'on a class',
+      _ => 'in ${enclosing.runtimeType}',
+    };
+    final kind = switch (element) {
+      GetterElement() => 'getter',
+      SetterElement() => 'setter',
+      MethodElement() => 'method',
+      FieldElement() => 'field',
+      _ => element.runtimeType.toString(),
+    };
+    throw Unsupported('$where $kind `${node.name}`', node.toSource());
+  }
+
+  /// The class, mixin or enum a member belongs to, or null when it is
+  /// top-level. Analyzer reaches a library through a fragment, so "no enclosing
+  /// interface" is the question, not "enclosing is a library".
+  InterfaceElement? enclosingOf(Element element) {
+    final enclosing = element.enclosingElement;
+    return enclosing is InterfaceElement ? enclosing : null;
   }
 
   IrExpr _prefixed(PrefixedIdentifier node) {
@@ -493,8 +532,26 @@ class Frontend {
   /// and neither fact can be seen from inside `Alignment`.
   (IrLibrary, List<String>) lowerLibrary(CompilationUnit unit) {
     final classes = <IrClass>[];
+    final constants = <IrConstDecl>[];
     final refused = <String>[];
     for (final declaration in unit.declarations) {
+      if (declaration is TopLevelVariableDeclaration) {
+        for (final v in declaration.variables.variables) {
+          if (!declaration.variables.isConst &&
+              !declaration.variables.isFinal) {
+            continue;
+          }
+          final init = v.initializer;
+          if (init == null) continue;
+          try {
+            constants.add(IrConstDecl(v.name.lexeme,
+                _type(declaration.variables.type?.type), expression(init)));
+          } on Unsupported catch (error) {
+            refused.add('top-level ${v.name.lexeme}: $error');
+          }
+        }
+        continue;
+      }
       if (declaration is EnumDeclaration) {
         // An enum is not a ClassDeclaration in analyzer's AST, so it was
         // skipped entirely here while every *reference* to one of its values
@@ -510,7 +567,7 @@ class Frontend {
       classes.add(cls);
       refused.addAll(problems.map((p) => '${cls.name}: $p'));
     }
-    return (IrLibrary(classes), refused);
+    return (IrLibrary(classes, constants: constants), refused);
   }
 
   /// Lowers a plain enum. An enhanced one -- with fields, a constructor or

@@ -158,6 +158,7 @@ class RustBackend {
       IrSuperCall(:final base, :final name, :final args) =>
         _superCall(base, name, args),
       IrNullCheck(:final operand) => '${expr(operand)}.unwrap()',
+      IrTopLevel(:final name) => screamingSnake(name),
     };
   }
 
@@ -423,9 +424,37 @@ class RustBackend {
   /// threw away the whole file -- including the classes that were fine. A
   /// compiler that produces nothing because of one bad class is much less
   /// useful than one that produces the rest and says which is missing.
-  static (String, List<String>) emitLibrary(IrLibrary library) {
+  static (String, List<String>) emitLibrary(IrLibrary library,
+      {List<String> frontEndRefusals = const []}) {
     final out = StringBuffer();
     final refused = <String>[];
+    if (frontEndRefusals.isNotEmpty) {
+      // The front end's refusals belong in the file too. The backend has always
+      // left a `// NOT TRANSLATED` where it stopped, but a member the *front
+      // end* refused never reaches the backend at all, so the output said
+      // nothing about it and only stderr did. A reader with the file in front
+      // of them should not have to have kept the console.
+      out.writeln('// The front end refused '
+          '${frontEndRefusals.length} member(s) in this library:');
+      for (final refusal in frontEndRefusals) {
+        out.writeln('// NOT TRANSLATED: $refusal');
+      }
+      out.writeln();
+    }
+    if (library.constants.isNotEmpty) {
+      // Module constants first: Dart's top-level names become Rust's, needing
+      // no owner on either side.
+      final holder = RustBackend(IrClass('<library>'), library: library);
+      for (final constant in library.constants) {
+        holder._member('top-level ${constant.name}', () {
+          holder._line('pub const ${screamingSnake(constant.name)}: '
+              '${holder.type(constant.type)} = ${holder.expr(constant.value)};');
+        });
+      }
+      out.write(holder._out.join('\n'));
+      out.writeln();
+      out.writeln();
+    }
     for (final cls in library.classes) {
       try {
         out.write(RustBackend(cls, library: library).emit());
@@ -1089,6 +1118,7 @@ class _WalkSelf {
       case IrLiteral():
       case IrLocal():
       case IrStatic():
+      case IrTopLevel():
       case IrThis():
     }
   }
