@@ -216,7 +216,11 @@ class RustBackend {
       return t.nullable ? 'Option<$vec>' : vec;
     }
     final mapped = _primitives[t.name] ?? t.name;
-    return t.nullable ? 'Option<$mapped>' : mapped;
+    // `Foo<int>` was coming out as a bare `Foo`, which is a different type.
+    final spelled = t.arguments.isEmpty || _primitives.containsKey(t.name)
+        ? mapped
+        : '$mapped<${t.arguments.map((a) => type(a)).join(', ')}>';
+    return t.nullable ? 'Option<$spelled>' : spelled;
   }
 
   // -- Expressions ------------------------------------------------------------
@@ -889,7 +893,11 @@ class RustBackend {
   String _ref(IrExpr e) => e is IrThis ? _selfName : expr(e);
 
   String _new(IrType t, List<IrExpr> args, String? constructor) {
-    final name = type(t);
+    // `Pair::<i64, f32>::new(..)`, not `Pair<i64, f32>::new(..)`: in an
+    // *expression* Rust wants the turbofish, and the plain form does not parse.
+    final name = t.arguments.isEmpty
+        ? type(t)
+        : '${t.name}::<${t.arguments.map((a) => type(a)).join(', ')}>';
     final ctor = _ctorName(constructor);
     return '$name::$ctor(${args.map(expr).join(', ')})';
   }
@@ -1380,6 +1388,41 @@ class RustBackend {
     _indent--;
     _line('}');
     return _out.join('\n') + '\n';
+  }
+
+  /// `<T>` for a class or method that has parameters, and nothing otherwise.
+  String _generics(Object owner) {
+    final params = switch (owner) {
+      IrClass(:final typeParameters) => typeParameters,
+      IrMethod(:final typeParameters) => typeParameters,
+      _ => const <String>[],
+    };
+    return params.isEmpty ? '' : '<${params.join(', ')}>';
+  }
+
+  /// Type parameters no field mentions.
+  ///
+  /// Rust refuses an unused parameter; Dart does not care. Anything the fields
+  /// do not name gets a `PhantomData` so the declaration stays legal without
+  /// changing what the class holds.
+  List<String> _unusedParameters(IrClass of) {
+    if (of.typeParameters.isEmpty) return const [];
+    final used = <String>{};
+    void mark(IrType t) {
+      used.add(t.name);
+      t.arguments.forEach(mark);
+      t.parameters?.forEach(mark);
+      final returns = t.returns;
+      if (returns != null) mark(returns);
+    }
+
+    for (final field in _allFields(of)) {
+      mark(field.type);
+    }
+    return [
+      for (final p in of.typeParameters)
+        if (!used.contains(p)) p,
+    ];
   }
 
   /// Whether a Rust type is `Copy`.
@@ -1928,17 +1971,26 @@ class RustBackend {
     // compiler's own line and it should not write one it knows is wrong.
     final copyable = _allFields(cls).every((f) => _isCopy(type(f.type)));
     _line('#[derive(Clone, ${copyable ? 'Copy, ' : ''}Debug, PartialEq)]');
-    _line('${_vis(cls.name)}struct ${cls.name} {');
+    _line('${_vis(cls.name)}struct ${cls.name}${_generics(cls)} {');
     _indent++;
     for (final field in _allFields(cls)) {
       _doc(field.doc);
       _line('${_vis(field.name)}${snake(field.name)}: ${type(field.type)},');
     }
+    // A Dart class can name a type parameter it never stores -- `Tween<T>`
+    // holds `begin` and `end` of type `T?`, but plenty do not. Rust will not
+    // have an unused parameter, and `PhantomData` is what it offers instead.
+    for (final unused in _unusedParameters(cls)) {
+      _line(
+        '_phantom_${snake(unused)}: '
+        'std::marker::PhantomData<$unused>,',
+      );
+    }
     _indent--;
     _line('}');
     _line('');
 
-    _line('impl ${cls.name} {');
+    _line('impl${_generics(cls)} ${cls.name}${_generics(cls)} {');
     _indent++;
     _emitConstructors();
     _emitConstants();
@@ -2130,6 +2182,12 @@ class RustBackend {
       }
       _line('${snake(field.name)}: ${expr(init)},');
     }
+    // The phantom fields the struct declaration added. They hold nothing, and
+    // leaving them out of the literal is a missing field rather than a
+    // harmless omission.
+    for (final unused in _unusedParameters(cls)) {
+      _line('_phantom_${snake(unused)}: std::marker::PhantomData,');
+    }
     _indent--;
     final body = ctor.body;
     if (body == null) {
@@ -2218,7 +2276,7 @@ class RustBackend {
           if (library.isAbstract(p.type.name)) p.name,
       };
       _line(
-        '${_vis(method.name)}fn ${_rustName(method)}($params) -> $returns {',
+        '${_vis(method.name)}fn ${_rustName(method)}${_generics(method)}($params) -> $returns {',
       );
       _indent++;
       _returns = method.returnType;

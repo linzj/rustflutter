@@ -1396,6 +1396,10 @@ class Frontend {
     final element = node.declaredFragment?.element;
     final cls = IrClass(
       node.name.lexeme,
+      typeParameters: [
+        for (final p in node.typeParameters?.typeParameters ?? const [])
+          p.name.lexeme,
+      ],
       superclass: node.extendsClause?.superclass.name.lexeme,
       isAbstract: node.abstractKeyword != null,
       doc: _doc(node),
@@ -1587,6 +1591,10 @@ class Frontend {
         params,
         _type(member.returnType?.type),
         member.isAbstract ? const IrBlock([]) : body(member.body),
+        typeParameters: [
+          for (final p in member.typeParameters?.typeParameters ?? const [])
+            p.name.lexeme,
+        ],
         isStatic: member.isStatic,
         isGetter: member.isGetter,
         isSetter: member.isSetter,

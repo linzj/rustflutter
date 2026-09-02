@@ -968,7 +968,12 @@ class KernelFrontend {
         for (final e in constant.fieldValues.entries)
           e.key.asField.name.text: e.value,
       };
-      final rebuilt = _asConstructorCall(cls, byName, node);
+      final rebuilt = _asConstructorCall(
+        cls,
+        byName,
+        node,
+        constant.typeArguments,
+      );
       if (rebuilt != null) return rebuilt;
       return IrConstInstance(IrType(cls.name), {
         for (final entry in byName.entries)
@@ -984,6 +989,7 @@ class KernelFrontend {
     Class cls,
     Map<String, Constant> byName,
     Expression node,
+    List<DartType> typeArguments,
   ) {
     final ctor = cls.constructors.where((c) => c.name.text.isEmpty).toList();
     if (ctor.length != 1) return null;
@@ -1008,8 +1014,17 @@ class KernelFrontend {
       if (value == null) return null;
       args.add(_constant(value, node));
     }
-    return IrNew(IrType(cls.name), args);
+    return IrNew(_constantType(cls, typeArguments), args);
   }
+
+  /// The type of a rebuilt constant, type arguments and all.
+  ///
+  /// Dropped, `const Pair<int, double>(3, 4.5)` came out as `Pair::new(..)`
+  /// against the analyzer front end's `Pair::<i64, f32>::new(..)`. Both are
+  /// valid Rust -- inference would have got there -- but the two front ends
+  /// saying different things is the one thing the fixtures exist to catch.
+  IrType _constantType(Class cls, List<DartType> typeArguments) =>
+      IrType(cls.name, arguments: [for (final t in typeArguments) _type(t)]);
 
   // There was a `_refusePrivate` here. It is gone, and its going is the point
   // of this round: skipping private members is right when translating one file
@@ -1470,6 +1485,7 @@ class KernelFrontend {
         : (enumValues[node] ?? const <String>[]);
     final cls = IrClass(
       node.name,
+      typeParameters: [for (final p in node.typeParameters) p.name ?? 'T'],
       superclass: node.isEnum || base == null || base.name == 'Object'
           ? null
           : base.name,
@@ -1655,6 +1671,9 @@ class KernelFrontend {
       params,
       _type(node.function.returnType),
       node.isAbstract ? const IrBlock([]) : _body(node.function),
+      typeParameters: [
+        for (final p in node.function.typeParameters) p.name ?? 'T',
+      ],
       isStatic: node.isStatic,
       isGetter: node.kind == ProcedureKind.Getter,
       isSetter: node.kind == ProcedureKind.Setter,

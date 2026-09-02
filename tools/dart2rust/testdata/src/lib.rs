@@ -299,6 +299,9 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod generic;
+pub use generic::{Boxes, Pair, Tagged};
+
 mod freefn;
 pub use freefn::{halve, thrice, Gauge};
 
@@ -1524,5 +1527,31 @@ mod tests {
         let g = Gauge::new(9.0);
         assert_eq!(g.reduced(), 4.5);
         assert_eq!(g.amplified(), 13.5);
+    }
+
+    // -- generics --------------------------------------------------------------
+
+    #[test]
+    fn a_class_with_two_type_parameters() {
+        let p = Pair::<i64, f32>::new(3, 4.5);
+        assert_eq!(p.first, 3);
+        assert_eq!(p.second, 4.5);
+        assert_eq!(Boxes::new().made(), p);
+    }
+
+    #[test]
+    fn a_parameter_no_field_mentions() {
+        // Dart does not mind an unused type parameter and Rust will not have
+        // one, so it becomes a PhantomData -- which the constructor has to
+        // fill in too, or the struct literal is a field short.
+        let t = Tagged::<String>::new(21);
+        assert_eq!(t.doubled(), 42);
+    }
+
+    #[test]
+    fn a_method_with_its_own_parameter() {
+        // Separate from the class's, which has none.
+        assert_eq!(Boxes::new().first_of(7, 9), 7);
+        assert_eq!(Boxes::new().first_of(1.5, 2.5), 1.5);
     }
 }

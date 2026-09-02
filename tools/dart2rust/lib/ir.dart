@@ -879,12 +879,26 @@ class IrConstDecl {
   final bool isLazy;
 }
 
+/// A class's or method's type parameters, as names.
+///
+/// Measured before it was built: of `package:flutter/`'s 2743 classes, 234
+/// are generic, 221 of those with exactly one parameter and 13 with two; 98
+/// methods carry their own. So the feature needed is small.
+///
+/// Bounds are **dropped**, and that is a stated cost rather than an oversight:
+/// 72 of the 247 parameters have one, and a Dart bound names a class where
+/// Rust wants a trait. Only an abstract class is a trait here, so most bounds
+/// have nothing to become -- and dropping one is more permissive than Dart,
+/// which loses a check and cannot make correct code fail.
+typedef IrTypeParams = List<String>;
+
 class IrMethod {
   const IrMethod(
     this.name,
     this.params,
     this.returnType,
     this.body, {
+    this.typeParameters = const [],
     this.isStatic = false,
     this.isGetter = false,
     this.isSetter = false,
@@ -894,6 +908,7 @@ class IrMethod {
   });
 
   final String name;
+  final IrTypeParams typeParameters;
   final List<IrParam> params;
   final IrType returnType;
   final IrStmt body;
@@ -973,6 +988,7 @@ class IrConstructor {
 class IrClass {
   IrClass(
     this.name, {
+    this.typeParameters = const [],
     this.superclass,
     this.isAbstract = false,
     this.isEnum = false,
@@ -981,6 +997,9 @@ class IrClass {
   });
 
   final String name;
+
+  /// `class Foo<T>` -- the names, in order. See [IrTypeParams].
+  final IrTypeParams typeParameters;
   final String? superclass;
 
   /// Whether Dart declared it `abstract`.
