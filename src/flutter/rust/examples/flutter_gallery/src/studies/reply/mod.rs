@@ -18,4 +18,5 @@ pub mod model;
 pub mod profile_avatar;
 pub mod routes;
 pub mod search_page;
+pub mod theme;
 pub mod waterfall_notched_rectangle;

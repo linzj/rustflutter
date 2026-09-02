@@ -10,7 +10,7 @@
 //! whose radius is half the (square) box -- a rounded rect with that radius
 //! on a square IS the circle. Divergence, visually nil.
 
-use rustflutter::framework::{leaf, AnyWidget, BuildContext, Component};
+use rustflutter::framework::{AnyWidget, BuildContext, Component, leaf};
 use rustflutter::painting::Image;
 use rustflutter::render::BoxFit;
 use rustflutter::widgets::{ClipRRect, Container, ImageView};
@@ -36,8 +36,9 @@ impl ProfileAvatar {
 impl Component for ProfileAvatar {
     fn build(&self, context: &mut BuildContext) -> AnyWidget {
         // Upstream's `backgroundColor: Theme.of(context).cardColor`, read from
-        // the study's own theme rather than the gallery's.
-        let card = super::app::reply_theme_of(context).card;
+        // the study's own theme rather than the gallery's. `cardColor` is the
+        // `surface` slot here -- see `reply/theme.rs`'s mapping table.
+        let card = super::app::reply_theme_of(context).surface;
         let avatar = self.avatar;
         let radius = self.radius;
         // Keyed by the upstream asset path, so the photograph decodes once

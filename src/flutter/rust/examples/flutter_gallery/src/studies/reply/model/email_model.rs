@@ -67,6 +67,20 @@ impl MailboxPageType {
         }
     }
 
+    /// The label the bottom app bar shows for this mailbox -- upstream's
+    /// `_Destination.textLabel`, which comes from the localizations
+    /// (`replyInboxLabel` and friends, `intl_en.arb`).
+    pub fn label(self) -> &'static str {
+        match self {
+            MailboxPageType::Inbox => "Inbox",
+            MailboxPageType::Starred => "Starred",
+            MailboxPageType::Sent => "Sent",
+            MailboxPageType::Trash => "Trash",
+            MailboxPageType::Spam => "Spam",
+            MailboxPageType::Drafts => "Drafts",
+        }
+    }
+
     /// All six, in upstream's declaration order -- the navigation destinations
     /// are built in this order.
     pub const ALL: [MailboxPageType; 6] = [
@@ -97,6 +111,16 @@ mod tests {
         assert_eq!(
             names,
             ["inbox", "starred", "sent", "trash", "spam", "drafts"]
+        );
+    }
+
+    #[test]
+    fn the_labels_are_upstreams_english_strings() {
+        // intl_en.arb: replyInboxLabel .. replyDraftsLabel.
+        let labels: Vec<&str> = MailboxPageType::ALL.iter().map(|p| p.label()).collect();
+        assert_eq!(
+            labels,
+            ["Inbox", "Starred", "Sent", "Trash", "Spam", "Drafts"]
         );
     }
 

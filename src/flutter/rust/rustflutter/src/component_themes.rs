@@ -5476,7 +5476,7 @@ impl ResolvedTimePicker {
                     )
                 }
             }),
-            /// The line above the picker -- "Select time".
+            // The line above the picker -- "Select time".
             help_text_style: data.help_text_style.clone().or_else(|| {
                 if material3 {
                     theme

@@ -357,7 +357,7 @@ impl MultiSelectableSelectionContainerDelegate {
         from: usize,
     ) -> (Option<usize>, SelectionResult) {
         let mut new_index: Option<usize> = None;
-        let mut result = SelectionResult::None;
+        let result = SelectionResult::None;
         let mut forward: Option<bool> = None;
         let mut index = from;
 

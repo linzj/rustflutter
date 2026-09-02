@@ -25,14 +25,18 @@ pub mod reply;
 pub mod shrine;
 pub mod starter;
 
-use rustflutter::framework::{leaf, AnyWidget, StateHandle};
+use rustflutter::framework::{AnyWidget, StateHandle, leaf};
 use rustflutter::prelude::*;
 
 use crate::app::{self, GalleryState};
 use crate::data::demos as catalog;
 
 /// What the studies remember.
-#[derive(Clone, Debug, Default)]
+///
+/// No `Debug`: a [`Scroll`](rustflutter::scrolling::Scroll) carries the
+/// activity driving it and does not print, which is the same reason
+/// `GalleryState` does not derive one.
+#[derive(Clone, Default)]
 pub struct StudyState {
     /// Shrine's category filter.
     pub filter: usize,
@@ -40,6 +44,13 @@ pub struct StudyState {
     pub cart: u32,
     /// Crane's tab.
     pub tab: usize,
+    /// Reply's `EmailStore` -- upstream's `ChangeNotifierProvider` at the
+    /// study root, which has nowhere else to live here. See
+    /// `reply::app::ReplyState`.
+    pub reply: reply::app::ReplyState,
+    /// Reply's mailbox scroll -- upstream's `MailboxBody` is a `ListView`,
+    /// and this port's list needs the offset held outside the tree.
+    pub reply_scroll: rustflutter::scrolling::Scroll,
 }
 
 pub fn page(
@@ -51,7 +62,7 @@ pub fn page(
         "rally" => rally::home::screen(state, handle.clone()),
         "shrine" => shrine::home::screen(state, handle.clone()),
         "crane" => crane::backdrop::screen(state, handle.clone()),
-        "reply" => reply::app::screen(),
+        "reply" => reply::app::screen(state, handle.clone()),
         "fortnightly" => fortnightly::app::screen(),
         "starterApp" => starter::home::screen(),
         other => not_written_yet(other),

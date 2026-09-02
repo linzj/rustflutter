@@ -174,7 +174,7 @@ pub fn register_fonts() {
 /// takes these from Material rather than from its own font, so they all
 /// live in [`MATERIAL_ICONS`].
 #[allow(dead_code)] // The complete set upstream uses; not every screen
-                    // that will want one exists yet.
+// that will want one exists yet.
 pub mod icon {
     pub const ARROW_BACK: &str = "\u{e092}";
     pub const SETTINGS: &str = "\u{e57f}";
@@ -211,6 +211,11 @@ pub mod icon {
     pub const EMAIL: &str = "\u{e22a}";
     pub const VISIBILITY: &str = "\u{e6bd}";
     pub const VISIBILITY_OFF: &str = "\u{e6be}";
+    // Reply's bottom app bar: the drawer's drop arrow and the compose
+    // button's pencil (upstream's `Icons.arrow_drop_up` and `Icons.create`).
+    // Its search action is `SEARCH`, already here.
+    pub const ARROW_DROP_UP: &str = "\u{e09a}";
+    pub const CREATE: &str = "\u{e19d}";
 }
 
 const BLUE: Color = Color::rgb(0x54, 0xC5, 0xF8);

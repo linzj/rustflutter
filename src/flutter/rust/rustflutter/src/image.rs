@@ -30,9 +30,9 @@ pub trait AssetBundle {
     fn load(&self, key: &str) -> Option<Vec<u8>>;
 }
 
-/// The root bundle, what `AssetImage` reads through when no other was
-/// given -- upstream's `rootBundle`, waiting for the services wave to give
-/// it a platform-backed implementation.
+// The root bundle, what `AssetImage` reads through when no other was
+// given -- upstream's `rootBundle`, waiting for the services wave to give
+// it a platform-backed implementation.
 thread_local! {
     static ROOT_BUNDLE: RefCell<Option<Rc<dyn AssetBundle>>> = const { RefCell::new(None) };
 }

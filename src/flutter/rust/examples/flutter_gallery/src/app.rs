@@ -457,6 +457,8 @@ impl StatefulComponent for Gallery {
         for column in &mut state.category_columns {
             flinging |= column.advance(frame_time_micros);
         }
+        // Reply's mailbox, for the same reason.
+        flinging |= state.study.reply_scroll.advance(frame_time_micros);
 
         // Only ask for another frame when something is actually moving. A
         // gallery that always asked would hold a core at sixty frames a second

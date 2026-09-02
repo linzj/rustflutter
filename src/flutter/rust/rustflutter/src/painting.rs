@@ -3011,7 +3011,7 @@ pub mod matrix_utils {
     fn safe_transform_rect(transform: Matrix4, rect: Rect) -> Rect {
         let s = &transform.storage;
         let is_affine = s[3] == 0.0 && s[7] == 0.0 && s[15] == 1.0;
-        let mut accumulate = |x: f32, y: f32, min_max: &mut [f32; 4], first: bool| {
+        let accumulate = |x: f32, y: f32, min_max: &mut [f32; 4], first: bool| {
             let w = if is_affine {
                 1.0
             } else {

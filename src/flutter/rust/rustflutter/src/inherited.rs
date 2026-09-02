@@ -430,16 +430,14 @@ impl LookupBoundary {
         ancestors: &[AncestorEntry],
         widget_type: &str,
     ) -> LookupOutcome {
-        let mut depended_on_boundary = false;
         for entry in ancestors {
             if entry.is_boundary {
-                depended_on_boundary = true;
                 break;
             }
             if entry.widget_type == widget_type {
                 return LookupOutcome {
                     found: Some(entry.element),
-                    depended_on_boundary,
+                    depended_on_boundary: false,
                 };
             }
         }
