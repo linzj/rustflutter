@@ -728,6 +728,13 @@ class Frontend {
     // `clampDouble(a, b, c)` came out as `self.clamp_double(a, b, c)`, which is
     // both wrong and a place the two front ends disagreed -- the Kernel one
     // refuses a top-level call outright.
+    if (element is TopLevelFunctionElement) {
+      return IrStaticCall(
+        null,
+        node.methodName.name,
+        _arguments(node.argumentList, element, node),
+      );
+    }
     if (element != null && element.enclosingElement is! ClassElement) {
       final enclosing = element.enclosingElement;
       if (enclosing is! InterfaceElement) {
@@ -1268,6 +1275,7 @@ class Frontend {
   (IrLibrary, List<String>) lowerLibrary(CompilationUnit unit) {
     final classes = <IrClass>[];
     final constants = <IrConstDecl>[];
+    final functions = <IrMethod>[];
     final refused = <String>[];
     for (final declaration in unit.declarations) {
       if (declaration is TopLevelVariableDeclaration) {
@@ -1302,12 +1310,52 @@ class Frontend {
         refused.addAll(problems.map((p) => '${cls.name}: $p'));
         continue;
       }
+      if (declaration is FunctionDeclaration) {
+        try {
+          functions.add(_lowerTopLevel(declaration));
+        } on Unsupported catch (error) {
+          refused.add('top-level ${declaration.name.lexeme}: $error');
+        }
+        continue;
+      }
       if (declaration is! ClassDeclaration) continue;
       final (cls, problems) = lowerClass(declaration);
       classes.add(cls);
       refused.addAll(problems.map((p) => '${cls.name}: $p'));
     }
-    return (IrLibrary(classes, constants: constants), refused);
+    return (
+      IrLibrary(classes, constants: constants, functions: functions),
+      refused,
+    );
+  }
+
+  /// A top-level function, as a method with no receiver.
+  IrMethod _lowerTopLevel(FunctionDeclaration node) {
+    if (node.isGetter || node.isSetter) {
+      throw Unsupported('a top-level accessor', node.name.lexeme);
+    }
+    final function = node.functionExpression;
+    final params = <IrParam>[];
+    for (final p in function.parameters?.parameters ?? const []) {
+      final inner = p is DefaultFormalParameter ? p.parameter : p;
+      final name = inner.name?.lexeme;
+      if (name == null) throw Unsupported('unnamed parameter', p.toSource());
+      params.add(
+        IrParam(
+          name,
+          _type(inner.declaredFragment?.element.type),
+          named: p.isNamed,
+        ),
+      );
+    }
+    return IrMethod(
+      node.name.lexeme,
+      params,
+      _type(node.returnType?.type),
+      body(function.body),
+      isStatic: true,
+      doc: _doc(node),
+    );
   }
 
   /// Lowers a plain enum. An enhanced one -- with fields, a constructor or

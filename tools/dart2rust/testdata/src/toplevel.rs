@@ -1,4 +1,5 @@
-// The front end refused 1 member(s) in this library:
+// The front end refused 2 member(s) in this library:
+// NOT TRANSLATED: top-level computed: unsupported a top-level accessor: computed
 // NOT TRANSLATED: Layout: unsupported top-level getter `computed`: computed
 
 pub const K_SPACING: f32 = 8.0;

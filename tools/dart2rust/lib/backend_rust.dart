@@ -456,7 +456,19 @@ class RustBackend {
   /// and removing that blunt rule brought it back. The precise rule is the same
   /// one `_superCall` uses -- if the callee is in this file, it has to be in the
   /// IR.
-  String _staticCall(String owner, String name, List<IrExpr> args) {
+  String _staticCall(String? owner, String name, List<IrExpr> args) {
+    if (owner == null) {
+      // A top-level function: no owner in either language. Checked against
+      // what this file emits, for the same reason a static call is -- a call
+      // to something refused would name a function nobody wrote.
+      if (!library.functions.any((f) => f.name == name)) {
+        throw Unsupported(
+          'call to top-level `$name`, which was not translated',
+          '$name(...)',
+        );
+      }
+      return '${snake(name)}(${args.map(expr).join(', ')})';
+    }
     final target = library[owner];
     if (target != null &&
         !target.methods.any((m) => m.name == name && m.operator == null)) {
@@ -1147,6 +1159,24 @@ class RustBackend {
       }
       out.writeln();
     }
+    if (library.functions.isNotEmpty) {
+      // Free functions, written before the classes so a class body reading one
+      // is looking at something already declared -- Rust does not care, and a
+      // reader does.
+      final holder = RustBackend(IrClass('<library>'), library: library);
+      for (final function in library.functions) {
+        holder._member('top-level ${function.name}', () {
+          holder._emitFreeFunction(function);
+        });
+      }
+      out.write(holder._out.join('\n'));
+      out.writeln();
+      for (final line in holder._out) {
+        if (line.startsWith('// NOT TRANSLATED:')) {
+          refused.add(line.substring('// NOT TRANSLATED: '.length));
+        }
+      }
+    }
     if (library.constants.isNotEmpty) {
       // Module constants first: Dart's top-level names become Rust's, needing
       // no owner on either side.
@@ -1306,6 +1336,32 @@ class RustBackend {
       !rust.contains('Vec<') &&
       !rust.contains('HashMap<') &&
       !rust.contains('dyn ');
+
+  /// A top-level function.
+  ///
+  /// The same body machinery a method uses, with no `self` -- `_selfName` is
+  /// the lever for that, as it is for a constructor body and for the free
+  /// functions an abstract class's methods become.
+  void _emitFreeFunction(IrMethod method) {
+    _doc(method.doc);
+    final params = method.params.map((p) => _param(p, owned: false)).join(', ');
+    _line(
+      '${_vis(method.name)}fn ${snake(method.name)}($params) -> '
+      '${type(method.returnType)} {',
+    );
+    _indent++;
+    final saved = _selfName;
+    // There is no receiver. Anything in the body that wanted one is a bug in
+    // the front end, not something to paper over here.
+    _selfName = '<no self>';
+    _returns = method.returnType;
+    stmt(method.body, tail: true);
+    _returns = null;
+    _selfName = saved;
+    _indent--;
+    _line('}');
+    _line('');
+  }
 
   /// The bodies of this abstract class's concrete methods, as free functions.
   ///

@@ -148,11 +148,12 @@ class IrCall extends IrExpr {
   final List<IrExpr> args;
 }
 
-/// A static method call: `Alignment.lerp(a, b, t)`.
+/// A static method call: `Alignment.lerp(a, b, t)`, or a top-level one.
 class IrStaticCall extends IrExpr {
   const IrStaticCall(this.owner, this.name, this.args);
 
-  final String owner;
+  /// Null for a top-level function, which needs no owner in either language.
+  final String? owner;
   final String name;
   final List<IrExpr> args;
 }
@@ -1018,9 +1019,18 @@ class IrClass {
 /// `AlignmentGeometry` is abstract and what it requires, and neither fact is
 /// visible from inside `Alignment`.
 class IrLibrary {
-  IrLibrary(this.classes, {this.constants = const []});
+  IrLibrary(
+    this.classes, {
+    this.constants = const [],
+    this.functions = const [],
+  });
 
   final List<IrClass> classes;
+
+  /// Top-level functions. 198 of them under `package:flutter/`, called 522
+  /// times -- and until round 36 this compiler translated classes only, so
+  /// every one of those calls took its member down with it.
+  final List<IrMethod> functions;
 
   /// Top-level `const`s and `final`s. Dart puts 241 of them under
   /// `package:flutter` alone -- `kMinInteractiveDimension`, `kIsWeb` -- and

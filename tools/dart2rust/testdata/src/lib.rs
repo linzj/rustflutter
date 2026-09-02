@@ -299,6 +299,9 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod freefn;
+pub use freefn::{halve, thrice, Gauge};
+
 mod lists;
 pub use lists::Marks;
 
@@ -1508,5 +1511,18 @@ mod tests {
         assert!(t.empty());
         assert_eq!(t.total(), 0);
         assert!(!Marks::new(Marks::starting()).empty());
+    }
+
+    // -- top-level functions ---------------------------------------------------
+
+    #[test]
+    fn a_top_level_function_is_a_free_fn() {
+        // 9.0 halved is 4.5, and thrice that is 13.5 -- three different numbers,
+        // so a call wired to the wrong function would show.
+        assert_eq!(halve(9.0), 4.5);
+        assert_eq!(thrice(9.0), 27.0);
+        let g = Gauge::new(9.0);
+        assert_eq!(g.reduced(), 4.5);
+        assert_eq!(g.amplified(), 13.5);
     }
 }

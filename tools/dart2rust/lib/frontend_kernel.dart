@@ -796,7 +796,20 @@ class KernelFrontend {
       return IrIdentical(expression(positional[0]), expression(positional[1]));
     }
     if (owner == null) {
-      throw Unsupported('top-level call `${target.name.text}`', _sample(node));
+      // A top-level function of *this* library. One from elsewhere is still
+      // refused: the backend checks the name against what this file emits, and
+      // a call to something outside it would name a function nobody wrote.
+      if (target.enclosingLibrary != library) {
+        throw Unsupported(
+          'top-level call `${target.name.text}`',
+          _sample(node),
+        );
+      }
+      return IrStaticCall(
+        null,
+        target.name.text,
+        _arguments(node.arguments, target.function),
+      );
     }
     return IrStaticCall(
       owner,
@@ -1335,6 +1348,24 @@ class KernelFrontend {
         refused.add('top-level ${field.name.text}: $error');
       }
     }
+    final functions = <IrMethod>[];
+    for (final procedure in library.procedures) {
+      // `BaselineOffset|+` and friends are the CFE's lowering of an extension
+      // type's members into top-level functions. They are not what upstream
+      // wrote and they are not translated as though they were.
+      if (procedure.name.text.contains('|')) {
+        refused.add(
+          'top-level ${procedure.name.text}: '
+          'an extension-type member lowered to a function',
+        );
+        continue;
+      }
+      try {
+        functions.add(_lowerTopLevel(procedure));
+      } on Unsupported catch (error) {
+        refused.add('top-level ${procedure.name.text}: $error');
+      }
+    }
     for (final cls in library.classes) {
       // Anonymous mixin applications stay skipped: they are the CFE's own
       // synthetic classes, not something upstream wrote. Private classes do
@@ -1344,7 +1375,29 @@ class KernelFrontend {
       classes.add(lowered);
       refused.addAll(problems.map((p) => '${cls.name}: $p'));
     }
-    return (IrLibrary(classes, constants: constants), refused);
+    return (
+      IrLibrary(classes, constants: constants, functions: functions),
+      refused,
+    );
+  }
+
+  /// A top-level function, as a method with no receiver.
+  IrMethod _lowerTopLevel(Procedure node) {
+    if (node.kind != ProcedureKind.Method) {
+      throw Unsupported('a top-level ${node.kind.name}', node.name.text);
+    }
+    return IrMethod(
+      node.name.text,
+      [
+        for (final p in node.function.positionalParameters)
+          IrParam(p.cosmeticName ?? '_', _type(p.type)),
+        for (final p in node.function.namedParameters)
+          IrParam(p.parameterName, _type(p.type), named: true),
+      ],
+      _type(node.function.returnType),
+      _body(node.function),
+      isStatic: true,
+    );
   }
 
   (IrClass, List<String>) lowerClass(Class node) {
