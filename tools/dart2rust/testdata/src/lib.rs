@@ -1365,6 +1365,20 @@ mod tests {
     }
 
     #[test]
+    fn a_switch_on_a_string_is_an_if_chain() {
+        // Rust's `match` takes patterns and a string is not one, so this comes
+        // out as the if-else chain it always was. Four different answers, so a
+        // case wired to the wrong arm cannot pass.
+        let p = Placement::new(7.0, 13.0);
+        assert_eq!(p.by_name("wide".to_string()), 7.0);
+        assert_eq!(p.by_name("narrow".to_string()), 13.0);
+        assert_eq!(p.by_name("thin".to_string()), 13.0);
+        assert_eq!(p.by_name("other".to_string()), 23.0);
+        // A carriage return written raw into a Rust literal is a hard error.
+        assert_eq!(p.by_name("crlf\r\n".to_string()), 17.0);
+    }
+
+    #[test]
     fn clamp_keeps_its_bounds() {
         let p = Placement::new(7.0, 13.0);
         assert_eq!(p.bounded(3.0), 7.0);

@@ -72,4 +72,22 @@ impl Placement {
     pub fn bounded(&self, value: f32) -> f32 {
         (value.clamp(self.width, self.height) as f32).max(1.0)
     }
+
+    /// A switch on a **string**. Rust's `match` takes patterns, and
+    /// `"wide".to_string()` is a call, not one -- so this comes out as the
+    /// if-else chain it always was. 266 arms upstream are like this.
+    ///
+    /// The carriage return is here on purpose: written raw into a Rust literal
+    /// it is a hard error, and upstream has 108 of them.
+    pub fn by_name(&self, name: String) -> f32 {
+        if name == "wide".to_string() {
+            return 7.0;
+        } else if name == "narrow".to_string() || name == "thin".to_string() {
+            return 13.0;
+        } else if name == "crlf\r\n".to_string() {
+            return 17.0;
+        } else {
+            return 23.0;
+        }
+    }
 }

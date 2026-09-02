@@ -63,6 +63,26 @@ class Placement {
     return math.max(value.clamp(width, height).toDouble(), 1.0);
   }
 
+  /// A switch on a **string**. Rust's `match` takes patterns, and
+  /// `"wide".to_string()` is a call, not one -- so this comes out as the
+  /// if-else chain it always was. 266 arms upstream are like this.
+  ///
+  /// The carriage return is here on purpose: written raw into a Rust literal
+  /// it is a hard error, and upstream has 108 of them.
+  double byName(String name) {
+    switch (name) {
+      case 'wide':
+        return 7.0;
+      case 'narrow':
+      case 'thin':
+        return 13.0;
+      case 'crlf\r\n':
+        return 17.0;
+      default:
+        return 23.0;
+    }
+  }
+
   /// Refused. The `break` is not the last statement of its case, so it means
   /// "leave the switch early" -- which a Rust match arm cannot do. Dropping it
   /// would compile and would run the line after it.

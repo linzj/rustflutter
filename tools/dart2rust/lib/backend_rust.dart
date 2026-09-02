@@ -503,8 +503,19 @@ class RustBackend {
   /// The backslash has to be doubled *before* the quote is escaped, or the
   /// backslash this step just added would be doubled by the next one. Only
   /// these two characters need it: Rust and Dart agree on the rest.
-  String _escape(String text) =>
-      text.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+  /// A Dart string as a Rust literal.
+  ///
+  /// The backslash and the quote were escaped from the start. The control
+  /// characters were not, and a carriage return written raw into a Rust
+  /// literal is a hard error -- `bare CR not allowed in string` -- 108 times
+  /// across upstream, which mostly writes them inside `\r\n`.
+  String _escape(String text) => text
+      .replaceAll('\\', '\\\\')
+      .replaceAll('"', '\\"')
+      .replaceAll('\r', '\\r')
+      .replaceAll('\n', '\\n')
+      .replaceAll('\t', '\\t')
+      .replaceAll('\u0000', '\\0');
 
   String _literal(String value, IrType t) {
     if (t.name == 'double') {
@@ -865,6 +876,16 @@ class RustBackend {
   static String _lazyName(String owner, String name) =>
       screamingSnake('${owner}_$name');
 
+  /// Whether a case value can be written as a Rust pattern.
+  ///
+  /// An enum variant and an integer or boolean literal can. A string cannot --
+  /// `"x".to_string()` is a call -- and neither can anything computed.
+  static bool _isPattern(IrExpr e) => switch (e) {
+    IrStatic(:final isEnumValue) => isEnumValue,
+    IrLiteral(:final type) => type.name == 'int' || type.name == 'bool',
+    _ => false,
+  };
+
   /// `identical(a, b)`.
   ///
   /// Only with `this` on one side. That is the `operator ==` fast path -- 140
@@ -1140,6 +1161,32 @@ class RustBackend {
       case IrContinue():
         _line('continue;');
       case IrSwitch(:final value, :final cases, :final otherwise):
+        // Rust's `match` takes *patterns*, and only some Dart case values are
+        // one. An enum variant and an integer are; a string is not, and
+        // `"x".to_string()` in an arm is "expected a pattern, found an
+        // expression" -- 266 of those. Those switches become the if-else chain
+        // they always were.
+        if (!cases.every((c) => c.values.every(_isPattern))) {
+          var first = true;
+          for (final one in cases) {
+            final test = one.values
+                .map((v) => '${expr(value)} == ${expr(v)}')
+                .join(' || ');
+            _line('${first ? 'if' : '} else if'} $test {');
+            first = false;
+            _indent++;
+            stmt(one.body);
+            _indent--;
+          }
+          if (otherwise != null) {
+            _line(first ? '{' : '} else {');
+            _indent++;
+            stmt(otherwise);
+            _indent--;
+          }
+          _line('}');
+          return;
+        }
         _line('match ${expr(value)} {');
         _indent++;
         for (final one in cases) {
