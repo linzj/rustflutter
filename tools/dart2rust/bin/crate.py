@@ -29,6 +29,29 @@ TOOL = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 CRATE = os.path.join(TOOL, '.crate')
 
+# Why a second, smaller crate exists.
+#
+# The whole package is 1.13 million lines of Rust in one crate, and one crate
+# is one rustc: on stable the front end is single-threaded, so a machine with
+# 32 cores runs one, for twelve to fifteen minutes. That is most of a round.
+#
+# `--slice` emits a *subset* of the libraries into `.crate-<name>`, with its own
+# target directory, so it neither waits for nor disturbs a full run. The number
+# it prints is not comparable to the full one -- it is a different program --
+# and it is not meant to be: it is for "did this change make things better or
+# worse", which is the question almost every round actually asks. Take the full
+# measurement when the answer matters, not when iterating.
+SLICES = {
+    # Roughly a tenth of the package, and the part most of the work touches:
+    # painting and foundation carry the classes everything else is built from.
+    'core': 'package:flutter/src/foundation,package:flutter/src/painting,'
+            'dart:ui',
+    # Adds the widget layer, where the closures and the mixins are.
+    'widgets': 'package:flutter/src/foundation,package:flutter/src/painting,'
+               'package:flutter/src/widgets,package:flutter/src/animation,'
+               'package:flutter/src/scheduler,dart:ui',
+}
+
 sys.path.insert(0, HERE)
 import dill as dill_tool  # noqa: E402
 
@@ -71,7 +94,15 @@ def main():
     parser.add_argument('--prefix', default='package:,dart:ui')
     parser.add_argument('--fresh', action='store_true',
                         help='drop the incremental cache first')
+    parser.add_argument('--slice', choices=sorted(SLICES),
+                        help='emit only a subset of the libraries, into its '
+                             'own crate, for a fast answer while iterating')
     args = parser.parse_args()
+
+    crate = CRATE
+    if args.slice:
+        crate = CRATE + '-' + args.slice
+        args.prefix = SLICES[args.slice]
 
     scratch = os.path.join(TOOL, '.agree')
     os.makedirs(scratch, exist_ok=True)
@@ -79,12 +110,12 @@ def main():
     if not os.path.exists(config):
         dill_tool.write_config(config, TOOL)
 
-    src = os.path.join(CRATE, 'src')
+    src = os.path.join(crate, 'src')
     os.makedirs(src, exist_ok=True)
     if args.fresh:
         import shutil
-        shutil.rmtree(os.path.join(CRATE, 'target'), ignore_errors=True)
-    io.open(os.path.join(CRATE, 'Cargo.toml'), 'w', encoding='utf-8',
+        shutil.rmtree(os.path.join(crate, 'target'), ignore_errors=True)
+    io.open(os.path.join(crate, 'Cargo.toml'), 'w', encoding='utf-8',
             newline='\n').write(CARGO_TOML)
 
     paths = dill_tool.paths()
@@ -96,7 +127,7 @@ def main():
         return 1
     print(r.stdout.strip())
 
-    r = run(['cargo', 'check', '--message-format=short'], cwd=CRATE,
+    r = run(['cargo', 'check', '--message-format=short'], cwd=crate,
             timeout=3600)
     text = (r.stdout or '') + (r.stderr or '')
     codes = Counter()
