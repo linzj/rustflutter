@@ -161,6 +161,28 @@ class IrNullCheck extends IrExpr {
   final IrExpr operand;
 }
 
+/// `a ?? b`.
+///
+/// Its own node because Rust needs a fact the IR does not otherwise carry: is
+/// the **result** still nullable? `a ?? b` yields a non-null value only when `b`
+/// is non-null, and Rust spells the two differently -- `a.unwrap_or_else(|| b)`
+/// unwraps, `a.or_else(|| b)` does not. Nested `??` is where this shows: in
+/// `a ?? b ?? c` the inner `b ?? c` is non-null but `a ?? b` on its own is not.
+///
+/// [eager] marks a right side with no effects, where the shorter `unwrap_or`
+/// and `or` are safe. Dart's `??` is short-circuit and Rust's `unwrap_or` is
+/// not, and only 23% of the 6764 `??` in `package:flutter` have a right side
+/// that may be evaluated unconditionally.
+class IrIfNull extends IrExpr {
+  const IrIfNull(this.left, this.right,
+      {required this.nullableResult, required this.eager});
+
+  final IrExpr left;
+  final IrExpr right;
+  final bool nullableResult;
+  final bool eager;
+}
+
 /// `x == null`.
 ///
 /// Its own node because Rust asks the question differently: a nullable value is

@@ -1,4 +1,3 @@
-// DIFFERS: Kernel lowers `??` to a `Let`, which is not translated yet, so `withFallback` is refused there and emitted by the analyzer front end. 2046 `Let` refusals stand behind this one.
 // A fixture for Dart's postfix `!`.
 //
 // `b!` says "this is not null; crash if I am wrong", and Rust's `unwrap()` says

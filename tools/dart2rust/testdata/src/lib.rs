@@ -270,6 +270,9 @@ pub use toplevel::{K_DERIVED, K_MAX_ITEMS, K_SPACING, K_VERBOSE};
 mod nulltest;
 pub use nulltest::Maybe;
 
+mod ifnull;
+pub use ifnull::IfNull;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,5 +841,39 @@ mod tests {
         // The shape upstream uses most: test, then unwrap.
         assert_eq!(Maybe::new(None, None).resolve(7.0), 7.0);
         assert_eq!(Maybe::new(Some(3.0), None).resolve(7.0), 3.0);
+    }
+
+    // -- `a ?? b` -------------------------------------------------------------
+    //
+    // Dart's `??` is short-circuit. Rust's `unwrap_or(b)` is not, so it is only
+    // right when `b` has no effects; `boom()` makes the difference observable
+    // by panicking if it is ever called. A fixture whose default was an
+    // ordinary number could not tell the two forms apart.
+
+    #[test]
+    fn a_literal_default_is_used_when_the_value_is_missing() {
+        assert_eq!(IfNull::new(None).with_literal(), 1.0);
+        assert_eq!(IfNull::new(Some(5.0)).with_literal(), 5.0);
+    }
+
+    #[test]
+    fn the_right_side_is_not_evaluated_when_the_left_is_present() {
+        // With `unwrap_or(self.boom())` this panics. That is the whole test:
+        // 77% of upstream's `??` have a call, a constructor or a throw here.
+        assert_eq!(IfNull::new(Some(5.0)).with_call(), 5.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "the right side of ?? was evaluated")]
+    fn the_right_side_is_evaluated_when_the_left_is_missing() {
+        // The partner: short-circuiting must not mean "never".
+        IfNull::new(None).with_call();
+    }
+
+    #[test]
+    fn nested_if_nulls_chain() {
+        assert_eq!(IfNull::new(Some(1.0)).nested(Some(2.0)), 1.0);
+        assert_eq!(IfNull::new(None).nested(Some(2.0)), 2.0);
+        assert_eq!(IfNull::new(None).nested(None), 2.0);
     }
 }

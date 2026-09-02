@@ -160,7 +160,32 @@ class RustBackend {
       IrNullCheck(:final operand) => '${expr(operand)}.unwrap()',
       IrTopLevel(:final name) => screamingSnake(name),
       IrIsNull(:final operand) => '${expr(operand)}.is_none()',
+      IrIfNull() => _ifNull(e as IrIfNull),
     };
+  }
+
+  /// `a ?? b`, in the one of four spellings Rust needs.
+  ///
+  /// Two questions decide it, and both come from the front end because the IR
+  /// carries no expression types:
+  ///
+  /// * **Is the result still nullable?** `a ?? b` is non-null exactly when `b`
+  ///   is. `unwrap_or_else` produces a value, `or_else` produces an Option, and
+  ///   using the wrong one does not type-check -- which is how nested `??`
+  ///   found this, since `a ?? b ?? c` has a nullable `a ?? b` inside it.
+  /// * **May the right side be evaluated eagerly?** Dart's `??` is
+  ///   short-circuit and Rust's `unwrap_or`/`or` are not. Only a literal is
+  ///   safe; 77% of upstream's right-hand sides are calls, constructors or
+  ///   throws.
+  String _ifNull(IrIfNull node) {
+    final left = expr(node.left);
+    final right = expr(node.right);
+    if (node.nullableResult) {
+      return node.eager ? '$left.or($right)' : '$left.or_else(|| $right)';
+    }
+    return node.eager
+        ? '$left.unwrap_or($right)'
+        : '$left.unwrap_or_else(|| $right)';
   }
 
   /// Dart's binary operators in Rust's spelling.
@@ -181,7 +206,24 @@ class RustBackend {
       '&&', '||', '&', '|', '^', '<<', '>>',
     };
     if (op == '~/') return '((${expr(left)} / ${expr(right)}).trunc())';
-    if (op == '??') return '${expr(left)}.unwrap_or(${expr(right)})';
+    if (op == '??') {
+      // Dart's `??` is short-circuit: the right side is evaluated only when the
+      // left is null. Rust's `unwrap_or` evaluates it **always**, so it is right
+      // only for a value that has no effects and costs nothing -- and this used
+      // `unwrap_or` for everything from round two until the corpus was counted.
+      //
+      // Of 6764 `??` in package:flutter only 23% have a literal or constant on
+      // the right. The rest are calls, constructors, and in six places a
+      // `throw` -- where eager evaluation does not give a wrong answer, it
+      // throws unconditionally.
+      //
+      // A literal keeps the shorter form because it reads better and is
+      // provably safe; everything else defers.
+      if (right is IrLiteral) {
+        return '${expr(left)}.unwrap_or(${expr(right)})';
+      }
+      return '${expr(left)}.unwrap_or_else(|| ${expr(right)})';
+    }
     if (!passthrough.contains(op)) {
       throw Unsupported('binary operator `$op`', '${expr(left)} $op ...');
     }
@@ -1106,6 +1148,9 @@ class _WalkSelf {
         expression(operand);
       case IrIsNull(:final operand):
         expression(operand);
+      case IrIfNull(:final left, :final right):
+        expression(left);
+        expression(right);
       case IrConditional(:final condition, :final then, :final otherwise):
         expression(condition);
         expression(then);

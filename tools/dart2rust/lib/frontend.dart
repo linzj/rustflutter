@@ -84,6 +84,16 @@ class Frontend {
           return operator == '==' ? test : IrUnary('!', test);
         }
       }
+      if (operator == '??') {
+        final right = node.rightOperand;
+        return IrIfNull(
+          expression(node.leftOperand),
+          expression(right),
+          nullableResult:
+              node.staticType?.nullabilitySuffix.name == 'question',
+          eager: right is Literal,
+        );
+      }
       return IrBinary(
         operator,
         expression(node.leftOperand),

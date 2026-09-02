@@ -79,6 +79,7 @@ class KernelFrontend {
     if (node is InstanceGet) return _instanceGet(node);
     if (node is StaticGet) return _staticGet(node);
     if (node is InstanceInvocation) return _instanceInvocation(node);
+    if (node is Let) return _let(node);
     if (node is EqualsNull) return IrIsNull(expression(node.expression));
     if (node is EqualsCall) {
       return IrBinary('==', expression(node.left), expression(node.right));
@@ -117,6 +118,54 @@ class KernelFrontend {
     if (node is ConstantExpression) return _constant(node.constant, node);
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
   }
+
+  /// Restores the Dart a `Let` was lowered from.
+  ///
+  /// `Let` is not a Dart construct -- it is the CFE's own temporary, and there
+  /// are 14946 of them under `package:flutter`. Emitting the temporary as
+  /// written would produce Rust nobody could read against upstream, which is
+  /// the judgement round eight already made for operators: restore, do not
+  /// transliterate.
+  ///
+  /// The shape here is `a ?? b`:
+  ///
+  ///     let final T #0 = a in #0 == null ? b : #0
+  ///
+  /// recognised by the else branch being the temporary itself. 6764 of the
+  /// lets are this, 45% of them. The rest still stop -- `a?.b` is 4838 more
+  /// and is the next shape, not this one.
+  IrExpr _let(Let node) {
+    final body = node.body;
+    if (body is ConditionalExpression) {
+      final condition = body.condition;
+      final otherwise = body.otherwise;
+      if (condition is EqualsNull &&
+          _isThe(condition.expression, node.variable) &&
+          _isThe(otherwise, node.variable)) {
+        final value = node.variable.initializer;
+        if (value == null) {
+          throw Unsupported('`??` with no left side', _sample(node));
+        }
+        final right = body.then;
+        return IrIfNull(
+          expression(value),
+          expression(right),
+          // Whether the whole thing is still nullable is the right side's
+          // question: `a ?? b` is non-null exactly when `b` is.
+          // The conditional carries its own static type, so no type context
+          // has to be built to ask this.
+          nullableResult: body.staticType.nullability == Nullability.nullable,
+          eager: right is BasicLiteral || right is ConstantExpression,
+        );
+      }
+    }
+    throw Unsupported('CFE `Let` temporary', _sample(node));
+  }
+
+  // A `Let`'s variable is a `SyntheticVariable`, not a `VariableDeclaration`:
+  // the CFE made it, so it has no declaration to point at.
+  bool _isThe(Expression e, Variable variable) =>
+      e is VariableGet && e.variable == variable;
 
   String _sample(Node node) {
     final text = node.toString().replaceAll('\n', ' ');
