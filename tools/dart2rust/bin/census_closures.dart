@@ -125,11 +125,61 @@ class _Visit extends RecursiveVisitor {
   }
 }
 
+/// Methods that call their closure and are done with it before returning.
+///
+/// A closure handed to one of these does not outlive the call that made it, so
+/// in Rust it can borrow -- `|x| self.f(x)` inside `.iter().map(..).collect()`
+/// compiles with no ownership arrangement at all. That is the whole difference
+/// between the closures that need `Rc` and the ones that need nothing.
+///
+/// `map` and `where` are lazy in Dart and would escape into the returned
+/// Iterable if the result were stored. They are counted here because the
+/// backend already folds a chain ending in `toList()` into one Rust iterator
+/// chain, which is where nearly all of them end.
+const _consuming = {
+  'map',
+  'where',
+  'forEach',
+  'any',
+  'every',
+  'sort',
+  'fold',
+  'reduce',
+  'expand',
+  'firstWhere',
+  'lastWhere',
+  'singleWhere',
+  'indexWhere',
+  'removeWhere',
+  'retainWhere',
+  'takeWhile',
+  'skipWhile',
+  'followedBy',
+  'whereType',
+  'sublist',
+  'toList',
+  'toSet',
+};
+
 /// Every closure written inside a member, including nested ones.
+///
+/// Records for each whether it was written directly as an argument to one of
+/// [_consuming].
 class _Closures extends RecursiveVisitor {
-  _Closures(this.found);
+  _Closures(this.found, this.consumed);
 
   final List<FunctionNode> found;
+  final Set<FunctionNode> consumed;
+
+  @override
+  void visitInstanceInvocation(InstanceInvocation node) {
+    if (_consuming.contains(node.name.text)) {
+      for (final argument in node.arguments.positional) {
+        if (argument is FunctionExpression) consumed.add(argument.function);
+      }
+    }
+    super.visitInstanceInvocation(node);
+  }
 
   @override
   void visitFunctionExpression(FunctionExpression node) {
@@ -160,6 +210,8 @@ void main(List<String> args) {
   final counts = {for (final n in Need.values) n: 0};
   final samples = {for (final n in Need.values) n: <String>[]};
   var members = 0;
+  var borrowing = 0;
+  final borrowingWhere = <String>[];
 
   for (final library in component.libraries) {
     if (!library.importUri.toString().startsWith(prefix)) continue;
@@ -167,7 +219,8 @@ void main(List<String> args) {
       for (final member in cls.members) {
         members++;
         final closures = <FunctionNode>[];
-        member.accept(_Closures(closures));
+        final consumed = <FunctionNode>{};
+        member.accept(_Closures(closures, consumed));
         for (final closure in closures) {
           final visit = _Visit();
           closure.accept(visit);
@@ -175,6 +228,12 @@ void main(List<String> args) {
           final where = samples[visit.need]!;
           if (examples && where.length < 5) {
             where.add('${cls.name}.${member.name.text}');
+          }
+          if (visit.need != Need.none && consumed.contains(closure)) {
+            borrowing++;
+            if (examples && borrowingWhere.length < 5) {
+              borrowingWhere.add('${cls.name}.${member.name.text}');
+            }
           }
         }
       }
@@ -199,5 +258,13 @@ void main(List<String> args) {
   if (reaching > 0) {
     final share = (shared * 100 / reaching).round();
     print('of those, read-only: $shared ($share%) -- `Rc<Self>` would do');
+    final consumedShare = (borrowing * 100 / reaching).round();
+    print(
+      'of those, handed straight to a consuming call: $borrowing '
+      '($consumedShare%) -- these can just borrow',
+    );
+    for (final where in borrowingWhere) {
+      print('    $where');
+    }
   }
 }
