@@ -56,6 +56,16 @@ class KernelFrontend {
         arguments: [for (final a in type.typeArguments) _type(a)],
       );
     }
+    if (type is RecordType) {
+      if (type.named.isNotEmpty) {
+        throw Unsupported('a record type with named fields', '$type');
+      }
+      return IrType(
+        'Record',
+        nullable: nullable,
+        arguments: [for (final f in type.positional) _type(f)],
+      );
+    }
     if (type is VoidType) return const IrType('void');
     if (type is DynamicType) return const IrType('dynamic');
     if (type is NullType) return const IrType('Null', nullable: true);
@@ -172,6 +182,17 @@ class KernelFrontend {
         throw Unsupported('assignment used for its value', _sample(node));
       }
       return IrAssignValue(known ?? written!, expression(node.value));
+    }
+    if (node is RecordIndexGet) {
+      // `r.$1` in Dart is `r.0` in Rust -- Dart counts its positional record
+      // fields from one and Rust counts tuple fields from zero.
+      return IrRecordField(expression(node.receiver), node.index);
+    }
+    if (node is RecordLiteral) {
+      if (node.named.isNotEmpty) {
+        throw Unsupported('a record with named fields', _sample(node));
+      }
+      return IrRecord([for (final e in node.positional) expression(e)]);
     }
     if (node is MapLiteral) {
       return IrMapLiteral(
@@ -1410,12 +1431,19 @@ class KernelFrontend {
     // becomes a field or a constant on the Rust side.
     if (cls.isEnum) return;
     if (field.isStatic) {
-      if (!field.isConst) {
-        throw Unsupported('non-const static field', name);
-      }
       final init = field.initializer;
-      if (init == null) throw Unsupported('const without initialiser', name);
-      cls.constants.add(IrConstDecl(name, _type(field.type), expression(init)));
+      if (init == null) throw Unsupported('static without initialiser', name);
+      cls.constants.add(
+        IrConstDecl(
+          name,
+          _type(field.type),
+          expression(init),
+          // A `static final` is computed once on first use, which is what
+          // `LazyLock` is. It was refused while there was nothing to say it
+          // with; there is now.
+          isLazy: !field.isConst,
+        ),
+      );
     } else {
       final initial = field.initializer;
       cls.fields.add(

@@ -87,6 +87,33 @@ class Marks {
   /// A map in a field, which is what stops the class being `Copy`.
   Map<String, int> notes = <String, int>{};
 
+  /// A `static final`: computed once on first use, which is what Rust's
+  /// `LazyLock` is. It goes at *module* scope, because an `impl` block may
+  /// hold a `const` and not a `static`, and its name carries the class so two
+  /// classes' `defaults` cannot collide.
+  static final List<int> defaults = <int>[5, 13];
+
+  static int defaultsTotal() {
+    int sum = 0;
+    for (final d in defaults) {
+      sum = sum + d;
+    }
+    return sum;
+  }
+
+  /// A record, which is a Rust tuple. Positional only: a named field would
+  /// need a struct with a name, and there is no name to give it.
+  static (int, int) span() {
+    return (3, 29);
+  }
+
+  /// Reading a record's fields back. Dart counts them from one and Rust
+  /// counts tuple fields from zero.
+  static int spanWidth() {
+    final s = span();
+    return s.$2 - s.$1;
+  }
+
   /// A map literal. `HashMap::from([..])`, which is safe because the members
   /// that would need the insertion order are refused wherever they are used.
   static Map<String, int> sizes() {

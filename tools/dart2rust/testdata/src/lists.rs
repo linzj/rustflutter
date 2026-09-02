@@ -83,6 +83,27 @@ impl Marks {
         self.marks.iter().map(|m| (m * 3)).collect::<Vec<_>>()
     }
 
+    pub fn defaults_total() -> i64 {
+        let mut sum: i64 = 0;
+        for d in &(*MARKS_DEFAULTS) {
+            sum = (sum + d);
+        }
+        sum
+    }
+
+    /// A record, which is a Rust tuple. Positional only: a named field would
+    /// need a struct with a name, and there is no name to give it.
+    pub fn span() -> (i64, i64) {
+        (3, 29)
+    }
+
+    /// Reading a record's fields back. Dart counts them from one and Rust
+    /// counts tuple fields from zero.
+    pub fn span_width() -> i64 {
+        let s: (i64, i64) = Marks::span();
+        (s.1 - s.0)
+    }
+
     /// A map literal. `HashMap::from([..])`, which is safe because the members
     /// that would need the insertion order are refused wherever they are used.
     pub fn sizes() -> std::collections::HashMap<String, i64> {
@@ -99,3 +120,8 @@ impl Marks {
         (-1)
     }
 }
+/// A `static final`: computed once on first use, which is what Rust's
+/// `LazyLock` is. It goes at *module* scope, because an `impl` block may
+/// hold a `const` and not a `static`, and its name carries the class so two
+/// classes' `defaults` cannot collide.
+pub static MARKS_DEFAULTS: std::sync::LazyLock<Vec<i64>> = std::sync::LazyLock::new(|| vec![5, 13]);

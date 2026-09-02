@@ -1456,6 +1456,21 @@ mod tests {
     }
 
     #[test]
+    fn a_static_final_is_a_lazy_lock() {
+        // 5 + 13. It lives at module scope with the class in its name, since
+        // Rust has no associated `static`, and a read of it dereferences.
+        assert_eq!(Marks::defaults_total(), 18);
+    }
+
+    #[test]
+    fn a_record_is_a_tuple() {
+        assert_eq!(Marks::span(), (3, 29));
+        // Dart counts record fields from one and Rust counts from zero, so a
+        // missing subtraction would name the wrong field or none at all.
+        assert_eq!(Marks::span_width(), 26);
+    }
+
+    #[test]
     fn a_map_is_looked_up_not_iterated() {
         // Insertion order is what a HashMap does not keep, so only the lookups
         // are translated; `keys`, `values`, `entries` and `forEach` are

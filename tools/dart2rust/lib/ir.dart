@@ -543,6 +543,27 @@ class IrListLiteral extends IrExpr {
   final IrType element;
 }
 
+/// `(1, 'two')` -- a record, which is a Rust tuple.
+///
+/// Positional fields only: a named record field would need a struct with a
+/// name, and there is no name to give it. 62 of these.
+class IrRecord extends IrExpr {
+  const IrRecord(this.fields);
+
+  final List<IrExpr> fields;
+}
+
+/// `r.$1` -- a positional record field.
+///
+/// The index is Rust's, counted from zero. Dart counts its record fields from
+/// one, and the front ends do that subtraction so the backend has one story.
+class IrRecordField extends IrExpr {
+  const IrRecordField(this.record, this.index);
+
+  final IrExpr record;
+  final int index;
+}
+
 /// `{'a': 1, 'b': 2}`.
 ///
 /// `HashMap::from([..])`, which is what the lookup-only decision of round 33
@@ -835,12 +856,26 @@ class IrFieldDecl {
 /// reason to have a resolving front end is that `Alignment(-1.0, -1.0)` arrives
 /// knowing what it is.
 class IrConstDecl {
-  const IrConstDecl(this.name, this.type, this.value, {this.doc});
+  const IrConstDecl(
+    this.name,
+    this.type,
+    this.value, {
+    this.doc,
+    this.isLazy = false,
+  });
 
   final String name;
   final IrType type;
   final IrExpr value;
   final String? doc;
+
+  /// A Dart `static final`, computed once on first use rather than at compile
+  /// time. 140 of these in `package:flutter/`.
+  ///
+  /// Rust says it with `LazyLock`, and says it at *module* scope: an `impl`
+  /// block may hold a `const` but not a `static`, so the name carries its
+  /// class -- `Foo.bar` becomes `FOO_BAR` -- and a read of it dereferences.
+  final bool isLazy;
 }
 
 class IrMethod {

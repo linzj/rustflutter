@@ -139,6 +139,10 @@ class RustBackend {
       final dynamic_ = owned ? 'Box<dyn ${t.name}>' : '&dyn ${t.name}';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
     }
+    if (t.name == 'Record') {
+      final tuple = '(${t.arguments.map((a) => type(a)).join(', ')})';
+      return t.nullable ? 'Option<$tuple>' : tuple;
+    }
     if (t.name == 'Map' && t.arguments.length == 2) {
       final map =
           'std::collections::HashMap<${type(t.arguments[0])}, '
@@ -161,8 +165,11 @@ class RustBackend {
       IrLocal(:final name) => snake(name),
       IrThis() => '*$_selfName',
       IrField(:final target, :final name) => _fieldRead(target, name),
-      IrStatic(:final owner, :final name, :final isEnumValue) =>
-        '$owner::${isEnumValue ? variantName(name) : screamingSnake(name)}',
+      IrStatic(:final owner, :final name, :final isEnumValue) => _staticRead(
+        owner,
+        name,
+        isEnumValue,
+      ),
       IrBinary(:final op, :final left, :final right, :final type) => _binary(
         op,
         left,
@@ -198,6 +205,8 @@ class RustBackend {
         '${expr(target)}[${expr(index)} as usize]',
       IrListLiteral(:final elements) =>
         'vec![${elements.map(expr).join(', ')}]',
+      IrRecord(:final fields) => '(${fields.map(expr).join(', ')})',
+      IrRecordField(:final record, :final index) => '${expr(record)}.$index',
       IrMapLiteral(:final entries) =>
         'std::collections::HashMap::from(['
             '${entries.map((e) => '(${expr(e.$1)}, ${expr(e.$2)})').join(', ')}'
@@ -744,6 +753,23 @@ class RustBackend {
     _indent = savedIndent;
     return '|$params| { $body }';
   }
+
+  /// A read of a static, or of an enum value.
+  ///
+  /// A Dart `static final` becomes a module-level `LazyLock`, because an
+  /// `impl` block may hold a `const` and not a `static`. So its name carries
+  /// its class, and reading it dereferences the lock.
+  String _staticRead(String owner, String name, bool isEnumValue) {
+    if (isEnumValue) return '$owner::${variantName(name)}';
+    if (_isLazy(owner, name)) return '(*${_lazyName(owner, name)})';
+    return '$owner::${screamingSnake(name)}';
+  }
+
+  bool _isLazy(String owner, String name) =>
+      library[owner]?.constants.any((c) => c.name == name && c.isLazy) ?? false;
+
+  static String _lazyName(String owner, String name) =>
+      screamingSnake('${owner}_$name');
 
   /// `identical(a, b)`.
   ///
@@ -1591,6 +1617,11 @@ class RustBackend {
         elements.map(go).toList(),
         element,
       ),
+      IrRecord(:final fields) => IrRecord(fields.map(go).toList()),
+      IrRecordField(:final record, :final index) => IrRecordField(
+        go(record),
+        index,
+      ),
       IrMapLiteral(:final entries, :final key, :final value) => IrMapLiteral(
         [for (final entry in entries) (go(entry.$1), go(entry.$2))],
         key,
@@ -1798,6 +1829,7 @@ class RustBackend {
     _line('}');
     _emitOperators();
     _emitBaseImpl();
+    _emitLazyStatics();
     return _out.join('\n') + '\n';
   }
 
@@ -2000,8 +2032,28 @@ class RustBackend {
     _line('');
   }
 
+  /// The class's `static final` fields, as module-level `LazyLock`s.
+  ///
+  /// Written outside the `impl` because Rust has no associated `static`, and
+  /// named with the class in front so two classes' `defaults` do not collide.
+  void _emitLazyStatics() {
+    for (final constant in cls.constants) {
+      if (!constant.isLazy) continue;
+      _member('${cls.name}.${constant.name}', () {
+        _doc(constant.doc);
+        _line(
+          '${_vis(constant.name)}static ${_lazyName(cls.name, constant.name)}: '
+          'std::sync::LazyLock<${type(constant.type)}> = '
+          'std::sync::LazyLock::new(|| ${expr(constant.value)});',
+        );
+        _line('');
+      });
+    }
+  }
+
   void _emitConstants() {
     for (final constant in cls.constants) {
+      if (constant.isLazy) continue;
       if (!_constable(type(constant.type))) {
         _line('// NOT TRANSLATED: ${cls.name}.${constant.name}');
         _line('//   a `const` cannot hold a collection');
@@ -2342,6 +2394,10 @@ class _WalkSelf {
         expression(index);
       case IrListLiteral(:final elements):
         elements.forEach(expression);
+      case IrRecord(:final fields):
+        fields.forEach(expression);
+      case IrRecordField(:final record):
+        expression(record);
       case IrMapLiteral(:final entries):
         for (final entry in entries) {
           expression(entry.$1);

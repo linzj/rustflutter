@@ -34,6 +34,19 @@ class Frontend {
         nullable: nullable,
       );
     }
+    if (type is RecordType) {
+      if (type.namedFields.isNotEmpty) {
+        throw Unsupported(
+          'a record type with named fields',
+          type.getDisplayString(),
+        );
+      }
+      return IrType(
+        'Record',
+        nullable: nullable,
+        arguments: [for (final f in type.positionalFields) _type(f.type)],
+      );
+    }
     final element = type.element;
     final name = element?.name ?? type.getDisplayString();
     return IrType(
@@ -149,6 +162,12 @@ class Frontend {
         expression(node.function),
         _arguments(node.argumentList, node.element, node),
       );
+    }
+    if (node is RecordLiteral) {
+      if (node.fields.any((f) => f is NamedExpression)) {
+        throw Unsupported('a record with named fields', node.toSource());
+      }
+      return IrRecord([for (final f in node.fields) expression(f)]);
     }
     if (node is SetOrMapLiteral) {
       if (!node.isMap) throw Unsupported('a set literal', node.toSource());
@@ -284,7 +303,26 @@ class Frontend {
     return enclosing is InterfaceElement ? enclosing : null;
   }
 
+  /// The Rust tuple index for a positional record field, or null.
+  ///
+  /// Dart writes them `$1`, `$2`, counting from one; Rust counts from zero,
+  /// and the subtraction is done here so the backend has one story.
+  int? _recordField(String name) {
+    if (name.length < 2 || name.codeUnitAt(0) != 0x24) return null;
+    final position = int.tryParse(name.substring(1));
+    return position == null || position < 1 ? null : position - 1;
+  }
+
   IrExpr _prefixed(PrefixedIdentifier node) {
+    if (_recordField(node.identifier.name) != null) {
+      // See the PropertyAccess case: `s.$2` on a plain local parses as a
+      // prefixed identifier rather than a property access, and reaching only
+      // one of the two left the two front ends saying different things.
+      return IrRecordField(
+        expression(node.prefix),
+        _recordField(node.identifier.name)!,
+      );
+    }
     final target = node.prefix.element;
     // `Alignment.topLeft` -- the prefix resolves to the class itself. An enum
     // is an `EnumElement`, not a `ClassElement`, which is why every reference
@@ -336,6 +374,18 @@ class Frontend {
   }
 
   IrExpr _property(PropertyAccess node) {
+    if (_recordField(node.propertyName.name) != null) {
+      // `r.$1` in Dart is `r.0` in Rust: Dart counts positional record fields
+      // from one and Rust counts tuple fields from zero.
+      //
+      // Written here rather than in `expression`, where it was unreachable:
+      // the dispatch sends every PropertyAccess to this method first, so a
+      // check further down never ran.
+      return IrRecordField(
+        expression(node.realTarget),
+        _recordField(node.propertyName.name)!,
+      );
+    }
     final target = node.target;
     if (target == null) {
       throw Unsupported('cascade', node.toSource());
@@ -1327,8 +1377,8 @@ class Frontend {
       final element = v.declaredFragment?.element;
       final type = _type(member.fields.type?.type ?? element?.type);
       if (member.isStatic) {
-        if (element is! FieldElement || !element.isConst) {
-          throw Unsupported('non-const static field', v.toSource());
+        if (element is! FieldElement) {
+          throw Unsupported('static ${element.runtimeType}', v.toSource());
         }
         // The initialiser is lowered from source rather than from the evaluated
         // constant. Both are available; the source keeps `Alignment(-1, -1)`
@@ -1336,9 +1386,17 @@ class Frontend {
         // check the two agree.
         final init = v.initializer;
         if (init == null)
-          throw Unsupported('const without initialiser', v.toSource());
+          throw Unsupported('static without initialiser', v.toSource());
         cls.constants.add(
-          IrConstDecl(v.name.lexeme, type, expression(init), doc: _doc(member)),
+          IrConstDecl(
+            v.name.lexeme,
+            type,
+            expression(init),
+            doc: _doc(member),
+            // A `static final` is computed once on first use, which is what
+            // Rust's `LazyLock` is.
+            isLazy: !element.isConst,
+          ),
         );
       } else {
         final initial = v.initializer;
