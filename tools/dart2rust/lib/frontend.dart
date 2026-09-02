@@ -150,6 +150,24 @@ class Frontend {
         _arguments(node.argumentList, node.element, node),
       );
     }
+    if (node is SetOrMapLiteral) {
+      if (!node.isMap) throw Unsupported('a set literal', node.toSource());
+      final args = node.typeArguments?.arguments;
+      return IrMapLiteral(
+        [
+          for (final element in node.elements)
+            if (element is MapLiteralEntry)
+              (expression(element.key), expression(element.value))
+            else
+              throw Unsupported(
+                'map element ${element.runtimeType}',
+                node.toSource(),
+              ),
+        ],
+        _type(args != null && args.length == 2 ? args[0].type : null),
+        _type(args != null && args.length == 2 ? args[1].type : null),
+      );
+    }
     if (node is ListLiteral) {
       return IrListLiteral([
         for (final element in node.elements)

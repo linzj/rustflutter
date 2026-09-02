@@ -1460,9 +1460,10 @@ mod tests {
         // Insertion order is what a HashMap does not keep, so only the lookups
         // are translated; `keys`, `values`, `entries` and `forEach` are
         // refused rather than quietly reordered.
-        let mut sizes = std::collections::HashMap::new();
-        sizes.insert("small".to_string(), 4);
-        sizes.insert("large".to_string(), 40);
+        // Built by the translated literal, not by hand: the literal is the
+        // thing under test as much as the lookup is.
+        let sizes = Marks::sizes();
+        assert_eq!(sizes.len(), 2);
         assert_eq!(Marks::look_up(sizes.clone(), "small".to_string()), 4);
         assert_eq!(Marks::look_up(sizes.clone(), "large".to_string()), 40);
         assert_eq!(Marks::look_up(sizes, "huge".to_string()), -1);

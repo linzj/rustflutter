@@ -10,6 +10,8 @@
 // come out in a different order. That one waits for a decision about what to
 // represent it with.
 //
+// REFUSES: a `const` cannot hold a collection
+//
 // The lengths and values below are all different so a wrong index cannot pass.
 
 class Marks {
@@ -75,6 +77,20 @@ class Marks {
   /// as a lazy Iterable are refused.
   List<int> tripled() {
     return marks.map((int m) => m * 3).toList();
+  }
+
+  /// A `const` list. Rust cannot build a `Vec` at compile time, so this one is
+  /// refused rather than emitted as a constant that will not compile -- one
+  /// broken constant would take the whole file with it.
+  static const List<int> fixed = <int>[2, 4, 8];
+
+  /// A map in a field, which is what stops the class being `Copy`.
+  Map<String, int> notes = <String, int>{};
+
+  /// A map literal. `HashMap::from([..])`, which is safe because the members
+  /// that would need the insertion order are refused wherever they are used.
+  static Map<String, int> sizes() {
+    return <String, int>{'small': 4, 'large': 40};
   }
 
   /// A lookup-only map. `keys`, `values`, `entries` and `forEach` are refused

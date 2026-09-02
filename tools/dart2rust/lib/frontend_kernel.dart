@@ -173,6 +173,16 @@ class KernelFrontend {
       }
       return IrAssignValue(known ?? written!, expression(node.value));
     }
+    if (node is MapLiteral) {
+      return IrMapLiteral(
+        [
+          for (final entry in node.entries)
+            (expression(entry.key), expression(entry.value)),
+        ],
+        _type(node.keyType),
+        _type(node.valueType),
+      );
+    }
     if (node is ListLiteral) {
       return IrListLiteral([
         for (final e in node.expressions) expression(e),
@@ -848,6 +858,21 @@ class KernelFrontend {
     }
     if (constant is NullConstant) {
       return const IrLiteral('null', IrType('Null', nullable: true));
+    }
+    if (constant is ListConstant) {
+      return IrListLiteral([
+        for (final e in constant.entries) _constant(e, node),
+      ], _type(constant.typeArgument));
+    }
+    if (constant is MapConstant) {
+      return IrMapLiteral(
+        [
+          for (final e in constant.entries)
+            (_constant(e.key, node), _constant(e.value, node)),
+        ],
+        _type(constant.keyType),
+        _type(constant.valueType),
+      );
     }
     if (constant is StaticTearOffConstant) {
       // A top-level or static function used as a value. Rust names the

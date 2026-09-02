@@ -198,6 +198,10 @@ class RustBackend {
         '${expr(target)}[${expr(index)} as usize]',
       IrListLiteral(:final elements) =>
         'vec![${elements.map(expr).join(', ')}]',
+      IrMapLiteral(:final entries) =>
+        'std::collections::HashMap::from(['
+            '${entries.map((e) => '(${expr(e.$1)}, ${expr(e.$2)})').join(', ')}'
+            '])',
       IrIterChain() => throw Unsupported(
         'a lazy Iterable that is never collected',
         'xs.map(..) with no toList()',
@@ -1264,10 +1268,17 @@ class RustBackend {
   ///
   /// Asked of the rendered text rather than the IR, because that is what the
   /// derive has to be true of. Owning types are the ones that are not.
+  /// A `const` needs a value Rust can build at compile time, and neither
+  /// `vec![]` nor `HashMap::from([..])` is one. Said here rather than left to
+  /// rustc, because one broken constant takes the whole file with it.
+  static bool _constable(String rust) =>
+      !rust.contains('Vec<') && !rust.contains('HashMap<');
+
   static bool _isCopy(String rust) =>
       !rust.contains('String') &&
       !rust.contains('Box<') &&
       !rust.contains('Vec<') &&
+      !rust.contains('HashMap<') &&
       !rust.contains('dyn ');
 
   /// The bodies of this abstract class's concrete methods, as free functions.
@@ -1579,6 +1590,11 @@ class RustBackend {
       IrListLiteral(:final elements, :final element) => IrListLiteral(
         elements.map(go).toList(),
         element,
+      ),
+      IrMapLiteral(:final entries, :final key, :final value) => IrMapLiteral(
+        [for (final entry in entries) (go(entry.$1), go(entry.$2))],
+        key,
+        value,
       ),
       IrFunctionRef() => e,
       IrAssignValue(:final name, :final value) => IrAssignValue(
@@ -1986,6 +2002,12 @@ class RustBackend {
 
   void _emitConstants() {
     for (final constant in cls.constants) {
+      if (!_constable(type(constant.type))) {
+        _line('// NOT TRANSLATED: ${cls.name}.${constant.name}');
+        _line('//   a `const` cannot hold a collection');
+        _line('');
+        continue;
+      }
       _doc(constant.doc);
       _line(
         '${_vis(constant.name)}const ${screamingSnake(constant.name)}: ${type(constant.type)} '
@@ -2320,6 +2342,11 @@ class _WalkSelf {
         expression(index);
       case IrListLiteral(:final elements):
         elements.forEach(expression);
+      case IrMapLiteral(:final entries):
+        for (final entry in entries) {
+          expression(entry.$1);
+          expression(entry.$2);
+        }
       case IrIterChain(:final source, :final steps):
         expression(source);
         for (final step in steps) {

@@ -6,12 +6,20 @@
 #[derive(Clone, Debug, PartialEq)]
 pub struct Marks {
     pub marks: Vec<i64>,
+    /// A map in a field, which is what stops the class being `Copy`.
+    pub notes: std::collections::HashMap<String, i64>,
 }
 
 impl Marks {
     pub fn new(marks: Vec<i64>) -> Self {
-        Self { marks: marks }
+        Self {
+            marks: marks,
+            notes: std::collections::HashMap::from([]),
+        }
     }
+
+    // NOT TRANSLATED: Marks.fixed
+    //   a `const` cannot hold a collection
 
     pub fn total(&self) -> i64 {
         let mut sum: i64 = 0;
@@ -73,6 +81,12 @@ impl Marks {
     /// as a lazy Iterable are refused.
     pub fn tripled(&self) -> Vec<i64> {
         self.marks.iter().map(|m| (m * 3)).collect::<Vec<_>>()
+    }
+
+    /// A map literal. `HashMap::from([..])`, which is safe because the members
+    /// that would need the insertion order are refused wherever they are used.
+    pub fn sizes() -> std::collections::HashMap<String, i64> {
+        std::collections::HashMap::from([("small".to_string(), 4), ("large".to_string(), 40)])
     }
 
     /// A lookup-only map. `keys`, `values`, `entries` and `forEach` are refused

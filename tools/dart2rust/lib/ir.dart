@@ -543,6 +543,20 @@ class IrListLiteral extends IrExpr {
   final IrType element;
 }
 
+/// `{'a': 1, 'b': 2}`.
+///
+/// `HashMap::from([..])`, which is what the lookup-only decision of round 33
+/// leaves it as. A literal that is *iterated* would need the insertion order
+/// a `HashMap` does not keep, and those members are refused wherever they are
+/// reached -- so the literal itself is safe.
+class IrMapLiteral extends IrExpr {
+  const IrMapLiteral(this.entries, this.key, this.value);
+
+  final List<(IrExpr, IrExpr)> entries;
+  final IrType key;
+  final IrType value;
+}
+
 /// `xs.map(f).toList()` -- a chain, recognised whole.
 ///
 /// Not a name-by-name mapping, because Dart's `map` and Rust's are only the
