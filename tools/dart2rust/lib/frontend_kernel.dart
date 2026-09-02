@@ -43,7 +43,13 @@ class KernelFrontend {
     if (type is TypeParameterType) {
       return IrType(type.parameter.name ?? 'T', nullable: nullable);
     }
-    if (type is FunctionType) return const IrType('Function');
+    if (type is FunctionType) {
+      return IrType.function(
+        [for (final p in type.positionalParameters) _type(p)],
+        _type(type.returnType),
+        nullable: nullable,
+      );
+    }
     return IrType(type.runtimeType.toString());
   }
 
@@ -81,6 +87,18 @@ class KernelFrontend {
     if (node is InstanceGet) return _instanceGet(node);
     if (node is StaticGet) return _staticGet(node);
     if (node is InstanceInvocation) return _instanceInvocation(node);
+    if (node is FunctionInvocation) {
+      return IrCallValue(
+          expression(node.receiver), _arguments(node.arguments));
+    }
+    if (node is LocalFunctionInvocation) {
+      final name = node.variable.cosmeticName;
+      if (name == null) {
+        throw Unsupported('call of an unnamed local function', _sample(node));
+      }
+      return IrCallValue(IrLocal(name), _arguments(node.arguments));
+    }
+    if (node is FunctionExpression) return _closure(node.function, node);
     if (node is Let) return _let(node);
     if (node is EqualsNull) return IrIsNull(expression(node.expression));
     if (node is EqualsCall) {
@@ -119,6 +137,34 @@ class KernelFrontend {
     if (node is AsExpression) return expression(node.operand);
     if (node is ConstantExpression) return _constant(node.constant, node);
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
+  }
+
+  /// A closure literal, when it captures nothing this compiler cannot give it.
+  ///
+  /// A closure reaching `this` is refused: it outlives the call that made it,
+  /// and `this` is a borrow, so it needs an ownership arrangement rather than a
+  /// translation. That is 60% of `package:flutter`'s closures and a round of
+  /// its own.
+  IrExpr _closure(FunctionNode fn, Node origin) {
+    if (_reachesThis(fn)) {
+      throw Unsupported('closure capturing `this`', _sample(origin));
+    }
+    final body = fn.body;
+    if (body == null) throw Unsupported('closure with no body', _sample(origin));
+    return IrClosure(
+      [
+        for (final p in fn.positionalParameters)
+          IrParam(p.cosmeticName ?? '_', _type(p.type)),
+      ],
+      statement(body),
+      _type(fn.returnType),
+    );
+  }
+
+  bool _reachesThis(FunctionNode fn) {
+    final finder = _ThisFinder();
+    fn.accept(finder);
+    return finder.found;
   }
 
   /// Restores the Dart a `Let` was lowered from.
@@ -711,5 +757,16 @@ class KernelFrontend {
       operator: isOperator ? name : null,
     );
     (node.isAbstract ? cls.abstractMethods : cls.methods).add(method);
+  }
+}
+
+/// Whether a function body mentions `this` anywhere inside it.
+class _ThisFinder extends RecursiveVisitor {
+  bool found = false;
+
+  @override
+  void visitThisExpression(ThisExpression node) {
+    found = true;
+    super.visitThisExpression(node);
   }
 }

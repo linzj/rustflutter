@@ -125,6 +125,16 @@ class RustBackend {
   String _vis(String dartName) => dartName.startsWith('_') ? '' : 'pub ';
 
   String type(IrType t, {bool owned = true}) {
+    if (t.isFunction) {
+      // A parameter takes `impl Fn(..)`, which needs no allocation and lets the
+      // caller pass a closure literal; anything owned -- a field, a return --
+      // has to be `Box<dyn Fn(..)>`, since a closure's own type has no name.
+      final args = t.parameters!.map((p) => type(p, owned: false)).join(', ');
+      final returns = type(t.returns!);
+      final signature = 'Fn($args) -> $returns';
+      final spelled = owned ? 'Box<dyn $signature>' : 'impl $signature';
+      return t.nullable ? 'Option<$spelled>' : spelled;
+    }
     if (library.isAbstract(t.name)) {
       final dynamic_ = owned ? 'Box<dyn ${t.name}>' : '&dyn ${t.name}';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
@@ -163,7 +173,29 @@ class RustBackend {
       IrNullAware(:final receiver, :final body) =>
         '${expr(receiver)}.map(|$_boundName| ${expr(body)})',
       IrBound() => _boundName,
+      IrClosure() => _closure(e as IrClosure),
+      IrCallValue(:final target, :final args) =>
+        '(${expr(target)})(${args.map(expr).join(', ')})',
     };
+  }
+
+  /// A closure literal.
+  ///
+  /// The parameter types are written out rather than inferred: a closure passed
+  /// straight into a call would usually infer, but one stored or returned would
+  /// not, and a compiler that emits both spellings depending on where the
+  /// closure lands is two rules where one will do.
+  String _closure(IrClosure node) {
+    final params =
+        node.params.map((p) => '${snake(p.name)}: ${type(p.type)}').join(', ');
+    final saved = _out.length;
+    final savedIndent = _indent;
+    _indent = 0;
+    stmt(node.body, tail: true);
+    final body = _out.sublist(saved).map((l) => l.trim()).join(' ');
+    _out.removeRange(saved, _out.length);
+    _indent = savedIndent;
+    return '|$params| { $body }';
   }
 
   /// The closure parameter a `?.` binds.
@@ -888,7 +920,15 @@ class RustBackend {
         IrSuperCall(base, name, args.map(go).toList()),
       IrIs(:final expr, :final type, :final negated) =>
         IrIs(go(expr), type, negated: negated),
-      IrLiteral() || IrStatic() || IrTopLevel() || IrThis() || IrBound() => e,
+      IrCallValue(:final target, :final args) =>
+        IrCallValue(go(target), args.map(go).toList()),
+      IrClosure() ||
+      IrLiteral() ||
+      IrStatic() ||
+      IrTopLevel() ||
+      IrThis() ||
+      IrBound() =>
+        e,
     };
   }
 
@@ -1135,7 +1175,11 @@ class RustBackend {
       _doc(method.doc);
       final params = [
         if (!method.isStatic) _receiverOf(method),
-        ...method.params.map(_param),
+        // Parameters are a borrowed position: a function type there is
+        // `impl Fn(..)`, which a closure literal can be passed to
+        // directly, rather than `Box<dyn Fn(..)>`, which would need a
+        // `Box::new` at every call site.
+        ...method.params.map((p) => _param(p, owned: false)),
       ].join(', ');
       // A setter returns nothing: Dart's `set x(v)` has no return type, and
       // giving one a value would make `a.x = 1` an expression, which it is not.
@@ -1171,7 +1215,7 @@ class RustBackend {
         _doc(method.doc);
         final params = [
           '&self',
-          ...method.params.map(_param),
+          ...method.params.map((p) => _param(p, owned: false)),
         ].join(', ');
         _line('${_vis(method.name)}fn ${_operatorName(op)}($params) -> ${type(method.returnType)} {');
         _indent++;
@@ -1329,6 +1373,11 @@ class _WalkSelf {
         args.forEach(expression);
       case IrIs(:final expr):
         expression(expr);
+      case IrClosure(:final body):
+        statement(body);
+      case IrCallValue(:final target, :final args):
+        expression(target);
+        args.forEach(expression);
       case IrLiteral():
       case IrLocal():
       case IrStatic():

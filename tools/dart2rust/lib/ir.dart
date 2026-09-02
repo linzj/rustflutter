@@ -17,11 +17,26 @@ library;
 /// Dart's `double`/`int`/`bool`/`String` are kept under their Dart names and
 /// mapped in the backend, because what they map to is a Rust question.
 class IrType {
-  const IrType(this.name, {this.nullable = false});
+  const IrType(this.name, {this.nullable = false})
+      : parameters = null,
+        returns = null;
+
+  /// A function type: `double Function(double, String)`.
+  ///
+  /// Structured rather than a name, because Rust needs the pieces: a parameter
+  /// takes `impl Fn(f32) -> f32` and a field holds `Box<dyn Fn(f32) -> f32>`,
+  /// and neither can be built from the string `Function`.
+  const IrType.function(this.parameters, this.returns, {this.nullable = false})
+      : name = 'Function';
 
   final String name;
   final bool nullable;
 
+  /// Non-null only for a function type.
+  final List<IrType>? parameters;
+  final IrType? returns;
+
+  bool get isFunction => parameters != null;
   bool get isNum => name == 'double' || name == 'int';
 
   @override
@@ -180,6 +195,33 @@ class IrNullAware extends IrExpr {
 /// The value bound by the enclosing [IrNullAware].
 class IrBound extends IrExpr {
   const IrBound();
+}
+
+/// Calling a function *value*: `f(x)`, where `f` is a variable.
+///
+/// Distinct from [IrCall], which names a method on a receiver. Rust spells this
+/// one the same as Dart does, so the node exists to keep the two apart rather
+/// than to encode anything -- a method call needs a receiver and this does not.
+class IrCallValue extends IrExpr {
+  const IrCallValue(this.target, this.args);
+
+  final IrExpr target;
+  final List<IrExpr> args;
+}
+
+/// A closure literal: `(x) => x * 2`.
+///
+/// Only the ones that capture nothing or read outer locals reach here. A
+/// closure that captures `this` needs an ownership story -- it outlives the
+/// call that made it, and `this` is a borrow -- and 60% of `package:flutter`'s
+/// closures are that kind, which is a round of its own rather than a corner of
+/// this one.
+class IrClosure extends IrExpr {
+  const IrClosure(this.params, this.body, this.returns);
+
+  final List<IrParam> params;
+  final IrStmt body;
+  final IrType returns;
 }
 
 /// `a ?? b`.

@@ -278,6 +278,9 @@ pub use nullaware::{Branch, Leaf};
 
 mod superctor;
 pub use superctor::{Padded, Rectangle, Square};
+
+mod closures;
+pub use closures::Closures;
 // The base trait, renamed on import:  has a  of its own.
 pub use superctor::Shape as GeometricShape;
 
@@ -957,5 +960,51 @@ mod tests {
         assert_eq!((p.width, p.height, p.side, p.padding), (2.0, 2.0, 2.0, 1.0));
         assert_eq!(GeometricShape::area(&p), 4.0);
         assert_eq!(p.padded_area(), 9.0);
+    }
+
+    // -- closures -------------------------------------------------------------
+    //
+    // Only the ones that capture nothing or read outer locals. `byFactor`
+    // reaches `this` and is refused, which matters because Dart lets an
+    // instance member be named without writing `this` -- a text search for the
+    // word let exactly the wrong ones through.
+
+    #[test]
+    fn a_closure_capturing_nothing() {
+        // applyTwice adds one twice: 3 -> 5.
+        assert_eq!(Closures::new(2.0).doubled(3.0), 5.0);
+    }
+
+    #[test]
+    fn a_closure_reading_an_outer_local() {
+        // v * 3, twice: 2 -> 18.
+        assert_eq!(Closures::new(0.0).scaled_by(3.0, 2.0), 18.0);
+    }
+
+    #[test]
+    fn two_captured_locals_keep_their_places() {
+        // v*2 + 10, twice: 1 -> 12 -> 34. Swapping a and b gives 1 -> 12 -> ...
+        // a different number, which is why they are not equal in the fixture.
+        assert_eq!(Closures::new(0.0).blend(2.0, 10.0, 1.0), 34.0);
+    }
+
+    #[test]
+    fn a_two_parameter_closure_keeps_its_order() {
+        // 10 - 3 = 7. Reversed it is -7, so the two parameters are not
+        // interchangeable -- which a one-parameter closure cannot show.
+        assert_eq!(Closures::new(0.0).subtracted(), 7.0);
+    }
+
+    #[test]
+    fn a_closure_reaching_this_is_refused() {
+        // `factor` is an instance field named without `this`, so the guard has
+        // to resolve the identifier rather than search the text.
+        let emitted = include_str!("closures.rs");
+        assert!(
+            emitted.contains("NOT TRANSLATED") && emitted.contains("capturing `this`"),
+            "expected byFactor to be refused, got:
+{emitted}"
+        );
+        assert!(!emitted.contains("fn by_factor"));
     }
 }

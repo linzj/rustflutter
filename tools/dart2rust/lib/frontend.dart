@@ -9,6 +9,7 @@
 library;
 
 import 'package:analyzer/dart/ast/ast.dart';
+import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 
@@ -26,6 +27,13 @@ class Frontend {
   IrType _type(DartType? type) {
     if (type == null) return const IrType('dynamic');
     final nullable = type.nullabilitySuffix.name == 'question';
+    if (type is FunctionType) {
+      return IrType.function(
+        [for (final p in type.formalParameters) _type(p.type)],
+        _type(type.returnType),
+        nullable: nullable,
+      );
+    }
     final element = type.element;
     final name = element?.name ?? type.getDisplayString();
     return IrType(name ?? 'dynamic', nullable: nullable);
@@ -131,6 +139,11 @@ class Frontend {
       }
       return IrNullCheck(expression(node.operand));
     }
+    if (node is FunctionExpressionInvocation) {
+      return IrCallValue(expression(node.function),
+          _arguments(node.argumentList, node.element, node));
+    }
+    if (node is FunctionExpression) return _closure(node);
     if (node is InstanceCreationExpression) return _construct(node);
     if (node is MethodInvocation) return _invoke(node);
 
@@ -253,6 +266,36 @@ class Frontend {
       return IrCall(receiver, name.name, const []);
     }
     return IrField(receiver, name.name);
+  }
+
+  /// A closure literal, when it captures nothing this compiler cannot give it.
+  ///
+  /// A closure reaching `this` is refused for the reason given in
+  /// `frontend_kernel.dart`: it outlives the call that made it and `this` is a
+  /// borrow.
+  IrExpr _closure(FunctionExpression node) {
+    // Not a text search for `this`. Dart lets an instance member be named
+    // without it -- `factor` inside a method *is* `this.factor` -- so
+    // `toSource().contains('this')` let exactly the closures this refuses
+    // through, and the Kernel front end (where `this` is explicit) refused
+    // them, so the two disagreed. Resolution is the only way to ask.
+    final finder = _InstanceUse();
+    node.accept(finder);
+    if (finder.found) {
+      throw Unsupported('closure capturing `this`', node.toSource());
+    }
+    final params = <IrParam>[];
+    for (final p in node.parameters?.parameters ?? const <FormalParameter>[]) {
+      final inner = p is DefaultFormalParameter ? p.parameter : p;
+      final name = inner.name?.lexeme;
+      if (name == null) throw Unsupported('unnamed parameter', p.toSource());
+      params.add(IrParam(name, _type(inner.declaredFragment?.element.type)));
+    }
+    return IrClosure(
+      params,
+      body(node.body),
+      _type(node.declaredFragment?.element.returnType),
+    );
   }
 
   IrExpr _construct(InstanceCreationExpression node) {
@@ -802,5 +845,35 @@ class Frontend {
           : null,
       doc: _doc(member),
     ));
+  }
+}
+
+/// Whether an expression reaches an instance member of the enclosing class,
+/// with or without writing `this`.
+class _InstanceUse extends RecursiveAstVisitor<void> {
+  bool found = false;
+
+  void _check(Element? element) {
+    if (element == null) return;
+    if (element.enclosingElement is! InterfaceElement) return;
+    final isStatic = switch (element) {
+      FieldElement() => element.isStatic,
+      PropertyAccessorElement() => element.isStatic,
+      MethodElement() => element.isStatic,
+      _ => true,
+    };
+    if (!isStatic) found = true;
+  }
+
+  @override
+  void visitThisExpression(ThisExpression node) {
+    found = true;
+    super.visitThisExpression(node);
+  }
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    _check(node.element);
+    super.visitSimpleIdentifier(node);
   }
 }
