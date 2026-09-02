@@ -1887,6 +1887,37 @@ Set<String> abstractClassesIn(Component component, List<String> prefixes) {
 /// mentions. This walks the body and collects the library of every class and
 /// member it reaches -- which is exactly the set of `use` lines that make it
 /// compile, and no more.
+/// The class names a library mentions, and where each came from.
+///
+/// Filled by the same walk as [librariesReferencedBy] and returned beside it,
+/// so the two cannot drift apart. See `_ReferenceCollector.namedClasses`.
+Map<String, Set<Library>> classNamesReferencedBy(Library library) {
+  final visitor = _ReferenceCollector(<Library>{});
+  library.accept(visitor);
+  for (final cls in library.classes) {
+    _climb(cls, (node) => visitor._class(node));
+  }
+  return visitor.namedClasses;
+}
+
+/// Every class in an ancestry, each visited once.
+void _climb(Class start, void Function(Class) visit) {
+  final seen = <Class>{};
+  void walk(Class node) {
+    if (!seen.add(node)) return;
+    visit(node);
+    for (final type in [
+      if (node.supertype != null) node.supertype!,
+      if (node.mixedInType != null) node.mixedInType!,
+      ...node.implementedTypes,
+    ]) {
+      walk(type.classNode);
+    }
+  }
+
+  walk(start);
+}
+
 Set<Library> librariesReferencedBy(Library library) {
   final found = <Library>{};
   final visitor = _ReferenceCollector(found);
@@ -1921,12 +1952,26 @@ class _ReferenceCollector extends RecursiveVisitor {
 
   final Set<Library> found;
 
+  /// Which library each class *name* came from.
+  ///
+  /// `use crate::<module>::*` for every referenced module is ambiguous whenever
+  /// two of them define the same name, and ten names do -- `TextStyle`,
+  /// `Image`, `Path` and `Gradient` are each defined once in `dart:ui` and
+  /// again in `painting`, which is 800 `E0659`s between them. An explicit
+  /// `use` beats a glob in Rust, so the fix is to name the one that was meant.
+  /// This records which that is; a name seen from two libraries at once stays
+  /// out of it, because no single `use` would be right.
+  final Map<String, Set<Library>> namedClasses = {};
+
   void _member(Member? member) {
     if (member != null) found.add(member.enclosingLibrary);
   }
 
   void _class(Class? cls) {
-    if (cls != null) found.add(cls.enclosingLibrary);
+    if (cls == null) return;
+    found.add(cls.enclosingLibrary);
+    final name = cls.name;
+    (namedClasses[name] ??= {}).add(cls.enclosingLibrary);
   }
 
   @override

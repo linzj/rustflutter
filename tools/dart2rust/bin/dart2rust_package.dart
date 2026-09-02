@@ -147,6 +147,12 @@ Future<void> main(List<String> args) async {
   final lowered = <Library, (IrLibrary, List<String>)>{};
   final everyClass = <String, IrClass>{};
   final everyFunction = <String>{};
+
+  /// Which modules define each class name. Ten names are defined by more than
+  /// one -- `TextStyle`, `Image`, `Path`, `Gradient` and `StrutStyle` each come
+  /// once from `dart:ui` and once from `painting` -- and a glob import of both
+  /// makes every use of them ambiguous. 800 `E0659`s from ten names.
+  final definedIn = <String, Set<String>>{};
   for (final library in inPackage) {
     final result = KernelFrontend(
       library,
@@ -158,6 +164,9 @@ Future<void> main(List<String> args) async {
       everyClass.putIfAbsent(cls.name, () => cls);
     }
     everyFunction.addAll(result.$1.functions.map((f) => f.name));
+    for (final cls in result.$1.classes) {
+      (definedIn[cls.name] ??= <String>{}).add(nameOf[library]!);
+    }
   }
 
   for (final library in inPackage) {
@@ -199,14 +208,36 @@ Future<void> main(List<String> args) async {
       functionsElsewhere: everyFunction,
     );
     final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);
-    refusals += refused.length + more.length;
+    // Counted from what is written, not from what the two lists happen to
+    // hold. Rounds 53 and 54 wrapped more emission sites in `_member`, and
+    // those refusals reach the file without reaching `more` -- so this said
+    // 2758 for a file that carried 3337. A ruler and the thing it measures
+    // have to be the same thing.
+    refusals += '// NOT TRANSLATED:'.allMatches(text).length;
     classes += ir.classes.length;
     libraries++;
     modules.add(name);
+    // A name two imported modules both define is ambiguous under globs, and
+    // Rust says so at every use. An explicit `use` outranks a glob, so the one
+    // the Dart actually meant is named. Skipped when this module defines the
+    // name itself -- its own item already outranks both globs, and a `use`
+    // beside it would be a redefinition.
+    final resolved = <String>[];
+    final ownNames = {for (final cls in own.classes) cls.name};
+    classNamesReferencedBy(library).forEach((className, from) {
+      if ((definedIn[className]?.length ?? 0) < 2) return;
+      if (ownNames.contains(className)) return;
+      final owners = from.map((l) => nameOf[l]).nonNulls.toSet();
+      if (owners.length != 1) return;
+      final owner = owners.single;
+      if (owner == name || !imports.contains(owner)) return;
+      resolved.add('use crate::$owner::$className;');
+    });
     final uses = [
       'use crate::dart_prelude::*;',
       for (final m in exports.toList()..sort()) 'pub use crate::$m::*;',
       for (final m in imports.toList()..sort()) 'use crate::$m::*;',
+      ...resolved..sort(),
     ].join('\n');
     await _writeIfChanged(
       '${out.path}/$name.rs',
@@ -235,6 +266,24 @@ Future<void> main(List<String> args) async {
   }
   await _writeIfChanged('${out.path}/lib.rs', lib.toString());
   await _writeIfChanged('${out.path}/dart_prelude.rs', _prelude);
+
+  // Anything left from an earlier run goes. `_writeIfChanged` only writes, so
+  // a module that stopped being emitted -- because the dill changed, or the
+  // prefix did -- stayed on disk and kept being counted: 931 files and 3347
+  // refusals reported for a run that emitted 920 and 2758. `cargo` never saw
+  // them, since `lib.rs` did not name them, but every ruler that reads the
+  // directory did.
+  final wrote = {
+    'lib.rs',
+    'dart_prelude.rs',
+    for (final name in modules) '$name.rs',
+  };
+  for (final entry in out.listSync()) {
+    final base = entry.path.split(RegExp(r'[/\\]')).last;
+    if (entry is File && base.endsWith('.rs') && !wrote.contains(base)) {
+      await entry.delete();
+    }
+  }
 
   stdout.writeln('$prefix -> ${out.path}');
   stdout.writeln(
