@@ -2356,17 +2356,58 @@ trait;这里只有抽象类是 trait,所以多数上界没有东西可变成。
 
 ---
 
+## 第 43 轮:`Object` 和三个非有限的 double
+
+| | 第 42 轮 | 这一轮 |
+|---|---|---|
+| **整程序 rustc 错误** | 7328 | **6608(−720)** |
+
+### `Infinity.0`
+
+`double.infinity` 在 Kernel 里是一个 `DoubleConstant`,`toString` 是 `Infinity`,
+而字面量发射器看见类型是 `double`、字符串里没有小数点,就**给它补了个 `.0`**
+——`Infinity.0`,一个谁也没声明的名字,**183 处**。
+
+`NaN`、`Infinity`、`-Infinity` 是 Dart 的 double 里仅有的三个 Rust 拼法不同的值。
+现在按名字发 `f32::NAN` / `f32::INFINITY` / `f32::NEG_INFINITY`。
+
+### `Object`:Rust 没有万物基类,但有"任何类型都能实现的 trait"
+
+543 处点名 `Object`,而它在 `dart:core` 里,没有库可翻。
+
+新增一个 `dart_prelude` 模块,里面是:
+
+```rust
+pub trait Object {}
+impl<T: ?Sized> Object for T {}
+```
+
+`&dyn Object` 于是接受任何东西——**对上游实际的用法(一个什么都收的参数或字段)
+来说,这就是同一件事**。每个模块都 `use crate::dart_prelude::*`,
+并把 `Object` 加进抽象名集合,后端才会写 `dyn`。
+
+这是这个编译器第一次**发出 Dart 里没有对应声明的东西**。
+之前所有输出都来自某个真实的 Dart 声明;prelude 是个例外,所以它自己单独一个
+模块、写明理由,而不是散在别处。
+
+---
+
 ## 下一步
 
-按 7328 个错误里的点名:
+6608 个错误,构成:
 
-1. **`Object`(543)** —— `dart:core` 里最缺的一个。Dart 的 `Object` 是所有东西
-   的基类;Rust 没有对应物。要么翻成一个 trait,要么在类型位置上换成泛型。
-2. **`E0405`(319)找不到 trait / `E0038`(111)trait 不是对象安全的**
-   ——第 42 轮把名字变成 trait 之后露出来的下一层。
-3. `TextStyle`(353)在 `dart:ui` 里被拒了,查为什么。
-4. `Matrix4`(205)在 `package:vector_math`,不在这个 dill 里。
-5. `Set`(194)、`Infinity`(183)、`Future`(128)、`Duration`(127)、`DateTime`(112)。
+| | |
+|---|---|
+| `E0425` 找不到值 | 4171 |
+| `E0433` 解析不到 | 1201 |
+| `E0405` 找不到 trait | 319 |
+| `E0424` `self` 用在没有 self 的地方 | 152 |
+| `E0428` 重名 | 144 |
+| `E0038` trait 不是对象安全的 | 111 |
+
+`E0425`(4171)是绝对大头,**下一轮先查它到底在找什么**——
+之前几轮的经验是:一族看着散乱的错误,底下常常是一个具体的假设失效了
+(第 42 轮 802 个 `E0782` 就是一行改动)。
 
 **不做**:按 SCC 拆 crate(第 40 轮量过,62% 在两个环里)。
 

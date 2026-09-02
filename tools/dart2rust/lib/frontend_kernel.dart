@@ -893,7 +893,18 @@ class KernelFrontend {
 
   IrExpr _constant(Constant constant, Expression node) {
     if (constant is DoubleConstant) {
-      return IrLiteral('${constant.value}', const IrType('double'));
+      // `double.infinity` prints as `Infinity`, which the literal emitter then
+      // suffixed into `Infinity.0` -- a name nothing declares, 183 times.
+      // Rust spells these three, and only these three, differently.
+      final value = constant.value;
+      if (value.isNaN) return const IrLiteral('f32::NAN', IrType('raw'));
+      if (value == double.infinity) {
+        return const IrLiteral('f32::INFINITY', IrType('raw'));
+      }
+      if (value == double.negativeInfinity) {
+        return const IrLiteral('f32::NEG_INFINITY', IrType('raw'));
+      }
+      return IrLiteral('$value', const IrType('double'));
     }
     if (constant is IntConstant) {
       return IrLiteral('${constant.value}', const IrType('int'));
