@@ -276,6 +276,11 @@ pub use ifnull::IfNull;
 mod nullaware;
 pub use nullaware::{Branch, Leaf};
 
+mod superctor;
+pub use superctor::{Padded, Rectangle, Square};
+// The base trait, renamed on import:  has a  of its own.
+pub use superctor::Shape as GeometricShape;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -919,5 +924,38 @@ mod tests {
         // other so a confusion between them shows.
         assert_eq!(Branch::new(None).size_or(9.0), 9.0);
         assert_eq!(Branch::new(Some(Leaf::new(4.0))).size_or(9.0), 4.0);
+    }
+
+    // -- `: super(...)` -------------------------------------------------------
+    //
+    // Rust has no constructor inheritance, so the base's fields live in the
+    // subclass's struct and the base's constructor is inlined with its
+    // parameters replaced. `Square` passes a computed argument up, so a wrong
+    // pairing changes a number rather than shuffling equal ones.
+
+    #[test]
+    fn a_subclass_carries_its_bases_fields() {
+        let r = Rectangle::new(3.0, 4.0);
+        assert_eq!((r.width, r.height), (3.0, 4.0));
+        assert_eq!(GeometricShape::area(&r), 12.0);
+    }
+
+    #[test]
+    fn super_arguments_reach_the_bases_fields() {
+        // One argument feeds two base fields, so dropping the substitution
+        // would leave one of them unset and fail to compile -- and pairing them
+        // wrongly would still be caught by `side` differing from the two.
+        let s = Square::new(5.0);
+        assert_eq!((s.width, s.height, s.side), (5.0, 5.0, 5.0));
+        assert_eq!(GeometricShape::area(&s), 25.0);
+    }
+
+    #[test]
+    fn a_two_level_chain_flattens() {
+        // Padded -> Square -> Shape. Upstream's chains go six deep.
+        let p = Padded::new(2.0, 1.0);
+        assert_eq!((p.width, p.height, p.side, p.padding), (2.0, 2.0, 2.0, 1.0));
+        assert_eq!(GeometricShape::area(&p), 4.0);
+        assert_eq!(p.padded_area(), 9.0);
     }
 }

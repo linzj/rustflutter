@@ -724,6 +724,8 @@ class Frontend {
       }
     }
     final asserts = <IrAssert>[];
+    String? superBase;
+    var superArgs = const <IrExpr>[];
     for (final init in member.initializers) {
       if (init is ConstructorFieldInitializer) {
         inits[init.fieldName.name] = expression(init.expression);
@@ -737,7 +739,15 @@ class Frontend {
         // a constructor that sets no fields.
         throw Unsupported('redirecting constructor', init.toSource());
       } else if (init is SuperConstructorInvocation) {
-        throw Unsupported('super constructor call', init.toSource());
+        final arguments = init.argumentList.arguments;
+        if (arguments.isNotEmpty) {
+          superBase = cls.superclass;
+          if (superBase == null) {
+            throw Unsupported('super constructor call with no base',
+                init.toSource());
+          }
+          superArgs = _arguments(init.argumentList, init.element, init);
+        }
       } else {
         throw Unsupported('initialiser ${init.runtimeType}', init.toSource());
       }
@@ -748,6 +758,8 @@ class Frontend {
       isConst: member.constKeyword != null,
       name: name,
       asserts: asserts,
+      superBase: superBase,
+      superArgs: superArgs,
       doc: _doc(member),
     ));
   }

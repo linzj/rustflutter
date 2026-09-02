@@ -633,6 +633,8 @@ class KernelFrontend {
 
     final inits = <String, IrExpr>{};
     final asserts = <IrAssert>[];
+    String? superBase;
+    var superArgs = const <IrExpr>[];
     for (final init in node.initializers) {
       if (init is FieldInitializer) {
         inits[init.field.name.text] = expression(init.value);
@@ -642,8 +644,16 @@ class KernelFrontend {
       } else if (init is SuperInitializer) {
         if (init.arguments.positional.isNotEmpty ||
             init.arguments.named.isNotEmpty) {
-          throw Unsupported('super constructor call with arguments',
-              _sample(init));
+          var base = node.enclosingClass.superclass;
+          while (base != null && base.isAnonymousMixin) {
+            base = base.superclass;
+          }
+          if (base == null) {
+            throw Unsupported('super constructor call with no base',
+                _sample(init));
+          }
+          superBase = base.name;
+          superArgs = _arguments(init.arguments, init.target.function);
         }
         // A no-argument super() adds nothing to a Rust struct literal.
       } else if (init is RedirectingInitializer) {
@@ -658,6 +668,8 @@ class KernelFrontend {
       isConst: node.isConst,
       name: name.isEmpty ? null : name,
       asserts: asserts,
+      superBase: superBase,
+      superArgs: superArgs,
     ));
   }
 

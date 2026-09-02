@@ -426,6 +426,8 @@ class IrConstructor {
     required this.isConst,
     this.name,
     this.asserts = const [],
+    this.superBase,
+    this.superArgs = const [],
     this.doc,
   });
 
@@ -440,6 +442,19 @@ class IrConstructor {
 
   /// `assert`s from the initialiser list, which run before the fields are set.
   final List<IrAssert> asserts;
+
+  /// `: super(a, b)` -- the base class and what it was passed.
+  ///
+  /// Rust has no constructor inheritance, so this cannot be a call. The base's
+  /// own field initialisers are inlined into this constructor instead, with its
+  /// parameters replaced by these arguments -- which is what "flattening the
+  /// hierarchy" means when it reaches storage.
+  ///
+  /// It has to be recorded rather than resolved here because the base's lowered
+  /// form is not available while this class is being lowered; the backend has
+  /// the whole library and does the substitution.
+  final String? superBase;
+  final List<IrExpr> superArgs;
 
   /// Field name -> the expression it is initialised to. A `this.x` parameter
   /// contributes `x -> IrLocal('x')`.
