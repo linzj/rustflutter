@@ -45,6 +45,9 @@ pub enum TextDirection {
 mod alignment;
 pub use alignment::Alignment;
 
+mod named_args;
+pub use named_args::NamedArgs;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +122,37 @@ mod tests {
         assert_eq!((centred.left, centred.top), (40.0, 40.0));
         let corner = Alignment::TOP_LEFT.inscribe(inner, outer);
         assert_eq!((corner.left, corner.top), (0.0, 0.0));
+    }
+
+    // -- named arguments ------------------------------------------------------
+    //
+    // Rust has no named arguments, so the compiler flattens a named call to a
+    // positional one. Flattening in call-site order rather than the callee's
+    // declaration order works on most calls by luck; the fixture's calls are
+    // written so that it does not, and the weights are powers of ten so a
+    // wrong permutation cannot reach the right total.
+
+    #[test]
+    fn named_arguments_go_to_the_parameters_they_named() {
+        let p = NamedArgs::new(1.0, 10.0, 100.0);
+        // first=1, second=10, third=100 -> 1*1 + 10*10 + 100*100
+        assert_eq!(p.out_of_order(), 10101.0);
+        // Call-site order would have been first=100, second=1, third=10,
+        // giving 1110.0 -- a number this assert would not accept.
+    }
+
+    #[test]
+    fn an_omitted_argument_takes_its_declared_default() {
+        let p = NamedArgs::new(1.0, 10.0, 100.0);
+        // first=1, second=2 (the default), third=1 -> 1 + 20 + 100
+        assert_eq!(p.with_omission(), 121.0);
+    }
+
+    #[test]
+    fn omitting_every_argument_still_passes_every_default() {
+        let p = NamedArgs::new(1.0, 10.0, 100.0);
+        // 1*1 + 10*2 + 100*4. Emitting `weigh()` here was a real bug: the
+        // no-named-arguments shortcut skipped the defaults entirely.
+        assert_eq!(p.all_defaults(), 421.0);
     }
 }

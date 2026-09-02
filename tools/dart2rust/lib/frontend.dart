@@ -148,19 +148,114 @@ class Frontend {
     final name = node.constructorName.name?.name;
     return IrNew(
       type,
-      [for (final a in node.argumentList.arguments) _argument(a)],
+      _arguments(node.argumentList, node.constructorName.element, node),
       constructor: name,
     );
   }
 
-  IrExpr _argument(Expression node) {
-    if (node is NamedExpression) {
-      // Named arguments lose their label here, which is only sound because the
-      // backend emits positional calls in declaration order. When the backend
-      // grows named-argument support this has to carry the label.
-      throw Unsupported('named argument', node.toSource());
+  /// Lowers an argument list into the callee's **declaration order**.
+  ///
+  /// Rust has no named arguments, so a Dart call has to be flattened to a
+  /// positional one. Flattening it in *call-site* order would be wrong -- Dart
+  /// lets `Rect.fromLTRB(top: a, left: b)` name them in any order, and the two
+  /// arguments would silently swap. So the order comes from the callee's own
+  /// parameter list, which resolution makes reachable from the call site (all
+  /// 130 sites in `edge_insets.dart`, when this was checked).
+  ///
+  /// An omitted optional parameter still has to be passed something, because
+  /// the emitted Rust function takes every parameter positionally:
+  ///
+  /// * an explicit default that is a literal is lowered from its source text
+  /// * an omitted nullable parameter becomes `None`, which is the value Dart
+  ///   gives it
+  /// * anything else stops, rather than inventing a value. A default this
+  ///   compiler guessed would be indistinguishable from one upstream wrote,
+  ///   which is the failure mode that costs the most to find later.
+  List<IrExpr> _arguments(
+    ArgumentList list,
+    ExecutableElement? callee,
+    AstNode site,
+  ) {
+    final positional = <Expression>[];
+    final named = <String, Expression>{};
+    for (final argument in list.arguments) {
+      if (argument is NamedExpression) {
+        named[argument.name.label.name] = argument.expression;
+      } else {
+        positional.add(argument);
+      }
     }
-    return expression(node);
+    // Not `if (named.isEmpty) return positional`. That shortcut is wrong for a
+    // call that omits every optional argument -- `weigh()` has no named
+    // arguments to reorder and still needs all three defaults filled in, and
+    // the shortcut emitted `weigh()` against a three-parameter function.
+    // Whenever the callee is known, every parameter is accounted for.
+    if (callee == null) {
+      if (named.isNotEmpty) {
+        throw Unsupported(
+            'named argument with no resolved callee', site.toSource());
+      }
+      return [for (final a in positional) expression(a)];
+    }
+
+    final out = <IrExpr>[];
+    var next = 0;
+    for (final param in callee.formalParameters) {
+      final name = param.name;
+      if (param.isNamed) {
+        final supplied = name == null ? null : named.remove(name);
+        if (supplied != null) {
+          out.add(expression(supplied));
+          continue;
+        }
+      } else if (next < positional.length) {
+        out.add(expression(positional[next++]));
+        continue;
+      }
+      out.add(_omitted(param, site));
+    }
+    if (named.isNotEmpty) {
+      throw Unsupported(
+          'named argument `${named.keys.first}` not in the callee', site.toSource());
+    }
+    return out;
+  }
+
+  /// The value an omitted optional parameter stands for.
+  IrExpr _omitted(FormalParameterElement param, AstNode site) {
+    final code = param.defaultValueCode;
+    if (code != null) {
+      final literal = _literalFromSource(code);
+      if (literal != null) return literal;
+      throw Unsupported(
+          'default `$code` is not a literal', site.toSource());
+    }
+    if (param.type.nullabilitySuffix.name == 'question') {
+      return const IrLiteral('null', IrType('Null', nullable: true));
+    }
+    throw Unsupported(
+        'omitted parameter `${param.name}` has no default', site.toSource());
+  }
+
+  /// A default value's source text, when it is a literal this IR can hold.
+  ///
+  /// Read from text because the callee may be declared in another file, whose
+  /// AST this compiler is not holding. Only the shapes that cannot be
+  /// misconstrued are accepted.
+  IrExpr? _literalFromSource(String code) {
+    if (code == 'true' || code == 'false') {
+      return IrLiteral(code, const IrType('bool'));
+    }
+    if (code == 'null') {
+      return const IrLiteral('null', IrType('Null', nullable: true));
+    }
+    if (RegExp(r'^-?\d+$').hasMatch(code)) {
+      return IrLiteral(code, const IrType('int'));
+    }
+    if (RegExp(r'^-?\d+\.\d+$').hasMatch(code)) {
+      return IrLiteral(code, const IrType('double'));
+    }
+    return null;
   }
 
   /// Private members are skipped when declarations are lowered, so a *call* to
@@ -180,7 +275,11 @@ class Frontend {
   IrExpr _invoke(MethodInvocation node) {
     final element = node.methodName.element;
     _refusePrivate(node.methodName.name, node);
-    final args = [for (final a in node.argumentList.arguments) _argument(a)];
+    final args = _arguments(
+      node.argumentList,
+      element is ExecutableElement ? element : null,
+      node,
+    );
     if (element is MethodElement && element.isStatic) {
       final owner = element.enclosingElement;
       return IrStaticCall(
