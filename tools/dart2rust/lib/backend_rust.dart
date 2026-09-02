@@ -1650,6 +1650,11 @@ class RustBackend {
   /// them on, so they become ordinary named methods.
   String _methodName(IrMethod method) {
     final op = method.operator;
+    // A getter and a setter of the same Dart name are two members there and
+    // one name here. The inherent path has always prefixed the setter; the
+    // trait impls had not, so a mixin carrying `Ticker? get _ticker` beside
+    // `set _ticker(v)` put two `fn _ticker` in one impl -- 839 `E0201`s.
+    if (method.isSetter) return 'set_${snake(method.name)}';
     if (op == null) return snake(method.name);
     final mapping = _operatorTraits[op];
     return mapping == null ? _operatorName(op) : 'op_${mapping.$2}';
@@ -2260,7 +2265,14 @@ class RustBackend {
     _line('');
     _line('impl ${base.name}$arguments for ${cls.name}${_generics(cls)} {');
     _indent++;
+    // A field and a method of the same name are one item in Rust. A mixin
+    // routinely has both -- `Ticker? _ticker;` beside a getter that reads it --
+    // and emitting the accessor as well as the method put two `fn _ticker` in
+    // one impl: 839 `E0201`s the moment mixins started being implemented. The
+    // method wins, because it is the one that may have a body worth keeping.
+    final taken = {for (final need in required) _methodName(need)};
     for (final field in accessors) {
+      if (taken.contains(snake(field.name))) continue;
       _line('fn ${snake(field.name)}(&self) -> ${type(field.type)} {');
       _indent++;
       _line('self.${snake(field.name)}');
