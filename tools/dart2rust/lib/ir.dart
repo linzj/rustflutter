@@ -1050,7 +1050,17 @@ class IrLibrary {
     this.constants = const [],
     this.functions = const [],
     this.abstractElsewhere = const {},
+    this.elsewhere = const {},
   });
+
+  /// Classes in the *other* modules of the same crate, by name.
+  ///
+  /// A base class is a base class wherever it lives. While one library was
+  /// emitted at a time this map was empty and a base from elsewhere was a
+  /// hand-written stub whose fields and constructors could not be known -- so
+  /// every subclass of one was refused, 1300 of them. In one crate the base
+  /// really is there, and `use crate::<module>::*` reaches it.
+  final Map<String, IrClass> elsewhere;
 
   /// Abstract classes declared in *other* libraries of the same crate.
   ///
@@ -1079,7 +1089,7 @@ class IrLibrary {
     for (final c in classes) {
       if (c.name == name) return c;
     }
-    return null;
+    return elsewhere[name];
   }
 
   bool isAbstract(String? name) =>

@@ -30,6 +30,7 @@ import 'dart:io';
 import 'package:kernel/kernel.dart';
 
 import '../lib/backend_rust.dart';
+import '../lib/ir.dart';
 import '../lib/frontend_kernel.dart';
 
 /// `package:flutter/src/painting/alignment.dart` -> `painting_alignment`.
@@ -139,6 +140,24 @@ Future<void> main(List<String> args) async {
     inPackage.add(library);
   }
 
+  // Lowered once, all of them, before any is emitted. A class needs its base
+  // class's fields and constructor to flatten it, and the base is usually in
+  // another module -- which is why 1300 classes were refused with "the base is
+  // not in this file". In one crate it is.
+  final lowered = <Library, (IrLibrary, List<String>)>{};
+  final everyClass = <String, IrClass>{};
+  for (final library in inPackage) {
+    final result = KernelFrontend(
+      library,
+      enumValues: enumValues,
+      abstractElsewhere: abstractNames,
+    ).lowerLibrary();
+    lowered[library] = result;
+    for (final cls in result.$1.classes) {
+      everyClass.putIfAbsent(cls.name, () => cls);
+    }
+  }
+
   for (final library in inPackage) {
     final uri = library.importUri.toString();
     final name = nameOf[library]!;
@@ -167,11 +186,15 @@ Future<void> main(List<String> args) async {
       }
     }
 
-    final (ir, refused) = KernelFrontend(
-      library,
-      enumValues: enumValues,
+    final (own, refused) = lowered[library]!;
+    // The same IR, plus a way to look up the rest of the crate.
+    final ir = IrLibrary(
+      own.classes,
+      constants: own.constants,
+      functions: own.functions,
       abstractElsewhere: abstractNames,
-    ).lowerLibrary();
+      elsewhere: everyClass,
+    );
     final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);
     refusals += refused.length + more.length;
     classes += ir.classes.length;

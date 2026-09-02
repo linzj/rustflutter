@@ -44,7 +44,11 @@ class KernelFrontend {
     this.library, {
     this.enumValues = const {},
     this.abstractElsewhere = const {},
+    this.elsewhere = const {},
   });
+
+  /// Classes in the rest of the crate. See [IrLibrary.elsewhere].
+  final Map<String, IrClass> elsewhere;
 
   /// Abstract classes in the rest of the crate. See [IrLibrary].
   final Set<String> abstractElsewhere;
@@ -1421,6 +1425,7 @@ class KernelFrontend {
         constants: constants,
         functions: functions,
         abstractElsewhere: abstractElsewhere,
+        elsewhere: elsewhere,
       ),
       refused,
     );
@@ -1859,14 +1864,25 @@ Set<Library> librariesReferencedBy(Library library) {
   final visitor = _ReferenceCollector(found);
   library.accept(visitor);
   for (final cls in library.classes) {
-    // A supertype is a reference too, and it is not in any body.
-    for (final type in [
-      if (cls.supertype != null) cls.supertype!,
-      if (cls.mixedInType != null) cls.mixedInType!,
-      ...cls.implementedTypes,
-    ]) {
-      found.add(type.classNode.enclosingLibrary);
+    // The whole ancestry, not just the direct supertype. The backend flattens
+    // a base class's fields into the subclass and emits an `impl` for every
+    // abstract *ancestor*, so a grandparent two modules away is named in the
+    // output even though nothing in the body mentions it -- 1008 "cannot find
+    // trait" until this walked the chain.
+    final seen = <Class>{};
+    void climb(Class node) {
+      if (!seen.add(node)) return;
+      found.add(node.enclosingLibrary);
+      for (final type in [
+        if (node.supertype != null) node.supertype!,
+        if (node.mixedInType != null) node.mixedInType!,
+        ...node.implementedTypes,
+      ]) {
+        climb(type.classNode);
+      }
     }
+
+    climb(cls);
   }
   found.remove(library);
   return found;
