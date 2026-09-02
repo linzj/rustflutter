@@ -21,9 +21,11 @@ class SuperFinder extends RecursiveVisitor {
   void visitSuperMethodInvocation(SuperMethodInvocation node) {
     superCalls++;
     if (targets.length < 4) {
-      targets.add('${node.name.text} -> '
-          '${node.interfaceTarget.enclosingClass?.name}.'
-          '${node.interfaceTarget.name.text}');
+      targets.add(
+        '${node.name.text} -> '
+        '${node.interfaceTarget.enclosingClass?.name}.'
+        '${node.interfaceTarget.name.text}',
+      );
     }
     super.visitSuperMethodInvocation(node);
   }
@@ -58,8 +60,10 @@ void main(List<String> args) {
       .where((l) => l.importUri.toString().startsWith('package:gallery/'))
       .toList();
   print('');
-  print('gallery libraries: ${gallery.length}, '
-      'classes: ${gallery.fold(0, (a, l) => a + l.classes.length)}');
+  print(
+    'gallery libraries: ${gallery.length}, '
+    'classes: ${gallery.fold(0, (a, l) => a + l.classes.length)}',
+  );
   for (final lib in gallery.take(3)) {
     final names = lib.classes.take(4).map((c) => c.name).join(', ');
     print('  ${lib.importUri}: $names');

@@ -97,8 +97,7 @@ class Frontend {
         return IrIfNull(
           expression(node.leftOperand),
           expression(right),
-          nullableResult:
-              node.staticType?.nullabilitySuffix.name == 'question',
+          nullableResult: node.staticType?.nullabilitySuffix.name == 'question',
           eager: right is Literal,
         );
       }
@@ -134,14 +133,15 @@ class Frontend {
       // `!` only. `x++` and `x--` are postfix too and are assignments in
       // disguise; they belong with the mutability work, not here.
       if (node.operator.lexeme != '!') {
-        throw Unsupported(
-            'postfix `${node.operator.lexeme}`', node.toSource());
+        throw Unsupported('postfix `${node.operator.lexeme}`', node.toSource());
       }
       return IrNullCheck(expression(node.operand));
     }
     if (node is FunctionExpressionInvocation) {
-      return IrCallValue(expression(node.function),
-          _arguments(node.argumentList, node.element, node));
+      return IrCallValue(
+        expression(node.function),
+        _arguments(node.argumentList, node.element, node),
+      );
     }
     if (node is ThrowExpression) {
       // A `throw` used for its value has none in Rust; the statement form is
@@ -234,8 +234,11 @@ class Frontend {
     // is an `EnumElement`, not a `ClassElement`, which is why every reference
     // to an enum value used to be refused as "identifier of EnumElementImpl".
     if (target is EnumElement) {
-      return IrStatic(target.name ?? '?', node.identifier.name,
-          isEnumValue: true);
+      return IrStatic(
+        target.name ?? '?',
+        node.identifier.name,
+        isEnumValue: true,
+      );
     }
     if (target is ClassElement) {
       return IrStatic(target.name ?? '?', node.identifier.name);
@@ -255,8 +258,10 @@ class Frontend {
     // `a?.b`. Kernel has already lowered this to a Let and the Kernel front end
     // restores it; here it is still written as itself, so it is simply read.
     if (node.isNullAware) {
-      return IrNullAware(expression(target),
-          _memberOn(const IrBound(), node.propertyName));
+      return IrNullAware(
+        expression(target),
+        _memberOn(const IrBound(), node.propertyName),
+      );
     }
     final accessor = node.propertyName.element;
     if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
@@ -284,8 +289,11 @@ class Frontend {
     _cascadeTarget = node.target;
     try {
       final steps = <IrStmt>[
-        IrLocalDecl(_cascadeName, _type(node.target.staticType),
-            expression(node.target)),
+        IrLocalDecl(
+          _cascadeName,
+          _type(node.target.staticType),
+          expression(node.target),
+        ),
         for (final section in node.cascadeSections) _cascadeStep(section),
       ];
       return IrBlockValue(steps, const IrLocal(_cascadeName));
@@ -301,26 +309,42 @@ class Frontend {
         final written = section.writeElement;
         final value = expression(section.rightHandSide);
         if (written != null && !written.isSynthetic) {
-          return IrSetter(const IrLocal(_cascadeName),
-              target.propertyName.name, value);
+          return IrSetter(
+            const IrLocal(_cascadeName),
+            target.propertyName.name,
+            value,
+          );
         }
-        return IrAssignField(target.propertyName.name, value,
-            target: const IrLocal(_cascadeName));
+        return IrAssignField(
+          target.propertyName.name,
+          value,
+          target: const IrLocal(_cascadeName),
+        );
       }
-      throw Unsupported('cascade step ${target.runtimeType}',
-          section.toSource());
+      throw Unsupported(
+        'cascade step ${target.runtimeType}',
+        section.toSource(),
+      );
     }
     if (section is MethodInvocation) {
-      return IrExprStmt(IrCall(const IrLocal(_cascadeName),
+      return IrExprStmt(
+        IrCall(
+          const IrLocal(_cascadeName),
           section.methodName.name,
-          _arguments(section.argumentList,
-              section.methodName.element is ExecutableElement
-                  ? section.methodName.element as ExecutableElement
-                  : null,
-              section)));
+          _arguments(
+            section.argumentList,
+            section.methodName.element is ExecutableElement
+                ? section.methodName.element as ExecutableElement
+                : null,
+            section,
+          ),
+        ),
+      );
     }
-    throw Unsupported('cascade step ${section.runtimeType}',
-        section.toSource());
+    throw Unsupported(
+      'cascade step ${section.runtimeType}',
+      section.toSource(),
+    );
   }
 
   /// The receiver the enclosing cascade bound; its sections leave their target
@@ -408,7 +432,9 @@ class Frontend {
     if (callee == null) {
       if (named.isNotEmpty) {
         throw Unsupported(
-            'named argument with no resolved callee', site.toSource());
+          'named argument with no resolved callee',
+          site.toSource(),
+        );
       }
       return [for (final a in positional) expression(a)];
     }
@@ -431,7 +457,9 @@ class Frontend {
     }
     if (named.isNotEmpty) {
       throw Unsupported(
-          'named argument `${named.keys.first}` not in the callee', site.toSource());
+        'named argument `${named.keys.first}` not in the callee',
+        site.toSource(),
+      );
     }
     return out;
   }
@@ -442,14 +470,15 @@ class Frontend {
     if (code != null) {
       final literal = _literalFromSource(code);
       if (literal != null) return literal;
-      throw Unsupported(
-          'default `$code` is not a literal', site.toSource());
+      throw Unsupported('default `$code` is not a literal', site.toSource());
     }
     if (param.type.nullabilitySuffix.name == 'question') {
       return const IrLiteral('null', IrType('Null', nullable: true));
     }
     throw Unsupported(
-        'omitted parameter `${param.name}` has no default', site.toSource());
+      'omitted parameter `${param.name}` has no default',
+      site.toSource(),
+    );
   }
 
   /// A default value's source text, when it is a literal this IR can hold.
@@ -511,13 +540,17 @@ class Frontend {
       final enclosing = element.enclosingElement;
       if (enclosing is! InterfaceElement) {
         throw Unsupported(
-            'top-level call `${node.methodName.name}`', node.toSource());
+          'top-level call `${node.methodName.name}`',
+          node.toSource(),
+        );
       }
     }
     final target = node.target;
     if (node.isNullAware && target != null) {
       return IrNullAware(
-          expression(target), IrCall(const IrBound(), node.methodName.name, args));
+        expression(target),
+        IrCall(const IrBound(), node.methodName.name, args),
+      );
     }
     if (target is SuperExpression) {
       final base = _superclass;
@@ -537,7 +570,9 @@ class Frontend {
 
   IrStmt statement(Statement node) {
     if (node is ReturnStatement) {
-      return IrReturn(node.expression == null ? null : expression(node.expression!));
+      return IrReturn(
+        node.expression == null ? null : expression(node.expression!),
+      );
     }
     if (node is Block) {
       return IrBlock([for (final s in node.statements) statement(s)]);
@@ -564,7 +599,8 @@ class Frontend {
     if (node is ExpressionStatement) {
       final value = node.expression;
       if (value is AssignmentExpression) return _assignment(value);
-      if (value is ThrowExpression) return IrThrow(expression(value.expression));
+      if (value is ThrowExpression)
+        return IrThrow(expression(value.expression));
       return IrExprStmt(expression(value));
     }
     if (node is AssertStatement) {
@@ -586,10 +622,7 @@ class Frontend {
     if (message is SimpleStringLiteral) {
       return IrAssert(expression(condition), literalMessage: message.value);
     }
-    return IrAssert(
-      expression(condition),
-      message: message?.toSource(),
-    );
+    return IrAssert(expression(condition), message: message?.toSource());
   }
 
   /// `x = value`, and only when `x` is a local.
@@ -607,7 +640,10 @@ class Frontend {
       if (operator == '=') return value;
       if (operator.endsWith('=') && operator.length > 1) {
         return IrBinary(
-            operator.substring(0, operator.length - 1), current, value);
+          operator.substring(0, operator.length - 1),
+          current,
+          value,
+        );
       }
       throw Unsupported('assignment operator `$operator`', node.toSource());
     }
@@ -616,10 +652,15 @@ class Frontend {
     if (_isSetterTarget(node)) {
       // A setter is a call. Its "current value" for a compound assignment is
       // the matching getter, not the field -- there may be no field at all.
-      final receiver = target is PropertyAccess && target.target is! ThisExpression
+      final receiver =
+          target is PropertyAccess && target.target is! ThisExpression
           ? expression(target.target!)
           : null;
-      return IrSetter(receiver, name, combined(IrCall(receiver, name, const [])));
+      return IrSetter(
+        receiver,
+        name,
+        combined(IrCall(receiver, name, const [])),
+      );
     }
     return IrAssignField(name, combined(IrField(null, name)));
   }
@@ -642,7 +683,9 @@ class Frontend {
       PropertyAccess() when target.target is ThisExpression =>
         target.propertyName.name,
       _ => throw Unsupported(
-          'assignment to ${target.runtimeType}', node.toSource()),
+        'assignment to ${target.runtimeType}',
+        node.toSource(),
+      ),
     };
     if (written is LocalVariableElement || written is FormalParameterElement) {
       return (name, false);
@@ -691,8 +734,13 @@ class Frontend {
           final init = v.initializer;
           if (init == null) continue;
           try {
-            constants.add(IrConstDecl(v.name.lexeme,
-                _type(declaration.variables.type?.type), expression(init)));
+            constants.add(
+              IrConstDecl(
+                v.name.lexeme,
+                _type(declaration.variables.type?.type),
+                expression(init),
+              ),
+            );
           } on Unsupported catch (error) {
             refused.add('top-level ${v.name.lexeme}: $error');
           }
@@ -730,8 +778,10 @@ class Frontend {
       return false;
     }).toList();
     if (declared.isNotEmpty) {
-      refused.add('unsupported enhanced enum: ${declared.length} declared '
-          'member(s)');
+      refused.add(
+        'unsupported enhanced enum: ${declared.length} declared '
+        'member(s)',
+      );
     }
     return (
       IrClass(
@@ -790,22 +840,22 @@ class Frontend {
         // recognisable, and the evaluated value is what the driver prints to
         // check the two agree.
         final init = v.initializer;
-        if (init == null) throw Unsupported('const without initialiser', v.toSource());
-        cls.constants.add(IrConstDecl(
-          v.name.lexeme,
-          type,
-          expression(init),
-          doc: _doc(member),
-        ));
+        if (init == null)
+          throw Unsupported('const without initialiser', v.toSource());
+        cls.constants.add(
+          IrConstDecl(v.name.lexeme, type, expression(init), doc: _doc(member)),
+        );
       } else {
         final initial = v.initializer;
-        cls.fields.add(IrFieldDecl(
-          v.name.lexeme,
-          type,
-          isFinal: member.fields.isFinal,
-          initial: initial == null ? null : expression(initial),
-          doc: _doc(member),
-        ));
+        cls.fields.add(
+          IrFieldDecl(
+            v.name.lexeme,
+            type,
+            isFinal: member.fields.isFinal,
+            initial: initial == null ? null : expression(initial),
+            doc: _doc(member),
+          ),
+        );
       }
     }
   }
@@ -849,8 +899,10 @@ class Frontend {
         if (arguments.isNotEmpty) {
           superBase = cls.superclass;
           if (superBase == null) {
-            throw Unsupported('super constructor call with no base',
-                init.toSource());
+            throw Unsupported(
+              'super constructor call with no base',
+              init.toSource(),
+            );
           }
           superArgs = _arguments(init.argumentList, init.element, init);
         }
@@ -865,16 +917,18 @@ class Frontend {
         constructorBody.block.statements.isNotEmpty) {
       throw Unsupported('constructor with a body', member.toSource());
     }
-    cls.constructors.add(IrConstructor(
-      params,
-      inits,
-      isConst: member.constKeyword != null,
-      name: name,
-      asserts: asserts,
-      superBase: superBase,
-      superArgs: superArgs,
-      doc: _doc(member),
-    ));
+    cls.constructors.add(
+      IrConstructor(
+        params,
+        inits,
+        isConst: member.constKeyword != null,
+        name: name,
+        asserts: asserts,
+        superBase: superBase,
+        superArgs: superArgs,
+        doc: _doc(member),
+      ),
+    );
   }
 
   void _lowerMethod(IrClass cls, MethodDeclaration member) {
@@ -883,17 +937,19 @@ class Frontend {
     // round of its own. Both are gone: private members are translated now, so
     // there is nothing for the ordering to decide.
 
-
     final params = <IrParam>[];
-    for (final p in member.parameters?.parameters ?? const <FormalParameter>[]) {
+    for (final p
+        in member.parameters?.parameters ?? const <FormalParameter>[]) {
       final inner = p is DefaultFormalParameter ? p.parameter : p;
       final name = inner.name?.lexeme;
       if (name == null) throw Unsupported('unnamed parameter', p.toSource());
-      params.add(IrParam(
-        name,
-        _type(inner.declaredFragment?.element.type),
-        named: p.isNamed,
-      ));
+      params.add(
+        IrParam(
+          name,
+          _type(inner.declaredFragment?.element.type),
+          named: p.isNamed,
+        ),
+      );
     }
 
     final isOperator = member.operatorKeyword != null;
@@ -901,28 +957,31 @@ class Frontend {
     member.body.accept(finder);
     if (finder.types.length > 1) {
       throw Unsupported(
-          'method throwing ${finder.types.length} error types',
-          member.name.lexeme);
+        'method throwing ${finder.types.length} error types',
+        member.name.lexeme,
+      );
     }
     // An abstract member has no body to lower, so it goes on a separate list:
     // it is what the trait *requires*, not what the trait *provides*.
     final target = member.isAbstract ? cls.abstractMethods : cls.methods;
-    target.add(IrMethod(
-      member.name.lexeme,
-      params,
-      _type(member.returnType?.type),
-      member.isAbstract ? const IrBlock([]) : body(member.body),
-      isStatic: member.isStatic,
-      isGetter: member.isGetter,
-      isSetter: member.isSetter,
-      operator: isOperator
-          ? (params.isEmpty && member.name.lexeme == '-'
-              ? 'unary-'
-              : member.name.lexeme)
-          : null,
-      throws: finder.types.isEmpty ? null : finder.types.single,
-      doc: _doc(member),
-    ));
+    target.add(
+      IrMethod(
+        member.name.lexeme,
+        params,
+        _type(member.returnType?.type),
+        member.isAbstract ? const IrBlock([]) : body(member.body),
+        isStatic: member.isStatic,
+        isGetter: member.isGetter,
+        isSetter: member.isSetter,
+        operator: isOperator
+            ? (params.isEmpty && member.name.lexeme == '-'
+                  ? 'unary-'
+                  : member.name.lexeme)
+            : null,
+        throws: finder.types.isEmpty ? null : finder.types.single,
+        doc: _doc(member),
+      ),
+    );
   }
 }
 

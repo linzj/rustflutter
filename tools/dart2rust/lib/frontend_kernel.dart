@@ -20,8 +20,23 @@ import 'ir.dart';
 
 /// Dart operators that are binary, spelled as Kernel names them.
 const _binaryOperators = {
-  '+', '-', '*', '/', '~/', '%', '==', '<', '>', '<=', '>=',
-  '&', '|', '^', '<<', '>>', '>>>',
+  '+',
+  '-',
+  '*',
+  '/',
+  '~/',
+  '%',
+  '==',
+  '<',
+  '>',
+  '<=',
+  '>=',
+  '&',
+  '|',
+  '^',
+  '<<',
+  '>>',
+  '>>>',
 };
 
 class KernelFrontend {
@@ -92,8 +107,7 @@ class KernelFrontend {
     if (node is InstanceInvocation) return _instanceInvocation(node);
     if (node is BlockExpression) return _blockValue(node);
     if (node is FunctionInvocation) {
-      return IrCallValue(
-          expression(node.receiver), _arguments(node.arguments));
+      return IrCallValue(expression(node.receiver), _arguments(node.arguments));
     }
     if (node is LocalFunctionInvocation) {
       final name = node.variable.cosmeticName;
@@ -112,13 +126,18 @@ class KernelFrontend {
       return IrUnary('!', expression(node.operand));
     }
     if (node is LogicalExpression) {
-      return IrBinary(node.operatorEnum == LogicalExpressionOperator.AND
-          ? '&&'
-          : '||', expression(node.left), expression(node.right));
+      return IrBinary(
+        node.operatorEnum == LogicalExpressionOperator.AND ? '&&' : '||',
+        expression(node.left),
+        expression(node.right),
+      );
     }
     if (node is ConditionalExpression) {
-      return IrConditional(expression(node.condition),
-          expression(node.then), expression(node.otherwise));
+      return IrConditional(
+        expression(node.condition),
+        expression(node.then),
+        expression(node.otherwise),
+      );
     }
     if (node is IsExpression) {
       return IrIs(expression(node.operand), _type(node.type));
@@ -166,8 +185,10 @@ class KernelFrontend {
     }
     final bound = first.declaration.variable;
     if (!(value is VariableGet && value.variable == bound)) {
-      throw Unsupported('block expression not producing its binding',
-          _sample(node));
+      throw Unsupported(
+        'block expression not producing its binding',
+        _sample(node),
+      );
     }
     final initial = bound.initializer;
     if (initial == null) {
@@ -202,7 +223,8 @@ class KernelFrontend {
       throw Unsupported('closure capturing `this`', _sample(origin));
     }
     final body = fn.body;
-    if (body == null) throw Unsupported('closure with no body', _sample(origin));
+    if (body == null)
+      throw Unsupported('closure with no body', _sample(origin));
     return IrClosure(
       [
         for (final p in fn.positionalParameters)
@@ -241,8 +263,7 @@ class KernelFrontend {
     // and the probe that measured these looked only at *it* -- so this shape,
     // which is the one upstream actually produces, was missed until the fixture
     // compared the two front ends.
-    if (body is BlockExpression &&
-        _isThe(body.value, node.variable)) {
+    if (body is BlockExpression && _isThe(body.value, node.variable)) {
       final initial = node.variable.initializer;
       if (initial == null) {
         throw Unsupported('cascade binding with no receiver', _sample(node));
@@ -252,7 +273,10 @@ class KernelFrontend {
       try {
         return IrBlockValue([
           IrLocalDecl(
-              _cascadeName, _type(node.variable.type), expression(initial)),
+            _cascadeName,
+            _type(node.variable.type),
+            expression(initial),
+          ),
           for (final s in body.body.statements) statement(s),
         ], const IrLocal(_cascadeName));
       } finally {
@@ -353,8 +377,11 @@ class KernelFrontend {
       }
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
     }
-    return IrStatic(enclosing.name, target.name.text,
-        isEnumValue: enclosing.isEnum);
+    return IrStatic(
+      enclosing.name,
+      target.name.text,
+      isEnumValue: enclosing.isEnum,
+    );
   }
 
   /// The place Kernel's desugaring has to be undone.
@@ -380,7 +407,10 @@ class KernelFrontend {
     }
     final receiver = node.receiver;
     return IrCall(
-        receiver is ThisExpression ? null : expression(receiver), name, args);
+      receiver is ThisExpression ? null : expression(receiver),
+      name,
+      args,
+    );
   }
 
   IrExpr _construct(ConstructorInvocation node) {
@@ -400,7 +430,10 @@ class KernelFrontend {
       throw Unsupported('top-level call `${target.name.text}`', _sample(node));
     }
     return IrStaticCall(
-        owner, target.name.text, _arguments(node.arguments, target.function));
+      owner,
+      target.name.text,
+      _arguments(node.arguments, target.function),
+    );
   }
 
   /// Arguments in the callee's declaration order.
@@ -412,7 +445,10 @@ class KernelFrontend {
     final positional = [for (final a in node.positional) expression(a)];
     if (node.named.isEmpty && callee == null) return positional;
     if (callee == null) {
-      throw Unsupported('named argument with no resolved callee', _sample(node));
+      throw Unsupported(
+        'named argument with no resolved callee',
+        _sample(node),
+      );
     }
     final supplied = {for (final n in node.named) n.name: n.value};
     // Kernel names a named parameter through `parameterName`.
@@ -426,15 +462,18 @@ class KernelFrontend {
       out.add(_omitted(param, node));
     }
     // A positional optional that was left off still needs its default.
-    for (var i = positional.length;
-        i < callee.positionalParameters.length;
-        i++) {
+    for (
+      var i = positional.length;
+      i < callee.positionalParameters.length;
+      i++
+    ) {
       out.insert(i, _omitted(callee.positionalParameters[i], node));
     }
     if (supplied.isNotEmpty) {
       throw Unsupported(
-          'named argument `${supplied.keys.first}` not in the callee',
-          _sample(node));
+        'named argument `${supplied.keys.first}` not in the callee',
+        _sample(node),
+      );
     }
     return out;
   }
@@ -451,8 +490,9 @@ class KernelFrontend {
       return const IrLiteral('null', IrType('Null', nullable: true));
     }
     throw Unsupported(
-        'omitted parameter `${param.cosmeticName}` has no default',
-        _sample(site));
+      'omitted parameter `${param.cosmeticName}` has no default',
+      _sample(site),
+    );
   }
 
   IrExpr _constant(Constant constant, Expression node) {
@@ -483,12 +523,14 @@ class KernelFrontend {
           if (entry.key.asField.name.text != '_name') continue;
           final value = entry.value;
           if (value is StringConstant) {
-            return IrStatic(constant.classNode.name, value.value,
-                isEnumValue: true);
+            return IrStatic(
+              constant.classNode.name,
+              value.value,
+              isEnumValue: true,
+            );
           }
         }
-        throw Unsupported(
-            'enum constant with no `_name`', _sample(node));
+        throw Unsupported('enum constant with no `_name`', _sample(node));
       }
       // `const Alignment(-1, -1)` arrives already evaluated, as the class plus
       // its field values. Rebuilt as a constructor call so the emitted Rust
@@ -497,12 +539,15 @@ class KernelFrontend {
       final cls = constant.classNode;
       final ctor = cls.constructors.where((c) => c.name.text.isEmpty).toList();
       if (ctor.length != 1) {
-        throw Unsupported('const instance of `${cls.name}` with '
-            '${ctor.length} unnamed constructors', _sample(node));
+        throw Unsupported(
+          'const instance of `${cls.name}` with '
+          '${ctor.length} unnamed constructors',
+          _sample(node),
+        );
       }
       final byName = {
         for (final e in constant.fieldValues.entries)
-          e.key.asField.name.text: e.value
+          e.key.asField.name.text: e.value,
       };
       // Positional **and** named, in that order, because that is the order
       // `_lowerConstructor` puts them in and the backend emits them
@@ -564,7 +609,10 @@ class KernelFrontend {
       }
       final init = variable.initializer;
       return IrLocalDecl(
-          name, _type(variable.type), init == null ? null : expression(init));
+        name,
+        _type(variable.type),
+        init == null ? null : expression(init),
+      );
     }
     if (node is ExpressionStatement && node.expression is Throw) {
       // Before the general `ExpressionStatement` case below, not after: the
@@ -590,11 +638,17 @@ class KernelFrontend {
             receiver is VariableGet &&
             receiver.variable == _cascade) {
           if (value.interfaceTarget is! Field) {
-            return IrSetter(const IrLocal(_cascadeName), value.name.text,
-                expression(value.value));
+            return IrSetter(
+              const IrLocal(_cascadeName),
+              value.name.text,
+              expression(value.value),
+            );
           }
-          return IrAssignField(value.name.text, expression(value.value),
-              target: const IrLocal(_cascadeName));
+          return IrAssignField(
+            value.name.text,
+            expression(value.value),
+            target: const IrLocal(_cascadeName),
+          );
         }
         if (value.receiver is! ThisExpression) {
           // Another object's *setter* is a call, which needs nothing from us
@@ -602,11 +656,16 @@ class KernelFrontend {
           // is a write through a reference, which does. So one is translated
           // and the other still stops.
           if (value.interfaceTarget is! Field) {
-            return IrSetter(expression(value.receiver), value.name.text,
-                expression(value.value));
+            return IrSetter(
+              expression(value.receiver),
+              value.name.text,
+              expression(value.value),
+            );
           }
           throw Unsupported(
-              'assignment to a field of another object', _sample(value));
+            'assignment to a field of another object',
+            _sample(value),
+          );
         }
         if (value.interfaceTarget is! Field) {
           return IrSetter(null, value.name.text, expression(value.value));
@@ -616,8 +675,10 @@ class KernelFrontend {
       if (value is VariableSet) {
         final name = value.variable.cosmeticName;
         if (name == null || name.startsWith('#')) {
-          throw Unsupported('assignment to a synthetic variable',
-              _sample(value));
+          throw Unsupported(
+            'assignment to a synthetic variable',
+            _sample(value),
+          );
         }
         return IrAssign(name, expression(value.value));
       }
@@ -637,8 +698,10 @@ class KernelFrontend {
     if (message is StringLiteral) {
       return IrAssert(expression(condition), literalMessage: message.value);
     }
-    return IrAssert(expression(condition),
-        message: message == null ? null : _sample(message));
+    return IrAssert(
+      expression(condition),
+      message: message == null ? null : _sample(message),
+    );
   }
 
   IrStmt _body(FunctionNode function) {
@@ -658,8 +721,9 @@ class KernelFrontend {
       final init = field.initializer;
       if (init == null) continue;
       try {
-        constants.add(IrConstDecl(
-            field.name.text, _type(field.type), expression(init)));
+        constants.add(
+          IrConstDecl(field.name.text, _type(field.type), expression(init)),
+        );
       } on Unsupported catch (error) {
         refused.add('top-level ${field.name.text}: $error');
       }
@@ -692,19 +756,30 @@ class KernelFrontend {
     // round fourteen's test only ever read the analyzer's output. The fixture
     // comparison is what found it.
     const implicitEnumMembers = {
-      'index', 'values', '_name', 'toString', 'hashCode', '==', 'name',
-      '_enumToString', 'compareTo',
+      'index',
+      'values',
+      '_name',
+      'toString',
+      'hashCode',
+      '==',
+      'name',
+      '_enumToString',
+      'compareTo',
     };
-    final enhanced = node.isEnum &&
-        (node.procedures.any((p) =>
-                !implicitEnumMembers.contains(p.name.text) && !p.isSynthetic) ||
-            node.fields.any((f) =>
-                !f.isStatic && !implicitEnumMembers.contains(f.name.text)));
+    final enhanced =
+        node.isEnum &&
+        (node.procedures.any(
+              (p) =>
+                  !implicitEnumMembers.contains(p.name.text) && !p.isSynthetic,
+            ) ||
+            node.fields.any(
+              (f) => !f.isStatic && !implicitEnumMembers.contains(f.name.text),
+            ));
     final values = node.isEnum && !enhanced
         ? [
             for (final f in node.fields)
               if (f.isStatic && f.isConst && f.name.text != 'values')
-                f.name.text
+                f.name.text,
           ]
         : const <String>[];
     final cls = IrClass(
@@ -754,13 +829,17 @@ class KernelFrontend {
       }
       final init = field.initializer;
       if (init == null) throw Unsupported('const without initialiser', name);
-      cls.constants
-          .add(IrConstDecl(name, _type(field.type), expression(init)));
+      cls.constants.add(IrConstDecl(name, _type(field.type), expression(init)));
     } else {
       final initial = field.initializer;
-      cls.fields.add(IrFieldDecl(name, _type(field.type),
+      cls.fields.add(
+        IrFieldDecl(
+          name,
+          _type(field.type),
           isFinal: field.isFinal,
-          initial: initial == null ? null : expression(initial)));
+          initial: initial == null ? null : expression(initial),
+        ),
+      );
     }
   }
 
@@ -793,8 +872,10 @@ class KernelFrontend {
             base = base.superclass;
           }
           if (base == null) {
-            throw Unsupported('super constructor call with no base',
-                _sample(init));
+            throw Unsupported(
+              'super constructor call with no base',
+              _sample(init),
+            );
           }
           superBase = base.name;
           superArgs = _arguments(init.arguments, init.target.function);
@@ -823,15 +904,17 @@ class KernelFrontend {
     if (statements.any((s) => s is! EmptyStatement)) {
       throw Unsupported('constructor with a body', _sample(node));
     }
-    cls.constructors.add(IrConstructor(
-      params,
-      inits,
-      isConst: node.isConst,
-      name: name.isEmpty ? null : name,
-      asserts: asserts,
-      superBase: superBase,
-      superArgs: superArgs,
-    ));
+    cls.constructors.add(
+      IrConstructor(
+        params,
+        inits,
+        isConst: node.isConst,
+        name: name.isEmpty ? null : name,
+        asserts: asserts,
+        superBase: superBase,
+        superArgs: superArgs,
+      ),
+    );
   }
 
   void _lowerProcedure(IrClass cls, Procedure node) {
@@ -841,8 +924,15 @@ class KernelFrontend {
       // an enhanced enum -- a Rust enum plus an impl -- and stops here rather
       // than being emitted as a plain one with its methods quietly missing.
       const implicit = {
-        'index', 'values', '_name', 'toString', 'hashCode', '==', 'name',
-        '_enumToString', 'compareTo',
+        'index',
+        'values',
+        '_name',
+        'toString',
+        'hashCode',
+        '==',
+        'name',
+        '_enumToString',
+        'compareTo',
       };
       if (!implicit.contains(name) && !node.isSynthetic) {
         throw Unsupported('enhanced enum member `$name`', cls.name);
@@ -852,7 +942,6 @@ class KernelFrontend {
     if (node.isStatic && node.kind == ProcedureKind.Factory) {
       throw Unsupported('factory constructor', name);
     }
-
 
     final params = [
       for (final p in node.function.positionalParameters)
@@ -867,8 +956,7 @@ class KernelFrontend {
       node.function.accept(finder);
       thrown.addAll(finder.types);
       if (thrown.length > 1) {
-        throw Unsupported(
-            'method throwing ${thrown.length} error types', name);
+        throw Unsupported('method throwing ${thrown.length} error types', name);
       }
     }
     final method = IrMethod(

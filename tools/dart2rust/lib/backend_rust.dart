@@ -37,10 +37,9 @@ const _operatorTraits = {
 };
 
 String snake(String name) {
-  final out = name.replaceAllMapped(
-    RegExp(r'(?<!^)([A-Z])'),
-    (m) => '_${m[1]}',
-  ).toLowerCase();
+  final out = name
+      .replaceAllMapped(RegExp(r'(?<!^)([A-Z])'), (m) => '_${m[1]}')
+      .toLowerCase();
   return out;
 }
 
@@ -56,7 +55,7 @@ String variantName(String name) =>
 
 class RustBackend {
   RustBackend(this.cls, {IrLibrary? library})
-      : library = library ?? IrLibrary([cls]);
+    : library = library ?? IrLibrary([cls]);
 
   final IrClass cls;
 
@@ -66,6 +65,7 @@ class RustBackend {
   /// this type name an abstract class? If it is, a value of that type is not a
   /// struct -- it is `dyn Trait`, and has to be behind a reference or a Box.
   final IrLibrary library;
+
   /// Lines, not a StringBuffer, so a member that turns out to be untranslatable
   /// can be rolled back. See [_member].
   final _out = <String>[];
@@ -153,19 +153,39 @@ class RustBackend {
       IrField(:final target, :final name) => _fieldRead(target, name),
       IrStatic(:final owner, :final name, :final isEnumValue) =>
         '$owner::${isEnumValue ? variantName(name) : screamingSnake(name)}',
-      IrBinary(:final op, :final left, :final right) => _binary(op, left, right),
+      IrBinary(:final op, :final left, :final right) => _binary(
+        op,
+        left,
+        right,
+      ),
       IrUnary(:final op, :final operand) => '($op${expr(operand)})',
-      IrCall(:final target, :final name, :final args) => _call(target, name, args),
-      IrStaticCall(:final owner, :final name, :final args) =>
-        _staticCall(owner, name, args),
-      IrNew(:final type, :final args, :final constructor) =>
-        _new(type, args, constructor),
+      IrCall(:final target, :final name, :final args) => _call(
+        target,
+        name,
+        args,
+      ),
+      IrStaticCall(:final owner, :final name, :final args) => _staticCall(
+        owner,
+        name,
+        args,
+      ),
+      IrNew(:final type, :final args, :final constructor) => _new(
+        type,
+        args,
+        constructor,
+      ),
       IrConditional(:final condition, :final then, :final otherwise) =>
         'if ${expr(condition)} { ${expr(then)} } else { ${expr(otherwise)} }',
-      IrIs() => throw Unsupported('`is` in the value subset', '`is` needs the '
-          'class hierarchy, which this backend does not model yet'),
-      IrSuperCall(:final base, :final name, :final args) =>
-        _superCall(base, name, args),
+      IrIs() => throw Unsupported(
+        '`is` in the value subset',
+        '`is` needs the '
+            'class hierarchy, which this backend does not model yet',
+      ),
+      IrSuperCall(:final base, :final name, :final args) => _superCall(
+        base,
+        name,
+        args,
+      ),
       IrNullCheck(:final operand) => '${expr(operand)}.unwrap()',
       IrTopLevel(:final name) => screamingSnake(name),
       IrIsNull(:final operand) => '${expr(operand)}.is_none()',
@@ -211,12 +231,12 @@ class RustBackend {
   static const _cascadeBinding = 'cascaded';
 
   bool _writesTheBinding(IrStmt s) => switch (s) {
-        IrAssignField(:final target) =>
-          target is IrLocal && target.name == _cascadeBinding,
-        IrSetter(:final target) =>
-          target is IrLocal && target.name == _cascadeBinding,
-        _ => false,
-      };
+    IrAssignField(:final target) =>
+      target is IrLocal && target.name == _cascadeBinding,
+    IrSetter(:final target) =>
+      target is IrLocal && target.name == _cascadeBinding,
+    _ => false,
+  };
 
   /// A closure literal.
   ///
@@ -225,8 +245,9 @@ class RustBackend {
   /// not, and a compiler that emits both spellings depending on where the
   /// closure lands is two rules where one will do.
   String _closure(IrClosure node) {
-    final params =
-        node.params.map((p) => '${snake(p.name)}: ${type(p.type)}').join(', ');
+    final params = node.params
+        .map((p) => '${snake(p.name)}: ${type(p.type)}')
+        .join(', ');
     final saved = _out.length;
     final savedIndent = _indent;
     _indent = 0;
@@ -282,8 +303,24 @@ class RustBackend {
   /// anything unrecognised stops.
   String _binary(String op, IrExpr left, IrExpr right) {
     const passthrough = {
-      '+', '-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>=',
-      '&&', '||', '&', '|', '^', '<<', '>>',
+      '+',
+      '-',
+      '*',
+      '/',
+      '%',
+      '==',
+      '!=',
+      '<',
+      '>',
+      '<=',
+      '>=',
+      '&&',
+      '||',
+      '&',
+      '|',
+      '^',
+      '<<',
+      '>>',
     };
     if (op == '~/') return '((${expr(left)} / ${expr(right)}).trunc())';
     if (op == '??') {
@@ -354,8 +391,10 @@ class RustBackend {
     final target = library[owner];
     if (target != null &&
         !target.methods.any((m) => m.name == name && m.operator == null)) {
-      throw Unsupported('call to `$owner.$name`, which was not translated',
-          '$owner.$name(...)');
+      throw Unsupported(
+        'call to `$owner.$name`, which was not translated',
+        '$owner.$name(...)',
+      );
     }
     return '$owner::${_identifier(name)}(${args.map(expr).join(', ')})';
   }
@@ -363,17 +402,22 @@ class RustBackend {
   String _superCall(String base, String name, List<IrExpr> args) {
     final baseClass = library[base];
     if (baseClass == null) {
-      throw Unsupported('super call into `$base`, which is not in this file',
-          'super.$name(...)');
+      throw Unsupported(
+        'super call into `$base`, which is not in this file',
+        'super.$name(...)',
+      );
     }
     final provides = baseClass.methods.any(
-        (m) => m.operator == null && m.name == name && !m.isStatic);
+      (m) => m.operator == null && m.name == name && !m.isStatic,
+    );
     if (!provides) {
       // The base's own version was refused, or is abstract and has no body to
       // call. Emitting the call anyway would name a function that was never
       // written -- the `_stringify` shape from round one, one level up.
-      throw Unsupported('super call to `$base.$name`, which was not translated',
-          'super.$name(...)');
+      throw Unsupported(
+        'super call to `$base.$name`, which was not translated',
+        'super.$name(...)',
+      );
     }
     return '${superFn(base, name)}(${[_selfName, ...args.map(expr)].join(', ')})';
   }
@@ -452,9 +496,10 @@ class RustBackend {
     // the caller's own signature was widened by the same fixpoint, so the two
     // always agree.
     final suffix =
-        (target == null || target is IrThis) && _failing.containsKey(snake(name))
-            ? '?'
-            : '';
+        (target == null || target is IrThis) &&
+            _failing.containsKey(snake(name))
+        ? '?'
+        : '';
     return '$receiver.${snake(name)}(${args.map(expr).join(', ')})$suffix';
   }
 
@@ -526,8 +571,10 @@ class RustBackend {
       case IrLocalDecl(:final name, :final type, :final init):
         final annotation = type == null ? '' : ': ${this.type(type)}';
         final mutable = _reassigned.contains(name) ? 'mut ' : '';
-        _line('let $mutable${snake(name)}$annotation = '
-            '${init == null ? "Default::default()" : expr(init)};');
+        _line(
+          'let $mutable${snake(name)}$annotation = '
+          '${init == null ? "Default::default()" : expr(init)};',
+        );
       case IrAssign(:final name, :final value):
         _line('${snake(name)} = ${expr(value)};');
       case IrAssignField(:final target, :final name, :final value):
@@ -551,11 +598,7 @@ class RustBackend {
         }
       case IrExprStmt(:final expr):
         _line('${this.expr(expr)};');
-      case IrAssert(
-          :final condition,
-          :final literalMessage,
-          :final message,
-        ):
+      case IrAssert(:final condition, :final literalMessage, :final message):
         // `debug_assert!`, not `assert!`: Dart's assert runs in debug builds
         // and is compiled out of release ones, and so is this. Using `assert!`
         // would keep every one of upstream's checks in a release binary, which
@@ -563,8 +606,9 @@ class RustBackend {
         if (message != null) {
           _line('// assert message, not translated: $message');
         }
-        final text =
-            literalMessage == null ? '' : ', "${_escape(literalMessage)}"';
+        final text = literalMessage == null
+            ? ''
+            : ', "${_escape(literalMessage)}"';
         _line('debug_assert!(${expr(condition)}$text);');
     }
   }
@@ -583,8 +627,10 @@ class RustBackend {
   /// threw away the whole file -- including the classes that were fine. A
   /// compiler that produces nothing because of one bad class is much less
   /// useful than one that produces the rest and says which is missing.
-  static (String, List<String>) emitLibrary(IrLibrary library,
-      {List<String> frontEndRefusals = const []}) {
+  static (String, List<String>) emitLibrary(
+    IrLibrary library, {
+    List<String> frontEndRefusals = const [],
+  }) {
     final out = StringBuffer();
     final refused = <String>[];
     if (frontEndRefusals.isNotEmpty) {
@@ -593,8 +639,10 @@ class RustBackend {
       // end* refused never reaches the backend at all, so the output said
       // nothing about it and only stderr did. A reader with the file in front
       // of them should not have to have kept the console.
-      out.writeln('// The front end refused '
-          '${frontEndRefusals.length} member(s) in this library:');
+      out.writeln(
+        '// The front end refused '
+        '${frontEndRefusals.length} member(s) in this library:',
+      );
       for (final refusal in frontEndRefusals) {
         out.writeln('// NOT TRANSLATED: $refusal');
       }
@@ -606,8 +654,10 @@ class RustBackend {
       final holder = RustBackend(IrClass('<library>'), library: library);
       for (final constant in library.constants) {
         holder._member('top-level ${constant.name}', () {
-          holder._line('pub const ${screamingSnake(constant.name)}: '
-              '${holder.type(constant.type)} = ${holder.expr(constant.value)};');
+          holder._line(
+            'pub const ${screamingSnake(constant.name)}: '
+            '${holder.type(constant.type)} = ${holder.expr(constant.value)};',
+          );
         });
       }
       out.write(holder._out.join('\n'));
@@ -705,8 +755,10 @@ class RustBackend {
     for (final method in cls.abstractMethods) {
       _member('${cls.name}.${method.name} (required)', () {
         _doc(method.doc);
-        _line('fn ${_methodName(method)}(${_params(method)}) -> '
-            '${type(method.returnType)};');
+        _line(
+          'fn ${_methodName(method)}(${_params(method)}) -> '
+          '${type(method.returnType)};',
+        );
         _line('');
       });
     }
@@ -714,16 +766,20 @@ class RustBackend {
       if (method.isStatic) continue;
       _member('${cls.name}.${method.name} (default)', () {
         _doc(method.doc);
-        _line('fn ${_methodName(method)}(${_params(method)}) -> '
-            '${type(method.returnType)} {');
+        _line(
+          'fn ${_methodName(method)}(${_params(method)}) -> '
+          '${type(method.returnType)} {',
+        );
         _indent++;
         // The default delegates to the free function rather than holding the
         // body, so that an override can still reach it. See `superFn`.
         if (_superFailed.contains(method.name)) {
           _line('todo!("${cls.name}.${method.name} did not translate")');
         } else {
-          _line('${superFn(cls.name, method.name)}('
-            '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})');
+          _line(
+            '${superFn(cls.name, method.name)}('
+            '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})',
+          );
         }
         _indent--;
         _line('}');
@@ -750,8 +806,10 @@ class RustBackend {
   void _emitSuperFns() {
     for (final method in cls.methods) {
       if (method.isStatic) continue;
-      if (!_member(superFn(cls.name, method.name),
-          () => _emitSuperFn(method))) {
+      if (!_member(
+        superFn(cls.name, method.name),
+        () => _emitSuperFn(method),
+      )) {
         _superFailed.add(method.name);
       }
     }
@@ -765,11 +823,14 @@ class RustBackend {
       final params = [
         'this_: &S',
         ...method.params.map(
-            (p) => '${snake(p.name)}: ${type(p.type, owned: false)}'),
+          (p) => '${snake(p.name)}: ${type(p.type, owned: false)}',
+        ),
       ].join(', ');
-      _line('${_vis(cls.name)}fn ${superFn(cls.name, method.name)}'
-          '<S: ${cls.name} + ?Sized>($params) -> '
-          '${type(method.returnType)} {');
+      _line(
+        '${_vis(cls.name)}fn ${superFn(cls.name, method.name)}'
+        '<S: ${cls.name} + ?Sized>($params) -> '
+        '${type(method.returnType)} {',
+      );
       _indent++;
       _selfName = 'this_';
       _returns = method.returnType;
@@ -858,10 +919,12 @@ class RustBackend {
   /// operators do not assign, so the first is a guard rather than a loss.
   String _receiverOf(IrMethod method) {
     if (!_mutating.contains(_rustName(method))) return '&self';
-    if (method.operator != null && _operatorTraits.containsKey(method.operator)) {
+    if (method.operator != null &&
+        _operatorTraits.containsKey(method.operator)) {
       throw Unsupported(
-          'a field write inside `operator ${method.operator}`',
-          'std::ops takes `self`, so the receiver is not this class\'s to change');
+        'a field write inside `operator ${method.operator}`',
+        'std::ops takes `self`, so the receiver is not this class\'s to change',
+      );
     }
     final base = library[cls.superclass];
     if (base != null &&
@@ -869,8 +932,9 @@ class RustBackend {
         (base.abstractMethods.any((m) => m.name == method.name) ||
             base.methods.any((m) => m.name == method.name))) {
       throw Unsupported(
-          'a field write inside `${method.name}`, which `${base.name}` declares',
-          'the receiver belongs to the trait, not to this class');
+        'a field write inside `${method.name}`, which `${base.name}` declares',
+        'the receiver belongs to the trait, not to this class',
+      );
     }
     return '&mut self';
   }
@@ -883,7 +947,6 @@ class RustBackend {
   /// make a getter and its setter one entry and mark the getter `&mut self`.
   String _rustName(IrMethod method) =>
       method.isSetter ? 'set_${snake(method.name)}' : _identifier(method.name);
-
 
   // -- Flattening the hierarchy -----------------------------------------------
 
@@ -915,22 +978,25 @@ class RustBackend {
     final base = library[baseName];
     if (base == null) {
       throw Unsupported(
-          'super constructor call into `$baseName`, which is not in this file',
-          'super(...)');
+        'super constructor call into `$baseName`, which is not in this file',
+        'super(...)',
+      );
     }
     final baseCtors = base.constructors.where((c) => c.name == null).toList();
     if (baseCtors.length != 1) {
       throw Unsupported(
-          'super constructor call into `$baseName`, which has '
-          '${baseCtors.length} unnamed constructors',
-          'super(...)');
+        'super constructor call into `$baseName`, which has '
+            '${baseCtors.length} unnamed constructors',
+        'super(...)',
+      );
     }
     final baseCtor = baseCtors.single;
     if (baseCtor.params.length != ctor.superArgs.length) {
       throw Unsupported(
-          'super(...) passes ${ctor.superArgs.length} arguments to a '
-          'constructor taking ${baseCtor.params.length}',
-          'super(...)');
+        'super(...) passes ${ctor.superArgs.length} arguments to a '
+            'constructor taking ${baseCtor.params.length}',
+        'super(...)',
+      );
     }
     final substitution = <String, IrExpr>{
       for (var i = 0; i < baseCtor.params.length; i++)
@@ -942,8 +1008,9 @@ class RustBackend {
       // let it, and neither does this.
       ..._inheritedInits(baseCtor)
           .map((k, v) => MapEntry(k, _substitute(v, substitution))),
-      ...baseCtor.fieldInits
-          .map((k, v) => MapEntry(k, _substitute(v, substitution))),
+      ...baseCtor.fieldInits.map(
+        (k, v) => MapEntry(k, _substitute(v, substitution)),
+      ),
     };
   }
 
@@ -953,44 +1020,77 @@ class RustBackend {
     IrExpr go(IrExpr node) => _substitute(node, by);
     return switch (e) {
       IrLocal(:final name) => by[name] ?? e,
-      IrField(:final target, :final name) =>
-        IrField(target == null ? null : go(target), name),
-      IrBinary(:final op, :final left, :final right) =>
-        IrBinary(op, go(left), go(right)),
+      IrField(:final target, :final name) => IrField(
+        target == null ? null : go(target),
+        name,
+      ),
+      IrBinary(:final op, :final left, :final right) => IrBinary(
+        op,
+        go(left),
+        go(right),
+      ),
       IrUnary(:final op, :final operand) => IrUnary(op, go(operand)),
       IrNullCheck(:final operand) => IrNullCheck(go(operand)),
       IrIsNull(:final operand) => IrIsNull(go(operand)),
-      IrIfNull(:final left, :final right, :final nullableResult, :final eager) =>
-        IrIfNull(go(left), go(right),
-            nullableResult: nullableResult, eager: eager),
-      IrNullAware(:final receiver, :final body) =>
-        IrNullAware(go(receiver), go(body)),
-      IrCall(:final target, :final name, :final args) =>
-        IrCall(target == null ? null : go(target), name, args.map(go).toList()),
-      IrStaticCall(:final owner, :final name, :final args) =>
-        IrStaticCall(owner, name, args.map(go).toList()),
-      IrNew(:final type, :final args, :final constructor) =>
-        IrNew(type, args.map(go).toList(), constructor: constructor),
+      IrIfNull(
+        :final left,
+        :final right,
+        :final nullableResult,
+        :final eager,
+      ) =>
+        IrIfNull(
+          go(left),
+          go(right),
+          nullableResult: nullableResult,
+          eager: eager,
+        ),
+      IrNullAware(:final receiver, :final body) => IrNullAware(
+        go(receiver),
+        go(body),
+      ),
+      IrCall(:final target, :final name, :final args) => IrCall(
+        target == null ? null : go(target),
+        name,
+        args.map(go).toList(),
+      ),
+      IrStaticCall(:final owner, :final name, :final args) => IrStaticCall(
+        owner,
+        name,
+        args.map(go).toList(),
+      ),
+      IrNew(:final type, :final args, :final constructor) => IrNew(
+        type,
+        args.map(go).toList(),
+        constructor: constructor,
+      ),
       IrConditional(:final condition, :final then, :final otherwise) =>
         IrConditional(go(condition), go(then), go(otherwise)),
-      IrSuperCall(:final base, :final name, :final args) =>
-        IrSuperCall(base, name, args.map(go).toList()),
-      IrIs(:final expr, :final type, :final negated) =>
-        IrIs(go(expr), type, negated: negated),
-      IrCallValue(:final target, :final args) =>
-        IrCallValue(go(target), args.map(go).toList()),
-      IrBlockValue(:final statements, :final value) =>
-        IrBlockValue(statements, go(value)),
+      IrSuperCall(:final base, :final name, :final args) => IrSuperCall(
+        base,
+        name,
+        args.map(go).toList(),
+      ),
+      IrIs(:final expr, :final type, :final negated) => IrIs(
+        go(expr),
+        type,
+        negated: negated,
+      ),
+      IrCallValue(:final target, :final args) => IrCallValue(
+        go(target),
+        args.map(go).toList(),
+      ),
+      IrBlockValue(:final statements, :final value) => IrBlockValue(
+        statements,
+        go(value),
+      ),
       IrClosure() ||
       IrLiteral() ||
       IrStatic() ||
       IrTopLevel() ||
       IrThis() ||
-      IrBound() =>
-        e,
+      IrBound() => e,
     };
   }
-
 
   // -- Failure in the return value --------------------------------------------
 
@@ -1051,11 +1151,11 @@ class RustBackend {
       '${snake(p.name)}: ${type(p.type, owned: owned)}';
 
   String _params(IrMethod method) => [
-        if (!method.isStatic) '&self',
-        // A parameter is borrowed, not owned: passing a `Box<dyn Trait>` in
-        // would move it, and upstream's callers do not give theirs away.
-        ...method.params.map((p) => _param(p, owned: false)),
-      ].join(', ');
+    if (!method.isStatic) '&self',
+    // A parameter is borrowed, not owned: passing a `Box<dyn Trait>` in
+    // would move it, and upstream's callers do not give theirs away.
+    ...method.params.map((p) => _param(p, owned: false)),
+  ].join(', ');
 
   String _emitStruct() {
     _line('// Generated by tools/dart2rust from upstream `${cls.name}`.');
@@ -1113,10 +1213,7 @@ class RustBackend {
   List<IrClass> _abstractAncestors(IrClass of) {
     final above = library[of.superclass];
     if (above == null) return const [];
-    return [
-      if (above.isAbstract) above,
-      ..._abstractAncestors(above),
-    ];
+    return [if (above.isAbstract) above, ..._abstractAncestors(above)];
   }
 
   void _emitImplFor(IrClass base) {
@@ -1151,8 +1248,10 @@ class RustBackend {
       _line('');
     }
     for (final need in required) {
-      _member('impl ${base.name}::${need.operator ?? need.name} for ${cls.name}',
-          () => _emitBaseMethod(need));
+      _member(
+        'impl ${base.name}::${need.operator ?? need.name} for ${cls.name}',
+        () => _emitBaseMethod(need),
+      );
     }
     _indent--;
     _line('}');
@@ -1171,8 +1270,10 @@ class RustBackend {
         // Reported in the output rather than silently skipped: a trait impl
         // missing a method does not compile, and the reader should learn why
         // from the file rather than from rustc.
-        _line('todo!("${cls.name} does not translate '
-            '${need.operator ?? need.name} yet")');
+        _line(
+          'todo!("${cls.name} does not translate '
+          '${need.operator ?? need.name} yet")',
+        );
       } else {
         final call = _inherentCall(have);
         final concrete = type(have.returnType);
@@ -1243,7 +1344,9 @@ class RustBackend {
     // It mattered: `TextAlignVertical` has asserts in its constructor and
     // `static const` fields built from it, and dropping `const` made those
     // fields uncompilable. The two rounds' rules only met on real code.
-    _line('${_vis(ctor.name ?? cls.name)}${ctor.isConst ? "const " : ""}fn $name($params) -> Self {');
+    _line(
+      '${_vis(ctor.name ?? cls.name)}${ctor.isConst ? "const " : ""}fn $name($params) -> Self {',
+    );
     _indent++;
     for (final check in ctor.asserts) {
       stmt(check);
@@ -1270,8 +1373,10 @@ class RustBackend {
   void _emitConstants() {
     for (final constant in cls.constants) {
       _doc(constant.doc);
-      _line('${_vis(constant.name)}const ${screamingSnake(constant.name)}: ${type(constant.type)} '
-          '= ${expr(constant.value)};');
+      _line(
+        '${_vis(constant.name)}const ${screamingSnake(constant.name)}: ${type(constant.type)} '
+        '= ${expr(constant.value)};',
+      );
     }
     if (cls.constants.isNotEmpty) _line('');
   }
@@ -1301,7 +1406,9 @@ class RustBackend {
       // giving one a value would make `a.x = 1` an expression, which it is not.
       final returns = _returnType(method);
       _failure = _failing[_rustName(method)];
-      _line('${_vis(method.name)}fn ${_rustName(method)}($params) -> $returns {');
+      _line(
+        '${_vis(method.name)}fn ${_rustName(method)}($params) -> $returns {',
+      );
       _indent++;
       _returns = method.returnType;
       stmt(method.body, tail: true);
@@ -1334,12 +1441,14 @@ class RustBackend {
           '&self',
           ...method.params.map((p) => _param(p, owned: false)),
         ].join(', ');
-        _line('${_vis(method.name)}fn ${_operatorName(op)}($params) -> ${type(method.returnType)} {');
+        _line(
+          '${_vis(method.name)}fn ${_operatorName(op)}($params) -> ${type(method.returnType)} {',
+        );
         _indent++;
         _returns = method.returnType;
-      _reassigned = _assignedIn(method.body);
-      stmt(method.body, tail: true);
-      _returns = null;
+        _reassigned = _assignedIn(method.body);
+        stmt(method.body, tail: true);
+        _returns = null;
         _indent--;
         _line('}');
         _indent--;
@@ -1372,7 +1481,6 @@ class RustBackend {
     }
   }
 
-
   /// A Rust-legal name for a Dart operator.
   ///
   /// The fallback used to be `op_` plus the code units, which turned `==` into
@@ -1380,29 +1488,29 @@ class RustBackend {
   /// has is named here instead; anything genuinely unknown stops rather than
   /// being spelled in decimal.
   static String _operatorName(String op) => switch (op) {
-        '+' => 'op_add',
-        '-' => 'op_sub',
-        '*' => 'op_mul',
-        '/' => 'op_div',
-        '%' => 'op_rem',
-        'unary-' => 'op_neg',
-        '~/' => 'int_div',
-        '[]' => 'index_of',
-        '[]=' => 'index_set',
-        '==' => 'op_eq',
-        '<' => 'lt',
-        '>' => 'gt',
-        '<=' => 'le',
-        '>=' => 'ge',
-        '&' => 'bit_and',
-        '|' => 'bit_or',
-        '^' => 'bit_xor',
-        '~' => 'bit_not',
-        '<<' => 'shl',
-        '>>' => 'shr',
-        '>>>' => 'ushr',
-        _ => throw Unsupported('operator `$op` has no Rust name', op),
-      };
+    '+' => 'op_add',
+    '-' => 'op_sub',
+    '*' => 'op_mul',
+    '/' => 'op_div',
+    '%' => 'op_rem',
+    'unary-' => 'op_neg',
+    '~/' => 'int_div',
+    '[]' => 'index_of',
+    '[]=' => 'index_set',
+    '==' => 'op_eq',
+    '<' => 'lt',
+    '>' => 'gt',
+    '<=' => 'le',
+    '>=' => 'ge',
+    '&' => 'bit_and',
+    '|' => 'bit_or',
+    '^' => 'bit_xor',
+    '~' => 'bit_not',
+    '<<' => 'shl',
+    '>>' => 'shr',
+    '>>>' => 'ushr',
+    _ => throw Unsupported('operator `$op` has no Rust name', op),
+  };
 
   /// A Rust-legal identifier for any Dart member name.
   ///
@@ -1411,10 +1519,9 @@ class RustBackend {
   /// `alignment_geometry_super_`, a name with nothing on the end of it.
   static String _identifier(String name) =>
       RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(name)
-          ? snake(name)
-          : _operatorName(name);
+      ? snake(name)
+      : _operatorName(name);
 }
-
 
 /// Finds, in one method body, whether it writes a field of `this` and which of
 /// its own methods it calls.

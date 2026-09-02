@@ -20,8 +20,10 @@ import '../lib/frontend_kernel.dart';
 
 Future<void> main(List<String> args) async {
   if (args.length < 2) {
-    stderr.writeln('usage: dart2rust_kernel.dart <app.dill> <library uri> '
-        '[-o out.rs] [--list]');
+    stderr.writeln(
+      'usage: dart2rust_kernel.dart <app.dill> <library uri> '
+      '[-o out.rs] [--list]',
+    );
     exit(2);
   }
   final dill = args[0];
@@ -38,27 +40,35 @@ Future<void> main(List<String> args) async {
         .where((l) => l.importUri.toString().contains(wanted))
         .toList();
     for (final lib in matching.take(60)) {
-      stdout.writeln('${lib.classes.length.toString().padLeft(4)}  '
-          '${lib.importUri}');
+      stdout.writeln(
+        '${lib.classes.length.toString().padLeft(4)}  '
+        '${lib.importUri}',
+      );
     }
     stdout.writeln('${matching.length} libraries match');
     return;
   }
 
-  final matches =
-      component.libraries.where((l) => l.importUri.toString() == wanted);
+  final matches = component.libraries.where(
+    (l) => l.importUri.toString() == wanted,
+  );
   if (matches.isEmpty) {
     stderr.writeln('no library `$wanted` in $dill (try --list)');
     exit(1);
   }
 
   final (lib, refused) = KernelFrontend(matches.first).lowerLibrary();
-  final (rust, backendRefused) = RustBackend.emitLibrary(lib, frontEndRefusals: refused);
+  final (rust, backendRefused) = RustBackend.emitLibrary(
+    lib,
+    frontEndRefusals: refused,
+  );
   refused.addAll(backendRefused);
 
-  stderr.writeln('${lib.classes.length} classes '
-      '(${lib.classes.where((c) => c.isAbstract).length} abstract), '
-      '${refused.length} refused');
+  stderr.writeln(
+    '${lib.classes.length} classes '
+    '(${lib.classes.where((c) => c.isAbstract).length} abstract), '
+    '${refused.length} refused',
+  );
   for (final r in refused.take(25)) {
     stderr.writeln('  REFUSED $r');
   }

@@ -140,11 +140,15 @@ Future<void> main(List<String> args) async {
   final ranked = counts.entries.toList()
     ..sort((a, b) => b.value.compareTo(a.value));
 
-  print('${files.length} files, $classesSeen classes, '
-      '${elapsed.inSeconds}s'
-      '${filesFailed > 0 ? ", $filesFailed did not resolve" : ""}');
-  print('$classesClean translated with no refusal, '
-      '$membersTranslated members emitted');
+  print(
+    '${files.length} files, $classesSeen classes, '
+    '${elapsed.inSeconds}s'
+    '${filesFailed > 0 ? ", $filesFailed did not resolve" : ""}',
+  );
+  print(
+    '$classesClean translated with no refusal, '
+    '$membersTranslated members emitted',
+  );
   print('');
   print('${'count'.padLeft(6)}  what has to be built');
   for (final entry in ranked.take(limit)) {
@@ -152,8 +156,10 @@ Future<void> main(List<String> args) async {
     if (showExamples) print('        e.g. ${examples[entry.key]}');
   }
   print('');
-  print('${ranked.length} distinct blockers, '
-      '${counts.values.fold(0, (a, b) => a + b)} refusals total');
+  print(
+    '${ranked.length} distinct blockers, '
+    '${counts.values.fold(0, (a, b) => a + b)} refusals total',
+  );
   if (cleanClasses.isNotEmpty) {
     print('');
     print('clean: ${cleanClasses.join(", ")}');

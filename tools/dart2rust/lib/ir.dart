@@ -18,8 +18,8 @@ library;
 /// mapped in the backend, because what they map to is a Rust question.
 class IrType {
   const IrType(this.name, {this.nullable = false})
-      : parameters = null,
-        returns = null;
+    : parameters = null,
+      returns = null;
 
   /// A function type: `double Function(double, String)`.
   ///
@@ -27,7 +27,7 @@ class IrType {
   /// takes `impl Fn(f32) -> f32` and a field holds `Box<dyn Fn(f32) -> f32>`,
   /// and neither can be built from the string `Function`.
   const IrType.function(this.parameters, this.returns, {this.nullable = false})
-      : name = 'Function';
+    : name = 'Function';
 
   final String name;
   final bool nullable;
@@ -45,7 +45,12 @@ class IrType {
 
 /// A parameter of a constructor or method.
 class IrParam {
-  const IrParam(this.name, this.type, {this.named = false, this.hasDefault = false});
+  const IrParam(
+    this.name,
+    this.type, {
+    this.named = false,
+    this.hasDefault = false,
+  });
 
   final String name;
   final IrType type;
@@ -250,8 +255,12 @@ class IrClosure extends IrExpr {
 /// not, and only 23% of the 6764 `??` in `package:flutter` have a right side
 /// that may be evaluated unconditionally.
 class IrIfNull extends IrExpr {
-  const IrIfNull(this.left, this.right,
-      {required this.nullableResult, required this.eager});
+  const IrIfNull(
+    this.left,
+    this.right, {
+    required this.nullableResult,
+    required this.eager,
+  });
 
   final IrExpr left;
   final IrExpr right;
@@ -443,8 +452,13 @@ class IrAssert extends IrStmt {
 // -- Declarations -------------------------------------------------------------
 
 class IrFieldDecl {
-  const IrFieldDecl(this.name, this.type,
-      {required this.isFinal, this.initial, this.doc});
+  const IrFieldDecl(
+    this.name,
+    this.type, {
+    required this.isFinal,
+    this.initial,
+    this.doc,
+  });
 
   final String name;
   final IrType type;
@@ -557,12 +571,14 @@ class IrConstructor {
 }
 
 class IrClass {
-  IrClass(this.name,
-      {this.superclass,
-      this.isAbstract = false,
-      this.isEnum = false,
-      this.values = const [],
-      this.doc});
+  IrClass(
+    this.name, {
+    this.superclass,
+    this.isAbstract = false,
+    this.isEnum = false,
+    this.values = const [],
+    this.doc,
+  });
 
   final String name;
   final String? superclass;

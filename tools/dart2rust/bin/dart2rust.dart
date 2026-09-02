@@ -61,11 +61,16 @@ Future<void> main(List<String> args) async {
   if (wanted == '--all') {
     final frontend = Frontend('');
     final (lib, refused) = frontend.lowerLibrary(resolved.unit);
-    final (rust, backendRefused) = RustBackend.emitLibrary(lib, frontEndRefusals: refused);
+    final (rust, backendRefused) = RustBackend.emitLibrary(
+      lib,
+      frontEndRefusals: refused,
+    );
     refused.addAll(backendRefused);
-    stderr.writeln('${lib.classes.length} classes '
-        '(${lib.classes.where((c) => c.isAbstract).length} abstract), '
-        '${refused.length} refused');
+    stderr.writeln(
+      '${lib.classes.length} classes '
+      '(${lib.classes.where((c) => c.isAbstract).length} abstract), '
+      '${refused.length} refused',
+    );
     for (final r in refused.take(20)) {
       stderr.writeln('  REFUSED $r');
     }
@@ -114,15 +119,19 @@ Future<void> main(List<String> args) async {
     }
   }
 
-  stderr.writeln('$wanted: ${cls.fields.length} fields, '
-      '${cls.constants.length} constants, ${cls.methods.length} methods, '
-      '${refused.length} refused');
+  stderr.writeln(
+    '$wanted: ${cls.fields.length} fields, '
+    '${cls.constants.length} constants, ${cls.methods.length} methods, '
+    '${refused.length} refused',
+  );
   for (final r in refused) {
     stderr.writeln('  REFUSED $r');
   }
   if (evaluated.isNotEmpty) {
-    stderr.writeln('  (analyser evaluated ${evaluated.length} constants, '
-        'e.g. ${evaluated.first})');
+    stderr.writeln(
+      '  (analyser evaluated ${evaluated.length} constants, '
+      'e.g. ${evaluated.first})',
+    );
   }
 
   if (rust == null) {

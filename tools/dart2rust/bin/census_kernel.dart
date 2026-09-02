@@ -35,8 +35,10 @@ int _topLevel(IrLibrary library) => library.constants.length;
 
 void main(List<String> args) {
   if (args.isEmpty) {
-    stderr.writeln('usage: census_kernel.dart <app.dill> [uri prefix] '
-        '[--limit N] [--examples]');
+    stderr.writeln(
+      'usage: census_kernel.dart <app.dill> [uri prefix] '
+      '[--limit N] [--examples]',
+    );
     exit(2);
   }
   final dill = args[0];
@@ -76,7 +78,8 @@ void main(List<String> args) {
       final (cls, problems) = frontend.lowerClass(node);
       lowered.add(cls);
       classesSeen++;
-      membersEmitted += cls.methods.length +
+      membersEmitted +=
+          cls.methods.length +
           cls.constants.length +
           cls.constructors.length +
           cls.values.length;
@@ -101,10 +104,14 @@ void main(List<String> args) {
   final ranked = counts.entries.toList()
     ..sort((a, b) => b.value.compareTo(a.value));
 
-  print('$prefix: $libraries libraries, $classesSeen classes, '
-      '${elapsed.inSeconds}s');
-  print('$classesClean classes with no refusal, '
-      '$membersEmitted members emitted');
+  print(
+    '$prefix: $libraries libraries, $classesSeen classes, '
+    '${elapsed.inSeconds}s',
+  );
+  print(
+    '$classesClean classes with no refusal, '
+    '$membersEmitted members emitted',
+  );
   print('');
   print('${'count'.padLeft(6)}  what has to be built');
   for (final entry in ranked.take(limit)) {
@@ -112,6 +119,8 @@ void main(List<String> args) {
     if (showExamples) print('        e.g. ${examples[entry.key]}');
   }
   print('');
-  print('${ranked.length} distinct blockers, '
-      '${counts.values.fold(0, (a, b) => a + b)} refusals total');
+  print(
+    '${ranked.length} distinct blockers, '
+    '${counts.values.fold(0, (a, b) => a + b)} refusals total',
+  );
 }
