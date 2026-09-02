@@ -153,10 +153,11 @@ class RustBackend {
       IrField(:final target, :final name) => _fieldRead(target, name),
       IrStatic(:final owner, :final name, :final isEnumValue) =>
         '$owner::${isEnumValue ? variantName(name) : screamingSnake(name)}',
-      IrBinary(:final op, :final left, :final right) => _binary(
+      IrBinary(:final op, :final left, :final right, :final type) => _binary(
         op,
         left,
         right,
+        type,
       ),
       IrUnary(:final op, :final operand) => '($op${expr(operand)})',
       IrCall(:final target, :final name, :final args) => _call(
@@ -178,6 +179,7 @@ class RustBackend {
         type,
         fields,
       ),
+      IrIdentical(:final left, :final right) => _identical(left, right),
       IrConditional(:final condition, :final then, :final otherwise) =>
         'if ${expr(condition)} { ${expr(then)} } else { ${expr(otherwise)} }',
       IrIs() => throw Unsupported(
@@ -305,7 +307,12 @@ class RustBackend {
   ///
   /// An operator not listed and not passed through would be silently wrong, so
   /// anything unrecognised stops.
-  String _binary(String op, IrExpr left, IrExpr right) {
+  String _binary(String op, IrExpr left, IrExpr right, [IrType? type]) {
+    if (op == '+' && type?.name == 'String') {
+      // `String + String` is not Rust. `format!` is, it needs no borrow worked
+      // out at either end, and it is what Dart's `+` on two strings means.
+      return 'format!("{}{}", ${expr(left)}, ${expr(right)})';
+    }
     const passthrough = {
       '+',
       '-',
@@ -532,8 +539,13 @@ class RustBackend {
 
   String _call(IrExpr? target, String name, List<IrExpr> args) {
     final receiver = _receiver(target);
-    // Dart's `toDouble` on a value already stored as one is a no-op here.
-    if (name == 'toDouble' && args.isEmpty) return receiver;
+    // Dart's `toDouble`. This used to return the receiver unchanged, on the
+    // reasoning that a value already stored as a double needs nothing -- true,
+    // and it is not the only receiver `toDouble` has. `total + i.toDouble()`
+    // with an `int` i came out as `total + i`, which does not compile in Rust
+    // and does in Dart. `as f32` is right for both: on an f32 it is the no-op
+    // the old rule assumed.
+    if (name == 'toDouble' && args.isEmpty) return '($receiver as f32)';
     // A call to a method of this class that can fail carries the failure
     // outward with `?`. That is the propagation the measurement counted, and
     // the caller's own signature was widened by the same fixpoint, so the two
@@ -593,6 +605,49 @@ class RustBackend {
     return name == '_' ? 'new_' : name;
   }
 
+  /// `identical(a, b)`.
+  ///
+  /// Only with `this` on one side. That is the `operator ==` fast path -- 140
+  /// of upstream's 259 -- and there both sides really are references, so
+  /// `std::ptr::eq` asks the question Dart asked. Between two locals it would
+  /// not: a translated value type is a `Copy` struct, and two copies of the
+  /// same value sit at different addresses while two names for one value may
+  /// sit at the same one. Answering that with an address is worse than not
+  /// answering.
+  String _identical(IrExpr left, IrExpr right) {
+    if (!_isReference(left) || !_isReference(right)) {
+      // The question is not "is one side `this`" -- it is whether both sides
+      // are *references* in the emitted Rust. A parameter of a concrete type
+      // arrives by value, because a translated value type is `Copy`, and the
+      // address of a copy answers nothing: `identical(this, other)` there would
+      // compile and always be false.
+      throw Unsupported(
+        '`identical` on something that is not a reference',
+        'identical(.., ..)',
+      );
+    }
+    // Through `*const ()` because the two sides have different Rust types --
+    // `&Self` and `&dyn Trait` -- and identity is about the address, which both
+    // of them have.
+    return 'std::ptr::eq('
+        '${_ref(left)} as *const _ as *const (), '
+        '${_ref(right)} as *const _ as *const ())';
+  }
+
+  /// Whether this expression is a reference in the emitted Rust.
+  ///
+  /// `self` always is. A local is one when it is a parameter whose Dart type is
+  /// an abstract class, since that becomes `&dyn Trait` -- which is what
+  /// upstream's `operator ==(Object other)` is.
+  bool _isReference(IrExpr e) =>
+      e is IrThis || (e is IrLocal && _referenceParams.contains(e.name));
+
+  /// Parameters of the method being emitted that are references.
+  var _referenceParams = <String>{};
+
+  /// `self` is already a reference; anything else names one.
+  String _ref(IrExpr e) => e is IrThis ? _selfName : expr(e);
+
   String _new(IrType t, List<IrExpr> args, String? constructor) {
     final name = type(t);
     final ctor = _ctorName(constructor);
@@ -628,6 +683,8 @@ class RustBackend {
         case IrTryFinally(:final body, :final finalizer):
           walk(body);
           walk(finalizer);
+        case IrWhile(:final body):
+          walk(body);
         case IrReturn():
         case IrLocalDecl():
         case IrExprStmt():
@@ -774,6 +831,12 @@ class RustBackend {
         stmt(handler);
         _indent--;
         _line('}');
+        _indent--;
+        _line('}');
+      case IrWhile(:final condition, :final body):
+        _line('while ${expr(condition)} {');
+        _indent++;
+        stmt(body);
         _indent--;
         _line('}');
       case IrLocalDecl(:final name, :final type, :final init):
@@ -1232,10 +1295,11 @@ class RustBackend {
         target == null ? null : go(target),
         name,
       ),
-      IrBinary(:final op, :final left, :final right) => IrBinary(
+      IrBinary(:final op, :final left, :final right, :final type) => IrBinary(
         op,
         go(left),
         go(right),
+        type: type,
       ),
       IrUnary(:final op, :final operand) => IrUnary(op, go(operand)),
       IrNullCheck(:final operand) => IrNullCheck(go(operand)),
@@ -1294,6 +1358,10 @@ class RustBackend {
       IrConstInstance(:final type, :final fields) => IrConstInstance(type, {
         for (final entry in fields.entries) entry.key: go(entry.value),
       }),
+      IrIdentical(:final left, :final right) => IrIdentical(
+        go(left),
+        go(right),
+      ),
       IrClosure() ||
       IrLiteral() ||
       IrStatic() ||
@@ -1369,6 +1437,8 @@ class RustBackend {
         case IrTryFinally(:final body, :final finalizer):
           walk(body);
           walk(finalizer);
+        case IrWhile(:final body):
+          walk(body);
         default:
       }
     }
@@ -1691,6 +1761,10 @@ class RustBackend {
       final returns = _returnType(method);
       _failure = _failing[_rustName(method)];
       _rustReturns = returns;
+      _referenceParams = {
+        for (final p in method.params)
+          if (library.isAbstract(p.type.name)) p.name,
+      };
       _line(
         '${_vis(method.name)}fn ${_rustName(method)}($params) -> $returns {',
       );
@@ -1865,6 +1939,9 @@ class _WalkSelf {
         // failing call in this body still makes the method fail.
         statement(body);
         statement(finalizer);
+      case IrWhile(:final condition, :final body):
+        expression(condition);
+        statement(body);
     }
   }
 
@@ -1918,6 +1995,9 @@ class _WalkSelf {
         expression(value);
       case IrConstInstance(:final fields):
         fields.values.forEach(expression);
+      case IrIdentical(:final left, :final right):
+        expression(left);
+        expression(right);
       case IrLiteral():
       case IrLocal():
       case IrStatic():

@@ -106,11 +106,19 @@ class IrStatic extends IrExpr {
 }
 
 class IrBinary extends IrExpr {
-  const IrBinary(this.op, this.left, this.right);
+  const IrBinary(this.op, this.left, this.right, {this.type});
 
   final String op;
   final IrExpr left;
   final IrExpr right;
+
+  /// The type of the *result*, when the front end knows it.
+  ///
+  /// Only `+` needs it so far, and it needs it badly: Dart's `a + b` on two
+  /// strings is Rust's `String + &str`, which `a + b` is not. 422 of these in
+  /// `package:flutter/`, and they only started appearing once `for` statements
+  /// translated -- until then the methods holding them were refused earlier.
+  final IrType? type;
 }
 
 class IrUnary extends IrExpr {
@@ -433,6 +441,35 @@ class IrSetter extends IrStmt {
   final IrExpr? target;
   final String name;
   final IrExpr value;
+}
+
+/// `identical(a, b)` -- Dart's reference identity.
+///
+/// 259 of these in `package:flutter/`, and 140 have `this` on one side: the
+/// fast path at the top of an `operator ==`. That is the case Rust can say
+/// exactly, with `std::ptr::eq`. The rest compare two values, and a translated
+/// value type is a `Copy` struct whose address says nothing about identity, so
+/// they are refused rather than answered wrongly.
+class IrIdentical extends IrExpr {
+  const IrIdentical(this.left, this.right);
+
+  final IrExpr left;
+  final IrExpr right;
+}
+
+/// `while (condition) { .. }`.
+///
+/// A `for` becomes one of these wrapped in a block holding its declarations,
+/// with the updates at the end of the body. Kernel's `for` is already that
+/// shape -- separate lists of variables, a condition and updates -- and so is
+/// Dart's `for (x in xs)`, which the CFE lowers to an iterator loop before this
+/// compiler ever sees it: 405 of `package:flutter`'s 592 `for` statements are
+/// really that.
+class IrWhile extends IrStmt {
+  const IrWhile(this.condition, this.body);
+
+  final IrExpr condition;
+  final IrStmt body;
 }
 
 /// `try { .. } finally { .. }`.

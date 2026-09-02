@@ -105,6 +105,7 @@ class Frontend {
         operator,
         expression(node.leftOperand),
         expression(node.rightOperand),
+        type: _type(node.staticType),
       );
     }
     if (node is PrefixExpression) {
@@ -532,6 +533,9 @@ class Frontend {
         args,
       );
     }
+    if (node.methodName.name == 'identical' && args.length == 2) {
+      return IrIdentical(args[0], args[1]);
+    }
     // A top-level function is not a method on `this`. Without this check
     // `clampDouble(a, b, c)` came out as `self.clamp_double(a, b, c)`, which is
     // both wrong and a place the two front ends disagreed -- the Kernel one
@@ -584,6 +588,47 @@ class Frontend {
         node.elseStatement == null ? null : statement(node.elseStatement!),
       );
     }
+    if (node is WhileStatement) {
+      return IrWhile(expression(node.condition), statement(node.body));
+    }
+    if (node is ForStatement) {
+      // The same three parts as Kernel's, but they arrive inside one `parts`
+      // node here. `for (x in xs)` is a different part kind entirely on this
+      // side -- the analyzer keeps the source shape, where the CFE has already
+      // lowered it to an iterator loop -- so it is refused, and the two front
+      // ends only meet on the loops both of them see the same way.
+      final parts = node.forLoopParts;
+      if (parts is! ForPartsWithDeclarations) {
+        throw Unsupported(
+          'for loop parts ${parts.runtimeType}',
+          node.toSource(),
+        );
+      }
+      final condition = parts.condition;
+      return IrBlock([
+        for (final v in parts.variables.variables)
+          IrLocalDecl(
+            v.name.lexeme,
+            _declaredType(parts.variables, v),
+            v.initializer == null ? null : expression(v.initializer!),
+          ),
+        IrWhile(
+          condition == null
+              ? const IrLiteral('true', IrType('bool'))
+              : expression(condition),
+          IrBlock([
+            statement(node.body),
+            // `i = i + 1` is an assignment, and an assignment is a statement
+            // on both sides of this compiler -- lowered as an expression it is
+            // refused, which is what the fixture caught.
+            for (final update in parts.updaters)
+              update is AssignmentExpression
+                  ? _assignment(update)
+                  : IrExprStmt(expression(update)),
+          ]),
+        ),
+      ]);
+    }
     if (node is VariableDeclarationStatement) {
       final declared = node.variables.variables;
       if (declared.length != 1) {
@@ -592,7 +637,7 @@ class Frontend {
       final v = declared.single;
       return IrLocalDecl(
         v.name.lexeme,
-        node.variables.type == null ? null : _type(node.variables.type!.type),
+        _declaredType(node.variables, v),
         v.initializer == null ? null : expression(v.initializer!),
       );
     }
@@ -623,6 +668,20 @@ class Frontend {
       return _assert(node.condition, node.message);
     }
     throw Unsupported('statement ${node.runtimeType}', node.toSource());
+  }
+
+  /// The type of a local, written or inferred.
+  ///
+  /// `var out = ''` has no written type, and this used to leave the annotation
+  /// off and let Rust infer it. Kernel always knows the type, so the two front
+  /// ends said different things about the same line -- invisible until `for`
+  /// started translating and brought a `var` into a fixture both of them
+  /// reached. Resolution knows it here too; asking is better than leaving it,
+  /// because Rust cannot always infer what Dart could.
+  IrType? _declaredType(VariableDeclarationList list, VariableDeclaration v) {
+    final written = list.type;
+    if (written != null) return _type(written.type);
+    return _type(v.declaredFragment?.element.type);
   }
 
   /// The catch half of a `try`, without its `finally`.

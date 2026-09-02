@@ -96,6 +96,11 @@ class KernelFrontend {
       if (_cascade != null && node.variable == _cascade) {
         return const IrLocal(_cascadeName);
       }
+      // A temporary this lowering has already named. Asking the map rather
+      // than the variable's own name is what makes two nested `#0`s two
+      // different locals instead of one.
+      final temporary = _temporaries[node.variable];
+      if (temporary != null) return IrLocal(temporary);
       final name = node.variable.cosmeticName;
       if (name == null || name.startsWith('#')) {
         throw Unsupported('synthetic variable', _sample(node));
@@ -326,8 +331,60 @@ class KernelFrontend {
         );
       }
     }
-    throw Unsupported('CFE `Let` temporary', _sample(node));
+    // Everything else is what a `Let` says it is: bind a name, then evaluate
+    // the body with it in scope. Rust spells that a block expression, and it
+    // needs no pattern recognised at all.
+    //
+    // The three shapes above are still tried first because they read like the
+    // Dart that produced them and keep the two front ends agreeing. This is the
+    // floor under them: 14476 `Let`s in `package:flutter/` are not any of the
+    // three, and the largest group is simply the CFE binding a temporary for a
+    // named argument -- `let #0 = radius * 2 in new CustomPaint(.., #0, ..)`.
+    final initial = node.variable.initializer;
+    if (initial == null) {
+      // A `Let` with nothing to bind. Its body may still read the variable, and
+      // there would be nothing to read.
+      throw Unsupported('CFE `Let` with no initialiser', _sample(node));
+    }
+    final name = _nameFor(node.variable);
+    return IrBlockValue([
+      IrLocalDecl(name, _type(node.variable.type), expression(initial)),
+    ], expression(node.body));
   }
+
+  /// One local declaration, wherever it is written.
+  ///
+  /// A `for`'s variables are `VariableDeclaration`s and not `Statement`s in
+  /// this Kernel, so they cannot go through `statement` -- and the rule about
+  /// what a declaration becomes should be in one place regardless.
+  IrStmt _declare(Variable variable, Node at) {
+    final name = variable.cosmeticName;
+    if (name == null || name.startsWith('#')) {
+      // A synthetic temporary from the CFE's own lowering. Translating one
+      // means translating the lowering it belongs to, which is a decision for
+      // whichever construct produced it, not for this statement.
+      throw Unsupported('synthetic variable', _sample(at));
+    }
+    final init = variable.initializer;
+    return IrLocalDecl(
+      name,
+      _type(variable.type),
+      init == null ? null : expression(init),
+    );
+  }
+
+  /// A name for one of the CFE's temporaries.
+  ///
+  /// They are called `#0`, `#1` and so on, and the numbering restarts, so two
+  /// nested `Let`s can both be `#0`. Rust would take the inner one as shadowing
+  /// the outer, which is what Dart means too -- but the backend snakes names,
+  /// and `#` is not a character it can carry. So each variable gets its own
+  /// name, kept in a map by identity rather than by text.
+  final _temporaries = <Variable, String>{};
+  var _nextTemporary = 0;
+
+  String _nameFor(Variable variable) =>
+      _temporaries[variable] ??= '__t${_nextTemporary++}';
 
   // A `Let`'s variable is a `SyntheticVariable`, not a `VariableDeclaration`:
   // the CFE made it, so it has no declaration to point at.
@@ -400,7 +457,17 @@ class KernelFrontend {
     // a fixture that used defaults.
     final args = _arguments(node.arguments, node.interfaceTarget.function);
     if (_binaryOperators.contains(name) && args.length == 1) {
-      return IrBinary(name, expression(node.receiver), args.single);
+      return IrBinary(
+        name,
+        expression(node.receiver),
+        args.single,
+        // The invocation's own function type says what the operator returns.
+        // `getStaticType` would need a StaticTypeContext this lowering does
+        // not build, and the function type is already here.
+        type: node.functionType == null
+            ? null
+            : _type(node.functionType!.returnType),
+      );
     }
     if (name == 'unary-' && args.isEmpty) {
       return IrUnary('-', expression(node.receiver));
@@ -425,6 +492,10 @@ class KernelFrontend {
 
   IrExpr _staticInvocation(StaticInvocation node) {
     final target = node.target;
+    final positional = node.arguments.positional;
+    if (target.name.text == 'identical' && positional.length == 2) {
+      return IrIdentical(expression(positional[0]), expression(positional[1]));
+    }
     final owner = target.enclosingClass?.name;
     if (owner == null) {
       throw Unsupported('top-level call `${target.name.text}`', _sample(node));
@@ -625,20 +696,7 @@ class KernelFrontend {
       );
     }
     if (node is VariableStatement) {
-      final variable = node.declaration.variable;
-      final name = variable.cosmeticName;
-      if (name == null || name.startsWith('#')) {
-        // A synthetic temporary from the CFE's own lowering. Translating one
-        // means translating the lowering it belongs to, which is a decision for
-        // whichever construct produced it, not for this statement.
-        throw Unsupported('synthetic variable', _sample(node));
-      }
-      final init = variable.initializer;
-      return IrLocalDecl(
-        name,
-        _type(variable.type),
-        init == null ? null : expression(init),
-      );
+      return _declare(node.declaration.variable, node);
     }
     if (node is ExpressionStatement && node.expression is Throw) {
       // Before the general `ExpressionStatement` case below, not after: the
@@ -712,6 +770,34 @@ class KernelFrontend {
     }
     if (node is AssertStatement) {
       return _assert(node.condition, node.message);
+    }
+    if (node is WhileStatement) {
+      return IrWhile(expression(node.condition), statement(node.body));
+    }
+    if (node is ForStatement) {
+      // Kernel's `for` is already the three parts kept apart, so the block is
+      // just those parts put in the order Rust wants them. `for (x in xs)`
+      // arrives here too -- the CFE lowered it to an iterator loop long before
+      // this -- which is 405 of the 592 in `package:flutter/`.
+      final condition = node.condition;
+      return IrBlock([
+        for (final v in node.variables) _declare(v.variable, node),
+        IrWhile(
+          // `for (;;)` has no condition and loops forever.
+          condition == null
+              ? const IrLiteral('true', IrType('bool'))
+              : expression(condition),
+          IrBlock([
+            statement(node.body),
+            // Through `statement`, not `expression`: `i = i + 1` is an
+            // assignment, which is a statement on both sides of this compiler.
+            // Lowered as an expression it was refused, and the fixture said so
+            // the first time it ran.
+            for (final update in node.updates)
+              statement(ExpressionStatement(update)),
+          ]),
+        ),
+      ]);
     }
     if (node is TryCatch) return _tryCatch(node);
     if (node is TryFinally) {

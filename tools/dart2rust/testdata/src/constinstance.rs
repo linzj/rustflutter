@@ -1,7 +1,7 @@
 // Generated from fixtures/constinstance.dart by the **Kernel** front end.
 //
 // Every other file here comes from the analyzer one, because that is what
-// dart2rust.dart runs. This round's work is Kernel-only -- the analyzer never
+// dart2rust.dart runs. That round's work is Kernel-only -- the analyzer never
 // meets an evaluated constant -- so testing it means testing that side's
 // output. fixtures.py still checks the two agree on everything but the
 // constants themselves, which the fixture declares with // DIFFERS:.

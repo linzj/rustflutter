@@ -43,6 +43,6 @@ impl NullCheck {
     /// A null-aware fallback beside a `!`, so the two are not confused: `??`
     /// supplies a default, `!` insists there is no need for one.
     pub fn with_fallback(&self, fallback: f32) -> f32 {
-        (self.other.unwrap_or(fallback) + self.maybe.unwrap())
+        (self.other.unwrap_or_else(|| fallback) + self.maybe.unwrap())
     }
 }

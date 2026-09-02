@@ -23,6 +23,7 @@ scratch directory, not the repo.
 """
 import argparse
 import difflib
+from concurrent import futures
 import io
 import os
 import subprocess
@@ -119,8 +120,21 @@ def expected_refusals(fixture):
 
 
 def refusals(path):
-    mark = '// NOT TRANSLATED:'
-    return [l.strip() for l in io.open(path, encoding='utf-8') if mark in l]
+    """The refusal lines, *and* the reason lines under them.
+
+    A refusal is written as two lines -- the member on one and why on the next
+    -- and looking only at the first meant a declared reason never matched.
+    `//   ` is the continuation; `///` is a doc comment carried over from the
+    fixture, which must not count.
+    """
+    out = []
+    for line in io.open(path, encoding='utf-8'):
+        text = line.strip()
+        if text.startswith('// NOT TRANSLATED:') or (
+                text.startswith('//') and not text.startswith('///')
+                and line.startswith(('    //  ', '//  '))):
+            out.append(text)
+    return out
 
 
 def missing_refusals(fixture, out):
@@ -162,8 +176,16 @@ def main():
         raise SystemExit('no fixtures matched')
 
     work = args.keep and scratch or tempfile.mkdtemp(prefix='d2r_fx_')
-    disagreed = []
-    for name in fixtures:
+
+    def examine(name):
+        """One fixture, start to finish. Returns (stem, lines, ok).
+
+        Nothing here touches anything another fixture touches -- each gets its
+        own directory -- so they run at the same time. Serially this was 21
+        Dart VM starts and 21 ten-megabyte dills one after another, which was
+        most of the round's wall clock.
+        """
+        lines = []
         fixture = os.path.join(FIXTURES, name)
         stem = name[:-5]
         holder = os.path.join(work, stem)
@@ -171,35 +193,31 @@ def main():
 
         dill_path = build_dill(fixture, holder)
         if dill_path is None:
-            print('%-12s DILL FAILED' % stem)
-            disagreed.append(stem)
-            continue
+            return stem, ['%-12s DILL FAILED' % stem], False
 
         a_out = os.path.join(holder, 'analyzer.rs')
         k_out = os.path.join(holder, 'kernel.rs')
         a_ok, a_log = from_analyzer(fixture, a_out)
         k_ok, k_log = from_kernel(dill_path, fixture, k_out, config)
         if not a_ok or not k_ok:
-            print('%-12s FRONT END FAILED (analyzer=%s kernel=%s)'
-                  % (stem, a_ok, k_ok))
+            lines.append('%-12s FRONT END FAILED (analyzer=%s kernel=%s)'
+                         % (stem, a_ok, k_ok))
             for line in (a_log if not a_ok else k_log).strip().splitlines()[:4]:
-                print('             ', line)
-            disagreed.append(stem)
-            continue
+                lines.append('              ' + line)
+            return stem, lines, False
 
         absent = (missing_refusals(fixture, a_out)
                   + missing_refusals(fixture, k_out))
         if absent:
-            print('%-12s TRANSLATED WHAT IT DECLARES IT REFUSES: %s'
-                  % (stem, '; '.join(sorted(set(absent)))))
-            disagreed.append(stem)
-            continue
+            return stem, ['%-12s TRANSLATED WHAT IT DECLARES IT REFUSES: %s'
+                          % (stem, '; '.join(sorted(set(absent))))], False
 
         a, k = code_lines(a_out), code_lines(k_out)
         diff = [l for l in difflib.unified_diff(a, k, lineterm='', n=0)
                 if l.startswith(('+', '-'))
                 and not l.startswith(('+++', '---'))]
         expected = expected_difference(fixture)
+        ok = True
         if not diff:
             status = 'same'
             if expected is not None:
@@ -207,17 +225,29 @@ def main():
                 # the difference was fixed and this note is stale, or the
                 # fixture stopped exercising what it was for.
                 status = 'SAME, but the fixture expects a difference'
-                disagreed.append(stem)
+                ok = False
         elif expected is not None:
             status = '%d lines differ, expected: %s' % (len(diff), expected)
         else:
             status = '%d lines differ' % len(diff)
-            disagreed.append(stem)
-        print('%-12s analyzer %3d lines, kernel %3d lines, %s'
-              % (stem, len(a), len(k), status))
+            ok = False
+        lines.append('%-12s analyzer %3d lines, kernel %3d lines, %s'
+                     % (stem, len(a), len(k), status))
         if expected is None:
             for line in diff[:8]:
-                print('               ', line[:110])
+                lines.append('                ' + line[:110])
+        return stem, lines, ok
+
+    disagreed = []
+    workers = min(len(fixtures), (os.cpu_count() or 4))
+    with futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        # Reported in fixture order however they finish, so a run is comparable
+        # with the one before it.
+        for stem, lines, ok in pool.map(examine, fixtures):
+            for line in lines:
+                print(line)
+            if not ok:
+                disagreed.append(stem)
 
     print()
     if disagreed:

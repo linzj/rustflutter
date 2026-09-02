@@ -299,6 +299,9 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod loops;
+pub use loops::{Ladder, Rung};
+
 mod constinstance;
 pub use constinstance::{Inset, Spacing, Span};
 
@@ -1230,5 +1233,44 @@ mod tests {
         assert_eq!(Span::FIRST.width(), 11);
         assert_eq!(Span::SECOND.end, 100);
         assert_eq!(Span::SECOND.width(), 60);
+    }
+
+    // -- for, while, identical ------------------------------------------------
+
+    #[test]
+    fn a_for_loop_and_a_while_loop_agree() {
+        // 0+1+2+3+4. Both methods do the same work by different routes, and a
+        // `for` that dropped its update or ran its body once too often would
+        // make them differ rather than both being wrong the same way.
+        let l = Ladder::new(5);
+        assert_eq!(l.climbed(), 10.0);
+        assert_eq!(l.climbed_the_long_way(), 10.0);
+    }
+
+    #[test]
+    fn a_for_loop_that_never_runs() {
+        // The condition is checked first, not after the first pass.
+        let l = Ladder::new(0);
+        assert_eq!(l.climbed(), 0.0);
+    }
+
+    #[test]
+    fn two_declarations_and_an_early_return() {
+        // Stops at 4.0 because of the `return`, not at 10.0 where `j` would
+        // have stopped it -- so the loop really is running the body, and the
+        // return really is leaving the method.
+        assert_eq!(Ladder::new(99).paired(), 4.0);
+    }
+
+    #[test]
+    fn identical_is_not_equality() {
+        // Two ladders with the same steps are equal and not identical. If this
+        // had been translated as `==` both assertions would read the same way
+        // and the second would fail.
+        let a = Ladder::new(3);
+        let b = Ladder::new(3);
+        assert_eq!(a, b);
+        assert!(a.is_the(&a));
+        assert!(!a.is_the(&b));
     }
 }
