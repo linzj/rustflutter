@@ -17,7 +17,7 @@ library;
 /// Dart's `double`/`int`/`bool`/`String` are kept under their Dart names and
 /// mapped in the backend, because what they map to is a Rust question.
 class IrType {
-  const IrType(this.name, {this.nullable = false})
+  const IrType(this.name, {this.nullable = false, this.arguments = const []})
     : parameters = null,
       returns = null;
 
@@ -27,10 +27,18 @@ class IrType {
   /// takes `impl Fn(f32) -> f32` and a field holds `Box<dyn Fn(f32) -> f32>`,
   /// and neither can be built from the string `Function`.
   const IrType.function(this.parameters, this.returns, {this.nullable = false})
-    : name = 'Function';
+    : name = 'Function',
+      arguments = const [];
 
   final String name;
   final bool nullable;
+
+  /// `List<double>`'s `double`. Empty for a type with no arguments.
+  ///
+  /// The IR carried none until round 32, so `List<double>` arrived as the bare
+  /// name `List` -- fine while lists were refused, and useless the moment they
+  /// were not, since `Vec` has to know what it holds.
+  final List<IrType> arguments;
 
   /// Non-null only for a function type.
   final List<IrType>? parameters;
@@ -40,7 +48,10 @@ class IrType {
   bool get isNum => name == 'double' || name == 'int';
 
   @override
-  String toString() => nullable ? '$name?' : name;
+  String toString() {
+    final args = arguments.isEmpty ? '' : '<${arguments.join(', ')}>';
+    return nullable ? '$name$args?' : '$name$args';
+  }
 }
 
 /// A parameter of a constructor or method.
@@ -490,6 +501,68 @@ class IrIdentical extends IrExpr {
   final IrExpr left;
   final IrExpr right;
 }
+
+/// `for (final x in xs) { .. }`.
+///
+/// The CFE lowers this into an iterator loop -- bind `xs.iterator`, loop while
+/// `moveNext()`, read `current` -- and 405 of `package:flutter/`'s 592 `for`
+/// statements are really that. Restored rather than carried across in pieces,
+/// because the analyzer front end sees what was written and the two have to
+/// arrive at the same Rust.
+class IrForIn extends IrStmt {
+  const IrForIn(this.name, this.iterable, this.body);
+
+  final String name;
+  final IrExpr iterable;
+  final IrStmt body;
+}
+
+/// `xs[i]`, and `xs[i] = v`.
+class IrIndex extends IrExpr {
+  const IrIndex(this.target, this.index);
+
+  final IrExpr target;
+  final IrExpr index;
+}
+
+class IrIndexSet extends IrStmt {
+  const IrIndexSet(this.target, this.index, this.value);
+
+  final IrExpr target;
+  final IrExpr index;
+  final IrExpr value;
+}
+
+/// `[a, b, c]`.
+class IrListLiteral extends IrExpr {
+  const IrListLiteral(this.elements, this.element);
+
+  final List<IrExpr> elements;
+
+  /// What the list holds, so an empty literal still knows its `Vec<T>`.
+  final IrType element;
+}
+
+/// Dart's `List` and `Iterable` methods in Rust's spelling.
+///
+/// Measured before it was written: across `package:flutter/` the calls are
+/// `[]` 687, `add` 548, `iterator` 410, `length` 343, `[]=` 141, `toList` 105,
+/// `isEmpty`/`isNotEmpty` 181. All of them are `Vec`, which is what made the
+/// representation an easy decision -- unlike `Map`, whose literal is insertion
+/// ordered and whose 109 iterating uses `HashMap` would silently reorder.
+///
+/// Shared by both front ends so they cannot drift: a name mapped on one side
+/// and not the other is a disagreement the fixtures would report but nothing
+/// would explain.
+const listMethodNames = <String, String>{
+  'add': 'push',
+  'addAll': 'extend',
+  'clear': 'clear',
+  'isEmpty': 'is_empty',
+  'length': 'len',
+  'removeLast': 'pop',
+  'contains': 'contains',
+};
 
 /// `'a $b c'` -- a string built from pieces.
 ///

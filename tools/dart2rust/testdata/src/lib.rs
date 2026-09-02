@@ -299,6 +299,9 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod lists;
+pub use lists::Marks;
+
 mod building;
 pub use building::{Shade, Slot};
 
@@ -1422,5 +1425,41 @@ mod tests {
         assert_eq!(s.tint.opacity, 2.0);
         s.fade(0.25);
         assert_eq!(s.tint.opacity, 0.25);
+    }
+
+    // -- List is Vec -----------------------------------------------------------
+
+    #[test]
+    fn indexing_and_length() {
+        // 3 + 11 + 29. A loop that read one element too few would give 14, one
+        // too many would panic -- neither of which is 43.
+        let t = Marks::new(Marks::starting());
+        assert_eq!(t.total(), 43);
+    }
+
+    #[test]
+    fn a_for_in_loop() {
+        // 2*(3+11+29) = 86. The CFE writes this as an iterator loop and both
+        // front ends have to put it back into Rust's own `for x in &xs`.
+        assert_eq!(Marks::new(Marks::starting()).doubled_total(), 86);
+    }
+
+    #[test]
+    fn add_and_overwrite_take_mut_self() {
+        // `push` changes a field, so the method takes `&mut self` for the same
+        // reason writing the field outright does.
+        let mut t = Marks::new(Marks::starting());
+        t.note(7);
+        assert_eq!(t.total(), 50);
+        t.overwrite_first(1);
+        assert_eq!(t.total(), 48);
+    }
+
+    #[test]
+    fn an_empty_list_still_knows_what_it_holds() {
+        let t = Marks::new(Vec::new());
+        assert!(t.empty());
+        assert_eq!(t.total(), 0);
+        assert!(!Marks::new(Marks::starting()).empty());
     }
 }

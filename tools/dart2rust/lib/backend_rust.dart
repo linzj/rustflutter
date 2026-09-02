@@ -139,6 +139,10 @@ class RustBackend {
       final dynamic_ = owned ? 'Box<dyn ${t.name}>' : '&dyn ${t.name}';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
     }
+    if ((t.name == 'List' || t.name == 'Iterable') && t.arguments.length == 1) {
+      final vec = 'Vec<${type(t.arguments.single)}>';
+      return t.nullable ? 'Option<$vec>' : vec;
+    }
     final mapped = _primitives[t.name] ?? t.name;
     return t.nullable ? 'Option<$mapped>' : mapped;
   }
@@ -183,6 +187,11 @@ class RustBackend {
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
       IrThrowValue(:final value) => 'return Err(${expr(value)})',
       IrInterpolation(:final parts) => _interpolation(parts),
+      // Dart indexes with an `int`; Rust wants a `usize`.
+      IrIndex(:final target, :final index) =>
+        '${expr(target)}[${expr(index)} as usize]',
+      IrListLiteral(:final elements) =>
+        'vec![${elements.map(expr).join(', ')}]',
       // Boxed, because a function item is not a `Box<dyn Fn>` and that is what
       // a function-typed field or local is here. A `Box<dyn Fn>` also
       // implements `Fn`, so it still passes where `impl Fn` is wanted.
@@ -565,6 +574,9 @@ class RustBackend {
 
   String _call(IrExpr? target, String name, List<IrExpr> args) {
     final receiver = _receiver(target);
+    // `Vec::len` gives a `usize` and Dart's `length` an `int`. Without the
+    // cast every comparison against a loop counter fails to compile.
+    if (name == 'len' && args.isEmpty) return '($receiver.len() as i64)';
     // Dart's `toDouble`. This used to return the receiver unchanged, on the
     // reasoning that a value already stored as a double needs nothing -- true,
     // and it is not the only receiver `toDouble` has. `total + i.toDouble()`
@@ -761,7 +773,10 @@ class RustBackend {
             walk(one.body);
           }
           if (otherwise != null) walk(otherwise);
+        case IrForIn(:final body):
+          walk(body);
         case IrLocalFunction():
+        case IrIndexSet():
         case IrBreak():
         case IrContinue():
         case IrReturn():
@@ -912,6 +927,17 @@ class RustBackend {
         _line('}');
         _indent--;
         _line('}');
+      case IrForIn(:final name, :final iterable, :final body):
+        // Borrowed, not moved: Dart's loop does not consume the list, and a
+        // body that changed it while borrowing would be refused by rustc --
+        // which is the same thing Dart refuses at runtime.
+        _line('for ${snake(name)} in &${expr(iterable)} {');
+        _indent++;
+        stmt(body);
+        _indent--;
+        _line('}');
+      case IrIndexSet(:final target, :final index, :final value):
+        _line('${expr(target)}[${expr(index)} as usize] = ${expr(value)};');
       case IrLocalFunction(:final name, :final closure):
         _line('let ${snake(name)} = ${expr(closure)};');
       case IrLabeled(:final label, :final body):
@@ -1485,6 +1511,11 @@ class RustBackend {
       ),
       IrThrowValue(:final value) => IrThrowValue(go(value)),
       IrInterpolation(:final parts) => IrInterpolation(parts.map(go).toList()),
+      IrIndex(:final target, :final index) => IrIndex(go(target), go(index)),
+      IrListLiteral(:final elements, :final element) => IrListLiteral(
+        elements.map(go).toList(),
+        element,
+      ),
       IrFunctionRef() => e,
       IrAssignValue(:final name, :final value) => IrAssignValue(
         name,
@@ -1571,6 +1602,8 @@ class RustBackend {
           walk(body);
           walk(finalizer);
         case IrWhile(:final body):
+          walk(body);
+        case IrForIn(:final body):
           walk(body);
         case IrLabeled(:final body):
           walk(body);
@@ -2055,6 +2088,16 @@ class _WalkSelf {
   bool writesFields = false;
   final selfCalls = <String>{};
 
+  /// `Vec` methods that change what they are called on.
+  static const _mutatingListMethods = {
+    'push',
+    'extend',
+    'clear',
+    'pop',
+    'insert',
+    'remove',
+  };
+
   /// Whether a write target is `this`, or a chain of field reads from it.
   static bool _rootedAtThis(IrExpr? e) => switch (e) {
     null => true,
@@ -2120,8 +2163,17 @@ class _WalkSelf {
       case IrWhile(:final condition, :final body):
         expression(condition);
         statement(body);
+      case IrForIn(:final iterable, :final body):
+        expression(iterable);
+        statement(body);
       case IrLocalFunction(:final closure):
         expression(closure);
+      case IrIndexSet(:final target, :final index, :final value):
+        // Writing through an index is writing through the thing indexed.
+        if (_rootedAtThis(target)) writesFields = true;
+        expression(target);
+        expression(index);
+        expression(value);
       case IrLabeled(:final body):
         statement(body);
       case IrSwitch(:final value, :final cases, :final otherwise):
@@ -2144,6 +2196,12 @@ class _WalkSelf {
       case IrCall(:final target, :final name, :final args):
         if (_caught == 0 && (target == null || target is IrThis)) {
           selfCalls.add(name);
+        }
+        // `self.marks.push(x)` mutates a field, so the method takes
+        // `&mut self` -- the same rule as writing the field outright, which is
+        // what a `Vec` method that changes it amounts to.
+        if (_mutatingListMethods.contains(name) && _rootedAtThis(target)) {
+          writesFields = true;
         }
         if (target != null) expression(target);
         args.forEach(expression);
@@ -2193,6 +2251,11 @@ class _WalkSelf {
         expression(value);
       case IrInterpolation(:final parts):
         parts.forEach(expression);
+      case IrIndex(:final target, :final index):
+        expression(target);
+        expression(index);
+      case IrListLiteral(:final elements):
+        elements.forEach(expression);
       case IrFunctionRef():
       case IrAssignValue():
         if (e is IrAssignValue) {

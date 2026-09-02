@@ -50,7 +50,11 @@ class KernelFrontend {
   IrType _type(DartType type) {
     final nullable = type.nullability == Nullability.nullable;
     if (type is InterfaceType) {
-      return IrType(type.classNode.name, nullable: nullable);
+      return IrType(
+        type.classNode.name,
+        nullable: nullable,
+        arguments: [for (final a in type.typeArguments) _type(a)],
+      );
     }
     if (type is VoidType) return const IrType('void');
     if (type is DynamicType) return const IrType('dynamic');
@@ -168,6 +172,11 @@ class KernelFrontend {
         throw Unsupported('assignment used for its value', _sample(node));
       }
       return IrAssignValue(known ?? written!, expression(node.value));
+    }
+    if (node is ListLiteral) {
+      return IrListLiteral([
+        for (final e in node.expressions) expression(e),
+      ], _type(node.typeArgument));
     }
     if (node is StringConcatenation) {
       return IrInterpolation([for (final e in node.expressions) expression(e)]);
@@ -411,6 +420,14 @@ class KernelFrontend {
   /// this Kernel, so they cannot go through `statement` -- and the rule about
   /// what a declaration becomes should be in one place regardless.
   IrStmt _declare(Variable variable, Node at) {
+    final init = variable.initializer;
+    if (init is InstanceGet && init.name.text == 'iterator') {
+      // Remembered, not lowered: if the loop below it is the CFE's `for-in`,
+      // this binding is part of that shape and the restored loop names the
+      // iterable itself.
+      _iterators[variable] = init.receiver;
+      return const IrBlock([]);
+    }
     final written = variable.cosmeticName;
     // A temporary the CFE invented. It used to be refused, on the grounds that
     // translating one means translating the lowering it belongs to -- but that
@@ -420,7 +437,6 @@ class KernelFrontend {
     final name = (written == null || written.startsWith('#'))
         ? _nameFor(variable)
         : written;
-    final init = variable.initializer;
     return IrLocalDecl(
       name,
       _type(variable.type),
@@ -481,6 +497,54 @@ class KernelFrontend {
   /// The label to put on the loop about to be lowered, if it needs one.
   String? _loopLabel;
 
+  /// `for (final x in xs)`, put back together.
+  ///
+  /// The CFE writes it as: bind `#0 = xs.iterator`, then `for (; #0.moveNext();)`
+  /// with `final x = #0.current` as the body's first statement. The binding is
+  /// a *sibling* of the loop, so it is spotted here from the loop's condition
+  /// and the loop's body, and the binding statement is dropped by the block
+  /// that holds it. Returns null when the shape is anything else.
+  IrStmt? _forIn(ForStatement node) {
+    if (node.variables.isNotEmpty || node.updates.isNotEmpty) return null;
+    final condition = node.condition;
+    if (condition is! InstanceInvocation || condition.name.text != 'moveNext') {
+      return null;
+    }
+    final receiver = condition.receiver;
+    if (receiver is! VariableGet) return null;
+    final iterable = _iterators[receiver.variable];
+    if (iterable == null) return null;
+
+    var body = node.body;
+    if (body is LabeledStatement) body = body.body;
+    if (body is! Block || body.statements.isEmpty) return null;
+    final first = body.statements.first;
+    if (first is! VariableStatement) return null;
+    final initial = first.declaration.variable.initializer;
+    if (initial is! InstanceGet ||
+        initial.name.text != 'current' ||
+        !(initial.receiver is VariableGet &&
+            identical(
+              (initial.receiver as VariableGet).variable,
+              receiver.variable,
+            ))) {
+      return null;
+    }
+    final name = first.declaration.variable.cosmeticName;
+    if (name == null || name.startsWith('#')) return null;
+    _iteratorLoops.add(receiver.variable);
+    return IrForIn(
+      name,
+      expression(iterable),
+      IrBlock([for (final s in body.statements.skip(1)) statement(s)]),
+    );
+  }
+
+  /// Temporaries bound to `<something>.iterator`, and the ones a restored
+  /// `for-in` has consumed -- whose binding statement must then not be emitted.
+  final _iterators = <Variable, Expression>{};
+  final _iteratorLoops = <Variable>{};
+
   IrStmt _loopBody(Statement body, bool hasUpdates) {
     if (body is! LabeledStatement) return statement(body);
     if (hasUpdates) {
@@ -519,6 +583,13 @@ class KernelFrontend {
   /// `Procedure` -- so nothing has to be inferred.
   IrExpr _instanceGet(InstanceGet node) {
     final name = node.name.text;
+    final listOwner = node.interfaceTarget.enclosingClass?.name;
+    if (listOwner == 'List' || listOwner == 'Iterable') {
+      final rust = listMethodNames[name];
+      if (rust == null) throw Unsupported('`List.$name`', _sample(node));
+      // A getter in Dart, a method in Rust: `xs.length` is `xs.len()`.
+      return IrCall(expression(node.receiver), rust, const []);
+    }
     final receiver = node.receiver;
     final target = receiver is ThisExpression ? null : expression(receiver);
     if (node.interfaceTarget is Procedure) {
@@ -560,6 +631,17 @@ class KernelFrontend {
     // round two, living on here because nothing compared the two front ends on
     // a fixture that used defaults.
     final args = _arguments(node.arguments, node.interfaceTarget.function);
+    final owner = node.interfaceTarget.enclosingClass?.name;
+    if (owner == 'List' || owner == 'Iterable') {
+      if (name == '[]' && args.length == 1) {
+        return IrIndex(expression(node.receiver), args.single);
+      }
+      final rust = listMethodNames[name];
+      if (rust != null) {
+        return IrCall(expression(node.receiver), rust, args);
+      }
+      throw Unsupported('`List.$name`', _sample(node));
+    }
     if (_binaryOperators.contains(name) && args.length == 1) {
       return IrBinary(
         name,
@@ -607,6 +689,17 @@ class KernelFrontend {
         expression(positional[1]),
       ]);
     }
+    // The CFE lowers `<int>[3, 11, 29]` to `_GrowableList._literal3(..)`, so a
+    // list literal never reaches this compiler as a ListLiteral. Restored
+    // rather than transliterated, for the same reason `??` and cascades are:
+    // the analyzer front end sees the literal, and the two have to agree.
+    final owner = target.enclosingClass?.name;
+    if ((owner == '_GrowableList' || owner == '_List') &&
+        target.name.text.startsWith('_literal')) {
+      return IrListLiteral([
+        for (final e in positional) expression(e),
+      ], _type(node.arguments.types.singleOrNull ?? const DynamicType()));
+    }
     if (target.name.text == 'lerpDouble' && positional.length == 3) {
       // `a + (b - a) * t`, which is what dart:ui's lerpDouble computes for
       // non-null arguments. 67 calls.
@@ -637,7 +730,6 @@ class KernelFrontend {
     if (target.name.text == 'identical' && positional.length == 2) {
       return IrIdentical(expression(positional[0]), expression(positional[1]));
     }
-    final owner = target.enclosingClass?.name;
     if (owner == null) {
       throw Unsupported('top-level call `${target.name.text}`', _sample(node));
     }
@@ -862,6 +954,16 @@ class KernelFrontend {
       // value cannot be translated this way -- and is refused below rather
       // than silently losing the value.
       final value = node.expression;
+      if (value is InstanceInvocation &&
+          value.name.text == '[]=' &&
+          value.interfaceTarget.enclosingClass?.name == 'List' &&
+          value.arguments.positional.length == 2) {
+        return IrIndexSet(
+          expression(value.receiver),
+          expression(value.arguments.positional[0]),
+          expression(value.arguments.positional[1]),
+        );
+      }
       if (value is InstanceSet) {
         // A field on `this`, and a field rather than a setter. Kernel names the
         // target outright, so neither has to be inferred.
@@ -1018,6 +1120,8 @@ class KernelFrontend {
       return IrWhile(expression(node.condition), _loopBody(node.body, false));
     }
     if (node is ForStatement) {
+      final restored = _forIn(node);
+      if (restored != null) return restored;
       // Kernel's `for` is already the three parts kept apart, so the block is
       // just those parts put in the order Rust wants them. `for (x in xs)`
       // arrives here too -- the CFE lowered it to an iterator loop long before

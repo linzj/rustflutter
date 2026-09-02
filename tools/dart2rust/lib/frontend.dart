@@ -36,7 +36,13 @@ class Frontend {
     }
     final element = type.element;
     final name = element?.name ?? type.getDisplayString();
-    return IrType(name ?? 'dynamic', nullable: nullable);
+    return IrType(
+      name ?? 'dynamic',
+      nullable: nullable,
+      arguments: type is InterfaceType
+          ? [for (final a in type.typeArguments) _type(a)]
+          : const [],
+    );
   }
 
   String? _doc(AnnotatedNode node) {
@@ -143,6 +149,21 @@ class Frontend {
         expression(node.function),
         _arguments(node.argumentList, node.element, node),
       );
+    }
+    if (node is ListLiteral) {
+      return IrListLiteral([
+        for (final element in node.elements)
+          if (element is Expression)
+            expression(element)
+          else
+            throw Unsupported(
+              'list element ${element.runtimeType}',
+              node.toSource(),
+            ),
+      ], _type(node.typeArguments?.arguments.singleOrNull?.type));
+    }
+    if (node is IndexExpression) {
+      return IrIndex(expression(node.target!), expression(node.index));
     }
     if (node is StringInterpolation) {
       return IrInterpolation([
@@ -259,6 +280,17 @@ class Frontend {
         return IrFunctionRef(target.name ?? '?', node.identifier.name);
       }
       return IrStatic(target.name ?? '?', node.identifier.name);
+    }
+    final listOwner = node.identifier.element == null
+        ? null
+        : enclosingOf(node.identifier.element!)?.name;
+    if (listOwner == 'List' || listOwner == 'Iterable') {
+      // A getter in Dart is a method in Rust: `xs.length` is `xs.len()`.
+      final rust = listMethodNames[node.identifier.name];
+      if (rust == null) {
+        throw Unsupported('`List.${node.identifier.name}`', node.toSource());
+      }
+      return IrCall(expression(node.prefix), rust, const []);
     }
     final accessor = node.identifier.element;
     if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
@@ -535,6 +567,21 @@ class Frontend {
 
   IrExpr _invoke(MethodInvocation node) {
     final element = node.methodName.element;
+    // A `List` or `Iterable` method: the name changes and nothing else does.
+    // Shared with the Kernel front end through `listMethodNames`, so the two
+    // cannot drift apart on a name.
+    final owner = element == null ? null : enclosingOf(element)?.name;
+    if (owner == 'List' || owner == 'Iterable') {
+      final rust = listMethodNames[node.methodName.name];
+      if (rust == null) {
+        throw Unsupported('`List.${node.methodName.name}`', node.toSource());
+      }
+      return IrCall(
+        node.target == null ? null : expression(node.target!),
+        rust,
+        _arguments(node.argumentList, null, node),
+      );
+    }
     _refusePrivate(node.methodName.name, node);
     final args = _arguments(
       node.argumentList,
@@ -722,6 +769,13 @@ class Frontend {
       // lowered it to an iterator loop -- so it is refused, and the two front
       // ends only meet on the loops both of them see the same way.
       final parts = node.forLoopParts;
+      if (parts is ForEachPartsWithDeclaration) {
+        return IrForIn(
+          parts.loopVariable.name.lexeme,
+          expression(parts.iterable),
+          statement(node.body),
+        );
+      }
       if (parts is! ForPartsWithDeclarations) {
         throw Unsupported(
           'for loop parts ${parts.runtimeType}',
@@ -972,6 +1026,16 @@ class Frontend {
 
   IrStmt _assignment(AssignmentExpression node) {
     final target = node.leftHandSide;
+    if (target is IndexExpression) {
+      if (node.operator.lexeme != '=') {
+        throw Unsupported('compound assignment to an index', node.toSource());
+      }
+      return IrIndexSet(
+        expression(target.target!),
+        expression(target.index),
+        expression(node.rightHandSide),
+      );
+    }
     // `tint.opacity = v` where `tint` is a field of `this`. Handled here and
     // not through `_assignTarget`, which returns a name and loses the
     // receiver -- so the write came out as `self.opacity = v`, naming a field
