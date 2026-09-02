@@ -108,6 +108,9 @@ class KernelFrontend {
       }
       return IrSuperCall(owner, node.name.text, _arguments(node.arguments));
     }
+    if (node is VariableSet) {
+      throw Unsupported('assignment used for its value', _sample(node));
+    }
     if (node is AsExpression) return expression(node.operand);
     if (node is ConstantExpression) return _constant(node.constant, node);
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
@@ -333,7 +336,20 @@ class KernelFrontend {
           name, _type(variable.type), init == null ? null : expression(init));
     }
     if (node is ExpressionStatement) {
-      return IrExprStmt(expression(node.expression));
+      // An assignment is a statement here, not an expression. Dart's `x = 1`
+      // has the value 1 and Rust's has the value `()`, so one used for its
+      // value cannot be translated this way -- and is refused below rather
+      // than silently losing the value.
+      final value = node.expression;
+      if (value is VariableSet) {
+        final name = value.variable.cosmeticName;
+        if (name == null || name.startsWith('#')) {
+          throw Unsupported('assignment to a synthetic variable',
+              _sample(value));
+        }
+        return IrAssign(name, expression(value.value));
+      }
+      return IrExprStmt(expression(value));
     }
     if (node is AssertStatement) {
       return _assert(node.condition, node.message);

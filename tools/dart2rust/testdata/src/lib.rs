@@ -1,6 +1,11 @@
-//! Stubs for the types the translated `Alignment` calls into, so the generated
-//! file can be compiled on its own. Only the shape matters here: the question
-//! this answers is whether dart2rust emits Rust, not whether Offset is right.
+//! Stubs for the types the translated code calls into, plus the tests.
+//!
+//! `unused_mut` is an error here, deliberately. Whether the compiler marks
+//! only the reassigned locals `mut` is otherwise invisible: marking every
+//! local `mut` compiles and passes every test, and the mutation sweep found
+//! exactly that. Denying the warning turns a claim about precision into
+//! something the build checks.
+#![deny(unused_mut)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Offset {
     x: f32,
@@ -243,6 +248,9 @@ pub use edge_insets::EdgeInsets;
 
 mod supercalls;
 pub use supercalls::{Doubled, Shape, Untouched};
+
+mod assignment;
+pub use assignment::Assignment;
 
 #[cfg(test)]
 mod tests {
@@ -517,5 +525,37 @@ mod tests {
             vec![Box::new(Doubled::new()), Box::new(Untouched::new())];
         let areas: Vec<f32> = shapes.iter().map(|s| s.area(1.0)).collect();
         assert_eq!(areas, vec![101.0, 100.0]);
+    }
+
+    // -- assigning a local ----------------------------------------------------
+    //
+    // Each case is paired with a local that is never reassigned, because
+    // marking every local `mut` would compile too and a test that only touched
+    // the reassigned ones would pass on that.
+
+    #[test]
+    fn a_reassigned_local_accumulates() {
+        // total = 0; total += step*2; total += step  ->  3*step
+        assert_eq!(Assignment::new(5.0).accumulate(), 15.0);
+    }
+
+    #[test]
+    fn compound_assignment_means_what_dart_means() {
+        // 10 + 5 = 15; 15 - 1 = 14; 14 * 2 = 28. The order matters, and a
+        // wrong expansion of `x *= 2` into `x = 2 * x` would still give 28 --
+        // so the subtraction sits between them, where order is visible.
+        assert_eq!(Assignment::new(5.0).compound(), 28.0);
+    }
+
+    #[test]
+    fn a_local_assigned_in_one_branch_only() {
+        assert_eq!(Assignment::new(1.0).branch(true), 100.0);
+        assert_eq!(Assignment::new(1.0).branch(false), 1.0);
+    }
+
+    #[test]
+    fn a_reassigned_parameter_gets_mut_in_the_signature() {
+        // Rust parameters are immutable unless declared `mut`; Dart's are not.
+        assert_eq!(Assignment::new(0.0).shadow(41.0), 42.0);
     }
 }

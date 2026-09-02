@@ -306,6 +306,36 @@ class RustBackend {
 
   // -- Statements -------------------------------------------------------------
 
+  /// Locals assigned somewhere in the body currently being emitted.
+  ///
+  /// Rust needs `let mut` at the *declaration*, and whether one is needed is a
+  /// fact about the whole body, not about the line. So the body is walked once
+  /// before it is emitted. Marking every local `mut` would compile too, and
+  /// would bury the ones that really are reassigned under a warning apiece.
+  var _reassigned = <String>{};
+
+  Set<String> _assignedIn(IrStmt statement) {
+    final found = <String>{};
+    void walk(IrStmt s) {
+      switch (s) {
+        case IrAssign(:final name):
+          found.add(name);
+        case IrBlock(:final statements):
+          statements.forEach(walk);
+        case IrIf(:final then, :final otherwise):
+          walk(then);
+          if (otherwise != null) walk(otherwise);
+        case IrReturn():
+        case IrLocalDecl():
+        case IrExprStmt():
+        case IrAssert():
+      }
+    }
+
+    walk(statement);
+    return found;
+  }
+
   /// Emits a statement. `tail` marks the position whose value is the block's --
   /// Rust's trailing expression, which is how a `return` at the end of a method
   /// stops needing the keyword.
@@ -324,7 +354,11 @@ class RustBackend {
         }
       case IrLocalDecl(:final name, :final type, :final init):
         final annotation = type == null ? '' : ': ${this.type(type)}';
-        _line('let ${snake(name)}$annotation = ${init == null ? "Default::default()" : expr(init)};');
+        final mutable = _reassigned.contains(name) ? 'mut ' : '';
+        _line('let $mutable${snake(name)}$annotation = '
+            '${init == null ? "Default::default()" : expr(init)};');
+      case IrAssign(:final name, :final value):
+        _line('${snake(name)} = ${expr(value)};');
       case IrIf(:final condition, :final then, :final otherwise):
         _line('if ${expr(condition)} {');
         _indent++;
@@ -498,6 +532,7 @@ class RustBackend {
       _indent++;
       _selfName = 'this_';
       _returns = method.returnType;
+      _reassigned = _assignedIn(method.body);
       stmt(method.body, tail: true);
       _returns = null;
       _selfName = 'self';
@@ -516,12 +551,22 @@ class RustBackend {
     return mapping == null ? _operatorName(op) : 'op_${mapping.$2}';
   }
 
+  /// A parameter's declaration, `mut` when the body reassigns it.
+  ///
+  /// Dart parameters are ordinary variables and get reassigned freely; Rust
+  /// parameters are immutable unless the declaration says otherwise, and
+  /// `mut x: f32` is where that is said. Without it,
+  /// `shadow(start) { start = start + 1; }` emitted an assignment to something
+  /// that cannot be assigned.
+  String _param(IrParam p, {bool owned = true}) =>
+      '${_reassigned.contains(p.name) ? "mut " : ""}'
+      '${snake(p.name)}: ${type(p.type, owned: owned)}';
+
   String _params(IrMethod method) => [
         if (!method.isStatic) '&self',
         // A parameter is borrowed, not owned: passing a `Box<dyn Trait>` in
         // would move it, and upstream's callers do not give theirs away.
-        ...method.params.map(
-            (p) => '${snake(p.name)}: ${type(p.type, owned: false)}'),
+        ...method.params.map((p) => _param(p, owned: false)),
       ].join(', ');
 
   String _emitStruct() {
@@ -712,10 +757,13 @@ class RustBackend {
 
   void _emitMethod(IrMethod method) {
     {
+      // Before the signature: whether a parameter needs `mut` is decided by the
+      // body, and the signature is written first.
+      _reassigned = _assignedIn(method.body);
       _doc(method.doc);
       final params = [
         if (!method.isStatic) '&self',
-        ...method.params.map((p) => '${snake(p.name)}: ${type(p.type)}'),
+        ...method.params.map(_param),
       ].join(', ');
       _line('${_vis(method.name)}fn ${snake(method.name)}($params) -> ${type(method.returnType)} {');
       _indent++;
@@ -748,11 +796,12 @@ class RustBackend {
         _doc(method.doc);
         final params = [
           '&self',
-          ...method.params.map((p) => '${snake(p.name)}: ${type(p.type)}'),
+          ...method.params.map(_param),
         ].join(', ');
         _line('${_vis(method.name)}fn ${_operatorName(op)}($params) -> ${type(method.returnType)} {');
         _indent++;
         _returns = method.returnType;
+      _reassigned = _assignedIn(method.body);
       stmt(method.body, tail: true);
       _returns = null;
         _indent--;
@@ -777,6 +826,7 @@ class RustBackend {
       _line('fn $fn($params) -> Self::Output {');
       _indent++;
       _returns = method.returnType;
+      _reassigned = _assignedIn(method.body);
       stmt(method.body, tail: true);
       _returns = null;
       _indent--;

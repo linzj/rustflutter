@@ -198,6 +198,21 @@ class IrExprStmt extends IrStmt {
   final IrExpr expr;
 }
 
+/// `x = value` where `x` is a **local variable**.
+///
+/// Only a local. Assigning a field is a different problem with a different
+/// answer -- it needs `&mut self`, and `&mut` spreads to every caller -- and
+/// the two were one entry in the census until they were counted apart:
+/// across `package:flutter` there are 10633 local assignments and 10089 field
+/// ones, so planning the hard answer for all of them would have been planning
+/// it for twice as many as need it.
+class IrAssign extends IrStmt {
+  const IrAssign(this.name, this.value);
+
+  final String name;
+  final IrExpr value;
+}
+
 /// `assert(condition, message)`.
 ///
 /// Dart's `assert` and Rust's `debug_assert!` are the same thing: a check that

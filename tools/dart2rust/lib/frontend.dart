@@ -362,7 +362,9 @@ class Frontend {
       );
     }
     if (node is ExpressionStatement) {
-      return IrExprStmt(expression(node.expression));
+      final value = node.expression;
+      if (value is AssignmentExpression) return _assignment(value);
+      return IrExprStmt(expression(value));
     }
     if (node is AssertStatement) {
       return _assert(node.condition, node.message);
@@ -387,6 +389,31 @@ class Frontend {
       expression(condition),
       message: message?.toSource(),
     );
+  }
+
+  /// `x = value`, and only when `x` is a local.
+  ///
+  /// A compound assignment (`x += 1`) is expanded here, because analyzer keeps
+  /// it as one node while Kernel has already rewritten it -- the two front ends
+  /// have to arrive at the same IR.
+  IrStmt _assignment(AssignmentExpression node) {
+    final target = node.leftHandSide;
+    if (target is! SimpleIdentifier) {
+      throw Unsupported('assignment to ${target.runtimeType}', node.toSource());
+    }
+    final element = target.element;
+    if (element is! LocalVariableElement && element is! FormalParameterElement) {
+      throw Unsupported('assignment to a field', node.toSource());
+    }
+    final operator = node.operator.lexeme;
+    final value = expression(node.rightHandSide);
+    if (operator == '=') return IrAssign(target.name, value);
+    if (operator.endsWith('=') && operator.length > 1) {
+      return IrAssign(target.name,
+          IrBinary(operator.substring(0, operator.length - 1),
+              IrLocal(target.name), value));
+    }
+    throw Unsupported('assignment operator `$operator`', node.toSource());
   }
 
   IrStmt body(FunctionBody node) {
