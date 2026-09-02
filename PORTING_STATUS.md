@@ -7495,3 +7495,56 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6991 通�
 （`InkResponse.hoverDuration`），以及本 crate 有没有人真的传过非 None 的值——
 如果没人传，那它就是又一个"存了没人用"的参数，
 该按 `show_cursor` 那轮的办法处理：**要么接上，要么写明**。
+
+---
+
+## 第 538 轮：`hoverDuration` 那条链，测的是最后一环
+
+先查上一轮记的那件事：`hover_micros` 谁传、传什么。
+全 crate 搜下来——**`with_hover_micros` 没有任何 widget 调用**，
+只有 `fade_micros` 自己的单元测试传过 `Some(...)`。
+
+但"没人调"不等于"没接上"：这是上游 `InkResponse.hoverDuration`
+的对应物，是给调用方用的公开参数，链路本身
+（builder → 字段 → `make_highlight` → `InkHighlight::with_fade_micros`）
+看起来是通的。
+
+**所以先别下结论，先看它有没有被观察到。** 两个变异探针：
+
+- `make_highlight` 里把 `hover_micros` 换成 `None`
+- `with_hover_micros` 什么都不存
+
+**两个都活着。** 也就是说整条链可以整个删掉，6991 个测试一个不红。
+`fade_micros` 是有测试的——**但那是链条的最后一环，
+而一条链不等于它的最后一环**。
+
+补一条测试，从 builder 一路读到 feature 里那个 `fade_micros`：
+给了 5ms 就得是 5ms、press 不受它影响（参数名里就写着 hover）、
+没给的响应拿到 50ms 的默认值——**最后这条是关键**，
+否则"每个高亮碰巧都是 5ms"也能让前两条通过。
+
+四个变异全部杀死，包括开头活着的那两个。
+
+尺子：十八把全部 exit 0。门：Rust 6992 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6992 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**顺带说一件仓库层面的事**：本轮中途按用户要求提交了会话开始前就存在的
+一批本地改动（gallery 的 Reply study，15 个文件 + 新的 `reply/theme.rs`
++ 四个 WorkSans 字体）。`mod.rs` 声明 `pub mod theme;`、`theme.rs`
+`include_bytes!` 那四个字体，**三者必须同一个提交**，否则全新 checkout 编不过。
+提交时 pre-commit 钩子要求 rustfmt，而 `rustfmt studies/mod.rs`
+**会顺着模块树把 crane/rally/fortnightly 全格式化一遍**——
+差点让十几个纯格式化文件挂在"Reply study"这个标题下。
+拆成两个提交：`d143a45` 是活，`ebffe7d` 是格式化。
+**提交信息要说得出提交里有什么。**
+
+**下一步**：`ink_well.rs` 顶部那段注释列了几件"还没有"的东西，
+其中一条是 **`statesController` 和 `overlayColor`**——
+说三个颜色在、覆盖它们的那个属性不在，"pending `widget_state` reaching this control"。
+而 `widget_state` 现在**已经**有 `StateProperty`（第 528 轮
+`CupertinoSwitch` 的 `track_outline_color` 就是 `StateProperty<Option<Color>>`）。
+**先查一件事**：那条注释是不是已经过期了——
+`widget_state::StateProperty` 到底有没有到得了 `InkResponse`。
+过期就改掉（**一条留在原地的错记录比没有记录更糟**，第 514 轮写过），
+没过期就把"还差什么"说得更具体。

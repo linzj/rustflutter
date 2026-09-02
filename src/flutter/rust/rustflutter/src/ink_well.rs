@@ -963,6 +963,69 @@ mod tests {
         InteractiveInkFeature::new(InkFeatureKind::Highlight(InkHighlight::new()), INK, micros)
     }
 
+    /// The fade a highlight was actually built with.
+    fn fade_of(feature: &InteractiveInkFeature) -> i64 {
+        match &feature.kind {
+            InkFeatureKind::Highlight(highlight) => highlight.fade_micros,
+            other => panic!("not a highlight: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hover_duration_reaches_the_highlight_it_was_given_for() {
+        // Upstream's `InkResponse.hoverDuration`, which overrides the 50ms
+        // hover and focus fades and leaves the 200ms press alone.
+        //
+        // The whole path from the builder to the feature was unobserved:
+        // dropping `hover_micros` on the floor in `make_highlight`, or having
+        // `with_hover_micros` store nothing, left every test in the crate
+        // passing. `fade_micros` was tested -- but that is the *end* of the
+        // chain, and a chain is not its last link.
+        let response = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
+            .with_hover_micros(5 * MS);
+        assert_eq!(response.hover_micros, Some(5 * MS), "the builder kept it");
+
+        let told = make_highlight(
+            InkHighlightShape::Rectangle,
+            None,
+            response.hover_micros,
+            HighlightType::Hover,
+            INK,
+            0,
+        );
+        assert_eq!(
+            fade_of(&told),
+            5 * MS,
+            "and the highlight was built with it"
+        );
+
+        // A press is not hurried by it, which is the point of the parameter
+        // being named for hover.
+        let pressed = make_highlight(
+            InkHighlightShape::Rectangle,
+            None,
+            response.hover_micros,
+            HighlightType::Pressed,
+            INK,
+            0,
+        );
+        assert_eq!(fade_of(&pressed), 200 * MS);
+
+        // And a response that was told nothing gets upstream's default, so
+        // the assertions above are about the duration travelling rather than
+        // about every highlight happening to be 5ms.
+        let untold = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty));
+        let plain = make_highlight(
+            InkHighlightShape::Rectangle,
+            None,
+            untold.hover_micros,
+            HighlightType::Hover,
+            INK,
+            0,
+        );
+        assert_eq!(fade_of(&plain), 50 * MS);
+    }
+
     #[test]
     fn a_second_press_cancels_the_first_splash_rather_than_removing_it() {
         // Two things happened, so there are two marks on the surface. The
