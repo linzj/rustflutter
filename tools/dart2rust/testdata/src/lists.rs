@@ -19,7 +19,7 @@ impl Marks {
     }
 
     // NOT TRANSLATED: Marks.fixed
-    //   a `const` cannot hold a collection
+    //   unsupported a `const` cannot hold a collection: Marks.fixed
 
     pub fn total(&self) -> i64 {
         let mut sum: i64 = 0;

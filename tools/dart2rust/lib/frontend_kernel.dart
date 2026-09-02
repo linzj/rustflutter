@@ -328,7 +328,7 @@ class KernelFrontend {
   /// translation. That is 60% of `package:flutter`'s closures and a round of
   /// its own.
   IrExpr _closure(FunctionNode fn, Node origin) {
-    if (_reachesThis(fn)) {
+    if (_reachesThis(fn) && !(_borrowedArgument && _onlyReadsThis(fn))) {
       throw Unsupported('closure capturing `this`', _sample(origin));
     }
     final body = fn.body;
@@ -355,6 +355,20 @@ class KernelFrontend {
     final finder = _ThisFinder();
     fn.accept(finder);
     return finder.found;
+  }
+
+  /// Whether a closure only *reads* fields of `this`.
+  ///
+  /// The line that matters in Rust: reading takes a shared borrow, and the
+  /// method the closure is written in already holds one. Writing a field would
+  /// want `&mut self` while `self` is borrowed for the call the closure is an
+  /// argument to, and calling a method on `this` hands out the whole object.
+  /// Both stay refused; 296 of the 1319 closures that reach `this` are on this
+  /// side of the line, measured by `bin/census_closures.dart`.
+  bool _onlyReadsThis(FunctionNode fn) {
+    final use = _ThisUse();
+    fn.accept(use);
+    return !use.demanding;
   }
 
   /// Restores the Dart a `Let` was lowered from.
@@ -773,7 +787,7 @@ class KernelFrontend {
     final name = target.name.text;
     return IrNew(
       IrType(target.enclosingClass.name),
-      _arguments(node.arguments, target.function),
+      _arguments(node.arguments, target.function, false),
       constructor: name.isEmpty ? null : name,
     );
   }
@@ -857,7 +871,30 @@ class KernelFrontend {
   /// Kernel has already split them into positional and named, and a named one
   /// that was omitted is simply absent -- so the callee's own parameter list is
   /// still what decides the order, exactly as in the analyzer front end.
-  List<IrExpr> _arguments(Arguments node, [FunctionNode? callee]) {
+  List<IrExpr> _arguments(
+    Arguments node, [
+    FunctionNode? callee,
+    bool borrows = true,
+  ]) {
+    final was = _borrowedArgument;
+    _borrowedArgument = borrows;
+    try {
+      return _argumentList(node, callee);
+    } finally {
+      _borrowedArgument = was;
+    }
+  }
+
+  /// Whether a closure written here would land in a borrowed position.
+  ///
+  /// The backend emits a function-typed *parameter* as `impl Fn(..)`, so a
+  /// closure passed to a call borrows and lives exactly as long as the call --
+  /// which is all a closure reading `this` needs. A constructor argument is
+  /// different: it is stored in the object being built, so it outlives
+  /// everything here and stays refused.
+  bool _borrowedArgument = false;
+
+  List<IrExpr> _argumentList(Arguments node, FunctionNode? callee) {
     final positional = [for (final a in node.positional) expression(a)];
     if (node.named.isEmpty && callee == null) return positional;
     if (callee == null) {
@@ -1759,6 +1796,50 @@ class _ThisFinder extends RecursiveVisitor {
     found = true;
     super.visitThisExpression(node);
   }
+}
+
+/// Whether a closure asks more of `this` than a shared borrow.
+///
+/// Reading a field of `this` is not demanding; writing one, calling a method on
+/// it, tearing a method off it, or handing `this` itself to something all are.
+/// `super` counts the same way -- it is the same object.
+class _ThisUse extends RecursiveVisitor {
+  bool demanding = false;
+
+  @override
+  void visitThisExpression(ThisExpression node) => demanding = true;
+
+  @override
+  void visitInstanceGet(InstanceGet node) {
+    // A read *of* `this` is the one thing allowed, so the receiver is not
+    // walked -- walking it would find the `ThisExpression` and refuse.
+    if (node.receiver is! ThisExpression) node.receiver.accept(this);
+  }
+
+  @override
+  void visitInstanceSet(InstanceSet node) {
+    if (node.receiver is ThisExpression) demanding = true;
+    super.visitInstanceSet(node);
+  }
+
+  @override
+  void visitInstanceInvocation(InstanceInvocation node) {
+    if (node.receiver is ThisExpression) demanding = true;
+    super.visitInstanceInvocation(node);
+  }
+
+  @override
+  void visitInstanceTearOff(InstanceTearOff node) {
+    if (node.receiver is ThisExpression) demanding = true;
+    super.visitInstanceTearOff(node);
+  }
+
+  @override
+  void visitSuperMethodInvocation(SuperMethodInvocation node) =>
+      demanding = true;
+
+  @override
+  void visitSuperPropertySet(SuperPropertySet node) => demanding = true;
 }
 
 /// The error types a function body throws.

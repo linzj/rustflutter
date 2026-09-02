@@ -178,8 +178,35 @@ class _Closures extends RecursiveVisitor {
         if (argument is FunctionExpression) consumed.add(argument.function);
       }
     }
+    _argument(node.arguments);
     super.visitInstanceInvocation(node);
   }
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    _argument(node.arguments);
+    super.visitStaticInvocation(node);
+  }
+
+  /// A closure written directly as an argument to a call.
+  ///
+  /// The backend already emits a function-typed parameter as `impl Fn(..)`,
+  /// which **borrows**: `Closures::apply_twice(|v| v * self.factor, x)`
+  /// compiles with no ownership arrangement at all. So the question that
+  /// decides whether a closure is cheap is not "is it handed to `map`" -- that
+  /// was round 57's question, and it was the wrong one -- but "is it handed to
+  /// anything that is not a constructor". A constructor argument is stored in
+  /// the object it builds and does outlive the call.
+  void _argument(Arguments arguments) {
+    for (final argument in [
+      ...arguments.positional,
+      ...arguments.named.map((n) => n.value),
+    ]) {
+      if (argument is FunctionExpression) passed.add(argument.function);
+    }
+  }
+
+  final Set<FunctionNode> passed = {};
 
   @override
   void visitFunctionExpression(FunctionExpression node) {
@@ -212,6 +239,8 @@ void main(List<String> args) {
   var members = 0;
   var borrowing = 0;
   final borrowingWhere = <String>[];
+  var passedToCall = 0;
+  var passedAndReadOnly = 0;
 
   for (final library in component.libraries) {
     if (!library.importUri.toString().startsWith(prefix)) continue;
@@ -220,7 +249,8 @@ void main(List<String> args) {
         members++;
         final closures = <FunctionNode>[];
         final consumed = <FunctionNode>{};
-        member.accept(_Closures(closures, consumed));
+        final walk = _Closures(closures, consumed);
+        member.accept(walk);
         for (final closure in closures) {
           final visit = _Visit();
           closure.accept(visit);
@@ -228,6 +258,10 @@ void main(List<String> args) {
           final where = samples[visit.need]!;
           if (examples && where.length < 5) {
             where.add('${cls.name}.${member.name.text}');
+          }
+          if (visit.need != Need.none && walk.passed.contains(closure)) {
+            passedToCall++;
+            if (visit.need == Need.reads) passedAndReadOnly++;
           }
           if (visit.need != Need.none && consumed.contains(closure)) {
             borrowing++;
@@ -266,5 +300,15 @@ void main(List<String> args) {
     for (final where in borrowingWhere) {
       print('    $where');
     }
+    final passedShare = (passedToCall * 100 / reaching).round();
+    print(
+      'of those, written as an argument to a call: $passedToCall '
+      '($passedShare%) -- `impl Fn` borrows, so these need nothing',
+    );
+    final readShare = (passedAndReadOnly * 100 / reaching).round();
+    print(
+      '  and of those, read-only: $passedAndReadOnly ($readShare%) '
+      '-- no borrow conflict with the `&self` the method already has',
+    );
   }
 }

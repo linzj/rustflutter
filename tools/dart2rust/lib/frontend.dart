@@ -500,7 +500,7 @@ class Frontend {
     // them, so the two disagreed. Resolution is the only way to ask.
     final finder = _InstanceUse();
     node.accept(finder);
-    if (finder.found) {
+    if (finder.found && !(_borrowedArgument && _onlyReadsThis(node))) {
       throw Unsupported('closure capturing `this`', node.toSource());
     }
     final params = <IrParam>[];
@@ -517,12 +517,30 @@ class Frontend {
     );
   }
 
+  /// Whether a closure only *reads* fields of `this`.
+  ///
+  /// Reading takes a shared borrow, and the method the closure sits in already
+  /// holds one. Writing a field wants `&mut self` while `self` is borrowed for
+  /// the call, and calling a method hands out the whole object; both stay
+  /// refused. The Kernel front end's `_onlyReadsThis` draws the same line, and
+  /// the fixtures are what keep them there.
+  bool _onlyReadsThis(FunctionExpression node) {
+    final use = _InstanceDemand();
+    node.accept(use);
+    return !use.demanding;
+  }
+
   IrExpr _construct(InstanceCreationExpression node) {
     final type = _type(node.staticType);
     final name = node.constructorName.name?.name;
     return IrNew(
       type,
-      _arguments(node.argumentList, node.constructorName.element, node),
+      _arguments(
+        node.argumentList,
+        node.constructorName.element,
+        node,
+        borrows: false,
+      ),
       constructor: name,
     );
   }
@@ -546,6 +564,30 @@ class Frontend {
   ///   compiler guessed would be indistinguishable from one upstream wrote,
   ///   which is the failure mode that costs the most to find later.
   List<IrExpr> _arguments(
+    ArgumentList list,
+    ExecutableElement? callee,
+    AstNode site, {
+    bool borrows = true,
+  }) {
+    final was = _borrowedArgument;
+    _borrowedArgument = borrows;
+    try {
+      return _argumentList(list, callee, site);
+    } finally {
+      _borrowedArgument = was;
+    }
+  }
+
+  /// Whether a closure written here would land in a borrowed position.
+  ///
+  /// The backend emits a function-typed *parameter* as `impl Fn(..)`, so a
+  /// closure passed to a call borrows and lives exactly as long as the call.
+  /// A constructor argument is stored in the object being built and outlives
+  /// it, so it stays refused. Kept in step with the Kernel front end, which
+  /// draws the same line in the same place.
+  bool _borrowedArgument = false;
+
+  List<IrExpr> _argumentList(
     ArgumentList list,
     ExecutableElement? callee,
     AstNode site,
@@ -1653,6 +1695,63 @@ class _InstanceUse extends RecursiveAstVisitor<void> {
     _check(node.element);
     super.visitSimpleIdentifier(node);
   }
+}
+
+/// Whether a closure asks more of `this` than a shared borrow.
+///
+/// The analyzer's half of `_ThisUse` in the Kernel front end. `this` is
+/// usually implicit here, so the question is asked of the resolved element:
+/// an instance field read is allowed, an instance field written or an instance
+/// method named -- called or torn off -- is not.
+class _InstanceDemand extends RecursiveAstVisitor<void> {
+  bool demanding = false;
+
+  bool _isInstance(Element? element) {
+    if (element == null) return false;
+    if (element.enclosingElement is! InterfaceElement) return false;
+    return switch (element) {
+      FieldElement() => !element.isStatic,
+      PropertyAccessorElement() => !element.isStatic,
+      MethodElement() => !element.isStatic,
+      _ => false,
+    };
+  }
+
+  @override
+  void visitThisExpression(ThisExpression node) => demanding = true;
+
+  @override
+  void visitMethodInvocation(MethodInvocation node) {
+    if (node.target == null && _isInstance(node.methodName.element)) {
+      demanding = true;
+    }
+    super.visitMethodInvocation(node);
+  }
+
+  @override
+  void visitAssignmentExpression(AssignmentExpression node) {
+    final target = node.leftHandSide;
+    if (target is SimpleIdentifier && _isInstance(target.element)) {
+      demanding = true;
+    }
+    if (target is PropertyAccess && target.target is ThisExpression) {
+      demanding = true;
+    }
+    super.visitAssignmentExpression(node);
+  }
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    // A bare name that resolves to an instance *method* is a tear-off, which
+    // needs the object itself and not a field of it.
+    if (node.element is MethodElement && _isInstance(node.element)) {
+      demanding = true;
+    }
+    super.visitSimpleIdentifier(node);
+  }
+
+  @override
+  void visitSuperExpression(SuperExpression node) => demanding = true;
 }
 
 /// The error types a method body throws.

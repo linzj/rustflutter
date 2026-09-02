@@ -1013,8 +1013,10 @@ mod tests {
 
     // -- closures -------------------------------------------------------------
     //
-    // Only the ones that capture nothing or read outer locals. `byFactor`
-    // reaches `this` and is refused, which matters because Dart lets an
+    // Two questions decide whether a closure reaching `this` can be
+    // translated: where it goes (an argument borrows, a return value does
+    // not) and what it asks of `this` (a field read is a shared borrow, a
+    // method call is the whole object). Both matter because Dart lets an
     // instance member be named without writing `this` -- a text search for the
     // word let exactly the wrong ones through.
 
@@ -1045,16 +1047,26 @@ mod tests {
     }
 
     #[test]
-    fn a_closure_reaching_this_is_refused() {
-        // `factor` is an instance field named without `this`, so the guard has
-        // to resolve the identifier rather than search the text.
+    fn a_closure_reading_this_as_an_argument_is_translated() {
+        // v * 2, twice: 3 -> 6 -> 12. `factor` is an instance field named
+        // without `this`, so the guard has to resolve the identifier rather
+        // than search the text -- and having resolved it, let this one
+        // through.
+        assert_eq!(Closures::new(2.0).by_factor(3.0), 12.0);
+    }
+
+    #[test]
+    fn a_closure_that_asks_for_more_than_a_borrow_is_refused() {
         let emitted = include_str!("closures.rs");
         assert!(
             emitted.contains("NOT TRANSLATED") && emitted.contains("capturing `this`"),
-            "expected byFactor to be refused, got:
+            "expected twiceScaled and scaler to be refused, got:
 {emitted}"
         );
-        assert!(!emitted.contains("fn by_factor"));
+        // Calls a method on `this`: needs the object, not a field of it.
+        assert!(!emitted.contains("fn twice_scaled"));
+        // Returned rather than passed: nothing bounds how long it lives.
+        assert!(!emitted.contains("fn scaler"));
     }
 
     // -- cascades -------------------------------------------------------------
