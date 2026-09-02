@@ -406,6 +406,7 @@ class Frontend {
   /// it as one node while Kernel has already rewritten it -- the two front ends
   /// have to arrive at the same IR.
   IrStmt _assignment(AssignmentExpression node) {
+    final target = node.leftHandSide;
     final (name, onThis) = _assignTarget(node);
     final operator = node.operator.lexeme;
     final value = expression(node.rightHandSide);
@@ -419,9 +420,16 @@ class Frontend {
       throw Unsupported('assignment operator `$operator`', node.toSource());
     }
 
-    return onThis
-        ? IrAssignField(name, combined(IrField(null, name)))
-        : IrAssign(name, combined(IrLocal(name)));
+    if (!onThis) return IrAssign(name, combined(IrLocal(name)));
+    if (_isSetterTarget(node)) {
+      // A setter is a call. Its "current value" for a compound assignment is
+      // the matching getter, not the field -- there may be no field at all.
+      final receiver = target is PropertyAccess && target.target is! ThisExpression
+          ? expression(target.target!)
+          : null;
+      return IrSetter(receiver, name, combined(IrCall(receiver, name, const [])));
+    }
+    return IrAssignField(name, combined(IrField(null, name)));
   }
 
   /// The name being assigned, and whether it is a field of `this`.
@@ -448,9 +456,16 @@ class Frontend {
       return (name, false);
     }
     if (written != null && written.isSynthetic) return (name, true);
-    throw Unsupported(
-        'assignment through a setter (`${written.runtimeType}`)',
-        node.toSource());
+    return (name, true);
+  }
+
+  /// Whether the assignment target is a real `set x(v)` rather than a field.
+  bool _isSetterTarget(AssignmentExpression node) {
+    final written = node.writeElement;
+    if (written is LocalVariableElement || written is FormalParameterElement) {
+      return false;
+    }
+    return written != null && !written.isSynthetic;
   }
 
   IrStmt body(FunctionBody node) {
@@ -597,7 +612,7 @@ class Frontend {
     // against the abstract and setter checks mattered enough to be worth a
     // round of its own. Both are gone: private members are translated now, so
     // there is nothing for the ordering to decide.
-    if (member.isSetter) throw Unsupported('setter', member.toSource());
+
 
     final params = <IrParam>[];
     for (final p in member.parameters?.parameters ?? const <FormalParameter>[]) {
@@ -622,6 +637,7 @@ class Frontend {
       member.isAbstract ? const IrBlock([]) : body(member.body),
       isStatic: member.isStatic,
       isGetter: member.isGetter,
+      isSetter: member.isSetter,
       operator: isOperator
           ? (params.isEmpty && member.name.lexeme == '-'
               ? 'unary-'

@@ -331,6 +331,7 @@ class RustBackend {
         case IrExprStmt():
         case IrAssert():
         case IrAssignField():
+        case IrSetter():
       }
     }
 
@@ -363,6 +364,8 @@ class RustBackend {
         _line('${snake(name)} = ${expr(value)};');
       case IrAssignField(:final name, :final value):
         _line('$_selfName.${snake(name)} = ${expr(value)};');
+      case IrSetter(:final target, :final name, :final value):
+        _line('${_receiver(target)}.set_${snake(name)}(${expr(value)});');
       case IrIf(:final condition, :final then, :final otherwise):
         _line('if ${expr(condition)} {');
         _indent++;
@@ -582,10 +585,16 @@ class RustBackend {
     final calls = <String, Set<String>>{};
     for (final method in cls.methods) {
       if (method.isStatic) continue;
+      final key = _rustName(method);
       final found = _WalkSelf();
       found.statement(method.body);
-      if (found.writesFields) writes.add(method.name);
-      calls[method.name] = found.selfCalls;
+      // No special case for setters. One was written here -- "a setter exists
+      // to change something, so mark it mutating" -- and the mutation sweep
+      // could not kill it: a setter that only delegates is already reached by
+      // the contagion below, and one that writes nothing needs no `&mut self`.
+      // A rule with no observable difference should not be written.
+      if (found.writesFields) writes.add(key);
+      calls[key] = found.selfCalls;
     }
     var changed = true;
     while (changed) {
@@ -614,7 +623,7 @@ class RustBackend {
   /// Both are refused rather than emitted with the wrong receiver. Upstream's
   /// operators do not assign, so the first is a guard rather than a loss.
   String _receiverOf(IrMethod method) {
-    if (!_mutating.contains(method.name)) return '&self';
+    if (!_mutating.contains(_rustName(method))) return '&self';
     if (method.operator != null && _operatorTraits.containsKey(method.operator)) {
       throw Unsupported(
           'a field write inside `operator ${method.operator}`',
@@ -631,6 +640,15 @@ class RustBackend {
     }
     return '&mut self';
   }
+
+  /// A member's name in Rust.
+  ///
+  /// `get x` and `set x` are the same name in Dart and cannot be in Rust, so a
+  /// setter becomes `set_x`. Everything keyed by member -- the mutability set
+  /// especially -- keys on *this* name, because keying on the Dart name would
+  /// make a getter and its setter one entry and mark the getter `&mut self`.
+  String _rustName(IrMethod method) =>
+      method.isSetter ? 'set_${snake(method.name)}' : _identifier(method.name);
 
   String _param(IrParam p, {bool owned = true}) =>
       '${_reassigned.contains(p.name) ? "mut " : ""}'
@@ -839,7 +857,10 @@ class RustBackend {
         if (!method.isStatic) _receiverOf(method),
         ...method.params.map(_param),
       ].join(', ');
-      _line('${_vis(method.name)}fn ${snake(method.name)}($params) -> ${type(method.returnType)} {');
+      // A setter returns nothing: Dart's `set x(v)` has no return type, and
+      // giving one a value would make `a.x = 1` an expression, which it is not.
+      final returns = method.isSetter ? '()' : type(method.returnType);
+      _line('${_vis(method.name)}fn ${_rustName(method)}($params) -> $returns {');
       _indent++;
       _returns = method.returnType;
       stmt(method.body, tail: true);
@@ -971,6 +992,11 @@ class _WalkSelf {
         expression(s.value);
       case IrAssign():
         expression(s.value);
+      case IrSetter(:final target, :final name, :final value):
+        // A setter call on `this` spreads `&mut` exactly as a method call does.
+        if (target == null || target is IrThis) selfCalls.add('set_$name');
+        if (target != null) expression(target);
+        expression(value);
       case IrBlock(:final statements):
         statements.forEach(statement);
       case IrIf(:final condition, :final then, :final otherwise):

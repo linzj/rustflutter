@@ -246,6 +246,23 @@ class IrAssignField extends IrStmt {
   final IrExpr value;
 }
 
+/// `target.x = value` where `x` is a **setter**, not a field.
+///
+/// A setter is a call, not a write, and which of the two an assignment is
+/// cannot be seen from the assignment itself -- it depends on how the receiver's
+/// class declared `x`. Both front ends can tell (Kernel names the target member;
+/// analyzer answers with `isSynthetic`), so the distinction is made where it is
+/// known rather than guessed at in the backend.
+///
+/// `target` is null for `this`.
+class IrSetter extends IrStmt {
+  const IrSetter(this.target, this.name, this.value);
+
+  final IrExpr? target;
+  final String name;
+  final IrExpr value;
+}
+
 /// `assert(condition, message)`.
 ///
 /// Dart's `assert` and Rust's `debug_assert!` are the same thing: a check that
@@ -300,6 +317,7 @@ class IrMethod {
     this.body, {
     this.isStatic = false,
     this.isGetter = false,
+    this.isSetter = false,
     this.operator,
     this.doc,
   });
@@ -310,6 +328,11 @@ class IrMethod {
   final IrStmt body;
   final bool isStatic;
   final bool isGetter;
+
+  /// A `set x(v)`. In Rust it is `set_x(&mut self, v)`, which is why it needs
+  /// its own flag: a getter and a setter share a name in Dart and must not in
+  /// Rust, and the mutability analysis keys on the Rust name for that reason.
+  final bool isSetter;
 
   /// The Dart operator this method declares, if any: `+`, `unary-`, `[]`.
   final String? operator;

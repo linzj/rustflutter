@@ -258,6 +258,9 @@ pub use nullcheck::NullCheck;
 mod mutation;
 pub use mutation::Counter;
 
+mod setters;
+pub use setters::Temperature;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,5 +647,52 @@ mod tests {
         let c = Counter::new(10.0, 5.0);
         assert_eq!(c.doubled(), 20.0);
         assert_eq!(c.quiet(), 21.0);
+    }
+
+    // -- setters --------------------------------------------------------------
+    //
+    // `get x` and `set x` are one name in Dart and two in Rust. The reading
+    // cases below use an immutable binding, so if the getter had also been
+    // marked `&mut self` -- which keying the mutability analysis on the Dart
+    // name would do -- they would not compile.
+
+    #[test]
+    fn a_setter_is_a_call_not_a_write() {
+        let mut t = Temperature::new(20.0);
+        t.set_celsius(25.0);
+        assert_eq!(t.celsius(), 25.0);
+    }
+
+    #[test]
+    fn a_setter_with_logic_is_not_an_assignment() {
+        // `set fahrenheit` converts; translating it as a field write would have
+        // stored 212.0 where 100.0 belongs.
+        let mut t = Temperature::new(0.0);
+        t.set_fahrenheit(212.0);
+        assert_eq!(t.celsius(), 100.0);
+    }
+
+    #[test]
+    fn assigning_through_your_own_setter_spreads_mut() {
+        let mut t = Temperature::new(20.0);
+        t.warm_by(5.0);
+        assert_eq!(t.celsius(), 25.0);
+    }
+
+    #[test]
+    fn a_compound_assignment_reads_back_through_the_getter() {
+        // 0C is 32F; +18F is 50F, which is 10C. There is no `fahrenheit` field
+        // to read, so the current value can only come from the getter.
+        let mut t = Temperature::new(0.0);
+        t.heat_up();
+        assert_eq!(t.celsius(), 10.0);
+    }
+
+    #[test]
+    fn getters_stay_immutable() {
+        // Not `let mut`.
+        let t = Temperature::new(100.0);
+        assert_eq!(t.fahrenheit(), 212.0);
+        assert_eq!(t.difference(), 112.0);
     }
 }

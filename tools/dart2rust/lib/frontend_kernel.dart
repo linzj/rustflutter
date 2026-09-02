@@ -346,11 +346,19 @@ class KernelFrontend {
         // A field on `this`, and a field rather than a setter. Kernel names the
         // target outright, so neither has to be inferred.
         if (value.receiver is! ThisExpression) {
+          // Another object's *setter* is a call, which needs nothing from us
+          // beyond a `&mut` receiver at the call site; another object's *field*
+          // is a write through a reference, which does. So one is translated
+          // and the other still stops.
+          if (value.interfaceTarget is! Field) {
+            return IrSetter(expression(value.receiver), value.name.text,
+                expression(value.value));
+          }
           throw Unsupported(
               'assignment to a field of another object', _sample(value));
         }
         if (value.interfaceTarget is! Field) {
-          throw Unsupported('assignment through a setter', _sample(value));
+          return IrSetter(null, value.name.text, expression(value.value));
         }
         return IrAssignField(value.name.text, expression(value.value));
       }
@@ -505,9 +513,7 @@ class KernelFrontend {
     if (node.isStatic && node.kind == ProcedureKind.Factory) {
       throw Unsupported('factory constructor', name);
     }
-    if (node.kind == ProcedureKind.Setter) {
-      throw Unsupported('setter', name);
-    }
+
 
     final params = [
       for (final p in node.function.positionalParameters)
@@ -523,6 +529,7 @@ class KernelFrontend {
       node.isAbstract ? const IrBlock([]) : _body(node.function),
       isStatic: node.isStatic,
       isGetter: node.kind == ProcedureKind.Getter,
+      isSetter: node.kind == ProcedureKind.Setter,
       operator: isOperator ? name : null,
     );
     (node.isAbstract ? cls.abstractMethods : cls.methods).add(method);
