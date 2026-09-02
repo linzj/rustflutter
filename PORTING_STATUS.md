@@ -7548,3 +7548,56 @@ C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6992 通�
 `widget_state::StateProperty` 到底有没有到得了 `InkResponse`。
 过期就改掉（**一条留在原地的错记录比没有记录更糟**，第 514 轮写过），
 没过期就把"还差什么"说得更具体。
+
+---
+
+## 第 539 轮：`overlayColor`——那条注释确实过期了
+
+先查上一轮记的那件事：`ink_well.rs` 顶部说
+`overlayColor` "pending `crate::widget_state` reaching this control"。
+
+**过期了。** `widget_state::StateProperty` 不但存在，
+components.rs 和 component_themes.rs **早就在用**
+（第 528 轮 `CupertinoSwitch` 的 `track_outline_color` 就是它）。
+挡路的东西不存在，所以这一轮把它接上，并把注释改成实话。
+
+### 上游的顺序是顺序，不是合并
+
+    overlayColor?.resolve(state) ?? <one>Color ?? theme.<one>Color
+
+一个能答三种状态的属性 > 单独给的那个颜色 > 主题的。照抄。
+
+### 真正容易抄错的是"拿什么状态去问"
+
+上游注释自己点了名：**保留非高亮状态**，
+"for this resolution to be correct"。
+
+所以 `states_for(kind)` 是：把 Hovered/Focused/Pressed 三个**都摘掉**，
+再把**正在问的那一个**放回去，其余（Selected、Disabled……）原样带着。
+
+两头都会错：
+- 不带其余状态 → 选中的 chip 被问"悬停什么颜色"时，属性以为它没被选中；
+- 不摘掉另外两个 → 一个**正被按下**的控件，问它"仅悬停时什么颜色"，
+  也会按"按下"来答。
+
+三条测试各守一头，而且每条都配了对照组
+（未选中的那个拿到另一个颜色、按下的那个问 hover 拿到未按下的答案）——
+**否则"选中时对"这句话，对一个永远返回同一个颜色的实现也成立**。
+
+五个变异全部杀死。中间有一条因 `cargo fmt` 重排而不匹配，
+按老规矩重写成格式化后的样子再跑，**不匹配的变异不算数**。
+
+尺子：十八把全部 exit 0。门：Rust 6995 通过、`cargo fmt --check` 干净；
+C++ 52 个 gtest 全过；gallery 357 通过；`rustflutter_unittests` 6995 通过；
+三个目录 default 与 `rustflutter_engine` 都 exit 0。
+
+**下一步**（循环在本轮后按用户要求暂停，这里留给下次）：
+`statesController` 仍然没有，而且这回**不是过期的注释**——
+改后的注释说清了差别：`overlayColor` 能解析了，
+缺的是**共享**（上游那个 controller 是个 listenable，
+多个控件订阅同一个状态集，一起亮起来），
+而 `with_states` 是按值传的一份拷贝。
+**先查一件事**：本 crate 有没有可订阅的 notifier 类
+（`ValueNotifier` / `ChangeNotifier` 之类）——
+有就接，没有就先想清楚"共享状态"在这个 port 里该长什么样，
+别为一个控件造一套通知机制。

@@ -42,10 +42,12 @@
 //!   touchscreen means nothing. The focus highlight here is driven by
 //!   [`InkResponseState::update_highlight`] like the other two; whoever owns
 //!   focus calls it.
-//! * **`statesController` and `overlayColor`.** A resolved overlay colour
-//!   would replace all three of `highlightColor`/`hoverColor`/`focusColor` at
-//!   once; the three are here and the property that overrides them is not,
-//!   pending [`crate::widget_state`] reaching this control.
+//! * **`statesController`.** Upstream's controller is a listenable a caller
+//!   shares between widgets so they light up together. `overlayColor` is
+//!   here now -- see [`InkResponse::with_overlay_color`] -- and it is
+//!   resolved against [`InkResponse::with_states`], which is the same set by
+//!   value rather than by subscription. What is missing is the *sharing*, not
+//!   the resolving.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -310,6 +312,21 @@ pub struct InkResponse {
     focus_id: Option<u64>,
     splash_factory: Option<InteractiveInkFeatureFactory>,
     hover_micros: Option<i64>,
+    /// Upstream's `overlayColor`, which answers for **all three** highlights
+    /// at once and outranks the individual colours when it is given.
+    ///
+    /// Resolved separately per highlight, against that highlight's state --
+    /// so one property can say "blue while pressed, faint grey while merely
+    /// hovered" without the caller writing three colours.
+    overlay_color: Option<crate::widget_state::StateProperty<Color>>,
+    /// The states this response is in that are **not** one of the three a
+    /// highlight stands for -- selected, disabled, and the rest.
+    ///
+    /// Upstream keeps them because `overlayColor` is resolved once per
+    /// highlight with that highlight's state added: a selected chip's hover
+    /// colour may differ from an unselected one's, and resolving `{hovered}`
+    /// alone would lose the selection.
+    states: crate::widget_state::WidgetStates,
     enabled: bool,
     /// Upstream's `getRectCallback`: the rectangle the ink is measured
     /// against, instead of the region's own bounds.
@@ -392,6 +409,8 @@ impl InkResponse {
             focus_id: None,
             splash_factory: None,
             hover_micros: None,
+            overlay_color: None,
+            states: crate::widget_state::WidgetStates::NONE,
             enabled: true,
             rect_callback: None,
         }
@@ -478,6 +497,21 @@ impl InkResponse {
     }
 
     /// Upstream's `hoverDuration`, which applies to the focus highlight too.
+    /// Upstream's `overlayColor`. See the field.
+    pub fn with_overlay_color(
+        mut self,
+        overlay: crate::widget_state::StateProperty<Color>,
+    ) -> Self {
+        self.overlay_color = Some(overlay);
+        self
+    }
+
+    /// The states the control is in besides the three a highlight names.
+    pub fn with_states(mut self, states: crate::widget_state::WidgetStates) -> Self {
+        self.states = states;
+        self
+    }
+
     pub fn with_hover_micros(mut self, micros: i64) -> Self {
         self.hover_micros = Some(micros);
         self
@@ -498,6 +532,33 @@ impl InkResponse {
     /// it looks wasteful until the lifecycle is the reason: the highlight has
     /// to exist so that becoming enabled again is a colour change rather than
     /// a highlight appearing from nowhere half way through a hover.
+    /// The states to resolve an overlay colour against for one highlight.
+    ///
+    /// This highlight's own state, **plus whatever else the control is** --
+    /// upstream keeps the non-highlightable states for the reason its comment
+    /// gives: resolving `{hovered}` alone would tell a selected control's
+    /// property that it is not selected, and it would answer with the wrong
+    /// colour.
+    fn states_for(&self, kind: HighlightType) -> crate::widget_state::WidgetStates {
+        use crate::widget_state::WidgetState;
+        // The three a highlight stands for are dropped and the one being
+        // asked about is put back, so asking about hover does not also claim
+        // the control is pressed.
+        let mut states = self.states;
+        for highlightable in [
+            WidgetState::Hovered,
+            WidgetState::Focused,
+            WidgetState::Pressed,
+        ] {
+            states = states.without(highlightable);
+        }
+        states.with(match kind {
+            HighlightType::Pressed => WidgetState::Pressed,
+            HighlightType::Hover => WidgetState::Hovered,
+            HighlightType::Focus => WidgetState::Focused,
+        })
+    }
+
     /// The colour one of the three highlights is drawn in.
     ///
     /// `material` is the fallback, and it is the *theme's* answer rather than
@@ -510,12 +571,22 @@ impl InkResponse {
         kind: HighlightType,
         material: &crate::theme::ThemeData,
     ) -> Color {
-        let resolved = match kind {
-            HighlightType::Pressed => self.highlight_color,
-            HighlightType::Hover => self.hover_color,
-            HighlightType::Focus => self.focus_color,
-        }
-        .unwrap_or_else(|| material.overlay_color(kind));
+        // Upstream's order, and it is an order rather than a merge:
+        //
+        //     widget.overlayColor?.resolve(state) ?? widget.<one>Color ?? theme.<one>Color
+        //
+        // A property that answers for all three wins over the single colour,
+        // which wins over the theme's.
+        let resolved = self
+            .overlay_color
+            .as_ref()
+            .map(|overlay| overlay.resolve(self.states_for(kind)))
+            .or(match kind {
+                HighlightType::Pressed => self.highlight_color,
+                HighlightType::Hover => self.hover_color,
+                HighlightType::Focus => self.focus_color,
+            })
+            .unwrap_or_else(|| material.overlay_color(kind));
         if self.enabled {
             resolved
         } else {
@@ -969,6 +1040,124 @@ mod tests {
             InkFeatureKind::Highlight(highlight) => highlight.fade_micros,
             other => panic!("not a highlight: {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_overlay_colour_answers_for_all_three_and_outranks_the_single_ones() {
+        // Upstream's order:
+        //
+        //     overlayColor?.resolve(state) ?? <one>Color ?? theme.<one>Color
+        //
+        // The note at the top of this file used to say this could not be done
+        // "pending `widget_state` reaching this control". `StateProperty` has
+        // been here since tick 528 and other controls already use it, so the
+        // note was stale rather than true.
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+        let material = crate::theme::ThemeData::light();
+        let by_state = StateProperty::resolve_with(|states| {
+            if states.contains(WidgetState::Pressed) {
+                Color(0xff111111)
+            } else if states.contains(WidgetState::Focused) {
+                Color(0xff222222)
+            } else {
+                Color(0xff333333)
+            }
+        });
+
+        let response = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
+            .with_overlay_color(by_state);
+        assert_eq!(
+            response.highlight_color_for(HighlightType::Pressed, &material),
+            Color(0xff111111)
+        );
+        assert_eq!(
+            response.highlight_color_for(HighlightType::Focus, &material),
+            Color(0xff222222)
+        );
+        assert_eq!(
+            response.highlight_color_for(HighlightType::Hover, &material),
+            Color(0xff333333)
+        );
+
+        // It outranks a single colour given alongside it.
+        let both = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
+            .with_hover_color(INK)
+            .with_overlay_color(StateProperty::resolve_with(|_| Color(0xff444444)));
+        assert_eq!(
+            both.highlight_color_for(HighlightType::Hover, &material),
+            Color(0xff444444),
+            "the property wins, and INK is what it wins over"
+        );
+    }
+
+    #[test]
+    fn an_overlay_is_resolved_with_the_control_s_other_states_kept() {
+        // Upstream's own comment: the non-highlightable states are preserved,
+        // "for this resolution to be correct". A selected chip's hover colour
+        // may differ from an unselected one's, and resolving `{hovered}`
+        // alone would tell the property the control is not selected.
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+        let material = crate::theme::ThemeData::light();
+        let selected_aware = StateProperty::resolve_with(|states| {
+            match (
+                states.contains(WidgetState::Selected),
+                states.contains(WidgetState::Hovered),
+            ) {
+                (true, true) => Color(0xffaaaaaa),
+                (false, true) => Color(0xffbbbbbb),
+                _ => Color(0xffcccccc),
+            }
+        });
+
+        let chosen = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
+            .with_states(WidgetStates::NONE.with(WidgetState::Selected))
+            .with_overlay_color(selected_aware.clone());
+        assert_eq!(
+            chosen.highlight_color_for(HighlightType::Hover, &material),
+            Color(0xffaaaaaa),
+            "the selection survived being asked about hover"
+        );
+
+        let plain = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
+            .with_overlay_color(selected_aware);
+        assert_eq!(
+            plain.highlight_color_for(HighlightType::Hover, &material),
+            Color(0xffbbbbbb),
+            "and an unselected one gets the other answer, so the assertion \
+             above is about the selection rather than about hover"
+        );
+    }
+
+    #[test]
+    fn asking_about_one_highlight_does_not_claim_the_other_two() {
+        // The three a highlight stands for are dropped before the one being
+        // asked about is put back. Without that, a control that is *pressed*
+        // would answer every question -- including "what colour when merely
+        // hovered" -- as though it were pressed.
+        use crate::widget_state::{StateProperty, WidgetState, WidgetStates};
+
+        let material = crate::theme::ThemeData::light();
+        let response = InkResponse::new(1, || crate::framework::leaf(|| crate::widgets::Empty))
+            .with_states(WidgetStates::NONE.with(WidgetState::Pressed))
+            .with_overlay_color(StateProperty::resolve_with(|states| {
+                if states.contains(WidgetState::Pressed) {
+                    Color(0xff111111)
+                } else {
+                    Color(0xff222222)
+                }
+            }));
+
+        assert_eq!(
+            response.highlight_color_for(HighlightType::Hover, &material),
+            Color(0xff222222),
+            "the hover question is asked without the press"
+        );
+        assert_eq!(
+            response.highlight_color_for(HighlightType::Pressed, &material),
+            Color(0xff111111)
+        );
     }
 
     #[test]
