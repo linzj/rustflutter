@@ -93,7 +93,9 @@ Future<void> main(List<String> args) async {
     for (final declaration in resolved.unit.declarations) {
       if (declaration is! ClassDeclaration) continue;
       final name = declaration.name.lexeme;
-      if (name.startsWith('_')) continue;
+      // Private classes counted too, now that they are translated. Skipping
+      // them was why `CupertinoApp` could report zero refusals: its behaviour
+      // lives in `_CupertinoAppState`, which the census never looked at.
       classesSeen++;
 
       final (cls, refused) = Frontend(name).lowerClass(declaration);
@@ -138,7 +140,7 @@ Future<void> main(List<String> args) async {
   final ranked = counts.entries.toList()
     ..sort((a, b) => b.value.compareTo(a.value));
 
-  print('${files.length} files, $classesSeen public classes, '
+  print('${files.length} files, $classesSeen classes, '
       '${elapsed.inSeconds}s'
       '${filesFailed > 0 ? ", $filesFailed did not resolve" : ""}');
   print('$classesClean translated with no refusal, '

@@ -31,7 +31,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 TESTDATA = os.path.join(os.path.dirname(HERE), 'testdata')
 TARGET = os.path.join(TESTDATA, 'src', 'alignment.rs')
-HEADER = 'use crate::{Offset, Rect, Size, TextDirection};\n\n'
+HEADER = ('use crate::{Object, Offset, Rect, SentinelValue, Size, '
+          'TextDirection};\n\n')
 
 UPSTREAM = 'E:/source/flutter/packages/flutter/lib/src/painting/alignment.dart'
 LIBRARY = 'package:flutter/src/painting/alignment.dart'

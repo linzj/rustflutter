@@ -120,6 +120,14 @@ class Frontend {
         if (isStatic) {
           return IrStatic(enclosing.name ?? '?', node.name);
         }
+        // A getter is a method in Rust, a field is a field, and Dart spells
+        // both `a.x`. Analyzer resolves a *field* read to the field's implicit
+        // accessor, so "is it a PropertyAccessorElement" is not the question --
+        // `isSynthetic` is. A synthetic accessor is the one the analyser made
+        // up for a field; a real `get x => ...` is not synthetic.
+        if (element is PropertyAccessorElement && !element.isSynthetic) {
+          return IrCall(null, node.name, const []);
+        }
         return IrField(null, node.name);
       }
     }
@@ -130,11 +138,14 @@ class Frontend {
   }
 
   IrExpr _prefixed(PrefixedIdentifier node) {
-    _refusePrivate(node.identifier.name, node);
     final target = node.prefix.element;
     // `Alignment.topLeft` -- the prefix resolves to the class itself.
     if (target is ClassElement) {
       return IrStatic(target.name ?? '?', node.identifier.name);
+    }
+    final accessor = node.identifier.element;
+    if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
+      return IrCall(expression(node.prefix), node.identifier.name, const []);
     }
     return IrField(expression(node.prefix), node.identifier.name);
   }
@@ -143,6 +154,10 @@ class Frontend {
     final target = node.target;
     if (target == null) {
       throw Unsupported('cascade', node.toSource());
+    }
+    final accessor = node.propertyName.element;
+    if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
+      return IrCall(expression(target), node.propertyName.name, const []);
     }
     return IrField(expression(target), node.propertyName.name);
   }
@@ -270,11 +285,11 @@ class Frontend {
   /// looks complete and does not compile. Refusing the caller is the honest
   /// answer: the translation of `toString` genuinely is not available until
   /// private members are translated too.
-  void _refusePrivate(String name, AstNode node) {
-    if (name.startsWith('_')) {
-      throw Unsupported('reference to private `$name`', node.toSource());
-    }
-  }
+  // `_refusePrivate` used to live here and refuse any reference to a private
+  // member. It is gone for the reason given in `frontend_kernel.dart`: private
+  // members are where a Flutter program keeps its implementation, so skipping
+  // them translates the surface and none of the substance.
+  void _refusePrivate(String name, AstNode node) {}
 
   IrExpr _invoke(MethodInvocation node) {
     final element = node.methodName.element;
@@ -291,6 +306,17 @@ class Frontend {
         node.methodName.name,
         args,
       );
+    }
+    // A top-level function is not a method on `this`. Without this check
+    // `clampDouble(a, b, c)` came out as `self.clamp_double(a, b, c)`, which is
+    // both wrong and a place the two front ends disagreed -- the Kernel one
+    // refuses a top-level call outright.
+    if (element != null && element.enclosingElement is! ClassElement) {
+      final enclosing = element.enclosingElement;
+      if (enclosing is! InterfaceElement) {
+        throw Unsupported(
+            'top-level call `${node.methodName.name}`', node.toSource());
+      }
     }
     final target = node.target;
     if (target is SuperExpression) {
@@ -385,7 +411,6 @@ class Frontend {
     final refused = <String>[];
     for (final declaration in unit.declarations) {
       if (declaration is! ClassDeclaration) continue;
-      if (declaration.name.lexeme.startsWith('_')) continue;
       final (cls, problems) = lowerClass(declaration);
       classes.add(cls);
       refused.addAll(problems.map((p) => '${cls.name}: $p'));
@@ -428,10 +453,6 @@ class Frontend {
     for (final v in member.fields.variables) {
       final element = v.declaredFragment?.element;
       final type = _type(member.fields.type?.type ?? element?.type);
-      // Private first, for the reason given in `_lowerMethod`: a private
-      // `static final` was being refused as a non-const static field when it
-      // should simply have been skipped.
-      if (v.name.lexeme.startsWith('_')) continue;
       if (member.isStatic) {
         if (element is! FieldElement || !element.isConst) {
           throw Unsupported('non-const static field', v.toSource());
@@ -461,7 +482,6 @@ class Frontend {
 
   void _lowerConstructor(IrClass cls, ConstructorDeclaration member) {
     final name = member.name?.lexeme;
-    if (name != null && name.startsWith('_')) return;
     if (member.factoryKeyword != null) {
       // A factory may return a cached instance or a subclass, so it is not an
       // associated function that builds Self -- it needs the hierarchy.
@@ -509,13 +529,10 @@ class Frontend {
   }
 
   void _lowerMethod(IrClass cls, MethodDeclaration member) {
-    // Private first, and that ordering is the whole point. A private member is
-    // *skipped*, not refused -- nothing outside its library can name it. When
-    // this check came last, `double get _x;` was counted as an abstract method
-    // and `set _foo(v)` as a setter, so the census reported 74 abstract methods
-    // in painting/ when the real number was far smaller. A queue whose head is
-    // partly fiction sends the next round to build the wrong thing.
-    if (member.name.lexeme.startsWith('_')) return;
+    // A private member used to be skipped here, and the ordering of that skip
+    // against the abstract and setter checks mattered enough to be worth a
+    // round of its own. Both are gone: private members are translated now, so
+    // there is nothing for the ordering to decide.
     if (member.isSetter) throw Unsupported('setter', member.toSource());
 
     final params = <IrParam>[];

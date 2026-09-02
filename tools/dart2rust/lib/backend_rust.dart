@@ -75,17 +75,21 @@ class RustBackend {
   /// stopped being refused for its super call and began being refused for the
   /// `is` beside it, which silently cost the entire class. Same lesson as the
   /// per-class fix one level up: the unit of refusal should be the unit of work.
-  void _member(String what, void Function() body) {
+  /// Returns whether the member was emitted, because a caller sometimes has to
+  /// know: a trait default cannot delegate to a free function that was refused.
+  bool _member(String what, void Function() body) {
     final mark = _out.length;
     final indent = _indent;
     try {
       body();
+      return true;
     } on Unsupported catch (error) {
       _out.removeRange(mark, _out.length);
       _indent = indent;
       _line('// NOT TRANSLATED: $what');
       _line('//   $error');
       _line('');
+      return false;
     }
   }
 
@@ -103,6 +107,15 @@ class RustBackend {
   /// behind a `Box` when owned. Getting this wrong is not a style question:
   /// `fn add(other: AlignmentGeometry)` does not compile at all, because Rust
   /// has no way to know how big an `AlignmentGeometry` is.
+  /// `pub `, or nothing when the Dart name was private.
+  ///
+  /// Dart's privacy is per *library* and Rust's is per *module*, so a file's
+  /// classes emitted into one module keep the same reachability: a `_`-prefixed
+  /// member is visible to its neighbours and to nobody else. The name is left
+  /// alone -- `_x` is a legal Rust identifier -- because changing it would make
+  /// the output unsearchable against upstream.
+  String _vis(String dartName) => dartName.startsWith('_') ? '' : 'pub ';
+
   String type(IrType t, {bool owned = true}) {
     if (library.isAbstract(t.name)) {
       final dynamic_ = owned ? 'Box<dyn ${t.name}>' : '&dyn ${t.name}';
@@ -126,7 +139,7 @@ class RustBackend {
       IrUnary(:final op, :final operand) => '($op${expr(operand)})',
       IrCall(:final target, :final name, :final args) => _call(target, name, args),
       IrStaticCall(:final owner, :final name, :final args) =>
-        '$owner::${snake(name)}(${args.map(expr).join(', ')})',
+        _staticCall(owner, name, args),
       IrNew(:final type, :final args, :final constructor) =>
         _new(type, args, constructor),
       IrConditional(:final condition, :final then, :final otherwise) =>
@@ -193,7 +206,25 @@ class RustBackend {
   /// and once as the trait default, which calls it. `super.name(..)` then names
   /// the function, which is the one thing that cannot dispatch anywhere else.
   static String superFn(String base, String name) =>
-      '${snake(base)}_super_${snake(name)}';
+      '${snake(base)}_super_${_identifier(name)}';
+
+  /// A static call, checked against the IR when it lands in this library.
+  ///
+  /// `Alignment._stringify(x, y)` was emitted for a method the front end had
+  /// refused, so the output named a function nobody wrote. That is round one's
+  /// bug in a new shape: it was masked then by refusing every private reference,
+  /// and removing that blunt rule brought it back. The precise rule is the same
+  /// one `_superCall` uses -- if the callee is in this file, it has to be in the
+  /// IR.
+  String _staticCall(String owner, String name, List<IrExpr> args) {
+    final target = library[owner];
+    if (target != null &&
+        !target.methods.any((m) => m.name == name && m.operator == null)) {
+      throw Unsupported('call to `$owner.$name`, which was not translated',
+          '$owner.$name(...)');
+    }
+    return '$owner::${_identifier(name)}(${args.map(expr).join(', ')})';
+  }
 
   String _superCall(String base, String name, List<IrExpr> args) {
     final baseClass = library[base];
@@ -224,6 +255,33 @@ class RustBackend {
   /// `left.unwrap_or(*self.left)`, which does not compile. It was found by
   /// building real upstream code rather than a fixture, which is the argument
   /// for keeping real code in the test crate.
+  /// The return type of the function currently being emitted.
+  ///
+  /// Needed for one thing Dart does implicitly and Rust does not: returning a
+  /// concrete value where an abstract type is declared.
+  /// `AlignmentGeometry.add` ends in `_MixedAlignment(...)` and is declared to
+  /// return `AlignmentGeometry`, which in Rust is `Box<dyn AlignmentGeometry>`.
+  /// That is the same coercion the trait impls needed at their boundary, met
+  /// again inside a body.
+  IrType? _returns;
+
+  /// Wraps a returned expression when the declared return is a trait object.
+  ///
+  /// Only an `IrNew` is wrapped, because only a constructor call is *known* to
+  /// produce that concrete type. Anything else could already be a box, and a
+  /// double `Box::new` compiles into something quietly wrong.
+  String _returned(IrExpr value) {
+    final declared = _returns;
+    final text = expr(value);
+    if (declared != null &&
+        library.isAbstract(declared.name) &&
+        value is IrNew &&
+        !library.isAbstract(value.type.name)) {
+      return 'Box::new($text)';
+    }
+    return text;
+  }
+
   /// What `self` is called in the code currently being emitted.
   ///
   /// A free function has no `self`, so while one is being written the receiver
@@ -261,7 +319,8 @@ class RustBackend {
         if (value == null) {
           _line(tail ? '' : 'return;');
         } else {
-          _line(tail ? expr(value) : 'return ${expr(value)};');
+          final text = _returned(value);
+          _line(tail ? text : 'return $text;');
         }
       case IrLocalDecl(:final name, :final type, :final init):
         final annotation = type == null ? '' : ': ${this.type(type)}';
@@ -348,31 +407,48 @@ class RustBackend {
     _line('// (abstract -> trait).');
     _line('');
     _doc(cls.doc);
-    _line('pub trait ${cls.name} {');
+    // The free functions go first: which of them failed decides whether the
+    // trait's matching default can delegate or has to be a `todo!()`.
+    _emitSuperFns();
+    _line('');
+    _line('${_vis(cls.name)}trait ${cls.name} {');
     _indent++;
+    // Guarded per member, like the struct path. The trait path was missed when
+    // that changed, and it showed the moment private members started being
+    // translated: one `toString` holding a string concatenation took the whole
+    // `AlignmentGeometry` trait with it, and every `impl` of it stopped
+    // compiling. Third time this has come up -- the unit of refusal should be
+    // the unit of work everywhere, not only where it has been noticed.
     for (final method in cls.abstractMethods) {
-      _doc(method.doc);
-      _line('fn ${_methodName(method)}(${_params(method)}) -> '
-          '${type(method.returnType)};');
-      _line('');
+      _member('${cls.name}.${method.name} (required)', () {
+        _doc(method.doc);
+        _line('fn ${_methodName(method)}(${_params(method)}) -> '
+            '${type(method.returnType)};');
+        _line('');
+      });
     }
     for (final method in cls.methods) {
       if (method.isStatic) continue;
-      _doc(method.doc);
-      _line('fn ${_methodName(method)}(${_params(method)}) -> '
-          '${type(method.returnType)} {');
-      _indent++;
-      // The default delegates to the free function rather than holding the
-      // body, so that an override can still reach it. See `superFn`.
-      _line('${superFn(cls.name, method.name)}('
-          '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})');
-      _indent--;
-      _line('}');
-      _line('');
+      _member('${cls.name}.${method.name} (default)', () {
+        _doc(method.doc);
+        _line('fn ${_methodName(method)}(${_params(method)}) -> '
+            '${type(method.returnType)} {');
+        _indent++;
+        // The default delegates to the free function rather than holding the
+        // body, so that an override can still reach it. See `superFn`.
+        if (_superFailed.contains(method.name)) {
+          _line('todo!("${cls.name}.${method.name} did not translate")');
+        } else {
+          _line('${superFn(cls.name, method.name)}('
+            '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})');
+        }
+        _indent--;
+        _line('}');
+        _line('');
+      });
     }
     _indent--;
     _line('}');
-    _emitSuperFns();
     if (cls.fields.isNotEmpty) {
       _line('');
       _line('// NOT TRANSLATED: `${cls.name}` declares '
@@ -389,9 +465,25 @@ class RustBackend {
   /// Generic over the implementor and `?Sized`, so both the trait's own default
   /// and a subclass's override can call it -- the default has an unsized `Self`,
   /// and a subclass has a concrete one.
+  /// Names whose free function could not be emitted.
+  ///
+  /// The trait's default for such a method cannot delegate to a function that
+  /// does not exist, so it gets a `todo!()` instead -- the trait and every impl
+  /// of it still line up, which a missing method would not.
+  final _superFailed = <String>{};
+
   void _emitSuperFns() {
     for (final method in cls.methods) {
       if (method.isStatic) continue;
+      if (!_member(superFn(cls.name, method.name),
+          () => _emitSuperFn(method))) {
+        _superFailed.add(method.name);
+      }
+    }
+  }
+
+  void _emitSuperFn(IrMethod method) {
+    {
       _line('');
       _line('/// The body of `${cls.name}.${method.name}`, reachable from an');
       _line('/// override the way Dart\'s `super.${method.name}` is.');
@@ -400,12 +492,14 @@ class RustBackend {
         ...method.params.map(
             (p) => '${snake(p.name)}: ${type(p.type, owned: false)}'),
       ].join(', ');
-      _line('pub fn ${superFn(cls.name, method.name)}'
+      _line('${_vis(cls.name)}fn ${superFn(cls.name, method.name)}'
           '<S: ${cls.name} + ?Sized>($params) -> '
           '${type(method.returnType)} {');
       _indent++;
       _selfName = 'this_';
+      _returns = method.returnType;
       stmt(method.body, tail: true);
+      _returns = null;
       _selfName = 'self';
       _indent--;
       _line('}');
@@ -438,11 +532,11 @@ class RustBackend {
     _line('');
     _doc(cls.doc);
     _line('#[derive(Clone, Copy, Debug, PartialEq)]');
-    _line('pub struct ${cls.name} {');
+    _line('${_vis(cls.name)}struct ${cls.name} {');
     _indent++;
     for (final field in cls.fields) {
       _doc(field.doc);
-      _line('pub ${snake(field.name)}: ${type(field.type)},');
+      _line('${_vis(field.name)}${snake(field.name)}: ${type(field.type)},');
     }
     _indent--;
     _line('}');
@@ -579,7 +673,7 @@ class RustBackend {
     // It mattered: `TextAlignVertical` has asserts in its constructor and
     // `static const` fields built from it, and dropping `const` made those
     // fields uncompilable. The two rounds' rules only met on real code.
-    _line('pub ${ctor.isConst ? "const " : ""}fn $name($params) -> Self {');
+    _line('${_vis(ctor.name ?? cls.name)}${ctor.isConst ? "const " : ""}fn $name($params) -> Self {');
     _indent++;
     for (final check in ctor.asserts) {
       stmt(check);
@@ -603,7 +697,7 @@ class RustBackend {
   void _emitConstants() {
     for (final constant in cls.constants) {
       _doc(constant.doc);
-      _line('pub const ${screamingSnake(constant.name)}: ${type(constant.type)} '
+      _line('${_vis(constant.name)}const ${screamingSnake(constant.name)}: ${type(constant.type)} '
           '= ${expr(constant.value)};');
     }
     if (cls.constants.isNotEmpty) _line('');
@@ -623,9 +717,11 @@ class RustBackend {
         if (!method.isStatic) '&self',
         ...method.params.map((p) => '${snake(p.name)}: ${type(p.type)}'),
       ].join(', ');
-      _line('pub fn ${snake(method.name)}($params) -> ${type(method.returnType)} {');
+      _line('${_vis(method.name)}fn ${snake(method.name)}($params) -> ${type(method.returnType)} {');
       _indent++;
+      _returns = method.returnType;
       stmt(method.body, tail: true);
+      _returns = null;
       _indent--;
       _line('}');
       _line('');
@@ -654,9 +750,11 @@ class RustBackend {
           '&self',
           ...method.params.map((p) => '${snake(p.name)}: ${type(p.type)}'),
         ].join(', ');
-        _line('pub fn ${_operatorName(op)}($params) -> ${type(method.returnType)} {');
+        _line('${_vis(method.name)}fn ${_operatorName(op)}($params) -> ${type(method.returnType)} {');
         _indent++;
-        stmt(method.body, tail: true);
+        _returns = method.returnType;
+      stmt(method.body, tail: true);
+      _returns = null;
         _indent--;
         _line('}');
         _indent--;
@@ -678,7 +776,9 @@ class RustBackend {
       ].join(', ');
       _line('fn $fn($params) -> Self::Output {');
       _indent++;
+      _returns = method.returnType;
       stmt(method.body, tail: true);
+      _returns = null;
       _indent--;
       _line('}');
       _indent--;
@@ -687,13 +787,44 @@ class RustBackend {
   }
 
 
-  String _operatorName(String op) => switch (op) {
+  /// A Rust-legal name for a Dart operator.
+  ///
+  /// The fallback used to be `op_` plus the code units, which turned `==` into
+  /// `op_61_61` -- legal, but unreadable and unsearchable. Every operator Dart
+  /// has is named here instead; anything genuinely unknown stops rather than
+  /// being spelled in decimal.
+  static String _operatorName(String op) => switch (op) {
+        '+' => 'op_add',
+        '-' => 'op_sub',
+        '*' => 'op_mul',
+        '/' => 'op_div',
+        '%' => 'op_rem',
+        'unary-' => 'op_neg',
         '~/' => 'int_div',
         '[]' => 'index_of',
+        '[]=' => 'index_set',
+        '==' => 'op_eq',
         '<' => 'lt',
         '>' => 'gt',
         '<=' => 'le',
         '>=' => 'ge',
-        _ => 'op_${op.codeUnits.join("_")}',
+        '&' => 'bit_and',
+        '|' => 'bit_or',
+        '^' => 'bit_xor',
+        '~' => 'bit_not',
+        '<<' => 'shl',
+        '>>' => 'shr',
+        '>>>' => 'ushr',
+        _ => throw Unsupported('operator `$op` has no Rust name', op),
       };
+
+  /// A Rust-legal identifier for any Dart member name.
+  ///
+  /// `superFn` pastes the name into another identifier, so an operator's own
+  /// spelling cannot go through: `superFn('AlignmentGeometry', '==')` produced
+  /// `alignment_geometry_super_`, a name with nothing on the end of it.
+  static String _identifier(String name) =>
+      RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(name)
+          ? snake(name)
+          : _operatorName(name);
 }

@@ -3,29 +3,53 @@
 //! this answers is whether dart2rust emits Rust, not whether Offset is right.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Offset {
-    pub dx: f32,
-    pub dy: f32,
+    x: f32,
+    y: f32,
 }
 impl Offset {
     pub const fn new(dx: f32, dy: f32) -> Self {
-        Self { dx, dy }
+        Self { x: dx, y: dy }
+    }
+    // Getters, as upstream has them. They were fields here while the compiler
+    // could not tell a Dart getter from a Dart field; it can now.
+    pub const fn dx(&self) -> f32 {
+        self.x
+    }
+    pub const fn dy(&self) -> f32 {
+        self.y
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Size {
-    pub width: f32,
-    pub height: f32,
+    w: f32,
+    h: f32,
+}
+impl Size {
+    pub const fn new(width: f32, height: f32) -> Self {
+        Self {
+            w: width,
+            h: height,
+        }
+    }
+    pub const fn width(&self) -> f32 {
+        self.w
+    }
+    pub const fn height(&self) -> f32 {
+        self.h
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rect {
+    // In dart:ui these four really are fields; `width` and `height` are
+    // getters. The stub draws the line where upstream draws it -- checked
+    // against dart:ui rather than guessed from how the compiler happened to
+    // read them.
     pub left: f32,
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
-    pub width: f32,
-    pub height: f32,
 }
 impl Rect {
     pub const fn from_l_t_w_h(left: f32, top: f32, width: f32, height: f32) -> Self {
@@ -34,23 +58,65 @@ impl Rect {
             top,
             right: left + width,
             bottom: top + height,
-            width,
-            height,
         }
     }
-    // Upstream's `right`/`bottom`/`width`/`height` are getters; the translated
-    // code reads them as fields, so the stub makes them fields. Turning a Dart
-    // getter into a Rust method is a real difference and belongs to its own
-    // round -- see STATUS.md.
     pub const fn from_l_t_r_b(left: f32, top: f32, right: f32, bottom: f32) -> Self {
         Self {
             left,
             top,
             right,
             bottom,
-            width: right - left,
-            height: bottom - top,
         }
+    }
+    pub const fn width(&self) -> f32 {
+        self.right - self.left
+    }
+    pub const fn height(&self) -> f32 {
+        self.bottom - self.top
+    }
+}
+
+/// `Object` is Dart's root type. Nothing is translated into it yet; it exists
+/// so that a signature mentioning it -- `operator ==(Object other)` -- compiles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Object;
+impl Object {
+    /// `Object.hash` is variadic in Dart and cannot be in Rust. The stub takes
+    /// the arity the translated code happens to use; making this general is a
+    /// real question for whoever translates `dart:core`, not for a stub.
+    #[allow(clippy::too_many_arguments)]
+    pub fn hash(
+        a: f32,
+        b: f32,
+        c: f32,
+        _d: SentinelValue,
+        _e: SentinelValue,
+        _f: SentinelValue,
+        _g: SentinelValue,
+        _h: SentinelValue,
+        _i: SentinelValue,
+        _j: SentinelValue,
+        _k: SentinelValue,
+        _l: SentinelValue,
+        _m: SentinelValue,
+        _n: SentinelValue,
+        _o: SentinelValue,
+        _p: SentinelValue,
+        _q: SentinelValue,
+        _r: SentinelValue,
+        _s: SentinelValue,
+        _t: SentinelValue,
+    ) -> i64 {
+        (a as i64) ^ (b as i64) ^ (c as i64)
+    }
+}
+
+/// Upstream's `_SentinelValue`, used as a "not given" marker in copyWith.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SentinelValue;
+impl SentinelValue {
+    pub const fn new(_id: i64) -> Self {
+        Self
     }
 }
 
@@ -117,10 +183,26 @@ pub struct RRect {
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
-    pub tl_radius: Radius,
-    pub tr_radius: Radius,
-    pub br_radius: Radius,
-    pub bl_radius: Radius,
+    tl: Radius,
+    tr: Radius,
+    br: Radius,
+    bl: Radius,
+}
+impl RRect {
+    // dart:ui's RRect stores `tlRadiusX`/`tlRadiusY` and exposes `tlRadius` as
+    // a getter, so these are methods.
+    pub const fn tl_radius(&self) -> Radius {
+        self.tl
+    }
+    pub const fn tr_radius(&self) -> Radius {
+        self.tr
+    }
+    pub const fn br_radius(&self) -> Radius {
+        self.br
+    }
+    pub const fn bl_radius(&self) -> Radius {
+        self.bl
+    }
 }
 impl RRect {
     #[allow(clippy::too_many_arguments)]
@@ -139,10 +221,10 @@ impl RRect {
             top,
             right,
             bottom,
-            tl_radius,
-            tr_radius,
-            br_radius,
-            bl_radius,
+            tl: tl_radius,
+            tr: tr_radius,
+            br: br_radius,
+            bl: bl_radius,
         }
     }
 }
@@ -179,10 +261,7 @@ mod tests {
 
     #[test]
     fn along_size_maps_the_corners_of_the_box() {
-        let box_ = Size {
-            width: 100.0,
-            height: 100.0,
-        };
+        let box_ = Size::new(100.0, 100.0);
         assert_eq!(Alignment::TOP_LEFT.along_size(box_), Offset::new(0.0, 0.0));
         assert_eq!(Alignment::CENTER.along_size(box_), Offset::new(50.0, 50.0));
         assert_eq!(
@@ -228,10 +307,7 @@ mod tests {
     #[test]
     fn inscribe_centres_a_smaller_box() {
         let outer = Rect::from_l_t_w_h(0.0, 0.0, 100.0, 100.0);
-        let inner = Size {
-            width: 20.0,
-            height: 20.0,
-        };
+        let inner = Size::new(20.0, 20.0);
         let centred = Alignment::CENTER.inscribe(inner, outer);
         assert_eq!((centred.left, centred.top), (40.0, 40.0));
         let corner = Alignment::TOP_LEFT.inscribe(inner, outer);

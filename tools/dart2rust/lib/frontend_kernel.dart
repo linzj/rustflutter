@@ -118,17 +118,28 @@ class KernelFrontend {
     return text.length > 90 ? '${text.substring(0, 90)}...' : text;
   }
 
+  /// A field read, or a getter call -- and the difference matters in Rust.
+  ///
+  /// Dart spells both `a.x`. Rust spells a field `a.x` and a getter `a.x()`,
+  /// and getting it wrong does not compile: `_x` on `AlignmentGeometry` is an
+  /// abstract getter, so it becomes a trait method, and reading it as a field
+  /// gives "attempted to take value of method `_x`".
+  ///
+  /// Kernel says which it is outright -- the target is a `Field` or a
+  /// `Procedure` -- so nothing has to be inferred.
   IrExpr _instanceGet(InstanceGet node) {
     final name = node.name.text;
-    _refusePrivate(name, node);
     final receiver = node.receiver;
-    return IrField(receiver is ThisExpression ? null : expression(receiver), name);
+    final target = receiver is ThisExpression ? null : expression(receiver);
+    if (node.interfaceTarget is Procedure) {
+      return IrCall(target, name, const []);
+    }
+    return IrField(target, name);
   }
 
   IrExpr _staticGet(StaticGet node) {
     final target = node.target;
     final owner = target.enclosingClass?.name;
-    _refusePrivate(target.name.text, node);
     if (owner == null) {
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
     }
@@ -151,7 +162,6 @@ class KernelFrontend {
     if (name == 'unary-' && args.isEmpty) {
       return IrUnary('-', expression(node.receiver));
     }
-    _refusePrivate(name, node);
     final receiver = node.receiver;
     return IrCall(
         receiver is ThisExpression ? null : expression(receiver), name, args);
@@ -170,7 +180,6 @@ class KernelFrontend {
   IrExpr _staticInvocation(StaticInvocation node) {
     final target = node.target;
     final owner = target.enclosingClass?.name;
-    _refusePrivate(target.name.text, node);
     if (owner == null) {
       throw Unsupported('top-level call `${target.name.text}`', _sample(node));
     }
@@ -284,11 +293,14 @@ class KernelFrontend {
     throw Unsupported('constant ${constant.runtimeType}', _sample(node));
   }
 
-  void _refusePrivate(String name, Node node) {
-    if (name.startsWith('_')) {
-      throw Unsupported('reference to private `$name`', _sample(node));
-    }
-  }
+  // There was a `_refusePrivate` here. It is gone, and its going is the point
+  // of this round: skipping private members is right when translating one file
+  // at a time -- nothing outside the library can name them -- and wrong for a
+  // whole program, because that is where the program keeps its implementation.
+  // Every StatefulWidget in Flutter does its work in a private State class, and
+  // so do most of the gallery's 689 classes. A compiler that skips them
+  // translates the surface and none of the substance, and reports a low refusal
+  // count for having looked at less.
 
   // -- Statements -------------------------------------------------------------
 
@@ -353,7 +365,10 @@ class KernelFrontend {
     final classes = <IrClass>[];
     final refused = <String>[];
     for (final cls in library.classes) {
-      if (cls.name.startsWith('_') || cls.isAnonymousMixin) continue;
+      // Anonymous mixin applications stay skipped: they are the CFE's own
+      // synthetic classes, not something upstream wrote. Private classes do
+      // not -- see the note where `_refusePrivate` used to be.
+      if (cls.isAnonymousMixin) continue;
       final (lowered, problems) = lowerClass(cls);
       classes.add(lowered);
       refused.addAll(problems.map((p) => '${cls.name}: $p'));
@@ -402,7 +417,6 @@ class KernelFrontend {
 
   void _lowerField(IrClass cls, Field field) {
     final name = field.name.text;
-    if (name.startsWith('_')) return;
     if (field.isStatic) {
       if (!field.isConst) {
         throw Unsupported('non-const static field', name);
@@ -419,7 +433,6 @@ class KernelFrontend {
 
   void _lowerConstructor(IrClass cls, Constructor node) {
     final name = node.name.text;
-    if (name.startsWith('_')) return;
     final params = <IrParam>[];
     for (final p in node.function.positionalParameters) {
       params.add(IrParam(p.cosmeticName ?? '_', _type(p.type)));
@@ -460,7 +473,6 @@ class KernelFrontend {
 
   void _lowerProcedure(IrClass cls, Procedure node) {
     final name = node.name.text;
-    if (name.startsWith('_')) return;
     if (node.isStatic && node.kind == ProcedureKind.Factory) {
       throw Unsupported('factory constructor', name);
     }
