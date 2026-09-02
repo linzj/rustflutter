@@ -39,7 +39,12 @@ Future<void> main(List<String> args) async {
     final matching = component.libraries
         .where((l) => l.importUri.toString().contains(wanted))
         .toList();
-    for (final lib in matching.take(60)) {
+    // 60 is a courtesy to a human reading the terminal. A tool asking for the
+    // list wants all of them -- `compiles.py` measured the first 60
+    // alphabetically and called it `package:flutter/`, which is animation and
+    // cupertino and not much else.
+    final shown = args.contains('--all') ? matching : matching.take(60);
+    for (final lib in shown) {
       stdout.writeln(
         '${lib.classes.length.toString().padLeft(4)}  '
         '${lib.importUri}',

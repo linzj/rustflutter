@@ -2088,25 +2088,65 @@ analyzer 侧 `s.$2` 一直没被认出来。我先后猜了三次(类型守卫�
 
 ---
 
-## 下一步:两件,一件是欠账
+## 第 37 轮:换一把尺子——不数"发出",数"编得过"
 
-### 1. Kernel 侧的常量实例(`agree.py` 现在红在这上面)
+这一轮没写翻译代码,写了一把尺子,量出来的东西改变了下一步该做什么。
 
-`agree.py` 是红的,理由具体:Kernel 不翻译 `Alignment::TOP_LEFT` 这类常量,
-也不翻译它的运算符,于是 testdata 里的手写测试编译不过。普查里这是排前十的
-一整族——`const instance missing dx / value / width / days …`,加上
-`const instance of CreationLocation with 0 unnamed constructors`(285)。
+### 为什么换
 
-CFE 把 `const Alignment(-1.0, -1.0)` 求值成一个 `ConstantExpression`,字段
-按**类里的声明顺序**摆着;要还原成 `Alignment::new(-1.0, -1.0)`,得把字段
-配回构造函数的形参。**"缺字段"这个拒绝理由本身说明现在的配法是按名字猜的**,
-先量:这些常量类里,有多少个的字段名和构造函数形参名对不上。
+普查数的是**发出的成员**。第 32 轮已经栽过一次:`xs.length` 发成
+`self.xs.length()`,对着一个裸的 `List` 类型,`Vec` 上根本没有那个方法
+——**"发出了",一行也编不过**,而它被当成翻译好的算了好几个月。
 
-### 2. `try/finally`(73 处)
+新尺子 `bin/compiles.py`:把上游的库整个翻出来,**每个单独用 rustc 编一遍**,
+不带任何桩、不带任何别的东西。绝大多数编不过,而**那正是测量**:
+它们够而不着的东西,就是"最小 `dart:core` / `dart:ui`"的购物清单。
 
-和 `Result` 是分开的问题。Rust 的答案是 `Drop` 守卫,而 `Drop` 里不能用 `?`
-——所以 finally 体里但凡有一次会失败的调用,这条路就走不通。**先量 73 个
-finally 体里有多少含会失败的调用**,再决定是做守卫还是整片拒绝。
+### 数
+
+**525 个库,115 个(22%)不带任何桩直接编得过。**
+
+比我预期的高得多。而**编不过的 410 个缺的是什么**,比这个数更有用:
+
+| 缺的 | 有多少个库要它 | 是什么 |
+|---|---|---|
+| `Offset` / `Color` / `Size` / `Rect` | 112 / 105 / 84 / 62 | `dart:ui` 几何 |
+| `Object` | 105 | `dart:core` |
+| **`BuildContext` / `Widget` / `BoxConstraints` / `RenderBox`** | **91 / 71 / 60 / 43** | **别的 flutter 库** |
+| `TextDirection` / `Axis` / `Clip` | 65 / 22 / 25 | `dart:ui` 枚举 |
+| `Set` / `Future` / `Duration` / `dynamic` | 52 / 32 / 31 / 27 | `dart:core` |
+| `T` | 42 | **泛型** |
+
+### 这改了下一步
+
+**最大的一块不是 `dart:core`,是跨库引用。** 这个编译器**一次只发一个库,
+不发一条 `use`**——所以 `BuildContext`、`Widget`、`RenderBox`、`BoxConstraints`
+这些"别的 flutter 库里的类"全都够不着,而它们本身很多是翻得出来的。
+
+把 525 个库当作**一个 crate 的 525 个模块**发出来、模块之间发 `use`,
+是下一件该做的事,而且现在它是**量出来的**,不是猜的。
+
+顺带修了这把尺子自己的一个偏差:`--list` 有 60 条的显示上限,
+第一次测量量的其实是**按字母序的前 60 个库**(animation 和 cupertino),
+还照着 `package:flutter/` 报了数。加了 `--all`。
+**又一次:一把新尺子的第一个读数,先查它量的是不是它说的那个东西。**
+
+---
+
+## 下一步:一个 crate,525 个模块
+
+第 37 轮量出来的:编不过的 410 个库里,缺得最多的是**别的 flutter 库里的类**
+——`BuildContext` 91、`Widget` 71、`BoxConstraints` 60、`RenderBox` 43。
+这个编译器一次只发一个库,不发一条 `use`。
+
+要做的:
+1. 把一个 package 整个发出来,每个库一个 `mod`,库之间发 `use`。
+2. 名字冲突要有说法(两个库都有 `_Painter`)。
+3. 然后**重新量一次 `compiles.py`**——那个数才是"翻译到底成了多少"的第一个
+   可信读数。
+
+在那之后剩下的才是真正的 `dart:core` / `dart:ui` 工作:
+`Offset`、`Color`、`Size`、`Rect`、`Object`、`Duration`、`Set`、泛型。
 
 ## 当前队头
 
