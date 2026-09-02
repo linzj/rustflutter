@@ -230,6 +230,22 @@ class IrAssign extends IrStmt {
   final IrExpr value;
 }
 
+/// `this.x = value` -- a write to one of this object's own fields.
+///
+/// Only `this`, and only a real field. Writing another object's field needs a
+/// mutable *receiver*, which is a harder question than a mutable `self`, and
+/// writing through a **setter** is not a write at all -- it is a call, and
+/// which of the two it is cannot be seen from the assignment.
+///
+/// The split is measured, not guessed: across `package:flutter` 6220 field
+/// writes go through `this` and 3869 through another object.
+class IrAssignField extends IrStmt {
+  const IrAssignField(this.name, this.value);
+
+  final String name;
+  final IrExpr value;
+}
+
 /// `assert(condition, message)`.
 ///
 /// Dart's `assert` and Rust's `debug_assert!` are the same thing: a check that

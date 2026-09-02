@@ -330,6 +330,7 @@ class RustBackend {
         case IrLocalDecl():
         case IrExprStmt():
         case IrAssert():
+        case IrAssignField():
       }
     }
 
@@ -360,6 +361,8 @@ class RustBackend {
             '${init == null ? "Default::default()" : expr(init)};');
       case IrAssign(:final name, :final value):
         _line('${snake(name)} = ${expr(value)};');
+      case IrAssignField(:final name, :final value):
+        _line('$_selfName.${snake(name)} = ${expr(value)};');
       case IrIf(:final condition, :final then, :final otherwise):
         _line('if ${expr(condition)} {');
         _indent++;
@@ -559,6 +562,76 @@ class RustBackend {
   /// `mut x: f32` is where that is said. Without it,
   /// `shadow(start) { start = start + 1; }` emitted an assignment to something
   /// that cannot be assigned.
+
+  // -- Mutability -------------------------------------------------------------
+
+  /// Methods of this class that need `&mut self`.
+  ///
+  /// Seeded with the ones that write a field of `this`, then closed over calls:
+  /// a method that calls a mutating method **on itself** is mutating too. That
+  /// closure is the answer to "who decides how far `&mut` spreads" -- nobody
+  /// decides, it is computed, and it stops at the class boundary because a call
+  /// on another object is refused for other reasons already.
+  ///
+  /// A fixpoint rather than one pass: `a` may call `b` which calls `c`, and only
+  /// `c` writes. One pass would find `b` and miss `a`.
+  late final Set<String> _mutating = _computeMutating();
+
+  Set<String> _computeMutating() {
+    final writes = <String>{};
+    final calls = <String, Set<String>>{};
+    for (final method in cls.methods) {
+      if (method.isStatic) continue;
+      final found = _WalkSelf();
+      found.statement(method.body);
+      if (found.writesFields) writes.add(method.name);
+      calls[method.name] = found.selfCalls;
+    }
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final entry in calls.entries) {
+        if (writes.contains(entry.key)) continue;
+        if (entry.value.any(writes.contains)) {
+          writes.add(entry.key);
+          changed = true;
+        }
+      }
+    }
+    return writes;
+  }
+
+  /// `&self` or `&mut self`, and a refusal where the signature is not ours.
+  ///
+  /// Two shapes have a fixed receiver and cannot become `&mut self`:
+  ///
+  /// * an operator that became an `impl std::ops::*`, whose method takes `self`
+  ///   by value because the trait says so;
+  /// * a method an abstract base declares, whose receiver is the trait's, not
+  ///   this class's -- changing it would have to change the trait and every
+  ///   other implementor.
+  ///
+  /// Both are refused rather than emitted with the wrong receiver. Upstream's
+  /// operators do not assign, so the first is a guard rather than a loss.
+  String _receiverOf(IrMethod method) {
+    if (!_mutating.contains(method.name)) return '&self';
+    if (method.operator != null && _operatorTraits.containsKey(method.operator)) {
+      throw Unsupported(
+          'a field write inside `operator ${method.operator}`',
+          'std::ops takes `self`, so the receiver is not this class\'s to change');
+    }
+    final base = library[cls.superclass];
+    if (base != null &&
+        base.isAbstract &&
+        (base.abstractMethods.any((m) => m.name == method.name) ||
+            base.methods.any((m) => m.name == method.name))) {
+      throw Unsupported(
+          'a field write inside `${method.name}`, which `${base.name}` declares',
+          'the receiver belongs to the trait, not to this class');
+    }
+    return '&mut self';
+  }
+
   String _param(IrParam p, {bool owned = true}) =>
       '${_reassigned.contains(p.name) ? "mut " : ""}'
       '${snake(p.name)}: ${type(p.type, owned: owned)}';
@@ -763,7 +836,7 @@ class RustBackend {
       _reassigned = _assignedIn(method.body);
       _doc(method.doc);
       final params = [
-        if (!method.isStatic) '&self',
+        if (!method.isStatic) _receiverOf(method),
         ...method.params.map(_param),
       ].join(', ');
       _line('${_vis(method.name)}fn ${snake(method.name)}($params) -> ${type(method.returnType)} {');
@@ -878,4 +951,74 @@ class RustBackend {
       RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(name)
           ? snake(name)
           : _operatorName(name);
+}
+
+
+/// Finds, in one method body, whether it writes a field of `this` and which of
+/// its own methods it calls.
+///
+/// Both answers are needed together and both need the *whole* body, statements
+/// and expressions alike -- a mutating call can be buried in the middle of an
+/// expression, and missing one would emit `&self` for a method that assigns.
+class _WalkSelf {
+  bool writesFields = false;
+  final selfCalls = <String>{};
+
+  void statement(IrStmt s) {
+    switch (s) {
+      case IrAssignField():
+        writesFields = true;
+        expression(s.value);
+      case IrAssign():
+        expression(s.value);
+      case IrBlock(:final statements):
+        statements.forEach(statement);
+      case IrIf(:final condition, :final then, :final otherwise):
+        expression(condition);
+        statement(then);
+        if (otherwise != null) statement(otherwise);
+      case IrReturn(:final value):
+        if (value != null) expression(value);
+      case IrLocalDecl(:final init):
+        if (init != null) expression(init);
+      case IrExprStmt(:final expr):
+        expression(expr);
+      case IrAssert(:final condition):
+        expression(condition);
+    }
+  }
+
+  void expression(IrExpr e) {
+    switch (e) {
+      case IrCall(:final target, :final name, :final args):
+        if (target == null || target is IrThis) selfCalls.add(name);
+        if (target != null) expression(target);
+        args.forEach(expression);
+      case IrField(:final target):
+        if (target != null) expression(target);
+      case IrBinary(:final left, :final right):
+        expression(left);
+        expression(right);
+      case IrUnary(:final operand):
+        expression(operand);
+      case IrNullCheck(:final operand):
+        expression(operand);
+      case IrConditional(:final condition, :final then, :final otherwise):
+        expression(condition);
+        expression(then);
+        expression(otherwise);
+      case IrStaticCall(:final args):
+        args.forEach(expression);
+      case IrNew(:final args):
+        args.forEach(expression);
+      case IrSuperCall(:final args):
+        args.forEach(expression);
+      case IrIs(:final expr):
+        expression(expr);
+      case IrLiteral():
+      case IrLocal():
+      case IrStatic():
+      case IrThis():
+    }
+  }
 }

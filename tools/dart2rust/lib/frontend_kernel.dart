@@ -342,6 +342,18 @@ class KernelFrontend {
       // value cannot be translated this way -- and is refused below rather
       // than silently losing the value.
       final value = node.expression;
+      if (value is InstanceSet) {
+        // A field on `this`, and a field rather than a setter. Kernel names the
+        // target outright, so neither has to be inferred.
+        if (value.receiver is! ThisExpression) {
+          throw Unsupported(
+              'assignment to a field of another object', _sample(value));
+        }
+        if (value.interfaceTarget is! Field) {
+          throw Unsupported('assignment through a setter', _sample(value));
+        }
+        return IrAssignField(value.name.text, expression(value.value));
+      }
       if (value is VariableSet) {
         final name = value.variable.cosmeticName;
         if (name == null || name.startsWith('#')) {

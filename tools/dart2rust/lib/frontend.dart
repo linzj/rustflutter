@@ -406,23 +406,51 @@ class Frontend {
   /// it as one node while Kernel has already rewritten it -- the two front ends
   /// have to arrive at the same IR.
   IrStmt _assignment(AssignmentExpression node) {
-    final target = node.leftHandSide;
-    if (target is! SimpleIdentifier) {
-      throw Unsupported('assignment to ${target.runtimeType}', node.toSource());
-    }
-    final element = target.element;
-    if (element is! LocalVariableElement && element is! FormalParameterElement) {
-      throw Unsupported('assignment to a field', node.toSource());
-    }
+    final (name, onThis) = _assignTarget(node);
     final operator = node.operator.lexeme;
     final value = expression(node.rightHandSide);
-    if (operator == '=') return IrAssign(target.name, value);
-    if (operator.endsWith('=') && operator.length > 1) {
-      return IrAssign(target.name,
-          IrBinary(operator.substring(0, operator.length - 1),
-              IrLocal(target.name), value));
+
+    IrExpr combined(IrExpr current) {
+      if (operator == '=') return value;
+      if (operator.endsWith('=') && operator.length > 1) {
+        return IrBinary(
+            operator.substring(0, operator.length - 1), current, value);
+      }
+      throw Unsupported('assignment operator `$operator`', node.toSource());
     }
-    throw Unsupported('assignment operator `$operator`', node.toSource());
+
+    return onThis
+        ? IrAssignField(name, combined(IrField(null, name)))
+        : IrAssign(name, combined(IrLocal(name)));
+  }
+
+  /// The name being assigned, and whether it is a field of `this`.
+  ///
+  /// The element is taken from `writeElement` on the assignment, not from the
+  /// identifier: analyzer leaves the identifier's own element **null** on the
+  /// left of an assignment, and reading it there gave "assignment to `Null`"
+  /// for every field write in the corpus.
+  ///
+  /// In valid code `writeElement` is a local, a parameter, or a setter. The
+  /// setter is the field's implicit one when it is really a field, and a real
+  /// `set x(v)` otherwise -- `isSynthetic` again, as on the getter side.
+  (String, bool) _assignTarget(AssignmentExpression node) {
+    final target = node.leftHandSide;
+    final written = node.writeElement;
+    final name = switch (target) {
+      SimpleIdentifier() => target.name,
+      PropertyAccess() when target.target is ThisExpression =>
+        target.propertyName.name,
+      _ => throw Unsupported(
+          'assignment to ${target.runtimeType}', node.toSource()),
+    };
+    if (written is LocalVariableElement || written is FormalParameterElement) {
+      return (name, false);
+    }
+    if (written != null && written.isSynthetic) return (name, true);
+    throw Unsupported(
+        'assignment through a setter (`${written.runtimeType}`)',
+        node.toSource());
   }
 
   IrStmt body(FunctionBody node) {

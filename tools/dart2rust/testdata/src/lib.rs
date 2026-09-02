@@ -255,6 +255,9 @@ pub use assignment::Assignment;
 mod nullcheck;
 pub use nullcheck::NullCheck;
 
+mod mutation;
+pub use mutation::Counter;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,5 +602,47 @@ mod tests {
         assert_eq!(n.with_fallback(10.0), 15.0);
         let m = NullCheck::new(Some(5.0), Some(1.0));
         assert_eq!(m.with_fallback(10.0), 6.0);
+    }
+
+    // -- &mut self ------------------------------------------------------------
+    //
+    // The non-mutating cases are checked on an immutable binding on purpose: if
+    // the compiler made every method `&mut self`, those lines would not build.
+    // Without them, "only the mutating methods take &mut self" is invisible --
+    // marking everything mut compiles and passes.
+
+    #[test]
+    fn a_method_that_writes_a_field_takes_mut_self() {
+        let mut c = Counter::new(10.0, 5.0);
+        c.bump();
+        assert_eq!(c.value, 15.0);
+        c.scale(2.0);
+        assert_eq!(c.value, 30.0);
+    }
+
+    #[test]
+    fn mut_spreads_one_hop() {
+        let mut c = Counter::new(10.0, 5.0);
+        c.middle();
+        assert_eq!(c.value, 15.0);
+    }
+
+    #[test]
+    fn mut_spreads_two_hops() {
+        // `outer` calls `middle` calls `bump`. One pass over the call graph
+        // would have found `middle` and left `outer` as `&self`, which would
+        // not compile -- so this is really checked by the build as well.
+        let mut c = Counter::new(10.0, 5.0);
+        c.outer();
+        assert_eq!(c.value, 15.0);
+    }
+
+    #[test]
+    fn a_reading_method_stays_immutable() {
+        // Not `let mut`. If `doubled` or `quiet` took `&mut self` this would
+        // fail to compile, which is how their receiver is checked at all.
+        let c = Counter::new(10.0, 5.0);
+        assert_eq!(c.doubled(), 20.0);
+        assert_eq!(c.quiet(), 21.0);
     }
 }
