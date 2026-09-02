@@ -1051,7 +1051,20 @@ class IrLibrary {
     this.functions = const [],
     this.abstractElsewhere = const {},
     this.elsewhere = const {},
+    this.functionsElsewhere = const {},
   });
+
+  /// Top-level functions in the *other* modules of the same crate, by name.
+  ///
+  /// `isDisplayDesktop(context)`, `mergeSort(list)`, `sqrt(3)` -- a top-level
+  /// function is reachable wherever it lives, and `use crate::<module>::*`
+  /// already brings it in. Only the check was still asking whether the callee
+  /// was in *this* library, which it stopped needing to be once the whole
+  /// package became one crate.
+  ///
+  /// Holds only what was lowered. `dart:ffi`'s `_fromAddress` is not in the
+  /// crate at all, so a call to it stays refused, which is right.
+  final Set<String> functionsElsewhere;
 
   /// Classes in the *other* modules of the same crate, by name.
   ///

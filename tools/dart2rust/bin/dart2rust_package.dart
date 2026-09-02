@@ -146,6 +146,7 @@ Future<void> main(List<String> args) async {
   // not in this file". In one crate it is.
   final lowered = <Library, (IrLibrary, List<String>)>{};
   final everyClass = <String, IrClass>{};
+  final everyFunction = <String>{};
   for (final library in inPackage) {
     final result = KernelFrontend(
       library,
@@ -156,6 +157,7 @@ Future<void> main(List<String> args) async {
     for (final cls in result.$1.classes) {
       everyClass.putIfAbsent(cls.name, () => cls);
     }
+    everyFunction.addAll(result.$1.functions.map((f) => f.name));
   }
 
   for (final library in inPackage) {
@@ -194,6 +196,7 @@ Future<void> main(List<String> args) async {
       functions: own.functions,
       abstractElsewhere: abstractNames,
       elsewhere: everyClass,
+      functionsElsewhere: everyFunction,
     );
     final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);
     refusals += refused.length + more.length;

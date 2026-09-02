@@ -554,7 +554,8 @@ class RustBackend {
       // A top-level function: no owner in either language. Checked against
       // what this file emits, for the same reason a static call is -- a call
       // to something refused would name a function nobody wrote.
-      if (!library.functions.any((f) => f.name == name)) {
+      if (!library.functions.any((f) => f.name == name) &&
+          !library.functionsElsewhere.contains(name)) {
         throw Unsupported(
           'call to top-level `$name`, which was not translated',
           '$name(...)',

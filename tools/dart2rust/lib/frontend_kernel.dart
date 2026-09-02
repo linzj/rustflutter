@@ -833,15 +833,12 @@ class KernelFrontend {
       return IrIdentical(expression(positional[0]), expression(positional[1]));
     }
     if (owner == null) {
-      // A top-level function of *this* library. One from elsewhere is still
-      // refused: the backend checks the name against what this file emits, and
-      // a call to something outside it would name a function nobody wrote.
-      if (target.enclosingLibrary != library) {
-        throw Unsupported(
-          'top-level call `${target.name.text}`',
-          _sample(node),
-        );
-      }
+      // A top-level function, this library's or another's. Which of those it
+      // is no longer decides anything here: whether the callee exists in the
+      // output is a whole-crate question, and the crate is not known until
+      // every library has been lowered, so the backend asks it instead. The
+      // analyzer front end never made the distinction, so this is also one
+      // fewer place the two of them could differ.
       return IrStaticCall(
         null,
         target.name.text,
