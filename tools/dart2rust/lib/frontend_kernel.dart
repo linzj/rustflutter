@@ -468,6 +468,25 @@ class KernelFrontend {
   /// A `for`'s variables are `VariableDeclaration`s and not `Statement`s in
   /// this Kernel, so they cannot go through `statement` -- and the rule about
   /// what a declaration becomes should be in one place regardless.
+  /// Whether a member or parameter is the widget inspector's, not upstream's.
+  ///
+  /// A debug build runs the widget-creation-tracking transform, which gives
+  /// `Widget` a `_location` field of type `CreationLocation` and its
+  /// constructor a `$creationLocationd_<hash>` parameter. `Widget` is the base
+  /// of nearly everything, so flattening copies that field into every widget
+  /// and every widget constructor passes the argument -- 627 refusals for a
+  /// const instance of a class that is not in the program at all.
+  ///
+  /// Dropped rather than translated, and said here rather than silently:
+  /// this is the compiler's own instrumentation, not something anybody wrote.
+  static bool _inspectorOnly(String name, [DartType? type]) {
+    if (name.startsWith(r'$creationLocation')) return true;
+    if (name != '_location') return false;
+    return type is InterfaceType &&
+        (type.classNode.name == 'CreationLocation' ||
+            type.classNode.name == '_Location');
+  }
+
   IrStmt _declare(Variable variable, Node at) {
     final init = variable.initializer;
     if (init is InstanceGet && init.name.text == 'iterator') {
@@ -854,6 +873,12 @@ class KernelFrontend {
     // Kernel names a named parameter through `parameterName`.
     final out = <IrExpr>[...positional];
     for (final param in callee.namedParameters) {
+      // The inspector's own argument, dropped along with the parameter it
+      // fills. See `_inspectorOnly`.
+      if (_inspectorOnly(param.parameterName)) {
+        supplied.remove(param.parameterName);
+        continue;
+      }
       final value = supplied.remove(param.parameterName);
       if (value != null) {
         out.add(expression(value));
@@ -1442,7 +1467,8 @@ class KernelFrontend {
         for (final p in node.function.positionalParameters)
           IrParam(p.cosmeticName ?? '_', _type(p.type)),
         for (final p in node.function.namedParameters)
-          IrParam(p.parameterName, _type(p.type), named: true),
+          if (!_inspectorOnly(p.parameterName))
+            IrParam(p.parameterName, _type(p.type), named: true),
       ],
       _type(node.function.returnType),
       _body(node.function),
@@ -1576,6 +1602,7 @@ class KernelFrontend {
         ),
       );
     } else {
+      if (_inspectorOnly(name, field.type)) return;
       final initial = field.initializer;
       cls.fields.add(
         IrFieldDecl(
@@ -1596,6 +1623,9 @@ class KernelFrontend {
       params.add(IrParam(p.cosmeticName ?? '_', _type(p.type)));
     }
     for (final p in node.function.namedParameters) {
+      // The inspector's parameter is dropped with its field. See
+      // `_inspectorOnly`.
+      if (_inspectorOnly(p.parameterName)) continue;
       params.add(IrParam(p.parameterName, _type(p.type), named: true));
     }
 
@@ -1692,7 +1722,8 @@ class KernelFrontend {
       for (final p in node.function.positionalParameters)
         IrParam(p.cosmeticName ?? '_', _type(p.type)),
       for (final p in node.function.namedParameters)
-        IrParam(p.parameterName, _type(p.type), named: true),
+        if (!_inspectorOnly(p.parameterName))
+          IrParam(p.parameterName, _type(p.type), named: true),
     ];
     final isOperator = node.kind == ProcedureKind.Operator;
     final thrown = <String>{};
