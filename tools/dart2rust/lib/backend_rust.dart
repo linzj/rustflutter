@@ -1331,7 +1331,15 @@ class RustBackend {
         out.write(RustBackend(cls, library: library).emit());
         out.writeln();
       } on Unsupported catch (error) {
+        // Written into the file, not only counted. A class the backend
+        // refused used to vanish from the output with nothing said -- the
+        // count went up in a summary nobody reads next to the code, and
+        // `CupertinoTheme` was simply absent, which is the one thing this
+        // compiler is not allowed to do.
         refused.add('${cls.name}: $error');
+        out.writeln('// NOT TRANSLATED: ${cls.name}');
+        out.writeln('//   $error');
+        out.writeln();
       }
     }
     return (out.toString(), refused);
@@ -1500,6 +1508,18 @@ class RustBackend {
       for (final p in of.typeParameters)
         if (!used.contains(p)) p,
     ];
+  }
+
+  /// Whether an expression reads `this`.
+  ///
+  /// Used where `this` does not exist yet -- inside the struct literal a
+  /// constructor builds.
+  static bool _mentionsThis(IrExpr e) {
+    var found = false;
+    final walk = _WalkSelf();
+    walk.expression(e);
+    found = walk.readsThis;
+    return found;
   }
 
   /// Whether a Rust type is `Copy`.
@@ -2305,6 +2325,17 @@ class RustBackend {
       if (init == null) {
         throw Unsupported('field never initialised', field.name);
       }
+      // A field whose declaration initialiser mentions `this`:
+      // `late final nativeFilter = _ImageFilter.matrix(this)`. In Dart the
+      // object already exists when that runs; in Rust the struct literal is
+      // still being built and there is no `self` at all. 152 of these came
+      // out as `*self` inside `Self { .. }`, which is not a thing.
+      if (_mentionsThis(init)) {
+        throw Unsupported(
+          'a field initialised from `this`',
+          '${cls.name}.${field.name}',
+        );
+      }
       _line('${snake(field.name)}: ${expr(init)},');
     }
     // The phantom fields the struct declaration added. They hold nothing, and
@@ -2548,6 +2579,9 @@ class _WalkSelf {
   /// Locals written by an assignment used for its value.
   final assignedLocals = <String>{};
 
+  /// Whether `this` is read anywhere in what was walked.
+  bool readsThis = false;
+
   void statement(IrStmt s) {
     switch (s) {
       case IrAssignField(:final target):
@@ -2721,12 +2755,13 @@ class _WalkSelf {
         if (target == null || target is IrThis) writesFields = true;
         if (target != null) expression(target);
         expression(value);
+      case IrThis():
+        readsThis = true;
       case IrLiteral():
       case IrLocal():
       case IrStatic():
       case IrTopLevel():
       case IrBound():
-      case IrThis():
     }
   }
 }
