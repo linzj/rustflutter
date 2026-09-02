@@ -12,7 +12,7 @@
 //! counterpart here (the focus tour is a framework tier the gallery does not
 //! drive), documented rather than stubbed.
 
-use rustflutter::framework::{many, AnyWidget};
+use rustflutter::framework::{AnyWidget, many};
 use rustflutter::prelude::*;
 use rustflutter::widgets::IndexedStack;
 

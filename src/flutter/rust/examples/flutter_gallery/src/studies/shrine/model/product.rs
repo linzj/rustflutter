@@ -25,7 +25,7 @@
 
 use crate::l10n::gallery_localizations::GalleryLocalizations;
 
-pub use super::products_repository::{Category, Product, PRODUCTS};
+pub use super::products_repository::{Category, PRODUCTS, Product};
 
 /// Upstream's `categories`: `[categoryAll, categoryAccessories,
 /// categoryClothing, categoryHome]`.

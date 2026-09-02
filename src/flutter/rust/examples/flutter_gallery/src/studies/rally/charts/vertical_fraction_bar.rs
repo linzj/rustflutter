@@ -10,7 +10,7 @@
 //! thing either version computes.
 
 use rustflutter::engine::{Color, Paint, Rect};
-use rustflutter::framework::{leaf, AnyWidget};
+use rustflutter::framework::{AnyWidget, leaf};
 use rustflutter::render::{BoxConstraints, Offset, PaintContext, RenderBox, Size};
 
 /// Upstream's bar width: `SizedBox(width: 4)`.

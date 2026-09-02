@@ -28,7 +28,7 @@
 //!   study screen it lays its children out in full rather than on demand.
 
 use rustflutter::framework::{
-    component, keyed_many, leaf, many, single, AnyWidget, BuildContext, Component, StateHandle,
+    AnyWidget, BuildContext, Component, StateHandle, component, keyed_many, leaf, many, single,
 };
 use rustflutter::gestures::PointerHandlers;
 use rustflutter::painting::Image;
@@ -38,10 +38,10 @@ use rustflutter::render::{
     MainAxisSize, Offset, PaintContext, RenderBox, RenderFlex, RenderRef, Size,
 };
 use rustflutter::widgets::{
-    boxed, BoxedWidget, ClipRRect, Container, Empty, ImageView, ListView, Pointer,
+    BoxedWidget, ClipRRect, Container, Empty, ImageView, ListView, Pointer, boxed,
 };
 
-use crate::app::{self, ids, GalleryState};
+use crate::app::{self, GalleryState, ids};
 use crate::l10n::gallery_localizations::GalleryLocalizations;
 use crate::pages::adaptive_layout;
 

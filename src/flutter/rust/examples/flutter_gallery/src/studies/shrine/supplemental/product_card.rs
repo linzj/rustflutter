@@ -18,7 +18,7 @@
 //! image back a frame after it was asked for, which is the same trade
 //! without the fade, and the placeholder is the same grey.
 
-use rustflutter::framework::{leaf, single, AnyWidget, StateHandle};
+use rustflutter::framework::{AnyWidget, StateHandle, leaf, single};
 use rustflutter::gestures::PointerHandlers;
 use rustflutter::painting::Image;
 use rustflutter::prelude::*;

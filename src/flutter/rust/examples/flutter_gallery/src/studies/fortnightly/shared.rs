@@ -36,7 +36,7 @@ use std::cell::RefCell;
 
 use rustflutter::engine::TextStyle;
 use rustflutter::framework::{
-    leaf, many, stateful, AnyWidget, BuildContext, Component, StateHandle, StatefulComponent,
+    AnyWidget, BuildContext, Component, StateHandle, StatefulComponent, leaf, many, stateful,
 };
 use rustflutter::painting::Image;
 use rustflutter::prelude::*;

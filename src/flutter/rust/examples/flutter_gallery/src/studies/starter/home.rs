@@ -41,7 +41,7 @@
 //!   the body's `MediaQuery`.
 
 use rustflutter::framework::{
-    component, leaf, many, stateful, AnyWidget, BuildContext, StateHandle, StatefulComponent,
+    AnyWidget, BuildContext, StateHandle, StatefulComponent, component, leaf, many, stateful,
 };
 use rustflutter::gestures::PointerHandlers;
 use rustflutter::prelude::*;

@@ -14,13 +14,13 @@
 //! `backdrop.rs` is built under it. `ApplyTextOptions` is the gallery's own
 //! MediaQuery override, applied at the gallery root, not here.
 
-use rustflutter::framework::{provide, AnyWidget};
+use rustflutter::framework::{AnyWidget, provide};
 
 use super::theme;
 
 /// Upstream's `title: 'Crane'`.
 #[allow(dead_code)] // The gallery's route table names the study; the title is
-                    // what upstream's MaterialApp carried.
+// what upstream's MaterialApp carried.
 pub const TITLE: &str = "Crane";
 
 /// Builds `body` under the Crane theme -- upstream's

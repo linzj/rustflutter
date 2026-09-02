@@ -11,7 +11,7 @@
 use rustflutter::framework::AnyWidget;
 
 use super::backlayer::BackLayerItem;
-use super::header_form::{field_icons, header_form, HeaderFormField};
+use super::header_form::{HeaderFormField, field_icons, header_form};
 
 /// Upstream's `SleepForm`.
 pub struct SleepForm;

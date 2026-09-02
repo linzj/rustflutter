@@ -18,7 +18,7 @@
 //! expanded cells -- `GridView.count`'s arithmetic with the column count
 //! upstream computes.
 
-use rustflutter::framework::{many, stateful, AnyWidget};
+use rustflutter::framework::{AnyWidget, many, stateful};
 use rustflutter::prelude::*;
 use rustflutter::render::{CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex};
 use rustflutter::widgets::Container;

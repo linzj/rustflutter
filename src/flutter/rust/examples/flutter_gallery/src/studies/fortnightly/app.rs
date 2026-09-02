@@ -33,8 +33,8 @@
 //! This is the module `studies::page` routes the `fortnightly` slug to.
 
 use rustflutter::framework::{
-    component, leaf, many, provide, single, stateful, AnyWidget, BuildContext, Component,
-    StateHandle, StatefulComponent,
+    AnyWidget, BuildContext, Component, StateHandle, StatefulComponent, component, leaf, many,
+    provide, single, stateful,
 };
 use rustflutter::prelude::*;
 use rustflutter::render::{

@@ -29,7 +29,7 @@
 
 use rustflutter::components::Theme;
 use rustflutter::engine::Color;
-use rustflutter::framework::{provide, AnyWidget};
+use rustflutter::framework::{AnyWidget, provide};
 
 /// Upstream's `_primaryColor`.
 pub(crate) const PRIMARY: Color = Color(0xFF6200EE);

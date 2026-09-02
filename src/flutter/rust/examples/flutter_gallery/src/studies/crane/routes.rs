@@ -12,7 +12,7 @@
 
 /// Upstream's `defaultRoute`.
 #[allow(dead_code)] // Documentation of the upstream route table; the gallery's
-                    // router, not this string, decides where Crane lives.
+// router, not this string, decides where Crane lives.
 pub const DEFAULT_ROUTE: &str = "/crane";
 
 #[cfg(test)]

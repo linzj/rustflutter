@@ -350,9 +350,11 @@ mod tests {
         assert_eq!(first.sender, "Google Express");
         assert_eq!(first.time, "15 minutes ago");
         assert_eq!(first.subject, "Package shipped!");
-        assert!(first
-            .message
-            .starts_with("Cucumber Mask Facial has shipped."));
+        assert!(
+            first
+                .message
+                .starts_with("Cucumber Mask Facial has shipped.")
+        );
         assert!(first.message.ends_with("Cucumber Mask!"));
         assert_eq!(first.recipients, "Jeff");
         assert_eq!(first.avatar.key, "reply/avatars/avatar_express.png");

@@ -20,7 +20,7 @@
 //! labels are carried on the data (`Destination::asset_semantic_label`,
 //! `Destination::subtitle_semantics`) with no semantics tree to read them.
 
-use rustflutter::framework::{leaf, AnyWidget, BuildContext, Component};
+use rustflutter::framework::{AnyWidget, BuildContext, Component, leaf};
 use rustflutter::painting::Image;
 use rustflutter::prelude::*;
 use rustflutter::render::{
@@ -146,7 +146,7 @@ impl Component for DestinationCard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustflutter::framework::{component, provide, ElementTree};
+    use rustflutter::framework::{ElementTree, component, provide};
     use rustflutter::render::{BoxConstraints, RenderBox, Size};
 
     use crate::studies::crane::model::data;

@@ -12,7 +12,7 @@
 //! The donut chart is drawn as bars (PORTING.md: "rally donut → bars").
 
 use rustflutter::components::theme_of;
-use rustflutter::framework::{component, leaf, many, AnyWidget, BuildContext, StateHandle};
+use rustflutter::framework::{AnyWidget, BuildContext, StateHandle, component, leaf, many};
 use rustflutter::prelude::*;
 use rustflutter::render::{CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex};
 use rustflutter::widgets::{Container, Empty};

@@ -13,13 +13,13 @@
 //! (PORTING.md: "shrine uniform grid").
 
 use rustflutter::components::theme_of;
-use rustflutter::framework::{component, leaf, many, AnyWidget, BuildContext, StateHandle};
+use rustflutter::framework::{AnyWidget, BuildContext, StateHandle, component, leaf, many};
 use rustflutter::painting::Image;
 use rustflutter::prelude::*;
 use rustflutter::render::{BoxFit, CrossAxisAlignment, FlexChild, MainAxisSize, RenderFlex};
 use rustflutter::widgets::{BoxedWidget, ClipRRect, Container, ImageView};
 
-use crate::app::{self, ids, GalleryState};
+use crate::app::{self, GalleryState, ids};
 use crate::studies::shrine::model::products_repository as shrine_data;
 
 /// The body `studies::page` wraps in the study scaffold.

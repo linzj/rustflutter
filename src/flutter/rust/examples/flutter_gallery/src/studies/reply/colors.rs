@@ -13,7 +13,7 @@
 /// Upstream's `ReplyColors`. Associated constants rather than a class, which
 /// is all the Dart class was.
 #[allow(dead_code)] // The whole palette, like upstream's; not every constant
-                    // has a reader yet (black800, the alpha variants).
+// has a reader yet (black800, the alpha variants).
 pub mod reply_colors {
     use rustflutter::engine::Color;
 
