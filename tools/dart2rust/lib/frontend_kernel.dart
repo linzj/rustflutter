@@ -165,7 +165,12 @@ class KernelFrontend {
   /// two front ends produce the same IR.
   IrExpr _instanceInvocation(InstanceInvocation node) {
     final name = node.name.text;
-    final args = _arguments(node.arguments);
+    // The callee is passed so omitted optional arguments get their defaults.
+    // Without it `weigh()` came out as a no-argument call against a
+    // three-parameter function -- the same bug the analyzer front end had in
+    // round two, living on here because nothing compared the two front ends on
+    // a fixture that used defaults.
+    final args = _arguments(node.arguments, node.interfaceTarget.function);
     if (_binaryOperators.contains(name) && args.length == 1) {
       return IrBinary(name, expression(node.receiver), args.single);
     }
@@ -458,7 +463,22 @@ class KernelFrontend {
     }
     // An enum's values are its static const fields, in declaration order,
     // minus the synthetic `values` list the CFE adds.
-    final values = node.isEnum
+    //
+    // An **enhanced** enum carries none, on purpose. It is a Rust enum plus an
+    // impl, and emitting it as a plain one drops its methods -- which is what
+    // the analyzer front end refuses and what this one was quietly doing, since
+    // round fourteen's test only ever read the analyzer's output. The fixture
+    // comparison is what found it.
+    const implicitEnumMembers = {
+      'index', 'values', '_name', 'toString', 'hashCode', '==', 'name',
+      '_enumToString', 'compareTo',
+    };
+    final enhanced = node.isEnum &&
+        (node.procedures.any((p) =>
+                !implicitEnumMembers.contains(p.name.text) && !p.isSynthetic) ||
+            node.fields.any((f) =>
+                !f.isStatic && !implicitEnumMembers.contains(f.name.text)));
+    final values = node.isEnum && !enhanced
         ? [
             for (final f in node.fields)
               if (f.isStatic && f.isConst && f.name.text != 'values')

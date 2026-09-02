@@ -1,3 +1,4 @@
+// DIFFERS: Kernel's constant evaluator folds `kSpacing * 2.0` into `8.0 * 2.0`, so the reference to the named constant is gone by the time this compiler sees it. Correct, and less readable than the analyzer's output -- a real cost of the dill route.
 // A fixture for top-level constants.
 //
 // Dart has module-level names and so does Rust, so a `const` at the top of a
