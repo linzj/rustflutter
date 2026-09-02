@@ -261,6 +261,9 @@ pub use mutation::Counter;
 mod setters;
 pub use setters::Temperature;
 
+mod enums;
+pub use enums::{Axis, Layout, MainAxisAlignment};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,5 +697,56 @@ mod tests {
         let t = Temperature::new(100.0);
         assert_eq!(t.fahrenheit(), 212.0);
         assert_eq!(t.difference(), 112.0);
+    }
+
+    // -- enums ----------------------------------------------------------------
+    //
+    // A plain Dart enum is a Rust enum and nothing else. The variants are
+    // renamed and nothing more is, so `spaceBetween` becomes `SpaceBetween` --
+    // a multi-word value is in the fixture because a single-word one would pass
+    // whether or not the renaming did anything.
+
+    #[test]
+    fn a_plain_enum_is_a_rust_enum() {
+        let l = Layout::new(Axis::Horizontal, MainAxisAlignment::Center);
+        assert!(l.is_horizontal());
+        assert!(l.is_centred());
+        assert!(!l.is_spaced());
+    }
+
+    #[test]
+    fn a_multi_word_variant_keeps_its_identity() {
+        let l = Layout::new(Axis::Vertical, MainAxisAlignment::SpaceBetween);
+        assert!(!l.is_horizontal());
+        assert!(!l.is_centred());
+        assert!(l.is_spaced());
+    }
+
+    #[test]
+    fn enum_values_are_copied_not_moved() {
+        // `Copy` is not decoration: without it, reading `self.axis` twice in a
+        // translated body would move out of `&self`.
+        let a = Axis::Vertical;
+        let b = a;
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn an_enhanced_enum_is_refused_rather_than_flattened() {
+        // `Season` carries a method, so it is a Rust enum *plus* an impl. This
+        // reads the generated file because the claim is about what the compiler
+        // emitted, and there is no `Season` type to make an assertion against --
+        // which is the point. Without this the refusal was untested, and a
+        // mutation deleting it survived the whole suite.
+        let emitted = include_str!("enums.rs");
+        assert!(
+            emitted.contains("NOT TRANSLATED: `Season` is an enhanced enum"),
+            "expected Season to be refused, got:
+{emitted}"
+        );
+        assert!(
+            !emitted.contains("enum Season {"),
+            "Season was emitted as a plain enum, dropping its method"
+        );
     }
 }

@@ -143,11 +143,12 @@ class KernelFrontend {
 
   IrExpr _staticGet(StaticGet node) {
     final target = node.target;
-    final owner = target.enclosingClass?.name;
-    if (owner == null) {
+    final enclosing = target.enclosingClass;
+    if (enclosing == null) {
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
     }
-    return IrStatic(owner, target.name.text);
+    return IrStatic(enclosing.name, target.name.text,
+        isEnumValue: enclosing.isEnum);
   }
 
   /// The place Kernel's desugaring has to be undone.
@@ -420,10 +421,23 @@ class KernelFrontend {
     while (base != null && base.isAnonymousMixin) {
       base = base.superclass;
     }
+    // An enum's values are its static const fields, in declaration order,
+    // minus the synthetic `values` list the CFE adds.
+    final values = node.isEnum
+        ? [
+            for (final f in node.fields)
+              if (f.isStatic && f.isConst && f.name.text != 'values')
+                f.name.text
+          ]
+        : const <String>[];
     final cls = IrClass(
       node.name,
-      superclass: base == null || base.name == 'Object' ? null : base.name,
+      superclass: node.isEnum || base == null || base.name == 'Object'
+          ? null
+          : base.name,
       isAbstract: node.isAbstract,
+      isEnum: node.isEnum,
+      values: values,
     );
     _superclass = cls.superclass;
     final refused = <String>[];
@@ -454,6 +468,9 @@ class KernelFrontend {
 
   void _lowerField(IrClass cls, Field field) {
     final name = field.name.text;
+    // An enum's own members are its variants and the CFE's bookkeeping; neither
+    // becomes a field or a constant on the Rust side.
+    if (cls.isEnum) return;
     if (field.isStatic) {
       if (!field.isConst) {
         throw Unsupported('non-const static field', name);
@@ -469,6 +486,7 @@ class KernelFrontend {
   }
 
   void _lowerConstructor(IrClass cls, Constructor node) {
+    if (cls.isEnum) return;
     final name = node.name.text;
     final params = <IrParam>[];
     for (final p in node.function.positionalParameters) {
@@ -510,6 +528,19 @@ class KernelFrontend {
 
   void _lowerProcedure(IrClass cls, Procedure node) {
     final name = node.name.text;
+    if (cls.isEnum) {
+      // A plain enum has only the implicit members. One with anything else is
+      // an enhanced enum -- a Rust enum plus an impl -- and stops here rather
+      // than being emitted as a plain one with its methods quietly missing.
+      const implicit = {
+        'index', 'values', '_name', 'toString', 'hashCode', '==', 'name',
+        '_enumToString', 'compareTo',
+      };
+      if (!implicit.contains(name) && !node.isSynthetic) {
+        throw Unsupported('enhanced enum member `$name`', cls.name);
+      }
+      return;
+    }
     if (node.isStatic && node.kind == ProcedureKind.Factory) {
       throw Unsupported('factory constructor', name);
     }

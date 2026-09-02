@@ -68,12 +68,21 @@ class IrField extends IrExpr {
   final String name;
 }
 
-/// A read of a static field or enum value: `Alignment.topLeft`.
+/// A read of a static field or enum value: `Alignment.topLeft`, `Axis.vertical`.
 class IrStatic extends IrExpr {
-  const IrStatic(this.owner, this.name);
+  const IrStatic(this.owner, this.name, {this.isEnumValue = false});
 
   final String owner;
   final String name;
+
+  /// Whether this names an enum's value rather than a static field.
+  ///
+  /// The two are spelled alike in Dart and differently in Rust -- an associated
+  /// const is `Alignment::TOP_LEFT`, a variant is `Axis::Vertical` -- and the
+  /// backend cannot tell them apart, because the owner is often declared in
+  /// another file. So the front end, which resolved the reference, says which
+  /// it is.
+  final bool isEnumValue;
 }
 
 class IrBinary extends IrExpr {
@@ -369,7 +378,12 @@ class IrConstructor {
 }
 
 class IrClass {
-  IrClass(this.name, {this.superclass, this.isAbstract = false, this.doc});
+  IrClass(this.name,
+      {this.superclass,
+      this.isAbstract = false,
+      this.isEnum = false,
+      this.values = const [],
+      this.doc});
 
   final String name;
   final String? superclass;
@@ -381,6 +395,15 @@ class IrClass {
   /// storage of its own". A concrete class becomes a struct, and one that
   /// extends an abstract class also gets an `impl`.
   final bool isAbstract;
+
+  /// A Dart `enum`. Rust has one too, so this is a translation rather than an
+  /// encoding -- but only for the plain kind. Across `package:flutter` 232 of
+  /// the 249 enums are plain and 17 carry fields or methods; the enhanced ones
+  /// are a Rust enum *plus* an impl, which is a different job.
+  final bool isEnum;
+
+  /// The enum's values, in declaration order, under their Dart names.
+  final List<String> values;
 
   final String? doc;
   final List<IrFieldDecl> fields = [];

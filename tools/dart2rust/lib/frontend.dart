@@ -148,7 +148,13 @@ class Frontend {
 
   IrExpr _prefixed(PrefixedIdentifier node) {
     final target = node.prefix.element;
-    // `Alignment.topLeft` -- the prefix resolves to the class itself.
+    // `Alignment.topLeft` -- the prefix resolves to the class itself. An enum
+    // is an `EnumElement`, not a `ClassElement`, which is why every reference
+    // to an enum value used to be refused as "identifier of EnumElementImpl".
+    if (target is EnumElement) {
+      return IrStatic(target.name ?? '?', node.identifier.name,
+          isEnumValue: true);
+    }
     if (target is ClassElement) {
       return IrStatic(target.name ?? '?', node.identifier.name);
     }
@@ -489,12 +495,51 @@ class Frontend {
     final classes = <IrClass>[];
     final refused = <String>[];
     for (final declaration in unit.declarations) {
+      if (declaration is EnumDeclaration) {
+        // An enum is not a ClassDeclaration in analyzer's AST, so it was
+        // skipped entirely here while every *reference* to one of its values
+        // was refused separately -- 847 refusals whose declarations the front
+        // end had never looked at.
+        final (cls, problems) = lowerEnum(declaration);
+        classes.add(cls);
+        refused.addAll(problems.map((p) => '${cls.name}: $p'));
+        continue;
+      }
       if (declaration is! ClassDeclaration) continue;
       final (cls, problems) = lowerClass(declaration);
       classes.add(cls);
       refused.addAll(problems.map((p) => '${cls.name}: $p'));
     }
     return (IrLibrary(classes), refused);
+  }
+
+  /// Lowers a plain enum. An enhanced one -- with fields, a constructor or
+  /// methods -- is refused: it is a Rust enum *plus* an impl, and emitting it
+  /// as a plain one would drop its members without saying so. Across
+  /// `package:flutter` 232 of 249 enums are plain.
+  (IrClass, List<String>) lowerEnum(EnumDeclaration node) {
+    final refused = <String>[];
+    final declared = node.members.where((m) {
+      if (m is MethodDeclaration) return true;
+      if (m is FieldDeclaration) return !m.isStatic;
+      if (m is ConstructorDeclaration) return true;
+      return false;
+    }).toList();
+    if (declared.isNotEmpty) {
+      refused.add('unsupported enhanced enum: ${declared.length} declared '
+          'member(s)');
+    }
+    return (
+      IrClass(
+        node.name.lexeme,
+        isEnum: true,
+        values: declared.isEmpty
+            ? [for (final c in node.constants) c.name.lexeme]
+            : const [],
+        doc: _doc(node),
+      ),
+      refused,
+    );
   }
 
   /// Lowers one class, collecting what it could not translate rather than
