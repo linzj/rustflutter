@@ -298,6 +298,9 @@ impl RangeError {
 
 mod failure;
 pub use failure::Bounds;
+
+mod trycatch;
+pub use trycatch::Guarded;
 // The base trait, renamed on import:  has a  of its own.
 pub use superctor::Shape as GeometricShape;
 
@@ -1107,5 +1110,38 @@ mod tests {
         // compile too, and this is the line that says it was not done.
         let b = Bounds::new(10.0);
         assert_eq!(b.halved(5.0), 2.5);
+    }
+
+    // -- try/catch ------------------------------------------------------------
+    //
+    // A catch stops the failure, and stopping it is what these check. The
+    // signatures carry the claim: `recovered` returns a plain f32 and
+    // `uncaught` returns a Result, so a catch that failed to stop anything
+    // would not compile rather than quietly returning the wrong thing.
+
+    #[test]
+    fn a_catch_stops_the_failure() {
+        let g = Guarded::new(10.0);
+        assert_eq!(g.recovered(5.0), 5.0);
+        // The throw happens and is caught, so this is the handler's value.
+        assert_eq!(g.recovered(50.0), -1.0);
+    }
+
+    #[test]
+    fn an_ignored_stack_trace_costs_nothing() {
+        // The clause binds a stack trace it never reads. A Result carries no
+        // stack, and ignoring one is free; reading one is refused instead.
+        let g = Guarded::new(10.0);
+        assert_eq!(g.recovered_with_unused_trace(5.0), 5.0);
+        assert_eq!(g.recovered_with_unused_trace(50.0), -2.0);
+    }
+
+    #[test]
+    fn without_a_catch_the_failure_keeps_travelling() {
+        // The pair to the two above: not catching has to give a different
+        // signature, or "the catch stopped it" is not being tested at all.
+        let g = Guarded::new(10.0);
+        assert_eq!(g.uncaught(5.0), Ok(6.0));
+        assert!(g.uncaught(50.0).is_err());
     }
 }

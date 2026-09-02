@@ -415,6 +415,31 @@ class IrSetter extends IrStmt {
   final IrExpr value;
 }
 
+/// `try { .. } catch (e) { .. }`.
+///
+/// The other half of `Result`: `?` carries a failure outward, this stops it.
+/// Measured first -- 155 of upstream's 174 catch clauses catch `Object`, which
+/// is `catch (e)` with no type at all, so the common case needs no type test.
+///
+/// [stack] is the stack-trace variable when the clause binds one. 133 clauses
+/// (76%) do, and a `Result` carries no stack; binding one and never using it
+/// costs nothing, so only a clause that **reads** it is refused.
+class IrTryCatch extends IrStmt {
+  const IrTryCatch(
+    this.body,
+    this.error,
+    this.handler, {
+    this.errorType,
+    this.stack,
+  });
+
+  final IrStmt body;
+  final String error;
+  final String? errorType;
+  final String? stack;
+  final IrStmt handler;
+}
+
 /// `throw e`.
 ///
 /// Becomes `return Err(e)`, on the decision that failure travels in the return

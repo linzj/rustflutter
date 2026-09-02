@@ -687,11 +687,64 @@ class KernelFrontend {
     if (node is AssertStatement) {
       return _assert(node.condition, node.message);
     }
+    if (node is TryCatch) return _tryCatch(node);
     if (node is AssertBlock) {
       return IrBlock([for (final s in node.statements) statement(s)]);
     }
     if (node is EmptyStatement) return const IrBlock([]);
     throw Unsupported('statement ${node.runtimeType}', _sample(node));
+  }
+
+  /// `try { .. } catch (e) { .. }`, when there is one clause.
+  ///
+  /// Two clauses is two type tests, and only two `try`s in the corpus have
+  /// them; the general answer waits for a reason to exist.
+  IrStmt _tryCatch(TryCatch node) {
+    if (node.catches.length != 1) {
+      throw Unsupported(
+        'try with ${node.catches.length} catch clauses',
+        _sample(node),
+      );
+    }
+    final clause = node.catches.single;
+    final error = clause.exception?.cosmeticName ?? 'error';
+    final stack = clause.stackTrace;
+    if (stack != null && _reads(clause.body, stack)) {
+      // A `Result` carries no stack trace. Binding one and ignoring it costs
+      // nothing; reading one cannot be honoured, so it stops here rather than
+      // being handed an empty stack that looks like a real one.
+      throw Unsupported('catch reading its stack trace', _sample(node));
+    }
+    if (_returnsEarly(node.body)) {
+      // The try body is emitted inside a closure, so `?` stops at the catch
+      // instead of leaving the method. A `return` written in that body would
+      // stop at the same closure and the method would carry on -- and it would
+      // compile. 10 of upstream's 64 try bodies have one, so this is refused
+      // rather than translated into a silent wrong answer.
+      throw Unsupported('return inside a try body', _sample(node));
+    }
+    final guard = clause.guard;
+    return IrTryCatch(
+      statement(node.body),
+      error,
+      statement(clause.body),
+      errorType: guard is InterfaceType && guard.classNode.name != 'Object'
+          ? guard.classNode.name
+          : null,
+      stack: stack?.cosmeticName,
+    );
+  }
+
+  bool _returnsEarly(Statement body) {
+    final finder = _EarlyExit();
+    body.accept(finder);
+    return finder.found;
+  }
+
+  bool _reads(Statement body, Variable variable) {
+    final finder = _VariableReader(variable);
+    body.accept(finder);
+    return finder.found;
   }
 
   IrAssert _assert(Expression condition, Expression? message) {
@@ -998,5 +1051,33 @@ class _ThrowFinder extends RecursiveVisitor {
       _ => 'Object',
     });
     super.visitThrow(node);
+  }
+}
+
+/// Whether a statement reads a particular variable.
+class _VariableReader extends RecursiveVisitor {
+  _VariableReader(this.variable);
+
+  final Variable variable;
+  bool found = false;
+
+  @override
+  void visitVariableGet(VariableGet node) {
+    if (node.variable == variable) found = true;
+    super.visitVariableGet(node);
+  }
+}
+
+/// Finds a `return` that belongs to the enclosing method, not to a closure
+/// written inside it -- hence the empty `visitFunctionNode`.
+class _EarlyExit extends RecursiveVisitor {
+  bool found = false;
+
+  @override
+  void visitFunctionNode(FunctionNode node) {}
+
+  @override
+  void visitReturnStatement(ReturnStatement node) {
+    found = true;
   }
 }

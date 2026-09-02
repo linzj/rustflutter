@@ -419,7 +419,40 @@ class RustBackend {
         'super.$name(...)',
       );
     }
+    if (!_superFnEmits(baseClass, name)) {
+      // The base *has* the method, and the free function holding its body still
+      // could not be emitted -- so the name this call would use is not written
+      // anywhere. `Alignment.toString` called `alignment_geometry_super_to_-
+      // string` for exactly this reason, and the Kernel side of the library did
+      // not build for two rounds while `agree.py` was recorded as green.
+      //
+      // The question is answered by emitting the function and seeing, rather
+      // than by a second rule about when it works: a second rule is a thing
+      // that can disagree with the first one.
+      throw Unsupported(
+        'super call to `$base.$name`, whose body did not translate',
+        'super.$name(...)',
+      );
+    }
     return '${superFn(base, name)}(${[_selfName, ...args.map(expr)].join(', ')})';
+  }
+
+  /// Whether `base`'s free function for [name] can actually be emitted.
+  ///
+  /// `_superFailed` answers this for the class being emitted, but a super call
+  /// is made from the *subclass*, whose backend never sees the base's set.
+  static final _superFnProbes = <String, bool>{};
+
+  bool _superFnEmits(IrClass baseClass, String name) {
+    final key = '${baseClass.name}.$name';
+    final known = _superFnProbes[key];
+    if (known != null) return known;
+    final method = baseClass.methods.firstWhere(
+      (m) => m.operator == null && m.name == name && !m.isStatic,
+    );
+    final probe = RustBackend(baseClass, library: library);
+    final ok = probe._member(key, () => probe._emitSuperFn(method));
+    return _superFnProbes[key] = ok;
   }
 
   /// Whether a field of *this* class is reachable as a field right now.
@@ -530,6 +563,11 @@ class RustBackend {
         case IrIf(:final then, :final otherwise):
           walk(then);
           if (otherwise != null) walk(otherwise);
+        case IrTryCatch(:final body, :final handler):
+          // Walked into, not skipped: a local assigned inside a `try` still
+          // needs `mut` at its declaration outside it.
+          walk(body);
+          walk(handler);
         case IrReturn():
         case IrLocalDecl():
         case IrExprStmt():
@@ -568,6 +606,37 @@ class RustBackend {
         }
       case IrThrow(:final value):
         _line('return Err(${expr(value)});');
+      case IrTryCatch(
+        :final body,
+        :final error,
+        :final errorType,
+        :final handler,
+      ):
+        // The body goes inside an immediately-invoked closure, and that is the
+        // load-bearing part: a failing call inside it is spelled `?`, and `?`
+        // returns from the function it is written in. In a closure it returns
+        // from the closure -- which is what `try` means -- and written inline
+        // it would return from the enclosing method, escaping the very `catch`
+        // that was supposed to stop it.
+        // The closure's error type comes from the try *body*, not from the
+        // enclosing method: a method that catches does not fail, so it has no
+        // error type of its own, and `Result<(), _>` cannot be inferred.
+        final failure = errorType ?? _errorIn(body) ?? _failure ?? '_';
+        _line('match (|| -> Result<(), $failure> {');
+        _indent++;
+        stmt(body);
+        _line('Ok(())');
+        _indent--;
+        _line('})() {');
+        _indent++;
+        _line('Ok(()) => {}');
+        _line('Err(${snake(error)}) => {');
+        _indent++;
+        stmt(handler);
+        _indent--;
+        _line('}');
+        _indent--;
+        _line('}');
       case IrLocalDecl(:final name, :final type, :final init):
         final annotation = type == null ? '' : ': ${this.type(type)}';
         final mutable = _reassigned.contains(name) ? 'mut ' : '';
@@ -1136,6 +1205,18 @@ class RustBackend {
     return failing;
   }
 
+  /// The error type a statement can produce, taken from the failing methods of
+  /// this class that it calls.
+  String? _errorIn(IrStmt body) {
+    final found = _WalkSelf();
+    found.statement(body);
+    for (final name in found.selfCalls) {
+      final error = _failing[name];
+      if (error != null) return error;
+    }
+    return null;
+  }
+
   /// The error type of the method currently being emitted, if it can fail.
   String? _failure;
 
@@ -1564,13 +1645,28 @@ class _WalkSelf {
         expression(condition);
       case IrThrow(:final value):
         expression(value);
+      case IrTryCatch(:final body, :final handler):
+        // Calls in the body are caught, so they do not make this method fail --
+        // that is what `catch` means, and it is the only thing that stops the
+        // propagation. Without this, a method that catches still had `Result`
+        // in its signature, which compiles and says the opposite of the truth.
+        // Calls in the *handler* are not caught and still count.
+        _caught++;
+        statement(body);
+        _caught--;
+        statement(handler);
     }
   }
+
+  /// How many `try` bodies deep the walk is. A call inside one is caught.
+  int _caught = 0;
 
   void expression(IrExpr e) {
     switch (e) {
       case IrCall(:final target, :final name, :final args):
-        if (target == null || target is IrThis) selfCalls.add(name);
+        if (_caught == 0 && (target == null || target is IrThis)) {
+          selfCalls.add(name);
+        }
         if (target != null) expression(target);
         args.forEach(expression);
       case IrField(:final target):

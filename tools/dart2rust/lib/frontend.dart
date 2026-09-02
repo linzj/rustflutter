@@ -596,6 +596,41 @@ class Frontend {
         v.initializer == null ? null : expression(v.initializer!),
       );
     }
+    if (node is TryStatement) {
+      if (node.finallyBlock != null) {
+        // `finally` is a separate problem from `Result`: Rust says it with a
+        // `Drop` guard, and 73 of upstream's `try`s have one.
+        throw Unsupported('try/finally', node.toSource());
+      }
+      if (node.catchClauses.length != 1) {
+        throw Unsupported(
+          'try with ${node.catchClauses.length} catch clauses',
+          node.toSource(),
+        );
+      }
+      final clause = node.catchClauses.single;
+      final stack = clause.stackTraceParameter;
+      if (stack != null && clause.body.toSource().contains(stack.name.lexeme)) {
+        throw Unsupported('catch reading its stack trace', node.toSource());
+      }
+      final early = _EarlyExit();
+      node.body.accept(early);
+      if (early.found) {
+        // See the Kernel front end: the try body becomes a closure, so a
+        // `return` inside it would stop at the closure and the method would
+        // carry on -- compiling, and wrong.
+        throw Unsupported('return inside a try body', node.toSource());
+      }
+      final guard = clause.exceptionType?.type;
+      final guardName = guard?.element?.name;
+      return IrTryCatch(
+        statement(node.body),
+        clause.exceptionParameter?.name.lexeme ?? 'error',
+        statement(clause.body),
+        errorType: guardName == 'Object' ? null : guardName,
+        stack: stack?.name.lexeme,
+      );
+    }
     if (node is ExpressionStatement) {
       final value = node.expression;
       if (value is AssignmentExpression) return _assignment(value);
@@ -1024,5 +1059,19 @@ class _ThrownTypes extends RecursiveAstVisitor<void> {
     final type = node.expression.staticType;
     types.add(type?.element?.name ?? 'Object');
     super.visitThrowExpression(node);
+  }
+}
+
+/// The analyzer's half of the return-inside-try check. Nested functions are
+/// skipped: a `return` in a closure belongs to that closure.
+class _EarlyExit extends RecursiveAstVisitor<void> {
+  bool found = false;
+
+  @override
+  void visitFunctionExpression(FunctionExpression node) {}
+
+  @override
+  void visitReturnStatement(ReturnStatement node) {
+    found = true;
   }
 }

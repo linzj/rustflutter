@@ -97,6 +97,38 @@ def expected_difference(fixture):
     return None
 
 
+def expected_refusals(fixture):
+    """What this fixture declares it must *not* translate.
+
+    Refusals were invisible to this tool: `code_lines` drops comments, and a
+    refusal is a comment. So deleting a refusal rule -- the rule that keeps a
+    silently-wrong translation from being emitted -- changed nothing any check
+    could see. A fixture now says so itself:
+
+        // REFUSES: return inside a try body
+
+    and the line must appear in both front ends' output.
+    """
+    wanted = []
+    for line in io.open(fixture, encoding='utf-8'):
+        if line.startswith('// REFUSES:'):
+            wanted.append(line[len('// REFUSES:'):].strip())
+        elif not line.startswith('//') and line.strip():
+            break
+    return wanted
+
+
+def refusals(path):
+    mark = '// NOT TRANSLATED:'
+    return [l.strip() for l in io.open(path, encoding='utf-8') if mark in l]
+
+
+def missing_refusals(fixture, out):
+    found = refusals(out)
+    return [w for w in expected_refusals(fixture)
+            if not any(w in line for line in found)]
+
+
 def code_lines(path):
     """Comparable lines: comments dropped, since only one side carries docs."""
     out = []
@@ -152,6 +184,14 @@ def main():
                   % (stem, a_ok, k_ok))
             for line in (a_log if not a_ok else k_log).strip().splitlines()[:4]:
                 print('             ', line)
+            disagreed.append(stem)
+            continue
+
+        absent = (missing_refusals(fixture, a_out)
+                  + missing_refusals(fixture, k_out))
+        if absent:
+            print('%-12s TRANSLATED WHAT IT DECLARES IT REFUSES: %s'
+                  % (stem, '; '.join(sorted(set(absent)))))
             disagreed.append(stem)
             continue
 
