@@ -143,18 +143,28 @@ Future<void> main(List<String> args) async {
     final uri = library.importUri.toString();
     final name = nameOf[library]!;
 
-    // The Dart imports, as Rust ones. A library this one never imported is a
-    // library whose names it could not have used.
+    // What the library *names*, not what it declared it imports.
+    //
+    // `library.dependencies` looked like the import graph and is not one: the
+    // CFE resolves flutter's barrel libraries away -- there are none in the
+    // dill -- without splicing their re-exports into the importer. So
+    // `cupertino/nav_bar.dart` depends on no painting library while using
+    // `TextStyle` 348 times. See `librariesReferencedBy`.
     final imports = <String>{};
     final exports = <String>{};
+    for (final referenced in librariesReferencedBy(library)) {
+      final target = nameOf[referenced];
+      if (target != null && target != name) imports.add(target);
+    }
     for (final dependency in library.dependencies) {
+      if (!dependency.isExport) continue;
       final target = nameOf[dependency.targetLibrary];
-      if (target == null || target == name) continue;
-      // Dart's `export` is a re-export, and flutter leans on it hard: a
-      // library that imports `painting.dart` gets everything painting.dart
-      // exports. Without this, `Axis` and `TargetPlatform` were "undeclared"
-      // in a hundred modules that had imported the library re-exporting them.
-      (dependency.isExport ? exports : imports).add(target);
+      // Dart's `export` is a re-export, and a library importing this one gets
+      // what it exports. The edges that survive are still worth keeping.
+      if (target != null && target != name) {
+        exports.add(target);
+        imports.remove(target);
+      }
     }
 
     final (ir, refused) = KernelFrontend(

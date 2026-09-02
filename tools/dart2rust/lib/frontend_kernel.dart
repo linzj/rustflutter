@@ -1830,3 +1830,124 @@ Set<String> abstractClassesIn(Component component, List<String> prefixes) {
   }
   return names;
 }
+
+/// The libraries a library actually names.
+///
+/// `library.dependencies` looked like the import graph and is not one. The
+/// CFE resolves `import 'package:flutter/painting.dart'` -- a barrel that only
+/// re-exports -- away entirely: there are **no** flutter barrels in the dill,
+/// and the edges they carried are not spliced into the importer. So
+/// `cupertino/nav_bar.dart` depends on no painting library at all while using
+/// `TextStyle` 348 times.
+///
+/// What a library needs is not what it declared it imports; it is what it
+/// mentions. This walks the body and collects the library of every class and
+/// member it reaches -- which is exactly the set of `use` lines that make it
+/// compile, and no more.
+Set<Library> librariesReferencedBy(Library library) {
+  final found = <Library>{};
+  final visitor = _ReferenceCollector(found);
+  library.accept(visitor);
+  for (final cls in library.classes) {
+    // A supertype is a reference too, and it is not in any body.
+    for (final type in [
+      if (cls.supertype != null) cls.supertype!,
+      if (cls.mixedInType != null) cls.mixedInType!,
+      ...cls.implementedTypes,
+    ]) {
+      found.add(type.classNode.enclosingLibrary);
+    }
+  }
+  found.remove(library);
+  return found;
+}
+
+class _ReferenceCollector extends RecursiveVisitor {
+  _ReferenceCollector(this.found);
+
+  final Set<Library> found;
+
+  void _member(Member? member) {
+    if (member != null) found.add(member.enclosingLibrary);
+  }
+
+  void _class(Class? cls) {
+    if (cls != null) found.add(cls.enclosingLibrary);
+  }
+
+  @override
+  void visitInterfaceType(InterfaceType node) {
+    _class(node.classNode);
+    super.visitInterfaceType(node);
+  }
+
+  @override
+  void visitConstructorInvocation(ConstructorInvocation node) {
+    _member(node.target);
+    super.visitConstructorInvocation(node);
+  }
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    _member(node.target);
+    super.visitStaticInvocation(node);
+  }
+
+  @override
+  void visitStaticGet(StaticGet node) {
+    _member(node.target);
+    super.visitStaticGet(node);
+  }
+
+  @override
+  void visitStaticSet(StaticSet node) {
+    _member(node.target);
+    super.visitStaticSet(node);
+  }
+
+  @override
+  void visitStaticTearOff(StaticTearOff node) {
+    _member(node.target);
+    super.visitStaticTearOff(node);
+  }
+
+  @override
+  void visitInstanceInvocation(InstanceInvocation node) {
+    _member(node.interfaceTarget);
+    super.visitInstanceInvocation(node);
+  }
+
+  @override
+  void visitInstanceGet(InstanceGet node) {
+    _member(node.interfaceTarget);
+    super.visitInstanceGet(node);
+  }
+
+  @override
+  void visitInstanceSet(InstanceSet node) {
+    _member(node.interfaceTarget);
+    super.visitInstanceSet(node);
+  }
+
+  @override
+  void visitConstantExpression(ConstantExpression node) {
+    _constant(node.constant);
+    super.visitConstantExpression(node);
+  }
+
+  void _constant(Constant constant) {
+    if (constant is InstanceConstant) {
+      _class(constant.classNode);
+      constant.fieldValues.values.forEach(_constant);
+    } else if (constant is StaticTearOffConstant) {
+      _member(constant.target);
+    } else if (constant is ListConstant) {
+      constant.entries.forEach(_constant);
+    } else if (constant is MapConstant) {
+      for (final entry in constant.entries) {
+        _constant(entry.key);
+        _constant(entry.value);
+      }
+    }
+  }
+}

@@ -2431,20 +2431,65 @@ Dart 的 `dynamic` 就是"任何东西",而第 43 轮的 prelude 里已经有了
 
 ---
 
+## 第 45 轮:`library.dependencies` 看着像 import 图,它不是
+
+| | 第 44 轮 | 这一轮 |
+|---|---|---|
+| **整程序 rustc 错误** | 6349 | **5383(−966)** |
+| `E0405`(找不到 trait) | 319 | **0** |
+
+### 追一个"东西在那儿却够不着"
+
+`TextStyle` 有 348 处报"找不到类型",而它**明明被翻出来了**,就在
+`painting_text_style.rs` 里。
+
+顺着查:用它的 `cupertino_nav_bar.rs` 有 294 条 `use`,**没有一条指向 painting**。
+再查 dill:`package:flutter/src/cupertino/nav_bar.dart` 的依赖表里
+**一个 painting 库都没有**。
+
+再往上一层才看见原因:**dill 里一个 flutter barrel 库都没有**。
+`package:flutter/painting.dart` 这种只做再导出的库,CFE 已经解析掉了
+——**而它中转的那些边没有被接回到 importer 身上**。
+
+所以 `library.dependencies` **不是 import 图**。它看着像,我用了它三轮。
+
+### 不猜 import,看它实际点了什么名字
+
+改成走一遍库的 AST,收集它引用到的每一个类和成员的所属库
+——那正好是"让它编得过所需的 `use`",不多不少。
+
+副作用是 `use` 变少了:`cupertino_nav_bar.rs` 从 **294 条降到 65 条**。
+声明的依赖里绝大多数它根本没用到。
+
+`export` 边仍然保留:一个库 import 它、就该拿到它 export 的东西,
+这条 Dart 语义没变,只是不再**依赖**它来找到名字。
+
+### 教训
+
+**一个数据结构叫什么名字,不代表它是什么。** `dependencies` 是"这个库声明了
+什么依赖",不是"这个库需要什么"——在一个 barrel 被解析掉的 dill 里,这两者
+差了 966 个错误。
+
+---
+
 ## 下一步
 
-6349 个错误。`E0425` 仍是 3912,里面点名最多的:
+5383 个错误:
 
-| | 次数 | 在哪 |
-|---|---|---|
-| `TextStyle` | 348 | **翻出来了**,但用它的模块看不见——导入链的洞 |
-| `T` | 332 | 泛型还有没覆盖到的地方 |
-| `Set` / `Future` / `Duration` / `DateTime` | 536 | `dart:core`,**先要处理 `external` 成员** |
-| `Matrix4` | 190 | `package:vector_math`,不在这个 dill 里 |
+| | |
+|---|---|
+| `E0425` 找不到名字 | 3156 |
+| `E0433` 解析不到 | 948 |
+| `E0038` trait 不是对象安全的 | 330 |
+| `E0424` `self` 用在没有 self 的地方 | 152 |
+| `E0428` 重名 | 144 |
+| `E0277` trait 没实现 | 129 |
 
-**下一轮**:查 `TextStyle` 那 348 处——它已经被发出来了,却看不见,
-说明 `use` 链有洞。这类"东西在那儿但够不着"的问题,前几轮的经验是
-底下常常只有一个具体原因。
+`E0425` 里剩下的大头应该是 `dart:core`(`Set`/`Duration`/`DateTime`/`Future`,
+536 处)和 `Matrix4`(190,`package:vector_math`,不在这个 dill 里)。
+`dart:core` 要先处理 `external` 成员——第 44 轮量过,直接加进来是 +10347。
+
+**下一轮**:重新量一次 `E0425` 的点名,看去掉导入问题之后还剩什么。
 
 **不做**:按 SCC 拆 crate(第 40 轮);加 `dart:core`(第 44 轮,+10347)。
 
