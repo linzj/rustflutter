@@ -2280,7 +2280,15 @@ class RustBackend {
 
   void _emitConstructors() {
     for (final ctor in cls.constructors) {
-      _emitConstructor(ctor);
+      // Through `_member`, like every other member. Without it an
+      // `Unsupported` from one constructor came out of `_emitStruct` and took
+      // the **whole class** with it -- 410 classes that vanished because one
+      // field was `late`. That is round 21's lesson, at a site it never
+      // reached: the unit of refusal has to be the unit of work.
+      _member(
+        '${cls.name}.${ctor.name ?? "new"}',
+        () => _emitConstructor(ctor),
+      );
     }
   }
 
