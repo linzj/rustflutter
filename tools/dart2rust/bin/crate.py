@@ -61,6 +61,13 @@ def main():
     # Everything the app is made of: every package in the dill, plus
     # dart:ui, whose Color/Offset/Size/Rect were the four names the
     # translated package reached for most and never found.
+    # `dart:ui` yes, `dart:core` no. Adding core, async and typed_data was
+    # tried in round 44 and measured: errors went from 6608 to 16955, because
+    # most of those classes are `external` and come out as traits with nothing
+    # in them -- 8512 "cannot find trait" and 2959 "expected trait, found
+    # type". The names they would have supplied (Set, Duration, DateTime,
+    # Future -- 536 uses) cost ten times as much as they are worth until
+    # external members are handled.
     parser.add_argument('--prefix', default='package:,dart:ui')
     parser.add_argument('--fresh', action='store_true',
                         help='drop the incremental cache first')

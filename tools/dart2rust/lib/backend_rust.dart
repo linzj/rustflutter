@@ -197,6 +197,13 @@ class RustBackend {
       final spelled = owned ? 'Box<dyn $signature>' : 'impl $signature';
       return t.nullable ? 'Option<$spelled>' : spelled;
     }
+    // Dart's `dynamic` is "anything", which is what the prelude's `Object`
+    // trait is here. Emitted as the bare word it was a type nothing declares,
+    // 259 times.
+    if (t.name == 'dynamic') {
+      final anything = owned ? 'Box<dyn Object>' : '&dyn Object';
+      return t.nullable ? 'Option<$anything>' : anything;
+    }
     if (library.isAbstract(t.name)) {
       final dynamic_ = owned ? 'Box<dyn ${t.name}>' : '&dyn ${t.name}';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
