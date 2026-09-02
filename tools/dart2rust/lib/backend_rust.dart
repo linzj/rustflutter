@@ -161,8 +161,18 @@ class RustBackend {
       IrTopLevel(:final name) => screamingSnake(name),
       IrIsNull(:final operand) => '${expr(operand)}.is_none()',
       IrIfNull() => _ifNull(e as IrIfNull),
+      IrNullAware(:final receiver, :final body) =>
+        '${expr(receiver)}.map(|$_boundName| ${expr(body)})',
+      IrBound() => _boundName,
     };
   }
+
+  /// The closure parameter a `?.` binds.
+  ///
+  /// One fixed name, not a fresh one per nesting level: a chained `a?.b?.c`
+  /// nests the closures, and the inner one shadows the outer -- which is what
+  /// the Dart means, since the inner access is about the inner value.
+  static const _boundName = 'it';
 
   /// `a ?? b`, in the one of four spellings Rust needs.
   ///
@@ -1151,6 +1161,9 @@ class _WalkSelf {
       case IrIfNull(:final left, :final right):
         expression(left);
         expression(right);
+      case IrNullAware(:final receiver, :final body):
+        expression(receiver);
+        expression(body);
       case IrConditional(:final condition, :final then, :final otherwise):
         expression(condition);
         expression(then);
@@ -1167,6 +1180,7 @@ class _WalkSelf {
       case IrLocal():
       case IrStatic():
       case IrTopLevel():
+      case IrBound():
       case IrThis():
     }
   }

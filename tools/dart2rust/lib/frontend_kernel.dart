@@ -70,6 +70,8 @@ class KernelFrontend {
       // `cosmeticName` is Kernel's word for the name a human wrote; a variable
       // the CFE invented has none, and one whose name starts with `#` is a
       // temporary from its own lowering.
+      final bound = _bound;
+      if (bound != null && node.variable == bound) return const IrBound();
       final name = node.variable.cosmeticName;
       if (name == null || name.startsWith('#')) {
         throw Unsupported('synthetic variable', _sample(node));
@@ -139,6 +141,26 @@ class KernelFrontend {
     if (body is ConditionalExpression) {
       final condition = body.condition;
       final otherwise = body.otherwise;
+      // `a?.b` -- the null branch is null and the other branch uses the
+      // temporary. Recognised before `??` reads more naturally but the two are
+      // disjoint: `??` has the temporary in the *else*, `?.` has null in the
+      // *then*.
+      if (condition is EqualsNull &&
+          _isThe(condition.expression, node.variable) &&
+          _isNull(body.then)) {
+        final value = node.variable.initializer;
+        if (value == null) {
+          throw Unsupported('`?.` with no receiver', _sample(node));
+        }
+        final receiver = expression(value);
+        final previous = _bound;
+        _bound = node.variable;
+        try {
+          return IrNullAware(receiver, expression(otherwise));
+        } finally {
+          _bound = previous;
+        }
+      }
       if (condition is EqualsNull &&
           _isThe(condition.expression, node.variable) &&
           _isThe(otherwise, node.variable)) {
@@ -166,6 +188,14 @@ class KernelFrontend {
   // the CFE made it, so it has no declaration to point at.
   bool _isThe(Expression e, Variable variable) =>
       e is VariableGet && e.variable == variable;
+
+  bool _isNull(Expression e) =>
+      e is NullLiteral ||
+      (e is ConstantExpression && e.constant is NullConstant);
+
+  /// The temporary the enclosing `?.` bound, if any. Reads of it become
+  /// [IrBound] so the backend can name it as a closure parameter.
+  Variable? _bound;
 
   String _sample(Node node) {
     final text = node.toString().replaceAll('\n', ' ');

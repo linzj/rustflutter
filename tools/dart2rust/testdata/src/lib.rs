@@ -273,6 +273,9 @@ pub use nulltest::Maybe;
 mod ifnull;
 pub use ifnull::IfNull;
 
+mod nullaware;
+pub use nullaware::{Branch, Leaf};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,5 +878,46 @@ mod tests {
         assert_eq!(IfNull::new(Some(1.0)).nested(Some(2.0)), 1.0);
         assert_eq!(IfNull::new(None).nested(Some(2.0)), 2.0);
         assert_eq!(IfNull::new(None).nested(None), 2.0);
+    }
+
+    // -- `a?.b` ---------------------------------------------------------------
+    //
+    // Rust says this with `a.map(|it| ...)`, and the risk is the `??` family
+    // again: the body must not run when the receiver is null. `boom()` asserts,
+    // so "skipped" and "ran anyway" are different observations rather than the
+    // same one.
+
+    #[test]
+    fn a_null_aware_read_gives_none_for_a_missing_receiver() {
+        assert_eq!(Branch::new(None).leaf_size(), None);
+        assert_eq!(Branch::new(Some(Leaf::new(4.0))).leaf_size(), Some(4.0));
+    }
+
+    #[test]
+    fn a_null_aware_call_runs_only_when_there_is_a_receiver() {
+        assert_eq!(Branch::new(None).leaf_doubled(), None);
+        assert_eq!(Branch::new(Some(Leaf::new(4.0))).leaf_doubled(), Some(8.0));
+    }
+
+    #[test]
+    fn the_body_does_not_run_for_a_null_receiver() {
+        // With an eager translation this panics.
+        assert_eq!(Branch::new(None).leaf_boom(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "the body of ?. was evaluated")]
+    fn the_body_does_run_when_there_is_a_receiver() {
+        // The partner: skipping must not mean "never".
+        Branch::new(Some(Leaf::new(1.0))).leaf_boom();
+    }
+
+    #[test]
+    fn null_aware_beside_if_null() {
+        // Two lowerings that look alike in Kernel -- one has null in the then,
+        // the other has the temporary in the else -- standing next to each
+        // other so a confusion between them shows.
+        assert_eq!(Branch::new(None).size_or(9.0), 9.0);
+        assert_eq!(Branch::new(Some(Leaf::new(4.0))).size_or(9.0), 4.0);
     }
 }

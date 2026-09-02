@@ -233,11 +233,26 @@ class Frontend {
     if (target == null) {
       throw Unsupported('cascade', node.toSource());
     }
+    // `a?.b`. Kernel has already lowered this to a Let and the Kernel front end
+    // restores it; here it is still written as itself, so it is simply read.
+    if (node.isNullAware) {
+      return IrNullAware(expression(target),
+          _memberOn(const IrBound(), node.propertyName));
+    }
     final accessor = node.propertyName.element;
     if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
       return IrCall(expression(target), node.propertyName.name, const []);
     }
     return IrField(expression(target), node.propertyName.name);
+  }
+
+  /// A getter or field read on an already-lowered receiver.
+  IrExpr _memberOn(IrExpr receiver, SimpleIdentifier name) {
+    final element = name.element;
+    if (element is PropertyAccessorElement && !element.isSynthetic) {
+      return IrCall(receiver, name.name, const []);
+    }
+    return IrField(receiver, name.name);
   }
 
   IrExpr _construct(InstanceCreationExpression node) {
@@ -397,6 +412,10 @@ class Frontend {
       }
     }
     final target = node.target;
+    if (node.isNullAware && target != null) {
+      return IrNullAware(
+          expression(target), IrCall(const IrBound(), node.methodName.name, args));
+    }
     if (target is SuperExpression) {
       final base = _superclass;
       if (base == null) {

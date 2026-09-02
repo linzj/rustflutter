@@ -161,6 +161,27 @@ class IrNullCheck extends IrExpr {
   final IrExpr operand;
 }
 
+/// `a?.b` -- do the thing only if the receiver is there.
+///
+/// Rust says this with `a.map(|x| ...)`, so the body needs a name for the value
+/// that was bound. [IrBound] is that name: it stands where the receiver's
+/// non-null value goes, and the backend supplies the closure parameter.
+///
+/// Keeping the body as an expression rather than as "a member and some
+/// arguments" is what lets a chain work -- `a?.b.c()` binds once and does two
+/// things with the binding, and 89 of upstream's are chained.
+class IrNullAware extends IrExpr {
+  const IrNullAware(this.receiver, this.body);
+
+  final IrExpr receiver;
+  final IrExpr body;
+}
+
+/// The value bound by the enclosing [IrNullAware].
+class IrBound extends IrExpr {
+  const IrBound();
+}
+
 /// `a ?? b`.
 ///
 /// Its own node because Rust needs a fact the IR does not otherwise carry: is
