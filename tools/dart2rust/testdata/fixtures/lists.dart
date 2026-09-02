@@ -55,4 +55,35 @@ class Marks {
   static List<int> starting() {
     return <int>[3, 11, 29];
   }
+
+  bool get any {
+    return marks.isNotEmpty;
+  }
+
+  int get highest {
+    return marks.last;
+  }
+
+  int get lowest {
+    return marks.first;
+  }
+
+  /// A chain that is collected right there. Dart's `map` and Rust's are only
+  /// the same when the chain ends -- `xs.iter().map(f)` is lazy and its
+  /// elements are references -- so the whole chain is recognised at once. 72
+  /// of upstream's 126 such calls are collected like this; the 54 that escape
+  /// as a lazy Iterable are refused.
+  List<int> tripled() {
+    return marks.map((int m) => m * 3).toList();
+  }
+
+  /// A lookup-only map. `keys`, `values`, `entries` and `forEach` are refused
+  /// because a Dart map iterates in insertion order and a `HashMap` does not,
+  /// which would quietly reorder 109 places upstream.
+  static int lookUp(Map<String, int> sizes, String name) {
+    if (sizes.containsKey(name)) {
+      return sizes[name]!;
+    }
+    return -1;
+  }
 }

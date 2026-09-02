@@ -1438,6 +1438,37 @@ mod tests {
     }
 
     #[test]
+    fn first_last_and_is_not_empty() {
+        // 3, 11, 29 -- first and last are different from each other and from
+        // everything else here, so a swapped pair would show.
+        let m = Marks::new(Marks::starting());
+        assert_eq!(m.lowest(), 3);
+        assert_eq!(m.highest(), 29);
+        assert!(m.any());
+        assert!(!Marks::new(Vec::new()).any());
+    }
+
+    #[test]
+    fn a_chain_that_is_collected() {
+        // 3*3, 11*3, 29*3. `iter().map(..)` yields references, so the Dart
+        // parameter type is the wrong annotation and is left off.
+        assert_eq!(Marks::new(Marks::starting()).tripled(), vec![9, 33, 87]);
+    }
+
+    #[test]
+    fn a_map_is_looked_up_not_iterated() {
+        // Insertion order is what a HashMap does not keep, so only the lookups
+        // are translated; `keys`, `values`, `entries` and `forEach` are
+        // refused rather than quietly reordered.
+        let mut sizes = std::collections::HashMap::new();
+        sizes.insert("small".to_string(), 4);
+        sizes.insert("large".to_string(), 40);
+        assert_eq!(Marks::look_up(sizes.clone(), "small".to_string()), 4);
+        assert_eq!(Marks::look_up(sizes.clone(), "large".to_string()), 40);
+        assert_eq!(Marks::look_up(sizes, "huge".to_string()), -1);
+    }
+
+    #[test]
     fn a_for_in_loop() {
         // 2*(3+11+29) = 86. The CFE writes this as an iterator loop and both
         // front ends have to put it back into Rust's own `for x in &xs`.

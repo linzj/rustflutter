@@ -590,6 +590,17 @@ class KernelFrontend {
       // A getter in Dart, a method in Rust: `xs.length` is `xs.len()`.
       return IrCall(expression(node.receiver), rust, const []);
     }
+    if (listOwner == 'Map') {
+      if (orderedMapMembers.contains(name)) {
+        throw Unsupported(
+          '`Map.$name`, which depends on insertion order',
+          _sample(node),
+        );
+      }
+      final rust = mapMethodNames[name];
+      if (rust == null) throw Unsupported('`Map.$name`', _sample(node));
+      return IrCall(expression(node.receiver), rust, const []);
+    }
     final receiver = node.receiver;
     final target = receiver is ThisExpression ? null : expression(receiver);
     if (node.interfaceTarget is Procedure) {
@@ -636,11 +647,34 @@ class KernelFrontend {
       if (name == '[]' && args.length == 1) {
         return IrIndex(expression(node.receiver), args.single);
       }
+      final step = iterStepNames[name];
+      if (step != null && args.length == 1) {
+        // A chain, extended rather than started again when the receiver is
+        // already one: `xs.where(f).map(g)` is one `iter()`, not two.
+        final source = expression(node.receiver);
+        return source is IrIterChain
+            ? IrIterChain(source.source, [...source.steps, (step, args.single)])
+            : IrIterChain(source, [(step, args.single)]);
+      }
       final rust = listMethodNames[name];
       if (rust != null) {
         return IrCall(expression(node.receiver), rust, args);
       }
       throw Unsupported('`List.$name`', _sample(node));
+    }
+    if (owner == 'Map') {
+      if (name == '[]' && args.length == 1) {
+        return IrCall(expression(node.receiver), 'get', args);
+      }
+      if (orderedMapMembers.contains(name)) {
+        throw Unsupported(
+          '`Map.$name`, which depends on insertion order',
+          _sample(node),
+        );
+      }
+      final rust = mapMethodNames[name];
+      if (rust == null) throw Unsupported('`Map.$name`', _sample(node));
+      return IrCall(expression(node.receiver), rust, args);
     }
     if (_binaryOperators.contains(name) && args.length == 1) {
       return IrBinary(
@@ -954,6 +988,17 @@ class KernelFrontend {
       // value cannot be translated this way -- and is refused below rather
       // than silently losing the value.
       final value = node.expression;
+      if (value is InstanceInvocation &&
+          value.name.text == '[]=' &&
+          value.interfaceTarget.enclosingClass?.name == 'Map' &&
+          value.arguments.positional.length == 2) {
+        return IrExprStmt(
+          IrCall(expression(value.receiver), 'insert', [
+            expression(value.arguments.positional[0]),
+            expression(value.arguments.positional[1]),
+          ]),
+        );
+      }
       if (value is InstanceInvocation &&
           value.name.text == '[]=' &&
           value.interfaceTarget.enclosingClass?.name == 'List' &&

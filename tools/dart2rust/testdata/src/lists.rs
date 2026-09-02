@@ -53,4 +53,35 @@ impl Marks {
     pub fn starting() -> Vec<i64> {
         vec![3, 11, 29]
     }
+
+    pub fn any(&self) -> bool {
+        !self.marks.is_empty()
+    }
+
+    pub fn highest(&self) -> i64 {
+        self.marks[self.marks.len() - 1]
+    }
+
+    pub fn lowest(&self) -> i64 {
+        self.marks[0]
+    }
+
+    /// A chain that is collected right there. Dart's `map` and Rust's are only
+    /// the same when the chain ends -- `xs.iter().map(f)` is lazy and its
+    /// elements are references -- so the whole chain is recognised at once. 72
+    /// of upstream's 126 such calls are collected like this; the 54 that escape
+    /// as a lazy Iterable are refused.
+    pub fn tripled(&self) -> Vec<i64> {
+        self.marks.iter().map(|m| (m * 3)).collect::<Vec<_>>()
+    }
+
+    /// A lookup-only map. `keys`, `values`, `entries` and `forEach` are refused
+    /// because a Dart map iterates in insertion order and a `HashMap` does not,
+    /// which would quietly reorder 109 places upstream.
+    pub fn look_up(sizes: std::collections::HashMap<String, i64>, name: String) -> i64 {
+        if sizes.contains_key(&name) {
+            return sizes.get(&name).cloned().unwrap();
+        }
+        (-1)
+    }
 }

@@ -139,6 +139,12 @@ class RustBackend {
       final dynamic_ = owned ? 'Box<dyn ${t.name}>' : '&dyn ${t.name}';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
     }
+    if (t.name == 'Map' && t.arguments.length == 2) {
+      final map =
+          'std::collections::HashMap<${type(t.arguments[0])}, '
+          '${type(t.arguments[1])}>';
+      return t.nullable ? 'Option<$map>' : map;
+    }
     if ((t.name == 'List' || t.name == 'Iterable') && t.arguments.length == 1) {
       final vec = 'Vec<${type(t.arguments.single)}>';
       return t.nullable ? 'Option<$vec>' : vec;
@@ -192,6 +198,10 @@ class RustBackend {
         '${expr(target)}[${expr(index)} as usize]',
       IrListLiteral(:final elements) =>
         'vec![${elements.map(expr).join(', ')}]',
+      IrIterChain() => throw Unsupported(
+        'a lazy Iterable that is never collected',
+        'xs.map(..) with no toList()',
+      ),
       // Boxed, because a function item is not a `Box<dyn Fn>` and that is what
       // a function-typed field or local is here. A `Box<dyn Fn>` also
       // implements `Fn`, so it still passes where `impl Fn` is wanted.
@@ -573,7 +583,32 @@ class RustBackend {
       (target == null || target is IrThis) ? _selfName : expr(target);
 
   String _call(IrExpr? target, String name, List<IrExpr> args) {
+    // Before the receiver is rendered: rendering a chain on its own is
+    // refused, and this is the one place a chain is not on its own.
+    // Any arguments, not none: Dart's `toList({bool growable = true})` has a
+    // named parameter, and the Kernel front end fills in its default -- so the
+    // chain was collected on one side and refused on the other.
+    if (name == 'to_list' && target is IrIterChain) {
+      return '${_chain(target)}.collect::<Vec<_>>()';
+    }
     final receiver = _receiver(target);
+    // `HashMap` looks up by reference, and gives back a reference to the
+    // value. Dart's `m[k]` is a `V?`, so the borrow is cloned away rather
+    // than leaked into every caller's type.
+    if (name == 'get' && args.length == 1) {
+      return '$receiver.get(&${expr(args.single)}).cloned()';
+    }
+    if ((name == 'contains_key' || name == 'remove') && args.length == 1) {
+      return '$receiver.$name(&${expr(args.single)})';
+    }
+    // The three List members Rust says differently rather than renames.
+    if (name == '!is_empty' && args.isEmpty) return '!$receiver.is_empty()';
+    if (name == 'first' && args.isEmpty) return '$receiver[0]';
+    if (name == 'last' && args.isEmpty) {
+      return '$receiver[$receiver.len() - 1]';
+    }
+    // Dart's `toList` on a list copies it, which is `clone`.
+    if (name == 'to_list') return '$receiver.clone()';
     // `Vec::len` gives a `usize` and Dart's `length` an `int`. Without the
     // cast every comparison against a loop counter fails to compile.
     if (name == 'len' && args.isEmpty) return '($receiver.len() as i64)';
@@ -678,6 +713,32 @@ class RustBackend {
     return args.isEmpty
         ? '"$text".to_string()'
         : 'format!("$text", ${args.join(', ')})';
+  }
+
+  /// The iterator part of a chain, without the collect that ends it.
+  String _chain(IrIterChain chain) {
+    final steps = chain.steps
+        .map((step) => '.${step.$1}(${_stepClosure(step.$2)})')
+        .join();
+    return '${expr(chain.source)}.iter()$steps';
+  }
+
+  /// A chain step's closure, without its parameter types.
+  ///
+  /// `iter()` yields references, so the Dart type is the wrong annotation --
+  /// `|m: i64|` against a `&i64` does not compile. Left off, Rust infers it,
+  /// and the body reads the same either way.
+  String _stepClosure(IrExpr e) {
+    if (e is! IrClosure) return expr(e);
+    final params = e.params.map((p) => snake(p.name)).join(', ');
+    final saved = _out.length;
+    final savedIndent = _indent;
+    _indent = 0;
+    stmt(e.body, tail: true);
+    final body = _out.sublist(saved).map((l) => l.trim()).join(' ');
+    _out.removeRange(saved, _out.length);
+    _indent = savedIndent;
+    return '|$params| { $body }';
   }
 
   /// `identical(a, b)`.
@@ -1512,6 +1573,9 @@ class RustBackend {
       IrThrowValue(:final value) => IrThrowValue(go(value)),
       IrInterpolation(:final parts) => IrInterpolation(parts.map(go).toList()),
       IrIndex(:final target, :final index) => IrIndex(go(target), go(index)),
+      IrIterChain(:final source, :final steps) => IrIterChain(go(source), [
+        for (final step in steps) (step.$1, go(step.$2)),
+      ]),
       IrListLiteral(:final elements, :final element) => IrListLiteral(
         elements.map(go).toList(),
         element,
@@ -2256,6 +2320,11 @@ class _WalkSelf {
         expression(index);
       case IrListLiteral(:final elements):
         elements.forEach(expression);
+      case IrIterChain(:final source, :final steps):
+        expression(source);
+        for (final step in steps) {
+          expression(step.$2);
+        }
       case IrFunctionRef():
       case IrAssignValue():
         if (e is IrAssignValue) {

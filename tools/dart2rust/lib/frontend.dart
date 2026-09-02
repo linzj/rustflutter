@@ -163,6 +163,12 @@ class Frontend {
       ], _type(node.typeArguments?.arguments.singleOrNull?.type));
     }
     if (node is IndexExpression) {
+      final owner = node.target?.staticType?.element?.name;
+      if (owner == 'Map') {
+        return IrCall(expression(node.target!), 'get', [
+          expression(node.index),
+        ]);
+      }
       return IrIndex(expression(node.target!), expression(node.index));
     }
     if (node is StringInterpolation) {
@@ -290,6 +296,18 @@ class Frontend {
       if (rust == null) {
         throw Unsupported('`List.${node.identifier.name}`', node.toSource());
       }
+      return IrCall(expression(node.prefix), rust, const []);
+    }
+    if (listOwner == 'Map') {
+      final name = node.identifier.name;
+      if (orderedMapMembers.contains(name)) {
+        throw Unsupported(
+          '`Map.$name`, which depends on insertion order',
+          node.toSource(),
+        );
+      }
+      final rust = mapMethodNames[name];
+      if (rust == null) throw Unsupported('`Map.$name`', node.toSource());
       return IrCall(expression(node.prefix), rust, const []);
     }
     final accessor = node.identifier.element;
@@ -572,10 +590,34 @@ class Frontend {
     // cannot drift apart on a name.
     final owner = element == null ? null : enclosingOf(element)?.name;
     if (owner == 'List' || owner == 'Iterable') {
+      final args = _arguments(node.argumentList, null, node);
+      final step = iterStepNames[node.methodName.name];
+      if (step != null && args.length == 1) {
+        final source = expression(node.target!);
+        return source is IrIterChain
+            ? IrIterChain(source.source, [...source.steps, (step, args.single)])
+            : IrIterChain(source, [(step, args.single)]);
+      }
       final rust = listMethodNames[node.methodName.name];
       if (rust == null) {
         throw Unsupported('`List.${node.methodName.name}`', node.toSource());
       }
+      return IrCall(
+        node.target == null ? null : expression(node.target!),
+        rust,
+        args,
+      );
+    }
+    if (owner == 'Map') {
+      final name = node.methodName.name;
+      if (orderedMapMembers.contains(name)) {
+        throw Unsupported(
+          '`Map.$name`, which depends on insertion order',
+          node.toSource(),
+        );
+      }
+      final rust = mapMethodNames[name];
+      if (rust == null) throw Unsupported('`Map.$name`', node.toSource());
       return IrCall(
         node.target == null ? null : expression(node.target!),
         rust,
@@ -1029,6 +1071,14 @@ class Frontend {
     if (target is IndexExpression) {
       if (node.operator.lexeme != '=') {
         throw Unsupported('compound assignment to an index', node.toSource());
+      }
+      if (target.target?.staticType?.element?.name == 'Map') {
+        return IrExprStmt(
+          IrCall(expression(target.target!), 'insert', [
+            expression(target.index),
+            expression(node.rightHandSide),
+          ]),
+        );
       }
       return IrIndexSet(
         expression(target.target!),
