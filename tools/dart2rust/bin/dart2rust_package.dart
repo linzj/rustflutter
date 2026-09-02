@@ -1,0 +1,148 @@
+// Emit a whole package as one crate: a module per library, and `use` between
+// them.
+//
+//     dart run --packages=<kernel config> \
+//         tools/dart2rust/bin/dart2rust_package.dart \
+//         app.dill package:flutter/ out/
+//
+// Round 37 measured why this exists. Of `package:flutter`'s 525 libraries, 115
+// compile on their own; of the 410 that do not, the commonest missing names
+// are `BuildContext` (91 libraries), `Widget` (71), `BoxConstraints` (60) and
+// `RenderBox` (43) -- classes in *other flutter libraries*, many of which this
+// compiler already translates. It emitted one library at a time and never
+// wrote a `use`, so each file reached for neighbours it could not see.
+//
+// The first attempt was the flattest thing that could work: `lib.rs`
+// re-exported every module and each module opened with `use crate::*`. That
+// was measured rather than reasoned about, and it lost: 143 `E0428` name
+// collisions -- two libraries defining `_Painter` -- and rustc had still not
+// finished after twenty-five minutes, because every module could see every
+// name in the package.
+//
+// So the imports follow the Dart ones. Kernel keeps each library's
+// dependencies, and a `use crate::<module>::*` is written for each of them
+// that is inside the package. That is both smaller and more faithful: two
+// libraries that never imported each other cannot collide, in Rust for the
+// same reason they could not in Dart.
+
+import 'dart:io';
+
+import 'package:kernel/kernel.dart';
+
+import '../lib/backend_rust.dart';
+import '../lib/frontend_kernel.dart';
+
+/// `package:flutter/src/painting/alignment.dart` -> `painting_alignment`.
+///
+/// Flat, not nested: a nested module tree would need every `use` to know how
+/// far up to go, and nothing here needs the hierarchy.
+String moduleName(String uri) {
+  var path = uri;
+  final marker = path.indexOf('/src/');
+  path = marker >= 0
+      ? path.substring(marker + '/src/'.length)
+      : path.substring(path.indexOf('/') + 1);
+  path = path.replaceAll('.dart', '');
+  final name = path.replaceAll(RegExp(r'[^A-Za-z0-9]+'), '_').toLowerCase();
+  return RegExp(r'^[0-9]').hasMatch(name) ? 'm_$name' : name;
+}
+
+Future<void> main(List<String> args) async {
+  if (args.length < 3) {
+    stderr.writeln(
+      'usage: dart2rust_package.dart <app.dill> <prefix> <out dir>',
+    );
+    exit(2);
+  }
+  final component = loadComponentFromBinary(args[0]);
+  final prefix = args[1];
+  final out = Directory(args[2]);
+  await out.create(recursive: true);
+
+  final modules = <String>[];
+  var libraries = 0;
+  var classes = 0;
+  var refusals = 0;
+  final taken = <String, String>{};
+
+  // Names first, so a module can name the ones it imports.
+  final inPackage = <Library>[];
+  final nameOf = <Library, String>{};
+  for (final library in component.libraries) {
+    final uri = library.importUri.toString();
+    if (!uri.startsWith(prefix)) continue;
+    var name = moduleName(uri);
+    // Two libraries can flatten to one module name. The second keeps its own
+    // file rather than overwriting the first, which is how a whole library
+    // would disappear without a word.
+    if (taken.containsKey(name)) {
+      var n = 2;
+      while (taken.containsKey('${name}_$n')) {
+        n++;
+      }
+      name = '${name}_$n';
+    }
+    taken[name] = uri;
+    nameOf[library] = name;
+    inPackage.add(library);
+  }
+
+  for (final library in inPackage) {
+    final uri = library.importUri.toString();
+    final name = nameOf[library]!;
+
+    // The Dart imports, as Rust ones. A library this one never imported is a
+    // library whose names it could not have used.
+    final imports = <String>{};
+    final exports = <String>{};
+    for (final dependency in library.dependencies) {
+      final target = nameOf[dependency.targetLibrary];
+      if (target == null || target == name) continue;
+      // Dart's `export` is a re-export, and flutter leans on it hard: a
+      // library that imports `painting.dart` gets everything painting.dart
+      // exports. Without this, `Axis` and `TargetPlatform` were "undeclared"
+      // in a hundred modules that had imported the library re-exporting them.
+      (dependency.isExport ? exports : imports).add(target);
+    }
+
+    final (ir, refused) = KernelFrontend(library).lowerLibrary();
+    final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);
+    refusals += refused.length + more.length;
+    classes += ir.classes.length;
+    libraries++;
+    modules.add(name);
+    final uses = [
+      for (final m in exports.toList()..sort()) 'pub use crate::$m::*;',
+      for (final m in imports.toList()..sort()) 'use crate::$m::*;',
+    ].join('\n');
+    await File('${out.path}/$name.rs').writeAsString(
+      '// Generated from $uri\n'
+      '//\n'
+      '// The `use` lines are this library\'s Dart imports, kept: see\n'
+      '// dart2rust_package.dart for what happened without them.\n'
+      '#![allow(unused_imports, dead_code, non_snake_case)]\n'
+      '$uses\n'
+      '\n'
+      '$text',
+    );
+  }
+
+  final lib = StringBuffer()
+    ..writeln('// Generated by tools/dart2rust from $prefix')
+    ..writeln('//')
+    ..writeln('// One module per Dart library. The modules import each other')
+    ..writeln('// the way the Dart libraries did, so two that never met')
+    ..writeln('// cannot collide.')
+    ..writeln('#![allow(unused_imports, dead_code, non_snake_case)]')
+    ..writeln();
+  for (final name in modules) {
+    lib.writeln('pub mod $name;');
+  }
+  await File('${out.path}/lib.rs').writeAsString(lib.toString());
+
+  stdout.writeln('$prefix -> ${out.path}');
+  stdout.writeln(
+    '  $libraries libraries, $classes classes, '
+    '$refusals refusals',
+  );
+}

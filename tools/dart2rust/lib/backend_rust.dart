@@ -40,7 +40,69 @@ String snake(String name) {
   final out = name
       .replaceAllMapped(RegExp(r'(?<!^)([A-Z])'), (m) => '_${m[1]}')
       .toLowerCase();
-  return out;
+  return _rustIdentifier(out);
+}
+
+/// Rust's keywords. A Dart name that happens to be one has to be spelled
+/// differently, and `r#type` is how Rust spells it -- the raw form keeps the
+/// name searchable against upstream, which renaming to `type_` would not.
+const _rustKeywords = {
+  'as',
+  'break',
+  'const',
+  'continue',
+  'crate',
+  'dyn',
+  'else',
+  'enum',
+  'extern',
+  'false',
+  'fn',
+  'for',
+  'if',
+  'impl',
+  'in',
+  'let',
+  'loop',
+  'match',
+  'mod',
+  'move',
+  'mut',
+  'pub',
+  'ref',
+  'return',
+  'static',
+  'struct',
+  'trait',
+  'true',
+  'type',
+  'unsafe',
+  'use',
+  'where',
+  'while',
+  'async',
+  'await',
+  'union',
+};
+
+/// Reserved words that cannot even be raw identifiers.
+const _rustNeverRaw = {'crate', 'self', 'super', 'Self'};
+
+/// A name Rust will take.
+///
+/// Two things reach here that Rust will not accept, and both come from the
+/// CFE rather than from anything upstream wrote:
+///
+/// * `_#wc0#formal` -- a synthetic parameter name. `#` is not an identifier
+///   character, and the whole 525-module crate failed to *parse* on three of
+///   these before the characters were stripped.
+/// * `type`, `match`, `where` -- ordinary Dart names that are Rust keywords.
+String _rustIdentifier(String name) {
+  var out = name.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
+  if (out.isEmpty) out = '_';
+  if (RegExp(r'^[0-9]').hasMatch(out)) out = '_$out';
+  if (_rustNeverRaw.contains(out)) return '${out}_';
+  return _rustKeywords.contains(out) ? 'r#$out' : out;
 }
 
 String screamingSnake(String name) => snake(name).toUpperCase();
