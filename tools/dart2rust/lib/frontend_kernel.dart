@@ -1441,6 +1441,9 @@ class KernelFrontend {
       ],
       _type(node.function.returnType),
       _body(node.function),
+      typeParameters: [
+        for (final p in node.function.typeParameters) p.name ?? 'T',
+      ],
       isStatic: true,
     );
   }
@@ -1511,6 +1514,9 @@ class KernelFrontend {
     final cls = IrClass(
       node.name,
       typeParameters: [for (final p in node.typeParameters) p.name ?? 'T'],
+      superclassArguments: [
+        for (final t in node.supertype?.typeArguments ?? const []) _type(t),
+      ],
       superclass: node.isEnum || base == null || base.name == 'Object'
           ? null
           : base.name,

@@ -205,7 +205,16 @@ class RustBackend {
       return t.nullable ? 'Option<$anything>' : anything;
     }
     if (library.isAbstract(t.name)) {
-      final dynamic_ = owned ? 'Box<dyn ${t.name}>' : '&dyn ${t.name}';
+      // With the arguments: an abstract `Animatable<T>` is `dyn Animatable<T>`,
+      // and dropping them made 477 uses wrong the moment traits became
+      // generic. The name alone was consistent only while nothing had
+      // parameters.
+      final args = t.arguments.isEmpty
+          ? ''
+          : '<${t.arguments.map((a) => type(a)).join(', ')}>';
+      final dynamic_ = owned
+          ? 'Box<dyn ${t.name}$args>'
+          : '&dyn ${t.name}$args';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
     }
     if (t.name == 'Record') {
@@ -1356,7 +1365,7 @@ class RustBackend {
     // trait's matching default can delegate or has to be a `todo!()`.
     _emitSuperFns();
     _line('');
-    _line('${_vis(cls.name)}trait ${cls.name} {');
+    _line('${_vis(cls.name)}trait ${cls.name}${_generics(cls)} {');
     _indent++;
     // Guarded per member, like the struct path. The trait path was missed when
     // that changed, and it showed the moment private members started being
@@ -1472,8 +1481,8 @@ class RustBackend {
     _doc(method.doc);
     final params = method.params.map((p) => _param(p, owned: false)).join(', ');
     _line(
-      '${_vis(method.name)}fn ${snake(method.name)}($params) -> '
-      '${type(method.returnType)} {',
+      '${_vis(method.name)}fn ${snake(method.name)}${_generics(method)}'
+      '($params) -> ${type(method.returnType)} {',
     );
     _indent++;
     final saved = _selfName;
@@ -1526,7 +1535,12 @@ class RustBackend {
       ].join(', ');
       _line(
         '${_vis(cls.name)}fn ${superFn(cls.name, method.name)}'
-        '<S: ${cls.name} + ?Sized>($params) -> '
+        // The class's parameters come too: a body of `ParametricCurve<T>`
+        // returns a `T`, and the free function holding it has to say where
+        // that `T` comes from.
+        '<S: ${cls.name}${_generics(cls)} + ?Sized'
+        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.join(', ')}'}'
+        '>($params) -> '
         '${type(method.returnType)} {',
       );
       _indent++;
@@ -2053,6 +2067,39 @@ class RustBackend {
     return [if (above.isAbstract) above, ..._abstractAncestors(above)];
   }
 
+  /// `<f32>` for `impl ParametricCurve<f32> for _Linear`, or nothing.
+  ///
+  /// Only the *direct* superclass's arguments are known. For a generic
+  /// ancestor further up the chain they would have to be composed through each
+  /// step, so that impl is refused rather than emitted with the wrong ones.
+  String? _baseArguments(IrClass base) {
+    if (base.typeParameters.isEmpty) return '';
+    // Walk up from this class, carrying the arguments through each step.
+    // `_Linear extends Curve` and `Curve extends ParametricCurve<double>`, so
+    // reaching ParametricCurve means going through Curve -- and a Curve that
+    // had parameters of its own would need ours substituted into what it
+    // passes on.
+    var current = cls;
+    var bound = <String, IrType>{};
+    while (true) {
+      final next = library[current.superclass];
+      if (next == null) return null;
+      final passed = [
+        for (final a in current.superclassArguments) bound[a.name] ?? a,
+      ];
+      if (next.name == base.name) {
+        if (passed.length != base.typeParameters.length) return null;
+        return '<${passed.map((a) => type(a)).join(', ')}>';
+      }
+      if (passed.length != next.typeParameters.length) return null;
+      bound = {
+        for (var i = 0; i < passed.length; i++)
+          next.typeParameters[i]: passed[i],
+      };
+      current = next;
+    }
+  }
+
   void _emitImplFor(IrClass base) {
     // Not just the abstract ones. A class that overrides a *concrete* base
     // method needs that override in the impl too, or dynamic dispatch reaches
@@ -2073,8 +2120,18 @@ class RustBackend {
     final accessors = ownFields;
     if (required.isEmpty && accessors.isEmpty) return;
 
+    final arguments = _baseArguments(base);
+    if (arguments == null) {
+      // A generic ancestor whose arguments cannot be worked out from here.
+      // Emitting `impl Base for This` without them does not compile; saying so
+      // is better than leaving rustc to.
+      _line('');
+      _line('// NOT TRANSLATED: impl ${base.name} for ${cls.name}');
+      _line('//   the base is generic and its arguments are not known here');
+      return;
+    }
     _line('');
-    _line('impl ${base.name} for ${cls.name} {');
+    _line('impl ${base.name}$arguments for ${cls.name}${_generics(cls)} {');
     _indent++;
     for (final field in accessors) {
       _line('fn ${snake(field.name)}(&self) -> ${type(field.type)} {');

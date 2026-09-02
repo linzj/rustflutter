@@ -1353,6 +1353,10 @@ class Frontend {
       params,
       _type(node.returnType?.type),
       body(function.body),
+      typeParameters: [
+        for (final p in function.typeParameters?.typeParameters ?? const [])
+          p.name.lexeme,
+      ],
       isStatic: true,
       doc: _doc(node),
     );
@@ -1406,6 +1410,12 @@ class Frontend {
           p.name.lexeme,
       ],
       superclass: node.extendsClause?.superclass.name.lexeme,
+      superclassArguments: [
+        for (final t
+            in node.extendsClause?.superclass.typeArguments?.arguments ??
+                const [])
+          _type(t.type),
+      ],
       isAbstract: node.abstractKeyword != null,
       doc: _doc(node),
     );

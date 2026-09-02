@@ -990,6 +990,7 @@ class IrClass {
     this.name, {
     this.typeParameters = const [],
     this.superclass,
+    this.superclassArguments = const [],
     this.isAbstract = false,
     this.isEnum = false,
     this.values = const [],
@@ -1001,6 +1002,12 @@ class IrClass {
   /// `class Foo<T>` -- the names, in order. See [IrTypeParams].
   final IrTypeParams typeParameters;
   final String? superclass;
+
+  /// `class _Linear extends ParametricCurve<double>` -- the `double`.
+  ///
+  /// Needed for the `impl`: Rust wants `impl ParametricCurve<f32> for _Linear`,
+  /// and the base's name alone does not say what to put in the angle brackets.
+  final List<IrType> superclassArguments;
 
   /// Whether Dart declared it `abstract`.
   ///
