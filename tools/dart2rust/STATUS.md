@@ -332,28 +332,93 @@ Rust 这一侧的问题一模一样,所以这一轮的工作 100% 转移。
 
 ---
 
-## 下一步:换 Kernel 前端
+## 第 7 轮:gallery 的 app.dill 造出来了,而且读得动
 
-这是本轮发现之后**唯一该做的下一件事**,优先于队列上任何一项。
+上一轮定的:**先造 dill 并确认能读出 gallery 自己的类,再动前端**——
+造不出来的话,整条路走不通,要在写代码之前就知道。
 
-理由:用户指出的发布路径论证成立——要发布只能从工具链构建好的
-app.dill 转,而不是按文件翻译源码。而且 Kernel 会**直接消掉**当前队列上的好几项
-(mixin 已展开、隐式转换已显式、常量已求值、泛型已具体化),
-继续在 analyzer 上做这些是在做会被丢掉的功。
+### 结果:通了
 
-具体要做的:
+    libraries: 1317   classes: 7467
 
-1. 用 `engine/src/out/host_release/gen/frontend_server_aot.dart.snapshot`
-   为 gallery 产出 `app.dill`(修订版必须和 `pkg/kernel` 对上,已验证是这一对)
-2. 新前端 `lib/frontend_kernel.dart`:Kernel `Component` → 现有 `IrLibrary`
-3. `lib/ir.dart`、`lib/backend_rust.dart`、`testdata`、`bin/census.dart` **不动**
-4. 用同一套 27 个测试验新前端——**同样的 IR 应当产出同样的 Rust**
+| 来源 | 类数 |
+|---|---|
+| `package:flutter` | 4281 |
+| `dart:*` | 1374 |
+| **`package:gallery`** | **689** |
+| `package:flutter_localizations` | 363 |
+| `package:get` | 208 |
 
-**先做第 1 步并确认能读出 gallery 自己的类**,再动前端。
-如果 gallery 的 dill 造不出来(依赖没 pub get、修订版对不上),
-那整条路走不通,要在写代码之前就知道。
+105 MB,frontend_server 零错误退出。
 
-## 参考:当前队头(analyzer 前端,全 framework 7012 次拒绝)
+### Kernel 已经替我们做完的事(analyzer 前端要自己做的)
+
+| | |
+|---|---|
+| 已展开的匿名 mixin 应用 | **871** |
+| gallery 里的 super 调用,**目标已解析** | **285**(`initState -> State.initState`) |
+| gallery 里已求值的 const 字段 | **273** |
+
+第 6 轮花了一整轮解决 super 调用要指向谁的问题;Kernel 里它**本来就带着目标**。
+871 个 mixin 应用在 analyzer 前端下是 871 次要自己做的类层次推导。
+
+### 修订版匹配是这件事的全部难点
+
+Flutter SDK 的 `bin/cache/dart-sdk` 和引擎里的 Dart checkout **是不同修订版**,
+而 Kernel 二进制格式带版本号。用一边的 `pkg/kernel` 读另一边产出的 dill:
+
+    Unexpected Kernel Format Version 140 (expected 139)
+
+引擎 checkout 里恰好有**完整的一套同修订版工具**——
+它自己编出来的 `dart-sdk`、`dartaotruntime`、`frontend_server` 快照、
+patched platform、`pkg/kernel`,全在 `bb17f25f...`。
+所以工具里的每一条路径都取自那一棵树,**一条都不来自 Flutter SDK**。
+
+这就是 `bin/dill.py` 存在的理由,而不是把命令写进 README:
+路径的修订版一致性是个静默失败的陷阱,
+`--check` 会把八个位置和 revision 一次列清楚。
+
+### 工具
+
+    python tools/dart2rust/bin/dill.py --check
+    python tools/dart2rust/bin/dill.py --config <out.json> [--config-root <dir>]
+    python tools/dart2rust/bin/dill.py --build package:gallery/main.dart \
+        --packages <app>/.dart_tool/package_config.json -o app.dill
+
+    dart run --packages=<out.json> tools/dart2rust/bin/dill_info.dart app.dill
+
+`--build` 是**用提交进仓库的工具重跑过一遍**的(105.1 MB,exit 0),
+不是把 scratchpad 里手敲的命令抄进文件——没跑过的工具不算验证。
+
+一个细节记下:frontend_server **编译出错也可能 exit 0**,
+所以 `build()` 另外扫 stdout 里的 `Error:` 行,不只看退出码。
+
+---
+
+## 下一步:写 Kernel 前端
+
+前置条件已全部验证,可以动手了。
+
+1. `lib/frontend_kernel.dart`:Kernel `Component` → 现有 `IrLibrary`
+2. `lib/ir.dart`、`lib/backend_rust.dart`、`testdata` 的 27 个测试 **一律不动**
+3. **验收标准**:同一个 `alignment.dart`,Kernel 前端产出的 Rust
+   要能让那 27 个测试全过。**同样的 IR 应当产出同样的 Rust**——
+   这是一个前端能不能替换掉另一个的唯一诚实检验。
+
+先做**一个类**跑通(建议 `Alignment`,已有 7 个测试盯着它),
+再铺开。别一上来写全量遍历。
+
+要当心的两处,现在就记下:
+
+- **Kernel 是脱糖过的**。`a + b` 是 `InstanceInvocation`,不是 `BinaryExpression`;
+  隐式转换是显式节点;`for-in` 已经展开成迭代器循环。
+  产出的 Rust 会比 analyzer 版**难看**,这是这条路的真实代价。
+- **Kernel 里没有私有/公开的区别**那么简单:`_x` 就是名字里带 `_` 的成员,
+  但它带 `Library` 归属。现在前端"跳过私有成员"的规则要重新想——
+  在整程序视角下,私有成员是**必须翻译**的(gallery 的实现全在私有 State 类里),
+  不能再跳过。**这会让拒绝数大涨,那是对的**,现在的低拒绝数有一部分是靠跳过换来的。
+
+## 参考:analyzer 前端的队头(全 framework 7012 次拒绝)
 
 | 次数 | 要建的东西 |
 |---|---|
@@ -365,9 +430,7 @@ app.dill 转,而不是按文件翻译源码。而且 Kernel 会**直接消掉**�
 | 197 | 字符串插值 |
 | 181 | `is` |
 
-其中 setter(499)+ 赋值(285)是同一件事:**可变性**,要 `&mut self` 和一个模型。
-换前端之后要重新普查——这些数字是 analyzer 视角的,Kernel 视角会不一样。
+换前端后要重新普查,这些是 analyzer 视角的数。
 
-**"零拒绝"这个数系统性偏乐观**,别用它报进度:私有成员是跳过不是拒绝,
-而 Flutter 的实现几乎全在私有类里。上次全量:347 零拒绝 → 254 能解析 →
-235 不含未翻译 Dart 类型 → **真正验证能编译的只有 2 个**。
+**"零拒绝"这个数系统性偏乐观**,别用它报进度。上次全量:
+347 零拒绝 → 254 能解析 → 235 不含未翻译 Dart 类型 → **验证过能编译的只有 2 个**。
