@@ -47,6 +47,18 @@ String moduleName(String uri) {
   return RegExp(r'^[0-9]').hasMatch(name) ? 'm_$name' : name;
 }
 
+/// Writes only when the text differs.
+///
+/// Cargo decides what to recheck from file timestamps, so rewriting 525
+/// identical files made every run a full run and the incremental cache
+/// worthless. A compiler change that touches three modules should cost three
+/// modules.
+Future<void> _writeIfChanged(String path, String text) async {
+  final file = File(path);
+  if (file.existsSync() && await file.readAsString() == text) return;
+  await file.writeAsString(text);
+}
+
 Future<void> main(List<String> args) async {
   if (args.length < 3) {
     stderr.writeln(
@@ -55,6 +67,9 @@ Future<void> main(List<String> args) async {
     exit(2);
   }
   final component = loadComponentFromBinary(args[0]);
+  // Once for the whole component: an enum's variants live in the
+  // constants that name them, which can be in any library.
+  final enumValues = enumValuesIn(component);
   final prefix = args[1];
   final out = Directory(args[2]);
   await out.create(recursive: true);
@@ -105,7 +120,10 @@ Future<void> main(List<String> args) async {
       (dependency.isExport ? exports : imports).add(target);
     }
 
-    final (ir, refused) = KernelFrontend(library).lowerLibrary();
+    final (ir, refused) = KernelFrontend(
+      library,
+      enumValues: enumValues,
+    ).lowerLibrary();
     final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);
     refusals += refused.length + more.length;
     classes += ir.classes.length;
@@ -115,15 +133,16 @@ Future<void> main(List<String> args) async {
       for (final m in exports.toList()..sort()) 'pub use crate::$m::*;',
       for (final m in imports.toList()..sort()) 'use crate::$m::*;',
     ].join('\n');
-    await File('${out.path}/$name.rs').writeAsString(
+    await _writeIfChanged(
+      '${out.path}/$name.rs',
       '// Generated from $uri\n'
-      '//\n'
-      '// The `use` lines are this library\'s Dart imports, kept: see\n'
-      '// dart2rust_package.dart for what happened without them.\n'
-      '#![allow(unused_imports, dead_code, non_snake_case)]\n'
-      '$uses\n'
-      '\n'
-      '$text',
+          '//\n'
+          '// The `use` lines are this library\'s Dart imports, kept: see\n'
+          '// dart2rust_package.dart for what happened without them.\n'
+          '#![allow(unused_imports, dead_code, non_snake_case)]\n'
+          '$uses\n'
+          '\n'
+          '$text',
     );
   }
 
@@ -138,7 +157,7 @@ Future<void> main(List<String> args) async {
   for (final name in modules) {
     lib.writeln('pub mod $name;');
   }
-  await File('${out.path}/lib.rs').writeAsString(lib.toString());
+  await _writeIfChanged('${out.path}/lib.rs', lib.toString());
 
   stdout.writeln('$prefix -> ${out.path}');
   stdout.writeln(

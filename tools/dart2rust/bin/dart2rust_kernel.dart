@@ -62,7 +62,10 @@ Future<void> main(List<String> args) async {
     exit(1);
   }
 
-  final (lib, refused) = KernelFrontend(matches.first).lowerLibrary();
+  final (lib, refused) = KernelFrontend(
+    matches.first,
+    enumValues: enumValuesIn(component),
+  ).lowerLibrary();
   final (rust, backendRefused) = RustBackend.emitLibrary(
     lib,
     frontEndRefusals: refused,

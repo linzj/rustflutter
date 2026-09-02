@@ -40,9 +40,16 @@ const _binaryOperators = {
 };
 
 class KernelFrontend {
-  KernelFrontend(this.library);
+  KernelFrontend(this.library, {this.enumValues = const {}});
 
   final Library library;
+
+  /// An enum class to its variant names, in `index` order.
+  ///
+  /// Empty by default, and then an enum whose fields the compiler dropped
+  /// comes out with no values -- which the backend says plainly rather than
+  /// emitting an enum with no variants. See `enumValuesIn`.
+  final Map<Class, List<String>> enumValues;
   String? _superclass;
 
   // -- Types ------------------------------------------------------------------
@@ -1435,13 +1442,32 @@ class KernelFrontend {
             node.fields.any(
               (f) => !f.isStatic && !implicitEnumMembers.contains(f.name.text),
             ));
-    final values = node.isEnum && !enhanced
-        ? [
+    // An enum's values are its static const fields -- except that in a real
+    // dill they are not there at all. Measured in round 39: of the 200 enums
+    // in `package:flutter/`, exactly **one** still has any field. Nothing
+    // reads `Axis.vertical` as a field once the constants are materialised,
+    // so the fields are unreachable and the compiler drops them, leaving a
+    // class that looks like an enum with no values.
+    //
+    // That is round 26's vanished constructor wearing another face, and the
+    // answer is the same: the values survive in the *constants* that name
+    // them. `enumValues` is that recovery, done once over the whole component
+    // by the driver, because a constant naming this enum can be in any
+    // library.
+    final values = !node.isEnum || enhanced
+        ? const <String>[]
+        : [
             for (final f in node.fields)
               if (f.isStatic && f.isConst && f.name.text != 'values')
                 f.name.text,
-          ]
-        : const <String>[];
+          ];
+    // Only when the enum is otherwise translatable. Recovering the variants of
+    // an *enhanced* enum would emit it as a plain one and drop its members --
+    // which is the thing the refusal exists to prevent, and which this
+    // recovery quietly undid until the fixture said so.
+    final recovered = values.isNotEmpty || enhanced || !node.isEnum
+        ? values
+        : (enumValues[node] ?? const <String>[]);
     final cls = IrClass(
       node.name,
       superclass: node.isEnum || base == null || base.name == 'Object'
@@ -1449,7 +1475,7 @@ class KernelFrontend {
           : base.name,
       isAbstract: node.isAbstract,
       isEnum: node.isEnum,
-      values: values,
+      values: recovered,
     );
     _superclass = cls.superclass;
     final refused = <String>[];
@@ -1691,5 +1717,57 @@ class _EarlyExit extends RecursiveVisitor {
   @override
   void visitReturnStatement(ReturnStatement node) {
     found = true;
+  }
+}
+
+/// Every enum's variants, recovered from the constants that name them.
+///
+/// Walk the whole component once: an `InstanceConstant` of an enum class
+/// carries the CFE's own `index` and `_name` fields, which is exactly the
+/// ordinal and the name. Sorted by index, so `Axis::Horizontal` keeps the
+/// position Dart gave it.
+///
+/// Only the variants something actually mentions are found. A variant no code
+/// refers to leaves a gap, and a gap is worth knowing about: `enumValuesIn`
+/// reports the indices it saw so the caller can tell a complete enum from a
+/// partial one.
+Map<Class, List<String>> enumValuesIn(Component component) {
+  final byIndex = <Class, Map<int, String>>{};
+  final finder = _EnumConstantFinder(byIndex);
+  for (final library in component.libraries) {
+    library.accept(finder);
+  }
+  return {
+    for (final entry in byIndex.entries)
+      entry.key: (entry.value.keys.toList()..sort())
+          .map((i) => entry.value[i]!)
+          .toList(),
+  };
+}
+
+class _EnumConstantFinder extends RecursiveVisitor {
+  _EnumConstantFinder(this.byIndex);
+
+  final Map<Class, Map<int, String>> byIndex;
+
+  void _look(Constant constant) {
+    if (constant is! InstanceConstant) return;
+    if (!constant.classNode.isEnum) return;
+    int? index;
+    String? name;
+    for (final entry in constant.fieldValues.entries) {
+      final field = entry.key.asField.name.text;
+      final value = entry.value;
+      if (field == 'index' && value is IntConstant) index = value.value;
+      if (field == '_name' && value is StringConstant) name = value.value;
+    }
+    if (index == null || name == null) return;
+    (byIndex[constant.classNode] ??= <int, String>{})[index] = name;
+  }
+
+  @override
+  void visitConstantExpression(ConstantExpression node) {
+    _look(node.constant);
+    super.visitConstantExpression(node);
   }
 }
