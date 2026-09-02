@@ -135,6 +135,23 @@ class IrIs extends IrExpr {
   final bool negated;
 }
 
+/// Dart's postfix `!`: the value, asserted not to be null.
+///
+/// Its own node rather than an `IrUnary('!')`, because Dart's *prefix* `!` is
+/// boolean negation and the two would otherwise share a spelling while meaning
+/// nothing alike.
+///
+/// Rust's `unwrap()` is the same contract -- "I say this is not null; crash if
+/// I am wrong" -- and, like Dart's `!`, it is still there in a release build.
+/// It is not `unwrap_or_default()`: upstream wrote `!` where it had already
+/// established the value was there, and turning a crash into a default would
+/// replace a loud failure with a quiet wrong answer.
+class IrNullCheck extends IrExpr {
+  const IrNullCheck(this.operand);
+
+  final IrExpr operand;
+}
+
 /// `this`.
 class IrThis extends IrExpr {
   const IrThis();

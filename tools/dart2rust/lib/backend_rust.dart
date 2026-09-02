@@ -148,6 +148,7 @@ class RustBackend {
           'class hierarchy, which this backend does not model yet'),
       IrSuperCall(:final base, :final name, :final args) =>
         _superCall(base, name, args),
+      IrNullCheck(:final operand) => '${expr(operand)}.unwrap()',
     };
   }
 

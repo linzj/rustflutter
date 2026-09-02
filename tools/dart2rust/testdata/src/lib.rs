@@ -252,6 +252,9 @@ pub use supercalls::{Doubled, Shape, Untouched};
 mod assignment;
 pub use assignment::Assignment;
 
+mod nullcheck;
+pub use nullcheck::NullCheck;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,5 +560,44 @@ mod tests {
     fn a_reassigned_parameter_gets_mut_in_the_signature() {
         // Rust parameters are immutable unless declared `mut`; Dart's are not.
         assert_eq!(Assignment::new(0.0).shadow(41.0), 42.0);
+    }
+
+    // -- postfix `!` ----------------------------------------------------------
+    //
+    // Each case has a partner that is actually null, because "the check is
+    // there" and "the check was replaced by a default" look the same on values
+    // that are never null.
+
+    #[test]
+    fn a_null_check_passes_the_value_through() {
+        let n = NullCheck::new(Some(3.0), Some(4.0));
+        assert_eq!(n.doubled(), 6.0);
+        assert_eq!(n.summed(), 7.0);
+        assert_eq!(n.via_call(), 7.0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn a_null_check_on_null_crashes_rather_than_defaulting() {
+        // Dart's `!` throws here; `unwrap_or_default()` would have returned 0.0
+        // and this test would pass with the wrong answer instead of panicking.
+        NullCheck::new(None, Some(1.0)).doubled();
+    }
+
+    #[test]
+    #[should_panic]
+    fn the_second_null_check_is_checked_too() {
+        // Only the first operand is non-null, so an implementation that
+        // unwrapped just the first would return 3.0 rather than crash.
+        NullCheck::new(Some(3.0), None).summed();
+    }
+
+    #[test]
+    fn a_fallback_and_a_check_are_not_the_same_thing() {
+        // `other ?? fallback` supplies a default; `maybe!` insists on a value.
+        let n = NullCheck::new(Some(5.0), None);
+        assert_eq!(n.with_fallback(10.0), 15.0);
+        let m = NullCheck::new(Some(5.0), Some(1.0));
+        assert_eq!(m.with_fallback(10.0), 6.0);
     }
 }

@@ -98,6 +98,15 @@ class Frontend {
       // the backend has nothing to do with one yet -- the value is the value.
       return expression(node.expression);
     }
+    if (node is PostfixExpression) {
+      // `!` only. `x++` and `x--` are postfix too and are assignments in
+      // disguise; they belong with the mutability work, not here.
+      if (node.operator.lexeme != '!') {
+        throw Unsupported(
+            'postfix `${node.operator.lexeme}`', node.toSource());
+      }
+      return IrNullCheck(expression(node.operand));
+    }
     if (node is InstanceCreationExpression) return _construct(node);
     if (node is MethodInvocation) return _invoke(node);
 

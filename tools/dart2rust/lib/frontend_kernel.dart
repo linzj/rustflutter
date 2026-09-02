@@ -111,6 +111,7 @@ class KernelFrontend {
     if (node is VariableSet) {
       throw Unsupported('assignment used for its value', _sample(node));
     }
+    if (node is NullCheck) return IrNullCheck(expression(node.operand));
     if (node is AsExpression) return expression(node.operand);
     if (node is ConstantExpression) return _constant(node.constant, node);
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
