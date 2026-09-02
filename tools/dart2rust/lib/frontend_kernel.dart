@@ -168,6 +168,21 @@ class KernelFrontend {
       // statement form, written where the value would have gone.
       return IrThrowValue(expression(node.expression));
     }
+    if (node is InstanceSet) {
+      // `a.b = v` where the value is wanted. Only a field on `this`: a setter
+      // returns nothing to produce, and another object's field is the `&mut`
+      // through a reference this compiler still refuses as a statement.
+      if (node.receiver is! ThisExpression) {
+        throw Unsupported(
+          'assignment to another object used for its value',
+          _sample(node),
+        );
+      }
+      if (node.interfaceTarget is! Field) {
+        throw Unsupported('setter call used for its value', _sample(node));
+      }
+      return IrSetValue(null, node.name.text, expression(node.value));
+    }
     if (node is NullCheck) return IrNullCheck(expression(node.operand));
     if (node is AsExpression) return expression(node.operand);
     if (node is ConstantExpression) return _constant(node.constant, node);
@@ -409,6 +424,20 @@ class KernelFrontend {
   /// carried across as labelled blocks.
   final _continueTargets = <LabeledStatement>{};
 
+  /// Labels a switch's `break` points at, and the breaks that may be dropped --
+  /// the last statement of a case body, and only that one.
+  final _switchBreaks = <LabeledStatement>{};
+  final _droppableBreaks = <BreakStatement>{};
+
+  /// A case body, with its trailing `break` marked as droppable.
+  IrStmt _caseBody(Statement body) {
+    final last = body is Block && body.statements.isNotEmpty
+        ? body.statements.last
+        : body;
+    if (last is BreakStatement) _droppableBreaks.add(last);
+    return statement(body);
+  }
+
   /// Labelled statements a `break` should leave, and the Rust label to use --
   /// null when a bare `break` will do.
   final _breakTargets = <LabeledStatement, String?>{};
@@ -532,6 +561,22 @@ class KernelFrontend {
   IrExpr _staticInvocation(StaticInvocation node) {
     final target = node.target;
     final positional = node.arguments.positional;
+    // Two of dart:math's, and one of Flutter's own. Rust has all three, and
+    // `max` is the same spelling for floats and integers because `f32::max` is
+    // inherent and `Ord::max` covers the rest. 372 `max` and 184 `clampDouble`.
+    const arithmetic = {'max': 'max', 'min': 'min'};
+    final rust = arithmetic[target.name.text];
+    if (rust != null && positional.length == 2) {
+      return IrCall(expression(positional[0]), rust, [
+        expression(positional[1]),
+      ]);
+    }
+    if (target.name.text == 'clampDouble' && positional.length == 3) {
+      return IrCall(expression(positional[0]), 'clamp', [
+        expression(positional[1]),
+        expression(positional[2]),
+      ]);
+    }
     if (target.name.text == 'unsafeCast' && positional.length == 1) {
       // The CFE's own cast, inserted where it has already proved the type. It
       // does nothing at runtime and there is nothing for it to do here either.
@@ -801,14 +846,19 @@ class KernelFrontend {
         return IrAssignField(value.name.text, expression(value.value));
       }
       if (value is VariableSet) {
-        final name = value.variable.cosmeticName;
-        if (name == null || name.startsWith('#')) {
+        // A temporary can be assigned to now that it has a name -- the same
+        // reason its declaration stopped being refused. It has to be a name
+        // this lowering already gave out, though: assigning to a temporary
+        // that was never declared here would name a local nobody wrote.
+        final written = value.variable.cosmeticName;
+        final known = _temporaries[value.variable];
+        if (known == null && (written == null || written.startsWith('#'))) {
           throw Unsupported(
             'assignment to a synthetic variable',
             _sample(value),
           );
         }
-        return IrAssign(name, expression(value.value));
+        return IrAssign(known ?? written!, expression(value.value));
       }
       return IrExprStmt(expression(value));
     }
@@ -817,6 +867,15 @@ class KernelFrontend {
     }
     if (node is LabeledStatement) {
       final body = node.body;
+      if (body is SwitchStatement) {
+        // The CFE wraps a switch in a label so that `break` has something to
+        // point at. In Rust a match arm simply ends, so that `break` is
+        // nothing -- but only the one at the *end* of a case. One in the
+        // middle would be leaving the switch early, which a match arm cannot
+        // do, so it is refused rather than dropped.
+        _switchBreaks.add(node);
+        return statement(body);
+      }
       if (body is WhileStatement ||
           body is ForStatement ||
           body is DoStatement) {
@@ -843,10 +902,35 @@ class KernelFrontend {
     }
     if (node is BreakStatement) {
       final target = node.target;
+      if (_switchBreaks.contains(target)) {
+        if (!_droppableBreaks.contains(node)) {
+          throw Unsupported(
+            'break out of a switch from inside a case',
+            _sample(node),
+          );
+        }
+        return const IrBlock([]);
+      }
       if (_continueTargets.contains(target)) return const IrContinue();
       if (_breakTargets.containsKey(target))
         return IrBreak(_breakTargets[target]);
       return IrBreak(_labelFor(target));
+    }
+    if (node is SwitchStatement) {
+      final cases = <IrCase>[];
+      IrStmt? otherwise;
+      for (final c in node.cases) {
+        final body = _caseBody(c.body);
+        if (c.isDefault) {
+          otherwise = body;
+          continue;
+        }
+        if (c.expressions.isEmpty) {
+          throw Unsupported('empty switch case', _sample(node));
+        }
+        cases.add(IrCase([for (final e in c.expressions) expression(e)], body));
+      }
+      return IrSwitch(expression(node.expression), cases, otherwise);
     }
     if (node is WhileStatement) {
       // No updates, so a `continue` really is Rust's `continue`.

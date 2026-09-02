@@ -144,6 +144,7 @@ class Frontend {
         _arguments(node.argumentList, node.element, node),
       );
     }
+    if (node is AssignmentExpression) return _assignmentValue(node);
     if (node is ThrowExpression) {
       // `a ?? throw StateError(..)`. Rust has no throw and does not need one:
       // `return Err(e)` has type `!`, which fits wherever a value was wanted.
@@ -536,6 +537,16 @@ class Frontend {
     if (node.methodName.name == 'identical' && args.length == 2) {
       return IrIdentical(args[0], args[1]);
     }
+    // dart:math's `max`/`min` and Flutter's `clampDouble`. Rust has all three,
+    // and `max` is one spelling for floats and integers alike.
+    const arithmetic = {'max': 'max', 'min': 'min'};
+    final rust = arithmetic[node.methodName.name];
+    if (rust != null && args.length == 2) {
+      return IrCall(args[0], rust, [args[1]]);
+    }
+    if (node.methodName.name == 'clampDouble' && args.length == 3) {
+      return IrCall(args[0], 'clamp', [args[1], args[2]]);
+    }
     // A top-level function is not a method on `this`. Without this check
     // `clampDouble(a, b, c)` came out as `self.clamp_double(a, b, c)`, which is
     // both wrong and a place the two front ends disagreed -- the Kernel one
@@ -588,12 +599,81 @@ class Frontend {
         node.elseStatement == null ? null : statement(node.elseStatement!),
       );
     }
+    if (node is SwitchStatement) {
+      final cases = <IrCase>[];
+      IrStmt? otherwise;
+      var values = <IrExpr>[];
+      for (final member in node.members) {
+        if (member is SwitchDefault) {
+          otherwise = _caseBody(member.statements);
+          continue;
+        }
+        // Dart 3 parses `case Corner.topLeft:` as a *pattern* case, so the
+        // constant has to be taken out of the pattern. Anything richer than a
+        // constant is a real pattern match and is refused: Rust has patterns
+        // too, but they are not these patterns.
+        final Expression value;
+        if (member is SwitchCase) {
+          value = member.expression;
+        } else if (member is SwitchPatternCase) {
+          final pattern = member.guardedPattern.pattern;
+          if (member.guardedPattern.whenClause != null) {
+            throw Unsupported(
+              'switch case with a `when` clause',
+              node.toSource(),
+            );
+          }
+          if (pattern is! ConstantPattern) {
+            throw Unsupported(
+              'switch case matching ${pattern.runtimeType}',
+              node.toSource(),
+            );
+          }
+          value = pattern.expression;
+        } else {
+          throw Unsupported(
+            'switch member ${member.runtimeType}',
+            node.toSource(),
+          );
+        }
+        values.add(expression(value));
+        if (member.statements.isEmpty) {
+          // `case A: case B: ..` -- one arm matching several values, which is
+          // `A | B =>`. Kernel gives it as one case with two expressions, so
+          // both front ends arrive at the same arm.
+          continue;
+        }
+        cases.add(IrCase(values, _caseBody(member.statements)));
+        values = <IrExpr>[];
+      }
+      if (values.isNotEmpty) {
+        throw Unsupported('switch case with no body', node.toSource());
+      }
+      return IrSwitch(expression(node.expression), cases, otherwise);
+    }
     if (node is WhileStatement) {
-      return IrWhile(expression(node.condition), statement(node.body));
+      final previous = _breakLeavesSwitch;
+      _breakLeavesSwitch = false;
+      try {
+        return IrWhile(expression(node.condition), statement(node.body));
+      } finally {
+        _breakLeavesSwitch = previous;
+      }
     }
     if (node is BreakStatement) {
       if (node.label != null) {
         throw Unsupported('labelled break', node.toSource());
+      }
+      if (_breakLeavesSwitch) {
+        // Not the `break` at the end of a case -- that one is dropped before
+        // the body is lowered. This is a `break` in the middle, which means
+        // leaving the switch early, and a Rust match arm cannot. Refused
+        // rather than emitted: a bare `break` in an arm does not compile, and
+        // one member failing to compile takes the whole file with it.
+        throw Unsupported(
+          'break out of a switch from inside a case',
+          node.toSource(),
+        );
       }
       // Labelled when the loop's body is a labelled block, because Rust will
       // not let a bare `break` cross one.
@@ -705,6 +785,31 @@ class Frontend {
     return _type(v.declaredFragment?.element.type);
   }
 
+  /// A case body, without the `break` Dart puts at the end of it.
+  ///
+  /// That `break` means "leave the switch", which a Rust match arm does by
+  /// ending. One anywhere *but* the end would be leaving early, which an arm
+  /// cannot do, so it is left in place to be refused.
+  IrStmt _caseBody(List<Statement> statements) {
+    final body =
+        statements.isNotEmpty &&
+            statements.last is BreakStatement &&
+            (statements.last as BreakStatement).label == null
+        ? statements.sublist(0, statements.length - 1)
+        : statements;
+    final previous = _breakLeavesSwitch;
+    _breakLeavesSwitch = true;
+    try {
+      return IrBlock([for (final s in body) statement(s)]);
+    } finally {
+      _breakLeavesSwitch = previous;
+    }
+  }
+
+  /// Whether a `break` reached now would be leaving a switch rather than a
+  /// loop. A loop written inside a case takes its own `break` back.
+  var _breakLeavesSwitch = false;
+
   /// The label a `continue` in the loop being lowered has to break out of.
   ///
   /// Null inside a `while`, where `continue` means what Rust's does.
@@ -726,6 +831,16 @@ class Frontend {
   }
 
   (IrStmt, String?) _forBody(Statement body, bool hasUpdates) {
+    final wasInSwitch = _breakLeavesSwitch;
+    _breakLeavesSwitch = false;
+    try {
+      return _forBodyInner(body, hasUpdates);
+    } finally {
+      _breakLeavesSwitch = wasInSwitch;
+    }
+  }
+
+  (IrStmt, String?) _forBodyInner(Statement body, bool hasUpdates) {
     final wraps = hasUpdates && _continues(body);
     // Both labels are allocated only when something needs them, and the loop's
     // before the body's -- which is the order the CFE allocates in, so the two
@@ -799,6 +914,30 @@ class Frontend {
   /// A compound assignment (`x += 1`) is expanded here, because analyzer keeps
   /// it as one node while Kernel has already rewritten it -- the two front ends
   /// have to arrive at the same IR.
+  /// `a.b = v` where the value is wanted, matching the Kernel front end's rule:
+  /// a field on `this`, and nothing else.
+  IrExpr _assignmentValue(AssignmentExpression node) {
+    final left = node.leftHandSide;
+    if (node.operator.lexeme != '=') {
+      throw Unsupported(
+        'compound assignment used for its value',
+        node.toSource(),
+      );
+    }
+    if (left is PropertyAccess && left.target is ThisExpression) {
+      final element = left.propertyName.element;
+      if (element is! FieldElement && element is! PropertyAccessorElement) {
+        throw Unsupported('assignment used for its value', node.toSource());
+      }
+      return IrSetValue(
+        null,
+        left.propertyName.name,
+        expression(node.rightHandSide),
+      );
+    }
+    throw Unsupported('assignment used for its value', node.toSource());
+  }
+
   IrStmt _assignment(AssignmentExpression node) {
     final target = node.leftHandSide;
     final (name, onThis) = _assignTarget(node);

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Presubmit: refuse a commit whose staged code is not format-clean.
 # Enable once per clone:  git config core.hooksPath .githooks
-# Fix what it complains about with:  cargo fmt / clang-format -i <files>
+# Fix what it complains about with:
+#   cargo fmt / clang-format -i <files> / dart format <files>
 
 # Staged, still-present files only (a `git rm` need not be formatted).
 files=$(git diff --cached --name-only --diff-filter=ACMR)
@@ -9,6 +10,16 @@ files=$(git diff --cached --name-only --diff-filter=ACMR)
 
 repo_root=$(git rev-parse --show-toplevel)
 fail=0
+
+# `dart` is not on PATH on this machine; the SDK the tools are run with is the
+# one that must decide the formatting, since a different revision formats
+# differently. Looked up once, and only complained about if a .dart file is
+# actually staged -- but complained about rather than skipped, because a check
+# that quietly does nothing is worse than no check.
+dart_bin=$(command -v dart 2>/dev/null)
+if [ -z "$dart_bin" ] && [ -x "E:/source/flutter/bin/cache/dart-sdk/bin/dart.exe" ]; then
+    dart_bin="E:/source/flutter/bin/cache/dart-sdk/bin/dart.exe"
+fi
 
 # The framework crate carries its own rustfmt config and edition; everything
 # under it must be checked through cargo so those settings apply.
@@ -32,8 +43,27 @@ for f in $files; do
             # framework crate's own rustfmt.toml says the same. The two
             # editions disagree about import order, so a stale number here
             # rejects every file written the way the compiler wants it.
-            if ! rustfmt --check --edition 2024 "$repo_root/$f" >/dev/null 2>&1; then
+            #
+            # Except the dart2rust test crate, whose Cargo.toml says 2021 and
+            # which is formatted with that -- checking it at 2024 was the same
+            # mismatch this comment warns about, pointing the other way.
+            edition=2024
+            case "$f" in tools/dart2rust/testdata/*) edition=2021 ;; esac
+            if ! rustfmt --check --edition "$edition" "$repo_root/$f" >/dev/null 2>&1; then
                 echo "pre-commit: rustfmt: $f" >&2
+                fail=1
+            fi
+            ;;
+        *.dart)
+            if [ -z "$dart_bin" ]; then
+                echo "pre-commit: no dart found, cannot check $f" >&2
+                echo "  put dart on PATH, or edit .githooks/pre-commit" >&2
+                fail=1
+                continue
+            fi
+            if ! "$dart_bin" format --output=none --set-exit-if-changed                     "$repo_root/$f" >/dev/null 2>&1; then
+                echo "pre-commit: dart format: $f" >&2
+                echo "  fix with: dart format $f" >&2
                 fail=1
             fi
             ;;

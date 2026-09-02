@@ -182,6 +182,11 @@ class RustBackend {
       IrIdentical(:final left, :final right) => _identical(left, right),
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
       IrThrowValue(:final value) => 'return Err(${expr(value)})',
+      IrSetValue(:final target, :final name, :final value) => _setValue(
+        target,
+        name,
+        value,
+      ),
       IrConditional(:final condition, :final then, :final otherwise) =>
         'if ${expr(condition)} { ${expr(then)} } else { ${expr(otherwise)} }',
       IrIs() => throw Unsupported(
@@ -616,6 +621,17 @@ class RustBackend {
     return name == '_' ? 'new_' : name;
   }
 
+  /// `a.b = v` where the value of the assignment is wanted.
+  ///
+  /// Rust's assignment produces `()`, so the value is bound first and produced
+  /// after -- not re-read from the field, which would be a second read of
+  /// something a setter or another thread could have changed.
+  String _setValue(IrExpr? target, String name, IrExpr value) {
+    final receiver = target == null ? _selfName : expr(target);
+    return '{ let __set = ${expr(value)}; '
+        '$receiver.${snake(name)} = __set; __set }';
+  }
+
   /// `identical(a, b)`.
   ///
   /// Only with `this` on one side. That is the `operator ==` fast path -- 140
@@ -698,6 +714,11 @@ class RustBackend {
           walk(body);
         case IrLabeled(:final body):
           walk(body);
+        case IrSwitch(:final cases, :final otherwise):
+          for (final one in cases) {
+            walk(one.body);
+          }
+          if (otherwise != null) walk(otherwise);
         case IrBreak():
         case IrContinue():
         case IrReturn():
@@ -858,6 +879,25 @@ class RustBackend {
         _line(label == null ? 'break;' : "break '$label;");
       case IrContinue():
         _line('continue;');
+      case IrSwitch(:final value, :final cases, :final otherwise):
+        _line('match ${expr(value)} {');
+        _indent++;
+        for (final one in cases) {
+          _line('${one.values.map(expr).join(' | ')} => {');
+          _indent++;
+          stmt(one.body);
+          _indent--;
+          _line('}');
+        }
+        if (otherwise != null) {
+          _line('_ => {');
+          _indent++;
+          stmt(otherwise);
+          _indent--;
+          _line('}');
+        }
+        _indent--;
+        _line('}');
       case IrWhile(:final condition, :final body, :final label):
         final head = label == null ? '' : "'" + label + ': ';
         _line('${head}while ${expr(condition)} {');
@@ -1389,6 +1429,11 @@ class RustBackend {
         go(right),
       ),
       IrThrowValue(:final value) => IrThrowValue(go(value)),
+      IrSetValue(:final target, :final name, :final value) => IrSetValue(
+        target == null ? null : go(target),
+        name,
+        go(value),
+      ),
       IrClosure() ||
       IrLiteral() ||
       IrStatic() ||
@@ -1468,6 +1513,11 @@ class RustBackend {
           walk(body);
         case IrLabeled(:final body):
           walk(body);
+        case IrSwitch(:final cases, :final otherwise):
+          for (final one in cases) {
+            walk(one.body);
+          }
+          if (otherwise != null) walk(otherwise);
         default:
       }
     }
@@ -1976,6 +2026,13 @@ class _WalkSelf {
         statement(body);
       case IrLabeled(:final body):
         statement(body);
+      case IrSwitch(:final value, :final cases, :final otherwise):
+        expression(value);
+        for (final one in cases) {
+          one.values.forEach(expression);
+          statement(one.body);
+        }
+        if (otherwise != null) statement(otherwise);
       case IrBreak():
       case IrContinue():
     }
@@ -2035,6 +2092,12 @@ class _WalkSelf {
         expression(left);
         expression(right);
       case IrThrowValue(:final value):
+        expression(value);
+      case IrSetValue(:final target, :final value):
+        // Same rule as the statement form: only a write to `this` makes the
+        // method mutating.
+        if (target == null || target is IrThis) writesFields = true;
+        if (target != null) expression(target);
         expression(value);
       case IrLiteral():
       case IrLocal():

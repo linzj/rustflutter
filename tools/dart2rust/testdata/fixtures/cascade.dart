@@ -9,7 +9,7 @@
 // duplicated one.
 
 class Paint {
-  Paint() ;
+  Paint();
 
   /// Set at the declaration **and** never by the constructor.
   double width = 0.0;

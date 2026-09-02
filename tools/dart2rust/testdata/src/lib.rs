@@ -299,6 +299,9 @@ impl RangeError {
 mod failure;
 pub use failure::Bounds;
 
+mod branching;
+pub use branching::{Corner, Placement};
+
 mod control;
 pub use control::Sieve;
 
@@ -1315,5 +1318,40 @@ mod tests {
     fn continue_skips_the_rest_of_the_body() {
         // 1+3+5+7+9. A `continue` translated as `break` would give 1.
         assert_eq!(Sieve::new(10).odds_below(), 25);
+    }
+
+    // -- switch, and the library calls beside it -------------------------------
+
+    #[test]
+    fn a_switch_with_no_default_covers_every_case() {
+        // Rust checks the exhaustiveness Dart only assumes. The two arms that
+        // give 0.0 and the two that give the width are separate arms, so a
+        // case wired to the wrong one would show.
+        let p = Placement::new(7.0, 13.0);
+        assert_eq!(p.offset_x(Corner::TopLeft), 0.0);
+        assert_eq!(p.offset_x(Corner::TopRight), 7.0);
+        assert_eq!(p.offset_x(Corner::BottomLeft), 0.0);
+        assert_eq!(p.offset_x(Corner::BottomRight), 7.0);
+    }
+
+    #[test]
+    fn two_values_on_one_arm_and_a_default() {
+        // The `break` at the end of each case means "leave the switch", which
+        // a match arm does by ending -- dropped, not translated. If it had been
+        // kept the file would not compile; if the arm had fallen through,
+        // TopLeft would give 11.0 instead of 3.0.
+        let p = Placement::new(7.0, 13.0);
+        assert_eq!(p.depth(Corner::TopLeft), 3.0);
+        assert_eq!(p.depth(Corner::TopRight), 3.0);
+        assert_eq!(p.depth(Corner::BottomLeft), 11.0);
+        assert_eq!(p.depth(Corner::BottomRight), 29.0); // the default
+    }
+
+    #[test]
+    fn clamp_keeps_its_bounds() {
+        let p = Placement::new(7.0, 13.0);
+        assert_eq!(p.bounded(3.0), 7.0);
+        assert_eq!(p.bounded(9.0), 9.0);
+        assert_eq!(p.bounded(99.0), 13.0);
     }
 }

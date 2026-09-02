@@ -491,6 +491,44 @@ class IrIdentical extends IrExpr {
   final IrExpr right;
 }
 
+/// `switch (x) { case A: .. }`.
+///
+/// 628 in `package:flutter/`, and the shape is friendly: almost all switch on
+/// an enum, only 20 have a default, none have an empty fall-through case and
+/// exactly one uses `continue L`. So Rust's `match` is not an approximation of
+/// this -- it is the same construct, including the exhaustiveness Dart's
+/// enum switches already rely on.
+class IrSwitch extends IrStmt {
+  const IrSwitch(this.value, this.cases, this.otherwise);
+
+  final IrExpr value;
+  final List<IrCase> cases;
+
+  /// The `default:` body, or null. Rust needs a `_` arm when the arms are not
+  /// exhaustive, and will say so itself when one is missing.
+  final IrStmt? otherwise;
+}
+
+class IrCase {
+  const IrCase(this.values, this.body);
+
+  /// One arm may match several values: `case A: case B: ..` is `A | B =>`.
+  final List<IrExpr> values;
+  final IrStmt body;
+}
+
+/// `a.b = v` where the value of the assignment is wanted.
+///
+/// 202 of these. Rust's assignment has the value `()`, so the value has to be
+/// kept: bind it, assign it, produce it.
+class IrSetValue extends IrExpr {
+  const IrSetValue(this.target, this.name, this.value);
+
+  final IrExpr? target;
+  final String name;
+  final IrExpr value;
+}
+
 /// `while (condition) { .. }`.
 ///
 /// A `for` becomes one of these wrapped in a block holding its declarations,
