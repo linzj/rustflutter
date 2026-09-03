@@ -3,7 +3,7 @@
 
 /// The body of `Shape.area`, reachable from an
 /// override the way Dart's `super.area` is.
-pub fn shape_super_area<S: Shape + ?Sized>(this_: &S, scale: f64) -> f64 {
+pub fn shape_super_area<__Self: Shape + ?Sized>(this_: &__Self, scale: f64) -> f64 {
     (100.0 * scale)
 }
 
@@ -85,7 +85,7 @@ impl Shape for Untouched {
 
 /// The body of `Untranslatable.describe`, reachable from an
 /// override the way Dart's `super.describe` is.
-pub fn untranslatable_super_describe<S: Untranslatable + ?Sized>(this_: &S) -> String {
+pub fn untranslatable_super_describe<__Self: Untranslatable + ?Sized>(this_: &__Self) -> String {
     let mut out: String = "".to_string();
     let mut i: i64 = 0;
     while (i < 2) {

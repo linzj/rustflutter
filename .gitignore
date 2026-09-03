@@ -71,3 +71,6 @@ try_*.log
 # agree.py 的中间产物
 /tools/dart2rust/.agree/
 tools/dart2rust/.crate/
+# The slice crates round 63 added. Generated, like `.crate/`, and forgetting
+# them here swept 1500 generated files into a commit.
+tools/dart2rust/.crate-*/

@@ -79,6 +79,30 @@ def from_analyzer(fixture, out):
     return r.returncode == 0, (r.stdout or '') + (r.stderr or '')
 
 
+def write_prelude():
+    """The fixture crate gets the same prelude the package crate does.
+
+    It was copied by hand before -- `Isolate`, `Completer` and `RangeError`
+    each written twice -- which is a second source of truth for exactly the
+    thing a fixture exists to hold still.
+    """
+    source = io.open(os.path.join(TOOL, 'lib', 'prelude.dart'),
+                     encoding='utf-8').read()
+    opening = "const rustPrelude = r" + "'''"
+    closing = "'''" + ";"
+    start = source.index(opening) + len(opening)
+    end = source.index(closing, start)
+    text = source[start:end].lstrip('\n')
+    out = os.path.join(SRC, 'dart_prelude.rs')
+    if not os.path.exists(out) or io.open(out, encoding='utf-8').read() != text:
+        io.open(out, 'w', encoding='utf-8', newline='\n').write(text)
+        # The hook checks this crate with rustfmt. `prelude.dart` is written
+        # for a reader rather than for rustfmt, so the copy is formatted here
+        # instead of the source being bent to match.
+        subprocess.run(['rustfmt', '--edition', '2021', out],
+                       capture_output=True)
+
+
 def regenerate(stem, config, work):
     fixture = os.path.join(FIXTURES, stem + '.dart')
     out = os.path.join(SRC, stem + '.rs')
@@ -115,6 +139,7 @@ def main():
     if not os.path.exists(config):
         dill_tool.write_config(config, TOOL)
 
+    write_prelude()
     stems = sorted(
         f[:-5] for f in os.listdir(FIXTURES)
         if f.endswith('.dart')

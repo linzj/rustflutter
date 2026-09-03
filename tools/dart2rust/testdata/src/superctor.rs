@@ -3,7 +3,7 @@
 
 /// The body of `Shape.area`, reachable from an
 /// override the way Dart's `super.area` is.
-pub fn shape_super_area<S: Shape + ?Sized>(this_: &S) -> f64 {
+pub fn shape_super_area<__Self: Shape + ?Sized>(this_: &__Self) -> f64 {
     (this_.width() * this_.height())
 }
 

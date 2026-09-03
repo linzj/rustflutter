@@ -291,99 +291,14 @@ pub use closures::Closures;
 mod cascade;
 pub use cascade::{Paint, Painter, Tinted};
 
-/// The prelude's `Completer`, as far as the fixtures need it.
-///
-/// Copied rather than shared because this crate is hand-written and does not
-/// get the generated prelude. The real one, and the argument that it is
-/// correct against any executor, is in lib/prelude.dart.
-pub struct Completer<T> {
-    shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
-}
-
-struct CompleterState<T> {
-    value: Option<T>,
-    waker: Option<std::task::Waker>,
-    completed: bool,
-}
-
-impl<T> Completer<T> {
-    pub fn new() -> Self {
-        Completer {
-            shared: std::rc::Rc::new(std::cell::RefCell::new(CompleterState {
-                value: None,
-                waker: None,
-                completed: false,
-            })),
-        }
-    }
-
-    pub fn complete(&self, value: T) {
-        let mut state = self.shared.borrow_mut();
-        state.completed = true;
-        state.value = Some(value);
-        if let Some(waker) = state.waker.take() {
-            waker.wake();
-        }
-    }
-
-    pub fn is_completed(&self) -> bool {
-        self.shared.borrow().completed
-    }
-
-    pub fn future(&self) -> CompleterFuture<T> {
-        CompleterFuture {
-            shared: self.shared.clone(),
-        }
-    }
-}
-
-pub struct CompleterFuture<T> {
-    shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
-}
-
-impl<T> std::future::Future for CompleterFuture<T> {
-    type Output = T;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<T> {
-        let mut state = self.shared.borrow_mut();
-        match state.value.take() {
-            Some(value) => std::task::Poll::Ready(value),
-            None => {
-                state.waker = Some(cx.waker().clone());
-                std::task::Poll::Pending
-            }
-        }
-    }
-}
-
-/// The prelude's `Isolate`, as far as the fixtures need it.
-///
-/// A Dart `static` is one per isolate and a Rust `static` is one per process,
-/// so the generated statics are wrapped in this and read through two derefs.
-/// The real one, with the argument for its `unsafe`, is in lib/prelude.dart;
-/// this crate is hand-written and does not get the generated prelude.
-pub struct Isolate<T>(pub T);
-
-unsafe impl<T> Sync for Isolate<T> {}
-unsafe impl<T> Send for Isolate<T> {}
-
-impl<T> std::ops::Deref for Isolate<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.0
-    }
-}
-
-/// dart:core's RangeError, as far as the fixture needs it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RangeError {
-    pub message: String,
-}
-impl RangeError {
-    pub fn new(message: String) -> Self {
-        Self { message }
-    }
-}
+// The prelude, the same file the whole-package crate gets.
+//
+// It used to be copied here by hand -- `Isolate`, `Completer` and `RangeError`
+// each written twice -- and a copy drifts. Two front ends held in step by a
+// fixture, and a prelude held in step by nothing, was the wrong shape.
+// `bin/regen.py` writes this file from `lib/prelude.dart` now.
+mod dart_prelude;
+pub use dart_prelude::*;
 
 mod failure;
 pub use failure::Bounds;
@@ -1206,6 +1121,40 @@ mod tests {
                 return value;
             }
         }
+    }
+
+    #[test]
+    fn the_event_loop_runs_microtasks_before_timers() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let order: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(vec![]));
+
+        let from_timer = order.clone();
+        Timer::new(
+            Duration::ZERO,
+            Rc::new(move || from_timer.borrow_mut().push("timer")),
+        );
+        let from_micro = order.clone();
+        schedule_microtask(Box::new(move || from_micro.borrow_mut().push("microtask")));
+
+        run_until_idle();
+        // Dart drains every microtask before any timer, and programs depend on
+        // it. A timer due at zero still comes second.
+        assert_eq!(*order.borrow(), vec!["microtask", "timer"]);
+    }
+
+    #[test]
+    fn a_cancelled_timer_does_not_run() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let ran = Rc::new(RefCell::new(false));
+        let mark = ran.clone();
+        let timer = Timer::new(Duration::ZERO, Rc::new(move || *mark.borrow_mut() = true));
+        assert!(timer.is_active());
+        timer.cancel();
+        assert!(!timer.is_active());
+        run_until_idle();
+        assert!(!*ran.borrow());
     }
 
     #[test]

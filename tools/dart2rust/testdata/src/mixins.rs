@@ -3,7 +3,7 @@
 
 /// The body of `Measured.base`, reachable from an
 /// override the way Dart's `super.base` is.
-pub fn measured_super_base<S: Measured + ?Sized>(this_: &S) -> f64 {
+pub fn measured_super_base<__Self: Measured + ?Sized>(this_: &__Self) -> f64 {
     2.0
 }
 
@@ -25,13 +25,13 @@ pub trait Measured {
 
 /// The body of `Scaled.scale`, reachable from an
 /// override the way Dart's `super.scale` is.
-pub fn scaled_super_scale<S: Scaled + ?Sized>(this_: &S) -> f64 {
+pub fn scaled_super_scale<__Self: Scaled + ?Sized>(this_: &__Self) -> f64 {
     3.0
 }
 
 /// The body of `Scaled.base`, reachable from an
 /// override the way Dart's `super.base` is.
-pub fn scaled_super_base<S: Scaled + ?Sized>(this_: &S) -> f64 {
+pub fn scaled_super_base<__Self: Scaled + ?Sized>(this_: &__Self) -> f64 {
     5.0
 }
 
