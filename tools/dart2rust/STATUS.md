@@ -3900,6 +3900,38 @@ E0277 **62 → 0**,而且那 15 个被拒的 static 又翻回来了。
 
 ---
 
+## 第 81 轮:位置参数按位置对,不按名字
+
+E0046(31)是"trait 没实现全",而缺的那些成员**是我上一轮亲手拒掉的**:
+
+    // NOT TRANSLATED: impl Simulation::x for _InterpolationSimulation
+    //   unsupported override widens `x` with `timeInSeconds`
+
+`Simulation.x(double time)`,覆盖它的是 `x(double timeInSeconds)`
+——**参数改了名,不是加了参数**。第 74 轮那个"加宽"的判断按名字比,
+于是把改名当成了加宽。Dart 的**位置参数按位置对**,只有命名参数按名字对。
+
+改完之后 E0046 → 0,拒绝少了 18。
+
+### 两个解析错误
+
+`box.left`:**`box` 是 Rust 的保留字**,而关键字表里没有它。
+补齐了保留字(`box`、`final`、`do`、`yield`、`try`、`gen` 等)——
+这些不是"在用"的关键字,但一样让代码不成话。
+
+`Box<dyn Gradient>::linear(..)`:在**抽象类上叫构造函数**。
+`Gradient.linear` 是抽象类上的工厂,而抽象类在这里是 trait,trait 没有构造函数。
+它真正该点名的是工厂重定向到的那个具体类,而那在这里不知道。如实拒绝。
+
+| | 错误 |
+|---|---|
+| `widgets` | 414 → 422(解开 E0046,下游名字露出来)→ **401** |
+| `core` | 145 → **114** |
+
+**中间那次微涨是预期的**:拒绝一解开,被它挡住的下游名字就露出来。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3920,9 +3952,9 @@ E0277 **62 → 0**,而且那 15 个被拒的 static 又翻回来了。
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`widgets` 剩 481。E0425 的 225 里,
-`Timer`/`Completer` 54 是执行器,`Pointer`/`NativeType` 是 dart:ffi(该拒),
-`TextStyle` 9 是 `dart:ui` 和 `painting` 重名那件老事。先看还剩什么形状。
+**下一轮**:`widgets` 剩 401,E0425 占 240。
+`Timer`/`Completer` 54 是执行器,`Pointer`/`NativeType` 是 dart:ffi(该拒)。
+看剩下的 E0425 是不是还有成规模的形状。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

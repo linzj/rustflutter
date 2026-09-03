@@ -83,6 +83,22 @@ const _rustKeywords = {
   'async',
   'await',
   'union',
+  // Reserved rather than in use, and just as fatal: `box.left` on a local
+  // named `box` -- which `TextPainter` has -- does not parse at all.
+  'box',
+  'abstract',
+  'become',
+  'do',
+  'final',
+  'macro',
+  'override',
+  'priv',
+  'typeof',
+  'unsized',
+  'virtual',
+  'yield',
+  'try',
+  'gen',
 };
 
 /// Reserved words that cannot even be raw identifiers.
@@ -1065,6 +1081,18 @@ class RustBackend {
           ? ''
           : '::<${t.arguments.map((a) => type(a)).join(', ')}>';
       return '$collection$arguments::new()';
+    }
+    // An abstract class is a trait here, and a trait has no constructor to
+    // call. Dart's `Gradient.linear(..)` is a factory on an abstract class,
+    // and the type of one is `Box<dyn Gradient>` -- so the call came out as
+    // `Box<dyn Gradient>::linear(..)`, which does not even parse. What it
+    // should name is whichever concrete class the factory redirects to, and
+    // that is not known here.
+    if (library.isAbstract(t.name)) {
+      throw Unsupported(
+        'a constructor of `${t.name}`, which is abstract and became a trait',
+        '${t.name}(..)',
+      );
     }
     // `Pair::<i64, f32>::new(..)`, not `Pair<i64, f32>::new(..)`: in an
     // *expression* Rust wants the turbofish, and the plain form does not parse.
@@ -2663,11 +2691,23 @@ class RustBackend {
     // extra optionals *absent*, so that is what is passed: `None`. An extra
     // parameter that is not optional cannot be answered that way and the
     // delegation is refused instead of guessed at.
-    final have = through == null
+    // Positional parameters line up by **position**, not by name. Dart lets an
+    // override rename them -- `Simulation.x(double time)` is overridden by
+    // `x(double timeInSeconds)` -- and matching on the name called that a
+    // widening and refused it, which left the trait unimplemented: 31 `E0046`s
+    // for what is only a different word.
+    final named = through == null
         ? null
-        : {for (final p in through.params) p.name};
+        : {for (final p in through.params.where((p) => p.named)) p.name};
+    final positional = through == null
+        ? 0
+        : through.params.where((p) => !p.named).length;
+    var at = -1;
     final args = method.params.map((p) {
-      if (have == null || have.contains(p.name)) return snake(p.name);
+      if (!p.named) at++;
+      if (through == null) return snake(p.name);
+      final supplied = p.named ? named!.contains(p.name) : at < positional;
+      if (supplied) return snake(p.name);
       if (p.type.nullable || p.hasDefault) return 'None';
       throw Unsupported(
         'override widens `${method.name}` with `${p.name}`, '
