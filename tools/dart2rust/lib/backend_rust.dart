@@ -786,6 +786,24 @@ class RustBackend {
     // "operator `` has no Rust name" -- 367 times, naming neither the member
     // nor where it came from.
     if (name.isEmpty) {
+      // The runtime's own collections first: `[]` is `_GrowableList(0)` in
+      // Kernel, and the unnamed-factory rule below would spell that
+      // `_GrowableList::new(0)` -- a module Rust has never heard of, 129
+      // times. A length other than zero is a list of nulls, which is not an
+      // empty `Vec`, so it is refused rather than flattened to one.
+      final collection = _collections[owner];
+      if (collection != null) {
+        final empty =
+            args.isEmpty ||
+            (args.length == 1 &&
+                args.single is IrLiteral &&
+                (args.single as IrLiteral).value == '0');
+        if (empty) return '$collection::new()';
+        throw Unsupported(
+          '`$owner` with a length, which is a list of nulls',
+          '$owner(..)',
+        );
+      }
       return '$owner::${_ctorName(null)}(${args.map(expr).join(', ')})';
     }
     final target = library[owner];

@@ -648,6 +648,41 @@ impl Zone {
     }
 }
 
+/// Dart's `RegExp`, as a name and a pattern and nothing else.
+///
+/// There is no regular-expression engine here and writing one is not this
+/// project's job. What upstream does with a `RegExp` is match and replace, and
+/// both `panic!` with the pattern in the message -- the same answer the
+/// backend gives for a method it cannot translate, and for the same reason: a
+/// loud failure at the point of use beats a quiet wrong answer, and beats a
+/// missing name that stops a thousand lines from compiling.
+///
+/// Pulling in a regex crate would work and is deliberately not done: the
+/// generated crate has no dependencies, which is what makes it possible to say
+/// that everything in it came from the Dart or from this file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegExp {
+    pub pattern: String,
+}
+
+impl RegExp {
+    pub fn new(pattern: String) -> Self {
+        RegExp { pattern }
+    }
+
+    pub fn has_match(&self, _input: &str) -> bool {
+        panic!("RegExp has no engine here: {}", self.pattern)
+    }
+
+    pub fn string_match(&self, _input: &str) -> Option<String> {
+        panic!("RegExp has no engine here: {}", self.pattern)
+    }
+
+    pub fn all_matches(&self, _input: &str) -> Vec<String> {
+        panic!("RegExp has no engine here: {}", self.pattern)
+    }
+}
+
 /// Dart's error and exception classes.
 ///
 /// One shape for all of them: a message, and a `Display` that prints what Dart
@@ -679,6 +714,7 @@ macro_rules! dart_error {
     };
 }
 
+dart_error!(Exception, "Exception");
 dart_error!(StateError, "Bad state");
 dart_error!(ArgumentError, "Invalid argument(s)");
 dart_error!(UnsupportedError, "Unsupported operation");
