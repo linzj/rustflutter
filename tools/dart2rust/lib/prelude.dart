@@ -404,6 +404,139 @@ impl DateTime {
     }
 }
 
+/// Dart's `MapEntry`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MapEntry<K, V> {
+    pub key: K,
+    pub value: V,
+}
+
+impl<K, V> MapEntry<K, V> {
+    pub fn new(key: K, value: V) -> Self {
+        MapEntry { key, value }
+    }
+}
+
+/// Dart's `Queue`, backed by a `VecDeque`.
+pub type Queue<T> = std::collections::VecDeque<T>;
+
+/// Dart's `Stopwatch`.
+///
+/// Real, and the one other thing here that reaches the outside world: it uses
+/// the monotonic clock, as Dart's does. `elapsedTicks` is microseconds, and
+/// `frequency` says so, which is what Dart reports on every platform Flutter
+/// ships to.
+#[derive(Clone, Copy, Debug)]
+pub struct Stopwatch {
+    started: Option<std::time::Instant>,
+    accumulated: u128,
+}
+
+impl Default for Stopwatch {
+    fn default() -> Self {
+        Stopwatch::new()
+    }
+}
+
+impl Stopwatch {
+    pub const FREQUENCY: i64 = 1000000;
+
+    pub fn new() -> Self {
+        Stopwatch { started: None, accumulated: 0 }
+    }
+
+    pub fn start(&mut self) {
+        if self.started.is_none() {
+            self.started = Some(std::time::Instant::now());
+        }
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(at) = self.started.take() {
+            self.accumulated += at.elapsed().as_micros();
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.accumulated = 0;
+        if self.started.is_some() {
+            self.started = Some(std::time::Instant::now());
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.started.is_some()
+    }
+
+    pub fn elapsed_microseconds(&self) -> i64 {
+        let running = self.started.map(|at| at.elapsed().as_micros()).unwrap_or(0);
+        (self.accumulated + running) as i64
+    }
+
+    pub fn elapsed_milliseconds(&self) -> i64 {
+        self.elapsed_microseconds() / 1000
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        Duration { microseconds: self.elapsed_microseconds() }
+    }
+}
+
+/// Dart's `Uri`, as far as upstream uses one.
+///
+/// The whole text, plus the pieces that can be taken from it without a parser
+/// worth the name. Upstream builds asset keys and compares them; it does not
+/// resolve relative references here, and `resolve` is left out rather than
+/// written wrong. `parse` never fails, which Dart's does -- another reason not
+/// to reach for this where correctness of the parse matters.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Uri {
+    pub text: String,
+}
+
+impl Uri {
+    pub fn parse(text: String) -> Self {
+        Uri { text }
+    }
+
+    pub fn scheme(&self) -> String {
+        match self.text.find(':') {
+            Some(at) if !self.text[..at].contains('/') => self.text[..at].to_string(),
+            _ => String::new(),
+        }
+    }
+
+    pub fn path(&self) -> String {
+        let rest = match self.text.find("://") {
+            Some(at) => &self.text[at + 3..],
+            None => &self.text[..],
+        };
+        let rest = match rest.find('/') {
+            Some(at) => &rest[at..],
+            None => rest,
+        };
+        rest.split(['?', '#']).next().unwrap_or("").to_string()
+    }
+
+    pub fn path_segments(&self) -> Vec<String> {
+        self.path()
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    pub fn has_scheme(&self) -> bool {
+        !self.scheme().is_empty()
+    }
+}
+
+impl fmt::Display for Uri {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 /// Dart's `Type`, as `runtimeType` gives it.
 ///
 /// A name and nothing else. Upstream prints it, compares it, and uses it as a

@@ -3846,6 +3846,40 @@ E0424 **110 → 0**,拒绝 3302 → 3321。
 
 ---
 
+## 第 80 轮:Dart 的 static 是每个 isolate 一份,Rust 的是每个进程一份
+
+### 前奏又添四个
+
+`MapEntry`、`Queue`(`VecDeque` 的别名)、`Stopwatch`(真的,用单调时钟)、
+`Uri`。`Uri` 的说明写在代码里:**只有整段文本和能不靠解析器取出来的几块**;
+`resolve` 干脆没写,而不是写错;`parse` 从不失败,而 Dart 的会——
+**这两条都是不要在解析正确性重要的地方用它的理由**。
+
+`Timer` 28 和 `Completer` 26 还是没做。它们是执行器,
+而一个半真的桩子正是这个项目一直在躲的东西。
+
+### `static` 里放不下 `dyn`
+
+    pub static IMAGE_ON_CREATE:
+        std::sync::LazyLock<Option<Box<dyn Fn(Image) -> ()>>> = ...
+
+    `(dyn Fn(Image))` cannot be shared between threads safely
+
+Rust 的 `static` 是每个进程一份,所以里面的东西必须 `Sync`,
+而 `dyn` trait 对象没有这个约束,以后也不会有。
+
+**但 Dart 的 static 根本不是那个东西**:它是**每个 isolate 一份**,
+而一个 isolate 就是一个线程。忠实的 Rust 是 `thread_local!`——
+那要求每一处读取都通过一个闭包进去,是改**每个使用点**,不是改这一行。
+所以在这里如实拒绝,把原因说清楚,而不是做一半。
+
+| | 错误 |
+|---|---|
+| `widgets` | 541 → 508(四个类型)→ **481**(非 Sync 的 static) |
+| `core` | 158 → **145** |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3866,8 +3900,9 @@ E0424 **110 → 0**,拒绝 3302 → 3321。
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`widgets` 剩 541,E0425 还有 247。
-`Timer` 28、`Completer` 26 是执行器;先看 247 里剩下的形状。
+**下一轮**:`widgets` 剩 481。E0425 的 225 里,
+`Timer`/`Completer` 54 是执行器,`Pointer`/`NativeType` 是 dart:ffi(该拒),
+`TextStyle` 9 是 `dart:ui` 和 `painting` 重名那件老事。先看还剩什么形状。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

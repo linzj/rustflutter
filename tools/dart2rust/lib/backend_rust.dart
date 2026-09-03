@@ -2801,10 +2801,27 @@ class RustBackend {
     for (final constant in cls.constants) {
       if (!constant.isLazy) continue;
       _member('${cls.name}.${constant.name}', () {
+        final held = type(constant.type);
+        // A Rust `static` is shared by every thread, so what it holds must be
+        // `Sync`. A `dyn` trait object here has no such bound and never will:
+        // `Box<dyn Fn(Image)>` in a static is 94 `E0277`s about being sent
+        // between threads.
+        //
+        // Dart's static is not that thing. It is one *per isolate*, and an
+        // isolate is a thread -- so the faithful Rust is a `thread_local!`,
+        // which every read would have to reach through a closure. That is a
+        // change to every use, not to this line, so it is refused here and
+        // said plainly rather than half-done.
+        if (held.contains('dyn ')) {
+          throw Unsupported(
+            'a mutable static holding `$held`, which is not `Sync`',
+            '${cls.name}.${constant.name}',
+          );
+        }
         _doc(constant.doc);
         _line(
           '${_vis(constant.name)}static ${_lazyName(cls.name, constant.name)}: '
-          'std::sync::LazyLock<${type(constant.type)}> = '
+          'std::sync::LazyLock<$held> = '
           'std::sync::LazyLock::new(|| ${expr(constant.value)});',
         );
         _line('');
