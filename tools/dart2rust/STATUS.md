@@ -3633,6 +3633,35 @@ trait 的方法是用基类的话写的,`impl` 必须用这个类的话写出来
 
 ---
 
+## 第 74 轮:Dart 允许覆盖时把可选参数加宽,Rust 不允许
+
+不再追单个名字,先看 E0425 的**形状**:52 个类型、30 个值、28 个函数。
+"值"那一类最有意思——`border_radius` 8、`eccentricity` 4、`circularity` 3:
+
+    fn copy_with(&self, side: Option<BorderSide>) -> Box<dyn OutlinedBorder> {
+        Box::new(BeveledRectangleBorder::copy_with(self, border_radius, side))
+    }
+
+trait 声明的是 `copyWith({side})`,类自己声明的是
+`copyWith({side, borderRadius})`——**Dart 允许覆盖时加可选参数**。
+委托调用照抄了类的参数表,于是点名了一个不在作用域里的 `border_radius`。
+
+一个通过 trait 进来的调用者,在 Dart 里拿到的就是那些多出来的可选参数**缺席**,
+所以传 `None`。多出来的参数**不是**可选的时候没法这么回答,那就拒绝,不猜。
+
+`_invoke`(8)查了一下,是 `identical(zone, Zone.current)`——两个 `Copy` 值比地址。
+**拒得对**,留着。
+
+| | 错误 | |
+|---|---|---|
+| `core` 切片 | 219 → **202** | 拒绝 781 → 785,那 4 个是加宽了非可选参数的 |
+| `widgets` 切片 | 3589 → **3552** | |
+
+`core` 切片已经很薄了,剩下的头部(`AssetBundle` 10、`AssetMetadata` 6)
+其实是**切片选得不对**——那些类在 `services` 里,不在这一片。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3653,9 +3682,8 @@ trait 的方法是用基类的话写的,`impl` 必须用这个类的话写出来
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`core` 切片缺的名字已经很碎了(`AssetBundle` 10、`T` 8、
-`border_radius` 8)。换个角度看 E0425 的 110 个到底是什么形状,
-而不是继续追单个名字。
+**下一轮**:换到 `widgets` 切片看。那里 `T` 有 **428** 个,
+比 `core` 的 8 个大两个数量级——同一个名字,多半不是同一个原因。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

@@ -2512,7 +2512,7 @@ class RustBackend {
           '${need.operator ?? need.name} yet")',
         );
       } else {
-        final call = _inherentCall(have);
+        final call = _inherentCall(have, need);
         final concrete = type(have.returnType);
         _line(concrete == returns ? call : 'Box::new($call)');
       }
@@ -2538,8 +2538,30 @@ class RustBackend {
   ///
   /// An operator that became an `impl std::ops::*` is invoked as the operator,
   /// not as a method: that is the whole point of having emitted the trait impl.
-  String _inherentCall(IrMethod method) {
-    final args = method.params.map((p) => snake(p.name)).toList();
+  String _inherentCall(IrMethod method, [IrMethod? through]) {
+    // Dart lets an override *widen* an optional signature:
+    // `OutlinedBorder.copyWith({side})` is overridden by
+    // `BeveledRectangleBorder.copyWith({side, borderRadius})`. Rust does not,
+    // so the trait method has fewer parameters than the inherent one it
+    // delegates to -- and passing the inherent one's names through named a
+    // `border_radius` that is not in scope, 30 times.
+    //
+    // What a caller reaching this through the trait would get in Dart is the
+    // extra optionals *absent*, so that is what is passed: `None`. An extra
+    // parameter that is not optional cannot be answered that way and the
+    // delegation is refused instead of guessed at.
+    final have = through == null
+        ? null
+        : {for (final p in through.params) p.name};
+    final args = method.params.map((p) {
+      if (have == null || have.contains(p.name)) return snake(p.name);
+      if (p.type.nullable || p.hasDefault) return 'None';
+      throw Unsupported(
+        'override widens `${method.name}` with `${p.name}`, '
+            'which the base has no value for',
+        '${cls.name}.${method.name}',
+      );
+    }).toList();
     final op = method.operator;
     if (op != null && _operatorTraits.containsKey(op)) {
       if (op == 'unary-') return '-*self';
