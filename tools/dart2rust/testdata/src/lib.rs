@@ -291,6 +291,71 @@ pub use closures::Closures;
 mod cascade;
 pub use cascade::{Paint, Painter, Tinted};
 
+/// The prelude's `Completer`, as far as the fixtures need it.
+///
+/// Copied rather than shared because this crate is hand-written and does not
+/// get the generated prelude. The real one, and the argument that it is
+/// correct against any executor, is in lib/prelude.dart.
+pub struct Completer<T> {
+    shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
+}
+
+struct CompleterState<T> {
+    value: Option<T>,
+    waker: Option<std::task::Waker>,
+    completed: bool,
+}
+
+impl<T> Completer<T> {
+    pub fn new() -> Self {
+        Completer {
+            shared: std::rc::Rc::new(std::cell::RefCell::new(CompleterState {
+                value: None,
+                waker: None,
+                completed: false,
+            })),
+        }
+    }
+
+    pub fn complete(&self, value: T) {
+        let mut state = self.shared.borrow_mut();
+        state.completed = true;
+        state.value = Some(value);
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.shared.borrow().completed
+    }
+
+    pub fn future(&self) -> CompleterFuture<T> {
+        CompleterFuture {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
+pub struct CompleterFuture<T> {
+    shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
+}
+
+impl<T> std::future::Future for CompleterFuture<T> {
+    type Output = T;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<T> {
+        let mut state = self.shared.borrow_mut();
+        match state.value.take() {
+            Some(value) => std::task::Poll::Ready(value),
+            None => {
+                state.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
 /// The prelude's `Isolate`, as far as the fixtures need it.
 ///
 /// A Dart `static` is one per isolate and a Rust `static` is one per process,
@@ -1141,6 +1206,20 @@ mod tests {
                 return value;
             }
         }
+    }
+
+    #[test]
+    fn a_completer_finishes_a_future_from_outside() {
+        // The one piece of the async runtime that needs no runtime: a value
+        // and a waker in one cell. Completed *before* the poll here, because
+        // the fixture's `block_on` spins rather than sleeping -- a future that
+        // is still pending would never finish, which is exactly the thing an
+        // executor is for and this is not one.
+        let completer: Completer<f64> = Completer::new();
+        assert!(!completer.is_completed());
+        completer.complete(7.0);
+        assert!(completer.is_completed());
+        assert_eq!(block_on(completer.future()), 7.0);
     }
 
     #[test]

@@ -648,6 +648,93 @@ impl Zone {
     }
 }
 
+/// Dart's `Completer`: a future somebody else finishes.
+///
+/// Real, and correct against any executor. The value and the waker share one
+/// cell; `complete` puts the value in and wakes whoever is waiting, and the
+/// future takes the value when it is there. That is the whole of what a
+/// completer is, and none of it needs a runtime -- which is why this one is
+/// written out rather than left to the executor round.
+///
+/// `Rc`, not `Arc`: everything here belongs to one isolate. See `Isolate`.
+pub struct Completer<T> {
+    shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
+}
+
+struct CompleterState<T> {
+    value: Option<T>,
+    waker: Option<std::task::Waker>,
+    completed: bool,
+}
+
+impl<T> Default for Completer<T> {
+    fn default() -> Self {
+        Completer::new()
+    }
+}
+
+impl<T> Completer<T> {
+    pub fn new() -> Self {
+        Completer {
+            shared: std::rc::Rc::new(std::cell::RefCell::new(CompleterState {
+                value: None,
+                waker: None,
+                completed: false,
+            })),
+        }
+    }
+
+    /// Dart's `Completer.sync`, which completes its future synchronously
+    /// rather than through a microtask. There are no microtasks here, so the
+    /// two are the same thing and this is not a stub -- it is the same
+    /// behaviour arrived at from the other side.
+    pub fn sync() -> Self {
+        Completer::new()
+    }
+
+    pub fn complete(&self, value: T) {
+        let mut state = self.shared.borrow_mut();
+        if state.completed {
+            panic!("Completer completed twice");
+        }
+        state.completed = true;
+        state.value = Some(value);
+        if let Some(waker) = state.waker.take() {
+            waker.wake();
+        }
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.shared.borrow().completed
+    }
+
+    pub fn future(&self) -> CompleterFuture<T> {
+        CompleterFuture { shared: self.shared.clone() }
+    }
+}
+
+pub struct CompleterFuture<T> {
+    shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
+}
+
+impl<T> std::future::Future for CompleterFuture<T> {
+    type Output = T;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<T> {
+        let mut state = self.shared.borrow_mut();
+        match state.value.take() {
+            Some(value) => std::task::Poll::Ready(value),
+            None => {
+                state.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
 /// Dart's `RegExp`, as a name and a pattern and nothing else.
 ///
 /// There is no regular-expression engine here and writing one is not this
