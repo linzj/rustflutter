@@ -4403,6 +4403,30 @@ fixture 的 crate 一直在**手抄**前奏:`Isolate`、`Completer`、`RangeErro
 
 ---
 
+## 第 96 轮:两个前奏类型的 const 实例
+
+`const instance of X, which is not in this file` 有 305 个,而 `elsewhere`
+早就是全 crate 的了。拆开看,**276 个是两个类**:
+
+    176 SentinelValue
+    100 Duration
+
+两个都在前奏里(或者该在),而**前奏的类型不在 IR 里**,
+所以 `_constInstance` 不知道它们的字段。
+
+`Duration` 的常量只带一个字段 `inMicroseconds`,那就是前奏的 `microseconds`
+换了个名字。`SentinelValue` **一个字段都没有**——它是 dart:core 的
+"这个参数没有被传"标记,上游拿它比同一性,所以一个空结构体就说完了它说的一切,
+而且它是 `Copy`,那正是这个比较免费的原因。
+
+**拒绝 5120 → 4849**,`widgets` 切片 2793 → **2648**,错误 228 → **200**。
+
+**记一条**:一个数字里最大的那块常常不是"这类问题",而是"这两个名字"。
+先按名字拆开再决定做什么,这是第四次奏效(第 88 轮 `num`、
+第 90 轮 `_GrowableList`、第 91 轮 `Completer`、这一轮)。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -4423,10 +4447,9 @@ fixture 的 crate 一直在**手抄**前奏:`Isolate`、`Completer`、`RangeErro
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:整包 378,E0425 占 254,已经是长尾了
-(`T` 21、`Pointer` 18、`_invoke` 11、`TextStyle` 9)。
-第 94 轮那个"没人声明的类型该拒绝"仍然是对的想法,只是要放在写出类型的地方,
-不能放在既发射又当谓词的 `type()` 里。
+**下一轮**:整包拒绝 4849,头三名是闭包捕获 `this` 585、
+调用没翻出来的成员 545、撕方法 495。**前两名和第三名是同一件事**
+——所有权,第 30 轮量过、第 56/57 轮量细过。绕不过去了。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

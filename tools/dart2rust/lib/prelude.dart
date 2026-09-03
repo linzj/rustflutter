@@ -442,6 +442,15 @@ impl<T> std::ops::DerefMut for Isolate<T> {
     }
 }
 
+/// `dart:core`'s "no argument was passed" marker.
+///
+/// Upstream's `copyWith` methods take a sentinel as the default so that
+/// passing `null` and passing nothing can be told apart. What is done with it
+/// is compare identities, so an empty struct says everything it says -- and it
+/// is `Copy`, which is what makes the comparison free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct SentinelValue;
+
 /// Dart's `MapEntry`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MapEntry<K, V> {

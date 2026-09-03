@@ -1059,6 +1059,22 @@ class RustBackend {
   /// `Duration { _duration: 1000 }` would be naming a field of a hand-written
   /// stub and would go wrong quietly the day the stub was spelled differently.
   String _constInstance(IrType t, Map<String, IrExpr> fields) {
+    // The prelude's types are not in the IR, so nothing here knows their
+    // fields -- and two of them account for 276 of the 305 refusals.
+    //
+    // `Duration` carries one field, `inMicroseconds`, which is the prelude's
+    // `microseconds` under another name. `SentinelValue` carries none: it is
+    // dart:core's "no argument was passed" marker, and what upstream does with
+    // it is compare identities, so an empty struct says everything it says.
+    if (t.name == 'Duration') {
+      final micros = fields['inMicroseconds'] ?? fields['_duration'];
+      if (micros != null) {
+        return 'Duration { microseconds: ${expr(micros)} }';
+      }
+    }
+    if (t.name == 'SentinelValue' && fields.isEmpty) {
+      return 'SentinelValue';
+    }
     final cls = library[t.name];
     if (cls == null) {
       throw Unsupported(
