@@ -1135,6 +1135,7 @@ class IrClass {
     this.superclass,
     this.superclassArguments = const [],
     this.mixins = const [],
+    this.interfaces = const [],
     this.counted = false,
     this.isAbstract = false,
     this.isEnum = false,
@@ -1161,6 +1162,18 @@ class IrClass {
   /// name refused 554 impls with "the base is generic and its arguments are
   /// not known here", which was true and avoidable.
   final List<IrType> mixins;
+
+  /// The `implements` clause.
+  ///
+  /// A third way to reach a base, and the one nothing here had: Dart's
+  /// `implements` promises the members without inheriting the bodies, which in
+  /// Rust is exactly an `impl Trait for Struct` whose methods all have to be
+  /// written. Carrying only the superclass and the mixins meant a class that
+  /// implemented an abstract one got **no impl block at all** -- so nothing
+  /// could hold it as that trait, and the fixture for `is` is what showed it.
+  /// 216 classes under the package implement something they do not otherwise
+  /// reach, and 214 of those interfaces are abstract.
+  final List<IrType> interfaces;
 
   /// Whether instances of this class are reference counted.
   ///

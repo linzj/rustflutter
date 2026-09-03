@@ -1954,6 +1954,12 @@ class KernelFrontend {
           ? null
           : base.name,
       mixins: node.isEnum ? const [] : mixins,
+      // The class's own `implements` clause. The applied mixins reached
+      // through `implementedTypes` above belong to the *synthetic* classes on
+      // the way up, not to this one, so the two lists do not overlap.
+      interfaces: node.isEnum
+          ? const []
+          : [for (final t in node.implementedTypes) _type(t.asInterfaceType)],
       counted: _counted,
       isAbstract: node.isAbstract,
       isEnum: node.isEnum,

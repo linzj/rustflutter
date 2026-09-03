@@ -1676,6 +1676,10 @@ class Frontend {
       mixins: [
         for (final t in node.withClause?.mixinTypes ?? const []) _type(t.type),
       ],
+      interfaces: [
+        for (final t in node.implementsClause?.interfaces ?? const [])
+          _type(t.type),
+      ],
       superclassArguments: [
         for (final t
             in node.extendsClause?.superclass.typeArguments?.arguments ??

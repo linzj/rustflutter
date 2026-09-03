@@ -12,19 +12,16 @@
 // 747 `is` expressions under the package, and the concrete targets are the
 // large majority (`bin/census_is.dart`).
 //
-// `extends` rather than `implements`, and not for the reason it looks like:
-// writing `implements Figure` here produced no `impl Figure for Tile` at all.
-// The IR carries a superclass and a mixin list and no interface list, so a
-// class that only *implements* an abstract one reaches none of its trait. A
-// hole of its own, found by this fixture and not by this fixture's subject.
+// `implements`, which is how real code reaches an interface. When this
+// fixture was first written it said `extends`, because `implements Figure`
+// produced no `impl Figure for Tile` at all -- the IR carried a superclass
+// and a mixin list and no interface list. Round 108 gave it one.
 
 abstract class Figure {
-  const Figure();
-
   double area();
 }
 
-class Tile extends Figure {
+class Tile implements Figure {
   const Tile(this.side);
 
   final double side;
@@ -35,7 +32,7 @@ class Tile extends Figure {
   }
 }
 
-class Wedge extends Figure {
+class Wedge implements Figure {
   const Wedge(this.width, this.height);
 
   final double width;

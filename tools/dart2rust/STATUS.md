@@ -4889,6 +4889,39 @@ downcast 永远为假、而且不报错。每个 struct 一行,盒子里的东�
 
 ---
 
+## 第 108 轮:`implements` —— 数字往上走了,因为编译器不再沉默
+
+上一轮的 fixture 撞出来的洞:`class Tile implements Figure` 一个
+`impl Figure for Tile` 都没生成。IR 里只有 superclass 和 mixin 两条路,
+没有第三条。整包量下来:**216 个类 implements 了一个别处到不了的东西**,
+其中 214 个是抽象类,后面挂着 773 个成员。
+
+IR 加一个 `interfaces` 列表,两个前端各填一处,`_abstractAncestors` 顺着
+多爬一条边——`impl PreferredSizeWidget for AppBar` 这类 impl 现在真的有了,
+以前一个都没有。
+
+### 但是拒绝数涨了 249
+
+新的 impl 块要把接口的每个方法都写出来,写不出来的就报出来。涨的几乎全是
+一条:"trait 上的泛型方法,`dyn` 用不了" 大约 50 → **302**。
+
+**这些拒绝以前不是不存在,是没人报。** impl 块根本没生成,所以没有地方说
+"这个方法我写不出来"——类照样发出去,只是它并不实现它声称实现的东西。
+一个 refusal 和一个沉默的错译,这个项目一直选前者。
+
+E0046("impl 少东西")没涨,还是 6 个:该 `todo!()` 的地方都 `todo!()` 了。
+
+| | |
+|---|---|
+| 整包错误 | 394 → **401** |
+| 整包拒绝 | 3985 → **4234**(见上) |
+| 新增 trait impl | `impl PreferredSizeWidget for AppBar` 之类,以前是零 |
+
+**这一轮两个计数器都往坏的方向走了,而我认为改动是对的。** 记在这里,
+因为下一次看这张表的人应该知道 4234 比 3985 好在哪。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -4909,8 +4942,8 @@ downcast 永远为假、而且不报错。每个 struct 一行,盒子里的东�
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`implements`。IR 没有 interface 列表,只 `implements` 抽象类的类
-一个 trait impl 都拿不到。先量整包有多少类是这样接上层的。
+**下一轮**:"trait 上的泛型方法"(302,这一轮自己涨出来的),或者
+`identical`(251)——计数类有了 `Rc`,`Rc::ptr_eq` 就是它要的东西。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

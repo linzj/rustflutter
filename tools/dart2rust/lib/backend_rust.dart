@@ -3053,7 +3053,13 @@ class RustBackend {
     final found = <String, IrClass>{};
     void climb(IrClass? from) {
       if (from == null) return;
-      for (final name in [from.superclass, ...from.mixins.map((m) => m.name)]) {
+      for (final name in [
+        from.superclass,
+        ...from.mixins.map((m) => m.name),
+        // `implements` reaches a base too. Dart promises the members without
+        // the bodies, which is what a Rust `impl` is.
+        ...from.interfaces.map((i) => i.name),
+      ]) {
         final above = library[name];
         if (above == null) continue;
         if (above.isAbstract) found.putIfAbsent(above.name, () => above);
@@ -3092,7 +3098,7 @@ class RustBackend {
       // A mixin is a direct base of whichever class named it, so its arguments
       // are read off the `with` clause rather than composed through a chain --
       // with whatever this step has already bound substituted in.
-      for (final mixin in current.mixins) {
+      for (final mixin in [...current.mixins, ...current.interfaces]) {
         if (mixin.name != base.name) continue;
         final passed = [for (final a in mixin.arguments) bound[a.name] ?? a];
         if (passed.length != base.typeParameters.length) return null;
