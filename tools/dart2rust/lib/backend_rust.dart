@@ -326,7 +326,7 @@ class RustBackend {
           ? ''
           : '<${t.arguments.map((a) => type(a)).join(', ')}>';
       final dynamic_ = owned
-          ? 'Box<dyn ${t.name}$args>'
+          ? 'std::rc::Rc<dyn ${t.name}$args>'
           : '&dyn ${t.name}$args';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
     }

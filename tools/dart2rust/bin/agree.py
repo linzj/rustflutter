@@ -36,8 +36,8 @@ HEADER = ('use crate::{Object, Offset, Rect, SentinelValue, Size, '
 
 UPSTREAM = 'E:/source/flutter/packages/flutter/lib/src/painting/alignment.dart'
 LIBRARY = 'package:flutter/src/painting/alignment.dart'
-FLUTTER_DART = 'E:/source/flutter/bin/cache/dart-sdk/bin/dart.exe'
-FLUTTER_PKGS = '--packages=E:/source/flutter/.dart_tool/package_config.json'
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paths import FLUTTER_DART, FLUTTER_PKGS  # noqa: E402
 
 sys.path.insert(0, HERE)
 import dill as dill_tool  # noqa: E402  -- for the matched toolchain paths

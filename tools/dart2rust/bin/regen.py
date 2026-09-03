@@ -32,10 +32,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 FIXTURES = os.path.join(TOOL, 'testdata', 'fixtures')
 SRC = os.path.join(TOOL, 'testdata', 'src')
 
-FLUTTER_DART = 'E:/source/flutter/bin/cache/dart-sdk/bin/dart.exe'
-FLUTTER_PKGS = '--packages=E:/source/flutter/.dart_tool/package_config.json'
-
 sys.path.insert(0, HERE)
+from paths import FLUTTER_DART, FLUTTER_PKGS  # noqa: E402
+
 import dill as dill_tool  # noqa: E402
 import fixtures as fixtures_tool  # noqa: E402
 

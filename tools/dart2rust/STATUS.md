@@ -5140,6 +5140,100 @@ prelude 里写了一个 `Vec<(K, V)>` 支撑的 `Map`,查找是线性的——**
 
 ---
 
+## 第 114 轮:`Box<dyn X>` 是一句所有权声明,而 Dart 从来没说过那句话
+
+上一轮记的判据——"环里那条可空、且不在构造函数里赋值的边就是回边"——
+**在唯一一个真实的环上是错的**:
+
+```
+ScaffoldMessengerState._scaffolds        Set<Rc<ScaffoldState>>          可空=否 构造函数里赋值=是
+ScaffoldState._scaffold_messenger        Rc<RefCell<Option<Rc<...>>>>    可空=否 构造函数里赋值=是
+```
+
+回边的"可空"藏在 cell 里面,尺子没看进去;而**真正分得开的是另一件事**:
+拥有的那条边是个**集合**(`children`),回指那条是**单个**。这是 Flutter
+到处的形状。第十一把量错东西的尺子。
+
+### 但更根本的问题不是环
+
+`Element._parent` 当时的类型是 `Option<Box<dyn Element>>`。那不是漏,
+那是**孩子拥有父亲**——树是反的,根本建不起来。
+
+原因在 `type()` 里一行:抽象类在 owned 位置翻成 `Box<dyn X>`。
+**`Box` 是一句所有权声明,而 Dart 的字段从来没说过那句话**——Dart 里每个
+对象字段都是一个共享引用。计数类那几轮解决的是具体类,抽象类这一半一直没动
+(又一次"另一半呢",而且是最大的一次)。
+
+改成 `Rc<dyn X>`:
+
+| | |
+|---|---|
+| 整包错误 | 416 → **416** |
+| 整包拒绝 | 3353 → **3353** |
+| fixture | 146 个测试全过,两前端一致 |
+
+**两个计数器一个都没动**,而所有权模型从此是对的。`Rc<dyn X>` 还顺带是
+`Clone` 的,`Box<dyn X>` 不是——那是压着好几轮的另一堵墙。
+
+### 环的现状(改完之后)
+
+| | |
+|---|---|
+| 持有 `Rc<dyn X>` 的字段 | **3400**(其中可空 2488) |
+| 结构体之间的 `Rc` 边 | 151 |
+| 已经成环的 | 1(`ScaffoldMessengerState ↔ ScaffoldState`) |
+| 后端生成过的 `Weak` | **0** |
+
+环的面已经铺开了(3400 条边),爆出来是时间问题。**判据要改成"集合 vs 单个"
+再量一遍**,不是上一轮记的那条。
+
+---
+
+## 转到 WSL2:路径已经收成三个环境变量
+
+四个脚本各自写死了 Windows 路径,现在都走 `bin/paths.py`:
+
+| 变量 | 默认值 | 是什么 |
+|---|---|---|
+| `RUSTFLUTTER_FLUTTER` | `E:/source/flutter` | Flutter checkout,前端跑在它自带的 dart-sdk 上 |
+| `RUSTFLUTTER_APP` | `D:/linzjUbuntu2204/gallery_upstream` | 被翻译的 app,fixture 用它的 package_config.json |
+| `RUSTFLUTTER_ENGINE` | `$FLUTTER/engine/src` | 有 built dart-sdk 的 engine,`dill.py` 要它的 `pkg/kernel` |
+
+`.exe` 后缀也收进 `paths.exe()`,非 Windows 上自动去掉。
+
+### 在 WSL2 里要准备的
+
+1. **一个 Linux 的 Flutter checkout**,并且 `flutter pub get` 过
+   (要 `$FLUTTER/.dart_tool/package_config.json`)。
+2. **一个 built 的 engine**,`out/host_release/dart-sdk/bin/` 下要有 `dart`,
+   `out/gen/frontend_server_aot.dart.snapshot` 和 `out/flutter_patched_sdk/`
+   也要在——`bin/dill.py` 靠这三样把 fixture 编成 `.dill`。
+   没有 engine 的话,Kernel 前端和 `bin/fixtures.py` 跑不了,
+   analyzer 前端和 `bin/crate.py`(吃现成的 `app.dill`)还能跑。
+3. **gallery 的 `app.dill`**:
+   `$RUSTFLUTTER_APP/.dart_tool/flutter_build/<hash>/app.dill`。
+   现在这份是 Windows 上 `flutter build` 出来的,**dill 是平台无关的**,
+   直接拷过去就行。
+4. `rustc` / `cargo` / `rustfmt`,以及 `python3`。
+
+### 三条命令
+
+```sh
+export RUSTFLUTTER_FLUTTER=/home/you/flutter
+export RUSTFLUTTER_APP=/mnt/d/linzjUbuntu2204/gallery_upstream
+
+cd tools/dart2rust
+python3 bin/regen.py                     # 重新生成 testdata/src/*.rs
+(cd testdata && cargo test)              # 146 个测试
+python3 bin/fixtures.py                  # 两个前端必须一字不差
+python3 bin/crate.py "$RUSTFLUTTER_APP/.dart_tool/flutter_build/<hash>/app.dill"
+```
+
+最后一条是整包的那把尺子,大约十二分钟,打印
+`920 libraries, 4122 classes, N refusals` 和 `errors: N`。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -5160,8 +5254,11 @@ prelude 里写了一个 `Vec<(K, V)>` 支撑的 `Map`,查找是线性的——**
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`Weak`。量"可空且不在构造函数里赋值"这个判据能不能在 141 条
-`Rc` 边上认出回边,认得出就让回边变 `Weak`。
+**下一轮**:先把回边的判据从"可空且不在构造函数里赋值"改成"集合 vs 单个",
+在 3400 条 `Rc<dyn X>` 边上量一遍;认得出就让回边变 `Weak`。
+在那之前 `crate.py` 报的 416 个错误里,E0425(294)还是最大的一块。
+
+**loop 已停**(cron `5435ce19` 已删)。下次继续时环境变量见上面那节。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

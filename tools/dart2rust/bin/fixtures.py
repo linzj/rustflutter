@@ -35,9 +35,12 @@ TOOL = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 FIXTURES = os.path.join(TOOL, 'testdata', 'fixtures')
 
-FLUTTER_DART = 'E:/source/flutter/bin/cache/dart-sdk/bin/dart.exe'
-FLUTTER_PKGS = '--packages=E:/source/flutter/.dart_tool/package_config.json'
-APP_PACKAGES = 'D:/linzjUbuntu2204/gallery_upstream/.dart_tool/package_config.json'
+sys.path.insert(0, HERE)
+from paths import (  # noqa: E402
+    APP_PACKAGES,
+    FLUTTER_DART,
+    FLUTTER_PKGS,
+)
 
 sys.path.insert(0, HERE)
 import dill as dill_tool  # noqa: E402

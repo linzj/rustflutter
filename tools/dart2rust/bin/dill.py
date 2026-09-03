@@ -31,7 +31,9 @@ import sys
 # `pkg/kernel` is under engine/src/**flutter**/third_party/dart, not
 # engine/src/third_party -- a search that stopped one level short of this path
 # is what produced the earlier, wrong conclusion that Kernel was unobtainable.
-ENGINE = os.environ.get('RUSTFLUTTER_ENGINE', r'E:/source/flutter/engine/src')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paths import ENGINE, exe  # noqa: E402
+
 DART_PKG = os.path.join(ENGINE, 'flutter', 'third_party', 'dart', 'pkg')
 
 
@@ -49,8 +51,8 @@ def paths():
     sdk = os.path.join(out, 'dart-sdk')
     return {
         'out': out,
-        'dart': os.path.join(sdk, 'bin', 'dart.exe'),
-        'aot': os.path.join(sdk, 'bin', 'dartaotruntime.exe'),
+        'dart': os.path.join(sdk, 'bin', exe('dart')),
+        'aot': os.path.join(sdk, 'bin', exe('dartaotruntime')),
         'frontend_server': os.path.join(
             out, 'gen', 'frontend_server_aot.dart.snapshot'),
         'platform': os.path.join(out, 'flutter_patched_sdk'),
