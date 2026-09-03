@@ -4848,6 +4848,47 @@ fixture 钉住。
 
 ---
 
+## 第 107 轮:`is` —— 一个 trait 不肯说自己是什么,除非写一句让它说
+
+283 条拒绝写着"`is` 需要类层次,这个后端还没建模"。先量:747 个 `is`
+里 **637 个是真的运行期判断**(`bin/census_is.dart`),静态能定死的只有 2 个。
+所以没有捷径,只能真做。
+
+Rust 的机制是 `Any`。做法是一句 prelude:
+
+```rust
+pub trait DartAny: 'static { fn as_any(&self) -> &dyn std::any::Any; }
+```
+
+每个翻出来的 trait 继承它,每个 struct 给一行 impl,`x is Foo` 就是
+`x.as_any().downcast_ref::<Foo>().is_some()`。
+
+**没有用 blanket impl**,虽然那样一行就够。`impl<T: 'static> DartAny for T`
+会让 `Box<dyn Widget>` 自己也实现它,`.as_any()` 就答成了"这个盒子是什么",
+downcast 永远为假、而且不报错。每个 struct 一行,盒子里的东西才答得上话。
+
+`DartAny: 'static` 会往下传:泛型类的每个 trait impl 都要 `<T: 'static>`。
+漏了这一句是 **620 个 E0310**,一次全冒出来——补上就归零了。
+
+`is` 的拒绝 283 → **78**,剩下的 57 个是 `x is 抽象类`:那问的是
+"它实现了某个 trait 吗",`Any` 答不了,没有一张 trait 的清单可查。
+
+### fixture 撞出来的另一个洞
+
+`class Tile implements Figure` 什么都没生成——**一个 `impl Figure for Tile`
+都没有**。IR 里只有 superclass 和 mixin 列表,没有 interface 列表,所以
+只 `implements` 一个抽象类的类,拿不到它 trait 的任何东西。
+
+这个洞是写 `is` 的 fixture 时撞出来的,不是 `is` 的问题。下一轮的活。
+
+| | |
+|---|---|
+| 整包错误 | 379 → **394** |
+| 整包拒绝 | 4176 → **3985** |
+| fixture | 140 → 141 个测试 |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -4868,8 +4909,8 @@ fixture 钉住。
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:"方法当值用" 剩下的 291,或者 `is`(283)。前者是非计数类里的
-撕方法,后者一直没碰过。先量哪一类的 `is` 最多。
+**下一轮**:`implements`。IR 没有 interface 列表,只 `implements` 抽象类的类
+一个 trait impl 都拿不到。先量整包有多少类是这样接上层的。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

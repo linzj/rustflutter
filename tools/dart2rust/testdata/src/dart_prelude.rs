@@ -12,6 +12,22 @@ pub trait Object {}
 
 impl<T: ?Sized> Object for T {}
 
+/// What a Dart value can be *asked*.
+///
+/// `x is Foo` wants to know what a value really is, and a Rust trait object
+/// cannot be asked unless the trait says it can. `Any` is the mechanism; this
+/// is the one line of it that every translated trait inherits, so every trait
+/// object can answer.
+///
+/// Not a blanket impl. `Box<dyn Widget>` would then implement it *itself*, and
+/// `.as_any()` would answer about the box rather than about what is in it --
+/// a downcast that is always false and never says so. Each translated struct
+/// gets its own one-line impl instead, so the only way to reach `as_any` from
+/// a box is through the trait inside it.
+pub trait DartAny: 'static {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
 /// Dart's `Duration`: a signed span counted in whole microseconds.
 ///
 /// Not `std::time::Duration`, which is unsigned and counts nanoseconds.

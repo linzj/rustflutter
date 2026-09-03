@@ -170,6 +170,18 @@ class KernelFrontend {
       return IrBinary('==', expression(node.left), expression(node.right));
     }
     if (node is Not) {
+      // `x is! T` is a `Not` around an `IsExpression` here; the analyzer keeps
+      // it as one node with a flag. Folded so the two front ends write the
+      // same Rust -- `is_none()`, not `!(..is_some())` -- which is the whole
+      // point of having two of them.
+      final inner = node.operand;
+      if (inner is IsExpression) {
+        return IrIs(
+          expression(inner.operand),
+          _type(inner.type),
+          negated: true,
+        );
+      }
       return IrUnary('!', expression(node.operand));
     }
     if (node is LogicalExpression) {

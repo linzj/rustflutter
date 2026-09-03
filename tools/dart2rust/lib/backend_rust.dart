@@ -495,10 +495,10 @@ class RustBackend {
       ),
       IrConditional(:final condition, :final then, :final otherwise) =>
         'if ${expr(condition)} { ${expr(then)} } else { ${expr(otherwise)} }',
-      IrIs() => throw Unsupported(
-        '`is` in the value subset',
-        '`is` needs the '
-            'class hierarchy, which this backend does not model yet',
+      IrIs(expr: final operand, :final type, :final negated) => _isTest(
+        operand,
+        type,
+        negated,
       ),
       IrSuperCall(:final base, :final name, :final args) => _superCall(
         base,
@@ -1100,6 +1100,28 @@ class RustBackend {
       }
     }
     return '$receiver.${snake(name)}';
+  }
+
+  /// `x is Foo`.
+  ///
+  /// Rust answers it with `Any`, which downcasts to a *concrete* type: the
+  /// trait object says what it holds, and holding is always a struct. So a
+  /// target that is itself abstract has no answer here -- `x is RenderBox`
+  /// asks whether the thing implements a trait, which `Any` cannot say -- and
+  /// is still refused, now under a name that says which half is missing.
+  String _isTest(IrExpr operand, IrType target, bool negated) {
+    final name = target.name;
+    if (library.isAbstract(name)) {
+      throw Unsupported('`is` against an abstract class', name);
+    }
+    if (library[name] == null) {
+      throw Unsupported('`is` against `$name`, which was not translated', name);
+    }
+    final arguments = target.arguments.isEmpty
+        ? ''
+        : '<${target.arguments.map(type).join(', ')}>';
+    return '${expr(operand)}.as_any()'
+        '.downcast_ref::<$name$arguments>().${negated ? "is_none" : "is_some"}()';
   }
 
   /// The receiver of a field read or a call.
@@ -2056,7 +2078,9 @@ class RustBackend {
     // trait's matching default can delegate or has to be a `todo!()`.
     _emitSuperFns();
     _line('');
-    _line('${_vis(cls.name)}trait ${cls.name}${_generics(cls)} {');
+    // `: DartAny` so a `Box<dyn ..>` of this trait can be asked what it holds,
+    // which is what `x is Foo` needs and what a bare trait object cannot do.
+    _line('${_vis(cls.name)}trait ${cls.name}${_generics(cls)}: DartAny {');
     _indent++;
     // Guarded per member, like the struct path. The trait path was missed when
     // that changed, and it showed the moment private members started being
@@ -2121,13 +2145,19 @@ class RustBackend {
   }
 
   /// `<T>` for a class or method that has parameters, and nothing otherwise.
-  String _generics(Object owner) {
+  String _generics(Object owner, {bool static = false}) {
     final params = switch (owner) {
       IrClass(:final typeParameters) => typeParameters,
       IrMethod(:final typeParameters) => typeParameters,
       _ => const <String>[],
     };
-    return params.isEmpty ? '' : '<${params.join(', ')}>';
+    if (params.isEmpty) return '';
+    // `&dyn Any` is `&dyn Any + 'static`, so a generic struct can only hand
+    // one out when its parameters outlive the borrow. Nothing this compiler
+    // emits holds a borrow, so the bound costs nothing and is not written
+    // anywhere else.
+    final bound = static ? params.map((p) => "$p: 'static") : params;
+    return '<${bound.join(', ')}>';
   }
 
   /// Type parameters no field mentions.
@@ -2963,6 +2993,21 @@ class RustBackend {
     _emitMethods();
     _indent--;
     _line('}');
+    // One line per struct rather than one blanket impl over everything: see
+    // `DartAny` in the prelude for why the blanket one is quietly wrong.
+    _line('');
+    _line(
+      'impl${_generics(cls, static: true)} DartAny for '
+      '${cls.name}${_generics(cls)} {',
+    );
+    _indent++;
+    _line('fn as_any(&self) -> &dyn std::any::Any {');
+    _indent++;
+    _line('self');
+    _indent--;
+    _line('}');
+    _indent--;
+    _line('}');
     _emitOperators();
     _emitBaseImpl();
     _emitLazyStatics();
@@ -3126,8 +3171,12 @@ class RustBackend {
     // T` in the widget layer alone, one for every generic class's every trait
     // impl. The struct's own inherent impl had it right all along, which is
     // why it took a slice big enough to hold a generic class to show.
+    // `'static` on the parameters, because the trait requires `DartAny` and
+    // `DartAny` hands out a `&dyn Any`. A generic class implementing a trait
+    // is the commonest shape in the widget layer, so leaving the bound off
+    // here was 620 `E0310` in one go.
     _line(
-      'impl${_generics(cls)} ${base.name}$arguments for '
+      'impl${_generics(cls, static: true)} ${base.name}$arguments for '
       '${cls.name}${_generics(cls)} {',
     );
     _indent++;

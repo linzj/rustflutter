@@ -1,3 +1,5 @@
+use crate::DartAny;
+
 pub fn halve(v: f64) -> f64 {
     (v / 2.0)
 }
@@ -28,5 +30,11 @@ impl Gauge {
     /// A top-level function calling another one, and a class calling both.
     pub fn amplified(&self) -> f64 {
         thrice(halve(self.value))
+    }
+}
+
+impl DartAny for Gauge {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

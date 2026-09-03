@@ -60,7 +60,8 @@ NOTES = {
 
 # What a generated file may need from the crate root, and how to tell.
 IMPORTS = {'RangeError': 'use crate::RangeError;',
-           'Isolate': 'use crate::Isolate;'}
+           'Isolate': 'use crate::Isolate;',
+           'DartAny': 'use crate::DartAny;'}
 
 
 def needed_imports(text):

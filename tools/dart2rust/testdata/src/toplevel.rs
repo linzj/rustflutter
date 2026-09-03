@@ -1,3 +1,5 @@
+use crate::DartAny;
+
 // The front end refused 2 member(s) in this library:
 // NOT TRANSLATED: top-level computed: unsupported a top-level accessor: computed
 // NOT TRANSLATED: Layout: unsupported top-level getter `computed`: computed
@@ -34,5 +36,11 @@ impl Layout {
 
     pub fn derived(&self) -> f64 {
         K_DERIVED
+    }
+}
+
+impl DartAny for Layout {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

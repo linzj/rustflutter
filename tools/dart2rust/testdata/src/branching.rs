@@ -1,3 +1,5 @@
+use crate::DartAny;
+
 // The front end refused 1 member(s) in this library:
 // NOT TRANSLATED: Placement: unsupported break out of a switch from inside a case: break;
 
@@ -89,5 +91,11 @@ impl Placement {
         } else {
             return 23.0;
         }
+    }
+}
+
+impl DartAny for Placement {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

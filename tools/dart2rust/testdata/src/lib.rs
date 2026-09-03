@@ -255,6 +255,9 @@ pub use counted::Ticker;
 mod lates;
 pub use lates::{Engine, Machine};
 
+mod typetest;
+pub use typetest::{Figure, Figures, Tile, Wedge};
+
 mod mixins;
 pub use mixins::{Measured, Panel, Scaled};
 
@@ -1790,5 +1793,21 @@ mod tests {
     #[should_panic]
     fn reading_a_late_field_first_is_an_error() {
         Machine::new().taken();
+    }
+
+    /// `x is Foo` through a trait object: the trait hands out a `&dyn Any`
+    /// and the downcast answers about what is inside the box, not the box.
+    #[test]
+    fn is_asks_what_a_trait_object_holds() {
+        let tile = Tile::new(3.0);
+        let wedge = Wedge::new(4.0, 2.0);
+        assert!(Figures::is_tile(&tile));
+        assert!(!Figures::is_tile(&wedge));
+        assert!(!Figures::is_not_tile(&tile));
+        assert!(Figures::is_not_tile(&wedge));
+        // 9 from the tile, nothing from the wedge.
+        assert_eq!(Figures::area_of_tiles(&tile, &wedge), 9.0);
+        assert_eq!(Figures::area_of_tiles(&wedge, &wedge), 0.0);
+        assert_eq!(wedge.area(), 4.0);
     }
 }
