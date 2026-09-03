@@ -154,6 +154,19 @@ String screamingSnake(String name) => snake(name).toUpperCase();
 String variantName(String name) =>
     name.isEmpty ? name : name[0].toUpperCase() + name.substring(1);
 
+/// The variants of one enum, spelled so that no two of them are the same.
+///
+/// Capitalising the first letter is right for `Axis.vertical` and wrong for
+/// `HourFormat { HH, H, h }`, where `H` and `h` are two different values that
+/// become one name. When that happens the *whole* enum keeps Dart's spelling:
+/// mixing the two conventions inside one enum would be worse than either, and
+/// the Dart names are the ones a reader can search for.
+Map<String, String> variantNames(List<String> values) {
+  final capitalised = {for (final v in values) v: variantName(v)};
+  final distinct = capitalised.values.toSet().length == values.toSet().length;
+  return distinct ? capitalised : {for (final v in values) v: v};
+}
+
 class RustBackend {
   RustBackend(this.cls, {IrLibrary? library})
     : library = library ?? IrLibrary([cls]);
@@ -476,7 +489,12 @@ class RustBackend {
         args,
       ),
       IrNullCheck(:final operand) => '${expr(operand)}.unwrap()',
-      IrTopLevel(:final name) => screamingSnake(name),
+      // A mutable one is read through its cell: two derefs for the `LazyLock`
+      // and the `Isolate`, then a `borrow`.
+      IrTopLevel(:final name) =>
+        _isMutableTopLevel(name)
+            ? '(**${screamingSnake(name)}).borrow().clone()'
+            : screamingSnake(name),
       IrIsNull(:final operand) => '${expr(operand)}.is_none()',
       IrIfNull() => _ifNull(e as IrIfNull),
       IrNullAware(:final receiver, :final body) =>
@@ -706,6 +724,10 @@ class RustBackend {
   /// and removing that blunt rule brought it back. The precise rule is the same
   /// one `_superCall` uses -- if the callee is in this file, it has to be in the
   /// IR.
+  /// Whether a top-level name is one of the library's mutable variables.
+  bool _isMutableTopLevel(String name) =>
+      library.constants.any((c) => c.name == name && c.isMutable);
+
   /// `Fn(..) -> ..` for a function type, without the `impl`/`dyn`/`Box`.
   String _fnSignature(IrType t) {
     final args = t.parameters!
@@ -1146,7 +1168,12 @@ class RustBackend {
   /// `impl` block may hold a `const` and not a `static`. So its name carries
   /// its class, and reading it dereferences the lock.
   String _staticRead(String owner, String name, bool isEnumValue) {
-    if (isEnumValue) return '$owner::${variantName(name)}';
+    // The owner's own spelling, which may be Dart's: see `variantNames`.
+    if (isEnumValue) {
+      final owned = library[owner];
+      final names = owned == null ? null : variantNames(owned.values);
+      return '$owner::${names?[name] ?? variantName(name)}';
+    }
     // Two derefs: through the `LazyLock`, then through the `Isolate` that
     // carries "one per isolate, not one per process".
     if (_isLazy(owner, name)) return '(**${_lazyName(owner, name)})';
@@ -1646,6 +1673,22 @@ class RustBackend {
       final holder = RustBackend(IrClass('<library>'), library: library);
       for (final constant in library.constants) {
         holder._member('top-level ${constant.name}', () {
+          // A mutable top-level variable is a `static` with a cell in it. Dart
+          // gives each isolate its own, which `Isolate` says, and anything in
+          // the library may assign it, which the `RefCell` says. A `const`
+          // cannot be either, so the two are emitted differently.
+          if (constant.isMutable) {
+            final held = holder.type(constant.type);
+            holder._line(
+              '${holder._vis(constant.name)}static '
+              '${screamingSnake(constant.name)}: '
+              'std::sync::LazyLock<Isolate<std::cell::RefCell<$held>>> = '
+              'std::sync::LazyLock::new(|| '
+              'Isolate(std::cell::RefCell::new('
+              '${holder.expr(constant.value)})));',
+            );
+            return;
+          }
           holder._line(
             'pub const ${screamingSnake(constant.name)}: '
             '${holder.type(constant.type)} = ${holder.expr(constant.value)};',
@@ -1705,11 +1748,17 @@ class RustBackend {
       _line('// enum plus an impl, which is a separate job.');
       return _out.join('\n') + '\n';
     }
+    final variants = variantNames(cls.values);
     _line('#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]');
+    if (variants.values.any((v) => v != variantName(v))) {
+      // Dart's own spelling, kept because capitalising would have collapsed
+      // two variants into one. See `variantNames`.
+      _line('#[allow(non_camel_case_types)]');
+    }
     _line('${_vis(cls.name)}enum ${cls.name} {');
     _indent++;
     for (final value in cls.values) {
-      _line('${variantName(value)},');
+      _line('${variants[value]},');
     }
     _indent--;
     _line('}');
@@ -1738,7 +1787,7 @@ class RustBackend {
         _indent++;
         for (final value in cls.values) {
           _line(
-            '${cls.name}::${variantName(value)} => '
+            '${cls.name}::${variants[value]} => '
             '${cls.valueFields[value]![field]},',
           );
         }
@@ -1990,7 +2039,7 @@ class RustBackend {
       _line('/// The body of `${cls.name}.${method.name}`, reachable from an');
       _line('/// override the way Dart\'s `super.${method.name}` is.');
       final params = [
-        'this_: &S',
+        'this_: &__Self',
         ...method.params.map(
           (p) => '${snake(p.name)}: ${type(p.type, owned: false)}',
         ),
@@ -2001,7 +2050,10 @@ class RustBackend {
         // The class's parameters come too: a body of `ParametricCurve<T>`
         // returns a `T`, and the free function holding it has to say where
         // that `T` comes from.
-        '<S: ${cls.name}${_generics(cls)} + ?Sized'
+        // `__Self`, not `S`: a Dart method's own type parameter is often
+        // named `S`, and round 78 started carrying those onto this function --
+        // where it collided with the receiver's. A generated name cannot.
+        '<__Self: ${cls.name}${_generics(cls)} + ?Sized'
         '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.join(', ')}'}'
         // And the *method's* own, for a generic method like
         // `invokeLayoutCallback<T extends Constraints>`. A free function can

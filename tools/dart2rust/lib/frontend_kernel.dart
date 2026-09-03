@@ -749,9 +749,9 @@ class KernelFrontend {
     if (enclosing == null) {
       // A top-level name. A `const` or `final` is a module constant in Rust
       // too; a computed `get foo => ...` is a function and stops here.
-      if (target is Field && (target.isConst || target.isFinal)) {
-        return IrTopLevel(target.name.text);
-      }
+      // Mutable ones too, now that they are emitted. A read of one goes
+      // through the cell, which the backend knows from the declaration.
+      if (target is Field) return IrTopLevel(target.name.text);
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
     }
     return IrStatic(
@@ -1492,12 +1492,22 @@ class KernelFrontend {
     final constants = <IrConstDecl>[];
     final refused = <String>[];
     for (final field in library.fields) {
-      if (!field.isConst && !field.isFinal) continue;
       final init = field.initializer;
       if (init == null) continue;
+      // A mutable top-level variable is a `static` too -- Dart's is one per
+      // isolate, which is what `Isolate` says -- and it needs a cell to be
+      // assignable. Skipping them meant every read refused the member around
+      // it.
+      final mutable = !field.isConst && !field.isFinal;
       try {
         constants.add(
-          IrConstDecl(field.name.text, _type(field.type), expression(init)),
+          IrConstDecl(
+            field.name.text,
+            _type(field.type),
+            expression(init),
+            isLazy: mutable,
+            isMutable: mutable,
+          ),
         );
       } on Unsupported catch (error) {
         refused.add('top-level ${field.name.text}: $error');

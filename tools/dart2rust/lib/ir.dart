@@ -898,6 +898,7 @@ class IrConstDecl {
     this.value, {
     this.doc,
     this.isLazy = false,
+    this.isMutable = false,
   });
 
   final String name;
@@ -912,6 +913,14 @@ class IrConstDecl {
   /// block may hold a `const` but not a `static`, so the name carries its
   /// class -- `Foo.bar` becomes `FOO_BAR` -- and a read of it dereferences.
   final bool isLazy;
+
+  /// A top-level variable that is neither `const` nor `final`: Dart's
+  /// `int _n;` at library scope, which anything in the library may assign.
+  ///
+  /// It is a `static` like the others, and needs interior mutability on top of
+  /// the `Isolate` wrapper -- 32 of these were skipped entirely, and reading
+  /// one refused the member that read it, 74 times.
+  final bool isMutable;
 }
 
 /// A class's or method's type parameters, as names.
