@@ -389,6 +389,15 @@ class RustBackend {
           : 'impl std::future::Future<Output = $output>';
       return t.nullable ? 'Option<$future>' : future;
     }
+    // A counted class is `Rc<Name>` everywhere it is named -- fields,
+    // parameters, returns, locals. One rule here rather than 1150 edits.
+    final owner = library[t.name];
+    if (owner != null && owner.counted && t.name != cls.name) {
+      final spelled =
+          'std::rc::Rc<${t.name}${t.arguments.isEmpty ? '' : '<'
+                    '${t.arguments.map((a) => type(a)).join(', ')}>'}>';
+      return t.nullable ? 'Option<$spelled>' : spelled;
+    }
     final mapped = _primitives[t.name] ?? t.name;
     // `Foo<int>` was coming out as a bare `Foo`, which is a different type.
     final spelled = t.arguments.isEmpty || _primitives.containsKey(t.name)
@@ -563,9 +572,11 @@ class RustBackend {
     // A closure that copies `final` fields in is a `move` closure with the
     // copies bound just before it. It borrows `self` not at all, which is the
     // whole point: it outlives the call that made it.
-    final bindings = node.captures
-        .map((c) => 'let ${snake(c.name)} = ${_copyOf(c)};')
-        .join(' ');
+    final bindings = [
+      // The handle first: a closure that calls a method keeps the object.
+      if (node.holdsSelf) 'let $_countedSelf = $_selfName.clone();',
+      ...node.captures.map((c) => 'let ${snake(c.name)} = ${_copyOf(c)};'),
+    ].join(' ');
     // Which of them are cells, for the body that is about to be written.
     final savedCells = _cellLocals;
     _cellLocals = {
@@ -575,15 +586,18 @@ class RustBackend {
     };
     final saved = _out.length;
     final savedIndent = _indent;
+    final savedSelf = _selfName;
+    if (node.holdsSelf) _selfName = _countedSelf;
     _indent = 0;
     stmt(node.body, tail: true);
+    _selfName = savedSelf;
     final body = _out.sublist(saved).map((l) => l.trim()).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
-    final closure =
-        '${node.captures.isEmpty ? '' : 'move '}|$params| { $body }';
+    final owns = node.captures.isNotEmpty || node.holdsSelf;
+    final closure = '${owns ? 'move ' : ''}|$params| { $body }';
     _cellLocals = savedCells;
-    final whole = node.captures.isEmpty ? closure : '{ $bindings $closure }';
+    final whole = owns ? '{ $bindings $closure }' : closure;
     return node.boxed ? 'Box::new($whole)' : whole;
   }
 
@@ -594,19 +608,42 @@ class RustBackend {
   /// wherever it fits. See `IrFieldDecl.shared`.
   String _fieldType(IrFieldDecl field) {
     final held = type(field.type);
-    if (!field.shared) return held;
+    // Every mutable field of a counted class, not only the ones a closure
+    // names: an `Rc` hands out shared *immutable* access, so a method that
+    // assigns a field cannot take `&mut self` and has to go through a cell.
+    if (!_inCell(field)) return held;
     final cell = _isCopy(held) ? 'Cell' : 'RefCell';
     return 'std::rc::Rc<std::cell::$cell<$held>>';
   }
 
   /// Whether a field of *this* class is shared. Named rather than passed
   /// around: reads and writes reach it from several places.
+  /// Whether a field is held in a cell: marked shared, or mutable in a
+  /// counted class.
+  bool _inCell(IrFieldDecl field) =>
+      field.shared || (cls.counted && !field.isFinal);
+
   IrFieldDecl? _sharedField(String name) {
     for (final f in _allFields(cls)) {
-      if (f.name == name) return f.shared ? f : null;
+      if (f.name == name) return _inCell(f) ? f : null;
     }
     return null;
   }
+
+  /// Whether a method's body makes a closure that keeps `this`.
+  ///
+  /// The whole body, not the three shapes a closure most often sits in: one
+  /// written as an *argument* -- `applyTwice(() => scaled(v), x)` -- is the
+  /// commonest of all, and missing it left the method taking `&self` while
+  /// its closure cloned that, which clones the struct rather than the handle.
+  static bool _handsOutSelf(IrMethod method) {
+    final walk = _WalkSelf();
+    walk.statement(method.body);
+    return walk.holdsSelfClosure;
+  }
+
+  /// The name a counted closure gives its handle to `this`.
+  static const _countedSelf = '__me';
 
   /// Captured locals that hold a cell, and whether it is a `Cell` (`true`)
   /// or a `RefCell`.
@@ -1390,8 +1427,12 @@ class RustBackend {
     }
     // `Pair::<i64, f32>::new(..)`, not `Pair<i64, f32>::new(..)`: in an
     // *expression* Rust wants the turbofish, and the plain form does not parse.
+    // The *name*, not the type: a counted class's type is `Rc<Foo>` and its
+    // constructor is `Foo::new`, which hands one out. Spelling the type here
+    // wrote `Rc<Foo>::new()`, which does not parse.
+    final counted = library[t.name]?.counted ?? false;
     final name = t.arguments.isEmpty
-        ? type(t)
+        ? (counted ? t.name : type(t))
         : '${t.name}::<${t.arguments.map((a) => type(a)).join(', ')}>';
     final ctor = _ctorName(constructor);
     return '$name::$ctor(${args.map(expr).join(', ')})';
@@ -2286,7 +2327,15 @@ class RustBackend {
   /// Both are refused rather than emitted with the wrong receiver. Upstream's
   /// operators do not assign, so the first is a guard rather than a loss.
   String _receiverOf(IrMethod method) {
-    if (!_mutating.contains(_rustName(method))) return '&self';
+    // A method that hands out a closure holding `this` takes the handle, not
+    // a borrow: the closure keeps a clone of it, and only an `Rc` clones into
+    // something that outlives the call.
+    if (cls.counted && _handsOutSelf(method)) {
+      return 'self: &std::rc::Rc<Self>';
+    }
+    // A counted class never takes `&mut self`: an `Rc` hands out shared
+    // access, and every mutable field of one is in a cell for that reason.
+    if (cls.counted || !_mutating.contains(_rustName(method))) return '&self';
     if (method.operator != null &&
         _operatorTraits.containsKey(method.operator)) {
       throw Unsupported(
@@ -3160,15 +3209,27 @@ class RustBackend {
     // A constructor with a body cannot be `const`: it builds the value into a
     // local and runs statements against it, and a `const fn` may not.
     final constness = ctor.isConst && ctor.body == null ? 'const ' : '';
+    // A counted class hands out a handle, not a value: everything that
+    // holds one holds an `Rc`, so the constructor is where the first one is
+    // made. A `const fn` cannot allocate, so a counted constructor is not one.
+    final produces = cls.counted ? 'std::rc::Rc<Self>' : 'Self';
     _line(
-      '${_vis(ctor.name ?? cls.name)}${constness}fn $name($params) -> Self {',
+      '${_vis(ctor.name ?? cls.name)}'
+      '${cls.counted ? '' : constness}fn $name($params) -> $produces {',
     );
     _indent++;
     for (final check in ctor.asserts) {
       stmt(check);
     }
     final inits = {..._inheritedInits(ctor), ...ctor.fieldInits};
-    _line(ctor.body == null ? 'Self {' : 'let mut __new = Self {');
+    // The handle is made around the value: a counted class's constructor is
+    // the one place an `Rc` comes from, and everything that holds one after
+    // that holds the handle.
+    _line(
+      ctor.body == null
+          ? (cls.counted ? 'std::rc::Rc::new(Self {' : 'Self {')
+          : 'let mut __new = Self {',
+    );
     _indent++;
     for (final field in _allFields(cls)) {
       // The constructor first, then the declaration's own value: Dart applies
@@ -3202,7 +3263,7 @@ class RustBackend {
       }
       final held = type(field.type);
       _line(
-        field.shared
+        _inCell(field)
             ? '${snake(field.name)}: std::rc::Rc::new(std::cell::'
                   '${_isCopy(held) ? 'Cell' : 'RefCell'}::new(${expr(init)})),'
             : '${snake(field.name)}: ${expr(init)},',
@@ -3217,7 +3278,7 @@ class RustBackend {
     _indent--;
     final body = ctor.body;
     if (body == null) {
-      _line('}');
+      _line(cls.counted ? '})' : '}');
     } else {
       _line('};');
       // `this` inside the body is the value being built, not a `self` that
@@ -3227,7 +3288,7 @@ class RustBackend {
       _selfName = '__new';
       stmt(body);
       _selfName = saved;
-      _line('__new');
+      _line(cls.counted ? 'std::rc::Rc::new(__new)' : '__new');
     }
     _indent--;
     _line('}');
@@ -3472,6 +3533,9 @@ class _WalkSelf {
   /// Whether `this` is read anywhere in what was walked.
   bool readsThis = false;
 
+  /// Whether a closure in what was walked keeps a counted handle to `this`.
+  bool holdsSelfClosure = false;
+
   void statement(IrStmt s) {
     switch (s) {
       case IrAssignField(:final target):
@@ -3608,7 +3672,8 @@ class _WalkSelf {
         args.forEach(expression);
       case IrIs(:final expr):
         expression(expr);
-      case IrClosure(:final body):
+      case IrClosure(:final body, :final holdsSelf):
+        if (holdsSelf) holdsSelfClosure = true;
         statement(body);
       case IrCallValue(:final target, :final args):
         expression(target);

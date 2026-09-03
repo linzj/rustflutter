@@ -391,7 +391,10 @@ class KernelFrontend {
     // that reach `this`.
     final finals = _finalFieldsRead(fn);
     final copies = finals != null && !_borrowedArgument;
+    // A counted class's closure keeps a handle to the object, so `this` is
+    // available to it and nothing has to be copied or borrowed.
     if (_reachesThis(fn) &&
+        !_counted &&
         !copies &&
         !(_borrowedArgument && _onlyReadsThis(fn))) {
       throw Unsupported('closure capturing `this`', _sample(origin));
@@ -400,6 +403,9 @@ class KernelFrontend {
     if (body == null)
       throw Unsupported('closure with no body', _sample(origin));
     final was = _captured;
+    // A counted class's closure keeps the object itself, so nothing is copied
+    // out of it: the fields are reached through the handle as usual.
+    final holds = _counted && _reachesThis(fn) && !copies;
     if (copies) _captured = {for (final f in finals) f.name.text};
     try {
       return IrClosure(
@@ -412,6 +418,7 @@ class KernelFrontend {
         captures: copies
             ? [for (final f in finals) IrParam(f.name.text, _type(f.type))]
             : const [],
+        holdsSelf: holds,
       );
     } finally {
       _captured = was;
@@ -1781,6 +1788,24 @@ class KernelFrontend {
   /// closure's capture all have to agree, and they are written in that order.
   Set<String> _sharedFields = const {};
 
+  /// Whether some closure in the class calls a method on `this`.
+  ///
+  /// Generous, like `_closureFields`: a class counted that need not be costs
+  /// an `Rc`; one not counted that should be is a closure that cannot exist.
+  bool _closureCallsMethod(Class node) {
+    final closures = <FunctionNode>[];
+    node.accept(_ClosureFinder(closures));
+    for (final fn in closures) {
+      final walk = _ThisUse();
+      fn.accept(walk);
+      if (walk.demandingBeyondFields) return true;
+    }
+    return false;
+  }
+
+  /// Whether the class being lowered is reference counted.
+  bool _counted = false;
+
   Set<String> _closureFields(Class node) {
     final closures = <FunctionNode>[];
     node.accept(_ClosureFinder(closures));
@@ -1795,6 +1820,7 @@ class KernelFrontend {
 
   (IrClass, List<String>) lowerClass(Class node) {
     _sharedFields = _closureFields(node);
+    _counted = _closureCallsMethod(node);
 
     // Kernel's superclass may be a synthetic mixin application; the class a
     // reader would name is the first one above that is not.
@@ -1906,6 +1932,7 @@ class KernelFrontend {
           ? null
           : base.name,
       mixins: node.isEnum ? const [] : mixins,
+      counted: _counted,
       isAbstract: node.isAbstract,
       isEnum: node.isEnum,
       values: recovered,

@@ -566,7 +566,9 @@ class Frontend {
     // holds the two to it.
     final finals = _finalFieldsRead(node);
     final copies = finals != null && !_borrowedArgument;
+    // A counted class's closure keeps a handle to the object.
     if (finder.found &&
+        !_counted &&
         !copies &&
         !(_borrowedArgument && _onlyReadsThis(node))) {
       throw Unsupported('closure capturing `this`', node.toSource());
@@ -579,6 +581,8 @@ class Frontend {
       params.add(IrParam(name, _type(inner.declaredFragment?.element.type)));
     }
     final was = _captured;
+    // A counted class's closure keeps the object itself. See `holdsSelf`.
+    final holds = _counted && finder.found && !copies;
     if (copies) _captured = {for (final f in finals) f.name!};
     try {
       return IrClosure(
@@ -588,6 +592,7 @@ class Frontend {
         captures: copies
             ? [for (final f in finals) IrParam(f.name!, _type(f.type))]
             : const [],
+        holdsSelf: holds,
       );
     } finally {
       _captured = was;
@@ -1644,10 +1649,17 @@ class Frontend {
   /// `IrFieldDecl.shared`; the Kernel front end collects the same set.
   Set<String> _sharedFields = const {};
 
+  /// Whether the class being lowered is reference counted. See
+  /// `IrClass.counted`.
+  bool _counted = false;
+
   (IrClass, List<String>) lowerClass(ClassDeclaration node) {
     final touched = _TouchedFields();
     node.accept(touched);
     _sharedFields = touched.mutable;
+    final calls = _ClosureCallsMethod();
+    node.accept(calls);
+    _counted = calls.found;
     final element = node.declaredFragment?.element;
     final cls = IrClass(
       node.name.lexeme,
@@ -1655,6 +1667,7 @@ class Frontend {
         for (final p in node.typeParameters?.typeParameters ?? const [])
           p.name.lexeme,
       ],
+      counted: _counted,
       superclass: node.extendsClause?.superclass.name.lexeme,
       mixins: [
         for (final t in node.withClause?.mixinTypes ?? const []) _type(t.type),
@@ -2091,6 +2104,19 @@ class _InstanceDemand extends RecursiveAstVisitor<void> {
   void visitSuperExpression(SuperExpression node) {
     demanding = true;
     callsOrEscapes = true;
+  }
+}
+
+/// Whether some closure in the class calls a method on `this`.
+class _ClosureCallsMethod extends RecursiveAstVisitor<void> {
+  bool found = false;
+
+  @override
+  void visitFunctionExpression(FunctionExpression node) {
+    final demand = _InstanceDemand();
+    node.accept(demand);
+    if (demand.callsOrEscapes) found = true;
+    super.visitFunctionExpression(node);
   }
 }
 

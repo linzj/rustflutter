@@ -308,6 +308,7 @@ class IrClosure extends IrExpr {
     this.returns, {
     this.captures = const [],
     this.boxed = false,
+    this.holdsSelf = false,
   });
 
   final List<IrParam> params;
@@ -331,6 +332,12 @@ class IrClosure extends IrExpr {
   /// Whether this closure goes to a parameter that keeps it, and so has to be
   /// boxed at the call site to match the owned parameter.
   final bool boxed;
+
+  /// Whether this closure keeps a counted handle to `this`.
+  ///
+  /// The answer for a closure that *calls a method* -- it cannot capture the
+  /// method, only the object. See `IrClass.counted`.
+  final bool holdsSelf;
 }
 
 /// `a ?? b`.
@@ -1110,6 +1117,7 @@ class IrClass {
     this.superclass,
     this.superclassArguments = const [],
     this.mixins = const [],
+    this.counted = false,
     this.isAbstract = false,
     this.isEnum = false,
     this.values = const [],
@@ -1135,6 +1143,18 @@ class IrClass {
   /// name refused 554 impls with "the base is generic and its arguments are
   /// not known here", which was true and avoidable.
   final List<IrType> mixins;
+
+  /// Whether instances of this class are reference counted.
+  ///
+  /// A closure cannot capture a method, only an object -- so a closure that
+  /// calls a method on `this` and outlives the call has to keep a handle to
+  /// it. 414 closures across the package do that, in 197 classes.
+  ///
+  /// It is the *type* that carries this, not the sites: `Rc<Ticker>` wherever
+  /// `Ticker` appears. Round 102 counted 1150 places where one of these
+  /// classes is constructed, held, passed or returned, and one rule in
+  /// `type()` answers all of them.
+  final bool counted;
 
   /// `class _Linear extends ParametricCurve<double>` -- the `double`.
   ///

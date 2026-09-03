@@ -249,6 +249,9 @@ pub use edge_insets::EdgeInsets;
 mod asyncs;
 pub use asyncs::Asyncs;
 
+mod counted;
+pub use counted::Ticker;
+
 mod mixins;
 pub use mixins::{Measured, Panel, Scaled};
 
@@ -1060,6 +1063,28 @@ mod tests {
     }
 
     #[test]
+    fn a_closure_that_calls_a_method_keeps_the_object() {
+        // A closure cannot capture a method, only an object -- so this class
+        // is reference counted: its constructor hands out an `Rc`, the method
+        // that gives away the closure takes `self: &Rc<Self>`, and the closure
+        // keeps a clone of it. Every mutable field is in a cell for the same
+        // reason: an `Rc` gives out shared access, so `fire` takes `&self`.
+        let ticker = Ticker::new(3);
+        let go = ticker.trigger();
+        go();
+        go();
+        assert_eq!(ticker.seen(), 6);
+        // The object stays alive because the closure holds it. Dropping the
+        // last other handle changes nothing.
+        let orphan = {
+            let short = Ticker::new(5);
+            short.trigger()
+        };
+        orphan();
+        orphan();
+    }
+
+    #[test]
     fn a_closure_and_its_object_share_a_mutable_field() {
         // `count` changes, so a copy would be a different number. The field
         // lives in a cell they both hold a handle to, and the closure outlives
@@ -1107,15 +1132,18 @@ mod tests {
     }
 
     #[test]
-    fn a_closure_that_asks_for_more_than_a_borrow_is_refused() {
+    fn a_closure_that_calls_a_method_holds_a_counted_handle() {
+        // This used to assert `twiceScaled` was refused: a closure calling a
+        // method on `this` had no way to keep it. Round 103 gave the class a
+        // reference count, so the premise changed and so does the test -- the
+        // closure keeps a handle and the method takes one.
         let emitted = include_str!("closures.rs");
         assert!(
-            emitted.contains("NOT TRANSLATED") && emitted.contains("capturing `this`"),
-            "expected twiceScaled and scaler to be refused, got:
+            emitted.contains("pub fn twice_scaled(self: &std::rc::Rc<Self>"),
+            "expected twiceScaled to take a counted handle, got:
 {emitted}"
         );
-        // Calls a method on `this`: needs the object, not a field of it.
-        assert!(!emitted.contains("fn twice_scaled"));
+        assert!(emitted.contains("let __me = self.clone();"));
     }
 
     #[test]
