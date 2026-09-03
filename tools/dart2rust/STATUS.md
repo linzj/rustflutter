@@ -3988,6 +3988,41 @@ E0428 **24 → 0**。
 
 ---
 
+## 第 84 轮:光秃秃的 `List`,和 `Fn` 约束里塞不下 `impl Trait`
+
+E0433 的四种,都不大,但每一种都是一个说得清的洞。
+
+### 没写类型参数的 `List`
+
+Dart 的 `List`(不带 `<T>`)持有任何东西,这里就是前奏的 `Object`。
+`List`、`Iterable`、`Set`、`Map`、`Future` 都补了这一条。
+
+### `dart:collection` 的**公开**类
+
+前几轮映射了内部的 `_LinkedHashMap`,漏了公开的 `LinkedHashMap`。
+前奏里加了别名,并且**把差别写下来**:Dart 的 `LinkedHashMap` 保插入序,
+`std` 的 `HashMap` 不保;目前没有翻译出来的东西依赖那个顺序——
+**写在这里,好过将来被发现**。
+
+### `List.generate(n, f)`
+
+那是 Dart 的列表构造函数披着静态方法的外衣。
+`(0..n).map(f).collect::<Vec<_>>()`;`filled` 是 `vec![v; n]`;
+参数个数对不上就拒,不猜。
+
+### `Fn(impl Fn())` 不成立
+
+函数类型**嵌在另一个函数类型的参数里**时不能是 `impl Fn`
+——Rust 不允许 `impl Trait` 出现在 `Fn` 约束的参数里。`&dyn Fn` 可以,
+借用方式一样。
+
+| | 错误 |
+|---|---|
+| `widgets` | 337 → 328 → **299** |
+| `core` | 113 → **102** |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -4008,9 +4043,9 @@ E0428 **24 → 0**。
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`widgets` 剩 337,E0425 占 214,其中
-`Timer`/`Completer` 54 是执行器、`Pointer`/`NativeType` 15 是 dart:ffi。
-真正没查过的是 `T` 26 和 E0433(36)。
+**下一轮**:`widgets` 剩 299,E0425 占 209。
+`Timer`/`Completer` 54 是执行器、`Pointer`/`NativeType` 15 是 dart:ffi,
+两样都该留着。真正没查过的还是 `T` 26,和 E0782(14)。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

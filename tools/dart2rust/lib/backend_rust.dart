@@ -246,7 +246,16 @@ class RustBackend {
       // A parameter takes `impl Fn(..)`, which needs no allocation and lets the
       // caller pass a closure literal; anything owned -- a field, a return --
       // has to be `Box<dyn Fn(..)>`, since a closure's own type has no name.
-      final args = t.parameters!.map((p) => type(p, owned: false)).join(', ');
+      // A function type *inside* a function type's parameters cannot be
+      // `impl Fn`: `Fn(impl Fn())` is not allowed in a trait bound. `&dyn Fn`
+      // is, and borrows the same way.
+      final args = t.parameters!
+          .map(
+            (p) => p.isFunction
+                ? '&dyn ${_fnSignature(p)}'
+                : type(p, owned: false),
+          )
+          .join(', ');
       final returns = type(t.returns!);
       final signature = 'Fn($args) -> $returns';
       // Inside a trait, `impl Fn(..)` is a generic parameter, and a trait with
@@ -289,6 +298,33 @@ class RustBackend {
           'std::collections::HashMap<${type(t.arguments[0])}, '
           '${type(t.arguments[1])}>';
       return t.nullable ? 'Option<$map>' : map;
+    }
+    // A bare `List` or `Future` -- Dart's, with no argument written -- holds
+    // anything, which here is the prelude's `Object`. Without this the name
+    // came out unadorned and Rust has no `List`.
+    const anything = IrType('dynamic');
+    if ((t.name == 'List' || t.name == 'Iterable' || t.name == 'Set') &&
+        t.arguments.isEmpty) {
+      return type(
+        IrType(t.name, nullable: t.nullable, arguments: const [anything]),
+        owned: owned,
+      );
+    }
+    if (t.name == 'Map' && t.arguments.isEmpty) {
+      return type(
+        IrType(
+          'Map',
+          nullable: t.nullable,
+          arguments: const [anything, anything],
+        ),
+        owned: owned,
+      );
+    }
+    if (t.name == 'Future' && t.arguments.isEmpty) {
+      return type(
+        IrType('Future', nullable: t.nullable, arguments: const [anything]),
+        owned: owned,
+      );
     }
     if ((t.name == 'List' || t.name == 'Iterable') && t.arguments.length == 1) {
       final vec = 'Vec<${type(t.arguments.single)}>';
@@ -637,7 +673,37 @@ class RustBackend {
   /// and removing that blunt rule brought it back. The precise rule is the same
   /// one `_superCall` uses -- if the callee is in this file, it has to be in the
   /// IR.
+  /// `Fn(..) -> ..` for a function type, without the `impl`/`dyn`/`Box`.
+  String _fnSignature(IrType t) {
+    final args = t.parameters!
+        .map(
+          (p) =>
+              p.isFunction ? '&dyn ${_fnSignature(p)}' : type(p, owned: false),
+        )
+        .join(', ');
+    return 'Fn($args) -> ${type(t.returns!)}';
+  }
+
+  /// `List.generate(n, f)` and friends, which are Dart's list constructors
+  /// wearing a static's clothes. Rust builds a `Vec` from an iterator.
+  static const _listStatics = {'generate', 'filled', 'from', 'of'};
+
   String _staticCall(String? owner, String name, List<IrExpr> args) {
+    if (owner == 'List' && _listStatics.contains(name)) {
+      if (name == 'generate' && args.length == 2) {
+        return '(0..${expr(args[0])}).map(${expr(args[1])}).collect::<Vec<_>>()';
+      }
+      if (name == 'filled' && args.length == 2) {
+        return 'vec![${expr(args[1])}; ${expr(args[0])} as usize]';
+      }
+      if ((name == 'from' || name == 'of') && args.length == 1) {
+        return '${expr(args[0])}.clone()';
+      }
+      throw Unsupported(
+        '`List.$name` with ${args.length} arguments',
+        'List.$name(..)',
+      );
+    }
     if (owner == null) {
       // A top-level function: no owner in either language. Checked against
       // what this file emits, for the same reason a static call is -- a call

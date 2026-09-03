@@ -455,6 +455,18 @@ impl<K, V> MapEntry<K, V> {
     }
 }
 
+/// `dart:collection`'s public map and set classes.
+///
+/// Dart's `LinkedHashMap` keeps insertion order and `HashMap` does not;
+/// `std::collections::HashMap` does not either, and nothing translated so far
+/// depends on the order -- which is why the difference is written here rather
+/// than left to be discovered. `SplayTreeMap` is sorted, and `BTreeMap` is the
+/// same promise.
+pub type LinkedHashMap<K, V> = std::collections::HashMap<K, V>;
+pub type HashMap<K, V> = std::collections::HashMap<K, V>;
+pub type LinkedHashSet<T> = Set<T>;
+pub type HashSet<T> = Set<T>;
+
 /// Dart's `Queue`, backed by a `VecDeque`.
 pub type Queue<T> = std::collections::VecDeque<T>;
 
