@@ -188,3 +188,44 @@ class Members {
     return m.isNotEmpty;
   }
 }
+
+/// A `Map` that keeps the order things were put in.
+///
+/// Dart's map literal is a `LinkedHashMap` and its `keys`, `values`, `entries`
+/// and `forEach` walk in insertion order. `std::collections::HashMap` does
+/// not, so those five were refused -- 97 across the package -- rather than
+/// reorder anything quietly. The prelude's `Map` is a `Vec` of pairs now, the
+/// same trade `Set<T>` next door had already made.
+class Ordered {
+  const Ordered();
+
+  /// Not alphabetical, and not hash order either: `b`, `a`, `c`.
+  static Map<String, int> built() {
+    final Map<String, int> m = <String, int>{};
+    m['b'] = 2;
+    m['a'] = 1;
+    m['c'] = 3;
+    return m;
+  }
+
+  static List<String> namesOf(Map<String, int> m) {
+    return m.keys.toList();
+  }
+
+  static List<int> valuesOf(Map<String, int> m) {
+    return m.values.toList();
+  }
+
+  static int total(Map<String, int> m) {
+    int sum = 0;
+    m.forEach((String k, int v) {
+      sum = sum + v;
+    });
+    return sum;
+  }
+
+  /// Gives back what is there afterwards, either way.
+  static int seeded(Map<String, int> m, String name) {
+    return m.putIfAbsent(name, () => 9);
+  }
+}

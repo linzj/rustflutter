@@ -888,6 +888,16 @@ class KernelFrontend {
     // a fixture that used defaults.
     final args = _arguments(node.arguments, node.interfaceTarget.function);
     final owner = node.interfaceTarget.enclosingClass?.name;
+    if (owner == 'List' || owner == 'Map' || owner == 'Iterable') {
+      // A collection member is a *Rust* method taking `impl Fn`, so a closure
+      // given to one is not boxed. `_keeps` cannot say so: the callee is
+      // `dart:core`'s, with no body to read, and it answers "kept" for want of
+      // evidence. The analyzer front end has no such analysis and said
+      // unboxed, so the two wrote different Rust for `m.forEach(..)`.
+      for (var i = 0; i < args.length; i++) {
+        args[i] = _unboxed(args[i]);
+      }
+    }
     if (owner == 'List' || owner == 'Iterable') {
       if (name == '[]' && args.length == 1) {
         return IrIndex(expression(node.receiver), args.single);
@@ -1067,6 +1077,16 @@ class KernelFrontend {
   IrExpr _namedArgument(Expression value, Object param) =>
       _withBorrowing(param, _calleeOf(param), () => expression(value));
 
+  static IrExpr _unboxed(IrExpr e) => e is IrClosure && e.boxed
+      ? IrClosure(
+          e.params,
+          e.body,
+          e.returns,
+          captures: e.captures,
+          holdsSelf: e.holdsSelf,
+        )
+      : e;
+
   FunctionNode? _calleeOf(Object param) {
     final parent = param is TreeNode ? param.parent : null;
     return parent is FunctionNode ? parent : null;
@@ -1090,6 +1110,9 @@ class KernelFrontend {
           value.body,
           value.returns,
           captures: value.captures,
+          // Carried. Rebuilding a node without a flag it had is the shape
+          // that lost `kept` in round 104 and `shared` in round 101.
+          holdsSelf: value.holdsSelf,
           boxed: true,
         );
       }

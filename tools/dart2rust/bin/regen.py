@@ -62,7 +62,9 @@ NOTES = {
 IMPORTS = {'RangeError': 'use crate::RangeError;',
            'Isolate': 'use crate::Isolate;',
            'DartAny': 'use crate::DartAny;',
-           'Type': 'use crate::Type;'}
+           'Type': 'use crate::Type;',
+           'Map': 'use crate::Map;',
+           'Set': 'use crate::Set;'}
 
 
 def needed_imports(text):

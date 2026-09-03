@@ -5084,6 +5084,62 @@ NOT TRANSLATED: Theme: unsupported constant TypeLiteralConstant:
 
 ---
 
+## 第 113 轮:有序的 `Map`,和一个已经在漏的环
+
+`Set<T>` 一直是 `Vec` 支撑的——**有序**;`Map` 用的是 `std::collections::HashMap`
+——**无序**。同一个决定做了两次,做得不一样,代价是 97 条
+"依赖插入顺序"的拒绝:`keys` 38、`values` 26、`putIfAbsent` 22、
+`forEach` 6、`entries` 5。
+
+prelude 里写了一个 `Vec<(K, V)>` 支撑的 `Map`,查找是线性的——**和隔壁
+`Set` 付的是同一笔账**。`keys`/`values`/`entries`/`forEach`/`putIfAbsent`
+现在都翻得出来。`Map.map` 还拒着:它要闭包返回 `MapEntry` 再重建一张表,
+那是个形状问题,不是名字问题,有序容器没解决它。
+
+### 又三处 Rust 要说 `mut`
+
+* `m.putIfAbsent(..)` 会写,接收者要 `mut`。
+* `m.forEach((k, v) { sum = sum + v; })` —— **闭包里写外层局部**。
+  `_assignedIn` 自己那个 walk 不进闭包,而进闭包的 `_WalkSelf` 只记
+  "当值用的赋值"。两个 walk 各知道一半。
+* 上一轮的 `xs[i] = v` 和 `xs.insert(..)`。
+
+### 两个前端又不一致
+
+`m.forEach(..)` 的闭包,Kernel 包了 `Box::new`,analyzer 没包。原因是
+`_keeps` 读不到 `dart:core` 的 `forEach` 有没有 body——**读不到就答"它留着"**。
+集合成员翻成的是收 `impl Fn` 的 Rust 方法,不该包。
+
+| | |
+|---|---|
+| 整包错误 | 408 → **416** |
+| 整包拒绝 | 3421 → **3353** |
+| fixture | 145 → 146 个测试 |
+
+---
+
+## 环:一个还没爆但方向明确的问题
+
+用户问的:Element 树的孩子持有 parent 回指,`Rc` 计不下去。量了当前输出:
+
+| | |
+|---|---|
+| 结构体之间的 `Rc` 边 | **141** |
+| 其中成环的 | **3**(真实的一个是 `ScaffoldMessengerState ↔ ScaffoldState`) |
+| 后端生成过的 `Weak` | **0**(全 crate 3 个 `Weak` 都在 prelude 里) |
+
+`Element._parent` 现在还不是 `Rc`,是 `Option<Box<dyn Element>>`——那是**更糟
+的一个 bug**:孩子拥有父亲,树是反的。`Element` 还不是计数类,所以还没走到
+泄漏那一步。
+
+但方向是确定的:`setState` 那类闭包迟早把 `Element`/`RenderObject` 逼成计数类,
+回指边一变 `Rc`,环立刻泄漏,而**编译器现在没有任何机制说"这条边是弱的"**。
+
+要判断哪条边是回边,一个可量的判据是:**环里那条"可空、且不在构造函数里赋值"
+的边**——回指都是事后挂上去的。下一轮先量这个判据在 141 条边上准不准。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -5104,8 +5160,8 @@ NOT TRANSLATED: Theme: unsupported constant TypeLiteralConstant:
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:有序的 `Map`。prelude 的 `Set` 已经是 `Vec` 支撑的有序容器,
-`Map` 照做,97 条"依赖插入顺序"就没了。
+**下一轮**:`Weak`。量"可空且不在构造函数里赋值"这个判据能不能在 141 条
+`Rc` 边上认出回边,认得出就让回边变 `Weak`。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

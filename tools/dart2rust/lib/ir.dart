@@ -668,12 +668,14 @@ class IrIterChain extends IrExpr {
 
 /// Dart's `Map` methods in Rust's spelling.
 ///
-/// Lookup only, and that is a decision with a measurement behind it: of the
-/// 923 uses in `package:flutter/`, 623 look up and 109 iterate -- and a Dart
-/// map literal is a LinkedHashMap, which iterates in **insertion order**,
-/// while `HashMap` does not. Translating `keys`, `values`, `entries` or
-/// `forEach` to `HashMap`'s would silently reorder those 109. They are
-/// refused until there is a representation that keeps the order.
+/// It used to be lookup only: of the 923 uses in `package:flutter/`, 623 look
+/// up and 109 iterate, and a Dart map literal is a LinkedHashMap, which walks
+/// in **insertion order** while `std::collections::HashMap` does not. Rather
+/// than reorder those 109 quietly, the five ordered members were refused --
+/// 97 of them across the package.
+///
+/// The prelude's `Map` keeps the order now (a `Vec` of pairs, the same trade
+/// `Set<T>` next door has always made), so they are here.
 const mapMethodNames = <String, String>{
   'containsKey': 'contains_key',
   'remove': 'remove',
@@ -685,17 +687,19 @@ const mapMethodNames = <String, String>{
   // wrote down: 10 refusals of a name that was already spelled next door.
   'isNotEmpty': '!is_empty',
   'cast': '!cast',
+  'keys': 'keys',
+  'values': 'values',
+  'entries': 'entries',
+  'forEach': 'for_each',
+  'putIfAbsent': 'put_if_absent',
 };
 
-/// `Map` members that depend on iteration order.
-const orderedMapMembers = <String>{
-  'keys',
-  'values',
-  'entries',
-  'forEach',
-  'map',
-  'putIfAbsent',
-};
+/// `Map` members that depend on iteration order and are still not translated.
+///
+/// `map` builds a new map out of `MapEntry`s the closure returns, which is a
+/// shape of its own rather than a name; the ordered container did not settle
+/// it. The other five are translated now.
+const orderedMapMembers = <String>{'map'};
 
 /// Dart's `List` and `Iterable` methods in Rust's spelling.
 ///

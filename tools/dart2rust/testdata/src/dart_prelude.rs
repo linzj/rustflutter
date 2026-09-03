@@ -483,15 +483,136 @@ impl<K, V> MapEntry<K, V> {
     }
 }
 
+/// Dart's `Map`: a lookup that **keeps insertion order**.
+///
+/// A Dart map literal is a `LinkedHashMap`, and `keys`, `values`, `entries`
+/// and `forEach` walk it in the order things were put in. A
+/// `std::collections::HashMap` does not, so those five members were refused --
+/// 97 of them -- rather than reorder anything quietly.
+///
+/// A `Vec` of pairs keeps the order and costs a linear lookup. That is the
+/// same trade `Set<T>` next door has always made, and taking it here too
+/// makes one decision instead of two: whatever these containers cost, they
+/// cost it the same way.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Map<K, V> {
+    entries: Vec<(K, V)>,
+}
+
+impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
+    pub fn new() -> Self {
+        Map {
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn from<const N: usize>(items: [(K, V); N]) -> Self {
+        let mut map = Map::new();
+        for (key, value) in items {
+            map.insert(key, value);
+        }
+        map
+    }
+
+    fn at(&self, key: &K) -> Option<usize> {
+        self.entries.iter().position(|(k, _)| k == key)
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.at(key).map(|i| &self.entries[i].1)
+    }
+
+    /// Dart gives back what was there; so does Rust's `HashMap::insert`.
+    /// Replacing a value keeps the key where it was, which is what insertion
+    /// order means once a key is written twice.
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        match self.at(&key) {
+            Some(i) => Some(std::mem::replace(&mut self.entries[i].1, value)),
+            None => {
+                self.entries.push((key, value));
+                None
+            }
+        }
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.at(key).is_some()
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.at(key).map(|i| self.entries.remove(i).1)
+    }
+
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// In insertion order, which is the whole reason for this type.
+    pub fn keys(&self) -> Vec<K> {
+        self.entries.iter().map(|(k, _)| k.clone()).collect()
+    }
+
+    pub fn values(&self) -> Vec<V> {
+        self.entries.iter().map(|(_, v)| v.clone()).collect()
+    }
+
+    pub fn entries(&self) -> Vec<MapEntry<K, V>> {
+        self.entries
+            .iter()
+            .map(|(k, v)| MapEntry {
+                key: k.clone(),
+                value: v.clone(),
+            })
+            .collect()
+    }
+
+    pub fn for_each(&self, mut f: impl FnMut(K, V)) {
+        for (key, value) in &self.entries {
+            f(key.clone(), value.clone());
+        }
+    }
+
+    /// Dart's `putIfAbsent`: the value that is there afterwards, either way.
+    pub fn put_if_absent(&mut self, key: K, make: impl FnOnce() -> V) -> V {
+        if let Some(i) = self.at(&key) {
+            return self.entries[i].1.clone();
+        }
+        let value = make();
+        self.entries.push((key, value.clone()));
+        value
+    }
+
+    pub fn extend(&mut self, other: Map<K, V>) {
+        for (key, value) in other.entries {
+            self.insert(key, value);
+        }
+    }
+}
+
+impl<K, V> IntoIterator for Map<K, V> {
+    type Item = (K, V);
+    type IntoIter = std::vec::IntoIter<(K, V)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
 /// `dart:collection`'s public map and set classes.
 ///
-/// Dart's `LinkedHashMap` keeps insertion order and `HashMap` does not;
-/// `std::collections::HashMap` does not either, and nothing translated so far
-/// depends on the order -- which is why the difference is written here rather
-/// than left to be discovered. `SplayTreeMap` is sorted, and `BTreeMap` is the
-/// same promise.
-pub type LinkedHashMap<K, V> = std::collections::HashMap<K, V>;
-pub type HashMap<K, V> = std::collections::HashMap<K, V>;
+/// Dart's `LinkedHashMap` keeps insertion order and `HashMap` does not. Both
+/// are the ordered `Map` here: keeping an order nothing asked for is a
+/// promise too strong, never one too weak. `SplayTreeMap` is sorted, and
+/// `BTreeMap` would be the same promise -- it is not translated.
+pub type LinkedHashMap<K, V> = Map<K, V>;
+pub type HashMap<K, V> = Map<K, V>;
 pub type LinkedHashSet<T> = Set<T>;
 pub type HashSet<T> = Set<T>;
 

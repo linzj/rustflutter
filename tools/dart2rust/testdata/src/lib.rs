@@ -322,7 +322,7 @@ mod freefn;
 pub use freefn::{halve, thrice, Gauge};
 
 mod lists;
-pub use lists::{Marks, Members};
+pub use lists::{Marks, Members, Ordered};
 
 mod building;
 pub use building::{Shade, Slot};
@@ -1870,9 +1870,22 @@ mod tests {
         assert_eq!(Members::middle(vec![1, 2, 3, 4], 1, 3), vec![2, 3]);
         assert_eq!(Members::tail(vec![1, 2, 3], 1), vec![2, 3]);
         assert_eq!(Members::backwards(vec![1, 2, 3]), vec![3, 2, 1]);
-        let mut m = std::collections::HashMap::new();
+        let mut m = Map::new();
         assert!(!Members::has_any(m.clone()));
         m.insert("a".to_string(), 1i64);
         assert!(Members::has_any(m));
+    }
+
+    /// The prelude's `Map` keeps insertion order, which is what a Dart map
+    /// literal promises and what `HashMap` does not.
+    #[test]
+    fn a_map_walks_in_the_order_things_went_in() {
+        let m = Ordered::built();
+        assert_eq!(Ordered::names_of(m.clone()), vec!["b", "a", "c"]);
+        assert_eq!(Ordered::values_of(m.clone()), vec![2, 1, 3]);
+        assert_eq!(Ordered::total(m.clone()), 6);
+        // Already there: the value that is there is what comes back.
+        assert_eq!(Ordered::seeded(m.clone(), "a".to_string()), 1);
+        assert_eq!(Ordered::seeded(m, "zz".to_string()), 9);
     }
 }

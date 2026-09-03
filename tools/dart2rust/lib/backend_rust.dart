@@ -336,7 +336,7 @@ class RustBackend {
     }
     if (t.name == 'Map' && t.arguments.length == 2) {
       final map =
-          'std::collections::HashMap<${type(t.arguments[0])}, '
+          'Map<${type(t.arguments[0])}, '
           '${type(t.arguments[1])}>';
       return t.nullable ? 'Option<$map>' : map;
     }
@@ -474,7 +474,7 @@ class RustBackend {
       IrRecord(:final fields) => '(${fields.map(expr).join(', ')})',
       IrRecordField(:final record, :final index) => '${expr(record)}.$index',
       IrMapLiteral(:final entries) =>
-        'std::collections::HashMap::from(['
+        'Map::from(['
             '${entries.map((e) => '(${expr(e.$1)}, ${expr(e.$2)})').join(', ')}'
             '])',
       IrIterChain() => throw Unsupported(
@@ -1546,10 +1546,10 @@ class RustBackend {
     '_LinkedHashSet': 'Set',
     '_CompactLinkedHashSet': 'Set',
     '_HashSet': 'Set',
-    '_Map': 'std::collections::HashMap',
-    '_LinkedHashMap': 'std::collections::HashMap',
-    '_InternalLinkedHashMap': 'std::collections::HashMap',
-    '_HashMap': 'std::collections::HashMap',
+    '_Map': 'Map',
+    '_LinkedHashMap': 'Map',
+    '_InternalLinkedHashMap': 'Map',
+    '_HashMap': 'Map',
     '_GrowableList': 'Vec',
     '_List': 'Vec',
   };
@@ -2305,7 +2305,7 @@ class RustBackend {
   /// `vec![]` nor `HashMap::from([..])` is one. Said here rather than left to
   /// rustc, because one broken constant takes the whole file with it.
   static bool _constable(String rust) =>
-      !rust.contains('Vec<') && !rust.contains('HashMap<');
+      !rust.contains('Vec<') && !rust.contains('Map<');
 
   /// Whether an emitted Rust type derives `Copy`.
   ///
@@ -2378,7 +2378,7 @@ class RustBackend {
       !rust.contains('String') &&
       !rust.contains('Box<') &&
       !rust.contains('Vec<') &&
-      !rust.contains('HashMap<') &&
+      !rust.contains('Map<') &&
       // A shared field's `Rc` is not `Copy` however copyable its contents,
       // and a `RefCell` is not either. Without these a struct holding one
       // derived `Copy` and did not compile.
@@ -3873,6 +3873,9 @@ class _WalkSelf {
     'remove',
     '!insert',
     '!remove_at',
+    // The ordered `Map`'s own mutators. `put_if_absent` may write, so it
+    // takes `&mut self`, and its receiver needs to say so.
+    'put_if_absent',
   };
 
   /// Locals a mutating call is made on -- `xs.insert(..)` needs `let mut xs`,
@@ -3913,7 +3916,12 @@ class _WalkSelf {
         // A library's own variable, not this object's: it goes through a cell
         // of its own, so writing one says nothing about `self`.
         expression(value);
-      case IrAssign():
+      case IrAssign(:final name):
+        // Recorded here as well as in `_assignedIn`'s own walk, because this
+        // one descends into closures and that one does not: `m.forEach((k, v)
+        // { sum = sum + v; })` writes an outer local from inside a closure,
+        // and nothing declared it `mut`.
+        assignedLocals.add(name);
         expression(s.value);
       case IrSetter(:final target, :final name, :final value):
         // A setter call on `this` spreads `&mut` exactly as a method call does.
