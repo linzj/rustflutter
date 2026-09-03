@@ -906,7 +906,24 @@ class IrFieldDecl {
     this.initial,
     this.doc,
     this.shared = false,
+    this.isLate = false,
   });
+
+  /// Dart's `late`: declared with no value, and an error to read before one is
+  /// assigned.
+  ///
+  /// Rust has no such state, so the field is `Option<T>` holding `None` until
+  /// something writes it, and every read unwraps. That panics where Dart would
+  /// have thrown `LateInitializationError` -- the same event, reported by a
+  /// different mechanism, which is the trade this compiler already makes for
+  /// index bounds.
+  ///
+  /// Round 52 measured 480 of these and put them down, because a read wanted
+  /// `Clone` and the commonest types were `Box<dyn Animation>`, which is not.
+  /// Unwrapping a reference wants nothing of the kind: `as_ref().unwrap()` is
+  /// a borrow, and only a field held in a cell -- where the borrow cannot
+  /// leave -- still needs the clone.
+  final bool isLate;
 
   /// Whether a closure has to see this field change.
   ///
@@ -955,6 +972,7 @@ class IrFieldDecl {
         // round ago, in the same shape: the declaration would share and the
         // reads would not.
         shared: f.shared,
+        isLate: f.isLate,
       );
 }
 

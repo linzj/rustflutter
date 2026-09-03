@@ -252,6 +252,9 @@ pub use asyncs::Asyncs;
 mod counted;
 pub use counted::Ticker;
 
+mod lates;
+pub use lates::{Engine, Machine};
+
 mod mixins;
 pub use mixins::{Measured, Panel, Scaled};
 
@@ -1767,5 +1770,25 @@ mod tests {
         // Separate from the class's, which has none.
         assert_eq!(Boxes::new().first_of(7, 9), 7);
         assert_eq!(Boxes::new().first_of(1.5, 2.5), 1.5);
+    }
+
+    /// A `late` field is `None` until something writes it, and every read
+    /// unwraps. The panic that a read-before-write gives is Dart's
+    /// `LateInitializationError` reported by a different mechanism.
+    #[test]
+    fn a_late_field_holds_nothing_until_it_is_written() {
+        let mut m = Machine::new();
+        m.start(Engine::new("mill".to_string()));
+        assert_eq!(m.taken(), 0);
+        assert_eq!(m.advance(3.0), 6.0);
+        assert_eq!(m.taken(), 1);
+        assert_eq!(m.describe(), "ran mill 1 times");
+    }
+
+    /// Reading one before the write is the error Dart makes it.
+    #[test]
+    #[should_panic]
+    fn reading_a_late_field_first_is_an_error() {
+        Machine::new().taken();
     }
 }

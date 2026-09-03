@@ -1741,6 +1741,7 @@ class Frontend {
             initial: initial == null ? null : expression(initial),
             doc: _doc(member),
             shared: _sharedFields.contains(v.name.lexeme),
+            isLate: member.fields.isLate,
           ),
         );
       }

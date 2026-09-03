@@ -2006,6 +2006,7 @@ class KernelFrontend {
           isFinal: field.isFinal,
           initial: initial == null ? null : expression(initial),
           shared: _sharedFields.contains(name),
+          isLate: field.isLate,
         ),
       );
     }

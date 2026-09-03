@@ -9,7 +9,10 @@
 // Where they do not agree the backend stops. See `Unsupported`.
 library;
 
+import 'dart:convert';
+
 import 'ir.dart';
+import 'prelude.dart';
 
 /// Dart's primitives, in the spelling this project's crate uses.
 ///
@@ -607,7 +610,7 @@ class RustBackend {
   /// `Cell` needs no borrow flag and cannot panic, so it is the better answer
   /// wherever it fits. See `IrFieldDecl.shared`.
   String _fieldType(IrFieldDecl field) {
-    final held = type(field.type);
+    final held = _heldType(field);
     // Every mutable field of a counted class, not only the ones a closure
     // names: an `Rc` hands out shared *immutable* access, so a method that
     // assigns a field cannot take `&mut self` and has to go through a cell.
@@ -622,6 +625,24 @@ class RustBackend {
   /// counted class.
   bool _inCell(IrFieldDecl field) =>
       field.shared || (cls.counted && !field.isFinal);
+
+  /// What a field holds, `Option`-wrapped when it is `late`.
+  ///
+  /// The wrapper goes *inside* the cell: a `late` field that a closure watches
+  /// is `Rc<RefCell<Option<T>>>`, one cell holding one absent value, not two
+  /// nested absences.
+  String _heldType(IrFieldDecl field) {
+    final held = type(field.type);
+    return field.isLate ? 'Option<$held>' : held;
+  }
+
+  /// The `late` field of *this* class by that name, or null.
+  IrFieldDecl? _lateField(String name) {
+    for (final f in _allFields(cls)) {
+      if (f.name == name) return f.isLate ? f : null;
+    }
+    return null;
+  }
 
   IrFieldDecl? _sharedField(String name) {
     for (final f in _allFields(cls)) {
@@ -654,6 +675,16 @@ class RustBackend {
   /// `clone()` unless the type is `Copy`, where it would only be noise.
   String _copyOf(IrParam field) {
     final read = '$_selfName.${snake(field.name)}';
+    // A copied `late` field is unwrapped here rather than in the body: the
+    // closure holds a `T`, so the reads inside it are ordinary local reads.
+    // It takes the value the field has when the closure is *made*, which is
+    // the same trade round 97 made for every copied field.
+    final late = _lateField(field.name);
+    if (late != null && _sharedField(field.name) == null) {
+      return _isCopy(type(late.type))
+          ? '$read.unwrap()'
+          : '$read.clone().unwrap()';
+    }
     // A shared field is carried as a *handle*: the closure and the object must
     // see the same cell, which is the whole reason it is shared. Cloning an
     // `Rc` is cloning the handle, not the value.
@@ -1050,10 +1081,22 @@ class RustBackend {
     if (target == null || target is IrThis) {
       final shared = _sharedField(name);
       if (shared != null) {
-        final held = type(shared.type);
-        return _isCopy(held)
+        final held = _heldType(shared);
+        final read = _isCopy(held)
             ? '$receiver.${snake(name)}.get()'
             : '$receiver.${snake(name)}.borrow().clone()';
+        // Out of the cell it is a value, so the `late` unwrap is on a value
+        // too. This is the one shape that does need `T: Clone`.
+        return shared.isLate ? '$read.unwrap()' : read;
+      }
+      final late = _lateField(name);
+      if (late != null) {
+        // `as_ref()` rather than a clone: a read of a field is a place in
+        // Rust, and `&T` is what the sites around it already expect. Only a
+        // `Copy` value is taken out whole, which is what a place does anyway.
+        return _isCopy(type(late.type))
+            ? '$receiver.${snake(name)}.unwrap()'
+            : '$receiver.${snake(name)}.as_ref().unwrap()';
       }
     }
     return '$receiver.${snake(name)}';
@@ -1733,16 +1776,24 @@ class RustBackend {
         final shared = target == null || target is IrThis
             ? _sharedField(name)
             : null;
+        // Assigning a `late` field is what takes it out of `None`, so the
+        // value goes in wrapped. This is the only place that happens.
+        final own = target == null || target is IrThis
+            ? _lateField(name)
+            : null;
+        final written = own != null || (shared?.isLate ?? false)
+            ? 'Some(${expr(value)})'
+            : expr(value);
         if (shared != null) {
           // Through the cell, which is why the field can be written from a
           // closure that does not hold `self` at all.
           _line(
-            _isCopy(type(shared.type))
-                ? '$receiver.${snake(name)}.set(${expr(value)});'
-                : '*$receiver.${snake(name)}.borrow_mut() = ${expr(value)};',
+            _isCopy(_heldType(shared))
+                ? '$receiver.${snake(name)}.set($written);'
+                : '*$receiver.${snake(name)}.borrow_mut() = $written;',
           );
         } else {
-          _line('$receiver.${snake(name)} = ${expr(value)};');
+          _line('$receiver.${snake(name)} = $written;');
         }
       case IrAssignTopLevel(:final name, :final value):
         // Through the cell: two derefs for the `LazyLock` and the `Isolate`,
@@ -2126,7 +2177,74 @@ class RustBackend {
   static bool _constable(String rust) =>
       !rust.contains('Vec<') && !rust.contains('HashMap<');
 
-  static bool _isCopy(String rust) =>
+  /// Whether an emitted Rust type derives `Copy`.
+  ///
+  /// The containers are decided by the text. A **class name** is not, and was
+  /// assumed `Copy` -- right for `Offset`, wrong for anything holding a
+  /// `String`, and the ruler said "is this Copy" while measuring "does the
+  /// text mention a container that is not". So a named class is asked the same
+  /// question its own derive is asked, which is what makes the two agree.
+  bool _isCopy(String rust) => _isCopyIn(rust, {});
+
+  bool _isCopyIn(String rust, Set<String> seen) {
+    if (!_copyText(rust)) return false;
+    for (final name in _namesIn(rust)) {
+      final prelude = _preludeCopy[name];
+      if (prelude == false) return false;
+      if (prelude != null) continue;
+      final other = library[name];
+      if (other != null && !_classIsCopy(other, seen)) return false;
+    }
+    return true;
+  }
+
+  /// Which of the prelude's own types are `Copy`, read out of the prelude.
+  ///
+  /// `WriteBuffer` holds a `Uint8List`, whose Rust name says nothing about
+  /// what it is -- `_copyText` saw an identifier and passed it, and the struct
+  /// derived `Copy` around a `Vec`. Listing the names here would be a second
+  /// source of truth for something the prelude already states in its own
+  /// derives, which is the thing `regen.py` exists to avoid.
+  static final Map<String, bool> _preludeCopy = _readPrelude();
+
+  static Map<String, bool> _readPrelude() {
+    final answers = <String, bool>{};
+    final aliases = <String, String>{};
+    final lines = const LineSplitter().convert(rustPrelude);
+    for (var i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      final alias = RegExp(r'^pub type (\w+)[^=]*= *(.*);').firstMatch(line);
+      if (alias != null) {
+        aliases[alias[1]!] = alias[2]!;
+        continue;
+      }
+      final decl = RegExp(r'^pub (?:struct|enum) (\w+)').firstMatch(line);
+      if (decl == null) continue;
+      // The derive sits on the line above, under any doc comment.
+      final above = i > 0 ? lines[i - 1] : '';
+      answers[decl[1]!] =
+          above.startsWith('#[derive(') && above.contains('Copy');
+    }
+    // An alias is as `Copy` as what it stands for, which may be another alias.
+    String resolve(String text, int depth) {
+      if (depth > 4) return text;
+      for (final name in _namesIn(text)) {
+        final next = aliases[name];
+        if (next != null)
+          return resolve(text.replaceAll(name, next), depth + 1);
+      }
+      return text;
+    }
+
+    for (final entry in aliases.entries) {
+      final text = resolve(entry.value, 0);
+      answers[entry.key] =
+          _copyText(text) && _namesIn(text).every((n) => answers[n] ?? true);
+    }
+    return answers;
+  }
+
+  static bool _copyText(String rust) =>
       !rust.contains('String') &&
       !rust.contains('Box<') &&
       !rust.contains('Vec<') &&
@@ -2137,7 +2255,39 @@ class RustBackend {
       !rust.contains('Rc<') &&
       !rust.contains('RefCell<') &&
       !rust.contains('Cell<') &&
+      !rust.contains('VecDeque') &&
       !rust.contains('dyn ');
+
+  static final _typeName = RegExp(r'[A-Za-z_][A-Za-z_0-9]*');
+
+  static Iterable<String> _namesIn(String rust) =>
+      _typeName.allMatches(rust).map((m) => m[0]!);
+
+  /// Answers by class name, once per *library* rather than once per class:
+  /// there is one backend per class, and 4123 of them each walking the whole
+  /// hierarchy is the shape of a compiler that got slower for no reason.
+  static final _copyableIn = Expando<Map<String, bool>>('copyable');
+
+  Map<String, bool> get _copyable => _copyableIn[library] ??= <String, bool>{};
+
+  bool _classIsCopy(IrClass other, Set<String> seen) {
+    final known = _copyable[other.name];
+    if (known != null) return known;
+    // Reached from itself. A value type cannot really contain itself -- the
+    // struct would have no size -- so this is a hierarchy that says something
+    // impossible, and `Clone` is the half that costs nothing but a clone.
+    if (!seen.add(other.name)) return false;
+    // A class emitted as a trait has no fields of its own here; its uses are
+    // `Box<dyn ..>`, which `_copyText` has already turned down.
+    final answer = _allFields(other).every((f) {
+      if (f.shared || (other.counted && !f.isFinal)) return false;
+      final held = f.isLate ? 'Option<${type(f.type)}>' : type(f.type);
+      return _isCopyIn(held, seen);
+    });
+    _copyable[other.name] = answer;
+    seen.remove(other.name);
+    return answer;
+  }
 
   /// A top-level function.
   ///
@@ -3245,13 +3395,20 @@ class RustBackend {
         init = const IrLiteral('null', IrType('Null', nullable: true));
       }
       if (init == null) {
-        // What is left is Dart's `late`: no value until something assigns one,
-        // and reading before that is an error. Rust's counterpart is
-        // `Option<T>` with every read unwrapped -- which panics where Dart
-        // would have thrown. Not done here: measured in round 52, 480 of these
-        // and most are objects (AnimationController 84, Animation 71), and an
-        // `Animation` is `Box<dyn Animation>`, which is not `Clone` -- so the
-        // read side is not one line. Refused until it is done properly.
+        // Dart's `late`, which starts with no value at all. `None` is that,
+        // and the reads unwrap. See `IrFieldDecl.isLate`.
+        if (field.isLate) {
+          _line(
+            _inCell(field)
+                ? '${snake(field.name)}: std::rc::Rc::new(std::cell::'
+                      '${_isCopy(_heldType(field)) ? 'Cell' : 'RefCell'}'
+                      '::new(None)),'
+                : '${snake(field.name)}: None,',
+          );
+          continue;
+        }
+        // Not `late` and not nullable, so Dart guaranteed a value and this
+        // compiler lost it -- a constructor it could not read, most often.
         throw Unsupported('field never initialised', field.name);
       }
       // A field whose declaration initialiser mentions `this`:
