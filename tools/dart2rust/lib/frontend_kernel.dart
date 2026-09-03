@@ -250,6 +250,9 @@ class KernelFrontend {
       }
       return IrSuperCall(owner, node.name.text, const []);
     }
+    if (node is AwaitExpression) {
+      return IrAwait(expression(node.operand));
+    }
     if (node is Throw) {
       // `a ?? throw StateError(..)`. Rust has no throw, but it does have an
       // expression that never produces a value: `return Err(e)` has type `!`,
@@ -1859,6 +1862,9 @@ class KernelFrontend {
       isSetter: node.kind == ProcedureKind.Setter,
       operator: isOperator ? name : null,
       throws: thrown.isEmpty ? null : thrown.single,
+      // Only plain `async`. `async*` and `sync*` are generators, which Rust
+      // has no direct word for, and there are five of them in the package.
+      isAsync: node.function.asyncMarker == AsyncMarker.Async,
     );
     (node.isAbstract ? cls.abstractMethods : cls.methods).add(method);
   }

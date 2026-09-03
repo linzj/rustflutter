@@ -3507,6 +3507,48 @@ analyzer 直接读源码里 `none(0)` 的实参。两边只认四种字面量,
 
 ---
 
+## 第 71 轮:CFE 没有脱糖,所以 async 几乎是一一对应
+
+探针先问 dill 里 async 长什么样:
+
+    marker=AsyncMarker.Async dartMarker=AsyncMarker.Async returns=Future<void>
+    body: Block({ ... await Navigator.of(...).push(...) ... })
+
+**没有状态机,`await` 原样立在体里。** 所以 Rust 这边就是同样的两个词:
+
+    pub async fn twice(&self, x: f32) -> f32 {
+        let once: f32 = self.scaled(x).await;
+        self.scaled(once).await
+    }
+
+两处差别,都写进了 fixture:
+
+* Rust 把 `await` 写在表达式**后面**,Dart 写在前面。
+* **Rust 的 `async fn` 返回 `T` 时它本身就是一个 future**,
+  所以 Dart 声明的 `Future<T>` 是包装而不是值,要从签名上摘掉——
+  不摘就成了 future 的 future。
+
+只做纯 `async`。`async*` 和 `sync*` 是生成器,Rust 没有直接对应的词,
+整个包里有 5 个,继续拒。
+
+### 数字很小,而且是预料之中的
+
+| | 拒绝 | 错误 |
+|---|---|---|
+| `core` 切片 | 780 → 777 | 300 → 303 |
+| `widgets` 切片 | 1986 → **1977** | 3995 → 3997 |
+
+第 66 轮量过:126 个 `await`、106 个 `async` 函数,占 137356 个成员的 **0.08%**。
+**赢面天生就这么大**,这一轮只是把它兑现了,没有惊喜。
+
+### fixture 里没有运行时,这是故意的
+
+这些 future 从不 pend,所以测试用四行 `poll` 就驱动完了。
+Flutter 的会 pend,回答那个的是执行器,是另一件事。
+**在这里写一个"真"执行器,是在假装这个编译器有一个它没有的运行时。**
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3527,9 +3569,9 @@ analyzer 直接读源码里 `none(0)` 的实参。两边只认四种字面量,
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:缺失名单头部只剩 async 了(`Zone` 35、`Future` 24)。
-第 66 轮量过:126 个 `await`、106 个 `async` 函数,占全部成员的 0.08%,
-而 Rust 自己就有 `async`/`await`。先看 CFE 把它们脱糖成了什么形状。
+**下一轮**:`Zone` 35 和 `Future` 24 仍在缺失名单上——它们是**类型**,
+出现在字段和参数里,不只是 `async fn` 的返回。看清楚这两个名字用在哪,
+再决定是给前奏加类型还是拒。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

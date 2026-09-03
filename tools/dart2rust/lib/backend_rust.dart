@@ -317,6 +317,9 @@ class RustBackend {
         type,
         fields,
       ),
+      // Rust puts it after the expression and Dart before it, which is the
+      // whole of the difference.
+      IrAwait(:final operand) => '${expr(operand)}.await',
       IrIdentical(:final left, :final right) => _identical(left, right),
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
       IrThrowValue(:final value) => 'return Err(${expr(value)})',
@@ -1961,6 +1964,7 @@ class RustBackend {
         name,
         args.map(go).toList(),
       ),
+      IrAwait(:final operand) => IrAwait(go(operand)),
       IrIs(:final expr, :final type, :final negated) => IrIs(
         go(expr),
         type,
@@ -2157,9 +2161,20 @@ class RustBackend {
   /// A method's return type, wrapped when it can fail.
   String _returnType(IrMethod method) {
     final error = _failing[_rustName(method)];
-    final value = method.isSetter ? '()' : type(method.returnType);
+    // A Rust `async fn` returning `T` already is a future, so the `Future<T>`
+    // Dart declared is the wrapper, not the value: `Future<void> f() async`
+    // is `async fn f()`, and writing the wrapper as well would make it a
+    // future of a future.
+    final declared = method.isAsync
+        ? _awaited(method.returnType)
+        : method.returnType;
+    final value = method.isSetter ? '()' : type(declared);
     return error == null ? value : 'Result<$value, $error>';
   }
+
+  /// `Future<T>` -> `T`; anything else unchanged.
+  static IrType _awaited(IrType t) =>
+      t.name == 'Future' && t.arguments.length == 1 ? t.arguments.single : t;
 
   String _param(IrParam p, {bool owned = true}) =>
       '${_reassigned.contains(p.name) ? "mut " : ""}'
@@ -2636,7 +2651,8 @@ class RustBackend {
           if (library.isAbstract(p.type.name)) p.name,
       };
       _line(
-        '${_vis(method.name)}fn ${_rustName(method)}${_generics(method)}($params) -> $returns {',
+        '${_vis(method.name)}${method.isAsync ? "async " : ""}fn '
+        '${_rustName(method)}${_generics(method)}($params) -> $returns {',
       );
       _indent++;
       _returns = method.returnType;
@@ -2921,6 +2937,8 @@ class _WalkSelf {
         expression(value);
       case IrConstInstance(:final fields):
         fields.values.forEach(expression);
+      case IrAwait(:final operand):
+        expression(operand);
       case IrIdentical(:final left, :final right):
         expression(left);
         expression(right);

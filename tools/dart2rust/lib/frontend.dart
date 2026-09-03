@@ -137,6 +137,9 @@ class Frontend {
         expression(node.elseExpression),
       );
     }
+    if (node is AwaitExpression) {
+      return IrAwait(expression(node.expression));
+    }
     if (node is IsExpression) {
       return IrIs(
         expression(node.expression),
@@ -1736,6 +1739,8 @@ class Frontend {
         isStatic: member.isStatic,
         isGetter: member.isGetter,
         isSetter: member.isSetter,
+        // Only plain `async`; a generator (`async*`, `sync*`) is not one.
+        isAsync: member.body.isAsynchronous && !member.body.isGenerator,
         operator: isOperator
             ? (params.isEmpty && member.name.lexeme == '-'
                   ? 'unary-'

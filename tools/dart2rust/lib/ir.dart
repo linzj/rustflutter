@@ -203,6 +203,16 @@ class IrConditional extends IrExpr {
   final IrExpr otherwise;
 }
 
+/// `await x`.
+///
+/// Rust spells it after the expression and Dart before it, which is the whole
+/// of the difference: `await f()` is `f().await`.
+class IrAwait extends IrExpr {
+  const IrAwait(this.operand);
+
+  final IrExpr operand;
+}
+
 /// `expr is Type`.
 class IrIs extends IrExpr {
   const IrIs(this.expr, this.type, {this.negated = false});
@@ -913,6 +923,7 @@ class IrMethod {
     this.operator,
     this.throws,
     this.doc,
+    this.isAsync = false,
   });
 
   final String name;
@@ -930,6 +941,14 @@ class IrMethod {
 
   /// The Dart operator this method declares, if any: `+`, `unary-`, `[]`.
   final String? operator;
+
+  /// A Dart `async` function. Rust has the same word for the same thing, and
+  /// the CFE leaves `await` in the body rather than desugaring it, so the two
+  /// line up almost exactly. `async*` and `sync*` do not and stay refused.
+  ///
+  /// The declared Dart return type is `Future<T>`; a Rust `async fn` returning
+  /// `T` already *is* a future, so the wrapper is dropped from the signature.
+  final bool isAsync;
 
   /// The error type this method throws, if it throws exactly one.
   ///

@@ -246,6 +246,9 @@ pub struct ViewPadding {
 mod edge_insets;
 pub use edge_insets::EdgeInsets;
 
+mod asyncs;
+pub use asyncs::Asyncs;
+
 mod mixins;
 pub use mixins::{Measured, Panel, Scaled};
 
@@ -1098,6 +1101,34 @@ mod tests {
         assert!(!Tristate::None.is_set());
         assert!(Tristate::IsTrue.is_set());
         assert_eq!(UsesTristate::new().weigh(Tristate::IsFalse), 20);
+    }
+
+    /// Drives a future to completion, for the async fixture.
+    ///
+    /// Not an executor: nothing here ever pends, so the first `poll` answers.
+    /// Flutter's futures do pend, and what answers those is a separate job --
+    /// writing a real one here would be pretending this compiler has a runtime
+    /// it does not.
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        use std::task::{Context, Poll};
+        let mut future = Box::pin(future);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        loop {
+            if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+                return value;
+            }
+        }
+    }
+
+    #[test]
+    fn await_reads_after_the_expression() {
+        let a = Asyncs::new(3.0);
+        assert_eq!(block_on(a.scaled(2.0)), 6.0);
+        // Twice, so folding the two calls into one would show: 2 -> 6 -> 18.
+        assert_eq!(block_on(a.twice(2.0)), 18.0);
+        // An await in the middle of a body rather than in the return.
+        assert_eq!(block_on(a.plus(2.0, 1.0)), 7.0);
+        block_on(a.ignore(2.0));
     }
 
     // -- cascades -------------------------------------------------------------
