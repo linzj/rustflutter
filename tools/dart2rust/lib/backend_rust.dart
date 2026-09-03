@@ -555,6 +555,12 @@ class RustBackend {
     final params = node.params
         .map((p) => '${snake(p.name)}: ${type(p.type)}')
         .join(', ');
+    // A closure that copies `final` fields in is a `move` closure with the
+    // copies bound just before it. It borrows `self` not at all, which is the
+    // whole point: it outlives the call that made it.
+    final bindings = node.captures
+        .map((c) => 'let ${snake(c.name)} = ${_copyOf(c)};')
+        .join(' ');
     final saved = _out.length;
     final savedIndent = _indent;
     _indent = 0;
@@ -562,7 +568,17 @@ class RustBackend {
     final body = _out.sublist(saved).map((l) => l.trim()).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
-    return '|$params| { $body }';
+    final closure =
+        '${node.captures.isEmpty ? '' : 'move '}|$params| { $body }';
+    return node.captures.isEmpty ? closure : '{ $bindings $closure }';
+  }
+
+  /// A copy of a field, for a closure to keep.
+  ///
+  /// `clone()` unless the type is `Copy`, where it would only be noise.
+  String _copyOf(IrParam field) {
+    final read = '$_selfName.${snake(field.name)}';
+    return _isCopy(type(field.type)) ? read : '$read.clone()';
   }
 
   /// The closure parameter a `?.` binds.
@@ -973,6 +989,13 @@ class RustBackend {
   String _returned(IrExpr value) {
     final declared = _returns;
     final text = expr(value);
+    // A closure returned from a function is an *owned* position, and a
+    // closure's own type has no name -- so the declared type is
+    // `Box<dyn Fn(..)>` and the value has to be boxed to match. This only
+    // came up once closures that outlive their call stopped being refused.
+    if (declared != null && declared.isFunction && value is IrClosure) {
+      return 'Box::new($text)';
+    }
     if (declared != null &&
         library.isAbstract(declared.name) &&
         (value is IrNew || value is IrConstInstance) &&

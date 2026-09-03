@@ -293,11 +293,30 @@ class IrCallValue extends IrExpr {
 /// closures are that kind, which is a round of its own rather than a corner of
 /// this one.
 class IrClosure extends IrExpr {
-  const IrClosure(this.params, this.body, this.returns);
+  const IrClosure(
+    this.params,
+    this.body,
+    this.returns, {
+    this.captures = const [],
+  });
 
   final List<IrParam> params;
   final IrStmt body;
   final IrType returns;
+
+  /// `final` fields of `this` the body reads, copied in when the closure is
+  /// made rather than read through a `this` that will not live long enough.
+  ///
+  /// Sound only because the fields are `final`: round 57 wrote copying off in
+  /// general, because Dart reads a field at *call* time and a copy is read at
+  /// *creation* time, and between the two the field may have changed. A
+  /// `final` field cannot, so for those two the two readings are the same
+  /// value. 345 of the 1319 closures that reach `this` are on this side of
+  /// that line -- measured by `bin/census_closures.dart`.
+  ///
+  /// The body reads them as locals; the front end that decides to capture is
+  /// the one that rewrites the reads.
+  final List<IrParam> captures;
 }
 
 /// `a ?? b`.

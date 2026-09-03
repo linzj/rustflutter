@@ -1060,6 +1060,20 @@ mod tests {
     }
 
     #[test]
+    fn a_returned_closure_copies_the_final_fields_it_reads() {
+        // `scaler` outlives the call that made it, so it cannot hold `this`.
+        // It does not have to: `factor` is `final`, so the copy taken when the
+        // closure is made is the value a read at call time would give. A field
+        // that could change would give two different answers, which is why
+        // this is sound only for `final`.
+        let f = Closures::new(3.0).scaler();
+        assert_eq!(f(2.0), 6.0);
+        // Still callable after the object it came from is gone.
+        let g = { Closures::new(4.0).scaler() };
+        assert_eq!(g(2.0), 8.0);
+    }
+
+    #[test]
     fn a_closure_that_asks_for_more_than_a_borrow_is_refused() {
         let emitted = include_str!("closures.rs");
         assert!(
@@ -1069,8 +1083,6 @@ mod tests {
         );
         // Calls a method on `this`: needs the object, not a field of it.
         assert!(!emitted.contains("fn twice_scaled"));
-        // Returned rather than passed: nothing bounds how long it lives.
-        assert!(!emitted.contains("fn scaler"));
     }
 
     #[test]

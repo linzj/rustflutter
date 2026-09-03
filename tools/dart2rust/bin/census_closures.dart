@@ -62,10 +62,21 @@ class _Visit extends RecursiveVisitor {
     calls = true;
   }
 
+  /// Whether every field read on `this` is `final`.
+  ///
+  /// A `final` field cannot change after construction, so capturing a *copy*
+  /// of it in a closure and reading it at call time are the same value. That
+  /// is what makes copying sound here and not in general: round 57 wrote the
+  /// general case off because Dart reads at call time and a copy reads at
+  /// creation time, and for a field that never changes there is no difference.
+  bool onlyFinal = true;
+
   @override
   void visitInstanceGet(InstanceGet node) {
     if (node.receiver is ThisExpression) {
       reads = true;
+      final target = node.interfaceTarget;
+      if (target is! Field || !target.isFinal) onlyFinal = false;
     } else {
       node.receiver.accept(this);
     }
@@ -241,6 +252,7 @@ void main(List<String> args) {
   final borrowingWhere = <String>[];
   var passedToCall = 0;
   var passedAndReadOnly = 0;
+  var readOnlyFinal = 0;
 
   for (final library in component.libraries) {
     if (!library.importUri.toString().startsWith(prefix)) continue;
@@ -259,6 +271,7 @@ void main(List<String> args) {
           if (examples && where.length < 5) {
             where.add('${cls.name}.${member.name.text}');
           }
+          if (visit.need == Need.reads && visit.onlyFinal) readOnlyFinal++;
           if (visit.need != Need.none && walk.passed.contains(closure)) {
             passedToCall++;
             if (visit.need == Need.reads) passedAndReadOnly++;
@@ -292,6 +305,11 @@ void main(List<String> args) {
   if (reaching > 0) {
     final share = (shared * 100 / reaching).round();
     print('of those, read-only: $shared ($share%) -- `Rc<Self>` would do');
+    print(
+      'of those, reading only `final` fields: $readOnlyFinal '
+      '(${(readOnlyFinal * 100 / reaching).round()}%) -- a copy of a field '
+      'that cannot change is the field',
+    );
     final consumedShare = (borrowing * 100 / reaching).round();
     print(
       'of those, handed straight to a consuming call: $borrowing '

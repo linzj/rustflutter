@@ -68,9 +68,12 @@ class Closures {
     return Closures.applyTwice((double v) => scaled(v), x);
   }
 
-  /// Reads a field, like `byFactor`, but is **returned** instead of passed.
-  /// Nothing bounds how long it lives, so the borrow cannot be given. Refused,
-  /// and the pair of them is what shows the position is what decides it.
+  /// Reads a `final` field and is **returned**, so it outlives the call.
+  ///
+  /// It cannot hold `this`, and it does not have to: `factor` is `final`, so a
+  /// copy taken when the closure is made is the same value a read at call time
+  /// would give. That is what makes copying sound here and not in general --
+  /// a field that can change would give two different answers.
   double Function(double) scaler() {
     return (double v) => v * factor;
   }

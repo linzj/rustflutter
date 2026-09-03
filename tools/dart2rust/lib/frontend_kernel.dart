@@ -345,21 +345,55 @@ class KernelFrontend {
   /// translation. That is 60% of `package:flutter`'s closures and a round of
   /// its own.
   IrExpr _closure(FunctionNode fn, Node origin) {
-    if (_reachesThis(fn) && !(_borrowedArgument && _onlyReadsThis(fn))) {
+    // A closure that only reads `final` fields of `this` copies them in
+    // instead of holding `this`. A `final` field cannot change, so the copy
+    // and the read are the same value -- see `IrClosure.captures`. This is
+    // the one case where copying is sound, and it is 345 of the 1319 closures
+    // that reach `this`.
+    final finals = _finalFieldsRead(fn);
+    final copies = finals != null && !_borrowedArgument;
+    if (_reachesThis(fn) &&
+        !copies &&
+        !(_borrowedArgument && _onlyReadsThis(fn))) {
       throw Unsupported('closure capturing `this`', _sample(origin));
     }
     final body = fn.body;
     if (body == null)
       throw Unsupported('closure with no body', _sample(origin));
-    return IrClosure(
-      [
-        for (final p in fn.positionalParameters)
-          IrParam(p.cosmeticName ?? '_', _type(p.type)),
-      ],
-      statement(body),
-      _type(fn.returnType),
-    );
+    final was = _captured;
+    if (copies) _captured = {for (final f in finals) f.name.text};
+    try {
+      return IrClosure(
+        [
+          for (final p in fn.positionalParameters)
+            IrParam(p.cosmeticName ?? '_', _type(p.type)),
+        ],
+        statement(body),
+        _type(fn.returnType),
+        captures: copies
+            ? [for (final f in finals) IrParam(f.name.text, _type(f.type))]
+            : const [],
+      );
+    } finally {
+      _captured = was;
+    }
   }
+
+  /// The fields a closure body reads on `this`, when **every** one is `final`
+  /// and nothing else about `this` is touched. Null when it is not that shape.
+  List<Field>? _finalFieldsRead(FunctionNode fn) {
+    final use = _ThisUse();
+    fn.accept(use);
+    if (use.demanding) return null;
+    final finder = _FinalFieldReads();
+    fn.accept(finder);
+    if (!finder.allFinal || finder.fields.isEmpty) return null;
+    return finder.fields.values.toList();
+  }
+
+  /// The fields the closure being lowered copies in. A read of one is a read
+  /// of the local, not of `this`.
+  Set<String> _captured = const {};
 
   /// Whether an expression is `this`, or a chain of field reads from it.
   bool _rootedAtThis(Expression e) => switch (e) {
@@ -732,6 +766,11 @@ class KernelFrontend {
       return IrCall(expression(node.receiver), rust, const []);
     }
     final receiver = node.receiver;
+    // A field the enclosing closure copied in is a local now, not a field of
+    // a `this` the closure does not hold. See `IrClosure.captures`.
+    if (receiver is ThisExpression && _captured.contains(name)) {
+      return IrLocal(name);
+    }
     final target = receiver is ThisExpression ? null : expression(receiver);
     if (node.interfaceTarget is Procedure) {
       return IrCall(target, name, const []);
@@ -1933,6 +1972,26 @@ class _ThisFinder extends RecursiveVisitor {
   void visitThisExpression(ThisExpression node) {
     found = true;
     super.visitThisExpression(node);
+  }
+}
+
+/// The `final` fields a closure reads on `this`, and whether they all are.
+class _FinalFieldReads extends RecursiveVisitor {
+  final fields = <String, Field>{};
+  bool allFinal = true;
+
+  @override
+  void visitInstanceGet(InstanceGet node) {
+    if (node.receiver is ThisExpression) {
+      final target = node.interfaceTarget;
+      if (target is Field && target.isFinal) {
+        fields[target.name.text] = target;
+      } else {
+        allFinal = false;
+      }
+    } else {
+      node.receiver.accept(this);
+    }
   }
 }
 

@@ -240,6 +240,9 @@ class Frontend {
       throw Unsupported('unresolved identifier', node.toSource());
     }
     _refusePrivate(node.name, node);
+    // A field the enclosing closure copied in is a local now, not a field of
+    // a `this` the closure does not hold. See `IrClosure.captures`.
+    if (_captured.contains(node.name)) return IrLocal(node.name);
     // A getter or field on this class, referred to without `this.`.
     if (element is PropertyAccessorElement || element is FieldElement) {
       final enclosing = element.enclosingElement;
@@ -524,7 +527,15 @@ class Frontend {
     // them, so the two disagreed. Resolution is the only way to ask.
     final finder = _InstanceUse();
     node.accept(finder);
-    if (finder.found && !(_borrowedArgument && _onlyReadsThis(node))) {
+    // A closure that only reads `final` fields copies them in rather than
+    // holding `this`. See `IrClosure.captures`; the Kernel front end draws the
+    // same line from the resolved fields, and the closures fixture is what
+    // holds the two to it.
+    final finals = _finalFieldsRead(node);
+    final copies = finals != null && !_borrowedArgument;
+    if (finder.found &&
+        !copies &&
+        !(_borrowedArgument && _onlyReadsThis(node))) {
       throw Unsupported('closure capturing `this`', node.toSource());
     }
     final params = <IrParam>[];
@@ -534,11 +545,32 @@ class Frontend {
       if (name == null) throw Unsupported('unnamed parameter', p.toSource());
       params.add(IrParam(name, _type(inner.declaredFragment?.element.type)));
     }
-    return IrClosure(
-      params,
-      body(node.body),
-      _type(node.declaredFragment?.element.returnType),
-    );
+    final was = _captured;
+    if (copies) _captured = {for (final f in finals) f.name!};
+    try {
+      return IrClosure(
+        params,
+        body(node.body),
+        _type(node.declaredFragment?.element.returnType),
+        captures: copies
+            ? [for (final f in finals) IrParam(f.name!, _type(f.type))]
+            : const [],
+      );
+    } finally {
+      _captured = was;
+    }
+  }
+
+  /// The fields a closure reads on `this`, when every one is `final` and
+  /// nothing else about `this` is touched. Null when it is not that shape.
+  List<FieldElement>? _finalFieldsRead(FunctionExpression node) {
+    final demand = _InstanceDemand();
+    node.accept(demand);
+    if (demand.demanding) return null;
+    final finder = _FinalFieldReads();
+    node.accept(finder);
+    if (!finder.allFinal || finder.fields.isEmpty) return null;
+    return finder.fields.values.toList();
   }
 
   /// Whether a closure only *reads* fields of `this`.
@@ -610,6 +642,10 @@ class Frontend {
   /// it, so it stays refused. Kept in step with the Kernel front end, which
   /// draws the same line in the same place.
   bool _borrowedArgument = false;
+
+  /// The fields the closure being lowered copies in. A read of one is a read
+  /// of the local, not of `this`.
+  Set<String> _captured = const {};
 
   List<IrExpr> _argumentList(
     ArgumentList list,
@@ -1780,6 +1816,43 @@ class _InstanceUse extends RecursiveAstVisitor<void> {
   void visitSimpleIdentifier(SimpleIdentifier node) {
     _check(node.element);
     super.visitSimpleIdentifier(node);
+  }
+}
+
+/// The `final` fields a closure reads on `this`, and whether they all are.
+class _FinalFieldReads extends RecursiveAstVisitor<void> {
+  final fields = <String, FieldElement>{};
+  bool allFinal = true;
+
+  void _look(Element? element) {
+    if (element == null) return;
+    if (element.enclosingElement is! InterfaceElement) return;
+    // A synthetic getter *is* the field; a written one is a computed getter
+    // and reads whatever it likes.
+    final field = switch (element) {
+      GetterElement(isSynthetic: true) => element.variable,
+      FieldElement() => element,
+      _ => null,
+    };
+    if (field is FieldElement && !field.isStatic) {
+      if (field.isFinal) {
+        fields[field.name!] = field;
+      } else {
+        allFinal = false;
+      }
+    }
+  }
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    _look(node.element);
+    super.visitSimpleIdentifier(node);
+  }
+
+  @override
+  void visitPropertyAccess(PropertyAccess node) {
+    if (node.target is ThisExpression) _look(node.propertyName.element);
+    super.visitPropertyAccess(node);
   }
 }
 
