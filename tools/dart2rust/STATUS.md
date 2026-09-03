@@ -5044,6 +5044,46 @@ NOT TRANSLATED: Theme: unsupported constant TypeLiteralConstant:
 
 ---
 
+## 第 112 轮:把 `List`/`Map` 的名字表补齐,顺带两处没人说 `mut`
+
+上一轮的教训是"别信自己没量过的断言",所以这一轮先拆剩下的桶。
+259 条拒绝是一个成员名:**232 个 `List.`,22 个 `Map.`,5 个 `int.`**。
+
+补了 Rust 说得出来的那些:`any`/`every`/`toSet`/`join`/`insert`/`removeAt`/
+`elementAt`/`sublist`/`reversed`/`cast`,加上 `Map.isNotEmpty`、`Map.addAll`。
+`sort`(比较器返回 `int`,Rust 要 `Ordering`)和 `forEach`(闭包收的是值,
+`iter()` 给的是引用)不是改名,还拒着。
+
+`Map.isNotEmpty` 一直写在 `List` 那张表里、没写在 `Map` 这张表里,没有理由,
+10 条拒绝。**又一次"另一半呢"。**
+
+### 两处 Rust 要说 `mut` 而没人说
+
+* `xs.insert(..)` / `xs.removeAt(..)` 调在一个**参数**上,那个参数没有 `mut`。
+  以前 `_mutatingListMethods` 只用来判断"这方法要不要 `&mut self`",
+  没人问过"这个局部要不要 `mut`"。
+* `xs[i] = v` 也要 `mut`,而 `IrIndexSet` 在那个 walk 里是个空 case。
+  只有当列表是通过名字而不是通过 `self` 写的时候才会露出来。
+
+### 还有一处两个前端不一致
+
+`xs.join()`:Kernel 会把默认参数填进去(`''`),analyzer 不会,于是一边写
+`join("")` 一边写 `join(&"".to_string())`。`sublist(from)` 同理,Kernel 填了
+个 `null` 当结尾。后端现在**认得出被写出来的默认值**。
+
+| | |
+|---|---|
+| 整包错误 | 407 → **408** |
+| 整包拒绝 | 3481 → **3421** |
+| fixture | 144 → 145 个测试 |
+
+剩下最大的一块是 `Map` 的顺序:`keys`/`values`/`putIfAbsent`/`forEach`/
+`entries` 共 97 条,全写着"依赖插入顺序"。prelude 里的 `Set<T>` 早就是
+`Vec` 支撑的——**有序的**——而 `Map` 用的是 `HashMap`。两个容器,一个决定,
+做了两次不一样的。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -5064,8 +5104,8 @@ NOT TRANSLATED: Theme: unsupported constant TypeLiteralConstant:
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:"方法当值用"(293,现在的第一名),或者把"没翻出来的成员"
-剩下的 215 再拆一遍——上一次拆它值 464 条。
+**下一轮**:有序的 `Map`。prelude 的 `Set` 已经是 `Vec` 支撑的有序容器,
+`Map` 照做,97 条"依赖插入顺序"就没了。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

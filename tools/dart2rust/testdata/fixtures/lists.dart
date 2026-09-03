@@ -130,3 +130,61 @@ class Marks {
     return -1;
   }
 }
+
+/// The `List` and `Map` members Rust says differently rather than renames.
+///
+/// Measured rather than guessed at: 232 refusals named a `List` member and 22
+/// a `Map` one, and the ones here are the ones whose Rust is exact. `sort`
+/// takes a comparator returning an `int` where Rust wants an `Ordering`, and
+/// `forEach` hands its closure a value where `iter()` hands it a reference --
+/// those are not renames and are still refused.
+class Members {
+  const Members();
+
+  static bool anyOver(List<int> xs, int limit) {
+    return xs.any((int x) => x > limit);
+  }
+
+  static bool allOver(List<int> xs, int limit) {
+    return xs.every((int x) => x > limit);
+  }
+
+  static String joined(List<String> xs) {
+    return xs.join('-');
+  }
+
+  static String run(List<String> xs) {
+    return xs.join();
+  }
+
+  static List<int> withInserted(List<int> xs, int at, int value) {
+    xs.insert(at, value);
+    return xs;
+  }
+
+  static int takenOut(List<int> xs, int at) {
+    return xs.removeAt(at);
+  }
+
+  static int nth(List<int> xs, int at) {
+    return xs.elementAt(at);
+  }
+
+  static List<int> middle(List<int> xs, int from, int to) {
+    return xs.sublist(from, to);
+  }
+
+  static List<int> tail(List<int> xs, int from) {
+    return xs.sublist(from);
+  }
+
+  static List<int> backwards(List<int> xs) {
+    return xs.reversed.toList();
+  }
+
+  /// `Map.isNotEmpty` was on the `List` map and not the `Map` one, which is
+  /// the same shape as every other "and the other half?" in this compiler.
+  static bool hasAny(Map<String, int> m) {
+    return m.isNotEmpty;
+  }
+}

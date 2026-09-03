@@ -1205,8 +1205,56 @@ class RustBackend {
     if ((name == 'contains_key' || name == 'remove') && args.length == 1) {
       return '$receiver.$name(&${expr(args.single)})';
     }
-    // The three List members Rust says differently rather than renames.
+    // The List and Map members Rust says differently rather than renames.
     if (name == '!is_empty' && args.isEmpty) return '!$receiver.is_empty()';
+    // `iter()` yields references and the closure is written for values, so
+    // the parameter types come off exactly as `_chain` takes them off.
+    // `cloned()`, because the Dart closure is written for a value and
+    // `iter()` yields a reference: `|x| x > limit` against a `&i64` is
+    // `expected &i64, found i64`. The chain steps get away with `iter()`
+    // because what they produce is collected, not compared.
+    if (name == '!any' && args.length == 1) {
+      return '$receiver.iter().cloned().any(${_stepClosure(args.single)})';
+    }
+    if (name == '!every' && args.length == 1) {
+      return '$receiver.iter().cloned().all(${_stepClosure(args.single)})';
+    }
+    if (name == '!to_set' && args.isEmpty) {
+      return 'Set::from($receiver.clone())';
+    }
+    // Dart joins with the empty string when nothing is given -- and the
+    // Kernel front end fills that default in while the analyzer one leaves it
+    // off, so the omitted argument has to be recognised rather than trusted to
+    // be absent. The fixtures said so: the two sides wrote `join("")` and
+    // `join(&"".to_string())` for one line of Dart.
+    if (name == '!join' && args.length < 2) {
+      final given = args.where((a) => !_isDefault(a, '')).toList();
+      final separator = given.isEmpty ? '""' : '&${expr(given.single)}';
+      return '$receiver.iter().map(|__e| __e.to_string())'
+          '.collect::<Vec<_>>().join($separator)';
+    }
+    if (name == '!insert' && args.length == 2) {
+      return '$receiver.insert(${expr(args[0])} as usize, ${expr(args[1])})';
+    }
+    if (name == '!remove_at' && args.length == 1) {
+      return '$receiver.remove(${expr(args.single)} as usize)';
+    }
+    if (name == '!element_at' && args.length == 1) {
+      return '$receiver[${expr(args.single)} as usize]';
+    }
+    if (name == '!sublist' && args.isNotEmpty && args.length < 3) {
+      // `sublist(from)` arrives with an explicit `null` end from Kernel and
+      // with nothing from the analyzer. Both mean "to the end".
+      final given = args.where((a) => !_isDefault(a, null)).toList();
+      final end = given.length == 1 ? '' : '${expr(given[1])} as usize';
+      return '$receiver[${expr(given[0])} as usize..$end].to_vec()';
+    }
+    // Dart's `reversed` is a lazy Iterable and nearly every use ends in
+    // `toList`. A `Vec` is what that produces, and `to_list` on one clones.
+    if (name == '!reversed' && args.isEmpty) {
+      return '{ let mut __r = $receiver.clone(); __r.reverse(); __r }';
+    }
+    if (name == '!cast' && args.isEmpty) return receiver;
     if (name == 'first' && args.isEmpty) return '$receiver[0]';
     if (name == 'last' && args.isEmpty) {
       return '$receiver[$receiver.len() - 1]';
@@ -1348,6 +1396,16 @@ class RustBackend {
         .join();
     return '${expr(chain.source)}.iter()$steps';
   }
+
+  /// Whether an argument is the omitted one, written out.
+  ///
+  /// Kernel fills a default in and the analyzer leaves it off, so a member
+  /// whose Rust says the absent case differently has to see through that.
+  static bool _isDefault(IrExpr e, String? empty) =>
+      e is IrLiteral &&
+      (empty == null
+          ? e.type.name == 'Null'
+          : e.type.name == 'String' && e.value == empty);
 
   /// A chain step's closure, without its parameter types.
   ///
@@ -1553,6 +1611,7 @@ class RustBackend {
     final inExpressions = _WalkSelf();
     inExpressions.statement(statement);
     found.addAll(inExpressions.assignedLocals);
+    found.addAll(inExpressions.mutatedLocals);
     void walk(IrStmt s) {
       switch (s) {
         case IrAssign(:final name):
@@ -1581,8 +1640,11 @@ class RustBackend {
           if (otherwise != null) walk(otherwise);
         case IrForIn(:final body):
           walk(body);
+        // `xs[i] = v` needs `xs` mutable, which nothing here said. It only
+        // shows on a list written through a name rather than through `self`.
+        case IrIndexSet(:final target):
+          if (target is IrLocal) found.add(target.name);
         case IrLocalFunction():
-        case IrIndexSet():
         case IrBreak():
         case IrContinue():
         case IrReturn():
@@ -3798,6 +3860,10 @@ class _WalkSelf {
   final selfCalls = <String>{};
 
   /// `Vec` methods that change what they are called on.
+  ///
+  /// The `!` ones are the markers the backend spells out; they mutate exactly
+  /// as the renamed ones do, and leaving them off here left the receiver
+  /// without its `mut`.
   static const _mutatingListMethods = {
     'push',
     'extend',
@@ -3805,7 +3871,14 @@ class _WalkSelf {
     'pop',
     'insert',
     'remove',
+    '!insert',
+    '!remove_at',
   };
+
+  /// Locals a mutating call is made on -- `xs.insert(..)` needs `let mut xs`,
+  /// and a parameter needs `mut xs` in the signature. Rust says this out loud
+  /// where Dart says nothing at all.
+  final mutatedLocals = <String>{};
 
   /// Whether a write target is `this`, or a chain of field reads from it.
   static bool _rootedAtThis(IrExpr? e) => switch (e) {
@@ -3925,8 +3998,9 @@ class _WalkSelf {
         // `self.marks.push(x)` mutates a field, so the method takes
         // `&mut self` -- the same rule as writing the field outright, which is
         // what a `Vec` method that changes it amounts to.
-        if (_mutatingListMethods.contains(name) && _rootedAtThis(target)) {
-          writesFields = true;
+        if (_mutatingListMethods.contains(name)) {
+          if (_rootedAtThis(target)) writesFields = true;
+          if (target is IrLocal) mutatedLocals.add(target.name);
         }
         if (target != null) expression(target);
         args.forEach(expression);

@@ -322,7 +322,7 @@ mod freefn;
 pub use freefn::{halve, thrice, Gauge};
 
 mod lists;
-pub use lists::Marks;
+pub use lists::{Marks, Members};
 
 mod building;
 pub use building::{Shade, Slot};
@@ -1850,5 +1850,29 @@ mod tests {
         assert!(!Types::is_tile(Types::marker_type()));
         assert!(Types::is_tile(Type::of("Tile")));
         let _ = Marker::new();
+    }
+
+    /// The `List` and `Map` members Rust says differently rather than renames.
+    #[test]
+    fn collection_members_rust_says_differently() {
+        assert!(Members::any_over(vec![1, 9], 5));
+        assert!(!Members::any_over(vec![1, 2], 5));
+        assert!(Members::all_over(vec![6, 9], 5));
+        assert!(!Members::all_over(vec![1, 9], 5));
+        assert_eq!(
+            Members::joined(vec!["a".to_string(), "b".to_string()]),
+            "a-b"
+        );
+        assert_eq!(Members::run(vec!["a".to_string(), "b".to_string()]), "ab");
+        assert_eq!(Members::with_inserted(vec![1, 3], 1, 2), vec![1, 2, 3]);
+        assert_eq!(Members::taken_out(vec![1, 2, 3], 1), 2);
+        assert_eq!(Members::nth(vec![7, 8], 1), 8);
+        assert_eq!(Members::middle(vec![1, 2, 3, 4], 1, 3), vec![2, 3]);
+        assert_eq!(Members::tail(vec![1, 2, 3], 1), vec![2, 3]);
+        assert_eq!(Members::backwards(vec![1, 2, 3]), vec![3, 2, 1]);
+        let mut m = std::collections::HashMap::new();
+        assert!(!Members::has_any(m.clone()));
+        m.insert("a".to_string(), 1i64);
+        assert!(Members::has_any(m));
     }
 }

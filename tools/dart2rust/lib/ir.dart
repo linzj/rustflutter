@@ -680,6 +680,11 @@ const mapMethodNames = <String, String>{
   'clear': 'clear',
   'isEmpty': 'is_empty',
   'length': 'len',
+  'addAll': 'extend',
+  // `isNotEmpty` was on the List map and not this one, for no reason anyone
+  // wrote down: 10 refusals of a name that was already spelled next door.
+  'isNotEmpty': '!is_empty',
+  'cast': '!cast',
 };
 
 /// `Map` members that depend on iteration order.
@@ -717,6 +722,18 @@ const listMethodNames = <String, String>{
   'first': 'first',
   'last': 'last',
   'toList': 'to_list',
+  'any': '!any',
+  'every': '!every',
+  'toSet': '!to_set',
+  'join': '!join',
+  'insert': '!insert',
+  'removeAt': '!remove_at',
+  'elementAt': '!element_at',
+  'sublist': '!sublist',
+  'reversed': '!reversed',
+  // Dart's `cast` re-types a list and copies nothing. Rust's types are
+  // already what they are, so it is the receiver.
+  'cast': '!cast',
 };
 
 /// The steps of an iterator chain, in Rust's spelling.
