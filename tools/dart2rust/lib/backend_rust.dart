@@ -170,6 +170,7 @@ class RustBackend {
     final reassigned = _reassigned;
     final failure = _failure;
     final rustReturns = _rustReturns;
+    final implBinding = _implBinding;
     try {
       body();
       return true;
@@ -187,6 +188,7 @@ class RustBackend {
       _reassigned = reassigned;
       _failure = failure;
       _rustReturns = rustReturns;
+      _implBinding = implBinding;
     }
   }
 
@@ -2330,6 +2332,15 @@ class RustBackend {
   /// step, so that impl is refused rather than emitted with the wrong ones.
   String? _baseArguments(IrClass base) {
     if (base.typeParameters.isEmpty) return '';
+    final passed = _baseTypeArguments(base);
+    if (passed == null) return null;
+    return '<${passed.map((a) => type(a)).join(', ')}>';
+  }
+
+  /// What this class passed the base's type parameters, or null when it cannot
+  /// be worked out from here.
+  List<IrType>? _baseTypeArguments(IrClass base) {
+    if (base.typeParameters.isEmpty) return const [];
     // Walk up from this class, carrying the arguments through each step.
     // `_Linear extends Curve` and `Curve extends ParametricCurve<double>`, so
     // reaching ParametricCurve means going through Curve -- and a Curve that
@@ -2345,7 +2356,7 @@ class RustBackend {
         if (mixin.name != base.name) continue;
         final passed = [for (final a in mixin.arguments) bound[a.name] ?? a];
         if (passed.length != base.typeParameters.length) return null;
-        return '<${passed.map((a) => type(a)).join(', ')}>';
+        return passed;
       }
       final next = library[current.superclass];
       if (next == null) return null;
@@ -2354,7 +2365,7 @@ class RustBackend {
       ];
       if (next.name == base.name) {
         if (passed.length != base.typeParameters.length) return null;
-        return '<${passed.map((a) => type(a)).join(', ')}>';
+        return passed;
       }
       if (passed.length != next.typeParameters.length) return null;
       bound = {
@@ -2401,6 +2412,14 @@ class RustBackend {
       _line('//   the base is generic and its arguments are not known here');
       return;
     }
+    // Bound for the whole block: every signature inside is written in the
+    // base's terms and has to come out in this class's.
+    final passed = _baseTypeArguments(base) ?? const [];
+    _implBinding = {
+      if (passed.length == base.typeParameters.length)
+        for (var i = 0; i < passed.length; i++)
+          base.typeParameters[i]: passed[i],
+    };
     _line('');
     _line('impl ${base.name}$arguments for ${cls.name}${_generics(cls)} {');
     _indent++;
@@ -2455,11 +2474,34 @@ class RustBackend {
   /// The base the impl block currently being written is for.
   late IrClass _implBase;
 
+  /// The base's type parameters, bound to what this class passed them.
+  ///
+  /// A trait method is declared in the base's terms -- `_RRectLike<T>` has
+  /// `fn _create(..) -> T` -- and `impl _RRectLike<RRect> for RRect` has to
+  /// say `-> RRect`. Copying the declaration through left a `T` no impl
+  /// declares, which is the same mistake flattening made with fields one level
+  /// down.
+  var _implBinding = <String, IrType>{};
+
   void _emitBaseMethod(IrMethod need) {
     {
       final have = _matching(need);
-      final returns = type(need.returnType);
-      _line('fn ${_methodName(need)}(${_params(need)}) -> $returns {');
+      final returns = type(_substituteType(need.returnType, _implBinding));
+      final params = [
+        if (!need.isStatic) '&self',
+        ...need.params.map(
+          (p) => _param(
+            IrParam(
+              p.name,
+              _substituteType(p.type, _implBinding),
+              named: p.named,
+              hasDefault: p.hasDefault,
+            ),
+            owned: false,
+          ),
+        ),
+      ].join(', ');
+      _line('fn ${_methodName(need)}($params) -> $returns {');
       _indent++;
       if (have == null) {
         // Reported in the output rather than silently skipped: a trait impl
