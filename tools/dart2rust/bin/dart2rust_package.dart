@@ -53,6 +53,37 @@ String moduleName(String uri) {
   return RegExp(r'^[0-9]').hasMatch(name) ? 'm_$name' : name;
 }
 
+/// The item names another module could import: the `pub` ones only.
+///
+/// A glob import never brought a private item across either, so naming one
+/// explicitly does not lose anything -- it just says out loud what was already
+/// true, instead of 81 `E0603`s.
+Set<String> _publicItemsIn(String text) => {
+  for (final m in RegExp(
+    r'^pub (?:fn|struct|trait|enum|const|static|type) ([A-Za-z_]\w*)',
+    multiLine: true,
+  ).allMatches(text))
+    m.group(1)!,
+};
+
+/// Every item name a module declares, public or not.
+Set<String> _itemsIn(String text) => {
+  for (final m in RegExp(
+    r'^(?:pub )?(?:fn|struct|trait|enum|const|static|type) ([A-Za-z_]\w*)',
+    multiLine: true,
+  ).allMatches(text))
+    m.group(1)!,
+};
+
+/// Every identifier the text uses.
+///
+/// Deliberately blunt: a word in a comment or a string counts too. Importing a
+/// name that turns out to be unused is free -- the file allows unused imports
+/// -- and missing one is not, so the net is cast wide.
+Set<String> _identifiersIn(String text) => {
+  for (final m in RegExp(r'[A-Za-z_]\w*').allMatches(text)) m.group(0)!,
+};
+
 /// Writes only when the text differs.
 ///
 /// Cargo decides what to recheck from file timestamps, so rewriting 525
@@ -113,6 +144,10 @@ Future<void> main(List<String> args) async {
   await out.create(recursive: true);
 
   final modules = <String>[];
+
+  /// Each module's text, held until every module is known: what a module has
+  /// to import cannot be decided before the others have said what they define.
+  final written = <String, (String, String, List<String>, List<String>)>{};
   var libraries = 0;
   var classes = 0;
   var refusals = 0;
@@ -231,20 +266,71 @@ Future<void> main(List<String> args) async {
       if (owners.length != 1) return;
       final owner = owners.single;
       if (owner == name || !imports.contains(owner)) return;
+      // A private class is private in Rust for the same reason it is in Dart:
+      // its library. Naming one from another module is an unresolved import,
+      // not an ambiguity being settled -- 22 of them.
+      if (className.startsWith('_')) return;
       resolved.add('use crate::$owner::$className;');
     });
+    written[name] = (uri, text, exports.toList()..sort(), resolved..sort());
+  }
+
+  // The `use` lines, decided from the emitted Rust rather than from the Dart.
+  //
+  // Every module used to open every module it referenced with
+  // `use crate::X::*`. That compiles, and it costs: `-Ztime-passes` puts 72 of
+  // a 73-second `cargo check` inside `resolve_crate`, because with hundreds of
+  // modules glob-importing each other every name is looked for in an enormous
+  // scope -- and every error message then searches that scope again for
+  // something to suggest, which was 30 of those seconds by itself.
+  //
+  // What a module needs is knowable exactly: the identifiers in the text it
+  // emitted. Deciding from the text rather than from the Dart AST is the
+  // point -- the text is the thing that has to compile, so no name can arrive
+  // by a route the importer did not think of.
+  final definer = <String, String>{};
+  final ambiguous = <String>{};
+  for (final entry in written.entries) {
+    for (final item in _publicItemsIn(entry.value.$2)) {
+      if (definer.containsKey(item) && definer[item] != entry.key) {
+        ambiguous.add(item);
+      } else {
+        definer[item] = entry.key;
+      }
+    }
+  }
+
+  for (final entry in written.entries) {
+    final name = entry.key;
+    final (uri, text, exports, resolved) = entry.value;
+    final mine = _itemsIn(text);
+    final wanted = <String, String>{};
+    for (final used in _identifiersIn(text)) {
+      if (mine.contains(used)) continue;
+      final from = definer[used];
+      if (from == null || from == name) continue;
+      // A name two modules define cannot be imported by name from here. The
+      // Dart said which one was meant, and `resolved` already carries that.
+      if (ambiguous.contains(used)) continue;
+      wanted[used] = from;
+    }
+    final byModule = <String, List<String>>{};
+    for (final e in wanted.entries) {
+      (byModule[e.value] ??= []).add(e.key);
+    }
     final uses = [
       'use crate::dart_prelude::*;',
-      for (final m in exports.toList()..sort()) 'pub use crate::$m::*;',
-      for (final m in imports.toList()..sort()) 'use crate::$m::*;',
-      ...resolved..sort(),
+      for (final m in exports) 'pub use crate::$m::*;',
+      for (final m in byModule.keys.toList()..sort())
+        'use crate::$m::{${(byModule[m]!..sort()).join(', ')}};',
+      ...resolved,
     ].join('\n');
     await _writeIfChanged(
       '${out.path}/$name.rs',
       '// Generated from $uri\n'
           '//\n'
-          '// The `use` lines are this library\'s Dart imports, kept: see\n'
-          '// dart2rust_package.dart for what happened without them.\n'
+          '// The `use` lines name exactly what this module\'s own text uses:\n'
+          '// see dart2rust_package.dart for what the glob imports cost.\n'
           '#![allow(unused_imports, dead_code, non_snake_case)]\n'
           '$uses\n'
           '\n'
