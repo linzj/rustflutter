@@ -204,14 +204,22 @@ class RustBackend {
   /// behind a `Box` when owned. Getting this wrong is not a style question:
   /// `fn add(other: AlignmentGeometry)` does not compile at all, because Rust
   /// has no way to know how big an `AlignmentGeometry` is.
-  /// `pub `, or nothing when the Dart name was private.
+  /// `pub `, or `pub(crate) ` when the Dart name was private.
   ///
-  /// Dart's privacy is per *library* and Rust's is per *module*, so a file's
-  /// classes emitted into one module keep the same reachability: a `_`-prefixed
-  /// member is visible to its neighbours and to nobody else. The name is left
-  /// alone -- `_x` is a legal Rust identifier -- because changing it would make
-  /// the output unsearchable against upstream.
-  String _vis(String dartName) => dartName.startsWith('_') ? '' : 'pub ';
+  /// Dart's privacy is per *library* and Rust's is per *module*, so emitting a
+  /// `_`-prefixed member with no `pub` looked like the faithful thing. It is
+  /// not quite, because Dart lets a private name escape its library without
+  /// being public: `abstract class Path { factory Path() = _NativePath; }`
+  /// hands every library a `_NativePath`, and Kernel resolves the factory, so
+  /// the translated `painting` names a struct `dart_ui` kept to itself -- 28
+  /// `cannot find _NativePath`, and the same shape for `_NullWidget` and
+  /// `_MaterialLocalizationsDelegate`.
+  ///
+  /// `pub(crate)` is what "private to its library, in a program that is one
+  /// crate" actually means here. The name still starts with `_`, so a reader
+  /// can still see what upstream considered private.
+  String _vis(String dartName) =>
+      dartName.startsWith('_') ? 'pub(crate) ' : 'pub ';
 
   String type(IrType t, {bool owned = true}) {
     if (t.isFunction) {

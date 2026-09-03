@@ -1957,8 +1957,33 @@ class _EnumConstantFinder extends RecursiveVisitor {
 
   final Map<Class, Map<int, String>> byIndex;
 
+  final _seen = <Constant>{};
+
   void _look(Constant constant) {
+    if (!_seen.add(constant)) return;
+    // Inside, not just on top. No enum in the dill carries its element fields
+    // -- the CFE strips them, so a variant is only knowable from a constant
+    // that *is* one -- and those constants are often nested: `Tristate.isTrue`
+    // appears as a field value of a `SemanticsFlags` constant and nowhere on
+    // its own, which is why that enum came out with no variants at all while
+    // `Axis` next to it was fine.
+    if (constant is ListConstant) {
+      constant.entries.forEach(_look);
+    } else if (constant is SetConstant) {
+      constant.entries.forEach(_look);
+    } else if (constant is MapConstant) {
+      for (final entry in constant.entries) {
+        _look(entry.key);
+        _look(entry.value);
+      }
+    } else if (constant is InstantiationConstant) {
+      _look(constant.tearOffConstant);
+    } else if (constant is RecordConstant) {
+      constant.positional.forEach(_look);
+      constant.named.values.forEach(_look);
+    }
     if (constant is! InstanceConstant) return;
+    constant.fieldValues.values.forEach(_look);
     if (!constant.classNode.isEnum) return;
     int? index;
     String? name;

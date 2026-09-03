@@ -60,7 +60,8 @@ String moduleName(String uri) {
 /// true, instead of 81 `E0603`s.
 Set<String> _publicItemsIn(String text) => {
   for (final m in RegExp(
-    r'^pub (?:fn|struct|trait|enum|const|static|type) ([A-Za-z_]\w*)',
+    r'^pub(?:\(crate\))? (?:fn|struct|trait|enum|const|static|type) '
+    r'([A-Za-z_]\w*)',
     multiLine: true,
   ).allMatches(text))
     m.group(1)!,
@@ -69,7 +70,8 @@ Set<String> _publicItemsIn(String text) => {
 /// Every item name a module declares, public or not.
 Set<String> _itemsIn(String text) => {
   for (final m in RegExp(
-    r'^(?:pub )?(?:fn|struct|trait|enum|const|static|type) ([A-Za-z_]\w*)',
+    r'^(?:pub(?:\(crate\))? )?(?:fn|struct|trait|enum|const|static|type) '
+    r'([A-Za-z_]\w*)',
     multiLine: true,
   ).allMatches(text))
     m.group(1)!,
