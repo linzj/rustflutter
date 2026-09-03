@@ -423,10 +423,13 @@ class KernelFrontend {
   List<Field>? _finalFieldsRead(FunctionNode fn) {
     final use = _ThisUse();
     fn.accept(use);
-    if (use.demanding) return null;
-    final finder = _FinalFieldReads();
+    // A closure that *writes* a shared field is fine -- the cell is what makes
+    // it fine -- so writing no longer makes it demanding when every field it
+    // touches is either final or shared.
+    final finder = _FinalFieldReads(_sharedFields);
     fn.accept(finder);
-    if (!finder.allFinal || finder.fields.isEmpty) return null;
+    if (use.demandingBeyondFields) return null;
+    if (!finder.allCarried || finder.fields.isEmpty) return null;
     return finder.fields.values.toList();
   }
 
@@ -1385,6 +1388,13 @@ class KernelFrontend {
           return IrAssignTopLevel(target.name.text, expression(value.value));
         }
       }
+      // A write to a field the enclosing closure captured: the cell is what
+      // makes it writable from there, and the local is the handle.
+      if (value is InstanceSet &&
+          value.receiver is ThisExpression &&
+          _captured.contains(value.name.text)) {
+        return IrAssign(value.name.text, expression(value.value));
+      }
       if (value is InstanceSet) {
         // A field on `this`, and a field rather than a setter. Kernel names the
         // target outright, so neither has to be inferred.
@@ -1764,7 +1774,28 @@ class KernelFrontend {
     );
   }
 
+  /// The class's mutable fields that some closure in it touches.
+  ///
+  /// Collected before anything is lowered, because the field's *declaration*
+  /// has to know: its type, its reads, its writes, its initialiser and the
+  /// closure's capture all have to agree, and they are written in that order.
+  Set<String> _sharedFields = const {};
+
+  Set<String> _closureFields(Class node) {
+    final closures = <FunctionNode>[];
+    node.accept(_ClosureFinder(closures));
+    final touched = <String>{};
+    for (final fn in closures) {
+      final walk = _FieldsTouched();
+      fn.accept(walk);
+      touched.addAll(walk.mutable);
+    }
+    return touched;
+  }
+
   (IrClass, List<String>) lowerClass(Class node) {
+    _sharedFields = _closureFields(node);
+
     // Kernel's superclass may be a synthetic mixin application; the class a
     // reader would name is the first one above that is not.
     // The **supertype**, not just the superclass: its type arguments are what
@@ -1937,6 +1968,7 @@ class KernelFrontend {
           _type(field.type),
           isFinal: field.isFinal,
           initial: initial == null ? null : expression(initial),
+          shared: _sharedFields.contains(name),
         ),
       );
     }
@@ -2103,6 +2135,53 @@ class _ThisFinder extends RecursiveVisitor {
   }
 }
 
+/// Every closure written inside something.
+class _ClosureFinder extends RecursiveVisitor {
+  _ClosureFinder(this.found);
+
+  final List<FunctionNode> found;
+
+  @override
+  void visitFunctionExpression(FunctionExpression node) {
+    found.add(node.function);
+    super.visitFunctionExpression(node);
+  }
+
+  @override
+  void visitFunctionDeclaration(FunctionDeclaration node) {
+    found.add(node.function);
+    super.visitFunctionDeclaration(node);
+  }
+}
+
+/// The **mutable** fields of `this` a closure reads or writes.
+class _FieldsTouched extends RecursiveVisitor {
+  final mutable = <String>{};
+
+  void _look(Member? target) {
+    if (target is Field && !target.isFinal) mutable.add(target.name.text);
+  }
+
+  @override
+  void visitInstanceGet(InstanceGet node) {
+    if (node.receiver is ThisExpression) {
+      _look(node.interfaceTarget);
+    } else {
+      node.receiver.accept(this);
+    }
+  }
+
+  @override
+  void visitInstanceSet(InstanceSet node) {
+    if (node.receiver is ThisExpression) {
+      _look(node.interfaceTarget);
+    } else {
+      node.receiver.accept(this);
+    }
+    node.value.accept(this);
+  }
+}
+
 /// Every use of a parameter that is not "call it right here".
 ///
 /// The one use a borrowed closure survives is being called. Anything else --
@@ -2141,21 +2220,51 @@ class _ParameterEscapes extends RecursiveVisitor {
 
 /// The `final` fields a closure reads on `this`, and whether they all are.
 class _FinalFieldReads extends RecursiveVisitor {
+  _FinalFieldReads(this.shared);
+
+  /// The class's fields that live in a cell, which a closure may hold a
+  /// handle to and both read and write.
+  final Set<String> shared;
+
   final fields = <String, Field>{};
-  bool allFinal = true;
+
+  /// Whether every field touched can be carried: `final` by copy, shared by
+  /// handle. One that is neither means the closure would need `this`.
+  bool allCarried = true;
+
+  void _look(Member? target) {
+    if (target is Field &&
+        (target.isFinal || shared.contains(target.name.text))) {
+      fields[target.name.text] = target;
+    } else {
+      allCarried = false;
+    }
+  }
 
   @override
   void visitInstanceGet(InstanceGet node) {
     if (node.receiver is ThisExpression) {
+      _look(node.interfaceTarget);
+    } else {
+      node.receiver.accept(this);
+    }
+  }
+
+  @override
+  void visitInstanceSet(InstanceSet node) {
+    if (node.receiver is ThisExpression) {
       final target = node.interfaceTarget;
-      if (target is Field && target.isFinal) {
+      // Writing is only carriable through a cell; a `final` field cannot be
+      // written at all, so a write to one is not this shape.
+      if (target is Field && shared.contains(target.name.text)) {
         fields[target.name.text] = target;
       } else {
-        allFinal = false;
+        allCarried = false;
       }
     } else {
       node.receiver.accept(this);
     }
+    node.value.accept(this);
   }
 }
 
@@ -2167,8 +2276,15 @@ class _FinalFieldReads extends RecursiveVisitor {
 class _ThisUse extends RecursiveVisitor {
   bool demanding = false;
 
+  /// Everything demanding except *writing a field*, which a shared field's
+  /// cell answers. `_FinalFieldReads` decides that part.
+  bool demandingBeyondFields = false;
+
   @override
-  void visitThisExpression(ThisExpression node) => demanding = true;
+  void visitThisExpression(ThisExpression node) {
+    demanding = true;
+    demandingBeyondFields = true;
+  }
 
   @override
   void visitInstanceGet(InstanceGet node) {
@@ -2179,28 +2295,48 @@ class _ThisUse extends RecursiveVisitor {
 
   @override
   void visitInstanceSet(InstanceSet node) {
-    if (node.receiver is ThisExpression) demanding = true;
-    super.visitInstanceSet(node);
+    // The receiver is not walked when it is `this`: walking it reaches the
+    // `ThisExpression` itself, which reads as "hands the whole object over"
+    // and is exactly what a field write is not. `visitInstanceGet` has always
+    // skipped it for the same reason; this one did not, and it made every
+    // field write look like the object escaping.
+    if (node.receiver is ThisExpression) {
+      demanding = true;
+    } else {
+      node.receiver.accept(this);
+    }
+    node.value.accept(this);
   }
 
   @override
   void visitInstanceInvocation(InstanceInvocation node) {
-    if (node.receiver is ThisExpression) demanding = true;
+    if (node.receiver is ThisExpression) {
+      demanding = true;
+      demandingBeyondFields = true;
+    }
     super.visitInstanceInvocation(node);
   }
 
   @override
   void visitInstanceTearOff(InstanceTearOff node) {
-    if (node.receiver is ThisExpression) demanding = true;
+    if (node.receiver is ThisExpression) {
+      demanding = true;
+      demandingBeyondFields = true;
+    }
     super.visitInstanceTearOff(node);
   }
 
   @override
-  void visitSuperMethodInvocation(SuperMethodInvocation node) =>
-      demanding = true;
+  void visitSuperMethodInvocation(SuperMethodInvocation node) {
+    demanding = true;
+    demandingBeyondFields = true;
+  }
 
   @override
-  void visitSuperPropertySet(SuperPropertySet node) => demanding = true;
+  void visitSuperPropertySet(SuperPropertySet node) {
+    demanding = true;
+    demandingBeyondFields = true;
+  }
 }
 
 /// The error types a function body throws.

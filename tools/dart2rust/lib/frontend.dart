@@ -599,10 +599,12 @@ class Frontend {
   List<FieldElement>? _finalFieldsRead(FunctionExpression node) {
     final demand = _InstanceDemand();
     node.accept(demand);
-    if (demand.demanding) return null;
-    final finder = _FinalFieldReads();
+    // Writing a field is answered by its cell, so it is not demanding when the
+    // field is shared. Calling a method still is.
+    if (demand.callsOrEscapes) return null;
+    final finder = _FinalFieldReads(_sharedFields);
     node.accept(finder);
-    if (!finder.allFinal || finder.fields.isEmpty) return null;
+    if (!finder.allCarried || finder.fields.isEmpty) return null;
     return finder.fields.values.toList();
   }
 
@@ -1382,6 +1384,11 @@ class Frontend {
         combined(IrCall(receiver, name, const [])),
       );
     }
+    // A field the enclosing closure captured is written through its cell, and
+    // the handle is a local there. The Kernel front end does the same.
+    if (_captured.contains(name)) {
+      return IrAssign(name, combined(IrLocal(name)));
+    }
     return IrAssignField(name, combined(IrField(null, name)));
   }
 
@@ -1633,7 +1640,14 @@ class Frontend {
   /// Lowers one class, collecting what it could not translate rather than
   /// stopping at the first refusal: a report of eleven unsupported members is
   /// worth more than a report of the first one.
+  /// The class's mutable fields that some closure in it touches. See
+  /// `IrFieldDecl.shared`; the Kernel front end collects the same set.
+  Set<String> _sharedFields = const {};
+
   (IrClass, List<String>) lowerClass(ClassDeclaration node) {
+    final touched = _TouchedFields();
+    node.accept(touched);
+    _sharedFields = touched.mutable;
     final element = node.declaredFragment?.element;
     final cls = IrClass(
       node.name.lexeme,
@@ -1709,6 +1723,7 @@ class Frontend {
             isFinal: member.fields.isFinal,
             initial: initial == null ? null : expression(initial),
             doc: _doc(member),
+            shared: _sharedFields.contains(v.name.lexeme),
           ),
         );
       }
@@ -1972,8 +1987,13 @@ class _ParameterEscapes extends RecursiveAstVisitor<void> {
 
 /// The `final` fields a closure reads on `this`, and whether they all are.
 class _FinalFieldReads extends RecursiveAstVisitor<void> {
+  _FinalFieldReads(this.shared);
+
+  /// Fields that live in a cell: carriable by handle, readable and writable.
+  final Set<String> shared;
+
   final fields = <String, FieldElement>{};
-  bool allFinal = true;
+  bool allCarried = true;
 
   void _look(Element? element) {
     if (element == null) return;
@@ -1986,10 +2006,10 @@ class _FinalFieldReads extends RecursiveAstVisitor<void> {
       _ => null,
     };
     if (field is FieldElement && !field.isStatic) {
-      if (field.isFinal) {
+      if (field.isFinal || shared.contains(field.name)) {
         fields[field.name!] = field;
       } else {
-        allFinal = false;
+        allCarried = false;
       }
     }
   }
@@ -2016,6 +2036,9 @@ class _FinalFieldReads extends RecursiveAstVisitor<void> {
 class _InstanceDemand extends RecursiveAstVisitor<void> {
   bool demanding = false;
 
+  /// Everything demanding except *writing a field*, which a cell answers.
+  bool callsOrEscapes = false;
+
   bool _isInstance(Element? element) {
     if (element == null) return false;
     if (element.enclosingElement is! InterfaceElement) return false;
@@ -2028,12 +2051,16 @@ class _InstanceDemand extends RecursiveAstVisitor<void> {
   }
 
   @override
-  void visitThisExpression(ThisExpression node) => demanding = true;
+  void visitThisExpression(ThisExpression node) {
+    demanding = true;
+    callsOrEscapes = true;
+  }
 
   @override
   void visitMethodInvocation(MethodInvocation node) {
     if (node.target == null && _isInstance(node.methodName.element)) {
       demanding = true;
+      callsOrEscapes = true;
     }
     super.visitMethodInvocation(node);
   }
@@ -2061,7 +2088,50 @@ class _InstanceDemand extends RecursiveAstVisitor<void> {
   }
 
   @override
-  void visitSuperExpression(SuperExpression node) => demanding = true;
+  void visitSuperExpression(SuperExpression node) {
+    demanding = true;
+    callsOrEscapes = true;
+  }
+}
+
+/// The **mutable** fields of `this` that a closure in this class touches.
+class _TouchedFields extends RecursiveAstVisitor<void> {
+  final mutable = <String>{};
+
+  void _look(Element? element) {
+    final field = switch (element) {
+      GetterElement(isSynthetic: true) => element.variable,
+      SetterElement(isSynthetic: true) => element.variable,
+      FieldElement() => element,
+      _ => null,
+    };
+    if (field is FieldElement && !field.isStatic && !field.isFinal) {
+      mutable.add(field.name!);
+    }
+  }
+
+  void _inside(FunctionExpression node) {
+    node.accept(_Touches(_look));
+  }
+
+  @override
+  void visitFunctionExpression(FunctionExpression node) {
+    _inside(node);
+    super.visitFunctionExpression(node);
+  }
+}
+
+/// Every identifier inside one closure, handed to a callback.
+class _Touches extends RecursiveAstVisitor<void> {
+  _Touches(this.look);
+
+  final void Function(Element?) look;
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    look(node.element);
+    super.visitSimpleIdentifier(node);
+  }
 }
 
 /// The error types a method body throws.

@@ -402,7 +402,12 @@ class RustBackend {
   String expr(IrExpr e) {
     return switch (e) {
       IrLiteral(:final value, :final type) => _literal(value, type),
-      IrLocal(:final name) => snake(name),
+      // A captured shared field is a cell handle, not the value: reading it
+      // is `f.get()`. The local is only a local in the closure's own text.
+      IrLocal(:final name) =>
+        _cellLocals.containsKey(name)
+            ? '${snake(name)}.${_cellLocals[name]! ? 'get()' : 'borrow().clone()'}'
+            : snake(name),
       IrThis() => '*$_selfName',
       IrField(:final target, :final name, :final onEnum) => _fieldRead(
         target,
@@ -561,6 +566,13 @@ class RustBackend {
     final bindings = node.captures
         .map((c) => 'let ${snake(c.name)} = ${_copyOf(c)};')
         .join(' ');
+    // Which of them are cells, for the body that is about to be written.
+    final savedCells = _cellLocals;
+    _cellLocals = {
+      ..._cellLocals,
+      for (final c in node.captures)
+        if (_sharedField(c.name) != null) c.name: _isCopy(type(c.type)),
+    };
     final saved = _out.length;
     final savedIndent = _indent;
     _indent = 0;
@@ -570,15 +582,45 @@ class RustBackend {
     _indent = savedIndent;
     final closure =
         '${node.captures.isEmpty ? '' : 'move '}|$params| { $body }';
+    _cellLocals = savedCells;
     final whole = node.captures.isEmpty ? closure : '{ $bindings $closure }';
     return node.boxed ? 'Box::new($whole)' : whole;
   }
+
+  /// A field's type, wrapped when a closure has to see it change.
+  ///
+  /// `Rc<Cell<T>>` where `T` is `Copy` and `Rc<RefCell<T>>` where it is not:
+  /// `Cell` needs no borrow flag and cannot panic, so it is the better answer
+  /// wherever it fits. See `IrFieldDecl.shared`.
+  String _fieldType(IrFieldDecl field) {
+    final held = type(field.type);
+    if (!field.shared) return held;
+    final cell = _isCopy(held) ? 'Cell' : 'RefCell';
+    return 'std::rc::Rc<std::cell::$cell<$held>>';
+  }
+
+  /// Whether a field of *this* class is shared. Named rather than passed
+  /// around: reads and writes reach it from several places.
+  IrFieldDecl? _sharedField(String name) {
+    for (final f in _allFields(cls)) {
+      if (f.name == name) return f.shared ? f : null;
+    }
+    return null;
+  }
+
+  /// Captured locals that hold a cell, and whether it is a `Cell` (`true`)
+  /// or a `RefCell`.
+  var _cellLocals = <String, bool>{};
 
   /// A copy of a field, for a closure to keep.
   ///
   /// `clone()` unless the type is `Copy`, where it would only be noise.
   String _copyOf(IrParam field) {
     final read = '$_selfName.${snake(field.name)}';
+    // A shared field is carried as a *handle*: the closure and the object must
+    // see the same cell, which is the whole reason it is shared. Cloning an
+    // `Rc` is cloning the handle, not the value.
+    if (_sharedField(field.name) != null) return '$read.clone()';
     return _isCopy(type(field.type)) ? read : '$read.clone()';
   }
 
@@ -964,6 +1006,18 @@ class RustBackend {
         (target == null || target is IrThis) &&
         cls.fields.any((f) => f.name == name)) {
       return '$receiver.${snake(name)}()';
+    }
+    // A shared field is read through its cell. `get` copies, which is what a
+    // Dart read does; `borrow().clone()` is the same for a value that is not
+    // `Copy`.
+    if (target == null || target is IrThis) {
+      final shared = _sharedField(name);
+      if (shared != null) {
+        final held = type(shared.type);
+        return _isCopy(held)
+            ? '$receiver.${snake(name)}.get()'
+            : '$receiver.${snake(name)}.borrow().clone()';
+      }
     }
     return '$receiver.${snake(name)}';
   }
@@ -1625,10 +1679,30 @@ class RustBackend {
           '${init == null ? "Default::default()" : expr(init)};',
         );
       case IrAssign(:final name, :final value):
-        _line('${snake(name)} = ${expr(value)};');
+        final cell = _cellLocals[name];
+        _line(
+          cell == null
+              ? '${snake(name)} = ${expr(value)};'
+              : cell
+              ? '${snake(name)}.set(${expr(value)});'
+              : '*${snake(name)}.borrow_mut() = ${expr(value)};',
+        );
       case IrAssignField(:final target, :final name, :final value):
         final receiver = target == null ? _selfName : expr(target);
-        _line('$receiver.${snake(name)} = ${expr(value)};');
+        final shared = target == null || target is IrThis
+            ? _sharedField(name)
+            : null;
+        if (shared != null) {
+          // Through the cell, which is why the field can be written from a
+          // closure that does not hold `self` at all.
+          _line(
+            _isCopy(type(shared.type))
+                ? '$receiver.${snake(name)}.set(${expr(value)});'
+                : '*$receiver.${snake(name)}.borrow_mut() = ${expr(value)};',
+          );
+        } else {
+          _line('$receiver.${snake(name)} = ${expr(value)};');
+        }
       case IrAssignTopLevel(:final name, :final value):
         // Through the cell: two derefs for the `LazyLock` and the `Isolate`,
         // then `borrow_mut`. The read side does the same with `borrow`.
@@ -2016,6 +2090,12 @@ class RustBackend {
       !rust.contains('Box<') &&
       !rust.contains('Vec<') &&
       !rust.contains('HashMap<') &&
+      // A shared field's `Rc` is not `Copy` however copyable its contents,
+      // and a `RefCell` is not either. Without these a struct holding one
+      // derived `Copy` and did not compile.
+      !rust.contains('Rc<') &&
+      !rust.contains('RefCell<') &&
+      !rust.contains('Cell<') &&
       !rust.contains('dyn ');
 
   /// A top-level function.
@@ -2649,13 +2729,16 @@ class RustBackend {
     // `Copy` only when every field is. A `String` field is not, and deriving
     // it anyway does not compile -- which is loud, but the derive is this
     // compiler's own line and it should not write one it knows is wrong.
-    final copyable = _allFields(cls).every((f) => _isCopy(type(f.type)));
+    // Asked of the *emitted* type: a shared field is an `Rc<Cell<..>>`, which
+    // is not `Copy` however copyable the value inside it is. Asking the Dart
+    // type instead derived `Copy` for a struct that cannot have it.
+    final copyable = _allFields(cls).every((f) => _isCopy(_fieldType(f)));
     _line('#[derive(Clone, ${copyable ? 'Copy, ' : ''}Debug, PartialEq)]');
     _line('${_vis(cls.name)}struct ${cls.name}${_generics(cls)} {');
     _indent++;
     for (final field in _allFields(cls)) {
       _doc(field.doc);
-      _line('${_vis(field.name)}${snake(field.name)}: ${type(field.type)},');
+      _line('${_vis(field.name)}${snake(field.name)}: ${_fieldType(field)},');
     }
     // A Dart class can name a type parameter it never stores -- `Tween<T>`
     // holds `begin` and `end` of type `T?`, but plenty do not. Rust will not
@@ -3117,7 +3200,13 @@ class RustBackend {
           '${cls.name}.${field.name}',
         );
       }
-      _line('${snake(field.name)}: ${expr(init)},');
+      final held = type(field.type);
+      _line(
+        field.shared
+            ? '${snake(field.name)}: std::rc::Rc::new(std::cell::'
+                  '${_isCopy(held) ? 'Cell' : 'RefCell'}::new(${expr(init)})),'
+            : '${snake(field.name)}: ${expr(init)},',
+      );
     }
     // The phantom fields the struct declaration added. They hold nothing, and
     // leaving them out of the literal is a missing field rather than a

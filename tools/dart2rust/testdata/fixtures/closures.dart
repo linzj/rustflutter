@@ -104,3 +104,26 @@ class Closures {
     return (double v) => v * factor;
   }
 }
+
+/// A **mutable** field that a closure both reads and writes, from a closure
+/// that outlives the call.
+///
+/// A copy would be wrong: `count` changes, and the closure and the object have
+/// to see the same one. So the field lives in a cell they both hold a handle
+/// to -- which is what "shared" means here, and why it is only for the mutable
+/// ones. A `final` field is cheaper copied, and round 97 does that.
+class Ticks {
+  Ticks();
+
+  int count = 0;
+
+  void Function() counter() {
+    return () {
+      count = count + 1;
+    };
+  }
+
+  int seen() {
+    return count;
+  }
+}

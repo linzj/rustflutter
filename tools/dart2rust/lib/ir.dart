@@ -898,7 +898,23 @@ class IrFieldDecl {
     required this.isFinal,
     this.initial,
     this.doc,
+    this.shared = false,
   });
+
+  /// Whether a closure has to see this field change.
+  ///
+  /// A closure that outlives its call cannot borrow `this`. For a `final`
+  /// field a copy *is* the field (see `IrClosure.captures`); for a mutable one
+  /// it is not, and the closure and the object have to hold the same cell. So
+  /// the field becomes `Rc<Cell<T>>` -- or `Rc<RefCell<T>>` where the value is
+  /// not `Copy` -- and the closure keeps a handle.
+  ///
+  /// Marked for *any* closure that touches it, not only the ones that escape.
+  /// Sharing a field that did not need it costs an indirection; not sharing
+  /// one that did is a borrow that outlives its borrower, and this compiler
+  /// has been on the wrong side of that once already (round 99). 404 fields
+  /// across the package, measured by `bin/census_shared.dart`.
+  final bool shared;
 
   final String name;
   final IrType type;
@@ -928,6 +944,10 @@ class IrFieldDecl {
         isFinal: f.isFinal,
         initial: f.initial,
         doc: f.doc,
+        // Carried. Rebuilding a field without it is how `kept` was lost one
+        // round ago, in the same shape: the declaration would share and the
+        // reads would not.
+        shared: f.shared,
       );
 }
 

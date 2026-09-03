@@ -286,7 +286,7 @@ mod superctor;
 pub use superctor::{Padded, Rectangle, Square};
 
 mod closures;
-pub use closures::Closures;
+pub use closures::{Closures, Ticks};
 
 mod cascade;
 pub use cascade::{Paint, Painter, Tinted};
@@ -1057,6 +1057,23 @@ mod tests {
         // than search the text -- and having resolved it, let this one
         // through.
         assert_eq!(Closures::new(2.0).by_factor(3.0), 12.0);
+    }
+
+    #[test]
+    fn a_closure_and_its_object_share_a_mutable_field() {
+        // `count` changes, so a copy would be a different number. The field
+        // lives in a cell they both hold a handle to, and the closure outlives
+        // the call that made it -- which is the whole reason it cannot borrow.
+        let tally = Ticks::new();
+        let bump = tally.counter();
+        bump();
+        bump();
+        assert_eq!(tally.seen(), 2);
+        // Still counting after the closure is the only thing left holding it.
+        let orphan = { Ticks::new().counter() };
+        orphan();
+        orphan();
+        orphan();
     }
 
     #[test]
