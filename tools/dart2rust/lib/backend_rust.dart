@@ -223,6 +223,7 @@ class RustBackend {
     final fieldsAreAccessors = _fieldsAreAccessors;
     final inTrait = _inTrait;
     final referenceParams = _referenceParams;
+    final selfIsHandle = _selfIsHandle;
     final reassigned = _reassigned;
     final failure = _failure;
     final rustReturns = _rustReturns;
@@ -242,6 +243,7 @@ class RustBackend {
       _fieldsAreAccessors = fieldsAreAccessors;
       _inTrait = inTrait;
       _referenceParams = referenceParams;
+      _selfIsHandle = selfIsHandle;
       _reassigned = reassigned;
       _failure = failure;
       _rustReturns = rustReturns;
@@ -1415,9 +1417,18 @@ class RustBackend {
       // arrives by value, because a translated value type is `Copy`, and the
       // address of a copy answers nothing: `identical(this, other)` there would
       // compile and always be false.
+      // Which side, and what it is. "identical(.., ..)" 251 times said only
+      // that something was wrong; the shapes are what the next round needs.
+      String what(IrExpr e) => switch (e) {
+        IrThis() => 'this',
+        IrLocal(:final name) => name,
+        IrField(:final name) => 'a field `$name`',
+        _ => e.runtimeType.toString(),
+      };
       throw Unsupported(
         '`identical` on something that is not a reference',
-        'identical(.., ..)',
+        '${_isReference(left) ? "" : "${what(left)} "}'
+            '${_isReference(right) ? "" : what(right)}',
       );
     }
     // Through `*const ()` because the two sides have different Rust types --
@@ -1433,14 +1444,35 @@ class RustBackend {
   /// `self` always is. A local is one when it is a parameter whose Dart type is
   /// an abstract class, since that becomes `&dyn Trait` -- which is what
   /// upstream's `operator ==(Object other)` is.
-  bool _isReference(IrExpr e) =>
-      e is IrThis || (e is IrLocal && _referenceParams.contains(e.name));
+  bool _isReference(IrExpr e) => _addressOf(e) != null;
 
-  /// Parameters of the method being emitted that are references.
-  var _referenceParams = <String>{};
+  /// How to take the address of a value, or null when it has none to take.
+  ///
+  /// "Has an address" is not the same as "is written as a reference". A
+  /// counted class arrives as an `Rc<Foo>` *by value*, and two handles to one
+  /// object are two different addresses -- so the handle is dereferenced and
+  /// the pointee's address is what identity is asked about. Getting that
+  /// backwards answers the opposite of the question and compiles.
+  String? _addressOf(IrExpr e) {
+    if (e is IrThis) {
+      // A closure's `__me` is a cloned handle, and a method that hands out
+      // `this` takes `&Rc<Self>`. Both need one more deref than they look.
+      if (_selfName == _countedSelf) return '&*$_countedSelf';
+      return _selfIsHandle ? '&**$_selfName' : _selfName;
+    }
+    if (e is IrLocal) return _referenceParams[e.name];
+    return null;
+  }
+
+  /// Parameters of the method being emitted that have an address, and how to
+  /// take it.
+  var _referenceParams = <String, String>{};
+
+  /// Whether `self` here is `&Rc<Self>` rather than `&Self`.
+  var _selfIsHandle = false;
 
   /// `self` is already a reference; anything else names one.
-  String _ref(IrExpr e) => e is IrThis ? _selfName : expr(e);
+  String _ref(IrExpr e) => _addressOf(e)!;
 
   /// `dart:collection`'s internal implementation classes, by what they are.
   ///
@@ -1780,10 +1812,16 @@ class RustBackend {
       case IrLocalDecl(:final name, :final type, :final init):
         final annotation = type == null ? '' : ': ${this.type(type)}';
         final mutable = _reassigned.contains(name) ? 'mut ' : '';
-        _line(
-          'let $mutable${snake(name)}$annotation = '
-          '${init == null ? "Default::default()" : expr(init)};',
-        );
+        // A declared function type is `Box<dyn Fn(..)>`, and a closure's own
+        // type is not that. `_returned` boxes for the same reason one line
+        // further out; a `let` is the other half of it.
+        final boxed = type != null && type.isFunction && init is IrClosure;
+        final value = init == null
+            ? 'Default::default()'
+            : boxed
+            ? 'Box::new(${expr(init)})'
+            : expr(init);
+        _line('let $mutable${snake(name)}$annotation = $value;');
       case IrAssign(:final name, :final value):
         final cell = _cellLocals[name];
         _line(
@@ -2530,8 +2568,10 @@ class RustBackend {
     // a borrow: the closure keeps a clone of it, and only an `Rc` clones into
     // something that outlives the call.
     if (cls.counted && _handsOutSelf(method)) {
+      _selfIsHandle = true;
       return 'self: &std::rc::Rc<Self>';
     }
+    _selfIsHandle = false;
     // A counted class never takes `&mut self`: an `Rc` hands out shared
     // access, and every mutable field of one is in a cell for that reason.
     if (cls.counted || !_mutating.contains(_rustName(method))) return '&self';
@@ -3609,7 +3649,18 @@ class RustBackend {
       _rustReturns = returns;
       _referenceParams = {
         for (final p in method.params)
-          if (library.isAbstract(p.type.name)) p.name,
+          // Asked of the **emitted** type, not of the Dart name. `Object` is
+          // the parameter of every `operator ==` and it is not one of this
+          // package's abstract classes -- it is the prelude's trait -- so a
+          // rule that consulted `library.isAbstract` missed all 251 of them
+          // while `&dyn Object` was sitting in the signature. The same shape
+          // as `_isCopy` two rounds ago: the ruler and its name disagreed.
+          if (type(p.type, owned: false).startsWith('&dyn '))
+            p.name: snake(p.name)
+          // A counted class is an `Rc<Foo>` by value. The handle is not the
+          // object, so the object is what gets asked.
+          else if (library[p.type.name]?.counted ?? false)
+            p.name: '&*${snake(p.name)}',
       };
       _line(
         '${_vis(method.name)}${method.isAsync ? "async " : ""}fn '

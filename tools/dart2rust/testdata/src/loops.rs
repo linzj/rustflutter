@@ -81,7 +81,7 @@ impl Ladder {
     }
 
     // NOT TRANSLATED: Ladder.isTheCopy
-    //   unsupported `identical` on something that is not a reference: identical(.., ..)
+    //   unsupported `identical` on something that is not a reference: other
 }
 
 impl DartAny for Ladder {

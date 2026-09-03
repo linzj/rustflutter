@@ -258,6 +258,9 @@ pub use lates::{Engine, Machine};
 mod typetest;
 pub use typetest::{Figure, Figures, Tile, Wedge};
 
+mod identity;
+pub use identity::{Node, Nodes, Watcher};
+
 mod mixins;
 pub use mixins::{Measured, Panel, Scaled};
 
@@ -1821,5 +1824,20 @@ mod tests {
         // Through the trait object, only the non-generic half is reachable --
         // which is the whole trade.
         assert_eq!(Shelves::size_of(&shelf), 4);
+    }
+
+    /// `identical` through an `Rc`. Two handles to one object sit at two
+    /// different addresses, so the handle has to be looked through -- and
+    /// getting that wrong compiles and answers the opposite.
+    #[test]
+    fn identity_is_the_object_not_the_handle() {
+        let w = Watcher::new(3);
+        let other = Watcher::new(3);
+        assert!(w.watching(&*w));
+        assert!(!w.watching(&*other));
+        assert!(Nodes::same(&*w, &*w));
+        assert!(Nodes::different(&*w, &*other));
+        // Equal contents, different objects: identity is not equality.
+        assert_eq!(w.id(), other.id());
     }
 }
