@@ -3704,6 +3704,45 @@ trait 里改成 `&dyn Fn(..)`:借用方式一模一样,trait 保持 dyn 兼容,
 
 ---
 
+## 第 76 轮:切错的刀口,和代入丢掉的两件东西
+
+### 先把切片修对
+
+`widgets` 切片最想要的名字是 `RenderObject`,383 次——**而 rendering
+根本不在那一片里**。那不是关于翻译的任何事实,是**刀口自己**。
+切片加上 rendering、gestures、semantics、services:318 个库、1869 个类。
+
+顺带印证了第 65 轮的预测:这个大得多的切片**只用 23 秒**,
+比之前小的那个还快——**错误少了,`resolve_report_errors` 就短了**。
+
+### 代入丢了 `?`
+
+    method `child` has an incompatible type for trait:
+      expected `Option<Box<dyn RenderBox>>`, found `Box<dyn RenderBox>`
+
+`ChildType? _child`,`ChildType` 绑到 `RenderBox`,代入之后成了 `RenderBox`
+——**问号属于使用点,不属于被代进来的东西**。575 个 E0053 里的 244 个。
+
+### 代入也丢了"拥有还是借用"
+
+    fn set_child(&self, value: Option<ChildType>);          // trait
+    fn set_child(&self, value: Option<&dyn RenderBox>);     // impl
+
+Rust 按 impl 头里写的 `Box<dyn RenderBox>` 去代入 `ChildType`,
+而 impl 这边按"参数是借用位置"写成了 `&dyn`。**一个类型参数代进来之后,
+必须按 impl 头写它的方式来写**,那是拥有的。
+
+E0053 **575 → 0**。
+
+| | 错误 |
+|---|---|
+| `widgets`(修对刀口后) | 2044 |
+| 保留可空性 | 1800 |
+| 代入按拥有渲染 | **1475** |
+| `core` 切片 | 163(不变) |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3724,9 +3763,8 @@ trait 里改成 `&dyn Fn(..)`:借用方式一模一样,trait 保持 dyn 兼容,
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`widgets` 切片 E0425 还有 2331,头部是 `RenderObject` 383
-——那是**切片选得不对**,rendering 不在这一片里。先把切片定义修对,
-再看剩下的形状。
+**下一轮**:`widgets` 切片剩 981 个 E0425,头部是 `Matrix4` 430
+——那是 `vector_math` 包,不在前缀里。先确认它是不是又一个"刀口"问题。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

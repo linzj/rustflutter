@@ -1907,7 +1907,17 @@ class RustBackend {
 
   /// `T` -> whatever `T` was bound to, inside a type and its arguments.
   static IrType _substituteType(IrType t, Map<String, IrType> bound) {
-    if (t.arguments.isEmpty) return bound[t.name] ?? t;
+    if (t.arguments.isEmpty) {
+      final to = bound[t.name];
+      if (to == null) return t;
+      // The `?` belongs to the *use*, not to what is put in its place:
+      // `ChildType? _child` with `ChildType` bound to `RenderBox` is a
+      // `RenderBox?`, and dropping the question mark made the accessor return
+      // a `Box<dyn RenderBox>` where the trait it implements wants an
+      // `Option<Box<dyn RenderBox>>` -- 575 `E0053`s.
+      if (!t.nullable || to.nullable) return to;
+      return IrType(to.name, nullable: true, arguments: to.arguments);
+    }
     return IrType(
       t.name,
       nullable: t.nullable,
@@ -2516,17 +2526,25 @@ class RustBackend {
       final returns = type(_substituteType(need.returnType, _implBinding));
       final params = [
         if (!need.isStatic) '&self',
-        ...need.params.map(
-          (p) => _param(
+        ...need.params.map((p) {
+          // A parameter whose type *is* one of the base's type parameters has
+          // to be written the way the impl header wrote that parameter, which
+          // is owned: Rust substitutes `ChildType` with the
+          // `Box<dyn RenderBox>` in `impl RenderObjectWithChildMixin<Box<dyn
+          // RenderBox>>`, and a borrowed `&dyn RenderBox` here is a different
+          // type from the one the trait declared.
+          final substituted = _substituteType(p.type, _implBinding);
+          final fromParameter = _implBinding.containsKey(p.type.name);
+          return _param(
             IrParam(
               p.name,
-              _substituteType(p.type, _implBinding),
+              substituted,
               named: p.named,
               hasDefault: p.hasDefault,
             ),
-            owned: false,
-          ),
-        ),
+            owned: fromParameter,
+          );
+        }),
       ].join(', ');
       _line('fn ${_methodName(need)}($params) -> $returns {');
       _indent++;

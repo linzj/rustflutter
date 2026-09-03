@@ -239,7 +239,7 @@ def main():
         return stem, lines, ok
 
     disagreed = []
-    workers = min(len(fixtures), (os.cpu_count() or 4))
+    workers = min(len(fixtures), 16)
     with futures.ThreadPoolExecutor(max_workers=workers) as pool:
         # Reported in fixture order however they finish, so a run is comparable
         # with the one before it.

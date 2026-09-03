@@ -47,9 +47,17 @@ SLICES = {
     'core': 'package:flutter/src/foundation,package:flutter/src/painting,'
             'dart:ui',
     # Adds the widget layer, where the closures and the mixins are.
+    #
+    # `rendering` is in it because leaving it out was measured and was a
+    # mistake: `RenderObject` was the most-wanted missing name in the slice,
+    # 383 times, and every one of those was the slice's own boundary rather
+    # than anything about the translation. A slice that cuts through a layer
+    # reports the cut.
     'widgets': 'package:flutter/src/foundation,package:flutter/src/painting,'
                'package:flutter/src/widgets,package:flutter/src/animation,'
-               'package:flutter/src/scheduler,dart:ui',
+               'package:flutter/src/scheduler,package:flutter/src/rendering,'
+               'package:flutter/src/gestures,package:flutter/src/semantics,'
+               'package:flutter/src/services,dart:ui',
 }
 
 sys.path.insert(0, HERE)
