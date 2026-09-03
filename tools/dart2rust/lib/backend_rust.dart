@@ -944,7 +944,13 @@ class RustBackend {
             _failing.containsKey(snake(name))
         ? '?'
         : '';
-    return '$receiver.${snake(name)}(${args.map(expr).join(', ')})$suffix';
+    // `_identifier`, not `snake`: an *operator* called as a method -- `~x` is
+    // `x.~()` in Kernel -- has no letters for `snake` to keep, and it came out
+    // as `x._()`, which does not parse and stopped the whole crate at the
+    // lexer. `_identifier` gives the operator the same name its definition
+    // got, and refuses the ones with no Rust name at all.
+    return '$receiver.${_identifier(name)}'
+        '(${args.map(expr).join(', ')})$suffix';
   }
 
   /// `Alignment { x: -1.0, y: -1.0 }`.

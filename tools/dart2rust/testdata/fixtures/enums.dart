@@ -49,13 +49,25 @@ class Layout {
 /// The value is a constant *of* the variant, so the Rust is a `match` in a
 /// getter -- which is also what makes it free to read.
 enum Tristate {
-  none(0),
-  isTrue(1),
-  isFalse(2);
+  none(0, 'none'),
+  isTrue(1, 'yes'),
+  isFalse(2, 'no'),
+  quoted(3, 'a "quoted" name');
 
-  const Tristate(this.value);
+  const Tristate(this.value, this.label);
 
   final int value;
+
+  /// A **string** the variant carries.
+  ///
+  /// The two front ends escape these differently unless something holds them
+  /// together. The Kernel side once replaced the *empty* string with a
+  /// backslash instead of replacing a backslash, which puts one before every
+  /// character, and a variant named `monochrome` came out with a backslash
+  /// between each letter -- which stops the whole crate at the lexer, not at a
+  /// type error. No fixture had a variant carrying a string, so nothing caught
+  /// it. One does now, quotes included.
+  final String label;
 
   bool get isSet {
     return value > 0;

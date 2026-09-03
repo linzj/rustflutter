@@ -1119,6 +1119,11 @@ mod tests {
         assert!(!Tristate::None.is_set());
         assert!(Tristate::IsTrue.is_set());
         assert_eq!(UsesTristate::new().weigh(Tristate::IsFalse), 20);
+        // A variant carrying a *string*, quotes and all. The Kernel front end
+        // once escaped these by replacing the empty string, which put a
+        // backslash before every character and stopped the crate at the lexer.
+        assert_eq!(Tristate::IsTrue.label(), "yes");
+        assert_eq!(Tristate::Quoted.label(), "a \"quoted\" name");
     }
 
     /// Drives a future to completion, for the async fixture.

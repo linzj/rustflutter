@@ -83,6 +83,7 @@ pub enum Tristate {
     None,
     IsTrue,
     IsFalse,
+    Quoted,
 }
 
 impl Tristate {
@@ -91,6 +92,16 @@ impl Tristate {
             Tristate::None => 0,
             Tristate::IsTrue => 1,
             Tristate::IsFalse => 2,
+            Tristate::Quoted => 3,
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Tristate::None => "none".to_string(),
+            Tristate::IsTrue => "yes".to_string(),
+            Tristate::IsFalse => "no".to_string(),
+            Tristate::Quoted => "a \"quoted\" name".to_string(),
         }
     }
 

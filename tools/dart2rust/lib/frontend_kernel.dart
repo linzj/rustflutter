@@ -2052,8 +2052,14 @@ class _EnumConstantFinder extends RecursiveVisitor {
     IntConstant(:final value) => '$value',
     DoubleConstant(:final value) => '$value',
     BoolConstant(:final value) => '$value',
+    // `replaceAll(r'\', r'\\')`. It was written once as `replaceAll(r'', ..)`
+    // -- replacing the *empty* string, which inserts a backslash before every
+    // character -- and `Variant.monochrome` came out as `"\m\o\n\o..."`, which
+    // stops the whole crate at the lexer. The analyzer side had it right, so
+    // the two front ends disagreed and no fixture noticed, because no fixture
+    // had an enum variant carrying a string. One does now.
     StringConstant(:final value) =>
-      '"${value.replaceAll(r'', r'\').replaceAll('"', r'\"')}".to_string()',
+      '"${value.replaceAll(r'\', r'\\').replaceAll('"', r'\"')}".to_string()',
     _ => null,
   };
 
