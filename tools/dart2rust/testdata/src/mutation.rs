@@ -5,12 +5,12 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Counter {
-    pub value: f32,
-    pub step: f32,
+    pub value: f64,
+    pub step: f64,
 }
 
 impl Counter {
-    pub fn new(value: f32, step: f32) -> Self {
+    pub fn new(value: f64, step: f64) -> Self {
         Self {
             value: value,
             step: step,
@@ -23,7 +23,7 @@ impl Counter {
     }
 
     /// Reads only: stays `&self`.
-    pub fn doubled(&self) -> f32 {
+    pub fn doubled(&self) -> f64 {
         (self.value * 2.0)
     }
 
@@ -41,12 +41,12 @@ impl Counter {
     }
 
     /// Calls only a non-mutating method, so it stays `&self`.
-    pub fn quiet(&self) -> f32 {
+    pub fn quiet(&self) -> f64 {
         (self.doubled() + 1.0)
     }
 
     /// A compound write.
-    pub fn scale(&mut self, by: f32) -> () {
+    pub fn scale(&mut self, by: f64) -> () {
         self.value = (self.value * by);
     }
 }

@@ -13,13 +13,25 @@ import 'ir.dart';
 
 /// Dart's primitives, in the spelling this project's crate uses.
 ///
-/// `double` is `f32`, not `f64`: the hand port measures in `f32` throughout
-/// because that is what the engine's geometry takes, and a translated value
-/// type has to be able to sit beside one. This is the first place the backend
-/// is opinionated about its target rather than neutral, and it is deliberate --
-/// a compiler emitting `f64` here would produce code that cannot be called.
+/// `double` is `f64`, and the note that used to stand here said `f32`.
+///
+/// The old reason was that the hand port measures in `f32` because that is
+/// what the engine's geometry takes, so a translated value type has to sit
+/// beside one. That is a fact about the *hand port*, and it was allowed to
+/// decide what a `double` is -- which is not a choice a translator gets to
+/// make. Dart's `double` is IEEE-754 double precision; the language says so.
+/// Where a translated value has to meet the engine's `f32`, the cast belongs
+/// at that boundary, not in the meaning of the type.
 const _primitives = {
-  'double': 'f32',
+  // `f64`, not `f32`. Dart's `double` is IEEE-754 **double** precision -- the
+  // language specifies it -- and this compiler mapped it to `f32` from its
+  // first round to its eighty-eighth. Nothing caught it: every fixture value
+  // is exactly representable in both, so the tests passed, the two front ends
+  // agreed, and the output compiled. It was wrong the whole time, in the way
+  // that matters least until it matters completely: 0.1 + 0.2 is a different
+  // number in the two widths, and every layout arithmetic in Flutter is
+  // doubles.
+  'double': 'f64',
   'int': 'i64',
   // Dart's `num` is the supertype of `int` and `double`, and Rust has no such
   // thing. `f32` is the choice that keeps arithmetic working and matches what
@@ -31,7 +43,7 @@ const _primitives = {
   // not survive the round trip, and a `num` used as an index needs a cast that
   // an `i64` would not. Upstream's `num`s are sizes, offsets and factors, so
   // neither has come up -- but this is where to look when one does.
-  'num': 'f32',
+  'num': 'f64',
   'bool': 'bool',
   'String': 'String',
   'void': '()',
@@ -309,6 +321,16 @@ class RustBackend {
           'std::collections::HashMap<${type(t.arguments[0])}, '
           '${type(t.arguments[1])}>';
       return t.nullable ? 'Option<$map>' : map;
+    }
+    // `dart:collection`'s internal classes as *types*, not just as
+    // constructors. Round 77 mapped `_Set()` and left `_GrowableList<Color>`
+    // standing in a `let`, which is the same name in the other position.
+    final internal = _collections[t.name];
+    if (internal != null) {
+      final spelled = t.arguments.isEmpty
+          ? internal
+          : '$internal<${t.arguments.map((a) => type(a)).join(', ')}>';
+      return t.nullable ? 'Option<$spelled>' : spelled;
     }
     // A bare `List` or `Future` -- Dart's, with no argument written -- holds
     // anything, which here is the prelude's `Object`. Without this the name
@@ -712,7 +734,23 @@ class RustBackend {
         'Future.$name(..)',
       );
     }
-    if (owner == 'List' && _listStatics.contains(name)) {
+    // `int.parse` and `double.parse`. Dart's throw on bad input and its
+    // `tryParse` returns null, which is `ok()`; `unwrap()` keeps the throw
+    // loud rather than turning it into a zero.
+    if (owner == 'int' || owner == 'double') {
+      final rust = owner == 'int' ? 'i64' : 'f64';
+      if (name == 'parse' && args.length == 1) {
+        return '${expr(args.single)}.parse::<$rust>().unwrap()';
+      }
+      if (name == 'tryParse' && args.length == 1) {
+        return '${expr(args.single)}.parse::<$rust>().ok()';
+      }
+      throw Unsupported('`$owner.$name`', '$owner.$name(..)');
+    }
+    // The runtime's own list classes reached as statics, the way
+    // `_GrowableList.filled` is. Same names as the constructors, same answer.
+    if ((_collections[owner] == 'Vec' || owner == 'List') &&
+        _listStatics.contains(name)) {
       if (name == 'generate' && args.length == 2) {
         return '(0..${expr(args[0])}).map(${expr(args[1])}).collect::<Vec<_>>()';
       }
@@ -722,9 +760,10 @@ class RustBackend {
       if ((name == 'from' || name == 'of') && args.length == 1) {
         return '${expr(args[0])}.clone()';
       }
+      if (name == 'empty' && args.isEmpty) return 'Vec::new()';
       throw Unsupported(
-        '`List.$name` with ${args.length} arguments',
-        'List.$name(..)',
+        '`$owner.$name` with ${args.length} arguments',
+        '$owner.$name(..)',
       );
     }
     if (owner == null) {
@@ -739,6 +778,15 @@ class RustBackend {
         );
       }
       return '${snake(name)}(${args.map(expr).join(', ')})';
+    }
+    // An **unnamed factory** is a `Procedure` whose name is the empty string,
+    // and Kernel calls it like a static: `RegExp('..')` arrives as
+    // `_staticCall('RegExp', '', ..)`. Its Rust name is the one every unnamed
+    // constructor gets. Without this it reached the operator table and said
+    // "operator `` has no Rust name" -- 367 times, naming neither the member
+    // nor where it came from.
+    if (name.isEmpty) {
+      return '$owner::${_ctorName(null)}(${args.map(expr).join(', ')})';
     }
     final target = library[owner];
     if (target != null &&
@@ -945,7 +993,7 @@ class RustBackend {
     // with an `int` i came out as `total + i`, which does not compile in Rust
     // and does in Dart. `as f32` is right for both: on an f32 it is the no-op
     // the old rule assumed.
-    if (name == 'toDouble' && args.isEmpty) return '($receiver as f32)';
+    if (name == 'toDouble' && args.isEmpty) return '($receiver as f64)';
     // A call to a method of this class that can fail carries the failure
     // outward with `?`. That is the propagation the measurement counted, and
     // the caller's own signature was widened by the same fixpoint, so the two
@@ -1699,7 +1747,7 @@ class RustBackend {
   static String _literalType(String literal) {
     if (literal.endsWith('.to_string()')) return 'String';
     if (literal == 'true' || literal == 'false') return 'bool';
-    return literal.contains('.') ? 'f32' : 'i64';
+    return literal.contains('.') ? 'f64' : 'i64';
   }
 
   /// An abstract class becomes a trait.
@@ -3151,6 +3199,10 @@ class RustBackend {
     '<<' => 'shl',
     '>>' => 'shr',
     '>>>' => 'ushr',
+    // The name is quoted *and* described: an empty one said
+    // "operator `` has no Rust name", 367 times, which names neither the
+    // operator nor where it came from.
+    '' => throw Unsupported('a member with no name', '<empty>'),
     _ => throw Unsupported('operator `$op` has no Rust name', op),
   };
 

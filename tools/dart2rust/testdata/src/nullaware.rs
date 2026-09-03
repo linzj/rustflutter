@@ -5,19 +5,19 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Leaf {
-    pub size: f32,
+    pub size: f64,
 }
 
 impl Leaf {
-    pub const fn new(size: f32) -> Self {
+    pub const fn new(size: f64) -> Self {
         Self { size: size }
     }
 
-    pub fn doubled(&self) -> f32 {
+    pub fn doubled(&self) -> f64 {
         (self.size * 2.0)
     }
 
-    pub fn boom(&self) -> f32 {
+    pub fn boom(&self) -> f64 {
         debug_assert!(false, "the body of ?. was evaluated");
         0.0
     }
@@ -39,23 +39,23 @@ impl Branch {
     }
 
     /// A field read through `?.`.
-    pub fn leaf_size(&self) -> Option<f32> {
+    pub fn leaf_size(&self) -> Option<f64> {
         self.leaf.map(|it| it.size)
     }
 
     /// A method call through `?.`.
-    pub fn leaf_doubled(&self) -> Option<f32> {
+    pub fn leaf_doubled(&self) -> Option<f64> {
         self.leaf.map(|it| it.doubled())
     }
 
     /// The body must not run when the receiver is null.
-    pub fn leaf_boom(&self) -> Option<f32> {
+    pub fn leaf_boom(&self) -> Option<f64> {
         self.leaf.map(|it| it.boom())
     }
 
     /// `?.` beside `??`, so the two lowerings are not confused with each other:
     /// one has null in the then, the other has the temporary in the else.
-    pub fn size_or(&self, fallback: f32) -> f32 {
+    pub fn size_or(&self, fallback: f64) -> f64 {
         self.leaf.map(|it| it.size).unwrap_or_else(|| fallback)
     }
 }

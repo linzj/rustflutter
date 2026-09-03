@@ -13,18 +13,18 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spacing {
-    pub amount: f32,
+    pub amount: f64,
 }
 
 impl Spacing {
-    pub(crate) const fn new_(amount: f32) -> Self {
+    pub(crate) const fn new_(amount: f64) -> Self {
         Self { amount: amount }
     }
 
     pub const TIGHT: Spacing = Spacing { amount: 3.0 };
     pub const WIDE: Spacing = Spacing { amount: 17.0 };
 
-    pub fn twice(&self) -> f32 {
+    pub fn twice(&self) -> f64 {
         (self.amount * 2.0)
     }
 }
@@ -36,12 +36,12 @@ impl Spacing {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InsetBase {
-    pub(crate) _h: f32,
-    pub(crate) _v: f32,
+    pub(crate) _h: f64,
+    pub(crate) _v: f64,
 }
 
 impl InsetBase {
-    pub const fn new(_h: f32, _v: f32) -> Self {
+    pub const fn new(_h: f64, _v: f64) -> Self {
         Self { _h: _h, _v: _v }
     }
 }
@@ -53,19 +53,19 @@ impl InsetBase {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Inset {
-    pub(crate) _h: f32,
-    pub(crate) _v: f32,
+    pub(crate) _h: f64,
+    pub(crate) _v: f64,
 }
 
 impl Inset {
-    pub const fn new(h: f32, v: f32) -> Self {
+    pub const fn new(h: f64, v: f64) -> Self {
         Self { _h: h, _v: v }
     }
 
     pub const SMALL: Inset = Inset { _h: 5.0, _v: 7.0 };
     pub const LARGE: Inset = Inset { _h: 23.0, _v: 29.0 };
 
-    pub fn span(&self) -> f32 {
+    pub fn span(&self) -> f64 {
         (self._h + self._v)
     }
 }

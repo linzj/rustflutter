@@ -5,33 +5,33 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Asyncs {
-    pub factor: f32,
+    pub factor: f64,
 }
 
 impl Asyncs {
-    pub const fn new(factor: f32) -> Self {
+    pub const fn new(factor: f64) -> Self {
         Self { factor: factor }
     }
 
-    pub async fn scaled(&self, x: f32) -> f32 {
+    pub async fn scaled(&self, x: f64) -> f64 {
         (x * self.factor)
     }
 
     /// Awaits twice, so the two calls cannot be folded into one.
-    pub async fn twice(&self, x: f32) -> f32 {
-        let once: f32 = self.scaled(x).await;
+    pub async fn twice(&self, x: f64) -> f64 {
+        let once: f64 = self.scaled(x).await;
         self.scaled(once).await
     }
 
     /// An `await` in the middle of a body, not in the return.
-    pub async fn plus(&self, x: f32, y: f32) -> f32 {
-        let got: f32 = self.scaled(x).await;
+    pub async fn plus(&self, x: f64, y: f64) -> f64 {
+        let got: f64 = self.scaled(x).await;
         (got + y)
     }
 
     /// Returns nothing: `Future<void>` becomes a Rust `async fn` with no return
     /// type at all.
-    pub async fn ignore(&self, x: f32) -> () {
+    pub async fn ignore(&self, x: f64) -> () {
         self.scaled(x).await;
     }
 }

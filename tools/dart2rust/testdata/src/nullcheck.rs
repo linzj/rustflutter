@@ -5,12 +5,12 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NullCheck {
-    pub maybe: Option<f32>,
-    pub other: Option<f32>,
+    pub maybe: Option<f64>,
+    pub other: Option<f64>,
 }
 
 impl NullCheck {
-    pub const fn new(maybe: Option<f32>, other: Option<f32>) -> Self {
+    pub const fn new(maybe: Option<f64>, other: Option<f64>) -> Self {
         Self {
             maybe: maybe,
             other: other,
@@ -18,22 +18,22 @@ impl NullCheck {
     }
 
     /// The plain case.
-    pub fn doubled(&self) -> f32 {
+    pub fn doubled(&self) -> f64 {
         (self.maybe.unwrap() * 2.0)
     }
 
     /// Two of them in one expression, so an implementation that unwrapped only
     /// the first would still be caught.
-    pub fn summed(&self) -> f32 {
+    pub fn summed(&self) -> f64 {
         (self.maybe.unwrap() + self.other.unwrap())
     }
 
     /// `!` on the *result* of something, not on a field.
-    pub fn via_call(&self) -> f32 {
+    pub fn via_call(&self) -> f64 {
         (self.pick(true).unwrap() + self.pick(false).unwrap())
     }
 
-    pub fn pick(&self, first: bool) -> Option<f32> {
+    pub fn pick(&self, first: bool) -> Option<f64> {
         if first {
             return self.maybe;
         }
@@ -42,7 +42,7 @@ impl NullCheck {
 
     /// A null-aware fallback beside a `!`, so the two are not confused: `??`
     /// supplies a default, `!` insists there is no need for one.
-    pub fn with_fallback(&self, fallback: f32) -> f32 {
+    pub fn with_fallback(&self, fallback: f64) -> f64 {
         (self.other.unwrap_or_else(|| fallback) + self.maybe.unwrap())
     }
 }

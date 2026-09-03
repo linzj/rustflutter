@@ -626,7 +626,7 @@ mod tests {
         // dyn dispatch found the trait default. 200.0, not 201.0.
         let shapes: Vec<Box<dyn Shape>> =
             vec![Box::new(Doubled::new()), Box::new(Untouched::new())];
-        let areas: Vec<f32> = shapes.iter().map(|s| s.area(1.0)).collect();
+        let areas: Vec<f64> = shapes.iter().map(|s| s.area(1.0)).collect();
         assert_eq!(areas, vec![101.0, 100.0]);
     }
 
@@ -1646,7 +1646,7 @@ mod tests {
 
     #[test]
     fn a_class_with_two_type_parameters() {
-        let p = Pair::<i64, f32>::new(3, 4.5);
+        let p = Pair::<i64, f64>::new(3, 4.5);
         assert_eq!(p.first, 3);
         assert_eq!(p.second, 4.5);
         assert_eq!(Boxes::new().made(), p);

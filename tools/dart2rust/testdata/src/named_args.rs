@@ -5,17 +5,17 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NamedArgs {
-    pub a: f32,
-    pub b: f32,
-    pub c: f32,
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
 }
 
 impl NamedArgs {
-    pub const fn new(a: f32, b: f32, c: f32) -> Self {
+    pub const fn new(a: f64, b: f64, c: f64) -> Self {
         Self { a: a, b: b, c: c }
     }
 
-    pub fn weigh(&self, first: f32, second: f32, third: f32) -> f32 {
+    pub fn weigh(&self, first: f64, second: f64, third: f64) -> f64 {
         (((self.a * first) + (self.b * second)) + (self.c * third))
     }
 
@@ -24,18 +24,18 @@ impl NamedArgs {
     /// Correct: first=1, second=10, third=100.
     /// Call-site order would give first=100, second=1, third=10 -- a different
     /// number, which is the point.
-    pub fn out_of_order(&self) -> f32 {
+    pub fn out_of_order(&self) -> f64 {
         self.weigh(1.0, 10.0, 100.0)
     }
 
     /// `second` is omitted and must fall back to its declared default of 2.0,
     /// not to zero and not to the next argument along.
-    pub fn with_omission(&self) -> f32 {
+    pub fn with_omission(&self) -> f64 {
         self.weigh(1.0, 2.0, 1.0)
     }
 
     /// All defaults: 1, 2, 4.
-    pub fn all_defaults(&self) -> f32 {
+    pub fn all_defaults(&self) -> f64 {
         self.weigh(1.0, 2.0, 4.0)
     }
 }

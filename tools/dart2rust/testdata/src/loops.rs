@@ -25,11 +25,11 @@ impl Ladder {
     }
 
     /// A plain counting loop.
-    pub fn climbed(&self) -> f32 {
-        let mut total: f32 = 0.0;
+    pub fn climbed(&self) -> f64 {
+        let mut total: f64 = 0.0;
         let mut i: i64 = 0;
         while (i < self.steps) {
-            total = (total + (i as f32));
+            total = (total + (i as f64));
             i = (i + 1);
         }
         total
@@ -38,19 +38,19 @@ impl Ladder {
     /// A `while` with the same work, so the two lowerings can be compared: a
     /// `for` is a block holding the declaration with the update at the end of the
     /// body, which is exactly this.
-    pub fn climbed_the_long_way(&self) -> f32 {
-        let mut total: f32 = 0.0;
+    pub fn climbed_the_long_way(&self) -> f64 {
+        let mut total: f64 = 0.0;
         let mut i: i64 = 0;
         while (i < self.steps) {
-            total = (total + (i as f32));
+            total = (total + (i as f64));
             i = (i + 1);
         }
         total
     }
 
     /// Two updates, and a condition that stops before the declaration would.
-    pub fn paired(&self) -> f32 {
-        let mut total: f32 = 0.0;
+    pub fn paired(&self) -> f64 {
+        let mut total: f64 = 0.0;
         let mut i: i64 = 0;
         let j: i64 = 10;
         while (i < j) {

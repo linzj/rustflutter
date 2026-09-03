@@ -5,32 +5,32 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Asserts {
-    pub value: f32,
+    pub value: f64,
 }
 
 impl Asserts {
     /// The constructor's own check, from the initialiser list.
-    pub fn new(value: f32) -> Self {
+    pub fn new(value: f64) -> Self {
         debug_assert!((value >= 0.0), "value must not be negative");
         Self { value: value }
     }
 
     /// A check in a body, with a message.
-    pub fn halved(&self) -> f32 {
+    pub fn halved(&self) -> f64 {
         debug_assert!((self.value > 0.0), "halving zero is not useful");
         (self.value / 2.0)
     }
 
     /// A check whose message is an interpolation, which is not translated -- the
     /// condition is the contract, the message is diagnostics.
-    pub fn doubled(&self) -> f32 {
+    pub fn doubled(&self) -> f64 {
         // assert message, not translated: 'value $value is too large to double'
         debug_assert!((self.value < 1000.0));
         (self.value * 2.0)
     }
 
     /// No message at all.
-    pub fn squared(&self) -> f32 {
+    pub fn squared(&self) -> f64 {
         debug_assert!((self.value >= 0.0));
         (self.value * self.value)
     }

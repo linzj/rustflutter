@@ -5,36 +5,36 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Temperature {
-    pub(crate) _celsius: f32,
+    pub(crate) _celsius: f64,
 }
 
 impl Temperature {
-    pub fn new(_celsius: f32) -> Self {
+    pub fn new(_celsius: f64) -> Self {
         Self { _celsius: _celsius }
     }
 
     /// Reads only. Must stay `&self`.
-    pub fn celsius(&self) -> f32 {
+    pub fn celsius(&self) -> f64 {
         self._celsius
     }
 
     /// Writes. Must become `set_celsius(&mut self, ..)`.
-    pub fn set_celsius(&mut self, value: f32) -> () {
+    pub fn set_celsius(&mut self, value: f64) -> () {
         self._celsius = value;
     }
 
     /// A setter with real logic, not a plain field write -- which is why a setter
     /// cannot be translated as an assignment.
-    pub fn set_fahrenheit(&mut self, value: f32) -> () {
+    pub fn set_fahrenheit(&mut self, value: f64) -> () {
         self._celsius = ((value - 32.0) / 1.8);
     }
 
-    pub fn fahrenheit(&self) -> f32 {
+    pub fn fahrenheit(&self) -> f64 {
         ((self._celsius * 1.8) + 32.0)
     }
 
     /// Assigns through this object's own setter. Mutating by contagion.
-    pub fn warm_by(&mut self, degrees: f32) -> () {
+    pub fn warm_by(&mut self, degrees: f64) -> () {
         self.set_celsius((self.celsius() + degrees));
     }
 
@@ -45,7 +45,7 @@ impl Temperature {
     }
 
     /// Reads through both getters. Stays `&self`.
-    pub fn difference(&self) -> f32 {
+    pub fn difference(&self) -> f64 {
         (self.fahrenheit() - self.celsius())
     }
 }

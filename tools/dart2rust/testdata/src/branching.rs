@@ -19,12 +19,12 @@ pub enum Corner {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
-    pub width: f32,
-    pub height: f32,
+    pub width: f64,
+    pub height: f64,
 }
 
 impl Placement {
-    pub const fn new(width: f32, height: f32) -> Self {
+    pub const fn new(width: f64, height: f64) -> Self {
         Self {
             width: width,
             height: height,
@@ -32,7 +32,7 @@ impl Placement {
     }
 
     /// Exhaustive, no default -- which Rust checks and Dart does not.
-    pub fn offset_x(&self, corner: Corner) -> f32 {
+    pub fn offset_x(&self, corner: Corner) -> f64 {
         match corner {
             Corner::TopLeft => {
                 return 0.0;
@@ -50,8 +50,8 @@ impl Placement {
     }
 
     /// Two values on one arm, a default, and a `break` at the end of each case.
-    pub fn depth(&self, corner: Corner) -> f32 {
-        let mut result: f32 = 0.0;
+    pub fn depth(&self, corner: Corner) -> f64 {
+        let mut result: f64 = 0.0;
         match corner {
             Corner::TopLeft | Corner::TopRight => {
                 result = 3.0;
@@ -69,8 +69,8 @@ impl Placement {
     /// `max` and `clamp`, which Rust spells the same way for floats. `max` is
     /// one spelling for integers too, since `f32::max` is inherent and `Ord::max`
     /// covers the rest -- 372 calls upstream.
-    pub fn bounded(&self, value: f32) -> f32 {
-        (value.clamp(self.width, self.height) as f32).max(1.0)
+    pub fn bounded(&self, value: f64) -> f64 {
+        (value.clamp(self.width, self.height) as f64).max(1.0)
     }
 
     /// A switch on a **string**. Rust's `match` takes patterns, and
@@ -79,7 +79,7 @@ impl Placement {
     ///
     /// The carriage return is here on purpose: written raw into a Rust literal
     /// it is a hard error, and upstream has 108 of them.
-    pub fn by_name(&self, name: String) -> f32 {
+    pub fn by_name(&self, name: String) -> f64 {
         if name == "wide".to_string() {
             return 7.0;
         } else if name == "narrow".to_string() || name == "thin".to_string() {

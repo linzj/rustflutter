@@ -797,13 +797,13 @@ impl ByteData {
         self.bytes[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
     }
 
-    pub fn get_float32(&self, at: i64) -> f32 {
-        f32::from_le_bytes(self.four(at, 4)[..4].try_into().unwrap())
+    pub fn get_float32(&self, at: i64) -> f64 {
+        f32::from_le_bytes(self.four(at, 4)[..4].try_into().unwrap()) as f64
     }
 
-    pub fn set_float32(&mut self, at: i64, value: f32) {
+    pub fn set_float32(&mut self, at: i64, value: f64) {
         let at = at as usize;
-        self.bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        self.bytes[at..at + 4].copy_from_slice(&(value as f32).to_le_bytes());
     }
 
     pub fn get_float64(&self, at: i64) -> f64 {

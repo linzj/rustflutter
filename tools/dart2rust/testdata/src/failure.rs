@@ -7,16 +7,16 @@ use crate::RangeError;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Bounds {
-    pub limit: f32,
+    pub limit: f64,
 }
 
 impl Bounds {
-    pub const fn new(limit: f32) -> Self {
+    pub const fn new(limit: f64) -> Self {
         Self { limit: limit }
     }
 
     /// Throws directly. Its Rust signature becomes `Result<f32, RangeError>`.
-    pub fn checked(&self, value: f32) -> Result<f32, RangeError> {
+    pub fn checked(&self, value: f64) -> Result<f64, RangeError> {
         if (value > self.limit) {
             return Err(RangeError::new("over the limit".to_string()));
         }
@@ -25,18 +25,18 @@ impl Bounds {
 
     /// Calls one that can fail, so the failure spreads here. Nothing in the Dart
     /// says so -- it is computed.
-    pub fn doubled(&self, value: f32) -> Result<f32, RangeError> {
+    pub fn doubled(&self, value: f64) -> Result<f64, RangeError> {
         Ok((self.checked(value)? * 2.0))
     }
 
     /// Two hops. One pass over the call graph would find `doubled` and miss this,
     /// the same way it did for `&mut self` in round twelve.
-    pub fn quadrupled(&self, value: f32) -> Result<f32, RangeError> {
+    pub fn quadrupled(&self, value: f64) -> Result<f64, RangeError> {
         Ok((self.doubled(value)? * 2.0))
     }
 
     /// Cannot fail, and must not be given a `Result` it does not need.
-    pub fn halved(&self, value: f32) -> f32 {
+    pub fn halved(&self, value: f64) -> f64 {
         (value / 2.0)
     }
 }

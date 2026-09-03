@@ -9,54 +9,54 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Closures {
-    pub factor: f32,
+    pub factor: f64,
 }
 
 impl Closures {
-    pub const fn new(factor: f32) -> Self {
+    pub const fn new(factor: f64) -> Self {
         Self { factor: factor }
     }
 
     /// A static method rather than a top-level function: top-level functions are
     /// not translated yet (964 refusals of their own), and a fixture that needs
     /// an untranslated construct tests nothing.
-    pub fn apply_twice(f: impl Fn(f32) -> f32, x: f32) -> f32 {
+    pub fn apply_twice(f: impl Fn(f64) -> f64, x: f64) -> f64 {
         (f)((f)(x))
     }
 
     /// Captures nothing: a plain function in Rust terms.
-    pub fn doubled(&self, x: f32) -> f32 {
-        Closures::apply_twice(|v: f32| (v + 1.0), x)
+    pub fn doubled(&self, x: f64) -> f64 {
+        Closures::apply_twice(|v: f64| (v + 1.0), x)
     }
 
     /// Reads an outer local. Rust borrows it; nothing has to be said.
-    pub fn scaled_by(&self, amount: f32, x: f32) -> f32 {
-        Closures::apply_twice(|v: f32| (v * amount), x)
+    pub fn scaled_by(&self, amount: f64, x: f64) -> f64 {
+        Closures::apply_twice(|v: f64| (v * amount), x)
     }
 
     /// Two captured locals, so pairing them wrongly changes the answer.
-    pub fn blend(&self, a: f32, b: f32, x: f32) -> f32 {
-        Closures::apply_twice(|v: f32| ((v * a) + b), x)
+    pub fn blend(&self, a: f64, b: f64, x: f64) -> f64 {
+        Closures::apply_twice(|v: f64| ((v * a) + b), x)
     }
 
     /// A two-parameter closure whose arguments are **not** interchangeable: with
     /// one parameter, reversing the list is a no-op and a mutation that shuffles
     /// them survives. Round twenty-one learned the same thing about `super`.
-    pub fn combine(f: impl Fn(f32, f32) -> f32) -> f32 {
+    pub fn combine(f: impl Fn(f64, f64) -> f64) -> f64 {
         (f)(10.0, 3.0)
     }
 
-    pub fn subtracted(&self) -> f32 {
-        Closures::combine(|a: f32, b: f32| (a - b))
+    pub fn subtracted(&self) -> f64 {
+        Closures::combine(|a: f64, b: f64| (a - b))
     }
 
     /// Reads a field of `this` from a closure written as a call argument. The
     /// borrow lasts exactly as long as `applyTwice` does, so this translates.
-    pub fn by_factor(&self, x: f32) -> f32 {
-        Closures::apply_twice(|v: f32| (v * self.factor), x)
+    pub fn by_factor(&self, x: f64) -> f64 {
+        Closures::apply_twice(|v: f64| (v * self.factor), x)
     }
 
-    pub fn scaled(&self, v: f32) -> f32 {
+    pub fn scaled(&self, v: f64) -> f64 {
         (v * self.factor)
     }
 }

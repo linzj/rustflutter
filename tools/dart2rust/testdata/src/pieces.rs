@@ -17,7 +17,7 @@ impl Label {
         }
     }
 
-    pub fn twice(x: f32) -> f32 {
+    pub fn twice(x: f64) -> f64 {
         (x * 2.0)
     }
 
@@ -33,21 +33,21 @@ impl Label {
 
     /// A static method used as a value. Nothing is captured, so none of the
     /// ownership question an instance tear-off raises applies.
-    pub fn doubled(&self, x: f32) -> f32 {
-        let f: Box<dyn Fn(f32) -> f32> = Box::new(Label::twice);
+    pub fn doubled(&self, x: f64) -> f64 {
+        let f: Box<dyn Fn(f64) -> f64> = Box::new(Label::twice);
         (f)(x)
     }
 
     /// A local function, which is a closure bound to a local.
-    pub fn stepped(&self, x: f32) -> f32 {
-        let step = |v: f32| (v + 1.0);
+    pub fn stepped(&self, x: f64) -> f64 {
+        let step = |v: f64| (v + 1.0);
         (step)((step)(x))
     }
 
     /// `total = ..` used for its value, inside the argument of another call.
     /// 7.0 doubled is 14.0, plus the 7.0 the assignment left behind.
-    pub fn running(&self, x: f32) -> f32 {
-        let mut total: f32 = 0.0;
+    pub fn running(&self, x: f64) -> f64 {
+        let mut total: f64 = 0.0;
         (Label::twice({
             let __set = (x + 3.0);
             total = __set;

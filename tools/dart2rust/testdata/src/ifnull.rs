@@ -5,33 +5,33 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IfNull {
-    pub value: Option<f32>,
+    pub value: Option<f64>,
 }
 
 impl IfNull {
-    pub const fn new(value: Option<f32>) -> Self {
+    pub const fn new(value: Option<f64>) -> Self {
         Self { value: value }
     }
 
     /// Throws if it is ever called. Standing in for the calls, allocations and
     /// `throw`s that make up 77% of upstream's right-hand sides.
-    pub fn boom(&self) -> f32 {
+    pub fn boom(&self) -> f64 {
         debug_assert!(false, "the right side of ?? was evaluated");
         0.0
     }
 
     /// A literal on the right: safe to evaluate eagerly, and it reads better.
-    pub fn with_literal(&self) -> f32 {
+    pub fn with_literal(&self) -> f64 {
         self.value.unwrap_or(1.0)
     }
 
     /// A call on the right: must not run when `value` is present.
-    pub fn with_call(&self) -> f32 {
+    pub fn with_call(&self) -> f64 {
         self.value.unwrap_or_else(|| self.boom())
     }
 
     /// Nested, so the inner one has to be restored too.
-    pub fn nested(&self, second: Option<f32>) -> f32 {
+    pub fn nested(&self, second: Option<f64>) -> f64 {
         self.value.or_else(|| second).unwrap_or(2.0)
     }
 }

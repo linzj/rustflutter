@@ -1,8 +1,8 @@
-pub fn halve(v: f32) -> f32 {
+pub fn halve(v: f64) -> f64 {
     (v / 2.0)
 }
 
-pub fn thrice(v: f32) -> f32 {
+pub fn thrice(v: f64) -> f64 {
     (v * 3.0)
 }
 
@@ -13,20 +13,20 @@ pub fn thrice(v: f32) -> f32 {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gauge {
-    pub value: f32,
+    pub value: f64,
 }
 
 impl Gauge {
-    pub const fn new(value: f32) -> Self {
+    pub const fn new(value: f64) -> Self {
         Self { value: value }
     }
 
-    pub fn reduced(&self) -> f32 {
+    pub fn reduced(&self) -> f64 {
         halve(self.value)
     }
 
     /// A top-level function calling another one, and a class calling both.
-    pub fn amplified(&self) -> f32 {
+    pub fn amplified(&self) -> f64 {
         thrice(halve(self.value))
     }
 }

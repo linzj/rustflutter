@@ -3,18 +3,18 @@
 
 /// The body of `Shape.area`, reachable from an
 /// override the way Dart's `super.area` is.
-pub fn shape_super_area<S: Shape + ?Sized>(this_: &S) -> f32 {
+pub fn shape_super_area<S: Shape + ?Sized>(this_: &S) -> f64 {
     (this_.width() * this_.height())
 }
 
 pub trait Shape {
     /// `Shape.width`, which the implementor stores.
-    fn width(&self) -> f32;
+    fn width(&self) -> f64;
 
     /// `Shape.height`, which the implementor stores.
-    fn height(&self) -> f32;
+    fn height(&self) -> f64;
 
-    fn area(&self) -> f32 {
+    fn area(&self) -> f64 {
         shape_super_area(self)
     }
 }
@@ -26,12 +26,12 @@ pub trait Shape {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rectangle {
-    pub width: f32,
-    pub height: f32,
+    pub width: f64,
+    pub height: f64,
 }
 
 impl Rectangle {
-    pub const fn new(w: f32, h: f32) -> Self {
+    pub const fn new(w: f64, h: f64) -> Self {
         Self {
             width: w,
             height: h,
@@ -40,11 +40,11 @@ impl Rectangle {
 }
 
 impl Shape for Rectangle {
-    fn width(&self) -> f32 {
+    fn width(&self) -> f64 {
         self.width
     }
 
-    fn height(&self) -> f32 {
+    fn height(&self) -> f64 {
         self.height
     }
 }
@@ -58,13 +58,13 @@ impl Shape for Rectangle {
 /// expression rather than just a name.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Square {
-    pub width: f32,
-    pub height: f32,
-    pub side: f32,
+    pub width: f64,
+    pub height: f64,
+    pub side: f64,
 }
 
 impl Square {
-    pub const fn new(side: f32) -> Self {
+    pub const fn new(side: f64) -> Self {
         Self {
             width: side,
             height: side,
@@ -74,11 +74,11 @@ impl Square {
 }
 
 impl Shape for Square {
-    fn width(&self) -> f32 {
+    fn width(&self) -> f64 {
         self.width
     }
 
-    fn height(&self) -> f32 {
+    fn height(&self) -> f64 {
         self.height
     }
 }
@@ -91,14 +91,14 @@ impl Shape for Square {
 /// Two levels: `Padded` -> `Square` -> `Shape`. Chains go six deep upstream.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Padded {
-    pub width: f32,
-    pub height: f32,
-    pub side: f32,
-    pub padding: f32,
+    pub width: f64,
+    pub height: f64,
+    pub side: f64,
+    pub padding: f64,
 }
 
 impl Padded {
-    pub const fn new(side: f32, padding: f32) -> Self {
+    pub const fn new(side: f64, padding: f64) -> Self {
         Self {
             width: side,
             height: side,
@@ -107,17 +107,17 @@ impl Padded {
         }
     }
 
-    pub fn padded_area(&self) -> f32 {
+    pub fn padded_area(&self) -> f64 {
         ((self.width + self.padding) * (self.height + self.padding))
     }
 }
 
 impl Shape for Padded {
-    fn width(&self) -> f32 {
+    fn width(&self) -> f64 {
         self.width
     }
 
-    fn height(&self) -> f32 {
+    fn height(&self) -> f64 {
         self.height
     }
 }

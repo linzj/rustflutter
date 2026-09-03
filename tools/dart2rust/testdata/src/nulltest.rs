@@ -5,12 +5,12 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Maybe {
-    pub value: Option<f32>,
-    pub other: Option<f32>,
+    pub value: Option<f64>,
+    pub other: Option<f64>,
 }
 
 impl Maybe {
-    pub const fn new(value: Option<f32>, other: Option<f32>) -> Self {
+    pub const fn new(value: Option<f64>, other: Option<f64>) -> Self {
         Self {
             value: value,
             other: other,
@@ -38,7 +38,7 @@ impl Maybe {
     }
 
     /// A null test guarding a null assertion -- the shape upstream uses most.
-    pub fn resolve(&self, fallback: f32) -> f32 {
+    pub fn resolve(&self, fallback: f64) -> f64 {
         if self.value.is_none() {
             return fallback;
         }

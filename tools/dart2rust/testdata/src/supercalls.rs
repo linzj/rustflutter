@@ -3,16 +3,16 @@
 
 /// The body of `Shape.area`, reachable from an
 /// override the way Dart's `super.area` is.
-pub fn shape_super_area<S: Shape + ?Sized>(this_: &S, scale: f32) -> f32 {
+pub fn shape_super_area<S: Shape + ?Sized>(this_: &S, scale: f64) -> f64 {
     (100.0 * scale)
 }
 
 pub trait Shape {
-    fn perimeter(&self) -> f32;
+    fn perimeter(&self) -> f64;
 
     /// The base's own answer. An override that calls `super.area()` must reach
     /// *this* body.
-    fn area(&self, scale: f32) -> f32 {
+    fn area(&self, scale: f64) -> f64 {
         shape_super_area(self, scale)
     }
 }
@@ -32,21 +32,21 @@ impl Doubled {
 
     /// Adds to whatever the base said. If `super.area` came back here instead,
     /// this would recurse forever rather than return 201.
-    pub fn area(&self, scale: f32) -> f32 {
+    pub fn area(&self, scale: f64) -> f64 {
         (shape_super_area(self, scale) + 1.0)
     }
 
-    pub fn perimeter(&self) -> f32 {
+    pub fn perimeter(&self) -> f64 {
         7.0
     }
 }
 
 impl Shape for Doubled {
-    fn perimeter(&self) -> f32 {
+    fn perimeter(&self) -> f64 {
         Doubled::perimeter(self)
     }
 
-    fn area(&self, scale: f32) -> f32 {
+    fn area(&self, scale: f64) -> f64 {
         Doubled::area(self, scale)
     }
 }
@@ -66,13 +66,13 @@ impl Untouched {
 
     /// Does not override `area`, so it gets the trait's default -- which must be
     /// the same body the base declared.
-    pub fn perimeter(&self) -> f32 {
+    pub fn perimeter(&self) -> f64 {
         3.0
     }
 }
 
 impl Shape for Untouched {
-    fn perimeter(&self) -> f32 {
+    fn perimeter(&self) -> f64 {
         Untouched::perimeter(self)
     }
 }
@@ -96,7 +96,7 @@ pub fn untranslatable_super_describe<S: Untranslatable + ?Sized>(this_: &S) -> S
 }
 
 pub trait Untranslatable {
-    fn size(&self) -> f32;
+    fn size(&self) -> f64;
 
     /// Uses a `for` loop, which is not translated yet, so this method is
     /// refused. It was a cascade until round twenty-three made cascades work --
@@ -127,13 +127,13 @@ impl UsesIt {
         untranslatable_super_describe(self)
     }
 
-    pub fn size(&self) -> f32 {
+    pub fn size(&self) -> f64 {
         5.0
     }
 }
 
 impl Untranslatable for UsesIt {
-    fn size(&self) -> f32 {
+    fn size(&self) -> f64 {
         UsesIt::size(self)
     }
 

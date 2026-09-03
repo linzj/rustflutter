@@ -62,7 +62,7 @@ impl Boxes {
         a
     }
 
-    pub fn made(&self) -> Pair<i64, f32> {
-        Pair::<i64, f32>::new(3, 4.5)
+    pub fn made(&self) -> Pair<i64, f64> {
+        Pair::<i64, f64>::new(3, 4.5)
     }
 }

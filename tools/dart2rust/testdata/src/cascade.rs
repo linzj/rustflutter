@@ -6,9 +6,9 @@
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Paint {
     /// Set at the declaration **and** never by the constructor.
-    pub width: f32,
-    pub alpha: f32,
-    pub blur: f32,
+    pub width: f64,
+    pub alpha: f64,
+    pub blur: f64,
 }
 
 impl Paint {
@@ -20,7 +20,7 @@ impl Paint {
         }
     }
 
-    pub fn widen(&mut self, by: f32) -> () {
+    pub fn widen(&mut self, by: f64) -> () {
         self.width = (self.width + by);
     }
 }
@@ -40,13 +40,13 @@ impl Paint {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tinted {
     /// Both a declaration value and a constructor that overrides it.
-    pub opacity: f32,
+    pub opacity: f64,
     /// Only a declaration value.
-    pub tint: f32,
+    pub tint: f64,
 }
 
 impl Tinted {
-    pub fn new(value: f32) -> Self {
+    pub fn new(value: f64) -> Self {
         Self {
             opacity: value,
             tint: 0.5,

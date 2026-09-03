@@ -5,26 +5,26 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Assignment {
-    pub step: f32,
+    pub step: f64,
 }
 
 impl Assignment {
-    pub const fn new(step: f32) -> Self {
+    pub const fn new(step: f64) -> Self {
         Self { step: step }
     }
 
     /// Plain reassignment. `total` is reassigned, `factor` never is.
-    pub fn accumulate(&self) -> f32 {
-        let mut total: f32 = 0.0;
-        let factor: f32 = 2.0;
+    pub fn accumulate(&self) -> f64 {
+        let mut total: f64 = 0.0;
+        let factor: f64 = 2.0;
         total = (total + (self.step * factor));
         total = (total + self.step);
         total
     }
 
     /// Compound assignment, which Kernel has already expanded to `x = x + y`.
-    pub fn compound(&self) -> f32 {
-        let mut total: f32 = 10.0;
+    pub fn compound(&self) -> f64 {
+        let mut total: f64 = 10.0;
         total = (total + self.step);
         total = (total - 1.0);
         total = (total * 2.0);
@@ -32,8 +32,8 @@ impl Assignment {
     }
 
     /// Assigned in one branch only -- still needs `mut`.
-    pub fn branch(&self, big: bool) -> f32 {
-        let mut value: f32 = 1.0;
+    pub fn branch(&self, big: bool) -> f64 {
+        let mut value: f64 = 1.0;
         if big {
             value = 100.0;
         }
@@ -42,7 +42,7 @@ impl Assignment {
 
     /// A parameter reassigned in the body. Rust spells that `mut start: f32` in
     /// the signature, which is the parameter's own declaration.
-    pub fn shadow(&self, mut start: f32) -> f32 {
+    pub fn shadow(&self, mut start: f64) -> f64 {
         start = (start + 1.0);
         start
     }

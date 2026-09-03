@@ -3,12 +3,12 @@
 
 /// The body of `Measured.base`, reachable from an
 /// override the way Dart's `super.base` is.
-pub fn measured_super_base<S: Measured + ?Sized>(this_: &S) -> f32 {
+pub fn measured_super_base<S: Measured + ?Sized>(this_: &S) -> f64 {
     2.0
 }
 
 pub trait Measured {
-    fn base(&self) -> f32 {
+    fn base(&self) -> f64 {
         measured_super_base(self)
     }
 }
@@ -25,22 +25,22 @@ pub trait Measured {
 
 /// The body of `Scaled.scale`, reachable from an
 /// override the way Dart's `super.scale` is.
-pub fn scaled_super_scale<S: Scaled + ?Sized>(this_: &S) -> f32 {
+pub fn scaled_super_scale<S: Scaled + ?Sized>(this_: &S) -> f64 {
     3.0
 }
 
 /// The body of `Scaled.base`, reachable from an
 /// override the way Dart's `super.base` is.
-pub fn scaled_super_base<S: Scaled + ?Sized>(this_: &S) -> f32 {
+pub fn scaled_super_base<S: Scaled + ?Sized>(this_: &S) -> f64 {
     5.0
 }
 
 pub trait Scaled {
-    fn scale(&self) -> f32 {
+    fn scale(&self) -> f64 {
         scaled_super_scale(self)
     }
 
-    fn base(&self) -> f32 {
+    fn base(&self) -> f64 {
         scaled_super_base(self)
     }
 }
@@ -60,12 +60,12 @@ impl Panel {
 
     /// `base` is declared by the mixin, not by `Measured`. The `extends` clause
     /// says `Measured`, and answering from it would call the wrong body.
-    pub fn from_mixin(&self) -> f32 {
+    pub fn from_mixin(&self) -> f64 {
         scaled_super_base(self)
     }
 
     /// Declared only by the mixin, so there is nothing else it could mean.
-    pub fn from_mixin_only(&self) -> f32 {
+    pub fn from_mixin_only(&self) -> f64 {
         scaled_super_scale(self)
     }
 }

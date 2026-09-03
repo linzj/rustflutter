@@ -7,15 +7,15 @@ use crate::RangeError;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Guarded {
-    pub limit: f32,
+    pub limit: f64,
 }
 
 impl Guarded {
-    pub const fn new(limit: f32) -> Self {
+    pub const fn new(limit: f64) -> Self {
         Self { limit: limit }
     }
 
-    pub fn checked(&self, value: f32) -> Result<f32, RangeError> {
+    pub fn checked(&self, value: f64) -> Result<f64, RangeError> {
         if (value > self.limit) {
             return Err(RangeError::new("over the limit".to_string()));
         }
@@ -24,8 +24,8 @@ impl Guarded {
 
     /// Catches, so this method does **not** return a Result. That is the whole
     /// test: the failure stops here.
-    pub fn recovered(&self, value: f32) -> f32 {
-        let mut result: f32 = 0.0;
+    pub fn recovered(&self, value: f64) -> f64 {
+        let mut result: f64 = 0.0;
         match (|| -> Result<(), RangeError> {
             result = self.checked(value)?;
             Ok(())
@@ -40,8 +40,8 @@ impl Guarded {
 
     /// A catch that binds a stack trace and never reads it. Free, since ignoring
     /// something a Result does not carry costs nothing.
-    pub fn recovered_with_unused_trace(&self, value: f32) -> f32 {
-        let mut result: f32 = 0.0;
+    pub fn recovered_with_unused_trace(&self, value: f64) -> f64 {
+        let mut result: f64 = 0.0;
         match (|| -> Result<(), RangeError> {
             result = self.checked(value)?;
             Ok(())
@@ -57,7 +57,7 @@ impl Guarded {
     /// Does not catch, so the failure keeps travelling and this one does return
     /// a Result. The pair is the point: catching and not catching have to give
     /// different signatures.
-    pub fn uncaught(&self, value: f32) -> Result<f32, RangeError> {
+    pub fn uncaught(&self, value: f64) -> Result<f64, RangeError> {
         Ok((self.checked(value)? + 1.0))
     }
 
@@ -66,8 +66,8 @@ impl Guarded {
     /// on -- returning whatever came after, and compiling while it did it. So the
     /// closure carries the control flow out as a value instead. If it did not,
     /// this would return 0.0 for every input rather than the two below.
-    pub fn returns_from_inside_try(&self, value: f32) -> f32 {
-        match (|| -> Result<Option<f32>, RangeError> {
+    pub fn returns_from_inside_try(&self, value: f64) -> f64 {
+        match (|| -> Result<Option<f64>, RangeError> {
             return Ok(Some(self.checked(value)?));
             #[allow(unreachable_code)]
             Ok(None)
@@ -83,9 +83,9 @@ impl Guarded {
     /// A `return` on only *one* path through the try body. The other path falls
     /// off the end of the closure, which is what `Ok(None)` is for -- without it
     /// this case and the one above cannot be told apart.
-    pub fn returns_on_one_path(&self, value: f32) -> f32 {
-        let mut result: f32 = 0.0;
-        match (|| -> Result<Option<f32>, RangeError> {
+    pub fn returns_on_one_path(&self, value: f64) -> f64 {
+        let mut result: f64 = 0.0;
+        match (|| -> Result<Option<f64>, RangeError> {
             if (value < 0.0) {
                 return Ok(Some((-4.0)));
             }
@@ -112,19 +112,19 @@ impl Guarded {
 /// field that can change and `Guarded` is const.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tally {
-    pub limit: f32,
+    pub limit: f64,
     pub runs: i64,
 }
 
 impl Tally {
-    pub fn new(limit: f32) -> Self {
+    pub fn new(limit: f64) -> Self {
         Self {
             limit: limit,
             runs: 0,
         }
     }
 
-    pub fn checked(&self, value: f32) -> Result<f32, RangeError> {
+    pub fn checked(&self, value: f64) -> Result<f64, RangeError> {
         if (value > self.limit) {
             return Err(RangeError::new("over the limit".to_string()));
         }
@@ -135,8 +135,8 @@ impl Tally {
     /// throw, and threw -- and `runs` has to go up on all three. A finalizer that
     /// ran only on the ordinary path would pass a test that used just one of
     /// them, which is why the test uses all three in sequence.
-    pub fn counted(&mut self, value: f32) -> Result<f32, RangeError> {
-        let __finally = (|| -> Result<Option<Result<f32, RangeError>>, RangeError> {
+    pub fn counted(&mut self, value: f64) -> Result<f64, RangeError> {
+        let __finally = (|| -> Result<Option<Result<f64, RangeError>>, RangeError> {
             if (value < 0.0) {
                 return Ok(Some(Ok((-6.0))));
             }

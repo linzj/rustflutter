@@ -5,13 +5,13 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shade {
-    pub opacity: f32,
+    pub opacity: f64,
 }
 
 impl Shade {
     /// A body that overwrites what the field declaration said. If the body were
     /// dropped this would be 1.0 for every argument.
-    pub fn new(v: f32) -> Self {
+    pub fn new(v: f64) -> Self {
         let mut __new = Self { opacity: 1.0 };
         __new.opacity = (v * 2.0);
         __new
@@ -43,7 +43,7 @@ impl Slot {
     /// needs `&mut self` and nothing else. Through a *parameter* it would need
     /// `&mut` on the parameter and on every call site, including in other files,
     /// so that one is still refused.
-    pub fn fade(&mut self, v: f32) -> () {
+    pub fn fade(&mut self, v: f64) -> () {
         self.tint.opacity = v;
     }
 }
