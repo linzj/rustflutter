@@ -3662,6 +3662,48 @@ trait 声明的是 `copyWith({side})`,类自己声明的是
 
 ---
 
+## 第 75 轮:同一个名字,两个原因
+
+`core` 切片里 `T` 有 8 个,`widgets` 里有 **428**。同一个名字,不是同一个原因。
+
+### 一、`impl` 没有声明它要用的类型参数
+
+    impl _RestorablePrimitiveValue<T> for RestorableNum<T> { }
+
+第一个 `T` 是**使用**,而没有任何东西引入过它。Rust 要的是
+`impl<T> Trait<T> for Foo<T>`。三处漏了(trait impl、运算符的 inherent impl、
+`std::ops` impl),而 struct 自己的 inherent impl 一直是对的
+——**所以它只在大到装得下一个泛型类的切片里才露头**。
+
+E0425 2671 → 2331(`T` 428 → 102)。
+
+### 二、可是错误总数涨了,因为 E0038 从 310 变成 796
+
+    the trait `Element` is not dyn compatible
+      ...because method `visit_ancestor_elements` has generic type parameters
+      fn visit_ancestor_elements(&self, visitor: impl Fn(&dyn Element) -> bool);
+
+**trait 方法带 `impl Fn(..)` 参数,这个 trait 就不能当对象用**,
+而这些 trait 全部是 `dyn` 出现的。796 个错误来自一个方法。
+
+trait 里改成 `&dyn Fn(..)`:借用方式一模一样,trait 保持 dyn 兼容,
+而别处的 `impl Fn` 参数照样接受它。trait 的 **impl** 也必须跟着改,
+否则"impl 声明了 trait 方法没有的类型参数"(E0049)。
+
+**这一涨一落是有意义的**:那 486 个 E0038 一直都在,只是先前被更早的错误挡着。
+改动本身是对的 Rust,数字一时变难看不代表改错了——
+**要看的是最终的形状,不是中间某一步**。
+
+| | 错误 |
+|---|---|
+| `widgets` 切片,开始 | 3552 |
+| 声明 impl 泛型之后 | 3715(E0038 涨到 796) |
+| trait 用 `&dyn Fn` 之后 | 3004(E0038 → **0**) |
+| impl 也跟着改之后 | **2909**(E0049 → 0) |
+| `core` 切片 | 202 → **163** |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3682,8 +3724,9 @@ trait 声明的是 `copyWith({side})`,类自己声明的是
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:换到 `widgets` 切片看。那里 `T` 有 **428** 个,
-比 `core` 的 8 个大两个数量级——同一个名字,多半不是同一个原因。
+**下一轮**:`widgets` 切片 E0425 还有 2331,头部是 `RenderObject` 383
+——那是**切片选得不对**,rendering 不在这一片里。先把切片定义修对,
+再看剩下的形状。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。
