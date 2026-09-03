@@ -291,6 +291,24 @@ pub use closures::Closures;
 mod cascade;
 pub use cascade::{Paint, Painter, Tinted};
 
+/// The prelude's `Isolate`, as far as the fixtures need it.
+///
+/// A Dart `static` is one per isolate and a Rust `static` is one per process,
+/// so the generated statics are wrapped in this and read through two derefs.
+/// The real one, with the argument for its `unsafe`, is in lib/prelude.dart;
+/// this crate is hand-written and does not get the generated prelude.
+pub struct Isolate<T>(pub T);
+
+unsafe impl<T> Sync for Isolate<T> {}
+unsafe impl<T> Send for Isolate<T> {}
+
+impl<T> std::ops::Deref for Isolate<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
 /// dart:core's RangeError, as far as the fixture needs it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RangeError {

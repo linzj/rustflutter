@@ -59,7 +59,8 @@ NOTES = {
 }
 
 # What a generated file may need from the crate root, and how to tell.
-IMPORTS = {'RangeError': 'use crate::RangeError;'}
+IMPORTS = {'RangeError': 'use crate::RangeError;',
+           'Isolate': 'use crate::Isolate;'}
 
 
 def needed_imports(text):
@@ -124,7 +125,7 @@ def main():
         raise SystemExit('nothing to regenerate')
 
     failed = []
-    workers = min(len(stems), (os.cpu_count() or 4))
+    workers = min(len(stems), 16)
     with futures.ThreadPoolExecutor(max_workers=workers) as pool:
         for stem, status in pool.map(
                 lambda s: regenerate(s, config, scratch), stems):

@@ -965,7 +965,9 @@ class RustBackend {
   /// its class, and reading it dereferences the lock.
   String _staticRead(String owner, String name, bool isEnumValue) {
     if (isEnumValue) return '$owner::${variantName(name)}';
-    if (_isLazy(owner, name)) return '(*${_lazyName(owner, name)})';
+    // Two derefs: through the `LazyLock`, then through the `Isolate` that
+    // carries "one per isolate, not one per process".
+    if (_isLazy(owner, name)) return '(**${_lazyName(owner, name)})';
     return '$owner::${screamingSnake(name)}';
   }
 
@@ -2802,27 +2804,16 @@ class RustBackend {
       if (!constant.isLazy) continue;
       _member('${cls.name}.${constant.name}', () {
         final held = type(constant.type);
-        // A Rust `static` is shared by every thread, so what it holds must be
-        // `Sync`. A `dyn` trait object here has no such bound and never will:
-        // `Box<dyn Fn(Image)>` in a static is 94 `E0277`s about being sent
-        // between threads.
-        //
-        // Dart's static is not that thing. It is one *per isolate*, and an
-        // isolate is a thread -- so the faithful Rust is a `thread_local!`,
-        // which every read would have to reach through a closure. That is a
-        // change to every use, not to this line, so it is refused here and
-        // said plainly rather than half-done.
-        if (held.contains('dyn ')) {
-          throw Unsupported(
-            'a mutable static holding `$held`, which is not `Sync`',
-            '${cls.name}.${constant.name}',
-          );
-        }
+        // Wrapped in `Isolate`, which is where "a Dart static is one per
+        // isolate" is written down. A Rust `static` is one per process and so
+        // must hold something `Sync`; `Box<dyn Fn(Image)>` is not, and that
+        // was 94 `E0277`s. See the prelude for what the wrapper's `unsafe`
+        // claims and when it stops being true.
         _doc(constant.doc);
         _line(
           '${_vis(constant.name)}static ${_lazyName(cls.name, constant.name)}: '
-          'std::sync::LazyLock<$held> = '
-          'std::sync::LazyLock::new(|| ${expr(constant.value)});',
+          'std::sync::LazyLock<Isolate<$held>> = '
+          'std::sync::LazyLock::new(|| Isolate(${expr(constant.value)}));',
         );
         _line('');
       });

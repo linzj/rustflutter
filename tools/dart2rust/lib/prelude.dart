@@ -404,6 +404,44 @@ impl DateTime {
     }
 }
 
+/// A value that belongs to one isolate, standing in a Rust `static`.
+///
+/// Dart's `static` is one **per isolate**, and an isolate is a thread. Rust's
+/// `static` is one per *process*, so what it holds must be `Sync` -- and a
+/// `Box<dyn Fn(..)>`, which is what half of Flutter's statics hold, is not and
+/// never will be.
+///
+/// `thread_local!` says the same thing safely, and would be the right answer if
+/// its value could be reached without a closure; it cannot, and
+/// `Box<dyn Fn(..)>` is not `Clone`, so every read would have to be
+/// restructured. This says it instead, and the `unsafe` is carrying exactly
+/// one claim:
+///
+/// **the translated program runs on one thread.**
+///
+/// That is true of a Dart isolate by construction, and it is the thing to
+/// check before running anything translated here: the moment this program
+/// spawns a thread that touches a static, this is unsound. Nothing translated
+/// so far can spawn one -- `Isolate.spawn` and `compute` are not translated --
+/// and if that changes, this is where it breaks.
+pub struct Isolate<T>(pub T);
+
+unsafe impl<T> Sync for Isolate<T> {}
+unsafe impl<T> Send for Isolate<T> {}
+
+impl<T> std::ops::Deref for Isolate<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for Isolate<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 /// Dart's `MapEntry`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MapEntry<K, V> {

@@ -102,7 +102,7 @@ def main():
     compiled = 0
     missing = Counter()
     failed = 0
-    with futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+    with futures.ThreadPoolExecutor(max_workers=min(len(uris), 16)) as pool:
         for uri, ok, names in pool.map(
                 lambda u: examine(args.dill, u, work), uris):
             if ok:
