@@ -1677,6 +1677,13 @@ class RustBackend {
     }
     _indent--;
     _line('}');
+    // A trait holds no storage, but the *class* still had its statics, and in
+    // Rust those are module-level items rather than trait items. The struct
+    // path has emitted them all along and this one had not, so an abstract
+    // class's `static` simply vanished: `NavigatorObserver._navigators` was
+    // read from three places and declared nowhere.
+    _emitConstants();
+    _emitLazyStatics();
     return _out.join('\n') + '\n';
   }
 
@@ -2702,12 +2709,21 @@ class RustBackend {
     final positional = through == null
         ? 0
         : through.params.where((p) => !p.named).length;
+    // And the name to pass is the **caller's**, not the callee's. The
+    // signature being written is the trait's, so `time` is what is in scope;
+    // passing the inherent method's `timeInSeconds` names nothing.
     var at = -1;
     final args = method.params.map((p) {
       if (!p.named) at++;
       if (through == null) return snake(p.name);
       final supplied = p.named ? named!.contains(p.name) : at < positional;
-      if (supplied) return snake(p.name);
+      if (supplied) {
+        return snake(
+          p.named
+              ? p.name
+              : through.params.where((q) => !q.named).elementAt(at).name,
+        );
+      }
       if (p.type.nullable || p.hasDefault) return 'None';
       throw Unsupported(
         'override widens `${method.name}` with `${p.name}`, '
