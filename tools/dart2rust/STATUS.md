@@ -3468,6 +3468,45 @@ analyzer 直接读源码里 `none(0)` 的实参。两边只认四种字面量,
 
 ---
 
+## 第 70 轮:手写的 dart:core,不是翻译的
+
+第 44 轮量过:把 dill 里的 `dart:core` 喂进翻译器,错误从 6608 涨到 16955
+——它的成员是 `external`,翻出来是空 trait。**那个测量成立,但它说的是
+"不能翻译",不是"不能写"。** 一个翻译出来的 `Duration` 是空 trait,
+一个写出来的是六十行算术。
+
+`lib/prelude.dart` 现在装着 `Duration`、`StringBuffer`、`Set`、`StackTrace`、
+`ByteData`、十个 typed-data 别名,和八个错误类。都是真的实现,不是桩子。
+
+几个决定,理由写在代码里:
+
+* **`Duration` 不用 `std::time::Duration`**。后者无符号、按纳秒。
+  上游会相减、会问 `isNegative`,符号必须留着,而 Dart 的每个构造和 getter
+  都是微秒。
+* **`Set` 用 `Vec` backing,不用 `HashSet`**。Dart 往集合里放 `double`、
+  放没有自定义 `hashCode` 的对象;要求 `Hash + Eq` 会拒掉在 Dart 里完全正常的
+  代码。成员判断因此是线性的——**对翻译来说这是对的取舍**,先正确,
+  而且上游留着的集合都很小。
+* **typed-data 用类型别名而不是包装**。一个 Dart typed list 在上游眼里
+  *就是*一个那种元素的 list,别名让后端已经会发的每个 `List` 操作继续可用。
+* **`StackTrace` 是不透明的**。Dart 的是运行时在抛出点捕获的,这里没有运行时;
+  上游拿它做的事是打印和传递,一个如实说明情况的字符串两件事都做得了。
+
+### 数字
+
+| | 错误 | |
+|---|---|---|
+| `core` 切片,加前奏之前 | 456 | |
+| 加了类型之后 | 323 | `ByteData`/`Duration`/`Set`/`StringBuffer`/typed lists 从缺失名单消失 |
+| 加了错误类之后 | **300** | |
+| `widgets` 切片 | 4776 → **3995** | |
+
+缺失名单头部现在是 `Zone` 35、`T` 32、`Future` 24——**async 那一层**,
+第 66 轮量过它只有 106 个函数。以及 `AssetBundle` 10,那是 flutter 自己的,
+不在这个切片里。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3488,9 +3527,9 @@ analyzer 直接读源码里 `none(0)` 的实参。两边只认四种字面量,
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`core` 切片缺的名字现在是真正的运行时了——
-`ByteData` 38、`Zone` 35、`Future` 24、`StackTrace` 19、`Duration` 13、`Set` 12。
-按第 66 轮量的:117 个 dart:core 成员覆盖 90% 的使用。开始写前奏。
+**下一轮**:缺失名单头部只剩 async 了(`Zone` 35、`Future` 24)。
+第 66 轮量过:126 个 `await`、106 个 `async` 函数,占全部成员的 0.08%,
+而 Rust 自己就有 `async`/`await`。先看 CFE 把它们脱糖成了什么形状。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。
