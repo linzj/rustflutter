@@ -40,3 +40,53 @@ class Boxes {
     return const Pair<int, double>(3, 4.5);
   }
 }
+
+/// A **generic method on an abstract class**, which is a trait here.
+///
+/// A trait with a generic method is not dyn-compatible, and every abstract
+/// class in this compiler's output is reached through `dyn` -- so these were
+/// refused outright, 302 of them. Rust leaves a `where Self: Sized` method out
+/// of the vtable, which keeps the trait usable as `dyn` *and* keeps the method
+/// on every concrete implementor. What is given up is calling it through a
+/// trait object, which is a refusal where the call is rather than a member
+/// deleted where it is declared.
+abstract class Store {
+  const Store();
+
+  /// Generic, so it carries the bound.
+  ///
+  /// It counts rather than returning an element, and not for tidiness:
+  /// `return items[0];` does not compile, because indexing a `Vec<T>` moves
+  /// out of it and `T` is not `Copy`. A hole of its own -- a Dart list read is
+  /// a copy of a reference and a Rust one is a move -- and not this fixture's
+  /// subject.
+  int countOf<T>(List<T> items, T ignored);
+
+  /// Not generic, so it stays in the vtable and `dyn Store` can call it.
+  int size();
+}
+
+class Shelf extends Store {
+  const Shelf(this.width);
+
+  final int width;
+
+  @override
+  int countOf<T>(List<T> items, T ignored) {
+    return items.length + width;
+  }
+
+  @override
+  int size() {
+    return width;
+  }
+}
+
+class Shelves {
+  const Shelves();
+
+  /// Through the trait object: only the non-generic half is reachable.
+  static int sizeOf(Store s) {
+    return s.size();
+  }
+}

@@ -313,7 +313,7 @@ mod failure;
 pub use failure::Bounds;
 
 mod generic;
-pub use generic::{Boxes, Pair, Tagged};
+pub use generic::{Boxes, Pair, Shelf, Shelves, Store, Tagged};
 
 mod freefn;
 pub use freefn::{halve, thrice, Gauge};
@@ -1809,5 +1809,17 @@ mod tests {
         assert_eq!(Figures::area_of_tiles(&tile, &wedge), 9.0);
         assert_eq!(Figures::area_of_tiles(&wedge, &wedge), 0.0);
         assert_eq!(wedge.area(), 4.0);
+    }
+
+    /// A generic method on a trait: `where Self: Sized` keeps it off the
+    /// vtable, so the trait is still `dyn` and the struct still has it.
+    #[test]
+    fn a_generic_trait_method_lives_on_the_implementor() {
+        let shelf = Shelf::new(4);
+        assert_eq!(shelf.count_of(vec![7i64, 9], 0), 6);
+        assert_eq!(shelf.count_of(vec!["a".to_string()], String::new()), 5);
+        // Through the trait object, only the non-generic half is reachable --
+        // which is the whole trade.
+        assert_eq!(Shelves::size_of(&shelf), 4);
     }
 }

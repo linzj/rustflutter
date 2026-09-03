@@ -2098,11 +2098,11 @@ class RustBackend {
     }
     for (final method in cls.abstractMethods) {
       _member('${cls.name}.${method.name} (required)', () {
-        _refuseGenericInTrait(method);
+        _refuseShadowedGeneric(method);
         _doc(method.doc);
         _line(
-          'fn ${_methodName(method)}(${_params(method)}) -> '
-          '${type(method.returnType)};',
+          'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
+          ' -> ${type(method.returnType)}${_sizedBound(method)};',
         );
         _line('');
       });
@@ -2110,11 +2110,11 @@ class RustBackend {
     for (final method in cls.methods) {
       if (method.isStatic) continue;
       _member('${cls.name}.${method.name} (default)', () {
-        _refuseGenericInTrait(method);
+        _refuseShadowedGeneric(method);
         _doc(method.doc);
         _line(
-          'fn ${_methodName(method)}(${_params(method)}) -> '
-          '${type(method.returnType)} {',
+          'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
+          ' -> ${type(method.returnType)}${_sizedBound(method)} {',
         );
         _indent++;
         // The default delegates to the free function rather than holding the
@@ -2370,21 +2370,39 @@ class RustBackend {
     }
   }
 
-  /// A generic method cannot live on a trait that is used as `dyn`.
+  /// `where Self: Sized` for a generic method on a trait, or nothing.
   ///
   /// `RenderObject.invokeLayoutCallback<T extends Constraints>` is generic,
-  /// and a trait with a generic method is not dyn-compatible -- which is the
-  /// same wall round 75 hit with `impl Fn` parameters, and every one of these
-  /// traits is reached through `dyn`. Emitting the method without its
-  /// parameter left a `T` nothing declares; emitting it with one would take
-  /// `dyn RenderObject` away from the whole layer. So the *member* is refused
-  /// and the trait stays usable.
-  void _refuseGenericInTrait(IrMethod method) {
-    if (method.typeParameters.isEmpty) return;
-    throw Unsupported(
-      'a generic method on a trait, which cannot be used through `dyn`',
-      '${cls.name}.${method.name}<${method.typeParameters.join(', ')}>',
-    );
+  /// and a generic method makes a trait dyn-incompatible -- so it used to be
+  /// refused, on the reading that emitting it "would take `dyn RenderObject`
+  /// away from the whole layer". That reading had a hole in it: Rust leaves a
+  /// `where Self: Sized` method **out of the vtable**, so the trait stays
+  /// dyn-compatible and every concrete implementor still has the method. It
+  /// is the bound the standard library puts on `Iterator::by_ref` and friends
+  /// for exactly this reason.
+  ///
+  /// What is given up is calling it *through* a trait object, which Dart does
+  /// allow. That call is a refusal of its own where it happens, rather than
+  /// 302 members deleted where they are declared.
+  static String _sizedBound(IrMethod method) =>
+      method.typeParameters.isEmpty ? '' : ' where Self: Sized';
+
+  /// A method whose type parameter has the same name as one of the class's.
+  ///
+  /// Dart allows the shadowing -- `Element.findAncestorStateOfType<T>` inside
+  /// a `State<T>` -- and Rust does not: 44 `E0403`, all of them `T` inside a
+  /// `T`. Renaming it would mean renaming it in the body too, which is a
+  /// substitution this backend does not do, so the member is refused and says
+  /// which name collided.
+  void _refuseShadowedGeneric(IrMethod method) {
+    for (final p in method.typeParameters) {
+      if (cls.typeParameters.contains(p)) {
+        throw Unsupported(
+          "a method whose type parameter shadows the class's",
+          '${cls.name}<$p>.${method.name}<$p>',
+        );
+      }
+    }
   }
 
   void _emitSuperFn(IrMethod method) {
@@ -3256,7 +3274,7 @@ class RustBackend {
 
   void _emitBaseMethod(IrMethod need) {
     {
-      _refuseGenericInTrait(need);
+      _refuseShadowedGeneric(need);
       final have = _matching(need);
       final returns = type(_substituteType(need.returnType, _implBinding));
       final params = [
@@ -3284,7 +3302,10 @@ class RustBackend {
           );
         }),
       ].join(', ');
-      _line('fn ${_methodName(need)}($params) -> $returns {');
+      _line(
+        'fn ${_methodName(need)}${_generics(need)}($params) -> '
+        '$returns${_sizedBound(need)} {',
+      );
       _indent++;
       if (have == null) {
         // Reported in the output rather than silently skipped: a trait impl
