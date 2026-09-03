@@ -689,6 +689,18 @@ class RustBackend {
   static const _listStatics = {'generate', 'filled', 'from', 'of'};
 
   String _staticCall(String? owner, String name, List<IrExpr> args) {
+    // `Future.value(v)` is a future that is already done, which Rust spells
+    // `ready`. `Future.delayed` and `Future.wait` need a runtime to be delayed
+    // or joined *by*, and there is none, so they say so.
+    if (owner == 'Future') {
+      if (name == 'value' && args.length == 1) {
+        return 'Box::pin(std::future::ready(${expr(args.single)}))';
+      }
+      throw Unsupported(
+        '`Future.$name`, which needs an executor',
+        'Future.$name(..)',
+      );
+    }
     if (owner == 'List' && _listStatics.contains(name)) {
       if (name == 'generate' && args.length == 2) {
         return '(0..${expr(args[0])}).map(${expr(args[1])}).collect::<Vec<_>>()';
@@ -2082,6 +2094,18 @@ class RustBackend {
       // `RenderBox?`, and dropping the question mark made the accessor return
       // a `Box<dyn RenderBox>` where the trait it implements wants an
       // `Option<Box<dyn RenderBox>>` -- 575 `E0053`s.
+      // `T?` where `T` is *already* nullable collapses, as it does in Dart:
+      // `bool??` is `bool?`. Rust does not collapse -- with
+      // `RestorableValue<bool?>` the trait's `Option<T>` is
+      // `Option<Option<bool>>`, and its two `None`s are distinguishable in a
+      // way Dart cannot express -- so 14 members come out with a type the
+      // trait will not accept.
+      //
+      // Refusing them instead was tried and measured *worse*: an accessor's
+      // refusal takes the whole `impl` with it, and the slice went 273 errors
+      // to 278. Saying it properly means the IR carrying nullability as
+      // something richer than a flag, which it does not. Until then these 14
+      // stay visible and explained rather than turned into a cascade.
       if (!t.nullable || to.nullable) return to;
       return IrType(to.name, nullable: true, arguments: to.arguments);
     }

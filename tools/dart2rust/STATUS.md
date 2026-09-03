@@ -4058,6 +4058,42 @@ E0782 → 0,新出 14 个 E0053,留到下一轮。
 
 ---
 
+## 第 86 轮:一个否定结果——那 14 个错误该留着
+
+E0053 的 14 个:
+
+    impl RestorableValue<Option<bool>> for RestorableBoolN {
+        fn _value(&self) -> Option<bool> {     // trait 要的是 Option<Option<bool>>
+
+`T` 绑到了 `bool?`,而 trait 声明的是 `T?`。
+**Dart 的 `T?` 在 `T` 已经可空时会塌缩(`bool??` 就是 `bool?`),Rust 的 `Option` 会嵌套**
+——`Option<Option<bool>>` 的两个 `None` 是可区分的,而 Dart 说不出这个区别。
+
+按这个项目的规矩,该拒绝。**试了,量了,更差**:访问器的拒绝会把整个 `impl`
+带下去,错误 273 → 278。
+
+要正确说出来,得让 IR 把可空性表达成比一个布尔更丰富的东西,那不是这一轮的事。
+所以这 14 个**留着,可见,并且在代码里写清了为什么**——
+一串连锁拒绝比 14 个说得清的错误更难读。
+
+**顺带栽了一跤**:回退的时候我把 `if (!t.nullable)` 那条守卫一起删了,
+于是所有代入进来的类型都变成可空的,错误一下子到 542。
+**回退也要量**,和改动一样。
+
+### 剩下的小东西
+
+`Future.value(v)` 是"已经完成的 future",Rust 说 `ready`。
+`Future.delayed` 和 `Future.wait` 需要一个运行时去延迟、去汇合,而这里没有,
+所以它们如实说出来。`ListQueue`/`LinkedList` 加了别名,
+并记下 Dart 的 `LinkedList` 是**侵入式**的而 `VecDeque` 不是。
+
+| | 错误 |
+|---|---|
+| `widgets` | 273 → **261** |
+| `core` | 100 → **97** |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -4078,8 +4114,10 @@ E0782 → 0,新出 14 个 E0053,留到下一轮。
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:E0053(14)——`_value` 的 `Option<bool>` 对上了 `bool`,
-上一轮换成按库解析之后冒出来的。
+**下一轮**:`widgets` 剩 261,E0425 占 181。
+`Timer`/`Completer` 54 和 `Pointer`/`NativeType` 15 都该留着,
+所以真正能动的只剩一百出头,而且很碎。该考虑把切片再放大一次,
+看整包上还有没有成规模的形状。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

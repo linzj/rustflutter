@@ -467,8 +467,15 @@ pub type HashMap<K, V> = std::collections::HashMap<K, V>;
 pub type LinkedHashSet<T> = Set<T>;
 pub type HashSet<T> = Set<T>;
 
-/// Dart's `Queue`, backed by a `VecDeque`.
+/// Dart's `Queue` and its two concrete kinds, backed by a `VecDeque`.
+///
+/// `LinkedList` in Dart is an intrusive list -- its elements carry their own
+/// links -- and a `VecDeque` is not that. Nothing translated so far uses the
+/// intrusive part, and this is where to look if something does.
 pub type Queue<T> = std::collections::VecDeque<T>;
+pub type ListQueue<T> = std::collections::VecDeque<T>;
+pub type DoubleLinkedQueue<T> = std::collections::VecDeque<T>;
+pub type LinkedList<T> = std::collections::VecDeque<T>;
 
 /// Dart's `Stopwatch`.
 ///
