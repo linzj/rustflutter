@@ -3338,6 +3338,37 @@ CFE 没有把它脱糖(`await` 还在),所以要一个变换,但只针对 106 �
 
 ---
 
+## 第 67 轮:一次拒绝把状态留在了原地,坏掉了整个类
+
+准备做 dart:core 前奏,先用 4 秒的 `core` 切片看缺什么名字。
+排第一的不是 dart:core 的任何东西,是 **`__new`,97 次**——**我自己造的名字**。
+
+    impl SemanticsFlags {
+        // NOT TRANSLATED: SemanticsFlags.new
+        //   unsupported call to `SemanticsFlags._initSemanticsFlags`, ...
+
+        pub fn merge(&self, other: SemanticsFlags) -> SemanticsFlags {
+            ... __new.is_checked.merge(other.is_checked) ...
+
+构造函数把 `_selfName` 设成 `__new`(构造函数体里的 `this.x = v` 写的是
+正在构造的那个值),用完再恢复。**而这个构造函数被拒了**——异常从
+`stmt(body)` 抛出去,那句恢复从来没执行,于是**这个类后面每一个方法
+都拿 `__new` 当接收者读字段**。一次拒绝,97 个错误。
+
+`_member` 一直在回滚**文本**,不回滚**状态**。
+这是"拒绝的单位必须等于工作的单位"往下一层:
+**一次拒绝要撤销的不只是写出去的东西,还有留下的东西。**
+六个字段现在在 `_member` 里存下、`finally` 里恢复
+——在一个地方列出来,比在十几个设置点各记一个 `finally` 便宜。
+
+`core` 切片:错误 **641 → 544**,E0425 **456 → 359**,`__new` 一个不剩。
+
+**还有一件事值得记**:这个 bug 之所以一直没被发现,是因为
+`.crate` 的错误一直是当作总数看的。切片让"最想要的名字"这一列
+在 4 秒里可读,排第一的立刻就露了馅。**快的尺子会让人看细节。**
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):

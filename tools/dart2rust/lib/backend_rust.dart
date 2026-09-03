@@ -150,6 +150,26 @@ class RustBackend {
   bool _member(String what, void Function() body) {
     final mark = _out.length;
     final indent = _indent;
+    // Every scrap of state a member's emission sets, so a refusal leaves none
+    // of it behind.
+    //
+    // Rolling back only the text was not enough. A constructor sets
+    // `_selfName` to `__new` -- `this.x = v` inside a constructor body is a
+    // write to the value being built -- and restores it afterwards. When the
+    // body threw, the restore never ran, and every later method in that class
+    // read its fields off a `__new` that does not exist there: 97 `E0425`s in
+    // `SemanticsFlags` alone, all from one refused constructor.
+    //
+    // This is the same rule as "the unit of refusal must equal the unit of
+    // work", one level down: a refusal has to undo the *state* as well as the
+    // output, and listing it here is cheaper than remembering a `finally` at
+    // each of the dozen places that set some.
+    final selfName = _selfName;
+    final fieldsAreAccessors = _fieldsAreAccessors;
+    final referenceParams = _referenceParams;
+    final reassigned = _reassigned;
+    final failure = _failure;
+    final rustReturns = _rustReturns;
     try {
       body();
       return true;
@@ -160,6 +180,13 @@ class RustBackend {
       _line('//   $error');
       _line('');
       return false;
+    } finally {
+      _selfName = selfName;
+      _fieldsAreAccessors = fieldsAreAccessors;
+      _referenceParams = referenceParams;
+      _reassigned = reassigned;
+      _failure = failure;
+      _rustReturns = rustReturns;
     }
   }
 
