@@ -3807,6 +3807,45 @@ Dart 的 `<T>{}` 在 Kernel 里是 `_Set` 的构造函数,`[]` 是 `_GrowableLis
 
 ---
 
+## 第 79 轮:检查已经在那儿了,只是它只认写出来的 `this`
+
+E0424 的 110 个,96 个在一个文件里:
+
+    impl _TransformedPointerAddedEvent {
+        pub(crate) fn new(original: PointerAddedEvent, transform: Matrix4) -> Self {
+            Self {
+                local_position: PointerEvent::transform_position(self.transform(), self.position()),
+
+构造函数里没有 `self`。上游写的是
+
+    late final Offset localPosition = PointerEvent.transformPosition(transform, position);
+
+**`late final` 在 Dart 里是首次读取时才算的,所以它根本不是存储**,
+一个结构体字段是错的形状。
+
+### 差点写了第二遍
+
+我先加了一个"字段初始化式读了 `this` 就拒绝"的检查,量下来**一点没变**。
+翻代码才发现:**这个检查早就在那儿**(`_mentionsThis`,152 次拒绝就是它),
+只是它走的 `_WalkSelf` 只在**显式** `IrThis` 上置位。
+而 Dart 允许不写 `this`——`transformPosition(transform, position)` 读了两个成员,
+一个 `this` 都没写。
+
+把我那份重复的删掉,改宽原来那一个:目标为 null 的字段读和方法调用,
+就是隐式的 `this`。**一处判断,一个地方。**
+
+E0424 **110 → 0**,拒绝 3302 → 3321。
+
+| | 错误 |
+|---|---|
+| `widgets` | 651 → **541** |
+| `core` | 159 → **158** |
+
+**记一条**:动手加检查之前,先找找它是不是已经在了。这一轮先写后查,
+浪费了一次测量——虽然那次测量恰好也是发现真相的东西。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3827,8 +3866,8 @@ Dart 的 `<T>{}` 在 Kernel 里是 `_Set` 的构造函数,`[]` 是 `_GrowableLis
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`widgets` 切片剩 651 个错误,头部是 `Timer` 28、`Completer` 26
-——执行器那件事;以及 E0424(110)`self` 相关。先看 E0424。
+**下一轮**:`widgets` 剩 541,E0425 还有 247。
+`Timer` 28、`Completer` 26 是执行器;先看 247 里剩下的形状。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

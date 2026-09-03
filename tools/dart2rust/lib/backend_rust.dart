@@ -3109,6 +3109,12 @@ class _WalkSelf {
         if (_caught == 0 && (target == null || target is IrThis)) {
           selfCalls.add(name);
         }
+        // An *implicit* `this` reads it just as surely as a written one.
+        // Dart lets a member be named without `this`, and a field initialiser
+        // that says `transformPosition(transform, position)` is reading two
+        // of them -- 110 `self` values in a constructor that has none, all of
+        // them Flutter's `late final x = <something about this>`.
+        if (target == null) readsThis = true;
         // `self.marks.push(x)` mutates a field, so the method takes
         // `&mut self` -- the same rule as writing the field outright, which is
         // what a `Vec` method that changes it amounts to.
@@ -3118,6 +3124,7 @@ class _WalkSelf {
         if (target != null) expression(target);
         args.forEach(expression);
       case IrField(:final target):
+        if (target == null) readsThis = true;
         if (target != null) expression(target);
       case IrBinary(:final left, :final right):
         expression(left);
