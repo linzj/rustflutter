@@ -256,7 +256,7 @@ mod lates;
 pub use lates::{Engine, Machine};
 
 mod typetest;
-pub use typetest::{Figure, Figures, Tile, Wedge};
+pub use typetest::{Figure, Figures, Marker, Tile, Types, Wedge};
 
 mod identity;
 pub use identity::{Node, Nodes, Watcher};
@@ -1839,5 +1839,16 @@ mod tests {
         assert!(Nodes::different(&*w, &*other));
         // Equal contents, different objects: identity is not equality.
         assert_eq!(w.id(), other.id());
+    }
+
+    /// A class name standing where a value goes is a `Type`, which compares
+    /// by what it names.
+    #[test]
+    fn a_class_name_is_a_value() {
+        assert_eq!(Types::marker_type(), Type::of("Marker"));
+        assert!(Types::is_marker(Types::marker_type()));
+        assert!(!Types::is_tile(Types::marker_type()));
+        assert!(Types::is_tile(Type::of("Tile")));
+        let _ = Marker::new();
     }
 }

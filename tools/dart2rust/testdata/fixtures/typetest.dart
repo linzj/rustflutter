@@ -70,3 +70,32 @@ class Figures {
     return total;
   }
 }
+
+/// A **class name where a value goes**: Dart's `Type`.
+///
+/// Not the same question as `is`. `x is Foo` asks about a value; `Foo` on its
+/// own *is* a value, of type `Type`, and upstream compares it, prints it and
+/// uses it as a map key. The prelude has had `Type::of(name)` for that all
+/// along and nothing produced one -- which refused `Theme.of`, and `Theme.of`
+/// is called 268 times. Four `of` methods stood on this one construct and
+/// accounted for 464 of the 670 "called something that was not translated".
+class Marker {
+  const Marker();
+}
+
+class Types {
+  const Types();
+
+  static Type markerType() {
+    return Marker;
+  }
+
+  /// Two `Type`s compare by what they name.
+  static bool isMarker(Type t) {
+    return t == Marker;
+  }
+
+  static bool isTile(Type t) {
+    return t == Tile;
+  }
+}

@@ -5001,6 +5001,49 @@ fixture 里 `watching` 就是同时踩中"交出 this"和"问身份"的那一格
 
 ---
 
+## 第 111 轮:一个类名站在值的位置上,压着 464 条拒绝
+
+"调用一个没翻出来的成员" 一直是第一名(670),一直被当成"跟着别人降的"
+而没去看。这次去看了:
+
+| 次数 | 调的是谁 |
+|---|---|
+| 268 | `Theme.of` |
+| 145 | `GalleryLocalizations.of` |
+| 40 | `MaterialLocalizations.of` |
+| 11 | `CupertinoLocalizations.of` |
+
+**464 条,四个 `of`。** 而 `Theme.of` 自己为什么没翻出来?
+
+```
+NOT TRANSLATED: Theme: unsupported constant TypeLiteralConstant:
+  ConstantExpression(MaterialLocalizations)
+```
+
+`Localizations.of<MaterialLocalizations>(context, MaterialLocalizations)`
+——最后那个 `MaterialLocalizations` 是**一个类名站在值的位置上**,Dart 的
+`Type`。
+
+而 prelude 里 `Type::of(name)` **一直就有**,从来没人产生过一个。两个前端
+各加三行,拒绝 3977 → **3481**,"没翻出来的成员" 670 → **215**,不再是第一名。
+
+一条构造压着 464 条拒绝,而它被"跟着别人降的"这个说法遮了好几轮。
+**"它会自己降"是个没量过的断言。**
+
+### 顺手
+
+`double.infinity` 一直翻成 `f32::INFINITY`——第 96 轮把 `double` 从 `f32`
+改成 `f64`,这三个字面量(NaN、±∞)漏了。178 处。没被发现是因为它们只出现在
+写了无穷大的地方,而那些地方本来就在编不过的块里。
+
+| | |
+|---|---|
+| 整包错误 | 397 → **407** |
+| 整包拒绝 | 3977 → **3481** |
+| fixture | 143 → 144 个测试 |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -5021,8 +5064,8 @@ fixture 里 `watching` 就是同时踩中"交出 this"和"问身份"的那一格
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`identical(this, other)` 那 150 条要的是给值类真正的身份,先量
-让它们成为计数类要付多少;或者换一块——"没有翻出来的成员" 670 一直是第一名。
+**下一轮**:"方法当值用"(293,现在的第一名),或者把"没翻出来的成员"
+剩下的 215 再拆一遍——上一次拆它值 464 条。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

@@ -198,6 +198,7 @@ class KernelFrontend {
         expression(node.otherwise),
       );
     }
+    if (node is TypeLiteral) return _typeLiteral(node.type);
     if (node is IsExpression) {
       return IrIs(expression(node.operand), _type(node.type));
     }
@@ -1187,18 +1188,36 @@ class KernelFrontend {
     );
   }
 
+  /// `MaterialLocalizations` written where a value goes: Dart's `Type`.
+  ///
+  /// The prelude has had `Type::of(name)` all along -- a name, because that is
+  /// what upstream does with one: compares it, prints it, uses it as a map
+  /// key. Not having this refused `Theme.of`, and `Theme.of` is called 268
+  /// times. Four `of` methods -- Theme, MaterialLocalizations,
+  /// CupertinoLocalizations and the gallery's own -- account for 464 of the
+  /// 670 "called something that was not translated".
+  static IrExpr _typeLiteral(DartType type) {
+    final name = type is InterfaceType ? type.classNode.name : '$type';
+    return IrLiteral('Type::of("$name")', const IrType('raw'));
+  }
+
   IrExpr _constant(Constant constant, Expression node) {
+    if (constant is TypeLiteralConstant) return _typeLiteral(constant.type);
     if (constant is DoubleConstant) {
       // `double.infinity` prints as `Infinity`, which the literal emitter then
       // suffixed into `Infinity.0` -- a name nothing declares, 183 times.
       // Rust spells these three, and only these three, differently.
       final value = constant.value;
-      if (value.isNaN) return const IrLiteral('f32::NAN', IrType('raw'));
+      // `f64`, because Dart's `double` is one. These three said `f32` since
+      // before round 96 changed the mapping, and nothing caught it: they only
+      // appear where an infinity is written down, and every one of those sites
+      // was already inside something that did not compile.
+      if (value.isNaN) return const IrLiteral('f64::NAN', IrType('raw'));
       if (value == double.infinity) {
-        return const IrLiteral('f32::INFINITY', IrType('raw'));
+        return const IrLiteral('f64::INFINITY', IrType('raw'));
       }
       if (value == double.negativeInfinity) {
-        return const IrLiteral('f32::NEG_INFINITY', IrType('raw'));
+        return const IrLiteral('f64::NEG_INFINITY', IrType('raw'));
       }
       return IrLiteral('$value', const IrType('double'));
     }

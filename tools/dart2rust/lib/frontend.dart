@@ -267,6 +267,12 @@ class Frontend {
     if (element is FormalParameterElement || element is LocalVariableElement) {
       return IrLocal(node.name);
     }
+    // A class name standing where a value goes: Dart's `Type`. The Kernel
+    // front end meets the same thing as a `TypeLiteral` or, once the constant
+    // evaluator has been through, a `TypeLiteralConstant`.
+    if (element is ClassElement || element is EnumElement) {
+      return IrLiteral('Type::of("${node.name}")', const IrType('raw'));
+    }
     // A top-level `const`/`final` is a module constant in Rust too. Analyzer
     // models one as a *synthetic* getter -- the same distinction that separates
     // a field from a real getter -- so a non-synthetic top-level getter is a
