@@ -4023,6 +4023,41 @@ Dart 的 `List`(不带 `<T>`)持有任何东西,这里就是前奏的 `Object`�
 
 ---
 
+## 第 85 轮:混入挡住了基类的类型参数,而同名类挡住了"它是不是抽象的"
+
+### `State<AnimatedSize>` 的参数被合成类吃掉了
+
+    pub(crate) struct _AnimatedSizeState {
+        pub(crate) _widget: Option<T>,
+
+上游是 `_AnimatedSizeState extends State<AnimatedSize> with
+SingleTickerProviderStateMixin`。Kernel 在中间放了一个合成类,
+而 `superclassArguments` 读的是 `node.supertype.typeArguments`
+——**那是合成类的参数,不是 `State<AnimatedSize>` 的**,所以是空的,
+`State` 的 `T? _widget` 就带着 `T` 被扁平化进来了。
+
+第 61 轮爬过这条链去找**名字**,却没有把**类型参数**一起带出来。
+现在爬的是 supertype 而不是 superclass,名字和参数一起拿。
+
+### 两个 `Gradient`
+
+`dart:ui` 的 `Gradient` 是具体类,`painting` 的是抽象类。
+crate 级的 `elsewhere` 用 `putIfAbsent`,**先遇到谁算谁**,
+于是"`Gradient` 是抽象的吗"回答的是另一个类,
+`painting` 那边就写出了 `Option<Gradient>` 而不是 `Option<Box<dyn Gradient>>`。
+
+**一个名字指谁,取决于是谁在叫它**,所以查表也得如此。
+驱动为每个库把它引用到的名字解析成那个库真正指的类,盖在 crate 级的表上面。
+
+| | 错误 |
+|---|---|
+| `widgets` | 299 → 275(混入的类型参数)→ **273** |
+| `core` | 102 → **100** |
+
+E0782 → 0,新出 14 个 E0053,留到下一轮。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -4043,9 +4078,8 @@ Dart 的 `List`(不带 `<T>`)持有任何东西,这里就是前奏的 `Object`�
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`widgets` 剩 299,E0425 占 209。
-`Timer`/`Completer` 54 是执行器、`Pointer`/`NativeType` 15 是 dart:ffi,
-两样都该留着。真正没查过的还是 `T` 26,和 E0782(14)。
+**下一轮**:E0053(14)——`_value` 的 `Option<bool>` 对上了 `bool`,
+上一轮换成按库解析之后冒出来的。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

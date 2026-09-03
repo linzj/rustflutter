@@ -165,6 +165,17 @@ Future<void> main(List<String> args) async {
   // not in this file". In one crate it is.
   final lowered = <Library, (IrLibrary, List<String>)>{};
   final everyClass = <String, IrClass>{};
+
+  /// Each library's own classes, by name.
+  ///
+  /// `everyClass` keeps the first class it meets under a name, and two
+  /// libraries can use the same one: `dart:ui`'s `Gradient` is a concrete
+  /// class and `painting`'s is abstract. Asking the crate-wide map whether
+  /// `Gradient` is abstract answers for whichever was lowered first, and the
+  /// backend then wrote `Option<Gradient>` where it needed
+  /// `Option<Box<dyn Gradient>>`. Which one a name means depends on the
+  /// library doing the naming, so the lookup has to as well.
+  final classesOf = <Library, Map<String, IrClass>>{};
   final everyFunction = <String>{};
 
   /// Which modules define each class name. Ten names are defined by more than
@@ -182,6 +193,7 @@ Future<void> main(List<String> args) async {
     lowered[library] = result;
     for (final cls in result.$1.classes) {
       everyClass.putIfAbsent(cls.name, () => cls);
+      (classesOf[library] ??= <String, IrClass>{})[cls.name] = cls;
     }
     everyFunction.addAll(result.$1.functions.map((f) => f.name));
     for (final cls in result.$1.classes) {
@@ -224,7 +236,15 @@ Future<void> main(List<String> args) async {
       constants: own.constants,
       functions: own.functions,
       abstractElsewhere: abstractNames,
-      elsewhere: everyClass,
+      elsewhere: {
+        ...everyClass,
+        // What *this* library's names resolve to wins over the crate-wide
+        // first-come map.
+        for (final entry in classNamesReferencedBy(library).entries)
+          if (entry.value.length == 1 &&
+              classesOf[entry.value.single]?[entry.key] != null)
+            entry.key: classesOf[entry.value.single]![entry.key]!,
+      },
       functionsElsewhere: everyFunction,
     );
     final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);

@@ -1578,19 +1578,27 @@ class KernelFrontend {
   (IrClass, List<String>) lowerClass(Class node) {
     // Kernel's superclass may be a synthetic mixin application; the class a
     // reader would name is the first one above that is not.
-    var base = node.superclass;
-    // The mixins are picked up on the way past: `Panel extends _Measured&Scal-
-    // ed extends Measured` puts each one in a synthetic class this compiler
-    // skips, and skipping it silently dropped the mixin too.
+    // The **supertype**, not just the superclass: its type arguments are what
+    // the base was instantiated with, and they are needed as much as the name.
+    // `_AnimatedSizeState extends State<AnimatedSize> with
+    // SingleTickerProviderStateMixin` puts a synthetic class in between, so
+    // reading `node.supertype.typeArguments` gave the *mixin application's*
+    // arguments -- none -- and `State`'s `T? _widget` was flattened in with
+    // its `T` still standing.
+    //
+    // The mixins are picked up on the way past: skipping the synthetic class
+    // silently dropped them too.
+    var superType = node.supertype;
     final mixins = <IrType>[];
-    while (base != null && base.isAnonymousMixin) {
+    while (superType != null && superType.classNode.isAnonymousMixin) {
       // `implementedTypes`, for the reason `_realOwner` gives: an applied
       // mixin has already been copied in and `mixedInType` cleared.
-      for (final applied in base.implementedTypes) {
+      for (final applied in superType.classNode.implementedTypes) {
         mixins.add(_type(applied.asInterfaceType));
       }
-      base = base.superclass;
+      superType = superType.classNode.supertype;
     }
+    final base = superType?.classNode;
     // An enum's values are its static const fields, in declaration order,
     // minus the synthetic `values` list the CFE adds.
     //
@@ -1672,7 +1680,7 @@ class KernelFrontend {
       node.name,
       typeParameters: [for (final p in node.typeParameters) p.name ?? 'T'],
       superclassArguments: [
-        for (final t in node.supertype?.typeArguments ?? const []) _type(t),
+        for (final t in superType?.typeArguments ?? const []) _type(t),
       ],
       superclass: node.isEnum || base == null || base.name == 'Object'
           ? null
