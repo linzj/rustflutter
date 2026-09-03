@@ -285,6 +285,39 @@ class Frontend {
         element.isSynthetic) {
       return IrField(null, node.name, onEnum: true);
     }
+    // A method used as a value: `applyTwice(scaled, x)`. In Rust that is a
+    // closure that calls it, which makes it the same question as any other
+    // closure and gets the same answer -- in a borrowed position it may borrow
+    // the receiver, anywhere else it would have to own it. The Kernel front
+    // end reads the same thing off `InstanceTearOff`.
+    if (element is MethodElement &&
+        !element.isStatic &&
+        element.enclosingElement is InterfaceElement) {
+      if (!_borrowedArgument) {
+        throw Unsupported('a method used as a value', node.toSource());
+      }
+      if (element.formalParameters.any((p) => p.isNamed) ||
+          element.typeParameters.isNotEmpty) {
+        throw Unsupported(
+          'a method with named or generic parameters used as a value',
+          node.toSource(),
+        );
+      }
+      final params = [
+        for (var i = 0; i < element.formalParameters.length; i++)
+          IrParam(
+            element.formalParameters[i].name ?? 'a$i',
+            _type(element.formalParameters[i].type),
+          ),
+      ];
+      return IrClosure(
+        params,
+        IrReturn(
+          IrCall(null, node.name, [for (final p in params) IrLocal(p.name)]),
+        ),
+        _type(element.returnType),
+      );
+    }
     // The refusal names *where* the thing is declared, not what analyzer's
     // class for it happens to be called. "identifier of GetterElementImpl"
     // says nothing about the work; "top-level getter" says it is a module

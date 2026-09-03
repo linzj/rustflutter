@@ -1060,6 +1060,13 @@ mod tests {
     }
 
     #[test]
+    fn a_method_handed_over_as_a_value_becomes_a_closure() {
+        // `applyTwice(scaled, x)` with factor 3: 2 -> 6 -> 18. A tear-off in
+        // an argument is a closure that borrows, so nothing has to be owned.
+        assert_eq!(Closures::new(3.0).by_tear_off(2.0), 18.0);
+    }
+
+    #[test]
     fn a_returned_closure_copies_the_final_fields_it_reads() {
         // `scaler` outlives the call that made it, so it cannot hold `this`.
         // It does not have to: `factor` is `final`, so the copy taken when the

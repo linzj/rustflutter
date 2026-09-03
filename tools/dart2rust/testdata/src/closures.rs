@@ -59,6 +59,14 @@ impl Closures {
         (v * self.factor)
     }
 
+    /// A **method used as a value**: `applyTwice(scaled, x)` hands the method
+    /// over without calling it. In Rust that is a closure that calls it, so it
+    /// is the same question as any other closure and gets the same answer --
+    /// here it is an argument, a borrowed position, so it may borrow `this`.
+    pub fn by_tear_off(&self, x: f64) -> f64 {
+        Closures::apply_twice(|v: f64| self.scaled(v), x)
+    }
+
     /// Reads a `final` field and is **returned**, so it outlives the call.
     ///
     /// It cannot hold `this`, and it does not have to: `factor` is `final`, so a

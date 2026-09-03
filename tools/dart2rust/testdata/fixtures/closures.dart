@@ -68,6 +68,14 @@ class Closures {
     return Closures.applyTwice((double v) => scaled(v), x);
   }
 
+  /// A **method used as a value**: `applyTwice(scaled, x)` hands the method
+  /// over without calling it. In Rust that is a closure that calls it, so it
+  /// is the same question as any other closure and gets the same answer --
+  /// here it is an argument, a borrowed position, so it may borrow `this`.
+  double byTearOff(double x) {
+    return Closures.applyTwice(scaled, x);
+  }
+
   /// Reads a `final` field and is **returned**, so it outlives the call.
   ///
   /// It cannot hold `this`, and it does not have to: `factor` is `final`, so a

@@ -290,6 +290,45 @@ class KernelFrontend {
       );
     }
     if (node is ConstantExpression) return _constant(node.constant, node);
+    // A method used as a value: `Ticker(_tick)` hands `this._tick` over
+    // without calling it. In Rust that is a closure that calls it, which makes
+    // it the same question as any other closure -- and the same answer: in a
+    // borrowed position (an argument, where the parameter is `impl Fn`) it can
+    // borrow the receiver, and anywhere else it would have to own it and is
+    // refused. 495 of these, and the closure rule already knew what to do with
+    // them.
+    if (node is InstanceTearOff) {
+      if (!_borrowedArgument) {
+        throw Unsupported('a method used as a value', _sample(node));
+      }
+      final target = node.interfaceTarget;
+      final fn = target.function;
+      if (fn.namedParameters.isNotEmpty || fn.typeParameters.isNotEmpty) {
+        throw Unsupported(
+          'a method with named or generic parameters used as a value',
+          _sample(node),
+        );
+      }
+      final params = [
+        for (var i = 0; i < fn.positionalParameters.length; i++)
+          IrParam(
+            fn.positionalParameters[i].cosmeticName ?? 'a$i',
+            _type(fn.positionalParameters[i].type),
+          ),
+      ];
+      final receiver = node.receiver;
+      return IrClosure(
+        params,
+        IrReturn(
+          IrCall(
+            receiver is ThisExpression ? null : expression(receiver),
+            node.name.text,
+            [for (final p in params) IrLocal(p.name)],
+          ),
+        ),
+        _type(fn.returnType),
+      );
+    }
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
   }
 
