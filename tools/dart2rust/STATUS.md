@@ -3776,6 +3776,37 @@ Dart 的 `<T>{}` 在 Kernel 里是 `_Set` 的构造函数,`[]` 是 `_GrowableLis
 
 ---
 
+## 第 78 轮:泛型方法进不了 trait,而访问器上一轮漏了
+
+剩下的 `T` 126 个是**泛型方法**,而它落在两种地方,答案相反。
+
+### 自由函数可以带,trait 不能
+
+`RenderObject.invokeLayoutCallback<T extends Constraints>` 是泛型方法。
+持有它的**自由函数**(`..._super_...`)可以把 `T` 声明出来,加上就是。
+
+但 **trait 方法不能**:一个带泛型参数的方法让 trait 失去 dyn 兼容,
+而这一层的每个 trait 都是通过 `dyn` 用的——**这正是第 75 轮 `impl Fn` 撞的同一堵墙**。
+不带参数发出去,留下一个没人声明的 `T`;带上,整层的 `dyn RenderObject` 就没了。
+所以**拒绝这个成员**,让 trait 还能用。50 个,声明处、默认实现处、impl 处一起拒。
+
+### 访问器上一轮漏了
+
+    impl _RenderCustomClip<Rect> for RenderClipRect {
+        fn _clipper(&self) -> Option<Box<dyn CustomClipper<T>>> {
+
+第 73 轮代入了 impl 块里的**方法**签名,把**字段访问器**落下了。
+同一个块、同一张绑定表、同一条理由。
+
+| | 错误 | |
+|---|---|---|
+| `widgets`,开始 | 808 | |
+| 泛型方法 | 728 | 拒绝 +50,`T` 126 → 103 |
+| 访问器代入 | **651** | `T` → 26 |
+| `core` 切片 | 163 → **159** | |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3796,8 +3827,8 @@ Dart 的 `<T>{}` 在 Kernel 里是 `_Set` 的构造函数,`[]` 是 `_GrowableLis
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`T` 126、`S` 25、`Output` 13 ——泛型参数还在漏,
-但已经不是 impl 头那一种了(那个修完了)。找出这一批是从哪儿漏的。
+**下一轮**:`widgets` 切片剩 651 个错误,头部是 `Timer` 28、`Completer` 26
+——执行器那件事;以及 E0424(110)`self` 相关。先看 E0424。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

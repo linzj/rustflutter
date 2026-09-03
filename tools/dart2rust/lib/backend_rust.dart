@@ -1611,6 +1611,7 @@ class RustBackend {
     }
     for (final method in cls.abstractMethods) {
       _member('${cls.name}.${method.name} (required)', () {
+        _refuseGenericInTrait(method);
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}(${_params(method)}) -> '
@@ -1622,6 +1623,7 @@ class RustBackend {
     for (final method in cls.methods) {
       if (method.isStatic) continue;
       _member('${cls.name}.${method.name} (default)', () {
+        _refuseGenericInTrait(method);
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}(${_params(method)}) -> '
@@ -1762,6 +1764,23 @@ class RustBackend {
     }
   }
 
+  /// A generic method cannot live on a trait that is used as `dyn`.
+  ///
+  /// `RenderObject.invokeLayoutCallback<T extends Constraints>` is generic,
+  /// and a trait with a generic method is not dyn-compatible -- which is the
+  /// same wall round 75 hit with `impl Fn` parameters, and every one of these
+  /// traits is reached through `dyn`. Emitting the method without its
+  /// parameter left a `T` nothing declares; emitting it with one would take
+  /// `dyn RenderObject` away from the whole layer. So the *member* is refused
+  /// and the trait stays usable.
+  void _refuseGenericInTrait(IrMethod method) {
+    if (method.typeParameters.isEmpty) return;
+    throw Unsupported(
+      'a generic method on a trait, which cannot be used through `dyn`',
+      '${cls.name}.${method.name}<${method.typeParameters.join(', ')}>',
+    );
+  }
+
   void _emitSuperFn(IrMethod method) {
     {
       _line('');
@@ -1780,6 +1799,10 @@ class RustBackend {
         // that `T` comes from.
         '<S: ${cls.name}${_generics(cls)} + ?Sized'
         '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.join(', ')}'}'
+        // And the *method's* own, for a generic method like
+        // `invokeLayoutCallback<T extends Constraints>`. A free function can
+        // carry them; the trait method it belongs to cannot, and says so.
+        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.join(', ')}'}'
         '>($params) -> '
         '${type(method.returnType)} {',
       );
@@ -2516,6 +2539,10 @@ class RustBackend {
           : cls.methods.any((m) => m.name == field.name && !m.isStatic)
           ? 'self.${snake(field.name)}()'
           : null;
+      // The accessor's type is the *trait's*, so it is written in this
+      // class's terms like every other signature in the block. Round 73
+      // substituted the methods and left the accessors behind, which put a
+      // `T` no impl declares in front of 103 field reads.
       if (reads == null) {
         _member('impl ${base.name}::${field.name} for ${cls.name}', () {
           throw Unsupported(
@@ -2526,7 +2553,10 @@ class RustBackend {
         });
         continue;
       }
-      _line('fn ${snake(field.name)}(&self) -> ${type(field.type)} {');
+      _line(
+        'fn ${snake(field.name)}(&self) -> '
+        '${type(_substituteType(field.type, _implBinding))} {',
+      );
       _indent++;
       _line(reads);
       _indent--;
@@ -2557,6 +2587,7 @@ class RustBackend {
 
   void _emitBaseMethod(IrMethod need) {
     {
+      _refuseGenericInTrait(need);
       final have = _matching(need);
       final returns = type(_substituteType(need.returnType, _implBinding));
       final params = [
