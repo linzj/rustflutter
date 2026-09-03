@@ -432,6 +432,18 @@ class IrAssign extends IrStmt {
   final IrExpr value;
 }
 
+/// `topLevel = value` -- a write to a library's own mutable variable.
+///
+/// Its own node because the storage is its own thing: a Dart top-level
+/// variable is one per isolate, and the Rust for it is a `static` with a cell
+/// in it, so the write goes through the cell rather than to a name.
+class IrAssignTopLevel extends IrStmt {
+  const IrAssignTopLevel(this.name, this.value);
+
+  final String name;
+  final IrExpr value;
+}
+
 /// `this.x = value` -- a write to one of this object's own fields.
 ///
 /// Only `this`, and only a real field. Writing another object's field needs a

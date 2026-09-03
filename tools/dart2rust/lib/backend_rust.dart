@@ -1353,6 +1353,7 @@ class RustBackend {
         case IrSetter():
         case IrThrow():
         case IrAssignField():
+        case IrAssignTopLevel():
       }
     }
 
@@ -1581,6 +1582,10 @@ class RustBackend {
       case IrAssignField(:final target, :final name, :final value):
         final receiver = target == null ? _selfName : expr(target);
         _line('$receiver.${snake(name)} = ${expr(value)};');
+      case IrAssignTopLevel(:final name, :final value):
+        // Through the cell: two derefs for the `LazyLock` and the `Isolate`,
+        // then `borrow_mut`. The read side does the same with `borrow`.
+        _line('*(**${screamingSnake(name)}).borrow_mut() = ${expr(value)};');
       case IrSetter(:final target, :final name, :final value):
         _line('${_receiver(target)}.set_${snake(name)}(${expr(value)});');
       case IrIf(:final condition, :final then, :final otherwise):
@@ -3333,6 +3338,10 @@ class _WalkSelf {
         // not compile.
         if (_rootedAtThis(target)) writesFields = true;
         expression(s.value);
+      case IrAssignTopLevel(:final value):
+        // A library's own variable, not this object's: it goes through a cell
+        // of its own, so writing one says nothing about `self`.
+        expression(value);
       case IrAssign():
         expression(s.value);
       case IrSetter(:final target, :final name, :final value):

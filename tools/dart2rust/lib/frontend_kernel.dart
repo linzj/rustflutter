@@ -752,6 +752,10 @@ class KernelFrontend {
       // Mutable ones too, now that they are emitted. A read of one goes
       // through the cell, which the backend knows from the declaration.
       if (target is Field) return IrTopLevel(target.name.text);
+      // A top-level getter is a function here, so reading it is calling it.
+      if (target is Procedure && target.kind == ProcedureKind.Getter) {
+        return IrStaticCall(null, target.name.text, const []);
+      }
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
     }
     return IrStatic(
@@ -1223,6 +1227,15 @@ class KernelFrontend {
           expression(value.arguments.positional[1]),
         );
       }
+      // A top-level variable's assignment. `StaticSet` on a `Field` with no
+      // enclosing class is exactly that, and it was reaching the general
+      // refusal below.
+      if (value is StaticSet) {
+        final target = value.target;
+        if (target is Field && target.enclosingClass == null) {
+          return IrAssignTopLevel(target.name.text, expression(value.value));
+        }
+      }
       if (value is InstanceSet) {
         // A field on `this`, and a field rather than a setter. Kernel names the
         // target outright, so neither has to be inferred.
@@ -1564,7 +1577,15 @@ class KernelFrontend {
 
   /// A top-level function, as a method with no receiver.
   IrMethod _lowerTopLevel(Procedure node) {
-    if (node.kind != ProcedureKind.Method) {
+    // A top-level **getter** is a function of no arguments, which is what it
+    // becomes here. Dart writes `PluralCase get ONE => ..` and reads it as a
+    // name; Rust writes `fn one() -> PluralCase` and reads it as a call, and
+    // the difference is only in the spelling of the read.
+    //
+    // A setter is not the same shape -- it is an assignment that has to look
+    // like one at every use -- and stays refused.
+    if (node.kind != ProcedureKind.Method &&
+        node.kind != ProcedureKind.Getter) {
       throw Unsupported('a top-level ${node.kind.name}', node.name.text);
     }
     return IrMethod(
