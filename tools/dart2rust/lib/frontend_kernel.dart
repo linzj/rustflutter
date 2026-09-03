@@ -1778,6 +1778,10 @@ class KernelFrontend {
         for (final p in node.function.typeParameters) p.name ?? 'T',
       ],
       isStatic: true,
+      // A top-level function is `async` the same way a method is. Round 71
+      // marked the methods and left these, so `await` came out inside a
+      // function that was not one.
+      isAsync: node.function.asyncMarker == AsyncMarker.Async,
     );
   }
 

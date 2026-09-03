@@ -2148,8 +2148,9 @@ class RustBackend {
     _doc(method.doc);
     final params = method.params.map((p) => _param(p, owned: false)).join(', ');
     _line(
-      '${_vis(method.name)}fn ${snake(method.name)}${_generics(method)}'
-      '($params) -> ${type(method.returnType)} {',
+      '${_vis(method.name)}${method.isAsync ? 'async ' : ''}fn '
+      '${snake(method.name)}${_generics(method)}'
+      '($params) -> ${_returnType(method)} {',
     );
     _indent++;
     final saved = _selfName;
@@ -2743,7 +2744,10 @@ class RustBackend {
         ? _awaited(method.returnType)
         : method.returnType;
     final value = method.isSetter ? '()' : type(declared);
-    return error == null ? value : 'Result<$value, $error>';
+    // The error type goes through `type()` like any other: an abstract one --
+    // `Object` is the commonest, since a `throw` with no declared type lands
+    // there -- is a trait, and a trait is not a type. `Box<dyn Object>` is.
+    return error == null ? value : 'Result<$value, ${type(IrType(error))}>';
   }
 
   /// `Future<T>` -> `T`; anything else unchanged.
