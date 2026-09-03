@@ -21,6 +21,17 @@ import 'ir.dart';
 const _primitives = {
   'double': 'f32',
   'int': 'i64',
+  // Dart's `num` is the supertype of `int` and `double`, and Rust has no such
+  // thing. `f32` is the choice that keeps arithmetic working and matches what
+  // `double` already maps to -- 2511 uses of the bare name `num`, three
+  // quarters of every "cannot find" in the package, and every one of them a
+  // parameter or return that takes either.
+  //
+  // The cost, written down rather than discovered: an `int` beyond 2^24 does
+  // not survive the round trip, and a `num` used as an index needs a cast that
+  // an `i64` would not. Upstream's `num`s are sizes, offsets and factors, so
+  // neither has come up -- but this is where to look when one does.
+  'num': 'f32',
   'bool': 'bool',
   'String': 'String',
   'void': '()',

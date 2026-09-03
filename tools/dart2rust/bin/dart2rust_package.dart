@@ -62,7 +62,10 @@ String moduleName(String uri) {
 Set<String> _publicItemsIn(String text) => {
   for (final m in RegExp(
     r'^pub(?:\(crate\))? (?:fn|struct|trait|enum|const|static|type) '
-    r'([A-Za-z_]\w*)',
+    // `r#break` is one name, not `r` followed by `break`. Without the `r#`
+    // the scan recorded a name `r`, every module that used the raw identifier
+    // imported it, and `no `r` in ...` was 212 unresolved imports.
+    r'((?:r#)?[A-Za-z_]\w*)',
     multiLine: true,
   ).allMatches(text))
     m.group(1)!,
@@ -72,7 +75,7 @@ Set<String> _publicItemsIn(String text) => {
 Set<String> _itemsIn(String text) => {
   for (final m in RegExp(
     r'^(?:pub(?:\(crate\))? )?(?:fn|struct|trait|enum|const|static|type) '
-    r'([A-Za-z_]\w*)',
+    r'((?:r#)?[A-Za-z_]\w*)',
     multiLine: true,
   ).allMatches(text))
     m.group(1)!,
@@ -84,7 +87,7 @@ Set<String> _itemsIn(String text) => {
 /// name that turns out to be unused is free -- the file allows unused imports
 /// -- and missing one is not, so the net is cast wide.
 Set<String> _identifiersIn(String text) => {
-  for (final m in RegExp(r'[A-Za-z_]\w*').allMatches(text)) m.group(0)!,
+  for (final m in RegExp(r'(?:r#)?[A-Za-z_]\w*').allMatches(text)) m.group(0)!,
 };
 
 /// Writes only when the text differs.
