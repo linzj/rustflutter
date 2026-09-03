@@ -270,6 +270,15 @@ class Frontend {
         (enclosingOf(element) == null)) {
       return IrTopLevel(node.name);
     }
+    // A value an enum variant carries, read from one of the enum's own
+    // methods. Lowered as a field read like any other; the backend knows that
+    // for an enum it is a getter over a `match`, and knowing it there means
+    // knowing it once rather than in both front ends.
+    if (element.enclosingElement is EnumElement &&
+        element is GetterElement &&
+        element.isSynthetic) {
+      return IrField(null, node.name, onEnum: true);
+    }
     // The refusal names *where* the thing is declared, not what analyzer's
     // class for it happens to be called. "identifier of GetterElementImpl"
     // says nothing about the work; "top-level getter" says it is a module
@@ -370,7 +379,11 @@ class Frontend {
     if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
       return IrCall(expression(node.prefix), node.identifier.name, const []);
     }
-    return IrField(expression(node.prefix), node.identifier.name);
+    return IrField(
+      expression(node.prefix),
+      node.identifier.name,
+      onEnum: accessor?.enclosingElement is EnumElement,
+    );
   }
 
   IrExpr _property(PropertyAccess node) {
@@ -402,7 +415,11 @@ class Frontend {
     if (accessor is PropertyAccessorElement && !accessor.isSynthetic) {
       return IrCall(expression(target), node.propertyName.name, const []);
     }
-    return IrField(expression(target), node.propertyName.name);
+    return IrField(
+      expression(target),
+      node.propertyName.name,
+      onEnum: accessor?.enclosingElement is EnumElement,
+    );
   }
 
   /// A getter or field read on an already-lowered receiver.
@@ -411,7 +428,11 @@ class Frontend {
     if (element is PropertyAccessorElement && !element.isSynthetic) {
       return IrCall(receiver, name.name, const []);
     }
-    return IrField(receiver, name.name);
+    return IrField(
+      receiver,
+      name.name,
+      onEnum: element?.enclosingElement is EnumElement,
+    );
   }
 
   /// `a..b = 1..c()` -- bind the receiver, do the steps, produce the binding.
@@ -1421,9 +1442,36 @@ class Frontend {
   /// variant a payload to say the same thing. 5 of the 284 enums here do.
   (IrClass, List<String>) lowerEnum(EnumDeclaration node) {
     final refused = <String>[];
-    final stateful = node.members.any(
-      (m) => m is FieldDeclaration && !m.isStatic,
-    );
+    // The names of the fields each value carries, in declaration order, and
+    // what each value passed for them. `none(0)` gives the variant a `value`
+    // of `0` -- a constant *of* the variant, so the Rust is a `match` in a
+    // getter rather than a payload on the enum. The Kernel front end reads the
+    // same thing off the evaluated constants; the enum fixture holds the two
+    // to the same answer.
+    final carried = [
+      for (final member in node.members)
+        if (member is FieldDeclaration && !member.isStatic)
+          for (final v in member.fields.variables) v.name.lexeme,
+    ];
+    final valueFields = <String, Map<String, String>>{};
+    var stateful = carried.isNotEmpty;
+    if (stateful) {
+      for (final constant in node.constants) {
+        final args = constant.arguments?.argumentList.arguments ?? const [];
+        if (args.length != carried.length) break;
+        final own = <String, String>{};
+        for (var i = 0; i < args.length; i++) {
+          final literal = _enumLiteral(args[i]);
+          if (literal == null) break;
+          own[carried[i]] = literal;
+        }
+        if (own.length != carried.length) break;
+        valueFields[constant.name.lexeme] = own;
+      }
+      // All of them or none: a getter that covers some variants is not a
+      // getter.
+      stateful = valueFields.length != node.constants.length;
+    }
     if (stateful) {
       refused.add('unsupported an enum whose values carry fields');
     }
@@ -1433,6 +1481,7 @@ class Frontend {
       values: stateful
           ? const []
           : [for (final c in node.constants) c.name.lexeme],
+      valueFields: stateful ? const {} : valueFields,
       doc: _doc(node),
     );
     if (!stateful) {
@@ -1446,6 +1495,27 @@ class Frontend {
       }
     }
     return (cls, refused);
+  }
+
+  /// A literal an enum value passed to its constructor, as Rust.
+  ///
+  /// Only the four shapes the Kernel side admits, spelled the same way, so a
+  /// fixture cannot pass on one front end and fail on the other.
+  String? _enumLiteral(Expression argument) {
+    if (argument is IntegerLiteral) return '${argument.value}';
+    if (argument is DoubleLiteral) return '${argument.value}';
+    if (argument is BooleanLiteral) return '${argument.value}';
+    if (argument is SimpleStringLiteral) {
+      final text = argument.value
+          .replaceAll(r'\', r'\\')
+          .replaceAll('"', r'\"');
+      return '"$text".to_string()';
+    }
+    if (argument is PrefixExpression && argument.operator.lexeme == '-') {
+      final inner = _enumLiteral(argument.operand);
+      return inner == null ? null : '-$inner';
+    }
+    return null;
   }
 
   /// Lowers one class, collecting what it could not translate rather than

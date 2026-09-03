@@ -265,7 +265,7 @@ mod setters;
 pub use setters::Temperature;
 
 mod enums;
-pub use enums::{Axis, Layout, MainAxisAlignment};
+pub use enums::{Axis, Layout, MainAxisAlignment, Tristate, UsesTristate};
 
 mod toplevel;
 pub use toplevel::{K_DERIVED, K_MAX_ITEMS, K_SPACING, K_VERBOSE};
@@ -1086,6 +1086,18 @@ mod tests {
         // mixin's body is the one Dart runs.
         assert_eq!(Panel::new().from_mixin(), 5.0);
         assert_eq!(Panel::new().from_mixin_only(), 3.0);
+    }
+
+    #[test]
+    fn an_enum_value_carries_its_own_constant() {
+        // `none(0)`, `isTrue(1)`, `isFalse(2)`. The value is a constant of the
+        // variant, so it is a `match` in a getter and not a payload -- which
+        // is also why `Tristate` is still `Copy`.
+        assert_eq!(Tristate::None.value(), 0);
+        assert_eq!(Tristate::IsFalse.value(), 2);
+        assert!(!Tristate::None.is_set());
+        assert!(Tristate::IsTrue.is_set());
+        assert_eq!(UsesTristate::new().weigh(Tristate::IsFalse), 20);
     }
 
     // -- cascades -------------------------------------------------------------

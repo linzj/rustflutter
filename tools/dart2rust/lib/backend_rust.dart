@@ -281,7 +281,11 @@ class RustBackend {
       IrLiteral(:final value, :final type) => _literal(value, type),
       IrLocal(:final name) => snake(name),
       IrThis() => '*$_selfName',
-      IrField(:final target, :final name) => _fieldRead(target, name),
+      IrField(:final target, :final name, :final onEnum) => _fieldRead(
+        target,
+        name,
+        onEnum,
+      ),
       IrStatic(:final owner, :final name, :final isEnumValue) => _staticRead(
         owner,
         name,
@@ -695,8 +699,14 @@ class RustBackend {
   /// Reading them as fields gives "no field `width` on type `&S`".
   var _fieldsAreAccessors = false;
 
-  String _fieldRead(IrExpr? target, String name) {
+  String _fieldRead(IrExpr? target, String name, [bool onEnum = false]) {
     final receiver = _receiver(target);
+    // A field of an *enum* is a getter here, not storage: the value is a
+    // constant of the variant and lives in a `match`. Only the front end knows
+    // -- the backend sees `state.value` with no idea what `state` is -- so it
+    // says so on the node.
+    if (onEnum) return '$receiver.${snake(name)}()';
+
     if (_fieldsAreAccessors &&
         (target == null || target is IrThis) &&
         cls.fields.any((f) => f.name == name)) {
@@ -1445,10 +1455,37 @@ class RustBackend {
     // Refusing the whole enum was right only while the alternative was
     // emitting a plain one and dropping them.
     final members = cls.methods.where((m) => m.operator == null).toList();
-    if (members.isNotEmpty) {
+    // The fields the Dart variants carried, as getters. `Tristate.value` is 0,
+    // 1 or 2 depending on which variant it is -- a `match`, not a payload,
+    // because the value is a constant *of* the variant.
+    final carried = cls.values.isEmpty
+        ? const <String>[]
+        : (cls.valueFields[cls.values.first]?.keys.toList() ?? const []);
+    if (members.isNotEmpty || carried.isNotEmpty) {
       _line('');
       _line('impl ${cls.name} {');
       _indent++;
+      for (final field in carried) {
+        final declared = cls.fields.where((f) => f.name == field).firstOrNull;
+        final rust = declared != null
+            ? type(declared.type)
+            : _literalType(cls.valueFields[cls.values.first]![field]!);
+        _line('${_vis(field)}fn ${snake(field)}(&self) -> $rust {');
+        _indent++;
+        _line('match self {');
+        _indent++;
+        for (final value in cls.values) {
+          _line(
+            '${cls.name}::${variantName(value)} => '
+            '${cls.valueFields[value]![field]},',
+          );
+        }
+        _indent--;
+        _line('}');
+        _indent--;
+        _line('}');
+        _line('');
+      }
       for (final method in members) {
         _member('${cls.name}.${method.name}', () => _emitMethod(method));
       }
@@ -1456,6 +1493,17 @@ class RustBackend {
       _line('}');
     }
     return _out.join('\n') + '\n';
+  }
+
+  /// The Rust type of a literal, when the enum's field declaration is gone.
+  ///
+  /// The dill drops an enum's fields along with its elements, so the type has
+  /// to come from the value. Only the four literal shapes the recovery admits
+  /// can arrive here.
+  static String _literalType(String literal) {
+    if (literal.endsWith('.to_string()')) return 'String';
+    if (literal == 'true' || literal == 'false') return 'bool';
+    return literal.contains('.') ? 'f32' : 'i64';
   }
 
   /// An abstract class becomes a trait.

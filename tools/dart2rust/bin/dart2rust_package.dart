@@ -127,7 +127,7 @@ Future<void> main(List<String> args) async {
   final component = loadComponentFromBinary(args[0]);
   // Once for the whole component: an enum's variants live in the
   // constants that name them, which can be in any library.
-  final enumValues = enumValuesIn(component);
+  final (enumValues, enumFields) = enumsIn(component);
   // A comma-separated list: `package:flutter/,dart:ui`. `dart:ui` holds
   // Color, Offset, Size and Rect, which round 39 measured as the four names
   // the translated package reaches for most and never finds -- and it is in
@@ -194,6 +194,7 @@ Future<void> main(List<String> args) async {
     final result = KernelFrontend(
       library,
       enumValues: enumValues,
+      enumFields: enumFields,
       abstractElsewhere: abstractNames,
     ).lowerLibrary();
     lowered[library] = result;

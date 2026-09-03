@@ -93,10 +93,18 @@ class IrLocal extends IrExpr {
 
 /// A field read. `target` is null for an implicit `this`.
 class IrField extends IrExpr {
-  const IrField(this.target, this.name);
+  const IrField(this.target, this.name, {this.onEnum = false});
 
   final IrExpr? target;
   final String name;
+
+  /// Whether the thing read belongs to an *enum*.
+  ///
+  /// A Dart enum can give each value its own final field, and the Rust for
+  /// that is a getter over a `match` -- the value is a constant of the
+  /// variant, not storage. So the read is a call, and only the front end knows
+  /// it: the backend sees `state.value` with no idea what `state` is.
+  final bool onEnum;
 }
 
 /// A read of a static field or enum value: `Alignment.topLeft`, `Axis.vertical`.
@@ -995,6 +1003,7 @@ class IrClass {
     this.isAbstract = false,
     this.isEnum = false,
     this.values = const [],
+    this.valueFields = const {},
     this.doc,
   });
 
@@ -1039,6 +1048,13 @@ class IrClass {
 
   /// The enum's values, in declaration order, under their Dart names.
   final List<String> values;
+
+  /// What each variant carries, when a Dart enum gave its values fields of
+  /// their own: variant name -> field name -> the Rust literal.
+  ///
+  /// Constants of the variant, not runtime state, so the Rust is a `match` in
+  /// a method rather than a payload on the enum.
+  final Map<String, Map<String, String>> valueFields;
 
   final String? doc;
   final List<IrFieldDecl> fields = [];

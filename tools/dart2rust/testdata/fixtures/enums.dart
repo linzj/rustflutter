@@ -41,3 +41,46 @@ class Layout {
     return alignment == MainAxisAlignment.spaceBetween;
   }
 }
+
+/// An **enhanced** enum whose values carry state of their own.
+///
+/// `none(0)` gives each variant a `value`, and that used to be refused: a Rust
+/// enum would need a payload per variant to say the same thing. It would not.
+/// The value is a constant *of* the variant, so the Rust is a `match` in a
+/// getter -- which is also what makes it free to read.
+enum Tristate {
+  none(0),
+  isTrue(1),
+  isFalse(2);
+
+  const Tristate(this.value);
+
+  final int value;
+
+  bool get isSet {
+    return value > 0;
+  }
+}
+
+class UsesTristate {
+  const UsesTristate();
+
+  int weigh(Tristate state) {
+    return state.value * 10;
+  }
+
+  /// Names all three values. The Kernel front end recovers an enum's variants
+  /// from the *constants* that name them -- the dill keeps no fields for them
+  /// -- so a fixture that declares an enum and never uses it tests nothing on
+  /// that side, and the two front ends came out 18 lines apart until this
+  /// method existed.
+  Tristate pick(int n) {
+    if (n > 0) {
+      return Tristate.isTrue;
+    }
+    if (n < 0) {
+      return Tristate.isFalse;
+    }
+    return Tristate.none;
+  }
+}

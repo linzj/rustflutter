@@ -62,9 +62,11 @@ Future<void> main(List<String> args) async {
     exit(1);
   }
 
+  final (enumValues, enumFields) = enumsIn(component);
   final (lib, refused) = KernelFrontend(
     matches.first,
-    enumValues: enumValuesIn(component),
+    enumValues: enumValues,
+    enumFields: enumFields,
   ).lowerLibrary();
   final (rust, backendRefused) = RustBackend.emitLibrary(
     lib,

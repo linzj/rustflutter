@@ -5,7 +5,7 @@
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Temperature {
-    _celsius: f32,
+    pub(crate) _celsius: f32,
 }
 
 impl Temperature {

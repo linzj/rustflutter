@@ -43,6 +43,7 @@ class KernelFrontend {
   KernelFrontend(
     this.library, {
     this.enumValues = const {},
+    this.enumFields = const {},
     this.abstractElsewhere = const {},
     this.elsewhere = const {},
   });
@@ -61,6 +62,9 @@ class KernelFrontend {
   /// comes out with no values -- which the backend says plainly rather than
   /// emitting an enum with no variants. See `enumValuesIn`.
   final Map<Class, List<String>> enumValues;
+
+  /// What each enum variant carries. See `enumsIn`.
+  final Map<Class, Map<String, Map<String, String>>> enumFields;
   String? _superclass;
 
   // -- Types ------------------------------------------------------------------
@@ -238,7 +242,11 @@ class KernelFrontend {
       if (node.interfaceTarget is Field) {
         // A base field is copied into the subclass struct by the flattening,
         // so `super.x` and `this.x` are the same storage.
-        return IrField(null, node.name.text);
+        return IrField(
+          null,
+          node.name.text,
+          onEnum: node.interfaceTarget?.enclosingClass?.isEnum ?? false,
+        );
       }
       return IrSuperCall(owner, node.name.text, const []);
     }
@@ -719,7 +727,11 @@ class KernelFrontend {
     if (node.interfaceTarget is Procedure) {
       return IrCall(target, name, const []);
     }
-    return IrField(target, name);
+    return IrField(
+      target,
+      name,
+      onEnum: node.interfaceTarget.enclosingClass?.isEnum ?? false,
+    );
   }
 
   IrExpr _staticGet(StaticGet node) {
@@ -1585,11 +1597,32 @@ class KernelFrontend {
     // value its own final fields, and a Rust enum would have to give every
     // variant a payload to say the same. 16 of the 284 enums here are
     // enhanced, and 5 of those carry fields.
-    final enhanced =
-        node.isEnum &&
-        node.fields.any(
-          (f) => !f.isStatic && !implicitEnumMembers.contains(f.name.text),
+    final carried = node.isEnum
+        ? [
+            for (final f in node.fields)
+              if (!f.isStatic && !implicitEnumMembers.contains(f.name.text))
+                f.name.text,
+          ]
+        : const <String>[];
+    // Per-variant state is only out of reach when it cannot be *read off the
+    // constants*. `enum Tristate { none(0), isTrue(1), isFalse(2) }` gives
+    // each value a `value`, and those are constants of the variant, so the
+    // Rust for them is a `match` in a getter rather than a payload on the
+    // enum. When every variant's every field arrives as a literal, the enum
+    // translates; when one does not -- a variant holding a list, say -- it
+    // stays refused rather than half-translated.
+    final carriedValues =
+        enumFields[node] ?? const <String, Map<String, String>>{};
+    final names = enumValues[node] ?? const <String>[];
+    final stateRecovered =
+        carried.isNotEmpty &&
+        names.isNotEmpty &&
+        names.every(
+          (v) =>
+              carriedValues[v] != null &&
+              carried.every(carriedValues[v]!.containsKey),
         );
+    final enhanced = carried.isNotEmpty && !stateRecovered;
     // An enum's values are its static const fields -- except that in a real
     // dill they are not there at all. Measured in round 39: of the 200 enums
     // in `package:flutter/`, exactly **one** still has any field. Nothing
@@ -1615,7 +1648,7 @@ class KernelFrontend {
     // recovery quietly undid until the fixture said so.
     final recovered = values.isNotEmpty || enhanced || !node.isEnum
         ? values
-        : (enumValues[node] ?? const <String>[]);
+        : names;
     final cls = IrClass(
       node.name,
       typeParameters: [for (final p in node.typeParameters) p.name ?? 'T'],
@@ -1629,6 +1662,9 @@ class KernelFrontend {
       isAbstract: node.isAbstract,
       isEnum: node.isEnum,
       values: recovered,
+      valueFields: stateRecovered
+          ? {for (final v in recovered) v: carriedValues[v]!}
+          : const {},
     );
     _superclass = cls.superclass;
     final refused = <String>[];
@@ -1938,24 +1974,58 @@ class _EarlyExit extends RecursiveVisitor {
 /// refers to leaves a gap, and a gap is worth knowing about: `enumValuesIn`
 /// reports the indices it saw so the caller can tell a complete enum from a
 /// partial one.
-Map<Class, List<String>> enumValuesIn(Component component) {
+Map<Class, List<String>> enumValuesIn(Component component) =>
+    enumsIn(component).$1;
+
+/// The variants, and what each one carries.
+///
+/// A Dart enum can give every value its own final fields --
+/// `enum Tristate { none(0), isTrue(1), isFalse(2); final int value; }` -- and
+/// that used to be refused outright, on the grounds that a Rust enum would
+/// need a payload per variant to say the same thing. It would not: the values
+/// are **constants of the variant**, so the Rust for them is a `match` in a
+/// method. The constants carry them, and this is where they are picked up.
+(Map<Class, List<String>>, Map<Class, Map<String, Map<String, String>>>)
+enumsIn(Component component) {
   final byIndex = <Class, Map<int, String>>{};
-  final finder = _EnumConstantFinder(byIndex);
+  final fields = <Class, Map<String, Map<String, String>>>{};
+  final finder = _EnumConstantFinder(byIndex, fields);
   for (final library in component.libraries) {
     library.accept(finder);
   }
-  return {
-    for (final entry in byIndex.entries)
-      entry.key: (entry.value.keys.toList()..sort())
-          .map((i) => entry.value[i]!)
-          .toList(),
-  };
+  return (
+    {
+      for (final entry in byIndex.entries)
+        entry.key: (entry.value.keys.toList()..sort())
+            .map((i) => entry.value[i]!)
+            .toList(),
+    },
+    fields,
+  );
 }
 
 class _EnumConstantFinder extends RecursiveVisitor {
-  _EnumConstantFinder(this.byIndex);
+  _EnumConstantFinder(this.byIndex, this.fields);
 
   final Map<Class, Map<int, String>> byIndex;
+
+  /// Class -> variant name -> field name -> the Rust literal for it.
+  ///
+  /// Only literals. A variant carrying a `List` or another object is state
+  /// this cannot write as a `match` arm, and the enum stays refused rather
+  /// than half-translated.
+  final Map<Class, Map<String, Map<String, String>>> fields;
+
+  static const _implicit = {'index', '_name', 'hashCode'};
+
+  static String? _literal(Constant value) => switch (value) {
+    IntConstant(:final value) => '$value',
+    DoubleConstant(:final value) => '$value',
+    BoolConstant(:final value) => '$value',
+    StringConstant(:final value) =>
+      '"${value.replaceAll(r'', r'\').replaceAll('"', r'\"')}".to_string()',
+    _ => null,
+  };
 
   final _seen = <Constant>{};
 
@@ -1995,6 +2065,16 @@ class _EnumConstantFinder extends RecursiveVisitor {
     }
     if (index == null || name == null) return;
     (byIndex[constant.classNode] ??= <int, String>{})[index] = name;
+    final own = <String, String>{};
+    for (final entry in constant.fieldValues.entries) {
+      final field = entry.key.asField.name.text;
+      if (_implicit.contains(field)) continue;
+      final literal = _literal(entry.value);
+      if (literal == null) return;
+      own[field] = literal;
+    }
+    (fields[constant.classNode] ??= <String, Map<String, String>>{})[name] =
+        own;
   }
 
   @override

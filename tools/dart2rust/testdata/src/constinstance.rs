@@ -17,7 +17,7 @@ pub struct Spacing {
 }
 
 impl Spacing {
-    const fn new_(amount: f32) -> Self {
+    pub(crate) const fn new_(amount: f32) -> Self {
         Self { amount: amount }
     }
 
@@ -36,8 +36,8 @@ impl Spacing {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InsetBase {
-    _h: f32,
-    _v: f32,
+    pub(crate) _h: f32,
+    pub(crate) _v: f32,
 }
 
 impl InsetBase {
@@ -53,8 +53,8 @@ impl InsetBase {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Inset {
-    _h: f32,
-    _v: f32,
+    pub(crate) _h: f32,
+    pub(crate) _v: f32,
 }
 
 impl Inset {

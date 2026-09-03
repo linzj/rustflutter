@@ -3412,6 +3412,62 @@ CFE 把它们剥掉了,所以变体只能从"本身就是一个变体"的常量�
 
 ---
 
+## 第 69 轮:"值不在 dill 里"是错的,真正的原因是逐变体的状态
+
+上一轮我写下"`Tristate` 的变体在这个 dill 里从未作为常量出现过"。
+**又是没验证就写的。** 探针一查:
+
+    Tristate 常量出现次数: 3
+      value=IntConstant(0), index=IntConstant(0), _name=StringConstant("none")
+      value=IntConstant(1), index=IntConstant(1), _name=StringConstant("isTrue")
+      value=IntConstant(2), index=IntConstant(2), _name=StringConstant("isFalse")
+
+三个都在,`index` 和 `_name` 齐全。真正拒绝它的是另一条**故意写下的**规则:
+
+    final enhanced = node.isEnum && node.fields.any((f) => !f.isStatic && ...);
+
+`Tristate` 的每个变体带自己的 `value`,当时判断"Rust 枚举要表达它就得给每个
+变体一个载荷",于是整个拒掉。
+
+**这个判断不成立。** 那些值是**变体的常量**,不是运行时状态——
+Rust 里它是一个 `match` 方法,不是载荷:
+
+    impl Tristate {
+        pub fn value(&self) -> i64 {
+            match self {
+                Tristate::None => 0,
+                Tristate::IsTrue => 1,
+                Tristate::IsFalse => 2,
+            }
+        }
+    }
+
+而且枚举还留着 `Copy`,读它是免费的。
+
+### 两个前端各走各的路,到同一个答案
+
+Kernel 从**求值后的常量**里读(dill 里枚举的字段被剥掉了);
+analyzer 直接读源码里 `none(0)` 的实参。两边只认四种字面量,
+拼出来的 Rust 文本一模一样,所以 fixture 能把它们钉在一起。
+**全有或全无**:有一个变体的字段读不出来,整个枚举仍然拒绝——
+覆盖一部分变体的 getter 不是 getter。
+
+### 读它的地方
+
+`state.value` 在 Rust 里是 `state.value()`,而**后端不知道 `state` 是什么**。
+所以 `IrField` 多了一个 `onEnum` 标记,由前端(它做过解析)填。
+一处判断,两个前端各填一次,后端只认这个标记。
+
+`core` 切片:错误 **491 → 456**,`Tristate` 从缺失名单上消失。
+
+### fixture 教了我一件关于 fixture 的事
+
+第一版 fixture 声明了 `Tristate` 却从没**用过**它的值,
+于是 Kernel 那边一个变体也恢复不出来——它是从常量里恢复的,而没有使用就没有常量。
+两个前端差了 18 行。**一个只声明不使用的 fixture,在 Kernel 这条路上什么都没测。**
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
