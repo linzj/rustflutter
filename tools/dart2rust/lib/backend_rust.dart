@@ -621,8 +621,13 @@ class RustBackend {
   /// class is emitted twice: once as a free generic function holding the body,
   /// and once as the trait default, which calls it. `super.name(..)` then names
   /// the function, which is the one thing that cannot dispatch anywhere else.
-  static String superFn(String base, String name) =>
-      '${snake(base)}_super_${_identifier(name)}';
+  /// A getter and a setter share a Dart name and must not share a Rust one.
+  ///
+  /// `RenderBox` has `Size get size` and `set size(Size)`, and both produced
+  /// `render_box_super_size` -- the same collision round 62 found in the trait
+  /// impls, one level over in the free functions that hold the bodies.
+  static String superFn(String base, String name, {bool isSetter = false}) =>
+      '${snake(base)}_super_${isSetter ? 'set_' : ''}${_identifier(name)}';
 
   /// A static call, checked against the IR when it lands in this library.
   ///
@@ -1666,7 +1671,7 @@ class RustBackend {
           _line('todo!("${cls.name}.${method.name} did not translate")');
         } else {
           _line(
-            '${superFn(cls.name, method.name)}('
+            '${superFn(cls.name, method.name, isSetter: method.isSetter)}('
             '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})',
           );
         }
@@ -1793,7 +1798,7 @@ class RustBackend {
     for (final method in cls.methods) {
       if (method.isStatic) continue;
       if (!_member(
-        superFn(cls.name, method.name),
+        superFn(cls.name, method.name, isSetter: method.isSetter),
         () => _emitSuperFn(method),
       )) {
         _superFailed.add(method.name);
@@ -1830,7 +1835,8 @@ class RustBackend {
         ),
       ].join(', ');
       _line(
-        '${_vis(cls.name)}fn ${superFn(cls.name, method.name)}'
+        '${_vis(cls.name)}fn '
+        '${superFn(cls.name, method.name, isSetter: method.isSetter)}'
         // The class's parameters come too: a body of `ParametricCurve<T>`
         // returns a `T`, and the free function holding it has to say where
         // that `T` comes from.
@@ -2580,22 +2586,23 @@ class RustBackend {
       // class's terms like every other signature in the block. Round 73
       // substituted the methods and left the accessors behind, which put a
       // `T` no impl declares in front of 103 field reads.
-      if (reads == null) {
-        _member('impl ${base.name}::${field.name} for ${cls.name}', () {
-          throw Unsupported(
-            '`${cls.name}` has neither a field nor a getter `${field.name}`, '
-                'which `${base.name}` requires',
-            '${base.name}.${field.name}',
-          );
-        });
-        continue;
-      }
+      // `todo!()`, not a refusal. A refused accessor leaves the trait
+      // unimplemented -- 18 `E0046`s, one of them naming twenty-three at once
+      // -- and the method path next door has always written a `todo!()` for
+      // exactly this. The two owe the same answer.
+      //
+      // The case is real: `_TransformedPointerAddedEvent` gets `viewId` from a
+      // mixin, and the IR does not copy a mixin's methods into the class, so
+      // nothing here can see the getter that does exist. Reaching it means
+      // going through the mixin's own trait, which is a round of its own.
+      final body =
+          reads ?? 'todo!("${cls.name} does not translate ${field.name} yet")';
       _line(
         'fn ${snake(field.name)}(&self) -> '
         '${type(_substituteType(field.type, _implBinding))} {',
       );
       _indent++;
-      _line(reads);
+      _line(body);
       _indent--;
       _line('}');
       _line('');

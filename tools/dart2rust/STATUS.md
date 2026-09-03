@@ -3958,6 +3958,36 @@ trait 里放不下存储,但**类的静态在 Rust 里本来就是模块级的�
 
 ---
 
+## 第 83 轮:同一个碰撞的第三处,和两条路径欠的同一个答案
+
+### getter 和 setter 又撞了一次
+
+    error[E0428]: the name `render_box_super_size` is defined multiple times
+
+`RenderBox` 有 `Size get size` 和 `set size(Size)`,两个都生成
+`render_box_super_size`。**这是第 62 轮那个碰撞的第三个地方**
+——先是 trait impl(E0201),然后是内部方法,现在是持有方法体的自由函数。
+每次都是同一句话:**getter 和 setter 在 Dart 里是两个成员,在 Rust 里是一个名字。**
+
+E0428 **24 → 0**。
+
+### 拒绝一个访问器,会让整个 trait 没实现
+
+修完上面那个,冒出 18 个 E0046,其中一个一次点名 23 个缺失成员
+——全是第 63 轮我拒掉的 `PointerEvent` 访问器。
+
+而**隔壁的方法路径遇到同样情况一直是发 `todo!()`**。两条路径欠的是同一个答案,
+而它们给了不同的。改成一致:访问器也发 `todo!()`。
+
+这个情况本身是真的:`_TransformedPointerAddedEvent` 的 `viewId` 来自一个混入,
+而 IR 不把混入的方法抄进类里,所以这里看不见那个确实存在的 getter。
+要够到它得走混入自己的 trait,那是另一轮的事——`todo!()` 如实说了这一点,
+而且不会让 trait 塌掉。
+
+**拒绝 3309 → 2964**(−345),错误 352 → **337**。
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3978,9 +4008,9 @@ trait 里放不下存储,但**类的静态在 Rust 里本来就是模块级的�
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`widgets` 剩 376。E0425 的 214 里,
-`Timer`/`Completer` 54 是执行器,`Pointer`/`NativeType` 15 是 dart:ffi(该拒),
-`T` 26 还没查。E0428(24,重名)也没看过。
+**下一轮**:`widgets` 剩 337,E0425 占 214,其中
+`Timer`/`Completer` 54 是执行器、`Pointer`/`NativeType` 15 是 dart:ffi。
+真正没查过的是 `T` 26 和 E0433(36)。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。
