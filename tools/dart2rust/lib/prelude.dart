@@ -336,6 +336,97 @@ impl fmt::Display for StackTrace {
     }
 }
 
+/// Dart's `DateTime`: an instant, counted in microseconds from the epoch.
+///
+/// `now()` is the one thing here that needs the outside world, and it uses the
+/// system clock. Dart's is the same clock. `isUtc` is carried because upstream
+/// compares on it, and the arithmetic ignores it exactly as Dart's does --
+/// a `Duration` is a span, not a calendar step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+pub struct DateTime {
+    pub microseconds_since_epoch: i64,
+    pub is_utc: bool,
+}
+
+impl DateTime {
+    pub fn now() -> Self {
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0);
+        DateTime { microseconds_since_epoch: since, is_utc: false }
+    }
+
+    pub fn from_microseconds_since_epoch(microseconds: i64) -> Self {
+        DateTime { microseconds_since_epoch: microseconds, is_utc: false }
+    }
+
+    pub fn from_milliseconds_since_epoch(milliseconds: i64) -> Self {
+        DateTime {
+            microseconds_since_epoch: milliseconds * 1000,
+            is_utc: false,
+        }
+    }
+
+    pub fn milliseconds_since_epoch(&self) -> i64 {
+        self.microseconds_since_epoch / 1000
+    }
+
+    pub fn difference(&self, other: DateTime) -> Duration {
+        Duration {
+            microseconds: self.microseconds_since_epoch
+                - other.microseconds_since_epoch,
+        }
+    }
+
+    pub fn add(&self, span: Duration) -> DateTime {
+        DateTime {
+            microseconds_since_epoch: self.microseconds_since_epoch
+                + span.microseconds,
+            is_utc: self.is_utc,
+        }
+    }
+
+    pub fn subtract(&self, span: Duration) -> DateTime {
+        DateTime {
+            microseconds_since_epoch: self.microseconds_since_epoch
+                - span.microseconds,
+            is_utc: self.is_utc,
+        }
+    }
+
+    pub fn is_before(&self, other: DateTime) -> bool {
+        self.microseconds_since_epoch < other.microseconds_since_epoch
+    }
+
+    pub fn is_after(&self, other: DateTime) -> bool {
+        self.microseconds_since_epoch > other.microseconds_since_epoch
+    }
+}
+
+/// Dart's `Type`, as `runtimeType` gives it.
+///
+/// A name and nothing else. Upstream prints it, compares it, and uses it as a
+/// map key; none of that needs the reflection Dart's `Type` can do and Rust
+/// cannot. What it does *not* support is being turned back into a class, and
+/// nothing here tries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Type {
+    pub name: &'static str,
+}
+
+impl Type {
+    pub const fn of(name: &'static str) -> Self {
+        Type { name }
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name)
+    }
+}
+
 /// Dart's `Zone`.
 ///
 /// A zone is the async context a callback was registered in, so that running

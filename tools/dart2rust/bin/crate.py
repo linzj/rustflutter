@@ -57,7 +57,11 @@ SLICES = {
                'package:flutter/src/widgets,package:flutter/src/animation,'
                'package:flutter/src/scheduler,package:flutter/src/rendering,'
                'package:flutter/src/gestures,package:flutter/src/semantics,'
-               'package:flutter/src/services,dart:ui',
+               'package:flutter/src/services,package:flutter/src/physics,'
+               # `Matrix4` was the most-wanted name after rendering came in,
+               # 430 times, and it lives in a *package* rather than a flutter
+               # layer. Same cut, one level out.
+               'package:vector_math,dart:ui',
 }
 
 sys.path.insert(0, HERE)

@@ -1028,7 +1028,42 @@ class RustBackend {
   /// `self` is already a reference; anything else names one.
   String _ref(IrExpr e) => e is IrThis ? _selfName : expr(e);
 
+  /// `dart:collection`'s internal implementation classes, by what they are.
+  ///
+  /// A Dart `<T>{}` resolves, in Kernel, to a constructor of `_Set`; a list
+  /// literal that can grow is a `_GrowableList`. Those names are the runtime's
+  /// own and nothing outside it declares them, so they came out as
+  /// `_Set::new()` -- a module Rust has never heard of, 40 times.
+  ///
+  /// Only the empty constructors. `_GrowableList(n)` and `_List.filled` mean
+  /// something else and are left to refuse rather than be guessed at.
+  static const _collections = {
+    '_Set': 'Set',
+    '_LinkedHashSet': 'Set',
+    '_CompactLinkedHashSet': 'Set',
+    '_HashSet': 'Set',
+    '_Map': 'std::collections::HashMap',
+    '_LinkedHashMap': 'std::collections::HashMap',
+    '_InternalLinkedHashMap': 'std::collections::HashMap',
+    '_HashMap': 'std::collections::HashMap',
+    '_GrowableList': 'Vec',
+    '_List': 'Vec',
+  };
+
   String _new(IrType t, List<IrExpr> args, String? constructor) {
+    final collection = _collections[t.name];
+    if (collection != null) {
+      if (args.isNotEmpty) {
+        throw Unsupported(
+          '`${t.name}` with arguments, which is not the empty collection',
+          '${t.name}(..)',
+        );
+      }
+      final arguments = t.arguments.isEmpty
+          ? ''
+          : '::<${t.arguments.map((a) => type(a)).join(', ')}>';
+      return '$collection$arguments::new()';
+    }
     // `Pair::<i64, f32>::new(..)`, not `Pair<i64, f32>::new(..)`: in an
     // *expression* Rust wants the turbofish, and the plain form does not parse.
     final name = t.arguments.isEmpty
