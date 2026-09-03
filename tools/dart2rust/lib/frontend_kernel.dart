@@ -298,7 +298,12 @@ class KernelFrontend {
     // refused. 495 of these, and the closure rule already knew what to do with
     // them.
     if (node is InstanceTearOff) {
-      if (!_borrowedArgument) {
+      // A counted class's tear-off keeps a handle, exactly as a closure that
+      // calls a method does -- it *is* that closure, written shorter. Without
+      // this the two shapes got different answers for the same question, and
+      // the tear-offs stayed refused: 503 of them.
+      final holds = _counted && node.receiver is ThisExpression;
+      if (!holds && !_borrowedArgument) {
         throw Unsupported('a method used as a value', _sample(node));
       }
       final target = node.interfaceTarget;
@@ -327,6 +332,7 @@ class KernelFrontend {
           ),
         ),
         _type(fn.returnType),
+        holdsSelf: holds,
       );
     }
     throw Unsupported('expression ${node.runtimeType}', _sample(node));

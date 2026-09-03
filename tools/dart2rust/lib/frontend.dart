@@ -293,7 +293,10 @@ class Frontend {
     if (element is MethodElement &&
         !element.isStatic &&
         element.enclosingElement is InterfaceElement) {
-      if (!_borrowedArgument) {
+      // A counted class's tear-off keeps a handle, like the closure it is.
+      // The Kernel front end draws the same line off `InstanceTearOff`.
+      final holds = _counted;
+      if (!holds && !_borrowedArgument) {
         throw Unsupported('a method used as a value', node.toSource());
       }
       if (element.formalParameters.any((p) => p.isNamed) ||
@@ -316,6 +319,7 @@ class Frontend {
           IrCall(null, node.name, [for (final p in params) IrLocal(p.name)]),
         ),
         _type(element.returnType),
+        holdsSelf: holds,
       );
     }
     // The refusal names *where* the thing is declared, not what analyzer's
