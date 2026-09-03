@@ -867,6 +867,23 @@ class IrFieldDecl {
   final IrExpr? initial;
 
   final String? doc;
+
+  /// The same field with its type put through [by].
+  ///
+  /// Flattening copies a base's fields into the subclass, and a generic base
+  /// declares them in terms of its own parameters: `DiagnosticsProperty<T>`
+  /// has a `T? _value`, and an `ErrorDescription extends
+  /// DiagnosticsProperty<String>` has a `String? _value`. Copying without
+  /// substituting left the parameter's name standing in a struct that has no
+  /// such parameter.
+  static IrFieldDecl substituted(IrFieldDecl f, IrType Function(IrType) by) =>
+      IrFieldDecl(
+        f.name,
+        by(f.type),
+        isFinal: f.isFinal,
+        initial: f.initial,
+        doc: f.doc,
+      );
 }
 
 /// A `static const` whose value the front end evaluated.

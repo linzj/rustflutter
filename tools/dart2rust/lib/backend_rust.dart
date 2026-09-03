@@ -266,6 +266,19 @@ class RustBackend {
       final vec = 'Vec<${type(t.arguments.single)}>';
       return t.nullable ? 'Option<$vec>' : vec;
     }
+    // `Future<T>` as a *type*, which is not the same as an `async fn`: a Rust
+    // `async fn` returning `T` is already a future and drops the wrapper, but
+    // a field that holds one, or a plain function that returns one, has to
+    // name it. A future's own type has no name, so an owned position is
+    // `Pin<Box<dyn Future>>` and a borrowed one is `impl Future` -- exactly
+    // the split a function type already takes here.
+    if (t.name == 'Future' && t.arguments.length == 1) {
+      final output = type(t.arguments.single);
+      final future = owned
+          ? 'std::pin::Pin<Box<dyn std::future::Future<Output = $output>>>'
+          : 'impl std::future::Future<Output = $output>';
+      return t.nullable ? 'Option<$future>' : future;
+    }
     final mapped = _primitives[t.name] ?? t.name;
     // `Foo<int>` was coming out as a bare `Foo`, which is a different type.
     final spelled = t.arguments.isEmpty || _primitives.containsKey(t.name)
@@ -1852,10 +1865,38 @@ class RustBackend {
   ///
   /// Base first, in declaration order, so the layout reads the way upstream's
   /// class hierarchy does.
-  List<IrFieldDecl> _allFields(IrClass of) {
+  List<IrFieldDecl> _allFields(
+    IrClass of, [
+    Map<String, IrType> bound = const {},
+  ]) {
+    final own = [
+      for (final f in of.fields)
+        IrFieldDecl.substituted(f, (t) => _substituteType(t, bound)),
+    ];
     final base = library[of.superclass];
-    if (base == null) return of.fields;
-    return [..._allFields(base), ...of.fields];
+    if (base == null) return own;
+    // The base's type parameters, bound to what this class passed it.
+    // `ErrorDescription extends DiagnosticsProperty<String>` inherits a
+    // `T? _value`, and copying it in unsubstituted left a field of type `T` in
+    // a struct with no `T` -- 32 `cannot find type T`, and every one of them a
+    // field this compiler had claimed to translate.
+    final passed = of.superclassArguments;
+    final next = <String, IrType>{
+      if (passed.length == base.typeParameters.length)
+        for (var i = 0; i < passed.length; i++)
+          base.typeParameters[i]: _substituteType(passed[i], bound),
+    };
+    return [..._allFields(base, next), ...own];
+  }
+
+  /// `T` -> whatever `T` was bound to, inside a type and its arguments.
+  static IrType _substituteType(IrType t, Map<String, IrType> bound) {
+    if (t.arguments.isEmpty) return bound[t.name] ?? t;
+    return IrType(
+      t.name,
+      nullable: t.nullable,
+      arguments: [for (final a in t.arguments) _substituteType(a, bound)],
+    );
   }
 
   /// The field initialisers a `super(...)` stands for.

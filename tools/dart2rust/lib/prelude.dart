@@ -336,6 +336,37 @@ impl fmt::Display for StackTrace {
     }
 }
 
+/// Dart's `Zone`.
+///
+/// A zone is the async context a callback was registered in, so that running
+/// it later runs it under the same error handling. Upstream stores one beside
+/// each callback -- `dart:ui` keeps a `_zone` next to every platform handler --
+/// and then runs the callback in it.
+///
+/// There is exactly one zone here, because there is no runtime to make a
+/// second: `Zone::CURRENT` is it, and `run` calls the callback directly. That
+/// is what the root zone does in Dart too. A program that installs a zone of
+/// its own to catch errors would not get that behaviour, and this is where to
+/// look when it does not.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Zone;
+
+impl Zone {
+    pub const CURRENT: Zone = Zone;
+
+    pub fn run<T>(&self, body: impl FnOnce() -> T) -> T {
+        body()
+    }
+
+    pub fn run_unary<A, T>(&self, body: impl FnOnce(A) -> T, argument: A) -> T {
+        body(argument)
+    }
+
+    pub fn register_callback<T>(&self, body: impl Fn() -> T) -> impl Fn() -> T {
+        body
+    }
+}
+
 /// Dart's error and exception classes.
 ///
 /// One shape for all of them: a message, and a `Display` that prints what Dart

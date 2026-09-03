@@ -3549,6 +3549,61 @@ Flutter 的会 pend,回答那个的是执行器,是另一件事。
 
 ---
 
+## 第 72 轮:`Future` 是类型,`FutureOrType` 是我编的名字
+
+`Zone` 35、`Future` 24 还在缺失名单上,查它们用在哪:
+
+    pub(crate) _zone: Zone,
+    fn get_next_frame(&self) -> Future<FrameInfo>;
+    pub(crate) fn _send_font_change_message() -> FutureOrType {
+
+三件不同的事。
+
+### `Future` 作为类型,和 `async fn` 不是一回事
+
+上一轮摘掉的是 `async fn` 签名上的包装。但一个**字段**持有 future、
+一个普通函数**返回** future 时,那个名字必须写出来。future 自己的类型没有名字,
+所以拥有的位置是 `Pin<Box<dyn Future<Output = T>>>`,借用的位置是
+`impl Future<Output = T>`——和函数类型早就在走的是同一个分法。
+
+### `FutureOrType` 是 Kernel 的类名,不是 Dart 的类型名
+
+前端的类型降级有一条兜底:`return IrType(type.runtimeType.toString())`。
+于是 `FutureOr<T>` 变成了一个叫 `FutureOrType` 的类型,
+**在输出里读起来和一个被翻译过的类一模一样**。
+
+**编出来的名字比没有名字更糟。** 兜底改成拒绝。
+`FutureOr` 是真的缺口——它是"T,或者 T 的 future",Rust 要一个枚举才说得清。
+
+### `Zone`
+
+它是回调注册时所在的异步上下文,`dart:ui` 在每个平台回调旁边存一个。
+前奏里现在有一个,而且**只有一个**——没有运行时去造第二个。
+`Zone::CURRENT` 就是它,`run` 直接调用回调,这也正是 Dart 根 zone 的行为。
+一个自己装 zone 来兜错误的程序拿不到那个行为,**这条写在代码里,
+出问题时知道去哪儿看**。
+
+### 扁平化没有代入类型参数
+
+`ErrorDescription extends DiagnosticsProperty<String>` 继承了一个 `T? _value`,
+而 `T` 被原样抄进了一个没有 `T` 的结构体——32 个 `cannot find type T`,
+每一个都是这个编译器**声称翻译过**的字段。现在沿继承链代入。
+
+### 又一次"拒绝的单位"
+
+`lowerClass` 逐成员设防,而**它自己的类头不是成员**:超类的类型参数和混入列表
+在任何成员之前降级,那里的拒绝无处可去,只能冲出整个运行——
+`widgets` 里一个扩展类型让整包发射直接崩掉。类是这里的单位,拒绝就停在类上。
+
+### 数字
+
+| | 错误 |
+|---|---|
+| `core` 切片 | 303 → **227**(`T` 32 → 20) |
+| `widgets` 切片 | 3997 → **3719** |
+
+---
+
 ## 下一步
 
 同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
@@ -3569,9 +3624,8 @@ Flutter 的会 pend,回答那个的是执行器,是另一件事。
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:`Zone` 35 和 `Future` 24 仍在缺失名单上——它们是**类型**,
-出现在字段和参数里,不只是 `async fn` 的返回。看清楚这两个名字用在哪,
-再决定是给前奏加类型还是拒。
+**下一轮**:剩下的 20 个 `T` 是另一种——trait 里的**泛型方法**
+(`fn _create(..) -> T`)没有带上自己的类型参数。
 
 **不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
 按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。

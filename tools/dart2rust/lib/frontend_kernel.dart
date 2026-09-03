@@ -101,7 +101,13 @@ class KernelFrontend {
         nullable: nullable,
       );
     }
-    return IrType(type.runtimeType.toString());
+    // Kernel's own class name is not a Dart type name. `FutureOr<T>` arrived
+    // as the type `FutureOrType`, which nothing declares and which reads, in
+    // the output, exactly like a class the compiler had translated. A name
+    // this compiler invented is worse than no name: refusing says where the
+    // gap is, and `FutureOr` is a real gap -- it is "T, or a future of T",
+    // which Rust would need an enum to say.
+    throw Unsupported('the type `$type`', '$type');
   }
 
   // -- Expressions ------------------------------------------------------------
@@ -1520,9 +1526,19 @@ class KernelFrontend {
       // synthetic classes, not something upstream wrote. Private classes do
       // not -- see the note where `_refusePrivate` used to be.
       if (cls.isAnonymousMixin) continue;
-      final (lowered, problems) = lowerClass(cls);
-      classes.add(lowered);
-      refused.addAll(problems.map((p) => '${cls.name}: $p'));
+      // `lowerClass` guards each *member*, and its own header is not a member:
+      // the superclass's type arguments and the mixin list are lowered before
+      // any member is, and a refusal there had nowhere to go but out of the
+      // whole run. One extension type in `widgets` stopped the package
+      // emitting at all. A class is the unit here, so it is where the refusal
+      // stops.
+      try {
+        final (lowered, problems) = lowerClass(cls);
+        classes.add(lowered);
+        refused.addAll(problems.map((p) => '${cls.name}: $p'));
+      } on Unsupported catch (error) {
+        refused.add('${cls.name}: $error');
+      }
     }
     return (
       IrLibrary(
