@@ -570,7 +570,8 @@ class RustBackend {
     _indent = savedIndent;
     final closure =
         '${node.captures.isEmpty ? '' : 'move '}|$params| { $body }';
-    return node.captures.isEmpty ? closure : '{ $bindings $closure }';
+    final whole = node.captures.isEmpty ? closure : '{ $bindings $closure }';
+    return node.boxed ? 'Box::new($whole)' : whole;
   }
 
   /// A copy of a field, for a closure to keep.
@@ -836,7 +837,14 @@ class RustBackend {
             (args.length == 1 &&
                 args.single is IrLiteral &&
                 (args.single as IrLiteral).value == '0');
-        if (empty) return '$collection::new()';
+        // `vec![]` for a list, which is what the list-literal path already
+        // writes. One thing, one spelling: the two front ends reach an empty
+        // list by different routes -- Kernel through `_GrowableList(0)` and
+        // the analyzer through a literal -- and a fixture that compares text
+        // sees any difference at all.
+        if (empty) {
+          return collection == 'Vec' ? 'vec![]' : '$collection::new()';
+        }
         throw Unsupported(
           '`$owner` with a length, which is a list of nulls',
           '$owner(..)',
@@ -2615,7 +2623,14 @@ class RustBackend {
 
   String _param(IrParam p, {bool owned = true}) =>
       '${_reassigned.contains(p.name) ? "mut " : ""}'
-      '${snake(p.name)}: ${type(p.type, owned: owned)}';
+      // A *function-typed* parameter the callee keeps is owned however it was
+      // reached: a list of listeners cannot hold a borrow. Only function
+      // types: "keeps it" is measured as "does more than call it", and for an
+      // ordinary parameter that includes merely comparing it -- which made
+      // `identical(this, other)` take its argument by value and stop being a
+      // question about references at all.
+      '${snake(p.name)}: '
+      '${type(p.type, owned: owned || (p.kept && p.type.isFunction))}';
 
   String _params(IrMethod method) => [
     if (!method.isStatic) '&self',
@@ -2920,6 +2935,9 @@ class RustBackend {
               substituted,
               named: p.named,
               hasDefault: p.hasDefault,
+              // Carried, or the impl writes `&dyn Fn` where the trait it
+              // implements declared `Box<dyn Fn>`.
+              kept: p.kept,
             ),
             owned: fromParameter,
           );

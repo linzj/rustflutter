@@ -1060,6 +1060,15 @@ mod tests {
     }
 
     #[test]
+    fn a_callee_that_keeps_a_closure_gets_an_owned_one() {
+        // `keep` returns what it is given, so it is not finished with it when
+        // it returns -- and a borrow could not survive that. The parameter is
+        // `Box<dyn Fn>`, the closure copies the `final` field it reads, and
+        // the two together are what make the escape legal.
+        assert_eq!(Closures::new(5.0).by_remembering(3.0), 15.0);
+    }
+
+    #[test]
     fn a_method_handed_over_as_a_value_becomes_a_closure() {
         // `applyTwice(scaled, x)` with factor 3: 2 -> 6 -> 18. A tear-off in
         // an argument is a closure that borrows, so nothing has to be owned.

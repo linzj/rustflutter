@@ -1019,6 +1019,74 @@ class KernelFrontend {
     }
   }
 
+  /// One argument, lowered knowing what the callee does with it.
+  ///
+  /// A closure may borrow only if the callee is *finished with it* when it
+  /// returns. Round 59 asked the weaker question -- "is this an argument" --
+  /// and `bin/census_escapes.dart` measured what that costs: of 1234 closures
+  /// handed to a call, 394 are kept by the callee. `addListener`,
+  /// `scheduleMicrotask`, `Timer`, `WidgetStateProperty.resolveWith`: storing
+  /// one needs `'static`, and a borrow cannot give it. Those go back to being
+  /// refused, which is the truth about them until objects are counted.
+  IrExpr _argument(Expression value, FunctionNode? callee, int index) {
+    final param = callee != null && index < callee.positionalParameters.length
+        ? callee.positionalParameters[index]
+        : null;
+    return _withBorrowing(param, callee, () => expression(value));
+  }
+
+  IrExpr _namedArgument(Expression value, Object param) =>
+      _withBorrowing(param, _calleeOf(param), () => expression(value));
+
+  FunctionNode? _calleeOf(Object param) {
+    final parent = param is TreeNode ? param.parent : null;
+    return parent is FunctionNode ? parent : null;
+  }
+
+  IrExpr _withBorrowing(
+    Object? param,
+    FunctionNode? callee,
+    IrExpr Function() lower,
+  ) {
+    final was = _borrowedArgument;
+    final kept = param != null && callee != null && _keeps(callee, param);
+    if (kept) _borrowedArgument = false;
+    try {
+      final value = lower();
+      // The parameter is owned where it is kept, so the argument is boxed to
+      // match: a closure's own type has no name.
+      if (kept && value is IrClosure) {
+        return IrClosure(
+          value.params,
+          value.body,
+          value.returns,
+          captures: value.captures,
+          boxed: true,
+        );
+      }
+      return value;
+    } finally {
+      _borrowedArgument = was;
+    }
+  }
+
+  /// Whether the callee does anything with the parameter but call it.
+  ///
+  /// A body that is not there cannot be read, and "unknown" has to mean
+  /// "keeps": guessing the other way is guessing that a borrow outlives its
+  /// borrower.
+  static final _keepsCache = <Object, bool>{};
+
+  bool _keeps(FunctionNode callee, Object param) {
+    final known = _keepsCache[param];
+    if (known != null) return known;
+    final body = callee.body;
+    if (body == null) return _keepsCache[param] = true;
+    final walk = _ParameterEscapes(param);
+    body.accept(walk);
+    return _keepsCache[param] = walk.escapes;
+  }
+
   /// Whether a closure written here would land in a borrowed position.
   ///
   /// The backend emits a function-typed *parameter* as `impl Fn(..)`, so a
@@ -1029,7 +1097,10 @@ class KernelFrontend {
   bool _borrowedArgument = false;
 
   List<IrExpr> _argumentList(Arguments node, FunctionNode? callee) {
-    final positional = [for (final a in node.positional) expression(a)];
+    final positional = [
+      for (var i = 0; i < node.positional.length; i++)
+        _argument(node.positional[i], callee, i),
+    ];
     if (node.named.isEmpty && callee == null) return positional;
     if (callee == null) {
       throw Unsupported(
@@ -1049,7 +1120,7 @@ class KernelFrontend {
       }
       final value = supplied.remove(param.parameterName);
       if (value != null) {
-        out.add(expression(value));
+        out.add(_namedArgument(value, param));
         continue;
       }
       out.add(_omitted(param, node));
@@ -1670,10 +1741,19 @@ class KernelFrontend {
       node.name.text,
       [
         for (final p in node.function.positionalParameters)
-          IrParam(p.cosmeticName ?? '_', _type(p.type)),
+          IrParam(
+            p.cosmeticName ?? '_',
+            _type(p.type),
+            kept: _keeps(node.function, p),
+          ),
         for (final p in node.function.namedParameters)
           if (!_inspectorOnly(p.parameterName))
-            IrParam(p.parameterName, _type(p.type), named: true),
+            IrParam(
+              p.parameterName,
+              _type(p.type),
+              named: true,
+              kept: _keeps(node.function, p),
+            ),
       ],
       _type(node.function.returnType),
       _body(node.function),
@@ -1967,10 +2047,19 @@ class KernelFrontend {
 
     final params = [
       for (final p in node.function.positionalParameters)
-        IrParam(p.cosmeticName ?? '_', _type(p.type)),
+        IrParam(
+          p.cosmeticName ?? '_',
+          _type(p.type),
+          kept: _keeps(node.function, p),
+        ),
       for (final p in node.function.namedParameters)
         if (!_inspectorOnly(p.parameterName))
-          IrParam(p.parameterName, _type(p.type), named: true),
+          IrParam(
+            p.parameterName,
+            _type(p.type),
+            named: true,
+            kept: _keeps(node.function, p),
+          ),
     ];
     final isOperator = node.kind == ProcedureKind.Operator;
     final thrown = <String>{};
@@ -2011,6 +2100,42 @@ class _ThisFinder extends RecursiveVisitor {
   void visitThisExpression(ThisExpression node) {
     found = true;
     super.visitThisExpression(node);
+  }
+}
+
+/// Every use of a parameter that is not "call it right here".
+///
+/// The one use a borrowed closure survives is being called. Anything else --
+/// stored in a field, put in a list, handed on -- outlives the call, and a
+/// borrow cannot.
+class _ParameterEscapes extends RecursiveVisitor {
+  _ParameterEscapes(this.param);
+
+  final Object param;
+  bool escapes = false;
+
+  @override
+  void visitLocalFunctionInvocation(LocalFunctionInvocation node) {
+    if (identical(node.variable, param)) {
+      node.arguments.accept(this);
+      return;
+    }
+    super.visitLocalFunctionInvocation(node);
+  }
+
+  @override
+  void visitFunctionInvocation(FunctionInvocation node) {
+    final receiver = node.receiver;
+    if (receiver is VariableGet && identical(receiver.variable, param)) {
+      node.arguments.accept(this);
+      return;
+    }
+    super.visitFunctionInvocation(node);
+  }
+
+  @override
+  void visitVariableGet(VariableGet node) {
+    if (identical(node.variable, param)) escapes = true;
   }
 }
 

@@ -680,6 +680,36 @@ class Frontend {
   /// of the local, not of `this`.
   Set<String> _captured = const {};
 
+  /// `name/index` for every parameter its callee does more with than call.
+  Set<String> _keptParameters = const {};
+
+  /// Whether the callee keeps the argument at [index] rather than calling it.
+  bool _keeps(ExecutableElement? callee, int index) =>
+      callee == null || _keptParameters.contains('${callee.name}/$index');
+
+  /// Lowers one argument with `_borrowedArgument` set for *that* parameter.
+  IrExpr _argumentAt(Expression value, ExecutableElement? callee, int index) {
+    final was = _borrowedArgument;
+    final kept = _keeps(callee, index);
+    if (kept) _borrowedArgument = false;
+    try {
+      final lowered = expression(value);
+      // Owned where it is kept, so the argument is boxed to match.
+      if (kept && lowered is IrClosure) {
+        return IrClosure(
+          lowered.params,
+          lowered.body,
+          lowered.returns,
+          captures: lowered.captures,
+          boxed: true,
+        );
+      }
+      return lowered;
+    } finally {
+      _borrowedArgument = was;
+    }
+  }
+
   List<IrExpr> _argumentList(
     ArgumentList list,
     ExecutableElement? callee,
@@ -711,16 +741,18 @@ class Frontend {
 
     final out = <IrExpr>[];
     var next = 0;
+    var at = 0;
     for (final param in callee.formalParameters) {
       final name = param.name;
+      final index = at++;
       if (param.isNamed) {
         final supplied = name == null ? null : named.remove(name);
         if (supplied != null) {
-          out.add(expression(supplied));
+          out.add(_argumentAt(supplied, callee, index));
           continue;
         }
       } else if (next < positional.length) {
-        out.add(expression(positional[next++]));
+        out.add(_argumentAt(positional[next++], callee, index));
         continue;
       }
       out.add(_omitted(param, site));
@@ -1416,6 +1448,14 @@ class Frontend {
   /// needs to know that `AlignmentGeometry` is abstract and what it requires,
   /// and neither fact can be seen from inside `Alignment`.
   (IrLibrary, List<String>) lowerLibrary(CompilationUnit unit) {
+    // Which parameters their callees *keep*, before anything is lowered: a
+    // closure may borrow only if the callee is finished with it when it
+    // returns. The Kernel front end reads this off the callee's body; here the
+    // bodies are all in one unit, so they are collected once. See
+    // `_ParameterEscapes` there and `bin/census_escapes.dart` for the count.
+    final keeps = _KeptParameters();
+    unit.accept(keeps);
+    _keptParameters = keeps.kept;
     final classes = <IrClass>[];
     final constants = <IrConstDecl>[];
     final functions = <IrMethod>[];
@@ -1779,6 +1819,10 @@ class Frontend {
           name,
           _type(inner.declaredFragment?.element.type),
           named: p.isNamed,
+          // Owned where the callee keeps it: see `IrParam.kept`.
+          kept: _keptParameters.contains(
+            '${member.name.lexeme}/${params.length}',
+          ),
         ),
       );
     }
@@ -1849,6 +1893,80 @@ class _InstanceUse extends RecursiveAstVisitor<void> {
   void visitSimpleIdentifier(SimpleIdentifier node) {
     _check(node.element);
     super.visitSimpleIdentifier(node);
+  }
+}
+
+/// Which parameters their callees keep, by `name/index`.
+///
+/// The one use a borrowed closure survives is being called; anything else --
+/// stored in a field, added to a list, handed on -- outlives the call. Only
+/// the declarations in this unit are seen, and a callee that is not here
+/// counts as keeping: guessing the other way guesses that a borrow outlives
+/// its borrower.
+class _KeptParameters extends RecursiveAstVisitor<void> {
+  final kept = <String>{};
+
+  void _look(String? name, FormalParameterList? params, FunctionBody? body) {
+    if (name == null || params == null || body == null) return;
+    for (var i = 0; i < params.parameters.length; i++) {
+      final p = params.parameters[i];
+      final inner = p is DefaultFormalParameter ? p.parameter : p;
+      final declared = inner.declaredFragment?.element;
+      if (declared == null) continue;
+      final walk = _ParameterEscapes(declared);
+      body.accept(walk);
+      if (walk.escapes) kept.add('$name/$i');
+    }
+  }
+
+  @override
+  void visitMethodDeclaration(MethodDeclaration node) {
+    _look(node.name.lexeme, node.parameters, node.body);
+    super.visitMethodDeclaration(node);
+  }
+
+  @override
+  void visitFunctionDeclaration(FunctionDeclaration node) {
+    _look(
+      node.name.lexeme,
+      node.functionExpression.parameters,
+      node.functionExpression.body,
+    );
+    super.visitFunctionDeclaration(node);
+  }
+}
+
+/// Every use of a parameter that is not "call it right here".
+class _ParameterEscapes extends RecursiveAstVisitor<void> {
+  _ParameterEscapes(this.param);
+
+  final Element param;
+  bool escapes = false;
+
+  @override
+  void visitFunctionExpressionInvocation(FunctionExpressionInvocation node) {
+    final target = node.function;
+    if (target is SimpleIdentifier && target.element == param) {
+      node.argumentList.accept(this);
+      return;
+    }
+    super.visitFunctionExpressionInvocation(node);
+  }
+
+  @override
+  void visitMethodInvocation(MethodInvocation node) {
+    // `f(..)` on a parameter holding a function is a MethodInvocation whose
+    // target is null and whose name resolves to the parameter.
+    if (node.target == null && node.methodName.element == param) {
+      node.argumentList.accept(this);
+      return;
+    }
+    super.visitMethodInvocation(node);
+  }
+
+  @override
+  void visitSimpleIdentifier(SimpleIdentifier node) {
+    if (node.element == param) escapes = true;
   }
 }
 

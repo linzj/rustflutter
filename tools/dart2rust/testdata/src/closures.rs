@@ -59,6 +59,27 @@ impl Closures {
         (v * self.factor)
     }
 
+    /// A callee that **keeps** what it is given, rather than calling it and
+    /// being done. `applyTwice` calls its closure and returns; this one puts it
+    /// somewhere that outlives the call, so a closure reaching `this` cannot
+    /// borrow for it and is refused.
+    ///
+    /// The two together are the point: being an argument is not the question.
+    /// The question is whether the callee is finished with it -- measured at
+    /// 394 of 1234 across the package, and they are `addListener`,
+    /// `scheduleMicrotask` and `Timer`.
+    pub fn keep(f: Box<dyn Fn(f64) -> f64>) -> Box<dyn Fn(f64) -> f64> {
+        f
+    }
+
+    pub fn by_remembering(&self, x: f64) -> f64 {
+        let f: Box<dyn Fn(f64) -> f64> = Closures::keep(Box::new({
+            let factor = self.factor;
+            move |v: f64| (v * factor)
+        }));
+        (f)(x)
+    }
+
     /// A **method used as a value**: `applyTwice(scaled, x)` hands the method
     /// over without calling it. In Rust that is a closure that calls it, so it
     /// is the same question as any other closure and gets the same answer --
