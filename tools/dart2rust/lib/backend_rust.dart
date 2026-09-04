@@ -708,8 +708,8 @@ class RustBackend {
             ? '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
             : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}',
       // A counted class's constructor already hands out an `Rc`.
-      IrUpcast(:final value, :final type) =>
-        (library[_concreteType(value).name]?.counted ?? false)
+      IrUpcast(:final value, :final type, :final handle) =>
+        handle || (library[_concreteType(value).name]?.counted ?? false)
             ? '(${expr(value)} as ${this.type(type)})'
             : library[_concreteType(value).name] != null
             ? '(dart_object(${expr(value)}) as ${this.type(type)})'
@@ -5015,7 +5015,11 @@ class RustBackend {
         args.map(go).toList(),
       ),
       IrAwait(:final operand) => IrAwait(go(operand)),
-      IrUpcast(:final value, :final type) => IrUpcast(go(value), type),
+      IrUpcast(:final value, :final type, :final handle) => IrUpcast(
+        go(value),
+        type,
+        handle: handle,
+      ),
       IrIs(:final expr, :final type, :final negated) => IrIs(
         go(expr),
         type,

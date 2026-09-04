@@ -387,7 +387,8 @@ class KernelFrontend {
       if (promoted is InterfaceType &&
           (!_abstractLike(promoted.classNode) ||
               scalars.contains(promoted.classNode.name)) &&
-          !promoted.classNode.isEnum &&
+          // An enum too: `switch (dependency)` after `is _MediaQueryAspect`
+          // matched enum arms against an `Rc<dyn Object>` (29 at ws311).
           !(declared is InterfaceType &&
               declared.classNode == promoted.classNode)) {
         final downcast = IrDowncast(

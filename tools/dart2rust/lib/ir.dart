@@ -550,10 +550,15 @@ class IrSome extends IrExpr {
 /// `(Rc::new(v) as Rc<dyn Curve>)`. A `match` arm does not coerce the way a
 /// call argument does, so `curve ?? Curves.ease` needs the `as` written.
 class IrUpcast extends IrExpr {
-  const IrUpcast(this.value, this.type);
+  const IrUpcast(this.value, this.type, {this.handle = false});
 
   final IrExpr value;
   final IrType type;
+
+  /// The value is a handle already (a counted class's): `as` alone, no
+  /// `Rc::new`. `Set<Ticker>.remove(&ticker)` with an `Rc<_WidgetTicker>`
+  /// could not coerce through the reference (45 at ws311).
+  final bool handle;
 }
 
 class IrCast extends IrExpr {
