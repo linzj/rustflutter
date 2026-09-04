@@ -88,6 +88,12 @@ class KernelFrontend {
   Set<Variable> _capturedWrites = const {};
 
   DartType? _staticType(Expression e) {
+    // An instance constant is its own class before it is the slot's declared
+    // type -- `getStaticType` answers `Curve` for `Curves.linear`, and the
+    // `_Linear` value was never shared into the `Rc<dyn Curve>` (98).
+    if (e is ConstantExpression && e.constant is InstanceConstant) {
+      return _constantStaticType(e.constant);
+    }
     final context = _typeContext;
     if (context != null) {
       try {

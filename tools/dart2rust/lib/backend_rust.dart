@@ -2038,6 +2038,8 @@ class RustBackend {
                   !value.type.nullable) ||
               value is IrConstInstance ||
               value is IrNew ||
+              value is IrListLiteral ||
+              value is IrMapLiteral ||
               // An enum value into a `TextBaseline?` (141 in `material`).
               (value is IrStatic && value.isEnumValue));
       final text = _returned(value);
