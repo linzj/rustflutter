@@ -2831,8 +2831,9 @@ class KernelFrontend {
     }
     // The constructor's parameters in the constructed type's terms:
     // `Tween<double>(begin: 0)` takes a `T?`, which is a `double?` here.
-    return IrNew(
-      IrType(_instanceName(target.enclosingClass)),
+    final cls = target.enclosingClass;
+    final created = IrNew(
+      IrType(_instanceName(cls)),
       _arguments(
         node.arguments,
         target.function,
@@ -2841,6 +2842,12 @@ class KernelFrontend {
       ),
       constructor: name.isEmpty ? null : name,
     );
+    // An open class's instance is its `Impl` struct, and every slot typed
+    // with the class is the trait handle: the construction leaves as one
+    // (570 `SizeImpl` where an `Rc<dyn Size>` was wanted).
+    return _isOpen(cls)
+        ? IrUpcast(created, _type(node.constructedType))
+        : created;
   }
 
   /// The struct an instance of `cls` is: the class's own name, or the
@@ -4235,11 +4242,22 @@ class KernelFrontend {
         node,
         constant.typeArguments,
       );
-      if (rebuilt != null) return rebuilt;
-      return IrConstInstance(IrType(_instanceName(cls)), {
+      if (rebuilt != null) {
+        return _isOpen(cls)
+            ? IrUpcast(
+                rebuilt,
+                IrType(
+                  cls.name,
+                  arguments: [for (final t in constant.typeArguments) _type(t)],
+                ),
+              )
+            : rebuilt;
+      }
+      final instance = IrConstInstance(IrType(_instanceName(cls)), {
         for (final entry in byName.entries)
           entry.key: _constant(entry.value, node),
       });
+      return _isOpen(cls) ? IrUpcast(instance, IrType(cls.name)) : instance;
     }
     throw Unsupported('constant ${constant.runtimeType}', _sample(node));
   }

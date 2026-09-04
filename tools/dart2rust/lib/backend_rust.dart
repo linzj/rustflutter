@@ -673,8 +673,11 @@ class RustBackend {
         _failure == null
             ? '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
             : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}',
+      // A counted class's constructor already hands out an `Rc`.
       IrUpcast(:final value, :final type) =>
-        '(std::rc::Rc::new(${expr(value)}) as ${this.type(type)})',
+        (library[_concreteType(value).name]?.counted ?? false)
+            ? '(${expr(value)} as ${this.type(type)})'
+            : '(std::rc::Rc::new(${expr(value)}) as ${this.type(type)})',
       IrBound() => _boundName,
       IrClosure() => _closure(e as IrClosure),
       // A function value returns `Result` like everything else.
@@ -2149,6 +2152,7 @@ class RustBackend {
                   !value.type.nullable) ||
               value is IrConstInstance ||
               value is IrNew ||
+              value is IrUpcast ||
               value is IrListLiteral ||
               value is IrMapLiteral ||
               // An enum value into a `TextBaseline?` (141 in `material`).
@@ -3019,6 +3023,13 @@ class RustBackend {
         // Inside a trait's body there is no field, only the setter it
         // declares (`this_.set__length(v)` in a mixin's super function).
         if (_fieldsAreAccessors && (target == null || target is IrThis)) {
+          _line('$receiver.set_${snake(name)}($written)$_propagate;');
+        } else if (target != null &&
+            target is! IrThis &&
+            owner != null &&
+            library.isAbstract(owner)) {
+          // A write on a trait handle (`cascaded.tolerance = t` on an
+          // `Rc<dyn Simulation>`) is the setter the trait declares (113).
           _line('$receiver.set_${snake(name)}($written)$_propagate;');
         } else if (shared != null) {
           // Through the cell, which is why the field can be written from a
