@@ -600,13 +600,29 @@ class KernelFrontend {
       return IrRecord([for (final e in node.positional) expression(e)]);
     }
     if (node is MapLiteral) {
+      // Each key and value into the map's own types, sharing into an
+      // `Object?` value (`{'extension': name, 'value': value}` handed to
+      // `postEvent` as a `Map<String, Object?>`), as a list literal's are.
+      final keyType = node.keyType;
+      final valueType = node.valueType;
       return IrMapLiteral(
         [
           for (final entry in node.entries)
-            (expression(entry.key), expression(entry.value)),
+            (
+              _intoObject(
+                entry.key,
+                keyType,
+                _widened(entry.key, keyType, expression(entry.key)),
+              ),
+              _intoObject(
+                entry.value,
+                valueType,
+                _widened(entry.value, valueType, expression(entry.value)),
+              ),
+            ),
         ],
-        _type(node.keyType),
-        _type(node.valueType),
+        _type(keyType),
+        _type(valueType),
       );
     }
     if (node is ListLiteral) {

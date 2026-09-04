@@ -2509,6 +2509,20 @@ pub struct Completer<T> {
     shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
 }
 
+/// A completer prints as its kind and compares by identity: a struct holding
+/// one (`SchedulerBinding._nextFrameCompleter`) derives both.
+impl<T> std::fmt::Debug for Completer<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Instance of 'Completer'")
+    }
+}
+
+impl<T> PartialEq for Completer<T> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
 struct CompleterState<T> {
     value: Option<T>,
     waker: Option<std::task::Waker>,

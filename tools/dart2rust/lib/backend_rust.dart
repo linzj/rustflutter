@@ -3962,19 +3962,10 @@ class RustBackend {
     final own = [
       for (final f in of.fields)
         IrFieldDecl.substituted(f, (t) => _substituteType(t, bound)),
-      // A mixin's fields are the class's too: `Value<T> extends ListNotifier
-      // with StateMixin<T>` has `StateMixin`'s `late T _value`, and came out
-      // as a struct of nothing but a `PhantomData<T>`.
-      for (final mixin in of.mixins)
-        if (library[mixin.name] case final m?)
-          for (final f in _allFields(m, {
-            if (mixin.arguments.length == m.typeParameters.length)
-              for (var i = 0; i < mixin.arguments.length; i++)
-                m.typeParameters[i]: _substituteType(mixin.arguments[i], bound)
-            else if (mixin.arguments.isEmpty)
-              for (final p in m.typeParameters) p: const IrType('dynamic'),
-          }))
-            if (!of.fields.any((o) => o.name == f.name)) f,
+      // A mixin's fields arrive with the class's own: the front end lowers
+      // the anonymous application classes' members into it (ws112). Adding
+      // them here as well declared `PointerEvent`'s fields twice (845
+      // struct errors the round the gesture crates became reachable).
     ];
     final base = library[of.superclass];
     if (base == null) return own;
