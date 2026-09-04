@@ -4621,7 +4621,7 @@ class KernelFrontend {
       c.enclosingLibrary.importUri.toString() == 'dart:async';
 
   /// A refused method or function, kept as its signature over a body that
-  /// says so at runtime: `todo!("dart2rust: not translated: <why>")`.
+  /// says so at runtime: `panic!("dart2rust: not translated: <why>")`.
   ///
   /// Without this a refusal took the member out of the output, and every
   /// reference to it -- `debugPrint = debugPrintThrottled` -- failed to
@@ -4674,7 +4674,7 @@ class KernelFrontend {
         IrBlock([
           IrExprStmt(
             IrLiteral(
-              'todo!("dart2rust: not translated: $text")',
+              'panic!("dart2rust: not translated: $text")',
               const IrType('raw'),
             ),
           ),

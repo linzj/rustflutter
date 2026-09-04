@@ -6239,6 +6239,9 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws182 | — | Map 字面量的键值也 widen/共享（`postEvent` 的 `Map<String, Object?>`）：flutter_foundation 清零，波及到 flutter_scheduler。
 | ws183 | — | prelude `Completer` 加 Debug/PartialEq：scheduler 过了，一轮里 1549 个错——gestures/animation/painting 这一层第一次被检查。845 个 struct 级错全是“字段声明两次”：mixin 字段前端（ws112）和后端（ws110）各拍平一次。
 | ws184 | — | 去掉后端那份 mixin 拍平。叶子 46 → 500 个函数被 stub → 3 个函数体外的错。
+| ws185 | — | prelude `Stopwatch` 加 PartialEq：gestures 过了。stub 体从 `todo!` 改成 `panic!`（`const fn` 构造器里 `todo!` 的格式化不是 const，E0015 ×14）。
+| ws186–ws187 | — | 波及 flutter_services：709 个函数被 stub，39 个函数体外的错（`Pattern`、`JsonUtf8Encoder` 名字补进 prelude；余下 mismatched types/借用一族在 impl 块和静态里）。
+| ws188–ws189 | — | 持有 boxed future 的 struct 不 derive Clone/Debug/PartialEq（AssetBundle 的缓存 Map）；静态初始化式里的 cascade 临时量总是 `mut`。flutter_services 还剩 23 个函数体外的错（静态里的字面量类型、`JsonUtf8Encoder::new`）。可达 28 个 crate。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步

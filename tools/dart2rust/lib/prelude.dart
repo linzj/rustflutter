@@ -1430,6 +1430,28 @@ impl<T> std::fmt::Debug for dyn DartSink<T> {
     }
 }
 
+/// `JsonUtf8Encoder`, as a name only: nothing here builds one (a `dart:` type the
+/// translated code names in a signature).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JsonUtf8Encoder;
+
+impl JsonUtf8Encoder {
+    /// `JsonUtf8Encoder([indent, toEncodable, bufferSize])`: a name with a
+    /// constructor, so a codec holding one is built; encoding is not here.
+    pub fn new(
+        _indent: Option<String>,
+        _to_encodable: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> std::rc::Rc<dyn Object>>>,
+        _buffer_size: Option<i64>,
+    ) -> JsonUtf8Encoder {
+        JsonUtf8Encoder
+    }
+}
+
+/// `Pattern`, as a name only: nothing here builds one (a `dart:` type the
+/// translated code names in a signature).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pattern;
+
 /// `dart:developer`'s `ServiceExtensionResponse`, as a name: no VM service
 /// listens here.
 #[derive(Clone, Debug, Default, PartialEq)]

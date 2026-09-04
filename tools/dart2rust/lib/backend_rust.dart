@@ -2719,7 +2719,11 @@ class RustBackend {
         // module may take `&mut self` -- `brk.next_break()` was 30
         // `E0596`s). A local only read stays immutable: the fixture crate
         // denies `unused_mut` to keep that claim checkable.
-        final mutable = _reassigned.contains(name) ? 'mut ' : '';
+        // A cascade's temporary is written by construction (`..add(x)`),
+        // in a static's initialiser as anywhere else.
+        final mutable = _reassigned.contains(name) || name == 'cascaded'
+            ? 'mut '
+            : '';
         // A declared function type is `Box<dyn Fn(..)>`, and a closure's own
         // type is not that. `_returned` boxes for the same reason one line
         // further out; a `let` is the other half of it.
@@ -3355,7 +3359,8 @@ class RustBackend {
 
   /// Whether every translated class named in a type text can be compared.
   bool _comparableType(String rust, Set<String> seen) {
-    if (rust.contains('dyn Fn')) return false;
+    if (rust.contains('dyn Fn') || rust.contains('dyn std::future::Future'))
+      return false;
     for (final name in _namesIn(rust)) {
       final other = library[name];
       if (other == null || !seen.add(name)) continue;
@@ -4644,8 +4649,13 @@ class RustBackend {
     // 14 `E0277`s for the derive alone. Left off there: a `==` on such a
     // class is then an error at the use, which says what it is.
     // Nested too: a `Vec<Option<Rc<dyn Fn()>>>` field cannot be printed.
-    final printable = _allFields(cls)
-        .every((f) => !f.type.isFunction && !_fieldType(f).contains('dyn Fn'));
+    final printable = _allFields(cls).every(
+      (f) =>
+          !f.type.isFunction &&
+          !_fieldType(f).contains('dyn Fn') &&
+          // A boxed future prints and compares no better than a closure.
+          !_fieldType(f).contains('dyn std::future::Future'),
+    );
     // A trait-object field compares by identity, and a derived `PartialEq`
     // cannot say so: `self.f == other.f` on an `Rc<dyn Object>` moved the
     // right-hand side (E0507, rustc 1.98 -- reproduced on four lines). The
@@ -4672,8 +4682,14 @@ class RustBackend {
         byIdentity.isEmpty &&
         _allFields(cls)
             .every((f) => _comparableType(_fieldType(f), {cls.name}));
+    // A boxed future is not `Clone`, and a struct holding one (an
+    // `AssetBundle`'s caches) cannot derive it; its handle, the `Rc` every
+    // counted class is passed by, still is. A value class holding one
+    // would have to be cloned by value somewhere and is left to say so.
+    final cloneable = !_allFields(cls)
+        .any((f) => _fieldType(f).contains('dyn std::future::Future'));
     _line(
-      '#[derive(Clone, ${copyable ? 'Copy, ' : ''}'
+      '#[derive(${cloneable ? 'Clone, ' : ''}${copyable ? 'Copy, ' : ''}'
       '${printable ? 'Debug' : ''}${comparable ? ', PartialEq' : ''})]',
     );
     // `'static` on the struct: an `Rc<dyn Equality<Option<E>>>` field needs
