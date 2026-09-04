@@ -1008,6 +1008,9 @@ class KernelFrontend {
       return wanted;
     }
     if (declared is FunctionType && wanted is FunctionType) return wanted;
+    // `_futurize<void>`: the callback the closure declares as `Object?`
+    // is a `void?` -- `Option<()>` -- in the instantiated signature.
+    if (wanted is VoidType) return wanted;
     return declared;
   }
 
@@ -2413,12 +2416,23 @@ class KernelFrontend {
         node.target.enclosingLibrary.importUri.toString() == 'dart:_internal' &&
         node.arguments.positional.length == 1 &&
         node.arguments.types.length == 1) {
-      return expression(
-        AsExpression(
-          node.arguments.positional.single,
-          node.arguments.types.single,
-        ),
-      );
+      // ..and into the cast's type: `unsafeCast<double?>(#1{Size}.width)`
+      // hands a `double` to a `double?` (`Some(..)`), which the CFE's `#0`
+      // above it is declared as.
+      final operand = node.arguments.positional.single;
+      final to = node.arguments.types.single;
+      final lowered = expression(AsExpression(operand, to));
+      // Only that shape: a non-null `T` into a `T?`. Widening every
+      // `unsafeCast` doubled `Option`s and unwrapped `dynamic`s (+17, ws159).
+      final from = _staticType(operand);
+      if (from is InterfaceType &&
+          to is InterfaceType &&
+          from.classNode == to.classNode &&
+          from.nullability != Nullability.nullable &&
+          to.nullability == Nullability.nullable) {
+        return IrSome(lowered);
+      }
+      return lowered;
     }
     final target = node.target;
     final positional = node.arguments.positional;
@@ -2888,7 +2902,7 @@ class KernelFrontend {
     if (given.nullability == Nullability.nullable) {
       // `ByteData? args` into an `Object?`: shared element by element.
       if (counted || param.nullability != Nullability.nullable) return lowered;
-      return IrNullAware(
+      final shared = IrNullAware(
         lowered,
         IrCall(
           IrCall(const IrBound(), 'clone', const []),
@@ -2896,6 +2910,11 @@ class KernelFrontend {
           const [],
         ),
       );
+      // A `dynamic` slot is never an `Option`: Dart's null there is the
+      // `Null` object (`_isNullOrEmpty(_value)` with a `T?` in `StateMixin`).
+      return param is DynamicType
+          ? IrCall(shared, '!or_null', const [])
+          : shared;
     }
     // A counted class's handle unsizes to `Rc<dyn Object>` only where the
     // target type is written; a `dynamic` static's initialiser names it.

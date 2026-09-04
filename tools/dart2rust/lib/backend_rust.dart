@@ -1709,6 +1709,10 @@ class RustBackend {
     // than leaked into every caller's type.
     // A value shared into a trait object (see `_widened`).
     if (name == '!rc' && args.isEmpty) return 'std::rc::Rc::new($receiver)';
+    // An `Option<Rc<dyn Object>>` into a `dynamic` slot: absent is `Null`.
+    if (name == '!or_null' && args.isEmpty) {
+      return '$receiver.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>)';
+    }
     // The other way: a `Uint8List` handed to a `List<int>` parameter.
     // A `List<String>` into a `List<Object?>`: each element shared.
     if (name == '!widen_object' && args.isEmpty) {
@@ -5143,7 +5147,11 @@ class RustBackend {
     // leans on Rust preferring the inherent one -- true today, and an infinite
     // recursion the moment the inherent one is not emitted. The explicit path
     // says which one is meant.
-    final name = op == null ? snake(method.name) : _operatorName(op);
+    // A setter's inherent name is `set_x` (see `_methodName`): the trait's
+    // `set__status` forwarded to `Value::_status`, which is the getter.
+    final name = op == null
+        ? (method.isSetter ? 'set_${snake(method.name)}' : snake(method.name))
+        : _operatorName(op);
     final call = '${cls.name}::$name(${['self', ...args].join(', ')})';
     // An `async fn` yields its own future type; the trait wants the boxed
     // one every `Future<T>` is here (`_NativeCodec::get_next_frame(self)`).
@@ -5171,8 +5179,18 @@ class RustBackend {
     // nothing is: this is one of the places the two languages simply agree.
     final name = _ctorName(ctor.name);
     _doc(ctor.doc);
+    // A parameter the constructor assigns -- `cullRect ??= Rect.largest`
+    // inside a field initialiser, or in the body -- is `mut` (E0384).
+    final assigned = <String>{
+      for (final init in ctor.fieldInits.values)
+        ..._assignedIn(IrExprStmt(init)),
+      if (ctor.body != null) ..._assignedIn(ctor.body!),
+    };
     final params = ctor.params
-        .map((p) => '${snake(p.name)}: ${type(p.type)}')
+        .map(
+          (p) =>
+              '${assigned.contains(p.name) ? 'mut ' : ''}${snake(p.name)}: ${type(p.type)}',
+        )
         .join(', ');
     // `const fn` because the Dart constructor was `const`, which is what lets
     // the static constants below be associated consts rather than lazy statics.
@@ -5246,9 +5264,16 @@ class RustBackend {
           field.name: (inits[field.name] ?? field.initial)!,
     };
     final built = ctor.body != null || deferred.isNotEmpty;
+    // A counted class is built *inside* its handle: the body's `this`
+    // (`_recorder._canvas = this` in `_NativeCanvas`) is then the `Rc`
+    // every holder wants, and the fields it writes are cells reached
+    // through the handle just the same.
+    final handleFirst = built && cls.counted;
     _line(
       !built
           ? (cls.counted ? 'std::rc::Rc::new(Self {' : 'Self {')
+          : handleFirst
+          ? 'let __new = std::rc::Rc::new(Self {'
           : 'let mut __new = Self {',
     );
     _indent++;
@@ -5325,7 +5350,7 @@ class RustBackend {
     if (!built) {
       _line(cls.counted ? '})' : '}');
     } else {
-      _line('};');
+      _line(handleFirst ? '});' : '};');
       // `this` inside the body is the value being built, not a `self` that
       // does not exist yet. `_selfName` is the same lever a free function
       // uses, so the body's `this.x = v` comes out as `__new.x = v`.
@@ -5344,7 +5369,7 @@ class RustBackend {
       }
       if (body != null) stmt(body);
       _selfName = saved;
-      _line(cls.counted ? 'std::rc::Rc::new(__new)' : '__new');
+      _line(handleFirst || !cls.counted ? '__new' : 'std::rc::Rc::new(__new)');
     }
     _indent--;
     _line('}');

@@ -6055,6 +6055,12 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 
 **看到但没动的**:`Result` 异常模型不是模块化的——`_computeFailing` 按类算,mixin/超类的 `_FileSpan::compare_to -> Result<..>` 被转发器当成 `i64` 用(13 条),`typed_buffer` 的 trait 声明不知道实现者会 `?`(5 条)。Dart 里任何方法都可能抛,`Result` 签名要全程序定点才对得上;候选替代是 panic + `catch_unwind`(模块化,但 `UnwindSafe` 与 FFI 边界另算)。先记着,不在一分钟一轮里换模型。
 
+**intl 的 dynamic 顶层，TFA 元数据这条路（2026-09-04）**：用 `package:vm` 的 `InferredTypeMetadataRepository` 读 dill，`_dateTimeSymbols`/`dateTimePatterns` 的 inferred type 是 null——槽里两种类型时 TFA 不标注。这条路走不通；剩下只能在前端按初始化式的类型加上后续赋值的类型枚举下转型。没动。
+
+
+**get 的 `_updaters.remove(listener)`（2026-09-04）**：`_updaters` 是 mixin 字段，在 super 函数里只能经 trait getter 拿到**克隆**，`remove` 作用在克隆上——即使把 `Vec<Option<Rc<dyn Fn>>>::remove_value` 的 PartialEq 约束绕过去让它编译，语义也是错的（监听器删不掉）。真正的修法是 trait getter 对 cell 字段返回句柄（`Rc<RefCell<Vec<..>>>`）而不是值。没动。
+
+
 **fixture 测试（2026-09-04）**：fixture crate 的库部分能编译（1 个错，见上），但 `cargo test` 的测试本身 27 处编译不过：手写测试还按旧的 `Result` 失败模型断言（`is_err()`），而分支已经改成 panic（`_resultModel = false`）；另有 `Rc<dyn Rung>` vs `&Ladder` 一族是 trait 对象参数的拼法变了。这 146 个测试要按新模型改写（`catch_unwind`），没动。
 
 
@@ -6212,6 +6218,12 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws153 | 78 | tear-off 类型先走继承层次代入再退回 `getStaticType`。
 | ws154 | 77 | `ByteConversionSink` = `Sink<Vec<i64>>`（`List<int>` 是 `Vec<i64>`）。**http 清零，第 13 个干净的翻译 crate**；剩 6 个叶子：dart:ui 30 / intl 23 / collection 12 / get 5 / source_span 4 / typed_data 3。
 | ws155 | 77 | **闭包里写的局部变成共享 cell**：`_CapturedWrites` 找出“在一个函数里声明、在嵌套函数里赋值”的局部，声明成 `Rc<Cell<T>>`/`Rc<RefCell<T>>`，读写走 `_cellLocals`，闭包 move 前克隆句柄。fixture `lists.rs` 的 `total` 对了，fixture crate 库部分 0 错。
+| ws156 | 74 | setter 的 trait 转发器调 `Type::set_x`（原来调成了 getter `Type::x`）；`T?` 送进 `dynamic` 槽时 None 变 `Null` 对象（`!or_null`）。
+| ws157 | 73 | counted 类有构造体时先建句柄（`let __new = Rc::new(Self{..})`），体里的 `this` 就是别人要的 `Rc`（`_NativeCanvas`）；闭包参数声明 `Object?` 而期望 `void?` 时取后者（`_futurize<void>`）。
+| ws158 | 73 | （unsafeCast 的 widen 补丁没贴上，本轮无变化。）
+| ws159 | 90 | `unsafeCast<T>(x)` 一律按目标类型 widen：+17（Option 套 Option、dynamic 被 unwrap）。收窄到“非空 T 进 T?”这一种形状。
+| ws160 | 70 | 收窄后的 unsafeCast widen。
+| ws161 | 69 | 构造器参数被字段初始化式或构造体赋值时标 `mut`（`cullRect ??= Rect.largest`）。剩余：dart:ui 25 / intl 22 / collection 12 / source_span 4 / typed_data 3 / get 3。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步
