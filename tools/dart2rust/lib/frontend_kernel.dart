@@ -69,6 +69,10 @@ class KernelFrontend {
   /// The member being lowered; its class is what `this` is.
   Member? _member;
 
+  /// The class being lowered -- the named one, while the members of the
+  /// anonymous mixin applications above it are lowered into it.
+  Class? _lowering;
+
   void _enter(Member member) {
     _member = member;
     final env = typeEnvironment;
@@ -2497,13 +2501,11 @@ class KernelFrontend {
     );
   }
 
-  /// See `IrCall.qualifier`: a member whose name a class above its owner
-  /// also declares is called through the owner's trait by name.
+  /// See `IrCall.qualifier`: a member whose name two classes in the
+  /// receiver's hierarchy declare is called through one of them by name.
   IrCall _qualified(IrCall call, Member member, Expression receiver) {
     final owner = member.enclosingClass;
-    if (owner == null || owner.isAnonymousMixin || !_translatedClass(owner)) {
-      return call;
-    }
+    if (owner == null || !_translatedClass(owner)) return call;
     // From the receiver's own class: a mixin's `child` is declared again
     // by the trait of the class that mixes it in, *below* the owner.
     final type = receiver is ThisExpression ? null : _staticType(receiver);
@@ -2512,49 +2514,101 @@ class KernelFrontend {
         : type is InterfaceType
         ? type.classNode
         : null;
-    if (!_declaredTwice(from ?? owner, member)) return call;
-    final handle =
-        type is InterfaceType &&
-        (type.classNode.isAbstract || _closureCallsMethod(type.classNode));
+    final qualifier = _qualifierFor(from ?? owner, member);
+    if (qualifier == null) return call;
     return IrCall(
       call.target,
       call.name,
       call.args,
-      qualifier: owner.name,
-      handle: handle,
+      qualifier: qualifier,
+      receiverClass: type is InterfaceType ? type.classNode.name : null,
     );
   }
 
-  bool _translatedClass(Class c) {
-    final uri = c.enclosingLibrary.importUri;
-    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
-  }
-
-  /// Whether two translated classes in `from`'s hierarchy (itself
-  /// included) declare a member of the same name and kind -- the second
-  /// declaration a Rust call cannot choose between.
-  bool _declaredTwice(Class from, Member member) {
+  /// The trait to call `member` through from a value of class `from`, or
+  /// null when only one class in the hierarchy declares it and the plain
+  /// call is unambiguous.
+  ///
+  /// A member the CFE cloned into an anonymous mixin application
+  /// (`_MixinApplication8&RenderBox&RenderObjectWithChildMixin.child`) is
+  /// declared twice on the Rust side: by the mixin's trait and, flattened
+  /// (ws112), by the trait of the class that applies it. That class is
+  /// the name to call through -- the mixin's trait is not a supertrait of
+  /// its, so inside a super function `__Self: ListNotifier` cannot reach
+  /// `ListNotifierMixin::_updaters` (295 E0277s the round the mixin was
+  /// named instead).
+  String? _qualifierFor(Class from, Member member) {
+    final owner = member.enclosingClass!;
     final name = member.name.text;
     final setter = member is Procedure && member.isSetter;
     final seen = <Class>{};
     var found = 0;
-    bool declares(Class c) => c.members.any(
-      (m) =>
-          m.name.text == name &&
-          (m is Field || (m is Procedure && m.isSetter == setter)),
-    );
-    bool walk(Class c) {
-      if (!seen.add(c)) return false;
-      if (_translatedClass(c) && !c.isAnonymousMixin && declares(c)) {
-        if (++found >= 2) return true;
+    String? applier;
+    Member? declared(Class c) {
+      for (final m in c.members) {
+        if (m.name.text == name &&
+            (m is Field || (m is Procedure && m.isSetter == setter))) {
+          return m;
+        }
       }
-      for (final s in c.supers) {
-        if (walk(s.classNode)) return true;
-      }
-      return false;
+      return null;
     }
 
-    return walk(from);
+    // `named`: the nearest class with a name of its own on the superclass
+    // path down to `c`, which is where an anonymous application's members
+    // were flattened to.
+    void walk(Class c, Class named) {
+      if (!seen.add(c)) return;
+      final m = _translatedClass(c) ? declared(c) : null;
+      if (m != null) {
+        if (c.isAnonymousMixin) {
+          // A cloned *abstract* member (`ScrollMetrics.axisDirection` in
+          // `ScrollPosition with ScrollMetrics`) is flattened nowhere: its
+          // one declaration is the mixin trait's.
+          if (m.isAbstract) {
+            found += 1;
+          } else {
+            found += 2;
+            applier ??= named.name;
+          }
+        } else {
+          found += 1;
+        }
+      }
+      final below = c.isAnonymousMixin ? named : c;
+      final superclass = c.superclass;
+      if (superclass != null) walk(superclass, below);
+      for (final s in c.supers) {
+        if (s.classNode != superclass) walk(s.classNode, s.classNode);
+      }
+    }
+
+    // `this` inside a member cloned into an application is the named class
+    // the application is lowered into.
+    walk(from, from.isAnonymousMixin ? (_lowering ?? from) : from);
+    if (found < 2) return null;
+    // Through the applying class whenever an application declares it --
+    // also when the resolved owner is the mixin itself (`this._notifyUpdate`
+    // inside `ListNotifier with ListNotifierMixin`): the mixin's trait is
+    // not among a subclass trait's supertraits, the applier's is. An
+    // abstract member of an anonymous owner is the mixin's, named by the
+    // application's last segment.
+    final chosen =
+        applier ??
+        (owner.isAnonymousMixin ? owner.name.split('&').last : owner.name);
+    // Never a synthetic name: 509 "expected value, found trait" the round
+    // one got through.
+    return chosen.contains('&') ? null : chosen;
+  }
+
+  bool _translatedClass(Class c) {
+    // The CFE's deduplicated mixin applications (`_MixinApplication8&
+    // RenderBox&RenderObjectWithChildMixin`) live in a synthetic library
+    // whose scheme is not a package's; they are the mixin's members
+    // under another name, translated like it.
+    if (c.isAnonymousMixin) return true;
+    final uri = c.enclosingLibrary.importUri;
+    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
   }
 
   IrExpr _construct(ConstructorInvocation node) {
@@ -5052,6 +5106,7 @@ class KernelFrontend {
   }
 
   (IrClass, List<String>) lowerClass(Class node) {
+    _lowering = node;
     _sharedFields = _closureFields(node);
     _counted = _closureCallsMethod(node);
 

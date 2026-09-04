@@ -532,9 +532,15 @@ class RustBackend {
         :final name,
         :final args,
         :final qualifier,
-        :final handle,
+        :final receiverClass,
       ) =>
-        _call(target, name, args, qualifier: qualifier, handle: handle),
+        _call(
+          target,
+          name,
+          args,
+          qualifier: qualifier,
+          receiverClass: receiverClass,
+        ),
       IrStaticCall(:final owner, :final name, :final args) => _staticCall(
         owner,
         name,
@@ -1689,12 +1695,19 @@ class RustBackend {
     return expr(target);
   }
 
+  /// Whether a value of this class is held as an `Rc`: a counted class, or
+  /// an abstract one (`Rc<dyn ..>`).
+  bool _isHandle(String? className) {
+    final c = library[className];
+    return c != null && (c.counted || c.isAbstract);
+  }
+
   String _call(
     IrExpr? target,
     String name,
     List<IrExpr> args, {
     String? qualifier,
-    bool handle = false,
+    String? receiverClass,
   }) {
     // Before the receiver is rendered: rendering a chain on its own is
     // refused, and this is the one place a chain is not on its own.
@@ -1898,13 +1911,17 @@ class RustBackend {
       // See `IrCall.qualifier`. `self`/`this_` are already references; a
       // closure's `__me` is a handle, as is any receiver typed by a trait
       // or a counted class.
+      // ..and `self` is `&Rc<Self>` in a method that hands out a closure
+      // holding it (`_receiverOf`), reached through twice.
       final through = target == null || target is IrThis
-          ? (_selfName == 'self' || _selfName == 'this_'
-                ? _selfName
+          ? (_selfName == 'self'
+                ? (_selfIsHandle ? '&**self' : 'self')
+                : _selfName == 'this_'
+                ? 'this_'
                 : cls.counted
                 ? '&*$_selfName'
                 : '&$_selfName')
-          : handle
+          : _isHandle(receiverClass)
           ? '&*${expr(target)}'
           : '&${expr(target)}';
       return '$qualifier::${_identifier(name)}'
@@ -4354,14 +4371,14 @@ class RustBackend {
         :final name,
         :final args,
         :final qualifier,
-        :final handle,
+        :final receiverClass,
       ) =>
         IrCall(
           target == null ? null : go(target),
           name,
           args.map(go).toList(),
           qualifier: qualifier,
-          handle: handle,
+          receiverClass: receiverClass,
         ),
       IrStaticCall(:final owner, :final name, :final args) => IrStaticCall(
         owner,

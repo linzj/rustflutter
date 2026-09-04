@@ -177,7 +177,7 @@ class IrCall extends IrExpr {
     this.name,
     this.args, {
     this.qualifier,
-    this.handle = false,
+    this.receiverClass,
   });
 
   final IrExpr? target;
@@ -191,9 +191,10 @@ class IrCall extends IrExpr {
   /// "multiple applicable items" in the workspace, 2026-09-04).
   final String? qualifier;
 
-  /// Whether the receiver is a handle (`Rc<..>`) the qualified call has to
-  /// reach through: `&*handle` rather than `&value`.
-  final bool handle;
+  /// The receiver's static class, for a qualified call: whether it is a
+  /// handle (`Rc<..>`, a counted or abstract class) to reach through with
+  /// `&*` rather than `&` is the backend's knowledge, not the front end's.
+  final String? receiverClass;
 }
 
 /// A static method call: `Alignment.lerp(a, b, t)`, or a top-level one.
