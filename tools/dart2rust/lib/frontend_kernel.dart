@@ -2383,7 +2383,13 @@ class KernelFrontend {
     // The prelude's `Set::remove` takes the value by reference, like the
     // map's key (`_tickers.remove(ticker)`, 46).
     if (owner == 'Set' && name == 'remove' && args.length == 1) {
-      return IrCall(expression(node.receiver), '!map_remove', args);
+      return IrCall(expression(node.receiver), '!map_remove', [
+        _intoElement(
+          args.single,
+          node.arguments.positional.single,
+          _staticType(node.receiver),
+        ),
+      ]);
     }
     if ((owner == 'List' || owner == 'Iterable' || owner == 'Set') &&
         name == 'contains' &&
@@ -2403,7 +2409,9 @@ class KernelFrontend {
           IrCast(args.single, 'i64'),
         ]);
       }
-      return IrCall(expression(node.receiver), '!contains', args);
+      return IrCall(expression(node.receiver), '!contains', [
+        _intoElement(args.single, node.arguments.positional.single, listType),
+      ]);
     }
     if (owner == 'String' && name == '[]' && args.length == 1) {
       return IrCall(expression(node.receiver), 'char_at', args);
@@ -2535,7 +2543,24 @@ class KernelFrontend {
       }
       final rust = listMethodNames[name];
       if (rust != null) {
-        return IrCall(expression(node.receiver), rust, args);
+        // An element handed to `remove`/`indexOf`: into the element type,
+        // which the prelude's `&T` cannot coerce to (see `_intoElement`).
+        final byElement =
+            const {'remove', 'indexOf', 'lastIndexOf'}.contains(name) &&
+            args.length == 1;
+        return IrCall(
+          expression(node.receiver),
+          rust,
+          byElement
+              ? [
+                  _intoElement(
+                    args.single,
+                    node.arguments.positional.single,
+                    _staticType(node.receiver),
+                  ),
+                ]
+              : args,
+        );
       }
       throw Unsupported('`List.$name`', _sample(node));
     }
@@ -4725,6 +4750,36 @@ class KernelFrontend {
       }
     }
     return out;
+  }
+
+  /// A collection's element argument (`set.remove(ticker)`, `contains`),
+  /// shared into the element type when that is a trait and the argument a
+  /// concrete class of it: the prelude takes `&T`, and a `&Rc<_WidgetTicker>`
+  /// does not coerce to `&Rc<dyn Ticker>` through the reference (45 at
+  /// ws311). A counted class's handle is upcast (`IrUpcast.handle`), a
+  /// value put behind a fresh one. Only a named value: `this` may be a
+  /// struct behind `&self` (ws312).
+  IrExpr _intoElement(IrExpr lowered, Expression value, DartType? collection) {
+    if (collection is! InterfaceType || collection.typeArguments.isEmpty) {
+      return lowered;
+    }
+    final element = collection.typeArguments.first;
+    final given = _staticType(value);
+    if (element is! InterfaceType ||
+        given is! InterfaceType ||
+        value is ThisExpression ||
+        element.nullability == Nullability.nullable ||
+        given.nullability == Nullability.nullable ||
+        !_translatedClass(element.classNode) ||
+        !_translatedClass(given.classNode) ||
+        !_abstractLike(element.classNode) ||
+        _abstractLike(given.classNode) ||
+        element.classNode == given.classNode) {
+      return lowered;
+    }
+    return _closureCallsMethod(given.classNode)
+        ? IrUpcast(lowered, _type(element), handle: true)
+        : IrCall(lowered, '!rc', const []);
   }
 
   /// Whether a type names an erased parameter anywhere in it.
