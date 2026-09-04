@@ -3300,7 +3300,7 @@ class RustBackend {
     // trait's own `E`, so the trait has to promise what the function asks
     // (147 E0277s from asking it of the function alone).
     final bound = owner is IrMethod || static
-        ? params.map((p) => "$p: Clone + PartialEq + std::fmt::Debug + 'static")
+        ? params.map((p) => "$p: Clone + 'static")
         : params;
     return '<${bound.join(', ')}>';
   }
@@ -3340,7 +3340,7 @@ class RustBackend {
     'Stream',
   };
 
-  static bool _constEvaluable(IrExpr e) => switch (e) {
+  bool _constEvaluable(IrExpr e) => switch (e) {
     IrLiteral() => true,
     IrStatic() => true,
     IrTopLevel() => true,
@@ -3352,10 +3352,22 @@ class RustBackend {
     // A translated class's constructor is a `const fn`; the prelude's
     // (`Stopwatch::new()`) are not, and a `const` holding one does not
     // compile (E0015 in `foundation_print`).
-    IrNew(:final type, :final args) =>
-      !_preludeTypes.contains(type.name) && args.every(_constEvaluable),
+    // ..and only a `const` constructor is one: `SpringDescription.
+    // withDampingRatio` takes a square root, and the `final` top-level
+    // holding one was emitted as a `const` (E0015, `animation`).
+    IrNew(:final type, :final args, :final constructor) =>
+      !_preludeTypes.contains(type.name) &&
+          _constConstructor(type.name, constructor) &&
+          args.every(_constEvaluable),
     _ => false,
   };
+
+  bool _constConstructor(String className, String? name) {
+    final c = library[className];
+    if (c == null) return true;
+    final k = c.constructors.where((k) => k.name == name);
+    return k.isEmpty || k.first.isConst;
+  }
 
   /// Whether every translated class named in a type text can be compared.
   bool _comparableType(String rust, Set<String> seen) {
@@ -3405,7 +3417,12 @@ class RustBackend {
     String bound(String p) {
       final keyed = RegExp('(Map|Set)<$p[,>]').hasMatch(fields);
       // `PartialEq`: `self._value == new_value` on a `T` (`ValueNotifier`).
-      return "$p: Clone + PartialEq + std::fmt::Debug + 'static${keyed ? ' + std::hash::Hash + Eq' : ''}";
+      // `Clone + 'static` only (2026-09-04): `PartialEq + Debug` on every
+      // type parameter shut out closures and futures -- `ObserverList<
+      // VoidCallback>`, a `Set<Future>` -- at the class, not at the one
+      // method that compares or prints. A method that does is what fails
+      // now, and the stub count says how many.
+      return "$p: Clone + 'static${keyed ? ' + PartialEq + Eq + std::hash::Hash' : ''}";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
@@ -3720,7 +3737,7 @@ class RustBackend {
         // `Debug` too: a mixin's `toString` hands `this` to `MapBase.
         // mapToString`, which prints it, and every implementer prints.
         '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
-        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone + PartialEq + std::fmt::Debug + 'static").join(', ')}'}'
+        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone + 'static").join(', ')}'}'
         // And the *method's* own, for a generic method like
         // `invokeLayoutCallback<T extends Constraints>`. A free function can
         // carry them; the trait method it belongs to cannot, and says so.
@@ -4688,9 +4705,15 @@ class RustBackend {
     // would have to be cloned by value somewhere and is left to say so.
     final cloneable = !_allFields(cls)
         .any((f) => _fieldType(f).contains('dyn std::future::Future'));
+    // A derived `Debug` on `ValueKey<T>` holds only for `T: Debug`, and
+    // the `Key` trait it implements has `Debug` above it for every `T:
+    // Clone + 'static` (18 E0277s the moment the type parameters lost
+    // their `Debug` bound). A generic class prints as its class instead;
+    // `PartialEq` can still be derived, that impl carries its own `T:
+    // PartialEq` and no trait asks for it unconditionally.
+    final derivesDebug = printable && cls.typeParameters.isEmpty;
     _line(
-      '#[derive(${cloneable ? 'Clone, ' : ''}${copyable ? 'Copy, ' : ''}'
-      '${printable ? 'Debug' : ''}${comparable ? ', PartialEq' : ''})]',
+      '#[derive(${[if (cloneable) 'Clone', if (copyable) 'Copy', if (derivesDebug) 'Debug', if (comparable) 'PartialEq'].join(', ')})]',
     );
     // `'static` on the struct: an `Rc<dyn Equality<Option<E>>>` field needs
     // its `E` to outlive the trait object (8 E0310s in `collection`).
@@ -4716,9 +4739,13 @@ class RustBackend {
     _line('');
     // A struct holding a closure still has to print -- `Rc<DynamicColor>`
     // in a struct that derives `Debug` -- so it prints as its class.
-    if (!printable) {
+    if (!derivesDebug) {
+      // The struct's own bounds, not the impl's: `_MapEntry` holds a
+      // `MapEquality<Rc<dyn Object>, ..>` and derives `Debug` over it, and
+      // `dyn Object` is no `Hash` -- the key bound the methods need is
+      // theirs alone.
       _line(
-        'impl${_implGenerics(cls)} std::fmt::Debug for ${cls.name}${_generics(cls)} {',
+        'impl${_generics(cls, static: true)} std::fmt::Debug for ${cls.name}${_generics(cls)} {',
       );
       _indent++;
       _line(

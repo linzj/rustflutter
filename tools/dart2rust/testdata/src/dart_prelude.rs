@@ -50,12 +50,7 @@ impl<T: 'static> Object for T {
     }
 
     fn runtime_type(&self) -> Type {
-        Type {
-            name: std::any::type_name::<T>()
-                .rsplit("::")
-                .next()
-                .unwrap_or("Object"),
-        }
+        Type { name: std::any::type_name::<T>().rsplit("::").next().unwrap_or("Object") }
     }
 }
 
@@ -90,17 +85,7 @@ impl DartDouble for f64 {
             Some(std::cmp::Ordering::Less) => -1,
             Some(std::cmp::Ordering::Equal) => 0,
             Some(std::cmp::Ordering::Greater) => 1,
-            None => {
-                if self.is_nan() {
-                    if other.is_nan() {
-                        0
-                    } else {
-                        1
-                    }
-                } else {
-                    -1
-                }
-            }
+            None => if self.is_nan() { if other.is_nan() { 0 } else { 1 } } else { -1 },
         }
     }
     fn to_string_as_fixed(&self, digits: i64) -> String {
@@ -192,11 +177,7 @@ impl DartInt for i64 {
     }
 
     fn to_unsigned(&self, width: i64) -> i64 {
-        if width >= 63 {
-            *self
-        } else {
-            *self & ((1i64 << width) - 1)
-        }
+        if width >= 63 { *self } else { *self & ((1i64 << width) - 1) }
     }
     fn to_radix_string(&self, radix: i64) -> String {
         match radix {
@@ -270,15 +251,11 @@ impl Duration {
     }
 
     pub const fn from_milliseconds(milliseconds: i64) -> Self {
-        Duration {
-            microseconds: milliseconds * 1000,
-        }
+        Duration { microseconds: milliseconds * 1000 }
     }
 
     pub const fn from_seconds(seconds: i64) -> Self {
-        Duration {
-            microseconds: seconds * 1000000,
-        }
+        Duration { microseconds: seconds * 1000000 }
     }
 
     /// Truncating, like Dart's: `inMilliseconds` of 1500us is 1, not 2.
@@ -311,9 +288,7 @@ impl Duration {
     }
 
     pub fn abs(&self) -> Duration {
-        Duration {
-            microseconds: self.microseconds.abs(),
-        }
+        Duration { microseconds: self.microseconds.abs() }
     }
 
     pub fn compare_to(&self, other: Duration) -> i64 {
@@ -328,36 +303,28 @@ impl Duration {
 impl std::ops::Add for Duration {
     type Output = Duration;
     fn add(self, other: Duration) -> Duration {
-        Duration {
-            microseconds: self.microseconds + other.microseconds,
-        }
+        Duration { microseconds: self.microseconds + other.microseconds }
     }
 }
 
 impl std::ops::Sub for Duration {
     type Output = Duration;
     fn sub(self, other: Duration) -> Duration {
-        Duration {
-            microseconds: self.microseconds - other.microseconds,
-        }
+        Duration { microseconds: self.microseconds - other.microseconds }
     }
 }
 
 impl std::ops::Neg for Duration {
     type Output = Duration;
     fn neg(self) -> Duration {
-        Duration {
-            microseconds: -self.microseconds,
-        }
+        Duration { microseconds: -self.microseconds }
     }
 }
 
 impl std::ops::Mul<i64> for Duration {
     type Output = Duration;
     fn mul(self, by: i64) -> Duration {
-        Duration {
-            microseconds: self.microseconds * by,
-        }
+        Duration { microseconds: self.microseconds * by }
     }
 }
 
@@ -572,15 +539,11 @@ impl StackTrace {
     }
 
     pub fn empty() -> Self {
-        StackTrace {
-            text: String::new(),
-        }
+        StackTrace { text: String::new() }
     }
 
     pub fn current() -> Self {
-        StackTrace {
-            text: "<no stack trace: translated from Dart>".to_string(),
-        }
+        StackTrace { text: "<no stack trace: translated from Dart>".to_string() }
     }
 }
 
@@ -634,16 +597,7 @@ impl DateTime {
 
     /// `DateTime(year, [month, day, hour, minute, second, millisecond,
     /// microsecond])`: local time is UTC here (no zone database yet).
-    pub fn new(
-        year: i64,
-        month: i64,
-        day: i64,
-        hour: i64,
-        minute: i64,
-        second: i64,
-        millisecond: i64,
-        microsecond: i64,
-    ) -> Self {
+    pub fn new(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64, microsecond: i64) -> Self {
         // Hinnant's days-from-civil.
         let y = if month <= 2 { year - 1 } else { year };
         let era = y.div_euclid(400);
@@ -652,36 +606,13 @@ impl DateTime {
         let doy = (153 * mp + 2) / 5 + day - 1;
         let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
         let days = era * 146_097 + doe - 719_468;
-        let micros = ((((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + millisecond)
-            * 1000
-            + microsecond;
-        DateTime {
-            microseconds_since_epoch: micros,
-            is_utc: false,
-        }
+        let micros = ((((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + millisecond) * 1000 + microsecond;
+        DateTime { microseconds_since_epoch: micros, is_utc: false }
     }
 
     /// `DateTime.utc(..)`: the same arithmetic, marked UTC.
-    pub fn utc(
-        year: i64,
-        month: i64,
-        day: i64,
-        hour: i64,
-        minute: i64,
-        second: i64,
-        millisecond: i64,
-        microsecond: i64,
-    ) -> Self {
-        let mut t = DateTime::new(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            millisecond,
-            microsecond,
-        );
+    pub fn utc(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, millisecond: i64, microsecond: i64) -> Self {
+        let mut t = DateTime::new(year, month, day, hour, minute, second, millisecond, microsecond);
         t.is_utc = true;
         t
     }
@@ -712,8 +643,7 @@ impl DateTime {
     }
     /// `compareTo(other)`: by the instant.
     pub fn compare_to(&self, other: DateTime) -> i64 {
-        self.microseconds_since_epoch
-            .cmp(&other.microseconds_since_epoch) as i64
+        self.microseconds_since_epoch.cmp(&other.microseconds_since_epoch) as i64
     }
 
     /// `timeZoneOffset`: local time is UTC here, so zero.
@@ -732,17 +662,11 @@ impl DateTime {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_micros() as i64)
             .unwrap_or(0);
-        DateTime {
-            microseconds_since_epoch: since,
-            is_utc: false,
-        }
+        DateTime { microseconds_since_epoch: since, is_utc: false }
     }
 
     pub fn from_microseconds_since_epoch(microseconds: i64) -> Self {
-        DateTime {
-            microseconds_since_epoch: microseconds,
-            is_utc: false,
-        }
+        DateTime { microseconds_since_epoch: microseconds, is_utc: false }
     }
 
     pub fn from_milliseconds_since_epoch(milliseconds: i64) -> Self {
@@ -758,20 +682,23 @@ impl DateTime {
 
     pub fn difference(&self, other: DateTime) -> Duration {
         Duration {
-            microseconds: self.microseconds_since_epoch - other.microseconds_since_epoch,
+            microseconds: self.microseconds_since_epoch
+                - other.microseconds_since_epoch,
         }
     }
 
     pub fn add(&self, span: Duration) -> DateTime {
         DateTime {
-            microseconds_since_epoch: self.microseconds_since_epoch + span.microseconds,
+            microseconds_since_epoch: self.microseconds_since_epoch
+                + span.microseconds,
             is_utc: self.is_utc,
         }
     }
 
     pub fn subtract(&self, span: Duration) -> DateTime {
         DateTime {
-            microseconds_since_epoch: self.microseconds_since_epoch - span.microseconds,
+            microseconds_since_epoch: self.microseconds_since_epoch
+                - span.microseconds,
             is_utc: self.is_utc,
         }
     }
@@ -863,9 +790,7 @@ pub struct Map<K, V> {
 
 impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
     pub fn new() -> Self {
-        Map {
-            entries: Vec::new(),
-        }
+        Map { entries: Vec::new() }
     }
 
     pub fn from<const N: usize>(items: [(K, V); N]) -> Self {
@@ -929,10 +854,7 @@ impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
     pub fn entries(&self) -> Vec<MapEntry<K, V>> {
         self.entries
             .iter()
-            .map(|(k, v)| MapEntry {
-                key: k.clone(),
-                value: v.clone(),
-            })
+            .map(|(k, v)| MapEntry { key: k.clone(), value: v.clone() })
             .collect()
     }
 
@@ -997,9 +919,7 @@ pub trait DartFuture<T> {
     ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = R>>>;
 }
 
-impl<T: 'static> DartFuture<T>
-    for std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>>
-{
+impl<T: 'static> DartFuture<T> for std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>> {
     fn then<R: 'static>(
         self,
         on_value: std::rc::Rc<dyn Fn(T) -> R>,
@@ -1090,10 +1010,7 @@ impl<T: ?Sized> RcHashCode for std::rc::Rc<T> {
 pub fn parse_int(text: String) -> i64 {
     match try_parse_int(text.clone()) {
         Some(v) => v,
-        None => panic!(
-            "uncaught Dart exception: FormatException: Invalid radix-10 number: {}",
-            text
-        ),
+        None => panic!("uncaught Dart exception: FormatException: Invalid radix-10 number: {}", text),
     }
 }
 
@@ -1107,9 +1024,7 @@ pub fn try_parse_int(text: String) -> Option<i64> {
     let v = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
         i64::from_str_radix(hex, 16).ok()?
     } else {
-        if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) {
-            return None;
-        }
+        if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) { return None; }
         body.parse::<i64>().ok()?
     };
     Some(if neg { -v } else { v })
@@ -1119,10 +1034,7 @@ pub fn try_parse_int(text: String) -> Option<i64> {
 pub fn parse_double(text: String) -> f64 {
     match try_parse_double(text.clone()) {
         Some(v) => v,
-        None => panic!(
-            "uncaught Dart exception: FormatException: Invalid double {}",
-            text
-        ),
+        None => panic!("uncaught Dart exception: FormatException: Invalid double {}", text),
     }
 }
 
@@ -1136,19 +1048,14 @@ pub fn try_parse_double(text: String) -> Option<f64> {
         "NaN" => return Some(f64::NAN),
         _ => {}
     }
-    if t.is_empty() || t.starts_with("inf") || t.starts_with("nan") {
-        return None;
-    }
+    if t.is_empty() || t.starts_with("inf") || t.starts_with("nan") { return None; }
     t.parse::<f64>().ok()
 }
 
 /// `null.hashCode` is a fixed number in Dart; an absent value hashes to it.
 impl<T: RcHashCode> RcHashCode for Option<T> {
     fn hash_code(&self) -> i64 {
-        match self {
-            Some(v) => v.hash_code(),
-            None => 2011,
-        }
+        match self { Some(v) => v.hash_code(), None => 2011 }
     }
 }
 
@@ -1204,10 +1111,7 @@ impl Stopwatch {
     pub const FREQUENCY: i64 = 1000000;
 
     pub fn new() -> Self {
-        Stopwatch {
-            started: None,
-            accumulated: 0,
-        }
+        Stopwatch { started: None, accumulated: 0 }
     }
 
     pub fn start(&mut self) {
@@ -1243,9 +1147,7 @@ impl Stopwatch {
     }
 
     pub fn elapsed(&self) -> Duration {
-        Duration {
-            microseconds: self.elapsed_microseconds(),
-        }
+        Duration { microseconds: self.elapsed_microseconds() }
     }
 }
 
@@ -1272,11 +1174,7 @@ impl Uri {
         let mut out = String::new();
         for b in text.bytes() {
             let keep = b.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=%".contains(&b);
-            if keep {
-                out.push(b as char)
-            } else {
-                out.push_str(&format!("%{:02X}", b))
-            }
+            if keep { out.push(b as char) } else { out.push_str(&format!("%{:02X}", b)) }
         }
         out
     }
@@ -1291,9 +1189,7 @@ impl Uri {
             Some(at) => &self.text[at + 3..],
             None => return String::new(),
         };
-        let end = rest
-            .find(|c| c == '/' || c == '?' || c == '#')
-            .unwrap_or(rest.len());
+        let end = rest.find(|c| c == '/' || c == '?' || c == '#').unwrap_or(rest.len());
         let authority = &rest[..end];
         let host = authority.rsplit('@').next().unwrap_or(authority);
         host.split(':').next().unwrap_or("").to_string()
@@ -1371,7 +1267,6 @@ impl fmt::Display for Type {
 pub trait DartList<T> {
     /// `length`, under its Dart name, beside `len()`.
     fn length(&self) -> i64;
-    fn remove_value(&mut self, value: T) -> bool;
     /// `sublist(start, [end])`: a copy of that range.
     fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T>;
     /// `sort([compare])`: without one, the elements' own order.
@@ -1383,35 +1278,22 @@ pub trait DartList<T> {
     /// `setRange(start, end, from, skip)`: copies `from[skip..]` over
     /// `self[start..end]`.
     fn set_range(&mut self, start: i64, end: i64, from: Vec<T>, skip: i64);
-    /// `indexOf(value)`: the first index holding an equal element, or -1.
-    fn index_of(&self, value: T) -> i64;
     /// `skip(n)`/`take(n)`, collected.
     fn skip_dart(&self, n: i64) -> Vec<T>;
     fn take_dart(&self, n: i64) -> Vec<T>;
 }
 
-impl<T: PartialEq + Clone> DartList<T> for Vec<T> {
+impl<T: Clone> DartList<T> for Vec<T> {
     fn length(&self) -> i64 {
         self.len() as i64
     }
 
     fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T> {
         let s = (start.max(0) as usize).min(self.len());
-        let e = end
-            .map(|n| (n.max(0) as usize).min(self.len()))
-            .unwrap_or(self.len());
+        let e = end.map(|n| (n.max(0) as usize).min(self.len())).unwrap_or(self.len());
         self[s..e.max(s)].to_vec()
     }
 
-    fn remove_value(&mut self, value: T) -> bool {
-        match self.iter().position(|x| *x == value) {
-            Some(i) => {
-                self.remove(i);
-                true
-            }
-            None => false,
-        }
-    }
 
     fn sort_by_dart(&mut self, compare: Option<std::rc::Rc<dyn Fn(T, T) -> i64>>) {
         match compare {
@@ -1450,6 +1332,28 @@ impl<T: PartialEq + Clone> DartList<T> for Vec<T> {
         self.iter().take(n.max(0) as usize).cloned().collect()
     }
 
+}
+
+/// The `List` methods that compare elements, apart so that a `Vec<T>`
+/// with only `T: Clone` (a generic class's `T`, 2026-09-04) still has
+/// `set_range` and `sublist`; `remove(value)` and `indexOf` ask for
+/// `==` and are an error at the use when `T` has none.
+pub trait DartListEq<T> {
+    fn remove_value(&mut self, value: T) -> bool;
+    /// `indexOf(value)`: the first index holding an equal element, or -1.
+    fn index_of(&self, value: T) -> i64;
+}
+
+impl<T: PartialEq + Clone> DartListEq<T> for Vec<T> {
+    fn remove_value(&mut self, value: T) -> bool {
+        match self.iter().position(|x| *x == value) {
+            Some(i) => {
+                self.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
     fn index_of(&self, value: T) -> i64 {
         match self.iter().position(|x| *x == value) {
             Some(i) => i as i64,
@@ -1482,7 +1386,11 @@ impl Timeline {
 
     pub fn finish_sync() {}
 
-    pub fn instant_sync(_name: String, _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>) {}
+    pub fn instant_sync(
+        _name: String,
+        _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>,
+    ) {
+    }
 
     pub fn now() -> i64 {
         std::time::SystemTime::now()
@@ -1522,9 +1430,7 @@ impl JsonUtf8Encoder {
     /// constructor, so a codec holding one is built; encoding is not here.
     pub fn new(
         _indent: Option<String>,
-        _to_encodable: Option<
-            std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> std::rc::Rc<dyn Object>>,
-        >,
+        _to_encodable: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> std::rc::Rc<dyn Object>>>,
         _buffer_size: Option<i64>,
     ) -> JsonUtf8Encoder {
         JsonUtf8Encoder
@@ -1543,16 +1449,10 @@ pub struct Pattern {
 
 impl Pattern {
     pub fn of_string(text: String) -> Pattern {
-        Pattern {
-            text: Some(text),
-            regexp: None,
-        }
+        Pattern { text: Some(text), regexp: None }
     }
     pub fn of_regexp(regexp: RegExp) -> Pattern {
-        Pattern {
-            text: None,
-            regexp: Some(regexp),
-        }
+        Pattern { text: None, regexp: Some(regexp) }
     }
 }
 
@@ -1567,18 +1467,10 @@ pub struct ServiceExtensionResponse {
 
 impl ServiceExtensionResponse {
     pub fn result(json: String) -> ServiceExtensionResponse {
-        ServiceExtensionResponse {
-            result: Some(json),
-            error_code: None,
-            error_detail: None,
-        }
+        ServiceExtensionResponse { result: Some(json), error_code: None, error_detail: None }
     }
     pub fn error(code: i64, detail: String) -> ServiceExtensionResponse {
-        ServiceExtensionResponse {
-            result: None,
-            error_code: Some(code),
-            error_detail: Some(detail),
-        }
+        ServiceExtensionResponse { result: None, error_code: Some(code), error_detail: Some(detail) }
     }
 }
 
@@ -1590,9 +1482,7 @@ pub struct Flow {
 
 impl Flow {
     pub fn begin(id: Option<i64>) -> Flow {
-        Flow {
-            id: id.unwrap_or(0),
-        }
+        Flow { id: id.unwrap_or(0) }
     }
     pub fn step(id: i64) -> Flow {
         Flow { id }
@@ -1636,9 +1526,7 @@ pub struct Expando<T> {
 impl<T: Clone> Expando<T> {
     /// `Expando([name])`: the name is for debugging only.
     pub fn new(_name: Option<String>) -> Self {
-        Expando {
-            entries: std::cell::RefCell::new(Vec::new()),
-        }
+        Expando { entries: std::cell::RefCell::new(Vec::new()) }
     }
 
     fn key(object: &std::rc::Rc<dyn Object>) -> usize {
@@ -1647,11 +1535,7 @@ impl<T: Clone> Expando<T> {
 
     pub fn get(&self, object: &std::rc::Rc<dyn Object>) -> Option<T> {
         let key = Self::key(object);
-        self.entries
-            .borrow()
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, v)| v.clone())
+        self.entries.borrow().iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())
     }
 
     pub fn set(&self, object: &std::rc::Rc<dyn Object>, value: Option<T>) {
@@ -1764,23 +1648,17 @@ impl<T> StreamSubscription<T> {
 impl<T: Clone + 'static> Stream<T> {
     /// `Stream.value(v)`: a single-element stream.
     pub fn value(value: T) -> Stream<T> {
-        Stream {
-            events: std::rc::Rc::new(std::cell::RefCell::new(vec![value])),
-        }
+        Stream { events: std::rc::Rc::new(std::cell::RefCell::new(vec![value])) }
     }
 
     /// `Stream.empty()`.
     pub fn empty() -> Stream<T> {
-        Stream {
-            events: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
-        }
+        Stream { events: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())) }
     }
 
     /// `Stream.fromIterable(xs)`.
     pub fn from_iterable(elements: Vec<T>) -> Stream<T> {
-        Stream {
-            events: std::rc::Rc::new(std::cell::RefCell::new(elements)),
-        }
+        Stream { events: std::rc::Rc::new(std::cell::RefCell::new(elements)) }
     }
 
     /// `listen(onData, {onError, onDone, cancelOnError})`: every event, then
@@ -1801,26 +1679,17 @@ impl<T: Clone + 'static> Stream<T> {
         if let Some(d) = &on_done {
             d();
         }
-        StreamSubscription {
-            _phantom: std::marker::PhantomData,
-        }
+        StreamSubscription { _phantom: std::marker::PhantomData }
     }
 
     /// `toList()`.
-    pub fn to_list(
-        &self,
-    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Vec<T>>>> {
+    pub fn to_list(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Vec<T>>>> {
         Box::pin(std::future::ready(self.events.borrow().clone()))
     }
 
     /// `first`.
     pub fn first(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>> {
-        let first = self
-            .events
-            .borrow()
-            .first()
-            .cloned()
-            .expect("Bad state: No element");
+        let first = self.events.borrow().first().cloned().expect("Bad state: No element");
         Box::pin(std::future::ready(first))
     }
 
@@ -1832,9 +1701,7 @@ impl<T: Clone + 'static> Stream<T> {
 
 impl<T> Clone for Stream<T> {
     fn clone(&self) -> Self {
-        Stream {
-            events: self.events.clone(),
-        }
+        Stream { events: self.events.clone() }
     }
 }
 
@@ -1859,10 +1726,7 @@ pub struct _ByteCallbackSink {
 
 impl _ByteCallbackSink {
     pub fn new(callback: std::rc::Rc<dyn Fn(Vec<i64>) -> ()>) -> ByteConversionSink {
-        std::rc::Rc::new(_ByteCallbackSink {
-            accumulated: std::cell::RefCell::new(Vec::new()),
-            callback,
-        })
+        std::rc::Rc::new(_ByteCallbackSink { accumulated: std::cell::RefCell::new(Vec::new()), callback })
     }
 }
 
@@ -1921,11 +1785,7 @@ pub struct RegExpMatch {
 
 impl RegExpMatch {
     pub fn group(&self, index: i64) -> Option<String> {
-        if index == 0 {
-            Some(self.input[self.start as usize..self.end as usize].to_string())
-        } else {
-            None
-        }
+        if index == 0 { Some(self.input[self.start as usize..self.end as usize].to_string()) } else { None }
     }
     pub fn start(&self) -> i64 {
         self.start
@@ -2076,18 +1936,12 @@ impl DartString for String {
     }
 
     fn code_unit_at(&self, index: i64) -> i64 {
-        self.encode_utf16()
-            .nth(index as usize)
-            .map(|u| u as i64)
-            .unwrap_or(0)
+        self.encode_utf16().nth(index as usize).map(|u| u as i64).unwrap_or(0)
     }
 
     fn substring(&self, start: i64, end: Option<i64>) -> String {
         let units: Vec<u16> = self.encode_utf16().collect();
-        let end = end
-            .map(|e| e as usize)
-            .unwrap_or(units.len())
-            .min(units.len());
+        let end = end.map(|e| e as usize).unwrap_or(units.len()).min(units.len());
         let start = (start.max(0) as usize).min(end);
         String::from_utf16_lossy(&units[start..end])
     }
@@ -2181,11 +2035,7 @@ impl DartString for String {
     }
     fn contains_dart(&self, pattern: String, start: i64) -> bool {
         let s: &str = self.as_ref();
-        let from = s
-            .char_indices()
-            .nth(start.max(0) as usize)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
+        let from = s.char_indices().nth(start.max(0) as usize).map(|(i, _)| i).unwrap_or(s.len());
         s[from..].contains(pattern.as_str())
     }
     fn starts_with_at(&self, pattern: String, index: i64) -> bool {
@@ -2303,49 +2153,7 @@ impl _Uri {
 
 /// `Object.hash(a, b, ..)`: up to twenty parts, the unused ones arriving
 /// as `SentinelValue`. Over the debug text of each, as `object_hash_all`.
-pub fn object_hash<
-    A: std::fmt::Debug,
-    B: std::fmt::Debug,
-    C: std::fmt::Debug,
-    D: std::fmt::Debug,
-    E: std::fmt::Debug,
-    F: std::fmt::Debug,
-    G: std::fmt::Debug,
-    H: std::fmt::Debug,
-    I: std::fmt::Debug,
-    J: std::fmt::Debug,
-    K: std::fmt::Debug,
-    L: std::fmt::Debug,
-    M: std::fmt::Debug,
-    N: std::fmt::Debug,
-    O: std::fmt::Debug,
-    P: std::fmt::Debug,
-    Q: std::fmt::Debug,
-    R: std::fmt::Debug,
-    S: std::fmt::Debug,
-    T: std::fmt::Debug,
->(
-    a: A,
-    b: B,
-    c: C,
-    d: D,
-    e: E,
-    f: F,
-    g: G,
-    h: H,
-    i: I,
-    j: J,
-    k: K,
-    l: L,
-    m: M,
-    n: N,
-    o: O,
-    p: P,
-    q: Q,
-    r: R,
-    s: S,
-    t: T,
-) -> i64 {
+pub fn object_hash<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug, D: std::fmt::Debug, E: std::fmt::Debug, F: std::fmt::Debug, G: std::fmt::Debug, H: std::fmt::Debug, I: std::fmt::Debug, J: std::fmt::Debug, K: std::fmt::Debug, L: std::fmt::Debug, M: std::fmt::Debug, N: std::fmt::Debug, O: std::fmt::Debug, P: std::fmt::Debug, Q: std::fmt::Debug, R: std::fmt::Debug, S: std::fmt::Debug, T: std::fmt::Debug>(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T) -> i64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     format!("{:?}", a).hash(&mut hasher);
@@ -2388,20 +2196,12 @@ pub fn object_hash_all<T: std::fmt::Debug>(items: Vec<T>) -> i64 {
 /// here uses across an isolate boundary, so there are no handles.
 /// `_invoke1WithReturn<A, R>(R Function(A)? callback, Zone? zone, A arg)`:
 /// `R?`, null when there is no callback.
-pub fn _invoke1_with_return<A, R>(
-    callback: Option<std::rc::Rc<dyn Fn(A) -> R>>,
-    _zone: Zone,
-    arg: A,
-) -> Option<R> {
+pub fn _invoke1_with_return<A, R>(callback: Option<std::rc::Rc<dyn Fn(A) -> R>>, _zone: Zone, arg: A) -> Option<R> {
     callback.map(|f| f(arg))
 }
 
 #[allow(dead_code)]
-fn _invoke1_with_return_unused<A, R>(
-    callback: std::rc::Rc<dyn Fn(A) -> R>,
-    _zone: Zone,
-    arg: A,
-) -> R {
+fn _invoke1_with_return_unused<A, R>(callback: std::rc::Rc<dyn Fn(A) -> R>, _zone: Zone, arg: A) -> R {
     callback(arg)
 }
 
@@ -2485,24 +2285,15 @@ pub enum InvocationKind {
 
 impl Invocation {
     pub const fn getter(member_name: Symbol) -> Self {
-        Invocation {
-            member_name,
-            kind: InvocationKind::Getter,
-        }
+        Invocation { member_name, kind: InvocationKind::Getter }
     }
 
     pub const fn setter(member_name: Symbol) -> Self {
-        Invocation {
-            member_name,
-            kind: InvocationKind::Setter,
-        }
+        Invocation { member_name, kind: InvocationKind::Setter }
     }
 
     pub const fn method(member_name: Symbol) -> Self {
-        Invocation {
-            member_name,
-            kind: InvocationKind::Method,
-        }
+        Invocation { member_name, kind: InvocationKind::Method }
     }
 
     pub fn member_name(&self) -> Symbol {
@@ -2706,7 +2497,9 @@ impl Timer {
         scheduler.timers.push(Scheduled {
             id,
             due: std::time::Instant::now() + wait,
-            period: period.map(|p| std::time::Duration::from_micros(p.microseconds.max(0) as u64)),
+            period: period.map(|p| {
+                std::time::Duration::from_micros(p.microseconds.max(0) as u64)
+            }),
             callback,
             active: true,
         });
@@ -2765,9 +2558,7 @@ struct CompleterState<T> {
 /// A `Completer` is a handle on its shared state: cloning shares.
 impl<T> Clone for Completer<T> {
     fn clone(&self) -> Self {
-        Completer {
-            shared: self.shared.clone(),
-        }
+        Completer { shared: self.shared.clone() }
     }
 }
 
@@ -2828,9 +2619,7 @@ impl<T> Completer<T> {
     where
         T: 'static,
     {
-        std::boxed::Box::pin(CompleterFuture {
-            shared: self.shared.clone(),
-        })
+        std::boxed::Box::pin(CompleterFuture { shared: self.shared.clone() })
     }
 }
 
@@ -2841,7 +2630,10 @@ pub struct CompleterFuture<T> {
 impl<T> std::future::Future for CompleterFuture<T> {
     type Output = T;
 
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<T> {
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<T> {
         let mut state = self.shared.borrow_mut();
         match state.value.take() {
             Some(value) => std::task::Poll::Ready(value),
@@ -2873,13 +2665,7 @@ pub struct RegExp {
 impl RegExp {
     /// `RegExp(source, {multiLine, caseSensitive, unicode, dotAll})`: the
     /// flags are carried and not yet honoured.
-    pub fn new(
-        pattern: String,
-        _multi_line: bool,
-        _case_sensitive: bool,
-        _unicode: bool,
-        _dot_all: bool,
-    ) -> Self {
+    pub fn new(pattern: String, _multi_line: bool, _case_sensitive: bool, _unicode: bool, _dot_all: bool) -> Self {
         RegExp { pattern }
     }
 
@@ -3029,16 +2815,11 @@ impl DartByteBuffer for Vec<u8> {
     }
 
     fn as_int8_list(&self, offset: i64, length: Option<i64>) -> Vec<i8> {
-        byte_window(self, offset, length, 1)
-            .iter()
-            .map(|b| *b as i8)
-            .collect()
+        byte_window(self, offset, length, 1).iter().map(|b| *b as i8).collect()
     }
 
     fn as_byte_data(&self, offset: i64, length: Option<i64>) -> ByteData {
-        ByteData {
-            bytes: byte_window(self, offset, length, 1).to_vec(),
-        }
+        ByteData { bytes: byte_window(self, offset, length, 1).to_vec() }
     }
 
     fn as_int32_list(&self, offset: i64, length: Option<i64>) -> Vec<i32> {
@@ -3071,37 +2852,21 @@ impl Utf8Decoder {
     /// `convert(codeUnits, [start, end])`.
     pub fn convert(&self, code_units: Vec<i64>, start: i64, end: Option<i64>) -> String {
         let s = (start.max(0) as usize).min(code_units.len());
-        let e = end
-            .map(|n| (n.max(0) as usize).min(code_units.len()))
-            .unwrap_or(code_units.len());
+        let e = end.map(|n| (n.max(0) as usize).min(code_units.len())).unwrap_or(code_units.len());
         Utf8Codec.decode(code_units[s..e].to_vec(), Some(true))
     }
 }
 
 /// `Platform.isWindows` and its siblings: what this binary was built for.
-pub fn platform_is_windows() -> bool {
-    cfg!(target_os = "windows")
-}
-pub fn platform_is_linux() -> bool {
-    cfg!(target_os = "linux")
-}
-pub fn platform_is_mac_o_s() -> bool {
-    cfg!(target_os = "macos")
-}
-pub fn platform_is_android() -> bool {
-    cfg!(target_os = "android")
-}
-pub fn platform_is_i_o_s() -> bool {
-    cfg!(target_os = "ios")
-}
-pub fn platform_is_fuchsia() -> bool {
-    cfg!(target_os = "fuchsia")
-}
+pub fn platform_is_windows() -> bool { cfg!(target_os = "windows") }
+pub fn platform_is_linux() -> bool { cfg!(target_os = "linux") }
+pub fn platform_is_mac_o_s() -> bool { cfg!(target_os = "macos") }
+pub fn platform_is_android() -> bool { cfg!(target_os = "android") }
+pub fn platform_is_i_o_s() -> bool { cfg!(target_os = "ios") }
+pub fn platform_is_fuchsia() -> bool { cfg!(target_os = "fuchsia") }
 
 pub fn platform_number_of_processors() -> i64 {
-    std::thread::available_parallelism()
-        .map(|n| n.get() as i64)
-        .unwrap_or(1)
+    std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(1)
 }
 pub fn platform_path_separator() -> String {
     std::path::MAIN_SEPARATOR.to_string()
@@ -3135,18 +2900,8 @@ pub struct SocketException {
 }
 
 impl SocketException {
-    pub fn new(
-        message: String,
-        os_error: Option<OSError>,
-        address: Option<InternetAddress>,
-        port: Option<i64>,
-    ) -> Self {
-        SocketException {
-            message,
-            os_error,
-            address,
-            port,
-        }
+    pub fn new(message: String, os_error: Option<OSError>, address: Option<InternetAddress>, port: Option<i64>) -> Self {
+        SocketException { message, os_error, address, port }
     }
 }
 
@@ -3220,19 +2975,11 @@ impl ArgumentError {
     /// `ArgumentError.checkNotNull(value, [name])`: the value, or a panic
     /// where Dart throws.
     pub fn check_not_null<T>(value: Option<T>, name: Option<String>) -> T {
-        value.unwrap_or_else(|| {
-            panic!(
-                "ArgumentError: {} must not be null",
-                name.unwrap_or_default()
-            )
-        })
+        value.unwrap_or_else(|| panic!("ArgumentError: {} must not be null", name.unwrap_or_default()))
     }
 
     pub fn new<M: fmt::Display>(message: M, name: Option<String>) -> Self {
-        ArgumentError {
-            message: message.to_string(),
-            name,
-        }
+        ArgumentError { message: message.to_string(), name }
     }
 }
 
@@ -3251,11 +2998,7 @@ impl ArgumentError {
     /// its Rust type, which is not what Dart's `toString` would print.
     pub fn value<T, M: IntoMessage>(_value: T, name: Option<String>, message: M) -> Self {
         ArgumentError {
-            message: format!(
-                "{} ({})",
-                message.into_message(),
-                std::any::type_name::<T>()
-            ),
+            message: format!("{} ({})", message.into_message(), std::any::type_name::<T>()),
             name,
         }
     }
@@ -3272,16 +3015,8 @@ pub struct FormatException {
 }
 
 impl FormatException {
-    pub fn new(
-        message: String,
-        source: Option<std::rc::Rc<dyn Object>>,
-        offset: Option<i64>,
-    ) -> Self {
-        FormatException {
-            message,
-            source,
-            offset,
-        }
+    pub fn new(message: String, source: Option<std::rc::Rc<dyn Object>>, offset: Option<i64>) -> Self {
+        FormatException { message, source, offset }
     }
 }
 
@@ -3316,11 +3051,7 @@ impl IndexError {
     ) -> Self {
         IndexError {
             message: message.unwrap_or_else(|| {
-                format!(
-                    "Index out of range{}: {}",
-                    name.map(|n| format!(" ({})", n)).unwrap_or_default(),
-                    index
-                )
+                format!("Index out of range{}: {}", name.map(|n| format!(" ({})", n)).unwrap_or_default(), index)
             }),
             index,
             length: length.unwrap_or(0),
@@ -3335,17 +3066,9 @@ impl IndexError {
         message: Option<String>,
     ) -> Self {
         let message = message.unwrap_or_else(|| {
-            format!(
-                "Index out of range: {}: {}",
-                name.unwrap_or_default(),
-                index
-            )
+            format!("Index out of range: {}: {}", name.unwrap_or_default(), index)
         });
-        IndexError {
-            message,
-            index,
-            length,
-        }
+        IndexError { message, index, length }
     }
 }
 
@@ -3409,36 +3132,18 @@ pub struct RangeError {
 
 impl RangeError {
     pub fn new(message: String) -> Self {
-        RangeError {
-            message,
-            start: None,
-            end: None,
-        }
+        RangeError { message, start: None, end: None }
     }
 
     /// `RangeError.checkValidRange(start, end, length, [startName, endName,
     /// message])`: the end, or a panic where Dart throws.
-    pub fn check_valid_range(
-        start: i64,
-        end: Option<i64>,
-        length: i64,
-        start_name: Option<String>,
-        end_name: Option<String>,
-        message: Option<String>,
-    ) -> i64 {
+    pub fn check_valid_range(start: i64, end: Option<i64>, length: i64, start_name: Option<String>, end_name: Option<String>, message: Option<String>) -> i64 {
         let end = end.unwrap_or(length);
         if start < 0 || start > length || end < start || end > length {
-            panic!(
-                "RangeError: {}",
-                message.unwrap_or_else(|| format!(
-                    "Invalid range {}..{} ({}, {}) for length {}",
-                    start,
-                    end,
-                    start_name.unwrap_or_default(),
-                    end_name.unwrap_or_default(),
-                    length
-                ))
-            );
+            panic!("RangeError: {}", message.unwrap_or_else(|| format!(
+                "Invalid range {}..{} ({}, {}) for length {}",
+                start, end, start_name.unwrap_or_default(), end_name.unwrap_or_default(), length
+            )));
         }
         end
     }
@@ -3550,27 +3255,17 @@ impl ByteData {
     pub fn get_int64(&self, offset: i64, endian: Endian) -> i64 {
         let mut b = [0u8; 8];
         b.copy_from_slice(self.at(offset, 8));
-        if self.le(endian) {
-            i64::from_le_bytes(b)
-        } else {
-            i64::from_be_bytes(b)
-        }
+        if self.le(endian) { i64::from_le_bytes(b) } else { i64::from_be_bytes(b) }
     }
 
     pub fn set_int64(&mut self, offset: i64, value: i64, endian: Endian) {
-        let b = if self.le(endian) {
-            value.to_le_bytes()
-        } else {
-            value.to_be_bytes()
-        };
+        let b = if self.le(endian) { value.to_le_bytes() } else { value.to_be_bytes() };
         let start = offset.max(0) as usize;
         self.bytes[start..start + 8].copy_from_slice(&b);
     }
 
     pub fn new(length: i64) -> Self {
-        ByteData {
-            bytes: vec![0; length.max(0) as usize],
-        }
+        ByteData { bytes: vec![0; length.max(0) as usize] }
     }
 
     /// `ByteData.view(buffer, [offsetInBytes, length])`: a copy of that
@@ -3581,9 +3276,7 @@ impl ByteData {
             Some(n) => (start + n.max(0) as usize).min(bytes.len()),
             None => bytes.len(),
         };
-        ByteData {
-            bytes: bytes[start..end].to_vec(),
-        }
+        ByteData { bytes: bytes[start..end].to_vec() }
     }
 
     pub fn length_in_bytes(&self) -> i64 {

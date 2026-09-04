@@ -1287,7 +1287,6 @@ impl fmt::Display for Type {
 pub trait DartList<T> {
     /// `length`, under its Dart name, beside `len()`.
     fn length(&self) -> i64;
-    fn remove_value(&mut self, value: T) -> bool;
     /// `sublist(start, [end])`: a copy of that range.
     fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T>;
     /// `sort([compare])`: without one, the elements' own order.
@@ -1299,14 +1298,12 @@ pub trait DartList<T> {
     /// `setRange(start, end, from, skip)`: copies `from[skip..]` over
     /// `self[start..end]`.
     fn set_range(&mut self, start: i64, end: i64, from: Vec<T>, skip: i64);
-    /// `indexOf(value)`: the first index holding an equal element, or -1.
-    fn index_of(&self, value: T) -> i64;
     /// `skip(n)`/`take(n)`, collected.
     fn skip_dart(&self, n: i64) -> Vec<T>;
     fn take_dart(&self, n: i64) -> Vec<T>;
 }
 
-impl<T: PartialEq + Clone> DartList<T> for Vec<T> {
+impl<T: Clone> DartList<T> for Vec<T> {
     fn length(&self) -> i64 {
         self.len() as i64
     }
@@ -1317,15 +1314,6 @@ impl<T: PartialEq + Clone> DartList<T> for Vec<T> {
         self[s..e.max(s)].to_vec()
     }
 
-    fn remove_value(&mut self, value: T) -> bool {
-        match self.iter().position(|x| *x == value) {
-            Some(i) => {
-                self.remove(i);
-                true
-            }
-            None => false,
-        }
-    }
 
     fn sort_by_dart(&mut self, compare: Option<std::rc::Rc<dyn Fn(T, T) -> i64>>) {
         match compare {
@@ -1364,6 +1352,28 @@ impl<T: PartialEq + Clone> DartList<T> for Vec<T> {
         self.iter().take(n.max(0) as usize).cloned().collect()
     }
 
+}
+
+/// The `List` methods that compare elements, apart so that a `Vec<T>`
+/// with only `T: Clone` (a generic class's `T`, 2026-09-04) still has
+/// `set_range` and `sublist`; `remove(value)` and `indexOf` ask for
+/// `==` and are an error at the use when `T` has none.
+pub trait DartListEq<T> {
+    fn remove_value(&mut self, value: T) -> bool;
+    /// `indexOf(value)`: the first index holding an equal element, or -1.
+    fn index_of(&self, value: T) -> i64;
+}
+
+impl<T: PartialEq + Clone> DartListEq<T> for Vec<T> {
+    fn remove_value(&mut self, value: T) -> bool {
+        match self.iter().position(|x| *x == value) {
+            Some(i) => {
+                self.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
     fn index_of(&self, value: T) -> i64 {
         match self.iter().position(|x| *x == value) {
             Some(i) => i as i64,
