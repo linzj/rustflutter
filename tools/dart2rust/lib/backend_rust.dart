@@ -886,6 +886,14 @@ class RustBackend {
   bool _mutableOnCounted(IrFieldDecl field) =>
       !field.isFinal || field.isLate || _isMutableCollection(type(field.type));
 
+  /// A trait's collection field that a trait body mutates in place is handed
+  /// out as its cell: the value accessor clones, and `this_._trackers
+  /// .borrow_mut().insert(..)` on a clone inserted into a copy (125 at ws271).
+  bool _handsCell(IrFieldDecl field) =>
+      !field.isLate && _isMutableCollection(type(field.type));
+
+  String _cellType(String held) => 'std::rc::Rc<std::cell::RefCell<$held>>';
+
   static bool _isMutableCollection(String rust) =>
       rust.startsWith('Vec<') ||
       rust.startsWith('Set<') ||
@@ -1762,6 +1770,20 @@ class RustBackend {
   String? _cellPlace(IrExpr? target) {
     if (target is! IrField) return null;
     final base = target.target;
+    final atThis = base == null || base is IrThis;
+    // Through the trait's cell accessor: inside a trait body, or on a
+    // handle whose owner is a trait (`cascaded.children.add(x)`).
+    final owner = target.owner;
+    if ((atThis && _fieldsAreAccessors) ||
+        (!atThis && owner != null && library.isAbstract(owner))) {
+      final owned = atThis ? cls : library[owner!];
+      final decl = owned == null
+          ? null
+          : _allFields(owned).where((f) => f.name == target.name).firstOrNull;
+      if (decl == null || !_handsCell(decl)) return null;
+      final holder = atThis ? _selfName : expr(base);
+      return '$holder.${snake(target.name)}_cell()$_propagate';
+    }
     final IrFieldDecl? cell;
     if (base == null || base is IrThis) {
       cell = _sharedField(target.name);
@@ -3418,6 +3440,11 @@ class RustBackend {
       if (!field.isFinal) {
         _line(
           'fn set_${snake(field.name)}(&self, value: ${type(field.type)}) -> ${_wrapped('()')};',
+        );
+      }
+      if (_handsCell(field)) {
+        _line(
+          'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(type(field.type)))};',
         );
       }
       _line('');
@@ -5449,6 +5476,28 @@ class RustBackend {
     // `PointerEvent` alone.
     final held = {for (final f in _allFields(cls)) f.name};
     for (final field in accessors) {
+      // The cell accessor first, before a getter of the class's own can
+      // take the value accessor's place: the trait asks for both.
+      if (_handsCell(field)) {
+        final cell = held.contains(field.name)
+            ? _sharedField(field.name)
+            : null;
+        final substituted = type(_substituteType(field.type, _implBinding));
+        _line(
+          'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(substituted))} {',
+        );
+        _indent++;
+        _line(
+          cell != null
+              ? (_resultModel
+                    ? 'Ok(self.${snake(field.name)}.clone())'
+                    : 'self.${snake(field.name)}.clone()')
+              : 'todo!("${cls.name}.${field.name} is mutated through a trait but is not a cell")',
+        );
+        _indent--;
+        _line('}');
+        _line('');
+      }
       if (taken.contains(snake(field.name))) continue;
       // Cloned out: the accessor returns a value and the field is behind
       // `&self` -- `fn _buffer(&self) -> Vec<i64> { self._buffer }` moved it.
