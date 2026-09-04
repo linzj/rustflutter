@@ -2676,7 +2676,14 @@ class RustBackend {
           final rust = type == null ? null : this.type(type);
           final copy = rust != null && _isCopy(rust);
           _cellLocals = {..._cellLocals, name: copy};
-          final inner = init == null ? 'Default::default()' : expr(init);
+          // A `dynamic` cell starts as Dart's null, the `Null` object.
+          final inner = init != null
+              ? expr(init)
+              : rust == 'std::rc::Rc<dyn Object>'
+              ? 'std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>'
+              : rust != null && rust.startsWith('Option<')
+              ? 'None'
+              : 'Default::default()';
           final held = rust == null
               ? ''
               : ': std::rc::Rc<std::cell::${copy ? 'Cell' : 'RefCell'}<$rust>>';

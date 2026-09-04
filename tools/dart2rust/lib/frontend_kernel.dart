@@ -3003,7 +3003,8 @@ class KernelFrontend {
     // a call on an `f64`: the value is a scalar, whatever Kernel says.
     if (given is DynamicType &&
         value is DynamicInvocation &&
-        _dynamicNumMethods.contains(value.name.text)) {
+        (_dynamicNumMethods.contains(value.name.text) ||
+            _dynamicNumOperators.contains(value.name.text))) {
       final shared = IrCall(lowered, '!rc_object', const []);
       return param is! DynamicType && param.nullability == Nullability.nullable
           ? IrSome(shared)
@@ -4332,6 +4333,11 @@ class KernelFrontend {
     }
     return lowered;
   }
+
+  /// The operators a `dynamic` receiver is downcast to `f64` for (see
+  /// `expression`): their result is an `f64` whatever the static type says,
+  /// and a `dynamic` slot taking it needs the sharing an `f64` gets.
+  static const _dynamicNumOperators = {'+', '-', '*', '/', '%', '~/'};
 
   /// The `num` members a `dynamic` receiver is downcast for.
   static const _dynamicNumMethods = {
