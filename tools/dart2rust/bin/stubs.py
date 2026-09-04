@@ -39,14 +39,24 @@ FN = re.compile(r'^(\s*)(pub(\([a-z]+\))?\s+)?(async\s+)?(const\s+)?fn\s+([A-Za-
 def cargo_errors(ws):
     """(file, line, message) for every error's primary span, plus the count of
     errors that had no span in the workspace."""
+    # `-j`: 32 parallel `rustc`s over a workspace whose largest crate is
+    # 220k lines took the machine (94 GB) down twice, 2026-09-05. Eight by
+    # default; `DART2RUST_JOBS` sets it. Never run a second `cargo check`
+    # beside this one -- the reachable-crate count comes from this run.
+    jobs = os.environ.get('DART2RUST_JOBS', '8')
     p = subprocess.run(
-        ['cargo', 'check', '--workspace', '--keep-going', '--message-format=json'],
+        ['cargo', 'check', '--workspace', '--keep-going', '-j', jobs,
+         '--message-format=json'],
         cwd=ws, capture_output=True, text=True)
     found = []
+    ARTIFACTS.clear()
     for raw in p.stdout.splitlines():
         try:
             m = json.loads(raw)
         except ValueError:
+            continue
+        if m.get('reason') == 'compiler-artifact':
+            ARTIFACTS.add(m['target']['name'])
             continue
         if m.get('reason') != 'compiler-message':
             continue
@@ -71,6 +81,9 @@ def cargo_errors(ws):
 
 
 RENDERED = []
+
+# Crates the last `cargo check` produced an artifact for: the ones reached.
+ARTIFACTS = set()
 
 
 def enclosing_fn(lines, line):
@@ -221,9 +234,11 @@ def main():
 
     print('total stubbed: %d' % len(stubbed))
     print('unstubbable: %d' % len(unstubbable))
+    print('reachable crates: %d' % len(ARTIFACTS))
     if args.report:
         with io.open(args.report, 'w', encoding='utf-8') as out:
             out.write('# stubbed functions: %d\n' % len(stubbed))
+            out.write('# reachable crates: %d\n' % len(ARTIFACTS))
             for f, name, msg in stubbed:
                 out.write('%s\t%s\t%s\n' % (f, name, msg))
             out.write('\n# errors outside any function: %d\n' % len(unstubbable))
