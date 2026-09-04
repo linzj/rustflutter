@@ -5493,8 +5493,13 @@ class RustBackend {
       _line('}');
       _line('');
       // The setter the trait asks for on a mutable field (see `_emitTrait`).
-      if (!field.isFinal && held.contains(field.name)) {
-        final cell = _sharedField(field.name);
+      // Every setter the trait declares, held or not: an impl missing one
+      // is "not all trait items implemented", and a whole crate with it
+      // (`SnapshotController with ChangeNotifier`, the round the gate opened).
+      if (!field.isFinal) {
+        final cell = held.contains(field.name)
+            ? _sharedField(field.name)
+            : null;
         _line(
           'fn set_${snake(field.name)}(&self, value: ${type(substituted)}) -> ${_wrapped('()')} {',
         );
