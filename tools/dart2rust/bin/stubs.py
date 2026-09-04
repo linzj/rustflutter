@@ -58,7 +58,13 @@ def cargo_errors(ws):
             continue
         s = spans[0]
         found.append((s['file_name'], s['line_start'], msg['message']))
+        # The whole diagnostic, notes and all: the headline says
+        # "mismatched types" 2482 times and nothing about which two.
+        RENDERED.append(msg.get('rendered') or '')
     return found
+
+
+RENDERED = []
 
 
 def enclosing_fn(lines, line):
@@ -177,6 +183,8 @@ def main():
             out.write('\n# errors outside any function: %d\n' % len(unstubbable))
             for f, line, msg in unstubbable:
                 out.write('%s:%d\t%s\n' % (f, line, msg))
+        with io.open(args.report + '.rendered.txt', 'w', encoding='utf-8') as out:
+            out.write('\n'.join(RENDERED))
     return 0
 
 

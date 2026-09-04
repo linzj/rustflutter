@@ -66,7 +66,11 @@ class KernelFrontend {
   final TypeEnvironment? typeEnvironment;
   StaticTypeContext? _typeContext;
 
+  /// The member being lowered; its class is what `this` is.
+  Member? _member;
+
   void _enter(Member member) {
+    _member = member;
     final env = typeEnvironment;
     _typeContext = env == null ? null : StaticTypeContext(member, env);
     _capturedWrites = _CapturedWrites.of(member);
@@ -1895,7 +1899,11 @@ class KernelFrontend {
     }
     final target = receiver is ThisExpression ? null : expression(receiver);
     if (node.interfaceTarget is Procedure) {
-      return IrCall(target, name, const []);
+      return _qualified(
+        IrCall(target, name, const []),
+        node.interfaceTarget,
+        receiver,
+      );
     }
     // A field of a `dart:` class the prelude re-expresses -- `Duration
     // .inMicroseconds` is a field in this SDK -- is a method there, as
@@ -1930,7 +1938,11 @@ class KernelFrontend {
         declaring.isAbstract &&
         !declaring.isAnonymousMixin &&
         !concrete) {
-      return IrCall(target, name, const []);
+      return _qualified(
+        IrCall(target, name, const []),
+        node.interfaceTarget,
+        receiver,
+      );
     }
     return IrField(
       target,
@@ -2474,11 +2486,75 @@ class KernelFrontend {
       }
     }
     final receiver = node.receiver;
-    return IrCall(
-      receiver is ThisExpression ? null : expression(receiver),
-      name,
-      args,
+    return _qualified(
+      IrCall(
+        receiver is ThisExpression ? null : expression(receiver),
+        name,
+        args,
+      ),
+      node.interfaceTarget,
+      receiver,
     );
+  }
+
+  /// See `IrCall.qualifier`: a member whose name a class above its owner
+  /// also declares is called through the owner's trait by name.
+  IrCall _qualified(IrCall call, Member member, Expression receiver) {
+    final owner = member.enclosingClass;
+    if (owner == null || owner.isAnonymousMixin || !_translatedClass(owner)) {
+      return call;
+    }
+    // From the receiver's own class: a mixin's `child` is declared again
+    // by the trait of the class that mixes it in, *below* the owner.
+    final type = receiver is ThisExpression ? null : _staticType(receiver);
+    final from = receiver is ThisExpression
+        ? _member?.enclosingClass
+        : type is InterfaceType
+        ? type.classNode
+        : null;
+    if (!_declaredTwice(from ?? owner, member)) return call;
+    final handle =
+        type is InterfaceType &&
+        (type.classNode.isAbstract || _closureCallsMethod(type.classNode));
+    return IrCall(
+      call.target,
+      call.name,
+      call.args,
+      qualifier: owner.name,
+      handle: handle,
+    );
+  }
+
+  bool _translatedClass(Class c) {
+    final uri = c.enclosingLibrary.importUri;
+    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+  }
+
+  /// Whether two translated classes in `from`'s hierarchy (itself
+  /// included) declare a member of the same name and kind -- the second
+  /// declaration a Rust call cannot choose between.
+  bool _declaredTwice(Class from, Member member) {
+    final name = member.name.text;
+    final setter = member is Procedure && member.isSetter;
+    final seen = <Class>{};
+    var found = 0;
+    bool declares(Class c) => c.members.any(
+      (m) =>
+          m.name.text == name &&
+          (m is Field || (m is Procedure && m.isSetter == setter)),
+    );
+    bool walk(Class c) {
+      if (!seen.add(c)) return false;
+      if (_translatedClass(c) && !c.isAnonymousMixin && declares(c)) {
+        if (++found >= 2) return true;
+      }
+      for (final s in c.supers) {
+        if (walk(s.classNode)) return true;
+      }
+      return false;
+    }
+
+    return walk(from);
   }
 
   IrExpr _construct(ConstructorInvocation node) {

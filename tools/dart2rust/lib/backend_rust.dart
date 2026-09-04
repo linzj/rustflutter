@@ -527,11 +527,14 @@ class RustBackend {
         type,
       ),
       IrUnary(:final op, :final operand) => '($op${expr(operand)})',
-      IrCall(:final target, :final name, :final args) => _call(
-        target,
-        name,
-        args,
-      ),
+      IrCall(
+        :final target,
+        :final name,
+        :final args,
+        :final qualifier,
+        :final handle,
+      ) =>
+        _call(target, name, args, qualifier: qualifier, handle: handle),
       IrStaticCall(:final owner, :final name, :final args) => _staticCall(
         owner,
         name,
@@ -1686,7 +1689,13 @@ class RustBackend {
     return expr(target);
   }
 
-  String _call(IrExpr? target, String name, List<IrExpr> args) {
+  String _call(
+    IrExpr? target,
+    String name,
+    List<IrExpr> args, {
+    String? qualifier,
+    bool handle = false,
+  }) {
     // Before the receiver is rendered: rendering a chain on its own is
     // refused, and this is the one place a chain is not on its own.
     // Any arguments, not none: Dart's `toList({bool growable = true})` has a
@@ -1885,6 +1894,23 @@ class RustBackend {
     // as `x._()`, which does not parse and stopped the whole crate at the
     // lexer. `_identifier` gives the operator the same name its definition
     // got, and refuses the ones with no Rust name at all.
+    if (qualifier != null) {
+      // See `IrCall.qualifier`. `self`/`this_` are already references; a
+      // closure's `__me` is a handle, as is any receiver typed by a trait
+      // or a counted class.
+      final through = target == null || target is IrThis
+          ? (_selfName == 'self' || _selfName == 'this_'
+                ? _selfName
+                : cls.counted
+                ? '&*$_selfName'
+                : '&$_selfName')
+          : handle
+          ? '&*${expr(target)}'
+          : '&${expr(target)}';
+      return '$qualifier::${_identifier(name)}'
+          '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
+          '$suffix';
+    }
     return '$receiver.${_identifier(name)}'
         '(${args.map(expr).join(', ')})$suffix';
   }
@@ -4323,11 +4349,20 @@ class RustBackend {
         go(body),
         flatten: flatten,
       ),
-      IrCall(:final target, :final name, :final args) => IrCall(
-        target == null ? null : go(target),
-        name,
-        args.map(go).toList(),
-      ),
+      IrCall(
+        :final target,
+        :final name,
+        :final args,
+        :final qualifier,
+        :final handle,
+      ) =>
+        IrCall(
+          target == null ? null : go(target),
+          name,
+          args.map(go).toList(),
+          qualifier: qualifier,
+          handle: handle,
+        ),
       IrStaticCall(:final owner, :final name, :final args) => IrStaticCall(
         owner,
         name,

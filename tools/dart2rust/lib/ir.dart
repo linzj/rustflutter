@@ -172,11 +172,28 @@ class IrUnary extends IrExpr {
 
 /// An instance method call. `target` null means `this`.
 class IrCall extends IrExpr {
-  const IrCall(this.target, this.name, this.args);
+  const IrCall(
+    this.target,
+    this.name,
+    this.args, {
+    this.qualifier,
+    this.handle = false,
+  });
 
   final IrExpr? target;
   final String name;
   final List<IrExpr> args;
+
+  /// The trait to name the method through -- `RenderBox::constraints(&self)`
+  /// -- when the receiver's hierarchy declares the name more than once: a
+  /// Dart override in an abstract class, or a covariant return, is a second
+  /// declaration in the subtrait, and the plain call sees both (975
+  /// "multiple applicable items" in the workspace, 2026-09-04).
+  final String? qualifier;
+
+  /// Whether the receiver is a handle (`Rc<..>`) the qualified call has to
+  /// reach through: `&*handle` rather than `&value`.
+  final bool handle;
 }
 
 /// A static method call: `Alignment.lerp(a, b, t)`, or a top-level one.
