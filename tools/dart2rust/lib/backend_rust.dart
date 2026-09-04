@@ -3955,6 +3955,8 @@ class RustBackend {
       _indent++;
       _selfName = 'this_';
       _returns = method.returnType;
+      // A super function fails like the method whose body it holds.
+      _failure = _failureOf(method);
       _asyncBody = method.isAsync;
       _reassigned = _assignedIn(method.body);
       _cellLocals = {};

@@ -2153,7 +2153,12 @@ class KernelFrontend {
       if (target is Field) return IrTopLevel(target.name.text);
       // A top-level getter is a function here, so reading it is calling it.
       if (target is Procedure && target.kind == ProcedureKind.Getter) {
-        return IrStaticCall(null, target.name.text, const []);
+        return IrStaticCall(
+          null,
+          target.name.text,
+          const [],
+          fails: _fails(target),
+        );
       }
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
     }
@@ -2162,7 +2167,12 @@ class KernelFrontend {
     // static it was spelled `PlatformDispatcher::INSTANCE`, a constant
     // nothing declared (20 times).
     if (target is Procedure && target.kind == ProcedureKind.Getter) {
-      return IrStaticCall(enclosing.name, target.name.text, const []);
+      return IrStaticCall(
+        enclosing.name,
+        target.name.text,
+        const [],
+        fails: _fails(target),
+      );
     }
     return IrStatic(
       enclosing.name,
