@@ -1533,8 +1533,19 @@ class RustBackend {
         'super.$name(...)',
       );
     }
+    // The receiver as the super function takes it, `&__Self`: `self` is
+    // already a reference -- one more deref when it is the handle
+    // (`_receiverOf`) -- and a closure's `__me` is a handle when the class
+    // is counted, a value otherwise (510 `Rc<X>: Trait` bounds at ws294).
+    final receiver = _selfName == 'self'
+        ? (_selfIsHandle ? '&**self' : 'self')
+        : _selfName == 'this_'
+        ? 'this_'
+        : cls.counted
+        ? '&*$_selfName'
+        : '&$_selfName';
     final call =
-        '${superFn(base, name)}(${[_selfName, ...args.map(expr)].join(', ')})';
+        '${superFn(base, name)}(${[receiver, ...args.map(expr)].join(', ')})';
     // An async super function is an `async fn`; the caller's trait wants
     // the boxed future every `Future<T>` is here.
     final isAsync = baseClass.methods.any(
