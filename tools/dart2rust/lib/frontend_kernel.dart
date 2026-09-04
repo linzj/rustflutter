@@ -2133,7 +2133,7 @@ class KernelFrontend {
     // list: `pattern[0] == "a"` in intl's date formatting (44 + 44).
     // `[3, 4, 5].contains(n % 100)` with `n` a `num`: Dart compares by
     // value (`3 == 3.0`), so the `double` is cast to the list's `int`.
-    if ((owner == 'List' || owner == 'Iterable') &&
+    if ((owner == 'List' || owner == 'Iterable' || owner == 'Set') &&
         name == 'contains' &&
         args.length == 1) {
       final listType = _staticType(node.receiver);
@@ -3113,6 +3113,45 @@ class KernelFrontend {
     // `String? Function(String)` -- returns through `Some`. A static
     // tear-off (`canonicalizedLocale` in a list of fallbacks) as well as a
     // local.
+    // A static function with *extra* optional named parameters as a value
+    // of a narrower function type: `presentError = dumpErrorToConsole`,
+    // where `dumpErrorToConsole(details, {forceReport = false})` fills a
+    // `void Function(FlutterErrorDetails)` slot. The adapter passes the
+    // defaults, as a call through the slot would.
+    if (value is ConstantExpression &&
+        value.constant is StaticTearOffConstant &&
+        param is FunctionType &&
+        given is FunctionType &&
+        param.namedParameters.isEmpty &&
+        given.namedParameters.isNotEmpty &&
+        param.positionalParameters.length ==
+            given.positionalParameters.length) {
+      final target = (value.constant as StaticTearOffConstant).target;
+      final params = <IrParam>[];
+      final args = <IrExpr>[];
+      for (var i = 0; i < param.positionalParameters.length; i++) {
+        final name = '__a$i';
+        params.add(IrParam(name, _paramType(param.positionalParameters[i])));
+        args.add(IrLocal(name));
+      }
+      for (final n in target.function.namedParameters) {
+        final init = n.initializer;
+        args.add(
+          init == null
+              ? const IrLiteral('null', IrType('Null', nullable: true))
+              : expression(init),
+        );
+      }
+      return IrCall(
+        IrClosure(
+          params,
+          IrReturn(IrCallValue(lowered, args)),
+          _type(param.returnType),
+        ),
+        '!rc',
+        const [],
+      );
+    }
     if ((value is VariableGet ||
             value is StaticTearOff ||
             (value is ConstantExpression &&
@@ -3663,6 +3702,15 @@ class KernelFrontend {
       );
     }
     if (constant is InstanceConstant) {
+      // `Zone.root` (the `_RootZone` constant): the prelude's `Zone::root()`.
+      // Fields initialised with it -- every `_onXZone` in
+      // `PlatformDispatcher` -- kept its constructor refused, and with it
+      // the static `instance` every hook goes through.
+      final constClass = constant.classNode;
+      if (constClass.enclosingLibrary.importUri.toString() == 'dart:async' &&
+          (constClass.name == '_RootZone' || constClass.name == 'Zone')) {
+        return IrStaticCall('Zone', 'root', const []);
+      }
       // An enum value arrives as an instance of the enum class carrying the
       // CFE's own `#index` and `_name` fields. Walking its constructor for
       // those was 1125 refusals reading `const instance missing #index` -- a
@@ -4508,6 +4556,8 @@ class KernelFrontend {
         functions.add(_lowerTopLevel(procedure));
       } on Unsupported catch (error) {
         refused.add('top-level ${procedure.name.text}: $error');
+        final stub = _stubFor(procedure, '$error');
+        if (stub != null) functions.add(stub);
       }
     }
     for (final cls in library.classes) {
@@ -4553,6 +4603,77 @@ class KernelFrontend {
   static bool _isStreamView(Class c) =>
       c.name == 'StreamView' &&
       c.enclosingLibrary.importUri.toString() == 'dart:async';
+
+  /// A refused method or function, kept as its signature over a body that
+  /// says so at runtime: `todo!("dart2rust: not translated: <why>")`.
+  ///
+  /// Without this a refusal took the member out of the output, and every
+  /// reference to it -- `debugPrint = debugPrintThrottled` -- failed to
+  /// compile, taking its crate and every crate above it out of the build.
+  /// The refusal is still recorded (the `NOT TRANSLATED` line, the count);
+  /// what changes is that the program links and fails where Dart would have
+  /// run the missing member, not everywhere. A member whose *signature*
+  /// cannot be spelled is still left out.
+  IrMethod? _stubFor(Procedure node, String reason) {
+    if (node.kind == ProcedureKind.Factory ||
+        node.isNoSuchMethodForwarder ||
+        node.isAbstract ||
+        node.isExternal) {
+      return null;
+    }
+    try {
+      final fn = node.function;
+      final isTopLevel = node.enclosingClass == null;
+      // `Iterator<T>` is a Rust trait, not a type: a signature naming it
+      // cannot be spelled here (`ObserverList.iterator`).
+      bool unspeakable(DartType t) =>
+          t is InterfaceType &&
+          (t.classNode.name == 'Iterator' ||
+              t.classNode.name == 'Iterable' && false);
+      if (unspeakable(fn.returnType) ||
+          fn.positionalParameters.any((p) => unspeakable(p.type)) ||
+          fn.namedParameters.any((p) => unspeakable(p.type))) {
+        return null;
+      }
+      final name = node.kind == ProcedureKind.Setter && isTopLevel
+          ? _topLevelSetterName(node.name.text)
+          : node.name.text.replaceAll(RegExp(r'[|#]'), '_');
+      // Into a Rust string literal that is also a format string: braces
+      // doubled, quotes and backslashes escaped, one line.
+      final text = reason
+          .replaceAll('\\', '\\\\')
+          .replaceAll('"', '\\"')
+          .replaceAll('{', '{{')
+          .replaceAll('}', '}}')
+          .replaceAll('\n', ' ');
+      return IrMethod(
+        name,
+        [
+          for (final p in fn.positionalParameters)
+            IrParam(_paramName(p), _type(p.type)),
+          for (final p in fn.namedParameters)
+            IrParam(p.parameterName, _type(p.type), named: true),
+        ],
+        _returnType(fn),
+        IrBlock([
+          IrExprStmt(
+            IrLiteral(
+              'todo!("dart2rust: not translated: $text")',
+              const IrType('raw'),
+            ),
+          ),
+        ]),
+        typeParameters: [for (final p in fn.typeParameters) p.name ?? 'T'],
+        isStatic: node.isStatic && !isTopLevel,
+        isGetter: node.kind == ProcedureKind.Getter && !(isTopLevel),
+        isSetter: node.kind == ProcedureKind.Setter && !isTopLevel,
+        isAsync: fn.asyncMarker == AsyncMarker.Async,
+        operator: node.kind == ProcedureKind.Operator ? name : null,
+      );
+    } on Unsupported {
+      return null;
+    }
+  }
 
   IrMethod _lowerTopLevel(Procedure node) {
     _enter(node);
@@ -4897,6 +5018,8 @@ class KernelFrontend {
         _lowerProcedure(cls, procedure);
       } on Unsupported catch (error) {
         refused.add('$error');
+        final stub = _stubFor(procedure, '$error');
+        if (stub != null) cls.methods.add(stub);
       }
     }
     // The applied mixins' members. After TFA a mixin's fields and methods

@@ -443,6 +443,15 @@ pub struct Set<T> {
 }
 
 impl<T: PartialEq + Clone> Set<T> {
+    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`.
+    pub fn of(elements: Vec<T>) -> Set<T> {
+        let mut s = Set::new();
+        for e in elements {
+            s.add(e);
+        }
+        s
+    }
+
     pub fn new() -> Self {
         Set { items: Vec::new() }
     }
@@ -1495,6 +1504,75 @@ pub trait DartSink<T> {
 
 pub type Sink<T> = std::rc::Rc<dyn DartSink<T>>;
 
+/// A sink prints as its kind: a struct holding one derives `Debug`
+/// (`crypto`'s `_Sha32BitSink` holds a `Sink<Digest>`).
+impl<T> std::fmt::Debug for dyn DartSink<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Instance of 'Sink'")
+    }
+}
+
+/// `dart:developer`'s `ServiceExtensionResponse`, as a name: no VM service
+/// listens here.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ServiceExtensionResponse {
+    pub result: Option<String>,
+    pub error_code: Option<i64>,
+    pub error_detail: Option<String>,
+}
+
+impl ServiceExtensionResponse {
+    pub fn result(json: String) -> ServiceExtensionResponse {
+        ServiceExtensionResponse {
+            result: Some(json),
+            error_code: None,
+            error_detail: None,
+        }
+    }
+    pub fn error(code: i64, detail: String) -> ServiceExtensionResponse {
+        ServiceExtensionResponse {
+            result: None,
+            error_code: Some(code),
+            error_detail: Some(detail),
+        }
+    }
+}
+
+/// `dart:developer`'s `Flow`, as a name: timeline flows go nowhere here.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Flow {
+    pub id: i64,
+}
+
+impl Flow {
+    pub fn begin(id: Option<i64>) -> Flow {
+        Flow {
+            id: id.unwrap_or(0),
+        }
+    }
+    pub fn step(id: i64) -> Flow {
+        Flow { id }
+    }
+    pub fn end(id: i64) -> Flow {
+        Flow { id }
+    }
+}
+
+/// `dart:io`'s `RandomAccessFile`, `File` and `Directory`, as names: nothing
+/// opens one here (`get_storage`'s IO backend names them in signatures).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RandomAccessFile;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct File {
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Directory {
+    pub path: String,
+}
+
 /// Dart's `Null` as a *type*: `Option<Null>` is a value that is always
 /// `None`, which is what a `List<Null>` or an `Expando<Null>` holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -2417,6 +2495,11 @@ pub struct Zone;
 
 impl Zone {
     /// `Zone.current`, a static getter upstream and so a call here.
+    /// `Zone.root`: the one zone there is here.
+    pub fn root() -> Zone {
+        Zone::current()
+    }
+
     pub fn current() -> Zone {
         Zone
     }

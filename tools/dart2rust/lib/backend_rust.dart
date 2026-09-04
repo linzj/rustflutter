@@ -246,7 +246,11 @@ class RustBackend {
   /// per-class fix one level up: the unit of refusal should be the unit of work.
   /// Returns whether the member was emitted, because a caller sometimes has to
   /// know: a trait default cannot delegate to a free function that was refused.
-  bool _member(String what, void Function() body) {
+  bool _member(
+    String what,
+    void Function() body, {
+    void Function(String reason)? stub,
+  }) {
     final mark = _out.length;
     final indent = _indent;
     // Every scrap of state a member's emission sets, so a refusal leaves none
@@ -280,6 +284,19 @@ class RustBackend {
       _indent = indent;
       _line('// NOT TRANSLATED: $what');
       _line('//   $error');
+      // The refusal stays written (it is what the count reads); under it,
+      // when the caller can, the member's signature over a body that says
+      // so at runtime -- so a reference to it still compiles (see the front
+      // end's `_stubFor` for the same policy one stage earlier).
+      if (stub != null) {
+        final after = _out.length;
+        try {
+          stub('$error');
+        } on Unsupported {
+          _out.removeRange(after, _out.length);
+          _indent = indent;
+        }
+      }
       _line('');
       return false;
     } finally {
@@ -2262,6 +2279,10 @@ class RustBackend {
   /// Only the empty constructors. `_GrowableList(n)` and `_List.filled` mean
   /// something else and are left to refuse rather than be guessed at.
   static const _collections = {
+    'LinkedHashSet': 'Set',
+    'HashSet': 'Set',
+    'LinkedHashMap': 'Map',
+    'HashMap': 'Map',
     '_Set': 'Set',
     '_LinkedHashSet': 'Set',
     '_CompactLinkedHashSet': 'Set',
@@ -2860,9 +2881,13 @@ class RustBackend {
       // reader does.
       final holder = RustBackend(IrClass('<library>'), library: library);
       for (final function in library.functions) {
-        holder._member('top-level ${function.name}', () {
-          holder._emitFreeFunction(function);
-        });
+        holder._member(
+          'top-level ${function.name}',
+          () {
+            holder._emitFreeFunction(function);
+          },
+          stub: (reason) => holder._emitFreeFunction(function, stubbed: reason),
+        );
       }
       out.write(holder._out.join('\n'));
       out.writeln();
@@ -3036,7 +3061,11 @@ class RustBackend {
         _line('');
       }
       for (final method in members) {
-        _member('${cls.name}.${method.name}', () => _emitMethod(method));
+        _member(
+          '${cls.name}.${method.name}',
+          () => _emitMethod(method),
+          stub: (reason) => _emitMethod(method, stubbed: reason),
+        );
       }
       _indent--;
       _line('}');
@@ -3289,6 +3318,24 @@ class RustBackend {
   bool _lazy(IrConstDecl c) =>
       !c.isMutable && (!_isCopy(type(c.type)) || !_constEvaluable(c.value));
 
+  /// Prelude classes whose constructors are not `const fn`.
+  static const _preludeTypes = {
+    'Stopwatch',
+    'DateTime',
+    'Duration',
+    'Completer',
+    'StringBuffer',
+    'RegExp',
+    'Uri',
+    'Random',
+    'Expando',
+    'Zone',
+    'Map',
+    'Set',
+    'Queue',
+    'Stream',
+  };
+
   static bool _constEvaluable(IrExpr e) => switch (e) {
     IrLiteral() => true,
     IrStatic() => true,
@@ -3298,7 +3345,11 @@ class RustBackend {
     IrUnary(:final operand) => _constEvaluable(operand),
     IrCast(:final value) => _constEvaluable(value),
     IrConstInstance(:final fields) => fields.values.every(_constEvaluable),
-    IrNew(:final args) => args.every(_constEvaluable),
+    // A translated class's constructor is a `const fn`; the prelude's
+    // (`Stopwatch::new()`) are not, and a `const` holding one does not
+    // compile (E0015 in `foundation_print`).
+    IrNew(:final type, :final args) =>
+      !_preludeTypes.contains(type.name) && args.every(_constEvaluable),
     _ => false,
   };
 
@@ -3522,7 +3573,15 @@ class RustBackend {
   /// The same body machinery a method uses, with no `self` -- `_selfName` is
   /// the lever for that, as it is for a constructor body and for the free
   /// functions an abstract class's methods become.
-  void _emitFreeFunction(IrMethod method) {
+  /// A refusal reason as the text of a `todo!` (a Rust format string).
+  static String _stubText(String reason) => reason
+      .replaceAll('\\', '\\\\')
+      .replaceAll('"', '\\"')
+      .replaceAll('{', '{{')
+      .replaceAll('}', '}}')
+      .replaceAll('\n', ' ');
+
+  void _emitFreeFunction(IrMethod method, {String? stubbed}) {
     _doc(method.doc);
     // Before the parameters are spelled: `_param` asks `_reassigned`
     // whether each is written, and it held the previous method's answer.
@@ -3545,8 +3604,12 @@ class RustBackend {
     // `return address.isLoopback` came out as an `Option<()>`.
     _rustReturns = _returnType(method);
     _asyncBody = method.isAsync;
-    stmt(method.body, tail: true);
-    _closeOpenIf(method.body);
+    if (stubbed != null) {
+      _line('todo!("dart2rust: not translated: ${_stubText(stubbed)}")');
+    } else {
+      stmt(method.body, tail: true);
+      _closeOpenIf(method.body);
+    }
     _returns = null;
     _rustReturns = null;
     _selfName = saved;
@@ -5488,7 +5551,11 @@ class RustBackend {
   void _emitMethods() {
     for (final method in cls.methods) {
       if (method.operator != null) continue;
-      _member('${cls.name}.${method.name}', () => _emitMethod(method));
+      _member(
+        '${cls.name}.${method.name}',
+        () => _emitMethod(method),
+        stub: (reason) => _emitMethod(method, stubbed: reason),
+      );
     }
     // A concrete superclass's methods, on the subclass: `ValueNotifier
     // extends ChangeNotifier` has `ChangeNotifier`'s fields (flattened in)
@@ -5530,7 +5597,7 @@ class RustBackend {
     return out;
   }
 
-  void _emitMethod(IrMethod method, {String? as}) {
+  void _emitMethod(IrMethod method, {String? as, String? stubbed}) {
     {
       // Before the signature: whether a parameter needs `mut` is decided by the
       // body, and the signature is written first.
@@ -5579,14 +5646,18 @@ class RustBackend {
           _failure != null &&
           type(method.returnType) == '()' &&
           !_alwaysReturns(method.body);
-      stmt(method.body, tail: !fallsOff);
-      if (fallsOff) _line('Ok(())');
+      if (stubbed != null) {
+        _line('todo!("dart2rust: not translated: ${_stubText(stubbed)}")');
+      } else {
+        stmt(method.body, tail: !fallsOff);
+        if (fallsOff) _line('Ok(())');
+      }
       // `TileMode` to text as an `if`/`else if` chain over every variant with
       // no final `else`: Dart lets the body fall off the end (returning null
       // it would then refuse at runtime); Rust wants the last `if` to be an
       // expression of the return type. The chain is exhaustive by the
       // author's reckoning, and the line after it says so.
-      if (!fallsOff) _closeOpenIf(method.body);
+      if (!fallsOff && stubbed == null) _closeOpenIf(method.body);
       _returns = null;
       _indent--;
       _line('}');

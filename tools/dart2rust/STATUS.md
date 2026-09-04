@@ -6234,6 +6234,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws169 | 63 | dynamic 接收者的 `~/` 也按 f64 算（`NumberFormat._formatFixed` 翻出来，带来新错）；静态类型为 `num` 的值进 `num` 槽也 `as f64`（`f64 as f64` 是合法的空转）。
 | ws170 | 56 | dynamic 接收者上的算术结果（是 f64）进 `dynamic` 槽时共享；`dynamic` 的 cell 局部初值是 `Null`。剩余：dart:ui 19 / intl 15 / collection 12 / source_span 4 / typed_data 3 / get 3。
 | ws171 | 50 | 静态方法的 tear-off 在 kernel 里是常量（`StaticTearOffConstant`），适配闭包现在认它（`verifiedLocale(.., DateFormat.localeExists)` 一族清掉）；`dynamic == 数字` 按 f64 比；prelude 异常类的 `dynamic source` 当 `Object?` 送。剩余：dart:ui 19 / collection 12 / intl 9 / source_span 4 / typed_data 3 / get 3。
+| ws172–ws181 | 46 叶子错 | **换打法：让整个 workspace 可检查。** (1) `bin/stubs.py`：对 `cargo check --workspace --keep-going` 的每个错，把所在函数体换成 `todo!("dart2rust: stubbed, did not compile: <错误>")`，反复到没有新错（报告列出每个被 stub 的函数；函数体之外的错——签名、静态、struct——不能 stub，单列）。(2) 前端和后端拒绝的方法/顶层函数不再从输出里消失，而是保留签名、体为 `todo!("dart2rust: not translated: <原因>")`（`// NOT TRANSLATED` 注释仍在，拒绝计数不变：1585）。(3) prelude 补 `Zone::root`、`File`/`Directory`/`RandomAccessFile`/`Flow`/`ServiceExtensionResponse` 名字、`Set::of`、`impl Debug for dyn DartSink`；`Zone.root` 常量按 `Zone::root()` 降；`LinkedHashSet/HashMap` 工厂映射到 prelude；prelude 构造器不进 `const`；`Set.contains` 按引用；带默认命名参数的静态 tear-off 适配。
+| ws181 | — | stubs 之后：叶子层 46 个错 → 132 个函数被 stub → 可达 25 个 crate（24 干净 + flutter_foundation 1 个错在 `foundation_binding.rs:69`）。**下一波在 flutter_foundation。** 被 stub 的函数是运行时会 panic 的债，数目要往零推。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步
