@@ -248,14 +248,20 @@ Future<void> main(List<String> args) async {
       if (target != null && target != name) imports.add(target);
     }
     for (final dependency in library.dependencies) {
-      if (!dependency.isExport) continue;
       final target = nameOf[dependency.targetLibrary];
+      if (target == null || target == name) continue;
+      if (!dependency.isExport) {
+        // The Dart file's own `import` lines, beside the references: a
+        // default argument the compiler filled in (`VerticalDirection.down`
+        // for `Column`) names a class the source never wrote, reached only
+        // through `material.dart`'s re-exports.
+        if (!exports.contains(target)) imports.add(target);
+        continue;
+      }
       // Dart's `export` is a re-export, and a library importing this one gets
       // what it exports. The edges that survive are still worth keeping.
-      if (target != null && target != name) {
-        exports.add(target);
-        imports.remove(target);
-      }
+      exports.add(target);
+      imports.remove(target);
     }
 
     final (own, refused) = lowered[library]!;
