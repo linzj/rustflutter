@@ -58,11 +58,13 @@ class KernelFrontend {
   });
 
   /// Whether type parameters bounded by translated abstract classes are
-  /// erased (`_erasedParameter`). Gated while the cut is finished: on, ws281
+  /// erased (`_erasedParameter`). Gated while the cut was finished: on, ws281
   /// measured 5341 against the gate's 5247, with three follow-ups owed --
   /// a cast to an open class's trait for `widget` reads, field reads through
   /// a downcast of a generic value struct, and callbacks typed with the
-  /// erased parameter. `DART2RUST_ERASE=1` turns it on.
+  /// erased parameter. With those in, ws290 measured 5352/883 against the
+  /// gate's 5358/887, and it is the default; `DART2RUST_ERASE=0` turns it
+  /// off.
   final bool erase;
 
   /// Concrete classes with subclasses, lowered as a trait plus a struct
@@ -357,6 +359,23 @@ class KernelFrontend {
       // xs.add(__t)` after the CFE's lowering of `?.`/`??` (`String <=
       // Option<String>`). It used to return before the checks below.
       final name = temporary ?? written!;
+      // A closure parameter retyped to an erased bound (`_closureParamType`)
+      // reads as the class it was declared with.
+      final retyped = _retyped[node.variable];
+      final declaredVar = node.variable.type;
+      if (retyped is TypeParameterType &&
+          _erasedParameter(retyped.parameter) &&
+          declaredVar is InterfaceType &&
+          declaredVar.nullability != Nullability.nullable) {
+        final bound = retyped.parameter.bound;
+        if (bound is InterfaceType &&
+            bound.classNode != declaredVar.classNode) {
+          if (_abstractLike(declaredVar.classNode)) {
+            return IrCastTo(IrLocal(name), _type(declaredVar));
+          }
+          return _narrowingCast(IrLocal(name), declaredVar);
+        }
+      }
       // Promoted to a concrete class the declaration does not name: the
       // read is a downcast. Promotion to the *same* class (nullable to
       // non-null) is not.
@@ -1170,14 +1189,17 @@ class KernelFrontend {
   /// not what Kernel says, and an argument made of it is widened from it.
   final Map<Variable, DartType> _retyped = {};
 
-  static DartType _closureParamType(
-    FunctionType? expected,
-    int i,
-    DartType declared,
-  ) {
+  DartType _closureParamType(FunctionType? expected, int i, DartType declared) {
     if (expected == null || i >= expected.positionalParameters.length)
       return declared;
     final wanted = expected.positionalParameters[i];
+    // The slot's parameter is an erased one: the closure takes the bound
+    // (`Rc<dyn Notification>`) and reads it as what it declared
+    // (`expression` on a `VariableGet`), 111 closure signature mismatches
+    // at ws281.
+    if (wanted is TypeParameterType && _erasedParameter(wanted.parameter)) {
+      return wanted;
+    }
     if (declared is DynamicType) return wanted;
     // TFA narrows the closure's own `int? result` to `int` when no caller
     // passes null; the `Fn(Option<T>)` it is handed to did not change.
@@ -3242,10 +3264,17 @@ class KernelFrontend {
     // The *instantiated* parameter type when the call site has one: a
     // `List<Shadow>.add(E)` takes a `Shadow`, and the `E` alone could
     // widen nothing (`Shadow <= Option<Shadow>` after TFA dropped a `!`).
+    // ..but the *declared* one when it is a function type naming an erased
+    // parameter: the instantiated `bool Function(ScrollNotification)` is
+    // not what the slot holds, `bool Function(T)` erased is.
+    final declaredType = param?.type;
     final paramType =
-        instantiated != null && index < instantiated.positionalParameters.length
+        declaredType is FunctionType && _mentionsErased(declaredType)
+        ? declaredType
+        : instantiated != null &&
+              index < instantiated.positionalParameters.length
         ? instantiated.positionalParameters[index]
-        : param?.type;
+        : declaredType;
     return _intoDynamic(
       value,
       paramType,
@@ -4417,7 +4446,13 @@ class KernelFrontend {
         !_erasedParameter(declared.parameter)) {
       return lowered;
     }
-    final result = node.resultType;
+    // ..or the reader's own erased parameter (`T` of
+    // `ImplicitlyAnimatedWidgetState<T>` reading `State<T>.widget`): its
+    // bound is what the read is typed as (80 reads on the erased handle).
+    var result = node.resultType;
+    if (result is TypeParameterType && _erasedParameter(result.parameter)) {
+      result = result.parameter.bound;
+    }
     final bound = declared.parameter.bound;
     if (result is! InterfaceType ||
         bound is! InterfaceType ||
@@ -4429,16 +4464,37 @@ class KernelFrontend {
     if (_abstractLike(result.classNode)) {
       return IrCastTo(lowered, _type(result));
     }
-    return IrCall(
-      IrDowncast(
-        lowered,
-        result.classNode.name,
-        arguments: _erasedArguments(result.classNode, result.typeArguments),
-      ),
-      'clone',
-      const [],
-    );
+    return _narrowingCast(lowered, result);
   }
+
+  /// The downcast of `lowered` to the concrete class `to` names. A counted
+  /// class comes back as its handle (`clone` on a downcast, ws279); a value
+  /// class as a copy -- except a *generic* one, whose derived `Clone` wants
+  /// `T: Clone` the impl never promised (ws281): that one is read as a
+  /// reference, and every field read through a downcast clones the field.
+  IrExpr _narrowingCast(IrExpr lowered, InterfaceType to) {
+    final target = to.classNode;
+    final cast = IrDowncast(
+      lowered,
+      target.name,
+      arguments: _erasedArguments(target, to.typeArguments),
+    );
+    if (!_closureCallsMethod(target) && target.typeParameters.isNotEmpty) {
+      return cast;
+    }
+    return IrCall(cast, 'clone', const []);
+  }
+
+  /// Whether a type names an erased parameter anywhere in it.
+  bool _mentionsErased(DartType t) => switch (t) {
+    TypeParameterType() => _erasedParameter(t.parameter),
+    InterfaceType() => t.typeArguments.any(_mentionsErased),
+    FunctionType() =>
+      _mentionsErased(t.returnType) ||
+          t.positionalParameters.any(_mentionsErased) ||
+          t.namedParameters.any((n) => _mentionsErased(n.type)),
+    _ => false,
+  };
 
   // There was a `_refusePrivate` here. It is gone, and its going is the point
   // of this round: skipping private members is right when translating one file
