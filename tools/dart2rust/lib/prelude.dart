@@ -2006,8 +2006,9 @@ impl<T: Clone> DartIter<T> {
     }
 }
 
-pub fn dart_iter<T: Clone>(items: Vec<T>) -> DartIter<T> {
-    DartIter::new(items)
+/// Over anything Dart iterates: a `Set` as much as a `List` (46 in `widgets`).
+pub fn dart_iter<T: Clone, I: IntoIterator<Item = T>>(items: I) -> DartIter<T> {
+    DartIter::new(items.into_iter().collect::<Vec<T>>())
 }
 
 /// `dart:math`'s `Point<T>`.

@@ -204,7 +204,13 @@ class KernelFrontend {
             'double',
             'bool',
           }.contains(bound.classNode.name)) {
-        return IrType(_type(bound).name, nullable: nullable);
+        // The bound's own nullability comes along: intl's `T extends
+        // String?` was a `String` here, and its `String?` return a
+        // `String` (40 `Option<String>` <- `String`).
+        return IrType(
+          _type(bound).name,
+          nullable: nullable || bound.nullability == Nullability.nullable,
+        );
       }
       // `T extends Iterable<E>`: the `Vec<E>` the bound is, since the body
       // iterates it (collection's `IterableEquality`, 6).
@@ -1460,6 +1466,11 @@ class KernelFrontend {
             eager: false,
           );
         }
+        // Not widened into the left's type: `curve ?? Curves.ease` shares
+        // its `Cubic` into an `Rc<Cubic>`, and a `match` arm does not
+        // coerce that to the `Rc<dyn Curve>` the other arm has -- 267
+        // "arms have incompatible types" for 181 mismatches saved
+        // (ws242). It needs an `as Rc<dyn Curve>` the IR cannot spell yet.
         return IrIfNull(
           expression(value),
           expression(right),
@@ -2203,6 +2214,11 @@ class KernelFrontend {
     // list: `pattern[0] == "a"` in intl's date formatting (44 + 44).
     // `[3, 4, 5].contains(n % 100)` with `n` a `num`: Dart compares by
     // value (`3 == 3.0`), so the `double` is cast to the list's `int`.
+    // The prelude's `Set::remove` takes the value by reference, like the
+    // map's key (`_tickers.remove(ticker)`, 46).
+    if (owner == 'Set' && name == 'remove' && args.length == 1) {
+      return IrCall(expression(node.receiver), '!map_remove', args);
+    }
     if ((owner == 'List' || owner == 'Iterable' || owner == 'Set') &&
         name == 'contains' &&
         args.length == 1) {
