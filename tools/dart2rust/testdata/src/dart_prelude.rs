@@ -43,6 +43,12 @@ pub trait DartIterator<T> {
 
 /// Dart's `Object`, as the one thing Rust has for "anything": a trait every
 /// type implements. `&dyn Object` then accepts what `Object` accepted.
+/// What every translated function fails with (STATUS, 决定 2026-09-04): a
+/// Dart exception is an object. A callback handed to the prelude returns
+/// `Result<_, DartError>` like any translated function, and the prelude
+/// propagates it where it can.
+pub type DartError = std::rc::Rc<dyn Object>;
+
 pub trait Object {
     /// The value as `Any`, for `is` and `as` on something typed `Object`
     /// or `dynamic`: 61 `x.as_any()` calls in the leaf crates landed on a
@@ -988,20 +994,28 @@ impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
             .collect()
     }
 
-    pub fn for_each(&self, mut f: impl FnMut(K, V)) {
+    pub fn for_each(
+        &self,
+        mut f: impl FnMut(K, V) -> Result<(), DartError>,
+    ) -> Result<(), DartError> {
         for (key, value) in &self.entries {
-            f(key.clone(), value.clone());
+            f(key.clone(), value.clone())?;
         }
+        Ok(())
     }
 
     /// Dart's `putIfAbsent`: the value that is there afterwards, either way.
-    pub fn put_if_absent(&mut self, key: K, make: impl FnOnce() -> V) -> V {
+    pub fn put_if_absent(
+        &mut self,
+        key: K,
+        make: impl FnOnce() -> Result<V, DartError>,
+    ) -> Result<V, DartError> {
         if let Some(i) = self.at(&key) {
-            return self.entries[i].1.clone();
+            return Ok(self.entries[i].1.clone());
         }
-        let value = make();
+        let value = make()?;
         self.entries.push((key, value.clone()));
-        value
+        Ok(value)
     }
 
     pub fn extend(&mut self, other: Map<K, V>) {
@@ -1044,20 +1058,32 @@ pub type Queue<T> = std::collections::VecDeque<T>;
 pub trait DartFuture<T> {
     fn then<R: 'static>(
         self,
-        on_value: std::rc::Rc<dyn Fn(T) -> R>,
-        on_error: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> R>>,
-    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = R>>>;
+        on_value: std::rc::Rc<dyn Fn(T) -> Result<R, DartError>>,
+        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<R, DartError>>>,
+    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<R, DartError>>>>;
 }
 
+/// `future.then(onValue, onError: ..)`: a translated future completes with
+/// a `Result`; the error goes to `onError` when there is one, and on
+/// through the returned future when there is not.
 impl<T: 'static> DartFuture<T>
-    for std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>>
+    for std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>
 {
     fn then<R: 'static>(
         self,
-        on_value: std::rc::Rc<dyn Fn(T) -> R>,
-        _on_error: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> R>>,
-    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = R>>> {
-        std::boxed::Box::pin(async move { on_value(self.await) })
+        on_value: std::rc::Rc<dyn Fn(T) -> Result<R, DartError>>,
+        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<R, DartError>>>,
+    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<R, DartError>>>>
+    {
+        std::boxed::Box::pin(async move {
+            match self.await {
+                Ok(value) => on_value(value),
+                Err(error) => match on_error {
+                    Some(handler) => handler(error),
+                    None => Err(error),
+                },
+            }
+        })
     }
 }
 
@@ -1499,11 +1525,18 @@ pub trait DartList<T> {
     /// `sublist(start, [end])`: a copy of that range.
     fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T>;
     /// `sort([compare])`: without one, the elements' own order.
-    fn sort_by_dart(&mut self, compare: Option<std::rc::Rc<dyn Fn(T, T) -> i64>>);
+    fn sort_by_dart(
+        &mut self,
+        compare: Option<std::rc::Rc<dyn Fn(T, T) -> Result<i64, DartError>>>,
+    ) -> Result<(), DartError>;
     /// `firstWhere(test)`: panics like Dart's `StateError` when none matches.
-    fn first_where<F: Fn(T) -> bool>(&self, test: F) -> T;
+    fn first_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<T, DartError>;
     /// `firstWhere(test, orElse: f)`.
-    fn first_where_or<F: Fn(T) -> bool, G: Fn() -> T>(&self, test: F, or_else: G) -> T;
+    fn first_where_or<F: Fn(T) -> Result<bool, DartError>, G: Fn() -> Result<T, DartError>>(
+        &self,
+        test: F,
+        or_else: G,
+    ) -> Result<T, DartError>;
     /// `setRange(start, end, from, skip)`: copies `from[skip..]` over
     /// `self[start..end]`.
     fn set_range(&mut self, start: i64, end: i64, from: Vec<T>, skip: i64);
@@ -1525,29 +1558,53 @@ impl<T: Clone> DartList<T> for Vec<T> {
         self[s..e.max(s)].to_vec()
     }
 
-    fn sort_by_dart(&mut self, compare: Option<std::rc::Rc<dyn Fn(T, T) -> i64>>) {
+    fn sort_by_dart(
+        &mut self,
+        compare: Option<std::rc::Rc<dyn Fn(T, T) -> Result<i64, DartError>>>,
+    ) -> Result<(), DartError> {
+        // `sort_by` cannot stop early: the first error is kept, the rest of
+        // the sort runs on `Equal`, and the error is returned after.
+        let failed: std::cell::RefCell<Option<DartError>> = std::cell::RefCell::new(None);
         match compare {
             Some(f) => self.sort_by(|a, b| match f(a.clone(), b.clone()) {
-                x if x < 0 => std::cmp::Ordering::Less,
-                0 => std::cmp::Ordering::Equal,
-                _ => std::cmp::Ordering::Greater,
+                Ok(x) if x < 0 => std::cmp::Ordering::Less,
+                Ok(0) => std::cmp::Ordering::Equal,
+                Ok(_) => std::cmp::Ordering::Greater,
+                Err(e) => {
+                    if failed.borrow().is_none() {
+                        *failed.borrow_mut() = Some(e);
+                    }
+                    std::cmp::Ordering::Equal
+                }
             }),
             None => panic!("List.sort() without a comparator on a type with no natural order here"),
         }
-    }
-
-    fn first_where<F: Fn(T) -> bool>(&self, test: F) -> T {
-        match self.iter().find(|x| test((*x).clone())) {
-            Some(x) => x.clone(),
-            None => panic!("Bad state: No element"),
+        match failed.into_inner() {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 
-    fn first_where_or<F: Fn(T) -> bool, G: Fn() -> T>(&self, test: F, or_else: G) -> T {
-        match self.iter().find(|x| test((*x).clone())) {
-            Some(x) => x.clone(),
-            None => or_else(),
+    fn first_where<F: Fn(T) -> Result<bool, DartError>>(&self, test: F) -> Result<T, DartError> {
+        for x in self.iter() {
+            if test(x.clone())? {
+                return Ok(x.clone());
+            }
         }
+        panic!("Bad state: No element")
+    }
+
+    fn first_where_or<F: Fn(T) -> Result<bool, DartError>, G: Fn() -> Result<T, DartError>>(
+        &self,
+        test: F,
+        or_else: G,
+    ) -> Result<T, DartError> {
+        for x in self.iter() {
+            if test(x.clone())? {
+                return Ok(x.clone());
+            }
+        }
+        or_else()
     }
 
     fn set_range(&mut self, start: i64, end: i64, from: Vec<T>, skip: i64) {
@@ -2003,11 +2060,13 @@ impl<T> PartialEq for Stream<T> {
 /// every chunk and hands the whole to the callback on `close`.
 pub struct _ByteCallbackSink {
     accumulated: std::cell::RefCell<Vec<i64>>,
-    callback: std::rc::Rc<dyn Fn(Vec<i64>) -> ()>,
+    callback: std::rc::Rc<dyn Fn(Vec<i64>) -> Result<(), DartError>>,
 }
 
 impl _ByteCallbackSink {
-    pub fn new(callback: std::rc::Rc<dyn Fn(Vec<i64>) -> ()>) -> ByteConversionSink {
+    pub fn new(
+        callback: std::rc::Rc<dyn Fn(Vec<i64>) -> Result<(), DartError>>,
+    ) -> ByteConversionSink {
         std::rc::Rc::new(_ByteCallbackSink {
             accumulated: std::cell::RefCell::new(Vec::new()),
             callback,
@@ -2022,7 +2081,8 @@ impl DartSink<Vec<i64>> for _ByteCallbackSink {
 
     fn close(&self) {
         let all = self.accumulated.borrow().clone();
-        (self.callback)(all);
+        // A `Sink::close` cannot fail here; the callback's error is loud.
+        (self.callback)(all).unwrap();
     }
 }
 
@@ -2046,14 +2106,17 @@ impl HttpClient {
 pub struct Iterable;
 
 impl Iterable {
-    pub fn generate<T>(count: i64, generator: Option<std::rc::Rc<dyn Fn(i64) -> T>>) -> Vec<T>
+    pub fn generate<T>(
+        count: i64,
+        generator: Option<std::rc::Rc<dyn Fn(i64) -> Result<T, DartError>>>,
+    ) -> Result<Vec<T>, DartError>
     where
         T: From<i64>,
     {
         (0..count.max(0))
             .map(|i| match &generator {
                 Some(f) => f(i),
-                None => T::from(i),
+                None => Ok(T::from(i)),
             })
             .collect()
     }
@@ -2371,8 +2434,9 @@ pub fn _print_debug(arg: String) {
     eprintln!("{}", arg);
 }
 
-pub fn _schedule_microtask(callback: std::rc::Rc<dyn Fn() -> ()>) {
-    callback();
+pub fn _schedule_microtask(callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>) {
+    // An error out of a microtask has no caller to reach: loud.
+    callback().unwrap();
 }
 
 /// `dart:core`'s `_StringStackTrace`, a stack trace that is just text: the
@@ -2539,19 +2603,19 @@ pub fn object_hash_all<T: std::fmt::Debug>(items: Vec<T>) -> i64 {
 /// `_invoke1WithReturn<A, R>(R Function(A)? callback, Zone? zone, A arg)`:
 /// `R?`, null when there is no callback.
 pub fn _invoke1_with_return<A, R>(
-    callback: Option<std::rc::Rc<dyn Fn(A) -> R>>,
+    callback: Option<std::rc::Rc<dyn Fn(A) -> Result<R, DartError>>>,
     _zone: Zone,
     arg: A,
-) -> Option<R> {
-    callback.map(|f| f(arg))
+) -> Result<Option<R>, DartError> {
+    callback.map(|f| f(arg)).transpose()
 }
 
 #[allow(dead_code)]
 fn _invoke1_with_return_unused<A, R>(
-    callback: std::rc::Rc<dyn Fn(A) -> R>,
+    callback: std::rc::Rc<dyn Fn(A) -> Result<R, DartError>>,
     _zone: Zone,
     arg: A,
-) -> R {
+) -> Result<R, DartError> {
     callback(arg)
 }
 
@@ -2700,7 +2764,7 @@ impl Zone {
 
     pub const CURRENT: Zone = Zone;
 
-    pub fn run<T>(&self, body: impl FnOnce() -> T) -> T {
+    pub fn run<T>(&self, body: impl FnOnce() -> Result<T, DartError>) -> Result<T, DartError> {
         body()
     }
 
@@ -2711,20 +2775,34 @@ impl Zone {
     }
 
     /// `runGuarded(f)`: the root zone has no error handler to guard with.
-    pub fn run_guarded(&self, body: std::rc::Rc<dyn Fn() -> ()>) {
+    pub fn run_guarded(
+        &self,
+        body: std::rc::Rc<dyn Fn() -> Result<(), DartError>>,
+    ) -> Result<(), DartError> {
         body()
     }
 
     /// `runUnaryGuarded(f, arg)`.
-    pub fn run_unary_guarded<A>(&self, body: std::rc::Rc<dyn Fn(A) -> ()>, arg: A) {
+    pub fn run_unary_guarded<A>(
+        &self,
+        body: std::rc::Rc<dyn Fn(A) -> Result<(), DartError>>,
+        arg: A,
+    ) -> Result<(), DartError> {
         body(arg)
     }
 
-    pub fn run_unary<A, T>(&self, body: impl FnOnce(A) -> T, argument: A) -> T {
+    pub fn run_unary<A, T>(
+        &self,
+        body: impl FnOnce(A) -> Result<T, DartError>,
+        argument: A,
+    ) -> Result<T, DartError> {
         body(argument)
     }
 
-    pub fn register_callback<T>(&self, body: impl Fn() -> T) -> impl Fn() -> T {
+    pub fn register_callback<T>(
+        &self,
+        body: impl Fn() -> Result<T, DartError>,
+    ) -> impl Fn() -> Result<T, DartError> {
         body
     }
 }
@@ -2741,7 +2819,7 @@ impl Zone {
 /// drains before any timer runs, and a microtask queued by a microtask runs
 /// before the timers too.
 pub struct Scheduler {
-    microtasks: std::collections::VecDeque<Box<dyn FnOnce()>>,
+    microtasks: std::collections::VecDeque<Box<dyn FnOnce() -> Result<(), DartError>>>,
     timers: Vec<Scheduled>,
     next_id: i64,
 }
@@ -2750,7 +2828,7 @@ struct Scheduled {
     id: i64,
     due: std::time::Instant,
     period: Option<std::time::Duration>,
-    callback: std::rc::Rc<dyn Fn()>,
+    callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>,
     active: bool,
 }
 
@@ -2764,7 +2842,7 @@ pub static SCHEDULER: std::sync::LazyLock<Isolate<std::cell::RefCell<Scheduler>>
     });
 
 /// Dart's `scheduleMicrotask`.
-pub fn schedule_microtask(callback: Box<dyn FnOnce()>) {
+pub fn schedule_microtask(callback: Box<dyn FnOnce() -> Result<(), DartError>>) {
     (**SCHEDULER).borrow_mut().microtasks.push_back(callback);
 }
 
@@ -2778,7 +2856,8 @@ pub fn run_until_idle() {
         let task = (**SCHEDULER).borrow_mut().microtasks.pop_front();
         match task {
             Some(task) => {
-                task();
+                // No caller to reach from the event loop: loud.
+                task().unwrap();
                 continue;
             }
             None => {}
@@ -2808,7 +2887,7 @@ pub fn run_until_idle() {
                     }
                 }
             }
-            callback();
+            callback().unwrap();
         }
     }
 }
@@ -2831,22 +2910,25 @@ pub struct Timer {
 }
 
 impl Timer {
-    pub fn new(delay: Duration, callback: std::rc::Rc<dyn Fn()>) -> Self {
+    pub fn new(delay: Duration, callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>) -> Self {
         Timer::schedule(delay, callback, None)
     }
 
-    pub fn periodic(period: Duration, callback: std::rc::Rc<dyn Fn()>) -> Self {
+    pub fn periodic(
+        period: Duration,
+        callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>,
+    ) -> Self {
         Timer::schedule(period, callback, Some(period))
     }
 
     /// Dart's `Timer.run`: a callback on the next turn of the loop.
-    pub fn run(callback: std::rc::Rc<dyn Fn()>) -> Self {
+    pub fn run(callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>) -> Self {
         Timer::new(Duration::ZERO, callback)
     }
 
     fn schedule(
         delay: Duration,
-        callback: std::rc::Rc<dyn Fn()>,
+        callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>,
         period: Option<Duration>,
     ) -> Self {
         let wait = std::time::Duration::from_micros(delay.microseconds.max(0) as u64);

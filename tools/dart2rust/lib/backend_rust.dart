@@ -705,7 +705,9 @@ class RustBackend {
     final awaited = _awaiting;
     _awaiting = false;
     final call = _staticCall(owner, name, args);
-    return fails && !awaited ? '$call$_propagate' : call;
+    final failing =
+        fails || (_resultModel && _preludeFailingStatics.contains(name));
+    return failing && !awaited ? '$call$_propagate' : call;
   }
 
   /// A translated class's constructor returns `Result` like any function;
@@ -1793,6 +1795,24 @@ class RustBackend {
     return c != null && (c.counted || c.isAbstract);
   }
 
+  /// The prelude's methods that take a callback and so return `Result`
+  /// themselves (see `DartError` there).
+  static const _preludeFailing = {
+    'put_if_absent',
+    'for_each',
+    'sort_by_dart',
+    'first_where',
+    'first_where_or',
+    'then',
+    'run',
+    'run_guarded',
+    'run_unary_guarded',
+    'run_unary',
+  };
+
+  /// ..and its static functions.
+  static const _preludeFailingStatics = {'generate', '_invoke1_with_return'};
+
   /// `?` when a function surrounds the expression, `.unwrap()` otherwise.
   String get _propagate => _failure != null ? '?' : '.unwrap()';
 
@@ -2011,7 +2031,8 @@ class RustBackend {
     // A translated callee returns `Result`: `?` inside a function, and
     // `.unwrap()` where there is none around (a static's initialiser).
     // An awaited call is not `?`ed here but at the `.await`.
-    final suffix = !fails || awaited ? '' : _propagate;
+    final failing = fails || (_resultModel && _preludeFailing.contains(name));
+    final suffix = !failing || awaited ? '' : _propagate;
     // `_identifier`, not `snake`: an *operator* called as a method -- `~x` is
     // `x.~()` in Kernel -- has no letters for `snake` to keep, and it came out
     // as `x._()`, which does not parse and stopped the whole crate at the
