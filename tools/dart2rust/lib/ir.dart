@@ -489,6 +489,15 @@ class IrDowncast extends IrExpr {
   final List<IrType> arguments;
 }
 
+/// `x as Trait` / the trait half of `x is Trait`: through `dart_cast_to`,
+/// which every object answers for the traits it implements.
+class IrCastTo extends IrExpr {
+  const IrCastTo(this.target, this.type);
+
+  final IrExpr target;
+  final IrType type;
+}
+
 /// `Some(value)`: a non-null value handed to a nullable parameter. Dart
 /// widens silently; Rust's `Option` does not. Emitted where the front end
 /// can see both types.

@@ -281,6 +281,47 @@ pub trait DartAny: 'static {
     /// function's `this_` -- where `Object::runtime_type` would resolve on
     /// the *reference* and demand it be `'static` (E0521).
     fn dart_runtime_type(&self) -> Type;
+
+    /// The object as one of the traits it implements, boxed as the
+    /// `Rc<dyn Trait>` the caller asked for by `TypeId` (see `dart_cast_to`).
+    /// Every translated struct answers for its own type and for every trait
+    /// it has an `impl` for; the closed world is what makes that a list.
+    fn dart_cast(&self, _target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
+}
+
+/// No impl for `Rc<T>`: a method call on a handle auto-derefs to the
+/// object, and a blanket impl beside `Object`'s made `as_any` ambiguous
+/// (5136 E0034s the first time).
+/// `x.dart_cast_to::<dyn Widget>()`: Dart's `x as Widget` and `x is Widget`
+/// where `Widget` is a trait, which `Any` cannot answer (a `dyn Any` knows
+/// one concrete type). A method on everything, so the receiver may be a
+/// handle, a reference or a value alike.
+pub trait DartCastExt {
+    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>>;
+}
+
+impl<S: DartAny + ?Sized> DartCastExt for S {
+    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
+        self.dart_cast(std::any::TypeId::of::<T>())
+            .and_then(|b| b.downcast::<std::rc::Rc<T>>().ok())
+            .map(|b| *b)
+    }
+}
+
+/// ..through a handle, and through an absent-or-not one: `x is Foo` where
+/// `x` is a `Foo?` asks the value inside, and `null is Foo` is false.
+impl<S: DartCastExt + ?Sized> DartCastExt for std::rc::Rc<S> {
+    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
+        (**self).dart_cast_to::<T>()
+    }
+}
+
+impl<S: DartCastExt> DartCastExt for Option<S> {
+    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
+        self.as_ref().and_then(|v| v.dart_cast_to::<T>())
+    }
 }
 
 /// Dart's `Duration`: a signed span counted in whole microseconds.

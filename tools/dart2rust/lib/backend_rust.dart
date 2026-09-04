@@ -648,6 +648,8 @@ class RustBackend {
         value is IrBound
             ? '(*${expr(value)} as $rust)'
             : '(${expr(value)} as $rust)',
+      IrCastTo(:final target, :final type) =>
+        '${expr(target)}.dart_cast_to::<${_dynOf(type)}>().unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
         '${expr(target)}.as_any().downcast_ref::<$type${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
@@ -1664,10 +1666,18 @@ class RustBackend {
   /// target that is itself abstract has no answer here -- `x is RenderBox`
   /// asks whether the thing implements a trait, which `Any` cannot say -- and
   /// is still refused, now under a name that says which half is missing.
+  /// `dyn Foo<A, B>`: the trait object a trait-typed `IrType` names.
+  String _dynOf(IrType t) => t.arguments.isEmpty
+      ? 'dyn ${t.name}'
+      : 'dyn ${t.name}<${t.arguments.map(type).join(', ')}>';
+
   String _isTest(IrExpr operand, IrType target, bool negated) {
     final name = target.name;
+    // A trait: asked of the object itself (`dart_cast`), which knows what
+    // it implements. Refused since the first round (`_isTest`).
     if (library.isAbstract(name)) {
-      throw Unsupported('`is` against an abstract class', name);
+      return '${expr(operand)}.dart_cast_to::<${_dynOf(target)}>()'
+          '.${negated ? "is_none" : "is_some"}()';
     }
     // `x is num` / `is int` / `is String` on a `dynamic`: the prelude's
     // scalar types, asked of `Any`. A `num` is either an `f64` or an `i64`.
@@ -4717,6 +4727,7 @@ class RustBackend {
       ),
       IrUnary(:final op, :final operand) => IrUnary(op, go(operand)),
       IrNullCheck(:final operand) => IrNullCheck(go(operand)),
+      IrCastTo(:final target, :final type) => IrCastTo(go(target), type),
       IrDowncast(:final target, :final type, :final arguments) => IrDowncast(
         go(target),
         type,
@@ -5290,6 +5301,32 @@ class RustBackend {
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
     _line('Type { name: "${cls.name}" }');
+    _indent--;
+    _line('}');
+    // What this object is (`dart_cast_to`): its own struct, and every
+    // trait it has an impl for, each through the handle that impl keeps.
+    _line(
+      'fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {',
+    );
+    _indent++;
+    final own = cls.counted
+        ? 'self.dart_self_ref().get()'
+        : cls.typeParameters.isEmpty && _cloneable(cls)
+        ? 'std::rc::Rc::new(self.clone())'
+        : null;
+    if (own != null) {
+      _line(
+        'if __t == std::any::TypeId::of::<Self>() { return Some(Box::new($own)); }',
+      );
+    }
+    for (final above in _abstractAncestors(cls)) {
+      final arguments = _baseArguments(above);
+      if (arguments == null) continue;
+      _line(
+        'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() { return Some(Box::new(self.dart_self_${snake(above.name)}())); }',
+      );
+    }
+    _line('None');
     _indent--;
     _line('}');
     _indent--;
@@ -6807,6 +6844,8 @@ class _WalkSelf {
           expression(b);
         }
       case IrDowncast(:final target):
+        expression(target);
+      case IrCastTo(:final target):
         expression(target);
       case IrSome(:final value):
         expression(value);

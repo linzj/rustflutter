@@ -378,6 +378,19 @@ class KernelFrontend {
         // Cloned out of the reference `Any` hands back.
         return IrCall(downcast, 'clone', const []);
       }
+      // ..and to an abstract or open class: the trait cast every object
+      // answers (`dart_cast_to`). Not from a nullable declaration, whose
+      // `Option` the null-promotion below takes off first.
+      if (promoted is InterfaceType &&
+          _abstractLike(promoted.classNode) &&
+          !scalars.contains(promoted.classNode.name) &&
+          promoted.nullability != Nullability.nullable &&
+          !(declared is InterfaceType &&
+              declared.classNode == promoted.classNode) &&
+          !(declared is InterfaceType &&
+              declared.nullability == Nullability.nullable)) {
+        return IrCastTo(IrLocal(name), _type(promoted));
+      }
       // Promoted from `T?` to `T` -- `if (x != null) f(x)` -- the read is
       // the value inside. A clone first, so the local is still there for
       // the next read: `&Option<Hct>` where `&Hct` was wanted, 12 times.
@@ -4409,9 +4422,12 @@ class KernelFrontend {
     if (result is! InterfaceType ||
         bound is! InterfaceType ||
         result.classNode == bound.classNode ||
-        result.nullability == Nullability.nullable ||
-        _abstractLike(result.classNode)) {
+        result.nullability == Nullability.nullable) {
       return lowered;
+    }
+    // ..to a trait, when the narrower class is open or abstract.
+    if (_abstractLike(result.classNode)) {
+      return IrCastTo(lowered, _type(result));
     }
     return IrCall(
       IrDowncast(
