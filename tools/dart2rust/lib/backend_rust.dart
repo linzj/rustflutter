@@ -3610,7 +3610,18 @@ class RustBackend {
     // A trait holds no storage, so the fields this class declares are reached
     // through required accessors. The fields themselves live on every
     // implementor, put there by `_allFields`; this is the other half of that.
+    // Not a field an abstract supertype already declares: a mixin's
+    // fields are lowered into the class applying it, and an open class
+    // that then became a trait offered `_listeners` beside
+    // `ChangeNotifier`'s -- every read of it ambiguous (50 E0034 at
+    // ws305). The ancestor's impl block carries the accessor.
+    final inherited = {
+      for (final above in _supertypesOf(cls))
+        if (library.isAbstract(above.name))
+          for (final f in above.fields) f.name,
+    };
     for (final field in cls.fields) {
+      if (inherited.contains(field.name)) continue;
       _line('/// `${cls.name}.${field.name}`, which the implementor stores.');
       // An accessor is a function like any other under the Result model.
       _line('fn ${snake(field.name)}(&self) -> ${_wrapped(type(field.type))};');
@@ -5686,7 +5697,18 @@ class RustBackend {
     // methods and nothing overridden still has fields, and without them the
     // subclass does not implement the trait at all -- so its inherited methods
     // are unreachable, which is how `area()` went missing.
-    final accessors = ownFields;
+    // ..less the ones an abstract supertype of the base declares, which
+    // the trait left to that ancestor (see `_emitTrait`) and whose impl
+    // block for this class carries them.
+    final inheritedByBase = {
+      for (final above in _supertypesOf(base))
+        if (library.isAbstract(above.name))
+          for (final f in above.fields) f.name,
+    };
+    final accessors = [
+      for (final f in ownFields)
+        if (!inheritedByBase.contains(f.name)) f,
+    ];
     // No early return when both are empty. A Dart subclass *is* its base
     // whether or not it changes anything, so the impl has to exist even with
     // nothing in it -- `Panel extends Measured with Scaled` overrides neither
