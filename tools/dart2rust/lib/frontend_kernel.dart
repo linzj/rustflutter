@@ -71,6 +71,10 @@ class KernelFrontend {
         target.function.asyncMarker == AsyncMarker.Async) {
       return false;
     }
+    // A member cloned into a mixin application lives in a synthetic
+    // library: translated like the mixin's (`current_down` on
+    // `_TapStatusTrackerMixin`, 40 calls without `?`).
+    if (target.enclosingClass?.isAnonymousMixin ?? false) return true;
     final uri = target.enclosingLibrary.importUri;
     return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
   }

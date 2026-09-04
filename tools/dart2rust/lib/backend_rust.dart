@@ -3406,7 +3406,15 @@ class RustBackend {
           final call =
               '${superFn(cls.name, method.name, isSetter: method.isSetter)}('
               '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})';
-          _line(method.isAsync ? 'std::boxed::Box::pin($call)' : call);
+          // An async super function is a future, not a `Result`: the
+          // trait default returns it in `Ok`.
+          _line(
+            method.isAsync
+                ? (_resultModel
+                      ? 'Ok(std::boxed::Box::pin($call))'
+                      : 'std::boxed::Box::pin($call)')
+                : call,
+          );
         }
         _indent--;
         _line('}');
@@ -5581,7 +5589,10 @@ class RustBackend {
           '${need.operator ?? need.name} yet")',
         );
       } else {
-        final call = _inherentCall(have, need);
+        // ..and an async inherent method is a future the forwarder wraps
+        // in `Ok` (49 `Pin<Box<impl Future>>` where `Result<..>` goes).
+        final inherent = _inherentCall(have, need);
+        final call = have.isAsync && _resultModel ? 'Ok($inherent)' : inherent;
         final concrete = type(have.returnType);
         // One `Option` short -- the override narrowed `T?` to `T`, which Dart
         // allows, or the trait's `T?` doubled up above -- is a `Some`.
