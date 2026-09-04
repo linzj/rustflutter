@@ -1601,6 +1601,56 @@ class RustBackend {
   /// Whether the signature being written belongs to a trait.
   var _inTrait = false;
 
+  /// In a trait body, the trait an accessor is reached through when more
+  /// than one trait in the chain declares it (`textTheme` on
+  /// `CupertinoThemeData` over `NoDefaultCupertinoThemeData`; 13 E0034 at
+  /// ws308): this trait when it declares the name, which is the override
+  /// Dart would dispatch to, else the nearest abstract supertype that does.
+  String? _accessorQualifier(String name, {String kind = 'read'}) {
+    // What each kind of accessor a trait declares (`_emitTrait`): a read
+    // for any field or getter, a write for a mutable field or a setter, a
+    // cell for a held collection. Naming a trait that lacks the item was
+    // "expected a type, found a trait" (22 at ws309).
+    bool field(IrClass c) => c.fields.any(
+      (f) =>
+          f.name == name &&
+          switch (kind) {
+            'write' => !f.isFinal,
+            'cell' => _handsCell(f),
+            _ => true,
+          },
+    );
+    bool method(IrClass c) =>
+        c.methods.any(
+          (m) =>
+              m.name == name && !m.isStatic && m.isSetter == (kind == 'write'),
+        ) ||
+        c.abstractMethods.any(
+          (m) => m.name == name && m.isSetter == (kind == 'write'),
+        );
+    if (kind == 'cell' && !field(cls) && !_supertypesOf(cls).any(field)) {
+      return null;
+    }
+    final chain = [
+      cls,
+      ..._supertypesOf(cls).where((t) => library.isAbstract(t.name)),
+    ];
+    final declaring = chain.where((c) => field(c) || method(c)).toList();
+    if (declaring.length < 2) return null;
+    // A getter override is the nearest trait's own; a field's accessor is
+    // declared once, by the topmost trait holding the field (`_emitTrait`
+    // leaves it to the ancestor), which no other declarer is above.
+    if (method(cls)) return cls.name;
+    final fields = declaring.where(field).toList();
+    if (fields.isEmpty) return declaring.first.name;
+    return fields
+        .firstWhere(
+          (c) => !fields.any((o) => o != c && _supertypesOf(c).contains(o)),
+          orElse: () => fields.last,
+        )
+        .name;
+  }
+
   String _fieldRead(
     IrExpr? target,
     String name, [
@@ -1618,7 +1668,10 @@ class RustBackend {
     // no fields, and a mixin's `this_.source_url` names a getter of the
     // implementer's, declared in an interface the mixin never sees (7).
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {
-      return '$receiver.${snake(name)}()$_propagate';
+      final through = _accessorQualifier(name);
+      return through == null
+          ? '$receiver.${snake(name)}()$_propagate'
+          : '$through::${snake(name)}($receiver)$_propagate';
     }
     // A shared field is read through its cell. `get` copies, which is what a
     // Dart read does; `borrow().clone()` is the same for a value that is not
@@ -1908,7 +1961,12 @@ class RustBackend {
           : _allFields(owned).where((f) => f.name == target.name).firstOrNull;
       if (decl == null || !_handsCell(decl)) return null;
       final holder = atThis ? _selfName : expr(base);
-      return '$holder.${snake(target.name)}_cell()$_propagate';
+      final through = atThis
+          ? _accessorQualifier(target.name, kind: 'cell')
+          : null;
+      return through == null
+          ? '$holder.${snake(target.name)}_cell()$_propagate'
+          : '$through::${snake(target.name)}_cell($holder)$_propagate';
     }
     final IrFieldDecl? cell;
     if (base == null || base is IrThis) {
@@ -2373,7 +2431,10 @@ class RustBackend {
         ? _sharedField(name)
         : null;
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {
-      return '{ let __set = ${expr(value)}; $receiver.set_${snake(name)}(__set.clone())$_propagate; __set }';
+      final through = _accessorQualifier(name, kind: 'write');
+      return through == null
+          ? '{ let __set = ${expr(value)}; $receiver.set_${snake(name)}(__set.clone())$_propagate; __set }'
+          : '{ let __set = ${expr(value)}; $through::set_${snake(name)}($receiver, __set.clone())$_propagate; __set }';
     }
     if (shared != null) {
       final copy = _isCopy(_heldType(shared));
@@ -3206,7 +3267,12 @@ class RustBackend {
         // Inside a trait's body there is no field, only the setter it
         // declares (`this_.set__length(v)` in a mixin's super function).
         if (_fieldsAreAccessors && (target == null || target is IrThis)) {
-          _line('$receiver.set_${snake(name)}($written)$_propagate;');
+          final through = _accessorQualifier(name, kind: 'write');
+          _line(
+            through == null
+                ? '$receiver.set_${snake(name)}($written)$_propagate;'
+                : '$through::set_${snake(name)}($receiver, $written)$_propagate;',
+          );
         } else if (target != null &&
             target is! IrThis &&
             owner != null &&
