@@ -2222,6 +2222,13 @@ class RustBackend {
                 : cls.counted
                 ? '&*$_selfName'
                 : '&$_selfName')
+          // A cast result is always a handle; a null-aware binding (`it`)
+          // is a reference to the value, one deref short of a handle's
+          // object and already a reference to a value (79 + 17, ws295).
+          : target is IrCastTo
+          ? '&*${expr(target)}'
+          : target is IrBound
+          ? (_isHandle(receiverClass) ? '&**${expr(target)}' : expr(target))
           : _isHandle(receiverClass)
           ? '&*${expr(target)}'
           : '&${expr(target)}';
