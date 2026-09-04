@@ -3223,11 +3223,24 @@ class RustBackend {
         _line('*(**${screamingSnake(name)}).borrow_mut() = ${expr(value)};');
       case IrAssignStatic(:final owner, :final name, :final value):
         _line('*(**${_lazyName(owner, name)}).borrow_mut() = ${expr(value)};');
-      case IrSetter(:final target, :final name, :final value):
-        // A setter is a method and returns `Result` like one.
-        _line(
-          '${_receiver(target)}.set_${snake(name)}(${expr(value)})$_propagate;',
-        );
+      case IrSetter(
+        :final target,
+        :final name,
+        :final value,
+        :final qualifier,
+        :final receiverClass,
+      ):
+        // A setter is a method and returns `Result` like one. Through the
+        // trait when two declare it (`IrSetter.qualifier`).
+        if (qualifier != null) {
+          _line(
+            '${_call(target, 'set_${snake(name)}', [value], qualifier: qualifier, receiverClass: receiverClass, fails: true)};',
+          );
+        } else {
+          _line(
+            '${_receiver(target)}.set_${snake(name)}(${expr(value)})$_propagate;',
+          );
+        }
       case IrIf(:final condition, :final then, :final otherwise):
         _line('if ${expr(condition)} {');
         _indent++;

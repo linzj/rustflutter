@@ -705,11 +705,23 @@ class IrAssignField extends IrStmt {
 ///
 /// `target` is null for `this`.
 class IrSetter extends IrStmt {
-  const IrSetter(this.target, this.name, this.value);
+  const IrSetter(
+    this.target,
+    this.name,
+    this.value, {
+    this.qualifier,
+    this.receiverClass,
+  });
 
   final IrExpr? target;
   final String name;
   final IrExpr value;
+
+  /// The trait to call the setter through when two declare it (`set value`
+  /// on `RestorableValue` and again on `_RestorablePrimitiveValue`: 77
+  /// ambiguous `set_value` at ws299). See `IrCall.qualifier`.
+  final String? qualifier;
+  final String? receiverClass;
 }
 
 /// A `throw` written where a value was wanted: `a ?? throw StateError(..)`.

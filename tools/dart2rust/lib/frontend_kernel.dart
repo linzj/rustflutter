@@ -842,7 +842,13 @@ class KernelFrontend {
                           ? (_receiverClassName(receiver) ?? declaring.name)
                           : null,
                     )
-                  : IrSetter(expression(receiver), node.name.text, stored),
+                  : IrSetter(
+                      expression(receiver),
+                      node.name.text,
+                      stored,
+                      qualifier: _setterQualifier(receiver, target),
+                      receiverClass: _classNameOf(receiver),
+                    ),
             ], IrLocal(held));
           }
         }
@@ -1731,7 +1737,13 @@ class KernelFrontend {
       // Another object's *setter* is a call, which needs nothing from us
       // beyond a `&mut` receiver at the call site.
       if (value.interfaceTarget is! Field) {
-        return IrSetter(expression(value.receiver), value.name.text, written);
+        return IrSetter(
+          expression(value.receiver),
+          value.name.text,
+          written,
+          qualifier: _setterQualifier(value.receiver, value.interfaceTarget),
+          receiverClass: _classNameOf(value.receiver),
+        );
       }
       // A *field* is a write through a reference. Through a chain rooted
       // at `this` -- `this.child.x = v` -- that reference is `self`, and
@@ -1790,7 +1802,12 @@ class KernelFrontend {
       );
     }
     if (value.interfaceTarget is! Field) {
-      return IrSetter(null, value.name.text, written);
+      return IrSetter(
+        null,
+        value.name.text,
+        written,
+        qualifier: _setterQualifier(null, value.interfaceTarget),
+      );
     }
     return IrAssignField(value.name.text, written);
   }
@@ -2817,6 +2834,26 @@ class KernelFrontend {
   /// its, so inside a super function `__Self: ListNotifier` cannot reach
   /// `ListNotifierMixin::_updaters` (295 E0277s the round the mixin was
   /// named instead).
+  /// The qualifier a setter call takes (see `IrSetter.qualifier`).
+  String? _setterQualifier(Expression? receiver, Member target) {
+    final owner = target.enclosingClass;
+    if (owner == null || !_translatedClass(owner)) return null;
+    final Class? from;
+    if (receiver == null || receiver is ThisExpression) {
+      from = _lowering ?? _member?.enclosingClass;
+    } else {
+      final t = _staticType(receiver);
+      from = t is InterfaceType ? t.classNode : null;
+    }
+    if (from == null) return null;
+    return _qualifierFor(from, target);
+  }
+
+  String? _classNameOf(Expression receiver) {
+    final t = _staticType(receiver);
+    return t is InterfaceType ? t.classNode.name : null;
+  }
+
   String? _qualifierFor(Class from, Member member) {
     final owner = member.enclosingClass!;
     final name = member.name.text;
