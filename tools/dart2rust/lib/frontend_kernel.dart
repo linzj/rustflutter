@@ -3231,6 +3231,7 @@ class KernelFrontend {
           ),
         ),
       ),
+      generic: param?.type is TypeParameterType,
     );
   }
 
@@ -3333,8 +3334,9 @@ class KernelFrontend {
     Expression value,
     DartType? param,
     FunctionNode? callee,
-    IrExpr lowered,
-  ) {
+    IrExpr lowered, {
+    bool generic = false,
+  }) {
     if (param == null || callee == null) return lowered;
     final member = callee.parent;
     if (member is! Member) return lowered;
@@ -3347,8 +3349,14 @@ class KernelFrontend {
     // mismatches (ws144).
     const preludeObjects = {'FormatException'};
     final owner = member.enclosingClass?.name;
+    // ..but a *generic* slot of a prelude collection instantiated to
+    // `Object?` holds what a translated class would: `<Object?>[..]` with
+    // spreads is `list.add(e)` on a `List<Object?>`, and the `Vec<Option<
+    // Rc<dyn Object>>>` wants each element shared and `Some`d (128
+    // "expected `Option<Rc<dyn Object>>`" at ws277).
     if (uri.scheme == 'dart' &&
         uri.toString() != 'dart:ui' &&
+        !generic &&
         !(owner != null && preludeObjects.contains(owner))) {
       return lowered;
     }
