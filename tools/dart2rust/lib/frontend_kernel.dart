@@ -59,7 +59,21 @@ class KernelFrontend {
   /// null while the Result model is off.
   final ThrowsAnalysis? throws;
 
-  bool _fails(Member target) => throws?.familyFails(target) ?? false;
+  /// Whether a call to `target` yields a `Result` to propagate: a member
+  /// of a translated library that is a function (a field's accessor is
+  /// plain) and not `async` (its exceptions go into the future, and the
+  /// `?` goes after the `.await`). Uniform model: the analysis (`throws`)
+  /// no longer decides, it only gates the model.
+  bool _fails(Member target) {
+    if (throws == null) return false;
+    if (target is Field) return false;
+    if (target is Procedure &&
+        target.function.asyncMarker == AsyncMarker.Async) {
+      return false;
+    }
+    final uri = target.enclosingLibrary.importUri;
+    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+  }
 
   /// Top-level `dynamic` fields whose runtime types the driver worked out
   /// from the initialiser and every store into them (`dynamicSlotsIn`):
@@ -3046,6 +3060,7 @@ class KernelFrontend {
         null,
         target.name.text.replaceAll(RegExp(r'[|#]'), '_'),
         _arguments(node.arguments, target.function, true, _instantiated(node)),
+        fails: _fails(target),
       );
     }
     return IrStaticCall(
@@ -3059,6 +3074,7 @@ class KernelFrontend {
       // Color?>((states) { .. })` expects the closure to return `Color?`,
       // and the declared `T` said nothing (63 `Option<Color>` <- `Color`).
       _arguments(node.arguments, target.function, true, _instantiated(node)),
+      fails: _fails(target),
     );
   }
 

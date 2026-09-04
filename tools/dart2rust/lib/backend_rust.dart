@@ -355,7 +355,7 @@ class RustBackend {
       // every function type is now, `Rc<dyn Fn>`: a `&dyn Fn` there took
       // no `Rc` a caller had (`callbacker(Rc::new(|t, e| ..))`).
       final args = t.parameters!.map((p) => type(p, owned: false)).join(', ');
-      final returns = type(t.returns!);
+      final returns = _wrapped(type(t.returns!));
       final signature = 'Fn($args) -> $returns';
       // Inside a trait, `impl Fn(..)` is a generic parameter, and a trait with
       // one cannot be made into an object: `&dyn Element` stops compiling
@@ -459,7 +459,7 @@ class RustBackend {
     // `Pin<Box<dyn Future>>` and a borrowed one is `impl Future` -- exactly
     // the split a function type already takes here.
     if (t.name == 'Future' && t.arguments.length == 1) {
-      final output = type(t.arguments.single);
+      final output = _wrapped(type(t.arguments.single));
       final future = owned
           ? 'std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = $output>>>'
           : 'impl std::future::Future<Output = $output>';
@@ -533,6 +533,7 @@ class RustBackend {
         :final args,
         :final qualifier,
         :final receiverClass,
+        :final fails,
       ) =>
         _call(
           target,
@@ -540,13 +541,11 @@ class RustBackend {
           args,
           qualifier: qualifier,
           receiverClass: receiverClass,
+          fails: fails,
         ),
-      IrStaticCall(:final owner, :final name, :final args) => _staticCall(
-        owner,
-        name,
-        args,
-      ),
-      IrNew(:final type, :final args, :final constructor) => _new(
+      IrStaticCall(:final owner, :final name, :final args, :final fails) =>
+        _staticCallFailing(owner, name, args, fails),
+      IrNew(:final type, :final args, :final constructor) => _newFailing(
         type,
         args,
         constructor,
@@ -557,7 +556,8 @@ class RustBackend {
         '(${_constInstance(type, fields)})',
       // Rust puts it after the expression and Dart before it, which is the
       // whole of the difference.
-      IrAwait(:final operand) => '${expr(operand)}.await',
+      // The future's output is a `Result`: the `?` goes after the await.
+      IrAwait(:final operand) => '${_awaitOperand(operand)}.await$_propagate',
       IrIdentical(:final left, :final right) => _identical(left, right),
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
       IrThrowValue(:final value) => _thrown(value),
@@ -610,11 +610,11 @@ class RustBackend {
         type,
         negated,
       ),
-      IrSuperCall(:final base, :final name, :final args) => _superCall(
-        base,
-        name,
-        args,
-      ),
+      // A super function returns `Result`; `Object.toString` is the prelude's.
+      IrSuperCall(:final base, :final name, :final args) =>
+        base == 'Object'
+            ? _superCall(base, name, args)
+            : '${_superCall(base, name, args)}$_propagate',
       // A local's `!` clones first: `a!.axis` and then `a!.value` moved
       // `a` at the first (E0382); a `Copy` local clones for free.
       IrNullCheck(:final operand) =>
@@ -657,8 +657,9 @@ class RustBackend {
         '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})',
       IrBound() => _boundName,
       IrClosure() => _closure(e as IrClosure),
+      // A function value returns `Result` like everything else.
       IrCallValue(:final target, :final args) =>
-        '(${expr(target)})(${args.map(expr).join(', ')})',
+        '(${expr(target)})(${args.map(expr).join(', ')})$_propagate',
       IrBlockValue() => _blockValue(e as IrBlockValue),
     };
   }
@@ -668,6 +669,38 @@ class RustBackend {
   /// The binding is `mut` only when a step writes to it, for the reason
   /// `let mut` is not applied everywhere: the test crate denies `unused_mut`,
   /// so an unneeded one is a build error rather than a warning nobody reads.
+  String _staticCallFailing(
+    String? owner,
+    String name,
+    List<IrExpr> args,
+    bool fails,
+  ) {
+    final awaited = _awaiting;
+    _awaiting = false;
+    final call = _staticCall(owner, name, args);
+    return fails && !awaited ? '$call$_propagate' : call;
+  }
+
+  /// A translated class's constructor returns `Result` like any function;
+  /// the prelude's do not.
+  String _newFailing(IrType t, List<IrExpr> args, String? constructor) {
+    final awaited = _awaiting;
+    _awaiting = false;
+    final call = _new(t, args, constructor);
+    final translated = _resultModel && library[t.name] != null;
+    return translated && !awaited ? '$call$_propagate' : call;
+  }
+
+  String _awaitOperand(IrExpr operand) {
+    if (operand is IrCall || operand is IrStaticCall) {
+      _awaiting = true;
+      final text = expr(operand);
+      _awaiting = false;
+      return text;
+    }
+    return expr(operand);
+  }
+
   String _blockValue(IrBlockValue node) {
     // A binding of a value the AOT compiler removed makes the whole block
     // unreachable, and a `let __t = unreachable!(..)` has no type for the
@@ -757,13 +790,15 @@ class RustBackend {
     // whatever the method around it promised (`_thrown`).
     final savedFailure = _failure;
     final savedFlow = _inFlowClosure;
-    _failure = null;
+    // ..under the uniform Result model it does: a closure fails like a
+    // function and says so in its type.
+    _failure = _resultModel ? _error : null;
     // Nor is it inside the try body's flow closure: a `return` in it is
     // the closure's own (`Ok(Some(..))` in `|x| builder.setDay(x)`).
     _inFlowClosure = false;
     if (node.holdsSelf) _selfName = _countedSelf;
     _indent = 0;
-    stmt(node.body, tail: true);
+    _body(node.body, node.returns);
     _failure = savedFailure;
     _inFlowClosure = savedFlow;
     _selfName = savedSelf;
@@ -775,8 +810,10 @@ class RustBackend {
     // `async |..|` is stable since Rust 1.85. A Dart `async` closure keeps
     // its `await`s, and a closure emitted without the word put every one of
     // them outside an async context: 79 `E0728`s.
+    // Annotated: a `?` inside needs the error type spelled, and the body
+    // ends in `Ok(..)`.
     final closure =
-        '${node.isAsync ? 'async ' : ''}${owns ? 'move ' : ''}|$params| { $body }';
+        '${node.isAsync ? 'async ' : ''}${owns ? 'move ' : ''}|$params| -> ${_wrapped(_spelledReturn(type(node.returns)))} { $body }';
     _cellLocals = savedCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
     return node.boxed ? 'std::rc::Rc::new($whole)' : whole;
@@ -1127,7 +1164,7 @@ class RustBackend {
               p.isFunction ? '&dyn ${_fnSignature(p)}' : type(p, owned: false),
         )
         .join(', ');
-    return 'Fn($args) -> ${type(t.returns!)}';
+    return 'Fn($args) -> ${_wrapped(type(t.returns!))}';
   }
 
   /// `List.generate(n, f)` and friends, which are Dart's list constructors
@@ -1726,13 +1763,25 @@ class RustBackend {
     return c != null && (c.counted || c.isAbstract);
   }
 
+  /// `?` when a function surrounds the expression, `.unwrap()` otherwise.
+  String get _propagate => _failure != null ? '?' : '.unwrap()';
+
+  /// Set while the operand of an `await` is printed: the call's own `?`
+  /// belongs after the `.await`.
+  bool _awaiting = false;
+
   String _call(
     IrExpr? target,
     String name,
     List<IrExpr> args, {
     String? qualifier,
     String? receiverClass,
+    bool fails = false,
   }) {
+    // Read before the receiver and arguments print: a call inside them
+    // would otherwise take the `await`'s flag.
+    final awaited = _awaiting;
+    _awaiting = false;
     // Before the receiver is rendered: rendering a chain on its own is
     // refused, and this is the one place a chain is not on its own.
     // Any arguments, not none: Dart's `toList({bool growable = true})` has a
@@ -1929,20 +1978,10 @@ class RustBackend {
     // always agree.
     // A callee failing with its own type inside a method failing with
     // `Object` (see `_computeFailing`): the error is boxed on the way up.
-    final calleeError = _failing[snake(name)];
-    final propagates =
-        (target == null || target is IrThis) &&
-        calleeError != null &&
-        !_traitDeclares(name);
-    final widens =
-        propagates &&
-        calleeError != 'Object' &&
-        (_failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>');
-    final suffix = !propagates
-        ? ''
-        : widens
-        ? '.map_err(|e| std::rc::Rc::new(e) as std::rc::Rc<dyn Object>)?'
-        : '?';
+    // A translated callee returns `Result`: `?` inside a function, and
+    // `.unwrap()` where there is none around (a static's initialiser).
+    // An awaited call is not `?`ed here but at the `.await`.
+    final suffix = !fails || awaited ? '' : _propagate;
     // `_identifier`, not `snake`: an *operator* called as a method -- `~x` is
     // `x.~()` in Kernel -- has no letters for `snake` to keep, and it came out
     // as `x._()`, which does not parse and stopped the whole crate at the
@@ -2528,6 +2567,15 @@ class RustBackend {
   /// Emits a statement. `tail` marks the position whose value is the block's --
   /// Rust's trailing expression, which is how a `return` at the end of a method
   /// stops needing the keyword.
+  /// A body under the Result model: a `void` one that falls off its end
+  /// ends in `Ok(())`, since the signature says `Result<(), E>`.
+  void _body(IrStmt body, IrType returnType) {
+    final fallsOff =
+        _failure != null && type(returnType) == '()' && !_alwaysReturns(body);
+    stmt(body, tail: !fallsOff);
+    if (fallsOff) _line('Ok(())');
+  }
+
   void stmt(IrStmt s, {bool tail = false}) {
     switch (s) {
       case IrBlock(:final statements):
@@ -2922,7 +2970,10 @@ class RustBackend {
       case IrAssignStatic(:final owner, :final name, :final value):
         _line('*(**${_lazyName(owner, name)}).borrow_mut() = ${expr(value)};');
       case IrSetter(:final target, :final name, :final value):
-        _line('${_receiver(target)}.set_${snake(name)}(${expr(value)});');
+        // A setter is a method and returns `Result` like one.
+        _line(
+          '${_receiver(target)}.set_${snake(name)}(${expr(value)})$_propagate;',
+        );
       case IrIf(:final condition, :final then, :final otherwise):
         _line('if ${expr(condition)} {');
         _indent++;
@@ -3297,7 +3348,7 @@ class RustBackend {
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
-          ' -> ${_spelledReturn(type(method.returnType))}${_sizedBound(method)};',
+          ' -> ${_wrapped(_spelledReturn(type(method.returnType)))}${_sizedBound(method)};',
         );
         _line('');
       });
@@ -3309,7 +3360,7 @@ class RustBackend {
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
-          ' -> ${_spelledReturn(type(method.returnType))}${_sizedBound(method)} {',
+          ' -> ${_wrapped(_spelledReturn(type(method.returnType)))}${_sizedBound(method)} {',
         );
         _indent++;
         // The default delegates to the free function rather than holding the
@@ -3492,8 +3543,11 @@ class RustBackend {
     // ..and only a `const` constructor is one: `SpringDescription.
     // withDampingRatio` takes a square root, and the `final` top-level
     // holding one was emitted as a `const` (E0015, `animation`).
+    // Under the Result model a constructor call is a `Result`, which no
+    // `const` item can unwrap: every such initialiser is lazy.
     IrNew(:final type, :final args, :final constructor) =>
-      !_preludeTypes.contains(type.name) &&
+      !_resultModel &&
+          !_preludeTypes.contains(type.name) &&
           _constConstructor(type.name, constructor) &&
           args.every(_constEvaluable),
     _ => false,
@@ -3770,11 +3824,12 @@ class RustBackend {
     // `Option<..>` of it out of its closure, and without it `_isLoopback`'s
     // `return address.isLoopback` came out as an `Option<()>`.
     _rustReturns = _returnType(method);
+    _failure = _failureOf(method);
     _asyncBody = method.isAsync;
     if (stubbed != null) {
       _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
     } else {
-      stmt(method.body, tail: true);
+      _body(method.body, method.returnType);
       _closeOpenIf(method.body);
     }
     _returns = null;
@@ -3908,7 +3963,7 @@ class RustBackend {
       // itself. `this_.start` was read as a field 6 times in `source_span`.
       final accessors = _fieldsAreAccessors;
       _fieldsAreAccessors = true;
-      stmt(method.body, tail: true);
+      _body(method.body, method.returnType);
       _closeOpenIf(method.body);
       _fieldsAreAccessors = accessors;
       _returns = null;
@@ -4264,8 +4319,7 @@ class RustBackend {
   }
 
   /// The error type a method's signature carries, if any: see `_thrown`.
-  String? _failureOf(IrMethod method) =>
-      _traitDeclares(method.name) ? null : _failing[_rustName(method)];
+  String? _failureOf(IrMethod method) => _resultModel ? _error : null;
 
   String _boxedThrow(IrExpr value) {
     final thrown = expr(value);
@@ -4500,6 +4554,7 @@ class RustBackend {
         :final args,
         :final qualifier,
         :final receiverClass,
+        :final fails,
       ) =>
         IrCall(
           target == null ? null : go(target),
@@ -4507,12 +4562,10 @@ class RustBackend {
           args.map(go).toList(),
           qualifier: qualifier,
           receiverClass: receiverClass,
+          fails: fails,
         ),
-      IrStaticCall(:final owner, :final name, :final args) => IrStaticCall(
-        owner,
-        name,
-        args.map(go).toList(),
-      ),
+      IrStaticCall(:final owner, :final name, :final args, :final fails) =>
+        IrStaticCall(owner, name, args.map(go).toList(), fails: fails),
       IrNew(:final type, :final args, :final constructor) => IrNew(
         type,
         args.map(go).toList(),
@@ -4623,10 +4676,15 @@ class RustBackend {
   /// is lost: an exception thrown *by a callee* inside a `try` panics
   /// instead of being caught. That is a loud loss, at the site, and the
   /// runtime will say so; the quiet one was a signature nobody could see.
-  static const _resultModel = false;
+  /// Every function returns `Result<T, _error>` (STATUS, 决定 2026-09-04,
+  /// 修正): a Dart exception is an object, and one type for them all is
+  /// what lets `?` propagate through every call form alike.
+  static const _resultModel = true;
+  static const _error = 'std::rc::Rc<dyn Object>';
 
   Map<String, String> _computeFailing() {
-    if (!_resultModel) return const {};
+    // The uniform model needs no per-class fixed point: every method fails.
+    if (_resultModel || !_resultModel) return const {};
     final failing = <String, String>{};
     final calls = <String, Set<String>>{};
     for (final method in cls.methods) {
@@ -4787,7 +4845,10 @@ class RustBackend {
     // The error type goes through `type()` like any other: an abstract one --
     // `Object` is the commonest, since a `throw` with no declared type lands
     // there -- is a trait, and a trait is not a type. `Box<dyn Object>` is.
-    return error == null ? value : 'Result<$value, ${type(IrType(error))}>';
+    if (error == null) return value;
+    // `Result<!, E>` is unstable; `Infallible` says the same.
+    final inner = value == '!' ? 'std::convert::Infallible' : value;
+    return 'Result<$inner, ${type(IrType(error))}>';
   }
 
   /// A boxed future in return position may borrow the receiver: `+ '_`.
@@ -4797,6 +4858,13 @@ class RustBackend {
   /// A return type as a signature spells it: `!` for `Never` (the general
   /// spelling `Infallible` is for value positions), and a boxed future's
   /// receiver lifetime.
+  /// `Result<T, E>` around a rendered return type.
+  static String _wrapped(String rendered) => !_resultModel
+      ? rendered
+      // `Result<!, E>`: the never type is unstable as a type argument, and
+      // `Infallible` is the stable spelling of a value that cannot be.
+      : 'Result<${rendered == '!' ? 'std::convert::Infallible' : rendered}, $_error>';
+
   static String _spelledReturn(String rendered) =>
       rendered == 'std::convert::Infallible' ? '!' : _lifetimed(rendered);
 
@@ -5289,7 +5357,9 @@ class RustBackend {
                 ? 'self.${snake(field.name)}$late'
                 : 'self.${snake(field.name)}.clone()$late')
           : cls.methods.any((m) => m.name == field.name && !m.isStatic)
-          ? 'self.${snake(field.name)}()'
+          // A getter is a method and returns `Result`; the accessor the
+          // trait asks for cannot, and unwraps.
+          ? 'self.${snake(field.name)}()${_resultModel ? '.unwrap()' : ''}'
           : null;
       // The accessor's type is the *trait's*, so it is written in this
       // class's terms like every other signature in the block. Round 73
@@ -5419,6 +5489,7 @@ class RustBackend {
       final returns = _spelledReturn(
         type(_substituteType(need.returnType, _implBinding)),
       );
+      final wrappedReturns = _wrapped(returns);
       final params = [
         // The forwarder's receiver is the trait's: `&mut self` when any
         // implementer writes in this method, or `ChangeNotifier::
@@ -5449,7 +5520,7 @@ class RustBackend {
       ].join(', ');
       _line(
         'fn ${_methodName(need)}${_generics(need)}($params) -> '
-        '$returns${_sizedBound(need)} {',
+        '$wrappedReturns${_sizedBound(need)} {',
       );
       _indent++;
       if (have == null) {
@@ -5474,23 +5545,25 @@ class RustBackend {
         // `()` where the trait says `Option<..>` is `None` (`Action.invoke`
         // overridden as `void`, 46).
         final handle = concrete.startsWith('std::rc::Rc<');
-        _line(
-          concrete == returns || _lifetimed(concrete) == returns
-              ? call
-              : returns == 'Option<$concrete>'
-              ? 'Some($call)'
-              : concrete == '()' && returns.startsWith('Option<')
-              ? '{ $call; None }'
-              : returns.startsWith('std::rc::Rc<dyn ')
-              ? (handle ? call : 'std::rc::Rc::new($call)')
-              : returns.startsWith('Option<std::rc::Rc<dyn ')
-              ? (handle || concrete.startsWith('Option<std::rc::Rc<')
-                    ? call
-                    : concrete.startsWith('Option<')
-                    ? '$call.map(|v| std::rc::Rc::new(v) as ${returns.substring(7, returns.length - 1)})'
-                    : 'Some(std::rc::Rc::new($call))')
-              : 'Box::new($call)',
-        );
+        // The inherent call yields a `Result`; whatever the trait's type
+        // asks of the value is applied inside it.
+        const v = '__v';
+        final shaped = concrete == returns || _lifetimed(concrete) == returns
+            ? null
+            : returns == 'Option<$concrete>'
+            ? 'Some($v)'
+            : concrete == '()' && returns.startsWith('Option<')
+            ? '{ $v; None }'
+            : returns.startsWith('std::rc::Rc<dyn ')
+            ? (handle ? null : 'std::rc::Rc::new($v)')
+            : returns.startsWith('Option<std::rc::Rc<dyn ')
+            ? (handle || concrete.startsWith('Option<std::rc::Rc<')
+                  ? null
+                  : concrete.startsWith('Option<')
+                  ? '$v.map(|v| std::rc::Rc::new(v) as ${returns.substring(7, returns.length - 1)})'
+                  : 'Some(std::rc::Rc::new($v))')
+            : 'Box::new($v)';
+        _line(shaped == null ? call : '$call.map(|$v| $shaped)');
       }
       _indent--;
       _line('}');
@@ -5687,9 +5760,12 @@ class RustBackend {
     final produces = cls.counted ? 'std::rc::Rc<Self>' : 'Self';
     _line(
       '${_vis(ctor.name ?? cls.name)}'
-      '${cls.counted ? '' : constness}fn $name($params) -> $produces {',
+      '${cls.counted ? '' : constness}fn $name($params) -> ${_wrapped(produces)} {',
     );
     _indent++;
+    // A constructor fails like any function: its body's value is `Ok`.
+    _failure = _resultModel ? _error : null;
+    if (ctor.redirectTo == null) _line('Ok({');
     // This constructor's own temporaries first -- a `super(#t0)` passes them
     // -- and only then the base's, computed from them.
     for (final s in [...ctor.pre, ..._inheritedPre(ctor)]) {
@@ -5833,6 +5909,7 @@ class RustBackend {
       _selfName = saved;
       _line(handleFirst || !cls.counted ? '__new' : 'std::rc::Rc::new(__new)');
     }
+    _line('})');
     _indent--;
     _line('}');
     _line('');
@@ -6131,8 +6208,13 @@ class RustBackend {
       _asyncBody = method.isAsync;
       _reassigned = _assignedIn(method.body);
       _cellLocals = {};
-      stmt(method.body, tail: true);
+      // An operator's signature is `std::ops`'s and cannot say `Result`:
+      // inside it a failing call unwraps.
+      final savedFailure = _failure;
+      _failure = null;
+      _body(method.body, method.returnType);
       _closeOpenIf(method.body);
+      _failure = savedFailure;
       _returns = null;
       _indent--;
       _line('}');
