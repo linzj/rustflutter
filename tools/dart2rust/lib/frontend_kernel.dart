@@ -6723,18 +6723,30 @@ Set<Class> openClassesIn(
       : gate.split(',').map((s) => s.trim()).toSet();
   bool translated(Library l) => prefixes.any(l.importUri.toString().startsWith);
   final hasSubclass = <Class>{};
+  void opens(Class? base) {
+    if (base != null &&
+        !base.isAbstract &&
+        !base.isEnum &&
+        translated(base.enclosingLibrary)) {
+      hasSubclass.add(base);
+    }
+  }
+
   for (final library in component.libraries) {
     if (!translated(library)) continue;
     for (final cls in library.classes) {
-      if (cls.isAnonymousMixin || cls.isAbstract || cls.isEnum) continue;
+      if (cls.isAnonymousMixin || cls.isEnum) continue;
+      // The subclass may itself be abstract (`ColorSwatch extends Color`),
+      // and a concrete class is a supertype through `implements` as much as
+      // through `extends` (`CupertinoDynamicColor .. implements Color`,
+      // 170 of the 3623 mismatches at ws270). Both make the base open.
       var base = cls.superclass;
       while (base != null && base.isAnonymousMixin) {
         base = base.superclass;
       }
-      if (base != null &&
-          !base.isAbstract &&
-          translated(base.enclosingLibrary)) {
-        hasSubclass.add(base);
+      opens(base);
+      for (final i in cls.implementedTypes) {
+        opens(i.classNode);
       }
     }
   }
