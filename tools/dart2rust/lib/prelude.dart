@@ -571,18 +571,44 @@ pub struct Set<T> {
     items: Vec<T>,
 }
 
+impl<T: Clone> Set<T> {    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`.
+    pub fn new() -> Self {
+        Set { items: Vec::new() }
+    }
+
+    pub fn clear(&mut self) {
+        self.items.clear();
+    }
+
+    pub fn length(&self) -> i64 {
+        self.items.len() as i64
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn is_not_empty(&self) -> bool {
+        !self.items.is_empty()
+    }
+
+    pub fn to_list(&self) -> Vec<T> {
+        self.items.clone()
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.items.iter()
+    }
+
+}
+
 impl<T: PartialEq + Clone> Set<T> {
-    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`.
     pub fn of(elements: Vec<T>) -> Set<T> {
         let mut s = Set::new();
         for e in elements {
             s.add(e);
         }
         s
-    }
-
-    pub fn new() -> Self {
-        Set { items: Vec::new() }
     }
 
     pub fn from(items: Vec<T>) -> Self {
@@ -620,30 +646,6 @@ impl<T: PartialEq + Clone> Set<T> {
             }
             None => false,
         }
-    }
-
-    pub fn clear(&mut self) {
-        self.items.clear();
-    }
-
-    pub fn length(&self) -> i64 {
-        self.items.len() as i64
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    pub fn is_not_empty(&self) -> bool {
-        !self.items.is_empty()
-    }
-
-    pub fn to_list(&self) -> Vec<T> {
-        self.items.clone()
-    }
-
-    pub fn iter(&self) -> std::slice::Iter<'_, T> {
-        self.items.iter()
     }
 
     pub fn union(&self, other: &Set<T>) -> Set<T> {
@@ -1014,50 +1016,15 @@ pub struct Map<K, V> {
     entries: Vec<(K, V)>,
 }
 
-impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
-    /// `Map.of(other)`: a copy with the same entries, in the same order.
+/// What needs no key equality: a `Map<Rc<dyn Fn()>, i64>` -- Dart's
+/// `ObserverList` -- can be made and sized, and only the lookups on it
+/// want the keys comparable (43 holders' constructors at ws298).
+impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the same entries, in the same order.
     pub fn of(other: Map<K, V>) -> Map<K, V> {
         other
     }
     pub fn new() -> Self {
         Map { entries: Vec::new() }
-    }
-
-    pub fn from<const N: usize>(items: [(K, V); N]) -> Self {
-        let mut map = Map::new();
-        for (key, value) in items {
-            map.insert(key, value);
-        }
-        map
-    }
-
-    fn at(&self, key: &K) -> Option<usize> {
-        self.entries.iter().position(|(k, _)| k == key)
-    }
-
-    pub fn get(&self, key: &K) -> Option<&V> {
-        self.at(key).map(|i| &self.entries[i].1)
-    }
-
-    /// Dart gives back what was there; so does Rust's `HashMap::insert`.
-    /// Replacing a value keeps the key where it was, which is what insertion
-    /// order means once a key is written twice.
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        match self.at(&key) {
-            Some(i) => Some(std::mem::replace(&mut self.entries[i].1, value)),
-            None => {
-                self.entries.push((key, value));
-                None
-            }
-        }
-    }
-
-    pub fn contains_key(&self, key: &K) -> bool {
-        self.at(key).is_some()
-    }
-
-    pub fn remove(&mut self, key: &K) -> Option<V> {
-        self.at(key).map(|i| self.entries.remove(i).1)
     }
 
     pub fn clear(&mut self) {
@@ -1093,6 +1060,46 @@ impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
             f(key.clone(), value.clone())?;
         }
         Ok(())
+    }
+
+}
+
+impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
+    pub fn from<const N: usize>(items: [(K, V); N]) -> Self {
+        let mut map = Map::new();
+        for (key, value) in items {
+            map.insert(key, value);
+        }
+        map
+    }
+
+    fn at(&self, key: &K) -> Option<usize> {
+        self.entries.iter().position(|(k, _)| k == key)
+    }
+
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.at(key).map(|i| &self.entries[i].1)
+    }
+
+    /// Dart gives back what was there; so does Rust's `HashMap::insert`.
+    /// Replacing a value keeps the key where it was, which is what insertion
+    /// order means once a key is written twice.
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        match self.at(&key) {
+            Some(i) => Some(std::mem::replace(&mut self.entries[i].1, value)),
+            None => {
+                self.entries.push((key, value));
+                None
+            }
+        }
+    }
+
+    pub fn contains_key(&self, key: &K) -> bool {
+        self.at(key).is_some()
+    }
+
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.at(key).map(|i| self.entries.remove(i).1)
     }
 
     /// Dart's `putIfAbsent`: the value that is there afterwards, either way.

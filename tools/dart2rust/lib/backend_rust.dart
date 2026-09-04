@@ -3857,7 +3857,7 @@ class RustBackend {
   /// and 12 E0310s in `collection`. The struct and trait declarations stay
   /// unbounded, so a type argument that is neither is still a type -- only
   /// its methods are missing, which is loud where it matters.
-  String _implGenerics(IrClass cls) {
+  String _implGenerics(IrClass cls, {bool keyed = true}) {
     if (cls.typeParameters.isEmpty) return '';
     // A parameter that keys a `Map` or fills a `Set` in one of the fields
     // needs what the prelude's `Map` asks of a key: `keys()` and `get()`
@@ -3870,7 +3870,7 @@ class RustBackend {
       ],
     ].join(' ');
     String bound(String p) {
-      final keyed = RegExp('(Map|Set)<$p[,>]').hasMatch(fields);
+      final key = RegExp('(Map|Set)<$p[,>]').hasMatch(fields);
       // `PartialEq`: `self._value == new_value` on a `T` (`ValueNotifier`).
       // `Clone + 'static` only (2026-09-04): `PartialEq + Debug` on every
       // type parameter shut out closures and futures -- `ObserverList<
@@ -3880,7 +3880,7 @@ class RustBackend {
       // The prelude's `Map` and `Set` are ordered and compare keys with
       // `==`: `PartialEq + Clone` is all they ask, and `Eq + Hash` shut
       // closures out of `ObserverList<VoidCallback>` (48 in `widgets`).
-      return "$p: 'static${keyed ? ' + Clone + PartialEq' : ''}";
+      return "$p: 'static${key ? (keyed ? ' + Clone + PartialEq' : ' + Clone') : ''}";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
@@ -5366,10 +5366,23 @@ class RustBackend {
       _line('');
     }
 
-    _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
+    // Constructors and constants in a block of their own when the methods
+    // carry a key bound (`T: PartialEq`, `_implGenerics`): an
+    // `ObserverList<Rc<dyn Fn()>>` can then be *made* wherever it is held,
+    // and only the methods comparing its items are out of reach.
+    final keyed = _implGenerics(cls);
+    final unkeyed = _implGenerics(cls, keyed: false);
+    _line('impl$unkeyed ${cls.name}${_generics(cls)} {');
     _indent++;
     _emitConstructors();
     _emitConstants();
+    if (keyed != unkeyed) {
+      _indent--;
+      _line('}');
+      _line('');
+      _line('impl$keyed ${cls.name}${_generics(cls)} {');
+      _indent++;
+    }
     _emitMethods();
     _indent--;
     _line('}');
