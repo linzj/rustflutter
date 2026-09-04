@@ -534,17 +534,30 @@ class RustBackend {
         :final qualifier,
         :final receiverClass,
         :final fails,
+        :final diverges,
       ) =>
-        _call(
-          target,
-          name,
-          args,
-          qualifier: qualifier,
-          receiverClass: receiverClass,
-          fails: fails,
+        _diverging(
+          _call(
+            target,
+            name,
+            args,
+            qualifier: qualifier,
+            receiverClass: receiverClass,
+            fails: fails && !diverges,
+          ),
+          diverges && fails,
         ),
-      IrStaticCall(:final owner, :final name, :final args, :final fails) =>
-        _staticCallFailing(owner, name, args, fails),
+      IrStaticCall(
+        :final owner,
+        :final name,
+        :final args,
+        :final fails,
+        :final diverges,
+      ) =>
+        _diverging(
+          _staticCallFailing(owner, name, args, fails && !diverges),
+          diverges && fails,
+        ),
       IrNew(:final type, :final args, :final constructor) => _newFailing(
         type,
         args,
@@ -674,6 +687,15 @@ class RustBackend {
   /// The binding is `mut` only when a step writes to it, for the reason
   /// `let mut` is not applied everywhere: the test crate denies `unused_mut`,
   /// so an unneeded one is a build error rather than a warning nobody reads.
+  /// A call to a `Never` function: its `Result<Infallible, E>` is either
+  /// the error, propagated, or a value that cannot exist -- so the
+  /// expression is the `!` Dart meant, whatever the slot wants.
+  String _diverging(String call, bool diverges) => !diverges
+      ? call
+      : _failure != null
+      ? '(match $call { Ok(__n) => match __n {}, Err(__e) => return Err(__e) })'
+      : '(match $call { Ok(__n) => match __n {}, Err(__e) => panic!("uncaught Dart exception: {:?}", __e) })';
+
   String _staticCallFailing(
     String? owner,
     String name,
@@ -4568,6 +4590,7 @@ class RustBackend {
         :final qualifier,
         :final receiverClass,
         :final fails,
+        :final diverges,
       ) =>
         IrCall(
           target == null ? null : go(target),
@@ -4576,9 +4599,22 @@ class RustBackend {
           qualifier: qualifier,
           receiverClass: receiverClass,
           fails: fails,
+          diverges: diverges,
         ),
-      IrStaticCall(:final owner, :final name, :final args, :final fails) =>
-        IrStaticCall(owner, name, args.map(go).toList(), fails: fails),
+      IrStaticCall(
+        :final owner,
+        :final name,
+        :final args,
+        :final fails,
+        :final diverges,
+      ) =>
+        IrStaticCall(
+          owner,
+          name,
+          args.map(go).toList(),
+          fails: fails,
+          diverges: diverges,
+        ),
       IrNew(:final type, :final args, :final constructor) => IrNew(
         type,
         args.map(go).toList(),

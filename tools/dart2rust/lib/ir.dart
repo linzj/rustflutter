@@ -179,10 +179,15 @@ class IrCall extends IrExpr {
     this.qualifier,
     this.receiverClass,
     this.fails = false,
+    this.diverges = false,
   });
 
   /// Whether the callee can fail (`IrMethod.fails`): the call is `?`ed.
   final bool fails;
+
+  /// Whether the callee never returns (Dart `Never`): its `Result` holds
+  /// an `Infallible`, and the call is spelled as the `!` it is.
+  final bool diverges;
 
   final IrExpr? target;
   final String name;
@@ -203,10 +208,19 @@ class IrCall extends IrExpr {
 
 /// A static method call: `Alignment.lerp(a, b, t)`, or a top-level one.
 class IrStaticCall extends IrExpr {
-  const IrStaticCall(this.owner, this.name, this.args, {this.fails = false});
+  const IrStaticCall(
+    this.owner,
+    this.name,
+    this.args, {
+    this.fails = false,
+    this.diverges = false,
+  });
 
   /// Whether the callee can fail (`IrMethod.fails`).
   final bool fails;
+
+  /// Whether the callee never returns. See `IrCall.diverges`.
+  final bool diverges;
 
   /// Null for a top-level function, which needs no owner in either language.
   final String? owner;

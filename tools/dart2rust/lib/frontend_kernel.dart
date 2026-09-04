@@ -2160,6 +2160,7 @@ class KernelFrontend {
           target.name.text,
           const [],
           fails: _fails(target),
+          diverges: _diverges(target),
         );
       }
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
@@ -2174,6 +2175,7 @@ class KernelFrontend {
         target.name.text,
         const [],
         fails: _fails(target),
+        diverges: _diverges(target),
       );
     }
     return IrStatic(
@@ -2627,7 +2629,13 @@ class KernelFrontend {
     final owner = member.enclosingClass;
     if (owner == null || !_translatedClass(owner)) {
       return _fails(member)
-          ? IrCall(call.target, call.name, call.args, fails: true)
+          ? IrCall(
+              call.target,
+              call.name,
+              call.args,
+              fails: true,
+              diverges: _diverges(member),
+            )
           : call;
     }
     // From the receiver's own class: a mixin's `child` is declared again
@@ -2648,8 +2656,13 @@ class KernelFrontend {
       qualifier: qualifier,
       receiverClass: type is InterfaceType ? type.classNode.name : null,
       fails: fails,
+      diverges: _diverges(member),
     );
   }
+
+  /// A member declared to return `Never`.
+  static bool _diverges(Member m) =>
+      m is Procedure && m.function.returnType is NeverType;
 
   /// The trait to call `member` through from a value of class `from`, or
   /// null when only one class in the hierarchy declares it and the plain
@@ -3073,6 +3086,7 @@ class KernelFrontend {
         target.name.text.replaceAll(RegExp(r'[|#]'), '_'),
         _arguments(node.arguments, target.function, true, _instantiated(node)),
         fails: _fails(target),
+        diverges: _diverges(target),
       );
     }
     return IrStaticCall(
@@ -3087,6 +3101,7 @@ class KernelFrontend {
       // and the declared `T` said nothing (63 `Option<Color>` <- `Color`).
       _arguments(node.arguments, target.function, true, _instantiated(node)),
       fails: _fails(target),
+      diverges: _diverges(target),
     );
   }
 
