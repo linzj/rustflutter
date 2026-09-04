@@ -2770,13 +2770,16 @@ class KernelFrontend {
     // narrower than the declaration the kernel typed the read by (`String?
     // get restorationId` overridden as `String`: 72 `unwrap` on a `String`
     // at ws296). Through the trait, whose signature the kernel agrees with.
+    // The *lowering* class, not the member's: a mixin's body is lowered
+    // into the class applying it, and there `this` is that class.
+    final host = _lowering ?? from;
     if (qualifier == null &&
         receiver is ThisExpression &&
-        from != null &&
-        from != owner &&
+        host != null &&
+        host != owner &&
         _abstractLike(owner) &&
         !owner.isAnonymousMixin &&
-        from.members.any(
+        host.members.any(
           (m) =>
               m.name.text == member.name.text &&
               ((m is Procedure && !m.isStatic) || (m is Field && !m.isStatic)),
@@ -5548,7 +5551,8 @@ class KernelFrontend {
       _type(node.function.returnType),
       _body(node.function),
       typeParameters: [
-        for (final p in node.function.typeParameters) p.name ?? 'T',
+        for (final p in node.function.typeParameters)
+          if (!_erasedParameter(p)) p.name ?? 'T',
       ],
       isStatic: true,
       // A top-level function is `async` the same way a method is. Round 71
@@ -6293,7 +6297,8 @@ class KernelFrontend {
       _returnType(node.function),
       node.isAbstract ? const IrBlock([]) : _body(node.function),
       typeParameters: [
-        for (final p in node.function.typeParameters) p.name ?? 'T',
+        for (final p in node.function.typeParameters)
+          if (!_erasedParameter(p)) p.name ?? 'T',
       ],
       isStatic: node.isStatic,
       isGetter: node.kind == ProcedureKind.Getter,
