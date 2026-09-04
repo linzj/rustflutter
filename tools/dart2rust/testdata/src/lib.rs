@@ -1248,7 +1248,7 @@ mod tests {
         // executor is for and this is not one.
         let completer: Completer<f64> = Completer::new();
         assert!(!completer.is_completed());
-        completer.complete(7.0);
+        completer.complete(Some(7.0));
         assert!(completer.is_completed());
         assert_eq!(block_on(completer.future()), 7.0);
     }

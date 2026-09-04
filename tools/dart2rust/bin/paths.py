@@ -18,8 +18,18 @@ Windows and `dart` everywhere else, and four call sites said `.exe` outright.
 """
 import os
 
-FLUTTER = os.environ.get('RUSTFLUTTER_FLUTTER', 'E:/source/flutter')
-APP = os.environ.get('RUSTFLUTTER_APP', 'D:/linzjUbuntu2204/gallery_upstream')
+# Defaults per host, so neither box has to export anything to keep working.
+# The Windows values are where this started; the Linux ones are where the work
+# moved on 2026-09-03, when the goal became "run the gallery" and the app came
+# out of `/mnt/d` and into the Linux filesystem as `~/gallery_upstream`.
+if os.name == 'nt':
+    _FLUTTER, _APP = 'E:/source/flutter', 'D:/linzjUbuntu2204/gallery_upstream'
+else:
+    _FLUTTER = os.path.expanduser('~/flutter_sdk')
+    _APP = os.path.expanduser('~/gallery_upstream')
+
+FLUTTER = os.environ.get('RUSTFLUTTER_FLUTTER', _FLUTTER)
+APP = os.environ.get('RUSTFLUTTER_APP', _APP)
 ENGINE = os.environ.get(
     'RUSTFLUTTER_ENGINE', os.path.join(FLUTTER, 'engine', 'src'))
 

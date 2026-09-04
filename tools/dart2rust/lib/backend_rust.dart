@@ -34,8 +34,23 @@ const _primitives = {
   // that matters least until it matters completely: 0.1 + 0.2 is a different
   // number in the two widths, and every layout arithmetic in Flutter is
   // doubles.
+  // `std::boxed::Box` is spelled out wherever the backend writes a `Box`:
+  // `material_color_utilities` declares a class named `Box`, the import
+  // tracker imports it into every file that mentions the word, and it took
+  // `Box<dyn Fn(..)>` with it -- 2849 `E0107`s from one name.
   'double': 'f64',
   'int': 'i64',
+  // Dart's bare `Function` type: a callable of unknown shape. Held, not
+  // called -- `Map<Function, CallbackHandle>` keys it -- so the widest
+  // owned thing there is. A call through one would not compile, and says so.
+  'Function': 'std::rc::Rc<dyn Object>',
+  // Dart's `Never` has two spellings in stable Rust: `!` as a function's bare
+  // return type, and `std::convert::Infallible` everywhere else -- a type
+  // argument, a `Result<Never, E>`, a `PopupMenuEntry<Never>`. The first
+  // round mapped it to `!` everywhere and rustc called 22 of them
+  // "experimental". The map holds the general spelling; the signature
+  // emitter substitutes `!` for the one position that takes it.
+  'Never': 'std::convert::Infallible',
   // Dart's `num` is the supertype of `int` and `double`, and Rust has no such
   // thing. `f32` is the choice that keeps arithmetic working and matches what
   // `double` already maps to -- 2511 uses of the bare name `num`, three
@@ -62,12 +77,15 @@ const _operatorTraits = {
   'unary-': ('Neg', 'neg'),
 };
 
-String snake(String name) {
-  final out = name
-      .replaceAllMapped(RegExp(r'(?<!^)([A-Z])'), (m) => '_${m[1]}')
-      .toLowerCase();
-  return _rustIdentifier(out);
-}
+String snake(String name) => _rustIdentifier(snakeRaw(name));
+
+/// `snake` before the keyword escape. For a name that is only ever a *part*
+/// of a longer identifier, or is about to be upper-cased: `r#` belongs at the
+/// front of a whole identifier, and `R#LOOP` and `theme_extension_super_r#type`
+/// were what escaping the parts produced -- 16 files that did not parse.
+String snakeRaw(String name) => name
+    .replaceAllMapped(RegExp(r'(?<!^)([A-Z])'), (m) => '_${m[1]}')
+    .toLowerCase();
 
 /// Rust's keywords. A Dart name that happens to be one has to be spelled
 /// differently, and `r#type` is how Rust spells it -- the raw form keeps the
@@ -140,14 +158,25 @@ const _rustNeverRaw = {'crate', 'self', 'super', 'Self'};
 ///   these before the characters were stripped.
 /// * `type`, `match`, `where` -- ordinary Dart names that are Rust keywords.
 String _rustIdentifier(String name) {
-  var out = name.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
-  if (out.isEmpty) out = '_';
-  if (RegExp(r'^[0-9]').hasMatch(out)) out = '_$out';
+  final out = _cleanIdentifier(name);
   if (_rustNeverRaw.contains(out)) return '${out}_';
   return _rustKeywords.contains(out) ? 'r#$out' : out;
 }
 
-String screamingSnake(String name) => snake(name).toUpperCase();
+/// The character-level half of `_rustIdentifier`: no `$`, `#` or `|`, no
+/// leading digit, never empty. Without the keyword escape, which is the half
+/// an upper-cased name does not need -- `snakeRaw` skipped *both* halves and
+/// `_$ADD_EVENT` and `_Rect::#SIZE_OF` reached rustc.
+String _cleanIdentifier(String name) {
+  var out = name.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
+  if (out.isEmpty) out = '_';
+  if (RegExp(r'^[0-9]').hasMatch(out)) out = '_$out';
+  return out;
+}
+
+// Rust's keywords are lowercase, so an upper-cased name is never one.
+String screamingSnake(String name) =>
+    _cleanIdentifier(snakeRaw(name)).toUpperCase();
 
 /// `spaceBetween` -> `SpaceBetween`: an enum variant as Rust spells it.
 ///
@@ -190,6 +219,21 @@ class RustBackend {
 
   void _line(String text) {
     _out.add(text.isEmpty ? '' : '${'    ' * _indent}$text');
+  }
+
+  /// One emitted line, made safe to stand beside others on a single line.
+  ///
+  /// A closure body becomes an expression by joining its lines with a space,
+  /// and a `//` comment on any of them takes the rest of the line with it --
+  /// including the braces that close the closure. `dart_ui.rs` stopped parsing
+  /// at 1803 because one refused assert message commented out the 11,000 lines
+  /// after it, and rustc reported it as an unclosed delimiter 11,000 lines
+  /// later. The note is worth keeping; the line comment is not the way to keep
+  /// it here.
+  static String _inlineSafe(String line) {
+    final text = line.trim();
+    if (!text.startsWith('//')) return text;
+    return '/* ${text.substring(2).trim().replaceAll('*/', '* /')} */';
   }
 
   /// Emits one member, or a comment saying why it is missing.
@@ -290,13 +334,10 @@ class RustBackend {
       // A function type *inside* a function type's parameters cannot be
       // `impl Fn`: `Fn(impl Fn())` is not allowed in a trait bound. `&dyn Fn`
       // is, and borrows the same way.
-      final args = t.parameters!
-          .map(
-            (p) => p.isFunction
-                ? '&dyn ${_fnSignature(p)}'
-                : type(p, owned: false),
-          )
-          .join(', ');
+      // A function type inside a function type's parameters is spelled as
+      // every function type is now, `Rc<dyn Fn>`: a `&dyn Fn` there took
+      // no `Rc` a caller had (`callbacker(Rc::new(|t, e| ..))`).
+      final args = t.parameters!.map((p) => type(p, owned: false)).join(', ');
       final returns = type(t.returns!);
       final signature = 'Fn($args) -> $returns';
       // Inside a trait, `impl Fn(..)` is a generic parameter, and a trait with
@@ -306,15 +347,26 @@ class RustBackend {
       // borrows exactly the same way and keeps the trait dyn-compatible, and
       // an `impl Fn` parameter elsewhere still accepts one.
       final spelled = owned
-          ? 'Box<dyn $signature>'
-          : (_inTrait ? '&dyn $signature' : 'impl $signature');
+          // `Rc`, not `Box`: a Dart closure is an object, held by every
+          // listener list it was added to at once, and `Box` claimed an
+          // ownership Dart never gave -- `listener` was moved into a closure
+          // "in a previous iteration" adding it to each child (E0382), and a
+          // field holding one could not be cloned out.
+          ? 'std::rc::Rc<dyn $signature>'
+          // Shared, like every closure here: an `Rc<dyn Fn>` argument cannot
+          // stand where `impl Fn` is asked for (`Rc` does not implement `Fn`),
+          // and a borrowed `&dyn Fn` cannot be kept. One spelling, both sides.
+          : 'std::rc::Rc<dyn $signature>';
       return t.nullable ? 'Option<$spelled>' : spelled;
     }
     // Dart's `dynamic` is "anything", which is what the prelude's `Object`
     // trait is here. Emitted as the bare word it was a type nothing declares,
     // 259 times.
     if (t.name == 'dynamic') {
-      final anything = owned ? 'Box<dyn Object>' : '&dyn Object';
+      // Shared, like an abstract class below: a `Box` could not be cloned
+      // out of a field (`SourceSpanException.source`), and a borrow could
+      // not be kept.
+      const anything = 'std::rc::Rc<dyn Object>';
       return t.nullable ? 'Option<$anything>' : anything;
     }
     if (library.isAbstract(t.name)) {
@@ -325,9 +377,11 @@ class RustBackend {
       final args = t.arguments.isEmpty
           ? ''
           : '<${t.arguments.map((a) => type(a)).join(', ')}>';
-      final dynamic_ = owned
-          ? 'std::rc::Rc<dyn ${t.name}$args>'
-          : '&dyn ${t.name}$args';
+      // One spelling, both sides, as for closures: a parameter that was
+      // `&dyn DynamicScheme` could not be the key of the `Map<Rc<dyn
+      // DynamicScheme>, Hct>` the method caches into, and the `Rc` every
+      // caller holds could not be passed to it -- 7 `E0308`s each way.
+      final dynamic_ = 'std::rc::Rc<dyn ${t.name}$args>';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
     }
     if (t.name == 'Record') {
@@ -390,14 +444,22 @@ class RustBackend {
     if (t.name == 'Future' && t.arguments.length == 1) {
       final output = type(t.arguments.single);
       final future = owned
-          ? 'std::pin::Pin<Box<dyn std::future::Future<Output = $output>>>'
+          ? 'std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = $output>>>'
           : 'impl std::future::Future<Output = $output>';
       return t.nullable ? 'Option<$future>' : future;
+    }
+    // The doubled `Option` from `_substituteType`.
+    if (t.name == 'Option' && t.arguments.length == 1) {
+      return 'Option<${type(t.arguments.single)}>';
     }
     // A counted class is `Rc<Name>` everywhere it is named -- fields,
     // parameters, returns, locals. One rule here rather than 1150 edits.
     final owner = library[t.name];
-    if (owner != null && owner.counted && t.name != cls.name) {
+    // Its own name included: a counted class's fields, parameters and
+    // returns that name the class itself are handles too, as they are from
+    // every other module. `impl` headers and constructors do not come
+    // through here.
+    if (owner != null && owner.counted) {
       final spelled =
           'std::rc::Rc<${t.name}${t.arguments.isEmpty ? '' : '<'
                     '${t.arguments.map((a) => type(a)).join(', ')}>'}>';
@@ -422,12 +484,20 @@ class RustBackend {
         _cellLocals.containsKey(name)
             ? '${snake(name)}.${_cellLocals[name]! ? 'get()' : 'borrow().clone()'}'
             : snake(name),
-      IrThis() => '*$_selfName',
-      IrField(:final target, :final name, :final onEnum) => _fieldRead(
-        target,
-        name,
-        onEnum,
-      ),
+      // `this` in a counted class is the handle -- one more `Rc`, not the
+      // value behind it. `*self` there moved out of a `&Rc<Self>`, and the
+      // getter `get owner => this` came out returning a bare struct where
+      // every other module spells that class `Rc<..>`: 18 `E0053`s.
+      // `Matrix3.copy(this)` in `clone()`: `*self` moves out of a shared
+      // reference unless the class is `Copy`.
+      // In a constructor `this` is the local being built (`__new`), a
+      // value and not a reference: no `*`.
+      IrThis() =>
+        _selfIsHandle || !_classIsCopy(cls, {}) || _selfName != 'self'
+            ? '$_selfName.clone()'
+            : '*$_selfName',
+      IrField(:final target, :final name, :final onEnum, :final owner) =>
+        _fieldRead(target, name, onEnum, owner),
       IrStatic(:final owner, :final name, :final isEnumValue) => _staticRead(
         owner,
         name,
@@ -455,28 +525,38 @@ class RustBackend {
         args,
         constructor,
       ),
-      IrConstInstance(:final type, :final fields) => _constInstance(
-        type,
-        fields,
-      ),
+      // Parenthesised: a struct literal is not allowed bare in an `if`
+      // condition, and `if self._state == _State { .. } {` did not parse.
+      IrConstInstance(:final type, :final fields) =>
+        '(${_constInstance(type, fields)})',
       // Rust puts it after the expression and Dart before it, which is the
       // whole of the difference.
       IrAwait(:final operand) => '${expr(operand)}.await',
       IrIdentical(:final left, :final right) => _identical(left, right),
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
-      IrThrowValue(:final value) => 'return Err(${expr(value)})',
+      IrThrowValue(:final value) => _thrown(value),
       IrInterpolation(:final parts) => _interpolation(parts),
       // Dart indexes with an `int`; Rust wants a `usize`.
+      // A clone: an indexed read is a value, and the element is behind the
+      // list's reference (`cannot move out of index of Vec<..>`).
       IrIndex(:final target, :final index) =>
-        '${expr(target)}[${expr(index)} as usize]',
-      IrListLiteral(:final elements) =>
-        'vec![${elements.map(expr).join(', ')}]',
+        '${expr(target)}[${expr(index)} as usize].clone()',
+      // A closure literal among the elements of a list of functions is an
+      // `Rc<dyn Fn>` there, as a field's or a constant's is: `DateFormat`'s
+      // `_fieldConstructors` is a `vec!` of three of them.
+      IrListLiteral(:final elements, :final element) =>
+        'vec![${elements.map((x) => element.isFunction && x is IrClosure && !x.boxed ? 'std::rc::Rc::new(${expr(x)})' : expr(x)).join(', ')}]',
       IrRecord(:final fields) => '(${fields.map(expr).join(', ')})',
       IrRecordField(:final record, :final index) => '${expr(record)}.$index',
       IrMapLiteral(:final entries) =>
         'Map::from(['
             '${entries.map((e) => '(${expr(e.$1)}, ${expr(e.$2)})').join(', ')}'
             '])',
+      // `for_each` consumes the chain and yields `()`: the one chain that is
+      // whole without a `collect`.
+      IrIterChain(:final steps)
+          when steps.isNotEmpty && steps.last.$1 == 'for_each' =>
+        _chain(e as IrIterChain),
       IrIterChain() => throw Unsupported(
         'a lazy Iterable that is never collected',
         'xs.map(..) with no toList()',
@@ -486,8 +566,10 @@ class RustBackend {
       // implements `Fn`, so it still passes where `impl Fn` is wanted.
       IrFunctionRef(:final owner, :final name) =>
         owner == null
-            ? 'Box::new(${snake(name)})'
-            : 'Box::new($owner::${snake(name)})',
+            ? 'std::rc::Rc::new(${snake(name)})'
+            : (library[owner]?.isAbstract ?? false)
+            ? 'std::rc::Rc::new(${_abstractStaticName(owner, name)})'
+            : 'std::rc::Rc::new($owner::${snake(name)})',
       IrAssignValue(:final name, :final value) =>
         '{ let __set = ${expr(value)}; ${snake(name)} = __set; __set }',
       IrSetValue(:final target, :final name, :final value) => _setValue(
@@ -507,17 +589,42 @@ class RustBackend {
         name,
         args,
       ),
-      IrNullCheck(:final operand) => '${expr(operand)}.unwrap()',
+      // A local's `!` clones first: `a!.axis` and then `a!.value` moved
+      // `a` at the first (E0382); a `Copy` local clones for free.
+      IrNullCheck(:final operand) =>
+        operand is IrLocal
+            ? '${expr(operand)}.clone().unwrap()'
+            : '${expr(operand)}.unwrap()',
+      // A closure inside `Some(..)` is the `Rc<dyn Fn>` its slot holds.
+      IrSome(:final value) =>
+        value is IrClosure && !value.boxed
+            ? 'Some(std::rc::Rc::new(${expr(value)}))'
+            : 'Some(${expr(value)})',
+      // Inside `as_ref().map(|it| ..)` the bound value is a reference, and
+      // a reference does not cast: `lerpDouble`'s `a as double` on an
+      // `Option<f64>` (E0606).
+      IrCast(:final value, :final rust) =>
+        value is IrBound
+            ? '(*${expr(value)} as $rust)'
+            : '(${expr(value)} as $rust)',
+      IrDowncast(:final target, :final type) =>
+        '${expr(target)}.as_any().downcast_ref::<$type>().unwrap()',
       // A mutable one is read through its cell: two derefs for the `LazyLock`
       // and the `Isolate`, then a `borrow`.
       IrTopLevel(:final name) =>
         _isMutableTopLevel(name)
             ? '(**${screamingSnake(name)}).borrow().clone()'
+            : _isLazyConst(name)
+            ? '(**${screamingSnake(name)}).clone()'
             : screamingSnake(name),
       IrIsNull(:final operand) => '${expr(operand)}.is_none()',
       IrIfNull() => _ifNull(e as IrIfNull),
-      IrNullAware(:final receiver, :final body) =>
-        '${expr(receiver)}.map(|$_boundName| ${expr(body)})',
+      // `as_ref()`: `a?.b` reads `a`, and `a` is a field or a loop variable
+      // behind a reference far more often than an owned `Option` -- `.map`
+      // alone moved out of `*child` (E0507). A body that needs the value
+      // rather than a reference to it now says so at the use.
+      IrNullAware(:final receiver, :final body, :final flatten) =>
+        '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})',
       IrBound() => _boundName,
       IrClosure() => _closure(e as IrClosure),
       IrCallValue(:final target, :final args) =>
@@ -546,7 +653,7 @@ class RustBackend {
     for (final statement in node.statements) {
       stmt(statement);
     }
-    final body = _out.sublist(saved).map((l) => l.trim()).join(' ');
+    final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
     _reassigned = savedReassigned;
@@ -571,8 +678,20 @@ class RustBackend {
   /// not, and a compiler that emits both spellings depending on where the
   /// closure lands is two rules where one will do.
   String _closure(IrClosure node) {
+    // A parameter the body assigns is `mut`, as a method's is (E0384 on
+    // `decodeError = ..` inside `_getNextFrame`'s callback).
+    final assigned = _assignedIn(node.body);
     final params = node.params
-        .map((p) => '${snake(p.name)}: ${type(p.type)}')
+        // Spelled as the function type spells them: a parameter of an abstract
+        // class is `&dyn X` there, and a closure declaring `Rc<dyn X>` did not
+        // match the `Fn(&dyn X)` it was handed to -- 133 `E0631`s.
+        // ..except a `Future`, which as a borrowed `impl Future` is not
+        // allowed in a closure's parameters (E0562); owned it is `Pin<Box<..>>`.
+        .map(
+          (p) =>
+              '${assigned.contains(p.name) ? 'mut ' : ''}${snake(p.name)}: '
+              '${type(p.type, owned: p.type.name == 'Future' || p.type.isFunction)}',
+        )
         .join(', ');
     // A closure that copies `final` fields in is a `move` closure with the
     // copies bound just before it. It borrows `self` not at all, which is the
@@ -581,6 +700,7 @@ class RustBackend {
       // The handle first: a closure that calls a method keeps the object.
       if (node.holdsSelf) 'let $_countedSelf = $_selfName.clone();',
       ...node.captures.map((c) => 'let ${snake(c.name)} = ${_copyOf(c)};'),
+      ...node.locals.map((l) => 'let ${snake(l)} = ${snake(l)}.clone();'),
     ].join(' ');
     // Which of them are cells, for the body that is about to be written.
     final savedCells = _cellLocals;
@@ -592,18 +712,33 @@ class RustBackend {
     final saved = _out.length;
     final savedIndent = _indent;
     final savedSelf = _selfName;
+    // A closure is a panic boundary: its own signature carries no `Result`,
+    // whatever the method around it promised (`_thrown`).
+    final savedFailure = _failure;
+    final savedFlow = _inFlowClosure;
+    _failure = null;
+    // Nor is it inside the try body's flow closure: a `return` in it is
+    // the closure's own (`Ok(Some(..))` in `|x| builder.setDay(x)`).
+    _inFlowClosure = false;
     if (node.holdsSelf) _selfName = _countedSelf;
     _indent = 0;
     stmt(node.body, tail: true);
+    _failure = savedFailure;
+    _inFlowClosure = savedFlow;
     _selfName = savedSelf;
-    final body = _out.sublist(saved).map((l) => l.trim()).join(' ');
+    final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
-    final owns = node.captures.isNotEmpty || node.holdsSelf;
-    final closure = '${owns ? 'move ' : ''}|$params| { $body }';
+    final owns =
+        node.captures.isNotEmpty || node.locals.isNotEmpty || node.holdsSelf;
+    // `async |..|` is stable since Rust 1.85. A Dart `async` closure keeps
+    // its `await`s, and a closure emitted without the word put every one of
+    // them outside an async context: 79 `E0728`s.
+    final closure =
+        '${node.isAsync ? 'async ' : ''}${owns ? 'move ' : ''}|$params| { $body }';
     _cellLocals = savedCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
-    return node.boxed ? 'Box::new($whole)' : whole;
+    return node.boxed ? 'std::rc::Rc::new($whole)' : whole;
   }
 
   /// A field's type, wrapped when a closure has to see it change.
@@ -626,7 +761,22 @@ class RustBackend {
   /// Whether a field is held in a cell: marked shared, or mutable in a
   /// counted class.
   bool _inCell(IrFieldDecl field) =>
-      field.shared || (cls.counted && !field.isFinal);
+      field.shared || (cls.counted && _mutableOnCounted(field));
+
+  /// On a counted class, what has to live in a cell: a field that is
+  /// assigned, a `late` one (assigned after construction by definition), and
+  /// a `final` collection -- `final Set<Image> _handles = {}` is never
+  /// reassigned and is added to from `Image`'s constructor, which through a
+  /// plain field behind an `Rc` cannot borrow mutably (E0596).
+  bool _mutableOnCounted(IrFieldDecl field) =>
+      !field.isFinal || field.isLate || _isMutableCollection(type(field.type));
+
+  static bool _isMutableCollection(String rust) =>
+      rust.startsWith('Vec<') ||
+      rust.startsWith('Set<') ||
+      rust.startsWith('Map<') ||
+      rust.startsWith('Queue<') ||
+      rust.startsWith('std::collections::VecDeque<');
 
   /// What a field holds, `Option`-wrapped when it is `late`.
   ///
@@ -642,6 +792,21 @@ class RustBackend {
   IrFieldDecl? _lateField(String name) {
     for (final f in _allFields(cls)) {
       if (f.name == name) return f.isLate ? f : null;
+    }
+    return null;
+  }
+
+  /// Another class's field, when a read or write of it goes through a cell.
+  ///
+  /// The same question `_sharedField` answers for this class, asked of the
+  /// class the front end named on the node: shared, or non-final on a counted
+  /// class. Null when the owner is not in the crate, or the field is plain.
+  IrFieldDecl? _cellFieldOf(String owner, String name) {
+    final owned = library[owner];
+    if (owned == null) return null;
+    for (final f in _allFields(owned)) {
+      if (f.name != name) continue;
+      return f.shared || (owned.counted && _mutableOnCounted(f)) ? f : null;
     }
     return null;
   }
@@ -662,7 +827,38 @@ class RustBackend {
   static bool _handsOutSelf(IrMethod method) {
     final walk = _WalkSelf();
     walk.statement(method.body);
-    return walk.holdsSelfClosure;
+    return walk.holdsSelfClosure || walk.passesSelf;
+  }
+
+  /// The methods of a counted class that take `self: &Rc<Self>`: those
+  /// that hand `this` out, and those that call one of them on `this` --
+  /// `self.addPattern(..)` from a `&self` method could not reach a method
+  /// wanting the handle (intl, 3). The same contagion as `_mutating`.
+  late final Set<String> _handles = _computeHandles();
+
+  Set<String> _computeHandles() {
+    final handles = <String>{};
+    final calls = <String, Set<String>>{};
+    for (final method in cls.methods) {
+      if (method.isStatic) continue;
+      final key = _rustName(method);
+      if (_handsOutSelf(method)) handles.add(key);
+      final walk = _WalkSelf();
+      walk.statement(method.body);
+      calls[key] = walk.selfCalls;
+    }
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final entry in calls.entries) {
+        if (handles.contains(entry.key)) continue;
+        if (entry.value.any((c) => handles.contains(snake(c)))) {
+          handles.add(entry.key);
+          changed = true;
+        }
+      }
+    }
+    return handles;
   }
 
   /// The name a counted closure gives its handle to `this`.
@@ -726,8 +922,17 @@ class RustBackend {
           'None => ${expr(node.right)} }';
     }
     final right = expr(node.right);
+    // The lazy side as a `match`, not an `or_else(|| ..)`: a closure is its
+    // own function, and an `.await` inside one -- `a ?? await b()` -- is
+    // "await outside async". `match` keeps the laziness and stays in the
+    // enclosing function. 13 `E0728`s.
     if (node.nullableResult) {
-      return node.eager ? '$left.or($right)' : '$left.or_else(|| $right)';
+      return node.eager
+          ? '$left.or($right)'
+          : 'match $left { Some(__value) => Some(__value), None => $right }';
+    }
+    if (!node.eager) {
+      return 'match $left { Some(__value) => __value, None => $right }';
     }
     return node.eager
         ? '$left.unwrap_or($right)'
@@ -814,7 +1019,14 @@ class RustBackend {
       .replaceAll('\r', '\\r')
       .replaceAll('\n', '\\n')
       .replaceAll('\t', '\\t')
-      .replaceAll('\u0000', '\\0');
+      .replaceAll('\u0000', '\\0')
+      // Text-direction controls (the l10n files have them) are rejected raw
+      // by rustc's `text_direction_codepoint_in_literal`; written as escapes
+      // they are the same string. 23 literals.
+      .replaceAllMapped(
+        RegExp('[\u200E\u200F\u202A-\u202E\u2066-\u2069]'),
+        (m) => '\\u{${m[0]!.codeUnitAt(0).toRadixString(16)}}',
+      );
 
   String _literal(String value, IrType t) {
     if (t.name == 'double') {
@@ -842,8 +1054,14 @@ class RustBackend {
   /// `RenderBox` has `Size get size` and `set size(Size)`, and both produced
   /// `render_box_super_size` -- the same collision round 62 found in the trait
   /// impls, one level over in the free functions that hold the bodies.
-  static String superFn(String base, String name, {bool isSetter = false}) =>
-      '${snake(base)}_super_${isSetter ? 'set_' : ''}${_identifier(name)}';
+  static String superFn(
+    String base,
+    String name, {
+    bool isSetter = false,
+  }) => _rustIdentifier(
+    '${snakeRaw(base)}_super_${isSetter ? 'set_' : ''}'
+    '${RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(name) ? snakeRaw(name) : _operatorName(name)}',
+  );
 
   /// A static call, checked against the IR when it lands in this library.
   ///
@@ -855,7 +1073,10 @@ class RustBackend {
   /// IR.
   /// Whether a top-level name is one of the library's mutable variables.
   bool _isMutableTopLevel(String name) =>
-      library.constants.any((c) => c.name == name && c.isMutable);
+      library.constants.any((c) => c.name == name && c.isMutable) ||
+      // Another module's: `numberFormatSymbols` read from `NumberFormat`
+      // was a bare `NUMBER_FORMAT_SYMBOLS.get(..)` against its `LazyLock`.
+      (library.constantsElsewhere[name]?.isMutable ?? false);
 
   /// `Fn(..) -> ..` for a function type, without the `impl`/`dyn`/`Box`.
   String _fnSignature(IrType t) {
@@ -903,12 +1124,36 @@ class RustBackend {
     if ((_collections[owner] == 'Vec' || owner == 'List') &&
         _listStatics.contains(name)) {
       if (name == 'generate' && args.length == 2) {
-        return '(0..${expr(args[0])}).map(${expr(args[1])}).collect::<Vec<_>>()';
+        // `map` wants the closure itself, not the `Rc<dyn Fn>` a function
+        // parameter would (E0277 in `plural_rules`); a function *value*
+        // is called through one.
+        final generator = args[1];
+        final rendered = expr(generator);
+        const boxed = 'std::rc::Rc::new(';
+        // A closure renders boxed when it captures (`Rc::new({ let x =
+        // x.clone(); move |i| .. })`); `map` wants the closure itself.
+        String unboxed(String r) => r.startsWith(boxed) && r.endsWith(')')
+            ? r.substring(boxed.length, r.length - 1)
+            : r;
+        final f =
+            generator is IrCall &&
+                generator.name == '!rc' &&
+                generator.args.isEmpty
+            ? unboxed(expr(generator.target!))
+            : generator is IrClosure || rendered.startsWith(boxed)
+            ? unboxed(rendered)
+            : '|__i| ($rendered)(__i)';
+        return '(0..${expr(args[0])}).map($f).collect::<Vec<_>>()';
       }
       if (name == 'filled' && args.length == 2) {
         return 'vec![${expr(args[1])}; ${expr(args[0])} as usize]';
       }
       if ((name == 'from' || name == 'of') && args.length == 1) {
+        return '${expr(args[0])}.clone()';
+      }
+      // `List.from(xs, growable: false)`: a `Vec` is always growable and a
+      // copy is a copy; the flag changes nothing that can be said here.
+      if ((name == 'from' || name == 'of') && args.length == 2) {
         return '${expr(args[0])}.clone()';
       }
       if (name == 'empty' && args.isEmpty) return 'Vec::new()';
@@ -917,12 +1162,56 @@ class RustBackend {
         '$owner.$name(..)',
       );
     }
+    // `Float64List(9)`: a typed list of a length is that many zeros, which
+    // is what Dart gives it. The untyped `_List(n)` is a list of *nulls*
+    // and is handled in the front end; these cannot hold null at all.
+    if (_typedLists.contains(owner) && name.isEmpty && args.length == 1) {
+      // A typed zero: `Default::default()` left the element to inference,
+      // and a `.map(|v| v as i64)` after it had nothing to go on (E0282).
+      const zero = {
+        'Float32List': '0.0f32',
+        'Float64List': '0.0f64',
+        'Int8List': '0i8',
+        'Int16List': '0i16',
+        'Int32List': '0i32',
+        'Int64List': '0i64',
+        'Uint8List': '0u8',
+        'Uint8ClampedList': '0u8',
+        'Uint16List': '0u16',
+        'Uint32List': '0u32',
+        'Uint64List': '0u64',
+      };
+      return 'vec![${zero[owner]}; ${expr(args.single)} as usize]';
+    }
+    // `Uint8List.fromList(xs)`: a typed list *is* a `Vec` here, so a copy.
+    if (_typedLists.contains(owner) && name == 'fromList' && args.length == 1) {
+      // `Float32List.fromList(doubles)`: a `Vec<f64>` narrowed element by
+      // element (E0308 `Vec<f32>` vs `Vec<f64>` in `_MatrixImageFilter`).
+      // The 64-bit ones are already what a `List<double>`/`List<int>` is.
+      const element = {
+        'Float32List': 'f32',
+        'Int8List': 'i8',
+        'Int16List': 'i16',
+        'Int32List': 'i32',
+        'Uint8List': 'u8',
+        'Uint8ClampedList': 'u8',
+        'Uint16List': 'u16',
+        'Uint32List': 'u32',
+        'Uint64List': 'u64',
+      };
+      final narrow = element[owner];
+      if (narrow != null) {
+        return '${expr(args.single)}.iter().map(|v| *v as $narrow).collect::<Vec<$narrow>>()';
+      }
+      return '${expr(args.single)}.clone()';
+    }
     if (owner == null) {
       // A top-level function: no owner in either language. Checked against
       // what this file emits, for the same reason a static call is -- a call
       // to something refused would name a function nobody wrote.
       if (!library.functions.any((f) => f.name == name) &&
-          !library.functionsElsewhere.contains(name)) {
+          !library.functionsElsewhere.contains(name) &&
+          !_preludeFunctions.contains(name)) {
         throw Unsupported(
           'call to top-level `$name`, which was not translated',
           '$name(...)',
@@ -962,6 +1251,12 @@ class RustBackend {
           '$owner(..)',
         );
       }
+      // A factory of an abstract class -- `Characters(s)` -- is the static
+      // named `new` of the trait's, a free function (see below); the struct
+      // spelling `Characters::new` named a trait as a type.
+      if (library.isAbstract(owner)) {
+        return '${_abstractStaticName(owner, 'new')}(${args.map(expr).join(', ')})';
+      }
       return '$owner::${_ctorName(null)}(${args.map(expr).join(', ')})';
     }
     final target = library[owner];
@@ -971,6 +1266,21 @@ class RustBackend {
         'call to `$owner.$name`, which was not translated',
         '$owner.$name(...)',
       );
+    }
+    if (owner == 'Object' && name == 'hashAll' && args.length == 1) {
+      return 'object_hash_all(${expr(args.single)})';
+    }
+    if (owner == 'Object' && name == 'hash') {
+      return 'object_hash(${args.map(expr).join(', ')})';
+    }
+    // `library.isAbstract`, not `library[owner]?.isAbstract`: an abstract
+    // class of another module is in `abstractElsewhere` and nowhere else
+    // (`Characters::new(..)` -- "expected a type, found a trait").
+    if (library.isAbstract(owner)) {
+      // A *factory* on an abstract class -- `Characters(s)` -- is the static
+      // named `new` here, as the struct path names an unnamed constructor.
+      final spelled = name.isEmpty ? 'new' : name;
+      return '${_abstractStaticName(owner, spelled)}(${args.map(expr).join(', ')})';
     }
     return '$owner::${_identifier(name)}(${args.map(expr).join(', ')})';
   }
@@ -1024,7 +1334,14 @@ class RustBackend {
         'super.$name(...)',
       );
     }
-    return '${superFn(base, name)}(${[_selfName, ...args.map(expr)].join(', ')})';
+    final call =
+        '${superFn(base, name)}(${[_selfName, ...args.map(expr)].join(', ')})';
+    // An async super function is an `async fn`; the caller's trait wants
+    // the boxed future every `Future<T>` is here.
+    final isAsync = baseClass.methods.any(
+      (m) => m.name == name && !m.isStatic && m.isAsync,
+    );
+    return isAsync ? 'std::boxed::Box::pin($call)' : call;
   }
 
   /// Whether `base`'s free function for [name] can actually be emitted.
@@ -1064,7 +1381,12 @@ class RustBackend {
   /// Whether the signature being written belongs to a trait.
   var _inTrait = false;
 
-  String _fieldRead(IrExpr? target, String name, [bool onEnum = false]) {
+  String _fieldRead(
+    IrExpr? target,
+    String name, [
+    bool onEnum = false,
+    String? owner,
+  ]) {
     final receiver = _receiver(target);
     // A field of an *enum* is a getter here, not storage: the value is a
     // constant of the variant and lives in a `match`. Only the front end knows
@@ -1072,9 +1394,10 @@ class RustBackend {
     // says so on the node.
     if (onEnum) return '$receiver.${snake(name)}()';
 
-    if (_fieldsAreAccessors &&
-        (target == null || target is IrThis) &&
-        cls.fields.any((f) => f.name == name)) {
+    // Inside a trait every read on `this` is an accessor call: a trait has
+    // no fields, and a mixin's `this_.source_url` names a getter of the
+    // implementer's, declared in an interface the mixin never sees (7).
+    if (_fieldsAreAccessors && (target == null || target is IrThis)) {
       return '$receiver.${snake(name)}()';
     }
     // A shared field is read through its cell. `get` copies, which is what a
@@ -1096,10 +1419,65 @@ class RustBackend {
         // `as_ref()` rather than a clone: a read of a field is a place in
         // Rust, and `&T` is what the sites around it already expect. Only a
         // `Copy` value is taken out whole, which is what a place does anyway.
+        // Cloned out, as every other field read is now: `as_ref()` handed
+        // back a `&_ImageFilter` where the getter returns one by value (4).
         return _isCopy(type(late.type))
             ? '$receiver.${snake(name)}.unwrap()'
-            : '$receiver.${snake(name)}.as_ref().unwrap()';
+            : '$receiver.${snake(name)}.clone().unwrap()';
       }
+    }
+    // Another object's field, when the front end named its class and that
+    // class keeps the field in a cell: read through the cell, as the write
+    // side does. Without this the read was `entry.x` against a `RefCell`.
+    if (owner != null) {
+      final cell = _cellFieldOf(owner, name);
+      if (cell != null) {
+        final read = _isCopy(_heldType(cell))
+            ? '$receiver.${snake(name)}.get()'
+            : '$receiver.${snake(name)}.borrow().clone()';
+        return cell.isLate ? '$read.unwrap()' : read;
+      }
+      // Another object's `late` field: `other._argb` in `Hct.==` is an
+      // `Option<i64>` on that side too, and reads unwrap it as `this`'s do.
+      final owned = library[owner];
+      if (owned != null) {
+        for (final f in _allFields(owned)) {
+          if (f.name != name || !f.isLate) continue;
+          return _isCopy(type(f.type))
+              ? '$receiver.${snake(name)}.unwrap()'
+              : '$receiver.${snake(name)}.clone().unwrap()';
+        }
+      }
+    }
+    // A read of one of this class's own fields is a *value*, and behind
+    // `&self` a value that is not `Copy` has to be cloned out: `self._value`
+    // moved out of a shared reference, 134 times in the leaf crates. A
+    // method call on the clone or a borrow of it costs a clone and nothing
+    // else.
+    if (target == null || target is IrThis) {
+      for (final f in _allFields(cls)) {
+        if (f.name == name) {
+          return _isCopy(type(f.type))
+              ? '$receiver.${snake(name)}'
+              : '$receiver.${snake(name)}.clone()';
+        }
+      }
+    }
+    // A field of a local: cloned out, as a field of `self` is -- `r._m3storage`
+    // moved out of `r` and `r.clone()` two lines later was a partial move (9).
+    // As a *receiver* the field is a place; `_receiver` spells that.
+    // Another object of *this* class (`other as Hct`): its `late` field is
+    // the same `Option`, unwrapped the same way.
+    if (target is IrDowncast && target.type == cls.name) {
+      final late = _lateField(name);
+      if (late != null) {
+        return _isCopy(type(late.type))
+            ? '$receiver.${snake(name)}.unwrap()'
+            : '$receiver.${snake(name)}.clone().unwrap()';
+      }
+    }
+    if (target is IrLocal || target is IrBound || target is IrDowncast) {
+      return '$receiver.${snake(name)}.clone()';
     }
     return '$receiver.${snake(name)}';
   }
@@ -1115,6 +1493,23 @@ class RustBackend {
     final name = target.name;
     if (library.isAbstract(name)) {
       throw Unsupported('`is` against an abstract class', name);
+    }
+    // `x is num` / `is int` / `is String` on a `dynamic`: the prelude's
+    // scalar types, asked of `Any`. A `num` is either an `f64` or an `i64`.
+    const scalars = {
+      'int': ['i64'],
+      'double': ['f64'],
+      'num': ['f64', 'i64'],
+      'bool': ['bool'],
+      'String': ['String'],
+    };
+    if (scalars.containsKey(name)) {
+      final tests = scalars[name]!
+          .map(
+            (t) => '${expr(operand)}.as_any().downcast_ref::<$t>().is_some()',
+          )
+          .join(' || ');
+      return negated ? '!($tests)' : '($tests)';
     }
     if (library[name] == null) {
       throw Unsupported('`is` against `$name`, which was not translated', name);
@@ -1147,6 +1542,10 @@ class RustBackend {
   /// again inside a body.
   IrType? _returns;
 
+  /// Whether the method being emitted is `async`, for the constructs that
+  /// must not wrap an `.await` in a closure.
+  var _asyncBody = false;
+
   /// Wraps a returned expression when the declared return is a trait object.
   ///
   /// Only an `IrNew` is wrapped, because only a constructor call is *known* to
@@ -1160,13 +1559,26 @@ class RustBackend {
     // `Box<dyn Fn(..)>` and the value has to be boxed to match. This only
     // came up once closures that outlive their call stopped being refused.
     if (declared != null && declared.isFunction && value is IrClosure) {
-      return 'Box::new($text)';
+      return 'std::rc::Rc::new($text)';
     }
+    // `dynamic` and `Object` are trait objects too (`Rc<dyn Object>`):
+    // `error = Exception(..)` into a `dynamic` local needs the same `Rc::new`.
     if (declared != null &&
-        library.isAbstract(declared.name) &&
+        (library.isAbstract(declared.name) ||
+            declared.name == 'dynamic' ||
+            declared.name == 'Object') &&
         (value is IrNew || value is IrConstInstance) &&
-        !library.isAbstract(_concreteType(value).name)) {
-      return 'Box::new($text)';
+        !library.isAbstract(_concreteType(value).name) &&
+        // A counted class's constructor already hands out an `Rc`, which
+        // unsizes on its own; wrapping it again was `Rc<Rc<X>>`.
+        !(library[_concreteType(value).name]?.counted ?? false)) {
+      return 'std::rc::Rc::new($text)';
+    }
+    // Each branch of a conditional on its own: `s.isEmpty ? StringCharacters
+    // ("") : StringCharacters(s)` returned as a `Characters`.
+    if (value is IrConditional) {
+      return 'if ${expr(value.condition)} { ${_returned(value.then)} } '
+          'else { ${_returned(value.otherwise)} }';
     }
     return text;
   }
@@ -1183,8 +1595,75 @@ class RustBackend {
   /// is its first parameter instead.
   String _selfName = 'self';
 
-  String _receiver(IrExpr? target) =>
-      (target == null || target is IrThis) ? _selfName : expr(target);
+  /// Rust names of the collection methods that change their receiver.
+  static const _inPlace = {
+    'push',
+    'insert',
+    'remove',
+    'clear',
+    'extend',
+    'add',
+    'retain',
+    'truncate',
+    'pop',
+    'sort',
+    'sort_by',
+    'reverse',
+    'swap',
+    'drain',
+    'remove_at',
+    'insert_all',
+    'remove_where',
+    'retain_where',
+    'add_all',
+    'remove_last',
+    'remove_first',
+    'push_back',
+    'push_front',
+    'pop_front',
+    'pop_back',
+    'remove_all',
+    'set_range',
+    'fill_range',
+    'shuffle',
+    'add_first',
+    'add_last',
+    'put_if_absent',
+    'update',
+    'remove_range',
+    'replace_range',
+    'set_all',
+  };
+
+  static bool _mutatesInPlace(String name) => _inPlace.contains(name);
+
+  /// The cell a field read would go through, as a place -- `self.x` or
+  /// `other.x` -- when the field is kept in a `RefCell`; null otherwise.
+  String? _cellPlace(IrExpr? target) {
+    if (target is! IrField) return null;
+    final base = target.target;
+    final IrFieldDecl? cell;
+    if (base == null || base is IrThis) {
+      cell = _sharedField(target.name);
+    } else if (target.owner != null) {
+      cell = _cellFieldOf(target.owner!, target.name);
+    } else {
+      cell = null;
+    }
+    if (cell == null || _isCopy(_heldType(cell))) return null;
+    final holder = base == null || base is IrThis ? _selfName : expr(base);
+    return '$holder.${snake(target.name)}';
+  }
+
+  String _receiver(IrExpr? target) {
+    if (target == null || target is IrThis) return _selfName;
+    // `local.field.method(..)`: the field is the place the method acts on,
+    // not the clone a value read takes.
+    if (target is IrField && target.target is IrLocal && target.owner == null) {
+      return '${expr(target.target!)}.${snake(target.name)}';
+    }
+    return expr(target);
+  }
 
   String _call(IrExpr? target, String name, List<IrExpr> args) {
     // Before the receiver is rendered: rendering a chain on its own is
@@ -1195,12 +1674,90 @@ class RustBackend {
     if (name == 'to_list' && target is IrIterChain) {
       return '${_chain(target)}.collect::<Vec<_>>()';
     }
-    final receiver = _receiver(target);
+    // `0.29.powf(x)`: a float literal as a receiver is an "ambiguous numeric
+    // type" until it says which (21 `E0689`s in the HCT colour code).
+    // `self._handles.add(x)` on a field kept in a cell: the cell is the
+    // place, and a mutating call goes through `borrow_mut()`. Read out as a
+    // value first -- `.borrow().clone().push(x)` -- it compiled and pushed
+    // onto a copy: 27 such silent no-ops in the leaf crates.
+    // `recorder as _NativePictureRecorder` where the class is counted: the
+    // downcast through `Any` yields the struct inside the `Rc<dyn Trait>`,
+    // and every holder of that class wants an `Rc<_NativePictureRecorder>`.
+    // A new handle around a clone: the fields are cells, so the state is
+    // still shared; only the handle's identity is new.
+    if (name == 'clone' &&
+        args.isEmpty &&
+        target is IrDowncast &&
+        (library[target.type]?.counted ?? false)) {
+      return 'std::rc::Rc::new(${expr(target)}.clone())';
+    }
+    // `runtimeType` on a super function's `this_` (see `DartAny`).
+    if ((name == 'runtimeType' || name == 'runtime_type') &&
+        args.isEmpty &&
+        (target == null || target is IrThis) &&
+        _selfName == 'this_') {
+      return 'this_.dart_runtime_type()';
+    }
+    final cellPlace = _mutatesInPlace(name) ? _cellPlace(target) : null;
+    final receiver = cellPlace != null
+        ? '$cellPlace.borrow_mut()'
+        : target is IrLiteral && target.type.name == 'double'
+        ? '(${_receiver(target)}_f64)'
+        : _receiver(target);
     // `HashMap` looks up by reference, and gives back a reference to the
     // value. Dart's `m[k]` is a `V?`, so the borrow is cloned away rather
     // than leaked into every caller's type.
-    if (name == 'get' && args.length == 1) {
+    // A value shared into a trait object (see `_widened`).
+    if (name == '!rc' && args.isEmpty) return 'std::rc::Rc::new($receiver)';
+    // The other way: a `Uint8List` handed to a `List<int>` parameter.
+    // A `List<String>` into a `List<Object?>`: each element shared.
+    if (name == '!widen_object' && args.isEmpty) {
+      return '$receiver.into_iter().map(|v| Some(std::rc::Rc::new(v) as std::rc::Rc<dyn Object>)).collect::<Vec<_>>()';
+    }
+    if (name == '!widen' && args.isEmpty) {
+      return '$receiver.into_iter().map(|v| v as i64).collect::<Vec<i64>>()';
+    }
+    if (name == '!narrow' && args.length == 1) {
+      final to = expr(args.single);
+      return '$receiver.into_iter().map(|v| v as $to).collect::<Vec<$to>>()';
+    }
+    // Into `Rc<dyn Object>` by name: inside a `.map(|it| ..)` the unsizing
+    // has nothing to infer it from.
+    // A `dynamic` asked whether it is a `T`: the `Option<T>` `Any` gives.
+    if (name == '!as_opt' && args.length == 1) {
+      return '$receiver.as_any().downcast_ref::<${expr(args.single)}>().cloned()';
+    }
+    if (name == '!as_object' && args.isEmpty) {
+      // `this` into an `Object` slot: the handle when the method holds
+      // one, a fresh `Rc` of a clone when it does not.
+      if (target is IrThis) {
+        return _selfIsHandle
+            ? '($_selfName.clone() as std::rc::Rc<dyn Object>)'
+            : '(std::rc::Rc::new($_selfName.clone()) as std::rc::Rc<dyn Object>)';
+      }
+      return '($receiver as std::rc::Rc<dyn Object>)';
+    }
+    if (name == '!rc_object' && args.isEmpty) {
+      return '(std::rc::Rc::new($receiver) as std::rc::Rc<dyn Object>)';
+    }
+    if (name == '!dart_eq' && args.length == 1) {
+      return '$receiver.dart_eq(&${expr(args.single)})';
+    }
+    // `Vec::contains` takes a reference; Dart's takes the value. Only the
+    // List's: `Path.contains(Offset)` is a method of its own.
+    if (name == '!contains' && args.length == 1) {
+      return '$receiver.contains(&${expr(args.single)})';
+    }
+    if (name == '!expando_get' && args.length == 1) {
+      return '$receiver.get(&${expr(args.single)})';
+    }
+    if (name == '!map_get' && args.length == 1) {
       return '$receiver.get(&${expr(args.single)}).cloned()';
+    }
+    // `_views[_implicitViewId]` with an `int?` key: Dart looks up `null`
+    // and finds nothing; here the absent key is the absent value.
+    if (name == '!map_get_opt' && args.length == 1) {
+      return '${expr(args.single)}.as_ref().and_then(|__k| $receiver.get(__k).cloned())';
     }
     if ((name == 'contains_key' || name == 'remove') && args.length == 1) {
       return '$receiver.$name(&${expr(args.single)})';
@@ -1230,7 +1787,7 @@ class RustBackend {
     if (name == '!join' && args.length < 2) {
       final given = args.where((a) => !_isDefault(a, '')).toList();
       final separator = given.isEmpty ? '""' : '&${expr(given.single)}';
-      return '$receiver.iter().map(|__e| __e.to_string())'
+      return '$receiver.iter().map(|__e| dart_str(__e))'
           '.collect::<Vec<_>>().join($separator)';
     }
     if (name == '!insert' && args.length == 2) {
@@ -1246,7 +1803,11 @@ class RustBackend {
       // `sublist(from)` arrives with an explicit `null` end from Kernel and
       // with nothing from the analyzer. Both mean "to the end".
       final given = args.where((a) => !_isDefault(a, null)).toList();
-      final end = given.length == 1 ? '' : '${expr(given[1])} as usize';
+      // The end is `int?` upstream, so it arrives as `Some(e)`: the value.
+      final endValue = given.length == 1 ? null : given[1];
+      final end = endValue == null
+          ? ''
+          : '${expr(endValue is IrSome ? endValue.value : endValue)} as usize';
       return '$receiver[${expr(given[0])} as usize..$end].to_vec()';
     }
     // Dart's `reversed` is a lazy Iterable and nearly every use ends in
@@ -1255,7 +1816,7 @@ class RustBackend {
       return '{ let mut __r = $receiver.clone(); __r.reverse(); __r }';
     }
     if (name == '!cast' && args.isEmpty) return receiver;
-    if (name == 'first' && args.isEmpty) return '$receiver[0]';
+    if (name == 'first' && args.isEmpty) return '$receiver[0].clone()';
     if (name == 'last' && args.isEmpty) {
       return '$receiver[$receiver.len() - 1]';
     }
@@ -1275,11 +1836,22 @@ class RustBackend {
     // outward with `?`. That is the propagation the measurement counted, and
     // the caller's own signature was widened by the same fixpoint, so the two
     // always agree.
-    final suffix =
+    // A callee failing with its own type inside a method failing with
+    // `Object` (see `_computeFailing`): the error is boxed on the way up.
+    final calleeError = _failing[snake(name)];
+    final propagates =
         (target == null || target is IrThis) &&
-            _failing.containsKey(snake(name))
-        ? '?'
-        : '';
+        calleeError != null &&
+        !_traitDeclares(name);
+    final widens =
+        propagates &&
+        calleeError != 'Object' &&
+        (_failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>');
+    final suffix = !propagates
+        ? ''
+        : widens
+        ? '.map_err(|e| std::rc::Rc::new(e) as std::rc::Rc<dyn Object>)?'
+        : '?';
     // `_identifier`, not `snake`: an *operator* called as a method -- `~x` is
     // `x.~()` in Kernel -- has no letters for `snake` to keep, and it came out
     // as `x._()`, which does not parse and stopped the whole crate at the
@@ -1312,6 +1884,16 @@ class RustBackend {
     if (t.name == 'SentinelValue' && fields.isEmpty) {
       return 'SentinelValue';
     }
+    // `Endian.little`/`Endian.big`: the prelude's enum, from the constant's
+    // one field. Every `Paint` getter reads a `ByteData` with one (14).
+    if (t.name == 'Zone' && fields.isEmpty) return 'Zone';
+    if (t.name == 'Utf8Codec') return 'Utf8Codec';
+    if (t.name == 'Endian') {
+      final little = fields['_littleEndian'];
+      return little != null && expr(little) == 'true'
+          ? 'Endian::Little'
+          : 'Endian::Big';
+    }
     final cls = library[t.name];
     if (cls == null) {
       throw Unsupported(
@@ -1333,9 +1915,17 @@ class RustBackend {
         'const ${t.name}(..)',
       );
     }
-    final parts = [
-      for (final field in wanted) '${snake(field)}: ${expr(fields[field]!)}',
-    ];
+    // A field declared as a trait object takes the same `Rc::new` a return
+    // does: `const _ClampTransform(_P3ToSrgbTransform())` holds its child
+    // as an `Rc<dyn _ColorTransform>`.
+    final parts = <String>[];
+    for (final f in _allFields(cls)) {
+      if (!fields.containsKey(f.name)) continue;
+      final outer = _returns;
+      _returns = f.type;
+      parts.add('${snake(f.name)}: ${_returned(fields[f.name]!)}');
+      _returns = outer;
+    }
     return '${t.name} { ${parts.join(', ')} }';
   }
 
@@ -1359,6 +1949,21 @@ class RustBackend {
   /// something a setter or another thread could have changed.
   String _setValue(IrExpr? target, String name, IrExpr value) {
     final receiver = target == null ? _selfName : expr(target);
+    // A counted class's field is a cell: `_count++` used for its value
+    // wrote `self._count = __set` against an `Rc<Cell<i64>>`.
+    final shared = (target == null || target is IrThis)
+        ? _sharedField(name)
+        : null;
+    if (_fieldsAreAccessors && (target == null || target is IrThis)) {
+      return '{ let __set = ${expr(value)}; $receiver.set_${snake(name)}(__set.clone()); __set }';
+    }
+    if (shared != null) {
+      final copy = _isCopy(_heldType(shared));
+      return copy
+          ? '{ let __set = ${expr(value)}; $receiver.${snake(name)}.set(__set); __set }'
+          : '{ let __set = ${expr(value)}; '
+                '*$receiver.${snake(name)}.borrow_mut() = __set.clone(); __set }';
+    }
     return '{ let __set = ${expr(value)}; '
         '$receiver.${snake(name)} = __set; __set }';
   }
@@ -1419,10 +2024,16 @@ class RustBackend {
     final savedIndent = _indent;
     _indent = 0;
     stmt(e.body, tail: true);
-    final body = _out.sublist(saved).map((l) => l.trim()).join(' ');
+    final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
-    return '|$params| { $body }';
+    // The fields the closure copies in, as `_closure` does for the boxed
+    // kind. A chain step that read `this.trashEmailIds` named a local that
+    // this line had not declared.
+    final copies = e.captures
+        .map((c) => 'let ${snake(c.name)} = ${_copyOf(c)}; ')
+        .join();
+    return '|$params| { $copies$body }';
   }
 
   /// A read of a static, or of an enum value.
@@ -1437,11 +2048,25 @@ class RustBackend {
       final names = owned == null ? null : variantNames(owned.values);
       return '$owner::${names?[name] ?? variantName(name)}';
     }
+    // `dart:io`'s `Platform.version` and friends: the prelude's functions.
+    if (owner == 'Platform') return 'platform_${snake(name)}()';
     // Two derefs: through the `LazyLock`, then through the `Isolate` that
     // carries "one per isolate, not one per process".
-    if (_isLazy(owner, name)) return '(**${_lazyName(owner, name)})';
+    if (_isMutableStatic(owner, name)) {
+      return '(**${_lazyName(owner, name)}).borrow().clone()';
+    }
+    // A clone: the lock hands out a reference, and a read is a value.
+    // `(**CHANGE_NOTIFIER__EMPTY_LISTENERS)` moved out of the lock (E0507).
+    if (_isLazy(owner, name)) return '(**${_lazyName(owner, name)}).clone()';
+    if (library[owner]?.isAbstract ?? false) {
+      return screamingSnake('${owner}_$name');
+    }
     return '$owner::${screamingSnake(name)}';
   }
+
+  bool _isMutableStatic(String owner, String name) =>
+      library[owner]?.constants.any((c) => c.name == name && c.isMutable) ??
+      false;
 
   bool _isLazy(String owner, String name) =>
       library[owner]?.constants.any((c) => c.name == name && c.isLazy) ?? false;
@@ -1469,6 +2094,55 @@ class RustBackend {
   /// sit at the same one. Answering that with an address is worse than not
   /// answering.
   String _identical(IrExpr left, IrExpr right) {
+    // Two locals, or a local against a static: the addresses of the *slots*.
+    // Two distinct slots are never the same address, so this says "not
+    // identical" -- which is what Dart says of two distinct objects, and is
+    // the fast-path answer `listEquals` and `setEquals` want before they
+    // compare elements. What it cannot see is two handles to one `Rc`: those
+    // read as distinct here where Dart would say identical. `_invoke`'s
+    // `identical(zone, Zone.current)` is the one site that asks, and the
+    // prelude has a single zone, so both branches run the callback the same
+    // way. 36 call sites were behind this.
+    bool slot(IrExpr e) => e is IrLocal || e is IrStatic;
+    // A slot against a static *call* -- `identical(zone, Zone.current)`,
+    // the one site, in `_invoke` and its siblings (18 callers of those) --
+    // binds the call and compares slots: distinct, as above.
+    if (slot(left) && right is IrStaticCall) {
+      return '{ let __i = ${expr(right)}; std::ptr::eq(&${expr(left)}, &__i) }';
+    }
+    if (left is IrStaticCall && slot(right)) {
+      return '{ let __i = ${expr(left)}; std::ptr::eq(&__i, &${expr(right)}) }';
+    }
+    // Only when `_addressOf` has no better answer: a counted class's handle
+    // is dereferenced below, and that path must keep winning for `Rc`s.
+    if (slot(left) &&
+        slot(right) &&
+        (!_isReference(left) || !_isReference(right))) {
+      return 'std::ptr::eq(&${expr(left)}, &${expr(right)})';
+    }
+    // `identical(x, 0)` / `identical(s, 'und')`: on a number, a string or
+    // a bool Dart's `identical` is value equality (`KeyData._nonValueBits`,
+    // `Locale.toString`).
+    // `identical(_cachedLocale, this)` on a value class: the struct has no
+    // identity to compare, so the cache never hits and is recomputed --
+    // the same answer Dart gives for a fresh object, every time.
+    if (!cls.counted &&
+        ((left is IrStatic && right is IrThis) ||
+            (left is IrThis && right is IrStatic))) {
+      return 'false';
+    }
+    if (left is IrLiteral || right is IrLiteral) {
+      // TFA folds both sides to literals of different kinds: `identical(0,
+      // 0.0)` is `false` in Dart, and `0 == 0.0` does not type in Rust.
+      String side(IrExpr e, IrExpr other) =>
+          e is IrLiteral &&
+              e.type.name == 'int' &&
+              other is IrLiteral &&
+              other.type.name == 'double'
+          ? '(${expr(e)} as f64)'
+          : expr(e);
+      return '(${side(left, right)} == ${side(right, left)})';
+    }
     if (!_isReference(left) || !_isReference(right)) {
       // The question is not "is one side `this`" -- it is whether both sides
       // are *references* in the emitted Rust. A parameter of a concrete type
@@ -1587,7 +2261,10 @@ class RustBackend {
     // wrote `Rc<Foo>::new()`, which does not parse.
     final counted = library[t.name]?.counted ?? false;
     final name = t.arguments.isEmpty
-        ? (counted ? t.name : type(t))
+        // The bare name: `type(t)` of an argument-less `Map` fills in its
+        // `Rc<dyn Object>` arguments, and `Map<K, V>::new()` needs a
+        // turbofish to parse (`comparison operators cannot be chained`).
+        ? (counted || type(t).contains('<') ? t.name : type(t))
         : '${t.name}::<${t.arguments.map((a) => type(a)).join(', ')}>';
     final ctor = _ctorName(constructor);
     return '$name::$ctor(${args.map(expr).join(', ')})';
@@ -1612,6 +2289,7 @@ class RustBackend {
     inExpressions.statement(statement);
     found.addAll(inExpressions.assignedLocals);
     found.addAll(inExpressions.mutatedLocals);
+    found.addAll(inExpressions.receiverLocals);
     void walk(IrStmt s) {
       switch (s) {
         case IrAssign(:final name):
@@ -1655,6 +2333,7 @@ class RustBackend {
         case IrThrow():
         case IrAssignField():
         case IrAssignTopLevel():
+        case IrAssignStatic():
       }
     }
 
@@ -1689,7 +2368,11 @@ class RustBackend {
           _line(tail ? returned : 'return $returned;');
         }
       case IrThrow(:final value):
-        _line('return Err(${expr(value)});');
+        // A thrown string where the function's error type is `Object` -- the
+        // tree shaker's "code removed by TFA" throws, 36 of them -- is boxed
+        // into the error type rather than left as a `String` in an `Rc`'s
+        // place.
+        _line('${_thrown(value)};');
       case IrTryFinally(:final body, :final finalizer):
         // The finalizer has to run on the way out however the body leaves, so
         // the body's exits are all collected into one value first and only
@@ -1704,7 +2387,15 @@ class RustBackend {
         final carried = flows ? 'Option<${_rustReturns ?? '()'}>' : '()';
         final failure =
             _errorIn(body) ?? _failure ?? 'std::convert::Infallible';
-        _line('let __finally = (|| -> Result<$carried, $failure> {');
+        // In an `async fn` the body goes in an `async` block, not a closure:
+        // a closure is its own function and an `.await` inside it is
+        // "outside async" -- 13 `E0728`s, every one a `try` around an
+        // `await`. The block has the same `return` semantics.
+        _line(
+          _asyncBody
+              ? 'let __finally: Result<$carried, $failure> = async {'
+              : 'let __finally = (|| -> Result<$carried, $failure> {',
+        );
         _indent++;
         final wasFlowing = _inFlowClosure;
         _inFlowClosure = flows;
@@ -1713,7 +2404,7 @@ class RustBackend {
         _line('#[allow(unreachable_code)]');
         _line(flows ? 'Ok(None)' : 'Ok(())');
         _indent--;
-        _line('})();');
+        _line(_asyncBody ? '}.await;' : '})();');
         stmt(finalizer);
         _line('match __finally {');
         _indent++;
@@ -1730,7 +2421,14 @@ class RustBackend {
         // The failure keeps going. `_failing` already put `Result` on this
         // method's signature, because a `finally` catches nothing and so the
         // walk that spreads failure never stopped at it.
-        _line('Err(__failed) => return Err(__failed),');
+        // A method that cannot fail wrapped its body in `Infallible`, and
+        // the arm is impossible: matching the empty enum says so, where a
+        // `return Err(..)` did not type in a `()` method (E0308).
+        _line(
+          _failure == null
+              ? 'Err(__failed) => match __failed {},'
+              : 'Err(__failed) => return Err(__failed),',
+        );
         _indent--;
         _line('}');
       case IrTryCatch(
@@ -1738,6 +2436,7 @@ class RustBackend {
         :final error,
         :final errorType,
         :final handler,
+        :final stack,
       ):
         // The body goes inside an immediately-invoked closure, and that is the
         // load-bearing part: a failing call inside it is spelled `?`, and `?`
@@ -1748,7 +2447,14 @@ class RustBackend {
         // The closure's error type comes from the try *body*, not from the
         // enclosing method: a method that catches does not fail, so it has no
         // error type of its own, and `Result<(), _>` cannot be inferred.
-        final failure = errorType ?? _errorIn(body) ?? _failure ?? '_';
+        // A body with nothing that fails -- `listener()` behind a catch-all
+        // in `ChangeNotifier.notifyListeners` -- leaves `_` with nothing to
+        // infer it from (E0282). A catch-all catches an `Object`.
+        final failure =
+            errorType ??
+            _errorIn(body) ??
+            _failure ??
+            'std::rc::Rc<dyn Object>';
         // The closure catches `?`, and it would catch a `return` too: written
         // plainly, `return x` in the body returns from the *closure* and the
         // method carries on, which compiles and is wrong. So when the body
@@ -1757,7 +2463,13 @@ class RustBackend {
         // end" -- and the match below does the returning for real.
         final flows = _returnsEarly(body);
         final carried = flows ? 'Option<${_rustReturns ?? '()'}>' : '()';
-        _line('match (|| -> Result<$carried, $failure> {');
+        // The same async-block rule as `try/finally` above: the handler
+        // wrapper must not be a closure when the body awaits.
+        _line(
+          _asyncBody
+              ? 'match async { let __r: Result<$carried, $failure> = {'
+              : 'match (|| -> Result<$carried, $failure> {',
+        );
         _indent++;
         final outer = _inFlowClosure;
         _inFlowClosure = flows;
@@ -1774,7 +2486,7 @@ class RustBackend {
           _line('Ok(())');
         }
         _indent--;
-        _line('})() {');
+        _line(_asyncBody ? '}; __r }.await {' : '})() {');
         _indent++;
         if (flows) {
           _line('Ok(Some(__returned)) => return __returned,');
@@ -1790,6 +2502,13 @@ class RustBackend {
           _line('Ok(()) => {}');
         }
         _line('Err(${snake(error)}) => {');
+        // The catch clause's stack trace: the catch site's own, since a
+        // `Result` carries none (see the front end's note).
+        if (stack != null) {
+          _indent++;
+          _line('let mut ${snake(stack)} = StackTrace::current();');
+          _indent--;
+        }
         _indent++;
         stmt(handler);
         _indent--;
@@ -1800,13 +2519,33 @@ class RustBackend {
         // Borrowed, not moved: Dart's loop does not consume the list, and a
         // body that changed it while borrowing would be refused by rustc --
         // which is the same thing Dart refuses at runtime.
-        _line('for ${snake(name)} in &${expr(iterable)} {');
+        // Each element cloned out, as a field read is: Dart's loop variable
+        // is the element, not a reference to it, and `&xs` handed out
+        // `&f64` where `f64` was wanted (14 in the colour code). The list
+        // itself is only borrowed, as before.
+        _line('for ${snake(name)} in ${expr(iterable)}.iter().cloned() {');
         _indent++;
         stmt(body);
         _indent--;
         _line('}');
       case IrIndexSet(:final target, :final index, :final value):
-        _line('${expr(target)}[${expr(index)} as usize] = ${expr(value)};');
+        // A write into one of this class's own lists is a write into the
+        // place, not into the clone a field *read* takes out:
+        // `self._m4storage.clone()[14] = v` changed nothing, 17 times in
+        // vector_math, and left the method `&self`.
+        final place =
+            target is IrField &&
+                (target.target == null || target.target is IrThis) &&
+                _sharedField(target.name) == null &&
+                !_fieldsAreAccessors &&
+                _allFields(cls).any((f) => f.name == target.name)
+            ? '${_receiver(target.target)}.${snake(target.name)}'
+            : expr(target);
+        // The index first: `self.f[self.index(r, c)] = v` borrows `self`
+        // twice at once (5 E0502s in vector_math).
+        _line(
+          '{ let __i = ${expr(index)} as usize; $place[__i] = ${expr(value)}; }',
+        );
       case IrLocalFunction(:final name, :final closure):
         _line('let ${snake(name)} = ${expr(closure)};');
       case IrLabeled(:final label, :final body):
@@ -1861,28 +2600,62 @@ class RustBackend {
           stmt(otherwise);
           _indent--;
           _line('}');
+        } else {
+          // Dart's `switch` with no `default` does nothing for a value no
+          // case names; Rust's `match` on an `i64` has to say so (E0004 on
+          // `switch (data.getInt32(..)) { case 0: .. case 1: .. }`). On an
+          // enum every variant is named and the arm is only unreachable.
+          _line('_ => {}');
         }
         _indent--;
         _line('}');
       case IrWhile(:final condition, :final body, :final label):
         final head = label == null ? '' : "'" + label + ': ';
-        _line('${head}while ${expr(condition)} {');
+        // `while (true)` is `loop`: its type is `!`, so a method whose body
+        // ends in one and returns from inside it type-checks (`bool <= ()`).
+        _line(
+          condition is IrLiteral && condition.value == 'true'
+              ? '${head}loop {'
+              : '${head}while ${expr(condition)} {',
+        );
         _indent++;
         stmt(body);
         _indent--;
         _line('}');
       case IrLocalDecl(:final name, :final type, :final init):
         final annotation = type == null ? '' : ': ${this.type(type)}';
-        final mutable = _reassigned.contains(name) ? 'mut ' : '';
+        // Every local is `mut`. Whether a local is written is known here;
+        // whether a method called on it takes `&mut self` is not, when the
+        // method belongs to a class in another module -- `brk.next_break()`
+        // on a `let brk` was 30 `E0596`s. An unneeded `mut` is a warning the
+        // crate allows; a missing one is an error.
+        const mutable = 'mut ';
         // A declared function type is `Box<dyn Fn(..)>`, and a closure's own
         // type is not that. `_returned` boxes for the same reason one line
         // further out; a `let` is the other half of it.
         final boxed = type != null && type.isFunction && init is IrClosure;
-        final value = init == null
-            ? 'Default::default()'
-            : boxed
-            ? 'Box::new(${expr(init)})'
-            : expr(init);
+        // A local with no initialiser is assigned before it is read -- Dart
+        // checks that, and so does Rust for a `let x: T;` -- so it needs no
+        // value; `Default::default()` asked `Color` for a default it does
+        // not have. A nullable one Dart starts at null.
+        if (init == null) {
+          final nullable =
+              type != null && (type.nullable || type.name == 'Option');
+          _line(
+            nullable
+                ? 'let $mutable${snake(name)}$annotation = None;'
+                : 'let $mutable${snake(name)}$annotation;',
+          );
+          return;
+        }
+        // The same coercion a `return` takes: `let l: Rc<dyn EngineLayer> =
+        // _NativeEngineLayer::new_()` needs the `Rc::new` (9 in dart:ui).
+        final outer = _returns;
+        _returns = type;
+        final value = boxed
+            ? 'std::rc::Rc::new(${expr(init)})'
+            : _returned(init);
+        _returns = outer;
         _line('let $mutable${snake(name)}$annotation = $value;');
       case IrAssign(:final name, :final value):
         final cell = _cellLocals[name];
@@ -1893,11 +2666,18 @@ class RustBackend {
               ? '${snake(name)}.set(${expr(value)});'
               : '*${snake(name)}.borrow_mut() = ${expr(value)};',
         );
-      case IrAssignField(:final target, :final name, :final value):
+      case IrAssignField(
+        :final target,
+        :final name,
+        :final value,
+        :final owner,
+      ):
         final receiver = target == null ? _selfName : expr(target);
         final shared = target == null || target is IrThis
             ? _sharedField(name)
-            : null;
+            : owner == null
+            ? null
+            : _cellFieldOf(owner, name);
         // Assigning a `late` field is what takes it out of `None`, so the
         // value goes in wrapped. This is the only place that happens.
         final own = target == null || target is IrThis
@@ -1906,7 +2686,11 @@ class RustBackend {
         final written = own != null || (shared?.isLate ?? false)
             ? 'Some(${expr(value)})'
             : expr(value);
-        if (shared != null) {
+        // Inside a trait's body there is no field, only the setter it
+        // declares (`this_.set__length(v)` in a mixin's super function).
+        if (_fieldsAreAccessors && (target == null || target is IrThis)) {
+          _line('$receiver.set_${snake(name)}($written);');
+        } else if (shared != null) {
           // Through the cell, which is why the field can be written from a
           // closure that does not hold `self` at all.
           _line(
@@ -1921,6 +2705,8 @@ class RustBackend {
         // Through the cell: two derefs for the `LazyLock` and the `Isolate`,
         // then `borrow_mut`. The read side does the same with `borrow`.
         _line('*(**${screamingSnake(name)}).borrow_mut() = ${expr(value)};');
+      case IrAssignStatic(:final owner, :final name, :final value):
+        _line('*(**${_lazyName(owner, name)}).borrow_mut() = ${expr(value)};');
       case IrSetter(:final target, :final name, :final value):
         _line('${_receiver(target)}.set_${snake(name)}(${expr(value)});');
       case IrIf(:final condition, :final then, :final otherwise):
@@ -1938,6 +2724,16 @@ class RustBackend {
           _line('}');
         }
       case IrExprStmt(:final expr):
+        // `onCreate?.call(this)` after TFA proved `onCreate` null is a bare
+        // `null` in statement position: nothing to do, and `None;` alone
+        // cannot even be typed (E0282).
+        if (expr is IrLiteral && expr.value == 'null') break;
+        if (expr is IrBlockValue &&
+            expr.value is IrLiteral &&
+            (expr.value as IrLiteral).value == 'null') {
+          for (final s in expr.statements) stmt(s);
+          break;
+        }
         _line('${this.expr(expr)};');
       case IrAssert(:final condition, :final literalMessage, :final message):
         // `debug_assert!`, not `assert!`: Dart's assert runs in debug builds
@@ -2029,6 +2825,20 @@ class RustBackend {
             );
             return;
           }
+          // A `const` with a destructor -- a `Vec`, a `String`, a `Map` --
+          // is not a Rust `const` (E0493): a lazily built `static`, read
+          // with `.clone()` (`_isLazyConst`).
+          if (holder._isLazyConst(constant.name)) {
+            // Behind `Isolate`, as the mutable ones are: a `static` must be
+            // `Sync`, and an `Rc<dyn Object>` (`Object()` as a zone key) is
+            // not; `Isolate` says "one per isolate" and carries that.
+            holder._line(
+              'pub static ${screamingSnake(constant.name)}: '
+              'std::sync::LazyLock<Isolate<${holder.type(constant.type)}>> = '
+              'std::sync::LazyLock::new(|| Isolate(${holder.expr(constant.value)}));',
+            );
+            return;
+          }
           holder._line(
             'pub const ${screamingSnake(constant.name)}: '
             '${holder.type(constant.type)} = ${holder.expr(constant.value)};',
@@ -2080,12 +2890,19 @@ class RustBackend {
     _line('');
     _doc(cls.doc);
     if (cls.values.isEmpty) {
-      // The front end refused it -- an enhanced enum, whose values it did not
-      // carry. An empty Rust enum is legal and uninhabited, so emitting one
-      // would turn "not translated" into "has no values", which is a different
-      // and false statement.
-      _line('// NOT TRANSLATED: `${cls.name}` is an enhanced enum -- a Rust');
-      _line('// enum plus an impl, which is a separate job.');
+      // No values: either the front end refused an enhanced enum's members,
+      // or the tree shaker dropped every value because nothing reads one
+      // (`KeyboardLockMode`, held in a `Set` nothing fills). The *type* is
+      // still named -- 5 fields and signatures wanted it -- so it is emitted
+      // uninhabited, which is exact: no value of it is ever made, and any
+      // code that tries does not compile. The note keeps the distinction.
+      _line('// NOT TRANSLATED: `${cls.name}` has no values here -- either');
+      _line(
+        '// an enhanced enum this compiler refused, or one the tree shaker',
+      );
+      _line('// emptied. Uninhabited, so that its name still resolves.');
+      _line('#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]');
+      _line('${_vis(cls.name)}enum ${cls.name} {}');
       return _out.join('\n') + '\n';
     }
     final variants = variantNames(cls.values);
@@ -2100,6 +2917,18 @@ class RustBackend {
     for (final value in cls.values) {
       _line('${variants[value]},');
     }
+    _indent--;
+    _line('}');
+    // `index`: a Dart enum value knows its position, and `x.index` was read
+    // as a method nothing declared (6 in `dart:ui`'s `BlendMode`).
+    _line('');
+    _line('impl ${cls.name} {');
+    _indent++;
+    _line('pub fn index(&self) -> i64 {');
+    _indent++;
+    _line('*self as i64');
+    _indent--;
+    _line('}');
     _indent--;
     _line('}');
     // An enhanced enum: its members go in an impl, where they lose nothing.
@@ -2180,7 +3009,31 @@ class RustBackend {
     _line('');
     // `: DartAny` so a `Box<dyn ..>` of this trait can be asked what it holds,
     // which is what `x is Foo` needs and what a bare trait object cannot do.
-    _line('${_vis(cls.name)}trait ${cls.name}${_generics(cls)}: DartAny {');
+    // ..and the traits of its own supertypes: a `SourceSpanMixin on
+    // SourceSpan` calls `start` through `this_: &__Self` in its super
+    // functions, and `__Self: SourceSpanMixin` had to imply `SourceSpan`
+    // for that to resolve (6). Dart's implementers already implement all
+    // of them, and the flattening below emits those impls.
+    // Not `Object`: a mixin `implements Listenable` lists `Object` among its
+    // interfaces, and a trait with `Object` above it makes `dyn Mixin` an
+    // `Object` twice over -- once here, once from the impl below (E0371).
+    // And each once: `on ListenableMixin implements ListenableMixin` named
+    // it twice.
+    // ..and `Debug`: every struct is one (derived, or "Instance of"), and
+    // a super function's `this_: &__Self` prints itself in messages
+    // (`MapBase.mapToString(this)`, `"Trying to read $x from $this"`).
+    // As a supertrait, `dyn X` is `Debug` by itself, so no impl for it below.
+    final supers = <String>{
+      'DartAny',
+      'std::fmt::Debug',
+      if (cls.superclass != null && library.isAbstract(cls.superclass))
+        _traitPath(IrType(cls.superclass!, arguments: cls.superclassArguments)),
+      for (final i in cls.interfaces)
+        if (library.isAbstract(i.name) && i.name != 'Object') _traitPath(i),
+    }.toList();
+    _line(
+      '${_vis(cls.name)}trait ${cls.name}${_generics(cls, static: true)}: ${supers.join(' + ')} {',
+    );
     _indent++;
     // Guarded per member, like the struct path. The trait path was missed when
     // that changed, and it showed the moment private members started being
@@ -2194,6 +3047,15 @@ class RustBackend {
     for (final field in cls.fields) {
       _line('/// `${cls.name}.${field.name}`, which the implementor stores.');
       _line('fn ${snake(field.name)}(&self) -> ${type(field.type)};');
+      // ..and writes, when the mixin's own methods write it: `_length =
+      // newLength` inside `_TypedDataBuffer._grow` goes through this. The
+      // receiver is `&self`: an implementer of a mixin that writes is
+      // counted, and its field is a cell.
+      if (!field.isFinal) {
+        _line(
+          'fn set_${snake(field.name)}(&self, value: ${type(field.type)});',
+        );
+      }
       _line('');
     }
     for (final method in cls.abstractMethods) {
@@ -2202,7 +3064,7 @@ class RustBackend {
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
-          ' -> ${type(method.returnType)}${_sizedBound(method)};',
+          ' -> ${_spelledReturn(type(method.returnType))}${_sizedBound(method)};',
         );
         _line('');
       });
@@ -2214,7 +3076,7 @@ class RustBackend {
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
-          ' -> ${type(method.returnType)}${_sizedBound(method)} {',
+          ' -> ${_spelledReturn(type(method.returnType))}${_sizedBound(method)} {',
         );
         _indent++;
         // The default delegates to the free function rather than holding the
@@ -2222,10 +3084,12 @@ class RustBackend {
         if (_superFailed.contains(method.name)) {
           _line('todo!("${cls.name}.${method.name} did not translate")');
         } else {
-          _line(
-            '${superFn(cls.name, method.name, isSetter: method.isSetter)}('
-            '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})',
-          );
+          // An `async` super function is an `async fn`: its future is
+          // boxed here, borrowing `self` for the `'_` the signature allows.
+          final call =
+              '${superFn(cls.name, method.name, isSetter: method.isSetter)}('
+              '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})';
+          _line(method.isAsync ? 'std::boxed::Box::pin($call)' : call);
         }
         _indent--;
         _line('}');
@@ -2239,10 +3103,80 @@ class RustBackend {
     // path has emitted them all along and this one had not, so an abstract
     // class's `static` simply vanished: `NavigatorObserver._navigators` was
     // read from three places and declared nowhere.
-    _emitConstants();
+    // The trait object is an `Object` too, through the `DartAny` every
+    // translated trait requires. Without this an `Rc<dyn Widget>` could not
+    // stand where an `Rc<dyn Object>` is wanted, now that `Object` carries
+    // `as_any` and is implemented only for sized types.
+    _line(
+      'impl${_generics(cls, static: true)} Object for dyn ${cls.name}${_generics(cls)} {',
+    );
+    _indent++;
+    _line('fn as_any(&self) -> &dyn std::any::Any {');
+    _indent++;
+    _line('DartAny::as_any(self)');
+    _indent--;
+    _line('}');
+    _line('fn runtime_type(&self) -> Type {');
+    _indent++;
+    // The struct's own name, not the trait's: `runtimeType` of an `Rc<dyn
+    // Widget>` is the widget's class.
+    _line('DartAny::dart_runtime_type(self)');
+    _indent--;
+    _line('}');
+    _indent--;
+    _line('}');
+    // A trait object compares and hashes by identity, which is what Dart's
+    // `Object.==` and `hashCode` do for anything not overriding them, and
+    // prints as its class. Without these a struct holding an `Rc<dyn
+    // EngineLayer>` could not derive `PartialEq` or `Debug` (9 + 9 in
+    // dart:ui), and `Map<Rc<dyn DynamicScheme>, _>` could not be looked up.
+    final generics = _generics(cls, static: true);
+    final object = 'dyn ${cls.name}${_generics(cls)}';
+    _line('impl$generics PartialEq for $object {');
+    _indent++;
+    _line(
+      'fn eq(&self, other: &Self) -> bool { std::ptr::addr_eq(self, other) }',
+    );
+    _indent--;
+    _line('}');
+    _line('impl$generics Eq for $object {}');
+    _line('impl$generics std::hash::Hash for $object {');
+    _indent++;
+    _line('fn hash<H: std::hash::Hasher>(&self, state: &mut H) {');
+    _indent++;
+    _line('(self as *const Self as *const u8 as usize).hash(state)');
+    _indent--;
+    _line('}');
+    _indent--;
+    _line('}');
+
+    _line('');
+    // Module-level, so they carry the class's name: `Contrast.ratio` is
+    // `contrast_ratio(..)` and `Platform.numberOfProcessors` is
+    // `PLATFORM_NUMBER_OF_PROCESSORS`. A bare `pub const` here was read as
+    // `Platform::..` by every caller (E0782, 86 of them), and a static
+    // *method* of an abstract class was not emitted at all. `_staticCall`
+    // and `_staticRead` spell the same names for an abstract owner.
+    for (final method in cls.methods) {
+      if (!method.isStatic || method.operator != null) continue;
+      _member(
+        '${cls.name}.${method.name} (static)',
+        () => _emitMethod(
+          method,
+          as: _abstractStaticName(
+            cls.name,
+            method.name.isEmpty ? 'new' : method.name,
+          ),
+        ),
+      );
+    }
+    _emitConstants(prefix: cls.name);
     _emitLazyStatics();
     return _out.join('\n') + '\n';
   }
+
+  static String _abstractStaticName(String owner, String name) =>
+      _rustIdentifier('${snakeRaw(owner)}_${snakeRaw(name)}');
 
   /// `<T>` for a class or method that has parameters, and nothing otherwise.
   String _generics(Object owner, {bool static = false}) {
@@ -2256,8 +3190,100 @@ class RustBackend {
     // one out when its parameters outlive the borrow. Nothing this compiler
     // emits holds a borrow, so the bound costs nothing and is not written
     // anywhere else.
-    final bound = static ? params.map((p) => "$p: 'static") : params;
+    // A method's own parameters carry what a body needs of them, as an
+    // impl's do (`_implGenerics`): `listEquals<T>` clones its `Option<Vec<T>>`
+    // (9 "trait bounds were not satisfied" in dart:ui).
+    // One bound for every declaration -- struct, trait, impl, method, super
+    // function: a trait's default method calls the super function with the
+    // trait's own `E`, so the trait has to promise what the function asks
+    // (147 E0277s from asking it of the function alone).
+    final bound = owner is IrMethod || static
+        ? params.map((p) => "$p: Clone + PartialEq + std::fmt::Debug + 'static")
+        : params;
     return '<${bound.join(', ')}>';
+  }
+
+  /// A top-level constant whose Rust type has a destructor, kept as a
+  /// lazily built `static` rather than a `const`.
+  bool _isLazyConst(String name) {
+    for (final c in library.constants) {
+      if (c.name == name) return _lazy(c);
+    }
+    final other = library.constantsElsewhere[name];
+    if (other != null) return _lazy(other);
+    return false;
+  }
+
+  /// A `const` only when Rust can evaluate the initialiser at compile
+  /// time: a `Copy` value built from literals. `"0".codeUnitAt(0)` is an
+  /// `i64` and still a call (E0015).
+  bool _lazy(IrConstDecl c) =>
+      !c.isMutable && (!_isCopy(type(c.type)) || !_constEvaluable(c.value));
+
+  static bool _constEvaluable(IrExpr e) => switch (e) {
+    IrLiteral() => true,
+    IrStatic() => true,
+    IrTopLevel() => true,
+    IrBinary(:final left, :final right) =>
+      _constEvaluable(left) && _constEvaluable(right),
+    IrUnary(:final operand) => _constEvaluable(operand),
+    IrCast(:final value) => _constEvaluable(value),
+    IrConstInstance(:final fields) => fields.values.every(_constEvaluable),
+    IrNew(:final args) => args.every(_constEvaluable),
+    _ => false,
+  };
+
+  /// Whether every translated class named in a type text can be compared.
+  bool _comparableType(String rust, Set<String> seen) {
+    if (rust.contains('dyn Fn')) return false;
+    for (final name in _namesIn(rust)) {
+      final other = library[name];
+      if (other == null || !seen.add(name)) continue;
+      if (other.isAbstract) continue;
+      for (final f in _allFields(other)) {
+        // A closure field compares by address in the manual `PartialEq`
+        // the struct gets (see `byIdentity`), so it does not make the
+        // class incomparable: `Vec<PointerData>` in `PointerDataPacket`.
+        if (f.type.isFunction) continue;
+        if (!_comparableType(_fieldType(f), seen)) return false;
+      }
+    }
+    return true;
+  }
+
+  /// A trait named as a bound: `Foo<T>`, not the `Rc<dyn Foo<T>>` a value
+  /// of it is.
+  String _traitPath(IrType t) => t.arguments.isEmpty
+      ? t.name
+      : '${t.name}<${t.arguments.map((a) => type(a)).join(', ')}>';
+
+  /// The generics of an `impl` block: every parameter `Clone + 'static`.
+  ///
+  /// A method body clones what it reads (`self._map.clone()`), and a
+  /// `Map<K, V>` is `Clone` only when `K` and `V` are; an `Rc<dyn ..>` held
+  /// in a `T` slot wants `'static`. 30 "trait bounds were not satisfied"
+  /// and 12 E0310s in `collection`. The struct and trait declarations stay
+  /// unbounded, so a type argument that is neither is still a type -- only
+  /// its methods are missing, which is loud where it matters.
+  String _implGenerics(IrClass cls) {
+    if (cls.typeParameters.isEmpty) return '';
+    // A parameter that keys a `Map` or fills a `Set` in one of the fields
+    // needs what the prelude's `Map` asks of a key: `keys()` and `get()`
+    // "exist but their trait bounds were not satisfied", 9 in `collection`.
+    final fields = [
+      ..._allFields(cls).map(_fieldType),
+      for (final m in cls.methods) ...[
+        type(m.returnType),
+        for (final p in m.params) type(p.type),
+      ],
+    ].join(' ');
+    String bound(String p) {
+      final keyed = RegExp('(Map|Set)<$p[,>]').hasMatch(fields);
+      // `PartialEq`: `self._value == new_value` on a `T` (`ValueNotifier`).
+      return "$p: Clone + PartialEq + std::fmt::Debug + 'static${keyed ? ' + std::hash::Hash + Eq' : ''}";
+    }
+
+    return '<${cls.typeParameters.map(bound).join(', ')}>';
   }
 
   /// Type parameters no field mentions.
@@ -2319,6 +3345,9 @@ class RustBackend {
   bool _isCopyIn(String rust, Set<String> seen) {
     if (!_copyText(rust)) return false;
     for (final name in _namesIn(rust)) {
+      // A type parameter is not known to be `Copy`, and a read of a `T`
+      // field behind `&self` has to clone it: `ValueNotifier.value`.
+      if (cls.typeParameters.contains(name)) return false;
       final prelude = _preludeCopy[name];
       if (prelude == false) return false;
       if (prelude != null) continue;
@@ -2376,7 +3405,7 @@ class RustBackend {
 
   static bool _copyText(String rust) =>
       !rust.contains('String') &&
-      !rust.contains('Box<') &&
+      !rust.contains('std::boxed::Box<') &&
       !rust.contains('Vec<') &&
       !rust.contains('Map<') &&
       // A shared field's `Rc` is not `Copy` however copyable its contents,
@@ -2410,7 +3439,7 @@ class RustBackend {
     // A class emitted as a trait has no fields of its own here; its uses are
     // `Box<dyn ..>`, which `_copyText` has already turned down.
     final answer = _allFields(other).every((f) {
-      if (f.shared || (other.counted && !f.isFinal)) return false;
+      if (f.shared || (other.counted && _mutableOnCounted(f))) return false;
       final held = f.isLate ? 'Option<${type(f.type)}>' : type(f.type);
       return _isCopyIn(held, seen);
     });
@@ -2426,6 +3455,9 @@ class RustBackend {
   /// functions an abstract class's methods become.
   void _emitFreeFunction(IrMethod method) {
     _doc(method.doc);
+    // Before the parameters are spelled: `_param` asks `_reassigned`
+    // whether each is written, and it held the previous method's answer.
+    _reassigned = _assignedIn(method.body);
     final params = method.params.map((p) => _param(p, owned: false)).join(', ');
     _line(
       '${_vis(method.name)}${method.isAsync ? 'async ' : ''}fn '
@@ -2438,8 +3470,15 @@ class RustBackend {
     // the front end, not something to paper over here.
     _selfName = '<no self>';
     _returns = method.returnType;
+    // The Rust return type too: a `try` body that returns carries
+    // `Option<..>` of it out of its closure, and without it `_isLoopback`'s
+    // `return address.isLoopback` came out as an `Option<()>`.
+    _rustReturns = _returnType(method);
+    _asyncBody = method.isAsync;
     stmt(method.body, tail: true);
+    _closeOpenIf(method.body);
     _returns = null;
+    _rustReturns = null;
     _selfName = saved;
     _indent--;
     _line('}');
@@ -2484,8 +3523,15 @@ class RustBackend {
   /// What is given up is calling it *through* a trait object, which Dart does
   /// allow. That call is a refusal of its own where it happens, rather than
   /// 302 members deleted where they are declared.
+  // A type parameter, or an `impl Future` parameter -- which is a type
+  // parameter in a coat -- keeps a method out of the vtable, and a trait
+  // used as `dyn` needs it kept out: `TransitionRoute` was "not dyn
+  // compatible" for `_setSecondaryAnimation(.., Future<void>? disposed)`.
   static String _sizedBound(IrMethod method) =>
-      method.typeParameters.isEmpty ? '' : ' where Self: Sized';
+      method.typeParameters.isEmpty &&
+          !method.params.any((p) => p.type.name == 'Future')
+      ? ''
+      : ' where Self: Sized';
 
   /// A method whose type parameter has the same name as one of the class's.
   ///
@@ -2511,13 +3557,21 @@ class RustBackend {
       _line('/// The body of `${cls.name}.${method.name}`, reachable from an');
       _line('/// override the way Dart\'s `super.${method.name}` is.');
       final params = [
+        // The body writes fields through `this_` when the method is one of
+        // this class's mutating ones (or the trait's, for every class).
+        // `&__Self` always: a write to a field in here goes through the
+        // setter the trait declares, on `&self` (typed_data, 7 mismatches
+        // once the trait's defaults went back to `&self`).
         'this_: &__Self',
         ...method.params.map(
-          (p) => '${snake(p.name)}: ${type(p.type, owned: false)}',
+          // `mut` when the body assigns it (`start = index + 1` in a loop).
+          (p) =>
+              '${_assignedIn(method.body).contains(p.name) ? 'mut ' : ''}'
+              '${snake(p.name)}: ${type(p.type, owned: false)}',
         ),
       ].join(', ');
       _line(
-        '${_vis(cls.name)}fn '
+        '${_vis(cls.name)}${method.isAsync ? 'async ' : ''}fn '
         '${superFn(cls.name, method.name, isSetter: method.isSetter)}'
         // The class's parameters come too: a body of `ParametricCurve<T>`
         // returns a `T`, and the free function holding it has to say where
@@ -2525,20 +3579,32 @@ class RustBackend {
         // `__Self`, not `S`: a Dart method's own type parameter is often
         // named `S`, and round 78 started carrying those onto this function --
         // where it collided with the receiver's. A generated name cannot.
-        '<__Self: ${cls.name}${_generics(cls)} + ?Sized'
-        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.join(', ')}'}'
+        // `Debug` too: a mixin's `toString` hands `this` to `MapBase.
+        // mapToString`, which prints it, and every implementer prints.
+        '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
+        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone + PartialEq + std::fmt::Debug + 'static").join(', ')}'}'
         // And the *method's* own, for a generic method like
         // `invokeLayoutCallback<T extends Constraints>`. A free function can
         // carry them; the trait method it belongs to cannot, and says so.
         '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.join(', ')}'}'
         '>($params) -> '
-        '${type(method.returnType)} {',
+        // An `async fn` returns the awaited type: `Future<Response>` on an
+        // `async` super function was a future of a boxed future (E0308).
+        '${_returnType(method)} {',
       );
       _indent++;
       _selfName = 'this_';
       _returns = method.returnType;
+      _asyncBody = method.isAsync;
       _reassigned = _assignedIn(method.body);
+      // `this_` is a `&__Self: Trait`, and a trait has no fields: the base's
+      // fields are its accessor methods here, as they are inside the trait
+      // itself. `this_.start` was read as a field 6 times in `source_span`.
+      final accessors = _fieldsAreAccessors;
+      _fieldsAreAccessors = true;
       stmt(method.body, tail: true);
+      _closeOpenIf(method.body);
+      _fieldsAreAccessors = accessors;
       _returns = null;
       _selfName = 'self';
       _indent--;
@@ -2604,7 +3670,7 @@ class RustBackend {
       changed = false;
       for (final entry in calls.entries) {
         if (writes.contains(entry.key)) continue;
-        if (entry.value.any(writes.contains)) {
+        if (entry.value.any((c) => writes.contains(snake(c)))) {
           writes.add(entry.key);
           changed = true;
         }
@@ -2629,14 +3695,22 @@ class RustBackend {
     // A method that hands out a closure holding `this` takes the handle, not
     // a borrow: the closure keeps a clone of it, and only an `Rc` clones into
     // something that outlives the call.
-    if (cls.counted && _handsOutSelf(method)) {
+    if (cls.counted && _handles.contains(_rustName(method))) {
       _selfIsHandle = true;
       return 'self: &std::rc::Rc<Self>';
     }
     _selfIsHandle = false;
     // A counted class never takes `&mut self`: an `Rc` hands out shared
     // access, and every mutable field of one is in a cell for that reason.
-    if (cls.counted || !_mutating.contains(_rustName(method))) return '&self';
+    if (cls.counted) return '&self';
+    // A trait's method has one signature for every class implementing it,
+    // so it is `&mut self` when *any* of them writes a field in it -- and
+    // so is every implementation and forwarder, whether or not that one
+    // writes. Decided per class, `ChangeNotifier::add_listener(self, ..)`
+    // under a `&self` forwarder was 10 "types differ in mutability" and 17
+    // E0596s.
+    if (_sharedMutation(method)) return '&mut self';
+    if (!_mutating.contains(_rustName(method))) return '&self';
     if (method.operator != null &&
         _operatorTraits.containsKey(method.operator)) {
       throw Unsupported(
@@ -2655,6 +3729,74 @@ class RustBackend {
       );
     }
     return '&mut self';
+  }
+
+  /// `_mutating` of every class, by class name, computed once per library.
+  static final Expando<Map<String, Set<String>>> _mutatingCache = Expando();
+
+  /// The concrete, uncounted classes under each trait, once per library.
+  static final Expando<Map<String, List<IrClass>>> _implementersCache =
+      Expando();
+
+  Set<String> _mutatingOf(IrClass other) {
+    if (identical(other, cls)) return _mutating;
+    final cache = _mutatingCache[library] ??= {};
+    return cache[other.name] ??= RustBackend(other, library: library)._mutating;
+  }
+
+  Iterable<String?> _supertypeNames(IrClass c) => [
+    c.superclass,
+    for (final m in c.mixins) m.name,
+    for (final i in c.interfaces) i.name,
+  ];
+
+  bool _isSubtypeOf(IrClass c, String trait, Set<String> seen) {
+    if (c.name == trait) return true;
+    if (!seen.add(c.name)) return false;
+    for (final name in _supertypeNames(c)) {
+      if (name == null) continue;
+      if (name == trait) return true;
+      final s = library[name];
+      if (s != null && _isSubtypeOf(s, trait, seen)) return true;
+    }
+    return false;
+  }
+
+  List<IrClass> _implementersOf(String trait) {
+    final cache = _implementersCache[library] ??= {};
+    return cache[trait] ??= [
+      for (final c in library.classes)
+        if (!c.isAbstract &&
+            !c.counted &&
+            c.name != trait &&
+            _isSubtypeOf(c, trait, {}))
+          c,
+    ];
+  }
+
+  /// Whether a class implementing a trait that declares this method writes
+  /// a field in it. See `_receiverOf`.
+  bool _sharedMutation(IrMethod method) {
+    if (method.isStatic) return false;
+    final name = _rustName(method);
+    final traits = <String>{};
+    void collect(IrClass c, Set<String> seen) {
+      if (!seen.add(c.name)) return;
+      if (c.isAbstract &&
+          (c.methods.any((m) => m.name == method.name) ||
+              c.abstractMethods.any((m) => m.name == method.name))) {
+        traits.add(c.name);
+      }
+      for (final n in _supertypeNames(c)) {
+        final s = library[n];
+        if (s != null) collect(s, seen);
+      }
+    }
+
+    collect(cls, {});
+    return traits.any(
+      (t) => _implementersOf(t).any((c) => _mutatingOf(c).contains(name)),
+    );
   }
 
   /// A member's name in Rust.
@@ -2684,6 +3826,19 @@ class RustBackend {
     final own = [
       for (final f in of.fields)
         IrFieldDecl.substituted(f, (t) => _substituteType(t, bound)),
+      // A mixin's fields are the class's too: `Value<T> extends ListNotifier
+      // with StateMixin<T>` has `StateMixin`'s `late T _value`, and came out
+      // as a struct of nothing but a `PhantomData<T>`.
+      for (final mixin in of.mixins)
+        if (library[mixin.name] case final m?)
+          for (final f in _allFields(m, {
+            if (mixin.arguments.length == m.typeParameters.length)
+              for (var i = 0; i < mixin.arguments.length; i++)
+                m.typeParameters[i]: _substituteType(mixin.arguments[i], bound)
+            else if (mixin.arguments.isEmpty)
+              for (final p in m.typeParameters) p: const IrType('dynamic'),
+          }))
+            if (!of.fields.any((o) => o.name == f.name)) f,
     ];
     final base = library[of.superclass];
     if (base == null) return own;
@@ -2693,19 +3848,49 @@ class RustBackend {
     // a struct with no `T` -- 32 `cannot find type T`, and every one of them a
     // field this compiler had claimed to translate.
     final passed = of.superclassArguments;
+    // `class _DialogRoute extends PopupRoute` -- no arguments written -- is
+    // `PopupRoute<dynamic>` in Dart. Leaving the base's `T` unbound copied
+    // `Option<T>` fields into a struct with no `T`: 25 `cannot find type T`.
     final next = <String, IrType>{
       if (passed.length == base.typeParameters.length)
         for (var i = 0; i < passed.length; i++)
-          base.typeParameters[i]: _substituteType(passed[i], bound),
+          base.typeParameters[i]: _substituteType(passed[i], bound)
+      else if (passed.isEmpty)
+        for (final p in base.typeParameters) p: const IrType('dynamic'),
     };
-    return [..._allFields(base, next), ...own];
+    // A subclass may redeclare a field the base already has -- Dart lets it
+    // shadow -- and one struct cannot hold two `_color`s (13 `E0124`s). The
+    // nearer declaration is the one the class's own code names, so it wins.
+    final inherited = _allFields(base, next);
+    final ownNames = {for (final f in own) f.name};
+    return [
+      for (final f in inherited)
+        if (!ownNames.contains(f.name)) f,
+      ...own,
+    ];
   }
 
   /// `T` -> whatever `T` was bound to, inside a type and its arguments.
   static IrType _substituteType(IrType t, Map<String, IrType> bound) {
+    // A function type keeps its parameters and result beside `arguments`,
+    // not in it: `FormFieldBuilder<T>` copied into `TextFormField` kept its
+    // `T` -- 25 `cannot find type T`, every one inside a `dyn Fn(..)`.
+    final params = t.parameters;
+    if (params != null) {
+      return IrType.function(
+        [for (final p in params) _substituteType(p, bound)],
+        _substituteType(t.returns!, bound),
+        nullable: t.nullable,
+      );
+    }
     if (t.arguments.isEmpty) {
       final to = bound[t.name];
       if (to == null) return t;
+      // `T?` with `T` bound to `dynamic` is `dynamic`: Dart's `dynamic`
+      // already admits null, and spelling the `?` again made the impl say
+      // `Option<Rc<dyn Object>>` where the trait, bound the same way, said
+      // `Rc<dyn Object>` -- `decodeMessage` on every codec, 16 `E0053`s.
+      if (to.name == 'dynamic') return to;
       // The `?` belongs to the *use*, not to what is put in its place:
       // `ChildType? _child` with `ChildType` bound to `RenderBox` is a
       // `RenderBox?`, and dropping the question mark made the accessor return
@@ -2723,7 +3908,11 @@ class RustBackend {
       // to 278. Saying it properly means the IR carrying nullability as
       // something richer than a flag, which it does not. Until then these 14
       // stay visible and explained rather than turned into a cascade.
-      if (!t.nullable || to.nullable) return to;
+      if (!t.nullable) return to;
+      // Dead code in the first cut: the old collapse (`|| to.nullable`)
+      // returned one line earlier, and r139 still read `Option<T>` where
+      // rustc wanted `Option<Option<..>>`.
+      if (to.nullable) return IrType('Option', arguments: [to]);
       return IrType(to.name, nullable: true, arguments: to.arguments);
     }
     return IrType(
@@ -2740,6 +3929,151 @@ class RustBackend {
   /// this constructor's. That is what flattening means once it reaches storage,
   /// and it recurses, since a base may call `super` in turn -- the chains go six
   /// deep in places.
+  /// A thrown value, boxed into the function's error type when that is
+  /// `Object` and the value is a string -- the tree shaker's "code removed
+  /// by TFA" throws, in statement and in expression position alike.
+  /// A throw, spelled for where it is. Inside a failing method it is the
+  /// `Err` the signature promised. Anywhere else -- a method a trait
+  /// declares (whose signature is the trait's, one for every class), a
+  /// static, a top-level function, a closure -- there is no `Result` to
+  /// carry it, and it is a panic: Dart's exception, uncaught on this side.
+  /// Not a quiet wrong answer; a loud one, at the site. 50 of ws32's 361
+  /// errors were `Result`s meeting signatures that never said so.
+  String _thrown(IrExpr value) => _failure == null
+      ? 'panic!("uncaught Dart exception: {:?}", ${expr(value)})'
+      : 'return Err(${_boxedThrow(value)})';
+
+  /// Whether an abstract class this one is or descends from declares the
+  /// method: its signature is then the trait's, and cannot be widened to
+  /// a `Result` by this class alone.
+  bool _traitDeclares(String dartName) {
+    var found = false;
+    void collect(IrClass c, Set<String> seen) {
+      if (found || !seen.add(c.name)) return;
+      if (c.isAbstract &&
+          (c.methods.any((m) => m.name == dartName) ||
+              c.abstractMethods.any((m) => m.name == dartName))) {
+        found = true;
+        return;
+      }
+      for (final n in _supertypeNames(c)) {
+        final s = library[n];
+        if (s != null) collect(s, seen);
+      }
+    }
+
+    collect(cls, {});
+    return found;
+  }
+
+  /// The error type a method's signature carries, if any: see `_thrown`.
+  String? _failureOf(IrMethod method) =>
+      _traitDeclares(method.name) ? null : _failing[_rustName(method)];
+
+  String _boxedThrow(IrExpr value) {
+    final thrown = expr(value);
+    // ..and any constructed error: a `FormatException` thrown where the
+    // signature says `Rc<dyn Object>` is boxed into it too.
+    final boxed =
+        (_failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>') &&
+        ((value is IrLiteral && value.type.name == 'String') ||
+            value is IrNew ||
+            value is IrConstInstance);
+    return boxed ? 'std::rc::Rc::new($thrown)' : thrown;
+  }
+
+  /// Free functions the prelude provides, which the front end calls by name
+  /// and no library declares: the crate-wide "was it translated" check has
+  /// to know them, or `vec_of_nones(..)` reads as a call to nothing.
+  static const _preludeFunctions = {
+    'never',
+    'new_object',
+    'string_from_char_codes',
+    'vec_of_nones',
+    'dart_iter',
+    'post_event',
+    '_print',
+    '_print_debug',
+    '_schedule_microtask',
+    'object_hash_all',
+    '_invoke1_with_return',
+    '_get_callback_handle',
+    '_get_callback_from_handle',
+    'object_hash',
+    'dart_str',
+    'log',
+    'parse_int',
+    'try_parse_int',
+    'parse_double',
+    'try_parse_double',
+    'schedule_microtask',
+  };
+
+  static const _typedLists = {
+    'Float32List',
+    'Float64List',
+    'Int8List',
+    'Int16List',
+    'Int32List',
+    'Int64List',
+    'Uint8List',
+    'Uint16List',
+    'Uint32List',
+    'Uint64List',
+    'Uint8ClampedList',
+  };
+
+  /// The statements a `super(...)` chain runs before its fields are set --
+  /// the temporaries the CFE binds in a base's initialiser list -- with the
+  /// base's parameters replaced by what this constructor passed, exactly as
+  /// `_inheritedInits` does for the field initialisers. Without them a base
+  /// field init named a `__t0` this constructor never bound.
+  List<IrStmt> _inheritedPre(IrConstructor ctor) {
+    final baseName = ctor.superBase;
+    if (baseName == null) return const [];
+    final base = library[baseName];
+    if (base == null) return const [];
+    final baseCtors = base.constructors
+        .where((c) => c.name == ctor.superName)
+        .toList();
+    if (baseCtors.length != 1) return const [];
+    final baseCtor = baseCtors.single;
+    if (baseCtor.params.length != ctor.superArgs.length) return const [];
+    final substitution = <String, IrExpr>{
+      for (var i = 0; i < baseCtor.params.length; i++)
+        baseCtor.params[i].name: ctor.superArgs[i],
+      ..._baseTempRenames(base, baseCtor),
+    };
+    return [
+      ..._inheritedPre(baseCtor),
+      for (final s in baseCtor.pre)
+        if (s is IrLocalDecl)
+          IrLocalDecl(
+            _baseTempName(base, s.name),
+            s.type,
+            s.init == null ? null : _substitute(s.init!, substitution),
+          )
+        else
+          s,
+    ];
+  }
+
+  /// A base constructor's temporaries, renamed for the constructor they are
+  /// inlined into. Each library numbers its own `__tN`, so a base in another
+  /// library and the subclass both have a `__t0` -- and the subclass passes
+  /// its `__t0` as the super argument the base's `__t0` is computed from:
+  /// `let __t0 = __t0.to_int()`, 9 times.
+  static String _baseTempName(IrClass base, String name) =>
+      '${snakeRaw(base.name)}_$name';
+
+  static Map<String, IrExpr> _baseTempRenames(
+    IrClass base,
+    IrConstructor ctor,
+  ) => {
+    for (final s in ctor.pre)
+      if (s is IrLocalDecl) s.name: IrLocal(_baseTempName(base, s.name)),
+  };
+
   Map<String, IrExpr> _inheritedInits(IrConstructor ctor) {
     final baseName = ctor.superBase;
     if (baseName == null) return const {};
@@ -2750,7 +4084,9 @@ class RustBackend {
         'super(...)',
       );
     }
-    final baseCtors = base.constructors.where((c) => c.name == null).toList();
+    final baseCtors = base.constructors
+        .where((c) => c.name == ctor.superName)
+        .toList();
     if (baseCtors.length != 1) {
       throw Unsupported(
         'super constructor call into `$baseName`, which has '
@@ -2769,6 +4105,7 @@ class RustBackend {
     final substitution = <String, IrExpr>{
       for (var i = 0; i < baseCtor.params.length; i++)
         baseCtor.params[i].name: ctor.superArgs[i],
+      ..._baseTempRenames(base, baseCtor),
     };
     return {
       // The base's own inherited initialisers first, so a chain resolves from
@@ -2788,10 +4125,13 @@ class RustBackend {
     IrExpr go(IrExpr node) => _substitute(node, by);
     return switch (e) {
       IrLocal(:final name) => by[name] ?? e,
-      IrField(:final target, :final name) => IrField(
-        target == null ? null : go(target),
-        name,
-      ),
+      IrField(:final target, :final name, :final onEnum, :final owner) =>
+        IrField(
+          target == null ? null : go(target),
+          name,
+          onEnum: onEnum,
+          owner: owner,
+        ),
       IrBinary(:final op, :final left, :final right, :final type) => IrBinary(
         op,
         go(left),
@@ -2800,6 +4140,9 @@ class RustBackend {
       ),
       IrUnary(:final op, :final operand) => IrUnary(op, go(operand)),
       IrNullCheck(:final operand) => IrNullCheck(go(operand)),
+      IrDowncast(:final target, :final type) => IrDowncast(go(target), type),
+      IrSome(:final value) => IrSome(go(value)),
+      IrCast(:final value, :final rust) => IrCast(go(value), rust),
       IrIsNull(:final operand) => IrIsNull(go(operand)),
       IrIfNull(
         :final left,
@@ -2813,9 +4156,10 @@ class RustBackend {
           nullableResult: nullableResult,
           eager: eager,
         ),
-      IrNullAware(:final receiver, :final body) => IrNullAware(
+      IrNullAware(:final receiver, :final body, :final flatten) => IrNullAware(
         go(receiver),
         go(body),
+        flatten: flatten,
       ),
       IrCall(:final target, :final name, :final args) => IrCall(
         target == null ? null : go(target),
@@ -2850,7 +4194,16 @@ class RustBackend {
         args.map(go).toList(),
       ),
       IrBlockValue(:final statements, :final value) => IrBlockValue(
-        statements,
+        // The bindings too: a base constructor's `errorPalette ??
+        // TonalPalette.of(..)` is `let __t = error_palette; ..`, and the
+        // parameter it names is the subclass's super argument (9).
+        [
+          for (final s in statements)
+            if (s is IrLocalDecl)
+              IrLocalDecl(s.name, s.type, s.init == null ? null : go(s.init!))
+            else
+              s,
+        ],
         go(value),
       ),
       IrConstInstance(:final type, :final fields) => IrConstInstance(type, {
@@ -2915,7 +4268,23 @@ class RustBackend {
   /// to see more than a file at a time, which is the same wall the stubs are at.
   late final Map<String, String> _failing = _computeFailing();
 
+  /// Whether a method that throws carries a `Result` in its signature.
+  ///
+  /// Off since 2026-09-04. The propagation was never modular: a `Result`
+  /// on a method is visible to callers on `this` (which add `?`) and to
+  /// nobody else -- a getter read through another object, a trait's
+  /// declaration, a closure, a static -- and every one of those was a
+  /// type error at the caller (ws59: `Rc<Image> <= Result<Rc<Image>,
+  /// StateError>` on `_image`, 15 such in dart:ui alone). Without it a
+  /// `throw` is a panic (`_thrown`), except inside a `try` body, where the
+  /// flow closure still turns it into the `Err` the handler catches. What
+  /// is lost: an exception thrown *by a callee* inside a `try` panics
+  /// instead of being caught. That is a loud loss, at the site, and the
+  /// runtime will say so; the quiet one was a signature nobody could see.
+  static const _resultModel = false;
+
   Map<String, String> _computeFailing() {
+    if (!_resultModel) return const {};
     final failing = <String, String>{};
     final calls = <String, Set<String>>{};
     for (final method in cls.methods) {
@@ -2931,9 +4300,29 @@ class RustBackend {
       for (final entry in calls.entries) {
         if (failing.containsKey(entry.key)) continue;
         for (final callee in entry.value) {
-          final error = failing[callee];
+          // `_WalkSelf` records the Dart name; the keys are Rust names.
+          // Compared raw, `setFromTranslationRotation` never matched
+          // `set_from_translation_rotation`, and neither contagion --
+          // this one nor `_computeMutating`'s -- ever crossed a camelCase
+          // call. The 16 E0596s that survived every receiver rule were this.
+          final error = failing[snake(callee)];
           if (error != null) {
             failing[entry.key] = error;
+            changed = true;
+            break;
+          }
+        }
+      }
+      // A method that throws its own type and calls one failing with
+      // another cannot carry both in one `Result`: it carries `Object`, the
+      // type every Dart throw already has (5 "couldn't convert the error").
+      for (final entry in calls.entries) {
+        final own = failing[entry.key];
+        if (own == null || own == 'Object') continue;
+        for (final callee in entry.value) {
+          final other = failing[snake(callee)];
+          if (other != null && other != own) {
+            failing[entry.key] = 'Object';
             changed = true;
             break;
           }
@@ -2996,6 +4385,10 @@ class RustBackend {
     IrBlock(:final statements) => statements.any(_alwaysReturns),
     IrIf(:final then, :final otherwise) =>
       otherwise != null && _alwaysReturns(then) && _alwaysReturns(otherwise),
+    IrSwitch(:final cases, :final otherwise) =>
+      otherwise != null &&
+          _alwaysReturns(otherwise) &&
+          cases.every((c) => _alwaysReturns(c.body)),
     IrTryCatch(:final body, :final handler) =>
       _alwaysReturns(body) && _alwaysReturns(handler),
     IrTryFinally(:final body, :final finalizer) =>
@@ -3012,7 +4405,8 @@ class RustBackend {
     final found = _WalkSelf();
     found.statement(body);
     for (final name in found.selfCalls) {
-      final error = _failing[name];
+      if (_traitDeclares(name)) continue;
+      final error = _failing[snake(name)];
       if (error != null) return error;
     }
     return null;
@@ -3035,7 +4429,7 @@ class RustBackend {
 
   /// A method's return type, wrapped when it can fail.
   String _returnType(IrMethod method) {
-    final error = _failing[_rustName(method)];
+    final error = _failureOf(method);
     // A Rust `async fn` returning `T` already is a future, so the `Future<T>`
     // Dart declared is the wrapper, not the value: `Future<void> f() async`
     // is `async fn f()`, and writing the wrapper as well would make it a
@@ -3043,11 +4437,33 @@ class RustBackend {
     final declared = method.isAsync
         ? _awaited(method.returnType)
         : method.returnType;
-    final value = method.isSetter ? '()' : type(declared);
+    final value = method.isSetter
+        ? '()'
+        : type(declared) == 'std::convert::Infallible'
+        ? '!'
+        : type(declared);
     // The error type goes through `type()` like any other: an abstract one --
     // `Object` is the commonest, since a `throw` with no declared type lands
     // there -- is a trait, and a trait is not a type. `Box<dyn Object>` is.
     return error == null ? value : 'Result<$value, ${type(IrType(error))}>';
+  }
+
+  /// A boxed future in return position may borrow the receiver: `+ '_`.
+  /// A trait's async method is `fn f(&self) -> Pin<Box<dyn Future<..> +
+  /// '_>>`, the manual spelling of `async fn` in a trait, and the default
+  /// that boxes `super_fn(self, ..)` needs exactly that lifetime.
+  /// A return type as a signature spells it: `!` for `Never` (the general
+  /// spelling `Infallible` is for value positions), and a boxed future's
+  /// receiver lifetime.
+  static String _spelledReturn(String rendered) =>
+      rendered == 'std::convert::Infallible' ? '!' : _lifetimed(rendered);
+
+  static String _lifetimed(String rendered) {
+    const prefix =
+        'std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ';
+    if (!rendered.startsWith(prefix) || !rendered.endsWith('>>'))
+      return rendered;
+    return "${rendered.substring(0, rendered.length - 2)} + '_>>";
   }
 
   /// `Future<T>` -> `T`; anything else unchanged.
@@ -3066,7 +4482,12 @@ class RustBackend {
       '${type(p.type, owned: owned || (p.kept && p.type.isFunction))}';
 
   String _params(IrMethod method) => [
-    if (!method.isStatic) '&self',
+    // A trait method is `&mut self` when any implementer writes a field in
+    // it; see `_receiverOf`. This is the trait's own declaration.
+    // Not the trait's own default body writing a field: that write goes
+    // through the setter the trait declares (`set_x(&self, ..)`), since the
+    // implementers of a writing trait are counted.
+    if (!method.isStatic) _sharedMutation(method) ? '&mut self' : '&self',
     // A parameter is borrowed, not owned: passing a `Box<dyn Trait>` in
     // would move it, and upstream's callers do not give theirs away.
     ...method.params.map((p) => _param(p, owned: false)),
@@ -3086,8 +4507,48 @@ class RustBackend {
     // is not `Copy` however copyable the value inside it is. Asking the Dart
     // type instead derived `Copy` for a struct that cannot have it.
     final copyable = _allFields(cls).every((f) => _isCopy(_fieldType(f)));
-    _line('#[derive(Clone, ${copyable ? 'Copy, ' : ''}Debug, PartialEq)]');
-    _line('${_vis(cls.name)}struct ${cls.name}${_generics(cls)} {');
+    // `Debug` and `PartialEq` cannot be derived over a function-typed field
+    // (a `dyn Fn` is neither), and a struct holding one got 15 `E0369`s and
+    // 14 `E0277`s for the derive alone. Left off there: a `==` on such a
+    // class is then an error at the use, which says what it is.
+    // Nested too: a `Vec<Option<Rc<dyn Fn()>>>` field cannot be printed.
+    final printable = _allFields(cls)
+        .every((f) => !f.type.isFunction && !_fieldType(f).contains('dyn Fn'));
+    // A trait-object field compares by identity, and a derived `PartialEq`
+    // cannot say so: `self.f == other.f` on an `Rc<dyn Object>` moved the
+    // right-hand side (E0507, rustc 1.98 -- reproduced on four lines). The
+    // `impl` is written out below instead, field by field, with the
+    // prelude's `dart_eq` on those.
+    // ..and a counted class's handle: `Rc<DynamicColor>` compares by
+    // identity too, which is what Dart says of two references.
+    // The field *is* a handle -- `Rc<..>`, or an `Option`/`Vec` of one --
+    // not a struct that merely holds one somewhere in its type arguments
+    // (`MapEquality<K, V>` compares by value).
+    final handle = RegExp(r'^(Option<|Vec<)*std::rc::Rc<');
+    // A closure field too: `PointerData._onRespond` is an `Rc<dyn Fn>`,
+    // which `DartEq` compares by address as Dart compares closures. Left
+    // out, the struct had no `PartialEq` at all and nothing generic over
+    // it could be called (`_invoke1<PointerDataPacket>`).
+    final byIdentity = _allFields(cls)
+        .where((f) => f.type.isFunction || handle.hasMatch(_fieldType(f)))
+        .toList();
+    // ..and every field's own class comparable, recursively: a
+    // `VecDeque<_StoredMessage>` of a struct holding a closure derives
+    // nothing (`==` cannot be applied, 3).
+    final comparable =
+        printable &&
+        byIdentity.isEmpty &&
+        _allFields(cls)
+            .every((f) => _comparableType(_fieldType(f), {cls.name}));
+    _line(
+      '#[derive(Clone, ${copyable ? 'Copy, ' : ''}'
+      '${printable ? 'Debug' : ''}${comparable ? ', PartialEq' : ''})]',
+    );
+    // `'static` on the struct: an `Rc<dyn Equality<Option<E>>>` field needs
+    // its `E` to outlive the trait object (8 E0310s in `collection`).
+    _line(
+      '${_vis(cls.name)}struct ${cls.name}${_generics(cls, static: true)} {',
+    );
     _indent++;
     for (final field in _allFields(cls)) {
       _doc(field.doc);
@@ -3105,8 +4566,50 @@ class RustBackend {
     _indent--;
     _line('}');
     _line('');
+    // A struct holding a closure still has to print -- `Rc<DynamicColor>`
+    // in a struct that derives `Debug` -- so it prints as its class.
+    if (!printable) {
+      _line(
+        'impl${_implGenerics(cls)} std::fmt::Debug for ${cls.name}${_generics(cls)} {',
+      );
+      _indent++;
+      _line(
+        "fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {",
+      );
+      _indent++;
+      _line('write!(f, "Instance of \'${cls.name}\'")');
+      _indent--;
+      _line('}');
+      _indent--;
+      _line('}');
+    }
+    if (byIdentity.isNotEmpty) {
+      final bounds = cls.typeParameters.isEmpty
+          ? ''
+          : ' where ${cls.typeParameters.map((p) => '$p: PartialEq').join(', ')}';
+      _line(
+        'impl${_implGenerics(cls)} PartialEq for ${cls.name}${_generics(cls)}$bounds {',
+      );
+      _indent++;
+      // By name: `_allFields` builds its list afresh each call, so the
+      // `IrField`s are not the same objects (`source` came out as `==`).
+      final identityNames = byIdentity.map((f) => f.name).toSet();
+      final terms = [
+        for (final f in _allFields(cls))
+          identityNames.contains(f.name)
+              ? 'self.${snake(f.name)}.dart_eq(&other.${snake(f.name)})'
+              : 'self.${snake(f.name)} == other.${snake(f.name)}',
+      ];
+      _line(
+        'fn eq(&self, other: &Self) -> bool { '
+        '${terms.isEmpty ? 'true' : terms.join(' && ')} }',
+      );
+      _indent--;
+      _line('}');
+      _line('');
+    }
 
-    _line('impl${_generics(cls)} ${cls.name}${_generics(cls)} {');
+    _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
     _indent++;
     _emitConstructors();
     _emitConstants();
@@ -3124,6 +4627,11 @@ class RustBackend {
     _line('fn as_any(&self) -> &dyn std::any::Any {');
     _indent++;
     _line('self');
+    _indent--;
+    _line('}');
+    _line('fn dart_runtime_type(&self) -> Type {');
+    _indent++;
+    _line('Type { name: "${cls.name}" }');
     _indent--;
     _line('}');
     _indent--;
@@ -3171,8 +4679,18 @@ class RustBackend {
   /// them.
   List<IrClass> _abstractAncestors(IrClass of) {
     final found = <String, IrClass>{};
+    // Bases are reached by **name**, and `library[...]` resolves a name against
+    // this module and then the rest of the crate -- where two libraries are
+    // allowed to declare the same one. `NetworkImage` in `image_provider.dart`
+    // is abstract and hands its construction to a `NetworkImage` in
+    // `_network_image_io.dart`, which implements it; `BitField` does the same.
+    // Under a name lookup the second reaches the first, which is the second,
+    // and the walk recursed until the stack ended. `seen` is what stops it --
+    // and it earns its keep on plain diamonds too, where an ancestor was
+    // re-walked once per path that reached it.
+    final seen = <IrClass>{};
     void climb(IrClass? from) {
-      if (from == null) return;
+      if (from == null || !seen.add(from)) return;
       for (final name in [
         from.superclass,
         ...from.mixins.map((m) => m.name),
@@ -3182,6 +4700,10 @@ class RustBackend {
       ]) {
         final above = library[name];
         if (above == null) continue;
+        // A class is not its own ancestor. Had the recursion above not ended
+        // the run, this is what the same name collision would have emitted:
+        // `impl NetworkImage for NetworkImage`.
+        if (identical(above, from) || identical(above, of)) continue;
         if (above.isAbstract) found.putIfAbsent(above.name, () => above);
         climb(above);
       }
@@ -3220,14 +4742,20 @@ class RustBackend {
       // with whatever this step has already bound substituted in.
       for (final mixin in [...current.mixins, ...current.interfaces]) {
         if (mixin.name != base.name) continue;
-        final passed = [for (final a in mixin.arguments) bound[a.name] ?? a];
+        // Substituted *inside* the argument, not only when the argument is a
+        // bare parameter: `FormFieldState<T> extends State<FormField<T>>`
+        // passes `FormField<T>`, and `bound[a.name]` left that `T` standing --
+        // 28 `E0747`s reading it as a constant.
+        final passed = [
+          for (final a in mixin.arguments) _substituteType(a, bound),
+        ];
         if (passed.length != base.typeParameters.length) return null;
         return passed;
       }
       final next = library[current.superclass];
       if (next == null) return null;
       final passed = [
-        for (final a in current.superclassArguments) bound[a.name] ?? a,
+        for (final a in current.superclassArguments) _substituteType(a, bound),
       ];
       if (next.name == base.name) {
         if (passed.length != base.typeParameters.length) return null;
@@ -3302,7 +4830,7 @@ class RustBackend {
     // is the commonest shape in the widget layer, so leaving the bound off
     // here was 620 `E0310` in one go.
     _line(
-      'impl${_generics(cls, static: true)} ${base.name}$arguments for '
+      'impl${_implGenerics(cls)} ${base.name}$arguments for '
       '${cls.name}${_generics(cls)} {',
     );
     _indent++;
@@ -3322,8 +4850,19 @@ class RustBackend {
     final held = {for (final f in _allFields(cls)) f.name};
     for (final field in accessors) {
       if (taken.contains(snake(field.name))) continue;
+      // Cloned out: the accessor returns a value and the field is behind
+      // `&self` -- `fn _buffer(&self) -> Vec<i64> { self._buffer }` moved it.
+      // ..and through the cell when the field is in one (a counted class):
+      // `self.parent.clone()` handed out the `Rc<RefCell<..>>` itself.
+      final cell = _sharedField(field.name);
       final reads = held.contains(field.name)
-          ? 'self.${snake(field.name)}'
+          ? (cell != null
+                ? (_isCopy(_heldType(cell))
+                      ? 'self.${snake(field.name)}.get()'
+                      : 'self.${snake(field.name)}.borrow().clone()')
+                : _isCopy(type(_substituteType(field.type, _implBinding)))
+                ? 'self.${snake(field.name)}'
+                : 'self.${snake(field.name)}.clone()')
           : cls.methods.any((m) => m.name == field.name && !m.isStatic)
           ? 'self.${snake(field.name)}()'
           : null;
@@ -3342,15 +4881,39 @@ class RustBackend {
       // going through the mixin's own trait, which is a round of its own.
       final body =
           reads ?? 'todo!("${cls.name} does not translate ${field.name} yet")';
-      _line(
-        'fn ${snake(field.name)}(&self) -> '
-        '${type(_substituteType(field.type, _implBinding))} {',
-      );
+      final substituted = _substituteType(field.type, _implBinding);
+      _line('fn ${snake(field.name)}(&self) -> ${type(substituted)} {');
       _indent++;
-      _line(body);
+      // The field holds one `Option`; a trait asking for the doubled one
+      // gets it wrapped.
+      _line(
+        substituted.name == 'Option' && reads != null ? 'Some($body)' : body,
+      );
       _indent--;
       _line('}');
       _line('');
+      // The setter the trait asks for on a mutable field (see `_emitTrait`).
+      if (!field.isFinal && held.contains(field.name)) {
+        final cell = _sharedField(field.name);
+        _line(
+          'fn set_${snake(field.name)}(&self, value: ${type(substituted)}) {',
+        );
+        _indent++;
+        if (cell != null) {
+          _line(
+            _isCopy(_heldType(cell))
+                ? 'self.${snake(field.name)}.set(value);'
+                : '*self.${snake(field.name)}.borrow_mut() = value;',
+          );
+        } else {
+          _line(
+            'todo!("${cls.name}.${field.name} is written through a trait but is not a cell")',
+          );
+        }
+        _indent--;
+        _line('}');
+        _line('');
+      }
     }
     for (final need in required) {
       _member(
@@ -3378,9 +4941,19 @@ class RustBackend {
     {
       _refuseShadowedGeneric(need);
       final have = _matching(need);
-      final returns = type(_substituteType(need.returnType, _implBinding));
+      // Rust does not collapse `Option<Option<X>>` the way Dart collapses
+      // `T?` for a nullable `T`: `MessageCodec<Object?>.decodeMessage` is
+      // `-> Option<T>` in the trait and the impl must say `Option<Option<..>>`
+      // -- 16 `E0053`s, the "14 members" `_substituteType`'s comment gave up
+      // on. Spelled out here, with the body wrapped to match below.
+      final returns = _spelledReturn(
+        type(_substituteType(need.returnType, _implBinding)),
+      );
       final params = [
-        if (!need.isStatic) '&self',
+        // The forwarder's receiver is the trait's: `&mut self` when any
+        // implementer writes in this method, or `ChangeNotifier::
+        // add_listener(self, ..)` under `&self` is a mutability mismatch.
+        if (!need.isStatic) _sharedMutation(need) ? '&mut self' : '&self',
         ...need.params.map((p) {
           // A parameter whose type *is* one of the base's type parameters has
           // to be written the way the impl header wrote that parameter, which
@@ -3420,7 +4993,17 @@ class RustBackend {
       } else {
         final call = _inherentCall(have, need);
         final concrete = type(have.returnType);
-        _line(concrete == returns ? call : 'Box::new($call)');
+        // One `Option` short -- the override narrowed `T?` to `T`, which Dart
+        // allows, or the trait's `T?` doubled up above -- is a `Some`.
+        // The trait's future carries `+ '_` (see `_lifetimed`); the
+        // inherent one is the same future without the spelling.
+        _line(
+          concrete == returns || _lifetimed(concrete) == returns
+              ? call
+              : returns == 'Option<$concrete>'
+              ? 'Some($call)'
+              : 'Box::new($call)',
+        );
       }
       _indent--;
       _line('}');
@@ -3476,13 +5059,42 @@ class RustBackend {
       if (through == null) return snake(p.name);
       final supplied = p.named ? named!.contains(p.name) : at < positional;
       if (supplied) {
-        return snake(
-          p.named
-              ? p.name
-              : through.params.where((q) => !q.named).elementAt(at).name,
-        );
+        final from = p.named
+            ? through.params.firstWhere((q) => q.named && q.name == p.name)
+            : through.params.where((q) => !q.named).elementAt(at);
+        // A trait parameter doubled to `Option<Option<..>>` arrives one
+        // `Option` deeper than the inherent method takes it.
+        final doubled =
+            _substituteType(from.type, _implBinding).name == 'Option';
+        final passed = '${snake(from.name)}${doubled ? '.flatten()' : ''}';
+        // Dart lets an override *widen* a parameter: `Equality<E>.equals(E,
+        // E)` is implemented by `equals(Object? e1, Object? e2)`. The trait's
+        // `E` arrives here and the inherent method wants the wider type, so
+        // it is shared into `Rc<dyn Object>` (and `Some`d) on the way in.
+        final traitType = _substituteType(from.type, _implBinding);
+        final wider = p.type.name == 'Object' || p.type.name == 'dynamic';
+        final narrowerGiven =
+            traitType.name != 'Object' && traitType.name != 'dynamic';
+        if (wider && narrowerGiven) {
+          final shared = traitType.nullable || traitType.name == 'Option'
+              ? '$passed.map(|v| std::rc::Rc::new(v) as std::rc::Rc<dyn Object>)'
+              : '(std::rc::Rc::new($passed) as std::rc::Rc<dyn Object>)';
+          return p.type.nullable &&
+                  !(traitType.nullable || traitType.name == 'Option')
+              ? 'Some($shared)'
+              : shared;
+        }
+        if (p.type.nullable &&
+            !traitType.nullable &&
+            traitType.name != 'Option') {
+          return 'Some($passed)';
+        }
+        return passed;
       }
-      if (p.type.nullable || p.hasDefault) return 'None';
+      // The override's own default is the value the base "has no value for".
+      final fallback = p.defaultValue;
+      if (fallback != null) return expr(fallback);
+      if (p.type.nullable) return 'None';
       throw Unsupported(
         'override widens `${method.name}` with `${p.name}`, '
             'which the base has no value for',
@@ -3500,7 +5112,10 @@ class RustBackend {
     // recursion the moment the inherent one is not emitted. The explicit path
     // says which one is meant.
     final name = op == null ? snake(method.name) : _operatorName(op);
-    return '${cls.name}::$name(${['self', ...args].join(', ')})';
+    final call = '${cls.name}::$name(${['self', ...args].join(', ')})';
+    // An `async fn` yields its own future type; the trait wants the boxed
+    // one every `Future<T>` is here (`_NativeCodec::get_next_frame(self)`).
+    return method.isAsync ? 'std::boxed::Box::pin($call)' : call;
   }
 
   void _emitConstructors() {
@@ -3540,7 +5155,20 @@ class RustBackend {
     // fields uncompilable. The two rounds' rules only met on real code.
     // A constructor with a body cannot be `const`: it builds the value into a
     // local and runs statements against it, and a `const fn` may not.
-    final constness = ctor.isConst && ctor.body == null ? 'const ' : '';
+    // ..and one whose parameters are not all `Copy`: a `String` field is
+    // initialised with `string.clone()` now, and a `const fn` may not call
+    // it (E0015, 53 of them the round the clones arrived). The `static
+    // const`s that needed `const fn` hold `Copy` values -- `Offset`,
+    // `TextAlignVertical` -- and keep it.
+    // ..nor one whose field initialisers clone -- `Color`, a `Copy` struct
+    // the front end could not know is one, arrives as `color.clone()`.
+    final constness =
+        ctor.isConst &&
+            ctor.body == null &&
+            ctor.params.every((p) => _isCopy(type(p.type))) &&
+            !ctor.fieldInits.values.any((e) => expr(e).contains('.clone()'))
+        ? 'const '
+        : '';
     // A counted class hands out a handle, not a value: everything that
     // holds one holds an `Rc`, so the constructor is where the first one is
     // made. A `const fn` cannot allocate, so a counted constructor is not one.
@@ -3550,6 +5178,22 @@ class RustBackend {
       '${cls.counted ? '' : constness}fn $name($params) -> $produces {',
     );
     _indent++;
+    // This constructor's own temporaries first -- a `super(#t0)` passes them
+    // -- and only then the base's, computed from them.
+    for (final s in [...ctor.pre, ..._inheritedPre(ctor)]) {
+      stmt(s);
+    }
+    final redirect = ctor.redirectTo;
+    if (redirect != null) {
+      // Everything this constructor does is hand its arguments to another one
+      // of the same class. `Self::` because it is the same class; `_ctorName`
+      // because the unnamed one is `new` here as it is above.
+      final args = ctor.redirectArgs.map(expr).join(', ');
+      _line('Self::${_ctorName(redirect.isEmpty ? null : redirect)}($args)');
+      _indent--;
+      _line('}');
+      return;
+    }
     for (final check in ctor.asserts) {
       stmt(check);
     }
@@ -3557,13 +5201,36 @@ class RustBackend {
     // The handle is made around the value: a counted class's constructor is
     // the one place an `Rc` comes from, and everything that holds one after
     // that holds the handle.
+    // A `late` field whose initialiser mentions `this` -- `late final
+    // nativeFilter = _ImageFilter.matrix(this)` -- starts absent in the
+    // literal and is written right after it, when `__new` exists to be
+    // named. Not a `late` one: it has no absence to start from, and stays
+    // refused below.
+    final deferred = <String, IrExpr>{
+      for (final field in _allFields(cls))
+        if (field.isLate &&
+            (inits[field.name] ?? field.initial) != null &&
+            _mentionsThis((inits[field.name] ?? field.initial)!))
+          field.name: (inits[field.name] ?? field.initial)!,
+    };
+    final built = ctor.body != null || deferred.isNotEmpty;
     _line(
-      ctor.body == null
+      !built
           ? (cls.counted ? 'std::rc::Rc::new(Self {' : 'Self {')
           : 'let mut __new = Self {',
     );
     _indent++;
     for (final field in _allFields(cls)) {
+      if (deferred.containsKey(field.name)) {
+        _line(
+          _inCell(field)
+              ? '${snake(field.name)}: std::rc::Rc::new(std::cell::'
+                    '${_isCopy(_heldType(field)) ? 'Cell' : 'RefCell'}'
+                    '::new(None)),'
+              : '${snake(field.name)}: None,',
+        );
+        continue;
+      }
       // The constructor first, then the declaration's own value: Dart applies
       // the latter only where the former says nothing.
       var init = inits[field.name] ?? field.initial;
@@ -3601,11 +5268,18 @@ class RustBackend {
         );
       }
       final held = type(field.type);
+      // A closure literal into a field of function type is an `Rc<dyn Fn>`
+      // there, as a constant's is (see the statics): `DateFormat
+      // .dateTimeConstructor` took a bare closure where the field's type
+      // named the trait object.
+      final value = field.type.isFunction && init is IrClosure && !init.boxed
+          ? 'std::rc::Rc::new(${expr(init)})'
+          : expr(init);
       _line(
         _inCell(field)
             ? '${snake(field.name)}: std::rc::Rc::new(std::cell::'
-                  '${_isCopy(held) ? 'Cell' : 'RefCell'}::new(${expr(init)})),'
-            : '${snake(field.name)}: ${expr(init)},',
+                  '${_isCopy(held) ? 'Cell' : 'RefCell'}::new($value)),'
+            : '${snake(field.name)}: $value,',
       );
     }
     // The phantom fields the struct declaration added. They hold nothing, and
@@ -3616,7 +5290,7 @@ class RustBackend {
     }
     _indent--;
     final body = ctor.body;
-    if (body == null) {
+    if (!built) {
       _line(cls.counted ? '})' : '}');
     } else {
       _line('};');
@@ -3625,7 +5299,18 @@ class RustBackend {
       // uses, so the body's `this.x = v` comes out as `__new.x = v`.
       final saved = _selfName;
       _selfName = '__new';
-      stmt(body);
+      for (final entry in deferred.entries) {
+        final field = _allFields(cls).firstWhere((f) => f.name == entry.key);
+        final value = 'Some(${expr(entry.value)})';
+        _line(
+          _inCell(field)
+              ? (_isCopy(_heldType(field))
+                    ? '__new.${snake(field.name)}.set($value);'
+                    : '*__new.${snake(field.name)}.borrow_mut() = $value;')
+              : '__new.${snake(field.name)} = $value;',
+        );
+      }
+      if (body != null) stmt(body);
       _selfName = saved;
       _line(cls.counted ? 'std::rc::Rc::new(__new)' : '__new');
     }
@@ -3649,27 +5334,37 @@ class RustBackend {
         // was 94 `E0277`s. See the prelude for what the wrapper's `unsafe`
         // claims and when it stops being true.
         _doc(constant.doc);
+        // Assignable, so a `RefCell` inside the `Isolate`: the same cell a
+        // mutable top-level gets, read with `borrow` and written with
+        // `borrow_mut` in `IrAssignStatic`.
+        final cell = constant.isMutable ? 'std::cell::RefCell<$held>' : held;
+        final made = constant.isMutable
+            ? 'std::cell::RefCell::new(${constant.value is IrClosure && !(constant.value as IrClosure).boxed ? 'std::rc::Rc::new(${expr(constant.value)})' : expr(constant.value)})'
+            : expr(constant.value);
         _line(
           '${_vis(constant.name)}static ${_lazyName(cls.name, constant.name)}: '
-          'std::sync::LazyLock<Isolate<$held>> = '
-          'std::sync::LazyLock::new(|| Isolate(${expr(constant.value)}));',
+          'std::sync::LazyLock<Isolate<$cell>> = '
+          'std::sync::LazyLock::new(|| Isolate($made));',
         );
         _line('');
       });
     }
   }
 
-  void _emitConstants() {
+  void _emitConstants({String? prefix}) {
     for (final constant in cls.constants) {
       if (constant.isLazy) continue;
       // Each constant on its own: one that cannot be built is one constant
       // missing, not a class.
-      _member('${cls.name}.${constant.name}', () => _emitConstant(constant));
+      _member(
+        '${cls.name}.${constant.name}',
+        () => _emitConstant(constant, prefix: prefix),
+      );
     }
     if (cls.constants.isNotEmpty) _line('');
   }
 
-  void _emitConstant(IrConstDecl constant) {
+  void _emitConstant(IrConstDecl constant, {String? prefix}) {
     if (!_constable(type(constant.type))) {
       throw Unsupported(
         'a `const` cannot hold a collection',
@@ -3677,8 +5372,11 @@ class RustBackend {
       );
     }
     _doc(constant.doc);
+    final spelled = prefix == null
+        ? screamingSnake(constant.name)
+        : screamingSnake('${prefix}_${constant.name}');
     _line(
-      '${_vis(constant.name)}const ${screamingSnake(constant.name)}: '
+      '${_vis(constant.name)}const $spelled: '
       '${type(constant.type)} = ${expr(constant.value)};',
     );
   }
@@ -3688,9 +5386,47 @@ class RustBackend {
       if (method.operator != null) continue;
       _member('${cls.name}.${method.name}', () => _emitMethod(method));
     }
+    // A concrete superclass's methods, on the subclass: `ValueNotifier
+    // extends ChangeNotifier` has `ChangeNotifier`'s fields (flattened in)
+    // and, in Dart, its methods -- `notifyListeners()` from `set value`. A
+    // struct inherits nothing, so the body is emitted again here, over the
+    // same field names. Only for an ancestor without type parameters (its
+    // `T` is not this class's) and not overridden here.
+    final have = <String>{
+      for (final m in cls.methods) m.name,
+      for (final f in _allFields(cls)) f.name,
+    };
+    for (final ancestor in _concreteAncestors()) {
+      for (final method in ancestor.methods) {
+        if (method.operator != null || method.isStatic) continue;
+        // Nearest first: a name already seen is overridden below this one.
+        if (!have.add(method.name)) continue;
+        _member(
+          '${cls.name}.${method.name} (from ${ancestor.name})',
+          () => _emitMethod(method),
+        );
+      }
+    }
   }
 
-  void _emitMethod(IrMethod method) {
+  /// The `extends` chain above this class, nearest first: the concrete,
+  /// non-generic classes of this library whose methods a struct has to
+  /// carry itself.
+  List<IrClass> _concreteAncestors() {
+    final out = <IrClass>[];
+    var name = cls.superclass;
+    final seen = <String>{cls.name};
+    while (name != null && seen.add(name)) {
+      final ancestor = library[name];
+      if (ancestor == null || ancestor.isAbstract || ancestor.isEnum) break;
+      if (_generics(ancestor).isNotEmpty) break;
+      out.add(ancestor);
+      name = ancestor.superclass;
+    }
+    return out;
+  }
+
+  void _emitMethod(IrMethod method, {String? as}) {
     {
       // Before the signature: whether a parameter needs `mut` is decided by the
       // body, and the signature is written first.
@@ -3707,7 +5443,7 @@ class RustBackend {
       // A setter returns nothing: Dart's `set x(v)` has no return type, and
       // giving one a value would make `a.x = 1` an expression, which it is not.
       final returns = _returnType(method);
-      _failure = _failing[_rustName(method)];
+      _failure = _failureOf(method);
       _rustReturns = returns;
       _referenceParams = {
         for (final p in method.params)
@@ -3717,7 +5453,7 @@ class RustBackend {
           // rule that consulted `library.isAbstract` missed all 251 of them
           // while `&dyn Object` was sitting in the signature. The same shape
           // as `_isCopy` two rounds ago: the ruler and its name disagreed.
-          if (type(p.type, owned: false).startsWith('&dyn '))
+          if (type(p.type, owned: false).startsWith('std::rc::Rc<dyn '))
             p.name: snake(p.name)
           // A counted class is an `Rc<Foo>` by value. The handle is not the
           // object, so the object is what gets asked.
@@ -3726,17 +5462,51 @@ class RustBackend {
       };
       _line(
         '${_vis(method.name)}${method.isAsync ? "async " : ""}fn '
-        '${_rustName(method)}${_generics(method)}($params) -> $returns {',
+        '${as ?? _rustName(method)}${_generics(method)}($params) -> $returns {',
       );
       _indent++;
       _returns = method.returnType;
-      stmt(method.body, tail: true);
+      _asyncBody = method.isAsync;
+      // A failing `void` method that falls off its end still has to
+      // produce its `Ok(())`: `_validateColorStops` ends in an `if`/`else`
+      // that only ever returns `Err`, and the value of that `if` is `()`.
+      final fallsOff =
+          _failure != null &&
+          type(method.returnType) == '()' &&
+          !_alwaysReturns(method.body);
+      stmt(method.body, tail: !fallsOff);
+      if (fallsOff) _line('Ok(())');
+      // `TileMode` to text as an `if`/`else if` chain over every variant with
+      // no final `else`: Dart lets the body fall off the end (returning null
+      // it would then refuse at runtime); Rust wants the last `if` to be an
+      // expression of the return type. The chain is exhaustive by the
+      // author's reckoning, and the line after it says so.
+      if (!fallsOff) _closeOpenIf(method.body);
       _returns = null;
       _indent--;
       _line('}');
       _line('');
     }
   }
+
+  /// After a body: the line that ends an open `if` chain, when the method
+  /// has a value to return and the chain is how it returns it.
+  void _closeOpenIf(IrStmt body) {
+    final returns = _returns;
+    if (returns == null || type(returns) == '()') return;
+    if (_alwaysReturns(body) || !_endsInOpenIf(body)) return;
+    _line('unreachable!("no branch of the if chain returned")');
+  }
+
+  /// Whether a body ends in an `if` chain that returns on every branch it
+  /// has, and has no `else` to end it.
+  bool _endsInOpenIf(IrStmt s) => switch (s) {
+    IrBlock(:final statements) =>
+      statements.isNotEmpty && _endsInOpenIf(statements.last),
+    IrIf(:final then, :final otherwise) =>
+      otherwise == null ? _alwaysReturns(then) : _endsInOpenIf(otherwise),
+    _ => false,
+  };
 
   void _emitOperators() {
     for (final method in cls.methods) {
@@ -3753,7 +5523,7 @@ class RustBackend {
         // `~/` has no Rust trait. Emitted as an inherent method rather than
         // forced into one that means something else.
         _line('');
-        _line('impl${_generics(cls)} ${cls.name}${_generics(cls)} {');
+        _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
         _indent++;
         _doc(method.doc);
         final params = [
@@ -3765,8 +5535,10 @@ class RustBackend {
         );
         _indent++;
         _returns = method.returnType;
+        _asyncBody = method.isAsync;
         _reassigned = _assignedIn(method.body);
         stmt(method.body, tail: true);
+        _closeOpenIf(method.body);
         _returns = null;
         _indent--;
         _line('}');
@@ -3780,7 +5552,7 @@ class RustBackend {
       _doc(method.doc);
       final generic = rhs == null ? '' : '<${type(rhs.type)}>';
       _line(
-        'impl${_generics(cls)} std::ops::$trait$generic for '
+        'impl${_implGenerics(cls)} std::ops::$trait$generic for '
         '${cls.name}${_generics(cls)} {',
       );
       _indent++;
@@ -3790,11 +5562,28 @@ class RustBackend {
         'self',
         if (rhs != null) '${snake(rhs.name)}: ${type(rhs.type)}',
       ].join(', ');
-      _line('fn $fn($params) -> Self::Output {');
+      // The body lives in an inherent method the trait impl forwards to.
+      // Inside `impl std::ops::Add for Matrix3`, the trait is in scope, and
+      // `cascaded.add(arg)` in the body of `operator +` -- Dart's own
+      // `add`, `&mut self` -- resolved to the by-value `Add::add` first:
+      // 8 `E0382`s and an infinite recursion in vector_math.
+      final own = _operatorName(method.operator!);
+      _line(
+        'fn $fn($params) -> Self::Output { '
+        'Self::$own(${['self', if (rhs != null) snake(rhs.name)].join(', ')}) }',
+      );
+      _indent--;
+      _line('}');
+      _line('');
+      _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
+      _indent++;
+      _line('pub fn $own($params) -> ${type(method.returnType)} {');
       _indent++;
       _returns = method.returnType;
+      _asyncBody = method.isAsync;
       _reassigned = _assignedIn(method.body);
       stmt(method.body, tail: true);
+      _closeOpenIf(method.body);
       _returns = null;
       _indent--;
       _line('}');
@@ -3844,9 +5633,11 @@ class RustBackend {
   /// spelling cannot go through: `superFn('AlignmentGeometry', '==')` produced
   /// `alignment_geometry_super_`, a name with nothing on the end of it.
   static String _identifier(String name) =>
-      RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(name)
-      ? snake(name)
-      : _operatorName(name);
+      // Any letters at all: `___sendPlatformMessage$Method$FfiNative`, the
+      // AOT lowering of an `@Native` external, is a name for `snake` to
+      // clean, not an operator, and refusing it took `PlatformDispatcher.
+      // instance` with it (20 callers).
+      RegExp(r'[A-Za-z]').hasMatch(name) ? snake(name) : _operatorName(name);
 }
 
 /// Finds, in one method body, whether it writes a field of `this` and which of
@@ -3883,6 +5674,9 @@ class _WalkSelf {
   /// where Dart says nothing at all.
   final mutatedLocals = <String>{};
 
+  /// Locals that are the receiver of some method call.
+  final receiverLocals = <String>{};
+
   /// Whether a write target is `this`, or a chain of field reads from it.
   static bool _rootedAtThis(IrExpr? e) => switch (e) {
     null => true,
@@ -3900,6 +5694,9 @@ class _WalkSelf {
   /// Whether a closure in what was walked keeps a counted handle to `this`.
   bool holdsSelfClosure = false;
 
+  /// Whether `this` is passed as an argument anywhere in what was walked.
+  bool passesSelf = false;
+
   void statement(IrStmt s) {
     switch (s) {
       case IrAssignField(:final target):
@@ -3911,8 +5708,16 @@ class _WalkSelf {
         // write through `self`, and without this it came out `&self` and did
         // not compile.
         if (_rootedAtThis(target)) writesFields = true;
+        // A write through a local -- `entry.x = v` on a value the local owns
+        // -- is what makes that local `let mut`. The cascade binding used to
+        // be told separately; this covers it and the plain local alike.
+        if (target is IrLocal) mutatedLocals.add(target.name);
         expression(s.value);
       case IrAssignTopLevel(:final value):
+        // A library's own variable, not this object's: it goes through a cell
+        // of its own, so writing one says nothing about `self`.
+        expression(value);
+      case IrAssignStatic(:final value):
         // A library's own variable, not this object's: it goes through a cell
         // of its own, so writing one says nothing about `self`.
         expression(value);
@@ -3935,6 +5740,8 @@ class _WalkSelf {
         statement(then);
         if (otherwise != null) statement(otherwise);
       case IrReturn(:final value):
+        // `return this` from a counted class hands out the handle.
+        if (value is IrThis) passesSelf = true;
         if (value != null) expression(value);
       case IrLocalDecl(:final init):
         if (init != null) expression(init);
@@ -3971,6 +5778,7 @@ class _WalkSelf {
       case IrIndexSet(:final target, :final index, :final value):
         // Writing through an index is writing through the thing indexed.
         if (_rootedAtThis(target)) writesFields = true;
+        if (target is IrLocal) mutatedLocals.add(target.name);
         expression(target);
         expression(index);
         expression(value);
@@ -3997,6 +5805,13 @@ class _WalkSelf {
         if (_caught == 0 && (target == null || target is IrThis)) {
           selfCalls.add(name);
         }
+        // `this` handed to a call keeps the object, as a closure would:
+        // `paragraph._paint(this, ..)` from a counted class needs the handle.
+        // So does `this` shared into an `Object` slot (`!as_object`/`!rc`).
+        if (args.any((a) => a is IrThis)) passesSelf = true;
+        if (target is IrThis && (name == '!as_object' || name == '!rc')) {
+          passesSelf = true;
+        }
         // An *implicit* `this` reads it just as surely as a written one.
         // Dart lets a member be named without `this`, and a field initialiser
         // that says `transformPosition(transform, position)` is reading two
@@ -4006,6 +5821,10 @@ class _WalkSelf {
         // `self.marks.push(x)` mutates a field, so the method takes
         // `&mut self` -- the same rule as writing the field outright, which is
         // what a `Vec` method that changes it amounts to.
+        // Any local a method is called on may be changed by it: the callee's
+        // receiver is unknown here, and `rotation.setFromRotation(r)` on an
+        // immutable parameter was E0596. An unneeded `mut` is a warning.
+        if (target is IrLocal) receiverLocals.add(target.name);
         if (_mutatingListMethods.contains(name)) {
           if (_rootedAtThis(target)) writesFields = true;
           if (target is IrLocal) mutatedLocals.add(target.name);
@@ -4022,6 +5841,12 @@ class _WalkSelf {
         expression(operand);
       case IrNullCheck(:final operand):
         expression(operand);
+      case IrDowncast(:final target):
+        expression(target);
+      case IrSome(:final value):
+        expression(value);
+      case IrCast(:final value):
+        expression(value);
       case IrIsNull(:final operand):
         expression(operand);
       case IrIfNull(:final left, :final right):
@@ -4035,8 +5860,11 @@ class _WalkSelf {
         expression(then);
         expression(otherwise);
       case IrStaticCall(:final args):
+        // `FlutterView(id, this, ..)` from a counted class hands out the handle.
+        if (args.any((a) => a is IrThis)) passesSelf = true;
         args.forEach(expression);
       case IrNew(:final args):
+        if (args.any((a) => a is IrThis)) passesSelf = true;
         args.forEach(expression);
       case IrSuperCall(:final args):
         args.forEach(expression);
@@ -4046,6 +5874,8 @@ class _WalkSelf {
         if (holdsSelf) holdsSelfClosure = true;
         statement(body);
       case IrCallValue(:final target, :final args):
+        // `this` handed to a closure call keeps the object too.
+        if (args.any((a) => a is IrThis)) passesSelf = true;
         expression(target);
         args.forEach(expression);
       case IrBlockValue(:final statements, :final value):

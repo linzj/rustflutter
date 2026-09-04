@@ -15,6 +15,9 @@
 library;
 
 import 'package:kernel/ast.dart';
+import 'package:kernel/class_hierarchy.dart';
+import 'package:kernel/type_algebra.dart';
+import 'package:kernel/type_environment.dart';
 
 import 'ir.dart';
 
@@ -46,7 +49,41 @@ class KernelFrontend {
     this.enumFields = const {},
     this.abstractElsewhere = const {},
     this.elsewhere = const {},
+    this.typeEnvironment,
   });
+
+  /// The whole program's types, for `getStaticType`. Built once by the
+  /// driver; null in the tools that lower a single library on its own, which
+  /// then do without the two things it buys -- `Some(..)` around a non-null
+  /// argument to a nullable parameter, and `as f64` in mixed arithmetic.
+  final TypeEnvironment? typeEnvironment;
+  StaticTypeContext? _typeContext;
+
+  void _enter(Member member) {
+    final env = typeEnvironment;
+    _typeContext = env == null ? null : StaticTypeContext(member, env);
+  }
+
+  DartType? _staticType(Expression e) {
+    final context = _typeContext;
+    if (context != null) {
+      try {
+        return e.getStaticType(context);
+      } catch (_) {
+        // Fall through to what the node itself records.
+      }
+    }
+    // Without a context (or when `getStaticType` gives up) the node still
+    // carries its type: `Zone.current[_clockKey] as Clock?` had its `as`
+    // dropped for want of knowing the operand was `dynamic`.
+    if (e is InstanceInvocation) return e.functionType.returnType;
+    if (e is InstanceGet) return e.resultType;
+    if (e is VariableGet) return e.promotedType ?? e.variable.type;
+    if (e is StaticGet) return e.target.getterType;
+    if (e is StaticInvocation) return e.target.function.returnType;
+    if (e is NullLiteral) return const NullType();
+    return null;
+  }
 
   /// Classes in the rest of the crate. See [IrLibrary.elsewhere].
   final Map<String, IrClass> elsewhere;
@@ -89,14 +126,52 @@ class KernelFrontend {
       );
     }
     if (type is VoidType) return const IrType('void');
+    // The bottom type. Thirty in the gallery's dill: `noSuchMethod`s declared
+    // `Never`, and a few `Foo<Never>`. The backend spells it two ways.
+    if (type is NeverType) return const IrType('Never');
     if (type is DynamicType) return const IrType('dynamic');
     if (type is NullType) return const IrType('Null', nullable: true);
     if (type is TypeParameterType) {
+      // `T extends String` is a `String` here: the bound is what the body
+      // calls methods on, and a Rust type parameter has no such methods.
+      // Only for the scalar bounds that are prelude types; `T extends
+      // Comparable<T>` would recurse.
+      final bound = type.parameter.bound;
+      if (bound is InterfaceType &&
+          const {
+            'String',
+            'num',
+            'int',
+            'double',
+            'bool',
+          }.contains(bound.classNode.name)) {
+        return IrType(_type(bound).name, nullable: nullable);
+      }
+      // `T extends Iterable<E>`: the `Vec<E>` the bound is, since the body
+      // iterates it (collection's `IterableEquality`, 6).
+      if (bound is InterfaceType &&
+          const {'Iterable', 'List'}.contains(bound.classNode.name)) {
+        final asBound = _type(bound);
+        return IrType(
+          asBound.name,
+          nullable: nullable,
+          arguments: asBound.arguments,
+        );
+      }
       return IrType(type.parameter.name ?? 'T', nullable: nullable);
     }
     if (type is FunctionType) {
+      // Named parameters after the positional ones, **sorted by name**, as
+      // a closure declares them: `LogWriterCallback = void Function(String
+      // text, {bool isError})` is an `Fn(String, bool)`, and a field of
+      // that type could not hold the two-parameter function (E0593).
+      final named = [...type.namedParameters]
+        ..sort((a, b) => a.name.compareTo(b.name));
       return IrType.function(
-        [for (final p in type.positionalParameters) _type(p)],
+        [
+          for (final p in type.positionalParameters) _paramType(p),
+          for (final p in named) _paramType(p.type),
+        ],
         _type(type.returnType),
         nullable: nullable,
       );
@@ -142,10 +217,43 @@ class KernelFrontend {
       // than the variable's own name is what makes two nested `#0`s two
       // different locals instead of one.
       final temporary = _temporaries[node.variable];
-      if (temporary != null) return IrLocal(temporary);
-      final name = node.variable.cosmeticName;
-      if (name == null || name.startsWith('#')) {
+      final written = node.variable.cosmeticName;
+      if (temporary == null && (written == null || written.startsWith('#'))) {
         throw Unsupported('synthetic variable', _sample(node));
+      }
+      // A temporary is promoted like any local: `if (__t != null)
+      // xs.add(__t)` after the CFE's lowering of `?.`/`??` (`String <=
+      // Option<String>`). It used to return before the checks below.
+      final name = temporary ?? written!;
+      // Promoted to a concrete class the declaration does not name: the
+      // read is a downcast. Promotion to the *same* class (nullable to
+      // non-null) is not.
+      final promoted = node.promotedType;
+      final declared = node.variable.type;
+      // The core scalars are abstract classes in Kernel and structs here:
+      // an `Object?` promoted to `String` is a downcast to `String`.
+      const scalars = {'String', 'int', 'double', 'bool', 'num'};
+      if (promoted is InterfaceType &&
+          (!promoted.classNode.isAbstract ||
+              scalars.contains(promoted.classNode.name)) &&
+          !promoted.classNode.isEnum &&
+          !(declared is InterfaceType &&
+              declared.classNode == promoted.classNode)) {
+        final downcast = IrDowncast(
+          IrLocal(name),
+          _rustScalar(_type(promoted).name),
+        );
+        // Cloned out of the reference `Any` hands back.
+        return IrCall(downcast, 'clone', const []);
+      }
+      // Promoted from `T?` to `T` -- `if (x != null) f(x)` -- the read is
+      // the value inside. A clone first, so the local is still there for
+      // the next read: `&Option<Hct>` where `&Hct` was wanted, 12 times.
+      if (promoted != null &&
+          declared is! DynamicType &&
+          promoted.nullability == Nullability.nonNullable &&
+          declared.nullability == Nullability.nullable) {
+        return IrNullCheck(IrCall(IrLocal(name), 'clone', const []));
       }
       return IrLocal(name);
     }
@@ -154,20 +262,171 @@ class KernelFrontend {
     if (node is InstanceInvocation) return _instanceInvocation(node);
     if (node is BlockExpression) return _blockValue(node);
     if (node is FunctionInvocation) {
-      return IrCallValue(expression(node.receiver), _arguments(node.arguments));
+      // A call through a function value: no callee to read defaults from,
+      // only its type -- which is enough to *order* named arguments, and the
+      // closures on the other end are declared in that same order.
+      final type = node.functionType;
+      if (type == null) {
+        throw Unsupported(
+          'call of a function value with no type',
+          _sample(node),
+        );
+      }
+      return IrCallValue(
+        expression(node.receiver),
+        _argumentsByType(node.arguments, type),
+      );
     }
     if (node is LocalFunctionInvocation) {
       final name = node.variable.cosmeticName;
       if (name == null) {
         throw Unsupported('call of an unnamed local function', _sample(node));
       }
-      return IrCallValue(IrLocal(name), _arguments(node.arguments));
+      // A local function is declared as a closure, so its named parameters
+      // are in type order there too.
+      return IrCallValue(
+        IrLocal(name),
+        _argumentsByType(node.arguments, node.functionType),
+      );
     }
     if (node is FunctionExpression) return _closure(node.function, node);
+    if (node is StaticSet) {
+      // `Owner.x = v` where the value is wanted -- the `??=` on a static, in
+      // the CFE's `let #t = X in #t == null ? X = v : #t`. Bind the value,
+      // store a clone, produce the binding: the store moves, and the value
+      // still has to come out.
+      final target = node.target;
+      if (target is Procedure &&
+          target.kind == ProcedureKind.Setter &&
+          target.enclosingClass == null) {
+        final held = '__t${_nextTemporary++}';
+        final stored = _widened(
+          node.value,
+          target.function.positionalParameters.single.type,
+          IrCall(IrLocal(held), 'clone', const []),
+        );
+        return IrBlockValue([
+          IrLocalDecl(held, null, expression(node.value)),
+          IrExprStmt(
+            IrStaticCall(null, _topLevelSetterName(target.name.text), [stored]),
+          ),
+        ], IrLocal(held));
+      }
+      if (target is! Field) {
+        throw Unsupported('static setter used for its value', _sample(node));
+      }
+      final owner = target.enclosingClass;
+      final held = '__t${_nextTemporary++}';
+      // The store widens into the static's type: `_decomposeV ??=
+      // Vector3.zero()` on a `Vector3?` stores `Some(..)`.
+      final write = _widened(
+        node.value,
+        target.type,
+        IrCall(IrLocal(held), 'clone', const []),
+      );
+      return IrBlockValue([
+        IrLocalDecl(held, null, expression(node.value)),
+        owner == null
+            ? IrAssignTopLevel(target.name.text, write)
+            : IrAssignStatic(owner.name, target.name.text, write),
+      ], IrLocal(held));
+    }
     if (node is Let) return _let(node);
     if (node is EqualsNull) return IrIsNull(expression(node.expression));
     if (node is EqualsCall) {
-      return IrBinary('==', expression(node.left), expression(node.right));
+      // `_argb == other._argb` with one side promoted: an `Option<i64>`
+      // against an `i64` does not compare; the non-null side is `Some`d.
+      var left = expression(node.left);
+      var right = expression(node.right);
+      final leftType = _staticType(node.left);
+      final rightType = _staticType(node.right);
+      bool nullable(DartType? t) =>
+          t != null &&
+          t is! DynamicType &&
+          t.nullability == Nullability.nullable;
+      bool plain(DartType? t) =>
+          t != null &&
+          t is! DynamicType &&
+          t is! NullType &&
+          t.nullability != Nullability.nullable;
+      if (nullable(leftType) && plain(rightType) && !_isNull(node.right)) {
+        right = _widened(node.right, leftType, right);
+      } else if (plain(leftType) &&
+          nullable(rightType) &&
+          !_isNull(node.left)) {
+        left = _widened(node.left, rightType, left);
+      }
+      // Two closures are equal when they are the same closure: `Rc<dyn Fn>`
+      // has no `==`, and the prelude's `dart_eq` is identity (8 in `listen`).
+      if (leftType is FunctionType || rightType is FunctionType) {
+        return IrCall(left, '!dart_eq', [right]);
+      }
+      // `lightOption == -1` on a `double`: the `int` side is cast, as the
+      // arithmetic operators cast theirs.
+      String? cls(DartType? t) => t is InterfaceType ? t.classNode.name : null;
+      if (cls(leftType) == 'double' && cls(rightType) == 'int') {
+        right = IrCast(right, 'f64');
+      } else if (cls(leftType) == 'int' && cls(rightType) == 'double') {
+        left = IrCast(left, 'f64');
+      } else if (_declaredNum(node.left) &&
+          (node.right is IntLiteral || cls(rightType) == 'int')) {
+        right = IrCast(right, 'f64');
+      } else if (_declaredNum(node.right) &&
+          (node.left is IntLiteral || cls(leftType) == 'int')) {
+        left = IrCast(left, 'f64');
+      }
+      return IrBinary('==', left, right);
+    }
+    // A truly dynamic call -- `number.abs()` on a `dynamic` in intl's
+    // NumberFormat -- when the name is one of `num`'s: the receiver is
+    // downcast to the `f64` a `num` is here (see the devirtualised case).
+    const numMethods = _dynamicNumMethods;
+    if (node is DynamicInvocation && numMethods.contains(node.name.text)) {
+      final asDouble = IrCall(
+        IrDowncast(expression(node.receiver), 'f64'),
+        'clone',
+        const [],
+      );
+      final call = IrCall(asDouble, node.name.text, [
+        for (final a in node.arguments.positional) expression(a),
+      ]);
+      return const {
+            'round',
+            'floor',
+            'ceil',
+            'truncate',
+            'toInt',
+          }.contains(node.name.text)
+          ? IrCast(call, 'i64')
+          : call;
+    }
+    // ..and its operators: `number - integerPart` on a `dynamic`.
+    const numOperators = {'+', '-', '*', '/', '%', '<', '>', '<=', '>='};
+    if (node is DynamicInvocation &&
+        numOperators.contains(node.name.text) &&
+        node.arguments.positional.length == 1) {
+      final asDouble = IrCall(
+        IrDowncast(expression(node.receiver), 'f64'),
+        'clone',
+        const [],
+      );
+      var right = expression(node.arguments.positional.single);
+      final rightType = _staticType(node.arguments.positional.single);
+      if (rightType is DynamicType) {
+        right = IrCall(IrDowncast(right, 'f64'), 'clone', const []);
+      } else if (rightType is InterfaceType &&
+          rightType.classNode.name == 'int') {
+        right = IrCast(right, 'f64');
+      }
+      return IrBinary(node.name.text, asDouble, right);
+    }
+    if (node is DynamicGet && numMethods.contains(node.name.text)) {
+      final asDouble = IrCall(
+        IrDowncast(expression(node.receiver), 'f64'),
+        'clone',
+        const [],
+      );
+      return IrCall(asDouble, node.name.text, const []);
     }
     if (node is Not) {
       // `x is! T` is a `Not` around an `IsExpression` here; the analyzer keeps
@@ -192,10 +451,34 @@ class KernelFrontend {
       );
     }
     if (node is ConditionalExpression) {
+      // A condition the AOT compiler replaced by its "removed" throw: the
+      // whole conditional is dead, and its branches' types no longer meet.
+      final condition = node.condition;
+      if (condition is Throw && _tfaUnreachable(condition)) return _unreachable;
+      // `x != null ? Color(..) : "unspecified"` inside a string: the branches
+      // are of different classes and the result is `Object`, so both go
+      // through `dart_str` (see the `??` case).
+      final staticType = node.staticType;
+      final thenType = _staticType(node.then);
+      final elseType = _staticType(node.otherwise);
+      if (staticType is InterfaceType &&
+          staticType.classNode.name == 'Object' &&
+          thenType is InterfaceType &&
+          elseType is InterfaceType &&
+          thenType.classNode != elseType.classNode) {
+        return IrConditional(
+          expression(condition),
+          IrStaticCall(null, 'dart_str', [expression(node.then)]),
+          IrStaticCall(null, 'dart_str', [expression(node.otherwise)]),
+        );
+      }
+      // Each branch widens into the conditional's own type: `m == null ?
+      // null : hashAll(m)` is an `Option`, and the second branch an `i64`
+      // until it is wrapped (4 `if` and `else` have incompatible types).
       return IrConditional(
-        expression(node.condition),
-        expression(node.then),
-        expression(node.otherwise),
+        expression(condition),
+        _widened(node.then, staticType, expression(node.then)),
+        _widened(node.otherwise, staticType, expression(node.otherwise)),
       );
     }
     if (node is TypeLiteral) return _typeLiteral(node.type);
@@ -211,7 +494,14 @@ class KernelFrontend {
       if (owner == null) {
         throw Unsupported('super call with no owner', '$node');
       }
-      return IrSuperCall(owner, node.name.text, _arguments(node.arguments));
+      // The super target is resolved, so its parameter list orders the named
+      // arguments -- 56 super calls with named arguments were refused for
+      // want of a callee this line had all along.
+      return IrSuperCall(
+        owner,
+        node.name.text,
+        _arguments(node.arguments, node.interfaceTarget.function),
+      );
     }
     if (node is VariableSet) {
       // `x = v` used for its value. Rust's assignment produces `()`, so the
@@ -222,7 +512,24 @@ class KernelFrontend {
       if (known == null && (written == null || written.startsWith('#'))) {
         throw Unsupported('assignment used for its value', _sample(node));
       }
-      return IrAssignValue(known ?? written!, expression(node.value));
+      final name = known ?? written!;
+      // Into a `dynamic` local (`dynamic result = scaled(x)` in vector_math's
+      // `operator *`) the value is shared into its `Rc<dyn Object>`.
+      final stored = _intoObject(
+        node.value,
+        node.variable.type,
+        _widened(node.value, node.variable.type, expression(node.value)),
+      );
+      // `(index = s.indexOf(p)) >= 0` with `int? index`: the store is
+      // `Some(..)`, the value of the expression is not.
+      if (stored is IrSome) {
+        final held = '__t${_nextTemporary++}';
+        return IrBlockValue([
+          IrLocalDecl(held, null, stored.value),
+          IrAssign(name, IrSome(IrCall(IrLocal(held), 'clone', const []))),
+        ], IrLocal(held));
+      }
+      return IrAssignValue(name, stored);
     }
     if (node is RecordIndexGet) {
       // `r.$1` in Dart is `r.0` in Rust -- Dart counts its positional record
@@ -246,12 +553,41 @@ class KernelFrontend {
       );
     }
     if (node is ListLiteral) {
+      // The CFE keeps a literal of more than eight elements as a node (the
+      // `_literalN` constructors stop there): its elements widen and share
+      // into the element type exactly as the short ones' do.
+      final element = node.typeArgument;
       return IrListLiteral([
-        for (final e in node.expressions) expression(e),
-      ], _type(node.typeArgument));
+        for (final e in node.expressions)
+          _intoObject(
+            e,
+            element,
+            _widened(
+              e,
+              element,
+              _withExpectedReturn(element, e, () => expression(e)),
+            ),
+          ),
+      ], _type(element));
     }
     if (node is StringConcatenation) {
-      return IrInterpolation([for (final e in node.expressions) expression(e)]);
+      // A part that is neither text nor a number goes through `dart_str`
+      // (the prelude's `Debug` rendering); the primitives print as they are.
+      IrExpr part(Expression e) {
+        final lowered = expression(e);
+        if (e is StringLiteral || lowered is IrLiteral) return lowered;
+        final type = _staticType(e);
+        final name = type is InterfaceType ? type.classNode.name : null;
+        const plain = {'String', 'int', 'double', 'num', 'bool', 'Null'};
+        if (name != null &&
+            plain.contains(name) &&
+            type!.nullability != Nullability.nullable) {
+          return lowered;
+        }
+        return IrStaticCall(null, 'dart_str', [lowered]);
+      }
+
+      return IrInterpolation([for (final e in node.expressions) part(e)]);
     }
     if (node is SuperPropertyGet) {
       final owner = node.interfaceTarget?.enclosingClass?.name;
@@ -270,9 +606,14 @@ class KernelFrontend {
       return IrSuperCall(owner, node.name.text, const []);
     }
     if (node is AwaitExpression) {
+      // `await <throw>`: the tree shaker replaces a removed call with a
+      // throw, and there is nothing to await in a throw -- `.await` on a
+      // `return Err(..)` is what came out.
+      if (node.operand is Throw) return expression(node.operand);
       return IrAwait(expression(node.operand));
     }
     if (node is Throw) {
+      if (_tfaUnreachable(node)) return _unreachable;
       // `a ?? throw StateError(..)`. Rust has no throw, but it does have an
       // expression that never produces a value: `return Err(e)` has type `!`,
       // which fits wherever a value was wanted. So the expression form is the
@@ -284,18 +625,168 @@ class KernelFrontend {
       // returns nothing to produce, and another object's field is the `&mut`
       // through a reference this compiler still refuses as a statement.
       if (node.receiver is! ThisExpression) {
+        // `entry.x = v` where the value is wanted, on a local or parameter:
+        // the same two shapes the statement form takes -- a local owning a
+        // value, or a handle to a counted class whose fields are cells --
+        // bound first, written as a clone, produced last. 66 of these.
+        final receiver = node.receiver;
+        final target = node.interfaceTarget;
+        final declaring = target.enclosingClass;
+        final onLocal = receiver is VariableGet;
+        // A local, a parameter, or a chain rooted at `this` -- the receivers
+        // the statement form already takes.
+        if ((onLocal || _rootedAtThis(receiver)) && declaring != null) {
+          final counted = _closureCallsMethod(declaring);
+          final ownsValue =
+              !onLocal || receiver.variable.parent is! FunctionNode;
+          if (counted || ownsValue) {
+            final held = '__t${_nextTemporary++}';
+            final clone = IrCall(IrLocal(held), 'clone', const []);
+            // Into a nullable field the store is `Some(..)`.
+            final stored = _widened(node.value, target.setterType, clone);
+            return IrBlockValue([
+              // Inferred: the field's *declared* type is the generic `T?` of
+              // `Tween<T>`, and spelling it put a `T` into a class with none.
+              IrLocalDecl(held, null, expression(node.value)),
+              // A field goes through storage (a cell when the class is
+              // counted); a setter is a call, on whatever the receiver is.
+              target is Field
+                  ? IrAssignField(
+                      node.name.text,
+                      stored,
+                      target: expression(receiver),
+                      owner: counted ? declaring.name : null,
+                    )
+                  : IrSetter(expression(receiver), node.name.text, stored),
+            ], IrLocal(held));
+          }
+        }
         throw Unsupported(
-          'assignment to another object used for its value',
+          'assignment to another object used for its value '
+          '(${_shape(node.receiver)})',
           _sample(node),
         );
       }
       if (node.interfaceTarget is! Field) {
         throw Unsupported('setter call used for its value', _sample(node));
       }
-      return IrSetValue(null, node.name.text, expression(node.value));
+      final stored = _widened(
+        node.value,
+        node.interfaceTarget.setterType,
+        expression(node.value),
+      );
+      if (stored is IrSome) {
+        // `_cache = s` into a `String?` field, used for its value: the
+        // store is `Some(s)`, the value is `s`.
+        final held = '__t${_nextTemporary++}';
+        return IrBlockValue([
+          IrLocalDecl(held, null, stored.value),
+          IrAssignField(
+            node.name.text,
+            IrSome(IrCall(IrLocal(held), 'clone', const [])),
+          ),
+        ], IrLocal(held));
+      }
+      return IrSetValue(null, node.name.text, stored);
     }
     if (node is NullCheck) return IrNullCheck(expression(node.operand));
-    if (node is AsExpression) return expression(node.operand);
+    if (node is AsExpression) {
+      // A cast that only removes `?` -- the CFE's spelling of a promoted
+      // private field, `_hct` after `if (_hct != null)` -- is a null check.
+      // Any other cast is the operand: Rust's types are already the
+      // concrete ones. 12 `&Option<Hct>` where `&Hct` was wanted.
+      final from = _staticType(node.operand);
+      final to = node.type;
+      if (from != null &&
+          from.nullability == Nullability.nullable &&
+          to.nullability == Nullability.nonNullable &&
+          from is InterfaceType &&
+          to is InterfaceType &&
+          from.classNode == to.classNode) {
+        return IrNullCheck(expression(node.operand));
+      }
+      // A cast down from an abstract class to a concrete one -- `path as
+      // _NativePath` in front of every native taking one -- is a downcast
+      // through `Any`, and the value is cloned out of the reference it
+      // yields. 4 `_NativePath <= Rc<dyn Path>`.
+      // `_queue[index] ?? (null as E)`: Dart's way of saying the branch is
+      // never taken for a non-nullable `E`. Rust's `E` has no null at all.
+      if (node.operand is NullLiteral && to is TypeParameterType) {
+        return _unreachable;
+      }
+      // `key as K` with `key` an `Object?`: a downcast to a type parameter,
+      // which `Any` can do because every parameter is bounded `'static`.
+      if (to is TypeParameterType &&
+          (from is DynamicType ||
+              (from is InterfaceType && from.classNode.name == 'Object'))) {
+        final operand = from != null && from.nullability == Nullability.nullable
+            ? IrNullCheck(expression(node.operand))
+            : expression(node.operand);
+        return IrCall(
+          IrDowncast(operand, to.parameter.name ?? 'T'),
+          'clone',
+          const [],
+        );
+      }
+      // `Object` and `dynamic` are trait objects here too (`Rc<dyn Object>`).
+      // `num` and `double` are abstract in dart:core too, but they are
+      // scalars here, not trait objects: `number as double` on a `num` is
+      // already an `f64`, and `Any` has nothing to do.
+      final fromObject =
+          from is DynamicType ||
+          (from is InterfaceType &&
+              ((from.classNode.isAbstract &&
+                      _rustScalar(from.classNode.name) ==
+                          from.classNode.name) ||
+                  from.classNode.name == 'Object'));
+      if (fromObject &&
+          from != null &&
+          to is InterfaceType &&
+          // `String` is abstract in dart:core, and `unsafeCast<String?>(Zone
+          // .current[#Intl.locale])` wants the same `Any` downcast a struct
+          // gets: the prelude's `String` is what an `Rc<dyn Object>` holds.
+          (!to.classNode.isAbstract ||
+              _rustScalar(to.classNode.name) != to.classNode.name ||
+              to.classNode.name == 'String') &&
+          to.classNode.name != 'Object' &&
+          (from is! InterfaceType || from.classNode != to.classNode)) {
+        // `dynamic` is an `Rc<dyn Object>`, never an `Option`, whatever
+        // its nullability says.
+        if ((from is DynamicType || from.nullability != Nullability.nullable) &&
+            to.nullability != Nullability.nullable) {
+          return IrCall(
+            IrDowncast(
+              expression(node.operand),
+              _rustScalar(to.classNode.name),
+            ),
+            'clone',
+            const [],
+          );
+        }
+        // `Zone.current[#token] as Client?`: a `dynamic` (never an `Option`
+        // here) to a nullable struct is a downcast that may fail: `cloned()`
+        // of the `Option<&T>` `Any` gives.
+        if (from is DynamicType && to.nullability == Nullability.nullable) {
+          return IrCall(expression(node.operand), '!as_opt', [
+            IrLiteral(_rustScalar(to.classNode.name), const IrType('raw')),
+          ]);
+        }
+        // `_objects![2] as _ImageFilter?`: an `Option<Rc<dyn Object>>` to an
+        // `Option<_ImageFilter>`, element by element.
+        if (from.nullability == Nullability.nullable &&
+            to.nullability == Nullability.nullable) {
+          return IrNullAware(
+            expression(node.operand),
+            IrCall(
+              IrDowncast(const IrBound(), to.classNode.name),
+              'clone',
+              const [],
+            ),
+          );
+        }
+      }
+      return expression(node.operand);
+    }
     if (node is StaticTearOff) {
       return IrFunctionRef(
         node.target.enclosingClass?.name,
@@ -315,24 +806,37 @@ class KernelFrontend {
       // calls a method does -- it *is* that closure, written shorter. Without
       // this the two shapes got different answers for the same question, and
       // the tear-offs stayed refused: 503 of them.
-      final holds = _counted && node.receiver is ThisExpression;
-      if (!holds && !_borrowedArgument) {
-        throw Unsupported('a method used as a value', _sample(node));
-      }
-      final target = node.interfaceTarget;
-      final fn = target.function;
-      if (fn.namedParameters.isNotEmpty || fn.typeParameters.isNotEmpty) {
+      // `this.controller.dispose` as a value is the same closure as
+      // `this.dispose` is, reaching the field through the handle it keeps.
+      final holds = _counted && _rootedAtThis(node.receiver);
+      // A method of a *local or parameter* used as a value: the closure
+      // below captures that variable the way any Rust closure captures a
+      // local. `asset.endsWith` handed to `firstWhere` is one.
+      final onLocal = node.receiver is VariableGet;
+      if (!holds && !_borrowedArgument && !onLocal) {
         throw Unsupported(
-          'a method with named or generic parameters used as a value',
+          'a method used as a value (${_shape(node.receiver)})',
           _sample(node),
         );
       }
+      final target = node.interfaceTarget;
+      final fn = target.function;
+      if (fn.typeParameters.isNotEmpty) {
+        throw Unsupported('a generic method used as a value', _sample(node));
+      }
+      // The closure's own parameters: positional as declared, then the named
+      // ones **in name order** -- the order a call through the function type
+      // uses (`_argumentsByType`). The call inside passes them on in the
+      // *method's* declared order, which is the order the method was
+      // emitted in. 23 tear-offs of methods with named parameters.
       final params = [
         for (var i = 0; i < fn.positionalParameters.length; i++)
           IrParam(
-            fn.positionalParameters[i].cosmeticName ?? 'a$i',
+            _paramName(fn.positionalParameters[i], 'a$i'),
             _type(fn.positionalParameters[i].type),
           ),
+        for (final p in _namedInTypeOrder(fn))
+          IrParam(p.parameterName, _type(p.type), named: true),
       ];
       final receiver = node.receiver;
       return IrClosure(
@@ -341,10 +845,18 @@ class KernelFrontend {
           IrCall(
             receiver is ThisExpression ? null : expression(receiver),
             node.name.text,
-            [for (final p in params) IrLocal(p.name)],
+            [
+              for (var i = 0; i < fn.positionalParameters.length; i++)
+                IrLocal(params[i].name),
+              for (final p in fn.namedParameters) IrLocal(p.parameterName),
+            ],
           ),
         ),
         _type(fn.returnType),
+        // A tear-off of `message.invoke` keeps `message`: cloned in, moved.
+        locals: receiver is ThisExpression
+            ? const []
+            : _freeLocalsIn(receiver, {}),
         holdsSelf: holds,
       );
     }
@@ -383,7 +895,13 @@ class KernelFrontend {
     _cascade = bound;
     try {
       final steps = <IrStmt>[
-        IrLocalDecl(_cascadeName, _type(bound.type), expression(initial)),
+        // A cascade on a local shares it: `v..setValues(..)` and `v` read
+        // again after (`use of moved value: v`, vector_math).
+        IrLocalDecl(
+          _cascadeName,
+          _type(bound.type),
+          _widened(initial, null, expression(initial)),
+        ),
         for (final s in statements.skip(1)) statement(s),
       ];
       return IrBlockValue(steps, const IrLocal(_cascadeName));
@@ -402,7 +920,54 @@ class KernelFrontend {
   /// and `this` is a borrow, so it needs an ownership arrangement rather than a
   /// translation. That is 60% of `package:flutter`'s closures and a round of
   /// its own.
+  /// A parameter's type: as `_type`, except that `void?` -- `_Callback<T>`
+  /// is `void Function(T? result)`, and `_futurize<void>` instantiates it --
+  /// is the `Option<()>` the generic `Option<T>` became there. A `void`
+  /// *return* type is nullable in Kernel too and stays `()`.
+  IrType _paramType(DartType t) =>
+      t is VoidType && t.nullability == Nullability.nullable
+      ? const IrType('void', nullable: true)
+      : _type(t);
+
+  /// A `dynamic` closure parameter takes the expected function type's, when
+  /// there is one at that position (see `_expectedFunction`).
+  /// Closure parameters whose Rust type is the *expected* one rather than
+  /// the declared (see `_closureParamType`): a read of one has that type,
+  /// not what Kernel says, and an argument made of it is widened from it.
+  final Map<Variable, DartType> _retyped = {};
+
+  static DartType _closureParamType(
+    FunctionType? expected,
+    int i,
+    DartType declared,
+  ) {
+    if (expected == null || i >= expected.positionalParameters.length)
+      return declared;
+    final wanted = expected.positionalParameters[i];
+    if (declared is DynamicType) return wanted;
+    // TFA narrows the closure's own `int? result` to `int` when no caller
+    // passes null; the `Fn(Option<T>)` it is handed to did not change.
+    if (declared is InterfaceType &&
+        wanted is InterfaceType &&
+        declared.classNode == wanted.classNode &&
+        declared.nullability != Nullability.nullable &&
+        wanted.nullability == Nullability.nullable) {
+      return wanted;
+    }
+    if (declared is FunctionType && wanted is FunctionType) return wanted;
+    return declared;
+  }
+
+  DartType _retype(Variable p, DartType chosen) {
+    if (chosen != p.type) _retyped[p] = chosen;
+    return chosen;
+  }
+
   IrExpr _closure(FunctionNode fn, Node origin) {
+    // Taken once, for this closure: a closure nested in the body is not the
+    // one the context described.
+    final expected = _expectedFunction;
+    _expectedFunction = null;
     // A closure that only reads `final` fields of `this` copies them in
     // instead of holding `this`. A `final` field cannot change, so the copy
     // and the read are the same value -- see `IrClosure.captures`. This is
@@ -416,7 +981,22 @@ class KernelFrontend {
         !_counted &&
         !copies &&
         !(_borrowedArgument && _onlyReadsThis(fn))) {
-      throw Unsupported('closure capturing `this`', _sample(origin));
+      TreeNode? up = origin is TreeNode ? origin : null;
+      while (up != null && up is! Member) {
+        up = up.parent;
+      }
+      final member = up as Member?;
+      throw Unsupported(
+        'closure capturing `this` in ${member?.enclosingClass?.name}.'
+        '${member?.name.text} (${member.runtimeType}'
+        '${member is Procedure ? " ${member.kind}" : ""}, '
+        'static=${member is Procedure
+            ? member.isStatic
+            : member is Field
+            ? member.isStatic
+            : "?"})',
+        _sample(origin),
+      );
     }
     final body = fn.body;
     if (body == null)
@@ -429,19 +1009,92 @@ class KernelFrontend {
     try {
       return IrClosure(
         [
-          for (final p in fn.positionalParameters)
-            IrParam(p.cosmeticName ?? '_', _type(p.type)),
+          for (final (i, p) in fn.positionalParameters.indexed)
+            IrParam(
+              _paramName(p),
+              _paramType(_retype(p, _closureParamType(expected, i, p.type))),
+            ),
+          // Named parameters, **sorted by name**. A Rust closure has only
+          // positions, and a call through a function value sees only the
+          // function *type*, whose named parameters Dart keeps in name order
+          // -- so that order is the one both ends can agree on. They used to
+          // be left off entirely, which made every closure with a named
+          // parameter a closure whose body read variables it did not have.
+          for (final p in _namedInTypeOrder(fn))
+            IrParam(p.parameterName, _type(p.type), named: true),
         ],
-        statement(body),
+        _lowerBody(fn, body),
         _type(fn.returnType),
+        isAsync: fn.asyncMarker == AsyncMarker.Async,
         captures: copies
             ? [for (final f in finals) IrParam(f.name.text, _type(f.type))]
             : const [],
+        locals: _freeLocals(fn),
         holdsSelf: holds,
       );
     } finally {
       _captured = was;
     }
+  }
+
+  /// The locals of the enclosing function a closure reads: they are cloned
+  /// in just before it is made, and the closure moves the clones. An
+  /// `Rc<dyn Fn>` is `'static`, and a closure borrowing `callback` and
+  /// `arg1` from the frame that made it was 9 "does not live long enough".
+  List<String> _freeLocals(FunctionNode fn) =>
+      _freeLocalsIn(fn, {...fn.positionalParameters, ...fn.namedParameters});
+
+  /// The locals read anywhere under a node and declared nowhere under it.
+  List<String> _freeLocalsIn(TreeNode node, Set<Variable> own) {
+    final finder = _LocalFinder();
+    node.accept(finder);
+    final inside = {...finder.declared, ...own};
+    final names = <String>[];
+    for (final v in finder.read) {
+      if (inside.contains(v)) continue;
+      // The name the read itself uses: a temporary's given one, else what
+      // the human wrote.
+      final written = v.cosmeticName;
+      final name =
+          _temporaries[v] ??
+          (written == null || written.startsWith('#') ? _nameFor(v) : written);
+      if (!names.contains(name)) names.add(name);
+    }
+    return names;
+  }
+
+  /// Whether a supertype that becomes a trait declares a mutable field.
+  static bool _inheritsMutableTraitField(Class node) {
+    final seen = <Class>{};
+    bool walk(Class c) {
+      if (!seen.add(c)) return false;
+      final supers = <Class>[
+        if (c.superclass != null) c.superclass!,
+        for (final t in c.implementedTypes) t.classNode,
+        if (c.mixedInClass != null) c.mixedInClass!,
+      ];
+      for (final s in supers) {
+        if ((s.isAbstract || s.isMixinDeclaration) &&
+            s.fields.any((f) => !f.isStatic && !f.isFinal)) {
+          return true;
+        }
+        if (walk(s)) return true;
+      }
+      return false;
+    }
+
+    return walk(node);
+  }
+
+  /// Whether any method body (not a constructor) writes a field of `this`.
+  static bool _writesFieldInMethod(Class node) {
+    final finder = _ThisWriteFinder();
+    for (final p in node.procedures) {
+      if (p.isStatic || p.isAbstract) continue;
+      p.function.body?.accept(finder);
+      if (finder.found) return true;
+    }
+    return false;
   }
 
   /// The fields a closure body reads on `this`, when **every** one is `final`
@@ -464,6 +1117,18 @@ class KernelFrontend {
   Set<String> _captured = const {};
 
   /// Whether an expression is `this`, or a chain of field reads from it.
+  /// A receiver's shape, for a refusal to name: `this.field!`, `param`.
+  static String _shape(Expression e) => switch (e) {
+    ThisExpression() => 'this',
+    InstanceGet(:final receiver) => '${_shape(receiver)}.field',
+    NullCheck(:final operand) => '${_shape(operand)}!',
+    Let() => 'let',
+    VariableGet(:final variable) =>
+      variable.parent is FunctionNode ? 'param' : 'local',
+    StaticGet() => 'static',
+    _ => '${e.runtimeType}',
+  };
+
   bool _rootedAtThis(Expression e) => switch (e) {
     ThisExpression() => true,
     InstanceGet(:final receiver) => _rootedAtThis(receiver),
@@ -555,7 +1220,11 @@ class KernelFrontend {
           IrLocalDecl(
             _cascadeName,
             _type(node.variable.type),
-            expression(initial),
+            // Shared, not moved, when the receiver is a local (see the
+            // other cascade site).
+            // Into the binding's own type: TFA proves `size?.width` non-null
+            // and the CFE's `#t` is still a `double?` (`Some(..)`).
+            _widened(initial, node.variable.type, expression(initial)),
           ),
           for (final s in body.body.statements) statement(s),
         ], const IrLocal(_cascadeName));
@@ -581,10 +1250,38 @@ class KernelFrontend {
         final previous = _bound;
         _bound = node.variable;
         try {
-          return IrNullAware(receiver, expression(otherwise));
+          // `oldLayer?._nativeLayer` with `_nativeLayer` a `T?`: one
+          // `Option`, not two (8 `Option<Option<..>>` in dart:ui).
+          final memberType = _staticType(otherwise);
+          return IrNullAware(
+            receiver,
+            expression(otherwise),
+            // `void` is "nullable" to Kernel; `x?.addListener(..)` is a
+            // `map`, not an `and_then` (`Option<_> <= ()`).
+            flatten:
+                memberType is InterfaceType &&
+                memberType.nullability == Nullability.nullable,
+          );
         } finally {
           _bound = previous;
         }
+      }
+      // `x!` -- the CFE writes it `let #0 = x in #0 == null ? #0 as T : #0`,
+      // which is `??`'s shape with the temporary on *both* sides. Read as `??`
+      // it took `#0 as T` for the right side and then met its own temporary
+      // there with no name: 111 refusals reading `synthetic variable`, every
+      // one an `x!` on a field.
+      final then = body.then;
+      if (condition is EqualsNull &&
+          _isThe(condition.expression, node.variable) &&
+          _isThe(otherwise, node.variable) &&
+          then is AsExpression &&
+          _isThe(then.operand, node.variable)) {
+        final value = node.variable.initializer;
+        if (value == null) {
+          throw Unsupported('`!` with no operand', _sample(node));
+        }
+        return IrNullCheck(expression(value));
       }
       if (condition is EqualsNull &&
           _isThe(condition.expression, node.variable) &&
@@ -594,6 +1291,26 @@ class KernelFrontend {
           throw Unsupported('`??` with no left side', _sample(node));
         }
         final right = body.then;
+        // `locale ?? "unspecified"` inside a string: the two sides are of
+        // different classes and the result is `Object`, so both go through
+        // `dart_str` (6 `Option<Locale> <= String` shapes in dart:ui).
+        final leftType = _staticType(value);
+        final rightType = _staticType(right);
+        if (leftType is InterfaceType &&
+            rightType is InterfaceType &&
+            leftType.classNode != rightType.classNode &&
+            body.staticType is InterfaceType &&
+            (body.staticType as InterfaceType).classNode.name == 'Object') {
+          return IrIfNull(
+            IrNullAware(
+              expression(value),
+              IrStaticCall(null, 'dart_str', const [IrBound()]),
+            ),
+            IrStaticCall(null, 'dart_str', [expression(right)]),
+            nullableResult: false,
+            eager: false,
+          );
+        }
         return IrIfNull(
           expression(value),
           expression(right),
@@ -622,9 +1339,35 @@ class KernelFrontend {
       throw Unsupported('CFE `Let` with no initialiser', _sample(node));
     }
     final name = _nameFor(node.variable);
+    // `alpha ?? a` after type flow analysis proved `alpha` non-null: the
+    // conditional is gone and the body is the bound variable, *promoted*
+    // to `double` while the binding is still `double?`. The unwrap is the
+    // proof (the `{ let __t: Option<f64> = alpha; __t }` shapes).
+    final letBody = node.body;
+    final promotedRead =
+        letBody is VariableGet &&
+        letBody.variable == node.variable &&
+        node.variable.type.nullability == Nullability.nullable &&
+        letBody.promotedType != null &&
+        letBody.promotedType!.nullability != Nullability.nullable;
     return IrBlockValue([
-      IrLocalDecl(name, _type(node.variable.type), expression(initial)),
-    ], expression(node.body));
+      IrLocalDecl(
+        name,
+        // The post-increment's middle binding is `void` (see `_declare`).
+        node.variable.type is VoidType ? null : _type(node.variable.type),
+        // A local bound here is shared, not moved: `let __t = key;` and
+        // `key` read again two lines on (13 E0382s). Into a `dynamic`
+        // binding it is shared into the `Rc<dyn Object>` (`__t: Rc<dyn
+        // Object> = true`).
+        _intoObject(
+          initial,
+          node.variable.type,
+          // ..and widened into the binding's type: `double? t = size?.height`
+          // after TFA holds a `double`, and the binding says `Some`.
+          _widened(initial, node.variable.type, expression(initial)),
+        ),
+      ),
+    ], promotedRead ? IrNullCheck(IrLocal(name)) : expression(letBody));
   }
 
   /// One local declaration, wherever it is written.
@@ -651,6 +1394,100 @@ class KernelFrontend {
             type.classNode.name == '_Location');
   }
 
+  /// `a.b = v` as a statement.
+  ///
+  /// Its own method because a `return a.b = v;` in a void function is this
+  /// statement and then a bare return -- the CFE writes `=> x = v` that way,
+  /// 171 times in the gallery's dill, every one in a setter or a void closure.
+  IrStmt _instanceSet(InstanceSet value) {
+    // The value widens into the field's or setter's type: `_cache = s`
+    // into a `String?` field is `Some(s)`.
+    final written = _widened(
+      value.value,
+      value.interfaceTarget.setterType,
+      expression(value.value),
+    );
+    // A field on `this`, and a field rather than a setter. Kernel names the
+    // target outright, so neither has to be inferred.
+    // A write to the cascade's own binding: a local, so it needs a
+    // mutable local rather than a mutable `self`.
+    final receiver = value.receiver;
+    if (_cascade != null &&
+        receiver is VariableGet &&
+        receiver.variable == _cascade) {
+      if (value.interfaceTarget is! Field) {
+        return IrSetter(const IrLocal(_cascadeName), value.name.text, written);
+      }
+      return IrAssignField(
+        value.name.text,
+        written,
+        target: const IrLocal(_cascadeName),
+      );
+    }
+    if (value.receiver is! ThisExpression) {
+      // Another object's *setter* is a call, which needs nothing from us
+      // beyond a `&mut` receiver at the call site.
+      if (value.interfaceTarget is! Field) {
+        return IrSetter(expression(value.receiver), value.name.text, written);
+      }
+      // A *field* is a write through a reference. Through a chain rooted
+      // at `this` -- `this.child.x = v` -- that reference is `self`, and
+      // `&mut self` is a thing this compiler already works out. Through a
+      // parameter it would mean `&mut` on the parameter and on every call
+      // site, including ones in other files, so that one still stops.
+      // A *local* that owns a value: `final entry = _ChildEntry(..);
+      // entry.x = v;` is `let mut entry` and a plain field write in Rust,
+      // with no reference in between and nothing for a call site to know.
+      // Measured on 2026-09-03: 107 of the 296 refusals here were exactly
+      // this. A local holding a counted class's handle is not this -- its
+      // fields would have to be cells -- and a parameter is not either.
+      final receiver = value.receiver;
+      if (receiver is VariableGet &&
+          receiver.variable.parent is! FunctionNode &&
+          !_closureCallsMethod(value.interfaceTarget.enclosingClass!)) {
+        return IrAssignField(
+          value.name.text,
+          written,
+          target: expression(receiver),
+        );
+      }
+      // A local or a parameter holding a *counted* class's handle: every
+      // non-final field of such a class is already a cell (the backend's
+      // `_inCell`), so the write goes through the cell and needs no `&mut`
+      // on anything. The owner rides on the node so the backend can find the
+      // cell. 82 + 14 of the refusals here.
+      final declaring = value.interfaceTarget.enclosingClass!;
+      // ..and reached however it was reached: `_views[viewId]!.x = v` is a
+      // handle out of a map, and the write goes through the cell just the
+      // same (`PlatformDispatcher`, 1 refusal that took 3 callers).
+      if (_closureCallsMethod(declaring)) {
+        return IrAssignField(
+          value.name.text,
+          written,
+          target: expression(receiver),
+          owner: declaring.name,
+        );
+      }
+      if (!_rootedAtThis(value.receiver)) {
+        throw Unsupported(
+          'assignment to a field of another object '
+          '(${_shape(value.receiver)}, '
+          '${_closureCallsMethod(value.interfaceTarget.enclosingClass!) ? "counted" : "value"})',
+          _sample(value),
+        );
+      }
+      return IrAssignField(
+        value.name.text,
+        written,
+        target: expression(value.receiver),
+      );
+    }
+    if (value.interfaceTarget is! Field) {
+      return IrSetter(null, value.name.text, written);
+    }
+    return IrAssignField(value.name.text, written);
+  }
+
   IrStmt _declare(Variable variable, Node at) {
     final init = variable.initializer;
     if (init is InstanceGet && init.name.text == 'iterator') {
@@ -658,7 +1495,26 @@ class KernelFrontend {
       // this binding is part of that shape and the restored loop names the
       // iterable itself.
       _iterators[variable] = init.receiver;
-      return const IrBlock([]);
+      // Declared as well as remembered: a loop the restoration recognises
+      // ignores this binding, and a hand-driven one -- `final it =
+      // xs.iterator; while (it.moveNext()) ..`, `equality.dart` -- needs it.
+      // Swallowed, it left `iterator.move_next()` on nothing.
+      final written = variable.cosmeticName;
+      final name =
+          (written == null ||
+              written.startsWith('#') ||
+              written.startsWith(':'))
+          ? _nameFor(variable)
+          : written;
+      return IrLocalDecl(
+        name,
+        null,
+        // A clone: the iterator owns its items, and the list is a field
+        // behind `&self` more often than not (`self._children`, E0507).
+        IrStaticCall(null, 'dart_iter', [
+          IrCall(expression(init.receiver), 'clone', const []),
+        ]),
+      );
     }
     final written = variable.cosmeticName;
     // A temporary the CFE invented. It used to be refused, on the grounds that
@@ -671,8 +1527,19 @@ class KernelFrontend {
         : written;
     return IrLocalDecl(
       name,
-      _type(variable.type),
-      init == null ? null : expression(init),
+      // `void` is what the CFE gives the temporary of a post-increment whose
+      // value is unused, and `let __t: () = { ..; __set }` then held an
+      // `i64` (53 `() <= i64`). Unannotated, Rust infers what it holds.
+      variable.type is VoidType ? null : _type(variable.type),
+      // Into the declared type: `Int32List? x = encode(..)` is `Some(..)`;
+      // `num divisor = pow(10, n).round()` casts the `int`.
+      init == null
+          ? null
+          : _intoDeclaredNum(
+              init,
+              variable.type,
+              _widened(init, variable.type, expression(init)),
+            ),
     );
   }
 
@@ -685,6 +1552,50 @@ class KernelFrontend {
   /// name, kept in a map by identity rather than by text.
   final _temporaries = <Variable, String>{};
   var _nextTemporary = 0;
+
+  /// The Rust element type of a typed list narrower than Dart's `double`
+  /// and `int`, or null for anything else.
+  static String? _narrowElement(DartType? type) {
+    if (type is! InterfaceType) return null;
+    return const {
+      'Float32List': 'f32',
+      'Int8List': 'i8',
+      'Int16List': 'i16',
+      'Int32List': 'i32',
+      'Uint8List': 'u8',
+      'Uint8ClampedList': 'u8',
+      'Uint16List': 'u16',
+      'Uint32List': 'u32',
+    }[type.classNode.name];
+  }
+
+  /// A parameter's declared default, lowered -- or null when it has none or
+  /// the default is not a shape this front end lowers.
+  IrExpr? _default(FunctionParameter p) {
+    final value = p.defaultValue;
+    if (value == null) return null;
+    try {
+      return expression(value);
+    } on Unsupported {
+      return null;
+    }
+  }
+
+  /// A parameter's name for the backend.
+  ///
+  /// The CFE gives its own parameters names no human wrote --
+  /// `#externalFieldValue` on an external field's setter, `#typedDataBase` on
+  /// a `Struct` constructor -- and `#` is not a character the backend can
+  /// carry. Those get the same `__tN` a temporary gets, by identity, and
+  /// `VariableGet` finds it again the same way. 128 refusals were these.
+  String _paramName(Variable p, [String? fallback]) {
+    final written = p.cosmeticName;
+    // A parameter with no written name still has to be *nameable*: a super
+    // forwarder passes it on by name, and `_` is a pattern in Rust, not a
+    // value -- `super_set_first(self, _)` did not parse.
+    if (written == null) return fallback ?? _nameFor(p);
+    return written.startsWith('#') || written == '_' ? _nameFor(p) : written;
+  }
 
   String _nameFor(Variable variable) =>
       _temporaries[variable] ??= '__t${_nextTemporary++}';
@@ -738,7 +1649,18 @@ class KernelFrontend {
   /// that holds it. Returns null when the shape is anything else.
   IrStmt? _forIn(ForStatement node) {
     if (node.variables.isNotEmpty || node.updates.isNotEmpty) return null;
-    final condition = node.condition;
+    return _restoreForIn(node.condition, node.body);
+  }
+
+  /// The same loop written with `while`: the CFE's other spelling of
+  /// `for (x in xs)` -- `while (:sync-for-iterator.moveNext())` -- which the
+  /// `for (;;)` restoration never saw. The iterator binding above it had
+  /// already been swallowed as "part of that shape", so the loop that came
+  /// out named a variable nothing declared: 6 `_sync_for_iterator`s.
+  IrStmt? _forInWhile(WhileStatement node) =>
+      _restoreForIn(node.condition, node.body);
+
+  IrStmt? _restoreForIn(Expression? condition, Statement body0) {
     if (condition is! InstanceInvocation || condition.name.text != 'moveNext') {
       return null;
     }
@@ -747,11 +1669,25 @@ class KernelFrontend {
     final iterable = _iterators[receiver.variable];
     if (iterable == null) return null;
 
-    var body = node.body;
+    var body = body0;
     if (body is LabeledStatement) body = body.body;
     if (body is! Block || body.statements.isEmpty) return null;
     final first = body.statements.first;
-    if (first is! VariableStatement) return null;
+    if (first is! VariableStatement) {
+      // No `x = it.current` at the top: the body reads `.current` where it
+      // needs it. The element gets a name here and `_instanceGet` hands the
+      // reads that name (see `_currentOf`). Without this the declaration
+      // was swallowed above and the loop below named a variable that was
+      // never declared -- `_sync_for_iterator`, 6 times.
+      final element = '__t${_nextTemporary++}';
+      _currentOf[receiver.variable] = element;
+      _iteratorLoops.add(receiver.variable);
+      return IrForIn(
+        element,
+        expression(iterable),
+        IrBlock([for (final s in body.statements) statement(s)]),
+      );
+    }
     final initial = first.declaration.variable.initializer;
     if (initial is! InstanceGet ||
         initial.name.text != 'current' ||
@@ -762,8 +1698,12 @@ class KernelFrontend {
             ))) {
       return null;
     }
-    final name = first.declaration.variable.cosmeticName;
-    if (name == null || name.startsWith('#')) return null;
+    // The element's name is the binding's, or one of this front end's own
+    // when the CFE gave it none -- a `for ((a, b) in pairs)` binds `#0`.
+    final written = first.declaration.variable.cosmeticName;
+    final name = (written == null || written.startsWith('#'))
+        ? _nameFor(first.declaration.variable)
+        : written;
     _iteratorLoops.add(receiver.variable);
     return IrForIn(
       name,
@@ -776,6 +1716,10 @@ class KernelFrontend {
   /// `for-in` has consumed -- whose binding statement must then not be emitted.
   final _iterators = <Variable, Expression>{};
   final _iteratorLoops = <Variable>{};
+
+  /// The element name standing in for `it.current` inside a restored loop
+  /// whose body did not bind it first.
+  final _currentOf = <Variable, String>{};
 
   IrStmt _loopBody(Statement body, bool hasUpdates) {
     if (body is! LabeledStatement) return statement(body);
@@ -839,14 +1783,58 @@ class KernelFrontend {
     if (receiver is ThisExpression && _captured.contains(name)) {
       return IrLocal(name);
     }
+    if (name == 'current' && receiver is VariableGet) {
+      final element = _currentOf[receiver.variable];
+      if (element != null) return IrLocal(element);
+    }
     final target = receiver is ThisExpression ? null : expression(receiver);
     if (node.interfaceTarget is Procedure) {
+      return IrCall(target, name, const []);
+    }
+    // A field of a `dart:` class the prelude re-expresses -- `Duration
+    // .inMicroseconds` is a field in this SDK -- is a method there, as
+    // every getter of such a class is.
+    // Only where the prelude spells them as methods: `MapEntry.key` and
+    // `SocketException.message` are fields there (11 E0599s when every
+    // `dart:` class took this path, ws136).
+    final owner = node.interfaceTarget.enclosingClass;
+    if (owner != null &&
+        owner.enclosingLibrary.importUri.scheme == 'dart' &&
+        const {'Duration', 'DateTime'}.contains(owner.name)) {
+      return IrCall(target, name, const []);
+    }
+    // A field declared on an *abstract* class is a trait accessor in Rust,
+    // and a read through another object -- whatever its concrete class
+    // stores -- goes through the accessor: `rc.x` took the value of a
+    // method, 111 times in the leaf crates.
+    final declaring = node.interfaceTarget.enclosingClass;
+    // Not an anonymous mixin application: it is abstract to Kernel, and its
+    // fields are flattened into the applying class's struct here
+    // (`Get.isLogEnable` read as a getter call on a field, E0599).
+    // ..unless the receiver's own static class is concrete: the struct has
+    // the abstract base's field flattened in, and the field is read as one
+    // (`Get.isLogEnable` on a `_GetImpl`, whose trait was not even in scope).
+    final receiverType = target == null ? null : _staticType(receiver);
+    final concrete =
+        receiverType is InterfaceType &&
+        !receiverType.classNode.isAbstract &&
+        receiverType.classNode.enclosingLibrary.importUri.scheme != 'dart';
+    if (target != null &&
+        declaring != null &&
+        declaring.isAbstract &&
+        !declaring.isAnonymousMixin &&
+        !concrete) {
       return IrCall(target, name, const []);
     }
     return IrField(
       target,
       name,
       onEnum: node.interfaceTarget.enclosingClass?.isEnum ?? false,
+      owner: target == null
+          ? null
+          : concrete && declaring != null && declaring.isAbstract
+          ? (receiverType as InterfaceType).classNode.name
+          : node.interfaceTarget.enclosingClass?.name,
     );
   }
 
@@ -864,6 +1852,13 @@ class KernelFrontend {
         return IrStaticCall(null, target.name.text, const []);
       }
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
+    }
+    // A static *getter* is a function -- `PlatformDispatcher.instance` --
+    // and reading it is calling it, as for a top-level getter above. As a
+    // static it was spelled `PlatformDispatcher::INSTANCE`, a constant
+    // nothing declared (20 times).
+    if (target is Procedure && target.kind == ProcedureKind.Getter) {
+      return IrStaticCall(enclosing.name, target.name.text, const []);
     }
     return IrStatic(
       enclosing.name,
@@ -886,8 +1881,24 @@ class KernelFrontend {
     // three-parameter function -- the same bug the analyzer front end had in
     // round two, living on here because nothing compared the two front ends on
     // a fixture that used defaults.
-    final args = _arguments(node.arguments, node.interfaceTarget.function);
+    final args = _arguments(
+      node.arguments,
+      node.interfaceTarget.function,
+      true,
+      node.functionType,
+    );
     final owner = node.interfaceTarget.enclosingClass?.name;
+    // `child.toString()` on a `Listenable?`: an `Option` has no
+    // `to_string`, and `dart_str` prints `null` for the absent case as
+    // Dart does.
+    if (name == 'toString' && args.isEmpty) {
+      final t = _staticType(node.receiver);
+      if (t != null &&
+          t is! DynamicType &&
+          t.nullability == Nullability.nullable) {
+        return IrStaticCall(null, 'dart_str', [expression(node.receiver)]);
+      }
+    }
     if (owner == 'List' || owner == 'Map' || owner == 'Iterable') {
       // A collection member is a *Rust* method taking `impl Fn`, so a closure
       // given to one is not boxed. `_keeps` cannot say so: the callee is
@@ -898,9 +1909,134 @@ class KernelFrontend {
         args[i] = _unboxed(args[i]);
       }
     }
+    // `completer.complete()` on a `Completer<void>`: the value is `()`.
+    if (owner == 'Completer' &&
+        name == 'complete' &&
+        (args.isEmpty ||
+            (args.length == 1 && node.arguments.positional.isEmpty))) {
+      return IrCall(expression(node.receiver), 'complete', [
+        IrSome(const IrLiteral('()', IrType('raw'))),
+      ]);
+    }
+    // `s[i]` on a String is a one-character String, not an index into a
+    // list: `pattern[0] == "a"` in intl's date formatting (44 + 44).
+    // `[3, 4, 5].contains(n % 100)` with `n` a `num`: Dart compares by
+    // value (`3 == 3.0`), so the `double` is cast to the list's `int`.
+    if ((owner == 'List' || owner == 'Iterable') &&
+        name == 'contains' &&
+        args.length == 1) {
+      final listType = _staticType(node.receiver);
+      final argType = _staticType(node.arguments.positional.single);
+      final element =
+          listType is InterfaceType && listType.typeArguments.isNotEmpty
+          ? listType.typeArguments.first
+          : null;
+      if (element is InterfaceType &&
+          element.classNode.name == 'int' &&
+          argType is InterfaceType &&
+          (argType.classNode.name == 'double' ||
+              argType.classNode.name == 'num')) {
+        return IrCall(expression(node.receiver), '!contains', [
+          IrCast(args.single, 'i64'),
+        ]);
+      }
+      return IrCall(expression(node.receiver), '!contains', args);
+    }
+    if (owner == 'String' && name == '[]' && args.length == 1) {
+      return IrCall(expression(node.receiver), 'char_at', args);
+    }
+    // `trim()` and friends: `str::trim` hands back a `&str`, and being
+    // inherent it wins over a trait method of the same name.
+    if (owner == 'String' &&
+        const {'trim', 'trimLeft', 'trimRight'}.contains(name) &&
+        args.isEmpty) {
+      const spelled = {
+        'trim': 'trim_dart',
+        'trimLeft': 'trim_left_dart',
+        'trimRight': 'trim_right_dart',
+      };
+      return IrCall(expression(node.receiver), spelled[name]!, const []);
+    }
+    if (owner == 'String' && name == 'split' && args.length == 1) {
+      // `s.split(p)`: Rust's `split` wants a `&str` and yields an iterator.
+      return IrCall(expression(node.receiver), 'split_dart', args);
+    }
+    if (owner == 'String' && name == '*' && args.length == 1) {
+      // `'0' * n`: Rust's `repeat` wants a `usize`.
+      return IrCall(expression(node.receiver), 'repeat_dart', args);
+    }
+    if (owner == 'String' &&
+        name == 'contains' &&
+        (args.length == 1 || args.length == 2)) {
+      // `contains(other, [start])`: `str::contains` is inherent, takes a
+      // `&str`, and has no start; the prelude's `contains_dart` has both.
+      return IrCall(expression(node.receiver), 'contains_dart', [
+        args.first,
+        if (args.length == 2) args[1] else const IrLiteral('0', IrType('int')),
+      ]);
+    }
+    if (owner == 'String' && name == 'startsWith' && args.length == 2) {
+      // `startsWith(pattern, index)`: `str::starts_with` takes one argument
+      // and, being inherent, would win over a trait method of the same name.
+      return IrCall(expression(node.receiver), 'starts_with_at', args);
+    }
+    if (owner == 'String' && name == 'replaceRange' && args.length == 3) {
+      // Dart's `replaceRange` returns a new string; Rust's `String` has an
+      // inherent `replace_range` that mutates in place and takes a range,
+      // and an inherent method shadows a trait's. So the prelude's is named
+      // apart.
+      return IrCall(expression(node.receiver), 'replace_range_dart', args);
+    }
+    if (owner == 'Expando') {
+      // `expando[object]` / `expando[object] = v`: identity-keyed, so the
+      // prelude's `get`/`set` rather than an index. 6 uses.
+      if (name == '[]' && args.length == 1) {
+        return IrCall(expression(node.receiver), '!expando_get', [args.single]);
+      }
+      if (name == '[]=' && args.length == 2) {
+        return IrCall(expression(node.receiver), 'set', args);
+      }
+    }
+    // A typed list with a narrow element -- `Float32List` is `Vec<f32>`,
+    // `Int32List` is `Vec<i32>` -- takes Dart's `double`/`int` cast down on
+    // the way in and up on the way out. 23 `f32 <= f64` and 14 `i32`/`i64`
+    // in `dart:ui`'s colour and vertex code.
+    final narrow = _narrowElement(_staticType(node.receiver));
+    if (narrow != null && name == '[]' && args.length == 1) {
+      return IrCast(
+        IrIndex(expression(node.receiver), args.single),
+        narrow.startsWith('f') ? 'f64' : 'i64',
+      );
+    }
+    if (narrow != null && name == '[]=' && args.length == 2) {
+      final held = '__t${_nextTemporary++}';
+      return IrBlockValue([
+        IrLocalDecl(held, null, args[1]),
+        IrIndexSet(
+          expression(node.receiver),
+          args[0],
+          IrCast(IrCall(IrLocal(held), 'clone', const []), narrow),
+        ),
+      ], IrLocal(held));
+    }
     if (owner == 'List' || owner == 'Iterable') {
       if (name == '[]' && args.length == 1) {
         return IrIndex(expression(node.receiver), args.single);
+      }
+      if (name == '[]=' && args.length == 2) {
+        // `xs[i] = v` where the expression's value is wanted -- the CFE puts
+        // `xs[i] += 1` into a `Let` whose body is this call. Bound, stored as
+        // a clone, produced: the same shape every other assignment-as-value
+        // takes here. 48 of them.
+        final held = '__t${_nextTemporary++}';
+        return IrBlockValue([
+          IrLocalDecl(held, null, args[1]),
+          IrIndexSet(
+            expression(node.receiver),
+            args[0],
+            IrCall(IrLocal(held), 'clone', const []),
+          ),
+        ], IrLocal(held));
       }
       final step = iterStepNames[name];
       if (step != null && args.length == 1) {
@@ -911,6 +2047,29 @@ class KernelFrontend {
             ? IrIterChain(source.source, [...source.steps, (step, args.single)])
             : IrIterChain(source, [(step, args.single)]);
       }
+      if (name == 'firstWhere' && args.length == 2) {
+        // `firstWhere(test)` throws when nothing matches; with `orElse` it
+        // calls that instead. The omitted `orElse` arrives as `None`, and a
+        // generic `impl Fn` parameter cannot take a `None`, so the two are
+        // two prelude methods. 25 calls.
+        final orElse = args[1];
+        final omitted = orElse is IrLiteral && orElse.type.name == 'Null';
+        return IrCall(
+          expression(node.receiver),
+          omitted ? 'first_where' : 'first_where_or',
+          omitted ? [args[0]] : args,
+        );
+      }
+      if (name == 'sort') {
+        // `sort()` is `Vec::sort`; `sort(compare)` takes a Dart comparator
+        // returning an `int`, which the prelude's `sort_by_dart` turns into
+        // an `Ordering`. 36 of these.
+        return IrCall(
+          expression(node.receiver),
+          args.isEmpty ? 'sort' : 'sort_by_dart',
+          args,
+        );
+      }
       final rust = listMethodNames[name];
       if (rust != null) {
         return IrCall(expression(node.receiver), rust, args);
@@ -918,8 +2077,39 @@ class KernelFrontend {
       throw Unsupported('`List.$name`', _sample(node));
     }
     if (owner == 'Map') {
+      // Its own name: the backend's `.get(&k).cloned()` was keyed on `get`
+      // and fired on `ContrastCurve.get(double)` too (14 `&f64`).
       if (name == '[]' && args.length == 1) {
-        return IrCall(expression(node.receiver), 'get', args);
+        // `_cache[tone]` on a `Map<int, _>` with a `num` key: the key is an
+        // `f64` here and the map's is `i64`, the same cast `contains` makes.
+        final mapType = _staticType(node.receiver);
+        final argType = _staticType(node.arguments.positional.single);
+        final key = mapType is InterfaceType && mapType.typeArguments.isNotEmpty
+            ? mapType.typeArguments.first
+            : null;
+        if (key is InterfaceType &&
+            key.classNode.name == 'int' &&
+            argType is InterfaceType &&
+            (argType.classNode.name == 'double' ||
+                argType.classNode.name == 'num')) {
+          return IrCall(expression(node.receiver), '!map_get', [
+            IrCast(args.single, 'i64'),
+          ]);
+        }
+        // A nullable key into a map of non-nullable ones: `_views[_implicitViewId]`.
+        if (key != null &&
+            key.nullability != Nullability.nullable &&
+            argType != null &&
+            argType is! DynamicType &&
+            argType.nullability == Nullability.nullable) {
+          return IrCall(expression(node.receiver), '!map_get_opt', args);
+        }
+        return IrCall(expression(node.receiver), '!map_get', args);
+      }
+      // `m[k] = v`: `insert`, as a statement or for its value (Dart's is
+      // `v`; here the old value, which no caller reads).
+      if (name == '[]=' && args.length == 2) {
+        return IrCall(expression(node.receiver), 'insert', args);
       }
       if (orderedMapMembers.contains(name)) {
         throw Unsupported(
@@ -929,13 +2119,111 @@ class KernelFrontend {
       }
       final rust = mapMethodNames[name];
       if (rust == null) throw Unsupported('`Map.$name`', _sample(node));
+      // `Map<int, _>.containsKey(tone)` with a `double`: Dart's `3.0 == 3`
+      // finds the key, so the `double` is cast to the map's `int`.
+      if (const {'containsKey', 'remove', '[]'}.contains(name) &&
+          args.length == 1) {
+        final mapType = _staticType(node.receiver);
+        final key = mapType is InterfaceType && mapType.typeArguments.isNotEmpty
+            ? mapType.typeArguments.first
+            : null;
+        final argType = _staticType(node.arguments.positional.single);
+        if (key is InterfaceType &&
+            key.classNode.name == 'int' &&
+            argType is InterfaceType &&
+            argType.classNode.name == 'double') {
+          return IrCall(expression(node.receiver), rust, [
+            IrCast(args.single, 'i64'),
+          ]);
+        }
+      }
       return IrCall(expression(node.receiver), rust, args);
     }
     if (_binaryOperators.contains(name) && args.length == 1) {
+      // `int * double` is a `double` in Dart and a type error in Rust: the
+      // `int` side is cast. The receiver's class is the operator's owner;
+      // the argument's is asked of the static types.
+      var left = expression(node.receiver);
+      var right = args.single;
+      // Comparisons too: `returnValue < 0` on a `double` is `f64 < integer`
+      // in Rust until the literal is cast (6 in the colour code).
+      // `targetWidth! ~/ (w / h)`: an `int ~/ double` is a `double`
+      // division truncated to an `int` in Dart. Both sides go to `f64`
+      // and the truncated result comes back to `i64`.
+      if (name == '~/') {
+        String? classOf(Expression e) {
+          final t = _staticType(e);
+          return t is InterfaceType ? t.classNode.name : null;
+        }
+
+        final leftClass = classOf(node.receiver);
+        final rightClass = classOf(node.arguments.positional.single);
+        if (leftClass == 'double' || rightClass == 'double') {
+          if (leftClass == 'int') left = IrCast(left, 'f64');
+          if (rightClass == 'int') right = IrCast(right, 'f64');
+          return IrCast(
+            IrBinary(name, left, right, type: const IrType('double')),
+            'i64',
+          );
+        }
+      }
+      if (const {
+        '+',
+        '-',
+        '*',
+        '/',
+        '%',
+        '<',
+        '>',
+        '<=',
+        '>=',
+      }.contains(name)) {
+        String? classOf(Expression e) {
+          final t = _staticType(e);
+          return t is InterfaceType ? t.classNode.name : null;
+        }
+
+        // The receiver's *static* class, not the operator's owner: an
+        // `int * double` may resolve to `num.*`.
+        final leftClass = classOf(node.receiver);
+        final rightClass = classOf(node.arguments.positional.single);
+        // Not `num`: a static type of `num` is an `i64` as often as an
+        // `f64` in the output (round ws49: 580 casts the wrong way).
+        if (leftClass == 'int' && rightClass == 'double') {
+          left = IrCast(left, 'f64');
+        }
+        if (leftClass == 'double' && rightClass == 'int') {
+          right = IrCast(right, 'f64');
+        }
+        // A *declared* `num` -- a variable, field or static whose declaration
+        // says `num`, an `f64` here -- against an int literal: the literal
+        // is cast. Not the static type: `getStaticType` says `num` for an
+        // `int` assignment used as a value (`(index = next()) >= 0`), and a
+        // cast on that went wrong 200 times (ws53).
+        final argument = node.arguments.positional.single;
+        if (_declaredNum(node.receiver) &&
+            (argument is IntLiteral || classOf(argument) == 'int')) {
+          right = IrCast(right, 'f64');
+        } else if (_declaredNum(argument) && leftClass == 'int') {
+          left = IrCast(left, 'f64');
+        }
+        // Dart's `/` is always a `double`, even on two `int`s (`~/` is the
+        // integer one); Rust's `/` on two `i64`s is an `i64`.
+        if (name == '/') {
+          if (leftClass == 'int') left = IrCast(left, 'f64');
+          if (rightClass == 'int') right = IrCast(right, 'f64');
+          // `targetWidth! / (w / h)`: whatever the static type of the left
+          // side says, a `/` with a `double` right side is a `double`
+          // division, and Rust has no `i64 / f64`.
+          if (rightClass == 'double' && leftClass != 'double') {
+            left = IrCast(left, 'f64');
+          }
+        }
+      }
       return IrBinary(
         name,
-        expression(node.receiver),
-        args.single,
+        left,
+        right,
         // The invocation's own function type says what the operator returns.
         // `getStaticType` would need a StaticTypeContext this lowering does
         // not build, and the function type is already here.
@@ -946,6 +2234,49 @@ class KernelFrontend {
     }
     if (name == 'unary-' && args.isEmpty) {
       return IrUnary('-', expression(node.receiver));
+    }
+    // Dart's `double.floor()`/`ceil()`/`round()` are `int`s; Rust's are
+    // `f64`s, inherent, and so not renameable through `DartDouble`. 10
+    // `i64 <= f64` in material_color_utilities' HCT solver.
+    // A `num` method on a `dynamic` receiver -- `number.isInfinite` in
+    // intl's `format(dynamic number)`, devirtualised to `num.isInfinite` by
+    // TFA: the receiver is downcast to the `f64` a `num` is here. An `int`
+    // inside the `Rc<dyn Object>` would fail that downcast, loudly.
+    final receiverStatic = _staticType(node.receiver);
+    if ((receiverStatic is DynamicType ||
+            (receiverStatic is InterfaceType &&
+                receiverStatic.classNode.name == 'Object')) &&
+        const {'num', 'int', 'double'}.contains(owner) &&
+        const {
+          'isInfinite',
+          'isNaN',
+          'isFinite',
+          'round',
+          'floor',
+          'ceil',
+          'truncate',
+          'toDouble',
+          'toInt',
+          'abs',
+          'toStringAsFixed',
+        }.contains(name)) {
+      final asDouble = IrCall(
+        IrDowncast(expression(node.receiver), 'f64'),
+        'clone',
+        const [],
+      );
+      final rounds =
+          const {'floor', 'ceil', 'round'}.contains(name) && args.isEmpty;
+      final call = IrCall(asDouble, name, args);
+      return rounds ? IrCast(call, 'i64') : call;
+    }
+    if (const {'floor', 'ceil', 'round'}.contains(name) && args.isEmpty) {
+      final receiverType = _staticType(node.receiver);
+      if (receiverType is InterfaceType &&
+          (receiverType.classNode.name == 'double' ||
+              receiverType.classNode.name == 'num')) {
+        return IrCast(IrCall(expression(node.receiver), name, const []), 'i64');
+      }
     }
     final receiver = node.receiver;
     return IrCall(
@@ -958,6 +2289,33 @@ class KernelFrontend {
   IrExpr _construct(ConstructorInvocation node) {
     final target = node.target;
     final name = target.name.text;
+    // `ListQueue([capacity])`: the prelude's `Queue` (a `VecDeque`), and
+    // the capacity hint is dropped.
+    if (const {
+          'ListQueue',
+          'Queue',
+          'DoubleLinkedQueue',
+        }.contains(target.enclosingClass.name) &&
+        name.isEmpty) {
+      return IrNew(const IrType('Queue'), const []);
+    }
+    // `HashMap(equals: .., hashCode: .., isValidKey: ..)` and `LinkedHashMap`
+    // likewise: the prelude's one `Map`, and the custom key equality is
+    // dropped -- recorded as the approximation it is (collection's
+    // `MapEquality` builds such a map to count entries).
+    if (const {
+          'HashMap',
+          'LinkedHashMap',
+        }.contains(target.enclosingClass.name) &&
+        name.isEmpty) {
+      return IrNew(const IrType('Map'), const []);
+    }
+    // `Object()`: an identity and nothing else, the prelude's `new_object`.
+    if (target.enclosingClass.name == 'Object' &&
+        node.arguments.positional.isEmpty &&
+        node.arguments.named.isEmpty) {
+      return IrStaticCall(null, 'new_object', const []);
+    }
     return IrNew(
       IrType(target.enclosingClass.name),
       _arguments(node.arguments, target.function, false),
@@ -965,7 +2323,39 @@ class KernelFrontend {
     );
   }
 
+  /// A generic function's type at this call: `_futurize<int>(callbacker)`
+  /// takes a `String? Function(_Callback<int>)`, and the closure passed is
+  /// typed against that, not against the `T` the declaration wrote.
+  static FunctionType? _instantiated(StaticInvocation node) {
+    final fn = node.target.function;
+    if (fn.typeParameters.isEmpty ||
+        node.arguments.types.length != fn.typeParameters.length) {
+      return null;
+    }
+    final declared = fn.computeFunctionType(Nullability.nonNullable);
+    final instantiated = FunctionTypeInstantiator.instantiate(
+      declared,
+      node.arguments.types,
+    );
+    return instantiated is FunctionType ? instantiated : null;
+  }
+
   IrExpr _staticInvocation(StaticInvocation node) {
+    // TFA spells a cast it has proven, or one it cannot check, as
+    // `unsafeCast<Clock?>(Zone.current[_clockKey])`. It is the `as` it
+    // replaced, and lowers as one -- without this the operand stood in for
+    // the whole and an `Rc<dyn Object>` landed in an `Option<Clock>`.
+    if (node.target.name.text == 'unsafeCast' &&
+        node.target.enclosingLibrary.importUri.toString() == 'dart:_internal' &&
+        node.arguments.positional.length == 1 &&
+        node.arguments.types.length == 1) {
+      return expression(
+        AsExpression(
+          node.arguments.positional.single,
+          node.arguments.types.single,
+        ),
+      );
+    }
     final target = node.target;
     final positional = node.arguments.positional;
     // Two of dart:math's, and one of Flutter's own. Rust has all three, and
@@ -974,20 +2364,83 @@ class KernelFrontend {
     const arithmetic = {'max': 'max', 'min': 'min'};
     final rust = arithmetic[target.name.text];
     if (rust != null && positional.length == 2) {
-      return IrCall(expression(positional[0]), rust, [
-        expression(positional[1]),
-      ]);
+      // `max(0, x)` with an `int` and a `double`: the `int` is cast, as
+      // the operators cast theirs (`0.max(f64)` was 3 `found integer`s).
+      String? cls(Expression e) {
+        final t = _staticType(e);
+        return t is InterfaceType ? t.classNode.name : null;
+      }
+
+      var a = expression(positional[0]);
+      var b = expression(positional[1]);
+      if (cls(positional[0]) == 'int' && cls(positional[1]) == 'double') {
+        a = IrCast(a, 'f64');
+      } else if (cls(positional[0]) == 'double' &&
+          cls(positional[1]) == 'int') {
+        b = IrCast(b, 'f64');
+      }
+      return IrCall(a, rust, [b]);
     }
     // The CFE lowers `<int>[3, 11, 29]` to `_GrowableList._literal3(..)`, so a
     // list literal never reaches this compiler as a ListLiteral. Restored
     // rather than transliterated, for the same reason `??` and cascades are:
     // the analyzer front end sees the literal, and the two have to agree.
     final owner = target.enclosingClass?.name;
+    // `int.parse(s)` / `double.tryParse(s)`: the prelude's four functions.
+    // `intl`'s field parsers and 30-odd other sites.
+    if ((owner == 'int' || owner == 'double') &&
+        (target.name.text == 'parse' || target.name.text == 'tryParse') &&
+        positional.length == 1 &&
+        node.arguments.named.isEmpty) {
+      final fn =
+          '${target.name.text == 'parse' ? 'parse' : 'try_parse'}_$owner';
+      return IrStaticCall(null, fn, [expression(positional[0])]);
+    }
+    // `_List<T?>(n)` -- `List.filled(n, null)` after the CFE -- is a list of
+    // `n` nulls, which for a nullable element is exactly what it says: the
+    // prelude's `vec_of_nones`. A non-nullable element has nothing to fill
+    // with and stays refused in the backend. `_makeArray` in
+    // `persistent_hash_map.dart`, and everything hashing through it.
+    if (owner == '_List' &&
+        target.name.text.isEmpty &&
+        positional.length == 1 &&
+        node.arguments.types.length == 1 &&
+        node.arguments.types.single.nullability == Nullability.nullable) {
+      return IrStaticCall(null, 'vec_of_nones', [expression(positional[0])]);
+    }
+    // `_GrowableList(0)` -- `List.empty(growable: true)` and `<T>[]` after
+    // the CFE -- is an empty list. With a length it would be `n` nulls,
+    // which for a non-nullable element has nothing to fill with; that one
+    // still stops in the backend.
+    if (owner == '_GrowableList' &&
+        target.name.text.isEmpty &&
+        positional.length == 1 &&
+        positional.single is IntLiteral &&
+        (positional.single as IntLiteral).value == 0) {
+      return IrListLiteral(
+        const [],
+        _type(node.arguments.types.singleOrNull ?? const DynamicType()),
+      );
+    }
     if ((owner == '_GrowableList' || owner == '_List') &&
         target.name.text.startsWith('_literal')) {
+      // Each element widens into the element type, and a local named as an
+      // element is cloned (`[left, right]` moved `left`).
+      final element = node.arguments.types.singleOrNull;
+      // ..and into an `Object?` element (`Object.hashAll([isChecked, ..])`
+      // over enums and structs) each is shared, as an argument would be.
       return IrListLiteral([
-        for (final e in positional) expression(e),
-      ], _type(node.arguments.types.singleOrNull ?? const DynamicType()));
+        for (final e in positional)
+          _intoObject(
+            e,
+            element,
+            _widened(
+              e,
+              element,
+              _withExpectedReturn(element, e, () => expression(e)),
+            ),
+          ),
+      ], _type(element ?? const DynamicType()));
     }
     if (target.name.text == 'lerpDouble' && positional.length == 3) {
       // `a + (b - a) * t`, which is what dart:ui's lerpDouble computes for
@@ -1000,10 +2453,47 @@ class KernelFrontend {
         IrBinary('*', IrBinary('-', b, a), expression(positional[2])),
       );
     }
+    // The rest of `dart:math`'s functions are methods on `f64` in Rust,
+    // spelled almost the same. `log` was refused as a top-level nothing
+    // declared, and took `ClampingScrollSimulation._kDecelerationRate` and
+    // everything reading it with it.
+    const unary = {
+      'log': 'ln',
+      'exp': 'exp',
+      'sqrt': 'sqrt',
+      'sin': 'sin',
+      'cos': 'cos',
+      'tan': 'tan',
+      'asin': 'asin',
+      'acos': 'acos',
+      'atan': 'atan',
+    };
+    // `dart:math` takes `num`s; Rust's are methods of `f64`, so an `int`
+    // argument (`log(10)`, `pow(10, n)`) is cast first.
+    IrExpr asDouble(Expression e) {
+      final t = _staticType(e);
+      final lowered = expression(e);
+      // A literal has no static type without a context (`log(10)` in a
+      // static's initialiser), and is an `int` by its spelling.
+      return e is IntLiteral ||
+              (t is InterfaceType && t.classNode.name == 'int')
+          ? IrCast(lowered, 'f64')
+          : lowered;
+    }
+
+    if ('${target.enclosingLibrary.importUri}' == 'dart:math') {
+      final method = unary[target.name.text];
+      if (method != null && positional.length == 1) {
+        return IrCall(asDouble(positional[0]), method, const []);
+      }
+      if (target.name.text == 'atan2' && positional.length == 2) {
+        return IrCall(asDouble(positional[0]), 'atan2', [
+          asDouble(positional[1]),
+        ]);
+      }
+    }
     if (target.name.text == 'pow' && positional.length == 2) {
-      return IrCall(expression(positional[0]), 'powf', [
-        expression(positional[1]),
-      ]);
+      return IrCall(asDouble(positional[0]), 'powf', [asDouble(positional[1])]);
     }
     if (target.name.text == 'clampDouble' && positional.length == 3) {
       return IrCall(expression(positional[0]), 'clamp', [
@@ -1013,8 +2503,66 @@ class KernelFrontend {
     }
     if (target.name.text == 'unsafeCast' && positional.length == 1) {
       // The CFE's own cast, inserted where it has already proved the type. It
-      // does nothing at runtime and there is nothing for it to do here either.
+      // does nothing at runtime in Dart; here a cast from a trait object to
+      // the struct it proved -- `unsafeCast<_NativePath>(path)` in front of
+      // every native taking one -- is the downcast through `Any`.
+      final from = _staticType(positional.single);
+      final to = node.arguments.types.singleOrNull;
+      final fromTraitObject =
+          from is DynamicType ||
+          (from is InterfaceType &&
+              from.nullability != Nullability.nullable &&
+              (from.classNode.isAbstract || from.classNode.name == 'Object'));
+      if (fromTraitObject &&
+          to is InterfaceType &&
+          to.nullability != Nullability.nullable &&
+          !to.classNode.isAbstract &&
+          to.classNode.name != 'Object' &&
+          (from is! InterfaceType || from.classNode != to.classNode)) {
+        // The Rust name: `double` is an `f64` (`arg is double` after TFA).
+        return IrCall(
+          IrDowncast(
+            expression(positional.single),
+            _rustScalar(_type(to).name),
+          ),
+          'clone',
+          const [],
+        );
+      }
       return expression(positional.single);
+    }
+    // `LinkedHashMap(equals: .., hashCode: ..)` as a factory: the prelude's
+    // `Map`, the custom equality dropped (see `_construct`).
+    if (const {
+          'HashMap',
+          'LinkedHashMap',
+          'LinkedHashSet',
+          'HashSet',
+        }.contains(owner) &&
+        target.name.text.isEmpty &&
+        target.kind == ProcedureKind.Factory) {
+      return IrNew(IrType(owner!.contains('Set') ? 'Set' : 'Map'), const []);
+    }
+    // `String.fromCharCodes(codes)`: a free function of the prelude's, since
+    // Rust's `String` takes no inherent additions.
+    if (owner == 'String' &&
+        target.name.text == 'fromCharCodes' &&
+        positional.length >= 1) {
+      return IrStaticCall(null, 'string_from_char_codes', [
+        expression(positional[0]),
+      ]);
+    }
+    // `scheduleMicrotask(f)`: the prelude's `_schedule_microtask` takes the
+    // `Rc<dyn Fn()>` a translated closure is; the public-named one is the
+    // prelude's own `Box<dyn FnOnce()>` entry.
+    if (target.name.text == 'scheduleMicrotask' &&
+        positional.length == 1 &&
+        target.enclosingLibrary.importUri.toString() == 'dart:async') {
+      return IrStaticCall(
+        null,
+        '_schedule_microtask',
+        _arguments(node.arguments, target.function),
+      );
     }
     if (target.name.text == 'identical' && positional.length == 2) {
       return IrIdentical(expression(positional[0]), expression(positional[1]));
@@ -1026,14 +2574,21 @@ class KernelFrontend {
       // every library has been lowered, so the backend asks it instead. The
       // analyzer front end never made the distinction, so this is also one
       // fewer place the two of them could differ.
+      // The same cleaning `_lowerTopLevel` gives the declaration: an
+      // extension member's `Ext|get#name` has to be one identifier at both
+      // ends, and the crate-wide "does the callee exist" check compares them.
       return IrStaticCall(
         null,
-        target.name.text,
-        _arguments(node.arguments, target.function),
+        target.name.text.replaceAll(RegExp(r'[|#]'), '_'),
+        _arguments(node.arguments, target.function, true, _instantiated(node)),
       );
     }
     return IrStaticCall(
       owner,
+      // An unnamed factory -- `factory Vector3(x, y, z)` -- has no name in
+      // Kernel at all. The backend spells an empty static name `new`, for a
+      // prelude class as much as a translated one, and `_lowerProcedure`
+      // declares the factory under that name.
       target.name.text,
       _arguments(node.arguments, target.function),
     );
@@ -1048,11 +2603,12 @@ class KernelFrontend {
     Arguments node, [
     FunctionNode? callee,
     bool borrows = true,
+    FunctionType? instantiated,
   ]) {
     final was = _borrowedArgument;
     _borrowedArgument = borrows;
     try {
-      return _argumentList(node, callee);
+      return _argumentList(node, callee, instantiated);
     } finally {
       _borrowedArgument = was;
     }
@@ -1067,15 +2623,463 @@ class KernelFrontend {
   /// `scheduleMicrotask`, `Timer`, `WidgetStateProperty.resolveWith`: storing
   /// one needs `'static`, and a borrow cannot give it. Those go back to being
   /// refused, which is the truth about them until objects are counted.
-  IrExpr _argument(Expression value, FunctionNode? callee, int index) {
+  IrExpr _argument(
+    Expression value,
+    FunctionNode? callee,
+    int index, [
+    FunctionType? instantiated,
+  ]) {
     final param = callee != null && index < callee.positionalParameters.length
         ? callee.positionalParameters[index]
         : null;
-    return _withBorrowing(param, callee, () => expression(value));
+    // The *instantiated* parameter type when the call site has one: a
+    // `List<Shadow>.add(E)` takes a `Shadow`, and the `E` alone could
+    // widen nothing (`Shadow <= Option<Shadow>` after TFA dropped a `!`).
+    final paramType =
+        instantiated != null && index < instantiated.positionalParameters.length
+        ? instantiated.positionalParameters[index]
+        : param?.type;
+    return _intoDynamic(
+      value,
+      paramType,
+      callee,
+      _numLiteral(
+        value,
+        paramType,
+        callee,
+        _widened(
+          value,
+          paramType,
+          _withBorrowing(
+            param,
+            callee,
+            () =>
+                _withExpectedReturn(paramType, value, () => expression(value)),
+          ),
+        ),
+      ),
+    );
   }
 
-  IrExpr _namedArgument(Expression value, Object param) =>
-      _withBorrowing(param, _calleeOf(param), () => expression(value));
+  /// A closure literal handed to a function-typed parameter returns what
+  /// the *parameter's* type says: `String? Function(String)` taking
+  /// `(l) => "default"` returns `Some("default")`. The closure's own
+  /// return type is what it wrote, not what it is for (5 in intl).
+  IrExpr _withExpectedReturn(
+    DartType? param,
+    Expression value,
+    IrExpr Function() lower,
+  ) {
+    if (param is! FunctionType || value is! FunctionExpression) return lower();
+    final was = _expectedReturn;
+    final wasFunction = _expectedFunction;
+    _expectedReturn = param.returnType;
+    _expectedFunction = param;
+    try {
+      return lower();
+    } finally {
+      _expectedReturn = was;
+      _expectedFunction = wasFunction;
+    }
+  }
+
+  /// The function type the next lowered closure is expected to have: its
+  /// parameters stand in for a closure's own `dynamic` ones. `(locale) =>
+  /// ..` in a `List<String Function(String)>` literal is inferred with a
+  /// `dynamic` parameter by the CFE, and the `Rc<dyn Fn(String) -> String>`
+  /// the list holds does not take an `Rc<dyn Object>`.
+  FunctionType? _expectedFunction;
+
+  /// The return type the next lowered body should widen into, if a
+  /// parameter's function type says so.
+  DartType? _expectedReturn;
+
+  /// An int literal into a parameter a *translated* callee declares `num`
+  /// (an `f64` here) is cast. Not a `dart:` callee's: `int.+(num other)` is
+  /// declared that way and its `num` is not an `f64` (ws54).
+  IrExpr _numLiteral(
+    Expression value,
+    DartType? param,
+    FunctionNode? callee,
+    IrExpr lowered,
+  ) {
+    if (param is! InterfaceType || param.classNode.name != 'num')
+      return lowered;
+    // A literal, or a value whose static type is `int` (a translated
+    // callee's `num` is an `f64`, so either is cast).
+    final given = _staticType(value);
+    final isInt =
+        value is IntLiteral ||
+        (given is InterfaceType &&
+            given.classNode.name == 'int' &&
+            given.nullability != Nullability.nullable);
+    if (!isInt) return lowered;
+    final member = callee?.parent;
+    if (member is! Member) return lowered;
+    if (member.enclosingLibrary.importUri.scheme == 'dart') return lowered;
+    return IrCast(lowered, 'f64');
+  }
+
+  IrExpr _namedArgument(Expression value, Object param) {
+    final callee = _calleeOf(param);
+    final type = param is FunctionParameter ? param.type : null;
+    return _intoDynamic(
+      value,
+      type,
+      callee,
+      _numLiteral(
+        value,
+        type,
+        callee,
+        _widened(
+          value,
+          type,
+          _withBorrowing(
+            param,
+            callee,
+            () => _withExpectedReturn(type, value, () => expression(value)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// A value handed to a translated callee's `dynamic`/`Object` parameter
+  /// is shared into the `Rc<dyn Object>` that parameter is: `Rc::new(..)`
+  /// around a `bool` or an `Exception` (5 in dart:ui), and `Some(..)` too
+  /// when the parameter is `Object?`. A prelude callee -- `print`,
+  /// `StringBuffer.write`, `Object.hash` -- is generic over what it takes
+  /// and is left alone; a counted class is already a handle and unsizes.
+  IrExpr _intoDynamic(
+    Expression value,
+    DartType? param,
+    FunctionNode? callee,
+    IrExpr lowered,
+  ) {
+    if (param == null || callee == null) return lowered;
+    final member = callee.parent;
+    if (member is! Member) return lowered;
+    final uri = member.enclosingLibrary.importUri;
+    // The prelude's exceptions take their `Object?` as `Option<Rc<dyn
+    // Object>>` like a translated class would: `FormatException(msg,
+    // source)` with a `String` source shares it.
+    // Only `FormatException`: `Exception(message)` and `ArgumentError
+    // .value(..)` take strings in the prelude, and sharing into them was 27
+    // mismatches (ws144).
+    const preludeObjects = {'FormatException'};
+    final owner = member.enclosingClass?.name;
+    if (uri.scheme == 'dart' &&
+        uri.toString() != 'dart:ui' &&
+        !(owner != null && preludeObjects.contains(owner))) {
+      return lowered;
+    }
+    return _intoObject(value, param, lowered);
+  }
+
+  /// The sharing `_intoDynamic` does, for any `Object`/`dynamic` slot.
+  IrExpr _intoObject(Expression value, DartType? param, IrExpr lowered) {
+    if (param == null) return lowered;
+    final isObject =
+        param is DynamicType ||
+        (param is InterfaceType && param.classNode.name == 'Object');
+    if (!isObject) return lowered;
+    if (_isNull(value) || lowered is IrClosure) return lowered;
+    final given = _staticType(value);
+    // A `num` method called on a `dynamic` (`number.abs()`) was lowered to
+    // a call on an `f64`: the value is a scalar, whatever Kernel says.
+    if (given is DynamicType &&
+        value is DynamicInvocation &&
+        _dynamicNumMethods.contains(value.name.text)) {
+      final shared = IrCall(lowered, '!rc_object', const []);
+      return param is! DynamicType && param.nullability == Nullability.nullable
+          ? IrSome(shared)
+          : shared;
+    }
+    if (given == null || given is DynamicType || given is NullType)
+      return lowered;
+    if (given is InterfaceType && given.classNode.name == 'Object')
+      return lowered;
+    final counted =
+        given is InterfaceType && _closureCallsMethod(given.classNode);
+    // An int literal into an `Object` slot is an `i64`, not the `i32`
+    // inference would pick for `Rc::new(0)`.
+    if (value is IntLiteral) lowered = IrCast(lowered, 'i64');
+    if (given.nullability == Nullability.nullable) {
+      // `ByteData? args` into an `Object?`: shared element by element.
+      if (counted || param.nullability != Nullability.nullable) return lowered;
+      return IrNullAware(
+        lowered,
+        IrCall(
+          IrCall(const IrBound(), 'clone', const []),
+          '!rc_object',
+          const [],
+        ),
+      );
+    }
+    // A counted class's handle unsizes to `Rc<dyn Object>` only where the
+    // target type is written; a `dynamic` static's initialiser names it.
+    final shared = counted
+        ? IrCall(lowered, '!as_object', const [])
+        : IrCall(lowered, '!rc_object', const []);
+    // `dynamic` is "nullable" to Kernel and is never an `Option` here.
+    final wantsSome =
+        param is! DynamicType && param.nullability == Nullability.nullable;
+    return wantsSome ? IrSome(shared) : shared;
+  }
+
+  /// `Some(..)` around a non-null argument handed to a nullable parameter --
+  /// Dart's silent widening, spelled. Only when the static type says the
+  /// argument is not itself nullable, so a nullable variable passed on stays
+  /// as it is.
+  IrExpr _widened(Expression value, DartType? param, IrExpr lowered) {
+    // A local handed on is shared in Dart and moved in Rust: `string` passed
+    // to `StringCharacterRange` and then read again, `listener` moved into a
+    // closure "in a previous iteration of loop" -- 21 `E0382`s. A clone of a
+    // `String` or an `Rc` is the sharing Dart meant. A list or map is not
+    // cloned: a copy of one would be a different list, and the aliasing
+    // Dart meant is not something a clone can give.
+    if (value is VariableGet && _clonedWhenPassed(value.variable.type)) {
+      lowered = IrCall(lowered, 'clone', const []);
+    }
+    // Type flow analysis narrows a parameter to the one class that reaches
+    // it -- `_pushClipPath(.., _NativePath path, ..)` -- and the caller
+    // still holds a `Path`. Kernel writes no cast for that; the downcast
+    // through `Any` is the same one `path as _NativePath` takes.
+    // ..as the closure parameter was retyped, when it was.
+    final given = value is VariableGet && _retyped.containsKey(value.variable)
+        ? _retyped[value.variable]
+        : _staticType(value);
+    // A function whose parameter is *wider* than the slot's -- `callback`,
+    // a `void Function(int?)`, handed to `_initFromAsset(.., void
+    // Function(int))` -- is fine in Dart and a different `Fn` in Rust. An
+    // adapter closure narrows each such parameter with `Some`.
+    // ..and a function whose *result* is narrower than the slot's --
+    // `_throwLocaleError`, a `String Function(String)`, as the default of a
+    // `String? Function(String)` -- returns through `Some`. A static
+    // tear-off (`canonicalizedLocale` in a list of fallbacks) as well as a
+    // local.
+    if ((value is VariableGet || value is StaticTearOff) &&
+        param is FunctionType &&
+        given is FunctionType &&
+        param.namedParameters.isEmpty &&
+        given.namedParameters.isEmpty &&
+        param.positionalParameters.length ==
+            given.positionalParameters.length) {
+      var adapts = false;
+      final params = <IrParam>[];
+      final args = <IrExpr>[];
+      bool narrows(DartType g, DartType p) =>
+          g is InterfaceType &&
+          p is InterfaceType &&
+          g.classNode == p.classNode &&
+          g.nullability == Nullability.nullable &&
+          p.nullability != Nullability.nullable;
+      for (var i = 0; i < param.positionalParameters.length; i++) {
+        final p = param.positionalParameters[i];
+        final g = given.positionalParameters[i];
+        final name = '__a$i';
+        params.add(IrParam(name, _paramType(p)));
+        if (narrows(g, p)) {
+          adapts = true;
+          args.add(IrSome(IrLocal(name)));
+        } else {
+          args.add(IrLocal(name));
+        }
+      }
+      final widensResult = narrows(param.returnType, given.returnType);
+      if (adapts || widensResult) {
+        final call = IrCallValue(lowered, args);
+        // Shared, as a closure argument is: the slot is an `Rc<dyn Fn>`.
+        return IrCall(
+          IrClosure(
+            params,
+            IrReturn(widensResult ? IrSome(call) : call),
+            _type(param.returnType),
+            locals: value is VariableGet ? _freeLocalsIn(value, {}) : const [],
+          ),
+          '!rc',
+          const [],
+        );
+      }
+    }
+    // A `dynamic` value into a scalar or struct parameter: `number` (a
+    // `num` upstream, `dynamic` after `is` checks) into `_formatExponential
+    // (double)`. The downcast through `Any` is what Dart's implicit cast did.
+    // A `dynamic` into a *nullable* struct slot -- `Clock? c = Zone.current
+    // [#key]` -- is the downcast that may fail: `Option<T>` from `Any`.
+    if (given is DynamicType &&
+        param is InterfaceType &&
+        param.nullability == Nullability.nullable &&
+        param.classNode.name != 'Object' &&
+        !param.classNode.isAbstract &&
+        (param.classNode.enclosingLibrary.importUri.scheme != 'dart' ||
+            param.classNode.enclosingLibrary.importUri.toString() ==
+                'dart:ui')) {
+      return IrCall(lowered, '!as_opt', [
+        IrLiteral(_rustScalar(param.classNode.name), const IrType('raw')),
+      ]);
+    }
+    // (`double` and `int` are abstract classes in dart:core, so no
+    // `isAbstract` check here.)
+    if (given is DynamicType &&
+        param is InterfaceType &&
+        param.nullability != Nullability.nullable &&
+        const {
+          'int',
+          'double',
+          'bool',
+          'String',
+        }.contains(param.classNode.name)) {
+      return IrCall(
+        IrDowncast(lowered, _rustScalar(_type(param).name)),
+        'clone',
+        const [],
+      );
+    }
+    // Neither coercion for a `dart:` class other than dart:ui's: those are
+    // the prelude's types, and `List`/`_GrowableList` is one `Vec`, not a
+    // trait object and its struct (13 `Rc<Vec<f64>>`).
+    bool translated(InterfaceType t) {
+      final uri = t.classNode.enclosingLibrary.importUri;
+      return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+    }
+
+    if (param is InterfaceType &&
+        given is InterfaceType &&
+        translated(param) &&
+        translated(given) &&
+        param.nullability != Nullability.nullable &&
+        given.nullability != Nullability.nullable &&
+        !param.classNode.isAbstract &&
+        // `Object` is not abstract in Kernel and is not a struct here.
+        param.classNode.name != 'Object' &&
+        given.classNode.isAbstract &&
+        param.classNode != given.classNode) {
+      return IrCall(
+        IrDowncast(lowered, param.classNode.name),
+        'clone',
+        const [],
+      );
+    }
+    // The other direction: a struct value handed to a parameter of one of
+    // its abstract supertypes is shared into the `Rc<dyn ..>` that is. A
+    // counted class is already a handle, and unsizes on its own.
+    if (param is InterfaceType &&
+        given is InterfaceType &&
+        translated(param) &&
+        translated(given) &&
+        param.nullability != Nullability.nullable &&
+        given.nullability != Nullability.nullable &&
+        param.classNode.isAbstract &&
+        !given.classNode.isAbstract &&
+        !_closureCallsMethod(given.classNode) &&
+        param.classNode != given.classNode) {
+      return IrCall(lowered, '!rc', const []);
+    }
+    // A `List<int>` handed to a `Uint8List` parameter (TFA narrowed it, or
+    // Dart's typed list is a `List<int>` too): the elements are cast down,
+    // `Vec<i64>` to `Vec<u8>`, as the typed-list index does.
+    final narrow = _narrowElement(param);
+    // The *declared* type of a variable, not its promotion: `if (input is
+    // Uint8List) return input;` still holds a `Vec<i64>`.
+    final held = value is VariableGet ? value.variable.type : given;
+    if (narrow != null &&
+        held is InterfaceType &&
+        _narrowElement(held) == null &&
+        (held.classNode.name == 'List' ||
+            held.classNode.name == '_GrowableList' ||
+            held.classNode.name == '_List')) {
+      final cast = IrCall(lowered, '!narrow', [
+        IrLiteral(narrow, const IrType('raw')),
+      ]);
+      return param!.nullability == Nullability.nullable &&
+              held.nullability != Nullability.nullable
+          ? IrSome(cast)
+          : cast;
+    }
+    // An `int` into a `double`/`num` slot: `howMany = truncated` (Dart's
+    // `num` is an `f64` here) -- the cast the operators take.
+    String? scalar(DartType? t) => t is InterfaceType ? t.classNode.name : null;
+    if (scalar(param) == 'double' &&
+        scalar(given) == 'int' &&
+        given!.nullability != Nullability.nullable) {
+      lowered = IrCast(lowered, 'f64');
+    }
+    // No rule for a `num` parameter either: `int.+(num other)` is declared
+    // that way, and `index + 1` became `index + (1 as f64)` (ws54, 85 in
+    // dart:ui alone). `num` is not a type this output has.
+    // A `List<String>` (any concrete element) into a `List<Object?>`: each
+    // element shared into its `Rc<dyn Object>`.
+    if (param is InterfaceType &&
+        (param.classNode.name == 'List' ||
+            param.classNode.name == 'Iterable') &&
+        param.typeArguments.isNotEmpty &&
+        param.typeArguments.first is InterfaceType &&
+        (param.typeArguments.first as InterfaceType).classNode.name ==
+            'Object' &&
+        param.typeArguments.first.nullability == Nullability.nullable &&
+        held is InterfaceType &&
+        held.classNode.name == 'List' &&
+        held.typeArguments.isNotEmpty &&
+        held.typeArguments.first is InterfaceType &&
+        (held.typeArguments.first as InterfaceType).classNode.name !=
+            'Object' &&
+        held.typeArguments.first.nullability != Nullability.nullable) {
+      final widened = IrCall(lowered, '!widen_object', const []);
+      return param.nullability == Nullability.nullable &&
+              held.nullability != Nullability.nullable
+          ? IrSome(widened)
+          : widened;
+    }
+    // A typed list handed to a `List<int>` parameter widens its elements
+    // (`Response.bytes(body)` with a `Uint8List`).
+    if (param is InterfaceType &&
+        _narrowElement(param) == null &&
+        (param.classNode.name == 'List' ||
+            param.classNode.name == 'Iterable') &&
+        param.typeArguments.isNotEmpty &&
+        param.typeArguments.first is InterfaceType &&
+        (param.typeArguments.first as InterfaceType).classNode.name == 'int' &&
+        held is InterfaceType &&
+        _narrowElement(held) != null &&
+        _narrowElement(held) != 'f32' &&
+        _narrowElement(held) != 'f64') {
+      final widened = IrCall(lowered, '!widen', const []);
+      return param.nullability == Nullability.nullable &&
+              held.nullability != Nullability.nullable
+          ? IrSome(widened)
+          : widened;
+    }
+    if (param == null || param.nullability != Nullability.nullable) {
+      // A nullable value into a non-nullable parameter: Dart would not have
+      // compiled it, so type flow analysis proved it non-null and rewrote
+      // the check away (`alpha ?? a` became `alpha`). The unwrap is that
+      // proof, spelled (7 `f64 <= Option<f64>` shapes).
+      if (param is InterfaceType &&
+          given is InterfaceType &&
+          given.nullability == Nullability.nullable &&
+          given.classNode == param.classNode) {
+        return IrNullCheck(lowered);
+      }
+      return lowered;
+    }
+    // `Object?` and `dynamic` take anything: the widening there is into
+    // `dyn Object`, a different coercion, and `Some(..)` around a `String`
+    // handed to `StringBuffer.write(Object?)` was 57 `Display` errors.
+    if (param is DynamicType ||
+        (param is InterfaceType && param.classNode.name == 'Object')) {
+      return lowered;
+    }
+    // A closure is wrapped like anything else now that a function-typed
+    // parameter is `Rc<dyn Fn>` on both sides: `Option<Rc<dyn Fn(..)>>`
+    // took a bare `Rc<{closure}>` 25 times in dart:ui.
+    if (_isNull(value)) return lowered;
+    final actual = _staticType(value);
+    if (actual == null) return lowered;
+    if (actual.nullability == Nullability.nullable) return lowered;
+    if (actual is DynamicType || actual is NullType) return lowered;
+    return IrSome(lowered);
+  }
 
   static IrExpr _unboxed(IrExpr e) => e is IrClosure && e.boxed
       ? IrClosure(
@@ -1083,6 +3087,7 @@ class KernelFrontend {
           e.body,
           e.returns,
           captures: e.captures,
+          locals: e.locals,
           holdsSelf: e.holdsSelf,
         )
       : e;
@@ -1104,12 +3109,13 @@ class KernelFrontend {
       final value = lower();
       // The parameter is owned where it is kept, so the argument is boxed to
       // match: a closure's own type has no name.
-      if (kept && value is IrClosure) {
+      if (value is IrClosure) {
         return IrClosure(
           value.params,
           value.body,
           value.returns,
           captures: value.captures,
+          locals: value.locals,
           // Carried. Rebuilding a node without a flag it had is the shape
           // that lost `kept` in round 104 and `shared` in round 101.
           holdsSelf: value.holdsSelf,
@@ -1148,15 +3154,62 @@ class KernelFrontend {
   /// everything here and stays refused.
   bool _borrowedArgument = false;
 
-  List<IrExpr> _argumentList(Arguments node, FunctionNode? callee) {
+  /// A function's named parameters in the order its *type* lists them.
+  static List<NamedParameter> _namedInTypeOrder(FunctionNode fn) =>
+      [...fn.namedParameters]
+        ..sort((a, b) => a.parameterName.compareTo(b.parameterName));
+
+  /// Arguments to a function *value*, ordered by its type.
+  ///
+  /// Positional ones as written; then each named parameter of the type, in
+  /// the type's (name) order, with what was supplied for it, or `None` when it
+  /// is nullable and was left off. A function type carries no defaults, so an
+  /// omitted non-nullable one has no value here and stops.
+  List<IrExpr> _argumentsByType(Arguments node, FunctionType type) {
+    // The function type's own parameter types widen the arguments, as a
+    // callee's would: `onError(e, stack)` with `StackTrace? stackTrace`
+    // takes `Some(stack)`.
+    final out = [
+      for (var i = 0; i < node.positional.length; i++)
+        _argument(node.positional[i], null, i, type),
+    ];
+    final supplied = {for (final n in node.named) n.name: n.value};
+    for (final param in type.namedParameters) {
+      final value = supplied.remove(param.name);
+      if (value != null) {
+        out.add(_widened(value, param.type, expression(value)));
+      } else if (param.type.nullability == Nullability.nullable) {
+        out.add(const IrLiteral('null', IrType('Null', nullable: true)));
+      } else {
+        throw Unsupported(
+          'omitted named argument `${param.name}` to a function value',
+          _sample(node),
+        );
+      }
+    }
+    if (supplied.isNotEmpty) {
+      throw Unsupported(
+        'named argument `${supplied.keys.first}` not in the function type',
+        _sample(node),
+      );
+    }
+    return out;
+  }
+
+  List<IrExpr> _argumentList(
+    Arguments node,
+    FunctionNode? callee, [
+    FunctionType? instantiated,
+  ]) {
     final positional = [
       for (var i = 0; i < node.positional.length; i++)
-        _argument(node.positional[i], callee, i),
+        _argument(node.positional[i], callee, i, instantiated),
     ];
     if (node.named.isEmpty && callee == null) return positional;
     if (callee == null) {
       throw Unsupported(
-        'named argument with no resolved callee',
+        'named argument with no resolved callee '
+        '(${node.parent.runtimeType})',
         _sample(node),
       );
     }
@@ -1205,10 +3258,60 @@ class KernelFrontend {
     if (param.type.nullability == Nullability.nullable) {
       return const IrLiteral('null', IrType('Null', nullable: true));
     }
+    // An *interface* member carries no default -- `Canvas.clipRect({bool
+    // doAntiAlias = true})` is abstract, and the default lives on the class
+    // that implements it (`_NativeCanvas`). Found there, through the
+    // hierarchy: 19 refusals for `doAntiAlias` and `debugLabel`.
+    final fromImplementer = _defaultFromImplementer(param);
+    if (fromImplementer != null) return expression(fromImplementer);
+    // A `dart:` member's `int` parameter whose default the minimal dill
+    // dropped (`String.startsWith(pattern, [int index = 0])`): zero, which
+    // is what every such default in the core library is.
+    final owner = _calleeOf(param)?.parent;
+    if (owner is Member &&
+        owner.enclosingLibrary.importUri.scheme == 'dart' &&
+        param.type is InterfaceType &&
+        (param.type as InterfaceType).classNode.name == 'int') {
+      return const IrLiteral('0', IrType('int'));
+    }
     throw Unsupported(
       'omitted parameter `${param.cosmeticName}` has no default',
       _sample(site),
     );
+  }
+
+  /// The closed world's subtype relation, computed once on first use.
+  late final ClassHierarchySubtypes? _subtypes = () {
+    final hierarchy = typeEnvironment?.hierarchy;
+    if (hierarchy is! ClosedWorldClassHierarchy) return null;
+    return hierarchy.computeSubtypesInformation();
+  }();
+
+  /// The default an implementing class gives an interface member's
+  /// parameter, when the interface itself gives none.
+  Expression? _defaultFromImplementer(FunctionParameter param) {
+    final callee = _calleeOf(param);
+    final member = callee?.parent;
+    if (member is! Procedure || member.enclosingClass == null) return null;
+    final subtypes = _subtypes;
+    if (subtypes == null) return null;
+    final name = param.cosmeticName ?? param.parameterName;
+    for (final sub in subtypes.getSubtypesOf(member.enclosingClass!)) {
+      for (final p in sub.procedures) {
+        if (p.name.text != member.name.text || p.isStatic) continue;
+        for (final candidate in [
+          ...p.function.positionalParameters,
+          ...p.function.namedParameters,
+        ]) {
+          final candidateName =
+              candidate.cosmeticName ?? candidate.parameterName;
+          if (candidateName == name && candidate.defaultValue != null) {
+            return candidate.defaultValue;
+          }
+        }
+      }
+    }
+    return null;
   }
 
   /// `MaterialLocalizations` written where a value goes: Dart's `Type`.
@@ -1226,6 +3329,12 @@ class KernelFrontend {
 
   IrExpr _constant(Constant constant, Expression node) {
     if (constant is TypeLiteralConstant) return _typeLiteral(constant.type);
+    if (constant is SymbolConstant) {
+      // `#name`, spelled the way `Type::of` is: a name and nothing else. The
+      // library a private symbol belongs to is dropped -- see the prelude's
+      // `Symbol` for what that costs, which in this program is nothing.
+      return IrLiteral('Symbol::of("${constant.name}")', const IrType('raw'));
+    }
     if (constant is DoubleConstant) {
       // `double.infinity` prints as `Infinity`, which the literal emitter then
       // suffixed into `Infinity.0` -- a name nothing declares, 183 times.
@@ -1260,6 +3369,15 @@ class KernelFrontend {
       return IrListLiteral([
         for (final e in constant.entries) _constant(e, node),
       ], _type(constant.typeArgument));
+    }
+    if (constant is SetConstant) {
+      // A const set: the prelude's `Set::from(vec![..])`, which is what a
+      // set literal expression becomes too. 37 in the gallery's dill.
+      return IrStaticCall('Set', 'from', [
+        IrListLiteral([
+          for (final e in constant.entries) _constant(e, node),
+        ], _type(constant.typeArgument)),
+      ]);
     }
     if (constant is MapConstant) {
       return IrMapLiteral(
@@ -1396,7 +3514,37 @@ class KernelFrontend {
   IrStmt statement(Statement node) {
     if (node is ReturnStatement) {
       final value = node.expression;
-      return IrReturn(value == null ? null : expression(value));
+      // `=> x = v` in a setter or a void closure: the CFE puts the assignment
+      // in the `return`, and a void function has no value to carry out. The
+      // assignment is the statement; the return is bare. Only when the value
+      // is a variable -- reading it twice costs nothing and moves nothing.
+      if (_voidReturn &&
+          value is InstanceSet &&
+          value.receiver is ThisExpression &&
+          value.value is VariableGet) {
+        return IrBlock([_instanceSet(value), const IrReturn(null)]);
+      }
+      // Any other `return e;` in a `void` body -- `(x) => day = x` handed
+      // to a `void Function(int)` -- runs `e` and returns nothing.
+      if (_voidReturn && value != null) {
+        return IrBlock([IrExprStmt(expression(value)), const IrReturn(null)]);
+      }
+      if (value == null) return const IrReturn(null);
+      // `return completer.future;` in an `async` body: Dart awaits the
+      // future it returns, and an `async fn` returning `T` has to as well.
+      final valueType = _staticType(value);
+      if (_asyncBody &&
+          valueType is InterfaceType &&
+          valueType.classNode.name == 'Future') {
+        return IrReturn(IrAwait(expression(value)));
+      }
+      return IrReturn(
+        _intoObject(
+          value,
+          _returnsType,
+          _widened(value, _returnsType, expression(value)),
+        ),
+      );
     }
     if (node is Block) {
       return IrBlock([for (final s in node.statements) statement(s)]);
@@ -1411,13 +3559,26 @@ class KernelFrontend {
     if (node is VariableStatement) {
       return _declare(node.declaration.variable, node);
     }
+    if (node is ExpressionStatement && node.expression is Rethrow) {
+      // `rethrow`: the handler's own error, thrown again. `Result` has no
+      // notion of "the current exception", so the name the handler bound is
+      // what goes back out. `loadFontIfNecessary` -- and through it every
+      // `google_fonts_text_style` call, 1709 of them -- stopped here.
+      final caught = _caught;
+      if (caught == null) {
+        throw Unsupported('rethrow outside a catch', _sample(node));
+      }
+      return IrThrow(IrLocal(caught));
+    }
     if (node is ExpressionStatement && node.expression is Throw) {
       // Before the general `ExpressionStatement` case below, not after: the
       // general one lowers the expression, and a `throw` has no value to lower.
       // Placed after, this check never ran and every throwing method was
       // refused -- which the fixture comparison found at once, because the
       // analyzer front end had it right.
-      return IrThrow(expression((node.expression as Throw).expression));
+      final thrown = node.expression as Throw;
+      if (_tfaUnreachable(thrown)) return IrExprStmt(_unreachable);
+      return IrThrow(expression(thrown.expression));
     }
     if (node is ExpressionStatement) {
       // An assignment is a statement here, not an expression. Dart's `x = 1`
@@ -1425,6 +3586,13 @@ class KernelFrontend {
       // value cannot be translated this way -- and is refused below rather
       // than silently losing the value.
       final value = node.expression;
+      // A narrow typed list's store carries a cast; the expression form
+      // below knows how, so a statement of one goes through it.
+      if (value is InstanceInvocation &&
+          value.name.text == '[]=' &&
+          _narrowElement(_staticType(value.receiver)) != null) {
+        return IrExprStmt(expression(value));
+      }
       if (value is InstanceInvocation &&
           value.name.text == '[]=' &&
           value.interfaceTarget.enclosingClass?.name == 'Map' &&
@@ -1440,10 +3608,22 @@ class KernelFrontend {
           value.name.text == '[]=' &&
           value.interfaceTarget.enclosingClass?.name == 'List' &&
           value.arguments.positional.length == 2) {
+        // The value widens into the element type: `_objects![i] = shader`
+        // on a `List<Object?>` is `Some(Rc::new(shader))`.
+        final listType = _staticType(value.receiver);
+        final element =
+            listType is InterfaceType && listType.typeArguments.isNotEmpty
+            ? listType.typeArguments.first
+            : null;
+        final stored = value.arguments.positional[1];
         return IrIndexSet(
           expression(value.receiver),
           expression(value.arguments.positional[0]),
-          expression(value.arguments.positional[1]),
+          _intoObject(
+            stored,
+            element,
+            _widened(stored, element, expression(stored)),
+          ),
         );
       }
       // A top-level variable's assignment. `StaticSet` on a `Field` with no
@@ -1451,8 +3631,35 @@ class KernelFrontend {
       // refusal below.
       if (value is StaticSet) {
         final target = value.target;
+        // Into the static's type: `_decomposeV = Vector3.zero()` on a
+        // `static Vector3? _decomposeV` is `Some(..)`.
         if (target is Field && target.enclosingClass == null) {
-          return IrAssignTopLevel(target.name.text, expression(value.value));
+          return IrAssignTopLevel(
+            target.name.text,
+            _widened(value.value, target.type, expression(value.value)),
+          );
+        }
+        if (target is Field) {
+          return IrAssignStatic(
+            target.enclosingClass!.name,
+            target.name.text,
+            _widened(value.value, target.type, expression(value.value)),
+          );
+        }
+        // `defaultLocale = systemLocale` on a top-level setter: a call of
+        // the function `_lowerTopLevel` made of it.
+        if (target is Procedure &&
+            target.kind == ProcedureKind.Setter &&
+            target.enclosingClass == null) {
+          return IrExprStmt(
+            IrStaticCall(null, _topLevelSetterName(target.name.text), [
+              _widened(
+                value.value,
+                target.function.positionalParameters.single.type,
+                expression(value.value),
+              ),
+            ]),
+          );
         }
       }
       // A write to a field the enclosing closure captured: the cell is what
@@ -1460,62 +3667,16 @@ class KernelFrontend {
       if (value is InstanceSet &&
           value.receiver is ThisExpression &&
           _captured.contains(value.name.text)) {
-        return IrAssign(value.name.text, expression(value.value));
-      }
-      if (value is InstanceSet) {
-        // A field on `this`, and a field rather than a setter. Kernel names the
-        // target outright, so neither has to be inferred.
-        // A write to the cascade's own binding: a local, so it needs a
-        // mutable local rather than a mutable `self`.
-        final receiver = value.receiver;
-        if (_cascade != null &&
-            receiver is VariableGet &&
-            receiver.variable == _cascade) {
-          if (value.interfaceTarget is! Field) {
-            return IrSetter(
-              const IrLocal(_cascadeName),
-              value.name.text,
-              expression(value.value),
-            );
-          }
-          return IrAssignField(
-            value.name.text,
+        return IrAssign(
+          value.name.text,
+          _widened(
+            value.value,
+            value.interfaceTarget.setterType,
             expression(value.value),
-            target: const IrLocal(_cascadeName),
-          );
-        }
-        if (value.receiver is! ThisExpression) {
-          // Another object's *setter* is a call, which needs nothing from us
-          // beyond a `&mut` receiver at the call site.
-          if (value.interfaceTarget is! Field) {
-            return IrSetter(
-              expression(value.receiver),
-              value.name.text,
-              expression(value.value),
-            );
-          }
-          // A *field* is a write through a reference. Through a chain rooted
-          // at `this` -- `this.child.x = v` -- that reference is `self`, and
-          // `&mut self` is a thing this compiler already works out. Through a
-          // parameter it would mean `&mut` on the parameter and on every call
-          // site, including ones in other files, so that one still stops.
-          if (!_rootedAtThis(value.receiver)) {
-            throw Unsupported(
-              'assignment to a field of another object',
-              _sample(value),
-            );
-          }
-          return IrAssignField(
-            value.name.text,
-            expression(value.value),
-            target: expression(value.receiver),
-          );
-        }
-        if (value.interfaceTarget is! Field) {
-          return IrSetter(null, value.name.text, expression(value.value));
-        }
-        return IrAssignField(value.name.text, expression(value.value));
+          ),
+        );
       }
+      if (value is InstanceSet) return _instanceSet(value);
       if (value is VariableSet) {
         // A temporary can be assigned to now that it has a name -- the same
         // reason its declaration stopped being refused. It has to be a name
@@ -1529,7 +3690,24 @@ class KernelFrontend {
             _sample(value),
           );
         }
-        return IrAssign(known ?? written!, expression(value.value));
+        // `targetWidth = width` into an `int?` local is `Some(width)`;
+        // `howMany = truncated` into a declared `num` local casts the `int`.
+        return IrAssign(
+          known ?? written!,
+          _intoObject(
+            value.value,
+            value.variable.type,
+            _intoDeclaredNum(
+              value.value,
+              value.variable.type,
+              _widened(
+                value.value,
+                value.variable.type,
+                expression(value.value),
+              ),
+            ),
+          ),
+        );
       }
       return IrExprStmt(expression(value));
     }
@@ -1595,6 +3773,14 @@ class KernelFrontend {
       if (name == null || name.startsWith('#')) {
         throw Unsupported('local function with no name', _sample(node));
       }
+      // `T effectiveValue<T>(..)` inside `ButtonStyleButton.build`: a local
+      // function with type parameters of its own. A Rust closure cannot be
+      // generic, and a nested `fn` cannot see the enclosing locals this one
+      // reads. Emitted as a closure it named a `T` nothing declared -- 36
+      // rustc errors that were really this one refusal.
+      if (node.function.typeParameters.isNotEmpty) {
+        throw Unsupported('generic local function', _sample(node));
+      }
       return IrLocalFunction(name, _closure(node.function, node) as IrClosure);
     }
     if (node is SwitchStatement) {
@@ -1609,13 +3795,47 @@ class KernelFrontend {
         if (c.expressions.isEmpty) {
           throw Unsupported('empty switch case', _sample(node));
         }
-        cases.add(IrCase([for (final e in c.expressions) expression(e)], body));
+        // A case value widens into the scrutinee's type: `switch (tileMode)`
+        // over a `TileMode?` compares an `Option` with `Some(TileMode::Clamp)`.
+        final scrutinee = _staticType(node.expression);
+        cases.add(
+          IrCase([
+            for (final e in c.expressions)
+              _widened(e, scrutinee, expression(e)),
+          ], body),
+        );
+      }
+      // A switch the language checked as exhaustive -- every `TileMode` and
+      // `null` -- has no `default`, and Rust's `if` chain made of it has no
+      // `else`: the chain's value is `()`, and a getter returning through it
+      // does not type. The last case is what is left when none of the
+      // others matched, so it is the `else`.
+      if (otherwise == null &&
+          node.isExplicitlyExhaustive &&
+          cases.isNotEmpty) {
+        otherwise = cases.removeLast().body;
       }
       return IrSwitch(expression(node.expression), cases, otherwise);
     }
     if (node is WhileStatement) {
+      final restored = _forInWhile(node);
+      if (restored != null) return restored;
       // No updates, so a `continue` really is Rust's `continue`.
       return IrWhile(expression(node.condition), _loopBody(node.body, false));
+    }
+    if (node is DoStatement) {
+      // `do { .. } while (c)`: a `loop` whose body runs first and tests
+      // last. The body is labelled as a `for` with updates is, so that a
+      // `continue` inside it leaves the body block and still reaches the
+      // test -- a bare `continue` would have skipped it. `package:characters`
+      // is written with these, and its whole `StringCharacters` was refused.
+      return IrWhile(
+        const IrLiteral('true', IrType('bool')),
+        IrBlock([
+          _loopBody(node.body, true),
+          IrIf(IrUnary('!', expression(node.condition)), const IrBreak(), null),
+        ]),
+      );
     }
     if (node is ForStatement) {
       final restored = _forIn(node);
@@ -1678,17 +3898,24 @@ class KernelFrontend {
     final clause = node.catches.single;
     final error = clause.exception?.cosmeticName ?? 'error';
     final stack = clause.stackTrace;
-    if (stack != null && _reads(clause.body, stack)) {
-      // A `Result` carries no stack trace. Binding one and ignoring it costs
-      // nothing; reading one cannot be honoured, so it stops here rather than
-      // being handed an empty stack that looks like a real one.
-      throw Unsupported('catch reading its stack trace', _sample(node));
-    }
+    // A read stack trace is bound to `StackTrace::current()` at the catch
+    // (the backend does it): the *catch site's* stack, not the throw's --
+    // a `Result` carries none. Recorded as the approximation it is; 38
+    // members were refused for reading one, most of them to log it.
+
     final guard = clause.guard;
+    final outerCaught = _caught;
+    _caught = error;
+    final IrStmt handler;
+    try {
+      handler = statement(clause.body);
+    } finally {
+      _caught = outerCaught;
+    }
     return IrTryCatch(
       statement(node.body),
       error,
-      statement(clause.body),
+      handler,
       errorType: guard is InterfaceType && guard.classNode.name != 'Object'
           ? guard.classNode.name
           : null,
@@ -1718,11 +3945,222 @@ class KernelFrontend {
     );
   }
 
+  /// A function's return type, which is the one place `Never` is allowed.
+  ///
+  /// Dart's `Never` is Rust's `!`, and stable Rust accepts `!` as a function's
+  /// return type and nowhere else: as a type argument it is "experimental",
+  /// and the first round that mapped it everywhere got 22 of those from rustc.
+  /// `noSuchMethod` declared `Never` is what this is for; a `Never` anywhere
+  /// else still refuses, through `_type`.
+  IrType _returnType(FunctionNode function) => function.returnType is NeverType
+      ? const IrType('Never')
+      : _type(function.returnType);
+
+  /// The error the enclosing `catch` bound, for a `rethrow` to name.
+  String? _caught;
+
+  /// Whether the function whose body is being lowered returns nothing.
+  var _voidReturn = false;
+
   IrStmt _body(FunctionNode function) {
     final body = function.body;
-    if (body == null) throw Unsupported('no body', function.toString());
-    return statement(body);
+    // A `@Native` member after the AOT FFI transform is no longer
+    // `external`: its body is the plumbing -- `_fromAddress(..)` and a call
+    // to `___drawRect$Method$FfiNative` -- around what the engine provides.
+    // The whole member is that slot; the plumbing is not worth translating.
+    // 27 refusals on `_NativeCanvas` alone, and 70 callers of them.
+    if (body != null && _callsFfiNative(body)) {
+      final member = function.parent;
+      final owner = member is Member ? member.enclosingClass?.name ?? '' : '';
+      final name = member is Member ? member.name.text : '';
+      return IrBlock([
+        IrExprStmt(
+          IrLiteral(
+            'todo!("native `$owner.$name` is the engine\'s to provide")',
+            const IrType('raw'),
+          ),
+        ),
+      ]);
+    }
+    if (body == null) {
+      // A redirecting factory -- `factory Foo() = Bar;` -- has no body in
+      // Kernel: it is a call to its target with its own parameters. 66
+      // "no body" refusals, `SemanticsConfiguration` alone 20 of them.
+      final procedure = function.parent;
+      if (procedure is Procedure && procedure.isRedirectingFactory) {
+        final target = function.redirectingFactoryTarget?.target;
+        if (target != null) {
+          final args = <IrExpr>[
+            for (final p in function.positionalParameters)
+              IrLocal(_paramName(p)),
+            for (final p in function.namedParameters) IrLocal(p.parameterName),
+          ];
+          final owner = target.enclosingClass?.name;
+          final name = target.name.text;
+          final call = target is Constructor
+              ? IrNew(
+                  IrType(owner!),
+                  args,
+                  constructor: name.isEmpty ? null : name,
+                )
+              : IrStaticCall(owner, name, args);
+          return IrBlock([IrReturn(call)]);
+        }
+      }
+      // An `external` member is the engine's to provide -- `dart:ui`'s
+      // `_ImageFilter._constructor`, `_Logger._printString`. The refusal
+      // moves to run time as a `todo!` naming it, so that the members and
+      // classes around it compile: 9 constructors and every caller of
+      // them were errors for a body that was never going to be here.
+      final member = function.parent;
+      if (member is Member && member.isExternal) {
+        final name = '${member.enclosingClass?.name ?? ''}.${member.name.text}';
+        return IrBlock([
+          IrExprStmt(
+            IrLiteral(
+              'todo!("external `$name` is the engine\'s to provide")',
+              const IrType('raw'),
+            ),
+          ),
+        ]);
+      }
+      // A setter with no body is what `--tree-shake-write-only-fields`
+      // leaves of a field that is only ever written (`ImmutableBuffer
+      // ._length`): the stores stay and go nowhere. An empty body is that.
+      final declaring = function.parent;
+      if (declaring is Procedure &&
+          declaring.kind == ProcedureKind.Setter &&
+          !declaring.isAbstract) {
+        return const IrBlock([]);
+      }
+      throw Unsupported('no body', function.toString());
+    }
+    return _lowerBody(function, body);
   }
+
+  /// A function body, with `_voidReturn` set for it and restored after --
+  /// closures included, since a closure inside a void method may well return
+  /// something.
+  IrStmt _lowerBody(FunctionNode function, Statement body) {
+    final outer = _voidReturn;
+    final outerType = _returnsType;
+    final outerAsync = _asyncBody;
+    // The expected return, when a parameter's function type set one, wins
+    // over the closure's own; consumed here so nested bodies do not see it.
+    // `void Function(int)` taking `(x) => day = x` returns nothing.
+    final expected = _expectedReturn;
+    _expectedReturn = null;
+    _voidReturn = (expected ?? function.returnType) is VoidType;
+    _returnsType = expected ?? function.returnType;
+    _asyncBody = function.asyncMarker == AsyncMarker.Async;
+    try {
+      return statement(body);
+    } finally {
+      _voidReturn = outer;
+      _returnsType = outerType;
+      _asyncBody = outerAsync;
+    }
+  }
+
+  /// Whether the body being lowered is an `async` one.
+  bool _asyncBody = false;
+
+  /// The AOT compiler's own throw, planted where type flow analysis proved
+  /// nothing arrives: `throw "Attempt to execute code removed by Dart AOT
+  /// compiler (TFA)"`. It is not an exception the program raises but a
+  /// claim that the line is dead, and `unreachable!` is that claim in Rust
+  /// -- without making the method a failing one, which put `Result` on 8
+  /// getters whose traits say otherwise.
+  static bool _tfaUnreachable(Throw node) {
+    final thrown = node.expression;
+    return thrown is StringLiteral &&
+        thrown.value.startsWith('Attempt to execute code removed by Dart AOT');
+  }
+
+  static const _unreachable = IrLiteral(
+    'unreachable!("removed by the AOT compiler (TFA)")',
+    IrType('raw'),
+  );
+
+  /// An `int` value stored into a variable *declared* `num` (an `f64`).
+  IrExpr _intoDeclaredNum(Expression value, DartType declared, IrExpr lowered) {
+    if (declared is! InterfaceType || declared.classNode.name != 'num')
+      return lowered;
+    // A literal says so itself: `num _n = 0` at the top level has no
+    // context for `getStaticType` and came out as `RefCell<f64>::new(0)`.
+    if (value is IntLiteral) return IrCast(lowered, 'f64');
+    final given = _staticType(value);
+    if (given is InterfaceType &&
+        given.classNode.name == 'int' &&
+        given.nullability != Nullability.nullable) {
+      return IrCast(lowered, 'f64');
+    }
+    return lowered;
+  }
+
+  /// The `num` members a `dynamic` receiver is downcast for.
+  static const _dynamicNumMethods = {
+    'abs',
+    'isInfinite',
+    'isNaN',
+    'isFinite',
+    'isNegative',
+    'round',
+    'floor',
+    'ceil',
+    'truncate',
+    'toDouble',
+    'toInt',
+    'toStringAsFixed',
+    'sign',
+  };
+
+  /// A downcast names a Rust type: the core scalars by their Rust names.
+  static String _rustScalar(String name) =>
+      const {
+        'num': 'f64',
+        'double': 'f64',
+        'int': 'i64',
+        'bool': 'bool',
+        'String': 'String',
+      }[name] ??
+      name;
+
+  /// Whether an expression reads a variable, field or static *declared*
+  /// `num` -- the one place the word can be trusted (see the operators).
+  static bool _declaredNum(Expression e) {
+    DartType? declared;
+    if (e is VariableGet) declared = e.variable.type;
+    if (e is InstanceGet) declared = e.interfaceTarget.getterType;
+    if (e is StaticGet) declared = e.target.getterType;
+    // `n % 10 == 1`: arithmetic on a declared `num` is a `num` still.
+    if (e is InstanceInvocation &&
+        const {'+', '-', '*', '/', '%', '~/'}.contains(e.name.text)) {
+      return _declaredNum(e.receiver);
+    }
+    return declared is InterfaceType && declared.classNode.name == 'num';
+  }
+
+  /// Whether a local of this type is cloned when passed on (see `_widened`).
+  static bool _clonedWhenPassed(DartType type) {
+    if (type is FunctionType || type is DynamicType) return true;
+    // Every type parameter is bounded `Clone` in the output.
+    if (type is TypeParameterType) return true;
+    // An enum is `Copy`, and a `const fn` may not call `clone` (18 E0015s).
+    if (type is InterfaceType && type.classNode.isEnum) return false;
+    if (type is! InterfaceType) return false;
+    const copied = {'int', 'double', 'bool', 'num', 'Null'};
+    // A list or map is cloned too. Dart shares it; this output already
+    // passes a `Vec` by value into every call, so the aliasing was lost
+    // at the first argument and a copy at `left = mid` (11 E0382s in the
+    // HCT solver) loses nothing more. Recorded as the approximation it is.
+    final name = type.classNode.name;
+    return !copied.contains(name);
+  }
+
+  /// The declared return type of the function being lowered, for `return`
+  /// to widen into when it is nullable and the value is not.
+  DartType? _returnsType;
 
   // -- Declarations -----------------------------------------------------------
 
@@ -1731,7 +4169,14 @@ class KernelFrontend {
     final constants = <IrConstDecl>[];
     final refused = <String>[];
     for (final field in library.fields) {
-      final init = field.initializer;
+      var init = field.initializer;
+      // `int? _implicitViewId;` -- a top-level variable with no initialiser
+      // starts out null, and readers were left naming a static that was
+      // never declared. A non-nullable one without an initialiser is `late`
+      // and stays refused here.
+      if (init == null && field.type.nullability == Nullability.nullable) {
+        init = NullLiteral();
+      }
       if (init == null) continue;
       // A mutable top-level variable is a `static` too -- Dart's is one per
       // isolate, which is what `Isolate` says -- and it needs a cell to be
@@ -1743,7 +4188,17 @@ class KernelFrontend {
           IrConstDecl(
             field.name.text,
             _type(field.type),
-            expression(init),
+            // Into the declared type: a `dynamic` top-level holding a
+            // struct is an `Rc<dyn Object>` (intl's locale data).
+            _intoObject(
+              init,
+              field.type,
+              _intoDeclaredNum(
+                init,
+                field.type,
+                _widened(init, field.type, expression(init)),
+              ),
+            ),
             isLazy: mutable,
             isMutable: mutable,
           ),
@@ -1757,7 +4212,13 @@ class KernelFrontend {
       // `BaselineOffset|+` and friends are the CFE's lowering of an extension
       // type's members into top-level functions. They are not what upstream
       // wrote and they are not translated as though they were.
-      if (procedure.name.text.contains('|')) {
+      // An *extension type*'s members have no representation here yet. A
+      // plain extension's do: the CFE has already lowered `extension X on T {
+      // get hinge => .. }` to a top-level function taking the receiver, and
+      // the name it gave it (`MediaQueryHinge|get#hinge`) cleans to an
+      // identifier the same way at the declaration and at every call.
+      if (procedure.name.text.contains('|') &&
+          procedure.isExtensionTypeMember) {
         refused.add(
           'top-level ${procedure.name.text}: '
           'an extension-type member lowered to a function',
@@ -1802,7 +4263,15 @@ class KernelFrontend {
   }
 
   /// A top-level function, as a method with no receiver.
+  /// `set defaultLocale(..)` as a function name: `setDefaultLocale`, which
+  /// `snake` spells `set_default_locale` at the declaration and every store.
+  static String _topLevelSetterName(String name) {
+    final clean = name.replaceAll(RegExp(r'[|#]'), '_');
+    return 'set${clean[0].toUpperCase()}${clean.substring(1)}';
+  }
+
   IrMethod _lowerTopLevel(Procedure node) {
+    _enter(node);
     // A top-level **getter** is a function of no arguments, which is what it
     // becomes here. Dart writes `PluralCase get ONE => ..` and reads it as a
     // name; Rust writes `fn one() -> PluralCase` and reads it as a call, and
@@ -1810,19 +4279,26 @@ class KernelFrontend {
     //
     // A setter is not the same shape -- it is an assignment that has to look
     // like one at every use -- and stays refused.
+    // A top-level **setter** is a function of one argument named for the
+    // store: `set defaultLocale(v)` is `fn set_default_locale(v)`, and
+    // `defaultLocale = x` at every site is a call of it (see `StaticSet`).
     if (node.kind != ProcedureKind.Method &&
-        node.kind != ProcedureKind.Getter) {
+        node.kind != ProcedureKind.Getter &&
+        node.kind != ProcedureKind.Setter) {
       throw Unsupported('a top-level ${node.kind.name}', node.name.text);
     }
+    // An extension member's CFE name -- `StringCharacters|get#characters` --
+    // read as an operator by the backend's `_identifier`, which then found no
+    // Rust name for it. Cleaned here the way `snake` cleans it at every call
+    // site, so the declaration and the calls spell one identifier.
+    final name = node.kind == ProcedureKind.Setter
+        ? _topLevelSetterName(node.name.text)
+        : node.name.text.replaceAll(RegExp(r'[|#]'), '_');
     return IrMethod(
-      node.name.text,
+      name,
       [
         for (final p in node.function.positionalParameters)
-          IrParam(
-            p.cosmeticName ?? '_',
-            _type(p.type),
-            kept: _keeps(node.function, p),
-          ),
+          IrParam(_paramName(p), _type(p.type), kept: _keeps(node.function, p)),
         for (final p in node.function.namedParameters)
           if (!_inspectorOnly(p.parameterName))
             IrParam(
@@ -1857,12 +4333,59 @@ class KernelFrontend {
   /// Generous, like `_closureFields`: a class counted that need not be costs
   /// an `Rc`; one not counted that should be is a closure that cannot exist.
   bool _closureCallsMethod(Class node) {
+    // A tear-off of `this.method` is that closure written shorter (see the
+    // `InstanceTearOff` case), so it makes the class counted for the same
+    // reason a closure calling a method does. 448 refusals were tear-offs in
+    // classes that had no such closure -- `onPressed: _submit`, and every
+    // `addListener(_handleChange)` -- and the handle they keep needs an `Rc`
+    // to be kept in.
+    final tearOffs = _TearOffFinder();
+    node.accept(tearOffs);
+    if (tearOffs.onThis) return true;
+    // A class reached through an interface is reached through an
+    // `Rc<dyn Trait>`, and a trait method on a shared handle cannot be
+    // `&mut self`: `child.addListener(..)` on an `Rc<dyn Listenable>` was
+    // E0596 however the trait was declared. So a class that implements an
+    // interface (or extends an abstract class, or is a mixin) *and* writes
+    // a field in a method is counted: its fields are cells, its methods
+    // `&self`, and the mutation happens through the cell -- which is what
+    // sharing an object that changes means.
+    final reachedThroughTrait =
+        node.implementedTypes.isNotEmpty ||
+        node.isMixinDeclaration ||
+        (node.superclass?.isAbstract ?? false);
+    if (reachedThroughTrait && _writesFieldInMethod(node)) return true;
+    // ..or mixes in / extends an abstract class with a mutable field: that
+    // class's own methods write it through the trait's setter, on `&self`,
+    // so the storage here has to be a cell (`_TypedDataBuffer._length`).
+    if (_inheritsMutableTraitField(node)) return true;
+    // A class holding its own type in a field -- `FocusNode`'s children,
+    // `_NotificationNode`'s parent -- cannot be a Rust value: the struct
+    // would have infinite size (7 `E0072`s). A handle is the only shape it
+    // has, so the class is counted. Direct self-reference only; a cycle
+    // through another class (`OverlayEntry` <-> `_OverlayEntryWidget`) is
+    // not seen from here yet.
+    for (final field in node.fields) {
+      if (field.isStatic) continue;
+      if (_mentions(field.type, node)) return true;
+      // ..and a cycle of length two: `_NativeCanvas` holds a
+      // `_NativePictureRecorder` which holds a `_NativeCanvas` (E0072).
+      final held = field.type;
+      if (held is InterfaceType) {
+        for (final back in held.classNode.fields) {
+          if (!back.isStatic && _mentions(back.type, node)) return true;
+        }
+      }
+    }
     final closures = <FunctionNode>[];
     node.accept(_ClosureFinder(closures));
     for (final fn in closures) {
-      final walk = _ThisUse();
-      fn.accept(walk);
-      if (walk.demandingBeyondFields) return true;
+      // The same two questions `_closure` asks before it refuses -- does the
+      // closure reach `this`, and would copying its final fields do instead.
+      // Asked with the same detectors: `_ThisUse` answered "no" for 65
+      // closures that `_ThisFinder` then found reaching `this`, because the
+      // former does not look inside a field read's receiver.
+      if (_reachesThis(fn) && _finalFieldsRead(fn) == null) return true;
     }
     return false;
   }
@@ -1880,6 +4403,16 @@ class KernelFrontend {
       touched.addAll(walk.mutable);
     }
     return touched;
+  }
+
+  /// Whether a static const field of an enum is one of its variants.
+  ///
+  /// The variants are the fields typed as the enum. Anything else declared
+  /// `static const` inside it is an ordinary constant that happens to live
+  /// there, and counting it as a variant emits a name no value ever had.
+  static bool _isVariantOf(Class node, Field field) {
+    final type = field.type;
+    return type is InterfaceType && type.classNode == node;
   }
 
   (IrClass, List<String>) lowerClass(Class node) {
@@ -1951,10 +4484,34 @@ class KernelFrontend {
     final carriedValues =
         enumFields[node] ?? const <String, Map<String, String>>{};
     final names = enumValues[node] ?? const <String>[];
+    // A variant is a static const field **whose type is the enum itself**.
+    // This used to read "every static const field except `values`", and an
+    // enhanced enum may declare ordinary constants alongside its variants:
+    // `_CupertinoMenuWidth` has four variants and a
+    // `static const double _kTabletWidthThreshold = 768.0`, which counted as a
+    // fifth. Nothing recovers per-variant state for something that is not a
+    // variant, so the state map came up one key short.
+    final declared = node.isEnum
+        ? [
+            for (final f in node.fields)
+              if (f.isStatic &&
+                  f.isConst &&
+                  f.name.text != 'values' &&
+                  _isVariantOf(node, f))
+                f.name.text,
+          ]
+        : const <String>[];
+    // The list that would actually be emitted: the declaration when the dill
+    // still carries it, otherwise the names recovered from the constants. The
+    // state recovery has to be judged on *that* list. Judged on `names` and
+    // then emitted from `declared`, a variant the constants never named is a
+    // key that is not there -- and it arrived as a crash rather than as a
+    // refusal, which is the one thing this front end is not allowed to do.
+    final variants = declared.isNotEmpty ? declared : names;
     final stateRecovered =
         carried.isNotEmpty &&
-        names.isNotEmpty &&
-        names.every(
+        variants.isNotEmpty &&
+        variants.every(
           (v) =>
               carriedValues[v] != null &&
               carried.every(carriedValues[v]!.containsKey),
@@ -1972,13 +4529,7 @@ class KernelFrontend {
     // them. `enumValues` is that recovery, done once over the whole component
     // by the driver, because a constant naming this enum can be in any
     // library.
-    final values = !node.isEnum || enhanced
-        ? const <String>[]
-        : [
-            for (final f in node.fields)
-              if (f.isStatic && f.isConst && f.name.text != 'values')
-                f.name.text,
-          ];
+    final values = !node.isEnum || enhanced ? const <String>[] : declared;
     // Only when the enum is otherwise translatable. Recovering the variants of
     // an *enhanced* enum would emit it as a plain one and drop its members --
     // which is the thing the refusal exists to prevent, and which this
@@ -1999,9 +4550,16 @@ class KernelFrontend {
       // The class's own `implements` clause. The applied mixins reached
       // through `implementedTypes` above belong to the *synthetic* classes on
       // the way up, not to this one, so the two lists do not overlap.
+      // A mixin's `on` types come along: `SourceSpanMixin on SourceSpan`
+      // calls `start` on `this`, and the free function holding that body is
+      // bounded by the trait, which had to say it is a `SourceSpan` too.
       interfaces: node.isEnum
           ? const []
-          : [for (final t in node.implementedTypes) _type(t.asInterfaceType)],
+          : [
+              for (final t in node.implementedTypes) _type(t.asInterfaceType),
+              if (node.isMixinDeclaration)
+                for (final t in node.onClause) _type(t.asInterfaceType),
+            ],
       counted: _counted,
       isAbstract: node.isAbstract,
       isEnum: node.isEnum,
@@ -2034,10 +4592,91 @@ class KernelFrontend {
         refused.add('$error');
       }
     }
+    // The applied mixins' members. After TFA a mixin's fields and methods
+    // live on the anonymous application classes between this class and its
+    // written superclass (`_MixinApplication459&ListNotifier&StateMixin`
+    // holds `StateMixin`'s `_value` and `refresh`), and the mixin
+    // declaration itself is left hollow. Those classes are not lowered on
+    // their own, so their members are this class's: a struct has no other
+    // way to carry them. The class's own declarations override by name.
+    if (!node.isEnum) {
+      final own = {
+        for (final f in node.fields) f.name.text,
+        for (final p in node.procedures) p.name.text,
+      };
+      var applied = node.supertype;
+      while (applied != null && applied.classNode.isAnonymousMixin) {
+        final anonymous = applied.classNode;
+        for (final field in anonymous.fields) {
+          if (!own.add(field.name.text)) continue;
+          try {
+            _lowerField(cls, field);
+          } on Unsupported catch (error) {
+            refused.add('$error');
+          }
+        }
+        for (final procedure in anonymous.procedures) {
+          if (procedure.isAbstract || !own.add(procedure.name.text)) continue;
+          try {
+            _lowerProcedure(cls, procedure);
+          } on Unsupported catch (error) {
+            refused.add('$error');
+          }
+        }
+        applied = anonymous.supertype;
+      }
+    }
+    // An abstract class or mixin that `implements` a *concrete* class --
+    // `SourceLocationMixin implements SourceLocation` -- reads that class's
+    // fields through `this`. A trait has no fields, so the trait declares
+    // the public ones as getters and every implementer answers with its own
+    // (the backend forwards a struct's field for a trait getter). 7
+    // `this_.source_url()` on an `&__Self` in source_span.
+    if (node.isAbstract || node.isMixinDeclaration) {
+      final declared = {
+        for (final m in cls.methods) m.name,
+        for (final m in cls.abstractMethods) m.name,
+      };
+      for (final t in node.implementedTypes) {
+        final iface = t.classNode;
+        if (iface.isAbstract) continue;
+        for (final f in iface.fields) {
+          if (f.isStatic || f.name.isPrivate) continue;
+          if (!declared.add(f.name.text)) continue;
+          cls.abstractMethods.add(
+            IrMethod(
+              f.name.text,
+              const [],
+              _type(f.type),
+              const IrBlock([]),
+              isGetter: true,
+            ),
+          );
+        }
+        for (final p in iface.procedures) {
+          if (p.isStatic ||
+              p.kind != ProcedureKind.Getter ||
+              p.name.isPrivate) {
+            continue;
+          }
+          if (!declared.add(p.name.text)) continue;
+          cls.abstractMethods.add(
+            IrMethod(
+              p.name.text,
+              const [],
+              _type(p.function.returnType),
+              const IrBlock([]),
+              isGetter: true,
+            ),
+          );
+        }
+      }
+    }
     return (cls, refused);
   }
 
   void _lowerField(IrClass cls, Field field) {
+    _enter(field);
     final name = field.name.text;
     // An enum's own members are its variants and the CFE's bookkeeping; neither
     // becomes a field or a constant on the Rust side.
@@ -2049,11 +4688,24 @@ class KernelFrontend {
         IrConstDecl(
           name,
           _type(field.type),
-          expression(init),
+          _intoObject(
+            init,
+            field.type,
+            _intoDeclaredNum(
+              init,
+              field.type,
+              _widened(init, field.type, expression(init)),
+            ),
+          ),
           // A `static final` is computed once on first use, which is what
           // `LazyLock` is. It was refused while there was nothing to say it
           // with; there is now.
           isLazy: !field.isConst,
+          // A plain `static` is assignable, so it needs a cell as well as the
+          // lock -- the same shape a mutable top-level has. 73 writes to
+          // these were refused as `expression StaticSet`, most of them a
+          // `??=` caching something on the class.
+          isMutable: !field.isConst && !field.isFinal,
         ),
       );
     } else {
@@ -2073,11 +4725,12 @@ class KernelFrontend {
   }
 
   void _lowerConstructor(IrClass cls, Constructor node) {
+    _enter(node);
     if (cls.isEnum) return;
     final name = node.name.text;
     final params = <IrParam>[];
     for (final p in node.function.positionalParameters) {
-      params.add(IrParam(p.cosmeticName ?? '_', _type(p.type)));
+      params.add(IrParam(_paramName(p), _type(p.type)));
     }
     for (final p in node.function.namedParameters) {
       // The inspector's parameter is dropped with its field. See
@@ -2089,10 +4742,22 @@ class KernelFrontend {
     final inits = <String, IrExpr>{};
     final asserts = <IrAssert>[];
     String? superBase;
+    String? superName;
     var superArgs = const <IrExpr>[];
+    String? redirectTo;
+    var redirectArgs = const <IrExpr>[];
+    var redirects = false;
+    final pre = <IrStmt>[];
     for (final init in node.initializers) {
       if (init is FieldInitializer) {
-        inits[init.field.name.text] = expression(init.value);
+        // Into the field's type: `creator = filter` with a `_GaussianBlur
+        // ImageFilter` in hand and an `ImageFilter` field is `Rc::new(..)`,
+        // a nullable field takes `Some(..)`.
+        inits[init.field.name.text] = _widened(
+          init.value,
+          init.field.type,
+          expression(init.value),
+        );
       } else if (init is AssertInitializer) {
         final statement = init.statement;
         asserts.add(_assert(statement.condition, statement.message));
@@ -2110,11 +4775,25 @@ class KernelFrontend {
             );
           }
           superBase = base.name;
+          superName = init.target.name.text.isEmpty
+              ? null
+              : init.target.name.text;
           superArgs = _arguments(init.arguments, init.target.function);
         }
         // A no-argument super() adds nothing to a Rust struct literal.
+      } else if (init is LocalInitializer) {
+        // `: final #t = e, super(#t, #t)` -- a temporary bound in the
+        // initialiser list. A `let` before the fields are set, named like
+        // every other CFE temporary, so the super arguments find it.
+        pre.add(_declare(init.variable, init));
       } else if (init is RedirectingInitializer) {
-        throw Unsupported('redirecting constructor', _sample(init));
+        // `: this._(string, 0, 0)`. 94 in the gallery's dill. The target is
+        // a constructor of this same class, so its parameter list is right
+        // here to order the named arguments by.
+        redirects = true;
+        final target = init.target.name.text;
+        redirectTo = target.isEmpty ? null : target;
+        redirectArgs = _arguments(init.arguments, init.target.function);
       } else {
         throw Unsupported('initialiser ${init.runtimeType}', _sample(init));
       }
@@ -2142,7 +4821,11 @@ class KernelFrontend {
         name: name.isEmpty ? null : name,
         asserts: asserts,
         superBase: superBase,
+        superName: superName,
         superArgs: superArgs,
+        redirectTo: redirects ? (redirectTo ?? '') : null,
+        redirectArgs: redirectArgs,
+        pre: pre,
         body: real.isEmpty
             ? null
             : IrBlock([for (final s in real) statement(s)]),
@@ -2151,7 +4834,17 @@ class KernelFrontend {
   }
 
   void _lowerProcedure(IrClass cls, Procedure node) {
-    final name = node.name.text;
+    _enter(node);
+    // An unnamed factory has no name in Kernel; an empty identifier stopped
+    // all 37 members of vector_math's classes through `_computeFailing`.
+    // `new`, as the backend spells the call.
+    final name = node.kind == ProcedureKind.Factory && node.name.text.isEmpty
+        ? 'new'
+        : node.name.text;
+    if (node.isNoSuchMethodForwarder) {
+      _lowerForwarder(cls, node);
+      return;
+    }
     if (cls.isEnum) {
       // A plain enum has only the implicit members. One with anything else is
       // an enhanced enum -- a Rust enum plus an impl -- and stops here rather
@@ -2178,9 +4871,11 @@ class KernelFrontend {
     final params = [
       for (final p in node.function.positionalParameters)
         IrParam(
-          p.cosmeticName ?? '_',
+          _paramName(p),
           _type(p.type),
           kept: _keeps(node.function, p),
+          hasDefault: p.defaultValue != null,
+          defaultValue: _default(p),
         ),
       for (final p in node.function.namedParameters)
         if (!_inspectorOnly(p.parameterName))
@@ -2189,6 +4884,8 @@ class KernelFrontend {
             _type(p.type),
             named: true,
             kept: _keeps(node.function, p),
+            hasDefault: p.defaultValue != null,
+            defaultValue: _default(p),
           ),
     ];
     final isOperator = node.kind == ProcedureKind.Operator;
@@ -2197,14 +4894,19 @@ class KernelFrontend {
       final finder = _ThrowFinder();
       node.function.accept(finder);
       thrown.addAll(finder.types);
+      // Two error types were once two `Result`s. A throw is a panic now
+      // (the backend's `_thrown`), and the method carries `Object` -- the
+      // type every Dart throw has -- for the `try` bodies that still catch.
       if (thrown.length > 1) {
-        throw Unsupported('method throwing ${thrown.length} error types', name);
+        thrown
+          ..clear()
+          ..add('Object');
       }
     }
     final method = IrMethod(
       name,
       params,
-      _type(node.function.returnType),
+      _returnType(node.function),
       node.isAbstract ? const IrBlock([]) : _body(node.function),
       typeParameters: [
         for (final p in node.function.typeParameters) p.name ?? 'T',
@@ -2220,9 +4922,133 @@ class KernelFrontend {
     );
     (node.isAbstract ? cls.abstractMethods : cls.methods).add(method);
   }
+
+  /// A `noSuchMethod` forwarder, lowered from what it *is* rather than from
+  /// its body.
+  ///
+  /// A class that declares `noSuchMethod` and implements an interface gets one
+  /// of these per interface member from the CFE -- `_WidgetTextStyleMapper`,
+  /// three lines of Dart, arrives with thirty-four. The body it is given is
+  /// `noSuchMethod(new _InvocationMirror._withType(#name, kind, ...))`, and
+  /// `_InvocationMirror` is the VM's own private class: translating that line
+  /// would name something no library here declares. What the forwarder means
+  /// is fully said by its name and its kind, so that is what is emitted:
+  /// `noSuchMethod(Invocation.getter(#name))`. 294 `SymbolConstant`
+  /// refusals were these, every one.
+  void _lowerForwarder(IrClass cls, Procedure node) {
+    final name = node.name.text;
+    final kind = switch (node.kind) {
+      ProcedureKind.Getter => 'getter',
+      ProcedureKind.Setter => 'setter',
+      _ => 'method',
+    };
+    final invocation = IrStaticCall('Invocation', kind, [
+      IrLiteral('Symbol::of("$name")', const IrType('raw')),
+    ]);
+    final params = [
+      for (final p in node.function.positionalParameters)
+        IrParam(_paramName(p), _type(p.type)),
+      for (final p in node.function.namedParameters)
+        IrParam(p.parameterName, _type(p.type), named: true),
+    ];
+    cls.methods.add(
+      IrMethod(
+        name,
+        params,
+        _returnType(node.function),
+        IrBlock([
+          // `noSuchMethod` yields `Never`, spelled `Infallible`, which does
+          // not coerce to the forwarder's own return type; the prelude's
+          // `never()` does the coercion `!` would have done.
+          IrReturn(
+            IrStaticCall(null, 'never', [
+              IrCall(const IrThis(), 'noSuchMethod', [invocation]),
+            ]),
+          ),
+        ]),
+        typeParameters: [
+          for (final p in node.function.typeParameters) p.name ?? 'T',
+        ],
+        isGetter: node.kind == ProcedureKind.Getter,
+        isSetter: node.kind == ProcedureKind.Setter,
+        operator: node.kind == ProcedureKind.Operator ? name : null,
+      ),
+    );
+  }
 }
 
 /// Whether a function body mentions `this` anywhere inside it.
+/// Whether a body is the FFI transform's plumbing around a `@Native`.
+bool _callsFfiNative(Statement body) {
+  final finder = _FfiNativeFinder();
+  body.accept(finder);
+  return finder.found;
+}
+
+class _FfiNativeFinder extends RecursiveVisitor {
+  bool found = false;
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    final name = node.target.name.text;
+    if (name.contains(r'$Method$FfiNative') || name == '_fromAddress') {
+      found = true;
+    }
+    super.visitStaticInvocation(node);
+  }
+}
+
+/// The variables a function body reads and the ones it declares.
+class _LocalFinder extends RecursiveVisitor {
+  final read = <Variable>[];
+  final declared = <Variable>{};
+
+  @override
+  void visitVariableGet(VariableGet node) {
+    read.add(node.variable);
+    super.visitVariableGet(node);
+  }
+
+  @override
+  void visitVariableSet(VariableSet node) {
+    read.add(node.variable);
+    super.visitVariableSet(node);
+  }
+
+  @override
+  void visitVariableDeclaration(VariableDeclaration node) {
+    // The statement declares a `DeclaredVariable`; reads name the variable.
+    declared.add(node.variable);
+    super.visitVariableDeclaration(node);
+  }
+
+  @override
+  void visitFunctionNode(FunctionNode node) {
+    declared.addAll(node.positionalParameters);
+    declared.addAll(node.namedParameters);
+    super.visitFunctionNode(node);
+  }
+
+  @override
+  void visitLet(Let node) {
+    // A `Let` binds its variable without a declaration statement; counted
+    // as an outer local, `__t0` was cloned in from a scope that had none.
+    declared.add(node.variable);
+    super.visitLet(node);
+  }
+}
+
+/// Finds `this.x = v` (implicit `this` included).
+class _ThisWriteFinder extends RecursiveVisitor {
+  bool found = false;
+
+  @override
+  void visitInstanceSet(InstanceSet node) {
+    if (node.receiver is ThisExpression) found = true;
+    super.visitInstanceSet(node);
+  }
+}
+
 class _ThisFinder extends RecursiveVisitor {
   bool found = false;
 
@@ -2371,6 +5197,27 @@ class _FinalFieldReads extends RecursiveVisitor {
 /// Reading a field of `this` is not demanding; writing one, calling a method on
 /// it, tearing a method off it, or handing `this` itself to something all are.
 /// `super` counts the same way -- it is the same object.
+/// Whether a type names `cls`, at any depth of its arguments.
+bool _mentions(DartType type, Class cls) => switch (type) {
+  InterfaceType(:final classNode, :final typeArguments) =>
+    classNode == cls || typeArguments.any((t) => _mentions(t, cls)),
+  FunctionType(:final positionalParameters, :final returnType) =>
+    positionalParameters.any((t) => _mentions(t, cls)) ||
+        _mentions(returnType, cls),
+  _ => false,
+};
+
+/// Whether a class tears off one of its own methods anywhere.
+class _TearOffFinder extends RecursiveVisitor {
+  bool onThis = false;
+
+  @override
+  void visitInstanceTearOff(InstanceTearOff node) {
+    if (node.receiver is ThisExpression) onThis = true;
+    super.visitInstanceTearOff(node);
+  }
+}
+
 class _ThisUse extends RecursiveVisitor {
   bool demanding = false;
 

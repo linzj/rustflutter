@@ -27,7 +27,10 @@
 
 import 'dart:io';
 
+import 'package:kernel/class_hierarchy.dart';
+import 'package:kernel/core_types.dart';
 import 'package:kernel/kernel.dart';
+import 'package:kernel/type_environment.dart';
 
 import '../lib/backend_rust.dart';
 import '../lib/ir.dart';
@@ -113,6 +116,14 @@ Future<void> main(List<String> args) async {
   // Once for the whole component: an enum's variants live in the
   // constants that name them, which can be in any library.
   final (enumValues, enumFields) = enumsIn(component);
+  // The program's types, once: `getStaticType` needs a class hierarchy, and
+  // building one over 924 libraries is a few seconds, not a few seconds per
+  // library.
+  final coreTypes = CoreTypes(component);
+  final typeEnvironment = TypeEnvironment(
+    coreTypes,
+    ClassHierarchy(component, coreTypes),
+  );
   // A comma-separated list: `package:flutter/,dart:ui`. `dart:ui` holds
   // Color, Offset, Size and Rect, which round 39 measured as the four names
   // the translated package reaches for most and never finds -- and it is in
@@ -134,7 +145,8 @@ Future<void> main(List<String> args) async {
 
   /// Each module's text, held until every module is known: what a module has
   /// to import cannot be decided before the others have said what they define.
-  final written = <String, (String, String, List<String>, List<String>)>{};
+  final written =
+      <String, (String, String, List<String>, List<String>, Set<String>)>{};
   var libraries = 0;
   var classes = 0;
   var refusals = 0;
@@ -180,6 +192,7 @@ Future<void> main(List<String> args) async {
   /// library doing the naming, so the lookup has to as well.
   final classesOf = <Library, Map<String, IrClass>>{};
   final everyFunction = <String>{};
+  final everyConstant = <String, IrConstDecl>{};
 
   /// Which modules define each class name. Ten names are defined by more than
   /// one -- `TextStyle`, `Image`, `Path`, `Gradient` and `StrutStyle` each come
@@ -192,6 +205,7 @@ Future<void> main(List<String> args) async {
       enumValues: enumValues,
       enumFields: enumFields,
       abstractElsewhere: abstractNames,
+      typeEnvironment: typeEnvironment,
     ).lowerLibrary();
     lowered[library] = result;
     for (final cls in result.$1.classes) {
@@ -199,6 +213,9 @@ Future<void> main(List<String> args) async {
       (classesOf[library] ??= <String, IrClass>{})[cls.name] = cls;
     }
     everyFunction.addAll(result.$1.functions.map((f) => f.name));
+    for (final c in result.$1.constants) {
+      everyConstant.putIfAbsent(c.name, () => c);
+    }
     for (final cls in result.$1.classes) {
       (definedIn[cls.name] ??= <String>{}).add(nameOf[library]!);
     }
@@ -239,6 +256,7 @@ Future<void> main(List<String> args) async {
       constants: own.constants,
       functions: own.functions,
       abstractElsewhere: abstractNames,
+      constantsElsewhere: everyConstant,
       elsewhere: {
         ...everyClass,
         // What *this* library's names resolve to wins over the crate-wide
@@ -271,16 +289,37 @@ Future<void> main(List<String> args) async {
       if ((definedIn[className]?.length ?? 0) < 2) return;
       if (ownNames.contains(className)) return;
       final owners = from.map((l) => nameOf[l]).nonNulls.toSet();
-      if (owners.length != 1) return;
-      final owner = owners.single;
-      if (owner == name || !imports.contains(owner)) return;
-      // A private class is private in Rust for the same reason it is in Dart:
-      // its library. Naming one from another module is an unresolved import,
-      // not an ambiguity being settled -- 22 of them.
-      if (className.startsWith('_')) return;
+      // `TextStyle` and `Image` exist in `dart:ui` and again in the
+      // framework, and a library that names both -- `painting/text_style.dart`
+      // itself -- cannot import either by its bare name. The framework's is
+      // the one the *text* means at nearly every site (the `dart:ui` one is
+      // written `ui.TextStyle`, and the prefix is gone here); importing it
+      // turns 20 "cannot find" into a type mismatch at the few `ui.` sites,
+      // which rustc still reports.
+      final String owner;
+      if (owners.length == 1) {
+        owner = owners.single;
+      } else if (owners.length == 2 && owners.contains('dart_ui')) {
+        owner = owners.firstWhere((o) => o != 'dart_ui');
+      } else {
+        return;
+      }
+      if (owner == name) return;
+      // Resolved from the Kernel reference, so neither the Dart import list
+      // nor the name's privacy is asked: the tree shaker inlines a library's
+      // constants into libraries that never imported it, and three libraries
+      // each declare a `_UnspecifiedTextScaler` -- the reference says which.
+      // A private class is `pub(crate)` here, so the import is a real one.
+      // 15 `E0422`s.
       resolved.add('use crate::$owner::$className;');
     });
-    written[name] = (uri, text, exports.toList()..sort(), resolved..sort());
+    written[name] = (
+      uri,
+      text,
+      exports.toList()..sort(),
+      resolved..sort(),
+      imports,
+    );
   }
 
   // The `use` lines, decided from the emitted Rust rather than from the Dart.
@@ -296,30 +335,52 @@ Future<void> main(List<String> args) async {
   // emitted. Deciding from the text rather than from the Dart AST is the
   // point -- the text is the thing that has to compile, so no name can arrive
   // by a route the importer did not think of.
-  final definer = <String, String>{};
-  final ambiguous = <String>{};
+  // Every module that defines each public item. One definer: import from it.
+  // Several: this used to give up, and `default_target_platform` -- defined
+  // by `platform.dart` *and* by the `_platform_io.dart` it wraps -- went
+  // unimported 73 times. The Dart import graph settles it the way it settles
+  // the classes above: of the definers, the one this library imports is the
+  // one it meant.
+  final definers = <String, Set<String>>{};
   for (final entry in written.entries) {
     for (final item in _publicItemsIn(entry.value.$2)) {
-      if (definer.containsKey(item) && definer[item] != entry.key) {
-        ambiguous.add(item);
-      } else {
-        definer[item] = entry.key;
-      }
+      (definers[item] ??= {}).add(entry.key);
     }
   }
 
   for (final entry in written.entries) {
     final name = entry.key;
-    final (uri, text, exports, resolved) = entry.value;
+    final (uri, text, exports, resolved, imports) = entry.value;
     final mine = _itemsIn(text);
+    // What `resolved` (the class path) already imports by name, so the same
+    // name is not imported twice -- 64 `E0252`s, `Path` 41 of them.
+    final already = {
+      for (final line in resolved)
+        line.substring(line.lastIndexOf(':') + 1, line.length - 1),
+    };
     final wanted = <String, String>{};
     for (final used in _identifiersIn(text)) {
       if (mine.contains(used)) continue;
-      final from = definer[used];
-      if (from == null || from == name) continue;
-      // A name two modules define cannot be imported by name from here. The
-      // Dart said which one was meant, and `resolved` already carries that.
-      if (ambiguous.contains(used)) continue;
+      // `_` is a pattern, not a name. A *private* name (`_Linear`) is
+      // imported when exactly one module defines it: Dart's library-private
+      // is `pub(crate)` here, and the tree shaker inlines constants across
+      // libraries -- `_AlwaysDismissedAnimation {}` turned up in
+      // `package:animations`, 250 `E0422`s and the top of the E0425 list.
+      if (used == '_') continue;
+      if (already.contains(used)) continue;
+      final candidates = definers[used];
+      if (candidates == null) continue;
+      // Only from a module this library reaches in the Dart graph. Text
+      // alone imported `locale` from the gallery's formatters into
+      // `widgets/basic.dart` for a *parameter* of that name, and `Dialog`
+      // and `MenuItem` from material and the gallery into `dart:ui` -- edges
+      // no Dart import made. rustc read them as unused imports; the module
+      // graph read them as one 450-module cycle, 27% of the crate, with
+      // `dart:ui` and `package:gallery` in it. Measured 2026-09-03.
+      final imported = candidates.where(imports.contains).toList();
+      if (imported.length != 1) continue;
+      final from = imported.single;
+      if (from == name) continue;
       wanted[used] = from;
     }
     final byModule = <String, List<String>>{};

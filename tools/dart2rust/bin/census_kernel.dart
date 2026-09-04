@@ -75,7 +75,20 @@ void main(List<String> args) {
     final lowered = <IrClass>[];
     for (final node in library.classes) {
       if (node.isAnonymousMixin) continue;
-      final (cls, problems) = frontend.lowerClass(node);
+      // `lowerLibrary` guards each class, and this does not go through it. A
+      // class whose *header* cannot be lowered -- `extends Foo<Never>` is the
+      // one that found this -- is a refusal to count, not the end of the run.
+      // Without the guard one class ended the measurement instead of appearing
+      // in it, and the queue it would have printed was never printed at all.
+      final (IrClass, List<String>) result;
+      try {
+        result = frontend.lowerClass(node);
+      } on Unsupported catch (error) {
+        classesSeen++;
+        all.add('${node.name}: $error');
+        continue;
+      }
+      final (cls, problems) = result;
       lowered.add(cls);
       classesSeen++;
       membersEmitted +=

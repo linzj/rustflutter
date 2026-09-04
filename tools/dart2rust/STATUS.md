@@ -1,13 +1,32 @@
 # dart2rust 进度
 
-目标:把 `/d/linzjUbuntu2204/gallery_upstream`(真正的 flutter/gallery)翻译成
-Rust 跑起来。这需要翻译 gallery 自身的 Dart **和**它依赖的整个 Flutter framework。
+目标:把 `~/gallery_upstream`(真正的 flutter/gallery)在**上游的 flutter engine**
+上跑起来,占的是 **AOT 模式的那个位置**。engine 不改,改的是 AOT 那一侧的两半:
 
-尺子是 `bin/census.dart`:对一棵树跑前端,把拒绝原因**按类别归并**后排队。
+| AOT 模式的两半 | 上游是什么 | 这里换成什么 |
+|---|---|---|
+| 编译好的代码 | `gen_snapshot` 出的 `libapp.so`(符号 `kDartSnapshotData` / `kDartSnapshotText`,由 `Dart_LoadELF` 装进来) | dart2rust 翻译出的 Rust crate |
+| 运行时 | `libdart`(Dart VM,`dart_component_kind = "static_library"`,静态链进 engine) | 一个 plain 的 Dart VM,Rust 写 |
+
+**整个 framework 仍然要翻译**——gallery 自己的 Dart,加上它依赖的
+`package:flutter`。新加的是另一半:**运行时**。翻译出来的 Rust 不是一个自足的
+程序,它要有人给它对象模型、`dart:core`、事件循环、异常、类型测试,以及
+`dart:ui` 的两个方向。上游这些东西全在 VM 和 snapshot 里;这里用 Rust 写出来,
+**把能力接到 dart2rust 生成的模块上**。为什么是这个形状、量到了多大,
+见〈目标改写(2026-09-03)〉。
+
+两把尺子,一半一把:
+
+`bin/census.dart` 量**翻译面**:对一棵树跑前端,把拒绝原因**按类别归并**后排队。
 队头就是下一件该做的事。用法:
 
-    dart run --packages="E:/source/flutter/.dart_tool/package_config.json" \
+    dart run --packages="$RUSTFLUTTER_FLUTTER/.dart_tool/package_config.json" \
         tools/dart2rust/bin/census.dart <目录> [--examples]
+
+`bin/embedder_api.py` 量**运行时面**:上游 engine 会向 AOT 那个位置要什么,
+Rust 这边答上了多少。用法:
+
+    python3 tools/dart2rust/bin/embedder_api.py [--top N] [--missing-only]
 
 ---
 
@@ -5193,23 +5212,30 @@ ScaffoldState._scaffold_messenger        Rc<RefCell<Option<Rc<...>>>>    可空=
 
 四个脚本各自写死了 Windows 路径,现在都走 `bin/paths.py`:
 
-| 变量 | 默认值 | 是什么 |
+| 变量 | 默认值(Windows / Linux) | 是什么 |
 |---|---|---|
-| `RUSTFLUTTER_FLUTTER` | `E:/source/flutter` | Flutter checkout,前端跑在它自带的 dart-sdk 上 |
-| `RUSTFLUTTER_APP` | `D:/linzjUbuntu2204/gallery_upstream` | 被翻译的 app,fixture 用它的 package_config.json |
-| `RUSTFLUTTER_ENGINE` | `$FLUTTER/engine/src` | 有 built dart-sdk 的 engine,`dill.py` 要它的 `pkg/kernel` |
+| `RUSTFLUTTER_FLUTTER` | `E:/source/flutter` / `~/flutter_sdk` | Flutter checkout,前端跑在它自带的 dart-sdk 上 |
+| `RUSTFLUTTER_APP` | `D:/linzjUbuntu2204/gallery_upstream` / `~/gallery_upstream` | 被翻译的 app,fixture 用它的 package_config.json |
+| `RUSTFLUTTER_ENGINE` | `$FLUTTER/engine/src` | 有 built dart-sdk 的 engine,`dill.py` 要它的 `pkg/kernel`,`embedder_api.py` 要它的 `Dart_*` 表面 |
 
-`.exe` 后缀也收进 `paths.exe()`,非 Windows 上自动去掉。
+默认值 2026-09-03 起**按宿主分两套**:目标改写时 app 从 `/mnt/d` 搬进了 Linux
+文件系统,成了 `~/gallery_upstream`,而 Windows 那台还在原处。两边都不用 export
+就能跑,`.exe` 后缀照旧收在 `paths.exe()` 里,非 Windows 上自动去掉。
 
 ### 在 WSL2 里要准备的
 
 1. **一个 Linux 的 Flutter checkout**,并且 `flutter pub get` 过
    (要 `$FLUTTER/.dart_tool/package_config.json`)。
-2. **一个 built 的 engine**,`out/host_release/dart-sdk/bin/` 下要有 `dart`,
-   `out/gen/frontend_server_aot.dart.snapshot` 和 `out/flutter_patched_sdk/`
-   也要在——`bin/dill.py` 靠这三样把 fixture 编成 `.dill`。
-   没有 engine 的话,Kernel 前端和 `bin/fixtures.py` 跑不了,
+2. **一个 built 的 engine**,`out/<mode>/dart-sdk/bin/` 下要有 `dart`,
+   `out/<mode>/gen/frontend_server_aot.dart.snapshot` 和
+   `out/<mode>/flutter_patched_sdk/` 也要在——`bin/dill.py` 靠这三样把 fixture
+   编成 `.dill`。没有 engine 的话,Kernel 前端和 `bin/fixtures.py` 跑不了,
    analyzer 前端和 `bin/crate.py`(吃现成的 `app.dill`)还能跑。
+
+   **这台机器上有了**:`~/flutter_sdk/engine/src/out/host_profile`,
+   `python3 bin/dill.py --check` 八项全 OK,dart revision `cf79067a1e`。
+   `host_profile` 是 2026-09-03 加进 `dill.py` 的搜索表的——**profile 就是 AOT**,
+   而新目标要跑的正是这个模式的 engine,之前那张表里没有它。
 3. **gallery 的 `app.dill`**:
    `$RUSTFLUTTER_APP/.dart_tool/flutter_build/<hash>/app.dill`。
    现在这份是 Windows 上 `flutter build` 出来的,**dill 是平台无关的**,
@@ -5219,20 +5245,959 @@ ScaffoldState._scaffold_messenger        Rc<RefCell<Option<Rc<...>>>>    可空=
 ### 三条命令
 
 ```sh
-export RUSTFLUTTER_FLUTTER=/home/you/flutter
-export RUSTFLUTTER_APP=/mnt/d/linzjUbuntu2204/gallery_upstream
+# 默认值已经是这两个,写出来是为了说清楚它们是什么
+export RUSTFLUTTER_FLUTTER=~/flutter_sdk
+export RUSTFLUTTER_APP=~/gallery_upstream
 
 cd tools/dart2rust
 python3 bin/regen.py                     # 重新生成 testdata/src/*.rs
 (cd testdata && cargo test)              # 146 个测试
 python3 bin/fixtures.py                  # 两个前端必须一字不差
 python3 bin/crate.py "$RUSTFLUTTER_APP/.dart_tool/flutter_build/<hash>/app.dill"
+python3 bin/embedder_api.py              # engine 要什么,运行时答上了多少
 ```
 
-最后一条是整包的那把尺子,大约十二分钟,打印
-`920 libraries, 4122 classes, N refusals` 和 `errors: N`。
+`crate.py` 那条是整包的那把尺子,大约十二分钟,打印
+`920 libraries, 4122 classes, N refusals` 和 `errors: N`。最后那条是秒回的,
+它读的是 engine 的源码,不 build 任何东西。
 
 ---
+
+## 第 115 轮:在这台机器上把 gallery 的 dill 重新做一份,然后三个编译器 bug
+
+目标改写之后的第一轮。要跑的是 `~/gallery_upstream`,而这台机器上**它的输入根本
+不成立**:`.dart_tool/` 是从 Windows 拷过来的,`package_config.json` 里全是
+`C:/Users/...` 和 `E:/source/flutter`,`app.dill` 是 Kernel v139,而这里的
+`pkg/kernel` 是 v141——第一次跑 `crate.py` 报的就是
+`Unexpected Kernel Format Version 139 (expected 141)`,和 `dill.py` 开头写的
+那句话一模一样,方向反了过来。
+
+### 先把输入做出来
+
+| 步骤 | 结果 |
+|---|---|
+| `flutter --version`(bootstrap `~/flutter_sdk`) | dart-sdk 786 MB,framework `0c2d270c5a`,Dart 3.14.0 |
+| `flutter pub get` | 27 个依赖变了,`package_config.json` 换成 Linux 路径 |
+| `flutter gen-l10n` | 生成到 `lib/l10n/`,**不再有 `package:flutter_gen`** |
+| `package:flutter_gen` → `lib/l10n` 的符号链接 + package_config 里一条映射 | 403 个「Not found」降到 4 |
+| `BottomAppBarTheme` → `BottomAppBarThemeData`(gallery 3 处) | 上游改了名 |
+| `google_fonts` `^6.1.0` → `^6.3.3` | 6.1.0 的 `const {FontWeight.w100: ...}` 在新 `dart:ui` 上不再合法:「key does not have a primitive operator `==`」 |
+| `dill.py --build package:gallery/main.dart` | **0 条 problem**,104.6 MB,revision `cf79067a1e` |
+
+`flutter update-packages` 也跑了,`$FLUTTER/.dart_tool/package_config.json` 有了
+——analyzer 前端要它。**但 analyzer 前端现在编不过**:flutter 仓库带的是
+analyzer 14.3.0,`SetterElement.isSynthetic` 没有了(`frontend.dart:2145`)。
+所以这一轮 `regen.py` / `fixtures.py` 跑不了,**两个前端一字不差的那条检查是红的
+——不是失败,是没跑**。Kernel 那条线不受影响,包整体的尺子走的就是它。
+
+### 三个 bug,一个接一个露出来
+
+**1. 一个静态常量被当成了枚举的变体。** `lowerClass` 里「变体 = 除 `values`
+以外的静态 const 字段」,而增强枚举可以在变体旁边声明普通常量:上游
+`_CupertinoMenuWidth` 有四个变体和一个
+`static const double _kTabletWidthThreshold = 768.0`,于是数出五个,第五个没有
+任何变体状态,`carriedValues[v]!` 当场炸掉。判据改成**字段的类型就是这个枚举
+本身**。顺带把 `stateRecovered` 的判断从 `names`(常量里恢复出来的)挪到
+**真正会发出去的那张表**上——否则同一个缺键会以另一副面孔再来一次,而且是以
+崩溃的形式,而这个前端唯一不许做的就是崩溃(该拒绝就拒绝)。
+
+**2. 继承图里有环,`_abstractAncestors` 顺着它走到栈底。** 基类是**按名字**查的,
+`library[...]` 先查本模块再查 crate 里别处,而两个库允许声明同一个名字:
+`image_provider.dart` 的抽象 `NetworkImage` 把构造交给
+`_network_image_io.dart` 里同名的 `NetworkImage`,后者 implements 前者;
+`BitField` 一模一样。名字查过去就回到了原地。加 `seen` 集合止住,并且显式跳过
+「自己」——**要不是先撞上栈溢出,它会发出 `impl NetworkImage for NetworkImage`**。
+`seen` 在普通菱形继承上也不白拿:同一个祖先此前每条路径走一遍。
+
+**3. 一条 `//` 注释吃掉了一万一千行。** 闭包体是把发出来的行 `join(' ')` 拼成
+表达式的,而拒绝的说明是 `// ...` 一整行。`dart_ui.rs:1803` 一条被拒的 assert
+message 就这样把它后面的一切(包括闭合的花括号)注释掉了,rustc 在一万一千行
+之后报 `unclosed delimiter`,整个 crate **一个错误都测不出来**。拼行的地方现在
+走 `_inlineSafe()`:整行的 `//` 注释变成 `/* */`。说明要留着,行注释不是留它的
+办法。
+
+### 这一轮之后的第一份诚实读数
+
+条件:dill 是**这台机器**上 2026-09-03 build 的 `~/gallery_upstream`
+(engine `0c2d270c5a9`,`out/host_profile`,frontend_server),
+`crate.py` 默认前缀 `package:,dart:ui`。**和之前 Windows dill 的数字不可比**
+(那份是 931 个库,这份连 gallery 自己和它的 106 个包一起进来了)。
+
+```
+1299 libraries, 5558 classes, 9741 refusals
+errors: 6045
+    2812  E0107      泛型参数个数不对
+    2771  E0425      名字不在作用域里
+     198  E0433
+      74  E0728      async 外面的 await
+      71  (no code)
+```
+
+**most wanted 的第一名是 `google_fonts_text_style`,1709 次。** 追下去是一条
+拒绝链:`googleFontsTextStyle` 被拒是因为它调 `loadFontIfNecessary`,而根上是
+`_findFamilyWithVariantAssetPath` 的一次**撕方法**
+(`asset.{String.endsWith}` 当值用)。也就是说,这个 app 上最大的一块错误,
+根子还是队头那件事——**所有权**。测出来的和第 30 轮量的是同一件事。
+
+### 记住的
+
+- **一个语法错误可以让六千个错误藏起来。** 上一次 `crate.py` 报 `errors: 1`,
+  看起来像是天大的好消息;那 1 是 `unclosed delimiter`,rustc 在它之后什么都没
+  检查。**报错数变小,先问是不是编译器提前退了**(九条第 8 条的反面)。
+- **换一份输入,前端会撞上三个从来没撞过的形状。** 三个 bug 都不是新写的代码
+  引入的,是旧代码从来没见过 `_CupertinoMenuWidth`、`NetworkImage` 和那条 assert。
+  尺子换了输入之后,**先修到跑通,再比数字**。
+
+---
+
+## 第 116 轮:队头,然后 `noSuchMethod` 转发器
+
+**先修尺子。** `census_kernel.dart` 绕开了 `lowerLibrary` 的逐类保护,直接调
+`lowerClass`,于是一个 `extends Foo<Never>` 的类头就结束了整次测量——队头一行
+都没印出来。补上和 `lowerLibrary` 一样的 `on Unsupported`,类头拒绝记成一条。
+
+另一件事:`~/gallery_upstream/.dart_tool/dart2rust/` 被某个 flutter 工具**清掉了**
+(连同 `hooks_runner/`),里面的 dill 和 `flutter_gen` 垫片一起没了。
+输入现在放在 `.dart_tool` 之外:`~/dart2rust_build/gallery/app.dill`,
+`~/dart2rust_build/flutter_gen/gen_l10n -> ~/gallery_upstream/lib/l10n`。
+package_config 里那条 `flutter_gen` 映射逃不掉——它在 `.dart_tool` 里,
+`pub get` 一跑就要重加。
+
+### 新 dill 的队头(前缀 `package:`)
+
+```
+1298 libraries, 5361 classes
+4324 classes with no refusal, 165263 members emitted
+109 distinct blockers, 2990 refusals
+
+   446  a method used as a value          ← 所有权,第 30 轮
+   301  synthetic variable
+   294  constant SymbolConstant
+   287  assignment to a field of another object
+   178  closure capturing `this`
+   176  setter call used for its value
+```
+
+### `SymbolConstant`:294 条,全是同一样东西
+
+追下去不是 app 逻辑。`_WidgetTextStyleMapper extends WidgetStateMapper<TextStyle>
+implements WidgetStateTextStyle` 是三行 Dart,到 dill 里有 **34 个 procedure**,
+每个 `isNoSuchMethodForwarder`,体是
+`noSuchMethod(new _InvocationMirror._withType(#color, 1, ...))`——
+`_InvocationMirror` 是 VM 自己的私有类。`Uint8Queue` 那些同理。
+
+照抄那个体没有意义。转发器的全部含义就在它的**名字和种类**里,所以前端认出
+`isNoSuchMethodForwarder` 就直接降成
+`noSuchMethod(Invocation::getter(Symbol::of("color")))`,不看体。为此:
+
+- prelude 加 `Symbol`(和 `Type` 一个形状,`Display` 印成 `Symbol("name")`,
+  因为程序里唯一读它的地方是拼进错误信息)和 `Invocation`。
+  **量过再定形状**:整个 `package:` 里 `noSuchMethod` 的实现读 `Invocation` 的
+  只有一处,读的是 `memberName`。所以它只带 `member_name` 和 kind,
+  positional / named / type arguments **没有**——写在结构体上,要加就加在那。
+- `SymbolConstant` → `Symbol::of("name")`,私有符号的 library 丢了
+  (Dart 里两个库的 `#_start` 不相等;这里相等;程序里没有跨库比较符号的地方)。
+- `NeverType` → `IrType('Never')` → Rust `!`。它只出现在返回位置
+  (`WidgetStateMapper.noSuchMethod`),那正是 stable Rust 唯一接受 `!` 的位置。
+
+### 结果
+
+```
+4373 classes with no refusal (+49), 165588 members emitted (+325)
+106 distinct blockers, 2667 refusals (-323)
+```
+
+`SymbolConstant` 和 `NeverType` 两类整个消失。这是**发出**的数字;编得过的
+数字要等 `crate.py`。
+
+---
+
+## 第 117 轮:队头后面三项,每一项都比名字小
+
+第 116 轮的转发器编过了(`self.no_such_method(Invocation::getter(Symbol::of("value")))`
+一字不差),但 rustc 的数字**往上走了 51**:6045 → 6096。其中 22 条是
+`error[E0658]: the `!` type is experimental`——`Never` 不只出现在返回位置,
+`PopupMenuEntry<!>`、`DefaultEquality::<!>`、`Result<!, E>` 都有。stable Rust 只在
+函数返回位置接受 `!`。收窄:`_type` 对 `NeverType` 照旧拒绝,只有 `_returnType()`
+(procedure 和转发器的返回类型)给 `Never`。**一个映射做对了一处就以为处处对,
+是第 96 轮 `f32` 那种错的小号。**
+
+然后按队头往下,三项,每一项拆开都比它的名字小:
+
+**`synthetic variable`(301)拆成三样:**
+
+| 条 | 是什么 | 做了什么 |
+|---|---|---|
+| 111 | `x!` 的 CFE 形式:`let #0 = x in #0 == null ? #0 as T : #0` | `??` 的识别器**先**认走了它(条件、else 都是那个临时量),把 `#0 as T` 当成右侧,然后在自己的临时量上撞到没名字。加一条更严的识别在 `??` 之前 → `IrNullCheck` |
+| 86 + 42 | `#externalFieldValue` / `#typedDataBase`:CFE 给 external 字段的 setter 和 `Struct` 构造函数起的**参数名** | `_paramName()`:带 `#` 的参数名走 `_nameFor`,和临时量一样按身份取 `__tN` |
+| 10 | `Let<ReturnStatement<Block` | 没动 |
+
+**`setter call used for its value`(176):** 探针量了 188 处 `this.x = v` 当值用,
+171 处是 `return this.x = v;`,而这 171 处**全部**在返回 void 的函数里——
+`=> x = v` 这种箭头 setter,和 `stream.listen((va) => value = va)` 这种 void 闭包。
+CFE 把赋值写进 `return`,void 函数没有值可带出去。`_voidReturn` 跟着每个
+`FunctionNode`(闭包也各自设),`return this.x = v` 在 void 里降成赋值语句 + 裸 return。
+只在 `v` 是变量时做——读两次不花钱,也不 move。**值用型 0 处,所以没做那一半。**
+
+`InstanceSet` 当语句的那 50 行顺手抽成 `_instanceSet()`,`return` 那条和
+`ExpressionStatement` 那条共用。
+
+### 读数(census,前缀 `package:`)
+
+```
+第 116 轮末   4373 clean / 165588 emitted / 2667 refusals
+`Never` 收窄 + `#` 参数 + void return     4389 / 165869 / 2384
+`x!`                                        4422 / 166038 / 2215
+```
+
+两轮合计 2990 → 2215,零拒绝的类 4324 → 4422。编得过的数字等 `crate.py`。
+
+### 记住的
+
+- **探针先于形状。** `Invocation` 只带 `memberName`、`return this.x = v` 只做 void
+  的、`Never` 只给返回位置——三个决定都是量出来的,不是猜的。
+- **一个识别器接得太宽,错误会以另一个类别的名字出现。** `??` 吃掉 `x!`,
+  报出来的是「synthetic variable」,不是「`??` 认错了」。队头的名字是**症状**。
+
+---
+
+## 第 118 轮:队头以下五项,加上 `Never` 的第二次改法
+
+第 117 轮前端的 `crate.py`:错误 6096 → 6105,拒绝 9380 → 9170。`E0658` 还剩
+14 条——`Never _throw()` 带 `throws`,返回类型被包成 `Result<!, E>`,`!` 又成了
+类型参数。**`!` 在 stable Rust 里只有一个合法位置,而 `Never` 会出现在任何位置。**
+所以第二次改法不再收窄,而是换拼法:`Never` → `std::convert::Infallible`,
+在哪都合法,包括裸返回位置。代价是它**不会像 `!` 那样 coerce**:声明 `-> bool`
+的转发器不能返回一个 `Infallible`。prelude 加 `never<T>(x: Infallible) -> T`
+(`match x {}`——空枚举上的 match 同时是任何类型,那正是 `!` 的意思),
+转发器的体变成 `never(self.no_such_method(...))`。`_type` 对 `NeverType` 不再拒绝。
+
+然后按队头往下五项:
+
+| 项 | 条 | 做了什么 | census |
+|---|---|---|---|
+| 重定向构造函数 | 94 | `IrConstructor.redirectTo/redirectArgs`;后端发 `Self::target(args)` 代替结构体字面量。目标是同一个类的构造函数,形参表就在手边,具名实参按它排 | 2215 → 2122 |
+| `List.forEach` | 70 | `iterStepNames` 加 `forEach: for_each`。它是唯一**消费**链的步骤,返回 `()`,所以后端对「从未 collect 的懒 Iterable」的拒绝给它开一个口 | 2122 → 2056 |
+| 具名实参没有已解析的被调方 | 92 | 两端都按**名字**排序:闭包声明(`_namedInTypeOrder`)和经函数类型的调用(`_argumentsByType`,读 `FunctionInvocation.functionType`)。**顺带发现闭包声明此前只发位置参数,具名参数整个丢了**——一个带具名参数的闭包,体里读的是它没有的变量 | 2056 → 2049,再 → 1998(见下) |
+| `expression StaticSet` | 73 | 类的 `static` 非 final 字段此前是 `LazyLock<Isolate<T>>`,只读。现在 `isMutable` 的包一层 `RefCell`,和顶层可变变量同一个形状;读 `borrow().clone()`,写走新的 `IrAssignStatic`。当值用的(`??=` 那种)先绑临时量、存一份 `clone`、再把临时量给出去 | → 1986 |
+
+具名实参那 92 条**大部分换了名字而不是消失**:「omitted named argument `isError`
+to a function value」16 条(函数类型不带默认值,省略的非空具名参数无值可填)、
+「call of a function value with no type」9 条(`functionType` 为 null 的动态调用)。
+所以那一步净减只有 51。**照九条第 8 条的规矩写清楚:这是把静默错误换成了明确拒绝。**
+
+### 读数(census,前缀 `package:`)
+
+```
+第 117 轮末   4422 clean / 166038 emitted / 2215 refusals
+第 118 轮末   1986 refusals,107 个 blocker
+```
+
+剩下的 1986 条里,所有权那三样(撕方法 448 + 闭包捕获 `this` 179 +
+写另一个对象的字段 292)是 **919 条,接近一半**。队尾其余都是几十条的。
+**下一轮就是对象模型了**——目标改写时说的那一轮自己的活。
+
+编得过的数字等两次 `crate.py`(一次是这轮前四项,一次是 `Never` 改法)。
+
+---
+
+## 第 120 轮:`Rc` 后面的字段,和 W1+W2 的编译账单
+
+**W1+W2 那版的 `crate.py`:错误 6121 → 6131(+10),拒绝 8929 → 8630(−299)。**
+`E0658`(实验性的 `!`)从前十里消失——`Infallible` + `never()` 那一改是对的。
+把几百个类换成 `Rc<Self>` 只多了 10 条错误,这是本轮最重要的一个数。
+
+**counted 类的非 final 字段本来就都是 cell**——后端的 `_inCell` 写着
+`field.shared || (cls.counted && !field.isFinal)`。所以「写 `Rc` 后面对象的字段」
+根本不缺 cell,缺的是**后端不知道那个字段属于哪个类**:`IrField` / `IrAssignField`
+对非 `this` 的接收者一律发 `entry.x`,而 `x` 是个 `RefCell`。给两个节点加 `owner`
+(前端解析过 `interfaceTarget.enclosingClass`,顺手带上),后端 `_cellFieldOf(owner,
+name)` 从 `library[owner]` 查同一个问题,读走 `get()` / `borrow().clone()`,
+写走 `set()` / `borrow_mut()`。改写 IR 的那处 `IrField(..) => IrField(..)` 也补上
+`onEnum`/`owner`——它此前把 `onEnum` 也丢了。
+
+放行:(param, counted) 82、(local, counted) 14。1336 → **1245**,
+「写另一个对象的字段」整类从队头消失。
+
+`a.b = v` **当值用**(66)用同一套:局部/参数接收者、值类或 counted 类,
+绑临时量、存 `clone`、把临时量给出去。1245 → **1216**。
+
+### 读数
+
+```
+第 119 轮末   1336
+owner 上节点   1245
+当值用         1216   128 blockers
+```
+
+队头现在是「本来就该拒绝」的两项(`no body` 80 = external 成员,
+`catch` 读栈 71),然后闭包捕获 `this` 65、具名记录 52、`List.[]=` 48。
+**拒绝这把尺子快到底了**;rustc 那把尺子上 E0107 2849 + E0425 2808 是墙。
+
+---
+
+## 第 121 轮:一个名字,两千八百条错误;一个 `rethrow`,一千七百条
+
+**W1+W2 那版的 rustc 账单出来了:6121 → 6131(+10)。** 把几百个类换成 `Rc<Self>`
+只多了十条错误。然后两件事把墙推倒了一半:
+
+- **E0107 的 2849 条全是同一句**:`struct takes 0 generic arguments but 1 was
+  supplied`,位置全在 `Box<dyn Fn(..)>`。`material_color_utilities` 的
+  `quantizer_wu.dart` 声明了一个 `class Box`,import 追踪器把它 import 进每个
+  提到 `Box` 这个词的文件,`std::boxed::Box` 就被遮住了。后端写 `Box` 的四处
+  改成 `std::boxed::Box`,免疫。**一个名字,2849 条。**
+- **`google_fonts_text_style` 那 1709 条 E0425** 的拒绝链根子不是撕方法(那条
+  第 119 轮已经通了),是 `loadFontIfNecessary` 里的 **`rethrow`**。`Result` 没有
+  「当前异常」这个概念,`rethrow` 就是把 handler 绑的那个名字再 `Err` 出去:
+  `_tryCatch` 记下 `_caught`,`Rethrow` 降成 `IrThrow(IrLocal(caught))`。
+
+```
+errors: 6131 → 1642     E0425 2808 → 1133,E0107 2849 → 0
+refusals(crate.py): 8630 → 8297
+```
+
+同一轮里拒绝这把尺子也在往下走,每一项都小:
+
+| 项 | 条 | 做法 |
+|---|---|---|
+| 闭包捕获 `this`(剩 65) | 65 | 全是 `counted=false`——`_closureCallsMethod` 用 `_ThisUse` 探测,`_closure` 拒绝时用 `_ThisFinder`,前者不看字段读的接收者。**两处用同一个探测器**:`_reachesThis(fn) && _finalFieldsRead(fn) == null` |
+| 撕方法(剩 42) | 42 | 接收者是局部/参数的放行(Rust 闭包本来就捕获局部);根在 `this` 的链(`this.controller.dispose`)在 counted 类里放行;带具名参数的方法按名字排序后放行 |
+| `List.[]=` 当值用 | 48 | 绑、存 `clone`、给出临时量 |
+| `a.b = v` 当值用 | 66 → 0 | 局部/参数/`this` 链;字段走存储,setter 走调用 |
+| const `Set` | 37 | `Set::from(vec![..])` |
+| `List.remove/sort/firstWhere/setRange/indexOf/expand` | 46+36+25+23+19+14 | prelude 加 `DartList` trait(`remove_value`、`sort_by_dart`、`first_where(_or)`、`set_range`、`index_of`);`expand` 是链步 `flat_map` |
+
+```
+第 120 轮末   1216
+第 121 轮末    838   133 blockers
+```
+
+队头现在:`no body` 80(external)、`catch` 读栈 72、具名字段的记录 53、
+`DynamicInvocation` 32、`(param, value)` 字段写 26——**前两项本来就该拒绝,
+第三四项没有诚实的 Rust,第五项是 `&mut` 穿过参数。** 拒绝这把尺子基本到底了;
+接下来的活在 rustc 那把尺子上:E0425 1133(most wanted:`Pointer` 116、
+`default_target_platform` 73、`StreamSubscription` 65、`Void` 60、`Function` 54
+——`dart:ffi` / `dart:async` / `dart:core` 的名字,prelude 的事),E0433 205,
+E0728 79(`await` 在非 async 里)。
+
+---
+
+## 第 122 轮:无编号的错误,一条条
+
+r122(第 121 轮末那版前端)的 rustc:1642 → 1676(+34),拒绝 8297 → 8048。
+新发出来的东西照例带几十条新错误进来。这一轮清的是「没有错误编号」那一类
+(80 条)和几个小类,每一条都是后端拼字符串的失误,不是翻译问题:
+
+| 条 | 症状 | 原因 → 改法 |
+|---|---|---|
+| 16 | `prefix R is unknown`:`pub const R#LOOP` | `screamingSnake = snake().toUpperCase()`,而 `snake` 先把关键字转义成 `r#loop`。大写名字不可能是 Rust 关键字 → `snakeRaw` 不转义,SCREAMING 走它 |
+| 7 | `theme_extension_super_r#type` | super 自由函数名把转义过的部分拼进长名字中间 → 用 `snakeRaw` 拼完整个再转义 |
+| 9 | `struct literals are not allowed here`:`if x == _State { .. } {` | 结构体字面量在 `if` 条件里不许裸写 → `IrConstInstance` 一律加括号 |
+| 23 | `unicode codepoint changing visible direction of text` | l10n 的阿拉伯文字面量里有 RTL 控制符,rustc 默认拒绝 → `_escape` 写成 `\u{200f}` |
+| 79 | E0728 `await` 在非 async 里 | Dart 的 `async` 闭包发成了普通闭包 → `IrClosure.isAsync`,发 `async |..|`(Rust 1.85 起稳定) |
+| 28 | E0747 `constant provided when a type was expected`:`impl State<FormField<T>> for _XState` | 祖先链代换只换**裸**的类型参数(`bound[a.name] ?? a`),`FormField<T>` 里的 `T` 留着 → `_substituteType` 深层代换 |
+
+prelude 加 `IndexError.withLength` 和 `dart:math` 的 `Random`(xorshift64*,不是 Dart 的
+序列——上游只拿它生成演示数据和抖动,写明了)。
+
+**这些全在 r123 里**,数字下一轮读。census 不变(838):这一轮没动前端的拒绝。
+
+---
+
+## 第 123 轮:rustc 太慢——先量是什么在慢
+
+`/tmp/rustflutter-compile-analysis.md` 里的结论(36 万行单 crate、前端单线程、
+无增量、重复编译)是对 master 那条线说的;这条线的 `.crate` 更糟:**1301 个文件,
+158 万行**。量它是什么:
+
+| 是什么 | 行 |
+|---|---|
+| `l10n_gallery_localizations_*`(78 个 locale)+ material/cupertino 的 localizations | **约 100 万** |
+| `package:flutter` 全部 | 43.6 万 |
+| google_fonts、icons 等 | 3 万 |
+
+一半以上是 l10n 表。而且这是**没有树摇的 dill**:frontend_server 默认把整个程序
+原样给出来,google_fonts 一千多个字体家族、一百个 locale 全在。gen_snapshot
+看到的从来不是这个——它跑 `--aot --tfa`(全程序类型流分析 + 树摇)。
+**目标改写时说的"AOT 那个位置"的输入,本来就该是树摇过的。**
+
+```
+dill.py --build ... --aot        (加了这个开关:--aot --tfa --tree-shake-write-only-fields)
+  dill        104.5 MB → 84.3 MB
+  libraries   1298 → 923,classes 5361 → 3995
+  crate       1301 → 926 文件,1.58M → 1.28M 行
+  census      838 → 541 → 474(接上 LocalInitializer,67 条)
+  fresh 全程  翻译 + cargo check 从 8 分钟以上到 **不到 3 分钟**
+```
+
+树摇同时换了形状,rustc 的账单换了组成:1775 → **1597**。消失的:
+「无编号」的 186 条(0)、E0728 58 → 13、E0747/E0403/E0573 全没了。
+新出现的两类都是**跨库的私有名**:TFA 把常量内联到别的库里
+(`_AlwaysDismissedAnimation {}` 出现在 `package:animations` 里),而 import
+追踪器不导入 `_` 开头的名字——E0422 250 条,加上 E0425 榜首的
+`_RenderObjectSemantics` 260、`_LayoutCacheStorage` 230 也是它。Rust 没有库私有,
+这些结构体本来就是 `pub(crate)`:**唯一定义者的私有名照常导入**。
+E0252 的 64 条是同一个名字被类路径和标识符路径各导入一次(`Path` 41),去重。
+
+同一轮顺手修的三处后端拼名错误(第 122 轮引入):`snakeRaw` 跳过了字符清洗
+(`_$ADD_EVENT`、`#SIZE_OF`)→ 拆出 `_cleanIdentifier`;没名字的参数给了 `_`,
+而 super 转发按名传参(`super_set_first(self, _)`)→ 一律 `_nameFor`。
+
+l10n 那 100 万行树摇后还在(`supportedLocales` 把每个 locale 都留下了),
+按包拆 workspace 让它们和 `package:flutter` 并行编译是下一步——先看 r125。
+
+---
+
+## 第 124 轮:树摇之后的第一份账单,412
+
+r125(树摇 dill + 私有名导入 + 去重):**rustc 错误 1597 → 412**。
+一句 `if (used.startsWith('_')) continue;` 挡着的就是 1200 条。
+
+```
+errors: 412
+   300  E0425   T 36 / list_equals 12 / TextStyle 12 / _invoke 11 / Pointer 11 / Function 9 / set_equals 7 ...
+    46  E0433   Image 8 / SplayTreeMap 5 / Timeline 4 / Expando 3
+    18  E0053   `owner` expected Rc<_RenderObjectSemantics>, found _RenderObjectSemantics
+    13  E0728   async 闭包剩下的
+    13  E0046   impl 缺 trait 项(被拒的抽象方法:`paint` 5,`dependOnInheritedWidgetOfExactType` 6)
+```
+
+`T` 36 条是**泛型局部函数**(`effectiveValue<T>(..)` 在 `ButtonStyleButton` 里):
+Rust 闭包不能带类型参数,降成闭包之后 `T` 没有出处。诚实的形状是嵌套的
+`fn effective_value<T>`(不捕获时)——待做。
+
+顺带量了树摇后 crate 的构成:`package:gallery` 806k 行(226 文件,几乎全是
+l10n:每个 locale 文件里 20 个国家变体子类,各自把 1600 个 getter 复制了两遍——
+「子类 = 拷贝」模型的最坏情况)、`package:flutter` 279k、`flutter_localizations`
+163k、其余全部不到 1 万。整个 crate 不到 3 分钟,先不为 l10n 拆 workspace。
+
+---
+
+## 第 125 轮:412 往下,三小类
+
+| 条 | 是什么 | 做法 |
+|---|---|---|
+| 36 处调用 | `listEquals` / `setEquals` / `_invoke` 被拒:`identical(a, b)` 的两边是参数,后端只认「有地址」的东西 | 两个局部(或局部对静态)比**槽**的地址:两个不同的槽永远不同,这正是 Dart 对两个不同对象说的话,也是 `listEquals` 要的快速路径答案。看不见的是同一个 `Rc` 的两个句柄——写在注释里;唯一问的地方 `_invoke` 在单 zone 的 prelude 下两条分支跑的是同一件事。`_addressOf` 有答案时仍走它 |
+| 7 + | `isDisplayFoldable` 被 `MediaQueryHinge|get#hinge` 挡着 | 前端把所有带 `|` 的顶层函数都当成 extension **type** 的成员拒绝;普通 extension 的成员 CFE 已经降成带接收者的顶层函数,名字两头都经 `snake` 清洗成同一个标识符。按 `isExtensionTypeMember` 区分 |
+| 36 条 rustc | E0425 的 `T`:泛型局部函数 `effectiveValue<T>(..)` 发成闭包,`T` 没有出处 | Rust 闭包不能泛型,嵌套 `fn` 又看不见外层局部——诚实的是**拒绝**,换成 4 条拒绝 |
+
+```
+r126: errors 412 → 386;census 474 → 478(泛型局部函数那 4 条)
+```
+
+---
+
+## 第 127 轮:322
+
+r129:375 → **322**。函数类型里的 `T` 代换(−25)、extension 成员名清洗
+(`string_characters_get_characters` −10 + 它挡着的)。
+
+---
+
+## 第 128 轮:310 → 302,和 counted 类的 `this`
+
+r130(extension 调用名清洗、赋值临时量改推断):322 → **310**。
+
+E0053 那 18 条追到根上是 `type()` 里一句 `t.name != cls.name`:counted 类在
+**别的模块**里拼成 `Rc<X>`,在**自己的 impl 里**拼成裸的 `X`——`get owner => this`
+返回裸结构体,trait 却要 `Rc<..>`;字段 `_children: Vec<_RenderObjectSemantics>`
+也是裸的。类就是它的句柄,自己的名字也不例外;`this` 在 `self: &Rc<Self>` 的
+方法里是 `self.clone()`,不是 `*self`(那是从引用里 move 出来)。
+r131:**302**,E0053 剩 16。
+
+再一条:持有自己类型字段的类(`FocusNode` 的 children、`_NotificationNode` 的
+parent)在 Rust 里没有值的形状——结构体无限大,7 条 E0072——所以它是 counted。
+只看直接自引用;经另一个类的环(`OverlayEntry` ↔ `_OverlayEntryWidget`)还看不见。
+census 476 → 465。prelude 加 `Sink<T>`(trait + `Rc<dyn>` 别名)。
+
+---
+
+## 第 130 轮:287,四条小尾巴
+
+r135 还是 287——`for-in` 的 `while` 拼法根本不存在:探针说那 6 处
+`_sync_for_iterator` 是 `for (;;)` 形状,还原失败在别处。给 `_restoreForIn` 的
+七个 `return null` 各编一号再跑一遍:3 处是**循环变量没名字**(`for ((a, b) in
+pairs)` 绑的是 `#0`),2 处是**体的第一句不是 `x = it.current`**(体里散着读
+`.current`),而迭代器的声明已经被"记住"并吞掉了,所以循环发出来时引用了一个
+从没声明的变量。改法:没名字的用 `_nameFor`;没绑定的自己给元素起名,
+`_instanceGet` 把体里的 `it.current` 换成它(`_currentOf`)。
+
+E0728 剩下的 13 条根在 **`try/finally`**:它被降成 `let __finally = (|| -> Result<..>
+{..})()`,闭包里的 `.await` 不在 async 里。async 方法里改成 `async { .. }.await`
+块——`return` 语义一样。另加:`await <throw>`(TFA 把删掉的调用换成 throw)
+直接是 throw;trait 里带 `impl Future` 参数的方法也 `where Self: Sized`
+(E0038 的 `TransitionRoute`);prelude 加 `Null` 类型。
+
+r136 待读。
+
+---
+
+## 第 131 轮:268,和 `Option<Option<..>>`
+
+r136:287 → **268**。这一轮的几处:
+
+- **E0053 的 16 条**:trait `MessageCodec<T>` 声明 `-> Option<T>`,impl 绑
+  `T = Object?`,rustc 要的是 `Option<Option<Rc<dyn Object>>>`——Dart 把 `T?` 压成
+  一层,Rust 不压。`_substituteType` 的注释早写着"14 个成员因此对不上,拒绝量过
+  更糟"。第三条路:转发器的**签名**照 rustc 的写(`doubled` 时外面再套一层
+  `Option`),**体**差一层 `Option` 时补 `Some(..)`——这同时接住了覆写把 `T?`
+  收窄成 `T` 的合法情况(`Option<i64>  <=  i64` 那些)。
+- `try/catch` 和 `try/finally` 一样,async 方法里改 `async {}` 块。
+- 常量里的类本来就被引用收集器看见(`_constant` → `_class`),剩下 3 条
+  `_UnspecifiedTextScaler` 是**一个库同时引用了两个同名私有类**——文本无法区分。
+- `TextStyle` / `Image` 在 `dart:ui` 和 framework 各有一个:一个库两个都引用时,
+  导入 framework 的那个(`ui.` 前缀在这里已经没了),少数 `ui.` 用点变成类型不匹配,
+  rustc 照样报——从"找不到"换成"不匹配",不是静默。
+- `Function` 类型 → `Rc<dyn Object>`(只被持有,不被调用;调用会编不过并说明)。
+
+r137:**263**;r138(`TextStyle`/`Image` 二义、`Function`):**240**。
+
+剩下 14 条 E0053 不在方法转发器上,在**字段转发器**和**参数**上——同一个
+`Option<Option<..>>`。这次不再各处打补丁:`_substituteType` 把「`T?` 且 `T` 可空」
+产出一个自己的类型 `IrType('Option', [T])`,`type()` 拼成 `Option<..>`;方法转发器
+体差一层就 `Some(..)`,参数多一层就 `.flatten()`,字段转发器读出来套 `Some`。
+一个表示,三处消费。另:链步闭包(`iter().filter(|e| ..)`)此前不拷入捕获的
+字段,体里读 `trash_email_ids` 而没人声明——补上和 `_closure` 一样的 `let`。
+r139 待读。
+
+---
+
+## 第 132 轮:233 → 207,和一行死代码
+
+r139:**233**,但 E0053 从 14 回到 16——`Option<Option<..>>` 那一改一条都没生效。
+原因是 `_substituteType` 里旧的压平 `if (!t.nullable || to.nullable) return to;`
+排在新分支**前面**,新分支是死代码。**加了一条新分支之后,要拿一个真会走到的
+输入试它**(九条第 7 条,又一次)。按位置重排后 r141:**182**,**E0053 归零**(16 → 0)。
+
+r140(`Expando` 的 `[]`/`[]=` → prelude 的 `get`/`set`;`dart:ffi` 的
+`Pointer`/`NativeType`/`Void` 等只有名字的桩——Windows 插件的代码,TFA 因平台判断
+不是常量而留下,这里到不了):**207**。
+
+`dart:math` 只映射了 `max`/`min`/`pow`;`log`/`exp`/`sqrt`/`sin`/…/`atan2` 被拒成
+「顶层函数没翻译」,顺带拒掉了 `ClampingScrollSimulation._kDecelerationRate` 这类
+static 和读它们的每一处。现在按 `dart:math` 的库判定映射成 `f64` 的方法。
+
+`_makeArray`(`persistent_hash_map.dart`)被拒在「带长度的 `_List` 是一列 null」——
+元素类型可空时,一列 null 正是 `List<T?>` 的意思,发成 `vec![None; n]`;
+非空元素照旧拒绝。prelude 加 `WeakReference<T>`(`Weak` 的包装,按目标身份相等)、
+`Stream<T>`(只有类型,没有事件循环,监听它编不过)、`ByteConversionSink`。r142:**167**。
+(带长度的 `_List` 那条第一版写在后端,而那里只有类名没有类型;改到前端按
+`arguments.types` 判可空,发 `vec_of_nones(n)`。)
+
+---
+
+## 第 133 轮:169,长尾
+
+r143:**169**(+2)。`vec_of_nones` 没生效:后端对顶层调用有一道「这个名字是不是
+翻译出来的」检查,prelude 提供的函数不在 crate 的函数表里,于是 `_makeArray`
+换了个理由继续被拒。加 `_preludeFunctions` 白名单(`never`、`vec_of_nones`、
+`dart_iter`)。
+
+剩下的 E0425 全是 ≤6 条一个名字的长尾,这一轮扫的:
+
+| 条 | 是什么 | 做法 |
+|---|---|---|
+| `iterator` 3 + `it2` 2 | `final it = xs.iterator; while (it.moveNext())` 手动驱动:声明被 `_declare` 当成 for-in 的一部分吞掉,循环又不是 for-in 形状 | 声明照发(prelude `DartIter`,`dart_iter(xs)`),for-in 还原照旧忽略它 |
+| `__t0` 3 | 基类构造函数初始化列表里的临时量(`LocalInitializer`)内联进子类时,`pre` 语句没跟着来 | `_inheritedPre`,和 `_inheritedInits` 一样沿 `super(..)` 链代换 |
+| `KeyboardLockMode` 5 | TFA 把枚举的值全摇掉了,类型还被字段引用 | 值为空的枚举发成**无居民**的 `enum X {}`:没有值会被造出来,这正是事实;注释区分"被拒"与"被摇" |
+| `Point` 5、`TimelineTask` 4、`Endian` 3 | `dart:math` / `dart:developer` / `dart:typed_data` | prelude |
+
+没动的:`File`/`Directory`(12,`dart:io`)、`Comparable`(6,作类型用,后端不知道它是
+trait)、`Pattern`/`Match`(6)、`StreamSubscription`(3)。r144 待读。
+
+---
+
+## 第 134 轮:分 crate——先量图,再切
+
+用户指出该优先做的是 `/tmp/rustflutter-compile-analysis.md` 里的结构问题:单 crate、
+单线程前端、高连通。树摇把整轮压到 3 分钟只是缓解。这一轮按分支的规矩先量:
+翻译出来的 crate 的模块图(`crate::x` 边,剥掉注释)跑 Tarjan。
+
+```
+924 modules, 10628 edges, 1.28M lines
+最大 SCC:450 模块,346k 行(27%)——widgets/material/rendering/painting/services/
+gestures/cupertino,以及 package:gallery 22 个模块和 dart:ui 都在里面
+```
+
+**`dart:ui` 和 gallery 在同一个环里,这不可能是 Dart 的 import 图。** 追出来是
+文本解析的导入器:一个模块的文本里出现过的标识符都去别处找唯一定义者——
+`widgets/basic.dart` 有个叫 `locale` 的参数,就 `use crate::studies_rally_formatters::{locale}`;
+`dart:ui` 的注释里提到 `Dialog`、`MenuItem`,就 import 了 material 和 gallery。
+rustc 只当它们是未用的导入,图却被焊死。**改法:文本解析的导入只在 Dart 引用图
+(`imports`)允许的模块里找。** 边 10628 → 9731,SCC 450 → **230 模块(243k 行,19%)**,
+`dart:ui`/rendering/painting/services 全部脱出。
+
+剩下的两条真反向边是 TFA 的**常量传播**:`runApp(const GalleryApp())` 的常量被
+内联进 `widgets/view.dart`,`_DialogDemoState._fullscreenDialogRoute` 进了 navigator。
+那是真的引用,不能删。所以 widgets+material+cupertino+12 个 gallery 模块是一个环,
+就作为**一个** crate。
+
+`bin/workspace.py`(新):从 `.crate/src` 生成 Cargo workspace——
+- ≥50k 行或 >20 模块的 SCC 自成 crate;≥5k 行的单模块(l10n 表)自成叶子 crate;
+- 其余按 Dart 层(`flutter/painting`、`package:intl`)分,再按"在大 SCC 之上/之下"
+  分两半,层 crate 就不可能借大 SCC 闭环;剩下的 crate 级环合并(只出现一次:
+  scheduler ↔ collection)。写文件之前先证明无环。
+- 路径按文本改写:跨 crate 的 `crate::x` → `<crate>::x`,`pub(crate)` → `pub`,
+  prelude 独立成 crate。
+
+```
+924 modules -> 130 crates
+  scc_flutter_widgets        243409 lines  230 files
+  leaf (l10n es / en)        134578 / 57681
+  scc_flutter_localizations   60438
+  其余 < 40k
+```
+
+`cargo check --workspace` 跑了 **1 秒**——不是快,是 cargo 在叶子 crate 失败后不再
+检查依赖它们的 crate。而叶子 crate 报的 962 条错误全是 **E0308 / E0507 / E0615 /
+E0599 / E0782**:类型检查阶段的。**单 crate 的 143 条从来只是名字解析阶段的**——
+rustc 在那一阶段失败就不做类型检查,三十多轮的"错误数"量的是同一道门槛的
+前半段。分 crate 之后叶子 crate 没有解析错误,门槛后面的东西第一次露出来:
+`material_color_utilities` 一个包 434 条,`characters` 80 条。
+
+这不是坏消息,是尺子准了(九条第 8 条)。而且 workspace 给出了顺序:叶子先清,
+清一层露一层。
+
+叶子层的三轮(`bin/workspace.py` 每轮 1–2 分钟,含重新翻译):
+
+| 轮 | 叶子 crate 错误 | 做了什么 |
+|---|---|---|
+| ws1 | 962 | 首次 |
+| ws3 | 907 | E0615(123):抽象类上声明的字段,从别的对象读要走 trait 访问器 `rc.x()`;E0782(86):抽象类的静态成员——常量发成了模块级裸名而读的一侧拼 `Platform::..`,静态方法根本没发——改成带类名前缀的模块项(`platform_number_of_processors`、`contrast_ratio`),两侧同一拼法;`DartString` trait(`length`/`code_unit_at`/`substring`…,按 UTF-16 计) |
+| ws4 | 693 | E0631(133)+E0308(36) 同一根:闭包参数拼 `Rc<dyn X>`,函数类型的参数是 `&dyn X`,闭包改按函数类型的拼法;基类构造临时量内联顺序反了(子类的 `__t0` 是 super 的实参,得先声明);`self.storage[i] = v` 让方法拿 `&mut self`;`Float64List(9)` 零填充;表达式位置的 TFA throw 也装箱 |
+| ws5 | 666 | 局部变量一律 `let mut`(别的类的方法会不会改自己,后端不知道;多余的 `mut` 只是警告) |
+| ws6 | 600 | 提升过的变量读(`other is Matrix4` 之后的 `other`)降成 `IrDowncast`;懒静态和本类非 `Copy` 字段读出来 `.clone()`;`String.replaceRange` |
+| ws7 | (后端没编过,`_fieldType` 返回的是字符串) | **闭包从 `Box<dyn Fn>` 改成 `Rc<dyn Fn>`**——Dart 的闭包是共享对象,`listener` 被加进每个 child 的列表时在循环里被 move(E0382),字段里的闭包 `.clone()` 不出来,都是同一句 `Box` 的所有权声明;含函数类型字段的结构体不再派生 `Debug`/`PartialEq`;TFA throw 装箱的判定比错了对象(`_failure` 存的是 Dart 名 `Object`) |
+| ws8 | 485 | prelude 的 `Object` trait 有了 `as_any`(sized `'static` 类型一律),每个翻译出来的 trait 之后发 `impl Object for dyn X`(转发给 `DartAny`),`Rc<dyn Widget>` 仍能当 `Rc<dyn Object>`;E0599 152 → 66 |
+| ws9 | 363 | **前端有了静态类型**:驱动器建一次 `TypeEnvironment`(`CoreTypes` + `ClassHierarchy`,924 个库几秒钟),每个成员一个 `StaticTypeContext`。买来两件事:非空实参传给可空形参时包 `Some(..)`(Dart 静默拓宽,`Option` 不会);`int * double` 给 `int` 那边 `as f64`。另:下标读和字段转发器读出来 `.clone()`,`StringBuffer.write<T: Display>` |
+| ws10 | 345 | 算术的 cast 改按**接收者的静态类**判(`int * double` 可能解析到 `num.*`);`StringBuffer::new(content)`;`T?` 提升到 `T` 的读 `.clone().unwrap()`;`Uint8List.fromList` |
+| ws11 | 336 | **`dart:ui` 叶子**只差 14 个名字,全是 `external` 钩子和 `dart:core`/`dart:io` 私有类:prelude 给 `_print`/`_print_debug`/`_schedule_microtask`(立刻执行——没有事件循环,写明了)、`_StringStackTrace`、`InternetAddress`、`_Uri`;没有初始化的顶层 `int? _implicitViewId` 此前被整个跳过,现在起始 `None`。这个叶子是 framework 之上所有 crate 的闸门 |
+| ws12 | 1197 | **`dart:ui` 过了名字解析**,类型检查一次露出 871 条(9.5k 行)。`dart:ui` 还剩的 6 条名字:再补三个钩子(`_invoke1WithReturn` 等)、`_NativeCanvas` ↔ `_NativePictureRecorder` 的两类互持(counted 判据加长度为二的环)、闭包的函数类型参数拼成 `Rc<dyn Fn>`;另外 `x as T`(去掉 `?` 的 cast,CFE 对提升过的私有字段就这么写)降成 null check、`Object.hashAll`、抽象类的工厂(`Characters(s)` → `characters_new`)、super 自由函数里字段读走访问器 |
+| ws13 | 1101 | `dart:ui` 的 871 按形状:`to_string_as_fixed on f64` 等 → prelude `DartDouble`/`DartInt`;`Object.runtimeType` 进 `Object` trait;`Object.hash(a, b, ..)` 二十参;静态 getter 是调用不是常量(`PlatformDispatcher.instance`,20 条);`int / int` 在 Dart 里是 double;`Float32List`/`Int32List` 这类窄元素 typed list 存取加 cast;枚举有 `index()`;**函数类型参数统一 `Rc<dyn Fn>`**(`Rc` 不实现 `Fn`,`impl Fn` 接不住它;借的 `&dyn Fn` 又留不住),闭包实参一律 `Rc::new` |
+| ws15 | 885 | `impl Object for dyn X` 补 `runtime_type`(E0046 56);`void` 临时量不写类型注解(`() <= i64` 53);`Object?`/`dynamic` 形参不套 `Some`;窄 typed list 的语句形 `[]=` 也走 cast;字符串插值里非原始类型的部分经 `dart_str`(`Debug` 文本,写明与 Dart 的 `toString` 不同);prelude:`Zone::current()`、`ByteData.get/set_int64`、`Duration::new(6 个可选)`、`Completer.complete_error` |
+
+叶子 crate 现在能到达的:`material_color_utilities`、`vector_math`、`source_span`、
+`characters`、`http`、`listen`、`typed_data`、`platform`,ws4 起加上 **`dart:ui`**(14 条)。
+
+---
+
+## 目标改写(2026-09-03):从「翻译得完」改成「跑得起来」
+
+原来的目标是**翻译**:把 gallery 和它依赖的 framework 翻成 Rust,尺子是拒绝数
+往下走。第 114 轮结束时那把尺子读作 2743 个类 / 1265 个零拒绝的类 / 3099 次
+拒绝,而队头那 1034 条(闭包捕获 `this` 599 + 撕方法 435)第 30 轮就量清楚了:
+**它不是翻译问题**。一个闭包活得比造它的那次调用长,而 `this` 是借来的——
+Dart 的对象是共享可变的,上游用 GC 提供这一点。翻译器再补一千个补丁也变不出
+一个对象模型。
+
+所以目标改成:**跑起来**,宿主是上游 flutter engine 的 **AOT 模式**,而 AOT
+那一侧的两半都换掉——代码那半是 dart2rust 的输出,运行时那半是一个 Rust 写的
+plain Dart VM。那 1034 条于是变成一个运行时的决定(`Rc<RefCell<T>>`,回边
+`Weak`),做一次,不是做一千次。
+
+### 要占的位置有多大(量过的)
+
+engine checkout `0c2d270c5a9`(2026-09-03),`out/host_profile`,linux x64,
+`flutter_runtime_mode = "profile"`——profile 就是 AOT。
+`python3 bin/embedder_api.py`:
+
+| 方向 | 是什么 | 量 |
+|---|---|---|
+| engine → VM | `Dart_*` 嵌入 API,五个头文件声明 312 个 | engine 真正调用 **168 个**,945 处调用点 |
+| app → engine | `dart:ui` natives(`dart_ui.cc` 的 `FFI_FUNCTION_LIST` 57 + `FFI_METHOD_LIST` 174) | **231 个** |
+| engine → app | `PlatformConfiguration` 里的持久句柄(begin frame、pointer packet、window metrics……) | **19 个** |
+
+装载点只有那么几处,全在 shell 和 runtime 里:`Dart_LoadELF` 1 处、
+`Dart_Initialize` 2 处、`Dart_CreateIsolateGroup` 5 处、
+`Dart_SetFfiNativeResolver` 1 处。
+
+上游的产物就在盘上,可以对着看:
+`~/gallery_upstream/.dart_tool/flutter_build/ef21e168…/app.so`,32,965,632 字节,
+里面有两个符号——`kDartSnapshotData` 和 `kDartSnapshotText`,正是
+`runtime/dart_snapshot.cc:18` 写下的那两个名字。(这一份是 8 月 17 日在 Windows
+上 build 的,`file` 说它是 PE32+ DLL;要在这台机器上跑,得重新 build 一份。)
+
+### 两条路,选了哪条
+
+**A(选这条):Rust 的 VM 顶掉 `libdart`。** engine 一个字节都不改,它照常调
+`Dart_Initialize` / `Dart_CreateIsolateGroup` / `Dart_Invoke`,答话的是 Rust。
+`args.gn` 里 `dart_component_kind = "static_library"`——libdart 本来就是静态链
+进去的一个库,所以这是**换一个库,不是改一个 engine**。dart2rust 出的 crate
+就是这个 VM 的 “snapshot”:`Dart_LoadELF` 那一步换成「把已经链进来的那份代码
+交出来」。代价照直写:handle / scope / isolate 的语义要真做,168 个函数不是桩。
+
+**B(没选,但记着):** 在 embedder 侧加一层薄 ABI,像 master 那条线做的那样
+——`src/flutter/runtime/rust_app_api.h`,539 行,把下行绑定和上行回调摊成 C
+函数,**而且已经被证明能跑完整个 gallery**。它便宜得多。但它是一个**改过的
+engine**,不是上游的 AOT 模式,而后者正是新目标特意指定的那一条。
+**A 推不动时可以退到 B,退的时候要说清是退了**——不能让「跑起来了」这句话
+悄悄换了主语。
+
+### 运行时要提供什么,接在哪
+
+`lib/prelude.dart` 那 1248 行已经是这件事的第一块:手写的 `dart:core` /
+`dart:typed_data` 子集,只是现在作为字符串跟着生成代码一起发出来。运行时 crate
+(`tools/dart2rust/runtime/`,**还不存在**)先把它接管过来,再长出翻译代码
+本来就假设有人提供的那些能力:
+
+| 能力 | 上游在哪 | 接到 dart2rust 的哪里 |
+|---|---|---|
+| 对象模型(共享可变、身份、回边) | GC | 后端发 `Rc<RefCell<T>>`;`identical` 比的是地址(第 110 轮);环用 `Weak`(第 113 轮) |
+| `dart:core` / `dart:typed_data` | VM 的 patch 文件 | 现在的 `prelude.dart`,搬进 crate |
+| 事件循环、`Future`、`async` | isolate 的 message loop | 队头里 47 次 `await` 拒绝 |
+| 异常与栈 | VM | 现在 catch 读 stack trace 一律拒绝(32 次) |
+| 类型测试 `is` / `as` | VM 的类型层次 | `DartAny`(见 prelude),259 次 `is` 拒绝 |
+| `dart:ui` | 231 个 native | VM 转发给 engine,生成代码只看见 Dart 那侧的签名 |
+
+`embedder_api.py` 现在打印 `runtime  no crate at runtime yet`,这个 0 是故意印
+出来的:距离就是这把尺子的全部意义。
+
+### 尺子的盲点,先写下来
+
+1. **「168」是上界,不是启动路径。** 数的是调用点,不是**跑到**的调用点——
+   service isolate、DevTools、message port 有些编进去了但 headless 跑不到。
+   下一轮按启动路径再收一次。
+2. **写这把尺子的时候它自己先漏了一次。** 声明本来按行读,而 `Dart_SetField`
+   的返回类型在 `DART_EXPORT` 那一行、名字在下一行,于是漏掉 18 个声明,
+   第一次跑报的是 144。改成整篇读之后是 168。**数字往上走,是尺子准了**——
+   和第 9 轮、第 24 轮同一类(九条第 8 条)。
+3. `Dart_Isolate` 和 `Dart_NewFinalizableHandle_DL` 被丢掉是对的:一个是类型,
+   一个是 `_DL` 宏,展开到 `Dart_NewFinalizableHandle`。**丢掉的东西看过一眼**,
+   这是九条第 9 条要求的。
+
+### 不变的部分
+
+翻译那一半的纪律一个字不改:前端不认识的构造仍然**拒绝**,不猜;census 的队头
+仍然是下一件事;fixture 仍然要能分辨「对」和「看着对」。新目标只是换了验收:
+**gallery 出现在屏幕上**,而不是拒绝数归零——九条第 1 条早就说过那两件事不是
+一回事。
+
+---
+
+## 第 119 轮:所有权那一半,按分支自己的规则扩一步
+
+第 118 轮末剩 1986 条,所有权三样占 919。对象模型其实早就有了:**counted 类**
+(`Rc<Self>`),判据是「某个闭包调用了 `this` 的方法」(`_closureCallsMethod`),
+撕方法只在 counted 类里放行——`InstanceTearOff` 那处注释自己写着「撕方法就是
+那个闭包写短了」。那就把规则对齐:
+
+| 步 | 判据 | census |
+|---|---|---|
+| W1 | 类里有 `this.method` 的撕方法 → counted(`_TearOffFinder`) | 1986 → **1507**:撕方法 448 → 42,闭包捕获 `this` 179 → 88 |
+| W2 | 闭包**碰到** `this` 就算(`_ThisUse.demanding`,不只 `demandingBeyondFields`);只读 final 字段的仍走复制 | 1507 → 1486:闭包捕获 88 → 65 |
+
+先量了再改:`package:` 里 2436 处实例撕方法,1872 处是 `this.method` 直接当实参
+(位置 1385 + 具名 487);被拒的 448 是「类不 counted 且实参被留住」的那些——
+`onPressed: _submit`、每一个 `addListener(_handleChange)`。
+
+**顺手两条:**
+- 「具名实参没有已解析的被调方」剩下 56 条全是 `SuperMethodInvocation`——
+  `IrSuperCall` 那行传的是 `_arguments(node.arguments)`,而 `interfaceTarget.function`
+  一直在手边。1486 → 1434。
+- 「写另一个对象的字段」296 条,拒绝信息加上接收者形状和字段所在类是否 counted
+  之后拆成:**(local, value) 107**、(param, counted) 82、(param, value) 35、
+  (local, counted) 14、(this.field!, counted) 12、(this.field!, value) 9、static 13。
+  第一项根本不是所有权问题:局部变量**拥有**一个值,`entry.x = v` 在 Rust 里就是
+  `let mut entry` 加一次字段写,中间没有引用,调用点也不用知道。放行,后端的
+  `_WalkSelf` 把这种目标记进 `mutatedLocals`。1434 → **1336**,零拒绝的类 4728。
+
+剩下的 (param, counted) 82 + (local, counted) 14 + (this.field!, counted) 12 是同一件事:
+**写一个 `Rc` 后面的字段,那个字段得是 cell**。现在 `shared` 只认「本类闭包碰过的
+字段」,而且后端只对 `this` 的接收者查 `shared`——IR 节点上没有接收者的类。
+要做的是:一次全程序预扫描收集「从类外写过的字段」,`IrAssignField`/读节点带上
+字段所在类,后端按那个类查。这是下一轮。
+
+### 读数
+
+```
+第 118 轮末   1986 refusals
+W1            1507
+W2            1486
+super 具名     1434
+local value    1336   4728 classes with no refusal
+```
+
+编得过的数字:`crate.py` 正在跑 W1+W2 那一版(`Rc` 扩宽的编译代价是最大的未知)。
+
+---
+
+## 第 126 轮:375,和几件小事
+
+r127 → r128 都是 **375**:`do { } while`(`package:characters` 整个 `StringCharacters`
+因它被拒)和「裸继承泛型基类绑到 `dynamic`」两处改动没有动 rustc 的数字——
+后者没动是因为漏掉的 `T` 其实在**函数类型**里(`FormFieldBuilder<T>` 复制进
+`TextFormField` 时,`_substituteType` 只走 `arguments`,不走函数类型的参数和
+返回值),这一轮补上。`StringCharacters|get#characters` 没出来是另一个原因:
+顶层函数名里带 `|`/`#` 被后端当成了**运算符**去查 Rust 名字——下一轮。
+
+prelude 加了 `SplayTreeMap`(= `Map`,写明丢了排序)和 `dart:developer` 的
+`Timeline`(空操作,24 对 `startSync`/`finishSync`)。
+
+---
+
+## 第 129 轮:300 → 287
+
+| 条 | 是什么 | 做法 |
+|---|---|---|
+| E0422 9(+E0425 若干) | `_UnspecifiedTextScaler` 三个库各声明一个,TFA 把 `TextPainter` 的默认值内联进 cupertino 的 date picker;导入器按**文本**解析,私有名又被跳过 | `resolved` 那条路是按 **Kernel 引用**解析的,不问 import 表也不问私有:引用说是哪个就是哪个。E0422 归零 |
+| E0046 13 → 6 | `impl ShapeBorder for _NoInputBorder` 缺 `paint`:覆写**加宽**了签名(`gapExtent = 0.0`),转发器给基类没有的参数只会填 `None` | `IrParam.defaultValue`:Kernel 前端把默认值降下来,转发器用它 |
+| E0728 13 | `a ?? await b()`:懒侧发成 `or_else(\|\| ..)`,闭包里的 `.await` 不在 async 里 | 懒侧改 `match`,不进闭包(这一改还没落到数字上——样本还要看) |
+| `_sync_for_iterator` 6 | `for (x in xs)` 的另一种 CFE 拼法 `while (:sync-for-iterator.moveNext())`,`for(;;)` 的还原认不出,而它上面的 iterator 绑定已经被当作"那个形状的一部分"吞掉 | `_restoreForIn` 两种循环共用 |
+
+r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 与 `Object?`
+的表示不一致**:`dynamic` → `Rc<dyn Object>`,`Object?` → `Option<Rc<dyn Object>>`,
+而 Dart 里 `dynamic` 覆写 `Object?` 合法。要么 `dynamic` 也带 `Option`,要么
+`Object?` 不带——两边各上千处,先记着。
+
+---
+| ws16 | 574 | `Let` 的通用落地(后置自增的中间量)也不给 `void` 写注解;`String.startsWith(p, i)` → `starts_with_at`(内建 `str::starts_with` 单参且盖过 trait 同名方法);**`external` 成员的拒绝挪到运行期**:`todo!("external \`_ImageFilter._constructor\` is the engine's to provide")`——这正是引擎该填的槽,编译期拒绝只让它周围的 9 个构造函数和全部调用方跟着报错;具体值放进抽象类型的局部用 `Rc::new` 不是 `Box::new`;`return v` 进可空返回类型套 `Some`(`_returnsType`);prelude `RangeError::range` 五参 |
+| ws17 | 523 | **无名工厂**:`factory Vector3(x, y, z)` 在 Kernel 里名字是空串,`_computeFailing` 走到它就把 vector_math 全部 37 个成员一起拒了——两端都拼作 `new_`;`double.floor/ceil/round` 是 `int`,Rust 的是内建 `f64` 方法改不了名 → 外面套 `as i64`;**抽象类形参也统一 `Rc<dyn X>`**,`dynamic` 统一 `Rc<dyn Object>`(`&dyn DynamicScheme` 进不了 `Map<Rc<dyn DynamicScheme>, _>`,各 7 条);无初值的局部写 `let mut x: T;`,让 Rust 自己查定值(`Color: Default` 不存在);`dyn X` 补 `PartialEq/Eq/Hash`(按地址)与 `Debug`(类名),`dyn Object` 同;**运算符 impl 的函数体挪进固有方法 `op_add`**,trait impl 只转发——`impl std::ops::Add` 块内 trait 在作用域里,`cascaded.add(arg)` 优先解析到按值的 `Add::add`(rustc 1.98 复现:警告"cannot return without recursing");prelude:`Uri.is_scheme`、`Zone.index_of`、`IndexError::new`、`ArgumentError::value`、`RangeError::check_not_negative`、`DartString::hash_code`、`DartQueue`(`remove_first` 等) |
+
+**看到但没动的**:`Result` 异常模型不是模块化的——`_computeFailing` 按类算,mixin/超类的 `_FileSpan::compare_to -> Result<..>` 被转发器当成 `i64` 用(13 条),`typed_buffer` 的 trait 声明不知道实现者会 `?`(5 条)。Dart 里任何方法都可能抛,`Result` 签名要全程序定点才对得上;候选替代是 panic + `catch_unwind`(模块化,但 `UnwindSafe` 与 FFI 边界另算)。先记着,不在一分钟一轮里换模型。
+
+**提交时的已知欠账（2026-09-04）**：`testdata`（fixture crate）`cargo check` 有 55 个 E0046——fixture 里生成的 `impl DartAny for X` 缺新加的 `dart_runtime_type`（ws131），fixture 没重生成。下一轮跑 `bin/fixtures.py` 重生成再看 `cargo test`。
+
+
+**ws146 时 7 个叶子 crate 剩下的 85 个错，按“要设计什么”分：**
+- http 8：全是 `Stream`——`ByteStream extends StreamView<List<int>>` 的 `super(stream)`、`Stream.value`、`listen`、`_ByteCallbackSink`、`Uint8List.view(buffer)`。要在 prelude 里给 `Stream<T>`/`StreamView<T>` 一个表示（单线程下可以先做成 `Vec<T>` 背后的“已就绪流”，`listen` 立即回调）。
+- collection 12：`dynamic` 与 `Object?` 表示不一致（见上）。
+- intl 23：`DateFormat`/`NumberFormat` 的成员因 `dynamic dateTimeSymbols[..]`（顶层 dynamic，运行时先是 `UninitializedLocaleData` 后是 `Map`）整段被拒；余下是 RegExp（没有引擎）和 switch 表达式的带标签块降低。
+- dart:ui 30：typed_data 的 `buffer()/asUint8List/view`、`_futurize<void>` 的类型实参、record 模式 switch、`_EngineLayerWrapper` 下转型——引擎接线一族。
+- get 5 / source_span 4 / typed_data 3：`Vec<Option<Rc<dyn Fn>>>::remove_value` 的 PartialEq 约束、被继承的具体类当返回类型、`TypedData` 存根。
+
+
+**collection 12 个错的根：`dynamic` 与 `Object?` 的表示不一致。** `dynamic` 永远是 `Rc<dyn Object>`（null 是 `Null` 对象），`Object?` 却是 `Option<Rc<dyn Object>>`。`MapEquality<K, V>` 裸用时 K = dynamic，字段 `Object? key` 却是 Option，`_keyEquality.hash(key)` 两边就对不上。要么 `Object?` 也走“永不 Option”（全局改，`_intoObject` 的 `Some` 全撤），要么 dynamic 走 Option（更大）。没动。
+
+
+| ws18 | 645 |','| ws18 | 645 |') if '| ws18 | 645 |' in io.open('STATUS.md',encoding='utf-8').read() else io.open('STATUS.md',encoding='utf-8').read())
+| ws19 | 508 | ws18 的 645 里 dart:ui 从 257 涨到 418,**不是回退,是露出来**:`_NativeCanvas` 的 27 个 `@Native` 成员在 AOT 的 FFI 变换后不再是 `external`,函数体是 `_fromAddress(..)` + `___drawRect$Method$FfiNative(..)` 的管道,`_fromAddress` 被拒 → 70 个调用方跟着报错。整个成员就是引擎槽,函数体换成 `todo!("native ...")`;`identical(zone, Zone.current)` 静态调用一侧先绑定再比槽地址(`_invoke*` 18 处);局部声明为 trait 对象时走 `_returned` 同一个 `Rc::new` 强制转换(9);**赋值表达式的值是值,存储才加 `Some`**(`(index = s.indexOf(p)) >= 0`,`int? index`);`this` 作值在非 `Copy` 类上是 `self.clone()`;`ArgumentError` 手写(两参 `new`,14/15 的调用传两个)。**看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
+| ws20 | 484 | `a?.b` 里 `b` 本身可空 → `and_then` 不是 `map`(8 个 `Option<Option<..>>`);`x as _NativePath`(抽象→具体)是经 `Any` 的向下转型再 clone(4);`dynamic`/`Object` 槽同抽象类一样 `Rc::new`;`==` 两侧一侧可空一侧不可空,不可空一侧套 `Some`;语句形 `x = v` 也进 `_widened`;失败的 `void` 方法从尾部掉出去补 `Ok(())`;**trait 方法的接收者按全库算**:任何实现类在该方法里写字段,trait、每个 impl、转发器统统 `&mut self`(`_sharedMutation`,按库缓存 `_mutating`);prelude `String.index_of(p, start: i64)`(前端已填默认值,`Option` 是多的)。**发现:AOT 的 TFA 做了签名收缩(SignatureShaker)**——`IndexError(..)` 在 dill 里只剩两个参数,`RegExp(..)` 的实参个数 1/2/3/6 全看调用方用了什么——prelude 的固定签名对不上按程序变的签名。`frontend_server` 没暴露开关;`gen_kernel --minimal-kernel` 走 `treeShakeSignatures: false`(代价:清掉 `uriToSource` 和 metadata),已在后台用它另建 `app_aot_sig.dill`,先量差别再换。 |
+| ws21 | 673 | **换 dill**:`gen_kernel --aot --tfa --minimal-kernel`(`treeShakeSignatures: false`)建的 `app_aot_sig.dill`,同一份编译器。多出来的 189 条大半在 `collection_below`(115,之前整个包被摇掉了)和 `material_color_utilities`(+47):签名不收缩,留下来的成员更多。普查 500(旧 dill 461)。从这轮起以它为准——prelude 的签名只能对 Dart 的签名,不能对按程序变的签名。 |
+| ws22 | 670 | sig dill 上的第一批:prelude `DartFuture::then`(`Pin<Box<dyn Future>>` 上的 trait,`onError` 先带着不调)、`Zone::run_guarded/run_unary_guarded`;`late` 字段读出来 `clone().unwrap()` 而不是 `as_ref()`。|
+| ws23 | 661 | **接收者的三处硬编码 `&self`**——trait 声明(`_params`)、转发器、超类函数的 `this_: &__Self`——都接上 `_sharedMutation`;之前只有 `_receiverOf` 一处看它,`addListener` 根本不经过那里(加了调试打印才看见)。E0596 + "differ in mutability" 28 → 20。 |
+| ws24 | 598 | 闭包也进 `_widened`(可空函数参数要 `Some(Rc::new(..))`,25 条);`for x in xs.iter().cloned()`(`&f64` 对 `f64`,14 条);impl 块的泛型一律 `T: Clone + 'static`(`Map<K, V>` 只有 `K: Clone` 才能 clone,30 条 + E0310 12 条),struct/trait 声明不加。 |
+| ws25 | 584 | **传染从来没跨过一个驼峰名**:`_WalkSelf` 记的是 Dart 名(`setFromTranslationRotation`),`_computeMutating`/`_computeFailing` 的键是 Rust 名(`set_from_translation_rotation`),原样比较永远不等——所以 `&mut self` 和 `Result` 的传染只在单词名上生效过。三处比较都过一遍 `snake`。另:TFA 种下的 `throw "Attempt to execute code removed by Dart AOT compiler"` 是"这行死了"的断言不是异常,译成 `unreachable!`,不再把方法变成失败的(8 个 getter 因它带上了 trait 不认的 `Result`);`while (true)` 是 `loop`(类型 `!`)。 |
+| ws26 | 584 | TFA 把形参收窄到唯一到达的类(`_pushClipPath(.., _NativePath path)`)而调用方拿的还是 `Path`,Kernel 里没有 cast——`_widened` 里补经 `Any` 的向下转型(5);`Endian.little/big` 常量 → prelude 枚举(`Paint` 的 14 个 getter 都读它);trait impl 块也用 `_implGenerics`(`E: Clone` 12);**trait 声明带上父 trait**(`trait SourceSpanMixin: DartAny + SourceSpan`,之前只有 `DartAny`,`this_.start()` 找不到)。 |
+| ws27 | 557 | ws26 总数没动但 dart:ui 254 → 315:`Paint` 的 getter 过了 `Endian` 那关,露出 prelude `ByteData` 存取器的 `endian: Option<Endian>`(前端已填默认值,12 条)——改成 `Endian`;impl 泛型里做 `Map` 键/`Set` 元素的参数加 `Hash + Eq`(9);`Map` 的 `[]` 有了自己的名字 `!map_get`,`get` 这个名字不再被当成 `HashMap::get`(`ContrastCurve.get(double)` 中枪 14 次);`Expando[]` 同理 `!expando_get`;`switch (tileMode)` 在 `TileMode?` 上,case 值套 `Some`。 |
+| ws28 | 493 | prelude `ByteData` 多字节存取器全部带 `endian: Endian`(dart:ui 70 条 E0061 是它);TFA 收窄的向下转型不对 `Object` 做(`Object` 在 Kernel 里不是抽象类,也不是这边的 struct——21 条 E0782);反方向:struct 值传给抽象形参走 `!rc` → `Rc::new`(计数类已是句柄,不套)。 |
+| ws29 | 436 | `unsafeCast<_NativePath>(path)`——CFE 自己插的 cast,Dart 里零开销,这边是经 `Any` 的向下转型(5,调试打印才看见实参是 `StaticInvocation`);`!rc`/向下转型都不碰 `dart:`(非 dart:ui)的类——那是 prelude 的类型,`List` 不是 trait 对象(13 条 `Rc<Vec<f64>>`);`_substitute` 进 `IrBlockValue` 的绑定(`error_palette` 9 条);trait 里对 `this` 的读一律访问器调用(mixin 读实现者的 getter,7);局部变量的字段读 `.clone()`,作接收者时是位置;闭包 `==` 走 `dart_eq`(身份);计数类句柄字段也按身份比较;impl 泛型加 `PartialEq`,`Hash + Eq` 的判断也看方法签名;prelude `SocketException`/`OSError` 手写。 |
+| ws30 | 405 | 赋值表达式存 `Some(__t.clone())`(值还要用,12 条 E0382);struct 声明泛型 `'static`(E0310 8);`self.f[self.index(r, c)] = v` 先算下标(E0502 5);方法自己的泛型也带 `Clone + PartialEq + 'static`(`listEquals<T>`);prelude `Completer.future()` 装箱成 `Pin<Box<dyn Future>>`;**译出的被调方的 `dynamic`/`Object` 形参**:实参 `Rc::new(..)` 进 `Rc<dyn Object>`(`Object?` 再套 `Some`),prelude 的泛型被调方不动;`locale ?? "unspecified"` 两侧类不同、结果是 `Object` 时两侧都过 `dart_str`。 |
+| ws31 | 535 | `x as T` 从 `Object`/`dynamic` 出发也是向下转型,可空到可空按元素做(`_objects![2] as _ImageFilter?`);`==` 加宽的那一侧走 `_widened`(也 clone,循环里不再被搬走);超类函数的类泛型带 impl 的界;常量实例里声明为 trait 对象的字段 `Rc::new`(`const _ClampTransform(_P3ToSrgbTransform())`);**带析构的顶层常量是 `static LazyLock`**,读时 `.clone()`(E0493 4);prelude `Completer.complete_error<E>` 泛型。 |
+| ws32 | 361 | ws31 反弹到 535:超类函数要 `E: Clone + PartialEq`,而 trait 的默认方法用 trait 自己没加界的 `E` 去调它——147 条 E0277。**所有声明一个界**:struct/trait/impl/方法/超类函数都是 `T: Clone + PartialEq + 'static`;比较运算(`< > <= >=`)也走 int/double 混合的 cast(`returnValue < 0` 在 `f64` 上,6)。 |
+| ws33 | 327 | **`Result` 模型的边界定下来**:方法是 trait 声明的(签名是 trait 的,全类共用)、静态、顶层函数、闭包——这些位置没有 `Result` 可带,`throw` 就是 `panic!("uncaught Dart exception: {:?}", e)`;只有类自己的失败方法(`_failing`,且不是 trait 声明的)才 `return Err`。`?` 的传播、`_errorIn` 同样绕开 trait 声明的方法。ws32 的 361 里 50 条是 `Result` 撞上没说过 `Result` 的签名。 |
+| ws34 | 291 | ws33 = 327,`Result` 撞签名的 50 → 11。这轮:条件是 TFA 的"removed" throw 时整个条件表达式就是 `unreachable!`(两支类型不再相遇);`x != null ? Color(..) : "unspecified"` 结果是 `Object` 时两支走 `dart_str`(同 `??`);`Let` 绑定的局部也 clone(`let __t = key;` 后 `key` 还要用,13 条 E0382),类型参数一律算 clone(界已保证);prelude `Stream::value`、`Error::throw_with_stack_trace`(panic)、`HttpClient::new`。 |
+| ws35 | 391 | **反弹**:构造器字段初始化走 `_widened` 后,`String` 参数进字段要 `.clone()`,而 `const` 构造器译成 `const fn`——`const fn` 里调不了 `clone`(E0015 53 + E0493 18);`IrSome(闭包)` 又套了一层 `Rc::new`(`expr` 对 boxed 闭包已经套过,37)。 |
+| ws36 | 273 | 修 ws35 的两处:参数不全是 `Copy` 的构造器不再 `const fn`(要 `const fn` 的 `static const` 都是 `Copy` 值);`Some(闭包)` 只对未 boxed 的闭包套 `Rc::new`。另:trait 自己的默认方法体写字段也 `&mut self`(`typed_data_buffer_super__add(self, v)` 的可变性不齐);`super._(..)` 这类**具名超类构造器**进 IR(`superName`),`_inheritedPre/Inits` 按名字找;`max/min`、`==` 的 int/double 混合也 cast;List/Map 赋值也 clone(别名早在第一次按值传参时就丢了,记为近似);`const Zone()`/`const Utf8Codec()` 常量。 |
+| ws37 | 251 | ws36 = 273。枚举是 `Copy`,不 clone(剩下的 18 条 E0015 是 `color_space.clone()` 进了 `const fn`);**可空值进不可空形参 = TFA 证明过非空**(Dart 本身编不过),`.unwrap()` 就是那条证明(`alpha ?? a` 被改写成 `alpha` 后 7 条);可空值进译出方的 `Object?` 按元素 `Rc::new`;prelude `ByteData.get/set_uint64`、`Uri.encode_full`、`Completer.complete(Option<T>)`(`Completer<void>.complete()` 前端传 `Some(())`)。 |
+| ws38 | 246 | ws37 = 251。字段初始化里有 `.clone()` 的构造器也不 `const fn`(`Color` 是 `Copy` 的 struct,前端不知道);`async` 体里 `return completer.future` 要 `.await`(`async fn` 返回的是 `T`);可空值进 `Object?` 按元素时点名 `as Rc<dyn Object>`(`.map` 里推不出 unsizing);函数类型形参里的函数类型也拼 `Rc<dyn Fn>`。**没解决**:`{ let __t = alpha; __t }` 传给 `f64` 形参——TFA 把 `alpha ?? a` 改写成 `alpha` 后 `Let` 的静态类型说非空、变量类型说可空,`_widened` 看的是前者。 |
+| ws39 | (前端没编过:`_let` 里 `body` 重名) | ws38 = 246。`Let` 的体是被提升(promoted)的绑定变量本身时(`alpha ?? a` 被 TFA 改写后的样子:绑定 `double?`,读 `double`),体是 `.unwrap()`;转发到 `async fn` 的调用 `Box::pin`(trait 要的是装箱的 future)。 |
+| ws40 | 243 | **闭包读到的外层局部变量先 clone 再 `move`**(`IrClosure.locals`,前端 `_freeLocals` 算自由变量):`Rc<dyn Fn>` 是 `'static`,借着帧里的 `callback`/`arg1` 是 9 条 "does not live long enough";`List<int>` 进 `Uint8List` 形参按元素 `as u8`(`!narrow`)。 |
+| ws41 | 242 | ws40 = 243。**顺带:crate 切分变了**——`scc_flutter_widgets` 从 250 个文件/25.7 万行缩到 81 个文件/7.1 万行,`merged_material_scc` 138 文件/8.3 万行分出来,137 个 crate:文本导入按 Dart 图约束后,大连通分量在这几轮里自己散开了。这轮:局部变量的 `!` 先 clone(`a!.axis` 后 `a!.value`);列表字面量的元素也进 `_widened`(`[left, right]` 搬走了 `left`)。 |
+| ws42 | 232 | 闭包捕获修两处:Kernel 的 `Let` 直接绑变量、没有声明语句,`_LocalFinder` 把闭包内部的 `__t0` 当成了外层局部去 clone(7 条 E0425);`message.invoke` 这样的 tear-off 闭包也捕获接收者里的局部。 |
+| ws43 | 219 | ws42 = 232。prelude:`Completer` 可 clone(句柄)、`_StringStackTrace` 就是 `StackTrace`、`_invoke1_with_return` 按 Dart 签名可空;计数类里把 `this` 作实参传出去的方法也拿句柄(`self: &Rc<Self>`,`paragraph._paint(this, ..)`);`List<Object?>` 的 `[]=` 值也 `Some(Rc::new(..))`(`_intoObject`,从 `_intoDynamic` 抽出来)。 |
+| ws44 | 214 | 闭包也是 panic 边界(体内的 `throw` 不再 `return Err`,闭包签名没有 `Result`);临时变量(`__t`)的读也做提升处理——之前在提升检查之前就返回了(`if (__t != null) xs.add(__t)`);局部声明的初值进 `_widened`(`Int32List? x = encode(..)` 要 `Some`)。 |
+| ws45 | 220 | **尺子换一把**:ws44 的 214 条分布在 12 个叶子 crate 上,138 个 crate 里 `cargo check --keep-going` 只开工了 12 个、**过 0 个**——其余 126 个依赖它们,连编都没开始。所以"并行 check 多快"仍量不到;下一步先把小叶子清零(clock 1、plugin_platform_interface 1、material_color_utilities 5、platform 6、typed_data 7、vector_math 7、listen 9、characters 11),让依赖链动起来。这轮:`key as K`(`Object?` 到类型参数)经 `Any` 向下转型。 |
+| ws48 | 326 | 计数类规则真正打上(第三次锚);intl 的三条系统性形状:`String[i]` 是单字符 String(`char_at`,88 条),`num` 当 `f64` 参与混合算术/比较(`% 100`、`== 0`,84 条),prelude `DateTime` 的 `year/month/day/hour/minute/second/weekday`(Hinnant 的 civil-from-days,50 条);别的模块的 lazy 常量读法也要 `(**X).clone()`(`constantsElsewhere` 从 driver 传进来)。 |
+| ws49 | 908 | ws48 = 326(intl 356 → 134,计数类规则本身几乎没动叶子)。这轮 intl 的下一层:`T extends String` 的类型参数直接当 `String`(标量界);`int` 进 `double`/`num` 槽 cast;`[3,4,5].contains(n % 100)` 把 `num` cast 到列表的 `int`;顶层/静态常量初值也进 `_widened`/`_intoObject`(`dynamic` 顶层放 struct);prelude `DateTime::new`(days-from-civil)、`String.fromCharCodes`、`ArgumentError.checkNotNull`、`FormatException` 三参、`RegExp::new` 五参(sig dill 之后签名齐了)。 |
+| ws50 | 374 | ws49 反弹到 908:把 `num` 当 `double` 参与 cast 是错的——静态类型是 `num` 的值在输出里一半是 `i64`(TFA 推成 int 的局部),580 条 cast 反了。撤回,只认 `double`;intl 那 46 条 `num % 100` 留着。计数类的句柄进 `dynamic` 槽要写明 `as Rc<dyn Object>`(`!as_object`)。 |
+| ws51 | 290 | ws50 = 374(回到 ws48 的水平,intl 183)。`num` 对 int **字面量**的算术/比较,字面量那侧 cast(只有字面量是安全的);闭包体不在 try 的 flow closure 里(`Ok(Some(..))` 出现在 `|x| builder.setDay(x)` 里);经 `?.` 绑定的字段读也 clone;prelude `DateTime::utc`、`Queue.length`。dart:ui 剩 97 条,已是九十来种各不相同的形状。 |
+| ws52 | (后端没编过:`IrReturn` 的分支放进了表达式的 switch) | ws51 = 290(intl 104)。int 字面量进 `num` 槽 cast;`contains` 的规则也认 `Iterable` 这个 owner;`return this` 也让计数类拿句柄;一个方法自己抛 X 又调用抛 Y 的方法时签名用 `Object`,构造出来的错误对象也装进 `Rc<dyn Object>`(5 条 "couldn't convert the error");`dart:math` 的 `int` 实参先 cast(`log(10)`、`pow(10, n)`)。 |
+| ws53 | 690 | ws52 那批的重跑(`return this` 的分支挪到语句的 walker)。 |
+| ws54 | 759 | ws53 反弹到 690:`num` 对 int 字面量的 cast 也错——`getStaticType` 对"赋值用作值"(`(index = next()) >= 0`)报 `num`,而那是 `i64`。**结论:表达式的静态类型是 `num` 时什么都不推**;只信声明为 `num` 的形参(`_widened` 里那条留着)。撤掉算术/比较里的两条。 |
+| ws55 | 375 | ws54 还在 759:`_widened` 里"声明为 `num` 的形参吃 int 字面量就 cast"也错——`int.+(num other)` 的形参就是 `num`,`index + 1` 成了 `index + (1 as f64)`。**`num` 在这个输出里不是类型,任何规则都别看它。**全部撤掉。 |
+| ws56 | 325 | ws55 = 375(intl 189:ws51 的 104 靠的是那条错的 `num` 规则碰巧对了 intl)。**`num` 的正确说法**:只信**声明**——变量/字段/静态的声明类型是 `num`(这边是 `f64`)时,对面的 int 字面量 cast;实参进译出方(非 `dart:`)声明为 `num` 的形参时 int 字面量 cast;`int.+(num)` 这类 `dart:` 的不算。prelude `DateTime.time_zone_offset`。 |
+| ws57 | 266 | ws56 = 325(intl 139)。`n % 10 == 1`:声明为 `num` 的值做算术仍是 `num`;`Vec::contains` 要引用;抛自己类型的被调方在 `Object` 失败的方法里 `?` 时 `.map_err(Rc::new)`(10 条 "couldn't convert");**闭包字面量按形参的函数类型决定返回**(`String? Function(String)` 接 `(l) => "default"` 返回 `Some(..)`,`_expectedReturn`)。 |
+| ws58 | 264 | ws57 = 266。`void` 体里任何 `return e;` 都是"执行 e、不返回"(闭包按形参类型是 `void Function` 时);ws59:`String.trim` 走 `trim_dart`(内建 `str::trim` 返回 `&str` 且盖住同名 trait 方法);`int` 值存进声明为 `num` 的变量 / 传给译出方声明为 `num` 的形参时 cast(声明可信,静态类型不可信)。 |
+| ws59 | (前端没编过:`snake` 不是前端的方法) | ws58 那行里写的"ws59"这批:`trim_dart`、声明为 `num` 的存储/形参对 `int` 值 cast。 |
+| ws60 | 251 | **关掉方法签名上的 `Result`**(`_resultModel = false`):它从来不是模块化的——只有 `this` 上的调用方看得见并加 `?`,经别的对象读 getter、trait 声明、闭包、静态全都在调用方报错(dart:ui 15 条、intl 10 条)。现在 `throw` 就是 panic,只有 `try` 体内的仍经 flow closure 变成 `Err` 给 handler。丢掉的是"被调方在 try 里抛、调用方 catch"这一种——丢得响,运行期会说;留着的是谁也看不见的签名。 |
+| ws61 | 250 | 把 `this` 传给构造器/静态调用的方法也拿句柄(`FlutterView(id, this, ..)`)。 |
+| ws62 | 245 | 计数类字段的"赋值用作值"(`_count++`)走 cell 的写法;typed list 的按元素收窄看变量的**声明**类型而不是提升后的(`if (input is Uint8List) return input;` 手里还是 `Vec<i64>`)。 |
+| ws63 | 237 | ws62 = 245。`contains` 按引用只对 List/Iterable 做(`Path.contains(Offset)` 是自己的方法);**计数类里"拿句柄"的方法也传染**——`&self` 的方法调用了 `self: &Rc<Self>` 的方法就得自己也拿句柄(`_handles`,同 `_mutating` 的定点);实例调用的实参按**实例化后**的形参类型加宽(`List<Shadow>.add(E)` 的 `E` 是 `Shadow`,TFA 去掉 `!` 后的 `Shadow <= Option<Shadow>`)。 |
+| ws64 | 236 | ws63 = 237。声明为 `num` 的一侧对 `int` **变量**也 cast(`truncated == howMany`);顶层常量初值也进 `_intoDeclaredNum`(`1e300.floor()` 进 `num` 静态);`dynamic` 值进标量形参经 `Any` 向下转型(`_formatExponential(number)`)。 |
+| ws65 | 229 | ws64 = 236。对着最小的五个叶子(mcu 4、listen 5、characters 6、vector_math 7、typed_data 7)一批:`unsafeCast<double>(arg)` 从 `dynamic` 出发也向下转型;抽象类的工厂(`Characters(s)`)是 trait 的静态自由函数;`_returned` 逐支处理条件表达式,计数类的构造结果不再套 `Rc::new`;可变静态的闭包初值 `Rc::new`;`this` 经 `!as_object` 传出也算交出句柄;超类函数被赋值的形参 `mut`;trait 的字段访问器经 cell 读;`??=` 到静态也加宽;prelude `RangeError.checkValidRange`、`ArgumentError.value` 的 `dynamic message`(`IntoMessage`)、`sort([compare])` 可选、`replaceRange(start, end?)`。 |
+| ws66 | 228 | 级联的接收者是局部变量时先 clone(`v..setValues(..)` 后 `v` 还在用);`this` 进 `Object` 槽:持句柄的方法给 `self.clone()`,不持的 `Rc::new(self.clone())`;别的模块的抽象类的静态/工厂用 `library.isAbstract`(`abstractElsewhere`)判断,不再拼成 `Characters::new`。 |
+| ws67 | 223 | 被当作方法接收者的局部变量/形参一律 `mut`(被调方要不要 `&mut self` 在这里看不见;多余的 `mut` 只是警告)。 |
+| ws68 | 215 | ws67 = 223。方法形参的 `mut` 判断之前读的是上一个方法的 `_reassigned`(参数字符串在赋值之前就拼好了);`dynamic` 值进 `double`/`int` 形参的向下转型不再要求"具体类"(dart:core 里 `double` 是抽象类);语句形级联的接收者也 clone。 |
+| ws69 | 214 | 抽象类的无名工厂经 `_staticCall` 的空名分支时也拼成 trait 的静态自由函数(`characters_new`)。 |
+| ws70 | 210 | 超类函数是 `async fn` 时调用处 `Box::pin`;`Uint8List` 进 `List<int>` 形参按元素加宽(`!widen`);prelude `HttpClient(context?)`、`HttpClientResponse`、`RegExp.hasMatch(String)`。 |
+| ws71 | 200 | **抽象类/mixin `implements` 具体类**(`SourceLocationMixin implements SourceLocation`)时,trait 把那个具体类的公开字段/getter 声明成抽象 getter,实现者用自己的字段作答(source_span 的 7 条 `this_.source_url()`)。 |
+| ws72 | 197 | ws71 = **200**(source_span 16 → 6)。按身份比较的字段只认类型文本以 `Rc<`(或 `Option<`/`Vec<` 套着的)开头的,不是类型参数里碰巧有 `Rc<` 的;`HashMap(equals:, hashCode:)`/`LinkedHashMap(..)` 是 prelude 的 `Map`,自定义键相等被丢掉——记为近似;prelude `MapBase.mapToString`。 |
+| ws73 | 189 | ws72 = 197。`Copy` 类型的顶层常量也只在初值能编译期求值(字面量/常量/四则)时才是 `const`,否则 `static LazyLock`(`"0".codeUnitAt(0)` 是 E0015);`this` 传给闭包调用也算交出句柄;prelude `DateTime.compareTo`、`Iterable.generate`、`RegExpMatch`/`RegExp.firstMatch`(还没有正则引擎,`firstMatch` 诚实地返回 `None`)。 |
+| ws74 | 183 | ws73 = 189。构造器里的 `this` 是正在构造的局部值(`__new`),不解引用;经 `Any` 向下转型后的字段读也 clone;`List<String>` 进 `List<Object?>` 按元素 `Some(Rc::new(..))`(`!widen_object`)。 |
+| ws75 | 183 | ws74 = 183。`/` 右边是 `double` 时左边无论静态类型说什么都 cast(`targetWidth! / (w / h)`)。 |
+| ws76 | 207 | `dynamic` 接收者上调 `num` 的方法(intl 的 `format(dynamic number)` 里 `number.isInfinite`,TFA 已定向到 `num.isInfinite`):接收者经 `Any` 向下转型成 `f64`——里面若是 `int` 会当场炸,响的。 |
+| ws77 | 217 | ws76 涨到 207 不是回退:`x is num`/`is String`(对 `Any` 问 `f64`/`i64`/`String`)让几个之前整体被拒的方法编出来了,带着自己的错。这轮:真正的动态调用 `number.abs()`/`number.isNegative`(intl 的 `format(dynamic number)`)按 `num` 的方法处理——接收者向下转型成 `f64`;minimal dill 丢掉的 `dart:` 成员 `int` 形参默认值补 0(`startsWith(p, [index = 0])`);prelude `DartDouble::is_negative/to_double`。 |
+| ws78 | 214 | ws77 = 217(typed_data +3:mixin 被计数类实现后,超类函数里经 `this_` 写 cell 字段——trait 上下文里该走 setter 访问器,还没做)。这轮:局部变量从 `Object?` 提升到 `String`/`int`/`double`(dart:core 里它们是抽象类)也是向下转型 + clone;`Object` 静态类型的接收者上调 `num` 方法同 `dynamic`;int 字面量进 `Object` 槽先 `as i64`(`Rc::new(0)` 会推成 `i32`)。 |
+| ws79 | 205 | ws78 = 214。向下转型里的类型名用 Rust 的(`num`/`double` 原样漏进了 `downcast_ref::<num>`,13 条);`dynamic` 的 `Let` 绑定也把值共享进 `Rc<dyn Object>`(`__t: Rc<dyn Object> = true`,6 条)。 |
+| ws80 | 205 | `Map.[]=` 是 `insert`(之前整个 `Map.[]=` 都拒,`PlatformDispatcher._scaleAndMemoize` 因此没译出);计数类的字段写经任何接收者都走 cell(`_views[id]!.x = v`)。 |
+| ws81 | 194 | prelude `Uri.host`、`Rc<T>` 的 `hashCode`(身份)、`ListQueue([capacity])`;`dynamic` 不是 `Option`(Kernel 说它"可空"),进 `Object` 槽用 `!rc_object` 写明目标类型;`Let` 绑定的初值按绑定类型加宽(`double? t = size?.height`);`sublist(i, end?)` 的 `Some(e)` 取值。 |
+| ws82 | 190 | ws81 = 194。`dynamic` 上的 `num` 方法结果是标量,进 `Object` 槽要 `Rc::new`;`dynamic` 上的算术/比较运算符也按 `f64` 做;`return` 进 `dynamic` 返回类型也共享;typed list 的零填充写明元素类型(`vec![0u8; n]`);派生 `PartialEq` 前递归看字段的类能不能比(`VecDeque<_StoredMessage>` 里有闭包);prelude `int.toInt`。 |
+| ws83 | 189 | ws82 = 190。局部声明和类静态的初值也进 `_intoDeclaredNum`(`num divisor = pow(10, n).round()`、`static final num _maxInt = 1e300.floor()`)。剩下的大头:collection 的 `Equality<E>` 泛型协变一族(23)、source_span 的具体类被继承又当返回类型(6)、typed_data 的 mixin 经 `this_` 写 cell(9)、dart:ui 的引擎管道(80)——都是结构性的,一分钟一轮啃不动,记着。 |
+| ws84 | 184 | ws83 = 189。**mixin 写自己的字段**(typed_data 的 `_TypedDataBuffer._grow` 写 `_length`/`_buffer`):trait 为每个可变字段声明 `set_x(&self, v)`,实现者用 cell 作答;trait 上下文里对 `this` 的字段写就是调 setter;混入/继承了带可变字段的抽象类的类算计数类(它的存储得是 cell)。 |
+| ws85 | 180 | `dynamic` 局部变量的赋值(`dynamic result = scaled(x)`)也共享进 `Rc<dyn Object>`。普查:398 条拒绝(最初 2990)。 |
+| ws86 | 184 | **接口成员的形参默认值在实现类上**(`Canvas.clipRect({doAntiAlias = true})` 是抽象的,默认值在 `_NativeCanvas`)——经 `ClosedWorldClassHierarchy` 到子类去找(`doAntiAlias`/`debugLabel` 19 条拒绝);**重定向工厂**(`factory Foo() = Bar;`)是对目标的调用,不是"no body"(66 条拒绝,`SemanticsConfiguration` 20);`catch (e, st)` 读 `st` 不再拒绝——绑到 catch 处的 `StackTrace::current()`(`Result` 不带栈,这是 catch 处的栈不是 throw 处的,记为近似;38 个成员)。 |
+| ws87 | 183 | **第一批 crate 过了**:ws86 = 184 之后,138 个 crate 里 9 个译出的 crate `cargo check` 干净——characters、clock、meta、path、platform、plugin_platform_interface、term_glyph、transparent_image、vector_math(加 dart_prelude);还剩 8 个叶子挡着 120 多个依赖它们的 crate(dart:ui 82、intl 46、collection 23、http 15、source_span 6、listen 5、typed_data 4、material_color_utilities 3)。这轮:函数值的调用(`callback(e, stack)`)按 `FunctionInvocation.functionType` 的形参类型加宽。 |
+| ws88 | 143 | ws87 = 183。http:`LinkedHashMap(equals:, hashCode:)` 的工厂形式也是 prelude 的 `Map`;`Zone.current[#token]` 返回 `dynamic`(这边永远不是 `Option`,空是 `Rc::new(Null)`),`x as Client?` 从 `dynamic` 出发是 `downcast_ref().cloned()`(`!as_opt`);trait 声明的接收者不再因为默认方法体写字段而 `&mut self`(写走 setter)。 |
+| ws89 | 137 | **ws88 = 143,intl 干净了**——10 个译出的 crate 过 `cargo check`。新露头:typed_data 7 条"differ in mutability"(trait 默认方法的接收者改回 `&self` 后,mixin 的超类函数还是 `&mut __Self`)、`downcast_ref::<X<..>>` 拼出的尖括号被当成比较链。 |
+| ws90 | 137 | 经 `Any` 转成本类的另一个对象(`other as Hct`)读 `late` 字段也 `unwrap`。 |
+| ws91 | 130 | `Map<int, _>.containsKey(tone)` 的 `double` 键 cast 成 `int`(Dart 里 `3.0 == 3` 能查到);`T extends Iterable<E>` 的类型参数当 `Vec<E>`。 |
+| ws92 | 200 | 上一轮补 `__Self: … + std::fmt::Debug`：修掉 canonicalized_map 一处 `{:?}` 但让 70 个 trait 默认体里 `super_fn(self)` 的 `Self` 不满足 Debug（E0277）。回退。
+| ws93 | 124 | 回退 Debug 约束；trait 转发器把 `E` 收窄参数共享成 `Some(Rc<dyn Object>)`（Equality 族 -6）。剩 dart:ui 83 / collection 14 / http 11 / source_span 6 / listen 4 / typed_data 3 / mcu 2 / clock 1。
+| ws94 | 119 | Map<int,_>[num] 键转 i64；`null as E`→unreachable；别的对象的 late 字段读也 unwrap；`Option<T>.hash_code`（None→2011）；`_staticType` 无上下文时退回节点自带类型（`Zone.current[k] as Clock?` 的 `as` 不再被丢）。
+| ws95 | 157 | `unsafeCast<T>(x)`（TFA 对 `as` 的拼法）按 `as` 降低：clock 清零、listen 4→2；try 闭包无失败调用时 `Result<_, Rc<dyn Object>>`；`DartInt::to_unsigned`。**intl 0→46**：原先整段被拒的 DateFormat/NumberFormat 现在翻出来了（`verified_locale` 找不到、`Zone.current[k] as String?` 的 `String` 在 dart:core 是 abstract 所以 `as` 又被丢）。拒绝数 1553、行数 1329892 与 ws94 完全相同：intl 的源没变，是 cargo 在 ws94 因 clock_below 出错跳过了依赖它的 intl_below，clock 清零后 intl 才第一次被检查。**因此错误总数不是单调指标，被跳过的 crate 算 0。**
+| ws96 | 159 | 字段初始化里的闭包字面量装 `Rc::new`（DateFormat.dateTimeConstructor，-3）；`as String?`（dart:core 的 String 是 abstract）允许走 `!as_opt`——带来 5 个 `cannot find type`，下轮看。
+| ws97 | 155 | `as num`/`as double` 目标用 `_rustScalar`，且 num/double 作源不再当 trait 对象（-5 `cannot find type`）；`int/double.parse/tryParse` → prelude `parse_int` 等。intl 44：下一个是顶层 setter（`set defaultLocale`）整个被拒。
+| ws98 | 155 | 顶层 setter 翻成 `fn set_x(v)`，`x = v` 的语句/取值形式都调它（-5 `cannot find function`），换来 intl 里 6 个新的类型不匹配（原先被拒的 verifiedLocale 一族现在翻出来了）。
+| ws99 | 153 | 语句位置的裸 `null`（TFA 把 `onCreate?.call(this)` 折成 null）不再发出（-4 E0282）；换来 2 个 E0596。
+| ws100 | 154 | 函数末尾无 else 的 if 链后补 `unreachable!`；函数类型列表里的闭包字面量装 `Rc::new`（-2 found closure，+3 E0631：闭包参数类型与 `dyn Fn` 签名不一致）。
+| ws101 | 150 | cell 字段上的就地修改调用（push/insert/remove/…）走 `borrow_mut()`——此前 `.borrow().clone().push(x)` 能编译但推到副本上，叶子 crate 里 27 处静默无效；闭包的 `dynamic` 参数取上下文函数类型的参数类型；无 else 的 if 链规则铺到全部 5 个方法体发出点。拒绝 1553→1548。
+| ws102 | 148 | counted 类上的 `late` 字段和 `final` 集合字段也放进 cell（`_Image._handles.add` 的 2 个 E0596 消失）；同时对齐 Copy 判定。
+| ws103 | 148 | Copy 判定与 cell 规则对齐：无变化。查明 `unreachable!` 没出现的原因：`_modeString` 是对 `TileMode?` 的穷尽 switch，前端把它降成 if 链，最后一个 `case null` 仍是 `else if`。
+| ws104 | 147 | 无 default 的穷尽 switch（`isExplicitlyExhaustive`）最后一个 case 降成 else；`_alwaysReturns` 认识 IrSwitch。
+| ws105 | 145 | `String.contains(p, [start])` → prelude `contains_dart`（Rust 的 `contains` 不收 `String` 也没有起点）。
+| ws106 | 141 | 别的模块的可变顶层静态也走 `(**X).borrow().clone()`；`dart:math` 的 int 字面量参数先 `as f64`。
+| ws107 | 140 | 具体（非抽象、无类型参数、同库）祖先类的方法在子类 impl 里重新发出一遍——字段本来就是拍平继承的，方法却没有；`ValueNotifier.notify_listeners` 补上。
+| ws108 | 140 | `late` 字段初始化里提到 `this` 的（`nativeFilter = _ImageFilter.matrix(this)`）：字面量里先 None，`__new` 建好后再写；可空接收者的 `toString()` → `dart_str`。
+| ws109 | 146 | 上一轮的延后初始化按名字匹配后生效（4 处 `nativeFilter`），两个 ImageFilter 构造器翻出来了；`join` 的元素经 `dart_str`。dart:ui 71→64，**listen 清零（第 12 个干净的翻译 crate）**，于是依赖它的 get_below 第一次被检查：14 个。
+| ws110 | 145 | mixin 的字段拍平进应用它的类的 struct（`Value<T>` 原来只有一个 PhantomData）；prelude 补 `platform_is_windows` 等。
+| ws111 | 142 | trait 的 supertrait 列表去重、去掉 `Object`（mixin `implements Listenable` 会把 Object 列进接口，`dyn Mixin` 就成了两次 Object，E0371 ×3）。
+| ws112 | 137 | **mixin 成员真正落地**：TFA 之后 mixin 的字段和方法都在匿名 mixin 应用类上（`_MixinApplication459&ListNotifier&StateMixin` 持有 `_value`/`refresh`），mixin 声明本身被掏空；前端现在把匿名类的成员降到应用它的类里。拒绝 1548→1725（多出来的都是新翻的 mixin 成员），错误 142→137。
+| ws113 | 136 | null-aware 里对绑定值的 `as f64` 先解引用；prelude `InternetAddress::new(host, type)` + `is_loopback`。
+| ws114 | 133 | 顶层函数也记录 Rust 返回类型，try 体里的 `return` 才带对类型出闭包（`_isLoopback` 的 bool）。
+| ws115 | 132 | `int ~/ double` 两边转 f64、结果回 i64；`String * n` → prelude `repeat_dart`。
+| ws116 | 131 | `List.generate` 的闭包不再裹 `Rc`；`num` 声明的顶层/字段的 int 字面量初始值 `as f64`。
+| ws117 | 126 | 无 default 的 int switch 补 `_ => {}`；`first` 克隆；可空键查非空键的 Map → `!map_get_opt`。
+| ws118 | 127 | `identical(x, 字面量)` 按值相等（KeyData._nonValueBits、Locale.toString 翻出来了）。
+| ws119 | 123 | 列表字面量的元素也经 `_intoObject` 共享进 `Object?`（`Object.hashAll([isChecked, ..])`）；不会失败的方法里 try/finally 的 `Err` 臂 `match __failed {}`；`identical(0, 0.0)` 两边同类。
+| ws120 | 122 | 有闭包字段的 struct 也手写 `PartialEq`（闭包按地址比，`DartEq`），否则整个类型不可比、泛型调用全断（`_invoke1<PointerDataPacket>`）。
+| ws121 | 393 | 把 `void?` 映射成 `Option<()>`：kernel 里 void 返回类型几乎都是 nullable，全部方法返回类型跟着变，+271。回退。同轮的 `Duration::new` 改成收 6 个裸 `i64`（所有调用点都这么传）保留。
+| ws122 | 117 | `void?` 只在**参数位置**映射成 `Option<()>`（函数类型的参数、闭包参数），返回位置仍是 `()`：`_futurize<void>` 的回调对上了。`Duration::new` 裸 i64。
+| ws123 | 115 | 没有函数体的 setter（`--tree-shake-write-only-fields` 把只写字段换成的空 setter）给空体，不再整个类拒绝（ImmutableBuffer）。
+| ws124 | 114 | 闭包里被赋值的参数加 `mut`。剩余：dart:ui 44 / intl 31 / collection 13 / http 11 / source_span 6 / get 6 / typed_data 3。
+| ws125 | 113 | 每个生成的 trait 都以 `std::fmt::Debug` 为 supertrait（去掉手写的 `impl Debug for dyn X`）：super 函数里的 `this_` 能打印了，ws92 想做没做成的事；prelude 补 `dart:developer` 的 `log`。
+| ws126 | 111 | `~/` 的混合类型转换挪到能执行的位置；函数类型带上按名排序的命名参数（`LogWriterCallback`）；匿名 mixin 应用类的字段按字段读（不再当 trait getter）；泛型顶层调用把被调者的函数类型实例化后再给闭包用（`_futurize<int>` 的 `Fn(Option<i64>)`），闭包声明的非空参数向期望的可空型放宽。
+| ws127 | 110 | 抽象基类的字段经具体类型的接收者读时按拍平的字段读（`_GetImpl.isLogEnable`）；参数比槽位宽的函数值（`Fn(Option<i64>)` 交给 `Fn(i64)`）套一层 `Some` 适配闭包。
+| ws127b | — | **测了并行时间的现状**：`cargo clean` 后 `cargo check --workspace --keep-going`：wall 0.85s、cpu 1.84s、32 核——但只有 19 个 crate 真被检查（12 个干净 + 7 个出错），其余 118 个都堵在这 7 个出错的叶子 crate 后面（cargo 不检查依赖失败的 crate）。所以“分 crate 后的并行编译时间”这个数还量不到；先把 7 个叶子清零（dart:ui 43 / intl 30 / collection 12 / http 11 / source_span 6 / get 5 / typed_data 3）。
+| ws128 | 110 | 被放宽的闭包参数记下放宽后的类型，作为实参时按它做适配。
+| ws129 | 109 | 适配闭包装进 `Rc`。剩余：dart:ui 42 / intl 30 / collection 12 / http 11 / source_span 6 / get 5 / typed_data 3。
+| ws130 | 109 | super 函数的 `__Self` 加 `'static`（`as_any` 要求；source_span 两处 E0521）。
+| ws131 | 109 | `DartAny` 加 `dart_runtime_type`，super 函数里 `this_.runtimeType` 走它（`Object::runtime_type` 在 `&__Self` 上会落到引用类型的 blanket impl，要求 'static）。
+| ws132 | 107 | 上一条的名字比对补上 Dart 拼法 `runtimeType`（`_call` 拿到的是 Dart 名）：source_span 6→4，剩下全是“被继承的具体类当返回类型”那一族。
+| ws133 | 111 | trait 里的 async 方法：super 函数是 `async fn` 就返回 awaited 类型；trait 默认体 `Box::pin(super_fn(self, ..))`；返回位置的 `Pin<Box<dyn Future>>` 加 `+ '_`（借用接收者，手写 async-trait 的拼法）——先加在所有方法返回上，静态/自由函数没有接收者，5 个 E0106，回收。
+| ws134 | 106 | `'_` 只加在 trait 声明、trait 默认体和 trait impl 的方法返回上（三处必须一致）。http 11→10，dart:ui 两处 E0521 换成两处 E0308。
+| ws135 | 104 | impl 转发器比较返回类型时把 `'_` 算作相同，不再 `Box::new(Box::pin(..))`。剩余：dart:ui 40 / intl 30 / collection 12 / http 10 / get 5 / source_span 4 / typed_data 3。
+| ws136 | 109 | 超过 8 个元素的列表字面量（CFE 保留为 ListLiteral 节点）也做元素 widen/共享；`_invoke1WithReturn` 的 zone 非空；值类上的 `identical(静态, this)` 取 false（无身份可比，缓存永远 miss）；闭包字段不再让类不可比（PointerDataPacket）。**`dart:` 类的字段一律按 prelude 方法读**：dart:ui -6，但 MapEntry.key/SocketException.message 在 prelude 里是字段，+11——收窄到 Duration/DateTime。
+| ws137 | 101 | 上条收窄后：dart:ui 40→34；intl 30→33（DateTime 的 3 个字段读，见下轮）。剩余：dart:ui 34 / intl 33 / collection 12 / http 10 / get 5 / source_span 4 / typed_data 3。
+| ws138 | 98 | prelude `DateTime::is_utc()` 方法（与同名字段并存）。
+| ws139 | 97 | counted 类的 `as` 下转型结果套新的 `Rc`（字段是 cell，状态仍共享，只有句柄身份是新的）。
+| ws140 | — | prelude 白名单补 `parse_int` 一族和 `schedule_microtask`；但 prelude 里本就有 `schedule_microtask`，我又加了一个别名，prelude 自己 E0428，整个 workspace 被堵（“1 errors”是假象）。去掉别名重跑。
+| ws141 | 105 | 白名单生效：`_Channel._drain`/`ChannelBuffers.handleMessage` 翻出来，带来新错（prelude 的 `schedule_microtask` 收 `Box<dyn FnOnce()>`，翻译出来传的是 `Rc<dyn Fn()>`）。
+| ws142 | 100 | `scheduleMicrotask` 映射到收 `Rc<dyn Fn()>` 的 `_schedule_microtask`；prelude `utf8.decode/encode`、`ByteData::offset_in_bytes`、`string_match(String)`；`List.generate` 的闭包若已被别的路径装箱则拆掉。
+| ws143 | 91 | `Never` 返回在所有签名位置（inherent、trait 声明、trait impl）都拼成 `!`（注释里说过、其实没做）；`List.generate` 的带捕获闭包拆箱；`String.split` → `split_dart`。**首次低于 100。**
+| ws144 | 118 | 参数比槽位宽/结果比槽位窄的函数值适配也覆盖静态 tear-off（intl 的 fallback 列表、`_throwLocaleError`）；`as String?` 允许 `!as_opt`；**prelude 异常类的 `Object?` 参数一律共享**——只有 `FormatException.source` 是 `Rc<dyn Object>`，`Exception(message)`/`ArgumentError.value` 收的是 String，+27。收窄到 FormatException。
+| ws145 | 89 | 收窄后：intl 25→23（tear-off 适配、`as String?`），其余同 ws143。
+| ws146 | 85 | `let #t = e in ..` 的初始值按 `#t` 的声明类型 widen（TFA 证明 `size?.width` 非空而 `#t` 仍是 `double?`）；`Float32List.fromList(doubles)` 逐元素收窄。
+**看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步
 
@@ -5254,9 +6219,18 @@ python3 bin/crate.py "$RUSTFLUTTER_APP/.dart_tool/flutter_build/<hash>/app.dill"
 这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
 诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
 
-**下一轮**:先把回边的判据从"可空且不在构造函数里赋值"改成"集合 vs 单个",
-在 3400 条 `Rc<dyn X>` 边上量一遍;认得出就让回边变 `Weak`。
-在那之前 `crate.py` 报的 416 个错误里,E0425(294)还是最大的一块。
+**下一轮**(目标改写之后,队头换了一半):
+
+1. **立 `tools/dart2rust/runtime/` crate**,把 `lib/prelude.dart` 那 1248 行
+   从「发出来的字符串」变成「链进来的库」。它已经是手写的 `dart:core` 子集,
+   只是站错了位置。立起来之后 `embedder_api.py` 的最后一行才有分母。
+2. **对象模型先于 `Dart_*`**。`Rc<RefCell<T>>` + `Weak` 回边一步到位,
+   1034 条所有权拒绝跟着降;先把回边的判据从"可空且不在构造函数里赋值"改成
+   "集合 vs 单个",在 3400 条 `Rc<dyn X>` 边上量一遍。
+3. **把 168 收到启动路径上**。现在这个数是「engine 里出现过」,
+   要的是「headless 跑一次 gallery 真的会调到」。收完再排 `Dart_*` 的实现顺序。
+4. 在那之前 `crate.py` 报的 416 个错误里,E0425(294)还是最大的一块——
+   这一条没变,它量的是翻译那一半。
 
 **loop 已停**(cron `5435ce19` 已删)。下次继续时环境变量见上面那节。
 
@@ -5267,8 +6241,31 @@ python3 bin/crate.py "$RUSTFLUTTER_APP/.dart_tool/flutter_build/<hash>/app.dill"
 
 ## 当前队头
 
-**Kernel,`flutter_build/ef21e168…/app.dill`,前缀 `package:flutter/`**
-(525 库 / 2743 类 / 1265 个零拒绝的类 / 11871 个成员发出 / 3099 次拒绝)
+两半,两把尺子。
+
+**运行时那半(`bin/embedder_api.py`,engine `0c2d270c5a9`)**
+
+| 数 | 是什么 |
+|---|---|
+| 168 / 312 | engine 真正调用的 `Dart_*`,945 处调用点(上界,还没收到启动路径上) |
+| 231 | `dart:ui` 的下行 native |
+| 19 | `PlatformConfiguration` 的上行句柄 |
+| **0** | Rust 这边实现了的——`runtime/` crate 还不存在 |
+
+**翻译那半(第 115 轮起换了输入):`~/gallery_upstream/.dart_tool/dart2rust/app.dill`
+——这台机器上 build 的、engine `0c2d270c5a9` 版本对得上的那一份,前缀
+`package:,dart:ui`**
+
+```
+1299 libraries, 5558 classes, 9741 refusals
+cargo check: 6045 errors   (E0107 2812 / E0425 2771 / E0433 198 / E0728 74)
+most wanted: google_fonts_text_style 1709  —— 追到根上是一次撕方法
+```
+
+下面这张类别表来自**上一份 dill**(`flutter_build/ef21e168…`,前缀
+`package:flutter/`,525 库 / 2743 类 / 1265 个零拒绝的类 / 11871 个成员发出 /
+3099 次拒绝)。类别分布仍然是队头的样子,但**数字不可比**,新输入的那份还没按
+类别归并过——那是下一轮第一件事。
 
 | 次数 | 要建的东西 |
 |---|---|
@@ -5288,7 +6285,11 @@ python3 bin/crate.py "$RUSTFLUTTER_APP/.dart_tool/flutter_build/<hash>/app.dill"
 ## 九条要记住的
 
 1. **"零拒绝"(781 / 2743)不等于"翻译好了"**:引用其他库的东西仍靠手写桩。
-2. **`testdata` 的桩已经吃力**。真正的答案是翻译 `dart:core` / `dart:ui` 的最小子集。
+   2026-09-03 目标改写之后这一条不再只是提醒,它就是新的验收:**跑得起来**。
+2. **`testdata` 的桩已经吃力**。真正的答案是 `dart:core` / `dart:ui` 的最小子集
+   ——**写出来,不是翻译出来**(第 44 轮量过:翻译 `dart:core` 让错误从 6608
+   涨到 16955)。那份东西现在有了名字和位置:`runtime/` crate,即那个 plain 的
+   Dart VM。
 3. **哪把仪器守哪条守卫。** 断言、rustc、前端对照各有盲区。
    第 25 轮又添一处:`fixtures.py` 比对前剥掉注释,而**拒绝就是注释**,
    于是删掉一条拒绝规则没有任何检查会变红。现在 fixture 用 `// REFUSES:` 自己声明。

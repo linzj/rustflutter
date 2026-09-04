@@ -39,7 +39,11 @@ DART_PKG = os.path.join(ENGINE, 'flutter', 'third_party', 'dart', 'pkg')
 
 def out_dir():
     """The engine build whose dart-sdk matches `pkg/kernel`."""
-    for mode in ('host_release', 'host_profile_unopt', 'host_debug_unopt'):
+    # `host_profile` is on this list because it is the build the goal now
+    # names: profile is AOT, and the engine the gallery has to run on is the
+    # one built that way. It carries the same matched dart-sdk as the others.
+    for mode in ('host_release', 'host_profile', 'host_profile_unopt',
+                 'host_debug_unopt'):
         candidate = os.path.join(ENGINE, 'out', mode)
         if os.path.isdir(os.path.join(candidate, 'dart-sdk', 'bin')):
             return candidate
@@ -57,6 +61,9 @@ def paths():
             out, 'gen', 'frontend_server_aot.dart.snapshot'),
         'platform': os.path.join(out, 'flutter_patched_sdk'),
         'kernel': os.path.join(DART_PKG, 'kernel'),
+        'gen_kernel': os.path.join(DART_PKG, 'vm', 'bin', 'gen_kernel.dart'),
+        'dart_package_config': os.path.join(
+            DART_PKG, os.pardir, '.dart_tool', 'package_config.json'),
         'fe_shared': os.path.join(DART_PKG, '_fe_analyzer_shared'),
         'revision': os.path.join(sdk, 'revision'),
     }
@@ -100,17 +107,45 @@ def write_config(target, extra_root=None):
     return 0
 
 
-def build(entry, app_packages, output):
+def build(entry, app_packages, output, aot=False):
     found = paths()
-    command = [
-        found['aot'], found['frontend_server'],
-        '--sdk-root', found['platform'] + os.sep,
-        '--target=flutter',
-        '--packages', os.path.abspath(app_packages),
-        '--output-dill', os.path.abspath(output),
-        '--no-print-incremental-dependencies',
-        entry,
-    ]
+    # `--aot --tfa`: the whole-program type flow analysis and tree shaking
+    # gen_snapshot runs. Measured on the gallery on 2026-09-03: 1298 -> 923
+    # libraries, 1.58M -> 1.28M lines of Rust, a fresh translate-and-check
+    # from eight minutes to under three -- and it is the input a release
+    # actually compiles, which is what the AOT slot is being filled with.
+    if aot:
+        # Not the frontend server: its `--tfa` also runs the signature
+        # shaker, which drops every optional parameter no caller in *this*
+        # program passes -- `IndexError(..)` came out with two parameters,
+        # `RegExp(..)` with one to six -- and the prelude's signatures can
+        # only match Dart's, not a program's. `gen_kernel --minimal-kernel`
+        # is the one switch that turns it off (`treeShakeSignatures:
+        # !minimalKernel`); its price is the source table and metadata,
+        # which nothing here reads. Measured 2026-09-03: the same compiler
+        # on the two dills, 484 vs 673 errors -- the extra is code the
+        # shaker had removed, not new trouble.
+        command = [
+            found['dart'],
+            '--packages=' + found['dart_package_config'],
+            found['gen_kernel'],
+            '--platform', os.path.join(found['platform'], 'platform_strong.dill'),
+            '--target', 'flutter',
+            '--aot', '--tfa', '--minimal-kernel', '--tree-shake-write-only-fields',
+            '--packages', os.path.abspath(app_packages),
+            '-o', os.path.abspath(output),
+            entry,
+        ]
+    else:
+        command = [
+            found['aot'], found['frontend_server'],
+            '--sdk-root', found['platform'] + os.sep,
+            '--target=flutter',
+            '--packages', os.path.abspath(app_packages),
+            '--output-dill', os.path.abspath(output),
+            '--no-print-incremental-dependencies',
+            entry,
+        ]
     print(' '.join(command))
     result = subprocess.run(command, capture_output=True, text=True,
                             errors='replace')
@@ -139,6 +174,9 @@ def main():
     parser.add_argument('--build', metavar='ENTRY')
     parser.add_argument('--packages', metavar='FILE')
     parser.add_argument('-o', '--output', metavar='FILE')
+    parser.add_argument('--aot', action='store_true',
+                        help='tree-shaken, as gen_snapshot would see it: '
+                             '--aot --tfa --tree-shake-write-only-fields')
     args = parser.parse_args()
 
     if args.check:
@@ -148,7 +186,7 @@ def main():
     if args.build:
         if not args.packages or not args.output:
             raise SystemExit('--build needs --packages and -o')
-        return build(args.build, args.packages, args.output)
+        return build(args.build, args.packages, args.output, aot=args.aot)
     parser.print_help()
     return 2
 

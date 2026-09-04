@@ -62,7 +62,13 @@ class IrParam {
     this.named = false,
     this.hasDefault = false,
     this.kept = false,
+    this.defaultValue,
   });
+
+  /// The declared default, when the front end could read it. A forwarder for
+  /// an override that *widens* the base's signature -- `InputBorder.paint`
+  /// adds `gapExtent = 0.0` -- passes this where the base has nothing.
+  final IrExpr? defaultValue;
 
   /// Whether the callee does more with this parameter than call it.
   ///
@@ -102,10 +108,18 @@ class IrLocal extends IrExpr {
 
 /// A field read. `target` is null for an implicit `this`.
 class IrField extends IrExpr {
-  const IrField(this.target, this.name, {this.onEnum = false});
+  const IrField(this.target, this.name, {this.onEnum = false, this.owner});
 
   final IrExpr? target;
   final String name;
+
+  /// The class that declares the field, when the read is on another object.
+  ///
+  /// A counted class keeps every non-final field in a cell, and a read of one
+  /// from outside has to go through the cell too. The backend sees `entry.x`
+  /// with no idea what `entry` is; the front end resolved the field, so it
+  /// says whose it is.
+  final String? owner;
 
   /// Whether the thing read belongs to an *enum*.
   ///
@@ -258,10 +272,14 @@ class IrNullCheck extends IrExpr {
 /// arguments" is what lets a chain work -- `a?.b.c()` binds once and does two
 /// things with the binding, and 89 of upstream's are chained.
 class IrNullAware extends IrExpr {
-  const IrNullAware(this.receiver, this.body);
+  const IrNullAware(this.receiver, this.body, {this.flatten = false});
 
   final IrExpr receiver;
   final IrExpr body;
+
+  /// Whether the body is itself nullable: `a?.b` with `b` a `T?` is one
+  /// `Option`, not two -- `and_then`, not `map`.
+  final bool flatten;
 }
 
 /// The value bound by the enclosing [IrNullAware].
@@ -307,13 +325,22 @@ class IrClosure extends IrExpr {
     this.body,
     this.returns, {
     this.captures = const [],
+    this.locals = const [],
     this.boxed = false,
     this.holdsSelf = false,
+    this.isAsync = false,
   });
 
   final List<IrParam> params;
   final IrStmt body;
   final IrType returns;
+
+  /// Locals of the enclosing function the body reads, cloned in before the
+  /// closure is made and moved into it (see the front end's `_freeLocals`).
+  final List<String> locals;
+
+  /// A Dart `async` closure: `async |..| { .. }` in Rust.
+  final bool isAsync;
 
   /// `final` fields of `this` the body reads, copied in when the closure is
   /// made rather than read through a `this` that will not live long enough.
@@ -395,6 +422,37 @@ class IrTopLevel extends IrExpr {
 }
 
 /// `this`.
+/// A promoted read: `other` after `other is Matrix4`, where the variable's
+/// own type is `Object`. Dart narrows the variable in place; Rust downcasts
+/// the value -- `other.as_any().downcast_ref::<Matrix4>().unwrap()` -- and the
+/// field reads that follow are on that. 36 `no field _m4storage on &dyn
+/// Object` in `vector_math`'s `==` operators.
+class IrDowncast extends IrExpr {
+  const IrDowncast(this.target, this.type);
+
+  final IrExpr target;
+  final String type;
+}
+
+/// `Some(value)`: a non-null value handed to a nullable parameter. Dart
+/// widens silently; Rust's `Option` does not. Emitted where the front end
+/// can see both types.
+class IrSome extends IrExpr {
+  const IrSome(this.value);
+
+  final IrExpr value;
+}
+
+/// `(value as f64)`: Dart promotes an `int` to `double` in mixed arithmetic;
+/// Rust has no implicit numeric conversion at all (`cannot multiply i64 by
+/// f64`, 32 times in the leaf crates).
+class IrCast extends IrExpr {
+  const IrCast(this.value, this.rust);
+
+  final IrExpr value;
+  final String rust;
+}
+
 class IrThis extends IrExpr {
   const IrThis();
 }
@@ -477,6 +535,16 @@ class IrAssign extends IrStmt {
 /// Its own node because the storage is its own thing: a Dart top-level
 /// variable is one per isolate, and the Rust for it is a `static` with a cell
 /// in it, so the write goes through the cell rather than to a name.
+/// `Owner.name = value` for a class's mutable static, which lives in a cell
+/// the way a mutable top-level does. See `IrConstDecl.isMutable`.
+class IrAssignStatic extends IrStmt {
+  const IrAssignStatic(this.owner, this.name, this.value);
+
+  final String owner;
+  final String name;
+  final IrExpr value;
+}
+
 class IrAssignTopLevel extends IrStmt {
   const IrAssignTopLevel(this.name, this.value);
 
@@ -494,7 +562,11 @@ class IrAssignTopLevel extends IrStmt {
 /// The split is measured, not guessed: across `package:flutter` 6220 field
 /// writes go through `this` and 3869 through another object.
 class IrAssignField extends IrStmt {
-  const IrAssignField(this.name, this.value, {this.target});
+  const IrAssignField(this.name, this.value, {this.target, this.owner});
+
+  /// The class that declares the field, for a write on another object. See
+  /// [IrField.owner]: the write goes through the cell when there is one.
+  final String? owner;
 
   /// The object written to, or null for `this`.
   ///
@@ -713,6 +785,18 @@ const orderedMapMembers = <String>{'map'};
 /// and not the other is a disagreement the fixtures would report but nothing
 /// would explain.
 const listMethodNames = <String, String>{
+  // Dart's `remove(value)` removes the first equal element and says
+  // whether it found one; `Vec::remove` takes an index. The prelude's
+  // `DartList` supplies the Dart one. 46 calls.
+  'remove': 'remove_value',
+  // `setRange(start, end, from, [skip])`, in the prelude's `DartList`. 23.
+  'setRange': 'set_range',
+  // `indexOf(value)` is -1 when absent; the prelude's `DartList` says so. 19.
+  'indexOf': 'index_of',
+  // `skip(n)`/`take(n)` are lazy Iterables upstream; a `Vec` here, as
+  // `reversed` is, since every use ends in a loop or a `toList`.
+  'skip': 'skip_dart',
+  'take': 'take_dart',
   'add': 'push',
   'addAll': 'extend',
   'clear': 'clear',
@@ -741,7 +825,16 @@ const listMethodNames = <String, String>{
 };
 
 /// The steps of an iterator chain, in Rust's spelling.
-const iterStepNames = <String, String>{'map': 'map', 'where': 'filter'};
+/// `forEach` is the one step that consumes the chain: `for_each` returns
+/// `()`, so a chain ending in it is a statement, not a lazy value -- see the
+/// backend, which refuses every other uncollected chain. 70 in the gallery.
+const iterStepNames = <String, String>{
+  'map': 'map',
+  'where': 'filter',
+  'forEach': 'for_each',
+  // `expand(f)` is `flat_map`. 14.
+  'expand': 'flat_map',
+};
 
 /// `'a $b c'` -- a string built from pieces.
 ///
@@ -1104,10 +1197,27 @@ class IrConstructor {
     this.name,
     this.asserts = const [],
     this.superBase,
+    this.superName,
     this.superArgs = const [],
     this.doc,
     this.body,
+    this.redirectTo,
+    this.redirectArgs = const [],
+    this.pre = const [],
   });
+
+  /// Statements that run before the fields are set: the temporaries the CFE
+  /// binds in the initialiser list (`LocalInitializer`) for a `super(..)`
+  /// argument used twice, and which the tree shaker's AOT lowering writes
+  /// far more of -- 67 constructors in the gallery's tree-shaken dill.
+  final List<IrStmt> pre;
+
+  /// `Foo.bar(a) : this(a, 0);` -- the constructor this one hands its
+  /// arguments to, by name, with the unnamed one as `null`. Dart forbids any
+  /// other initialiser beside a redirect, so `fieldInits` is empty when this
+  /// is set, and the Rust is one call: `Self::new(a, 0)`.
+  final String? redirectTo;
+  final List<IrExpr> redirectArgs;
 
   /// Statements the constructor runs after the fields are set.
   ///
@@ -1140,6 +1250,10 @@ class IrConstructor {
   /// form is not available while this class is being lowered; the backend has
   /// the whole library and does the substitution.
   final String? superBase;
+
+  /// The base constructor `super(..)` names -- `super._(..)` -- or null for
+  /// the unnamed one.
+  final String? superName;
   final List<IrExpr> superArgs;
 
   /// Field name -> the expression it is initialised to. A `this.x` parameter
@@ -1264,7 +1378,12 @@ class IrLibrary {
     this.abstractElsewhere = const {},
     this.elsewhere = const {},
     this.functionsElsewhere = const {},
+    this.constantsElsewhere = const {},
   });
+
+  /// Top-level constants of every other module, by name: a read of one
+  /// here has to know whether it is a lazily built `static` (`_isLazyConst`).
+  final Map<String, IrConstDecl> constantsElsewhere;
 
   /// Top-level functions in the *other* modules of the same crate, by name.
   ///

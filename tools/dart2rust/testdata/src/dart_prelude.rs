@@ -8,9 +8,205 @@ use std::fmt;
 
 /// Dart's `Object`, as the one thing Rust has for "anything": a trait every
 /// type implements. `&dyn Object` then accepts what `Object` accepted.
-pub trait Object {}
+pub trait Object {
+    /// The value as `Any`, for `is` and `as` on something typed `Object`
+    /// or `dynamic`: 61 `x.as_any()` calls in the leaf crates landed on a
+    /// `dyn Object` that had no such method.
+    fn as_any(&self) -> &dyn std::any::Any;
 
-impl<T: ?Sized> Object for T {}
+    /// `runtimeType`: the Rust type's name, which is the Dart class's name
+    /// for a translated class and a longer path for a prelude one.
+    fn runtime_type(&self) -> Type;
+}
+
+/// A `dyn Object` compares by identity and prints as its class, as a
+/// translated trait object does (see `_emitTrait`).
+impl PartialEq for dyn Object {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self, other)
+    }
+}
+
+impl fmt::Debug for dyn Object {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Instance of '{}'", self.runtime_type().name)
+    }
+}
+
+impl fmt::Display for dyn Object {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Instance of '{}'", self.runtime_type().name)
+    }
+}
+
+/// Every sized `'static` type is an `Object`. Trait objects are not sized,
+/// and each translated trait gets its own `impl Object for dyn X` from the
+/// backend, forwarding to the `DartAny` it requires -- so an `Rc<dyn Widget>`
+/// still coerces to an `Rc<dyn Object>`, and `as_any` on it answers about the
+/// struct inside, not about a box.
+impl<T: 'static> Object for T {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn runtime_type(&self) -> Type {
+        Type {
+            name: std::any::type_name::<T>()
+                .rsplit("::")
+                .next()
+                .unwrap_or("Object"),
+        }
+    }
+}
+
+/// `double`'s methods under their Dart names, on `f64`.
+pub trait DartDouble {
+    fn to_string_as_fixed(&self, digits: i64) -> String;
+    /// `compareTo`: -1, 0, 1, with NaN after everything as Dart orders it.
+    fn compare_to(&self, other: f64) -> i64;
+    /// `isNegative`, `toDouble`: on a `double`, the sign and itself.
+    fn is_negative(&self) -> bool;
+    fn to_double(&self) -> f64;
+    fn is_na_n(&self) -> bool;
+    fn is_infinite(&self) -> bool;
+    fn is_finite(&self) -> bool;
+    fn truncate(&self) -> i64;
+    fn to_int(&self) -> i64;
+    fn round_to_double(&self) -> f64;
+    fn floor_to_double(&self) -> f64;
+    fn ceil_to_double(&self) -> f64;
+    fn hash_code(&self) -> i64;
+}
+
+impl DartDouble for f64 {
+    fn is_negative(&self) -> bool {
+        *self < 0.0 || (*self == 0.0 && self.is_sign_negative())
+    }
+    fn to_double(&self) -> f64 {
+        *self
+    }
+    fn compare_to(&self, other: f64) -> i64 {
+        match self.partial_cmp(&other) {
+            Some(std::cmp::Ordering::Less) => -1,
+            Some(std::cmp::Ordering::Equal) => 0,
+            Some(std::cmp::Ordering::Greater) => 1,
+            None => {
+                if self.is_nan() {
+                    if other.is_nan() {
+                        0
+                    } else {
+                        1
+                    }
+                } else {
+                    -1
+                }
+            }
+        }
+    }
+    fn to_string_as_fixed(&self, digits: i64) -> String {
+        format!("{:.*}", digits.max(0) as usize, self)
+    }
+
+    fn is_na_n(&self) -> bool {
+        self.is_nan()
+    }
+
+    fn is_infinite(&self) -> bool {
+        f64::is_infinite(*self)
+    }
+
+    fn is_finite(&self) -> bool {
+        f64::is_finite(*self)
+    }
+
+    fn truncate(&self) -> i64 {
+        f64::trunc(*self) as i64
+    }
+
+    fn to_int(&self) -> i64 {
+        f64::trunc(*self) as i64
+    }
+
+    fn round_to_double(&self) -> f64 {
+        f64::round(*self)
+    }
+
+    fn floor_to_double(&self) -> f64 {
+        f64::floor(*self)
+    }
+
+    fn ceil_to_double(&self) -> f64 {
+        f64::ceil(*self)
+    }
+
+    fn hash_code(&self) -> i64 {
+        self.to_bits() as i64
+    }
+}
+
+/// `int`'s methods under their Dart names, on `i64`.
+pub trait DartInt {
+    fn hash_code(&self) -> i64;
+    /// `toInt` on an int: itself.
+    fn to_int(&self) -> i64;
+    /// `sign`: -1, 0 or 1 -- `i64::signum`, under Dart's name.
+    fn sign(&self) -> i64;
+    fn trunc(&self) -> i64;
+    fn to_double(&self) -> f64;
+    fn truncate(&self) -> i64;
+    fn is_even(&self) -> bool;
+    fn is_odd(&self) -> bool;
+    fn to_radix_string(&self, radix: i64) -> String;
+    fn to_unsigned(&self, width: i64) -> i64;
+}
+
+impl DartInt for i64 {
+    fn to_int(&self) -> i64 {
+        *self
+    }
+    fn sign(&self) -> i64 {
+        self.signum()
+    }
+    fn hash_code(&self) -> i64 {
+        *self
+    }
+
+    fn trunc(&self) -> i64 {
+        *self
+    }
+
+    fn to_double(&self) -> f64 {
+        *self as f64
+    }
+
+    fn truncate(&self) -> i64 {
+        *self
+    }
+
+    fn is_even(&self) -> bool {
+        self % 2 == 0
+    }
+
+    fn is_odd(&self) -> bool {
+        self % 2 != 0
+    }
+
+    fn to_unsigned(&self, width: i64) -> i64 {
+        if width >= 63 {
+            *self
+        } else {
+            *self & ((1i64 << width) - 1)
+        }
+    }
+    fn to_radix_string(&self, radix: i64) -> String {
+        match radix {
+            2 => format!("{:b}", self),
+            8 => format!("{:o}", self),
+            16 => format!("{:x}", self),
+            _ => self.to_string(),
+        }
+    }
+}
 
 /// What a Dart value can be *asked*.
 ///
@@ -26,6 +222,11 @@ impl<T: ?Sized> Object for T {}
 /// a box is through the trait inside it.
 pub trait DartAny: 'static {
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// `runtimeType` reachable through a `&__Self: Trait + ?Sized` -- a super
+    /// function's `this_` -- where `Object::runtime_type` would resolve on
+    /// the *reference* and demand it be `'static` (E0521).
+    fn dart_runtime_type(&self) -> Type;
 }
 
 /// Dart's `Duration`: a signed span counted in whole microseconds.
@@ -39,6 +240,29 @@ pub struct Duration {
 }
 
 impl Duration {
+    /// `Duration({days, hours, minutes, seconds, milliseconds, microseconds})`,
+    /// every part optional and arriving as `None` when left off.
+    /// `Duration({days, hours, ..})`: every part defaults to 0 in Dart, and
+    /// the front end fills the defaults in, so each arrives as a plain
+    /// `i64`.
+    pub fn new(
+        days: i64,
+        hours: i64,
+        minutes: i64,
+        seconds: i64,
+        milliseconds: i64,
+        microseconds: i64,
+    ) -> Self {
+        Duration {
+            microseconds: days * 86_400_000_000
+                + hours * 3_600_000_000
+                + minutes * 60_000_000
+                + seconds * 1_000_000
+                + milliseconds * 1_000
+                + microseconds,
+        }
+    }
+
     pub const ZERO: Duration = Duration { microseconds: 0 };
 
     pub const fn from_microseconds(microseconds: i64) -> Self {
@@ -162,18 +386,18 @@ pub struct StringBuffer {
 }
 
 impl StringBuffer {
-    pub fn new() -> Self {
-        StringBuffer {
-            text: String::new(),
-        }
+    /// `StringBuffer([content = ''])`: the optional start, which the front
+    /// end always supplies.
+    pub fn new(content: String) -> Self {
+        StringBuffer { text: content }
     }
 
-    pub fn write(&mut self, value: &str) {
-        self.text.push_str(value);
+    pub fn write<T: fmt::Display>(&mut self, value: T) {
+        self.text.push_str(&value.to_string());
     }
 
-    pub fn writeln(&mut self, value: &str) {
-        self.text.push_str(value);
+    pub fn writeln<T: fmt::Display>(&mut self, value: T) {
+        self.text.push_str(&value.to_string());
         self.text.push('\n');
     }
 
@@ -333,6 +557,11 @@ pub struct StackTrace {
 }
 
 impl StackTrace {
+    /// `StackTrace.fromString(text)` and `_StringStackTrace(text)`.
+    pub fn new(text: String) -> Self {
+        StackTrace { text }
+    }
+
     pub fn empty() -> Self {
         StackTrace {
             text: String::new(),
@@ -365,6 +594,130 @@ pub struct DateTime {
 }
 
 impl DateTime {
+    /// `isUtc`, the field, as the method every other getter here is (a
+    /// Dart field of a `dart:` class is read as a call, see the front end).
+    pub fn is_utc(&self) -> bool {
+        self.is_utc
+    }
+
+    /// Days since the epoch and the microseconds into that day, UTC.
+    fn civil(&self) -> (i64, i64) {
+        let day = 86_400_000_000i64;
+        let days = self.microseconds_since_epoch.div_euclid(day);
+        let rest = self.microseconds_since_epoch.rem_euclid(day);
+        (days, rest)
+    }
+
+    /// Howard Hinnant's civil-from-days: (year, month, day).
+    fn ymd(&self) -> (i64, i64, i64) {
+        let (z, _) = self.civil();
+        let z = z + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        (if m <= 2 { y + 1 } else { y }, m, d)
+    }
+
+    /// `DateTime(year, [month, day, hour, minute, second, millisecond,
+    /// microsecond])`: local time is UTC here (no zone database yet).
+    pub fn new(
+        year: i64,
+        month: i64,
+        day: i64,
+        hour: i64,
+        minute: i64,
+        second: i64,
+        millisecond: i64,
+        microsecond: i64,
+    ) -> Self {
+        // Hinnant's days-from-civil.
+        let y = if month <= 2 { year - 1 } else { year };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let mp = if month > 2 { month - 3 } else { month + 9 };
+        let doy = (153 * mp + 2) / 5 + day - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        let micros = ((((days * 24 + hour) * 60 + minute) * 60 + second) * 1000 + millisecond)
+            * 1000
+            + microsecond;
+        DateTime {
+            microseconds_since_epoch: micros,
+            is_utc: false,
+        }
+    }
+
+    /// `DateTime.utc(..)`: the same arithmetic, marked UTC.
+    pub fn utc(
+        year: i64,
+        month: i64,
+        day: i64,
+        hour: i64,
+        minute: i64,
+        second: i64,
+        millisecond: i64,
+        microsecond: i64,
+    ) -> Self {
+        let mut t = DateTime::new(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+        );
+        t.is_utc = true;
+        t
+    }
+
+    pub fn year(&self) -> i64 {
+        self.ymd().0
+    }
+    pub fn month(&self) -> i64 {
+        self.ymd().1
+    }
+    pub fn day(&self) -> i64 {
+        self.ymd().2
+    }
+    pub fn hour(&self) -> i64 {
+        self.civil().1 / 3_600_000_000
+    }
+    pub fn minute(&self) -> i64 {
+        self.civil().1 / 60_000_000 % 60
+    }
+    pub fn second(&self) -> i64 {
+        self.civil().1 / 1_000_000 % 60
+    }
+    pub fn millisecond(&self) -> i64 {
+        self.civil().1 / 1_000 % 1_000
+    }
+    pub fn microsecond(&self) -> i64 {
+        self.civil().1 % 1_000
+    }
+    /// `compareTo(other)`: by the instant.
+    pub fn compare_to(&self, other: DateTime) -> i64 {
+        self.microseconds_since_epoch
+            .cmp(&other.microseconds_since_epoch) as i64
+    }
+
+    /// `timeZoneOffset`: local time is UTC here, so zero.
+    pub fn time_zone_offset(&self) -> Duration {
+        Duration { microseconds: 0 }
+    }
+
+    /// `weekday`: Monday is 1, Sunday 7, as `DateTime.monday..sunday`.
+    pub fn weekday(&self) -> i64 {
+        let (days, _) = self.civil();
+        (days + 3).rem_euclid(7) + 1
+    }
+
     pub fn now() -> Self {
         let since = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -622,6 +975,192 @@ pub type HashSet<T> = Set<T>;
 /// links -- and a `VecDeque` is not that. Nothing translated so far uses the
 /// intrusive part, and this is where to look if something does.
 pub type Queue<T> = std::collections::VecDeque<T>;
+
+/// `Future.then(onValue, {onError})` on the `Pin<Box<dyn Future>>` a Dart
+/// `Future<T>` is here: the continuation runs when the future does. The
+/// error path has nothing to catch yet -- a Dart throw is not a Rust
+/// value on this side -- so `onError` is carried and never called.
+pub trait DartFuture<T> {
+    fn then<R: 'static>(
+        self,
+        on_value: std::rc::Rc<dyn Fn(T) -> R>,
+        on_error: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> R>>,
+    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = R>>>;
+}
+
+impl<T: 'static> DartFuture<T>
+    for std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>>
+{
+    fn then<R: 'static>(
+        self,
+        on_value: std::rc::Rc<dyn Fn(T) -> R>,
+        _on_error: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> R>>,
+    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = R>>> {
+        std::boxed::Box::pin(async move { on_value(self.await) })
+    }
+}
+
+/// A `dynamic message` parameter: a `String`, an `Option` of one, or nothing.
+pub trait IntoMessage {
+    fn into_message(self) -> String;
+}
+
+impl IntoMessage for String {
+    fn into_message(self) -> String {
+        self
+    }
+}
+
+impl IntoMessage for &str {
+    fn into_message(self) -> String {
+        self.to_string()
+    }
+}
+
+impl IntoMessage for Option<String> {
+    fn into_message(self) -> String {
+        self.unwrap_or_default()
+    }
+}
+
+impl IntoMessage for Option<std::rc::Rc<dyn Object>> {
+    fn into_message(self) -> String {
+        self.map(|o| format!("{:?}", o)).unwrap_or_default()
+    }
+}
+
+/// Equality by identity for what is shared: what Dart's `Object.==` does,
+/// and what a derived `PartialEq` over an `Rc<dyn X>` field cannot say
+/// (see `_emitStruct`).
+pub trait DartEq {
+    fn dart_eq(&self, other: &Self) -> bool;
+}
+
+impl<T: ?Sized> DartEq for std::rc::Rc<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(self, other)
+    }
+}
+
+impl<T: DartEq> DartEq for Option<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Some(a), Some(b)) => a.dart_eq(b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl<T: DartEq> DartEq for Vec<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a.dart_eq(b))
+    }
+}
+
+/// `hashCode` of a shared object: its identity, as Dart's `Object.hashCode`.
+pub trait RcHashCode {
+    fn hash_code(&self) -> i64;
+}
+
+impl<T: ?Sized> RcHashCode for std::rc::Rc<T> {
+    fn hash_code(&self) -> i64 {
+        (std::rc::Rc::as_ptr(self) as *const u8 as usize as i64) & 0x3fff_ffff
+    }
+}
+
+/// `int.parse(s)`: Dart's, which throws a `FormatException` on anything else.
+pub fn parse_int(text: String) -> i64 {
+    match try_parse_int(text.clone()) {
+        Some(v) => v,
+        None => panic!(
+            "uncaught Dart exception: FormatException: Invalid radix-10 number: {}",
+            text
+        ),
+    }
+}
+
+/// `int.tryParse(s)`: an optional sign and decimal digits, or `0x` hex.
+pub fn try_parse_int(text: String) -> Option<i64> {
+    let t = text.trim();
+    let (neg, body) = match t.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, t.strip_prefix('+').unwrap_or(t)),
+    };
+    let v = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).ok()?
+    } else {
+        if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        body.parse::<i64>().ok()?
+    };
+    Some(if neg { -v } else { v })
+}
+
+/// `double.parse(s)`.
+pub fn parse_double(text: String) -> f64 {
+    match try_parse_double(text.clone()) {
+        Some(v) => v,
+        None => panic!(
+            "uncaught Dart exception: FormatException: Invalid double {}",
+            text
+        ),
+    }
+}
+
+/// `double.tryParse(s)`: Dart's grammar is close enough to Rust's here;
+/// `Infinity`/`NaN` spellings are the difference and are mapped.
+pub fn try_parse_double(text: String) -> Option<f64> {
+    let t = text.trim();
+    match t {
+        "Infinity" | "+Infinity" => return Some(f64::INFINITY),
+        "-Infinity" => return Some(f64::NEG_INFINITY),
+        "NaN" => return Some(f64::NAN),
+        _ => {}
+    }
+    if t.is_empty() || t.starts_with("inf") || t.starts_with("nan") {
+        return None;
+    }
+    t.parse::<f64>().ok()
+}
+
+/// `null.hashCode` is a fixed number in Dart; an absent value hashes to it.
+impl<T: RcHashCode> RcHashCode for Option<T> {
+    fn hash_code(&self) -> i64 {
+        match self {
+            Some(v) => v.hash_code(),
+            None => 2011,
+        }
+    }
+}
+
+/// `Queue`'s own methods, by their Dart names.
+pub trait DartQueue<T> {
+    fn length(&self) -> i64;
+    fn remove_first(&mut self) -> T;
+    fn remove_last(&mut self) -> T;
+    fn add_first(&mut self, value: T);
+    fn add_last(&mut self, value: T);
+}
+
+impl<T> DartQueue<T> for std::collections::VecDeque<T> {
+    fn length(&self) -> i64 {
+        self.len() as i64
+    }
+    fn remove_first(&mut self) -> T {
+        self.pop_front().expect("removeFirst on an empty Queue")
+    }
+    fn remove_last(&mut self) -> T {
+        self.pop_back().expect("removeLast on an empty Queue")
+    }
+    fn add_first(&mut self, value: T) {
+        self.push_front(value)
+    }
+    fn add_last(&mut self, value: T) {
+        self.push_back(value)
+    }
+}
 pub type ListQueue<T> = std::collections::VecDeque<T>;
 pub type DoubleLinkedQueue<T> = std::collections::VecDeque<T>;
 pub type LinkedList<T> = std::collections::VecDeque<T>;
@@ -710,6 +1249,39 @@ impl Uri {
         Uri { text }
     }
 
+    /// `isScheme(scheme)`: case-insensitively.
+    /// `Uri.encodeFull(s)`: percent-encodes what a full URI may not hold.
+    pub fn encode_full(text: String) -> String {
+        let mut out = String::new();
+        for b in text.bytes() {
+            let keep = b.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=%".contains(&b);
+            if keep {
+                out.push(b as char)
+            } else {
+                out.push_str(&format!("%{:02X}", b))
+            }
+        }
+        out
+    }
+
+    pub fn is_scheme(&self, scheme: String) -> bool {
+        self.scheme().eq_ignore_ascii_case(&scheme)
+    }
+
+    /// `host`: the authority's host, or empty.
+    pub fn host(&self) -> String {
+        let rest = match self.text.find("://") {
+            Some(at) => &self.text[at + 3..],
+            None => return String::new(),
+        };
+        let end = rest
+            .find(|c| c == '/' || c == '?' || c == '#')
+            .unwrap_or(rest.len());
+        let authority = &rest[..end];
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        host.split(':').next().unwrap_or("").to_string()
+    }
+
     pub fn scheme(&self) -> String {
         match self.text.find(':') {
             Some(at) if !self.text[..at].contains('/') => self.text[..at].to_string(),
@@ -771,6 +1343,914 @@ impl fmt::Display for Type {
     }
 }
 
+/// The `List` methods a `Vec` does not have under Dart's meaning.
+///
+/// `remove(value)` in Dart removes the first equal element and reports whether
+/// there was one; `Vec::remove` takes an index. `sort(compare)` takes a
+/// comparator returning an `int`, which Rust wants as an `Ordering`. The
+/// elements are cloned into the comparator because the translated closure
+/// takes Dart's `T`, not Rust's `&T` -- the same trade the iterator chains
+/// make, written here once instead of at every call.
+pub trait DartList<T> {
+    /// `length`, under its Dart name, beside `len()`.
+    fn length(&self) -> i64;
+    fn remove_value(&mut self, value: T) -> bool;
+    /// `sort([compare])`: without one, the elements' own order.
+    fn sort_by_dart(&mut self, compare: Option<std::rc::Rc<dyn Fn(T, T) -> i64>>);
+    /// `firstWhere(test)`: panics like Dart's `StateError` when none matches.
+    fn first_where<F: Fn(T) -> bool>(&self, test: F) -> T;
+    /// `firstWhere(test, orElse: f)`.
+    fn first_where_or<F: Fn(T) -> bool, G: Fn() -> T>(&self, test: F, or_else: G) -> T;
+    /// `setRange(start, end, from, skip)`: copies `from[skip..]` over
+    /// `self[start..end]`.
+    fn set_range(&mut self, start: i64, end: i64, from: Vec<T>, skip: i64);
+    /// `indexOf(value)`: the first index holding an equal element, or -1.
+    fn index_of(&self, value: T) -> i64;
+    /// `skip(n)`/`take(n)`, collected.
+    fn skip_dart(&self, n: i64) -> Vec<T>;
+    fn take_dart(&self, n: i64) -> Vec<T>;
+}
+
+impl<T: PartialEq + Clone> DartList<T> for Vec<T> {
+    fn length(&self) -> i64 {
+        self.len() as i64
+    }
+
+    fn remove_value(&mut self, value: T) -> bool {
+        match self.iter().position(|x| *x == value) {
+            Some(i) => {
+                self.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn sort_by_dart(&mut self, compare: Option<std::rc::Rc<dyn Fn(T, T) -> i64>>) {
+        match compare {
+            Some(f) => self.sort_by(|a, b| match f(a.clone(), b.clone()) {
+                x if x < 0 => std::cmp::Ordering::Less,
+                0 => std::cmp::Ordering::Equal,
+                _ => std::cmp::Ordering::Greater,
+            }),
+            None => panic!("List.sort() without a comparator on a type with no natural order here"),
+        }
+    }
+
+    fn first_where<F: Fn(T) -> bool>(&self, test: F) -> T {
+        match self.iter().find(|x| test((*x).clone())) {
+            Some(x) => x.clone(),
+            None => panic!("Bad state: No element"),
+        }
+    }
+
+    fn first_where_or<F: Fn(T) -> bool, G: Fn() -> T>(&self, test: F, or_else: G) -> T {
+        match self.iter().find(|x| test((*x).clone())) {
+            Some(x) => x.clone(),
+            None => or_else(),
+        }
+    }
+
+    fn set_range(&mut self, start: i64, end: i64, from: Vec<T>, skip: i64) {
+        let (start, end, skip) = (start as usize, end as usize, skip as usize);
+        self[start..end].clone_from_slice(&from[skip..skip + (end - start)]);
+    }
+
+    fn skip_dart(&self, n: i64) -> Vec<T> {
+        self.iter().skip(n.max(0) as usize).cloned().collect()
+    }
+    fn take_dart(&self, n: i64) -> Vec<T> {
+        self.iter().take(n.max(0) as usize).cloned().collect()
+    }
+
+    fn index_of(&self, value: T) -> i64 {
+        match self.iter().position(|x| *x == value) {
+            Some(i) => i as i64,
+            None => -1,
+        }
+    }
+}
+
+/// `dart:collection`'s `SplayTreeMap`, as the prelude's `Map`.
+///
+/// The same operations; what is lost is the order: a `SplayTreeMap` iterates
+/// its keys sorted, and `Map` here iterates them as inserted (round 113).
+/// The gallery's uses build one and read it back by key, and this is where to
+/// look if one of them starts iterating.
+pub type SplayTreeMap<K, V> = Map<K, V>;
+
+/// `dart:developer`'s `Timeline`: the tracing calls upstream sprinkles into
+/// layout and paint. There is no observatory to send them to, so they are
+/// no-ops with the right shapes -- 24 `startSync`/`finishSync` pairs would
+/// otherwise refuse the methods around them.
+pub struct Timeline;
+
+impl Timeline {
+    pub fn start_sync(
+        _name: String,
+        _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>,
+        _flow: Option<std::rc::Rc<dyn Object>>,
+    ) {
+    }
+
+    pub fn finish_sync() {}
+
+    pub fn instant_sync(_name: String, _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>) {}
+
+    pub fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// `dart:core`'s `Sink<T>`: something that takes values and can be closed.
+///
+/// A trait, since a sink is always something else underneath, and the name
+/// as a type is a handle to one -- `Sink<Digest>` in `package:crypto`'s
+/// chunked conversion.
+pub trait DartSink<T> {
+    fn add(&self, data: T);
+    fn close(&self);
+}
+
+pub type Sink<T> = std::rc::Rc<dyn DartSink<T>>;
+
+/// Dart's `Null` as a *type*: `Option<Null>` is a value that is always
+/// `None`, which is what a `List<Null>` or an `Expando<Null>` holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Null;
+
+/// `dart:core`'s `Expando<T>`: a value attached to an object by identity.
+///
+/// Keyed by the address behind the handle, since identity here is the `Rc`.
+/// Dart's is weak -- the entry goes when the object does -- and this one is
+/// not: an object that is expando-tagged and then dropped leaves its entry
+/// behind. The gallery tags a handful of long-lived messengers, which is why
+/// that is a note and not a bug.
+pub struct Expando<T> {
+    entries: std::cell::RefCell<Vec<(usize, T)>>,
+}
+
+impl<T: Clone> Expando<T> {
+    /// `Expando([name])`: the name is for debugging only.
+    pub fn new(_name: Option<String>) -> Self {
+        Expando {
+            entries: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    fn key(object: &std::rc::Rc<dyn Object>) -> usize {
+        std::rc::Rc::as_ptr(object) as *const u8 as usize
+    }
+
+    pub fn get(&self, object: &std::rc::Rc<dyn Object>) -> Option<T> {
+        let key = Self::key(object);
+        self.entries
+            .borrow()
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    pub fn set(&self, object: &std::rc::Rc<dyn Object>, value: Option<T>) {
+        let key = Self::key(object);
+        let mut entries = self.entries.borrow_mut();
+        entries.retain(|(k, _)| *k != key);
+        if let Some(value) = value {
+            entries.push((key, value));
+        }
+    }
+}
+
+/// `dart:ffi`, as far as the gallery's dill reaches it: the Windows plugins
+/// (`win32`, `url_launcher_windows`) that the tree shaker keeps because a
+/// platform check is not a constant. None of it runs on the host this
+/// targets, and none of it can: these are the names, with no behaviour, so
+/// that the code around them compiles and the refusal is at the call.
+pub struct Pointer<T>(pub usize, std::marker::PhantomData<T>);
+
+impl<T> Pointer<T> {
+    pub fn from_address(address: i64) -> Self {
+        Pointer(address as usize, std::marker::PhantomData)
+    }
+
+    pub fn address(&self) -> i64 {
+        self.0 as i64
+    }
+}
+
+impl<T> Clone for Pointer<T> {
+    fn clone(&self) -> Self {
+        Pointer(self.0, std::marker::PhantomData)
+    }
+}
+
+/// A marker, not a trait: `Pointer<NativeType>` is written as a *type*
+/// upstream, and a trait there wants `dyn` (4 `E0782`).
+pub struct NativeType;
+pub struct Void;
+pub struct NativeFunction<T>(std::marker::PhantomData<T>);
+pub struct DynamicLibrary;
+pub struct Allocator;
+
+/// `dart:core`'s `WeakReference<T>`: a handle that does not keep its
+/// target alive. `std::rc::Weak` is exactly that; the wrapper gives it the
+/// `Clone`/`Debug`/`PartialEq` the structs holding one derive, with equality
+/// by target identity.
+pub struct WeakReference<T: ?Sized>(std::rc::Weak<T>);
+
+impl<T: ?Sized> WeakReference<T> {
+    pub fn new(target: std::rc::Rc<T>) -> Self {
+        WeakReference(std::rc::Rc::downgrade(&target))
+    }
+
+    pub fn target(&self) -> Option<std::rc::Rc<T>> {
+        self.0.upgrade()
+    }
+}
+
+impl<T: ?Sized> Clone for WeakReference<T> {
+    fn clone(&self) -> Self {
+        WeakReference(self.0.clone())
+    }
+}
+
+impl<T: ?Sized> fmt::Debug for WeakReference<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("WeakReference")
+    }
+}
+
+impl<T: ?Sized> PartialEq for WeakReference<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+
+/// `dart:async`'s `Stream<T>` as a type only. There is no event loop here
+/// to drive one, so this is a name for signatures to agree on (the license
+/// registry's collectors return them); anything that listens will not
+/// compile, and says so.
+pub struct Stream<T>(std::marker::PhantomData<T>);
+
+impl<T> Stream<T> {
+    /// `Stream.value(v)`: a single-element stream; nothing listens yet.
+    pub fn value(_value: T) -> Stream<T> {
+        Stream(std::marker::PhantomData)
+    }
+}
+
+impl<T> Clone for Stream<T> {
+    fn clone(&self) -> Self {
+        Stream(std::marker::PhantomData)
+    }
+}
+
+impl Error {
+    /// `Error.throwWithStackTrace(error, stackTrace)`: a throw, which on
+    /// this side is a panic (see the backend's `_thrown`).
+    pub fn throw_with_stack_trace<E: std::fmt::Debug>(error: E, _stack: StackTrace) -> ! {
+        panic!("uncaught Dart exception: {:?}", error)
+    }
+}
+
+impl HttpClient {
+    /// `HttpClient([SecurityContext? context])`.
+    pub fn new(_context: Option<std::rc::Rc<dyn Object>>) -> Self {
+        HttpClient
+    }
+}
+
+/// `Iterable.generate(count, [generator])`: a `Vec`, as every lazy Iterable
+/// is here once it is used.
+pub struct Iterable;
+
+impl Iterable {
+    pub fn generate<T>(count: i64, generator: Option<std::rc::Rc<dyn Fn(i64) -> T>>) -> Vec<T>
+    where
+        T: From<i64>,
+    {
+        (0..count.max(0))
+            .map(|i| match &generator {
+                Some(f) => f(i),
+                None => T::from(i),
+            })
+            .collect()
+    }
+}
+
+/// A `RegExpMatch`: what `firstMatch` hands back. There is no regular
+/// expression engine here yet, so `first_match` finds nothing and says so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegExpMatch {
+    pub input: String,
+    pub start: i64,
+    pub end: i64,
+}
+
+impl RegExpMatch {
+    pub fn group(&self, index: i64) -> Option<String> {
+        if index == 0 {
+            Some(self.input[self.start as usize..self.end as usize].to_string())
+        } else {
+            None
+        }
+    }
+    pub fn start(&self) -> i64 {
+        self.start
+    }
+    pub fn end(&self) -> i64 {
+        self.end
+    }
+}
+
+/// `dart:collection`'s `MapBase`, for its one static in use.
+pub struct MapBase;
+
+impl MapBase {
+    /// `MapBase.mapToString(map)`: the `{k: v, ..}` text.
+    pub fn map_to_string<M: std::fmt::Debug>(map: M) -> String {
+        format!("{:?}", map)
+    }
+}
+
+/// `dart:io`'s `HttpClientResponse`, named in `http`'s IO client.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HttpClientResponse;
+
+/// `dart:convert`'s `ByteConversionSink`: a sink of byte lists.
+pub type ByteConversionSink = Sink<Vec<u8>>;
+
+/// `List<T?>.filled(n, null)`: `n` absences.
+pub fn vec_of_nones<T: Clone>(n: i64) -> Vec<Option<T>> {
+    vec![None; n.max(0) as usize]
+}
+
+/// A Dart `Iterator<T>` over a list, for code that drives one by hand --
+/// `final it = xs.iterator; while (it.moveNext()) ..` -- rather than with a
+/// `for-in` the front end restores. `moveNext` before `current`, as Dart.
+pub struct DartIter<T> {
+    items: Vec<T>,
+    index: i64,
+}
+
+impl<T: Clone> DartIter<T> {
+    pub fn new(items: Vec<T>) -> Self {
+        DartIter { items, index: -1 }
+    }
+
+    pub fn move_next(&mut self) -> bool {
+        self.index += 1;
+        (self.index as usize) < self.items.len()
+    }
+
+    pub fn current(&self) -> T {
+        self.items[self.index as usize].clone()
+    }
+}
+
+pub fn dart_iter<T: Clone>(items: Vec<T>) -> DartIter<T> {
+    DartIter::new(items)
+}
+
+/// `dart:math`'s `Point<T>`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Point<T> {
+    pub x: T,
+    pub y: T,
+}
+
+impl<T> Point<T> {
+    pub const fn new(x: T, y: T) -> Self {
+        Point { x, y }
+    }
+}
+
+/// `dart:developer`'s `TimelineTask`: no observatory, no-ops (see `Timeline`).
+pub struct TimelineTask;
+
+impl TimelineTask {
+    pub fn new(_parent: Option<std::rc::Rc<dyn Object>>, _filter_key: Option<String>) -> Self {
+        TimelineTask
+    }
+
+    pub fn start(&self, _name: String, _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>) {}
+
+    pub fn finish(&self, _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>) {}
+}
+
+/// `dart:typed_data`'s `Endian`. The host is little-endian.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Endian {
+    Big,
+    Little,
+}
+
+impl Endian {
+    pub const HOST: Endian = Endian::Little;
+}
+
+/// `dart:developer`'s `postEvent`: nothing is listening.
+pub fn post_event(_event_kind: String, _event_data: Map<String, std::rc::Rc<dyn Object>>) {}
+
+/// Dart's `String` methods, under their Dart names, on Rust's `String`.
+///
+/// The backend spells a Dart call `s.codeUnitAt(i)` as `s.code_unit_at(i)`
+/// and stops there; this trait is where those names land. Only names `str`
+/// does not already have: a trait method on `String` shadows a `str` one,
+/// and `split`/`contains`/`trim` here broke the fixtures that used them. Lengths and
+/// indices are in UTF-16 code units, as Dart's are -- `len()` would have
+/// counted bytes, and "length" is the commonest String member in the
+/// gallery (19 sites in the leaf crates alone).
+pub trait DartString {
+    fn length(&self) -> i64;
+    fn code_unit_at(&self, index: i64) -> i64;
+    fn substring(&self, start: i64, end: Option<i64>) -> String;
+    fn to_lower_case(&self) -> String;
+    fn to_upper_case(&self) -> String;
+    /// `indexOf(pattern, [start = 0])`: the default is filled in by the
+    /// front end, so `start` is never absent here.
+    fn index_of(&self, other: String, start: i64) -> i64;
+    fn replace_all(&self, from: String, to: String) -> String;
+    fn is_not_empty(&self) -> bool;
+    fn pad_left(&self, width: i64, padding: String) -> String;
+    fn pad_right(&self, width: i64, padding: String) -> String;
+    fn code_units(&self) -> Vec<i64>;
+    /// `replaceRange(start, end, replacement)`: a new string.
+    fn replace_range_dart(&self, start: i64, end: Option<i64>, replacement: String) -> String;
+    /// `startsWith(pattern, index)`.
+    fn starts_with_at(&self, pattern: String, index: i64) -> bool;
+    /// `contains(other, [startIndex])`: Rust's `contains` wants a `&str`
+    /// and has no start.
+    fn contains_dart(&self, pattern: String, start: i64) -> bool;
+    /// `'0' * n`.
+    fn repeat_dart(&self, times: i64) -> String;
+    /// `split(pattern)`, into owned pieces.
+    fn split_dart(&self, pattern: String) -> Vec<String>;
+    /// `s[i]`: the one-code-unit String at `i`.
+    fn char_at(&self, index: i64) -> String;
+    /// `trim()`/`trimLeft()`/`trimRight()`, owned.
+    fn trim_dart(&self) -> String;
+    fn trim_left_dart(&self) -> String;
+    fn trim_right_dart(&self) -> String;
+    /// `hashCode`: stable within a process, not Dart's numbers.
+    fn hash_code(&self) -> i64;
+}
+
+impl DartString for String {
+    fn length(&self) -> i64 {
+        self.encode_utf16().count() as i64
+    }
+
+    fn code_unit_at(&self, index: i64) -> i64 {
+        self.encode_utf16()
+            .nth(index as usize)
+            .map(|u| u as i64)
+            .unwrap_or(0)
+    }
+
+    fn substring(&self, start: i64, end: Option<i64>) -> String {
+        let units: Vec<u16> = self.encode_utf16().collect();
+        let end = end
+            .map(|e| e as usize)
+            .unwrap_or(units.len())
+            .min(units.len());
+        let start = (start.max(0) as usize).min(end);
+        String::from_utf16_lossy(&units[start..end])
+    }
+
+    fn to_lower_case(&self) -> String {
+        self.to_lowercase()
+    }
+
+    fn to_upper_case(&self) -> String {
+        self.to_uppercase()
+    }
+
+    fn index_of(&self, other: String, start: i64) -> i64 {
+        let units: Vec<u16> = self.encode_utf16().collect();
+        let needle: Vec<u16> = other.encode_utf16().collect();
+        let from = start.max(0) as usize;
+        if needle.is_empty() {
+            return from.min(units.len()) as i64;
+        }
+        (from..units.len().saturating_sub(needle.len() - 1))
+            .find(|&i| units[i..i + needle.len()] == needle[..])
+            .map(|i| i as i64)
+            .unwrap_or(-1)
+    }
+
+    fn replace_all(&self, from: String, to: String) -> String {
+        str::replace(self, from.as_str(), to.as_str())
+    }
+
+    fn is_not_empty(&self) -> bool {
+        !str::is_empty(self)
+    }
+
+    fn pad_left(&self, width: i64, padding: String) -> String {
+        let mut out = String::new();
+        let mut n = DartString::length(self);
+        while n < width {
+            out.push_str(&padding);
+            n += DartString::length(&padding).max(1);
+        }
+        out.push_str(self);
+        out
+    }
+
+    fn pad_right(&self, width: i64, padding: String) -> String {
+        let mut out = self.clone();
+        let mut n = DartString::length(self);
+        while n < width {
+            out.push_str(&padding);
+            n += DartString::length(&padding).max(1);
+        }
+        out
+    }
+
+    fn code_units(&self) -> Vec<i64> {
+        self.encode_utf16().map(|u| u as i64).collect()
+    }
+
+    fn hash_code(&self) -> i64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        (hasher.finish() & 0x3fff_ffff) as i64
+    }
+
+    fn trim_dart(&self) -> String {
+        self.trim().to_string()
+    }
+    fn trim_left_dart(&self) -> String {
+        self.trim_start().to_string()
+    }
+    fn trim_right_dart(&self) -> String {
+        self.trim_end().to_string()
+    }
+
+    fn char_at(&self, index: i64) -> String {
+        let units: Vec<u16> = self.encode_utf16().collect();
+        String::from_utf16_lossy(&units[index as usize..index as usize + 1])
+    }
+
+    fn split_dart(&self, pattern: String) -> Vec<String> {
+        let s: &str = self.as_ref();
+        if pattern.is_empty() {
+            return s.chars().map(|c| c.to_string()).collect();
+        }
+        s.split(pattern.as_str()).map(|p| p.to_string()).collect()
+    }
+    fn repeat_dart(&self, times: i64) -> String {
+        let s: &str = self.as_ref();
+        s.repeat(times.max(0) as usize)
+    }
+    fn contains_dart(&self, pattern: String, start: i64) -> bool {
+        let s: &str = self.as_ref();
+        let from = s
+            .char_indices()
+            .nth(start.max(0) as usize)
+            .map(|(i, _)| i)
+            .unwrap_or(s.len());
+        s[from..].contains(pattern.as_str())
+    }
+    fn starts_with_at(&self, pattern: String, index: i64) -> bool {
+        let units: Vec<u16> = self.encode_utf16().collect();
+        let needle: Vec<u16> = pattern.encode_utf16().collect();
+        let from = index.max(0) as usize;
+        from + needle.len() <= units.len() && units[from..from + needle.len()] == needle[..]
+    }
+
+    fn replace_range_dart(&self, start: i64, end: Option<i64>, replacement: String) -> String {
+        let end = end.unwrap_or(self.length());
+        let units: Vec<u16> = self.encode_utf16().collect();
+        let end = (end.max(0) as usize).min(units.len());
+        let start = (start.max(0) as usize).min(end);
+        let mut out = String::from_utf16_lossy(&units[..start]);
+        out.push_str(&replacement);
+        out.push_str(&String::from_utf16_lossy(&units[end..]));
+        out
+    }
+}
+
+/// `dart:ui`'s native hooks, which upstream implements in C++ behind
+/// `external` declarations. `_print` is stdout; `_scheduleMicrotask` runs
+/// the callback *now* -- there is no event loop here to run it after the
+/// current turn, and "now" is the ordering a single-threaded program can
+/// observe least. This is where to look when something depended on the
+/// delay.
+pub fn _print(arg: String) {
+    println!("{}", arg);
+}
+
+pub fn _print_debug(arg: String) {
+    eprintln!("{}", arg);
+}
+
+pub fn _schedule_microtask(callback: std::rc::Rc<dyn Fn() -> ()>) {
+    callback();
+}
+
+/// `dart:core`'s `_StringStackTrace`, a stack trace that is just text: the
+/// same type, so it goes where a `StackTrace` is wanted.
+pub type _StringStackTrace = StackTrace;
+
+/// `dart:io`'s `InternetAddress`, as far as `dart:ui` asks of it: whether a
+/// host is the loopback.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InternetAddress {
+    pub host: String,
+}
+
+impl InternetAddress {
+    /// `InternetAddress(address, {type})`: the type is a hint this stub
+    /// does not need.
+    pub fn new(host: String, _type: Option<i64>) -> Self {
+        InternetAddress { host }
+    }
+
+    pub fn is_loopback(&self) -> bool {
+        self.host == "localhost" || self.host.starts_with("127.") || self.host == "::1"
+    }
+}
+
+/// `dart:core`'s `_Uri`: the class `Uri(..)` constructs behind the
+/// interface. Nine optional parts, assembled into the one string this
+/// prelude's `Uri` keeps.
+pub struct _Uri;
+
+impl _Uri {
+    pub fn new(
+        scheme: Option<String>,
+        user_info: Option<String>,
+        host: Option<String>,
+        port: Option<i64>,
+        path: Option<String>,
+        path_segments: Option<Vec<String>>,
+        query: Option<String>,
+        query_parameters: Option<Map<String, std::rc::Rc<dyn Object>>>,
+        fragment: Option<String>,
+    ) -> Uri {
+        let _ = query_parameters;
+        let mut text = String::new();
+        if let Some(s) = scheme {
+            text.push_str(&s);
+            text.push(':');
+        }
+        if host.is_some() || user_info.is_some() {
+            text.push_str("//");
+            if let Some(u) = user_info {
+                text.push_str(&u);
+                text.push('@');
+            }
+            if let Some(h) = host {
+                text.push_str(&h);
+            }
+            if let Some(p) = port {
+                text.push_str(&format!(":{}", p));
+            }
+        }
+        match (path, path_segments) {
+            (Some(p), _) => text.push_str(&p),
+            (None, Some(segments)) => text.push_str(&segments.join("/")),
+            (None, None) => {}
+        }
+        if let Some(q) = query {
+            text.push('?');
+            text.push_str(&q);
+        }
+        if let Some(f) = fragment {
+            text.push('#');
+            text.push_str(&f);
+        }
+        Uri { text }
+    }
+}
+
+/// `Object.hash(a, b, ..)`: up to twenty parts, the unused ones arriving
+/// as `SentinelValue`. Over the debug text of each, as `object_hash_all`.
+pub fn object_hash<
+    A: std::fmt::Debug,
+    B: std::fmt::Debug,
+    C: std::fmt::Debug,
+    D: std::fmt::Debug,
+    E: std::fmt::Debug,
+    F: std::fmt::Debug,
+    G: std::fmt::Debug,
+    H: std::fmt::Debug,
+    I: std::fmt::Debug,
+    J: std::fmt::Debug,
+    K: std::fmt::Debug,
+    L: std::fmt::Debug,
+    M: std::fmt::Debug,
+    N: std::fmt::Debug,
+    O: std::fmt::Debug,
+    P: std::fmt::Debug,
+    Q: std::fmt::Debug,
+    R: std::fmt::Debug,
+    S: std::fmt::Debug,
+    T: std::fmt::Debug,
+>(
+    a: A,
+    b: B,
+    c: C,
+    d: D,
+    e: E,
+    f: F,
+    g: G,
+    h: H,
+    i: I,
+    j: J,
+    k: K,
+    l: L,
+    m: M,
+    n: N,
+    o: O,
+    p: P,
+    q: Q,
+    r: R,
+    s: S,
+    t: T,
+) -> i64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{:?}", a).hash(&mut hasher);
+    format!("{:?}", b).hash(&mut hasher);
+    format!("{:?}", c).hash(&mut hasher);
+    format!("{:?}", d).hash(&mut hasher);
+    format!("{:?}", e).hash(&mut hasher);
+    format!("{:?}", f).hash(&mut hasher);
+    format!("{:?}", g).hash(&mut hasher);
+    format!("{:?}", h).hash(&mut hasher);
+    format!("{:?}", i).hash(&mut hasher);
+    format!("{:?}", j).hash(&mut hasher);
+    format!("{:?}", k).hash(&mut hasher);
+    format!("{:?}", l).hash(&mut hasher);
+    format!("{:?}", m).hash(&mut hasher);
+    format!("{:?}", n).hash(&mut hasher);
+    format!("{:?}", o).hash(&mut hasher);
+    format!("{:?}", p).hash(&mut hasher);
+    format!("{:?}", q).hash(&mut hasher);
+    format!("{:?}", r).hash(&mut hasher);
+    format!("{:?}", s).hash(&mut hasher);
+    format!("{:?}", t).hash(&mut hasher);
+    (hasher.finish() >> 1) as i64
+}
+
+/// `Object.hashAll(xs)`: a hash of the elements in order. Over the debug
+/// text of each element, which is not Dart's algorithm and does not need to
+/// be -- nothing here persists a hash -- and which every element type here
+/// can produce.
+pub fn object_hash_all<T: std::fmt::Debug>(items: Vec<T>) -> i64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for item in &items {
+        format!("{:?}", item).hash(&mut hasher);
+    }
+    (hasher.finish() >> 1) as i64
+}
+
+/// More of `dart:ui`'s hooks: the callback-handle registry, which nothing
+/// here uses across an isolate boundary, so there are no handles.
+/// `_invoke1WithReturn<A, R>(R Function(A)? callback, Zone? zone, A arg)`:
+/// `R?`, null when there is no callback.
+pub fn _invoke1_with_return<A, R>(
+    callback: Option<std::rc::Rc<dyn Fn(A) -> R>>,
+    _zone: Zone,
+    arg: A,
+) -> Option<R> {
+    callback.map(|f| f(arg))
+}
+
+#[allow(dead_code)]
+fn _invoke1_with_return_unused<A, R>(
+    callback: std::rc::Rc<dyn Fn(A) -> R>,
+    _zone: Zone,
+    arg: A,
+) -> R {
+    callback(arg)
+}
+
+pub fn _get_callback_handle(_callback: std::rc::Rc<dyn Object>) -> Option<i64> {
+    None
+}
+
+pub fn _get_callback_from_handle(_handle: i64) -> Option<std::rc::Rc<dyn Object>> {
+    None
+}
+
+/// A value in a string interpolation, when it is not a string or a number:
+/// Dart calls `toString()`, and the translated classes carry theirs as
+/// `Debug`. Not the same text -- `Offset { dx: 1.0, dy: 2.0 }` where Dart
+/// prints `Offset(1.0, 2.0)` -- and nothing here reads it back. 57 parts
+/// `cannot be formatted with the default formatter`.
+pub fn dart_str<T: std::fmt::Debug>(value: T) -> String {
+    format!("{:?}", value)
+}
+
+/// Dart's `Symbol`: a member name as a value.
+///
+/// `#foo` in source, and what `Invocation.memberName` carries. Compared and
+/// printed, nothing else -- there is no `dart:mirrors` here to look a name up
+/// with. Prints as Dart prints it, `Symbol("foo")`, because the one reader of
+/// it in this program interpolates it into an error message.
+///
+/// A private symbol (`#_start`) is private *to a library* in Dart, and two
+/// libraries' `#_start` are different symbols. The library is dropped here: a
+/// name is all a `Symbol` holds. Nothing in this program compares symbols
+/// across libraries, and this is where to look when something does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Symbol {
+    pub name: &'static str,
+}
+
+impl Symbol {
+    pub const fn of(name: &'static str) -> Self {
+        Symbol { name }
+    }
+}
+
+impl fmt::Display for Symbol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Symbol(\"{}\")", self.name)
+    }
+}
+
+/// A `Never` value, turned into whatever the caller needed.
+///
+/// Dart's `Never` is spelled `std::convert::Infallible` here (see the
+/// backend's type map), and an `Infallible` does not coerce the way `!`
+/// would: a getter declared `-> bool` cannot return one. `match x {}` on an
+/// empty enum has every type at once, which is what `!` meant. The
+/// `noSuchMethod` forwarders are where this is called.
+pub fn never<T>(x: std::convert::Infallible) -> T {
+    match x {}
+}
+
+/// Dart's `Invocation`: what `noSuchMethod` is handed.
+///
+/// The CFE writes one *forwarder* per interface member of a class that
+/// declares `noSuchMethod` -- `_WidgetTextStyleMapper` gets thirty-four -- and
+/// each builds one of these and passes it on. Measured across `package:` on
+/// 2026-09-03: every `noSuchMethod` in the program reads exactly one thing off
+/// it, `memberName`. So that is what it carries, with the kind beside it. The
+/// positional, named and type arguments are **not** here: a `noSuchMethod`
+/// that reads them would get nothing, and this struct is where to add them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Invocation {
+    pub member_name: Symbol,
+    pub kind: InvocationKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvocationKind {
+    Method,
+    Getter,
+    Setter,
+}
+
+impl Invocation {
+    pub const fn getter(member_name: Symbol) -> Self {
+        Invocation {
+            member_name,
+            kind: InvocationKind::Getter,
+        }
+    }
+
+    pub const fn setter(member_name: Symbol) -> Self {
+        Invocation {
+            member_name,
+            kind: InvocationKind::Setter,
+        }
+    }
+
+    pub const fn method(member_name: Symbol) -> Self {
+        Invocation {
+            member_name,
+            kind: InvocationKind::Method,
+        }
+    }
+
+    pub fn member_name(&self) -> Symbol {
+        self.member_name
+    }
+
+    pub fn is_getter(&self) -> bool {
+        matches!(self.kind, InvocationKind::Getter)
+    }
+
+    pub fn is_setter(&self) -> bool {
+        matches!(self.kind, InvocationKind::Setter)
+    }
+
+    pub fn is_method(&self) -> bool {
+        matches!(self.kind, InvocationKind::Method)
+    }
+}
+
 /// Dart's `Zone`.
 ///
 /// A zone is the async context a callback was registered in, so that running
@@ -787,10 +2267,31 @@ impl fmt::Display for Type {
 pub struct Zone;
 
 impl Zone {
+    /// `Zone.current`, a static getter upstream and so a call here.
+    pub fn current() -> Zone {
+        Zone
+    }
+
     pub const CURRENT: Zone = Zone;
 
     pub fn run<T>(&self, body: impl FnOnce() -> T) -> T {
         body()
+    }
+
+    /// `Zone.current[key]`: a `dynamic`, which is never an `Option` here;
+    /// the root zone holds no values, so this is Dart's `null` as an object.
+    pub fn index_of<K>(&self, _key: K) -> std::rc::Rc<dyn Object> {
+        std::rc::Rc::new(Null)
+    }
+
+    /// `runGuarded(f)`: the root zone has no error handler to guard with.
+    pub fn run_guarded(&self, body: std::rc::Rc<dyn Fn() -> ()>) {
+        body()
+    }
+
+    /// `runUnaryGuarded(f, arg)`.
+    pub fn run_unary_guarded<A>(&self, body: std::rc::Rc<dyn Fn(A) -> ()>, arg: A) {
+        body(arg)
     }
 
     pub fn run_unary<A, T>(&self, body: impl FnOnce(A) -> T, argument: A) -> T {
@@ -971,6 +2472,15 @@ struct CompleterState<T> {
     completed: bool,
 }
 
+/// A `Completer` is a handle on its shared state: cloning shares.
+impl<T> Clone for Completer<T> {
+    fn clone(&self) -> Self {
+        Completer {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
 impl<T> Default for Completer<T> {
     fn default() -> Self {
         Completer::new()
@@ -988,6 +2498,12 @@ impl<T> Completer<T> {
         }
     }
 
+    /// `completeError(e)`: nothing awaits here to receive it, so it is the
+    /// error the future would have carried, kept nowhere.
+    /// `completeError(error, [stackTrace])`: anything, as Dart's `Object`
+    /// parameter takes anything; nothing here delivers it yet.
+    pub fn complete_error<E: 'static>(&self, _error: E, _stack: Option<StackTrace>) {}
+
     /// Dart's `Completer.sync`, which completes its future synchronously
     /// rather than through a microtask. There are no microtasks here, so the
     /// two are the same thing and this is not a stub -- it is the same
@@ -996,13 +2512,17 @@ impl<T> Completer<T> {
         Completer::new()
     }
 
-    pub fn complete(&self, value: T) {
+    /// `complete([value])`: the parameter is nullable upstream, so it is an
+    /// `Option` here; a `Completer<void>` is completed with `Some(())` by
+    /// the front end. A `None` for a non-void `T` would be Dart's null into
+    /// a non-nullable type, which Dart itself refuses.
+    pub fn complete(&self, value: Option<T>) {
         let mut state = self.shared.borrow_mut();
         if state.completed {
             panic!("Completer completed twice");
         }
         state.completed = true;
-        state.value = Some(value);
+        state.value = value;
         if let Some(waker) = state.waker.take() {
             waker.wake();
         }
@@ -1012,10 +2532,15 @@ impl<T> Completer<T> {
         self.shared.borrow().completed
     }
 
-    pub fn future(&self) -> CompleterFuture<T> {
-        CompleterFuture {
+    /// `future`: boxed, as every `Future<T>` is here, so it goes where one
+    /// is expected (4 `Pin<Box<dyn Future>> <= CompleterFuture<T>`).
+    pub fn future(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>>
+    where
+        T: 'static,
+    {
+        std::boxed::Box::pin(CompleterFuture {
             shared: self.shared.clone(),
-        }
+        })
     }
 }
 
@@ -1056,15 +2581,28 @@ pub struct RegExp {
 }
 
 impl RegExp {
-    pub fn new(pattern: String) -> Self {
+    /// `RegExp(source, {multiLine, caseSensitive, unicode, dotAll})`: the
+    /// flags are carried and not yet honoured.
+    pub fn new(
+        pattern: String,
+        _multi_line: bool,
+        _case_sensitive: bool,
+        _unicode: bool,
+        _dot_all: bool,
+    ) -> Self {
         RegExp { pattern }
     }
 
-    pub fn has_match(&self, _input: &str) -> bool {
+    /// `firstMatch(input)`: none, until there is an engine (see `RegExpMatch`).
+    pub fn first_match(&self, _input: String) -> Option<RegExpMatch> {
+        None
+    }
+
+    pub fn has_match(&self, _input: String) -> bool {
         panic!("RegExp has no engine here: {}", self.pattern)
     }
 
-    pub fn string_match(&self, _input: &str) -> Option<String> {
+    pub fn string_match(&self, _input: String) -> Option<String> {
         panic!("RegExp has no engine here: {}", self.pattern)
     }
 
@@ -1106,12 +2644,361 @@ macro_rules! dart_error {
 
 dart_error!(Exception, "Exception");
 dart_error!(StateError, "Bad state");
-dart_error!(ArgumentError, "Invalid argument(s)");
+dart_error!(Error, "Error");
+
+/// `String.fromCharCodes(codes)`: UTF-16 code units to a String.
+pub fn string_from_char_codes(codes: Vec<i64>) -> String {
+    let units: Vec<u16> = codes.iter().map(|c| *c as u16).collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// `Object()`: a fresh object with nothing but an identity -- `final
+/// _clockKey = Object();` uses one as a zone key.
+pub fn new_object() -> std::rc::Rc<dyn Object> {
+    std::rc::Rc::new(())
+}
+
+/// `dart:io`'s `Platform` statics, as functions: a static getter upstream is
+/// a call here (see the backend's `_staticRead`).
+/// `dart:developer`'s `log(message, {time, sequenceNumber, level, name,
+/// zone, error, stackTrace})`, the named ones filled in by the front end in
+/// declaration order. Printed to stderr, which is where a developer log
+/// goes without an observatory.
+pub fn log(
+    message: String,
+    _time: Option<DateTime>,
+    _sequence_number: Option<i64>,
+    _level: i64,
+    name: String,
+    _zone: Option<Zone>,
+    error: Option<std::rc::Rc<dyn Object>>,
+    _stack_trace: Option<StackTrace>,
+) {
+    if name.is_empty() {
+        eprintln!("{}", message);
+    } else {
+        eprintln!("[{}] {}", name, message);
+    }
+    if let Some(e) = error {
+        eprintln!("  error: {:?}", e);
+    }
+}
+
+/// `Platform.isWindows` and its siblings: what this binary was built for.
+pub fn platform_is_windows() -> bool {
+    cfg!(target_os = "windows")
+}
+pub fn platform_is_linux() -> bool {
+    cfg!(target_os = "linux")
+}
+pub fn platform_is_mac_o_s() -> bool {
+    cfg!(target_os = "macos")
+}
+pub fn platform_is_android() -> bool {
+    cfg!(target_os = "android")
+}
+pub fn platform_is_i_o_s() -> bool {
+    cfg!(target_os = "ios")
+}
+pub fn platform_is_fuchsia() -> bool {
+    cfg!(target_os = "fuchsia")
+}
+
+pub fn platform_number_of_processors() -> i64 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as i64)
+        .unwrap_or(1)
+}
+pub fn platform_path_separator() -> String {
+    std::path::MAIN_SEPARATOR.to_string()
+}
+pub fn platform_operating_system() -> String {
+    std::env::consts::OS.to_string()
+}
+pub fn platform_operating_system_version() -> String {
+    String::new()
+}
+pub fn platform_local_hostname() -> String {
+    std::env::var("HOSTNAME").unwrap_or_default()
+}
+pub fn platform_version() -> String {
+    "dart2rust".to_string()
+}
+/// `dart:io`'s `OSError` and `SocketException`, with the fields `http`'s
+/// client reads off them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OSError {
+    pub message: String,
+    pub error_code: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SocketException {
+    pub message: String,
+    pub os_error: Option<OSError>,
+    pub address: Option<InternetAddress>,
+    pub port: Option<i64>,
+}
+
+impl SocketException {
+    pub fn new(
+        message: String,
+        os_error: Option<OSError>,
+        address: Option<InternetAddress>,
+        port: Option<i64>,
+    ) -> Self {
+        SocketException {
+            message,
+            os_error,
+            address,
+            port,
+        }
+    }
+}
+
+impl fmt::Display for SocketException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SocketException: {}", self.message)
+    }
+}
+
+/// `dart:io`'s client, `dart:convert`'s `Encoding`, and `dart:typed_data`'s
+/// `TypedData`/`ByteBuffer`: named in signatures the http and typed_data
+/// packages keep, not yet given bodies. Types so the signatures compile.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HttpClient;
+
+/// `dart:convert`'s `utf8`, a `const Utf8Codec()`: a name for now.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Utf8Codec;
+
+impl Utf8Codec {
+    /// `utf8.decode(bytes, {allowMalformed})`: lossy when malformed is
+    /// allowed, and a panic (Dart's `FormatException`) when it is not.
+    pub fn decode(&self, bytes: Vec<i64>, allow_malformed: Option<bool>) -> String {
+        let raw: Vec<u8> = bytes.into_iter().map(|b| b as u8).collect();
+        match String::from_utf8(raw) {
+            Ok(s) => s,
+            Err(e) => {
+                if allow_malformed.unwrap_or(false) {
+                    String::from_utf8_lossy(e.as_bytes()).into_owned()
+                } else {
+                    panic!("uncaught Dart exception: FormatException: {}", e)
+                }
+            }
+        }
+    }
+
+    /// `utf8.encode(string)`.
+    pub fn encode(&self, string: String) -> Vec<i64> {
+        string.into_bytes().into_iter().map(|b| b as i64).collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Encoding {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TypedData;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ByteBuffer {
+    pub bytes: Vec<u8>,
+}
+
+/// `ArgumentError([message, name])`: its constructor has two parameters,
+/// and 14 of 15 calls pass both, so it is not the macro's one-parameter
+/// `new`. The message is `dynamic` upstream; here anything that prints.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArgumentError {
+    pub message: String,
+    pub name: Option<String>,
+}
+
+impl ArgumentError {
+    /// `ArgumentError.checkNotNull(value, [name])`: the value, or a panic
+    /// where Dart throws.
+    pub fn check_not_null<T>(value: Option<T>, name: Option<String>) -> T {
+        value.unwrap_or_else(|| {
+            panic!(
+                "ArgumentError: {} must not be null",
+                name.unwrap_or_default()
+            )
+        })
+    }
+
+    pub fn new<M: fmt::Display>(message: M, name: Option<String>) -> Self {
+        ArgumentError {
+            message: message.to_string(),
+            name,
+        }
+    }
+}
+
+impl fmt::Display for ArgumentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.name {
+            Some(name) => write!(f, "Invalid argument ({}): {}", name, self.message),
+            None if self.message.is_empty() => f.write_str("Invalid argument(s)"),
+            None => write!(f, "Invalid argument(s): {}", self.message),
+        }
+    }
+}
+
+impl ArgumentError {
+    /// `ArgumentError.value(value, [name, message])`: the value is named by
+    /// its Rust type, which is not what Dart's `toString` would print.
+    pub fn value<T, M: IntoMessage>(_value: T, name: Option<String>, message: M) -> Self {
+        ArgumentError {
+            message: format!(
+                "{} ({})",
+                message.into_message(),
+                std::any::type_name::<T>()
+            ),
+            name,
+        }
+    }
+}
 dart_error!(UnsupportedError, "Unsupported operation");
 dart_error!(UnimplementedError, "UnimplementedError");
-dart_error!(FormatException, "FormatException");
+/// `FormatException([message, source, offset])`: three parameters, as
+/// intl's date parsing passes them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FormatException {
+    pub message: String,
+    pub source: Option<std::rc::Rc<dyn Object>>,
+    pub offset: Option<i64>,
+}
+
+impl FormatException {
+    pub fn new(
+        message: String,
+        source: Option<std::rc::Rc<dyn Object>>,
+        offset: Option<i64>,
+    ) -> Self {
+        FormatException {
+            message,
+            source,
+            offset,
+        }
+    }
+}
+
+impl fmt::Display for FormatException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.message.is_empty() {
+            f.write_str("FormatException")
+        } else {
+            write!(f, "FormatException: {}", self.message)
+        }
+    }
+}
 dart_error!(AssertionError, "Assertion failed");
 dart_error!(ConcurrentModificationError, "Concurrent modification");
+
+/// `IndexError`, with the one constructor upstream uses: `withLength`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IndexError {
+    pub message: String,
+    pub index: i64,
+    pub length: i64,
+}
+
+impl IndexError {
+    /// `IndexError(invalidValue, indexable, [name, message, length])`.
+    pub fn new<T>(
+        index: i64,
+        _indexable: T,
+        name: Option<String>,
+        message: Option<String>,
+        length: Option<i64>,
+    ) -> Self {
+        IndexError {
+            message: message.unwrap_or_else(|| {
+                format!(
+                    "Index out of range{}: {}",
+                    name.map(|n| format!(" ({})", n)).unwrap_or_default(),
+                    index
+                )
+            }),
+            index,
+            length: length.unwrap_or(0),
+        }
+    }
+
+    pub fn with_length(
+        index: i64,
+        length: i64,
+        _indexable: Option<std::rc::Rc<dyn Object>>,
+        name: Option<String>,
+        message: Option<String>,
+    ) -> Self {
+        let message = message.unwrap_or_else(|| {
+            format!(
+                "Index out of range: {}: {}",
+                name.unwrap_or_default(),
+                index
+            )
+        });
+        IndexError {
+            message,
+            index,
+            length,
+        }
+    }
+}
+
+impl fmt::Display for IndexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RangeError (index): {}", self.message)
+    }
+}
+
+/// `dart:math`'s `Random`: `nextInt`, `nextDouble`, `nextBool`.
+///
+/// A xorshift64*, seeded from the clock when no seed is given. Not Dart's
+/// generator, and not meant to reproduce its sequence: upstream uses this for
+/// demo data and jitter, where any decent generator will do. A test that
+/// pins a sequence would be the first to say otherwise.
+#[derive(Clone, Debug)]
+pub struct Random {
+    state: u64,
+}
+
+impl Random {
+    pub fn new(seed: Option<i64>) -> Self {
+        let seed = seed.map(|s| s as u64).unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x9E3779B97F4A7C15)
+        });
+        Random { state: seed | 1 }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.state = x;
+        x.wrapping_mul(0x2545F4914F6CDD1D)
+    }
+
+    pub fn next_int(&mut self, max: i64) -> i64 {
+        (self.next_u64() % (max.max(1) as u64)) as i64
+    }
+
+    pub fn next_double(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    pub fn next_bool(&mut self) -> bool {
+        self.next_u64() & 1 == 1
+    }
+}
 
 /// `RangeError`, which carries the bounds it was given.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1130,11 +3017,70 @@ impl RangeError {
         }
     }
 
-    pub fn range(invalid: f64, min: f64, max: f64) -> Self {
+    /// `RangeError.checkValidRange(start, end, length, [startName, endName,
+    /// message])`: the end, or a panic where Dart throws.
+    pub fn check_valid_range(
+        start: i64,
+        end: Option<i64>,
+        length: i64,
+        start_name: Option<String>,
+        end_name: Option<String>,
+        message: Option<String>,
+    ) -> i64 {
+        let end = end.unwrap_or(length);
+        if start < 0 || start > length || end < start || end > length {
+            panic!(
+                "RangeError: {}",
+                message.unwrap_or_else(|| format!(
+                    "Invalid range {}..{} ({}, {}) for length {}",
+                    start,
+                    end,
+                    start_name.unwrap_or_default(),
+                    end_name.unwrap_or_default(),
+                    length
+                ))
+            );
+        }
+        end
+    }
+
+    /// `RangeError.checkNotNegative(value, [name, message])`: the value, or
+    /// a panic where Dart throws -- a static of the prelude's has no
+    /// `Result` signature to carry it.
+    pub fn check_not_negative(value: i64, name: Option<String>, message: Option<String>) -> i64 {
+        if value < 0 {
+            panic!(
+                "RangeError: {}",
+                message.unwrap_or_else(|| format!(
+                    "{}: must not be negative: {}",
+                    name.unwrap_or_else(|| "index".to_string()),
+                    value
+                ))
+            );
+        }
+        value
+    }
+
+    /// `RangeError.range(value, min, max, [name, message])`.
+    pub fn range(
+        invalid: i64,
+        min: Option<i64>,
+        max: Option<i64>,
+        name: Option<String>,
+        message: Option<String>,
+    ) -> Self {
         RangeError {
-            message: format!("Invalid value: not in range {}..{}: {}", min, max, invalid),
-            start: Some(min),
-            end: Some(max),
+            message: message.unwrap_or_else(|| {
+                format!(
+                    "Invalid value{}: not in range {}..{}: {}",
+                    name.map(|n| format!(" for {}", n)).unwrap_or_default(),
+                    min.map(|m| m.to_string()).unwrap_or_default(),
+                    max.map(|m| m.to_string()).unwrap_or_default(),
+                    invalid
+                )
+            }),
+            start: min.map(|m| m as f64),
+            end: max.map(|m| m as f64),
         }
     }
 }
@@ -1173,14 +3119,67 @@ pub struct ByteData {
 }
 
 impl ByteData {
+    /// `offsetInBytes`: a `ByteData` here owns its bytes, so it starts at 0.
+    pub fn offset_in_bytes(&self) -> i64 {
+        0
+    }
+
+    fn at(&self, offset: i64, width: usize) -> &[u8] {
+        let start = offset.max(0) as usize;
+        &self.bytes[start.min(self.bytes.len())..(start + width).min(self.bytes.len())]
+    }
+
+    fn le(&self, endian: Endian) -> bool {
+        endian == Endian::Little
+    }
+
+    /// `getUint64`/`setUint64`: Dart's `int` is 64-bit signed, so the bits
+    /// are the same and the sign is the reader's problem, as in Dart.
+    pub fn get_uint64(&self, offset: i64, endian: Endian) -> i64 {
+        self.get_int64(offset, endian)
+    }
+
+    pub fn set_uint64(&mut self, offset: i64, value: i64, endian: Endian) {
+        self.set_int64(offset, value, endian)
+    }
+
+    pub fn get_int64(&self, offset: i64, endian: Endian) -> i64 {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(self.at(offset, 8));
+        if self.le(endian) {
+            i64::from_le_bytes(b)
+        } else {
+            i64::from_be_bytes(b)
+        }
+    }
+
+    pub fn set_int64(&mut self, offset: i64, value: i64, endian: Endian) {
+        let b = if self.le(endian) {
+            value.to_le_bytes()
+        } else {
+            value.to_be_bytes()
+        };
+        let start = offset.max(0) as usize;
+        self.bytes[start..start + 8].copy_from_slice(&b);
+    }
+
     pub fn new(length: i64) -> Self {
         ByteData {
             bytes: vec![0; length.max(0) as usize],
         }
     }
 
-    pub fn view(bytes: Vec<u8>) -> Self {
-        ByteData { bytes }
+    /// `ByteData.view(buffer, [offsetInBytes, length])`: a copy of that
+    /// window, since a buffer here is the bytes themselves.
+    pub fn view(bytes: Vec<u8>, offset: i64, length: Option<i64>) -> Self {
+        let start = (offset.max(0) as usize).min(bytes.len());
+        let end = match length {
+            Some(n) => (start + n.max(0) as usize).min(bytes.len()),
+            None => bytes.len(),
+        };
+        ByteData {
+            bytes: bytes[start..end].to_vec(),
+        }
     }
 
     pub fn length_in_bytes(&self) -> i64 {
@@ -1207,42 +3206,42 @@ impl ByteData {
         self.bytes[at as usize] = value as i8 as u8;
     }
 
-    pub fn get_uint16(&self, at: i64) -> i64 {
+    pub fn get_uint16(&self, at: i64, _endian: Endian) -> i64 {
         u16::from_le_bytes(self.four(at, 2)[..2].try_into().unwrap()) as i64
     }
 
-    pub fn get_int32(&self, at: i64) -> i64 {
+    pub fn get_int32(&self, at: i64, _endian: Endian) -> i64 {
         i32::from_le_bytes(self.four(at, 4)[..4].try_into().unwrap()) as i64
     }
 
-    pub fn set_int32(&mut self, at: i64, value: i64) {
+    pub fn set_int32(&mut self, at: i64, value: i64, _endian: Endian) {
         let at = at as usize;
         self.bytes[at..at + 4].copy_from_slice(&(value as i32).to_le_bytes());
     }
 
-    pub fn get_uint32(&self, at: i64) -> i64 {
+    pub fn get_uint32(&self, at: i64, _endian: Endian) -> i64 {
         u32::from_le_bytes(self.four(at, 4)[..4].try_into().unwrap()) as i64
     }
 
-    pub fn set_uint32(&mut self, at: i64, value: i64) {
+    pub fn set_uint32(&mut self, at: i64, value: i64, _endian: Endian) {
         let at = at as usize;
         self.bytes[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
     }
 
-    pub fn get_float32(&self, at: i64) -> f64 {
+    pub fn get_float32(&self, at: i64, _endian: Endian) -> f64 {
         f32::from_le_bytes(self.four(at, 4)[..4].try_into().unwrap()) as f64
     }
 
-    pub fn set_float32(&mut self, at: i64, value: f64) {
+    pub fn set_float32(&mut self, at: i64, value: f64, _endian: Endian) {
         let at = at as usize;
         self.bytes[at..at + 4].copy_from_slice(&(value as f32).to_le_bytes());
     }
 
-    pub fn get_float64(&self, at: i64) -> f64 {
+    pub fn get_float64(&self, at: i64, _endian: Endian) -> f64 {
         f64::from_le_bytes(self.eight(at)[..8].try_into().unwrap())
     }
 
-    pub fn set_float64(&mut self, at: i64, value: f64) {
+    pub fn set_float64(&mut self, at: i64, value: f64, _endian: Endian) {
         let at = at as usize;
         self.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
