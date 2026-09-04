@@ -3906,7 +3906,10 @@ class RustBackend {
     if (stubbed != null) {
       _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
     } else {
-      _body(method.body, method.returnType);
+      _body(
+        method.body,
+        method.isAsync ? _awaited(method.returnType) : method.returnType,
+      );
       _closeOpenIf(method.body);
     }
     _returns = null;
@@ -4042,7 +4045,10 @@ class RustBackend {
       // itself. `this_.start` was read as a field 6 times in `source_span`.
       final accessors = _fieldsAreAccessors;
       _fieldsAreAccessors = true;
-      _body(method.body, method.returnType);
+      _body(
+        method.body,
+        method.isAsync ? _awaited(method.returnType) : method.returnType,
+      );
       _closeOpenIf(method.body);
       _fieldsAreAccessors = accessors;
       _returns = null;
@@ -6193,9 +6199,14 @@ class RustBackend {
       // A failing `void` method that falls off its end still has to
       // produce its `Ok(())`: `_validateColorStops` ends in an `if`/`else`
       // that only ever returns `Err`, and the value of that `if` is `()`.
+      // An async method's value is the awaited one: `Future<void>` falls
+      // off into `Ok(())` too (54 in `widgets`).
+      final produced = method.isAsync
+          ? _awaited(method.returnType)
+          : method.returnType;
       final fallsOff =
           _failure != null &&
-          type(method.returnType) == '()' &&
+          type(produced) == '()' &&
           !_alwaysReturns(method.body);
       if (stubbed != null) {
         _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
@@ -6315,7 +6326,10 @@ class RustBackend {
       // inside it a failing call unwraps.
       final savedFailure = _failure;
       _failure = null;
-      _body(method.body, method.returnType);
+      _body(
+        method.body,
+        method.isAsync ? _awaited(method.returnType) : method.returnType,
+      );
       _closeOpenIf(method.body);
       _failure = savedFailure;
       _returns = null;

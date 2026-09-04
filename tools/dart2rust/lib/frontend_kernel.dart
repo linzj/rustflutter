@@ -164,6 +164,9 @@ class KernelFrontend {
       if (e is IntLiteral) return core.intNonNullableRawType;
       if (e is DoubleLiteral) return core.doubleNonNullableRawType;
       if (e is StringLiteral) return core.stringNonNullableRawType;
+      // An interpolation is a `String` too: without a type the return of
+      // one into a `String?` was never wrapped in `Some` (40 in intl).
+      if (e is StringConcatenation) return core.stringNonNullableRawType;
     }
     return null;
   }
