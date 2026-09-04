@@ -476,6 +476,17 @@ impl std::ops::Mul<i64> for Duration {
     }
 }
 
+/// `Duration * num` takes a `double` too: `kThemeChangeDuration *
+/// timeDilation` (23 at ws321). Dart rounds the microseconds.
+impl std::ops::Mul<f64> for Duration {
+    type Output = Duration;
+    fn mul(self, by: f64) -> Duration {
+        Duration {
+            microseconds: (self.microseconds as f64 * by).round() as i64,
+        }
+    }
+}
+
 impl fmt::Display for Duration {
     /// Dart prints `0:00:01.500000`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

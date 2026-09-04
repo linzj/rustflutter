@@ -38,7 +38,8 @@ while kill -0 "$chain" 2>/dev/null; do
   avail=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
   if [ "$avail" -lt "$floor_kb" ]; then
     last=$(tail -1 "$log" | cut -c1-120)
-    echo "OOM-GUARD: MemAvailable ${avail}kB under ${floor_kb}kB; killing the compile (last: $last)" >> "$log"
+    crates=$(pgrep -fa rustc | grep -o -- '--crate-name [^ ]*' | sort | uniq | tr '\n' ' ')
+    echo "OOM-GUARD: MemAvailable ${avail}kB under ${floor_kb}kB; killing the compile (rustc on: $crates) (last: $last)" >> "$log"
     pkill -f rustc
     pkill -f 'cargo check'
     pkill -f 'bin/stubs.py'
