@@ -537,6 +537,7 @@ class RustBackend {
         :final receiverClass,
         :final fails,
         :final diverges,
+        :final typeArguments,
       ) =>
         _diverging(
           _call(
@@ -546,6 +547,7 @@ class RustBackend {
             qualifier: qualifier,
             receiverClass: receiverClass,
             fails: fails && !diverges,
+            typeArguments: typeArguments,
           ),
           diverges && fails,
         ),
@@ -1974,7 +1976,11 @@ class RustBackend {
     String? qualifier,
     String? receiverClass,
     bool fails = false,
+    List<IrType> typeArguments = const [],
   }) {
+    final turbofish = typeArguments.isEmpty
+        ? ''
+        : '::<${typeArguments.map(type).join(', ')}>';
     // Read before the receiver and arguments print: a call inside them
     // would otherwise take the `await`'s flag.
     final awaited = _awaiting;
@@ -2232,11 +2238,11 @@ class RustBackend {
           : _isHandle(receiverClass)
           ? '&*${expr(target)}'
           : '&${expr(target)}';
-      return '$qualifier::${_identifier(name)}'
+      return '$qualifier::${_identifier(name)}$turbofish'
           '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
           '$suffix';
     }
-    return '$receiver.${_identifier(name)}'
+    return '$receiver.${_identifier(name)}$turbofish'
         '(${args.map(expr).join(', ')})$suffix';
   }
 
@@ -4845,6 +4851,7 @@ class RustBackend {
         :final receiverClass,
         :final fails,
         :final diverges,
+        :final typeArguments,
       ) =>
         IrCall(
           target == null ? null : go(target),
@@ -4854,6 +4861,7 @@ class RustBackend {
           receiverClass: receiverClass,
           fails: fails,
           diverges: diverges,
+          typeArguments: typeArguments,
         ),
       IrStaticCall(
         :final owner,

@@ -180,6 +180,7 @@ class IrCall extends IrExpr {
     this.receiverClass,
     this.fails = false,
     this.diverges = false,
+    this.typeArguments = const [],
   });
 
   /// Whether the callee can fail (`IrMethod.fails`): the call is `?`ed.
@@ -192,6 +193,11 @@ class IrCall extends IrExpr {
   final IrExpr? target;
   final String name;
   final List<IrExpr> args;
+
+  /// The call's own type arguments, spelled as a turbofish when the method
+  /// is a translated generic one: `bucket.remove<P>(id)` names `P` only in
+  /// its result, which inference cannot recover (55 at ws296).
+  final List<IrType> typeArguments;
 
   /// The trait to name the method through -- `RenderBox::constraints(&self)`
   /// -- when the receiver's hierarchy declares the name more than once: a

@@ -2718,11 +2718,23 @@ class KernelFrontend {
       }
     }
     final receiver = node.receiver;
+    // A translated generic method's type arguments (see `IrCall.
+    // typeArguments`); a `dart:` class's method takes none in the prelude.
+    final target = node.interfaceTarget;
+    final withTypeArgs =
+        target is Procedure &&
+        target.function.typeParameters.isNotEmpty &&
+        target.enclosingClass != null &&
+        _translatedClass(target.enclosingClass!) &&
+        node.arguments.types.length == target.function.typeParameters.length;
     return _qualified(
       IrCall(
         receiver is ThisExpression ? null : expression(receiver),
         name,
         args,
+        typeArguments: withTypeArgs
+            ? [for (final t in node.arguments.types) _type(t)]
+            : const [],
       ),
       node.interfaceTarget,
       receiver,
@@ -2752,7 +2764,25 @@ class KernelFrontend {
         : type is InterfaceType
         ? type.classNode
         : null;
-    final qualifier = _qualifierFor(from ?? owner, member);
+    var qualifier = _qualifierFor(from ?? owner, member);
+    // `this.x` where a trait declared `x` and this class overrides it: Rust
+    // resolves `self.x()` to the inherent override, whose type may be
+    // narrower than the declaration the kernel typed the read by (`String?
+    // get restorationId` overridden as `String`: 72 `unwrap` on a `String`
+    // at ws296). Through the trait, whose signature the kernel agrees with.
+    if (qualifier == null &&
+        receiver is ThisExpression &&
+        from != null &&
+        from != owner &&
+        _abstractLike(owner) &&
+        !owner.isAnonymousMixin &&
+        from.members.any(
+          (m) =>
+              m.name.text == member.name.text &&
+              ((m is Procedure && !m.isStatic) || (m is Field && !m.isStatic)),
+        )) {
+      qualifier = owner.name;
+    }
     final fails = _fails(member);
     final renamed = member is Procedure && member.name.text == 'clone';
     if (qualifier == null && !fails && !renamed) return call;
@@ -2764,6 +2794,7 @@ class KernelFrontend {
       receiverClass: type is InterfaceType ? type.classNode.name : null,
       fails: fails,
       diverges: _diverges(member),
+      typeArguments: call.typeArguments,
     );
   }
 
@@ -2890,8 +2921,13 @@ class KernelFrontend {
     // The constructor's parameters in the constructed type's terms:
     // `Tween<double>(begin: 0)` takes a `T?`, which is a `double?` here.
     final cls = target.enclosingClass;
+    // The type arguments come along, as a turbofish where the class is
+    // generic: `_FooState<T>()` in `createState` says which `T` (27).
     final created = IrNew(
-      IrType(_instanceName(cls)),
+      IrType(
+        _instanceName(cls),
+        arguments: _erasedArguments(cls, node.constructedType.typeArguments),
+      ),
       _arguments(
         node.arguments,
         target.function,
@@ -4422,7 +4458,19 @@ class KernelFrontend {
   /// State>` -- and not when the bound is `Object` or a scalar, where the
   /// parameter is a real type variable (`Tween<T>`, `Animation<T>`).
   bool _erasedParameter(TypeParameter p) {
-    if (!erase || p.declaration is! Class) return false;
+    if (!erase) return false;
+    // A factory carries its own copies of the class's parameters: erased
+    // with them, or `global_key_new<T>` kept a `T` nothing could infer (87).
+    final decl = p.declaration;
+    if (decl is Procedure && decl.isFactory) {
+      final cls = decl.enclosingClass;
+      final i = decl.function.typeParameters.indexOf(p);
+      return cls != null &&
+          i >= 0 &&
+          i < cls.typeParameters.length &&
+          _erasedParameter(cls.typeParameters[i]);
+    }
+    if (decl is! Class) return false;
     final bound = p.bound;
     return bound is InterfaceType &&
         bound.classNode.name != 'Object' &&
@@ -5444,7 +5492,10 @@ class KernelFrontend {
             ),
           ),
         ]),
-        typeParameters: [for (final p in fn.typeParameters) p.name ?? 'T'],
+        typeParameters: [
+          for (final p in fn.typeParameters)
+            if (!_erasedParameter(p)) p.name ?? 'T',
+        ],
         isStatic: node.isStatic && !isTopLevel,
         isGetter: node.kind == ProcedureKind.Getter && !(isTopLevel),
         isSetter: node.kind == ProcedureKind.Setter && !isTopLevel,
