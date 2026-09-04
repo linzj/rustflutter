@@ -62,6 +62,8 @@ pub trait DartIterator<T> {
     fn current(&self) -> T;
 }
 
+
+
 /// Dart's `Object`, as the one thing Rust has for "anything": a trait every
 /// type implements. `&dyn Object` then accepts what `Object` accepted.
 pub trait Object {

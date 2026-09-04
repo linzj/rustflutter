@@ -3177,6 +3177,10 @@ class RustBackend {
       _indent--;
       _line('}');
     }
+    // An enum implementing an interface -- `WidgetState` is a
+    // `WidgetStatesConstraint` -- gets the impl a struct would, forwarding
+    // to the enhanced enum's own methods (20 "trait bound not satisfied").
+    _emitBaseImpl();
     return _out.join('\n') + '\n';
   }
 
@@ -3538,7 +3542,10 @@ class RustBackend {
       // VoidCallback>`, a `Set<Future>` -- at the class, not at the one
       // method that compares or prints. A method that does is what fails
       // now, and the stub count says how many.
-      return "$p: 'static${keyed ? ' + Clone + PartialEq + Eq + std::hash::Hash' : ''}";
+      // The prelude's `Map` and `Set` are ordered and compare keys with
+      // `==`: `PartialEq + Clone` is all they ask, and `Eq + Hash` shut
+      // closures out of `ObserverList<VoidCallback>` (48 in `widgets`).
+      return "$p: 'static${keyed ? ' + Clone + PartialEq' : ''}";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
