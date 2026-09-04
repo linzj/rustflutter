@@ -1449,8 +1449,22 @@ impl JsonUtf8Encoder {
 
 /// `Pattern`, as a name only: nothing here builds one (a `dart:` type the
 /// translated code names in a signature).
+/// `dart:core`'s `Pattern`: a `String` or a `RegExp`, whichever was handed
+/// to a `Pattern` parameter (the front end converts at the call).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Pattern;
+pub struct Pattern {
+    pub text: Option<String>,
+    pub regexp: Option<RegExp>,
+}
+
+impl Pattern {
+    pub fn of_string(text: String) -> Pattern {
+        Pattern { text: Some(text), regexp: None }
+    }
+    pub fn of_regexp(regexp: RegExp) -> Pattern {
+        Pattern { text: None, regexp: Some(regexp) }
+    }
+}
 
 /// `dart:developer`'s `ServiceExtensionResponse`, as a name: no VM service
 /// listens here.

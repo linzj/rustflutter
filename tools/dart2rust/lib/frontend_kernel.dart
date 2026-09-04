@@ -3038,6 +3038,23 @@ class KernelFrontend {
         return _intoObject(value, env.coreTypes.objectNullableRawType, lowered);
       }
     }
+    // `dart:core`'s `Pattern` is a `String` or a `RegExp`; the prelude's
+    // struct holds either, and a call into *translated* code converts
+    // (`FilteringTextInputFormatter.deny('\n')`). Not a `dart:` callee's:
+    // the prelude's own `split`/`contains` take the `String`.
+    if (param is InterfaceType &&
+        param.classNode.name == 'Pattern' &&
+        param.classNode.enclosingLibrary.importUri.toString() == 'dart:core') {
+      final given = _staticType(value);
+      if (given is InterfaceType && given.classNode.name == 'String') {
+        final made = IrStaticCall('Pattern', 'of_string', [lowered]);
+        return param.nullability == Nullability.nullable ? IrSome(made) : made;
+      }
+      if (given is InterfaceType && given.classNode.name == 'RegExp') {
+        final made = IrStaticCall('Pattern', 'of_regexp', [lowered]);
+        return param.nullability == Nullability.nullable ? IrSome(made) : made;
+      }
+    }
     return _intoObject(value, param, lowered);
   }
 
@@ -3811,10 +3828,25 @@ class KernelFrontend {
     // instance would silently be a different one.
 
     final args = <IrExpr>[];
+    // Each constant into its parameter's type: `const _ModifierSidePair(
+    // ModifierKey.altModifier, KeyboardSide.left)` against a `KeyboardSide?
+    // side` is `Some(..)` (20 in `RawKeyboard`'s modifier map).
+    final paramType = <String, DartType>{
+      for (final p in function.positionalParameters) _paramName(p): p.type,
+      for (final p in function.namedParameters) p.parameterName: p.type,
+    };
     for (final name in names) {
       final value = byName[name];
       if (value == null) return null;
-      args.add(_constant(value, node));
+      final lowered = _constant(value, node);
+      final t = paramType[name];
+      final wraps =
+          t != null &&
+          t is! DynamicType &&
+          t.nullability == Nullability.nullable &&
+          !(t is InterfaceType && t.classNode.name == 'Object') &&
+          value is! NullConstant;
+      args.add(wraps ? IrSome(lowered) : lowered);
     }
     return IrNew(_constantType(cls, typeArguments), args);
   }
