@@ -90,6 +90,15 @@ class KernelFrontend {
     if (e is StaticGet) return e.target.getterType;
     if (e is StaticInvocation) return e.target.function.returnType;
     if (e is NullLiteral) return const NullType();
+    // Literals, from the core types when there are any: `return true` in a
+    // closure returning `Object?` had nothing to say it was a `bool`.
+    final core = typeEnvironment?.coreTypes;
+    if (core != null) {
+      if (e is BoolLiteral) return core.boolNonNullableRawType;
+      if (e is IntLiteral) return core.intNonNullableRawType;
+      if (e is DoubleLiteral) return core.doubleNonNullableRawType;
+      if (e is StringLiteral) return core.stringNonNullableRawType;
+    }
     return null;
   }
 
@@ -697,7 +706,16 @@ class KernelFrontend {
       }
       return IrSetValue(null, node.name.text, stored);
     }
-    if (node is NullCheck) return IrNullCheck(expression(node.operand));
+    if (node is NullCheck) {
+      // `lerpDouble(a, b, t)!`: the special lowering of `lerpDouble` (see
+      // `_staticInvocation`) is already a bare `f64`; nothing to unwrap.
+      final operand = node.operand;
+      if (operand is StaticInvocation &&
+          operand.target.name.text == 'lerpDouble') {
+        return expression(operand);
+      }
+      return IrNullCheck(expression(operand));
+    }
     if (node is AsExpression) {
       // A cast that only removes `?` -- the CFE's spelling of a promoted
       // private field, `_hct` after `if (_hct != null)` -- is a null check.
@@ -3125,9 +3143,15 @@ class KernelFrontend {
         (held.typeArguments.first as InterfaceType).classNode.name !=
             'Object' &&
         held.typeArguments.first.nullability != Nullability.nullable) {
+      // A nullable list widens element by element under the `Option`.
+      if (held.nullability == Nullability.nullable) {
+        return IrNullAware(
+          lowered,
+          IrCall(const IrBound(), '!widen_object', const []),
+        );
+      }
       final widened = IrCall(lowered, '!widen_object', const []);
-      return param.nullability == Nullability.nullable &&
-              held.nullability != Nullability.nullable
+      return param.nullability == Nullability.nullable
           ? IrSome(widened)
           : widened;
     }

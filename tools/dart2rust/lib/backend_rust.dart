@@ -1716,7 +1716,10 @@ class RustBackend {
     // The other way: a `Uint8List` handed to a `List<int>` parameter.
     // A `List<String>` into a `List<Object?>`: each element shared.
     if (name == '!widen_object' && args.isEmpty) {
-      return '$receiver.into_iter().map(|v| Some(std::rc::Rc::new(v) as std::rc::Rc<dyn Object>)).collect::<Vec<_>>()';
+      // `iter().cloned()`: the receiver may be the `&Vec` a null-aware
+      // `as_ref().map(|it| ..)` binds, and `into_iter` on that yields
+      // references (E0282 in `ColorFilter.hashCode`).
+      return '$receiver.iter().cloned().map(|v| Some(std::rc::Rc::new(v) as std::rc::Rc<dyn Object>)).collect::<Vec<_>>()';
     }
     if (name == '!widen' && args.isEmpty) {
       return '$receiver.into_iter().map(|v| v as i64).collect::<Vec<i64>>()';
@@ -5192,6 +5195,11 @@ class RustBackend {
               '${assigned.contains(p.name) ? 'mut ' : ''}${snake(p.name)}: ${type(p.type)}',
         )
         .join(', ');
+    // ..and the body's locals are `mut` by the same reckoning (`let` in a
+    // constructor body was never `mut` once locals stopped being so by
+    // default: 4 E0384s in `ParagraphStyle`).
+    _reassigned = assigned;
+    _cellLocals = {};
     // `const fn` because the Dart constructor was `const`, which is what lets
     // the static constants below be associated consts rather than lazy statics.
     // `const fn` even when the constructor carries asserts. An earlier round

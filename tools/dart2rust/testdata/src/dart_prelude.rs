@@ -1011,6 +1011,14 @@ impl IntoMessage for String {
     }
 }
 
+/// `ArgumentError(other)` with an object for its message: printed as
+/// Dart would print it (`Instance of 'X'`, or the class's own text).
+impl<T: ?Sized + std::fmt::Debug> IntoMessage for std::rc::Rc<T> {
+    fn into_message(self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 impl IntoMessage for &str {
     fn into_message(self) -> String {
         self.to_string()
@@ -1355,6 +1363,8 @@ pub trait DartList<T> {
     /// `length`, under its Dart name, beside `len()`.
     fn length(&self) -> i64;
     fn remove_value(&mut self, value: T) -> bool;
+    /// `sublist(start, [end])`: a copy of that range.
+    fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T>;
     /// `sort([compare])`: without one, the elements' own order.
     fn sort_by_dart(&mut self, compare: Option<std::rc::Rc<dyn Fn(T, T) -> i64>>);
     /// `firstWhere(test)`: panics like Dart's `StateError` when none matches.
@@ -1374,6 +1384,14 @@ pub trait DartList<T> {
 impl<T: PartialEq + Clone> DartList<T> for Vec<T> {
     fn length(&self) -> i64 {
         self.len() as i64
+    }
+
+    fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T> {
+        let s = (start.max(0) as usize).min(self.len());
+        let e = end
+            .map(|n| (n.max(0) as usize).min(self.len()))
+            .unwrap_or(self.len());
+        self[s..e.max(s)].to_vec()
     }
 
     fn remove_value(&mut self, value: T) -> bool {
@@ -2844,6 +2862,81 @@ impl DartTypedList for Vec<u8> {
     }
 }
 
+/// `ByteBuffer.asUint8List(offset, length)` and its siblings on the bytes
+/// a buffer is here: windows copied out, in the element width asked for.
+pub trait DartByteBuffer {
+    fn as_uint8_list(&self, offset: i64, length: Option<i64>) -> Vec<u8>;
+    fn as_int8_list(&self, offset: i64, length: Option<i64>) -> Vec<i8>;
+    fn as_byte_data(&self, offset: i64, length: Option<i64>) -> ByteData;
+    fn as_int32_list(&self, offset: i64, length: Option<i64>) -> Vec<i32>;
+    fn as_float32_list(&self, offset: i64, length: Option<i64>) -> Vec<f32>;
+    fn as_float64_list(&self, offset: i64, length: Option<i64>) -> Vec<f64>;
+}
+
+fn byte_window(bytes: &[u8], offset: i64, length: Option<i64>, width: usize) -> &[u8] {
+    let start = (offset.max(0) as usize).min(bytes.len());
+    let end = match length {
+        Some(n) => (start + n.max(0) as usize * width).min(bytes.len()),
+        None => bytes.len(),
+    };
+    &bytes[start..end]
+}
+
+impl DartByteBuffer for Vec<u8> {
+    fn as_uint8_list(&self, offset: i64, length: Option<i64>) -> Vec<u8> {
+        byte_window(self, offset, length, 1).to_vec()
+    }
+
+    fn as_int8_list(&self, offset: i64, length: Option<i64>) -> Vec<i8> {
+        byte_window(self, offset, length, 1)
+            .iter()
+            .map(|b| *b as i8)
+            .collect()
+    }
+
+    fn as_byte_data(&self, offset: i64, length: Option<i64>) -> ByteData {
+        ByteData {
+            bytes: byte_window(self, offset, length, 1).to_vec(),
+        }
+    }
+
+    fn as_int32_list(&self, offset: i64, length: Option<i64>) -> Vec<i32> {
+        byte_window(self, offset, length, 4)
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
+    fn as_float32_list(&self, offset: i64, length: Option<i64>) -> Vec<f32> {
+        byte_window(self, offset, length, 4)
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
+    fn as_float64_list(&self, offset: i64, length: Option<i64>) -> Vec<f64> {
+        byte_window(self, offset, length, 8)
+            .chunks_exact(8)
+            .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .collect()
+    }
+}
+
+/// `utf8.decoder`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Utf8Decoder;
+
+impl Utf8Decoder {
+    /// `convert(codeUnits, [start, end])`.
+    pub fn convert(&self, code_units: Vec<i64>, start: i64, end: Option<i64>) -> String {
+        let s = (start.max(0) as usize).min(code_units.len());
+        let e = end
+            .map(|n| (n.max(0) as usize).min(code_units.len()))
+            .unwrap_or(code_units.len());
+        Utf8Codec.decode(code_units[s..e].to_vec(), Some(true))
+    }
+}
+
 /// `Platform.isWindows` and its siblings: what this binary was built for.
 pub fn platform_is_windows() -> bool {
     cfg!(target_os = "windows")
@@ -2952,6 +3045,11 @@ impl Utf8Codec {
     /// `utf8.encode(string)`.
     pub fn encode(&self, string: String) -> Vec<i64> {
         string.into_bytes().into_iter().map(|b| b as i64).collect()
+    }
+
+    /// `utf8.decoder`.
+    pub fn decoder(&self) -> Utf8Decoder {
+        Utf8Decoder
     }
 }
 
@@ -3279,6 +3377,11 @@ pub struct ByteData {
 }
 
 impl ByteData {
+    /// `asUnmodifiableView()`: a `ByteData` here is already a value.
+    pub fn as_unmodifiable_view(&self) -> ByteData {
+        self.clone()
+    }
+
     /// `offsetInBytes`: a `ByteData` here owns its bytes, so it starts at 0.
     pub fn offset_in_bytes(&self) -> i64 {
         0

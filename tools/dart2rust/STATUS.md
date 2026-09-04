@@ -6224,6 +6224,9 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws159 | 90 | `unsafeCast<T>(x)` 一律按目标类型 widen：+17（Option 套 Option、dynamic 被 unwrap）。收窄到“非空 T 进 T?”这一种形状。
 | ws160 | 70 | 收窄后的 unsafeCast widen。
 | ws161 | 69 | 构造器参数被字段初始化式或构造体赋值时标 `mut`（`cullRect ??= Rect.largest`）。剩余：dart:ui 25 / intl 22 / collection 12 / source_span 4 / typed_data 3 / get 3。
+| ws162 | 72 | prelude：`ByteBuffer.asUint8List/asInt8List/asByteData/asInt32List/asFloat32List/asFloat64List`、`utf8.decoder`、`ByteData.asUnmodifiableView`、`IntoMessage for Rc<T>`；`lerpDouble(..)!` 不再 unwrap；可空列表逐元素 widen 走 null-aware；字面量在无上下文时也有静态类型。dart:ui -5 +8：构造体里的局部丢了 `mut`（构造器发出器从没算过赋值集合），`Uint8List.sublist` 缺。
+| ws163 | 72 | （补丁没贴上，无变化。）
+| ws164 | 63 | 构造器发出器也算赋值集合（构造体里的局部/参数该 `mut` 的 `mut`）；`!widen_object` 用 `iter().cloned()`（接收者可能是 null-aware 绑定的引用）；prelude `List.sublist`。剩余：dart:ui 19 / intl 22 / collection 12 / source_span 4 / typed_data 3 / get 3。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步
