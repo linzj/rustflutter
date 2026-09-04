@@ -652,6 +652,24 @@ class RustBackend {
             : '(${expr(value)} as $rust)',
       IrCastTo(:final target, :final type) =>
         '${expr(target)}.dart_cast_to::<${_dynOf(type)}>().unwrap()',
+      IrSuperDispatch(
+        :final receiver,
+        :final base,
+        :final name,
+        :final args,
+        :final typeArguments,
+        :final classArity,
+        :final castTo,
+      ) =>
+        _superDispatch(
+          receiver,
+          base,
+          name,
+          args,
+          typeArguments,
+          classArity,
+          castTo,
+        ),
       IrDowncast(:final target, :final type, :final arguments) =>
         '${expr(target)}.as_any().downcast_ref::<$type${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
@@ -1670,6 +1688,30 @@ class RustBackend {
   /// target that is itself abstract has no answer here -- `x is RenderBox`
   /// asks whether the thing implements a trait, which `Any` cannot say -- and
   /// is still refused, now under a name that says which half is missing.
+  /// See `IrSuperDispatch`. The super function's generics are `<__Self,
+  /// class parameters.., method parameters..>`: the first two kinds are
+  /// inferred from the receiver, the method's own are spelled.
+  String _superDispatch(
+    IrExpr receiver,
+    String base,
+    String name,
+    List<IrExpr> args,
+    List<IrType> typeArguments,
+    int classArity,
+    String? castTo,
+  ) {
+    final on = castTo == null
+        ? expr(receiver)
+        : '${expr(receiver)}.dart_cast_to::<dyn $castTo>().unwrap()';
+    final generics = [
+      '_',
+      for (var i = 0; i < classArity; i++) '_',
+      ...typeArguments.map(type),
+    ];
+    return '${superFn(base, name)}::<${generics.join(', ')}>'
+        '(${['&*$on', ...args.map(expr)].join(', ')})$_propagate';
+  }
+
   /// `dyn Foo<A, B>`: the trait object a trait-typed `IrType` names.
   String _dynOf(IrType t) => t.arguments.isEmpty
       ? 'dyn ${t.name}'
@@ -4733,6 +4775,24 @@ class RustBackend {
       IrUnary(:final op, :final operand) => IrUnary(op, go(operand)),
       IrNullCheck(:final operand) => IrNullCheck(go(operand)),
       IrCastTo(:final target, :final type) => IrCastTo(go(target), type),
+      IrSuperDispatch(
+        :final receiver,
+        :final base,
+        :final name,
+        :final args,
+        :final typeArguments,
+        :final classArity,
+        :final castTo,
+      ) =>
+        IrSuperDispatch(
+          go(receiver),
+          base,
+          name,
+          args.map(go).toList(),
+          typeArguments,
+          classArity,
+          castTo: castTo,
+        ),
       IrDowncast(:final target, :final type, :final arguments) => IrDowncast(
         go(target),
         type,
@@ -6855,6 +6915,9 @@ class _WalkSelf {
         expression(target);
       case IrCastTo(:final target):
         expression(target);
+      case IrSuperDispatch(:final receiver, :final args):
+        expression(receiver);
+        args.forEach(expression);
       case IrSome(:final value):
         expression(value);
       case IrCast(:final value):

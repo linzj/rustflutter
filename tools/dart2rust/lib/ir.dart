@@ -479,6 +479,36 @@ class IrDynamicDispatch extends IrExpr {
   final List<(IrType?, IrExpr)> arms;
 }
 
+/// A generic method called on a trait handle, dispatched to the one body
+/// the closed world holds for it: the super function of `base`, called on
+/// the receiver (cast to `base`'s trait first when `castTo` says so).
+///
+/// Rust cannot dispatch a generic method through `dyn` (`where Self:
+/// Sized`), and `BuildContext.dependOnInheritedWidgetOfExactType<T>` has
+/// exactly one body, `Element`'s: 180 "cannot be invoked on a trait object"
+/// at ws290.
+class IrSuperDispatch extends IrExpr {
+  const IrSuperDispatch(
+    this.receiver,
+    this.base,
+    this.name,
+    this.args,
+    this.typeArguments,
+    this.classArity, {
+    this.castTo,
+  });
+
+  final IrExpr receiver;
+  final String base;
+  final String name;
+  final List<IrExpr> args;
+  final List<IrType> typeArguments;
+
+  /// How many type parameters `base` keeps: inferred at the call.
+  final int classArity;
+  final String? castTo;
+}
+
 class IrDowncast extends IrExpr {
   const IrDowncast(this.target, this.type, {this.arguments = const []});
 

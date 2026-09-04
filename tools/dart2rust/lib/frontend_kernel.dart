@@ -2309,6 +2309,8 @@ class KernelFrontend {
       true,
       node.functionType,
     );
+    final generic = _genericOnTrait(node, args);
+    if (generic != null) return generic;
     final owner = node.interfaceTarget.enclosingClass?.name;
     // A `StreamView` subclass's inherited `listen` and friends act on the
     // `_stream` it carries (see `lowerClass`).
@@ -4483,6 +4485,71 @@ class KernelFrontend {
       return cast;
     }
     return IrCall(cast, 'clone', const []);
+  }
+
+  /// A generic method called on a trait handle: see `IrSuperDispatch`.
+  /// Only when the closed world holds exactly one body for it, in a class
+  /// that is a trait here; a second body (`OptionalMethodChannel.
+  /// invokeMethod`) or a body on a struct is left for a later round.
+  IrExpr? _genericOnTrait(InstanceInvocation node, List<IrExpr> args) {
+    final target = node.interfaceTarget;
+    if (target is! Procedure ||
+        target.kind != ProcedureKind.Method ||
+        target.function.typeParameters.isEmpty) {
+      return null;
+    }
+    final declaring = target.enclosingClass;
+    if (declaring == null || !_abstractLike(declaring)) return null;
+    final receiver = node.receiver;
+    final Class? from;
+    if (receiver is ThisExpression) {
+      from = declaring;
+    } else {
+      final t = _staticType(receiver);
+      from = t is InterfaceType ? t.classNode : null;
+      if (from == null || !_abstractLike(from)) return null;
+    }
+    final bodies = _genericBodies(target);
+    if (bodies.length != 1) return null;
+    final body = bodies.single;
+    if (!_abstractLike(body)) return null;
+    final hierarchy = typeEnvironment?.hierarchy;
+    final below =
+        from == body || (hierarchy?.isSubInterfaceOf(from, body) ?? false);
+    return IrSuperDispatch(
+      receiver is ThisExpression ? const IrThis() : expression(receiver),
+      body.name,
+      target.name.text,
+      args,
+      [for (final t in node.arguments.types) _type(t)],
+      body.typeParameters.where((p) => !_erasedParameter(p)).length,
+      castTo: below ? null : body.name,
+    );
+  }
+
+  /// The classes below (and including) the target's that carry a body for
+  /// its name, whole program.
+  List<Class> _genericBodies(Procedure target) {
+    final subtypes = _subtypes;
+    if (subtypes == null) return const [];
+    final declaring = target.enclosingClass!;
+    final out = <Class>[];
+    for (final c in [declaring, ...subtypes.getSubtypesOf(declaring)]) {
+      if (c.isAnonymousMixin || out.contains(c)) continue;
+      final uri = c.enclosingLibrary.importUri.toString();
+      if (!uri.startsWith('package:') && uri != 'dart:ui') continue;
+      for (final p in c.procedures) {
+        if (p.name.text == target.name.text &&
+            !p.isStatic &&
+            !p.isAbstract &&
+            p.kind == ProcedureKind.Method &&
+            p.function.body != null) {
+          out.add(c);
+          break;
+        }
+      }
+    }
+    return out;
   }
 
   /// Whether a type names an erased parameter anywhere in it.
