@@ -1283,6 +1283,32 @@ Kernel 普查:`BlockExpression` 掉出前六,拒绝 10329 → **9997**
 
 ---
 
+## 决定（2026-09-04）：恢复 `Result`，整程序做传播分析
+
+ws60 关掉签名上的 `Result`（`throw` = panic）是因为当时的失败集合是**按类算**的：
+`_computeFailing` 只在一个类的方法之间做定点，所以只有 `this` 上的调用看得见
+被调方的签名变了；经别的对象、trait 声明、闭包、静态的调用都在调用方报错。
+这是分析的范围问题，不是模型的问题——这里是 closed world（AOT dill，TFA 之后，
+整个程序都在手里），哪个成员会抛是能算准的。用户据此要求撤回 panic 模型。
+
+**v2 的形状：**
+
+1. **错误类型统一为 `Rc<dyn Object>`。** Dart 的异常就是对象，`catch (e)` 按 `is`
+   分派；单一错误类型让 `?` 在任何调用形态下都不需要转换。
+2. **失败集合在 driver 里对整个 component 算定点**（像 `dynamicSlots` 那样传给
+   前端）：成员失败 ⇔ 体内有不被 catch-all `try` 包住的 `throw`，或调用了失败的
+   成员——静态调用直接看目标；实例调用看接口目标在 closed world 里的**全部实现者**
+   （任何一个失败就算失败，trait 方法签名因此对所有实现者一致）；函数值按声明的
+   函数类型槽算并集（有失败的闭包/tear-off 流进去，槽就是 `Result`）。
+3. **签名与调用点：** 失败成员返回 `Result<T, Rc<dyn Object>>`；失败成员里对失败
+   成员的调用一律 `?`（`_qualified`、getter、闭包调用、静态、trait 默认转发器，
+   全部形态）；非失败的值进 `Result` 槽包 `Ok`；`try` 体是 `match (|| -> Result {..})()`，
+   `finally` 在分派前跑。
+4. **原语（越界、除零、null check、失败的 `as`）先不进 `Result`。** 它们在 Dart 里
+   也能被 `catch (e)` 抓到，要补的是 prelude 的检查版本；先量它们在 `try` 里出现
+   多少次再做。
+5. **尺子不变：** 每一步都过 `stubs.py`，Result 造成的错误按 kind 单独记。
+
 ## 决定:异常翻译到 `Result<T, E>`
 
 用户定的方向,并明确说明理由:**约定到返回值的异常处理优于 panic**。
@@ -6258,6 +6284,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws231 | 274 叶子错 | 方法自己的类型参数恢复 `Clone + 'static`（`binarySearch<T>` 要 clone 它的 T，148；类的参数仍只 `'static`）；prelude `Uri` 补 `fragment`/`query`/`queryParametersAll`/`queryParameters`/`decodeComponent`/`decodeQueryComponent`，`DartDouble` 补 `sign`；`_cellPlace` 只对集合类型的 cell 用 `borrow_mut()`（`reverse` 撞上 `Rc<RefCell<Option<Rc<AnimationController>>>>`，51）；`SplayTreeMap`/`HashMap`/`LinkedHashMap` 算 Map（`index_of`/`index_set` 50）；具体祖先的方法继承走过抽象祖先（`_SwitchPainter → ToggleablePainter(抽象) → ChangeNotifier`，`notify_listeners` 58）；推断类型的闭包局部也 `Rc::new`（38）。**8293→8088**。剩：mismatched 4479（`Color`←`CupertinoDynamicColor` 147、`Rc<dyn RenderBox>`←`Rc<dyn RenderObject>` 91、`ParentData` 103、`Color`↔`Option<Color>` 135）、trait bound 841、no method 378。
 | ws232–ws235 | 274 叶子错 | trait bound 一族的普查（rendered 里 1171）：`ObserverList<VoidCallback>` 的 `T` 要 `Eq + Hash`（48）——prelude 的 `Map`/`Set` 是有序线性表，只要 `PartialEq + Clone`，键上的约束减到这个；枚举实现接口没有 impl（`WidgetState: WidgetStatesConstraint`，20）——`_emitEnum` 末尾也走 `_emitBaseImpl()`。想给闭包按身份的 `PartialEq`（`impl<R> PartialEq for dyn Fn() -> R`）**撞了孤儿规则**（std 的 trait、非本地类型），整个 prelude 编不过、stub 归零——而且 workspace 用的是 driver 写进 `.crate/src` 的那份 prelude，只重跑 `regen` + `stubs.py` 不会更新，白跑一轮。正确做法是 prelude 自己的 `DartEq` 接管 `Map`/`Set` 的键比较（`impl<T: ?Sized> DartEq for Rc<T>` 已按指针比），但 i64/String 也得进 `DartEq` 而 blanket impl 与 `Rc<T>` 的重叠——要单独一轮。推断类型的闭包局部 `Rc::new` 只值 1 个。**8088→8063**；“can't compare” +37 是闭包进了 `Set` 之后在方法里露出的。**看到但没动的**：泛型 trait 的协变（`AssetImage: ImageProvider<Rc<dyn Object>>` 44、`RestorableBool: RestorableProperty<Option<Rc<dyn Object>>>` 一族 77、`CallbackAction<..>: Action<..>` 9）——要一个按 trait 生成的擦除适配器；`Rc<dyn Animation<f64>>: Animation<_>`（13，`as_ref().map(|it| Trait::m(&*it))` 里 `it` 已是 `&Rc`）。
 | ws236–ws241 | 274 叶子错 | 泛型静态方法/构造器的调用按实例化后的形参类型加宽（`WidgetStateProperty.resolveWith<Color?>((states) {..})` 的闭包该返回 `Color?`，声明的 `T` 什么都没说；`Tween<double>(begin: 0)` 的 `T?`）：8063→8006。`_staticType` 里实例常量的类要排在 kernel 的 `getStaticType` 之前——后者答槽的声明类型 `Curve`，`_Linear`/`Cubic` 值从没被共享进 `Rc<dyn Curve>`（trace 证实：`given=InterfaceType(Curve)`）：→7917。prelude `Map::remove` 改名 `!map_remove`，按引用的键只留给它（译出类的 `remove(String)` 收到了 `&String`，56）；常量实例里可空字段收 list/map 字面量包 `Some`。**量了没收益的**：`let __t74 = unreachable!(..)` 后面 `Some(__t74.clone())` 的 “type annotations needed”（115）——在 VariableSet/InstanceSet 用作值处和后端 `_blockValue` 三处加了守卫，数字一动不动（7937→7936），说明那个形状不是这三条路生成的，下次先 grep 生成物找出是哪条路再改。**现在 7936**，拒绝 1180，全 141 crate。
+| ws242–ws243 | 274 叶子错 | 类型参数带上界自身的可空性（intl 的 `T extends String?` 之前是 `String`，40）；prelude `dart_iter` 收任何 `IntoIterator`（`Set` 也能 for，46）；`Set.remove` 也走 `!map_remove`（按引用，46）：7936→**7843**。**量了撤回的**：`a ?? b` 的右侧按左侧类型共享（`curve ?? Curves.ease` 的 `Cubic` 进 `Rc<dyn Curve>`）：mismatched −181，但 “arms have incompatible types” +267——`match` 的两条臂不做 unsizing coercion，得写 `as Rc<dyn Curve>`，IR 现在拼不出这个 `as`。要做得先给 `!rc` 带上目标 trait。**决定（用户，2026-09-04）：撤销 ws60 的 panic 模型，恢复 `Result`。** 理由：这是 closed world（AOT dill + TFA，整个程序在手），ws60 列的代价——签名传染只有 `this` 上的调用看得见——是当时那个**按类做**的定点（`_computeFailing` 只看 `cls.methods` 的 `selfCalls`）的局限，不是 Result 的。计划见下一节。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步
