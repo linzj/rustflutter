@@ -5522,6 +5522,21 @@ class KernelFrontend {
       } else if (init is SuperInitializer) {
         var base = node.enclosingClass.superclass;
         while (base != null && base.isAnonymousMixin) {
+          // A mixin field's initialiser -- `AnimationLocalStatusListeners
+          // Mixin._statusListeners = ObserverList()` -- was moved by the
+          // CFE into the application's synthetic constructor, which this
+          // walk passes over: its field initialisers come along (15
+          // `AnimationController::new` missing, 6 `ProxyAnimation`).
+          for (final synthetic in base.constructors) {
+            for (final moved in synthetic.initializers) {
+              if (moved is FieldInitializer) {
+                inits.putIfAbsent(
+                  moved.field.name.text,
+                  () => expression(moved.value),
+                );
+              }
+            }
+          }
           base = base.superclass;
         }
         // A no-argument `super()` into a translated base is *not* nothing:

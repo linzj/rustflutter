@@ -345,6 +345,30 @@ Future<void> main(List<String> args) async {
   // unimported 73 times. The Dart import graph settles it the way it settles
   // the classes above: of the definers, the one this library imports is the
   // one it meant.
+  // The abstract classes above a class, by name, through superclass,
+  // mixins and interfaces -- the traits its values' methods live in.
+  final ancestorsCache = <String, Set<String>>{};
+  Set<String> abstractAncestors(String className) {
+    final cached = ancestorsCache[className];
+    if (cached != null) return cached;
+    final out = <String>{};
+    ancestorsCache[className] = out;
+    final cls = everyClass[className];
+    if (cls == null) return out;
+    for (final above in [
+      cls.superclass,
+      for (final m in cls.mixins) m.name,
+      for (final i in cls.interfaces) i.name,
+    ]) {
+      if (above == null) continue;
+      final aboveClass = everyClass[above];
+      if (aboveClass == null) continue;
+      if (aboveClass.isAbstract) out.add(above);
+      out.addAll(abstractAncestors(above));
+    }
+    return out;
+  }
+
   final definers = <String, Set<String>>{};
   for (final entry in written.entries) {
     for (final item in _publicItemsIn(entry.value.$2)) {
@@ -363,7 +387,8 @@ Future<void> main(List<String> args) async {
         line.substring(line.lastIndexOf(':') + 1, line.length - 1),
     };
     final wanted = <String, String>{};
-    for (final used in _identifiersIn(text)) {
+    final used = _identifiersIn(text).toSet();
+    for (final used in used) {
       if (mine.contains(used)) continue;
       // `_` is a pattern, not a name. A *private* name (`_Linear`) is
       // imported when exactly one module defines it: Dart's library-private
@@ -386,6 +411,24 @@ Future<void> main(List<String> args) async {
       final from = imported.single;
       if (from == name) continue;
       wanted[used] = from;
+    }
+    // A class's abstract ancestors too: `rrect.left()` is `_RRectLike`'s
+    // accessor, and a method of a trait not in scope does not exist
+    // (209 "no method named", `_RRectLike` alone 70). The text names the
+    // class, never the trait, so the trait comes with the class.
+    for (final cls in used) {
+      for (final ancestor in abstractAncestors(cls)) {
+        if (mine.contains(ancestor) ||
+            already.contains(ancestor) ||
+            wanted.containsKey(ancestor)) {
+          continue;
+        }
+        final candidates = definers[ancestor];
+        if (candidates == null || candidates.length != 1) continue;
+        final from = candidates.single;
+        if (from == name) continue;
+        wanted[ancestor] = from;
+      }
     }
     final byModule = <String, List<String>>{};
     for (final e in wanted.entries) {
