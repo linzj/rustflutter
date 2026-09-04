@@ -1598,6 +1598,11 @@ class KernelFrontend {
   String? _receiverClassName(Expression receiver) =>
       _staticClass(receiver)?.name;
 
+  /// A Dart member's name on the Rust side: `clone` would shadow
+  /// `Clone::clone`, which the backend calls on every value it shares
+  /// (`Matrix4.clone()` gave every `.clone()` a `Result`, 179).
+  static String _dartName(String name) => name == 'clone' ? 'clone_' : name;
+
   IrStmt _instanceSet(InstanceSet value) {
     // The value widens into the field's or setter's type: `_cache = s`
     // into a `String?` field is `Some(s)`.
@@ -2652,10 +2657,11 @@ class KernelFrontend {
         : null;
     final qualifier = _qualifierFor(from ?? owner, member);
     final fails = _fails(member);
-    if (qualifier == null && !fails) return call;
+    final renamed = member is Procedure && member.name.text == 'clone';
+    if (qualifier == null && !fails && !renamed) return call;
     return IrCall(
       call.target,
-      call.name,
+      renamed ? _dartName(call.name) : call.name,
       call.args,
       qualifier: qualifier,
       receiverClass: type is InterfaceType ? type.classNode.name : null,
@@ -5829,7 +5835,7 @@ class KernelFrontend {
     // `new`, as the backend spells the call.
     final name = node.kind == ProcedureKind.Factory && node.name.text.isEmpty
         ? 'new'
-        : node.name.text;
+        : _dartName(node.name.text);
     if (node.isNoSuchMethodForwarder) {
       _lowerForwarder(cls, node);
       return;

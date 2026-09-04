@@ -2603,10 +2603,15 @@ class RustBackend {
   /// A body under the Result model: a `void` one that falls off its end
   /// ends in `Ok(())`, since the signature says `Result<(), E>`.
   void _body(IrStmt body, IrType returnType) {
+    final rendered = type(returnType);
+    // A `Null?` return (a `FutureOr<void>` callback's) falls off into
+    // `Ok(None)` as `()` does into `Ok(())` (52 in `widgets`).
+    final unit = rendered == '()';
+    final optional = rendered.startsWith('Option<');
     final fallsOff =
-        _failure != null && type(returnType) == '()' && !_alwaysReturns(body);
+        _failure != null && (unit || optional) && !_alwaysReturns(body);
     stmt(body, tail: !fallsOff);
-    if (fallsOff) _line('Ok(())');
+    if (fallsOff) _line(unit ? 'Ok(())' : 'Ok(None)');
   }
 
   void stmt(IrStmt s, {bool tail = false}) {
