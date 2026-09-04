@@ -136,7 +136,12 @@ Future<void> main(List<String> args) async {
     // not translated -- 543 uses of a name nothing declares. The prelude gives
     // it a trait with a blanket impl, so `&dyn Object` accepts anything, and
     // it is listed here so the backend spells it `dyn`.
-    ..add('Object');
+    ..add('Object')
+    // Two prelude traits standing for `dart:core` interfaces, spelled
+    // `dyn` like any abstract class: `Comparable<T>` and `Iterator<E>`
+    // (`DartIterator`, renamed by the front end).
+    ..add('Comparable')
+    ..add('DartIterator');
   final prefix = args[1];
   final out = Directory(args[2]);
   await out.create(recursive: true);

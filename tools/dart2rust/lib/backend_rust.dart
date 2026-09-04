@@ -3192,8 +3192,15 @@ class RustBackend {
       'std::fmt::Debug',
       if (cls.superclass != null && library.isAbstract(cls.superclass))
         _traitPath(IrType(cls.superclass!, arguments: cls.superclassArguments)),
+      // Not the prelude's interfaces: `SourceSpan implements Comparable<
+      // SourceSpan>` as a supertrait names the trait inside its own bound
+      // ("cycle detected when computing the super predicates"). A concrete
+      // class gets a forwarding impl instead (`_emitPreludeInterfaces`).
       for (final i in cls.interfaces)
-        if (library.isAbstract(i.name) && i.name != 'Object') _traitPath(i),
+        if (library.isAbstract(i.name) &&
+            i.name != 'Object' &&
+            !_preludeInterfaces.containsKey(i.name))
+          _traitPath(i),
     }.toList();
     _line(
       '${_vis(cls.name)}trait ${cls.name}${_generics(cls, static: true)}: ${supers.join(' + ')} {',
@@ -4908,7 +4915,53 @@ class RustBackend {
   /// Delegating keeps one body and one idiomatic surface: `Alignment` still has
   /// its `impl Neg` returning an `Alignment`, which is what a Rust caller wants,
   /// and the trait method boxes that up for callers who only know the base.
+  /// The prelude's traits for `dart:core` interfaces, with the methods each
+  /// asks for: the impl forwards to the class's own.
+  static const _preludeInterfaces = {
+    'Comparable': [
+      'compare_to(&self, other: __A0) -> i64',
+      'compare_to(other)',
+    ],
+    'DartIterator': [
+      'move_next(&self) -> bool',
+      'move_next()',
+      'current(&self) -> __A0',
+      'current()',
+    ],
+  };
+
+  void _emitPreludeInterfaces() {
+    for (final i in cls.interfaces) {
+      final methods = _preludeInterfaces[i.name];
+      if (methods == null) continue;
+      final args = i.arguments.map((a) => type(a)).toList();
+      final generic = args.isEmpty ? '' : '<${args.join(', ')}>';
+      _member('impl ${i.name} for ${cls.name}', () {
+        _line(
+          'impl${_implGenerics(cls)} ${i.name}$generic for '
+          '${cls.name}${_generics(cls)} {',
+        );
+        _indent++;
+        for (var k = 0; k + 1 < methods.length; k += 2) {
+          final signature = methods[k].replaceAll(
+            '__A0',
+            args.isEmpty ? 'std::rc::Rc<dyn Object>' : args[0],
+          );
+          _line('fn $signature {');
+          _indent++;
+          _line('self.${methods[k + 1]}');
+          _indent--;
+          _line('}');
+        }
+        _indent--;
+        _line('}');
+        _line('');
+      });
+    }
+  }
+
   void _emitBaseImpl() {
+    _emitPreludeInterfaces();
     // Every abstract **ancestor**, not just a direct abstract base. `Padded`
     // extends the concrete `Square`, which extends the abstract `Shape`; with
     // only the direct base considered, `Padded` implemented nothing and

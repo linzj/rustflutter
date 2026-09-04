@@ -148,8 +148,15 @@ class KernelFrontend {
   IrType _type(DartType type) {
     final nullable = type.nullability == Nullability.nullable;
     if (type is InterfaceType) {
+      // `dart:core`'s `Iterator` would shadow `std::iter::Iterator` in every
+      // module: it is the prelude's `DartIterator`.
+      final core =
+          type.classNode.enclosingLibrary.importUri.toString() == 'dart:core';
+      final name = core && type.classNode.name == 'Iterator'
+          ? 'DartIterator'
+          : type.classNode.name;
       return IrType(
-        type.classNode.name,
+        name,
         nullable: nullable,
         arguments: [for (final a in type.typeArguments) _type(a)],
       );
@@ -4952,9 +4959,24 @@ class KernelFrontend {
         name,
         [
           for (final p in fn.positionalParameters)
-            IrParam(_paramName(p), _type(p.type)),
+            IrParam(
+              _paramName(p),
+              _type(p.type),
+              hasDefault: p.defaultValue != null,
+              defaultValue: _default(p),
+            ),
           for (final p in fn.namedParameters)
-            IrParam(p.parameterName, _type(p.type), named: true),
+            // With their defaults: the impl forwarder for an override that
+            // adds `gapExtent = 0` to `ShapeBorder.paint` passes the default,
+            // and a stub without it was "a value the base has no value for"
+            // (`CutCornersBorder`, the one error left in the gallery).
+            IrParam(
+              p.parameterName,
+              _type(p.type),
+              named: true,
+              hasDefault: p.defaultValue != null,
+              defaultValue: _default(p),
+            ),
         ],
         _returnType(fn),
         IrBlock([

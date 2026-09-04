@@ -6,6 +6,41 @@
 
 use std::fmt;
 
+/// `Comparable<T>`: `compareTo`, on the scalars that have it. A value typed
+/// `Comparable<T>` is an `Rc<dyn Comparable<T>>`, as any abstract class's is.
+pub trait Comparable<T> {
+    fn compare_to(&self, other: T) -> i64;
+}
+
+impl Comparable<i64> for i64 {
+    fn compare_to(&self, other: i64) -> i64 {
+        (*self > other) as i64 - (*self < other) as i64
+    }
+}
+
+impl Comparable<f64> for f64 {
+    fn compare_to(&self, other: f64) -> i64 {
+        (*self > other) as i64 - (*self < other) as i64
+    }
+}
+
+impl Comparable<String> for String {
+    fn compare_to(&self, other: String) -> i64 {
+        match self.cmp(&other) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        }
+    }
+}
+
+/// Dart's `Iterator<E>` -- `moveNext()` and `current` -- under a name that
+/// does not shadow `std::iter::Iterator`. The front end renames the type.
+pub trait DartIterator<T> {
+    fn move_next(&self) -> bool;
+    fn current(&self) -> T;
+}
+
 /// Dart's `Object`, as the one thing Rust has for "anything": a trait every
 /// type implements. `&dyn Object` then accepts what `Object` accepted.
 pub trait Object {
