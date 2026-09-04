@@ -1907,6 +1907,13 @@ class RustBackend {
     // as `x._()`, which does not parse and stopped the whole crate at the
     // lexer. `_identifier` gives the operator the same name its definition
     // got, and refuses the ones with no Rust name at all.
+    // A concrete class's own method is inherent, and an inherent method
+    // wins over any trait's: the plain call is unambiguous, and the
+    // qualified one passed `&**self` to a `self: &Rc<Self>` receiver (47
+    // in `WidgetsFlutterBinding` alone).
+    if (qualifier != null && !(library[qualifier]?.isAbstract ?? true)) {
+      qualifier = null;
+    }
     if (qualifier != null) {
       // See `IrCall.qualifier`. `self`/`this_` are already references; a
       // closure's `__me` is a handle, as is any receiver typed by a trait

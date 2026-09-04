@@ -3471,6 +3471,21 @@ class KernelFrontend {
         param.classNode != given.classNode) {
       return IrCall(lowered, '!rc', const []);
     }
+    // ..and into a *nullable* slot of the supertype, through `Some`:
+    // `ErrorDescription(..)` as the `DiagnosticsNode? context` of a
+    // `FlutterErrorDetails` (59 in `foundation`).
+    if (param is InterfaceType &&
+        given is InterfaceType &&
+        translated(param) &&
+        translated(given) &&
+        param.nullability == Nullability.nullable &&
+        given.nullability != Nullability.nullable &&
+        param.classNode.isAbstract &&
+        !given.classNode.isAbstract &&
+        !_closureCallsMethod(given.classNode) &&
+        param.classNode != given.classNode) {
+      return IrSome(IrCall(lowered, '!rc', const []));
+    }
     // A `List<int>` handed to a `Uint8List` parameter (TFA narrowed it, or
     // Dart's typed list is a `List<int>` too): the elements are cast down,
     // `Vec<i64>` to `Vec<u8>`, as the typed-list index does.
