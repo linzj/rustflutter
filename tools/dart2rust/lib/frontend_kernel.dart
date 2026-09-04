@@ -2693,11 +2693,29 @@ class KernelFrontend {
         node.arguments.named.isEmpty) {
       return IrStaticCall(null, 'new_object', const []);
     }
+    // The constructor's parameters in the constructed type's terms:
+    // `Tween<double>(begin: 0)` takes a `T?`, which is a `double?` here.
     return IrNew(
       IrType(target.enclosingClass.name),
-      _arguments(node.arguments, target.function, false),
+      _arguments(
+        node.arguments,
+        target.function,
+        false,
+        _instantiatedConstructor(node),
+      ),
       constructor: name.isEmpty ? null : name,
     );
+  }
+
+  static FunctionType? _instantiatedConstructor(ConstructorInvocation node) {
+    final cls = node.target.enclosingClass;
+    if (cls.typeParameters.isEmpty) return null;
+    final declared = node.target.function.computeThisFunctionType(
+      Nullability.nonNullable,
+    );
+    final substituted = Substitution.fromInterfaceType(node.constructedType)
+        .substituteType(declared);
+    return substituted is FunctionType ? substituted : null;
   }
 
   /// A generic function's type at this call: `_futurize<int>(callbacker)`
@@ -2989,7 +3007,10 @@ class KernelFrontend {
       // prelude class as much as a translated one, and `_lowerProcedure`
       // declares the factory under that name.
       target.name.text,
-      _arguments(node.arguments, target.function),
+      // With the call's type arguments: `WidgetStateProperty.resolveWith<
+      // Color?>((states) { .. })` expects the closure to return `Color?`,
+      // and the declared `T` said nothing (63 `Option<Color>` <- `Color`).
+      _arguments(node.arguments, target.function, true, _instantiated(node)),
     );
   }
 
