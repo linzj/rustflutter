@@ -4706,8 +4706,11 @@ class KernelFrontend {
   /// getters whose traits say otherwise.
   static bool _tfaUnreachable(Throw node) {
     final thrown = node.expression;
+    // "code removed" in a body, "method removed" for a whole constructor
+    // (`IconData`'s, whose every use upstream is a constant).
     return thrown is StringLiteral &&
-        thrown.value.startsWith('Attempt to execute code removed by Dart AOT');
+        thrown.value.startsWith('Attempt to execute ') &&
+        thrown.value.contains('removed by Dart AOT');
   }
 
   static const _unreachable = IrLiteral(
@@ -5641,7 +5644,35 @@ class KernelFrontend {
       EmptyStatement() => const <Statement>[],
       _ => [body],
     };
-    final real = statements.where((s) => s is! EmptyStatement).toList();
+    var real = statements.where((s) => s is! EmptyStatement).toList();
+    // A constructor the AOT compiler gutted: every `IconData(..)` upstream
+    // is a constant, so the runtime never runs the constructor and TFA
+    // left it with no initialisers and a body that throws "code removed".
+    // This output rebuilds those constants as constructor calls (74
+    // `IconData::new` missing), so the constructor is rebuilt from its
+    // signature: a field takes the parameter of the same name, which is
+    // what `this.codePoint` meant.
+    final gutted =
+        real.length == 1 &&
+        real.single is ExpressionStatement &&
+        (real.single as ExpressionStatement).expression is Throw &&
+        _tfaUnreachable(
+          (real.single as ExpressionStatement).expression as Throw,
+        );
+    if (gutted && !node.initializers.any((i) => i is FieldInitializer)) {
+      final byName = <String, String>{
+        for (final p in node.function.positionalParameters)
+          _paramName(p): _paramName(p),
+        for (final p in node.function.namedParameters)
+          p.parameterName: p.parameterName,
+      };
+      for (final field in node.enclosingClass.fields) {
+        if (field.isStatic || field.initializer != null) continue;
+        final param = byName[field.name.text];
+        if (param != null) inits[field.name.text] = IrLocal(param);
+      }
+      real = const [];
+    }
     cls.constructors.add(
       IrConstructor(
         params,

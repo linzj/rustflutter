@@ -4337,19 +4337,50 @@ class RustBackend {
         'super(...)',
       );
     }
-    final substitution = <String, IrExpr>{
+    var substitution = <String, IrExpr>{
       for (var i = 0; i < baseCtor.params.length; i++)
         baseCtor.params[i].name: ctor.superArgs[i],
       ..._baseTempRenames(base, baseCtor),
     };
+    // Through the base's redirects: `_SemanticsBase()` is `this.
+    // fromProperties(.., properties: SemanticsProperties(..))`, and the
+    // field initialisers are the target's, in terms of its parameters,
+    // which the redirect's arguments fill (`Semantics.new`, 119 callers,
+    // "field never initialised: properties").
+    var reached = baseCtor;
+    while (reached.redirectTo != null) {
+      final targetName = reached.redirectTo!.isEmpty
+          ? null
+          : reached.redirectTo;
+      final targets = base.constructors
+          .where((c) => c.name == targetName)
+          .toList();
+      if (targets.length != 1 ||
+          targets.single.params.length != reached.redirectArgs.length) {
+        throw Unsupported(
+          'super constructor call into `$baseName`, whose constructor '
+              'redirects to one this compiler cannot follow',
+          'super(...)',
+        );
+      }
+      final target = targets.single;
+      final through = substitution;
+      substitution = {
+        for (var i = 0; i < target.params.length; i++)
+          target.params[i].name: _substitute(reached.redirectArgs[i], through),
+        ..._baseTempRenames(base, target),
+      };
+      reached = target;
+    }
+    final reachedSubstitution = substitution;
     return {
       // The base's own inherited initialisers first, so a chain resolves from
       // the top down and a nearer class can override nothing -- Dart does not
       // let it, and neither does this.
-      ..._inheritedInits(baseCtor)
-          .map((k, v) => MapEntry(k, _substitute(v, substitution))),
-      ...baseCtor.fieldInits.map(
-        (k, v) => MapEntry(k, _substitute(v, substitution)),
+      ..._inheritedInits(reached)
+          .map((k, v) => MapEntry(k, _substitute(v, reachedSubstitution))),
+      ...reached.fieldInits.map(
+        (k, v) => MapEntry(k, _substitute(v, reachedSubstitution)),
       ),
     };
   }
