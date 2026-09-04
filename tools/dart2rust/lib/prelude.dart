@@ -1532,6 +1532,13 @@ pub struct Directory {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Null;
 
+/// A struct holding one derives `Debug` (`RenderTapRegionSurface._cachedResults`).
+impl<T> fmt::Debug for Expando<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Instance of 'Expando'")
+    }
+}
+
 /// `dart:core`'s `Expando<T>`: a value attached to an object by identity.
 ///
 /// Keyed by the address behind the handle, since identity here is the `Rc`.
@@ -1597,6 +1604,12 @@ pub struct NativeType;
 pub struct Void;
 pub struct NativeFunction<T>(std::marker::PhantomData<T>);
 pub struct DynamicLibrary;
+impl fmt::Debug for Allocator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Instance of 'Allocator'")
+    }
+}
+
 pub struct Allocator;
 
 /// `dart:core`'s `WeakReference<T>`: a handle that does not keep its

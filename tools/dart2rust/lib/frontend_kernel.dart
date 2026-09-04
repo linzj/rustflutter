@@ -1973,7 +1973,13 @@ class KernelFrontend {
     return IrField(
       target,
       name,
-      onEnum: node.interfaceTarget.enclosingClass?.isEnum ?? false,
+      // `PerformanceOverlayOption.x.index` in a static initialiser resolves
+      // to `_Enum.index`, a field of a class that is not an enum; the
+      // receiver's own type says it is one (4 "attempted to take value of
+      // method `index`" in `rendering`).
+      onEnum:
+          (node.interfaceTarget.enclosingClass?.isEnum ?? false) ||
+          (receiverType is InterfaceType && receiverType.classNode.isEnum),
       owner: target == null
           ? null
           : concrete && declaring != null && declaring.isAbstract

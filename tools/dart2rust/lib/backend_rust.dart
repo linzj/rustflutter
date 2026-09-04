@@ -3741,7 +3741,10 @@ class RustBackend {
         // And the *method's* own, for a generic method like
         // `invokeLayoutCallback<T extends Constraints>`. A free function can
         // carry them; the trait method it belongs to cannot, and says so.
-        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.join(', ')}'}'
+        // Bounded as the trait method's are: `AnnotationResult<S>` asks
+        // `Clone + 'static` of its `S`, and the free function said nothing
+        // (E0277 in the signature of `ContainerLayer.findAnnotations<S>`).
+        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone + 'static").join(', ')}'}'
         '>($params) -> '
         // An `async fn` returns the awaited type: `Future<Response>` on an
         // `async` super function was a future of a boxed future (E0308).
@@ -4904,45 +4907,55 @@ class RustBackend {
   /// be worked out from here.
   List<IrType>? _baseTypeArguments(IrClass base) {
     if (base.typeParameters.isEmpty) return const [];
-    // Walk up from this class, carrying the arguments through each step.
-    // `_Linear extends Curve` and `Curve extends ParametricCurve<double>`, so
-    // reaching ParametricCurve means going through Curve -- and a Curve that
-    // had parameters of its own would need ours substituted into what it
-    // passes on.
-    var current = cls;
-    var bound = <String, IrType>{};
-    while (true) {
-      // A mixin is a direct base of whichever class named it, so its arguments
-      // are read off the `with` clause rather than composed through a chain --
-      // with whatever this step has already bound substituted in.
-      for (final mixin in [...current.mixins, ...current.interfaces]) {
-        if (mixin.name != base.name) continue;
-        // Substituted *inside* the argument, not only when the argument is a
-        // bare parameter: `FormFieldState<T> extends State<FormField<T>>`
-        // passes `FormField<T>`, and `bound[a.name]` left that `T` standing --
-        // 28 `E0747`s reading it as a constant.
-        final passed = [
-          for (final a in mixin.arguments) _substituteType(a, bound),
-        ];
-        if (passed.length != base.typeParameters.length) return null;
-        return passed;
-      }
-      final next = library[current.superclass];
-      if (next == null) return null;
+    return _argumentsThrough(cls, const {}, base, {});
+  }
+
+  /// Walk up from `current`, carrying the arguments through each step.
+  /// `_Linear extends Curve` and `Curve extends ParametricCurve<double>`, so
+  /// reaching ParametricCurve means going through Curve -- and a Curve that
+  /// had parameters of its own would need ours substituted into what it
+  /// passes on. A mixin or interface is a direct base of whichever class
+  /// named it, so its arguments are read off the `with`/`implements` clause
+  /// -- and followed through: `_SelectableFragment with Selectable`, where
+  /// `Selectable implements SelectionHandler` and that `extends
+  /// ValueListenable<SelectionGeometry>` (the impl was refused as "arguments
+  /// not known here" while the `Selectable` trait required it, 2 E0277).
+  List<IrType>? _argumentsThrough(
+    IrClass current,
+    Map<String, IrType> bound,
+    IrClass base,
+    Set<String> seen,
+  ) {
+    if (!seen.add(current.name)) return null;
+    Map<String, IrType> binding(IrClass of, List<IrType> passed) => {
+      for (var i = 0; i < passed.length; i++) of.typeParameters[i]: passed[i],
+    };
+    for (final mixin in [...current.mixins, ...current.interfaces]) {
+      // Substituted *inside* the argument, not only when the argument is a
+      // bare parameter: `FormFieldState<T> extends State<FormField<T>>`
+      // passes `FormField<T>`, and `bound[a.name]` left that `T` standing --
+      // 28 `E0747`s reading it as a constant.
       final passed = [
-        for (final a in current.superclassArguments) _substituteType(a, bound),
+        for (final a in mixin.arguments) _substituteType(a, bound),
       ];
-      if (next.name == base.name) {
-        if (passed.length != base.typeParameters.length) return null;
-        return passed;
+      if (mixin.name == base.name) {
+        return passed.length == base.typeParameters.length ? passed : null;
       }
-      if (passed.length != next.typeParameters.length) return null;
-      bound = {
-        for (var i = 0; i < passed.length; i++)
-          next.typeParameters[i]: passed[i],
-      };
-      current = next;
+      final via = library[mixin.name];
+      if (via == null || passed.length != via.typeParameters.length) continue;
+      final found = _argumentsThrough(via, binding(via, passed), base, seen);
+      if (found != null) return found;
     }
+    final next = library[current.superclass];
+    if (next == null) return null;
+    final passed = [
+      for (final a in current.superclassArguments) _substituteType(a, bound),
+    ];
+    if (next.name == base.name) {
+      return passed.length == base.typeParameters.length ? passed : null;
+    }
+    if (passed.length != next.typeParameters.length) return null;
+    return _argumentsThrough(next, binding(next, passed), base, seen);
   }
 
   void _emitImplFor(IrClass base) {
