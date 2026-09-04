@@ -612,7 +612,9 @@ class RustBackend {
             ? 'std::rc::Rc::new(${_abstractStaticName(owner, name)})'
             : 'std::rc::Rc::new($owner::${snake(name)})',
       IrAssignValue(:final name, :final value) =>
-        '{ let __set = ${expr(value)}; ${snake(name)} = __set; __set }',
+        // The stored copy is a clone: a non-`Copy` value moved into the
+        // local was gone by the time the expression yielded it (E0382, 17).
+        '{ let __set = ${expr(value)}; ${snake(name)} = __set.clone(); __set }',
       IrSetValue(:final target, :final name, :final value) => _setValue(
         target,
         name,
@@ -2292,7 +2294,7 @@ class RustBackend {
                 '*$receiver.${snake(name)}.borrow_mut() = __set.clone(); __set }';
     }
     return '{ let __set = ${expr(value)}; '
-        '$receiver.${snake(name)} = __set; __set }';
+        '$receiver.${snake(name)} = __set.clone(); __set }';
   }
 
   /// `'a \$b c'` as `format!`.
