@@ -53,7 +53,22 @@ class KernelFrontend {
     this.typeEnvironment,
     this.dynamicSlots = const {},
     this.throws,
+    this.open = const {},
   });
+
+  /// Concrete classes with subclasses, lowered as a trait plus a struct
+  /// (`XImpl`) for their own instances: a subclass instance can then sit in
+  /// a slot typed by the base, which a value struct never allowed
+  /// (`ParentData` 138 mismatches, `Color` 178, 2026-09-04).
+  final Set<Class> open;
+
+  bool _isOpen(Class c) => open.contains(c);
+
+  /// Abstract on the Rust side: a Dart abstract class, or an open one.
+  bool _abstractLike(Class c) => c.isAbstract || _isOpen(c);
+
+  /// The struct behind an open class's own instances.
+  static String implName(String name) => '${name}Impl';
 
   /// Which members can fail, over the whole program (`ThrowsAnalysis`);
   /// null while the Result model is off.
@@ -333,7 +348,7 @@ class KernelFrontend {
       // an `Object?` promoted to `String` is a downcast to `String`.
       const scalars = {'String', 'int', 'double', 'bool', 'num'};
       if (promoted is InterfaceType &&
-          (!promoted.classNode.isAbstract ||
+          (!_abstractLike(promoted.classNode) ||
               scalars.contains(promoted.classNode.name)) &&
           !promoted.classNode.isEnum &&
           !(declared is InterfaceType &&
@@ -871,7 +886,7 @@ class KernelFrontend {
       final fromObject =
           from is DynamicType ||
           (from is InterfaceType &&
-              ((from.classNode.isAbstract &&
+              ((_abstractLike(from.classNode) &&
                       _rustScalar(from.classNode.name) ==
                           from.classNode.name) ||
                   from.classNode.name == 'Object'));
@@ -881,7 +896,7 @@ class KernelFrontend {
           // `String` is abstract in dart:core, and `unsafeCast<String?>(Zone
           // .current[#Intl.locale])` wants the same `Any` downcast a struct
           // gets: the prelude's `String` is what an `Rc<dyn Object>` holds.
-          (!to.classNode.isAbstract ||
+          (!_abstractLike(to.classNode) ||
               _rustScalar(to.classNode.name) != to.classNode.name ||
               to.classNode.name == 'String') &&
           to.classNode.name != 'Object' &&
@@ -2073,11 +2088,11 @@ class KernelFrontend {
     final receiverType = target == null ? null : _staticType(receiver);
     final concrete =
         receiverType is InterfaceType &&
-        !receiverType.classNode.isAbstract &&
+        !_abstractLike(receiverType.classNode) &&
         receiverType.classNode.enclosingLibrary.importUri.scheme != 'dart';
     if (target != null &&
         declaring != null &&
-        declaring.isAbstract &&
+        _abstractLike(declaring) &&
         !declaring.isAnonymousMixin &&
         !concrete) {
       return _qualified(
@@ -2098,7 +2113,7 @@ class KernelFrontend {
           (receiverType is InterfaceType && receiverType.classNode.isEnum),
       owner: target == null
           ? null
-          : concrete && declaring != null && declaring.isAbstract
+          : concrete && declaring != null && _abstractLike(declaring)
           ? (receiverType as InterfaceType).classNode.name
           : node.interfaceTarget.enclosingClass?.name,
     );
@@ -2817,7 +2832,7 @@ class KernelFrontend {
     // The constructor's parameters in the constructed type's terms:
     // `Tween<double>(begin: 0)` takes a `T?`, which is a `double?` here.
     return IrNew(
-      IrType(target.enclosingClass.name),
+      IrType(_instanceName(target.enclosingClass)),
       _arguments(
         node.arguments,
         target.function,
@@ -2827,6 +2842,11 @@ class KernelFrontend {
       constructor: name.isEmpty ? null : name,
     );
   }
+
+  /// The struct an instance of `cls` is: the class's own name, or the
+  /// `Impl` beside an open class's trait.
+  String _instanceName(Class cls) =>
+      _isOpen(cls) ? implName(cls.name) : cls.name;
 
   static FunctionType? _instantiatedConstructor(ConstructorInvocation node) {
     final cls = node.target.enclosingClass;
@@ -3050,11 +3070,12 @@ class KernelFrontend {
           from is DynamicType ||
           (from is InterfaceType &&
               from.nullability != Nullability.nullable &&
-              (from.classNode.isAbstract || from.classNode.name == 'Object'));
+              (_abstractLike(from.classNode) ||
+                  from.classNode.name == 'Object'));
       if (fromTraitObject &&
           to is InterfaceType &&
           to.nullability != Nullability.nullable &&
-          !to.classNode.isAbstract &&
+          !_abstractLike(to.classNode) &&
           to.classNode.name != 'Object' &&
           (from is! InterfaceType || from.classNode != to.classNode)) {
         // The Rust name: `double` is an `f64` (`arg is double` after TFA).
@@ -3604,7 +3625,7 @@ class KernelFrontend {
         param is InterfaceType &&
         param.nullability == Nullability.nullable &&
         param.classNode.name != 'Object' &&
-        !param.classNode.isAbstract &&
+        !_abstractLike(param.classNode) &&
         (param.classNode.enclosingLibrary.importUri.scheme != 'dart' ||
             param.classNode.enclosingLibrary.importUri.toString() ==
                 'dart:ui')) {
@@ -3643,10 +3664,10 @@ class KernelFrontend {
         translated(given) &&
         param.nullability != Nullability.nullable &&
         given.nullability != Nullability.nullable &&
-        !param.classNode.isAbstract &&
+        !_abstractLike(param.classNode) &&
         // `Object` is not abstract in Kernel and is not a struct here.
         param.classNode.name != 'Object' &&
-        given.classNode.isAbstract &&
+        _abstractLike(given.classNode) &&
         param.classNode != given.classNode) {
       return IrCall(
         IrDowncast(lowered, param.classNode.name),
@@ -3663,8 +3684,8 @@ class KernelFrontend {
         translated(given) &&
         param.nullability != Nullability.nullable &&
         given.nullability != Nullability.nullable &&
-        param.classNode.isAbstract &&
-        !given.classNode.isAbstract &&
+        _abstractLike(param.classNode) &&
+        !_abstractLike(given.classNode) &&
         !_closureCallsMethod(given.classNode) &&
         param.classNode != given.classNode) {
       return IrCall(lowered, '!rc', const []);
@@ -3678,8 +3699,8 @@ class KernelFrontend {
         translated(given) &&
         param.nullability == Nullability.nullable &&
         given.nullability != Nullability.nullable &&
-        param.classNode.isAbstract &&
-        !given.classNode.isAbstract &&
+        _abstractLike(param.classNode) &&
+        !_abstractLike(given.classNode) &&
         !_closureCallsMethod(given.classNode) &&
         param.classNode != given.classNode) {
       return IrSome(IrCall(lowered, '!rc', const []));
@@ -4266,8 +4287,8 @@ class KernelFrontend {
       // `curve` is a `_Linear` value where an `Rc<dyn Curve>` goes (39).
       if (t is InterfaceType &&
           value is InstanceConstant &&
-          t.classNode.isAbstract &&
-          !value.classNode.isAbstract &&
+          _abstractLike(t.classNode) &&
+          !_abstractLike(value.classNode) &&
           t.classNode != value.classNode &&
           _translatedClass(t.classNode) &&
           _translatedClass(value.classNode) &&
@@ -4291,8 +4312,10 @@ class KernelFrontend {
   /// against the analyzer front end's `Pair::<i64, f32>::new(..)`. Both are
   /// valid Rust -- inference would have got there -- but the two front ends
   /// saying different things is the one thing the fixtures exist to catch.
-  IrType _constantType(Class cls, List<DartType> typeArguments) =>
-      IrType(cls.name, arguments: [for (final t in typeArguments) _type(t)]);
+  IrType _constantType(Class cls, List<DartType> typeArguments) => IrType(
+    _instanceName(cls),
+    arguments: [for (final t in typeArguments) _type(t)],
+  );
 
   // There was a `_refusePrivate` here. It is gone, and its going is the point
   // of this round: skipping private members is right when translating one file
@@ -5070,6 +5093,7 @@ class KernelFrontend {
       try {
         final (lowered, problems) = lowerClass(cls);
         classes.add(lowered);
+        if (_isOpen(cls)) classes.add(_implOf(cls, lowered));
         refused.addAll(problems.map((p) => '${cls.name}: $p'));
       } on Unsupported catch (error) {
         refused.add('${cls.name}: $error');
@@ -5296,7 +5320,7 @@ class KernelFrontend {
     final reachedThroughTrait =
         node.implementedTypes.isNotEmpty ||
         node.isMixinDeclaration ||
-        (node.superclass?.isAbstract ?? false);
+        (node.superclass != null && _abstractLike(node.superclass!));
     if (reachedThroughTrait && _writesFieldInMethod(node)) return true;
     // ..or mixes in / extends an abstract class with a mutable field: that
     // class's own methods write it through the trait's setter, on `&self`,
@@ -5354,6 +5378,34 @@ class KernelFrontend {
   static bool _isVariantOf(Class node, Field field) {
     final type = field.type;
     return type is InterfaceType && type.classNode == node;
+  }
+
+  /// The struct beside an open class's trait: it extends the class (whose
+  /// fields flatten into it and whose methods reach it as a subclass's
+  /// do) and adds nothing but constructors forwarding to the base's.
+  IrClass _implOf(Class node, IrClass lowered) {
+    final impl = IrClass(
+      implName(node.name),
+      typeParameters: lowered.typeParameters,
+      superclass: lowered.name,
+      superclassArguments: [for (final p in lowered.typeParameters) IrType(p)],
+      counted: lowered.counted,
+      doc: 'The instances of `${node.name}` itself; see the trait.',
+    );
+    for (final ctor in lowered.constructors) {
+      impl.constructors.add(
+        IrConstructor(
+          ctor.params,
+          const {},
+          isConst: ctor.isConst,
+          name: ctor.name,
+          superBase: lowered.name,
+          superName: ctor.name,
+          superArgs: [for (final p in ctor.params) IrLocal(p.name)],
+        ),
+      );
+    }
+    return impl;
   }
 
   (IrClass, List<String>) lowerClass(Class node) {
@@ -5511,7 +5563,7 @@ class KernelFrontend {
                 for (final t in node.onClause) _type(t.asInterfaceType),
             ],
       counted: _counted,
-      isAbstract: node.isAbstract,
+      isAbstract: node.isAbstract || _isOpen(node),
       isEnum: node.isEnum,
       values: recovered,
       valueFields: stateRecovered
@@ -6635,6 +6687,47 @@ class _EnumConstantFinder extends RecursiveVisitor {
 /// The backend decides `dyn Trait` against a plain struct from this. A library
 /// only knows its own classes, which was fine while one library was emitted at
 /// a time and is not once a whole package shares a crate.
+/// The default gate for open classes: the `ParentData` family, where a
+/// subclass instance in a base-typed slot is what layout is made of.
+const defaultOpenClasses =
+    'ParentData,BoxParentData,ContainerBoxParentData,'
+    'SliverMultiBoxAdaptorParentData,SliverLogicalContainerParentData,'
+    'SliverPhysicalContainerParentData,SliverLogicalParentData,'
+    'SliverPhysicalParentData';
+
+/// Concrete translated classes with a translated concrete subclass, within
+/// the gate (`all`, or a comma-separated list of names).
+Set<Class> openClassesIn(
+  Component component,
+  List<String> prefixes,
+  String gate,
+) {
+  final allowed = gate == 'all'
+      ? null
+      : gate.split(',').map((s) => s.trim()).toSet();
+  bool translated(Library l) => prefixes.any(l.importUri.toString().startsWith);
+  final hasSubclass = <Class>{};
+  for (final library in component.libraries) {
+    if (!translated(library)) continue;
+    for (final cls in library.classes) {
+      if (cls.isAnonymousMixin || cls.isAbstract || cls.isEnum) continue;
+      var base = cls.superclass;
+      while (base != null && base.isAnonymousMixin) {
+        base = base.superclass;
+      }
+      if (base != null &&
+          !base.isAbstract &&
+          translated(base.enclosingLibrary)) {
+        hasSubclass.add(base);
+      }
+    }
+  }
+  return {
+    for (final c in hasSubclass)
+      if (allowed == null || allowed.contains(c.name)) c,
+  };
+}
+
 Set<String> abstractClassesIn(Component component, List<String> prefixes) {
   final names = <String>{};
   for (final library in component.libraries) {

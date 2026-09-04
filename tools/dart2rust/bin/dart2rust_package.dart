@@ -132,7 +132,17 @@ Future<void> main(List<String> args) async {
   final prefixes = args[1].split(',').where((p) => p.isNotEmpty).toList();
   // Which names are traits, across the whole crate. A library only knows its
   // own, and a trait named without `dyn` was 802 of the errors.
+  // Open classes: concrete classes with translated subclasses, emitted as
+  // a trait beside a struct for their own instances (STATUS, ws265). Gated
+  // by name while it is measured; `DART2RUST_OPEN=all` opens every one.
+  final openClasses = openClassesIn(
+    component,
+    prefixes,
+    Platform.environment['DART2RUST_OPEN'] ?? defaultOpenClasses,
+  );
+  stderr.writeln('open classes: ${openClasses.length}');
   final abstractNames = abstractClassesIn(component, prefixes)
+    ..addAll(openClasses.map((c) => c.name))
     // `Object` is every Dart class's base and lives in `dart:core`, which is
     // not translated -- 543 uses of a name nothing declares. The prelude gives
     // it a trait with a blanket impl, so `&dyn Object` accepts anything, and
@@ -231,6 +241,7 @@ Future<void> main(List<String> args) async {
       typeEnvironment: typeEnvironment,
       dynamicSlots: dynamicSlots,
       throws: throwsAnalysis,
+      open: openClasses,
     ).lowerLibrary();
     lowered[library] = result;
     for (final cls in result.$1.classes) {
