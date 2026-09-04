@@ -385,6 +385,20 @@ Future<void> main(List<String> args) async {
     final name = entry.key;
     final (uri, text, exports, resolved, imports) = entry.value;
     final mine = _itemsIn(text);
+    // What the Dart import graph makes visible: the imports, and what
+    // each imported module re-exports, transitively -- `VerticalDirection`
+    // reaches a widget through `flutter/widgets.dart`, which exports
+    // `rendering/flex.dart` (164 "cannot find type"). Still the Dart
+    // graph, so no new module cycle.
+    final visible = <String>{};
+    void see(String m) {
+      if (!visible.add(m)) return;
+      for (final e in written[m]?.$3 ?? const <String>[]) {
+        see(e);
+      }
+    }
+
+    imports.forEach(see);
     // What `resolved` (the class path) already imports by name, so the same
     // name is not imported twice -- 64 `E0252`s, `Path` 41 of them.
     final already = {
@@ -411,7 +425,7 @@ Future<void> main(List<String> args) async {
       // no Dart import made. rustc read them as unused imports; the module
       // graph read them as one 450-module cycle, 27% of the crate, with
       // `dart:ui` and `package:gallery` in it. Measured 2026-09-03.
-      final imported = candidates.where(imports.contains).toList();
+      final imported = candidates.where(visible.contains).toList();
       if (imported.length != 1) continue;
       final from = imported.single;
       if (from == name) continue;
