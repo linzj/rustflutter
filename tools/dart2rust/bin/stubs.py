@@ -57,6 +57,12 @@ def cargo_errors(ws):
         if not spans:
             continue
         s = spans[0]
+        # A span inside a macro's definition (`vec![..]` in the standard
+        # library) names a file this tool cannot open, and 33 errors in
+        # `material` were dropped without a word. The expansion chain
+        # leads back to the call site in the workspace.
+        while s.get('expansion') and s['file_name'].startswith('/'):
+            s = s['expansion']['span']
         found.append((s['file_name'], s['line_start'], msg['message']))
         # The whole diagnostic, notes and all: the headline says
         # "mismatched types" 2482 times and nothing about which two.
@@ -169,6 +175,9 @@ def main():
             try:
                 lines = io.open(path, encoding='utf-8').read().split('\n')
             except OSError:
+                # Not a file of the workspace: reported, not dropped.
+                for line, msg in items:
+                    unstubbable.append((f, line, msg))
                 continue
             # Highest line first, so earlier stubs do not shift later spans.
             done = set()
