@@ -81,6 +81,12 @@ def enclosing_fn(lines, line):
             depth = 0
             opened = None
             while k < len(lines):
+                # A declaration without a body -- a trait's `fn x(..);` --
+                # ends before any brace; the brace after it belongs to the
+                # next item, and stubbing from there once replaced an
+                # `impl` header with a panic (a parse error in `material`).
+                if opened is None and ';' in lines[k].split('{')[0]:
+                    break
                 for ch in lines[k]:
                     if ch == '{':
                         if opened is None:
@@ -99,7 +105,9 @@ def enclosing_fn(lines, line):
                     break
                 k += 1
             if opened is None:
-                return None
+                # No body: keep looking above for the fn that holds the line.
+                j -= 1
+                continue
         j -= 1
     return None
 
