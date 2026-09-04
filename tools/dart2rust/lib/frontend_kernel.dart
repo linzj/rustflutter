@@ -4236,7 +4236,7 @@ class KernelFrontend {
         constant.typeArguments,
       );
       if (rebuilt != null) return rebuilt;
-      return IrConstInstance(IrType(cls.name), {
+      return IrConstInstance(IrType(_instanceName(cls)), {
         for (final entry in byName.entries)
           entry.key: _constant(entry.value, node),
       });
