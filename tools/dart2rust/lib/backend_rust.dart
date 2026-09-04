@@ -669,6 +669,17 @@ class RustBackend {
   /// `let mut` is not applied everywhere: the test crate denies `unused_mut`,
   /// so an unneeded one is a build error rather than a warning nobody reads.
   String _blockValue(IrBlockValue node) {
+    // A binding of a value the AOT compiler removed makes the whole block
+    // unreachable, and a `let __t = unreachable!(..)` has no type for the
+    // `Some(__t.clone())` after it (115 "type annotations needed").
+    for (final statement in node.statements) {
+      if (statement is IrLocalDecl) {
+        final init = statement.init;
+        if (init is IrLiteral && init.value.startsWith('unreachable!')) {
+          return init.value;
+        }
+      }
+    }
     final saved = _out.length;
     final savedIndent = _indent;
     final savedReassigned = _reassigned;

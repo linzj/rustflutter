@@ -589,6 +589,12 @@ class KernelFrontend {
       );
     }
     if (node is VariableSet) {
+      // A value the AOT compiler removed: the assignment never happens and
+      // the temporary it would bind has no type (`let __t74 =
+      // unreachable!(..)`, 115 "type annotations needed").
+      if (node.value is Throw && _tfaUnreachable(node.value as Throw)) {
+        return _unreachable;
+      }
       // `x = v` used for its value. Rust's assignment produces `()`, so the
       // value is bound, assigned and produced -- the same shape a field write
       // used for its value takes.
