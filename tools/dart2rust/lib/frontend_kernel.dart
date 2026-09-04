@@ -6705,13 +6705,11 @@ class _EnumConstantFinder extends RecursiveVisitor {
 /// The backend decides `dyn Trait` against a plain struct from this. A library
 /// only knows its own classes, which was fine while one library was emitted at
 /// a time and is not once a whole package shares a crate.
-/// The default gate for open classes: the `ParentData` family, where a
-/// subclass instance in a base-typed slot is what layout is made of.
-const defaultOpenClasses =
-    'ParentData,BoxParentData,ContainerBoxParentData,'
-    'SliverMultiBoxAdaptorParentData,SliverLogicalContainerParentData,'
-    'SliverPhysicalContainerParentData,SliverLogicalParentData,'
-    'SliverPhysicalParentData';
+/// The default gate for open classes: every one. The gate began as the
+/// `ParentData` family (8 names, 7827 stubs) while the lowering was measured;
+/// once an open class's construction left as its trait handle, opening all
+/// 145 measured 7397 (STATUS, ws270). `DART2RUST_OPEN=a,b` narrows it.
+const defaultOpenClasses = 'all';
 
 /// Concrete translated classes with a translated concrete subclass, within
 /// the gate (`all`, or a comma-separated list of names).
