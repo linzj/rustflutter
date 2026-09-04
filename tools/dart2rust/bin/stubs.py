@@ -163,13 +163,15 @@ def main():
         errors = cargo_errors(args.ws)
         dt = time.time() - t0
         print('round %d: %d errors (%.0fs)' % (rnd, len(errors), dt), flush=True)
+        # This round's, not the last one's: a final round with no errors
+        # reported the previous round's 1695 "outside any function".
+        unstubbable = []
         if not errors:
             break
         by_file = {}
         for f, line, msg in errors:
             by_file.setdefault(f, []).append((line, msg))
         changed = 0
-        unstubbable = []
         for f, items in by_file.items():
             path = os.path.join(args.ws, f)
             try:

@@ -187,7 +187,7 @@ def write_workspace(src, out, mods, crate_of, graph):
     prelude = prelude.replace('macro_rules! dart_error', '#[macro_export]\nmacro_rules! dart_error')
     io.open(os.path.join(pd, 'lib.rs'), 'w', encoding='utf-8').write(prelude)
     io.open(os.path.join(out, 'dart_prelude', 'Cargo.toml'), 'w', encoding='utf-8').write(
-        '[package]\nname = "dart_prelude"\nversion = "0.0.0"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n')
+        '[package]\nname = "dart_prelude"\nversion = "0.0.0"\nedition = "2021"\nautobins = false\n\n[lib]\npath = "src/lib.rs"\n')
     by_crate = collections.defaultdict(list)
     for m, key in crate_of.items():
         by_crate[key].append(m)
@@ -197,7 +197,7 @@ def write_workspace(src, out, mods, crate_of, graph):
         os.makedirs(d, exist_ok=True)
         deps = sorted(graph.get(key, ()))
         io.open(os.path.join(out, key, 'Cargo.toml'), 'w', encoding='utf-8').write(
-            '[package]\nname = "%s"\nversion = "0.0.0"\nedition = "2021"\n\n[lib]\npath = "src/lib.rs"\n\n'
+            '[package]\nname = "%s"\nversion = "0.0.0"\nedition = "2021"\nautobins = false\n\n[lib]\npath = "src/lib.rs"\n\n'
             '[dependencies]\ndart_prelude = { path = "../dart_prelude" }\n%s'
             % (key, ''.join('%s = { path = "../%s" }\n' % (dep, dep) for dep in deps)))
         io.open(os.path.join(d, 'lib.rs'), 'w', encoding='utf-8').write(
