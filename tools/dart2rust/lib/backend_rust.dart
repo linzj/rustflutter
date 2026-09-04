@@ -75,6 +75,14 @@ const _operatorTraits = {
   '/': ('Div', 'div'),
   '%': ('Rem', 'rem'),
   'unary-': ('Neg', 'neg'),
+  // The bitwise ones too: `Offset & Size` is `Rect` upstream, and without
+  // the impl the call site's `a & b` had no operator to land on (103 at
+  // ws300).
+  '&': ('BitAnd', 'bitand'),
+  '|': ('BitOr', 'bitor'),
+  '^': ('BitXor', 'bitxor'),
+  '<<': ('Shl', 'shl'),
+  '>>': ('Shr', 'shr'),
 };
 
 String snake(String name) => _rustIdentifier(snakeRaw(name));

@@ -105,7 +105,6 @@ impl<T: 'static> Object for T {
 pub trait DartDouble {
     fn to_string_as_fixed(&self, digits: i64) -> String;
     /// `compareTo`: -1, 0, 1, with NaN after everything as Dart orders it.
-    fn compare_to(&self, other: f64) -> i64;
     /// `isNegative`, `toDouble`: on a `double`, the sign and itself.
     fn is_negative(&self) -> bool;
     /// `sign`: -1.0, 0.0 or 1.0 (NaN stays NaN), as Dart's `double.sign`.
@@ -139,24 +138,6 @@ impl DartDouble for f64 {
     }
     fn to_double(&self) -> f64 {
         *self
-    }
-    fn compare_to(&self, other: f64) -> i64 {
-        match self.partial_cmp(&other) {
-            Some(std::cmp::Ordering::Less) => -1,
-            Some(std::cmp::Ordering::Equal) => 0,
-            Some(std::cmp::Ordering::Greater) => 1,
-            None => {
-                if self.is_nan() {
-                    if other.is_nan() {
-                        0
-                    } else {
-                        1
-                    }
-                } else {
-                    -1
-                }
-            }
-        }
     }
     fn to_string_as_fixed(&self, digits: i64) -> String {
         format!("{:.*}", digits.max(0) as usize, self)
