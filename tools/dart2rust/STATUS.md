@@ -6243,6 +6243,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws186–ws187 | — | 波及 flutter_services：709 个函数被 stub，39 个函数体外的错（`Pattern`、`JsonUtf8Encoder` 名字补进 prelude；余下 mismatched types/借用一族在 impl 块和静态里）。
 | ws188–ws189 | — | 持有 boxed future 的 struct 不 derive Clone/Debug/PartialEq（AssetBundle 的缓存 Map）；静态初始化式里的 cascade 临时量总是 `mut`。flutter_services 还剩 23 个函数体外的错（静态里的字面量类型、`JsonUtf8Encoder::new`）。可达 28 个 crate。
 | ws190–ws192 | — | 常量实例重建成构造调用时，实参按参数类型 widen（`KeyboardSide?` 收 `Some`，RawKeyboard 的修饰键表 20 个错清掉）；`dart:core` 的 `Pattern` 在 prelude 里是持 String 或 RegExp 的 struct，进翻译代码的 `Pattern` 参数时转换（进 `dart:` 被调者的不转——第一次放在 `_widened` 里连 prelude 的 `split` 也转了，+7，改到 `_intoDynamic`）。flutter_services 过了，波及 flutter_painting：716 个函数被 stub，剩 2 个函数体外的错（`_TextLayout`/`TextPainter` 互含无限大小；`remove_listener` 的 trait 签名不一致）。
+| ws193–ws194 | — | counted 的判定加三条：对 `this` 的字段就地修改（`_listeners.remove`）算写；沿值类型字段可达自身（任意短深度，`TextPainter`→缓存→`_TextLayout`→`TextPainter`）算；有 `dispose` 的算。flutter_painting 过了，波及 rendering/semantics/google_fonts：1075 个函数被 stub；叶子层 46→76（更多类变 counted 带来的新错，要回头看）。剩 4 个函数体外的错：静态里的 `Set<Future>`、`Option<Rc<dyn Fn>>` 要 PartialEq/Debug。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步

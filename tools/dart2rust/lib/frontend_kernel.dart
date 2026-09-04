@@ -4785,6 +4785,33 @@ class KernelFrontend {
   ///
   /// Generous, like `_closureFields`: a class counted that need not be costs
   /// an `Rc`; one not counted that should be is a closure that cannot exist.
+  /// Whether `from`'s instance fields reach `target` by value within a few
+  /// steps (a field of a class type, or a type argument of one).
+  bool _reachesItself(Class target, Class from, Set<Class> seen, int depth) {
+    if (depth > 4 || !seen.add(from)) return false;
+    for (final field in from.fields) {
+      if (field.isStatic) continue;
+      if (_mentions(field.type, target)) return true;
+      final held = field.type;
+      if (held is! InterfaceType) continue;
+      final next = held.classNode;
+      if (next != target &&
+          next.enclosingLibrary.importUri.scheme != 'dart' &&
+          _reachesItself(target, next, seen, depth + 1)) {
+        return true;
+      }
+      for (final arg in held.typeArguments) {
+        if (arg is InterfaceType &&
+            arg.classNode != target &&
+            arg.classNode.enclosingLibrary.importUri.scheme != 'dart' &&
+            _reachesItself(target, arg.classNode, seen, depth + 1)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   bool _closureCallsMethod(Class node) {
     // A tear-off of `this.method` is that closure written shorter (see the
     // `InstanceTearOff` case), so it makes the class counted for the same
@@ -4818,17 +4845,15 @@ class KernelFrontend {
     // has, so the class is counted. Direct self-reference only; a cycle
     // through another class (`OverlayEntry` <-> `_OverlayEntryWidget`) is
     // not seen from here yet.
-    for (final field in node.fields) {
-      if (field.isStatic) continue;
-      if (_mentions(field.type, node)) return true;
-      // ..and a cycle of length two: `_NativeCanvas` holds a
-      // `_NativePictureRecorder` which holds a `_NativeCanvas` (E0072).
-      final held = field.type;
-      if (held is InterfaceType) {
-        for (final back in held.classNode.fields) {
-          if (!back.isStatic && _mentions(back.type, node)) return true;
-        }
-      }
+    // ..and a cycle of any short length through value classes:
+    // `_NativeCanvas` holds a `_NativePictureRecorder` holding a
+    // `_NativeCanvas` (E0072); `TextPainter` holds a layout cache holding a
+    // `_TextLayout` holding a `TextPainter` -- a struct of infinite size
+    // unless it is a handle.
+    if (_reachesItself(node, node, {}, 0)) return true;
+    // ..and a class that is disposed has an identity to dispose.
+    if (node.procedures.any((p) => p.name.text == 'dispose' && !p.isStatic)) {
+      return true;
     }
     final closures = <FunctionNode>[];
     node.accept(_ClosureFinder(closures));
@@ -5571,6 +5596,44 @@ class _ThisWriteFinder extends RecursiveVisitor {
   void visitInstanceSet(InstanceSet node) {
     if (node.receiver is ThisExpression) found = true;
     super.visitInstanceSet(node);
+  }
+
+  /// `_listeners.remove(l)` on a field of `this`: a mutation in place is a
+  /// write to the object as much as an assignment is (a `&mut self` method
+  /// behind a `&self` trait, `_SystemFontsNotifier.removeListener`).
+  @override
+  void visitInstanceInvocation(InstanceInvocation node) {
+    const mutating = {
+      'add',
+      'addAll',
+      'remove',
+      'removeAt',
+      'removeLast',
+      'removeWhere',
+      'retainWhere',
+      'clear',
+      'insert',
+      'insertAll',
+      'sort',
+      'shuffle',
+      'addFirst',
+      'addLast',
+      'removeFirst',
+      'putIfAbsent',
+      'update',
+      'setRange',
+      'fillRange',
+      'replaceRange',
+      'setAll',
+      '[]=',
+    };
+    final receiver = node.receiver;
+    if (receiver is InstanceGet &&
+        receiver.receiver is ThisExpression &&
+        mutating.contains(node.name.text)) {
+      found = true;
+    }
+    super.visitInstanceInvocation(node);
   }
 }
 
