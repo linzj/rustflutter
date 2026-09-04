@@ -104,6 +104,26 @@ def enclosing_fn(lines, line):
     return None
 
 
+STATIC = re.compile(r'^(\s*pub(\([a-z]+\))?\s+static\s+[A-Z_0-9]+\s*:.*?LazyLock::new\(\|\|\s*)(.*)\);\s*$')
+
+
+def stub_static(lines, line, message):
+    """A `static X: LazyLock<..> = LazyLock::new(|| ..);` on one line whose
+    initialiser does not compile: the closure body becomes the panic. A
+    static is not a function, but it is a body all the same, and one that
+    fails keeps every crate above it unchecked (the widgets crate's
+    `WidgetsApp.defaultActions`, seven errors, hid the gallery)."""
+    i = line - 1
+    m = STATIC.match(lines[i])
+    if not m:
+        return None
+    text = (message.replace('\\', '\\\\').replace('"', '\\"')
+            .replace('{', '{{').replace('}', '}}').replace('\n', ' '))
+    lines[i] = '%spanic!("dart2rust: stubbed static, did not compile: %s"));' % (
+        m.group(1), text)
+    return lines
+
+
 def stub(lines, start, opened, end, message):
     """Replace the body from the opening brace to the closing one."""
     head = lines[opened][:lines[opened].index('{')]
@@ -152,6 +172,13 @@ def main():
                     continue
                 fn = enclosing_fn(lines, line)
                 if fn is None:
+                    if 'stubbed static' not in lines[line - 1]:
+                        replaced = stub_static(lines, line, msg)
+                        if replaced is not None:
+                            lines = replaced
+                            stubbed.append((f, '<static>', msg))
+                            changed += 1
+                            continue
                     unstubbable.append((f, line, msg))
                     continue
                 start, opened, end = fn

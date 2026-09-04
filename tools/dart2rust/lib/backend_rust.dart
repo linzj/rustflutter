@@ -3362,7 +3362,7 @@ class RustBackend {
     // trait's own `E`, so the trait has to promise what the function asks
     // (147 E0277s from asking it of the function alone).
     final bound = owner is IrMethod || static
-        ? params.map((p) => "$p: Clone + 'static")
+        ? params.map((p) => "$p: 'static")
         : params;
     return '<${bound.join(', ')}>';
   }
@@ -3484,7 +3484,7 @@ class RustBackend {
       // VoidCallback>`, a `Set<Future>` -- at the class, not at the one
       // method that compares or prints. A method that does is what fails
       // now, and the stub count says how many.
-      return "$p: Clone + 'static${keyed ? ' + PartialEq + Eq + std::hash::Hash' : ''}";
+      return "$p: 'static${keyed ? ' + Clone + PartialEq + Eq + std::hash::Hash' : ''}";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
@@ -3804,14 +3804,14 @@ class RustBackend {
         // `Debug` too: a mixin's `toString` hands `this` to `MapBase.
         // mapToString`, which prints it, and every implementer prints.
         '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
-        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone + 'static").join(', ')}'}'
+        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: 'static").join(', ')}'}'
         // And the *method's* own, for a generic method like
         // `invokeLayoutCallback<T extends Constraints>`. A free function can
         // carry them; the trait method it belongs to cannot, and says so.
         // Bounded as the trait method's are: `AnnotationResult<S>` asks
         // `Clone + 'static` of its `S`, and the free function said nothing
         // (E0277 in the signature of `ContainerLayer.findAnnotations<S>`).
-        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone + 'static").join(', ')}'}'
+        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: 'static").join(', ')}'}'
         '>($params) -> '
         // An `async fn` returns the awaited type: `Future<Response>` on an
         // `async` super function was a future of a boxed future (E0308).
@@ -5208,6 +5208,43 @@ class RustBackend {
   /// down.
   var _implBinding = <String, IrType>{};
 
+  /// The method with each type parameter that shadows one of the class's
+  /// renamed `T_` in its signature, or null when none does. The body is
+  /// not rewritten: only a forwarder or a stub may use the result.
+  IrMethod? _renamedShadowed(IrMethod need) {
+    final shadowed = {
+      for (final p in need.typeParameters)
+        if (cls.typeParameters.contains(p)) p: IrType('${p}_'),
+    };
+    if (shadowed.isEmpty) return null;
+    return IrMethod(
+      need.name,
+      [
+        for (final p in need.params)
+          IrParam(
+            p.name,
+            _substituteType(p.type, shadowed),
+            named: p.named,
+            hasDefault: p.hasDefault,
+            kept: p.kept,
+          ),
+      ],
+      _substituteType(need.returnType, shadowed),
+      need.body,
+      typeParameters: [
+        for (final p in need.typeParameters)
+          shadowed.containsKey(p) ? '${p}_' : p,
+      ],
+      isStatic: need.isStatic,
+      isGetter: need.isGetter,
+      isSetter: need.isSetter,
+      operator: need.operator,
+      throws: need.throws,
+      doc: need.doc,
+      isAsync: need.isAsync,
+    );
+  }
+
   void _emitBaseMethod(IrMethod need) {
     {
       // A method type parameter named like one of the class's --
@@ -5217,38 +5254,7 @@ class RustBackend {
       // never spells the parameter, so only the signature has to change
       // (4 "not all trait items implemented" in `widgets`, one per
       // generic `Element`).
-      final shadowed = {
-        for (final p in need.typeParameters)
-          if (cls.typeParameters.contains(p)) p: IrType('${p}_'),
-      };
-      if (shadowed.isNotEmpty) {
-        need = IrMethod(
-          need.name,
-          [
-            for (final p in need.params)
-              IrParam(
-                p.name,
-                _substituteType(p.type, shadowed),
-                named: p.named,
-                hasDefault: p.hasDefault,
-                kept: p.kept,
-              ),
-          ],
-          _substituteType(need.returnType, shadowed),
-          need.body,
-          typeParameters: [
-            for (final p in need.typeParameters)
-              shadowed.containsKey(p) ? '${p}_' : p,
-          ],
-          isStatic: need.isStatic,
-          isGetter: need.isGetter,
-          isSetter: need.isSetter,
-          operator: need.operator,
-          throws: need.throws,
-          doc: need.doc,
-          isAsync: need.isAsync,
-        );
-      }
+      need = _renamedShadowed(need) ?? need;
       final have = _matching(need);
       // Rust does not collapse `Option<Option<X>>` the way Dart collapses
       // `T?` for a nullable `T`: `MessageCodec<Object?>.decodeMessage` is
@@ -5773,6 +5779,17 @@ class RustBackend {
 
   void _emitMethod(IrMethod method, {String? as, String? stubbed}) {
     {
+      // A static `of<T>` inside `ScopedModel<T>`: Rust will not have the
+      // name twice (E0403, the two errors outside any body once the
+      // widgets crate passed). The signature is renamed and the body,
+      // which would need the same rename, is a stub that says so.
+      final renamed = _renamedShadowed(method);
+      if (renamed != null) {
+        method = renamed;
+        stubbed ??=
+            "a method whose type parameter shadows the class's: "
+            '${cls.name}.${method.name}';
+      }
       // Before the signature: whether a parameter needs `mut` is decided by the
       // body, and the signature is written first.
       _reassigned = _assignedIn(method.body);
