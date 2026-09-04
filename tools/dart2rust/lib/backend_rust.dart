@@ -1788,6 +1788,20 @@ class RustBackend {
       return '($receiver as std::rc::Rc<dyn Object>)';
     }
     if (name == '!rc_object' && args.isEmpty) {
+      // `this` shared as an `Object` is behind `&self`: a handle is cloned,
+      // a value is cloned into a fresh one -- `Rc::new(self)` was a handle
+      // to a borrow, and "lifetime may not live long enough" 329 times.
+      // `this_` in a super function is `&__Self: ?Sized` and stays.
+      if (target == null || target is IrThis) {
+        if (_selfName == 'self') {
+          return _selfIsHandle
+              ? '(self.clone() as std::rc::Rc<dyn Object>)'
+              : '(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>)';
+        }
+        if (_selfName != 'this_' && cls.counted) {
+          return '($_selfName.clone() as std::rc::Rc<dyn Object>)';
+        }
+      }
       return '(std::rc::Rc::new($receiver) as std::rc::Rc<dyn Object>)';
     }
     if (name == '!dart_eq' && args.length == 1) {
@@ -2091,7 +2105,11 @@ class RustBackend {
     final steps = chain.steps
         .map((step) => '.${step.$1}(${_stepClosure(step.$2)})')
         .join();
-    return '${expr(chain.source)}.iter()$steps';
+    // A bare `forEach` hands the closure each element by value, as Dart
+    // does: `keys.forEach(_updateProperty)` gave it `&Rc<..>` (53).
+    final owned =
+        chain.steps.length == 1 && chain.steps.single.$1 == 'for_each';
+    return '${expr(chain.source)}.iter()${owned ? '.cloned()' : ''}$steps';
   }
 
   /// Whether an argument is the omitted one, written out.
@@ -5406,14 +5424,26 @@ class RustBackend {
         // inherent one is the same future without the spelling.
         // An `Rc<Concrete>` returned where the trait says `Rc<dyn Base>`
         // unsizes on its own at the return (47 `Box<Rc<dyn State>>`s).
+        // ..a *value* returned there is put behind a fresh handle (`impl
+        // BorderRadiusGeometry for BorderRadius`'s `op_mul`, 79), and a
+        // `()` where the trait says `Option<..>` is `None` (`Action.invoke`
+        // overridden as `void`, 46).
+        final handle = concrete.startsWith('std::rc::Rc<');
         _line(
           concrete == returns || _lifetimed(concrete) == returns
               ? call
               : returns == 'Option<$concrete>'
               ? 'Some($call)'
-              : returns.startsWith('std::rc::Rc<dyn ') ||
-                    returns.startsWith('Option<std::rc::Rc<dyn ')
-              ? call
+              : concrete == '()' && returns.startsWith('Option<')
+              ? '{ $call; None }'
+              : returns.startsWith('std::rc::Rc<dyn ')
+              ? (handle ? call : 'std::rc::Rc::new($call)')
+              : returns.startsWith('Option<std::rc::Rc<dyn ')
+              ? (handle || concrete.startsWith('Option<std::rc::Rc<')
+                    ? call
+                    : concrete.startsWith('Option<')
+                    ? '$call.map(|v| std::rc::Rc::new(v) as ${returns.substring(7, returns.length - 1)})'
+                    : 'Some(std::rc::Rc::new($call))')
               : 'Box::new($call)',
         );
       }

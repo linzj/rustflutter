@@ -3815,7 +3815,14 @@ class KernelFrontend {
       // Kernel holds the default as an expression, already evaluated when it is
       // constant -- better than the analyzer front end, which could only read
       // the source text and accept the literals it recognised.
-      return expression(initializer);
+      // ..and widened into the parameter like a written argument: `Curves.
+      // linear` filling a `Curve` is a `_Linear` value into an `Rc<dyn
+      // Curve>` (92 `_Linear`, 109 `Cubic`).
+      return _intoObject(
+        initializer,
+        param.type,
+        _widened(initializer, param.type, expression(initializer)),
+      );
     }
     if (param.type.nullability == Nullability.nullable) {
       return const IrLiteral('null', IrType('Null', nullable: true));
