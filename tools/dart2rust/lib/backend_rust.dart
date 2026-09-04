@@ -681,6 +681,8 @@ class RustBackend {
       IrUpcast(:final value, :final type) =>
         (library[_concreteType(value).name]?.counted ?? false)
             ? '(${expr(value)} as ${this.type(type)})'
+            : library[_concreteType(value).name] != null
+            ? '(dart_object(${expr(value)}) as ${this.type(type)})'
             : '(std::rc::Rc::new(${expr(value)}) as ${this.type(type)})',
       IrBound() => _boundName,
       IrClosure() => _closure(e as IrClosure),
@@ -1757,7 +1759,8 @@ class RustBackend {
         // A counted class's constructor already hands out an `Rc`, which
         // unsizes on its own; wrapping it again was `Rc<Rc<X>>`.
         !(library[_concreteType(value).name]?.counted ?? false)) {
-      return 'std::rc::Rc::new($text)';
+      // Registered for `dart_cast_to` through `dyn Object` on the way.
+      return 'dart_object($text)';
     }
     // Each branch of a conditional on its own: `s.isEmpty ? StringCharacters
     // ("") : StringCharacters(s)` returned as a `Characters`.
@@ -6112,6 +6115,9 @@ class RustBackend {
       '${cls.counted ? '' : constness}fn $name($params) -> ${_wrapped(produces)} {',
     );
     _indent++;
+    // A value class registers its cast function as it is first made
+    // (`dart_register`); a counted one does so in `dart_rc`.
+    if (!cls.counted && constness.isEmpty) _line('dart_register::<Self>();');
     // A constructor fails like any function: its body's value is `Ok`.
     _failure = _resultModel ? _error : null;
     if (ctor.redirectTo == null) _line('Ok({');

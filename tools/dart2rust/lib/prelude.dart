@@ -328,6 +328,44 @@ impl<S: DartCastExt> DartCastExt for Option<S> {
     }
 }
 
+/// The cast table for objects reached through `dyn Object`, whose blanket
+/// impl cannot know their type: `TypeId` of the struct to the function that
+/// asks it `dart_cast`. Filled as objects are made -- `dart_rc`,
+/// `dart_object`, and every constructor that is not `const` -- which in a
+/// closed world is every object an `is Trait` can ever meet.
+type DartCastFn =
+    fn(&dyn std::any::Any, std::any::TypeId) -> Option<Box<dyn std::any::Any>>;
+
+thread_local! {
+    static DART_CASTS: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartCastFn>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub fn dart_register<T: DartAny>() {
+    DART_CASTS.with(|c| {
+        c.borrow_mut()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert(|any, t| any.downcast_ref::<T>().and_then(|v| v.dart_cast(t)));
+    });
+}
+
+/// `Rc::new` for a value shared as an object: registered on the way.
+pub fn dart_object<T: DartAny>(value: T) -> std::rc::Rc<T> {
+    dart_register::<T>();
+    std::rc::Rc::new(value)
+}
+
+impl DartCastExt for dyn Object {
+    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
+        let any = self.as_any();
+        let id = std::any::Any::type_id(any);
+        let f = DART_CASTS.with(|c| c.borrow().get(&id).copied());
+        f.and_then(|f| f(any, std::any::TypeId::of::<T>()))
+            .and_then(|b| b.downcast::<std::rc::Rc<T>>().ok())
+            .map(|b| *b)
+    }
+}
+
 /// Dart's `Duration`: a signed span counted in whole microseconds.
 ///
 /// Not `std::time::Duration`, which is unsigned and counts nanoseconds.
@@ -934,7 +972,8 @@ pub trait DartSelfRef {
 }
 
 /// `std::rc::Rc::new` for a counted object: the handle is made and remembered.
-pub fn dart_rc<T: DartSelfRef>(value: T) -> std::rc::Rc<T> {
+pub fn dart_rc<T: DartSelfRef + DartAny>(value: T) -> std::rc::Rc<T> {
+    dart_register::<T>();
     let rc = std::rc::Rc::new(value);
     rc.dart_self_ref().set(&rc);
     rc
