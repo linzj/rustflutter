@@ -480,10 +480,13 @@ class IrDynamicDispatch extends IrExpr {
 }
 
 class IrDowncast extends IrExpr {
-  const IrDowncast(this.target, this.type);
+  const IrDowncast(this.target, this.type, {this.arguments = const []});
 
   final IrExpr target;
   final String type;
+
+  /// The struct's type arguments, when it has them: `RadioListTile<T>`.
+  final List<IrType> arguments;
 }
 
 /// `Some(value)`: a non-null value handed to a nullable parameter. Dart

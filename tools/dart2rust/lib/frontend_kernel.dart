@@ -54,7 +54,16 @@ class KernelFrontend {
     this.dynamicSlots = const {},
     this.throws,
     this.open = const {},
+    this.erase = false,
   });
+
+  /// Whether type parameters bounded by translated abstract classes are
+  /// erased (`_erasedParameter`). Gated while the cut is finished: on, ws281
+  /// measured 5341 against the gate's 5247, with three follow-ups owed --
+  /// a cast to an open class's trait for `widget` reads, field reads through
+  /// a downcast of a generic value struct, and callbacks typed with the
+  /// erased parameter. `DART2RUST_ERASE=1` turns it on.
+  final bool erase;
 
   /// Concrete classes with subclasses, lowered as a trait plus a struct
   /// (`XImpl`) for their own instances: a subclass instance can then sit in
@@ -220,7 +229,7 @@ class KernelFrontend {
       return IrType(
         name,
         nullable: nullable,
-        arguments: [for (final a in type.typeArguments) _type(a)],
+        arguments: _erasedArguments(type.classNode, type.typeArguments),
       );
     }
     if (type is RecordType) {
@@ -240,6 +249,15 @@ class KernelFrontend {
     if (type is DynamicType) return const IrType('dynamic');
     if (type is NullType) return const IrType('Null', nullable: true);
     if (type is TypeParameterType) {
+      // An erased parameter is its bound (see `_erasedParameter`).
+      if (_erasedParameter(type.parameter)) {
+        final asBound = _type(type.parameter.bound);
+        return IrType(
+          asBound.name,
+          nullable: nullable || asBound.nullable,
+          arguments: asBound.arguments,
+        );
+      }
       // `T extends String` is a `String` here: the bound is what the body
       // calls methods on, and a Rust type parameter has no such methods.
       // Only for the scalar bounds that are prelude types; `T extends
@@ -2024,7 +2042,10 @@ class KernelFrontend {
   static bool _isMapClass(String? owner) =>
       const {'Map', 'LinkedHashMap', 'HashMap', 'SplayTreeMap'}.contains(owner);
 
-  IrExpr _instanceGet(InstanceGet node) {
+  IrExpr _instanceGet(InstanceGet node) =>
+      _narrowedRead(node, _instanceGetRaw(node));
+
+  IrExpr _instanceGetRaw(InstanceGet node) {
     final name = node.name.text;
     final listOwner = node.interfaceTarget.enclosingClass?.name;
     if (listOwner == 'List' || listOwner == 'Iterable') {
@@ -4256,7 +4277,7 @@ class KernelFrontend {
                 rebuilt,
                 IrType(
                   cls.name,
-                  arguments: [for (final t in constant.typeArguments) _type(t)],
+                  arguments: _erasedArguments(cls, constant.typeArguments),
                 ),
               )
             : rebuilt;
@@ -4340,8 +4361,68 @@ class KernelFrontend {
   /// saying different things is the one thing the fixtures exist to catch.
   IrType _constantType(Class cls, List<DartType> typeArguments) => IrType(
     _instanceName(cls),
-    arguments: [for (final t in typeArguments) _type(t)],
+    arguments: _erasedArguments(cls, typeArguments),
   );
+
+  /// Whether a class's type parameter is erased to its bound.
+  ///
+  /// Rust's trait parameters are invariant: `impl State<Scaffold> for
+  /// ScaffoldState` is no `State<StatefulWidget>`, and `createState` has to
+  /// return one (377 stubs naming `State<..>` at ws279). Dart's `State<T
+  /// extends StatefulWidget>` only ever *narrows* `T` in subclasses, so in
+  /// a closed world the parameter can go: the trait is `State`, `T` inside
+  /// it is `StatefulWidget`, and a read typed narrower than that is a
+  /// downcast (`_narrowedRead`). A parameter is erased when its bound is a
+  /// translated abstract-like class -- `Action<T extends Intent>`,
+  /// `ParentDataWidget<T extends ParentData>`, `GlobalKey<T extends
+  /// State>` -- and not when the bound is `Object` or a scalar, where the
+  /// parameter is a real type variable (`Tween<T>`, `Animation<T>`).
+  bool _erasedParameter(TypeParameter p) {
+    if (!erase || p.declaration is! Class) return false;
+    final bound = p.bound;
+    return bound is InterfaceType &&
+        bound.classNode.name != 'Object' &&
+        bound.classNode.enclosingLibrary.importUri.scheme != 'dart' &&
+        _abstractLike(bound.classNode);
+  }
+
+  /// A class's type arguments with the erased ones left out.
+  List<IrType> _erasedArguments(Class cls, List<DartType> arguments) => [
+    for (var i = 0; i < arguments.length; i++)
+      if (i >= cls.typeParameters.length ||
+          !_erasedParameter(cls.typeParameters[i]))
+        _type(arguments[i]),
+  ];
+
+  /// A read whose declared type is an erased parameter and whose static
+  /// type is a concrete class below the bound: `widget` in
+  /// `_ScaffoldState` is a `Scaffold`, and the accessor hands out the
+  /// `Rc<dyn StatefulWidget>` the erased trait declares.
+  IrExpr _narrowedRead(InstanceGet node, IrExpr lowered) {
+    final declared = node.interfaceTarget.getterType;
+    if (declared is! TypeParameterType ||
+        !_erasedParameter(declared.parameter)) {
+      return lowered;
+    }
+    final result = node.resultType;
+    final bound = declared.parameter.bound;
+    if (result is! InterfaceType ||
+        bound is! InterfaceType ||
+        result.classNode == bound.classNode ||
+        result.nullability == Nullability.nullable ||
+        _abstractLike(result.classNode)) {
+      return lowered;
+    }
+    return IrCall(
+      IrDowncast(
+        lowered,
+        result.classNode.name,
+        arguments: _erasedArguments(result.classNode, result.typeArguments),
+      ),
+      'clone',
+      const [],
+    );
+  }
 
   // There was a `_refusePrivate` here. It is gone, and its going is the point
   // of this round: skipping private members is right when translating one file
@@ -5559,10 +5640,13 @@ class KernelFrontend {
         : names;
     final cls = IrClass(
       node.name,
-      typeParameters: [for (final p in node.typeParameters) p.name ?? 'T'],
-      superclassArguments: [
-        for (final t in superType?.typeArguments ?? const []) _type(t),
+      typeParameters: [
+        for (final p in node.typeParameters)
+          if (!_erasedParameter(p)) p.name ?? 'T',
       ],
+      superclassArguments: superType == null
+          ? const []
+          : _erasedArguments(superType.classNode, superType.typeArguments),
       // `class ByteStream extends StreamView<List<int>>`: the prelude's
       // `StreamView` has no struct to flatten, so the subclass carries the
       // one field it would have inherited, `_stream` (added below), and

@@ -648,8 +648,8 @@ class RustBackend {
         value is IrBound
             ? '(*${expr(value)} as $rust)'
             : '(${expr(value)} as $rust)',
-      IrDowncast(:final target, :final type) =>
-        '${expr(target)}.as_any().downcast_ref::<$type>().unwrap()',
+      IrDowncast(:final target, :final type, :final arguments) =>
+        '${expr(target)}.as_any().downcast_ref::<$type${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
         receiver,
         arms,
@@ -4717,7 +4717,11 @@ class RustBackend {
       ),
       IrUnary(:final op, :final operand) => IrUnary(op, go(operand)),
       IrNullCheck(:final operand) => IrNullCheck(go(operand)),
-      IrDowncast(:final target, :final type) => IrDowncast(go(target), type),
+      IrDowncast(:final target, :final type, :final arguments) => IrDowncast(
+        go(target),
+        type,
+        arguments: arguments,
+      ),
       IrDynamicDispatch(:final receiver, :final arms) => IrDynamicDispatch(
         go(receiver),
         [for (final (t, b) in arms) (t, go(b))],

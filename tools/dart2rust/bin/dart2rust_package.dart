@@ -242,6 +242,7 @@ Future<void> main(List<String> args) async {
       dynamicSlots: dynamicSlots,
       throws: throwsAnalysis,
       open: openClasses,
+      erase: Platform.environment['DART2RUST_ERASE'] == '1',
     ).lowerLibrary();
     lowered[library] = result;
     for (final cls in result.$1.classes) {
