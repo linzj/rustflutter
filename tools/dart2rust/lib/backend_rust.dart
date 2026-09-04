@@ -1253,7 +1253,11 @@ class RustBackend {
             : generator is IrClosure || rendered.startsWith(boxed)
             ? unboxed(rendered)
             : '|__i| ($rendered)(__i)';
-        return '(0..${expr(args[0])}).map($f).collect::<Vec<_>>()';
+        // The generator returns `Result`: the collection does too, and the
+        // `?` the name rule appends unwraps it (69 `?` on a `Vec`).
+        return _resultModel
+            ? '(0..${expr(args[0])}).map($f).collect::<Result<Vec<_>, $_error>>()'
+            : '(0..${expr(args[0])}).map($f).collect::<Vec<_>>()';
       }
       if (name == 'filled' && args.length == 2) {
         return 'vec![${expr(args[1])}; ${expr(args[0])} as usize]';
