@@ -199,6 +199,9 @@ Future<void> main(List<String> args) async {
   /// once from `dart:ui` and once from `painting` -- and a glob import of both
   /// makes every use of them ambiguous. 800 `E0659`s from ten names.
   final definedIn = <String, Set<String>>{};
+  final dynamicSlots = typeEnvironment == null
+      ? const <Field, List<InterfaceType>>{}
+      : dynamicSlotsIn(inPackage, typeEnvironment);
   for (final library in inPackage) {
     final result = KernelFrontend(
       library,
@@ -206,6 +209,7 @@ Future<void> main(List<String> args) async {
       enumFields: enumFields,
       abstractElsewhere: abstractNames,
       typeEnvironment: typeEnvironment,
+      dynamicSlots: dynamicSlots,
     ).lowerLibrary();
     lowered[library] = result;
     for (final cls in result.$1.classes) {

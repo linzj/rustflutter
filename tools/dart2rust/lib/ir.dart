@@ -427,6 +427,19 @@ class IrTopLevel extends IrExpr {
 /// the value -- `other.as_any().downcast_ref::<Matrix4>().unwrap()` -- and the
 /// field reads that follow are on that. 36 `no field _m4storage on &dyn
 /// Object` in `vector_math`'s `==` operators.
+/// A call on a `dynamic` slot whose runtime types are known (see the
+/// front end's `dynamicSlots`): `dateTimeSymbols[locale]` where the slot
+/// starts as an `UninitializedLocaleData` and becomes a `Map`. The
+/// receiver is bound to `__d`, and each arm is tried by downcast in order;
+/// inside an arm `__d` is the value as that type. The last arm's type may be
+/// null: it is the fallback, taken without a test.
+class IrDynamicDispatch extends IrExpr {
+  const IrDynamicDispatch(this.receiver, this.arms);
+
+  final IrExpr receiver;
+  final List<(IrType?, IrExpr)> arms;
+}
+
 class IrDowncast extends IrExpr {
   const IrDowncast(this.target, this.type);
 

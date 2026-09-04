@@ -609,6 +609,10 @@ class RustBackend {
             : '(${expr(value)} as $rust)',
       IrDowncast(:final target, :final type) =>
         '${expr(target)}.as_any().downcast_ref::<$type>().unwrap()',
+      IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
+        receiver,
+        arms,
+      ),
       // A mutable one is read through its cell: two derefs for the `LazyLock`
       // and the `Isolate`, then a `borrow`.
       IrTopLevel(:final name) =>
@@ -2201,6 +2205,30 @@ class RustBackend {
       return 'std::rc::Rc::as_ptr(&$r) as *const u8 as *const ()';
     }
     return '$r as *const _ as *const ()';
+  }
+
+  /// See `IrDynamicDispatch`.
+  String _dispatch(IrExpr receiver, List<(IrType?, IrExpr)> arms) {
+    final out = StringBuffer('{ let __d = ${expr(receiver)}; ');
+    var first = true;
+    for (final (t, body) in arms) {
+      if (t == null) {
+        out.write('${first ? '' : ' else '}{ ${expr(body)} }');
+      } else {
+        out.write(
+          '${first ? '' : ' else '}if let Some(__t) = __d.as_any().downcast_ref::<${type(t)}>() '
+          '{ let __d = __t.clone(); ${expr(body)} }',
+        );
+      }
+      first = false;
+    }
+    if (arms.isEmpty || arms.last.$1 != null) {
+      out.write(
+        ' else { panic!("uncaught Dart exception: a dynamic slot held an unexpected type") }',
+      );
+    }
+    out.write(' }');
+    return out.toString();
   }
 
   String? _addressOf(IrExpr e) {
@@ -4180,6 +4208,10 @@ class RustBackend {
       IrUnary(:final op, :final operand) => IrUnary(op, go(operand)),
       IrNullCheck(:final operand) => IrNullCheck(go(operand)),
       IrDowncast(:final target, :final type) => IrDowncast(go(target), type),
+      IrDynamicDispatch(:final receiver, :final arms) => IrDynamicDispatch(
+        go(receiver),
+        [for (final (t, b) in arms) (t, go(b))],
+      ),
       IrSome(:final value) => IrSome(go(value)),
       IrCast(:final value, :final rust) => IrCast(go(value), rust),
       IrIsNull(:final operand) => IrIsNull(go(operand)),
@@ -5909,6 +5941,11 @@ class _WalkSelf {
         expression(operand);
       case IrNullCheck(:final operand):
         expression(operand);
+      case IrDynamicDispatch(:final receiver, :final arms):
+        expression(receiver);
+        for (final (_, b) in arms) {
+          expression(b);
+        }
       case IrDowncast(:final target):
         expression(target);
       case IrSome(:final value):

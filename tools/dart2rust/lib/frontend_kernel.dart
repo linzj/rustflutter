@@ -50,7 +50,14 @@ class KernelFrontend {
     this.abstractElsewhere = const {},
     this.elsewhere = const {},
     this.typeEnvironment,
+    this.dynamicSlots = const {},
   });
+
+  /// Top-level `dynamic` fields whose runtime types the driver worked out
+  /// from the initialiser and every store into them (`dynamicSlotsIn`):
+  /// `dateTimeSymbols` holds an `UninitializedLocaleData` and then a `Map`.
+  /// A call on such a slot dispatches by downcast (`IrDynamicDispatch`).
+  final Map<Field, List<InterfaceType>> dynamicSlots;
 
   /// The whole program's types, for `getStaticType`. Built once by the
   /// driver; null in the tools that lower a single library on its own, which
@@ -89,6 +96,7 @@ class KernelFrontend {
     if (e is VariableGet) return e.promotedType ?? e.variable.type;
     if (e is StaticGet) return e.target.getterType;
     if (e is StaticInvocation) return e.target.function.returnType;
+    if (e is ConstructorInvocation) return e.constructedType;
     if (e is NullLiteral) return const NullType();
     // Literals, from the core types when there are any: `return true` in a
     // closure returning `Object?` had nothing to say it was a `bool`.
@@ -419,6 +427,10 @@ class KernelFrontend {
     }
     // ..and its operators: `number - integerPart` on a `dynamic`.
     const numOperators = {'+', '-', '*', '/', '%', '<', '>', '<=', '>='};
+    if (node is DynamicInvocation || node is DynamicGet) {
+      final dispatched = _dynamicSlotCall(node);
+      if (dispatched != null) return dispatched;
+    }
     if (node is DynamicInvocation &&
         numOperators.contains(node.name.text) &&
         node.arguments.positional.length == 1) {
@@ -1911,6 +1923,79 @@ class KernelFrontend {
           ? (receiverType as InterfaceType).classNode.name
           : node.interfaceTarget.enclosingClass?.name,
     );
+  }
+
+  /// `dateTimeSymbols[k]`, `.containsKey(k)`, `.keys` on a `dynamic` slot
+  /// with known types (see `dynamicSlots`): one arm per type, each giving
+  /// the *same* Rust type -- what the Dart code does with the result is
+  /// typed by the first arm's member. A `Map` arm answers as a map; a class
+  /// arm calls its own member, or panics for one it does not have (Dart's
+  /// `NoSuchMethodError`, which is what `UninitializedLocaleData` does).
+  IrExpr? _dynamicSlotCall(Expression node) {
+    final Expression receiver;
+    final String name;
+    final List<Expression> positional;
+    if (node is DynamicInvocation) {
+      receiver = node.receiver;
+      name = node.name.text;
+      positional = node.arguments.positional;
+    } else if (node is DynamicGet) {
+      receiver = node.receiver;
+      name = node.name.text;
+      positional = const [];
+    } else {
+      return null;
+    }
+    if (receiver is! StaticGet) return null;
+    var target = receiver.target;
+    // Through a getter that only reads the slot: `dynamic get
+    // dateTimeSymbols => _dateTimeSymbols`.
+    if (target is Procedure && target.isGetter) {
+      final body = target.function.body;
+      final read = body is ReturnStatement ? body.expression : null;
+      if (read is StaticGet) target = read.target;
+    }
+    if (target is! Field) return null;
+    final candidates = dynamicSlots[target];
+    if (candidates == null || candidates.isEmpty) return null;
+    const known = {'[]', 'containsKey', 'keys'};
+    if (!known.contains(name)) return null;
+    final args = [for (final e in positional) expression(e)];
+    const slot = IrLocal('__d');
+    IrExpr noSuch() => IrLiteral(
+      'panic!("uncaught Dart exception: NoSuchMethodError: `$name` on an ${candidates.first.classNode.name}")',
+      const IrType('raw'),
+    );
+    final arms = <(IrType?, IrExpr)>[];
+    for (final c in candidates) {
+      final isMap =
+          c.classNode.name == 'Map' || c.classNode.name == 'LinkedHashMap';
+      final hasMember = c.classNode.members.any(
+        (m) => m.name.text == name && !m.isAbstract,
+      );
+      final IrExpr body;
+      switch (name) {
+        case '[]':
+          body = isMap
+              ? IrCall(slot, '!map_get', args)
+              : hasMember
+              ? IrSome(IrCall(slot, '[]', args))
+              : noSuch();
+        case 'containsKey':
+          // The map's is the prelude's `contains_key(&k)`, spelled as the
+          // `Map` lowering spells it so the backend passes the key by
+          // reference; a class's is its own method, by value.
+          body = isMap
+              ? IrCall(slot, 'contains_key', args)
+              : hasMember
+              ? IrCall(slot, 'containsKey', args)
+              : noSuch();
+        default:
+          body = isMap || hasMember ? IrCall(slot, name, args) : noSuch();
+      }
+      arms.add((_type(c), body));
+    }
+    return IrDynamicDispatch(expression(receiver), arms);
   }
 
   IrExpr _staticGet(StaticGet node) {
@@ -5538,6 +5623,74 @@ class _EarlyExit extends RecursiveVisitor {
 /// refers to leaves a gap, and a gap is worth knowing about: `enumValuesIn`
 /// reports the indices it saw so the caller can tell a complete enum from a
 /// partial one.
+/// Top-level `dynamic` fields of the libraries given, with the types they
+/// hold: the initialiser's, then every value stored into them anywhere in
+/// those libraries. Only slots whose every value has a class are kept.
+Map<Field, List<InterfaceType>> dynamicSlotsIn(
+  Iterable<Library> libraries,
+  TypeEnvironment env,
+) {
+  final slots = <Field, List<InterfaceType>>{};
+  for (final library in libraries) {
+    for (final field in library.fields) {
+      final init = field.initializer;
+      if (field.type is! DynamicType || init == null) continue;
+      final t = init.getStaticType(StaticTypeContext(field, env));
+      if (t is! InterfaceType) continue;
+      slots[field] = [t];
+      // intl's `UninitializedLocaleData<F>` is the placeholder for a
+      // `Map<String, F>` that `initializeDateFormatting` stores later
+      // through a `Function` call whose static type says nothing. The map
+      // is the slot's other type, and this is where that is written down.
+      if (t.classNode.name == 'UninitializedLocaleData' &&
+          t.typeArguments.length == 1 &&
+          t.classNode.enclosingLibrary.importUri.toString().startsWith(
+            'package:intl/',
+          )) {
+        slots[field]!.add(
+          InterfaceType(env.coreTypes.mapClass, Nullability.nonNullable, [
+            env.coreTypes.stringNonNullableRawType,
+            t.typeArguments.single,
+          ]),
+        );
+      }
+    }
+  }
+  final finder = _SlotStores(slots, env);
+  for (final library in libraries) {
+    library.accept(finder);
+  }
+  return slots;
+}
+
+class _SlotStores extends RecursiveVisitor {
+  _SlotStores(this.slots, this.env);
+  final Map<Field, List<InterfaceType>> slots;
+  final TypeEnvironment env;
+  Member? _member;
+
+  @override
+  void defaultMember(Member node) {
+    _member = node;
+    super.defaultMember(node);
+    _member = null;
+  }
+
+  @override
+  void visitStaticSet(StaticSet node) {
+    final target = node.target;
+    final held = slots[target is Field ? target : null];
+    final member = _member;
+    if (held != null && member != null) {
+      final t = node.value.getStaticType(StaticTypeContext(member, env));
+      if (t is InterfaceType) {
+        if (!held.any((h) => h.classNode == t.classNode)) held.add(t);
+      }
+    }
+    super.visitStaticSet(node);
+  }
+}
+
 Map<Class, List<String>> enumValuesIn(Component component) =>
     enumsIn(component).$1;
 
