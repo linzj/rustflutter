@@ -839,8 +839,11 @@ class RustBackend {
     // them outside an async context: 79 `E0728`s.
     // Annotated: a `?` inside needs the error type spelled, and the body
     // ends in `Ok(..)`.
+    // The value type is left to inference: naming it pulled types into
+    // modules that never imported them (248 "cannot find type"), and a
+    // closure signature may say `_`. The error type is what `?` needs.
     final closure =
-        '${node.isAsync ? 'async ' : ''}${owns ? 'move ' : ''}|$params| -> ${_wrapped(_spelledReturn(type(node.returns)))} { $body }';
+        '${node.isAsync ? 'async ' : ''}${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<_, $_error>' : ''} { $body }';
     _cellLocals = savedCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
     return node.boxed ? 'std::rc::Rc::new($whole)' : whole;
