@@ -1934,7 +1934,8 @@ class RustBackend {
         args.isEmpty &&
         target is IrDowncast &&
         (library[target.type]?.counted ?? false)) {
-      return 'dart_rc(${expr(target)}.clone())';
+      // ..the object's own handle, now that it keeps one (`DartSelf`).
+      return '${expr(target)}.dart_self_ref().get()';
     }
     // `runtimeType` on a super function's `this_` (see `DartAny`).
     if ((name == 'runtimeType' || name == 'runtime_type') &&
@@ -5832,11 +5833,15 @@ class RustBackend {
             ? 'Some($v)'
             : concrete == '()' && returns.startsWith('Option<')
             ? '{ $v; None }'
+            // An `Rc<Concrete>` inside a `Result` does not unsize on its
+            // own: the map says `as` (100 `create_render_object`s at ws278).
             : returns.startsWith('std::rc::Rc<dyn ')
-            ? (handle ? null : 'std::rc::Rc::new($v)')
+            ? (handle ? '$v as $returns' : 'std::rc::Rc::new($v)')
             : returns.startsWith('Option<std::rc::Rc<dyn ')
-            ? (handle || concrete.startsWith('Option<std::rc::Rc<')
-                  ? null
+            ? (handle
+                  ? 'Some($v as ${returns.substring(7, returns.length - 1)})'
+                  : concrete.startsWith('Option<std::rc::Rc<')
+                  ? '$v.map(|v| v as ${returns.substring(7, returns.length - 1)})'
                   : concrete.startsWith('Option<')
                   ? '$v.map(|v| std::rc::Rc::new(v) as ${returns.substring(7, returns.length - 1)})'
                   : 'Some(std::rc::Rc::new($v))')
@@ -5932,6 +5937,24 @@ class RustBackend {
             !traitType.nullable &&
             traitType.name != 'Option') {
           return 'Some($passed)';
+        }
+        // ..and *narrow* one (`covariant RenderClipRect renderObject` under
+        // the trait's `RenderObject`): the trait's handle is downcast to
+        // the class the override names, keeping its identity.
+        final narrower = library[p.type.name];
+        if (narrower != null &&
+            !narrower.isAbstract &&
+            !p.type.nullable &&
+            !traitType.nullable &&
+            traitType.name != p.type.name &&
+            library.isAbstract(traitType.name)) {
+          final target = p.type.arguments.isEmpty
+              ? p.type.name
+              : '${p.type.name}<${p.type.arguments.map(type).join(', ')}>';
+          final down = '$passed.as_any().downcast_ref::<$target>().unwrap()';
+          return narrower.counted
+              ? '$down.dart_self_ref().get()'
+              : '$down.clone()';
         }
         return passed;
       }
@@ -6042,6 +6065,7 @@ class RustBackend {
     // holds one holds an `Rc`, so the constructor is where the first one is
     // made. A `const fn` cannot allocate, so a counted constructor is not one.
     final produces = cls.counted ? 'std::rc::Rc<Self>' : 'Self';
+    final signatureAt = _out.length;
     _line(
       '${_vis(ctor.name ?? cls.name)}'
       '${cls.counted ? '' : constness}fn $name($params) -> ${_wrapped(produces)} {',
@@ -6197,6 +6221,13 @@ class RustBackend {
     _line('})');
     _indent--;
     _line('}');
+    // A clone reached the body by a road the initialisers' check above
+    // does not see (a super constructor's argument, a widened `Duration`):
+    // a `const fn` may not call it (38 in `gestures_events` at ws278).
+    if (constness.isNotEmpty &&
+        _out.sublist(signatureAt + 1).any((l) => l.contains('.clone()'))) {
+      _out[signatureAt] = _out[signatureAt].replaceFirst('const fn ', 'fn ');
+    }
     _line('');
   }
 
