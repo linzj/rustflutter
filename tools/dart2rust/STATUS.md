@@ -6230,6 +6230,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws165 | 64 | **dynamic 顶层槽按已知类型集分派**：驱动器扫整个包，顶层 `dynamic` 字段的类型集 = 初始化式的类型 ∪ 所有 `StaticSet` 存进去的类型（`dateTimeSymbols`：`UninitializedLocaleData<DateSymbols>` 和 `Map<String, DateSymbols>`）；`x[k]`/`x.containsKey(k)`/`x.keys` 降成按 downcast 逐臂尝试（`IrDynamicDispatch`），各臂同一 Rust 类型。DateFormat 一族翻出来了：拒绝 1725→1618。
 | ws166 | 64 | 槽的读经 getter 也认（`dynamic get dateTimeSymbols => _dateTimeSymbols`）；`UninitializedLocaleData<F>` 的槽补上 `Map<String, F>` 这一臂（intl 通过 `Function` 调用存进去的类型静态上看不到，这是唯一写下这个事实的地方）；`dynamic` 顶层的初始化式共享进 `Rc<dyn Object>`。拒绝 1618→1614。
 | ws167 | 62 | 无上下文时 `ConstructorInvocation` 也有静态类型（`dynamic` 顶层的初始化式终于共享进 `Rc<dyn Object>`）。剩余：intl 21 / dart:ui 19 / collection 12 / source_span 4 / typed_data 3 / get 3。
+| ws168 | 60 | 静态 tear-off 无上下文时也有静态类型（适配闭包能套上 `DateFormat.localeExists`）；`num as int` → `as i64`；`dynamic` 局部的初始值共享进 `Rc<dyn Object>`。
+| ws169 | 63 | dynamic 接收者的 `~/` 也按 f64 算（`NumberFormat._formatFixed` 翻出来，带来新错）；静态类型为 `num` 的值进 `num` 槽也 `as f64`（`f64 as f64` 是合法的空转）。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步

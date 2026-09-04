@@ -97,6 +97,9 @@ class KernelFrontend {
     if (e is StaticGet) return e.target.getterType;
     if (e is StaticInvocation) return e.target.function.returnType;
     if (e is ConstructorInvocation) return e.constructedType;
+    if (e is StaticTearOff) {
+      return e.target.function.computeFunctionType(Nullability.nonNullable);
+    }
     if (e is NullLiteral) return const NullType();
     // Literals, from the core types when there are any: `return true` in a
     // closure returning `Object?` had nothing to say it was a `bool`.
@@ -426,7 +429,7 @@ class KernelFrontend {
           : call;
     }
     // ..and its operators: `number - integerPart` on a `dynamic`.
-    const numOperators = {'+', '-', '*', '/', '%', '<', '>', '<=', '>='};
+    const numOperators = {'+', '-', '*', '/', '%', '<', '>', '<=', '>=', '~/'};
     if (node is DynamicInvocation || node is DynamicGet) {
       final dispatched = _dynamicSlotCall(node);
       if (dispatched != null) return dispatched;
@@ -747,6 +750,13 @@ class KernelFrontend {
       // _NativePath` in front of every native taking one -- is a downcast
       // through `Any`, and the value is cloned out of the reference it
       // yields. 4 `_NativePath <= Rc<dyn Path>`.
+      // `math.pow(10, v) as int`: a `num` (an `f64` here) to an `int`.
+      if (to is InterfaceType &&
+          to.classNode.name == 'int' &&
+          from is InterfaceType &&
+          (from.classNode.name == 'num' || from.classNode.name == 'double')) {
+        return IrCast(expression(node.operand), 'i64');
+      }
       // `_queue[index] ?? (null as E)`: Dart's way of saying the branch is
       // never taken for a non-nullable `E`. Rust's `E` has no null at all.
       if (node.operand is NullLiteral && to is TypeParameterType) {
@@ -1619,12 +1629,18 @@ class KernelFrontend {
       variable.type is VoidType ? null : _type(variable.type),
       // Into the declared type: `Int32List? x = encode(..)` is `Some(..)`;
       // `num divisor = pow(10, n).round()` casts the `int`.
+      // ..and a `dynamic` local holding a scalar or struct shares it
+      // (`var integer = number.floor()` on a `dynamic` number).
       init == null
           ? null
-          : _intoDeclaredNum(
+          : _intoObject(
               init,
               variable.type,
-              _widened(init, variable.type, expression(init)),
+              _intoDeclaredNum(
+                init,
+                variable.type,
+                _widened(init, variable.type, expression(init)),
+              ),
             ),
       cell: _capturedWrites.contains(variable),
     );
@@ -4302,6 +4318,16 @@ class KernelFrontend {
     if (given is InterfaceType &&
         given.classNode.name == 'int' &&
         given.nullability != Nullability.nullable) {
+      return IrCast(lowered, 'f64');
+    }
+    // A `num` whose static type is `num` -- TFA folded `1 is double ?
+    // pow(2, 52) : 1.0e300.floor()` to its `int` branch and the
+    // conditional's type stayed `num` -- is cast too: `f64 as f64` is a
+    // no-op Rust accepts, and `i64 as f64` is the cast that was missing.
+    if (given is InterfaceType &&
+        given.classNode.name == 'num' &&
+        given.nullability != Nullability.nullable &&
+        value is! DoubleLiteral) {
       return IrCast(lowered, 'f64');
     }
     return lowered;
