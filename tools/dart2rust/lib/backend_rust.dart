@@ -875,8 +875,54 @@ class RustBackend {
   /// around: reads and writes reach it from several places.
   /// Whether a field is held in a cell: marked shared, or mutable in a
   /// counted class.
-  bool _inCell(IrFieldDecl field) =>
-      field.shared || (cls.counted && _mutableOnCounted(field));
+  bool _inCell(IrFieldDecl field) => _inCellOf(cls, field);
+
+  /// ..for a field of `owner`, which a constant instance of another class
+  /// needs to know (`MaterialColor { _swatch: .. }`, 81 at ws273).
+  bool _inCellOf(IrClass owner, IrFieldDecl field) =>
+      field.shared ||
+      (owner.counted && _mutableOnCounted(field)) ||
+      _handedByTraitOf(owner, field);
+
+  /// A field that a trait this class implements hands out as a cell
+  /// (`_handsCell`): the implementer holds it as one, so the trait body's
+  /// in-place write lands on the object (66 `todo!`s at ws272 -- `_Theater.
+  /// children`, every `ChangeNotifier._listeners` on a plain struct).
+  bool _handedByTraitOf(IrClass owner, IrFieldDecl field) =>
+      _handsCell(field) &&
+      _supertypesOf(owner).any(
+        (t) =>
+            library.isAbstract(t.name) &&
+            t.fields.any((f) => f.name == field.name),
+      );
+
+  /// Every class above `of`: superclasses, mixins and interfaces, transitively.
+  List<IrClass> _supertypesOf(IrClass of) {
+    final seen = <String>{};
+    final out = <IrClass>[];
+    void walk(String? name) {
+      if (name == null || !seen.add(name)) return;
+      final c = library[name];
+      if (c == null) return;
+      out.add(c);
+      walk(c.superclass);
+      for (final m in c.mixins) {
+        walk(m.name);
+      }
+      for (final i in c.interfaces) {
+        walk(i.name);
+      }
+    }
+
+    walk(of.superclass);
+    for (final m in of.mixins) {
+      walk(m.name);
+    }
+    for (final i in of.interfaces) {
+      walk(i.name);
+    }
+    return out;
+  }
 
   /// On a counted class, what has to live in a cell: a field that is
   /// assigned, a `late` one (assigned after construction by definition), and
@@ -2180,7 +2226,14 @@ class RustBackend {
               // An enum value into a `TextBaseline?` (141 in `material`).
               (value is IrStatic && value.isEnumValue));
       final text = _returned(value);
-      parts.add('${snake(f.name)}: ${wrapped ? 'Some($text)' : text}');
+      final stored = wrapped ? 'Some($text)' : text;
+      // Into the cell the struct holds it in (`_fieldType`).
+      final celled = _inCellOf(cls, f)
+          ? (_isCopy(_heldType(f))
+                ? 'std::rc::Rc::new(std::cell::Cell::new($stored))'
+                : 'std::rc::Rc::new(std::cell::RefCell::new($stored))')
+          : stored;
+      parts.add('${snake(f.name)}: $celled');
       _returns = outer;
     }
     return '${t.name} { ${parts.join(', ')} }';
