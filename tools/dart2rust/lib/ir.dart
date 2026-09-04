@@ -786,7 +786,10 @@ class IrIterChain extends IrExpr {
 /// `Set<T>` next door has always made), so they are here.
 const mapMethodNames = <String, String>{
   'containsKey': 'contains_key',
-  'remove': 'remove',
+  // Its own name: the prelude's takes the key by reference, and a
+  // translated class's `remove(String)` was handed a `&String` for
+  // sharing the name (56 in `widgets`).
+  'remove': '!map_remove',
   'clear': 'clear',
   'isEmpty': 'is_empty',
   'length': 'len',

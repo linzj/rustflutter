@@ -1630,6 +1630,7 @@ class RustBackend {
     'push',
     'insert',
     'remove',
+    '!map_remove',
     'clear',
     'extend',
     'add',
@@ -1835,7 +1836,10 @@ class RustBackend {
     if (name == '!map_get_opt' && args.length == 1) {
       return '${expr(args.single)}.as_ref().and_then(|__k| $receiver.get(__k).cloned())';
     }
-    if ((name == 'contains_key' || name == 'remove') && args.length == 1) {
+    if (name == '!map_remove' && args.length == 1) {
+      return '$receiver.remove(&${expr(args.single)})';
+    }
+    if (name == 'contains_key' && args.length == 1) {
       return '$receiver.$name(&${expr(args.single)})';
     }
     // The List and Map members Rust says differently rather than renames.
@@ -6196,6 +6200,7 @@ class _WalkSelf {
     'pop',
     'insert',
     'remove',
+    '!map_remove',
     '!insert',
     '!remove_at',
     // The ordered `Map`'s own mutators. `put_if_absent` may write, so it

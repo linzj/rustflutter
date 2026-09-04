@@ -698,6 +698,12 @@ class KernelFrontend {
         final onLocal = receiver is VariableGet;
         // A local, a parameter, or a chain rooted at `this` -- the receivers
         // the statement form already takes.
+        // A value the AOT compiler removed: the store never happens and
+        // the expression has no type to bind (`let __t = unreachable!(..)`,
+        // 56 "type annotations needed").
+        if (node.value is Throw && _tfaUnreachable(node.value as Throw)) {
+          return _unreachable;
+        }
         if ((onLocal || _rootedAtThis(receiver)) && declaring != null) {
           final receiverClass = _staticClass(receiver);
           final counted =
