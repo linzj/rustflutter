@@ -886,6 +886,69 @@ impl<T> std::ops::DerefMut for Isolate<T> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SentinelValue;
 
+/// An object's own handle, from inside.
+///
+/// A trait's default body has `&self` and no `Rc`; Dart's `this` there is a
+/// value that can be stored and returned (`return this` in `TextScaler.clamp`).
+/// Every counted struct keeps a weak back-reference to its own `Rc`, set the
+/// moment the `Rc` is made (`dart_rc`), and a trait reaches it through
+/// `dart_self_<trait>()`. A clone starts empty: a new handle around a copy is
+/// a new object.
+pub struct DartSelf<T: ?Sized>(std::cell::OnceCell<std::rc::Weak<T>>);
+
+impl<T: ?Sized> DartSelf<T> {
+    pub const fn new() -> Self {
+        DartSelf(std::cell::OnceCell::new())
+    }
+
+    pub fn set(&self, rc: &std::rc::Rc<T>) {
+        let _ = self.0.set(std::rc::Rc::downgrade(rc));
+    }
+
+    pub fn get(&self) -> std::rc::Rc<T> {
+        self.0
+            .get()
+            .and_then(|w| w.upgrade())
+            .expect("dart2rust: `this` taken before the object had a handle")
+    }
+}
+
+impl<T: ?Sized> Clone for DartSelf<T> {
+    fn clone(&self) -> Self {
+        DartSelf::new()
+    }
+}
+
+impl<T: ?Sized> Default for DartSelf<T> {
+    fn default() -> Self {
+        DartSelf::new()
+    }
+}
+
+impl<T: ?Sized> std::fmt::Debug for DartSelf<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DartSelf")
+    }
+}
+
+impl<T: ?Sized> PartialEq for DartSelf<T> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// The struct's back-reference, for `dart_rc`.
+pub trait DartSelfRef {
+    fn dart_self_ref(&self) -> &DartSelf<Self>;
+}
+
+/// `std::rc::Rc::new` for a counted object: the handle is made and remembered.
+pub fn dart_rc<T: DartSelfRef>(value: T) -> std::rc::Rc<T> {
+    let rc = std::rc::Rc::new(value);
+    rc.dart_self_ref().set(&rc);
+    rc
+}
+
 /// Dart's `MapEntry`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MapEntry<K, V> {

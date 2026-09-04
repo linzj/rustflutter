@@ -510,7 +510,9 @@ class RustBackend {
       // In a constructor `this` is the local being built (`__new`), a
       // value and not a reference: no `*`.
       IrThis() =>
-        _selfIsHandle || !_classIsCopy(cls, {}) || _selfName != 'self'
+        _fieldsAreAccessors
+            ? '$_selfName.dart_self_${snake(cls.name)}()'
+            : _selfIsHandle || !_classIsCopy(cls, {}) || _selfName != 'self'
             ? '$_selfName.clone()'
             : '*$_selfName',
       IrField(:final target, :final name, :final onEnum, :final owner) =>
@@ -1932,7 +1934,7 @@ class RustBackend {
         args.isEmpty &&
         target is IrDowncast &&
         (library[target.type]?.counted ?? false)) {
-      return 'std::rc::Rc::new(${expr(target)}.clone())';
+      return 'dart_rc(${expr(target)}.clone())';
     }
     // `runtimeType` on a super function's `this_` (see `DartAny`).
     if ((name == 'runtimeType' || name == 'runtime_type') &&
@@ -2236,6 +2238,7 @@ class RustBackend {
       parts.add('${snake(f.name)}: $celled');
       _returns = outer;
     }
+    if (cls.counted) parts.add('__self: DartSelf::new()');
     return '${t.name} { ${parts.join(', ')} }';
   }
 
@@ -3502,6 +3505,11 @@ class RustBackend {
       }
       _line('');
     }
+    // `this` as a value inside the trait's own bodies (see `DartSelf`).
+    _line(
+      'fn dart_self_${snake(cls.name)}(&self) -> std::rc::Rc<dyn ${cls.name}${_useArguments(cls)}>;',
+    );
+    _line('');
     for (final method in cls.abstractMethods) {
       _member('${cls.name}.${method.name} (required)', () {
         _refuseShadowedGeneric(method);
@@ -3631,6 +3639,15 @@ class RustBackend {
       _rustIdentifier('${snakeRaw(owner)}_${snakeRaw(name)}');
 
   /// `<T>` for a class or method that has parameters, and nothing otherwise.
+  /// Whether the struct derives `Clone`: nothing it holds is a bare future.
+  bool _cloneable(IrClass of) =>
+      !_allFields(of)
+          .any((f) => _fieldType(f).contains('dyn std::future::Future'));
+
+  /// A class's parameters as a use: `<T, U>`, or nothing.
+  String _useArguments(IrClass of) =>
+      of.typeParameters.isEmpty ? '' : '<${of.typeParameters.join(', ')}>';
+
   String _generics(Object owner, {bool static = false}) {
     final params = switch (owner) {
       IrClass(:final typeParameters) => typeParameters,
@@ -5107,7 +5124,8 @@ class RustBackend {
     // Asked of the *emitted* type: a shared field is an `Rc<Cell<..>>`, which
     // is not `Copy` however copyable the value inside it is. Asking the Dart
     // type instead derived `Copy` for a struct that cannot have it.
-    final copyable = _allFields(cls).every((f) => _isCopy(_fieldType(f)));
+    final copyable =
+        !cls.counted && _allFields(cls).every((f) => _isCopy(_fieldType(f)));
     // `Debug` and `PartialEq` cannot be derived over a function-typed field
     // (a `dyn Fn` is neither), and a struct holding one got 15 `E0369`s and
     // 14 `E0277`s for the derive alone. Left off there: a `==` on such a
@@ -5150,8 +5168,7 @@ class RustBackend {
     // `AssetBundle`'s caches) cannot derive it; its handle, the `Rc` every
     // counted class is passed by, still is. A value class holding one
     // would have to be cloned by value somewhere and is left to say so.
-    final cloneable = !_allFields(cls)
-        .any((f) => _fieldType(f).contains('dyn std::future::Future'));
+    final cloneable = _cloneable(cls);
     // A derived `Debug` on `ValueKey<T>` holds only for `T: Debug`, and
     // the `Key` trait it implements has `Debug` above it for every `T:
     // Clone + 'static` (18 E0277s the moment the type parameters lost
@@ -5172,6 +5189,10 @@ class RustBackend {
       _doc(field.doc);
       _line('${_vis(field.name)}${snake(field.name)}: ${_fieldType(field)},');
     }
+    // A counted object knows its own handle (`DartSelf`): a trait body's
+    // `this` is `self.dart_self_<trait>()`, 117 `&__Self` where an
+    // `Rc<dyn X>` was wanted at ws271.
+    if (cls.counted) _line('__self: DartSelf<Self>,');
     // A Dart class can name a type parameter it never stores -- `Tween<T>`
     // holds `begin` and `end` of type `T?`, but plenty do not. Rust will not
     // have an unused parameter, and `PhantomData` is what it offers instead.
@@ -5184,6 +5205,16 @@ class RustBackend {
     _indent--;
     _line('}');
     _line('');
+    if (cls.counted) {
+      _line(
+        'impl${_generics(cls, static: true)} DartSelfRef for ${cls.name}${_generics(cls)} {',
+      );
+      _indent++;
+      _line('fn dart_self_ref(&self) -> &DartSelf<Self> { &self.__self }');
+      _indent--;
+      _line('}');
+      _line('');
+    }
     // A struct holding a closure still has to print -- `Rc<DynamicColor>`
     // in a struct that derives `Debug` -- so it prints as its class.
     if (!derivesDebug) {
@@ -5514,6 +5545,26 @@ class RustBackend {
       '${cls.name}${_generics(cls)} {',
     );
     _indent++;
+    // The handle a trait body's `this` is. A struct that is not counted has
+    // no identity to give, and a fresh handle around a copy is what the
+    // rest of its translation does with it too.
+    _line(
+      'fn dart_self_${snake(base.name)}(&self) -> std::rc::Rc<dyn ${base.name}$arguments> {',
+    );
+    _indent++;
+    // ..and a generic value class cannot even be cloned here: its derived
+    // `Clone` wants `T: Clone`, which the impl's `T: 'static` does not
+    // promise (192 `&X<T>: Trait` bounds at ws275).
+    _line(
+      cls.counted
+          ? 'self.__self.get()'
+          : cls.typeParameters.isEmpty && _cloneable(cls)
+          ? 'std::rc::Rc::new(self.clone())'
+          : 'todo!("${cls.name} has no handle of its own")',
+    );
+    _indent--;
+    _line('}');
+    _line('');
     // A field and a method of the same name are one item in Rust. A mixin
     // routinely has both -- `Ticker? _ticker;` beside a getter that reads it --
     // and emitting the accessor as well as the method put two `fn _ticker` in
@@ -6036,12 +6087,13 @@ class RustBackend {
     final handleFirst = built && cls.counted;
     _line(
       !built
-          ? (cls.counted ? 'std::rc::Rc::new(Self {' : 'Self {')
+          ? (cls.counted ? 'dart_rc(Self {' : 'Self {')
           : handleFirst
-          ? 'let __new = std::rc::Rc::new(Self {'
+          ? 'let __new = dart_rc(Self {'
           : 'let mut __new = Self {',
     );
     _indent++;
+    if (cls.counted) _line('__self: DartSelf::new(),');
     for (final field in _allFields(cls)) {
       if (deferred.containsKey(field.name)) {
         _line(
@@ -6134,7 +6186,7 @@ class RustBackend {
       }
       if (body != null) stmt(body);
       _selfName = saved;
-      _line(handleFirst || !cls.counted ? '__new' : 'std::rc::Rc::new(__new)');
+      _line(handleFirst || !cls.counted ? '__new' : 'dart_rc(__new)');
     }
     _line('})');
     _indent--;
