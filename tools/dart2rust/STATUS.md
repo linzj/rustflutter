@@ -1291,6 +1291,15 @@ ws60 关掉签名上的 `Result`（`throw` = panic）是因为当时的失败集
 这是分析的范围问题，不是模型的问题——这里是 closed world（AOT dill，TFA 之后，
 整个程序都在手里），哪个成员会抛是能算准的。用户据此要求撤回 panic 模型。
 
+**修正（用户，2026-09-04，同日）：不按分析决定，一律 `Result`。** 所有函数、方法、
+构造函数、闭包都返回 `Result<T, Rc<dyn Object>>`；函数类型和 `Future` 的输出同样
+是 `Result`。ws244–ws245 的失败分析留作以后的优化（哪些成员其实不失败），不再决定
+签名。要一起改的：函数类型统一；构造函数 `Result<Self, E>`（计数类 `Result<Rc<Self>, E>`），
+const 上下文用 `match` 展开；prelude 接回调的函数自己也返回 `Result` 或暂存错误；
+`throw` = `return Err`，`rethrow` = `return Err(e)`，`try` = `match`，`finally` 在分派
+前跑；trait 声明、impl 转发器、super fn、async 同源。原语（越界、除零、null check、
+`as`）仍先量再做检查版本。
+
 **v2 的形状：**
 
 1. **错误类型统一为 `Rc<dyn Object>`。** Dart 的异常就是对象，`catch (e)` 按 `is`
