@@ -55,7 +55,12 @@ class KernelFrontend {
     this.throws,
     this.open = const {},
     this.erase = false,
+    this.eraseObjectBounded = false,
   });
+
+  /// Whether `Object`-bounded parameters a subclass fixes are erased too
+  /// (see `_erasedParameter`). Off: ws318.
+  final bool eraseObjectBounded;
 
   /// Whether type parameters bounded by translated abstract classes are
   /// erased (`_erasedParameter`). Gated while the cut was finished: on, ws281
@@ -370,7 +375,8 @@ class KernelFrontend {
         final bound = retyped.parameter.bound;
         if (bound is InterfaceType &&
             bound.classNode != declaredVar.classNode) {
-          if (_abstractLike(declaredVar.classNode)) {
+          if (_abstractLike(declaredVar.classNode) &&
+              !_scalarClass(declaredVar.classNode)) {
             return IrCastTo(IrLocal(name), _type(declaredVar));
           }
           return _narrowingCast(IrLocal(name), declaredVar);
@@ -4498,8 +4504,46 @@ class KernelFrontend {
   /// `ParentDataWidget<T extends ParentData>`, `GlobalKey<T extends
   /// State>` -- and not when the bound is `Object` or a scalar, where the
   /// parameter is a real type variable (`Tween<T>`, `Animation<T>`).
+  static bool _scalarClass(Class c) =>
+      const {'String', 'int', 'double', 'bool', 'num'}.contains(c.name) &&
+      c.enclosingLibrary.importUri.toString() == 'dart:core';
+
   bool _erasedParameter(TypeParameter p) {
     if (!erase) return false;
+    // An anonymous mixin application's parameter stands for the mixin's:
+    // erased when that one is (`SlottedRenderObjectElement<SlotType>` kept
+    // a `SlotType` nothing declared, ws315).
+    final decl0 = p.declaration;
+    if (decl0 is Class && decl0.isAnonymousMixin) {
+      final mixedIn = decl0.mixedInType;
+      if (mixedIn != null) {
+        for (var j = 0; j < mixedIn.typeArguments.length; j++) {
+          final a = mixedIn.typeArguments[j];
+          if (a is TypeParameterType &&
+              a.parameter == p &&
+              j < mixedIn.classNode.typeParameters.length) {
+            return _erasedParameter(mixedIn.classNode.typeParameters[j]);
+          }
+        }
+      }
+      // A deduplicated application (`dart:mixin_deduplication`) has no
+      // `mixedInType`; the mixin is among its `implementedTypes`.
+      for (final st in [
+        if (decl0.supertype != null) decl0.supertype!,
+        ...decl0.implementedTypes,
+      ]) {
+        for (var j = 0; j < st.typeArguments.length; j++) {
+          final a = st.typeArguments[j];
+          if (a is TypeParameterType &&
+              a.parameter == p &&
+              j < st.classNode.typeParameters.length) {
+            return _erasedParameter(st.classNode.typeParameters[j]);
+          }
+        }
+      }
+      // No mapping found: judged by its own bound below, as before
+      // (`ChildType extends RenderBox` on a mixin application, 54 at ws316).
+    }
     // A factory carries its own copies of the class's parameters: erased
     // with them, or `global_key_new<T>` kept a `T` nothing could infer (87).
     final decl = p.declaration;
@@ -4512,11 +4556,52 @@ class KernelFrontend {
           _erasedParameter(cls.typeParameters[i]);
     }
     if (decl is! Class) return false;
-    final bound = p.bound;
-    return bound is InterfaceType &&
-        bound.classNode.name != 'Object' &&
-        bound.classNode.enclosingLibrary.importUri.scheme != 'dart' &&
-        _abstractLike(bound.classNode);
+    return _erasedCache.putIfAbsent(p, () {
+      final bound = p.bound;
+      if (bound is! InterfaceType) return false;
+      if (bound.classNode.name != 'Object' &&
+          bound.classNode.enclosingLibrary.importUri.scheme != 'dart' &&
+          _abstractLike(bound.classNode)) {
+        return true;
+      }
+      // An `Object`-bounded parameter of a trait-like class that some
+      // subclass fixes to a concrete type: `AssetImage` is an
+      // `ImageProvider<AssetBundleImageKey>` and stands where an
+      // `ImageProvider<Object>` is wanted (121 bounds at ws313). A
+      // parameter every subclass passes through (`Animation<T>`) stays.
+      // Only a translated class: the prelude's `Sink<T>` keeps its
+      // parameter (11 "missing generics" that killed a leaf crate, ws314).
+      final uri = decl.enclosingLibrary.importUri.toString();
+      // Gated (`DART2RUST_ERASE_OBJECT=1`): measured 4435 against 3995
+      // at ws318 with every crate reached -- `Animation<double>`'s values
+      // went behind `Rc<dyn Object>` and every read had to come back.
+      return eraseObjectBounded &&
+          bound.classNode.name == 'Object' &&
+          (uri.startsWith('package:') || uri == 'dart:ui') &&
+          _abstractLike(decl) &&
+          _fixedBelow(decl, decl.typeParameters.indexOf(p));
+    });
+  }
+
+  final Map<TypeParameter, bool> _erasedCache = {};
+
+  /// Whether a subtype of `cls` supplies a concrete type (not one of its
+  /// own parameters) for `cls`'s `i`th parameter.
+  bool _fixedBelow(Class cls, int i) {
+    final subtypes = _subtypes;
+    final hierarchy = typeEnvironment?.hierarchy;
+    if (subtypes == null || hierarchy == null || i < 0) return false;
+    for (final sub in subtypes.getSubtypesOf(cls)) {
+      if (sub == cls) continue;
+      final asBase = hierarchy.getClassAsInstanceOf(sub, cls);
+      if (asBase == null || i >= asBase.typeArguments.length) continue;
+      final arg = asBase.typeArguments[i];
+      if (arg is! TypeParameterType && arg is! DynamicType) {
+        if (arg is InterfaceType && arg.classNode.name == 'Object') continue;
+        return true;
+      }
+    }
+    return false;
   }
 
   /// A class's type arguments with the erased ones left out.
@@ -4551,8 +4636,9 @@ class KernelFrontend {
         result.nullability == Nullability.nullable) {
       return lowered;
     }
-    // ..to a trait, when the narrower class is open or abstract.
-    if (_abstractLike(result.classNode)) {
+    // ..to a trait, when the narrower class is open or abstract -- not a
+    // scalar, abstract to Kernel and a struct here (`dyn double`, 133).
+    if (_abstractLike(result.classNode) && !_scalarClass(result.classNode)) {
       return IrCastTo(lowered, _type(result));
     }
     return _narrowingCast(lowered, result);
