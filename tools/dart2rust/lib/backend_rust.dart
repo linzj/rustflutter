@@ -2001,7 +2001,19 @@ class RustBackend {
       if (!fields.containsKey(f.name)) continue;
       final outer = _returns;
       _returns = f.type;
-      parts.add('${snake(f.name)}: ${_returned(fields[f.name]!)}');
+      final value = fields[f.name]!;
+      // A constant into a nullable field goes in through `Some`: the
+      // `bool? signed` of a `const TextInputType(..)` held `false` bare
+      // (26 in `widgets`).
+      final wrapped =
+          f.type.nullable &&
+          ((value is IrLiteral &&
+                  value.type.name != 'Null' &&
+                  !value.type.nullable) ||
+              value is IrConstInstance ||
+              value is IrNew);
+      final text = _returned(value);
+      parts.add('${snake(f.name)}: ${wrapped ? 'Some($text)' : text}');
       _returns = outer;
     }
     return '${t.name} { ${parts.join(', ')} }';

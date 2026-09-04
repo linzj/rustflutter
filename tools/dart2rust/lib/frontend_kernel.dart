@@ -679,7 +679,10 @@ class KernelFrontend {
         // A local, a parameter, or a chain rooted at `this` -- the receivers
         // the statement form already takes.
         if ((onLocal || _rootedAtThis(receiver)) && declaring != null) {
-          final counted = _closureCallsMethod(declaring);
+          final receiverClass = _staticClass(receiver);
+          final counted =
+              _closureCallsMethod(declaring) ||
+              (receiverClass != null && _closureCallsMethod(receiverClass));
           final ownsValue =
               !onLocal || receiver.variable.parent is! FunctionNode;
           if (counted || ownsValue) {
@@ -698,7 +701,9 @@ class KernelFrontend {
                       node.name.text,
                       stored,
                       target: expression(receiver),
-                      owner: counted ? declaring.name : null,
+                      owner: counted
+                          ? (_receiverClassName(receiver) ?? declaring.name)
+                          : null,
                     )
                   : IrSetter(expression(receiver), node.name.text, stored),
             ], IrLocal(held));
@@ -1506,6 +1511,17 @@ class KernelFrontend {
   /// Its own method because a `return a.b = v;` in a void function is this
   /// statement and then a bare return -- the CFE writes `=> x = v` that way,
   /// 171 times in the gallery's dill, every one in a setter or a void closure.
+  /// The receiver's static class, when it is a translated one.
+  Class? _staticClass(Expression receiver) {
+    final t = _staticType(receiver);
+    return t is InterfaceType && _translatedClass(t.classNode)
+        ? t.classNode
+        : null;
+  }
+
+  String? _receiverClassName(Expression receiver) =>
+      _staticClass(receiver)?.name;
+
   IrStmt _instanceSet(InstanceSet value) {
     // The value widens into the field's or setter's type: `_cache = s`
     // into a `String?` field is `Some(s)`.
@@ -1525,10 +1541,17 @@ class KernelFrontend {
       if (value.interfaceTarget is! Field) {
         return IrSetter(const IrLocal(_cascadeName), value.name.text, written);
       }
+      // The owner is the cascaded value's own class: on a counted one its
+      // fields are cells, and without the owner the backend wrote
+      // `cascaded.on_down = ..` into an `Rc<RefCell<..>>` (23+23 in
+      // `widgets`).
       return IrAssignField(
         value.name.text,
         written,
         target: const IrLocal(_cascadeName),
+        owner:
+            _receiverClassName(receiver) ??
+            value.interfaceTarget.enclosingClass?.name,
       );
     }
     if (value.receiver is! ThisExpression) {
@@ -1567,12 +1590,16 @@ class KernelFrontend {
       // ..and reached however it was reached: `_views[viewId]!.x = v` is a
       // handle out of a map, and the write goes through the cell just the
       // same (`PlatformDispatcher`, 1 refusal that took 3 callers).
-      if (_closureCallsMethod(declaring)) {
+      final receiverClass = _staticClass(receiver);
+      if (_closureCallsMethod(declaring) ||
+          (receiverClass != null && _closureCallsMethod(receiverClass))) {
+        // The receiver's own class, where the cells are decided; the
+        // declaring one may be an abstract base.
         return IrAssignField(
           value.name.text,
           written,
           target: expression(receiver),
-          owner: declaring.name,
+          owner: receiverClass?.name ?? declaring.name,
         );
       }
       if (!_rootedAtThis(value.receiver)) {
