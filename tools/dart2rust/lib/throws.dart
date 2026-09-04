@@ -21,7 +21,72 @@ class ThrowsAnalysis {
     this.rounds,
     this.failingFunctionValues,
     this.functionValueCalls,
+    this._callers,
+    this._dispatch,
+    this._hierarchy,
   );
+
+  final Set<Member> Function(Member) _dispatch;
+  final ClosedWorldClassHierarchy _hierarchy;
+  final Map<Member, bool> _familyCache = {};
+
+  /// Whether the *signature* of `m` is a failing one: it, an override of
+  /// it anywhere below, or the interface member it overrides, fails. A
+  /// trait method has one signature for every implementer, so one failing
+  /// implementer puts `Result` on all of them.
+  bool familyFails(Member m) {
+    return _familyCache.putIfAbsent(m, () {
+      final cls = m.enclosingClass;
+      if (cls == null) return failing.contains(m);
+      final name = m.name;
+      final setter = m is Procedure && m.isSetter;
+      // Every class above (itself included) that declares the name; the
+      // dispatch set below each of those is the family.
+      final tops = <Class>{};
+      final seen = <Class>{};
+      void up(Class c) {
+        if (!seen.add(c)) return;
+        for (final member in c.members) {
+          if (member.name == name &&
+              (member is Field ||
+                  (member is Procedure && member.isSetter == setter))) {
+            tops.add(c);
+            break;
+          }
+        }
+        for (final s in c.supers) {
+          up(s.classNode);
+        }
+      }
+
+      up(cls);
+      for (final top in tops) {
+        for (final member in top.members) {
+          if (member.name != name) continue;
+          if (member is Procedure && member.isSetter != setter) continue;
+          if (_dispatch(member).any(failing.contains)) return true;
+        }
+      }
+      return false;
+    });
+  }
+
+  /// Callee -> members calling it (outside any catch-all).
+  final Map<Member, Set<Member>> _callers;
+
+  /// The members that fail through `root`: everything that reaches it
+  /// through the call graph. Sets for different roots overlap.
+  Set<Member> infectedBy(Member root) {
+    final seen = <Member>{root};
+    final queue = [root];
+    while (queue.isNotEmpty) {
+      final m = queue.removeLast();
+      for (final caller in _callers[m] ?? const <Member>{}) {
+        if (seen.add(caller)) queue.add(caller);
+      }
+    }
+    return seen;
+  }
 
   /// Every member the analysis looked at (translated libraries only).
   final List<Member> members;
@@ -115,6 +180,12 @@ class ThrowsAnalysis {
         }
       }
     }
+    final callers = <Member, Set<Member>>{};
+    for (final entry in calls.entries) {
+      for (final callee in entry.value) {
+        callers.putIfAbsent(callee, () => {}).add(entry.key);
+      }
+    }
     return ThrowsAnalysis._(
       members,
       direct,
@@ -122,6 +193,9 @@ class ThrowsAnalysis {
       rounds,
       failingFunctionValues,
       functionValueCalls,
+      callers,
+      dispatch,
+      hierarchy,
     );
   }
 }

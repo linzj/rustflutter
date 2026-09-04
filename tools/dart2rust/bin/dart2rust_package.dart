@@ -34,6 +34,7 @@ import 'package:kernel/type_environment.dart';
 
 import '../lib/backend_rust.dart';
 import '../lib/ir.dart';
+import '../lib/throws.dart';
 import '../lib/frontend_kernel.dart';
 import '../lib/prelude.dart';
 
@@ -204,6 +205,20 @@ Future<void> main(List<String> args) async {
   /// once from `dart:ui` and once from `painting` -- and a glob import of both
   /// makes every use of them ambiguous. 800 `E0659`s from ten names.
   final definedIn = <String, Set<String>>{};
+  // The Result model's failure analysis, over the whole component once.
+  final throwsAnalysis = typeEnvironment == null
+      ? null
+      : ThrowsAnalysis.of(
+          component,
+          typeEnvironment.hierarchy as ClosedWorldClassHierarchy,
+          prefixes,
+        );
+  if (throwsAnalysis != null) {
+    stderr.writeln(
+      'throws: ${throwsAnalysis.direct.length} direct, '
+      '${throwsAnalysis.failing.length} failing of ${throwsAnalysis.considered}',
+    );
+  }
   final dynamicSlots = typeEnvironment == null
       ? const <Field, List<InterfaceType>>{}
       : dynamicSlotsIn(inPackage, typeEnvironment);
@@ -215,6 +230,7 @@ Future<void> main(List<String> args) async {
       abstractElsewhere: abstractNames,
       typeEnvironment: typeEnvironment,
       dynamicSlots: dynamicSlots,
+      throws: throwsAnalysis,
     ).lowerLibrary();
     lowered[library] = result;
     for (final cls in result.$1.classes) {

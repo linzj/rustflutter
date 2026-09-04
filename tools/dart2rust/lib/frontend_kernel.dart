@@ -19,6 +19,7 @@ import 'package:kernel/class_hierarchy.dart';
 import 'package:kernel/type_algebra.dart';
 import 'package:kernel/type_environment.dart';
 
+import 'throws.dart';
 import 'ir.dart';
 
 /// Dart operators that are binary, spelled as Kernel names them.
@@ -51,7 +52,14 @@ class KernelFrontend {
     this.elsewhere = const {},
     this.typeEnvironment,
     this.dynamicSlots = const {},
+    this.throws,
   });
+
+  /// Which members can fail, over the whole program (`ThrowsAnalysis`);
+  /// null while the Result model is off.
+  final ThrowsAnalysis? throws;
+
+  bool _fails(Member target) => throws?.familyFails(target) ?? false;
 
   /// Top-level `dynamic` fields whose runtime types the driver worked out
   /// from the initialiser and every store into them (`dynamicSlotsIn`):
@@ -2591,7 +2599,11 @@ class KernelFrontend {
   /// receiver's hierarchy declare is called through one of them by name.
   IrCall _qualified(IrCall call, Member member, Expression receiver) {
     final owner = member.enclosingClass;
-    if (owner == null || !_translatedClass(owner)) return call;
+    if (owner == null || !_translatedClass(owner)) {
+      return _fails(member)
+          ? IrCall(call.target, call.name, call.args, fails: true)
+          : call;
+    }
     // From the receiver's own class: a mixin's `child` is declared again
     // by the trait of the class that mixes it in, *below* the owner.
     final type = receiver is ThisExpression ? null : _staticType(receiver);
@@ -2601,13 +2613,15 @@ class KernelFrontend {
         ? type.classNode
         : null;
     final qualifier = _qualifierFor(from ?? owner, member);
-    if (qualifier == null) return call;
+    final fails = _fails(member);
+    if (qualifier == null && !fails) return call;
     return IrCall(
       call.target,
       call.name,
       call.args,
       qualifier: qualifier,
       receiverClass: type is InterfaceType ? type.classNode.name : null,
+      fails: fails,
     );
   }
 
@@ -5843,6 +5857,7 @@ class KernelFrontend {
       isGetter: node.kind == ProcedureKind.Getter,
       isSetter: node.kind == ProcedureKind.Setter,
       operator: isOperator ? name : null,
+      fails: _fails(node),
       throws: thrown.isEmpty ? null : thrown.single,
       // Only plain `async`. `async*` and `sync*` are generators, which Rust
       // has no direct word for, and there are five of them in the package.

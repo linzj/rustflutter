@@ -47,6 +47,19 @@ void main(List<String> args) {
     row[0]++;
     if (analysis.failing.contains(m)) row[1]++;
   }
+  if (args.contains('--roots')) {
+    final ranked = [
+      for (final root in analysis.direct)
+        (root, analysis.infectedBy(root).length),
+    ]..sort((a, b) => b.$2.compareTo(a.$2));
+    stdout.writeln('roots by members infected (overlapping):');
+    for (final (root, n) in ranked.take(30)) {
+      final cls = root.enclosingClass?.name;
+      stdout.writeln(
+        '  ${n.toString().padLeft(6)}  ${cls == null ? '' : '$cls.'}${root.name.text}  (${root.enclosingLibrary.importUri.pathSegments.last})',
+      );
+    }
+  }
   final rows = byPackage.entries.toList()
     ..sort((a, b) => b.value[1].compareTo(a.value[1]));
   for (final e in rows.take(20)) {

@@ -178,7 +178,11 @@ class IrCall extends IrExpr {
     this.args, {
     this.qualifier,
     this.receiverClass,
+    this.fails = false,
   });
+
+  /// Whether the callee can fail (`IrMethod.fails`): the call is `?`ed.
+  final bool fails;
 
   final IrExpr? target;
   final String name;
@@ -199,7 +203,10 @@ class IrCall extends IrExpr {
 
 /// A static method call: `Alignment.lerp(a, b, t)`, or a top-level one.
 class IrStaticCall extends IrExpr {
-  const IrStaticCall(this.owner, this.name, this.args);
+  const IrStaticCall(this.owner, this.name, this.args, {this.fails = false});
+
+  /// Whether the callee can fail (`IrMethod.fails`).
+  final bool fails;
 
   /// Null for a top-level function, which needs no owner in either language.
   final String? owner;
@@ -1185,6 +1192,7 @@ class IrMethod {
     this.params,
     this.returnType,
     this.body, {
+    this.fails = false,
     this.typeParameters = const [],
     this.isStatic = false,
     this.isGetter = false,
@@ -1202,6 +1210,12 @@ class IrMethod {
   final IrStmt body;
   final bool isStatic;
   final bool isGetter;
+
+  /// Whether the member can complete with a Dart exception -- it, or any
+  /// member sharing its signature through overriding, throws or calls
+  /// something that does (`ThrowsAnalysis.familyFails`). Such a member
+  /// returns `Result<T, Rc<dyn Object>>`. See STATUS, 决定 2026-09-04.
+  final bool fails;
 
   /// A `set x(v)`. In Rust it is `set_x(&mut self, v)`, which is why it needs
   /// its own flag: a getter and a setter share a name in Dart and must not in
