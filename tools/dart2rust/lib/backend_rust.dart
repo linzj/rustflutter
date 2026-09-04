@@ -653,8 +653,13 @@ class RustBackend {
       // behind a reference far more often than an owned `Option` -- `.map`
       // alone moved out of `*child` (E0507). A body that needs the value
       // rather than a reference to it now says so at the use.
+      // Under the Result model the body may `?`: it runs inside a closure
+      // returning `Result`, and `transpose()?` lifts the error out of the
+      // `Option` again.
       IrNullAware(:final receiver, :final body, :final flatten) =>
-        '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})',
+        _failure == null
+            ? '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
+            : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}',
       IrBound() => _boundName,
       IrClosure() => _closure(e as IrClosure),
       // A function value returns `Result` like everything else.
@@ -2201,7 +2206,13 @@ class RustBackend {
     final saved = _out.length;
     final savedIndent = _indent;
     _indent = 0;
+    // A step of a std iterator chain (`all`, `map`, `filter`) returns a
+    // plain value: a failing call inside unwraps, and the tail is bare.
+    // Loud, and recorded: an exception in a `where` predicate panics.
+    final savedFailure = _failure;
+    _failure = null;
     stmt(e.body, tail: true);
+    _failure = savedFailure;
     final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;

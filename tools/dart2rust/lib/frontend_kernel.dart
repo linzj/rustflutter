@@ -1024,6 +1024,8 @@ class KernelFrontend {
                 IrLocal(params[i].name),
               for (final p in fn.namedParameters) IrLocal(p.parameterName),
             ],
+            // The adapter's call propagates like a written one would.
+            fails: _fails(node.interfaceTarget),
           ),
         ),
         _type(returnType),
