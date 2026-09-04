@@ -110,7 +110,14 @@ class KernelFrontend {
     }
     // A tear-off of a static method is a *constant* in Kernel
     // (`DateFormat.localeExists` as an argument), with its type on the node.
-    if (e is ConstantExpression) return e.type;
+    // An instance constant is its own class, not the slot's declared type:
+    // `Curves.linear` filling an omitted `Curve curve` arrives typed `Curve`
+    // and was never shared into the `Rc<dyn Curve>` (109 `Cubic`, 88
+    // `_Linear`, 75 `BorderRadius`).
+    if (e is ConstantExpression) {
+      final c = e.constant;
+      return c is InstanceConstant ? _constantStaticType(c) : e.type;
+    }
     if (e is NullLiteral) return const NullType();
     // Literals, from the core types when there are any: `return true` in a
     // closure returning `Object?` had nothing to say it was a `bool`.
@@ -864,6 +871,11 @@ class KernelFrontend {
         node.target.name.text,
       );
     }
+    // An expression the CFE moved from another file -- a mixin field's
+    // initialiser into the application's constructor -- is wrapped with
+    // its origin; the wrapper is not the expression (`AnimationController`
+    // was refused whole for one).
+    if (node is FileUriExpression) return expression(node.expression);
     if (node is ConstantExpression) return _constant(node.constant, node);
     // A method used as a value: `Ticker(_tick)` hands `this._tick` over
     // without calling it. In Rust that is a closure that calls it, which makes

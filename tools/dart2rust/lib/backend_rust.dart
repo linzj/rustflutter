@@ -2011,7 +2011,9 @@ class RustBackend {
                   value.type.name != 'Null' &&
                   !value.type.nullable) ||
               value is IrConstInstance ||
-              value is IrNew);
+              value is IrNew ||
+              // An enum value into a `TextBaseline?` (141 in `material`).
+              (value is IrStatic && value.isEnumValue));
       final text = _returned(value);
       parts.add('${snake(f.name)}: ${wrapped ? 'Some($text)' : text}');
       _returns = outer;
@@ -2377,6 +2379,12 @@ class RustBackend {
     // `Box<dyn Gradient>::linear(..)`, which does not even parse. What it
     // should name is whichever concrete class the factory redirects to, and
     // that is not known here.
+    // `Object()` as an identity token -- a lock, a sentinel: a fresh unit
+    // behind a handle, which `dyn Object` accepts (`_RenderObjectSemantics`,
+    // 119 callers of a constructor refused for this).
+    if (t.name == 'Object' && args.isEmpty) {
+      return '(std::rc::Rc::new(()) as std::rc::Rc<dyn Object>)';
+    }
     if (library.isAbstract(t.name)) {
       throw Unsupported(
         'a constructor of `${t.name}`, which is abstract and became a trait',
@@ -5365,11 +5373,16 @@ class RustBackend {
         // allows, or the trait's `T?` doubled up above -- is a `Some`.
         // The trait's future carries `+ '_` (see `_lifetimed`); the
         // inherent one is the same future without the spelling.
+        // An `Rc<Concrete>` returned where the trait says `Rc<dyn Base>`
+        // unsizes on its own at the return (47 `Box<Rc<dyn State>>`s).
         _line(
           concrete == returns || _lifetimed(concrete) == returns
               ? call
               : returns == 'Option<$concrete>'
               ? 'Some($call)'
+              : returns.startsWith('std::rc::Rc<dyn ') ||
+                    returns.startsWith('Option<std::rc::Rc<dyn ')
+              ? call
               : 'Box::new($call)',
         );
       }
