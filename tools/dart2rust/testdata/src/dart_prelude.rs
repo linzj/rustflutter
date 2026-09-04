@@ -862,6 +862,10 @@ pub struct Map<K, V> {
 }
 
 impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
+    /// `Map.of(other)`: a copy with the same entries, in the same order.
+    pub fn of(other: Map<K, V>) -> Map<K, V> {
+        other
+    }
     pub fn new() -> Self {
         Map {
             entries: Vec::new(),
@@ -1644,6 +1648,7 @@ impl<T> fmt::Debug for Expando<T> {
 /// not: an object that is expando-tagged and then dropped leaves its entry
 /// behind. The gallery tags a handful of long-lived messengers, which is why
 /// that is a note and not a bug.
+#[derive(Clone)]
 pub struct Expando<T> {
     entries: std::cell::RefCell<Vec<(usize, T)>>,
 }
@@ -1707,6 +1712,7 @@ impl<T> Clone for Pointer<T> {
 pub struct NativeType;
 pub struct Void;
 pub struct NativeFunction<T>(std::marker::PhantomData<T>);
+#[derive(Clone, Copy, Debug)]
 pub struct DynamicLibrary;
 impl fmt::Debug for Allocator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1714,6 +1720,7 @@ impl fmt::Debug for Allocator {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Allocator;
 
 /// `dart:core`'s `WeakReference<T>`: a handle that does not keep its

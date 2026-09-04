@@ -600,48 +600,10 @@ class KernelFrontend {
       return IrRecord([for (final e in node.positional) expression(e)]);
     }
     if (node is MapLiteral) {
-      // Each key and value into the map's own types, sharing into an
-      // `Object?` value (`{'extension': name, 'value': value}` handed to
-      // `postEvent` as a `Map<String, Object?>`), as a list literal's are.
-      final keyType = node.keyType;
-      final valueType = node.valueType;
-      return IrMapLiteral(
-        [
-          for (final entry in node.entries)
-            (
-              _intoObject(
-                entry.key,
-                keyType,
-                _widened(entry.key, keyType, expression(entry.key)),
-              ),
-              _intoObject(
-                entry.value,
-                valueType,
-                _widened(entry.value, valueType, expression(entry.value)),
-              ),
-            ),
-        ],
-        _type(keyType),
-        _type(valueType),
-      );
+      return _mapLiteral(node, node.keyType, node.valueType);
     }
     if (node is ListLiteral) {
-      // The CFE keeps a literal of more than eight elements as a node (the
-      // `_literalN` constructors stop there): its elements widen and share
-      // into the element type exactly as the short ones' do.
-      final element = node.typeArgument;
-      return IrListLiteral([
-        for (final e in node.expressions)
-          _intoObject(
-            e,
-            element,
-            _widened(
-              e,
-              element,
-              _withExpectedReturn(element, e, () => expression(e)),
-            ),
-          ),
-      ], _type(element));
+      return _listLiteral(node, node.typeArgument);
     }
     if (node is StringConcatenation) {
       // A part that is neither text nor a number goes through `dart_str`
@@ -3125,7 +3087,74 @@ class KernelFrontend {
   /// Dart's silent widening, spelled. Only when the static type says the
   /// argument is not itself nullable, so a nullable variable passed on stays
   /// as it is.
+  /// A map literal's entries, each key and value into the map's own types,
+  /// sharing into an `Object?` value (`{'extension': name, 'value': value}`
+  /// handed to `postEvent` as a `Map<String, Object?>`), as a list literal's
+  /// are. The types are a parameter: a literal spread into a wider map --
+  /// `<SingleActivator, Intent>{..}` into the `Map<ShortcutActivator,
+  /// Intent>` of `DefaultTextEditingShortcuts` -- is lowered against the
+  /// wider one's, so each key is shared into its `Rc<dyn ..>` (121
+  /// "arguments incorrect" on one file in `widgets`).
+  IrExpr _mapLiteral(MapLiteral node, DartType keyType, DartType valueType) {
+    return IrMapLiteral(
+      [
+        for (final entry in node.entries)
+          (
+            _intoObject(
+              entry.key,
+              keyType,
+              _widened(entry.key, keyType, expression(entry.key)),
+            ),
+            _intoObject(
+              entry.value,
+              valueType,
+              _widened(entry.value, valueType, expression(entry.value)),
+            ),
+          ),
+      ],
+      _type(keyType),
+      _type(valueType),
+    );
+  }
+
+  /// A list literal's elements into `element`. The CFE keeps a literal of
+  /// more than eight elements as a node (the `_literalN` constructors stop
+  /// there): its elements widen and share into the element type exactly as
+  /// the short ones' do.
+  IrExpr _listLiteral(ListLiteral node, DartType element) {
+    return IrListLiteral([
+      for (final e in node.expressions)
+        _intoObject(
+          e,
+          element,
+          _widened(
+            e,
+            element,
+            _withExpectedReturn(element, e, () => expression(e)),
+          ),
+        ),
+    ], _type(element));
+  }
+
   IrExpr _widened(Expression value, DartType? param, IrExpr lowered) {
+    // A literal into a collection slot of other element types is lowered
+    // again against those: see `_mapLiteral`.
+    if (param is InterfaceType && param.nullability != Nullability.nullable) {
+      final args = param.typeArguments;
+      if (value is MapLiteral &&
+          param.classNode.name == 'Map' &&
+          args.length == 2 &&
+          (args[0] != value.keyType || args[1] != value.valueType)) {
+        return _mapLiteral(value, args[0], args[1]);
+      }
+      if (value is ListLiteral &&
+          (param.classNode.name == 'List' ||
+              param.classNode.name == 'Iterable') &&
+          args.length == 1 &&
+          args[0] != value.typeArgument) {
+        return _listLiteral(value, args[0]);
+      }
+    }
     // A local handed on is shared in Dart and moved in Rust: `string` passed
     // to `StringCharacterRange` and then read again, `listener` moved into a
     // closure "in a previous iteration of loop" -- 21 `E0382`s. A clone of a
@@ -3669,6 +3698,25 @@ class KernelFrontend {
     return IrLiteral('Type::of("$name")', const IrType('raw'));
   }
 
+  /// The static type of a constant, for the widening a literal's entry
+  /// gets: an instance is its class, a literal its `dart:core` class.
+  DartType _constantStaticType(Constant c) {
+    final core = typeEnvironment?.coreTypes;
+    return switch (c) {
+      InstanceConstant() => InterfaceType(
+        c.classNode,
+        Nullability.nonNullable,
+        c.typeArguments,
+      ),
+      IntConstant() when core != null => core.intNonNullableRawType,
+      DoubleConstant() when core != null => core.doubleNonNullableRawType,
+      BoolConstant() when core != null => core.boolNonNullableRawType,
+      StringConstant() when core != null => core.stringNonNullableRawType,
+      NullConstant() => const NullType(),
+      _ => const DynamicType(),
+    };
+  }
+
   IrExpr _constant(Constant constant, Expression node) {
     if (constant is TypeLiteralConstant) return _typeLiteral(constant.type);
     if (constant is SymbolConstant) {
@@ -3722,10 +3770,27 @@ class KernelFrontend {
       ]);
     }
     if (constant is MapConstant) {
+      // Each entry into the map's own types, as a map literal's are: the
+      // `const <ShortcutActivator, Intent>{SingleActivator(..): ..}` tables
+      // of `DefaultTextEditingShortcuts` put a `SingleActivator` where an
+      // `Rc<dyn ShortcutActivator>` goes (74 "arguments incorrect" and 12
+      // mismatched types on five statics in `widgets`).
+      IrExpr entry(Constant c, DartType into) {
+        final value = ConstantExpression(c, _constantStaticType(c));
+        return _intoObject(
+          value,
+          into,
+          _widened(value, into, _constant(c, node)),
+        );
+      }
+
       return IrMapLiteral(
         [
           for (final e in constant.entries)
-            (_constant(e.key, node), _constant(e.value, node)),
+            (
+              entry(e.key, constant.keyType),
+              entry(e.value, constant.valueType),
+            ),
         ],
         _type(constant.keyType),
         _type(constant.valueType),
@@ -3963,11 +4028,22 @@ class KernelFrontend {
           value.name.text == '[]=' &&
           value.interfaceTarget.enclosingClass?.name == 'Map' &&
           value.arguments.positional.length == 2) {
+        // The key and the value into the map's own types, as the
+        // expression form's are: the CFE spells a map literal with a `for`
+        // in it as `#t[k] = v` statements, and `SingleActivator(..)` went
+        // into a `Map<ShortcutActivator, Intent>` unshared (121 "arguments
+        // incorrect" on `DefaultTextEditingShortcuts`).
         return IrExprStmt(
-          IrCall(expression(value.receiver), 'insert', [
-            expression(value.arguments.positional[0]),
-            expression(value.arguments.positional[1]),
-          ]),
+          IrCall(
+            expression(value.receiver),
+            'insert',
+            _arguments(
+              value.arguments,
+              value.interfaceTarget.function,
+              true,
+              value.functionType,
+            ),
+          ),
         );
       }
       if (value is InstanceInvocation &&
@@ -5271,12 +5347,23 @@ class KernelFrontend {
         final statement = init.statement;
         asserts.add(_assert(statement.condition, statement.message));
       } else if (init is SuperInitializer) {
-        if (init.arguments.positional.isNotEmpty ||
-            init.arguments.named.isNotEmpty) {
-          var base = node.enclosingClass.superclass;
-          while (base != null && base.isAnonymousMixin) {
-            base = base.superclass;
-          }
+        var base = node.enclosingClass.superclass;
+        while (base != null && base.isAnonymousMixin) {
+          base = base.superclass;
+        }
+        // A no-argument `super()` into a translated base is *not* nothing:
+        // the CFE moves a field's initialiser into the constructor
+        // (`Action._listeners = ObserverList()` arrives as a
+        // `FieldInitializer` of `Action()`), and the subclass gets it only
+        // through the call. `DoNothingAction`, `CallbackAction` and every
+        // other `Action` were refused as "field never initialised" (13
+        // "no associated function `new`" on `WidgetsApp.defaultActions`).
+        final passesArguments =
+            init.arguments.positional.isNotEmpty ||
+            init.arguments.named.isNotEmpty;
+        final translatedBase =
+            base != null && base.enclosingLibrary.importUri.scheme != 'dart';
+        if (passesArguments || translatedBase) {
           if (base == null) {
             throw Unsupported(
               'super constructor call with no base',

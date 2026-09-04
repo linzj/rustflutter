@@ -3583,6 +3583,11 @@ class RustBackend {
     final answer = _allFields(other).every((f) {
       if (f.shared || (other.counted && _mutableOnCounted(f))) return false;
       final held = f.isLate ? 'Option<${type(f.type)}>' : type(f.type);
+      // *That* class's parameters: `Tween<T>` holds an `Option<T>`, and
+      // asked from `AnimatedPositionedState` its `T` read as a class name
+      // nobody knew, so the field went into a `Cell` (3 "Tween<f64>: Copy
+      // is not satisfied" in `widgets`).
+      if (_namesIn(held).any(other.typeParameters.contains)) return false;
       return _isCopyIn(held, seen);
     });
     _copyable[other.name] = answer;
@@ -5204,7 +5209,13 @@ class RustBackend {
     for (final method in cls.methods) {
       if (need.operator != null) {
         if (method.operator == need.operator) return method;
-      } else if (method.operator == null && method.name == need.name) {
+      } else if (method.operator == null &&
+          method.name == need.name &&
+          method.isSetter == need.isSetter) {
+        // The getter and the setter share a name: `ValueListenable.value`
+        // asked for its getter and got `TextEditingController`'s setter,
+        // whose `newValue` "the base has no value for", and the impl
+        // block came out without `value` at all.
         return method;
       }
     }
