@@ -3584,14 +3584,21 @@ class RustBackend {
       // SourceSpan>` as a supertrait names the trait inside its own bound
       // ("cycle detected when computing the super predicates"). A concrete
       // class gets a forwarding impl instead (`_emitPreludeInterfaces`).
-      for (final i in cls.interfaces)
+      // ..and the mixins: `FixedScrollMetrics with ScrollMetrics` is a
+      // `ScrollMetrics`, and its super functions call the mixin's methods
+      // on `this_: &__Self` (39 `__Self: ScrollMetrics` at ws301).
+      for (final i in [...cls.interfaces, ...cls.mixins])
         if (library.isAbstract(i.name) &&
             i.name != 'Object' &&
             !_preludeInterfaces.containsKey(i.name))
           _traitPath(i),
     }.toList();
     _line(
-      '${_vis(cls.name)}trait ${cls.name}${_generics(cls, static: true)}: ${supers.join(' + ')} {',
+      // No `Clone` on the trait's parameters: a `dyn Foo<Pin<Box<dyn
+      // Future>>>` is named (`_CallbackHookProvider<Future<bool>>`), and a
+      // bound here shuts the whole trait. The default methods that clone
+      // carry it instead (`_traitWhere`).
+      '${_vis(cls.name)}trait ${cls.name}${_generics(cls, static: true, clone: false)}: ${supers.join(' + ')} {',
     );
     _indent++;
     // Guarded per member, like the struct path. The trait path was missed when
@@ -3646,7 +3653,7 @@ class RustBackend {
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
-          ' -> ${_wrapped(_spelledReturn(type(method.returnType)))}${_sizedBound(method)} {',
+          ' -> ${_wrapped(_spelledReturn(type(method.returnType)))}${_traitWhere(method)} {',
         );
         _indent++;
         // The default delegates to the free function rather than holding the
@@ -3748,7 +3755,13 @@ class RustBackend {
   String _useArguments(IrClass of) =>
       of.typeParameters.isEmpty ? '' : '<${of.typeParameters.join(', ')}>';
 
-  String _generics(Object owner, {bool static = false}) {
+  /// `clone` puts `Clone` on a class's parameters. Off by default: a
+  /// declaration -- struct, trait, the marker impls -- needs no bound to
+  /// exist, and one there is demanded wherever the type is *named* (a
+  /// trait accessor returning `Vec<TweenSequenceItem<T>>` under `T:
+  /// 'static`, ws303). The impl blocks whose bodies clone ask for it
+  /// themselves (`_implGenerics`, the super functions, `_traitWhere`).
+  String _generics(Object owner, {bool static = false, bool clone = false}) {
     final params = switch (owner) {
       IrClass(:final typeParameters) => typeParameters,
       IrMethod(:final typeParameters) => typeParameters,
@@ -3773,7 +3786,10 @@ class RustBackend {
     final bound = owner is IrMethod
         ? params.map((p) => "$p: Clone + 'static")
         : static
-        ? params.map((p) => "$p: 'static")
+        // `Clone` on a class's parameters after all (ws301): every held
+        // `T` is read by `.clone()`, and 240 stubs said so; the one shape
+        // that is not `Clone`, a bare future, is measured against that.
+        ? params.map((p) => clone ? "$p: Clone + 'static" : "$p: 'static")
         : params;
     return '<${bound.join(', ')}>';
   }
@@ -3901,7 +3917,7 @@ class RustBackend {
       // The prelude's `Map` and `Set` are ordered and compare keys with
       // `==`: `PartialEq + Clone` is all they ask, and `Eq + Hash` shut
       // closures out of `ObserverList<VoidCallback>` (48 in `widgets`).
-      return "$p: 'static${key ? (keyed ? ' + Clone + PartialEq' : ' + Clone') : ''}";
+      return "$p: Clone + 'static${key && keyed ? ' + PartialEq' : ''}";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
@@ -4170,6 +4186,17 @@ class RustBackend {
   // parameter in a coat -- keeps a method out of the vtable, and a trait
   // used as `dyn` needs it kept out: `TransitionRoute` was "not dyn
   // compatible" for `_setSecondaryAnimation(.., Future<void>? disposed)`.
+  /// A trait default method's `where`: `Self: Sized` when it needs it,
+  /// and `T: Clone` for the class's parameters, which the super function
+  /// holding its body asks for (see the trait header).
+  String _traitWhere(IrMethod method) {
+    final clauses = [
+      if (_sizedBound(method).isNotEmpty) 'Self: Sized',
+      for (final p in cls.typeParameters) '$p: Clone',
+    ];
+    return clauses.isEmpty ? '' : ' where ${clauses.join(', ')}';
+  }
+
   static String _sizedBound(IrMethod method) =>
       method.typeParameters.isEmpty &&
           !method.params.any((p) => p.type.name == 'Future')
@@ -4225,14 +4252,14 @@ class RustBackend {
         // `Debug` too: a mixin's `toString` hands `this` to `MapBase.
         // mapToString`, which prints it, and every implementer prints.
         '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
-        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: 'static").join(', ')}'}'
+        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone + 'static").join(', ')}'}'
         // And the *method's* own, for a generic method like
         // `invokeLayoutCallback<T extends Constraints>`. A free function can
         // carry them; the trait method it belongs to cannot, and says so.
         // Bounded as the trait method's are: `AnnotationResult<S>` asks
         // `Clone + 'static` of its `S`, and the free function said nothing
         // (E0277 in the signature of `ContainerLayer.findAnnotations<S>`).
-        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: 'static").join(', ')}'}'
+        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone + 'static").join(', ')}'}'
         '>($params) -> '
         // An `async fn` returns the awaited type: `Future<Response>` on an
         // `async` super function was a future of a boxed future (E0308).
