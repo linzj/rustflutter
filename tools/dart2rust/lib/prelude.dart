@@ -114,7 +114,11 @@ impl<T: 'static> Object for T {
     }
 
     fn runtime_type(&self) -> Type {
-        Type { name: std::any::type_name::<T>().rsplit("::").next().unwrap_or("Object") }
+        // The struct's name alone, as `dart_runtime_type` spells it: no
+        // module path, no type arguments.
+        let full = std::any::type_name::<T>();
+        let bare = full.split('<').next().unwrap_or(full);
+        Type { name: bare.rsplit("::").next().unwrap_or("Object") }
     }
 }
 
@@ -278,8 +282,10 @@ impl DartInt for i64 {
 /// a downcast that is always false and never says so. Each translated struct
 /// gets its own one-line impl instead, so the only way to reach `as_any` from
 /// a box is through the trait inside it.
-pub trait DartAny: 'static {
-    fn as_any(&self) -> &dyn std::any::Any;
+/// `Object` above it: an `Rc<dyn Widget>` then unsizes to an `Rc<dyn
+/// Object>` (trait upcasting), which no `impl Object for dyn Widget` could
+/// give -- a coercion needs the supertrait. `as_any` is `Object`'s.
+pub trait DartAny: Object + 'static {
 
     /// `runtimeType` reachable through a `&__Self: Trait + ?Sized` -- a super
     /// function's `this_` -- where `Object::runtime_type` would resolve on

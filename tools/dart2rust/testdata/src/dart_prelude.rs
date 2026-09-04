@@ -91,11 +91,12 @@ impl<T: 'static> Object for T {
     }
 
     fn runtime_type(&self) -> Type {
+        // The struct's name alone, as `dart_runtime_type` spells it: no
+        // module path, no type arguments.
+        let full = std::any::type_name::<T>();
+        let bare = full.split('<').next().unwrap_or(full);
         Type {
-            name: std::any::type_name::<T>()
-                .rsplit("::")
-                .next()
-                .unwrap_or("Object"),
+            name: bare.rsplit("::").next().unwrap_or("Object"),
         }
     }
 }
@@ -274,9 +275,10 @@ impl DartInt for i64 {
 /// a downcast that is always false and never says so. Each translated struct
 /// gets its own one-line impl instead, so the only way to reach `as_any` from
 /// a box is through the trait inside it.
-pub trait DartAny: 'static {
-    fn as_any(&self) -> &dyn std::any::Any;
-
+/// `Object` above it: an `Rc<dyn Widget>` then unsizes to an `Rc<dyn
+/// Object>` (trait upcasting), which no `impl Object for dyn Widget` could
+/// give -- a coercion needs the supertrait. `as_any` is `Object`'s.
+pub trait DartAny: Object + 'static {
     /// `runtimeType` reachable through a `&__Self: Trait + ?Sized` -- a super
     /// function's `this_` -- where `Object::runtime_type` would resolve on
     /// the *reference* and demand it be `'static` (E0521).
@@ -321,6 +323,43 @@ impl<S: DartCastExt + ?Sized> DartCastExt for std::rc::Rc<S> {
 impl<S: DartCastExt> DartCastExt for Option<S> {
     fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
         self.as_ref().and_then(|v| v.dart_cast_to::<T>())
+    }
+}
+
+/// The cast table for objects reached through `dyn Object`, whose blanket
+/// impl cannot know their type: `TypeId` of the struct to the function that
+/// asks it `dart_cast`. Filled as objects are made -- `dart_rc`,
+/// `dart_object`, and every constructor that is not `const` -- which in a
+/// closed world is every object an `is Trait` can ever meet.
+type DartCastFn = fn(&dyn std::any::Any, std::any::TypeId) -> Option<Box<dyn std::any::Any>>;
+
+thread_local! {
+    static DART_CASTS: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartCastFn>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub fn dart_register<T: DartAny>() {
+    DART_CASTS.with(|c| {
+        c.borrow_mut()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert(|any, t| any.downcast_ref::<T>().and_then(|v| v.dart_cast(t)));
+    });
+}
+
+/// `Rc::new` for a value shared as an object: registered on the way.
+pub fn dart_object<T: DartAny>(value: T) -> std::rc::Rc<T> {
+    dart_register::<T>();
+    std::rc::Rc::new(value)
+}
+
+impl DartCastExt for dyn Object {
+    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
+        let any = self.as_any();
+        let id = std::any::Any::type_id(any);
+        let f = DART_CASTS.with(|c| c.borrow().get(&id).copied());
+        f.and_then(|f| f(any, std::any::TypeId::of::<T>()))
+            .and_then(|b| b.downcast::<std::rc::Rc<T>>().ok())
+            .map(|b| *b)
     }
 }
 
@@ -984,7 +1023,8 @@ pub trait DartSelfRef {
 }
 
 /// `std::rc::Rc::new` for a counted object: the handle is made and remembered.
-pub fn dart_rc<T: DartSelfRef>(value: T) -> std::rc::Rc<T> {
+pub fn dart_rc<T: DartSelfRef + DartAny>(value: T) -> std::rc::Rc<T> {
+    dart_register::<T>();
     let rc = std::rc::Rc::new(value);
     rc.dart_self_ref().set(&rc);
     rc

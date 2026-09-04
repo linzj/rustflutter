@@ -2060,14 +2060,21 @@ class RustBackend {
       // a value is cloned into a fresh one -- `Rc::new(self)` was a handle
       // to a borrow, and "lifetime may not live long enough" 329 times.
       // `this_` in a super function is `&__Self: ?Sized` and stays.
+      // ..and now that every object keeps its own handle (`DartSelf`): a
+      // trait body's `this` is `dart_self_<trait>()`, a counted class's is
+      // `dart_self_ref().get()` -- not a copy with a new identity (8703
+      // `Rc::new(self.clone())`, 82 `Rc::new(this_)` at ws292).
       if (target == null || target is IrThis) {
+        if (_fieldsAreAccessors) {
+          return '($_selfName.dart_self_${snake(cls.name)}() as std::rc::Rc<dyn Object>)';
+        }
+        if (cls.counted) {
+          return '($_selfName.dart_self_ref().get() as std::rc::Rc<dyn Object>)';
+        }
         if (_selfName == 'self') {
           return _selfIsHandle
               ? '(self.clone() as std::rc::Rc<dyn Object>)'
               : '(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>)';
-        }
-        if (_selfName != 'this_' && cls.counted) {
-          return '($_selfName.clone() as std::rc::Rc<dyn Object>)';
         }
       }
       return '(std::rc::Rc::new($receiver) as std::rc::Rc<dyn Object>)';
@@ -3629,28 +3636,10 @@ class RustBackend {
     // path has emitted them all along and this one had not, so an abstract
     // class's `static` simply vanished: `NavigatorObserver._navigators` was
     // read from three places and declared nowhere.
-    // The trait object is an `Object` too, through the `DartAny` every
-    // translated trait requires. Without this an `Rc<dyn Widget>` could not
-    // stand where an `Rc<dyn Object>` is wanted, now that `Object` carries
-    // `as_any` and is implemented only for sized types.
-    _line(
-      'impl${_generics(cls, static: true)} Object for dyn ${cls.name}${_generics(cls)} {',
-    );
-    _indent++;
-    _line('fn as_any(&self) -> &dyn std::any::Any {');
-    _indent++;
-    _line('DartAny::as_any(self)');
-    _indent--;
-    _line('}');
-    _line('fn runtime_type(&self) -> Type {');
-    _indent++;
-    // The struct's own name, not the trait's: `runtimeType` of an `Rc<dyn
-    // Widget>` is the widget's class.
-    _line('DartAny::dart_runtime_type(self)');
-    _indent--;
-    _line('}');
-    _indent--;
-    _line('}');
+    // The trait object is an `Object` through `DartAny: Object`: a
+    // supertrait, so that an `Rc<dyn Widget>` unsizes to an `Rc<dyn
+    // Object>`. An `impl Object for dyn Widget` stood here before and gave
+    // no coercion (75 non-primitive casts at ws293).
     // A trait object compares and hashes by identity, which is what Dart's
     // `Object.==` and `hashCode` do for anything not overriding them, and
     // prints as its class. Without these a struct holding an `Rc<dyn
@@ -5366,11 +5355,6 @@ class RustBackend {
       '${cls.name}${_generics(cls)} {',
     );
     _indent++;
-    _line('fn as_any(&self) -> &dyn std::any::Any {');
-    _indent++;
-    _line('self');
-    _indent--;
-    _line('}');
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
     _line('Type { name: "${cls.name}" }');
