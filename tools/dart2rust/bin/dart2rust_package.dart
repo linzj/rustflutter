@@ -460,6 +460,13 @@ Future<void> main(List<String> args) async {
       // graph read them as one 450-module cycle, 27% of the crate, with
       // `dart:ui` and `package:gallery` in it. Measured 2026-09-03.
       final imported = candidates.where(visible.contains).toList();
+      // A name one module in the crate defines is that module's whatever
+      // the Dart imports say: a barrel library (`rendering.dart`) that
+      // lowers to nothing breaks the visible chain, and `VerticalDirection`
+      // was unresolved 48 times for it (ws291).
+      if (imported.isEmpty && candidates.length == 1) {
+        imported.add(candidates.single);
+      }
       if (imported.length != 1) continue;
       final from = imported.single;
       if (from == name) continue;

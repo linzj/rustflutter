@@ -2011,6 +2011,14 @@ class RustBackend {
     // value. Dart's `m[k]` is a `V?`, so the borrow is cloned away rather
     // than leaked into every caller's type.
     // A value shared into a trait object (see `_widened`).
+    // `this` shared: the object's own handle, not a fresh `Rc` around a
+    // reference (`Rc::new(this_)` wanted `'static`, 168 lifetime errors)
+    // or a copy (a new identity).
+    if (name == '!rc' && args.isEmpty && target is IrThis) {
+      if (_fieldsAreAccessors)
+        return '$_selfName.dart_self_${snake(cls.name)}()';
+      if (cls.counted) return '$_selfName.dart_self_ref().get()';
+    }
     if (name == '!rc' && args.isEmpty) return 'std::rc::Rc::new($receiver)';
     // An `Option<Rc<dyn Object>>` into a `dynamic` slot: absent is `Null`.
     if (name == '!or_null' && args.isEmpty) {

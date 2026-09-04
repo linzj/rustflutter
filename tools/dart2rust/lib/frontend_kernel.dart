@@ -4478,7 +4478,7 @@ class KernelFrontend {
     final target = to.classNode;
     final cast = IrDowncast(
       lowered,
-      target.name,
+      _rustScalar(target.name),
       arguments: _erasedArguments(target, to.typeArguments),
     );
     if (!_closureCallsMethod(target) && target.typeParameters.isNotEmpty) {
