@@ -104,7 +104,7 @@ def stub(lines, start, opened, end, message):
     indent = re.match(r'\s*', lines[start]).group(0)
     text = (message.replace('\\', '\\\\').replace('"', '\\"')
             .replace('{', '{{').replace('}', '}}').replace('\n', ' '))
-    body = '%s{ todo!("dart2rust: stubbed, did not compile: %s") }' % (head, text)
+    body = '%s{ panic!("dart2rust: stubbed, did not compile: %s") }' % (head, text)
     return lines[:opened] + [body] + lines[end + 1:]
 
 
@@ -155,7 +155,7 @@ def main():
                 name = FN.match(lines[start]).group(6)
                 # Stubbed already and still failing: the error is in the
                 # signature or the trait it implements, not the body.
-                if 'todo!("dart2rust: stubbed' in lines[opened]:
+                if 'panic!("dart2rust: stubbed' in lines[opened]:
                     unstubbable.append((f, line, msg))
                     continue
                 lines = stub(lines, start, opened, end, msg)

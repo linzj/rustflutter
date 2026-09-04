@@ -1188,7 +1188,7 @@ pub type LinkedList<T> = std::collections::VecDeque<T>;
 /// the monotonic clock, as Dart's does. `elapsedTicks` is microseconds, and
 /// `frequency` says so, which is what Dart reports on every platform Flutter
 /// ships to.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stopwatch {
     started: Option<std::time::Instant>,
     accumulated: u128,

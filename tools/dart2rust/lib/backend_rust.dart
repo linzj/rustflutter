@@ -3605,7 +3605,7 @@ class RustBackend {
     _rustReturns = _returnType(method);
     _asyncBody = method.isAsync;
     if (stubbed != null) {
-      _line('todo!("dart2rust: not translated: ${_stubText(stubbed)}")');
+      _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
     } else {
       stmt(method.body, tail: true);
       _closeOpenIf(method.body);
@@ -5638,7 +5638,7 @@ class RustBackend {
           type(method.returnType) == '()' &&
           !_alwaysReturns(method.body);
       if (stubbed != null) {
-        _line('todo!("dart2rust: not translated: ${_stubText(stubbed)}")');
+        _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
       } else {
         stmt(method.body, tail: !fallsOff);
         if (fallsOff) _line('Ok(())');
