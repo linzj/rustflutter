@@ -498,6 +498,16 @@ class IrSome extends IrExpr {
 /// `(value as f64)`: Dart promotes an `int` to `double` in mixed arithmetic;
 /// Rust has no implicit numeric conversion at all (`cannot multiply i64 by
 /// f64`, 32 times in the leaf crates).
+/// A concrete value shared into a trait object with the target spelled:
+/// `(Rc::new(v) as Rc<dyn Curve>)`. A `match` arm does not coerce the way a
+/// call argument does, so `curve ?? Curves.ease` needs the `as` written.
+class IrUpcast extends IrExpr {
+  const IrUpcast(this.value, this.type);
+
+  final IrExpr value;
+  final IrType type;
+}
+
 class IrCast extends IrExpr {
   const IrCast(this.value, this.rust);
 

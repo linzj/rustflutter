@@ -1499,14 +1499,30 @@ class KernelFrontend {
             eager: false,
           );
         }
-        // Not widened into the left's type: `curve ?? Curves.ease` shares
-        // its `Cubic` into an `Rc<Cubic>`, and a `match` arm does not
-        // coerce that to the `Rc<dyn Curve>` the other arm has -- 267
-        // "arms have incompatible types" for 181 mismatches saved
-        // (ws242). It needs an `as Rc<dyn Curve>` the IR cannot spell yet.
+        // The right side into the left's type: `curve ?? Curves.ease` shares
+        // its `Cubic` into the `Rc<dyn Curve>` -- with the target spelled
+        // (`IrUpcast`), since a `match` arm does not coerce (267 "arms have
+        // incompatible types" the round it was a bare `Rc::new`).
+        // ..into the type the *result* has: `a ?? b` with a nullable `b`
+        // stays nullable, and the arm is `Some(..)`, not `.unwrap()` (292
+        // "arms have incompatible types" the round it was always non-null).
+        final resultNullable =
+            body.staticType.nullability == Nullability.nullable;
+        final into = leftType is InterfaceType
+            ? (resultNullable
+                  ? leftType.withDeclaredNullability(Nullability.nullable)
+                  : leftType.withDeclaredNullability(Nullability.nonNullable))
+            : null;
+        var rightSide = expression(right);
+        if (into != null) {
+          final widened = _widened(right, into, rightSide);
+          rightSide = widened is IrCall && widened.name == '!rc'
+              ? IrUpcast(widened.target!, _type(into))
+              : widened;
+        }
         return IrIfNull(
           expression(value),
-          expression(right),
+          rightSide,
           // Whether the whole thing is still nullable is the right side's
           // question: `a ?? b` is non-null exactly when `b` is.
           // The conditional carries its own static type, so no type context
@@ -4240,8 +4256,21 @@ class KernelFrontend {
     for (final name in names) {
       final value = byName[name];
       if (value == null) return null;
-      final lowered = _constant(value, node);
+      var lowered = _constant(value, node);
       final t = paramType[name];
+      // A concrete constant into an abstract parameter is shared, as a
+      // written argument would be: `Curves.linear` filling `Interval`'s
+      // `curve` is a `_Linear` value where an `Rc<dyn Curve>` goes (39).
+      if (t is InterfaceType &&
+          value is InstanceConstant &&
+          t.classNode.isAbstract &&
+          !value.classNode.isAbstract &&
+          t.classNode != value.classNode &&
+          _translatedClass(t.classNode) &&
+          _translatedClass(value.classNode) &&
+          !_closureCallsMethod(value.classNode)) {
+        lowered = IrCall(lowered, '!rc', const []);
+      }
       final wraps =
           t != null &&
           t is! DynamicType &&

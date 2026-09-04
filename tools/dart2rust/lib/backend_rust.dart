@@ -673,6 +673,8 @@ class RustBackend {
         _failure == null
             ? '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
             : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}',
+      IrUpcast(:final value, :final type) =>
+        '(std::rc::Rc::new(${expr(value)}) as ${this.type(type)})',
       IrBound() => _boundName,
       IrClosure() => _closure(e as IrClosure),
       // A function value returns `Result` like everything else.
@@ -4670,6 +4672,7 @@ class RustBackend {
         args.map(go).toList(),
       ),
       IrAwait(:final operand) => IrAwait(go(operand)),
+      IrUpcast(:final value, :final type) => IrUpcast(go(value), type),
       IrIs(:final expr, :final type, :final negated) => IrIs(
         go(expr),
         type,
@@ -6620,6 +6623,8 @@ class _WalkSelf {
         expression(value);
       case IrConstInstance(:final fields):
         fields.values.forEach(expression);
+      case IrUpcast(:final value):
+        expression(value);
       case IrAwait(:final operand):
         expression(operand);
       case IrIdentical(:final left, :final right):
