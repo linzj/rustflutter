@@ -5132,7 +5132,45 @@ class RustBackend {
 
   void _emitBaseMethod(IrMethod need) {
     {
-      _refuseShadowedGeneric(need);
+      // A method type parameter named like one of the class's --
+      // `ParentDataElement<T>` implementing `BuildContext.
+      // dependOnInheritedWidgetOfExactType<T>` -- is renamed here rather
+      // than refused: this forwarder's body is the backend's own line and
+      // never spells the parameter, so only the signature has to change
+      // (4 "not all trait items implemented" in `widgets`, one per
+      // generic `Element`).
+      final shadowed = {
+        for (final p in need.typeParameters)
+          if (cls.typeParameters.contains(p)) p: IrType('${p}_'),
+      };
+      if (shadowed.isNotEmpty) {
+        need = IrMethod(
+          need.name,
+          [
+            for (final p in need.params)
+              IrParam(
+                p.name,
+                _substituteType(p.type, shadowed),
+                named: p.named,
+                hasDefault: p.hasDefault,
+                kept: p.kept,
+              ),
+          ],
+          _substituteType(need.returnType, shadowed),
+          need.body,
+          typeParameters: [
+            for (final p in need.typeParameters)
+              shadowed.containsKey(p) ? '${p}_' : p,
+          ],
+          isStatic: need.isStatic,
+          isGetter: need.isGetter,
+          isSetter: need.isSetter,
+          operator: need.operator,
+          throws: need.throws,
+          doc: need.doc,
+          isAsync: need.isAsync,
+        );
+      }
       final have = _matching(need);
       // Rust does not collapse `Option<Option<X>>` the way Dart collapses
       // `T?` for a nullable `T`: `MessageCodec<Object?>.decodeMessage` is
