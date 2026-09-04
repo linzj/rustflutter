@@ -1917,6 +1917,12 @@ class KernelFrontend {
   ///
   /// Kernel says which it is outright -- the target is a `Field` or a
   /// `Procedure` -- so nothing has to be inferred.
+  /// `Map` and the `dart:collection` classes the prelude's `Map` stands
+  /// for: `SplayTreeMap<double, String>` in `AssetImage` took the generic
+  /// path and asked for `index_of` (50).
+  static bool _isMapClass(String? owner) =>
+      const {'Map', 'LinkedHashMap', 'HashMap', 'SplayTreeMap'}.contains(owner);
+
   IrExpr _instanceGet(InstanceGet node) {
     final name = node.name.text;
     final listOwner = node.interfaceTarget.enclosingClass?.name;
@@ -1926,7 +1932,7 @@ class KernelFrontend {
       // A getter in Dart, a method in Rust: `xs.length` is `xs.len()`.
       return IrCall(expression(node.receiver), rust, const []);
     }
-    if (listOwner == 'Map') {
+    if (_isMapClass(listOwner)) {
       if (orderedMapMembers.contains(name)) {
         throw Unsupported(
           '`Map.$name`, which depends on insertion order',
@@ -2156,7 +2162,7 @@ class KernelFrontend {
         return IrStaticCall(null, 'dart_str', [expression(node.receiver)]);
       }
     }
-    if (owner == 'List' || owner == 'Map' || owner == 'Iterable') {
+    if (owner == 'List' || _isMapClass(owner) || owner == 'Iterable') {
       // A collection member is a *Rust* method taking `impl Fn`, so a closure
       // given to one is not boxed. `_keeps` cannot say so: the callee is
       // `dart:core`'s, with no body to read, and it answers "kept" for want of
@@ -2333,7 +2339,7 @@ class KernelFrontend {
       }
       throw Unsupported('`List.$name`', _sample(node));
     }
-    if (owner == 'Map') {
+    if (_isMapClass(owner)) {
       // Its own name: the backend's `.get(&k).cloned()` was keyed on `get`
       // and fired on `ContrastCurve.get(double)` too (14 `&f64`).
       if (name == '[]' && args.length == 1) {
@@ -4224,7 +4230,7 @@ class KernelFrontend {
       }
       if (value is InstanceInvocation &&
           value.name.text == '[]=' &&
-          value.interfaceTarget.enclosingClass?.name == 'Map' &&
+          _isMapClass(value.interfaceTarget.enclosingClass?.name) &&
           value.arguments.positional.length == 2) {
         // The key and the value into the map's own types, as the
         // expression form's are: the CFE spells a map literal with a `for`

@@ -1681,6 +1681,18 @@ class RustBackend {
       cell = null;
     }
     if (cell == null || _isCopy(_heldType(cell))) return null;
+    // Only a collection is mutated through the cell: `reverse` on an
+    // `Rc<RefCell<Option<Rc<AnimationController>>>>` is the controller's
+    // method, not `Vec::reverse` (51 in `widgets`).
+    final held = _heldType(cell);
+    const collections = [
+      'Vec<',
+      'Map<',
+      'Set<',
+      'std::collections::VecDeque<',
+      'Queue<',
+    ];
+    if (!collections.any(held.startsWith)) return null;
     final holder = base == null || base is IrThis ? _selfName : expr(base);
     return '$holder.${snake(target.name)}';
   }
@@ -2815,7 +2827,10 @@ class RustBackend {
         // A declared function type is `Box<dyn Fn(..)>`, and a closure's own
         // type is not that. `_returned` boxes for the same reason one line
         // further out; a `let` is the other half of it.
-        final boxed = type != null && type.isFunction && init is IrClosure;
+        // ..and an inferred one too: `final listener = () { .. }` is a
+        // function-typed local whether or not the type was written (38
+        // closures handed to an `Rc<dyn Fn()>` slot in the gallery).
+        final boxed = init is IrClosure && (type == null || type.isFunction);
         // A local with no initialiser is assigned before it is read -- Dart
         // checks that, and so does Rust for a `let x: T;` -- so it needs no
         // value; `Default::default()` asked `Color` for a default it does
@@ -3394,7 +3409,13 @@ class RustBackend {
     // function: a trait's default method calls the super function with the
     // trait's own `E`, so the trait has to promise what the function asks
     // (147 E0277s from asking it of the function alone).
-    final bound = owner is IrMethod || static
+    // A method's own parameter keeps `Clone`: `binarySearch<T>` clones
+    // its `T` (148 ".clone on T"), and nothing instantiates a method's
+    // parameter with a future. A class's does not (`_CallbackHookProvider<
+    // Future<bool>>`), see `bound` in `_boundedGenerics`.
+    final bound = owner is IrMethod
+        ? params.map((p) => "$p: Clone + 'static")
+        : static
         ? params.map((p) => "$p: 'static")
         : params;
     return '<${bound.join(', ')}>';
@@ -5896,7 +5917,15 @@ class RustBackend {
     final seen = <String>{cls.name};
     while (name != null && seen.add(name)) {
       final ancestor = library[name];
-      if (ancestor == null || ancestor.isAbstract || ancestor.isEnum) break;
+      if (ancestor == null || ancestor.isEnum) break;
+      // Past an abstract ancestor, not stopped by it: `_SwitchPainter`
+      // extends the abstract `ToggleablePainter`, which extends the
+      // concrete `ChangeNotifier`, and `notifyListeners` is the latter's
+      // (58 "no method named `notify_listeners`" in `cupertino`).
+      if (ancestor.isAbstract) {
+        name = ancestor.superclass;
+        continue;
+      }
       if (_generics(ancestor).isNotEmpty) break;
       out.add(ancestor);
       name = ancestor.superclass;

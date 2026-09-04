@@ -117,6 +117,8 @@ pub trait DartDouble {
     fn compare_to(&self, other: f64) -> i64;
     /// `isNegative`, `toDouble`: on a `double`, the sign and itself.
     fn is_negative(&self) -> bool;
+    /// `sign`: -1.0, 0.0 or 1.0 (NaN stays NaN), as Dart's `double.sign`.
+    fn sign(&self) -> f64;
     fn to_double(&self) -> f64;
     fn is_na_n(&self) -> bool;
     fn is_infinite(&self) -> bool;
@@ -130,6 +132,17 @@ pub trait DartDouble {
 }
 
 impl DartDouble for f64 {
+    fn sign(&self) -> f64 {
+        if self.is_nan() {
+            *self
+        } else if *self > 0.0 {
+            1.0
+        } else if *self < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    }
     fn is_negative(&self) -> bool {
         *self < 0.0 || (*self == 0.0 && self.is_sign_negative())
     }
@@ -1260,6 +1273,79 @@ impl Uri {
             Some(at) if !self.text[..at].contains('/') => self.text[..at].to_string(),
             _ => String::new(),
         }
+    }
+
+    /// `fragment`: what follows `#`, or empty.
+    pub fn fragment(&self) -> String {
+        match self.text.find('#') {
+            Some(i) => self.text[i + 1..].to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// `query`: between `?` and `#`, or empty.
+    pub fn query(&self) -> String {
+        let end = self.text.find('#').unwrap_or(self.text.len());
+        match self.text[..end].find('?') {
+            Some(i) => self.text[i + 1..end].to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// `queryParametersAll`: every value under each key, in order.
+    pub fn query_parameters_all(&self) -> Map<String, Vec<String>> {
+        let mut out: Map<String, Vec<String>> = Map::new();
+        let query = self.query();
+        if query.is_empty() {
+            return out;
+        }
+        for pair in query.split('&') {
+            let (k, v) = match pair.find('=') {
+                Some(i) => (&pair[..i], &pair[i + 1..]),
+                None => (pair, ""),
+            };
+            let key = Uri::decode_query_component(k.to_string());
+            let value = Uri::decode_query_component(v.to_string());
+            let mut values = out.get(&key).cloned().unwrap_or_default();
+            values.push(value);
+            out.insert(key, values);
+        }
+        out
+    }
+
+    /// `queryParameters`: the first value under each key.
+    pub fn query_parameters(&self) -> Map<String, String> {
+        let mut out: Map<String, String> = Map::new();
+        for (k, vs) in self.query_parameters_all().into_iter() {
+            if let Some(v) = vs.first() {
+                out.insert(k, v.clone());
+            }
+        }
+        out
+    }
+
+    /// `Uri.decodeQueryComponent(s)`: `+` is a space, `%XX` a byte.
+    pub fn decode_query_component(text: String) -> String {
+        Uri::decode_component(text.replace('+', " "))
+    }
+
+    /// `Uri.decodeComponent(s)`: `%XX` a byte.
+    pub fn decode_component(text: String) -> String {
+        let bytes = text.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                if let Ok(b) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
+                    out.push(b);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).into_owned()
     }
 
     pub fn path(&self) -> String {
