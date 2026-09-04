@@ -1503,7 +1503,7 @@ class RustBackend {
     // no fields, and a mixin's `this_.source_url` names a getter of the
     // implementer's, declared in an interface the mixin never sees (7).
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {
-      return '$receiver.${snake(name)}()';
+      return '$receiver.${snake(name)}()$_propagate';
     }
     // A shared field is read through its cell. `get` copies, which is what a
     // Dart read does; `borrow().clone()` is the same for a value that is not
@@ -2156,7 +2156,7 @@ class RustBackend {
         ? _sharedField(name)
         : null;
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {
-      return '{ let __set = ${expr(value)}; $receiver.set_${snake(name)}(__set.clone()); __set }';
+      return '{ let __set = ${expr(value)}; $receiver.set_${snake(name)}(__set.clone())$_propagate; __set }';
     }
     if (shared != null) {
       final copy = _isCopy(_heldType(shared));
@@ -2989,7 +2989,7 @@ class RustBackend {
         // Inside a trait's body there is no field, only the setter it
         // declares (`this_.set__length(v)` in a mixin's super function).
         if (_fieldsAreAccessors && (target == null || target is IrThis)) {
-          _line('$receiver.set_${snake(name)}($written);');
+          _line('$receiver.set_${snake(name)}($written)$_propagate;');
         } else if (shared != null) {
           // Through the cell, which is why the field can be written from a
           // closure that does not hold `self` at all.
@@ -3368,14 +3368,15 @@ class RustBackend {
     // implementor, put there by `_allFields`; this is the other half of that.
     for (final field in cls.fields) {
       _line('/// `${cls.name}.${field.name}`, which the implementor stores.');
-      _line('fn ${snake(field.name)}(&self) -> ${type(field.type)};');
+      // An accessor is a function like any other under the Result model.
+      _line('fn ${snake(field.name)}(&self) -> ${_wrapped(type(field.type))};');
       // ..and writes, when the mixin's own methods write it: `_length =
       // newLength` inside `_TypedDataBuffer._grow` goes through this. The
       // receiver is `&self`: an implementer of a mixin that writes is
       // counted, and its field is a cell.
       if (!field.isFinal) {
         _line(
-          'fn set_${snake(field.name)}(&self, value: ${type(field.type)});',
+          'fn set_${snake(field.name)}(&self, value: ${type(field.type)}) -> ${_wrapped('()')};',
         );
       }
       _line('');
@@ -5181,7 +5182,9 @@ class RustBackend {
           );
           _line('fn $signature {');
           _indent++;
-          _line('self.${methods[k + 1]}');
+          // The class's own method returns `Result`; the prelude trait's
+          // signature is fixed.
+          _line('self.${methods[k + 1]}${_resultModel ? '.unwrap()' : ''}');
           _indent--;
           _line('}');
         }
@@ -5421,7 +5424,7 @@ class RustBackend {
           : cls.methods.any((m) => m.name == field.name && !m.isStatic)
           // A getter is a method and returns `Result`; the accessor the
           // trait asks for cannot, and unwraps.
-          ? 'self.${snake(field.name)}()${_resultModel ? '.unwrap()' : ''}'
+          ? 'self.${snake(field.name)}()${_resultModel ? '?' : ''}'
           : null;
       // The accessor's type is the *trait's*, so it is written in this
       // class's terms like every other signature in the block. Round 73
@@ -5439,13 +5442,16 @@ class RustBackend {
       final body =
           reads ?? 'todo!("${cls.name} does not translate ${field.name} yet")';
       final substituted = _substituteType(field.type, _implBinding);
-      _line('fn ${snake(field.name)}(&self) -> ${type(substituted)} {');
+      _line(
+        'fn ${snake(field.name)}(&self) -> ${_wrapped(type(substituted))} {',
+      );
       _indent++;
       // The field holds one `Option`; a trait asking for the doubled one
-      // gets it wrapped.
-      _line(
-        substituted.name == 'Option' && reads != null ? 'Some($body)' : body,
-      );
+      // gets it wrapped -- and the whole in `Ok`.
+      final value = substituted.name == 'Option' && reads != null
+          ? 'Some($body)'
+          : body;
+      _line(reads != null && _resultModel ? 'Ok($value)' : value);
       _indent--;
       _line('}');
       _line('');
@@ -5453,7 +5459,7 @@ class RustBackend {
       if (!field.isFinal && held.contains(field.name)) {
         final cell = _sharedField(field.name);
         _line(
-          'fn set_${snake(field.name)}(&self, value: ${type(substituted)}) {',
+          'fn set_${snake(field.name)}(&self, value: ${type(substituted)}) -> ${_wrapped('()')} {',
         );
         _indent++;
         if (cell != null) {
@@ -5463,6 +5469,7 @@ class RustBackend {
                 ? 'self.${snake(field.name)}.set($stored);'
                 : '*self.${snake(field.name)}.borrow_mut() = $stored;',
           );
+          if (_resultModel) _line('Ok(())');
         } else {
           _line(
             'todo!("${cls.name}.${field.name} is written through a trait but is not a cell")',

@@ -66,7 +66,12 @@ class KernelFrontend {
   /// no longer decides, it only gates the model.
   bool _fails(Member target) {
     if (throws == null) return false;
-    if (target is Field) return false;
+    // A field read through an accessor call is a function call too; an
+    // enum's carried fields are plain methods on the enum.
+    if (target is Field) {
+      if (target.isStatic) return false;
+      if (target.enclosingClass?.isEnum ?? false) return false;
+    }
     if (target is Procedure &&
         target.function.asyncMarker == AsyncMarker.Async) {
       return false;
