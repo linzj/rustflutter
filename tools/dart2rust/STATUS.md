@@ -6233,6 +6233,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws168 | 60 | 静态 tear-off 无上下文时也有静态类型（适配闭包能套上 `DateFormat.localeExists`）；`num as int` → `as i64`；`dynamic` 局部的初始值共享进 `Rc<dyn Object>`。
 | ws169 | 63 | dynamic 接收者的 `~/` 也按 f64 算（`NumberFormat._formatFixed` 翻出来，带来新错）；静态类型为 `num` 的值进 `num` 槽也 `as f64`（`f64 as f64` 是合法的空转）。
 | ws170 | 56 | dynamic 接收者上的算术结果（是 f64）进 `dynamic` 槽时共享；`dynamic` 的 cell 局部初值是 `Null`。剩余：dart:ui 19 / intl 15 / collection 12 / source_span 4 / typed_data 3 / get 3。
+| ws171 | 50 | 静态方法的 tear-off 在 kernel 里是常量（`StaticTearOffConstant`），适配闭包现在认它（`verifiedLocale(.., DateFormat.localeExists)` 一族清掉）；`dynamic == 数字` 按 f64 比；prelude 异常类的 `dynamic source` 当 `Object?` 送。剩余：dart:ui 19 / collection 12 / intl 9 / source_span 4 / typed_data 3 / get 3。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步

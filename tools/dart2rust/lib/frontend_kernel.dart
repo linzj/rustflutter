@@ -100,6 +100,9 @@ class KernelFrontend {
     if (e is StaticTearOff) {
       return e.target.function.computeFunctionType(Nullability.nonNullable);
     }
+    // A tear-off of a static method is a *constant* in Kernel
+    // (`DateFormat.localeExists` as an argument), with its type on the node.
+    if (e is ConstantExpression) return e.type;
     if (e is NullLiteral) return const NullType();
     // Literals, from the core types when there are any: `return true` in a
     // closure returning `Object?` had nothing to say it was a `bool`.
@@ -388,6 +391,28 @@ class KernelFrontend {
       // has no `==`, and the prelude's `dart_eq` is identity (8 in `listen`).
       if (leftType is FunctionType || rightType is FunctionType) {
         return IrCall(left, '!dart_eq', [right]);
+      }
+      // `integer == 0` with `integer` a `dynamic` holding a number: the
+      // `dynamic` side is the `f64` its arithmetic made it (see the
+      // `numOperators` lowering), and the literal side is cast to match.
+      bool number(DartType? t) =>
+          t is InterfaceType &&
+          (t.classNode.name == 'int' ||
+              t.classNode.name == 'double' ||
+              t.classNode.name == 'num');
+      String? numClass(DartType? t) =>
+          t is InterfaceType ? t.classNode.name : null;
+      if (leftType is DynamicType && number(rightType)) {
+        final asDouble = IrCall(IrDowncast(left, 'f64'), 'clone', const []);
+        final other = numClass(rightType) == 'int'
+            ? IrCast(right, 'f64')
+            : right;
+        return IrBinary('==', asDouble, other);
+      }
+      if (rightType is DynamicType && number(leftType)) {
+        final asDouble = IrCall(IrDowncast(right, 'f64'), 'clone', const []);
+        final other = numClass(leftType) == 'int' ? IrCast(left, 'f64') : left;
+        return IrBinary('==', other, asDouble);
       }
       // `lightOption == -1` on a `double`: the `int` side is cast, as the
       // arithmetic operators cast theirs.
@@ -2987,6 +3012,16 @@ class KernelFrontend {
         !(owner != null && preludeObjects.contains(owner))) {
       return lowered;
     }
+    // The prelude spells those exceptions' `dynamic source` as an
+    // `Option<Rc<dyn Object>>`: into it as into an `Object?`.
+    if (owner != null &&
+        preludeObjects.contains(owner) &&
+        param is DynamicType) {
+      final env = typeEnvironment;
+      if (env != null) {
+        return _intoObject(value, env.coreTypes.objectNullableRawType, lowered);
+      }
+    }
     return _intoObject(value, param, lowered);
   }
 
@@ -3078,7 +3113,10 @@ class KernelFrontend {
     // `String? Function(String)` -- returns through `Some`. A static
     // tear-off (`canonicalizedLocale` in a list of fallbacks) as well as a
     // local.
-    if ((value is VariableGet || value is StaticTearOff) &&
+    if ((value is VariableGet ||
+            value is StaticTearOff ||
+            (value is ConstantExpression &&
+                value.constant is StaticTearOffConstant)) &&
         param is FunctionType &&
         given is FunctionType &&
         param.namedParameters.isEmpty &&
