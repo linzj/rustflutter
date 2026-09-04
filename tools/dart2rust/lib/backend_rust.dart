@@ -5960,7 +5960,13 @@ class RustBackend {
     final name = op == null
         ? (method.isSetter ? 'set_${snake(method.name)}' : snake(method.name))
         : _operatorName(op);
-    final call = '${cls.name}::$name(${['self', ...args].join(', ')})';
+    // An inherent method that takes `self: &Rc<Self>` (`_receiverOf`) is
+    // reached from the trait's `&self` through the stored handle (1297
+    // "expected `&Rc<X>`, found `&X`" at ws276).
+    final receiver = cls.counted && _handles.contains(_rustName(method))
+        ? '&self.__self.get()'
+        : 'self';
+    final call = '${cls.name}::$name(${[receiver, ...args].join(', ')})';
     // An `async fn` yields its own future type; the trait wants the boxed
     // one every `Future<T>` is here (`_NativeCodec::get_next_frame(self)`).
     return method.isAsync ? 'std::boxed::Box::pin($call)' : call;
