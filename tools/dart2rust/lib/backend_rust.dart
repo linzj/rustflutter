@@ -5359,7 +5359,7 @@ class RustBackend {
     _line('');
     if (cls.counted) {
       _line(
-        'impl${_generics(cls, static: true)} DartSelfRef for ${cls.name}${_generics(cls)} {',
+        'impl${_implGenerics(cls, keyed: false)} DartSelfRef for ${cls.name}${_generics(cls)} {',
       );
       _indent++;
       _line('fn dart_self_ref(&self) -> &DartSelf<Self> { &self.__self }');
@@ -5438,7 +5438,9 @@ class RustBackend {
     // `DartAny` in the prelude for why the blanket one is quietly wrong.
     _line('');
     _line(
-      'impl${_generics(cls, static: true)} DartAny for '
+      // The bounds the inherent impl has: `dart_cast` calls the trait
+      // impls, whose `E: Clone` a bare `'static` cannot meet (ws304).
+      'impl${_implGenerics(cls, keyed: false)} DartAny for '
       '${cls.name}${_generics(cls)} {',
     );
     _indent++;
