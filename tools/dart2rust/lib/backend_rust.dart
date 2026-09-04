@@ -5100,14 +5100,20 @@ class RustBackend {
       // ..and through the cell when the field is in one (a counted class):
       // `self.parent.clone()` handed out the `Rc<RefCell<..>>` itself.
       final cell = _sharedField(field.name);
+      // A `late` field is held as an `Option` and the trait's accessor
+      // gives the declared type: the read unwraps (Dart's read of an unset
+      // `late` throws; this panics), the write wraps. `RenderObject`'s
+      // `late bool _needsCompositing` alone was 363 mismatches in
+      // `rendering` (194 `set`, 169 reads).
+      final late = field.isLate ? '.unwrap()' : '';
       final reads = held.contains(field.name)
           ? (cell != null
                 ? (_isCopy(_heldType(cell))
-                      ? 'self.${snake(field.name)}.get()'
-                      : 'self.${snake(field.name)}.borrow().clone()')
+                      ? 'self.${snake(field.name)}.get()$late'
+                      : 'self.${snake(field.name)}.borrow().clone()$late')
                 : _isCopy(type(_substituteType(field.type, _implBinding)))
-                ? 'self.${snake(field.name)}'
-                : 'self.${snake(field.name)}.clone()')
+                ? 'self.${snake(field.name)}$late'
+                : 'self.${snake(field.name)}.clone()$late')
           : cls.methods.any((m) => m.name == field.name && !m.isStatic)
           ? 'self.${snake(field.name)}()'
           : null;
@@ -5145,10 +5151,11 @@ class RustBackend {
         );
         _indent++;
         if (cell != null) {
+          final stored = field.isLate ? 'Some(value)' : 'value';
           _line(
             _isCopy(_heldType(cell))
-                ? 'self.${snake(field.name)}.set(value);'
-                : '*self.${snake(field.name)}.borrow_mut() = value;',
+                ? 'self.${snake(field.name)}.set($stored);'
+                : '*self.${snake(field.name)}.borrow_mut() = $stored;',
           );
         } else {
           _line(
