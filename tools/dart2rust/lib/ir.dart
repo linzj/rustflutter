@@ -488,7 +488,12 @@ class IrReturn extends IrStmt {
 }
 
 class IrLocalDecl extends IrStmt {
-  const IrLocalDecl(this.name, this.type, this.init);
+  const IrLocalDecl(this.name, this.type, this.init, {this.cell = false});
+
+  /// A local a closure writes: declared as a shared cell (`Rc<Cell<T>>` or
+  /// `Rc<RefCell<T>>`), so the closure's writes are the local's, as Dart's
+  /// are. Reads and writes of a cell local go through it (`_cellLocals`).
+  final bool cell;
 
   final String name;
   final IrType? type;

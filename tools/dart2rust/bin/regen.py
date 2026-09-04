@@ -63,11 +63,19 @@ IMPORTS = {'RangeError': 'use crate::RangeError;',
            'DartAny': 'use crate::DartAny;',
            'Type': 'use crate::Type;',
            'Map': 'use crate::Map;',
-           'Set': 'use crate::Set;'}
+           'Set': 'use crate::Set;',
+           'Object': 'use crate::dart_prelude::Object;',
+           'StackTrace': 'use crate::StackTrace;',
+           'dart_iter': 'use crate::dart_iter;',
+           'dart_str': 'use crate::dart_str;'}
 
 
 def needed_imports(text):
-    lines = []
+    # The kernel front end's output names prelude traits (`DartEq`,
+    # `DartString`, ..) by their bare names, as the workspace modules do
+    # behind `use crate::dart_prelude::*`; the same glob here, once.
+    glob = 'use crate::dart_prelude::*;'
+    lines = [] if glob in text else [glob]
     for name, line in sorted(IMPORTS.items()):
         if name in text and line not in text:
             lines.append(line)

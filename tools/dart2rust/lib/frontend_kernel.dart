@@ -62,7 +62,15 @@ class KernelFrontend {
   void _enter(Member member) {
     final env = typeEnvironment;
     _typeContext = env == null ? null : StaticTypeContext(member, env);
+    _capturedWrites = _CapturedWrites.of(member);
   }
+
+  /// The locals of the member being lowered that a closure inside it
+  /// writes: `sum += v` inside a `forEach` callback. Each is declared as a
+  /// shared cell (`IrLocalDecl.cell`), so the closure's write is the
+  /// local's -- a plain `let` copied into the closure would have kept the
+  /// sum to itself, and the fixture crate's `total` said 0.
+  Set<Variable> _capturedWrites = const {};
 
   DartType? _staticType(Expression e) {
     final context = _typeContext;
@@ -821,6 +829,47 @@ class KernelFrontend {
       }
       final target = node.interfaceTarget;
       final fn = target.function;
+      // The tear-off's own type is the instantiated one: `sink.add` on a
+      // `Sink<List<int>>` takes a `List<int>`, not the `T` the method
+      // declares (E0425 `T` in `ByteStream.toBytes`).
+      // ..or, when the tear-off's type is out of reach, the receiver's type
+      // arguments substituted into the method's declaration (`sink.add` on
+      // a local `Sink<List<int>>`).
+      // The receiver's instantiation first: `getStaticType` of the tear-off
+      // still said `T` for `sink.add` on a `ByteConversionSink`.
+      final torn =
+          (() {
+            final receiverType = _staticType(node.receiver);
+            if (receiverType is! InterfaceType) return null;
+            // As an instance of the *declaring* class: a `ByteConversionSink`
+            // is a `Sink<List<int>>`, and `T` is `Sink`'s.
+            final declaringClass = target.enclosingClass;
+            final env = typeEnvironment;
+            if (declaringClass == null || env == null) return null;
+            final asDeclaring = env.hierarchy.getTypeAsInstanceOf(
+              receiverType,
+              declaringClass,
+            );
+            if (asDeclaring is! InterfaceType) return null;
+            final declared = fn.computeFunctionType(Nullability.nonNullable);
+            return Substitution.fromInterfaceType(asDeclaring)
+                .substituteType(declared);
+          })() ??
+          _staticType(node);
+      DartType positionalType(int i) =>
+          torn is FunctionType && i < torn.positionalParameters.length
+          ? torn.positionalParameters[i]
+          : fn.positionalParameters[i].type;
+      DartType namedType(String name, DartType declared) {
+        if (torn is FunctionType) {
+          for (final n in torn.namedParameters) {
+            if (n.name == name) return n.type;
+          }
+        }
+        return declared;
+      }
+
+      final returnType = torn is FunctionType ? torn.returnType : fn.returnType;
       if (fn.typeParameters.isNotEmpty) {
         throw Unsupported('a generic method used as a value', _sample(node));
       }
@@ -833,10 +882,14 @@ class KernelFrontend {
         for (var i = 0; i < fn.positionalParameters.length; i++)
           IrParam(
             _paramName(fn.positionalParameters[i], 'a$i'),
-            _type(fn.positionalParameters[i].type),
+            _type(positionalType(i)),
           ),
         for (final p in _namedInTypeOrder(fn))
-          IrParam(p.parameterName, _type(p.type), named: true),
+          IrParam(
+            p.parameterName,
+            _type(namedType(p.parameterName, p.type)),
+            named: true,
+          ),
       ];
       final receiver = node.receiver;
       return IrClosure(
@@ -852,7 +905,7 @@ class KernelFrontend {
             ],
           ),
         ),
-        _type(fn.returnType),
+        _type(returnType),
         // A tear-off of `message.invoke` keeps `message`: cloned in, moved.
         locals: receiver is ThisExpression
             ? const []
@@ -1540,6 +1593,7 @@ class KernelFrontend {
               variable.type,
               _widened(init, variable.type, expression(init)),
             ),
+      cell: _capturedWrites.contains(variable),
     );
   }
 
@@ -1888,6 +1942,16 @@ class KernelFrontend {
       node.functionType,
     );
     final owner = node.interfaceTarget.enclosingClass?.name;
+    // A `StreamView` subclass's inherited `listen` and friends act on the
+    // `_stream` it carries (see `lowerClass`).
+    final declaringStream = node.interfaceTarget.enclosingClass;
+    if (node.receiver is ThisExpression &&
+        declaringStream != null &&
+        (declaringStream.name == 'Stream' ||
+            declaringStream.name == 'StreamView') &&
+        declaringStream.enclosingLibrary.importUri.toString() == 'dart:async') {
+      return IrCall(const IrField(null, '_stream'), name, args);
+    }
     // `child.toString()` on a `Listenable?`: an `Option` has no
     // `to_string`, and `dart_str` prints `null` for the absent case as
     // Dart does.
@@ -2386,6 +2450,17 @@ class KernelFrontend {
     // rather than transliterated, for the same reason `??` and cascades are:
     // the analyzer front end sees the literal, and the two have to agree.
     final owner = target.enclosingClass?.name;
+    // `Uint8List.view(buffer, [offset, length])`: a `Vec<u8>` cannot carry
+    // an associated function; the prelude's free one.
+    if (owner == 'Uint8List' &&
+        target.name.text == 'view' &&
+        positional.isNotEmpty) {
+      return IrStaticCall(
+        null,
+        'uint8_list_view',
+        _arguments(node.arguments, target.function),
+      );
+    }
     // `int.parse(s)` / `double.tryParse(s)`: the prelude's four functions.
     // `intl`'s field parsers and 30-odd other sites.
     if ((owner == 'int' || owner == 'double') &&
@@ -2670,7 +2745,13 @@ class KernelFrontend {
     Expression value,
     IrExpr Function() lower,
   ) {
-    if (param is! FunctionType || value is! FunctionExpression) return lower();
+    // Through the cast the CFE wraps a closure argument in (`(chunk) =>
+    // ..` as `void Function(List<int>)?` for `listen`): the closure under
+    // it is what the expected type is for.
+    var closure = value;
+    while (closure is AsExpression) closure = closure.operand;
+    if (param is! FunctionType || closure is! FunctionExpression)
+      return lower();
     final was = _expectedReturn;
     final wasFunction = _expectedFunction;
     _expectedReturn = param.returnType;
@@ -4270,6 +4351,11 @@ class KernelFrontend {
     return 'set${clean[0].toUpperCase()}${clean.substring(1)}';
   }
 
+  /// `dart:async`'s `StreamView`, the one prelude base a class extends.
+  static bool _isStreamView(Class c) =>
+      c.name == 'StreamView' &&
+      c.enclosingLibrary.importUri.toString() == 'dart:async';
+
   IrMethod _lowerTopLevel(Procedure node) {
     _enter(node);
     // A top-level **getter** is a function of no arguments, which is what it
@@ -4543,7 +4629,15 @@ class KernelFrontend {
       superclassArguments: [
         for (final t in superType?.typeArguments ?? const []) _type(t),
       ],
-      superclass: node.isEnum || base == null || base.name == 'Object'
+      // `class ByteStream extends StreamView<List<int>>`: the prelude's
+      // `StreamView` has no struct to flatten, so the subclass carries the
+      // one field it would have inherited, `_stream` (added below), and
+      // has no Rust superclass.
+      superclass:
+          node.isEnum ||
+              base == null ||
+              base.name == 'Object' ||
+              _isStreamView(base)
           ? null
           : base.name,
       mixins: node.isEnum ? const [] : mixins,
@@ -4570,6 +4664,21 @@ class KernelFrontend {
     );
     _superclass = cls.superclass;
     final refused = <String>[];
+    if (base != null && _isStreamView(base)) {
+      cls.fields.add(
+        IrFieldDecl(
+          '_stream',
+          IrType(
+            'Stream',
+            arguments: [
+              for (final t in superType?.typeArguments ?? const <DartType>[])
+                _type(t),
+            ],
+          ),
+          isFinal: true,
+        ),
+      );
+    }
 
     for (final field in node.fields) {
       try {
@@ -4773,6 +4882,17 @@ class KernelFrontend {
               'super constructor call with no base',
               _sample(init),
             );
+          }
+          // `super(stream)` into `StreamView`: the stream goes into the
+          // `_stream` field the subclass carries (see `lowerClass`).
+          if (_isStreamView(base) && init.arguments.positional.length == 1) {
+            final stream = init.arguments.positional.single;
+            inits['_stream'] = _widened(
+              stream,
+              init.target.function.positionalParameters.single.type,
+              expression(stream),
+            );
+            continue;
           }
           superBase = base.name;
           superName = init.target.name.text.isEmpty
@@ -4999,6 +5119,42 @@ class _FfiNativeFinder extends RecursiveVisitor {
 }
 
 /// The variables a function body reads and the ones it declares.
+/// Finds the variables a member declares in one function and assigns in a
+/// nested one.
+class _CapturedWrites extends RecursiveVisitor {
+  final _declaredIn = <Variable, FunctionNode>{};
+  final _stack = <FunctionNode>[];
+  final found = <Variable>{};
+
+  static Set<Variable> of(Member member) {
+    final v = _CapturedWrites();
+    member.accept(v);
+    return v.found;
+  }
+
+  @override
+  void visitFunctionNode(FunctionNode node) {
+    _stack.add(node);
+    super.visitFunctionNode(node);
+    _stack.removeLast();
+  }
+
+  @override
+  void visitVariableDeclaration(VariableDeclaration node) {
+    if (_stack.isNotEmpty) _declaredIn[node.variable] = _stack.last;
+    super.visitVariableDeclaration(node);
+  }
+
+  @override
+  void visitVariableSet(VariableSet node) {
+    final home = _declaredIn[node.variable];
+    if (home != null && _stack.isNotEmpty && home != _stack.last) {
+      found.add(node.variable);
+    }
+    super.visitVariableSet(node);
+  }
+}
+
 class _LocalFinder extends RecursiveVisitor {
   final read = <Variable>[];
   final declared = <Variable>{};

@@ -2167,8 +2167,8 @@ class RustBackend {
     // `&Self` and `&dyn Trait` -- and identity is about the address, which both
     // of them have.
     return 'std::ptr::eq('
-        '${_ref(left)} as *const _ as *const (), '
-        '${_ref(right)} as *const _ as *const ())';
+        '${_asPointer(left)}, '
+        '${_asPointer(right)})';
   }
 
   /// Whether this expression is a reference in the emitted Rust.
@@ -2185,6 +2185,17 @@ class RustBackend {
   /// object are two different addresses -- so the handle is dereferenced and
   /// the pointee's address is what identity is asked about. Getting that
   /// backwards answers the opposite of the question and compiles.
+  /// One side of `identical` as a thin pointer. A parameter holding an
+  /// `Rc<dyn X>` (see `_referenceParams`) is the handle, not a reference,
+  /// and `Rc::as_ptr` is its address; `x as *const _` was an invalid cast.
+  String _asPointer(IrExpr e) {
+    final r = _ref(e);
+    if (e is IrLocal && !r.startsWith('&')) {
+      return 'std::rc::Rc::as_ptr(&$r) as *const u8 as *const ()';
+    }
+    return '$r as *const _ as *const ()';
+  }
+
   String? _addressOf(IrExpr e) {
     if (e is IrThis) {
       // A closure's `__me` is a cloned handle, and a method that hands out
@@ -2622,14 +2633,30 @@ class RustBackend {
         stmt(body);
         _indent--;
         _line('}');
-      case IrLocalDecl(:final name, :final type, :final init):
+      case IrLocalDecl(:final name, :final type, :final init, :final cell):
+        // A local a closure writes lives in a cell the closure clones a
+        // handle to (see `IrLocalDecl.cell`); every read and write below
+        // goes through `_cellLocals`.
+        if (cell) {
+          final rust = type == null ? null : this.type(type);
+          final copy = rust != null && _isCopy(rust);
+          _cellLocals = {..._cellLocals, name: copy};
+          final inner = init == null ? 'Default::default()' : expr(init);
+          final held = rust == null
+              ? ''
+              : ': std::rc::Rc<std::cell::${copy ? 'Cell' : 'RefCell'}<$rust>>';
+          _line(
+            'let ${snake(name)}$held = std::rc::Rc::new(std::cell::${copy ? 'Cell' : 'RefCell'}::new($inner));',
+          );
+          return;
+        }
         final annotation = type == null ? '' : ': ${this.type(type)}';
-        // Every local is `mut`. Whether a local is written is known here;
-        // whether a method called on it takes `&mut self` is not, when the
-        // method belongs to a class in another module -- `brk.next_break()`
-        // on a `let brk` was 30 `E0596`s. An unneeded `mut` is a warning the
-        // crate allows; a missing one is an error.
-        const mutable = 'mut ';
+        // `mut` when the body writes the local, or calls a method on it
+        // (`_assignedIn` counts receivers too, since a method in another
+        // module may take `&mut self` -- `brk.next_break()` was 30
+        // `E0596`s). A local only read stays immutable: the fixture crate
+        // denies `unused_mut` to keep that claim checkable.
+        final mutable = _reassigned.contains(name) ? 'mut ' : '';
         // A declared function type is `Box<dyn Fn(..)>`, and a closure's own
         // type is not that. `_returned` boxes for the same reason one line
         // further out; a `let` is the other half of it.
@@ -3458,6 +3485,7 @@ class RustBackend {
     // Before the parameters are spelled: `_param` asks `_reassigned`
     // whether each is written, and it held the previous method's answer.
     _reassigned = _assignedIn(method.body);
+    _cellLocals = {};
     final params = method.params.map((p) => _param(p, owned: false)).join(', ');
     _line(
       '${_vis(method.name)}${method.isAsync ? 'async ' : ''}fn '
@@ -3590,13 +3618,16 @@ class RustBackend {
         '>($params) -> '
         // An `async fn` returns the awaited type: `Future<Response>` on an
         // `async` super function was a future of a boxed future (E0308).
-        '${_returnType(method)} {',
+        // A boxed future returned by a non-async one borrows `this_`
+        // (`get(url) => _sendUnstreamed(..)` in `BaseClient`): `+ '_`.
+        '${_lifetimed(_returnType(method))} {',
       );
       _indent++;
       _selfName = 'this_';
       _returns = method.returnType;
       _asyncBody = method.isAsync;
       _reassigned = _assignedIn(method.body);
+      _cellLocals = {};
       // `this_` is a `&__Self: Trait`, and a trait has no fields: the base's
       // fields are its accessor methods here, as they are inside the trait
       // itself. `this_.start` was read as a field 6 times in `source_span`.
@@ -4007,6 +4038,7 @@ class RustBackend {
     'parse_double',
     'try_parse_double',
     'schedule_microtask',
+    'uint8_list_view',
   };
 
   static const _typedLists = {
@@ -5431,6 +5463,7 @@ class RustBackend {
       // Before the signature: whether a parameter needs `mut` is decided by the
       // body, and the signature is written first.
       _reassigned = _assignedIn(method.body);
+      _cellLocals = {};
       _doc(method.doc);
       final params = [
         if (!method.isStatic) _receiverOf(method),
@@ -5537,6 +5570,7 @@ class RustBackend {
         _returns = method.returnType;
         _asyncBody = method.isAsync;
         _reassigned = _assignedIn(method.body);
+        _cellLocals = {};
         stmt(method.body, tail: true);
         _closeOpenIf(method.body);
         _returns = null;
@@ -5582,6 +5616,7 @@ class RustBackend {
       _returns = method.returnType;
       _asyncBody = method.isAsync;
       _reassigned = _assignedIn(method.body);
+      _cellLocals = {};
       stmt(method.body, tail: true);
       _closeOpenIf(method.body);
       _returns = null;

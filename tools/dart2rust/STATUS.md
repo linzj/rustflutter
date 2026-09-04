@@ -6055,6 +6055,12 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 
 **看到但没动的**:`Result` 异常模型不是模块化的——`_computeFailing` 按类算,mixin/超类的 `_FileSpan::compare_to -> Result<..>` 被转发器当成 `i64` 用(13 条),`typed_buffer` 的 trait 声明不知道实现者会 `?`(5 条)。Dart 里任何方法都可能抛,`Result` 签名要全程序定点才对得上;候选替代是 panic + `catch_unwind`(模块化,但 `UnwindSafe` 与 FFI 边界另算)。先记着,不在一分钟一轮里换模型。
 
+**fixture 测试（2026-09-04）**：fixture crate 的库部分能编译（1 个错，见上），但 `cargo test` 的测试本身 27 处编译不过：手写测试还按旧的 `Result` 失败模型断言（`is_err()`），而分支已经改成 panic（`_resultModel = false`）；另有 `Rc<dyn Rung>` vs `&Ladder` 一族是 trait 对象参数的拼法变了。这 146 个测试要按新模型改写（`catch_unwind`），没动。
+
+
+**fixture crate（2026-09-04）**：kernel 前端重生成全部 32 个 fixture 后，`testdata` 从 55 个错到 1 个（`lists.rs` 里闭包内写被捕获的局部 `sum`——闭包捕获的可写局部还没有 cell 化，这是个真缺口）。`#![deny(unused_mut)]` 改成 allow：局部/参数上有方法调用就标 `mut`（别的模块的 `&mut self` 看不到），只读的不标；这条“精确性”的断言收窄了，写在 lib.rs 头上。
+
+
 **提交时的已知欠账（2026-09-04）**：`testdata`（fixture crate）`cargo check` 有 55 个 E0046——fixture 里生成的 `impl DartAny for X` 缺新加的 `dart_runtime_type`（ws131），fixture 没重生成。下一轮跑 `bin/fixtures.py` 重生成再看 `cargo test`。
 
 
@@ -6197,6 +6203,15 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws144 | 118 | 参数比槽位宽/结果比槽位窄的函数值适配也覆盖静态 tear-off（intl 的 fallback 列表、`_throwLocaleError`）；`as String?` 允许 `!as_opt`；**prelude 异常类的 `Object?` 参数一律共享**——只有 `FormatException.source` 是 `Rc<dyn Object>`，`Exception(message)`/`ArgumentError.value` 收的是 String，+27。收窄到 FormatException。
 | ws145 | 89 | 收窄后：intl 25→23（tear-off 适配、`as String?`），其余同 ws143。
 | ws146 | 85 | `let #t = e in ..` 的初始值按 `#t` 的声明类型 widen（TFA 证明 `size?.width` 非空而 `#t` 仍是 `double?`）；`Float32List.fromList(doubles)` 逐元素收窄。
+| ws147 | 81 | prelude 的 `Stream<T>` 从“只有名字”改成就绪流（事件已知，`listen` 同步送完再 `onDone`），`StreamView<T>` = `Stream<T>`，`StreamSubscription`、`_ByteCallbackSink`；`extends StreamView<T>` 的类带一个 `_stream` 字段，`super(stream)` 写它，继承的 `listen` 转到它。
+| ws148 | 80 | super 函数返回的 boxed future 也加 `'_`（`BaseClient.get` 借 `this_`）。
+| ws149 | 80 | 闭包实参外面 CFE 包的 `as` 不再挡住期望函数类型（`listen((chunk) => ..)`）。fixture：`bin/regen.py` 全部走 kernel 前端重生成（analyzer 前端与 analyzer 14.3 不兼容，`ClassDeclaration.name`），32/32 生成；fixture crate 从 55 个错到 8 个（crate 根的占位 `struct Object` 遮住了 prelude 的 trait）。
+| ws150 | 78 | tear-off 的参数/返回类型用 tear-off 自己（已实例化）的静态类型（`sink.add` 在 `Sink<List<int>>` 上收 `List<int>` 不是 `T`）；`Uint8List.view` → prelude `uint8_list_view`；`List<int>.buffer`。http 3→1。fixture crate：生成文件改用 `use crate::dart_prelude::*`，剩 37 个错，30 个是 `#![deny(warnings)]` 下的“不需要 mut”。
+| ws151 | 78 | tear-off 类型拿不到时用接收者的类型实参代入方法声明。
+| ws152 | 78 | tear-off 的类型代入经 `ClassHierarchy.getTypeAsInstanceOf`（`ByteConversionSink` 是 `Sink<List<int>>`）；`identical` 里 `Rc<dyn X>` 参数取 `Rc::as_ptr`。
+| ws153 | 78 | tear-off 类型先走继承层次代入再退回 `getStaticType`。
+| ws154 | 77 | `ByteConversionSink` = `Sink<Vec<i64>>`（`List<int>` 是 `Vec<i64>`）。**http 清零，第 13 个干净的翻译 crate**；剩 6 个叶子：dart:ui 30 / intl 23 / collection 12 / get 5 / source_span 4 / typed_data 3。
+| ws155 | 77 | **闭包里写的局部变成共享 cell**：`_CapturedWrites` 找出“在一个函数里声明、在嵌套函数里赋值”的局部，声明成 `Rc<Cell<T>>`/`Rc<RefCell<T>>`，读写走 `_cellLocals`，闭包 move 前克隆句柄。fixture `lists.rs` 的 `total` 对了，fixture crate 库部分 0 错。
 **看到但没动的**:`RegExp::new` 实参个数 1/2/3/6 各不相同——同一个工厂,`_omitted` 的填法不一致,先量再改;`ChangeNotifier::add_listener(self, ..)` 在 trait impl 里 `&self` 对 `&mut self`(10 条 "types differ in mutability")是 `_mutating` 按类算的老问题,同 `_failing`。 |
 
 ## 下一步

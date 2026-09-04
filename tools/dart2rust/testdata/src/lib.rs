@@ -1,11 +1,14 @@
 //! Stubs for the types the translated code calls into, plus the tests.
 //!
-//! `unused_mut` is an error here, deliberately. Whether the compiler marks
-//! only the reassigned locals `mut` is otherwise invisible: marking every
-//! local `mut` compiles and passes every test, and the mutation sweep found
-//! exactly that. Denying the warning turns a claim about precision into
-//! something the build checks.
-#![deny(unused_mut)]
+//! `unused_mut` was an error here, to make the compiler's claim about which
+//! locals it marks `mut` something the build checks. The claim is narrower
+//! now (2026-09-04): a local or parameter is `mut` when the body writes it
+//! **or calls a method on it**, because a method of a class in another
+//! module may take `&mut self` and the backend cannot see that from here
+//! (`brk.next_break()` was 30 E0596s in the leaf crates). A local that is
+//! only read is not `mut`, and that half is still checked by reading the
+//! generated files; the receiver half leaves ~23 warnings in this crate.
+#![allow(unused_mut)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Offset {
     x: f32,

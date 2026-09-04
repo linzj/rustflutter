@@ -1593,18 +1593,147 @@ impl<T: ?Sized> PartialEq for WeakReference<T> {
 /// to drive one, so this is a name for signatures to agree on (the license
 /// registry's collectors return them); anything that listens will not
 /// compile, and says so.
-pub struct Stream<T>(std::marker::PhantomData<T>);
+pub struct Stream<T> {
+    /// The events, all of them already known: without an event loop a
+    /// stream here is a *ready* stream, and `listen` delivers everything it
+    /// holds and then `onDone`, synchronously.
+    events: std::rc::Rc<std::cell::RefCell<Vec<T>>>,
+}
 
-impl<T> Stream<T> {
-    /// `Stream.value(v)`: a single-element stream; nothing listens yet.
-    pub fn value(_value: T) -> Stream<T> {
-        Stream(std::marker::PhantomData)
+/// `StreamView<T>` is a stream that forwards to another; with nothing
+/// asynchronous in between it is the same thing.
+pub type StreamView<T> = Stream<T>;
+
+/// `StreamSubscription<T>`: what `listen` hands back. Everything was
+/// delivered before it was returned, so `cancel` has nothing left to stop.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StreamSubscription<T> {
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T> StreamSubscription<T> {
+    pub fn cancel(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ()>>> {
+        Box::pin(std::future::ready(()))
+    }
+
+    pub fn pause(&self, _resume_signal: Option<std::rc::Rc<dyn Object>>) {}
+
+    pub fn resume(&self) {}
+}
+
+impl<T: Clone + 'static> Stream<T> {
+    /// `Stream.value(v)`: a single-element stream.
+    pub fn value(value: T) -> Stream<T> {
+        Stream {
+            events: std::rc::Rc::new(std::cell::RefCell::new(vec![value])),
+        }
+    }
+
+    /// `Stream.empty()`.
+    pub fn empty() -> Stream<T> {
+        Stream {
+            events: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        }
+    }
+
+    /// `Stream.fromIterable(xs)`.
+    pub fn from_iterable(elements: Vec<T>) -> Stream<T> {
+        Stream {
+            events: std::rc::Rc::new(std::cell::RefCell::new(elements)),
+        }
+    }
+
+    /// `listen(onData, {onError, onDone, cancelOnError})`: every event, then
+    /// done. `onError` never fires -- a ready stream holds no errors.
+    pub fn listen(
+        &self,
+        on_data: Option<std::rc::Rc<dyn Fn(T) -> ()>>,
+        _on_error: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>, Option<StackTrace>) -> ()>>,
+        on_done: Option<std::rc::Rc<dyn Fn() -> ()>>,
+        _cancel_on_error: Option<bool>,
+    ) -> StreamSubscription<T> {
+        let events: Vec<T> = self.events.borrow().clone();
+        if let Some(f) = &on_data {
+            for e in events {
+                f(e);
+            }
+        }
+        if let Some(d) = &on_done {
+            d();
+        }
+        StreamSubscription {
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// `toList()`.
+    pub fn to_list(
+        &self,
+    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Vec<T>>>> {
+        Box::pin(std::future::ready(self.events.borrow().clone()))
+    }
+
+    /// `first`.
+    pub fn first(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>> {
+        let first = self
+            .events
+            .borrow()
+            .first()
+            .cloned()
+            .expect("Bad state: No element");
+        Box::pin(std::future::ready(first))
+    }
+
+    /// `isBroadcast`: a ready stream can be listened to any number of times.
+    pub fn is_broadcast(&self) -> bool {
+        true
     }
 }
 
 impl<T> Clone for Stream<T> {
     fn clone(&self) -> Self {
-        Stream(std::marker::PhantomData)
+        Stream {
+            events: self.events.clone(),
+        }
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Stream<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Stream({:?})", self.events.borrow())
+    }
+}
+
+impl<T> PartialEq for Stream<T> {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.events, &other.events)
+    }
+}
+
+/// `dart:convert`'s `ByteConversionSink.withCallback(callback)`: collects
+/// every chunk and hands the whole to the callback on `close`.
+pub struct _ByteCallbackSink {
+    accumulated: std::cell::RefCell<Vec<i64>>,
+    callback: std::rc::Rc<dyn Fn(Vec<i64>) -> ()>,
+}
+
+impl _ByteCallbackSink {
+    pub fn new(callback: std::rc::Rc<dyn Fn(Vec<i64>) -> ()>) -> ByteConversionSink {
+        std::rc::Rc::new(_ByteCallbackSink {
+            accumulated: std::cell::RefCell::new(Vec::new()),
+            callback,
+        })
+    }
+}
+
+impl DartSink<Vec<i64>> for _ByteCallbackSink {
+    fn add(&self, data: Vec<i64>) {
+        self.accumulated.borrow_mut().extend(data);
+    }
+
+    fn close(&self) {
+        let all = self.accumulated.borrow().clone();
+        (self.callback)(all);
     }
 }
 
@@ -1681,7 +1810,9 @@ impl MapBase {
 pub struct HttpClientResponse;
 
 /// `dart:convert`'s `ByteConversionSink`: a sink of byte lists.
-pub type ByteConversionSink = Sink<Vec<u8>>;
+/// A `Sink<List<int>>`, and a `List<int>` is a `Vec<i64>` here (the
+/// `Vec<u8>` spelling is `Uint8List`'s).
+pub type ByteConversionSink = Sink<Vec<i64>>;
 
 /// `List<T?>.filled(n, null)`: `n` absences.
 pub fn vec_of_nones<T: Clone>(n: i64) -> Vec<Option<T>> {
@@ -2681,6 +2812,35 @@ pub fn log(
     }
     if let Some(e) = error {
         eprintln!("  error: {:?}", e);
+    }
+}
+
+/// `Uint8List.view(buffer, [offsetInBytes, length])`: a window copied out
+/// of the bytes (a buffer here is the bytes themselves).
+pub fn uint8_list_view(buffer: Vec<u8>, offset: i64, length: Option<i64>) -> Vec<u8> {
+    let start = (offset.max(0) as usize).min(buffer.len());
+    let end = match length {
+        Some(n) => (start + n.max(0) as usize).min(buffer.len()),
+        None => buffer.len(),
+    };
+    buffer[start..end].to_vec()
+}
+
+/// `TypedData.buffer` on a list of ints: the bytes, one per element, which
+/// is what a `Uint8List` behind a `List<int>` holds.
+pub trait DartTypedList {
+    fn buffer(&self) -> Vec<u8>;
+}
+
+impl DartTypedList for Vec<i64> {
+    fn buffer(&self) -> Vec<u8> {
+        self.iter().map(|v| *v as u8).collect()
+    }
+}
+
+impl DartTypedList for Vec<u8> {
+    fn buffer(&self) -> Vec<u8> {
+        self.clone()
     }
 }
 
