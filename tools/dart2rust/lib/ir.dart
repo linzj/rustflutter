@@ -582,12 +582,16 @@ class IrThis extends IrExpr {
 /// in Flutter: every one of the 435 super calls in painting/ and rendering/
 /// is exactly that.
 class IrSuperCall extends IrExpr {
-  const IrSuperCall(this.base, this.name, this.args);
+  const IrSuperCall(this.base, this.name, this.args, {this.isSetter = false});
 
   /// The class the call resolves into.
   final String base;
   final String name;
   final List<IrExpr> args;
+
+  /// `super.x = v`: the base's setter, whose super function is
+  /// `<base>_super_set_x`.
+  final bool isSetter;
 }
 
 // -- Statements ---------------------------------------------------------------

@@ -640,10 +640,10 @@ class RustBackend {
         negated,
       ),
       // A super function returns `Result`; `Object.toString` is the prelude's.
-      IrSuperCall(:final base, :final name, :final args) =>
+      IrSuperCall(:final base, :final name, :final args, :final isSetter) =>
         base == 'Object'
             ? _superCall(base, name, args)
-            : '${_superCall(base, name, args)}$_propagate',
+            : '${_superCall(base, name, args, isSetter: isSetter)}$_propagate',
       // A local's `!` clones first: `a!.axis` and then `a!.value` moved
       // `a` at the first (E0382); a `Copy` local clones for free.
       IrNullCheck(:final operand) =>
@@ -1507,7 +1507,12 @@ class RustBackend {
     return '$owner::${_identifier(name)}(${args.map(expr).join(', ')})';
   }
 
-  String _superCall(String base, String name, List<IrExpr> args) {
+  String _superCall(
+    String base,
+    String name,
+    List<IrExpr> args, {
+    bool isSetter = false,
+  }) {
     // `Object` is not a class this compiler has, and it never will be -- it is
     // the root every Dart class already inherits from. So `super.toString()`
     // was refused as "not in this file", 198 times, when the truth is that
@@ -1530,7 +1535,11 @@ class RustBackend {
       );
     }
     final provides = baseClass.methods.any(
-      (m) => m.operator == null && m.name == name && !m.isStatic,
+      (m) =>
+          m.operator == null &&
+          m.name == name &&
+          !m.isStatic &&
+          m.isSetter == isSetter,
     );
     if (!provides) {
       // The base's own version was refused, or is abstract and has no body to
@@ -1541,7 +1550,7 @@ class RustBackend {
         'super.$name(...)',
       );
     }
-    if (!_superFnEmits(baseClass, name)) {
+    if (!_superFnEmits(baseClass, name, isSetter: isSetter)) {
       // The base *has* the method, and the free function holding its body still
       // could not be emitted -- so the name this call would use is not written
       // anywhere. `Alignment.toString` called `alignment_geometry_super_to_-
@@ -1568,7 +1577,7 @@ class RustBackend {
         ? '&*$_selfName'
         : '&$_selfName';
     final call =
-        '${superFn(base, name)}(${[receiver, ...args.map(expr)].join(', ')})';
+        '${superFn(base, name, isSetter: isSetter)}(${[receiver, ...args.map(expr)].join(', ')})';
     // An async super function is an `async fn`; the caller's trait wants
     // the boxed future every `Future<T>` is here.
     final isAsync = baseClass.methods.any(
@@ -1583,7 +1592,7 @@ class RustBackend {
   /// is made from the *subclass*, whose backend never sees the base's set.
   static final _superFnProbes = <String, bool>{};
 
-  bool _superFnEmits(IrClass baseClass, String name) {
+  bool _superFnEmits(IrClass baseClass, String name, {bool isSetter = false}) {
     // Only an abstract class writes them. `_emitSuperFns` is called from
     // `_emitTrait` and nowhere else, because the free function is generic over
     // the trait -- there is nothing to make it generic over when the base is a
@@ -1592,11 +1601,15 @@ class RustBackend {
     // first said yes and the call named a function nobody wrote; the mixin
     // fixture is what walked into it.
     if (!baseClass.isAbstract) return false;
-    final key = '${baseClass.name}.$name';
+    final key = '${baseClass.name}.${isSetter ? 'set:' : ''}$name';
     final known = _superFnProbes[key];
     if (known != null) return known;
     final method = baseClass.methods.firstWhere(
-      (m) => m.operator == null && m.name == name && !m.isStatic,
+      (m) =>
+          m.operator == null &&
+          m.name == name &&
+          !m.isStatic &&
+          m.isSetter == isSetter,
     );
     final probe = RustBackend(baseClass, library: library);
     final ok = probe._member(key, () => probe._emitSuperFn(method));
@@ -5140,11 +5153,8 @@ class RustBackend {
       ),
       IrConditional(:final condition, :final then, :final otherwise) =>
         IrConditional(go(condition), go(then), go(otherwise)),
-      IrSuperCall(:final base, :final name, :final args) => IrSuperCall(
-        base,
-        name,
-        args.map(go).toList(),
-      ),
+      IrSuperCall(:final base, :final name, :final args, :final isSetter) =>
+        IrSuperCall(base, name, args.map(go).toList(), isSetter: isSetter),
       IrAwait(:final operand) => IrAwait(go(operand)),
       IrUpcast(:final value, :final type, :final handle) => IrUpcast(
         go(value),

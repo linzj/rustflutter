@@ -275,11 +275,13 @@ class KernelFrontend {
       // calls methods on, and a Rust type parameter has no such methods.
       // Only for the scalar bounds that are prelude types; `T extends
       // Comparable<T>` would recurse.
+      // Not `num`: `_RestorablePrimitiveValue<T extends num>` as an `f64`
+      // took `RestorableInt`'s `i64`s in and gave `f64`s out (51 at
+      // ws354); `T` stays the caller's type.
       final bound = type.parameter.bound;
       if (bound is InterfaceType &&
           const {
             'String',
-            'num',
             'int',
             'double',
             'bool',
@@ -832,6 +834,38 @@ class KernelFrontend {
         );
       }
       return IrSuperCall(owner, node.name.text, const []);
+    }
+    if (node is SuperPropertySet) {
+      // `super.value = value` in `_RestorablePrimitiveValue.value=`: the
+      // base's setter, through its super function, the value kept as any
+      // assignment's is (9 refusals at ws354). A base *field* is the same
+      // storage as this class's (flattened): a plain write.
+      final target = node.interfaceTarget;
+      final owner = target == null
+          ? null
+          : _realOwner(target, node.name.text)?.name;
+      if (target == null || owner == null) {
+        throw Unsupported('super property set with no owner', _sample(node));
+      }
+      final slot = target is Field
+          ? target.setterType
+          : target is Procedure
+          ? target.function.positionalParameters.single.type
+          : null;
+      final held = '__t${_nextTemporary++}';
+      final stored = _widened(
+        node.value,
+        slot,
+        IrCall(IrLocal(held), 'clone', const []),
+      );
+      return IrBlockValue([
+        IrLocalDecl(held, null, expression(node.value)),
+        target is Field
+            ? IrAssignField(node.name.text, stored)
+            : IrExprStmt(
+                IrSuperCall(owner, node.name.text, [stored], isSetter: true),
+              ),
+      ], IrLocal(held));
     }
     if (node is AwaitExpression) {
       // `await <throw>`: the tree shaker replaces a removed call with a
