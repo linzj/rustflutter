@@ -6100,7 +6100,15 @@ class RustBackend {
       // (4 "not all trait items implemented" in `widgets`, one per
       // generic `Element`).
       need = _renamedShadowed(need) ?? need;
-      final have = _matching(need);
+      var have = _matching(need);
+      String? via;
+      if (have == null) {
+        final inherited = _inherited(need);
+        if (inherited != null) {
+          via = inherited.$1.name;
+          have = inherited.$2;
+        }
+      }
       // Rust does not collapse `Option<Option<X>>` the way Dart collapses
       // `T?` for a nullable `T`: `MessageCodec<Object?>.decodeMessage` is
       // `-> Option<T>` in the trait and the impl must say `Option<Option<..>>`
@@ -6154,7 +6162,7 @@ class RustBackend {
       } else {
         // ..and an async inherent method is a future the forwarder wraps
         // in `Ok` (49 `Pin<Box<impl Future>>` where `Result<..>` goes).
-        final inherent = _inherentCall(have, need);
+        final inherent = _inherentCall(have, need, via);
         final call = have.isAsync && _resultModel ? 'Ok($inherent)' : inherent;
         final concrete = type(have.returnType);
         // One `Option` short -- the override narrowed `T?` to `T`, which Dart
@@ -6220,7 +6228,35 @@ class RustBackend {
   ///
   /// An operator that became an `impl std::ops::*` is invoked as the operator,
   /// not as a method: that is the whole point of having emitted the trait impl.
-  String _inherentCall(IrMethod method, [IrMethod? through]) {
+  /// The nearest class above this one with a body for `need`: an open
+  /// class's `Impl` struct has none of its own (`_implOf`), and a subclass
+  /// inherits the base's -- both reach the base trait's default through
+  /// `Base::name(self, ..)`. Until ws345 every such method was a
+  /// `todo!("X does not translate Y yet")`: 26199 of them, `insert`,
+  /// `perform_layout` and `first_child` of `RenderFlexImpl` and all 796
+  /// getters of each `GalleryLocalizationsXxImpl` -- compiled, never ran.
+  (IrClass, IrMethod)? _inherited(IrMethod need) {
+    var above = cls.superclass;
+    final seen = <String>{cls.name};
+    while (above != null && seen.add(above)) {
+      final base = library[above];
+      if (base == null || !library.isAbstract(base.name)) return null;
+      for (final method in base.methods) {
+        if (need.operator != null) {
+          if (method.operator == need.operator) return (base, method);
+        } else if (method.operator == null &&
+            method.name == need.name &&
+            method.isSetter == need.isSetter &&
+            method.isStatic == need.isStatic) {
+          return (base, method);
+        }
+      }
+      above = base.superclass;
+    }
+    return null;
+  }
+
+  String _inherentCall(IrMethod method, [IrMethod? through, String? via]) {
     // Dart lets an override *widen* an optional signature:
     // `OutlinedBorder.copyWith({side})` is overridden by
     // `BeveledRectangleBorder.copyWith({side, borderRadius})`. Rust does not,
@@ -6285,6 +6321,20 @@ class RustBackend {
         // ..and *narrow* one (`covariant RenderClipRect renderObject` under
         // the trait's `RenderObject`): the trait's handle is downcast to
         // the class the override names, keeping its identity.
+        // A trait narrower than the base's: the body's `child` is a
+        // `RenderBox`, the base's a `RenderObject` (the erased bound).
+        if (p.type.name != traitType.name &&
+            library.isAbstract(p.type.name) &&
+            library.isAbstract(traitType.name) &&
+            p.type.name != 'Object' &&
+            traitType.name != 'Object' &&
+            (p.type.nullable || !traitType.nullable)) {
+          final target = _dynOf(
+            IrType(p.type.name, arguments: p.type.arguments),
+          );
+          return '$passed.dart_cast_to::<$target>()'
+              '${p.type.nullable ? '' : '.unwrap()'}';
+        }
         final narrower = library[p.type.name];
         if (narrower != null &&
             !narrower.isAbstract &&
@@ -6333,7 +6383,7 @@ class RustBackend {
     final receiver = cls.counted && _handles.contains(_rustName(method))
         ? '&self.__self.get()'
         : 'self';
-    final call = '${cls.name}::$name(${[receiver, ...args].join(', ')})';
+    final call = '${via ?? cls.name}::$name(${[receiver, ...args].join(', ')})';
     // An `async fn` yields its own future type; the trait wants the boxed
     // one every `Future<T>` is here (`_NativeCodec::get_next_frame(self)`).
     return method.isAsync ? 'std::boxed::Box::pin($call)' : call;
