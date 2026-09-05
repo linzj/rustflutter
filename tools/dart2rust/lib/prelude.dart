@@ -3451,7 +3451,9 @@ pub struct Scheduler {
     next_id: i64,
     /// Futures running on their own (`dart_spawn`): Dart's are eager, and
     /// a `Future(..)` nobody awaits still runs.
-    tasks: Vec<std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ()>>>>,
+    /// Each spawned future with the name of what spawned it (`spawn_named`),
+    /// so a run stuck on an await can say what it waits for.
+    tasks: Vec<(&'static str, std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ()>>>)>,
 }
 
 /// Set by any waker the scheduler hands out: something a task or `main`
@@ -3562,13 +3564,28 @@ impl<T> DartFuture<T> {
     where
         T: 'static,
     {
+        Self::spawn_named("", future)
+    }
+
+    /// `spawn`, with the name of the function or closure whose body the
+    /// future is: what `run_main` names when nothing will complete it.
+    pub fn spawn_named(
+        name: &'static str,
+        future: std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>,
+    ) -> Self
+    where
+        T: 'static,
+    {
         let out = DartFuture::pending();
         let done = out.clone();
         let mut future = future;
-        (**SCHEDULER).borrow_mut().tasks.push(Box::pin(async move {
-            let result = future.as_mut().await;
-            done.resolve(result);
-        }));
+        (**SCHEDULER).borrow_mut().tasks.push((
+            name,
+            Box::pin(async move {
+                let result = future.as_mut().await;
+                done.resolve(result);
+            }),
+        ));
         out
     }
 
@@ -3852,9 +3869,9 @@ pub fn run_until_idle() {
             let waker = dart_waker();
             let mut cx = std::task::Context::from_waker(&waker);
             let mut pending = Vec::new();
-            for mut task in tasks {
+            for (name, mut task) in tasks {
                 if task.as_mut().poll(&mut cx).is_pending() {
-                    pending.push(task);
+                    pending.push((name, task));
                 }
             }
             {
@@ -3933,8 +3950,11 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
             }
             None => {
                 if !done {
+                    let waiting = pending_tasks();
                     eprintln!(
-                        "dart2rust: main is waiting on something no timer or microtask will complete"
+                        "dart2rust: main is waiting on something no timer or microtask will complete; {} future(s) still pending: {}",
+                        waiting.len(),
+                        waiting.join(", ")
                     );
                 }
                 report_natives_skipped();
@@ -3942,6 +3962,17 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
             }
         }
     }
+}
+
+/// The spawned futures not yet complete, by the name each was spawned
+/// under (`DartFuture::spawn_named`); unnamed ones as `?`.
+pub fn pending_tasks() -> Vec<String> {
+    (**SCHEDULER)
+        .borrow()
+        .tasks
+        .iter()
+        .map(|(name, _)| if name.is_empty() { "?".to_string() } else { name.to_string() })
+        .collect()
 }
 
 /// What a run without a native host left undone, for the ruler to read:

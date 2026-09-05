@@ -1066,7 +1066,7 @@ class RustBackend {
     // `async` closure, `setMessageHandler`'s at run459). A bare
     // `-> DartFuture<_>` matched neither (12 stubs on the start path).
     final spawned =
-        'DartFuture::spawn(std::boxed::Box::pin(async move { $body }))';
+        'DartFuture::spawn_named("${cls.name} closure", std::boxed::Box::pin(async move { $body }))';
     final wantsFuture =
         node.returns.name == 'Future' || node.returns.name == 'FutureOr';
     final closure = node.isAsync
@@ -6371,7 +6371,7 @@ class RustBackend {
       ...method.params.map((p) => snake(p.name)),
     ].join(', ');
     _line(
-      'DartFuture::spawn(std::boxed::Box::pin(async move { $bodyName$turbofish($args).await }))',
+      'DartFuture::spawn_named("${cls.name}.${method.name}", std::boxed::Box::pin(async move { $bodyName$turbofish($args).await }))',
     );
     _indent--;
     _line('}');
