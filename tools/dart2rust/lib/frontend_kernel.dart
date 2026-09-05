@@ -3508,14 +3508,21 @@ class KernelFrontend {
         value,
         paramType,
         callee,
-        _widened(
+        _intoErased(
           value,
-          paramType,
-          _withBorrowing(
-            param,
-            callee,
-            () =>
-                _withExpectedReturn(paramType, value, () => expression(value)),
+          declaredType,
+          _widened(
+            value,
+            paramType,
+            _withBorrowing(
+              param,
+              callee,
+              () => _withExpectedReturn(
+                paramType,
+                value,
+                () => expression(value),
+              ),
+            ),
           ),
         ),
       ),
@@ -3599,17 +3606,68 @@ class KernelFrontend {
         value,
         type,
         callee,
-        _widened(
+        _intoErased(
           value,
           type,
-          _withBorrowing(
-            param,
-            callee,
-            () => _withExpectedReturn(type, value, () => expression(value)),
+          _widened(
+            value,
+            type,
+            _withBorrowing(
+              param,
+              callee,
+              () => _withExpectedReturn(type, value, () => expression(value)),
+            ),
           ),
         ),
       ),
     );
+  }
+
+  /// A trait handle into a slot whose *erased* parameter is bounded by a
+  /// wider trait: `child`, a `RenderBox`, into `ContainerRenderObjectMixin
+  /// .insert(ChildType child, {ChildType? after})`, which is `Rc<dyn
+  /// RenderObject>` here. Rust upcasts a bare handle at the call and not
+  /// one inside an `Option` (24 `_insertIntoChildList` at ws340), so the
+  /// handle is upcast by name, through `map` when it is optional.
+  IrExpr _intoErased(Expression value, DartType? declared, IrExpr lowered) {
+    if (declared is! TypeParameterType || !_erasedParameter(declared.parameter))
+      return lowered;
+    final bound = declared.parameter.bound;
+    final given = value is VariableGet && _retyped.containsKey(value.variable)
+        ? _retyped[value.variable]
+        : _staticType(value);
+    if (bound is! InterfaceType ||
+        given is! InterfaceType ||
+        given.classNode == bound.classNode ||
+        !_abstractLike(bound.classNode) ||
+        !_abstractLike(given.classNode) ||
+        !_translatedClass(bound.classNode) ||
+        !_translatedClass(given.classNode) ||
+        _scalarClass(bound.classNode) ||
+        _scalarClass(given.classNode) ||
+        !(typeEnvironment?.hierarchy.isSubInterfaceOf(
+              given.classNode,
+              bound.classNode,
+            ) ??
+            false)) {
+      return lowered;
+    }
+    final asBound = _type(bound);
+    final target = IrType(asBound.name, arguments: asBound.arguments);
+    if (given.nullability == Nullability.nullable) {
+      return IrNullAware(
+        lowered,
+        IrUpcast(
+          IrCall(const IrBound(), 'clone', const []),
+          target,
+          handle: true,
+        ),
+      );
+    }
+    if (lowered is IrSome) {
+      return IrSome(IrUpcast(lowered.value, target, handle: true));
+    }
+    return IrUpcast(lowered, target, handle: true);
   }
 
   /// A value handed to a translated callee's `dynamic`/`Object` parameter
@@ -4853,15 +4911,20 @@ class KernelFrontend {
     final bound = declared.parameter.bound;
     if (result is! InterfaceType ||
         bound is! InterfaceType ||
-        result.classNode == bound.classNode ||
-        result.nullability == Nullability.nullable) {
+        result.classNode == bound.classNode) {
       return lowered;
     }
     // ..to a trait, when the narrower class is open or abstract -- not a
     // scalar, abstract to Kernel and a struct here (`dyn double`, 133).
-    if (_abstractLike(result.classNode) && !_scalarClass(result.classNode)) {
+    // A nullable read too, now that the cast keeps an `Option` (ws340):
+    // `firstChild` and `nextSibling` of the erased container mixins read
+    // as `Rc<dyn RenderObject>` into `RenderBox?` locals, 341 mismatches.
+    if (_abstractLike(result.classNode) &&
+        _translatedClass(result.classNode) &&
+        !_scalarClass(result.classNode)) {
       return IrCastTo(lowered, _type(result));
     }
+    if (result.nullability == Nullability.nullable) return lowered;
     return _narrowingCast(lowered, result);
   }
 
