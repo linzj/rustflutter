@@ -1792,13 +1792,24 @@ class KernelFrontend {
       // this. A local holding a counted class's handle is not this -- its
       // fields would have to be cells -- and a parameter is not either.
       final receiver = value.receiver;
+      final receiverClassHere = _staticClass(receiver);
+      // ..unless the local's own class is counted (its fields are cells)
+      // or the field's class is a trait (its setter): `childParentData.
+      // offset = Offset(..)` on a `_ToolbarParentData` local wrote to an
+      // `Rc<Cell<Offset>>` (23 at ws325).
       if (receiver is VariableGet &&
           receiver.variable.parent is! FunctionNode &&
-          !_closureCallsMethod(value.interfaceTarget.enclosingClass!)) {
+          !_closureCallsMethod(value.interfaceTarget.enclosingClass!) &&
+          !(receiverClassHere != null &&
+              _closureCallsMethod(receiverClassHere)) &&
+          !_abstractLike(value.interfaceTarget.enclosingClass!)) {
         return IrAssignField(
           value.name.text,
           written,
           target: expression(receiver),
+          owner:
+              receiverClassHere?.name ??
+              value.interfaceTarget.enclosingClass?.name,
         );
       }
       // A local or a parameter holding a *counted* class's handle: every
@@ -1820,6 +1831,16 @@ class KernelFrontend {
           written,
           target: expression(receiver),
           owner: receiverClass?.name ?? declaring.name,
+        );
+      }
+      // A trait's field on a value local: the setter the trait declares
+      // (`IrAssignField.owner` abstract; 19 refusals at ws326).
+      if (_abstractLike(declaring)) {
+        return IrAssignField(
+          value.name.text,
+          written,
+          target: expression(receiver),
+          owner: declaring.name,
         );
       }
       if (!_rootedAtThis(value.receiver)) {

@@ -4722,11 +4722,28 @@ class RustBackend {
     final thrown = expr(value);
     // ..and any constructed error: a `FormatException` thrown where the
     // signature says `Rc<dyn Object>` is boxed into it too.
+    // ..and a prelude exception made by its constructor function
+    // (`Exception::new(..)` is a static call, not an `IrNew`; 29 at ws325).
+    const preludeExceptions = {
+      'Exception',
+      'FormatException',
+      'StateError',
+      'ArgumentError',
+      'RangeError',
+      'UnsupportedError',
+      'UnimplementedError',
+      'ConcurrentModificationError',
+      'TypeError',
+      'AssertionError',
+    };
     final boxed =
         (_failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>') &&
         ((value is IrLiteral && value.type.name == 'String') ||
             value is IrNew ||
-            value is IrConstInstance);
+            value is IrConstInstance ||
+            (value is IrStaticCall &&
+                value.owner != null &&
+                preludeExceptions.contains(value.owner)));
     return boxed ? 'std::rc::Rc::new($thrown)' : thrown;
   }
 
