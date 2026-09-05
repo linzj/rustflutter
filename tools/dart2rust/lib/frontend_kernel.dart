@@ -1515,8 +1515,94 @@ class KernelFrontend implements TypeWorld {
         !(member != null && identical(declaration, member.function))) {
       return false;
     }
-    final ir = _type(t);
-    return ir.arguments.isEmpty && ir.name == (t.parameter.name ?? 'T');
+    return !_spelledAsBound(t.parameter);
+  }
+
+  /// A parameter `_type` spells as its bound rather than as itself (the
+  /// scalar and the list bounds): no Rust type parameter to project.
+  bool _spelledAsBound(TypeParameter p) {
+    final bound = p.bound;
+    return bound is InterfaceType &&
+        const {
+          'String',
+          'int',
+          'double',
+          'bool',
+          'Iterable',
+          'List',
+        }.contains(bound.classNode.name);
+  }
+
+  /// Whether a value crosses a projected slot at a *use*: the declaration
+  /// says `T?` and what this use puts in for `T` is a non-nullable type
+  /// parameter of the code here -- then the slot is `<U as DartNullable>::
+  /// Or` where the code has an `Option<U>`. For `U?` or a concrete type
+  /// the slot already *is* the `Option` the code has.
+  bool _crossing(DartType? declared, DartType? binding) {
+    if (declared is! TypeParameterType ||
+        declared.nullability != Nullability.nullable ||
+        _erasedParameter(declared.parameter)) {
+      return false;
+    }
+    if (binding is! TypeParameterType ||
+        binding.nullability == Nullability.nullable) {
+      return false;
+    }
+    return _projectedSlot(
+      binding.withDeclaredNullability(Nullability.nullable),
+    );
+  }
+
+  IrExpr _acrossBinding(
+    IrExpr value,
+    DartType? declared,
+    DartType? binding, {
+    required bool toOption,
+  }) {
+    if (!_crossing(declared, binding)) return value;
+    return IrNullableOf(value, _type(binding!).name, toOption: toOption)
+      ..rustType = value.rustType;
+  }
+
+  /// What a member access puts in for a declared type parameter: the
+  /// member's own by the call's type arguments, the class's by the
+  /// receiver's.
+  DartType? _bindingOf(
+    DartType? declared,
+    Member member,
+    Expression receiver, [
+    Arguments? args,
+  ]) {
+    if (declared is! TypeParameterType) return null;
+    final p = declared.parameter;
+    final fn = member.function;
+    if (fn != null && fn.typeParameters.contains(p)) {
+      if (args == null || args.types.length != fn.typeParameters.length) {
+        return null;
+      }
+      return args.types[fn.typeParameters.indexOf(p)];
+    }
+    final env = typeEnvironment;
+    final receiverType = receiver is ThisExpression
+        ? (env == null
+              ? null
+              : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable))
+        : _staticType(receiver);
+    return _keptFor(member.enclosingClass, receiverType)[p];
+  }
+
+  /// What an argument's slot puts in for the callee's type parameter: the
+  /// dispatch's receiver for a class's, the call's type arguments for the
+  /// callee's own.
+  DartType? _argumentBinding(FunctionNode? callee, DartType? declared) {
+    if (declared is! TypeParameterType || callee == null) return null;
+    final p = declared.parameter;
+    if (callee.typeParameters.contains(p)) {
+      return identical(callee, _genericCallee) ? _genericArgs[p] : null;
+    }
+    final landing = _dispatchMember;
+    if (landing == null || !identical(callee, _dispatchInterface)) return null;
+    return _keptFor(landing.enclosingClass, _dispatchReceiverType)[p];
   }
 
   /// A signature's or a field's type: projected where `_projectedSlot`.
@@ -1582,32 +1668,6 @@ class KernelFrontend implements TypeWorld {
     if (owner != null) return _translatedClass(owner);
     final uri = member.enclosingLibrary.importUri;
     return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
-  }
-
-  /// The return type of a member as this call instantiates it: the class's
-  /// kept parameters by the receiver, the member's own by the call.
-  DartType? _callResultType(
-    Member member,
-    Expression receiver,
-    Arguments args,
-  ) {
-    final function = member.function;
-    if (function == null) return null;
-    var declared = function.returnType;
-    if (function.typeParameters.isNotEmpty) {
-      if (args.types.length != function.typeParameters.length) return null;
-      declared = Substitution.fromPairs(
-        function.typeParameters,
-        args.types,
-      ).substituteType(declared);
-    }
-    final env = typeEnvironment;
-    final receiverType = receiver is ThisExpression
-        ? (env == null
-              ? null
-              : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable))
-        : _staticType(receiver);
-    return _substituteKept(declared, member.enclosingClass, receiverType);
   }
 
   /// The declared return of the member whose body is being lowered, for
@@ -2152,14 +2212,19 @@ class KernelFrontend implements TypeWorld {
     // `String?` field is `Some(s)`. A clone's field, being this struct's,
     // is written as a field, not through the trait's setter.
     final slot = _writeSlot(value.interfaceTarget, value.receiver);
-    final written = _acrossEdge(
+    final landing = _landing(value.interfaceTarget, value.receiver);
+    final declaredSlot = landing is Procedure && landing.isSetter
+        ? landing.function.positionalParameters.single.type
+        : landing.setterType;
+    final written = _acrossBinding(
       _widened(
         value.value,
         slot,
         expression(value.value),
         slotIr: _writeSlotIr(value.interfaceTarget, value.receiver),
       ),
-      slot,
+      declaredSlot,
+      _bindingOf(declaredSlot, landing, value.receiver),
       toOption: false,
     );
     // A field on `this`, and a field rather than a setter. Kernel names the
@@ -2685,13 +2750,15 @@ class KernelFrontend implements TypeWorld {
         _abstractLike(declaring) &&
         !declaring.isAnonymousMixin &&
         !concrete) {
-      return _acrossEdge(
+      final declared = node.interfaceTarget.getterType;
+      return _acrossBinding(
         _qualified(
           IrCall(target, name, const []),
           node.interfaceTarget,
           receiver,
         ),
-        node.resultType,
+        declared,
+        _bindingOf(declared, node.interfaceTarget, receiver),
         toOption: true,
       );
     }
@@ -2719,7 +2786,13 @@ class KernelFrontend implements TypeWorld {
             asGetter: true,
           );
     // Out of a projected field: into the `Option<T>` the body works with.
-    return _acrossEdge(read, node.resultType, toOption: true);
+    final declared = node.interfaceTarget.getterType;
+    return _acrossBinding(
+      read,
+      declared,
+      _bindingOf(declared, node.interfaceTarget, receiver),
+      toOption: true,
+    );
   }
 
   /// `dateTimeSymbols[k]`, `.containsKey(k)`, `.keys` on a `dynamic` slot
@@ -3360,9 +3433,11 @@ class KernelFrontend implements TypeWorld {
       receiver,
     );
     // A projected result: into the `Option<T>` the caller works with.
-    return _acrossEdge(
+    final declared = node.interfaceTarget.function?.returnType;
+    return _acrossBinding(
       call,
-      _callResultType(node.interfaceTarget, receiver, node.arguments),
+      declared,
+      _bindingOf(declared, node.interfaceTarget, receiver, node.arguments),
       toOption: true,
     );
   }
@@ -4135,8 +4210,13 @@ class KernelFrontend implements TypeWorld {
       ),
     );
     // Into a projected slot of a translated callee: the spelled `T?`.
-    return declaredType is TypeParameterType && _translatedCallee(callee)
-        ? _acrossEdge(argument, paramType, toOption: false)
+    return _translatedCallee(callee)
+        ? _acrossBinding(
+            argument,
+            declaredType,
+            _argumentBinding(callee, declaredType),
+            toOption: false,
+          )
         : argument;
   }
 
@@ -4250,8 +4330,13 @@ class KernelFrontend implements TypeWorld {
         ),
       ),
     );
-    return declared is TypeParameterType && _translatedCallee(callee)
-        ? _acrossEdge(argument, type, toOption: false)
+    return _translatedCallee(callee)
+        ? _acrossBinding(
+            argument,
+            declared,
+            _argumentBinding(callee, declared),
+            toOption: false,
+          )
         : argument;
   }
 

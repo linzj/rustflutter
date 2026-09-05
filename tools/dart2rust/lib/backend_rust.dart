@@ -387,6 +387,14 @@ class RustBackend {
           : 'std::rc::Rc<dyn $signature>';
       return t.nullable ? 'Option<$spelled>' : spelled;
     }
+    // A projected `T?` (`IrType.projected`): `<T as DartNullable>::Or`,
+    // with whatever stands for `T` -- a type parameter in a declaration,
+    // the type put in for it in an impl's signature, where rustc compares
+    // the spelling with the trait's rather than the normalised type.
+    if (t.projected) {
+      final inner = type(IrType(t.name, arguments: t.arguments));
+      return '<$inner as DartNullable>::Or';
+    }
     // Dart's `dynamic` is "anything", which is what the prelude's `Object`
     // trait is here. Emitted as the bare word it was a type nothing declares,
     // 259 times.
@@ -495,9 +503,6 @@ class RustBackend {
     }
     // A nullable type parameter in a signature: the associated type that
     // collapses `T?` with `T` bound to `X?` (see `IrType.projected`).
-    if (t.projected && t.nullable && t.arguments.isEmpty) {
-      return '<${t.name} as DartNullable>::Or';
-    }
     final mapped = _primitives[t.name] ?? t.name;
     // `Foo<int>` was coming out as a bare `Foo`, which is a different type.
     final spelled = t.arguments.isEmpty || _primitives.containsKey(t.name)
@@ -3940,6 +3945,45 @@ class RustBackend {
     return _out.join('\n') + '\n';
   }
 
+  /// Whether a class's own declaration spells a projected `T?` anywhere:
+  /// a field, a constructor's or a method's parameter, a result.
+  bool _usesProjection(IrClass c) =>
+      _allFields(c).any((f) => f.type.projected) ||
+      c.constructors.any((k) => k.params.any((p) => p.type.projected)) ||
+      [...c.methods, ...c.abstractMethods].any(
+        (m) => m.returnType.projected || m.params.any((p) => p.type.projected),
+      );
+
+  /// Whether a class's type parameters need `DartNullable`: it or a class
+  /// it implements spells `<T as DartNullable>::Or`. Not every class: the
+  /// bound shuts a future out (`_CallbackHookProvider<Future<bool>>`), and
+  /// only a projection asks for it.
+  bool _needsNullable(IrClass c) {
+    final seen = <String>{};
+    bool walk(IrClass k) {
+      if (!seen.add(k.name)) return false;
+      if (_usesProjection(k)) return true;
+      for (final name in [
+        if (k.superclass != null) k.superclass!,
+        ...k.mixins.map((m) => m.name),
+        ...k.interfaces.map((i) => i.name),
+      ]) {
+        final other = library[name];
+        if (other != null && walk(other)) return true;
+      }
+      return false;
+    }
+
+    return walk(c);
+  }
+
+  String _nb(IrClass c) => _needsNullable(c) ? ' + DartNullable' : '';
+
+  bool _methodProjects(IrMethod m) =>
+      m.returnType.projected || m.params.any((p) => p.type.projected);
+
+  String _nbm(IrMethod m) => _methodProjects(m) ? ' + DartNullable' : '';
+
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
   void _emitDartNullable() {
@@ -4005,15 +4049,15 @@ class RustBackend {
     // parameter with a future. A class's does not (`_CallbackHookProvider<
     // Future<bool>>`), see `bound` in `_boundedGenerics`.
     final bound = owner is IrMethod
-        ? params.map((p) => "$p: Clone + DartNullable + 'static")
+        ? params.map((p) => "$p: Clone${_nbm(owner)} + 'static")
         : static
         // `Clone` on a class's parameters after all (ws301): every held
         // `T` is read by `.clone()`, and 240 stubs said so; the one shape
         // that is not `Clone`, a bare future, is measured against that.
         ? params.map(
             (p) => clone
-                ? "$p: Clone + DartNullable + 'static"
-                : "$p: DartNullable + 'static",
+                ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
+                : "$p: ${owner is IrClass && _needsNullable(owner) ? 'DartNullable + ' : ''}'static",
           )
         : params;
     return '<${bound.join(', ')}>';
@@ -4142,7 +4186,7 @@ class RustBackend {
       // The prelude's `Map` and `Set` are ordered and compare keys with
       // `==`: `PartialEq + Clone` is all they ask, and `Eq + Hash` shut
       // closures out of `ObserverList<VoidCallback>` (48 in `widgets`).
-      return "$p: Clone + DartNullable + 'static${key && keyed ? ' + PartialEq' : ''}";
+      return "$p: Clone${_nb(cls)} + 'static${key && keyed ? ' + PartialEq' : ''}";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
@@ -4418,7 +4462,7 @@ class RustBackend {
   String _traitWhere(IrMethod method) {
     final clauses = [
       if (_sizedBound(method).isNotEmpty) 'Self: Sized',
-      for (final p in cls.typeParameters) '$p: Clone + DartNullable',
+      for (final p in cls.typeParameters) '$p: Clone${_nb(cls)}',
     ];
     return clauses.isEmpty ? '' : ' where ${clauses.join(', ')}';
   }
@@ -4478,14 +4522,14 @@ class RustBackend {
         // `Debug` too: a mixin's `toString` hands `this` to `MapBase.
         // mapToString`, which prints it, and every implementer prints.
         '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
-        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone + DartNullable + 'static").join(', ')}'}'
+        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone${_nb(cls)} + 'static").join(', ')}'}'
         // And the *method's* own, for a generic method like
         // `invokeLayoutCallback<T extends Constraints>`. A free function can
         // carry them; the trait method it belongs to cannot, and says so.
         // Bounded as the trait method's are: `AnnotationResult<S>` asks
         // `Clone + DartNullable + 'static` of its `S`, and the free function said nothing
         // (E0277 in the signature of `ContainerLayer.findAnnotations<S>`).
-        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone + DartNullable + 'static").join(', ')}'}'
+        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone${_nbm(method)} + 'static").join(', ')}'}'
         '>($params) -> '
         // An `async fn` returns the awaited type: `Future<Response>` on an
         // `async` super function was a future of a boxed future (E0308).
@@ -4819,13 +4863,18 @@ class RustBackend {
       // ..and now it does collapse, as Dart does: a signature's `T?` is
       // `<T as DartNullable>::Or` (`IrType.projected`), which *is* `X?`
       // for `T = X?`. Put in for another parameter it stays projected.
+      // A projected slot stays projected over what is put in: an impl's
+      // signature has to spell the trait's `<X as DartNullable>::Or`.
+      if (t.projected) {
+        return IrType(
+          to.name,
+          nullable: true,
+          arguments: to.arguments,
+          projected: true,
+        );
+      }
       if (to.nullable) return to;
-      return IrType(
-        to.name,
-        nullable: true,
-        arguments: to.arguments,
-        projected: t.projected && cls.typeParameters.contains(to.name),
-      );
+      return IrType(to.name, nullable: true, arguments: to.arguments);
     }
     return IrType(
       t.name,
@@ -5572,9 +5621,12 @@ class RustBackend {
     // ..and every field's own class comparable, recursively: a
     // `VecDeque<_StoredMessage>` of a struct holding a closure derives
     // nothing (`==` cannot be applied, 3).
+    // ..and not over a projected `T?` field: `<T as DartNullable>::Or:
+    // PartialEq` is a where clause a derive cannot write.
     final comparable =
         printable &&
         byIdentity.isEmpty &&
+        _allFields(cls).every((f) => !f.type.projected) &&
         _allFields(cls)
             .every((f) => _comparableType(_fieldType(f), {cls.name}));
     // A boxed future is not `Clone`, and a struct holding one (an
@@ -5650,9 +5702,13 @@ class RustBackend {
       _line('}');
     }
     if (byIdentity.isNotEmpty) {
+      final projected = {
+        for (final f in _allFields(cls))
+          if (f.type.projected) f.type.name,
+      };
       final bounds = cls.typeParameters.isEmpty
           ? ''
-          : ' where ${cls.typeParameters.map((p) => '$p: PartialEq').join(', ')}';
+          : ' where ${[for (final p in cls.typeParameters) '$p: PartialEq', for (final p in projected) '<$p as DartNullable>::Or: PartialEq'].join(', ')}';
       _line(
         'impl${_implGenerics(cls)} PartialEq for ${cls.name}${_generics(cls)}$bounds {',
       );
@@ -5714,7 +5770,9 @@ class RustBackend {
     // One line per struct rather than one blanket impl over everything: see
     // `DartAny` in the prelude for why the blanket one is quietly wrong.
     _line('');
-    _emitDartNullable();
+    // Its `Or` is `Option<Self>`, which has to be `Clone`: a struct that
+    // is not (one holding a bare future) is no type argument either.
+    if (cloneable) _emitDartNullable();
     _line(
       // The bounds the inherent impl has: `dart_cast` calls the trait
       // impls, whose `E: Clone` a bare `'static` cannot meet (ws304).
