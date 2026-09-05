@@ -2462,6 +2462,44 @@ class RustBackend {
     return name == '_' ? 'new_' : name;
   }
 
+  /// A value written through a trait's setter into a field the struct holds
+  /// narrower than the trait declares it: `_firstChild` is a `RenderBox?` on
+  /// `RenderFlex` and a `RenderObject?` (the erased bound) on
+  /// `ContainerRenderObjectMixin`, and the setter takes the trait's. The
+  /// handle is upcast by name -- inside `map` when optional (24
+  /// `set__first_child` at ws348).
+  String _intoDeclared(String name, String written) {
+    // A mixin's field is an abstract setter on its trait, an interface's
+    // a field: either declares the type the setter takes.
+    IrType? wide;
+    for (final above in _abstractAncestors(cls)) {
+      for (final f in above.fields) {
+        if (f.name == name) wide = f.type;
+      }
+      for (final m in above.abstractMethods) {
+        if (m.name == name && m.isSetter && m.params.length == 1) {
+          wide = m.params.single.type;
+        }
+      }
+      if (wide != null) break;
+    }
+    final own = _allFields(cls).where((f) => f.name == name).firstOrNull;
+    if (wide == null || own == null) return written;
+    final narrow = own.type;
+    if (wide.name == narrow.name ||
+        wide.name == 'Object' ||
+        !library.isAbstract(wide.name) ||
+        !library.isAbstract(narrow.name) ||
+        written == 'None') {
+      return written;
+    }
+    final target =
+        'std::rc::Rc<${_dynOf(IrType(wide.name, arguments: wide.arguments))}>';
+    return wide.nullable
+        ? '$written.map(|v| v as $target)'
+        : '($written as $target)';
+  }
+
   /// `a.b = v` where the value of the assignment is wanted.
   ///
   /// Rust's assignment produces `()`, so the value is bound first and produced
@@ -2476,9 +2514,10 @@ class RustBackend {
         : null;
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {
       final through = _accessorQualifier(name, kind: 'write');
+      final widened = _intoDeclared(name, '__set.clone()');
       return through == null
-          ? '{ let __set = ${expr(value)}; $receiver.set_${snake(name)}(__set.clone())$_propagate; __set }'
-          : '{ let __set = ${expr(value)}; $through::set_${snake(name)}($receiver, __set.clone())$_propagate; __set }';
+          ? '{ let __set = ${expr(value)}; $receiver.set_${snake(name)}($widened)$_propagate; __set }'
+          : '{ let __set = ${expr(value)}; $through::set_${snake(name)}($receiver, $widened)$_propagate; __set }';
     }
     if (shared != null) {
       final copy = _isCopy(_heldType(shared));
@@ -3312,10 +3351,11 @@ class RustBackend {
         // declares (`this_.set__length(v)` in a mixin's super function).
         if (_fieldsAreAccessors && (target == null || target is IrThis)) {
           final through = _accessorQualifier(name, kind: 'write');
+          final widened = _intoDeclared(name, written);
           _line(
             through == null
-                ? '$receiver.set_${snake(name)}($written)$_propagate;'
-                : '$through::set_${snake(name)}($receiver, $written)$_propagate;',
+                ? '$receiver.set_${snake(name)}($widened)$_propagate;'
+                : '$through::set_${snake(name)}($receiver, $widened)$_propagate;',
           );
         } else if (target != null &&
             target is! IrThis &&
@@ -3351,12 +3391,17 @@ class RustBackend {
         // A setter is a method and returns `Result` like one. Through the
         // trait when two declare it (`IrSetter.qualifier`).
         if (qualifier != null) {
+          // ..widened to the trait's field type on the way (`_intoDeclared`),
+          // as a raw argument the call prints as it is.
+          final argument = target == null || target is IrThis
+              ? IrLiteral(_intoDeclared(name, expr(value)), const IrType('raw'))
+              : value;
           _line(
-            '${_call(target, 'set_${snake(name)}', [value], qualifier: qualifier, receiverClass: receiverClass, fails: true)};',
+            '${_call(target, 'set_${snake(name)}', [argument], qualifier: qualifier, receiverClass: receiverClass, fails: true)};',
           );
         } else {
           _line(
-            '${_receiver(target)}.set_${snake(name)}(${expr(value)})$_propagate;',
+            '${_receiver(target)}.set_${snake(name)}(${target == null || target is IrThis ? _intoDeclared(name, expr(value)) : expr(value)})$_propagate;',
           );
         }
       case IrIf(:final condition, :final then, :final otherwise):
