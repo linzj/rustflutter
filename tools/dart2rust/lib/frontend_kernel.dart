@@ -4113,6 +4113,14 @@ class KernelFrontend implements TypeWorld {
   /// mixin's it applies -- with no trait on the path.
   bool _inherentAsync(Member member, Class? from, String? qualifier) {
     final owner = member.enclosingClass;
+    if (Platform.environment['DART2RUST_TRACE_CALL'] == member.name.text) {
+      stderr.writeln(
+        'TRACE_ASYNC ${member.name.text}: from=${from?.name} owner=${owner?.name} '
+        'fails=${_fails(member)} async=${_asyncMember(member)} qualifier=$qualifier '
+        'applies=${from != null && owner != null && _appliesMixin(from, owner)} '
+        'abstract=${from != null && _abstractLike(from)} open=${from != null && _isOpen(from)}',
+      );
+    }
     if (owner == null || from == null) return false;
     return _fails(member) &&
         (qualifier == null || qualifier == from.name) &&
