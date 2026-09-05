@@ -249,6 +249,20 @@ Future<void> main(List<String> args) async {
   // (`KernelFrontend.addWiderImpls`).
   final instantiations = <Class, Set<InterfaceType>>{};
   final frontends = <Library, KernelFrontend>{};
+  // Where a mixin's bodies went: the CFE applies a mixin by copying its
+  // members into an anonymous application class and leaves the declaration
+  // hollow (abstract). Any application will do -- they are copies -- and
+  // the first found is the one a mixin's trait takes its defaults from
+  // (`KernelFrontend.applications`).
+  final applications = <Class, List<Class>>{};
+  for (final library in component.libraries) {
+    for (final cls in library.classes) {
+      if (!cls.isAnonymousMixin) continue;
+      for (final applied in cls.implementedTypes) {
+        (applications[applied.classNode] ??= []).add(cls);
+      }
+    }
+  }
   for (final library in inPackage) {
     final frontend = KernelFrontend(
       library,
@@ -263,6 +277,7 @@ Future<void> main(List<String> args) async {
       eraseObjectBounded: Platform.environment['DART2RUST_ERASE_OBJECT'] == '1',
       coerceByType: Platform.environment['DART2RUST_COERCE'] != '0',
       instantiations: instantiations,
+      applications: applications,
     );
     final result = frontend.lowerLibrary();
     frontends[library] = frontend;

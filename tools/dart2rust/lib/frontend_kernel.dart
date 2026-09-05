@@ -62,7 +62,16 @@ class KernelFrontend implements TypeWorld {
     this.eraseObjectBounded = false,
     this.coerceByType = true,
     this.instantiations,
+    this.applications = const {},
   });
+
+  /// For each mixin declaration, an anonymous class the CFE applied it to,
+  /// which holds the bodies the declaration lost (see the driver). A
+  /// mixin's trait takes its default methods -- and so its super
+  /// functions, which `super.x()` across a mixin chain reaches -- from
+  /// there (`WidgetsBinding.framesEnabled` calling `SchedulerBinding`'s,
+  /// run434).
+  final Map<Class, List<Class>> applications;
 
   /// The closed world's census of generic trait-like classes' instantiations,
   /// shared by every library's lowering: each `_type` of a `Foo<X>` records
@@ -2240,6 +2249,24 @@ class KernelFrontend implements TypeWorld {
   /// (`Owner.name`, or `.name` for a top-level): the driver marks them
   /// mutable so they live in a cell.
   static final staticFieldWrites = <String>{};
+
+  /// The concrete copy of a mixin declaration's abstract procedure in an
+  /// application of the mixin, if the CFE left one there.
+  Procedure? _appliedBody(Class mixin, Procedure declared) {
+    // Deduplicated applications (`dart:mixin_deduplication`) may be hollow
+    // themselves; the copy is in whichever application kept it.
+    for (final application in applications[mixin] ?? const <Class>[]) {
+      for (final p in application.procedures) {
+        if (p.name.text == declared.name.text &&
+            p.kind == declared.kind &&
+            !p.isAbstract &&
+            !p.isStatic) {
+          return p;
+        }
+      }
+    }
+    return null;
+  }
 
   bool _rootedAtThis(Expression e) => switch (e) {
     ThisExpression() => true,
@@ -7845,8 +7872,12 @@ class KernelFrontend implements TypeWorld {
       }
     }
     for (final procedure in node.procedures) {
+      // A hollow mixin method: its body, from an application of the mixin.
+      final lowered = node.isMixinDeclaration && procedure.isAbstract
+          ? _appliedBody(node, procedure) ?? procedure
+          : procedure;
       try {
-        _lowerProcedure(cls, procedure);
+        _lowerProcedure(cls, lowered);
       } on Unsupported catch (error, stack) {
         refuse(procedure.name.text, error, stack);
         final stub = _stubFor(procedure, '$error');

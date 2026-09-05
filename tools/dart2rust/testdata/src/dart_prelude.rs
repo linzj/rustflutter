@@ -4079,6 +4079,68 @@ impl Utf8Decoder {
             .unwrap_or(code_units.len());
         Utf8Codec.decode(code_units[s..e].to_vec(), Some(true))
     }
+
+    /// `utf8.decoder.fuse(other)`: the two conversions in a row.
+    pub fn fuse<U: 'static>(&self, next: Converter<String, U>) -> Converter<Vec<i64>, U> {
+        Converter::new(std::rc::Rc::new(move |bytes: Vec<i64>| {
+            next.convert(Utf8Decoder.convert(bytes, 0, None))
+        }))
+    }
+}
+
+/// `dart:convert`'s `Converter<S, T>`, as a value: what a `fuse` makes, and
+/// what a codec's `encoder`/`decoder` are. It holds the conversion.
+pub struct Converter<S, T> {
+    convert: std::rc::Rc<dyn Fn(S) -> Result<T, DartError>>,
+}
+
+impl<S, T> Clone for Converter<S, T> {
+    fn clone(&self) -> Self {
+        Converter {
+            convert: self.convert.clone(),
+        }
+    }
+}
+
+impl<S, T> std::fmt::Debug for Converter<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Instance of 'Converter'")
+    }
+}
+
+impl<S, T> PartialEq for Converter<S, T> {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.convert, &other.convert)
+    }
+}
+
+impl<S, T> DartNullable for Converter<S, T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl<S: 'static, T: 'static> Converter<S, T> {
+    pub fn new(convert: std::rc::Rc<dyn Fn(S) -> Result<T, DartError>>) -> Self {
+        Converter { convert }
+    }
+
+    /// `convert(input)`.
+    pub fn convert(&self, input: S) -> Result<T, DartError> {
+        (self.convert)(input)
+    }
+
+    /// `fuse(other)`: this conversion, then the other's.
+    pub fn fuse<U: 'static>(&self, next: Converter<T, U>) -> Converter<S, U> {
+        let first = self.clone();
+        Converter::new(std::rc::Rc::new(move |input: S| {
+            next.convert(first.convert(input)?)
+        }))
+    }
 }
 
 /// `Platform.isWindows` and its siblings: what this binary was built for.
@@ -4182,6 +4244,24 @@ impl JsonCodec {
     pub fn decode(&self, _source: String) -> std::rc::Rc<dyn Object> {
         panic!("dart2rust: JsonCodec.decode is not written")
     }
+
+    /// `json.decoder`: a `Converter<String, Object?>`.
+    pub fn decoder(&self) -> Converter<String, Option<std::rc::Rc<dyn Object>>> {
+        Converter::new(std::rc::Rc::new(|source: String| {
+            Ok(Some(JsonCodec.decode(source)))
+        }))
+    }
+
+    /// `json.encoder`: a `Converter<Object?, String>`.
+    pub fn encoder(&self) -> Converter<Option<std::rc::Rc<dyn Object>>, String> {
+        Converter::new(std::rc::Rc::new(
+            |value: Option<std::rc::Rc<dyn Object>>| {
+                Ok(JsonCodec.encode(
+                    value.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>),
+                ))
+            },
+        ))
+    }
 }
 
 fn json_write(out: &mut String, value: &std::rc::Rc<dyn Object>) {
@@ -4211,17 +4291,17 @@ fn json_write(out: &mut String, value: &std::rc::Rc<dyn Object>) {
     } else if let Some(map) = any.downcast_ref::<Map<String, std::rc::Rc<dyn Object>>>() {
         out.push('{');
         let mut first = true;
-        for (k, v) in map.entries() {
+        for entry in map.entries() {
             if !first {
                 out.push(',');
             }
             first = false;
             json_write(
                 out,
-                &(std::rc::Rc::new(k.clone()) as std::rc::Rc<dyn Object>),
+                &(std::rc::Rc::new(entry.key.clone()) as std::rc::Rc<dyn Object>),
             );
             out.push(':');
-            json_write(out, &v);
+            json_write(out, &entry.value);
         }
         out.push('}');
     } else if let Some(list) = any.downcast_ref::<Vec<std::rc::Rc<dyn Object>>>() {
