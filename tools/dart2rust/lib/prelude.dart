@@ -1376,40 +1376,6 @@ pub type HashSet<T> = Set<T>;
 /// intrusive part, and this is where to look if something does.
 pub type Queue<T> = std::collections::VecDeque<T>;
 
-/// `Future.then(onValue, {onError})` on the `Pin<Box<dyn Future>>` a Dart
-/// `Future<T>` is here: the continuation runs when the future does. The
-/// error path has nothing to catch yet -- a Dart throw is not a Rust
-/// value on this side -- so `onError` is carried and never called.
-pub trait DartFuture<T> {
-    fn then<R: 'static>(
-        self,
-        on_value: std::rc::Rc<dyn Fn(T) -> Result<R, DartError>>,
-        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<R, DartError>>>,
-    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<R, DartError>>>>;
-}
-
-/// `future.then(onValue, onError: ..)`: a translated future completes with
-/// a `Result`; the error goes to `onError` when there is one, and on
-/// through the returned future when there is not.
-impl<T: 'static> DartFuture<T>
-    for std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>
-{
-    fn then<R: 'static>(
-        self,
-        on_value: std::rc::Rc<dyn Fn(T) -> Result<R, DartError>>,
-        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<R, DartError>>>,
-    ) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<R, DartError>>>> {
-        std::boxed::Box::pin(async move {
-            match self.await {
-                Ok(value) => on_value(value),
-                Err(error) => match on_error {
-                    Some(handler) => handler(error),
-                    None => Err(error),
-                },
-            }
-        })
-    }
-}
 
 /// Equality by identity for what is shared: what Dart's `Object.==` does,
 /// and what a derived `PartialEq` over an `Rc<dyn X>` field cannot say
@@ -2212,8 +2178,8 @@ pub struct StreamSubscription<T> {
 }
 
 impl<T> StreamSubscription<T> {
-    pub fn cancel(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ()>>> {
-        Box::pin(std::future::ready(()))
+    pub fn cancel(&self) -> DartFuture<()> {
+        DartFuture::ready(Ok(()))
     }
 
     pub fn pause(&self, _resume_signal: Option<std::rc::Rc<dyn Object>>) {}
@@ -2259,14 +2225,14 @@ impl<T: Clone + 'static> Stream<T> {
     }
 
     /// `toList()`.
-    pub fn to_list(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Vec<T>>>> {
-        Box::pin(std::future::ready(self.events.borrow().clone()))
+    pub fn to_list(&self) -> DartFuture<Vec<T>> {
+        DartFuture::ready(Ok(self.events.borrow().clone()))
     }
 
     /// `first`.
-    pub fn first(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>> {
+    pub fn first(&self) -> DartFuture<T> {
         let first = self.events.borrow().first().cloned().expect("Bad state: No element");
-        Box::pin(std::future::ready(first))
+        DartFuture::ready(Ok(first))
     }
 
     /// `isBroadcast`: a ready stream can be listened to any number of times.
@@ -2999,69 +2965,195 @@ pub fn dart_woken() -> bool {
     WOKEN.0.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Runs a future on the scheduler and hands back a future of its result:
-/// `Future(..)`, `Future.delayed(..)`, and the eager start Dart gives them.
-pub fn dart_spawn<T: DartNullable + 'static>(
+/// A Dart `Future<T>`: a shared handle on a result that arrives once, which
+/// any number of holders may clone, store, and await (each awaiter gets a
+/// clone of the result). A translated `async` function returns one, made
+/// by `spawn`: its body runs on the scheduler from the next pass, whether
+/// or not anything awaits it, as Dart's does.
+pub struct DartFuture<T> {
+    shared: std::rc::Rc<std::cell::RefCell<FutureState<T>>>,
+}
+
+struct FutureState<T> {
+    result: Option<Result<T, DartError>>,
+    wakers: Vec<std::task::Waker>,
+}
+
+impl<T> Clone for DartFuture<T> {
+    fn clone(&self) -> Self {
+        DartFuture { shared: self.shared.clone() }
+    }
+}
+
+impl<T> std::fmt::Debug for DartFuture<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Instance of 'Future'")
+    }
+}
+
+/// By identity, as Dart's `==` on a future is.
+impl<T> PartialEq for DartFuture<T> {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.shared, &other.shared)
+    }
+}
+
+impl<T> DartNullable for DartFuture<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl<T> DartFuture<T> {
+    /// A future nothing has resolved yet (a `Completer`'s).
+    pub fn pending() -> Self {
+        DartFuture {
+            shared: std::rc::Rc::new(std::cell::RefCell::new(FutureState { result: None, wakers: Vec::new() })),
+        }
+    }
+
+    /// `Future.value(v)` / `Future.error(e)`: already done.
+    pub fn ready(result: Result<T, DartError>) -> Self {
+        let future = DartFuture::pending();
+        future.resolve(result);
+        future
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.shared.borrow().result.is_some()
+    }
+
+    /// Resolves it, once, and wakes everything awaiting it.
+    pub fn resolve(&self, result: Result<T, DartError>) {
+        let wakers = {
+            let mut state = self.shared.borrow_mut();
+            if state.result.is_some() {
+                panic!("a Future resolved twice");
+            }
+            state.result = Some(result);
+            std::mem::take(&mut state.wakers)
+        };
+        for waker in wakers {
+            waker.wake();
+        }
+    }
+
+    /// Runs `future` on the scheduler and hands back the future of its
+    /// result: Dart's futures are eager, and a `Future(..)` nobody awaits
+    /// still runs.
+    pub fn spawn(
+        future: std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>,
+    ) -> Self
+    where
+        T: 'static,
+    {
+        let out = DartFuture::pending();
+        let done = out.clone();
+        let mut future = future;
+        (**SCHEDULER).borrow_mut().tasks.push(Box::pin(async move {
+            let result = future.as_mut().await;
+            done.resolve(result);
+        }));
+        out
+    }
+
+    /// `future.then(onValue, onError: ..)`: the error goes to `onError` when
+    /// there is one, and on through the returned future when there is not.
+    pub fn then<R: 'static>(
+        &self,
+        on_value: std::rc::Rc<dyn Fn(T) -> Result<R, DartError>>,
+        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<R, DartError>>>,
+    ) -> DartFuture<R>
+    where
+        T: Clone + 'static,
+    {
+        let me = self.clone();
+        DartFuture::spawn(Box::pin(async move {
+            match me.await {
+                Ok(value) => on_value(value),
+                Err(error) => match on_error {
+                    Some(handler) => handler(error),
+                    None => Err(error),
+                },
+            }
+        }))
+    }
+}
+
+impl<T: Clone> std::future::Future for DartFuture<T> {
+    type Output = Result<T, DartError>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let mut state = self.shared.borrow_mut();
+        match &state.result {
+            Some(result) => std::task::Poll::Ready(result.clone()),
+            None => {
+                state.wakers.push(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+/// `DartFuture::spawn`, as a function.
+pub fn dart_spawn<T: 'static>(
     future: std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>,
-) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
-    let completer: Completer<Result<T, DartError>> = Completer::new();
-    let done = completer.clone();
-    let mut future = future;
-    (**SCHEDULER).borrow_mut().tasks.push(Box::pin(async move {
-        let result = future.as_mut().await;
-        done.complete(Some(result));
-    }));
-    completer.future()
+) -> DartFuture<T> {
+    DartFuture::spawn(future)
 }
 
 /// A future that completes when the timer fires.
-pub fn timer_future(delay: Duration) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ()>>> {
-    let completer: Completer<()> = Completer::new();
-    let done = completer.clone();
+pub fn timer_future(delay: Duration) -> DartFuture<()> {
+    let future = DartFuture::pending();
+    let done = future.clone();
     Timer::new(
         delay,
         std::rc::Rc::new(move || {
-            done.complete(Some(()));
+            done.resolve(Ok(()));
             Ok(())
         }),
     );
-    completer.future()
+    future
 }
 
 /// `Future(computation)`: the computation runs on the scheduler's next pass.
-pub fn future_new<T: DartNullable + 'static>(
+pub fn future_new<T: Clone + 'static>(
     computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
-) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
-    dart_spawn(Box::pin(async move { computation()?.await }))
+) -> DartFuture<T> {
+    DartFuture::spawn(Box::pin(async move { computation()?.await }))
 }
 
 /// `Future.microtask(computation)`: the same, one pass is a microtask here.
-pub fn future_microtask<T: DartNullable + 'static>(
+pub fn future_microtask<T: Clone + 'static>(
     computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
-) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
+) -> DartFuture<T> {
     future_new(computation)
 }
 
 /// `Future.sync(computation)`: the computation runs now; its value or its
 /// future is the result.
-pub fn future_sync<T: DartNullable + 'static>(
+pub fn future_sync<T: Clone + 'static>(
     computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
-) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
+) -> DartFuture<T> {
     match computation() {
-        Ok(FutureOr::Value(value)) => Box::pin(std::future::ready(Ok(value.expect("FutureOr value")))),
+        Ok(FutureOr::Value(value)) => DartFuture::ready(Ok(value.expect("FutureOr value"))),
         Ok(FutureOr::Future(future)) => future,
-        Err(error) => Box::pin(std::future::ready(Err(error))),
+        Err(error) => DartFuture::ready(Err(error)),
     }
 }
 
 /// `Future.delayed(duration, [computation])`: after the timer, the
 /// computation's result, or `null` when there is none.
-pub fn future_delayed<T: DartNullable + 'static>(
+pub fn future_delayed<T: DartNullable + Clone + 'static>(
     duration: Duration,
     computation: Option<std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>>,
-) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
-    dart_spawn(Box::pin(async move {
-        timer_future(duration).await;
+) -> DartFuture<T> {
+    DartFuture::spawn(Box::pin(async move {
+        timer_future(duration).await?;
         match computation {
             Some(computation) => computation()?.await,
             None => Ok(T::dart_null().expect("Future.delayed without a computation on a non-nullable type")),
@@ -3070,43 +3162,39 @@ pub fn future_delayed<T: DartNullable + 'static>(
 }
 
 /// `Future.wait(futures)`: every result, in order.
-pub fn future_wait<T: DartNullable + 'static>(
-    futures: Vec<std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>>,
-) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<Vec<T>, DartError>>>> {
-    Box::pin(async move {
+pub fn future_wait<T: Clone + 'static>(futures: Vec<DartFuture<T>>) -> DartFuture<Vec<T>> {
+    DartFuture::spawn(Box::pin(async move {
         let mut out = Vec::new();
         for future in futures {
             out.push(future.await?);
         }
         Ok(out)
-    })
+    }))
 }
 
 /// Dart's `FutureOr<T>`: a `T`, or a `Future<T>`; awaitable either way.
 pub enum FutureOr<T> {
     Value(Option<T>),
-    Future(std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>),
+    Future(DartFuture<T>),
 }
 
 impl<T> FutureOr<T> {
     pub fn value(value: T) -> Self {
         FutureOr::Value(Some(value))
     }
-    pub fn future(
-        future: std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>,
-    ) -> Self {
+    pub fn future(future: DartFuture<T>) -> Self {
         FutureOr::Future(future)
     }
 }
 
 impl<T> Unpin for FutureOr<T> {}
 
-impl<T> std::future::Future for FutureOr<T> {
+impl<T: Clone> std::future::Future for FutureOr<T> {
     type Output = Result<T, DartError>;
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
         match self.get_mut() {
             FutureOr::Value(value) => std::task::Poll::Ready(Ok(value.take().expect("FutureOr polled twice"))),
-            FutureOr::Future(future) => future.as_mut().poll(cx),
+            FutureOr::Future(future) => std::pin::Pin::new(future).poll(cx),
         }
     }
 }
@@ -3352,7 +3440,7 @@ impl Timer {
 ///
 /// `Rc`, not `Arc`: everything here belongs to one isolate. See `Isolate`.
 pub struct Completer<T> {
-    shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
+    future: DartFuture<T>,
 }
 
 /// A completer prints as its kind and compares by identity: a struct holding
@@ -3365,20 +3453,14 @@ impl<T> std::fmt::Debug for Completer<T> {
 
 impl<T> PartialEq for Completer<T> {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self, other)
+        self.future == other.future
     }
 }
 
-struct CompleterState<T> {
-    value: Option<T>,
-    waker: Option<std::task::Waker>,
-    completed: bool,
-}
-
-/// A `Completer` is a handle on its shared state: cloning shares.
+/// A `Completer` is a handle on its future: cloning shares.
 impl<T> Clone for Completer<T> {
     fn clone(&self) -> Self {
-        Completer { shared: self.shared.clone() }
+        Completer { future: self.future.clone() }
     }
 }
 
@@ -3390,81 +3472,44 @@ impl<T: DartNullable> Default for Completer<T> {
 
 impl<T: DartNullable> Completer<T> {
     pub fn new() -> Self {
-        Completer {
-            shared: std::rc::Rc::new(std::cell::RefCell::new(CompleterState {
-                value: None,
-                waker: None,
-                completed: false,
-            })),
-        }
+        Completer { future: DartFuture::pending() }
     }
 
-    /// `completeError(e)`: nothing awaits here to receive it, so it is the
-    /// error the future would have carried, kept nowhere.
-    /// `completeError(error, [stackTrace])`: anything, as Dart's `Object`
-    /// parameter takes anything; nothing here delivers it yet.
-    pub fn complete_error<E: 'static>(&self, _error: E, _stack: Option<StackTrace>) {}
+    /// `completeError(error, [stackTrace])`: the future fails with it.
+    pub fn complete_error(&self, error: std::rc::Rc<dyn Object>, _stack: Option<StackTrace>) {
+        if self.future.is_done() {
+            panic!("Completer completed twice");
+        }
+        self.future.resolve(Err(error));
+    }
 
     /// Dart's `Completer.sync`, which completes its future synchronously
-    /// rather than through a microtask. There are no microtasks here, so the
-    /// two are the same thing and this is not a stub -- it is the same
-    /// behaviour arrived at from the other side.
+    /// rather than through a microtask; the same thing here.
     pub fn sync() -> Self {
         Completer::new()
     }
 
-    /// `complete([value])`: the parameter is nullable upstream, so it is an
-    /// `Option` here; a `Completer<void>` is completed with `Some(())` by
-    /// the front end. A `None` for a non-void `T` would be Dart's null into
-    /// a non-nullable type, which Dart itself refuses.
-    /// The slot is Dart's `T?` as translated code spells it, `<T as
-    /// DartNullable>::Or`: for a `Completer<ByteData?>` that is one
-    /// `Option`, not two, and its `null` completes the future with `None`.
+    /// `complete([value])`. The slot is Dart's `T?` as translated code
+    /// spells it, `<T as DartNullable>::Or`: for a `Completer<ByteData?>`
+    /// that is one `Option`, not two, and its `null` completes the future
+    /// with `None`; a `Completer<void>` is completed with `Some(())`.
     pub fn complete(&self, value: <T as DartNullable>::Or) {
-        let mut state = self.shared.borrow_mut();
-        if state.completed {
+        if self.future.is_done() {
             panic!("Completer completed twice");
         }
-        state.completed = true;
-        state.value = T::option(value).or_else(T::dart_null);
-        if let Some(waker) = state.waker.take() {
-            waker.wake();
-        }
+        let value = T::option(value)
+            .or_else(T::dart_null)
+            .expect("Completer completed with null for a non-nullable type");
+        self.future.resolve(Ok(value));
     }
 
     pub fn is_completed(&self) -> bool {
-        self.shared.borrow().completed
+        self.future.is_done()
     }
 
-    /// `future`: boxed, as every `Future<T>` is here, so it goes where one
-    /// is expected (4 `Pin<Box<dyn Future>> <= CompleterFuture<T>`).
-    pub fn future(&self) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = T>>>
-    where
-        T: 'static,
-    {
-        std::boxed::Box::pin(CompleterFuture { shared: self.shared.clone() })
-    }
-}
-
-pub struct CompleterFuture<T> {
-    shared: std::rc::Rc<std::cell::RefCell<CompleterState<T>>>,
-}
-
-impl<T> std::future::Future for CompleterFuture<T> {
-    type Output = T;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<T> {
-        let mut state = self.shared.borrow_mut();
-        match state.value.take() {
-            Some(value) => std::task::Poll::Ready(value),
-            None => {
-                state.waker = Some(cx.waker().clone());
-                std::task::Poll::Pending
-            }
-        }
+    /// `future`: the same shared future every time.
+    pub fn future(&self) -> DartFuture<T> {
+        self.future.clone()
     }
 }
 

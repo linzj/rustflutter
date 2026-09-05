@@ -477,11 +477,12 @@ class RustBackend {
     // name it. A future's own type has no name, so an owned position is
     // `Pin<Box<dyn Future>>` and a borrowed one is `impl Future` -- exactly
     // the split a function type already takes here.
+    // ..a `DartFuture<T>` (the prelude's shared, clonable, eager future),
+    // owned or borrowed alike, since the runtime ruler's second panic
+    // (run430): a `Future<bool>` read out of a field was cloned, and a
+    // `Pin<Box<dyn Future>>` cannot be.
     if (t.name == 'Future' && t.arguments.length == 1) {
-      final output = _wrapped(type(t.arguments.single));
-      final future = owned
-          ? 'std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = $output>>>'
-          : 'impl std::future::Future<Output = $output>';
+      final future = 'DartFuture<${type(t.arguments.single)}>';
       return t.nullable ? 'Option<$future>' : future;
     }
     // The doubled `Option` from `_substituteType`.
@@ -846,8 +847,7 @@ class RustBackend {
   /// An `async fn` called and not awaited: its future is the value, boxed
   /// as every `Future<T>` is here (`return _handleCommitBackGesture()`,
   /// ws428). Not `?`ed: an `async fn` fails inside its future.
-  String _asyncValue(String call, bool boxed) =>
-      boxed ? 'std::boxed::Box::pin($call)' : call;
+  String _asyncValue(String call, bool boxed) => call;
 
   /// A translated class's constructor returns `Result` like any function;
   /// the prelude's do not.
@@ -980,7 +980,7 @@ class RustBackend {
     _inFlowClosure = false;
     if (node.holdsSelf) _selfName = _countedSelf;
     _indent = 0;
-    _body(node.body, node.returns);
+    _body(node.body, node.isAsync ? _awaited(node.returns) : node.returns);
     _failure = savedFailure;
     _inFlowClosure = savedFlow;
     _selfName = savedSelf;
@@ -997,8 +997,20 @@ class RustBackend {
     // The value type is left to inference: naming it pulled types into
     // modules that never imported them (248 "cannot find type"), and a
     // closure signature may say `_`. The error type is what `?` needs.
-    final closure =
-        '${node.isAsync ? 'async ' : ''}${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<_, $_error>' : ''} { $body }';
+    // An `async` closure is a plain closure returning the spawned future
+    // of its body, as an `async` function is (`_emitAsyncWrapper`): the
+    // captures it owns are cloned again inside, since the body moves them
+    // into a `'static` future and a `Fn` closure keeps its own.
+    final again = [
+      if (node.holdsSelf) 'let $_countedSelf = $_countedSelf.clone();',
+      ...node.captures.map(
+        (c) => 'let ${snake(c.name)} = ${snake(c.name)}.clone();',
+      ),
+      ...node.locals.map((l) => 'let ${snake(l)} = ${snake(l)}.clone();'),
+    ].join(' ');
+    final closure = node.isAsync
+        ? '${owns ? 'move ' : ''}|$params| -> DartFuture<_> { $again DartFuture::spawn(std::boxed::Box::pin(async move { $body })) }'
+        : '${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<_, $_error>' : ''} { $body }';
     _cellLocals = savedCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
     return node.boxed ? 'std::rc::Rc::new($whole)' : whole;
@@ -1511,7 +1523,7 @@ class RustBackend {
     // first refusal after `main`: `Future<bool>(() async {..})`).
     if (owner == 'Future') {
       if (name == 'value' && args.length == 1) {
-        return 'Box::pin(std::future::ready(${expr(args.single)}))';
+        return 'DartFuture::ready(Ok(${expr(args.single)}))';
       }
       if ((name == '' || name == 'new') && args.length == 1) {
         return 'future_new(${expr(args.single)})';
@@ -1526,7 +1538,7 @@ class RustBackend {
         return 'future_delayed(${expr(args[0])}, ${args.length == 2 ? expr(args[1]) : 'None'})';
       }
       if (name == 'error' && args.isNotEmpty) {
-        return 'Box::pin(std::future::ready(Err(${expr(args[0])})))';
+        return 'DartFuture::ready(Err(${expr(args[0])}))';
       }
       if (name == 'wait' && args.isNotEmpty) {
         return 'future_wait(${expr(args[0])})';
@@ -1795,7 +1807,7 @@ class RustBackend {
     final isAsync = baseClass.methods.any(
       (m) => m.name == name && !m.isStatic && m.isAsync,
     );
-    return isAsync ? 'std::boxed::Box::pin($call)' : call;
+    return call;
   }
 
   /// Whether `base`'s free function for [name] can actually be emitted.
@@ -4063,7 +4075,7 @@ class RustBackend {
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
-          ' -> ${_wrapped(_spelledReturn(type(method.returnType)))}${_sizedBound(method)};',
+          ' -> ${_wrapped(method.isAsync ? _futureOf(method) : _spelledReturn(type(method.returnType)))}${_sizedBound(method)};',
         );
         _line('');
       });
@@ -4075,7 +4087,7 @@ class RustBackend {
         _doc(method.doc);
         _line(
           'fn ${_methodName(method)}${_generics(method)}(${_params(method)})'
-          ' -> ${_wrapped(_spelledReturn(type(method.returnType)))}${_traitWhere(method)} {',
+          ' -> ${_wrapped(method.isAsync ? _futureOf(method) : _spelledReturn(type(method.returnType)))}${_traitWhere(method)} {',
         );
         _indent++;
         // The default delegates to the free function rather than holding the
@@ -4090,13 +4102,7 @@ class RustBackend {
               '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})';
           // An async super function is a future, not a `Result`: the
           // trait default returns it in `Ok`.
-          _line(
-            method.isAsync
-                ? (_resultModel
-                      ? 'Ok(std::boxed::Box::pin($call))'
-                      : 'std::boxed::Box::pin($call)')
-                : call,
-          );
+          _line(method.isAsync && _resultModel ? 'Ok($call)' : call);
         }
         _indent--;
         _line('}');
@@ -4606,9 +4612,32 @@ class RustBackend {
     _reassigned = _assignedIn(method.body);
     _cellLocals = {};
     final params = method.params.map((p) => _param(p, owned: false)).join(', ');
+    final async = method.isAsync && stubbed == null;
+    if (method.isAsync) {
+      if (stubbed != null) {
+        _line(
+          '${_vis(method.name)}fn ${snake(method.name)}${_generics(method)}($params) -> ${_futureOf(method)} {',
+        );
+        _indent++;
+        _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
+        _indent--;
+        _line('}');
+        _line('');
+        return;
+      }
+      _emitAsyncWrapper(
+        method,
+        '${_vis(method.name)}fn ${snake(method.name)}${_generics(method)}($params) -> ${_futureOf(method)}',
+        '${snake(method.name)}__body',
+        turbofish: method.typeParameters.isEmpty
+            ? ''
+            : '::<${method.typeParameters.join(', ')}>',
+      );
+      _line('');
+    }
     _line(
-      '${_vis(method.name)}${method.isAsync ? 'async ' : ''}fn '
-      '${snake(method.name)}${_generics(method)}'
+      '${_vis(method.name)}${async ? 'async ' : ''}fn '
+      '${async ? '${snake(method.name)}__body' : snake(method.name)}${_generics(method)}'
       '($params) -> ${_returnType(method)} {',
     );
     _indent++;
@@ -4695,10 +4724,7 @@ class RustBackend {
   }
 
   static String _sizedBound(IrMethod method) =>
-      method.typeParameters.isEmpty &&
-          !method.params.any((p) => p.type.name == 'Future')
-      ? ''
-      : ' where Self: Sized';
+      method.typeParameters.isEmpty ? '' : ' where Self: Sized';
 
   /// A method whose type parameter has the same name as one of the class's.
   ///
@@ -4737,31 +4763,35 @@ class RustBackend {
               '${snake(p.name)}: ${type(p.type, owned: false)}',
         ),
       ].join(', ');
+      final generics =
+          '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
+          '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone${_nb(cls)} + 'static").join(', ')}'}'
+          '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone${_nbm(method)} + 'static").join(', ')}'}'
+          '>';
+      final name = superFn(cls.name, method.name, isSetter: method.isSetter);
+      if (method.isAsync) {
+        // The wrapper holds the object through the trait's own handle
+        // (`dart_self_<trait>()`, an `Rc<dyn Trait>`), and the body runs
+        // on that: `__Self` there is the trait object.
+        _emitAsyncWrapper(
+          method,
+          '${_vis(cls.name)}fn $name$generics($params) -> ${_futureOf(method)}',
+          '${name}__body',
+          receiver: (
+            'let __self = this_.dart_self_${snake(cls.name)}();',
+            '&*__self',
+          ),
+          turbofish:
+              '::<_${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.join(', ')}'}${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.join(', ')}'}>',
+        );
+        _line('');
+      }
       _line(
         '${_vis(cls.name)}${method.isAsync ? 'async ' : ''}fn '
-        '${superFn(cls.name, method.name, isSetter: method.isSetter)}'
-        // The class's parameters come too: a body of `ParametricCurve<T>`
-        // returns a `T`, and the free function holding it has to say where
-        // that `T` comes from.
-        // `__Self`, not `S`: a Dart method's own type parameter is often
-        // named `S`, and round 78 started carrying those onto this function --
-        // where it collided with the receiver's. A generated name cannot.
-        // `Debug` too: a mixin's `toString` hands `this` to `MapBase.
-        // mapToString`, which prints it, and every implementer prints.
-        '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
-        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone${_nb(cls)} + 'static").join(', ')}'}'
-        // And the *method's* own, for a generic method like
-        // `invokeLayoutCallback<T extends Constraints>`. A free function can
-        // carry them; the trait method it belongs to cannot, and says so.
-        // Bounded as the trait method's are: `AnnotationResult<S>` asks
-        // `Clone + DartNullable<Or: Clone> + 'static` of its `S`, and the free function said nothing
-        // (E0277 in the signature of `ContainerLayer.findAnnotations<S>`).
-        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone${_nbm(method)} + 'static").join(', ')}'}'
-        '>($params) -> '
-        // An `async fn` returns the awaited type: `Future<Response>` on an
-        // `async` super function was a future of a boxed future (E0308).
-        // A boxed future returned by a non-async one borrows `this_`
-        // (`get(url) => _sendUnstreamed(..)` in `BaseClient`): `+ '_`.
+        '${method.isAsync ? '${name}__body' : name}'
+        '$generics($params) -> '
+        // An `async fn` returns the awaited type. A boxed future returned by
+        // a non-async one borrows `this_`: `+ '_`.
         '${_lifetimed(_returnType(method))} {',
       );
       _indent++;
@@ -5818,6 +5848,39 @@ class RustBackend {
   /// spelling `Infallible` is for value positions), and a boxed future's
   /// receiver lifetime.
   /// `Result<T, E>` around a rendered return type.
+  /// The `DartFuture<T>` an `async` function returns: `T` the awaited
+  /// type, `()` for a `void` one.
+  String _futureOf(IrMethod method) =>
+      'DartFuture<${type(_awaited(method.returnType))}>';
+
+  /// An `async` function is emitted twice: its body as a private `async
+  /// fn` (`name__body`, the lazy borrowing future Rust makes), and under
+  /// its own name a plain function that clones the receiver's handle,
+  /// moves the arguments, and spawns the body on the scheduler --
+  /// Dart's future: eager, shared, `'static`, a value (`DartFuture`).
+  /// `receiver` is the handle binding (`let __self = ..;`) and the
+  /// argument that reaches the body, or null for a function with none.
+  void _emitAsyncWrapper(
+    IrMethod method,
+    String signature,
+    String bodyName, {
+    (String, String)? receiver,
+    String turbofish = '',
+  }) {
+    _line('$signature {');
+    _indent++;
+    if (receiver != null) _line(receiver.$1);
+    final args = [
+      if (receiver != null) receiver.$2,
+      ...method.params.map((p) => snake(p.name)),
+    ].join(', ');
+    _line(
+      'DartFuture::spawn(std::boxed::Box::pin(async move { $bodyName$turbofish($args).await }))',
+    );
+    _indent--;
+    _line('}');
+  }
+
   static String _wrapped(String rendered) => !_resultModel
       ? rendered
       // `Result<!, E>`: the never type is unstable as a type argument, and
@@ -6980,7 +7043,7 @@ class RustBackend {
         '${via == null ? cls.name : _implementedAs(via)}::$name$fish(${[receiver, ...args].join(', ')})';
     // An `async fn` yields its own future type; the trait wants the boxed
     // one every `Future<T>` is here (`_NativeCodec::get_next_frame(self)`).
-    return method.isAsync ? 'std::boxed::Box::pin($call)' : call;
+    return call;
   }
 
   void _emitConstructors() {
@@ -7388,9 +7451,51 @@ class RustBackend {
           else if (library[p.type.name]?.counted ?? false)
             p.name: '&*${snake(p.name)}',
       };
+      final name = as ?? _rustName(method);
+      // An `async` method that translated is the body under `name__body`
+      // and the spawning wrapper under `name` (`_emitAsyncWrapper`); one
+      // that did not is the wrapper alone, panicking.
+      final async = method.isAsync && stubbed == null;
+      if (method.isAsync) {
+        final mutable =
+            !method.isStatic && _receiverOf(method).startsWith('&mut');
+        final receiver = method.isStatic
+            ? null
+            : (
+                'let ${mutable ? 'mut ' : ''}__self = ${_selfHandle()};',
+                _selfIsHandle
+                    ? '&__self'
+                    : cls.counted
+                    ? '&*__self'
+                    : mutable
+                    ? '&mut __self'
+                    : '&__self',
+              );
+        if (stubbed != null) {
+          _line(
+            '${_vis(method.name)}fn $name${_generics(method)}($params) -> ${_futureOf(method)} {',
+          );
+          _indent++;
+          _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
+          _indent--;
+          _line('}');
+          _line('');
+          return;
+        }
+        _emitAsyncWrapper(
+          method,
+          '${_vis(method.name)}fn $name${_generics(method)}($params) -> ${_futureOf(method)}',
+          'Self::${name}__body',
+          receiver: receiver,
+          turbofish: method.typeParameters.isEmpty
+              ? ''
+              : '::<${method.typeParameters.join(', ')}>',
+        );
+        _line('');
+      }
       _line(
-        '${_vis(method.name)}${method.isAsync ? "async " : ""}fn '
-        '${as ?? _rustName(method)}${_generics(method)}($params) -> $returns {',
+        '${_vis(method.name)}${async ? "async " : ""}fn '
+        '${async ? '${name}__body' : name}${_generics(method)}($params) -> $returns {',
       );
       _indent++;
       _returns = method.returnType;
