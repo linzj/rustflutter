@@ -6433,6 +6433,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws406 | 950 叶子错 | 手写 Clone 的泛型 struct 也手写 `Copy`（同一 bound 加 `Copy`）。 |
 | ws406 结果 | 950 叶子错 | **构建通了：2651→2713 / 795，138+1 个 crate**（修 62，新 97）。投影的净代价 +62，新错误五类：(1) 54 个 `cannot find type T`——基类构造器拍平进子类时 `IrNullableOf` 里的 `T` 没代入（根源是 `this.begin` 参数的 FieldInitializer 也被当成 `Option<T>` 值转了一次）；(2) `this.value` 经第三条访问器路径（`_qualified` 的第一个调用点）没转；(3) `super(begin: parent.end)` 的实参没有构造器的绑定信息；(4) `Or` 上直接 `.is_none()`；(5) `==` 在 `Option<T>` 上要 PartialEq（待查）。 |
 | ws407 | 950 叶子错 | 构造器的投影参数读作投影类型（构造器没有函数体前奏），值已是投影时不再转；第三条访问器路径也按绑定转；`Foo<T>(..)` 按调用类型实参、`super(..)` 按本类 supertype 给被调用构造器的形参绑定；后端拍平基类构造器时 `IrNullableOf` 的 `T` 按 `superclassArguments` 沿链代入（代成本类形参则改名，代成具体类型则转换是恒等、去掉）。 |
+| ws407 结果 | 950 叶子错 | **2713→2639 / 795，138+1 个 crate**，比投影前的 ws399（2651）低 12：投影机制转为净收益。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
 ## 下一步(2026-09-05 重铺)
