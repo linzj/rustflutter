@@ -4165,6 +4165,82 @@ impl fmt::Display for SocketException {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HttpClient;
 
+/// `dart:convert`'s `json`, a `const JsonCodec()`. `encode` writes the
+/// JSON of what a translated `dynamic` holds -- a string, a number, a bool,
+/// `null`, a `Map<String, dynamic>`, a `List<dynamic>` -- and refuses,
+/// loudly, anything else; `decode` is not written yet.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JsonCodec;
+
+impl JsonCodec {
+    pub fn encode(&self, value: std::rc::Rc<dyn Object>) -> String {
+        let mut out = String::new();
+        json_write(&mut out, &value);
+        out
+    }
+
+    pub fn decode(&self, _source: String) -> std::rc::Rc<dyn Object> {
+        panic!("dart2rust: JsonCodec.decode is not written")
+    }
+}
+
+fn json_write(out: &mut String, value: &std::rc::Rc<dyn Object>) {
+    let any = value.as_any();
+    if let Some(s) = any.downcast_ref::<String>() {
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+    } else if let Some(i) = any.downcast_ref::<i64>() {
+        out.push_str(&i.to_string());
+    } else if let Some(d) = any.downcast_ref::<f64>() {
+        out.push_str(&d.to_string());
+    } else if let Some(b) = any.downcast_ref::<bool>() {
+        out.push_str(if *b { "true" } else { "false" });
+    } else if any.downcast_ref::<Null>().is_some() {
+        out.push_str("null");
+    } else if let Some(map) = any.downcast_ref::<Map<String, std::rc::Rc<dyn Object>>>() {
+        out.push('{');
+        let mut first = true;
+        for (k, v) in map.entries() {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            json_write(
+                out,
+                &(std::rc::Rc::new(k.clone()) as std::rc::Rc<dyn Object>),
+            );
+            out.push(':');
+            json_write(out, &v);
+        }
+        out.push('}');
+    } else if let Some(list) = any.downcast_ref::<Vec<std::rc::Rc<dyn Object>>>() {
+        out.push('[');
+        for (i, v) in list.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            json_write(out, v);
+        }
+        out.push(']');
+    } else {
+        panic!(
+            "dart2rust: JsonCodec.encode of a {}",
+            value.runtime_type().name
+        );
+    }
+}
+
 /// `dart:convert`'s `utf8`, a `const Utf8Codec()`: a name for now.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Utf8Codec;

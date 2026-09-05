@@ -2695,7 +2695,8 @@ class RustBackend {
     // `Endian.little`/`Endian.big`: the prelude's enum, from the constant's
     // one field. Every `Paint` getter reads a `ByteData` with one (14).
     if (t.name == 'Zone' && fields.isEmpty) return 'Zone';
-    if (t.name == 'Utf8Codec') return 'Utf8Codec';
+    // The prelude's unit codecs: `const Utf8Codec()`, `const JsonCodec()`.
+    if (t.name == 'Utf8Codec' || t.name == 'JsonCodec') return t.name;
     if (t.name == 'Endian') {
       final little = fields['_littleEndian'];
       return little != null && expr(little) == 'true'
