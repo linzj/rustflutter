@@ -19,6 +19,7 @@ import 'package:kernel/class_hierarchy.dart';
 import 'package:kernel/type_algebra.dart';
 import 'package:kernel/type_environment.dart';
 
+import 'coerce.dart';
 import 'throws.dart';
 import 'ir.dart';
 
@@ -43,7 +44,7 @@ const _binaryOperators = {
   '>>>',
 };
 
-class KernelFrontend {
+class KernelFrontend implements TypeWorld {
   KernelFrontend(
     this.library, {
     this.enumValues = const {},
@@ -4405,169 +4406,34 @@ class KernelFrontend {
     return a == b || hierarchy.isSubInterfaceOf(a, b);
   }
 
-  static String _normalName(String name) => switch (name) {
-    'Iterable' => 'List',
-    'dynamic' => 'Object',
-    'num' => 'double',
-    _ => name,
-  };
+  // The rule itself lives in `coerce.dart`; this class is its `TypeWorld`.
+  @override
+  bool isTrait(String name) => _isTraitName(name);
 
-  /// Whether two IR types spell the same Rust type.
-  bool _sameRust(IrType a, IrType b) {
-    if (a.nullable != b.nullable) return false;
-    if (a.isFunction || b.isFunction) {
-      if (!(a.isFunction && b.isFunction)) return false;
-      final ap = a.parameters!, bp = b.parameters!;
-      if (ap.length != bp.length) return false;
-      for (var i = 0; i < ap.length; i++) {
-        if (!_sameRust(ap[i], bp[i])) return false;
-      }
-      return _sameRust(a.returns!, b.returns!);
-    }
-    if (_normalName(a.name) != _normalName(b.name)) return false;
-    if (a.arguments.length != b.arguments.length) {
-      // `List` alone is `List<dynamic>` to the backend.
-      return a.arguments.isEmpty || b.arguments.isEmpty;
-    }
-    for (var i = 0; i < a.arguments.length; i++) {
-      if (!_sameRust(a.arguments[i], b.arguments[i])) return false;
-    }
-    return true;
+  @override
+  bool isCounted(String name) => _isCountedName(name);
+
+  @override
+  bool isStruct(String name) => _isStructName(name);
+
+  @override
+  bool isBelow(String sub, String sup) => _isBelow(sub, sup);
+
+  @override
+  bool isGenericValueStruct(String name) {
+    final c = _classNamed(name);
+    return c != null && !_closureCallsMethod(c) && c.typeParameters.isNotEmpty;
   }
 
-  static IrType _nonNull(IrType t) => t.isFunction
-      ? IrType.function(t.parameters!, t.returns!)
-      : IrType(t.name, arguments: t.arguments);
+  bool _sameRust(IrType a, IrType b) => sameRust(a, b);
 
-  /// `value`, adapted to `slot`; `value` itself when nothing is known
-  /// (an untyped value) or nothing needs doing.
-  IrExpr coerce(IrExpr value, IrType slot, {bool inClosure = false}) {
-    final have = value.rustType;
-    if (have == null || _sameRust(have, slot)) return value;
-    // The `Option` layer first: on, off, or mapped through.
-    if (slot.nullable && !have.nullable) {
-      final inner = coerce(value, _nonNull(slot), inClosure: inClosure);
-      if (identical(inner, value) && !_sameRust(have, _nonNull(slot))) {
-        return value;
-      }
-      return IrSome(inner)..rustType = slot;
-    }
-    if (!slot.nullable && have.nullable) {
-      if (slot.name == 'dynamic') {
-        // `dynamic` admits null: absent is the `Null` object.
-        final element = IrCall(IrBound(), 'clone', const [])
-          ..rustType = _nonNull(have);
-        final shared = coerce(element, slot, inClosure: true);
-        final mapped = identical(shared, element)
-            ? value
-            : (IrNullAware(value, shared)
-                ..rustType = IrType('dynamic', nullable: true));
-        return IrCall(mapped, '!or_null', const [])..rustType = slot;
-      }
-      final inner = IrNullCheck(value)..rustType = _nonNull(have);
-      return coerce(inner, slot, inClosure: inClosure);
-    }
-    if (slot.nullable && have.nullable) {
-      final element = IrCall(IrBound(), 'clone', const [])
-        ..rustType = _nonNull(have);
-      final inner = coerce(element, _nonNull(slot), inClosure: true);
-      if (identical(inner, element)) return value;
-      return IrNullAware(value, inner)..rustType = slot;
-    }
-    // Both present. Scalars: `int` into a `double` slot is cast; a `num`
-    // slot is `dart:core`'s polymorphic one (`num.+` takes `num`, and `i +
-    // 1` stays an `i64`), and a translated callee's `num` is `_numLiteral`'s
-    // to make an `f64` (999 `cannot add f64 to i64` at ws357).
-    if (slot.name == 'num') return value;
-    if (have.name == 'int' && slot.name == 'double') {
-      return IrCast(value, 'f64')..rustType = slot;
-    }
-    if (_scalarNames.contains(have.name) &&
-        slot.name != 'Object' &&
-        slot.name != 'dynamic') {
-      return value;
-    }
-    if (_scalarNames.contains(slot.name) &&
-        have.name != 'Object' &&
-        have.name != 'dynamic') {
-      return value;
-    }
-    // Function types: the adapters below know them.
-    if (have.isFunction || slot.isFunction) return value;
-    // Collections, element by element.
-    if (_collectionNames.contains(have.name) &&
-        _collectionNames.contains(slot.name) &&
-        _normalName(have.name) == _normalName(slot.name) &&
-        have.arguments.length == 1 &&
-        slot.arguments.length == 1) {
-      final element = IrLocal('v')..rustType = have.arguments.single;
-      final body = coerce(element, slot.arguments.single, inClosure: true);
-      if (identical(body, element)) return value;
-      return IrMapElements(value, _normalName(slot.name), body)
-        ..rustType = slot;
-    }
-    if (have.name == 'Map' || slot.name == 'Map') return value;
-    final haveTrait = _isTraitName(have.name);
-    final slotTrait = _isTraitName(slot.name);
-    // Into `Object`: a handle unsizes, a value goes behind a fresh,
-    // registered one. `dynamic` admits null, which is the `Null` object.
-    if (slot.name == 'Object' || slot.name == 'dynamic') {
-      if (have.name == 'Object' || have.name == 'dynamic') return value;
-      if (have.name == 'Null') return value;
-      return IrUpcast(
-        value,
-        IrType('Object'),
-        handle: haveTrait || _isCountedName(have.name),
-        explicit: inClosure,
-      )..rustType = slot;
-    }
-    // Out of `Object`: a scalar by `Any`, cloned out of the reference.
-    if ((have.name == 'Object' || have.name == 'dynamic') &&
-        _scalarNames.contains(slot.name)) {
-      return IrCall(
-        IrDowncast(value, _rustScalar(slot.name)),
-        'clone',
-        const [],
-      )..rustType = slot;
-    }
-    if (haveTrait && slotTrait) {
-      // The same trait with other arguments (`Tween<f64>` into a
-      // `Tween<Object>`) has no cast (55 non-primitive casts at ws357).
-      if (have.name == slot.name) return value;
-      if (_isBelow(have.name, slot.name)) {
-        return IrUpcast(value, slot, handle: true, explicit: inClosure)
-          ..rustType = slot;
-      }
-      return IrCastTo(value, slot)..rustType = slot;
-    }
-    if (slotTrait && _isStructName(have.name)) {
-      return IrUpcast(
-        value,
-        slot,
-        handle: _isCountedName(have.name),
-        explicit: inClosure,
-      )..rustType = slot;
-    }
-    if (haveTrait && _isStructName(slot.name)) {
-      // Down to a struct through `Any`, with the slot's kept type arguments
-      // (`ModalBottomSheet<T>` from a `StatefulWidget`, 61 bare `widget`
-      // reads at ws378). A generic value struct is not cloned out of the
-      // reference; a counted one and a plain one are (`_narrowingCast`).
-      final target = _classNamed(slot.name);
-      if (target == null) return value;
-      final cast = IrDowncast(
-        value,
-        _rustScalar(slot.name),
-        arguments: slot.arguments,
-      );
-      final out =
-          !_closureCallsMethod(target) && target.typeParameters.isNotEmpty
-          ? cast
-          : IrCall(cast, 'clone', const []);
-      return out..rustType = slot;
-    }
-    return value;
-  }
+  static IrType _nonNull(IrType t) => nonNull(t);
+
+  static String _normalName(String name) => normalName(name);
+
+  /// `value`, adapted to `slot`: see `coerceInto`.
+  IrExpr coerce(IrExpr value, IrType slot, {bool inClosure = false}) =>
+      coerceInto(value, slot, this, inClosure: inClosure);
 
   IrExpr _widened(Expression value, DartType? param, IrExpr lowered) {
     // The callee flag (`_slotTranslated`) is about this slot; whatever is
