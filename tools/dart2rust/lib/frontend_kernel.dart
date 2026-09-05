@@ -1098,19 +1098,33 @@ class KernelFrontend {
       // Only a class that is a trait here: `List` and `TypedData` are
       // abstract to Kernel and prelude types or nothing here (18 "expected
       // trait, found struct" at ws340).
-      if (to is InterfaceType &&
+      // ..and `child.parentData! as ParentDataType` with the parameter
+      // erased: the cast is to its bound, `ContainerParentDataMixin`
+      // (13 `Rc<dyn ParentData>` where that was wanted, ws353).
+      final toClass = to is InterfaceType
+          ? to
+          : to is TypeParameterType &&
+                _erasedParameter(to.parameter) &&
+                to.parameter.bound is InterfaceType
+          ? (to.parameter.bound as InterfaceType).withDeclaredNullability(
+              to.nullability == Nullability.nullable
+                  ? Nullability.nullable
+                  : Nullability.nonNullable,
+            )
+          : null;
+      if (toClass != null &&
           from is InterfaceType &&
-          _abstractLike(to.classNode) &&
-          _translatedClass(to.classNode) &&
-          !_scalarClass(to.classNode) &&
-          to.classNode.name != 'Object' &&
-          from.classNode != to.classNode &&
+          _abstractLike(toClass.classNode) &&
+          _translatedClass(toClass.classNode) &&
+          !_scalarClass(toClass.classNode) &&
+          toClass.classNode.name != 'Object' &&
+          from.classNode != toClass.classNode &&
           !(typeEnvironment?.hierarchy.isSubInterfaceOf(
                 from.classNode,
-                to.classNode,
+                toClass.classNode,
               ) ??
               true)) {
-        return IrCastTo(expression(node.operand), _type(to));
+        return IrCastTo(expression(node.operand), _type(toClass));
       }
       return expression(node.operand);
     }
@@ -2720,6 +2734,33 @@ class KernelFrontend {
       // Its own name: the backend's `.get(&k).cloned()` was keyed on `get`
       // and fired on `ContrastCurve.get(double)` too (14 `&f64`).
       if (name == '[]' && args.length == 1) {
+        // A map of an erased parameter's values read as the clone's
+        // narrower class: `_slotToChild[slot]` is a `Map<S, Rc<dyn
+        // RenderObject>>` here (the mixin's, the bound) and the read a
+        // `RenderBox?` to Dart -- narrowed at the read, the `Option` kept
+        // (37 `childForSlot`s at ws353).
+        IrExpr narrowed(IrExpr read) {
+          final receiver = node.receiver;
+          if (receiver is! InstanceGet) return read;
+          final declared = receiver.interfaceTarget.getterType;
+          if (declared is! InterfaceType || declared.typeArguments.length != 2)
+            return read;
+          final held = declared.typeArguments[1];
+          if (held is! TypeParameterType || !_erasedParameter(held.parameter))
+            return read;
+          final bound = held.parameter.bound;
+          final result = _staticType(node);
+          if (bound is! InterfaceType ||
+              result is! InterfaceType ||
+              result.classNode == bound.classNode ||
+              !_abstractLike(result.classNode) ||
+              !_translatedClass(result.classNode) ||
+              _scalarClass(result.classNode)) {
+            return read;
+          }
+          return IrCastTo(read, _type(result));
+        }
+
         // `_cache[tone]` on a `Map<int, _>` with a `num` key: the key is an
         // `f64` here and the map's is `i64`, the same cast `contains` makes.
         final mapType = _staticType(node.receiver);
@@ -2732,9 +2773,11 @@ class KernelFrontend {
             argType is InterfaceType &&
             (argType.classNode.name == 'double' ||
                 argType.classNode.name == 'num')) {
-          return IrCall(expression(node.receiver), '!map_get', [
-            IrCast(args.single, 'i64'),
-          ]);
+          return narrowed(
+            IrCall(expression(node.receiver), '!map_get', [
+              IrCast(args.single, 'i64'),
+            ]),
+          );
         }
         // A nullable key into a map of non-nullable ones: `_views[_implicitViewId]`.
         if (key != null &&
@@ -2742,9 +2785,11 @@ class KernelFrontend {
             argType != null &&
             argType is! DynamicType &&
             argType.nullability == Nullability.nullable) {
-          return IrCall(expression(node.receiver), '!map_get_opt', args);
+          return narrowed(
+            IrCall(expression(node.receiver), '!map_get_opt', args),
+          );
         }
-        return IrCall(expression(node.receiver), '!map_get', args);
+        return narrowed(IrCall(expression(node.receiver), '!map_get', args));
       }
       // `m[k] = v`: `insert`, as a statement or for its value (Dart's is
       // `v`; here the old value, which no caller reads).
@@ -4141,6 +4186,47 @@ class KernelFrontend {
     // Neither coercion for a `dart:` class other than dart:ui's: those are
     // the prelude's types, and `List`/`_GrowableList` is one `Vec`, not a
     // trait object and its struct (13 `Rc<Vec<f64>>`).
+    // A cast the AOT compiler dropped: `final ContainerParentDataMixin<
+    // ChildType> childParentData = child.parentData! as ..` reaches here
+    // with no `as` and a `ParentData` in hand -- TFA removed the check it
+    // proved. A trait handle into a slot of a trait *below* it is that
+    // downcast, the `Option` kept when both are nullable (13 at ws353).
+    // ..and an erased read into a slot of the clone's narrower class:
+    // `_slotToChild[slot]` (a `ChildType?`, the bound here) returned as the
+    // `RenderBox?` `childForSlot` declares (37 at ws353).
+    {
+      final slot = param;
+      InterfaceType? held;
+      if (given is InterfaceType) {
+        held = given;
+      } else if (given is TypeParameterType &&
+          _erasedParameter(given.parameter)) {
+        final bound = given.parameter.bound;
+        if (bound is InterfaceType) {
+          held = bound.withDeclaredNullability(given.nullability);
+        }
+      }
+      if (slot is InterfaceType &&
+          held != null &&
+          slot.classNode != held.classNode &&
+          _abstractLike(slot.classNode) &&
+          _abstractLike(held.classNode) &&
+          _translatedClass(slot.classNode) &&
+          _translatedClass(held.classNode) &&
+          !_scalarClass(slot.classNode) &&
+          !_scalarClass(held.classNode) &&
+          slot.classNode.name != 'Object' &&
+          held.classNode.name != 'Object' &&
+          (slot.nullability == Nullability.nullable ||
+              held.nullability != Nullability.nullable) &&
+          !(typeEnvironment?.hierarchy.isSubInterfaceOf(
+                held.classNode,
+                slot.classNode,
+              ) ??
+              true)) {
+        return IrCastTo(lowered, _type(slot));
+      }
+    }
     bool translated(InterfaceType t) {
       final uri = t.classNode.enclosingLibrary.importUri;
       return uri.scheme != 'dart' || uri.toString() == 'dart:ui';

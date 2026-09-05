@@ -6367,6 +6367,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws351 | 950 叶子错 | 空 `Set()`/`Map()` 按槽位元素类型起名（`_typedEmpty`，四处暂存赋值都走）：**3284→3284**，一个桩没变——`_tickers ??= <_WidgetTicker>{}` 不是空构造而是带类型的级联（`Set::<Rc<_WidgetTicker>>::new()`），槽位是 `Set<Ticker>?`，差的是**元素**的 trait；回退。 |
 | ws352 | 950 叶子错 | 集合元素向上转：`Set<X>`/`List<X>` 进 `Set<T>`/`List<T>` 槽（T 是 X 的 trait 祖先）——`!upcast_elements`，`Set::of(v.into_iter().map(|v| v as Rc<dyn T>).collect())`。**3284→3243 / 804，138+1 个 crate**（`create_ticker` 30 个编过；新增 12 个 non-primitive cast——元素是值 struct 不是句柄，下一轮 `Rc::new`）。 |
 | ws353 | 950 叶子错 | `!upcast_elements` 的元素是值 struct（`Vec<_OverlayEntryWidget>` 进 `List<Widget>`）时先 `dart_object(v)` 再转（第三个类型实参带元素的类，后端查 `counted`）。**3243→3235 / 804，138+1 个 crate**（non-primitive cast −11）。 |
+| ws354 | 950 叶子错 | 两处擦除的窄读：`child.parentData! as ParentDataType`（参数被擦除）转到它的界 `ContainerParentDataMixin`；`_slotToChild[slot]`——map 是 mixin 的（值是擦除的 `RenderObject`），读出来按克隆声明的 `RenderBox?` 收窄（`narrowed` 包住 `!map_get` 三条返回）。`_widened` 里也加了 TFA 删掉的向下转（trait 句柄进更低 trait 的槽）和擦除类型参数读进克隆窄类的收窄——这两条此轮没有独立命中数。**3235→3214 / 804，138+1 个 crate**（`child_for_slot`/`_set_child`/`_move_child` 各 4 个编过）。 |
 
 ## 下一步(2026-09-05 重铺)
 
