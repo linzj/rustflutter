@@ -2209,6 +2209,11 @@ class KernelFrontend implements TypeWorld {
     _ => '${e.runtimeType}',
   };
 
+  /// Statics whose value's field is written somewhere in the package
+  /// (`Owner.name`, or `.name` for a top-level): the driver marks them
+  /// mutable so they live in a cell.
+  static final staticFieldWrites = <String>{};
+
   bool _rootedAtThis(Expression e) => switch (e) {
     ThisExpression() => true,
     InstanceGet(:final receiver) => _rootedAtThis(receiver),
@@ -2631,6 +2636,30 @@ class KernelFrontend implements TypeWorld {
           target: expression(receiver),
           owner: declaring.name,
         );
+      }
+      // A *static* holding a value: `GoogleFonts.config.allowRuntimeFetching
+      // = false` writes a field of the value in the static's cell, which
+      // makes that static mutable state (the driver flips its cell on:
+      // `staticFieldWrites`). The first refusal on the gallery's startup
+      // path, in `main` itself (2026-09-05).
+      if (receiver is StaticGet &&
+          receiver.target is Field &&
+          !_closureCallsMethod(declaring) &&
+          !_abstractLike(declaring)) {
+        final place = expression(receiver);
+        if (place is IrStatic || place is IrTopLevel) {
+          staticFieldWrites.add(
+            place is IrStatic
+                ? '${place.owner}.${place.name}'
+                : '.${(place as IrTopLevel).name}',
+          );
+          return IrAssignField(
+            value.name.text,
+            written,
+            target: place,
+            owner: receiverClassHere?.name ?? declaring.name,
+          );
+        }
       }
       if (!_rootedAtThis(value.receiver)) {
         throw Unsupported(

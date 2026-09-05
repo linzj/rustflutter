@@ -177,6 +177,17 @@ def write_workspace(src, out, mods, crate_of, graph):
                 shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
     os.makedirs(out, exist_ok=True)
     members = sorted(set(crate_of.values())) + ['dart_prelude']
+    # The program's entry, when a module has one: a binary crate that runs
+    # the translated `main` under the prelude's scheduler. This is the
+    # runtime ruler: how far the gallery's startup gets before a stub or a
+    # refusal panics (2026-09-05).
+    entry = None
+    for m in sorted(crate_of):
+        if 'pub async fn main()' in read(os.path.join(src, m + '.rs')):
+            entry = m
+            break
+    if entry is not None:
+        members = members + ['dart_main']
     io.open(os.path.join(out, 'Cargo.toml'), 'w', encoding='utf-8').write(
         '[workspace]\nresolver = "2"\nmembers = [\n%s]\n\n[profile.dev]\ndebug = false\n'
         % ''.join('    "%s",\n' % m for m in members))
@@ -216,6 +227,19 @@ def write_workspace(src, out, mods, crate_of, graph):
 
             text = path_re.sub(rewrite, text)
             io.open(os.path.join(d, m + '.rs'), 'w', encoding='utf-8').write(text)
+    if entry is not None:
+        d = os.path.join(out, 'dart_main', 'src')
+        os.makedirs(d, exist_ok=True)
+        owner = crate_of[entry]
+        io.open(os.path.join(out, 'dart_main', 'Cargo.toml'), 'w', encoding='utf-8').write(
+            '[package]\nname = "dart_main"\nversion = "0.0.0"\nedition = "2021"\n\n'
+            '[[bin]]\nname = "dart_main"\npath = "src/main.rs"\n\n'
+            '[dependencies]\ndart_prelude = { path = "../dart_prelude" }\n%s = { path = "../%s" }\n'
+            % (owner, owner))
+        io.open(os.path.join(d, 'main.rs'), 'w', encoding='utf-8').write(
+            '#![allow(warnings)]\n'
+            '// The translated program\'s entry, run under the prelude\'s scheduler.\n'
+            'fn main() {\n    dart_prelude::run_main(%s::%s::main());\n}\n' % (owner, entry))
 
 
 def main():

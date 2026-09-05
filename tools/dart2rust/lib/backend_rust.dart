@@ -3528,9 +3528,19 @@ class RustBackend {
         final written = own != null || (shared?.isLate ?? false)
             ? 'Some(${expr(value)})'
             : expr(value);
+        // A field of the value in a static's cell (`staticFieldWrites`).
+        if (target is IrStatic) {
+          _line(
+            '(**${_lazyName(target.owner, target.name)}).borrow_mut().${snake(name)} = $written;',
+          );
+        } else if (target is IrTopLevel) {
+          _line(
+            '(**${screamingSnake(target.name)}).borrow_mut().${snake(name)} = $written;',
+          );
+        }
         // Inside a trait's body there is no field, only the setter it
         // declares (`this_.set__length(v)` in a mixin's super function).
-        if (_fieldsAreAccessors && (target == null || target is IrThis)) {
+        else if (_fieldsAreAccessors && (target == null || target is IrThis)) {
           // Through the setter, which takes the plain value and does its
           // own `Some` for a `late` field (106 `f64` <- `Option<f64>`
           // on `_globalDistanceMoved`, ws384).

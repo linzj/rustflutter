@@ -3276,6 +3276,49 @@ pub fn run_until_idle() {
 }
 
 /// When the next timer comes due, for a host that wants to sleep until then.
+/// Runs a translated `main` to completion: polls its future, runs the
+/// microtasks and due timers between polls, and sleeps until the next
+/// timer when nothing else can make progress. Returns when the future is
+/// done and the scheduler is idle. A `main` that waits on something no
+/// timer or microtask will ever complete -- the engine's frame callback,
+/// with no engine here -- is reported and abandoned: that is the ruler's
+/// reading, not an error.
+pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F) {
+    let mut main = std::pin::pin!(main);
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    let mut done = false;
+    loop {
+        if !done {
+            match main.as_mut().poll(&mut cx) {
+                std::task::Poll::Ready(Ok(())) => done = true,
+                std::task::Poll::Ready(Err(error)) => {
+                    eprintln!("dart2rust: main threw: {}", dart_message(&error));
+                    return;
+                }
+                std::task::Poll::Pending => {}
+            }
+        }
+        run_until_idle();
+        match next_due() {
+            Some(due) => {
+                let now = std::time::Instant::now();
+                if due > now {
+                    std::thread::sleep(due - now);
+                }
+            }
+            None => {
+                if !done {
+                    eprintln!(
+                        "dart2rust: main is waiting on something no timer or microtask will complete"
+                    );
+                }
+                return;
+            }
+        }
+    }
+}
+
 pub fn next_due() -> Option<std::time::Instant> {
     (**SCHEDULER)
         .borrow()

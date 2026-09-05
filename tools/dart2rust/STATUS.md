@@ -6478,6 +6478,19 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws428 | 950 叶子错 | 两条通用（两族都是老账，ws423–425 稳定在 118/125 个错）：(1) `await` 的操作数——只有到达时是 `async fn` 的调用（顶层/静态函数、具体 struct 自己声明的 async 方法、无 qualifier）值才是 future 本身，`?` 放在 `.await` 后；其余失败调用（trait 方法、自己构造 `Future<T>` 返回的普通函数如 `_futurize`）future 在 `Result` 里，先 `?` 再 `.await?`。前端在 `IrCall/IrStaticCall.asyncFn` 上标（kernel `asyncMarker` + 接收者静态类 == 声明类 且非 abstract/open），后端 `_awaitOperand` 只对它压 `?`（118 个 "is not a future"；输出里 `)?.await?` 22→78）。(2) 无初始值的块值变量（CFE 把 pattern switch 表达式铺成 `L: { if (..) { #t = ..; break L; } .. }`）：Dart 的确定赋值保证读到它的路径都赋过值，所以从末尾无 else 的 `if` 掉出块是死路，块尾补 `unreachable!`（125 个 E0381；90 处）。再加第三条：方法调用的接收者不是 coercion 位置，它下面的隐式 upcast（穿过 `Some`）拼出来——构造函数缺省常量 `Some(dart_object(EdgeInsets{..})).clone()` 进 `Option<Rc<dyn EdgeInsetsGeometry>>`（26 个：EdgeInsets 8、ShapeBorder 9、AlignmentGeometry 9）。驱动输出对 ws427 差 132 文件，拒绝 693。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
+## 运行尺子（2026-09-05 起）
+
+编译尺子（`stubs.py` 的 `total stubbed`）量的是全树能否编译，目标是 gallery 跑起来，两者不等价：stub 是 panic 不是编译失败，工作区一直能编译。从 ws429 起换尺子：
+
+- `workspace.py` 在有 `pub async fn main()` 的模块存在时多生成一个二进制 crate `dart_main`（`fn main() { dart_prelude::run_main(gallery_above::main::main()) }`）；prelude 加 `run_main`：轮询 future、跑 microtask 和到期 timer、睡到下一个 timer，没有任何东西能推进时报告并退出（没有引擎，等帧回调就是这个结果）。
+- `bin/run_main.sh <log>`：在链跑完留下的**已打桩**工作区上 `cargo build -p dart_main`，运行，记录第一个 panic（stub 或 refusal 的原因）。同样受内存守卫，不和链并行。
+- 每轮：修掉启动路径上第一个 panic（通用机制）→ 链（回归尺子，`total stubbed` 不许涨，`reachable crates` 从 139 变 **140**，多的是 `dart_main`）→ 构建运行 → 下一个 panic。
+- 第一项已知：`main` 本身被拒（`GoogleFonts.config.allowRuntimeFetching = false`），见 ws429。
+
+| 轮 | 启动路径上第一个 panic | 处理 |
+|---|---|---|
+| ws429 | `main`：refusal「assignment to a field of another object (static, value)」 | 通用：写 static 里值的字段 = 那个 static 是可变状态，前端记 `staticFieldWrites`，驱动把它的 `IrConstDecl` 翻成 cell（`LazyLock<Isolate<RefCell<Config>>>`），后端 `(**X).borrow_mut().field = v`。拒绝 693→692，驱动输出对 ws428 差 6 文件。 |
+
 ## 下一步(2026-09-05 重铺)
 
 本节和〈当前队头〉原来停在 2026-09-03 目标改写时(`crate.py` 的 416 个错误、

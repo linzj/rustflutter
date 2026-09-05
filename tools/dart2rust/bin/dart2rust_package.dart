@@ -304,6 +304,44 @@ Future<void> main(List<String> args) async {
       reachable[library]!,
     );
   }
+  // A static whose value's field is written anywhere is mutable state and
+  // lives in a cell, wherever it is declared (`staticFieldWrites`).
+  IrConstDecl inCell(IrConstDecl c) => IrConstDecl(
+    c.name,
+    c.type,
+    c.value,
+    doc: c.doc,
+    isLazy: c.isLazy,
+    isMutable: true,
+  );
+  for (final key in KernelFrontend.staticFieldWrites) {
+    final dot = key.indexOf('.');
+    final owner = key.substring(0, dot);
+    final name = key.substring(dot + 1);
+    for (final result in lowered.values) {
+      final ir = result.$1;
+      if (owner.isEmpty) {
+        for (var i = 0; i < ir.constants.length; i++) {
+          if (ir.constants[i].name == name && !ir.constants[i].isMutable) {
+            ir.constants[i] = inCell(ir.constants[i]);
+          }
+        }
+        continue;
+      }
+      for (final cls in ir.classes) {
+        if (cls.name != owner) continue;
+        for (var i = 0; i < cls.constants.length; i++) {
+          if (cls.constants[i].name == name && !cls.constants[i].isMutable) {
+            cls.constants[i] = inCell(cls.constants[i]);
+          }
+        }
+      }
+    }
+    if (owner.isEmpty) {
+      final c = everyConstant[name];
+      if (c != null && !c.isMutable) everyConstant[name] = inCell(c);
+    }
+  }
   KernelFrontend.dumpUntyped();
 
   for (final library in inPackage) {
