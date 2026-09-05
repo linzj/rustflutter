@@ -283,6 +283,13 @@ pub trait DartAny: Object + 'static {
 /// handle, a reference or a value alike.
 pub trait DartCastExt {
     fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>>;
+    /// `x is T` and `x as T` where `T` is a *type parameter*: what the
+    /// caller passed for it is a whole type -- `Rc<ScaffoldState>`, `Rc<dyn
+    /// State>`, an `i64` -- so the object is asked for that type by id
+    /// (its `dart_cast` answers for its handles as well as for the traits),
+    /// and a value type is asked of `Any`. Without this, `findAncestorState
+    /// OfType` and `Provider.of` were refused ("`is` against `T`").
+    fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T>;
 }
 
 impl<S: DartAny + ?Sized> DartCastExt for S {
@@ -290,6 +297,12 @@ impl<S: DartAny + ?Sized> DartCastExt for S {
         self.dart_cast(std::any::TypeId::of::<T>())
             .and_then(|b| b.downcast::<std::rc::Rc<T>>().ok())
             .map(|b| *b)
+    }
+    fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T> {
+        self.dart_cast(std::any::TypeId::of::<T>())
+            .and_then(|b| b.downcast::<T>().ok())
+            .map(|b| *b)
+            .or_else(|| self.as_any().downcast_ref::<T>().cloned())
     }
 }
 
@@ -299,11 +312,17 @@ impl<S: DartCastExt + ?Sized> DartCastExt for std::rc::Rc<S> {
     fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
         (**self).dart_cast_to::<T>()
     }
+    fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T> {
+        (**self).dart_cast_any::<T>()
+    }
 }
 
 impl<S: DartCastExt> DartCastExt for Option<S> {
     fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
         self.as_ref().and_then(|v| v.dart_cast_to::<T>())
+    }
+    fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T> {
+        self.as_ref().and_then(|v| v.dart_cast_any::<T>())
     }
 }
 
@@ -341,6 +360,15 @@ impl DartCastExt for dyn Object {
         f.and_then(|f| f(any, std::any::TypeId::of::<T>()))
             .and_then(|b| b.downcast::<std::rc::Rc<T>>().ok())
             .map(|b| *b)
+    }
+    fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T> {
+        let any = self.as_any();
+        let id = std::any::Any::type_id(any);
+        let f = DART_CASTS.with(|c| c.borrow().get(&id).copied());
+        f.and_then(|f| f(any, std::any::TypeId::of::<T>()))
+            .and_then(|b| b.downcast::<T>().ok())
+            .map(|b| *b)
+            .or_else(|| any.downcast_ref::<T>().cloned())
     }
 }
 

@@ -662,6 +662,11 @@ class RustBackend {
         value is IrBound
             ? '(*${expr(value)} as $rust)'
             : '(${expr(value)} as $rust)',
+      // `state as T?` with `T` a type parameter: by id, and the `Option`
+      // stays one (see `dart_cast_any`).
+      IrCastTo(:final target, :final type) when _isTypeParam(type.name) =>
+        '${expr(target)}.dart_cast_any::<${type.name}>()'
+            '${type.nullable ? "" : ".unwrap()"}',
       IrCastTo(:final target, :final type) =>
         '${expr(target)}.dart_cast_to::<${_dynOf(type)}>().unwrap()',
       IrSuperDispatch(
@@ -1807,6 +1812,13 @@ class RustBackend {
 
   String _isTest(IrExpr operand, IrType target, bool negated) {
     final name = target.name;
+    // A type parameter: whatever the caller passed for it, asked by id
+    // (`dart_cast_any`). `ancestor.state is T` in `findAncestorStateOfType`,
+    // refused as "`is` against `T`" since the first round.
+    if (_isTypeParam(name)) {
+      return '${expr(operand)}.dart_cast_any::<$name>()'
+          '.${negated ? "is_none" : "is_some"}()';
+    }
     // A trait: asked of the object itself (`dart_cast`), which knows what
     // it implements. Refused since the first round (`_isTest`).
     if (library.isAbstract(name)) {
@@ -1864,6 +1876,13 @@ class RustBackend {
   /// Whether the method being emitted is `async`, for the constructs that
   /// must not wrap an `.await` in a closure.
   var _asyncBody = false;
+
+  /// The type parameters of the method being emitted: a name among them
+  /// is a Rust type parameter, not a class (`_isTest`, `IrCastTo`).
+  var _methodTypeParams = const <String>[];
+
+  bool _isTypeParam(String name) =>
+      _methodTypeParams.contains(name) || cls.typeParameters.contains(name);
 
   /// Wraps a returned expression when the declared return is a trait object.
   ///
@@ -4227,6 +4246,7 @@ class RustBackend {
     _rustReturns = _returnType(method);
     _failure = _failureOf(method);
     _asyncBody = method.isAsync;
+    _methodTypeParams = method.typeParameters;
     if (stubbed != null) {
       _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
     } else {
@@ -4373,6 +4393,7 @@ class RustBackend {
       // A super function fails like the method whose body it holds.
       _failure = _failureOf(method);
       _asyncBody = method.isAsync;
+      _methodTypeParams = method.typeParameters;
       _reassigned = _assignedIn(method.body);
       _cellLocals = {};
       // `this_` is a `&__Self: Trait`, and a trait has no fields: the base's
@@ -5581,16 +5602,18 @@ class RustBackend {
         : cls.typeParameters.isEmpty && _cloneable(cls)
         ? 'std::rc::Rc::new(self.clone())'
         : null;
+    // ..and for the handle type itself (`dart_cast_any`): a type parameter
+    // is instantiated with `Rc<ScaffoldState>`, not `ScaffoldState`.
     if (own != null) {
       _line(
-        'if __t == std::any::TypeId::of::<Self>() { return Some(Box::new($own)); }',
+        'if __t == std::any::TypeId::of::<Self>() || __t == std::any::TypeId::of::<std::rc::Rc<Self>>() { return Some(Box::new($own)); }',
       );
     }
     for (final above in _abstractAncestors(cls)) {
       final arguments = _baseArguments(above);
       if (arguments == null) continue;
       _line(
-        'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() { return Some(Box::new(self.dart_self_${snake(above.name)}())); }',
+        'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(Box::new(self.dart_self_${snake(above.name)}())); }',
       );
     }
     _line('None');
@@ -6725,6 +6748,7 @@ class RustBackend {
       _indent++;
       _returns = method.returnType;
       _asyncBody = method.isAsync;
+      _methodTypeParams = method.typeParameters;
       // A failing `void` method that falls off its end still has to
       // produce its `Ok(())`: `_validateColorStops` ends in an `if`/`else`
       // that only ever returns `Err`, and the value of that `if` is `()`.
@@ -6803,6 +6827,7 @@ class RustBackend {
         _indent++;
         _returns = method.returnType;
         _asyncBody = method.isAsync;
+        _methodTypeParams = method.typeParameters;
         _reassigned = _assignedIn(method.body);
         _cellLocals = {};
         stmt(method.body, tail: true);
@@ -6849,6 +6874,7 @@ class RustBackend {
       _indent++;
       _returns = method.returnType;
       _asyncBody = method.isAsync;
+      _methodTypeParams = method.typeParameters;
       _reassigned = _assignedIn(method.body);
       _cellLocals = {};
       // An operator's signature is `std::ops`'s and cannot say `Result`:

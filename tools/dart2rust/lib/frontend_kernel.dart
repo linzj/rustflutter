@@ -666,11 +666,11 @@ class KernelFrontend {
       // point of having two of them.
       final inner = node.operand;
       if (inner is IsExpression) {
-        return IrIs(
-          expression(inner.operand),
-          _type(inner.type),
-          negated: true,
-        );
+        final test = _isExpression(inner);
+        if (test is IrIs) {
+          return IrIs(test.expr, test.type, negated: true);
+        }
+        return IrUnary('!', test);
       }
       return IrUnary('!', expression(node.operand));
     }
@@ -713,9 +713,7 @@ class KernelFrontend {
       );
     }
     if (node is TypeLiteral) return _typeLiteral(node.type);
-    if (node is IsExpression) {
-      return IrIs(expression(node.operand), _type(node.type));
-    }
+    if (node is IsExpression) return _isExpression(node);
     if (node is ConstructorInvocation) return _construct(node);
     if (node is StaticInvocation) return _staticInvocation(node);
     if (node is SuperMethodInvocation) {
@@ -988,6 +986,19 @@ class KernelFrontend {
           'clone',
           const [],
         );
+      }
+      // `state as T?` from a class, `T` a type parameter: by id in the
+      // backend (`dart_cast_any`). From the parameter's own nullable self
+      // (`value as T` on a `T?`) only null is in question.
+      if (to is TypeParameterType && !_erasedParameter(to.parameter)) {
+        if (from is TypeParameterType && from.parameter == to.parameter) {
+          return to.nullability == Nullability.nullable
+              ? expression(node.operand)
+              : IrNullCheck(expression(node.operand));
+        }
+        if (from is InterfaceType) {
+          return IrCastTo(expression(node.operand), _type(to));
+        }
       }
       // `Object` and `dynamic` are trait objects here too (`Rc<dyn Object>`).
       // `num` and `double` are abstract in dart:core too, but they are
@@ -4816,6 +4827,26 @@ class KernelFrontend {
       return IrCastTo(lowered, _type(result));
     }
     return _narrowingCast(lowered, result);
+  }
+
+  /// `x is T`. Against a type parameter that is the operand's own type
+  /// (`value is! T` on a `T?` in `Provider.of`) it asks only about null,
+  /// which is all Rust's `T` can differ in; `null is T` is false for the
+  /// non-nullable arguments the gallery passes (`of<EmailStore>`, and
+  /// nothing `of<X?>`). Any other type parameter is asked by id in the
+  /// backend (`dart_cast_any`).
+  IrExpr _isExpression(IsExpression node) {
+    final asked = node.type;
+    if (asked is TypeParameterType && !_erasedParameter(asked.parameter)) {
+      final on = _staticType(node.operand);
+      if (on is TypeParameterType && on.parameter == asked.parameter) {
+        return IrUnary('!', IrIsNull(expression(node.operand)));
+      }
+      if (node.operand is NullLiteral) {
+        return const IrLiteral('false', IrType('bool'));
+      }
+    }
+    return IrIs(expression(node.operand), _type(asked));
   }
 
   /// The downcast of `lowered` to the concrete class `to` names. A counted
