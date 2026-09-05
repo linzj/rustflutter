@@ -4073,10 +4073,25 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
                         "dart2rust: main is waiting on something no timer or microtask will complete"
                     );
                 }
+                report_natives_skipped();
                 return;
             }
         }
     }
+}
+
+/// What a run without a native host left undone, for the ruler to read:
+/// the void natives skipped, by symbol, each once.
+fn report_natives_skipped() {
+    let skipped = natives_skipped();
+    if skipped.is_empty() {
+        return;
+    }
+    eprintln!(
+        "dart2rust: no native host; {} void native(s) skipped: {}",
+        skipped.len(),
+        skipped.join(", ")
+    );
 }
 
 pub fn next_due() -> Option<std::time::Instant> {

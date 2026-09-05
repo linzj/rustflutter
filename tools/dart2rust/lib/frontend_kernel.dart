@@ -5701,8 +5701,14 @@ class KernelFrontend implements TypeWorld {
     if (_scalarNames.contains(name) || _collectionNames.contains(name)) {
       return false;
     }
-    if (abstractElsewhere.contains(name)) return true;
+    // This library's own class first: `dart:ui`'s `Gradient` is a struct
+    // while `package:flutter`'s is abstract, and the name alone said
+    // trait (`Gradient as Rc<dyn Object>` on a value, ws456).
     final c = _classNamed(name);
+    if (c != null && identical(c.enclosingLibrary, library)) {
+      return _translatedClass(c) && _abstractLike(c);
+    }
+    if (abstractElsewhere.contains(name)) return true;
     return c != null && _translatedClass(c) && _abstractLike(c);
   }
 
