@@ -1370,7 +1370,10 @@ class KernelFrontend implements TypeWorld {
       // (Dart's `TypeError`) for one with no null. Spelled through the
       // prelude, which asks `T` itself (`_queue[i] ?? (null as E)` in
       // `HeapPriorityQueue`, run436).
-      if (node.operand is NullLiteral) {
+      // ..whether written as the literal or as the CFE's `let Null #t =
+      // null in #t as E`: the operand's static type is `Null`.
+      if (node.operand is NullLiteral ||
+          _staticType(node.operand) is NullType) {
         return IrStaticCall(
           null,
           'dart_null_as',
