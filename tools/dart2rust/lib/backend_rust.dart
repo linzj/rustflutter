@@ -7682,7 +7682,7 @@ class RustBackend {
   }
 
   void _emitConstructor(IrConstructor ctor) {
-    _here = '${cls.name}.${ctor.name.isEmpty ? 'new' : ctor.name}';
+    _here = '${cls.name}.${ctor.name?.isEmpty ?? true ? 'new' : ctor.name}';
     // Dart's named constructors are Rust's associated functions already --
     // `EdgeInsets.all(8)` and `EdgeInsets::all(8.0)` are the same call, and the
     // unnamed one is `new` by Rust's convention. Nothing has to be encoded, so

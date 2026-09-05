@@ -4466,7 +4466,7 @@ impl<T> Clone for Completer<T> {
     }
 }
 
-impl<T: DartNullable> Default for Completer<T> {
+impl<T: DartNullable + 'static> Default for Completer<T> {
     fn default() -> Self {
         Completer::new()
     }
