@@ -6409,64 +6409,26 @@ class RustBackend {
             : through.params.where((q) => !q.named).elementAt(at);
         // A trait parameter doubled to `Option<Option<..>>` arrives one
         // `Option` deeper than the inherent method takes it.
-        final doubled =
-            _substituteType(from.type, _implBinding).name == 'Option';
-        final passed = '${snake(from.name)}${doubled ? '.flatten()' : ''}';
-        // Dart lets an override *widen* a parameter: `Equality<E>.equals(E,
-        // E)` is implemented by `equals(Object? e1, Object? e2)`. The trait's
-        // `E` arrives here and the inherent method wants the wider type, so
-        // it is shared into `Rc<dyn Object>` (and `Some`d) on the way in.
         final traitType = _substituteType(from.type, _implBinding);
-        final wider = p.type.name == 'Object' || p.type.name == 'dynamic';
-        final narrowerGiven =
-            traitType.name != 'Object' && traitType.name != 'dynamic';
-        if (wider && narrowerGiven) {
-          final shared = traitType.nullable || traitType.name == 'Option'
-              ? '$passed.map(|v| std::rc::Rc::new(v) as std::rc::Rc<dyn Object>)'
-              : '(std::rc::Rc::new($passed) as std::rc::Rc<dyn Object>)';
-          return p.type.nullable &&
-                  !(traitType.nullable || traitType.name == 'Option')
-              ? 'Some($shared)'
-              : shared;
-        }
-        if (p.type.nullable &&
-            !traitType.nullable &&
-            traitType.name != 'Option') {
-          return 'Some($passed)';
-        }
-        // ..and *narrow* one (`covariant RenderClipRect renderObject` under
-        // the trait's `RenderObject`): the trait's handle is downcast to
-        // the class the override names, keeping its identity.
-        // A trait narrower than the base's: the body's `child` is a
-        // `RenderBox`, the base's a `RenderObject` (the erased bound).
-        if (p.type.name != traitType.name &&
-            library.isAbstract(p.type.name) &&
-            library.isAbstract(traitType.name) &&
-            p.type.name != 'Object' &&
-            traitType.name != 'Object' &&
-            (p.type.nullable || !traitType.nullable)) {
-          final target = _dynOf(
-            IrType(p.type.name, arguments: p.type.arguments),
-          );
-          return '$passed.dart_cast_to::<$target>()'
-              '${p.type.nullable ? '' : '.unwrap()'}';
-        }
-        final narrower = library[p.type.name];
-        if (narrower != null &&
-            !narrower.isAbstract &&
-            !p.type.nullable &&
-            !traitType.nullable &&
-            traitType.name != p.type.name &&
-            library.isAbstract(traitType.name)) {
-          final target = p.type.arguments.isEmpty
-              ? p.type.name
-              : '${p.type.name}<${p.type.arguments.map(type).join(', ')}>';
-          final down = '$passed.as_any().downcast_ref::<$target>().unwrap()';
-          return narrower.counted
-              ? '$down.dart_self_ref().get()'
-              : '$down.clone()';
-        }
-        return passed;
+        final doubled = traitType.name == 'Option';
+        final flattened = doubled && traitType.arguments.length == 1
+            ? IrType(
+                traitType.arguments.single.name,
+                nullable: true,
+                arguments: traitType.arguments.single.arguments,
+              )
+            : traitType;
+        // The argument as the trait typed it, into the inherent method's
+        // parameter, by the one rule (`coerceInto`): a widened override
+        // (`equals(Object? e1, ..)` under `Equality<E>.equals(E, ..)`) is
+        // shared into `Object`, a covariant one (`RenderClipRect` under
+        // `RenderObject`) downcast, an erased bound narrowed to the body's
+        // trait, an `Option` put on.
+        final IrExpr passed = doubled
+            ? (IrLiteral('${snake(from.name)}.flatten()', const IrType('raw'))
+                ..rustType = flattened)
+            : (IrLocal(from.name)..rustType = flattened);
+        return expr(coerceInto(passed, p.type, _world));
       }
       // The override's own default is the value the base "has no value for".
       final fallback = p.defaultValue;
