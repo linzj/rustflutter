@@ -4328,7 +4328,13 @@ class RustBackend {
   String _lazyRead(IrFieldDecl f, String receiver) {
     final name = snake(f.name);
     _lazyExpanding.add(f.name);
-    final init = expr(f.initial!);
+    // In the impl's terms when forwarded through one: `FormFieldState<T>`'s
+    // `_value` under `impl FormFieldState<String>` (ws451).
+    final init = expr(
+      _implBinding.isEmpty
+          ? f.initial!
+          : _substitute(f.initial!, const {}, _implBinding),
+    );
     _lazyExpanding.remove(f.name);
     return _isCopy(_heldType(f))
         ? '{ if $receiver.$name.get().is_none() { let __v = $init; $receiver.$name.set(Some(__v)); } $receiver.$name.get().unwrap() }'
@@ -4341,6 +4347,9 @@ class RustBackend {
   String _traitArgsOf(String name) {
     final trait = library[name];
     if (trait == null || trait.typeParameters.isEmpty) return '';
+    // This class's own trait: its own parameters (`<__Self as
+    // CupertinoPageRoute<T>>` in its super fns, ws451).
+    if (name == cls.name) return _generics(cls);
     final passed = _argumentsThrough(cls, const {}, trait, {});
     if (passed == null || passed.isEmpty) return '';
     return '<${passed.map(type).join(', ')}>';
@@ -5657,7 +5666,10 @@ class RustBackend {
       ),
       IrUnary(:final op, :final operand) => IrUnary(op, go(operand)),
       IrNullCheck(:final operand) => IrNullCheck(go(operand)),
-      IrCastTo(:final target, :final type) => IrCastTo(go(target), type),
+      IrCastTo(:final target, :final type) => IrCastTo(
+        go(target),
+        _substituteType(type, types),
+      ),
       IrSuperDispatch(
         :final receiver,
         :final base,
@@ -5679,7 +5691,7 @@ class RustBackend {
       IrDowncast(:final target, :final type, :final arguments) => IrDowncast(
         go(target),
         type,
-        arguments: arguments,
+        arguments: [for (final a in arguments) _substituteType(a, types)],
       ),
       IrDynamicDispatch(:final receiver, :final arms) => IrDynamicDispatch(
         go(receiver),

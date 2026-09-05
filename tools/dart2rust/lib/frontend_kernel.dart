@@ -150,6 +150,8 @@ class KernelFrontend implements TypeWorld {
           // instantiation reaches them: `impl Tween<Object> for IntTween`
           // asks `IntTween: Animatable<Object>` of its supertrait.
           for (final above in [base, ..._kernelAncestors(base)]) {
+            // An anonymous mixin application is no trait anyone names.
+            if (above.isAnonymousMixin) continue;
             if (above.typeParameters.isEmpty ||
                 !_translatedClass(above) ||
                 !_abstractLike(above)) {
@@ -790,7 +792,15 @@ class KernelFrontend implements TypeWorld {
       // The core scalars are abstract classes in Kernel and structs here:
       // an `Object?` promoted to `String` is a downcast to `String`.
       const scalars = {'String', 'int', 'double', 'bool', 'num'};
+      // To `Object` (a pattern's `final Object? msg` on a `dynamic`
+      // temporary) is to the root every value already is: no cast.
+      final toObject =
+          promoted is InterfaceType &&
+          promoted.classNode.name == 'Object' &&
+          promoted.classNode.enclosingLibrary.importUri.toString() ==
+              'dart:core';
       if (promoted is InterfaceType &&
+          !toObject &&
           (!_abstractLike(promoted.classNode) ||
               scalars.contains(promoted.classNode.name)) &&
           // An enum too: `switch (dependency)` after `is _MediaQueryAspect`

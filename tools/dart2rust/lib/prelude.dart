@@ -4459,7 +4459,41 @@ impl fmt::Display for FormatException {
         }
     }
 }
-dart_error!(AssertionError, "Assertion failed");
+/// `AssertionError([Object? message])`: the message is Dart's `Object?`,
+/// read as one (`AssertionError(message: final Object? msg)` in
+/// `BindingBase._initListenable`, run451); `new` takes the text the
+/// backend's own asserts spell.
+#[derive(Clone, Debug, Default)]
+pub struct AssertionError {
+    pub message: Option<std::rc::Rc<dyn Object>>,
+}
+
+impl AssertionError {
+    pub fn new(message: String) -> Self {
+        AssertionError { message: Some(std::rc::Rc::new(message) as std::rc::Rc<dyn Object>) }
+    }
+}
+
+impl PartialEq for AssertionError {
+    fn eq(&self, other: &Self) -> bool {
+        self.message.dart_eq(&other.message)
+    }
+}
+
+impl fmt::Display for AssertionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.message {
+            None => f.write_str("Assertion failed"),
+            Some(m) => write!(f, "Assertion failed: {}", dart_message(m)),
+        }
+    }
+}
+
+impl DartEq for AssertionError {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
 dart_error!(ConcurrentModificationError, "Concurrent modification");
 
 /// `IndexError`, with the one constructor upstream uses: `withLength`.
