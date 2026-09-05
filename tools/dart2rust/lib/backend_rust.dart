@@ -5666,7 +5666,7 @@ class RustBackend {
     final derivesDebug = printable && cls.typeParameters.isEmpty;
     final derives = [
       if (cloneable && !writesClone) 'Clone',
-      if (copyable) 'Copy',
+      if (copyable && !writesClone) 'Copy',
       if (derivesDebug) 'Debug',
       if (comparable) 'PartialEq',
     ];
@@ -5713,6 +5713,16 @@ class RustBackend {
       _indent--;
       _line('}');
       _line('');
+      // `Copy` alongside, under the same bound: a derived one asks `Clone`
+      // of every `T: Copy`, which the impl above does not give.
+      if (copyable) {
+        final generics = _implGenerics(
+          cls,
+          keyed: false,
+        ).replaceAll("'static", "'static + Copy");
+        _line('impl$generics Copy for ${cls.name}${_generics(cls)} {}');
+        _line('');
+      }
     }
     if (cls.counted) {
       _line(

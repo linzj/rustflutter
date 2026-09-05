@@ -6429,6 +6429,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws404 | 950 叶子错 | struct 级 bound 回到 `DartNullable + 'static`（集合的 impl 已无条件，不再需要 Clone），带投影字段的 struct 不 derive Clone 而由后端手写 `impl<T: Clone + DartNullable<Or: Clone>> Clone`（impl 级 bound 不传染）；空的 `#[derive()]` 不写。 |
 | ws404 结果 | 950 叶子错 | **还是断的：2293 / 57 个 crate，15 个函数外错**，两类：每个 struct 的 `DartNullable` impl 用了 impl 级 bound（`T: Clone + DartNullable<Or: Clone>`），于是只有 T 可 clone 时 `_DropdownRouteResult<T>: DartNullable` 才成立；持有投影 struct 的泛型 struct `derive(Clone)` 时要它的 `Clone`，而那个 Clone 的 bound（`Or: Clone`）derive 写不出来。另有 `Never`（`Infallible`）作类型实参没 impl。 |
 | ws405 | 950 叶子错 | struct 的 `DartNullable` impl 用 struct 自己的 bound（`Or = Option<Self>` 不要求什么）；**所有泛型 struct** 的 Clone 都由后端手写（impl 级 bound），非泛型的仍 derive；prelude 加 `Infallible` 的 impl。 |
+| ws405 结果 | 950 叶子错 | **还是断的：113 / 32 个 crate，1 个函数外错**：`derive(Copy)` 要求在它自己的 bound（`E: Copy`）下 `Self: Clone`，手写 Clone 的 bound 更强（`Or: Clone`）。 |
+| ws406 | 950 叶子错 | 手写 Clone 的泛型 struct 也手写 `Copy`（同一 bound 加 `Copy`）。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
 ## 下一步(2026-09-05 重铺)
