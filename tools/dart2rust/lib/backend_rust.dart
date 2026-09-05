@@ -1071,9 +1071,15 @@ class RustBackend {
         'DartFuture::spawn_named("${cls.name} closure", std::boxed::Box::pin(async move { $body }))';
     final wantsFuture =
         node.returns.name == 'Future' || node.returns.name == 'FutureOr';
+    // ..and where the slot says `FutureOr<T>`, the future as that
+    // (`Future<bool>(() async {..})` in `GetStorage`, ws470: the stub that
+    // kept `main` waiting without a word).
+    final asFutureOr = node.returns.name == 'FutureOr';
     final closure = node.isAsync
         ? (wantsFuture
-              ? '${owns ? 'move ' : ''}|$params| -> Result<DartFuture<_>, $_error> { $again Ok($spawned) }'
+              ? (asFutureOr
+                    ? '${owns ? 'move ' : ''}|$params| -> Result<FutureOr<_>, $_error> { $again Ok(FutureOr::future($spawned)) }'
+                    : '${owns ? 'move ' : ''}|$params| -> Result<DartFuture<_>, $_error> { $again Ok($spawned) }')
               : '${owns ? 'move ' : ''}|$params| -> Result<_, $_error> { $again let _ = $spawned; Ok(()) }')
         : '${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<_, $_error>' : ''} { $body }';
     _cellLocals = savedCells;
