@@ -107,6 +107,12 @@ class KernelFrontend {
         target.function.asyncMarker == AsyncMarker.Async) {
       return false;
     }
+    // An operator keeps its std signature (`_emitOperator`: no `Result`),
+    // so a call of one never propagates: `self[i] * a[i]` in `_Vector`'s
+    // own `operator *` unwrapped a bare `f64` (73 at ws329).
+    if (target is Procedure && target.kind == ProcedureKind.Operator) {
+      return false;
+    }
     // A member cloned into a mixin application lives in a synthetic
     // library: translated like the mixin's (`current_down` on
     // `_TapStatusTrackerMixin`, 40 calls without `?`).
