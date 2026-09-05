@@ -3356,8 +3356,11 @@ class RustBackend {
         // Inside a trait's body there is no field, only the setter it
         // declares (`this_.set__length(v)` in a mixin's super function).
         if (_fieldsAreAccessors && (target == null || target is IrThis)) {
+          // Through the setter, which takes the plain value and does its
+          // own `Some` for a `late` field (106 `f64` <- `Option<f64>`
+          // on `_globalDistanceMoved`, ws384).
           final through = _accessorQualifier(name, kind: 'write');
-          final widened = written;
+          final widened = expr(value);
           _line(
             through == null
                 ? '$receiver.set_${snake(name)}($widened)$_propagate;'
