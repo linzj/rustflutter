@@ -630,11 +630,19 @@ class RustBackend {
       // there is spelled (`Rc::new(x) as Rc<dyn Object>`), or the second
       // element's other class does not fit (`Object.hashAll([isChecked,
       // isButton])`, 17 at ws421). The rest coerce to the first.
+      // ..and one whose elements can fail is built element by element:
+      // in `vec![a?, b?, ..]` every `?` exit drops every earlier element,
+      // and a literal of 3038 failing constructors (the gallery's code
+      // viewer) is 4.6 million drops of codegen -- one function held
+      // `rustc` for half an hour at 27 GB (run429). Pushed one at a time,
+      // a failure drops the one partial `Vec`.
+      IrListLiteral(:final elements, :final element)
+          when elements.isNotEmpty && _WalkSelf.failingIn(elements) =>
+        '{ let mut __v = Vec::new(); '
+            '${elements.indexed.map((ix) => '__v.push(${_listElement(ix.$1, ix.$2, element)});').join(' ')}'
+            ' __v }',
       IrListLiteral(:final elements, :final element) =>
-        'vec![${elements.indexed.map((ix) {
-          final first = ix.$1 == 0 ? _explicitUpcast(ix.$2) : ix.$2;
-          return element.isFunction && first is IrClosure && !first.boxed ? 'std::rc::Rc::new(${expr(first)})' : expr(first);
-        }).join(', ')}]',
+        'vec![${elements.indexed.map((ix) => _listElement(ix.$1, ix.$2, element)).join(', ')}]',
       IrRecord(:final fields) => '(${fields.map(expr).join(', ')})',
       IrRecordField(:final record, :final index) => '${expr(record)}.$index',
       // An empty one spells its key and value types: nothing else says
@@ -1449,6 +1457,15 @@ class RustBackend {
     final args = _baseArguments(base) ?? '';
     final self = _selfName == 'this_' ? '__Self' : 'Self';
     return '<$self as $trait$args>';
+  }
+
+  /// One element of a list literal: the first with its upcast spelled, a
+  /// bare closure behind an `Rc` where the list holds functions.
+  String _listElement(int index, IrExpr e, IrType element) {
+    final first = index == 0 ? _explicitUpcast(e) : e;
+    return element.isFunction && first is IrClosure && !first.boxed
+        ? 'std::rc::Rc::new(${expr(first)})'
+        : expr(first);
   }
 
   /// An implicit upcast made explicit, through any `Some` around it: the
@@ -7568,6 +7585,17 @@ class _WalkSelf {
   bool writesFields = false;
   final selfCalls = <String>{};
 
+  /// Whether anything walked can fail -- a `?` on a call, a constructor,
+  /// an `await`.
+  bool failing = false;
+
+  /// Whether any of `elements` can fail.
+  static bool failingIn(Iterable<IrExpr> elements) {
+    final walk = _WalkSelf();
+    elements.forEach(walk.expression);
+    return walk.failing;
+  }
+
   /// `Vec` methods that change what they are called on.
   ///
   /// The `!` ones are the markers the backend spells out; they mutate exactly
@@ -7720,7 +7748,8 @@ class _WalkSelf {
 
   void expression(IrExpr e) {
     switch (e) {
-      case IrCall(:final target, :final name, :final args):
+      case IrCall(:final target, :final name, :final args, :final fails):
+        if (fails) failing = true;
         if (_caught == 0 && (target == null || target is IrThis)) {
           selfCalls.add(name);
         }
@@ -7790,11 +7819,16 @@ class _WalkSelf {
         expression(condition);
         expression(then);
         expression(otherwise);
-      case IrStaticCall(:final args):
+      case IrStaticCall(:final args, :final fails):
+        if (fails) failing = true;
         // `FlutterView(id, this, ..)` from a counted class hands out the handle.
         if (args.any((a) => a is IrThis)) passesSelf = true;
         args.forEach(expression);
       case IrNew(:final args):
+        // A translated class's constructor returns `Result`; the walker
+        // does not know which classes are translated, and a prelude one
+        // built in steps is the same value.
+        failing = true;
         if (args.any((a) => a is IrThis)) passesSelf = true;
         args.forEach(expression);
       case IrSuperCall(:final args):
@@ -7820,6 +7854,7 @@ class _WalkSelf {
         expression(collection);
         expression(body);
       case IrAwait(:final operand):
+        failing = true;
         expression(operand);
       case IrIdentical(:final left, :final right):
         expression(left);
