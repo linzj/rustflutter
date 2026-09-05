@@ -1496,6 +1496,125 @@ class KernelFrontend implements TypeWorld {
       ? const IrType('void', nullable: true)
       : _type(t);
 
+  /// A nullable, kept type parameter of the declaration being lowered, as
+  /// a slot: in a generic declaration's signature or field it is spelled
+  /// `<T as DartNullable>::Or` (`IrType.projected`) -- Dart's `T?` with
+  /// `T` bound to `X?` is `X?`, one `Option` layer -- and a value crosses
+  /// it through `IrNullableOf`. Only the class's or the member's own
+  /// parameters: another declaration's `T` is not a name here.
+  bool _projectedSlot(DartType? t) {
+    if (t is! TypeParameterType ||
+        t.nullability != Nullability.nullable ||
+        _erasedParameter(t.parameter)) {
+      return false;
+    }
+    final declaration = t.parameter.declaration;
+    final member = _member;
+    if (!identical(declaration, _lowering) &&
+        !identical(declaration, member) &&
+        !(member != null && identical(declaration, member.function))) {
+      return false;
+    }
+    final ir = _type(t);
+    return ir.arguments.isEmpty && ir.name == (t.parameter.name ?? 'T');
+  }
+
+  /// A signature's or a field's type: projected where `_projectedSlot`.
+  IrType _edgeType(DartType t) {
+    final ir = _type(t);
+    return _projectedSlot(t)
+        ? IrType(ir.name, nullable: true, projected: true)
+        : ir;
+  }
+
+  IrType _edgeReturnType(FunctionNode function) =>
+      function.returnType is NeverType
+      ? const IrType('Never')
+      : _edgeType(function.returnType);
+
+  /// `value` across a projected slot: into the body's `Option<T>` from the
+  /// spelled `T?` (`toOption`), or back out. Itself for any other slot.
+  IrExpr _acrossEdge(IrExpr value, DartType? slot, {required bool toOption}) {
+    if (!_projectedSlot(slot)) return value;
+    return IrNullableOf(value, _type(slot!).name, toOption: toOption)
+      ..rustType = value.rustType;
+  }
+
+  /// A body behind its projected parameters: each re-bound, in the same
+  /// scope, as the `Option<T>` the body reads and writes.
+  IrStmt _withEdgeParams(FunctionNode fn, IrStmt body) {
+    final prologue = <IrStmt>[];
+    void rebind(String name, DartType type) {
+      if (!_projectedSlot(type)) return;
+      final held = _type(type);
+      prologue.add(
+        IrLocalDecl(
+          name,
+          held,
+          IrNullableOf(
+            IrLocal(name)..rustType = _edgeType(type),
+            held.name,
+            toOption: true,
+          )..rustType = held,
+        ),
+      );
+    }
+
+    for (final p in fn.positionalParameters) {
+      rebind(_paramName(p), p.type);
+    }
+    for (final p in fn.namedParameters) {
+      if (!_inspectorOnly(p.parameterName)) rebind(p.parameterName, p.type);
+    }
+    if (prologue.isEmpty) return body;
+    return IrBlock([
+      ...prologue,
+      if (body is IrBlock) ...body.statements else body,
+    ]);
+  }
+
+  /// Whether a callee is translated code, whose signature spells a `T?`
+  /// projected; a prelude member's Rust is its own.
+  bool _translatedCallee(FunctionNode? callee) {
+    final member = callee?.parent;
+    if (member is! Member) return false;
+    final owner = member.enclosingClass;
+    if (owner != null) return _translatedClass(owner);
+    final uri = member.enclosingLibrary.importUri;
+    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+  }
+
+  /// The return type of a member as this call instantiates it: the class's
+  /// kept parameters by the receiver, the member's own by the call.
+  DartType? _callResultType(
+    Member member,
+    Expression receiver,
+    Arguments args,
+  ) {
+    final function = member.function;
+    if (function == null) return null;
+    var declared = function.returnType;
+    if (function.typeParameters.isNotEmpty) {
+      if (args.types.length != function.typeParameters.length) return null;
+      declared = Substitution.fromPairs(
+        function.typeParameters,
+        args.types,
+      ).substituteType(declared);
+    }
+    final env = typeEnvironment;
+    final receiverType = receiver is ThisExpression
+        ? (env == null
+              ? null
+              : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable))
+        : _staticType(receiver);
+    return _substituteKept(declared, member.enclosingClass, receiverType);
+  }
+
+  /// The declared return of the member whose body is being lowered, for
+  /// its own `return`s to cross; null inside a closure, whose function
+  /// type is spelled with `Option<T>`.
+  DartType? _edgeReturn;
+
   /// A `dynamic` closure parameter takes the expected function type's, when
   /// there is one at that position (see `_expectedFunction`).
   /// Closure parameters whose Rust type is the *expected* one rather than
@@ -2032,11 +2151,16 @@ class KernelFrontend implements TypeWorld {
     // mixin clone's field, or the trait's setter -- `_cache = s` into a
     // `String?` field is `Some(s)`. A clone's field, being this struct's,
     // is written as a field, not through the trait's setter.
-    final written = _widened(
-      value.value,
-      _writeSlot(value.interfaceTarget, value.receiver),
-      expression(value.value),
-      slotIr: _writeSlotIr(value.interfaceTarget, value.receiver),
+    final slot = _writeSlot(value.interfaceTarget, value.receiver);
+    final written = _acrossEdge(
+      _widened(
+        value.value,
+        slot,
+        expression(value.value),
+        slotIr: _writeSlotIr(value.interfaceTarget, value.receiver),
+      ),
+      slot,
+      toOption: false,
     );
     // A field on `this`, and a field rather than a setter. Kernel names the
     // target outright, so neither has to be inferred.
@@ -2561,33 +2685,41 @@ class KernelFrontend implements TypeWorld {
         _abstractLike(declaring) &&
         !declaring.isAnonymousMixin &&
         !concrete) {
-      return _qualified(
-        IrCall(target, name, const []),
-        node.interfaceTarget,
-        receiver,
+      return _acrossEdge(
+        _qualified(
+          IrCall(target, name, const []),
+          node.interfaceTarget,
+          receiver,
+        ),
+        node.resultType,
+        toOption: true,
       );
     }
-    return IrField(
-        target,
-        name,
-        // `PerformanceOverlayOption.x.index` in a static initialiser resolves
-        // to `_Enum.index`, a field of a class that is not an enum; the
-        // receiver's own type says it is one (4 "attempted to take value of
-        // method `index`" in `rendering`).
-        onEnum:
-            (node.interfaceTarget.enclosingClass?.isEnum ?? false) ||
-            (receiverType is InterfaceType && receiverType.classNode.isEnum),
-        owner: target == null
-            ? null
-            : concrete && declaring != null && _abstractLike(declaring)
-            ? (receiverType as InterfaceType).classNode.name
-            : node.interfaceTarget.enclosingClass?.name,
-      )
-      ..rustType = _memberRustType(
-        _landing(node.interfaceTarget, receiver),
-        receiver,
-        asGetter: true,
-      );
+    final read =
+        IrField(
+            target,
+            name,
+            // `PerformanceOverlayOption.x.index` in a static initialiser resolves
+            // to `_Enum.index`, a field of a class that is not an enum; the
+            // receiver's own type says it is one (4 "attempted to take value of
+            // method `index`" in `rendering`).
+            onEnum:
+                (node.interfaceTarget.enclosingClass?.isEnum ?? false) ||
+                (receiverType is InterfaceType &&
+                    receiverType.classNode.isEnum),
+            owner: target == null
+                ? null
+                : concrete && declaring != null && _abstractLike(declaring)
+                ? (receiverType as InterfaceType).classNode.name
+                : node.interfaceTarget.enclosingClass?.name,
+          )
+          ..rustType = _memberRustType(
+            _landing(node.interfaceTarget, receiver),
+            receiver,
+            asGetter: true,
+          );
+    // Out of a projected field: into the `Option<T>` the body works with.
+    return _acrossEdge(read, node.resultType, toOption: true);
   }
 
   /// `dateTimeSymbols[k]`, `.containsKey(k)`, `.keys` on a `dynamic` slot
@@ -3215,7 +3347,7 @@ class KernelFrontend implements TypeWorld {
         target.enclosingClass != null &&
         _translatedClass(target.enclosingClass!) &&
         node.arguments.types.length == target.function.typeParameters.length;
-    return _qualified(
+    final call = _qualified(
       IrCall(
         receiver is ThisExpression ? null : _receiver(receiver),
         name,
@@ -3226,6 +3358,12 @@ class KernelFrontend implements TypeWorld {
       ),
       node.interfaceTarget,
       receiver,
+    );
+    // A projected result: into the `Option<T>` the caller works with.
+    return _acrossEdge(
+      call,
+      _callResultType(node.interfaceTarget, receiver, node.arguments),
+      toOption: true,
     );
   }
 
@@ -3974,7 +4112,7 @@ class KernelFrontend implements TypeWorld {
                   index < instantiated.positionalParameters.length
             ? instantiated.positionalParameters[index]
             : declaredType);
-    return _numLiteral(
+    final argument = _numLiteral(
       value,
       paramType,
       callee,
@@ -3996,6 +4134,10 @@ class KernelFrontend implements TypeWorld {
         ),
       ),
     );
+    // Into a projected slot of a translated callee: the spelled `T?`.
+    return declaredType is TypeParameterType && _translatedCallee(callee)
+        ? _acrossEdge(argument, paramType, toOption: false)
+        : argument;
   }
 
   /// A closure literal handed to a function-typed parameter returns what
@@ -4083,7 +4225,7 @@ class KernelFrontend implements TypeWorld {
           name: param is FunctionParameter ? param.parameterName : null,
         ) ??
         declared;
-    return _numLiteral(
+    final argument = _numLiteral(
       value,
       type,
       callee,
@@ -4108,6 +4250,9 @@ class KernelFrontend implements TypeWorld {
         ),
       ),
     );
+    return declared is TypeParameterType && _translatedCallee(callee)
+        ? _acrossEdge(argument, type, toOption: false)
+        : argument;
   }
 
   /// A trait handle into a slot whose *erased* parameter is bounded by a
@@ -4267,7 +4412,10 @@ class KernelFrontend implements TypeWorld {
   IrType _typeKept(DartType t, Map<TypeParameter, DartType> kept) {
     if (t is TypeParameterType && kept.containsKey(t.parameter)) {
       final arg = _type(kept[t.parameter]!);
-      return t.nullability == Nullability.nullable ? withNull(arg) : arg;
+      // `T?` with `T` bound to `X?` is `X?`, as Dart collapses it and as
+      // the projected signature (`<T as DartNullable>::Or`) now spells it.
+      if (t.nullability != Nullability.nullable || isNullable(arg)) return arg;
+      return withNull(arg);
     }
     if (t is InterfaceType && kept.isNotEmpty) {
       final base = _type(t);
@@ -5779,7 +5927,13 @@ class KernelFrontend implements TypeWorld {
           valueType.classNode.name == 'Future') {
         return IrReturn(IrAwait(expression(value)));
       }
-      return IrReturn(_widened(value, _returnsType, expression(value)));
+      return IrReturn(
+        _acrossEdge(
+          _widened(value, _returnsType, expression(value)),
+          _edgeReturn,
+          toOption: false,
+        ),
+      );
     }
     if (node is Block) {
       return IrBlock([for (final s in node.statements) statement(s)]);
@@ -6291,12 +6445,17 @@ class KernelFrontend implements TypeWorld {
     _voidReturn = (expected ?? function.returnType) is VoidType;
     _returnsType = expected ?? function.returnType;
     _asyncBody = function.asyncMarker == AsyncMarker.Async;
+    final outerEdge = _edgeReturn;
+    _edgeReturn = expected == null && function.parent is Member
+        ? function.returnType
+        : null;
     try {
       return statement(body);
     } finally {
       _voidReturn = outer;
       _returnsType = outerType;
       _asyncBody = outerAsync;
+      _edgeReturn = outerEdge;
     }
   }
 
@@ -6578,7 +6737,7 @@ class KernelFrontend implements TypeWorld {
           for (final p in fn.positionalParameters)
             IrParam(
               _paramName(p),
-              _type(p.type),
+              _edgeType(p.type),
               hasDefault: p.defaultValue != null,
               defaultValue: _default(p),
             ),
@@ -6589,13 +6748,13 @@ class KernelFrontend implements TypeWorld {
             // (`CutCornersBorder`, the one error left in the gallery).
             IrParam(
               p.parameterName,
-              _type(p.type),
+              _edgeType(p.type),
               named: true,
               hasDefault: p.defaultValue != null,
               defaultValue: _default(p),
             ),
         ],
-        _returnType(fn),
+        _edgeReturnType(fn),
         IrBlock([
           IrExprStmt(
             IrLiteral(
@@ -6647,18 +6806,22 @@ class KernelFrontend implements TypeWorld {
       name,
       [
         for (final p in node.function.positionalParameters)
-          IrParam(_paramName(p), _type(p.type), kept: _keeps(node.function, p)),
+          IrParam(
+            _paramName(p),
+            _edgeType(p.type),
+            kept: _keeps(node.function, p),
+          ),
         for (final p in node.function.namedParameters)
           if (!_inspectorOnly(p.parameterName))
             IrParam(
               p.parameterName,
-              _type(p.type),
+              _edgeType(p.type),
               named: true,
               kept: _keeps(node.function, p),
             ),
       ],
-      _type(node.function.returnType),
-      _body(node.function),
+      _edgeReturnType(node.function),
+      _withEdgeParams(node.function, _body(node.function)),
       typeParameters: [
         for (final p in node.function.typeParameters)
           if (!_erasedParameter(p)) p.name ?? 'T',
@@ -7142,7 +7305,7 @@ class KernelFrontend implements TypeWorld {
       cls.fields.add(
         IrFieldDecl(
           name,
-          _type(field.type),
+          _edgeType(field.type),
           isFinal: field.isFinal,
           initial: initial == null ? null : expression(initial),
           shared: _sharedFields.contains(name),
@@ -7158,13 +7321,13 @@ class KernelFrontend implements TypeWorld {
     final name = node.name.text;
     final params = <IrParam>[];
     for (final p in node.function.positionalParameters) {
-      params.add(IrParam(_paramName(p), _type(p.type)));
+      params.add(IrParam(_paramName(p), _edgeType(p.type)));
     }
     for (final p in node.function.namedParameters) {
       // The inspector's parameter is dropped with its field. See
       // `_inspectorOnly`.
       if (_inspectorOnly(p.parameterName)) continue;
-      params.add(IrParam(p.parameterName, _type(p.type), named: true));
+      params.add(IrParam(p.parameterName, _edgeType(p.type), named: true));
     }
 
     final inits = <String, IrExpr>{};
@@ -7181,10 +7344,10 @@ class KernelFrontend implements TypeWorld {
         // Into the field's type: `creator = filter` with a `_GaussianBlur
         // ImageFilter` in hand and an `ImageFilter` field is `Rc::new(..)`,
         // a nullable field takes `Some(..)`.
-        inits[init.field.name.text] = _widened(
-          init.value,
+        inits[init.field.name.text] = _acrossEdge(
+          _widened(init.value, init.field.type, expression(init.value)),
           init.field.type,
-          expression(init.value),
+          toOption: false,
         );
       } else if (init is AssertInitializer) {
         final statement = init.statement;
@@ -7365,7 +7528,7 @@ class KernelFrontend implements TypeWorld {
       for (final p in node.function.positionalParameters)
         IrParam(
           _paramName(p),
-          _type(p.type),
+          _edgeType(p.type),
           kept: _keeps(node.function, p),
           hasDefault: p.defaultValue != null,
           defaultValue: _default(p),
@@ -7374,7 +7537,7 @@ class KernelFrontend implements TypeWorld {
         if (!_inspectorOnly(p.parameterName))
           IrParam(
             p.parameterName,
-            _type(p.type),
+            _edgeType(p.type),
             named: true,
             kept: _keeps(node.function, p),
             hasDefault: p.defaultValue != null,
@@ -7399,8 +7562,10 @@ class KernelFrontend implements TypeWorld {
     final method = IrMethod(
       name,
       params,
-      _returnType(node.function),
-      node.isAbstract ? const IrBlock([]) : _body(node.function),
+      _edgeReturnType(node.function),
+      node.isAbstract
+          ? const IrBlock([])
+          : _withEdgeParams(node.function, _body(node.function)),
       typeParameters: [
         for (final p in node.function.typeParameters)
           if (!_erasedParameter(p)) p.name ?? 'T',
@@ -7442,15 +7607,15 @@ class KernelFrontend implements TypeWorld {
     ]);
     final params = [
       for (final p in node.function.positionalParameters)
-        IrParam(_paramName(p), _type(p.type)),
+        IrParam(_paramName(p), _edgeType(p.type)),
       for (final p in node.function.namedParameters)
-        IrParam(p.parameterName, _type(p.type), named: true),
+        IrParam(p.parameterName, _edgeType(p.type), named: true),
     ];
     cls.methods.add(
       IrMethod(
         name,
         params,
-        _returnType(node.function),
+        _edgeReturnType(node.function),
         IrBlock([
           // `noSuchMethod` yields `Never`, spelled `Infallible`, which does
           // not coerce to the forwarder's own return type; the prelude's

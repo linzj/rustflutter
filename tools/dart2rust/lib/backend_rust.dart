@@ -4005,12 +4005,16 @@ class RustBackend {
     // parameter with a future. A class's does not (`_CallbackHookProvider<
     // Future<bool>>`), see `bound` in `_boundedGenerics`.
     final bound = owner is IrMethod
-        ? params.map((p) => "$p: Clone + 'static")
+        ? params.map((p) => "$p: Clone + DartNullable + 'static")
         : static
         // `Clone` on a class's parameters after all (ws301): every held
         // `T` is read by `.clone()`, and 240 stubs said so; the one shape
         // that is not `Clone`, a bare future, is measured against that.
-        ? params.map((p) => clone ? "$p: Clone + 'static" : "$p: 'static")
+        ? params.map(
+            (p) => clone
+                ? "$p: Clone + DartNullable + 'static"
+                : "$p: DartNullable + 'static",
+          )
         : params;
     return '<${bound.join(', ')}>';
   }
@@ -4107,7 +4111,7 @@ class RustBackend {
       ? t.name
       : '${t.name}<${t.arguments.map((a) => type(a)).join(', ')}>';
 
-  /// The generics of an `impl` block: every parameter `Clone + 'static`.
+  /// The generics of an `impl` block: every parameter `Clone + DartNullable + 'static`.
   ///
   /// A method body clones what it reads (`self._map.clone()`), and a
   /// `Map<K, V>` is `Clone` only when `K` and `V` are; an `Rc<dyn ..>` held
@@ -4130,7 +4134,7 @@ class RustBackend {
     String bound(String p) {
       final key = RegExp('(Map|Set)<$p[,>]').hasMatch(fields);
       // `PartialEq`: `self._value == new_value` on a `T` (`ValueNotifier`).
-      // `Clone + 'static` only (2026-09-04): `PartialEq + Debug` on every
+      // `Clone + DartNullable + 'static` only (2026-09-04): `PartialEq + Debug` on every
       // type parameter shut out closures and futures -- `ObserverList<
       // VoidCallback>`, a `Set<Future>` -- at the class, not at the one
       // method that compares or prints. A method that does is what fails
@@ -4138,7 +4142,7 @@ class RustBackend {
       // The prelude's `Map` and `Set` are ordered and compare keys with
       // `==`: `PartialEq + Clone` is all they ask, and `Eq + Hash` shut
       // closures out of `ObserverList<VoidCallback>` (48 in `widgets`).
-      return "$p: Clone + 'static${key && keyed ? ' + PartialEq' : ''}";
+      return "$p: Clone + DartNullable + 'static${key && keyed ? ' + PartialEq' : ''}";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
@@ -4414,7 +4418,7 @@ class RustBackend {
   String _traitWhere(IrMethod method) {
     final clauses = [
       if (_sizedBound(method).isNotEmpty) 'Self: Sized',
-      for (final p in cls.typeParameters) '$p: Clone',
+      for (final p in cls.typeParameters) '$p: Clone + DartNullable',
     ];
     return clauses.isEmpty ? '' : ' where ${clauses.join(', ')}';
   }
@@ -4474,14 +4478,14 @@ class RustBackend {
         // `Debug` too: a mixin's `toString` hands `this` to `MapBase.
         // mapToString`, which prints it, and every implementer prints.
         '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
-        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone + 'static").join(', ')}'}'
+        '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone + DartNullable + 'static").join(', ')}'}'
         // And the *method's* own, for a generic method like
         // `invokeLayoutCallback<T extends Constraints>`. A free function can
         // carry them; the trait method it belongs to cannot, and says so.
         // Bounded as the trait method's are: `AnnotationResult<S>` asks
-        // `Clone + 'static` of its `S`, and the free function said nothing
+        // `Clone + DartNullable + 'static` of its `S`, and the free function said nothing
         // (E0277 in the signature of `ContainerLayer.findAnnotations<S>`).
-        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone + 'static").join(', ')}'}'
+        '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone + DartNullable + 'static").join(', ')}'}'
         '>($params) -> '
         // An `async fn` returns the awaited type: `Future<Response>` on an
         // `async` super function was a future of a boxed future (E0308).
@@ -4774,7 +4778,7 @@ class RustBackend {
   }
 
   /// `T` -> whatever `T` was bound to, inside a type and its arguments.
-  static IrType _substituteType(IrType t, Map<String, IrType> bound) {
+  IrType _substituteType(IrType t, Map<String, IrType> bound) {
     // A function type keeps its parameters and result beside `arguments`,
     // not in it: `FormFieldBuilder<T>` copied into `TextFormField` kept its
     // `T` -- 25 `cannot find type T`, every one inside a `dyn Fn(..)`.
@@ -4812,11 +4816,16 @@ class RustBackend {
       // something richer than a flag, which it does not. Until then these 14
       // stay visible and explained rather than turned into a cascade.
       if (!t.nullable) return to;
-      // Dead code in the first cut: the old collapse (`|| to.nullable`)
-      // returned one line earlier, and r139 still read `Option<T>` where
-      // rustc wanted `Option<Option<..>>`.
-      if (to.nullable) return IrType('Option', arguments: [to]);
-      return IrType(to.name, nullable: true, arguments: to.arguments);
+      // ..and now it does collapse, as Dart does: a signature's `T?` is
+      // `<T as DartNullable>::Or` (`IrType.projected`), which *is* `X?`
+      // for `T = X?`. Put in for another parameter it stays projected.
+      if (to.nullable) return to;
+      return IrType(
+        to.name,
+        nullable: true,
+        arguments: to.arguments,
+        projected: t.projected && cls.typeParameters.contains(to.name),
+      );
     }
     return IrType(
       t.name,
@@ -5575,7 +5584,7 @@ class RustBackend {
     final cloneable = _cloneable(cls);
     // A derived `Debug` on `ValueKey<T>` holds only for `T: Debug`, and
     // the `Key` trait it implements has `Debug` above it for every `T:
-    // Clone + 'static` (18 E0277s the moment the type parameters lost
+    // Clone + DartNullable + 'static` (18 E0277s the moment the type parameters lost
     // their `Debug` bound). A generic class prints as its class instead;
     // `PartialEq` can still be derived, that impl carries its own `T:
     // PartialEq` and no trait asks for it unconditionally.
