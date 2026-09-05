@@ -619,8 +619,15 @@ class RustBackend {
       // A closure literal among the elements of a list of functions is an
       // `Rc<dyn Fn>` there, as a field's or a constant's is: `DateFormat`'s
       // `_fieldConstructors` is a `vec!` of three of them.
+      // A `vec![..]` is typed by its *first* element: an implicit upcast
+      // there is spelled (`Rc::new(x) as Rc<dyn Object>`), or the second
+      // element's other class does not fit (`Object.hashAll([isChecked,
+      // isButton])`, 17 at ws421). The rest coerce to the first.
       IrListLiteral(:final elements, :final element) =>
-        'vec![${elements.map((x) => element.isFunction && x is IrClosure && !x.boxed ? 'std::rc::Rc::new(${expr(x)})' : expr(x)).join(', ')}]',
+        'vec![${elements.indexed.map((ix) {
+          final first = ix.$1 == 0 ? _explicitUpcast(ix.$2) : ix.$2;
+          return element.isFunction && first is IrClosure && !first.boxed ? 'std::rc::Rc::new(${expr(first)})' : expr(first);
+        }).join(', ')}]',
       IrRecord(:final fields) => '(${fields.map(expr).join(', ')})',
       IrRecordField(:final record, :final index) => '${expr(record)}.$index',
       // An empty one spells its key and value types: nothing else says
@@ -1409,6 +1416,19 @@ class RustBackend {
     final self = _selfName == 'this_' ? '__Self' : 'Self';
     return '<$self as $trait$args>';
   }
+
+  /// An implicit upcast made explicit, through any `Some` around it: the
+  /// first element of a `vec![..]` decides the `Vec`'s type.
+  IrExpr _explicitUpcast(IrExpr e) => switch (e) {
+    IrUpcast(:final value, :final type, :final handle, :final explicit)
+        when !explicit =>
+      IrUpcast(value, type, handle: handle, explicit: true)
+        ..rustType = e.rustType,
+    IrSome(:final value) => IrSome(
+      _explicitUpcast(value),
+    )..rustType = e.rustType,
+    _ => e,
+  };
 
   /// `::<A, B>` for a call's type arguments; nothing when there are none.
   String _turbofish(List<IrType> typeArguments) =>
