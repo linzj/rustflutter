@@ -3860,7 +3860,27 @@ impl ArgumentError {
     }
 }
 dart_error!(UnsupportedError, "Unsupported operation");
-dart_error!(UnimplementedError, "UnimplementedError");
+/// `UnimplementedError([String? message])`: the message is optional, as
+/// Dart declares it, where the other errors' is not.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnimplementedError {
+    pub message: Option<String>,
+}
+
+impl UnimplementedError {
+    pub fn new(message: Option<String>) -> Self {
+        UnimplementedError { message }
+    }
+}
+
+impl fmt::Display for UnimplementedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.message {
+            Some(message) if !message.is_empty() => write!(f, "UnimplementedError: {}", message),
+            _ => f.write_str("UnimplementedError"),
+        }
+    }
+}
 /// `FormatException([message, source, offset])`: three parameters, as
 /// intl's date parsing passes them.
 #[derive(Clone, Debug)]
