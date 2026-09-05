@@ -2777,7 +2777,7 @@ pub fn run_until_idle() {
             None => {}
         }
         let now = std::time::Instant::now();
-        let due: Vec<(i64, std::rc::Rc<dyn Fn()>)> = {
+        let due: Vec<(i64, std::rc::Rc<dyn Fn() -> Result<(), DartError>>)> = {
             let scheduler = (**SCHEDULER).borrow();
             scheduler
                 .timers
@@ -3394,7 +3394,7 @@ dart_error!(UnsupportedError, "Unsupported operation");
 dart_error!(UnimplementedError, "UnimplementedError");
 /// `FormatException([message, source, offset])`: three parameters, as
 /// intl's date parsing passes them.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct FormatException {
     pub message: String,
     /// `dynamic source`: an `Rc<dyn Object>` as translated code spells
@@ -3412,6 +3412,16 @@ impl Default for FormatException {
 impl FormatException {
     pub fn new(message: String, source: std::rc::Rc<dyn Object>, offset: Option<i64>) -> Self {
         FormatException { message, source, offset }
+    }
+}
+
+/// The source by identity, as a `dynamic` field of a translated struct
+/// compares (`DartEq`).
+impl PartialEq for FormatException {
+    fn eq(&self, other: &Self) -> bool {
+        self.message == other.message
+            && std::rc::Rc::ptr_eq(&self.source, &other.source)
+            && self.offset == other.offset
     }
 }
 
