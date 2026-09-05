@@ -2460,37 +2460,118 @@ class KernelFrontend implements TypeWorld {
     if (asBase is! InterfaceType) return const [];
     var arguments = asBase.typeArguments;
     if (fromApplication && !identical(enclosing, lowering)) {
-      Supertype? applied;
-      for (final t in enclosing.implementedTypes) {
-        if (t.classNode == lowering) applied = t;
-      }
-      if (applied == null) return const [];
-      final map = <TypeParameter, DartType>{};
-      for (var i = 0; i < applied.typeArguments.length; i++) {
-        final a = applied.typeArguments[i];
-        if (a is! TypeParameterType ||
-            !enclosing.typeParameters.contains(a.parameter) ||
-            i >= lowering.typeParameters.length) {
-          return const [];
-        }
-        map[a.parameter] = TypeParameterType(
-          lowering.typeParameters[i],
-          Nullability.nonNullable,
-        );
-      }
-      final substitution = Substitution.fromMap(map);
-      arguments = [for (final a in arguments) substitution.substituteType(a)];
-      for (final a in arguments) {
-        if (_mentionsForeignParameter(a, enclosing.typeParameters)) {
-          return const [];
-        }
-      }
+      final mapped = _inMixinTerms(enclosing, lowering, arguments);
+      if (mapped == null) return const [];
+      arguments = mapped;
     }
     try {
       return _erasedArguments(base, arguments);
     } on Unsupported {
       return const [];
     }
+  }
+
+  /// `types`, spelled with the application's parameters, in the terms of
+  /// the mixin's own: the applied type (`LocalHistoryRoute<T_app>`) maps
+  /// each application parameter onto the mixin's. Null when an applied
+  /// argument is not a bare parameter, or an application parameter is
+  /// left over.
+  List<DartType>? _inMixinTerms(
+    Class application,
+    Class mixin,
+    List<DartType> types,
+  ) {
+    Supertype? applied;
+    for (final t in application.implementedTypes) {
+      if (t.classNode == mixin) applied = t;
+    }
+    if (applied == null) return null;
+    final map = <TypeParameter, DartType>{};
+    for (var i = 0; i < applied.typeArguments.length; i++) {
+      final a = applied.typeArguments[i];
+      if (a is! TypeParameterType ||
+          !application.typeParameters.contains(a.parameter) ||
+          i >= mixin.typeParameters.length) {
+        return null;
+      }
+      map[a.parameter] = TypeParameterType(
+        mixin.typeParameters[i],
+        Nullability.nonNullable,
+      );
+    }
+    final substitution = Substitution.fromMap(map);
+    final mapped = [for (final t in types) substitution.substituteType(t)];
+    for (final t in mapped) {
+      if (_mentionsForeignParameter(t, application.typeParameters)) {
+        return null;
+      }
+    }
+    return mapped;
+  }
+
+  /// The traits a mixin is applied over in *every* application of it, as
+  /// its trait's supertraits.
+  ///
+  /// A mixin's bodies come from an application (`_appliedBody`), and a
+  /// `super` call in one dispatches to the previous mixin of that
+  /// application (`_realOwner`), not to the `on` clause: the trait's
+  /// default `init_instances` calling `scheduler_binding_super_init_
+  /// instances(self)` needs `Self: GestureBinding`, which a method-level
+  /// `where Self:` cannot say on a dispatchable method (E0038). What every
+  /// application of the mixin puts under it, the trait can require --
+  /// the closed world has no application that does otherwise. The
+  /// arguments come from the first application, in the mixin's terms.
+  List<IrType> _appliedOver(Class mixin) {
+    final env = typeEnvironment;
+    final apps = applications[mixin];
+    if (env == null || apps == null || apps.isEmpty) return const [];
+    List<Class> under(Class application) {
+      final chain = <Class>[];
+      var c = application.superclass;
+      while (c != null) {
+        if (c.isAnonymousMixin) {
+          for (final t in c.implementedTypes) {
+            chain.add(t.classNode);
+          }
+          c = c.superclass;
+        } else {
+          chain.add(c);
+          break;
+        }
+      }
+      return chain;
+    }
+
+    var common = under(apps.first).toSet();
+    for (final a in apps.skip(1)) {
+      common = common.intersection(under(a).toSet());
+    }
+    final already = {
+      for (final t in mixin.implementedTypes) t.classNode,
+      for (final t in mixin.onClause) t.classNode,
+    };
+    final first = apps.first;
+    final thisType = first.getThisType(env.coreTypes, Nullability.nonNullable);
+    final found = <IrType>[];
+    for (final x in under(first)) {
+      if (!common.contains(x) ||
+          already.contains(x) ||
+          x.name == 'Object' ||
+          !_translatedClass(x) ||
+          !_abstractLike(x)) {
+        continue;
+      }
+      final asX = env.hierarchy.getTypeAsInstanceOf(thisType, x);
+      if (asX is! InterfaceType) continue;
+      final mapped = _inMixinTerms(first, mixin, asX.typeArguments);
+      if (mapped == null) continue;
+      try {
+        found.add(_type(InterfaceType(x, Nullability.nonNullable, mapped)));
+      } on Unsupported {
+        continue;
+      }
+    }
+    return found;
   }
 
   static bool _mentionsForeignParameter(
@@ -8151,6 +8232,9 @@ class KernelFrontend implements TypeWorld {
               for (final t in node.implementedTypes) _type(t.asInterfaceType),
               if (node.isMixinDeclaration)
                 for (final t in node.onClause) _type(t.asInterfaceType),
+              // ..and what every application puts under it
+              // (`_appliedOver`).
+              if (node.isMixinDeclaration) ..._appliedOver(node),
             ],
       counted: _counted,
       isAbstract: node.isAbstract || _isOpen(node),

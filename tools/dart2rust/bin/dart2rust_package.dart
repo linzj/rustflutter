@@ -254,10 +254,27 @@ Future<void> main(List<String> args) async {
   // hollow (abstract). Any application will do -- they are copies -- and
   // the first found is the one a mixin's trait takes its defaults from
   // (`KernelFrontend.applications`).
+  // Not every anonymous mixin class is an application: a mixin
+  // declaration's `on` clause is held by one too (`mixin ServicesBinding
+  // on BindingBase, SchedulerBinding` sits on `Object&BindingBase&
+  // SchedulerBinding`), and mixin deduplication leaves ones nothing
+  // extends. Neither holds bodies, and neither puts the mixin over
+  // anything (`_appliedOver`); both are left out.
   final applications = <Class, List<Class>>{};
+  final holders = <Class>{};
+  final extended = <Class>{};
+  for (final library in component.libraries) {
+    for (final cls in library.classes) {
+      final base = cls.superclass;
+      if (base == null) continue;
+      extended.add(base);
+      if (cls.isMixinDeclaration && base.isAnonymousMixin) holders.add(base);
+    }
+  }
   for (final library in component.libraries) {
     for (final cls in library.classes) {
       if (!cls.isAnonymousMixin) continue;
+      if (holders.contains(cls) || !extended.contains(cls)) continue;
       for (final applied in cls.implementedTypes) {
         (applications[applied.classNode] ??= []).add(cls);
       }
