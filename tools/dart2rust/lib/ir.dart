@@ -221,11 +221,18 @@ class IrCall extends IrExpr {
     this.fails = false,
     this.diverges = false,
     this.asyncFn = false,
+    this.asyncTarget = false,
     this.typeArguments = const [],
   });
 
   /// Whether the callee can fail (`IrMethod.fails`): the call is `?`ed.
   final bool fails;
+
+  /// Whether the callee is an `async` method at all. Reached through a
+  /// trait its future comes back inside the trait's `Result`, whether or
+  /// not the method fails; the backend decides the path (`asyncFn` is
+  /// the front end's guess that it is inherent).
+  final bool asyncTarget;
 
   /// Whether the call reaches an `async fn` as one -- a concrete class's
   /// own async method, called plainly -- so that the value is the future

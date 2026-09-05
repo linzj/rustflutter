@@ -12,6 +12,9 @@ library;
 import 'dart:convert';
 
 import 'coerce.dart';
+
+import 'dart:io' show Platform, stderr;
+
 import 'ir.dart';
 import 'prelude.dart';
 
@@ -580,6 +583,7 @@ class RustBackend {
             fails: fails && !diverges,
             typeArguments: typeArguments,
             asyncFn: e.asyncFn,
+            asyncTarget: e.asyncTarget,
           ),
           diverges && fails,
         ),
@@ -2373,6 +2377,7 @@ class RustBackend {
     bool fails = false,
     List<IrType> typeArguments = const [],
     bool asyncFn = false,
+    bool asyncTarget = false,
   }) {
     final turbofish = typeArguments.isEmpty
         ? ''
@@ -2613,8 +2618,10 @@ class RustBackend {
     // awaited or not (`OptionalMethodChannel.invokeMethod<T>` through its
     // trait, ws432). The front end's `asyncFn` is a guess at the path the
     // backend decides here.
+    // ..and through the trait it is a `Result` whether or not the method
+    // itself fails: the trait's declaration wraps every async method.
     String suffixFor(bool viaTrait) =>
-        failing && !(asyncFn && !viaTrait) ? _propagate : '';
+        (failing || asyncTarget) && !(asyncFn && !viaTrait) ? _propagate : '';
     final boxed = false;
     // `_identifier`, not `snake`: an *operator* called as a method -- `~x` is
     // `x.~()` in Kernel -- has no letters for `snake` to keep, and it came out
@@ -2721,6 +2728,11 @@ class RustBackend {
     // `MethodChannel.setMethodCallHandler`'s super fn, run458).
     final viaTrait =
         _fieldsAreAccessors && (target == null || target is IrThis);
+    if (Platform.environment['DART2RUST_TRACE_BACKEND'] == name) {
+      stderr.writeln(
+        'TRACE_BACKEND $name asyncFn=$asyncFn fails=$fails failing=$failing accessors=$_fieldsAreAccessors target=${target.runtimeType} self=$_selfName cls=${cls.name}',
+      );
+    }
     return _asyncValue(
       '$receiver.${_identifier(name)}$turbofish'
       '(${args.map(expr).join(', ')})${suffixFor(viaTrait)}',
@@ -5799,6 +5811,7 @@ class RustBackend {
         :final fails,
         :final diverges,
         :final asyncFn,
+        :final asyncTarget,
         :final typeArguments,
       ) =>
         IrCall(
@@ -5810,6 +5823,7 @@ class RustBackend {
           fails: fails,
           diverges: diverges,
           asyncFn: asyncFn,
+          asyncTarget: asyncTarget,
           typeArguments: typeArguments,
         ),
       IrStaticCall(

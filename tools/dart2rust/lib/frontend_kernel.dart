@@ -1778,7 +1778,9 @@ class KernelFrontend implements TypeWorld {
                         : _member?.enclosingClass)
                   : _staticClass(receiver),
               null,
+              onThis: receiver is ThisExpression,
             ),
+            asyncTarget: _asyncMember(node.interfaceTarget),
           ),
         ),
         _type(returnType),
@@ -4439,7 +4441,9 @@ class KernelFrontend implements TypeWorld {
         'abstract=${from != null && _abstractLike(from)} open=${from != null && _isOpen(from)}',
       );
     }
-    if (qualifier == null && !fails && !renamed) return call;
+    if (qualifier == null && !fails && !renamed && !_asyncMember(member)) {
+      return call;
+    }
     return IrCall(
       call.target,
       renamed ? _dartName(call.name) : call.name,
@@ -4454,7 +4458,13 @@ class KernelFrontend implements TypeWorld {
       // ..or a mixin's method the receiver's class applies, which is
       // inlined into that class as its own (`handlePopRoute()` inside
       // `WidgetsBinding.initInstances`, run445).
-      asyncFn: _inherentAsync(member, from, qualifier),
+      asyncFn: _inherentAsync(
+        member,
+        from,
+        qualifier,
+        onThis: call.target == null,
+      ),
+      asyncTarget: _asyncMember(member),
       typeArguments: call.typeArguments,
     );
   }
@@ -4463,7 +4473,18 @@ class KernelFrontend implements TypeWorld {
   /// `async fn` as one (`IrCall.asyncFn`): the member is async, and the
   /// receiver's own struct carries it inherently -- its own method, or a
   /// mixin's it applies -- with no trait on the path.
-  bool _inherentAsync(Member member, Class? from, String? qualifier) {
+  ///
+  /// On `this` (`onThis`) the receiver's own class is the struct or the
+  /// trait body being emitted, and the backend knows which: an open or
+  /// abstract class's own async method called on `this` counts as
+  /// inherent here, and the trait bodies unwrap it (`_handleAsMethodCall`
+  /// in `MethodChannel.setMethodCallHandler`'s super fn, run458).
+  bool _inherentAsync(
+    Member member,
+    Class? from,
+    String? qualifier, {
+    bool onThis = false,
+  }) {
     final owner = member.enclosingClass;
     if (Platform.environment['DART2RUST_TRACE_CALL'] == member.name.text) {
       stderr.writeln(
@@ -4474,12 +4495,10 @@ class KernelFrontend implements TypeWorld {
       );
     }
     if (owner == null || from == null) return false;
-    return _fails(member) &&
-        (qualifier == null || qualifier == from.name) &&
+    return (qualifier == null || qualifier == from.name) &&
         _asyncMember(member) &&
         (from == owner || _appliesMixin(from, owner)) &&
-        !_abstractLike(from) &&
-        !_isOpen(from);
+        (onThis || (!_abstractLike(from) && !_isOpen(from)));
   }
 
   /// Whether `from` applies `mixin` somewhere in its anonymous superclass
