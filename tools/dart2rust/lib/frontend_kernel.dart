@@ -695,9 +695,13 @@ class KernelFrontend implements TypeWorld {
           // matched enum arms against an `Rc<dyn Object>` (29 at ws311).
           !(declared is InterfaceType &&
               declared.classNode == promoted.classNode)) {
+        // With the struct's type arguments: `other is AsyncSnapshot<T>`
+        // reads `other` as an `AsyncSnapshot<T>` (16 E0107 at ws425).
+        final to = _type(promoted);
         final downcast = IrDowncast(
           IrLocal(name),
-          _rustScalar(_type(promoted).name),
+          _rustScalar(to.name),
+          arguments: to.arguments,
         );
         // Cloned out of the reference `Any` hands back.
         return IrCall(downcast, 'clone', const []);
@@ -4285,10 +4289,12 @@ class KernelFrontend implements TypeWorld {
           to.classNode.name != 'Object' &&
           (from is! InterfaceType || from.classNode != to.classNode)) {
         // The Rust name: `double` is an `f64` (`arg is double` after TFA).
+        final toIr = _type(to);
         return IrCall(
           IrDowncast(
             expression(positional.single),
-            _rustScalar(_type(to).name),
+            _rustScalar(toIr.name),
+            arguments: toIr.arguments,
           ),
           'clone',
           const [],

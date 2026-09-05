@@ -296,6 +296,11 @@ pub trait DartNullable: Sized {
     fn option(or: Self::Or) -> Option<Self>;
     /// The spelled `T?` from a body's `Option<Self>`.
     fn from_option(option: Option<Self>) -> Self::Or;
+    /// The `null` of this type, when it has one: growing a `List<T?>` by
+    /// `length =` fills with it; a `List<T>` has none to fill with.
+    fn dart_null() -> Option<Self> {
+        None
+    }
 }
 
 impl<X> DartNullable for Option<X> {
@@ -305,6 +310,9 @@ impl<X> DartNullable for Option<X> {
     }
     fn from_option(option: Option<Option<X>>) -> Option<X> {
         option.flatten()
+    }
+    fn dart_null() -> Option<Self> {
+        Some(None)
     }
 }
 
@@ -790,6 +798,12 @@ pub struct Set<T> {
 impl<T: Clone> Set<T> {    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`.
     pub fn new() -> Self {
         Set { items: Vec::new() }
+    }
+
+    /// `len()`, as a `Vec` and a `Map` say it: `length` is printed as
+    /// `len()` for every collection.
+    pub fn len(&self) -> usize {
+        self.items.len()
     }
 
     pub fn clear(&mut self) {
@@ -1768,6 +1782,31 @@ impl fmt::Display for Type {
 /// elements are cloned into the comparator because the translated closure
 /// takes Dart's `T`, not Rust's `&T` -- the same trade the iterator chains
 /// make, written here once instead of at every call.
+/// `length = n`: shrinks, or grows with `null`s when the element type has
+/// one (`List<RenderBox?>.length = rows * columns`); growing a list of
+/// non-nullable elements is Dart's `RangeError`.
+pub trait DartListLength {
+    fn set_length(&mut self, length: i64) -> Result<(), DartError>;
+}
+
+impl<T: DartNullable> DartListLength for Vec<T> {
+    fn set_length(&mut self, length: i64) -> Result<(), DartError> {
+        let length = length as usize;
+        self.truncate(length);
+        while self.len() < length {
+            match T::dart_null() {
+                Some(null) => self.push(null),
+                None => {
+                    return Err(std::rc::Rc::new(RangeError::new(
+                        "Cannot grow a list of non-nullable elements".to_string(),
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub trait DartList<T> {
     /// `length`, under its Dart name, beside `len()`.
     fn length(&self) -> i64;

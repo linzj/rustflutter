@@ -1442,6 +1442,11 @@ class RustBackend {
     _ => e,
   };
 
+  /// An operand under a borrow: its implicit upcast is spelled, since
+  /// unsizing does not happen behind a `&` (`map.get(&Rc::new(key))` was
+  /// a `&Rc<String>` where `&Rc<dyn Object>` was wanted, 19 at ws425).
+  String _borrowed(IrExpr e) => expr(_explicitUpcast(e));
+
   /// `::<A, B>` for a call's type arguments; nothing when there are none.
   String _turbofish(List<IrType> typeArguments) =>
       typeArguments.isEmpty ? '' : '::<${typeArguments.map(type).join(', ')}>';
@@ -2365,18 +2370,18 @@ class RustBackend {
       return '(std::rc::Rc::new($receiver) as std::rc::Rc<dyn Object>)';
     }
     if (name == '!dart_eq' && args.length == 1) {
-      return '$receiver.dart_eq(&${expr(args.single)})';
+      return '$receiver.dart_eq(&${_borrowed(args.single)})';
     }
     // `Vec::contains` takes a reference; Dart's takes the value. Only the
     // List's: `Path.contains(Offset)` is a method of its own.
     if (name == '!contains' && args.length == 1) {
-      return '$receiver.contains(&${expr(args.single)})';
+      return '$receiver.contains(&${_borrowed(args.single)})';
     }
     if (name == '!expando_get' && args.length == 1) {
-      return '$receiver.get(&${expr(args.single)})';
+      return '$receiver.get(&${_borrowed(args.single)})';
     }
     if (name == '!map_get' && args.length == 1) {
-      return '$receiver.get(&${expr(args.single)}).cloned()';
+      return '$receiver.get(&${_borrowed(args.single)}).cloned()';
     }
     // `_views[_implicitViewId]` with an `int?` key: Dart looks up `null`
     // and finds nothing; here the absent key is the absent value.
@@ -2384,10 +2389,10 @@ class RustBackend {
       return '${expr(args.single)}.as_ref().and_then(|__k| $receiver.get(__k).cloned())';
     }
     if (name == '!map_remove' && args.length == 1) {
-      return '$receiver.remove(&${expr(args.single)})';
+      return '$receiver.remove(&${_borrowed(args.single)})';
     }
     if (name == 'contains_key' && args.length == 1) {
-      return '$receiver.$name(&${expr(args.single)})';
+      return '$receiver.$name(&${_borrowed(args.single)})';
     }
     // The List and Map members Rust says differently rather than renames.
     if (name == '!is_empty' && args.isEmpty) return '!$receiver.is_empty()';
