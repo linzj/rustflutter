@@ -69,6 +69,21 @@ class KernelFrontend implements TypeWorld {
   /// The Kernel class behind each lowered class, for `addWiderImpls`.
   final Map<String, Class> _kernelClasses = {};
 
+  /// Off while a type parameter's *bound* is spelled: `T extends
+  /// _RRectLike<T>` names no instantiation anything holds, and an impl for
+  /// it is noise.
+  var _censusOff = false;
+
+  IrType _typeOfBound(DartType bound) {
+    final was = _censusOff;
+    _censusOff = true;
+    try {
+      return _type(bound);
+    } finally {
+      _censusOff = was;
+    }
+  }
+
   /// Every class of `lowered` gets an impl for each wider instantiation of a
   /// generic trait it implements that the program names somewhere
   /// (`IrClass.extraImpls`): the one whose arguments differ from the class's
@@ -402,6 +417,7 @@ class KernelFrontend implements TypeWorld {
       // arguments, as the closed world names it.
       final census = instantiations;
       if (census != null &&
+          !_censusOff &&
           type.typeArguments.isNotEmpty &&
           !core &&
           _translatedClass(type.classNode) &&
@@ -437,7 +453,7 @@ class KernelFrontend implements TypeWorld {
     if (type is TypeParameterType) {
       // An erased parameter is its bound (see `_erasedParameter`).
       if (_erasedParameter(type.parameter)) {
-        final asBound = _type(type.parameter.bound);
+        final asBound = _typeOfBound(type.parameter.bound);
         return IrType(
           asBound.name,
           nullable: nullable || asBound.nullable,
@@ -463,7 +479,7 @@ class KernelFrontend implements TypeWorld {
         // String?` was a `String` here, and its `String?` return a
         // `String` (40 `Option<String>` <- `String`).
         return IrType(
-          _type(bound).name,
+          _typeOfBound(bound).name,
           nullable: nullable || bound.nullability == Nullability.nullable,
         );
       }
@@ -471,7 +487,7 @@ class KernelFrontend implements TypeWorld {
       // iterates it (collection's `IterableEquality`, 6).
       if (bound is InterfaceType &&
           const {'Iterable', 'List'}.contains(bound.classNode.name)) {
-        final asBound = _type(bound);
+        final asBound = _typeOfBound(bound);
         return IrType(
           asBound.name,
           nullable: nullable,

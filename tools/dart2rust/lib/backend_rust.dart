@@ -1381,6 +1381,35 @@ class RustBackend {
         )..rustType = e.rustType)
       : e;
 
+  /// The trait declaring `name` that `owner` implements at more than one
+  /// instantiation (`IrClass.extraImpls`), or null: a plain call of such a
+  /// method is ambiguous to rustc and is qualified by the class's own
+  /// instantiation (`<Self as Tween<i64>>::begin(self)`).
+  IrClass? _wideTraitFor(IrClass? owner, String name) {
+    if (owner == null || owner.extraImpls.isEmpty) return null;
+    for (final above in _abstractAncestors(owner)) {
+      if (!owner.extraImpls.any((w) => w.name == above.name)) continue;
+      final declares =
+          above.methods.any((m) => m.name == name && !m.isStatic) ||
+          above.abstractMethods.any((m) => m.name == name) ||
+          above.fields.any((f) => f.name == name);
+      if (declares) return above;
+    }
+    return null;
+  }
+
+  /// `<Self as Trait<args>>` for a trait this class implements more than
+  /// once, `Trait` otherwise: what a qualified call on `self` has to say.
+  String _implementedAs(String trait) {
+    final base = library[trait];
+    if (base == null || !cls.extraImpls.any((w) => w.name == trait)) {
+      return trait;
+    }
+    final args = _baseArguments(base) ?? '';
+    final self = _selfName == 'this_' ? '__Self' : 'Self';
+    return '<$self as $trait$args>';
+  }
+
   /// `::<A, B>` for a call's type arguments; nothing when there are none.
   String _turbofish(List<IrType> typeArguments) =>
       typeArguments.isEmpty ? '' : '::<${typeArguments.map(type).join(', ')}>';
@@ -1782,10 +1811,11 @@ class RustBackend {
     // no fields, and a mixin's `this_.source_url` names a getter of the
     // implementer's, declared in an interface the mixin never sees (7).
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {
-      final through = _accessorQualifier(name);
+      final through =
+          _accessorQualifier(name) ?? _wideTraitFor(cls, name)?.name;
       return through == null
           ? '$receiver.${snake(name)}()$_propagate'
-          : '$through::${snake(name)}($receiver)$_propagate';
+          : '${_implementedAs(through)}::${snake(name)}($receiver)$_propagate';
     }
     // A shared field is read through its cell. `get` copies, which is what a
     // Dart read does; `borrow().clone()` is the same for a value that is not
@@ -2420,6 +2450,31 @@ class RustBackend {
     if (qualifier != null && !(library[qualifier]?.isAbstract ?? true)) {
       qualifier = null;
     }
+    // A method of a trait the receiver's class implements more than once
+    // (`IrClass.extraImpls`): the call names the class's own instantiation.
+    final owner = target == null || target is IrThis
+        ? cls
+        : receiverClass == null
+        ? null
+        : library[receiverClass];
+    final wide = _wideTraitFor(owner, name);
+    String? asTrait;
+    if (wide != null &&
+        owner != null &&
+        (qualifier == null || qualifier == wide.name)) {
+      final passed = _argumentsThrough(owner, const {}, wide, {});
+      if (passed != null &&
+          (identical(owner, cls) || owner.typeParameters.isEmpty)) {
+        final spelledArgs = passed.isEmpty
+            ? ''
+            : '<${passed.map((a) => type(a)).join(', ')}>';
+        final self = identical(owner, cls)
+            ? (_selfName == 'this_' ? '__Self' : 'Self')
+            : owner.name;
+        asTrait = '<$self as ${wide.name}$spelledArgs>';
+        qualifier = wide.name;
+      }
+    }
     if (qualifier != null) {
       // See `IrCall.qualifier`. `self`/`this_` are already references; a
       // closure's `__me` is a handle, as is any receiver typed by a trait
@@ -2444,7 +2499,7 @@ class RustBackend {
           : _isHandle(receiverClass)
           ? '&*${expr(target)}'
           : '&${expr(target)}';
-      return '$qualifier::${_identifier(name)}$turbofish'
+      return '${asTrait ?? qualifier}::${_identifier(name)}$turbofish'
           '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
           '$suffix';
     }
@@ -5929,14 +5984,17 @@ class RustBackend {
     for (final above in _abstractAncestors(cls)) {
       final arguments = _baseArguments(above);
       if (arguments == null) continue;
+      final handle = cls.extraImpls.any((w) => w.name == above.name)
+          ? '<Self as ${above.name}$arguments>::dart_self_${snake(above.name)}(self)'
+          : 'self.dart_self_${snake(above.name)}()';
       _line(
-        'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(Box::new(self.dart_self_${snake(above.name)}())); }',
+        'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(Box::new($handle)); }',
       );
     }
     for (final wider in cls.extraImpls) {
       final arguments = '<${wider.arguments.map((a) => type(a)).join(', ')}>';
       _line(
-        'if __t == std::any::TypeId::of::<dyn ${wider.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${wider.name}$arguments>>() { return Some(Box::new(self.dart_self_${snake(wider.name)}())); }',
+        'if __t == std::any::TypeId::of::<dyn ${wider.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${wider.name}$arguments>>() { return Some(Box::new(<Self as ${wider.name}$arguments>::dart_self_${snake(wider.name)}(self))); }',
       );
     }
     _line('None');
@@ -6765,7 +6823,7 @@ class RustBackend {
         ? _turbofish([for (final g in generics) IrType(g)])
         : '';
     final call =
-        '${via ?? cls.name}::$name$fish(${[receiver, ...args].join(', ')})';
+        '${via == null ? cls.name : _implementedAs(via)}::$name$fish(${[receiver, ...args].join(', ')})';
     // An `async fn` yields its own future type; the trait wants the boxed
     // one every `Future<T>` is here (`_NativeCodec::get_next_frame(self)`).
     return method.isAsync ? 'std::boxed::Box::pin($call)' : call;

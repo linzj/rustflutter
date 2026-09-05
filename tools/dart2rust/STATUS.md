@@ -6449,6 +6449,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws414 | 950 叶子错 | 更宽 impl 连同 trait 的每个泛型祖先 trait 一起发（按更宽实例化沿层次代入）；投影的槽代 `dynamic` 仍保持投影。 |
 | ws414 结果 | 950 叶子错 | **断：3 个函数外错，57 个 crate**：`impl PopupMenuEntry<BannerDemoAction> for PopupMenuDivider` 写在 material 里，`BannerDemoAction` 是 gallery 的枚举，依赖方向反了。 |
 | ws415 | 950 叶子错 | 更宽 impl 只在它命名的类型都可见时才写（驱动器算每个库的传递引用闭包交给 `addWiderImpls`；只丢那个 gallery 的实例化）；泛型类的字段初始值也过投影边（`T? _result = null` 之前是裸 `None`）。 |
+| ws415 结果 | 950 叶子错 | **构建通了但 2638→2973 / 796**（修 112 新 285）：同一 struct 对同一 trait 有两个实例化的 impl 后，裸的 trait 方法调用 rustc 选不出哪个（E0283 `type annotations needed` 100→920，E0034 21）：`dart_cast` 里的 `self.dart_self_tween()`、forwarder 里的 `RestorableProperty::dispose(self)`、`rrect.right()` 这类对 struct 值的调用。impl 本身是对的（handle 同一性保留）。 |
+| ws416 | 950 叶子错 | 通用修法：接收者的类对声明该方法的 trait 有多个 impl 时，调用按类自己的实例化限定——`<Self as Tween<i64>>::begin(self)`（super fn 里是 `__Self`），struct 局部值是 `<RRect as _RRectLike<RRect>>::right(&rrect)`；`dart_cast`、forwarder 的 `via` 路径、trait 体里的访问器读取、普通方法调用四处。census 不记类型形参 bound 里的实例化（`T extends _RRectLike<T>`）。驱动器 402 处 `<Self as ..>` 限定。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
 ## 下一步(2026-09-05 重铺)
