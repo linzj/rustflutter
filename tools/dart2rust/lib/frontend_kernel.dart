@@ -5254,6 +5254,16 @@ class KernelFrontend implements TypeWorld {
         ),
       ),
     );
+    if (calleeMember is Member &&
+        (tracedArg == '*' ||
+            tracedArg ==
+                (calleeMember.enclosingClass?.name ??
+                    calleeMember.name.text))) {
+      stderr.writeln(
+        'TRACE_ARG_OUT ${calleeMember.enclosingClass?.name}.${calleeMember.name.text}[$index] '
+        '${argument.runtimeType} type=${argument.rustType}',
+      );
+    }
     // Into a projected slot of a translated callee: the spelled `T?`.
     return _translatedCallee(callee)
         ? _acrossBinding(

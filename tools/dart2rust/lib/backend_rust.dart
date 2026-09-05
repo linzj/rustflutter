@@ -741,7 +741,7 @@ class RustBackend {
             : '${expr(_plain(operand))}.unwrap()',
       // A closure inside `Some(..)` is the `Rc<dyn Fn>` its slot holds.
       IrNullableOf(:final value, :final parameter, :final toOption) =>
-        '<$parameter as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)})',
+        '<${_nullableOf(parameter)} as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)})',
       IrSome(:final value) =>
         value is IrClosure && !value.boxed
             ? 'Some(std::rc::Rc::new(${expr(value)}))'
@@ -1408,6 +1408,18 @@ class RustBackend {
       return op == '==' ? eq : '(!$eq)';
     }
     return '(${expr(left)} $op ${expr(right)})';
+  }
+
+  /// The type a `<T as DartNullable>` projection names: the parameter
+  /// itself when it is one in scope, else the concrete type it was
+  /// substituted with, spelled (`<Rc<dyn Object> as DartNullable>`, not
+  /// `<Object as ..>`: E0782 26 and `dynamic` 25 at ws465).
+  String _nullableOf(String parameter) {
+    if (cls.typeParameters.contains(parameter) ||
+        _methodTypeParams.contains(parameter)) {
+      return parameter;
+    }
+    return type(IrType(parameter));
   }
 
   /// Whether a type is a translated class's, a trait's, or a collection's
@@ -8113,7 +8125,11 @@ class RustBackend {
         _emitAsyncWrapper(
           method,
           '${_vis(method.name)}fn $name${_generics(method)}($params) -> ${_futureOf(method)}',
-          'Self::${name}__body',
+          // A free static (an abstract class's) has no `Self` to go through
+          // (E0433, 19 at ws465).
+          method.isStatic && _freeStatics(cls.name)
+              ? '${name}__body'
+              : 'Self::${name}__body',
           receiver: receiver,
           turbofish: method.typeParameters.isEmpty
               ? ''
