@@ -6543,6 +6543,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | run453 | 还是 `_init_listenable` 桩，剩三处：(1) `dynamic` 临时量提升到 `Object?` 的读没带类型，`expression()` 按静态类型补成 `Object?`，槽就不套 `Some`（`if`/`else` 类型不合）——通用：这种读按局部**存的**类型（`Rc<dyn Object>`）标注，`Some` 由槽的规则加；(2) `Listenable.onError = (..) {..}` 存进 static 的 `Rc<dyn Fn>` 没装箱——`coerceInto` 类型完全相同就提前返回，函数规则的装箱够不到；通用：闭包字面量进同类型函数槽也装箱（2145 个函数参数里只有 2 个是 `impl Fn`）；(3) `registerServiceExtension(callback: _exitApplication)`：async 静态函数的引用 `Rc::new(_exit_application)` 返回裸 `DartFuture`，函数值要 `Result`——通用：async 函数作值时包成 `|a..| Ok(f(a..))`。驱动 diff 122 行，refusal 521。另修：catch/for-in/局部函数的变量算本地声明，不再当外层局部 clone 进闭包（`error`/`stack` 找不到，7 处）。 |
 | ws454 结果 | 编译尺子 **2575**（ws453 2581，−6），141 crate：去 8 来 2——`_setup_hooks`：async 函数引用的闭包 `|__a0, __a1| Ok(..)` 推不出 `Result` 的 `E`；`_compressed_index`：`Object?` 声明提升到 `Object` 走了我上轮的「到 Object 不 cast」分支，跳过了 `T?`→`T` 的 unwrap（`key == key_or_null` 拿 `Rc` 比 `Option`）。 |
 | run454 | 还是 `_init_listenable` 桩，剩一处 E0381：CFE 给模式匹配造的 `synthesized dynamic #0#2` 没有初始值，读被 `#0#2#isSet` 标志守着，rustc 看不出已赋值。Dart 里可空类型的局部不初始化就是 null。通用：可空类型（含 `dynamic`）的无初始值局部从 null 起（`None` / `Rc::new(Null) as Rc<dyn Object>`），全树只有各 1 处。连带：async 函数引用的闭包写明参数类型和 `-> Result<_, Rc<dyn Object>>`；「到 Object 不 cast」只对 `dynamic` 声明。驱动 diff 78 行，refusal 521。 |
+| ws455 结果 | 编译尺子 **2573**（ws454 2575，−2），141 crate：`_init_listenable`、`_setup_hooks`、`_compressed_index` 都编过了；来 1（`copyWith` 里闭包捕获的字段副本 `app_bar_theme` 与同名参数相撞，老问题换了归属）。 |
 
 ## 下一步(2026-09-05 重铺)
 
