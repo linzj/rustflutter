@@ -334,7 +334,28 @@ class KernelFrontend {
 
   // -- Expressions ------------------------------------------------------------
 
+  /// Every lowered expression knows its Rust type (`IrExpr.rustType`):
+  /// what the lowering said when it knew better, and Dart's static type
+  /// mapped through `_type` otherwise. A slot's coercion (`coerce`) reads
+  /// this rather than re-deriving the value's shape at each site.
   IrExpr expression(Expression node) {
+    final lowered = _expressionRaw(node);
+    if (lowered.rustType == null) {
+      final static = _staticType(node);
+      if (static != null) {
+        try {
+          lowered.rustType = _type(static);
+        } on Unsupported {
+          // A type this compiler has no spelling for: the node stays
+          // untyped, and a coercion into a slot falls back to the shape
+          // rules.
+        }
+      }
+    }
+    return lowered;
+  }
+
+  IrExpr _expressionRaw(Expression node) {
     if (node is IntLiteral) {
       return IrLiteral('${node.value}', const IrType('int'));
     }
@@ -350,15 +371,15 @@ class KernelFrontend {
     if (node is NullLiteral) {
       return IrLiteral('null', const IrType('Null', nullable: true));
     }
-    if (node is ThisExpression) return const IrThis();
+    if (node is ThisExpression) return IrThis();
     if (node is VariableGet) {
       // `cosmeticName` is Kernel's word for the name a human wrote; a variable
       // the CFE invented has none, and one whose name starts with `#` is a
       // temporary from its own lowering.
       final bound = _bound;
-      if (bound != null && node.variable == bound) return const IrBound();
+      if (bound != null && node.variable == bound) return IrBound();
       if (_cascade != null && node.variable == _cascade) {
-        return const IrLocal(_cascadeName);
+        return IrLocal(_cascadeName);
       }
       // A temporary this lowering has already named. Asking the map rather
       // than the variable's own name is what makes two nested `#0`s two
@@ -1117,11 +1138,7 @@ class KernelFrontend {
             to.nullability == Nullability.nullable) {
           return IrNullAware(
             expression(node.operand),
-            IrCall(
-              IrDowncast(const IrBound(), to.classNode.name),
-              'clone',
-              const [],
-            ),
+            IrCall(IrDowncast(IrBound(), to.classNode.name), 'clone', const []),
           );
         }
       }
@@ -1331,7 +1348,7 @@ class KernelFrontend {
         ),
         for (final s in statements.skip(1)) statement(s),
       ];
-      return IrBlockValue(steps, const IrLocal(_cascadeName));
+      return IrBlockValue(steps, IrLocal(_cascadeName));
     } finally {
       _cascade = previous;
     }
@@ -1660,7 +1677,7 @@ class KernelFrontend {
             _widened(initial, node.variable.type, expression(initial)),
           ),
           for (final s in body.body.statements) statement(s),
-        ], const IrLocal(_cascadeName));
+        ], IrLocal(_cascadeName));
       } finally {
         _cascade = previous;
       }
@@ -1737,7 +1754,7 @@ class KernelFrontend {
           return IrIfNull(
             IrNullAware(
               expression(value),
-              IrStaticCall(null, 'dart_str', const [IrBound()]),
+              IrStaticCall(null, 'dart_str', [IrBound()]),
             ),
             IrStaticCall(null, 'dart_str', [expression(right)]),
             nullableResult: false,
@@ -1886,7 +1903,7 @@ class KernelFrontend {
         receiver is VariableGet &&
         receiver.variable == _cascade) {
       if (value.interfaceTarget is! Field) {
-        return IrSetter(const IrLocal(_cascadeName), value.name.text, written);
+        return IrSetter(IrLocal(_cascadeName), value.name.text, written);
       }
       // The owner is the cascaded value's own class: on a counted one its
       // fields are cells, and without the owner the backend wrote
@@ -1895,7 +1912,7 @@ class KernelFrontend {
       return IrAssignField(
         value.name.text,
         written,
-        target: const IrLocal(_cascadeName),
+        target: IrLocal(_cascadeName),
         owner:
             _receiverClassName(receiver) ??
             value.interfaceTarget.enclosingClass?.name,
@@ -2417,7 +2434,7 @@ class KernelFrontend {
     const known = {'[]', 'containsKey', 'keys'};
     if (!known.contains(name)) return null;
     final args = [for (final e in positional) expression(e)];
-    const slot = IrLocal('__d');
+    final slot = IrLocal('__d');
     IrExpr noSuch() => IrLiteral(
       'panic!("uncaught Dart exception: NoSuchMethodError: `$name` on an ${candidates.first.classNode.name}")',
       const IrType('raw'),
@@ -2544,7 +2561,7 @@ class KernelFrontend {
         (declaringStream.name == 'Stream' ||
             declaringStream.name == 'StreamView') &&
         declaringStream.enclosingLibrary.importUri.toString() == 'dart:async') {
-      return IrCall(const IrField(null, '_stream'), name, args);
+      return IrCall(IrField(null, '_stream'), name, args);
     }
     // `child.toString()` on a `Listenable?`: an `Option` has no
     // `to_string`, and `dart_str` prints `null` for the absent case as
@@ -2573,7 +2590,7 @@ class KernelFrontend {
         (args.isEmpty ||
             (args.length == 1 && node.arguments.positional.isEmpty))) {
       return IrCall(expression(node.receiver), 'complete', [
-        IrSome(const IrLiteral('()', IrType('raw'))),
+        IrSome(IrLiteral('()', const IrType('raw'))),
       ]);
     }
     // `s[i]` on a String is a one-character String, not an index into a
@@ -2643,7 +2660,7 @@ class KernelFrontend {
       // `&str`, and has no start; the prelude's `contains_dart` has both.
       return IrCall(expression(node.receiver), 'contains_dart', [
         args.first,
-        if (args.length == 2) args[1] else const IrLiteral('0', IrType('int')),
+        if (args.length == 2) args[1] else IrLiteral('0', const IrType('int')),
       ]);
     }
     if (owner == 'String' && name == 'startsWith' && args.length == 2) {
@@ -3794,11 +3811,7 @@ class KernelFrontend {
     if (given.nullability == Nullability.nullable) {
       return IrNullAware(
         lowered,
-        IrUpcast(
-          IrCall(const IrBound(), 'clone', const []),
-          target,
-          handle: true,
-        ),
+        IrUpcast(IrCall(IrBound(), 'clone', const []), target, handle: true),
       );
     }
     if (lowered is IrSome) {
@@ -3922,11 +3935,7 @@ class KernelFrontend {
       if (counted || param.nullability != Nullability.nullable) return lowered;
       final shared = IrNullAware(
         lowered,
-        IrCall(
-          IrCall(const IrBound(), 'clone', const []),
-          '!rc_object',
-          const [],
-        ),
+        IrCall(IrCall(IrBound(), 'clone', const []), '!rc_object', const []),
       );
       // A `dynamic` slot is never an `Option`: Dart's null there is the
       // `Null` object (`_isNullOrEmpty(_value)` with a `T?` in `StateMixin`).
@@ -4068,7 +4077,7 @@ class KernelFrontend {
         final init = n.initializer;
         args.add(
           init == null
-              ? const IrLiteral('null', IrType('Null', nullable: true))
+              ? IrLiteral('null', const IrType('Null', nullable: true))
               : expression(init),
         );
       }
@@ -4405,7 +4414,7 @@ class KernelFrontend {
       if (held.nullability == Nullability.nullable) {
         return IrNullAware(
           lowered,
-          IrCall(const IrBound(), '!widen_object', const []),
+          IrCall(IrBound(), '!widen_object', const []),
         );
       }
       final widened = IrCall(lowered, '!widen_object', const []);
@@ -4569,7 +4578,7 @@ class KernelFrontend {
       if (value != null) {
         out.add(_widened(value, param.type, expression(value)));
       } else if (param.type.nullability == Nullability.nullable) {
-        out.add(const IrLiteral('null', IrType('Null', nullable: true)));
+        out.add(IrLiteral('null', const IrType('Null', nullable: true)));
       } else {
         throw Unsupported(
           'omitted named argument `${param.name}` to a function value',
@@ -4657,7 +4666,7 @@ class KernelFrontend {
       );
     }
     if (param.type.nullability == Nullability.nullable) {
-      return const IrLiteral('null', IrType('Null', nullable: true));
+      return IrLiteral('null', const IrType('Null', nullable: true));
     }
     // An *interface* member carries no default -- `Canvas.clipRect({bool
     // doAntiAlias = true})` is abstract, and the default lives on the class
@@ -4673,7 +4682,7 @@ class KernelFrontend {
         owner.enclosingLibrary.importUri.scheme == 'dart' &&
         param.type is InterfaceType &&
         (param.type as InterfaceType).classNode.name == 'int') {
-      return const IrLiteral('0', IrType('int'));
+      return IrLiteral('0', const IrType('int'));
     }
     throw Unsupported(
       'omitted parameter `${param.cosmeticName}` has no default',
@@ -4764,12 +4773,12 @@ class KernelFrontend {
       // before round 96 changed the mapping, and nothing caught it: they only
       // appear where an infinity is written down, and every one of those sites
       // was already inside something that did not compile.
-      if (value.isNaN) return const IrLiteral('f64::NAN', IrType('raw'));
+      if (value.isNaN) return IrLiteral('f64::NAN', const IrType('raw'));
       if (value == double.infinity) {
-        return const IrLiteral('f64::INFINITY', IrType('raw'));
+        return IrLiteral('f64::INFINITY', const IrType('raw'));
       }
       if (value == double.negativeInfinity) {
-        return const IrLiteral('f64::NEG_INFINITY', IrType('raw'));
+        return IrLiteral('f64::NEG_INFINITY', const IrType('raw'));
       }
       return IrLiteral('$value', const IrType('double'));
     }
@@ -4783,7 +4792,7 @@ class KernelFrontend {
       return IrLiteral(constant.value, const IrType('String'));
     }
     if (constant is NullConstant) {
-      return const IrLiteral('null', IrType('Null', nullable: true));
+      return IrLiteral('null', const IrType('Null', nullable: true));
     }
     if (constant is ListConstant) {
       return IrListLiteral([
@@ -5159,7 +5168,7 @@ class KernelFrontend {
         return IrUnary('!', IrIsNull(expression(node.operand)));
       }
       if (node.operand is NullLiteral) {
-        return const IrLiteral('false', IrType('bool'));
+        return IrLiteral('false', const IrType('bool'));
       }
     }
     return IrIs(expression(node.operand), _type(asked));
@@ -5213,7 +5222,7 @@ class KernelFrontend {
     final below =
         from == body || (hierarchy?.isSubInterfaceOf(from, body) ?? false);
     return IrSuperDispatch(
-      receiver is ThisExpression ? const IrThis() : expression(receiver),
+      receiver is ThisExpression ? IrThis() : expression(receiver),
       body.name,
       target.name.text,
       args,
@@ -5675,7 +5684,7 @@ class KernelFrontend {
       // test -- a bare `continue` would have skipped it. `package:characters`
       // is written with these, and its whole `StringCharacters` was refused.
       return IrWhile(
-        const IrLiteral('true', IrType('bool')),
+        IrLiteral('true', const IrType('bool')),
         IrBlock([
           _loopBody(node.body, true),
           IrIf(IrUnary('!', expression(node.condition)), const IrBreak(), null),
@@ -5697,7 +5706,7 @@ class KernelFrontend {
         IrWhile(
           // `for (;;)` has no condition and loops forever.
           condition == null
-              ? const IrLiteral('true', IrType('bool'))
+              ? IrLiteral('true', const IrType('bool'))
               : expression(condition),
           IrBlock([
             // A `for` runs its updates after a `continue`; Rust's `continue`
@@ -5925,7 +5934,7 @@ class KernelFrontend {
         thrown.value.contains('removed by Dart AOT');
   }
 
-  static const _unreachable = IrLiteral(
+  static final _unreachable = IrLiteral(
     'unreachable!("removed by the AOT compiler (TFA)")',
     IrType('raw'),
   );
@@ -7072,7 +7081,7 @@ class KernelFrontend {
           // `never()` does the coercion `!` would have done.
           IrReturn(
             IrStaticCall(null, 'never', [
-              IrCall(const IrThis(), 'noSuchMethod', [invocation]),
+              IrCall(IrThis(), 'noSuchMethod', [invocation]),
             ]),
           ),
         ]),

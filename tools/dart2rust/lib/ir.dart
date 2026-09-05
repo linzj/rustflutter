@@ -87,13 +87,22 @@ class IrParam {
 // -- Expressions --------------------------------------------------------------
 
 sealed class IrExpr {
-  const IrExpr();
+  IrExpr();
+
+  /// The Rust type this expression has once lowered, as the front end
+  /// decided it -- not Dart's static type, which the erasure of generics,
+  /// the mixin clones and the trait-versus-struct split all move away
+  /// from. Null until the lowering that made the node has said; the
+  /// `expression` entry point fills in Dart's static type as a default, and
+  /// every coercion into a slot compares this against the slot's type
+  /// (`coerce`) instead of matching shapes one by one.
+  IrType? rustType;
 }
 
 /// A literal whose value is already known. `value` is the Dart source text for
 /// primitives; the backend decides how to spell it.
 class IrLiteral extends IrExpr {
-  const IrLiteral(this.value, this.type);
+  IrLiteral(this.value, this.type);
 
   final String value;
   final IrType type;
@@ -101,14 +110,14 @@ class IrLiteral extends IrExpr {
 
 /// A reference to a local variable or parameter.
 class IrLocal extends IrExpr {
-  const IrLocal(this.name);
+  IrLocal(this.name);
 
   final String name;
 }
 
 /// A field read. `target` is null for an implicit `this`.
 class IrField extends IrExpr {
-  const IrField(this.target, this.name, {this.onEnum = false, this.owner});
+  IrField(this.target, this.name, {this.onEnum = false, this.owner});
 
   final IrExpr? target;
   final String name;
@@ -132,7 +141,7 @@ class IrField extends IrExpr {
 
 /// A read of a static field or enum value: `Alignment.topLeft`, `Axis.vertical`.
 class IrStatic extends IrExpr {
-  const IrStatic(this.owner, this.name, {this.isEnumValue = false});
+  IrStatic(this.owner, this.name, {this.isEnumValue = false});
 
   final String owner;
   final String name;
@@ -148,7 +157,7 @@ class IrStatic extends IrExpr {
 }
 
 class IrBinary extends IrExpr {
-  const IrBinary(this.op, this.left, this.right, {this.type});
+  IrBinary(this.op, this.left, this.right, {this.type});
 
   final String op;
   final IrExpr left;
@@ -164,7 +173,7 @@ class IrBinary extends IrExpr {
 }
 
 class IrUnary extends IrExpr {
-  const IrUnary(this.op, this.operand);
+  IrUnary(this.op, this.operand);
 
   final String op;
   final IrExpr operand;
@@ -172,7 +181,7 @@ class IrUnary extends IrExpr {
 
 /// An instance method call. `target` null means `this`.
 class IrCall extends IrExpr {
-  const IrCall(
+  IrCall(
     this.target,
     this.name,
     this.args, {
@@ -214,7 +223,7 @@ class IrCall extends IrExpr {
 
 /// A static method call: `Alignment.lerp(a, b, t)`, or a top-level one.
 class IrStaticCall extends IrExpr {
-  const IrStaticCall(
+  IrStaticCall(
     this.owner,
     this.name,
     this.args, {
@@ -236,7 +245,7 @@ class IrStaticCall extends IrExpr {
 
 /// A constructor invocation. Named constructors carry their name.
 class IrNew extends IrExpr {
-  const IrNew(this.type, this.args, {this.constructor});
+  IrNew(this.type, this.args, {this.constructor});
 
   final IrType type;
   final List<IrExpr> args;
@@ -254,7 +263,7 @@ class IrNew extends IrExpr {
 /// instances are of a class whose constructors are all gone. The field values
 /// are the one thing an `InstanceConstant` always carries.
 class IrConstInstance extends IrExpr {
-  const IrConstInstance(this.type, this.fields);
+  IrConstInstance(this.type, this.fields);
 
   final IrType type;
 
@@ -264,7 +273,7 @@ class IrConstInstance extends IrExpr {
 }
 
 class IrConditional extends IrExpr {
-  const IrConditional(this.condition, this.then, this.otherwise);
+  IrConditional(this.condition, this.then, this.otherwise);
 
   final IrExpr condition;
   final IrExpr then;
@@ -276,14 +285,14 @@ class IrConditional extends IrExpr {
 /// Rust spells it after the expression and Dart before it, which is the whole
 /// of the difference: `await f()` is `f().await`.
 class IrAwait extends IrExpr {
-  const IrAwait(this.operand);
+  IrAwait(this.operand);
 
   final IrExpr operand;
 }
 
 /// `expr is Type`.
 class IrIs extends IrExpr {
-  const IrIs(this.expr, this.type, {this.negated = false});
+  IrIs(this.expr, this.type, {this.negated = false});
 
   final IrExpr expr;
   final IrType type;
@@ -302,7 +311,7 @@ class IrIs extends IrExpr {
 /// established the value was there, and turning a crash into a default would
 /// replace a loud failure with a quiet wrong answer.
 class IrNullCheck extends IrExpr {
-  const IrNullCheck(this.operand);
+  IrNullCheck(this.operand);
 
   final IrExpr operand;
 }
@@ -317,7 +326,7 @@ class IrNullCheck extends IrExpr {
 /// arguments" is what lets a chain work -- `a?.b.c()` binds once and does two
 /// things with the binding, and 89 of upstream's are chained.
 class IrNullAware extends IrExpr {
-  const IrNullAware(this.receiver, this.body, {this.flatten = false});
+  IrNullAware(this.receiver, this.body, {this.flatten = false});
 
   final IrExpr receiver;
   final IrExpr body;
@@ -329,7 +338,7 @@ class IrNullAware extends IrExpr {
 
 /// The value bound by the enclosing [IrNullAware].
 class IrBound extends IrExpr {
-  const IrBound();
+  IrBound();
 }
 
 /// Statements, then a value: what Rust calls a block expression.
@@ -339,7 +348,7 @@ class IrBound extends IrExpr {
 /// produce the binding". Rust says exactly that with `{ let mut it = ...; ...;
 /// it }`, so this is a translation rather than an encoding.
 class IrBlockValue extends IrExpr {
-  const IrBlockValue(this.statements, this.value);
+  IrBlockValue(this.statements, this.value);
 
   final List<IrStmt> statements;
   final IrExpr value;
@@ -351,7 +360,7 @@ class IrBlockValue extends IrExpr {
 /// one the same as Dart does, so the node exists to keep the two apart rather
 /// than to encode anything -- a method call needs a receiver and this does not.
 class IrCallValue extends IrExpr {
-  const IrCallValue(this.target, this.args);
+  IrCallValue(this.target, this.args);
 
   final IrExpr target;
   final List<IrExpr> args;
@@ -365,7 +374,7 @@ class IrCallValue extends IrExpr {
 /// closures are that kind, which is a round of its own rather than a corner of
 /// this one.
 class IrClosure extends IrExpr {
-  const IrClosure(
+  IrClosure(
     this.params,
     this.body,
     this.returns, {
@@ -425,7 +434,7 @@ class IrClosure extends IrExpr {
 /// not, and only 23% of the 6764 `??` in `package:flutter` have a right side
 /// that may be evaluated unconditionally.
 class IrIfNull extends IrExpr {
-  const IrIfNull(
+  IrIfNull(
     this.left,
     this.right, {
     required this.nullableResult,
@@ -450,7 +459,7 @@ class IrIfNull extends IrExpr {
 /// two would emit different Rust for the same Dart, and 2524 places in
 /// `package:flutter` would have found out.
 class IrIsNull extends IrExpr {
-  const IrIsNull(this.operand);
+  IrIsNull(this.operand);
 
   final IrExpr operand;
 }
@@ -461,7 +470,7 @@ class IrIsNull extends IrExpr {
 /// its own node rather than an [IrStatic] with an empty owner because a name
 /// with no owner is not a static field with a missing one.
 class IrTopLevel extends IrExpr {
-  const IrTopLevel(this.name);
+  IrTopLevel(this.name);
 
   final String name;
 }
@@ -479,7 +488,7 @@ class IrTopLevel extends IrExpr {
 /// inside an arm `__d` is the value as that type. The last arm's type may be
 /// null: it is the fallback, taken without a test.
 class IrDynamicDispatch extends IrExpr {
-  const IrDynamicDispatch(this.receiver, this.arms);
+  IrDynamicDispatch(this.receiver, this.arms);
 
   final IrExpr receiver;
   final List<(IrType?, IrExpr)> arms;
@@ -494,7 +503,7 @@ class IrDynamicDispatch extends IrExpr {
 /// exactly one body, `Element`'s: 180 "cannot be invoked on a trait object"
 /// at ws290.
 class IrSuperDispatch extends IrExpr {
-  const IrSuperDispatch(
+  IrSuperDispatch(
     this.receiver,
     this.base,
     this.name,
@@ -516,7 +525,7 @@ class IrSuperDispatch extends IrExpr {
 }
 
 class IrDowncast extends IrExpr {
-  const IrDowncast(this.target, this.type, {this.arguments = const []});
+  IrDowncast(this.target, this.type, {this.arguments = const []});
 
   final IrExpr target;
   final String type;
@@ -528,7 +537,7 @@ class IrDowncast extends IrExpr {
 /// `x as Trait` / the trait half of `x is Trait`: through `dart_cast_to`,
 /// which every object answers for the traits it implements.
 class IrCastTo extends IrExpr {
-  const IrCastTo(this.target, this.type);
+  IrCastTo(this.target, this.type);
 
   final IrExpr target;
   final IrType type;
@@ -538,7 +547,7 @@ class IrCastTo extends IrExpr {
 /// widens silently; Rust's `Option` does not. Emitted where the front end
 /// can see both types.
 class IrSome extends IrExpr {
-  const IrSome(this.value);
+  IrSome(this.value);
 
   final IrExpr value;
 }
@@ -550,7 +559,7 @@ class IrSome extends IrExpr {
 /// `(Rc::new(v) as Rc<dyn Curve>)`. A `match` arm does not coerce the way a
 /// call argument does, so `curve ?? Curves.ease` needs the `as` written.
 class IrUpcast extends IrExpr {
-  const IrUpcast(this.value, this.type, {this.handle = false});
+  IrUpcast(this.value, this.type, {this.handle = false});
 
   final IrExpr value;
   final IrType type;
@@ -562,14 +571,14 @@ class IrUpcast extends IrExpr {
 }
 
 class IrCast extends IrExpr {
-  const IrCast(this.value, this.rust);
+  IrCast(this.value, this.rust);
 
   final IrExpr value;
   final String rust;
 }
 
 class IrThis extends IrExpr {
-  const IrThis();
+  IrThis();
 }
 
 /// `super.name(args)`.
@@ -582,7 +591,7 @@ class IrThis extends IrExpr {
 /// in Flutter: every one of the 435 super calls in painting/ and rendering/
 /// is exactly that.
 class IrSuperCall extends IrExpr {
-  const IrSuperCall(this.base, this.name, this.args, {this.isSetter = false});
+  IrSuperCall(this.base, this.name, this.args, {this.isSetter = false});
 
   /// The class the call resolves into.
   final String base;
@@ -739,7 +748,7 @@ class IrSetter extends IrStmt {
 /// expression of type `!`, which fits wherever a value was expected. 151 of
 /// these in `package:flutter/`.
 class IrThrowValue extends IrExpr {
-  const IrThrowValue(this.value);
+  IrThrowValue(this.value);
 
   final IrExpr value;
 }
@@ -775,7 +784,7 @@ class IrContinue extends IrStmt {
 /// value type is a `Copy` struct whose address says nothing about identity, so
 /// they are refused rather than answered wrongly.
 class IrIdentical extends IrExpr {
-  const IrIdentical(this.left, this.right);
+  IrIdentical(this.left, this.right);
 
   final IrExpr left;
   final IrExpr right;
@@ -798,7 +807,7 @@ class IrForIn extends IrStmt {
 
 /// `xs[i]`, and `xs[i] = v`.
 class IrIndex extends IrExpr {
-  const IrIndex(this.target, this.index);
+  IrIndex(this.target, this.index);
 
   final IrExpr target;
   final IrExpr index;
@@ -814,7 +823,7 @@ class IrIndexSet extends IrStmt {
 
 /// `[a, b, c]`.
 class IrListLiteral extends IrExpr {
-  const IrListLiteral(this.elements, this.element);
+  IrListLiteral(this.elements, this.element);
 
   final List<IrExpr> elements;
 
@@ -827,7 +836,7 @@ class IrListLiteral extends IrExpr {
 /// Positional fields only: a named record field would need a struct with a
 /// name, and there is no name to give it. 62 of these.
 class IrRecord extends IrExpr {
-  const IrRecord(this.fields);
+  IrRecord(this.fields);
 
   final List<IrExpr> fields;
 }
@@ -837,7 +846,7 @@ class IrRecord extends IrExpr {
 /// The index is Rust's, counted from zero. Dart counts its record fields from
 /// one, and the front ends do that subtraction so the backend has one story.
 class IrRecordField extends IrExpr {
-  const IrRecordField(this.record, this.index);
+  IrRecordField(this.record, this.index);
 
   final IrExpr record;
   final int index;
@@ -850,7 +859,7 @@ class IrRecordField extends IrExpr {
 /// a `HashMap` does not keep, and those members are refused wherever they are
 /// reached -- so the literal itself is safe.
 class IrMapLiteral extends IrExpr {
-  const IrMapLiteral(this.entries, this.key, this.value);
+  IrMapLiteral(this.entries, this.key, this.value);
 
   final List<(IrExpr, IrExpr)> entries;
   final IrType key;
@@ -866,7 +875,7 @@ class IrMapLiteral extends IrExpr {
 /// collected right there and 54 escape as a lazy Iterable. Only the collected
 /// ones are translated; the rest are refused rather than guessed at.
 class IrIterChain extends IrExpr {
-  const IrIterChain(this.source, this.steps);
+  IrIterChain(this.source, this.steps);
 
   final IrExpr source;
 
@@ -980,7 +989,7 @@ const iterStepNames = <String, String>{
 /// Rust's `format!` is the same thing said differently: the literal pieces
 /// become the format string and the rest become its arguments. 99 of these.
 class IrInterpolation extends IrExpr {
-  const IrInterpolation(this.parts);
+  IrInterpolation(this.parts);
 
   /// Literal text and expressions, in order. A literal part carries its text
   /// in [IrLiteral.value].
@@ -993,7 +1002,7 @@ class IrInterpolation extends IrExpr {
 /// separate from the tear-off of an *instance* method, where the receiver has
 /// to be captured and the ownership question starts. 111 of these.
 class IrFunctionRef extends IrExpr {
-  const IrFunctionRef(this.owner, this.name);
+  IrFunctionRef(this.owner, this.name);
 
   /// The class holding it, or null for a top-level function.
   final String? owner;
@@ -1037,7 +1046,7 @@ class IrCase {
 /// `x = v` where the value of the assignment is wanted. The local's twin of
 /// [IrSetValue].
 class IrAssignValue extends IrExpr {
-  const IrAssignValue(this.name, this.value);
+  IrAssignValue(this.name, this.value);
 
   final String name;
   final IrExpr value;
@@ -1048,7 +1057,7 @@ class IrAssignValue extends IrExpr {
 /// 202 of these. Rust's assignment has the value `()`, so the value has to be
 /// kept: bind it, assign it, produce it.
 class IrSetValue extends IrExpr {
-  const IrSetValue(this.target, this.name, this.value);
+  IrSetValue(this.target, this.name, this.value);
 
   final IrExpr? target;
   final String name;

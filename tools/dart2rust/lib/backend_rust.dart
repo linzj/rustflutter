@@ -6688,7 +6688,7 @@ class RustBackend {
       if (init == null && field.type.nullable) {
         // A nullable Dart field with no initialiser *is* null. Rust needs the
         // value written down, and `None` is exactly it -- not a stand-in.
-        init = const IrLiteral('null', IrType('Null', nullable: true));
+        init = IrLiteral('null', const IrType('Null', nullable: true));
       }
       if (init == null) {
         // Dart's `late`, which starts with no value at all. `None` is that,
