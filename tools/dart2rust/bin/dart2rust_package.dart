@@ -280,8 +280,29 @@ Future<void> main(List<String> args) async {
     }
   }
 
+  // What each library can name: itself and everything it references,
+  // transitively. A wider impl may only be written where the types it
+  // names are visible (`addWiderImpls`).
+  final references = <Library, Set<Library>>{
+    for (final library in inPackage)
+      library: librariesReferencedBy(library).toSet(),
+  };
+  final reachable = <Library, Set<Library>>{};
   for (final library in inPackage) {
-    frontends[library]!.addWiderImpls(lowered[library]!.$1);
+    final seen = <Library>{library};
+    final work = [library];
+    while (work.isNotEmpty) {
+      for (final next in references[work.removeLast()] ?? const <Library>{}) {
+        if (seen.add(next)) work.add(next);
+      }
+    }
+    reachable[library] = seen;
+  }
+  for (final library in inPackage) {
+    frontends[library]!.addWiderImpls(
+      lowered[library]!.$1,
+      reachable[library]!,
+    );
   }
 
   for (final library in inPackage) {

@@ -75,10 +75,28 @@ class KernelFrontend implements TypeWorld {
   /// own and that Dart's covariance admits (`Foo<X>` is a `Foo<Y>` for
   /// `X <: Y`). Only concrete instantiations: one naming a type parameter is
   /// another declaration's business.
-  void addWiderImpls(IrLibrary lowered) {
+  void addWiderImpls(IrLibrary lowered, Set<Library> visible) {
     final census = instantiations;
     final env = typeEnvironment;
     if (census == null || env == null) return;
+    // Whether every class a type names is visible from this library: an
+    // impl written here cannot name the gallery's enum from `material`.
+    bool nameable(DartType t) {
+      if (t is InterfaceType) {
+        final lib = t.classNode.enclosingLibrary;
+        if (lib.importUri.scheme != 'dart' && !visible.contains(lib)) {
+          return false;
+        }
+        return t.typeArguments.every(nameable);
+      }
+      if (t is FunctionType) {
+        return nameable(t.returnType) &&
+            t.positionalParameters.every(nameable) &&
+            t.namedParameters.every((n) => nameable(n.type));
+      }
+      return true;
+    }
+
     for (final ir in lowered.classes) {
       if (ir.isAbstract || ir.isEnum) continue;
       final node = _kernelClasses[ir.name];
@@ -99,6 +117,7 @@ class KernelFrontend implements TypeWorld {
         for (final wider in entry.value) {
           if (wider == asBase) continue;
           if (wider.typeArguments.any(_mentionsTypeParameter)) continue;
+          if (!wider.typeArguments.every(nameable)) continue;
           if (!env.isSubtypeOf(asBase, wider)) continue;
           // The trait and every generic trait above it, as the wider
           // instantiation reaches them: `impl Tween<Object> for IntTween`
@@ -7644,7 +7663,15 @@ class KernelFrontend implements TypeWorld {
           name,
           _edgeType(field.type),
           isFinal: field.isFinal,
-          initial: initial == null ? null : expression(initial),
+          // Into the field's type, and across a projected one (`T? _result
+          // = null` in a generic route, ws414).
+          initial: initial == null
+              ? null
+              : _acrossEdge(
+                  _widened(initial, field.type, expression(initial)),
+                  field.type,
+                  toOption: false,
+                ),
           shared: _sharedFields.contains(name),
           isLate: field.isLate,
         ),
