@@ -827,6 +827,26 @@ class KernelFrontend {
       // expression that never produces a value: `return Err(e)` has type `!`,
       // which fits wherever a value was wanted. So the expression form is the
       // statement form, written where the value would have gone.
+      // A *value* of a translated class thrown from a local or a call
+      // (`throw error` with a `FlutterError` in hand) goes behind an
+      // `Rc<dyn Object>` here; a constructed one the backend boxes itself
+      // (`_boxedThrow`), a handle or a trait object unsizes on its own (18).
+      final thrownType = _staticType(node.expression);
+      final thrownExpr = node.expression;
+      if (thrownType is InterfaceType &&
+          thrownExpr is! ConstructorInvocation &&
+          thrownExpr is! ConstantExpression &&
+          thrownExpr is! StringLiteral &&
+          thrownType.nullability != Nullability.nullable &&
+          _translatedClass(thrownType.classNode) &&
+          !_abstractLike(thrownType.classNode) &&
+          !_closureCallsMethod(thrownType.classNode) &&
+          !thrownType.classNode.isEnum &&
+          !_scalarClass(thrownType.classNode)) {
+        return IrThrowValue(
+          IrCall(expression(node.expression), '!rc_object', const []),
+        );
+      }
       return IrThrowValue(expression(node.expression));
     }
     if (node is InstanceSet) {
@@ -3634,8 +3654,15 @@ class KernelFrontend {
     }
     if (given == null || given is DynamicType || given is NullType)
       return lowered;
-    if (given is InterfaceType && given.classNode.name == 'Object')
-      return lowered;
+    // An `Object` into an `Object?`: `Some`, like any non-null into a
+    // nullable (`list[i] = key` on a `List<Object?>`, 36 at ws327).
+    if (given is InterfaceType && given.classNode.name == 'Object') {
+      return param is! DynamicType &&
+              param.nullability == Nullability.nullable &&
+              given.nullability != Nullability.nullable
+          ? IrSome(lowered)
+          : lowered;
+    }
     final counted =
         given is InterfaceType && _closureCallsMethod(given.classNode);
     // An int literal into an `Object` slot is an `i64`, not the `i32`
@@ -4290,9 +4317,13 @@ class KernelFrontend {
       // ..and widened into the parameter like a written argument: `Curves.
       // linear` filling a `Curve` is a `_Linear` value into an `Rc<dyn
       // Curve>` (92 `_Linear`, 109 `Cubic`).
-      return _intoObject(
+      // Through `_intoDynamic`, which knows a prelude callee's `Object`
+      // parameter is spelled as what it takes: `StringBuffer([content =
+      // ''])` got its default as an `Rc<dyn Object>` (21 at ws327).
+      return _intoDynamic(
         initializer,
         param.type,
+        _calleeOf(param),
         _widened(initializer, param.type, expression(initializer)),
       );
     }
