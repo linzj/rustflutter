@@ -215,8 +215,16 @@ def main():
                     unstubbable.append((f, line, msg))
                 continue
             # Highest line first, so earlier stubs do not shift later spans.
+            # ..and a span inside a function this round already collapsed
+            # is that function's: the collapse moved everything below it
+            # up, and looking the span up again found a *healthy* function
+            # further down (`create_restoration_manager` stubbed for an
+            # error in `_handlePlatformMessage`, ws457).
             done = set()
+            covered = []
             for line, msg, rendered in sorted(items, reverse=True):
+                if any(opened < line <= end for opened, end in covered):
+                    continue
                 if line < 1 or line > len(lines):
                     # A span past the end: the file changed under cargo
                     # (the same file reported under two spellings).
@@ -245,6 +253,7 @@ def main():
                     unstubbable.append((f, line, msg))
                     continue
                 lines = stub(lines, start, opened, end, msg)
+                covered.append((opened + 1, end + 1))
                 stubbed.append((f, name, msg))
                 # The diagnostic that stubbed it, by (file, function): the
                 # rendered list alone could not be searched by line once
