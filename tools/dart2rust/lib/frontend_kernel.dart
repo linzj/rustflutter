@@ -8902,6 +8902,30 @@ class _LocalFinder extends RecursiveVisitor {
     declared.add(node.variable);
     super.visitLet(node);
   }
+
+  // The other binders without a declaration statement: a catch clause's
+  // two, a `for-in`'s, a local function's. Counted as outer locals, a
+  // closure around `catch (error, stack)` cloned `error` in from a scope
+  // that had none (`lockEvents`, `registerServiceExtension`, ws452).
+  @override
+  void visitCatch(Catch node) {
+    final exception = node.exception, stackTrace = node.stackTrace;
+    if (exception != null) declared.add(exception);
+    if (stackTrace != null) declared.add(stackTrace);
+    super.visitCatch(node);
+  }
+
+  @override
+  void visitForInStatement(ForInStatement node) {
+    declared.add(node.variable);
+    super.visitForInStatement(node);
+  }
+
+  @override
+  void visitFunctionDeclaration(FunctionDeclaration node) {
+    declared.add(node.variable);
+    super.visitFunctionDeclaration(node);
+  }
 }
 
 /// Finds `this.x = v` (implicit `this` included).
