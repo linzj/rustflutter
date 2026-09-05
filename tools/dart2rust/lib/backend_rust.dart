@@ -705,10 +705,16 @@ class RustBackend {
       // A super function returns `Result`; `Object.toString` is the prelude's.
       // An async super function is a `DartFuture`, not a `Result`: no `?`
       // (`super.handleSystemMessage(..)` in `WidgetsBinding`, ws446).
-      IrSuperCall(:final base, :final name, :final args, :final isSetter) =>
+      IrSuperCall(
+        :final base,
+        :final name,
+        :final args,
+        :final isSetter,
+        :final baseArguments,
+      ) =>
         base == 'Object'
             ? _superCall(base, name, args)
-            : '${_superCall(base, name, args, isSetter: isSetter)}${(library[base]?.methods.any((m) => m.name == name && !m.isStatic && m.isAsync) ?? false) ? '' : _propagate}',
+            : '${_superCall(base, name, args, isSetter: isSetter, baseArguments: baseArguments)}${(library[base]?.methods.any((m) => m.name == name && !m.isStatic && m.isAsync) ?? false) ? '' : _propagate}',
       // A local's `!` clones first: `a!.axis` and then `a!.value` moved
       // `a` at the first (E0382); a `Copy` local clones for free.
       IrNullCheck(:final operand) =>
@@ -1759,6 +1765,7 @@ class RustBackend {
     String name,
     List<IrExpr> args, {
     bool isSetter = false,
+    List<IrType> baseArguments = const [],
   }) {
     // `Object` is not a class this compiler has, and it never will be -- it is
     // the root every Dart class already inherits from. So `super.toString()`
@@ -1823,8 +1830,19 @@ class RustBackend {
         : cls.counted
         ? '&*$_selfName'
         : '&$_selfName';
+    // The base's type arguments spelled: a class implementing the trait
+    // at two instantiations (`Animation<f64>` and the wider `Animation<
+    // Option<f64>>`) left `T` ambiguous (E0283, 3 at ws451). The method's
+    // own stay inferred.
+    final method = baseClass.methods.firstWhere(
+      (m) => m.name == name && !m.isStatic && m.isSetter == isSetter,
+    );
+    final turbofish = baseArguments.isEmpty
+        ? ''
+        : '::<_, ${baseArguments.map(type).join(', ')}'
+              '${', _' * method.typeParameters.length}>';
     final call =
-        '${superFn(base, name, isSetter: isSetter)}(${[receiver, ...args.map(expr)].join(', ')})';
+        '${superFn(base, name, isSetter: isSetter)}$turbofish(${[receiver, ...args.map(expr)].join(', ')})';
     // An async super function is an `async fn`; the caller's trait wants
     // the boxed future every `Future<T>` is here.
     final isAsync = baseClass.methods.any(
@@ -4182,8 +4200,15 @@ class RustBackend {
         } else {
           // An `async` super function is an `async fn`: its future is
           // boxed here, borrowing `self` for the `'_` the signature allows.
+          // The trait's own parameters spelled, so a class implementing
+          // it at two instantiations is not ambiguous (ws451).
+          final spelled = [
+            if (cls.typeParameters.isNotEmpty ||
+                method.typeParameters.isNotEmpty)
+              '::<_${[...cls.typeParameters, ...method.typeParameters].map((p) => ', $p').join()}>',
+          ].join();
           final call =
-              '${superFn(cls.name, method.name, isSetter: method.isSetter)}('
+              '${superFn(cls.name, method.name, isSetter: method.isSetter)}$spelled('
               '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})';
           // An async super function is a future, not a `Result`: the
           // trait default returns it in `Ok`.
