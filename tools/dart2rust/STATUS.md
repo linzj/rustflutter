@@ -6375,6 +6375,9 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws359 | 950 叶子错 | `_binaryType` 递归给自己造的操作数定型。**3110→3076 / 795，138+1 个 crate**（unwrap on f64 −43，cannot subtract −22）。 |
 | ws360 | 950 叶子错 | `coerce` 加 `Object`/`dynamic` 槽的共享（值 `dart_object`、句柄 unsize、`this` 走自己的句柄、可空经 `map`、`dynamic` 的 null 是 `Null` 对象）和 `Object`→标量的 `Any` 下转。**3076→3656**：prelude 被调方（`Set.contains(Object?)`、`StringBuffer.write`、`Object.hash`）的 Rust 签名不是 Dart 声明的，按声明转是错的（+443 `&Option<Rc<WidgetState>>`）。 |
 | ws361 | 950 叶子错 | 实参的槽只在被调方是翻译过的代码时才按类型转（`_slotTranslated`/`_forCallee`，prelude 的签名是它自己的）；`_intoDynamic` 幂等；`as int?` 的下转拼成 `i64`（10 处 `downcast_ref::<int>`，旧 bug）。**3656→3076 / 795**，与 ws359 持平——Object 规则进了 `coerce`，尺子没动。下一步删 `_widened` 里被覆盖的分支。 |
+| ws362 | 950 叶子错 | 删掉 `_widened` 里被 `coerce` 覆盖的 172 行（dynamic 下转、抽象→具体下转、具体→trait 的 `!rc`、TFA 删掉的 `as`、擦除读收窄、`!upcast_elements`）。**3076→3239**：prelude 泛型槽（`List<Widget>.add(E)`）被门禁挡住没转（+163）。 |
+| ws363 | 950 叶子错 | prelude 被调方的**泛型**形参（声明里带类型参数）按实例化类型转，具体形参仍不转；`_forCallee` 只管直接的槽，下层字面量条目各是自己的槽。**3239→3128**。剩的：暂存赋值的 `clone()` 没类型、常量集合条目没类型。 |
+| ws364 | 950 叶子错 | 九处 `__t` 暂存的 `clone()` 从初值取 `rustType`；`_constant` 结果按常量类定型，const list/set 条目同 map 条目一样过 `_widened`。**3128→3093 / 795，138+1 个 crate**（比 ws361 多 17 个桩，换 172 行删除；剩的差在下一轮找）。 |
 
 ## 下一步(2026-09-05 重铺)
 

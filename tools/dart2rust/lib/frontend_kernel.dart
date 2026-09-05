@@ -70,11 +70,25 @@ class KernelFrontend {
   /// so its arguments are not coerced by the declared type.
   var _slotTranslated = true;
 
-  bool _calleeTranslated(FunctionNode? callee) {
+  /// ..except a prelude callee's *generic* slot: `List<Widget>.add(E)` holds
+  /// what the translated element type says, so that one is coerced.
+  bool _calleeTranslated(FunctionNode? callee, DartType? declared) {
     final member = callee?.parent;
     if (member is! Member) return true;
     final uri = member.enclosingLibrary.importUri;
-    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+    if (uri.scheme != 'dart' || uri.toString() == 'dart:ui') return true;
+    return declared != null && _mentionsTypeParameter(declared);
+  }
+
+  static bool _mentionsTypeParameter(DartType t) {
+    if (t is TypeParameterType) return true;
+    if (t is InterfaceType) return t.typeArguments.any(_mentionsTypeParameter);
+    if (t is FunctionType) {
+      return _mentionsTypeParameter(t.returnType) ||
+          t.positionalParameters.any(_mentionsTypeParameter) ||
+          t.namedParameters.any((n) => _mentionsTypeParameter(n.type));
+    }
+    return false;
   }
 
   /// Whether `Object`-bounded parameters a subclass fixes are erased too
@@ -591,13 +605,14 @@ class KernelFrontend {
           target.kind == ProcedureKind.Setter &&
           target.enclosingClass == null) {
         final held = '__t${_nextTemporary++}';
+        final init = expression(node.value);
         final stored = _widened(
           node.value,
           target.function.positionalParameters.single.type,
-          IrCall(IrLocal(held), 'clone', const []),
+          IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
         );
         return IrBlockValue([
-          IrLocalDecl(held, null, expression(node.value)),
+          IrLocalDecl(held, null, init),
           IrExprStmt(
             IrStaticCall(null, _topLevelSetterName(target.name.text), [stored]),
           ),
@@ -608,15 +623,16 @@ class KernelFrontend {
       }
       final owner = target.enclosingClass;
       final held = '__t${_nextTemporary++}';
+      final init = expression(node.value);
       // The store widens into the static's type: `_decomposeV ??=
       // Vector3.zero()` on a `Vector3?` stores `Some(..)`.
       final write = _widened(
         node.value,
         target.type,
-        IrCall(IrLocal(held), 'clone', const []),
+        IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
       );
       return IrBlockValue([
-        IrLocalDecl(held, null, expression(node.value)),
+        IrLocalDecl(held, null, init),
         owner == null
             ? IrAssignTopLevel(target.name.text, write)
             : IrAssignStatic(owner.name, target.name.text, write),
@@ -845,7 +861,13 @@ class KernelFrontend {
         final held = '__t${_nextTemporary++}';
         return IrBlockValue([
           IrLocalDecl(held, null, stored.value),
-          IrAssign(name, IrSome(IrCall(IrLocal(held), 'clone', const []))),
+          IrAssign(
+            name,
+            IrSome(
+              IrCall(IrLocal(held), 'clone', const [])
+                ..rustType = stored.value.rustType,
+            ),
+          ),
         ], IrLocal(held));
       }
       return IrAssignValue(name, stored);
@@ -920,13 +942,14 @@ class KernelFrontend {
           ? target.function.positionalParameters.single.type
           : null;
       final held = '__t${_nextTemporary++}';
+      final init = expression(node.value);
       final stored = _widened(
         node.value,
         slot,
-        IrCall(IrLocal(held), 'clone', const []),
+        IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
       );
       return IrBlockValue([
-        IrLocalDecl(held, null, expression(node.value)),
+        IrLocalDecl(held, null, init),
         target is Field
             ? IrAssignField(node.name.text, stored)
             : IrExprStmt(
@@ -983,13 +1006,15 @@ class KernelFrontend {
               !onLocal || receiver.variable.parent is! FunctionNode;
           if (counted || ownsValue) {
             final held = '__t${_nextTemporary++}';
-            final clone = IrCall(IrLocal(held), 'clone', const []);
+            final init = expression(node.value);
+            final clone = IrCall(IrLocal(held), 'clone', const [])
+              ..rustType = init.rustType;
             // Into a nullable field the store is `Some(..)`.
             final stored = _widened(node.value, target.setterType, clone);
             return IrBlockValue([
               // Inferred: the field's *declared* type is the generic `T?` of
               // `Tween<T>`, and spelling it put a `T` into a class with none.
-              IrLocalDecl(held, null, expression(node.value)),
+              IrLocalDecl(held, null, init),
               // A field goes through storage (a cell when the class is
               // counted); a setter is a call, on whatever the receiver is.
               target is Field
@@ -1024,13 +1049,14 @@ class KernelFrontend {
         // left `ContainerRenderObjectMixin._insertIntoChildList` out of
         // every applier (27 `todo!`s).
         final held = '__t${_nextTemporary++}';
+        final init = expression(node.value);
         final stored = _widened(
           node.value,
           node.interfaceTarget.setterType,
-          IrCall(IrLocal(held), 'clone', const []),
+          IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
         );
         return IrBlockValue([
-          IrLocalDecl(held, null, expression(node.value)),
+          IrLocalDecl(held, null, init),
           IrSetter(
             null,
             node.name.text,
@@ -1052,7 +1078,10 @@ class KernelFrontend {
           IrLocalDecl(held, null, stored.value),
           IrAssignField(
             node.name.text,
-            IrSome(IrCall(IrLocal(held), 'clone', const [])),
+            IrSome(
+              IrCall(IrLocal(held), 'clone', const [])
+                ..rustType = stored.value.rustType,
+            ),
           ),
         ], IrLocal(held));
       }
@@ -1398,7 +1427,8 @@ class KernelFrontend {
         ),
         for (final s in statements.skip(1)) statement(s),
       ];
-      return IrBlockValue(steps, IrLocal(_cascadeName));
+      return IrBlockValue(steps, IrLocal(_cascadeName))
+        ..rustType = _type(bound.type);
     } finally {
       _cascade = previous;
     }
@@ -1727,7 +1757,7 @@ class KernelFrontend {
             _widened(initial, node.variable.type, expression(initial)),
           ),
           for (final s in body.body.statements) statement(s),
-        ], IrLocal(_cascadeName));
+        ], IrLocal(_cascadeName))..rustType = _type(node.variable.type);
       } finally {
         _cascade = previous;
       }
@@ -2758,7 +2788,11 @@ class KernelFrontend {
         IrIndexSet(
           expression(node.receiver),
           args[0],
-          IrCast(IrCall(IrLocal(held), 'clone', const []), narrow),
+          IrCast(
+            IrCall(IrLocal(held), 'clone', const [])
+              ..rustType = args[1].rustType,
+            narrow,
+          ),
         ),
       ], IrLocal(held));
     }
@@ -2777,7 +2811,8 @@ class KernelFrontend {
           IrIndexSet(
             expression(node.receiver),
             args[0],
-            IrCall(IrLocal(held), 'clone', const []),
+            IrCall(IrLocal(held), 'clone', const [])
+              ..rustType = args[1].rustType,
           ),
         ], IrLocal(held));
       }
@@ -3765,11 +3800,16 @@ class KernelFrontend {
   /// one needs `'static`, and a borrow cannot give it. Those go back to being
   /// refused, which is the truth about them until objects are counted.
   /// `lower()`, with the slot's owner known (`_slotTranslated`).
-  IrExpr _forCallee(FunctionNode? callee, IrExpr Function() lower) {
+  IrExpr _forCallee(
+    FunctionNode? callee,
+    DartType? declared,
+    IrExpr lowered,
+    IrExpr Function(IrExpr lowered) widen,
+  ) {
     final was = _slotTranslated;
-    _slotTranslated = _calleeTranslated(callee);
+    _slotTranslated = _calleeTranslated(callee, declared);
     try {
-      return lower();
+      return widen(lowered);
     } finally {
       _slotTranslated = was;
     }
@@ -3812,19 +3852,17 @@ class KernelFrontend {
           index: index,
           _forCallee(
             callee,
-            () => _widened(
-              value,
-              paramType,
-              _withBorrowing(
-                param,
-                callee,
-                () => _withExpectedReturn(
-                  paramType,
-                  value,
-                  () => expression(value),
-                ),
+            declaredType,
+            _withBorrowing(
+              param,
+              callee,
+              () => _withExpectedReturn(
+                paramType,
+                value,
+                () => expression(value),
               ),
             ),
+            (lowered) => _widened(value, paramType, lowered),
           ),
         ),
       ),
@@ -3925,15 +3963,13 @@ class KernelFrontend {
           name: param is FunctionParameter ? param.parameterName : null,
           _forCallee(
             callee,
-            () => _widened(
-              value,
-              type,
-              _withBorrowing(
-                param,
-                callee,
-                () => _withExpectedReturn(type, value, () => expression(value)),
-              ),
+            type,
+            _withBorrowing(
+              param,
+              callee,
+              () => _withExpectedReturn(type, value, () => expression(value)),
             ),
+            (lowered) => _widened(value, type, lowered),
           ),
         ),
       ),
@@ -4435,6 +4471,24 @@ class KernelFrontend {
   }
 
   IrExpr _widened(Expression value, DartType? param, IrExpr lowered) {
+    // The callee flag (`_slotTranslated`) is about this slot; whatever is
+    // lowered underneath -- a literal's entries against the slot's element
+    // types -- fills slots of its own, translated ones.
+    final translated = _slotTranslated;
+    _slotTranslated = true;
+    try {
+      return _widenedInto(value, param, lowered, translated: translated);
+    } finally {
+      _slotTranslated = translated;
+    }
+  }
+
+  IrExpr _widenedInto(
+    Expression value,
+    DartType? param,
+    IrExpr lowered, {
+    required bool translated,
+  }) {
     // A literal into a collection slot of other element types is lowered
     // again against those: see `_mapLiteral`.
     if (param is InterfaceType && param.nullability != Nullability.nullable) {
@@ -4454,7 +4508,7 @@ class KernelFrontend {
       }
     }
     if (coerceByType &&
-        _slotTranslated &&
+        translated &&
         param != null &&
         lowered.rustType != null) {
       IrType? slot;
@@ -4641,178 +4695,10 @@ class KernelFrontend {
         );
       }
     }
-    // A `dynamic` value into a scalar or struct parameter: `number` (a
-    // `num` upstream, `dynamic` after `is` checks) into `_formatExponential
-    // (double)`. The downcast through `Any` is what Dart's implicit cast did.
-    // A `dynamic` into a *nullable* struct slot -- `Clock? c = Zone.current
-    // [#key]` -- is the downcast that may fail: `Option<T>` from `Any`.
-    if (given is DynamicType &&
-        param is InterfaceType &&
-        param.nullability == Nullability.nullable &&
-        param.classNode.name != 'Object' &&
-        !_abstractLike(param.classNode) &&
-        (param.classNode.enclosingLibrary.importUri.scheme != 'dart' ||
-            param.classNode.enclosingLibrary.importUri.toString() ==
-                'dart:ui')) {
-      return IrCall(lowered, '!as_opt', [
-        IrLiteral(_rustScalar(param.classNode.name), const IrType('raw')),
-      ]);
-    }
-    // (`double` and `int` are abstract classes in dart:core, so no
-    // `isAbstract` check here.)
-    if (given is DynamicType &&
-        param is InterfaceType &&
-        param.nullability != Nullability.nullable &&
-        const {
-          'int',
-          'double',
-          'bool',
-          'String',
-        }.contains(param.classNode.name)) {
-      return IrCall(
-        IrDowncast(lowered, _rustScalar(_type(param).name)),
-        'clone',
-        const [],
-      );
-    }
-    // Neither coercion for a `dart:` class other than dart:ui's: those are
-    // the prelude's types, and `List`/`_GrowableList` is one `Vec`, not a
-    // trait object and its struct (13 `Rc<Vec<f64>>`).
-    // A cast the AOT compiler dropped: `final ContainerParentDataMixin<
-    // ChildType> childParentData = child.parentData! as ..` reaches here
-    // with no `as` and a `ParentData` in hand -- TFA removed the check it
-    // proved. A trait handle into a slot of a trait *below* it is that
-    // downcast, the `Option` kept when both are nullable (13 at ws353).
-    // ..and an erased read into a slot of the clone's narrower class:
-    // `_slotToChild[slot]` (a `ChildType?`, the bound here) returned as the
-    // `RenderBox?` `childForSlot` declares (37 at ws353).
-    {
-      final slot = param;
-      InterfaceType? held;
-      if (given is InterfaceType) {
-        held = given;
-      } else if (given is TypeParameterType &&
-          _erasedParameter(given.parameter)) {
-        final bound = given.parameter.bound;
-        if (bound is InterfaceType) {
-          held = bound.withDeclaredNullability(given.nullability);
-        }
-      }
-      if (slot is InterfaceType &&
-          held != null &&
-          slot.classNode != held.classNode &&
-          _abstractLike(slot.classNode) &&
-          _abstractLike(held.classNode) &&
-          _translatedClass(slot.classNode) &&
-          _translatedClass(held.classNode) &&
-          !_scalarClass(slot.classNode) &&
-          !_scalarClass(held.classNode) &&
-          slot.classNode.name != 'Object' &&
-          held.classNode.name != 'Object' &&
-          (slot.nullability == Nullability.nullable ||
-              held.nullability != Nullability.nullable) &&
-          !(typeEnvironment?.hierarchy.isSubInterfaceOf(
-                held.classNode,
-                slot.classNode,
-              ) ??
-              true)) {
-        return IrCastTo(lowered, _type(slot));
-      }
-    }
-    bool translated(InterfaceType t) {
-      final uri = t.classNode.enclosingLibrary.importUri;
-      return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
-    }
-
-    if (param is InterfaceType &&
-        given is InterfaceType &&
-        translated(param) &&
-        translated(given) &&
-        param.nullability != Nullability.nullable &&
-        given.nullability != Nullability.nullable &&
-        !_abstractLike(param.classNode) &&
-        // `Object` is not abstract in Kernel and is not a struct here.
-        param.classNode.name != 'Object' &&
-        _abstractLike(given.classNode) &&
-        param.classNode != given.classNode) {
-      return IrCall(
-        IrDowncast(lowered, param.classNode.name),
-        'clone',
-        const [],
-      );
-    }
-    // The other direction: a struct value handed to a parameter of one of
-    // its abstract supertypes is shared into the `Rc<dyn ..>` that is. A
-    // counted class is already a handle, and unsizes on its own.
-    if (param is InterfaceType &&
-        given is InterfaceType &&
-        translated(param) &&
-        translated(given) &&
-        param.nullability != Nullability.nullable &&
-        given.nullability != Nullability.nullable &&
-        _abstractLike(param.classNode) &&
-        !_abstractLike(given.classNode) &&
-        !_closureCallsMethod(given.classNode) &&
-        param.classNode != given.classNode) {
-      return IrCall(lowered, '!rc', const []);
-    }
-    // ..and into a *nullable* slot of the supertype, through `Some`:
-    // `ErrorDescription(..)` as the `DiagnosticsNode? context` of a
-    // `FlutterErrorDetails` (59 in `foundation`).
-    if (param is InterfaceType &&
-        given is InterfaceType &&
-        translated(param) &&
-        translated(given) &&
-        param.nullability == Nullability.nullable &&
-        given.nullability != Nullability.nullable &&
-        _abstractLike(param.classNode) &&
-        !_abstractLike(given.classNode) &&
-        !_closureCallsMethod(given.classNode) &&
-        param.classNode != given.classNode) {
-      return IrSome(IrCall(lowered, '!rc', const []));
-    }
-    // A `List<int>` handed to a `Uint8List` parameter (TFA narrowed it, or
-    // Dart's typed list is a `List<int>` too): the elements are cast down,
-    // `Vec<i64>` to `Vec<u8>`, as the typed-list index does.
-    // A collection of a class into a slot of its trait: `_tickers ??=
-    // <_WidgetTicker>{}` on a `Set<Ticker>?` built a `Set<Rc<_WidgetTicker>>`
-    // (44 `createTicker`s at ws351). Each handle is upcast, in a new
-    // collection (`!upcast_elements`).
-    if (param is InterfaceType &&
-        given is InterfaceType &&
-        (param.classNode.name == 'Set' || param.classNode.name == 'List') &&
-        given.classNode.name == param.classNode.name &&
-        given.nullability != Nullability.nullable &&
-        param.typeArguments.length == 1 &&
-        given.typeArguments.length == 1) {
-      final want = param.typeArguments.single;
-      final have = given.typeArguments.single;
-      if (want is InterfaceType &&
-          have is InterfaceType &&
-          want.classNode != have.classNode &&
-          _abstractLike(want.classNode) &&
-          _translatedClass(want.classNode) &&
-          !_scalarClass(want.classNode) &&
-          _translatedClass(have.classNode) &&
-          !_scalarClass(have.classNode) &&
-          (typeEnvironment?.hierarchy.isSubInterfaceOf(
-                have.classNode,
-                want.classNode,
-              ) ??
-              false)) {
-        final cast = IrCall(
-          lowered,
-          '!upcast_elements',
-          const [],
-          typeArguments: [
-            IrType(param.classNode.name),
-            _type(want),
-            _type(have),
-          ],
-        );
-        return param.nullability == Nullability.nullable ? IrSome(cast) : cast;
-      }
-    }
+    // The downcasts, the sharing into a trait handle, the dropped `as`
+    // and the element upcasts that used to be spelled here one shape at a
+    // time are `coerce`'s now (ws362): a typed value never reaches this
+    // point needing one of them.
     final narrow = _narrowElement(param);
     // The *declared* type of a variable, not its promotion: `if (input is
     // Uint8List) return input;` still holds a `Vec<i64>`.
@@ -5205,7 +5091,22 @@ class KernelFrontend {
     };
   }
 
+  /// A constant, typed by its own class (`_constantStaticType`) so that a
+  /// slot it goes into -- a `const <ShortcutActivator, Intent>{..}` entry --
+  /// is coerced like any value (`coerce`).
   IrExpr _constant(Constant constant, Expression node) {
+    final lowered = _constantRaw(constant, node);
+    if (lowered.rustType == null) {
+      try {
+        lowered.rustType = _type(_constantStaticType(constant));
+      } on Unsupported {
+        // Left untyped.
+      }
+    }
+    return lowered;
+  }
+
+  IrExpr _constantRaw(Constant constant, Expression node) {
     if (constant is TypeLiteralConstant) return _typeLiteral(constant.type);
     if (constant is SymbolConstant) {
       // `#name`, spelled the way `Type::of` is: a name and nothing else. The
@@ -5243,9 +5144,20 @@ class KernelFrontend {
     if (constant is NullConstant) {
       return IrLiteral('null', const IrType('Null', nullable: true));
     }
+    // Each element into the collection's element type, as a map constant's
+    // entries are below.
+    IrExpr element(Constant c, DartType into) {
+      final value = ConstantExpression(c, _constantStaticType(c));
+      return _intoObject(
+        value,
+        into,
+        _widened(value, into, _constant(c, node)),
+      );
+    }
+
     if (constant is ListConstant) {
       return IrListLiteral([
-        for (final e in constant.entries) _constant(e, node),
+        for (final e in constant.entries) element(e, constant.typeArgument),
       ], _type(constant.typeArgument));
     }
     if (constant is SetConstant) {
@@ -5253,7 +5165,7 @@ class KernelFrontend {
       // set literal expression becomes too. 37 in the gallery's dill.
       return IrStaticCall('Set', 'from', [
         IrListLiteral([
-          for (final e in constant.entries) _constant(e, node),
+          for (final e in constant.entries) element(e, constant.typeArgument),
         ], _type(constant.typeArgument)),
       ]);
     }
