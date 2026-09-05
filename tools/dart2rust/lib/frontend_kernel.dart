@@ -1191,25 +1191,29 @@ class KernelFrontend implements TypeWorld {
       final name = known ?? written!;
       // Into a `dynamic` local (`dynamic result = scaled(x)` in vector_math's
       // `operator *`) the value is shared into its `Rc<dyn Object>`.
-      final stored = _widened(
-        node.value,
-        _localType(node.variable),
-        expression(node.value),
-      );
+      final raw = expression(node.value);
+      final stored = _widened(node.value, _localType(node.variable), raw);
       // `(index = s.indexOf(p)) >= 0` with `int? index`: the store is
-      // `Some(..)`, the value of the expression is not.
-      if (stored is IrSome) {
+      // `Some(..)`, the value of the expression is not -- nor, for a
+      // `dynamic` temporary assigned a `String` (a pattern's `#0#2 =
+      // error.message`, run452), is it the boxed `Rc<String>`. Whatever
+      // the store adapted, the value is the one before: held, stored
+      // through the same adaptation of a clone, produced.
+      // A literal is not held: the store re-lowers it against the slot's
+      // element types, and holding it too would evaluate it twice.
+      if (!identical(stored, raw) &&
+          node.value is! MapLiteral &&
+          node.value is! ListLiteral) {
         final held = '__t${_nextTemporary++}';
+        final again = IrCall(IrLocal(held), 'clone', const [])
+          ..rustType = raw.rustType;
         return IrBlockValue([
-          IrLocalDecl(held, null, stored.value),
+          IrLocalDecl(held, null, raw),
           IrAssign(
             name,
-            IrSome(
-              IrCall(IrLocal(held), 'clone', const [])
-                ..rustType = stored.value.rustType,
-            ),
+            _widened(node.value, _localType(node.variable), again),
           ),
-        ], IrLocal(held));
+        ], IrLocal(held))..rustType = raw.rustType;
       }
       return IrAssignValue(name, stored);
     }
