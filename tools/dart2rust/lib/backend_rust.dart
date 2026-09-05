@@ -6151,6 +6151,9 @@ class RustBackend {
       // (4 "not all trait items implemented" in `widgets`, one per
       // generic `Element`).
       need = _renamedShadowed(need) ?? need;
+      // A forwarder has parameters, not locals: the last body's cell locals
+      // printed a parameter `child` as `child.borrow()` (7 at ws383).
+      _cellLocals = {};
       var have = _matching(need);
       String? via;
       if (have == null) {

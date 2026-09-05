@@ -6397,6 +6397,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws381 | 950 叶子错 | `IrNullCheck` 的类型是操作数去掉 `Option`（结构，不信 Dart）；`==` 协调只看类名差异，不碰已有的可空处理。**3088→3020 / 795，138+1 个 crate**（与 ws377 持平 +2；`_narrowedRead` 删净）。 |
 | ws382 | 950 叶子错 | coercion 规则独立成 `lib/coerce.dart`（`coerceInto(value, slot, TypeWorld)`，只认 `IrType`），前端和后端各实现一个 `TypeWorld`（trait/counted/struct/子类/泛型值 struct）。后端转发器的返回整形 `_shaped`（靠 Rust 类型文本 `startsWith` 判断）删掉，字段转发器和方法转发器都走同一条规则；`()` 进 `Option` 的形状进了规则。**3020→2907 / 795，138+1 个 crate**（mismatched −114，没有新桩）。 |
 | ws383 | 950 叶子错 | 转发器的**形参**适配（`_inherentCall`：widen 成 `Object`、covariant 下转、擦除界收窄、加 `Some`，四段字符串规则）也换成 `coerceInto`。**2907→2897 / 795，138+1 个 crate**。 |
+| ws384 | 950 叶子错 | 转发器印之前清空上一个方法体的 `_cellLocals`（形参 `child` 被印成 `child.borrow()`）。**2897→2890 / 795，138+1 个 crate**。 |
 
 ## 下一步(2026-09-05 重铺)
 
