@@ -3985,9 +3985,9 @@ class RustBackend {
   /// still decides is `Clone` on a *struct's* parameters: a projecting
   /// struct's `T?` field is `<Vec<T> as DartNullable>::Or` when `T` is put
   /// in for a `List`, and that asks `T: Clone`.
-  String _nb(IrClass c) => ' + DartNullable';
+  String _nb(IrClass c) => ' + DartNullable<Or: Clone>';
 
-  String _nbm(IrMethod m) => ' + DartNullable';
+  String _nbm(IrMethod m) => ' + DartNullable<Or: Clone>';
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
@@ -4063,7 +4063,7 @@ class RustBackend {
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
                 : owner is IrClass && _needsNullable(owner)
-                ? "$p: Clone + DartNullable + 'static"
+                ? "$p: Clone + DartNullable<Or: Clone> + 'static"
                 : "$p: DartNullable + 'static",
           )
         : params;
@@ -4162,7 +4162,7 @@ class RustBackend {
       ? t.name
       : '${t.name}<${t.arguments.map((a) => type(a)).join(', ')}>';
 
-  /// The generics of an `impl` block: every parameter `Clone + DartNullable + 'static`.
+  /// The generics of an `impl` block: every parameter `Clone + DartNullable<Or: Clone> + 'static`.
   ///
   /// A method body clones what it reads (`self._map.clone()`), and a
   /// `Map<K, V>` is `Clone` only when `K` and `V` are; an `Rc<dyn ..>` held
@@ -4185,7 +4185,7 @@ class RustBackend {
     String bound(String p) {
       final key = RegExp('(Map|Set)<$p[,>]').hasMatch(fields);
       // `PartialEq`: `self._value == new_value` on a `T` (`ValueNotifier`).
-      // `Clone + DartNullable + 'static` only (2026-09-04): `PartialEq + Debug` on every
+      // `Clone + DartNullable<Or: Clone> + 'static` only (2026-09-04): `PartialEq + Debug` on every
       // type parameter shut out closures and futures -- `ObserverList<
       // VoidCallback>`, a `Set<Future>` -- at the class, not at the one
       // method that compares or prints. A method that does is what fails
@@ -4469,7 +4469,7 @@ class RustBackend {
   String _traitWhere(IrMethod method) {
     final clauses = [
       if (_sizedBound(method).isNotEmpty) 'Self: Sized',
-      for (final p in cls.typeParameters) '$p: Clone${_nb(cls)}',
+      for (final p in cls.typeParameters) '$p: Clone + DartNullable<Or: Clone>',
     ];
     return clauses.isEmpty ? '' : ' where ${clauses.join(', ')}';
   }
@@ -4534,7 +4534,7 @@ class RustBackend {
         // `invokeLayoutCallback<T extends Constraints>`. A free function can
         // carry them; the trait method it belongs to cannot, and says so.
         // Bounded as the trait method's are: `AnnotationResult<S>` asks
-        // `Clone + DartNullable + 'static` of its `S`, and the free function said nothing
+        // `Clone + DartNullable<Or: Clone> + 'static` of its `S`, and the free function said nothing
         // (E0277 in the signature of `ContainerLayer.findAnnotations<S>`).
         '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone${_nbm(method)} + 'static").join(', ')}'}'
         '>($params) -> '
@@ -5645,7 +5645,7 @@ class RustBackend {
     final cloneable = _cloneable(cls);
     // A derived `Debug` on `ValueKey<T>` holds only for `T: Debug`, and
     // the `Key` trait it implements has `Debug` above it for every `T:
-    // Clone + DartNullable + 'static` (18 E0277s the moment the type parameters lost
+    // Clone + DartNullable<Or: Clone> + 'static` (18 E0277s the moment the type parameters lost
     // their `Debug` bound). A generic class prints as its class instead;
     // `PartialEq` can still be derived, that impl carries its own `T:
     // PartialEq` and no trait asks for it unconditionally.
@@ -5780,9 +5780,7 @@ class RustBackend {
     // One line per struct rather than one blanket impl over everything: see
     // `DartAny` in the prelude for why the blanket one is quietly wrong.
     _line('');
-    // Its `Or` is `Option<Self>`, which has to be `Clone`: a struct that
-    // is not (one holding a bare future) is no type argument either.
-    if (cloneable) _emitDartNullable();
+    _emitDartNullable();
     _line(
       // The bounds the inherent impl has: `dart_cast` calls the trait
       // impls, whose `E: Clone` a bare `'static` cannot meet (ws304).

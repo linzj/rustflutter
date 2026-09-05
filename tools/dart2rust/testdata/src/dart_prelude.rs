@@ -269,15 +269,16 @@ impl DartInt for i64 {
 /// type parameter can be bound to implements it; the backend writes the
 /// impl for each translated struct and enum.
 pub trait DartNullable: Sized {
-    /// `Clone`, as every held value is: a struct clones its `T?` field.
-    type Or: Clone;
+    /// Not `Clone` by itself -- `Vec<T>` is one only for `T: Clone` --
+    /// so a declaration that clones a `T?` asks `DartNullable<Or: Clone>`.
+    type Or;
     /// The `Option<Self>` a body works with, from the spelled `T?`.
     fn option(or: Self::Or) -> Option<Self>;
     /// The spelled `T?` from a body's `Option<Self>`.
     fn from_option(option: Option<Self>) -> Self::Or;
 }
 
-impl<X: Clone> DartNullable for Option<X> {
+impl<X> DartNullable for Option<X> {
     type Or = Option<X>;
     fn option(or: Option<X>) -> Option<Option<X>> {
         or.map(Some)
@@ -303,20 +304,16 @@ macro_rules! dart_nullable {
     };
 }
 
-/// A boxed future as a type argument (`_CallbackHookProvider<Future<bool>>`):
-/// its `T?` is a handle to one, which is what makes `Or` `Clone`. Read back
-/// out only when nothing else holds it -- a future never is a `T?` value in
-/// this program; the impl exists so the bound holds everywhere.
+/// A boxed future as a type argument too (`_CallbackHookProvider<Future<
+/// bool>>`): the bound holds everywhere, and nothing asks its `Or` to be
+/// `Clone`.
 impl<F: ?Sized> DartNullable for std::pin::Pin<Box<F>> {
-    type Or = Option<std::rc::Rc<std::pin::Pin<Box<F>>>>;
-    fn option(or: Self::Or) -> Option<Self> {
-        or.map(|shared| {
-            std::rc::Rc::try_unwrap(shared)
-                .unwrap_or_else(|_| panic!("dart2rust: a shared future read as a `T?`"))
-        })
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
     }
-    fn from_option(option: Option<Self>) -> Self::Or {
-        option.map(std::rc::Rc::new)
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
     }
 }
 impl<T: ?Sized> DartNullable for std::rc::Rc<T> {
@@ -328,7 +325,7 @@ impl<T: ?Sized> DartNullable for std::rc::Rc<T> {
         option
     }
 }
-impl<T: Clone> DartNullable for Vec<T> {
+impl<T> DartNullable for Vec<T> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -337,7 +334,7 @@ impl<T: Clone> DartNullable for Vec<T> {
         option
     }
 }
-impl<K: Clone, V: Clone> DartNullable for Map<K, V> {
+impl<K, V> DartNullable for Map<K, V> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -346,7 +343,7 @@ impl<K: Clone, V: Clone> DartNullable for Map<K, V> {
         option
     }
 }
-impl<T: Clone> DartNullable for Set<T> {
+impl<T> DartNullable for Set<T> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -355,7 +352,7 @@ impl<T: Clone> DartNullable for Set<T> {
         option
     }
 }
-impl<A: Clone, B: Clone> DartNullable for (A, B) {
+impl<A, B> DartNullable for (A, B) {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -364,7 +361,7 @@ impl<A: Clone, B: Clone> DartNullable for (A, B) {
         option
     }
 }
-impl<A: Clone, B: Clone, C: Clone> DartNullable for (A, B, C) {
+impl<A, B, C> DartNullable for (A, B, C) {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -373,7 +370,7 @@ impl<A: Clone, B: Clone, C: Clone> DartNullable for (A, B, C) {
         option
     }
 }
-impl<A: Clone, B: Clone, C: Clone, D: Clone> DartNullable for (A, B, C, D) {
+impl<A, B, C, D> DartNullable for (A, B, C, D) {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -382,7 +379,7 @@ impl<A: Clone, B: Clone, C: Clone, D: Clone> DartNullable for (A, B, C, D) {
         option
     }
 }
-impl<T: Clone> DartNullable for Completer<T> {
+impl<T> DartNullable for Completer<T> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -391,7 +388,7 @@ impl<T: Clone> DartNullable for Completer<T> {
         option
     }
 }
-impl<T: Clone> DartNullable for Stream<T> {
+impl<T> DartNullable for Stream<T> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -400,7 +397,7 @@ impl<T: Clone> DartNullable for Stream<T> {
         option
     }
 }
-impl<T: Clone> DartNullable for Point<T> {
+impl<T> DartNullable for Point<T> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
@@ -409,7 +406,7 @@ impl<T: Clone> DartNullable for Point<T> {
         option
     }
 }
-impl<K: Clone, V: Clone> DartNullable for MapEntry<K, V> {
+impl<K, V> DartNullable for MapEntry<K, V> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
