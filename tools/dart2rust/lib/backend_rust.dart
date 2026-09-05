@@ -6090,6 +6090,34 @@ class RustBackend {
     );
   }
 
+  /// What the trait's return type asks of a concrete value `__v`, or null
+  /// when the two agree (see the notes inside).
+  String? _shaped(String concrete, String returns) {
+    final handle = concrete.startsWith('std::rc::Rc<');
+    // The inherent call yields a `Result`; whatever the trait's type
+    // asks of the value is applied inside it.
+    const v = '__v';
+    return concrete == returns || _lifetimed(concrete) == returns
+        ? null
+        : returns == 'Option<$concrete>'
+        ? 'Some($v)'
+        : concrete == '()' && returns.startsWith('Option<')
+        ? '{ $v; None }'
+        // An `Rc<Concrete>` inside a `Result` does not unsize on its
+        // own: the map says `as` (100 `create_render_object`s at ws278).
+        : returns.startsWith('std::rc::Rc<dyn ')
+        ? (handle ? '$v as $returns' : 'std::rc::Rc::new($v)')
+        : returns.startsWith('Option<std::rc::Rc<dyn ')
+        ? (handle
+              ? 'Some($v as ${returns.substring(7, returns.length - 1)})'
+              : concrete.startsWith('Option<std::rc::Rc<')
+              ? '$v.map(|v| v as ${returns.substring(7, returns.length - 1)})'
+              : concrete.startsWith('Option<')
+              ? '$v.map(|v| std::rc::Rc::new(v) as ${returns.substring(7, returns.length - 1)})'
+              : 'Some(std::rc::Rc::new($v))')
+        : 'Box::new($v)';
+  }
+
   void _emitBaseMethod(IrMethod need) {
     {
       // A method type parameter named like one of the class's --
@@ -6151,7 +6179,73 @@ class RustBackend {
         '$wrappedReturns${_sizedBound(need)} {',
       );
       _indent++;
-      if (have == null) {
+      // A mixin's field is an abstract getter and setter on its trait,
+      // and the struct holds the field (flattened from the application):
+      // read and written here, as an interface's field is above. 2747
+      // `todo!`s at ws345 were these (`_tickerModeNotifier` 198, `_child`
+      // 180, `_bucket` 110).
+      final field = have == null
+          ? _allFields(cls).where((f) => f.name == need.name).firstOrNull
+          : null;
+      if (field != null &&
+          !need.isStatic &&
+          (need.isSetter ? need.params.length == 1 : need.params.isEmpty)) {
+        final cell = _sharedField(field.name);
+        final late = field.isLate ? '.unwrap()' : '';
+        final name = snake(field.name);
+        if (need.isSetter) {
+          if (cell != null) {
+            // The trait's type is the erased bound (`Option<Rc<dyn
+            // RenderObject>>`), the field's the narrower one (`RenderBox?`):
+            // the trait cast narrows on the way in, and an `Option` is
+            // taken off or put on (+319 mismatched at ws346).
+            final given = _substituteType(
+              need.params.single.type,
+              _implBinding,
+            );
+            final held = field.type;
+            var value = 'value';
+            if (given.name != held.name &&
+                library.isAbstract(given.name) &&
+                library.isAbstract(held.name) &&
+                held.name != 'Object') {
+              final target = _dynOf(
+                IrType(held.name, arguments: held.arguments),
+              );
+              value =
+                  'value.dart_cast_to::<$target>()${held.nullable ? '' : '.unwrap()'}';
+            } else if (held.nullable && !given.nullable) {
+              value = 'Some(value)';
+            } else if (!held.nullable && given.nullable) {
+              value = 'value.unwrap()';
+            }
+            final stored = field.isLate ? 'Some($value)' : value;
+            _line(
+              _isCopy(_heldType(cell))
+                  ? 'self.$name.set($stored);'
+                  : '*self.$name.borrow_mut() = $stored;',
+            );
+            if (_resultModel) _line('Ok(())');
+          } else {
+            _line(
+              'todo!("${cls.name}.${field.name} is written through a trait but is not a cell")',
+            );
+          }
+        } else {
+          final read = cell != null
+              ? (_isCopy(_heldType(cell))
+                    ? 'self.$name.get()$late'
+                    : 'self.$name.borrow().clone()$late')
+              : _isCopy(type(field.type))
+              ? 'self.$name$late'
+              : 'self.$name.clone()$late';
+          // ..and widened on the way out (`_shaped`), as a method's
+          // result is.
+          final shaped = _shaped(type(field.type), returns);
+          final value = shaped == null ? read : '{ let __v = $read; $shaped }';
+          _line(_resultModel ? 'Ok($value)' : value);
+        }
+      } else if (have == null) {
         // Reported in the output rather than silently skipped: a trait impl
         // missing a method does not compile, and the reader should learn why
         // from the file rather than from rustc.
@@ -6175,30 +6269,8 @@ class RustBackend {
         // BorderRadiusGeometry for BorderRadius`'s `op_mul`, 79), and a
         // `()` where the trait says `Option<..>` is `None` (`Action.invoke`
         // overridden as `void`, 46).
-        final handle = concrete.startsWith('std::rc::Rc<');
-        // The inherent call yields a `Result`; whatever the trait's type
-        // asks of the value is applied inside it.
-        const v = '__v';
-        final shaped = concrete == returns || _lifetimed(concrete) == returns
-            ? null
-            : returns == 'Option<$concrete>'
-            ? 'Some($v)'
-            : concrete == '()' && returns.startsWith('Option<')
-            ? '{ $v; None }'
-            // An `Rc<Concrete>` inside a `Result` does not unsize on its
-            // own: the map says `as` (100 `create_render_object`s at ws278).
-            : returns.startsWith('std::rc::Rc<dyn ')
-            ? (handle ? '$v as $returns' : 'std::rc::Rc::new($v)')
-            : returns.startsWith('Option<std::rc::Rc<dyn ')
-            ? (handle
-                  ? 'Some($v as ${returns.substring(7, returns.length - 1)})'
-                  : concrete.startsWith('Option<std::rc::Rc<')
-                  ? '$v.map(|v| v as ${returns.substring(7, returns.length - 1)})'
-                  : concrete.startsWith('Option<')
-                  ? '$v.map(|v| std::rc::Rc::new(v) as ${returns.substring(7, returns.length - 1)})'
-                  : 'Some(std::rc::Rc::new($v))')
-            : 'Box::new($v)';
-        _line(shaped == null ? call : '$call.map(|$v| $shaped)');
+        final shaped = _shaped(concrete, returns);
+        _line(shaped == null ? call : '$call.map(|__v| $shaped)');
       }
       _indent--;
       _line('}');
