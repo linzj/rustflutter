@@ -6563,6 +6563,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | run464 | **第一次没有 panic**：`SetNeedsReportTimings` 跳过、`GetRootIsolateToken` 答 0（`RootIsolateToken.instance` 当作没有），binding 构造全部跑完，然后 `main` 停在一个没人会完成的 await 上（"main is waiting on something no timer or microtask will complete"）：`GetStorage.init()` → `_concrete.init()`（io 实现，读文件目录）。下一步：让无头运行报出**卡在哪个 await**，再看 GetStorage 的 io 路径要什么。 |
 | ws465 结果 | 编译尺子 **1696**（ws464 1769，−73），141 crate。 |
 | ws466 结果 | 编译尺子 **1696**（同 ws465），141 crate：量的是 future 记名和 `std::ops` 体里的 `self`，不动桩数。 |
+| run466 | 记名后："main is waiting …; **0 future(s) still pending**"——没有任何 spawn 出来的任务在等，卡住的是一个从没 `complete` 的 `Completer`（或 prelude 里自造的 `pending()`）。下一步：`Completer` 也记名（构造处带上所在成员名），运行结束报出未完成的 completer。 |
 
 ## 下一步(2026-09-05 重铺)
 
