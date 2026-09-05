@@ -4353,139 +4353,20 @@ class KernelFrontend implements TypeWorld {
     }
   }
 
+  /// A value into an `Object`/`dynamic` slot. What the shape rules here
+  /// once did (`!rc_object`, `Some`, the prelude's `Pattern`) is the
+  /// coercion rule's, from the value's recorded type; the two names stay
+  /// while their call sites are folded into `_widened` (ws395).
   IrExpr _intoDynamic(
     Expression value,
     DartType? param,
     FunctionNode? callee,
     IrExpr lowered, {
     bool generic = false,
-  }) {
-    if (param == null || callee == null) return lowered;
-    if (coerceByType) return lowered;
-    // Already what the slot holds (`coerce` shared it): nothing to add.
-    final already = lowered.rustType;
-    if (already != null) {
-      try {
-        if (_sameRust(already, _type(param))) return lowered;
-      } on Unsupported {
-        // Untyped slot: the rules below decide.
-      }
-    }
-    final member = callee.parent;
-    if (member is! Member) return lowered;
-    final uri = member.enclosingLibrary.importUri;
-    // The prelude's exceptions take their `Object?` as `Option<Rc<dyn
-    // Object>>` like a translated class would: `FormatException(msg,
-    // source)` with a `String` source shares it.
-    // Only `FormatException`: `Exception(message)` and `ArgumentError
-    // .value(..)` take strings in the prelude, and sharing into them was 27
-    // mismatches (ws144).
-    const preludeObjects = {'FormatException'};
-    final owner = member.enclosingClass?.name;
-    // ..but a *generic* slot of a prelude collection instantiated to
-    // `Object?` holds what a translated class would: `<Object?>[..]` with
-    // spreads is `list.add(e)` on a `List<Object?>`, and the `Vec<Option<
-    // Rc<dyn Object>>>` wants each element shared and `Some`d (128
-    // "expected `Option<Rc<dyn Object>>`" at ws277).
-    if (uri.scheme == 'dart' &&
-        uri.toString() != 'dart:ui' &&
-        !generic &&
-        !(owner != null && preludeObjects.contains(owner))) {
-      return lowered;
-    }
-    // The prelude spells those exceptions' `dynamic source` as an
-    // `Option<Rc<dyn Object>>`: into it as into an `Object?`.
-    if (owner != null &&
-        preludeObjects.contains(owner) &&
-        param is DynamicType) {
-      final env = typeEnvironment;
-      if (env != null) {
-        return _intoObject(value, env.coreTypes.objectNullableRawType, lowered);
-      }
-    }
-    return _intoObject(value, param, lowered);
-  }
+  }) => lowered;
 
-  /// The sharing `_intoDynamic` does, for any `Object`/`dynamic` slot.
-  IrExpr _intoObject(Expression value, DartType? param, IrExpr lowered) {
-    // The `Object` slot is `coerce`'s (ws392): what follows is measured
-    // for what it still adds.
-    if (coerceByType) return lowered;
-    if (param == null) return lowered;
-    final isObject =
-        param is DynamicType ||
-        (param is InterfaceType && param.classNode.name == 'Object');
-    if (!isObject) return lowered;
-    if (_isNull(value) || lowered is IrClosure) return lowered;
-    // Already what the slot holds -- `coerce` put the `Some` on
-    // (`Some(Some(key))` in `PersistentHashMap`, ws356).
-    final already = lowered.rustType;
-    if (already != null) {
-      try {
-        if (_sameRust(already, _type(param))) return lowered;
-      } on Unsupported {
-        // Untyped slot: the shape rules below decide.
-      }
-    }
-    final given = _staticType(value);
-    // A `num` method called on a `dynamic` (`number.abs()`) was lowered to
-    // a call on an `f64`: the value is a scalar, whatever Kernel says.
-    if (given is DynamicType &&
-        value is DynamicInvocation &&
-        (_dynamicNumMethods.contains(value.name.text) ||
-            _dynamicNumOperators.contains(value.name.text))) {
-      final shared = IrCall(lowered, '!rc_object', const []);
-      return param is! DynamicType && param.nullability == Nullability.nullable
-          ? IrSome(shared)
-          : shared;
-    }
-    // A `dynamic` (an `Rc<dyn Object>`, `Null` included) into an
-    // `Object?`: `Some` (`MethodCall.arguments` into `writeValue`, 32).
-    if (given is DynamicType &&
-        param is InterfaceType &&
-        param.nullability == Nullability.nullable &&
-        lowered is! IrSome) {
-      return IrSome(lowered);
-    }
-    if (given == null || given is DynamicType || given is NullType)
-      return lowered;
-    // An `Object` into an `Object?`: `Some`, like any non-null into a
-    // nullable (`list[i] = key` on a `List<Object?>`, 36 at ws327).
-    if (given is InterfaceType && given.classNode.name == 'Object') {
-      return param is! DynamicType &&
-              param.nullability == Nullability.nullable &&
-              given.nullability != Nullability.nullable
-          ? IrSome(lowered)
-          : lowered;
-    }
-    final counted =
-        given is InterfaceType && _closureCallsMethod(given.classNode);
-    // An int literal into an `Object` slot is an `i64`, not the `i32`
-    // inference would pick for `Rc::new(0)`.
-    if (value is IntLiteral) lowered = IrCast(lowered, 'i64');
-    if (given.nullability == Nullability.nullable) {
-      // `ByteData? args` into an `Object?`: shared element by element.
-      if (counted || param.nullability != Nullability.nullable) return lowered;
-      final shared = IrNullAware(
-        lowered,
-        IrCall(IrCall(IrBound(), 'clone', const []), '!rc_object', const []),
-      );
-      // A `dynamic` slot is never an `Option`: Dart's null there is the
-      // `Null` object (`_isNullOrEmpty(_value)` with a `T?` in `StateMixin`).
-      return param is DynamicType
-          ? IrCall(shared, '!or_null', const [])
-          : shared;
-    }
-    // A counted class's handle unsizes to `Rc<dyn Object>` only where the
-    // target type is written; a `dynamic` static's initialiser names it.
-    final shared = counted
-        ? IrCall(lowered, '!as_object', const [])
-        : IrCall(lowered, '!rc_object', const []);
-    // `dynamic` is "nullable" to Kernel and is never an `Option` here.
-    final wantsSome =
-        param is! DynamicType && param.nullability == Nullability.nullable;
-    return wantsSome ? IrSome(shared) : shared;
-  }
+  IrExpr _intoObject(Expression value, DartType? param, IrExpr lowered) =>
+      lowered;
 
   /// `Some(..)` around a non-null argument handed to a nullable parameter --
   /// Dart's silent widening, spelled. Only when the static type says the
