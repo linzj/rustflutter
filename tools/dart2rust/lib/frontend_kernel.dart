@@ -22,7 +22,7 @@ import 'package:kernel/type_environment.dart';
 import 'coerce.dart';
 import 'throws.dart';
 
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, stderr;
 
 import 'ir.dart';
 
@@ -524,6 +524,24 @@ class KernelFrontend implements TypeWorld {
         // `T?` -- a callee's, reached before its instantiation is put in --
         // is not a name here, projected or not (24 `cannot find type`).
         projected: nullable && _typeDepth > 0 && _projectedSlot(type),
+      );
+    }
+    // A generic function *type*'s own parameter (`E Function<E>(E)`),
+    // spelled at its bound: a `dyn Fn` has no type parameters of its own,
+    // and a value of the type is used at the bound (`HeapPriorityQueue`'s
+    // comparator in `SchedulerBinding`, which refused the whole
+    // `WidgetsFlutterBinding` constructor, run432).
+    if (type is StructuralParameterType) {
+      final bound = type.parameter.bound;
+      return _type(
+        nullable ? bound.withDeclaredNullability(Nullability.nullable) : bound,
+      );
+    }
+    if (type is FunctionType && type.typeParameters.isNotEmpty) {
+      return _type(
+        FunctionTypeInstantiator.instantiate(type, [
+          for (final p in type.typeParameters) p.bound,
+        ]),
       );
     }
     if (type is FunctionType) {
@@ -1527,7 +1545,10 @@ class KernelFrontend implements TypeWorld {
       // below captures that variable the way any Rust closure captures a
       // local. `asset.endsWith` handed to `firstWhere` is one.
       final onLocal = node.receiver is VariableGet;
-      if (!holds && !_borrowedArgument && !onLocal) {
+      // ..and of a *constant* (`const GZipCodec().decode`): the closure
+      // captures nothing, the constant is spelled inside it.
+      final onConstant = node.receiver is ConstantExpression;
+      if (!holds && !_borrowedArgument && !onLocal && !onConstant) {
         throw Unsupported(
           'a method used as a value (${_shape(node.receiver)})',
           _sample(node),
@@ -7784,25 +7805,34 @@ class KernelFrontend implements TypeWorld {
       );
     }
 
+    // Each refusal names its member; with `DART2RUST_TRACE=<class>` the
+    // stack of every refusal in that class goes to stderr (finding the
+    // binding's constructor refusal took an hour without it, run432).
+    final trace = Platform.environment['DART2RUST_TRACE'] == node.name;
+    void refuse(String member, Unsupported error, StackTrace stack) {
+      refused.add('$member: $error');
+      if (trace) stderr.writeln('TRACE ${node.name}.$member: $error\n$stack');
+    }
+
     for (final field in node.fields) {
       try {
         _lowerField(cls, field);
-      } on Unsupported catch (error) {
-        refused.add('$error');
+      } on Unsupported catch (error, stack) {
+        refuse(field.name.text, error, stack);
       }
     }
     for (final ctor in node.constructors) {
       try {
         _lowerConstructor(cls, ctor);
-      } on Unsupported catch (error) {
-        refused.add('$error');
+      } on Unsupported catch (error, stack) {
+        refuse(ctor.name.text.isEmpty ? 'new' : ctor.name.text, error, stack);
       }
     }
     for (final procedure in node.procedures) {
       try {
         _lowerProcedure(cls, procedure);
-      } on Unsupported catch (error) {
-        refused.add('$error');
+      } on Unsupported catch (error, stack) {
+        refuse(procedure.name.text, error, stack);
         final stub = _stubFor(procedure, '$error');
         if (stub != null) cls.methods.add(stub);
       }
@@ -7826,16 +7856,16 @@ class KernelFrontend implements TypeWorld {
           if (!own.add(field.name.text)) continue;
           try {
             _lowerField(cls, field);
-          } on Unsupported catch (error) {
-            refused.add('$error');
+          } on Unsupported catch (error, stack) {
+            refuse(field.name.text, error, stack);
           }
         }
         for (final procedure in anonymous.procedures) {
           if (procedure.isAbstract || !own.add(procedure.name.text)) continue;
           try {
             _lowerProcedure(cls, procedure);
-          } on Unsupported catch (error) {
-            refused.add('$error');
+          } on Unsupported catch (error, stack) {
+            refuse(procedure.name.text, error, stack);
           }
         }
         applied = anonymous.supertype;
