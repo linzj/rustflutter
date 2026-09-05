@@ -6514,6 +6514,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws437 结果 | 编译尺子 **3328**（ws436 2427，**+901**），140 crate：`_ThisEscapes` 计数太宽——`WidgetState`（enum！）和 `Matrix4` 之类只是 `return this`/把 `this` 传给值参数的类都成了 `Rc`（440 个 `&Rc<WidgetState> <= &WidgetState`）。收窄：enum 永不计数；只有 `this` 进 **handle 槽**（参数声明类型是 abstract/open 类）、进字面量、存进别的对象字段才算；`return this` 是拷贝，和以前一样。counted struct 1125 → 858。 |
 | run437 | 过了 `HeapPriorityQueue`，下一个 panic：`GestureBinding.initInstances` 的 `PointerRouter()` 编译桩。 |
 | ws438 | `PointerRouter()` 的根：`Map<PointerRoute, Matrix4?>`——键是函数值 `Rc<dyn Fn>`，`Map/Set/Vec` 的比较要求 `PartialEq`，而 `dyn Fn` 永远没有（orphan）。通用机制：**集合的相等一律走 prelude 的 `DartEq`**（Dart 的 `==`）：`Rc<T>` 按所指（`T: DartEq`），trait object 和函数按身份（`dyn Fn` 各元数一组 impl；`dyn Object`；后端给每个 trait 发 `impl DartEq for dyn X`），值类型按 `PartialEq`（prelude 类型一张 `dart_eq!` 表 + 标量 + 错误宏；后端给每个 struct/enum 发 `impl DartEq`：有 `PartialEq` 的用它（派生或手写的带同样 bounds），没有的按身份），`Option/Vec/VecDeque/RefCell/Cell/元组/Map/Set/MapEntry/PhantomData/Weak` 泛型 impl。`Map<K: DartEq>`、`Set<T: DartEq>`、`DartListEq<T: DartEq>`（`contains` 打印成 `dart_contains`）。prelude 单独 check 通过。 |
+| ws438 结果 | 编译尺子 **2654**（ws437 3328，ws436 2427），140 crate。对 ws436 来 204：`Set` 没有 `dart_contains`（497 个错，`!contains` 对 Set 也打印它）；`Rc<T>` 的 `DartEq` 改成按所指后，泛型体里 `T`/`Or` 没有 `DartEq` bound（手写 `PartialEq` 里的 `field.dart_eq`、`Map<T,_>::remove`）。改：`Set::dart_contains`；**所有类型参数的 bound 统一 `Clone + DartNullable<Or: Clone + DartEq> + DartEq + 'static`**（`_nb/_nbm`、struct/trait 头、`_traitWhere`）；prelude 剩下没有 `==` 的类型按身份实现（`dart_eq_identity!` 一张表 + 泛型的 `Stream/FutureOr/Expando/…`），`Box/&str/HashSet/HashMap/4 元组/7–8 元 Fn`。prelude check 通过。 |
+| run438 | **第一个运行期 panic（不是桩）**：`widgets_binding.rs:1864` `Option::unwrap()` on None。 |
 
 ## 下一步(2026-09-05 重铺)
 

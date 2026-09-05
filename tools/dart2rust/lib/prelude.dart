@@ -880,6 +880,11 @@ impl<T: DartEq + Clone> Set<T> {
         self.items.iter().any(|item| item.dart_eq(value))
     }
 
+    /// `contains`, under the name every collection's is printed as.
+    pub fn dart_contains(&self, value: &T) -> bool {
+        self.contains(value)
+    }
+
     pub fn remove(&mut self, value: &T) -> bool {
         match self.items.iter().position(|item| item.dart_eq(value)) {
             Some(at) => {
@@ -1556,6 +1561,104 @@ impl<A, B, C, D, E, R> DartEq for dyn Fn(A, B, C, D, E) -> R {
     }
 }
 impl<A, B, C, D, E, F, R> DartEq for dyn Fn(A, B, C, D, E, F) -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+
+
+/// The rest of the prelude's types compare by identity, as a Dart object
+/// with no `==` of its own does.
+macro_rules! dart_eq_identity {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl DartEq for $t {
+                fn dart_eq(&self, other: &Self) -> bool {
+                    std::ptr::eq(self, other)
+                }
+            }
+        )*
+    };
+}
+
+dart_eq_identity!(Timeline, NativeType, Void, DynamicLibrary, Allocator, _ByteCallbackSink, Iterable, MapBase, _Uri, Scheduler, Random, std::convert::Infallible);
+
+impl<T> DartEq for Isolate<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl<T: ?Sized> DartEq for DartSelf<T> {
+    fn dart_eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl<T> DartEq for Expando<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl<T> DartEq for Pointer<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl<T> DartEq for NativeFunction<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl<T: ?Sized> DartEq for WeakReference<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl<T> DartEq for Stream<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl<T> DartEq for DartIter<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl<T> DartEq for FutureOr<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl<T: ?Sized + DartEq> DartEq for Box<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        (**self).dart_eq(&**other)
+    }
+}
+impl DartEq for &'static str {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+impl<T: Eq + std::hash::Hash> DartEq for std::collections::HashSet<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+impl<K: Eq + std::hash::Hash, V: PartialEq> DartEq for std::collections::HashMap<K, V> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+impl<A: DartEq, B: DartEq, C: DartEq, D: DartEq> DartEq for (A, B, C, D) {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.0.dart_eq(&other.0) && self.1.dart_eq(&other.1) && self.2.dart_eq(&other.2) && self.3.dart_eq(&other.3)
+    }
+}
+impl<A, B, C, D, E, F, G, R> DartEq for dyn Fn(A, B, C, D, E, F, G) -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+impl<A, B, C, D, E, F, G, H, R> DartEq for dyn Fn(A, B, C, D, E, F, G, H) -> R {
     fn dart_eq(&self, other: &Self) -> bool {
         std::ptr::addr_eq(self as *const Self, other as *const Self)
     }

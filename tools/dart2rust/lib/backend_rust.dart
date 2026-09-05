@@ -4260,9 +4260,9 @@ class RustBackend {
   /// still decides is `Clone` on a *struct's* parameters: a projecting
   /// struct's `T?` field is `<Vec<T> as DartNullable>::Or` when `T` is put
   /// in for a `List`, and that asks `T: Clone`.
-  String _nb(IrClass c) => ' + DartNullable<Or: Clone>';
+  String _nb(IrClass c) => ' + DartNullable<Or: Clone + DartEq> + DartEq';
 
-  String _nbm(IrMethod m) => ' + DartNullable<Or: Clone>';
+  String _nbm(IrMethod m) => ' + DartNullable<Or: Clone + DartEq> + DartEq';
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
@@ -4277,7 +4277,7 @@ class RustBackend {
     final own = '${cls.name}${_generics(cls)}';
     final header = cls.typeParameters.isEmpty
         ? ''
-        : '<${cls.typeParameters.map((p) => "$p: Clone + DartNullable<Or: Clone> + 'static$extraBound").join(', ')}>';
+        : '<${cls.typeParameters.map((p) => "$p: Clone${_nb(cls)} + 'static$extraBound").join(', ')}>';
     _line('impl$header DartEq for $own$where {');
     _indent++;
     _line('fn dart_eq(&self, other: &Self) -> bool { $body }');
@@ -4360,7 +4360,7 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : "$p: DartNullable + 'static",
+                : "$p: DartNullable + DartEq + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';
@@ -4788,7 +4788,7 @@ class RustBackend {
   String _traitWhere(IrMethod method) {
     final clauses = [
       if (_sizedBound(method).isNotEmpty) 'Self: Sized',
-      for (final p in cls.typeParameters) '$p: Clone + DartNullable<Or: Clone>',
+      for (final p in cls.typeParameters) '$p: Clone${_nb(cls)}',
     ];
     return clauses.isEmpty ? '' : ' where ${clauses.join(', ')}';
   }
