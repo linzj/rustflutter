@@ -58,6 +58,15 @@ String moduleName(String uri) {
   return RegExp(r'^[0-9]').hasMatch(name) ? 'm_$name' : name;
 }
 
+/// `package:flutter` for `package:flutter/src/widgets/basic.dart`, `dart:ui`
+/// for `dart:ui`: the unit whose libraries may see each other through a
+/// barrel the CFE resolved away.
+String _packageOf(String uri) {
+  if (!uri.startsWith('package:')) return uri;
+  final slash = uri.indexOf('/');
+  return slash < 0 ? uri : uri.substring(0, slash);
+}
+
 /// The item names another module could import: the `pub` ones only.
 ///
 /// A glob import never brought a private item across either, so naming one
@@ -65,7 +74,10 @@ String moduleName(String uri) {
 /// true, instead of 81 `E0603`s.
 Set<String> _publicItemsIn(String text) => {
   for (final m in RegExp(
-    r'^pub(?:\(crate\))? (?:fn|struct|trait|enum|const|static|type) '
+    // `pub async fn` and `pub const fn` are items too: an `async` free
+    // function was never a definer, and every module calling one imported
+    // nothing for it (`haptic_feedback_selection_click`, ws336).
+    r'^pub(?:\(crate\))? (?:(?:async|const|unsafe) )*(?:fn|struct|trait|enum|const|static|type) '
     // `r#break` is one name, not `r` followed by `break`. Without the `r#`
     // the scan recorded a name `r`, every module that used the raw identifier
     // imported it, and `no `r` in ...` was 212 unresolved imports.
@@ -434,6 +446,10 @@ Future<void> main(List<String> args) async {
     }
 
     imports.forEach(see);
+    final visiblePackages = {
+      _packageOf(uri),
+      for (final m in visible) _packageOf(written[m]!.$1),
+    };
     // What `resolved` (the class path) already imports by name, so the same
     // name is not imported twice -- 64 `E0252`s, `Path` 41 of them.
     final already = {
@@ -464,9 +480,19 @@ Future<void> main(List<String> args) async {
       // A name one module in the crate defines is that module's whatever
       // the Dart imports say: a barrel library (`rendering.dart`) that
       // lowers to nothing breaks the visible chain, and `VerticalDirection`
-      // was unresolved 48 times for it (ws291).
+      // was unresolved 48 times for it (ws291). Within a package the
+      // library sees, though: the identifier scan reads a *field* named
+      // `destinations` in `material/navigation_rail.dart` and a local
+      // `is_android` in `rendering/view.dart`, and the one definer of each
+      // was in the gallery and in `google_fonts`. Those edges closed a
+      // cycle that merged the gallery and `flutter_localizations` into the
+      // widgets crate (378k -> 581k lines, ws337) -- the crate whose
+      // `rustc` is the one that runs the machine out of memory.
       if (imported.isEmpty && candidates.length == 1) {
-        imported.add(candidates.single);
+        final candidate = candidates.single;
+        if (visiblePackages.contains(_packageOf(written[candidate]!.$1))) {
+          imported.add(candidate);
+        }
       }
       if (imported.length != 1) continue;
       final from = imported.single;
