@@ -1258,43 +1258,6 @@ impl<T: 'static> DartFuture<T>
     }
 }
 
-/// A `dynamic message` parameter: a `String`, an `Option` of one, or nothing.
-pub trait IntoMessage {
-    fn into_message(self) -> String;
-}
-
-impl IntoMessage for String {
-    fn into_message(self) -> String {
-        self
-    }
-}
-
-/// `ArgumentError(other)` with an object for its message: printed as
-/// Dart would print it (`Instance of 'X'`, or the class's own text).
-impl<T: ?Sized + std::fmt::Debug> IntoMessage for std::rc::Rc<T> {
-    fn into_message(self) -> String {
-        format!("{:?}", self)
-    }
-}
-
-impl IntoMessage for &str {
-    fn into_message(self) -> String {
-        self.to_string()
-    }
-}
-
-impl IntoMessage for Option<String> {
-    fn into_message(self) -> String {
-        self.unwrap_or_default()
-    }
-}
-
-impl IntoMessage for Option<std::rc::Rc<dyn Object>> {
-    fn into_message(self) -> String {
-        self.map(|o| format!("{:?}", o)).unwrap_or_default()
-    }
-}
-
 /// Equality by identity for what is shared: what Dart's `Object.==` does,
 /// and what a derived `PartialEq` over an `Rc<dyn X>` field cannot say
 /// (see `_emitStruct`).
@@ -3335,7 +3298,43 @@ macro_rules! dart_error {
     };
 }
 
-dart_error!(Exception, "Exception");
+/// `Exception([dynamic message])`: the message as translated code spells a
+/// `dynamic`, printed as Dart's `toString` would.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Exception {
+    pub message: String,
+}
+
+impl Exception {
+    pub fn new(message: std::rc::Rc<dyn Object>) -> Self {
+        Exception {
+            message: dart_message(&message),
+        }
+    }
+}
+
+impl fmt::Display for Exception {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.message.is_empty() {
+            f.write_str("Exception")
+        } else {
+            write!(f, "Exception: {}", self.message)
+        }
+    }
+}
+
+/// A `dynamic message` as `Exception.toString` prints it: nothing for null,
+/// a string as itself, anything else by its own text.
+pub fn dart_message(message: &std::rc::Rc<dyn Object>) -> String {
+    let object: &dyn Object = message.as_ref();
+    if object.as_any().is::<Null>() {
+        return String::new();
+    }
+    match object.as_any().downcast_ref::<String>() {
+        Some(text) => text.clone(),
+        None => format!("{}", object),
+    }
+}
 dart_error!(StateError, "Bad state");
 dart_error!(Error, "Error");
 
@@ -3631,9 +3630,10 @@ impl ArgumentError {
         })
     }
 
-    pub fn new<M: fmt::Display>(message: M, name: Option<String>) -> Self {
+    /// `ArgumentError([dynamic message, String? name])`.
+    pub fn new(message: std::rc::Rc<dyn Object>, name: Option<String>) -> Self {
         ArgumentError {
-            message: message.to_string(),
+            message: dart_message(&message),
             name,
         }
     }
@@ -3650,15 +3650,19 @@ impl fmt::Display for ArgumentError {
 }
 
 impl ArgumentError {
-    /// `ArgumentError.value(value, [name, message])`: the value is named by
-    /// its Rust type, which is not what Dart's `toString` would print.
-    pub fn value<T, M: IntoMessage>(_value: T, name: Option<String>, message: M) -> Self {
+    /// `ArgumentError.value(value, [name, message])`.
+    pub fn value(
+        value: std::rc::Rc<dyn Object>,
+        name: Option<String>,
+        message: std::rc::Rc<dyn Object>,
+    ) -> Self {
+        let text = dart_message(&message);
         ArgumentError {
-            message: format!(
-                "{} ({})",
-                message.into_message(),
-                std::any::type_name::<T>()
-            ),
+            message: if text.is_empty() {
+                dart_str(&value)
+            } else {
+                format!("{}: {}", text, dart_str(&value))
+            },
             name,
         }
     }
@@ -3667,11 +3671,23 @@ dart_error!(UnsupportedError, "Unsupported operation");
 dart_error!(UnimplementedError, "UnimplementedError");
 /// `FormatException([message, source, offset])`: three parameters, as
 /// intl's date parsing passes them.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FormatException {
     pub message: String,
-    pub source: Option<std::rc::Rc<dyn Object>>,
+    /// `dynamic source`: an `Rc<dyn Object>` as translated code spells
+    /// `dynamic`, `Null` when none was given.
+    pub source: std::rc::Rc<dyn Object>,
     pub offset: Option<i64>,
+}
+
+impl Default for FormatException {
+    fn default() -> Self {
+        FormatException {
+            message: String::new(),
+            source: std::rc::Rc::new(Null),
+            offset: None,
+        }
+    }
 }
 
 impl FormatException {

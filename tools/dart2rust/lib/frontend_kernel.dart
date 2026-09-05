@@ -86,7 +86,10 @@ class KernelFrontend implements TypeWorld {
         (uri.scheme != 'dart' || uri.toString() == 'dart:ui')) {
       return true;
     }
-    return declared != null && _mentionsTypeParameter(declared);
+    // A type parameter's spelling is the caller's; `dynamic` has one
+    // spelling, an `Rc<dyn Object>`, and the prelude uses it.
+    return declared != null &&
+        (declared is DynamicType || _mentionsTypeParameter(declared));
   }
 
   static bool _mentionsTypeParameter(DartType t) {
@@ -4358,7 +4361,7 @@ class KernelFrontend implements TypeWorld {
     bool generic = false,
   }) {
     if (param == null || callee == null) return lowered;
-    if (coerceByType && lowered.rustType != null) return lowered;
+    if (coerceByType) return lowered;
     // Already what the slot holds (`coerce` shared it): nothing to add.
     final already = lowered.rustType;
     if (already != null) {
@@ -4407,7 +4410,7 @@ class KernelFrontend implements TypeWorld {
   IrExpr _intoObject(Expression value, DartType? param, IrExpr lowered) {
     // The `Object` slot is `coerce`'s (ws392): what follows is measured
     // for what it still adds.
-    if (coerceByType && lowered.rustType != null) return lowered;
+    if (coerceByType) return lowered;
     if (param == null) return lowered;
     final isObject =
         param is DynamicType ||
@@ -4718,7 +4721,8 @@ class KernelFrontend implements TypeWorld {
     // cloned: a copy of one would be a different list, and the aliasing
     // Dart meant is not something a clone can give.
     if (value is VariableGet && _clonedWhenPassed(value.variable.type)) {
-      lowered = IrCall(lowered, 'clone', const []);
+      // A clone is its operand's type.
+      lowered = IrCall(lowered, 'clone', const [])..rustType = lowered.rustType;
     }
     // Type flow analysis narrows a parameter to the one class that reaches
     // it -- `_pushClipPath(.., _NativePath path, ..)` -- and the caller
@@ -5175,11 +5179,19 @@ class KernelFrontend implements TypeWorld {
       // Through `_intoDynamic`, which knows a prelude callee's `Object`
       // parameter is spelled as what it takes: `StringBuffer([content =
       // ''])` got its default as an `Rc<dyn Object>` (21 at ws327).
+      // ..under the callee's gate, as a written argument is: a prelude
+      // `dynamic` slot's `null` default is its `Null` object.
+      final callee = _calleeOf(param);
       return _intoDynamic(
         initializer,
         param.type,
-        _calleeOf(param),
-        _widened(initializer, param.type, expression(initializer)),
+        callee,
+        _forCallee(
+          callee,
+          param.type,
+          expression(initializer),
+          (lowered) => _widened(initializer, param.type, lowered),
+        ),
       );
     }
     if (param.type.nullability == Nullability.nullable) {
@@ -5505,6 +5517,20 @@ class KernelFrontend implements TypeWorld {
       if (value == null) return null;
       var lowered = _constant(value, node);
       final t = paramType[name];
+      // Into the parameter's type by the coercion rule, under the
+      // constructor's gate as a written argument is: a prelude `dynamic`
+      // slot's null is its `Null` object (`const FormatException(..)`).
+      if (coerceByType && t != null && lowered.rustType != null) {
+        if (_calleeTranslated(function, t)) {
+          try {
+            lowered = coerce(lowered, _type(t));
+          } on Unsupported {
+            // An unspelled slot: the value as it is.
+          }
+        }
+        args.add(lowered);
+        continue;
+      }
       // A concrete constant into an abstract parameter is shared, as a
       // written argument would be: `Curves.linear` filling `Interval`'s
       // `curve` is a `_Linear` value where an `Rc<dyn Curve>` goes (39).
