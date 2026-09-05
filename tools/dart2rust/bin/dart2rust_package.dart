@@ -304,6 +304,7 @@ Future<void> main(List<String> args) async {
       reachable[library]!,
     );
   }
+  KernelFrontend.dumpUntyped();
 
   for (final library in inPackage) {
     final uri = library.importUri.toString();

@@ -21,6 +21,9 @@ import 'package:kernel/type_environment.dart';
 
 import 'coerce.dart';
 import 'throws.dart';
+
+import 'dart:io' show Platform;
+
 import 'ir.dart';
 
 /// Dart operators that are binary, spelled as Kernel names them.
@@ -1565,7 +1568,7 @@ class KernelFrontend implements TypeWorld {
           ),
       ];
       final receiver = node.receiver;
-      return IrClosure(
+      final adapter = IrClosure(
         params,
         IrReturn(
           IrCall(
@@ -1587,6 +1590,11 @@ class KernelFrontend implements TypeWorld {
             : _freeLocalsIn(receiver, {}),
         holdsSelf: holds,
       );
+      // Typed by its own signature, as a closure literal is.
+      adapter.rustType = IrType.function([
+        for (final p in adapter.params) p.type,
+      ], adapter.returns);
+      return adapter;
     }
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
   }
@@ -5072,6 +5080,16 @@ class KernelFrontend implements TypeWorld {
     if (coerceByType &&
         translated &&
         param != null &&
+        lowered.rustType == null) {
+      _untypedCensus.update(
+        '${lowered.runtimeType}/${value.runtimeType}',
+        (n) => n + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    if (coerceByType &&
+        translated &&
+        param != null &&
         lowered.rustType != null) {
       IrType? slot = slotIr;
       if (slot == null) {
@@ -5373,14 +5391,14 @@ class KernelFrontend implements TypeWorld {
   }
 
   static IrExpr _unboxed(IrExpr e) => e is IrClosure && e.boxed
-      ? IrClosure(
+      ? (IrClosure(
           e.params,
           e.body,
           e.returns,
           captures: e.captures,
           locals: e.locals,
           holdsSelf: e.holdsSelf,
-        )
+        )..rustType = e.rustType)
       : e;
 
   FunctionNode? _calleeOf(Object param) {
@@ -5401,6 +5419,8 @@ class KernelFrontend implements TypeWorld {
       // The parameter is owned where it is kept, so the argument is boxed to
       // match: a closure's own type has no name.
       if (value is IrClosure) {
+        // ..and its type: a rebuilt closure reached its slot untyped, and
+        // no adapter was ever made for it (3388 at ws418).
         return IrClosure(
           value.params,
           value.body,
@@ -5411,7 +5431,7 @@ class KernelFrontend implements TypeWorld {
           // that lost `kept` in round 104 and `shared` in round 101.
           holdsSelf: value.holdsSelf,
           boxed: true,
-        );
+        )..rustType = value.rustType;
       }
       return value;
     } finally {
@@ -6949,6 +6969,18 @@ class KernelFrontend implements TypeWorld {
   DartType? _returnsType;
 
   // -- Declarations -----------------------------------------------------------
+
+  static final Map<String, int> _untypedCensus = {};
+
+  /// `DART2RUST_CENSUS=1`: what reached a slot untyped, by node kind.
+  static void dumpUntyped() {
+    if (Platform.environment['DART2RUST_CENSUS'] != '1') return;
+    final items = _untypedCensus.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    for (final e in items.take(25)) {
+      print('UNTYPED ${e.value} ${e.key}');
+    }
+  }
 
   (IrLibrary, List<String>) lowerLibrary() {
     final classes = <IrClass>[];

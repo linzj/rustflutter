@@ -2466,10 +2466,15 @@ class RustBackend {
         owner != null &&
         qualifier == null &&
         !owner.methods.any((m) => m.name == name && !m.isStatic)) {
+      // A getter or a method, not a setter of the same Dart name (`value`
+      // and `value=`: the setter is `set_value` here, and naming a trait
+      // that has only the setter was 49 "cannot find method", ws418).
+      bool declares(IrMethod m) => m.name == name && !m.isStatic && !m.isSetter;
       final declaring = _abstractAncestors(owner).where(
         (a) =>
-            a.methods.any((m) => m.name == name && !m.isStatic) ||
-            a.abstractMethods.any((m) => m.name == name),
+            a.methods.any(declares) ||
+            a.abstractMethods.any(declares) ||
+            a.fields.any((f) => f.name == name),
       );
       if (declaring.length > 1) wide = declaring.first;
     }
