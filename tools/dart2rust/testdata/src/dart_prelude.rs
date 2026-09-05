@@ -4252,13 +4252,18 @@ pub fn schedule_microtask(callback: Box<dyn FnOnce() -> Result<(), DartError>>) 
 /// Does **not** sleep waiting for a timer that is not due yet: sleeping is a
 /// policy the host decides, and a translated program has no host here.
 /// `next_due` says when to come back.
-pub fn run_until_idle() {
+/// Runs microtasks, spawned futures and due timers until none is ready;
+/// whether anything ran at all (a caller polling a future of its own re-polls
+/// it then, since the wake that resolving it sends is consumed in here).
+pub fn run_until_idle() -> bool {
+    let mut worked = false;
     loop {
         let task = (**SCHEDULER).borrow_mut().microtasks.pop_front();
         match task {
             Some(task) => {
                 // No caller to reach from the event loop: loud.
                 task().unwrap();
+                worked = true;
                 continue;
             }
             None => {}
@@ -4267,6 +4272,7 @@ pub fn run_until_idle() {
         // of them woke something (a completer another awaits).
         let tasks = std::mem::take(&mut (**SCHEDULER).borrow_mut().tasks);
         if !tasks.is_empty() {
+            worked = true;
             dart_woken();
             let waker = dart_waker();
             let mut cx = std::task::Context::from_waker(&waker);
@@ -4301,8 +4307,9 @@ pub fn run_until_idle() {
                 .collect()
         };
         if due.is_empty() {
-            return;
+            return worked;
         }
+        worked = true;
         for (id, callback) in due {
             // Rescheduled or dropped *before* the callback runs, so that a
             // callback cancelling its own timer wins over the reschedule.
@@ -4344,8 +4351,10 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
                 std::task::Poll::Pending => {}
             }
         }
-        run_until_idle();
-        if dart_woken() {
+        // Anything ran: `main` is polled again -- the wake that resolving
+        // its future sent was consumed in there, and a `main` whose task
+        // had just finished was reported as waiting (run470).
+        if run_until_idle() || dart_woken() {
             continue;
         }
         match next_due() {
