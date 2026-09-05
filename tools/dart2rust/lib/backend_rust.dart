@@ -601,8 +601,13 @@ class RustBackend {
       ),
       // Parenthesised: a struct literal is not allowed bare in an `if`
       // condition, and `if self._state == _State { .. } {` did not parse.
+      // ..and a counted class's constant is its handle, as its
+      // constructor's result is (`const StandardMethodCodec()` holding a
+      // `StandardMessageCodec`, 12 `Rc<X> <= X` at ws421).
       IrConstInstance(:final type, :final fields) =>
-        '(${_constInstance(type, fields)})',
+        (library[type.name]?.counted ?? false)
+            ? 'dart_rc(${_constInstance(type, fields)})'
+            : '(${_constInstance(type, fields)})',
       // Rust puts it after the expression and Dart before it, which is the
       // whole of the difference.
       // The future's output is a `Result`: the `?` goes after the await.
