@@ -517,8 +517,10 @@ class RustBackend {
       // reference unless the class is `Copy`.
       // In a constructor `this` is the local being built (`__new`), a
       // value and not a reference: no `*`.
+      // `this_` is a `&__Self` whatever the mode: its clone is a reference
+      // (91 lifetime errors at ws334), its handle is `dart_self_<trait>()`.
       IrThis() =>
-        _fieldsAreAccessors
+        _fieldsAreAccessors || _selfName == 'this_'
             ? '$_selfName.dart_self_${snake(cls.name)}()'
             : _selfIsHandle || !_classIsCopy(cls, {}) || _selfName != 'self'
             ? '$_selfName.clone()'
@@ -842,7 +844,11 @@ class RustBackend {
     // whole point: it outlives the call that made it.
     final bindings = [
       // The handle first: a closure that calls a method keeps the object.
-      if (node.holdsSelf) 'let $_countedSelf = $_selfName.clone();',
+      // The handle, not a clone of a reference: inside a trait body `this`
+      // is `dart_self_<trait>()`, on a counted class `dart_self_ref().get()`
+      // (`let __me = this_.clone()` captured a `&__Self` into a `'static`
+      // closure, 91 lifetime errors at ws334).
+      if (node.holdsSelf) 'let $_countedSelf = ${_selfHandle()};',
       ...node.captures.map((c) => 'let ${snake(c.name)} = ${_copyOf(c)};'),
       ...node.locals.map((l) => 'let ${snake(l)} = ${snake(l)}.clone();'),
     ].join(' ');
@@ -1600,6 +1606,14 @@ class RustBackend {
 
   /// Whether the signature being written belongs to a trait.
   var _inTrait = false;
+
+  /// `this` as an owned handle, from wherever the body is: a trait body's
+  /// `dart_self_<trait>()`, a counted class's stored handle, else a clone.
+  String _selfHandle() => _fieldsAreAccessors
+      ? '$_selfName.dart_self_${snake(cls.name)}()'
+      : cls.counted
+      ? '$_selfName.dart_self_ref().get()'
+      : '$_selfName.clone()';
 
   /// In a trait body, the trait an accessor is reached through when more
   /// than one trait in the chain declares it (`textTheme` on
