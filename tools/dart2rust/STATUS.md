@@ -6505,6 +6505,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | run433 | 下一个 panic：`WidgetsFlutterBinding::new` 是编译桩。三处：(1) 构造函数的函数类型 `computeThisFunctionType` 把类的类型参数作为它自己的（structural `E%`），`Substitution.fromInterfaceType` 够不到——改成 `FunctionTypeInstantiator.instantiate(declared, constructedType.typeArguments)`（`HeapPriorityQueue(_taskSorter)` 的比较器、`ValueNotifier<bool>(x)` 的 `Some(Rc::new(x))` 都是它）；(2) mixin 被 CFE 挪进合成构造函数的字段初始值内联时没按字段类型 coerce（`_frameTimelineTask: TimelineTask?` 少 `Some`），走 `_acrossEdge(_widened(..))`。 |
 | ws434 结果 | 编译尺子 **2339**（ws433 2444，−105），140 crate。 |
 | 预修 | 构造函数体接着调 `initServiceExtensions`，整条链被拒的根在 prelude 缺口（后端「top-level X was not translated」）：`exit`、`registerExtension`（泛型 no-op）、`postEvent`（有 `post_event`，但 `_preludeFunctions` 表按 Dart 名比对，补 Dart 名）、`EnumName|get#name`（prelude `DartEnum` trait + `enum_name_get_name`，后端给每个 enum 发 `name()` 和 `impl DartEnum`）；`is StateError` 之类对 prelude 类的 `is`（`_preludeClasses` 一张表，`Any` downcast）。拒绝 656→630。 |
+| run434 | **过了 `WidgetsFlutterBinding::new`**（构造函数跑起来了）。下一个 panic：`SemanticsBinding` 初始化 `ObserverList<..>()` → `ObserverList::new` 编译桩：`late final Set<T> _set = HashSet<T>()`——late 字段是 `Option<T>`，带初始值（不提 `this`）的却按裸值放进 struct 字面量，补 `Some(..)`（驱动输出差 175 文件）。同一文件里 `contains(Object? element)`（Dart 的 `Iterable.contains` 签名）对 `Vec<T>::contains(&T)` 不匹配——`Object?` 槽对值集合的查询要按 downcast 比（待运行尺子点到再做）。还留着一族：mixin 链上的 `super.x()`（`WidgetsBinding.framesEnabled` → `SchedulerBinding.framesEnabled`）——TFA 把 mixin 的方法体挪进匿名 application 类，mixin 声明本身空了，super 函数没处发；`scheduleFrame` 会调 `framesEnabled`，在第一帧路径上。 |
+| ws435 | prelude `JsonCodec`（`registerServiceExtension` 的 `const JsonCodec()`；encode 只认 dynamic 能装的 String/num/bool/null/Map/List，其余明确 panic）；拒绝 630→624。 |
 
 ## 下一步(2026-09-05 重铺)
 

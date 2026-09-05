@@ -7281,9 +7281,13 @@ class RustBackend {
       // there, as a constant's is (see the statics): `DateFormat
       // .dateTimeConstructor` took a bare closure where the field's type
       // named the trait object.
-      final value = field.type.isFunction && init is IrClosure && !init.boxed
+      final rendered = field.type.isFunction && init is IrClosure && !init.boxed
           ? 'std::rc::Rc::new(${expr(init)})'
           : expr(init);
+      // A `late` field is an `Option` (`_lateField`); one with an
+      // initialiser that does not mention `this` starts with it, in
+      // `Some` (`ObserverList._set = HashSet<T>()`, run434).
+      final value = field.isLate ? 'Some($rendered)' : rendered;
       _line(
         _inCell(field)
             ? '${snake(field.name)}: std::rc::Rc::new(std::cell::'
