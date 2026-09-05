@@ -4276,12 +4276,17 @@ pub fn run_until_idle() {
                     pending.push((name, task));
                 }
             }
-            {
+            // A task spawned *during* the pass (an `async` closure's body,
+            // spawned when the closure ran) is polled in the next pass, not
+            // left for a wake that nothing will send.
+            let spawned = {
                 let mut scheduler = (**SCHEDULER).borrow_mut();
+                let spawned = !scheduler.tasks.is_empty();
                 pending.append(&mut scheduler.tasks);
                 scheduler.tasks = pending;
-            }
-            if dart_woken() || !(**SCHEDULER).borrow().microtasks.is_empty() {
+                spawned
+            };
+            if spawned || dart_woken() || !(**SCHEDULER).borrow().microtasks.is_empty() {
                 continue;
             }
         }
