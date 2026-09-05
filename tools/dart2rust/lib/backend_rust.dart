@@ -572,9 +572,16 @@ class RustBackend {
         :final args,
         :final fails,
         :final diverges,
+        :final typeArguments,
       ) =>
         _diverging(
-          _staticCallFailing(owner, name, args, fails && !diverges),
+          _staticCallFailing(
+            owner,
+            name,
+            args,
+            fails && !diverges,
+            typeArguments,
+          ),
           diverges && fails,
         ),
       IrNew(:final type, :final args, :final constructor) => _newFailing(
@@ -778,11 +785,12 @@ class RustBackend {
     String? owner,
     String name,
     List<IrExpr> args,
-    bool fails,
-  ) {
+    bool fails, [
+    List<IrType> typeArguments = const [],
+  ]) {
     final awaited = _awaiting;
     _awaiting = false;
-    final call = _staticCall(owner, name, args);
+    final call = _staticCall(owner, name, args, typeArguments);
     final failing =
         fails || (_resultModel && _preludeFailingStatics.contains(name));
     return failing && !awaited ? '$call$_propagate' : call;
@@ -1339,7 +1347,17 @@ class RustBackend {
   /// wearing a static's clothes. Rust builds a `Vec` from an iterator.
   static const _listStatics = {'generate', 'filled', 'from', 'of'};
 
-  String _staticCall(String? owner, String name, List<IrExpr> args) {
+  /// `::<A, B>` for a call's type arguments; nothing when there are none.
+  String _turbofish(List<IrType> typeArguments) =>
+      typeArguments.isEmpty ? '' : '::<${typeArguments.map(type).join(', ')}>';
+
+  String _staticCall(
+    String? owner,
+    String name,
+    List<IrExpr> args, [
+    List<IrType> typeArguments = const [],
+  ]) {
+    final fish = _turbofish(typeArguments);
     // `Future.value(v)` is a future that is already done, which Rust spells
     // `ready`. `Future.delayed` and `Future.wait` need a runtime to be delayed
     // or joined *by*, and there is none, so they say so.
@@ -1467,7 +1485,7 @@ class RustBackend {
           '$name(...)',
         );
       }
-      return '${snake(name)}(${args.map(expr).join(', ')})';
+      return '${snake(name)}$fish(${args.map(expr).join(', ')})';
     }
     // An **unnamed factory** is a `Procedure` whose name is the empty string,
     // and Kernel calls it like a static: `RegExp('..')` arrives as
@@ -1530,9 +1548,9 @@ class RustBackend {
       // A *factory* on an abstract class -- `Characters(s)` -- is the static
       // named `new` here, as the struct path names an unnamed constructor.
       final spelled = name.isEmpty ? 'new' : name;
-      return '${_abstractStaticName(owner, spelled)}(${args.map(expr).join(', ')})';
+      return '${_abstractStaticName(owner, spelled)}$fish(${args.map(expr).join(', ')})';
     }
-    return '$owner::${_identifier(name)}(${args.map(expr).join(', ')})';
+    return '$owner::${_identifier(name)}$fish(${args.map(expr).join(', ')})';
   }
 
   String _superCall(
@@ -5115,6 +5133,7 @@ class RustBackend {
         :final args,
         :final fails,
         :final diverges,
+        :final typeArguments,
       ) =>
         IrStaticCall(
           owner,
@@ -5122,6 +5141,7 @@ class RustBackend {
           args.map(go).toList(),
           fails: fails,
           diverges: diverges,
+          typeArguments: typeArguments,
         ),
       IrNew(:final type, :final args, :final constructor) => IrNew(
         type,

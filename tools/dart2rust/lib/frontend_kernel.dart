@@ -3828,6 +3828,7 @@ class KernelFrontend implements TypeWorld {
         ),
         fails: _fails(target),
         diverges: _diverges(target),
+        typeArguments: _keptTypeArguments(target.function, node.arguments),
       );
     }
     return IrStaticCall(
@@ -3852,7 +3853,28 @@ class KernelFrontend implements TypeWorld {
       ),
       fails: _fails(target),
       diverges: _diverges(target),
+      typeArguments: _keptTypeArguments(target.function, node.arguments),
     );
+  }
+
+  /// A translated generic callee's type arguments for the type parameters
+  /// it keeps (an erased one is its bound and has no slot), spelled as a
+  /// turbofish; nothing for a prelude callee, whose Rust signature is its
+  /// own, or when one cannot be spelled.
+  List<IrType> _keptTypeArguments(FunctionNode fn, Arguments arguments) {
+    final parameters = fn.typeParameters;
+    if (parameters.isEmpty || arguments.types.length != parameters.length) {
+      return const [];
+    }
+    if (!_calleeTranslated(fn, null)) return const [];
+    try {
+      return [
+        for (var i = 0; i < parameters.length; i++)
+          if (!_erasedParameter(parameters[i])) _type(arguments.types[i]),
+      ];
+    } on Unsupported {
+      return const [];
+    }
   }
 
   /// Arguments in the callee's declaration order.

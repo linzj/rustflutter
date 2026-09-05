@@ -229,10 +229,16 @@ class IrStaticCall extends IrExpr {
     this.args, {
     this.fails = false,
     this.diverges = false,
+    this.typeArguments = const [],
   });
 
   /// Whether the callee can fail (`IrMethod.fails`).
   final bool fails;
+
+  /// The call's type arguments for the callee's kept type parameters, as
+  /// a turbofish: `ModalRoute.of<T>(context)` names `T` only in its
+  /// result, which inference cannot recover (73 at ws396).
+  final List<IrType> typeArguments;
 
   /// Whether the callee never returns. See `IrCall.diverges`.
   final bool diverges;

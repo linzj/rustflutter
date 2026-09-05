@@ -6412,6 +6412,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws395 结果 | 950 叶子错 | **2809→2784 / 795，138+1 个 crate**（mismatched −21；修 33 个函数，新 stub 9 个：`rendering_table`/`widgets_table` 7 个、cupertino 2 个）。`_intoObject`/`_intoDynamic` 的函数体整个删掉（只剩恒等），驱动输出和 ws395 零差异。 |
 | ws396 | 950 叶子错 | ws395 新 stub 的根：`_constantStaticType` 把集合常量当 `dynamic`，`const [BoxShadow(..)]` 进 `List<BoxShadow>?` 没 `Some`。集合常量按自己的类和元素类型定型；空列表字面量进另一元素类型的槽位是改型不是逐元素 map（`vec![]` 逐元素 map rustc 推不出类型，`fontFamilyFallback ?? const []`）。驱动输出对 ws395 差 3 文件。 |
 | ws396 结果 | 950 叶子错 | **2784→2782 / 795，138+1 个 crate**。`_intoObject`/`_intoDynamic` 的 17 处调用折掉、函数删掉，驱动输出零差异（脚本按括号折参数时把注释里的逗号当分隔符，一处手工还原）。 |
+| ws397 | 950 叶子错 | 99 个 `type annotations needed` 里 73 个 E0283：翻译过的泛型**静态**调用没带 turbofish（`ModalRoute.of(context)` 的 `T` 只出现在返回里，rustc 推不出）。`IrStaticCall` 带 `typeArguments`：Kernel 每个调用都带完整的类型实参，取被保留（未 erase）的那些，prelude 被调用者不带。实例调用早有此机制；剩下的是后端 forwarder 转发泛型方法丢了类型形参（36 个 `get_element_for_inherited_widget_of_exact_type`）和泛型 struct 的构造（`RadioGroup` 等 12 个）。驱动输出对 ws396 差 211 文件。 |
 
 ## 下一步(2026-09-05 重铺)
 
