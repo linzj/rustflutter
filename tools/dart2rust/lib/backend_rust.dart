@@ -1404,7 +1404,24 @@ class RustBackend {
         (_ownsParameter(left.rustType) ||
             _ownsParameter(right.rustType) ||
             (_objectLike(left.rustType) && _objectLike(right.rustType)))) {
-      final eq = '${expr(left)}.dart_eq(&${expr(right)})';
+      // `DartEq` compares two of the *left's* type: the right operand
+      // was shared into `Object` for Dart's `operator ==(Object)`, and is
+      // shared into the left's trait instead (`&Rc<dyn Object>` where
+      // `&Rc<dyn Color>` was wanted, 12 at ws467).
+      final leftType = left.rustType;
+      final other =
+          right is IrUpcast &&
+              right.type.name == 'Object' &&
+              leftType != null &&
+              library.isAbstract(leftType.name)
+          ? IrUpcast(
+              right.value,
+              IrType(leftType.name, arguments: leftType.arguments),
+              handle: right.handle,
+              explicit: true,
+            )
+          : right;
+      final eq = '${expr(left)}.dart_eq(&${expr(other)})';
       return op == '==' ? eq : '(!$eq)';
     }
     return '(${expr(left)} $op ${expr(right)})';
