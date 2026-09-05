@@ -6518,6 +6518,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | run438 | **第一个运行期 panic（不是桩）**：`widgets_binding.rs:1864` `Option::unwrap()` on None。 |
 | ws439 结果 | 作废：**60 crate**，2171。struct 头的类型参数 bound 是 `DartNullable + DartEq + 'static`，trait 默认方法要 `Or: DartEq`（`_nb`），forwarder 里调不动——struct/trait 头改成 `DartNullable<Or: DartEq> + DartEq + 'static`（`Or: DartEq` 对所有类型都成立）。 |
 | ws440 | run438 的 `None`：`super.initInstances()` 链。三处通用：(1) mixin 声明被 TFA 删掉的方法（`initInstances` 在声明里根本没有，只在 application 里）——mixin 的 trait 从 application 取所有它没列的具体方法；(2) `_realOwner`：mixin 体里的 `super.x()` 名义上指向 `on` 约束的成员（`BindingBase.initInstances`），实际派发给 application 的**真实**超类——从 `_member.enclosingClass.superclass` 起走，匿名类看它 apply 的 mixin（含 application 里才有的方法），真实类没声明就继续往上（`RenderBox.attach` → `RenderObject`）。现在 `init_instances` 链 Widgets→Renderer→Semantics→Painting→Services→Scheduler→Gesture→BindingBase 全通。拒绝 617→516（走对之后又暴露一批）。 |
+| ws440 结果 | 编译尺子 **2545**（ws436 2427），**141 crate**（工作区分出了一个新 crate，成员数也是 141，全到）。对 ws436 去 378 来 461：来的是 mixin 体第一次编译（`Tween<f64>` 进 `Tween<Object>` 的泛型协变等长尾）。 |
+| run440 | 还是 `_semanticsEnabled` 的 `None`，但原因换了：`late final _manifold = _BindingPipelineManifold(this)`——提到 `this` 的 late 初始值以前是「字面量后立刻求值」，在 `initInstances` 之前就跑了；Dart 的 late 是**首次读取时求值**。通用：这类字段留 `None`，每个读取点（`this` 读、cell 读、trait 访问器两处）打印 get-or-init（`_lazyRead`，同名字段在自己的初始值里读到自己时用普通读，否则展开无穷——驱动栈溢出了一次）。377 处。 |
 
 ## 下一步(2026-09-05 重铺)
 

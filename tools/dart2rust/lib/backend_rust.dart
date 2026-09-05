@@ -1944,6 +1944,8 @@ class RustBackend {
     if (target == null || target is IrThis) {
       final shared = _sharedField(name);
       if (shared != null) {
+        final lazy = _lazyDecl(name);
+        if (lazy != null) return _lazyRead(lazy, receiver);
         final held = _heldType(shared);
         final read = _isCopy(held)
             ? '$receiver.${snake(name)}.get()'
@@ -1969,6 +1971,9 @@ class RustBackend {
     // side does. Without this the read was `entry.x` against a `RefCell`.
     if (owner != null) {
       final cell = _cellFieldOf(owner, name);
+      if (cell != null && _lazyDecl(name) != null) {
+        return _lazyRead(_lazyDecl(name)!, receiver);
+      }
       if (cell != null) {
         // The `borrow()` guard is a temporary, and a temporary in a block's
         // tail expression outlives the block's locals: `Ok(data.next_sibling
@@ -4266,6 +4271,40 @@ class RustBackend {
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
+  /// A `late` field whose initialiser mentions `this` is Dart's lazy one:
+  /// evaluated on the first read, in a cell so a `&self` read can fill
+  /// it. (`late final _manifold = _BindingPipelineManifold(this)` read
+  /// `_semanticsEnabled`, set by an `initInstances` that ran *after* the
+  /// constructor's eager evaluation of it: run440's `None`.)
+  bool _lazyLate(IrFieldDecl f) =>
+      f.isLate &&
+      f.initial != null &&
+      _mentionsThis(f.initial!) &&
+      _inCell(f) &&
+      !_lazyExpanding.contains(f.name);
+
+  /// The lazy fields whose initialiser is being printed: a read of the
+  /// same field inside it (a closure the initialiser hands out reading it
+  /// later) is the plain read, or the expansion never ends.
+  final _lazyExpanding = <String>{};
+
+  /// The class's lazy `late` field of this name, by its full declaration
+  /// (the shared-field census carries no initialiser).
+  IrFieldDecl? _lazyDecl(String name) =>
+      _allFields(cls).where((f) => f.name == name && _lazyLate(f)).firstOrNull;
+
+  /// The read of a lazy `late` field through `receiver`: filled on the
+  /// first read, the value each time.
+  String _lazyRead(IrFieldDecl f, String receiver) {
+    final name = snake(f.name);
+    _lazyExpanding.add(f.name);
+    final init = expr(f.initial!);
+    _lazyExpanding.remove(f.name);
+    return _isCopy(_heldType(f))
+        ? '{ if $receiver.$name.get().is_none() { let __v = $init; $receiver.$name.set(Some(__v)); } $receiver.$name.get().unwrap() }'
+        : '{ if $receiver.$name.borrow().is_none() { let __v = $init; *$receiver.$name.borrow_mut() = Some(__v); } let __r = $receiver.$name.borrow().clone().unwrap(); __r }';
+  }
+
   /// `DartEq` for the struct or enum (see the prelude's `DartEq`): `body`
   /// compares `self` and `other`; `extraBound` joins each type parameter's
   /// bounds, `where` follows the header.
@@ -6673,7 +6712,9 @@ class RustBackend {
       final late = field.isLate ? '.unwrap()' : '';
       final reads = held.contains(field.name)
           ? (cell != null
-                ? (_isCopy(_heldType(cell))
+                ? (_lazyLate(field)
+                      ? _lazyRead(field, 'self')
+                      : _isCopy(_heldType(cell))
                       ? 'self.${snake(field.name)}.get()$late'
                       : 'self.${snake(field.name)}.borrow().clone()$late')
                 : _isCopy(type(_substituteType(field.type, _implBinding)))
@@ -6929,7 +6970,9 @@ class RustBackend {
           }
         } else {
           final read = cell != null
-              ? (_isCopy(_heldType(cell))
+              ? (_lazyLate(field)
+                    ? _lazyRead(field, 'self')
+                    : _isCopy(_heldType(cell))
                     ? 'self.$name.get()$late'
                     : 'self.$name.borrow().clone()$late')
               : _isCopy(type(field.type))
@@ -7366,6 +7409,8 @@ class RustBackend {
       _selfName = '__new';
       for (final entry in deferred.entries) {
         final field = _allFields(cls).firstWhere((f) => f.name == entry.key);
+        // A lazy one stays absent: its first read fills it (`_lazyRead`).
+        if (_lazyLate(field)) continue;
         final value = 'Some(${expr(entry.value)})';
         _line(
           _inCell(field)
