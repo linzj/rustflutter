@@ -6351,6 +6351,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws341 | 950 叶子错 | ws340 新加的两处 `IrCastTo` 只对**这里是 trait** 的类生效（`_translatedClass`）：`List`、`TypedData`、`String` 在 Kernel 里 abstract，这里是 prelude 类型或没有（`dyn String`，18 个 expected trait found struct）。**3441→3455 / 872**：那 17 个解析期错误没了，但 mismatched types +28——多是 crate 归属/轮次顺序变化后暴露的旧错（`rendering_table`、`widgets_table` 那组在两份报告里路径不同），不是新引入的形状。 |
 | ws342 | 950 叶子错 | 擦除参数的两侧：读（`_narrowedRead`）结果可空时也收窄——`IrCastTo` 现在保留 `Option`，`firstChild`/`nextSibling` 读出的 `Rc<dyn RenderObject>` 进 `RenderBox?` 局部（341 处 mismatched）；写（`_intoErased`，`_argument`/`_namedArgument`）trait 句柄进被擦除、界是更宽 trait 的形参（`insert(ChildType child, {ChildType? after})`）按名向上转，可空的经 `map`。**3455→3364 / 872，138+1 个 crate**（`?` operator incompatible −86）。 |
 | ws343 | 950 叶子错 | `_intoErased` 看调用**落到**的成员（`getDispatchTarget`）而不是接口目标：匿名 mixin 应用里的克隆写的是 `RenderBox`（`_addDiagnostics`，188 处反向 mismatched），只有 mixin 自己的——trait 的——才取擦除的界。**3364→3351 / 872，138+1 个 crate**。但 flex 那边 `_insert_into_child_list` 的向上转也没了（落点同样是克隆，却印成 `Rc<dyn RenderObject>`），RenderBox/RenderObject 仍剩 250 块，下一轮查两份克隆为何印得不同。 |
+| ws344 | 950 叶子错 | 字段写入也走 `_intoErased`（`_firstChild = child` 进擦除的 setter）：**3351→3351**，一处也没变——克隆体里的字段接口目标已是具体的 `RenderBox?`，没有擦除参数可看；回退。查到更大的事：open 类的 `XImpl` 对基 trait 的 impl 里，凡不是 `XImpl` 自己声明的方法一律是 `todo!("X does not translate Y yet")`——整个输出 **26199** 个（`RenderFlexImpl` 的 `insert`/`perform_layout`/`first_child` 全是；每个 `GalleryLocalizationsXxImpl` 796 个）。能编译，跑不了。下一轮修：转发到 open 类自己 trait 的方法。 |
 
 ## 下一步
 
