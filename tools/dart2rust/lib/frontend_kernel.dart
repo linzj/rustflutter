@@ -4079,21 +4079,49 @@ class KernelFrontend implements TypeWorld {
       // A struct's *own* async method, called plainly, is an `async fn`
       // reached as one; an inherited or a trait's goes through the trait
       // impl, which hands the future back inside the `Result`.
+      // ..or a mixin's method the receiver's class applies, which is
+      // inlined into that class as its own (`handlePopRoute()` inside
+      // `WidgetsBinding.initInstances`, run445).
       asyncFn:
           fails &&
-          qualifier == null &&
+          (qualifier == null || qualifier == from?.name) &&
           _asyncMember(member) &&
-          from == owner &&
-          !_abstractLike(owner) &&
-          !_isOpen(owner),
+          from != null &&
+          (from == owner || _appliesMixin(from, owner)) &&
+          !_abstractLike(from) &&
+          !_isOpen(from),
       typeArguments: call.typeArguments,
     );
   }
 
+  /// Whether `from` applies `mixin` somewhere in its anonymous superclass
+  /// chain, so that the mixin's methods are inlined into `from`'s struct.
+  static bool _appliesMixin(Class from, Class mixin) {
+    var t = from.supertype;
+    while (t != null && t.classNode.isAnonymousMixin) {
+      // The mixin itself, or the application class holding its copy (an
+      // interface target inside an applied body names that one).
+      if (t.classNode == mixin ||
+          t.classNode.implementedTypes.any((i) => i.classNode == mixin)) {
+        return true;
+      }
+      t = t.classNode.supertype;
+    }
+    return false;
+  }
+
   /// A member declared `async`: emitted as an `async fn` where it is a
   /// free function, a static, or a struct's own method.
-  static bool _asyncMember(Member m) =>
-      m is Procedure && m.function.asyncMarker == AsyncMarker.Async;
+  bool _asyncMember(Member m) {
+    if (m is! Procedure) return false;
+    // A hollow mixin declaration's member has no body and no marker: the
+    // applied copy's says (`WidgetsBinding.handlePopRoute`, run445).
+    final owner = m.enclosingClass;
+    final declared = m.isAbstract && owner != null && owner.isMixinDeclaration
+        ? _appliedProcedure(owner, m.name.text, kind: m.kind) ?? m
+        : m;
+    return declared.function.asyncMarker == AsyncMarker.Async;
+  }
 
   /// A member declared to return `Never`.
   static bool _diverges(Member m) =>

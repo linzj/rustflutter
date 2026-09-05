@@ -519,11 +519,16 @@ class RustBackend {
       IrLiteral(:final value, :final type) => _literal(value, type),
       // A captured shared field is a cell handle, not the value: reading it
       // is `f.get()`. The local is only a local in the closure's own text.
+      // A local a closure captured is the closure's own copy, and a `Fn`
+      // closure may not give it away: read as a clone, so a use by value
+      // (`instance.on_start = on_start`) moves the clone (107 E0507).
       IrLocal(:final name) =>
         _cellLocals.containsKey(name)
             ? (_cellLocals[name]!
                   ? '${snake(name)}.get()'
                   : '{ let __r = ${snake(name)}.borrow().clone(); __r }')
+            : _closureCaptured.contains(name)
+            ? '${snake(name)}.clone()'
             : snake(name),
       // `this` in a counted class is the handle -- one more `Rc`, not the
       // value behind it. `*self` there moved out of a `&Rc<Self>`, and the
@@ -985,11 +990,19 @@ class RustBackend {
     // the closure's own (`Ok(Some(..))` in `|x| builder.setDay(x)`).
     _inFlowClosure = false;
     if (node.holdsSelf) _selfName = _countedSelf;
+    final savedCaptured = _closureCaptured;
+    _closureCaptured = {
+      ..._closureCaptured,
+      for (final c in node.captures)
+        if (_sharedField(c.name) == null) c.name,
+      ...node.locals,
+    };
     _indent = 0;
     _body(node.body, node.isAsync ? _awaited(node.returns) : node.returns);
     _failure = savedFailure;
     _inFlowClosure = savedFlow;
     _selfName = savedSelf;
+    _closureCaptured = savedCaptured;
     final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
@@ -2671,7 +2684,7 @@ class RustBackend {
       final path =
           asTrait ??
           (library.isAbstract(qualifier) && (target == null || target is IrThis)
-              ? '<${_selfName == 'this_' ? '__Self' : 'Self'} as $qualifier>'
+              ? '<${_selfName == 'this_' ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
               : qualifier);
       return _asyncValue(
         '$path::${_identifier(name)}$turbofish'
@@ -4317,6 +4330,20 @@ class RustBackend {
         ? '{ if $receiver.$name.get().is_none() { let __v = $init; $receiver.$name.set(Some(__v)); } $receiver.$name.get().unwrap() }'
         : '{ if $receiver.$name.borrow().is_none() { let __v = $init; *$receiver.$name.borrow_mut() = Some(__v); } let __r = $receiver.$name.borrow().clone().unwrap(); __r }';
   }
+
+  /// The type arguments this class passes to the generic trait `name`, spelled
+  /// (`<T>`), or nothing for a non-generic trait or one it cannot compute
+  /// (151 E0107 `missing generics for trait` at ws445).
+  String _traitArgsOf(String name) {
+    final trait = library[name];
+    if (trait == null || trait.typeParameters.isEmpty) return '';
+    final passed = _argumentsThrough(cls, const {}, trait, {});
+    if (passed == null || passed.isEmpty) return '';
+    return '<${passed.map(type).join(', ')}>';
+  }
+
+  /// The locals the closure being printed captured (see `IrLocal`).
+  var _closureCaptured = <String>{};
 
   /// `DartEq` for the struct or enum (see the prelude's `DartEq`): `body`
   /// compares `self` and `other`; `extraBound` joins each type parameter's
@@ -6331,19 +6358,21 @@ class RustBackend {
     _emitDartNullable();
     // `DartEq`, by the `PartialEq` the struct has -- derived, or the
     // manual one above with its bounds -- and by identity when it has none.
-    if (comparable) {
-      _emitDartEq(body: 'self == other', extraBound: ' + PartialEq');
-    } else if (byIdentity.isNotEmpty) {
-      final projected = {
+    // A generic struct compares field by field through `DartEq`, which
+    // every field type has (the `T: DartEq` bound is the struct's own); a
+    // `T: PartialEq` bound shut out every `ObserverList<VoidCallback>`
+    // (48 at ws445).
+    String fieldWise() {
+      final parts = [
         for (final f in _allFields(cls))
-          if (f.type.projected)
-            type(IrType(f.type.name, arguments: f.type.arguments)),
-      };
+          'self.${snake(f.name)}.dart_eq(&other.${snake(f.name)})',
+      ];
+      return parts.isEmpty ? 'true' : parts.join(' && ');
+    }
+
+    if (comparable || byIdentity.isNotEmpty) {
       _emitDartEq(
-        body: 'self == other',
-        where: cls.typeParameters.isEmpty
-            ? ''
-            : ' where ${[for (final p in cls.typeParameters) '$p: PartialEq', for (final p in projected) '<$p as DartNullable>::Or: PartialEq'].join(', ')}',
+        body: cls.typeParameters.isEmpty ? 'self == other' : fieldWise(),
       );
     } else {
       _emitDartEq(body: 'std::ptr::eq(self, other)');

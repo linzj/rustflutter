@@ -6524,6 +6524,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | run441 | **构造函数整个跑完了**（所有 mixin 的 `initInstances` 顺序对了）。下一个 panic：`WidgetsBinding.instance` 的 static 是 `None`——因为 `WidgetsFlutterBinding::new` 根本没跑 `BindingBase()` 的**构造函数体**（`initInstances(); initServiceExtensions(); ..`）：子类构造只继承基类的字段初始值，不继承基类构造体。通用：`_inheritedBodies`——沿 `super(..)` 链把基类构造体（最深的先）内联进子类构造，参数按名 `let` 绑定 super 实参，各自一个块；泛型基类先不做。prelude `post_event(kind, data, stream)` 按 Dart 声明。 |
 | ws443 结果 | 编译尺子 **2776**（ws441 2685，+91），141 crate。来 47，35 个是 `new`：内联进来的基类构造体里 `this.child = x` 走 trait setter，打印成裸 `RenderProxyBox::set_child(&*__new, ..)`——2021 edition 的 E0782（100 个）。通用：`this` 上以 trait 为 qualifier 的调用拼成 `<Self as Trait>::m(..)`（super 函数里 `__Self`）。 |
 | run443 | 基类构造体跑起来了，第一句 `FlutterTimeline.startSync(..)` 是编译桩。 |
+| ws445 结果 | 编译尺子 **2840**（ws443 2776，+64），141 crate。来 66：`<__Self as LocalHistoryRoute>` 少泛型实参（151 个 E0107）；泛型 struct 的 `DartEq` 要求 `T: PartialEq`，`ObserverList<VoidCallback>` 不满足（48）；闭包里按值用捕获的局部（`instance.on_start = on_start`，107 个 E0507）。三条通用：qualified 路径带上 trait 的类型实参（`_traitArgsOf`，从类的 mixins/interfaces/超类链求）；泛型 struct 的 `DartEq` 逐字段 `dart_eq`（bound 只要 `T: DartEq`）；闭包体内读捕获的局部一律 `.clone()`。 |
+| run445 | 过了 `FlutterTimeline.startSync`，下一个 panic：`WidgetsFlutterBinding::init_instances` 编译桩——`self.handle_pop_route()?`：mixin 声明里的目标是 abstract 没有 `async` 标记，且 qualifier 是具体类自己；`_asyncMember` 看 application 里的副本，`qualifier == 接收者类` 仍算 inherent。 |
 
 ## 下一步(2026-09-05 重铺)
 
