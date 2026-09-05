@@ -2457,7 +2457,22 @@ class RustBackend {
         : receiverClass == null
         ? null
         : library[receiverClass];
-    final wide = _wideTraitFor(owner, name);
+    var wide = _wideTraitFor(owner, name);
+    // ..or one of *two* traits the receiver's class implements that both
+    // declare the method (`RenderBox` re-declares `RenderObject`'s
+    // `markNeedsLayout`), with no inherent method to win: the nearest is
+    // named (21 E0034 at ws416).
+    if (wide == null &&
+        owner != null &&
+        qualifier == null &&
+        !owner.methods.any((m) => m.name == name && !m.isStatic)) {
+      final declaring = _abstractAncestors(owner).where(
+        (a) =>
+            a.methods.any((m) => m.name == name && !m.isStatic) ||
+            a.abstractMethods.any((m) => m.name == name),
+      );
+      if (declaring.length > 1) wide = declaring.first;
+    }
     String? asTrait;
     if (wide != null &&
         owner != null &&

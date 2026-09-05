@@ -6454,6 +6454,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws416 结果 | 950 叶子错 | **2973→2632 / 796，138+1 个 crate**，比协变前的 ws411（2638）低 6，目前最低。 |
 | ws416 细看 | 950 叶子错 | 修 123 新 64；协变 trait bound 187→65（剩的：泛型类 `WidgetStatePropertyAll<T>` 用作 `WSP<T?>` 12 个——要按类自身的具体实例化发 impl；`Rc<dyn X>: DiagnosticableTree` 之类 handle 进 handle 的 20 个）。新错里 `cannot find type T` 43→63：基类 `T? x = null` 的字段初始值拍平进子类时 `IrNullableOf` 的 `T` 没代入。E0034 21 个（`mark_needs_layout` 两个 trait 都声明）是老的。 |
 | ws417 | 950 叶子错 | `_allFields` 拍平基类字段时初始值也经 `_substitute` 按基类绑定代入（`IrFieldDecl.substituted` 加 `initial`）。 |
+| ws417 结果 | 950 叶子错 | **2632→2609 / 796，138+1 个 crate**。 |
+| ws418 | 950 叶子错 | 老的 21 个 E0034（`mark_needs_layout` 由 `RenderBox` 和 `RenderObject` 两个 trait 都声明、类自己没有 inherent 方法）：接收者的类对同名方法有两个声明 trait 时按最近的那个限定，和多实例化的限定走同一条路径。`Match` 是 `RegExpMatch`（prelude 一行 `pub type Match`）。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
 ## 下一步(2026-09-05 重铺)

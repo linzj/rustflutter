@@ -2311,6 +2311,10 @@ impl Iterable {
     }
 }
 
+/// `dart:core`'s `Match`, the interface `RegExpMatch` implements: one
+/// struct stands for both here.
+pub type Match = RegExpMatch;
+
 /// A `RegExpMatch`: what `firstMatch` hands back. There is no regular
 /// expression engine here yet, so `first_match` finds nothing and says so.
 #[derive(Clone, Debug, PartialEq)]
