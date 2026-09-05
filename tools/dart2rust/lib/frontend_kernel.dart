@@ -4196,6 +4196,22 @@ class KernelFrontend implements TypeWorld {
     final declared = node.target.function.computeThisFunctionType(
       Nullability.nonNullable,
     );
+    // A constructor's function type carries the class's type parameters as
+    // its own (structural ones, `E%`), which a substitution by the
+    // constructed type's arguments does not reach: instantiated instead
+    // (`HeapPriorityQueue<_TaskEntry<dynamic>>(_taskSorter)` in the
+    // binding's constructor took a `Comparator<E%>`, run433).
+    if (declared.typeParameters.isNotEmpty) {
+      if (declared.typeParameters.length !=
+          node.constructedType.typeArguments.length) {
+        return null;
+      }
+      final instantiated = FunctionTypeInstantiator.instantiate(
+        declared,
+        node.constructedType.typeArguments,
+      );
+      return instantiated is FunctionType ? instantiated : null;
+    }
     final substituted = Substitution.fromInterfaceType(node.constructedType)
         .substituteType(declared);
     return substituted is FunctionType ? substituted : null;
@@ -8021,9 +8037,20 @@ class KernelFrontend implements TypeWorld {
           for (final synthetic in base.constructors) {
             for (final moved in synthetic.initializers) {
               if (moved is FieldInitializer) {
+                // Into the field's type, as a written initialiser is
+                // (`_frameTimelineTask: TimelineTask? = TimelineTask()`
+                // needed its `Some`, run433).
                 inits.putIfAbsent(
                   moved.field.name.text,
-                  () => expression(moved.value),
+                  () => _acrossEdge(
+                    _widened(
+                      moved.value,
+                      moved.field.type,
+                      expression(moved.value),
+                    ),
+                    moved.field.type,
+                    toOption: false,
+                  ),
                 );
               }
             }
