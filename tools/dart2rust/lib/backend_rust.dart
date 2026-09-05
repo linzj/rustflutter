@@ -725,12 +725,21 @@ class RustBackend {
       IrUpcast(:final value, :final type)
           when value is IrThis && type.name == 'Object' =>
         _call(value, '!as_object', const []),
+      // The value's class by its recorded type first (a local, a call), by
+      // its shape (a constructor call) otherwise.
       IrUpcast(:final value, :final type, :final handle, :final explicit) =>
-        handle || (library[_concreteType(value).name]?.counted ?? false)
+        handle ||
+                (library[value.rustType?.name ?? _concreteType(value).name]
+                        ?.counted ??
+                    false)
             ? (explicit
                   ? '(${expr(value)} as ${this.type(type)})'
                   : expr(value))
-            : library[_concreteType(value).name] != null
+            // An enum is not a `DartAny`: a plain handle (49 `_ScaffoldSlot:
+            // DartAny` at ws367).
+            : (library[value.rustType?.name ?? _concreteType(value).name]
+                      ?.isEnum ==
+                  false)
             ? (explicit
                   ? '(dart_object(${expr(value)}) as ${this.type(type)})'
                   : 'dart_object(${expr(value)})')
