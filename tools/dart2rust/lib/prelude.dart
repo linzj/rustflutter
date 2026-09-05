@@ -2756,7 +2756,7 @@ pub fn register_extension<F>(_method: String, _handler: F) {}
 /// `dart:developer`'s `postEvent`: nothing is listening.
 pub fn post_event(
     _event_kind: String,
-    _event_data: Map<Option<std::rc::Rc<dyn Object>>, Option<std::rc::Rc<dyn Object>>>,
+    _event_data: Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>,
     _stream: String,
 ) {
 }
