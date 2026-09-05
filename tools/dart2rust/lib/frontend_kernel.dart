@@ -4196,6 +4196,41 @@ class KernelFrontend {
     // A `List<int>` handed to a `Uint8List` parameter (TFA narrowed it, or
     // Dart's typed list is a `List<int>` too): the elements are cast down,
     // `Vec<i64>` to `Vec<u8>`, as the typed-list index does.
+    // A collection of a class into a slot of its trait: `_tickers ??=
+    // <_WidgetTicker>{}` on a `Set<Ticker>?` built a `Set<Rc<_WidgetTicker>>`
+    // (44 `createTicker`s at ws351). Each handle is upcast, in a new
+    // collection (`!upcast_elements`).
+    if (param is InterfaceType &&
+        given is InterfaceType &&
+        (param.classNode.name == 'Set' || param.classNode.name == 'List') &&
+        given.classNode.name == param.classNode.name &&
+        given.nullability != Nullability.nullable &&
+        param.typeArguments.length == 1 &&
+        given.typeArguments.length == 1) {
+      final want = param.typeArguments.single;
+      final have = given.typeArguments.single;
+      if (want is InterfaceType &&
+          have is InterfaceType &&
+          want.classNode != have.classNode &&
+          _abstractLike(want.classNode) &&
+          _translatedClass(want.classNode) &&
+          !_scalarClass(want.classNode) &&
+          _translatedClass(have.classNode) &&
+          !_scalarClass(have.classNode) &&
+          (typeEnvironment?.hierarchy.isSubInterfaceOf(
+                have.classNode,
+                want.classNode,
+              ) ??
+              false)) {
+        final cast = IrCall(
+          lowered,
+          '!upcast_elements',
+          const [],
+          typeArguments: [IrType(param.classNode.name), _type(want)],
+        );
+        return param.nullability == Nullability.nullable ? IrSome(cast) : cast;
+      }
+    }
     final narrow = _narrowElement(param);
     // The *declared* type of a variable, not its promotion: `if (input is
     // Uint8List) return input;` still holds a `Vec<i64>`.

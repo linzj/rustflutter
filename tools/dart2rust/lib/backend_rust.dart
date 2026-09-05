@@ -2144,6 +2144,17 @@ class RustBackend {
     }
     // The other way: a `Uint8List` handed to a `List<int>` parameter.
     // A `List<String>` into a `List<Object?>`: each element shared.
+    // A `Set<_WidgetTicker>` into a `Set<Ticker>` slot: each handle upcast
+    // to the trait (`_tickers ??= <_WidgetTicker>{}`, 44 `createTicker`s at
+    // ws351). The type arguments name the collection and the element.
+    if (name == '!upcast_elements' &&
+        args.isEmpty &&
+        typeArguments.length == 2) {
+      final to = type(typeArguments[1]);
+      final mapped =
+          '$receiver.into_iter().map(|v| v as $to).collect::<Vec<$to>>()';
+      return typeArguments[0].name == 'Set' ? 'Set::of($mapped)' : mapped;
+    }
     if (name == '!widen_object' && args.isEmpty) {
       // `iter().cloned()`: the receiver may be the `&Vec` a null-aware
       // `as_ref().map(|it| ..)` binds, and `into_iter` on that yields
