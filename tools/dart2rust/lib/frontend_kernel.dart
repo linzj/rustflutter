@@ -1128,19 +1128,14 @@ class KernelFrontend implements TypeWorld {
       return IrSetValue(null, node.name.text, stored);
     }
     if (node is NullCheck) {
-      // `lerpDouble(a, b, t)!`: the special lowering of `lerpDouble` (see
-      // `_staticInvocation`) is already a bare `f64`; nothing to unwrap.
-      final operand = node.operand;
-      if (operand is StaticInvocation &&
-          operand.target.name.text == 'lerpDouble') {
-        return expression(operand);
-      }
-      // ..and the same call once the tree shaker inlined it: `(a + (b - a)
-      // * t)!` is arithmetic the type flow analysis already made a
-      // `double`, and there is no `Option` to unwrap (71 `unwrap` on an
-      // `f64` at ws331).
-      if (_neverNullHere(operand)) return expression(operand);
-      return IrNullCheck(expression(operand));
+      // `x!` on a value that is not an `Option` here -- arithmetic the type
+      // flow analysis typed non-nullable and Kernel still writes `double?`
+      // for -- is the value: the operand's recorded type says so, where a
+      // list of shapes used to (`lerpDouble`, ws331).
+      final inner = expression(node.operand);
+      final have = inner.rustType;
+      if (have != null && !isNullable(have)) return inner;
+      return IrNullCheck(inner);
     }
     if (node is AsExpression) {
       // A cast that only removes `?` -- the CFE's spelling of a promoted
@@ -1155,11 +1150,13 @@ class KernelFrontend implements TypeWorld {
           from is InterfaceType &&
           to is InterfaceType &&
           from.classNode == to.classNode) {
-        // `unsafeCast<double>(lerpDouble(..))`, the tree shaker's form of
-        // `lerpDouble(..)!`: the lowering of `lerpDouble` is arithmetic
-        // with no `Option` on it (71 `unwrap` on an `f64` at ws331).
-        if (_neverNullHere(node.operand)) return expression(node.operand);
-        return IrNullCheck(expression(node.operand));
+        // `unsafeCast<double>(..)`, the tree shaker's form of `..!`: the
+        // value when the operand is not an `Option` here (its recorded
+        // type says), the unwrap otherwise.
+        final inner = expression(node.operand);
+        final have = inner.rustType;
+        if (have != null && !isNullable(have)) return inner;
+        return IrNullCheck(inner);
       }
       // A cast down from an abstract class to a concrete one -- `path as
       // _NativePath` in front of every native taking one -- is a downcast
@@ -3306,8 +3303,13 @@ class KernelFrontend implements TypeWorld {
 
   IrCall _qualified(IrCall call, Member member, Expression receiver) {
     final out = _qualifiedRaw(call, member, receiver);
+    // Typed by the member the call reaches in Rust: through a trait's
+    // path (`RestorationMixin::restoration_id(self)`) it is the trait's
+    // declaration, whatever the class's override narrowed it to (`String?`
+    // there, `String` here: 72 dropped `!`s at ws390); a plain call lands
+    // on the class's own.
     out.rustType ??= _memberRustType(
-      _landing(member, receiver),
+      out.qualifier != null ? member : _landing(member, receiver),
       receiver,
       asGetter: member is Field || (member is Procedure && member.isGetter),
     );
@@ -3694,17 +3696,6 @@ class KernelFrontend implements TypeWorld {
             ),
           ),
       ], _type(element ?? const DynamicType()));
-    }
-    if (target.name.text == 'lerpDouble' && positional.length == 3) {
-      // `a + (b - a) * t`, which is what dart:ui's lerpDouble computes for
-      // non-null arguments. 67 calls.
-      final a = expression(positional[0]);
-      final b = expression(positional[1]);
-      return IrBinary(
-        '+',
-        a,
-        IrBinary('*', IrBinary('-', b, a), expression(positional[2])),
-      );
     }
     // The rest of `dart:math`'s functions are methods on `f64` in Rust,
     // spelled almost the same. `log` was refused as a top-level nothing
@@ -5784,26 +5775,6 @@ class KernelFrontend implements TypeWorld {
       }
     }
     return out;
-  }
-
-  /// Whether an expression's lowering is already a bare value where Kernel
-  /// still sees a nullable: `lerpDouble(..)` (lowered to arithmetic), or
-  /// arithmetic on numbers the type flow analysis typed non-nullable, the
-  /// two shapes of an inlined `lerpDouble(..)!`.
-  bool _neverNullHere(Expression e) {
-    var inner = e;
-    while (inner is Let) {
-      inner = inner.body;
-    }
-    if (inner is StaticInvocation && inner.target.name.text == 'lerpDouble') {
-      return true;
-    }
-    final type = _staticType(inner);
-    return inner is InstanceInvocation &&
-        type is InterfaceType &&
-        type.nullability != Nullability.nullable &&
-        const {'+', '-', '*', '/', '%', '~/'}.contains(inner.name.text) &&
-        const {'double', 'int', 'num'}.contains(type.classNode.name);
   }
 
   /// What a `throw` hands to `Err`: a *value* of a translated class

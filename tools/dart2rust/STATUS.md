@@ -6403,6 +6403,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws387 | 950 叶子错 | 泛型**静态**调用的槽也按调用处的类型实参代入（`_withGenericArgs`/`_genericSlotIr`）；`coerceInto` 加函数类型规则：参数逐个从槽的类型转到函数的、结果转回，包一层适配闭包。**2855→2855**——没生效：tear-off 的 `rustType` 是 `dynamic`，闭包根本没类型。 |
 | ws388 | 950 叶子错 | 函数值按自己的签名定型：闭包用 lowering 后的形参和返回，静态 tear-off 用目标的函数类型。`TextStyle.lerp` 进 `WidgetStateProperty.lerp<TextStyle?>` 有了 `|__a0: Option<Option<..>>, ..|` 的适配。**2855→2854 / 795，138+1 个 crate**（fn-arg mismatch −28，mismatched +13：新露出的）。 |
 | ws389 | 950 叶子错 | `Option<Option<..>>` 进 `Option<..>` 是 `flatten`（`None` 和 `Some(None)` 都是 Dart 的 null），不是 unwrap。**2854→2854**。`WidgetStateProperty.lerp<TextStyle?>` 那 75 处的根：泛型函数**返回** `WidgetStateProperty<T?>?`，T 代 `TextStyle?` 后 Rust 是 `WSP<Option<Option<TS>>>`，而槽位是 `WSP<Option<TS>>`——trait 对象的类型实参不变型，值层面无法转。通用解要在类型层：`T?` 在泛型声明里印成 `<T as Nullable>::Or`（`Option<X>` 的 `Or` 是自己，其余类型是 `Option<Self>`，每个翻译的类生成一个 impl）。记为下一项结构性工作。 |
+| ws390 | 950 叶子错 | 删 `lerpDouble` 特判（`a + (b - a) * t` 的硬编码展开，操作数可空时是错的）和 `_neverNullHere` 那一串形状；`lerpDouble` 走翻译过的 `lerp_double(Option<f64>, Option<f64>, f64)`，`x!` 只在操作数记录的类型可空时才 unwrap（结构规则）。**2854→2893**：`restorationId!` 的 `!` 被丢了——读的类型按落点（子类覆盖为 `String`）定，可后端经 trait 路径调用（`RestorationMixin::restoration_id`，`String?`）。 |
+| ws391 | 950 叶子错 | 带 trait 限定的调用按 trait 的声明定型，其余按落点。**2893→2809 / 795，138+1 个 crate**（mismatched −36，cannot subtract −18）。 |
 
 ## 下一步(2026-09-05 重铺)
 
