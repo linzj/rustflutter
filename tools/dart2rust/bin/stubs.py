@@ -44,13 +44,28 @@ def cargo_errors(ws):
     # default; `DART2RUST_JOBS` sets it. Never run a second `cargo check`
     # beside this one -- the reachable-crate count comes from this run.
     jobs = os.environ.get('DART2RUST_JOBS', '8')
-    p = subprocess.run(
+    # Streamed, never held whole: one round produced 50 GB of JSON --
+    # thousands of errors on one 1.7 MB source line, each carrying the line
+    # in `rendered` -- and `capture_output` kept it all in this process,
+    # which is what took the VM down (2026-09-05). Each rendered text is
+    # kept to its head, and the round's output is bounded.
+    p = subprocess.Popen(
         ['cargo', 'check', '--workspace', '--keep-going', '-j', jobs,
          '--message-format=json'],
-        cwd=ws, capture_output=True, text=True)
+        cwd=ws, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     found = []
     ARTIFACTS.clear()
-    for raw in p.stdout.splitlines():
+    budget = int(os.environ.get('DART2RUST_DIAG_BUDGET_MB', '512')) * 1024 * 1024
+    seen = 0
+    for raw in p.stdout:
+        seen += len(raw)
+        if seen > budget:
+            print('  diagnostics past %d MB this round; the rest is dropped'
+                  % (budget // (1024 * 1024)), flush=True)
+            p.kill()
+            break
+        if len(raw) > 4 * 1024 * 1024:
+            continue
         try:
             m = json.loads(raw)
         except ValueError:
@@ -76,7 +91,8 @@ def cargo_errors(ws):
         found.append((s['file_name'], s['line_start'], msg['message']))
         # The whole diagnostic, notes and all: the headline says
         # "mismatched types" 2482 times and nothing about which two.
-        RENDERED.append(msg.get('rendered') or '')
+        RENDERED.append((msg.get('rendered') or '')[:8192])
+    p.wait()
     return found
 
 
