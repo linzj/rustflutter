@@ -281,7 +281,12 @@ class KernelFrontend implements TypeWorld {
     // An operator keeps its std signature (`_emitOperator`: no `Result`),
     // so a call of one never propagates: `self[i] * a[i]` in `_Vector`'s
     // own `operator *` unwrapped a bare `f64` (73 at ws329).
-    if (target is Procedure && target.kind == ProcedureKind.Operator) {
+    // ..a *std* operator; `[]` and the comparisons are methods here, and a
+    // trait's `index_of` returned `Result` while the call did not `?` it
+    // (20 `Rc<dyn Color> <= Option<..>` on `MaterialColor.shade50`, ws423).
+    if (target is Procedure &&
+        target.kind == ProcedureKind.Operator &&
+        stdOperators.contains(target.name.text)) {
       return false;
     }
     // A member cloned into a mixin application lives in a synthetic

@@ -66,6 +66,25 @@ class IrType {
   }
 }
 
+/// The operators Rust has a `std::ops` trait for: an `impl Add for X` keeps
+/// the trait's signature, with no `Result`, so a call of one never
+/// propagates. Every other operator (`[]`, `~/`, the comparisons) is a
+/// method here, failing like any method. The backend's `_operatorTraits`
+/// maps these same names.
+const stdOperators = {
+  '+',
+  '-',
+  '*',
+  '/',
+  '%',
+  'unary-',
+  '&',
+  '|',
+  '^',
+  '<<',
+  '>>',
+};
+
 /// A parameter of a constructor or method.
 class IrParam {
   const IrParam(

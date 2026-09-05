@@ -7359,28 +7359,13 @@ class RustBackend {
       if (mapping == null) {
         // `~/` has no Rust trait. Emitted as an inherent method rather than
         // forced into one that means something else.
+        // ..and as a method in every respect: it returns `Result` and
+        // its body may `?`, as the trait's declaration of the same
+        // operator does (`stdOperators`).
         _line('');
         _line('impl${_implGenerics(cls)} ${cls.name}${_generics(cls)} {');
         _indent++;
-        _doc(method.doc);
-        final params = [
-          '&self',
-          ...method.params.map((p) => _param(p, owned: false)),
-        ].join(', ');
-        _line(
-          '${_vis(method.name)}fn ${_operatorName(op)}($params) -> ${type(method.returnType)} {',
-        );
-        _indent++;
-        _returns = method.returnType;
-        _asyncBody = method.isAsync;
-        _methodTypeParams = method.typeParameters;
-        _reassigned = _assignedIn(method.body);
-        _cellLocals = {};
-        stmt(method.body, tail: true);
-        _closeOpenIf(method.body);
-        _returns = null;
-        _indent--;
-        _line('}');
+        _emitMethod(method, as: _operatorName(op));
         _indent--;
         _line('}');
         return;
