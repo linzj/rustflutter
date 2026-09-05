@@ -36,6 +36,13 @@ abstract class TypeWorld {
 const scalarNames = {'int', 'double', 'num', 'bool', 'String'};
 const collectionNames = {'List', 'Iterable', 'Set'};
 
+/// `dart:core` interfaces the prelude spells as a sum of their cases: the
+/// case's class to the constructor that wraps it. `Pattern` is a `String`
+/// or a `RegExp`, and the prelude's struct holds either.
+const preludeSums = {
+  'Pattern': {'String': 'of_string', 'RegExp': 'of_regexp'},
+};
+
 /// The Rust spelling of a scalar class's name.
 String rustScalar(String name) =>
     const {
@@ -196,10 +203,26 @@ IrExpr coerceInto(
   if (have.name == 'int' && slot.name == 'double') {
     return IrCast(value, 'f64')..rustType = slot;
   }
+  // A case into the prelude's sum of it.
+  final wrap = preludeSums[slot.name]?[have.name];
+  if (wrap != null) {
+    return IrStaticCall(slot.name, wrap, [value])..rustType = slot;
+  }
   final haveObject = have.name == 'Object' || have.name == 'dynamic';
   final slotObject = slot.name == 'Object' || slot.name == 'dynamic';
   if (scalarNames.contains(have.name) && !slotObject) return value;
   if (scalarNames.contains(slot.name) && !haveObject) return value;
+  // Into `Object`: a handle unsizes, a value goes behind a fresh,
+  // registered one.
+  if (slotObject) {
+    if (haveObject || have.name == 'Null') return value;
+    return IrUpcast(
+      value,
+      IrType('Object'),
+      handle: world.isTrait(have.name) || world.isCounted(have.name),
+      explicit: inClosure,
+    )..rustType = slot;
+  }
   // Function types: an adapter closure, each parameter coerced from the
   // slot's type to the function's and the result back (`lerp<Color?>`'s
   // `T? Function(T?, T?, double)` wants `Option<Option<..>>` parameters
@@ -247,17 +270,6 @@ IrExpr coerceInto(
   if (have.name == 'Map' || slot.name == 'Map') return value;
   final haveTrait = world.isTrait(have.name);
   final slotTrait = world.isTrait(slot.name);
-  // Into `Object`: a handle unsizes, a value goes behind a fresh,
-  // registered one.
-  if (slotObject) {
-    if (haveObject || have.name == 'Null') return value;
-    return IrUpcast(
-      value,
-      IrType('Object'),
-      handle: haveTrait || world.isCounted(have.name),
-      explicit: inClosure,
-    )..rustType = slot;
-  }
   // Out of `Object`: a scalar by `Any`, cloned out of the reference.
   if (haveObject && scalarNames.contains(slot.name)) {
     return IrCall(IrDowncast(value, rustScalar(slot.name)), 'clone', const [])

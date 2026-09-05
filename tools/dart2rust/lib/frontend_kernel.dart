@@ -4358,6 +4358,7 @@ class KernelFrontend implements TypeWorld {
     bool generic = false,
   }) {
     if (param == null || callee == null) return lowered;
+    if (coerceByType && lowered.rustType != null) return lowered;
     // Already what the slot holds (`coerce` shared it): nothing to add.
     final already = lowered.rustType;
     if (already != null) {
@@ -4399,28 +4400,14 @@ class KernelFrontend implements TypeWorld {
         return _intoObject(value, env.coreTypes.objectNullableRawType, lowered);
       }
     }
-    // `dart:core`'s `Pattern` is a `String` or a `RegExp`; the prelude's
-    // struct holds either, and a call into *translated* code converts
-    // (`FilteringTextInputFormatter.deny('\n')`). Not a `dart:` callee's:
-    // the prelude's own `split`/`contains` take the `String`.
-    if (param is InterfaceType &&
-        param.classNode.name == 'Pattern' &&
-        param.classNode.enclosingLibrary.importUri.toString() == 'dart:core') {
-      final given = _staticType(value);
-      if (given is InterfaceType && given.classNode.name == 'String') {
-        final made = IrStaticCall('Pattern', 'of_string', [lowered]);
-        return param.nullability == Nullability.nullable ? IrSome(made) : made;
-      }
-      if (given is InterfaceType && given.classNode.name == 'RegExp') {
-        final made = IrStaticCall('Pattern', 'of_regexp', [lowered]);
-        return param.nullability == Nullability.nullable ? IrSome(made) : made;
-      }
-    }
     return _intoObject(value, param, lowered);
   }
 
   /// The sharing `_intoDynamic` does, for any `Object`/`dynamic` slot.
   IrExpr _intoObject(Expression value, DartType? param, IrExpr lowered) {
+    // The `Object` slot is `coerce`'s (ws392): what follows is measured
+    // for what it still adds.
+    if (coerceByType && lowered.rustType != null) return lowered;
     if (param == null) return lowered;
     final isObject =
         param is DynamicType ||

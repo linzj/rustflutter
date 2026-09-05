@@ -6405,6 +6405,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws389 | 950 叶子错 | `Option<Option<..>>` 进 `Option<..>` 是 `flatten`（`None` 和 `Some(None)` 都是 Dart 的 null），不是 unwrap。**2854→2854**。`WidgetStateProperty.lerp<TextStyle?>` 那 75 处的根：泛型函数**返回** `WidgetStateProperty<T?>?`，T 代 `TextStyle?` 后 Rust 是 `WSP<Option<Option<TS>>>`，而槽位是 `WSP<Option<TS>>`——trait 对象的类型实参不变型，值层面无法转。通用解要在类型层：`T?` 在泛型声明里印成 `<T as Nullable>::Or`（`Option<X>` 的 `Or` 是自己，其余类型是 `Option<Self>`，每个翻译的类生成一个 impl）。记为下一项结构性工作。 |
 | ws390 | 950 叶子错 | 删 `lerpDouble` 特判（`a + (b - a) * t` 的硬编码展开，操作数可空时是错的）和 `_neverNullHere` 那一串形状；`lerpDouble` 走翻译过的 `lerp_double(Option<f64>, Option<f64>, f64)`，`x!` 只在操作数记录的类型可空时才 unwrap（结构规则）。**2854→2893**：`restorationId!` 的 `!` 被丢了——读的类型按落点（子类覆盖为 `String`）定，可后端经 trait 路径调用（`RestorationMixin::restoration_id`，`String?`）。 |
 | ws391 | 950 叶子错 | 带 trait 限定的调用按 trait 的声明定型，其余按落点。**2893→2809 / 795，138+1 个 crate**（mismatched −36，cannot subtract −18）。 |
+| ws392 | 950 叶子错 | 量 `_intoObject`/`_intoDynamic` 在值已定型时还剩什么：两者一进来就返回，`coerce` 的 `Object` 槽规则挪到函数类型规则前面（函数值进 `Object?` 也要共享）。**2809→2811 / 795，138+1 个 crate**：只丢了一样——`String`/`RegExp` 进 `dart:core` 的 `Pattern`（prelude 是 `of_string`/`of_regexp` 的和类型），两处 static 初始化。其余差异只是多余的显式 `as Rc<dyn Object>` 没了。 |
+| ws393 | 950 叶子错 | `Pattern` 的转换进 `coerce.dart` 的 `preludeSums` 表（dart:core→prelude 的和类型，一处表），前端 `_intoDynamic` 里那段删掉。驱动输出对 ws392 只差那两行。 |
 
 ## 下一步(2026-09-05 重铺)
 
