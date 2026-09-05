@@ -4869,7 +4869,10 @@ class RustBackend {
       // already admits null, and spelling the `?` again made the impl say
       // `Option<Rc<dyn Object>>` where the trait, bound the same way, said
       // `Rc<dyn Object>` -- `decodeMessage` on every codec, 16 `E0053`s.
-      if (to.name == 'dynamic') return to;
+      // ..but a *projected* `T?` stays projected over `dynamic` too: the
+      // trait's side normalises `<Rc<dyn Object> as DartNullable>::Or` to
+      // `Option<Rc<dyn Object>>`, and the impl has to say the same.
+      if (to.name == 'dynamic' && !t.projected) return to;
       // The `?` belongs to the *use*, not to what is put in its place:
       // `ChildType? _child` with `ChildType` bound to `RenderBox` is a
       // `RenderBox?`, and dropping the question mark made the accessor return

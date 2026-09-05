@@ -6445,6 +6445,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws411 结果 | 950 叶子错 | **2650→2638 / 796，138+1 个 crate**，目前最低。 |
 | ws412 结果 | 950 叶子错 | **断：1 个函数外错**——`DefaultEquality<E>: Equality<E>` 再加 `Equality<Rc<dyn Object>>` 在 E=Object 时重叠（E0119）。 |
 | ws413 | 950 叶子错 | 泛型类自己的实例化提到自己的形参时不发更宽 impl；另外两处：`_type` 的嵌套投影也只对本声明的形参（24 个 `cannot find type T` 是别的声明的 `T?` 在实例化前被投影了）；forwarder 里被转发的方法（含继承来的）也做 `T_` 改名，否则 `T?` 和 `T_?` 被当两种类型双向转换。 |
+| ws413 结果 | 950 叶子错 | **断：80 个函数外错，34 个 crate**。两类：(1) `impl Tween<Object> for IntTween` 要求 supertrait `Animatable<Object>` 也有 impl（61 个 E0053 里一部分、19 个 bound）；(2) 投影的 `T?` 代 `dynamic` 时后端走了"dynamic 已含 null"的老捷径拼成 `Rc<dyn Object>`，trait 侧规范化后是 `Option<Rc<dyn Object>>`。 |
+| ws414 | 950 叶子错 | 更宽 impl 连同 trait 的每个泛型祖先 trait 一起发（按更宽实例化沿层次代入）；投影的槽代 `dynamic` 仍保持投影。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
 ## 下一步(2026-09-05 重铺)

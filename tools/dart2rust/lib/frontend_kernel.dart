@@ -100,15 +100,35 @@ class KernelFrontend implements TypeWorld {
           if (wider == asBase) continue;
           if (wider.typeArguments.any(_mentionsTypeParameter)) continue;
           if (!env.isSubtypeOf(asBase, wider)) continue;
-          final List<IrType> args;
-          try {
-            args = _erasedArguments(base, wider.typeArguments);
-          } on Unsupported {
-            continue;
+          // The trait and every generic trait above it, as the wider
+          // instantiation reaches them: `impl Tween<Object> for IntTween`
+          // asks `IntTween: Animatable<Object>` of its supertrait.
+          for (final above in [base, ..._kernelAncestors(base)]) {
+            if (above.typeParameters.isEmpty ||
+                !_translatedClass(above) ||
+                !_abstractLike(above)) {
+              continue;
+            }
+            final asAbove = env.hierarchy.getTypeAsInstanceOf(wider, above);
+            final ownAbove = env.hierarchy.getTypeAsInstanceOf(thisType, above);
+            if (asAbove is! InterfaceType || ownAbove is! InterfaceType) {
+              continue;
+            }
+            if (ownAbove.typeArguments.any(_mentionsTypeParameter)) continue;
+            final List<IrType> args, ownArgs;
+            try {
+              args = _erasedArguments(above, asAbove.typeArguments);
+              ownArgs = _erasedArguments(above, ownAbove.typeArguments);
+            } on Unsupported {
+              continue;
+            }
+            if (args.isEmpty) continue;
+            final key = '${above.name}<${args.join(',')}>';
+            if (args.join(',') == ownArgs.join(',') || !spelled.add(key)) {
+              continue;
+            }
+            ir.extraImpls.add(IrType(above.name, arguments: args));
           }
-          final text = args.join(',');
-          if (text == own.join(',') || !spelled.add(text)) continue;
-          ir.extraImpls.add(IrType(base.name, arguments: args));
         }
       }
     }
@@ -1755,6 +1775,27 @@ class KernelFrontend implements TypeWorld {
     final landing = _dispatchMember;
     if (landing == null || !identical(callee, _dispatchInterface)) return null;
     return _keptFor(landing.enclosingClass, _dispatchReceiverType)[p];
+  }
+
+  /// The classes above one, nearest first, through `extends`, `with` and
+  /// `implements`.
+  Iterable<Class> _kernelAncestors(Class c) sync* {
+    final seen = <Class>{};
+    final work = [c];
+    while (work.isNotEmpty) {
+      final k = work.removeLast();
+      for (final st in [
+        if (k.supertype != null) k.supertype!,
+        if (k.mixedInType != null) k.mixedInType!,
+        ...k.implementedTypes,
+      ]) {
+        final a = st.classNode;
+        if (seen.add(a)) {
+          yield a;
+          work.add(a);
+        }
+      }
+    }
   }
 
   /// A signature's or a field's type: projected where `_projectedSlot`.
