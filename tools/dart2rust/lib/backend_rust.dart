@@ -2210,7 +2210,10 @@ class RustBackend {
     if (target is IrField && target.target is IrLocal && target.owner == null) {
       return '${expr(target.target!)}.${snake(target.name)}';
     }
-    return expr(target);
+    // A receiver is not a coercion site: an implicit upcast under it, even
+    // through a `Some`, is spelled (`Some(dart_object(EdgeInsets {..}))
+    // .clone()` into an `Option<Rc<dyn EdgeInsetsGeometry>>`, 26 at ws426).
+    return expr(_explicitUpcast(target));
   }
 
   /// Whether a value of this class is held as an `Rc`: a counted class, or
