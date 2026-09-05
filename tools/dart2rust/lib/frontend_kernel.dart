@@ -5163,6 +5163,24 @@ class KernelFrontend implements TypeWorld {
       BoolConstant() when core != null => core.boolNonNullableRawType,
       StringConstant() when core != null => core.stringNonNullableRawType,
       NullConstant() => const NullType(),
+      // A collection constant is its class with its own element types: a
+      // `const [BoxShadow(..)]` into a `List<BoxShadow>?` parameter was
+      // `dynamic` here and never `Some`d (ws395).
+      ListConstant() when core != null => InterfaceType(
+        core.listClass,
+        Nullability.nonNullable,
+        [c.typeArgument],
+      ),
+      SetConstant() when core != null => InterfaceType(
+        core.setClass,
+        Nullability.nonNullable,
+        [c.typeArgument],
+      ),
+      MapConstant() when core != null => InterfaceType(
+        core.mapClass,
+        Nullability.nonNullable,
+        [c.keyType, c.valueType],
+      ),
       _ => const DynamicType(),
     };
   }

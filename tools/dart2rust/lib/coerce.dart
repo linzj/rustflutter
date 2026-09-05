@@ -257,6 +257,12 @@ IrExpr coerceInto(
       normalName(have.name) == normalName(slot.name) &&
       have.arguments.length == 1 &&
       slot.arguments.length == 1) {
+    // An empty literal holds whatever the slot holds (`x ?? const []`):
+    // retyped, since a `vec![]` mapped element by element has no element
+    // type for rustc to infer from.
+    if (value is IrListLiteral && value.elements.isEmpty) {
+      return IrListLiteral(const [], slot.arguments.single)..rustType = slot;
+    }
     final element = IrLocal('v')..rustType = have.arguments.single;
     final body = coerceInto(
       element,

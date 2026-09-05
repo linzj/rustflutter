@@ -6410,6 +6410,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws394 | 950 叶子错 | `_intoObject`/`_intoDynamic` 整个旁路（`coerceByType` 下直接返回），量出只差 intl 的 `FormatException(msg, trunk)`：那是 `preludeObjects = {'FormatException'}` 的硬编码在撑。通用替代：(1) prelude 把 `dynamic` 拼成翻译代码的拼法 `Rc<dyn Object>`（`FormatException.source`、`Exception(dynamic)`、`ArgumentError(dynamic)`、`ArgumentError.value(dynamic, _, dynamic)`，`IntoMessage` 删掉，`dart_message` 按 Dart 的 toString 出文本），(2) `_calleeTranslated` 对 `dynamic` 槽位放行（一种拼法），(3) 省略实参的默认值和 `const` 实例的构造参数都走同一条 `coerce` 规则、同一个 callee 闸门（`throw const FormatException('..')` 是 InstanceConstant 路径，之前手写 `!rc`/`Some`）。传参的 local 克隆带上操作数类型。驱动输出对 ws393 差 238 文件。 |
 | ws395 | 950 叶子错 | ws394 **prelude 自己没编过（0 个 crate）**：`FormatException` 的 `derive(PartialEq)` 对 `Rc<dyn Object>` 字段是 E0507，函数外的错 stub 不了。手写 `PartialEq`（source 按同一性），顺手修了一直被 stub 的 `run_until_idle`（`Vec<(i64, Rc<dyn Fn()>)>` 少了 `-> Result`）。单独 `cargo check -p dart_prelude` 干净后再上链。 |
 | ws395 结果 | 950 叶子错 | **2809→2784 / 795，138+1 个 crate**（mismatched −21；修 33 个函数，新 stub 9 个：`rendering_table`/`widgets_table` 7 个、cupertino 2 个）。`_intoObject`/`_intoDynamic` 的函数体整个删掉（只剩恒等），驱动输出和 ws395 零差异。 |
+| ws396 | 950 叶子错 | ws395 新 stub 的根：`_constantStaticType` 把集合常量当 `dynamic`，`const [BoxShadow(..)]` 进 `List<BoxShadow>?` 没 `Some`。集合常量按自己的类和元素类型定型；空列表字面量进另一元素类型的槽位是改型不是逐元素 map（`vec![]` 逐元素 map rustc 推不出类型，`fontFamilyFallback ?? const []`）。驱动输出对 ws395 差 3 文件。 |
 
 ## 下一步(2026-09-05 重铺)
 
