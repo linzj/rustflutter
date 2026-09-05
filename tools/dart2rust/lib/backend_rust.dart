@@ -839,8 +839,18 @@ class RustBackend {
     return translated && !awaited ? '$call$_propagate' : call;
   }
 
+  /// The operand of an `await`. A call reaching an `async fn` as one
+  /// (`asyncFn`) is the future itself and its `?` goes after the `.await`;
+  /// any other failing call returns its future inside the `Result` -- a
+  /// trait method, a plain function that built a `Future<T>` -- and is
+  /// unwrapped first, `f()?.await?` (118 "is not a future" at ws425).
   String _awaitOperand(IrExpr operand) {
-    if (operand is IrCall || operand is IrStaticCall) {
+    final asyncFn = switch (operand) {
+      IrCall(:final asyncFn) => asyncFn,
+      IrStaticCall(:final asyncFn) => asyncFn,
+      _ => false,
+    };
+    if (asyncFn) {
       _awaiting = true;
       final text = expr(operand);
       _awaiting = false;
@@ -5405,6 +5415,7 @@ class RustBackend {
         :final receiverClass,
         :final fails,
         :final diverges,
+        :final asyncFn,
         :final typeArguments,
       ) =>
         IrCall(
@@ -5415,6 +5426,7 @@ class RustBackend {
           receiverClass: receiverClass,
           fails: fails,
           diverges: diverges,
+          asyncFn: asyncFn,
           typeArguments: typeArguments,
         ),
       IrStaticCall(
@@ -5423,6 +5435,7 @@ class RustBackend {
         :final args,
         :final fails,
         :final diverges,
+        :final asyncFn,
         :final typeArguments,
       ) =>
         IrStaticCall(
@@ -5431,6 +5444,7 @@ class RustBackend {
           args.map(go).toList(),
           fails: fails,
           diverges: diverges,
+          asyncFn: asyncFn,
           typeArguments: typeArguments,
         ),
       IrNew(:final type, :final args, :final constructor) => IrNew(

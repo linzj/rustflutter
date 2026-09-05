@@ -220,11 +220,19 @@ class IrCall extends IrExpr {
     this.receiverClass,
     this.fails = false,
     this.diverges = false,
+    this.asyncFn = false,
     this.typeArguments = const [],
   });
 
   /// Whether the callee can fail (`IrMethod.fails`): the call is `?`ed.
   final bool fails;
+
+  /// Whether the call reaches an `async fn` as one -- a concrete class's
+  /// own async method, called plainly -- so that the value is the future
+  /// itself and the call's `?` belongs after the `.await`. Any other
+  /// failing call returns its future inside the `Result` (a trait method,
+  /// a plain function that built a `Future<T>`) and is unwrapped first.
+  final bool asyncFn;
 
   /// Whether the callee never returns (Dart `Never`): its `Result` holds
   /// an `Infallible`, and the call is spelled as the `!` it is.
@@ -260,11 +268,15 @@ class IrStaticCall extends IrExpr {
     this.args, {
     this.fails = false,
     this.diverges = false,
+    this.asyncFn = false,
     this.typeArguments = const [],
   });
 
   /// Whether the callee can fail (`IrMethod.fails`).
   final bool fails;
+
+  /// Whether the callee is an `async fn` (see `IrCall.asyncFn`).
+  final bool asyncFn;
 
   /// The call's type arguments for the callee's kept type parameters, as
   /// a turbofish: `ModalRoute.of<T>(context)` names `T` only in its

@@ -1642,8 +1642,27 @@ class KernelFrontend implements TypeWorld {
       // Not the cascade shape. It is still a block with a value, which is what
       // Rust's block expression is, so it needs no shape recognised -- the same
       // floor the general `Let` put under the three `Let` shapes.
+      // A value declared without an initializer and read after a labelled
+      // block -- a switch expression's arms, each `if (..) { #t = ..;
+      // break; }` -- is definitely assigned, which Dart checked; so the
+      // paths that leave the block without assigning it are dead, and
+      // Rust is told so where it cannot see it (125 E0381 at ws425).
+      final definite =
+          bound != null &&
+          initial == null &&
+          value is VariableGet &&
+          value.variable == bound;
       return IrBlockValue([
-        for (final s in statements) statement(s),
+        for (final s in statements)
+          if (definite &&
+              s is LabeledStatement &&
+              _fallsOutUnassigned(s, bound))
+            IrLabeled(
+              _labelFor(s),
+              IrBlock([statement(s.body), IrExprStmt(_noCaseMatched)]),
+            )
+          else
+            statement(s),
       ], expression(value));
     }
 
@@ -1666,6 +1685,35 @@ class KernelFrontend implements TypeWorld {
       _cascade = previous;
     }
   }
+
+  /// Whether control leaves the labelled block only by falling out of an
+  /// else-less `if` at its end, with nothing before it assigning `bound`
+  /// unconditionally: then the fall-out is the dead path of a definite
+  /// assignment.
+  static bool _fallsOutUnassigned(
+    LabeledStatement node,
+    DeclaredVariable bound,
+  ) {
+    final body = node.body;
+    if (body is! Block || body.statements.isEmpty) return false;
+    Statement last = body.statements.last;
+    while (last is Block && last.statements.length == 1) {
+      last = last.statements.single;
+    }
+    if (last is! IfStatement || last.otherwise != null) return false;
+    for (final s in body.statements.take(body.statements.length - 1)) {
+      if (s is ExpressionStatement) {
+        final e = s.expression;
+        if (e is VariableSet && e.variable == bound) return false;
+      }
+    }
+    return true;
+  }
+
+  static final _noCaseMatched = IrLiteral(
+    'unreachable!("dart2rust: no case of an exhaustive switch matched")',
+    IrType('raw'),
+  );
 
   /// The receiver the enclosing cascade bound. Reads of it become a local.
   Variable? _cascade;
@@ -3149,6 +3197,7 @@ class KernelFrontend implements TypeWorld {
           const [],
           fails: _fails(target),
           diverges: _diverges(target),
+          asyncFn: _asyncMember(target),
         );
       }
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
@@ -3164,6 +3213,7 @@ class KernelFrontend implements TypeWorld {
         const [],
         fails: _fails(target),
         diverges: _diverges(target),
+        asyncFn: _asyncMember(target),
       );
     }
     return IrStatic(
@@ -3883,9 +3933,24 @@ class KernelFrontend implements TypeWorld {
       receiverClass: type is InterfaceType ? type.classNode.name : null,
       fails: fails,
       diverges: _diverges(member),
+      // A struct's *own* async method, called plainly, is an `async fn`
+      // reached as one; an inherited or a trait's goes through the trait
+      // impl, which hands the future back inside the `Result`.
+      asyncFn:
+          fails &&
+          qualifier == null &&
+          _asyncMember(member) &&
+          from == owner &&
+          !_abstractLike(owner) &&
+          !_isOpen(owner),
       typeArguments: call.typeArguments,
     );
   }
+
+  /// A member declared `async`: emitted as an `async fn` where it is a
+  /// free function, a static, or a struct's own method.
+  static bool _asyncMember(Member m) =>
+      m is Procedure && m.function.asyncMarker == AsyncMarker.Async;
 
   /// A member declared to return `Never`.
   static bool _diverges(Member m) =>
@@ -4363,6 +4428,7 @@ class KernelFrontend implements TypeWorld {
         ),
         fails: _fails(target),
         diverges: _diverges(target),
+        asyncFn: _asyncMember(target),
         typeArguments: _keptTypeArguments(declaration, node.arguments),
       );
     }
@@ -4388,6 +4454,7 @@ class KernelFrontend implements TypeWorld {
       ),
       fails: _fails(target),
       diverges: _diverges(target),
+      asyncFn: _asyncMember(target),
       typeArguments: _keptTypeArguments(declaration, node.arguments),
     );
   }
