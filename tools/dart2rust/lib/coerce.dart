@@ -122,6 +122,13 @@ IrExpr coerceInto(
     if (identical(inner, element)) return value;
     return IrNullAware(value, inner)..rustType = slot;
   }
+  // `()` where an `Option` goes: nothing, then `None` (`Action.invoke`
+  // overridden as `void` under a trait returning `Object?`).
+  if (have.name == 'void' && slot.nullable) {
+    return IrBlockValue([
+      IrExprStmt(value),
+    ], IrLiteral('None', const IrType('raw')))..rustType = slot;
+  }
   // Both present. Scalars: `int` into a `double` slot is cast; a `num`
   // slot is `dart:core`'s polymorphic one (`num.+` takes `num`, and `i +
   // 1` stays an `i64`), and a translated callee's `num` is the front

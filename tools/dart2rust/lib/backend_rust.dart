@@ -11,6 +11,7 @@ library;
 
 import 'dart:convert';
 
+import 'coerce.dart';
 import 'ir.dart';
 import 'prelude.dart';
 
@@ -212,6 +213,8 @@ class RustBackend {
     : library = library ?? IrLibrary([cls]);
 
   final IrClass cls;
+
+  late final TypeWorld _world = _BackendWorld(this);
 
   /// The other classes in the same file.
   ///
@@ -6138,34 +6141,6 @@ class RustBackend {
     );
   }
 
-  /// What the trait's return type asks of a concrete value `__v`, or null
-  /// when the two agree (see the notes inside).
-  String? _shaped(String concrete, String returns) {
-    final handle = concrete.startsWith('std::rc::Rc<');
-    // The inherent call yields a `Result`; whatever the trait's type
-    // asks of the value is applied inside it.
-    const v = '__v';
-    return concrete == returns || _lifetimed(concrete) == returns
-        ? null
-        : returns == 'Option<$concrete>'
-        ? 'Some($v)'
-        : concrete == '()' && returns.startsWith('Option<')
-        ? '{ $v; None }'
-        // An `Rc<Concrete>` inside a `Result` does not unsize on its
-        // own: the map says `as` (100 `create_render_object`s at ws278).
-        : returns.startsWith('std::rc::Rc<dyn ')
-        ? (handle ? '$v as $returns' : 'std::rc::Rc::new($v)')
-        : returns.startsWith('Option<std::rc::Rc<dyn ')
-        ? (handle
-              ? 'Some($v as ${returns.substring(7, returns.length - 1)})'
-              : concrete.startsWith('Option<std::rc::Rc<')
-              ? '$v.map(|v| v as ${returns.substring(7, returns.length - 1)})'
-              : concrete.startsWith('Option<')
-              ? '$v.map(|v| std::rc::Rc::new(v) as ${returns.substring(7, returns.length - 1)})'
-              : 'Some(std::rc::Rc::new($v))')
-        : 'Box::new($v)';
-  }
-
   void _emitBaseMethod(IrMethod need) {
     {
       // A method type parameter named like one of the class's --
@@ -6289,8 +6264,17 @@ class RustBackend {
               : 'self.$name.clone()$late';
           // ..and widened on the way out (`_shaped`), as a method's
           // result is.
-          final shaped = _shaped(type(field.type), returns);
-          final value = shaped == null ? read : '{ let __v = $read; $shaped }';
+          // ..and widened on the way out by the one rule (`coerceInto`),
+          // as a method's result is.
+          final held = IrLocal('__v')..rustType = field.type;
+          final shaped = coerceInto(
+            held,
+            _substituteType(need.returnType, _implBinding),
+            _world,
+          );
+          final value = identical(shaped, held)
+              ? read
+              : '{ let __v = $read; ${expr(shaped)} }';
           _line(_resultModel ? 'Ok($value)' : value);
         }
       } else if (have == null) {
@@ -6306,7 +6290,6 @@ class RustBackend {
         // in `Ok` (49 `Pin<Box<impl Future>>` where `Result<..>` goes).
         final inherent = _inherentCall(have, need, via);
         final call = have.isAsync && _resultModel ? 'Ok($inherent)' : inherent;
-        final concrete = type(have.returnType);
         // One `Option` short -- the override narrowed `T?` to `T`, which Dart
         // allows, or the trait's `T?` doubled up above -- is a `Some`.
         // The trait's future carries `+ '_` (see `_lifetimed`); the
@@ -6317,8 +6300,21 @@ class RustBackend {
         // BorderRadiusGeometry for BorderRadius`'s `op_mul`, 79), and a
         // `()` where the trait says `Option<..>` is `None` (`Action.invoke`
         // overridden as `void`, 46).
-        final shaped = _shaped(concrete, returns);
-        _line(shaped == null ? call : '$call.map(|__v| $shaped)');
+        // ..all by the one rule (`coerceInto`) inside the `Result`'s `map`.
+        // A future is the same future under a lifetime spelling and is
+        // left alone.
+        final held = IrLocal('__v')..rustType = have.returnType;
+        final shaped = have.isAsync
+            ? held
+            : coerceInto(
+                held,
+                _substituteType(need.returnType, _implBinding),
+                _world,
+                inClosure: true,
+              );
+        _line(
+          identical(shaped, held) ? call : '$call.map(|__v| ${expr(shaped)})',
+        );
       }
       _indent--;
       _line('}');
@@ -7422,5 +7418,47 @@ class _WalkSelf {
       case IrTopLevel():
       case IrBound():
     }
+  }
+}
+
+/// The backend's view of the classes a type names, for `coerceInto`: the
+/// `IrLibrary` knows which are traits, counted, enums, and how they sit in
+/// the hierarchy.
+class _BackendWorld implements TypeWorld {
+  _BackendWorld(this.backend);
+
+  final RustBackend backend;
+
+  IrLibrary get library => backend.library;
+
+  @override
+  bool isTrait(String name) =>
+      const {
+        'Object',
+        'dynamic',
+        'Comparable',
+        'DartIterator',
+      }.contains(name) ||
+      library.isAbstract(name);
+
+  @override
+  bool isCounted(String name) => library[name]?.counted ?? false;
+
+  @override
+  bool isStruct(String name) {
+    final c = library[name];
+    return c != null && !c.isAbstract && !c.isEnum;
+  }
+
+  @override
+  bool isBelow(String sub, String sup) {
+    final c = library[sub];
+    return c != null && backend._isSubtypeOf(c, sup, {});
+  }
+
+  @override
+  bool isGenericValueStruct(String name) {
+    final c = library[name];
+    return c != null && !c.counted && c.typeParameters.isNotEmpty;
   }
 }
