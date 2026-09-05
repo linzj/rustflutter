@@ -2968,6 +2968,9 @@ pub trait DartString {
     /// front end, so `start` is never absent here.
     fn index_of(&self, other: String, start: i64) -> i64;
     fn replace_all(&self, from: String, to: String) -> String;
+    /// `replaceFirst(from, to)`: the first occurrence replaced. Named apart
+    /// from std's unstable inherent `replace_first`, which outranks a trait's.
+    fn dart_replace_first(&self, from: String, to: String) -> String;
     fn is_not_empty(&self) -> bool;
     fn pad_left(&self, width: i64, padding: String) -> String;
     fn pad_right(&self, width: i64, padding: String) -> String;
@@ -3028,6 +3031,10 @@ impl DartString for String {
             .find(|&i| units[i..i + needle.len()] == needle[..])
             .map(|i| i as i64)
             .unwrap_or(-1)
+    }
+
+    fn dart_replace_first(&self, from: String, to: String) -> String {
+        self.replacen(&from, &to, 1)
     }
 
     fn replace_all(&self, from: String, to: String) -> String {
@@ -3951,10 +3958,13 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
             None => {
                 if !done {
                     let waiting = pending_tasks();
+                    let completers = pending_completers();
                     eprintln!(
-                        "dart2rust: main is waiting on something no timer or microtask will complete; {} future(s) still pending: {}",
+                        "dart2rust: main is waiting on something no timer or microtask will complete; {} future(s) still pending: {}; {} completer(s) never completed: {}",
                         waiting.len(),
-                        waiting.join(", ")
+                        waiting.join(", "),
+                        completers.len(),
+                        completers.join(", ")
                     );
                 }
                 report_natives_skipped();
@@ -4097,15 +4107,40 @@ impl<T> Clone for Completer<T> {
     }
 }
 
-impl<T: DartNullable> Default for Completer<T> {
+impl<T: DartNullable + 'static> Default for Completer<T> {
     fn default() -> Self {
         Completer::new()
     }
 }
 
-impl<T: DartNullable> Completer<T> {
+thread_local! {
+    /// Every completer made, by its maker's name, with a way to ask
+    /// whether its future is done: what a stuck run reports.
+    static COMPLETERS: std::cell::RefCell<Vec<(&'static str, Box<dyn Fn() -> bool>)>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// The completers whose futures nobody completed, by maker.
+pub fn pending_completers() -> Vec<String> {
+    COMPLETERS.with(|c| {
+        c.borrow()
+            .iter()
+            .filter(|(_, done)| !done())
+            .map(|(name, _)| if name.is_empty() { "?".to_string() } else { name.to_string() })
+            .collect()
+    })
+}
+
+impl<T: DartNullable + 'static> Completer<T> {
     pub fn new() -> Self {
-        Completer { future: DartFuture::pending() }
+        Self::new_named("")
+    }
+
+    /// `Completer()`, recording who made it (`Class.member`).
+    pub fn new_named(name: &'static str) -> Self {
+        let future = DartFuture::pending();
+        let probe = future.clone();
+        COMPLETERS.with(|c| c.borrow_mut().push((name, Box::new(move || probe.is_done()))));
+        Completer { future }
     }
 
     /// `completeError(error, [stackTrace])`: the future fails with it.

@@ -1831,6 +1831,12 @@ class RustBackend {
       if (library.isAbstract(owner)) {
         return '${_abstractStaticName(owner, 'new')}(${args.map(expr).join(', ')})';
       }
+      // `dart:async`'s `Completer` records where it was made, so a run
+      // stuck on a future nobody completes can say whose (run466: "0
+      // future(s) still pending").
+      if (owner == 'Completer' && args.isEmpty) {
+        return 'Completer::new_named("$_here")';
+      }
       return '$owner::${_ctorName(null)}(${args.map(expr).join(', ')})';
     }
     final target = library[owner];
@@ -2380,6 +2386,10 @@ class RustBackend {
   /// A free function has no `self`, so while one is being written the receiver
   /// is its first parameter instead.
   String _selfName = 'self';
+
+  /// The member whose body is being printed, `Class.member`, for runtime
+  /// diagnostics that name their creator (`Completer::new_named`).
+  String _here = '';
 
   /// Whether `self` is held by value (an `std::ops` operator's body).
   var _selfByValue = false;
@@ -5103,6 +5113,7 @@ class RustBackend {
     // the front end, not something to paper over here.
     _selfName = '<no self>';
     _returns = method.returnType;
+    _here = '${cls.name}.${method.name}';
     // The Rust return type too: a `try` body that returns carries
     // `Option<..>` of it out of its closure, and without it `_isLoopback`'s
     // `return address.isLoopback` came out as an `Option<()>`.
@@ -5285,6 +5296,7 @@ class RustBackend {
       _indent++;
       _selfName = 'this_';
       _returns = method.returnType;
+      _here = '${cls.name}.${method.name}';
       // A super function fails like the method whose body it holds.
       _failure = _failureOf(method);
       _asyncBody = method.isAsync;
@@ -7670,6 +7682,7 @@ class RustBackend {
   }
 
   void _emitConstructor(IrConstructor ctor) {
+    _here = '${cls.name}.${ctor.name.isEmpty ? 'new' : ctor.name}';
     // Dart's named constructors are Rust's associated functions already --
     // `EdgeInsets.all(8)` and `EdgeInsets::all(8.0)` are the same call, and the
     // unnamed one is `new` by Rust's convention. Nothing has to be encoded, so
@@ -8143,6 +8156,7 @@ class RustBackend {
       );
       _indent++;
       _returns = method.returnType;
+      _here = '${cls.name}.${method.name}';
       _asyncBody = method.isAsync;
       _methodTypeParams = method.typeParameters;
       // A failing `void` method that falls off its end still has to
@@ -8254,6 +8268,7 @@ class RustBackend {
       _line('pub fn $own($params) -> ${type(method.returnType)} {');
       _indent++;
       _returns = method.returnType;
+      _here = '${cls.name}.${method.name}';
       _asyncBody = method.isAsync;
       _methodTypeParams = method.typeParameters;
       _reassigned = _assignedIn(method.body);
@@ -8325,7 +8340,13 @@ class RustBackend {
       // AOT lowering of an `@Native` external, is a name for `snake` to
       // clean, not an operator, and refusing it took `PlatformDispatcher.
       // instance` with it (20 callers).
-      RegExp(r'[A-Za-z]').hasMatch(name) ? snake(name) : _operatorName(name);
+      _stdShadowed[name] ??
+      (RegExp(r'[A-Za-z]').hasMatch(name) ? snake(name) : _operatorName(name));
+
+  /// `dart:core` methods whose snake-cased name is an *unstable* inherent
+  /// method of Rust's std, which outranks any trait's: spelled by the
+  /// prelude's own name (`String.replaceFirst`, E0658 16 at ws465).
+  static const _stdShadowed = {'replaceFirst': 'dart_replace_first'};
 }
 
 /// Finds, in one method body, whether it writes a field of `this` and which of
