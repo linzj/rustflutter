@@ -614,6 +614,12 @@ class RustBackend {
       // Rust puts it after the expression and Dart before it, which is the
       // whole of the difference.
       // The future's output is a `Result`: the `?` goes after the await.
+      // `await f` on a `Future<T>?`: null stays null (`await proxy.send(..)`
+      // where `send` returns `Future<ByteData?>?`).
+      IrAwait(:final operand)
+          when operand.rustType?.name == 'Future' &&
+              (operand.rustType?.nullable ?? false) =>
+        '(match ${_awaitOperand(operand)} { Some(__f) => Some(__f.await$_propagate), None => None })',
       IrAwait(:final operand) => '${_awaitOperand(operand)}.await$_propagate',
       IrIdentical(:final left, :final right) => _identical(left, right),
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
@@ -2556,8 +2562,15 @@ class RustBackend {
     // `.unwrap()` where there is none around (a static's initialiser).
     // An awaited call is not `?`ed here but at the `.await`.
     final failing = fails || (_resultModel && _preludeFailing.contains(name));
-    final suffix = !failing || awaited || asyncFn ? '' : _propagate;
-    final boxed = asyncFn && !awaited;
+    // A call reaching an `async fn` *inherently* is its `DartFuture`, no
+    // `?`; one reaching it through a trait (`qualifier`, `asTrait` below)
+    // gets the trait's `Result<DartFuture<T>, E>` and is unwrapped first,
+    // awaited or not (`OptionalMethodChannel.invokeMethod<T>` through its
+    // trait, ws432). The front end's `asyncFn` is a guess at the path the
+    // backend decides here.
+    String suffixFor(bool viaTrait) =>
+        failing && !(asyncFn && !viaTrait) ? _propagate : '';
+    final boxed = false;
     // `_identifier`, not `snake`: an *operator* called as a method -- `~x` is
     // `x.~()` in Kernel -- has no letters for `snake` to keep, and it came out
     // as `x._()`, which does not parse and stopped the whole crate at the
@@ -2642,13 +2655,13 @@ class RustBackend {
       return _asyncValue(
         '${asTrait ?? qualifier}::${_identifier(name)}$turbofish'
         '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
-        '$suffix',
+        '${suffixFor(true)}',
         boxed,
       );
     }
     return _asyncValue(
       '$receiver.${_identifier(name)}$turbofish'
-      '(${args.map(expr).join(', ')})$suffix',
+      '(${args.map(expr).join(', ')})${suffixFor(false)}',
       boxed,
     );
   }
@@ -6026,7 +6039,10 @@ class RustBackend {
     // A counted object knows its own handle (`DartSelf`): a trait body's
     // `this` is `self.dart_self_<trait>()`, 117 `&__Self` where an
     // `Rc<dyn X>` was wanted at ws271.
-    if (cls.counted) _line('__self: DartSelf<Self>,');
+    // `pub`: a constant instance of the class is spelled as a struct
+    // literal wherever it is used (`dart_rc(Struct {..})`), other modules
+    // included (E0451 in `SemanticsService`, ws432).
+    if (cls.counted) _line('pub __self: DartSelf<Self>,');
     // A Dart class can name a type parameter it never stores -- `Tween<T>`
     // holds `begin` and `end` of type `T?`, but plenty do not. Rust will not
     // have an unused parameter, and `PhantomData` is what it offers instead.

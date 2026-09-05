@@ -183,7 +183,7 @@ def write_workspace(src, out, mods, crate_of, graph):
     # refusal panics (2026-09-05).
     entry = None
     for m in sorted(crate_of):
-        if 'pub async fn main()' in read(os.path.join(src, m + '.rs')):
+        if re.search(r'^pub fn main\(\) -> DartFuture<\(\)>', read(os.path.join(src, m + '.rs')), re.M):
             entry = m
             break
     if entry is not None:

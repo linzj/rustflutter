@@ -1575,7 +1575,16 @@ pub struct Uri {
 }
 
 impl Uri {
-    pub fn parse(text: String) -> Self {
+    /// `Uri.parse(uri, [start, end])`: the slice of the text, as Dart
+    /// declares it.
+    pub fn parse(text: String, start: i64, end: Option<i64>) -> Self {
+        let chars: Vec<char> = text.chars().collect();
+        let end = end.map(|e| e as usize).unwrap_or(chars.len());
+        let text: String = chars[(start as usize).min(end)..end].iter().collect();
+        Uri::parse_text(text)
+    }
+
+    fn parse_text(text: String) -> Self {
         Uri { text }
     }
 
