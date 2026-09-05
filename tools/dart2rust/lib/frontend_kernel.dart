@@ -7594,11 +7594,18 @@ class KernelFrontend implements TypeWorld {
   }
 
   bool _closureCallsMethod(Class node) {
+    // An enum is a value whatever its methods do with `this`.
+    if (node.isEnum) return false;
     // An object whose `this` leaves as a value -- handed to a call
-    // (`addObserver(this)`), returned, stored, put in a literal -- is
-    // held by someone else afterwards, and only a handle can be: counted
-    // (`Rc<dyn WidgetsBindingObserver> <= _WidgetsAppState`, ws436).
-    final escapes = _ThisEscapes();
+    // (`addObserver(this)`), stored in another object, put in a literal
+    // -- is held by someone else afterwards, and only a handle can be:
+    // counted (`Rc<dyn WidgetsBindingObserver> <= _WidgetsAppState`,
+    // ws436). Not one that merely *returns* `this`: a value returned is
+    // a copy, which is what it was before (counting those was +901
+    // stubs at ws437, `Matrix4` and `WidgetState` among them).
+    final escapes = _ThisEscapes(
+      (t) => t is InterfaceType && _abstractLike(t.classNode),
+    );
     node.accept(escapes);
     if (escapes.found) return true;
     // A tear-off of `this.method` is that closure written shorter (see the
@@ -8711,24 +8718,58 @@ bool _mentions(DartType type, Class cls) => switch (type) {
 /// a returned value, a stored value, a literal's element. Its use as a
 /// receiver (`this.x`, `this.m()`) is not that.
 class _ThisEscapes extends RecursiveVisitor {
+  _ThisEscapes(this.handleSlot);
+
+  /// Whether a slot of this type holds a handle (a trait object): `this`
+  /// handed into one is kept by identity; into a value slot it is a copy.
+  final bool Function(DartType) handleSlot;
+
   bool found = false;
 
   @override
   void visitThisExpression(ThisExpression node) {
     final parent = node.parent;
-    if (parent is Arguments ||
-        parent is ReturnStatement ||
-        parent is VariableDeclaration ||
-        parent is VariableSet ||
-        parent is ListLiteral ||
+    if (parent is Arguments) {
+      final slot = _slotOf(parent, node);
+      // An unresolvable callee is taken to keep it.
+      if (slot == null || handleSlot(slot)) found = true;
+      return;
+    }
+    if (parent is ListLiteral ||
         parent is SetLiteral ||
         parent is MapLiteralEntry ||
-        parent is ConditionalExpression ||
-        parent is AsExpression ||
         (parent is InstanceSet && identical(parent.value, node)) ||
         (parent is StaticSet && identical(parent.value, node))) {
       found = true;
     }
+  }
+
+  /// The declared type of the parameter `argument` lands in, if the call's
+  /// callee can be read off the arguments' parent.
+  static DartType? _slotOf(Arguments arguments, Expression argument) {
+    final call = arguments.parent;
+    final FunctionNode? fn = switch (call) {
+      InstanceInvocation(:final interfaceTarget) => interfaceTarget.function,
+      StaticInvocation(:final target) => target.function,
+      ConstructorInvocation(:final target) => target.function,
+      SuperMethodInvocation(:final interfaceTarget) => interfaceTarget.function,
+      _ => null,
+    };
+    if (fn == null) return null;
+    final index = arguments.positional.indexOf(argument);
+    if (index >= 0) {
+      return index < fn.positionalParameters.length
+          ? fn.positionalParameters[index].type
+          : null;
+    }
+    for (final named in arguments.named) {
+      if (identical(named.value, argument)) {
+        for (final p in fn.namedParameters) {
+          if (p.parameterName == named.name) return p.type;
+        }
+      }
+    }
+    return null;
   }
 }
 
