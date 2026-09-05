@@ -2545,6 +2545,10 @@ impl<T> Point<T> {
 }
 
 /// `dart:developer`'s `TimelineTask`: no observatory, no-ops (see `Timeline`).
+/// A value like any other a translated struct holds: `Clone`, `Debug`,
+/// `PartialEq` (a struct deriving them with an `Option<TimelineTask>`
+/// field cut the workspace to 34 crates at ws431).
+#[derive(Clone, Debug, PartialEq)]
 pub struct TimelineTask;
 
 impl TimelineTask {
