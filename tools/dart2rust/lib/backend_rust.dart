@@ -1604,7 +1604,9 @@ class RustBackend {
     // first refusal after `main`: `Future<bool>(() async {..})`).
     if (owner == 'Future') {
       if (name == 'value' && args.length <= 1) {
-        return 'future_value(${args.isEmpty ? 'None' : expr(args.single)})';
+        // The type spelled: `Future<void>.value()` alone left `T` to
+        // inference (E0283, ws462).
+        return 'future_value$fish(${args.isEmpty ? 'None' : expr(args.single)})';
       }
       if ((name == '' || name == 'new') && args.length == 1) {
         return 'future_new(${expr(args.single)})';
@@ -2544,6 +2546,8 @@ class RustBackend {
     if (name == '!or_null' && args.isEmpty) {
       return '$receiver.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>)';
     }
+    // The other way: a `dynamic` as an `Option`, `None` for the `Null` object.
+    if (name == '!nullable' && args.isEmpty) return 'dart_nullable($receiver)';
     if (name == '!widen_object' && args.isEmpty) {
       // `iter().cloned()`: the receiver may be the `&Vec` a null-aware
       // `as_ref().map(|it| ..)` binds, and `into_iter` on that yields
@@ -2791,6 +2795,16 @@ class RustBackend {
         qualifier = wide.name;
       }
     }
+    // On a closure's handle a name two traits declare is ambiguous where
+    // `self.name()` was not (`__me.child()` on a struct implementing
+    // both `RenderObjectWithChildMixin` and `RenderProxyBox`, E0034 at
+    // ws462): the declaring trait, as an accessor read chooses it.
+    if (qualifier == null &&
+        _selfName == _countedSelf &&
+        (target == null || target is IrThis)) {
+      final chosen = _accessorQualifier(name);
+      if (chosen != null && library.isAbstract(chosen)) qualifier = chosen;
+    }
     if (qualifier != null) {
       // See `IrCall.qualifier`. `self`/`this_` are already references; a
       // closure's `__me` is a handle, as is any receiver typed by a trait
@@ -2824,10 +2838,21 @@ class RustBackend {
       // or an `Rc<Struct>`), the plain call: `<__Self as Trait>::m(&*__me)`
       // wanted a `&__Self` where `__me` is the trait object
       // (`initMouseTracker`'s closure, ws461).
-      if (_selfName == _countedSelf && (target == null || target is IrThis)) {
+      if (_selfName == _countedSelf &&
+          (target == null || target is IrThis) &&
+          library.isAbstract(qualifier)) {
+        // Still qualified -- the plain call was ambiguous where two traits
+        // declare the name (`hit_test`, 16 at ws462) -- through the type
+        // the handle is: the trait object in a trait body, the struct
+        // otherwise.
+        final declaring = _declaringTrait(qualifier, _identifier(name));
+        final through = declaring ?? qualifier;
+        final selfType = _fieldsAreAccessors
+            ? 'dyn ${cls.name}${_useArguments(cls)}'
+            : 'Self';
         return _asyncValue(
-          '$_selfName.${_identifier(name)}$turbofish'
-          '(${args.map(expr).join(', ')})${suffixFor(_fieldsAreAccessors)}',
+          '<$selfType as $through${_traitArgsOf(through)}>::${_identifier(name)}$turbofish'
+          '(&*$_selfName${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})${suffixFor(_fieldsAreAccessors)}',
           boxed,
         );
       }
@@ -5758,7 +5783,13 @@ class RustBackend {
         if (s is IrLocalDecl)
           IrLocalDecl(
             _baseTempName(base, s.name),
-            s.type,
+            // A parameter's binding is typed by the parameter: `let
+            // configuration = None` inferred nothing (E0282, ws461).
+            s.type ??
+                baseCtor.params
+                    .where((p) => p.name == s.name)
+                    .map((p) => _substituteType(p.type, binding))
+                    .firstOrNull,
             s.init == null ? null : _substitute(s.init!, substitution, binding),
           )
         else
@@ -7768,8 +7799,11 @@ class RustBackend {
         _line('{');
         _indent++;
         for (var i = 0; i < baseCtor.params.length; i++) {
+          // Typed by the parameter: an unused `None` inferred nothing
+          // (`configuration` in `_ReusableRenderView`, E0282 at ws461).
+          final p = baseCtor.params[i];
           _line(
-            'let ${_assignedIn(baseCtor.body!).contains(baseCtor.params[i].name) ? 'mut ' : ''}${snake(baseCtor.params[i].name)} = ${expr(superArgs[i])};',
+            'let ${_assignedIn(baseCtor.body!).contains(p.name) ? 'mut ' : ''}${snake(p.name)}: ${type(_substituteType(p.type, _baseTypes(cls, const {})))} = ${expr(superArgs[i])};',
           );
         }
         final savedReassigned = _reassigned;

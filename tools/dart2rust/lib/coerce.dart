@@ -12,6 +12,8 @@
 // for them through [TypeWorld], so it knows neither Kernel nor the backend.
 library;
 
+import 'dart:io' show Platform, stderr;
+
 import 'ir.dart';
 
 /// What `coerce` has to know about the classes a type names.
@@ -134,6 +136,11 @@ IrType withNull(IrType t) {
 /// One spelling for each type: an `Option` wrapper over a non-nullable
 /// type is that type's `nullable` flag.
 IrType _normal(IrType t) {
+  // `void?` is `void`: the unit, never an `Option` (the prelude's unit
+  // says so; `complete(null)` on a `Completer<void>` is `complete(())`).
+  if ((t.name == 'void' || t.name == '()') && t.nullable) {
+    return IrType(t.name);
+  }
   if (t.name == 'Option' && t.arguments.length == 1) {
     final inner = _normal(t.arguments.single);
     return isNullable(inner)
@@ -205,12 +212,29 @@ IrExpr coerceInto(
   }
   final have = _normal(have0);
   slot = _normal(slot);
+  // `DART2RUST_TRACE_COERCE=<name>`: every adaptation whose slot or value
+  // names it, to stderr.
+  final traced = Platform.environment['DART2RUST_TRACE_COERCE'];
+  if (traced != null && (slot.name == traced || have.name == traced)) {
+    stderr.writeln(
+      'TRACE_COERCE have=$have0 (${have0.projected ? 'projected' : ''}) '
+      'slot=$slot (${slot.projected ? 'projected' : ''}) value=${value.runtimeType}',
+    );
+  }
   // Null into `void?`, which is `void`: the unit (`Completer<void>`'s
   // `complete(null)`, a `SynchronousFuture<void>`'s `_value`, ws461).
   if ((slot.name == 'void' || slot.name == '()') && have.name == 'Null') {
     return IrLiteral('()', const IrType('raw'))..rustType = slot;
   }
   // The `Option` layer first: on, off, or mapped through.
+  // A `dynamic` into a `T?` is null when it holds the `Null` object: the
+  // prelude asks (`dart_nullable`), and the value inside goes on by the
+  // rule below (a native's answer into `RootIsolateToken?`, run462).
+  if (isNullable(slot) && have.name == 'dynamic' && !slot.projected) {
+    final asked = IrCall(value, '!nullable', const [])
+      ..rustType = const IrType('Object', nullable: true);
+    return coerceInto(asked, slot, world, inClosure: inClosure);
+  }
   if (isNullable(slot) && !isNullable(have)) {
     final inner = coerceInto(
       value,

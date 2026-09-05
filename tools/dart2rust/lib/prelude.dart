@@ -2433,6 +2433,7 @@ pub type NativeHost = dyn Fn(&str, Vec<std::rc::Rc<dyn Object>>) -> Result<std::
 thread_local! {
     static NATIVE_HOST: std::cell::RefCell<Option<Box<NativeHost>>> = std::cell::RefCell::new(None);
     static NATIVES_SKIPPED: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    static NATIVES_UNANSWERED: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
 }
 
 pub fn set_native_host(host: Box<NativeHost>) {
@@ -2449,16 +2450,34 @@ pub fn dart_native(symbol: String, args: Vec<std::rc::Rc<dyn Object>>, returns: 
     if let Some(result) = answered {
         return result;
     }
-    if !returns {
-        NATIVES_SKIPPED.with(|s| {
-            let mut s = s.borrow_mut();
-            if !s.contains(&symbol) {
-                s.push(symbol);
-            }
-        });
-        return Ok(std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>);
+    // No host: a void native is skipped, and one that returns a value is
+    // answered with Dart's null -- what an engine that is not there
+    // answers. A nullable result (`RootIsolateToken?`, run462) takes it
+    // as null; a non-nullable one fails at its own cast, naming the
+    // symbol here. Both lists are reported at the end of the run.
+    let list = if returns { &NATIVES_UNANSWERED } else { &NATIVES_SKIPPED };
+    list.with(|s| {
+        let mut s = s.borrow_mut();
+        if !s.contains(&symbol) {
+            s.push(symbol);
+        }
+    });
+    Ok(std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>)
+}
+
+/// The valued natives a run without a host answered with null, in order.
+pub fn natives_unanswered() -> Vec<String> {
+    NATIVES_UNANSWERED.with(|s| s.borrow().clone())
+}
+
+/// A `dynamic` as the `Option` a `T?` is: `None` for the `Null` object.
+pub fn dart_nullable(value: std::rc::Rc<dyn Object>) -> Option<std::rc::Rc<dyn Object>> {
+    let object: &dyn Object = value.as_ref();
+    if object.as_any().is::<Null>() {
+        None
+    } else {
+        Some(value)
     }
-    panic!("native `{}` needs the engine: no native host is installed", symbol)
 }
 
 /// `dart:ffi`, as far as the gallery's dill reaches it: the Windows plugins
@@ -3850,14 +3869,21 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
 /// the void natives skipped, by symbol, each once.
 fn report_natives_skipped() {
     let skipped = natives_skipped();
-    if skipped.is_empty() {
-        return;
+    if !skipped.is_empty() {
+        eprintln!(
+            "dart2rust: no native host; {} void native(s) skipped: {}",
+            skipped.len(),
+            skipped.join(", ")
+        );
     }
-    eprintln!(
-        "dart2rust: no native host; {} void native(s) skipped: {}",
-        skipped.len(),
-        skipped.join(", ")
-    );
+    let unanswered = natives_unanswered();
+    if !unanswered.is_empty() {
+        eprintln!(
+            "dart2rust: no native host; {} valued native(s) answered null: {}",
+            unanswered.len(),
+            unanswered.join(", ")
+        );
+    }
 }
 
 pub fn next_due() -> Option<std::time::Instant> {

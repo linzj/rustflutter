@@ -3835,7 +3835,7 @@ class KernelFrontend implements TypeWorld {
         (args.isEmpty ||
             (args.length == 1 && node.arguments.positional.isEmpty))) {
       return IrCall(_receiver(node.receiver), 'complete', [
-        IrSome(IrLiteral('()', const IrType('raw'))),
+        IrLiteral('()', const IrType('raw')),
       ]);
     }
     // `s[i]` on a String is a one-character String, not an index into a
@@ -8174,8 +8174,18 @@ class KernelFrontend implements TypeWorld {
     // ws436). Not one that merely *returns* `this`: a value returned is
     // a copy, which is what it was before (counting those was +901
     // stubs at ws437, `Matrix4` and `WidgetState` among them).
+    // ..and an `Object` slot is a handle slot too (`Rc<dyn Object>`): an
+    // `Expando` keyed by `this`, a `Map<Object, ..>`, `identical(this, x)`
+    // all keep the object by identity (`_profiledBinaryMessengers[this]`
+    // in `BasicMessageChannel`, run461).
     final escapes = _ThisEscapes(
-      (t) => t is InterfaceType && _abstractLike(t.classNode),
+      (t) =>
+          t is DynamicType ||
+          (t is InterfaceType &&
+              (_abstractLike(t.classNode) ||
+                  (t.classNode.name == 'Object' &&
+                      t.classNode.enclosingLibrary.importUri.toString() ==
+                          'dart:core'))),
     );
     node.accept(escapes);
     if (escapes.found) return true;
