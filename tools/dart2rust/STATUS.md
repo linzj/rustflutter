@@ -6415,6 +6415,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws397 | 950 叶子错 | 99 个 `type annotations needed` 里 73 个 E0283：翻译过的泛型**静态**调用没带 turbofish（`ModalRoute.of(context)` 的 `T` 只出现在返回里，rustc 推不出）。`IrStaticCall` 带 `typeArguments`：Kernel 每个调用都带完整的类型实参，取被保留（未 erase）的那些，prelude 被调用者不带。实例调用早有此机制；剩下的是后端 forwarder 转发泛型方法丢了类型形参（36 个 `get_element_for_inherited_widget_of_exact_type`）和泛型 struct 的构造（`RadioGroup` 等 12 个）。驱动输出对 ws396 差 211 文件。 |
 | ws397 结果 | 950 叶子错 | **2782→2754 / 795，138+1 个 crate**（修 29，新 5：`_inflate`、`cupertino_nav_bar` 2 个、`material_app_bar.build`、`material_drawer`）。 |
 | ws398 | 950 叶子错 | 剩下的 E0283 三类，都是通用机制：(1) 后端 forwarder 转发泛型方法带上类型形参 `Trait::m::<T>(self)`（36）；(2) 泛型 struct 的 static 和常量放到模块级、按类名命名（和抽象类的 static 一个机制 `_freeStatics`）——`impl<T> Foo<T>` 里的 static 让每个调用都得说一个它根本不提的 `T`（`RadioGroup.maybeOf`，12）；(3) 空 map 字面量拼出 K、V（进 `Rc<dyn Object>` 槽时没别的东西说它们）。驱动输出对 ws397 差 204 文件。 |
+| ws399 | 950 叶子错 | 129 个 E0381（`isn't initialized`/`possibly-uninitialized`）的根：CFE 把 `late` 局部变量降成 `#x` + `#x#isSet` 标志，`#x` 声明时没初始化、在标志下赋值，rustc 的定赋检查跟不上。Dart 里非 late 的非空局部本来就要求定赋（rustc 也能证），所以只剩 late 这一类——它在 Rust 就是 `Option`：`#`-名、无初始化、非空的合成局部声明成 `Option<T> = None`，读作 `T?`（coerce 在要 `T` 的地方 unwrap），写用 `Some`。未初始化的 `__t` 声明 588→397，剩的是 switch 降级里定赋的。 |
 
 ## 下一步(2026-09-05 重铺)
 

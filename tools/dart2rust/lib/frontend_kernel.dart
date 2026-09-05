@@ -474,6 +474,9 @@ class KernelFrontend implements TypeWorld {
       // xs.add(__t)` after the CFE's lowering of `?.`/`??` (`String <=
       // Option<String>`). It used to return before the checks below.
       final name = temporary ?? written!;
+      if (_optionLocals.contains(node.variable)) {
+        return IrLocal(name)..rustType = _type(_localType(node.variable));
+      }
       // A closure parameter retyped to an erased bound (`_closureParamType`)
       // reads as the class it was declared with.
       final retyped = _retyped[node.variable];
@@ -887,7 +890,7 @@ class KernelFrontend implements TypeWorld {
       // `operator *`) the value is shared into its `Rc<dyn Object>`.
       final stored = _widened(
         node.value,
-        node.variable.type,
+        _localType(node.variable),
         expression(node.value),
       );
       // `(index = s.indexOf(p)) >= 0` with `int? index`: the store is
@@ -2197,6 +2200,19 @@ class KernelFrontend implements TypeWorld {
     final name = (written == null || written.startsWith('#'))
         ? _nameFor(variable)
         : written;
+    if (init == null &&
+        written != null &&
+        written.startsWith('#') &&
+        variable.type is! VoidType &&
+        variable.type.nullability != Nullability.nullable) {
+      _optionLocals.add(variable);
+      return IrLocalDecl(
+        name,
+        _type(_localType(variable)),
+        IrLiteral('null', const IrType('Null', nullable: true)),
+        cell: _capturedWrites.contains(variable),
+      );
+    }
     return IrLocalDecl(
       name,
       // `void` is what the CFE gives the temporary of a post-increment whose
@@ -2227,6 +2243,18 @@ class KernelFrontend implements TypeWorld {
   /// name, kept in a map by identity rather than by text.
   final _temporaries = <Variable, String>{};
   var _nextTemporary = 0;
+
+  /// The CFE's value half of a lowered `late` local: declared without an
+  /// initialiser and assigned under its `#isSet` flag, which Rust's
+  /// definite-assignment check cannot follow (129 E0381 at ws397). It is
+  /// what a `late` local is in Rust terms, an `Option`: `None` until set,
+  /// read as `T?` (the coercion rule unwraps where a `T` goes), written
+  /// with `Some`.
+  final _optionLocals = <Variable>{};
+
+  DartType _localType(Variable v) => _optionLocals.contains(v)
+      ? v.type.withDeclaredNullability(Nullability.nullable)
+      : v.type;
 
   /// The Rust element type of a typed list narrower than Dart's `double`
   /// and `int`, or null for anything else.
@@ -5910,8 +5938,12 @@ class KernelFrontend implements TypeWorld {
           known ?? written!,
           _intoDeclaredNum(
             value.value,
-            value.variable.type,
-            _widened(value.value, value.variable.type, expression(value.value)),
+            _localType(value.variable),
+            _widened(
+              value.value,
+              _localType(value.variable),
+              expression(value.value),
+            ),
           ),
         );
       }
