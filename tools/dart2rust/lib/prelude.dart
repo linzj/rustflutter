@@ -320,6 +320,22 @@ macro_rules! dart_nullable {
     };
 }
 
+/// A boxed future as a type argument (`_CallbackHookProvider<Future<bool>>`):
+/// its `T?` is a handle to one, which is what makes `Or` `Clone`. Read back
+/// out only when nothing else holds it -- a future never is a `T?` value in
+/// this program; the impl exists so the bound holds everywhere.
+impl<F: ?Sized> DartNullable for std::pin::Pin<Box<F>> {
+    type Or = Option<std::rc::Rc<std::pin::Pin<Box<F>>>>;
+    fn option(or: Self::Or) -> Option<Self> {
+        or.map(|shared| {
+            std::rc::Rc::try_unwrap(shared)
+                .unwrap_or_else(|_| panic!("dart2rust: a shared future read as a `T?`"))
+        })
+    }
+    fn from_option(option: Option<Self>) -> Self::Or {
+        option.map(std::rc::Rc::new)
+    }
+}
 impl<T: ?Sized> DartNullable for std::rc::Rc<T> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {

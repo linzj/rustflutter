@@ -3977,12 +3977,17 @@ class RustBackend {
     return walk(c);
   }
 
-  String _nb(IrClass c) => _needsNullable(c) ? ' + DartNullable' : '';
+  /// `DartNullable` on every type parameter after all: a bound only where
+  /// a projection asks for it has to be repeated by everything that names
+  /// the generic type (`SlottedRenderObjectElement<SlotType>` in a trait
+  /// whose `SlotType` had none, ws401), and every type implements it -- a
+  /// boxed future through a handle (see the prelude). What `_needsNullable`
+  /// still decides is `Clone` on a *struct's* parameters: a projecting
+  /// struct's `T?` field is `<Vec<T> as DartNullable>::Or` when `T` is put
+  /// in for a `List`, and that asks `T: Clone`.
+  String _nb(IrClass c) => ' + DartNullable';
 
-  bool _methodProjects(IrMethod m) =>
-      m.returnType.projected || m.params.any((p) => p.type.projected);
-
-  String _nbm(IrMethod m) => _methodProjects(m) ? ' + DartNullable' : '';
+  String _nbm(IrMethod m) => ' + DartNullable';
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
@@ -4057,7 +4062,9 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : "$p: ${owner is IrClass && _needsNullable(owner) ? 'DartNullable + ' : ''}'static",
+                : owner is IrClass && _needsNullable(owner)
+                ? "$p: Clone + DartNullable + 'static"
+                : "$p: DartNullable + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';
@@ -4865,6 +4872,9 @@ class RustBackend {
       // for `T = X?`. Put in for another parameter it stays projected.
       // A projected slot stays projected over what is put in: an impl's
       // signature has to spell the trait's `<X as DartNullable>::Or`.
+      // ..unless what is put in is nullable itself: then the projection
+      // *is* that `Option`, and rustc normalises the trait's side to it.
+      if (to.nullable) return to;
       if (t.projected) {
         return IrType(
           to.name,
@@ -4873,7 +4883,6 @@ class RustBackend {
           projected: true,
         );
       }
-      if (to.nullable) return to;
       return IrType(to.name, nullable: true, arguments: to.arguments);
     }
     return IrType(
@@ -5704,7 +5713,8 @@ class RustBackend {
     if (byIdentity.isNotEmpty) {
       final projected = {
         for (final f in _allFields(cls))
-          if (f.type.projected) f.type.name,
+          if (f.type.projected)
+            type(IrType(f.type.name, arguments: f.type.arguments)),
       };
       final bounds = cls.typeParameters.isEmpty
           ? ''
