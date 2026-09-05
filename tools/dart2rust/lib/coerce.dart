@@ -55,16 +55,18 @@ String normalName(String name) => switch (name) {
 };
 
 /// Whether two IR types spell the same Rust type.
-bool sameRust(IrType a, IrType b) {
+bool sameRust(IrType a, IrType b) => _sameNormal(_normal(a), _normal(b));
+
+bool _sameNormal(IrType a, IrType b) {
   if (a.nullable != b.nullable) return false;
   if (a.isFunction || b.isFunction) {
     if (!(a.isFunction && b.isFunction)) return false;
     final ap = a.parameters!, bp = b.parameters!;
     if (ap.length != bp.length) return false;
     for (var i = 0; i < ap.length; i++) {
-      if (!sameRust(ap[i], bp[i])) return false;
+      if (!_sameNormal(ap[i], bp[i])) return false;
     }
-    return sameRust(a.returns!, b.returns!);
+    return _sameNormal(a.returns!, b.returns!);
   }
   if (normalName(a.name) != normalName(b.name)) return false;
   if (a.arguments.length != b.arguments.length) {
@@ -72,7 +74,7 @@ bool sameRust(IrType a, IrType b) {
     return a.arguments.isEmpty || b.arguments.isEmpty;
   }
   for (var i = 0; i < a.arguments.length; i++) {
-    if (!sameRust(a.arguments[i], b.arguments[i])) return false;
+    if (!_sameNormal(a.arguments[i], b.arguments[i])) return false;
   }
   return true;
 }
@@ -80,6 +82,48 @@ bool sameRust(IrType a, IrType b) {
 IrType nonNull(IrType t) => t.isFunction
     ? IrType.function(t.parameters!, t.returns!)
     : IrType(t.name, arguments: t.arguments);
+
+/// An `Option` layer is either the `nullable` flag or, when the type under
+/// it is nullable itself, an explicit `Option` wrapper: `T?` with `T` bound
+/// to `Color?` is `Option<Option<Rc<dyn Color>>>`, which Dart collapses and
+/// Rust does not.
+bool isNullable(IrType t) =>
+    t.nullable || (t.name == 'Option' && t.arguments.length == 1);
+
+IrType stripNull(IrType t) => t.name == 'Option' && t.arguments.length == 1
+    ? t.arguments.single
+    : nonNull(t);
+
+IrType withNull(IrType t) {
+  if (isNullable(t)) return IrType('Option', arguments: [t]);
+  return t.isFunction
+      ? IrType.function(t.parameters!, t.returns!, nullable: true)
+      : IrType(t.name, nullable: true, arguments: t.arguments);
+}
+
+/// One spelling for each type: an `Option` wrapper over a non-nullable
+/// type is that type's `nullable` flag.
+IrType _normal(IrType t) {
+  if (t.name == 'Option' && t.arguments.length == 1) {
+    final inner = _normal(t.arguments.single);
+    return isNullable(inner)
+        ? IrType('Option', arguments: [inner])
+        : withNull(inner);
+  }
+  if (t.isFunction) {
+    return IrType.function(
+      [for (final p in t.parameters!) _normal(p)],
+      _normal(t.returns!),
+      nullable: t.nullable,
+    );
+  }
+  if (t.arguments.isEmpty) return t;
+  return IrType(
+    t.name,
+    nullable: t.nullable,
+    arguments: [for (final a in t.arguments) _normal(a)],
+  );
+}
 
 /// `value`, adapted to `slot`; `value` itself when nothing is known (an
 /// untyped value) or nothing needs doing. `inClosure`: the value stands
@@ -90,21 +134,28 @@ IrExpr coerceInto(
   TypeWorld world, {
   bool inClosure = false,
 }) {
-  final have = value.rustType;
-  if (have == null || sameRust(have, slot)) return value;
+  final have0 = value.rustType;
+  if (have0 == null || sameRust(have0, slot)) return value;
+  final have = _normal(have0);
+  slot = _normal(slot);
   // The `Option` layer first: on, off, or mapped through.
-  if (slot.nullable && !have.nullable) {
-    final inner = coerceInto(value, nonNull(slot), world, inClosure: inClosure);
-    if (identical(inner, value) && !sameRust(have, nonNull(slot))) {
+  if (isNullable(slot) && !isNullable(have)) {
+    final inner = coerceInto(
+      value,
+      stripNull(slot),
+      world,
+      inClosure: inClosure,
+    );
+    if (identical(inner, value) && !sameRust(have, stripNull(slot))) {
       return value;
     }
     return IrSome(inner)..rustType = slot;
   }
-  if (!slot.nullable && have.nullable) {
+  if (!isNullable(slot) && isNullable(have)) {
     if (slot.name == 'dynamic') {
       // `dynamic` admits null: absent is the `Null` object.
       final element = IrCall(IrBound(), 'clone', const [])
-        ..rustType = nonNull(have);
+        ..rustType = stripNull(have);
       final shared = coerceInto(element, slot, world, inClosure: true);
       final mapped = identical(shared, element)
           ? value
@@ -112,13 +163,13 @@ IrExpr coerceInto(
               ..rustType = IrType('dynamic', nullable: true));
       return IrCall(mapped, '!or_null', const [])..rustType = slot;
     }
-    final inner = IrNullCheck(value)..rustType = nonNull(have);
+    final inner = IrNullCheck(value)..rustType = stripNull(have);
     return coerceInto(inner, slot, world, inClosure: inClosure);
   }
-  if (slot.nullable && have.nullable) {
+  if (isNullable(slot) && isNullable(have)) {
     final element = IrCall(IrBound(), 'clone', const [])
-      ..rustType = nonNull(have);
-    final inner = coerceInto(element, nonNull(slot), world, inClosure: true);
+      ..rustType = stripNull(have);
+    final inner = coerceInto(element, stripNull(slot), world, inClosure: true);
     if (identical(inner, element)) return value;
     return IrNullAware(value, inner)..rustType = slot;
   }
@@ -141,7 +192,33 @@ IrExpr coerceInto(
   final slotObject = slot.name == 'Object' || slot.name == 'dynamic';
   if (scalarNames.contains(have.name) && !slotObject) return value;
   if (scalarNames.contains(slot.name) && !haveObject) return value;
-  // Function types: the front end's adapters know them.
+  // Function types: an adapter closure, each parameter coerced from the
+  // slot's type to the function's and the result back (`lerp<Color?>`'s
+  // `T? Function(T?, T?, double)` wants `Option<Option<..>>` parameters
+  // where the closure written takes `Option<..>`).
+  if (have.isFunction && slot.isFunction) {
+    final hp = have.parameters!, sp = slot.parameters!;
+    if (hp.length != sp.length) return value;
+    final params = <IrParam>[];
+    final args = <IrExpr>[];
+    var adapted = false;
+    for (var i = 0; i < sp.length; i++) {
+      final name = '__a$i';
+      params.add(IrParam(name, sp[i]));
+      final given = IrLocal(name)..rustType = sp[i];
+      final arg = coerceInto(given, hp[i], world, inClosure: true);
+      if (!identical(arg, given)) adapted = true;
+      args.add(arg);
+    }
+    final call = IrCallValue(value, args)..rustType = have.returns;
+    final result = coerceInto(call, slot.returns!, world, inClosure: true);
+    if (!adapted && identical(result, call)) return value;
+    return IrCall(
+      IrClosure(params, IrReturn(result), slot.returns!),
+      '!rc',
+      const [],
+    )..rustType = slot;
+  }
   if (have.isFunction || slot.isFunction) return value;
   // Collections, element by element.
   if (collectionNames.contains(have.name) &&

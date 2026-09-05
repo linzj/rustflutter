@@ -6399,6 +6399,9 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws383 | 950 叶子错 | 转发器的**形参**适配（`_inherentCall`：widen 成 `Object`、covariant 下转、擦除界收窄、加 `Some`，四段字符串规则）也换成 `coerceInto`。**2907→2897 / 795，138+1 个 crate**。 |
 | ws384 | 950 叶子错 | 转发器印之前清空上一个方法体的 `_cellLocals`（形参 `child` 被印成 `child.borrow()`）。**2897→2890 / 795，138+1 个 crate**。 |
 | ws385 | 950 叶子错 | 后端旧 bug：`late` 字段的 `Some(..)` 包装（给直接写 cell 用的）也套在经 trait setter 的写入上，setter 收的是裸值（106 处 `f64` <- `Option<f64>`）。**2890→2871 / 795，138+1 个 crate**。 |
+| ws386 | 950 叶子错 | `Option` 层不再被 Dart 折叠：类型代入改在 IR 里做（`_typeKept`：`T?` 代 `Color?` 得 `IrType('Option',[Color?])`），成员读、落点形参、字段写的槽都用它；`coerce.dart` 认识显式 `Option` 包装（`isNullable`/`stripNull`/`_normal`）。**2871→2855**。 |
+| ws387 | 950 叶子错 | 泛型**静态**调用的槽也按调用处的类型实参代入（`_withGenericArgs`/`_genericSlotIr`）；`coerceInto` 加函数类型规则：参数逐个从槽的类型转到函数的、结果转回，包一层适配闭包。**2855→2855**——没生效：tear-off 的 `rustType` 是 `dynamic`，闭包根本没类型。 |
+| ws388 | 950 叶子错 | 函数值按自己的签名定型：闭包用 lowering 后的形参和返回，静态 tear-off 用目标的函数类型。`TextStyle.lerp` 进 `WidgetStateProperty.lerp<TextStyle?>` 有了 `|__a0: Option<Option<..>>, ..|` 的适配。**2855→2854 / 795，138+1 个 crate**（fn-arg mismatch −28，mismatched +13：新露出的）。 |
 
 ## 下一步(2026-09-05 重铺)
 

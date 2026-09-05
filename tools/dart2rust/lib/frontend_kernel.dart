@@ -1046,6 +1046,7 @@ class KernelFrontend implements TypeWorld {
               node.value,
               _writeSlot(node.interfaceTarget, receiver),
               clone,
+              slotIr: _writeSlotIr(node.interfaceTarget, receiver),
             );
             return IrBlockValue([
               // Inferred: the field's *declared* type is the generic `T?` of
@@ -1091,6 +1092,7 @@ class KernelFrontend implements TypeWorld {
           node.value,
           _writeSlot(node.interfaceTarget, node.receiver),
           IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
+          slotIr: _writeSlotIr(node.interfaceTarget, node.receiver),
         );
         return IrBlockValue([
           IrLocalDecl(held, null, init),
@@ -1106,6 +1108,7 @@ class KernelFrontend implements TypeWorld {
         node.value,
         _writeSlot(node.interfaceTarget, node.receiver),
         expression(node.value),
+        slotIr: _writeSlotIr(node.interfaceTarget, node.receiver),
       );
       if (stored is IrSome) {
         // `_cache = s` into a `String?` field, used for its value: the
@@ -1299,7 +1302,7 @@ class KernelFrontend implements TypeWorld {
       return IrFunctionRef(
         node.target.enclosingClass?.name,
         node.target.name.text,
-      );
+      )..rustType = _functionRefType(node.target);
     }
     // An expression the CFE moved from another file -- a mixin field's
     // initialiser into the application's constructor -- is wrapped with
@@ -1530,6 +1533,20 @@ class KernelFrontend implements TypeWorld {
     return chosen;
   }
 
+  /// A tear-off's type: the function's own signature, so a slot of
+  /// another function type gets its adapter from `coerce` (`TextStyle.lerp`
+  /// handed to `WidgetStateProperty.lerp<TextStyle?>`, whose `T?` is one
+  /// `Option` deeper; 161 tear-offs typed `dynamic` at ws387).
+  IrType? _functionRefType(Procedure target) {
+    try {
+      return _type(
+        target.function.computeFunctionType(Nullability.nonNullable),
+      );
+    } on Unsupported {
+      return null;
+    }
+  }
+
   IrExpr _closure(FunctionNode fn, Node origin) {
     // Taken once, for this closure: a closure nested in the body is not the
     // one the context described.
@@ -1574,7 +1591,7 @@ class KernelFrontend implements TypeWorld {
     final holds = _counted && _reachesThis(fn) && !copies;
     if (copies) _captured = {for (final f in finals) f.name.text};
     try {
-      return IrClosure(
+      final closure = IrClosure(
         [
           for (final (i, p) in fn.positionalParameters.indexed)
             IrParam(
@@ -1599,6 +1616,14 @@ class KernelFrontend implements TypeWorld {
         locals: _freeLocals(fn),
         holdsSelf: holds,
       );
+      // A function value is typed by its own signature -- the parameters
+      // as lowered (retyped to the expected ones where they were), the
+      // return as declared -- so a slot of another function type gets its
+      // adapter from `coerce` (1233 untyped closures at ws387).
+      closure.rustType = IrType.function([
+        for (final p in closure.params) p.type,
+      ], closure.returns);
+      return closure;
     } finally {
       _captured = was;
     }
@@ -2012,6 +2037,7 @@ class KernelFrontend implements TypeWorld {
       value.value,
       _writeSlot(value.interfaceTarget, value.receiver),
       expression(value.value),
+      slotIr: _writeSlotIr(value.interfaceTarget, value.receiver),
     );
     // A field on `this`, and a field rather than a setter. Kernel names the
     // target outright, so neither has to be inferred.
@@ -3251,7 +3277,11 @@ class KernelFrontend implements TypeWorld {
           final p = owner.typeParameters[i];
           if (!_erasedParameter(p)) kept[p] = asOwner.typeArguments[i];
         }
-        declared = Substitution.fromMap(kept).substituteType(declared);
+        try {
+          return _typeKept(declared, kept);
+        } on Unsupported {
+          return null;
+        }
       }
     }
     try {
@@ -3804,7 +3834,16 @@ class KernelFrontend implements TypeWorld {
       return IrStaticCall(
         null,
         target.name.text.replaceAll(RegExp(r'[|#]'), '_'),
-        _arguments(node.arguments, target.function, true, _instantiated(node)),
+        _withGenericArgs(
+          target.function,
+          node.arguments,
+          () => _arguments(
+            node.arguments,
+            target.function,
+            true,
+            _instantiated(node),
+          ),
+        ),
         fails: _fails(target),
         diverges: _diverges(target),
       );
@@ -3819,7 +3858,16 @@ class KernelFrontend implements TypeWorld {
       // With the call's type arguments: `WidgetStateProperty.resolveWith<
       // Color?>((states) { .. })` expects the closure to return `Color?`,
       // and the declared `T` said nothing (63 `Option<Color>` <- `Color`).
-      _arguments(node.arguments, target.function, true, _instantiated(node)),
+      _withGenericArgs(
+        target.function,
+        node.arguments,
+        () => _arguments(
+          node.arguments,
+          target.function,
+          true,
+          _instantiated(node),
+        ),
+      ),
       fails: _fails(target),
       diverges: _diverges(target),
     );
@@ -3911,7 +3959,14 @@ class KernelFrontend implements TypeWorld {
             () =>
                 _withExpectedReturn(paramType, value, () => expression(value)),
           ),
-          (lowered) => _widened(value, paramType, lowered),
+          (lowered) => _widened(
+            value,
+            paramType,
+            lowered,
+            slotIr:
+                _landingSlotIr(callee: callee, index: index) ??
+                _genericSlotIr(callee, declaredType),
+          ),
         ),
       ),
       generic: param?.type is TypeParameterType,
@@ -4019,7 +4074,17 @@ class KernelFrontend implements TypeWorld {
             callee,
             () => _withExpectedReturn(type, value, () => expression(value)),
           ),
-          (lowered) => _widened(value, type, lowered),
+          (lowered) => _widened(
+            value,
+            type,
+            lowered,
+            slotIr:
+                _landingSlotIr(
+                  callee: callee,
+                  name: param is FunctionParameter ? param.parameterName : null,
+                ) ??
+                _genericSlotIr(callee, declared),
+          ),
         ),
       ),
     );
@@ -4038,6 +4103,51 @@ class KernelFrontend implements TypeWorld {
   /// kept parameters, exactly as a read is typed (`_memberRustType`).
   Procedure? _dispatchMember;
   DartType? _dispatchReceiverType;
+
+  /// A generic callee's own type arguments at the call, while its
+  /// arguments are lowered: `T?` under `lerp<Color?>` is `Option<Option<
+  /// Rc<dyn Color>>>` here, which Dart's instantiated type collapses.
+  FunctionNode? _genericCallee;
+  Map<TypeParameter, DartType> _genericArgs = const {};
+
+  T _withGenericArgs<T>(
+    FunctionNode fn,
+    Arguments arguments,
+    T Function() lower,
+  ) {
+    if (fn.typeParameters.isEmpty ||
+        arguments.types.length != fn.typeParameters.length) {
+      return lower();
+    }
+    final wasCallee = _genericCallee;
+    final wasArgs = _genericArgs;
+    _genericCallee = fn;
+    _genericArgs = {
+      for (var i = 0; i < fn.typeParameters.length; i++)
+        fn.typeParameters[i]: arguments.types[i],
+    };
+    try {
+      return lower();
+    } finally {
+      _genericCallee = wasCallee;
+      _genericArgs = wasArgs;
+    }
+  }
+
+  IrType? _genericSlotIr(FunctionNode? callee, DartType? declared) {
+    if (declared == null ||
+        callee == null ||
+        !identical(callee, _genericCallee) ||
+        _genericArgs.isEmpty) {
+      return null;
+    }
+    if (!_mentionsParametersOf(declared, callee.typeParameters)) return null;
+    try {
+      return _typeKept(declared, _genericArgs);
+    } on Unsupported {
+      return null;
+    }
+  }
 
   /// The interface member whose arguments the dispatch above is for: a
   /// call nested inside one of those arguments has a callee of its own
@@ -4073,6 +4183,99 @@ class KernelFrontend implements TypeWorld {
       landing.enclosingClass,
       _dispatchReceiverType,
     );
+  }
+
+  /// `_landingSlot` in the IR, `Option` layers kept apart (`_typeKept`).
+  IrType? _landingSlotIr({
+    required FunctionNode? callee,
+    int? index,
+    String? name,
+  }) {
+    final declared = _landingSlot(callee: callee, index: index, name: name);
+    final landing = _dispatchMember;
+    if (declared == null || landing == null) return null;
+    // The declared type again, unsubstituted, for the IR-level put-in.
+    final fn = landing.function;
+    DartType? raw;
+    if (index != null && index < fn.positionalParameters.length) {
+      raw = fn.positionalParameters[index].type;
+    } else if (name != null) {
+      for (final p in fn.namedParameters) {
+        if (p.parameterName == name) raw = p.type;
+      }
+    }
+    if (raw == null) return null;
+    try {
+      return _typeKept(
+        raw,
+        _keptFor(landing.enclosingClass, _dispatchReceiverType),
+      );
+    } on Unsupported {
+      return null;
+    }
+  }
+
+  /// The receiver's type arguments for `owner`'s *kept* parameters (the
+  /// erased ones are left to `_type`, which spells them as their bound).
+  Map<TypeParameter, DartType> _keptFor(Class? owner, DartType? receiverType) {
+    final env = typeEnvironment;
+    if (owner == null ||
+        owner.typeParameters.isEmpty ||
+        env == null ||
+        receiverType is! InterfaceType) {
+      return const {};
+    }
+    final asOwner = env.hierarchy.getTypeAsInstanceOf(receiverType, owner);
+    if (asOwner is! InterfaceType) return const {};
+    final kept = <TypeParameter, DartType>{};
+    for (
+      var i = 0;
+      i < owner.typeParameters.length && i < asOwner.typeArguments.length;
+      i++
+    ) {
+      final p = owner.typeParameters[i];
+      if (!_erasedParameter(p)) kept[p] = asOwner.typeArguments[i];
+    }
+    return kept;
+  }
+
+  /// `declared` as a Rust type with `kept` put in for its parameters --
+  /// in the IR, not in Kernel, because Dart collapses `T?` with `T` bound
+  /// to `Color?` into `Color?` and Rust's `Option<T>` does not: that is
+  /// `Option<Option<Rc<dyn Color>>>` here (the `WidgetStateProperty<
+  /// Color?>.lerp` family, 66 mismatches at ws384).
+  IrType _typeKept(DartType t, Map<TypeParameter, DartType> kept) {
+    if (t is TypeParameterType && kept.containsKey(t.parameter)) {
+      final arg = _type(kept[t.parameter]!);
+      return t.nullability == Nullability.nullable ? withNull(arg) : arg;
+    }
+    if (t is InterfaceType && kept.isNotEmpty) {
+      final base = _type(t);
+      final cls = t.classNode;
+      return IrType(
+        base.name,
+        nullable: base.nullable,
+        arguments: [
+          for (var i = 0; i < t.typeArguments.length; i++)
+            if (i >= cls.typeParameters.length ||
+                !_erasedParameter(cls.typeParameters[i]))
+              _typeKept(t.typeArguments[i], kept),
+        ],
+      );
+    }
+    if (t is FunctionType && kept.isNotEmpty) {
+      final named = [...t.namedParameters]
+        ..sort((a, b) => a.name.compareTo(b.name));
+      return IrType.function(
+        [
+          for (final p in t.positionalParameters) _typeKept(p, kept),
+          for (final p in named) _typeKept(p.type, kept),
+        ],
+        _typeKept(t.returnType, kept),
+        nullable: t.nullability == Nullability.nullable,
+      );
+    }
+    return _type(t);
   }
 
   /// `declared` with the receiver's type arguments put in for `owner`'s
@@ -4132,6 +4335,28 @@ class KernelFrontend implements TypeWorld {
               : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable))
         : _staticType(receiver);
     return _substituteKept(declared, landing.enclosingClass, receiverType);
+  }
+
+  /// `_writeSlot` in the IR, `Option` layers kept apart (`_typeKept`).
+  IrType? _writeSlotIr(Member interface, Expression receiver) {
+    final landing = _landing(interface, receiver);
+    final declared = landing is Procedure && landing.isSetter
+        ? landing.function.positionalParameters.single.type
+        : landing.setterType;
+    final env = typeEnvironment;
+    final receiverType = receiver is ThisExpression
+        ? (env == null
+              ? null
+              : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable))
+        : _staticType(receiver);
+    try {
+      return _typeKept(
+        declared,
+        _keptFor(landing.enclosingClass, receiverType),
+      );
+    } on Unsupported {
+      return null;
+    }
   }
 
   IrExpr _intoDynamic(
@@ -4435,14 +4660,25 @@ class KernelFrontend implements TypeWorld {
   IrExpr coerce(IrExpr value, IrType slot, {bool inClosure = false}) =>
       coerceInto(value, slot, this, inClosure: inClosure);
 
-  IrExpr _widened(Expression value, DartType? param, IrExpr lowered) {
+  IrExpr _widened(
+    Expression value,
+    DartType? param,
+    IrExpr lowered, {
+    IrType? slotIr,
+  }) {
     // The callee flag (`_slotTranslated`) is about this slot; whatever is
     // lowered underneath -- a literal's entries against the slot's element
     // types -- fills slots of its own, translated ones.
     final translated = _slotTranslated;
     _slotTranslated = true;
     try {
-      return _widenedInto(value, param, lowered, translated: translated);
+      return _widenedInto(
+        value,
+        param,
+        lowered,
+        translated: translated,
+        slotIr: slotIr,
+      );
     } finally {
       _slotTranslated = translated;
     }
@@ -4453,6 +4689,7 @@ class KernelFrontend implements TypeWorld {
     DartType? param,
     IrExpr lowered, {
     required bool translated,
+    IrType? slotIr,
   }) {
     // A literal into a collection slot of other element types is lowered
     // again against those: see `_mapLiteral`.
@@ -4476,11 +4713,13 @@ class KernelFrontend implements TypeWorld {
         translated &&
         param != null &&
         lowered.rustType != null) {
-      IrType? slot;
-      try {
-        slot = _type(param);
-      } on Unsupported {
-        slot = null;
+      IrType? slot = slotIr;
+      if (slot == null) {
+        try {
+          slot = _type(param);
+        } on Unsupported {
+          slot = null;
+        }
       }
       if (slot != null) {
         // A local handed on is shared, as below: the clone comes first so
@@ -5169,7 +5408,7 @@ class KernelFrontend implements TypeWorld {
       return IrFunctionRef(
         constant.target.enclosingClass?.name,
         constant.target.name.text,
-      );
+      )..rustType = _functionRefType(constant.target);
     }
     if (constant is InstanceConstant) {
       // `Zone.root` (the `_RootZone` constant): the prelude's `Zone::root()`.
