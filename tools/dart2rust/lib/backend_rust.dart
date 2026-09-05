@@ -2714,9 +2714,16 @@ class RustBackend {
         boxed,
       );
     }
+    // A plain call on `this` inside a trait body -- a super fn's `this_:
+    // &__Self`, a trait default's `&self`, a closure's `dart_self_<trait>()`
+    // handle in either -- dispatches through the trait, whose async
+    // methods return `Result<DartFuture<T>, E>` (`_handleAsMethodCall` in
+    // `MethodChannel.setMethodCallHandler`'s super fn, run458).
+    final viaTrait =
+        _fieldsAreAccessors && (target == null || target is IrThis);
     return _asyncValue(
       '$receiver.${_identifier(name)}$turbofish'
-      '(${args.map(expr).join(', ')})${suffixFor(false)}',
+      '(${args.map(expr).join(', ')})${suffixFor(viaTrait)}',
       boxed,
     );
   }
