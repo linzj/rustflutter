@@ -9937,7 +9937,13 @@ class _ReferenceCollector extends RecursiveVisitor {
   final Map<String, Set<Library>> namedClasses = {};
 
   void _member(Member? member) {
-    if (member != null) found.add(member.enclosingLibrary);
+    if (member == null) return;
+    found.add(member.enclosingLibrary);
+    // The class a constructor or static belongs to is named by the call
+    // (`Image(..)` in `ImageIcon.build` named `widgets/image.dart`'s
+    // `Image`, which two modules define; without the class here the
+    // import chose neither, E0433, 18 at ws464).
+    _class(member.enclosingClass);
   }
 
   void _class(Class? cls) {

@@ -3098,7 +3098,7 @@ class RustBackend {
   /// The iterator part of a chain, without the collect that ends it.
   String _chain(IrIterChain chain) {
     final steps = chain.steps
-        .map((step) => '.${step.$1}(${_stepClosure(step.$2)})')
+        .map((step) => '.${step.$1}(${_stepClosure(step.$2, step: step.$1)})')
         .join();
     // A bare `forEach` hands the closure each element by value, as Dart
     // does: `keys.forEach(_updateProperty)` gave it `&Rc<..>` (53).
@@ -3122,8 +3122,15 @@ class RustBackend {
   /// `iter()` yields references, so the Dart type is the wrong annotation --
   /// `|m: i64|` against a `&i64` does not compile. Left off, Rust infers it,
   /// and the body reads the same either way.
-  String _stepClosure(IrExpr e) {
-    if (e is! IrClosure) return expr(e);
+  String _stepClosure(IrExpr e, {String step = ''}) {
+    // A function *value* as the step (`where(shouldNotSkip)`): called
+    // from a closure of the step's own shape -- `filter` hands `&&T`,
+    // the rest the item -- and its `Result` unwrapped, as a written
+    // closure's is (E0631, 17 at ws464).
+    if (e is! IrClosure) {
+      final item = step == 'filter' ? '(*__x).clone()' : '__x.clone()';
+      return '|__x| (${expr(e)})($item).unwrap()';
+    }
     final params = e.params.map((p) => snake(p.name)).join(', ');
     final saved = _out.length;
     final savedIndent = _indent;
