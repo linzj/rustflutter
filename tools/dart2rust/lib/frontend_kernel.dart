@@ -274,6 +274,27 @@ class KernelFrontend implements TypeWorld {
 
   // -- Types ------------------------------------------------------------------
 
+  /// How deep inside a type `_type` is: a `T?` *inside* a type -- a type
+  /// argument, a function type's parameter or result -- is spelled
+  /// projected (`<T as DartNullable>::Or`), the way a signature's is, so
+  /// that `WidgetStateProperty<T?>` with `T` bound to `Color?` is one
+  /// trait object type on both sides. A bare `T?` at the top is the
+  /// `Option<T>` a body works with; `_edgeType` projects that one in
+  /// signatures.
+  var _typeDepth = 0;
+
+  T _nested<T>(T Function() inside) {
+    _typeDepth++;
+    try {
+      return inside();
+    } finally {
+      _typeDepth--;
+    }
+  }
+
+  /// `_type`, as a type argument: a `T?` here is projected.
+  IrType _typeNested(DartType type) => _nested(() => _type(type));
+
   IrType _type(DartType type) {
     final nullable = type.nullability == Nullability.nullable;
     if (type is InterfaceType) {
@@ -287,7 +308,9 @@ class KernelFrontend implements TypeWorld {
       return IrType(
         name,
         nullable: nullable,
-        arguments: _erasedArguments(type.classNode, type.typeArguments),
+        arguments: _nested(
+          () => _erasedArguments(type.classNode, type.typeArguments),
+        ),
       );
     }
     if (type is RecordType) {
@@ -297,7 +320,7 @@ class KernelFrontend implements TypeWorld {
       return IrType(
         'Record',
         nullable: nullable,
-        arguments: [for (final f in type.positional) _type(f)],
+        arguments: _nested(() => [for (final f in type.positional) _type(f)]),
       );
     }
     if (type is VoidType) return const IrType('void');
@@ -350,7 +373,11 @@ class KernelFrontend implements TypeWorld {
           arguments: asBound.arguments,
         );
       }
-      return IrType(type.parameter.name ?? 'T', nullable: nullable);
+      return IrType(
+        type.parameter.name ?? 'T',
+        nullable: nullable,
+        projected: nullable && _typeDepth > 0,
+      );
     }
     if (type is FunctionType) {
       // Named parameters after the positional ones, **sorted by name**, as
@@ -359,13 +386,15 @@ class KernelFrontend implements TypeWorld {
       // that type could not hold the two-parameter function (E0593).
       final named = [...type.namedParameters]
         ..sort((a, b) => a.name.compareTo(b.name));
-      return IrType.function(
-        [
-          for (final p in type.positionalParameters) _paramType(p),
-          for (final p in named) _paramType(p.type),
-        ],
-        _type(type.returnType),
-        nullable: nullable,
+      return _nested(
+        () => IrType.function(
+          [
+            for (final p in type.positionalParameters) _paramType(p),
+            for (final p in named) _paramType(p.type),
+          ],
+          _type(type.returnType),
+          nullable: nullable,
+        ),
       );
     }
     // Kernel's own class name is not a Dart type name. `FutureOr<T>` arrived
@@ -611,7 +640,7 @@ class KernelFrontend implements TypeWorld {
       return IrCallValue(
         expression(node.receiver),
         _argumentsByType(node.arguments, type),
-      );
+      )..rustType = _type(type).returns;
     }
     if (node is LocalFunctionInvocation) {
       final name = node.variable.cosmeticName;
@@ -623,7 +652,7 @@ class KernelFrontend implements TypeWorld {
       return IrCallValue(
         IrLocal(name),
         _argumentsByType(node.arguments, node.functionType),
-      );
+      )..rustType = _type(node.functionType).returns;
     }
     if (node is FunctionExpression) return _closure(node.function, node);
     if (node is StaticSet) {
@@ -1570,8 +1599,9 @@ class KernelFrontend implements TypeWorld {
   }) {
     if (!_crossing(declared, binding)) return value;
     if (value.rustType?.projected == true) return value;
-    return IrNullableOf(value, _type(binding!).name, toOption: toOption)
-      ..rustType = value.rustType;
+    final held = binding!.withDeclaredNullability(Nullability.nullable);
+    return IrNullableOf(value, _type(binding).name, toOption: toOption)
+      ..rustType = toOption ? _type(held) : _edgeType(held);
   }
 
   /// What a member access puts in for a declared type parameter: the
@@ -1678,7 +1708,7 @@ class KernelFrontend implements TypeWorld {
     // Already the spelled `T?` (a constructor parameter): nothing to cross.
     if (value.rustType?.projected == true) return value;
     return IrNullableOf(value, _type(slot!).name, toOption: toOption)
-      ..rustType = value.rustType;
+      ..rustType = toOption ? _type(slot) : _edgeType(slot);
   }
 
   /// A body behind its projected parameters: each re-bound, in the same
@@ -4240,6 +4270,7 @@ class KernelFrontend implements TypeWorld {
     FunctionNode? callee,
     int index, [
     FunctionType? instantiated,
+    IrType? slotIr,
   ]) {
     final param = callee != null && index < callee.positionalParameters.length
         ? callee.positionalParameters[index]
@@ -4276,6 +4307,7 @@ class KernelFrontend implements TypeWorld {
           paramType,
           lowered,
           slotIr:
+              slotIr ??
               _landingSlotIr(callee: callee, index: index) ??
               _genericSlotIr(callee, declaredType),
         ),
@@ -4568,11 +4600,22 @@ class KernelFrontend implements TypeWorld {
   /// Color?>.lerp` family, 66 mismatches at ws384).
   IrType _typeKept(DartType t, Map<TypeParameter, DartType> kept) {
     if (t is TypeParameterType && kept.containsKey(t.parameter)) {
-      final arg = _type(kept[t.parameter]!);
+      // What is put in is a type argument: a `U?` there is projected.
+      final arg = _typeNested(kept[t.parameter]!);
+      if (t.nullability != Nullability.nullable) return arg;
       // `T?` with `T` bound to `X?` is `X?`, as Dart collapses it and as
-      // the projected signature (`<T as DartNullable>::Or`) now spells it.
-      if (t.nullability != Nullability.nullable || isNullable(arg)) return arg;
-      return withNull(arg);
+      // rustc normalises the projected signature to (`<Option<X> as
+      // DartNullable>::Or` is `Option<X>`): the plain `Option`, projected
+      // no more. With `T` bound to a bare `U` the slot stays `Or`.
+      if (isNullable(arg)) {
+        return IrType(arg.name, nullable: true, arguments: arg.arguments);
+      }
+      return IrType(
+        arg.name,
+        nullable: true,
+        arguments: arg.arguments,
+        projected: arg.arguments.isEmpty && !arg.isFunction,
+      );
     }
     if (t is InterfaceType && kept.isNotEmpty) {
       final base = _type(t);
@@ -5274,15 +5317,35 @@ class KernelFrontend implements TypeWorld {
     // The function type's own parameter types widen the arguments, as a
     // callee's would: `onError(e, stack)` with `StackTrace? stackTrace`
     // takes `Some(stack)`.
+    // ..as the function's Rust type spells them: a `T?` there is
+    // projected, and the coercion rule converts into it.
+    final ir = _type(type);
+    final slots = ir.parameters ?? const <IrType>[];
     final out = [
       for (var i = 0; i < node.positional.length; i++)
-        _argument(node.positional[i], null, i, type),
+        _argument(
+          node.positional[i],
+          null,
+          i,
+          type,
+          i < slots.length ? slots[i] : null,
+        ),
     ];
     final supplied = {for (final n in node.named) n.name: n.value};
+    final named = [...type.namedParameters]
+      ..sort((a, b) => a.name.compareTo(b.name));
     for (final param in type.namedParameters) {
       final value = supplied.remove(param.name);
       if (value != null) {
-        out.add(_widened(value, param.type, expression(value)));
+        final at = type.positionalParameters.length + named.indexOf(param);
+        out.add(
+          _widened(
+            value,
+            param.type,
+            expression(value),
+            slotIr: at < slots.length ? slots[at] : null,
+          ),
+        );
       } else if (param.type.nullability == Nullability.nullable) {
         out.add(IrLiteral('null', const IrType('Null', nullable: true)));
       } else {

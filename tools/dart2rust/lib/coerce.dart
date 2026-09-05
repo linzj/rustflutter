@@ -64,6 +64,26 @@ String normalName(String name) => switch (name) {
 /// Whether two IR types spell the same Rust type.
 bool sameRust(IrType a, IrType b) => _sameNormal(_normal(a), _normal(b));
 
+/// Whether two types the same by `sameRust` differ in a projection
+/// somewhere -- a function type whose parameter is `<T as DartNullable>::
+/// Or` on one side and `Option<T>` on the other needs an adapter.
+bool projectionDiffers(IrType a, IrType b) {
+  if (a.projected != b.projected) return true;
+  if (a.isFunction && b.isFunction) {
+    final ap = a.parameters!, bp = b.parameters!;
+    if (ap.length != bp.length) return false;
+    for (var i = 0; i < ap.length; i++) {
+      if (projectionDiffers(ap[i], bp[i])) return true;
+    }
+    return projectionDiffers(a.returns!, b.returns!);
+  }
+  if (a.arguments.length != b.arguments.length) return false;
+  for (var i = 0; i < a.arguments.length; i++) {
+    if (projectionDiffers(a.arguments[i], b.arguments[i])) return true;
+  }
+  return false;
+}
+
 bool _sameNormal(IrType a, IrType b) {
   if (a.nullable != b.nullable) return false;
   if (a.isFunction || b.isFunction) {
@@ -142,7 +162,22 @@ IrExpr coerceInto(
   bool inClosure = false,
 }) {
   final have0 = value.rustType;
-  if (have0 == null || sameRust(have0, slot)) return value;
+  if (have0 == null) return value;
+  // A `T?` spelled projected (`<T as DartNullable>::Or`, a generic
+  // declaration's edge) against the plain `Option<T>` a body works with:
+  // the prelude's conversion, one way or the other (`IrNullableOf`).
+  if (have0.projected != slot.projected &&
+      !have0.isFunction &&
+      !slot.isFunction &&
+      have0.nullable &&
+      slot.nullable &&
+      have0.arguments.isEmpty &&
+      slot.arguments.isEmpty &&
+      have0.name == slot.name) {
+    return IrNullableOf(value, slot.name, toOption: !slot.projected)
+      ..rustType = slot;
+  }
+  if (sameRust(have0, slot) && !projectionDiffers(have0, slot)) return value;
   final have = _normal(have0);
   slot = _normal(slot);
   // The `Option` layer first: on, off, or mapped through.
