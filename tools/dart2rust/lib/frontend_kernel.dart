@@ -2267,13 +2267,25 @@ class KernelFrontend implements TypeWorld {
 
   /// The concrete copy of a mixin declaration's abstract procedure in an
   /// application of the mixin, if the CFE left one there.
-  Procedure? _appliedBody(Class mixin, Procedure declared) {
+  Procedure? _appliedBody(Class mixin, Procedure declared) =>
+      _appliedProcedure(mixin, declared.name.text, kind: declared.kind);
+
+  /// A concrete, non-static procedure named `name` in an application of
+  /// `mixin` -- the mixin's own method, whether or not the hollow
+  /// declaration still lists it (TFA drops the ones it does not need
+  /// there: `SchedulerBinding.initInstances` was nowhere in the
+  /// declaration and everywhere in the applications).
+  Procedure? _appliedProcedure(
+    Class mixin,
+    String name, {
+    ProcedureKind? kind,
+  }) {
     // Deduplicated applications (`dart:mixin_deduplication`) may be hollow
     // themselves; the copy is in whichever application kept it.
     for (final application in applications[mixin] ?? const <Class>[]) {
       for (final p in application.procedures) {
-        if (p.name.text == declared.name.text &&
-            p.kind == declared.kind &&
+        if (p.name.text == name &&
+            (kind == null || p.kind == kind) &&
             !p.isAbstract &&
             !p.isStatic) {
           return p;
@@ -2307,7 +2319,22 @@ class KernelFrontend implements TypeWorld {
   /// The class a reader would name is the mixin that declares the member, or
   /// the first real superclass above it if none does.
   Class? _realOwner(Member target, String name) {
-    var owner = target.enclosingClass;
+    // A super call in a mixin's body names the `on` constraint's member
+    // (`BindingBase.initInstances`), but dispatches to the *actual*
+    // superclass of the application the body sits in: the walk starts
+    // there, at the previous mixin in the chain (`RendererBinding`'s
+    // `super.initInstances()` reaching `SemanticsBinding`'s, run438).
+    final enclosing = _member?.enclosingClass;
+    final fromApplication = enclosing?.isAnonymousMixin ?? false;
+    var owner = fromApplication ? enclosing!.superclass : target.enclosingClass;
+    // ..and on up past real classes that do not declare the member
+    // (`RenderBox` for `attach`, which `RenderObject` declares).
+    while (fromApplication &&
+        owner != null &&
+        !owner.isAnonymousMixin &&
+        !owner.members.any((m) => m.name.text == name && !m.isAbstract)) {
+      owner = owner.superclass;
+    }
     while (owner != null && owner.isAnonymousMixin) {
       // Not `mixedInClass`: with `--target=flutter` the CFE *applies* the
       // mixin, copying its members into this class and clearing `mixedInType`,
@@ -2317,7 +2344,13 @@ class KernelFrontend implements TypeWorld {
       // the search runs backwards.
       for (final applied in owner.implementedTypes.reversed) {
         final mixin = applied.classNode;
-        if (mixin.members.any((m) => m.name.text == name && !m.isAbstract)) {
+        // A hollow mixin declares the member when an application of it
+        // holds the body (`_appliedBody`): `super.initInstances()` in
+        // `WidgetsBinding` fell through every binding mixin to
+        // `BindingBase`, and `SemanticsBinding.initInstances` never ran
+        // (run438's `None` in `_semanticsEnabled`).
+        if (mixin.members.any((m) => m.name.text == name && !m.isAbstract) ||
+            _appliedProcedure(mixin, name) != null) {
           return mixin;
         }
       }
@@ -7934,6 +7967,28 @@ class KernelFrontend implements TypeWorld {
         refuse(procedure.name.text, error, stack);
         final stub = _stubFor(procedure, '$error');
         if (stub != null) cls.methods.add(stub);
+      }
+    }
+    // ..and the mixin's methods the declaration no longer lists at all,
+    // from an application that kept them (`_appliedProcedure`).
+    if (node.isMixinDeclaration) {
+      final declared = {
+        for (final p in node.procedures) p.name.text,
+        for (final f in node.fields) f.name.text,
+      };
+      final seen = <String>{};
+      for (final application in applications[node] ?? const <Class>[]) {
+        for (final p in application.procedures) {
+          if (p.isAbstract || p.isStatic) continue;
+          if (declared.contains(p.name.text) || !seen.add(p.name.text)) {
+            continue;
+          }
+          try {
+            _lowerProcedure(cls, p);
+          } on Unsupported catch (error, stack) {
+            refuse(p.name.text, error, stack);
+          }
+        }
       }
     }
     // The applied mixins' members. After TFA a mixin's fields and methods

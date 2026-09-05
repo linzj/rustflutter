@@ -4360,7 +4360,7 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : "$p: DartNullable + DartEq + 'static",
+                : "$p: DartNullable<Or: DartEq> + DartEq + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';
