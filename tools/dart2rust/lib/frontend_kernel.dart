@@ -803,7 +803,10 @@ class KernelFrontend implements TypeWorld {
       // `dynamic`), not as the promotion says (`Object?`): the slot's
       // rule puts the `Some` on (`if` and `else` have incompatible
       // types, run453).
-      if (toObject) {
+      // Only from a `dynamic`: an `Object?` promoted to `Object` is the
+      // unwrap below (`key == keyOrNull` compared an `Rc` with an
+      // `Option`, ws454).
+      if (toObject && declared is DynamicType) {
         try {
           return IrLocal(name)..rustType = _type(declared);
         } on Unsupported {
@@ -3140,6 +3143,25 @@ class KernelFrontend implements TypeWorld {
         cell: _capturedWrites.contains(variable),
       );
     }
+    // A local of a nullable type declared without an initializer holds
+    // Dart's null from the start: `None`, or the `Null` object for a
+    // `dynamic`. Left uninitialized, a read Dart guards with its own flag
+    // (a pattern's `#0#2` behind `#0#2#isSet`) is one rustc cannot see
+    // assigned (E0381, run454).
+    final type = variable.type;
+    final IrExpr? nullStart = init != null || type is VoidType
+        ? null
+        : type is DynamicType
+        ? IrUpcast(
+            IrLiteral('Null', const IrType('raw'))
+              ..rustType = const IrType('Null'),
+            IrType('Object'),
+            handle: false,
+            explicit: true,
+          )
+        : type.nullability == Nullability.nullable && type is! VoidType
+        ? IrLiteral('None', const IrType('raw'))
+        : null;
     return IrLocalDecl(
       name,
       // `void` is what the CFE gives the temporary of a post-increment whose
@@ -3151,7 +3173,7 @@ class KernelFrontend implements TypeWorld {
       // ..and a `dynamic` local holding a scalar or struct shares it
       // (`var integer = number.floor()` on a `dynamic` number).
       init == null
-          ? null
+          ? nullStart
           : _intoDeclaredNum(
               init,
               variable.type,

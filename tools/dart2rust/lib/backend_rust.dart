@@ -4437,9 +4437,15 @@ class RustBackend {
               .where((m) => m.name == name && m.isStatic)
               .firstOrNull;
     if (target == null || !target.isAsync) return 'std::rc::Rc::new($path)';
-    final arity = type?.parameters?.length ?? target.params.length;
-    final args = [for (var i = 0; i < arity; i++) '__a$i'].join(', ');
-    return 'std::rc::Rc::new(|$args| Ok($path($args)))';
+    // The parameters and the error spelled, as a closure literal's are:
+    // nothing else infers them behind the `Rc` (E0282, ws454).
+    final params = type?.parameters ?? [for (final p in target.params) p.type];
+    final args = [for (var i = 0; i < params.length; i++) '__a$i'];
+    final spelled = [
+      for (var i = 0; i < params.length; i++)
+        '${args[i]}: ${this.type(params[i], owned: params[i].name == 'Future' || params[i].isFunction)}',
+    ].join(', ');
+    return 'std::rc::Rc::new(|$spelled| -> Result<_, $_error> { Ok($path(${args.join(', ')})) })';
   }
 
   /// Whether a class's statics live at module level under the class's
