@@ -256,6 +256,7 @@ Future<void> main(List<String> args) async {
       open: openClasses,
       erase: Platform.environment['DART2RUST_ERASE'] != '0',
       eraseObjectBounded: Platform.environment['DART2RUST_ERASE_OBJECT'] == '1',
+      coerceByType: Platform.environment['DART2RUST_COERCE'] != '0',
     ).lowerLibrary();
     lowered[library] = result;
     for (final cls in result.$1.classes) {

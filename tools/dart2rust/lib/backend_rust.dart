@@ -717,12 +717,22 @@ class RustBackend {
             ? '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
             : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}',
       // A counted class's constructor already hands out an `Rc`.
-      IrUpcast(:final value, :final type, :final handle) =>
+      IrMapElements(:final collection, :final kind, :final body) =>
+        kind == 'Set'
+            ? 'Set::of(${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>())'
+            : '${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>()',
+      IrUpcast(:final value, :final type, :final handle, :final explicit) =>
         handle || (library[_concreteType(value).name]?.counted ?? false)
-            ? '(${expr(value)} as ${this.type(type)})'
+            ? (explicit
+                  ? '(${expr(value)} as ${this.type(type)})'
+                  : expr(value))
             : library[_concreteType(value).name] != null
-            ? '(dart_object(${expr(value)}) as ${this.type(type)})'
-            : '(std::rc::Rc::new(${expr(value)}) as ${this.type(type)})',
+            ? (explicit
+                  ? '(dart_object(${expr(value)}) as ${this.type(type)})'
+                  : 'dart_object(${expr(value)})')
+            : (explicit
+                  ? '(std::rc::Rc::new(${expr(value)}) as ${this.type(type)})'
+                  : 'std::rc::Rc::new(${expr(value)})'),
       IrBound() => _boundName,
       IrClosure() => _closure(e as IrClosure),
       // A function value returns `Result` like everything else.
@@ -5156,11 +5166,10 @@ class RustBackend {
       IrSuperCall(:final base, :final name, :final args, :final isSetter) =>
         IrSuperCall(base, name, args.map(go).toList(), isSetter: isSetter),
       IrAwait(:final operand) => IrAwait(go(operand)),
-      IrUpcast(:final value, :final type, :final handle) => IrUpcast(
-        go(value),
-        type,
-        handle: handle,
-      ),
+      IrUpcast(:final value, :final type, :final handle, :final explicit) =>
+        IrUpcast(go(value), type, handle: handle, explicit: explicit),
+      IrMapElements(:final collection, :final kind, :final body) =>
+        IrMapElements(go(collection), kind, go(body)),
       IrIs(:final expr, :final type, :final negated) => IrIs(
         go(expr),
         type,
@@ -7401,6 +7410,9 @@ class _WalkSelf {
         fields.values.forEach(expression);
       case IrUpcast(:final value):
         expression(value);
+      case IrMapElements(:final collection, :final body):
+        expression(collection);
+        expression(body);
       case IrAwait(:final operand):
         expression(operand);
       case IrIdentical(:final left, :final right):

@@ -559,7 +559,15 @@ class IrSome extends IrExpr {
 /// `(Rc::new(v) as Rc<dyn Curve>)`. A `match` arm does not coerce the way a
 /// call argument does, so `curve ?? Curves.ease` needs the `as` written.
 class IrUpcast extends IrExpr {
-  IrUpcast(this.value, this.type, {this.handle = false});
+  IrUpcast(this.value, this.type, {this.handle = false, this.explicit = true});
+
+  /// Whether the cast is spelled (`.. as Rc<dyn T>`). Rust coerces a
+  /// handle up to a trait object on its own at an argument, a return, an
+  /// annotated `let` or an array element, and 45 thousand spelled casts
+  /// inside one crate's `vec![..]` literals ran `rustc` out of memory
+  /// (ws356). Inside a closure body nothing expects a type, so the cast
+  /// is spelled there.
+  final bool explicit;
 
   final IrExpr value;
   final IrType type;
@@ -568,6 +576,19 @@ class IrUpcast extends IrExpr {
   /// `Rc::new`. `Set<Ticker>.remove(&ticker)` with an `Rc<_WidgetTicker>`
   /// could not coerce through the reference (45 at ws311).
   final bool handle;
+}
+
+/// A collection rebuilt with each element coerced: `xs.into_iter().map(|v|
+/// ..).collect()`. `body` reads the element as `IrLocal('v')`; `kind` is
+/// `List` or `Set`. One node for every element adaptation there is --
+/// element upcasts, sharing into `Object`, `int` into `double` -- since
+/// the body is whatever `coerce` says for one element.
+class IrMapElements extends IrExpr {
+  IrMapElements(this.collection, this.kind, this.body);
+
+  final IrExpr collection;
+  final String kind;
+  final IrExpr body;
 }
 
 class IrCast extends IrExpr {

@@ -56,7 +56,13 @@ class KernelFrontend {
     this.open = const {},
     this.erase = false,
     this.eraseObjectBounded = false,
+    this.coerceByType = true,
   });
+
+  /// Whether a value into a slot is adapted by comparing the two Rust
+  /// types (`coerce`) before the shape rules of `_widened` get a look.
+  /// `DART2RUST_COERCE=0` measures without.
+  final bool coerceByType;
 
   /// Whether `Object`-bounded parameters a subclass fixes are erased too
   /// (see `_erasedParameter`). Off: ws318.
@@ -340,6 +346,12 @@ class KernelFrontend {
   /// this rather than re-deriving the value's shape at each site.
   IrExpr expression(Expression node) {
     final lowered = _expressionRaw(node);
+    // Arithmetic is typed by its operands, not by Dart: the `double?` Dart
+    // gives an inlined `lerpDouble` is an `f64` here (69 `unwrap` on an
+    // `f64` at ws357).
+    if (lowered is IrBinary && lowered.rustType == null) {
+      lowered.rustType = _binaryType(lowered);
+    }
     if (lowered.rustType == null) {
       final static = _staticType(node);
       if (static != null) {
@@ -353,6 +365,29 @@ class KernelFrontend {
       }
     }
     return lowered;
+  }
+
+  static IrType? _binaryType(IrBinary b) {
+    const comparisons = {'==', '!=', '<', '>', '<=', '>=', '&&', '||'};
+    if (comparisons.contains(b.op)) return const IrType('bool');
+    // Operands the lowering built itself (the inlined `lerpDouble`'s
+    // `(b - a) * t`) never passed through `expression`: typed here first.
+    final left = b.left;
+    if (left is IrBinary && left.rustType == null) {
+      left.rustType = _binaryType(left);
+    }
+    final right = b.right;
+    if (right is IrBinary && right.rustType == null) {
+      right.rustType = _binaryType(right);
+    }
+    final l = b.left.rustType?.name;
+    final r = b.right.rustType?.name;
+    if (l == null || r == null) return null;
+    const numbers = {'int', 'double', 'num'};
+    if (!numbers.contains(l) || !numbers.contains(r)) return null;
+    if (b.op == '~/') return const IrType('int');
+    if (b.op == '/' || l != 'int' || r != 'int') return const IrType('double');
+    return const IrType('int');
   }
 
   IrExpr _expressionRaw(Expression node) {
@@ -616,29 +651,27 @@ class KernelFrontend {
           t is InterfaceType ? t.classNode.name : null;
       if (leftType is DynamicType && number(rightType)) {
         final asDouble = IrCall(IrDowncast(left, 'f64'), 'clone', const []);
-        final other = numClass(rightType) == 'int'
-            ? IrCast(right, 'f64')
-            : right;
+        final other = numClass(rightType) == 'int' ? _toF64(right) : right;
         return IrBinary('==', asDouble, other);
       }
       if (rightType is DynamicType && number(leftType)) {
         final asDouble = IrCall(IrDowncast(right, 'f64'), 'clone', const []);
-        final other = numClass(leftType) == 'int' ? IrCast(left, 'f64') : left;
+        final other = numClass(leftType) == 'int' ? _toF64(left) : left;
         return IrBinary('==', other, asDouble);
       }
       // `lightOption == -1` on a `double`: the `int` side is cast, as the
       // arithmetic operators cast theirs.
       String? cls(DartType? t) => t is InterfaceType ? t.classNode.name : null;
       if (cls(leftType) == 'double' && cls(rightType) == 'int') {
-        right = IrCast(right, 'f64');
+        right = _toF64(right);
       } else if (cls(leftType) == 'int' && cls(rightType) == 'double') {
-        left = IrCast(left, 'f64');
+        left = _toF64(left);
       } else if (_declaredNum(node.left) &&
           (node.right is IntLiteral || cls(rightType) == 'int')) {
-        right = IrCast(right, 'f64');
+        right = _toF64(right);
       } else if (_declaredNum(node.right) &&
           (node.left is IntLiteral || cls(leftType) == 'int')) {
-        left = IrCast(left, 'f64');
+        left = _toF64(left);
       }
       return IrBinary('==', left, right);
     }
@@ -685,7 +718,7 @@ class KernelFrontend {
         right = IrCall(IrDowncast(right, 'f64'), 'clone', const []);
       } else if (rightType is InterfaceType &&
           rightType.classNode.name == 'int') {
-        right = IrCast(right, 'f64');
+        right = _toF64(right);
       }
       return IrBinary(node.name.text, asDouble, right);
     }
@@ -2900,8 +2933,8 @@ class KernelFrontend {
         final leftClass = classOf(node.receiver);
         final rightClass = classOf(node.arguments.positional.single);
         if (leftClass == 'double' || rightClass == 'double') {
-          if (leftClass == 'int') left = IrCast(left, 'f64');
-          if (rightClass == 'int') right = IrCast(right, 'f64');
+          if (leftClass == 'int') left = _toF64(left);
+          if (rightClass == 'int') right = _toF64(right);
           return IrCast(
             IrBinary(name, left, right, type: const IrType('double')),
             'i64',
@@ -2931,10 +2964,10 @@ class KernelFrontend {
         // Not `num`: a static type of `num` is an `i64` as often as an
         // `f64` in the output (round ws49: 580 casts the wrong way).
         if (leftClass == 'int' && rightClass == 'double') {
-          left = IrCast(left, 'f64');
+          left = _toF64(left);
         }
         if (leftClass == 'double' && rightClass == 'int') {
-          right = IrCast(right, 'f64');
+          right = _toF64(right);
         }
         // A *declared* `num` -- a variable, field or static whose declaration
         // says `num`, an `f64` here -- against an int literal: the literal
@@ -2944,20 +2977,20 @@ class KernelFrontend {
         final argument = node.arguments.positional.single;
         if (_declaredNum(node.receiver) &&
             (argument is IntLiteral || classOf(argument) == 'int')) {
-          right = IrCast(right, 'f64');
+          right = _toF64(right);
         } else if (_declaredNum(argument) && leftClass == 'int') {
-          left = IrCast(left, 'f64');
+          left = _toF64(left);
         }
         // Dart's `/` is always a `double`, even on two `int`s (`~/` is the
         // integer one); Rust's `/` on two `i64`s is an `i64`.
         if (name == '/') {
-          if (leftClass == 'int') left = IrCast(left, 'f64');
-          if (rightClass == 'int') right = IrCast(right, 'f64');
+          if (leftClass == 'int') left = _toF64(left);
+          if (rightClass == 'int') right = _toF64(right);
           // `targetWidth! / (w / h)`: whatever the static type of the left
           // side says, a `/` with a `double` right side is a `double`
           // division, and Rust has no `i64 / f64`.
           if (rightClass == 'double' && leftClass != 'double') {
-            left = IrCast(left, 'f64');
+            left = _toF64(left);
           }
         }
       }
@@ -3446,10 +3479,10 @@ class KernelFrontend {
       var a = expression(positional[0]);
       var b = expression(positional[1]);
       if (cls(positional[0]) == 'int' && cls(positional[1]) == 'double') {
-        a = IrCast(a, 'f64');
+        a = _toF64(a);
       } else if (cls(positional[0]) == 'double' &&
           cls(positional[1]) == 'int') {
-        b = IrCast(b, 'f64');
+        b = _toF64(b);
       }
       return IrCall(a, rust, [b]);
     }
@@ -3560,7 +3593,7 @@ class KernelFrontend {
       // static's initialiser), and is an `int` by its spelling.
       return e is IntLiteral ||
               (t is InterfaceType && t.classNode.name == 'int')
-          ? IrCast(lowered, 'f64')
+          ? _toF64(lowered)
           : lowered;
     }
 
@@ -3810,6 +3843,15 @@ class KernelFrontend {
   /// An int literal into a parameter a *translated* callee declares `num`
   /// (an `f64` here) is cast. Not a `dart:` callee's: `int.+(num other)` is
   /// declared that way and its `num` is not an `f64` (ws54).
+  /// `e as f64`, once: a value already an `f64` -- `coerce` cast it on
+  /// the way into the operand slot -- is left alone (`((1 as f64) as f64)`,
+  /// 430 at ws356).
+  static IrExpr _toF64(IrExpr e) {
+    if (e.rustType?.name == 'double') return e;
+    if (e is IrCast && e.rust == 'f64') return e;
+    return IrCast(e, 'f64')..rustType = const IrType('double');
+  }
+
   IrExpr _numLiteral(
     Expression value,
     DartType? param,
@@ -3818,6 +3860,8 @@ class KernelFrontend {
   ) {
     if (param is! InterfaceType || param.classNode.name != 'num')
       return lowered;
+    // Already an `f64` -- `coerce` cast it (`((1 as f64) as f64)`, ws356).
+    if (lowered.rustType?.name == 'double') return lowered;
     // A literal, or a value whose static type is `int` (a translated
     // callee's `num` is an `f64`, so either is cast).
     final given = _staticType(value);
@@ -3830,7 +3874,7 @@ class KernelFrontend {
     final member = callee?.parent;
     if (member is! Member) return lowered;
     if (member.enclosingLibrary.importUri.scheme == 'dart') return lowered;
-    return IrCast(lowered, 'f64');
+    return _toF64(lowered)..rustType = const IrType('double');
   }
 
   IrExpr _namedArgument(Expression value, Object param) {
@@ -3998,6 +4042,16 @@ class KernelFrontend {
         (param is InterfaceType && param.classNode.name == 'Object');
     if (!isObject) return lowered;
     if (_isNull(value) || lowered is IrClosure) return lowered;
+    // Already what the slot holds -- `coerce` put the `Some` on
+    // (`Some(Some(key))` in `PersistentHashMap`, ws356).
+    final already = lowered.rustType;
+    if (already != null) {
+      try {
+        if (_sameRust(already, _type(param))) return lowered;
+      } on Unsupported {
+        // Untyped slot: the shape rules below decide.
+      }
+    }
     final given = _staticType(value);
     // A `num` method called on a `dynamic` (`number.abs()`) was lowered to
     // a call on an `f64`: the value is a scalar, whatever Kernel says.
@@ -4111,6 +4165,195 @@ class KernelFrontend {
     ], _type(element));
   }
 
+  // -- Coercion by type ------------------------------------------------------
+  //
+  // One rule for a value entering a slot: compare the value's Rust type
+  // (`IrExpr.rustType`) with the slot's, and adapt the difference --
+  // an `Option` layer, a scalar widening, a handle up or down the trait
+  // hierarchy, a value put behind a handle, a collection rebuilt element by
+  // element. The shape rules in `_widened` below each did one of these for
+  // one syntactic shape; by ws355 there were 26 of them and they had begun
+  // to disagree. This replaces them as it proves to cover them.
+
+  Map<String, Class>? _classesByName;
+
+  Class? _classNamed(String name) {
+    final index = _classesByName ??= () {
+      final out = <String, Class>{};
+      final component = library.enclosingComponent;
+      if (component != null) {
+        for (final l in component.libraries) {
+          for (final c in l.classes) {
+            out.putIfAbsent(c.name, () => c);
+          }
+        }
+      }
+      for (final c in library.classes) {
+        out[c.name] = c;
+      }
+      return out;
+    }();
+    return index[name];
+  }
+
+  static const _scalarNames = {'int', 'double', 'num', 'bool', 'String'};
+  static const _collectionNames = {'List', 'Iterable', 'Set'};
+
+  bool _isTraitName(String name) {
+    if (const {
+      'Object',
+      'dynamic',
+      'Comparable',
+      'DartIterator',
+    }.contains(name)) {
+      return true;
+    }
+    if (_scalarNames.contains(name) || _collectionNames.contains(name)) {
+      return false;
+    }
+    if (abstractElsewhere.contains(name)) return true;
+    final c = _classNamed(name);
+    return c != null && _translatedClass(c) && _abstractLike(c);
+  }
+
+  bool _isCountedName(String name) {
+    final known = elsewhere[name];
+    if (known != null) return known.counted;
+    final c = _classNamed(name);
+    return c != null && _translatedClass(c) && _closureCallsMethod(c);
+  }
+
+  bool _isStructName(String name) {
+    if (_isTraitName(name) || _scalarNames.contains(name)) return false;
+    final c = _classNamed(name);
+    return c != null && _translatedClass(c) && !c.isEnum;
+  }
+
+  bool _isBelow(String sub, String sup) {
+    final a = _classNamed(sub);
+    final b = _classNamed(sup);
+    final hierarchy = typeEnvironment?.hierarchy;
+    if (a == null || b == null || hierarchy == null) return false;
+    return a == b || hierarchy.isSubInterfaceOf(a, b);
+  }
+
+  static String _normalName(String name) => switch (name) {
+    'Iterable' => 'List',
+    'dynamic' => 'Object',
+    'num' => 'double',
+    _ => name,
+  };
+
+  /// Whether two IR types spell the same Rust type.
+  bool _sameRust(IrType a, IrType b) {
+    if (a.nullable != b.nullable) return false;
+    if (a.isFunction || b.isFunction) {
+      if (!(a.isFunction && b.isFunction)) return false;
+      final ap = a.parameters!, bp = b.parameters!;
+      if (ap.length != bp.length) return false;
+      for (var i = 0; i < ap.length; i++) {
+        if (!_sameRust(ap[i], bp[i])) return false;
+      }
+      return _sameRust(a.returns!, b.returns!);
+    }
+    if (_normalName(a.name) != _normalName(b.name)) return false;
+    if (a.arguments.length != b.arguments.length) {
+      // `List` alone is `List<dynamic>` to the backend.
+      return a.arguments.isEmpty || b.arguments.isEmpty;
+    }
+    for (var i = 0; i < a.arguments.length; i++) {
+      if (!_sameRust(a.arguments[i], b.arguments[i])) return false;
+    }
+    return true;
+  }
+
+  static IrType _nonNull(IrType t) => t.isFunction
+      ? IrType.function(t.parameters!, t.returns!)
+      : IrType(t.name, arguments: t.arguments);
+
+  /// `value`, adapted to `slot`; `value` itself when nothing is known
+  /// (an untyped value) or nothing needs doing.
+  IrExpr coerce(IrExpr value, IrType slot, {bool inClosure = false}) {
+    final have = value.rustType;
+    if (have == null || _sameRust(have, slot)) return value;
+    // The `Option` layer first: on, off, or mapped through.
+    if (slot.nullable && !have.nullable) {
+      final inner = coerce(value, _nonNull(slot), inClosure: inClosure);
+      if (identical(inner, value) && !_sameRust(have, _nonNull(slot))) {
+        return value;
+      }
+      return IrSome(inner)..rustType = slot;
+    }
+    if (!slot.nullable && have.nullable) {
+      final inner = IrNullCheck(value)..rustType = _nonNull(have);
+      return coerce(inner, slot, inClosure: inClosure);
+    }
+    if (slot.nullable && have.nullable) {
+      final element = IrCall(IrBound(), 'clone', const [])
+        ..rustType = _nonNull(have);
+      final inner = coerce(element, _nonNull(slot), inClosure: true);
+      if (identical(inner, element)) return value;
+      return IrNullAware(value, inner)..rustType = slot;
+    }
+    // Both present. Scalars: `int` into a `double` slot is cast; a `num`
+    // slot is `dart:core`'s polymorphic one (`num.+` takes `num`, and `i +
+    // 1` stays an `i64`), and a translated callee's `num` is `_numLiteral`'s
+    // to make an `f64` (999 `cannot add f64 to i64` at ws357).
+    if (slot.name == 'num') return value;
+    if (have.name == 'int' && slot.name == 'double') {
+      return IrCast(value, 'f64')..rustType = slot;
+    }
+    if (_scalarNames.contains(have.name) || _scalarNames.contains(slot.name)) {
+      return value;
+    }
+    // Function types: the adapters below know them.
+    if (have.isFunction || slot.isFunction) return value;
+    // Collections, element by element.
+    if (_collectionNames.contains(have.name) &&
+        _collectionNames.contains(slot.name) &&
+        _normalName(have.name) == _normalName(slot.name) &&
+        have.arguments.length == 1 &&
+        slot.arguments.length == 1) {
+      final element = IrLocal('v')..rustType = have.arguments.single;
+      final body = coerce(element, slot.arguments.single, inClosure: true);
+      if (identical(body, element)) return value;
+      return IrMapElements(value, _normalName(slot.name), body)
+        ..rustType = slot;
+    }
+    if (have.name == 'Map' || slot.name == 'Map') return value;
+    // `Object` slots are shared into by `_intoObject`, after this.
+    if (slot.name == 'Object' || slot.name == 'dynamic') return value;
+    final haveTrait = _isTraitName(have.name);
+    final slotTrait = _isTraitName(slot.name);
+    if (haveTrait && slotTrait) {
+      // The same trait with other arguments (`Tween<f64>` into a
+      // `Tween<Object>`) has no cast (55 non-primitive casts at ws357).
+      if (have.name == slot.name) return value;
+      if (_isBelow(have.name, slot.name)) {
+        return IrUpcast(value, slot, handle: true, explicit: inClosure)
+          ..rustType = slot;
+      }
+      return IrCastTo(value, slot)..rustType = slot;
+    }
+    if (slotTrait && _isStructName(have.name)) {
+      return IrUpcast(
+        value,
+        slot,
+        handle: _isCountedName(have.name),
+        explicit: inClosure,
+      )..rustType = slot;
+    }
+    if (haveTrait && _isStructName(slot.name)) {
+      final target = _classNamed(slot.name);
+      if (target == null || target.typeParameters.isNotEmpty) return value;
+      return _narrowingCast(
+        value,
+        InterfaceType(target, Nullability.nonNullable),
+      )..rustType = slot;
+    }
+    return value;
+  }
+
   IrExpr _widened(Expression value, DartType? param, IrExpr lowered) {
     // A literal into a collection slot of other element types is lowered
     // again against those: see `_mapLiteral`.
@@ -4128,6 +4371,25 @@ class KernelFrontend {
           args.length == 1 &&
           args[0] != value.typeArgument) {
         return _listLiteral(value, args[0]);
+      }
+    }
+    if (coerceByType && param != null && lowered.rustType != null) {
+      IrType? slot;
+      try {
+        slot = _type(param);
+      } on Unsupported {
+        slot = null;
+      }
+      if (slot != null) {
+        // A local handed on is shared, as below: the clone comes first so
+        // the coercion wraps the clone, not the local.
+        var shared = lowered;
+        if (value is VariableGet && _clonedWhenPassed(value.variable.type)) {
+          shared = IrCall(lowered, 'clone', const [])
+            ..rustType = lowered.rustType;
+        }
+        final coerced = coerce(shared, slot);
+        if (!identical(coerced, shared)) return coerced;
       }
     }
     // A local handed on is shared in Dart and moved in Rust: `string` passed
@@ -4492,7 +4754,7 @@ class KernelFrontend {
     if (scalar(param) == 'double' &&
         scalar(given) == 'int' &&
         given!.nullability != Nullability.nullable) {
-      lowered = IrCast(lowered, 'f64');
+      lowered = _toF64(lowered);
     }
     // No rule for a `num` parameter either: `int.+(num other)` is declared
     // that way, and `index + 1` became `index + (1 as f64)` (ws54, 85 in
@@ -6049,12 +6311,12 @@ class KernelFrontend {
       return lowered;
     // A literal says so itself: `num _n = 0` at the top level has no
     // context for `getStaticType` and came out as `RefCell<f64>::new(0)`.
-    if (value is IntLiteral) return IrCast(lowered, 'f64');
+    if (value is IntLiteral) return _toF64(lowered);
     final given = _staticType(value);
     if (given is InterfaceType &&
         given.classNode.name == 'int' &&
         given.nullability != Nullability.nullable) {
-      return IrCast(lowered, 'f64');
+      return _toF64(lowered);
     }
     // A `num` whose static type is `num` -- TFA folded `1 is double ?
     // pow(2, 52) : 1.0e300.floor()` to its `int` branch and the
@@ -6064,7 +6326,7 @@ class KernelFrontend {
         given.classNode.name == 'num' &&
         given.nullability != Nullability.nullable &&
         value is! DoubleLiteral) {
-      return IrCast(lowered, 'f64');
+      return _toF64(lowered);
     }
     return lowered;
   }
