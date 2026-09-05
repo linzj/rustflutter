@@ -1528,8 +1528,8 @@ class RustBackend {
     // constructors are its functions (2026-09-05, the runtime ruler's
     // first refusal after `main`: `Future<bool>(() async {..})`).
     if (owner == 'Future') {
-      if (name == 'value' && args.length == 1) {
-        return 'DartFuture::ready(Ok(${expr(args.single)}))';
+      if (name == 'value' && args.length <= 1) {
+        return 'future_value(${args.isEmpty ? 'None' : expr(args.single)})';
       }
       if ((name == '' || name == 'new') && args.length == 1) {
         return 'future_new(${expr(args.single)})';

@@ -448,7 +448,19 @@ dart_nullable!(i64);
 dart_nullable!(f64);
 dart_nullable!(bool);
 dart_nullable!(String);
-dart_nullable!(());
+/// `void`'s null is `()`: `Future<void>.value()` completes with it.
+impl DartNullable for () {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+    fn dart_null() -> Option<Self> {
+        Some(())
+    }
+}
 dart_nullable!(DateTime);
 dart_nullable!(Duration);
 dart_nullable!(Exception);
@@ -3138,6 +3150,16 @@ pub fn future_new<T: Clone + 'static>(
     computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
 ) -> DartFuture<T> {
     DartFuture::spawn(Box::pin(async move { computation()?.await }))
+}
+
+/// `Future.value([value])`: already done. The parameter is Dart's
+/// `FutureOr<T>? value`, and what arrives is the `T` in an `Option` (the
+/// front end coerces a plain value into the optional slot); no value is
+/// the `null` of `T` -- `()` for a `Future<void>`.
+pub fn future_value<T: DartNullable>(value: Option<T>) -> DartFuture<T> {
+    DartFuture::ready(Ok(value
+        .or_else(T::dart_null)
+        .expect("Future.value() without a value on a non-nullable type")))
 }
 
 /// `Future.microtask(computation)`: the same, one pass is a microtask here.
