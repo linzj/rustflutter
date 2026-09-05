@@ -1656,6 +1656,15 @@ class KernelFrontend implements TypeWorld {
             ],
             // The adapter's call propagates like a written one would.
             fails: _fails(node.interfaceTarget),
+            asyncFn: _inherentAsync(
+              node.interfaceTarget,
+              receiver is ThisExpression
+                  ? ((_member?.enclosingClass?.isAnonymousMixin ?? false)
+                        ? _lowering
+                        : _member?.enclosingClass)
+                  : _staticClass(receiver),
+              null,
+            ),
           ),
         ),
         _type(returnType),
@@ -4067,6 +4076,17 @@ class KernelFrontend implements TypeWorld {
     }
     final fails = _fails(member);
     final renamed = member is Procedure && member.name.text == 'clone';
+    // `DART2RUST_TRACE_CALL=<name>`: the async-rule inputs of every call
+    // to that member, to stderr.
+    if (Platform.environment['DART2RUST_TRACE_CALL'] == member.name.text) {
+      stderr.writeln(
+        'TRACE_CALL ${member.name.text}: from=${from?.name} owner=${owner.name} '
+        'enclosing=${_member?.enclosingClass?.name} lowering=${_lowering?.name} '
+        'fails=$fails async=${_asyncMember(member)} qualifier=$qualifier '
+        'applies=${from != null && _appliesMixin(from, owner)} '
+        'abstract=${from != null && _abstractLike(from)} open=${from != null && _isOpen(from)}',
+      );
+    }
     if (qualifier == null && !fails && !renamed) return call;
     return IrCall(
       call.target,
@@ -4082,16 +4102,24 @@ class KernelFrontend implements TypeWorld {
       // ..or a mixin's method the receiver's class applies, which is
       // inlined into that class as its own (`handlePopRoute()` inside
       // `WidgetsBinding.initInstances`, run445).
-      asyncFn:
-          fails &&
-          (qualifier == null || qualifier == from?.name) &&
-          _asyncMember(member) &&
-          from != null &&
-          (from == owner || _appliesMixin(from, owner)) &&
-          !_abstractLike(from) &&
-          !_isOpen(from),
+      asyncFn: _inherentAsync(member, from, qualifier),
       typeArguments: call.typeArguments,
     );
+  }
+
+  /// Whether a call to `member` from a receiver of class `from` reaches an
+  /// `async fn` as one (`IrCall.asyncFn`): the member is async, and the
+  /// receiver's own struct carries it inherently -- its own method, or a
+  /// mixin's it applies -- with no trait on the path.
+  bool _inherentAsync(Member member, Class? from, String? qualifier) {
+    final owner = member.enclosingClass;
+    if (owner == null || from == null) return false;
+    return _fails(member) &&
+        (qualifier == null || qualifier == from.name) &&
+        _asyncMember(member) &&
+        (from == owner || _appliesMixin(from, owner)) &&
+        !_abstractLike(from) &&
+        !_isOpen(from);
   }
 
   /// Whether `from` applies `mixin` somewhere in its anonymous superclass
@@ -4112,16 +4140,11 @@ class KernelFrontend implements TypeWorld {
 
   /// A member declared `async`: emitted as an `async fn` where it is a
   /// free function, a static, or a struct's own method.
-  bool _asyncMember(Member m) {
-    if (m is! Procedure) return false;
-    // A hollow mixin declaration's member has no body and no marker: the
-    // applied copy's says (`WidgetsBinding.handlePopRoute`, run445).
-    final owner = m.enclosingClass;
-    final declared = m.isAbstract && owner != null && owner.isMixinDeclaration
-        ? _appliedProcedure(owner, m.name.text, kind: m.kind) ?? m
-        : m;
-    return declared.function.asyncMarker == AsyncMarker.Async;
-  }
+  /// By the marker the programmer wrote (`dartAsyncMarker`), which a hollow
+  /// mixin declaration keeps where its `asyncMarker` says `Sync` for want
+  /// of a body (`ServicesBinding.handleRequestAppExit`, run446).
+  bool _asyncMember(Member m) =>
+      m is Procedure && m.function.dartAsyncMarker == AsyncMarker.Async;
 
   /// A member declared to return `Never`.
   static bool _diverges(Member m) =>

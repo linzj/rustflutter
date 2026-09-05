@@ -6526,6 +6526,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | run443 | 基类构造体跑起来了，第一句 `FlutterTimeline.startSync(..)` 是编译桩。 |
 | ws445 结果 | 编译尺子 **2840**（ws443 2776，+64），141 crate。来 66：`<__Self as LocalHistoryRoute>` 少泛型实参（151 个 E0107）；泛型 struct 的 `DartEq` 要求 `T: PartialEq`，`ObserverList<VoidCallback>` 不满足（48）；闭包里按值用捕获的局部（`instance.on_start = on_start`，107 个 E0507）。三条通用：qualified 路径带上 trait 的类型实参（`_traitArgsOf`，从类的 mixins/interfaces/超类链求）；泛型 struct 的 `DartEq` 逐字段 `dart_eq`（bound 只要 `T: DartEq`）；闭包体内读捕获的局部一律 `.clone()`。 |
 | run445 | 过了 `FlutterTimeline.startSync`，下一个 panic：`WidgetsFlutterBinding::init_instances` 编译桩——`self.handle_pop_route()?`：mixin 声明里的目标是 abstract 没有 `async` 标记，且 qualifier 是具体类自己；`_asyncMember` 看 application 里的副本，`qualifier == 接收者类` 仍算 inherent。 |
+| ws446 结果 | 编译尺子 **2701**（ws445 2840，−139），141 crate：去 93 来 0。 |
+| run446 | 还是 `init_instances` 桩：剩三种 `?` 打在 `DartFuture` 上——(1) 空壳 mixin 声明的 `asyncMarker` 是 `Sync`（没体），但 kernel 另存了程序员写的 `dartAsyncMarker`，`_asyncMember` 改看它；(2) tear-off adapter 里的调用没标 `asyncFn`（`setMethodCallHandler(_handleBackGestureInvocation)`），规则抽成 `_inherentAsync` 两处共用；(3) `super.x()` 到 async super 函数是 `DartFuture`，`IrSuperCall` 不再 `?`。 |
 
 ## 下一步(2026-09-05 重铺)
 

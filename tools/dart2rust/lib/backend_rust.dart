@@ -703,10 +703,12 @@ class RustBackend {
         negated,
       ),
       // A super function returns `Result`; `Object.toString` is the prelude's.
+      // An async super function is a `DartFuture`, not a `Result`: no `?`
+      // (`super.handleSystemMessage(..)` in `WidgetsBinding`, ws446).
       IrSuperCall(:final base, :final name, :final args, :final isSetter) =>
         base == 'Object'
             ? _superCall(base, name, args)
-            : '${_superCall(base, name, args, isSetter: isSetter)}$_propagate',
+            : '${_superCall(base, name, args, isSetter: isSetter)}${(library[base]?.methods.any((m) => m.name == name && !m.isStatic && m.isAsync) ?? false) ? '' : _propagate}',
       // A local's `!` clones first: `a!.axis` and then `a!.value` moved
       // `a` at the first (E0382); a `Copy` local clones for free.
       IrNullCheck(:final operand) =>
