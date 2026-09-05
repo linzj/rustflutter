@@ -6522,6 +6522,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | run440 | 还是 `_semanticsEnabled` 的 `None`，但原因换了：`late final _manifold = _BindingPipelineManifold(this)`——提到 `this` 的 late 初始值以前是「字面量后立刻求值」，在 `initInstances` 之前就跑了；Dart 的 late 是**首次读取时求值**。通用：这类字段留 `None`，每个读取点（`this` 读、cell 读、trait 访问器两处）打印 get-or-init（`_lazyRead`，同名字段在自己的初始值里读到自己时用普通读，否则展开无穷——驱动栈溢出了一次）。377 处。 |
 | ws441 结果 | 编译尺子 **2685**（ws440 2545，+140），141 crate。来 103 多是长尾（`Tween` 协变、泛型类的 `this` 进 handle 槽）；另修 `!map_get_opt`：map 在 `and_then` 闭包外先算（闭包返回 `Option`，里面的 `?` 出不去，35 个）。 |
 | run441 | **构造函数整个跑完了**（所有 mixin 的 `initInstances` 顺序对了）。下一个 panic：`WidgetsBinding.instance` 的 static 是 `None`——因为 `WidgetsFlutterBinding::new` 根本没跑 `BindingBase()` 的**构造函数体**（`initInstances(); initServiceExtensions(); ..`）：子类构造只继承基类的字段初始值，不继承基类构造体。通用：`_inheritedBodies`——沿 `super(..)` 链把基类构造体（最深的先）内联进子类构造，参数按名 `let` 绑定 super 实参，各自一个块；泛型基类先不做。prelude `post_event(kind, data, stream)` 按 Dart 声明。 |
+| ws443 结果 | 编译尺子 **2776**（ws441 2685，+91），141 crate。来 47，35 个是 `new`：内联进来的基类构造体里 `this.child = x` 走 trait setter，打印成裸 `RenderProxyBox::set_child(&*__new, ..)`——2021 edition 的 E0782（100 个）。通用：`this` 上以 trait 为 qualifier 的调用拼成 `<Self as Trait>::m(..)`（super 函数里 `__Self`）。 |
+| run443 | 基类构造体跑起来了，第一句 `FlutterTimeline.startSync(..)` 是编译桩。 |
 
 ## 下一步(2026-09-05 重铺)
 

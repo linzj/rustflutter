@@ -2663,8 +2663,18 @@ class RustBackend {
           : _isHandle(receiverClass)
           ? '&*${expr(target)}'
           : '&${expr(target)}';
+      // A trait as the qualifier of a call on `this` is spelled through
+      // the type that implements it (`<Self as RenderProxyBox>::set_child`):
+      // a bare `Trait::method` is E0782 since edition 2021, and a base
+      // constructor's body inlined into a subclass (`_inheritedBodies`)
+      // writes the base's fields through the trait's setters (100 at ws443).
+      final path =
+          asTrait ??
+          (library.isAbstract(qualifier) && (target == null || target is IrThis)
+              ? '<${_selfName == 'this_' ? '__Self' : 'Self'} as $qualifier>'
+              : qualifier);
       return _asyncValue(
-        '${asTrait ?? qualifier}::${_identifier(name)}$turbofish'
+        '$path::${_identifier(name)}$turbofish'
         '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
         '${suffixFor(true)}',
         boxed,
