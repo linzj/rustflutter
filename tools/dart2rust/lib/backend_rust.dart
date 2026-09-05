@@ -2112,7 +2112,7 @@ class RustBackend {
     // reference (`Rc::new(this_)` wanted `'static`, 168 lifetime errors)
     // or a copy (a new identity).
     if (name == '!rc' && args.isEmpty && target is IrThis) {
-      if (_fieldsAreAccessors)
+      if (_fieldsAreAccessors || _selfName == 'this_')
         return '$_selfName.dart_self_${snake(cls.name)}()';
       if (cls.counted) return '$_selfName.dart_self_ref().get()';
     }
@@ -2146,6 +2146,15 @@ class RustBackend {
       // `this` into an `Object` slot: the handle when the method holds
       // one, a fresh `Rc` of a clone when it does not.
       if (target is IrThis) {
+        // ..and the object's own handle where it has one (`_selfHandle`):
+        // `Rc::new(this_.clone())` boxed a reference (the last 20 lifetime
+        // errors at ws335).
+        if (_fieldsAreAccessors || _selfName == 'this_') {
+          return '($_selfName.dart_self_${snake(cls.name)}() as std::rc::Rc<dyn Object>)';
+        }
+        if (cls.counted) {
+          return '($_selfName.dart_self_ref().get() as std::rc::Rc<dyn Object>)';
+        }
         return _selfIsHandle
             ? '($_selfName.clone() as std::rc::Rc<dyn Object>)'
             : '(std::rc::Rc::new($_selfName.clone()) as std::rc::Rc<dyn Object>)';
