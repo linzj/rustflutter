@@ -2619,7 +2619,7 @@ class KernelFrontend {
     // three-parameter function -- the same bug the analyzer front end had in
     // round two, living on here because nothing compared the two front ends on
     // a fixture that used defaults.
-    // The member the call lands on, for `_intoErased`: an anonymous mixin
+    // The member the call lands on, for `_landingSlot`: an anonymous mixin
     // application's copy of `_addDiagnostics(ChildType child)` has
     // `RenderBox` written in it, and only the mixin's own -- the trait's
     // -- takes the erased bound (188 `RenderBox` <- `RenderObject`, ws342).
@@ -2630,8 +2630,12 @@ class KernelFrontend {
             node.name,
           )
         : null;
-    final wasDispatch = _dispatchCallee;
-    _dispatchCallee = dispatch is Procedure ? dispatch.function : null;
+    final wasDispatch = _dispatchMember;
+    final wasReceiver = _dispatchReceiverType;
+    final wasInterface = _dispatchInterface;
+    _dispatchMember = dispatch is Procedure ? dispatch : null;
+    _dispatchReceiverType = receiverType;
+    _dispatchInterface = node.interfaceTarget.function;
     final List<IrExpr> args;
     try {
       args = _arguments(
@@ -2641,7 +2645,9 @@ class KernelFrontend {
         node.functionType,
       );
     } finally {
-      _dispatchCallee = wasDispatch;
+      _dispatchMember = wasDispatch;
+      _dispatchReceiverType = wasReceiver;
+      _dispatchInterface = wasInterface;
     }
     final generic = _genericOnTrait(node, args);
     if (generic != null) return generic;
@@ -3840,12 +3846,13 @@ class KernelFrontend {
     // not what the slot holds, `bool Function(T)` erased is.
     final declaredType = param?.type;
     final paramType =
-        declaredType is FunctionType && _mentionsErased(declaredType)
-        ? declaredType
-        : instantiated != null &&
-              index < instantiated.positionalParameters.length
-        ? instantiated.positionalParameters[index]
-        : declaredType;
+        _landingSlot(callee: callee, index: index) ??
+        (declaredType is FunctionType && _mentionsErased(declaredType)
+            ? declaredType
+            : instantiated != null &&
+                  index < instantiated.positionalParameters.length
+            ? instantiated.positionalParameters[index]
+            : declaredType);
     return _intoDynamic(
       value,
       paramType,
@@ -3854,24 +3861,16 @@ class KernelFrontend {
         value,
         paramType,
         callee,
-        _intoErased(
-          value,
+        _forCallee(
+          callee,
           declaredType,
-          index: index,
-          _forCallee(
+          _withBorrowing(
+            param,
             callee,
-            declaredType,
-            _withBorrowing(
-              param,
-              callee,
-              () => _withExpectedReturn(
-                paramType,
-                value,
-                () => expression(value),
-              ),
-            ),
-            (lowered) => _widened(value, paramType, lowered),
+            () =>
+                _withExpectedReturn(paramType, value, () => expression(value)),
           ),
+          (lowered) => _widened(value, paramType, lowered),
         ),
       ),
       generic: param?.type is TypeParameterType,
@@ -3956,7 +3955,13 @@ class KernelFrontend {
 
   IrExpr _namedArgument(Expression value, Object param) {
     final callee = _calleeOf(param);
-    final type = param is FunctionParameter ? param.type : null;
+    final declared = param is FunctionParameter ? param.type : null;
+    final type =
+        _landingSlot(
+          callee: callee,
+          name: param is FunctionParameter ? param.parameterName : null,
+        ) ??
+        declared;
     return _intoDynamic(
       value,
       type,
@@ -3965,20 +3970,15 @@ class KernelFrontend {
         value,
         type,
         callee,
-        _intoErased(
-          value,
-          type,
-          name: param is FunctionParameter ? param.parameterName : null,
-          _forCallee(
+        _forCallee(
+          callee,
+          declared,
+          _withBorrowing(
+            param,
             callee,
-            type,
-            _withBorrowing(
-              param,
-              callee,
-              () => _withExpectedReturn(type, value, () => expression(value)),
-            ),
-            (lowered) => _widened(value, type, lowered),
+            () => _withExpectedReturn(type, value, () => expression(value)),
           ),
+          (lowered) => _widened(value, type, lowered),
         ),
       ),
     );
@@ -3990,68 +3990,66 @@ class KernelFrontend {
   /// RenderObject>` here. Rust upcasts a bare handle at the call and not
   /// one inside an `Option` (24 `_insertIntoChildList` at ws340), so the
   /// handle is upcast by name, through `map` when it is optional.
-  FunctionNode? _dispatchCallee;
+  /// The member an instance call lands on (`_landing`), and the receiver's
+  /// type, while its arguments are lowered: a parameter's slot is that
+  /// member's declared type -- a mixin clone's `RenderBox`, or the trait's
+  /// erased bound -- with the receiver's arguments put in for the class's
+  /// kept parameters, exactly as a read is typed (`_memberRustType`).
+  Procedure? _dispatchMember;
+  DartType? _dispatchReceiverType;
 
-  IrExpr _intoErased(
-    Expression value,
-    DartType? declared,
-    IrExpr lowered, {
+  /// The interface member whose arguments the dispatch above is for: a
+  /// call nested inside one of those arguments has a callee of its own
+  /// (`Matrix4.rotationY(angle)` as an argument took the outer call's
+  /// first parameter, 31 at ws369).
+  FunctionNode? _dispatchInterface;
+
+  DartType? _landingSlot({
+    required FunctionNode? callee,
     int? index,
     String? name,
   }) {
-    // As the landing member declares it, when the call has one.
-    final landing = _dispatchCallee;
-    if (landing != null) {
-      if (index != null && index < landing.positionalParameters.length) {
-        declared = landing.positionalParameters[index].type;
-      } else if (name != null) {
-        for (final p in landing.namedParameters) {
-          if (p.parameterName == name) declared = p.type;
-        }
+    final landing = _dispatchMember;
+    if (landing == null || !identical(callee, _dispatchInterface)) return null;
+    final fn = landing.function;
+    DartType? declared;
+    if (index != null && index < fn.positionalParameters.length) {
+      declared = fn.positionalParameters[index].type;
+    } else if (name != null) {
+      for (final p in fn.namedParameters) {
+        if (p.parameterName == name) declared = p.type;
       }
     }
-    if (declared is! TypeParameterType || !_erasedParameter(declared.parameter))
-      return lowered;
-    final bound = declared.parameter.bound;
-    final given = value is VariableGet && _retyped.containsKey(value.variable)
-        ? _retyped[value.variable]
-        : _staticType(value);
-    if (bound is! InterfaceType ||
-        given is! InterfaceType ||
-        given.classNode == bound.classNode ||
-        !_abstractLike(bound.classNode) ||
-        !_abstractLike(given.classNode) ||
-        !_translatedClass(bound.classNode) ||
-        !_translatedClass(given.classNode) ||
-        _scalarClass(bound.classNode) ||
-        _scalarClass(given.classNode) ||
-        !(typeEnvironment?.hierarchy.isSubInterfaceOf(
-              given.classNode,
-              bound.classNode,
-            ) ??
-            false)) {
-      return lowered;
+    if (declared == null) return null;
+    // The method's own parameters are instantiated at the call: Dart's
+    // type is the better answer there.
+    if (fn.typeParameters.isNotEmpty &&
+        _mentionsParametersOf(declared, fn.typeParameters)) {
+      return null;
     }
-    final asBound = _type(bound);
-    final target = IrType(asBound.name, arguments: asBound.arguments);
-    if (given.nullability == Nullability.nullable) {
-      return IrNullAware(
-        lowered,
-        IrUpcast(IrCall(IrBound(), 'clone', const []), target, handle: true),
-      );
+    final owner = landing.enclosingClass;
+    final env = typeEnvironment;
+    final receiverType = _dispatchReceiverType;
+    if (owner == null ||
+        owner.typeParameters.isEmpty ||
+        env == null ||
+        receiverType is! InterfaceType) {
+      return declared;
     }
-    if (lowered is IrSome) {
-      return IrSome(IrUpcast(lowered.value, target, handle: true));
+    final asOwner = env.hierarchy.getTypeAsInstanceOf(receiverType, owner);
+    if (asOwner is! InterfaceType) return declared;
+    final kept = <TypeParameter, DartType>{};
+    for (
+      var i = 0;
+      i < owner.typeParameters.length && i < asOwner.typeArguments.length;
+      i++
+    ) {
+      final p = owner.typeParameters[i];
+      if (!_erasedParameter(p)) kept[p] = asOwner.typeArguments[i];
     }
-    return IrUpcast(lowered, target, handle: true);
+    return Substitution.fromMap(kept).substituteType(declared);
   }
 
-  /// A value handed to a translated callee's `dynamic`/`Object` parameter
-  /// is shared into the `Rc<dyn Object>` that parameter is: `Rc::new(..)`
-  /// around a `bool` or an `Exception` (5 in dart:ui), and `Some(..)` too
-  /// when the parameter is `Object?`. A prelude callee -- `print`,
-  /// `StringBuffer.write`, `Object.hash` -- is generic over what it takes
-  /// and is left alone; a counted class is already a handle and unsizes.
   IrExpr _intoDynamic(
     Expression value,
     DartType? param,
