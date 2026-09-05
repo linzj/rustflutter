@@ -6417,6 +6417,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws398 | 950 叶子错 | 剩下的 E0283 三类，都是通用机制：(1) 后端 forwarder 转发泛型方法带上类型形参 `Trait::m::<T>(self)`（36）；(2) 泛型 struct 的 static 和常量放到模块级、按类名命名（和抽象类的 static 一个机制 `_freeStatics`）——`impl<T> Foo<T>` 里的 static 让每个调用都得说一个它根本不提的 `T`（`RadioGroup.maybeOf`，12）；(3) 空 map 字面量拼出 K、V（进 `Rc<dyn Object>` 槽时没别的东西说它们）。驱动输出对 ws397 差 204 文件。 |
 | ws399 | 950 叶子错 | 129 个 E0381（`isn't initialized`/`possibly-uninitialized`）的根：CFE 把 `late` 局部变量降成 `#x` + `#x#isSet` 标志，`#x` 声明时没初始化、在标志下赋值，rustc 的定赋检查跟不上。Dart 里非 late 的非空局部本来就要求定赋（rustc 也能证），所以只剩 late 这一类——它在 Rust 就是 `Option`：`#`-名、无初始化、非空的合成局部声明成 `Option<T> = None`，读作 `T?`（coerce 在要 `T` 的地方 unwrap），写用 `Some`。未初始化的 `__t` 声明 588→397，剩的是 switch 降级里定赋的。 |
 | ws398 结果 | 950 叶子错 | **2754→2705 / 795，138+1 个 crate**。 |
+| ws399 结果 | 950 叶子错 | **2705→2651 / 795，138+1 个 crate**。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
 ## 下一步(2026-09-05 重铺)
