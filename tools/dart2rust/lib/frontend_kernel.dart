@@ -2381,21 +2381,26 @@ class KernelFrontend {
       );
     }
     return IrField(
-      target,
-      name,
-      // `PerformanceOverlayOption.x.index` in a static initialiser resolves
-      // to `_Enum.index`, a field of a class that is not an enum; the
-      // receiver's own type says it is one (4 "attempted to take value of
-      // method `index`" in `rendering`).
-      onEnum:
-          (node.interfaceTarget.enclosingClass?.isEnum ?? false) ||
-          (receiverType is InterfaceType && receiverType.classNode.isEnum),
-      owner: target == null
-          ? null
-          : concrete && declaring != null && _abstractLike(declaring)
-          ? (receiverType as InterfaceType).classNode.name
-          : node.interfaceTarget.enclosingClass?.name,
-    );
+        target,
+        name,
+        // `PerformanceOverlayOption.x.index` in a static initialiser resolves
+        // to `_Enum.index`, a field of a class that is not an enum; the
+        // receiver's own type says it is one (4 "attempted to take value of
+        // method `index`" in `rendering`).
+        onEnum:
+            (node.interfaceTarget.enclosingClass?.isEnum ?? false) ||
+            (receiverType is InterfaceType && receiverType.classNode.isEnum),
+        owner: target == null
+            ? null
+            : concrete && declaring != null && _abstractLike(declaring)
+            ? (receiverType as InterfaceType).classNode.name
+            : node.interfaceTarget.enclosingClass?.name,
+      )
+      ..rustType = _memberRustType(
+        _landing(node.interfaceTarget, receiver),
+        receiver,
+        asGetter: true,
+      );
   }
 
   /// `dateTimeSymbols[k]`, `.containsKey(k)`, `.keys` on a `dynamic` slot
@@ -3040,7 +3045,106 @@ class KernelFrontend {
 
   /// See `IrCall.qualifier`: a member whose name two classes in the
   /// receiver's hierarchy declare is called through one of them by name.
+  /// The member a call on `receiver` lands on in Rust: an inherent method
+  /// of the receiver's class (a mixin clone with `RenderBox` written in
+  /// it) when the class is a struct or an open class, the interface
+  /// member (the trait's, erased) otherwise. `getDispatchTarget` answers
+  /// for both: on an abstract class it finds the hollow mixin's own.
+  Member _landing(Member interface, Expression receiver) {
+    final hierarchy = typeEnvironment?.hierarchy;
+    final type = receiver is ThisExpression ? null : _staticType(receiver);
+    final on = receiver is ThisExpression
+        ? (_lowering ?? _member?.enclosingClass)
+        : type is InterfaceType
+        ? type.classNode
+        : null;
+    if (hierarchy == null || on == null) return interface;
+    final found = hierarchy.getDispatchTarget(
+      on,
+      interface.name,
+      setter: interface is Procedure && interface.isSetter,
+    );
+    return found ?? interface;
+  }
+
+  /// The Rust type of `landing`'s value as reached through `receiver`:
+  /// its declared type with the receiver's type arguments substituted for
+  /// the parameters that are *kept*, the erased ones left to `_type`,
+  /// which spells them as their bound. Dart's own static type substitutes
+  /// every one, which is where the clone's `RenderBox` and the trait's
+  /// `RenderObject` part ways. Null when the type names the method's own
+  /// parameters (Dart's instantiated type is the better answer there) or
+  /// has no spelling here.
+  IrType? _memberRustType(
+    Member landing,
+    Expression receiver, {
+    required bool asGetter,
+  }) {
+    var declared = asGetter || landing is! Procedure
+        ? landing.getterType
+        : landing.function.returnType;
+    if (landing is Procedure &&
+        !asGetter &&
+        landing.function.typeParameters.isNotEmpty &&
+        _mentionsParametersOf(declared, landing.function.typeParameters)) {
+      return null;
+    }
+    final owner = landing.enclosingClass;
+    final env = typeEnvironment;
+    final receiverType = receiver is ThisExpression
+        ? (env == null
+              ? null
+              : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable))
+        : _staticType(receiver);
+    if (owner != null &&
+        owner.typeParameters.isNotEmpty &&
+        env != null &&
+        receiverType is InterfaceType) {
+      final asOwner = env.hierarchy.getTypeAsInstanceOf(receiverType, owner);
+      if (asOwner is InterfaceType) {
+        final kept = <TypeParameter, DartType>{};
+        for (
+          var i = 0;
+          i < owner.typeParameters.length && i < asOwner.typeArguments.length;
+          i++
+        ) {
+          final p = owner.typeParameters[i];
+          if (!_erasedParameter(p)) kept[p] = asOwner.typeArguments[i];
+        }
+        declared = Substitution.fromMap(kept).substituteType(declared);
+      }
+    }
+    try {
+      return _type(declared);
+    } on Unsupported {
+      return null;
+    }
+  }
+
+  static bool _mentionsParametersOf(DartType t, List<TypeParameter> ps) {
+    if (t is TypeParameterType) return ps.contains(t.parameter);
+    if (t is InterfaceType) {
+      return t.typeArguments.any((a) => _mentionsParametersOf(a, ps));
+    }
+    if (t is FunctionType) {
+      return _mentionsParametersOf(t.returnType, ps) ||
+          t.positionalParameters.any((a) => _mentionsParametersOf(a, ps)) ||
+          t.namedParameters.any((n) => _mentionsParametersOf(n.type, ps));
+    }
+    return false;
+  }
+
   IrCall _qualified(IrCall call, Member member, Expression receiver) {
+    final out = _qualifiedRaw(call, member, receiver);
+    out.rustType ??= _memberRustType(
+      _landing(member, receiver),
+      receiver,
+      asGetter: member is Field || (member is Procedure && member.isGetter),
+    );
+    return out;
+  }
+
+  IrCall _qualifiedRaw(IrCall call, Member member, Expression receiver) {
     final owner = member.enclosingClass;
     if (owner == null || !_translatedClass(owner)) {
       return _fails(member)
