@@ -6568,6 +6568,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws468 结果 | 编译尺子 **1563**（同 ws467），141 crate：量的是 Completer 记名，不动桩数。 |
 | run468 | "0 future(s) still pending; 1 completer(s) never completed: `WidgetsFlutterBinding.new`"——那是 `_firstFrameCompleter`，无头本来就不会有帧；main 等的不是它，也不是任何 spawn 出来的任务，而是某个 prelude 自造的 pending future（`then`/`map`/`timer`……）。下一步：所有 `DartFuture::pending()` 带来源标签，结束时列出**所有**未完成的 future。 |
 | ws469 结果 | 编译尺子 **1553**（ws468 1563，−10），141 crate。 |
+| ws470 结果 | 编译尺子 **1553**（同 ws469），141 crate：量的是 future 来源标签，不动桩数。另发现 prelude 调度器的一个洞：一轮里**新 spawn 出来的任务**要等某个 wake 才会被 poll，没人 wake 就一直挂着（`initStorage` 的 async 闭包体就是这样）——改成同轮有新任务就再跑一轮。 |
 
 ## 下一步(2026-09-05 重铺)
 
