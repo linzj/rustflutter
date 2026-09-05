@@ -2481,8 +2481,11 @@ class RustBackend {
     }
     // `_views[_implicitViewId]` with an `int?` key: Dart looks up `null`
     // and finds nothing; here the absent key is the absent value.
+    // The map is built outside the closure: an element that can fail (a
+    // `?` in a literal's constructor) has no `Result` to leave through
+    // inside an `and_then` returning `Option` (30 E0277 at ws441).
     if (name == '!map_get_opt' && args.length == 1) {
-      return '${expr(args.single)}.as_ref().and_then(|__k| $receiver.get(__k).cloned())';
+      return '{ let __m = $receiver; ${expr(args.single)}.as_ref().and_then(|__k| __m.get(__k).cloned()) }';
     }
     if (name == '!map_remove' && args.length == 1) {
       return '$receiver.remove(&${_borrowed(args.single)})';
@@ -5414,6 +5417,31 @@ class RustBackend {
     };
   }
 
+  /// The bodies a constructor runs on the way in: its base's chain, from
+  /// the deepest base down to the direct one, each with the constructor it
+  /// reaches and the arguments the `super(..)` passes. A generic base is
+  /// left out: its body names the base's `T`, which this constructor
+  /// cannot (it stays what it was: not run).
+  List<(IrClass, IrConstructor, List<IrExpr>)> _inheritedBodies(
+    IrConstructor ctor, [
+    IrClass? from,
+  ]) {
+    final baseName = ctor.superBase;
+    if (baseName == null) return const [];
+    final base = library[baseName];
+    if (base == null || base.typeParameters.isNotEmpty) return const [];
+    final baseCtors = base.constructors
+        .where((c) => c.name == ctor.superName)
+        .toList();
+    if (baseCtors.length != 1) return const [];
+    final baseCtor = baseCtors.single;
+    if (baseCtor.params.length != ctor.superArgs.length) return const [];
+    return [
+      ..._inheritedBodies(baseCtor, base),
+      if (baseCtor.body != null) (base, baseCtor, ctor.superArgs),
+    ];
+  }
+
   List<IrStmt> _inheritedPre(
     IrConstructor ctor, [
     IrClass? from,
@@ -7309,7 +7337,12 @@ class RustBackend {
             _mentionsThis((inits[field.name] ?? field.initial)!))
           field.name: (inits[field.name] ?? field.initial)!,
     };
-    final built = ctor.body != null || deferred.isNotEmpty;
+    // The base constructors' bodies run too, deepest first, before this
+    // one's: `BindingBase()` calls `initInstances()` and
+    // `initServiceExtensions()` from its body, and no binding subclass
+    // ran either until run441.
+    final bases = _inheritedBodies(ctor);
+    final built = ctor.body != null || deferred.isNotEmpty || bases.isNotEmpty;
     // A counted class is built *inside* its handle: the body's `this`
     // (`_recorder._canvas = this` in `_NativeCanvas`) is then the `Rc`
     // every holder wants, and the fields it writes are cells reached
@@ -7419,6 +7452,23 @@ class RustBackend {
                     : '*__new.${snake(field.name)}.borrow_mut() = $value;')
               : '__new.${snake(field.name)} = $value;',
         );
+      }
+      for (final (base, baseCtor, superArgs) in bases) {
+        // In a block of its own: the base's temporaries and parameters are
+        // bound here by name, shadowing nothing outside it.
+        _line('{');
+        _indent++;
+        for (var i = 0; i < baseCtor.params.length; i++) {
+          _line(
+            'let ${_assignedIn(baseCtor.body!).contains(baseCtor.params[i].name) ? 'mut ' : ''}${snake(baseCtor.params[i].name)} = ${expr(superArgs[i])};',
+          );
+        }
+        final savedReassigned = _reassigned;
+        _reassigned = {..._reassigned, ..._assignedIn(baseCtor.body!)};
+        stmt(baseCtor.body!);
+        _reassigned = savedReassigned;
+        _indent--;
+        _line('}');
       }
       if (body != null) stmt(body);
       _selfName = saved;
