@@ -674,12 +674,25 @@ class IrThis extends IrExpr {
 /// in Flutter: every one of the 435 super calls in painting/ and rendering/
 /// is exactly that.
 class IrSuperCall extends IrExpr {
-  IrSuperCall(this.base, this.name, this.args, {this.isSetter = false});
+  IrSuperCall(
+    this.base,
+    this.name,
+    this.args, {
+    this.isSetter = false,
+    this.baseArguments = const [],
+  });
 
   /// The class the call resolves into.
   final String base;
   final String name;
   final List<IrExpr> args;
+
+  /// The base's type arguments as the enclosing declaration spells them:
+  /// `LocalHistoryRoute<T>`'s `super.didPop` reaches `TransitionRoute<T>`
+  /// through the application `ModalRoute<T>`, and the super function's
+  /// bound on `__Self` has to say `TransitionRoute<T>`. Empty when the
+  /// base has none or they are not expressible in those terms.
+  final List<IrType> baseArguments;
 
   /// `super.x = v`: the base's setter, whose super function is
   /// `<base>_super_set_x`.

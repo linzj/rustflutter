@@ -4923,11 +4923,13 @@ class RustBackend {
       // `GestureBinding`'s, 3 stubs on the start path at run448).
       final reached = _WalkSelf()..statement(method.body);
       final superBounds = [
-        for (final base in reached.superBases)
+        for (final MapEntry(key: base, value: arguments)
+            in reached.superBases.entries)
           if (base != cls.name &&
+              base != 'Object' &&
               _world.isTrait(base) &&
               !_world.isBelow(cls.name, base))
-            ' + $base${_traitArgsOf(base)}',
+            ' + $base${arguments.isEmpty ? _traitArgsOf(base) : '<${arguments.map(type).join(', ')}>'}',
       ].join();
       final generics =
           '<__Self: ${cls.name}${_generics(cls)}$superBounds + ?Sized + \'static'
@@ -5763,8 +5765,20 @@ class RustBackend {
       ),
       IrConditional(:final condition, :final then, :final otherwise) =>
         IrConditional(go(condition), go(then), go(otherwise)),
-      IrSuperCall(:final base, :final name, :final args, :final isSetter) =>
-        IrSuperCall(base, name, args.map(go).toList(), isSetter: isSetter),
+      IrSuperCall(
+        :final base,
+        :final name,
+        :final args,
+        :final isSetter,
+        :final baseArguments,
+      ) =>
+        IrSuperCall(
+          base,
+          name,
+          args.map(go).toList(),
+          isSetter: isSetter,
+          baseArguments: baseArguments,
+        ),
       IrAwait(:final operand) => IrAwait(go(operand)),
       IrUpcast(:final value, :final type, :final handle, :final explicit) =>
         IrUpcast(go(value), type, handle: handle, explicit: explicit),
@@ -7948,8 +7962,9 @@ class _WalkSelf {
   bool writesFields = false;
   final selfCalls = <String>{};
 
-  /// The classes `super` calls resolve into (`IrSuperCall.base`).
-  final superBases = <String>{};
+  /// The classes `super` calls resolve into (`IrSuperCall.base`), each
+  /// with its type arguments (`baseArguments`).
+  final superBases = <String, List<IrType>>{};
 
   /// Whether anything walked can fail -- a `?` on a call, a constructor,
   /// an `await`.
@@ -8197,8 +8212,8 @@ class _WalkSelf {
         failing = true;
         if (args.any((a) => a is IrThis)) passesSelf = true;
         args.forEach(expression);
-      case IrSuperCall(:final base, :final args):
-        superBases.add(base);
+      case IrSuperCall(:final base, :final args, :final baseArguments):
+        superBases.putIfAbsent(base, () => baseArguments);
         args.forEach(expression);
       case IrIs(:final expr):
         expression(expr);

@@ -1148,7 +1148,8 @@ class KernelFrontend implements TypeWorld {
     if (node is SuperMethodInvocation) {
       // The target member is already resolved -- this is the fact the analyzer
       // front end had to work out for itself.
-      final owner = _realOwner(node.interfaceTarget, node.name.text)?.name;
+      final ownerClass = _realOwner(node.interfaceTarget, node.name.text);
+      final owner = ownerClass?.name;
       if (owner == null) {
         throw Unsupported('super call with no owner', '$node');
       }
@@ -1159,6 +1160,7 @@ class KernelFrontend implements TypeWorld {
         owner,
         node.name.text,
         _arguments(node.arguments, node.interfaceTarget.function),
+        baseArguments: _superBaseArguments(ownerClass!),
       );
     }
     if (node is VariableSet) {
@@ -1251,7 +1253,15 @@ class KernelFrontend implements TypeWorld {
           onEnum: node.interfaceTarget?.enclosingClass?.isEnum ?? false,
         );
       }
-      return IrSuperCall(owner, node.name.text, const []);
+      final ownerClass = node.interfaceTarget?.enclosingClass;
+      return IrSuperCall(
+        owner,
+        node.name.text,
+        const [],
+        baseArguments: ownerClass == null
+            ? const []
+            : _superBaseArguments(ownerClass),
+      );
     }
     if (node is SuperPropertySet) {
       // `super.value = value` in `_RestorablePrimitiveValue.value=`: the
@@ -1259,9 +1269,10 @@ class KernelFrontend implements TypeWorld {
       // assignment's is (9 refusals at ws354). A base *field* is the same
       // storage as this class's (flattened): a plain write.
       final target = node.interfaceTarget;
-      final owner = target == null
+      final ownerClass = target == null
           ? null
-          : _realOwner(target, node.name.text)?.name;
+          : _realOwner(target, node.name.text);
+      final owner = ownerClass?.name;
       if (target == null || owner == null) {
         throw Unsupported('super property set with no owner', _sample(node));
       }
@@ -1282,7 +1293,13 @@ class KernelFrontend implements TypeWorld {
         target is Field
             ? IrAssignField(node.name.text, stored)
             : IrExprStmt(
-                IrSuperCall(owner, node.name.text, [stored], isSetter: true),
+                IrSuperCall(
+                  owner,
+                  node.name.text,
+                  [stored],
+                  isSetter: true,
+                  baseArguments: _superBaseArguments(ownerClass!),
+                ),
               ),
       ], IrLocal(held));
     }
@@ -2418,6 +2435,84 @@ class KernelFrontend implements TypeWorld {
   ///
   /// The class a reader would name is the mixin that declares the member, or
   /// the first real superclass above it if none does.
+  /// The type arguments a `super` call's base carries, in the terms of the
+  /// declaration whose body this is (`IrSuperCall.baseArguments`).
+  ///
+  /// From an application's copy of a mixin body, the base is reached as
+  /// the application is an instance of it (`ModalRoute<T>`'s application
+  /// is a `TransitionRoute<T>`), and the application's parameters are
+  /// mapped back onto the mixin's through the applied type
+  /// (`LocalHistoryRoute<T>`). Elsewhere the base is a supertype of the
+  /// class itself. Not expressible -- an application argument that is not
+  /// a bare parameter -- is empty.
+  List<IrType> _superBaseArguments(Class base) {
+    if (base.typeParameters.isEmpty) return const [];
+    final env = typeEnvironment;
+    final lowering = _lowering;
+    if (env == null || lowering == null) return const [];
+    final enclosing = _member?.enclosingClass;
+    final fromApplication = enclosing != null && enclosing.isAnonymousMixin;
+    final from = fromApplication ? enclosing : lowering;
+    final asBase = env.hierarchy.getTypeAsInstanceOf(
+      from.getThisType(env.coreTypes, Nullability.nonNullable),
+      base,
+    );
+    if (asBase is! InterfaceType) return const [];
+    var arguments = asBase.typeArguments;
+    if (fromApplication && !identical(enclosing, lowering)) {
+      Supertype? applied;
+      for (final t in enclosing.implementedTypes) {
+        if (t.classNode == lowering) applied = t;
+      }
+      if (applied == null) return const [];
+      final map = <TypeParameter, DartType>{};
+      for (var i = 0; i < applied.typeArguments.length; i++) {
+        final a = applied.typeArguments[i];
+        if (a is! TypeParameterType ||
+            !enclosing.typeParameters.contains(a.parameter) ||
+            i >= lowering.typeParameters.length) {
+          return const [];
+        }
+        map[a.parameter] = TypeParameterType(
+          lowering.typeParameters[i],
+          Nullability.nonNullable,
+        );
+      }
+      final substitution = Substitution.fromMap(map);
+      arguments = [for (final a in arguments) substitution.substituteType(a)];
+      for (final a in arguments) {
+        if (_mentionsForeignParameter(a, enclosing.typeParameters)) {
+          return const [];
+        }
+      }
+    }
+    try {
+      return _erasedArguments(base, arguments);
+    } on Unsupported {
+      return const [];
+    }
+  }
+
+  static bool _mentionsForeignParameter(
+    DartType t,
+    List<TypeParameter> foreign,
+  ) {
+    if (t is TypeParameterType) return foreign.contains(t.parameter);
+    if (t is InterfaceType) {
+      return t.typeArguments.any((a) => _mentionsForeignParameter(a, foreign));
+    }
+    if (t is FunctionType) {
+      return _mentionsForeignParameter(t.returnType, foreign) ||
+          t.positionalParameters.any(
+            (a) => _mentionsForeignParameter(a, foreign),
+          ) ||
+          t.namedParameters.any(
+            (n) => _mentionsForeignParameter(n.type, foreign),
+          );
+    }
+    return false;
+  }
+
   Class? _realOwner(Member target, String name) {
     // A super call in a mixin's body names the `on` constraint's member
     // (`BindingBase.initInstances`), but dispatches to the *actual*
