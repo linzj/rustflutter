@@ -4079,8 +4079,11 @@ class KernelFrontend implements TypeWorld {
   /// A generic function's type at this call: `_futurize<int>(callbacker)`
   /// takes a `String? Function(_Callback<int>)`, and the closure passed is
   /// typed against that, not against the `T` the declaration wrote.
-  static FunctionType? _instantiated(StaticInvocation node) {
-    final fn = node.target.function;
+  static FunctionType? _instantiated(
+    StaticInvocation node, [
+    FunctionNode? declaration,
+  ]) {
+    final fn = declaration ?? node.target.function;
     if (fn.typeParameters.isEmpty ||
         node.arguments.types.length != fn.typeParameters.length) {
       return null;
@@ -4121,6 +4124,7 @@ class KernelFrontend implements TypeWorld {
       return lowered;
     }
     final target = node.target;
+    final declaration = _preludeDeclaration(target).function;
     final positional = node.arguments.positional;
     // Two of dart:math's, and one of Flutter's own. Rust has all three, and
     // `max` is the same spelling for floats and integers because `f32::max` is
@@ -4342,18 +4346,18 @@ class KernelFrontend implements TypeWorld {
         null,
         target.name.text.replaceAll(RegExp(r'[|#]'), '_'),
         _withGenericArgs(
-          target.function,
+          declaration,
           node.arguments,
           () => _arguments(
             node.arguments,
-            target.function,
+            declaration,
             true,
-            _instantiated(node),
+            _instantiated(node, declaration),
           ),
         ),
         fails: _fails(target),
         diverges: _diverges(target),
-        typeArguments: _keptTypeArguments(target.function, node.arguments),
+        typeArguments: _keptTypeArguments(declaration, node.arguments),
       );
     }
     return IrStaticCall(
@@ -4367,19 +4371,51 @@ class KernelFrontend implements TypeWorld {
       // Color?>((states) { .. })` expects the closure to return `Color?`,
       // and the declared `T` said nothing (63 `Option<Color>` <- `Color`).
       _withGenericArgs(
-        target.function,
+        declaration,
         node.arguments,
         () => _arguments(
           node.arguments,
-          target.function,
+          declaration,
           true,
-          _instantiated(node),
+          _instantiated(node, declaration),
         ),
       ),
       fails: _fails(target),
       diverges: _diverges(target),
-      typeArguments: _keptTypeArguments(target.function, node.arguments),
+      typeArguments: _keptTypeArguments(declaration, node.arguments),
     );
+  }
+
+  /// dart:core members the prelude implements as a *sibling* declares
+  /// them. Dart's `List<E>.from(Iterable elements)` takes anything and
+  /// casts element by element; the prelude copies, as `List.of(Iterable<
+  /// E>)` does, and so its slot is `of`'s: coerced into the declared
+  /// `Iterable<dynamic>`, the argument was upcast on the way in and nothing
+  /// cast it back (`Vec<Hct> <= Vec<Rc<dyn Object>>`, 11 at ws424).
+  static const preludeSiblings = {
+    'List.from': 'of',
+    'Set.from': 'of',
+    'Map.from': 'of',
+    'HashSet.from': 'of',
+    'LinkedHashSet.from': 'of',
+    'HashMap.from': 'of',
+    'LinkedHashMap.from': 'of',
+  };
+
+  Procedure _preludeDeclaration(Procedure target) {
+    final owner = target.enclosingClass;
+    if (owner == null || _translatedClass(owner)) return target;
+    final sibling = preludeSiblings['${owner.name}.${target.name.text}'];
+    if (sibling == null) return target;
+    for (final p in owner.procedures) {
+      if (p.isStatic &&
+          p.name.text == sibling &&
+          p.function.positionalParameters.length ==
+              target.function.positionalParameters.length) {
+        return p;
+      }
+    }
+    return target;
   }
 
   /// A translated generic callee's type arguments for the type parameters

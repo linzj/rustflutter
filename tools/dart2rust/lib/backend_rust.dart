@@ -637,9 +637,14 @@ class RustBackend {
       IrRecordField(:final record, :final index) => '${expr(record)}.$index',
       // An empty one spells its key and value types: nothing else says
       // them when the slot is an `Rc<dyn Object>` (E0283, `K` on `Map`).
+      // ..and a written one is typed by its first entry, as a `vec![..]`
+      // is by its first element: that entry's upcasts are spelled.
       IrMapLiteral(:final entries, :final key, :final value) =>
         '${entries.isEmpty ? 'Map::<${type(key)}, ${type(value)}>' : 'Map'}::from(['
-            '${entries.map((e) => '(${expr(e.$1)}, ${expr(e.$2)})').join(', ')}'
+            '${entries.indexed.map((ie) {
+              final e = ie.$1 == 0 ? (_explicitUpcast(ie.$2.$1), _explicitUpcast(ie.$2.$2)) : ie.$2;
+              return '(${expr(e.$1)}, ${expr(e.$2)})';
+            }).join(', ')}'
             '])',
       // `for_each` consumes the chain and yields `()`: the one chain that is
       // whole without a `collect`.

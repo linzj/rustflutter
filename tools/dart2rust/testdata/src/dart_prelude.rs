@@ -1326,7 +1326,8 @@ impl<K: Clone, V: Clone> Map<K, V> {
 }
 
 impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
-    pub fn from<const N: usize>(items: [(K, V); N]) -> Self {
+    /// `Map.from(other)` / a literal: an array or a `Vec` of entries.
+    pub fn from<I: IntoIterator<Item = (K, V)>>(items: I) -> Self {
         let mut map = Map::new();
         for (key, value) in items {
             map.insert(key, value);
@@ -1987,14 +1988,18 @@ pub struct Timeline;
 impl Timeline {
     pub fn start_sync(
         _name: String,
-        _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>,
+        _arguments: Option<Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>>,
         _flow: Option<std::rc::Rc<dyn Object>>,
     ) {
     }
 
     pub fn finish_sync() {}
 
-    pub fn instant_sync(_name: String, _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>) {}
+    pub fn instant_sync(
+        _name: String,
+        _arguments: Option<Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>>,
+    ) {
+    }
 
     pub fn now() -> i64 {
         std::time::SystemTime::now()
@@ -2546,9 +2551,18 @@ impl TimelineTask {
         TimelineTask
     }
 
-    pub fn start(&self, _name: String, _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>) {}
+    pub fn start(
+        &self,
+        _name: String,
+        _arguments: Option<Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>>,
+    ) {
+    }
 
-    pub fn finish(&self, _arguments: Option<Map<String, std::rc::Rc<dyn Object>>>) {}
+    pub fn finish(
+        &self,
+        _arguments: Option<Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>>,
+    ) {
+    }
 }
 
 /// `dart:typed_data`'s `Endian`. The host is little-endian.
@@ -2563,7 +2577,11 @@ impl Endian {
 }
 
 /// `dart:developer`'s `postEvent`: nothing is listening.
-pub fn post_event(_event_kind: String, _event_data: Map<String, std::rc::Rc<dyn Object>>) {}
+pub fn post_event(
+    _event_kind: String,
+    _event_data: Map<Option<std::rc::Rc<dyn Object>>, Option<std::rc::Rc<dyn Object>>>,
+) {
+}
 
 /// Dart's `String` methods, under their Dart names, on Rust's `String`.
 ///
