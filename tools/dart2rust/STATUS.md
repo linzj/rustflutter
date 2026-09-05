@@ -6567,6 +6567,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws467 结果 | 编译尺子 **1563**（ws466 1696，−133），141 crate：去 105 来 13。这一批通用规则：两个对象的 `==` 一律 `dart_eq(&)`（`Rc<dyn Size>` 上的 `==` 把操作数 move 掉，53）；构造调用也把类名记进引用表（`Image` 两个模块都定义，之前一个都没导入，18）；函数值作迭代器步骤按步骤的形状套闭包再 unwrap（`where(pred)`，17）；`DartNullable` 投影写代入后的具体类型（`<Rc<dyn Object> as DartNullable>`，51）；抽象类静态 async 包装不经 `Self`（19）；`replaceFirst` 绕开 std 的 unstable 同名方法（16）。 |
 | ws468 结果 | 编译尺子 **1563**（同 ws467），141 crate：量的是 Completer 记名，不动桩数。 |
 | run468 | "0 future(s) still pending; 1 completer(s) never completed: `WidgetsFlutterBinding.new`"——那是 `_firstFrameCompleter`，无头本来就不会有帧；main 等的不是它，也不是任何 spawn 出来的任务，而是某个 prelude 自造的 pending future（`then`/`map`/`timer`……）。下一步：所有 `DartFuture::pending()` 带来源标签，结束时列出**所有**未完成的 future。 |
+| ws469 结果 | 编译尺子 **1553**（ws468 1563，−10），141 crate。 |
 
 ## 下一步(2026-09-05 重铺)
 
