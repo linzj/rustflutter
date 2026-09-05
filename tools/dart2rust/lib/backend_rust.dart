@@ -1409,18 +1409,16 @@ class RustBackend {
       // shared into the left's trait instead (`&Rc<dyn Object>` where
       // `&Rc<dyn Color>` was wanted, 12 at ws467).
       final leftType = left.rustType;
-      final other =
-          right is IrUpcast &&
-              right.type.name == 'Object' &&
-              leftType != null &&
-              library.isAbstract(leftType.name)
-          ? IrUpcast(
-              right.value,
-              IrType(leftType.name, arguments: leftType.arguments),
-              handle: right.handle,
-              explicit: true,
-            )
+      final bare = right is IrUpcast && right.type.name == 'Object'
+          ? right.value
           : right;
+      // ..and where this module's world cannot classify the value (a
+      // struct of another library), the `Object` sharing stands: the
+      // prelude's `dart_object` takes the trait the comparison wants.
+      final coerced = leftType != null && bare.rustType != null
+          ? coerceInto(bare, leftType, _world, inClosure: true)
+          : bare;
+      final other = identical(coerced, bare) ? right : coerced;
       final eq = '${expr(left)}.dart_eq(&${expr(other)})';
       return op == '==' ? eq : '(!$eq)';
     }
@@ -2572,7 +2570,12 @@ class RustBackend {
     // named parameter, and the Kernel front end fills in its default -- so the
     // chain was collected on one side and refused on the other.
     if (name == 'to_list' && target is IrIterChain) {
-      return '${_chain(target)}.collect::<Vec<_>>()';
+      // `where(..).toList()`: `filter` keeps references, and the list
+      // wants the items (`Vec<&Rc<dyn FocusNode>>`, 8 at ws467).
+      final cloned = target.steps.isNotEmpty && target.steps.last.$1 == 'filter'
+          ? '.cloned()'
+          : '';
+      return '${_chain(target)}$cloned.collect::<Vec<_>>()';
     }
     // `0.29.powf(x)`: a float literal as a receiver is an "ambiguous numeric
     // type" until it says which (21 `E0689`s in the HCT colour code).
