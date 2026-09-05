@@ -38,14 +38,16 @@ while kill -0 "$chain" 2>/dev/null; do
   avail=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
   if [ "$avail" -lt "$floor_kb" ]; then
     last=$(tail -1 "$log" | cut -c1-120)
-    crates=$(pgrep -fa rustc | grep -o -- '--crate-name [^ ]*' | sort | uniq | tr '\n' ' ')
+    crates=$(for pid in $(pgrep -x rustc); do tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null | sed -n 's/.*--crate-name \([^ ]*\).*/\1/p'; done | sort | uniq -c | sort -rn | tr '\n' ' ')
     echo "OOM-GUARD: MemAvailable ${avail}kB under ${floor_kb}kB; killing the compile (rustc on: $crates) (last: $last)" >> "$log"
-    pkill -f rustc
-    pkill -f 'cargo check'
-    pkill -f 'bin/stubs.py'
-    pkill -f dart2rust_package.dart
+    # Exact process names: `pkill -f rustc` also took the shell that was
+    # watching the log, whose command line mentioned rustc.
+    pkill -x rustc
+    pkill -x cargo
+    pkill -f 'python3 bin/stubs.py'
+    pkill -f 'bin/dart2rust_package.dart'
     sleep 2
-    pkill -9 -f rustc
+    pkill -9 -x rustc
     exit 3
   fi
   sleep 2
