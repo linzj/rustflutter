@@ -4114,7 +4114,7 @@ pub fn future_new<T: Clone + 'static>(
 /// `FutureOr<T>? value`, and what arrives is the `T` in an `Option` (the
 /// front end coerces a plain value into the optional slot); no value is
 /// the `null` of `T` -- `()` for a `Future<void>`.
-pub fn future_value<T: DartNullable>(value: Option<T>) -> DartFuture<T> {
+pub fn future_value<T: DartNullable + 'static>(value: Option<T>) -> DartFuture<T> {
     DartFuture::ready(Ok(value
         .or_else(T::dart_null)
         .expect("Future.value() without a value on a non-nullable type")))
