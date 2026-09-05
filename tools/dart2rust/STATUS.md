@@ -6386,6 +6386,11 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws370 | 950 叶子错 | 落点只对同一个接口成员的实参生效（`_dispatchInterface` 身份比对）。**3102→3039 / 795，138+1 个 crate**。 |
 | ws371 | 950 叶子错 | 字段写入也按落点：槽是落点成员的声明类型（`_writeSlot`），落点是克隆体字段时直接写 struct 的 cell 而不是走 trait 的 setter（`*self._first_child.borrow_mut() = ..`，不再 `.map(|v| v as ..)`）。**3039→3023 / 795，138+1 个 crate**。 |
 | ws372 | 950 叶子错 | 删后端的 `_intoDeclared`（经 trait setter 写入时按名向上转的那层）：写入的类型前端已按落点定好。**3023→3022 / 795，138+1 个 crate**。至此删掉的适配器：`_widened` 172 行、`_intoErased`、`_intoDeclared`。 |
+| ws373 | 950 叶子错 | 读也按落点：getter 目标落在本类持有的克隆体字段上时直接读字段（`self._slot_to_child.borrow()`），不经 trait 的 getter（那条返回擦除的界）；`!map_get` 结果按接收者记录的 map 值类型定型，删掉 `narrowed` 那个包 `IrCastTo` 的钩子；删后端 12 个以为无人产生的 `!xxx` 处理器。**crate 级失败**：4 个 "incompatible type for trait"，55 个 crate 不可达——直接写字段让值 struct 的方法变成 `&mut self`，而 `_sharedMutation` 只看**本文件**的实现者，trait 声明和另一文件的 impl 各判各的。 |
+| ws374 | 950 叶子错 | 直接读写字段只在 lowering 具体类时用（trait 体仍走访问器，`_heldField`）。同样 4 个 crate 级错——根因在 `_sharedMutation`。 |
+| ws375 | 950 叶子错 | `_implementersOf` 改为全 crate（`library.elsewhere`）：trait 声明与各处 impl 对 `&mut self` 的判断一致。crate 齐了，但 **3022→3151**：删掉的 `!join`/`!is_empty`/`!any`… 是前端用 `'!$name'` 动态拼出来的，不是死的（+157 no method）。 |
+| ws376 | 950 叶子错 | 从 HEAD 恢复那些处理器，只删真正没人产生的 `!upcast_elements`。**3151→3035**（+11 "does not live long enough"：局部变量上的 cell 读 `data.x.borrow().clone()` 在块尾表达式里，guard 临时量活过了局部）。 |
+| ws377 | 950 叶子错 | 局部（非 `self`）上的 cell 读和 cell 局部变量印成 `{ let __r = x.borrow().clone(); __r }`，guard 死在自己的语句里。**3035→3018 / 795，138+1 个 crate**。 |
 
 ## 下一步(2026-09-05 重铺)
 

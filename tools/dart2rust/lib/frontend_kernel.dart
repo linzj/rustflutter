@@ -1055,7 +1055,7 @@ class KernelFrontend {
         );
       }
       if (node.interfaceTarget is! Field &&
-          _landing(node.interfaceTarget, node.receiver) is! Field) {
+          !_heldField(node.interfaceTarget, node.receiver)) {
         // `_firstChild = _lastChild = child` in a mixin's body: the mixin's
         // field is a setter on its trait. Called, and the value kept -- as
         // the field on another object is above. Refused before ws348, which
@@ -1984,7 +1984,6 @@ class KernelFrontend {
     // mixin clone's field, or the trait's setter -- `_cache = s` into a
     // `String?` field is `Some(s)`. A clone's field, being this struct's,
     // is written as a field, not through the trait's setter.
-    final landing = _landing(value.interfaceTarget, value.receiver);
     final written = _widened(
       value.value,
       _writeSlot(value.interfaceTarget, value.receiver),
@@ -2103,7 +2102,8 @@ class KernelFrontend {
         target: expression(value.receiver),
       );
     }
-    if (value.interfaceTarget is! Field && landing is! Field) {
+    if (value.interfaceTarget is! Field &&
+        !_heldField(value.interfaceTarget, value.receiver)) {
       return IrSetter(
         null,
         value.name.text,
@@ -2430,7 +2430,12 @@ class KernelFrontend {
       if (element != null) return IrLocal(element);
     }
     final target = receiver is ThisExpression ? null : expression(receiver);
-    if (node.interfaceTarget is Procedure) {
+    // A getter whose landing member is a field this class holds (a mixin
+    // clone's) is read as the field, typed as the clone declares it -- as
+    // a write to it is stored (`_instanceSet`). Through the trait's getter
+    // it came back as the erased bound (`_slotToChild`, ws373).
+    if (node.interfaceTarget is Procedure &&
+        !_heldField(node.interfaceTarget, receiver)) {
       return _qualified(
         IrCall(target, name, const []),
         node.interfaceTarget,
@@ -2897,31 +2902,21 @@ class KernelFrontend {
       // Its own name: the backend's `.get(&k).cloned()` was keyed on `get`
       // and fired on `ContrastCurve.get(double)` too (14 `&f64`).
       if (name == '[]' && args.length == 1) {
-        // A map of an erased parameter's values read as the clone's
-        // narrower class: `_slotToChild[slot]` is a `Map<S, Rc<dyn
-        // RenderObject>>` here (the mixin's, the bound) and the read a
-        // `RenderBox?` to Dart -- narrowed at the read, the `Option` kept
-        // (37 `childForSlot`s at ws353).
-        IrExpr narrowed(IrExpr read) {
-          final receiver = node.receiver;
-          if (receiver is! InstanceGet) return read;
-          final declared = receiver.interfaceTarget.getterType;
-          if (declared is! InterfaceType || declared.typeArguments.length != 2)
-            return read;
-          final held = declared.typeArguments[1];
-          if (held is! TypeParameterType || !_erasedParameter(held.parameter))
-            return read;
-          final bound = held.parameter.bound;
-          final result = _staticType(node);
-          if (bound is! InterfaceType ||
-              result is! InterfaceType ||
-              result.classNode == bound.classNode ||
-              !_abstractLike(result.classNode) ||
-              !_translatedClass(result.classNode) ||
-              _scalarClass(result.classNode)) {
-            return read;
+        // The read is typed by the map's own value type -- the receiver's
+        // recorded `rustType`, which an erased map keeps as the bound --
+        // and a slot it goes into coerces it (`_slotToChild[slot]` returned
+        // as the `RenderBox?` `childForSlot` declares).
+        IrExpr typed(IrExpr read) {
+          final map = read is IrCall ? read.target?.rustType : null;
+          if (map != null && map.name == 'Map' && map.arguments.length == 2) {
+            final value = map.arguments[1];
+            read.rustType = IrType(
+              value.name,
+              nullable: true,
+              arguments: value.arguments,
+            );
           }
-          return IrCastTo(read, _type(result));
+          return read;
         }
 
         // `_cache[tone]` on a `Map<int, _>` with a `num` key: the key is an
@@ -2936,7 +2931,7 @@ class KernelFrontend {
             argType is InterfaceType &&
             (argType.classNode.name == 'double' ||
                 argType.classNode.name == 'num')) {
-          return narrowed(
+          return typed(
             IrCall(expression(node.receiver), '!map_get', [
               IrCast(args.single, 'i64'),
             ]),
@@ -2948,11 +2943,9 @@ class KernelFrontend {
             argType != null &&
             argType is! DynamicType &&
             argType.nullability == Nullability.nullable) {
-          return narrowed(
-            IrCall(expression(node.receiver), '!map_get_opt', args),
-          );
+          return typed(IrCall(expression(node.receiver), '!map_get_opt', args));
         }
-        return narrowed(IrCall(expression(node.receiver), '!map_get', args));
+        return typed(IrCall(expression(node.receiver), '!map_get', args));
       }
       // `m[k] = v`: `insert`, as a statement or for its value (Dart's is
       // `v`; here the old value, which no caller reads).
@@ -4069,6 +4062,19 @@ class KernelFrontend {
       if (!_erasedParameter(p)) kept[p] = asOwner.typeArguments[i];
     }
     return Substitution.fromMap(kept).substituteType(declared);
+  }
+
+  /// Whether a member landing on a field is that field for this class: a
+  /// struct holds its clones' fields; a trait body (a mixin, an abstract
+  /// or an open class) reaches its own through accessors, and a direct
+  /// field write there made the mutation analysis ask for `&mut self`
+  /// (12 "incompatible type for trait", ws373).
+  bool _heldField(Member interface, Expression receiver) {
+    final here = _lowering;
+    if (receiver is ThisExpression && (here == null || _abstractLike(here))) {
+      return false;
+    }
+    return _landing(interface, receiver) is Field;
   }
 
   /// The type a write into `interface` on `receiver` must produce: the

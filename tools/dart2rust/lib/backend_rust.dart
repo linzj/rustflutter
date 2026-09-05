@@ -507,7 +507,9 @@ class RustBackend {
       // is `f.get()`. The local is only a local in the closure's own text.
       IrLocal(:final name) =>
         _cellLocals.containsKey(name)
-            ? '${snake(name)}.${_cellLocals[name]! ? 'get()' : 'borrow().clone()'}'
+            ? (_cellLocals[name]!
+                  ? '${snake(name)}.get()'
+                  : '{ let __r = ${snake(name)}.borrow().clone(); __r }')
             : snake(name),
       // `this` in a counted class is the handle -- one more `Rc`, not the
       // value behind it. `*self` there moved out of a `&Rc<Self>`, and the
@@ -1762,9 +1764,14 @@ class RustBackend {
     if (owner != null) {
       final cell = _cellFieldOf(owner, name);
       if (cell != null) {
+        // The `borrow()` guard is a temporary, and a temporary in a block's
+        // tail expression outlives the block's locals: `Ok(data.next_sibling
+        // .borrow().clone())` on a local `data` was "does not live long
+        // enough" 17 times (ws376). Bound and handed out, the guard dies
+        // in its own statement.
         final read = _isCopy(_heldType(cell))
             ? '$receiver.${snake(name)}.get()'
-            : '$receiver.${snake(name)}.borrow().clone()';
+            : '{ let __r = $receiver.${snake(name)}.borrow().clone(); __r }';
         return cell.isLate ? '$read.unwrap()' : read;
       }
       // Another object's `late` field: `other._argb` in `Hct.==` is an
@@ -2177,26 +2184,6 @@ class RustBackend {
     // An `Option<Rc<dyn Object>>` into a `dynamic` slot: absent is `Null`.
     if (name == '!or_null' && args.isEmpty) {
       return '$receiver.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>)';
-    }
-    // The other way: a `Uint8List` handed to a `List<int>` parameter.
-    // A `List<String>` into a `List<Object?>`: each element shared.
-    // A `Set<_WidgetTicker>` into a `Set<Ticker>` slot: each handle upcast
-    // to the trait (`_tickers ??= <_WidgetTicker>{}`, 44 `createTicker`s at
-    // ws351). The type arguments name the collection and the element.
-    // ..and a *value* element (a widget struct in a `Vec<_OverlayEntryWidget>`)
-    // goes behind a fresh, registered handle first (14 non-primitive casts
-    // at ws352); the third type argument names the element's class.
-    if (name == '!upcast_elements' &&
-        args.isEmpty &&
-        typeArguments.length == 3) {
-      final to = type(typeArguments[1]);
-      final held = library[typeArguments[2].name];
-      final shared = held == null || held.isAbstract || held.counted
-          ? 'v as $to'
-          : 'dart_object(v) as $to';
-      final mapped =
-          '$receiver.into_iter().map(|v| $shared).collect::<Vec<$to>>()';
-      return typeArguments[0].name == 'Set' ? 'Set::of($mapped)' : mapped;
     }
     if (name == '!widen_object' && args.isEmpty) {
       // `iter().cloned()`: the receiver may be the `&Vec` a null-aware
@@ -4623,10 +4610,18 @@ class RustBackend {
     return false;
   }
 
+  /// Crate-wide, not this file's: the trait's declaration and an impl in
+  /// another file must agree on `&mut self`, and each was deciding from
+  /// the implementers it could see (`DirectionalFocusTraversalPolicyMixin
+  /// .inDirection`: `&mut` in `focus_traversal`, `&self` in `radio_group`,
+  /// 4 errors outside any function at ws373).
   List<IrClass> _implementersOf(String trait) {
     final cache = _implementersCache[library] ??= {};
     return cache[trait] ??= [
-      for (final c in library.classes)
+      for (final c in {
+        for (final c in library.elsewhere.values) c.name: c,
+        for (final c in library.classes) c.name: c,
+      }.values)
         if (!c.isAbstract &&
             !c.counted &&
             c.name != trait &&
