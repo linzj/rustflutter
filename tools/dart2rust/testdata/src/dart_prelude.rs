@@ -1886,6 +1886,8 @@ pub trait DartQueue<T> {
     fn remove_last(&mut self) -> T;
     fn add_first(&mut self, value: T);
     fn add_last(&mut self, value: T);
+    /// `queue.addAll(iterable)`: at the end, in order (`_pendingPointerEvents`, run459).
+    fn add_all(&mut self, values: Vec<T>);
 }
 
 impl<T> DartQueue<T> for std::collections::VecDeque<T> {
@@ -1903,6 +1905,9 @@ impl<T> DartQueue<T> for std::collections::VecDeque<T> {
     }
     fn add_last(&mut self, value: T) {
         self.push_back(value)
+    }
+    fn add_all(&mut self, values: Vec<T>) {
+        self.extend(values)
     }
 }
 pub type ListQueue<T> = std::collections::VecDeque<T>;
@@ -2350,6 +2355,36 @@ pub type SplayTreeMap<K, V> = Map<K, V>;
 /// layout and paint. There is no observatory to send them to, so they are
 /// no-ops with the right shapes -- 24 `startSync`/`finishSync` pairs would
 /// otherwise refuse the methods around them.
+/// `dart:developer`'s `UserTag`: a label the profiler would attribute
+/// samples to. There is no profiler here; the tag is the label, and
+/// `makeCurrent` hands back the one it replaces (the default).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserTag {
+    pub label: String,
+}
+
+impl UserTag {
+    pub fn new(label: String) -> Self {
+        UserTag { label }
+    }
+
+    pub fn default_tag() -> Self {
+        UserTag {
+            label: "Default".to_string(),
+        }
+    }
+
+    pub fn make_current(&self) -> UserTag {
+        UserTag::default_tag()
+    }
+}
+
+impl DartEq for UserTag {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 pub struct Timeline;
 
 impl Timeline {
@@ -2361,6 +2396,17 @@ impl Timeline {
     }
 
     pub fn finish_sync() {}
+
+    /// `Timeline.timeSync(name, function, arguments:, flow:)`: the function,
+    /// run between a start and a finish that record nothing here.
+    pub fn time_sync<T>(
+        _name: String,
+        function: std::rc::Rc<dyn Fn() -> Result<T, DartError>>,
+        _arguments: Option<Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>>,
+        _flow: Option<Flow>,
+    ) -> Result<T, DartError> {
+        function()
+    }
 
     pub fn instant_sync(
         _name: String,
@@ -2533,11 +2579,14 @@ impl<T: Clone> Expando<T> {
         }
     }
 
-    fn key(object: &std::rc::Rc<dyn Object>) -> usize {
+    fn key<O: ?Sized>(object: &std::rc::Rc<O>) -> usize {
         std::rc::Rc::as_ptr(object) as *const u8 as usize
     }
 
-    pub fn get(&self, object: &std::rc::Rc<dyn Object>) -> Option<T> {
+    /// Keyed by the object's identity, whatever handle it arrives as
+    /// (`_profiledBinaryMessengers[this]` with `this` an `Rc<dyn
+    /// MethodChannel>`, run459).
+    pub fn get<O: ?Sized>(&self, object: &std::rc::Rc<O>) -> Option<T> {
         let key = Self::key(object);
         self.entries
             .borrow()
@@ -2546,7 +2595,7 @@ impl<T: Clone> Expando<T> {
             .map(|(_, v)| v.clone())
     }
 
-    pub fn set(&self, object: &std::rc::Rc<dyn Object>, value: Option<T>) {
+    pub fn set<O: ?Sized>(&self, object: &std::rc::Rc<O>, value: Option<T>) {
         let key = Self::key(object);
         let mut entries = self.entries.borrow_mut();
         entries.retain(|(k, _)| *k != key);
@@ -3756,6 +3805,55 @@ impl<T> DartFuture<T> {
     {
         let me = self.clone();
         DartFuture::spawn(Box::pin(async move { Ok(f(me.await?)) }))
+    }
+
+    /// `future.whenComplete(action)`: the action runs when the future
+    /// settles, and the settled value or error goes on unchanged. The
+    /// action's own value is not awaited here (an `async` action is
+    /// rare on the paths reached, `lockEvents`' is sync; run459).
+    pub fn when_complete<R: 'static>(
+        &self,
+        action: std::rc::Rc<dyn Fn() -> Result<R, DartError>>,
+    ) -> DartFuture<T>
+    where
+        T: Clone + 'static,
+    {
+        let me = self.clone();
+        DartFuture::spawn(Box::pin(async move {
+            let settled = me.await;
+            action()?;
+            settled
+        }))
+    }
+
+    /// `future.catchError(onError, test: ..)`: the error goes to `onError`
+    /// when `test` (absent means every error) admits it, with the stack
+    /// the catch site has; the value goes on unchanged.
+    pub fn catch_error(
+        &self,
+        on_error: std::rc::Rc<dyn Fn(DartError, StackTrace) -> Result<T, DartError>>,
+        test: Option<std::rc::Rc<dyn Fn(DartError) -> Result<bool, DartError>>>,
+    ) -> DartFuture<T>
+    where
+        T: Clone + 'static,
+    {
+        let me = self.clone();
+        DartFuture::spawn(Box::pin(async move {
+            match me.await {
+                Ok(value) => Ok(value),
+                Err(error) => {
+                    let admitted = match &test {
+                        Some(test) => test(error.clone())?,
+                        None => true,
+                    };
+                    if admitted {
+                        on_error(error, StackTrace::current())
+                    } else {
+                        Err(error)
+                    }
+                }
+            }
+        }))
     }
 
     /// `future.then(onValue, onError: ..)`: the error goes to `onError` when

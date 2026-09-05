@@ -1040,8 +1040,20 @@ class RustBackend {
       ),
       ...node.locals.map((l) => 'let ${snake(l)} = ${snake(l)}.clone();'),
     ].join(' ');
+    // An async closure is a function value like any other, returning
+    // `Result`: its future inside `Ok` where the slot wants the future
+    // (`Fn(..) -> Result<DartFuture<T>, E>`), and `Ok(())` after spawning
+    // it where the slot wants nothing (`void Function(..)` handed an
+    // `async` closure, `setMessageHandler`'s at run459). A bare
+    // `-> DartFuture<_>` matched neither (12 stubs on the start path).
+    final spawned =
+        'DartFuture::spawn(std::boxed::Box::pin(async move { $body }))';
+    final wantsFuture =
+        node.returns.name == 'Future' || node.returns.name == 'FutureOr';
     final closure = node.isAsync
-        ? '${owns ? 'move ' : ''}|$params| -> DartFuture<_> { $again DartFuture::spawn(std::boxed::Box::pin(async move { $body })) }'
+        ? (wantsFuture
+              ? '${owns ? 'move ' : ''}|$params| -> Result<DartFuture<_>, $_error> { $again Ok($spawned) }'
+              : '${owns ? 'move ' : ''}|$params| -> Result<_, $_error> { $again let _ = $spawned; Ok(()) }')
         : '${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<_, $_error>' : ''} { $body }';
     _cellLocals = savedCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
@@ -2087,9 +2099,15 @@ class RustBackend {
     int classArity,
     String? castTo,
   ) {
+    // A generic trait cast to with its arguments inferred (`dyn
+    // CanonicalizedMap<_, _, _>`; E0107 on the bare name, run459).
+    final castArity = library[castTo ?? '']?.typeParameters.length ?? 0;
+    final castSpelled = castArity == 0
+        ? castTo
+        : '$castTo<${List.filled(castArity, '_').join(', ')}>';
     final on = castTo == null
         ? expr(receiver)
-        : '${expr(receiver)}.dart_cast_to::<dyn $castTo>().unwrap()';
+        : '${expr(receiver)}.dart_cast_to::<dyn $castSpelled>().unwrap()';
     final generics = [
       '_',
       for (var i = 0; i < classArity; i++) '_',
@@ -4652,7 +4670,11 @@ class RustBackend {
       // The prelude's `Map` and `Set` are ordered and compare keys with
       // `==`: `PartialEq + Clone` is all they ask, and `Eq + Hash` shut
       // closures out of `ObserverList<VoidCallback>` (48 in `widgets`).
-      return "$p: Clone${_nb(cls)} + 'static${key && keyed ? ' + PartialEq' : ''}";
+      // ..and no `PartialEq` for a key parameter either (2026-09-06): the
+      // prelude's `Map` and `Set` compare keys by `DartEq`, which every
+      // parameter already carries; the `PartialEq` block shut
+      // `ObserverList<VoidCallback>.add` out (run459).
+      return "$p: Clone${_nb(cls)} + 'static";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
