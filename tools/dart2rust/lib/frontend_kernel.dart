@@ -933,6 +933,11 @@ class KernelFrontend {
           operand.target.name.text == 'lerpDouble') {
         return expression(operand);
       }
+      // ..and the same call once the tree shaker inlined it: `(a + (b - a)
+      // * t)!` is arithmetic the type flow analysis already made a
+      // `double`, and there is no `Option` to unwrap (71 `unwrap` on an
+      // `f64` at ws331).
+      if (_neverNullHere(operand)) return expression(operand);
       return IrNullCheck(expression(operand));
     }
     if (node is AsExpression) {
@@ -948,6 +953,10 @@ class KernelFrontend {
           from is InterfaceType &&
           to is InterfaceType &&
           from.classNode == to.classNode) {
+        // `unsafeCast<double>(lerpDouble(..))`, the tree shaker's form of
+        // `lerpDouble(..)!`: the lowering of `lerpDouble` is arithmetic
+        // with no `Option` on it (71 `unwrap` on an `f64` at ws331).
+        if (_neverNullHere(node.operand)) return expression(node.operand);
         return IrNullCheck(expression(node.operand));
       }
       // A cast down from an abstract class to a concrete one -- `path as
@@ -4890,6 +4899,26 @@ class KernelFrontend {
       }
     }
     return out;
+  }
+
+  /// Whether an expression's lowering is already a bare value where Kernel
+  /// still sees a nullable: `lerpDouble(..)` (lowered to arithmetic), or
+  /// arithmetic on numbers the type flow analysis typed non-nullable, the
+  /// two shapes of an inlined `lerpDouble(..)!`.
+  bool _neverNullHere(Expression e) {
+    var inner = e;
+    while (inner is Let) {
+      inner = inner.body;
+    }
+    if (inner is StaticInvocation && inner.target.name.text == 'lerpDouble') {
+      return true;
+    }
+    final type = _staticType(inner);
+    return inner is InstanceInvocation &&
+        type is InterfaceType &&
+        type.nullability != Nullability.nullable &&
+        const {'+', '-', '*', '/', '%', '~/'}.contains(inner.name.text) &&
+        const {'double', 'int', 'num'}.contains(type.classNode.name);
   }
 
   /// What a `throw` hands to `Err`: a *value* of a translated class
