@@ -1366,6 +1366,18 @@ class KernelFrontend implements TypeWorld {
       return IrNullCheck(inner);
     }
     if (node is AsExpression) {
+      // `null as T`: the null of `T` -- `None` for a nullable `T`, a panic
+      // (Dart's `TypeError`) for one with no null. Spelled through the
+      // prelude, which asks `T` itself (`_queue[i] ?? (null as E)` in
+      // `HeapPriorityQueue`, run436).
+      if (node.operand is NullLiteral) {
+        return IrStaticCall(
+          null,
+          'dart_null_as',
+          const [],
+          typeArguments: [_type(node.type)],
+        )..rustType = _type(node.type);
+      }
       // A cast that only removes `?` -- the CFE's spelling of a promoted
       // private field, `_hct` after `if (_hct != null)` -- is a null check.
       // Any other cast is the operand: Rust's types are already the
@@ -3521,7 +3533,14 @@ class KernelFrontend implements TypeWorld {
     }
     if (owner == 'List' || owner == 'Iterable') {
       if (name == '[]' && args.length == 1) {
-        return IrIndex(_receiver(node.receiver), args.single);
+        // Typed by the list's element, which a generic class's `List<E?>`
+        // keeps projected (`<E as DartNullable>::Or`) where the static type
+        // of the read says a plain `E?`.
+        final list = _receiver(node.receiver);
+        final element = list.rustType?.arguments.length == 1
+            ? list.rustType!.arguments.single
+            : null;
+        return IrIndex(list, args.single)..rustType = element;
       }
       if (name == '[]=' && args.length == 2) {
         // `xs[i] = v` where the expression's value is wanted -- the CFE puts
@@ -3978,8 +3997,13 @@ class KernelFrontend implements TypeWorld {
     // From the receiver's own class: a mixin's `child` is declared again
     // by the trait of the class that mixes it in, *below* the owner.
     final type = receiver is ThisExpression ? null : _staticType(receiver);
+    // Inside a body borrowed from a mixin application (`_appliedBody`)
+    // `this` is the mixin's trait, not the anonymous class the CFE copied
+    // the body into (`ServicesBinding::x(this_)` named the trait as a
+    // type, 9 E0782 at ws436).
+    final enclosing = _member?.enclosingClass;
     final from = receiver is ThisExpression
-        ? _member?.enclosingClass
+        ? ((enclosing?.isAnonymousMixin ?? false) ? _lowering : enclosing)
         : type is InterfaceType
         ? type.classNode
         : null;
@@ -4353,7 +4377,18 @@ class KernelFrontend implements TypeWorld {
         positional.length == 1 &&
         node.arguments.types.length == 1 &&
         node.arguments.types.single.nullability == Nullability.nullable) {
-      return IrStaticCall(null, 'vec_of_nones', [expression(positional[0])]);
+      // With the element type spelled: for a projected `E?` (a generic
+      // class's `List<E?>`) the prelude fills with `<E as DartNullable>::Or`
+      // nulls, which nothing could infer (`HeapPriorityQueue._queue`, run436).
+      final element = node.arguments.types.single;
+      return IrStaticCall(
+        null,
+        'vec_of_nones',
+        [expression(positional[0])],
+        typeArguments: [
+          _type(element.withDeclaredNullability(Nullability.nonNullable)),
+        ],
+      );
     }
     // `_GrowableList(0)` -- `List.empty(growable: true)` and `<T>[]` after
     // the CFE -- is an empty list. With a length it would be `n` nulls,
@@ -7556,6 +7591,13 @@ class KernelFrontend implements TypeWorld {
   }
 
   bool _closureCallsMethod(Class node) {
+    // An object whose `this` leaves as a value -- handed to a call
+    // (`addObserver(this)`), returned, stored, put in a literal -- is
+    // held by someone else afterwards, and only a handle can be: counted
+    // (`Rc<dyn WidgetsBindingObserver> <= _WidgetsAppState`, ws436).
+    final escapes = _ThisEscapes();
+    node.accept(escapes);
+    if (escapes.found) return true;
     // A tear-off of `this.method` is that closure written shorter (see the
     // `InstanceTearOff` case), so it makes the class counted for the same
     // reason a closure calling a method does. 448 refusals were tear-offs in
@@ -8662,6 +8704,31 @@ bool _mentions(DartType type, Class cls) => switch (type) {
 };
 
 /// Whether a class tears off one of its own methods anywhere.
+/// Whether `this` is used as a *value* anywhere in the class: an argument,
+/// a returned value, a stored value, a literal's element. Its use as a
+/// receiver (`this.x`, `this.m()`) is not that.
+class _ThisEscapes extends RecursiveVisitor {
+  bool found = false;
+
+  @override
+  void visitThisExpression(ThisExpression node) {
+    final parent = node.parent;
+    if (parent is Arguments ||
+        parent is ReturnStatement ||
+        parent is VariableDeclaration ||
+        parent is VariableSet ||
+        parent is ListLiteral ||
+        parent is SetLiteral ||
+        parent is MapLiteralEntry ||
+        parent is ConditionalExpression ||
+        parent is AsExpression ||
+        (parent is InstanceSet && identical(parent.value, node)) ||
+        (parent is StaticSet && identical(parent.value, node))) {
+      found = true;
+    }
+  }
+}
+
 class _TearOffFinder extends RecursiveVisitor {
   bool onThis = false;
 

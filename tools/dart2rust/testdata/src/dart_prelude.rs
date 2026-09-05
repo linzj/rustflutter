@@ -1973,8 +1973,9 @@ impl<T: Clone> DartList<T> for Vec<T> {
 /// `==` and are an error at the use when `T` has none.
 pub trait DartListEq<T> {
     fn remove_value(&mut self, value: T) -> bool;
-    /// `indexOf(value)`: the first index holding an equal element, or -1.
-    fn index_of(&self, value: T) -> i64;
+    /// `indexOf(value, [start])`: the first index at or after `start`
+    /// holding an equal element, or -1.
+    fn index_of(&self, value: T, start: i64) -> i64;
 }
 
 impl<T: PartialEq + Clone> DartListEq<T> for Vec<T> {
@@ -1987,9 +1988,10 @@ impl<T: PartialEq + Clone> DartListEq<T> for Vec<T> {
             None => false,
         }
     }
-    fn index_of(&self, value: T) -> i64 {
-        match self.iter().position(|x| *x == value) {
-            Some(i) => i as i64,
+    fn index_of(&self, value: T, start: i64) -> i64 {
+        let start = start.max(0) as usize;
+        match self.iter().skip(start).position(|x| *x == value) {
+            Some(i) => (i + start) as i64,
             None => -1,
         }
     }
@@ -2520,8 +2522,16 @@ pub struct HttpClientResponse;
 pub type ByteConversionSink = Sink<Vec<i64>>;
 
 /// `List<T?>.filled(n, null)`: `n` absences.
-pub fn vec_of_nones<T: Clone>(n: i64) -> Vec<Option<T>> {
-    vec![None; n.max(0) as usize]
+/// `null as T`: `T`'s own null, or the `TypeError` Dart throws when `T` has
+/// none.
+pub fn dart_null_as<T: DartNullable>() -> T {
+    T::dart_null().expect("type 'Null' is not a subtype of the cast's type")
+}
+
+/// `List<T?>.filled(n, null)`: `n` nulls of `T?` as translated code spells
+/// it -- `<T as DartNullable>::Or`, one `Option` layer whatever `T` is.
+pub fn vec_of_nones<T: DartNullable>(n: i64) -> Vec<<T as DartNullable>::Or> {
+    (0..n.max(0)).map(|_| T::from_option(None)).collect()
 }
 
 /// A Dart `Iterator<T>` over a list, for code that drives one by hand --

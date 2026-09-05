@@ -5261,6 +5261,7 @@ class RustBackend {
     // By their Dart names, as the call names them (`postEvent`, not the
     // `post_event` it is spelled as).
     'exit',
+    'dart_null_as',
     'postEvent',
     'registerExtension',
     'EnumName_get_name',
