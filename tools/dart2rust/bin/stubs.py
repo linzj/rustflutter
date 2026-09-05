@@ -88,15 +88,19 @@ def cargo_errors(ws):
         # leads back to the call site in the workspace.
         while s.get('expansion') and s['file_name'].startswith('/'):
             s = s['expansion']['span']
-        found.append((s['file_name'], s['line_start'], msg['message']))
         # The whole diagnostic, notes and all: the headline says
         # "mismatched types" 2482 times and nothing about which two.
-        RENDERED.append((msg.get('rendered') or '')[:8192])
+        rendered = (msg.get('rendered') or '')[:8192]
+        found.append((s['file_name'], s['line_start'], msg['message'], rendered))
+        RENDERED.append(rendered)
     p.wait()
     return found
 
 
 RENDERED = []
+
+# (file, function, rendered diagnostic) for each stub, in stub order.
+DETAIL = []
 
 # Crates the last `cargo check` produced an artifact for: the ones reached.
 ARTIFACTS = set()
@@ -198,8 +202,8 @@ def main():
         if not errors:
             break
         by_file = {}
-        for f, line, msg in errors:
-            by_file.setdefault(f, []).append((line, msg))
+        for f, line, msg, rendered in errors:
+            by_file.setdefault(f, []).append((line, msg, rendered))
         changed = 0
         for f, items in by_file.items():
             path = os.path.join(args.ws, f)
@@ -207,12 +211,12 @@ def main():
                 lines = io.open(path, encoding='utf-8').read().split('\n')
             except OSError:
                 # Not a file of the workspace: reported, not dropped.
-                for line, msg in items:
+                for line, msg, rendered in items:
                     unstubbable.append((f, line, msg))
                 continue
             # Highest line first, so earlier stubs do not shift later spans.
             done = set()
-            for line, msg in sorted(items, reverse=True):
+            for line, msg, rendered in sorted(items, reverse=True):
                 if line < 1 or line > len(lines):
                     # A span past the end: the file changed under cargo
                     # (the same file reported under two spellings).
@@ -225,6 +229,7 @@ def main():
                         if replaced is not None:
                             lines = replaced
                             stubbed.append((f, '<static>', msg))
+                            DETAIL.append((f, '<static>', rendered))
                             changed += 1
                             continue
                     unstubbable.append((f, line, msg))
@@ -241,6 +246,10 @@ def main():
                     continue
                 lines = stub(lines, start, opened, end, msg)
                 stubbed.append((f, name, msg))
+                # The diagnostic that stubbed it, by (file, function): the
+                # rendered list alone could not be searched by line once
+                # earlier stubs had shifted the file (ws456).
+                DETAIL.append((f, name, rendered))
                 changed += 1
             io.open(path, 'w', encoding='utf-8', newline='\n').write('\n'.join(lines))
         print('  stubbed %d function(s), %d error(s) outside any function' % (
@@ -262,6 +271,9 @@ def main():
                 out.write('%s:%d\t%s\n' % (f, line, msg))
         with io.open(args.report + '.rendered.txt', 'w', encoding='utf-8') as out:
             out.write('\n'.join(RENDERED))
+        with io.open(args.report + '.detail.txt', 'w', encoding='utf-8') as out:
+            for f, name, rendered in DETAIL:
+                out.write('=== %s\t%s\n%s\n' % (f, name, rendered))
     return 0
 
 
