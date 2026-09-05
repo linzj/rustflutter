@@ -439,6 +439,7 @@ class KernelFrontend {
         // `Rc<dyn Element>` (`findAncestorStateOfType`).
         if (promoted is InterfaceType &&
             _abstractLike(promoted.classNode) &&
+            _translatedClass(promoted.classNode) &&
             !scalars.contains(promoted.classNode.name) &&
             declared is InterfaceType &&
             declared.classNode != promoted.classNode) {
@@ -1075,9 +1076,13 @@ class KernelFrontend {
       // a trait, the `Option` kept when the target is nullable (the
       // prelude's `dart_cast_to` on an `Option`). An upcast stays the
       // operand: the value already is one.
+      // Only a class that is a trait here: `List` and `TypedData` are
+      // abstract to Kernel and prelude types or nothing here (18 "expected
+      // trait, found struct" at ws340).
       if (to is InterfaceType &&
           from is InterfaceType &&
           _abstractLike(to.classNode) &&
+          _translatedClass(to.classNode) &&
           !_scalarClass(to.classNode) &&
           to.classNode.name != 'Object' &&
           from.classNode != to.classNode &&
