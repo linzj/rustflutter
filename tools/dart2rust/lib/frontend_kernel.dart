@@ -7608,19 +7608,28 @@ class KernelFrontend implements TypeWorld {
                 ),
             ];
             final returns = function.returnType;
-            final call = IrStaticCall(null, 'dart_native', [
-              IrLiteral(symbol, const IrType('String')),
-              IrListLiteral(args, IrType('Object')),
-              IrLiteral(
-                returns is VoidType ? 'false' : 'true',
-                const IrType('bool'),
-              ),
-            ], fails: true)..rustType = const IrType('dynamic');
-            if (returns is VoidType) return IrBlock([IrExprStmt(call)]);
-            if (returns is NeverType) {
+            final symbolText = IrLiteral(symbol, const IrType('String'));
+            final passed = IrListLiteral(args, IrType('Object'));
+            if (returns is VoidType || returns is NeverType) {
+              final call = IrStaticCall(null, 'dart_native', [
+                symbolText,
+                passed,
+                IrLiteral('false', const IrType('bool')),
+              ], fails: true)..rustType = const IrType('dynamic');
+              if (returns is VoidType) return IrBlock([IrExprStmt(call)]);
               return IrBlock([IrExprStmt(call), IrExprStmt(_unreachable)]);
             }
-            return IrBlock([IrReturn(coerce(call, _type(returns)))]);
+            // A value comes back as the declared type (`NativeAnswer`):
+            // the host's object read as it, or the absent engine's value.
+            final type = _type(returns);
+            final valued = IrStaticCall(
+              null,
+              'dart_native_as',
+              [symbolText, passed],
+              fails: true,
+              typeArguments: [type],
+            )..rustType = type;
+            return IrBlock([IrReturn(valued)]);
           } on Unsupported catch (error) {
             // A signature the boundary cannot spell: the refusal below.
             if (Platform.environment['DART2RUST_TRACE_NATIVE'] != null) {

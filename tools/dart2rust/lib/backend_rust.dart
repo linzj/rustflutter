@@ -5645,6 +5645,7 @@ class RustBackend {
   /// to know them, or `vec_of_nones(..)` reads as a call to nothing.
   static const _preludeFunctions = {
     'dart_native',
+    'dart_native_as',
     // By their Dart names, as the call names them (`postEvent`, not the
     // `post_event` it is spelled as).
     'exit',

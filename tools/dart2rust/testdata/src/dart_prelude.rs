@@ -2663,6 +2663,84 @@ pub fn dart_native(
     Ok(std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>)
 }
 
+/// What a native's answer is read as, by the declared return type: the
+/// host's object downcast to it, or -- with no host -- the value an
+/// engine that is not there gives: zero, false, the empty string, null.
+/// `RootIsolateToken.instance` reads a `0` token as "none" itself.
+pub trait NativeAnswer: Sized {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self;
+    fn absent() -> Self;
+}
+
+macro_rules! native_answer_scalar {
+    ($t:ty, $absent:expr) => {
+        impl NativeAnswer for $t {
+            fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+                let object: &dyn Object = answer.as_ref();
+                match object.as_any().downcast_ref::<$t>() {
+                    Some(value) => value.clone(),
+                    None => panic!(
+                        "native `{}` answered {:?} where {} was declared",
+                        symbol,
+                        answer,
+                        stringify!($t)
+                    ),
+                }
+            }
+            fn absent() -> Self {
+                $absent
+            }
+        }
+    };
+}
+
+native_answer_scalar!(i64, 0);
+native_answer_scalar!(f64, 0.0);
+native_answer_scalar!(bool, false);
+native_answer_scalar!(String, String::new());
+
+impl NativeAnswer for () {
+    fn from_answer(_answer: std::rc::Rc<dyn Object>, _symbol: &str) -> Self {}
+    fn absent() -> Self {}
+}
+
+impl NativeAnswer for std::rc::Rc<dyn Object> {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, _symbol: &str) -> Self {
+        answer
+    }
+    fn absent() -> Self {
+        std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>
+    }
+}
+
+impl<T: NativeAnswer> NativeAnswer for Option<T> {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        dart_nullable(answer).map(|value| T::from_answer(value, symbol))
+    }
+    fn absent() -> Self {
+        None
+    }
+}
+
+/// A native that returns a value, read as its declared type
+/// (`NativeAnswer`); without a host the absent engine's value, recorded.
+pub fn dart_native_as<T: NativeAnswer>(
+    symbol: String,
+    args: Vec<std::rc::Rc<dyn Object>>,
+) -> Result<T, std::rc::Rc<dyn Object>> {
+    let answered = NATIVE_HOST.with(|h| h.borrow().as_ref().map(|host| host(&symbol, args)));
+    if let Some(result) = answered {
+        return result.map(|answer| T::from_answer(answer, &symbol));
+    }
+    NATIVES_UNANSWERED.with(|s| {
+        let mut s = s.borrow_mut();
+        if !s.contains(&symbol) {
+            s.push(symbol);
+        }
+    });
+    Ok(T::absent())
+}
+
 /// The valued natives a run without a host answered with null, in order.
 pub fn natives_unanswered() -> Vec<String> {
     NATIVES_UNANSWERED.with(|s| s.borrow().clone())
@@ -4213,7 +4291,7 @@ fn report_natives_skipped() {
     let unanswered = natives_unanswered();
     if !unanswered.is_empty() {
         eprintln!(
-            "dart2rust: no native host; {} valued native(s) answered null: {}",
+            "dart2rust: no native host; {} valued native(s) answered as absent: {}",
             unanswered.len(),
             unanswered.join(", ")
         );
