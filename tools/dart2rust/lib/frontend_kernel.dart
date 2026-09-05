@@ -3182,11 +3182,19 @@ class KernelFrontend implements TypeWorld {
     _dispatchInterface = node.interfaceTarget.function;
     final List<IrExpr> args;
     try {
-      args = _arguments(
-        node.arguments,
+      // With the call's type arguments for the method's own parameters,
+      // as a static generic call has them (`_withGenericArgs`): `pop<T>
+      // (result)` inside `maybePop<T>` binds the callee's `T` to the
+      // caller's, which a projected `T?` slot has to know (19 at ws421).
+      args = _withGenericArgs(
         node.interfaceTarget.function,
-        true,
-        node.functionType,
+        node.arguments,
+        () => _arguments(
+          node.arguments,
+          node.interfaceTarget.function,
+          true,
+          node.functionType,
+        ),
       );
     } finally {
       _dispatchMember = wasDispatch;
@@ -6849,8 +6857,16 @@ class KernelFrontend implements TypeWorld {
     _returnsType = expected ?? function.returnType;
     _asyncBody = function.asyncMarker == AsyncMarker.Async;
     final outerEdge = _edgeReturn;
+    // ..the awaited type for an `async` body, whose `return v` is the
+    // future's value (`Future<T?> send()` returning `T?`, ws421).
+    final declaredReturn = function.returnType;
     _edgeReturn = expected == null && function.parent is Member
-        ? function.returnType
+        ? (function.asyncMarker == AsyncMarker.Async &&
+                  declaredReturn is InterfaceType &&
+                  declaredReturn.classNode.name == 'Future' &&
+                  declaredReturn.typeArguments.length == 1
+              ? declaredReturn.typeArguments.single
+              : declaredReturn)
         : null;
     try {
       return statement(body);
