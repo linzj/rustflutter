@@ -721,6 +721,10 @@ class RustBackend {
         kind == 'Set'
             ? 'Set::of(${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>())'
             : '${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>()',
+      // `this` shared as an object is its own handle (`!as_object`).
+      IrUpcast(:final value, :final type)
+          when value is IrThis && type.name == 'Object' =>
+        _call(value, '!as_object', const []),
       IrUpcast(:final value, :final type, :final handle, :final explicit) =>
         handle || (library[_concreteType(value).name]?.counted ?? false)
             ? (explicit

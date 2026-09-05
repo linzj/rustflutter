@@ -64,6 +64,19 @@ class KernelFrontend {
   /// `DART2RUST_COERCE=0` measures without.
   final bool coerceByType;
 
+  /// Whether the slot being filled belongs to translated code. A prelude
+  /// callee's Rust signature is its own (`AssertionError::new(String)`,
+  /// `Object::hash` generic over what it takes), not Dart's declaration,
+  /// so its arguments are not coerced by the declared type.
+  var _slotTranslated = true;
+
+  bool _calleeTranslated(FunctionNode? callee) {
+    final member = callee?.parent;
+    if (member is! Member) return true;
+    final uri = member.enclosingLibrary.importUri;
+    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+  }
+
   /// Whether `Object`-bounded parameters a subclass fixes are erased too
   /// (see `_erasedParameter`). Off: ws318.
   final bool eraseObjectBounded;
@@ -1171,7 +1184,11 @@ class KernelFrontend {
             to.nullability == Nullability.nullable) {
           return IrNullAware(
             expression(node.operand),
-            IrCall(IrDowncast(IrBound(), to.classNode.name), 'clone', const []),
+            IrCall(
+              IrDowncast(IrBound(), _rustScalar(to.classNode.name)),
+              'clone',
+              const [],
+            ),
           );
         }
       }
@@ -3747,6 +3764,17 @@ class KernelFrontend {
   /// `scheduleMicrotask`, `Timer`, `WidgetStateProperty.resolveWith`: storing
   /// one needs `'static`, and a borrow cannot give it. Those go back to being
   /// refused, which is the truth about them until objects are counted.
+  /// `lower()`, with the slot's owner known (`_slotTranslated`).
+  IrExpr _forCallee(FunctionNode? callee, IrExpr Function() lower) {
+    final was = _slotTranslated;
+    _slotTranslated = _calleeTranslated(callee);
+    try {
+      return lower();
+    } finally {
+      _slotTranslated = was;
+    }
+  }
+
   IrExpr _argument(
     Expression value,
     FunctionNode? callee,
@@ -3782,16 +3810,19 @@ class KernelFrontend {
           value,
           declaredType,
           index: index,
-          _widened(
-            value,
-            paramType,
-            _withBorrowing(
-              param,
-              callee,
-              () => _withExpectedReturn(
-                paramType,
-                value,
-                () => expression(value),
+          _forCallee(
+            callee,
+            () => _widened(
+              value,
+              paramType,
+              _withBorrowing(
+                param,
+                callee,
+                () => _withExpectedReturn(
+                  paramType,
+                  value,
+                  () => expression(value),
+                ),
               ),
             ),
           ),
@@ -3892,13 +3923,16 @@ class KernelFrontend {
           value,
           type,
           name: param is FunctionParameter ? param.parameterName : null,
-          _widened(
-            value,
-            type,
-            _withBorrowing(
-              param,
-              callee,
-              () => _withExpectedReturn(type, value, () => expression(value)),
+          _forCallee(
+            callee,
+            () => _widened(
+              value,
+              type,
+              _withBorrowing(
+                param,
+                callee,
+                () => _withExpectedReturn(type, value, () => expression(value)),
+              ),
             ),
           ),
         ),
@@ -3982,6 +4016,15 @@ class KernelFrontend {
     bool generic = false,
   }) {
     if (param == null || callee == null) return lowered;
+    // Already what the slot holds (`coerce` shared it): nothing to add.
+    final already = lowered.rustType;
+    if (already != null) {
+      try {
+        if (_sameRust(already, _type(param))) return lowered;
+      } on Unsupported {
+        // Untyped slot: the rules below decide.
+      }
+    }
     final member = callee.parent;
     if (member is! Member) return lowered;
     final uri = member.enclosingLibrary.importUri;
@@ -4285,6 +4328,17 @@ class KernelFrontend {
       return IrSome(inner)..rustType = slot;
     }
     if (!slot.nullable && have.nullable) {
+      if (slot.name == 'dynamic') {
+        // `dynamic` admits null: absent is the `Null` object.
+        final element = IrCall(IrBound(), 'clone', const [])
+          ..rustType = _nonNull(have);
+        final shared = coerce(element, slot, inClosure: true);
+        final mapped = identical(shared, element)
+            ? value
+            : (IrNullAware(value, shared)
+                ..rustType = IrType('dynamic', nullable: true));
+        return IrCall(mapped, '!or_null', const [])..rustType = slot;
+      }
       final inner = IrNullCheck(value)..rustType = _nonNull(have);
       return coerce(inner, slot, inClosure: inClosure);
     }
@@ -4303,7 +4357,14 @@ class KernelFrontend {
     if (have.name == 'int' && slot.name == 'double') {
       return IrCast(value, 'f64')..rustType = slot;
     }
-    if (_scalarNames.contains(have.name) || _scalarNames.contains(slot.name)) {
+    if (_scalarNames.contains(have.name) &&
+        slot.name != 'Object' &&
+        slot.name != 'dynamic') {
+      return value;
+    }
+    if (_scalarNames.contains(slot.name) &&
+        have.name != 'Object' &&
+        have.name != 'dynamic') {
       return value;
     }
     // Function types: the adapters below know them.
@@ -4321,10 +4382,29 @@ class KernelFrontend {
         ..rustType = slot;
     }
     if (have.name == 'Map' || slot.name == 'Map') return value;
-    // `Object` slots are shared into by `_intoObject`, after this.
-    if (slot.name == 'Object' || slot.name == 'dynamic') return value;
     final haveTrait = _isTraitName(have.name);
     final slotTrait = _isTraitName(slot.name);
+    // Into `Object`: a handle unsizes, a value goes behind a fresh,
+    // registered one. `dynamic` admits null, which is the `Null` object.
+    if (slot.name == 'Object' || slot.name == 'dynamic') {
+      if (have.name == 'Object' || have.name == 'dynamic') return value;
+      if (have.name == 'Null') return value;
+      return IrUpcast(
+        value,
+        IrType('Object'),
+        handle: haveTrait || _isCountedName(have.name),
+        explicit: inClosure,
+      )..rustType = slot;
+    }
+    // Out of `Object`: a scalar by `Any`, cloned out of the reference.
+    if ((have.name == 'Object' || have.name == 'dynamic') &&
+        _scalarNames.contains(slot.name)) {
+      return IrCall(
+        IrDowncast(value, _rustScalar(slot.name)),
+        'clone',
+        const [],
+      )..rustType = slot;
+    }
     if (haveTrait && slotTrait) {
       // The same trait with other arguments (`Tween<f64>` into a
       // `Tween<Object>`) has no cast (55 non-primitive casts at ws357).
@@ -4373,7 +4453,10 @@ class KernelFrontend {
         return _listLiteral(value, args[0]);
       }
     }
-    if (coerceByType && param != null && lowered.rustType != null) {
+    if (coerceByType &&
+        _slotTranslated &&
+        param != null &&
+        lowered.rustType != null) {
       IrType? slot;
       try {
         slot = _type(param);

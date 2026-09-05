@@ -6373,6 +6373,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws357 | 950 叶子错 | **3187→4259**：`num` 槽（`dart:core` 的 `num.+` 形参）被当成 `f64`，`i + 1` 全变 `i + (1 as f64)`（+999 cannot add，+443 cannot subtract）；同名不同实参的 trait 也被 `as`（`Tween<f64>` 转 `Tween<Object>`，+55）。改：`num` 槽不转，翻译过的被调方的 `num` 仍由 `_numLiteral` 变 `f64`；同名 trait 不转；`IrBinary` 由操作数定型（`_binaryType`），不信 Dart 给内联 `lerpDouble` 的 `double?`。 |
 | ws358 | 950 叶子错 | `coerce` 默认开（`DART2RUST_COERCE=0` 关）。**3187→3110 / 795，138+1 个 crate**，尺子第一次在通用机制下下降（mismatched −110，operator incompatible −57；+53 `unwrap` on f64：自己造的 `IrBinary`（`(b - a) * t`）没过 `expression()`，没类型——已改成递归定型，下一轮量）。旧的 26 个 `_widened` 分支还在，接下来逐个删、逐个量。 |
 | ws359 | 950 叶子错 | `_binaryType` 递归给自己造的操作数定型。**3110→3076 / 795，138+1 个 crate**（unwrap on f64 −43，cannot subtract −22）。 |
+| ws360 | 950 叶子错 | `coerce` 加 `Object`/`dynamic` 槽的共享（值 `dart_object`、句柄 unsize、`this` 走自己的句柄、可空经 `map`、`dynamic` 的 null 是 `Null` 对象）和 `Object`→标量的 `Any` 下转。**3076→3656**：prelude 被调方（`Set.contains(Object?)`、`StringBuffer.write`、`Object.hash`）的 Rust 签名不是 Dart 声明的，按声明转是错的（+443 `&Option<Rc<WidgetState>>`）。 |
+| ws361 | 950 叶子错 | 实参的槽只在被调方是翻译过的代码时才按类型转（`_slotTranslated`/`_forCallee`，prelude 的签名是它自己的）；`_intoDynamic` 幂等；`as int?` 的下转拼成 `i64`（10 处 `downcast_ref::<int>`，旧 bug）。**3656→3076 / 795**，与 ws359 持平——Object 规则进了 `coerce`，尺子没动。下一步删 `_widened` 里被覆盖的分支。 |
 
 ## 下一步(2026-09-05 重铺)
 
