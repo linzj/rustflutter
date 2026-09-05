@@ -426,11 +426,25 @@ class KernelFrontend {
       // Promoted from `T?` to `T` -- `if (x != null) f(x)` -- the read is
       // the value inside. A clone first, so the local is still there for
       // the next read: `&Option<Hct>` where `&Hct` was wanted, 12 times.
+      // A type parameter's own nullability is *undetermined*, not
+      // non-nullable: `value` after `if (value is! T) throw` in
+      // `Provider.of` was returned still an `Option<T>`.
       if (promoted != null &&
           declared is! DynamicType &&
-          promoted.nullability == Nullability.nonNullable &&
+          promoted.nullability != Nullability.nullable &&
           declared.nullability == Nullability.nullable) {
-        return IrNullCheck(IrCall(IrLocal(name), 'clone', const []));
+        final inside = IrNullCheck(IrCall(IrLocal(name), 'clone', const []));
+        // ..and narrowed as well as unwrapped: `ancestor` after `ancestor
+        // is StatefulElement`, on an `Element?`, read `.state` of an
+        // `Rc<dyn Element>` (`findAncestorStateOfType`).
+        if (promoted is InterfaceType &&
+            _abstractLike(promoted.classNode) &&
+            !scalars.contains(promoted.classNode.name) &&
+            declared is InterfaceType &&
+            declared.classNode != promoted.classNode) {
+          return IrCastTo(inside, _type(promoted));
+        }
+        return inside;
       }
       return IrLocal(name);
     }
@@ -1056,6 +1070,23 @@ class KernelFrontend {
             ),
           );
         }
+      }
+      // `ancestor as StatefulElement?` from an `Element?`: a downcast to
+      // a trait, the `Option` kept when the target is nullable (the
+      // prelude's `dart_cast_to` on an `Option`). An upcast stays the
+      // operand: the value already is one.
+      if (to is InterfaceType &&
+          from is InterfaceType &&
+          _abstractLike(to.classNode) &&
+          !_scalarClass(to.classNode) &&
+          to.classNode.name != 'Object' &&
+          from.classNode != to.classNode &&
+          !(typeEnvironment?.hierarchy.isSubInterfaceOf(
+                from.classNode,
+                to.classNode,
+              ) ??
+              true)) {
+        return IrCastTo(expression(node.operand), _type(to));
       }
       return expression(node.operand);
     }

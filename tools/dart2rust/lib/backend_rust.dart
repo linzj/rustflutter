@@ -667,8 +667,10 @@ class RustBackend {
       IrCastTo(:final target, :final type) when _isTypeParam(type.name) =>
         '${expr(target)}.dart_cast_any::<${type.name}>()'
             '${type.nullable ? "" : ".unwrap()"}',
+      // A nullable target keeps the `Option` the cast hands back.
       IrCastTo(:final target, :final type) =>
-        '${expr(target)}.dart_cast_to::<${_dynOf(type)}>().unwrap()',
+        '${expr(target)}.dart_cast_to::<${_dynOf(type)}>()'
+            '${type.nullable ? "" : ".unwrap()"}',
       IrSuperDispatch(
         :final receiver,
         :final base,
