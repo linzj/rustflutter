@@ -292,7 +292,15 @@ IrExpr coerceInto(
     }
     final call = IrCallValue(value, args)..rustType = have.returns;
     final result = coerceInto(call, slot.returns!, world, inClosure: true);
-    if (!adapted && identical(result, call)) return value;
+    if (!adapted && identical(result, call)) {
+      // The same function type: a closure literal still goes behind the
+      // handle every function slot is (`Rc<dyn Fn>`), unless it already
+      // is one (`boxed`).
+      if (value is IrClosure && !value.boxed) {
+        return IrCall(value, '!rc', const [])..rustType = slot;
+      }
+      return value;
+    }
     return IrCall(
       IrClosure(params, IrReturn(result), slot.returns!),
       '!rc',

@@ -6458,6 +6458,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws418 | 950 叶子错 | 老的 21 个 E0034（`mark_needs_layout` 由 `RenderBox` 和 `RenderObject` 两个 trait 都声明、类自己没有 inherent 方法）：接收者的类对同名方法有两个声明 trait 时按最近的那个限定，和多实例化的限定走同一条路径。`Match` 是 `RegExpMatch`（prelude 一行 `pub type Match`）。 |
 | ws418 结果 | 950 叶子错 | **2609→2650**（修 3 新 36）：两 trait 限定把只声明了 setter `value=` 的 trait 当成声明者（49 个 `cannot find method value in trait _RestorablePrimitiveValue`）；E0034 21→15。 |
 | ws419 | 950 叶子错 | 限定时排除 setter、算上 trait 的字段访问器。另外 `DART2RUST_CENSUS=1` 数了到槽位时没类型的值：闭包 3388 个（`_withBorrowing` 装箱重建、`_unboxed`、tear-off 适配闭包三处丢了 `rustType`），所以函数槽位的适配闭包从没生效过；三处补上。驱动输出对 ws418 差 167 文件。 |
+| ws419/420 结果 | 950 叶子错 | **2650→2779→2770**，闭包定型是净亏（比 ws417 高 160）：定型后闭包在函数槽位得到适配闭包，适配结果的规则不对——`void` 结果进 `Object` 槽、返回 counted widget 的闭包结果被 `dart_object` 再包一层 `Rc`（`Rc<Semantics>: DartAny` 一族 +200）、prelude 泛型函数形参（`first_where_or`）按 Dart 签名适配。ws420 加了裸闭包进函数槽 `!rc`、prelude 被调用者的闭包不适配，只回 9。 |
+| ws421 | 950 叶子错 | **回退**闭包三处的类型携带（留 setter 修正、`Match`、census），闭包回到无类型走形状规则；`!rc` 规则和 prelude 跳过保留（无害）。待办：适配结果规则补 `void→Object`、counted 类结果按 handle 上转后再开闭包定型。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
 ## 下一步(2026-09-05 重铺)

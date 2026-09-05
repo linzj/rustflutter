@@ -1590,10 +1590,6 @@ class KernelFrontend implements TypeWorld {
             : _freeLocalsIn(receiver, {}),
         holdsSelf: holds,
       );
-      // Typed by its own signature, as a closure literal is.
-      adapter.rustType = IrType.function([
-        for (final p in adapter.params) p.type,
-      ], adapter.returns);
       return adapter;
     }
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
@@ -4410,13 +4406,22 @@ class KernelFrontend implements TypeWorld {
     IrExpr Function(IrExpr lowered) widen,
   ) {
     final was = _slotTranslated;
+    final wasPrelude = _slotPrelude;
     _slotTranslated = _calleeTranslated(callee, declared);
+    _slotPrelude = !_translatedCallee(callee) && callee != null;
     try {
       return widen(lowered);
     } finally {
       _slotTranslated = was;
+      _slotPrelude = wasPrelude;
     }
   }
+
+  /// Whether the slot being filled is a prelude callee's. Its function
+  /// parameters are its own Rust signatures (`first_where_or` takes the
+  /// element, not Dart's `T?`), and a closure handed to one is not adapted
+  /// by the declared Dart type (132 new at ws419).
+  var _slotPrelude = false;
 
   IrExpr _argument(
     Expression value,
@@ -5038,17 +5043,20 @@ class KernelFrontend implements TypeWorld {
     // lowered underneath -- a literal's entries against the slot's element
     // types -- fills slots of its own, translated ones.
     final translated = _slotTranslated;
+    final prelude = _slotPrelude;
     _slotTranslated = true;
+    _slotPrelude = false;
     try {
       return _widenedInto(
         value,
         param,
         lowered,
-        translated: translated,
+        translated: translated && !(prelude && lowered is IrClosure),
         slotIr: slotIr,
       );
     } finally {
       _slotTranslated = translated;
+      _slotPrelude = prelude;
     }
   }
 
@@ -5398,7 +5406,7 @@ class KernelFrontend implements TypeWorld {
           captures: e.captures,
           locals: e.locals,
           holdsSelf: e.holdsSelf,
-        )..rustType = e.rustType)
+        ))
       : e;
 
   FunctionNode? _calleeOf(Object param) {
@@ -5419,8 +5427,12 @@ class KernelFrontend implements TypeWorld {
       // The parameter is owned where it is kept, so the argument is boxed to
       // match: a closure's own type has no name.
       if (value is IrClosure) {
-        // ..and its type: a rebuilt closure reached its slot untyped, and
-        // no adapter was ever made for it (3388 at ws418).
+        // Untyped on purpose (ws419 measured typing it: 2609 -> 2779). A
+        // typed closure at its slot gets an adapter from `coerce`, and the
+        // adapter's result rules -- a `void` result into `Object`, a
+        // counted widget's handle behind a fresh `dart_object` -- are not
+        // right yet. Until they are, the slot's shape rules keep the old
+        // answer.
         return IrClosure(
           value.params,
           value.body,
@@ -5431,7 +5443,7 @@ class KernelFrontend implements TypeWorld {
           // that lost `kept` in round 104 and `shared` in round 101.
           holdsSelf: value.holdsSelf,
           boxed: true,
-        )..rustType = value.rustType;
+        );
       }
       return value;
     } finally {
