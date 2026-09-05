@@ -2466,7 +2466,7 @@ class RustBackend {
     // `Vec::contains` takes a reference; Dart's takes the value. Only the
     // List's: `Path.contains(Offset)` is a method of its own.
     if (name == '!contains' && args.length == 1) {
-      return '$receiver.contains(&${_borrowed(args.single)})';
+      return '$receiver.dart_contains(&${_borrowed(args.single)})';
     }
     if (name == '!expando_get' && args.length == 1) {
       return '$receiver.get(&${_borrowed(args.single)})';
@@ -3936,6 +3936,7 @@ class RustBackend {
     _line('}');
     _line('');
     _emitDartNullable();
+    _emitDartEq(body: 'self == other');
     // An enhanced enum: its members go in an impl, where they lose nothing.
     // Refusing the whole enum was right only while the alternative was
     // emitting a plain one and dropping them.
@@ -4054,6 +4055,17 @@ class RustBackend {
             !_preludeInterfaces.containsKey(i.name))
           _traitPath(i),
     }.toList();
+    // A trait object compares by identity (`DartEq`), as `dyn Object` does.
+    _line(
+      'impl${_generics(cls, static: true, clone: false)} DartEq for dyn ${cls.name}${cls.typeParameters.isEmpty ? '' : '<${cls.typeParameters.join(', ')}>'} {',
+    );
+    _indent++;
+    _line(
+      'fn dart_eq(&self, other: &Self) -> bool { std::ptr::addr_eq(self as *const Self, other as *const Self) }',
+    );
+    _indent--;
+    _line('}');
+    _line('');
     _line(
       // No `Clone` on the trait's parameters: a `dyn Foo<Pin<Box<dyn
       // Future>>>` is named (`_CallbackHookProvider<Future<bool>>`), and a
@@ -4254,6 +4266,26 @@ class RustBackend {
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
+  /// `DartEq` for the struct or enum (see the prelude's `DartEq`): `body`
+  /// compares `self` and `other`; `extraBound` joins each type parameter's
+  /// bounds, `where` follows the header.
+  void _emitDartEq({
+    required String body,
+    String extraBound = '',
+    String where = '',
+  }) {
+    final own = '${cls.name}${_generics(cls)}';
+    final header = cls.typeParameters.isEmpty
+        ? ''
+        : '<${cls.typeParameters.map((p) => "$p: Clone + DartNullable<Or: Clone> + 'static$extraBound").join(', ')}>';
+    _line('impl$header DartEq for $own$where {');
+    _indent++;
+    _line('fn dart_eq(&self, other: &Self) -> bool { $body }');
+    _indent--;
+    _line('}');
+    _line('');
+  }
+
   void _emitDartNullable() {
     final own = '${cls.name}${_generics(cls)}';
     // The struct's own bounds, not an impl's: `Or` is `Option<Self>` and
@@ -6220,6 +6252,25 @@ class RustBackend {
     // `DartAny` in the prelude for why the blanket one is quietly wrong.
     _line('');
     _emitDartNullable();
+    // `DartEq`, by the `PartialEq` the struct has -- derived, or the
+    // manual one above with its bounds -- and by identity when it has none.
+    if (comparable) {
+      _emitDartEq(body: 'self == other', extraBound: ' + PartialEq');
+    } else if (byIdentity.isNotEmpty) {
+      final projected = {
+        for (final f in _allFields(cls))
+          if (f.type.projected)
+            type(IrType(f.type.name, arguments: f.type.arguments)),
+      };
+      _emitDartEq(
+        body: 'self == other',
+        where: cls.typeParameters.isEmpty
+            ? ''
+            : ' where ${[for (final p in cls.typeParameters) '$p: PartialEq', for (final p in projected) '<$p as DartNullable>::Or: PartialEq'].join(', ')}',
+      );
+    } else {
+      _emitDartEq(body: 'std::ptr::eq(self, other)');
+    }
     _line(
       // The bounds the inherent impl has: `dart_cast` calls the trait
       // impls, whose `E: Clone` a bare `'static` cannot meet (ws304).

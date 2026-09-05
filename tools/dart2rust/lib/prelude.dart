@@ -844,7 +844,7 @@ impl<T: Clone> Set<T> {    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`
 
 }
 
-impl<T: PartialEq + Clone> Set<T> {
+impl<T: DartEq + Clone> Set<T> {
     pub fn of(elements: Vec<T>) -> Set<T> {
         let mut s = Set::new();
         for e in elements {
@@ -877,11 +877,11 @@ impl<T: PartialEq + Clone> Set<T> {
     }
 
     pub fn contains(&self, value: &T) -> bool {
-        self.items.iter().any(|item| item == value)
+        self.items.iter().any(|item| item.dart_eq(value))
     }
 
     pub fn remove(&mut self, value: &T) -> bool {
-        match self.items.iter().position(|item| item == value) {
+        match self.items.iter().position(|item| item.dart_eq(value)) {
             Some(at) => {
                 self.items.remove(at);
                 true
@@ -1306,7 +1306,7 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
 
 }
 
-impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
+impl<K: DartEq + Clone, V: Clone> Map<K, V> {
     /// `Map.from(other)` / a literal: an array or a `Vec` of entries.
     pub fn from<I: IntoIterator<Item = (K, V)>>(items: I) -> Self {
         let mut map = Map::new();
@@ -1317,7 +1317,7 @@ impl<K: PartialEq + Clone, V: Clone> Map<K, V> {
     }
 
     fn at(&self, key: &K) -> Option<usize> {
-        self.entries.iter().position(|(k, _)| k == key)
+        self.entries.iter().position(|(k, _)| k.dart_eq(key))
     }
 
     pub fn get(&self, key: &K) -> Option<&V> {
@@ -1392,13 +1392,34 @@ pub type Queue<T> = std::collections::VecDeque<T>;
 /// Equality by identity for what is shared: what Dart's `Object.==` does,
 /// and what a derived `PartialEq` over an `Rc<dyn X>` field cannot say
 /// (see `_emitStruct`).
+/// Dart's `==`, as collections ask it of their keys and elements: a
+/// value by its `PartialEq`, a shared object (`Rc<..>`) by what it holds,
+/// a trait object or a function by identity. `Map`, `Set` and the `List`
+/// operations that compare (`contains`, `remove`, `indexOf`) all go
+/// through this, so a `Set<VoidCallback>` or a `Map<PointerRoute, ..>` is
+/// as ordinary as a `Set<int>` (run437: `PointerRouter`, and every
+/// listener list before it).
 pub trait DartEq {
     fn dart_eq(&self, other: &Self) -> bool;
 }
 
-impl<T: ?Sized> DartEq for std::rc::Rc<T> {
+/// A shared object compares as what it holds: a value struct by value, a
+/// trait object or a function by identity (their own impls).
+impl<T: ?Sized + DartEq> DartEq for std::rc::Rc<T> {
     fn dart_eq(&self, other: &Self) -> bool {
-        std::rc::Rc::ptr_eq(self, other)
+        (**self).dart_eq(&**other)
+    }
+}
+
+impl<T: ?Sized> DartEq for std::rc::Weak<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.ptr_eq(other)
+    }
+}
+
+impl DartEq for dyn Object {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
@@ -1417,6 +1438,143 @@ impl<T: DartEq> DartEq for Vec<T> {
         self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a.dart_eq(b))
     }
 }
+
+impl<T: DartEq> DartEq for std::collections::VecDeque<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a.dart_eq(b))
+    }
+}
+
+impl<T: DartEq> DartEq for std::cell::RefCell<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.borrow().dart_eq(&*other.borrow())
+    }
+}
+
+impl<T: Copy + DartEq> DartEq for std::cell::Cell<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.get().dart_eq(&other.get())
+    }
+}
+
+impl<T: ?Sized> DartEq for std::marker::PhantomData<T> {
+    fn dart_eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl<A: DartEq, B: DartEq> DartEq for (A, B) {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.0.dart_eq(&other.0) && self.1.dart_eq(&other.1)
+    }
+}
+
+impl<A: DartEq, B: DartEq, C: DartEq> DartEq for (A, B, C) {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.0.dart_eq(&other.0) && self.1.dart_eq(&other.1) && self.2.dart_eq(&other.2)
+    }
+}
+
+impl<K: DartEq + Clone, V: DartEq + Clone> DartEq for Map<K, V> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.entries.dart_eq(&other.entries)
+    }
+}
+
+impl<T: DartEq + Clone> DartEq for Set<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.items.dart_eq(&other.items)
+    }
+}
+
+impl<K: DartEq, V: DartEq> DartEq for MapEntry<K, V> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self.key.dart_eq(&other.key) && self.value.dart_eq(&other.value)
+    }
+}
+
+impl<T: PartialEq> DartEq for Point<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+impl<T> DartEq for StreamSubscription<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl<T> DartEq for DartFuture<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+impl<T> DartEq for Completer<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+impl<S, T> DartEq for Converter<S, T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+/// A function compares by identity: the closure's address, which an
+/// `Rc` clone shares and a fresh closure does not.
+impl<R> DartEq for dyn Fn() -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+impl<A, R> DartEq for dyn Fn(A) -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+impl<A, B, R> DartEq for dyn Fn(A, B) -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+impl<A, B, C, R> DartEq for dyn Fn(A, B, C) -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+impl<A, B, C, D, R> DartEq for dyn Fn(A, B, C, D) -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+impl<A, B, C, D, E, R> DartEq for dyn Fn(A, B, C, D, E) -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+impl<A, B, C, D, E, F, R> DartEq for dyn Fn(A, B, C, D, E, F) -> R {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(self as *const Self, other as *const Self)
+    }
+}
+
+/// A value type with `PartialEq`: by it.
+macro_rules! dart_eq {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl DartEq for $t {
+                fn dart_eq(&self, other: &Self) -> bool {
+                    self == other
+                }
+            }
+        )*
+    };
+}
+
+dart_eq!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, f32, f64, bool, char, String, (), Duration, StringBuffer, StackTrace, DateTime, SentinelValue, Stopwatch, Uri, Type, JsonUtf8Encoder, Pattern, ServiceExtensionResponse, Flow, RandomAccessFile, File, Directory, Null, RegExpMatch, HttpClientResponse, TimelineTask, Endian, InternetAddress, Symbol, Invocation, InvocationKind, Zone, Timer, RegExp, Exception, Utf8Decoder, OSError, SocketException, HttpClient, JsonCodec, Utf8Codec, Encoding, TypedData, ByteBuffer, ArgumentError, UnimplementedError, IndexError, RangeError, ByteData, FormatException);
 
 /// `hashCode` of a shared object: its identity, as Dart's `Object.hashCode`.
 pub trait RcHashCode {
@@ -1886,15 +2044,20 @@ impl<T: Clone> DartList<T> for Vec<T> {
 /// `set_range` and `sublist`; `remove(value)` and `indexOf` ask for
 /// `==` and are an error at the use when `T` has none.
 pub trait DartListEq<T> {
+    /// `contains(value)`, by Dart's `==` (`DartEq`).
+    fn dart_contains(&self, value: &T) -> bool;
     fn remove_value(&mut self, value: T) -> bool;
     /// `indexOf(value, [start])`: the first index at or after `start`
     /// holding an equal element, or -1.
     fn index_of(&self, value: T, start: i64) -> i64;
 }
 
-impl<T: PartialEq + Clone> DartListEq<T> for Vec<T> {
+impl<T: DartEq + Clone> DartListEq<T> for Vec<T> {
+    fn dart_contains(&self, value: &T) -> bool {
+        self.iter().any(|x| x.dart_eq(value))
+    }
     fn remove_value(&mut self, value: T) -> bool {
-        match self.iter().position(|x| *x == value) {
+        match self.iter().position(|x| x.dart_eq(&value)) {
             Some(i) => {
                 self.remove(i);
                 true
@@ -1904,7 +2067,7 @@ impl<T: PartialEq + Clone> DartListEq<T> for Vec<T> {
     }
     fn index_of(&self, value: T, start: i64) -> i64 {
         let start = start.max(0) as usize;
-        match self.iter().skip(start).position(|x| *x == value) {
+        match self.iter().skip(start).position(|x| x.dart_eq(&value)) {
             Some(i) => (i + start) as i64,
             None => -1,
         }
@@ -3647,6 +3810,12 @@ macro_rules! dart_error {
                 } else {
                     write!(f, "{}: {}", $prefix, self.message)
                 }
+            }
+        }
+
+        impl DartEq for $name {
+            fn dart_eq(&self, other: &Self) -> bool {
+                self == other
             }
         }
     };
