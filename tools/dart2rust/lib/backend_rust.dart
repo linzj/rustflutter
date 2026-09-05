@@ -1397,12 +1397,43 @@ class RustBackend {
     // prelude's `DartEq`, which every parameter carries; `PartialEq` is
     // not asked of one (`selected == value` on a `T?` in
     // `CupertinoSegmentedControl`, 7 at ws460).
+    // ..and on any object that is not a primitive: Dart's `==` is the
+    // class's `operator ==`, which is `DartEq` here, taken by reference
+    // (`==` on two `Rc<dyn Size>` moved its operand, E0382, 53 at ws464).
     if ((op == '==' || op == '!=') &&
-        (_ownsParameter(left.rustType) || _ownsParameter(right.rustType))) {
+        (_ownsParameter(left.rustType) ||
+            _ownsParameter(right.rustType) ||
+            (_objectLike(left.rustType) && _objectLike(right.rustType)))) {
       final eq = '${expr(left)}.dart_eq(&${expr(right)})';
       return op == '==' ? eq : '(!$eq)';
     }
     return '(${expr(left)} $op ${expr(right)})';
+  }
+
+  /// Whether a type is a translated class's, a trait's, or a collection's
+  /// -- anything `==` compares by `DartEq` rather than by value.
+  bool _objectLike(IrType? t) {
+    if (t == null || t.isFunction) return false;
+    final name = t.name;
+    if (const {
+      'int',
+      'double',
+      'num',
+      'bool',
+      'String',
+      'void',
+      '()',
+      'Null',
+      'dynamic',
+      'Object',
+      'Type',
+      'Option',
+    }.contains(name)) {
+      return false;
+    }
+    final c = library[name];
+    if (c != null && c.isEnum) return false;
+    return c != null || const {'List', 'Map', 'Set', 'Iterable'}.contains(name);
   }
 
   /// Whether a type is a type parameter of the class or method being
