@@ -449,14 +449,15 @@ dart_nullable!(f64);
 dart_nullable!(bool);
 dart_nullable!(String);
 /// `void`'s null is `()`: `Future<void>.value()` completes with it.
+/// Dart's `void?` is `void`: the unit's nullable form is itself, and its
+/// null is itself (`invokeMethod<void>` returning `Future<T?>` is a
+/// `Future<void>`, `sendToEngine`, run459).
 impl DartNullable for () {
-    type Or = Option<Self>;
-    fn option(or: Option<Self>) -> Option<Self> {
-        or
+    type Or = ();
+    fn option(_or: ()) -> Option<Self> {
+        Some(())
     }
-    fn from_option(option: Option<Self>) -> Option<Self> {
-        option
-    }
+    fn from_option(_option: Option<Self>) {}
     fn dart_null() -> Option<Self> {
         Some(())
     }
@@ -2403,13 +2404,13 @@ impl<T: Clone> Expando<T> {
     /// Keyed by the object's identity, whatever handle it arrives as
     /// (`_profiledBinaryMessengers[this]` with `this` an `Rc<dyn
     /// MethodChannel>`, run459).
-    pub fn get<O: ?Sized>(&self, object: &std::rc::Rc<O>) -> Option<T> {
-        let key = Self::key(object);
+    pub fn get<O: ?Sized>(&self, object: std::rc::Rc<O>) -> Option<T> {
+        let key = Self::key(&object);
         self.entries.borrow().iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())
     }
 
-    pub fn set<O: ?Sized>(&self, object: &std::rc::Rc<O>, value: Option<T>) {
-        let key = Self::key(object);
+    pub fn set<O: ?Sized>(&self, object: std::rc::Rc<O>, value: Option<T>) {
+        let key = Self::key(&object);
         let mut entries = self.entries.borrow_mut();
         entries.retain(|(k, _)| *k != key);
         if let Some(value) = value {

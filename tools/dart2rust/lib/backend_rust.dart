@@ -813,8 +813,8 @@ class RustBackend {
                         ?.counted ??
                     false)
             ? (explicit
-                  ? '(${expr(value)} as ${this.type(type)})'
-                  : expr(value))
+                  ? '(${_handleOf(value)} as ${this.type(type)})'
+                  : _handleOf(value))
             // An enum is not a `DartAny`: a plain handle (49 `_ScaffoldSlot:
             // DartAny` at ws367).
             : (library[value.rustType?.name ?? _concreteType(value).name]
@@ -1372,8 +1372,26 @@ class RustBackend {
     if (!passthrough.contains(op)) {
       throw Unsupported('binary operator `$op`', '${expr(left)} $op ...');
     }
+    // `==` on a type parameter's values (`T`, `T?`) is Dart's `==`, the
+    // prelude's `DartEq`, which every parameter carries; `PartialEq` is
+    // not asked of one (`selected == value` on a `T?` in
+    // `CupertinoSegmentedControl`, 7 at ws460).
+    if ((op == '==' || op == '!=') &&
+        (_ownsParameter(left.rustType) || _ownsParameter(right.rustType))) {
+      final eq = '${expr(left)}.dart_eq(&${expr(right)})';
+      return op == '==' ? eq : '(!$eq)';
+    }
     return '(${expr(left)} $op ${expr(right)})';
   }
+
+  /// Whether a type is a type parameter of the class or method being
+  /// printed, or its nullable form.
+  bool _ownsParameter(IrType? t) =>
+      t != null &&
+      t.arguments.isEmpty &&
+      !t.isFunction &&
+      (cls.typeParameters.contains(t.name) ||
+          _methodTypeParams.contains(t.name));
 
   /// A Dart string's contents, safe to sit inside a Rust `"..."`.
   ///
@@ -1511,7 +1529,7 @@ class RustBackend {
       return trait;
     }
     final args = _baseArguments(base) ?? '';
-    final self = _selfName == 'this_' ? '__Self' : 'Self';
+    final self = _inSuperFn ? '__Self' : 'Self';
     return '<$self as $trait$args>';
   }
 
@@ -1965,6 +1983,42 @@ class RustBackend {
         .name;
   }
 
+  /// The trait, `from` or one above it, that declares the Rust item
+  /// `rustName` (a method, a setter, a field's accessor); null when none
+  /// of them does.
+  String? _declaringTrait(String from, String rustName) {
+    final start = library[from];
+    if (start == null) return null;
+    bool declares(IrClass c) =>
+        c.methods.any((m) => !m.isStatic && _methodName(m) == rustName) ||
+        c.abstractMethods.any((m) => _methodName(m) == rustName) ||
+        c.fields.any(
+          (f) =>
+              snake(f.name) == rustName || 'set_${snake(f.name)}' == rustName,
+        );
+    for (final c in [start, ..._abstractAncestors(start)]) {
+      if (declares(c)) return c.name;
+    }
+    return null;
+  }
+
+  /// `this` as the handle the object already has -- the trait's own in a
+  /// trait body, the counted struct's otherwise -- or null when the class
+  /// has none (a plain value struct).
+  String? _thisHandle() {
+    if (_fieldsAreAccessors || _selfName == 'this_') {
+      return '$_selfName.dart_self_${snake(cls.name)}()';
+    }
+    if (cls.counted) return '$_selfName.dart_self_ref().get()';
+    return null;
+  }
+
+  /// A value shared as a handle: `this` by its own handle (`self.clone()`
+  /// was a struct where `Rc<dyn RendererBinding>` went, `_manifold`'s
+  /// lazy initializer, run459), anything else as spelled.
+  String _handleOf(IrExpr value) =>
+      value is IrThis ? (_thisHandle() ?? expr(value)) : expr(value);
+
   String _fieldRead(
     IrExpr? target,
     String name, [
@@ -2074,10 +2128,10 @@ class RustBackend {
             : '$receiver.${snake(name)}.clone().unwrap()';
       }
     }
-    if (target is IrLocal || target is IrBound || target is IrDowncast) {
-      return '$receiver.${snake(name)}.clone()';
-    }
-    return '$receiver.${snake(name)}';
+    // Any other object's field: cloned out, as a field of `self` or of a
+    // local is (`..get().child` handed to `updateChild` moved out of the
+    // handle, E0507, run459).
+    return '$receiver.${snake(name)}.clone()';
   }
 
   /// `x is Foo`.
@@ -2451,9 +2505,8 @@ class RustBackend {
     // reference (`Rc::new(this_)` wanted `'static`, 168 lifetime errors)
     // or a copy (a new identity).
     if (name == '!rc' && args.isEmpty && target is IrThis) {
-      if (_fieldsAreAccessors || _selfName == 'this_')
-        return '$_selfName.dart_self_${snake(cls.name)}()';
-      if (cls.counted) return '$_selfName.dart_self_ref().get()';
+      final own = _thisHandle();
+      if (own != null) return own;
     }
     if (name == '!rc' && args.isEmpty) return 'std::rc::Rc::new($receiver)';
     // An `Option<Rc<dyn Object>>` into a `dynamic` slot: absent is `Null`.
@@ -2692,7 +2745,7 @@ class RustBackend {
             ? ''
             : '<${passed.map((a) => type(a)).join(', ')}>';
         final self = identical(owner, cls)
-            ? (_selfName == 'this_' ? '__Self' : 'Self')
+            ? (_inSuperFn ? '__Self' : 'Self')
             : owner.name;
         asTrait = '<$self as ${wide.name}$spelledArgs>';
         qualifier = wide.name;
@@ -2727,10 +2780,19 @@ class RustBackend {
       // a bare `Trait::method` is E0782 since edition 2021, and a base
       // constructor's body inlined into a subclass (`_inheritedBodies`)
       // writes the base's fields through the trait's setters (100 at ws443).
+      // The trait named has to be the one *declaring* the item: a base
+      // constructor's body inlined into a subclass wrote `this.child = x`
+      // as `<Self as RenderView>::set_child`, and `set_child` is the
+      // mixin's (`RenderObjectWithChildMixin`), which `RenderView` only
+      // inherits (78 E0576 at ws460).
+      if (asTrait == null && library.isAbstract(qualifier)) {
+        final declaring = _declaringTrait(qualifier, _identifier(name));
+        if (declaring != null) qualifier = declaring;
+      }
       final path =
           asTrait ??
           (library.isAbstract(qualifier) && (target == null || target is IrThis)
-              ? '<${_selfName == 'this_' ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
+              ? '<${_inSuperFn ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
               : qualifier);
       return _asyncValue(
         '$path::${_identifier(name)}$turbofish'
@@ -4999,7 +5061,23 @@ class RustBackend {
     }
   }
 
+  /// Whether a super fn's body is being printed: `this` is a `&__Self`
+  /// there, and so is `this` inside a closure of it, whose `_selfName` is
+  /// the handle (`<Self as RendererBinding>` in `initMouseTracker`'s
+  /// closure, E0411, run459).
+  var _inSuperFn = false;
+
   void _emitSuperFn(IrMethod method) {
+    final wasSuperFn = _inSuperFn;
+    _inSuperFn = true;
+    try {
+      _emitSuperFnBody(method);
+    } finally {
+      _inSuperFn = wasSuperFn;
+    }
+  }
+
+  void _emitSuperFnBody(IrMethod method) {
     {
       _line('');
       _line('/// The body of `${cls.name}.${method.name}`, reachable from an');

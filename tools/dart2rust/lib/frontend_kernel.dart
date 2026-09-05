@@ -295,6 +295,11 @@ class KernelFrontend implements TypeWorld {
     }
   }
 
+  /// `dart:core`'s `List`, `Set`, `Map`: abstract there, values here.
+  static bool _coreCollection(Class c) =>
+      c.enclosingLibrary.importUri.toString() == 'dart:core' &&
+      const {'List', 'Set', 'Map'}.contains(c.name);
+
   static bool _mentionsTypeParameter(DartType t) {
     if (t is TypeParameterType) return true;
     if (t is InterfaceType) return t.typeArguments.any(_mentionsTypeParameter);
@@ -1577,17 +1582,23 @@ class KernelFrontend implements TypeWorld {
           // gets: the prelude's `String` is what an `Rc<dyn Object>` holds.
           (!_abstractLike(to.classNode) ||
               _rustScalar(to.classNode.name) != to.classNode.name ||
-              to.classNode.name == 'String') &&
+              to.classNode.name == 'String' ||
+              // `dart:core`'s collections are abstract there and values
+              // here: `systemMessage as Map<String, dynamic>` is the
+              // `Map<String, Rc<dyn Object>>` the object holds (run459).
+              _coreCollection(to.classNode)) &&
           to.classNode.name != 'Object' &&
           (from is! InterfaceType || from.classNode != to.classNode)) {
         // `dynamic` is an `Rc<dyn Object>`, never an `Option`, whatever
         // its nullability says.
         if ((from is DynamicType || from.nullability != Nullability.nullable) &&
             to.nullability != Nullability.nullable) {
+          final target = _type(to);
           return IrCall(
             IrDowncast(
               expression(node.operand),
               _rustScalar(to.classNode.name),
+              arguments: target.arguments,
             ),
             'clone',
             const [],
@@ -7659,7 +7670,32 @@ class KernelFrontend implements TypeWorld {
               : declaredReturn)
         : null;
     try {
-      return statement(body);
+      // A parameter a closure assigns lives in a cell, as a local one
+      // does (`_capturedWrites`): rebound over itself before the body.
+      // ..through a temporary: the cell's own name is a cell already by
+      // the time its initializer prints.
+      final rebound = <IrStmt>[];
+      for (final p in [
+        ...function.positionalParameters,
+        ...function.namedParameters,
+      ]) {
+        if (!_capturedWrites.contains(p)) continue;
+        final type = _type(_localType(p));
+        final held = '__p${_nextTemporary++}';
+        rebound.add(
+          IrLocalDecl(held, type, IrLocal(_paramName(p))..rustType = type),
+        );
+        rebound.add(
+          IrLocalDecl(
+            _paramName(p),
+            type,
+            IrLocal(held)..rustType = type,
+            cell: true,
+          ),
+        );
+      }
+      if (rebound.isEmpty) return statement(body);
+      return IrBlock([...rebound, statement(body)]);
     } finally {
       _voidReturn = outer;
       _returnsType = outerType;
@@ -8983,6 +9019,16 @@ class _CapturedWrites extends RecursiveVisitor {
   @override
   void visitFunctionNode(FunctionNode node) {
     _stack.add(node);
+    // A parameter is declared by its function as a local is: `element`
+    // in `attach(owner, [RootElement? element])`, assigned inside
+    // `owner.lockState(() { element = createElement(); .. })`, was a
+    // plain binding the closure's assignment never reached (run459).
+    for (final p in node.positionalParameters) {
+      _declaredIn[p] = node;
+    }
+    for (final p in node.namedParameters) {
+      _declaredIn[p] = node;
+    }
     super.visitFunctionNode(node);
     _stack.removeLast();
   }
