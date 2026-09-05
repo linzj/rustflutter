@@ -4062,8 +4062,6 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : owner is IrClass && _needsNullable(owner)
-                ? "$p: Clone + DartNullable<Or: Clone> + 'static"
                 : "$p: DartNullable + 'static",
           )
         : params;
@@ -5643,6 +5641,12 @@ class RustBackend {
     // counted class is passed by, still is. A value class holding one
     // would have to be cloned by value somewhere and is left to say so.
     final cloneable = _cloneable(cls);
+    // A struct with a projected `T?` field writes its `Clone` out below:
+    // the derive cannot say `<T as DartNullable>::Or: Clone`, and a bound
+    // on the struct's own parameters would have to be repeated by every
+    // declaration naming it (`_FutureBuilderState<T>` holding an
+    // `AsyncSnapshot<T>`, ws403).
+    final projecting = _allFields(cls).any((f) => f.type.projected);
     // A derived `Debug` on `ValueKey<T>` holds only for `T: Debug`, and
     // the `Key` trait it implements has `Debug` above it for every `T:
     // Clone + DartNullable<Or: Clone> + 'static` (18 E0277s the moment the type parameters lost
@@ -5650,9 +5654,13 @@ class RustBackend {
     // `PartialEq` can still be derived, that impl carries its own `T:
     // PartialEq` and no trait asks for it unconditionally.
     final derivesDebug = printable && cls.typeParameters.isEmpty;
-    _line(
-      '#[derive(${[if (cloneable) 'Clone', if (copyable) 'Copy', if (derivesDebug) 'Debug', if (comparable) 'PartialEq'].join(', ')})]',
-    );
+    final derives = [
+      if (cloneable && !projecting) 'Clone',
+      if (copyable) 'Copy',
+      if (derivesDebug) 'Debug',
+      if (comparable) 'PartialEq',
+    ];
+    if (derives.isNotEmpty) _line('#[derive(${derives.join(', ')})]');
     // `'static` on the struct: an `Rc<dyn Equality<Option<E>>>` field needs
     // its `E` to outlive the trait object (8 E0310s in `collection`).
     _line(
@@ -5679,6 +5687,23 @@ class RustBackend {
     _indent--;
     _line('}');
     _line('');
+    if (cloneable && projecting) {
+      _line(
+        'impl${_implGenerics(cls, keyed: false)} Clone for ${cls.name}${_generics(cls)} {',
+      );
+      _indent++;
+      final copied = [
+        for (final f in _allFields(cls))
+          '${snake(f.name)}: self.${snake(f.name)}.clone()',
+        if (cls.counted) '__self: self.__self.clone()',
+        for (final unused in _unusedParameters(cls))
+          '_phantom_${snake(unused)}: std::marker::PhantomData',
+      ];
+      _line('fn clone(&self) -> Self { ${cls.name} { ${copied.join(', ')} } }');
+      _indent--;
+      _line('}');
+      _line('');
+    }
     if (cls.counted) {
       _line(
         'impl${_implGenerics(cls, keyed: false)} DartSelfRef for ${cls.name}${_generics(cls)} {',
