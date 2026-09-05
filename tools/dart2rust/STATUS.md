@@ -6465,6 +6465,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws422 结果 | 950 叶子错 | **2605→2602 / 796，138+1 个 crate**，目前最低。 |
 | ws423 | 950 叶子错 | `vec![..]` 的类型由第一个元素决定：第一个元素是隐式上转（含 `Some(..)` 里的）就拼成显式 `as Rc<dyn Object>`，其余元素随之（`Object.hashAll([isChecked, isButton])` 的 `CheckedState <= bool` 17 个）。驱动输出对 ws422 差 137 文件。 |
 | ws424 | 950 叶子错 | counted 类的常量实例和它的构造结果一样是 handle：`IrConstInstance` 打印成 `dart_rc(Struct {..})`（`const StandardMethodCodec()` 里的 `StandardMessageCodec`，12 个 `Rc<X> <= X`）。驱动输出对 ws423 差 15 文件。 |
+| ws425 | 950 叶子错 | 三条通用：`m[k]` 的 key 按 map 的 key 类型 coerce（`Map<Object?,..>` 用 `String` 取，15 个）；coerce 规则加 `Map` 逐 key/value 转换（`IrMapElements` kind Map，`Map::from(m.into_iter().map(|(k, v)| ..))`）；prelude 被调用者的槽位类型**任何位置**含 `dynamic` 就 coerce（`Uri.replace(queryParameters: Map<String, List<String>>)` 进 `Map<String, dynamic>`，16 个）。驱动输出对 ws424 差 90 文件。 |
 | ws400 起 | 950 叶子错 | `T?` 在泛型声明里的通用机制（之前记的 75 块 + 42 个 `?` operator 不兼容都是它：`WidgetStateProperty<T?>` 代 `Color?` 后 Rust 是 `Option<Option<..>>`，Dart 折成一层）。prelude 加 `DartNullable { type Or; option(); from_option() }`：`Option<X>::Or = Option<X>`，其余类型 `Or = Option<Self>`（Rc/Vec/Map/Set/元组/标量泛型 impl，prelude 结构体逐个，翻译的 struct/enum 由后端逐个发 impl）。第一步（本轮）：trait、impl、`IrType.projected` 标志（后端拼成 `<T as DartNullable>::Or`）、边界转换节点 `IrNullableOf`；前端还没用，输出只多了 impl。第二步：前端把泛型声明签名/字段里的 `T?` 标成 projected，参数入口/返回/字段读写插转换；第三步：`_substituteKept` 代入时按 Dart 规则折叠 `T?[T:=X?]=X?`。 |
 
 ## 下一步(2026-09-05 重铺)

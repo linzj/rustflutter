@@ -200,7 +200,22 @@ class KernelFrontend implements TypeWorld {
     // A type parameter's spelling is the caller's; `dynamic` has one
     // spelling, an `Rc<dyn Object>`, and the prelude uses it.
     return declared != null &&
-        (declared is DynamicType || _mentionsTypeParameter(declared));
+        (_mentionsDynamic(declared) || _mentionsTypeParameter(declared));
+  }
+
+  /// `dynamic` anywhere in a type: the prelude spells it as translated
+  /// code does (`Map<String, dynamic>` is `Map<String, Rc<dyn Object>>`),
+  /// so such a slot of a prelude callee is coerced too (`Uri.replace(
+  /// queryParameters: uri.queryParametersAll)`, 16 at ws421).
+  static bool _mentionsDynamic(DartType t) {
+    if (t is DynamicType) return true;
+    if (t is InterfaceType) return t.typeArguments.any(_mentionsDynamic);
+    if (t is FunctionType) {
+      return _mentionsDynamic(t.returnType) ||
+          t.positionalParameters.any(_mentionsDynamic) ||
+          t.namedParameters.any((n) => _mentionsDynamic(n.type));
+    }
+    return false;
   }
 
   static bool _mentionsTypeParameter(DartType t) {
@@ -3484,7 +3499,12 @@ class KernelFrontend implements TypeWorld {
             argType.nullability == Nullability.nullable) {
           return typed(IrCall(_receiver(node.receiver), '!map_get_opt', args));
         }
-        return typed(IrCall(_receiver(node.receiver), '!map_get', args));
+        // The key into the map's key type by the one rule: a `String` into
+        // a `Map<Object?, ..>` goes behind a handle (15 at ws421).
+        final keyed = key == null
+            ? args.single
+            : _widened(node.arguments.positional.single, key, args.single);
+        return typed(IrCall(_receiver(node.receiver), '!map_get', [keyed]));
       }
       // `m[k] = v`: `insert`, as a statement or for its value (Dart's is
       // `v`; here the old value, which no caller reads).

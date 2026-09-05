@@ -758,6 +758,8 @@ class RustBackend {
       IrMapElements(:final collection, :final kind, :final body) =>
         kind == 'Set'
             ? 'Set::of(${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>())'
+            : kind == 'Map'
+            ? 'Map::from(${expr(collection)}.into_iter().map(|(k, v)| ${expr(body)}).collect::<Vec<_>>())'
             : '${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>()',
       // `this` shared as an object is its own handle (`!as_object`).
       IrUpcast(:final value, :final type)

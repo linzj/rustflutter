@@ -330,6 +330,18 @@ IrExpr coerceInto(
     if (identical(body, element)) return value;
     return IrMapElements(value, normalName(slot.name), body)..rustType = slot;
   }
+  // A map, key by key and value by value.
+  if (have.name == 'Map' &&
+      slot.name == 'Map' &&
+      have.arguments.length == 2 &&
+      slot.arguments.length == 2) {
+    final k = IrLocal('k')..rustType = have.arguments[0];
+    final v = IrLocal('v')..rustType = have.arguments[1];
+    final kb = coerceInto(k, slot.arguments[0], world, inClosure: true);
+    final vb = coerceInto(v, slot.arguments[1], world, inClosure: true);
+    if (identical(kb, k) && identical(vb, v)) return value;
+    return IrMapElements(value, 'Map', IrRecord([kb, vb]))..rustType = slot;
+  }
   if (have.name == 'Map' || slot.name == 'Map') return value;
   final haveTrait = world.isTrait(have.name);
   final slotTrait = world.isTrait(slot.name);
