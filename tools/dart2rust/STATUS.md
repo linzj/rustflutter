@@ -6402,6 +6402,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws386 | 950 叶子错 | `Option` 层不再被 Dart 折叠：类型代入改在 IR 里做（`_typeKept`：`T?` 代 `Color?` 得 `IrType('Option',[Color?])`），成员读、落点形参、字段写的槽都用它；`coerce.dart` 认识显式 `Option` 包装（`isNullable`/`stripNull`/`_normal`）。**2871→2855**。 |
 | ws387 | 950 叶子错 | 泛型**静态**调用的槽也按调用处的类型实参代入（`_withGenericArgs`/`_genericSlotIr`）；`coerceInto` 加函数类型规则：参数逐个从槽的类型转到函数的、结果转回，包一层适配闭包。**2855→2855**——没生效：tear-off 的 `rustType` 是 `dynamic`，闭包根本没类型。 |
 | ws388 | 950 叶子错 | 函数值按自己的签名定型：闭包用 lowering 后的形参和返回，静态 tear-off 用目标的函数类型。`TextStyle.lerp` 进 `WidgetStateProperty.lerp<TextStyle?>` 有了 `|__a0: Option<Option<..>>, ..|` 的适配。**2855→2854 / 795，138+1 个 crate**（fn-arg mismatch −28，mismatched +13：新露出的）。 |
+| ws389 | 950 叶子错 | `Option<Option<..>>` 进 `Option<..>` 是 `flatten`（`None` 和 `Some(None)` 都是 Dart 的 null），不是 unwrap。**2854→2854**。`WidgetStateProperty.lerp<TextStyle?>` 那 75 处的根：泛型函数**返回** `WidgetStateProperty<T?>?`，T 代 `TextStyle?` 后 Rust 是 `WSP<Option<Option<TS>>>`，而槽位是 `WSP<Option<TS>>`——trait 对象的类型实参不变型，值层面无法转。通用解要在类型层：`T?` 在泛型声明里印成 `<T as Nullable>::Or`（`Option<X>` 的 `Or` 是自己，其余类型是 `Option<Self>`，每个翻译的类生成一个 impl）。记为下一项结构性工作。 |
 
 ## 下一步(2026-09-05 重铺)
 

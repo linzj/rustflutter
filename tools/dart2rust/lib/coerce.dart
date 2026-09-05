@@ -167,6 +167,14 @@ IrExpr coerceInto(
     return coerceInto(inner, slot, world, inClosure: inClosure);
   }
   if (isNullable(slot) && isNullable(have)) {
+    // Two layers into one: Dart's `T?` with `T` bound to `Color?` is one
+    // `Color?`, so `Option<Option<..>>` into `Option<..>` is `flatten`
+    // (both `None` and `Some(None)` are Dart's null), not an unwrap.
+    if (have.name == 'Option' && slot.name != 'Option') {
+      final flat = IrCall(value, 'flatten', const [])
+        ..rustType = have.arguments.single;
+      return coerceInto(flat, slot, world, inClosure: inClosure);
+    }
     final element = IrCall(IrBound(), 'clone', const [])
       ..rustType = stripNull(have);
     final inner = coerceInto(element, stripNull(slot), world, inClosure: true);
