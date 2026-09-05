@@ -90,6 +90,10 @@ class KernelFrontend implements TypeWorld {
         if (identical(base, node) || base.typeParameters.isEmpty) continue;
         final asBase = env.hierarchy.getTypeAsInstanceOf(thisType, base);
         if (asBase is! InterfaceType) continue;
+        // A generic class's own instantiation names its parameter
+        // (`DefaultEquality<E>: Equality<E>`): a wider impl would overlap
+        // it for the `E` that is the wider type (E0119).
+        if (asBase.typeArguments.any(_mentionsTypeParameter)) continue;
         final own = _erasedArguments(base, asBase.typeArguments);
         if (own.isEmpty) continue;
         for (final wider in entry.value) {
@@ -438,7 +442,10 @@ class KernelFrontend implements TypeWorld {
       return IrType(
         type.parameter.name ?? 'T',
         nullable: nullable,
-        projected: nullable && _typeDepth > 0,
+        // ..of the declaration being lowered only: another declaration's
+        // `T?` -- a callee's, reached before its instantiation is put in --
+        // is not a name here, projected or not (24 `cannot find type`).
+        projected: nullable && _typeDepth > 0 && _projectedSlot(type),
       );
     }
     if (type is FunctionType) {

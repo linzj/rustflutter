@@ -6434,13 +6434,22 @@ class RustBackend {
       // A forwarder has parameters, not locals: the last body's cell locals
       // printed a parameter `child` as `child.borrow()` (7 at ws383).
       _cellLocals = {};
+      // ..and the inherent method it reaches spelled with the same renaming,
+      // so that its `T?` and the trait's `T_?` compare as one type and not
+      // as two the coercion rule converts between (22 at ws411).
       var have = _matching(need);
+      if (have != null && have.typeParameters.isNotEmpty) {
+        have = _renamedShadowed(have) ?? have;
+      }
       String? via;
       if (have == null) {
         final inherited = _inherited(need);
         if (inherited != null) {
           via = inherited.$1.name;
           have = inherited.$2;
+          if (have.typeParameters.isNotEmpty) {
+            have = _renamedShadowed(have) ?? have;
+          }
         }
       }
       // Rust does not collapse `Option<Option<X>>` the way Dart collapses
