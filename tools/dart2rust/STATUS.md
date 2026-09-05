@@ -6391,6 +6391,10 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws375 | 950 叶子错 | `_implementersOf` 改为全 crate（`library.elsewhere`）：trait 声明与各处 impl 对 `&mut self` 的判断一致。crate 齐了，但 **3022→3151**：删掉的 `!join`/`!is_empty`/`!any`… 是前端用 `'!$name'` 动态拼出来的，不是死的（+157 no method）。 |
 | ws376 | 950 叶子错 | 从 HEAD 恢复那些处理器，只删真正没人产生的 `!upcast_elements`。**3151→3035**（+11 "does not live long enough"：局部变量上的 cell 读 `data.x.borrow().clone()` 在块尾表达式里，guard 临时量活过了局部）。 |
 | ws377 | 950 叶子错 | 局部（非 `self`）上的 cell 读和 cell 局部变量印成 `{ let __r = x.borrow().clone(); __r }`，guard 死在自己的语句里。**3035→3018 / 795，138+1 个 crate**。 |
+| ws378 | 950 叶子错 | 删 `_narrowedRead`：成员访问的**接收者**按 Dart 静态类型 `coerce`（`_receiver`，两处实例访问 lowering 里 36 个接收者位点），擦除读只在真被当接收者时才收窄。**3018→3229**：`coerce` 里 trait→泛型 struct 的下转被我跳过了（`ModalBottomSheet<T>`，61 处 `widget` 读没转）。 |
+| ws379 | 950 叶子错 | 泛型 struct 目标用槽位的保留实参下转（`IrDowncast(.., arguments: slot.arguments)`，泛型值 struct 不 clone）。**3229→3087**：`==` 的操作数没有类型协调（擦除读 `RenderObject?` 比 `RenderBox?`，47）；另一对象上的字段直读用在 open 类句柄上（"attempted to take value of method"，12）。 |
+| ws380 | 950 叶子错 | `==` 两边类名不同时右边 coerce 到左边、否则左到右；直读字段只对 struct 接收者。**3087→3088**：`NullCheck` 的 `rustType` 取了 Dart 静态类型（克隆体的 `RenderBox`），操作数其实是擦除的 `RenderObject?`（108）。 |
+| ws381 | 950 叶子错 | `IrNullCheck` 的类型是操作数去掉 `Option`（结构，不信 Dart）；`==` 协调只看类名差异，不碰已有的可空处理。**3088→3020 / 795，138+1 个 crate**（与 ws377 持平 +2；`_narrowedRead` 删净）。 |
 
 ## 下一步(2026-09-05 重铺)
 

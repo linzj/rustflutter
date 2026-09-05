@@ -387,6 +387,13 @@ class KernelFrontend {
     if (lowered is IrBinary && lowered.rustType == null) {
       lowered.rustType = _binaryType(lowered);
     }
+    // A null check is its operand's type without the `Option`: Dart's
+    // static type for `data.nextSibling!` is the clone's `RenderBox`, the
+    // operand an erased `RenderObject?` (108 at ws380).
+    if (lowered is IrNullCheck && lowered.rustType == null) {
+      final inner = lowered.operand.rustType;
+      if (inner != null) lowered.rustType = _nonNull(inner);
+    }
     if (lowered.rustType == null) {
       final static = _staticType(node);
       if (static != null) {
@@ -709,6 +716,22 @@ class KernelFrontend {
       } else if (_declaredNum(node.right) &&
           (node.left is IntLiteral || cls(leftType) == 'int')) {
         left = _toF64(left);
+      }
+      // Operands of one Rust type: the right to the left's, else the left
+      // to the right's (`data.previousSibling == after`, an erased
+      // `RenderObject?` read against a `RenderBox?`, 47 at ws379).
+      final lt = left.rustType;
+      final rt = right.rustType;
+      if (coerceByType &&
+          lt != null &&
+          rt != null &&
+          _normalName(lt.name) != _normalName(rt.name)) {
+        final r = coerce(right, lt);
+        if (!identical(r, right)) {
+          right = r;
+        } else {
+          left = coerce(left, rt);
+        }
       }
       return IrBinary('==', left, right);
     }
@@ -2396,8 +2419,24 @@ class KernelFrontend {
   static bool _isMapClass(String? owner) =>
       const {'Map', 'LinkedHashMap', 'HashMap', 'SplayTreeMap'}.contains(owner);
 
-  IrExpr _instanceGet(InstanceGet node) =>
-      _narrowedRead(node, _instanceGetRaw(node));
+  IrExpr _instanceGet(InstanceGet node) => _instanceGetRaw(node);
+
+  /// A member access's receiver, as Dart types it: a value whose recorded
+  /// Rust type is wider -- an erased read, `Rc<dyn StatefulWidget>` where
+  /// Dart says `Scaffold` -- is narrowed on the way in (`coerce`), which is
+  /// what the erased-read narrowing used to do at every such read whether
+  /// or not a member was then reached through it.
+  IrExpr _receiver(Expression e) {
+    final lowered = expression(e);
+    final static = _staticType(e);
+    if (!coerceByType || static is! InterfaceType) return lowered;
+    try {
+      final out = coerce(lowered, _type(static));
+      return out;
+    } on Unsupported {
+      return lowered;
+    }
+  }
 
   IrExpr _instanceGetRaw(InstanceGet node) {
     final name = node.name.text;
@@ -2406,7 +2445,7 @@ class KernelFrontend {
       final rust = listMethodNames[name];
       if (rust == null) throw Unsupported('`List.$name`', _sample(node));
       // A getter in Dart, a method in Rust: `xs.length` is `xs.len()`.
-      return IrCall(expression(node.receiver), rust, const []);
+      return IrCall(_receiver(node.receiver), rust, const []);
     }
     if (_isMapClass(listOwner)) {
       if (orderedMapMembers.contains(name)) {
@@ -2417,7 +2456,7 @@ class KernelFrontend {
       }
       final rust = mapMethodNames[name];
       if (rust == null) throw Unsupported('`Map.$name`', _sample(node));
-      return IrCall(expression(node.receiver), rust, const []);
+      return IrCall(_receiver(node.receiver), rust, const []);
     }
     final receiver = node.receiver;
     // A field the enclosing closure copied in is a local now, not a field of
@@ -2429,7 +2468,7 @@ class KernelFrontend {
       final element = _currentOf[receiver.variable];
       if (element != null) return IrLocal(element);
     }
-    final target = receiver is ThisExpression ? null : expression(receiver);
+    final target = receiver is ThisExpression ? null : _receiver(receiver);
     // A getter whose landing member is a field this class holds (a mixin
     // clone's) is read as the field, typed as the clone declares it -- as
     // a write to it is stored (`_instanceSet`). Through the trait's getter
@@ -2683,7 +2722,7 @@ class KernelFrontend {
       if (t != null &&
           t is! DynamicType &&
           t.nullability == Nullability.nullable) {
-        return IrStaticCall(null, 'dart_str', [expression(node.receiver)]);
+        return IrStaticCall(null, 'dart_str', [_receiver(node.receiver)]);
       }
     }
     if (owner == 'List' || _isMapClass(owner) || owner == 'Iterable') {
@@ -2701,7 +2740,7 @@ class KernelFrontend {
         name == 'complete' &&
         (args.isEmpty ||
             (args.length == 1 && node.arguments.positional.isEmpty))) {
-      return IrCall(expression(node.receiver), 'complete', [
+      return IrCall(_receiver(node.receiver), 'complete', [
         IrSome(IrLiteral('()', const IrType('raw'))),
       ]);
     }
@@ -2712,7 +2751,7 @@ class KernelFrontend {
     // The prelude's `Set::remove` takes the value by reference, like the
     // map's key (`_tickers.remove(ticker)`, 46).
     if (owner == 'Set' && name == 'remove' && args.length == 1) {
-      return IrCall(expression(node.receiver), '!map_remove', [
+      return IrCall(_receiver(node.receiver), '!map_remove', [
         _intoElement(
           args.single,
           node.arguments.positional.single,
@@ -2734,16 +2773,16 @@ class KernelFrontend {
           argType is InterfaceType &&
           (argType.classNode.name == 'double' ||
               argType.classNode.name == 'num')) {
-        return IrCall(expression(node.receiver), '!contains', [
+        return IrCall(_receiver(node.receiver), '!contains', [
           IrCast(args.single, 'i64'),
         ]);
       }
-      return IrCall(expression(node.receiver), '!contains', [
+      return IrCall(_receiver(node.receiver), '!contains', [
         _intoElement(args.single, node.arguments.positional.single, listType),
       ]);
     }
     if (owner == 'String' && name == '[]' && args.length == 1) {
-      return IrCall(expression(node.receiver), 'char_at', args);
+      return IrCall(_receiver(node.receiver), 'char_at', args);
     }
     // `trim()` and friends: `str::trim` hands back a `&str`, and being
     // inherent it wins over a trait method of the same name.
@@ -2755,22 +2794,22 @@ class KernelFrontend {
         'trimLeft': 'trim_left_dart',
         'trimRight': 'trim_right_dart',
       };
-      return IrCall(expression(node.receiver), spelled[name]!, const []);
+      return IrCall(_receiver(node.receiver), spelled[name]!, const []);
     }
     if (owner == 'String' && name == 'split' && args.length == 1) {
       // `s.split(p)`: Rust's `split` wants a `&str` and yields an iterator.
-      return IrCall(expression(node.receiver), 'split_dart', args);
+      return IrCall(_receiver(node.receiver), 'split_dart', args);
     }
     if (owner == 'String' && name == '*' && args.length == 1) {
       // `'0' * n`: Rust's `repeat` wants a `usize`.
-      return IrCall(expression(node.receiver), 'repeat_dart', args);
+      return IrCall(_receiver(node.receiver), 'repeat_dart', args);
     }
     if (owner == 'String' &&
         name == 'contains' &&
         (args.length == 1 || args.length == 2)) {
       // `contains(other, [start])`: `str::contains` is inherent, takes a
       // `&str`, and has no start; the prelude's `contains_dart` has both.
-      return IrCall(expression(node.receiver), 'contains_dart', [
+      return IrCall(_receiver(node.receiver), 'contains_dart', [
         args.first,
         if (args.length == 2) args[1] else IrLiteral('0', const IrType('int')),
       ]);
@@ -2778,23 +2817,23 @@ class KernelFrontend {
     if (owner == 'String' && name == 'startsWith' && args.length == 2) {
       // `startsWith(pattern, index)`: `str::starts_with` takes one argument
       // and, being inherent, would win over a trait method of the same name.
-      return IrCall(expression(node.receiver), 'starts_with_at', args);
+      return IrCall(_receiver(node.receiver), 'starts_with_at', args);
     }
     if (owner == 'String' && name == 'replaceRange' && args.length == 3) {
       // Dart's `replaceRange` returns a new string; Rust's `String` has an
       // inherent `replace_range` that mutates in place and takes a range,
       // and an inherent method shadows a trait's. So the prelude's is named
       // apart.
-      return IrCall(expression(node.receiver), 'replace_range_dart', args);
+      return IrCall(_receiver(node.receiver), 'replace_range_dart', args);
     }
     if (owner == 'Expando') {
       // `expando[object]` / `expando[object] = v`: identity-keyed, so the
       // prelude's `get`/`set` rather than an index. 6 uses.
       if (name == '[]' && args.length == 1) {
-        return IrCall(expression(node.receiver), '!expando_get', [args.single]);
+        return IrCall(_receiver(node.receiver), '!expando_get', [args.single]);
       }
       if (name == '[]=' && args.length == 2) {
-        return IrCall(expression(node.receiver), 'set', args);
+        return IrCall(_receiver(node.receiver), 'set', args);
       }
     }
     // A typed list with a narrow element -- `Float32List` is `Vec<f32>`,
@@ -2804,7 +2843,7 @@ class KernelFrontend {
     final narrow = _narrowElement(_staticType(node.receiver));
     if (narrow != null && name == '[]' && args.length == 1) {
       return IrCast(
-        IrIndex(expression(node.receiver), args.single),
+        IrIndex(_receiver(node.receiver), args.single),
         narrow.startsWith('f') ? 'f64' : 'i64',
       );
     }
@@ -2813,7 +2852,7 @@ class KernelFrontend {
       return IrBlockValue([
         IrLocalDecl(held, null, args[1]),
         IrIndexSet(
-          expression(node.receiver),
+          _receiver(node.receiver),
           args[0],
           IrCast(
             IrCall(IrLocal(held), 'clone', const [])
@@ -2825,7 +2864,7 @@ class KernelFrontend {
     }
     if (owner == 'List' || owner == 'Iterable') {
       if (name == '[]' && args.length == 1) {
-        return IrIndex(expression(node.receiver), args.single);
+        return IrIndex(_receiver(node.receiver), args.single);
       }
       if (name == '[]=' && args.length == 2) {
         // `xs[i] = v` where the expression's value is wanted -- the CFE puts
@@ -2836,7 +2875,7 @@ class KernelFrontend {
         return IrBlockValue([
           IrLocalDecl(held, null, args[1]),
           IrIndexSet(
-            expression(node.receiver),
+            _receiver(node.receiver),
             args[0],
             IrCall(IrLocal(held), 'clone', const [])
               ..rustType = args[1].rustType,
@@ -2847,7 +2886,7 @@ class KernelFrontend {
       if (step != null && args.length == 1) {
         // A chain, extended rather than started again when the receiver is
         // already one: `xs.where(f).map(g)` is one `iter()`, not two.
-        final source = expression(node.receiver);
+        final source = _receiver(node.receiver);
         return source is IrIterChain
             ? IrIterChain(source.source, [...source.steps, (step, args.single)])
             : IrIterChain(source, [(step, args.single)]);
@@ -2860,7 +2899,7 @@ class KernelFrontend {
         final orElse = args[1];
         final omitted = orElse is IrLiteral && orElse.type.name == 'Null';
         return IrCall(
-          expression(node.receiver),
+          _receiver(node.receiver),
           omitted ? 'first_where' : 'first_where_or',
           omitted ? [args[0]] : args,
         );
@@ -2870,7 +2909,7 @@ class KernelFrontend {
         // returning an `int`, which the prelude's `sort_by_dart` turns into
         // an `Ordering`. 36 of these.
         return IrCall(
-          expression(node.receiver),
+          _receiver(node.receiver),
           args.isEmpty ? 'sort' : 'sort_by_dart',
           args,
         );
@@ -2883,7 +2922,7 @@ class KernelFrontend {
             const {'remove', 'indexOf', 'lastIndexOf'}.contains(name) &&
             args.length == 1;
         return IrCall(
-          expression(node.receiver),
+          _receiver(node.receiver),
           rust,
           byElement
               ? [
@@ -2932,7 +2971,7 @@ class KernelFrontend {
             (argType.classNode.name == 'double' ||
                 argType.classNode.name == 'num')) {
           return typed(
-            IrCall(expression(node.receiver), '!map_get', [
+            IrCall(_receiver(node.receiver), '!map_get', [
               IrCast(args.single, 'i64'),
             ]),
           );
@@ -2943,14 +2982,14 @@ class KernelFrontend {
             argType != null &&
             argType is! DynamicType &&
             argType.nullability == Nullability.nullable) {
-          return typed(IrCall(expression(node.receiver), '!map_get_opt', args));
+          return typed(IrCall(_receiver(node.receiver), '!map_get_opt', args));
         }
-        return typed(IrCall(expression(node.receiver), '!map_get', args));
+        return typed(IrCall(_receiver(node.receiver), '!map_get', args));
       }
       // `m[k] = v`: `insert`, as a statement or for its value (Dart's is
       // `v`; here the old value, which no caller reads).
       if (name == '[]=' && args.length == 2) {
-        return IrCall(expression(node.receiver), 'insert', args);
+        return IrCall(_receiver(node.receiver), 'insert', args);
       }
       if (orderedMapMembers.contains(name)) {
         throw Unsupported(
@@ -2973,18 +3012,18 @@ class KernelFrontend {
             key.classNode.name == 'int' &&
             argType is InterfaceType &&
             argType.classNode.name == 'double') {
-          return IrCall(expression(node.receiver), rust, [
+          return IrCall(_receiver(node.receiver), rust, [
             IrCast(args.single, 'i64'),
           ]);
         }
       }
-      return IrCall(expression(node.receiver), rust, args);
+      return IrCall(_receiver(node.receiver), rust, args);
     }
     if (_binaryOperators.contains(name) && args.length == 1) {
       // `int * double` is a `double` in Dart and a type error in Rust: the
       // `int` side is cast. The receiver's class is the operator's owner;
       // the argument's is asked of the static types.
-      var left = expression(node.receiver);
+      var left = _receiver(node.receiver);
       var right = args.single;
       // Comparisons too: `returnValue < 0` on a `double` is `f64 < integer`
       // in Rust until the literal is cast (6 in the colour code).
@@ -3074,7 +3113,7 @@ class KernelFrontend {
       );
     }
     if (name == 'unary-' && args.isEmpty) {
-      return IrUnary('-', expression(node.receiver));
+      return IrUnary('-', _receiver(node.receiver));
     }
     // Dart's `double.floor()`/`ceil()`/`round()` are `int`s; Rust's are
     // `f64`s, inherent, and so not renameable through `DartDouble`. 10
@@ -3102,7 +3141,7 @@ class KernelFrontend {
           'toStringAsFixed',
         }.contains(name)) {
       final asDouble = IrCall(
-        IrDowncast(expression(node.receiver), 'f64'),
+        IrDowncast(_receiver(node.receiver), 'f64'),
         'clone',
         const [],
       );
@@ -3116,7 +3155,7 @@ class KernelFrontend {
       if (receiverType is InterfaceType &&
           (receiverType.classNode.name == 'double' ||
               receiverType.classNode.name == 'num')) {
-        return IrCast(IrCall(expression(node.receiver), name, const []), 'i64');
+        return IrCast(IrCall(_receiver(node.receiver), name, const []), 'i64');
       }
     }
     final receiver = node.receiver;
@@ -3131,7 +3170,7 @@ class KernelFrontend {
         node.arguments.types.length == target.function.typeParameters.length;
     return _qualified(
       IrCall(
-        receiver is ThisExpression ? null : expression(receiver),
+        receiver is ThisExpression ? null : _receiver(receiver),
         name,
         args,
         typeArguments: withTypeArgs
@@ -4070,10 +4109,11 @@ class KernelFrontend {
   /// field write there made the mutation analysis ask for `&mut self`
   /// (12 "incompatible type for trait", ws373).
   bool _heldField(Member interface, Expression receiver) {
-    final here = _lowering;
-    if (receiver is ThisExpression && (here == null || _abstractLike(here))) {
-      return false;
-    }
+    final on = receiver is ThisExpression ? _lowering : _staticClass(receiver);
+    // ..and on another object only when that object is a struct: a handle
+    // to an open class has accessors, not fields (12 "attempted to take
+    // value of method", ws379).
+    if (on == null || _abstractLike(on)) return false;
     return _landing(interface, receiver) is Field;
   }
 
@@ -4509,12 +4549,22 @@ class KernelFrontend {
       )..rustType = slot;
     }
     if (haveTrait && _isStructName(slot.name)) {
+      // Down to a struct through `Any`, with the slot's kept type arguments
+      // (`ModalBottomSheet<T>` from a `StatefulWidget`, 61 bare `widget`
+      // reads at ws378). A generic value struct is not cloned out of the
+      // reference; a counted one and a plain one are (`_narrowingCast`).
       final target = _classNamed(slot.name);
-      if (target == null || target.typeParameters.isNotEmpty) return value;
-      return _narrowingCast(
+      if (target == null) return value;
+      final cast = IrDowncast(
         value,
-        InterfaceType(target, Nullability.nonNullable),
-      )..rustType = slot;
+        _rustScalar(slot.name),
+        arguments: slot.arguments,
+      );
+      final out =
+          !_closureCallsMethod(target) && target.typeParameters.isNotEmpty
+          ? cast
+          : IrCall(cast, 'clone', const []);
+      return out..rustType = slot;
     }
     return value;
   }
@@ -5527,43 +5577,6 @@ class KernelFrontend {
           !_erasedParameter(cls.typeParameters[i]))
         _type(arguments[i]),
   ];
-
-  /// A read whose declared type is an erased parameter and whose static
-  /// type is a concrete class below the bound: `widget` in
-  /// `_ScaffoldState` is a `Scaffold`, and the accessor hands out the
-  /// `Rc<dyn StatefulWidget>` the erased trait declares.
-  IrExpr _narrowedRead(InstanceGet node, IrExpr lowered) {
-    final declared = node.interfaceTarget.getterType;
-    if (declared is! TypeParameterType ||
-        !_erasedParameter(declared.parameter)) {
-      return lowered;
-    }
-    // ..or the reader's own erased parameter (`T` of
-    // `ImplicitlyAnimatedWidgetState<T>` reading `State<T>.widget`): its
-    // bound is what the read is typed as (80 reads on the erased handle).
-    var result = node.resultType;
-    if (result is TypeParameterType && _erasedParameter(result.parameter)) {
-      result = result.parameter.bound;
-    }
-    final bound = declared.parameter.bound;
-    if (result is! InterfaceType ||
-        bound is! InterfaceType ||
-        result.classNode == bound.classNode) {
-      return lowered;
-    }
-    // ..to a trait, when the narrower class is open or abstract -- not a
-    // scalar, abstract to Kernel and a struct here (`dyn double`, 133).
-    // A nullable read too, now that the cast keeps an `Option` (ws340):
-    // `firstChild` and `nextSibling` of the erased container mixins read
-    // as `Rc<dyn RenderObject>` into `RenderBox?` locals, 341 mismatches.
-    if (_abstractLike(result.classNode) &&
-        _translatedClass(result.classNode) &&
-        !_scalarClass(result.classNode)) {
-      return IrCastTo(lowered, _type(result));
-    }
-    if (result.nullability == Nullability.nullable) return lowered;
-    return _narrowingCast(lowered, result);
-  }
 
   /// `x is T`. Against a type parameter that is the operand's own type
   /// (`value is! T` on a `T?` in `Provider.of`) it asks only about null,
