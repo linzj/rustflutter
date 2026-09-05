@@ -443,6 +443,34 @@ class KernelFrontend {
           _sample(node),
         );
       }
+      // ..unless the value is a tear-off the compiler resolved to a
+      // constant (`GoogleFonts.libreFranklin(..)`, whose getter TFA folded
+      // into `partL::libreFranklin`): that is the static call it names, and
+      // its arguments go in the function's own order, not the type's sorted
+      // one, which put a `FontWeight` in the `locale` slot (34 at ws321).
+      var receiver = node.receiver;
+      while (receiver is FileUriExpression) {
+        receiver = receiver.expression;
+      }
+      final constantTarget =
+          receiver is ConstantExpression &&
+              receiver.constant is StaticTearOffConstant
+          ? (receiver.constant as StaticTearOffConstant).target
+          : receiver is StaticTearOff
+          ? receiver.target
+          : null;
+      if (constantTarget != null &&
+          constantTarget.function.typeParameters.isEmpty) {
+        return IrStaticCall(
+          constantTarget.enclosingClass?.name,
+          constantTarget.enclosingClass == null
+              ? constantTarget.name.text.replaceAll(RegExp(r'[|#]'), '_')
+              : constantTarget.name.text,
+          _arguments(node.arguments, constantTarget.function),
+          fails: _fails(constantTarget),
+          diverges: _diverges(constantTarget),
+        );
+      }
       return IrCallValue(
         expression(node.receiver),
         _argumentsByType(node.arguments, type),
@@ -3757,6 +3785,60 @@ class KernelFrontend {
         const [],
       );
     }
+    // A static tear-off into a slot whose type *keeps* named parameters: a
+    // function value is called through its type, whose named parameters
+    // Kernel sorts, while the function itself is declared in its own
+    // order. `partLLibreFranklin(fontSize: 16, fontWeight: ..)` through
+    // the tear-off landed a `FontWeight` in the `locale` slot (34 at ws321).
+    // An adapter taking the type's order and calling in the declaration's.
+    // Sorting every definition instead was 8789 (ws323).
+    final torn = value is StaticTearOff
+        ? value.target
+        : value is ConstantExpression && value.constant is StaticTearOffConstant
+        ? (value.constant as StaticTearOffConstant).target
+        : null;
+    if (torn != null &&
+        param is FunctionType &&
+        param.namedParameters.isNotEmpty &&
+        param.positionalParameters.length ==
+            torn.function.positionalParameters.length) {
+      final declared = [
+        for (final n in torn.function.namedParameters) n.parameterName,
+      ];
+      final byType = [for (final n in param.namedParameters) n.name];
+      if (declared.length == byType.length &&
+          declared.toSet().containsAll(byType) &&
+          !_sameOrder(declared, byType)) {
+        final params = <IrParam>[];
+        final positional = <IrExpr>[];
+        for (var i = 0; i < param.positionalParameters.length; i++) {
+          final name = '__a$i';
+          params.add(IrParam(name, _paramType(param.positionalParameters[i])));
+          positional.add(IrLocal(name));
+        }
+        final byName = <String, IrExpr>{};
+        for (final n in param.namedParameters) {
+          final name = '__n_${n.name}';
+          params.add(IrParam(name, _paramType(n.type)));
+          byName[n.name] = IrLocal(name);
+        }
+        return IrCall(
+          IrClosure(
+            params,
+            IrReturn(
+              IrCallValue(lowered, [
+                ...positional,
+                for (final n in torn.function.namedParameters)
+                  byName[n.parameterName]!,
+              ]),
+            ),
+            _type(param.returnType),
+          ),
+          '!rc',
+          const [],
+        );
+      }
+    }
     if ((value is VariableGet ||
             value is StaticTearOff ||
             (value is ConstantExpression &&
@@ -4076,6 +4158,14 @@ class KernelFrontend {
   /// different: it is stored in the object being built, so it outlives
   /// everything here and stays refused.
   bool _borrowedArgument = false;
+
+  static bool _sameOrder(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 
   /// A function's named parameters in the order its *type* lists them.
   static List<NamedParameter> _namedInTypeOrder(FunctionNode fn) =>
