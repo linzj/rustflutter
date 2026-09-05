@@ -306,7 +306,13 @@ IrExpr coerceInto(
     );
     return IrStaticCall('FutureOr', 'value', [inner])..rustType = slot;
   }
-  final haveObject = have.name == 'Object' || have.name == 'dynamic';
+  // A bare `Function` (`dart:core`'s, no signature) is spelled as the
+  // object it is (`Rc<dyn Object>`, the backend's type table), so into
+  // `Object` it is itself, not a value to put behind a handle.
+  final haveObject =
+      have.name == 'Object' ||
+      have.name == 'dynamic' ||
+      (have.name == 'Function' && !have.isFunction);
   final slotObject = slot.name == 'Object' || slot.name == 'dynamic';
   if (scalarNames.contains(have.name) && !slotObject) return value;
   if (scalarNames.contains(slot.name) && !haveObject) return value;

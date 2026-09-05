@@ -2622,6 +2622,44 @@ class KernelFrontend implements TypeWorld {
     return false;
   }
 
+  /// The symbol an `external` member's `@Native` annotation registers it
+  /// under (`PlatformConfigurationNativeApi::SetNeedsReportTimings`), as
+  /// the CFE leaves it: a `pragma("cfe:ffi:native-marker", Native<..>(
+  /// symbol: ..))`. Null for an external with no such annotation.
+  String? _nativeSymbol(Member member) {
+    for (final a in member.annotations) {
+      if (a is! ConstantExpression) continue;
+      final c = a.constant;
+      if (c is! InstanceConstant || c.classNode.name != 'pragma') continue;
+      InstanceConstant? options;
+      var marker = false;
+      for (final e in c.fieldValues.entries) {
+        final field = e.key.asField.name.text;
+        final v = e.value;
+        // Two spellings: the marker the CFE leaves on the member written
+        // (`cfe:ffi:native-marker`), and the pragma on the `$Method$
+        // FfiNative` external its transform synthesizes (`vm:ffi:native`).
+        if (field == 'name' &&
+            v is StringConstant &&
+            (v.value == 'cfe:ffi:native-marker' ||
+                v.value == 'vm:ffi:native')) {
+          marker = true;
+        }
+        if (field == 'options' && v is InstanceConstant) options = v;
+      }
+      if (!marker || options == null || options.classNode.name != 'Native') {
+        continue;
+      }
+      for (final e in options.fieldValues.entries) {
+        final v = e.value;
+        if (e.key.asField.name.text == 'symbol' && v is StringConstant) {
+          return v.value;
+        }
+      }
+    }
+    return null;
+  }
+
   Class? _realOwner(Member target, String name) {
     // A super call in a mixin's body names the `on` constraint's member
     // (`BindingBase.initInstances`), but dispatches to the *actual*
@@ -7498,6 +7536,48 @@ class KernelFrontend implements TypeWorld {
       final member = function.parent;
       if (member is Member && member.isExternal) {
         final name = '${member.enclosingClass?.name ?? ''}.${member.name.text}';
+        // ..through the one boundary the runtime answers (`dart_native`
+        // in the prelude): the `@Native` symbol the engine registers it
+        // under, the arguments as objects, and whether a value comes
+        // back. The generated code sees only the Dart signature; what
+        // the symbol does is the native host's (run455: the first panic
+        // past the bindings' constructors was `__nativeSetNeedsReport
+        // Timings`).
+        final symbol = _nativeSymbol(member);
+        if (symbol != null) {
+          try {
+            final args = [
+              for (final p in function.positionalParameters)
+                coerce(
+                  IrLocal(_paramName(p))..rustType = _type(p.type),
+                  IrType('Object'),
+                ),
+            ];
+            final returns = function.returnType;
+            final call = IrStaticCall(null, 'dart_native', [
+              IrLiteral(symbol, const IrType('String')),
+              IrListLiteral(args, IrType('Object')),
+              IrLiteral(
+                returns is VoidType ? 'false' : 'true',
+                const IrType('bool'),
+              ),
+            ], fails: true)..rustType = const IrType('dynamic');
+            if (returns is VoidType) return IrBlock([IrExprStmt(call)]);
+            if (returns is NeverType) {
+              return IrBlock([IrExprStmt(call), IrExprStmt(_unreachable)]);
+            }
+            return IrBlock([IrReturn(coerce(call, _type(returns)))]);
+          } on Unsupported catch (error) {
+            // A signature the boundary cannot spell: the refusal below.
+            if (Platform.environment['DART2RUST_TRACE_NATIVE'] != null) {
+              stderr.writeln('TRACE_NATIVE $name unsupported: $error');
+            }
+          }
+        } else if (Platform.environment['DART2RUST_TRACE_NATIVE'] != null) {
+          stderr.writeln(
+            'TRACE_NATIVE $name no symbol: ${member.annotations.map((a) => a is ConstantExpression && a.constant is InstanceConstant ? (a.constant as InstanceConstant).fieldValues.entries.map((e) => '${e.key.asField.name.text}=${e.value.toString().substring(0, e.value.toString().length.clamp(0, 90))}').join(';') : a.runtimeType.toString()).join(' | ')}',
+          );
+        }
         return IrBlock([
           IrExprStmt(
             IrLiteral(

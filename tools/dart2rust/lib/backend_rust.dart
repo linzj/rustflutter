@@ -5449,6 +5449,7 @@ class RustBackend {
   /// and no library declares: the crate-wide "was it translated" check has
   /// to know them, or `vec_of_nones(..)` reads as a call to nothing.
   static const _preludeFunctions = {
+    'dart_native',
     // By their Dart names, as the call names them (`postEvent`, not the
     // `post_event` it is spelled as).
     'exit',

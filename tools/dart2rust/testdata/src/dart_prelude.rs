@@ -2556,6 +2556,58 @@ impl<T: Clone> Expando<T> {
     }
 }
 
+/// The engine's side of `dart:ui`. Every `external` member the compiler
+/// translates becomes a call through here, by the symbol its `@Native`
+/// annotation registers it under, with its arguments as objects and a
+/// flag saying whether a value comes back. The *native host* -- the
+/// runtime crate, forwarding to the engine -- answers; installed with
+/// `set_native_host`. Without one, a native that returns nothing does
+/// nothing (counted, so a headless run can say how many it skipped), and
+/// one that returns a value has nothing to return and panics naming
+/// itself: that is where the headless ruler ends and the runtime begins.
+pub type NativeHost = dyn Fn(
+    &str,
+    Vec<std::rc::Rc<dyn Object>>,
+) -> Result<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>;
+
+thread_local! {
+    static NATIVE_HOST: std::cell::RefCell<Option<Box<NativeHost>>> = std::cell::RefCell::new(None);
+    static NATIVES_SKIPPED: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+}
+
+pub fn set_native_host(host: Box<NativeHost>) {
+    NATIVE_HOST.with(|h| *h.borrow_mut() = Some(host));
+}
+
+/// The void natives a run without a host skipped, in order, each once.
+pub fn natives_skipped() -> Vec<String> {
+    NATIVES_SKIPPED.with(|s| s.borrow().clone())
+}
+
+pub fn dart_native(
+    symbol: String,
+    args: Vec<std::rc::Rc<dyn Object>>,
+    returns: bool,
+) -> Result<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>> {
+    let answered = NATIVE_HOST.with(|h| h.borrow().as_ref().map(|host| host(&symbol, args)));
+    if let Some(result) = answered {
+        return result;
+    }
+    if !returns {
+        NATIVES_SKIPPED.with(|s| {
+            let mut s = s.borrow_mut();
+            if !s.contains(&symbol) {
+                s.push(symbol);
+            }
+        });
+        return Ok(std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>);
+    }
+    panic!(
+        "native `{}` needs the engine: no native host is installed",
+        symbol
+    )
+}
+
 /// `dart:ffi`, as far as the gallery's dill reaches it: the Windows plugins
 /// (`win32`, `url_launcher_windows`) that the tree shaker keeps because a
 /// platform check is not a constant. None of it runs on the host this
