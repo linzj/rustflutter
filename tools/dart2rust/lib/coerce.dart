@@ -257,6 +257,21 @@ IrExpr coerceInto(
   if (wrap != null) {
     return IrStaticCall(slot.name, wrap, [value])..rustType = slot;
   }
+  // `FutureOr<T>`: a future goes in as one, anything else as a `T`.
+  if (slot.name == 'FutureOr' &&
+      slot.arguments.length == 1 &&
+      have.name != 'FutureOr') {
+    if (have.name == 'Future' && have.arguments.length == 1) {
+      return IrStaticCall('FutureOr', 'future', [value])..rustType = slot;
+    }
+    final inner = coerceInto(
+      value,
+      slot.arguments.single,
+      world,
+      inClosure: inClosure,
+    );
+    return IrStaticCall('FutureOr', 'value', [inner])..rustType = slot;
+  }
   final haveObject = have.name == 'Object' || have.name == 'dynamic';
   final slotObject = slot.name == 'Object' || slot.name == 'dynamic';
   if (scalarNames.contains(have.name) && !slotObject) return value;

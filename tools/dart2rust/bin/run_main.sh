@@ -16,7 +16,7 @@ here=$(cd "$(dirname "$0")/.." && pwd)
 export PATH="$HOME/.cargo/bin:$PATH"
 cd "$here/.crate-ws" || exit 2
 (
-  cargo build -p dart_main -j "$DART2RUST_JOBS" 2>&1 | grep -E '^(error|warning: unused)' | head -20
+  cargo build -p dart_main -j "$DART2RUST_JOBS" 2>&1 | grep -E '^error' -A12 | head -80
   echo "BUILD-DONE"
   RUST_BACKTRACE=1 timeout 120 ./target/debug/dart_main 2>&1 | head -60
   echo "RUN-DONE exit=$?"

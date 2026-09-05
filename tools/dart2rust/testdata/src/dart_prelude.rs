@@ -3205,6 +3205,184 @@ pub struct Scheduler {
     microtasks: std::collections::VecDeque<Box<dyn FnOnce() -> Result<(), DartError>>>,
     timers: Vec<Scheduled>,
     next_id: i64,
+    /// Futures running on their own (`dart_spawn`): Dart's are eager, and
+    /// a `Future(..)` nobody awaits still runs.
+    tasks: Vec<std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ()>>>>,
+}
+
+/// Set by any waker the scheduler hands out: something a task or `main`
+/// awaited has moved on, so another pass is worth making.
+struct Woken(std::sync::atomic::AtomicBool);
+
+impl std::task::Wake for Woken {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+pub static WOKEN: std::sync::LazyLock<std::sync::Arc<Woken>> = std::sync::LazyLock::new(|| {
+    std::sync::Arc::new(Woken(std::sync::atomic::AtomicBool::new(false)))
+});
+
+/// The scheduler's waker, and whether anything woke since it was last asked.
+pub fn dart_waker() -> std::task::Waker {
+    std::task::Waker::from(std::sync::Arc::clone(&*WOKEN))
+}
+
+pub fn dart_woken() -> bool {
+    WOKEN.0.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Runs a future on the scheduler and hands back a future of its result:
+/// `Future(..)`, `Future.delayed(..)`, and the eager start Dart gives them.
+pub fn dart_spawn<T: DartNullable + 'static>(
+    future: std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>,
+) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
+    let completer: Completer<Result<T, DartError>> = Completer::new();
+    let done = completer.clone();
+    let mut future = future;
+    (**SCHEDULER).borrow_mut().tasks.push(Box::pin(async move {
+        let result = future.as_mut().await;
+        done.complete(Some(result));
+    }));
+    completer.future()
+}
+
+/// A future that completes when the timer fires.
+pub fn timer_future(
+    delay: Duration,
+) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = ()>>> {
+    let completer: Completer<()> = Completer::new();
+    let done = completer.clone();
+    Timer::new(
+        delay,
+        std::rc::Rc::new(move || {
+            done.complete(Some(()));
+            Ok(())
+        }),
+    );
+    completer.future()
+}
+
+/// `Future(computation)`: the computation runs on the scheduler's next pass.
+pub fn future_new<T: DartNullable + 'static>(
+    computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
+) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
+    dart_spawn(Box::pin(async move { computation()?.await }))
+}
+
+/// `Future.microtask(computation)`: the same, one pass is a microtask here.
+pub fn future_microtask<T: DartNullable + 'static>(
+    computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
+) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
+    future_new(computation)
+}
+
+/// `Future.sync(computation)`: the computation runs now; its value or its
+/// future is the result.
+pub fn future_sync<T: DartNullable + 'static>(
+    computation: std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>,
+) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
+    match computation() {
+        Ok(FutureOr::Value(value)) => {
+            Box::pin(std::future::ready(Ok(value.expect("FutureOr value"))))
+        }
+        Ok(FutureOr::Future(future)) => future,
+        Err(error) => Box::pin(std::future::ready(Err(error))),
+    }
+}
+
+/// `Future.delayed(duration, [computation])`: after the timer, the
+/// computation's result, or `null` when there is none.
+pub fn future_delayed<T: DartNullable + 'static>(
+    duration: Duration,
+    computation: Option<std::rc::Rc<dyn Fn() -> Result<FutureOr<T>, DartError>>>,
+) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>> {
+    dart_spawn(Box::pin(async move {
+        timer_future(duration).await;
+        match computation {
+            Some(computation) => computation()?.await,
+            None => Ok(T::dart_null()
+                .expect("Future.delayed without a computation on a non-nullable type")),
+        }
+    }))
+}
+
+/// `Future.wait(futures)`: every result, in order.
+pub fn future_wait<T: DartNullable + 'static>(
+    futures: Vec<
+        std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>,
+    >,
+) -> std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<Vec<T>, DartError>>>> {
+    Box::pin(async move {
+        let mut out = Vec::new();
+        for future in futures {
+            out.push(future.await?);
+        }
+        Ok(out)
+    })
+}
+
+/// Dart's `FutureOr<T>`: a `T`, or a `Future<T>`; awaitable either way.
+pub enum FutureOr<T> {
+    Value(Option<T>),
+    Future(std::pin::Pin<std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>>),
+}
+
+impl<T> FutureOr<T> {
+    pub fn value(value: T) -> Self {
+        FutureOr::Value(Some(value))
+    }
+    pub fn future(
+        future: std::pin::Pin<
+            std::boxed::Box<dyn std::future::Future<Output = Result<T, DartError>>>,
+        >,
+    ) -> Self {
+        FutureOr::Future(future)
+    }
+}
+
+impl<T> Unpin for FutureOr<T> {}
+
+impl<T> std::future::Future for FutureOr<T> {
+    type Output = Result<T, DartError>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        match self.get_mut() {
+            FutureOr::Value(value) => {
+                std::task::Poll::Ready(Ok(value.take().expect("FutureOr polled twice")))
+            }
+            FutureOr::Future(future) => future.as_mut().poll(cx),
+        }
+    }
+}
+
+impl<T> std::fmt::Debug for FutureOr<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Instance of 'FutureOr'")
+    }
+}
+
+impl<T> DartNullable for FutureOr<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl<T, E> DartNullable for Result<T, E> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
 }
 
 struct Scheduled {
@@ -3219,6 +3397,7 @@ pub static SCHEDULER: std::sync::LazyLock<Isolate<std::cell::RefCell<Scheduler>>
     std::sync::LazyLock::new(|| {
         Isolate(std::cell::RefCell::new(Scheduler {
             microtasks: std::collections::VecDeque::new(),
+            tasks: Vec::new(),
             timers: Vec::new(),
             next_id: 1,
         }))
@@ -3244,6 +3423,28 @@ pub fn run_until_idle() {
                 continue;
             }
             None => {}
+        }
+        // The spawned futures, each polled once; another pass whenever one
+        // of them woke something (a completer another awaits).
+        let tasks = std::mem::take(&mut (**SCHEDULER).borrow_mut().tasks);
+        if !tasks.is_empty() {
+            dart_woken();
+            let waker = dart_waker();
+            let mut cx = std::task::Context::from_waker(&waker);
+            let mut pending = Vec::new();
+            for mut task in tasks {
+                if task.as_mut().poll(&mut cx).is_pending() {
+                    pending.push(task);
+                }
+            }
+            {
+                let mut scheduler = (**SCHEDULER).borrow_mut();
+                pending.append(&mut scheduler.tasks);
+                scheduler.tasks = pending;
+            }
+            if dart_woken() || !(**SCHEDULER).borrow().microtasks.is_empty() {
+                continue;
+            }
         }
         let now = std::time::Instant::now();
         let due: Vec<(i64, std::rc::Rc<dyn Fn() -> Result<(), DartError>>)> = {
@@ -3285,8 +3486,8 @@ pub fn run_until_idle() {
 /// reading, not an error.
 pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F) {
     let mut main = std::pin::pin!(main);
-    let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
+    let waker = dart_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
     let mut done = false;
     loop {
         if !done {
@@ -3300,6 +3501,9 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
             }
         }
         run_until_idle();
+        if dart_woken() {
+            continue;
+        }
         match next_due() {
             Some(due) => {
                 let now = std::time::Instant::now();
@@ -3429,7 +3633,7 @@ impl<T> Clone for Completer<T> {
     }
 }
 
-impl<T> Default for Completer<T> {
+impl<T: DartNullable> Default for Completer<T> {
     fn default() -> Self {
         Completer::new()
     }
@@ -4006,11 +4210,7 @@ impl Default for FormatException {
 }
 
 impl FormatException {
-    pub fn new(
-        message: String,
-        source: Option<std::rc::Rc<dyn Object>>,
-        offset: Option<i64>,
-    ) -> Self {
+    pub fn new(message: String, source: std::rc::Rc<dyn Object>, offset: Option<i64>) -> Self {
         FormatException {
             message,
             source,

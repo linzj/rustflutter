@@ -544,12 +544,18 @@ class KernelFrontend implements TypeWorld {
         ),
       );
     }
-    // Kernel's own class name is not a Dart type name. `FutureOr<T>` arrived
-    // as the type `FutureOrType`, which nothing declares and which reads, in
-    // the output, exactly like a class the compiler had translated. A name
-    // this compiler invented is worse than no name: refusing says where the
-    // gap is, and `FutureOr` is a real gap -- it is "T, or a future of T",
-    // which Rust would need an enum to say.
+    // `FutureOr<T>` is "a `T`, or a future of one": the prelude's enum of
+    // the two, awaitable either way; a value crosses into it through
+    // `FutureOr::value` / `FutureOr::future` (`coerceInto`). The gallery's
+    // startup path needs it: `Future<bool>(() async {..})` in
+    // `GetStorage._internal`, `SchedulerBinding.scheduleTask`.
+    if (type is FutureOrType) {
+      return IrType(
+        'FutureOr',
+        nullable: type.nullability == Nullability.nullable,
+        arguments: [_type(type.typeArgument)],
+      );
+    }
     throw Unsupported('the type `$type`', '$type');
   }
 

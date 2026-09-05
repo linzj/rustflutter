@@ -573,6 +573,7 @@ class RustBackend {
             receiverClass: receiverClass,
             fails: fails && !diverges,
             typeArguments: typeArguments,
+            asyncFn: e.asyncFn,
           ),
           diverges && fails,
         ),
@@ -591,6 +592,7 @@ class RustBackend {
             args,
             fails && !diverges,
             typeArguments,
+            e.asyncFn,
           ),
           diverges && fails,
         ),
@@ -820,14 +822,24 @@ class RustBackend {
     List<IrExpr> args,
     bool fails, [
     List<IrType> typeArguments = const [],
+    bool asyncFn = false,
   ]) {
     final awaited = _awaiting;
     _awaiting = false;
     final call = _staticCall(owner, name, args, typeArguments);
     final failing =
         fails || (_resultModel && _preludeFailingStatics.contains(name));
-    return failing && !awaited ? '$call$_propagate' : call;
+    return _asyncValue(
+      failing && !awaited && !asyncFn ? '$call$_propagate' : call,
+      asyncFn && !awaited,
+    );
   }
+
+  /// An `async fn` called and not awaited: its future is the value, boxed
+  /// as every `Future<T>` is here (`return _handleCommitBackGesture()`,
+  /// ws428). Not `?`ed: an `async fn` fails inside its future.
+  String _asyncValue(String call, bool boxed) =>
+      boxed ? 'std::boxed::Box::pin($call)' : call;
 
   /// A translated class's constructor returns `Result` like any function;
   /// the prelude's do not.
@@ -1477,9 +1489,30 @@ class RustBackend {
     // `Future.value(v)` is a future that is already done, which Rust spells
     // `ready`. `Future.delayed` and `Future.wait` need a runtime to be delayed
     // or joined *by*, and there is none, so they say so.
+    // ..the prelude has one now (`SCHEDULER`, `dart_spawn`): the other
+    // constructors are its functions (2026-09-05, the runtime ruler's
+    // first refusal after `main`: `Future<bool>(() async {..})`).
     if (owner == 'Future') {
       if (name == 'value' && args.length == 1) {
         return 'Box::pin(std::future::ready(${expr(args.single)}))';
+      }
+      if ((name == '' || name == 'new') && args.length == 1) {
+        return 'future_new(${expr(args.single)})';
+      }
+      if (name == 'microtask' && args.length == 1) {
+        return 'future_microtask(${expr(args.single)})';
+      }
+      if (name == 'sync' && args.length == 1) {
+        return 'future_sync(${expr(args.single)})';
+      }
+      if (name == 'delayed' && (args.length == 1 || args.length == 2)) {
+        return 'future_delayed(${expr(args[0])}, ${args.length == 2 ? expr(args[1]) : 'None'})';
+      }
+      if (name == 'error' && args.isNotEmpty) {
+        return 'Box::pin(std::future::ready(Err(${expr(args[0])})))';
+      }
+      if (name == 'wait' && args.isNotEmpty) {
+        return 'future_wait(${expr(args[0])})';
       }
       throw Unsupported(
         '`Future.$name`, which needs an executor',
@@ -2262,6 +2295,7 @@ class RustBackend {
     String? receiverClass,
     bool fails = false,
     List<IrType> typeArguments = const [],
+    bool asyncFn = false,
   }) {
     final turbofish = typeArguments.isEmpty
         ? ''
@@ -2493,7 +2527,8 @@ class RustBackend {
     // `.unwrap()` where there is none around (a static's initialiser).
     // An awaited call is not `?`ed here but at the `.await`.
     final failing = fails || (_resultModel && _preludeFailing.contains(name));
-    final suffix = !failing || awaited ? '' : _propagate;
+    final suffix = !failing || awaited || asyncFn ? '' : _propagate;
+    final boxed = asyncFn && !awaited;
     // `_identifier`, not `snake`: an *operator* called as a method -- `~x` is
     // `x.~()` in Kernel -- has no letters for `snake` to keep, and it came out
     // as `x._()`, which does not parse and stopped the whole crate at the
@@ -2575,12 +2610,18 @@ class RustBackend {
           : _isHandle(receiverClass)
           ? '&*${expr(target)}'
           : '&${expr(target)}';
-      return '${asTrait ?? qualifier}::${_identifier(name)}$turbofish'
-          '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
-          '$suffix';
+      return _asyncValue(
+        '${asTrait ?? qualifier}::${_identifier(name)}$turbofish'
+        '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
+        '$suffix',
+        boxed,
+      );
     }
-    return '$receiver.${_identifier(name)}$turbofish'
-        '(${args.map(expr).join(', ')})$suffix';
+    return _asyncValue(
+      '$receiver.${_identifier(name)}$turbofish'
+      '(${args.map(expr).join(', ')})$suffix',
+      boxed,
+    );
   }
 
   /// `Alignment { x: -1.0, y: -1.0 }`.
