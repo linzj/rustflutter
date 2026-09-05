@@ -288,7 +288,10 @@ impl DartInt for i64 {
 pub trait DartNullable: Sized {
     /// Not `Clone` by itself -- `Vec<T>` is one only for `T: Clone` --
     /// so a declaration that clones a `T?` asks `DartNullable<Or: Clone>`.
-    type Or;
+    /// Its own `Or` again: `T?` with `T` bound to `U?` is `U?`, and this
+    /// is what lets rustc read `<<U as DartNullable>::Or as DartNullable>
+    /// ::Or` as `<U as DartNullable>::Or`.
+    type Or: DartNullable<Or = Self::Or>;
     /// The `Option<Self>` a body works with, from the spelled `T?`.
     fn option(or: Self::Or) -> Option<Self>;
     /// The spelled `T?` from a body's `Option<Self>`.
