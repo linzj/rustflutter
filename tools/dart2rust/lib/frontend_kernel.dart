@@ -885,10 +885,10 @@ class KernelFrontend implements TypeWorld {
       final name = known ?? written!;
       // Into a `dynamic` local (`dynamic result = scaled(x)` in vector_math's
       // `operator *`) the value is shared into its `Rc<dyn Object>`.
-      final stored = _intoObject(
+      final stored = _widened(
         node.value,
         node.variable.type,
-        _widened(node.value, node.variable.type, expression(node.value)),
+        expression(node.value),
       );
       // `(index = s.indexOf(p)) >= 0` with `int? index`: the store is
       // `Some(..)`, the value of the expression is not.
@@ -1972,13 +1972,9 @@ class KernelFrontend implements TypeWorld {
         // `key` read again two lines on (13 E0382s). Into a `dynamic`
         // binding it is shared into the `Rc<dyn Object>` (`__t: Rc<dyn
         // Object> = true`).
-        _intoObject(
-          initial,
-          node.variable.type,
-          // ..and widened into the binding's type: `double? t = size?.height`
-          // after TFA holds a `double`, and the binding says `Some`.
-          _widened(initial, node.variable.type, expression(initial)),
-        ),
+        // ..and widened into the binding's type: `double? t = size?.height`
+        // after TFA holds a `double`, and the binding says `Some`.
+        _widened(initial, node.variable.type, expression(initial)),
       ),
     ], promotedRead ? IrNullCheck(IrLocal(name)) : expression(letBody));
   }
@@ -2213,14 +2209,10 @@ class KernelFrontend implements TypeWorld {
       // (`var integer = number.floor()` on a `dynamic` number).
       init == null
           ? null
-          : _intoObject(
+          : _intoDeclaredNum(
               init,
               variable.type,
-              _intoDeclaredNum(
-                init,
-                variable.type,
-                _widened(init, variable.type, expression(init)),
-              ),
+              _widened(init, variable.type, expression(init)),
             ),
       cell: _capturedWrites.contains(variable),
     );
@@ -3689,14 +3681,10 @@ class KernelFrontend implements TypeWorld {
       // over enums and structs) each is shared, as an argument would be.
       return IrListLiteral([
         for (final e in positional)
-          _intoObject(
+          _widened(
             e,
             element,
-            _widened(
-              e,
-              element,
-              _withExpectedReturn(element, e, () => expression(e)),
-            ),
+            _withExpectedReturn(element, e, () => expression(e)),
           ),
       ], _type(element ?? const DynamicType()));
     }
@@ -3936,34 +3924,27 @@ class KernelFrontend implements TypeWorld {
                   index < instantiated.positionalParameters.length
             ? instantiated.positionalParameters[index]
             : declaredType);
-    return _intoDynamic(
+    return _numLiteral(
       value,
       paramType,
       callee,
-      _numLiteral(
-        value,
-        paramType,
+      _forCallee(
         callee,
-        _forCallee(
+        declaredType,
+        _withBorrowing(
+          param,
           callee,
-          declaredType,
-          _withBorrowing(
-            param,
-            callee,
-            () =>
-                _withExpectedReturn(paramType, value, () => expression(value)),
-          ),
-          (lowered) => _widened(
-            value,
-            paramType,
-            lowered,
-            slotIr:
-                _landingSlotIr(callee: callee, index: index) ??
-                _genericSlotIr(callee, declaredType),
-          ),
+          () => _withExpectedReturn(paramType, value, () => expression(value)),
+        ),
+        (lowered) => _widened(
+          value,
+          paramType,
+          lowered,
+          slotIr:
+              _landingSlotIr(callee: callee, index: index) ??
+              _genericSlotIr(callee, declaredType),
         ),
       ),
-      generic: param?.type is TypeParameterType,
     );
   }
 
@@ -4052,33 +4033,28 @@ class KernelFrontend implements TypeWorld {
           name: param is FunctionParameter ? param.parameterName : null,
         ) ??
         declared;
-    return _intoDynamic(
+    return _numLiteral(
       value,
       type,
       callee,
-      _numLiteral(
-        value,
-        type,
+      _forCallee(
         callee,
-        _forCallee(
+        declared,
+        _withBorrowing(
+          param,
           callee,
-          declared,
-          _withBorrowing(
-            param,
-            callee,
-            () => _withExpectedReturn(type, value, () => expression(value)),
-          ),
-          (lowered) => _widened(
-            value,
-            type,
-            lowered,
-            slotIr:
-                _landingSlotIr(
-                  callee: callee,
-                  name: param is FunctionParameter ? param.parameterName : null,
-                ) ??
-                _genericSlotIr(callee, declared),
-          ),
+          () => _withExpectedReturn(type, value, () => expression(value)),
+        ),
+        (lowered) => _widened(
+          value,
+          type,
+          lowered,
+          slotIr:
+              _landingSlotIr(
+                callee: callee,
+                name: param is FunctionParameter ? param.parameterName : null,
+              ) ??
+              _genericSlotIr(callee, declared),
         ),
       ),
     );
@@ -4353,21 +4329,6 @@ class KernelFrontend implements TypeWorld {
     }
   }
 
-  /// A value into an `Object`/`dynamic` slot. What the shape rules here
-  /// once did (`!rc_object`, `Some`, the prelude's `Pattern`) is the
-  /// coercion rule's, from the value's recorded type; the two names stay
-  /// while their call sites are folded into `_widened` (ws395).
-  IrExpr _intoDynamic(
-    Expression value,
-    DartType? param,
-    FunctionNode? callee,
-    IrExpr lowered, {
-    bool generic = false,
-  }) => lowered;
-
-  IrExpr _intoObject(Expression value, DartType? param, IrExpr lowered) =>
-      lowered;
-
   /// `Some(..)` around a non-null argument handed to a nullable parameter --
   /// Dart's silent widening, spelled. Only when the static type says the
   /// argument is not itself nullable, so a nullable variable passed on stays
@@ -4385,16 +4346,8 @@ class KernelFrontend implements TypeWorld {
       [
         for (final entry in node.entries)
           (
-            _intoObject(
-              entry.key,
-              keyType,
-              _widened(entry.key, keyType, expression(entry.key)),
-            ),
-            _intoObject(
-              entry.value,
-              valueType,
-              _widened(entry.value, valueType, expression(entry.value)),
-            ),
+            _widened(entry.key, keyType, expression(entry.key)),
+            _widened(entry.value, valueType, expression(entry.value)),
           ),
       ],
       _type(keyType),
@@ -4409,14 +4362,10 @@ class KernelFrontend implements TypeWorld {
   IrExpr _listLiteral(ListLiteral node, DartType element) {
     return IrListLiteral([
       for (final e in node.expressions)
-        _intoObject(
+        _widened(
           e,
           element,
-          _widened(
-            e,
-            element,
-            _withExpectedReturn(element, e, () => expression(e)),
-          ),
+          _withExpectedReturn(element, e, () => expression(e)),
         ),
     ], _type(element));
   }
@@ -5063,16 +5012,11 @@ class KernelFrontend implements TypeWorld {
       // ..under the callee's gate, as a written argument is: a prelude
       // `dynamic` slot's `null` default is its `Null` object.
       final callee = _calleeOf(param);
-      return _intoDynamic(
-        initializer,
-        param.type,
+      return _forCallee(
         callee,
-        _forCallee(
-          callee,
-          param.type,
-          expression(initializer),
-          (lowered) => _widened(initializer, param.type, lowered),
-        ),
+        param.type,
+        expression(initializer),
+        (lowered) => _widened(initializer, param.type, lowered),
       );
     }
     if (param.type.nullability == Nullability.nullable) {
@@ -5242,11 +5186,7 @@ class KernelFrontend implements TypeWorld {
     // entries are below.
     IrExpr element(Constant c, DartType into) {
       final value = ConstantExpression(c, _constantStaticType(c));
-      return _intoObject(
-        value,
-        into,
-        _widened(value, into, _constant(c, node)),
-      );
+      return _widened(value, into, _constant(c, node));
     }
 
     if (constant is ListConstant) {
@@ -5271,11 +5211,7 @@ class KernelFrontend implements TypeWorld {
       // mismatched types on five statics in `widgets`).
       IrExpr entry(Constant c, DartType into) {
         final value = ConstantExpression(c, _constantStaticType(c));
-        return _intoObject(
-          value,
-          into,
-          _widened(value, into, _constant(c, node)),
-        );
+        return _widened(value, into, _constant(c, node));
       }
 
       return IrMapLiteral(
@@ -5793,13 +5729,7 @@ class KernelFrontend implements TypeWorld {
           valueType.classNode.name == 'Future') {
         return IrReturn(IrAwait(expression(value)));
       }
-      return IrReturn(
-        _intoObject(
-          value,
-          _returnsType,
-          _widened(value, _returnsType, expression(value)),
-        ),
-      );
+      return IrReturn(_widened(value, _returnsType, expression(value)));
     }
     if (node is Block) {
       return IrBlock([for (final s in node.statements) statement(s)]);
@@ -5885,11 +5815,7 @@ class KernelFrontend implements TypeWorld {
         return IrIndexSet(
           expression(value.receiver),
           expression(value.arguments.positional[0]),
-          _intoObject(
-            stored,
-            element,
-            _widened(stored, element, expression(stored)),
-          ),
+          _widened(stored, element, expression(stored)),
         );
       }
       // A top-level variable's assignment. `StaticSet` on a `Field` with no
@@ -5960,18 +5886,10 @@ class KernelFrontend implements TypeWorld {
         // `howMany = truncated` into a declared `num` local casts the `int`.
         return IrAssign(
           known ?? written!,
-          _intoObject(
+          _intoDeclaredNum(
             value.value,
             value.variable.type,
-            _intoDeclaredNum(
-              value.value,
-              value.variable.type,
-              _widened(
-                value.value,
-                value.variable.type,
-                expression(value.value),
-              ),
-            ),
+            _widened(value.value, value.variable.type, expression(value.value)),
           ),
         );
       }
@@ -6474,14 +6392,10 @@ class KernelFrontend implements TypeWorld {
             _type(field.type),
             // Into the declared type: a `dynamic` top-level holding a
             // struct is an `Rc<dyn Object>` (intl's locale data).
-            _intoObject(
+            _intoDeclaredNum(
               init,
               field.type,
-              _intoDeclaredNum(
-                init,
-                field.type,
-                _widened(init, field.type, expression(init)),
-              ),
+              _widened(init, field.type, expression(init)),
             ),
             isLazy: mutable,
             isMutable: mutable,
@@ -7152,14 +7066,10 @@ class KernelFrontend implements TypeWorld {
         IrConstDecl(
           name,
           _type(field.type),
-          _intoObject(
+          _intoDeclaredNum(
             init,
             field.type,
-            _intoDeclaredNum(
-              init,
-              field.type,
-              _widened(init, field.type, expression(init)),
-            ),
+            _widened(init, field.type, expression(init)),
           ),
           // A `static final` is computed once on first use, which is what
           // `LazyLock` is. It was refused while there was nothing to say it

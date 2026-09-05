@@ -6411,6 +6411,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws395 | 950 叶子错 | ws394 **prelude 自己没编过（0 个 crate）**：`FormatException` 的 `derive(PartialEq)` 对 `Rc<dyn Object>` 字段是 E0507，函数外的错 stub 不了。手写 `PartialEq`（source 按同一性），顺手修了一直被 stub 的 `run_until_idle`（`Vec<(i64, Rc<dyn Fn()>)>` 少了 `-> Result`）。单独 `cargo check -p dart_prelude` 干净后再上链。 |
 | ws395 结果 | 950 叶子错 | **2809→2784 / 795，138+1 个 crate**（mismatched −21；修 33 个函数，新 stub 9 个：`rendering_table`/`widgets_table` 7 个、cupertino 2 个）。`_intoObject`/`_intoDynamic` 的函数体整个删掉（只剩恒等），驱动输出和 ws395 零差异。 |
 | ws396 | 950 叶子错 | ws395 新 stub 的根：`_constantStaticType` 把集合常量当 `dynamic`，`const [BoxShadow(..)]` 进 `List<BoxShadow>?` 没 `Some`。集合常量按自己的类和元素类型定型；空列表字面量进另一元素类型的槽位是改型不是逐元素 map（`vec![]` 逐元素 map rustc 推不出类型，`fontFamilyFallback ?? const []`）。驱动输出对 ws395 差 3 文件。 |
+| ws396 结果 | 950 叶子错 | **2784→2782 / 795，138+1 个 crate**。`_intoObject`/`_intoDynamic` 的 17 处调用折掉、函数删掉，驱动输出零差异（脚本按括号折参数时把注释里的逗号当分隔符，一处手工还原）。 |
 
 ## 下一步(2026-09-05 重铺)
 
