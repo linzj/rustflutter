@@ -3829,6 +3829,26 @@ pub struct DartFuture<T> {
 struct FutureState<T> {
     result: Option<Result<T, DartError>>,
     wakers: Vec<std::task::Waker>,
+    /// Where the future came from (`pending_labeled`), for a stuck run.
+    label: &'static str,
+}
+
+thread_local! {
+    /// Every future made, with a way to ask whether it is still pending
+    /// (`None` once dropped): what a stuck run lists.
+    static FUTURES: std::cell::RefCell<Vec<(&'static str, Box<dyn Fn() -> Option<bool>>)>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// The futures still pending, by label; the dropped ones are forgotten.
+pub fn pending_futures() -> Vec<String> {
+    FUTURES.with(|f| {
+        let mut f = f.borrow_mut();
+        f.retain(|(_, probe)| probe().is_some());
+        f.iter()
+            .filter(|(_, probe)| probe() == Some(false))
+            .map(|(label, _)| label.to_string())
+            .collect()
+    })
 }
 
 impl<T> Clone for DartFuture<T> {
@@ -3862,15 +3882,31 @@ impl<T> DartNullable for DartFuture<T> {
     }
 }
 
-impl<T> DartFuture<T> {
+impl<T: 'static> DartFuture<T> {
     /// A future nothing has resolved yet (a `Completer`'s).
     pub fn pending() -> Self {
-        DartFuture {
-            shared: std::rc::Rc::new(std::cell::RefCell::new(FutureState {
-                result: None,
-                wakers: Vec::new(),
-            })),
-        }
+        Self::pending_labeled("?")
+    }
+
+    /// `pending`, labeled with where it comes from, and registered so a
+    /// run stuck on it can say so (`pending_futures`).
+    pub fn pending_labeled(label: &'static str) -> Self
+    where
+        T: 'static,
+    {
+        let shared = std::rc::Rc::new(std::cell::RefCell::new(FutureState {
+            result: None,
+            wakers: Vec::new(),
+            label,
+        }));
+        let weak = std::rc::Rc::downgrade(&shared);
+        FUTURES.with(|f| {
+            f.borrow_mut().push((
+                label,
+                Box::new(move || weak.upgrade().map(|s| s.borrow().result.is_some())),
+            ))
+        });
+        DartFuture { shared }
     }
 
     /// `Future.value(v)` / `Future.error(e)`: already done.
@@ -3924,7 +3960,7 @@ impl<T> DartFuture<T> {
     where
         T: 'static,
     {
-        let out = DartFuture::pending();
+        let out = DartFuture::pending_labeled(name);
         let done = out.clone();
         let mut future = future;
         (**SCHEDULER).borrow_mut().tasks.push((
@@ -3944,7 +3980,7 @@ impl<T> DartFuture<T> {
         T: Clone + 'static,
     {
         let me = self.clone();
-        DartFuture::spawn(Box::pin(async move { Ok(f(me.await?)) }))
+        DartFuture::spawn_named("map", Box::pin(async move { Ok(f(me.await?)) }))
     }
 
     /// `future.whenComplete(action)`: the action runs when the future
@@ -3959,11 +3995,14 @@ impl<T> DartFuture<T> {
         T: Clone + 'static,
     {
         let me = self.clone();
-        DartFuture::spawn(Box::pin(async move {
-            let settled = me.await;
-            action()?;
-            settled
-        }))
+        DartFuture::spawn_named(
+            "whenComplete",
+            Box::pin(async move {
+                let settled = me.await;
+                action()?;
+                settled
+            }),
+        )
     }
 
     /// `future.catchError(onError, test: ..)`: the error goes to `onError`
@@ -3978,22 +4017,25 @@ impl<T> DartFuture<T> {
         T: Clone + 'static,
     {
         let me = self.clone();
-        DartFuture::spawn(Box::pin(async move {
-            match me.await {
-                Ok(value) => Ok(value),
-                Err(error) => {
-                    let admitted = match &test {
-                        Some(test) => test(error.clone())?,
-                        None => true,
-                    };
-                    if admitted {
-                        on_error(error, StackTrace::current())
-                    } else {
-                        Err(error)
+        DartFuture::spawn_named(
+            "catchError",
+            Box::pin(async move {
+                match me.await {
+                    Ok(value) => Ok(value),
+                    Err(error) => {
+                        let admitted = match &test {
+                            Some(test) => test(error.clone())?,
+                            None => true,
+                        };
+                        if admitted {
+                            on_error(error, StackTrace::current())
+                        } else {
+                            Err(error)
+                        }
                     }
                 }
-            }
-        }))
+            }),
+        )
     }
 
     /// `future.then(onValue, onError: ..)`: the error goes to `onError` when
@@ -4007,15 +4049,18 @@ impl<T> DartFuture<T> {
         T: Clone + 'static,
     {
         let me = self.clone();
-        DartFuture::spawn(Box::pin(async move {
-            match me.await {
-                Ok(value) => on_value(value),
-                Err(error) => match on_error {
-                    Some(handler) => handler(error),
-                    None => Err(error),
-                },
-            }
-        }))
+        DartFuture::spawn_named(
+            "then",
+            Box::pin(async move {
+                match me.await {
+                    Ok(value) => on_value(value),
+                    Err(error) => match on_error {
+                        Some(handler) => handler(error),
+                        None => Err(error),
+                    },
+                }
+            }),
+        )
     }
 }
 
@@ -4307,7 +4352,7 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
             }
             None => {
                 if !done {
-                    let waiting = pending_tasks();
+                    let waiting = pending_futures();
                     let completers = pending_completers();
                     eprintln!(
                         "dart2rust: main is waiting on something no timer or microtask will complete; {} future(s) still pending: {}; {} completer(s) never completed: {}",
@@ -4502,7 +4547,7 @@ impl<T: DartNullable + 'static> Completer<T> {
 
     /// `Completer()`, recording who made it (`Class.member`).
     pub fn new_named(name: &'static str) -> Self {
-        let future = DartFuture::pending();
+        let future = DartFuture::pending_labeled(name);
         let probe = future.clone();
         COMPLETERS.with(|c| {
             c.borrow_mut()
