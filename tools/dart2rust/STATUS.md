@@ -6355,6 +6355,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws345 | 950 叶子错 | 基 trait impl 里类自己没有正文的方法，沿 superclass 链找最近有正文的（open 类的 trait 默认方法），`Base::name(self, ..)` 转发（`_inherited`/`_inherentCall(via)`）；转发时比基更窄的 trait 形参 `dart_cast_to::<dyn RenderBox>()`。`todo!("X does not translate Y yet")` **26199→2747**（剩的多是 mixin 的私有字段访问器：`_tickerModeNotifier` 198、`_child` 180、`_bucket` 110）。**3351→3283 / 872，138+1 个 crate**（mismatched −76，arguments incorrect −26，type annotations needed +34）。 |
 | ws346 | 950 叶子错 | mixin 的私有字段在 trait 上是抽象 getter/setter，struct 已经持有该字段（从应用摊平）：impl 里直接读写 cell。`todo!` **2747→861**，但 **3283→3603**（+319 mismatched）：trait 的类型是擦除的界（`Option<Rc<dyn RenderObject>>`），字段是窄的（`RenderBox?`），进出都差一个 trait/`Option`。 |
 | ws347 | 950 叶子错 | 字段转发器按类型适配：出去走 `_shaped`（从方法转发器里抽出来的返回整形：`__v.map(|v| v as Rc<dyn RenderObject>)`、`Some`），进来 `value.dart_cast_to::<dyn RenderBox>()`／`Some`／`unwrap`。**3603→3288 / 872，138+1 个 crate**（比 ws345 多 5 个桩，换来约 1900 个真正有正文的转发器；`todo!` 861，剩 `debugFillProperties` 197、`child` 90、`createTicker` 61、`_insertIntoChildList` 27）。 |
+| ws348 | 950 叶子错 | 查 `todo!`：`debugFillProperties` 197 个是 AOT 树摇掉的成员（dill 里没有，release 下死代码，todo 是实话）；`_insertIntoChildList` 是被拒的——`_firstChild = _lastChild = child` 链式赋值，setter 目标"used for its value"，拒绝信息不带成员名所以此前看不出。现在同 Field 一样：存临时、`IrSetter`、值留下。**3288→3345 / 872→804，138+1 个 crate**，`todo!` 861→782（`createTicker` 61 和 `_insertIntoChildList` 27 都有了正文；新增桩 `create_ticker` 35、`_insert_into_child_list` 12——正文有了但还编不过，下一轮看）。桩+拒 4160→4149。 |
 
 ## 下一步
 

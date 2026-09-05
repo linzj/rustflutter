@@ -917,7 +917,26 @@ class KernelFrontend {
         );
       }
       if (node.interfaceTarget is! Field) {
-        throw Unsupported('setter call used for its value', _sample(node));
+        // `_firstChild = _lastChild = child` in a mixin's body: the mixin's
+        // field is a setter on its trait. Called, and the value kept -- as
+        // the field on another object is above. Refused before ws348, which
+        // left `ContainerRenderObjectMixin._insertIntoChildList` out of
+        // every applier (27 `todo!`s).
+        final held = '__t${_nextTemporary++}';
+        final stored = _widened(
+          node.value,
+          node.interfaceTarget.setterType,
+          IrCall(IrLocal(held), 'clone', const []),
+        );
+        return IrBlockValue([
+          IrLocalDecl(held, null, expression(node.value)),
+          IrSetter(
+            null,
+            node.name.text,
+            stored,
+            qualifier: _setterQualifier(null, node.interfaceTarget),
+          ),
+        ], IrLocal(held));
       }
       final stored = _widened(
         node.value,
