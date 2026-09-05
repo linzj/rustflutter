@@ -680,12 +680,11 @@ class RustBackend {
       // Boxed, because a function item is not a `Box<dyn Fn>` and that is what
       // a function-typed field or local is here. A `Box<dyn Fn>` also
       // implements `Fn`, so it still passes where `impl Fn` is wanted.
-      IrFunctionRef(:final owner, :final name) =>
-        owner == null
-            ? 'std::rc::Rc::new(${snake(name)})'
-            : _freeStatics(owner)
-            ? 'std::rc::Rc::new(${_abstractStaticName(owner, name)})'
-            : 'std::rc::Rc::new($owner::${snake(name)})',
+      IrFunctionRef(:final owner, :final name) => _functionRef(
+        owner,
+        name,
+        e.rustType,
+      ),
       IrAssignValue(:final name, :final value) =>
         // The stored copy is a clone: a non-`Copy` value moved into the
         // local was gone by the time the expression yielded it (E0382, 17).
@@ -4420,6 +4419,28 @@ class RustBackend {
 
   static String _abstractStaticName(String owner, String name) =>
       _rustIdentifier('${snakeRaw(owner)}_${snakeRaw(name)}');
+
+  /// A function used as a value, behind the handle every function slot
+  /// is. An `async` function's item returns its future bare, where a
+  /// function value returns `Result` like everything else: a closure
+  /// around it puts the `Ok` on (`registerServiceExtension(callback:
+  /// _exitApplication)`, run453).
+  String _functionRef(String? owner, String name, IrType? type) {
+    final path = owner == null
+        ? snake(name)
+        : _freeStatics(owner)
+        ? _abstractStaticName(owner, name)
+        : '$owner::${snake(name)}';
+    final target = owner == null
+        ? library.functions.where((f) => f.name == name).firstOrNull
+        : library[owner]?.methods
+              .where((m) => m.name == name && m.isStatic)
+              .firstOrNull;
+    if (target == null || !target.isAsync) return 'std::rc::Rc::new($path)';
+    final arity = type?.parameters?.length ?? target.params.length;
+    final args = [for (var i = 0; i < arity; i++) '__a$i'].join(', ');
+    return 'std::rc::Rc::new(|$args| Ok($path($args)))';
+  }
 
   /// Whether a class's statics live at module level under the class's
   /// name: an abstract class is a trait and has nowhere else to put them;

@@ -177,7 +177,15 @@ IrExpr coerceInto(
     return IrNullableOf(value, slot.name, toOption: !slot.projected)
       ..rustType = slot;
   }
-  if (sameRust(have0, slot) && !projectionDiffers(have0, slot)) return value;
+  if (sameRust(have0, slot) && !projectionDiffers(have0, slot)) {
+    // A closure literal of exactly the slot's type still goes behind the
+    // handle every function slot is (`Listenable.onError = (..) {..}`
+    // into a static's `Rc<dyn Fn>`, run453), unless it already is one.
+    if (value is IrClosure && !value.boxed && slot.isFunction) {
+      return IrCall(value, '!rc', const [])..rustType = slot;
+    }
+    return value;
+  }
   // Anything else into a projected slot: into the plain `Option<T>` first,
   // then the conversion (`None` into a `Vec<T?>` element is `<T as
   // DartNullable>::from_option(None)`; rustc cannot unify an `Option<_>`

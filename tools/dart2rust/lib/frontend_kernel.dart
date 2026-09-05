@@ -799,6 +799,17 @@ class KernelFrontend implements TypeWorld {
           promoted.classNode.name == 'Object' &&
           promoted.classNode.enclosingLibrary.importUri.toString() ==
               'dart:core';
+      // ..typed as what the local holds (`Rc<dyn Object>` for a
+      // `dynamic`), not as the promotion says (`Object?`): the slot's
+      // rule puts the `Some` on (`if` and `else` have incompatible
+      // types, run453).
+      if (toObject) {
+        try {
+          return IrLocal(name)..rustType = _type(declared);
+        } on Unsupported {
+          return IrLocal(name);
+        }
+      }
       if (promoted is InterfaceType &&
           !toObject &&
           (!_abstractLike(promoted.classNode) ||
