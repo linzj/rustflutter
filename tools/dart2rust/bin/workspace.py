@@ -189,7 +189,13 @@ def write_workspace(src, out, mods, crate_of, graph):
     if entry is not None:
         members = members + ['dart_main']
     io.open(os.path.join(out, 'Cargo.toml'), 'w', encoding='utf-8').write(
-        '[workspace]\nresolver = "2"\nmembers = [\n%s]\n\n[profile.dev]\ndebug = false\n'
+        # `panic = "abort"`: nothing translated catches a Rust panic (a Dart
+        # throw is a `Result`; a panic is a stub or a refusal), and the
+        # unwind landing pads of a function that builds a widget tree of
+        # thousands of temporaries are most of its code -- the gallery's
+        # 6.7 MB code-viewer module sat in codegen for half an hour with
+        # them (2026-09-05, run429).
+        '[workspace]\nresolver = "2"\nmembers = [\n%s]\n\n[profile.dev]\ndebug = false\npanic = "abort"\n'
         % ''.join('    "%s",\n' % m for m in members))
     # the prelude crate
     pd = os.path.join(out, 'dart_prelude', 'src')
