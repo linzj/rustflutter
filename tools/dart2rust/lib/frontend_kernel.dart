@@ -831,23 +831,7 @@ class KernelFrontend {
       // (`throw error` with a `FlutterError` in hand) goes behind an
       // `Rc<dyn Object>` here; a constructed one the backend boxes itself
       // (`_boxedThrow`), a handle or a trait object unsizes on its own (18).
-      final thrownType = _staticType(node.expression);
-      final thrownExpr = node.expression;
-      if (thrownType is InterfaceType &&
-          thrownExpr is! ConstructorInvocation &&
-          thrownExpr is! ConstantExpression &&
-          thrownExpr is! StringLiteral &&
-          thrownType.nullability != Nullability.nullable &&
-          _translatedClass(thrownType.classNode) &&
-          !_abstractLike(thrownType.classNode) &&
-          !_closureCallsMethod(thrownType.classNode) &&
-          !thrownType.classNode.isEnum &&
-          !_scalarClass(thrownType.classNode)) {
-        return IrThrowValue(
-          IrCall(expression(node.expression), '!rc_object', const []),
-        );
-      }
-      return IrThrowValue(expression(node.expression));
+      return IrThrowValue(_thrownValue(node.expression));
     }
     if (node is InstanceSet) {
       // `a.b = v` where the value is wanted. Only a field on `this`: a setter
@@ -3652,6 +3636,14 @@ class KernelFrontend {
           ? IrSome(shared)
           : shared;
     }
+    // A `dynamic` (an `Rc<dyn Object>`, `Null` included) into an
+    // `Object?`: `Some` (`MethodCall.arguments` into `writeValue`, 32).
+    if (given is DynamicType &&
+        param is InterfaceType &&
+        param.nullability == Nullability.nullable &&
+        lowered is! IrSome) {
+      return IrSome(lowered);
+    }
     if (given == null || given is DynamicType || given is NullType)
       return lowered;
     // An `Object` into an `Object?`: `Some`, like any non-null into a
@@ -4894,6 +4886,31 @@ class KernelFrontend {
     return out;
   }
 
+  /// What a `throw` hands to `Err`: a *value* of a translated class
+  /// (`throw error` with a `FlutterError` in hand, `FlutterError(..)`
+  /// whose constructor is a factory and so a static call) goes behind an
+  /// `Rc<dyn Object>` here; a constructed one the backend boxes itself
+  /// (`_boxedThrow`), a handle or a trait object unsizes on its own.
+  IrExpr _thrownValue(Expression thrown) {
+    final lowered = expression(thrown);
+    final type = _staticType(thrown);
+    if (type is InterfaceType &&
+        thrown is! ConstructorInvocation &&
+        thrown is! ConstantExpression &&
+        thrown is! StringLiteral &&
+        type.nullability != Nullability.nullable &&
+        _translatedClass(type.classNode) &&
+        !_abstractLike(type.classNode) &&
+        !_closureCallsMethod(type.classNode) &&
+        !type.classNode.isEnum &&
+        !_scalarClass(type.classNode) &&
+        lowered is! IrNew &&
+        lowered is! IrUpcast) {
+      return IrCall(lowered, '!rc_object', const []);
+    }
+    return lowered;
+  }
+
   /// A collection's element argument (`set.remove(ticker)`, `contains`),
   /// shared into the element type when that is a trait and the argument a
   /// concrete class of it: the prelude takes `&T`, and a `&Rc<_WidgetTicker>`
@@ -5013,7 +5030,7 @@ class KernelFrontend {
       // analyzer front end had it right.
       final thrown = node.expression as Throw;
       if (_tfaUnreachable(thrown)) return IrExprStmt(_unreachable);
-      return IrThrow(expression(thrown.expression));
+      return IrThrow(_thrownValue(thrown.expression));
     }
     if (node is ExpressionStatement) {
       // An assignment is a statement here, not an expression. Dart's `x = 1`
