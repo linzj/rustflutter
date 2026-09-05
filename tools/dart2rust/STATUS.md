@@ -6564,6 +6564,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws465 结果 | 编译尺子 **1696**（ws464 1769，−73），141 crate。 |
 | ws466 结果 | 编译尺子 **1696**（同 ws465），141 crate：量的是 future 记名和 `std::ops` 体里的 `self`，不动桩数。 |
 | run466 | 记名后："main is waiting …; **0 future(s) still pending**"——没有任何 spawn 出来的任务在等，卡住的是一个从没 `complete` 的 `Completer`（或 prelude 里自造的 `pending()`）。下一步：`Completer` 也记名（构造处带上所在成员名），运行结束报出未完成的 completer。 |
+| ws467 结果 | 编译尺子 **1563**（ws466 1696，−133），141 crate：去 105 来 13。这一批通用规则：两个对象的 `==` 一律 `dart_eq(&)`（`Rc<dyn Size>` 上的 `==` 把操作数 move 掉，53）；构造调用也把类名记进引用表（`Image` 两个模块都定义，之前一个都没导入，18）；函数值作迭代器步骤按步骤的形状套闭包再 unwrap（`where(pred)`，17）；`DartNullable` 投影写代入后的具体类型（`<Rc<dyn Object> as DartNullable>`，51）；抽象类静态 async 包装不经 `Self`（19）；`replaceFirst` 绕开 std 的 unstable 同名方法（16）。 |
 
 ## 下一步(2026-09-05 重铺)
 
