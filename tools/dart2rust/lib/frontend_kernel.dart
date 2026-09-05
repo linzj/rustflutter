@@ -227,6 +227,72 @@ class KernelFrontend implements TypeWorld {
     return false;
   }
 
+  /// The instantiations a named one *implies*: `BasicMessageChannel<
+  /// String?>` holds a `MessageCodec<T> codec`, so the program names
+  /// `MessageCodec<String?>` without spelling it anywhere, and the
+  /// `StringCodec` handed to it needs the wider impl (`addWiderImpls`;
+  /// `StringCodec: MessageCodec<Option<String>>` unsatisfied, run448).
+  /// Each member's declared types, the instantiation substituted in, go
+  /// through the same census; one level at a time, each instantiation once.
+  static final _censused = <InterfaceType>{};
+
+  void _censusMembers(
+    InterfaceType type,
+    Map<Class, Set<InterfaceType>> census,
+  ) {
+    final cls = type.classNode;
+    if (cls.enclosingLibrary.importUri.scheme == 'dart') return;
+    if (_mentionsTypeParameter(type)) return;
+    if (!_translatedClass(cls)) return;
+    final key = type.withDeclaredNullability(Nullability.nonNullable);
+    if (!_censused.add(key)) return;
+    final substitution = Substitution.fromInterfaceType(key);
+    void walk(DartType t) {
+      if (t is InterfaceType) {
+        if (t.typeArguments.isNotEmpty &&
+            !_mentionsTypeParameter(t) &&
+            t.classNode.enclosingLibrary.importUri.scheme != 'dart' &&
+            _translatedClass(t.classNode)) {
+          if (_abstractLike(t.classNode)) {
+            census
+                .putIfAbsent(t.classNode, () => {})
+                .add(t.withDeclaredNullability(Nullability.nonNullable));
+          }
+          _censusMembers(t, census);
+        }
+        t.typeArguments.forEach(walk);
+      } else if (t is FunctionType) {
+        walk(t.returnType);
+        t.positionalParameters.forEach(walk);
+        for (final n in t.namedParameters) {
+          walk(n.type);
+        }
+      }
+    }
+
+    for (final f in cls.fields) {
+      walk(substitution.substituteType(f.type));
+    }
+    for (final p in cls.procedures) {
+      final fn = p.function;
+      walk(substitution.substituteType(fn.returnType));
+      for (final v in fn.positionalParameters) {
+        walk(substitution.substituteType(v.type));
+      }
+      for (final v in fn.namedParameters) {
+        walk(substitution.substituteType(v.type));
+      }
+    }
+    for (final c in cls.constructors) {
+      for (final v in c.function.positionalParameters) {
+        walk(substitution.substituteType(v.type));
+      }
+      for (final v in c.function.namedParameters) {
+        walk(substitution.substituteType(v.type));
+      }
+    }
+  }
+
   static bool _mentionsTypeParameter(DartType t) {
     if (t is TypeParameterType) return true;
     if (t is InterfaceType) return t.typeArguments.any(_mentionsTypeParameter);
@@ -457,6 +523,9 @@ class KernelFrontend implements TypeWorld {
         census
             .putIfAbsent(type.classNode, () => {})
             .add(type.withDeclaredNullability(Nullability.nonNullable));
+      }
+      if (census != null && !_censusOff && type.typeArguments.isNotEmpty) {
+        _censusMembers(type, census);
       }
       return IrType(
         name,

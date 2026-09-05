@@ -4916,8 +4916,21 @@ class RustBackend {
               '${snake(p.name)}: ${type(p.type, owned: false)}',
         ),
       ].join(', ');
+      // ..and by every trait a `super` call inside reaches that this
+      // class is not below: a mixin's `super.initInstances()` dispatches
+      // to the previous mixin of the application (`_realOwner`), which
+      // its `on` clause never named (`SchedulerBinding`'s reaching
+      // `GestureBinding`'s, 3 stubs on the start path at run448).
+      final reached = _WalkSelf()..statement(method.body);
+      final superBounds = [
+        for (final base in reached.superBases)
+          if (base != cls.name &&
+              _world.isTrait(base) &&
+              !_world.isBelow(cls.name, base))
+            ' + $base${_traitArgsOf(base)}',
+      ].join();
       final generics =
-          '<__Self: ${cls.name}${_generics(cls)} + ?Sized + \'static'
+          '<__Self: ${cls.name}${_generics(cls)}$superBounds + ?Sized + \'static'
           '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone${_nb(cls)} + 'static").join(', ')}'}'
           '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone${_nbm(method)} + 'static").join(', ')}'}'
           '>';
@@ -7935,6 +7948,9 @@ class _WalkSelf {
   bool writesFields = false;
   final selfCalls = <String>{};
 
+  /// The classes `super` calls resolve into (`IrSuperCall.base`).
+  final superBases = <String>{};
+
   /// Whether anything walked can fail -- a `?` on a call, a constructor,
   /// an `await`.
   bool failing = false;
@@ -8181,7 +8197,8 @@ class _WalkSelf {
         failing = true;
         if (args.any((a) => a is IrThis)) passesSelf = true;
         args.forEach(expression);
-      case IrSuperCall(:final args):
+      case IrSuperCall(:final base, :final args):
+        superBases.add(base);
         args.forEach(expression);
       case IrIs(:final expr):
         expression(expr);
