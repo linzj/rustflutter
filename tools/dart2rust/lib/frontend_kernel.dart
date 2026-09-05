@@ -58,7 +58,57 @@ class KernelFrontend implements TypeWorld {
     this.erase = false,
     this.eraseObjectBounded = false,
     this.coerceByType = true,
+    this.instantiations,
   });
+
+  /// The closed world's census of generic trait-like classes' instantiations,
+  /// shared by every library's lowering: each `_type` of a `Foo<X>` records
+  /// it, and `addWiderImpls` reads it once every library is lowered.
+  final Map<Class, Set<InterfaceType>>? instantiations;
+
+  /// The Kernel class behind each lowered class, for `addWiderImpls`.
+  final Map<String, Class> _kernelClasses = {};
+
+  /// Every class of `lowered` gets an impl for each wider instantiation of a
+  /// generic trait it implements that the program names somewhere
+  /// (`IrClass.extraImpls`): the one whose arguments differ from the class's
+  /// own and that Dart's covariance admits (`Foo<X>` is a `Foo<Y>` for
+  /// `X <: Y`). Only concrete instantiations: one naming a type parameter is
+  /// another declaration's business.
+  void addWiderImpls(IrLibrary lowered) {
+    final census = instantiations;
+    final env = typeEnvironment;
+    if (census == null || env == null) return;
+    for (final ir in lowered.classes) {
+      if (ir.isAbstract || ir.isEnum) continue;
+      final node = _kernelClasses[ir.name];
+      if (node == null) continue;
+      final thisType = node.getThisType(env.coreTypes, Nullability.nonNullable);
+      final spelled = <String>{};
+      for (final entry in census.entries) {
+        final base = entry.key;
+        if (identical(base, node) || base.typeParameters.isEmpty) continue;
+        final asBase = env.hierarchy.getTypeAsInstanceOf(thisType, base);
+        if (asBase is! InterfaceType) continue;
+        final own = _erasedArguments(base, asBase.typeArguments);
+        if (own.isEmpty) continue;
+        for (final wider in entry.value) {
+          if (wider == asBase) continue;
+          if (wider.typeArguments.any(_mentionsTypeParameter)) continue;
+          if (!env.isSubtypeOf(asBase, wider)) continue;
+          final List<IrType> args;
+          try {
+            args = _erasedArguments(base, wider.typeArguments);
+          } on Unsupported {
+            continue;
+          }
+          final text = args.join(',');
+          if (text == own.join(',') || !spelled.add(text)) continue;
+          ir.extraImpls.add(IrType(base.name, arguments: args));
+        }
+      }
+    }
+  }
 
   /// Whether a value into a slot is adapted by comparing the two Rust
   /// types (`coerce`) before the shape rules of `_widened` get a look.
@@ -305,6 +355,18 @@ class KernelFrontend implements TypeWorld {
       final name = core && type.classNode.name == 'Iterator'
           ? 'DartIterator'
           : type.classNode.name;
+      // The census (`addWiderImpls`): a generic trait-like class named with
+      // arguments, as the closed world names it.
+      final census = instantiations;
+      if (census != null &&
+          type.typeArguments.isNotEmpty &&
+          !core &&
+          _translatedClass(type.classNode) &&
+          _abstractLike(type.classNode)) {
+        census
+            .putIfAbsent(type.classNode, () => {})
+            .add(type.withDeclaredNullability(Nullability.nonNullable));
+      }
       return IrType(
         name,
         nullable: nullable,
@@ -7330,6 +7392,7 @@ class KernelFrontend implements TypeWorld {
     final recovered = values.isNotEmpty || enhanced || !node.isEnum
         ? values
         : names;
+    _kernelClasses[node.name] = node;
     final cls = IrClass(
       node.name,
       typeParameters: [

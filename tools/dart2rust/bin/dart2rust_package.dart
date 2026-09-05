@@ -244,8 +244,13 @@ Future<void> main(List<String> args) async {
   final dynamicSlots = typeEnvironment == null
       ? const <Field, List<InterfaceType>>{}
       : dynamicSlotsIn(inPackage, typeEnvironment);
+  // The closed world's instantiations of generic traits, gathered while
+  // every library is lowered and read back for the wider impls
+  // (`KernelFrontend.addWiderImpls`).
+  final instantiations = <Class, Set<InterfaceType>>{};
+  final frontends = <Library, KernelFrontend>{};
   for (final library in inPackage) {
-    final result = KernelFrontend(
+    final frontend = KernelFrontend(
       library,
       enumValues: enumValues,
       enumFields: enumFields,
@@ -257,7 +262,10 @@ Future<void> main(List<String> args) async {
       erase: Platform.environment['DART2RUST_ERASE'] != '0',
       eraseObjectBounded: Platform.environment['DART2RUST_ERASE_OBJECT'] == '1',
       coerceByType: Platform.environment['DART2RUST_COERCE'] != '0',
-    ).lowerLibrary();
+      instantiations: instantiations,
+    );
+    final result = frontend.lowerLibrary();
+    frontends[library] = frontend;
     lowered[library] = result;
     for (final cls in result.$1.classes) {
       everyClass.putIfAbsent(cls.name, () => cls);
@@ -270,6 +278,10 @@ Future<void> main(List<String> args) async {
     for (final cls in result.$1.classes) {
       (definedIn[cls.name] ??= <String>{}).add(nameOf[library]!);
     }
+  }
+
+  for (final library in inPackage) {
+    frontends[library]!.addWiderImpls(lowered[library]!.$1);
   }
 
   for (final library in inPackage) {

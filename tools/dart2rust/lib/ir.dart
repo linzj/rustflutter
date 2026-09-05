@@ -1488,6 +1488,15 @@ class IrClass {
 
   final String name;
 
+  /// Wider instantiations of generic traits this class implements, each
+  /// getting an impl of its own that forwards through the coercion rule:
+  /// Dart's `RestorableBool` is a `RestorableProperty<Object?>` because
+  /// Dart's generics are covariant, and Rust's trait `RestorableProperty<
+  /// Option<Rc<dyn Object>>>` is a different trait from `RestorableProperty
+  /// <bool>`. The closed world says which instantiations are ever named
+  /// (the front end's census), so the list is finite.
+  final List<IrType> extraImpls = [];
+
   /// `class Foo<T>` -- the names, in order. See [IrTypeParams].
   final IrTypeParams typeParameters;
   final String? superclass;

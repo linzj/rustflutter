@@ -5930,6 +5930,12 @@ class RustBackend {
         'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(Box::new(self.dart_self_${snake(above.name)}())); }',
       );
     }
+    for (final wider in cls.extraImpls) {
+      final arguments = '<${wider.arguments.map((a) => type(a)).join(', ')}>';
+      _line(
+        'if __t == std::any::TypeId::of::<dyn ${wider.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${wider.name}$arguments>>() { return Some(Box::new(self.dart_self_${snake(wider.name)}())); }',
+      );
+    }
     _line('None');
     _indent--;
     _line('}');
@@ -6013,6 +6019,17 @@ class RustBackend {
       _member(
         'impl ${ancestor.name} for ${cls.name}',
         () => _emitImplFor(ancestor),
+      );
+    }
+    // The wider instantiations the program names (`IrClass.extraImpls`):
+    // an impl each, its signatures in the wider terms, forwarding to the
+    // class's own methods through the coercion rule.
+    for (final wider in cls.extraImpls) {
+      final base = library[wider.name];
+      if (base == null) continue;
+      _member(
+        'impl ${wider.name}<${wider.arguments.join(', ')}> for ${cls.name}',
+        () => _emitImplFor(base, passedOverride: wider.arguments),
       );
     }
   }
@@ -6127,7 +6144,7 @@ class RustBackend {
     return _argumentsThrough(next, binding(next, passed), base, seen);
   }
 
-  void _emitImplFor(IrClass base) {
+  void _emitImplFor(IrClass base, {List<IrType>? passedOverride}) {
     // Not just the abstract ones. A class that overrides a *concrete* base
     // method needs that override in the impl too, or dynamic dispatch reaches
     // the trait's default instead -- the inherent method would still be right,
@@ -6164,7 +6181,9 @@ class RustBackend {
     // "the trait bound `Panel: Scaled` is not satisfied". An empty impl block
     // is the whole statement that it is one.
 
-    final arguments = _baseArguments(base);
+    final arguments = passedOverride != null
+        ? '<${passedOverride.map((a) => type(a)).join(', ')}>'
+        : _baseArguments(base);
     if (arguments == null) {
       // A generic ancestor whose arguments cannot be worked out from here.
       // Emitting `impl Base for This` without them does not compile; saying so
@@ -6180,7 +6199,7 @@ class RustBackend {
     _inTrait = true;
     // Bound for the whole block: every signature inside is written in the
     // base's terms and has to come out in this class's.
-    final passed = _baseTypeArguments(base) ?? const [];
+    final passed = passedOverride ?? _baseTypeArguments(base) ?? const [];
     _implBinding = {
       if (passed.length == base.typeParameters.length)
         for (var i = 0; i < passed.length; i++)
