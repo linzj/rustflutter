@@ -5617,9 +5617,12 @@ class KernelFrontend implements TypeWorld {
           captures: value.captures,
           locals: value.locals,
           // Carried. Rebuilding a node without a flag it had is the shape
-          // that lost `kept` in round 104 and `shared` in round 101.
+          // that lost `kept` in round 104 and `shared` in round 101 --
+          // and `isAsync` here, until run430 (`await` in a closure that
+          // was not `async`).
           holdsSelf: value.holdsSelf,
           boxed: true,
+          isAsync: value.isAsync,
         );
       }
       return value;
@@ -7020,11 +7023,16 @@ class KernelFrontend implements TypeWorld {
     // The expected return, when a parameter's function type set one, wins
     // over the closure's own; consumed here so nested bodies do not see it.
     // `void Function(int)` taking `(x) => day = x` returns nothing.
-    final expected = _expectedReturn;
+    // ..and for an `async` body the *awaited* one: a slot's `FutureOr<T>
+    // Function()` taking `() async { .. return v; }` expects `T` of the
+    // body's returns, the future around it being the closure's own
+    // (`Future<bool>(() async {..})`, run430).
+    final async = function.asyncMarker == AsyncMarker.Async;
+    final expected = async ? _awaitedType(_expectedReturn) : _expectedReturn;
     _expectedReturn = null;
     _voidReturn = (expected ?? function.returnType) is VoidType;
     _returnsType = expected ?? function.returnType;
-    _asyncBody = function.asyncMarker == AsyncMarker.Async;
+    _asyncBody = async;
     final outerEdge = _edgeReturn;
     // ..the awaited type for an `async` body, whose `return v` is the
     // future's value (`Future<T?> send()` returning `T?`, ws421).
@@ -7049,6 +7057,17 @@ class KernelFrontend implements TypeWorld {
 
   /// Whether the body being lowered is an `async` one.
   bool _asyncBody = false;
+
+  /// `Future<T>` or `FutureOr<T>` -> `T`; anything else unchanged.
+  static DartType? _awaitedType(DartType? t) {
+    if (t is FutureOrType) return t.typeArgument;
+    if (t is InterfaceType &&
+        t.classNode.name == 'Future' &&
+        t.typeArguments.length == 1) {
+      return t.typeArguments.single;
+    }
+    return t;
+  }
 
   /// The AOT compiler's own throw, planted where type flow analysis proved
   /// nothing arrives: `throw "Attempt to execute code removed by Dart AOT
