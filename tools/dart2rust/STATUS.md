@@ -6378,6 +6378,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws362 | 950 叶子错 | 删掉 `_widened` 里被 `coerce` 覆盖的 172 行（dynamic 下转、抽象→具体下转、具体→trait 的 `!rc`、TFA 删掉的 `as`、擦除读收窄、`!upcast_elements`）。**3076→3239**：prelude 泛型槽（`List<Widget>.add(E)`）被门禁挡住没转（+163）。 |
 | ws363 | 950 叶子错 | prelude 被调方的**泛型**形参（声明里带类型参数）按实例化类型转，具体形参仍不转；`_forCallee` 只管直接的槽，下层字面量条目各是自己的槽。**3239→3128**。剩的：暂存赋值的 `clone()` 没类型、常量集合条目没类型。 |
 | ws364 | 950 叶子错 | 九处 `__t` 暂存的 `clone()` 从初值取 `rustType`；`_constant` 结果按常量类定型，const list/set 条目同 map 条目一样过 `_widened`。**3128→3093 / 795，138+1 个 crate**（比 ws361 多 17 个桩，换 172 行删除；剩的差在下一轮找）。 |
+| ws365 | 950 叶子错 | 去重 mixin 应用的构造函数在 `dart:mixin_deduplication` 里，被当成 prelude 没转（`_NotificationElement(super.widget)`）：按类判断是否翻译过；类型字面量 `Type::of(..)` 定型为 `Type`。**3093→3171**：改判断时把 prelude 泛型槽的规则短路了（`List.add(E)` 又不转，+105）。 |
+| ws366 | 950 叶子错 | 判断顺序修正：翻译过的类→是；否则 prelude 只有泛型形参才转。**3171→3070 / 795，138+1 个 crate**——比删分支前（ws361 的 3076）还少 6 个，172 行旧规则不必再有。 |
 
 ## 下一步(2026-09-05 重铺)
 

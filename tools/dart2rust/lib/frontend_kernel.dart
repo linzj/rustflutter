@@ -75,8 +75,16 @@ class KernelFrontend {
   bool _calleeTranslated(FunctionNode? callee, DartType? declared) {
     final member = callee?.parent;
     if (member is! Member) return true;
+    // By the class when there is one: a deduplicated mixin application's
+    // constructor lives in `dart:mixin_deduplication` and is translated
+    // code all the same (`_NotificationElement(super.widget)`, ws364).
+    final owner = member.enclosingClass;
+    if (owner != null && _translatedClass(owner)) return true;
     final uri = member.enclosingLibrary.importUri;
-    if (uri.scheme != 'dart' || uri.toString() == 'dart:ui') return true;
+    if (owner == null &&
+        (uri.scheme != 'dart' || uri.toString() == 'dart:ui')) {
+      return true;
+    }
     return declared != null && _mentionsTypeParameter(declared);
   }
 
@@ -5069,7 +5077,8 @@ class KernelFrontend {
   /// 670 "called something that was not translated".
   static IrExpr _typeLiteral(DartType type) {
     final name = type is InterfaceType ? type.classNode.name : '$type';
-    return IrLiteral('Type::of("$name")', const IrType('raw'));
+    return IrLiteral('Type::of("$name")', const IrType('raw'))
+      ..rustType = const IrType('Type');
   }
 
   /// The static type of a constant, for the widening a literal's entry
