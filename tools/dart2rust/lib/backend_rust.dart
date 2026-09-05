@@ -1449,6 +1449,12 @@ class RustBackend {
     IrSome(:final value) => IrSome(
       _explicitUpcast(value),
     )..rustType = e.rustType,
+    // A function item behind an `Rc` is not yet the `Rc<dyn Fn>` its slot
+    // holds; spelled where nothing else will unsize it.
+    IrFunctionRef() when e.rustType?.isFunction ?? false => IrLiteral(
+      '(${expr(e)} as ${type(e.rustType!)})',
+      e.rustType!,
+    )..rustType = e.rustType,
     _ => e,
   };
 

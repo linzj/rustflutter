@@ -6489,7 +6489,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 
 | 轮 | 启动路径上第一个 panic | 处理 |
 |---|---|---|
-| ws429 | `main`：refusal「assignment to a field of another object (static, value)」 | 通用：写 static 里值的字段 = 那个 static 是可变状态，前端记 `staticFieldWrites`，驱动把它的 `IrConstDecl` 翻成 cell（`LazyLock<Isolate<RefCell<Config>>>`），后端 `(**X).borrow_mut().field = v`。拒绝 693→692，驱动输出对 ws428 差 6 文件。 |
+| ws429 | `main`：refusal「assignment to a field of another object (static, value)」 | 通用：写 static 里值的字段 = 那个 static 是可变状态，前端记 `staticFieldWrites`，驱动把它的 `IrConstDecl` 翻成 cell（`LazyLock<Isolate<RefCell<Config>>>`），后端 `(**X).borrow_mut().field = v`。拒绝 693→692。同轮预修路径上已知的两项：prelude `Completer<T: DartNullable>::complete` 收 `<T as DartNullable>::Or`（`Completer<ByteData?>` 一层 `Option`，`services_binding.set_message_handler`）；函数项引用在接收者/借用/`vec!` 首元素下拼成 `Rc::new(f) as Rc<dyn Fn(..)>`（`rendering_binding.new` 的 `Some(Rc::new(f)).clone()`）。驱动输出对 ws428 差 10 文件。 |
 
 ## 下一步(2026-09-05 重铺)
 

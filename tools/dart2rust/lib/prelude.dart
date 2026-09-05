@@ -3199,7 +3199,7 @@ impl<T> Default for Completer<T> {
     }
 }
 
-impl<T> Completer<T> {
+impl<T: DartNullable> Completer<T> {
     pub fn new() -> Self {
         Completer {
             shared: std::rc::Rc::new(std::cell::RefCell::new(CompleterState {
@@ -3228,13 +3228,16 @@ impl<T> Completer<T> {
     /// `Option` here; a `Completer<void>` is completed with `Some(())` by
     /// the front end. A `None` for a non-void `T` would be Dart's null into
     /// a non-nullable type, which Dart itself refuses.
-    pub fn complete(&self, value: Option<T>) {
+    /// The slot is Dart's `T?` as translated code spells it, `<T as
+    /// DartNullable>::Or`: for a `Completer<ByteData?>` that is one
+    /// `Option`, not two, and its `null` completes the future with `None`.
+    pub fn complete(&self, value: <T as DartNullable>::Or) {
         let mut state = self.shared.borrow_mut();
         if state.completed {
             panic!("Completer completed twice");
         }
         state.completed = true;
-        state.value = value;
+        state.value = T::option(value).or_else(T::dart_null);
         if let Some(waker) = state.waker.take() {
             waker.wake();
         }
