@@ -785,7 +785,9 @@ class RustBackend {
             : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}',
       // A counted class's constructor already hands out an `Rc`.
       IrMapElements(:final collection, :final kind, :final body) =>
-        kind == 'Set'
+        kind == 'Future'
+            ? '${expr(collection)}.map(|v| ${expr(body)})'
+            : kind == 'Set'
             ? 'Set::of(${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>())'
             : kind == 'Map'
             ? 'Map::from(${expr(collection)}.into_iter().map(|(k, v)| ${expr(body)}).collect::<Vec<_>>())'

@@ -257,6 +257,32 @@ IrExpr coerceInto(
   if (wrap != null) {
     return IrStaticCall(slot.name, wrap, [value])..rustType = slot;
   }
+  // A future of one type into a future of another (`Future<bool>` into
+  // the `Future<dynamic>` a handler slot declares, `setMethodCallHandler(
+  // _handleNavigationInvocation)`, run447): the value mapped through the
+  // same rule when it arrives (`DartFuture::map`).
+  if (have.name == 'Future' &&
+      slot.name == 'Future' &&
+      have.arguments.length == 1 &&
+      slot.arguments.length == 1) {
+    final element = IrLocal('v')..rustType = have.arguments.single;
+    final body = coerceInto(
+      element,
+      slot.arguments.single,
+      world,
+      inClosure: true,
+    );
+    if (identical(body, element)) return value;
+    return IrMapElements(value, 'Future', body)..rustType = slot;
+  }
+  // `void` into `Object`: the unit value behind a fresh handle, as any
+  // value is (the prelude's `Object` is blanket over every `'static`
+  // type). A `None` there had no type to infer (65 at ws448).
+  if ((have.name == 'void' || have.name == '()') &&
+      (slot.name == 'Object' || slot.name == 'dynamic')) {
+    return IrUpcast(value, IrType('Object'), handle: false, explicit: true)
+      ..rustType = slot;
+  }
   // `FutureOr<T>`: a future goes in as one, anything else as a `T`.
   if (slot.name == 'FutureOr' &&
       slot.arguments.length == 1 &&
@@ -315,6 +341,38 @@ IrExpr coerceInto(
         return IrCall(value, '!rc', const [])..rustType = slot;
       }
       return value;
+    }
+    // A closure *literal* adapted: the adapter takes over what the
+    // literal owns -- the copied fields, the cloned locals, the handle on
+    // `this` -- and binds them where it is made, so it is a `move` closure
+    // of its own that borrows nothing; the literal inside it, called in
+    // place, re-clones from those bindings. Wrapping the literal as it
+    // stood put its bindings (`let x = self.x.clone()`) inside the
+    // adapter's body, a borrow of `self` in a closure a `'static` slot
+    // keeps (ws448).
+    if (value is IrClosure) {
+      final inner = IrClosure(
+        value.params,
+        value.body,
+        value.returns,
+        locals: [for (final c in value.captures) c.name, ...value.locals],
+        holdsSelf: value.holdsSelf,
+        isAsync: value.isAsync,
+      )..rustType = value.rustType;
+      final called = IrCallValue(inner, args)..rustType = have.returns;
+      final shaped = coerceInto(called, slot.returns!, world, inClosure: true);
+      return IrCall(
+        IrClosure(
+          params,
+          IrReturn(shaped),
+          slot.returns!,
+          captures: value.captures,
+          locals: value.locals,
+          holdsSelf: value.holdsSelf,
+        ),
+        '!rc',
+        const [],
+      )..rustType = slot;
     }
     return IrCall(
       IrClosure(params, IrReturn(result), slot.returns!),

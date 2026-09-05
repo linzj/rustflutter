@@ -3696,6 +3696,16 @@ impl<T> DartFuture<T> {
         out
     }
 
+    /// The future of `f(value)`: a `Future<bool>` where a `Future<dynamic>`
+    /// is expected, mapped by the coercion rule (`IrMapElements`).
+    pub fn map<U: 'static>(&self, f: impl Fn(T) -> U + 'static) -> DartFuture<U>
+    where
+        T: Clone + 'static,
+    {
+        let me = self.clone();
+        DartFuture::spawn(Box::pin(async move { Ok(f(me.await?)) }))
+    }
+
     /// `future.then(onValue, onError: ..)`: the error goes to `onError` when
     /// there is one, and on through the returned future when there is not.
     pub fn then<R: 'static>(

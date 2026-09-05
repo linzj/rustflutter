@@ -1674,7 +1674,13 @@ class KernelFrontend implements TypeWorld {
             : _freeLocalsIn(receiver, {}),
         holdsSelf: holds,
       );
-      return adapter;
+      // Typed as the function it is, so the slot's coercion sees it: a
+      // `Future<bool> Function(MethodCall)` handed to a `Future<dynamic>
+      // Function(MethodCall)` slot gets its result mapped (run447).
+      return adapter
+        ..rustType = IrType.function([
+          for (final p in params) p.type,
+        ], _type(returnType));
     }
     throw Unsupported('expression ${node.runtimeType}', _sample(node));
   }
@@ -2048,6 +2054,17 @@ class KernelFrontend implements TypeWorld {
   /// not what Kernel says, and an argument made of it is widened from it.
   final Map<Variable, DartType> _retyped = {};
 
+  IrType _closureReturnType(FunctionType? expected, FunctionNode fn) {
+    if (expected != null) {
+      try {
+        return _type(expected.returnType);
+      } on Unsupported {
+        // Fall through to the declared one.
+      }
+    }
+    return _type(fn.returnType);
+  }
+
   DartType _closureParamType(FunctionType? expected, int i, DartType declared) {
     if (expected == null || i >= expected.positionalParameters.length)
       return declared;
@@ -2156,7 +2173,12 @@ class KernelFrontend implements TypeWorld {
             IrParam(p.parameterName, _type(p.type), named: true),
         ],
         _lowerBody(fn, body),
-        _type(fn.returnType),
+        // The return as the body was lowered against it: the slot's, when
+        // a parameter's function type set one (`_lowerBody`'s expected
+        // return), else the closure's own. Typing the closure by its own
+        // `Color` while its returns were made `Option<..>` for the
+        // `Color?` slot put a second `Some` on at the slot (ws448).
+        _closureReturnType(expected, fn),
         isAsync: fn.asyncMarker == AsyncMarker.Async,
         captures: copies
             ? [for (final f in finals) IrParam(f.name.text, _type(f.type))]
@@ -5798,12 +5820,12 @@ class KernelFrontend implements TypeWorld {
       // The parameter is owned where it is kept, so the argument is boxed to
       // match: a closure's own type has no name.
       if (value is IrClosure) {
-        // Untyped on purpose (ws419 measured typing it: 2609 -> 2779). A
-        // typed closure at its slot gets an adapter from `coerce`, and the
-        // adapter's result rules -- a `void` result into `Object`, a
-        // counted widget's handle behind a fresh `dart_object` -- are not
-        // right yet. Until they are, the slot's shape rules keep the old
-        // answer.
+        // Typed as the closure it is (`rustType` carried), so the slot's
+        // coercion sees it: a `Future<bool> Function(MethodCall)` tear-off
+        // kept by `setMethodCallHandler` gets its result mapped into the
+        // `Future<dynamic>` the slot declares (run447). Untyped from ws419
+        // (2609 -> 2779 then) until the result rules -- `void` into
+        // `Object`, a future into a future -- were in `coerce`.
         return IrClosure(
           value.params,
           value.body,
@@ -5817,7 +5839,7 @@ class KernelFrontend implements TypeWorld {
           holdsSelf: value.holdsSelf,
           boxed: true,
           isAsync: value.isAsync,
-        );
+        )..rustType = value.rustType;
       }
       return value;
     } finally {
