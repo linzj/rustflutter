@@ -117,6 +117,7 @@ IrType nonNull(IrType t) => t.isFunction
 /// `void?` is `void`: never an `Option` (the prelude's unit says so).
 bool isNullable(IrType t) =>
     t.name != 'void' &&
+    t.name != '()' &&
     (t.nullable || (t.name == 'Option' && t.arguments.length == 1));
 
 IrType stripNull(IrType t) => t.name == 'Option' && t.arguments.length == 1
@@ -204,6 +205,11 @@ IrExpr coerceInto(
   }
   final have = _normal(have0);
   slot = _normal(slot);
+  // Null into `void?`, which is `void`: the unit (`Completer<void>`'s
+  // `complete(null)`, a `SynchronousFuture<void>`'s `_value`, ws461).
+  if ((slot.name == 'void' || slot.name == '()') && have.name == 'Null') {
+    return IrLiteral('()', const IrType('raw'))..rustType = slot;
+  }
   // The `Option` layer first: on, off, or mapped through.
   if (isNullable(slot) && !isNullable(have)) {
     final inner = coerceInto(

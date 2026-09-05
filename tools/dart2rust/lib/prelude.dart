@@ -2404,8 +2404,8 @@ impl<T: Clone> Expando<T> {
     /// Keyed by the object's identity, whatever handle it arrives as
     /// (`_profiledBinaryMessengers[this]` with `this` an `Rc<dyn
     /// MethodChannel>`, run459).
-    pub fn get<O: ?Sized>(&self, object: std::rc::Rc<O>) -> Option<T> {
-        let key = Self::key(&object);
+    pub fn get<O: ?Sized>(&self, object: &std::rc::Rc<O>) -> Option<T> {
+        let key = Self::key(object);
         self.entries.borrow().iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())
     }
 

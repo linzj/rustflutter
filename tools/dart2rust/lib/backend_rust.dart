@@ -72,6 +72,9 @@ const _primitives = {
 };
 
 /// Dart operators that are Rust traits, and the trait's method name.
+/// `dart:core` collections a value is downcast to, by their spelling here.
+const _downcastNames = {'List': 'Vec'};
+
 const _operatorTraits = {
   '+': ('Add', 'add'),
   '-': ('Sub', 'sub'),
@@ -723,10 +726,11 @@ class RustBackend {
         :final args,
         :final isSetter,
         :final baseArguments,
+        :final typeArguments,
       ) =>
         base == 'Object'
             ? _superCall(base, name, args)
-            : '${_superCall(base, name, args, isSetter: isSetter, baseArguments: baseArguments)}${(library[base]?.methods.any((m) => m.name == name && !m.isStatic && m.isAsync) ?? false) ? '' : _propagate}',
+            : '${_superCall(base, name, args, isSetter: isSetter, baseArguments: baseArguments, typeArguments: typeArguments)}${(library[base]?.methods.any((m) => m.name == name && !m.isStatic && m.isAsync) ?? false) ? '' : _propagate}',
       // A local's `!` clones first: `a!.axis` and then `a!.value` moved
       // `a` at the first (E0382); a `Copy` local clones for free.
       IrNullCheck(:final operand) =>
@@ -775,7 +779,7 @@ class RustBackend {
           castTo,
         ),
       IrDowncast(:final target, :final type, :final arguments) =>
-        '${expr(target)}.as_any().downcast_ref::<$type${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
+        '${expr(target)}.as_any().downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
         receiver,
         arms,
@@ -1020,7 +1024,13 @@ class RustBackend {
       ...node.locals,
     };
     _indent = 0;
+    // The body's own asyncness: a `try` inside an `async` closure of a
+    // sync method wrapped its body in a closure that cannot `await`
+    // (`setMessageHandler`'s handler, E0728 at ws461).
+    final savedAsyncBody = _asyncBody;
+    _asyncBody = node.isAsync;
     _body(node.body, node.isAsync ? _awaited(node.returns) : node.returns);
+    _asyncBody = savedAsyncBody;
     _failure = savedFailure;
     _inFlowClosure = savedFlow;
     _selfName = savedSelf;
@@ -1808,6 +1818,7 @@ class RustBackend {
     List<IrExpr> args, {
     bool isSetter = false,
     List<IrType> baseArguments = const [],
+    List<IrType> typeArguments = const [],
   }) {
     // `Object` is not a class this compiler has, and it never will be -- it is
     // the root every Dart class already inherits from. So `super.toString()`
@@ -1879,10 +1890,12 @@ class RustBackend {
     final method = baseClass.methods.firstWhere(
       (m) => m.name == name && !m.isStatic && m.isSetter == isSetter,
     );
-    final turbofish = baseArguments.isEmpty
+    final own = typeArguments.length == method.typeParameters.length
+        ? typeArguments.map(type).toList()
+        : List.filled(method.typeParameters.length, '_');
+    final turbofish = baseArguments.isEmpty && own.every((a) => a == '_')
         ? ''
-        : '::<_, ${baseArguments.map(type).join(', ')}'
-              '${', _' * method.typeParameters.length}>';
+        : '::<_${[...baseArguments.map(type), ...own].map((a) => ', $a').join()}>';
     final call =
         '${superFn(base, name, isSetter: isSetter)}$turbofish(${[receiver, ...args.map(expr)].join(', ')})';
     // An async super function is an `async fn`; the caller's trait wants
@@ -2807,6 +2820,17 @@ class RustBackend {
       // a bare `Trait::method` is E0782 since edition 2021, and a base
       // constructor's body inlined into a subclass (`_inheritedBodies`)
       // writes the base's fields through the trait's setters (100 at ws443).
+      // On a closure's handle (`__me`, an `Rc<dyn Trait>` in a trait body
+      // or an `Rc<Struct>`), the plain call: `<__Self as Trait>::m(&*__me)`
+      // wanted a `&__Self` where `__me` is the trait object
+      // (`initMouseTracker`'s closure, ws461).
+      if (_selfName == _countedSelf && (target == null || target is IrThis)) {
+        return _asyncValue(
+          '$_selfName.${_identifier(name)}$turbofish'
+          '(${args.map(expr).join(', ')})${suffixFor(_fieldsAreAccessors)}',
+          boxed,
+        );
+      }
       // The trait named has to be the one *declaring* the item: a base
       // constructor's body inlined into a subclass wrote `this.child = x`
       // as `<Self as RenderView>::set_child`, and `set_child` is the
@@ -5984,6 +6008,7 @@ class RustBackend {
         :final args,
         :final isSetter,
         :final baseArguments,
+        :final typeArguments,
       ) =>
         IrSuperCall(
           base,
@@ -5991,6 +6016,7 @@ class RustBackend {
           args.map(go).toList(),
           isSetter: isSetter,
           baseArguments: baseArguments,
+          typeArguments: typeArguments,
         ),
       IrAwait(:final operand) => IrAwait(go(operand)),
       IrUpcast(:final value, :final type, :final handle, :final explicit) =>

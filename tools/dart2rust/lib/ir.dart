@@ -687,10 +687,16 @@ class IrSuperCall extends IrExpr {
     this.args, {
     this.isSetter = false,
     this.baseArguments = const [],
+    this.typeArguments = const [],
   });
 
   /// The class the call resolves into.
   final String base;
+
+  /// The method's own type arguments (`super.foo<T>(..)`), spelled on the
+  /// super fn after the base's so that nothing is left to inference
+  /// (`_invokeMethod<T>` from `invokeMethod<T>`, E0283 at ws461).
+  final List<IrType> typeArguments;
   final String name;
   final List<IrExpr> args;
 

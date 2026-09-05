@@ -1190,6 +1190,7 @@ class KernelFrontend implements TypeWorld {
         node.name.text,
         _arguments(node.arguments, node.interfaceTarget.function),
         baseArguments: _superBaseArguments(ownerClass!),
+        typeArguments: _typeArgumentsOf(node.arguments),
       );
     }
     if (node is VariableSet) {
@@ -1541,7 +1542,12 @@ class KernelFrontend implements TypeWorld {
       if (to is TypeParameterType &&
           (from is DynamicType ||
               (from is InterfaceType && from.classNode.name == 'Object'))) {
-        final operand = from != null && from.nullability == Nullability.nullable
+        // A `dynamic` is an `Rc<dyn Object>`, never an `Option`: no unwrap
+        // (`codec.decodeEnvelope(result) as T?`, ws461).
+        final operand =
+            from != null &&
+                from is! DynamicType &&
+                from.nullability == Nullability.nullable
             ? IrNullCheck(expression(node.operand))
             : expression(node.operand);
         return IrCall(
@@ -2633,6 +2639,15 @@ class KernelFrontend implements TypeWorld {
           );
     }
     return false;
+  }
+
+  /// A call's own type arguments, spelled; empty when one cannot be.
+  List<IrType> _typeArgumentsOf(Arguments arguments) {
+    try {
+      return [for (final t in arguments.types) _type(t)];
+    } on Unsupported {
+      return const [];
+    }
   }
 
   /// The symbol an `external` member's `@Native` annotation registers it
