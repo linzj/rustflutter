@@ -276,6 +276,176 @@ impl DartInt for i64 {
 /// `Object` above it: an `Rc<dyn Widget>` then unsizes to an `Rc<dyn
 /// Object>` (trait upcasting), which no `impl Object for dyn Widget` could
 /// give -- a coercion needs the supertrait. `as_any` is `Object`'s.
+/// Dart's `T?` for a `T` that may be nullable already. `T?` with `T` bound
+/// to `Color?` is `Color?` -- one layer, Dart collapses them -- where Rust's
+/// `Option<Option<Color>>` is two. Generic code spells a `T?` in its
+/// signature and its fields as `<T as DartNullable>::Or`, which is `Option<T>`
+/// for a plain `T` and `Option<X>` again for `T = Option<X>`, and converts
+/// at its edges: a parameter or a field read comes in through `option`, a
+/// result or a field write goes out through `from_option`. Every type a
+/// type parameter can be bound to implements it; the backend writes the
+/// impl for each translated struct and enum.
+pub trait DartNullable: Sized {
+    type Or;
+    /// The `Option<Self>` a body works with, from the spelled `T?`.
+    fn option(or: Self::Or) -> Option<Self>;
+    /// The spelled `T?` from a body's `Option<Self>`.
+    fn from_option(option: Option<Self>) -> Self::Or;
+}
+
+impl<X> DartNullable for Option<X> {
+    type Or = Option<X>;
+    fn option(or: Option<X>) -> Option<Option<X>> {
+        or.map(Some)
+    }
+    fn from_option(option: Option<Option<X>>) -> Option<X> {
+        option.flatten()
+    }
+}
+
+/// `DartNullable` for a type that is not an `Option`: `T?` is `Option<T>`.
+#[macro_export]
+macro_rules! dart_nullable {
+    ($($t:tt)*) => {
+        impl DartNullable for $($t)* {
+            type Or = Option<Self>;
+            fn option(or: Option<Self>) -> Option<Self> {
+                or
+            }
+            fn from_option(option: Option<Self>) -> Option<Self> {
+                option
+            }
+        }
+    };
+}
+
+impl<T: ?Sized> DartNullable for std::rc::Rc<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<T> DartNullable for Vec<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<K, V> DartNullable for Map<K, V> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<T> DartNullable for Set<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<A, B> DartNullable for (A, B) {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<A, B, C> DartNullable for (A, B, C) {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<A, B, C, D> DartNullable for (A, B, C, D) {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<T> DartNullable for Completer<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<T> DartNullable for Stream<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<T> DartNullable for Point<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+impl<K, V> DartNullable for MapEntry<K, V> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+dart_nullable!(i64);
+dart_nullable!(f64);
+dart_nullable!(bool);
+dart_nullable!(String);
+dart_nullable!(());
+dart_nullable!(DateTime);
+dart_nullable!(Duration);
+dart_nullable!(Exception);
+dart_nullable!(FormatException);
+dart_nullable!(Null);
+dart_nullable!(Pattern);
+dart_nullable!(RegExp);
+dart_nullable!(RegExpMatch);
+dart_nullable!(StackTrace);
+dart_nullable!(Stopwatch);
+dart_nullable!(StringBuffer);
+dart_nullable!(Symbol);
+dart_nullable!(Type);
+dart_nullable!(Uri);
+dart_nullable!(Random);
+dart_nullable!(SentinelValue);
+dart_nullable!(Timer);
+dart_nullable!(ArgumentError);
+dart_nullable!(RangeError);
+dart_nullable!(IndexError);
+dart_nullable!(ByteData);
+dart_nullable!(Invocation);
+
 pub trait DartAny: Object + 'static {
 
     /// `runtimeType` reachable through a `&__Self: Trait + ?Sized` -- a super

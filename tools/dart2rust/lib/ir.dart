@@ -17,9 +17,13 @@ library;
 /// Dart's `double`/`int`/`bool`/`String` are kept under their Dart names and
 /// mapped in the backend, because what they map to is a Rust question.
 class IrType {
-  const IrType(this.name, {this.nullable = false, this.arguments = const []})
-    : parameters = null,
-      returns = null;
+  const IrType(
+    this.name, {
+    this.nullable = false,
+    this.arguments = const [],
+    this.projected = false,
+  }) : parameters = null,
+       returns = null;
 
   /// A function type: `double Function(double, String)`.
   ///
@@ -28,10 +32,18 @@ class IrType {
   /// and neither can be built from the string `Function`.
   const IrType.function(this.parameters, this.returns, {this.nullable = false})
     : name = 'Function',
-      arguments = const [];
+      arguments = const [],
+      projected = false;
 
   final String name;
   final bool nullable;
+
+  /// A nullable *type parameter* in a generic declaration's signature or
+  /// field, spelled `<T as DartNullable>::Or` (see the prelude): Dart's
+  /// `T?` with `T` bound to `X?` is `X?`, one `Option` layer, and only an
+  /// associated type can say that in Rust. The body works with `Option<T>`
+  /// and converts at the edges (`IrNullableOf`).
+  final bool projected;
 
   /// `List<double>`'s `double`. Empty for a type with no arguments.
   ///
@@ -247,6 +259,19 @@ class IrStaticCall extends IrExpr {
   final String? owner;
   final String name;
   final List<IrExpr> args;
+}
+
+/// A value crossing the edge of a generic declaration where a `T?` is
+/// spelled `<T as DartNullable>::Or` (`IrType.projected`): `toOption` takes
+/// the spelled value into the `Option<T>` a body works with (a parameter, a
+/// field read); the other way gives the spelled value back (a result, a
+/// field write).
+class IrNullableOf extends IrExpr {
+  IrNullableOf(this.value, this.parameter, {required this.toOption});
+
+  final IrExpr value;
+  final String parameter;
+  final bool toOption;
 }
 
 /// A constructor invocation. Named constructors carry their name.

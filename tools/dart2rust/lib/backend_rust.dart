@@ -493,6 +493,11 @@ class RustBackend {
                     '${t.arguments.map((a) => type(a)).join(', ')}>'}>';
       return t.nullable ? 'Option<$spelled>' : spelled;
     }
+    // A nullable type parameter in a signature: the associated type that
+    // collapses `T?` with `T` bound to `X?` (see `IrType.projected`).
+    if (t.projected && t.nullable && t.arguments.isEmpty) {
+      return '<${t.name} as DartNullable>::Or';
+    }
     final mapped = _primitives[t.name] ?? t.name;
     // `Foo<int>` was coming out as a bare `Foo`, which is a different type.
     final spelled = t.arguments.isEmpty || _primitives.containsKey(t.name)
@@ -665,6 +670,8 @@ class RustBackend {
             ? '${expr(operand)}.clone().unwrap()'
             : '${expr(operand)}.unwrap()',
       // A closure inside `Some(..)` is the `Rc<dyn Fn>` its slot holds.
+      IrNullableOf(:final value, :final parameter, :final toOption) =>
+        '<$parameter as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)})',
       IrSome(:final value) =>
         value is IrClosure && !value.boxed
             ? 'Some(std::rc::Rc::new(${expr(value)}))'
@@ -3653,6 +3660,8 @@ class RustBackend {
     _line('}');
     _indent--;
     _line('}');
+    _line('');
+    _emitDartNullable();
     // An enhanced enum: its members go in an impl, where they lose nothing.
     // Refusing the whole enum was right only while the alternative was
     // emitting a plain one and dropping them.
@@ -3929,6 +3938,20 @@ class RustBackend {
     _emitConstants(prefix: cls.name);
     _emitLazyStatics();
     return _out.join('\n') + '\n';
+  }
+
+  /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
+  /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
+  void _emitDartNullable() {
+    final own = '${cls.name}${_generics(cls)}';
+    _line('impl${_implGenerics(cls, keyed: false)} DartNullable for $own {');
+    _indent++;
+    _line('type Or = Option<Self>;');
+    _line('fn option(or: Option<Self>) -> Option<Self> { or }');
+    _line('fn from_option(option: Option<Self>) -> Option<Self> { option }');
+    _indent--;
+    _line('}');
+    _line('');
   }
 
   static String _abstractStaticName(String owner, String name) =>
@@ -5097,6 +5120,8 @@ class RustBackend {
         [for (final (t, b) in arms) (t, go(b))],
       ),
       IrSome(:final value) => IrSome(go(value)),
+      IrNullableOf(:final value, :final parameter, :final toOption) =>
+        IrNullableOf(go(value), parameter, toOption: toOption),
       IrCast(:final value, :final rust) => IrCast(go(value), rust),
       IrIsNull(:final operand) => IrIsNull(go(operand)),
       IrIfNull(
@@ -5680,6 +5705,7 @@ class RustBackend {
     // One line per struct rather than one blanket impl over everything: see
     // `DartAny` in the prelude for why the blanket one is quietly wrong.
     _line('');
+    _emitDartNullable();
     _line(
       // The bounds the inherent impl has: `dart_cast` calls the trait
       // impls, whose `E: Clone` a bare `'static` cannot meet (ws304).
@@ -7348,6 +7374,8 @@ class _WalkSelf {
       case IrSuperDispatch(:final receiver, :final args):
         expression(receiver);
         args.forEach(expression);
+      case IrNullableOf(:final value):
+        expression(value);
       case IrSome(:final value):
         expression(value);
       case IrCast(:final value):
