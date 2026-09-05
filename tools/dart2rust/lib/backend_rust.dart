@@ -2468,11 +2468,14 @@ class RustBackend {
   /// `ContainerRenderObjectMixin`, and the setter takes the trait's. The
   /// handle is upcast by name -- inside `map` when optional (24
   /// `set__first_child` at ws348).
-  String _intoDeclared(String name, String written) {
+  String _intoDeclared(String name, String written, {String? on}) {
+    final at = on == null ? cls : library[on];
+    if (at == null || written == 'None') return written;
     // A mixin's field is an abstract setter on its trait, an interface's
-    // a field: either declares the type the setter takes.
+    // a field: either declares the type the setter takes. The traits
+    // above first -- the struct's own field is the narrow one.
     IrType? wide;
-    for (final above in _abstractAncestors(cls)) {
+    for (final above in [..._abstractAncestors(at), if (at.isAbstract) at]) {
       for (final f in above.fields) {
         if (f.name == name) wide = f.type;
       }
@@ -2483,14 +2486,9 @@ class RustBackend {
       }
       if (wide != null) break;
     }
-    final own = _allFields(cls).where((f) => f.name == name).firstOrNull;
-    if (wide == null || own == null) return written;
-    final narrow = own.type;
-    if (wide.name == narrow.name ||
+    if (wide == null ||
         wide.name == 'Object' ||
-        !library.isAbstract(wide.name) ||
-        !library.isAbstract(narrow.name) ||
-        written == 'None') {
+        !library.isAbstract(wide.name)) {
       return written;
     }
     final target =
@@ -3393,15 +3391,22 @@ class RustBackend {
         if (qualifier != null) {
           // ..widened to the trait's field type on the way (`_intoDeclared`),
           // as a raw argument the call prints as it is.
-          final argument = target == null || target is IrThis
-              ? IrLiteral(_intoDeclared(name, expr(value)), const IrType('raw'))
-              : value;
+          final argument = IrLiteral(
+            _intoDeclared(
+              name,
+              expr(value),
+              on: target == null || target is IrThis
+                  ? null
+                  : (qualifier ?? receiverClass),
+            ),
+            const IrType('raw'),
+          );
           _line(
             '${_call(target, 'set_${snake(name)}', [argument], qualifier: qualifier, receiverClass: receiverClass, fails: true)};',
           );
         } else {
           _line(
-            '${_receiver(target)}.set_${snake(name)}(${target == null || target is IrThis ? _intoDeclared(name, expr(value)) : expr(value)})$_propagate;',
+            '${_receiver(target)}.set_${snake(name)}(${_intoDeclared(name, expr(value), on: target == null || target is IrThis ? null : receiverClass)})$_propagate;',
           );
         }
       case IrIf(:final condition, :final then, :final otherwise):
