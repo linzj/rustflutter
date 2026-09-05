@@ -6528,6 +6528,8 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | run445 | 过了 `FlutterTimeline.startSync`，下一个 panic：`WidgetsFlutterBinding::init_instances` 编译桩——`self.handle_pop_route()?`：mixin 声明里的目标是 abstract 没有 `async` 标记，且 qualifier 是具体类自己；`_asyncMember` 看 application 里的副本，`qualifier == 接收者类` 仍算 inherent。 |
 | ws446 结果 | 编译尺子 **2701**（ws445 2840，−139），141 crate：去 93 来 0。 |
 | run446 | 还是 `init_instances` 桩：剩三种 `?` 打在 `DartFuture` 上——(1) 空壳 mixin 声明的 `asyncMarker` 是 `Sync`（没体），但 kernel 另存了程序员写的 `dartAsyncMarker`，`_asyncMember` 改看它；(2) tear-off adapter 里的调用没标 `asyncFn`（`setMethodCallHandler(_handleBackGestureInvocation)`），规则抽成 `_inherentAsync` 两处共用；(3) `super.x()` 到 async super 函数是 `DartFuture`，`IrSuperCall` 不再 `?`。 |
+| ws447 结果 | 编译尺子 **2698**（ws446 2701，−3），141 crate。 |
+| run447 | 还是 `init_instances` 桩，错误换成 mismatched types：`setMethodCallHandler(_handleNavigationInvocation)` 的 tear-off 返回 `DartFuture<bool>`，槽要 `DartFuture<Rc<dyn Object>>`。查下来 tear-off adapter 虽然标了类型，`_withBorrowing` 为「被保存的槽」重建 `IrClosure(boxed: true)` 时把 `rustType` 丢了（ws419 起故意不带：那时 `coerce` 的结果规则不全），槽的 coerce 根本没看到它。四条通用：(1) 重建时带上类型，闭包/tear-off 进保存槽也走 `coerce` 的函数规则（Future→Future 用 `DartFuture::map`）；(2) 被适配的闭包**字面量**：adapter 接管它的 captures/locals/`this` 句柄，在自己外面绑定成 `move` 闭包，里面的字面量再从这些绑定 clone——原样包起来会把 `let x = self.x.clone()` 放进 adapter 体内，借了 `self`；(3) 闭包的返回类型取**体被降低时对的**那个（槽的 `Color?`），不是 kernel 自己的 `Color`——否则槽上再套一层 `Some`（20 处 `resolveWith`）；(4) `void` 进 `Object`：`()` 放进句柄（prelude 的 `Object` 对所有 `'static` 类型 blanket），不是 `None`（65 处推不出类型）。驱动 diff 236 行，refusal 521 不变。 |
 
 ## 下一步(2026-09-05 重铺)
 
