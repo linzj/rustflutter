@@ -549,8 +549,8 @@ class RustBackend {
       ),
       IrBinary(:final op, :final left, :final right, :final type) => _binary(
         op,
-        left,
-        right,
+        op == '==' || op == '!=' ? _plain(left) : left,
+        op == '==' || op == '!=' ? _plain(right) : right,
         type,
       ),
       IrUnary(:final op, :final operand) => '($op${expr(operand)})',
@@ -673,7 +673,7 @@ class RustBackend {
       IrNullCheck(:final operand) =>
         operand is IrLocal
             ? '${expr(operand)}.clone().unwrap()'
-            : '${expr(operand)}.unwrap()',
+            : '${expr(_plain(operand))}.unwrap()',
       // A closure inside `Some(..)` is the `Rc<dyn Fn>` its slot holds.
       IrNullableOf(:final value, :final parameter, :final toOption) =>
         '<$parameter as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)})',
@@ -729,8 +729,8 @@ class RustBackend {
             : _isLazyConst(name)
             ? '(**${screamingSnake(name)}).clone()'
             : screamingSnake(name),
-      IrIsNull(:final operand) => '${expr(operand)}.is_none()',
-      IrIfNull() => _ifNull(e as IrIfNull),
+      IrIsNull(:final operand) => '${expr(_plain(operand))}.is_none()',
+      IrIfNull() => _ifNull(_plainIfNull(e as IrIfNull)),
       // `as_ref()`: `a?.b` reads `a`, and `a` is a field or a loop variable
       // behind a reference far more often than an owned `Option` -- `.map`
       // alone moved out of `*child` (E0507). A body that needs the value
@@ -740,7 +740,7 @@ class RustBackend {
       // `Option` again.
       IrNullAware(:final receiver, :final body, :final flatten) =>
         _failure == null
-            ? '${expr(receiver)}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
+            ? '${expr(_plain(receiver))}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
             : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}',
       // A counted class's constructor already hands out an `Rc`.
       IrMapElements(:final collection, :final kind, :final body) =>
@@ -1360,6 +1360,26 @@ class RustBackend {
   /// `List.generate(n, f)` and friends, which are Dart's list constructors
   /// wearing a static's clothes. Rust builds a `Vec` from an iterator.
   static const _listStatics = {'generate', 'filled', 'from', 'of'};
+
+  /// A value spelled projected (`<T as DartNullable>::Or`, a read out of
+  /// a `Vec<T?>` or a generic accessor) where an `Option` operation --
+  /// `!`, `== null`, `?.`, `??`, `==` -- wants the `Option<T>` a body works
+  /// with: the prelude's conversion first.
+  IrExpr _plain(IrExpr e) {
+    final t = e.rustType;
+    if (t == null || !t.projected) return e;
+    return IrNullableOf(e, t.name, toOption: true)
+      ..rustType = IrType(t.name, nullable: true, arguments: t.arguments);
+  }
+
+  IrIfNull _plainIfNull(IrIfNull e) => e.left.rustType?.projected == true
+      ? (IrIfNull(
+          _plain(e.left),
+          e.right,
+          nullableResult: e.nullableResult,
+          eager: e.eager,
+        )..rustType = e.rustType)
+      : e;
 
   /// `::<A, B>` for a call's type arguments; nothing when there are none.
   String _turbofish(List<IrType> typeArguments) =>

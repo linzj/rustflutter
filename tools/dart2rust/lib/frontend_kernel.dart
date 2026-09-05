@@ -4610,11 +4610,17 @@ class KernelFrontend implements TypeWorld {
       if (isNullable(arg)) {
         return IrType(arg.name, nullable: true, arguments: arg.arguments);
       }
+      // Projected only over a bare type parameter of the code here: over a
+      // concrete class the slot normalises to the plain `Option` (and
+      // `<GestureBinding as DartNullable>` names a trait as a type).
+      final put = kept[t.parameter]!;
       return IrType(
         arg.name,
         nullable: true,
         arguments: arg.arguments,
-        projected: arg.arguments.isEmpty && !arg.isFunction,
+        projected: _projectedSlot(
+          put.withDeclaredNullability(Nullability.nullable),
+        ),
       );
     }
     if (t is InterfaceType && kept.isNotEmpty) {

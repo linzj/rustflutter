@@ -178,6 +178,20 @@ IrExpr coerceInto(
       ..rustType = slot;
   }
   if (sameRust(have0, slot) && !projectionDiffers(have0, slot)) return value;
+  // Anything else into a projected slot: into the plain `Option<T>` first,
+  // then the conversion (`None` into a `Vec<T?>` element is `<T as
+  // DartNullable>::from_option(None)`; rustc cannot unify an `Option<_>`
+  // with the associated type). Out of a projected value the other way.
+  if (slot.projected && slot.arguments.isEmpty && !slot.isFunction) {
+    final plainSlot = IrType(slot.name, nullable: true);
+    final inner = coerceInto(value, plainSlot, world, inClosure: inClosure);
+    return IrNullableOf(inner, slot.name, toOption: false)..rustType = slot;
+  }
+  if (have0.projected && have0.arguments.isEmpty && !have0.isFunction) {
+    final plain = IrNullableOf(value, have0.name, toOption: true)
+      ..rustType = IrType(have0.name, nullable: true);
+    return coerceInto(plain, slot, world, inClosure: inClosure);
+  }
   final have = _normal(have0);
   slot = _normal(slot);
   // The `Option` layer first: on, off, or mapped through.
