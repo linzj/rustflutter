@@ -2456,6 +2456,27 @@ impl Endian {
     pub const HOST: Endian = Endian::Little;
 }
 
+/// Every translated enum: `dart:core`'s `EnumName.name` reaches any of them
+/// through it (`enum_name_get_name`).
+pub trait DartEnum {
+    fn name(&self) -> String;
+    fn index(&self) -> i64;
+}
+
+/// `dart:core`'s `EnumName|get#name` extension getter, as the CFE lowers it.
+pub fn enum_name_get_name<E: DartEnum>(value: E) -> String {
+    value.name()
+}
+
+/// `dart:io`'s `exit`.
+pub fn exit(code: i64) -> ! {
+    std::process::exit(code as i32)
+}
+
+/// `dart:developer`'s `registerExtension`: no VM service to register with,
+/// whatever the handler's exact type is.
+pub fn register_extension<F>(_method: String, _handler: F) {}
+
 /// `dart:developer`'s `postEvent`: nothing is listening.
 pub fn post_event(
     _event_kind: String,

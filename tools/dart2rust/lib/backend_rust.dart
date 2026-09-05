@@ -2093,7 +2093,10 @@ class RustBackend {
           .join(' || ');
       return negated ? '!($tests)' : '($tests)';
     }
-    if (library[name] == null) {
+    // A prelude class answers `is` through `Any` like a translated one:
+    // every `'static` type is an `Object` there (`is StateError` in
+    // `BindingBase._initListenable`, run433).
+    if (library[name] == null && !_preludeClasses.contains(name)) {
       throw Unsupported('`is` against `$name`, which was not translated', name);
     }
     final arguments = target.arguments.isEmpty
@@ -3907,6 +3910,27 @@ class RustBackend {
     _line('*self as i64');
     _indent--;
     _line('}');
+    // `name`: `dart:core`'s `EnumName` extension, the value's Dart name.
+    _line('pub fn name(&self) -> String {');
+    _indent++;
+    _line('match self {');
+    _indent++;
+    for (final value in cls.values) {
+      _line('${cls.name}::${variants[value]} => "$value".to_string(),');
+    }
+    _indent--;
+    _line('}');
+    _indent--;
+    _line('}');
+    _indent--;
+    _line('}');
+    _line('');
+    // ..and both through the prelude's `DartEnum`, which is how a generic
+    // `enum_name_get_name(e)` reaches them.
+    _line('impl DartEnum for ${cls.name} {');
+    _indent++;
+    _line('fn name(&self) -> String { ${cls.name}::name(self) }');
+    _line('fn index(&self) -> i64 { ${cls.name}::index(self) }');
     _indent--;
     _line('}');
     _line('');
@@ -5217,18 +5241,7 @@ class RustBackend {
     // signature says `Rc<dyn Object>` is boxed into it too.
     // ..and a prelude exception made by its constructor function
     // (`Exception::new(..)` is a static call, not an `IrNew`; 29 at ws325).
-    const preludeExceptions = {
-      'Exception',
-      'FormatException',
-      'StateError',
-      'ArgumentError',
-      'RangeError',
-      'UnsupportedError',
-      'UnimplementedError',
-      'ConcurrentModificationError',
-      'TypeError',
-      'AssertionError',
-    };
+    const preludeExceptions = _preludeClasses;
     final boxed =
         (_failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>') &&
         ((value is IrLiteral && value.type.name == 'String') ||
@@ -5244,6 +5257,12 @@ class RustBackend {
   /// and no library declares: the crate-wide "was it translated" check has
   /// to know them, or `vec_of_nones(..)` reads as a call to nothing.
   static const _preludeFunctions = {
+    // By their Dart names, as the call names them (`postEvent`, not the
+    // `post_event` it is spelled as).
+    'exit',
+    'postEvent',
+    'registerExtension',
+    'EnumName_get_name',
     'never',
     'new_object',
     'string_from_char_codes',
@@ -5266,6 +5285,21 @@ class RustBackend {
     'try_parse_double',
     'schedule_microtask',
     'uint8_list_view',
+  };
+
+  /// The prelude's classes that `is` can ask about and a `throw` boxes.
+  static const _preludeClasses = {
+    'Exception',
+    'FormatException',
+    'StateError',
+    'ArgumentError',
+    'RangeError',
+    'UnsupportedError',
+    'UnimplementedError',
+    'ConcurrentModificationError',
+    'TypeError',
+    'AssertionError',
+    'Error',
   };
 
   static const _typedLists = {
