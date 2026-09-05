@@ -2746,6 +2746,18 @@ pub fn natives_unanswered() -> Vec<String> {
     NATIVES_UNANSWERED.with(|s| s.borrow().clone())
 }
 
+/// `identical(a, b)` on two nullable handles: both null, or one object.
+pub fn dart_identical_opt<T: ?Sized>(
+    a: &Option<std::rc::Rc<T>>,
+    b: &Option<std::rc::Rc<T>>,
+) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => std::rc::Rc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
 /// A `dynamic` as the `Option` a `T?` is: `None` for the `Null` object.
 pub fn dart_nullable(value: std::rc::Rc<dyn Object>) -> Option<std::rc::Rc<dyn Object>> {
     let object: &dyn Object = value.as_ref();

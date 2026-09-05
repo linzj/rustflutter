@@ -3167,6 +3167,15 @@ class RustBackend {
   /// sit at the same one. Answering that with an address is worse than not
   /// answering.
   String _identical(IrExpr left, IrExpr right) {
+    // Two nullable handles: identical when both null or both the same
+    // object (the prelude asks; `&*a` on an `Option` was E0614, ws463).
+    final leftType = left.rustType, rightType = right.rustType;
+    if (leftType != null &&
+        rightType != null &&
+        isNullable(leftType) &&
+        isNullable(rightType)) {
+      return 'dart_identical_opt(&${expr(left)}, &${expr(right)})';
+    }
     // Two locals, or a local against a static: the addresses of the *slots*.
     // Two distinct slots are never the same address, so this says "not
     // identical" -- which is what Dart says of two distinct objects, and is
@@ -6933,7 +6942,11 @@ class RustBackend {
     return _argumentsThrough(next, binding(next, passed), base, seen);
   }
 
+  /// The trait whose impl block is being printed (`_emitImplFor`).
+  String? _implFor;
+
   void _emitImplFor(IrClass base, {List<IrType>? passedOverride}) {
+    _implFor = base.name;
     // Not just the abstract ones. A class that overrides a *concrete* base
     // method needs that override in the impl too, or dynamic dispatch reaches
     // the trait's default instead -- the inherent method would still be right,
@@ -7116,9 +7129,25 @@ class RustBackend {
       _indent++;
       // The field holds one `Option`; a trait asking for the doubled one
       // gets it wrapped -- and the whole in `Ok`.
-      final value = substituted.name == 'Option' && reads != null
-          ? 'Some($body)'
-          : body;
+      // ..and any other difference between this class's field and the
+      // trait's -- a `Matrix4` field under a `Matrix4?` accessor
+      // (`_TransformedPointerCancelEvent.transform`, 15 at ws463) -- by
+      // the one rule, as a method's result is.
+      final own = _allFields(cls)
+          .where((f) => f.name == field.name)
+          .firstOrNull;
+      String value;
+      if (reads != null && own != null && substituted.name != 'Option') {
+        final held = IrLocal('__v')..rustType = own.type;
+        final shaped = coerceInto(held, substituted, _world);
+        value = identical(shaped, held)
+            ? body
+            : '{ let __v = $body; ${expr(shaped)} }';
+      } else {
+        value = substituted.name == 'Option' && reads != null
+            ? 'Some($body)'
+            : body;
+      }
       _line(reads != null && _resultModel ? 'Ok($value)' : value);
       _indent--;
       _line('}');
@@ -7352,6 +7381,11 @@ class RustBackend {
           // ..and widened on the way out by the one rule (`coerceInto`),
           // as a method's result is.
           final held = IrLocal('__v')..rustType = field.type;
+          if (Platform.environment['DART2RUST_TRACE_FWD'] == field.name) {
+            stderr.writeln(
+              'TRACE_FWD ${cls.name}.${field.name} field=${field.type} need=${need.returnType} for=${_implFor}',
+            );
+          }
           final shaped = coerceInto(
             held,
             _substituteType(need.returnType, _implBinding),
@@ -7389,6 +7423,11 @@ class RustBackend {
         // A future is the same future under a lifetime spelling and is
         // left alone.
         final held = IrLocal('__v')..rustType = have.returnType;
+        if (Platform.environment['DART2RUST_TRACE_FWD'] == need.name) {
+          stderr.writeln(
+            'TRACE_FWD ${cls.name}.${need.name} have=${have.returnType} need=${need.returnType} method',
+          );
+        }
         final shaped = have.isAsync
             ? held
             : coerceInto(

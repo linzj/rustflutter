@@ -5216,6 +5216,21 @@ class KernelFrontend implements TypeWorld {
                   index < instantiated.positionalParameters.length
             ? instantiated.positionalParameters[index]
             : declaredType);
+    // `DART2RUST_TRACE_ARG=<callee name>`: the slot each argument lands
+    // in, to stderr.
+    final calleeMember = callee?.parent;
+    final tracedArg = Platform.environment['DART2RUST_TRACE_ARG'];
+    if (calleeMember is Member &&
+        (tracedArg == '*' ||
+            tracedArg ==
+                (calleeMember.enclosingClass?.name ??
+                    calleeMember.name.text))) {
+      stderr.writeln(
+        'TRACE_ARG ${calleeMember.enclosingClass?.name}.${calleeMember.name.text}[$index] in=${_member?.enclosingClass?.name}.${_member?.name.text} '
+        'declared=$declaredType instantiated=${instantiated?.positionalParameters} '
+        'param=$paramType slotIr=$slotIr landing=${_landingSlotIr(callee: callee, index: index)} generic=${_genericSlotIr(callee, declaredType)}',
+      );
+    }
     final argument = _numLiteral(
       value,
       paramType,
@@ -6732,7 +6747,19 @@ class KernelFrontend implements TypeWorld {
       final value = byName[name];
       if (value == null) return null;
       var lowered = _constant(value, node);
-      final t = paramType[name];
+      // ..the parameter's type at the constant's own instantiation: `const
+      // WidgetStatePropertyAll<OutlinedBorder?>(StadiumBorder())` takes an
+      // `OutlinedBorder?`, not the bare `T` (ws463).
+      final declaredParam = paramType[name];
+      final t = declaredParam == null
+          ? null
+          : cls.typeParameters.isNotEmpty &&
+                cls.typeParameters.length == typeArguments.length
+          ? Substitution.fromPairs(
+              cls.typeParameters,
+              typeArguments,
+            ).substituteType(declaredParam)
+          : declaredParam;
       // Into the parameter's type by the coercion rule, under the
       // constructor's gate as a written argument is: a prelude `dynamic`
       // slot's null is its `Null` object (`const FormatException(..)`).
@@ -9379,6 +9406,16 @@ class _ThisEscapes extends RecursiveVisitor {
   void visitThisExpression(ThisExpression node) {
     final parent = node.parent;
     if (parent is Arguments) {
+      // A `dart:` library's top-level function (`identical(this, other)`,
+      // `print(this)`) asks about the object and keeps nothing: not an
+      // escape. Counting `Radius` for its `==` put its `+` on an `Rc`
+      // (ws463).
+      final call = parent.parent;
+      if (call is StaticInvocation &&
+          call.target.enclosingClass == null &&
+          call.target.enclosingLibrary.importUri.scheme == 'dart') {
+        return;
+      }
       final slot = _slotOf(parent, node);
       // An unresolvable callee is taken to keep it.
       if (slot == null || handleSlot(slot)) found = true;
