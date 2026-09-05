@@ -477,6 +477,15 @@ class KernelFrontend implements TypeWorld {
       if (_optionLocals.contains(node.variable)) {
         return IrLocal(name)..rustType = _type(_localType(node.variable));
       }
+      // A constructor's projected parameter is read as it was declared,
+      // the spelled `T?`: a constructor has no body prologue to re-bind
+      // it, and its field initialisers store it as it is.
+      final declaring = node.variable.parent;
+      if (declaring is FunctionNode &&
+          declaring.parent is Constructor &&
+          _projectedSlot(node.variable.type)) {
+        return IrLocal(name)..rustType = _edgeType(node.variable.type);
+      }
       // A closure parameter retyped to an erased bound (`_closureParamType`)
       // reads as the class it was declared with.
       final retyped = _retyped[node.variable];
@@ -1560,6 +1569,7 @@ class KernelFrontend implements TypeWorld {
     required bool toOption,
   }) {
     if (!_crossing(declared, binding)) return value;
+    if (value.rustType?.projected == true) return value;
     return IrNullableOf(value, _type(binding!).name, toOption: toOption)
       ..rustType = value.rustType;
   }
@@ -1594,12 +1604,55 @@ class KernelFrontend implements TypeWorld {
   /// What an argument's slot puts in for the callee's type parameter: the
   /// dispatch's receiver for a class's, the call's type arguments for the
   /// callee's own.
+  /// The constructor whose arguments are being lowered, with what the
+  /// construction puts in for its class's parameters: `Foo<T>(..)` by the
+  /// call's type arguments, `super(..)` by this class's supertype.
+  FunctionNode? _constructedCallee;
+  Map<TypeParameter, DartType> _constructedArgs = const {};
+
+  List<IrExpr> _constructing(
+    FunctionNode callee,
+    Map<TypeParameter, DartType> args,
+    List<IrExpr> Function() lower,
+  ) {
+    final wasCallee = _constructedCallee;
+    final wasArgs = _constructedArgs;
+    _constructedCallee = callee;
+    _constructedArgs = args;
+    try {
+      return lower();
+    } finally {
+      _constructedCallee = wasCallee;
+      _constructedArgs = wasArgs;
+    }
+  }
+
+  /// What this class's supertype puts in for a base's parameters.
+  Map<TypeParameter, DartType> _superBinding(Class cls, Class base) {
+    final env = typeEnvironment;
+    if (env == null || base.typeParameters.isEmpty) return const {};
+    final asBase = env.hierarchy.getTypeAsInstanceOf(
+      cls.getThisType(env.coreTypes, Nullability.nonNullable),
+      base,
+    );
+    if (asBase is! InterfaceType) return const {};
+    return {
+      for (
+        var i = 0;
+        i < base.typeParameters.length && i < asBase.typeArguments.length;
+        i++
+      )
+        base.typeParameters[i]: asBase.typeArguments[i],
+    };
+  }
+
   DartType? _argumentBinding(FunctionNode? callee, DartType? declared) {
     if (declared is! TypeParameterType || callee == null) return null;
     final p = declared.parameter;
     if (callee.typeParameters.contains(p)) {
       return identical(callee, _genericCallee) ? _genericArgs[p] : null;
     }
+    if (identical(callee, _constructedCallee)) return _constructedArgs[p];
     final landing = _dispatchMember;
     if (landing == null || !identical(callee, _dispatchInterface)) return null;
     return _keptFor(landing.enclosingClass, _dispatchReceiverType)[p];
@@ -1622,6 +1675,8 @@ class KernelFrontend implements TypeWorld {
   /// spelled `T?` (`toOption`), or back out. Itself for any other slot.
   IrExpr _acrossEdge(IrExpr value, DartType? slot, {required bool toOption}) {
     if (!_projectedSlot(slot)) return value;
+    // Already the spelled `T?` (a constructor parameter): nothing to cross.
+    if (value.rustType?.projected == true) return value;
     return IrNullableOf(value, _type(slot!).name, toOption: toOption)
       ..rustType = value.rustType;
   }
@@ -2711,10 +2766,16 @@ class KernelFrontend implements TypeWorld {
     // it came back as the erased bound (`_slotToChild`, ws373).
     if (node.interfaceTarget is Procedure &&
         !_heldField(node.interfaceTarget, receiver)) {
-      return _qualified(
-        IrCall(target, name, const []),
-        node.interfaceTarget,
-        receiver,
+      final declared = node.interfaceTarget.getterType;
+      return _acrossBinding(
+        _qualified(
+          IrCall(target, name, const []),
+          node.interfaceTarget,
+          receiver,
+        ),
+        declared,
+        _bindingOf(declared, node.interfaceTarget, receiver),
+        toOption: true,
       );
     }
     // A field of a `dart:` class the prelude re-expresses -- `Duration
@@ -3760,11 +3821,22 @@ class KernelFrontend implements TypeWorld {
         _instanceName(cls),
         arguments: _erasedArguments(cls, node.constructedType.typeArguments),
       ),
-      _arguments(
-        node.arguments,
+      _constructing(
         target.function,
-        false,
-        _instantiatedConstructor(node),
+        {
+          for (
+            var i = 0;
+            i < cls.typeParameters.length && i < node.arguments.types.length;
+            i++
+          )
+            cls.typeParameters[i]: node.arguments.types[i],
+        },
+        () => _arguments(
+          node.arguments,
+          target.function,
+          false,
+          _instantiatedConstructor(node),
+        ),
       ),
       constructor: name.isEmpty ? null : name,
     );
@@ -7491,7 +7563,11 @@ class KernelFrontend implements TypeWorld {
           superName = init.target.name.text.isEmpty
               ? null
               : init.target.name.text;
-          superArgs = _arguments(init.arguments, init.target.function);
+          superArgs = _constructing(
+            init.target.function,
+            _superBinding(node.enclosingClass, init.target.enclosingClass),
+            () => _arguments(init.arguments, init.target.function),
+          );
         }
         // A no-argument super() adds nothing to a Rust struct literal.
       } else if (init is LocalInitializer) {

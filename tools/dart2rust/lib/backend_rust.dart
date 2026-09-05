@@ -5016,11 +5016,37 @@ class RustBackend {
   /// base's parameters replaced by what this constructor passed, exactly as
   /// `_inheritedInits` does for the field initialisers. Without them a base
   /// field init named a `__t0` this constructor never bound.
-  List<IrStmt> _inheritedPre(IrConstructor ctor) {
+  /// What a class puts in for its base's type parameters, from the
+  /// `superclassArguments` of the class the chain started at, composed
+  /// down the chain.
+  Map<String, IrType> _baseTypes(IrClass from, Map<String, IrType> types) {
+    final baseName = from.superclass;
+    final base = baseName == null ? null : library[baseName];
+    if (base == null) return const {};
+    return {
+      for (
+        var i = 0;
+        i < base.typeParameters.length && i < from.superclassArguments.length;
+        i++
+      )
+        base.typeParameters[i]: _substituteType(
+          from.superclassArguments[i],
+          types,
+        ),
+    };
+  }
+
+  List<IrStmt> _inheritedPre(
+    IrConstructor ctor, [
+    IrClass? from,
+    Map<String, IrType> types = const {},
+  ]) {
     final baseName = ctor.superBase;
     if (baseName == null) return const [];
     final base = library[baseName];
     if (base == null) return const [];
+    final here = from ?? cls;
+    final binding = _baseTypes(here, types);
     final baseCtors = base.constructors
         .where((c) => c.name == ctor.superName)
         .toList();
@@ -5033,13 +5059,13 @@ class RustBackend {
       ..._baseTempRenames(base, baseCtor),
     };
     return [
-      ..._inheritedPre(baseCtor),
+      ..._inheritedPre(baseCtor, base, binding),
       for (final s in baseCtor.pre)
         if (s is IrLocalDecl)
           IrLocalDecl(
             _baseTempName(base, s.name),
             s.type,
-            s.init == null ? null : _substitute(s.init!, substitution),
+            s.init == null ? null : _substitute(s.init!, substitution, binding),
           )
         else
           s,
@@ -5062,10 +5088,15 @@ class RustBackend {
       if (s is IrLocalDecl) s.name: IrLocal(_baseTempName(base, s.name)),
   };
 
-  Map<String, IrExpr> _inheritedInits(IrConstructor ctor) {
+  Map<String, IrExpr> _inheritedInits(
+    IrConstructor ctor, [
+    IrClass? from,
+    Map<String, IrType> types = const {},
+  ]) {
     final baseName = ctor.superBase;
     if (baseName == null) return const {};
     final base = library[baseName];
+    final binding = _baseTypes(from ?? cls, types);
     if (base == null) {
       throw Unsupported(
         'super constructor call into `$baseName`, which is not in this file',
@@ -5130,18 +5161,23 @@ class RustBackend {
       // The base's own inherited initialisers first, so a chain resolves from
       // the top down and a nearer class can override nothing -- Dart does not
       // let it, and neither does this.
-      ..._inheritedInits(reached)
-          .map((k, v) => MapEntry(k, _substitute(v, reachedSubstitution))),
+      ..._inheritedInits(reached, base, binding).map(
+        (k, v) => MapEntry(k, _substitute(v, reachedSubstitution, binding)),
+      ),
       ...reached.fieldInits.map(
-        (k, v) => MapEntry(k, _substitute(v, reachedSubstitution)),
+        (k, v) => MapEntry(k, _substitute(v, reachedSubstitution, binding)),
       ),
     };
   }
 
   /// Replaces references to a constructor's parameters with the expressions a
   /// `super(...)` passed for them.
-  IrExpr _substitute(IrExpr e, Map<String, IrExpr> by) {
-    IrExpr go(IrExpr node) => _substitute(node, by);
+  IrExpr _substitute(
+    IrExpr e,
+    Map<String, IrExpr> by, [
+    Map<String, IrType> types = const {},
+  ]) {
+    IrExpr go(IrExpr node) => _substitute(node, by, types);
     return switch (e) {
       IrLocal(:final name) => by[name] ?? e,
       IrField(:final target, :final name, :final onEnum, :final owner) =>
@@ -5188,8 +5224,19 @@ class RustBackend {
         [for (final (t, b) in arms) (t, go(b))],
       ),
       IrSome(:final value) => IrSome(go(value)),
+      // An edge conversion inlined from a base (`_inheritedInits`): the
+      // base's `T` is this class's own parameter, renamed, or a concrete
+      // type -- and for one of those the conversion is the identity.
       IrNullableOf(:final value, :final parameter, :final toOption) =>
-        IrNullableOf(go(value), parameter, toOption: toOption),
+        switch (types[parameter]) {
+          null => IrNullableOf(go(value), parameter, toOption: toOption),
+          final to
+              when to.arguments.isEmpty &&
+                  !to.nullable &&
+                  cls.typeParameters.contains(to.name) =>
+            IrNullableOf(go(value), to.name, toOption: toOption),
+          _ => go(value),
+        },
       IrCast(:final value, :final rust) => IrCast(go(value), rust),
       IrIsNull(:final operand) => IrIsNull(go(operand)),
       IrIfNull(
