@@ -2356,7 +2356,7 @@ impl Timeline {
     pub fn start_sync(
         _name: String,
         _arguments: Option<Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>>,
-        _flow: Option<std::rc::Rc<dyn Object>>,
+        _flow: Option<Flow>,
     ) {
     }
 
