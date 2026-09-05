@@ -550,7 +550,9 @@ class RustBackend {
       // `this_` is a `&__Self` whatever the mode: its clone is a reference
       // (91 lifetime errors at ws334), its handle is `dart_self_<trait>()`.
       IrThis() =>
-        _fieldsAreAccessors || _selfName == 'this_'
+        _selfByValue
+            ? _selfName
+            : _fieldsAreAccessors || _selfName == 'this_'
             ? '$_selfName.dart_self_${snake(cls.name)}()'
             // A counted object as a value is its own handle: a clone of
             // the struct would be a second object sharing one `DartSelf`
@@ -2335,6 +2337,9 @@ class RustBackend {
   /// A free function has no `self`, so while one is being written the receiver
   /// is its first parameter instead.
   String _selfName = 'self';
+
+  /// Whether `self` is held by value (an `std::ops` operator's body).
+  var _selfByValue = false;
 
   /// Rust names of the collection methods that change their receiver.
   static const _inPlace = {
@@ -8203,10 +8208,14 @@ class RustBackend {
       // inside it a failing call unwraps.
       final savedFailure = _failure;
       _failure = null;
+      // ..and takes `self` by value: `this` inside is `self`, not `*self`
+      // (`Priority.operator -` doing `this + (-offset)`, E0614 at ws463).
+      _selfByValue = true;
       _body(
         method.body,
         method.isAsync ? _awaited(method.returnType) : method.returnType,
       );
+      _selfByValue = false;
       _closeOpenIf(method.body);
       _failure = savedFailure;
       _returns = null;
