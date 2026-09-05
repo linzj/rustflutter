@@ -2147,12 +2147,19 @@ class RustBackend {
     // A `Set<_WidgetTicker>` into a `Set<Ticker>` slot: each handle upcast
     // to the trait (`_tickers ??= <_WidgetTicker>{}`, 44 `createTicker`s at
     // ws351). The type arguments name the collection and the element.
+    // ..and a *value* element (a widget struct in a `Vec<_OverlayEntryWidget>`)
+    // goes behind a fresh, registered handle first (14 non-primitive casts
+    // at ws352); the third type argument names the element's class.
     if (name == '!upcast_elements' &&
         args.isEmpty &&
-        typeArguments.length == 2) {
+        typeArguments.length == 3) {
       final to = type(typeArguments[1]);
+      final held = library[typeArguments[2].name];
+      final shared = held == null || held.isAbstract || held.counted
+          ? 'v as $to'
+          : 'dart_object(v) as $to';
       final mapped =
-          '$receiver.into_iter().map(|v| v as $to).collect::<Vec<$to>>()';
+          '$receiver.into_iter().map(|v| $shared).collect::<Vec<$to>>()';
       return typeArguments[0].name == 'Set' ? 'Set::of($mapped)' : mapped;
     }
     if (name == '!widen_object' && args.isEmpty) {

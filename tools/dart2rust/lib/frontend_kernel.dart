@@ -4226,7 +4226,11 @@ class KernelFrontend {
           lowered,
           '!upcast_elements',
           const [],
-          typeArguments: [IrType(param.classNode.name), _type(want)],
+          typeArguments: [
+            IrType(param.classNode.name),
+            _type(want),
+            _type(have),
+          ],
         );
         return param.nullability == Nullability.nullable ? IrSome(cast) : cast;
       }
