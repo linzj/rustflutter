@@ -1018,7 +1018,11 @@ class KernelFrontend {
             final clone = IrCall(IrLocal(held), 'clone', const [])
               ..rustType = init.rustType;
             // Into a nullable field the store is `Some(..)`.
-            final stored = _widened(node.value, target.setterType, clone);
+            final stored = _widened(
+              node.value,
+              _writeSlot(node.interfaceTarget, receiver),
+              clone,
+            );
             return IrBlockValue([
               // Inferred: the field's *declared* type is the generic `T?` of
               // `Tween<T>`, and spelling it put a `T` into a class with none.
@@ -1050,7 +1054,8 @@ class KernelFrontend {
           _sample(node),
         );
       }
-      if (node.interfaceTarget is! Field) {
+      if (node.interfaceTarget is! Field &&
+          _landing(node.interfaceTarget, node.receiver) is! Field) {
         // `_firstChild = _lastChild = child` in a mixin's body: the mixin's
         // field is a setter on its trait. Called, and the value kept -- as
         // the field on another object is above. Refused before ws348, which
@@ -1060,7 +1065,7 @@ class KernelFrontend {
         final init = expression(node.value);
         final stored = _widened(
           node.value,
-          node.interfaceTarget.setterType,
+          _writeSlot(node.interfaceTarget, node.receiver),
           IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
         );
         return IrBlockValue([
@@ -1075,7 +1080,7 @@ class KernelFrontend {
       }
       final stored = _widened(
         node.value,
-        node.interfaceTarget.setterType,
+        _writeSlot(node.interfaceTarget, node.receiver),
         expression(node.value),
       );
       if (stored is IrSome) {
@@ -1975,11 +1980,14 @@ class KernelFrontend {
   static String _dartName(String name) => name == 'clone' ? 'clone_' : name;
 
   IrStmt _instanceSet(InstanceSet value) {
-    // The value widens into the field's or setter's type: `_cache = s`
-    // into a `String?` field is `Some(s)`.
+    // The value widens into the type the write lands on (`_writeSlot`): a
+    // mixin clone's field, or the trait's setter -- `_cache = s` into a
+    // `String?` field is `Some(s)`. A clone's field, being this struct's,
+    // is written as a field, not through the trait's setter.
+    final landing = _landing(value.interfaceTarget, value.receiver);
     final written = _widened(
       value.value,
-      value.interfaceTarget.setterType,
+      _writeSlot(value.interfaceTarget, value.receiver),
       expression(value.value),
     );
     // A field on `this`, and a field rather than a setter. Kernel names the
@@ -2095,7 +2103,7 @@ class KernelFrontend {
         target: expression(value.receiver),
       );
     }
-    if (value.interfaceTarget is! Field) {
+    if (value.interfaceTarget is! Field && landing is! Field) {
       return IrSetter(
         null,
         value.name.text,
@@ -4027,9 +4035,22 @@ class KernelFrontend {
         _mentionsParametersOf(declared, fn.typeParameters)) {
       return null;
     }
-    final owner = landing.enclosingClass;
+    return _substituteKept(
+      declared,
+      landing.enclosingClass,
+      _dispatchReceiverType,
+    );
+  }
+
+  /// `declared` with the receiver's type arguments put in for `owner`'s
+  /// *kept* parameters; the erased ones stay, for `_type` to spell as
+  /// their bound.
+  DartType _substituteKept(
+    DartType declared,
+    Class? owner,
+    DartType? receiverType,
+  ) {
     final env = typeEnvironment;
-    final receiverType = _dispatchReceiverType;
     if (owner == null ||
         owner.typeParameters.isEmpty ||
         env == null ||
@@ -4048,6 +4069,22 @@ class KernelFrontend {
       if (!_erasedParameter(p)) kept[p] = asOwner.typeArguments[i];
     }
     return Substitution.fromMap(kept).substituteType(declared);
+  }
+
+  /// The type a write into `interface` on `receiver` must produce: the
+  /// landing member's -- a mixin clone's field, or the trait's setter.
+  DartType _writeSlot(Member interface, Expression receiver) {
+    final landing = _landing(interface, receiver);
+    final declared = landing is Procedure && landing.isSetter
+        ? landing.function.positionalParameters.single.type
+        : landing.setterType;
+    final env = typeEnvironment;
+    final receiverType = receiver is ThisExpression
+        ? (env == null
+              ? null
+              : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable))
+        : _staticType(receiver);
+    return _substituteKept(declared, landing.enclosingClass, receiverType);
   }
 
   IrExpr _intoDynamic(
