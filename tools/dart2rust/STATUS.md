@@ -6350,6 +6350,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws340 | 950 叶子错 | 跟进两处：局部从 `T?` 提升到 `T` 时 `promoted.nullability` 对类型参数是 *undetermined* 而非 nonNullable，此前不拆 `Option`；提升同时收窄到 trait（`ancestor` 在 `is StatefulElement` 之后）读成 `IrCastTo(clone().unwrap())`。`x as Trait?`（从别的类向下）不再丢掉，`IrCastTo` 目标可空时不 `unwrap`（prelude 的 `Option` 实现保留 `Option`）。**3702→3441 / 872，138+1 个 crate**（mismatched types −245，no method −39；新增 expected trait found struct +10、cannot find trait +7，下一轮看）。 |
 | ws341 | 950 叶子错 | ws340 新加的两处 `IrCastTo` 只对**这里是 trait** 的类生效（`_translatedClass`）：`List`、`TypedData`、`String` 在 Kernel 里 abstract，这里是 prelude 类型或没有（`dyn String`，18 个 expected trait found struct）。**3441→3455 / 872**：那 17 个解析期错误没了，但 mismatched types +28——多是 crate 归属/轮次顺序变化后暴露的旧错（`rendering_table`、`widgets_table` 那组在两份报告里路径不同），不是新引入的形状。 |
 | ws342 | 950 叶子错 | 擦除参数的两侧：读（`_narrowedRead`）结果可空时也收窄——`IrCastTo` 现在保留 `Option`，`firstChild`/`nextSibling` 读出的 `Rc<dyn RenderObject>` 进 `RenderBox?` 局部（341 处 mismatched）；写（`_intoErased`，`_argument`/`_namedArgument`）trait 句柄进被擦除、界是更宽 trait 的形参（`insert(ChildType child, {ChildType? after})`）按名向上转，可空的经 `map`。**3455→3364 / 872，138+1 个 crate**（`?` operator incompatible −86）。 |
+| ws343 | 950 叶子错 | `_intoErased` 看调用**落到**的成员（`getDispatchTarget`）而不是接口目标：匿名 mixin 应用里的克隆写的是 `RenderBox`（`_addDiagnostics`，188 处反向 mismatched），只有 mixin 自己的——trait 的——才取擦除的界。**3364→3351 / 872，138+1 个 crate**。但 flex 那边 `_insert_into_child_list` 的向上转也没了（落点同样是克隆，却印成 `Rc<dyn RenderObject>`），RenderBox/RenderObject 仍剩 250 块，下一轮查两份克隆为何印得不同。 |
 
 ## 下一步
 

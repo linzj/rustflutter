@@ -2442,12 +2442,30 @@ class KernelFrontend {
     // three-parameter function -- the same bug the analyzer front end had in
     // round two, living on here because nothing compared the two front ends on
     // a fixture that used defaults.
-    final args = _arguments(
-      node.arguments,
-      node.interfaceTarget.function,
-      true,
-      node.functionType,
-    );
+    // The member the call lands on, for `_intoErased`: an anonymous mixin
+    // application's copy of `_addDiagnostics(ChildType child)` has
+    // `RenderBox` written in it, and only the mixin's own -- the trait's
+    // -- takes the erased bound (188 `RenderBox` <- `RenderObject`, ws342).
+    final receiverType = _staticType(node.receiver);
+    final dispatch = receiverType is InterfaceType
+        ? typeEnvironment?.hierarchy.getDispatchTarget(
+            receiverType.classNode,
+            node.name,
+          )
+        : null;
+    final wasDispatch = _dispatchCallee;
+    _dispatchCallee = dispatch is Procedure ? dispatch.function : null;
+    final List<IrExpr> args;
+    try {
+      args = _arguments(
+        node.arguments,
+        node.interfaceTarget.function,
+        true,
+        node.functionType,
+      );
+    } finally {
+      _dispatchCallee = wasDispatch;
+    }
     final generic = _genericOnTrait(node, args);
     if (generic != null) return generic;
     final owner = node.interfaceTarget.enclosingClass?.name;
@@ -3511,6 +3529,7 @@ class KernelFrontend {
         _intoErased(
           value,
           declaredType,
+          index: index,
           _widened(
             value,
             paramType,
@@ -3609,6 +3628,7 @@ class KernelFrontend {
         _intoErased(
           value,
           type,
+          name: param is FunctionParameter ? param.parameterName : null,
           _widened(
             value,
             type,
@@ -3629,7 +3649,26 @@ class KernelFrontend {
   /// RenderObject>` here. Rust upcasts a bare handle at the call and not
   /// one inside an `Option` (24 `_insertIntoChildList` at ws340), so the
   /// handle is upcast by name, through `map` when it is optional.
-  IrExpr _intoErased(Expression value, DartType? declared, IrExpr lowered) {
+  FunctionNode? _dispatchCallee;
+
+  IrExpr _intoErased(
+    Expression value,
+    DartType? declared,
+    IrExpr lowered, {
+    int? index,
+    String? name,
+  }) {
+    // As the landing member declares it, when the call has one.
+    final landing = _dispatchCallee;
+    if (landing != null) {
+      if (index != null && index < landing.positionalParameters.length) {
+        declared = landing.positionalParameters[index].type;
+      } else if (name != null) {
+        for (final p in landing.namedParameters) {
+          if (p.parameterName == name) declared = p.type;
+        }
+      }
+    }
     if (declared is! TypeParameterType || !_erasedParameter(declared.parameter))
       return lowered;
     final bound = declared.parameter.bound;
