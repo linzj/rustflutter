@@ -6385,6 +6385,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws369 | 950 叶子错 | 删 `_intoErased`：实参的槽改为**落点成员**的形参声明类型（`_landingSlot`，保留的类型参数按接收者实参代入，擦除的留给 `_type` 给界），和读一样一条规则。**3071→3102**：落点上下文泄漏进实参里嵌套的调用（`Matrix4.rotationY(angle)` 拿了外层调用的第一个形参，+31）。 |
 | ws370 | 950 叶子错 | 落点只对同一个接口成员的实参生效（`_dispatchInterface` 身份比对）。**3102→3039 / 795，138+1 个 crate**。 |
 | ws371 | 950 叶子错 | 字段写入也按落点：槽是落点成员的声明类型（`_writeSlot`），落点是克隆体字段时直接写 struct 的 cell 而不是走 trait 的 setter（`*self._first_child.borrow_mut() = ..`，不再 `.map(|v| v as ..)`）。**3039→3023 / 795，138+1 个 crate**。 |
+| ws372 | 950 叶子错 | 删后端的 `_intoDeclared`（经 trait setter 写入时按名向上转的那层）：写入的类型前端已按落点定好。**3023→3022 / 795，138+1 个 crate**。至此删掉的适配器：`_widened` 172 行、`_intoErased`、`_intoDeclared`。 |
 
 ## 下一步(2026-09-05 重铺)
 
