@@ -17,8 +17,14 @@
 
 两把尺子,一半一把:
 
-`bin/census.dart` 量**翻译面**:对一棵树跑前端,把拒绝原因**按类别归并**后排队。
-队头就是下一件该做的事。用法:
+`bin/stubs.py` 量**翻译面**的工作读数:对整个 crate workspace 跑 `cargo check`
+(内存看护下,`DART2RUST_JOBS` 控并行),数**被 stub 的函数**——编不过的函数体
+换 `panic!`。同一把尺子还记 **refusal**(没译出的函数)和 **`todo!`**(编得过、
+一跑就 panic 的转发器体,ws344 起才照到它)。诊断流式读、一轮 512 MB 预算
+(ws322–325:50 GB 的 rendered 流打死过机器两次)。
+
+`bin/census.dart` 把拒绝原因**按类别归并**后排类别队——是分类工具,不是进度数。
+用法:
 
     dart run --packages="$RUSTFLUTTER_FLUTTER/.dart_tool/package_config.json" \
         tools/dart2rust/bin/census.dart <目录> [--examples]
@@ -6358,52 +6364,44 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws348 | 950 叶子错 | 查 `todo!`：`debugFillProperties` 197 个是 AOT 树摇掉的成员（dill 里没有，release 下死代码，todo 是实话）；`_insertIntoChildList` 是被拒的——`_firstChild = _lastChild = child` 链式赋值，setter 目标"used for its value"，拒绝信息不带成员名所以此前看不出。现在同 Field 一样：存临时、`IrSetter`、值留下。**3288→3345 / 872→804，138+1 个 crate**，`todo!` 861→782（`createTicker` 61 和 `_insertIntoChildList` 27 都有了正文；新增桩 `create_ticker` 35、`_insert_into_child_list` 12——正文有了但还编不过，下一轮看）。桩+拒 4160→4149。 |
 | ws349 | 950 叶子错 | 经 trait setter 写进 struct 持有得更窄的字段（`_firstChild`：struct 里 `RenderBox?`，`ContainerRenderObjectMixin` 声明 `RenderObject?`——擦除的界）：后端 `_intoDeclared` 按名向上转，`Option` 经 `map`；mixin 的字段在 trait 上是抽象 setter，所以也查 `abstractMethods`；三条写路径（访问器、`_setValue`、带限定的 `IrSetter`）都走。**3345→3336 / 804，138+1 个 crate**。 |
 | ws350 | 950 叶子错 | `_intoDeclared` 推广到别的对象的 setter（`childParentData.nextSibling = _firstChild`：`ContainerParentDataMixin` 声明的是擦除的 `RenderObject?`，值是收窄后的 `RenderBox`）：按 `qualifier`/`receiverClass` 查声明 trait，只要 setter 声明的是 trait 就按名向上转。**3336→3284 / 804，138+1 个 crate**（`insert`/`remove`/`_insertIntoChildList`/`_removeFromChildList` 各 12 个 applier 全部编过）。 |
+| ws351 | 950 叶子错 | 空 `Set()`/`Map()` 按槽位元素类型起名（`_typedEmpty`，四处暂存赋值都走）：**3284→3284**，一个桩没变——`_tickers ??= <_WidgetTicker>{}` 不是空构造而是带类型的级联（`Set::<Rc<_WidgetTicker>>::new()`），槽位是 `Set<Ticker>?`，差的是**元素**的 trait；回退。 |
+| ws352 | 950 叶子错 | 集合元素向上转：`Set<X>`/`List<X>` 进 `Set<T>`/`List<T>` 槽（T 是 X 的 trait 祖先）——`!upcast_elements`，`Set::of(v.into_iter().map(|v| v as Rc<dyn T>).collect())`。**3284→3243 / 804，138+1 个 crate**（`create_ticker` 30 个编过；新增 12 个 non-primitive cast——元素是值 struct 不是句柄，下一轮 `Rc::new`）。 |
+| ws353 | 950 叶子错 | `!upcast_elements` 的元素是值 struct（`Vec<_OverlayEntryWidget>` 进 `List<Widget>`）时先 `dart_object(v)` 再转（第三个类型实参带元素的类，后端查 `counted`）。**3243→3235 / 804，138+1 个 crate**（non-primitive cast −11）。 |
 
-## 下一步
+## 下一步(2026-09-05 重铺)
 
-同一次发射(dill `0700f1e5`,前缀 `package:,dart:ui`,931 个库):
+本节和〈当前队头〉原来停在 2026-09-03 目标改写时(`crate.py` 的 416 个错误、
+老 census 的类别表),早已对不上,作废重铺。活账是上面的 ws 表,队头以表末
+(ws350:**3284 stub / 804 refusal / 782 `todo!`**,138+1 个 crate 全到)为准:
 
-| 理由 | 次数 | |
-|---|---|---|
-| 闭包捕获 `this` | 792 | **所有权**,第 30 轮量过 |
-| 撕方法 InstanceTearOff | 495 | 同一件事 |
-| 调用一个被拒的成员 | 581 | 跟着别的类别一起降 |
-| 字段从未初始化 | 411 | `late`,读那侧卡在 `Box<dyn Trait>` 不是 `Clone` |
-| 跨文件 super 调用 | 406 | |
-| 运算符没有 Rust 名字 | 381 | |
-| 跨文件 const 实例 | 293 | |
-| `is` | 259 | 要类型层次 |
-
-**闭包捕获 `this` + 撕方法 = 1287,是最大的一块,也是同一件事**:
-一个闭包活得比造它的那次调用长,而 `this` 是借来的。
-这要的不是翻译,是**对象模型**——Flutter 的 widget/state 本来就是共享的,
-诚实的形状是 `Rc<RefCell<T>>`。这是一轮自己的活,不是一个补丁。
-
-**下一轮**(目标改写之后,队头换了一半):
-
-1. **立 `tools/dart2rust/runtime/` crate**,把 `lib/prelude.dart` 那 1248 行
-   从「发出来的字符串」变成「链进来的库」。它已经是手写的 `dart:core` 子集,
-   只是站错了位置。立起来之后 `embedder_api.py` 的最后一行才有分母。
-2. **对象模型先于 `Dart_*`**。`Rc<RefCell<T>>` + `Weak` 回边一步到位,
-   1034 条所有权拒绝跟着降;先把回边的判据从"可空且不在构造函数里赋值"改成
-   "集合 vs 单个",在 3400 条 `Rc<dyn X>` 边上量一遍。
-3. **把 168 收到启动路径上**。现在这个数是「engine 里出现过」,
-   要的是「headless 跑一次 gallery 真的会调到」。收完再排 `Dart_*` 的实现顺序。
-4. 在那之前 `crate.py` 报的 416 个错误里,E0425(294)还是最大的一块——
-   这一条没变,它量的是翻译那一半。
+1. **782 个 `todo!` 的剩员**:`debugFillProperties` 197 个是 AOT 树摇掉的成员
+   (dill 里没有,release 下是死代码,todo 是实话);ws348 露出的新桩里
+   `insert`/`remove`/`_insertIntoChildList`/`_removeFromChildList` 各 12 个 applier
+   ws350 已全部编过,剩 `create_ticker` 35 个——先看它编不过在哪。
+2. **refusal 804**:ws348 一道清掉 68(链式 setter 赋值当值用);剩下的还没按
+   类别重新归并,归并一次是下一轮的事。
+3. **Result 的记账债**:函数值调用 1200 处不参与失败传播(闭包里
+   `.unwrap_or_else(panic)` 计数,ws244/ws250);原语(越界/除零/null check/`as`)
+   不进 Result;microtask/Timer 回调的错误无人可收,`.unwrap()` 记为响的债。
+4. **`Rc<dyn Fn>` 的 `PartialEq`** 撞 orphan 规则(`Set<Ticker>.remove` 一族;
+   ws299 记了两个候选:prelude 自己的 `dyn DartFn`,或 `Map`/`Set` 改用 `DartEq`
+   比键),都没动手。
+5. **`dynamic` vs `Object?`** 表示不一致(第 129 轮起挂着);RegExp 无引擎
+   (intl 依赖);多实现体的 trait 泛型方法 31 处(`IrDynamicDispatch` 没做,ws291)。
+6. **运行时那半仍是 0/168**:`runtime/` crate 不存在。翻译半烧完之前它是最终
+   瓶颈;原话仍有效——立 crate 接管 prelude,再把 168 收到启动路径上。
 
 **loop 已停**(cron `5435ce19` 已删)。下次继续时环境变量见上面那节。
 
-**不做**:nightly 的并行前端(第 65 轮量过,对名字解析无效);
-按 SCC 拆 crate(第 40 轮,库图只允许并行两个)。
+**不做**(量过的,仍然算数):nightly 的并行前端(第 65 轮,对名字解析无效);
+按 SCC 拆 crate(第 40 轮,库图只允许并行两个);翻译 `dart:core`(第 44 轮,
++10347)。
 
-**不做**:按 SCC 拆 crate(第 40 轮);加 `dart:core`(第 44 轮,+10347)。
-
-## 当前队头
+## 当前队头(2026-09-05)
 
 两半,两把尺子。
 
-**运行时那半(`bin/embedder_api.py`,engine `0c2d270c5a9`)**
+**运行时那半(`bin/embedder_api.py`,engine `0c2d270c5a9`)** ——不变:
 
 | 数 | 是什么 |
 |---|---|
@@ -6412,35 +6410,25 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | 19 | `PlatformConfiguration` 的上行句柄 |
 | **0** | Rust 这边实现了的——`runtime/` crate 还不存在 |
 
-**翻译那半(第 115 轮起换了输入):`~/gallery_upstream/.dart_tool/dart2rust/app.dill`
-——这台机器上 build 的、engine `0c2d270c5a9` 版本对得上的那一份,前缀
-`package:,dart:ui`**
+**翻译那半(dill `0700f1e5`,`gen_kernel --aot --tfa --minimal-kernel` 出的
+sig dill,前缀 `package:,dart:ui`,931 个库;尺子 `bin/stubs.py`,峰值 4–19 GB)**
 
 ```
-1299 libraries, 5558 classes, 9741 refusals
-cargo check: 6045 errors   (E0107 2812 / E0425 2771 / E0433 198 / E0728 74)
-most wanted: google_fonts_text_style 1709  —— 追到根上是一次撕方法
+ws350:  3284 stub / 804 refusal / 782 todo!,138+1 个 crate 全到
+轨迹:   ws243(panic 模型最好) 7843
+        ws246(Result v2 初版) 17068 → ws250 11061
+        ws271(开放类落地)     7270
+        ws279(this 句柄化)    5247
+        ws350                 3284
 ```
 
-下面这张类别表来自**上一份 dill**(`flutter_build/ef21e168…`,前缀
-`package:flutter/`,525 库 / 2743 类 / 1265 个零拒绝的类 / 11871 个成员发出 /
-3099 次拒绝)。类别分布仍然是队头的样子,但**数字不可比**,新输入的那份还没按
-类别归并过——那是下一轮第一件事。
+三个数各量一样东西:**stub** 是「译出了、编不过」的函数;**refusal** 是
+「没译出」的函数;**`todo!`** 是「编得过、一跑就 panic」的转发器体——
+ws344 才照到它,一量 26199 个,削到 782。
 
-| 次数 | 要建的东西 |
-|---|---|
-| 599 + 435 | **闭包捕获 `this` / 撕方法——同一件事,见第 30 轮的测量** |
-| 141 | 写另一个对象的字段(穿过形参那半) |
-| 66 | 没有函数体(external / abstract,**本来就该拒绝**) |
-| 47 | `await` |
-| 44 | `LocalInitializer` |
-| 38 | `TypeLiteralConstant`(`Foo` 当值用;Rust 没有运行时类型对象) |
-| 32 | catch 读它的 stack trace(**本来就该拒绝**) |
-
-**队尾已经很薄了。** 除开所有权那 1034 条,最大的一条是 141,
-再往下是一长串十几二十条的东西。**下一轮该重新量一次全局**:
-"发出的成员"这把尺子只数发出、不数编得过(第 32 轮记的),
-而剩下的东西可能不再是"再做几个 blocker"能推进的了。
+老的那份类别表(闭包捕获 `this` 599、撕方法 435 那份)来自更老的输入,
+已删——它量的事(ws119–122 的所有权三样)大半已经做完;新输入的 804 个
+refusal 还没按类别归并,归并之前不引用旧数字。
 
 ## 九条要记住的
 
