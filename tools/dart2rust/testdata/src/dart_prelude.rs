@@ -4769,7 +4769,19 @@ pub struct HttpClient;
 pub struct JsonCodec;
 
 impl JsonCodec {
-    pub fn encode(&self, value: std::rc::Rc<dyn Object>) -> String {
+    /// `json.encode(value, toEncodable: ..)`: the callback for a value the
+    /// encoder does not know is Dart's declaration, not used here.
+    pub fn encode(
+        &self,
+        value: std::rc::Rc<dyn Object>,
+        _to_encodable: Option<
+            std::rc::Rc<
+                dyn Fn(
+                    Option<std::rc::Rc<dyn Object>>,
+                ) -> Result<Option<std::rc::Rc<dyn Object>>, DartError>,
+            >,
+        >,
+    ) -> String {
         let mut out = String::new();
         json_write(&mut out, &value);
         out
@@ -4792,6 +4804,7 @@ impl JsonCodec {
             |value: Option<std::rc::Rc<dyn Object>>| {
                 Ok(JsonCodec.encode(
                     value.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>),
+                    None,
                 ))
             },
         ))

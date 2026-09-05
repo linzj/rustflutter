@@ -1610,7 +1610,7 @@ class KernelFrontend implements TypeWorld {
         if (from is DynamicType && to.nullability == Nullability.nullable) {
           return IrCall(expression(node.operand), '!as_opt', [
             IrLiteral(_rustScalar(to.classNode.name), const IrType('raw')),
-          ]);
+          ], typeArguments: _type(to).arguments);
         }
         // `_objects![2] as _ImageFilter?`: an `Option<Rc<dyn Object>>` to an
         // `Option<_ImageFilter>`, element by element.
@@ -5657,6 +5657,9 @@ class KernelFrontend implements TypeWorld {
   /// wider one's, so each key is shared into its `Rc<dyn ..>` (121
   /// "arguments incorrect" on one file in `widgets`).
   IrExpr _mapLiteral(MapLiteral node, DartType keyType, DartType valueType) {
+    // Typed as the map it is, so a slot of another type adapts it: one
+    // returned where `dynamic` goes is put behind a handle
+    // (`_handlePlatformMessage`'s `{'response': ..}`, run460).
     return IrMapLiteral(
       [
         for (final entry in node.entries)
@@ -5667,7 +5670,7 @@ class KernelFrontend implements TypeWorld {
       ],
       _type(keyType),
       _type(valueType),
-    );
+    )..rustType = IrType('Map', arguments: [_type(keyType), _type(valueType)]);
   }
 
   /// A list literal's elements into `element`. The CFE keeps a literal of
@@ -7654,8 +7657,14 @@ class KernelFrontend implements TypeWorld {
     final async = function.asyncMarker == AsyncMarker.Async;
     final expected = async ? _awaitedType(_expectedReturn) : _expectedReturn;
     _expectedReturn = null;
-    _voidReturn = (expected ?? function.returnType) is VoidType;
-    _returnsType = expected ?? function.returnType;
+    // An `async` body's `return v` is the future's value: the returns are
+    // widened into the awaited type (a `{'response': ..}` returned from a
+    // `Future<dynamic>` goes behind a handle, run460).
+    final own = async
+        ? (_awaitedType(function.returnType) ?? function.returnType)
+        : function.returnType;
+    _voidReturn = (expected ?? own) is VoidType;
+    _returnsType = expected ?? own;
     _asyncBody = async;
     final outerEdge = _edgeReturn;
     // ..the awaited type for an `async` body, whose `return v` is the

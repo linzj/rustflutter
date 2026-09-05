@@ -114,8 +114,10 @@ IrType nonNull(IrType t) => t.isFunction
 /// it is nullable itself, an explicit `Option` wrapper: `T?` with `T` bound
 /// to `Color?` is `Option<Option<Rc<dyn Color>>>`, which Dart collapses and
 /// Rust does not.
+/// `void?` is `void`: never an `Option` (the prelude's unit says so).
 bool isNullable(IrType t) =>
-    t.nullable || (t.name == 'Option' && t.arguments.length == 1);
+    t.name != 'void' &&
+    (t.nullable || (t.name == 'Option' && t.arguments.length == 1));
 
 IrType stripNull(IrType t) => t.name == 'Option' && t.arguments.length == 1
     ? t.arguments.single

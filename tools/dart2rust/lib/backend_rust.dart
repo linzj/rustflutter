@@ -358,6 +358,9 @@ class RustBackend {
       dartName.startsWith('_') ? 'pub(crate) ' : 'pub ';
 
   String type(IrType t, {bool owned = true}) {
+    // Dart's `void?` is `void`, and the prelude's unit says so (`<() as
+    // DartNullable>::Or = ()`): no `Option` around it.
+    if (t.name == 'void' && t.nullable) return '()';
     if (t.isFunction) {
       // A parameter takes `impl Fn(..)`, which needs no allocation and lets the
       // caller pass a closure literal; anything owned -- a field, a return --
@@ -546,6 +549,12 @@ class RustBackend {
       IrThis() =>
         _fieldsAreAccessors || _selfName == 'this_'
             ? '$_selfName.dart_self_${snake(cls.name)}()'
+            // A counted object as a value is its own handle: a clone of
+            // the struct would be a second object sharing one `DartSelf`
+            // (`_RenderObjectSemantics(this)` in a lazy initializer,
+            // run460).
+            : cls.counted
+            ? '$_selfName.dart_self_ref().get()'
             : _selfIsHandle || !_classIsCopy(cls, {}) || _selfName != 'self'
             ? '$_selfName.clone()'
             : '*$_selfName',
@@ -2016,8 +2025,17 @@ class RustBackend {
   /// A value shared as a handle: `this` by its own handle (`self.clone()`
   /// was a struct where `Rc<dyn RendererBinding>` went, `_manifold`'s
   /// lazy initializer, run459), anything else as spelled.
-  String _handleOf(IrExpr value) =>
-      value is IrThis ? (_thisHandle() ?? expr(value)) : expr(value);
+  String _handleOf(IrExpr value) {
+    // A clone of `this` (the front end's) is `this`.
+    final bare =
+        value is IrCall &&
+            value.name == 'clone' &&
+            value.args.isEmpty &&
+            (value.target == null || value.target is IrThis)
+        ? IrThis()
+        : value;
+    return bare is IrThis ? (_thisHandle() ?? expr(value)) : expr(value);
+  }
 
   String _fieldRead(
     IrExpr? target,
@@ -2530,7 +2548,10 @@ class RustBackend {
     // has nothing to infer it from.
     // A `dynamic` asked whether it is a `T`: the `Option<T>` `Any` gives.
     if (name == '!as_opt' && args.length == 1) {
-      return '$receiver.as_any().downcast_ref::<${expr(args.single)}>().cloned()';
+      final spelledArgs = typeArguments.isEmpty
+          ? ''
+          : '<${typeArguments.map(type).join(', ')}>';
+      return '$receiver.as_any().downcast_ref::<${expr(args.single)}$spelledArgs>().cloned()';
     }
     if (name == '!as_object' && args.isEmpty) {
       // `this` into an `Object` slot: the handle when the method holds
@@ -2657,7 +2678,13 @@ class RustBackend {
       return '{ let mut __r = $receiver.clone(); __r.reverse(); __r }';
     }
     if (name == '!cast' && args.isEmpty) return receiver;
-    if (name == 'first' && args.isEmpty) return '$receiver[0].clone()';
+    // `first` is an index on a list and a method on a translated class
+    // with a getter of that name (`PriorityQueue.first`, E0608 at ws460).
+    if (name == 'first' &&
+        args.isEmpty &&
+        library[receiverClass ?? ''] == null) {
+      return '$receiver[0].clone()';
+    }
     if (name == 'last' && args.isEmpty) {
       return '$receiver[$receiver.len() - 1]';
     }
