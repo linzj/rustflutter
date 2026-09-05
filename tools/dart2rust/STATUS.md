@@ -6561,6 +6561,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws463 结果 | 编译尺子 **1769**（ws462 1762，+7），141 crate：去 57 来 65。来的两族都是「`this` 进 `Object` 槽就计数」的副作用：`Radius`/`OffsetPair` 因 `==` 里的 `identical(this, other)` 被计数，值上的 `+` 落在 `Rc` 上（10）；`identical(a, b)` 对可空句柄打成 `&*a`（E0614，17 个 ThemeData 的 `lerp`）。通用：`dart:` 顶层函数（`identical`、`print`）不保存实参，不算逃逸；两个可空句柄的 `identical` 走 prelude `dart_identical_opt`。另修：const 泛型实例的字段按实例化后的参数类型 coerce（`const WidgetStatePropertyAll<OutlinedBorder?>(StadiumBorder())`）；trait 字段访问器的转发按规则把本类字段类型适配到 trait 的（`Matrix4` 字段对 `Matrix4?` 访问器，15 处）。counted 1058→934，refusal 514。 |
 | ws464 结果 | 编译尺子 **1769**（同 ws463），141 crate：量的是 `NativeAnswer`（有返回值的 native 按声明类型读答案），不动桩数。 |
 | run464 | **第一次没有 panic**：`SetNeedsReportTimings` 跳过、`GetRootIsolateToken` 答 0（`RootIsolateToken.instance` 当作没有），binding 构造全部跑完，然后 `main` 停在一个没人会完成的 await 上（"main is waiting on something no timer or microtask will complete"）：`GetStorage.init()` → `_concrete.init()`（io 实现，读文件目录）。下一步：让无头运行报出**卡在哪个 await**，再看 GetStorage 的 io 路径要什么。 |
+| ws465 结果 | 编译尺子 **1696**（ws464 1769，−73），141 crate。 |
 
 ## 下一步(2026-09-05 重铺)
 
