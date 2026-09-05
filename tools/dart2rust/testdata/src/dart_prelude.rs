@@ -415,6 +415,7 @@ impl<K, V> DartNullable for MapEntry<K, V> {
         option
     }
 }
+dart_nullable!(std::convert::Infallible);
 dart_nullable!(i64);
 dart_nullable!(f64);
 dart_nullable!(bool);

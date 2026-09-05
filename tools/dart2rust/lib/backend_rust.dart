@@ -3993,7 +3993,10 @@ class RustBackend {
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
   void _emitDartNullable() {
     final own = '${cls.name}${_generics(cls)}';
-    _line('impl${_implGenerics(cls, keyed: false)} DartNullable for $own {');
+    // The struct's own bounds, not an impl's: `Or` is `Option<Self>` and
+    // asks nothing of `T`, and a `T: Clone` here would have shut the
+    // struct out of every `T?` slot in code that has no `Clone` (ws404).
+    _line('impl${_generics(cls, static: true)} DartNullable for $own {');
     _indent++;
     _line('type Or = Option<Self>;');
     _line('fn option(or: Option<Self>) -> Option<Self> { or }');
@@ -5647,6 +5650,13 @@ class RustBackend {
     // declaration naming it (`_FutureBuilderState<T>` holding an
     // `AsyncSnapshot<T>`, ws403).
     final projecting = _allFields(cls).any((f) => f.type.projected);
+    // ..and every *generic* struct's, for the same reason one step removed:
+    // a derive over a field holding a projecting struct (`Option<
+    // DropdownMenuItem<T>>`) needs that struct's `Clone`, whose bound is
+    // `<T as DartNullable>::Or: Clone` -- said on the impl, where nothing
+    // has to repeat it.
+    final writesClone =
+        cloneable && (projecting || cls.typeParameters.isNotEmpty);
     // A derived `Debug` on `ValueKey<T>` holds only for `T: Debug`, and
     // the `Key` trait it implements has `Debug` above it for every `T:
     // Clone + DartNullable<Or: Clone> + 'static` (18 E0277s the moment the type parameters lost
@@ -5655,7 +5665,7 @@ class RustBackend {
     // PartialEq` and no trait asks for it unconditionally.
     final derivesDebug = printable && cls.typeParameters.isEmpty;
     final derives = [
-      if (cloneable && !projecting) 'Clone',
+      if (cloneable && !writesClone) 'Clone',
       if (copyable) 'Copy',
       if (derivesDebug) 'Debug',
       if (comparable) 'PartialEq',
@@ -5687,7 +5697,7 @@ class RustBackend {
     _indent--;
     _line('}');
     _line('');
-    if (cloneable && projecting) {
+    if (writesClone) {
       _line(
         'impl${_implGenerics(cls, keyed: false)} Clone for ${cls.name}${_generics(cls)} {',
       );
