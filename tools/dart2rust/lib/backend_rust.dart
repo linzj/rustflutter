@@ -4868,7 +4868,13 @@ class RustBackend {
   ]) {
     final own = [
       for (final f in of.fields)
-        IrFieldDecl.substituted(f, (t) => _substituteType(t, bound)),
+        IrFieldDecl.substituted(
+          f,
+          (t) => _substituteType(t, bound),
+          initial: bound.isEmpty
+              ? null
+              : (e) => _substitute(e, const {}, bound),
+        ),
       // A mixin's fields arrive with the class's own: the front end lowers
       // the anonymous application classes' members into it (ws112). Adding
       // them here as well declared `PointerEvent`'s fields twice (845

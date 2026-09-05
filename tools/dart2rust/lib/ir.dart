@@ -1275,19 +1275,26 @@ class IrFieldDecl {
   /// DiagnosticsProperty<String>` has a `String? _value`. Copying without
   /// substituting left the parameter's name standing in a struct that has no
   /// such parameter.
-  static IrFieldDecl substituted(IrFieldDecl f, IrType Function(IrType) by) =>
-      IrFieldDecl(
-        f.name,
-        by(f.type),
-        isFinal: f.isFinal,
-        initial: f.initial,
-        doc: f.doc,
-        // Carried. Rebuilding a field without it is how `kept` was lost one
-        // round ago, in the same shape: the declaration would share and the
-        // reads would not.
-        shared: f.shared,
-        isLate: f.isLate,
-      );
+  static IrFieldDecl substituted(
+    IrFieldDecl f,
+    IrType Function(IrType) by, {
+    IrExpr Function(IrExpr)? initial,
+  }) => IrFieldDecl(
+    f.name,
+    by(f.type),
+    isFinal: f.isFinal,
+    // The initialiser too, when the caller can: a base's `T? x = null`
+    // crosses a projection naming the base's `T` (`IrNullableOf`).
+    initial: f.initial == null || initial == null
+        ? f.initial
+        : initial(f.initial!),
+    doc: f.doc,
+    // Carried. Rebuilding a field without it is how `kept` was lost one
+    // round ago, in the same shape: the declaration would share and the
+    // reads would not.
+    shared: f.shared,
+    isLate: f.isLate,
+  );
 }
 
 /// A `static const` whose value the front end evaluated.
