@@ -613,8 +613,10 @@ class RustBackend {
         'vec![${elements.map((x) => element.isFunction && x is IrClosure && !x.boxed ? 'std::rc::Rc::new(${expr(x)})' : expr(x)).join(', ')}]',
       IrRecord(:final fields) => '(${fields.map(expr).join(', ')})',
       IrRecordField(:final record, :final index) => '${expr(record)}.$index',
-      IrMapLiteral(:final entries) =>
-        'Map::from(['
+      // An empty one spells its key and value types: nothing else says
+      // them when the slot is an `Rc<dyn Object>` (E0283, `K` on `Map`).
+      IrMapLiteral(:final entries, :final key, :final value) =>
+        '${entries.isEmpty ? 'Map::<${type(key)}, ${type(value)}>' : 'Map'}::from(['
             '${entries.map((e) => '(${expr(e.$1)}, ${expr(e.$2)})').join(', ')}'
             '])',
       // `for_each` consumes the chain and yields `()`: the one chain that is
@@ -632,7 +634,7 @@ class RustBackend {
       IrFunctionRef(:final owner, :final name) =>
         owner == null
             ? 'std::rc::Rc::new(${snake(name)})'
-            : (library[owner]?.isAbstract ?? false)
+            : _freeStatics(owner)
             ? 'std::rc::Rc::new(${_abstractStaticName(owner, name)})'
             : 'std::rc::Rc::new($owner::${snake(name)})',
       IrAssignValue(:final name, :final value) =>
@@ -1544,7 +1546,7 @@ class RustBackend {
     // `library.isAbstract`, not `library[owner]?.isAbstract`: an abstract
     // class of another module is in `abstractElsewhere` and nowhere else
     // (`Characters::new(..)` -- "expected a type, found a trait").
-    if (library.isAbstract(owner)) {
+    if (_freeStatics(owner) && (name.isNotEmpty || library.isAbstract(owner))) {
       // A *factory* on an abstract class -- `Characters(s)` -- is the static
       // named `new` here, as the struct path names an unnamed constructor.
       final spelled = name.isEmpty ? 'new' : name;
@@ -2654,9 +2656,7 @@ class RustBackend {
     // A clone: the lock hands out a reference, and a read is a value.
     // `(**CHANGE_NOTIFIER__EMPTY_LISTENERS)` moved out of the lock (E0507).
     if (_isLazy(owner, name)) return '(**${_lazyName(owner, name)}).clone()';
-    if (library[owner]?.isAbstract ?? false) {
-      return screamingSnake('${owner}_$name');
-    }
+    if (_freeStatics(owner)) return screamingSnake('${owner}_$name');
     return '$owner::${screamingSnake(name)}';
   }
 
@@ -3933,6 +3933,15 @@ class RustBackend {
 
   static String _abstractStaticName(String owner, String name) =>
       _rustIdentifier('${snakeRaw(owner)}_${snakeRaw(name)}');
+
+  /// Whether a class's statics live at module level under the class's
+  /// name: an abstract class is a trait and has nowhere else to put them;
+  /// a *generic* class's `impl<T> Foo<T>` would make every static call
+  /// name a `T` the static never mentions (`RadioGroup.maybeOf<T>()`, 12
+  /// "cannot infer type" at ws397).
+  bool _freeStatics(String owner) =>
+      library.isAbstract(owner) ||
+      (library[owner]?.typeParameters.isNotEmpty ?? false);
 
   /// `<T>` for a class or method that has parameters, and nothing otherwise.
   /// Whether the struct derives `Clone`: nothing it holds is a bare future.
@@ -5641,7 +5650,7 @@ class RustBackend {
     _line('impl$unkeyed ${cls.name}${_generics(cls)} {');
     _indent++;
     _emitConstructors();
-    _emitConstants();
+    if (!_freeStatics(cls.name)) _emitConstants();
     if (keyed != unkeyed) {
       _indent--;
       _line('}');
@@ -5652,6 +5661,22 @@ class RustBackend {
     _emitMethods();
     _indent--;
     _line('}');
+    if (_freeStatics(cls.name)) {
+      // A generic class's statics and constants at module level, named
+      // with the class, as an abstract class's are (`_freeStatics`).
+      _line('');
+      _emitConstants(prefix: cls.name);
+      for (final method in cls.methods) {
+        if (!method.isStatic || method.operator != null) continue;
+        _member(
+          '${cls.name}.${method.name} (static)',
+          () => _emitMethod(
+            method,
+            as: _abstractStaticName(cls.name, method.name),
+          ),
+        );
+      }
+    }
     // One line per struct rather than one blanket impl over everything: see
     // `DartAny` in the prelude for why the blanket one is quietly wrong.
     _line('');
@@ -6487,7 +6512,16 @@ class RustBackend {
     final receiver = cls.counted && _handles.contains(_rustName(method))
         ? '&self.__self.get()'
         : 'self';
-    final call = '${via ?? cls.name}::$name(${[receiver, ...args].join(', ')})';
+    // A generic method's type parameters go along: the forwarder declares
+    // the trait's, and the inherent one it reaches names its own only in
+    // its result (`getElementForInheritedWidgetOfExactType<T>()`, 36
+    // "cannot infer type of the type parameter `T`" at ws397).
+    final generics = through?.typeParameters ?? method.typeParameters;
+    final fish = generics.length == method.typeParameters.length
+        ? _turbofish([for (final g in generics) IrType(g)])
+        : '';
+    final call =
+        '${via ?? cls.name}::$name$fish(${[receiver, ...args].join(', ')})';
     // An `async fn` yields its own future type; the trait wants the boxed
     // one every `Future<T>` is here (`_NativeCodec::get_next_frame(self)`).
     return method.isAsync ? 'std::boxed::Box::pin($call)' : call;
@@ -6797,6 +6831,7 @@ class RustBackend {
   void _emitMethods() {
     for (final method in cls.methods) {
       if (method.operator != null) continue;
+      if (method.isStatic && _freeStatics(cls.name)) continue;
       _member(
         '${cls.name}.${method.name}',
         () => _emitMethod(method),
