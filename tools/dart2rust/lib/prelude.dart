@@ -2486,6 +2486,11 @@ impl<T> DartQueue<T> for std::collections::VecDeque<T> {
         self.extend(values)
     }
 }
+/// `Iterable.empty()` (`const Iterable<RenderBox>.empty()` in
+/// `_RenderTheater._childrenInPaintOrder`, ws551): the empty `Vec` every
+/// iterable is here.
+pub type EmptyIterable<T> = Vec<T>;
+
 pub type ListQueue<T> = std::collections::VecDeque<T>;
 pub type DoubleLinkedQueue<T> = std::collections::VecDeque<T>;
 /// Dart's `LinkedList<E extends LinkedListEntry<E>>`: an intrusive doubly
@@ -2731,7 +2736,12 @@ pub trait LinkedListEntry: Sized {
     fn unlink(&self);
 }
 
-impl<E: ?Sized + 'static> LinkedListEntry for std::rc::Rc<E> {
+/// The classes that extend `LinkedListEntry` (the backend marks them):
+/// the entry protocol is theirs alone, or its `next()`/`previous()` would
+/// shadow every other class's on a handle.
+pub trait DartLinkedEntry {}
+
+impl<E: ?Sized + DartLinkedEntry + 'static> LinkedListEntry for std::rc::Rc<E> {
     fn list(&self) -> Option<LinkedList<Self>> {
         let found = ENTRY_LISTS.with(|m| m.borrow().get(&self.__entry_key()).cloned());
         found

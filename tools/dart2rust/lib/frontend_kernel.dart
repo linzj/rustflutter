@@ -3282,16 +3282,19 @@ class KernelFrontend implements TypeWorld {
     if (symbol == null) return null;
     {
       try {
+        // As `dynamic` slots: a nullable handle (`oldLayer?._nativeLayer` into
+        // `SceneBuilder._pushTransform`, run552) goes over as the `Null`
+        // object where an `Object` slot unwrapped it.
         final args = [
           for (final p in function.positionalParameters)
             coerce(
               IrLocal(_paramName(p))..rustType = _type(p.type),
-              IrType('Object'),
+              IrType('dynamic'),
             ),
         ];
         final returns = function.returnType;
         final symbolText = IrLiteral(symbol, const IrType('String'));
-        final passed = IrListLiteral(args, IrType('Object'));
+        final passed = IrListLiteral(args, IrType('dynamic'));
         if (returns is VoidType || returns is NeverType) {
           final call = IrStaticCall(null, 'dart_native', [
             symbolText,

@@ -3497,6 +3497,12 @@ class RustBackend {
     // off, so the omitted argument has to be recognised rather than trusted to
     // be absent. The fixtures said so: the two sides wrote `join("")` and
     // `join(&"".to_string())` for one line of Dart.
+    // `removeLast()`: `pop()` answers an `Option`, Dart's throws on an
+    // empty list -- the unwrap is that (`ModalRoute.didPop`'s
+    // `_localHistory.removeLast()`, ws551).
+    if (name == 'pop' && args.isEmpty && target != null) {
+      return '$receiver.pop().unwrap()';
+    }
     // `Object.toString()`: the `DartAny` protocol's (a struct's own
     // override, an enum's `X.value`, `Instance of` otherwise).
     if (name == '!dart_to_string' && args.isEmpty && target != null) {
@@ -5881,6 +5887,13 @@ class RustBackend {
   void _emitDartNullable() {
     _emitFromDynamic();
     _emitNativeAnswer();
+    // A `LinkedListEntry` subclass (dart:collection): the prelude's entry
+    // protocol on its handle, and on no other -- `next()` on every `Rc`
+    // shadowed `FocusTraversalPolicy.next(node)` (ws552).
+    if (cls.superclass == 'LinkedListEntry') {
+      _line('impl DartLinkedEntry for ${cls.name} {}');
+      _line('');
+    }
     final own = '${cls.name}${_generics(cls)}';
     // The struct's own bounds, not an impl's: `Or` is `Option<Self>` and
     // asks nothing of `T`, and a `T: Clone` here would have shut the
