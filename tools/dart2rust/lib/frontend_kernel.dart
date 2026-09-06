@@ -7059,6 +7059,84 @@ class KernelFrontend implements TypeWorld {
     }
   }
 
+  /// A `let` is its body: the type flow analysis folds `a ?? b` with an
+  /// always-null `a` into `let #t = a in b`, and the tear-off inside is
+  /// what the slot takes (`requestFocusCallback ?? FocusTraversalPolicy.
+  /// defaultTraversalRequestFocusCallback`, run523).
+  static Expression _throughLets(Expression e) {
+    var out = e;
+    while (out is Let) {
+      out = out.body;
+    }
+    return out;
+  }
+
+  /// A static tear-off into a slot whose type keeps named parameters: an
+  /// adapter taking the type's (sorted) order and calling in the
+  /// declaration's (see `_widenedInto`), or null when the orders agree.
+  IrExpr? _namedOrderAdapter(
+    Expression value,
+    DartType? param,
+    IrExpr lowered,
+  ) {
+    final bare = _throughLets(value);
+    final torn = bare is StaticTearOff
+        ? bare.target
+        : bare is ConstantExpression && bare.constant is StaticTearOffConstant
+        ? (bare.constant as StaticTearOffConstant).target
+        : null;
+    if (torn == null ||
+        param is! FunctionType ||
+        param.namedParameters.isEmpty ||
+        param.positionalParameters.length !=
+            torn.function.positionalParameters.length) {
+      return null;
+    }
+    final declared = [
+      for (final n in torn.function.namedParameters) n.parameterName,
+    ];
+    final byType = [for (final n in param.namedParameters) n.name];
+    if (declared.length != byType.length ||
+        !declared.toSet().containsAll(byType) ||
+        _sameOrder(declared, byType)) {
+      return null;
+    }
+    final params = <IrParam>[];
+    final positional = <IrExpr>[];
+    for (var i = 0; i < param.positionalParameters.length; i++) {
+      final name = '__a$i';
+      params.add(IrParam(name, _paramType(param.positionalParameters[i])));
+      positional.add(IrLocal(name));
+    }
+    final byName = <String, IrExpr>{};
+    for (final n in param.namedParameters) {
+      final name = '__n_${n.name}';
+      params.add(IrParam(name, _paramType(n.type)));
+      byName[n.name] = IrLocal(name);
+    }
+    IrType? slot;
+    try {
+      slot = _type(param);
+    } on Unsupported {
+      slot = null;
+    }
+    return IrCall(
+      IrClosure(
+        params,
+        IrReturn(
+          IrCallValue(lowered, [
+            ...positional,
+            for (final n in torn.function.namedParameters)
+              byName[n.parameterName]!,
+          ]),
+        ),
+        _type(param.returnType),
+      ),
+      '!rc',
+      const [],
+    )..rustType = slot;
+  }
+
   IrExpr _widenedInto(
     Expression value,
     DartType? param,
@@ -7093,6 +7171,11 @@ class KernelFrontend implements TypeWorld {
         param.positional.toString() != value.recordType.positional.toString()) {
       return _recordLiteral(value, param.positional);
     }
+    // A tear-off's named-parameter order first, whatever its recorded
+    // type says: the type is spelled sorted, the value is declared in its
+    // own order, and no type rule can tell them apart (run523).
+    final ordered = _namedOrderAdapter(value, param, lowered);
+    if (ordered != null) lowered = ordered;
     if (coerceByType &&
         translated &&
         param != null &&
@@ -7196,53 +7279,7 @@ class KernelFrontend implements TypeWorld {
     // the tear-off landed a `FontWeight` in the `locale` slot (34 at ws321).
     // An adapter taking the type's order and calling in the declaration's.
     // Sorting every definition instead was 8789 (ws323).
-    final torn = value is StaticTearOff
-        ? value.target
-        : value is ConstantExpression && value.constant is StaticTearOffConstant
-        ? (value.constant as StaticTearOffConstant).target
-        : null;
-    if (torn != null &&
-        param is FunctionType &&
-        param.namedParameters.isNotEmpty &&
-        param.positionalParameters.length ==
-            torn.function.positionalParameters.length) {
-      final declared = [
-        for (final n in torn.function.namedParameters) n.parameterName,
-      ];
-      final byType = [for (final n in param.namedParameters) n.name];
-      if (declared.length == byType.length &&
-          declared.toSet().containsAll(byType) &&
-          !_sameOrder(declared, byType)) {
-        final params = <IrParam>[];
-        final positional = <IrExpr>[];
-        for (var i = 0; i < param.positionalParameters.length; i++) {
-          final name = '__a$i';
-          params.add(IrParam(name, _paramType(param.positionalParameters[i])));
-          positional.add(IrLocal(name));
-        }
-        final byName = <String, IrExpr>{};
-        for (final n in param.namedParameters) {
-          final name = '__n_${n.name}';
-          params.add(IrParam(name, _paramType(n.type)));
-          byName[n.name] = IrLocal(name);
-        }
-        return IrCall(
-          IrClosure(
-            params,
-            IrReturn(
-              IrCallValue(lowered, [
-                ...positional,
-                for (final n in torn.function.namedParameters)
-                  byName[n.parameterName]!,
-              ]),
-            ),
-            _type(param.returnType),
-          ),
-          '!rc',
-          const [],
-        );
-      }
-    }
+    // (An untyped tear-off reaches here with its order adapted above.)
     if ((value is VariableGet ||
             value is StaticTearOff ||
             (value is ConstantExpression &&

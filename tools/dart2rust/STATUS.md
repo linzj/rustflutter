@@ -6681,6 +6681,7 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws522 | 链：**1068**（−45；比 1300 少 232：新 13/去 222；比 1113 新 6/去 43），141。Route 家族（routes 6、navigator 4、form/text_form_field 6、pop_scope 2、popup_menu 2、open_container 2…）由协变擦除收口；新 6 个：intl_number_format 3、open_container 1、table 2（crate 换位）。 | |
 | run522 | **过了 `RootElement.mount`**，进 `inflateWidget`，停在 `widgets_focus_traversal.rs:1377` 的 stub：`FocusTraversalPolicy` 构造里 `requestFocusCallback ?? FocusTraversalPolicy.defaultTraversalRequestFocusCallback`——静态 tear-off 的具名参数按声明序，函数类型按名字排序，`??` 的右边只对类类型算 `into`，函数类型没进 `_widened`，适配闭包没生成。另：`as_any()` 经句柄的规则收窄到 trait 句柄和计数类（TFA 收窄过的 `dynamic` 调用值是裸 `bool`，intl `_floor` +3）。 | `??` 的 `into` 也算函数类型（98932523）。夹具 teardef（声明序 ≠ 排序）。 |
 | ws523 | 链：**1065**（−3；新 0/去 3），141。 | 两个小洞：`xs.last` 按值用要 `.clone()`（`Vec` 里 move 不出来）；`let __t = node;` 以整个局部量初始化另一个绑定时 `.clone()`（参数被 `?.` 闭包 move 后又用）。 |
+| run523 | 仍停在 `widgets_focus_traversal.rs:1377`：AOT 的 TFA 把 `requestFocusCallback ?? default`（参数总为 null）折成 `let #t = .. in <tear-off>`，字段初始化的收缩看到的是 `Let` 不是 tear-off；而且该值带记录类型（按名排序拼的函数类型）走了按类型路径，类型规则看不出声明序和排序的差别。 | `_namedOrderAdapter` 抽成方法，看穿 `Let`，在按类型路径**之前**先套一层顺序适配闭包（值带槽位类型，后面的按类型收缩视为同型）。 |
 
 ## 下一步(2026-09-05 重铺)
 
