@@ -6670,6 +6670,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run515 | 停在 `dart_ui.rs:11271` 的 stub（`_sendPlatformMessage`，上面 (1)）。 | 同上（2082bd3e，进 ws516）。 |
 | ws516 | 链：**1127**（−33；比 1300 少 173：新 16/去 175），141。`Function` 那 27 个全回来了，再去 6 个；新 1 个：`RenderObject::new` 里 `DiagnosticsDebugCreator` 的 super 构造槽位是基类未代换的 `T`，兜底 `dart_from_dynamic::<T>` 拼出了作用域里没有的 `T`。 | 兜底只对世界认得的类型开（struct/enum/prelude 值类型表 `preludeValueTypes`）。 |
 | run516 | 过了 path_provider，停在 get 的 `TaskManager._instance ??= TaskManager._()`：`match (**X).borrow().clone() { .. None => { *(**X).borrow_mut() = .. } }`——`match` 的被匹配值的临时量（`Ref`）活到所有分支结束，`borrow_mut` 时"already borrowed"。 | `_ifNull` 的被匹配值先 `let` 绑定再 `match`（`{ let __scrutinee = ..; __scrutinee }`）。夹具 staticcell。 |
+| ws517 | 链：**1127**（持平；比 1300 少 173：新 10/去 170），141。`RenderObject::new` 回来了；但兜底门关得太死：`ObserverList<T>.contains(Object?)`、`SlottedRenderObjectElement<SlotType>`、`CanonicalizedMap<K,..>` 里 `Object → T`（作用域里的类型参数，bound 里有 `FromDynamic`）也被关了（+6）。 | `TypeWorld.isTypeParameter(name)`（后端 `_isTypeParam`，前端当前类/成员的参数）：作用域里的类型参数放行，别的声明的 `T` 仍不放。同批：函数适配闭包对非字面量值先 `let __f = ..` 再 move 进去（`WidgetsApp.build` 的 `custom ?? _defaultOnNote` tear-off 在适配器体内绑 `__me`，借了 `self`）。夹具 tparam、fnadapt。 |
+| run517 | 过了 `TaskManager`，停在 get_storage 的 `storage_io.rs:58`：又一个 "RefCell already borrowed"。 | 见下一轮。 |
 
 ## 下一步(2026-09-05 重铺)
 

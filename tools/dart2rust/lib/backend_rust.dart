@@ -9749,4 +9749,7 @@ class _BackendWorld implements TypeWorld {
     final c = library[name];
     return c != null && !c.counted && c.typeParameters.isNotEmpty;
   }
+
+  @override
+  bool isTypeParameter(String name) => backend._isTypeParam(name);
 }

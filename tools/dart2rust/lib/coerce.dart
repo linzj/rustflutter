@@ -37,6 +37,11 @@ abstract class TypeWorld {
   /// A generic value struct: a downcast to it is not cloned out of the
   /// reference `Any` hands back (its `T` has no `Clone` there).
   bool isGenericValueStruct(String name);
+
+  /// A type parameter in scope where the coercion is emitted: the class's
+  /// own or the member's. One has a `FromDynamic` bound; a name that is
+  /// neither a class nor in scope (a super constructor's `T`) has nothing.
+  bool isTypeParameter(String name);
 }
 
 const scalarNames = {'int', 'double', 'num', 'bool', 'String'};
@@ -453,10 +458,26 @@ IrExpr coerceInto(
         const [],
       )..rustType = slot;
     }
-    return IrCall(
-      IrClosure(params, IrReturn(result), slot.returns!),
-      '!rc',
-      const [],
+    // Any other function value -- a field read, a `??` of two, a
+    // tear-off -- is bound first and moved in, as the literal's bindings
+    // are: emitted inside the adapter's body, a tear-off's `let __me =
+    // self..` borrowed `self` in a closure a widget keeps (`WidgetsApp.
+    // build`'s `onNavigationNotification`, ws517).
+    final bound = IrLocal('__f')..rustType = have;
+    final rebound = IrCallValue(bound, args)..rustType = have.returns;
+    final reshaped = coerceInto(rebound, slot.returns!, world, inClosure: true);
+    return IrBlockValue(
+      [IrLocalDecl('__f', null, value)],
+      IrCall(
+        IrClosure(
+          params,
+          IrReturn(reshaped),
+          slot.returns!,
+          locals: const ['__f'],
+        ),
+        '!rc',
+        const [],
+      ),
     )..rustType = slot;
   }
   // A bare `Function` (the object a function value went behind) into a
@@ -567,6 +588,7 @@ IrExpr coerceInto(
       !isNullable(slot) &&
       (world.isStruct(slot.name) ||
           world.isEnum(slot.name) ||
+          world.isTypeParameter(slot.name) ||
           preludeValueTypes.contains(slot.name))) {
     return IrStaticCall(
       null,

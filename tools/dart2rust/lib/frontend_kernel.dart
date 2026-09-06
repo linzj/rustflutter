@@ -7001,6 +7001,18 @@ class KernelFrontend implements TypeWorld {
   static String _normalName(String name) => normalName(name);
 
   /// `value`, adapted to `slot`: see `coerceInto`.
+  @override
+  bool isTypeParameter(String name) {
+    final member = _member;
+    final fn = member is Procedure
+        ? member.function
+        : member is Constructor
+        ? member.function
+        : null;
+    return (fn?.typeParameters.any((p) => p.name == name) ?? false) ||
+        (_lowering?.typeParameters.any((p) => p.name == name) ?? false);
+  }
+
   IrExpr coerce(IrExpr value, IrType slot, {bool inClosure = false}) =>
       coerceInto(value, slot, this, inClosure: inClosure);
 
