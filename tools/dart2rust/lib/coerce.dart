@@ -602,6 +602,19 @@ IrExpr coerceInto(
   // ..only into a type the world can name: a type parameter of another
   // declaration (a super constructor's `T`, `DiagnosticsDebugCreator`,
   // ws516) is nothing to convert into.
+  // A type parameter's value into a trait slot (`model` of `T extends
+  // InheritedModel` asked for `isSupportedAspect`): the object's own cast
+  // (`dart_cast_to`, on every `DartAny`), which a handle forwards and a
+  // struct answers for its traits. Nullable either side keeps its shape.
+  if (world.isTypeParameter(have.name) &&
+      have.arguments.isEmpty &&
+      !have.isFunction &&
+      !isNullable(have) &&
+      !isNullable(slot) &&
+      !slotObject &&
+      world.isTrait(slot.name)) {
+    return IrCastTo(value, slot)..rustType = slot;
+  }
   if (haveObject &&
       !slotObject &&
       !slot.isFunction &&

@@ -5589,10 +5589,10 @@ class RustBackend {
   /// it of a bare `K` (`invokeMapMethod`, run494). Every type carries it
   /// (the prelude's, `_emitFromDynamic` for the translated ones).
   String _nb(IrClass c) =>
-      ' + DartNullable<Or: Clone + DartEq + FromDynamic> + DartEq + FromDynamic';
+      ' + DartNullable<Or: Clone + DartEq + FromDynamic> + DartEq + FromDynamic + DartAny';
 
   String _nbm(IrMethod m) =>
-      ' + DartNullable<Or: Clone + DartEq + FromDynamic> + DartEq + FromDynamic';
+      ' + DartNullable<Or: Clone + DartEq + FromDynamic> + DartEq + FromDynamic + DartAny';
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
@@ -5911,11 +5911,12 @@ class RustBackend {
     // Future<bool>>`), see `bound` in `_boundedGenerics`.
     // ..and the trait its Dart bound names (`IrMethod.typeParameterBounds`),
     // so the body can call the bound's members on it.
+    // Not the trait its Dart bound names: the erased twin instantiates
+    // the parameter with `Rc<dyn Object>` and a handle is not the trait
+    // (+252 at ws544). A member of the bound is reached through the
+    // object instead (`_receiver`'s narrowing, the Object protocol).
     final bound = owner is IrMethod
-        ? params.map(
-            (p) =>
-                "$p: Clone${_nbm(owner)} + 'static${_traitBoundOf(owner, p)}",
-          )
+        ? params.map((p) => "$p: Clone${_nbm(owner)} + 'static")
         : static
         // `Clone` on a class's parameters after all (ws301): every held
         // `T` is read by `.clone()`, and 240 stubs said so; the one shape
@@ -5923,7 +5924,7 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : "$p: DartNullable<Or: DartEq + FromDynamic> + DartEq + FromDynamic + 'static",
+                : "$p: DartNullable<Or: DartEq + FromDynamic> + DartEq + FromDynamic + DartAny + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';

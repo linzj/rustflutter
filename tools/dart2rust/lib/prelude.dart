@@ -618,6 +618,12 @@ pub trait DartAny: Object + 'static {
         format!("Instance of '{}'", self.dart_runtime_type().name)
     }
 
+    /// The value itself as `Any`, for `dart_cast_any`'s fallback: a
+    /// handle answers with what it holds, an absent value with itself.
+    fn dart_any_ref(&self) -> &dyn std::any::Any {
+        self.as_any()
+    }
+
     fn dart_cast(&self, _target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
         None
     }
@@ -651,29 +657,14 @@ impl<S: DartAny + ?Sized> DartCastExt for S {
         self.dart_cast(std::any::TypeId::of::<T>())
             .and_then(|b| b.downcast::<T>().ok())
             .map(|b| *b)
-            .or_else(|| self.as_any().downcast_ref::<T>().cloned())
+            .or_else(|| self.dart_any_ref().downcast_ref::<T>().cloned())
     }
 }
 
-/// ..through a handle, and through an absent-or-not one: `x is Foo` where
-/// `x` is a `Foo?` asks the value inside, and `null is Foo` is false.
-impl<S: DartCastExt + ?Sized> DartCastExt for std::rc::Rc<S> {
-    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
-        (**self).dart_cast_to::<T>()
-    }
-    fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T> {
-        (**self).dart_cast_any::<T>()
-    }
-}
-
-impl<S: DartCastExt> DartCastExt for Option<S> {
-    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
-        self.as_ref().and_then(|v| v.dart_cast_to::<T>())
-    }
-    fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T> {
-        self.as_ref().and_then(|v| v.dart_cast_any::<T>())
-    }
-}
+// A handle, an absent-or-not value and a `dyn Object` are `DartAny` below
+// (the Object protocol), so the one blanket above casts through them:
+// `x is Foo` where `x` is a `Foo?` asks the value inside, and `null is
+// Foo` is false.
 
 /// The cast table for objects reached through `dyn Object`, whose blanket
 /// impl cannot know their type: `TypeId` of the struct to the function that
@@ -713,8 +704,8 @@ pub fn dart_register<T: DartAny>() {
 /// `dynamic`, an `Object?`, a type parameter. The core values print as
 /// Dart prints them, a translated object by its own `toString` (the
 /// registry, filled as objects are made), anything else as `Instance of`.
-pub fn dart_object_str<T: Object>(value: T) -> String {
-    dart_object_str_ref(&value)
+pub fn dart_object_str<T: DartAny>(value: T) -> String {
+    value.dart_to_string()
 }
 
 pub fn dart_object_str_ref(value: &dyn Object) -> String {
@@ -772,25 +763,365 @@ pub fn dart_object<T: DartAny>(value: T) -> std::rc::Rc<T> {
     std::rc::Rc::new(value)
 }
 
-impl DartCastExt for dyn Object {
-    fn dart_cast_to<T: ?Sized + 'static>(&self) -> Option<std::rc::Rc<T>> {
-        let any = self.as_any();
-        let id = std::any::Any::type_id(any);
-        let f = DART_CASTS.with(|c| c.borrow().get(&id).copied());
-        f.and_then(|f| f(any, std::any::TypeId::of::<T>()))
-            .and_then(|b| b.downcast::<std::rc::Rc<T>>().ok())
-            .map(|b| *b)
+/// The Object protocol of a `dyn Object`: what the object behind it
+/// answers, found by the registry (`DART_CASTS`, `DART_STRINGS`).
+impl DartAny for dyn Object {
+    fn dart_runtime_type(&self) -> Type {
+        self.runtime_type()
     }
-    fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T> {
+    fn dart_to_string(&self) -> String {
+        dart_object_str_ref(self)
+    }
+    fn dart_any_ref(&self) -> &dyn std::any::Any {
+        self.as_any()
+    }
+    fn dart_cast(&self, target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
         let any = self.as_any();
         let id = std::any::Any::type_id(any);
         let f = DART_CASTS.with(|c| c.borrow().get(&id).copied());
-        f.and_then(|f| f(any, std::any::TypeId::of::<T>()))
-            .and_then(|b| b.downcast::<T>().ok())
-            .map(|b| *b)
-            .or_else(|| any.downcast_ref::<T>().cloned())
+        f.and_then(|f| f(any, target))
     }
 }
+
+/// A handle is the object it holds, for the whole protocol.
+impl<T: ?Sized + DartAny> DartAny for std::rc::Rc<T> {
+    fn dart_runtime_type(&self) -> Type {
+        (**self).dart_runtime_type()
+    }
+    fn dart_to_string(&self) -> String {
+        (**self).dart_to_string()
+    }
+    fn dart_any_ref(&self) -> &dyn std::any::Any {
+        (**self).dart_any_ref()
+    }
+    fn dart_cast(&self, target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        (**self).dart_cast(target)
+    }
+}
+
+impl<T: ?Sized + DartAny> DartAny for Box<T> {
+    fn dart_runtime_type(&self) -> Type {
+        (**self).dart_runtime_type()
+    }
+    fn dart_to_string(&self) -> String {
+        (**self).dart_to_string()
+    }
+    fn dart_any_ref(&self) -> &dyn std::any::Any {
+        (**self).dart_any_ref()
+    }
+    fn dart_cast(&self, target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        (**self).dart_cast(target)
+    }
+}
+
+/// An absent-or-not value: `null` when absent, the value's answers
+/// otherwise.
+impl<T: DartAny> DartAny for Option<T> {
+    fn dart_runtime_type(&self) -> Type {
+        match self {
+            Some(v) => v.dart_runtime_type(),
+            None => Type::of("Null"),
+        }
+    }
+    fn dart_to_string(&self) -> String {
+        match self {
+            Some(v) => v.dart_to_string(),
+            None => "null".to_string(),
+        }
+    }
+    fn dart_any_ref(&self) -> &dyn std::any::Any {
+        match self {
+            Some(v) => v.dart_any_ref(),
+            None => self,
+        }
+    }
+    fn dart_cast(&self, target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        self.as_ref().and_then(|v| v.dart_cast(target))
+    }
+}
+
+impl<T: DartAny> DartAny for std::cell::RefCell<T> {
+    fn dart_runtime_type(&self) -> Type {
+        self.borrow().dart_runtime_type()
+    }
+    fn dart_to_string(&self) -> String {
+        self.borrow().dart_to_string()
+    }
+}
+
+impl<T: Copy + DartAny> DartAny for std::cell::Cell<T> {
+    fn dart_runtime_type(&self) -> Type {
+        self.get().dart_runtime_type()
+    }
+    fn dart_to_string(&self) -> String {
+        self.get().dart_to_string()
+    }
+}
+
+/// The collections: named as Dart names them, printed as Dart prints them.
+impl<T: DartAny> DartAny for Vec<T> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("List")
+    }
+    fn dart_to_string(&self) -> String {
+        format!("[{}]", self.iter().map(|e| e.dart_to_string()).collect::<Vec<_>>().join(", "))
+    }
+}
+
+impl<T: DartAny> DartAny for std::collections::VecDeque<T> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Queue")
+    }
+    fn dart_to_string(&self) -> String {
+        format!("{{{}}}", self.iter().map(|e| e.dart_to_string()).collect::<Vec<_>>().join(", "))
+    }
+}
+
+impl<T: DartAny> DartAny for Set<T> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Set")
+    }
+    fn dart_to_string(&self) -> String {
+        format!("{{{}}}", self.items.iter().map(|e| e.dart_to_string()).collect::<Vec<_>>().join(", "))
+    }
+}
+
+impl<K: DartAny, V: DartAny> DartAny for Map<K, V> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Map")
+    }
+    fn dart_to_string(&self) -> String {
+        format!(
+            "{{{}}}",
+            self.entries
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k.dart_to_string(), v.dart_to_string()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl<K: DartAny, V: DartAny> DartAny for MapEntry<K, V> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("MapEntry")
+    }
+    fn dart_to_string(&self) -> String {
+        format!("MapEntry({}: {})", self.key.dart_to_string(), self.value.dart_to_string())
+    }
+}
+
+impl<T: Eq + std::hash::Hash + DartAny> DartAny for std::collections::HashSet<T> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Set")
+    }
+}
+
+impl<K: Eq + std::hash::Hash + DartAny, V: DartAny> DartAny for std::collections::HashMap<K, V> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Map")
+    }
+}
+
+impl<A: DartAny, B: DartAny> DartAny for (A, B) {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Record")
+    }
+    fn dart_to_string(&self) -> String {
+        format!("({}, {})", self.0.dart_to_string(), self.1.dart_to_string())
+    }
+}
+
+impl<A: DartAny, B: DartAny, C: DartAny> DartAny for (A, B, C) {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Record")
+    }
+    fn dart_to_string(&self) -> String {
+        format!("({}, {}, {})", self.0.dart_to_string(), self.1.dart_to_string(), self.2.dart_to_string())
+    }
+}
+
+impl<A: DartAny, B: DartAny, C: DartAny, D: DartAny> DartAny for (A, B, C, D) {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Record")
+    }
+}
+
+/// The rest of what a type parameter can hold: named, nothing more.
+macro_rules! dart_any_named {
+    ($($t:ty => $name:literal),* $(,)?) => {
+        $(
+            impl DartAny for $t {
+                fn dart_runtime_type(&self) -> Type {
+                    Type::of($name)
+                }
+            }
+        )*
+    };
+}
+
+macro_rules! dart_any_generic {
+    ($($t:ident<$($p:ident),*> => $name:literal),* $(,)?) => {
+        $(
+            impl<$($p: 'static),*> DartAny for $t<$($p),*> {
+                fn dart_runtime_type(&self) -> Type {
+                    Type::of($name)
+                }
+            }
+        )*
+    };
+}
+
+impl DartAny for i64 {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("int")
+    }
+    fn dart_to_string(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl DartAny for f64 {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("double")
+    }
+    fn dart_to_string(&self) -> String {
+        dart_double_str(*self)
+    }
+}
+
+impl DartAny for bool {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("bool")
+    }
+    fn dart_to_string(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl DartAny for String {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("String")
+    }
+    fn dart_to_string(&self) -> String {
+        self.clone()
+    }
+}
+
+impl DartAny for &'static str {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("String")
+    }
+    fn dart_to_string(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl DartAny for Null {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Null")
+    }
+    fn dart_to_string(&self) -> String {
+        "null".to_string()
+    }
+}
+
+impl DartAny for () {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Null")
+    }
+    fn dart_to_string(&self) -> String {
+        "null".to_string()
+    }
+}
+
+impl DartAny for Type {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Type")
+    }
+    fn dart_to_string(&self) -> String {
+        self.name.to_string()
+    }
+}
+
+dart_any_named!(
+    i8 => "int", i16 => "int", i32 => "int", u8 => "int", u16 => "int", u32 => "int", u64 => "int",
+    usize => "int", isize => "int", f32 => "double", char => "String",
+    Duration => "Duration", Symbol => "Symbol", StringBuffer => "StringBuffer", StackTrace => "StackTrace",
+    DateTime => "DateTime", SentinelValue => "SentinelValue", Stopwatch => "Stopwatch", Uri => "Uri",
+    JsonUtf8Encoder => "JsonUtf8Encoder", Pattern => "Pattern", ServiceExtensionResponse => "ServiceExtensionResponse",
+    Flow => "Flow", RandomAccessFile => "RandomAccessFile", File => "File", Directory => "Directory",
+    FileSystemEntity => "FileSystemEntity", FileSystemException => "FileSystemException", FileMode => "FileMode",
+    FileLock => "FileLock", RegExpMatch => "RegExpMatch", HttpClientResponse => "HttpClientResponse",
+    TimelineTask => "TimelineTask", Endian => "Endian", InternetAddress => "InternetAddress", Invocation => "Invocation",
+    InvocationKind => "InvocationKind", Zone => "Zone", Timer => "Timer", RegExp => "RegExp", Exception => "Exception",
+    Utf8Decoder => "Utf8Decoder", OSError => "OSError", SocketException => "SocketException", HttpClient => "HttpClient",
+    JsonCodec => "JsonCodec", Utf8Codec => "Utf8Codec", Encoding => "Encoding", TypedData => "TypedData",
+    ByteBuffer => "ByteBuffer", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError",
+    IndexError => "IndexError", RangeError => "RangeError", ByteData => "ByteData", FormatException => "FormatException",
+    Timeline => "Timeline", NativeType => "NativeType", Void => "Void", DynamicLibrary => "DynamicLibrary",
+    Allocator => "Allocator", _ByteCallbackSink => "_ByteCallbackSink", Iterable => "Iterable", MapBase => "MapBase",
+    _Uri => "_Uri", Scheduler => "Scheduler", Random => "Random", std::convert::Infallible => "Never",
+    UserTag => "UserTag", AssertionError => "AssertionError",
+);
+
+dart_any_generic!(
+    StreamSubscription<T> => "StreamSubscription",
+    DartFuture<T> => "Future", Completer<T> => "Completer", Converter<S, T> => "Converter", Isolate<T> => "Isolate",
+    DartSelf<T> => "Object", Expando<T> => "Expando", Pointer<T> => "Pointer", NativeFunction<T> => "NativeFunction",
+    WeakReference<T> => "WeakReference", Stream<T> => "Stream", DartIter<T> => "Iterator", FutureOr<T> => "FutureOr",
+    Point<T> => "Point",
+);
+
+impl<T: ?Sized + 'static> DartAny for std::rc::Weak<T> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("WeakReference")
+    }
+}
+
+impl<T: ?Sized + 'static> DartAny for std::marker::PhantomData<T> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Never")
+    }
+}
+
+/// A closure is an object too (`Closure`): behind its handle, which is
+/// what a function slot holds. The `Any` it hands out is a unit -- there
+/// is no downcasting a function.
+macro_rules! dart_any_fn {
+    ($($($a:ident),* ;)*) => {
+        $(
+            impl<$($a: 'static,)* R: 'static> Object for dyn Fn($($a),*) -> R {
+                fn as_any(&self) -> &dyn std::any::Any {
+                    &()
+                }
+                fn runtime_type(&self) -> Type {
+                    Type::of("Closure")
+                }
+            }
+            impl<$($a: 'static,)* R: 'static> DartAny for dyn Fn($($a),*) -> R {
+                fn dart_runtime_type(&self) -> Type {
+                    Type::of("Closure")
+                }
+                fn dart_to_string(&self) -> String {
+                    "Closure".to_string()
+                }
+            }
+        )*
+    };
+}
+
+dart_any_fn!(
+    ;
+    A;
+    A, B;
+    A, B, C;
+    A, B, C, D;
+    A, B, C, D, E;
+    A, B, C, D, E, F;
+    A, B, C, D, E, F, G;
+    A, B, C, D, E, F, G, H;
+);
 
 /// Dart's `Duration`: a signed span counted in whole microseconds.
 ///

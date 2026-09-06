@@ -4408,9 +4408,19 @@ class KernelFrontend implements TypeWorld {
     // `Rc<dyn StatefulWidget>` the trait returns, and is narrowed to the
     // `ImplicitlyAnimatedWidget` this class's `T` promises (`AnimatedTheme`
     // in `MaterialApp`, ws538).
+    // ..only to a translated abstract bound, whose trait the member is
+    // reached through. To `Object` there is nothing to narrow to, and
+    // boxing `key` for `key.hashCode` moved it and hashed the box (the
+    // hashtrie fixture, ws544).
     var hops = 0;
     while (static is TypeParameterType && hops++ < 8) {
-      static = static.parameter.bound;
+      final bound = static.parameter.bound;
+      if (bound is InterfaceType &&
+          !(_translatedClass(bound.classNode) &&
+              _abstractLike(bound.classNode))) {
+        return lowered;
+      }
+      static = bound;
     }
     if (!coerceByType || static is! InterfaceType) return lowered;
     try {
