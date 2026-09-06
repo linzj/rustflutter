@@ -3333,8 +3333,10 @@ class RustBackend {
         library[receiverClass ?? ''] == null) {
       return '$receiver[0].clone()';
     }
+    // Cloned out, as `first` is: an element used by value moved out of
+    // the `Vec` (`_requestTabTraversalFocus(sortedNodes.last)`, ws522).
     if (name == 'last' && args.isEmpty) {
-      return '$receiver[$receiver.len() - 1]';
+      return '$receiver[$receiver.len() - 1].clone()';
     }
     // Dart's `toList` on a list copies it, which is `clone`.
     // `toList()` on a list is the list again; on any other collection --
@@ -4615,8 +4617,16 @@ class RustBackend {
         // _NativeEngineLayer::new_()` needs the `Rc::new` (9 in dart:ui).
         final outer = _returns;
         _returns = type;
+        // A local read whole as another's initialiser is a clone, as it
+        // is as an argument: `let __t = node;` moved a parameter a closure
+        // then read (`_requestFocus`, ws522). `Clone` on a `Copy` type is
+        // the copy.
         final value = boxed
             ? 'std::rc::Rc::new(${expr(init)})'
+            : init is IrLocal &&
+                  !_cellLocals.containsKey(init.name) &&
+                  !_closureCaptured.contains(init.name)
+            ? '${_returned(init)}.clone()'
             : _returned(init);
         _returns = outer;
         _line('let $mutable${snake(name)}$annotation = $value;');
