@@ -1207,8 +1207,12 @@ class KernelFrontend implements TypeWorld {
         return IrBound()..rustType = have;
       }
       if (_cascade != null && node.variable == _cascade) {
-        return IrLocal(_cascadeName);
+        return _cascadeRead();
       }
+      // A `let` temporary standing for a place its body mutates (see
+      // `_let`): the place itself.
+      final aliased = _letAliases[node.variable];
+      if (aliased != null) return expression(aliased);
       // A temporary this lowering has already named. Asking the map rather
       // than the variable's own name is what makes two nested `#0`s two
       // different locals instead of one.
@@ -2520,23 +2524,61 @@ class KernelFrontend implements TypeWorld {
     }
 
     final previous = _cascade;
+    final previousStatic = _cascadeStatic;
     _cascade = bound;
+    // A cascade on a static filled in place acts on the static itself
+    // (`log..add(b)..add(c)`, the statmut fixture): every step names it,
+    // and nothing is bound.
+    _cascadeStatic = _mutatedStaticOf(initial) ? expression(initial) : null;
     try {
       final steps = <IrStmt>[
         // A cascade on a local shares it: `v..setValues(..)` and `v` read
         // again after (`use of moved value: v`, vector_math).
-        IrLocalDecl(
-          _cascadeName,
-          _type(bound.type),
-          _widened(initial, null, expression(initial)),
-        ),
+        if (_cascadeStatic == null)
+          IrLocalDecl(
+            _cascadeName,
+            _type(bound.type),
+            _widened(initial, null, expression(initial)),
+          ),
         for (final s in statements.skip(1)) statement(s),
       ];
-      return IrBlockValue(steps, IrLocal(_cascadeName))
-        ..rustType = _type(bound.type);
+      return IrBlockValue(steps, _cascadeRead())..rustType = _type(bound.type);
     } finally {
       _cascade = previous;
+      _cascadeStatic = previousStatic;
     }
+  }
+
+  /// The cascade's receiver: the bound local, or the static it acts on.
+  IrExpr _cascadeRead() => _cascadeStatic ?? IrLocal(_cascadeName);
+
+  /// `let` temporaries that stand for the place they were bound to.
+  final _letAliases = <Variable, Expression>{};
+
+  /// A local's read, or a static's that is filled in place.
+  bool _isAliasablePlace(Expression e) {
+    var bare = e;
+    while (bare is FileUriExpression) {
+      bare = bare.expression;
+    }
+    if (bare is VariableGet) return !_temporaries.containsKey(bare.variable);
+    return _mutatedStaticOf(bare);
+  }
+
+  /// The static the cascade acts on directly, when it is one filled in
+  /// place; null otherwise.
+  IrExpr? _cascadeStatic;
+
+  bool _mutatedStaticOf(Expression e) {
+    var bare = e;
+    while (bare is FileUriExpression) {
+      bare = bare.expression;
+    }
+    if (bare is! StaticGet) return false;
+    final target = bare.target;
+    return target is Field &&
+        target.isStatic &&
+        _mutatedStatics.contains(target);
   }
 
   /// Whether control leaves the labelled block only by falling out of an
@@ -3462,32 +3504,40 @@ class KernelFrontend implements TypeWorld {
     final enclosing = _member?.enclosingClass;
     final fromApplication = enclosing?.isAnonymousMixin ?? false;
     var owner = fromApplication ? enclosing!.superclass : target.enclosingClass;
-    // ..and on up past real classes that do not declare the member
-    // (`RenderBox` for `attach`, which `RenderObject` declares).
-    while (fromApplication &&
-        owner != null &&
-        !owner.isAnonymousMixin &&
-        !owner.members.any((m) => m.name.text == name && !m.isAbstract)) {
-      owner = owner.superclass;
-    }
-    while (owner != null && owner.isAnonymousMixin) {
-      // Not `mixedInClass`: with `--target=flutter` the CFE *applies* the
-      // mixin, copying its members into this class and clearing `mixedInType`,
-      // so that getter is null by the time a dill is read. What survives is
-      // `implementedTypes` -- the applied mixins, in the order they were
-      // written -- which is how `is Scaled` still answers. Later mixins win, so
-      // the search runs backwards.
-      for (final applied in owner.implementedTypes.reversed) {
-        final mixin = applied.classNode;
-        // A hollow mixin declares the member when an application of it
-        // holds the body (`_appliedBody`): `super.initInstances()` in
-        // `WidgetsBinding` fell through every binding mixin to
-        // `BindingBase`, and `SemanticsBinding.initInstances` never ran
-        // (run438's `None` in `_semanticsEnabled`).
-        if (mixin.members.any((m) => m.name.text == name && !m.isAbstract) ||
-            _appliedProcedure(mixin, name) != null) {
-          return mixin;
+    while (owner != null) {
+      if (owner.isAnonymousMixin) {
+        // Not `mixedInClass`: with `--target=flutter` the CFE *applies*
+        // the mixin, copying its members into this class and clearing
+        // `mixedInType`, so that getter is null by the time a dill is
+        // read. What survives is `implementedTypes` -- the applied
+        // mixins, in the order they were written -- which is how `is
+        // Scaled` still answers. Later mixins win, so the search runs
+        // backwards.
+        for (final applied in owner.implementedTypes.reversed) {
+          final mixin = applied.classNode;
+          // A hollow mixin declares the member when an application of it
+          // holds the body (`_appliedBody`): `super.initInstances()` in
+          // `WidgetsBinding` fell through every binding mixin to
+          // `BindingBase`, and `SemanticsBinding.initInstances` never ran
+          // (run438's `None` in `_semanticsEnabled`).
+          if (mixin.members.any((m) => m.name.text == name && !m.isAbstract) ||
+              _appliedProcedure(mixin, name) != null) {
+            return mixin;
+          }
         }
+        owner = owner.superclass;
+        continue;
+      }
+      // A real class: from an application's body, on up past the ones
+      // that do not declare the member -- before *and* after the
+      // anonymous applications in between (`RenderBox` for `attach`,
+      // which `RenderObject` declares; `RenderSemanticsAnnotations`'
+      // applied `super.describeSemanticsConfiguration` climbed
+      // `RenderProxyBox`'s applications and stopped at `RenderBox`,
+      // run575). A body of its own names the declaring class already.
+      if (!fromApplication ||
+          owner.members.any((m) => m.name.text == name && !m.isAbstract)) {
+        return owner;
       }
       owner = owner.superclass;
     }
@@ -3536,22 +3586,26 @@ class KernelFrontend implements TypeWorld {
         throw Unsupported('cascade binding with no receiver', _sample(node));
       }
       final previous = _cascade;
+      final previousStatic = _cascadeStatic;
       _cascade = node.variable;
+      _cascadeStatic = _mutatedStaticOf(initial) ? expression(initial) : null;
       try {
         return IrBlockValue([
-          IrLocalDecl(
-            _cascadeName,
-            _type(node.variable.type),
-            // Shared, not moved, when the receiver is a local (see the
-            // other cascade site).
-            // Into the binding's own type: TFA proves `size?.width` non-null
-            // and the CFE's `#t` is still a `double?` (`Some(..)`).
-            _widened(initial, node.variable.type, expression(initial)),
-          ),
+          if (_cascadeStatic == null)
+            IrLocalDecl(
+              _cascadeName,
+              _type(node.variable.type),
+              // Shared, not moved, when the receiver is a local (see the
+              // other cascade site).
+              // Into the binding's own type: TFA proves `size?.width` non-null
+              // and the CFE's `#t` is still a `double?` (`Some(..)`).
+              _widened(initial, node.variable.type, expression(initial)),
+            ),
           for (final s in body.body.statements) statement(s),
-        ], IrLocal(_cascadeName))..rustType = _type(node.variable.type);
+        ], _cascadeRead())..rustType = _type(node.variable.type);
       } finally {
         _cascade = previous;
+        _cascadeStatic = previousStatic;
       }
     }
     if (body is ConditionalExpression) {
@@ -3768,6 +3822,20 @@ class KernelFrontend implements TypeWorld {
       // there would be nothing to read.
       throw Unsupported('CFE `Let` with no initialiser', _sample(node));
     }
+    // A temporary bound to a *place* -- a local, a static filled in place
+    // -- that the body mutates in place (`let #t = local in #t.clear()`,
+    // what TFA leaves of `local?.clear()` once `local` is known non-null,
+    // the nullmut fixture): the body acts on the place, and nothing is
+    // bound, as a cascade on one does.
+    if (_isAliasablePlace(initial) &&
+        _TempMutationFinder.mutates(node.variable, node.body)) {
+      _letAliases[node.variable] = initial;
+      try {
+        return expression(node.body);
+      } finally {
+        _letAliases.remove(node.variable);
+      }
+    }
     final name = _nameFor(node.variable);
     // `alpha ?? a` after type flow analysis proved `alpha` non-null: the
     // conditional is gone and the body is the bound variable, *promoted*
@@ -3887,7 +3955,7 @@ class KernelFrontend implements TypeWorld {
         receiver.variable == _cascade) {
       if (value.interfaceTarget is! Field) {
         return IrSetter(
-          IrLocal(_cascadeName),
+          _cascadeRead(),
           _fieldNameOf(value.interfaceTarget, value.name.text),
           written,
         );
@@ -7457,6 +7525,30 @@ class KernelFrontend implements TypeWorld {
 
   Map<String, Class>? _classesByName;
 
+  /// The static and top-level fields some body mutates in place: the
+  /// receivers of a collection mutator (`_mutatingListNames`), of a field
+  /// write, or a `List`/`Set` argument a callee fills -- also through a
+  /// cascade's `let #t = field in #t.add(..)`. Once, over every translated
+  /// library of the component: a library may fill another's.
+  late final Set<Field> _mutatedStatics = () {
+    final finder = _StaticFillFinder(this);
+    final component = library.enclosingComponent;
+    if (component != null) {
+      for (final l in component.libraries) {
+        if (!_translatedLibrary(l)) continue;
+        l.accept(finder);
+      }
+    } else {
+      library.accept(finder);
+    }
+    return finder.found;
+  }();
+
+  bool _translatedLibrary(Library l) {
+    final uri = l.importUri;
+    return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
+  }
+
   Class? _classNamed(String name) {
     final index = _classesByName ??= () {
       final out = <String, Class>{};
@@ -10121,7 +10213,12 @@ class KernelFrontend implements TypeWorld {
       // isolate, which is what `Isolate` says -- and it needs a cell to be
       // assignable. Skipping them meant every read refused the member around
       // it.
-      final mutable = !field.isConst && !field.isFinal;
+      // ..and a `final` collection filled in place (`log.add(..)`,
+      // `pendingFontFutures.remove(..)`) needs the cell as much: the
+      // read was a clone, and the mutation went into the clone (the
+      // supermix fixture's log stayed empty, ws576).
+      final mutable =
+          !field.isConst && (!field.isFinal || _mutatedStatics.contains(field));
       try {
         constants.add(
           IrConstDecl(
@@ -10970,7 +11067,11 @@ class KernelFrontend implements TypeWorld {
           // lock -- the same shape a mutable top-level has. 73 writes to
           // these were refused as `expression StaticSet`, most of them a
           // `??=` caching something on the class.
-          isMutable: !field.isConst && !field.isFinal,
+          // ..or a `static final` collection filled in place (see the
+          // top-level rule).
+          isMutable:
+              !field.isConst &&
+              (!field.isFinal || _mutatedStatics.contains(field)),
         ),
       );
     } else {
@@ -12510,6 +12611,117 @@ class _ReferenceCollector extends RecursiveVisitor {
         _constant(entry.value);
       }
     }
+  }
+}
+
+/// Whether a body mutates a variable's value in place: a collection
+/// mutator called on it, or an index written (see `_let`).
+class _TempMutationFinder extends RecursiveVisitor {
+  _TempMutationFinder(this.variable);
+
+  final Variable variable;
+  bool found = false;
+
+  static bool mutates(Variable variable, Expression body) {
+    final finder = _TempMutationFinder(variable);
+    body.accept(finder);
+    return finder.found;
+  }
+
+  @override
+  void visitInstanceInvocation(InstanceInvocation node) {
+    if (found) return;
+    final receiver = node.receiver;
+    if (receiver is VariableGet &&
+        receiver.variable == variable &&
+        KernelFrontend._mutatingListNames.contains(node.name.text) &&
+        node.name.text != 'length') {
+      found = true;
+      return;
+    }
+    super.visitInstanceInvocation(node);
+  }
+}
+
+/// Finds the static fields filled in place (see `_mutatedStatics`).
+class _StaticFillFinder extends RecursiveVisitor {
+  _StaticFillFinder(this.frontend);
+
+  final KernelFrontend frontend;
+  final Set<Field> found = {};
+
+  /// A cascade binds the receiver first: `let #t = log in #t..add(..)`.
+  final Map<Variable, Field> _aliases = {};
+
+  Field? _staticOf(Expression e) {
+    var bare = e;
+    while (bare is FileUriExpression) {
+      bare = bare.expression;
+    }
+    if (bare is StaticGet) {
+      final target = bare.target;
+      return target is Field && target.isStatic ? target : null;
+    }
+    if (bare is VariableGet) return _aliases[bare.variable];
+    return null;
+  }
+
+  @override
+  void visitLet(Let node) {
+    final init = node.variable.initializer;
+    final field = init == null ? null : _staticOf(init);
+    if (field != null) _aliases[node.variable] = field;
+    super.visitLet(node);
+  }
+
+  @override
+  void visitVariableDeclaration(VariableDeclaration node) {
+    final variable = node.variable;
+    final init = variable.initializer;
+    // A `final` local holding a static collection is the same list.
+    final field = init == null || !variable.isFinal ? null : _staticOf(init);
+    if (field != null) _aliases[variable] = field;
+    super.visitVariableDeclaration(node);
+  }
+
+  @override
+  void visitInstanceInvocation(InstanceInvocation node) {
+    final field = _staticOf(node.receiver);
+    if (field != null &&
+        KernelFrontend._mutatingListNames.contains(node.name.text) &&
+        node.name.text != 'length') {
+      found.add(field);
+    }
+    super.visitInstanceInvocation(node);
+  }
+
+  @override
+  void visitInstanceSet(InstanceSet node) {
+    // A field written through a static holding a *value* struct changes
+    // the static; through a counted class's handle it changes the shared
+    // object, and the static stays what it was (`GoogleFonts.config.
+    // allowRuntimeFetching = false`, ws577).
+    final field = _staticOf(node.receiver);
+    final type = field?.type;
+    if (field != null &&
+        type is InterfaceType &&
+        frontend._translatedClass(type.classNode) &&
+        !frontend._isCountedName(type.classNode.name)) {
+      found.add(field);
+    }
+    super.visitInstanceSet(node);
+  }
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    final positional = node.arguments.positional;
+    for (var i = 0; i < positional.length; i++) {
+      final field = _staticOf(positional[i]);
+      if (field != null && frontend._fillsParameter(node.target, i)) {
+        found.add(field);
+      }
+    }
+    super.visitStaticInvocation(node);
   }
 }
 

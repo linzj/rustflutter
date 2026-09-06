@@ -721,10 +721,15 @@ class RustBackend {
       IrIterChain(:final steps)
           when steps.isNotEmpty && steps.last.$1 == 'for_each' =>
         _chain(e as IrIterChain),
-      IrIterChain() => throw Unsupported(
-        'a lazy Iterable that is never collected',
-        'xs.map(..) with no toList()',
-      ),
+      // ..any other chain used as a value is collected: the prelude's
+      // `Iterable` is a `Vec` (see `EmptyIterable`), so what Dart keeps
+      // lazy is eager here, and what was refused as "never collected"
+      // (`Future.wait(pendingList.map(..))` in `_loadAll`, run578) is the
+      // list it would have made.
+      IrIterChain(:final steps) =>
+        '${_chain(e as IrIterChain)}'
+            '${steps.isNotEmpty && steps.last.$1 == 'filter' ? '.cloned()' : ''}'
+            '.collect::<Vec<_>>()',
       // Boxed, because a function item is not a `Box<dyn Fn>` and that is what
       // a function-typed field or local is here. A `Box<dyn Fn>` also
       // implements `Fn`, so it still passes where `impl Fn` is wanted.
@@ -733,10 +738,19 @@ class RustBackend {
         name,
         e.rustType,
       ),
+      // ..through the local's cell when it has one (`fired++` in a closure
+      // that captured `fired`, the nullmut fixture), as `IrAssign` writes.
       IrAssignValue(:final name, :final value) =>
         // The stored copy is a clone: a non-`Copy` value moved into the
         // local was gone by the time the expression yielded it (E0382, 17).
-        '{ let __set = ${expr(value)}; ${snake(name)} = __set.clone(); __set }',
+        switch (_cellLocals[name]) {
+          null =>
+            '{ let __set = ${expr(value)}; ${snake(name)} = __set.clone(); __set }',
+          true =>
+            '{ let __set = ${expr(value)}; ${snake(name)}.set(__set.clone()); __set }',
+          false =>
+            '{ let __set = ${expr(value)}; *${snake(name)}.borrow_mut() = __set.clone(); __set }',
+        },
       IrSetValue(:final target, :final name, :final value) => _setValue(
         target,
         name,
@@ -1392,6 +1406,11 @@ class RustBackend {
   String _cellType(String held) => 'std::rc::Rc<std::cell::RefCell<$held>>';
 
   static bool _isMutableCollection(String rust) =>
+      // ..or an absent-or-not one (`Map<K, V>?` in a cell, mutated under
+      // `?.`).
+      (rust.startsWith('Option<') &&
+          rust.endsWith('>') &&
+          _isMutableCollection(rust.substring(7, rust.length - 1))) ||
       rust.startsWith('Vec<') ||
       rust.startsWith('Set<') ||
       rust.startsWith('Map<') ||
@@ -2024,6 +2043,35 @@ class RustBackend {
     final outer = _boundByValue;
     _boundByValue = scalar;
     try {
+      // A mutating call on the bound value (`_cachedDryLayoutSizes?.
+      // clear()`) acts on the place, borrowed mutably -- through the
+      // cell the field is kept in, or the struct's own field -- not on
+      // the clone a read takes (`_LayoutCacheStorage.clear`, run576).
+      final mutating =
+          body is IrCall &&
+          body.target is IrBound &&
+          _mutatesInPlace(body.name) &&
+          !scalar;
+      final cellPlace = mutating ? _mutPlace(receiver) : null;
+      final ownPlace =
+          mutating &&
+              cellPlace == null &&
+              receiver is IrField &&
+              (receiver.target == null || receiver.target is IrThis) &&
+              !_fieldsAreAccessors &&
+              _selfName == 'self' &&
+              _sharedField(receiver.name) == null
+          ? '$_selfName.${snake(receiver.name)}'
+          : null;
+      final place =
+          cellPlace ??
+          ownPlace ??
+          (mutating && receiver is IrLocal ? snake(receiver.name) : null);
+      if (place != null) {
+        return _failure == null
+            ? '$place.as_mut().map(|$_boundName| ${expr(body)})'
+            : '$place.as_mut().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?';
+      }
       final at = scalar ? '' : '.as_ref()';
       // The body's type spelled where it is known: an adapter closure
       // made in the body (`handler == null ? null : (m) async {..}` into
@@ -2953,6 +3001,16 @@ class RustBackend {
       }
       if (shared == null) return '&mut $_selfName.${snake(place.name)}';
     }
+    // A mutable static lent to a callee that fills it (`fill(log)` on a
+    // top-level list, the statmut fixture): through its cell.
+    if (place is IrTopLevel && _isMutableTopLevel(place.name)) {
+      return '&mut *(**${screamingSnake(place.name)}).borrow_mut()';
+    }
+    if (place is IrStatic &&
+        !place.isEnumValue &&
+        _isMutableStatic(place.owner, place.name)) {
+      return '&mut *(**${_lazyName(place.owner, place.name)}).borrow_mut()';
+    }
     return '&mut ${expr(place)}';
   }
 
@@ -3098,6 +3156,7 @@ class RustBackend {
     'push',
     'insert',
     'remove',
+    'remove_value',
     '!map_remove',
     'clear',
     'extend',
@@ -3146,7 +3205,56 @@ class RustBackend {
     'set_float64',
   };
 
-  static bool _mutatesInPlace(String name) => _inPlace.contains(name);
+  // ..by either spelling: a prelude collection's method arrives under its
+  // Dart name (`addAll`) and is snaked at the call (`add_all`, ws578).
+  static bool _mutatesInPlace(String name) =>
+      _inPlace.contains(name) || _inPlace.contains(snake(name));
+
+  /// The place a mutating call acts on, borrowed mutably: a cell's
+  /// `borrow_mut()`, and through a promoted read (`_sizes!.add(..)`,
+  /// `_sizes![k] = v`) the value inside it (`as_mut().unwrap()`); null
+  /// when the target has no such place (the nullmut fixture, ws577).
+  String? _mutPlace(IrExpr? target) {
+    // A read's clone is the place it read.
+    if (target is IrCall &&
+        target.name == 'clone' &&
+        target.args.isEmpty &&
+        target.target != null) {
+      return _mutPlace(target.target!);
+    }
+    if (target is IrNullCheck) {
+      final inner = _mutPlace(target.operand);
+      if (inner != null) return '$inner.as_mut().unwrap()';
+      // ..a plain local `Option<..>` promoted: the local itself.
+      var operand = target.operand;
+      if (operand is IrCall &&
+          operand.name == 'clone' &&
+          operand.args.isEmpty &&
+          operand.target != null) {
+        operand = operand.target!;
+      }
+      if (operand is IrLocal && !_cellLocals.containsKey(operand.name)) {
+        return '${snake(operand.name)}.as_mut().unwrap()';
+      }
+      return null;
+    }
+    final cell = _cellPlace(target);
+    if (cell == null) return null;
+    // A `late` field's cell holds an `Option`: the value inside it
+    // (`ObserverList._set.clear()`, ws577).
+    if (target is IrField) {
+      final atThis = target.target == null || target.target is IrThis;
+      final decl = atThis
+          ? _lateField(target.name)
+          : target.owner == null
+          ? null
+          : _cellFieldOf(target.owner!, target.name);
+      if (decl != null && decl.isLate) {
+        return '$cell.borrow_mut().as_mut().unwrap()';
+      }
+    }
+    return '$cell.borrow_mut()';
+  }
 
   /// The cell a field read would go through, as a place -- `self.x` or
   /// `other.x` -- when the field is kept in a `RefCell`; null otherwise.
@@ -3163,6 +3271,31 @@ class RustBackend {
         target.rustType != null &&
         _isMutableCollection(type(target.rustType!))) {
       return snake(target.name);
+    }
+    // A mutable static's cell (`LazyLock<Isolate<RefCell<..>>>`), when it
+    // holds a collection: the read was a clone, and `log.add(..)` filled
+    // the clone (the supermix fixture, ws576).
+    if (target is IrTopLevel && _isMutableTopLevel(target.name)) {
+      final held =
+          library.constants
+              .where((c) => c.name == target.name)
+              .firstOrNull
+              ?.type ??
+          library.constantsElsewhere[target.name]?.type;
+      if (held != null && _isMutableCollection(type(held))) {
+        return '(**${screamingSnake(target.name)})';
+      }
+    }
+    if (target is IrStatic &&
+        !target.isEnumValue &&
+        _isMutableStatic(target.owner, target.name)) {
+      final held = library[target.owner]?.constants
+          .where((c) => c.name == target.name)
+          .firstOrNull
+          ?.type;
+      if (held != null && _isMutableCollection(type(held))) {
+        return '(**${_lazyName(target.owner, target.name)})';
+      }
     }
     // A hollow mixin's field is read through the declaration's abstract
     // getter -- an accessor *call* on `this` in the trait body -- where the
@@ -3191,7 +3324,10 @@ class RustBackend {
           : _allFields(owned).where((f) => f.name == target.name).firstOrNull ??
                 _appliedFieldOf(owned, target.name);
       if (decl == null || !_handsCell(decl)) return null;
-      final holder = atThis ? _selfName : expr(base);
+      // `this` as the accessor's `&self`: inside a closure it is the
+      // handle `__me`, dereferenced (`ListNotifierMixin::_updaters_cell(
+      // __me)` handed the `Rc`, ws578).
+      final holder = atThis ? (_addressOf(IrThis()) ?? _selfName) : expr(base);
       final through = atThis
           ? _accessorQualifier(target.name, kind: 'cell')
           : null;
@@ -3362,7 +3498,44 @@ class RustBackend {
         _isTypeParam(target.rustType?.name ?? '')) {
       return 'DartEq::dart_hash_code(&${expr(target)})';
     }
-    final cellPlace = _mutatesInPlace(name) ? _cellPlace(target) : null;
+    final cellPlace = _mutatesInPlace(name) ? _mutPlace(target) : null;
+    // The arguments first, bound: the receiver's `borrow_mut()` is taken
+    // before the arguments are evaluated, and an argument reading the same
+    // cell panicked ("already mutably borrowed": `counts['x'] = (counts['x']
+    // ?? 0) + 1` on a static, the statmut fixture). A closure literal and a
+    // plain literal read nothing when made and stay in place.
+    if (cellPlace != null &&
+        args.any((a) => !_closureLike(a) && a is! IrLiteral)) {
+      final binds = <String>[];
+      final rebound = <IrExpr>[];
+      for (var i = 0; i < args.length; i++) {
+        final a = args[i];
+        if (_closureLike(a) || a is IrLiteral) {
+          rebound.add(a);
+          continue;
+        }
+        // ..with its implicit upcast spelled: a `let` has no slot to
+        // unsize against (`_tickers!.remove(ticker)` bound a
+        // `Rc<_WidgetTicker>` where the set holds `Rc<dyn Ticker>`, ws577).
+        binds.add('let __a$i = ${expr(_explicitUpcast(a))};');
+        rebound.add(
+          IrLiteral('__a$i', const IrType('raw'))..rustType = a.rustType,
+        );
+      }
+      final inner = _call(
+        target,
+        name,
+        rebound,
+        qualifier: qualifier,
+        receiverClass: receiverClass,
+        fails: fails,
+        typeArguments: typeArguments,
+        asyncFn: asyncFn,
+        asyncTarget: asyncTarget,
+        resultType: resultType,
+      );
+      return '{ ${binds.join(' ')} $inner }';
+    }
     // A mutating call on a field of `this` in a struct's own method acts
     // on the field, not on the clone a value read takes: `_buffer.setRange
     // (..)` on a clone left `WriteBuffer` empty and every platform message
@@ -3382,7 +3555,7 @@ class RustBackend {
         ? '$_selfName.${snake(target.name)}'
         : null;
     final receiver = cellPlace != null
-        ? '$cellPlace.borrow_mut()'
+        ? cellPlace
         : ownPlace != null
         ? ownPlace
         : target is IrLiteral && target.type.name == 'double'
@@ -4842,9 +5015,9 @@ class RustBackend {
         // ..and into one held in a cell -- a counted class's storage, its
         // own or another object's (`cascaded._m4storage[i] = 1.0` on a
         // counted `Matrix4`, ws511) -- through the cell's `borrow_mut`.
-        final cellPlace = _cellPlace(target);
+        final cellPlace = _mutPlace(target);
         final place = cellPlace != null
-            ? '$cellPlace.borrow_mut()'
+            ? cellPlace
             : target is IrField &&
                   (target.target == null || target.target is IrThis) &&
                   _sharedField(target.name) == null &&
