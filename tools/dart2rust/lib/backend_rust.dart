@@ -5005,10 +5005,10 @@ class RustBackend {
   /// it of a bare `K` (`invokeMapMethod`, run494). Every type carries it
   /// (the prelude's, `_emitFromDynamic` for the translated ones).
   String _nb(IrClass c) =>
-      ' + DartNullable<Or: Clone + DartEq> + DartEq + FromDynamic';
+      ' + DartNullable<Or: Clone + DartEq + FromDynamic> + DartEq + FromDynamic';
 
   String _nbm(IrMethod m) =>
-      ' + DartNullable<Or: Clone + DartEq> + DartEq + FromDynamic';
+      ' + DartNullable<Or: Clone + DartEq + FromDynamic> + DartEq + FromDynamic';
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
@@ -5102,6 +5102,11 @@ class RustBackend {
     _line(
       'fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> { $body }',
     );
+    if (_cloneable(cls)) {
+      _line(
+        'fn from_same(value: &Self) -> Option<Self> { Some(value.clone()) }',
+      );
+    }
     _indent--;
     _line('}');
     _line('');
@@ -5210,7 +5215,7 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : "$p: DartNullable<Or: DartEq> + DartEq + FromDynamic + 'static",
+                : "$p: DartNullable<Or: DartEq + FromDynamic> + DartEq + FromDynamic + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';

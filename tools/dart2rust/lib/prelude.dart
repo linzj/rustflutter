@@ -371,6 +371,9 @@ macro_rules! dart_nullable {
                 let object: &dyn Object = value.as_ref();
                 object.as_any().downcast_ref::<Self>().cloned()
             }
+            fn from_same(value: &Self) -> Option<Self> {
+                Some(value.clone())
+            }
         }
     };
 }
@@ -1317,6 +1320,37 @@ pub struct Map<K, V> {
 /// What needs no key equality: a `Map<Rc<dyn Fn()>, i64>` -- Dart's
 /// `ObserverList` -- can be made and sized, and only the lookups on it
 /// want the keys comparable (43 holders' constructors at ws298).
+impl<K: DartEq, V> Map<K, V> {
+    /// Entries converted one by one (`cast_to`, `dart_cast_map`): a later
+    /// duplicate of a key replaces the earlier, as `insert` does, without
+    /// asking `Clone` of either type.
+    fn from_converted(pairs: Vec<(K, V)>) -> Self {
+        let mut entries: Vec<(K, V)> = Vec::new();
+        for (k, v) in pairs {
+            if let Some(slot) = entries.iter_mut().find(|(k0, _)| k0.dart_eq(&k)) {
+                slot.1 = v;
+            } else {
+                entries.push((k, v));
+            }
+        }
+        Map { entries }
+    }
+}
+
+impl<T: DartEq> Set<T> {
+    /// Elements converted one by one (`cast_to`, `dart_cast_set`): a later
+    /// duplicate is dropped, as `add` does.
+    fn from_converted(elements: Vec<T>) -> Self {
+        let mut items: Vec<T> = Vec::new();
+        for e in elements {
+            if !items.iter().any(|e0| e0.dart_eq(&e)) {
+                items.push(e);
+            }
+        }
+        Set { items }
+    }
+}
+
 impl<K, V> Map<K, V> {
     /// A written map literal: its entries as an array *of the spelled
     /// types*, so that every entry's value is coerced to them where
@@ -5615,6 +5649,16 @@ impl<'a> JsonParser<'a> {
 pub trait FromDynamic: Sized + 'static {
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self>;
 
+    /// A value of this very type again, from a reference to one: a clone
+    /// where the type has one. A collection's exact-typed elements come out
+    /// this way, and so ask no `Clone` of the element type in the bound --
+    /// a declaration's parameters carry none (`Equality<Iterable<E>>`,
+    /// ws495); a type without one (a boxed future) has no value to give.
+    fn from_same(value: &Self) -> Option<Self> {
+        let _ = value;
+        None
+    }
+
     fn from_nullable(value: &Option<std::rc::Rc<dyn Object>>) -> Option<Self> {
         match value {
             Some(v) => Self::from_dynamic(v),
@@ -5634,11 +5678,17 @@ impl<T: ?Sized + 'static> FromDynamic for std::rc::Rc<T> {
             Err(_) => value.dart_cast_to::<T>(),
         }
     }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
 }
 
 /// `void`: whatever the value, nothing is kept of it.
 impl FromDynamic for () {
     fn from_dynamic(_value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        Some(())
+    }
+    fn from_same(_value: &Self) -> Option<Self> {
         Some(())
     }
 }
@@ -5679,27 +5729,26 @@ impl<F: ?Sized + 'static> FromDynamic for std::pin::Pin<Box<F>> {
 }
 
 /// `x as Set<T>` on an object: see `dart_cast_list`.
-pub fn dart_cast_set<T: FromDynamic + Clone + DartEq>(value: &std::rc::Rc<dyn Object>) -> Option<Set<T>> {
+pub fn dart_cast_set<T: FromDynamic + DartEq>(value: &std::rc::Rc<dyn Object>) -> Option<Set<T>> {
     let object: &dyn Object = value.as_ref();
     let any = object.as_any();
     if let Some(set) = any.downcast_ref::<Set<T>>() {
-        return Some(set.clone());
+        let items: Option<Vec<T>> = set.items.iter().map(T::from_same).collect();
+        return items.map(|items| Set { items });
     }
-    fn convert<T1: Clone + 'static, T: FromDynamic + Clone + DartEq>(
+    fn convert<T1: Clone + 'static, T: FromDynamic + DartEq>(
         any: &dyn std::any::Any,
         element: fn(&T1) -> Option<T>,
     ) -> Option<Option<Set<T>>> {
         let set = any.downcast_ref::<Set<T1>>()?;
-        let mut out: Set<T> = Set::new();
-        for e in set.iter() {
+        let mut out: Vec<T> = Vec::new();
+        for e in set.items.iter() {
             match element(e) {
-                Some(t) => {
-                    out.add(t);
-                }
+                Some(t) => out.push(t),
                 None => return Some(None),
             }
         }
-        Some(Some(out))
+        Some(Some(Set::from_converted(out)))
     }
     if let Some(r) = convert::<std::rc::Rc<dyn Object>, T>(any, T::from_dynamic) {
         return r;
@@ -5710,7 +5759,11 @@ pub fn dart_cast_set<T: FromDynamic + Clone + DartEq>(value: &std::rc::Rc<dyn Ob
     None
 }
 
-impl<T: FromDynamic + Clone + DartEq> FromDynamic for Set<T> {
+impl<T: FromDynamic + DartEq> FromDynamic for Set<T> {
+    fn from_same(value: &Self) -> Option<Self> {
+        let items: Option<Vec<T>> = value.items.iter().map(T::from_same).collect();
+        items.map(|items| Set { items })
+    }
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_set::<T>(value)
     }
@@ -5725,6 +5778,12 @@ impl<T: FromDynamic> FromDynamic for Option<T> {
             return Some(None);
         }
         T::from_dynamic(value).map(Some)
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        match value {
+            None => Some(None),
+            Some(v) => T::from_same(v).map(Some),
+        }
     }
 }
 
@@ -5784,13 +5843,20 @@ pub fn dart_cast_erased<To, From: CastErased<To>>(value: From) -> To {
     value.cast_erased()
 }
 
-impl<T: FromDynamic + Clone> FromDynamic for Vec<T> {
+impl<T: FromDynamic> FromDynamic for Vec<T> {
+    fn from_same(value: &Self) -> Option<Self> {
+        value.iter().map(T::from_same).collect()
+    }
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_list::<T>(value)
     }
 }
 
-impl<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone> FromDynamic for Map<K, V> {
+impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
+    fn from_same(value: &Self) -> Option<Self> {
+        let entries: Option<Vec<(K, V)>> = value.entries.iter().map(|(k, v)| Some((K::from_same(k)?, V::from_same(v)?))).collect();
+        entries.map(|entries| Map { entries })
+    }
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_map::<K, V>(value)
     }
@@ -5800,44 +5866,40 @@ impl<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone> FromDynamic for Ma
 /// converted (`FromDynamic`), which is the representation change Dart's
 /// `cast` does not need and this one does.
 impl<K: Clone + 'static, V: Clone + 'static> Map<K, V> {
-    pub fn cast_to<K2: FromDynamic + Clone + DartEq, V2: FromDynamic + Clone>(&self) -> Map<K2, V2> {
-        let mut out: Map<K2, V2> = Map::new();
+    pub fn cast_to<K2: FromDynamic + DartEq, V2: FromDynamic>(&self) -> Map<K2, V2> {
+        let mut out: Vec<(K2, V2)> = Vec::new();
         for (k, v) in self.entries.iter() {
             let key: std::rc::Rc<dyn Object> = std::rc::Rc::new(k.clone());
             let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
             match (K2::from_dynamic(&key), V2::from_dynamic(&value)) {
-                (Some(k2), Some(v2)) => {
-                    out.insert(k2, v2);
-                }
+                (Some(k2), Some(v2)) => out.push((k2, v2)),
                 _ => erased_cast_failed(&value),
             }
         }
-        out
+        Map::from_converted(out)
     }
 }
 
 impl<T: Clone + 'static> Set<T> {
-    pub fn cast_to<T2: FromDynamic + Clone + DartEq>(&self) -> Set<T2> {
-        let mut out: Set<T2> = Set::new();
+    pub fn cast_to<T2: FromDynamic + DartEq>(&self) -> Set<T2> {
+        let mut out: Vec<T2> = Vec::new();
         for v in self.iter() {
             let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
             match T2::from_dynamic(&value) {
-                Some(t) => {
-                    out.add(t);
-                }
+                Some(t) => out.push(t),
                 None => erased_cast_failed(&value),
             }
         }
-        out
+        Set::from_converted(out)
     }
 }
 
 pub trait DartListCast {
-    fn cast_to<T2: FromDynamic + Clone>(&self) -> Vec<T2>;
+    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2>;
 }
 
 impl<T: Clone + 'static> DartListCast for Vec<T> {
-    fn cast_to<T2: FromDynamic + Clone>(&self) -> Vec<T2> {
+    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2> {
         self.iter()
             .map(|v| {
                 let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
@@ -5897,13 +5959,13 @@ pub fn byte_data_sublist_view<T: AsDartBytes>(data: T, start: i64, end: Option<i
 
 /// `x as List<T>` on an object: the list as it is when it is one of `T`,
 /// else each element of a `List<dynamic>` / `List<Object?>` converted.
-pub fn dart_cast_list<T: FromDynamic + Clone>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {
+pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {
     // The object's `Any`, not the handle's: `Rc<dyn Object>` is `'static`
     // and so an `Object` itself under the blanket impl.
     let object: &dyn Object = value.as_ref();
     let any = object.as_any();
     if let Some(list) = any.downcast_ref::<Vec<T>>() {
-        return Some(list.clone());
+        return list.iter().map(T::from_same).collect();
     }
     if let Some(list) = any.downcast_ref::<Vec<std::rc::Rc<dyn Object>>>() {
         return list.iter().map(T::from_dynamic).collect();
@@ -5915,28 +5977,31 @@ pub fn dart_cast_list<T: FromDynamic + Clone>(value: &std::rc::Rc<dyn Object>) -
 }
 
 /// `x as Map<K, V>` on an object: see `dart_cast_list`.
-pub fn dart_cast_map<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone>(value: &std::rc::Rc<dyn Object>) -> Option<Map<K, V>> {
+pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option<Map<K, V>> {
     let object: &dyn Object = value.as_ref();
     let any = object.as_any();
     if let Some(map) = any.downcast_ref::<Map<K, V>>() {
-        return Some(map.clone());
+        let entries: Option<Vec<(K, V)>> = map
+            .entries
+            .iter()
+            .map(|(k, v)| Some((K::from_same(k)?, V::from_same(v)?)))
+            .collect();
+        return entries.map(|entries| Map { entries });
     }
-    fn convert<K1: Clone + 'static, V1: Clone + 'static, K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone>(
+    fn convert<K1: Clone + 'static, V1: Clone + 'static, K: FromDynamic + DartEq, V: FromDynamic>(
         any: &dyn std::any::Any,
         key: fn(&K1) -> Option<K>,
         value: fn(&V1) -> Option<V>,
     ) -> Option<Option<Map<K, V>>> {
         let map = any.downcast_ref::<Map<K1, V1>>()?;
-        let mut out: Map<K, V> = Map::new();
+        let mut out: Vec<(K, V)> = Vec::new();
         for (k, v) in map.entries.iter() {
             match (key(k), value(v)) {
-                (Some(k), Some(v)) => {
-                    out.insert(k, v);
-                }
+                (Some(k), Some(v)) => out.push((k, v)),
                 _ => return Some(None),
             }
         }
-        Some(Some(out))
+        Some(Some(Map::from_converted(out)))
     }
     if let Some(r) = convert::<String, std::rc::Rc<dyn Object>, K, V>(any, |k| K::from_dynamic(&(std::rc::Rc::new(k.clone()) as std::rc::Rc<dyn Object>)), V::from_dynamic) {
         return r;
