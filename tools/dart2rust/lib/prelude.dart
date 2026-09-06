@@ -62,6 +62,41 @@ pub trait DartIterator<T> {
     fn current(&self) -> T;
 }
 
+/// `xs.iterator` on the prelude's collections: Dart's `Iterator` over the
+/// elements, which a translated class that *is* an `Iterable` hands out
+/// as its own (`_History.iterator` is `_value.iterator`, ws499).
+pub trait DartIterable<T> {
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>>;
+}
+
+pub struct VecIterator<T> {
+    items: Vec<T>,
+    at: std::cell::Cell<i64>,
+}
+
+impl<T: Clone + 'static> DartIterator<T> for VecIterator<T> {
+    fn move_next(&self) -> bool {
+        let next = self.at.get() + 1;
+        self.at.set(next);
+        (next as usize) < self.items.len()
+    }
+    fn current(&self) -> T {
+        self.items[self.at.get() as usize].clone()
+    }
+}
+
+impl<T: Clone + 'static> DartIterable<T> for Vec<T> {
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        std::rc::Rc::new(VecIterator { items: self.clone(), at: std::cell::Cell::new(-1) })
+    }
+}
+
+impl<T: Clone + 'static> DartIterable<T> for Set<T> {
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        std::rc::Rc::new(VecIterator { items: self.items.clone(), at: std::cell::Cell::new(-1) })
+    }
+}
+
 
 
 /// Dart's `Object`, as the one thing Rust has for "anything": a trait every
@@ -3138,6 +3173,20 @@ impl NativeAnswer for std::rc::Rc<dyn Object> {
     }
 }
 
+/// A list out of a native (`Paragraph.getBoxesForRange`, a `Float32List`):
+/// the host's list converted (`FromDynamic`), or the empty one.
+impl<T: FromDynamic> NativeAnswer for Vec<T> {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match dart_cast_list::<T>(&answer) {
+            Some(list) => list,
+            None => panic!("native `{}` answered {:?} where a list was declared", symbol, answer),
+        }
+    }
+    fn absent() -> Self {
+        Vec::new()
+    }
+}
+
 impl<T: NativeAnswer> NativeAnswer for Option<T> {
     fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
         dart_nullable(answer).map(|value| T::from_answer(value, symbol))
@@ -3477,6 +3526,17 @@ pub fn dart_null_as<T: DartNullable>() -> T {
 
 /// `List<T?>.filled(n, null)`: `n` nulls of `T?` as translated code spells
 /// it -- `<T as DartNullable>::Or`, one `Option` layer whatever `T` is.
+/// Dart's `null` where a `dynamic` goes: the `Null` object behind a handle.
+pub fn dart_null_object() -> std::rc::Rc<dyn Object> {
+    std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>
+}
+
+/// `List<Object?>.filled(n, null)`: `n` nulls of a `dynamic`, which holds
+/// its null as the `Null` object (`vec_of_nones` fills an `Option`).
+pub fn vec_of_nulls(n: i64) -> Vec<std::rc::Rc<dyn Object>> {
+    (0..n).map(|_| dart_null_object()).collect()
+}
+
 pub fn vec_of_nones<T: DartNullable>(n: i64) -> Vec<<T as DartNullable>::Or> {
     (0..n.max(0)).map(|_| T::from_option(None)).collect()
 }

@@ -3475,7 +3475,7 @@ class KernelFrontend implements TypeWorld {
         // A clone: the iterator owns its items, and the list is a field
         // behind `&self` more often than not (`self._children`, E0507).
         IrStaticCall(null, 'dart_iter', [
-          IrCall(expression(init.receiver), 'clone', const []),
+          IrCall(_listReceiver(init.receiver), 'clone', const []),
         ]),
       );
     }
@@ -3722,7 +3722,7 @@ class KernelFrontend implements TypeWorld {
       _iteratorLoops.add(receiver.variable);
       return IrForIn(
         element,
-        expression(iterable),
+        _listReceiver(iterable),
         IrBlock([for (final s in body.statements) statement(s)]),
       );
     }
@@ -3745,7 +3745,7 @@ class KernelFrontend implements TypeWorld {
     _iteratorLoops.add(receiver.variable);
     return IrForIn(
       name,
-      expression(iterable),
+      _listReceiver(iterable),
       IrBlock([for (final s in body.statements.skip(1)) statement(s)]),
     );
   }
@@ -3808,6 +3808,51 @@ class KernelFrontend implements TypeWorld {
   /// Dart says `Scaffold` -- is narrowed on the way in (`coerce`), which is
   /// what the erased-read narrowing used to do at every such read whether
   /// or not a member was then reached through it.
+  /// A receiver asked as a list -- `Iterable`'s members on it, a `for-in`
+  /// over it -- when it is a translated class that *is* an `Iterable<E>`
+  /// (`Navigator`'s `_History extends Iterable<_RouteEntry>`, ws499): the
+  /// list of its elements, `to_list`, which the backend writes from the
+  /// class's `iterator`. Any other receiver is itself.
+  IrExpr _listReceiver(Expression e) {
+    final lowered = _receiver(e);
+    final static = _staticType(e);
+    if (static is! InterfaceType || !_translatedClass(static.classNode)) {
+      return lowered;
+    }
+    final element = _iterableElement(static);
+    if (element == null) return lowered;
+    return IrCall(lowered, 'to_list', const [])
+      ..rustType = IrType('List', arguments: [_typeNested(element)]);
+  }
+
+  /// `IrClass.iterableElement`: the class's own `Iterable<E>` element.
+  IrType? _iterableElementIr(Class node) {
+    final env = typeEnvironment;
+    if (env == null || !_translatedClass(node)) return null;
+    final element = _iterableElement(
+      node.getThisType(env.coreTypes, Nullability.nonNullable),
+    );
+    if (element == null) return null;
+    try {
+      return _typeNested(element);
+    } on Unsupported {
+      return null;
+    }
+  }
+
+  /// The `E` of the `Iterable<E>` a translated class is, or null.
+  DartType? _iterableElement(InterfaceType type) {
+    final env = typeEnvironment;
+    if (env == null) return null;
+    final iterable = env.coreTypes.iterableClass;
+    if (identical(type.classNode, iterable)) return null;
+    final asIterable = env.hierarchy.getTypeAsInstanceOf(type, iterable);
+    if (asIterable is! InterfaceType || asIterable.typeArguments.length != 1) {
+      return null;
+    }
+    return asIterable.typeArguments.single;
+  }
+
   IrExpr _receiver(Expression e) {
     final lowered = expression(e);
     final static = _staticType(e);
@@ -3827,7 +3872,7 @@ class KernelFrontend implements TypeWorld {
       final rust = listMethodNames[name];
       if (rust == null) throw Unsupported('`List.$name`', _sample(node));
       // A getter in Dart, a method in Rust: `xs.length` is `xs.len()`.
-      return IrCall(_receiver(node.receiver), rust, const []);
+      return IrCall(_listReceiver(node.receiver), rust, const []);
     }
     if (_isMapClass(listOwner)) {
       if (orderedMapMembers.contains(name)) {
@@ -4216,7 +4261,7 @@ class KernelFrontend implements TypeWorld {
     // The prelude's `Set::remove` takes the value by reference, like the
     // map's key (`_tickers.remove(ticker)`, 46).
     if (owner == 'Set' && name == 'remove' && args.length == 1) {
-      return IrCall(_receiver(node.receiver), '!map_remove', [
+      return IrCall(_listReceiver(node.receiver), '!map_remove', [
         _intoElement(
           args.single,
           node.arguments.positional.single,
@@ -4238,16 +4283,16 @@ class KernelFrontend implements TypeWorld {
           argType is InterfaceType &&
           (argType.classNode.name == 'double' ||
               argType.classNode.name == 'num')) {
-        return IrCall(_receiver(node.receiver), '!contains', [
+        return IrCall(_listReceiver(node.receiver), '!contains', [
           IrCast(args.single, 'i64'),
         ]);
       }
-      return IrCall(_receiver(node.receiver), '!contains', [
+      return IrCall(_listReceiver(node.receiver), '!contains', [
         _intoElement(args.single, node.arguments.positional.single, listType),
       ]);
     }
     if (owner == 'String' && name == '[]' && args.length == 1) {
-      return IrCall(_receiver(node.receiver), 'char_at', args);
+      return IrCall(_listReceiver(node.receiver), 'char_at', args);
     }
     // `trim()` and friends: `str::trim` hands back a `&str`, and being
     // inherent it wins over a trait method of the same name.
@@ -4259,22 +4304,22 @@ class KernelFrontend implements TypeWorld {
         'trimLeft': 'trim_left_dart',
         'trimRight': 'trim_right_dart',
       };
-      return IrCall(_receiver(node.receiver), spelled[name]!, const []);
+      return IrCall(_listReceiver(node.receiver), spelled[name]!, const []);
     }
     if (owner == 'String' && name == 'split' && args.length == 1) {
       // `s.split(p)`: Rust's `split` wants a `&str` and yields an iterator.
-      return IrCall(_receiver(node.receiver), 'split_dart', args);
+      return IrCall(_listReceiver(node.receiver), 'split_dart', args);
     }
     if (owner == 'String' && name == '*' && args.length == 1) {
       // `'0' * n`: Rust's `repeat` wants a `usize`.
-      return IrCall(_receiver(node.receiver), 'repeat_dart', args);
+      return IrCall(_listReceiver(node.receiver), 'repeat_dart', args);
     }
     if (owner == 'String' &&
         name == 'contains' &&
         (args.length == 1 || args.length == 2)) {
       // `contains(other, [start])`: `str::contains` is inherent, takes a
       // `&str`, and has no start; the prelude's `contains_dart` has both.
-      return IrCall(_receiver(node.receiver), 'contains_dart', [
+      return IrCall(_listReceiver(node.receiver), 'contains_dart', [
         args.first,
         if (args.length == 2) args[1] else IrLiteral('0', const IrType('int')),
       ]);
@@ -4282,23 +4327,25 @@ class KernelFrontend implements TypeWorld {
     if (owner == 'String' && name == 'startsWith' && args.length == 2) {
       // `startsWith(pattern, index)`: `str::starts_with` takes one argument
       // and, being inherent, would win over a trait method of the same name.
-      return IrCall(_receiver(node.receiver), 'starts_with_at', args);
+      return IrCall(_listReceiver(node.receiver), 'starts_with_at', args);
     }
     if (owner == 'String' && name == 'replaceRange' && args.length == 3) {
       // Dart's `replaceRange` returns a new string; Rust's `String` has an
       // inherent `replace_range` that mutates in place and takes a range,
       // and an inherent method shadows a trait's. So the prelude's is named
       // apart.
-      return IrCall(_receiver(node.receiver), 'replace_range_dart', args);
+      return IrCall(_listReceiver(node.receiver), 'replace_range_dart', args);
     }
     if (owner == 'Expando') {
       // `expando[object]` / `expando[object] = v`: identity-keyed, so the
       // prelude's `get`/`set` rather than an index. 6 uses.
       if (name == '[]' && args.length == 1) {
-        return IrCall(_receiver(node.receiver), '!expando_get', [args.single]);
+        return IrCall(_listReceiver(node.receiver), '!expando_get', [
+          args.single,
+        ]);
       }
       if (name == '[]=' && args.length == 2) {
-        return IrCall(_receiver(node.receiver), '!expando_set', args);
+        return IrCall(_listReceiver(node.receiver), '!expando_set', args);
       }
     }
     // A typed list with a narrow element -- `Float32List` is `Vec<f32>`,
@@ -4308,7 +4355,7 @@ class KernelFrontend implements TypeWorld {
     final narrow = _narrowElement(_staticType(node.receiver));
     if (narrow != null && name == '[]' && args.length == 1) {
       return IrCast(
-        IrIndex(_receiver(node.receiver), args.single),
+        IrIndex(_listReceiver(node.receiver), args.single),
         narrow.startsWith('f') ? 'f64' : 'i64',
       );
     }
@@ -4317,7 +4364,7 @@ class KernelFrontend implements TypeWorld {
       return IrBlockValue([
         IrLocalDecl(held, null, args[1]),
         IrIndexSet(
-          _receiver(node.receiver),
+          _listReceiver(node.receiver),
           args[0],
           IrCast(
             IrCall(IrLocal(held), 'clone', const [])
@@ -4332,7 +4379,7 @@ class KernelFrontend implements TypeWorld {
         // Typed by the list's element, which a generic class's `List<E?>`
         // keeps projected (`<E as DartNullable>::Or`) where the static type
         // of the read says a plain `E?`.
-        final list = _receiver(node.receiver);
+        final list = _listReceiver(node.receiver);
         final element = list.rustType?.arguments.length == 1
             ? list.rustType!.arguments.single
             : null;
@@ -4347,7 +4394,7 @@ class KernelFrontend implements TypeWorld {
         return IrBlockValue([
           IrLocalDecl(held, null, args[1]),
           IrIndexSet(
-            _receiver(node.receiver),
+            _listReceiver(node.receiver),
             args[0],
             IrCall(IrLocal(held), 'clone', const [])
               ..rustType = args[1].rustType,
@@ -4358,7 +4405,7 @@ class KernelFrontend implements TypeWorld {
       if (step != null && args.length == 1) {
         // A chain, extended rather than started again when the receiver is
         // already one: `xs.where(f).map(g)` is one `iter()`, not two.
-        final source = _receiver(node.receiver);
+        final source = _listReceiver(node.receiver);
         return source is IrIterChain
             ? IrIterChain(source.source, [...source.steps, (step, args.single)])
             : IrIterChain(source, [(step, args.single)]);
@@ -4371,7 +4418,7 @@ class KernelFrontend implements TypeWorld {
         final orElse = args[1];
         final omitted = orElse is IrLiteral && orElse.type.name == 'Null';
         return IrCall(
-          _receiver(node.receiver),
+          _listReceiver(node.receiver),
           omitted ? 'first_where' : 'first_where_or',
           omitted ? [args[0]] : args,
         );
@@ -4381,7 +4428,7 @@ class KernelFrontend implements TypeWorld {
         // returning an `int`, which the prelude's `sort_by_dart` turns into
         // an `Ordering`. 36 of these.
         return IrCall(
-          _receiver(node.receiver),
+          _listReceiver(node.receiver),
           args.isEmpty ? 'sort' : 'sort_by_dart',
           args,
         );
@@ -4394,7 +4441,7 @@ class KernelFrontend implements TypeWorld {
             const {'remove', 'indexOf', 'lastIndexOf'}.contains(name) &&
             args.length == 1;
         return IrCall(
-          _receiver(node.receiver),
+          _listReceiver(node.receiver),
           rust,
           byElement
               ? [
@@ -5338,6 +5385,13 @@ class KernelFrontend implements TypeWorld {
       // class's `List<E?>`) the prelude fills with `<E as DartNullable>::Or`
       // nulls, which nothing could infer (`HeapPriorityQueue._queue`, run436).
       final element = node.arguments.types.single;
+      // ..and a `dynamic` element (`List<Object?>`, which is one) holds
+      // its nulls as `Null` objects, not as `None`s (ws499).
+      final elementIr = _type(element);
+      if (elementIr.name == 'dynamic' && !elementIr.nullable) {
+        return IrStaticCall(null, 'vec_of_nulls', [expression(positional[0])])
+          ..rustType = IrType('List', arguments: [elementIr]);
+      }
       return IrStaticCall(
         null,
         'vec_of_nones',
@@ -9216,6 +9270,7 @@ class KernelFrontend implements TypeWorld {
           ? null
           : base.name,
       mixins: node.isEnum ? const [] : mixins,
+      iterableElement: node.isEnum ? null : _iterableElementIr(node),
       // The class's own `implements` clause. The applied mixins reached
       // through `implementedTypes` above belong to the *synthetic* classes on
       // the way up, not to this one, so the two lists do not overlap.

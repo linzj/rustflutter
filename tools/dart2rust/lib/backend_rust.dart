@@ -5167,8 +5167,57 @@ class RustBackend {
     _line('');
   }
 
+  /// `to_list` for a struct that *is* an `Iterable<E>` (`IrClass.
+  /// iterableElement`): its elements, walked off its own `iterator` --
+  /// what `Iterable`'s members and a `for-in` on it read (the front end's
+  /// `_listReceiver`; `Navigator`'s `_History`, ws499). Only where the
+  /// struct carries the getter itself.
+  void _emitToList() {
+    final element = cls.iterableElement;
+    if (element == null) return;
+    final getter = cls.methods
+        .where((m) => m.name == 'iterator' && m.isGetter && !m.isStatic)
+        .firstOrNull;
+    if (getter == null) return;
+    // Not a failing call: a `for-in` and a chain read the list where no
+    // `?` can go, so a failing `iterator` getter is an uncaught exception
+    // here, as it would be in Dart.
+    final fetched = getter.fails
+        ? 'match self.iterator() { Ok(__it) => __it, Err(__e) => panic!("uncaught Dart exception: {}", dart_str(&__e)) }'
+        : 'self.iterator()';
+    final element_ = type(element);
+    _line(
+      'pub fn to_list(&self) -> Vec<$element_> { '
+      'let __it = $fetched; let mut __out: Vec<$element_> = Vec::new(); '
+      'while __it.move_next() { __out.push(__it.current()); } __out }',
+    );
+  }
+
+  /// `NativeAnswer` for the struct or enum (see the prelude's): a native
+  /// declared to return one of its own (`dart:ui`'s `GlyphInfo`) reads the
+  /// host's object as it; without one there is no value to give.
+  void _emitNativeAnswer() {
+    final own = '${cls.name}${_generics(cls)}';
+    _line(
+      'impl${_generics(cls, static: true, clone: true)} NativeAnswer for $own {',
+    );
+    _indent++;
+    _line(
+      'fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self { '
+      'match answer.dart_cast_any::<Self>() { Some(value) => value, '
+      'None => panic!("native `{}` answered {:?} where ${cls.name} was declared", symbol, answer) } }',
+    );
+    _line(
+      'fn absent() -> Self { panic!("native answered nothing where ${cls.name} was declared") }',
+    );
+    _indent--;
+    _line('}');
+    _line('');
+  }
+
   void _emitDartNullable() {
     _emitFromDynamic();
+    _emitNativeAnswer();
     final own = '${cls.name}${_generics(cls)}';
     // The struct's own bounds, not an impl's: `Or` is `Option<Self>` and
     // asks nothing of `T`, and a `T: Clone` here would have shut the
@@ -6346,6 +6395,8 @@ class RustBackend {
   /// and no library declares: the crate-wide "was it translated" check has
   /// to know them, or `vec_of_nones(..)` reads as a call to nothing.
   static const _preludeFunctions = {
+    'dart_null_object',
+    'vec_of_nulls',
     'dart_native',
     'dart_native_as',
     'future_ready',
@@ -7345,6 +7396,7 @@ class RustBackend {
       _indent++;
     }
     _emitMethods();
+    _emitToList();
     _indent--;
     _line('}');
     if (_freeStatics(cls.name)) {

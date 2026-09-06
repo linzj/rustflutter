@@ -1062,6 +1062,7 @@ const listMethodNames = <String, String>{
   'skip': 'skip_dart',
   'take': 'take_dart',
   'add': 'push',
+  'iterator': 'iterator',
   'addAll': 'extend',
   'clear': 'clear',
   'isEmpty': 'is_empty',
@@ -1561,9 +1562,16 @@ class IrClass {
     this.values = const [],
     this.valueFields = const {},
     this.doc,
+    this.iterableElement,
   });
 
   final String name;
+
+  /// The element type when the class *is* an `Iterable<E>` (`_History
+  /// extends Iterable<_RouteEntry>`): the backend writes it a `to_list`
+  /// from its `iterator`, and `Iterable`'s members on it go through that
+  /// list (see the front end's `_listReceiver`).
+  final IrType? iterableElement;
 
   /// Wider instantiations of generic traits this class implements, each
   /// getting an impl of its own that forwards through the coercion rule:

@@ -6636,6 +6636,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws497 | 链：**1300**（−3），141。新 10/去 10：去掉的是 ws496 的 Set 一族；新的散在 `_clear_trackers`、`dart_ui.values`、intl 的 `parse_pattern` 等（待看）。 | |
 | run497 | **过了 JSON 编码**；停在 `PlatformDispatcher.__sendPlatformMessage`：AOT 的 FFI 变换给了它一个体（调 `$Method$FfiNative`），这条路一律 `todo!`，没走宿主边界。 | 有体的 `@Native` 成员带着 marker，同 `external` 的一样经 `_nativeBoundary`（`dart_native`/`dart_native_as`）交宿主。同批：`Object?` 即 `dynamic`（Dart 的两个顶类型是一个类型；`LocalizationsDelegate<dynamic>` 对 `<Object?>`，`WidgetsApp.build`），位置无关；由此每处按 Dart 可空性插的 unwrap 改为按记录的 Rust 类型（`_nullChecked`），late 局部量的 `Option` 在 Rust 类型层拼（`_localIrType`）。 |
 | ws498 | 链**坏了**：reachable 34。`_SaltedValueKey` 上 `impl ValueKey<Rc<dyn Object>>` 两份（E0119，函数体外）：census 按 IR 文本去重，`ValueKey<Object>` 和 `ValueKey<dynamic>` 文本不同、Rust 拼法相同（`Object?` 归 `dynamic` 后撞上）。 | 更宽的 impl 按 **Rust 类型**（`sameRust`）去重。同批：`toList` 按接收者拼出的 `Vec` 判。 |
+| ws499 | 链：**1372（+72）**，141。新 116/去 30：91 个是 `null` 进了 `dynamic` 槽还写成 `None`（省略的 `Object? aspect` 实参、`Object? value = null`）；`List<Object?>.filled` 填成 `Vec<Option<..>>`；FFI 变换过的 native 现在到边界了，返回 `Vec<i64>`/`Vec<f32>`/`GlyphInfo`/`LineMetrics` 没有 `NativeAnswer`（10）。 | `null` 进 `dynamic`/`Object` 槽即 `dart_null_object()`（`Null` 对象），排在 Option 规则之前；`dynamic` 元素的 filled 列表用 `vec_of_nulls`；`NativeAnswer` 给 `Vec<T: FromDynamic>`（缺席为空）和每个翻译的 struct/enum（缺席即 panic）。同批：**翻译类是 `Iterable<E>`** 的一族（`Navigator` 的 `_History`）：类带 `iterableElement`，后端从它的 `iterator` 写 `to_list()`，`Iterable` 成员、`for-in`、iterator 绑定都经 `_listReceiver` 走列表；prelude 给 `Vec`/`Set` 的 `iterator`（`DartIterable`）。 |
+| run499 | 停在宿主 `announce_view` 里的 `_update_user_settings_data`——正是上面的 `None` 进 `Rc<dyn Object>` 桩（`Object? value = null`）。 | 见 ws499。 |
 
 ## 下一步(2026-09-05 重铺)
 

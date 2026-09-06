@@ -147,6 +147,9 @@ fn send_platform_message(args: &[Rc<dyn Object>]) {
         .and_then(|a| a.as_any().downcast_ref::<String>().cloned())
         .unwrap_or_default();
     MESSAGES.with(|m| m.borrow_mut().push(name.clone()));
+    if std::env::var_os("DART2RUST_TRACE_MESSAGES").is_some() {
+        eprintln!("dart2rust runtime: platform message on {}", name);
+    }
     let callback = args.get(1).and_then(|a| {
         let any = a.as_any();
         any.downcast_ref::<MessageCallback>().cloned().or_else(|| {

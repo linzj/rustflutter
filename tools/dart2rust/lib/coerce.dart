@@ -226,6 +226,16 @@ IrExpr coerceInto(
   if ((slot.name == 'void' || slot.name == '()') && have.name == 'Null') {
     return IrLiteral('()', const IrType('raw'))..rustType = slot;
   }
+  // Dart's `null` where a `dynamic` goes: the `Null` object behind a
+  // handle (an omitted `Object? aspect`, a `Object? value = null`; 91
+  // `None` where an `Rc<dyn Object>` went once `Object?` was `dynamic`,
+  // ws499). Before the `Option` rules: the literal is a nullable `Null`,
+  // and mapping it through them made `None.as_ref().map(..)`.
+  if ((slot.name == 'dynamic' || slot.name == 'Object') &&
+      !isNullable(slot) &&
+      have.name == 'Null') {
+    return IrStaticCall(null, 'dart_null_object', const [])..rustType = slot;
+  }
   // The `Option` layer first: on, off, or mapped through.
   // A `dynamic` into a `T?` is null when it holds the `Null` object: the
   // prelude asks (`dart_nullable`), and the value inside goes on by the
@@ -351,7 +361,10 @@ IrExpr coerceInto(
   // Into `Object`: a handle unsizes, a value goes behind a fresh,
   // registered one.
   if (slotObject) {
-    if (haveObject || have.name == 'Null') return value;
+    if (haveObject) return value;
+    if (have.name == 'Null') {
+      return IrStaticCall(null, 'dart_null_object', const [])..rustType = slot;
+    }
     return IrUpcast(
       value,
       IrType('Object'),
