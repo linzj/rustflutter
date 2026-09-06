@@ -1438,6 +1438,22 @@ class RustBackend {
   /// the Dart means, since the inner access is about the inner value.
   static const _boundName = 'it';
 
+  /// An erased twin's result back to what the call declared (see the
+  /// prelude's `CastErased`). A projected `T?` -- this declaration's own
+  /// parameter, nullable -- has no `CastErased` of its own: the value
+  /// comes back as the `Option<T>` and goes out through `from_option`,
+  /// as any projected value does (`find<T>()` returning `T?`, ws496).
+  String _erasedCast(IrType resultType, String call) {
+    if (resultType.projected && resultType.nullable) {
+      final inner = type(
+        IrType(resultType.name, arguments: resultType.arguments),
+      );
+      return '<$inner as DartNullable>::from_option('
+          'dart_cast_erased::<Option<$inner>, _>($call))';
+    }
+    return 'dart_cast_erased::<${type(resultType)}, _>($call)';
+  }
+
   /// `a ?? b`, in the one of four spellings Rust needs.
   ///
   /// Two questions decide it, and both come from the front end because the IR
@@ -1452,7 +1468,14 @@ class RustBackend {
   ///   safe; 77% of upstream's right-hand sides are calls, constructors or
   ///   throws.
   String _ifNull(IrIfNull node) {
-    final left = expr(node.left);
+    // A `match` on a place moves out of it, and the place lives on
+    // (`final child = inactive ?? create(); if (inactive != null) ..` in
+    // `Element.inflateWidget`, ws494): a local or a field of `this` is
+    // read by clone.
+    final operand = node.left;
+    final left = operand is IrLocal
+        ? '${expr(operand)}.clone()'
+        : expr(operand);
     if (node.right is IrThrowValue) {
       // `a ?? throw e`. The closure forms are wrong here for the reason a try
       // body could not hold a `?`: the `return Err(e)` inside `unwrap_or_else`
@@ -3093,7 +3116,15 @@ class RustBackend {
       return '$receiver[$receiver.len() - 1]';
     }
     // Dart's `toList` on a list copies it, which is `clone`.
-    if (name == 'to_list') return '$receiver.clone()';
+    // `toList()` on a list is the list again; on any other collection --
+    // a `Set`, whose static owner is `Iterable` (ws496) -- the prelude's
+    // `to_list()`. Its `growable` is dropped either way.
+    if (name == 'to_list') {
+      final held = target?.rustType?.name;
+      return held == null || held == 'Vec' || held == 'List'
+          ? '$receiver.clone()'
+          : '$receiver.to_list()';
+    }
     // `Vec::len` gives a `usize` and Dart's `length` an `int`. Without the
     // cast every comparison against a loop counter fails to compile.
     if (name == 'len' && args.isEmpty) return '($receiver.len() as i64)';
@@ -3240,9 +3271,11 @@ class RustBackend {
         if (typeArguments.isNotEmpty &&
             resultType != null &&
             _fieldsAreAccessors) {
-          return 'dart_cast_erased::<${type(resultType)}, _>('
-              '<$selfType as $through${_traitArgsOf(through)}>::${_identifier(name)}__erased'
-              '(&*$_selfName${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate)';
+          return _erasedCast(
+            resultType,
+            '<$selfType as $through${_traitArgsOf(through)}>::${_identifier(name)}__erased'
+            '(&*$_selfName${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate',
+          );
         }
         return _asyncValue(
           '<$selfType as $through${_traitArgsOf(through)}>::${_identifier(name)}$turbofish'
@@ -3264,6 +3297,23 @@ class RustBackend {
           (library.isAbstract(qualifier) && (target == null || target is IrThis)
               ? '<${_inSuperFn ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
               : qualifier);
+      // A generic method of the trait, on `this` in a trait body through
+      // the qualified path: its erased twin, as the plain call goes (the
+      // method is `where Self: Sized` in the trait, and `__Self` may be
+      // the trait object -- `getInheritedWidgetOfExactType<T>` calling
+      // `getElementForInheritedWidgetOfExactType<T>`, ws494).
+      if (typeArguments.isNotEmpty &&
+          resultType != null &&
+          asTrait == null &&
+          library.isAbstract(qualifier) &&
+          (target == null || target is IrThis) &&
+          (_inSuperFn || _fieldsAreAccessors)) {
+        return _erasedCast(
+          resultType,
+          '$path::${_identifier(name)}__erased'
+          '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate',
+        );
+      }
       return _asyncValue(
         '$path::${_identifier(name)}$turbofish'
         '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})'
@@ -3305,13 +3355,15 @@ class RustBackend {
                 library.isAbstract(receiverClass) &&
                 (target is! IrThis || _fieldsAreAccessors)) ||
             (receiverClass == null && viaTrait))) {
-      return 'dart_cast_erased::<${type(resultType)}, _>('
-          '$receiver.${_identifier(name)}__erased'
-          '(${args.map(expr).join(', ')})$_propagate)';
+      return _erasedCast(
+        resultType,
+        '$receiver.${_identifier(name)}__erased'
+        '(${args.map(expr).join(', ')})$_propagate',
+      );
     }
     if (Platform.environment['DART2RUST_TRACE_BACKEND'] == name) {
       stderr.writeln(
-        'TRACE_BACKEND $name asyncFn=$asyncFn fails=$fails failing=$failing accessors=$_fieldsAreAccessors target=${target.runtimeType} self=$_selfName cls=${cls.name}',
+        'TRACE_BACKEND $name asyncFn=$asyncFn fails=$fails failing=$failing accessors=$_fieldsAreAccessors target=${target.runtimeType} self=$_selfName cls=${cls.name} receiverClass=$receiverClass resultType=$resultType typeArguments=$typeArguments qualifier=$qualifier',
       );
     }
     return _asyncValue(

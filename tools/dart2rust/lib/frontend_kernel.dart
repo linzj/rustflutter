@@ -4011,9 +4011,16 @@ class KernelFrontend implements TypeWorld {
         receiverClass.enclosingLibrary.importUri.scheme == 'dart';
     final generic = collectionReceiver ? null : _genericOnTrait(node, args);
     if (generic != null) return generic;
-    final owner = collectionReceiver
-        ? staticOwner
-        : node.interfaceTarget.enclosingClass?.name;
+    // The owner the lowering tables are keyed by is the *declaring* class
+    // (`Iterable` for a `Set`'s `any`, ws496) -- unless TFA devirtualised
+    // the target onto a translated class (`CanonicalizedMap.cast`), where
+    // the receiver's static collection is the owner.
+    final declaringOwner = node.interfaceTarget.enclosingClass;
+    final devirtualised =
+        collectionReceiver &&
+        declaringOwner != null &&
+        declaringOwner.enclosingLibrary.importUri.scheme != 'dart';
+    final owner = devirtualised ? staticOwner : declaringOwner?.name;
     // A `StreamView` subclass's inherited `listen` and friends act on the
     // `_stream` it carries (see `lowerClass`).
     final declaringStream = node.interfaceTarget.enclosingClass;
@@ -4532,6 +4539,31 @@ class KernelFrontend implements TypeWorld {
       node.interfaceTarget,
       receiver,
     );
+    // The call's own result type, on the call itself: the projection
+    // below wraps it, and `expression` types only the wrapper, which left
+    // a generic method's call untyped -- and the erased twin's cast back
+    // (`dart_cast_erased`) spells that type (`find<T>()` returning `T?`,
+    // ws496). A `T?` of this declaration's own parameter comes back
+    // projected (`<T as DartNullable>::Or`), as the callee's declared `T?`
+    // return does.
+    if (withTypeArgs) {
+      final static = _staticType(node);
+      if (static is TypeParameterType &&
+          static.nullability == Nullability.nullable &&
+          !_erasedParameter(static.parameter)) {
+        call.rustType = IrType(
+          static.parameter.name ?? 'T',
+          nullable: true,
+          projected: true,
+        );
+      } else if (static != null) {
+        try {
+          call.rustType = _type(static);
+        } on Unsupported {
+          // Untyped, as `expression` leaves it.
+        }
+      }
+    }
     // A projected result: into the `Option<T>` the caller works with.
     final declared = node.interfaceTarget.function?.returnType;
     return _acrossBinding(

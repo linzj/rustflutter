@@ -6021,55 +6021,164 @@ pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(value: &std::rc::R
     None
 }
 
-fn json_write(out: &mut String, value: &std::rc::Rc<dyn Object>) {
-    let any = value.as_any();
-    if let Some(s) = any.downcast_ref::<String>() {
-        out.push('"');
-        for c in s.chars() {
-            match c {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-                c => out.push(c),
-            }
+/// What a JSON value is written from: the scalars, `null`, a list, a map
+/// with string keys (Dart's encoder takes `Map<String, dynamic>`; a
+/// `dynamic` key that is a string passes too), and a `dynamic`, which is
+/// asked what it holds (`json_write`).
+pub trait JsonPiece {
+    fn json_write(&self, out: &mut String);
+}
+
+fn json_write_string(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
         }
-        out.push('"');
-    } else if let Some(i) = any.downcast_ref::<i64>() {
-        out.push_str(&i.to_string());
-    } else if let Some(d) = any.downcast_ref::<f64>() {
-        out.push_str(&d.to_string());
-    } else if let Some(b) = any.downcast_ref::<bool>() {
-        out.push_str(if *b { "true" } else { "false" });
-    } else if any.downcast_ref::<Null>().is_some() {
-        out.push_str("null");
-    } else if let Some(map) = any.downcast_ref::<Map<String, std::rc::Rc<dyn Object>>>() {
+    }
+    out.push('"');
+}
+
+impl JsonPiece for String {
+    fn json_write(&self, out: &mut String) {
+        json_write_string(out, self)
+    }
+}
+impl JsonPiece for i64 {
+    fn json_write(&self, out: &mut String) {
+        out.push_str(&self.to_string())
+    }
+}
+impl JsonPiece for f64 {
+    fn json_write(&self, out: &mut String) {
+        out.push_str(&self.to_string())
+    }
+}
+impl JsonPiece for bool {
+    fn json_write(&self, out: &mut String) {
+        out.push_str(if *self { "true" } else { "false" })
+    }
+}
+impl JsonPiece for Null {
+    fn json_write(&self, out: &mut String) {
+        out.push_str("null")
+    }
+}
+impl JsonPiece for () {
+    fn json_write(&self, out: &mut String) {
+        out.push_str("null")
+    }
+}
+impl<T: JsonPiece> JsonPiece for Option<T> {
+    fn json_write(&self, out: &mut String) {
+        match self {
+            Some(v) => v.json_write(out),
+            None => out.push_str("null"),
+        }
+    }
+}
+impl<T: JsonPiece> JsonPiece for Vec<T> {
+    fn json_write(&self, out: &mut String) {
+        out.push('[');
+        for (i, v) in self.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            v.json_write(out);
+        }
+        out.push(']');
+    }
+}
+impl<K: JsonKey, V: JsonPiece> JsonPiece for Map<K, V> {
+    fn json_write(&self, out: &mut String) {
         out.push('{');
         let mut first = true;
-        for entry in map.entries() {
+        for (k, v) in self.entries.iter() {
             if !first {
                 out.push(',');
             }
             first = false;
-            json_write(out, &(std::rc::Rc::new(entry.key.clone()) as std::rc::Rc<dyn Object>));
+            json_write_string(out, &k.json_key());
             out.push(':');
-            json_write(out, &entry.value);
+            v.json_write(out);
         }
         out.push('}');
-    } else if let Some(list) = any.downcast_ref::<Vec<std::rc::Rc<dyn Object>>>() {
-        out.push('[');
-        for (i, v) in list.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            json_write(out, v);
-        }
-        out.push(']');
-    } else {
-        panic!("dart2rust: JsonCodec.encode of a {}", value.runtime_type().name);
     }
+}
+impl JsonPiece for std::rc::Rc<dyn Object> {
+    fn json_write(&self, out: &mut String) {
+        json_write(out, self)
+    }
+}
+
+/// A map's key as JSON's string: a `String`, or a `dynamic` holding one
+/// (Dart's encoder refuses any other key).
+pub trait JsonKey {
+    fn json_key(&self) -> String;
+}
+impl JsonKey for String {
+    fn json_key(&self) -> String {
+        self.clone()
+    }
+}
+impl JsonKey for std::rc::Rc<dyn Object> {
+    fn json_key(&self) -> String {
+        match self.as_any().downcast_ref::<String>() {
+            Some(s) => s.clone(),
+            None => panic!("uncaught Dart exception: JsonUnsupportedObjectError: a map key of type '{}'", self.runtime_type().name),
+        }
+    }
+}
+impl<K: JsonKey> JsonKey for Option<K> {
+    fn json_key(&self) -> String {
+        match self {
+            Some(k) => k.json_key(),
+            None => panic!("uncaught Dart exception: JsonUnsupportedObjectError: a null map key"),
+        }
+    }
+}
+
+/// A `dynamic` written as JSON: asked, by type, for each shape a value
+/// can be boxed as -- the scalars, `null`, and the lists and maps of
+/// those and of `dynamic`, two levels deep. The table, not a rule: a
+/// boxed `Vec<String>` is its own type behind the handle, and nothing
+/// but a list of shapes can find it (`JSONMethodCodec.encodeMethodCall`'s
+/// `<String, Object?>{'method': .., 'args': ..}`, run496).
+macro_rules! json_dynamic_shapes {
+    ($out:ident, $any:ident; $($t:ty),* $(,)?) => {
+        $(
+            if let Some(v) = $any.downcast_ref::<$t>() {
+                v.json_write($out);
+                return;
+            }
+        )*
+    };
+}
+
+macro_rules! json_dynamic_containers {
+    ($out:ident, $any:ident; $($e:ty),* $(,)?) => {
+        $(
+            json_dynamic_shapes!($out, $any; Vec<$e>, Map<String, $e>, Map<std::rc::Rc<dyn Object>, $e>, Map<Option<std::rc::Rc<dyn Object>>, $e>);
+        )*
+    };
+}
+
+fn json_write(out: &mut String, value: &std::rc::Rc<dyn Object>) {
+    let any = value.as_any();
+    json_dynamic_shapes!(out, any; String, i64, f64, bool, Null, (), Option<std::rc::Rc<dyn Object>>, Option<String>, Option<i64>, Option<f64>, Option<bool>);
+    json_dynamic_containers!(out, any; std::rc::Rc<dyn Object>, Option<std::rc::Rc<dyn Object>>, String, Option<String>, i64, Option<i64>, f64, Option<f64>, bool, Option<bool>);
+    json_dynamic_containers!(out, any;
+        Vec<std::rc::Rc<dyn Object>>, Vec<Option<std::rc::Rc<dyn Object>>>, Vec<String>, Vec<i64>, Vec<f64>, Vec<bool>,
+        Map<String, std::rc::Rc<dyn Object>>, Map<String, Option<std::rc::Rc<dyn Object>>>, Map<String, String>, Map<String, i64>, Map<String, f64>, Map<String, bool>,
+        Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>, Map<std::rc::Rc<dyn Object>, Option<std::rc::Rc<dyn Object>>>,
+        Map<Option<std::rc::Rc<dyn Object>>, Option<std::rc::Rc<dyn Object>>>);
+    panic!("dart2rust: JsonCodec.encode of a {}", value.runtime_type().name);
 }
 
 /// `dart:convert`'s `utf8`, a `const Utf8Codec()`: a name for now.
