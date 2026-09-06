@@ -463,13 +463,20 @@ impl<F: ?Sized> DartNullable for std::pin::Pin<Box<F>> {
         option
     }
 }
-impl<T: ?Sized> DartNullable for std::rc::Rc<T> {
+impl<T: ?Sized + 'static> DartNullable for std::rc::Rc<T> {
     type Or = Option<Self>;
     fn option(or: Option<Self>) -> Option<Self> {
         or
     }
     fn from_option(option: Option<Self>) -> Option<Self> {
         option
+    }
+    /// A `dynamic` (`Rc<dyn Object>`) has a null of its own, the `Null`
+    /// object; a handle to anything else has none (`Future<dynamic>.
+    /// value()` for a deferred library's `loadLibrary()`, run583).
+    fn dart_null() -> Option<Self> {
+        let boxed: Box<dyn std::any::Any> = Box::new(dart_null_object());
+        boxed.downcast::<Self>().ok().map(|b| *b)
     }
 }
 impl<T> DartNullable for Vec<T> {
@@ -1604,6 +1611,23 @@ impl<T: DartEq + Clone> Set<T> {
     /// `addAll(Iterable)`: a `Vec`, another `Set`, whatever iterates
     /// (`_dirtyNodes.addAll(previousPath.difference(nextPath))` handed a
     /// `Set` where only a `Vec` was taken, `FocusManager`, ws537).
+    /// `removeAll` / `retainAll` / `containsAll` (`RenderObject.
+    /// updateChildren`'s `oldChildren.removeAll(..)`, ws579).
+    pub fn remove_all(&mut self, values: impl IntoIterator<Item = T>) {
+        for value in values {
+            self.remove(&value);
+        }
+    }
+
+    pub fn retain_all(&mut self, values: impl IntoIterator<Item = T>) {
+        let keep: Vec<T> = values.into_iter().collect();
+        self.items.retain(|item| keep.iter().any(|k| k.dart_eq(item)));
+    }
+
+    pub fn contains_all(&self, values: impl IntoIterator<Item = T>) -> bool {
+        values.into_iter().all(|v| self.dart_contains(&v))
+    }
+
     pub fn add_all(&mut self, values: impl IntoIterator<Item = T>) {
         for value in values {
             self.add(value);
@@ -4789,6 +4813,11 @@ pub trait DartString {
     /// or after `start_index` (Dart's optional third parameter, which the
     /// front end fills in; `GoogleFontsVariant.toString`, ws563).
     fn dart_replace_first(&self, from: String, to: String, start_index: i64) -> String;
+    /// `startsWith(other)` / `endsWith(other)` with a `String`, which is
+    /// no `Pattern` for `str`'s own (the backend routes the Dart names
+    /// here, see `_stdShadowed`).
+    fn dart_starts_with(&self, other: String) -> bool;
+    fn dart_ends_with(&self, other: String) -> bool;
     fn is_not_empty(&self) -> bool;
     fn pad_left(&self, width: i64, padding: String) -> String;
     fn pad_right(&self, width: i64, padding: String) -> String;
@@ -4849,6 +4878,14 @@ impl DartString for String {
             .find(|&i| units[i..i + needle.len()] == needle[..])
             .map(|i| i as i64)
             .unwrap_or(-1)
+    }
+
+    fn dart_starts_with(&self, other: String) -> bool {
+        str::starts_with(self, other.as_str())
+    }
+
+    fn dart_ends_with(&self, other: String) -> bool {
+        str::ends_with(self, other.as_str())
     }
 
     fn dart_replace_first(&self, from: String, to: String, start_index: i64) -> String {
@@ -5875,6 +5912,19 @@ impl<T> FutureOr<T> {
     pub fn future(future: DartFuture<T>) -> Self {
         FutureOr::Future(future)
     }
+}
+
+/// `FutureOr::value` / `FutureOr::future` with `T` spelled (a free
+/// function takes the turbofish where an associated one would not): a
+/// `then` callback's `FutureOr<Rc<dyn GalleryLocalizations>>` inferred as
+/// the concrete `Rc<GalleryLocalizationsZu>` inside otherwise, and failed
+/// the `IntoFutureOr<R>` bound (ws582).
+pub fn future_or_value<T>(value: T) -> FutureOr<T> {
+    FutureOr::Value(Some(value))
+}
+
+pub fn future_or_future<T>(future: DartFuture<T>) -> FutureOr<T> {
+    FutureOr::Future(future)
 }
 
 impl<T> Unpin for FutureOr<T> {}

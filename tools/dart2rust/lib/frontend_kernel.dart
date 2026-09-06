@@ -1412,6 +1412,24 @@ class KernelFrontend implements TypeWorld {
     if (node is InstanceGet) return _instanceGet(node);
     if (node is StaticGet) return _staticGet(node);
     if (node is InstanceInvocation) return _instanceInvocation(node);
+    // A deferred import is linked like any other here: `loadLibrary()`
+    // is a future already done with null, and the CFE's check before a
+    // use of the library is null itself (the generated localizations'
+    // `lookupGalleryLocalizations`, run579).
+    if (node is LoadLibrary) {
+      // `Future<dynamic>.value()`: the `null` of `dynamic` (the slot is
+      // the projected `Option<Rc<dyn Object>>`, ws580).
+      return IrStaticCall(
+        'Future',
+        'value',
+        const [],
+        typeArguments: const [IrType('dynamic')],
+      )..rustType = const IrType('Future', arguments: [IrType('dynamic')]);
+    }
+    if (node is CheckLibraryIsLoaded) {
+      return IrStaticCall(null, 'dart_null_object', const [])
+        ..rustType = const IrType('dynamic');
+    }
     if (node is BlockExpression) return _blockValue(node);
     if (node is FunctionInvocation) {
       // A call through a function value: no callee to read defaults from,
@@ -2551,6 +2569,29 @@ class KernelFrontend implements TypeWorld {
 
   /// The cascade's receiver: the bound local, or the static it acts on.
   IrExpr _cascadeRead() => _cascadeStatic ?? IrLocal(_cascadeName);
+
+  /// The element type of a `dart:core` list literal factory
+  /// (`_GrowableList._literalN<E>(..)`, `_List._literalN`), or null for
+  /// any other invocation.
+  DartType? _coreListLiteral(StaticInvocation node) {
+    final target = node.target;
+    final owner = target.enclosingClass;
+    if (owner == null ||
+        !(owner.name == '_GrowableList' || owner.name == '_List') ||
+        !target.name.text.startsWith('_literal') ||
+        target.enclosingLibrary.importUri.toString() != 'dart:core') {
+      return null;
+    }
+    return node.arguments.types.singleOrNull ?? const DynamicType();
+  }
+
+  /// `dynamic`, `Object?`, `void`: a slot that takes anything.
+  static bool _isTopType(DartType t) =>
+      t is DynamicType ||
+      t is VoidType ||
+      (t is InterfaceType &&
+          t.classNode.name == 'Object' &&
+          t.nullability == Nullability.nullable);
 
   /// `let` temporaries that stand for the place they were bound to.
   final _letAliases = <Variable, Expression>{};
@@ -4363,14 +4404,25 @@ class KernelFrontend implements TypeWorld {
   final _switchBreaks = <LabeledStatement>{};
   final _droppableBreaks = <BreakStatement>{};
 
-  /// A case body, with its trailing `break` marked as droppable.
+  /// A case body, with its trailing `break` marked as droppable -- the
+  /// trailing statement through nested blocks (`{ { switch (..) {..}
+  /// break #L; } }`, a nested switch's case).
   IrStmt _caseBody(Statement body) {
-    final last = body is Block && body.statements.isNotEmpty
-        ? body.statements.last
-        : body;
+    final last = _trailingStatement(body);
     if (last is BreakStatement) _droppableBreaks.add(last);
     return statement(body);
   }
+
+  static Statement _trailingStatement(Statement body) {
+    var last = body;
+    while (last is Block && last.statements.isNotEmpty) {
+      last = last.statements.last;
+    }
+    return last;
+  }
+
+  /// Switches whose `break`s leave a labelled block around the match.
+  final _labeledSwitches = <LabeledStatement, String>{};
 
   /// Labelled statements a `break` should leave, and the Rust label to use --
   /// null when a bare `break` will do.
@@ -4462,11 +4514,22 @@ class KernelFrontend implements TypeWorld {
 
   IrStmt _loopBody(Statement body, bool hasUpdates) {
     if (body is! LabeledStatement) return statement(body);
-    if (hasUpdates) {
+    // ..and when the body holds a switch that leaves early through a
+    // labelled block (see the labelled-switch lowering), Rust wants the
+    // `continue` labelled too (E0695): the body is the labelled block the
+    // CFE wrote, and the continue breaks out of it (`Navigator.
+    // _flushHistoryUpdates`, ws582).
+    if (hasUpdates || _holdsEarlySwitch(body.body)) {
       return IrLabeled(_labelFor(body), statement(body.body));
     }
     _continueTargets.add(body);
     return statement(body.body);
+  }
+
+  static bool _holdsEarlySwitch(Statement body) {
+    final finder = _EarlySwitchFinder();
+    body.accept(finder);
+    return finder.found;
   }
 
   // A `Let`'s variable is a `SyntheticVariable`, not a `VariableDeclaration`:
@@ -4898,6 +4961,51 @@ class KernelFrontend implements TypeWorld {
     _dispatchMember = dispatchOriginal is Procedure ? dispatchOriginal : null;
     _dispatchReceiverType = receiverType;
     _dispatchInterface = node.interfaceTarget.function;
+    // A prelude method's slots as its sibling declares them
+    // (`preludeSiblings`: `Set.removeAll(Iterable<Object?>)` takes the
+    // set's own `E` here, as `addAll` does), instantiated with the
+    // receiver's type arguments.
+    final interface = node.interfaceTarget;
+    final sibling = interface is Procedure
+        ? _preludeDeclaration(interface)
+        : null;
+    final calleeFunction = sibling?.function ?? interface.function;
+    FunctionType? instantiated = node.functionType;
+    if (sibling != null && !identical(sibling, interface)) {
+      final own = sibling.function.computeFunctionType(Nullability.nonNullable);
+      instantiated = receiverType is InterfaceType
+          ? Substitution.fromInterfaceType(receiverType).substituteType(own)
+                as FunctionType
+          : own;
+    } else if (interface is Procedure &&
+        interface.enclosingClass != null &&
+        preludeSiblings.containsKey(
+          '${interface.enclosingClass!.name}.${interface.name.text}',
+        ) &&
+        receiverType is InterfaceType &&
+        receiverType.typeArguments.isNotEmpty) {
+      // The sibling itself was tree-shaken out of the dill: the slots it
+      // would have declared, spelled directly -- an `Iterable<Object?>`
+      // parameter takes the collection's own elements.
+      final element = receiverType.typeArguments.first;
+      final own = interface.function.computeFunctionType(
+        Nullability.nonNullable,
+      );
+      DartType elements(DartType p) =>
+          p is InterfaceType &&
+              p.classNode.name == 'Iterable' &&
+              p.typeArguments.length == 1 &&
+              _isTopType(p.typeArguments.single)
+          ? InterfaceType(p.classNode, p.nullability, [element])
+          : p;
+      instantiated = FunctionType(
+        [for (final p in own.positionalParameters) elements(p)],
+        own.returnType,
+        Nullability.nonNullable,
+        namedParameters: own.namedParameters,
+        requiredParameterCount: own.requiredParameterCount,
+      );
+    }
     final List<IrExpr> args;
     try {
       // With the call's type arguments for the method's own parameters,
@@ -4905,13 +5013,13 @@ class KernelFrontend implements TypeWorld {
       // (result)` inside `maybePop<T>` binds the callee's `T` to the
       // caller's, which a projected `T?` slot has to know (19 at ws421).
       args = _withGenericArgs(
-        node.interfaceTarget.function,
+        calleeFunction,
         node.arguments,
         () => _arguments(
           node.arguments,
-          node.interfaceTarget.function,
+          calleeFunction,
           true,
-          node.functionType,
+          instantiated,
           null,
           null,
           _narrowSlots(node),
@@ -6495,6 +6603,14 @@ class KernelFrontend implements TypeWorld {
     'LinkedHashSet.from': 'of',
     'HashMap.from': 'of',
     'LinkedHashMap.from': 'of',
+    // `List.unmodifiable(Iterable)` / `Map.unmodifiable(Map)`: copies,
+    // as `of`. `Set.removeAll(Iterable<Object?>)` and its siblings take
+    // the set's own elements here, as `addAll(Iterable<E>)` does (ws580).
+    'List.unmodifiable': 'of',
+    'Map.unmodifiable': 'of',
+    'Set.removeAll': 'addAll',
+    'Set.retainAll': 'addAll',
+    'Set.containsAll': 'addAll',
   };
 
   Procedure _preludeDeclaration(Procedure target) {
@@ -6503,7 +6619,9 @@ class KernelFrontend implements TypeWorld {
     final sibling = preludeSiblings['${owner.name}.${target.name.text}'];
     if (sibling == null) return target;
     for (final p in owner.procedures) {
-      if (p.isStatic &&
+      // ..of the same kind: a factory's sibling is a factory, an instance
+      // method's (`Set.removeAll` -> `addAll`) an instance method.
+      if (p.isStatic == target.isStatic &&
           p.name.text == sibling &&
           p.function.positionalParameters.length ==
               target.function.positionalParameters.length) {
@@ -7814,7 +7932,18 @@ class KernelFrontend implements TypeWorld {
   }) {
     // A literal into a collection slot of other element types is lowered
     // again against those: see `_mapLiteral`.
-    if (param is InterfaceType && param.nullability != Nullability.nullable) {
+    // ..not into a prelude callee's slot whose element types are top
+    // types: `List.unmodifiable(Iterable)`, `Set.removeAll(Iterable<
+    // Object?>)` are generic over what they are given, and a `[3, 1, 2]`
+    // re-lowered as `Vec<Rc<dyn Object>>` fit neither (ws580).
+    final rawSlot =
+        !translated &&
+        param is InterfaceType &&
+        param.typeArguments.isNotEmpty &&
+        param.typeArguments.every(_isTopType);
+    if (param is InterfaceType &&
+        param.nullability != Nullability.nullable &&
+        !rawSlot) {
       final args = param.typeArguments;
       if (value is MapLiteral &&
           param.classNode.name == 'Map' &&
@@ -7828,6 +7957,25 @@ class KernelFrontend implements TypeWorld {
           args.length == 1 &&
           args[0] != value.typeArgument) {
         return _listLiteral(value, args[0]);
+      }
+      // ..and the AOT dill's spelling of one, `_GrowableList._literal3<
+      // dynamic>(3, 1, 2)`: its elements lowered again against the slot's
+      // element type (`List<int>.unmodifiable([3, 1, 2])`, ws580).
+      final core = value is StaticInvocation ? _coreListLiteral(value) : null;
+      if (core != null &&
+          (param.classNode.name == 'List' ||
+              param.classNode.name == 'Iterable') &&
+          args.length == 1 &&
+          args[0] != core) {
+        final elements = (value as StaticInvocation).arguments.positional;
+        return IrListLiteral([
+          for (final e in elements)
+            _widened(
+              e,
+              args[0],
+              _withExpectedReturn(args[0], e, () => expression(e)),
+            ),
+        ], _type(args[0]));
       }
     }
     // ..and a record literal into a record slot of other field types: its
@@ -9638,11 +9786,16 @@ class KernelFrontend implements TypeWorld {
       if (body is SwitchStatement) {
         // The CFE wraps a switch in a label so that `break` has something to
         // point at. In Rust a match arm simply ends, so that `break` is
-        // nothing -- but only the one at the *end* of a case. One in the
-        // middle would be leaving the switch early, which a match arm cannot
-        // do, so it is refused rather than dropped.
+        // nothing -- but only the one at the *end* of a case (through the
+        // blocks a nested switch's case leaves it in). One in the middle
+        // leaves the switch early, which a match arm cannot do on its own:
+        // then the match sits in a labelled block and the break names it
+        // (the generated `lookupGalleryLocalizations`, run581).
         _switchBreaks.add(node);
-        return statement(body);
+        final early = _SwitchBreakFinder.earlyBreaks(node, body);
+        if (early.isEmpty) return statement(body);
+        _labeledSwitches[node] = _labelFor(node);
+        return IrLabeled(_labelFor(node), statement(body));
       }
       if (body is WhileStatement ||
           body is ForStatement ||
@@ -9671,13 +9824,15 @@ class KernelFrontend implements TypeWorld {
     if (node is BreakStatement) {
       final target = node.target;
       if (_switchBreaks.contains(target)) {
-        if (!_droppableBreaks.contains(node)) {
+        if (_droppableBreaks.contains(node)) return const IrBlock([]);
+        final label = _labeledSwitches[target];
+        if (label == null) {
           throw Unsupported(
             'break out of a switch from inside a case',
             _sample(node),
           );
         }
-        return const IrBlock([]);
+        return IrBreak(label);
       }
       if (_continueTargets.contains(target)) return const IrContinue();
       if (_breakTargets.containsKey(target))
@@ -12611,6 +12766,62 @@ class _ReferenceCollector extends RecursiveVisitor {
         _constant(entry.value);
       }
     }
+  }
+}
+
+/// Whether a statement holds a labelled switch that some `break` leaves
+/// early (see `_loopBody`).
+class _EarlySwitchFinder extends RecursiveVisitor {
+  bool found = false;
+
+  @override
+  void visitLabeledStatement(LabeledStatement node) {
+    if (found) return;
+    final body = node.body;
+    if (body is SwitchStatement &&
+        _SwitchBreakFinder.earlyBreaks(node, body).isNotEmpty) {
+      found = true;
+      return;
+    }
+    super.visitLabeledStatement(node);
+  }
+
+  @override
+  void visitFunctionNode(FunctionNode node) {}
+}
+
+/// The `break`s out of a labelled switch that are not the trailing
+/// statement of their case body (see `_caseBody`).
+class _SwitchBreakFinder extends RecursiveVisitor {
+  _SwitchBreakFinder(this.label, this.trailing);
+
+  final LabeledStatement label;
+  final Set<BreakStatement> trailing;
+  final List<BreakStatement> found = [];
+
+  static List<BreakStatement> earlyBreaks(
+    LabeledStatement label,
+    SwitchStatement body,
+  ) {
+    final trailing = <BreakStatement>{};
+    for (final c in body.cases) {
+      final last = KernelFrontend._trailingStatement(c.body);
+      if (last is BreakStatement) trailing.add(last);
+    }
+    final finder = _SwitchBreakFinder(label, trailing);
+    body.accept(finder);
+    return finder.found;
+  }
+
+  @override
+  void visitBreakStatement(BreakStatement node) {
+    if (node.target == label && !trailing.contains(node)) found.add(node);
+    super.visitBreakStatement(node);
+  }
+
+  @override
+  void visitFunctionNode(FunctionNode node) {
+    // A closure's own breaks are its own.
   }
 }
 

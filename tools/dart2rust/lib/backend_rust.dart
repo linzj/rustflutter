@@ -1954,7 +1954,13 @@ class RustBackend {
 
   /// `List.generate(n, f)` and friends, which are Dart's list constructors
   /// wearing a static's clothes. Rust builds a `Vec` from an iterator.
-  static const _listStatics = {'generate', 'filled', 'from', 'of'};
+  static const _listStatics = {
+    'generate',
+    'filled',
+    'from',
+    'of',
+    'unmodifiable',
+  };
 
   /// A value spelled projected (`<T as DartNullable>::Or`, a read out of
   /// a `Vec<T?>` or a generic accessor) where an `Option` operation --
@@ -2275,12 +2281,15 @@ class RustBackend {
       if (name == 'filled' && args.length == 2) {
         return 'vec![${expr(args[1])}; ${expr(args[0])} as usize]';
       }
-      if ((name == 'from' || name == 'of') && args.length == 1) {
+      // ..and `List.unmodifiable(xs)`: a copy that nothing here writes to.
+      if ((name == 'from' || name == 'of' || name == 'unmodifiable') &&
+          args.length == 1) {
         return '${expr(args[0])}.clone()';
       }
       // `List.from(xs, growable: false)`: a `Vec` is always growable and a
       // copy is a copy; the flag changes nothing that can be said here.
-      if ((name == 'from' || name == 'of') && args.length == 2) {
+      if ((name == 'from' || name == 'of' || name == 'unmodifiable') &&
+          args.length == 2) {
         return '${expr(args[0])}.clone()';
       }
       if (name == 'empty' && args.isEmpty) return 'Vec::new()';
@@ -3181,6 +3190,7 @@ class RustBackend {
     'pop_front',
     'pop_back',
     'remove_all',
+    'retain_all',
     'set_range',
     'fill_range',
     'shuffle',
@@ -7485,6 +7495,8 @@ class RustBackend {
     'dart_shl',
     'dart_identical',
     'dart_boxed',
+    'future_or_value',
+    'future_or_future',
     'dart_shr',
     'dart_ushr',
     'vec_of_nulls',
@@ -10313,7 +10325,13 @@ class RustBackend {
   /// `dart:core` methods whose snake-cased name is an *unstable* inherent
   /// method of Rust's std, which outranks any trait's: spelled by the
   /// prelude's own name (`String.replaceFirst`, E0658 16 at ws465).
-  static const _stdShadowed = {'replaceFirst': 'dart_replace_first'};
+  static const _stdShadowed = {
+    'replaceFirst': 'dart_replace_first',
+    // `str::starts_with`/`ends_with` take a `Pattern`, which a `String`
+    // is not (`_findFamilyWithVariantAssetPath`, ws579).
+    'startsWith': 'dart_starts_with',
+    'endsWith': 'dart_ends_with',
+  };
 }
 
 /// Finds, in one method body, whether it writes a field of `this` and which of

@@ -380,16 +380,20 @@ IrExpr coerceInto(
   if (slot.name == 'FutureOr' &&
       slot.arguments.length == 1 &&
       have.name != 'FutureOr') {
+    // With the slot's `T` spelled: inferred from a concrete value inside
+    // (`Rc<GalleryLocalizationsZu>` where `Rc<dyn GalleryLocalizations>`
+    // was the slot), the `FutureOr` was the wrong one for `then`'s bound.
+    final held = slot.arguments.single;
+    final spelled = _spellable(held) ? [held] : const <IrType>[];
     if (have.name == 'Future' && have.arguments.length == 1) {
-      return IrStaticCall('FutureOr', 'future', [value])..rustType = slot;
+      return IrStaticCall(null, 'future_or_future', [
+        value,
+      ], typeArguments: spelled)..rustType = slot;
     }
-    final inner = coerceInto(
-      value,
-      slot.arguments.single,
-      world,
-      inClosure: inClosure,
-    );
-    return IrStaticCall('FutureOr', 'value', [inner])..rustType = slot;
+    final inner = coerceInto(value, held, world, inClosure: inClosure);
+    return IrStaticCall(null, 'future_or_value', [
+      inner,
+    ], typeArguments: spelled)..rustType = slot;
   }
   // A bare `Function` (`dart:core`'s, no signature) is spelled as the
   // object it is (`Rc<dyn Object>`, the backend's type table), so into
@@ -715,6 +719,16 @@ const preludeValueTypes = {
 };
 
 const _dynamicType = IrType('dynamic');
+
+/// Whether a type can be written as a turbofish: no placeholder in it.
+bool _spellable(IrType t) {
+  if (t.name == '_' || t.name == 'raw' || t.name.isEmpty) return false;
+  if (t.isFunction) {
+    return (t.parameters ?? const []).every(_spellable) &&
+        (t.returns == null || _spellable(t.returns!));
+  }
+  return t.arguments.every(_spellable);
+}
 
 /// A function value as the prelude's `DartFunction` (see
 /// `dart_function_object`): bound first (a closure literal shared, with its
