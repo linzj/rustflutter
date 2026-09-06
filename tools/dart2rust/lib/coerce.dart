@@ -236,6 +236,10 @@ IrExpr coerceInto(
       have.name == 'Null') {
     return IrStaticCall(null, 'dart_null_object', const [])..rustType = slot;
   }
+  // ..and into any `Option` it is the `None` it already is: mapped through
+  // the rules below, `null` into a `dynamic?` was `None.as_ref().map(..)`,
+  // which types nothing (E0282, ws501).
+  if (isNullable(slot) && !slot.projected && have.name == 'Null') return value;
   // The `Option` layer first: on, off, or mapped through.
   // A `dynamic` into a `T?` is null when it holds the `Null` object: the
   // prelude asks (`dart_nullable`), and the value inside goes on by the

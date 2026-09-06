@@ -754,7 +754,25 @@ class KernelFrontend implements TypeWorld {
     }
     if (lowered.rustType == null) {
       final static = _staticType(node);
-      if (static != null) {
+      // A member declared `T?` with `T` bound to a top type reads as the
+      // `Option<Rc<dyn Object>>` Rust's `Or` is for a handle, not as the
+      // bare `dynamic` Kernel's substitution wrote (`_imageStream?.key`,
+      // `raw[id]` on a `Map<String, Object?>`, ws499); `coerce` converts
+      // it into a `dynamic` slot from there.
+      final projected = switch (node) {
+        InstanceInvocation(:final interfaceTarget) => _topBound(
+          interfaceTarget.function?.returnType,
+          static,
+        ),
+        InstanceGet(:final interfaceTarget) => _topBound(
+          interfaceTarget.getterType,
+          static,
+        ),
+        _ => null,
+      };
+      if (projected != null) {
+        lowered.rustType = projected;
+      } else if (static != null) {
         try {
           lowered.rustType = _type(static);
         } on Unsupported {
@@ -765,6 +783,27 @@ class KernelFrontend implements TypeWorld {
       }
     }
     return lowered;
+  }
+
+  /// `dynamic?`, the `Option<Rc<dyn Object>>` a nullable type parameter is
+  /// once bound to a top type (`Object?`, `dynamic`): what the Rust side
+  /// holds for it (`<Rc<dyn Object> as DartNullable>::Or`), where the
+  /// substituted Dart type says only `Object?` -- a `dynamic` here. Null
+  /// for any other declared type or binding.
+  IrType? _topBound(DartType? declared, DartType? substituted) {
+    if (declared is! TypeParameterType ||
+        declared.nullability != Nullability.nullable ||
+        _erasedParameter(declared.parameter)) {
+      return null;
+    }
+    final top =
+        substituted is DynamicType ||
+        (substituted is InterfaceType &&
+            substituted.classNode.name == 'Object' &&
+            substituted.classNode.enclosingLibrary.importUri.toString() ==
+                'dart:core' &&
+            substituted.nullability == Nullability.nullable);
+    return top ? const IrType('dynamic', nullable: true) : null;
   }
 
   /// `x!`, and every unwrap the lowering adds on Dart's word that a value
@@ -1203,9 +1242,22 @@ class KernelFrontend implements TypeWorld {
       // Operands of one Rust type: the right to the left's, else the left
       // to the right's (`data.previousSibling == after`, an erased
       // `RenderObject?` read against a `RenderBox?`, 47 at ws379).
+      // ..and of one nullability: a `dynamic?` -- a `T?` read bound to a
+      // top type, `raw[id]` -- against a `dynamic` (ws501); the bare side
+      // goes into the `Option` (Dart's `null` there is `None`).
       final lt = left.rustType;
       final rt = right.rustType;
       if (coerceByType &&
+          lt != null &&
+          rt != null &&
+          _normalName(lt.name) == _normalName(rt.name) &&
+          isNullable(lt) != isNullable(rt)) {
+        if (isNullable(lt)) {
+          right = coerce(right, lt);
+        } else {
+          left = coerce(left, rt);
+        }
+      } else if (coerceByType &&
           lt != null &&
           rt != null &&
           _normalName(lt.name) != _normalName(rt.name)) {
@@ -5781,9 +5833,13 @@ class KernelFrontend implements TypeWorld {
           value,
           paramType,
           lowered,
+          // A `T?` slot with `T` bound to a top type is the `Option<Rc<dyn
+          // Object>>` the callee holds (`_topBound`; `DiagnosticsProperty<
+          // Object?>(value: ..)`, ws499).
           slotIr:
               slotIr ??
               _landingSlotIr(callee: callee, index: index) ??
+              _topBound(declaredType, paramType) ??
               _genericSlotIr(callee, declaredType),
         ),
       ),
@@ -5922,6 +5978,7 @@ class KernelFrontend implements TypeWorld {
                 callee: callee,
                 name: param is FunctionParameter ? param.parameterName : null,
               ) ??
+              _topBound(declared, _argumentBinding(callee, declared)) ??
               _genericSlotIr(callee, declared),
         ),
       ),
