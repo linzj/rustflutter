@@ -140,6 +140,30 @@ fn schedule_frame() {
 
 type MessageCallback = Rc<dyn Fn(Option<ByteData>) -> Result<(), DartError>>;
 
+/// The reply callback a platform message came with: the typed closure, or
+/// Dart's `Function` object (a closure handed across a `dynamic` slot goes
+/// behind one), called through the prelude's dynamic call.
+fn message_callback(object: &Rc<dyn Object>) -> Option<MessageCallback> {
+    let any = object.as_any();
+    if let Some(callback) = any.downcast_ref::<MessageCallback>() {
+        return Some(callback.clone());
+    }
+    if let Some(callback) = any.downcast_ref::<Option<MessageCallback>>() {
+        return callback.clone();
+    }
+    if any.downcast_ref::<DartFunction>().is_some() {
+        let function = object.clone();
+        return Some(Rc::new(move |bytes: Option<ByteData>| {
+            let reply: Rc<dyn Object> = match bytes {
+                Some(bytes) => Rc::new(bytes) as Rc<dyn Object>,
+                None => dart_null_object(),
+            };
+            dart_call_function(function.clone(), vec![reply]).map(|_| ())
+        }));
+    }
+    None
+}
+
 /// A platform message: answered by the plugin this runtime hosts for the
 /// channel, else by Dart's null ("no plugin"), delivered on the next turn
 /// as the engine's would be.
@@ -152,14 +176,7 @@ fn send_platform_message(args: &[Rc<dyn Object>]) {
     if std::env::var_os("DART2RUST_TRACE_MESSAGES").is_some() {
         eprintln!("dart2rust runtime: platform message on {}", name);
     }
-    let callback = args.get(1).and_then(|a| {
-        let any = a.as_any();
-        any.downcast_ref::<MessageCallback>().cloned().or_else(|| {
-            any.downcast_ref::<Option<MessageCallback>>()
-                .cloned()
-                .flatten()
-        })
-    });
+    let callback = args.get(1).and_then(message_callback);
     let data = args.get(2).and_then(|a| {
         let any = a.as_any();
         any.downcast_ref::<ByteData>()

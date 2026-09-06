@@ -145,6 +145,7 @@ pub fn object_eq(a: &dyn Object, b: &dyn Object) -> bool {
         .or_else(|| same::<bool>(a, b))
         .or_else(|| same::<()>(a, b))
         .or_else(|| same::<Null>(a, b))
+        .or_else(|| same::<DartFunction>(a, b))
         .unwrap_or_else(|| std::ptr::addr_eq(a, b))
 }
 
@@ -6047,11 +6048,29 @@ pub type DartFunctionCall =
 pub struct DartFunction {
     pub arity: usize,
     pub call: std::rc::Rc<DartFunctionCall>,
+    /// The typed function it was made from, for a slot of that very type
+    /// (`dart_function_same`): the same handle back, so `removeListener(f)`
+    /// finds what `addListener(f)` stored.
+    pub original: std::rc::Rc<dyn std::any::Any>,
+    /// The function's identity (the handle's address): Dart's `==` on two
+    /// function values (`ObserverList.contains(listener)`).
+    pub identity: usize,
 }
 
 impl Clone for DartFunction {
     fn clone(&self) -> Self {
-        DartFunction { arity: self.arity, call: self.call.clone() }
+        DartFunction {
+            arity: self.arity,
+            call: self.call.clone(),
+            original: self.original.clone(),
+            identity: self.identity,
+        }
+    }
+}
+
+impl PartialEq for DartFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
     }
 }
 
@@ -6061,8 +6080,14 @@ impl DartAny for DartFunction {
     }
 }
 
-pub fn dart_function_object(arity: usize, call: std::rc::Rc<DartFunctionCall>) -> std::rc::Rc<dyn Object> {
-    dart_object(DartFunction { arity, call }) as std::rc::Rc<dyn Object>
+pub fn dart_function_object<F: ?Sized + 'static>(
+    arity: usize,
+    function: std::rc::Rc<F>,
+    call: std::rc::Rc<DartFunctionCall>,
+) -> std::rc::Rc<dyn Object> {
+    let identity = std::rc::Rc::as_ptr(&function) as *const () as usize;
+    let original: std::rc::Rc<dyn std::any::Any> = std::rc::Rc::new(function);
+    dart_object(DartFunction { arity, call, original, identity }) as std::rc::Rc<dyn Object>
 }
 
 fn dart_function_of(object: &std::rc::Rc<dyn Object>) -> &DartFunction {
@@ -6072,6 +6097,24 @@ fn dart_function_of(object: &std::rc::Rc<dyn Object>) -> &DartFunction {
         None => panic!(
             "dart2rust: a {} called as a function",
             object.runtime_type().name
+        ),
+    }
+}
+
+/// The typed function a `Function` was made from, when it is of type `F`.
+pub fn dart_function_same<F: ?Sized + 'static>(object: std::rc::Rc<dyn Object>) -> Option<std::rc::Rc<F>> {
+    dart_function_of(&object).original.downcast_ref::<std::rc::Rc<F>>().cloned()
+}
+
+/// Out of a `dynamic` into a type with a conversion of its own: Dart's
+/// cast, failing as one does.
+pub fn dart_from_dynamic<T: FromDynamic>(value: std::rc::Rc<dyn Object>) -> T {
+    match T::from_dynamic(&value) {
+        Some(converted) => converted,
+        None => panic!(
+            "dart2rust: a {} where a `{}` was wanted",
+            value.runtime_type().name,
+            std::any::type_name::<T>()
         ),
     }
 }

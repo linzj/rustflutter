@@ -817,7 +817,7 @@ class RustBackend {
       // `T` bound to `Rc<dyn Object>` is none.
       IrDowncast(:final target, :final type, :final arguments)
           when arguments.isEmpty && _isTypeParam(type) =>
-        '<$type as FromDynamic>::from_dynamic(&${expr(target)}).unwrap()',
+        '<$type as FromDynamic>::from_dynamic(&(${expr(target)} as std::rc::Rc<dyn Object>)).unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
         '${expr(target)}.as_any().downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
@@ -6679,6 +6679,8 @@ class RustBackend {
     'dart_null_object',
     'dart_function_object',
     'dart_call_function',
+    'dart_function_same',
+    'dart_from_dynamic',
     'vec_of_nulls',
     'dart_native',
     'dart_native_as',

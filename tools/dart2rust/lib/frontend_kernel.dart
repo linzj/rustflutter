@@ -1313,12 +1313,14 @@ class KernelFrontend implements TypeWorld {
       String? numClass(DartType? t) =>
           t is InterfaceType ? t.classNode.name : null;
       if (leftType is DynamicType && number(rightType)) {
-        final asDouble = IrCall(IrDowncast(left, 'f64'), 'clone', const []);
+        final asDouble = (IrCall(IrDowncast(left, 'f64'), 'clone', const [])
+          ..rustType = const IrType('double'));
         final other = numClass(rightType) == 'int' ? _toF64(right) : right;
         return IrBinary('==', asDouble, other);
       }
       if (rightType is DynamicType && number(leftType)) {
-        final asDouble = IrCall(IrDowncast(right, 'f64'), 'clone', const []);
+        final asDouble = (IrCall(IrDowncast(right, 'f64'), 'clone', const [])
+          ..rustType = const IrType('double'));
         final other = numClass(leftType) == 'int' ? _toF64(left) : left;
         return IrBinary('==', other, asDouble);
       }
@@ -1372,11 +1374,11 @@ class KernelFrontend implements TypeWorld {
     // downcast to the `f64` a `num` is here (see the devirtualised case).
     const numMethods = _dynamicNumMethods;
     if (node is DynamicInvocation && numMethods.contains(node.name.text)) {
-      final asDouble = IrCall(
+      final asDouble = (IrCall(
         IrDowncast(expression(node.receiver), 'f64'),
         'clone',
         const [],
-      );
+      )..rustType = const IrType('double'));
       final call = IrCall(asDouble, node.name.text, [
         for (final a in node.arguments.positional) expression(a),
       ]);
@@ -1399,15 +1401,16 @@ class KernelFrontend implements TypeWorld {
     if (node is DynamicInvocation &&
         numOperators.contains(node.name.text) &&
         node.arguments.positional.length == 1) {
-      final asDouble = IrCall(
+      final asDouble = (IrCall(
         IrDowncast(expression(node.receiver), 'f64'),
         'clone',
         const [],
-      );
+      )..rustType = const IrType('double'));
       var right = expression(node.arguments.positional.single);
       final rightType = _staticType(node.arguments.positional.single);
       if (rightType is DynamicType) {
-        right = IrCall(IrDowncast(right, 'f64'), 'clone', const []);
+        right = (IrCall(IrDowncast(right, 'f64'), 'clone', const [])
+          ..rustType = const IrType('double'));
       } else if (rightType is InterfaceType &&
           rightType.classNode.name == 'int') {
         right = _toF64(right);
@@ -1415,11 +1418,11 @@ class KernelFrontend implements TypeWorld {
       return IrBinary(node.name.text, asDouble, right);
     }
     if (node is DynamicGet && numMethods.contains(node.name.text)) {
-      final asDouble = IrCall(
+      final asDouble = (IrCall(
         IrDowncast(expression(node.receiver), 'f64'),
         'clone',
         const [],
-      );
+      )..rustType = const IrType('double'));
       return IrCall(asDouble, node.name.text, const []);
     }
     if (node is Not) {
