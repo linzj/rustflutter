@@ -6879,6 +6879,12 @@ impl JsonCodec {
 }
 
 /// `Object? reviver(Object? key, Object? value)`, as translated code spells it.
+/// `dart:convert`'s top-level `jsonDecode(source, {reviver})`: the codec's
+/// (`flutter_localized_locales`' `_loadJSON`, run599).
+pub fn json_decode(source: String, reviver: Option<JsonReviver>) -> std::rc::Rc<dyn Object> {
+    JsonCodec.decode(source, reviver)
+}
+
 pub type JsonReviver = std::rc::Rc<
     dyn Fn(Option<std::rc::Rc<dyn Object>>, Option<std::rc::Rc<dyn Object>>) -> Result<Option<std::rc::Rc<dyn Object>>, DartError>,
 >;

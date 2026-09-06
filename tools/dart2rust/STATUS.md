@@ -6811,6 +6811,14 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run593 | `verifiedLocale` 过了；下一站 `DateFormat._availableSkeletons` 的 stub：动态槽分派里 `UninitializedLocaleData` 自己的 `[]` 臂是翻译方法，`Some(Result<..>)` 没 `?`——同 containsKey 标 `fails`。夹具 isgeneric 加了类自带 `[]`/`containsKey` 的臂，与 dart 一致。 | ws594 量；run594 看下一站。 |
 | ws594 | 链：stub **730**（-2），拒绝 253。 | |
 | run594 | `_availableSkeletons` 译出来了，运行时 `dart_cast_map::<dyn Object, dyn Object>` 转不了 `Map<String, String>`（只认几种来源形状）→ None。通用：`Map`/`Vec` 的 `DartAny::dart_cast` 能给出**全 dynamic 形式**（每个条目装箱），`dart_cast_map`/`dart_cast_list` 最后从它转（`from_dynamic`），来源形状不用枚举。夹具 dyncastmap 与 dart 一致。 | ws595 量；run595 看下一站。 |
+| ws595 | 链断了：stub 60、unstubbable 1、可达 32——`Vec<T>: DartAny` 要 `T: Clone` 后，trait 声明的类型参数没带 `Clone`（`_UnorderedEquality<E>: Equality<Vec<E>>`）整个 crate 编不过。修：trait 的类型参数 bound 也加 `Clone`（struct/impl 早就有）。 | ws596 量。 |
+| ws596 | 链：stub **730**（回到 ws594），拒绝 253，63 可达。 | |
+| run596 | `_availableSkeletons` 过了；下一站 `DateFormat.addPattern`：`_appendPattern(_availableSkeletons[inputPattern], ..)` 的隐式 `as String` 在 `Option<Rc<dyn Object>>` 上直接问 `as_any` → None。通用：`_asAny` 对可空类型先 `clone().unwrap()`（句柄再 `as_ref`）。夹具 dyncastmap 加 `String pat(k) => skeletons[k]`，与 dart 一致。 | ws597 量；run597 看下一站。 |
+| ws597 | 链：stub **732**（+2）：`_asAny` 的 unwrap 打到了投影的 `T?`（不是 `Option`）和提升读（记录类型是声明的可空、值已脱壳）。收窄为**朴素读**（局部/字段/静态/下标/`!map_get`/clone）且非投影。 | ws598 量。 |
+| ws598 | 链：stub **731**（+1 `CupertinoTextField.build`：clone 的目标是提升读——clone 的朴素性也看它的目标），拒绝 253。 | |
+| run598 | intl 的 DateFormat 整条过了；下一站 `LocaleNamesLocalizationsDelegate.load`（flutter_localized_locales）的 stub：trait 转发器对 **async** 方法跳过了结果整形——`Future<LocaleNames>`（值 struct）对 trait 擦除后的 `Future<Rc<dyn Object>>`。修：async 也走 `coerceInto`（同类型时原样，不同则 `.map(|v| dart_boxed(v))`）。夹具 asyncfwd 编译通过。 | ws599 量；run599 看下一站。 |
+| ws599 | 链：stub **727**（-4），拒绝 253。 | |
+| run599 | **渲染树六个节点全部到齐、顺序一致**（只差 `size=`——还没 layout）。元素树进到 `Localizations` 下面。第一处 panic 在 future 里：`LocaleNamesLocalizationsDelegate._loadJSON` 的 `jsonDecode`（dart:convert 顶层）拒绝——进 `_coreTopLevel` 表（prelude `json_decode` = `JsonCodec.decode`）。夹具 jsondec 揪出 `as List<dynamic>` 对 map 读的 `Option` 没脱壳（`dart_cast_list(&Option)`）——`_optionRead` 统一给 `_asAny` 和集合 cast 用。 | ws600 量；run600 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 

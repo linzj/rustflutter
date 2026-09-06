@@ -9395,6 +9395,7 @@ class KernelFrontend implements TypeWorld {
       'print': ('dart_print', [IrType('dynamic')]),
     },
     'dart:async': {'scheduleMicrotask': ('_schedule_microtask', null)},
+    'dart:convert': {'jsonDecode': ('json_decode', null)},
   };
 
   bool _erasedParameter(TypeParameter p) {

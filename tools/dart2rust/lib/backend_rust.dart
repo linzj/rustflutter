@@ -848,7 +848,7 @@ class RustBackend {
           when (type == 'Map' || type == 'List') &&
               arguments.isNotEmpty &&
               arguments.every(_dynamicRepresentable) =>
-        '${type == 'Map' ? 'dart_cast_map' : 'dart_cast_list'}::<${arguments.map(this.type).join(', ')}>(&${expr(target)}).unwrap()',
+        '${type == 'Map' ? 'dart_cast_map' : 'dart_cast_list'}::<${arguments.map(this.type).join(', ')}>(&${_optionRead(target) ?? expr(target)}).unwrap()',
       // A type parameter: its own conversion (`FromDynamic`, in every
       // bound), as `!as_opt` above -- `Any` knows one concrete type, and a
       // `T` bound to `Rc<dyn Object>` is none.
@@ -3057,8 +3057,50 @@ class RustBackend {
   /// *handle's* `Any` -- an `Rc<dyn Widget>`, never a `RootWidget` -- so
   /// `widget is RootWidget` was always false and `RootElement.mount`
   /// unwrapped a `None` (run521). `this` and a value are asked directly.
-  String _asAny(IrExpr e) =>
-      _handleLike(e) ? '${expr(e)}.as_ref().as_any()' : '${expr(e)}.as_any()';
+  /// A plain read of an `Option` (a local, a field, a map lookup), taken
+  /// out of it: the value a cast asks about (`_availableSkeletons[
+  /// inputPattern]` as a `String`, a `Map<dynamic, dynamic>` read,
+  /// run596). A projected `T?` is no `Option`, and a promoted read's
+  /// recorded type is the declaration's while its value is already
+  /// unwrapped (`tween_super_lerp`, `CupertinoTextField.build`, ws597).
+  /// Null when the read is not such a value.
+  String? _optionRead(IrExpr e) {
+    final t = e.rustType;
+    final plain =
+        e is IrLocal ||
+        e is IrField ||
+        e is IrTopLevel ||
+        e is IrStatic ||
+        e is IrIndex ||
+        (e is IrCall &&
+            (e.name == '!map_get' ||
+                (e.name == 'clone' &&
+                    (e.target is IrLocal ||
+                        e.target is IrField ||
+                        e.target is IrIndex))));
+    if (plain &&
+        t != null &&
+        isNullable(t) &&
+        !t.projected &&
+        e is! IrThis &&
+        !t.isFunction) {
+      return '${expr(e)}.clone().unwrap()';
+    }
+    return null;
+  }
+
+  String _asAny(IrExpr e) {
+    final read = _optionRead(e);
+    if (read != null) {
+      final t = e.rustType!;
+      final held = library[t.name];
+      final handle = held != null && (held.isAbstract || held.counted);
+      return '$read${handle ? '.as_ref()' : ''}.as_any()';
+    }
+    return _handleLike(e)
+        ? '${expr(e)}.as_ref().as_any()'
+        : '${expr(e)}.as_any()';
+  }
 
   /// Whether `name` is a field of this struct's own, not in a cell, whose
   /// Rust type is one of the prelude's collections by value.
@@ -6379,7 +6421,11 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : "$p: DartNullable<Or: DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny + 'static",
+                // `Clone` on a trait's parameters too: a `Vec<E>` is
+                // `DartAny` only for a `Clone` element now that a list
+                // answers a cast to its dynamic form (`_UnorderedEquality<
+                // E>: Equality<Vec<E>>`, ws595).
+                : "$p: Clone + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';
@@ -7601,6 +7647,7 @@ class RustBackend {
     '_print_debug',
     '_schedule_microtask',
     'dart_print',
+    'json_decode',
     'object_hash_all',
     '_invoke1_with_return',
     '_get_callback_handle',
@@ -9424,10 +9471,13 @@ class RustBackend {
             'TRACE_FWD ${cls.name}.${need.name} have=${have.returnType} need=${need.returnType} method',
           );
         }
+        // ..an async one too: the same future is left alone by the rule
+        // (identical types), and a future of a value where the trait's
+        // erased twin says `dyn Object` is mapped (`LocaleNamesLocalizations
+        // Delegate.load` returning `Future<LocaleNames>` under
+        // `LocalizationsDelegate<T>`, run598).
         final needReturns = _substituteType(need.returnType, _implBinding);
-        final shaped = have.isAsync
-            ? held
-            : coerceInto(held, needReturns, _world, inClosure: true);
+        final shaped = coerceInto(held, needReturns, _world, inClosure: true);
         // An override may return where the trait returns nothing
         // (`Disposer addListener(..)` over `void addListener(..)` in get's
         // `ListNotifier`): the value is dropped (run489).
