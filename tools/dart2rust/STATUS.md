@@ -6717,6 +6717,10 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws540 | 作废（翻译带上面的顺序 bug）。 | |
 | run538 | 过了 `PersistentHashMap.put` 的第一层，停在 `_CompressedNode.put` 的 stub：`identical(keyOrNull, null)` 写成 `key_or_null == None`，而 `List<Object?>` 的元素是持 `Null` 对象的 `Rc<dyn Object>`。 | `identical(x, null)` 降成 `IrIsNull(x)`（夹具 identnull 与 dart 一致）。 |
 | （ws541 前） | 同批（都是提前看到的启动路径 stub）：`_receiver` 对类型参数类型的接收者按 bound 收窄（`ImplicitlyAnimatedWidgetState<T extends ImplicitlyAnimatedWidget>` 里 `widget.duration`）；`coerce` 把任何值进 `void` 槽改为"求值后丢弃"（`_paintChildWithTransform` 撕给 `PaintingContextCallback`）；`double` 的字符串化走 `dart_double_str`（`3.0` 不是 `3`，插值与 `join` 都走它）。夹具 voidslot 与 dart 逐字一致。 | |
+| ws541 | 链：**925**（−22 对 947；新 0/去 22），141；拒绝回到 357。 | |
+| run541 | **过了 PersistentHashMap**（InheritedElement 挂载、`_updateInheritance` 都走通），停在拒绝：`InheritedModel.inheritFrom<T>`（`MediaQuery.maybeOf` 经它）——"方法的类型参数遮蔽类的"。7 个这种 stub 全是 static：自由函数里根本没有类的参数可撞，static 不改名不 stub。顺带：`if (item is T) return item;` 提升到类型参数的局部量读成 `<T as FromDynamic>::from_dynamic`（擦除的 T 走 bound 的规则）。 | |
+| ws542 | 链：**885**（−40；新 1 `scheduler_ticker.rs then`/去 41），141。 | |
+| （ws543 前） | `_findModels<T>(context, aspect, models)` 往参数列表里 add，调用方读它——Dart 的 List 是共享的，这里的 `Vec` 是值，参数一路是拷贝。通用机制：`IrParam.mutRef`——被调方（static/顶层/私有方法，一个体的成员）在体里对 `List`/`Set` 参数做变异（`_mutatingListNames`，含转借给同样会填的被调方，`_FillFinder`）就把参数声明成 `&mut Vec<..>`，调用点按 `IrMutRef` 借出地方（与 prelude 的 out-buffer 同一条路），体内再借出写成 `&mut *p`。夹具 shadowstatic：值与 dart 一致（`1 2 a true`），只差可空插值打成 `Some(1)`——下一个机制（toString 协议）。 | |
 
 ## 下一步(2026-09-05 重铺)
 

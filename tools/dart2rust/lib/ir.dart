@@ -94,7 +94,15 @@ class IrParam {
     this.hasDefault = false,
     this.kept = false,
     this.defaultValue,
+    this.mutRef = false,
   });
+
+  /// Whether the callee *fills* this parameter -- a `List`/`Set` it adds to,
+  /// which the caller reads afterwards (`_findModels<T>(context, aspect,
+  /// models)` in `InheritedModel.inheritFrom`). Dart's list is shared; the
+  /// `Vec` here is a value, so the parameter is `&mut Vec<..>` and the call
+  /// site lends the place (`IrMutRef`), as the prelude's out-buffers do.
+  final bool mutRef;
 
   /// The declared default, when the front end could read it. A forwarder for
   /// an override that *widens* the base's signature -- `InputBorder.paint`

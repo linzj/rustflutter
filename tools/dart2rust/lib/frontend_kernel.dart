@@ -1099,10 +1099,24 @@ class KernelFrontend implements TypeWorld {
       // Promoted to a concrete class the declaration does not name: the
       // read is a downcast. Promotion to the *same* class (nullable to
       // non-null) is not.
-      final promoted = node.promotedType;
+      var promoted = node.promotedType;
       // ..a copy's parameter as its declaration types it (`ChildType?`,
       // the bound here) rather than as the copy does (`RenderBox?`).
       final declared = declaredAs ?? node.variable.type;
+      // Promoted to a type parameter (`if (item is T) return item;` in
+      // `InheritedModel.inheritFrom<T>`, run541): a kept one is the
+      // parameter's own conversion (`FromDynamic`, as `as T` is), an
+      // erased one is its bound and takes the rules below.
+      if (promoted is TypeParameterType) {
+        final parameter = promoted.parameter;
+        if (_erasedParameter(parameter)) {
+          promoted = parameter.bound;
+        } else if (!(declared is TypeParameterType &&
+            declared.parameter == parameter)) {
+          return IrDowncast(IrLocal(name), parameter.name ?? 'T')
+            ..rustType = _type(promoted);
+        }
+      }
       // The core scalars are abstract classes in Kernel and structs here:
       // an `Object?` promoted to `String` is a downcast to `String`.
       const scalars = {'String', 'int', 'double', 'bool', 'num'};
@@ -6312,6 +6326,11 @@ class KernelFrontend implements TypeWorld {
       if (outs != null && outs.contains(index)) {
         return IrMutRef(expression(value));
       }
+      // ..and a translated callee that fills the slot (`_fillsParameter`)
+      // takes the caller's place the same way.
+      if (calleeMember is Procedure && _fillsParameter(calleeMember, index)) {
+        return IrMutRef(expression(value));
+      }
     }
     final tracedArg = Platform.environment['DART2RUST_TRACE_ARG'];
     if (calleeMember is Member &&
@@ -7751,6 +7770,39 @@ class KernelFrontend implements TypeWorld {
   /// "keeps": guessing the other way is guessing that a borrow outlives its
   /// borrower.
   static final _keepsCache = <Object, bool>{};
+
+  /// Whether `callee` fills its `index`th positional parameter: a `List`
+  /// or `Set` it adds to, removes from or writes into (`_mutatingListNames`),
+  /// directly or by lending it to a callee that does. Only a member with
+  /// one body -- a static, a top-level function, a private method -- is
+  /// asked: an override family would have to agree on the signature.
+  /// Cached; a cycle (`_findModels` lending `results` to itself) is a
+  /// "no" while it is being asked.
+  bool _fillsParameter(Procedure callee, int index) {
+    if (callee.isAbstract || callee.isGetter || callee.isSetter) return false;
+    final own = callee.isStatic || callee.enclosingClass == null;
+    if (!own && !callee.name.isPrivate) return false;
+    final params = callee.function.positionalParameters;
+    if (index >= params.length) return false;
+    final param = params[index];
+    final type = param.type;
+    if (type is! InterfaceType ||
+        type.nullability == Nullability.nullable ||
+        !const {'List', 'Set'}.contains(type.classNode.name) ||
+        type.classNode.enclosingLibrary.importUri.toString() != 'dart:core') {
+      return false;
+    }
+    final key = (callee, index);
+    final known = _fillsCache[key];
+    if (known != null) return known;
+    _fillsCache[key] = false;
+    final finder = _FillFinder(param, this);
+    callee.function.body?.accept(finder);
+    _fillsCache[key] = finder.found;
+    return finder.found;
+  }
+
+  final Map<(Procedure, int), bool> _fillsCache = {};
 
   bool _keeps(FunctionNode callee, Object param) {
     final known = _keepsCache[param];
@@ -10689,13 +10741,14 @@ class KernelFrontend implements TypeWorld {
     }
 
     final params = [
-      for (final p in node.function.positionalParameters)
+      for (final (i, p) in node.function.positionalParameters.indexed)
         IrParam(
           _paramName(p),
           _edgeType(paramType(p, p.type)),
           kept: _keeps(node.function, p),
           hasDefault: p.defaultValue != null,
           defaultValue: _default(p),
+          mutRef: _fillsParameter(node, i),
         ),
       for (final p in node.function.namedParameters)
         if (!_inspectorOnly(p.parameterName))
@@ -11871,5 +11924,51 @@ class _ReferenceCollector extends RecursiveVisitor {
         _constant(entry.value);
       }
     }
+  }
+}
+
+/// Finds a `List`/`Set` parameter being filled (see `_fillsParameter`).
+class _FillFinder extends RecursiveVisitor {
+  _FillFinder(this.param, this.frontend);
+
+  final Variable param;
+  final KernelFrontend frontend;
+  bool found = false;
+
+  bool _isParam(Expression e) => e is VariableGet && e.variable == param;
+
+  @override
+  void visitInstanceInvocation(InstanceInvocation node) {
+    if (found) return;
+    if (_isParam(node.receiver) &&
+        KernelFrontend._mutatingListNames.contains(node.name.text) &&
+        node.name.text != 'length') {
+      found = true;
+      return;
+    }
+    super.visitInstanceInvocation(node);
+  }
+
+  @override
+  void visitInstanceSet(InstanceSet node) {
+    if (found) return;
+    if (_isParam(node.receiver)) {
+      found = true;
+      return;
+    }
+    super.visitInstanceSet(node);
+  }
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    if (found) return;
+    final positional = node.arguments.positional;
+    for (var i = 0; i < positional.length; i++) {
+      if (_isParam(positional[i]) && frontend._fillsParameter(node.target, i)) {
+        found = true;
+        return;
+      }
+    }
+    super.visitStaticInvocation(node);
   }
 }

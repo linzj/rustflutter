@@ -2857,8 +2857,15 @@ class RustBackend {
   /// A place as `&mut`: a local by name (through its cell when it has
   /// one), a field of `this` through its cell, anything else as a
   /// temporary the callee fills and nobody reads.
+  /// The parameters of the body being written that are lent places
+  /// (`IrParam.mutRef`): lent on again as a reborrow.
+  Set<String> _mutRefParams = const {};
+
   String _mutRef(IrExpr place) {
     if (place is IrLocal) {
+      if (_mutRefParams.contains(place.name)) {
+        return '&mut *${snake(place.name)}';
+      }
       final cell = _cellLocals[place.name];
       if (cell == null) return '&mut ${snake(place.name)}';
       return cell
@@ -6188,6 +6195,10 @@ class RustBackend {
     // Before the parameters are spelled: `_param` asks `_reassigned`
     // whether each is written, and it held the previous method's answer.
     _reassigned = _assignedIn(method.body);
+    _mutRefParams = {
+      for (final p in method.params)
+        if (p.mutRef) p.name,
+    };
     _cellLocals = {};
     final params = method.params.map((p) => _param(p, owned: false)).join(', ');
     final async = method.isAsync && stubbed == null;
@@ -6291,6 +6302,7 @@ class RustBackend {
             named: p.named,
             hasDefault: p.hasDefault,
             kept: p.kept,
+            mutRef: p.mutRef,
           ),
           owned: false,
         ),
@@ -6500,6 +6512,10 @@ class RustBackend {
       _asyncBody = method.isAsync;
       _methodTypeParams = method.typeParameters;
       _reassigned = _assignedIn(method.body);
+      _mutRefParams = {
+        for (final p in method.params)
+          if (p.mutRef) p.name,
+      };
       _cellLocals = {};
       // `this_` is a `&__Self: Trait`, and a trait has no fields: the base's
       // fields are its accessor methods here, as they are inside the trait
@@ -7703,16 +7719,19 @@ class RustBackend {
   static IrType _awaited(IrType t) =>
       t.name == 'Future' && t.arguments.length == 1 ? t.arguments.single : t;
 
-  String _param(IrParam p, {bool owned = true}) =>
-      '${_reassigned.contains(p.name) ? "mut " : ""}'
-      // A *function-typed* parameter the callee keeps is owned however it was
-      // reached: a list of listeners cannot hold a borrow. Only function
-      // types: "keeps it" is measured as "does more than call it", and for an
-      // ordinary parameter that includes merely comparing it -- which made
-      // `identical(this, other)` take its argument by value and stop being a
-      // question about references at all.
-      '${snake(p.name)}: '
-      '${type(p.type, owned: owned || (p.kept && p.type.isFunction))}';
+  String _param(IrParam p, {bool owned = true}) => p.mutRef
+      // A parameter the callee fills: the caller's place, lent
+      // (`IrParam.mutRef`).
+      ? '${_reassigned.contains(p.name) ? "mut " : ""}${snake(p.name)}: &mut ${type(p.type, owned: true)}'
+      : '${_reassigned.contains(p.name) ? "mut " : ""}'
+            // A *function-typed* parameter the callee keeps is owned however it was
+            // reached: a list of listeners cannot hold a borrow. Only function
+            // types: "keeps it" is measured as "does more than call it", and for an
+            // ordinary parameter that includes merely comparing it -- which made
+            // `identical(this, other)` take its argument by value and stop being a
+            // question about references at all.
+            '${snake(p.name)}: '
+            '${type(p.type, owned: owned || (p.kept && p.type.isFunction))}';
 
   String _params(IrMethod method) => [
     // A trait method is `&mut self` when any implementer writes a field in
@@ -8566,6 +8585,7 @@ class RustBackend {
             named: p.named,
             hasDefault: p.hasDefault,
             kept: p.kept,
+            mutRef: p.mutRef,
           ),
       ],
       _substituteType(need.returnType, shadowed),
@@ -8647,6 +8667,7 @@ class RustBackend {
               // Carried, or the impl writes `&dyn Fn` where the trait it
               // implements declared `Box<dyn Fn>`.
               kept: p.kept,
+              mutRef: p.mutRef,
             ),
             owned: fromParameter,
           );
@@ -9459,7 +9480,12 @@ class RustBackend {
       // name twice (E0403, the two errors outside any body once the
       // widgets crate passed). The signature is renamed and the body,
       // which would need the same rename, is a stub that says so.
-      final renamed = _renamedShadowed(method);
+      // ..an *instance* method's: a static one is a free function with
+      // no class parameter in scope to collide with, and its body spells
+      // its own `T` unrenamed (`InheritedModel.inheritFrom<T>`, the
+      // `MediaQuery.maybeOf` every widget asks: run541; all 7 stubs of
+      // this kind were statics).
+      final renamed = method.isStatic ? null : _renamedShadowed(method);
       if (renamed != null) {
         method = renamed;
         stubbed ??=
@@ -9469,6 +9495,10 @@ class RustBackend {
       // Before the signature: whether a parameter needs `mut` is decided by the
       // body, and the signature is written first.
       _reassigned = _assignedIn(method.body);
+      _mutRefParams = {
+        for (final p in method.params)
+          if (p.mutRef) p.name,
+      };
       _cellLocals = {};
       _doc(method.doc);
       final params = [
@@ -9667,6 +9697,10 @@ class RustBackend {
       _asyncBody = method.isAsync;
       _methodTypeParams = method.typeParameters;
       _reassigned = _assignedIn(method.body);
+      _mutRefParams = {
+        for (final p in method.params)
+          if (p.mutRef) p.name,
+      };
       _cellLocals = {};
       // An operator's signature is `std::ops`'s and cannot say `Result`:
       // inside it a failing call unwraps.
