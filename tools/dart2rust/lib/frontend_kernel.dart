@@ -8100,7 +8100,13 @@ class KernelFrontend implements TypeWorld {
 
   bool _erasedParameter(TypeParameter p) {
     if (!erase) return false;
-    if (covariantParameters.contains(p)) return true;
+    // ..when its bound has a handle to erase to: a top type (`Rc<dyn
+    // Object>`) or a translated trait. `RestorableEnum<T extends Enum>`
+    // erased to a `dart:core` class this compiler does not spell took 107
+    // crates down (ws520).
+    if (covariantParameters.contains(p) && _erasableBound(p.bound)) {
+      return true;
+    }
     // An anonymous mixin application's parameter stands for the mixin's:
     // erased when that one is (`SlottedRenderObjectElement<SlotType>` kept
     // a `SlotType` nothing declared, ws315).
@@ -8189,6 +8195,19 @@ class KernelFrontend implements TypeWorld {
   }
 
   final Map<TypeParameter, bool> _erasedCache = {};
+
+  /// Whether an erased parameter of this bound is spelled: a top type, or
+  /// a translated abstract-like class (a trait object).
+  bool _erasableBound(DartType bound) {
+    if (bound is DynamicType) return true;
+    if (bound is! InterfaceType) return false;
+    final cls = bound.classNode;
+    if (cls.name == 'Object' &&
+        cls.enclosingLibrary.importUri.toString() == 'dart:core') {
+      return true;
+    }
+    return _translatedClass(cls) && _abstractLike(cls);
+  }
 
   /// Whether a subtype of `cls` supplies a concrete type (not one of its
   /// own parameters) for `cls`'s `i`th parameter.

@@ -11,7 +11,9 @@
 // bound already has (`_erasedParameter`, `FromDynamic`). Found once over
 // the whole component, at every flow site: an argument into a parameter,
 // an initialiser or an assignment into a declared type, a return into the
-// function's, an element into a literal's, a cast, a conditional's arms.
+// function's, an element into a literal's, a conditional's arms. Not a
+// cast: `this as Animation<double>` is a runtime check the cast table
+// answers by instantiation, and counting it erased `Animation<T>`.
 // Then handed down: a subclass parameter put in an erased position of its
 // supertype (`MaterialPageRoute<T> extends PageRoute<T>`) is erased too.
 import 'dart:io';
@@ -82,10 +84,18 @@ class _FlowScan extends RecursiveVisitor {
 
   StaticTypeContext? _context;
   final List<FunctionNode> _functions = [];
+  Member? _member;
+
+  String _where() {
+    final m = _member;
+    if (m == null) return '?';
+    return '${m.enclosingClass?.name ?? m.enclosingLibrary.name}.${m.name.text}';
+  }
 
   @override
   void visitProcedure(Procedure node) {
     _context = StaticTypeContext(node, environment);
+    _member = node;
     super.visitProcedure(node);
     _context = null;
   }
@@ -93,6 +103,7 @@ class _FlowScan extends RecursiveVisitor {
   @override
   void visitConstructor(Constructor node) {
     _context = StaticTypeContext(node, environment);
+    _member = node;
     super.visitConstructor(node);
     _context = null;
   }
@@ -100,6 +111,7 @@ class _FlowScan extends RecursiveVisitor {
   @override
   void visitField(Field node) {
     _context = StaticTypeContext(node, environment);
+    _member = node;
     final init = node.initializer;
     if (init != null) _flow(init, node.type);
     super.visitField(node);
@@ -152,7 +164,14 @@ class _FlowScan extends RecursiveVisitor {
         final a = asSlot.typeArguments[i];
         final b = slot.typeArguments[i];
         if (_same(a, b)) continue;
-        if (_translated(slot.classNode)) found.add(params[i]);
+        if (_translated(slot.classNode) && found.add(params[i])) {
+          if (Platform.environment['DART2RUST_TRACE_COVARIANT'] != null) {
+            stderr.writeln(
+              'TRACE_COVARIANT_SITE ${slot.classNode.name}<${params[i].name}> '
+              'in ${_where()}: $have -> $slot',
+            );
+          }
+        }
         _compare(a, b, depth + 1);
       }
       return;
@@ -178,9 +197,20 @@ class _FlowScan extends RecursiveVisitor {
   /// here (`Object?` is `dynamic`).
   static bool _same(DartType a, DartType b) {
     if (_top(a) && _top(b)) return true;
+    // A closure's own parameter and its structural copy in the closure's
+    // type are one parameter (`<T>(..) => MaterialPageRoute<T>(..)` into
+    // a `PageRoute<T> Function<T>(..)` slot).
+    final aName = _parameterName(a), bName = _parameterName(b);
+    if (aName != null && bName != null) return aName == bName;
     return a.withDeclaredNullability(Nullability.nonNullable) ==
         b.withDeclaredNullability(Nullability.nonNullable);
   }
+
+  static String? _parameterName(DartType t) => t is TypeParameterType
+      ? t.parameter.name
+      : t is StructuralParameterType
+      ? t.parameter.name
+      : null;
 
   static bool _top(DartType t) =>
       t is DynamicType ||
@@ -210,31 +240,57 @@ class _FlowScan extends RecursiveVisitor {
     super.visitInstanceInvocation(node);
   }
 
+  /// The declared parameter types, substituted: `computeFunctionType`
+  /// copies a callee's own parameters into structural ones, which then
+  /// compare unequal to the declaration's and marked every generic
+  /// constructor call covariant.
+  void _declaredArguments(
+    Arguments arguments,
+    FunctionNode fn,
+    Substitution substitution,
+  ) {
+    final positional = fn.positionalParameters;
+    for (
+      var i = 0;
+      i < arguments.positional.length && i < positional.length;
+      i++
+    ) {
+      _flow(
+        arguments.positional[i],
+        substitution.substituteType(positional[i].type),
+      );
+    }
+    for (final named in arguments.named) {
+      for (final p in fn.namedParameters) {
+        if (p.parameterName == named.name) {
+          _flow(named.value, substitution.substituteType(p.type));
+        }
+      }
+    }
+  }
+
   @override
   void visitStaticInvocation(StaticInvocation node) {
     final fn = node.target.function;
-    var type = fn.computeFunctionType(Nullability.nonNullable);
-    if (fn.typeParameters.isNotEmpty) {
-      if (fn.typeParameters.length == node.arguments.types.length) {
-        type = FunctionTypeInstantiator.instantiate(type, node.arguments.types);
-      } else {
-        type = FunctionTypeInstantiator.instantiate(type, [
-          for (final p in fn.typeParameters) p.bound,
-        ]);
-      }
-    }
-    _arguments(node.arguments, type);
+    final substitution = fn.typeParameters.isEmpty
+        ? Substitution.empty
+        : Substitution.fromPairs(
+            fn.typeParameters,
+            fn.typeParameters.length == node.arguments.types.length
+                ? node.arguments.types
+                : [for (final p in fn.typeParameters) p.bound],
+          );
+    _declaredArguments(node.arguments, fn, substitution);
     super.visitStaticInvocation(node);
   }
 
   @override
   void visitConstructorInvocation(ConstructorInvocation node) {
-    final fn = node.target.function;
-    final substitution = Substitution.fromInterfaceType(node.constructedType);
-    final type = substitution.substituteType(
-      fn.computeFunctionType(Nullability.nonNullable),
+    _declaredArguments(
+      node.arguments,
+      node.target.function,
+      Substitution.fromInterfaceType(node.constructedType),
     );
-    if (type is FunctionType) _arguments(node.arguments, type);
     super.visitConstructorInvocation(node);
   }
 
@@ -331,12 +387,6 @@ class _FlowScan extends RecursiveVisitor {
       _flow(e.value, node.valueType);
     }
     super.visitMapLiteral(node);
-  }
-
-  @override
-  void visitAsExpression(AsExpression node) {
-    _flow(node.operand, node.type);
-    super.visitAsExpression(node);
   }
 
   @override
