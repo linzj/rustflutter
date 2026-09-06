@@ -4868,6 +4868,7 @@ class RustBackend {
     _line('');
     _emitDartNullable();
     _emitDartEq(body: 'self == other');
+    _emitEnumDartAny();
     // An enhanced enum: its members go in an impl, where they lose nothing.
     // Refusing the whole enum was right only while the alternative was
     // emitting a plain one and dropping them.
@@ -5364,6 +5365,38 @@ class RustBackend {
     _line(
       'fn absent() -> Self { panic!("native answered nothing where ${cls.name} was declared") }',
     );
+    _indent--;
+    _line('}');
+    _line('');
+  }
+
+  /// `DartAny` for an enum (see the struct's inline impl): its own type
+  /// behind a fresh handle, and every interface it implements through the
+  /// handle that impl keeps -- what lets `_emitBaseImpl`'s `impl Ts for U`
+  /// compile, `Ts: DartAny` (an enum into an `Rc<dyn Ts>`, ws510).
+  void _emitEnumDartAny() {
+    _line('impl DartAny for ${cls.name} {');
+    _indent++;
+    _line(
+      'fn dart_runtime_type(&self) -> Type { Type { name: "${cls.name}" } }',
+    );
+    _line(
+      'fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {',
+    );
+    _indent++;
+    _line(
+      'if __t == std::any::TypeId::of::<Self>() || __t == std::any::TypeId::of::<std::rc::Rc<Self>>() { return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone()))); }',
+    );
+    for (final above in _abstractAncestors(cls)) {
+      final arguments = _baseArguments(above);
+      if (arguments == null) continue;
+      _line(
+        'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(std::boxed::Box::new(self.dart_self_${snakeRaw(above.name)}())); }',
+      );
+    }
+    _line('None');
+    _indent--;
+    _line('}');
     _indent--;
     _line('}');
     _line('');

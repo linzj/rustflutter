@@ -9658,8 +9658,15 @@ class KernelFrontend implements TypeWorld {
       // A mixin's `on` types come along: `SourceSpanMixin on SourceSpan`
       // calls `start` on `this`, and the free function holding that body is
       // bounded by the trait, which had to say it is a `SourceSpan` too.
+      // An enum's own `implements` clause too: the trait impl it gets is
+      // what lets its value stand where the interface is (`_emitBaseImpl`;
+      // an enum into an `Rc<dyn Ts>`, ws510).
       interfaces: node.isEnum
-          ? const []
+          ? [
+              for (final t in node.implementedTypes)
+                if (t.classNode.name != '_Enum' && t.classNode.name != 'Enum')
+                  _type(t.asInterfaceType),
+            ]
           : [
               for (final t in node.implementedTypes) _type(t.asInterfaceType),
               if (node.isMixinDeclaration)
