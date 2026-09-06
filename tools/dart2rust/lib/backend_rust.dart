@@ -3057,6 +3057,19 @@ class RustBackend {
   /// The cell a field read would go through, as a place -- `self.x` or
   /// `other.x` -- when the field is kept in a `RefCell`; null otherwise.
   String? _cellPlace(IrExpr? target) {
+    // A hollow mixin's field is read through the declaration's abstract
+    // getter -- an accessor *call* on `this` in the trait body -- where the
+    // application holds the field (`IrClass.appliedFields`): the same
+    // place as the field read (`_viewIdToRenderView[id] = view` in
+    // `RendererBinding.addRenderView`, ws532).
+    if (target is IrCall &&
+        target.args.isEmpty &&
+        target.typeArguments.isEmpty &&
+        (target.target == null || target.target is IrThis) &&
+        _fieldsAreAccessors &&
+        _appliedFieldOf(cls, target.name) != null) {
+      return _cellPlace(IrField(target.target, target.name));
+    }
     if (target is! IrField) return null;
     final base = target.target;
     final atThis = base == null || base is IrThis;
