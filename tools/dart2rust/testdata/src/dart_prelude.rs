@@ -2500,6 +2500,17 @@ impl<T> std::fmt::Debug for dyn DartSink<T> {
 pub struct JsonUtf8Encoder;
 
 impl JsonUtf8Encoder {
+    /// `encoder.convert(value)`: the JSON text's UTF-8 bytes, as Dart's
+    /// `List<int>` (`JSONMessageCodec.encodeMessage`, ws493).
+    pub fn convert<V: 'static>(&self, value: V) -> Vec<i64> {
+        JsonCodec
+            .encode(value, None)
+            .into_bytes()
+            .into_iter()
+            .map(|b| b as i64)
+            .collect()
+    }
+
     /// `JsonUtf8Encoder([indent, toEncodable, bufferSize])`: a name with a
     /// constructor, so a codec holding one is built; encoding is not here.
     pub fn new(
@@ -6284,6 +6295,51 @@ impl<T: Clone + 'static> DartListCast for Vec<T> {
             })
             .collect()
     }
+}
+
+/// A `TypedData`'s bytes: what `Uint8List.sublistView(data)` and
+/// `ByteData.sublistView(data)` read, from a `Uint8List` (`Vec<u8>`), a
+/// `List<int>` or a `ByteData`.
+pub trait AsDartBytes {
+    fn dart_bytes(&self) -> Vec<u8>;
+}
+
+impl AsDartBytes for Vec<u8> {
+    fn dart_bytes(&self) -> Vec<u8> {
+        self.clone()
+    }
+}
+
+impl AsDartBytes for Vec<i64> {
+    fn dart_bytes(&self) -> Vec<u8> {
+        self.iter().map(|b| *b as u8).collect()
+    }
+}
+
+impl AsDartBytes for ByteData {
+    fn dart_bytes(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+}
+
+fn dart_byte_range(bytes: Vec<u8>, start: i64, end: Option<i64>) -> Vec<u8> {
+    let from = (start.max(0) as usize).min(bytes.len());
+    let to = match end {
+        Some(e) => (e.max(0) as usize).clamp(from, bytes.len()),
+        None => bytes.len(),
+    };
+    bytes[from..to].to_vec()
+}
+
+/// `Uint8List.sublistView(data, [start, end])`: a copy of the byte range
+/// (a view is a value here, as every list is).
+pub fn uint8_list_sublist_view<T: AsDartBytes>(data: T, start: i64, end: Option<i64>) -> Vec<u8> {
+    dart_byte_range(data.dart_bytes(), start, end)
+}
+
+/// `ByteData.sublistView(data, [start, end])`.
+pub fn byte_data_sublist_view<T: AsDartBytes>(data: T, start: i64, end: Option<i64>) -> ByteData {
+    ByteData::view(dart_byte_range(data.dart_bytes(), start, end), 0, None)
 }
 
 /// `x as List<T>` on an object: the list as it is when it is one of `T`,

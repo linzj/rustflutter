@@ -3989,21 +3989,23 @@ class KernelFrontend implements TypeWorld {
       _dispatchReceiverType = wasReceiver;
       _dispatchInterface = wasInterface;
     }
-    final generic = _genericOnTrait(node, args);
-    if (generic != null) return generic;
     // The owner by the receiver's *static* class when that is one of the
     // prelude's collections: TFA devirtualises `Map.cast` onto the one
-    // implementation it found (`CanonicalizedMap`), and the prelude's
-    // `Map` is what the receiver is here (`invokeMapMethod`, run492).
+    // implementation it found (`CanonicalizedMap`, a generic method on a
+    // trait), and the prelude's `Map` is what the receiver is here
+    // (`invokeMapMethod`, run492).
     final staticOwner = _staticClass(node.receiver)?.name;
-    final owner =
+    final collectionReceiver =
         staticOwner != null &&
-            (staticOwner == 'List' ||
-                staticOwner == 'Iterable' ||
-                staticOwner == 'Set' ||
-                _isMapClass(staticOwner)) &&
-            _staticClass(node.receiver)?.enclosingLibrary.importUri.scheme ==
-                'dart'
+        (staticOwner == 'List' ||
+            staticOwner == 'Iterable' ||
+            staticOwner == 'Set' ||
+            _isMapClass(staticOwner)) &&
+        _staticClass(node.receiver)?.enclosingLibrary.importUri.scheme ==
+            'dart';
+    final generic = collectionReceiver ? null : _genericOnTrait(node, args);
+    if (generic != null) return generic;
+    final owner = collectionReceiver
         ? staticOwner
         : node.interfaceTarget.enclosingClass?.name;
     // A `StreamView` subclass's inherited `listen` and friends act on the
@@ -5128,6 +5130,21 @@ class KernelFrontend implements TypeWorld {
       return IrStaticCall(
         null,
         'uint8_list_view',
+        _arguments(node.arguments, target.function),
+      );
+    }
+    // `Uint8List.sublistView(data, [start, end])` / `ByteData.sublistView`:
+    // a copy of the bytes here (a `TypedData` is its bytes: a `ByteData` or
+    // a `Uint8List`), the prelude's free functions (`StandardMessageCodec`,
+    // on every platform message; ws493).
+    if ((owner == 'Uint8List' || owner == 'ByteData') &&
+        target.name.text == 'sublistView' &&
+        positional.isNotEmpty) {
+      return IrStaticCall(
+        null,
+        owner == 'Uint8List'
+            ? 'uint8_list_sublist_view'
+            : 'byte_data_sublist_view',
         _arguments(node.arguments, target.function),
       );
     }

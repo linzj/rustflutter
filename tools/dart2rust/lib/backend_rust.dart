@@ -6257,6 +6257,8 @@ class RustBackend {
     'future_ready',
     'dart_cast_erased',
     'dart_is_kind',
+    'uint8_list_sublist_view',
+    'byte_data_sublist_view',
     // By their Dart names, as the call names them (`postEvent`, not the
     // `post_event` it is spelled as).
     'exit',
