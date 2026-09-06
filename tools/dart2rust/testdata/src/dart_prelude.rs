@@ -5731,9 +5731,14 @@ pub struct JsonCodec;
 impl JsonCodec {
     /// `json.encode(value, toEncodable: ..)`: the callback for a value the
     /// encoder does not know is Dart's declaration, not used here.
-    pub fn encode(
+    /// `json.encode(value, toEncodable: ..)`: the slot is `Object?`, and a
+    /// prelude callee's arguments are not adapted by the front end, so it
+    /// takes whatever value the caller has (a `Map<String, Rc<dyn Object>>`
+    /// as itself, a `dynamic` as its handle: the blanket `Object`'s
+    /// `as_any` looks through a handle, ws481).
+    pub fn encode<V: 'static>(
         &self,
-        value: std::rc::Rc<dyn Object>,
+        value: V,
         _to_encodable: Option<
             std::rc::Rc<
                 dyn Fn(
@@ -5742,6 +5747,7 @@ impl JsonCodec {
             >,
         >,
     ) -> String {
+        let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(value);
         let mut out = String::new();
         json_write(&mut out, &value);
         out
@@ -6263,8 +6269,10 @@ impl Utf8Codec {
     }
 
     /// `utf8.encode(string)`.
-    pub fn encode(&self, string: String) -> Vec<i64> {
-        string.into_bytes().into_iter().map(|b| b as i64).collect()
+    /// `utf8.encode(s)`: a `Uint8List`, which is `Vec<u8>` here
+    /// (`GetStorage.flush` held one, ws481).
+    pub fn encode(&self, string: String) -> Vec<u8> {
+        string.into_bytes()
     }
 
     /// `utf8.decoder`.

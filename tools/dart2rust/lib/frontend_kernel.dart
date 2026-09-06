@@ -63,7 +63,27 @@ class KernelFrontend implements TypeWorld {
     this.coerceByType = true,
     this.instantiations,
     this.applications = const {},
+    this.moduleOf = const {},
   });
+
+  /// Each translated library's module name, from the driver: what a
+  /// qualified top-level reference is spelled by (`IrStaticCall.module`).
+  final Map<Library, String> moduleOf;
+
+  /// The module to qualify a top-level `target` by: another library's,
+  /// when this library declares a top-level of the same name -- an
+  /// unqualified call would resolve to this library's own
+  /// (`defaultTargetPlatform` wrapping `_platform_io`'s, run481).
+  String? _topLevelModule(Member target) {
+    if (target.enclosingClass != null) return null;
+    final home = target.enclosingLibrary;
+    if (identical(home, library)) return null;
+    final name = target.name.text;
+    final shadowed =
+        library.procedures.any((p) => p.name.text == name) ||
+        library.fields.any((f) => f.name.text == name);
+    return shadowed ? moduleOf[home] : null;
+  }
 
   /// For each mixin declaration, an anonymous class the CFE applied it to,
   /// which holds the bodies the declaration lost (see the driver). A
@@ -3805,6 +3825,7 @@ class KernelFrontend implements TypeWorld {
           fails: _fails(target),
           diverges: _diverges(target),
           asyncFn: _asyncMember(target),
+          module: _topLevelModule(target),
         );
       }
       throw Unsupported('top-level `${target.name.text}`', _sample(node));
@@ -5161,6 +5182,7 @@ class KernelFrontend implements TypeWorld {
         diverges: _diverges(target),
         asyncFn: _asyncMember(target),
         typeArguments: _keptTypeArguments(declaration, node.arguments),
+        module: _topLevelModule(target),
       );
     }
     return IrStaticCall(
@@ -5187,6 +5209,7 @@ class KernelFrontend implements TypeWorld {
       diverges: _diverges(target),
       asyncFn: _asyncMember(target),
       typeArguments: _keptTypeArguments(declaration, node.arguments),
+      module: owner == null ? _topLevelModule(target) : null,
     );
   }
 

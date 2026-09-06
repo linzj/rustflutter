@@ -277,7 +277,14 @@ class IrStaticCall extends IrExpr {
     this.diverges = false,
     this.asyncFn = false,
     this.typeArguments = const [],
+    this.module,
   });
+
+  /// For a top-level callee in another library whose name this library
+  /// also declares: the callee's module, spelled as `crate::<module>::`
+  /// (`platform.dart`'s `defaultTargetPlatform` wrapping
+  /// `_platform_io.dart`'s called itself, a stack overflow at run481).
+  final String? module;
 
   /// Whether the callee can fail (`IrMethod.fails`).
   final bool fails;

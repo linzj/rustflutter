@@ -612,6 +612,7 @@ class RustBackend {
         :final fails,
         :final diverges,
         :final typeArguments,
+        :final module,
       ) =>
         _diverging(
           _staticCallFailing(
@@ -621,6 +622,7 @@ class RustBackend {
             fails && !diverges,
             typeArguments,
             e.asyncFn,
+            module,
           ),
           diverges && fails,
         ),
@@ -897,10 +899,15 @@ class RustBackend {
     bool fails, [
     List<IrType> typeArguments = const [],
     bool asyncFn = false,
+    String? module,
   ]) {
     final awaited = _awaiting;
     _awaiting = false;
-    final call = _staticCall(owner, name, args, typeArguments);
+    // A top-level of another module this module shadows by name is spelled
+    // by its module (see `IrStaticCall.module`).
+    final call = owner == null && module != null
+        ? 'crate::$module::${_staticCall(owner, name, args, typeArguments)}'
+        : _staticCall(owner, name, args, typeArguments);
     final failing =
         fails || (_resultModel && _preludeFailingStatics.contains(name));
     return _asyncValue(
@@ -5949,7 +5956,28 @@ class RustBackend {
             (value is IrStaticCall &&
                 value.owner != null &&
                 preludeExceptions.contains(value.owner)));
-    return boxed ? 'std::rc::Rc::new($thrown)' : thrown;
+    // ..spelled as the error type: inside an `async` block the `Err` has
+    // no signature to infer from, and `Rc<Exception>` was the block's
+    // whole error type (`initServiceExtensions`, ws479).
+    final asError =
+        _failure == 'Object' || _failure == 'std::rc::Rc<dyn Object>';
+    if (boxed) {
+      return asError
+          ? '(std::rc::Rc::new($thrown) as std::rc::Rc<dyn Object>)'
+          : 'std::rc::Rc::new($thrown)';
+    }
+    final valueType = value.rustType;
+    if (asError &&
+        valueType != null &&
+        valueType.name != 'Object' &&
+        valueType.name != 'dynamic' &&
+        !valueType.nullable &&
+        !valueType.isFunction &&
+        (library[valueType.name] != null ||
+            _preludeClasses.contains(valueType.name))) {
+      return '(${_handleOf(value)} as std::rc::Rc<dyn Object>)';
+    }
+    return thrown;
   }
 
   /// Free functions the prelude provides, which the front end calls by name
@@ -6329,6 +6357,7 @@ class RustBackend {
         :final diverges,
         :final asyncFn,
         :final typeArguments,
+        :final module,
       ) =>
         IrStaticCall(
           owner,
@@ -6338,6 +6367,7 @@ class RustBackend {
           diverges: diverges,
           asyncFn: asyncFn,
           typeArguments: typeArguments,
+          module: module,
         ),
       IrNew(:final type, :final args, :final constructor) => IrNew(
         type,

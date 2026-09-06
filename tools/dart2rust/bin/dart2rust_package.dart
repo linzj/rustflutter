@@ -295,6 +295,7 @@ Future<void> main(List<String> args) async {
       coerceByType: Platform.environment['DART2RUST_COERCE'] != '0',
       instantiations: instantiations,
       applications: applications,
+      moduleOf: nameOf,
     );
     final result = frontend.lowerLibrary();
     frontends[library] = frontend;
