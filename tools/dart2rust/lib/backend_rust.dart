@@ -1624,6 +1624,10 @@ class RustBackend {
   bool _objectLike(IrType? t) {
     if (t == null || t.isFunction) return false;
     final name = t.name;
+    // A `dynamic` (an `Object?`) compares by `DartEq` too: the raw `==`
+    // on two `Rc<dyn Object>` moved its right operand (E0382, a pattern
+    // switch on `data['platformBrightness']`, run502), and the prelude's
+    // `DartEq for dyn Object` is the value comparison either way.
     if (const {
       'int',
       'double',
@@ -1633,13 +1637,12 @@ class RustBackend {
       'void',
       '()',
       'Null',
-      'dynamic',
-      'Object',
       'Type',
       'Option',
     }.contains(name)) {
       return false;
     }
+    if (name == 'dynamic' || name == 'Object') return true;
     final c = library[name];
     if (c != null && c.isEnum) return false;
     return c != null || const {'List', 'Map', 'Set', 'Iterable'}.contains(name);
