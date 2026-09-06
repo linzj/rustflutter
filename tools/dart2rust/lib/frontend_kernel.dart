@@ -4186,7 +4186,41 @@ class KernelFrontend implements TypeWorld {
   /// (`Navigator`'s `_History extends Iterable<_RouteEntry>`, ws499): the
   /// list of its elements, `to_list`, which the backend writes from the
   /// class's `iterator`. Any other receiver is itself.
-  IrExpr _listReceiver(Expression e) {
+  /// Dart names of the list members that change the receiver: the
+  /// receiver of one is the place itself, never a narrowing copy.
+  static const _mutatingListNames = {
+    '[]=',
+    'add',
+    'addAll',
+    'insert',
+    'insertAll',
+    'remove',
+    'removeAt',
+    'removeLast',
+    'removeWhere',
+    'retainWhere',
+    'clear',
+    'setRange',
+    'fillRange',
+    'replaceRange',
+    'removeRange',
+    'setAll',
+    'sort',
+    'shuffle',
+    'addFirst',
+    'addLast',
+    'removeFirst',
+    'length',
+  };
+
+  IrExpr _listReceiver(Expression e, [String? member]) {
+    // A mutating member's receiver as it is: an erased `List<ChildType>`
+    // read as a `List<Sliver>` is a narrowing *copy*, and `children.add
+    // (x)` pushed into it (the erased tear-off fixture, ws528). The element
+    // goes in as the slot's type and rustc upcasts it to the erased one.
+    if (member != null && _mutatingListNames.contains(member)) {
+      return expression(e);
+    }
     final lowered = _receiver(e);
     final static = _staticType(e);
     if (static is! InterfaceType || !_translatedClass(static.classNode)) {
@@ -4740,7 +4774,7 @@ class KernelFrontend implements TypeWorld {
       return IrBlockValue([
         IrLocalDecl(held, null, args[1]),
         IrIndexSet(
-          _listReceiver(node.receiver),
+          _listReceiver(node.receiver, name),
           args[0],
           IrCast(
             IrCall(IrLocal(held), 'clone', const [])
@@ -4755,7 +4789,7 @@ class KernelFrontend implements TypeWorld {
         // Typed by the list's element, which a generic class's `List<E?>`
         // keeps projected (`<E as DartNullable>::Or`) where the static type
         // of the read says a plain `E?`.
-        final list = _listReceiver(node.receiver);
+        final list = _listReceiver(node.receiver, name);
         final element = list.rustType?.arguments.length == 1
             ? list.rustType!.arguments.single
             : null;
@@ -4770,7 +4804,7 @@ class KernelFrontend implements TypeWorld {
         return IrBlockValue([
           IrLocalDecl(held, null, args[1]),
           IrIndexSet(
-            _listReceiver(node.receiver),
+            _listReceiver(node.receiver, name),
             args[0],
             IrCall(IrLocal(held), 'clone', const [])
               ..rustType = args[1].rustType,
@@ -4784,7 +4818,7 @@ class KernelFrontend implements TypeWorld {
           node.arguments.types.length == 1) {
         final wanted = _type(node.arguments.types.single);
         return IrCall(
-          _listReceiver(node.receiver),
+          _listReceiver(node.receiver, name),
           '!where_type',
           const [],
           typeArguments: [wanted],
@@ -4794,7 +4828,7 @@ class KernelFrontend implements TypeWorld {
       if (step != null && args.length == 1) {
         // A chain, extended rather than started again when the receiver is
         // already one: `xs.where(f).map(g)` is one `iter()`, not two.
-        final source = _listReceiver(node.receiver);
+        final source = _listReceiver(node.receiver, name);
         return source is IrIterChain
             ? IrIterChain(source.source, [...source.steps, (step, args.single)])
             : IrIterChain(source, [(step, args.single)]);
@@ -4807,7 +4841,7 @@ class KernelFrontend implements TypeWorld {
         final orElse = args[1];
         final omitted = orElse is IrLiteral && orElse.type.name == 'Null';
         return IrCall(
-          _listReceiver(node.receiver),
+          _listReceiver(node.receiver, name),
           omitted ? 'first_where' : 'first_where_or',
           omitted ? [args[0]] : args,
         );
@@ -4817,7 +4851,7 @@ class KernelFrontend implements TypeWorld {
         // returning an `int`, which the prelude's `sort_by_dart` turns into
         // an `Ordering`. 36 of these.
         return IrCall(
-          _listReceiver(node.receiver),
+          _listReceiver(node.receiver, name),
           args.isEmpty ? 'sort' : 'sort_by_dart',
           args,
         );
@@ -4830,7 +4864,7 @@ class KernelFrontend implements TypeWorld {
             const {'remove', 'indexOf', 'lastIndexOf'}.contains(name) &&
             args.length == 1;
         return IrCall(
-          _listReceiver(node.receiver),
+          _listReceiver(node.receiver, name),
           rust,
           byElement
               ? [
