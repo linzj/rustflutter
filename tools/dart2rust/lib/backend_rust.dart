@@ -1357,8 +1357,63 @@ class RustBackend {
         for (final m in trait.methods) {
           walk(m.body);
         }
+        // ..and the writes through a handle of the trait's type from any
+        // body in the program: `tween.end ??= tween.begin` on a
+        // `Tween<dynamic>` in `_constructTweens` reaches `ThemeDataTween`
+        // through `set_end`, which was a `todo!` there (run615).
+        found.addAll(_writtenThroughHandles(trait));
         return found;
       });
+
+  /// The fields set on a handle typed as `trait` (or a subtype of it)
+  /// anywhere in the program, by name. Each class's bodies are walked
+  /// once for the whole run (`_setterWritesIn`), and this unions them for
+  /// one trait, once per backend.
+  final Map<String, Set<String>> _externalWrites = {};
+
+  Set<String> _writtenThroughHandles(IrClass trait) =>
+      _externalWrites.putIfAbsent(trait.name, () {
+        final found = <String>{};
+        final classes = <IrClass>{
+          ...library.elsewhere.values,
+          ...library.classes,
+        };
+        for (final c in classes) {
+          for (final entry in _setterWritesIn(c).entries) {
+            final receiver = entry.key;
+            if (receiver == trait.name) {
+              found.addAll(entry.value);
+              continue;
+            }
+            final receiverClass = library[receiver];
+            if (receiverClass != null &&
+                _supertypesOf(receiverClass).any((t) => t.name == trait.name)) {
+              found.addAll(entry.value);
+            }
+          }
+        }
+        return found;
+      });
+
+  /// `_WalkSelf.setterWrites` over one class's bodies, memoised on the
+  /// class object: the program's classes are shared by every module's
+  /// backend, and walking them once per module was the whole program
+  /// times the module count.
+  static final _setterWritesOf = Expando<Map<String, Set<String>>>();
+
+  static Map<String, Set<String>> _setterWritesIn(IrClass c) {
+    final cached = _setterWritesOf[c];
+    if (cached != null) return cached;
+    final walk = _WalkSelf();
+    for (final m in c.methods) {
+      walk.statement(m.body);
+    }
+    for (final k in c.constructors) {
+      final body = k.body;
+      if (body != null) walk.statement(body);
+    }
+    return _setterWritesOf[c] = walk.setterWrites;
+  }
 
   final Map<String, Set<String>> _traitWrites = {};
 
@@ -6836,7 +6891,11 @@ class RustBackend {
     // A class emitted as a trait has no fields of its own here; its uses are
     // `Box<dyn ..>`, which `_copyText` has already turned down.
     final answer = _allFields(other).every((f) {
-      if (f.shared || (other.counted && _mutableOnCounted(f))) return false;
+      // Any cell (`_inCellOf`: shared, mutable on a counted class, handed
+      // out or set through a trait) is an `Rc`, and no `Copy`. Only the
+      // first two were asked, and `BorderRadiusTween` -- whose `end` a
+      // `Tween` handle writes -- went into a `Cell` (ws617: 34 crates).
+      if (_inCellOf(other, f)) return false;
       final held = f.isLate ? 'Option<${type(f.type)}>' : type(f.type);
       // *That* class's parameters: `Tween<T>` holds an `Option<T>`, and
       // asked from `AnimatedPositionedState` its `T` read as a class name
@@ -10547,6 +10606,10 @@ class _WalkSelf {
   /// Locals that are the receiver of some method call.
   final receiverLocals = <String>{};
 
+  /// Fields set through a setter on another object, by the receiver's
+  /// class (`tween.end = ..` on a `Tween<dynamic>`: `{'Tween': {'end'}}`).
+  final setterWrites = <String, Set<String>>{};
+
   /// Whether a write target is `this`, or a chain of field reads from it.
   static bool _rootedAtThis(IrExpr? e) => switch (e) {
     null => true,
@@ -10569,7 +10632,7 @@ class _WalkSelf {
 
   void statement(IrStmt s) {
     switch (s) {
-      case IrAssignField(:final target):
+      case IrAssignField(:final target, :final name, :final owner):
         // Only a write to `this` makes the method mutating. A cascade writes a
         // *local* it just bound, which needs `let mut` and not `&mut self` --
         // and counting it made every method holding a cascade take `&mut self`.
@@ -10578,6 +10641,16 @@ class _WalkSelf {
         // write through `self`, and without this it came out `&self` and did
         // not compile.
         if (_rootedAtThis(target)) writesFields = true;
+        // A write on another object's field, by the class that declares
+        // it (`_fieldsWrittenBy`): on a trait it is that trait's setter,
+        // landing on every implementer (`#t.end = ..` on a `Tween`
+        // temporary in `_constructTweens`, run616).
+        if (!_rootedAtThis(target)) {
+          final written = owner ?? target?.rustType?.name;
+          if (written != null) {
+            setterWrites.putIfAbsent(written, () => {}).add(name);
+          }
+        }
         // A write through a local -- `entry.x = v` on a value the local owns
         // -- is what makes that local `let mut`. The cascade binding used to
         // be told separately; this covers it and the plain local alike.
@@ -10598,9 +10671,21 @@ class _WalkSelf {
         // and nothing declared it `mut`.
         assignedLocals.add(name);
         expression(s.value);
-      case IrSetter(:final target, :final name, :final value):
+      case IrSetter(
+        :final target,
+        :final name,
+        :final value,
+        :final receiverClass,
+      ):
         // A setter call on `this` spreads `&mut` exactly as a method call does.
         if (target == null || target is IrThis) selfCalls.add('set_$name');
+        // ..and one on another object is a write through that object's
+        // class (`_fieldsWrittenBy`): the setter lands on every
+        // implementer of the trait that declares the field.
+        final written = receiverClass ?? target?.rustType?.name;
+        if (target != null && target is! IrThis && written != null) {
+          setterWrites.putIfAbsent(written, () => {}).add(name);
+        }
         if (target != null) expression(target);
         expression(value);
       case IrBlock(:final statements):
@@ -10825,10 +10910,14 @@ class _WalkSelf {
           assignedLocals.add(e.name);
           expression(e.value);
         }
-      case IrSetValue(:final target, :final value):
+      case IrSetValue(:final target, :final value, :final name):
         // Same rule as the statement form: only a write to `this` makes the
         // method mutating.
         if (target == null || target is IrThis) writesFields = true;
+        final written = target?.rustType?.name;
+        if (target != null && target is! IrThis && written != null) {
+          setterWrites.putIfAbsent(written, () => {}).add(name);
+        }
         if (target != null) expression(target);
         expression(value);
       case IrThis():

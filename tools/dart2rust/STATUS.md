@@ -374,6 +374,11 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run612 | `getValuesNotifier` 过了；下一站 `ImplicitlyAnimatedWidgetState._constructTweens` 的 stub：`tween.end ??= tween.begin`，CFE 拼成 `let #t = tween in #t.end == null ? #t.end = .. : null`，两臂一个是存值的 `Option<Rc<dyn Object>>`、一个是 `Null` 对象，作为表达式类型不合。语句位置的条件表达式（值被丢弃）改译成 `if`（`_conditionalStatement`，穿过 CFE 的 `Let`；`?.`/`??` 形仍归 `_let`）。夹具 condstmt SAME。 | ws613 量；run613 看下一站。 |
 | ws613 | 链：stub **723**（+14），拒绝 244。十三个是 CFE 的模式缓存 `#isSet ? #t : (#isSet = true, #t = ..)` 作语句：`#t` 臂作为语句是 `__t8;`，把临时量 move 掉了；一个是 `_callPopInvoked` 的 TFA 死尾巴（条件是 throw）。改：纯读的臂（读、字面量、`this`）当空臂，空 then 变成取反的 `if`；带 throw 的仍走表达式形。 | ws614 量。 |
 | ws614 | 链：stub **709**（=ws612），拒绝 244。`_constructTweens` 过了 `??=`，卡在下一处：`targetValue != (tween.end ?? tween.begin)`——`Tween<dynamic>` 的 `end`/`begin` 是投影的 `T?`（`Option<Rc<dyn Object>>`），整体是 `dynamic`（不可空）：`match` 的 None 臂给了 `Option`，Some 臂给了 `Rc`。整体为 `dynamic` 而右边仍是 `Option` 时，右边经 `dart_option_object` 装成 handle（null 即 `Null` 对象）。夹具 dynifnull SAME。 | ws615 量；run615 看下一站。 |
+| ws615 | 链：stub **708**（-1 `_constructTweens`），拒绝 244。 | |
+| run615 | 下一站运行时 `todo!`：`ThemeDataTween.end is written through a trait but is not a cell`——trait 里可变字段只在 trait 自己的体里写到 `this` 时才做 cell（ws480 全做过、翻车）；`tween.end ??= ..` 是在 `_constructTweens` 里经 `Tween<dynamic>` 句柄写的，setter 落到每个实现者。加"经句柄的写"：`_WalkSelf` 记下 `IrSetter` 的接收者类与字段（按类对象记忆一次），`_fieldsWrittenBy(trait)` 并入全程序里对该 trait（或其子类）句柄的写。顺带插值里 `int?`/`bool?` 改走 Object 协议（擦除存储的 `Tween<int>.end` 打成了 `Instance of 'int'`）。夹具 traitset SAME。 | ws616 量；run616 看下一站。 |
+| ws616 | 链：stub **708**（持平），拒绝 244。 | |
+| run616 | 还是同一个 `todo!`：gallery 里那笔写不是 `IrSetter`，是经 CFE 临时量的 `IrAssignField(owner: 'Tween')`（夹具里参数写才是 setter 形）。`_WalkSelf` 对非 `this` 的 `IrAssignField`（按 `owner`）和 `IrSetValue`（按接收者类型）也记入 `setterWrites`。夹具 traitset 加 gallery 同形（闭包参数重赋值后经临时量写），SAME，且生成里无 `todo!`。 | ws617 量；run617 看下一站。 |
+| ws617 | **链断了**：stub 464、unstubbable 1、可达 34——`_AnimatedPhysicalModelState._borderRadius` 进了 `Cell<Option<BorderRadiusTween>>`，而 `BorderRadiusTween` 的 `begin`/`end` 刚成了 cell（`Rc`，不 `Copy`）：`_classIsCopy` 只问 shared 和计数类的可变字段，没问 `_inCellOf` 的另外两条（trait 交出的 / 经 trait 写的）。改为按 `_inCellOf`。夹具 traitset 加 holder 形，SAME。 | ws618 量。 |
 
 ## 下一步(2026-09-05 重铺)
 

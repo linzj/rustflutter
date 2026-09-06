@@ -1129,12 +1129,16 @@ class KernelFrontend implements TypeWorld {
       if (core &&
           const {'String', 'int', 'double', 'bool'}.contains(node.name)) {
         if (!nullable) return explicit ? null : lowered;
+        // An `int?`/`bool?` through the Object protocol, as any other
+        // value: the bound may be the erased handle a `Tween<int>.end`
+        // is held as, whose `Debug` (`dart_str`) says `Instance of 'int'`
+        // (the traitset fixture).
         final inner = switch (node.name) {
           'String' => IrCall(IrBound(), 'clone', const [])..rustType = text,
           'double' => IrStaticCall(null, 'dart_double_str', [
             IrBound(),
           ])..rustType = text,
-          _ => IrStaticCall(null, 'dart_str', [IrBound()])..rustType = text,
+          _ => IrCall(IrBound(), '!object_str', const [])..rustType = text,
         };
         return nullOr(inner);
       }
