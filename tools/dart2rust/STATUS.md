@@ -6700,6 +6700,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws531 | 链：**1179**（**+163**），142。试的是"把空心 mixin 的字段从 application 恢复到声明上"：把抽象 getter/setter 换成字段访问器，波及 `_child`/`_firstChild`/`_tickerModeNotifier` 等所有 mixin 字段（子类 super fn 里的 `<__Self as RenderFlex>::_first_child` 找不到、late 字段没 setter、非 `this` 接收者的限定调用拼成裸 trait 路径 E0782）。**撤回**。 | 改成窄的：`IrClass.appliedFields`——application 替空心 mixin 持有的字段只让 trait 多声明一个 `_cell()`（`_handsCell` 的集合才有），struct 侧从自己的 cell 实现，`_cellPlace`/`_accessorQualifier('cell')` 也查它；trait 体里经声明的抽象 getter 读到的 `IrCall(this, name)` 接收者，对就地变异的方法视同字段读（`_viewIdToRenderView[id] = view` → `_cell().borrow_mut().insert`）。夹具 traitcell（AOT 下才空心）。 |
 | run531 | 停在 `ServicesBinding.initInstances` 的 stub（上面那族）。 | 撤回后不复现。 |
 | ws532 | 链：**1197**（+181）：非 `this` 接收者的限定调用改成 `<dyn Held as Q>::m(&*x)` 时丢了 `Q` 的泛型（`<dyn Animation<f64> as Animation>::value`，132 个 "missing generics"）。这个改动只为撤回的恢复服务。**撤回**。 | ws533 只带 appliedFields 一族。 |
+| ws533 | 链：**1015**（只带 appliedFields 一族：新 0/去 1），142。 | |
+| run533 | render 树 dump 仍空：`renderViews` 仍空。夹具里 `addRenderView` 已走 `_cell().borrow_mut().insert`，struct 侧读的也是自己的 cell，所以要么 `_RawViewElement._attachView`（`RendererBinding.instance.addRenderView(renderObject)`）根本没走到。 | 后端加编译期选择的运行时追踪 `DART2RUST_RUNTIME_TRACE=名,名`（匹配的成员入口打印 `Class.member`），ws534 带着看注册路径。 |
 
 ## 下一步(2026-09-05 重铺)
 

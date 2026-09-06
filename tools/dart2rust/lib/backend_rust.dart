@@ -4373,7 +4373,19 @@ class RustBackend {
   /// stops needing the keyword.
   /// A body under the Result model: a `void` one that falls off its end
   /// ends in `Ok(())`, since the signature says `Result<(), E>`.
+  /// `DART2RUST_RUNTIME_TRACE=a,b,c`: every member whose `Class.name`
+  /// contains one of the names prints its name to stderr on entry, in the
+  /// translated program. Chosen when translating; nothing at run time.
+  static final _runtimeTraced =
+      (Platform.environment['DART2RUST_RUNTIME_TRACE'] ?? '')
+          .split(',')
+          .where((s) => s.isNotEmpty)
+          .toList();
+
   void _body(IrStmt body, IrType returnType) {
+    if (_runtimeTraced.any(_here.contains)) {
+      _line('eprintln!("dart2rust trace: $_here");');
+    }
     final rendered = type(returnType);
     // A `Null?` return (a `FutureOr<void>` callback's) falls off into
     // `Ok(None)` as `()` does into `Ok(())` (52 in `widgets`).
