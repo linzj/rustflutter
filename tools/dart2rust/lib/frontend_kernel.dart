@@ -1035,7 +1035,12 @@ class KernelFrontend implements TypeWorld {
             _type(wanted.withDeclaredNullability(Nullability.nonNullable)),
           );
         }
-        return IrBound();
+        // Typed as the value the body binds: the receiver without its
+        // `Option`. A `?..` cascade produces the bound (`=>#t3`, which
+        // the CFE leaves unpromoted), and typed by Kernel's `RenderBox?`
+        // the block got a `.flatten()` on a value that was never doubled
+        // (`RenderProxyBoxMixin.performLayout`, `getTransformTo`, ws537).
+        return IrBound()..rustType = have;
       }
       if (_cascade != null && node.variable == _cascade) {
         return IrLocal(_cascadeName);
@@ -2304,6 +2309,9 @@ class KernelFrontend implements TypeWorld {
           initial == null &&
           value is VariableGet &&
           value.variable == bound;
+      final produced = expression(value);
+      // A block is typed as its value is, where that is known: Kernel's
+      // type for the block may be wider (see the bound read above).
       return IrBlockValue([
         for (final s in statements)
           if (definite &&
@@ -2315,7 +2323,7 @@ class KernelFrontend implements TypeWorld {
             )
           else
             statement(s),
-      ], expression(value));
+      ], produced)..rustType = produced.rustType;
     }
 
     final previous = _cascade;
@@ -10187,15 +10195,22 @@ class KernelFrontend implements TypeWorld {
     // ..and the mixin's methods the declaration no longer lists at all,
     // from an application that kept them (`_appliedProcedure`).
     if (node.isMixinDeclaration) {
+      // By name *and* kind: a getter the declaration kept does not stand
+      // for the setter of the same name it dropped
+      // (`RenderAnimatedOpacityMixin.alwaysIncludeSemantics=`, written by
+      // `RenderAnimatedOpacity`'s constructor, was left out: run537).
+      String keyOf(Procedure p) => p.isSetter ? '${p.name.text}=' : p.name.text;
       final declared = {
-        for (final p in node.procedures) p.name.text,
+        for (final p in node.procedures) keyOf(p),
         for (final f in node.fields) f.name.text,
+        for (final f in node.fields)
+          if (!f.isFinal) '${f.name.text}=',
       };
       final seen = <String>{};
       for (final application in applications[node] ?? const <Class>[]) {
         for (final p in application.procedures) {
           if (p.isAbstract || p.isStatic) continue;
-          if (declared.contains(p.name.text) || !seen.add(p.name.text)) {
+          if (declared.contains(keyOf(p)) || !seen.add(keyOf(p))) {
             continue;
           }
           try {

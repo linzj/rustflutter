@@ -988,7 +988,10 @@ impl<T: DartEq + Clone> Set<T> {
         true
     }
 
-    pub fn add_all(&mut self, values: Vec<T>) {
+    /// `addAll(Iterable)`: a `Vec`, another `Set`, whatever iterates
+    /// (`_dirtyNodes.addAll(previousPath.difference(nextPath))` handed a
+    /// `Set` where only a `Vec` was taken, `FocusManager`, ws537).
+    pub fn add_all(&mut self, values: impl IntoIterator<Item = T>) {
         for value in values {
             self.add(value);
         }
@@ -1013,13 +1016,13 @@ impl<T: DartEq + Clone> Set<T> {
         }
     }
 
-    pub fn union(&self, other: &Set<T>) -> Set<T> {
+    pub fn union(&self, other: Set<T>) -> Set<T> {
         let mut out = self.clone();
         out.add_all(other.to_list());
         out
     }
 
-    pub fn intersection(&self, other: &Set<T>) -> Set<T> {
+    pub fn intersection(&self, other: Set<T>) -> Set<T> {
         Set {
             items: self
                 .items
@@ -1030,7 +1033,7 @@ impl<T: DartEq + Clone> Set<T> {
         }
     }
 
-    pub fn difference(&self, other: &Set<T>) -> Set<T> {
+    pub fn difference(&self, other: Set<T>) -> Set<T> {
         Set {
             items: self
                 .items

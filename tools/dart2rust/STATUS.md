@@ -6711,6 +6711,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws537 | 链：**959**（持平，新 0/去 0），141（138 crate）。带构造链修复。 | |
 | run537 | **元素树往下长了**：`View` → `RawView` → `_RawViewElement.mount` → `_updateChild` → … → `InheritedElementImpl.mount` → `_updateInheritance` → `PersistentHashMap.put` 的 stub：`key.hash_code()` 在类型参数 `K` 上没有 trait；同文件 `_TrieNode._trieIndex`/`_bitCount`/`_CompressedNode._inflate` 因 `>>>` 被拒绝。 | `>>>`：`((x as i64) as u64 >> n) as i64`（先过 `i64`，否则 `(-8) as u64` 把字面量推成 `u64`）；`hashCode` 进 Object 协议：`DartEq::dart_hash_code`（默认 0，与任何相等一致；标量/String/Type/Duration/Symbol 按 `Hash`，`f64` 按位，`Rc<T>` 转内层，`Option` 转内层，trait 对象按地址），类型参数上的 `hashCode` 走它；夹具 hashtrie（与 dart 本机输出逐字一致 `2 3 true 1 8 135272480 15`）。 |
 | （ws538 前） | 同批：`_qualifiedRaw`/`_setterQualifier` 的接收者类型是类型参数时取它 bound 的类（`_classOfType`）——ws536 新增的 4 个 `to_diagnostics_node` 二义由此来（`_staticType` 改按声明读拷贝参数后，`ChildType child` 不再是 `RenderBox`）。 | |
+| ws538 | 链：**947**（−12，新 0/去 12），141。去的：persistent_hash_map 全部 7 个、4 个 `_add_diagnostics`、2 个 `hash_code`（`Object.hash` 的参数经 `DartEq::dart_hash_code`）。 | |
+| （ws539 前） | 提前看启动路径上的 stub：(1) `?..` 级联（`(child?..layout(..))?.size`）多了一层 `.flatten()`——CFE 把块值写成未提升的 `=>#t3`，块按 Kernel 的 `RenderBox?` 定型；改成 bound 读取按绑定值定型（无 `Option`）、块值按其值定型（夹具 cascade）。(2) `RenderAnimatedOpacityMixin` 的 setter `alwaysIncludeSemantics=` 丢了：空心 mixin 找回 application 里的成员时按名字去重，getter 留下把同名 setter 挡掉；改按 名字+种类。(3) `Set.addAll` 收 `impl IntoIterator`，`Set.union/intersection/difference` 收值（gallery 里所有调用都传值，原来 `&Set` 一个也对不上）。夹具 cascade 与 dart 本机一致（`7 -1 true false 2`）。 | ws539 量。 |
 
 ## 下一步(2026-09-05 重铺)
 
