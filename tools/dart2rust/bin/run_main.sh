@@ -18,8 +18,11 @@ cd "$here/.crate-ws" || exit 2
 (
   cargo build -p dart_main -j "$DART2RUST_JOBS" 2>&1 | grep -E '^error' -A12 | head -80
   echo "BUILD-DONE"
-  RUST_BACKTRACE=1 timeout 120 ./target/debug/dart_main 2>&1 | head -60
+  # The whole run to its own file, then the status: through `head` the
+  # program died of SIGPIPE past 60 lines and the status was `head`'s.
+  RUST_BACKTRACE=1 timeout 120 ./target/debug/dart_main > "$log.run" 2>&1
   echo "RUN-DONE exit=$?"
+  head -c 400000 "$log.run"
 ) > "$log" 2>&1 &
 chain=$!
 floor_kb=$((DART2RUST_MIN_FREE_GB * 1024 * 1024))

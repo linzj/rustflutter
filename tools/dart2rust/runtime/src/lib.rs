@@ -316,7 +316,10 @@ fn dump_render_tree() -> Result<String, DartError> {
     let binding = generated::rendering_binding::renderer_binding_instance()?;
     let mut out = String::new();
     for view in binding.render_views()? {
-        out.push_str(&view.to_string_deep(
+        // Through `RenderObject`: `DiagnosticableTree` declares the same
+        // name with one more parameter, and the handle sees both.
+        out.push_str(&RenderObject::to_string_deep(
+            &*view,
             String::new(),
             None,
             generated::foundation_diagnostics::DiagnosticLevel::Debug,
