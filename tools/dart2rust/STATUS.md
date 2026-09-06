@@ -6573,6 +6573,23 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws471 结果 | 编译尺子 **1552**（ws470 1553，−1），141 crate。 |
 | run471 | **无头尺子到头了**。修掉 `run_main` 的 wake 丢失和 `GetStorage._internal` 的桩之后，`main` 跑完 binding 构造、`GetStorage.init` → `_internal` → `initStorage`，最后以 Dart 异常结束（错误文本改为按 prelude 错误类的 `Display` 打印）："Bad state: The BackgroundIsolateBinaryMessenger.instance value is invalid until … ensureInitialized" —— 来自 `MethodChannel._findBinaryMessenger()`：`ServicesBinding.rootIsolateToken == null`，因为无宿主时 `GetRootIsolateToken` 答的是 0，`RootIsolateToken.instance` 把 0 当"没有"。也就是说：启动路径上剩下的每一个停点都是 engine 的 native（这一个之后是 path_provider 的 platform message 回复）。翻译这半到此为止；下一半是 runtime crate（native host + `Dart_*`），见〈两条路〉。 |
 
+## 第二个 goal：无头引擎（2026-09-06 起）
+
+run471 之后启动路径上剩下的每个停点都是 engine 的 native，所以 goal 换成：**runtime crate 的第一层——一个无头引擎**。它是手写的 Rust（`tools/dart2rust/runtime/src/lib.rs`），`workspace.py` 把它拷进工作区当 `dart_runtime` crate，附一个生成的 `generated.rs`（`pub use <持有 dart:ui 的 crate>::dart_ui;`，crate 名由分区决定），`dart_main` 先 `dart_runtime::install()` 再 `run_main`，跑完 `dart_runtime::report()`（帧数、平台消息）。
+
+它按 engine 的 `PlatformConfiguration` 那样做事，不按 gallery 做事（没有任何 gallery 专用分支）：
+
+- 装一个 `NativeHost`（prelude 的 native 边界，按 `@Native` 符号答）：`GetRootIsolateToken` → 1，`DefaultRouteName` → "/"，`GetPersistentIsolateData` → null，`ScheduleFrame` → 一个 `Timer::run` 到时调 `dart_ui::_begin_frame(us, n)` 和 `_draw_frame()`（计帧），`SendPlatformMessage` → 记名字、下一轮用 null 回调（"没有插件"），`RespondToPlatformMessage`/`SetNeedsReportTimings`/`Render`/`UpdateSemantics` → 无事。别的符号答 `Ok(None)`——宿主的"不是我的"，无引擎的值照旧、照旧记账（`NativeHost` 的返回类型为此改成 `Result<Option<Rc<dyn Object>>, E>`）。
+- 装好后先做 engine 在 `main` 之前做的事：`_update_locales(["en","US","",""])`、`_update_user_settings_data(json)`、`_add_view(0, dpr 1.0, 800×600, …)`。
+
+尺子：**gallery 无头地 build、layout、paint 出第一帧**，`run_main` 报出帧数。路径上撞到的 stub 照旧只用通用机制修。之后把这层换成真 engine 的桥（同一个宿主接口）。
+
+| 轮 | 第一个停点 | 处理 |
+|---|---|---|
+| run472 | `dart_runtime::install` → `_update_user_settings_data`（stub：mismatched types）。宿主的第一次上行就撞上 dart:ui 自己的桩。 | 用 scratch fixture 复现（`switch (data['platformBrightness']) { 'dark' => …, final Object? value => throw }`），三条通用规则：① `==`/`!=` 的操作数上转型写成显式的（比较没有期望类型，`Some(Rc::new("dark"))` 对着 `Option<Rc<dyn Object>>` 是 `Option<Rc<String>>`）；② prelude `dyn Object` 的 `PartialEq` 对原语按值（String/i64/f64/bool/()/Null），其余按身份——原来一律按身份，两个装箱的字符串永远不等；③ `is Object` 是判空、`is Object?` 恒真，不再拒绝。**已知缺口**：`dyn Object` 的 `==` 到不了译出类自己的 `operator ==`（`Object` impl 是 blanket 的，无法按类分派）。 |
+| ws472 | 链：**1552 → 1537**，reachable **142**（141 + `dart_runtime`）。 | |
+| run473 | 同一个桩，下一条：`data['platformBrightness']` 在 `Map<String, Object?>` 上是 `Option<Option<..>>`。 | 规则：map 取值的 `V?` 在 `V` 可空时压平（`.flatten()`），`!map_get`/`!map_get_opt` 各一处。 |
+
 ## 下一步(2026-09-05 重铺)
 
 本节和〈当前队头〉原来停在 2026-09-03 目标改写时(`crate.py` 的 416 个错误、
@@ -6613,7 +6630,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | 168 / 312 | engine 真正调用的 `Dart_*`,945 处调用点(上界,还没收到启动路径上) |
 | 231 | `dart:ui` 的下行 native |
 | 19 | `PlatformConfiguration` 的上行句柄 |
-| **0** | Rust 这边实现了的——`runtime/` crate 还不存在 |
+| **1 层** | Rust 这边实现了的——`runtime/` crate 从 2026-09-06 起存在：无头引擎，见〈第二个 goal〉；`Dart_*` 仍是 0 |
 
 **翻译那半(dill `0700f1e5`,`gen_kernel --aot --tfa --minimal-kernel` 出的
 sig dill,前缀 `package:,dart:ui`,931 个库;尺子 `bin/stubs.py`,峰值 4–19 GB)**
