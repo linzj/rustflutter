@@ -4975,6 +4975,31 @@ pub fn dart_double_str(value: f64) -> String {
     format!("{}", value)
 }
 
+/// A type parameter's type literal (`T` where a value goes): the class the
+/// Rust type stands for, from its name -- `Rc<dyn X>` is `X`, a struct is
+/// itself, the core values by their Dart names (see `Object::runtime_type`).
+pub fn dart_type_of<T: ?Sized + 'static>() -> Type {
+    let full = std::any::type_name::<T>();
+    let inner = match full.rfind("dyn ") {
+        Some(at) => {
+            let rest = &full[at + 4..];
+            let end = rest.find(|c: char| c == '+' || c == '>' || c == ' ' || c == ')').unwrap_or(rest.len());
+            &rest[..end]
+        }
+        None => full.split('<').next().unwrap_or(full),
+    };
+    let bare = inner.rsplit("::").next().unwrap_or(inner).trim();
+    let name: &'static str = match bare {
+        "i64" => "int",
+        "f64" => "double",
+        "bool" => "bool",
+        "String" => "String",
+        "Null" | "()" => "Null",
+        other => Box::leak(other.to_string().into_boxed_str()),
+    };
+    Type { name }
+}
+
 /// Dart's `Symbol`: a member name as a value.
 ///
 /// `#foo` in source, and what `Invocation.memberName` carries. Compared and

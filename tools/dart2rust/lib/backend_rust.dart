@@ -7155,6 +7155,7 @@ class RustBackend {
     'dart_from_dynamic',
     'dart_double_str',
     'dart_object_str',
+    'dart_type_of',
     'vec_of_nulls',
     'dart_native',
     'dart_native_as',

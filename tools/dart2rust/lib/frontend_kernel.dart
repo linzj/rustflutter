@@ -1223,7 +1223,12 @@ class KernelFrontend implements TypeWorld {
           promoted = parameter.bound;
         } else if (!(declared is TypeParameterType &&
             declared.parameter == parameter)) {
-          return IrDowncast(IrLocal(name), parameter.name ?? 'T')
+          // Out of its `Option` first when the local is nullable (`final w
+          // = map[T]; w is T ? w : null`, the typelit fixture).
+          final read = declared.nullability == Nullability.nullable
+              ? _nullChecked(IrLocal(name)..rustType = _recordedType(declared))
+              : IrLocal(name);
+          return IrDowncast(read, parameter.name ?? 'T')
             ..rustType = _type(promoted);
         }
       }
@@ -1985,7 +1990,7 @@ class KernelFrontend implements TypeWorld {
           IrLocalDecl(held, null, init),
           IrSetter(
             null,
-            node.name.text,
+            _fieldNameOf(node.interfaceTarget, node.name.text),
             stored,
             qualifier: _setterQualifier(null, node.interfaceTarget),
           ),
@@ -3792,7 +3797,11 @@ class KernelFrontend implements TypeWorld {
         receiver is VariableGet &&
         receiver.variable == _cascade) {
       if (value.interfaceTarget is! Field) {
-        return IrSetter(IrLocal(_cascadeName), value.name.text, written);
+        return IrSetter(
+          IrLocal(_cascadeName),
+          _fieldNameOf(value.interfaceTarget, value.name.text),
+          written,
+        );
       }
       // The owner is the cascaded value's own class: on a counted one its
       // fields are cells, and without the owner the backend wrote
@@ -3924,7 +3933,7 @@ class KernelFrontend implements TypeWorld {
         !_heldField(value.interfaceTarget, value.receiver)) {
       return IrSetter(
         null,
-        value.name.text,
+        _fieldNameOf(value.interfaceTarget, value.name.text),
         written,
         qualifier: _setterQualifier(null, value.interfaceTarget),
       );
@@ -7956,35 +7965,78 @@ class KernelFrontend implements TypeWorld {
   /// library's tag; every reference resolves through the member, so the
   /// name is one everywhere.
   String _memberName(Member member) {
-    final known = _memberNames[member];
+    // Keyed by the declaration behind a copy (`_originalOf`): every
+    // application of a mixin and the mixin's own trait spell the field
+    // alike.
+    final original = _originalOf(member);
+    final known = _memberNames[original];
     if (known != null) return known;
     final text = member.name.text;
     var out = text;
-    final owner = member.enclosingClass;
-    if (member.name.isPrivate && owner != null && member is Field) {
-      final library = member.enclosingLibrary;
-      var above = owner.superclass;
-      while (above != null) {
-        if (above.enclosingLibrary != library &&
-            above.fields.any(
-              (f) => f.name.text == text && f.name.isPrivate && !f.isStatic,
-            )) {
-          out = '${text}_${_libraryTag(library)}';
-          break;
+    final accessor =
+        original is Field ||
+        (original is Procedure && (original.isGetter || original.isSetter));
+    final start = member.enclosingClass;
+    final static = switch (original) {
+      Field(:final isStatic) => isStatic,
+      Procedure(:final isStatic) => isStatic,
+      _ => false,
+    };
+    if (member.name.isPrivate && accessor && !static && start != null) {
+      final library = original.enclosingLibrary;
+      // From the class itself, or -- for a mixin's member, whose own
+      // superclass is `Object` -- from every application of the mixin,
+      // whichever is asked first (the answer is cached by declaration).
+      final owner = original.enclosingClass;
+      final starts = <Class>[
+        start,
+        if (owner != null && owner.isMixinDeclaration) ...?applications[owner],
+      ];
+      if (Platform.environment['DART2RUST_TRACE_MEMBER'] == text) {
+        stderr.writeln(
+          'TRACE_MEMBER $text in ${start.name} (${library.importUri}) starts=${starts.map((c) => c.name).toList()}',
+        );
+      }
+      outer:
+      for (final from in starts) {
+        var above = from.superclass;
+        while (above != null) {
+          if (above.enclosingLibrary != library &&
+              _declaresPrivateAccessor(above, text)) {
+            out = '${text}_${_libraryTag(library)}';
+            break outer;
+          }
+          above = above.superclass;
         }
-        above = above.superclass;
       }
     }
-    _memberNames[member] = out;
+    _memberNames[original] = out;
     return out;
   }
+
+  /// Whether `c` declares a non-static private field, getter or setter
+  /// named `text` -- its own, or a mixin's copy the CFE put in it.
+  static bool _declaresPrivateAccessor(Class c, String text) =>
+      c.fields.any(
+        (f) => f.name.text == text && f.name.isPrivate && !f.isStatic,
+      ) ||
+      c.procedures.any(
+        (p) =>
+            p.name.text == text &&
+            p.name.isPrivate &&
+            !p.isStatic &&
+            (p.isGetter || p.isSetter),
+      );
 
   final Map<Member, String> _memberNames = {};
 
   /// A field's IR name from its target, or the written name for anything
   /// else (a setter's).
   String _fieldNameOf(Member? target, String text) =>
-      target is Field ? _memberName(target) : text;
+      target is Field ||
+          (target is Procedure && (target.isGetter || target.isSetter))
+      ? _memberName(target!)
+      : text;
 
   /// A short tag for a library, from its URI's last segment.
   static String _libraryTag(Library library) {
@@ -8303,7 +8355,23 @@ class KernelFrontend implements TypeWorld {
   /// times. Four `of` methods -- Theme, MaterialLocalizations,
   /// CupertinoLocalizations and the gallery's own -- account for 464 of the
   /// 670 "called something that was not translated".
-  static IrExpr _typeLiteral(DartType type) {
+  IrExpr _typeLiteral(DartType type) {
+    // A type parameter's: what it was instantiated with, asked of the
+    // Rust type (`dart_type_of::<T>()`); spelled as text it was the
+    // Kernel node (`_inheritedElements[T]` in
+    // `dependOnInheritedWidgetOfExactType<T>` found nothing, run555).
+    // An erased one is its bound.
+    if (type is TypeParameterType) {
+      if (_erasedParameter(type.parameter)) {
+        return _typeLiteral(type.parameter.bound);
+      }
+      return IrStaticCall(
+        null,
+        'dart_type_of',
+        const [],
+        typeArguments: [IrType(type.parameter.name ?? 'T')],
+      )..rustType = const IrType('Type');
+    }
     final name = type is InterfaceType ? type.classNode.name : '$type';
     return IrLiteral('Type::of("$name")', const IrType('raw'))
       ..rustType = const IrType('Type');
@@ -10963,6 +11031,10 @@ class KernelFrontend implements TypeWorld {
     // `new`, as the backend spells the call.
     final name = node.kind == ProcedureKind.Factory && node.name.text.isEmpty
         ? 'new'
+        : node.name.isPrivate &&
+              (node.kind == ProcedureKind.Getter ||
+                  node.kind == ProcedureKind.Setter)
+        ? _dartName(_memberName(node))
         : _dartName(node.name.text);
     if (node.isNoSuchMethodForwarder) {
       _lowerForwarder(cls, node);
