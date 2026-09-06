@@ -6693,6 +6693,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | （ws528 前） | 同批：tear-off 的内层调用经 `_qualified` 带上成员的擦除类型再收进 tear-off 自己的返回（`advance: childAfter` 返回擦除的 `RenderObject?`，槽位要 `RenderSliver?`——`RenderViewport._attemptLayout`）；`late` 无初始化的局部量走 `_optionLocals`（`Scaffold` 布局的 `late Rect floatingActionButtonRect`）。夹具 erasedtear、latelocal。**待办（夹具暴露）**：擦除参数类型的集合字段（mixin 里 `List<ChildType> children`）上的 `add` 落在 `__to_list`/`!narrow` 拷贝上，写丢了——就地变异规则要看穿收窄拷贝。 | |
 | ws528 | 链：**1015**（−13；新 8/去 20），**可达 crate 142**（多了一个叶 crate）。 | |
 | run528 | **第一帧画出来了**：`1 frame(s) drawn`，`main` 没抛、没 panic；剩下 3 个跳过的 void native（`ScheduleMicrotask`、`SendChannelUpdate`、`EndWarmUpFrame`）。Goal 2（gallery 无头构建、布局、绘制第一帧）达成。 | 下一个 goal 见"下一步"。 |
+| ws529 | 链：**1015**（持平，新 0/去 0），142。可变列表成员的接收者不再收窄拷贝（`children.add(x)` 落回 `self.children.borrow_mut().push(..)`）。 | |
+| run529 | 仍 1 帧、`RUN-DONE exit=0`，无回归。 | |
 
 ## 下一步(2026-09-05 重铺)
 
