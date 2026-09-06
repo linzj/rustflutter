@@ -1213,8 +1213,14 @@ class RustBackend {
     // spelled: inside a `.map(|__f| ..)` there is no slot to infer
     // `Rc<dyn Fn>` from, and the `Rc<{closure}>` stayed one (a
     // conditional tear-off into `VoidCallback?`, ws549).
+    // A `let` with the type, not an `as` cast: the expectation flows
+    // into the closure, whose `Ok(concrete)` then unsizes to the declared
+    // `Rc<dyn Widget>` -- under a cast it stayed concrete and the closure
+    // "returned the wrong type" (+192 at ws550).
     final spelled = _closureHandleType(node, node.rustType);
-    if (spelled != null) return '(std::rc::Rc::new($whole) as $spelled)';
+    if (spelled != null) {
+      return '{ let __h: $spelled = std::rc::Rc::new($whole); __h }';
+    }
     return 'std::rc::Rc::new($whole)';
   }
 
@@ -3371,7 +3377,7 @@ class RustBackend {
           ? _closureHandleType(target, resultType)
           : null;
       if (spelled != null) {
-        return '(std::rc::Rc::new($receiver) as $spelled)';
+        return '{ let __h: $spelled = std::rc::Rc::new($receiver); __h }';
       }
       return 'std::rc::Rc::new($receiver)';
     }
