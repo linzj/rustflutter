@@ -6635,6 +6635,7 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run496 | **过了键盘状态同步的 `invokeMapMethod`**；停在 prelude：`JSONMethodCodec.encodeMethodCall` 的 `<String, Object?>{'method': .., 'args': ..}` 进 `json.encode`，写入器只认 `Map<String, Rc<dyn Object>>`。 | JSON 写入器改成 `JsonPiece` trait（标量/`null`/`Option`/`Vec`/`Map`/`dynamic`）+ `dynamic` 的形状表（标量、`dynamic`、两层的 list/map，宏生成），不认的形状按运行时类型名报错。 |
 | ws497 | 链：**1300**（−3），141。新 10/去 10：去掉的是 ws496 的 Set 一族；新的散在 `_clear_trackers`、`dart_ui.values`、intl 的 `parse_pattern` 等（待看）。 | |
 | run497 | **过了 JSON 编码**；停在 `PlatformDispatcher.__sendPlatformMessage`：AOT 的 FFI 变换给了它一个体（调 `$Method$FfiNative`），这条路一律 `todo!`，没走宿主边界。 | 有体的 `@Native` 成员带着 marker，同 `external` 的一样经 `_nativeBoundary`（`dart_native`/`dart_native_as`）交宿主。同批：`Object?` 即 `dynamic`（Dart 的两个顶类型是一个类型；`LocalizationsDelegate<dynamic>` 对 `<Object?>`，`WidgetsApp.build`），位置无关；由此每处按 Dart 可空性插的 unwrap 改为按记录的 Rust 类型（`_nullChecked`），late 局部量的 `Option` 在 Rust 类型层拼（`_localIrType`）。 |
+| ws498 | 链**坏了**：reachable 34。`_SaltedValueKey` 上 `impl ValueKey<Rc<dyn Object>>` 两份（E0119，函数体外）：census 按 IR 文本去重，`ValueKey<Object>` 和 `ValueKey<dynamic>` 文本不同、Rust 拼法相同（`Object?` 归 `dynamic` 后撞上）。 | 更宽的 impl 按 **Rust 类型**（`sameRust`）去重。同批：`toList` 按接收者拼出的 `Vec` 判。 |
 
 ## 下一步(2026-09-05 重铺)
 

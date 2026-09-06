@@ -149,7 +149,21 @@ class KernelFrontend implements TypeWorld {
       final node = _kernelClasses[ir.name];
       if (node == null) continue;
       final thisType = node.getThisType(env.coreTypes, Nullability.nonNullable);
-      final spelled = <String>{};
+      // What has an impl already, by the *Rust* type (`sameRust`): `Object`
+      // and `dynamic` are one spelling, and `ValueKey<Object>` beside
+      // `ValueKey<dynamic>` was two impls of one trait (E0119, ws498).
+      final spelled = <String, List<List<IrType>>>{};
+      bool sameArgs(List<IrType> a, List<IrType> b) =>
+          a.length == b.length &&
+          [for (var i = 0; i < a.length; i++) sameRust(a[i], b[i])]
+              .every((same) => same);
+      bool seen(String name, List<IrType> args) {
+        final list = spelled.putIfAbsent(name, () => []);
+        if (list.any((s) => sameArgs(s, args))) return true;
+        list.add(args);
+        return false;
+      }
+
       for (final entry in census.entries) {
         final base = entry.key;
         if (identical(base, node) || base.typeParameters.isEmpty) continue;
@@ -191,10 +205,7 @@ class KernelFrontend implements TypeWorld {
               continue;
             }
             if (args.isEmpty) continue;
-            final key = '${above.name}<${args.join(',')}>';
-            if (args.join(',') == ownArgs.join(',') || !spelled.add(key)) {
-              continue;
-            }
+            if (sameArgs(args, ownArgs) || seen(above.name, args)) continue;
             ir.extraImpls.add(IrType(above.name, arguments: args));
           }
         }
