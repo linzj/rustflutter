@@ -251,6 +251,11 @@ class KernelFrontend implements TypeWorld {
   /// so such a slot of a prelude callee is coerced too (`Uri.replace(
   /// queryParameters: uri.queryParametersAll)`, 16 at ws421).
   static bool _mentionsDynamic(DartType t) {
+    if (t is FutureOrType) return _mentionsDynamic(t.typeArgument);
+    if (t is RecordType) {
+      return t.positional.any(_mentionsDynamic) ||
+          t.named.any((n) => _mentionsDynamic(n.type));
+    }
     if (t is DynamicType) return true;
     if (t is InterfaceType) return t.typeArguments.any(_mentionsDynamic);
     if (t is FunctionType) {
@@ -333,6 +338,11 @@ class KernelFrontend implements TypeWorld {
       const {'List', 'Set', 'Map'}.contains(c.name);
 
   static bool _mentionsTypeParameter(DartType t) {
+    if (t is FutureOrType) return _mentionsTypeParameter(t.typeArgument);
+    if (t is RecordType) {
+      return t.positional.any(_mentionsTypeParameter) ||
+          t.named.any((n) => _mentionsTypeParameter(n.type));
+    }
     if (t is TypeParameterType) return true;
     if (t is InterfaceType) return t.typeArguments.any(_mentionsTypeParameter);
     if (t is FunctionType) {
@@ -2971,6 +2981,13 @@ class KernelFrontend implements TypeWorld {
     DartType t,
     List<TypeParameter> foreign,
   ) {
+    if (t is FutureOrType) {
+      return _mentionsForeignParameter(t.typeArgument, foreign);
+    }
+    if (t is RecordType) {
+      return t.positional.any((a) => _mentionsForeignParameter(a, foreign)) ||
+          t.named.any((n) => _mentionsForeignParameter(n.type, foreign));
+    }
     if (t is TypeParameterType) return foreign.contains(t.parameter);
     if (t is InterfaceType) {
       return t.typeArguments.any((a) => _mentionsForeignParameter(a, foreign));
@@ -4994,7 +5011,10 @@ class KernelFrontend implements TypeWorld {
         );
       } else if (static != null) {
         try {
-          call.rustType = _type(static);
+          // A `T?` bound to a top type is the `Option<Rc<dyn Object>>`
+          // the callee hands back, as `expression` types a read
+          // (`invokeMethod<dynamic>(..)` into a `dynamic` local, ws513).
+          call.rustType = _topBound(declaredReturn, static) ?? _type(static);
         } on Unsupported {
           // Untyped, as `expression` leaves it.
         }
@@ -5097,6 +5117,15 @@ class KernelFrontend implements TypeWorld {
   }
 
   static bool _mentionsParametersOf(DartType t, List<TypeParameter> ps) {
+    // `FutureOr<R>` is its own node, not an `InterfaceType`: `then<R>`'s
+    // `FutureOr<R> Function(void)` slot passed for a slot of no parameter,
+    // and the callback was lowered against the declared `R`, its body
+    // never closed (`Route.didAdd`, ws512).
+    if (t is FutureOrType) return _mentionsParametersOf(t.typeArgument, ps);
+    if (t is RecordType) {
+      return t.positional.any((a) => _mentionsParametersOf(a, ps)) ||
+          t.named.any((n) => _mentionsParametersOf(n.type, ps));
+    }
     if (t is TypeParameterType) return ps.contains(t.parameter);
     if (t is InterfaceType) {
       return t.typeArguments.any((a) => _mentionsParametersOf(a, ps));
@@ -6484,6 +6513,11 @@ class KernelFrontend implements TypeWorld {
   /// declaration's cannot replace it (`LayoutInfoType get layoutInfo`
   /// returning `BoxConstraints` in `RenderLayoutBuilder`, ws477).
   bool _mentionsKeptParameter(DartType t) {
+    if (t is FutureOrType) return _mentionsKeptParameter(t.typeArgument);
+    if (t is RecordType) {
+      return t.positional.any(_mentionsKeptParameter) ||
+          t.named.any((n) => _mentionsKeptParameter(n.type));
+    }
     if (t is TypeParameterType) return !_erasedParameter(t.parameter);
     if (t is InterfaceType) {
       return t.typeArguments.any(_mentionsKeptParameter);
@@ -8305,6 +8339,10 @@ class KernelFrontend implements TypeWorld {
   /// Whether a type names an erased parameter anywhere in it.
   bool _mentionsErased(DartType t) => switch (t) {
     TypeParameterType() => _erasedParameter(t.parameter),
+    FutureOrType() => _mentionsErased(t.typeArgument),
+    RecordType() =>
+      t.positional.any(_mentionsErased) ||
+          t.named.any((n) => _mentionsErased(n.type)),
     InterfaceType() => t.typeArguments.any(_mentionsErased),
     FunctionType() =>
       _mentionsErased(t.returnType) ||
@@ -10776,6 +10814,10 @@ class _FinalFieldReads extends RecursiveVisitor {
 bool _mentions(DartType type, Class cls) => switch (type) {
   InterfaceType(:final classNode, :final typeArguments) =>
     classNode == cls || typeArguments.any((t) => _mentions(t, cls)),
+  FutureOrType(:final typeArgument) => _mentions(typeArgument, cls),
+  RecordType(:final positional, :final named) =>
+    positional.any((t) => _mentions(t, cls)) ||
+        named.any((n) => _mentions(n.type, cls)),
   FunctionType(:final positionalParameters, :final returnType) =>
     positionalParameters.any((t) => _mentions(t, cls)) ||
         _mentions(returnType, cls),

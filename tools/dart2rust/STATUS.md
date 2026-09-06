@@ -6660,6 +6660,10 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run510 | 停在 gallery 的 `main`：`GoogleFonts.config.allowRuntimeFetching = false` 写成 `(**GOOGLE_FONTS_CONFIG).borrow_mut().allow_runtime_fetching = ..`——`Config` 现在是计数类，静态对象的字段写要走字段自己的 cell。 | 静态接收者的字段写按类是否计数分路。 |
 | ws511 | 链：**1173**（−60；比 1300 少 127：新 16/去 133；比 ws508 少 3），141。别名突变计数这一族收口。 | |
 | run511 | 平台消息**长度对了**（`getKeyboardState` 19 字节、path_provider 35 字节），内容全零：`WriteBuffer` 计数后 `_buffer` 进了 cell，`_add` 的 `_buffer[i] = byte` 写在 `borrow().clone()` 上。 | 进 cell 的字段上的下标赋值经 `_cellPlace` 的 `borrow_mut()`（81f8e7fa，进 ws512）。同批：`{ .. }[0]` 读下标时块表达式加括号（`gestures_arena`）；计数类的运算符两边取值（`Rc<Matrix4> * Rc<Matrix4>`）。 |
+| ws512 | 链：**1170**（−3；比 1300 少 130：新 12/去 132），141。`_countedClass` 缓存 + 实例常量字段按槽位收缩进了这轮；`modal_route_super__build_modal_scope` 仍 stub，但错误换成了 `dart_object(dart_object(Semantics))`。 | `??=` 的右边（赋值当值的块）类型按**存进去的**值算：`_cache ??= Semantics(..)` 存的是 `Rc<dyn Widget>`，块再被 `Widget` 槽包一层 `dart_object`。块和它的值都带 `stored.value.rustType`（86027849，进 ws513）。 |
+| run512 | 长度对、内容仍全零：`_add` 的 `self._buffer.borrow().clone()[__i] = ..`——`_cellPlace` 自己有一份只认 `Vec<`/`Map<`/.. 前缀的表，`Uint8List` 是别名不在里面。 | `_cellPlace` 改用 `_isMutableCollection`（同一张表）（86027849）。 |
+| ws513 | 链：**1161**（−9；比 1300 少 139：新 7/去 134），141。`modal_route_super__build_modal_scope` 去了；vector_math 六个回来了。 | |
+| run513 | 三条平台消息**字节全对**（`getKeyboardState`、`getApplicationDocumentsDirectory`），宿主也答了路径（run513b 加了回包 hex 追踪：`00 07 30 2f 68 6f 6d 65 ..`），停在 `MissingPlatformDirectoryException`：`decodeEnvelope(result) as T?` 拼成 `downcast_ref::<T>()`，`T = Rc<dyn Object>`（`invokeMethod<dynamic>`）不是任何对象的具体类型，永远 None。 | 到类型参数的 `as T` / `as T?` 走 `<T as FromDynamic>::from_dynamic`（每个 bound 里都有），`as T?` 先经 `dart_nullable`；同批：`_mentionsParametersOf`/`_mentionsErased`/其余五个类型遍历补 `FutureOrType`/`RecordType`（`then<R>` 的 `FutureOr<R> Function(void)` 槽被当成不含 R，回调按声明的 `R` 降低、体不收口——`Route.didAdd`）；`invokeMethod<dynamic>` 的 `T?` 结果记成 `dynamic?`。夹具 astp/tfthen/ifnullset。 |
 
 ## 下一步(2026-09-05 重铺)
 

@@ -177,6 +177,19 @@ fn send_platform_message(args: &[Rc<dyn Object>]) {
             None
         }
     };
+    if std::env::var_os("DART2RUST_TRACE_MESSAGES").is_some() {
+        match &reply {
+            Some(bytes) => {
+                let hex: Vec<String> = bytes
+                    .dart_bytes()
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
+                eprintln!("dart2rust runtime: {} reply: {}", name, hex.join(" "));
+            }
+            None => eprintln!("dart2rust runtime: {} reply: none", name),
+        }
+    }
     if let Some(callback) = callback {
         Timer::run(Rc::new(move || callback(reply.clone())));
     }

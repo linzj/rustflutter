@@ -812,6 +812,12 @@ class RustBackend {
               arguments.isNotEmpty &&
               arguments.every(_dynamicRepresentable) =>
         '${type == 'Map' ? 'dart_cast_map' : 'dart_cast_list'}::<${arguments.map(this.type).join(', ')}>(&${expr(target)}).unwrap()',
+      // A type parameter: its own conversion (`FromDynamic`, in every
+      // bound), as `!as_opt` above -- `Any` knows one concrete type, and a
+      // `T` bound to `Rc<dyn Object>` is none.
+      IrDowncast(:final target, :final type, :final arguments)
+          when arguments.isEmpty && _isTypeParam(type) =>
+        '<$type as FromDynamic>::from_dynamic(&${expr(target)}).unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
         '${expr(target)}.as_any().downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
@@ -3139,11 +3145,16 @@ class RustBackend {
     // Into `Rc<dyn Object>` by name: inside a `.map(|it| ..)` the unsizing
     // has nothing to infer it from.
     // A `dynamic` asked whether it is a `T`: the `Option<T>` `Any` gives.
+    // ..by the parameter's own conversion, not `Any`'s one concrete
+    // type: a `T` instantiated with `Rc<dyn Object>` (`invokeMethod<
+    // dynamic>`) is no object's type, and `decodeEnvelope(..) as T?` gave
+    // null for every reply -- `MissingPlatformDirectoryException` at
+    // run513. Dart's null (the `Null` object) is `None` first.
     if (name == '!as_opt' && args.length == 1) {
       final spelledArgs = typeArguments.isEmpty
           ? ''
           : '<${typeArguments.map(type).join(', ')}>';
-      return '$receiver.as_any().downcast_ref::<${expr(args.single)}$spelledArgs>().cloned()';
+      return 'dart_nullable($receiver).as_ref().and_then(|__v| <${expr(args.single)}$spelledArgs as FromDynamic>::from_dynamic(__v))';
     }
     if (name == '!as_object' && args.isEmpty) {
       // `this` into an `Object` slot: the handle when the method holds
