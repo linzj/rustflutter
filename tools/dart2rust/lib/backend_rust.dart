@@ -2633,7 +2633,8 @@ class RustBackend {
     'sort_by_dart',
     'first_where',
     'first_where_or',
-    'then',
+    // Not `then`: the prelude's returns the future it spawns, and the
+    // callback's own failure lands in that future (`_initKeyboard`, run476).
     'run',
     'run_guarded',
     'run_unary_guarded',
@@ -3173,6 +3174,12 @@ class RustBackend {
       _returns = outer;
     }
     if (cls.counted) parts.add('__self: DartSelf::new()');
+    // The phantom fields a generic class carries (see the struct's
+    // emission): `const PersistentHashMap<Type, InheritedElement>.empty()`
+    // (ws475).
+    for (final unused in _unusedParameters(cls)) {
+      parts.add('_phantom_${snake(unused)}: std::marker::PhantomData');
+    }
     return '${t.name} { ${parts.join(', ')} }';
   }
 
@@ -5424,6 +5431,11 @@ class RustBackend {
       _indent++;
       _selfName = 'this_';
       _returns = method.returnType;
+      // ..and the Rust spelling, which a `try` that returns from inside
+      // carries out through its closure (`Option<()>` carried an
+      // `Rc<dyn Element>` in `inflateWidget`'s super function, ws475).
+      final outerRustReturns = _rustReturns;
+      _rustReturns = _returnType(method);
       _here = '${cls.name}.${method.name}';
       // A super function fails like the method whose body it holds.
       _failure = _failureOf(method);
@@ -5442,6 +5454,7 @@ class RustBackend {
       );
       _closeOpenIf(method.body);
       _fieldsAreAccessors = accessors;
+      _rustReturns = outerRustReturns;
       _returns = null;
       _selfName = 'self';
       _indent--;
@@ -6726,7 +6739,7 @@ class RustBackend {
     // have an unused parameter, and `PhantomData` is what it offers instead.
     for (final unused in _unusedParameters(cls)) {
       _line(
-        '_phantom_${snake(unused)}: '
+        'pub _phantom_${snake(unused)}: '
         'std::marker::PhantomData<$unused>,',
       );
     }

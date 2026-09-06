@@ -404,6 +404,7 @@ class KernelFrontend implements TypeWorld {
     final env = typeEnvironment;
     _typeContext = env == null ? null : StaticTypeContext(member, env);
     _capturedWrites = _CapturedWrites.of(member);
+    _tryWrites = _TryWrites.of(member);
   }
 
   /// The locals of the member being lowered that a closure inside it
@@ -412,6 +413,14 @@ class KernelFrontend implements TypeWorld {
   /// local's -- a plain `let` copied into the closure would have kept the
   /// sum to itself, and the fixture crate's `total` said 0.
   Set<Variable> _capturedWrites = const {};
+
+  /// Locals assigned inside a `try` body they are declared outside of.
+  /// The backend lowers a `try` into a closure called on the spot, and
+  /// Rust will not let a closure assign a binding that is not yet
+  /// initialized: such a local starts as `None` and is read unwrapped
+  /// (`late Widget built; try { built = build(); } ..` in
+  /// `ComponentElement.performRebuild`, ws475).
+  Set<Variable> _tryWrites = const {};
 
   DartType? _staticType(Expression e) {
     // An instance constant is its own class before it is the slot's declared
@@ -760,6 +769,14 @@ class KernelFrontend implements TypeWorld {
       // Option<String>`). It used to return before the checks below.
       final name = temporary ?? written!;
       if (_optionLocals.contains(node.variable)) {
+        if (_tryWrites.contains(node.variable) &&
+            node.variable.type.nullability != Nullability.nullable) {
+          return IrCall(
+            IrCall(IrLocal(name), 'clone', const []),
+            'unwrap',
+            const [],
+          )..rustType = _type(node.variable.type);
+        }
         return IrLocal(name)..rustType = _type(_localType(node.variable));
       }
       // A constructor's projected parameter is read as it was declared,
@@ -775,6 +792,9 @@ class KernelFrontend implements TypeWorld {
       // reads as the class it was declared with.
       final retyped = _retyped[node.variable];
       final declaredVar = node.variable.type;
+      if (retyped != null && retyped is! TypeParameterType) {
+        return IrLocal(name)..rustType = _type(retyped);
+      }
       if (retyped is TypeParameterType &&
           _erasedParameter(retyped.parameter) &&
           declaredVar is InterfaceType &&
@@ -1147,20 +1167,13 @@ class KernelFrontend implements TypeWorld {
       // `x != null ? Color(..) : "unspecified"` inside a string: the branches
       // are of different classes and the result is `Object`, so both go
       // through `dart_str` (see the `??` case).
+      // ..no longer: each branch widens into `Object` below, which is
+      // right in every context, and an interpolation's part goes through
+      // `dart_str` on its own (`_stringPart`). Stringifying here turned
+      // `slots != null ? slots[i] : IndexedSlot(..)` -- an `Object?`
+      // returned from `slotFor` -- into a `String` (`updateChildren`,
+      // ws475).
       final staticType = node.staticType;
-      final thenType = _staticType(node.then);
-      final elseType = _staticType(node.otherwise);
-      if (staticType is InterfaceType &&
-          staticType.classNode.name == 'Object' &&
-          thenType is InterfaceType &&
-          elseType is InterfaceType &&
-          thenType.classNode != elseType.classNode) {
-        return IrConditional(
-          expression(condition),
-          IrStaticCall(null, 'dart_str', [expression(node.then)]),
-          IrStaticCall(null, 'dart_str', [expression(node.otherwise)]),
-        );
-      }
       // Each branch widens into the conditional's own type: `m == null ?
       // null : hashAll(m)` is an `Option`, and the second branch an `i64`
       // until it is wrapped (4 `if` and `else` have incompatible types).
@@ -3205,7 +3218,7 @@ class KernelFrontend implements TypeWorld {
         : written;
     if (init == null &&
         written != null &&
-        written.startsWith('#') &&
+        (written.startsWith('#') || _tryWrites.contains(variable)) &&
         variable.type is! VoidType &&
         variable.type.nullability != Nullability.nullable) {
       _optionLocals.add(variable);
@@ -4208,7 +4221,11 @@ class KernelFrontend implements TypeWorld {
           // `targetWidth! / (w / h)`: whatever the static type of the left
           // side says, a `/` with a `double` right side is a `double`
           // division, and Rust has no `i64 / f64`.
-          if (rightClass == 'double' && leftClass != 'double') {
+          // ..when the left side is a number: a class's own `/` takes
+          // what it declares (`BoxConstraints / double` in
+          // `ViewConfiguration.fromView`, cast to `f64`, ws474).
+          if (rightClass == 'double' &&
+              (leftClass == 'int' || leftClass == 'num')) {
             left = _toF64(left);
           }
         }
@@ -8573,7 +8590,15 @@ class KernelFrontend implements TypeWorld {
           ? _appliedBody(node, procedure) ?? procedure
           : procedure;
       try {
-        _lowerProcedure(cls, lowered);
+        // ..under the declaration's own signature: the application's copy
+        // has the mixin's parameter substituted (`RenderBox?` for
+        // `ChildType?`), and the trait is the mixin's, not one
+        // application's (`RenderObjectWithChildMixin.child`, ws475).
+        _lowerProcedure(
+          cls,
+          lowered,
+          signature: identical(lowered, procedure) ? null : procedure,
+        );
       } on Unsupported catch (error, stack) {
         refuse(procedure.name.text, error, stack);
         final stub = _stubFor(procedure, '$error');
@@ -8927,8 +8952,33 @@ class KernelFrontend implements TypeWorld {
     );
   }
 
-  void _lowerProcedure(IrClass cls, Procedure node) {
+  void _lowerProcedure(IrClass cls, Procedure node, {Procedure? signature}) {
     _enter(node);
+    // The declared signature's types for the body's parameters (see the
+    // mixin lowering): a read of one is typed by the declaration.
+    if (signature != null) {
+      final own = node.function;
+      final sig = signature.function;
+      for (
+        var i = 0;
+        i < own.positionalParameters.length &&
+            i < sig.positionalParameters.length;
+        i++
+      ) {
+        final p = own.positionalParameters[i];
+        final t = sig.positionalParameters[i].type;
+        if (t != p.type) _retyped[p] = t;
+      }
+      for (final p in own.namedParameters) {
+        for (final q in sig.namedParameters) {
+          if (q.parameterName == p.parameterName && q.type != p.type) {
+            _retyped[p] = q.type;
+          }
+        }
+      }
+    }
+    DartType paramType(Variable p, DartType declared) =>
+        _retyped[p] ?? declared;
     // An unnamed factory has no name in Kernel; an empty identifier stopped
     // all 37 members of vector_math's classes through `_computeFailing`.
     // `new`, as the backend spells the call.
@@ -8966,7 +9016,7 @@ class KernelFrontend implements TypeWorld {
       for (final p in node.function.positionalParameters)
         IrParam(
           _paramName(p),
-          _edgeType(p.type),
+          _edgeType(paramType(p, p.type)),
           kept: _keeps(node.function, p),
           hasDefault: p.defaultValue != null,
           defaultValue: _default(p),
@@ -8975,7 +9025,7 @@ class KernelFrontend implements TypeWorld {
         if (!_inspectorOnly(p.parameterName))
           IrParam(
             p.parameterName,
-            _edgeType(p.type),
+            _edgeType(paramType(p, p.type)),
             named: true,
             kept: _keeps(node.function, p),
             hasDefault: p.defaultValue != null,
@@ -9000,7 +9050,7 @@ class KernelFrontend implements TypeWorld {
     final method = IrMethod(
       name,
       params,
-      _edgeReturnType(node.function),
+      _edgeReturnType((signature ?? node).function),
       node.isAbstract
           ? const IrBlock([])
           : _withEdgeParams(node.function, _body(node.function)),
@@ -9137,6 +9187,61 @@ class _CapturedWrites extends RecursiveVisitor {
   void visitVariableSet(VariableSet node) {
     final home = _declaredIn[node.variable];
     if (home != null && _stack.isNotEmpty && home != _stack.last) {
+      found.add(node.variable);
+    }
+    super.visitVariableSet(node);
+  }
+}
+
+/// See `_tryWrites`: a variable declared outside a `try` and assigned
+/// inside its body (or a catch or finally block).
+class _TryWrites extends RecursiveVisitor {
+  final _declaredIn = <Variable, TreeNode?>{};
+  final _stack = <TreeNode>[];
+  final found = <Variable>{};
+
+  static Set<Variable> of(Member member) {
+    final v = _TryWrites();
+    member.accept(v);
+    return v.found;
+  }
+
+  TreeNode? get _home => _stack.isEmpty ? null : _stack.last;
+
+  @override
+  void visitTryCatch(TryCatch node) {
+    _stack.add(node);
+    super.visitTryCatch(node);
+    _stack.removeLast();
+  }
+
+  @override
+  void visitTryFinally(TryFinally node) {
+    _stack.add(node);
+    super.visitTryFinally(node);
+    _stack.removeLast();
+  }
+
+  @override
+  void visitFunctionNode(FunctionNode node) {
+    // A closure is a boundary of its own (`_CapturedWrites`): what it
+    // assigns is not this `try`'s doing.
+    _stack.add(node);
+    super.visitFunctionNode(node);
+    _stack.removeLast();
+  }
+
+  @override
+  void visitVariableDeclaration(VariableDeclaration node) {
+    _declaredIn[node.variable] = _home;
+    super.visitVariableDeclaration(node);
+  }
+
+  @override
+  void visitVariableSet(VariableSet node) {
+    if (_declaredIn.containsKey(node.variable) &&
+        _declaredIn[node.variable] != _home &&
+        _home is! FunctionNode) {
       found.add(node.variable);
     }
     super.visitVariableSet(node);
