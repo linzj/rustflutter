@@ -1158,8 +1158,57 @@ class RustBackend {
       _supertypesOf(owner).any(
         (t) =>
             library.isAbstract(t.name) &&
-            t.fields.any((f) => f.name == field.name && !f.isFinal),
+            t.fields.any((f) => f.name == field.name && !f.isFinal) &&
+            _fieldsWrittenBy(t).contains(field.name),
       );
+
+  /// The fields a trait's own bodies assign on `this` (`_manifold =
+  /// manifold` in `PipelineOwner.attach`): those writes reach an
+  /// implementer through the setter, so only those fields need the cell.
+  /// Every trait-declared mutable field was a cell for one round (ws480),
+  /// which made `Cell`s of what `_isCopy` misjudged and took the widgets
+  /// crate down.
+  Set<String> _fieldsWrittenBy(IrClass trait) =>
+      _traitWrites.putIfAbsent(trait.name, () {
+        final found = <String>{};
+        void walk(IrStmt s) {
+          switch (s) {
+            case IrAssignField(:final name, :final target):
+              if (target == null || target is IrThis) found.add(name);
+            case IrBlock(:final statements):
+              statements.forEach(walk);
+            case IrIf(:final then, :final otherwise):
+              walk(then);
+              if (otherwise != null) walk(otherwise);
+            case IrTryCatch(:final body, :final handler):
+              walk(body);
+              walk(handler);
+            case IrTryFinally(:final body, :final finalizer):
+              walk(body);
+              walk(finalizer);
+            case IrWhile(:final body):
+              walk(body);
+            case IrLabeled(:final body):
+              walk(body);
+            case IrSwitch(:final cases, :final otherwise):
+              for (final one in cases) {
+                walk(one.body);
+              }
+              if (otherwise != null) walk(otherwise);
+            case IrForIn(:final body):
+              walk(body);
+            default:
+              break;
+          }
+        }
+
+        for (final m in trait.methods) {
+          walk(m.body);
+        }
+        return found;
+      });
+
+  final Map<String, Set<String>> _traitWrites = {};
 
   /// A field that a trait this class implements hands out as a cell
   /// (`_handsCell`): the implementer holds it as one, so the trait body's
@@ -7419,7 +7468,21 @@ class RustBackend {
         );
         _indent++;
         if (cell != null) {
-          final stored = field.isLate ? 'Some(value)' : 'value';
+          // The trait's view of the field may be wider than this class's
+          // (`Tween<T>.begin` as `T?` erased against `ColorTween`'s
+          // `Color?`): the value is adapted into what the field holds.
+          final own = cell.type;
+          final adapted = type(substituted) == type(own)
+              ? 'value'
+              : expr(
+                  coerceInto(
+                    IrLocal('value')..rustType = substituted,
+                    own,
+                    _world,
+                    inClosure: true,
+                  ),
+                );
+          final stored = field.isLate ? 'Some($adapted)' : adapted;
           _line(
             _isCopy(_heldType(cell))
                 ? 'self.${snake(field.name)}.set($stored);'

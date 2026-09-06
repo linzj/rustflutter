@@ -1240,7 +1240,10 @@ class KernelFrontend implements TypeWorld {
       return IrSuperCall(
         owner,
         node.name.text,
-        _arguments(node.arguments, node.interfaceTarget.function),
+        // Into the declaration's slots: a super call reaches the mixin's
+        // super function, typed by the mixin (`super.insert(child, after:
+        // after)` in `RenderSliverMultiBoxAdaptor`, ws479).
+        _arguments(node.arguments, _originalFunction(node.interfaceTarget)),
         baseArguments: _superBaseArguments(ownerClass!),
         typeArguments: _typeArgumentsOf(node.arguments),
       );
@@ -5807,6 +5810,13 @@ class KernelFrontend implements TypeWorld {
       }
     }
     return m;
+  }
+
+  /// The function whose parameters a call to `m` fills: the mixin's own
+  /// declaration behind a copy (see `_originalOf`).
+  FunctionNode _originalFunction(Member m) {
+    final original = _originalOf(m);
+    return original is Procedure ? original.function : m.function!;
   }
 
   /// The type a copy's field is declared with (see `_originalOf`), or
