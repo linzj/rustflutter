@@ -501,6 +501,13 @@ impl DartNullable for () {
 }
 dart_nullable!(DateTime);
 dart_nullable!(Duration);
+dart_nullable!(File);
+dart_nullable!(Directory);
+dart_nullable!(RandomAccessFile);
+dart_nullable!(FileSystemEntity);
+dart_nullable!(FileSystemException);
+dart_nullable!(FileMode);
+dart_nullable!(FileLock);
 dart_nullable!(Exception);
 dart_nullable!(FormatException);
 dart_nullable!(Null);
@@ -1715,7 +1722,7 @@ macro_rules! dart_eq {
     };
 }
 
-dart_eq!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, f32, f64, bool, char, String, (), Duration, StringBuffer, StackTrace, DateTime, SentinelValue, Stopwatch, Uri, Type, JsonUtf8Encoder, Pattern, ServiceExtensionResponse, Flow, RandomAccessFile, File, Directory, Null, RegExpMatch, HttpClientResponse, TimelineTask, Endian, InternetAddress, Symbol, Invocation, InvocationKind, Zone, Timer, RegExp, Exception, Utf8Decoder, OSError, SocketException, HttpClient, JsonCodec, Utf8Codec, Encoding, TypedData, ByteBuffer, ArgumentError, UnimplementedError, IndexError, RangeError, ByteData, FormatException);
+dart_eq!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, f32, f64, bool, char, String, (), Duration, StringBuffer, StackTrace, DateTime, SentinelValue, Stopwatch, Uri, Type, JsonUtf8Encoder, Pattern, ServiceExtensionResponse, Flow, RandomAccessFile, File, Directory, FileSystemEntity, FileSystemException, FileMode, FileLock, Null, RegExpMatch, HttpClientResponse, TimelineTask, Endian, InternetAddress, Symbol, Invocation, InvocationKind, Zone, Timer, RegExp, Exception, Utf8Decoder, OSError, SocketException, HttpClient, JsonCodec, Utf8Codec, Encoding, TypedData, ByteBuffer, ArgumentError, UnimplementedError, IndexError, RangeError, ByteData, FormatException);
 
 /// `hashCode` of a shared object: its identity, as Dart's `Object.hashCode`.
 pub trait RcHashCode {
@@ -2389,19 +2396,535 @@ impl Flow {
     }
 }
 
-/// `dart:io`'s `RandomAccessFile`, `File` and `Directory`, as names: nothing
-/// opens one here (`get_storage`'s IO backend names them in signatures).
+/// `dart:io`'s files, on `std::fs`: what `get_storage`'s IO backend
+/// asks of them (ws479). The sync members panic with Dart's
+/// `FileSystemException` text, as the prelude's other primitives do; the
+/// async ones hand the exception back in the future, where a `try` can
+/// catch it. `readInto` cannot fill the caller's buffer: a list is a
+/// value here, so it reads and reports the count only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileMode {
+    #[default]
+    Read,
+    Write,
+    Append,
+    WriteOnly,
+    WriteOnlyAppend,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileLock {
+    Shared,
+    #[default]
+    Exclusive,
+    BlockingShared,
+    BlockingExclusive,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct RandomAccessFile;
+pub struct FileSystemException {
+    pub message: String,
+    pub path: Option<String>,
+    pub os_error: Option<OSError>,
+}
+
+impl FileSystemException {
+    pub fn new(message: String, path: Option<String>, os_error: Option<OSError>) -> Self {
+        FileSystemException { message, path, os_error }
+    }
+
+    fn of(what: &str, path: &str, error: std::io::Error) -> Self {
+        FileSystemException {
+            message: what.to_string(),
+            path: Some(path.to_string()),
+            os_error: Some(OSError { message: error.to_string(), error_code: error.raw_os_error().unwrap_or(0) as i64 }),
+        }
+    }
+
+    fn raise(self) -> ! {
+        panic!("uncaught Dart exception: {}", self)
+    }
+
+    fn failed(self) -> DartError {
+        std::rc::Rc::new(self) as DartError
+    }
+}
+
+impl fmt::Display for FileSystemException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "FileSystemException: {}", self.message)?;
+        if let Some(path) = &self.path {
+            write!(f, ", path = '{}'", path)?;
+        }
+        if let Some(os) = &self.os_error {
+            write!(f, " (OS Error: {}, errno = {})", os.message, os.error_code)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileSystemEntity {
+    pub path: String,
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct File {
     pub path: String,
 }
 
+fn io_ready<T: 'static>(result: Result<T, FileSystemException>) -> DartFuture<T> {
+    DartFuture::ready(result.map_err(|e| e.failed()))
+}
+
+fn bytes_of(list: &[i64], start: i64, end: Option<i64>) -> Vec<u8> {
+    let start = start.max(0) as usize;
+    let end = end.map(|e| e.max(0) as usize).unwrap_or(list.len()).min(list.len());
+    list[start.min(end)..end].iter().map(|b| *b as u8).collect()
+}
+
+impl File {
+    pub fn new(path: String) -> Self {
+        File { path }
+    }
+
+    pub fn path(&self) -> String {
+        self.path.clone()
+    }
+
+    pub fn parent(&self) -> Directory {
+        Directory::new(
+            std::path::Path::new(&self.path)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".to_string()),
+        )
+    }
+
+    pub fn exists_sync(&self) -> bool {
+        std::path::Path::new(&self.path).is_file()
+    }
+
+    pub fn exists(&self) -> DartFuture<bool> {
+        DartFuture::ready(Ok(self.exists_sync()))
+    }
+
+    fn try_create(&self, recursive: bool, exclusive: bool) -> Result<(), FileSystemException> {
+        if recursive {
+            if let Some(parent) = std::path::Path::new(&self.path).parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| FileSystemException::of("Cannot create file", &self.path, e))?;
+            }
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .create_new(exclusive)
+            .open(&self.path)
+            .map(|_| ())
+            .map_err(|e| FileSystemException::of("Cannot create file", &self.path, e))
+    }
+
+    pub fn create_sync(&self, recursive: bool, exclusive: bool) {
+        if let Err(e) = self.try_create(recursive, exclusive) {
+            e.raise()
+        }
+    }
+
+    pub fn create(&self, recursive: bool, exclusive: bool) -> DartFuture<File> {
+        io_ready(self.try_create(recursive, exclusive).map(|_| self.clone()))
+    }
+
+    fn try_open(&self, mode: FileMode) -> Result<RandomAccessFile, FileSystemException> {
+        let mut options = std::fs::OpenOptions::new();
+        match mode {
+            FileMode::Read => {
+                options.read(true);
+            }
+            FileMode::Write => {
+                options.read(true).write(true).create(true);
+            }
+            FileMode::Append => {
+                options.read(true).append(true).create(true);
+            }
+            FileMode::WriteOnly => {
+                options.write(true).create(true);
+            }
+            FileMode::WriteOnlyAppend => {
+                options.append(true).create(true);
+            }
+        }
+        let file = options
+            .open(&self.path)
+            .map_err(|e| FileSystemException::of("Cannot open file", &self.path, e))?;
+        Ok(RandomAccessFile { path: self.path.clone(), file: std::rc::Rc::new(std::cell::RefCell::new(file)) })
+    }
+
+    pub fn open_sync(&self, mode: FileMode) -> RandomAccessFile {
+        match self.try_open(mode) {
+            Ok(file) => file,
+            Err(e) => e.raise(),
+        }
+    }
+
+    pub fn open(&self, mode: FileMode) -> DartFuture<RandomAccessFile> {
+        io_ready(self.try_open(mode))
+    }
+
+    fn try_length(&self) -> Result<i64, FileSystemException> {
+        std::fs::metadata(&self.path)
+            .map(|m| m.len() as i64)
+            .map_err(|e| FileSystemException::of("Cannot retrieve length of file", &self.path, e))
+    }
+
+    pub fn length_sync(&self) -> i64 {
+        match self.try_length() {
+            Ok(n) => n,
+            Err(e) => e.raise(),
+        }
+    }
+
+    pub fn length(&self) -> DartFuture<i64> {
+        io_ready(self.try_length())
+    }
+
+    fn try_read(&self) -> Result<Vec<u8>, FileSystemException> {
+        std::fs::read(&self.path).map_err(|e| FileSystemException::of("Cannot open file", &self.path, e))
+    }
+
+    pub fn read_as_bytes_sync(&self) -> Vec<i64> {
+        match self.try_read() {
+            Ok(bytes) => bytes.into_iter().map(|b| b as i64).collect(),
+            Err(e) => e.raise(),
+        }
+    }
+
+    pub fn read_as_bytes(&self) -> DartFuture<Vec<i64>> {
+        io_ready(self.try_read().map(|bytes| bytes.into_iter().map(|b| b as i64).collect()))
+    }
+
+    pub fn read_as_string_sync(&self, _encoding: Utf8Codec) -> String {
+        match self.try_read() {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) => e.raise(),
+        }
+    }
+
+    pub fn read_as_string(&self, _encoding: Utf8Codec) -> DartFuture<String> {
+        io_ready(self.try_read().map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    fn try_write(&self, bytes: &[u8], mode: FileMode, flush: bool) -> Result<(), FileSystemException> {
+        use std::io::Write;
+        let file = self.try_open(if matches!(mode, FileMode::Append | FileMode::WriteOnlyAppend) {
+            FileMode::WriteOnlyAppend
+        } else {
+            FileMode::WriteOnly
+        })?;
+        let mut handle = file.file.borrow_mut();
+        if !matches!(mode, FileMode::Append | FileMode::WriteOnlyAppend) {
+            handle.set_len(0).map_err(|e| FileSystemException::of("Cannot truncate file", &self.path, e))?;
+        }
+        handle.write_all(bytes).map_err(|e| FileSystemException::of("Cannot write file", &self.path, e))?;
+        if flush {
+            handle.flush().map_err(|e| FileSystemException::of("Cannot flush file", &self.path, e))?;
+        }
+        Ok(())
+    }
+
+    pub fn write_as_string_sync(&self, contents: String, mode: FileMode, _encoding: Utf8Codec, flush: bool) {
+        if let Err(e) = self.try_write(contents.as_bytes(), mode, flush) {
+            e.raise()
+        }
+    }
+
+    pub fn write_as_string(&self, contents: String, mode: FileMode, _encoding: Utf8Codec, flush: bool) -> DartFuture<File> {
+        io_ready(self.try_write(contents.as_bytes(), mode, flush).map(|_| self.clone()))
+    }
+
+    pub fn write_as_bytes_sync(&self, bytes: Vec<i64>, mode: FileMode, flush: bool) {
+        if let Err(e) = self.try_write(&bytes_of(&bytes, 0, None), mode, flush) {
+            e.raise()
+        }
+    }
+
+    pub fn write_as_bytes(&self, bytes: Vec<i64>, mode: FileMode, flush: bool) -> DartFuture<File> {
+        io_ready(self.try_write(&bytes_of(&bytes, 0, None), mode, flush).map(|_| self.clone()))
+    }
+
+    fn try_delete(&self) -> Result<FileSystemEntity, FileSystemException> {
+        std::fs::remove_file(&self.path)
+            .map(|_| FileSystemEntity { path: self.path.clone() })
+            .map_err(|e| FileSystemException::of("Cannot delete file", &self.path, e))
+    }
+
+    pub fn delete_sync(&self, _recursive: bool) {
+        if let Err(e) = self.try_delete() {
+            e.raise()
+        }
+    }
+
+    pub fn delete(&self, _recursive: bool) -> DartFuture<FileSystemEntity> {
+        io_ready(self.try_delete())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RandomAccessFile {
+    pub path: String,
+    file: std::rc::Rc<std::cell::RefCell<std::fs::File>>,
+}
+
+impl PartialEq for RandomAccessFile {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.file, &other.file)
+    }
+}
+
+impl RandomAccessFile {
+    fn io<T>(&self, what: &str, result: std::io::Result<T>) -> Result<T, FileSystemException> {
+        result.map_err(|e| FileSystemException::of(what, &self.path, e))
+    }
+
+    pub fn path(&self) -> String {
+        self.path.clone()
+    }
+
+    pub fn length_sync(&self) -> i64 {
+        match self.io("Cannot retrieve length of file", self.file.borrow().metadata()) {
+            Ok(m) => m.len() as i64,
+            Err(e) => e.raise(),
+        }
+    }
+
+    pub fn length(&self) -> DartFuture<i64> {
+        io_ready(self.io("Cannot retrieve length of file", self.file.borrow().metadata()).map(|m| m.len() as i64))
+    }
+
+    pub fn position_sync(&self) -> i64 {
+        use std::io::Seek;
+        match self.io("Cannot retrieve position", self.file.borrow_mut().stream_position()) {
+            Ok(p) => p as i64,
+            Err(e) => e.raise(),
+        }
+    }
+
+    pub fn position(&self) -> DartFuture<i64> {
+        DartFuture::ready(Ok(self.position_sync()))
+    }
+
+    fn try_set_position(&self, position: i64) -> Result<(), FileSystemException> {
+        use std::io::Seek;
+        self.io("Cannot set position", self.file.borrow_mut().seek(std::io::SeekFrom::Start(position.max(0) as u64)))
+            .map(|_| ())
+    }
+
+    pub fn set_position_sync(&self, position: i64) {
+        if let Err(e) = self.try_set_position(position) {
+            e.raise()
+        }
+    }
+
+    pub fn set_position(&self, position: i64) -> DartFuture<RandomAccessFile> {
+        io_ready(self.try_set_position(position).map(|_| self.clone()))
+    }
+
+    fn try_read(&self, count: usize) -> Result<Vec<u8>, FileSystemException> {
+        use std::io::Read;
+        let mut out = vec![0u8; count];
+        let mut filled = 0;
+        let mut handle = self.file.borrow_mut();
+        while filled < count {
+            let n = self.io("Cannot read file", handle.read(&mut out[filled..]))?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        out.truncate(filled);
+        Ok(out)
+    }
+
+    pub fn read_sync(&self, count: i64) -> Vec<i64> {
+        match self.try_read(count.max(0) as usize) {
+            Ok(bytes) => bytes.into_iter().map(|b| b as i64).collect(),
+            Err(e) => e.raise(),
+        }
+    }
+
+    pub fn read(&self, count: i64) -> DartFuture<Vec<i64>> {
+        io_ready(self.try_read(count.max(0) as usize).map(|bytes| bytes.into_iter().map(|b| b as i64).collect()))
+    }
+
+    /// `readInto(buffer, [start, end])`: the buffer is a value here, so the
+    /// bytes are read and counted but reach no one.
+    pub fn read_into_sync(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) -> i64 {
+        let wanted = bytes_of(&buffer, start, end).len();
+        match self.try_read(wanted) {
+            Ok(bytes) => bytes.len() as i64,
+            Err(e) => e.raise(),
+        }
+    }
+
+    pub fn read_into(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) -> DartFuture<i64> {
+        let wanted = bytes_of(&buffer, start, end).len();
+        io_ready(self.try_read(wanted).map(|bytes| bytes.len() as i64))
+    }
+
+    fn try_write(&self, bytes: &[u8]) -> Result<(), FileSystemException> {
+        use std::io::Write;
+        self.io("Cannot write file", self.file.borrow_mut().write_all(bytes))
+    }
+
+    pub fn write_from_sync(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) {
+        if let Err(e) = self.try_write(&bytes_of(&buffer, start, end)) {
+            e.raise()
+        }
+    }
+
+    pub fn write_from(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) -> DartFuture<RandomAccessFile> {
+        io_ready(self.try_write(&bytes_of(&buffer, start, end)).map(|_| self.clone()))
+    }
+
+    pub fn write_string_sync(&self, string: String, _encoding: Utf8Codec) {
+        if let Err(e) = self.try_write(string.as_bytes()) {
+            e.raise()
+        }
+    }
+
+    pub fn write_string(&self, string: String, _encoding: Utf8Codec) -> DartFuture<RandomAccessFile> {
+        io_ready(self.try_write(string.as_bytes()).map(|_| self.clone()))
+    }
+
+    pub fn write_byte_sync(&self, value: i64) -> i64 {
+        if let Err(e) = self.try_write(&[value as u8]) {
+            e.raise()
+        }
+        1
+    }
+
+    fn try_truncate(&self, length: i64) -> Result<(), FileSystemException> {
+        self.io("Cannot truncate file", self.file.borrow_mut().set_len(length.max(0) as u64))
+    }
+
+    pub fn truncate_sync(&self, length: i64) {
+        if let Err(e) = self.try_truncate(length) {
+            e.raise()
+        }
+    }
+
+    pub fn truncate(&self, length: i64) -> DartFuture<RandomAccessFile> {
+        io_ready(self.try_truncate(length).map(|_| self.clone()))
+    }
+
+    fn try_flush(&self) -> Result<(), FileSystemException> {
+        use std::io::Write;
+        self.io("Cannot flush file", self.file.borrow_mut().flush())
+    }
+
+    pub fn flush_sync(&self) {
+        if let Err(e) = self.try_flush() {
+            e.raise()
+        }
+    }
+
+    pub fn flush(&self) -> DartFuture<RandomAccessFile> {
+        io_ready(self.try_flush().map(|_| self.clone()))
+    }
+
+    pub fn close_sync(&self) {
+        self.flush_sync()
+    }
+
+    pub fn close(&self) -> DartFuture<()> {
+        io_ready(self.try_flush())
+    }
+
+    /// `lock`/`unlock`: one process here, no other holder to keep out.
+    pub fn lock_sync(&self, _mode: FileLock, _start: i64, _end: i64) {}
+
+    pub fn lock(&self, _mode: FileLock, _start: i64, _end: i64) -> DartFuture<RandomAccessFile> {
+        DartFuture::ready(Ok(self.clone()))
+    }
+
+    pub fn unlock_sync(&self, _start: i64, _end: i64) {}
+
+    pub fn unlock(&self, _start: i64, _end: i64) -> DartFuture<RandomAccessFile> {
+        DartFuture::ready(Ok(self.clone()))
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Directory {
     pub path: String,
+}
+
+impl Directory {
+    pub fn new(path: String) -> Self {
+        Directory { path }
+    }
+
+    pub fn path(&self) -> String {
+        self.path.clone()
+    }
+
+    /// `Directory.systemTemp`.
+    pub fn system_temp() -> Directory {
+        Directory::new(std::env::temp_dir().to_string_lossy().into_owned())
+    }
+
+    pub fn parent(&self) -> Directory {
+        Directory::new(
+            std::path::Path::new(&self.path)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".to_string()),
+        )
+    }
+
+    pub fn exists_sync(&self) -> bool {
+        std::path::Path::new(&self.path).is_dir()
+    }
+
+    pub fn exists(&self) -> DartFuture<bool> {
+        DartFuture::ready(Ok(self.exists_sync()))
+    }
+
+    fn try_create(&self, recursive: bool) -> Result<(), FileSystemException> {
+        let made = if recursive { std::fs::create_dir_all(&self.path) } else { std::fs::create_dir(&self.path) };
+        match made {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(FileSystemException::of("Creation failed", &self.path, e)),
+        }
+    }
+
+    pub fn create_sync(&self, recursive: bool) {
+        if let Err(e) = self.try_create(recursive) {
+            e.raise()
+        }
+    }
+
+    pub fn create(&self, recursive: bool) -> DartFuture<Directory> {
+        io_ready(self.try_create(recursive).map(|_| self.clone()))
+    }
+
+    fn try_delete(&self, recursive: bool) -> Result<FileSystemEntity, FileSystemException> {
+        let removed = if recursive { std::fs::remove_dir_all(&self.path) } else { std::fs::remove_dir(&self.path) };
+        removed
+            .map(|_| FileSystemEntity { path: self.path.clone() })
+            .map_err(|e| FileSystemException::of("Deletion failed", &self.path, e))
+    }
+
+    pub fn delete_sync(&self, recursive: bool) {
+        if let Err(e) = self.try_delete(recursive) {
+            e.raise()
+        }
+    }
+
+    pub fn delete(&self, recursive: bool) -> DartFuture<FileSystemEntity> {
+        io_ready(self.try_delete(recursive))
+    }
 }
 
 /// Dart's `Null` as a *type*: `Option<Null>` is a value that is always

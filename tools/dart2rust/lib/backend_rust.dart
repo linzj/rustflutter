@@ -1145,7 +1145,21 @@ class RustBackend {
   bool _inCellOf(IrClass owner, IrFieldDecl field) =>
       field.shared ||
       (owner.counted && _mutableOnCounted(field)) ||
-      _handedByTraitOf(owner, field);
+      _handedByTraitOf(owner, field) ||
+      _setThroughTraitOf(owner, field);
+
+  /// A mutable field a trait this class implements declares: the trait's
+  /// setter (`set_x(&self, ..)`, every non-final field has one) is how a
+  /// base's body writes it, and `&self` can only write a cell. It was a
+  /// `todo!` (`_DefaultRootPipelineOwner._manifold`, written by
+  /// `PipelineOwner.attach`'s super function, run479).
+  bool _setThroughTraitOf(IrClass owner, IrFieldDecl field) =>
+      !field.isFinal &&
+      _supertypesOf(owner).any(
+        (t) =>
+            library.isAbstract(t.name) &&
+            t.fields.any((f) => f.name == field.name && !f.isFinal),
+      );
 
   /// A field that a trait this class implements hands out as a cell
   /// (`_handsCell`): the implementer holds it as one, so the trait body's
@@ -3129,6 +3143,25 @@ class RustBackend {
       return little != null && expr(little) == 'true'
           ? 'Endian::Little'
           : 'Endian::Big';
+    }
+    // `dart:io`'s `FileMode` and `FileLock`: `const FileMode._internal(n)`
+    // by the number it carries, the prelude's enums (`GetStorage`'s IO
+    // backend, refused since it was reached, ws478).
+    if (t.name == 'FileMode' || t.name == 'FileLock') {
+      final carried = fields[t.name == 'FileMode' ? '_mode' : '_type'];
+      final variants = t.name == 'FileMode'
+          ? const ['Read', 'Write', 'Append', 'WriteOnly', 'WriteOnlyAppend']
+          : const [
+              'Shared',
+              'Shared',
+              'Exclusive',
+              'BlockingShared',
+              'BlockingExclusive',
+            ];
+      final index = carried == null ? null : int.tryParse(expr(carried));
+      if (index != null && index >= 0 && index < variants.length) {
+        return '${t.name}::${variants[index]}';
+      }
     }
     final cls = library[t.name];
     if (cls == null) {

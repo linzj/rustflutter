@@ -238,18 +238,31 @@ def write_workspace(src, out, mods, crate_of, graph):
         # the headless engine that answers the native boundary. Its source
         # is copied in; its manifest and the name of the crate holding
         # `dart:ui` are written here, since the partition decides that name.
-        ui_owner = crate_of.get('dart_ui')
+        # The translated modules the runtime reaches: dart:ui's upward
+        # hooks, and the services' message codecs it answers platform
+        # channels with. Each is re-exported from whichever crate the
+        # partition put it in; one the translation lacks is an empty
+        # module, so the runtime still compiles.
+        runtime_modules = ['dart_ui', 'services_message_codecs', 'services_message_codec']
         r = os.path.join(out, 'dart_runtime', 'src')
         os.makedirs(r, exist_ok=True)
         shutil.copy(os.path.join(TOOL, 'runtime', 'src', 'lib.rs'), os.path.join(r, 'lib.rs'))
-        io.open(os.path.join(r, 'generated.rs'), 'w', encoding='utf-8').write(
-            '// Written by bin/workspace.py: where `dart:ui` was translated to.\n'
-            + ('pub use %s::dart_ui;\n' % ui_owner if ui_owner else 'pub mod dart_ui {}\n'))
+        owners = {}
+        lines = ['// Written by bin/workspace.py: where the modules the runtime',
+                 '// names were translated to.']
+        for m in runtime_modules:
+            owner = crate_of.get(m)
+            if owner:
+                owners[owner] = True
+                lines.append('pub use %s::%s;' % (owner, m))
+            else:
+                lines.append('pub mod %s {}' % m)
+        io.open(os.path.join(r, 'generated.rs'), 'w', encoding='utf-8').write('\n'.join(lines) + '\n')
         io.open(os.path.join(out, 'dart_runtime', 'Cargo.toml'), 'w', encoding='utf-8').write(
             '[package]\nname = "dart_runtime"\nversion = "0.0.0"\nedition = "2021"\n\n'
             '[lib]\npath = "src/lib.rs"\n\n'
             '[dependencies]\ndart_prelude = { path = "../dart_prelude" }\n%s'
-            % ('%s = { path = "../%s" }\n' % (ui_owner, ui_owner) if ui_owner else ''))
+            % ''.join('%s = { path = "../%s" }\n' % (o, o) for o in owners))
         d = os.path.join(out, 'dart_main', 'src')
         os.makedirs(d, exist_ok=True)
         owner = crate_of[entry]

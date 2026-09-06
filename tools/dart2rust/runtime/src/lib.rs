@@ -20,6 +20,7 @@ use std::rc::Rc;
 
 mod generated;
 use generated::dart_ui;
+use generated::services_message_codecs::{StandardMessageCodec, StandardMethodCodec};
 
 const VIEW_ID: i64 = 0;
 const WIDTH: f64 = 800.0;
@@ -137,14 +138,15 @@ fn schedule_frame() {
 
 type MessageCallback = Rc<dyn Fn(Option<ByteData>) -> Result<(), DartError>>;
 
-/// A platform message: no plugin is here, so the reply is Dart's null,
-/// delivered on the next turn as the engine's would be.
+/// A platform message: answered by the plugin this runtime hosts for the
+/// channel, else by Dart's null ("no plugin"), delivered on the next turn
+/// as the engine's would be.
 fn send_platform_message(args: &[Rc<dyn Object>]) {
     let name = args
         .get(0)
         .and_then(|a| a.as_any().downcast_ref::<String>().cloned())
         .unwrap_or_default();
-    MESSAGES.with(|m| m.borrow_mut().push(name));
+    MESSAGES.with(|m| m.borrow_mut().push(name.clone()));
     let callback = args.get(1).and_then(|a| {
         let any = a.as_any();
         any.downcast_ref::<MessageCallback>().cloned().or_else(|| {
@@ -153,9 +155,77 @@ fn send_platform_message(args: &[Rc<dyn Object>]) {
                 .flatten()
         })
     });
+    let data = args.get(2).and_then(|a| {
+        let any = a.as_any();
+        any.downcast_ref::<ByteData>()
+            .cloned()
+            .or_else(|| any.downcast_ref::<Option<ByteData>>().cloned().flatten())
+    });
+    let reply = match plugin_reply(&name, data) {
+        Ok(reply) => reply,
+        Err(error) => {
+            eprintln!(
+                "dart2rust runtime: the plugin for {} threw: {}",
+                name,
+                dart_error_text(&error)
+            );
+            None
+        }
+    };
     if let Some(callback) = callback {
-        Timer::run(Rc::new(move || callback(None)));
+        Timer::run(Rc::new(move || callback(reply.clone())));
     }
+}
+
+/// The plugins an embedder registers, hosted here: `path_provider`'s
+/// method channel, answered with directories under the XDG data home
+/// (what `path_provider_linux` does on the Dart side).
+fn plugin_reply(channel: &str, data: Option<ByteData>) -> Result<Option<ByteData>, DartError> {
+    match channel {
+        "plugins.flutter.io/path_provider" => {
+            let codec = StandardMethodCodec {
+                message_codec: dart_rc(StandardMessageCodec {
+                    __self: DartSelf::new(),
+                }),
+            };
+            let call = codec.decode_method_call(data)?;
+            let directory = match call.method.as_str() {
+                "getApplicationDocumentsDirectory" => Some(app_dir("documents")),
+                "getApplicationSupportDirectory" => Some(app_dir("support")),
+                "getLibraryDirectory" => Some(app_dir("library")),
+                "getApplicationCachePath" | "getApplicationCacheDirectory" => {
+                    Some(app_dir("cache"))
+                }
+                "getDownloadsDirectory" => Some(app_dir("downloads")),
+                "getTemporaryDirectory" => Some(temp_dir()),
+                _ => return Ok(None),
+            };
+            let result = directory.map(|path| Rc::new(path) as Rc<dyn Object>);
+            Ok(Some(codec.encode_success_envelope(result)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn app_dir(kind: &str) -> String {
+    let base = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "{}/.local/share",
+                std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+            )
+        });
+    let path = format!("{}/dart2rust_app/{}", base, kind);
+    let _ = std::fs::create_dir_all(&path);
+    path
+}
+
+fn temp_dir() -> String {
+    let path = std::env::temp_dir().join("dart2rust_app");
+    let _ = std::fs::create_dir_all(&path);
+    path.to_string_lossy().into_owned()
 }
 
 fn answer(symbol: &str, args: Vec<Rc<dyn Object>>) -> Result<Option<Rc<dyn Object>>, DartError> {
