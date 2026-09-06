@@ -352,6 +352,12 @@ macro_rules! dart_nullable {
                 option
             }
         }
+        impl FromDynamic for $($t)* {
+            fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+                let object: &dyn Object = value.as_ref();
+                object.as_any().downcast_ref::<Self>().cloned()
+            }
+        }
     };
 }
 
@@ -6146,9 +6152,17 @@ impl<'a> JsonParser<'a> {
 /// What a value out of a `dynamic` becomes in a typed collection: the
 /// conversions Dart's runtime does not need, because `Map<String, dynamic>`
 /// and `Map<String, Object?>` are one type there and two here (`json.decode`
-/// cast `as Map<String, Object?>`, ws473). A translated class is not one of
-/// these: its downcast is exact.
-pub trait FromDynamic: Sized + Clone + 'static {
+/// cast `as Map<String, Object?>`, ws473). A translated class's downcast
+/// is exact; a handle is asked of the object (`dart_cast_to`).
+///
+/// On every type a type parameter can be bound to, as `DartNullable` is:
+/// Dart's `cast<K, V>` takes any `K`, so a generic body's
+/// `result.cast<K, V>()` asks it of a bare `K`, and a bound only where a
+/// body asks would have to be repeated by everything naming the generic
+/// (`invokeMapMethod<K, V>`, run494). The backend writes the impl for
+/// each translated struct and enum; a type that cannot come back out of
+/// a `dynamic` answers `None`, which the cast reports.
+pub trait FromDynamic: Sized + 'static {
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self>;
 
     fn from_nullable(value: &Option<std::rc::Rc<dyn Object>>) -> Option<Self> {
@@ -6159,9 +6173,98 @@ pub trait FromDynamic: Sized + Clone + 'static {
     }
 }
 
-impl FromDynamic for std::rc::Rc<dyn Object> {
+/// A handle: the value itself when that is the handle asked for (`T` is
+/// `dyn Object`), else the object asked for it -- its own `Rc<Struct>`,
+/// or an `Rc<dyn Trait>` it implements (`dart_cast_to`).
+impl<T: ?Sized + 'static> FromDynamic for std::rc::Rc<T> {
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        Some(value.clone())
+        let same: Box<dyn std::any::Any> = Box::new(value.clone());
+        match same.downcast::<std::rc::Rc<T>>() {
+            Ok(handle) => Some(*handle),
+            Err(_) => value.dart_cast_to::<T>(),
+        }
+    }
+}
+
+/// `void`: whatever the value, nothing is kept of it.
+impl FromDynamic for () {
+    fn from_dynamic(_value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        Some(())
+    }
+}
+
+/// The rest of the types a type parameter can be bound to: none of
+/// them comes out of a `dynamic` here (a boxed future, a record, a
+/// completer), and the cast reports it.
+macro_rules! from_dynamic_never {
+    ($(impl<$($p:ident),*> $t:ty;)*) => {
+        $(
+            impl<$($p: 'static),*> FromDynamic for $t {
+                fn from_dynamic(_value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+                    None
+                }
+            }
+        )*
+    };
+}
+
+from_dynamic_never! {
+    impl<A, B> (A, B);
+    impl<A, B, C> (A, B, C);
+    impl<A, B, C, D> (A, B, C, D);
+    impl<T> Completer<T>;
+    impl<T> Stream<T>;
+    impl<T> Point<T>;
+    impl<K, V> MapEntry<K, V>;
+    impl<T> DartFuture<T>;
+    impl<T> FutureOr<T>;
+    impl<T, E> Result<T, E>;
+    impl<S, T> Converter<S, T>;
+}
+
+impl<F: ?Sized + 'static> FromDynamic for std::pin::Pin<Box<F>> {
+    fn from_dynamic(_value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        None
+    }
+}
+
+/// `x as Set<T>` on an object: see `dart_cast_list`.
+pub fn dart_cast_set<T: FromDynamic + Clone + DartEq>(
+    value: &std::rc::Rc<dyn Object>,
+) -> Option<Set<T>> {
+    let object: &dyn Object = value.as_ref();
+    let any = object.as_any();
+    if let Some(set) = any.downcast_ref::<Set<T>>() {
+        return Some(set.clone());
+    }
+    fn convert<T1: Clone + 'static, T: FromDynamic + Clone + DartEq>(
+        any: &dyn std::any::Any,
+        element: fn(&T1) -> Option<T>,
+    ) -> Option<Option<Set<T>>> {
+        let set = any.downcast_ref::<Set<T1>>()?;
+        let mut out: Set<T> = Set::new();
+        for e in set.iter() {
+            match element(e) {
+                Some(t) => {
+                    out.add(t);
+                }
+                None => return Some(None),
+            }
+        }
+        Some(Some(out))
+    }
+    if let Some(r) = convert::<std::rc::Rc<dyn Object>, T>(any, T::from_dynamic) {
+        return r;
+    }
+    if let Some(r) = convert::<Option<std::rc::Rc<dyn Object>>, T>(any, T::from_nullable) {
+        return r;
+    }
+    None
+}
+
+impl<T: FromDynamic + Clone + DartEq> FromDynamic for Set<T> {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        dart_cast_set::<T>(value)
     }
 }
 
@@ -6233,27 +6336,13 @@ pub fn dart_cast_erased<To, From: CastErased<To>>(value: From) -> To {
     value.cast_erased()
 }
 
-macro_rules! from_dynamic_scalar {
-    ($($t:ty),*) => {
-        $(
-            impl FromDynamic for $t {
-                fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-                    let object: &dyn Object = value.as_ref();
-                    object.as_any().downcast_ref::<$t>().cloned()
-                }
-            }
-        )*
-    };
-}
-from_dynamic_scalar!(String, i64, f64, bool);
-
-impl<T: FromDynamic> FromDynamic for Vec<T> {
+impl<T: FromDynamic + Clone> FromDynamic for Vec<T> {
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_list::<T>(value)
     }
 }
 
-impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
+impl<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone> FromDynamic for Map<K, V> {
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_map::<K, V>(value)
     }
@@ -6263,7 +6352,9 @@ impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
 /// converted (`FromDynamic`), which is the representation change Dart's
 /// `cast` does not need and this one does.
 impl<K: Clone + 'static, V: Clone + 'static> Map<K, V> {
-    pub fn cast_to<K2: FromDynamic + DartEq, V2: FromDynamic>(&self) -> Map<K2, V2> {
+    pub fn cast_to<K2: FromDynamic + Clone + DartEq, V2: FromDynamic + Clone>(
+        &self,
+    ) -> Map<K2, V2> {
         let mut out: Map<K2, V2> = Map::new();
         for (k, v) in self.entries.iter() {
             let key: std::rc::Rc<dyn Object> = std::rc::Rc::new(k.clone());
@@ -6280,11 +6371,11 @@ impl<K: Clone + 'static, V: Clone + 'static> Map<K, V> {
 }
 
 pub trait DartListCast {
-    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2>;
+    fn cast_to<T2: FromDynamic + Clone>(&self) -> Vec<T2>;
 }
 
 impl<T: Clone + 'static> DartListCast for Vec<T> {
-    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2> {
+    fn cast_to<T2: FromDynamic + Clone>(&self) -> Vec<T2> {
         self.iter()
             .map(|v| {
                 let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
@@ -6344,7 +6435,7 @@ pub fn byte_data_sublist_view<T: AsDartBytes>(data: T, start: i64, end: Option<i
 
 /// `x as List<T>` on an object: the list as it is when it is one of `T`,
 /// else each element of a `List<dynamic>` / `List<Object?>` converted.
-pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {
+pub fn dart_cast_list<T: FromDynamic + Clone>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {
     // The object's `Any`, not the handle's: `Rc<dyn Object>` is `'static`
     // and so an `Object` itself under the blanket impl.
     let object: &dyn Object = value.as_ref();
@@ -6362,7 +6453,7 @@ pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option
 }
 
 /// `x as Map<K, V>` on an object: see `dart_cast_list`.
-pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(
+pub fn dart_cast_map<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone>(
     value: &std::rc::Rc<dyn Object>,
 ) -> Option<Map<K, V>> {
     let object: &dyn Object = value.as_ref();
@@ -6373,8 +6464,8 @@ pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(
     fn convert<
         K1: Clone + 'static,
         V1: Clone + 'static,
-        K: FromDynamic + DartEq,
-        V: FromDynamic,
+        K: FromDynamic + Clone + DartEq,
+        V: FromDynamic + Clone,
     >(
         any: &dyn std::any::Any,
         key: fn(&K1) -> Option<K>,

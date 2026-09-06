@@ -6844,8 +6844,24 @@ class KernelFrontend implements TypeWorld {
     final known = elsewhere[name];
     if (known != null) return known.counted;
     final c = _classNamed(name);
-    return c != null && _translatedClass(c) && _closureCallsMethod(c);
+    return c != null && _translatedClass(c) && _countedClass(c);
   }
+
+  /// Whether `c` is counted, decided once per class: the rule reads
+  /// `_sharedFields`, which is the class *being lowered*'s, and asked of
+  /// another class from inside a method it answered by the wrong fields
+  /// (`Semantics` boxed twice from `routes.dart`, ws512).
+  final _countedCache = <Class, bool>{};
+
+  bool _countedClass(Class c) => _countedCache.putIfAbsent(c, () {
+    final saved = _sharedFields;
+    _sharedFields = _closureFields(c);
+    try {
+      return _closureCallsMethod(c);
+    } finally {
+      _sharedFields = saved;
+    }
+  });
 
   bool _isStructName(String name) {
     if (_isTraitName(name) || _scalarNames.contains(name)) return false;
@@ -7828,9 +7844,23 @@ class KernelFrontend implements TypeWorld {
       // Typed, so a slot of another type adapts it: `const
       // OptionalMethodChannel('flutter/menu')` into a `MethodChannel`
       // field wants the handle (`DefaultPlatformMenuDelegate`, run482).
+      // Each field's value into the field's declared type by the one
+      // rule: an omitted `Object?` field of a `const` instance holds the
+      // `Null` object (`ThemeData`'s constants, ws511).
+      IrExpr fieldValue(String name, Constant value) {
+        final field = cls.fields.where((f) => f.name.text == name).firstOrNull;
+        final lowered = _constant(value, node);
+        if (field == null) return lowered;
+        return _widened(
+          ConstantExpression(value, _constantStaticType(value)),
+          field.type,
+          lowered,
+        );
+      }
+
       final instance = IrConstInstance(IrType(_instanceName(cls)), {
         for (final entry in byName.entries)
-          entry.key: _constant(entry.value, node),
+          entry.key: fieldValue(entry.key, entry.value),
       })..rustType = IrType(_instanceName(cls));
       return _isOpen(cls)
           ? (IrUpcast(instance, IrType(cls.name))..rustType = IrType(cls.name))
@@ -9509,7 +9539,7 @@ class KernelFrontend implements TypeWorld {
   (IrClass, List<String>) lowerClass(Class node) {
     _lowering = node;
     _sharedFields = _closureFields(node);
-    _counted = _closureCallsMethod(node);
+    _counted = _countedClass(node);
 
     // Kernel's superclass may be a synthetic mixin application; the class a
     // reader would name is the first one above that is not.
