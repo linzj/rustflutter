@@ -5921,9 +5921,12 @@ class KernelFrontend implements TypeWorld {
         ? null
         : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable);
     if (owner == null || thisType is! InterfaceType) return declared;
-    final asOwner = env!.hierarchy.getTypeAsInstanceOf(thisType, owner);
-    if (asOwner is! InterfaceType) return declared;
-    return Substitution.fromInterfaceType(asOwner).substituteType(declared);
+    // The *kept* parameters only (`_keptFor`): an erased one is its bound
+    // everywhere, the trait included, and `ChildType` put in as `RenderBox`
+    // brought the `RenderBox`-typed copies back (+47 at ws489).
+    final kept = _keptFor(owner, thisType);
+    if (kept.isEmpty) return declared;
+    return Substitution.fromMap(kept).substituteType(declared);
   }
 
   /// The type a copy's field is declared with (see `_originalOf`), or
