@@ -6626,6 +6626,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run491 | **`GetStorage.init` 起步了**（`Value<T>`、`_isNullOrEmpty` 都过）；停在调度器上的一个 future：`MethodChannel.invokeMapMethod<int,int>`（键盘状态同步）的 `result.cast<K, V>()`。 | 见 ws491 行（`cast_to`）。 |
 | ws492 | 链：**1314**（−21）；新桩 3 个 `didPop`：super 调用的实参按 mixin 声明的 `T?` 填，没把本类的实参放进去（`Option<T>` 对 `Or`）。 | super 调用的槽 = 声明的参数类型经 `_asApplied`（`_arguments` 新增按位/按名的声明类型覆盖）。 |
 | run492 | 同 run491（`invokeMapMethod` 的 `cast`）：`result?.cast<K, V>()` 的 interfaceTarget 被 TFA 虚化成 `CanonicalizedMap.cast`，没走 Map 的路。 | 集合成员按**接收者的静态类**（dart:core 的 List/Map/Set/Iterable）走 prelude 的路。另：`PlatformInterface` 的构造函数把 `this` 放进 Expando，子类跑的是它的体——继承的构造函数体里的逃逸也算入 counted（path_provider 的 platform 类原来是值，Expando 键没身份）。 |
+| ws493 | 链：**1308**（−6，无新桩）。 | |
+| run493 | 同 run492：`result?.cast<K, V>()` 仍走了 trait 泛型方法那条路（`_genericOnTrait` 排在前面）。 | 接收者静态类是 dart:core 集合时先走 prelude 路。同批预读平台消息路径：`StandardMessageCodec` 的 `Uint8List.sublistView(message)`/`ByteData.sublistView(bytes)`（`TypedData` 即字节：`ByteData`/`Uint8List`/`List<int>` 都收）、`JSONMessageCodec` 的 `JsonUtf8Encoder().convert(v)` 进 prelude。 |
 
 ## 下一步(2026-09-05 重铺)
 
