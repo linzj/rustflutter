@@ -4843,10 +4843,26 @@ class KernelFrontend implements TypeWorld {
     if (target is! Field) return null;
     final candidates = dynamicSlots[target];
     if (candidates == null || candidates.isEmpty) return null;
-    const known = {'[]', 'containsKey', 'keys'};
+    const known = {'[]', '[]=', 'containsKey', 'keys'};
     if (!known.contains(name)) return null;
-    final args = [for (final e in positional) expression(e)];
+    // A local handed in is shared, as an argument is (`_clonedWhenPassed`):
+    // two dispatches in a row moved the key into the first.
+    final args = [
+      for (final e in positional)
+        () {
+          final lowered = expression(e);
+          return lowered is IrLocal
+              ? (IrCall(lowered, 'clone', const [])
+                  ..rustType = lowered.rustType)
+              : lowered;
+        }(),
+    ];
     final slot = IrLocal('__d');
+    // A write into the slot's map (`dateTimeSymbols[locale] = symbols`,
+    // intl's `initializeDateFormattingCustom`, run585): the map is a
+    // value behind the slot's handle, so the copy the arm holds is
+    // written and put back as the slot's object.
+    final field = target;
     IrExpr noSuch() => IrLiteral(
       'panic!("uncaught Dart exception: NoSuchMethodError: `$name` on an ${candidates.first.classNode.name}")',
       const IrType('raw'),
@@ -4861,11 +4877,39 @@ class KernelFrontend implements TypeWorld {
       final IrExpr body;
       switch (name) {
         case '[]':
+          // The result is a `dynamic`, as the caller sees it (`as Sym`
+          // on it, the isgeneric fixture): the object, or Dart's null.
           body = isMap
-              ? IrCall(slot, '!map_get', args)
+              ? IrStaticCall(null, 'dart_option_object', [
+                  IrCall(slot, '!map_get', args),
+                ])
               : hasMember
-              ? IrSome(IrCall(slot, '[]', args))
+              ? IrStaticCall(null, 'dart_option_object', [
+                  IrSome(IrCall(slot, '[]', args)),
+                ])
               : noSuch();
+        case '[]=':
+          if (!isMap) {
+            body = noSuch();
+            break;
+          }
+          final boxed = IrUpcast(
+            IrLocal('__d')..rustType = _type(c),
+            const IrType('Object'),
+            handle: false,
+            explicit: true,
+          )..rustType = const IrType('Object');
+          final store = field.enclosingClass == null
+              ? IrAssignTopLevel(field.name.text, boxed)
+              : IrAssignStatic(
+                  field.enclosingClass!.name,
+                  field.name.text,
+                  boxed,
+                );
+          body = IrBlockValue([
+            IrExprStmt(IrCall(slot, 'insert', args)),
+            store,
+          ], IrLiteral('()', const IrType('raw')));
         case 'containsKey':
           // The map's is the prelude's `contains_key(&k)`, spelled as the
           // `Map` lowering spells it so the backend passes the key by
@@ -4880,7 +4924,12 @@ class KernelFrontend implements TypeWorld {
       }
       arms.add((_type(c), body));
     }
-    return IrDynamicDispatch(expression(receiver), arms);
+    return IrDynamicDispatch(expression(receiver), arms)
+      ..rustType = switch (name) {
+        '[]' => const IrType('dynamic'),
+        'containsKey' => const IrType('bool'),
+        _ => null,
+      };
   }
 
   IrExpr _staticGet(StaticGet node) {
@@ -8784,6 +8833,101 @@ class KernelFrontend implements TypeWorld {
   /// times. Four `of` methods -- Theme, MaterialLocalizations,
   /// CupertinoLocalizations and the gallery's own -- account for 464 of the
   /// 670 "called something that was not translated".
+  /// The erased type parameters of an abstract class that its own bodies
+  /// read as type literals (`T` as a value): each gets a getter on the
+  /// trait, answered by every class under it (see `_typeArgumentGetters`).
+  final _typeLiteralParamsCache = <Class, Set<TypeParameter>>{};
+
+  Set<TypeParameter> _typeLiteralParams(Class c) =>
+      _typeLiteralParamsCache.putIfAbsent(c, () {
+        if (c.typeParameters.isEmpty) return const {};
+        final finder = _TypeLiteralFinder(c.typeParameters.toSet());
+        for (final m in c.members) {
+          m.accept(finder);
+        }
+        return {
+          for (final p in finder.found)
+            if (_erasedParameter(p)) p,
+        };
+      });
+
+  String _typeArgGetter(Class owner, TypeParameter p) =>
+      '_typeArg${owner.name}${p.name ?? 'T'}';
+
+  /// The getters for the erased type parameters read as literals: declared
+  /// on the abstract class that reads them, and answered by every class
+  /// under it with the argument its ancestry puts in (`_WidgetsLocalizations
+  /// Delegate extends LocalizationsDelegate<WidgetsLocalizations>` answers
+  /// `WidgetsLocalizations`).
+  void _typeArgumentGetters(Class node, IrClass cls) {
+    final hierarchy = typeEnvironment?.hierarchy;
+    if (hierarchy == null || cls.isEnum) return;
+    if (node.isAbstract || _isOpen(node)) {
+      for (final p in _typeLiteralParams(node)) {
+        cls.abstractMethods.add(
+          IrMethod(
+            _typeArgGetter(node, p),
+            const [],
+            const IrType('Type'),
+            const IrBlock([]),
+            isGetter: true,
+          ),
+        );
+      }
+    }
+    final self = InterfaceType(node, Nullability.nonNullable, [
+      for (final p in node.typeParameters)
+        TypeParameterType(p, Nullability.nonNullable),
+    ]);
+    final seen = <Class>{};
+    final work = <Class>[
+      if (node.superclass != null) node.superclass!,
+      for (final t in node.implementedTypes) t.classNode,
+      if (node.mixedInType != null) node.mixedInType!.classNode,
+    ];
+    while (work.isNotEmpty) {
+      final above = work.removeLast();
+      if (!seen.add(above)) continue;
+      work.addAll([
+        if (above.superclass != null) above.superclass!,
+        for (final t in above.implementedTypes) t.classNode,
+        if (above.mixedInType != null) above.mixedInType!.classNode,
+      ]);
+      if (above.isAnonymousMixin || !_translatedClass(above)) continue;
+      if (!(above.isAbstract || _isOpen(above))) continue;
+      final used = _typeLiteralParams(above);
+      if (used.isEmpty) continue;
+      final asAbove = hierarchy.getInterfaceTypeAsInstanceOfClass(self, above);
+      if (asAbove == null) continue;
+      for (final p in used) {
+        final index = above.typeParameters.indexOf(p);
+        if (index < 0 || index >= asAbove.typeArguments.length) continue;
+        final argument = asAbove.typeArguments[index];
+        // An erased parameter of this class itself: left to the classes
+        // under it, which know.
+        if (argument is TypeParameterType &&
+            _erasedParameter(argument.parameter)) {
+          continue;
+        }
+        final IrExpr answer;
+        try {
+          answer = _typeLiteral(argument);
+        } on Unsupported {
+          continue;
+        }
+        cls.methods.add(
+          IrMethod(
+            _typeArgGetter(above, p),
+            const [],
+            const IrType('Type'),
+            IrBlock([IrReturn(answer)]),
+            isGetter: true,
+          ),
+        );
+      }
+    }
+  }
+
   IrExpr _typeLiteral(DartType type) {
     // A type parameter's: what it was instantiated with, asked of the
     // Rust type (`dart_type_of::<T>()`); spelled as text it was the
@@ -8792,6 +8936,23 @@ class KernelFrontend implements TypeWorld {
     // An erased one is its bound.
     if (type is TypeParameterType) {
       if (_erasedParameter(type.parameter)) {
+        // An erased parameter of an abstract class is answered by the
+        // object: every class under it says what it put in (`Type get
+        // type => T` in `LocalizationsDelegate<T>`, whose delegates all
+        // answered `Object` and shared one map slot, run584).
+        final owner = type.parameter.declaration;
+        if (owner is Class &&
+            (owner.isAbstract || _isOpen(owner)) &&
+            _typeLiteralParams(owner).contains(type.parameter) &&
+            _member != null &&
+            !(_member is Procedure && (_member as Procedure).isStatic)) {
+          return IrCall(
+            IrThis(),
+            _typeArgGetter(owner, type.parameter),
+            const [],
+            fails: true,
+          )..rustType = const IrType('Type');
+        }
         return _typeLiteral(type.parameter.bound);
       }
       return IrStaticCall(
@@ -9057,10 +9218,17 @@ class KernelFrontend implements TypeWorld {
         );
       }
 
-      final instance = IrConstInstance(IrType(_instanceName(cls)), {
+      // With the constant's type arguments (the kept ones): a `const
+      // Uninit<Sym>(..)` boxed into a `dynamic` slot had nothing else to
+      // say what its `PhantomData` was (ws588).
+      final instanceType = IrType(
+        _instanceName(cls),
+        arguments: _erasedArguments(cls, constant.typeArguments),
+      );
+      final instance = IrConstInstance(instanceType, {
         for (final entry in byName.entries)
           entry.key: fieldValue(entry.key, entry.value),
-      })..rustType = IrType(_instanceName(cls));
+      })..rustType = instanceType;
       return _isOpen(cls)
           ? (IrUpcast(instance, IrType(cls.name))..rustType = IrType(cls.name))
           : instance;
@@ -10777,6 +10945,7 @@ class KernelFrontend implements TypeWorld {
   IrClass _implOf(Class node, IrClass lowered) {
     final impl = IrClass(
       implName(node.name),
+      dartName: node.name,
       typeParameters: lowered.typeParameters,
       superclass: lowered.name,
       superclassArguments: [for (final p in lowered.typeParameters) IrType(p)],
@@ -11038,6 +11207,7 @@ class KernelFrontend implements TypeWorld {
         if (stub != null) cls.methods.add(stub);
       }
     }
+    _typeArgumentGetters(node, cls);
     // ..and the fields the declaration no longer lists, held by an
     // application: known to the trait for their cells only
     // (`IrClass.appliedFields`), typed by the declaration's own getter.
@@ -12382,7 +12552,14 @@ class _SlotStores extends RecursiveVisitor {
 
   @override
   void visitStaticSet(StaticSet node) {
-    final target = node.target;
+    var target = node.target;
+    // Through a setter that only stores its value into the slot (`set
+    // dateTimeSymbols(dynamic symbols) { ..; _dateTimeSymbols = symbols; }`):
+    // the store is the field's, as the read through a getter is.
+    if (target is Procedure && target.isSetter) {
+      final stored = _storedField(target);
+      if (stored != null) target = stored;
+    }
     final held = slots[target is Field ? target : null];
     final member = _member;
     if (held != null && member != null) {
@@ -12390,6 +12567,31 @@ class _SlotStores extends RecursiveVisitor {
       if (t is InterfaceType) {
         if (!held.any((h) => h.classNode == t.classNode)) held.add(t);
       }
+    }
+    super.visitStaticSet(node);
+  }
+
+  /// The field a setter stores its parameter into, or null.
+  static Field? _storedField(Procedure setter) {
+    final param = setter.function.positionalParameters.singleOrNull;
+    if (param == null) return null;
+    final finder = _ParamStoreFinder(param);
+    setter.function.body?.accept(finder);
+    return finder.field;
+  }
+}
+
+class _ParamStoreFinder extends RecursiveVisitor {
+  _ParamStoreFinder(this.param);
+  final Variable param;
+  Field? field;
+
+  @override
+  void visitStaticSet(StaticSet node) {
+    final value = node.value;
+    final target = node.target;
+    if (target is Field && value is VariableGet && value.variable == param) {
+      field = target;
     }
     super.visitStaticSet(node);
   }
@@ -12766,6 +12968,24 @@ class _ReferenceCollector extends RecursiveVisitor {
         _constant(entry.value);
       }
     }
+  }
+}
+
+/// The class type parameters a body reads as type literals (`T` as a
+/// value; see `_typeLiteralParams`).
+class _TypeLiteralFinder extends RecursiveVisitor {
+  _TypeLiteralFinder(this.parameters);
+
+  final Set<TypeParameter> parameters;
+  final Set<TypeParameter> found = {};
+
+  @override
+  void visitTypeLiteral(TypeLiteral node) {
+    final t = node.type;
+    if (t is TypeParameterType && parameters.contains(t.parameter)) {
+      found.add(t.parameter);
+    }
+    super.visitTypeLiteral(node);
   }
 }
 

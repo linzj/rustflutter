@@ -1590,6 +1590,7 @@ class IrConstructor {
 class IrClass {
   IrClass(
     this.name, {
+    this.dartName,
     this.typeParameters = const [],
     this.superclass,
     this.superclassArguments = const [],
@@ -1603,6 +1604,10 @@ class IrClass {
     this.doc,
     this.iterableElement,
   });
+
+  /// Dart's name for the class, where the struct's differs (an open
+  /// class's instances are its `Impl` struct): what `runtimeType` says.
+  final String? dartName;
 
   final String name;
 

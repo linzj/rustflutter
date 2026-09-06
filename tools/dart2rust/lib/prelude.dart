@@ -874,6 +874,15 @@ pub fn dart_object<T: DartAny>(value: T) -> std::rc::Rc<T> {
 /// handle, so what comes back out casts to the handle again (`_inheritedElements[T]`
 /// stored `Rc<Rc<dyn InheritedElement>>` and `from_dynamic` never found
 /// the element, run558) -- and a core value behind a fresh handle.
+/// An absent-or-not value as a `dynamic`: the object it is, or Dart's
+/// null (a dynamic slot's `map[k]`, whose consumer casts the result).
+pub fn dart_option_object<T: DartAny>(value: Option<T>) -> std::rc::Rc<dyn Object> {
+    match value {
+        Some(v) => dart_boxed(v),
+        None => dart_null_object(),
+    }
+}
+
 pub fn dart_boxed<T: DartAny>(value: T) -> std::rc::Rc<dyn Object> {
     dart_register::<T>();
     match value.dart_cast_to::<dyn Object>() {
@@ -5123,46 +5132,50 @@ impl _Uri {
         Uri { text }
     }
 }
-
 /// `Object.hash(a, b, ..)`: up to twenty parts, the unused ones arriving
-/// as `SentinelValue`. Over the debug text of each, as `object_hash_all`.
-pub fn object_hash<A: std::fmt::Debug, B: std::fmt::Debug, C: std::fmt::Debug, D: std::fmt::Debug, E: std::fmt::Debug, F: std::fmt::Debug, G: std::fmt::Debug, H: std::fmt::Debug, I: std::fmt::Debug, J: std::fmt::Debug, K: std::fmt::Debug, L: std::fmt::Debug, M: std::fmt::Debug, N: std::fmt::Debug, O: std::fmt::Debug, P: std::fmt::Debug, Q: std::fmt::Debug, R: std::fmt::Debug, S: std::fmt::Debug, T: std::fmt::Debug>(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T) -> i64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!("{:?}", a).hash(&mut hasher);
-    format!("{:?}", b).hash(&mut hasher);
-    format!("{:?}", c).hash(&mut hasher);
-    format!("{:?}", d).hash(&mut hasher);
-    format!("{:?}", e).hash(&mut hasher);
-    format!("{:?}", f).hash(&mut hasher);
-    format!("{:?}", g).hash(&mut hasher);
-    format!("{:?}", h).hash(&mut hasher);
-    format!("{:?}", i).hash(&mut hasher);
-    format!("{:?}", j).hash(&mut hasher);
-    format!("{:?}", k).hash(&mut hasher);
-    format!("{:?}", l).hash(&mut hasher);
-    format!("{:?}", m).hash(&mut hasher);
-    format!("{:?}", n).hash(&mut hasher);
-    format!("{:?}", o).hash(&mut hasher);
-    format!("{:?}", p).hash(&mut hasher);
-    format!("{:?}", q).hash(&mut hasher);
-    format!("{:?}", r).hash(&mut hasher);
-    format!("{:?}", s).hash(&mut hasher);
-    format!("{:?}", t).hash(&mut hasher);
-    (hasher.finish() >> 1) as i64
+/// as `SentinelValue` (skipped). Each part's `hashCode` through the Object
+/// protocol (`dart_hash_any`), combined -- consistent with `==` there, as
+/// Dart's is; the debug text it hashed before was not (a closure has none,
+/// and two handles to one object printed alike or not by their fields).
+pub fn object_hash<A: DartAny, B: DartAny, C: DartAny, D: DartAny, E: DartAny, F: DartAny, G: DartAny, H: DartAny, I: DartAny, J: DartAny, K: DartAny, L: DartAny, M: DartAny, N: DartAny, O: DartAny, P: DartAny, Q: DartAny, R: DartAny, S: DartAny, T: DartAny>(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L, m: M, n: N, o: O, p: P, q: Q, r: R, s: S, t: T) -> i64 {
+    let mut hash: i64 = 0;
+    dart_hash_part(&mut hash, &a);
+    dart_hash_part(&mut hash, &b);
+    dart_hash_part(&mut hash, &c);
+    dart_hash_part(&mut hash, &d);
+    dart_hash_part(&mut hash, &e);
+    dart_hash_part(&mut hash, &f);
+    dart_hash_part(&mut hash, &g);
+    dart_hash_part(&mut hash, &h);
+    dart_hash_part(&mut hash, &i);
+    dart_hash_part(&mut hash, &j);
+    dart_hash_part(&mut hash, &k);
+    dart_hash_part(&mut hash, &l);
+    dart_hash_part(&mut hash, &m);
+    dart_hash_part(&mut hash, &n);
+    dart_hash_part(&mut hash, &o);
+    dart_hash_part(&mut hash, &p);
+    dart_hash_part(&mut hash, &q);
+    dart_hash_part(&mut hash, &r);
+    dart_hash_part(&mut hash, &s);
+    dart_hash_part(&mut hash, &t);
+    hash & 0x3fff_ffff
 }
 
-/// `Object.hashAll(xs)`: a hash of the elements in order. Over the debug
-/// text of each element, which is not Dart's algorithm and does not need to
-/// be -- nothing here persists a hash -- and which every element type here
-/// can produce.
-pub fn object_hash_all<T: std::fmt::Debug>(items: Vec<T>) -> i64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for item in &items {
-        format!("{:?}", item).hash(&mut hasher);
+fn dart_hash_part<T: DartAny>(hash: &mut i64, part: &T) {
+    if part.dart_any_ref().downcast_ref::<SentinelValue>().is_some() {
+        return;
     }
-    (hasher.finish() >> 1) as i64
+    let h = part.dart_hash_any();
+    *hash = (hash.wrapping_mul(31)).wrapping_add(h) & 0x3fff_ffff;
+}
+/// `Object.hashAll(xs)`: a hash of the elements' `hashCode`s in order.
+pub fn object_hash_all<T: DartAny>(items: Vec<T>) -> i64 {
+    let mut hash: i64 = 0;
+    for item in &items {
+        dart_hash_part(&mut hash, item);
+    }
+    hash & 0x3fff_ffff
 }
 
 /// More of `dart:ui`'s hooks: the callback-handle registry, which nothing

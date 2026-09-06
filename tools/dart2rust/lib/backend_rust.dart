@@ -759,6 +759,16 @@ class RustBackend {
       // The branches have no expected type from each other: an upcast in
       // one is explicit (`dart_object(FontWeight)` against
       // `Rc::new("unspecified")`, ws476).
+      // ..typed where one arm never arrives: `if c { None } else {
+      // unreachable!() }` leaves `None`'s `T` to a never-type fallback
+      // (`Object.hash(.., stops == null ? null : hashAll(stops!), ..)`
+      // with the second arm removed by TFA, ws589).
+      IrConditional(:final condition, :final then, :final otherwise)
+          when (_diverges(then) || _diverges(otherwise)) &&
+              e.rustType != null &&
+              !_mentionsUnknown(e.rustType!) &&
+              !_mentionsNever(e.rustType!) =>
+        '{ let __c: ${type(e.rustType!)} = if ${expr(condition)} { ${expr(_explicitUpcast(then))} } else { ${expr(_explicitUpcast(otherwise))} }; __c }',
       IrConditional(:final condition, :final then, :final otherwise) =>
         'if ${expr(condition)} { ${expr(_explicitUpcast(then))} } else { ${expr(_explicitUpcast(otherwise))} }',
       IrIs(expr: final operand, :final type, :final negated) => _isTest(
@@ -2966,6 +2976,22 @@ class RustBackend {
     if (library[name] == null && !_preludeClasses.contains(name)) {
       throw Unsupported('`is` against `$name`, which was not translated', name);
     }
+    // `x is C<dynamic>` against a translated generic struct: true of every
+    // instantiation, which `Any` cannot ask for (`UninitializedLocaleData<
+    // DateSymbols>` never was an `UninitializedLocaleData<Rc<dyn Object>>`,
+    // and intl's date symbols stayed uninitialised, run587); the runtime
+    // type's name can, as for the prelude's collections above.
+    final generic = library[name];
+    if (generic != null &&
+        !generic.isAbstract &&
+        generic.typeParameters.isNotEmpty &&
+        target.arguments.isNotEmpty &&
+        target.arguments.every(
+          (a) => a.name == 'dynamic' || a.name == 'Object',
+        )) {
+      final test = 'dart_is_kind(&${expr(operand)}, &["$name"])';
+      return negated ? '!$test' : test;
+    }
     final arguments = target.arguments.isEmpty
         ? ''
         : '<${target.arguments.map(type).join(', ')}>';
@@ -4214,7 +4240,16 @@ class RustBackend {
     for (final unused in _unusedParameters(cls)) {
       parts.add('_phantom_${snake(unused)}: std::marker::PhantomData');
     }
-    return '${t.name} { ${parts.join(', ')} }';
+    // ..with the type arguments the constant carries, where the struct
+    // is generic: nothing else infers a phantom's `T` in a `dynamic` slot.
+    // ..unless one is `Never`, Dart's unconstrained default for a const
+    // generic (`const DeepCollectionEquality()` is a `DefaultEquality<
+    // Never>`): that one is the slot's to infer (ws588).
+    final spellable = t.arguments.every((a) => !_mentionsNever(a));
+    final turbofish = t.arguments.isEmpty || !spellable
+        ? ''
+        : '::<${t.arguments.map(type).join(', ')}>';
+    return '${t.name}$turbofish { ${parts.join(', ')} }';
   }
 
   /// A constructor's Rust name. One function, used by both the definition and
@@ -4413,6 +4448,34 @@ class RustBackend {
         isNullable(rightType)) {
       return 'dart_identical_opt(&${expr(left)}, &${expr(right)})';
     }
+    // One side an absent-or-not handle (`identical(_cachedLocale, this)`
+    // in `Locale.toString`, a static `Locale?`, run589): absent is never
+    // identical, present is asked as two handles.
+    bool nullableHandle(IrExpr e) {
+      final t = e.rustType;
+      if (t == null || !isNullable(t) || t.isFunction) return false;
+      final held = library[t.name];
+      return held != null && (held.isAbstract || held.counted);
+    }
+
+    String? handleText(IrExpr e) => e is IrThis
+        ? _thisHandle()
+        : nullableHandle(e)
+        ? null
+        : _handleLike(e) || _isReference(e)
+        ? expr(e)
+        : null;
+    if (nullableHandle(left) || nullableHandle(right)) {
+      final absent = nullableHandle(left) ? left : right;
+      final other = identical(absent, left) ? right : left;
+      final otherHandle = handleText(other);
+      if (otherHandle != null) {
+        return '(match ${expr(absent)} { Some(__o) => dart_identical_any(&__o, &$otherHandle), None => false })';
+      }
+      if (nullableHandle(other)) {
+        return 'dart_identical_opt(&${expr(absent)}, &${expr(other)})';
+      }
+    }
     // Two locals, or a local against a static: the addresses of the *slots*.
     // Two distinct slots are never the same address, so this says "not
     // identical" -- which is what Dart says of two distinct objects, and is
@@ -4598,7 +4661,7 @@ class RustBackend {
       } else {
         out.write(
           '${first ? '' : ' else '}if let Some(__t) = $asAny.downcast_ref::<${type(t)}>() '
-          '{ let __d = __t.clone(); ${expr(body)} }',
+          '{ let mut __d = __t.clone(); ${expr(body)} }',
         );
       }
       first = false;
@@ -6163,7 +6226,7 @@ class RustBackend {
     _line('impl DartAny for ${cls.name} {');
     _indent++;
     _line(
-      'fn dart_runtime_type(&self) -> Type { Type { name: "${cls.name}" } }',
+      'fn dart_runtime_type(&self) -> Type { Type { name: "${cls.dartName ?? cls.name}" } }',
     );
     _line(
       'fn dart_to_string(&self) -> String { ${_dartToStringBody(enumForm: true)} }',
@@ -6366,6 +6429,14 @@ class RustBackend {
     };
     return own == null ? '' : '::<$own>';
   }
+
+  /// Whether a type names `Never` anywhere in it.
+  static bool _mentionsNever(IrType t) =>
+      t.name == 'Never' ||
+      t.arguments.any(_mentionsNever) ||
+      (t.isFunction &&
+          ((t.parameters ?? const []).any(_mentionsNever) ||
+              (t.returns != null && _mentionsNever(t.returns!))));
 
   /// A value on its way behind a fresh handle: an `int` literal with its
   /// `i64` suffix, anything else as it is.
@@ -7495,6 +7566,7 @@ class RustBackend {
     'dart_shl',
     'dart_identical',
     'dart_boxed',
+    'dart_option_object',
     'future_or_value',
     'future_or_future',
     'dart_shr',
@@ -8565,7 +8637,7 @@ class RustBackend {
     _line('fn dart_hash_any(&self) -> i64 { self.dart_hash_code() }');
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
-    _line('Type { name: "${cls.name}" }');
+    _line('Type { name: "${cls.dartName ?? cls.name}" }');
     _indent--;
     _line('}');
     // What this object is (`dart_cast_to`): its own struct, and every
