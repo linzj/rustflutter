@@ -1013,7 +1013,11 @@ class KernelFrontend implements TypeWorld {
     }
     // A value the AOT compiler removed (`!`) is its own text: a call on
     // it would ask `!: DartAny` (11 "never type fallback" at ws545).
-    if (lowered.rustType?.name == 'Never') return lowered;
+    // ..through `dart_str` (a `Debug` bound, which the `()` the block
+    // falls back to has; bare, `{}` asked `Display` of it: 11 at ws546).
+    if (lowered.rustType?.name == 'Never') {
+      return IrStaticCall(null, 'dart_str', [lowered])..rustType = text;
+    }
     return IrCall(lowered, '!object_str', const [])..rustType = text;
   }
 

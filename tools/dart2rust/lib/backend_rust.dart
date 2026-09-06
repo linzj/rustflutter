@@ -3086,7 +3086,13 @@ class RustBackend {
     // closure): the cell itself, whose `borrow_mut()` the call takes. The
     // value read cloned it and `seen.add(..)` pushed into the clone (the
     // lend2 fixture, ws544).
-    if (target is IrLocal && _cellLocals[target.name] == false) {
+    // ..a collection in the cell: a handle's method that shares a
+    // mutator's name (`controller.reverse()` on an `AnimationController`
+    // local) is not a mutation of the local (3 at ws546).
+    if (target is IrLocal &&
+        _cellLocals[target.name] == false &&
+        target.rustType != null &&
+        _isMutableCollection(type(target.rustType!))) {
       return snake(target.name);
     }
     // A hollow mixin's field is read through the declaration's abstract
@@ -4166,6 +4172,17 @@ class RustBackend {
         ((left is IrStatic && right is IrThis) ||
             (left is IrThis && right is IrStatic))) {
       return 'false';
+    }
+    // Against a constant instance (`identical(_textScaler,
+    // _kUnspecifiedTextScaler)`, `MediaQueryData.textScaler`, run546):
+    // Dart canonicalises constants, so a value equal to the constant *is*
+    // the constant -- the other side is asked for the constant's class and
+    // compared by value; another class, or null, is not identical.
+    if (left is IrConstInstance || right is IrConstInstance) {
+      final constant = left is IrConstInstance ? left : right;
+      final other = left is IrConstInstance ? right : left;
+      final name = (constant as IrConstInstance).type.name;
+      return '(match (${expr(other)}).dart_cast_any::<$name>() { Some(__c) => __c.dart_eq(&${expr(constant)}), None => false })';
     }
     if (left is IrLiteral || right is IrLiteral) {
       // TFA folds both sides to literals of different kinds: `identical(0,
