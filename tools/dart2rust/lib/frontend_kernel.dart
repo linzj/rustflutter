@@ -806,6 +806,14 @@ class KernelFrontend implements TypeWorld {
     return top ? const IrType('dynamic', nullable: true) : null;
   }
 
+  /// Dart's `null`, as the lowering writes it on its own -- an omitted
+  /// argument, an uninitialised local, a constant -- *typed*, so that the
+  /// coercion into its slot sees it: untyped, an omitted `Object? aspect`
+  /// stayed `None` where the `Null` object went (85 at ws502).
+  static IrExpr _nullLiteral() =>
+      IrLiteral('null', const IrType('Null', nullable: true))
+        ..rustType = const IrType('Null', nullable: true);
+
   /// `x!`, and every unwrap the lowering adds on Dart's word that a value
   /// is nullable: the value itself when its recorded Rust type is not an
   /// `Option` -- a `dynamic`, an `Object?` (one type here, see `_type`),
@@ -866,7 +874,7 @@ class KernelFrontend implements TypeWorld {
       return IrLiteral(node.value, const IrType('String'));
     }
     if (node is NullLiteral) {
-      return IrLiteral('null', const IrType('Null', nullable: true));
+      return _nullLiteral();
     }
     if (node is ThisExpression) return IrThis();
     if (node is VariableGet) {
@@ -1481,7 +1489,19 @@ class KernelFrontend implements TypeWorld {
       if (node.named.isNotEmpty) {
         throw Unsupported('a record with named fields', _sample(node));
       }
-      return IrRecord([for (final e in node.positional) expression(e)]);
+      // Each field into the record's field type by the one rule: `(false,
+      // null)` as a `(bool, Object?)` holds the `Null` object (ws502).
+      final fields = node.recordType.positional;
+      return IrRecord([
+        for (var i = 0; i < node.positional.length; i++)
+          i < fields.length
+              ? _widened(
+                  node.positional[i],
+                  fields[i],
+                  expression(node.positional[i]),
+                )
+              : expression(node.positional[i]),
+      ]);
     }
     if (node is MapLiteral) {
       return _mapLiteral(node, node.keyType, node.valueType);
@@ -3141,6 +3161,20 @@ class KernelFrontend implements TypeWorld {
           // the CFE's temporaries say (`RenderProxyBoxMixin.performLayout`,
           // ws485).
           final bodyType = body.rustType;
+          // Typed as what the Rust value is -- the body's `Option` (one
+          // layer, see `flatten`) -- not as Kernel's `T?`, which for a
+          // `dynamic` body is a bare `dynamic` (`_imageStream?.key ==
+          // key`, ws502).
+          final flattened =
+              bodyType != null &&
+              bodyType.nullable &&
+              bodyType.name != 'void' &&
+              bodyType.name != '()';
+          final IrType? resultType = bodyType == null
+              ? null
+              : flattened
+              ? bodyType
+              : _nullableIr(bodyType);
           return IrNullAware(
             receiver,
             body,
@@ -3157,7 +3191,7 @@ class KernelFrontend implements TypeWorld {
                       (memberType is InterfaceType ||
                           memberType is TypeParameterType) &&
                       memberType.nullability == Nullability.nullable,
-          );
+          )..rustType = resultType;
         } finally {
           _boundType = previousType;
           _bound = previous;
@@ -3193,9 +3227,14 @@ class KernelFrontend implements TypeWorld {
         // `dart_str` (6 `Option<Locale> <= String` shapes in dart:ui).
         final leftType = _staticType(value);
         final rightType = _staticType(right);
+        // ..two *concrete* classes: a top-typed side (`Object?`, a
+        // `dynamic`) takes the general path, where the other side goes
+        // behind the handle (ws502).
         if (leftType is InterfaceType &&
             rightType is InterfaceType &&
             leftType.classNode != rightType.classNode &&
+            leftType.classNode.name != 'Object' &&
+            rightType.classNode.name != 'Object' &&
             body.staticType is InterfaceType &&
             (body.staticType as InterfaceType).classNode.name == 'Object') {
           return IrIfNull(
@@ -3229,14 +3268,28 @@ class KernelFrontend implements TypeWorld {
               ? IrUpcast(widened.target!, _type(into))
               : widened;
         }
+        // `x ?? y` on a `dynamic` (an `Object?`, ws502): its null is the
+        // `Null` object, asked by the prelude; and whether the result is
+        // still an `Option` is the *Rust* type's answer -- a `dynamic`
+        // result is no `Option`.
+        final leftSide = expression(value);
+        final leftIr = leftSide.rustType;
+        final asked =
+            leftIr != null && leftIr.name == 'dynamic' && !leftIr.nullable
+            ? (IrCall(leftSide, '!nullable', const [])
+                ..rustType = const IrType('dynamic', nullable: true))
+            : leftSide;
+        final resultIr = _recordedType(body.staticType);
         return IrIfNull(
-          expression(value),
+          asked,
           rightSide,
           // Whether the whole thing is still nullable is the right side's
           // question: `a ?? b` is non-null exactly when `b` is.
           // The conditional carries its own static type, so no type context
           // has to be built to ask this.
-          nullableResult: body.staticType.nullability == Nullability.nullable,
+          nullableResult: resultIr != null
+              ? resultIr.nullable
+              : body.staticType.nullability == Nullability.nullable,
           eager: right is BasicLiteral || right is ConstantExpression,
         );
       }
@@ -3560,7 +3613,7 @@ class KernelFrontend implements TypeWorld {
       return IrLocalDecl(
         name,
         _localIrType(variable),
-        IrLiteral('null', const IrType('Null', nullable: true)),
+        _nullLiteral(),
         cell: _capturedWrites.contains(variable),
       );
     }
@@ -6773,11 +6826,7 @@ class KernelFrontend implements TypeWorld {
       }
       for (final n in target.function.namedParameters) {
         final init = n.initializer;
-        args.add(
-          init == null
-              ? IrLiteral('null', const IrType('Null', nullable: true))
-              : expression(init),
-        );
+        args.add(init == null ? _nullLiteral() : expression(init));
       }
       return IrCall(
         IrClosure(
@@ -7137,7 +7186,7 @@ class KernelFrontend implements TypeWorld {
           ),
         );
       } else if (param.type.nullability == Nullability.nullable) {
-        out.add(IrLiteral('null', const IrType('Null', nullable: true)));
+        out.add(_nullLiteral());
       } else {
         throw Unsupported(
           'omitted named argument `${param.name}` to a function value',
@@ -7243,7 +7292,7 @@ class KernelFrontend implements TypeWorld {
       // `Null` object, not `None` (85 at ws501).
       // ..of a translated callee: a prelude callee's slot is its own Rust
       // signature (`_slotPrelude`), an `Option` where Dart says `Object?`.
-      final absent = IrLiteral('null', const IrType('Null', nullable: true));
+      final absent = _nullLiteral();
       final slot = _recordedType(param.type);
       return slot == null || !_translatedCallee(_calleeOf(param))
           ? absent
@@ -7407,7 +7456,7 @@ class KernelFrontend implements TypeWorld {
       return IrLiteral(constant.value, const IrType('String'));
     }
     if (constant is NullConstant) {
-      return IrLiteral('null', const IrType('Null', nullable: true));
+      return _nullLiteral();
     }
     // Each element into the collection's element type, as a map constant's
     // entries are below.
