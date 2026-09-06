@@ -1754,6 +1754,20 @@ class RustBackend {
   /// The captured cell locals that hold a `late` field (see `_cellLocals`).
   Set<String> _lateCellLocals = const {};
 
+  /// A closure, possibly behind the wrappers coerce puts on one (a
+  /// `Some`, an upcast, a clone).
+  bool _closureLike(IrExpr e) => switch (e) {
+    IrClosure() => true,
+    IrUpcast(:final value) => _closureLike(value),
+    IrSome(:final value) => _closureLike(value),
+    IrCall(:final target, :final name, :final args) =>
+      (name == 'clone' || name == '!rc') &&
+          args.isEmpty &&
+          target != null &&
+          _closureLike(target),
+    _ => false,
+  };
+
   /// A type that cannot be spelled as a return (`_`, a placeholder, a
   /// method's own parameter nothing declares here).
   bool _mentionsUnknown(IrType t) {
@@ -1784,9 +1798,19 @@ class RustBackend {
       // made in the body (`handler == null ? null : (m) async {..}` into
       // a `MessageHandler?` slot) unsizes against a spelled return and
       // not against an inferred `_` (ws486).
+      // ..only for a closure body: the IR type of anything else is not
+      // exact enough to spell as a return (`Infallible` for a body TFA
+      // removed, `Option<()>` for a `void?`; +35 at ws487).
       final bodyType = body.rustType;
+      final closureBody = _closureLike(body);
+      if (Platform.environment['DART2RUST_TRACE_NULLAWARE'] == '1') {
+        stderr.writeln(
+          'TRACE_NULLAWARE body=${body.runtimeType} type=${body.rustType} closure=$closureBody',
+        );
+      }
       final spelled =
-          bodyType != null &&
+          closureBody &&
+              bodyType != null &&
               bodyType.name != 'raw' &&
               !_mentionsUnknown(bodyType)
           ? type(bodyType)
