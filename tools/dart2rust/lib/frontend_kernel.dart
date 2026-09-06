@@ -1822,7 +1822,7 @@ class KernelFrontend implements TypeWorld {
         // so `super.x` and `this.x` are the same storage.
         return IrField(
           null,
-          node.name.text,
+          _memberName(node.interfaceTarget!),
           onEnum: node.interfaceTarget?.enclosingClass?.isEnum ?? false,
         );
       }
@@ -1864,7 +1864,7 @@ class KernelFrontend implements TypeWorld {
       return IrBlockValue([
         IrLocalDecl(held, null, init),
         target is Field
-            ? IrAssignField(node.name.text, stored)
+            ? IrAssignField(_fieldNameOf(target, node.name.text), stored)
             : IrExprStmt(
                 IrSuperCall(
                   owner,
@@ -1943,7 +1943,7 @@ class KernelFrontend implements TypeWorld {
               // counted); a setter is a call, on whatever the receiver is.
               target is Field
                   ? IrAssignField(
-                      node.name.text,
+                      _fieldNameOf(target, node.name.text),
                       stored,
                       target: expression(receiver),
                       owner: counted
@@ -2009,7 +2009,7 @@ class KernelFrontend implements TypeWorld {
         return IrBlockValue([
           IrLocalDecl(held, null, stored.value),
           IrAssignField(
-            node.name.text,
+            _fieldNameOf(node.interfaceTarget, node.name.text),
             IrSome(
               IrCall(IrLocal(held), 'clone', const [])..rustType = storedType,
             ),
@@ -3799,7 +3799,7 @@ class KernelFrontend implements TypeWorld {
       // `cascaded.on_down = ..` into an `Rc<RefCell<..>>` (23+23 in
       // `widgets`).
       return IrAssignField(
-        value.name.text,
+        _fieldNameOf(value.interfaceTarget, value.name.text),
         written,
         target: IrLocal(_cascadeName),
         owner:
@@ -3843,7 +3843,7 @@ class KernelFrontend implements TypeWorld {
               _closureCallsMethod(receiverClassHere)) &&
           !_abstractLike(value.interfaceTarget.enclosingClass!)) {
         return IrAssignField(
-          value.name.text,
+          _fieldNameOf(value.interfaceTarget, value.name.text),
           written,
           target: expression(receiver),
           owner:
@@ -3866,7 +3866,7 @@ class KernelFrontend implements TypeWorld {
         // The receiver's own class, where the cells are decided; the
         // declaring one may be an abstract base.
         return IrAssignField(
-          value.name.text,
+          _fieldNameOf(value.interfaceTarget, value.name.text),
           written,
           target: expression(receiver),
           owner: receiverClass?.name ?? declaring.name,
@@ -3876,7 +3876,7 @@ class KernelFrontend implements TypeWorld {
       // (`IrAssignField.owner` abstract; 19 refusals at ws326).
       if (_abstractLike(declaring)) {
         return IrAssignField(
-          value.name.text,
+          _fieldNameOf(value.interfaceTarget, value.name.text),
           written,
           target: expression(receiver),
           owner: declaring.name,
@@ -3899,7 +3899,7 @@ class KernelFrontend implements TypeWorld {
                 : '.${(place as IrTopLevel).name}',
           );
           return IrAssignField(
-            value.name.text,
+            _fieldNameOf(value.interfaceTarget, value.name.text),
             written,
             target: place,
             owner: receiverClassHere?.name ?? declaring.name,
@@ -3915,7 +3915,7 @@ class KernelFrontend implements TypeWorld {
         );
       }
       return IrAssignField(
-        value.name.text,
+        _fieldNameOf(value.interfaceTarget, value.name.text),
         written,
         target: expression(value.receiver),
       );
@@ -3929,7 +3929,10 @@ class KernelFrontend implements TypeWorld {
         qualifier: _setterQualifier(null, value.interfaceTarget),
       );
     }
-    return IrAssignField(value.name.text, written);
+    return IrAssignField(
+      _fieldNameOf(value.interfaceTarget, value.name.text),
+      written,
+    );
   }
 
   IrStmt _declare(Variable variable, Node at) {
@@ -4452,7 +4455,7 @@ class KernelFrontend implements TypeWorld {
   }
 
   IrExpr _instanceGetRaw(InstanceGet node) {
-    final name = node.name.text;
+    final name = _fieldNameOf(node.interfaceTarget, node.name.text);
     final listOwner = node.interfaceTarget.enclosingClass?.name;
     if (listOwner == 'List' || listOwner == 'Iterable') {
       final rust = listMethodNames[name];
@@ -7944,6 +7947,55 @@ class KernelFrontend implements TypeWorld {
   /// borrower.
   static final _keepsCache = <Object, bool>{};
 
+  /// The IR name of a field: its Dart name, unless it is *private* and an
+  /// ancestor in another library declares a private field of the same
+  /// text -- Dart's privacy is per library, so those are two fields, and
+  /// the flattened struct held one (`_InheritedNotifierElement._dirty`
+  /// took `Element._dirty`'s place, started `false`, and the element
+  /// never built: run554). The lower declaration is renamed with its
+  /// library's tag; every reference resolves through the member, so the
+  /// name is one everywhere.
+  String _memberName(Member member) {
+    final known = _memberNames[member];
+    if (known != null) return known;
+    final text = member.name.text;
+    var out = text;
+    final owner = member.enclosingClass;
+    if (member.name.isPrivate && owner != null && member is Field) {
+      final library = member.enclosingLibrary;
+      var above = owner.superclass;
+      while (above != null) {
+        if (above.enclosingLibrary != library &&
+            above.fields.any(
+              (f) => f.name.text == text && f.name.isPrivate && !f.isStatic,
+            )) {
+          out = '${text}_${_libraryTag(library)}';
+          break;
+        }
+        above = above.superclass;
+      }
+    }
+    _memberNames[member] = out;
+    return out;
+  }
+
+  final Map<Member, String> _memberNames = {};
+
+  /// A field's IR name from its target, or the written name for anything
+  /// else (a setter's).
+  String _fieldNameOf(Member? target, String text) =>
+      target is Field ? _memberName(target) : text;
+
+  /// A short tag for a library, from its URI's last segment.
+  static String _libraryTag(Library library) {
+    final segments = library.importUri.pathSegments;
+    final last = segments.isEmpty ? 'lib' : segments.last;
+    final base = last.endsWith('.dart')
+        ? last.substring(0, last.length - 5)
+        : last;
+    return base.replaceAll(RegExp(r'[^A-Za-z0-9_]'), '_');
+  }
+
   /// `IrMethod.typeParameterBounds`: each kept type parameter whose bound
   /// is a translated abstract class, with the bound spelled.
   Map<String, IrType> _traitBounds(FunctionNode function) {
@@ -10458,7 +10510,7 @@ class KernelFrontend implements TypeWorld {
           try {
             cls.appliedFields.add(
               IrFieldDecl(
-                f.name.text,
+                _memberName(f),
                 _type(_declaredFieldType(f) ?? f.type),
                 isFinal: f.isFinal,
                 isLate: f.isLate,
@@ -10599,7 +10651,7 @@ class KernelFrontend implements TypeWorld {
 
   void _lowerField(IrClass cls, Field field, {DartType? declaredType}) {
     _enter(field);
-    final name = field.name.text;
+    final name = _memberName(field);
     // A copy's field under the mixin's declared type (see the applied
     // members' lowering), with the mixin's parameters substituted by
     // this class's arguments for them -- `StateMixin<T>`'s `T? _value`
@@ -10692,7 +10744,7 @@ class KernelFrontend implements TypeWorld {
         // Into the field's type: `creator = filter` with a `_GaussianBlur
         // ImageFilter` in hand and an `ImageFilter` field is `Rc::new(..)`,
         // a nullable field takes `Some(..)`.
-        inits[init.field.name.text] = _acrossEdge(
+        inits[_memberName(init.field)] = _acrossEdge(
           _widened(init.value, init.field.type, expression(init.value)),
           init.field.type,
           toOption: false,
@@ -10828,7 +10880,7 @@ class KernelFrontend implements TypeWorld {
       for (final field in node.enclosingClass.fields) {
         if (field.isStatic || field.initializer != null) continue;
         final param = byName[field.name.text];
-        if (param != null) inits[field.name.text] = IrLocal(param);
+        if (param != null) inits[_memberName(field)] = IrLocal(param);
       }
       real = const [];
     }

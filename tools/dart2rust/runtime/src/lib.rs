@@ -39,6 +39,7 @@ thread_local! {
 /// Installs the headless engine: the native host, then the view the
 /// engine would have announced before `main` ran.
 pub fn install() {
+    install_panic_report();
     set_native_host(Box::new(answer));
     if let Err(e) = announce_view() {
         eprintln!(
@@ -154,6 +155,22 @@ fn string(value: &str) -> Rc<dyn Object> {
 
 fn null() -> Rc<dyn Object> {
     Rc::new(Null) as Rc<dyn Object>
+}
+
+/// Under `panic = "abort"` (the workspace's profile: unwind landing pads
+/// cost the widget-tree functions half an hour of codegen) nothing can
+/// catch a panic, so the report is made *in* the panic hook: the message,
+/// then the tree dumps the run asked for (`DART2RUST_DUMP_*`), which is
+/// what a stub on the compositing path was hiding (run554). A borrow the
+/// panicking frame still holds makes the dump panic in turn, which aborts
+/// exactly as the first panic was about to.
+pub fn install_panic_report() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        eprintln!("dart2rust host: reporting from the panic hook");
+        report();
+    }));
 }
 
 /// A frame: the engine's vsync, as a timer that fires once the program
@@ -349,22 +366,53 @@ fn plugin_reply(channel: &str, data: Option<ByteData>) -> Result<Option<ByteData
     }
 }
 
+/// The render tree as a structural walk -- one line per render object:
+/// its runtime type, its size when it is a laid-out box, its offset in
+/// its parent when its parent data is box parent data -- which is what
+/// `~/gallery_upstream/test/dump_render_walk_test.dart` prints from
+/// Flutter itself. Not `toStringDeep`: Flutter renders that inside an
+/// `assert`, which the release dill drops, so it is empty here (run554).
 fn dump_render_tree() -> Result<String, DartError> {
+    use generated::rendering_box::{BoxParentData, RenderBox};
     use generated::rendering_object::RenderObject;
     let binding = generated::rendering_binding::renderer_binding_instance()?;
-    let mut out = String::new();
-    for view in binding.render_views()? {
-        // Through `RenderObject`: `DiagnosticableTree` declares the same
-        // name with one more parameter, and the handle sees both.
-        out.push_str(&RenderObject::to_string_deep(
-            &*view,
-            String::new(),
-            None,
-            generated::foundation_diagnostics::DiagnosticLevel::Debug,
-            65,
-        )?);
+    let out = Rc::new(RefCell::new(String::new()));
+    fn walk(
+        node: Rc<dyn RenderObject>,
+        depth: usize,
+        out: Rc<RefCell<String>>,
+    ) -> Result<(), DartError> {
+        let mut line = format!(
+            "{}{}",
+            "  ".repeat(depth),
+            (&*node).dart_runtime_type().name
+        );
+        if let Some(bx) = node.dart_cast_to::<dyn RenderBox>() {
+            if bx.has_size()? {
+                line.push_str(&format!(" size={}", bx.size()?.dart_to_string()));
+            }
+        }
+        if let Some(data) = RenderObject::parent_data(&*node)? {
+            if let Some(bpd) = data.dart_cast_to::<dyn BoxParentData>() {
+                line.push_str(&format!(" offset={}", bpd.offset()?.dart_to_string()));
+            }
+        }
+        line.push('\n');
+        out.borrow_mut().push_str(&line);
+        if depth > 200 {
+            return Ok(());
+        }
+        let out_child = out.clone();
+        RenderObject::visit_children(
+            &*node,
+            Rc::new(move |child: Rc<dyn RenderObject>| walk(child, depth + 1, out_child.clone())),
+        )
     }
-    Ok(out)
+    for view in binding.render_views()? {
+        walk(view as Rc<dyn RenderObject>, 0, out.clone())?;
+    }
+    let text = out.borrow().clone();
+    Ok(text)
 }
 
 fn dump_app() -> Result<String, DartError> {
