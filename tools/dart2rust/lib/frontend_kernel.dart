@@ -1305,9 +1305,18 @@ class KernelFrontend implements TypeWorld {
         owner,
         node.name.text,
         // Into the declaration's slots: a super call reaches the mixin's
-        // super function, typed by the mixin (`super.insert(child, after:
-        // after)` in `RenderSliverMultiBoxAdaptor`, ws479).
-        _arguments(node.arguments, _originalFunction(node.interfaceTarget)),
+        // super function, typed by the mixin with this class's arguments
+        // put in (`super.insert(child, after: after)` in
+        // `RenderSliverMultiBoxAdaptor`, ws479; `didPop(result)`'s `T?`
+        // as the class's projected `T?`, ws492).
+        _arguments(
+          node.arguments,
+          node.interfaceTarget.function,
+          true,
+          null,
+          _superSlots(node.interfaceTarget).$1,
+          _superSlots(node.interfaceTarget).$2,
+        ),
         baseArguments: _superBaseArguments(ownerClass!),
         typeArguments: _typeArgumentsOf(node.arguments),
       );
@@ -3982,7 +3991,21 @@ class KernelFrontend implements TypeWorld {
     }
     final generic = _genericOnTrait(node, args);
     if (generic != null) return generic;
-    final owner = node.interfaceTarget.enclosingClass?.name;
+    // The owner by the receiver's *static* class when that is one of the
+    // prelude's collections: TFA devirtualises `Map.cast` onto the one
+    // implementation it found (`CanonicalizedMap`), and the prelude's
+    // `Map` is what the receiver is here (`invokeMapMethod`, run492).
+    final staticOwner = _staticClass(node.receiver)?.name;
+    final owner =
+        staticOwner != null &&
+            (staticOwner == 'List' ||
+                staticOwner == 'Iterable' ||
+                staticOwner == 'Set' ||
+                _isMapClass(staticOwner)) &&
+            _staticClass(node.receiver)?.enclosingLibrary.importUri.scheme ==
+                'dart'
+        ? staticOwner
+        : node.interfaceTarget.enclosingClass?.name;
     // A `StreamView` subclass's inherited `listen` and friends act on the
     // `_stream` it carries (see `lowerClass`).
     final declaringStream = node.interfaceTarget.enclosingClass;
@@ -5408,11 +5431,19 @@ class KernelFrontend implements TypeWorld {
     FunctionNode? callee,
     bool borrows = true,
     FunctionType? instantiated,
+    List<DartType>? positionalTypes,
+    Map<String, DartType>? namedTypes,
   ]) {
     final was = _borrowedArgument;
     _borrowedArgument = borrows;
     try {
-      return _argumentList(node, callee, instantiated);
+      return _argumentList(
+        node,
+        callee,
+        instantiated,
+        positionalTypes,
+        namedTypes,
+      );
     } finally {
       _borrowedArgument = was;
     }
@@ -5458,6 +5489,7 @@ class KernelFrontend implements TypeWorld {
     int index, [
     FunctionType? instantiated,
     IrType? slotIr,
+    DartType? declaredOverride,
   ]) {
     final param = callee != null && index < callee.positionalParameters.length
         ? callee.positionalParameters[index]
@@ -5468,9 +5500,13 @@ class KernelFrontend implements TypeWorld {
     // ..but the *declared* one when it is a function type naming an erased
     // parameter: the instantiated `bool Function(ScrollNotification)` is
     // not what the slot holds, `bool Function(T)` erased is.
-    final declaredType = param?.type;
+    // A super call fills the mixin's declared slots, with this class's
+    // arguments put in (`declaredOverride`, see the super-call lowering).
+    final declaredType = declaredOverride ?? param?.type;
     final paramType =
-        _landingSlot(callee: callee, index: index) ??
+        (declaredOverride == null
+            ? _landingSlot(callee: callee, index: index)
+            : null) ??
         (declaredType is FunctionType && _mentionsErased(declaredType)
             ? declaredType
             : instantiated != null &&
@@ -5612,14 +5648,21 @@ class KernelFrontend implements TypeWorld {
     return _toF64(lowered)..rustType = const IrType('double');
   }
 
-  IrExpr _namedArgument(Expression value, Object param) {
+  IrExpr _namedArgument(
+    Expression value,
+    Object param, [
+    DartType? declaredOverride,
+  ]) {
     final callee = _calleeOf(param);
-    final declared = param is FunctionParameter ? param.type : null;
+    final declared =
+        declaredOverride ?? (param is FunctionParameter ? param.type : null);
     final type =
-        _landingSlot(
-          callee: callee,
-          name: param is FunctionParameter ? param.parameterName : null,
-        ) ??
+        (declaredOverride == null
+            ? _landingSlot(
+                callee: callee,
+                name: param is FunctionParameter ? param.parameterName : null,
+              )
+            : null) ??
         declared;
     final argument = _numLiteral(
       value,
@@ -5966,6 +6009,25 @@ class KernelFrontend implements TypeWorld {
       }
     }
     return m;
+  }
+
+  /// A super call's slots as this class sees them: the declaration's
+  /// parameter types (the mixin's, behind a copy) with this class's
+  /// arguments put in for the mixin's kept parameters.
+  (List<DartType>?, Map<String, DartType>?) _superSlots(Member target) {
+    final original = _originalOf(target);
+    if (identical(original, target) || original is! Procedure) {
+      return (null, null);
+    }
+    final owner = original.enclosingClass;
+    final fn = original.function;
+    return (
+      [for (final p in fn.positionalParameters) _asApplied(p.type, owner)],
+      {
+        for (final p in fn.namedParameters)
+          p.parameterName: _asApplied(p.type, owner),
+      },
+    );
   }
 
   /// The function whose parameters a call to `m` fills: the mixin's own
@@ -6790,10 +6852,21 @@ class KernelFrontend implements TypeWorld {
     Arguments node,
     FunctionNode? callee, [
     FunctionType? instantiated,
+    List<DartType>? positionalTypes,
+    Map<String, DartType>? namedTypes,
   ]) {
     final positional = [
       for (var i = 0; i < node.positional.length; i++)
-        _argument(node.positional[i], callee, i, instantiated),
+        _argument(
+          node.positional[i],
+          callee,
+          i,
+          instantiated,
+          null,
+          positionalTypes != null && i < positionalTypes.length
+              ? positionalTypes[i]
+              : null,
+        ),
     ];
     if (node.named.isEmpty && callee == null) return positional;
     if (callee == null) {
@@ -6815,7 +6888,7 @@ class KernelFrontend implements TypeWorld {
       }
       final value = supplied.remove(param.parameterName);
       if (value != null) {
-        out.add(_namedArgument(value, param));
+        out.add(_namedArgument(value, param, namedTypes?[param.parameterName]));
         continue;
       }
       out.add(_omitted(param, node));
@@ -8739,6 +8812,16 @@ class KernelFrontend implements TypeWorld {
     );
     node.accept(escapes);
     if (escapes.found) return true;
+    // ..and in the constructors above it, whose bodies run as this class's
+    // (flattened in): `PlatformInterface`'s `_instanceTokens[this] = token`
+    // keys an Expando by identity, which a value has none of (run491).
+    for (final above in _kernelAncestors(node)) {
+      if (above.enclosingLibrary.importUri.scheme == 'dart') continue;
+      for (final k in above.constructors) {
+        k.accept(escapes);
+        if (escapes.found) return true;
+      }
+    }
     // A tear-off of `this.method` is that closure written shorter (see the
     // `InstanceTearOff` case), so it makes the class counted for the same
     // reason a closure calling a method does. 448 refusals were tear-offs in
