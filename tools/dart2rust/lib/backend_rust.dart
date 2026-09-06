@@ -1621,6 +1621,21 @@ class RustBackend {
       // ..and where this module's world cannot classify the value (a
       // struct of another library), the `Object` sharing stands: the
       // prelude's `dart_object` takes the trait the comparison wants.
+      // Two handles of one trait at different instantiations (`Route<T>`
+      // against the navigator's `Route<dynamic>`, ws505): Dart's `==` on
+      // them is identity, and only a thin pointer can compare the two.
+      final rightType = right.rustType;
+      if (leftType != null &&
+          rightType != null &&
+          leftType.name == rightType.name &&
+          !leftType.nullable &&
+          !rightType.nullable &&
+          library.isAbstract(leftType.name) &&
+          leftType.arguments.isNotEmpty &&
+          leftType.arguments.toString() != rightType.arguments.toString()) {
+        final same = 'dart_identical_any(&${expr(left)}, &${expr(right)})';
+        return op == '==' ? same : '(!$same)';
+      }
       final coerced = leftType != null && bare.rustType != null
           ? coerceInto(bare, leftType, _world, inClosure: true)
           : bare;
@@ -4042,10 +4057,23 @@ class RustBackend {
     // `Ok(None)` as `()` does into `Ok(())` (52 in `widgets`).
     final unit = rendered == '()';
     final optional = rendered.startsWith('Option<');
+    // ..and a `FutureOr<void>` one (a `then` callback's, `Route.didAdd`,
+    // ws504) into the done `FutureOr` of `()`.
+    final futureOrUnit = rendered == 'FutureOr<()>';
     final fallsOff =
-        _failure != null && (unit || optional) && !_alwaysReturns(body);
+        _failure != null &&
+        (unit || optional || futureOrUnit) &&
+        !_alwaysReturns(body);
     stmt(body, tail: !fallsOff);
-    if (fallsOff) _line(unit ? 'Ok(())' : 'Ok(None)');
+    if (fallsOff) {
+      _line(
+        unit
+            ? 'Ok(())'
+            : futureOrUnit
+            ? 'Ok(FutureOr::value(()))'
+            : 'Ok(None)',
+      );
+    }
   }
 
   void stmt(IrStmt s, {bool tail = false}) {

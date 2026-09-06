@@ -934,6 +934,17 @@ impl<T: Clone> Set<T> {    /// `LinkedHashSet.of(elements)` / `Set.of(elements)`
 }
 
 impl<T: DartEq + Clone> Set<T> {
+    /// `set.removeWhere(test)`: every element the test holds of goes.
+    pub fn remove_where(&mut self, test: std::rc::Rc<dyn Fn(T) -> Result<bool, DartError>>) -> Result<(), DartError> {
+        let mut kept: Vec<T> = Vec::new();
+        for e in self.items.drain(..) {
+            if !test(e.clone())? {
+                kept.push(e);
+            }
+        }
+        self.items = kept;
+        Ok(())
+    }
     pub fn of(elements: Vec<T>) -> Set<T> {
         let mut s = Set::new();
         for e in elements {
@@ -1746,9 +1757,9 @@ impl<T> DartEq for NativeFunction<T> {
         std::ptr::eq(self, other)
     }
 }
-impl<T: ?Sized> DartEq for WeakReference<T> {
+impl<T: DartEq> DartEq for WeakReference<T> {
     fn dart_eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self, other)
+        self.0.dart_eq(&other.0)
     }
 }
 impl<T> DartEq for Stream<T> {
@@ -3313,37 +3324,33 @@ impl fmt::Debug for Allocator {
 #[derive(Clone, Copy)]
 pub struct Allocator;
 
-/// `dart:core`'s `WeakReference<T>`: a handle that does not keep its
-/// target alive. `std::rc::Weak` is exactly that; the wrapper gives it the
-/// `Clone`/`Debug`/`PartialEq` the structs holding one derive, with equality
-/// by target identity.
-pub struct WeakReference<T: ?Sized>(std::rc::Weak<T>);
+/// `dart:core`'s `WeakReference<T>`, with `T` the Dart type as spelled
+/// here (a handle `Rc<dyn X>`, or a value). Held *strongly*: nothing here
+/// collects, so a reference that never clears is what a weak one is in
+/// this runtime; what is kept is the `WeakReference` surface (`target`)
+/// the translated code reads (the navigator's `_RouteEntry`, ws505).
+#[derive(Clone)]
+pub struct WeakReference<T>(T);
 
-impl<T: ?Sized> WeakReference<T> {
-    pub fn new(target: std::rc::Rc<T>) -> Self {
-        WeakReference(std::rc::Rc::downgrade(&target))
+impl<T: Clone> WeakReference<T> {
+    pub fn new(target: T) -> Self {
+        WeakReference(target)
     }
 
-    pub fn target(&self) -> Option<std::rc::Rc<T>> {
-        self.0.upgrade()
-    }
-}
-
-impl<T: ?Sized> Clone for WeakReference<T> {
-    fn clone(&self) -> Self {
-        WeakReference(self.0.clone())
+    pub fn target(&self) -> Option<T> {
+        Some(self.0.clone())
     }
 }
 
-impl<T: ?Sized> fmt::Debug for WeakReference<T> {
+impl<T> fmt::Debug for WeakReference<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("WeakReference")
     }
 }
 
-impl<T: ?Sized> PartialEq for WeakReference<T> {
+impl<T: DartEq> PartialEq for WeakReference<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0)
+        self.0.dart_eq(&other.0)
     }
 }
 
@@ -3584,6 +3591,13 @@ macro_rules! from_dynamic_narrow {
     };
 }
 from_dynamic_narrow!(f32 => f64, i8 => i64, i16 => i64, i32 => i64, u8 => i64, u16 => i64, u32 => i64, u64 => i64, usize => i64, isize => i64);
+
+/// `identical(a, b)` across two handles of one trait at different
+/// instantiations (`Route<T>` against the navigator's `Route<dynamic>`,
+/// ws505): the same object whatever the trait object's type says.
+pub fn dart_identical_any<A: ?Sized, B: ?Sized>(a: &std::rc::Rc<A>, b: &std::rc::Rc<B>) -> bool {
+    std::rc::Rc::as_ptr(a) as *const () == std::rc::Rc::as_ptr(b) as *const ()
+}
 
 /// Dart's `null` where a `dynamic` goes: the `Null` object behind a handle.
 pub fn dart_null_object() -> std::rc::Rc<dyn Object> {

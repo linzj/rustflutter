@@ -5388,8 +5388,27 @@ class KernelFrontend implements TypeWorld {
 
   /// The struct an instance of `cls` is: the class's own name, or the
   /// `Impl` beside an open class's trait.
-  String _instanceName(Class cls) =>
-      _isOpen(cls) ? implName(cls.name) : cls.name;
+  String _instanceName(Class cls) {
+    // A private implementation class of a `dart:` library is constructed
+    // as the public type it implements, which is what the prelude names
+    // (`WeakReference(..)` devirtualised to `_WeakReference`, the
+    // navigator's `_RouteEntry`, ws505).
+    final uri = cls.enclosingLibrary.importUri;
+    if (cls.name.startsWith('_') &&
+        uri.scheme == 'dart' &&
+        uri.toString() != 'dart:ui') {
+      for (final above in [
+        if (cls.supertype != null) cls.supertype!,
+        ...cls.implementedTypes,
+      ]) {
+        final c = above.classNode;
+        if (!c.name.startsWith('_') && c.name != 'Object') {
+          return _instanceName(c);
+        }
+      }
+    }
+    return _isOpen(cls) ? implName(cls.name) : cls.name;
+  }
 
   static FunctionType? _instantiatedConstructor(ConstructorInvocation node) {
     final cls = node.target.enclosingClass;
