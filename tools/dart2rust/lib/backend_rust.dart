@@ -1213,37 +1213,12 @@ class RustBackend {
     // spelled: inside a `.map(|__f| ..)` there is no slot to infer
     // `Rc<dyn Fn>` from, and the `Rc<{closure}>` stayed one (a
     // conditional tear-off into `VoidCallback?`, ws549).
-    // A `let` with the type, not an `as` cast: the expectation flows
-    // into the closure, whose `Ok(concrete)` then unsizes to the declared
-    // `Rc<dyn Widget>` -- under a cast it stayed concrete and the closure
-    // "returned the wrong type" (+192 at ws550).
-    final spelled = _closureHandleType(node, node.rustType);
-    if (spelled != null) {
-      return '{ let __h: $spelled = std::rc::Rc::new($whole); __h }';
-    }
+    // Plain: the slot it lands in unsizes it. Spelling the handle type
+    // here (an `as`, then a typed `let`) named type parameters out of
+    // scope and turned iterator closures into handles (+49 at ws551);
+    // the one place with no slot to infer from, a null-aware `.map`,
+    // spells its own return (`_nullAware`).
     return 'std::rc::Rc::new($whole)';
-  }
-
-  /// The `Rc<dyn Fn(..) -> ..>` a boxed closure is, spelled from its
-  /// recorded type or, failing that, from its own parameters and return
-  /// -- or null when either names something this backend cannot spell (an
-  /// async closure's future, an unknown).
-  String? _closureHandleType(IrClosure node, IrType? recorded) {
-    if (node.isAsync) return null;
-    final own = recorded != null && recorded.isFunction
-        ? recorded
-        : IrType.function([for (final p in node.params) p.type], node.returns);
-    if (_mentionsUnknown(own) ||
-        own.parameters!.any((p) => p.name == '_' || p.name == 'raw') ||
-        own.returns!.name == '_' ||
-        own.returns!.name == 'raw') {
-      return null;
-    }
-    try {
-      return type(nonNull(own));
-    } on Unsupported {
-      return null;
-    }
   }
 
   /// A field's type, wrapped when a closure has to see it change.
@@ -1967,6 +1942,11 @@ class RustBackend {
     IrClosure() => true,
     IrUpcast(:final value) => _closureLike(value),
     IrSome(:final value) => _closureLike(value),
+    // The adapter `coerce` makes of a bound function value (`{ let __f =
+    // ..; Rc::new(move |..| ..) }`): its map's return is spelled, or the
+    // `Rc<{closure}>` never unsized (a conditional tear-off into
+    // `VoidCallback?`, ws551).
+    IrBlockValue(:final value) => _closureLike(value),
     IrCall(:final target, :final name, :final args) =>
       (name == 'clone' || name == '!rc') &&
           args.isEmpty &&
@@ -3373,12 +3353,6 @@ class RustBackend {
       // typed as where that is spelled: inside a `.map(|__f| ..)` there
       // is no slot to infer `Rc<dyn Fn>` from, and the `Rc<{closure}>`
       // stayed one (a conditional tear-off into `VoidCallback?`, ws549).
-      final spelled = target is IrClosure
-          ? _closureHandleType(target, resultType)
-          : null;
-      if (spelled != null) {
-        return '{ let __h: $spelled = std::rc::Rc::new($receiver); __h }';
-      }
       return 'std::rc::Rc::new($receiver)';
     }
     // An `Option<Rc<dyn Object>>` into a `dynamic` slot: absent is `Null`.
