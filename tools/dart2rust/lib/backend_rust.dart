@@ -3154,7 +3154,14 @@ class RustBackend {
       final spelledArgs = typeArguments.isEmpty
           ? ''
           : '<${typeArguments.map(type).join(', ')}>';
-      return 'dart_nullable($receiver).as_ref().and_then(|__v| <${expr(args.single)}$spelledArgs as FromDynamic>::from_dynamic(__v))';
+      final asked =
+          '<${expr(args.single)}$spelledArgs as FromDynamic>::from_dynamic';
+      // ..on an `Option` already (a `dynamic?`): through it.
+      final targetIr = target?.rustType;
+      if (targetIr != null && isNullable(targetIr)) {
+        return '$receiver.and_then(|__v| dart_nullable(__v)).as_ref().and_then(|__v| $asked(__v))';
+      }
+      return 'dart_nullable($receiver).as_ref().and_then(|__v| $asked(__v))';
     }
     if (name == '!as_object' && args.isEmpty) {
       // `this` into an `Object` slot: the handle when the method holds
@@ -6670,6 +6677,8 @@ class RustBackend {
   /// to know them, or `vec_of_nones(..)` reads as a call to nothing.
   static const _preludeFunctions = {
     'dart_null_object',
+    'dart_function_object',
+    'dart_call_function',
     'vec_of_nulls',
     'dart_native',
     'dart_native_as',

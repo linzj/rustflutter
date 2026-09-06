@@ -1,3 +1,4 @@
+use crate::dart_prelude::Object;
 use crate::dart_prelude::*;
 use crate::DartAny;
 use crate::Type;
@@ -21,24 +22,73 @@ pub struct Spacing {
 }
 
 impl Spacing {
-    pub(crate) const fn new_(amount: f64) -> Self {
-        Self { amount: amount }
+    pub(crate) const fn new_(amount: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self { amount: amount } })
     }
 
-    pub const TIGHT: Spacing = (Spacing { amount: 3.0 });
-    pub const WIDE: Spacing = (Spacing { amount: 17.0 });
+    pub const TIGHT: Spacing = (Spacing {
+        amount: 3.0.as_any().downcast_ref::<f64>().unwrap().clone(),
+    });
+    pub const WIDE: Spacing = (Spacing {
+        amount: 17.0.as_any().downcast_ref::<f64>().unwrap().clone(),
+    });
 
-    pub fn twice(&self) -> f64 {
-        (self.amount * 2.0)
+    pub fn twice(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((self.amount * 2.0))
+    }
+}
+
+impl FromDynamic for Spacing {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Spacing {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Spacing was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Spacing was declared")
+    }
+}
+
+impl DartNullable for Spacing {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Spacing {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Spacing {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn dart_runtime_type(&self) -> Type {
         Type { name: "Spacing" }
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        None
     }
 }
 
@@ -54,17 +104,62 @@ pub struct InsetBase {
 }
 
 impl InsetBase {
-    pub const fn new(_h: f64, _v: f64) -> Self {
-        Self { _h: _h, _v: _v }
+    pub const fn new(_h: f64, _v: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self { _h: _h, _v: _v } })
+    }
+}
+
+impl FromDynamic for InsetBase {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for InsetBase {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where InsetBase was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where InsetBase was declared")
+    }
+}
+
+impl DartNullable for InsetBase {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for InsetBase {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for InsetBase {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn dart_runtime_type(&self) -> Type {
         Type { name: "InsetBase" }
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        None
     }
 }
 
@@ -80,24 +175,69 @@ pub struct Inset {
 }
 
 impl Inset {
-    pub const fn new(h: f64, v: f64) -> Self {
-        Self { _h: h, _v: v }
+    pub const fn new(h: f64, v: f64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({ Self { _h: h, _v: v } })
     }
 
     pub const SMALL: Inset = (Inset { _h: 5.0, _v: 7.0 });
     pub const LARGE: Inset = (Inset { _h: 23.0, _v: 29.0 });
 
-    pub fn span(&self) -> f64 {
-        (self._h + self._v)
+    pub fn span(&self) -> Result<f64, std::rc::Rc<dyn Object>> {
+        Ok((self._h + self._v))
+    }
+}
+
+impl FromDynamic for Inset {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Inset {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Inset was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Inset was declared")
+    }
+}
+
+impl DartNullable for Inset {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Inset {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Inset {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn dart_runtime_type(&self) -> Type {
         Type { name: "Inset" }
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        None
     }
 }
 
@@ -113,29 +253,79 @@ pub struct Span {
 }
 
 impl Span {
-    pub const fn new(start: i64, length: i64) -> Self {
-        Self {
-            start: start,
-            end: (start + length),
-        }
+    pub const fn new(start: i64, length: i64) -> Result<Self, std::rc::Rc<dyn Object>> {
+        Ok({
+            Self {
+                start: start,
+                end: (start + length),
+            }
+        })
     }
 
-    pub const FIRST: Span = (Span { start: 2, end: 13 });
+    pub const FIRST: Span = (Span {
+        start: 2.as_any().downcast_ref::<i64>().unwrap().clone(),
+        end: 13.as_any().downcast_ref::<i64>().unwrap().clone(),
+    });
     pub const SECOND: Span = (Span {
-        start: 40,
-        end: 100,
+        start: 40.as_any().downcast_ref::<i64>().unwrap().clone(),
+        end: 100.as_any().downcast_ref::<i64>().unwrap().clone(),
     });
 
-    pub fn width(&self) -> i64 {
-        (self.end - self.start)
+    pub fn width(&self) -> Result<i64, std::rc::Rc<dyn Object>> {
+        Ok((self.end - self.start))
+    }
+}
+
+impl FromDynamic for Span {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.dart_cast_any::<Self>()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl NativeAnswer for Span {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match answer.dart_cast_any::<Self>() {
+            Some(value) => value,
+            None => panic!(
+                "native `{}` answered {:?} where Span was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        panic!("native answered nothing where Span was declared")
+    }
+}
+
+impl DartNullable for Span {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl DartEq for Span {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 impl DartAny for Span {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
     fn dart_runtime_type(&self) -> Type {
         Type { name: "Span" }
+    }
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<Self>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<Self>>()
+        {
+            return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone())));
+        }
+        None
     }
 }

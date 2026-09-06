@@ -41,6 +41,47 @@ pub trait DartIterator<T> {
     fn current(&self) -> T;
 }
 
+/// `xs.iterator` on the prelude's collections: Dart's `Iterator` over the
+/// elements, which a translated class that *is* an `Iterable` hands out
+/// as its own (`_History.iterator` is `_value.iterator`, ws499).
+pub trait DartIterable<T> {
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>>;
+}
+
+pub struct VecIterator<T> {
+    items: Vec<T>,
+    at: std::cell::Cell<i64>,
+}
+
+impl<T: Clone + 'static> DartIterator<T> for VecIterator<T> {
+    fn move_next(&self) -> bool {
+        let next = self.at.get() + 1;
+        self.at.set(next);
+        (next as usize) < self.items.len()
+    }
+    fn current(&self) -> T {
+        self.items[self.at.get() as usize].clone()
+    }
+}
+
+impl<T: Clone + 'static> DartIterable<T> for Vec<T> {
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        std::rc::Rc::new(VecIterator {
+            items: self.clone(),
+            at: std::cell::Cell::new(-1),
+        })
+    }
+}
+
+impl<T: Clone + 'static> DartIterable<T> for Set<T> {
+    fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
+        std::rc::Rc::new(VecIterator {
+            items: self.items.clone(),
+            at: std::cell::Cell::new(-1),
+        })
+    }
+}
+
 /// Dart's `Object`, as the one thing Rust has for "anything": a trait every
 /// type implements. `&dyn Object` then accepts what `Object` accepted.
 /// What every translated function fails with (STATUS, 决定 2026-09-04): a
@@ -356,6 +397,9 @@ macro_rules! dart_nullable {
             fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
                 let object: &dyn Object = value.as_ref();
                 object.as_any().downcast_ref::<Self>().cloned()
+            }
+            fn from_same(value: &Self) -> Option<Self> {
+                Some(value.clone())
             }
         }
     };
@@ -896,6 +940,20 @@ impl<T: Clone> Set<T> {
 }
 
 impl<T: DartEq + Clone> Set<T> {
+    /// `set.removeWhere(test)`: every element the test holds of goes.
+    pub fn remove_where(
+        &mut self,
+        test: std::rc::Rc<dyn Fn(T) -> Result<bool, DartError>>,
+    ) -> Result<(), DartError> {
+        let mut kept: Vec<T> = Vec::new();
+        for e in self.items.drain(..) {
+            if !test(e.clone())? {
+                kept.push(e);
+            }
+        }
+        self.items = kept;
+        Ok(())
+    }
     pub fn of(elements: Vec<T>) -> Set<T> {
         let mut s = Set::new();
         for e in elements {
@@ -1357,6 +1415,55 @@ pub struct Map<K, V> {
 /// What needs no key equality: a `Map<Rc<dyn Fn()>, i64>` -- Dart's
 /// `ObserverList` -- can be made and sized, and only the lookups on it
 /// want the keys comparable (43 holders' constructors at ws298).
+impl<K: DartEq, V> Map<K, V> {
+    /// Entries converted one by one (`cast_to`, `dart_cast_map`): a later
+    /// duplicate of a key replaces the earlier, as `insert` does, without
+    /// asking `Clone` of either type.
+    fn from_converted(pairs: Vec<(K, V)>) -> Self {
+        let mut entries: Vec<(K, V)> = Vec::new();
+        for (k, v) in pairs {
+            if let Some(slot) = entries.iter_mut().find(|(k0, _)| k0.dart_eq(&k)) {
+                slot.1 = v;
+            } else {
+                entries.push((k, v));
+            }
+        }
+        Map { entries }
+    }
+}
+
+impl<T: DartEq> Set<T> {
+    /// Elements converted one by one (`cast_to`, `dart_cast_set`): a later
+    /// duplicate is dropped, as `add` does.
+    fn from_converted(elements: Vec<T>) -> Self {
+        let mut items: Vec<T> = Vec::new();
+        for e in elements {
+            if !items.iter().any(|e0| e0.dart_eq(&e)) {
+                items.push(e);
+            }
+        }
+        Set { items }
+    }
+}
+
+impl<K, V> Map<K, V> {
+    /// A written map literal: its entries as an array *of the spelled
+    /// types*, so that every entry's value is coerced to them where
+    /// `From<impl IntoIterator>` typed the array by its first entry
+    /// alone (`{'a': null, 'b': 2}` into `Map<Object?, Object?>`, ws495).
+    pub fn from_pairs<const N: usize>(entries: [(K, V); N]) -> Self
+    where
+        K: DartEq + Clone,
+        V: Clone,
+    {
+        let mut out = Map::new();
+        for (k, v) in entries {
+            out.insert(k, v);
+        }
+        out
+    }
+}
+
 impl<K: Clone, V: Clone> Map<K, V> {
     /// `Map.of(other)`: a copy with the same entries, in the same order.
     pub fn of(other: Map<K, V>) -> Map<K, V> {
@@ -1722,9 +1829,9 @@ impl<T> DartEq for NativeFunction<T> {
         std::ptr::eq(self, other)
     }
 }
-impl<T: ?Sized> DartEq for WeakReference<T> {
+impl<T: DartEq> DartEq for WeakReference<T> {
     fn dart_eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self, other)
+        self.0.dart_eq(&other.0)
     }
 }
 impl<T> DartEq for Stream<T> {
@@ -1944,13 +2051,53 @@ pub trait DartQueue<T> {
     fn remove_last(&mut self) -> T;
     fn add_first(&mut self, value: T);
     fn add_last(&mut self, value: T);
+    /// `queue.add(x)`: at the end (`Navigator`'s `_observedRouteAdditions`, ws503).
+    fn add(&mut self, value: T);
     /// `queue.addAll(iterable)`: at the end, in order (`_pendingPointerEvents`, run459).
     fn add_all(&mut self, values: Vec<T>);
+    fn is_empty(&self) -> bool;
+    fn is_not_empty(&self) -> bool;
+    fn clear(&mut self);
+}
+
+/// `first`, `last`, `toList()` on a `Queue`: copies, so `T: Clone`.
+pub trait DartQueueRead<T> {
+    fn first(&self) -> T;
+    fn last(&self) -> T;
+    fn to_list(&self) -> Vec<T>;
+}
+
+impl<T: Clone> DartQueueRead<T> for std::collections::VecDeque<T> {
+    fn first(&self) -> T {
+        self.front()
+            .cloned()
+            .unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    }
+    fn last(&self) -> T {
+        self.back()
+            .cloned()
+            .unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    }
+    fn to_list(&self) -> Vec<T> {
+        self.iter().cloned().collect()
+    }
 }
 
 impl<T> DartQueue<T> for std::collections::VecDeque<T> {
     fn length(&self) -> i64 {
         self.len() as i64
+    }
+    fn add(&mut self, value: T) {
+        self.push_back(value)
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn is_not_empty(&self) -> bool {
+        self.len() != 0
+    }
+    fn clear(&mut self) {
+        std::collections::VecDeque::clear(self)
     }
     fn remove_first(&mut self) -> T {
         self.pop_front().expect("removeFirst on an empty Queue")
@@ -2508,13 +2655,13 @@ pub struct JsonUtf8Encoder;
 impl JsonUtf8Encoder {
     /// `encoder.convert(value)`: the JSON text's UTF-8 bytes, as Dart's
     /// `List<int>` (`JSONMessageCodec.encodeMessage`, ws493).
-    pub fn convert<V: 'static>(&self, value: V) -> Vec<i64> {
-        JsonCodec
+    pub fn convert<V: 'static>(&self, value: V) -> Result<Vec<i64>, DartError> {
+        Ok(JsonCodec
             .encode(value, None)
             .into_bytes()
             .into_iter()
             .map(|b| b as i64)
-            .collect()
+            .collect())
     }
 
     /// `JsonUtf8Encoder([indent, toEncodable, bufferSize])`: a name with a
@@ -3399,6 +3546,23 @@ impl NativeAnswer for std::rc::Rc<dyn Object> {
     }
 }
 
+/// A list out of a native (`Paragraph.getBoxesForRange`, a `Float32List`):
+/// the host's list converted (`FromDynamic`), or the empty one.
+impl<T: FromDynamic> NativeAnswer for Vec<T> {
+    fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
+        match dart_cast_list::<T>(&answer) {
+            Some(list) => list,
+            None => panic!(
+                "native `{}` answered {:?} where a list was declared",
+                symbol, answer
+            ),
+        }
+    }
+    fn absent() -> Self {
+        Vec::new()
+    }
+}
+
 impl<T: NativeAnswer> NativeAnswer for Option<T> {
     fn from_answer(answer: std::rc::Rc<dyn Object>, symbol: &str) -> Self {
         dart_nullable(answer).map(|value| T::from_answer(value, symbol))
@@ -3495,37 +3659,33 @@ impl fmt::Debug for Allocator {
 #[derive(Clone, Copy)]
 pub struct Allocator;
 
-/// `dart:core`'s `WeakReference<T>`: a handle that does not keep its
-/// target alive. `std::rc::Weak` is exactly that; the wrapper gives it the
-/// `Clone`/`Debug`/`PartialEq` the structs holding one derive, with equality
-/// by target identity.
-pub struct WeakReference<T: ?Sized>(std::rc::Weak<T>);
+/// `dart:core`'s `WeakReference<T>`, with `T` the Dart type as spelled
+/// here (a handle `Rc<dyn X>`, or a value). Held *strongly*: nothing here
+/// collects, so a reference that never clears is what a weak one is in
+/// this runtime; what is kept is the `WeakReference` surface (`target`)
+/// the translated code reads (the navigator's `_RouteEntry`, ws505).
+#[derive(Clone)]
+pub struct WeakReference<T>(T);
 
-impl<T: ?Sized> WeakReference<T> {
-    pub fn new(target: std::rc::Rc<T>) -> Self {
-        WeakReference(std::rc::Rc::downgrade(&target))
+impl<T: Clone> WeakReference<T> {
+    pub fn new(target: T) -> Self {
+        WeakReference(target)
     }
 
-    pub fn target(&self) -> Option<std::rc::Rc<T>> {
-        self.0.upgrade()
-    }
-}
-
-impl<T: ?Sized> Clone for WeakReference<T> {
-    fn clone(&self) -> Self {
-        WeakReference(self.0.clone())
+    pub fn target(&self) -> Option<T> {
+        Some(self.0.clone())
     }
 }
 
-impl<T: ?Sized> fmt::Debug for WeakReference<T> {
+impl<T> fmt::Debug for WeakReference<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("WeakReference")
     }
 }
 
-impl<T: ?Sized> PartialEq for WeakReference<T> {
+impl<T: DartEq> PartialEq for WeakReference<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0)
+        self.0.dart_eq(&other.0)
     }
 }
 
@@ -3771,6 +3931,47 @@ pub fn dart_null_as<T: DartNullable>() -> T {
 
 /// `List<T?>.filled(n, null)`: `n` nulls of `T?` as translated code spells
 /// it -- `<T as DartNullable>::Or`, one `Option` layer whatever `T` is.
+/// The narrow numbers a typed list holds (`Float32List` is a `Vec<f32>`):
+/// out of a `dynamic` they are the `f64`/`i64` a Dart number is, cast.
+macro_rules! from_dynamic_narrow {
+    ($($t:ty => $wide:ty),* $(,)?) => {
+        $(
+            impl FromDynamic for $t {
+                fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+                    let object: &dyn Object = value.as_ref();
+                    let any = object.as_any();
+                    if let Some(v) = any.downcast_ref::<$t>() {
+                        return Some(*v);
+                    }
+                    any.downcast_ref::<$wide>().map(|v| *v as $t)
+                }
+                fn from_same(value: &Self) -> Option<Self> {
+                    Some(*value)
+                }
+            }
+        )*
+    };
+}
+from_dynamic_narrow!(f32 => f64, i8 => i64, i16 => i64, i32 => i64, u8 => i64, u16 => i64, u32 => i64, u64 => i64, usize => i64, isize => i64);
+
+/// `identical(a, b)` across two handles of one trait at different
+/// instantiations (`Route<T>` against the navigator's `Route<dynamic>`,
+/// ws505): the same object whatever the trait object's type says.
+pub fn dart_identical_any<A: ?Sized, B: ?Sized>(a: &std::rc::Rc<A>, b: &std::rc::Rc<B>) -> bool {
+    std::rc::Rc::as_ptr(a) as *const () == std::rc::Rc::as_ptr(b) as *const ()
+}
+
+/// Dart's `null` where a `dynamic` goes: the `Null` object behind a handle.
+pub fn dart_null_object() -> std::rc::Rc<dyn Object> {
+    std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>
+}
+
+/// `List<Object?>.filled(n, null)`: `n` nulls of a `dynamic`, which holds
+/// its null as the `Null` object (`vec_of_nones` fills an `Option`).
+pub fn vec_of_nulls(n: i64) -> Vec<std::rc::Rc<dyn Object>> {
+    (0..n).map(|_| dart_null_object()).collect()
+}
+
 pub fn vec_of_nones<T: DartNullable>(n: i64) -> Vec<<T as DartNullable>::Or> {
     (0..n.max(0)).map(|_| T::from_option(None)).collect()
 }
@@ -4273,8 +4474,8 @@ pub fn _get_callback_handle(_callback: std::rc::Rc<dyn Object>) -> Option<i64> {
     None
 }
 
-pub fn _get_callback_from_handle(_handle: i64) -> Option<std::rc::Rc<dyn Object>> {
-    None
+pub fn _get_callback_from_handle(_handle: i64) -> std::rc::Rc<dyn Object> {
+    dart_null_object()
 }
 
 /// A value in a string interpolation, when it is not a string or a number:
@@ -4698,11 +4899,11 @@ impl<T: 'static> DartFuture<T> {
     /// the catch site has; the value goes on unchanged.
     pub fn catch_error(
         &self,
-        on_error: std::rc::Rc<dyn Fn(DartError, StackTrace) -> Result<T, DartError>>,
+        on_error: std::rc::Rc<dyn Object>,
         test: Option<std::rc::Rc<dyn Fn(DartError) -> Result<bool, DartError>>>,
     ) -> DartFuture<T>
     where
-        T: Clone + 'static,
+        T: Clone + FromDynamic + 'static,
     {
         let me = self.clone();
         DartFuture::spawn_named(
@@ -4715,10 +4916,16 @@ impl<T: 'static> DartFuture<T> {
                             Some(test) => test(error.clone())?,
                             None => true,
                         };
-                        if admitted {
-                            on_error(error, StackTrace::current())
-                        } else {
-                            Err(error)
+                        if !admitted {
+                            return Err(error);
+                        }
+                        match dart_call_error_handler::<T>(on_error, error)? {
+                            FutureOr::Value(Some(value)) => Ok(value),
+                            FutureOr::Value(None) => Err(std::rc::Rc::new(StateError::new(
+                                "a FutureOr held no value".to_string(),
+                            ))
+                                as DartError),
+                            FutureOr::Future(future) => future.await,
                         }
                     }
                 }
@@ -4732,10 +4939,10 @@ impl<T: 'static> DartFuture<T> {
     /// and a translated one returns that or an `R` outright
     /// (`IntoFutureOr`); a future it returns is awaited, as Dart chains
     /// it. The backend spells `R` at the call.
-    pub fn then<R: Clone + 'static, X: IntoFutureOr<R> + 'static>(
+    pub fn then<R: Clone + FromDynamic + 'static, X: IntoFutureOr<R> + 'static>(
         &self,
         on_value: std::rc::Rc<dyn Fn(T) -> Result<X, DartError>>,
-        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<X, DartError>>>,
+        on_error: Option<std::rc::Rc<dyn Object>>,
     ) -> DartFuture<R>
     where
         T: Clone + 'static,
@@ -4744,14 +4951,14 @@ impl<T: 'static> DartFuture<T> {
         DartFuture::spawn_named(
             "then",
             Box::pin(async move {
-                let produced = match me.await {
-                    Ok(value) => on_value(value),
+                let produced: Result<FutureOr<R>, DartError> = match me.await {
+                    Ok(value) => on_value(value).map(|x| x.into_future_or()),
                     Err(error) => match on_error {
-                        Some(handler) => handler(error),
+                        Some(handler) => dart_call_error_handler::<R>(handler, error),
                         None => Err(error),
                     },
                 };
-                match produced?.into_future_or() {
+                match produced? {
                     FutureOr::Value(value) => match value {
                         Some(v) => Ok(v),
                         None => Err(std::rc::Rc::new(StateError::new(
@@ -4886,6 +5093,7 @@ pub fn future_wait<T: Clone + 'static>(futures: Vec<DartFuture<T>>) -> DartFutur
 }
 
 /// Dart's `FutureOr<T>`: a `T`, or a `Future<T>`; awaitable either way.
+#[derive(Clone)]
 pub enum FutureOr<T> {
     Value(Option<T>),
     Future(DartFuture<T>),
@@ -5583,15 +5791,27 @@ pub fn uint8_list_view(buffer: Vec<u8>, offset: i64, length: Option<i64>) -> Vec
     buffer[start..end].to_vec()
 }
 
-/// `TypedData.buffer` on a list of ints: the bytes, one per element, which
-/// is what a `Uint8List` behind a `List<int>` holds.
+/// `TypedData.buffer` and its sizes on a typed list, which is a `Vec` of
+/// its element here: the bytes of the elements, little-endian, as the
+/// platform's are (`WriteBuffer.putFloat64List`, run505). A `List<int>`
+/// behind a `Uint8List` holds one byte per element.
 pub trait DartTypedList {
     fn buffer(&self) -> Vec<u8>;
+    fn element_size_in_bytes(&self) -> i64;
+    fn offset_in_bytes(&self) -> i64 {
+        0
+    }
+    fn length_in_bytes(&self) -> i64 {
+        self.buffer().len() as i64
+    }
 }
 
 impl DartTypedList for Vec<i64> {
     fn buffer(&self) -> Vec<u8> {
         self.iter().map(|v| *v as u8).collect()
+    }
+    fn element_size_in_bytes(&self) -> i64 {
+        1
     }
 }
 
@@ -5599,7 +5819,26 @@ impl DartTypedList for Vec<u8> {
     fn buffer(&self) -> Vec<u8> {
         self.clone()
     }
+    fn element_size_in_bytes(&self) -> i64 {
+        1
+    }
 }
+
+macro_rules! dart_typed_list {
+    ($($t:ty => $width:expr),* $(,)?) => {
+        $(
+            impl DartTypedList for Vec<$t> {
+                fn buffer(&self) -> Vec<u8> {
+                    self.iter().flat_map(|v| v.to_le_bytes()).collect()
+                }
+                fn element_size_in_bytes(&self) -> i64 {
+                    $width
+                }
+            }
+        )*
+    };
+}
+dart_typed_list!(i8 => 1, i16 => 2, u16 => 2, i32 => 4, u32 => 4, u64 => 8, f32 => 4, f64 => 8);
 
 /// `ByteBuffer.asUint8List(offset, length)` and its siblings on the bytes
 /// a buffer is here: windows copied out, in the element width asked for.
@@ -5610,6 +5849,11 @@ pub trait DartByteBuffer {
     fn as_int32_list(&self, offset: i64, length: Option<i64>) -> Vec<i32>;
     fn as_float32_list(&self, offset: i64, length: Option<i64>) -> Vec<f32>;
     fn as_float64_list(&self, offset: i64, length: Option<i64>) -> Vec<f64>;
+    fn as_int64_list(&self, offset: i64, length: Option<i64>) -> Vec<i64>;
+    fn as_uint64_list(&self, offset: i64, length: Option<i64>) -> Vec<u64>;
+    fn as_int16_list(&self, offset: i64, length: Option<i64>) -> Vec<i16>;
+    fn as_uint16_list(&self, offset: i64, length: Option<i64>) -> Vec<u16>;
+    fn as_uint32_list(&self, offset: i64, length: Option<i64>) -> Vec<u32>;
 }
 
 fn byte_window(bytes: &[u8], offset: i64, length: Option<i64>, width: usize) -> &[u8] {
@@ -5659,6 +5903,36 @@ impl DartByteBuffer for Vec<u8> {
             .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
             .collect()
     }
+    fn as_int64_list(&self, offset: i64, length: Option<i64>) -> Vec<i64> {
+        byte_window(self, offset, length, 8)
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .collect()
+    }
+    fn as_uint64_list(&self, offset: i64, length: Option<i64>) -> Vec<u64> {
+        byte_window(self, offset, length, 8)
+            .chunks_exact(8)
+            .map(|c| u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .collect()
+    }
+    fn as_int16_list(&self, offset: i64, length: Option<i64>) -> Vec<i16> {
+        byte_window(self, offset, length, 2)
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect()
+    }
+    fn as_uint16_list(&self, offset: i64, length: Option<i64>) -> Vec<u16> {
+        byte_window(self, offset, length, 2)
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect()
+    }
+    fn as_uint32_list(&self, offset: i64, length: Option<i64>) -> Vec<u32> {
+        byte_window(self, offset, length, 4)
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
 }
 
 /// `utf8.decoder`.
@@ -5667,18 +5941,23 @@ pub struct Utf8Decoder;
 
 impl Utf8Decoder {
     /// `convert(codeUnits, [start, end])`.
-    pub fn convert(&self, code_units: Vec<i64>, start: i64, end: Option<i64>) -> String {
+    pub fn convert(
+        &self,
+        code_units: Vec<i64>,
+        start: i64,
+        end: Option<i64>,
+    ) -> Result<String, DartError> {
         let s = (start.max(0) as usize).min(code_units.len());
         let e = end
             .map(|n| (n.max(0) as usize).min(code_units.len()))
             .unwrap_or(code_units.len());
-        Utf8Codec.decode(code_units[s..e].to_vec(), Some(true))
+        Ok(Utf8Codec.decode(code_units[s..e].to_vec(), Some(true)))
     }
 
     /// `utf8.decoder.fuse(other)`: the two conversions in a row.
     pub fn fuse<U: 'static>(&self, next: Converter<String, U>) -> Converter<Vec<i64>, U> {
         Converter::new(std::rc::Rc::new(move |bytes: Vec<i64>| {
-            next.convert(Utf8Decoder.convert(bytes, 0, None))
+            next.convert(Utf8Decoder.convert(bytes, 0, None)?)
         }))
     }
 }
@@ -5875,23 +6154,19 @@ impl JsonCodec {
         parser.revive(None, value)
     }
 
-    /// `json.decoder`: a `Converter<String, Object?>`.
-    pub fn decoder(&self) -> Converter<String, Option<std::rc::Rc<dyn Object>>> {
+    /// `json.decoder`: a `Converter<String, Object?>` -- and `Object?` is a
+    /// `dynamic` here, whose null is the `Null` object.
+    pub fn decoder(&self) -> Converter<String, std::rc::Rc<dyn Object>> {
         Converter::new(std::rc::Rc::new(|source: String| {
-            Ok(Some(JsonCodec.decode(source, None)))
+            Ok(JsonCodec.decode(source, None))
         }))
     }
 
     /// `json.encoder`: a `Converter<Object?, String>`.
-    pub fn encoder(&self) -> Converter<Option<std::rc::Rc<dyn Object>>, String> {
-        Converter::new(std::rc::Rc::new(
-            |value: Option<std::rc::Rc<dyn Object>>| {
-                Ok(JsonCodec.encode(
-                    value.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>),
-                    None,
-                ))
-            },
-        ))
+    pub fn encoder(&self) -> Converter<std::rc::Rc<dyn Object>, String> {
+        Converter::new(std::rc::Rc::new(|value: std::rc::Rc<dyn Object>| {
+            Ok(JsonCodec.encode(value, None))
+        }))
     }
 }
 
@@ -6165,6 +6440,16 @@ impl<'a> JsonParser<'a> {
 pub trait FromDynamic: Sized + 'static {
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self>;
 
+    /// A value of this very type again, from a reference to one: a clone
+    /// where the type has one. A collection's exact-typed elements come out
+    /// this way, and so ask no `Clone` of the element type in the bound --
+    /// a declaration's parameters carry none (`Equality<Iterable<E>>`,
+    /// ws495); a type without one (a boxed future) has no value to give.
+    fn from_same(value: &Self) -> Option<Self> {
+        let _ = value;
+        None
+    }
+
     fn from_nullable(value: &Option<std::rc::Rc<dyn Object>>) -> Option<Self> {
         match value {
             Some(v) => Self::from_dynamic(v),
@@ -6184,11 +6469,17 @@ impl<T: ?Sized + 'static> FromDynamic for std::rc::Rc<T> {
             Err(_) => value.dart_cast_to::<T>(),
         }
     }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
 }
 
 /// `void`: whatever the value, nothing is kept of it.
 impl FromDynamic for () {
     fn from_dynamic(_value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        Some(())
+    }
+    fn from_same(_value: &Self) -> Option<Self> {
         Some(())
     }
 }
@@ -6229,29 +6520,26 @@ impl<F: ?Sized + 'static> FromDynamic for std::pin::Pin<Box<F>> {
 }
 
 /// `x as Set<T>` on an object: see `dart_cast_list`.
-pub fn dart_cast_set<T: FromDynamic + Clone + DartEq>(
-    value: &std::rc::Rc<dyn Object>,
-) -> Option<Set<T>> {
+pub fn dart_cast_set<T: FromDynamic + DartEq>(value: &std::rc::Rc<dyn Object>) -> Option<Set<T>> {
     let object: &dyn Object = value.as_ref();
     let any = object.as_any();
     if let Some(set) = any.downcast_ref::<Set<T>>() {
-        return Some(set.clone());
+        let items: Option<Vec<T>> = set.items.iter().map(T::from_same).collect();
+        return items.map(|items| Set { items });
     }
-    fn convert<T1: Clone + 'static, T: FromDynamic + Clone + DartEq>(
+    fn convert<T1: Clone + 'static, T: FromDynamic + DartEq>(
         any: &dyn std::any::Any,
         element: fn(&T1) -> Option<T>,
     ) -> Option<Option<Set<T>>> {
         let set = any.downcast_ref::<Set<T1>>()?;
-        let mut out: Set<T> = Set::new();
-        for e in set.iter() {
+        let mut out: Vec<T> = Vec::new();
+        for e in set.items.iter() {
             match element(e) {
-                Some(t) => {
-                    out.add(t);
-                }
+                Some(t) => out.push(t),
                 None => return Some(None),
             }
         }
-        Some(Some(out))
+        Some(Some(Set::from_converted(out)))
     }
     if let Some(r) = convert::<std::rc::Rc<dyn Object>, T>(any, T::from_dynamic) {
         return r;
@@ -6262,7 +6550,11 @@ pub fn dart_cast_set<T: FromDynamic + Clone + DartEq>(
     None
 }
 
-impl<T: FromDynamic + Clone + DartEq> FromDynamic for Set<T> {
+impl<T: FromDynamic + DartEq> FromDynamic for Set<T> {
+    fn from_same(value: &Self) -> Option<Self> {
+        let items: Option<Vec<T>> = value.items.iter().map(T::from_same).collect();
+        items.map(|items| Set { items })
+    }
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_set::<T>(value)
     }
@@ -6277,6 +6569,12 @@ impl<T: FromDynamic> FromDynamic for Option<T> {
             return Some(None);
         }
         T::from_dynamic(value).map(Some)
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        match value {
+            None => Some(None),
+            Some(v) => T::from_same(v).map(Some),
+        }
     }
 }
 
@@ -6323,7 +6621,8 @@ impl CastErased<()> for Option<std::rc::Rc<dyn Object>> {
     fn cast_erased(self) {}
 }
 
-impl<A: Clone + 'static, B: Clone + 'static> CastErased<DartFuture<B>> for DartFuture<A>
+impl<A: Clone + 'static, B: Clone + 'static + FromDynamic> CastErased<DartFuture<B>>
+    for DartFuture<A>
 where
     A: CastErased<B>,
 {
@@ -6332,17 +6631,140 @@ where
     }
 }
 
+/// Dart's bare `Function` -- a value with no signature, called dynamically:
+/// its arguments arrive as objects and its result leaves as one, converted
+/// at both ends by the type rules (`coerce` builds the adapters, so a
+/// `void Function(int)` stored as a `Function` reads its `int` out of the
+/// object and hands back the `Null` object). Spelled as the object it is
+/// (`Rc<dyn Object>`); made by `dart_function_object`, called by
+/// `dart_call_function`, and taken back into a typed function slot by an
+/// adapter the other way. `then(onError: Function?)` forwarded from a
+/// translated `Future` (`TickerFuture.then`, ws513).
+pub type DartFunctionCall =
+    dyn Fn(Vec<std::rc::Rc<dyn Object>>) -> Result<std::rc::Rc<dyn Object>, DartError>;
+
+pub struct DartFunction {
+    pub arity: usize,
+    pub call: std::rc::Rc<DartFunctionCall>,
+}
+
+impl Clone for DartFunction {
+    fn clone(&self) -> Self {
+        DartFunction {
+            arity: self.arity,
+            call: self.call.clone(),
+        }
+    }
+}
+
+impl DartAny for DartFunction {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Function")
+    }
+}
+
+pub fn dart_function_object(
+    arity: usize,
+    call: std::rc::Rc<DartFunctionCall>,
+) -> std::rc::Rc<dyn Object> {
+    dart_object(DartFunction { arity, call }) as std::rc::Rc<dyn Object>
+}
+
+fn dart_function_of(object: &std::rc::Rc<dyn Object>) -> &DartFunction {
+    let any: &dyn Object = object.as_ref();
+    match any.as_any().downcast_ref::<DartFunction>() {
+        Some(function) => function,
+        None => panic!(
+            "dart2rust: a {} called as a function",
+            object.runtime_type().name
+        ),
+    }
+}
+
+/// How many positional arguments the function takes.
+pub fn dart_function_arity(object: &std::rc::Rc<dyn Object>) -> usize {
+    dart_function_of(object).arity
+}
+
+/// Dart's dynamic call on a `Function`: an error on the wrong number of
+/// arguments, as Dart's `NoSuchMethodError` is.
+pub fn dart_call_function(
+    object: std::rc::Rc<dyn Object>,
+    args: Vec<std::rc::Rc<dyn Object>>,
+) -> Result<std::rc::Rc<dyn Object>, DartError> {
+    let function = dart_function_of(&object);
+    if function.arity != args.len() {
+        return Err(std::rc::Rc::new(StateError::new(format!(
+            "a function of {} argument(s) called with {}",
+            function.arity,
+            args.len()
+        ))) as DartError);
+    }
+    (function.call)(args)
+}
+
+/// What a dynamically called callback handed back, as the `FutureOr<R>` a
+/// `then` wants: the `FutureOr` or `Future` it is, else the `R` value.
+pub fn dart_future_or_from_dynamic<R: FromDynamic + Clone + 'static>(
+    value: std::rc::Rc<dyn Object>,
+) -> Result<FutureOr<R>, DartError> {
+    let object: &dyn Object = value.as_ref();
+    if let Some(future_or) = object.as_any().downcast_ref::<FutureOr<R>>() {
+        return Ok(future_or.clone());
+    }
+    if let Some(future) = object.as_any().downcast_ref::<DartFuture<R>>() {
+        return Ok(FutureOr::Future(future.clone()));
+    }
+    match R::from_dynamic(&value) {
+        Some(r) => Ok(FutureOr::Value(Some(r))),
+        None => Err(std::rc::Rc::new(StateError::new(format!(
+            "a {} where a `{}` was wanted",
+            value.runtime_type().name,
+            std::any::type_name::<R>()
+        ))) as DartError),
+    }
+}
+
+/// `Future.then`'s and `catchError`'s `onError`, a `Function` of one
+/// argument (the error) or two (the error and its stack trace), as Dart
+/// dispatches it.
+pub fn dart_call_error_handler<R: FromDynamic + Clone + 'static>(
+    handler: std::rc::Rc<dyn Object>,
+    error: DartError,
+) -> Result<FutureOr<R>, DartError> {
+    let args: Vec<std::rc::Rc<dyn Object>> = if dart_function_arity(&handler) >= 2 {
+        vec![
+            error,
+            std::rc::Rc::new(StackTrace::current()) as std::rc::Rc<dyn Object>,
+        ]
+    } else {
+        vec![error]
+    };
+    dart_future_or_from_dynamic::<R>(dart_call_function(handler, args)?)
+}
+
 pub fn dart_cast_erased<To, From: CastErased<To>>(value: From) -> To {
     value.cast_erased()
 }
 
-impl<T: FromDynamic + Clone> FromDynamic for Vec<T> {
+impl<T: FromDynamic> FromDynamic for Vec<T> {
+    fn from_same(value: &Self) -> Option<Self> {
+        value.iter().map(T::from_same).collect()
+    }
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_list::<T>(value)
     }
 }
 
-impl<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone> FromDynamic for Map<K, V> {
+impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
+    fn from_same(value: &Self) -> Option<Self> {
+        let entries: Option<Vec<(K, V)>> = value
+            .entries
+            .iter()
+            .map(|(k, v)| Some((K::from_same(k)?, V::from_same(v)?)))
+            .collect();
+        entries.map(|entries| Map { entries })
+    }
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_map::<K, V>(value)
     }
@@ -6352,30 +6774,40 @@ impl<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone> FromDynamic for Ma
 /// converted (`FromDynamic`), which is the representation change Dart's
 /// `cast` does not need and this one does.
 impl<K: Clone + 'static, V: Clone + 'static> Map<K, V> {
-    pub fn cast_to<K2: FromDynamic + Clone + DartEq, V2: FromDynamic + Clone>(
-        &self,
-    ) -> Map<K2, V2> {
-        let mut out: Map<K2, V2> = Map::new();
+    pub fn cast_to<K2: FromDynamic + DartEq, V2: FromDynamic>(&self) -> Map<K2, V2> {
+        let mut out: Vec<(K2, V2)> = Vec::new();
         for (k, v) in self.entries.iter() {
             let key: std::rc::Rc<dyn Object> = std::rc::Rc::new(k.clone());
             let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
             match (K2::from_dynamic(&key), V2::from_dynamic(&value)) {
-                (Some(k2), Some(v2)) => {
-                    out.insert(k2, v2);
-                }
+                (Some(k2), Some(v2)) => out.push((k2, v2)),
                 _ => erased_cast_failed(&value),
             }
         }
-        out
+        Map::from_converted(out)
+    }
+}
+
+impl<T: Clone + 'static> Set<T> {
+    pub fn cast_to<T2: FromDynamic + DartEq>(&self) -> Set<T2> {
+        let mut out: Vec<T2> = Vec::new();
+        for v in self.iter() {
+            let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
+            match T2::from_dynamic(&value) {
+                Some(t) => out.push(t),
+                None => erased_cast_failed(&value),
+            }
+        }
+        Set::from_converted(out)
     }
 }
 
 pub trait DartListCast {
-    fn cast_to<T2: FromDynamic + Clone>(&self) -> Vec<T2>;
+    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2>;
 }
 
 impl<T: Clone + 'static> DartListCast for Vec<T> {
-    fn cast_to<T2: FromDynamic + Clone>(&self) -> Vec<T2> {
+    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2> {
         self.iter()
             .map(|v| {
                 let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
@@ -6435,13 +6867,13 @@ pub fn byte_data_sublist_view<T: AsDartBytes>(data: T, start: i64, end: Option<i
 
 /// `x as List<T>` on an object: the list as it is when it is one of `T`,
 /// else each element of a `List<dynamic>` / `List<Object?>` converted.
-pub fn dart_cast_list<T: FromDynamic + Clone>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {
+pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {
     // The object's `Any`, not the handle's: `Rc<dyn Object>` is `'static`
     // and so an `Object` itself under the blanket impl.
     let object: &dyn Object = value.as_ref();
     let any = object.as_any();
     if let Some(list) = any.downcast_ref::<Vec<T>>() {
-        return Some(list.clone());
+        return list.iter().map(T::from_same).collect();
     }
     if let Some(list) = any.downcast_ref::<Vec<std::rc::Rc<dyn Object>>>() {
         return list.iter().map(T::from_dynamic).collect();
@@ -6453,35 +6885,38 @@ pub fn dart_cast_list<T: FromDynamic + Clone>(value: &std::rc::Rc<dyn Object>) -
 }
 
 /// `x as Map<K, V>` on an object: see `dart_cast_list`.
-pub fn dart_cast_map<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone>(
+pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(
     value: &std::rc::Rc<dyn Object>,
 ) -> Option<Map<K, V>> {
     let object: &dyn Object = value.as_ref();
     let any = object.as_any();
     if let Some(map) = any.downcast_ref::<Map<K, V>>() {
-        return Some(map.clone());
+        let entries: Option<Vec<(K, V)>> = map
+            .entries
+            .iter()
+            .map(|(k, v)| Some((K::from_same(k)?, V::from_same(v)?)))
+            .collect();
+        return entries.map(|entries| Map { entries });
     }
     fn convert<
         K1: Clone + 'static,
         V1: Clone + 'static,
-        K: FromDynamic + Clone + DartEq,
-        V: FromDynamic + Clone,
+        K: FromDynamic + DartEq,
+        V: FromDynamic,
     >(
         any: &dyn std::any::Any,
         key: fn(&K1) -> Option<K>,
         value: fn(&V1) -> Option<V>,
     ) -> Option<Option<Map<K, V>>> {
         let map = any.downcast_ref::<Map<K1, V1>>()?;
-        let mut out: Map<K, V> = Map::new();
+        let mut out: Vec<(K, V)> = Vec::new();
         for (k, v) in map.entries.iter() {
             match (key(k), value(v)) {
-                (Some(k), Some(v)) => {
-                    out.insert(k, v);
-                }
+                (Some(k), Some(v)) => out.push((k, v)),
                 _ => return Some(None),
             }
         }
-        Some(Some(out))
+        Some(Some(Map::from_converted(out)))
     }
     if let Some(r) = convert::<String, std::rc::Rc<dyn Object>, K, V>(
         any,
@@ -6521,61 +6956,170 @@ pub fn dart_cast_map<K: FromDynamic + Clone + DartEq, V: FromDynamic + Clone>(
     None
 }
 
-fn json_write(out: &mut String, value: &std::rc::Rc<dyn Object>) {
-    let any = value.as_any();
-    if let Some(s) = any.downcast_ref::<String>() {
-        out.push('"');
-        for c in s.chars() {
-            match c {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-                c => out.push(c),
-            }
+/// What a JSON value is written from: the scalars, `null`, a list, a map
+/// with string keys (Dart's encoder takes `Map<String, dynamic>`; a
+/// `dynamic` key that is a string passes too), and a `dynamic`, which is
+/// asked what it holds (`json_write`).
+pub trait JsonPiece {
+    fn json_write(&self, out: &mut String);
+}
+
+fn json_write_string(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
         }
-        out.push('"');
-    } else if let Some(i) = any.downcast_ref::<i64>() {
-        out.push_str(&i.to_string());
-    } else if let Some(d) = any.downcast_ref::<f64>() {
-        out.push_str(&d.to_string());
-    } else if let Some(b) = any.downcast_ref::<bool>() {
-        out.push_str(if *b { "true" } else { "false" });
-    } else if any.downcast_ref::<Null>().is_some() {
-        out.push_str("null");
-    } else if let Some(map) = any.downcast_ref::<Map<String, std::rc::Rc<dyn Object>>>() {
+    }
+    out.push('"');
+}
+
+impl JsonPiece for String {
+    fn json_write(&self, out: &mut String) {
+        json_write_string(out, self)
+    }
+}
+impl JsonPiece for i64 {
+    fn json_write(&self, out: &mut String) {
+        out.push_str(&self.to_string())
+    }
+}
+impl JsonPiece for f64 {
+    fn json_write(&self, out: &mut String) {
+        out.push_str(&self.to_string())
+    }
+}
+impl JsonPiece for bool {
+    fn json_write(&self, out: &mut String) {
+        out.push_str(if *self { "true" } else { "false" })
+    }
+}
+impl JsonPiece for Null {
+    fn json_write(&self, out: &mut String) {
+        out.push_str("null")
+    }
+}
+impl JsonPiece for () {
+    fn json_write(&self, out: &mut String) {
+        out.push_str("null")
+    }
+}
+impl<T: JsonPiece> JsonPiece for Option<T> {
+    fn json_write(&self, out: &mut String) {
+        match self {
+            Some(v) => v.json_write(out),
+            None => out.push_str("null"),
+        }
+    }
+}
+impl<T: JsonPiece> JsonPiece for Vec<T> {
+    fn json_write(&self, out: &mut String) {
+        out.push('[');
+        for (i, v) in self.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            v.json_write(out);
+        }
+        out.push(']');
+    }
+}
+impl<K: JsonKey, V: JsonPiece> JsonPiece for Map<K, V> {
+    fn json_write(&self, out: &mut String) {
         out.push('{');
         let mut first = true;
-        for entry in map.entries() {
+        for (k, v) in self.entries.iter() {
             if !first {
                 out.push(',');
             }
             first = false;
-            json_write(
-                out,
-                &(std::rc::Rc::new(entry.key.clone()) as std::rc::Rc<dyn Object>),
-            );
+            json_write_string(out, &k.json_key());
             out.push(':');
-            json_write(out, &entry.value);
+            v.json_write(out);
         }
         out.push('}');
-    } else if let Some(list) = any.downcast_ref::<Vec<std::rc::Rc<dyn Object>>>() {
-        out.push('[');
-        for (i, v) in list.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            json_write(out, v);
-        }
-        out.push(']');
-    } else {
-        panic!(
-            "dart2rust: JsonCodec.encode of a {}",
-            value.runtime_type().name
-        );
     }
+}
+impl JsonPiece for std::rc::Rc<dyn Object> {
+    fn json_write(&self, out: &mut String) {
+        json_write(out, self)
+    }
+}
+
+/// A map's key as JSON's string: a `String`, or a `dynamic` holding one
+/// (Dart's encoder refuses any other key).
+pub trait JsonKey {
+    fn json_key(&self) -> String;
+}
+impl JsonKey for String {
+    fn json_key(&self) -> String {
+        self.clone()
+    }
+}
+impl JsonKey for std::rc::Rc<dyn Object> {
+    fn json_key(&self) -> String {
+        match self.as_any().downcast_ref::<String>() {
+            Some(s) => s.clone(),
+            None => panic!(
+                "uncaught Dart exception: JsonUnsupportedObjectError: a map key of type '{}'",
+                self.runtime_type().name
+            ),
+        }
+    }
+}
+impl<K: JsonKey> JsonKey for Option<K> {
+    fn json_key(&self) -> String {
+        match self {
+            Some(k) => k.json_key(),
+            None => panic!("uncaught Dart exception: JsonUnsupportedObjectError: a null map key"),
+        }
+    }
+}
+
+/// A `dynamic` written as JSON: asked, by type, for each shape a value
+/// can be boxed as -- the scalars, `null`, and the lists and maps of
+/// those and of `dynamic`, two levels deep. The table, not a rule: a
+/// boxed `Vec<String>` is its own type behind the handle, and nothing
+/// but a list of shapes can find it (`JSONMethodCodec.encodeMethodCall`'s
+/// `<String, Object?>{'method': .., 'args': ..}`, run496).
+macro_rules! json_dynamic_shapes {
+    ($out:ident, $any:ident; $($t:ty),* $(,)?) => {
+        $(
+            if let Some(v) = $any.downcast_ref::<$t>() {
+                v.json_write($out);
+                return;
+            }
+        )*
+    };
+}
+
+macro_rules! json_dynamic_containers {
+    ($out:ident, $any:ident; $($e:ty),* $(,)?) => {
+        $(
+            json_dynamic_shapes!($out, $any; Vec<$e>, Map<String, $e>, Map<std::rc::Rc<dyn Object>, $e>, Map<Option<std::rc::Rc<dyn Object>>, $e>);
+        )*
+    };
+}
+
+fn json_write(out: &mut String, value: &std::rc::Rc<dyn Object>) {
+    let any = value.as_any();
+    json_dynamic_shapes!(out, any; String, i64, f64, bool, Null, (), Option<std::rc::Rc<dyn Object>>, Option<String>, Option<i64>, Option<f64>, Option<bool>);
+    json_dynamic_containers!(out, any; std::rc::Rc<dyn Object>, Option<std::rc::Rc<dyn Object>>, String, Option<String>, i64, Option<i64>, f64, Option<f64>, bool, Option<bool>);
+    json_dynamic_containers!(out, any;
+        Vec<std::rc::Rc<dyn Object>>, Vec<Option<std::rc::Rc<dyn Object>>>, Vec<String>, Vec<i64>, Vec<f64>, Vec<bool>,
+        Map<String, std::rc::Rc<dyn Object>>, Map<String, Option<std::rc::Rc<dyn Object>>>, Map<String, String>, Map<String, i64>, Map<String, f64>, Map<String, bool>,
+        Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>, Map<std::rc::Rc<dyn Object>, Option<std::rc::Rc<dyn Object>>>,
+        Map<Option<std::rc::Rc<dyn Object>>, Option<std::rc::Rc<dyn Object>>>);
+    panic!(
+        "dart2rust: JsonCodec.encode of a {}",
+        value.runtime_type().name
+    );
 }
 
 /// `dart:convert`'s `utf8`, a `const Utf8Codec()`: a name for now.
@@ -6759,15 +7303,24 @@ impl fmt::Display for FormatException {
 /// read as one (`AssertionError(message: final Object? msg)` in
 /// `BindingBase._initListenable`, run451); `new` takes the text the
 /// backend's own asserts spell.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AssertionError {
-    pub message: Option<std::rc::Rc<dyn Object>>,
+    /// Dart's `Object?`: a `dynamic` here, whose null is the `Null` object.
+    pub message: std::rc::Rc<dyn Object>,
+}
+
+impl Default for AssertionError {
+    fn default() -> Self {
+        AssertionError {
+            message: dart_null_object(),
+        }
+    }
 }
 
 impl AssertionError {
     pub fn new(message: String) -> Self {
         AssertionError {
-            message: Some(std::rc::Rc::new(message) as std::rc::Rc<dyn Object>),
+            message: std::rc::Rc::new(message) as std::rc::Rc<dyn Object>,
         }
     }
 }
@@ -6780,9 +7333,9 @@ impl PartialEq for AssertionError {
 
 impl fmt::Display for AssertionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.message {
+        match dart_nullable(self.message.clone()) {
             None => f.write_str("Assertion failed"),
-            Some(m) => write!(f, "Assertion failed: {}", dart_message(m)),
+            Some(m) => write!(f, "Assertion failed: {}", dart_message(&m)),
         }
     }
 }
@@ -7109,6 +7662,20 @@ impl ByteData {
 
     pub fn get_uint16(&self, at: i64, _endian: Endian) -> i64 {
         u16::from_le_bytes(self.four(at, 2)[..2].try_into().unwrap()) as i64
+    }
+    pub fn set_uint16(&mut self, at: i64, value: i64, _endian: Endian) {
+        let bytes = (value as u16).to_le_bytes();
+        let at = at as usize;
+        self.bytes[at..at + 2].copy_from_slice(&bytes);
+    }
+    pub fn get_int16(&self, at: i64, _endian: Endian) -> i64 {
+        let at = at as usize;
+        i16::from_le_bytes([self.bytes[at], self.bytes[at + 1]]) as i64
+    }
+    pub fn set_int16(&mut self, at: i64, value: i64, _endian: Endian) {
+        let bytes = (value as i16).to_le_bytes();
+        let at = at as usize;
+        self.bytes[at..at + 2].copy_from_slice(&bytes);
     }
 
     pub fn get_int32(&self, at: i64, _endian: Endian) -> i64 {

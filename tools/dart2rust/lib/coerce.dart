@@ -363,7 +363,11 @@ IrExpr coerceInto(
       have.name == 'Object' ||
       have.name == 'dynamic' ||
       (have.name == 'Function' && !have.isFunction);
-  final slotObject = slot.name == 'Object' || slot.name == 'dynamic';
+  // ..and a bare `Function` slot is spelled as the object too.
+  final slotObject =
+      slot.name == 'Object' ||
+      slot.name == 'dynamic' ||
+      (slot.name == 'Function' && !slot.isFunction);
   if (scalarNames.contains(have.name) && !slotObject) return value;
   if (scalarNames.contains(slot.name) && !haveObject) return value;
   // Into `Object`: a handle unsizes, a value goes behind a fresh,
@@ -372,6 +376,14 @@ IrExpr coerceInto(
     if (haveObject) return value;
     if (have.name == 'Null') {
       return IrStaticCall(null, 'dart_null_object', const [])..rustType = slot;
+    }
+    // A typed function value into a bare `Function`: the prelude's
+    // function object, called dynamically -- an adapter taking its
+    // arguments as objects, each coerced into the function's own type, and
+    // handing its result back as one. The function itself is bound first
+    // and moved in, so the adapter borrows nothing.
+    if (have.isFunction) {
+      return _dynamicFunction(value, have, world)..rustType = slot;
     }
     return IrUpcast(
       value,
@@ -446,6 +458,12 @@ IrExpr coerceInto(
       '!rc',
       const [],
     )..rustType = slot;
+  }
+  // A bare `Function` (the object a function value went behind) into a
+  // typed function slot: a closure of the slot's type calling it
+  // dynamically, each argument as an object, the result coerced back.
+  if (slot.isFunction && haveObject) {
+    return _typedFunction(value, slot, world)..rustType = slot;
   }
   if (have.isFunction || slot.isFunction) return value;
   // Collections, element by element.
@@ -536,4 +554,108 @@ IrExpr coerceInto(
     return out..rustType = slot;
   }
   return value;
+}
+
+const _dynamicType = IrType('dynamic');
+
+/// A typed function value behind the prelude's `DartFunction` (see
+/// `dart_function_object`): `(args: Vec<Rc<dyn Object>>) -> Rc<dyn Object>`.
+IrExpr _dynamicFunction(IrExpr value, IrType have, TypeWorld world) {
+  final hp = have.parameters!;
+  final argsList = IrLocal('__args')
+    ..rustType = IrType('List', arguments: const [_dynamicType]);
+  final args = <IrExpr>[
+    for (var i = 0; i < hp.length; i++)
+      coerceInto(
+        IrIndex(argsList, IrLiteral('$i', const IrType('int')))
+          ..rustType = _dynamicType,
+        hp[i],
+        world,
+        inClosure: true,
+      ),
+  ];
+  final params = [IrParam('__args', argsList.rustType!)];
+  final arity = IrLiteral('${hp.length}', const IrType('raw'));
+  // A closure literal is called in place, its own bindings moved into the
+  // adapter (as the function-to-function adapter does above).
+  if (value is IrClosure) {
+    final inner = IrClosure(
+      value.params,
+      value.body,
+      value.returns,
+      locals: [for (final c in value.captures) c.name, ...value.locals],
+      holdsSelf: value.holdsSelf,
+      isAsync: value.isAsync,
+    )..rustType = value.rustType;
+    final called = IrCallValue(inner, args)..rustType = have.returns;
+    final result = coerceInto(called, _dynamicType, world, inClosure: true);
+    return IrStaticCall(null, 'dart_function_object', [
+      arity,
+      IrCall(
+        IrClosure(
+          params,
+          IrReturn(result),
+          _dynamicType,
+          captures: value.captures,
+          locals: value.locals,
+          holdsSelf: value.holdsSelf,
+        ),
+        '!rc',
+        const [],
+      ),
+    ]);
+  }
+  final function = IrLocal('__f')..rustType = have;
+  final called = IrCallValue(function, args)..rustType = have.returns;
+  final result = coerceInto(called, _dynamicType, world, inClosure: true);
+  return IrBlockValue(
+    [IrLocalDecl('__f', null, value)],
+    IrStaticCall(null, 'dart_function_object', [
+      arity,
+      IrCall(
+        IrClosure(
+          params,
+          IrReturn(result),
+          _dynamicType,
+          locals: const ['__f'],
+        ),
+        '!rc',
+        const [],
+      ),
+    ]),
+  );
+}
+
+/// A bare `Function` as a closure of `slot`'s type: each argument as an
+/// object into `dart_call_function`, the result coerced into the slot's.
+IrExpr _typedFunction(IrExpr value, IrType slot, TypeWorld world) {
+  final sp = slot.parameters!;
+  final params = <IrParam>[];
+  final args = <IrExpr>[];
+  for (var i = 0; i < sp.length; i++) {
+    final name = '__a$i';
+    params.add(IrParam(name, sp[i]));
+    args.add(
+      coerceInto(
+        IrLocal(name)..rustType = sp[i],
+        _dynamicType,
+        world,
+        inClosure: true,
+      ),
+    );
+  }
+  final function = IrLocal('__f')..rustType = _dynamicType;
+  final call = IrStaticCall(null, 'dart_call_function', [
+    function,
+    IrListLiteral(args, _dynamicType),
+  ], fails: true)..rustType = _dynamicType;
+  final result = coerceInto(call, slot.returns!, world, inClosure: true);
+  return IrBlockValue(
+    [IrLocalDecl('__f', null, value)],
+    IrCall(
+      IrClosure(params, IrReturn(result), slot.returns!, locals: const ['__f']),
+      '!rc',
+      const [],
+    ),
+  );
 }

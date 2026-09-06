@@ -4428,11 +4428,11 @@ impl<T: 'static> DartFuture<T> {
     /// the catch site has; the value goes on unchanged.
     pub fn catch_error(
         &self,
-        on_error: std::rc::Rc<dyn Fn(DartError, StackTrace) -> Result<T, DartError>>,
+        on_error: std::rc::Rc<dyn Object>,
         test: Option<std::rc::Rc<dyn Fn(DartError) -> Result<bool, DartError>>>,
     ) -> DartFuture<T>
     where
-        T: Clone + 'static,
+        T: Clone + FromDynamic + 'static,
     {
         let me = self.clone();
         DartFuture::spawn_named("catchError", Box::pin(async move {
@@ -4443,10 +4443,13 @@ impl<T: 'static> DartFuture<T> {
                         Some(test) => test(error.clone())?,
                         None => true,
                     };
-                    if admitted {
-                        on_error(error, StackTrace::current())
-                    } else {
-                        Err(error)
+                    if !admitted {
+                        return Err(error);
+                    }
+                    match dart_call_error_handler::<T>(on_error, error)? {
+                        FutureOr::Value(Some(value)) => Ok(value),
+                        FutureOr::Value(None) => Err(std::rc::Rc::new(StateError::new("a FutureOr held no value".to_string())) as DartError),
+                        FutureOr::Future(future) => future.await,
                     }
                 }
             }
@@ -4459,24 +4462,24 @@ impl<T: 'static> DartFuture<T> {
     /// and a translated one returns that or an `R` outright
     /// (`IntoFutureOr`); a future it returns is awaited, as Dart chains
     /// it. The backend spells `R` at the call.
-    pub fn then<R: Clone + 'static, X: IntoFutureOr<R> + 'static>(
+    pub fn then<R: Clone + FromDynamic + 'static, X: IntoFutureOr<R> + 'static>(
         &self,
         on_value: std::rc::Rc<dyn Fn(T) -> Result<X, DartError>>,
-        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<X, DartError>>>,
+        on_error: Option<std::rc::Rc<dyn Object>>,
     ) -> DartFuture<R>
     where
         T: Clone + 'static,
     {
         let me = self.clone();
         DartFuture::spawn_named("then", Box::pin(async move {
-            let produced = match me.await {
-                Ok(value) => on_value(value),
+            let produced: Result<FutureOr<R>, DartError> = match me.await {
+                Ok(value) => on_value(value).map(|x| x.into_future_or()),
                 Err(error) => match on_error {
-                    Some(handler) => handler(error),
+                    Some(handler) => dart_call_error_handler::<R>(handler, error),
                     None => Err(error),
                 },
             };
-            match produced?.into_future_or() {
+            match produced? {
                 FutureOr::Value(value) => match value {
                     Some(v) => Ok(v),
                     None => Err(std::rc::Rc::new(StateError::new("a FutureOr held no value".to_string())) as DartError),
@@ -4604,6 +4607,7 @@ pub fn future_wait<T: Clone + 'static>(futures: Vec<DartFuture<T>>) -> DartFutur
 }
 
 /// Dart's `FutureOr<T>`: a `T`, or a `Future<T>`; awaitable either way.
+#[derive(Clone)]
 pub enum FutureOr<T> {
     Value(Option<T>),
     Future(DartFuture<T>),
@@ -6019,13 +6023,116 @@ impl CastErased<()> for Option<std::rc::Rc<dyn Object>> {
     fn cast_erased(self) {}
 }
 
-impl<A: Clone + 'static, B: Clone + 'static> CastErased<DartFuture<B>> for DartFuture<A>
+impl<A: Clone + 'static, B: Clone + 'static + FromDynamic> CastErased<DartFuture<B>> for DartFuture<A>
 where
     A: CastErased<B>,
 {
     fn cast_erased(self) -> DartFuture<B> {
         self.then(std::rc::Rc::new(|v: A| Ok(v.cast_erased())), None)
     }
+}
+
+/// Dart's bare `Function` -- a value with no signature, called dynamically:
+/// its arguments arrive as objects and its result leaves as one, converted
+/// at both ends by the type rules (`coerce` builds the adapters, so a
+/// `void Function(int)` stored as a `Function` reads its `int` out of the
+/// object and hands back the `Null` object). Spelled as the object it is
+/// (`Rc<dyn Object>`); made by `dart_function_object`, called by
+/// `dart_call_function`, and taken back into a typed function slot by an
+/// adapter the other way. `then(onError: Function?)` forwarded from a
+/// translated `Future` (`TickerFuture.then`, ws513).
+pub type DartFunctionCall =
+    dyn Fn(Vec<std::rc::Rc<dyn Object>>) -> Result<std::rc::Rc<dyn Object>, DartError>;
+
+pub struct DartFunction {
+    pub arity: usize,
+    pub call: std::rc::Rc<DartFunctionCall>,
+}
+
+impl Clone for DartFunction {
+    fn clone(&self) -> Self {
+        DartFunction { arity: self.arity, call: self.call.clone() }
+    }
+}
+
+impl DartAny for DartFunction {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("Function")
+    }
+}
+
+pub fn dart_function_object(arity: usize, call: std::rc::Rc<DartFunctionCall>) -> std::rc::Rc<dyn Object> {
+    dart_object(DartFunction { arity, call }) as std::rc::Rc<dyn Object>
+}
+
+fn dart_function_of(object: &std::rc::Rc<dyn Object>) -> &DartFunction {
+    let any: &dyn Object = object.as_ref();
+    match any.as_any().downcast_ref::<DartFunction>() {
+        Some(function) => function,
+        None => panic!(
+            "dart2rust: a {} called as a function",
+            object.runtime_type().name
+        ),
+    }
+}
+
+/// How many positional arguments the function takes.
+pub fn dart_function_arity(object: &std::rc::Rc<dyn Object>) -> usize {
+    dart_function_of(object).arity
+}
+
+/// Dart's dynamic call on a `Function`: an error on the wrong number of
+/// arguments, as Dart's `NoSuchMethodError` is.
+pub fn dart_call_function(
+    object: std::rc::Rc<dyn Object>,
+    args: Vec<std::rc::Rc<dyn Object>>,
+) -> Result<std::rc::Rc<dyn Object>, DartError> {
+    let function = dart_function_of(&object);
+    if function.arity != args.len() {
+        return Err(std::rc::Rc::new(StateError::new(format!(
+            "a function of {} argument(s) called with {}",
+            function.arity,
+            args.len()
+        ))) as DartError);
+    }
+    (function.call)(args)
+}
+
+/// What a dynamically called callback handed back, as the `FutureOr<R>` a
+/// `then` wants: the `FutureOr` or `Future` it is, else the `R` value.
+pub fn dart_future_or_from_dynamic<R: FromDynamic + Clone + 'static>(
+    value: std::rc::Rc<dyn Object>,
+) -> Result<FutureOr<R>, DartError> {
+    let object: &dyn Object = value.as_ref();
+    if let Some(future_or) = object.as_any().downcast_ref::<FutureOr<R>>() {
+        return Ok(future_or.clone());
+    }
+    if let Some(future) = object.as_any().downcast_ref::<DartFuture<R>>() {
+        return Ok(FutureOr::Future(future.clone()));
+    }
+    match R::from_dynamic(&value) {
+        Some(r) => Ok(FutureOr::Value(Some(r))),
+        None => Err(std::rc::Rc::new(StateError::new(format!(
+            "a {} where a `{}` was wanted",
+            value.runtime_type().name,
+            std::any::type_name::<R>()
+        ))) as DartError),
+    }
+}
+
+/// `Future.then`'s and `catchError`'s `onError`, a `Function` of one
+/// argument (the error) or two (the error and its stack trace), as Dart
+/// dispatches it.
+pub fn dart_call_error_handler<R: FromDynamic + Clone + 'static>(
+    handler: std::rc::Rc<dyn Object>,
+    error: DartError,
+) -> Result<FutureOr<R>, DartError> {
+    let args: Vec<std::rc::Rc<dyn Object>> = if dart_function_arity(&handler) >= 2 {
+        vec![error, std::rc::Rc::new(StackTrace::current()) as std::rc::Rc<dyn Object>]
+    } else {
+        vec![error]
+    };
+    dart_future_or_from_dynamic::<R>(dart_call_function(handler, args)?)
 }
 
 pub fn dart_cast_erased<To, From: CastErased<To>>(value: From) -> To {

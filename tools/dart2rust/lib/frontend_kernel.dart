@@ -242,7 +242,11 @@ class KernelFrontend implements TypeWorld {
     }
     // A type parameter's spelling is the caller's; `dynamic` has one
     // spelling, an `Rc<dyn Object>`, and the prelude uses it.
+    // ..but not a `FutureOr<T>` slot: the prelude takes the `T` there
+    // (`Future.value`, `Completer.complete`), so it goes by shape, as it
+    // did while the walkers could not see into `FutureOr` (+47 at ws514).
     return declared != null &&
+        declared is! FutureOrType &&
         (_mentionsDynamic(declared) || _mentionsTypeParameter(declared));
   }
 
@@ -1161,10 +1165,23 @@ class KernelFrontend implements TypeWorld {
       // closures on the other end are declared in that same order.
       final type = node.functionType;
       if (type == null) {
-        throw Unsupported(
-          'call of a function value with no type',
-          _sample(node),
-        );
+        // A call on a bare `Function` (or a `dynamic`): Dart's dynamic
+        // call, which the prelude's function object answers with its
+        // arguments as objects and its result as one (`dart_call_function`).
+        if (node.arguments.named.isNotEmpty ||
+            node.arguments.types.isNotEmpty) {
+          throw Unsupported(
+            'dynamic call with named or type arguments',
+            _sample(node),
+          );
+        }
+        return IrStaticCall(null, 'dart_call_function', [
+          coerce(expression(node.receiver), const IrType('dynamic')),
+          IrListLiteral([
+            for (final a in node.arguments.positional)
+              coerce(expression(a), const IrType('dynamic')),
+          ], const IrType('dynamic')),
+        ], fails: true)..rustType = const IrType('dynamic');
       }
       // ..unless the value is a tear-off the compiler resolved to a
       // constant (`GoogleFonts.libreFranklin(..)`, whose getter TFA folded
@@ -1871,16 +1888,34 @@ class KernelFrontend implements TypeWorld {
               (from is InterfaceType && from.classNode.name == 'Object'))) {
         // A `dynamic` is an `Rc<dyn Object>`, never an `Option`: no unwrap
         // (`codec.decodeEnvelope(result) as T?`, ws461).
-        final operand =
-            from != null &&
-                from is! DynamicType &&
-                from.nullability == Nullability.nullable
-            ? _nullChecked(expression(node.operand), node.operand)
-            : expression(node.operand);
+        // By the operand's *recorded* type: an `Option` (a `Map<K,
+        // Object?>` lookup) is unwrapped for a non-null `T` and kept for
+        // a `T?`; a value the type flow analysis narrowed to a scalar
+        // (`begin as T` on an `f64`) goes behind the object first, as any
+        // value into a `dynamic` does (`Tween.lerp`, ws514).
+        final asOption = to.nullability == Nullability.nullable;
+        var operand = expression(node.operand);
+        final have = operand.rustType;
+        if (have != null) {
+          if (isNullable(have) && !asOption && operand is! IrNullCheck) {
+            operand = IrNullCheck(operand)..rustType = _nonNull(have);
+          }
+        } else if (from != null &&
+            from is! DynamicType &&
+            from.nullability == Nullability.nullable) {
+          operand = _nullChecked(operand, node.operand);
+        }
+        final kept = operand.rustType;
+        operand = coerce(
+          operand,
+          kept != null && isNullable(kept)
+              ? const IrType('dynamic', nullable: true)
+              : const IrType('dynamic'),
+        );
         // `as T?`: the `Option` the downcast hands back, Dart's null for
         // a `Null` object or another type (`decodeEnvelope(result) as T?`
         // returning `T?`, ws482).
-        if (to.nullability == Nullability.nullable) {
+        if (asOption) {
           return IrCall(operand, '!as_opt', [
             IrLiteral(to.parameter.name ?? 'T', const IrType('raw')),
           ])..rustType = _type(to);
