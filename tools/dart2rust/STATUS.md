@@ -6610,6 +6610,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run483 | 仍停在 `DefaultPlatformMenuDelegate::new`：const 实例带了类型也没用——TFA 把 `channel ?? SystemChannels.menu` 判成恒取右侧，CFE 留下 `let #t = channel in <const>`，那个 let 块没带值的类型，槽没适配。 | let 块按其值定型。同批预读 `main` 剩余路径和第一帧 build 路径上的桩，各修一条通用规则：`as T?` 保留下转的 `Option`；`expando[o] = v` 以句柄为键；async 基类方法的 super 函数直接是 future 不加 `?`；闭包捕获的 late 字段 cell 读时 unwrap；`x?.f<T?>()` 压平；try 套 try 的 `return` 经外层闭包返回；prelude 的 `then` 接受返回 `FutureOr<R>` 或 `R` 的回调（`IntoFutureOr`，backend 写出 `R`）；实现 `dart:async` `Future` 的类（`SynchronousFuture`）就是 prelude 的 future，构造即 `future_ready(v)`。 |
 | ws484 | 链：**1370**（−49）；新桩 10：多是 `then::<R, _>` 撞上返回 `FutureOr<R>?` 的回调（`(_) { .. }`），`Option<FutureOr<..>>` 没有 `IntoFutureOr`；另 table 一族 3 个旧账重现。 | prelude：`NullValue`（`()`/`Option<T>`/`Rc<dyn Object>` 的 null）+ `impl IntoFutureOr<R> for Option<FutureOr<R>>`。同批：**递归的局部函数**——Rust 闭包不能自称，绑定改成 `Rc<RefCell<Option<Rc<dyn Fn>>>>`，闭包造好后装进去（闭包里持同一个 cell 的句柄），体内外所有对该名字的读都经 cell（late local 那样 unwrap）；靠 `LocalFunctionInvocation`/自读检测。fixture（求树和）整 crate 编过。 |
 | run484 | 又停在 `_initKeyboard`（上面那条 `then` 的桩）。 | 见 ws484。 |
+| ws485 | 链：**1355**（−15，无新桩）。 | |
+| run485 | **`initInstances` 全过**（键盘那条修了）；`WidgetsFlutterBinding.new` → `initServiceExtensions`（dill 不是 release 折叠的，`kReleaseMode` 为假）→ `BindingBase.registerServiceExtension` 桩：mismatched types。 | 见下一行。同批（预读第一帧路径）：闭包自己的类型参数按 bound 擦除（`MaterialApp._buildWidgetApp` 里 `<T extends Object?>(settings, builder) => MaterialPageRoute<T>(..)`，泛型函数类型本来就按 bound 实例化）；`?.` 的压平按 lower 出的体的类型判（`child?..layout(..)` 的 cascade）；try/catch 套在 try/finally 闭包里的 `return` 经外层闭包返回（`inflateWidget`）。 |
 
 ## 下一步(2026-09-05 重铺)
 
