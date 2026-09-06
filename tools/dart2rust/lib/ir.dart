@@ -145,6 +145,15 @@ class IrLiteral extends IrExpr {
 
   final String value;
   final IrType type;
+
+  /// The one line Dart's AOT compiler (TFA) proved dead: the frontend
+  /// lowers every such throw to this instance, and the backend knows the
+  /// value diverges by identity (`dart_boxed::<Null>(..)`: a `!` is no
+  /// `DartAny`, and never-type fallback filled `()` in, ws559).
+  static final unreachable = IrLiteral(
+    'unreachable!("removed by the AOT compiler (TFA)")',
+    const IrType('raw'),
+  );
 }
 
 /// A reference to a local variable or parameter.

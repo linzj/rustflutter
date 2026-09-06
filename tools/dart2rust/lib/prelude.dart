@@ -645,6 +645,15 @@ pub trait DartAny: Object + 'static {
         std::ptr::addr_eq(self.dart_any_ref() as *const dyn std::any::Any as *const u8, other as *const dyn std::any::Any as *const u8)
     }
 
+    /// Dart's `hashCode` through the object: what `DartEq::dart_hash_code`
+    /// answers for the concrete type (the backend writes each struct's),
+    /// so a key hashed as its `K` and re-hashed as the `Object` a trie
+    /// holds agree (`_resolveCollision` recursed forever on two hashes of
+    /// one key, ws557). `0` -- one bucket -- is consistent with anything.
+    fn dart_hash_any(&self) -> i64 {
+        0
+    }
+
     fn dart_cast(&self, _target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
         None
     }
@@ -716,6 +725,14 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+/// `hashCode` for objects reached through `dyn Object`, by the same key.
+type DartHashFn = fn(&dyn std::any::Any) -> Option<i64>;
+
+thread_local! {
+    static DART_HASHES: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartHashFn>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 pub fn dart_register<T: DartAny>() {
     DART_CASTS.with(|c| {
         c.borrow_mut()
@@ -732,6 +749,40 @@ pub fn dart_register<T: DartAny>() {
             .entry(std::any::TypeId::of::<T>())
             .or_insert(|a, b| a.downcast_ref::<T>().map(|v| v.dart_eq_any(b)));
     });
+    DART_HASHES.with(|c| {
+        c.borrow_mut()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert(|a| a.downcast_ref::<T>().map(|v| v.dart_hash_any()));
+    });
+}
+
+/// `hashCode` of an object reached through `dyn Object`: its own, by the
+/// registry; identity of the box for what was never registered.
+pub fn dart_object_hash(value: &dyn Object) -> i64 {
+    let any = value.as_any();
+    let id = std::any::Any::type_id(any);
+    let f = DART_HASHES.with(|c| c.borrow().get(&id).copied());
+    match f.and_then(|f| f(any)) {
+        Some(hash) => hash,
+        None => {
+            if let Some(s) = any.downcast_ref::<String>() {
+                return dart_std_hash(s);
+            }
+            if let Some(i) = any.downcast_ref::<i64>() {
+                return dart_std_hash(i);
+            }
+            if let Some(d) = any.downcast_ref::<f64>() {
+                return dart_std_hash(&d.to_bits());
+            }
+            if let Some(b) = any.downcast_ref::<bool>() {
+                return dart_std_hash(b);
+            }
+            if let Some(t) = any.downcast_ref::<Type>() {
+                return dart_std_hash(t);
+            }
+            (any as *const dyn std::any::Any as *const u8 as usize as i64) & 0x3fff_ffff
+        }
+    }
 }
 
 /// Dart's `toString()` of a value whose type only the object knows: a
@@ -810,6 +861,20 @@ pub fn dart_object<T: DartAny>(value: T) -> std::rc::Rc<T> {
     std::rc::Rc::new(value)
 }
 
+/// A value of a type only known as a parameter (`K`, `V`) on its way into
+/// an `Object` slot: the object it *is* -- a handle (`Rc<dyn
+/// InheritedElement>`) becomes the object it holds, not a box around the
+/// handle, so what comes back out casts to the handle again (`_inheritedElements[T]`
+/// stored `Rc<Rc<dyn InheritedElement>>` and `from_dynamic` never found
+/// the element, run558) -- and a core value behind a fresh handle.
+pub fn dart_boxed<T: DartAny>(value: T) -> std::rc::Rc<dyn Object> {
+    dart_register::<T>();
+    match value.dart_cast_to::<dyn Object>() {
+        Some(object) => object,
+        None => std::rc::Rc::new(value),
+    }
+}
+
 /// The Object protocol of a `dyn Object`: what the object behind it
 /// answers, found by the registry (`DART_CASTS`, `DART_STRINGS`).
 impl DartAny for dyn Object {
@@ -827,6 +892,9 @@ impl DartAny for dyn Object {
             Some(answer) => answer,
             None => std::ptr::addr_eq(any as *const dyn std::any::Any as *const u8, other as *const dyn std::any::Any as *const u8),
         }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        dart_object_hash(self)
     }
     fn dart_any_ref(&self) -> &dyn std::any::Any {
         self.as_any()
@@ -849,6 +917,9 @@ impl<T: ?Sized + DartAny> DartAny for std::rc::Rc<T> {
     }
     fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
         (**self).dart_eq_any(other)
+    }
+    fn dart_hash_any(&self) -> i64 {
+        (**self).dart_hash_any()
     }
     fn dart_any_ref(&self) -> &dyn std::any::Any {
         (**self).dart_any_ref()
@@ -892,6 +963,12 @@ impl<T: DartAny> DartAny for Option<T> {
         match self {
             Some(v) => v.dart_eq_any(other),
             None => other.downcast_ref::<Null>().is_some() || other.downcast_ref::<()>().is_some(),
+        }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        match self {
+            Some(v) => v.dart_hash_any(),
+            None => 0,
         }
     }
     fn dart_any_ref(&self) -> &dyn std::any::Any {
@@ -1026,6 +1103,9 @@ macro_rules! dart_any_named {
                         None => false,
                     }
                 }
+                fn dart_hash_any(&self) -> i64 {
+                    self.dart_hash_code()
+                }
             }
         )*
     };
@@ -1050,6 +1130,9 @@ impl DartAny for i64 {
             None => false,
         }
     }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
+    }
     fn dart_runtime_type(&self) -> Type {
         Type::of("int")
     }
@@ -1064,6 +1147,9 @@ impl DartAny for f64 {
             Some(o) => self == o,
             None => false,
         }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
         Type::of("double")
@@ -1080,6 +1166,9 @@ impl DartAny for bool {
             None => false,
         }
     }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
+    }
     fn dart_runtime_type(&self) -> Type {
         Type::of("bool")
     }
@@ -1094,6 +1183,9 @@ impl DartAny for String {
             Some(o) => self == o,
             None => false,
         }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
         Type::of("String")
@@ -1136,6 +1228,9 @@ impl DartAny for Type {
             Some(o) => self == o,
             None => false,
         }
+    }
+    fn dart_hash_any(&self) -> i64 {
+        self.dart_hash_code()
     }
     fn dart_runtime_type(&self) -> Type {
         Type::of("Type")
@@ -2147,6 +2242,9 @@ impl DartEq for dyn Object {
     fn dart_eq(&self, other: &Self) -> bool {
         self == other
     }
+    fn dart_hash_code(&self) -> i64 {
+        dart_object_hash(self)
+    }
 }
 
 impl<T: DartEq> DartEq for Option<T> {
@@ -2448,9 +2546,9 @@ pub trait RcHashCode {
     fn hash_code(&self) -> i64;
 }
 
-impl<T: ?Sized> RcHashCode for std::rc::Rc<T> {
+impl<T: ?Sized + DartAny> RcHashCode for std::rc::Rc<T> {
     fn hash_code(&self) -> i64 {
-        (std::rc::Rc::as_ptr(self) as *const u8 as usize as i64) & 0x3fff_ffff
+        (**self).dart_hash_any()
     }
 }
 
@@ -4858,6 +4956,12 @@ pub fn _print_debug(arg: String) {
     eprintln!("{}", arg);
 }
 
+/// `dart:core`'s `print(Object? object)`: the object's `toString()` to
+/// stdout.
+pub fn dart_print(object: std::rc::Rc<dyn Object>) {
+    println!("{}", dart_object_str_ref(&*object));
+}
+
 pub fn _schedule_microtask(callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>) {
     run_callback("a microtask", || callback());
 }
@@ -5061,6 +5165,52 @@ pub fn dart_double_str(value: f64) -> String {
         return format!("{:.1}", value);
     }
     format!("{}", value)
+}
+
+/// Dart's `identical` on two values typed `Object`: the same object, or
+/// two of the core values Dart canonicalises -- numbers, strings, `Type`s,
+/// `null` -- that are equal (`identical(value, keyValuePairs[i])` in
+/// `_HashCollisionNode.put`, ws557).
+pub fn dart_identical(a: &std::rc::Rc<dyn Object>, b: &std::rc::Rc<dyn Object>) -> bool {
+    if std::rc::Rc::ptr_eq(a, b) {
+        return true;
+    }
+    let any = a.as_any();
+    let canonical = any.is::<i64>()
+        || any.is::<f64>()
+        || any.is::<bool>()
+        || any.is::<String>()
+        || any.is::<&'static str>()
+        || any.is::<Type>()
+        || any.is::<Null>()
+        || any.is::<()>();
+    canonical && object_eq(&**a, &**b)
+}
+
+/// Dart's shifts on a 64-bit `int`: a count of 64 or more shifts every
+/// bit out (`<<` and `>>>` give 0, `>>` the sign), where Rust's operators
+/// panic in a debug build (`_TrieNode._trieIndex` at bit index 65, the
+/// sixth level of a `PersistentHashMap`, ws557). A negative count is an
+/// `ArgumentError` in Dart; it panics here.
+pub fn dart_shl(value: i64, count: i64) -> i64 {
+    if count < 0 {
+        panic!("uncaught Dart exception: ArgumentError: negative shift count {}", count);
+    }
+    if count >= 64 { 0 } else { value.wrapping_shl(count as u32) }
+}
+
+pub fn dart_shr(value: i64, count: i64) -> i64 {
+    if count < 0 {
+        panic!("uncaught Dart exception: ArgumentError: negative shift count {}", count);
+    }
+    if count >= 64 { if value < 0 { -1 } else { 0 } } else { value >> count }
+}
+
+pub fn dart_ushr(value: i64, count: i64) -> i64 {
+    if count < 0 {
+        panic!("uncaught Dart exception: ArgumentError: negative shift count {}", count);
+    }
+    if count >= 64 { 0 } else { ((value as u64) >> count) as i64 }
 }
 
 /// A type parameter's type literal (`T` where a value goes): the class the
@@ -6899,7 +7049,10 @@ impl<T: ?Sized + 'static> FromDynamic for std::rc::Rc<T> {
         let same: Box<dyn std::any::Any> = Box::new(value.clone());
         match same.downcast::<std::rc::Rc<T>>() {
             Ok(handle) => Some(*handle),
-            Err(_) => value.dart_cast_to::<T>(),
+            // ..the object as the handle, or a handle boxed as an object.
+            Err(_) => value
+                .dart_cast_to::<T>()
+                .or_else(|| value.as_any().downcast_ref::<std::rc::Rc<T>>().cloned()),
         }
     }
     fn from_same(value: &Self) -> Option<Self> {

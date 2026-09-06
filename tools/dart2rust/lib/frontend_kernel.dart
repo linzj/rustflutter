@@ -6205,7 +6205,15 @@ class KernelFrontend implements TypeWorld {
         }.contains(owner) &&
         target.name.text.isEmpty &&
         target.kind == ProcedureKind.Factory) {
-      return IrNew(IrType(owner!.contains('Set') ? 'Set' : 'Map'), const []);
+      // ..with its type arguments: `HashSet<T>()` into an `Object` slot
+      // has nothing else to say what `Set::new()` holds (run560).
+      return IrNew(
+        IrType(
+          owner!.contains('Set') ? 'Set' : 'Map',
+          arguments: [for (final t in node.arguments.types) _type(t)],
+        ),
+        const [],
+      );
     }
     // `String.fromCharCodes(codes)`: a free function of the prelude's, since
     // Rust's `String` takes no inherent additions.
@@ -6219,14 +6227,20 @@ class KernelFrontend implements TypeWorld {
     // `scheduleMicrotask(f)`: the prelude's `_schedule_microtask` takes the
     // `Rc<dyn Fn()>` a translated closure is; the public-named one is the
     // prelude's own `Box<dyn FnOnce()>` entry.
-    if (target.name.text == 'scheduleMicrotask' &&
-        positional.length == 1 &&
-        target.enclosingLibrary.importUri.toString() == 'dart:async') {
-      return IrStaticCall(
-        null,
-        '_schedule_microtask',
-        _arguments(node.arguments, target.function),
-      );
+    final coreFunction =
+        _coreTopLevel[target.enclosingLibrary.importUri
+            .toString()]?[target.name.text];
+    if (coreFunction != null && owner == null) {
+      final (fn, slots) = coreFunction;
+      final args = _arguments(node.arguments, target.function);
+      // A prelude callee's slots are not widened into by `_widened` (its
+      // generics take the value as it is); the table's are spelled here.
+      if (slots != null) {
+        for (var i = 0; i < args.length && i < slots.length; i++) {
+          args[i] = coerce(args[i], slots[i]);
+        }
+      }
+      return IrStaticCall(null, fn, args);
     }
     if (target.name.text == 'identical' && positional.length == 2) {
       // `identical(x, null)` is `x == null`: the null test the value's
@@ -8750,8 +8764,27 @@ class KernelFrontend implements TypeWorld {
       const {'String', 'int', 'double', 'bool', 'num'}.contains(c.name) &&
       c.enclosingLibrary.importUri.toString() == 'dart:core';
 
+  /// The `dart:` libraries' top-level functions the prelude provides, by
+  /// library and name. `scheduleMicrotask` runs its callback now (see the
+  /// prelude); `print` is Dart's, to stdout, through the Object
+  /// protocol's `toString` (google_fonts' error path, run561).
+  /// Each with the Rust slots its arguments are coerced into, or none.
+  static const _coreTopLevel = <String, Map<String, (String, List<IrType>?)>>{
+    'dart:core': {
+      'print': ('dart_print', [IrType('dynamic')]),
+    },
+    'dart:async': {'scheduleMicrotask': ('_schedule_microtask', null)},
+  };
+
   bool _erasedParameter(TypeParameter p) {
     if (!erase) return false;
+    // Erasure is a property of the declarations this compiler writes: a
+    // prelude class's parameter (`HashSet<E>`) is the prelude's own
+    // generic, and dropping it left `Set::new()` with nothing to infer
+    // `T` from once boxed into an `Object` slot (`InheritedModelElement.
+    // updateDependencies`, run560).
+    final owner = p.declaration;
+    if (owner is Class && !_translatedClass(owner)) return false;
     // ..when its bound has a handle to erase to: a top type (`Rc<dyn
     // Object>`) or a translated trait. `RestorableEnum<T extends Enum>`
     // erased to a `dart:core` class this compiler does not spell took 107
@@ -9779,10 +9812,7 @@ class KernelFrontend implements TypeWorld {
         thrown.value.contains('removed by Dart AOT');
   }
 
-  static final _unreachable = IrLiteral(
-    'unreachable!("removed by the AOT compiler (TFA)")',
-    IrType('raw'),
-  );
+  static final _unreachable = IrLiteral.unreachable;
 
   /// An `int` value stored into a variable *declared* `num` (an `f64`).
   IrExpr _intoDeclaredNum(Expression value, DartType declared, IrExpr lowered) {

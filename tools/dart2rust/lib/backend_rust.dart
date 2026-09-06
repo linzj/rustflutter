@@ -648,13 +648,16 @@ class RustBackend {
       // ..and `T?` of a `T` already nullable is `T`: awaiting a
       // `Future<ByteData?>?` is a `ByteData?`, not an `Option<Option<..>>`
       // (`BinaryMessenger.send`, ws474).
+      // ..matched on a copy of the handle when the operand is a place:
+      // matching the local itself moved the future out of it, and the
+      // line after read it again (`loadFontIfNecessary`, ws562).
       IrAwait(:final operand)
           when operand.rustType?.name == 'Future' &&
               (operand.rustType?.nullable ?? false) =>
         (operand.rustType!.arguments.isNotEmpty &&
                 operand.rustType!.arguments.first.nullable)
-            ? '(match ${_awaitOperand(operand)} { Some(__f) => __f.await$_propagate, None => None })'
-            : '(match ${_awaitOperand(operand)} { Some(__f) => Some(__f.await$_propagate), None => None })',
+            ? '(match ${_awaitedPlace(operand)} { Some(__f) => __f.await$_propagate, None => None })'
+            : '(match ${_awaitedPlace(operand)} { Some(__f) => Some(__f.await$_propagate), None => None })',
       IrAwait(:final operand) => '${_awaitOperand(operand)}.await$_propagate',
       IrMutRef(:final place) => _mutRef(place),
       IrIdentical(:final left, :final right) => _identical(left, right),
@@ -918,6 +921,13 @@ class RustBackend {
             // A core value behind a plain handle. An `int` literal spelled
             // as the `i64` it is: boxed bare, Rust typed `3` an `i32`, and
             // the object printed as one (the tostr fixture, ws543).
+            // ..and into an `Object` slot, the object the value *is*: a
+            // handle of a type only a parameter names (`V` bound to
+            // `Rc<dyn InheritedElement>`) is not boxed a second time.
+            : (type.name == 'Object' || type.name == 'dynamic')
+            ? (explicit
+                  ? '(dart_boxed${_boxedAs(value)}(${_boxedLiteral(value)}) as ${this.type(type)})'
+                  : 'dart_boxed${_boxedAs(value)}(${_boxedLiteral(value)})')
             : (explicit
                   ? '(std::rc::Rc::new(${_boxedLiteral(value)}) as ${this.type(type)})'
                   : 'std::rc::Rc::new(${_boxedLiteral(value)})'),
@@ -988,6 +998,13 @@ class RustBackend {
   /// any other failing call returns its future inside the `Result` -- a
   /// trait method, a plain function that built a `Future<T>` -- and is
   /// unwrapped first, `f()?.await?` (118 "is not a future" at ws425).
+  /// A nullable future to match on: a place's handle cloned, so the place
+  /// keeps it; a value as it is.
+  String _awaitedPlace(IrExpr operand) {
+    final text = _awaitOperand(operand);
+    return operand is IrLocal || operand is IrField ? '($text).clone()' : text;
+  }
+
   String _awaitOperand(IrExpr operand) {
     final asyncFn = switch (operand) {
       IrCall(:final asyncFn) => asyncFn,
@@ -1669,10 +1686,20 @@ class RustBackend {
     // on `i64` is arithmetic, and on `u64` it is this (`_TrieNode.
     // _trieIndex`, `_bitCount`: the `PersistentHashMap` every
     // `InheritedElement` mounts through, run537).
-    if (op == '>>>') {
-      // Through `i64` first: `(-8) as u64` types the literal `u64` and
-      // cannot negate it (E0600).
-      return '((((${expr(left)}) as i64) as u64) >> (${expr(right)})) as i64';
+    // Dart's shifts on an `int`, by count: the prelude's, which give 0 (or
+    // the sign) past 63 where Rust's operators panic (`_trieIndex` at bit
+    // index 65, ws557). Only on an `int` left operand: the byte and mask
+    // arithmetic on other widths keeps the operator.
+    final leftInt =
+        left.rustType?.name == 'int' ||
+        (left is IrLiteral && left.type.name == 'int');
+    if (op == '>>>' || ((op == '<<' || op == '>>') && leftInt)) {
+      final helper = switch (op) {
+        '<<' => 'dart_shl',
+        '>>' => 'dart_shr',
+        _ => 'dart_ushr',
+      };
+      return '$helper((${expr(left)}) as i64, (${expr(right)}) as i64)';
     }
     if (!passthrough.contains(op)) {
       throw Unsupported('binary operator `$op`', '${expr(left)} $op ...');
@@ -4239,6 +4266,33 @@ class RustBackend {
           : expr(e);
       return '(${side(left, right)} == ${side(right, left)})';
     }
+    // A side typed `Object`/`dynamic` -- a list element, a `T` erased to
+    // the object -- is an `Rc<dyn Object>`: the prelude asks (the same
+    // object, or two canonical core values that are equal), the other side
+    // shared into an object as any value is (ws557).
+    bool objectTyped(IrExpr e) {
+      final t = e.rustType;
+      return t != null &&
+          !isNullable(t) &&
+          (t.name == 'Object' || t.name == 'dynamic') &&
+          t.arguments.isEmpty;
+    }
+
+    if ((objectTyped(left) || objectTyped(right)) &&
+        left.rustType != null &&
+        right.rustType != null &&
+        !isNullable(left.rustType!) &&
+        !isNullable(right.rustType!)) {
+      String asObject(IrExpr e) => objectTyped(e)
+          ? '(${expr(e)}).clone()'
+          : _handleLike(e)
+          ? '(${expr(e)}.clone() as std::rc::Rc<dyn Object>)'
+          : expr(
+              IrUpcast(e, IrType('Object'), handle: false, explicit: true)
+                ..rustType = const IrType('Object'),
+            );
+      return 'dart_identical(&${asObject(left)}, &${asObject(right)})';
+    }
     // A handle *value* -- a getter's `Rc<BuildScope>`, a call's trait
     // object -- has an address once bound: `identical(element.buildScope,
     // this)` in `BuildScope._flushDirtyElements` was refused (run525).
@@ -5738,9 +5792,41 @@ class RustBackend {
     _line('impl$header DartEq for $own$where {');
     _indent++;
     _line('fn dart_eq(&self, other: &Self) -> bool { $body }');
+    final hash = _dartHashBody();
+    if (hash != null) _line('fn dart_hash_code(&self) -> i64 { $hash }');
     _indent--;
     _line('}');
     _line('');
+  }
+
+  /// Dart's `hashCode` of this class for `DartEq::dart_hash_code`: the
+  /// class's own override (or the nearest ancestor's through its trait),
+  /// a counted class's identity otherwise -- as Dart's `Object.hashCode`
+  /// -- and, for a value class with none, the default (`0`, consistent
+  /// with its value equality). Null when the default stands.
+  String? _dartHashBody() {
+    final need = IrMethod(
+      'hashCode',
+      const [],
+      const IrType('int'),
+      IrBlock(const []),
+      isGetter: true,
+    );
+    final own = _matching(need);
+    String? call;
+    if (own != null && !own.isStatic && own.params.isEmpty) {
+      call = _inherentCall(own);
+    } else {
+      final inherited = _inherited(need);
+      if (inherited != null && inherited.$2.params.isEmpty) {
+        call = _inherentCall(inherited.$2, need, inherited.$1.name);
+      }
+    }
+    if (call != null) return _resultModel ? '$call.unwrap_or(0)' : call;
+    if (cls.counted) {
+      return '(std::rc::Rc::as_ptr(&self.__self.get()) as *const u8 as usize as i64) & 0x3fff_ffff';
+    }
+    return null;
   }
 
   /// `FromDynamic` for the struct or enum (see the prelude's): the object
@@ -5865,6 +5951,7 @@ class RustBackend {
     _line(
       'fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool { match other.downcast_ref::<Self>() { Some(o) => self.dart_eq(o), None => false } }',
     );
+    _line('fn dart_hash_any(&self) -> i64 { self.dart_hash_code() }');
     _line(
       'fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {',
     );
@@ -6032,6 +6119,32 @@ class RustBackend {
       final name when library[name] != null => '__e.dart_to_string()',
       _ => 'dart_object_str(__e.clone())',
     };
+  }
+
+  /// Whether the value never arrives: a throw, the AOT compiler's dead
+  /// line, a block ending in one. Rust types it `!`, which no trait
+  /// bound accepts, so a generic boxing names its type parameter.
+  bool _diverges(IrExpr value) =>
+      identical(value, IrLiteral.unreachable) ||
+      value is IrThrowValue ||
+      value.rustType?.name == 'Never' ||
+      (value is IrBlockValue && _diverges(value.value));
+
+  /// The turbofish `dart_boxed` needs where nothing else says the type:
+  /// `Null` for a value that never arrives, a literal collection's own
+  /// (`vec![1, 2]` boxed bare is a `Vec<i32>`, printed `Instance of
+  /// 'int'`), nothing otherwise.
+  String _boxedAs(IrExpr value) {
+    if (_diverges(value)) return '::<Null>';
+    final own = switch (value) {
+      IrListLiteral(:final element) when !_mentionsUnknown(element) =>
+        'Vec<${type(element)}>',
+      IrMapLiteral(:final key, :final value)
+          when !_mentionsUnknown(key) && !_mentionsUnknown(value) =>
+        'Map<${type(key)}, ${type(value)}>',
+      _ => null,
+    };
+    return own == null ? '' : '::<$own>';
   }
 
   /// A value on its way behind a fresh handle: an `int` literal with its
@@ -7159,6 +7272,11 @@ class RustBackend {
     'dart_double_str',
     'dart_object_str',
     'dart_type_of',
+    'dart_shl',
+    'dart_identical',
+    'dart_boxed',
+    'dart_shr',
+    'dart_ushr',
     'vec_of_nulls',
     'dart_native',
     'dart_native_as',
@@ -7183,6 +7301,7 @@ class RustBackend {
     '_print',
     '_print_debug',
     '_schedule_microtask',
+    'dart_print',
     'object_hash_all',
     '_invoke1_with_return',
     '_get_callback_handle',
@@ -8221,6 +8340,7 @@ class RustBackend {
     _line(
       'fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool { match other.downcast_ref::<Self>() { Some(o) => self.dart_eq(o), None => false } }',
     );
+    _line('fn dart_hash_any(&self) -> i64 { self.dart_hash_code() }');
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
     _line('Type { name: "${cls.name}" }');
@@ -8242,6 +8362,13 @@ class RustBackend {
     if (own != null) {
       _line(
         'if __t == std::any::TypeId::of::<Self>() || __t == std::any::TypeId::of::<std::rc::Rc<Self>>() { return Some(std::boxed::Box::new($own)); }',
+      );
+    }
+    // ..and as the `Object` it is, for `dart_boxed`: the one handle, not
+    // a box around a handle.
+    if (cls.counted) {
+      _line(
+        'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() { return Some(std::boxed::Box::new(self.dart_self_ref().get() as std::rc::Rc<dyn Object>)); }',
       );
     }
     for (final above in _abstractAncestors(cls)) {
