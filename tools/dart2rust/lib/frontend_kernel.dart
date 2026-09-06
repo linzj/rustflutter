@@ -1773,17 +1773,21 @@ class KernelFrontend implements TypeWorld {
       if (stored is IrSome) {
         // `_cache = s` into a `String?` field, used for its value: the
         // store is `Some(s)`, the value is `s`.
+        // ..and the value is the *stored* one, in the slot's type: a
+        // `Semantics` behind the field's `Rc<dyn Widget>` already, not a
+        // value to share again (`_modalScopeCache ??= Semantics(..)`
+        // was `dart_object(dart_object(..))`, ws512).
         final held = '__t${_nextTemporary++}';
+        final storedType = stored.value.rustType;
         return IrBlockValue([
           IrLocalDecl(held, null, stored.value),
           IrAssignField(
             node.name.text,
             IrSome(
-              IrCall(IrLocal(held), 'clone', const [])
-                ..rustType = stored.value.rustType,
+              IrCall(IrLocal(held), 'clone', const [])..rustType = storedType,
             ),
           ),
-        ], IrLocal(held));
+        ], IrLocal(held)..rustType = storedType)..rustType = storedType;
       }
       return IrSetValue(null, node.name.text, stored);
     }

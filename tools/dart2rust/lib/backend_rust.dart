@@ -2959,15 +2959,12 @@ class RustBackend {
     // Only a collection is mutated through the cell: `reverse` on an
     // `Rc<RefCell<Option<Rc<AnimationController>>>>` is the controller's
     // method, not `Vec::reverse` (51 in `widgets`).
+    // ..the same set every other in-place site uses: a typed list is an
+    // alias of its `Vec` and spelled by name, and `WriteBuffer._add`'s
+    // `_buffer[i] = b` went into a clone -- every platform message was
+    // 35 zero bytes (run512).
     final held = _heldType(cell);
-    const collections = [
-      'Vec<',
-      'Map<',
-      'Set<',
-      'std::collections::VecDeque<',
-      'Queue<',
-    ];
-    if (!collections.any(held.startsWith)) return null;
+    if (!_isMutableCollection(held)) return null;
     final holder = base == null || base is IrThis ? _selfName : expr(base);
     return '$holder.${snake(target.name)}';
   }
