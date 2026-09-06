@@ -5913,6 +5913,19 @@ class KernelFrontend implements TypeWorld {
     return original is Procedure ? original.function : m.function!;
   }
 
+  /// A declared type of `owner`'s (a mixin's) with `owner`'s parameters
+  /// substituted by the class being lowered's arguments for them.
+  DartType _asApplied(DartType declared, Class? owner) {
+    final env = typeEnvironment;
+    final thisType = env == null
+        ? null
+        : _lowering?.getThisType(env.coreTypes, Nullability.nonNullable);
+    if (owner == null || thisType is! InterfaceType) return declared;
+    final asOwner = env!.hierarchy.getTypeAsInstanceOf(thisType, owner);
+    if (asOwner is! InterfaceType) return declared;
+    return Substitution.fromInterfaceType(asOwner).substituteType(declared);
+  }
+
   /// The type a copy's field is declared with (see `_originalOf`), or
   /// null for a field that is its own declaration.
   DartType? _declaredFieldType(Field field) {
@@ -8997,10 +9010,18 @@ class KernelFrontend implements TypeWorld {
     _enter(field);
     final name = field.name.text;
     // A copy's field under the mixin's declared type (see the applied
-    // members' lowering), unless that names a kept parameter.
-    final type = declaredType != null && !_mentionsKeptParameter(declaredType)
-        ? declaredType
+    // members' lowering), with the mixin's parameters substituted by
+    // this class's arguments for them -- `StateMixin<T>`'s `T? _value`
+    // is `Value<T>`'s own `T?`, projected by the same rule as an own
+    // field's, where the erased `ChildType?` is `RenderObject?` and a
+    // kept `LayoutInfoType` is the `BoxConstraints` the application
+    // put in (get's `Value<T>._value`: held as `Option<T>` while read and
+    // written as the edge's `Or`, run486).
+    final original = _originalOf(field);
+    final type = declaredType != null && !identical(original, field)
+        ? _asApplied(declaredType, original.enclosingClass)
         : field.type;
+    IrType fieldIrType() => _edgeType(type);
     // An enum's own members are its variants and the CFE's bookkeeping; neither
     // becomes a field or a constant on the Rust side.
     if (cls.isEnum) return;
@@ -9029,7 +9050,7 @@ class KernelFrontend implements TypeWorld {
       cls.fields.add(
         IrFieldDecl(
           name,
-          _edgeType(type),
+          fieldIrType(),
           isFinal: field.isFinal,
           // Into the field's type, and across a projected one (`T? _result
           // = null` in a generic route, ws414).
@@ -9250,23 +9271,23 @@ class KernelFrontend implements TypeWorld {
         i++
       ) {
         final p = own.positionalParameters[i];
-        final t = sig.positionalParameters[i].type;
-        if (t != p.type && !_mentionsKeptParameter(t)) {
-          _declaredParamTypes[p] = t;
-        }
+        final t = _asApplied(
+          sig.positionalParameters[i].type,
+          signature.enclosingClass,
+        );
+        if (t != p.type) _declaredParamTypes[p] = t;
       }
       for (final p in own.namedParameters) {
         for (final q in sig.namedParameters) {
-          if (q.parameterName == p.parameterName &&
-              q.type != p.type &&
-              !_mentionsKeptParameter(q.type)) {
-            _declaredParamTypes[p] = q.type;
+          if (q.parameterName == p.parameterName) {
+            final t = _asApplied(q.type, signature.enclosingClass);
+            if (t != p.type) _declaredParamTypes[p] = t;
           }
         }
       }
       // ..and its returns widen into the declaration's return type.
-      if (!node.isAbstract && !_mentionsKeptParameter(sig.returnType)) {
-        _expectedReturn = sig.returnType;
+      if (!node.isAbstract) {
+        _expectedReturn = _asApplied(sig.returnType, signature.enclosingClass);
       }
     }
     DartType paramType(Variable p, DartType declared) =>
@@ -9342,12 +9363,15 @@ class KernelFrontend implements TypeWorld {
     final method = IrMethod(
       name,
       params,
-      _edgeReturnType(
-        signature != null &&
-                !_mentionsKeptParameter(signature.function.returnType)
-            ? signature.function
-            : node.function,
-      ),
+      signature == null
+          ? _edgeReturnType(node.function)
+          : (() {
+              final r = _asApplied(
+                signature.function.returnType,
+                signature.enclosingClass,
+              );
+              return r is NeverType ? const IrType('Never') : _edgeType(r);
+            })(),
       node.isAbstract
           ? const IrBlock([])
           : _withEdgeParams(node.function, _body(node.function)),
