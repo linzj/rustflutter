@@ -309,9 +309,42 @@ class KernelFrontend implements TypeWorld {
     // {closure} called as a function" once the font manifest failed to
     // load (run572).
     if (_bareFunctionType(declared)) return true;
+    // ..and `Object` is spelled as `dynamic` is, an `Rc<dyn Object>`:
+    // `Completer.completeError(Object error)` took the bare `Exception`
+    // struct the shape rules left it (`_futurize`, run608).
     return declared != null &&
         declared is! FutureOrType &&
-        (_mentionsDynamic(declared) || _mentionsTypeParameter(declared));
+        (_mentionsTop(declared) || _mentionsTypeParameter(declared));
+  }
+
+  /// `dynamic` or `dart:core`'s non-nullable `Object` anywhere in a
+  /// type: both are the handle `Rc<dyn Object>` on the Rust side, so a
+  /// prelude slot mentioning either is coerced by type. Not `Object?`:
+  /// the prelude takes that generically, as the value's own type
+  /// (`Iterable.contains(Object? element)` is `contains(&T)`,
+  /// `AssertionError([Object? message])`, `log(error: Object?)`; +29
+  /// stubs when it was coerced, ws609).
+  static bool _mentionsTop(DartType t) {
+    if (t is FutureOrType) return _mentionsTop(t.typeArgument);
+    if (t is RecordType) {
+      return t.positional.any(_mentionsTop) ||
+          t.named.any((n) => _mentionsTop(n.type));
+    }
+    if (t is DynamicType) return true;
+    if (t is InterfaceType) {
+      if (t.classNode.name == 'Object' &&
+          t.nullability != Nullability.nullable &&
+          t.classNode.enclosingLibrary.importUri.toString() == 'dart:core') {
+        return true;
+      }
+      return t.typeArguments.any(_mentionsTop);
+    }
+    if (t is FunctionType) {
+      return _mentionsTop(t.returnType) ||
+          t.positionalParameters.any(_mentionsTop) ||
+          t.namedParameters.any((n) => _mentionsTop(n.type));
+    }
+    return false;
   }
 
   /// `dart:core`'s `Function` (nullable or not): a slot with no signature.
@@ -3847,10 +3880,29 @@ class KernelFrontend implements TypeWorld {
         // them takes its adapter here too (`requestFocusCallback ??
         // FocusTraversalPolicy.defaultTraversalRequestFocusCallback`,
         // run522).
-        final into = leftType is InterfaceType || leftType is FunctionType
+        // ..the type of the *whole* -- Dart's least upper bound -- when the
+        // left side is narrower than it: `widget?.notifier ?? fallback`
+        // is a `ValueListenable` where `notifier` is a `ValueNotifier`
+        // and `fallback` implements only the interface; into the left's
+        // type the fallback had no `ValueNotifier` to become
+        // (`TickerMode.getValuesNotifier`, run610). Both sides go into
+        // it: the left below, mapped through its `Option`.
+        final resultType = body.staticType;
+        // ..a class with a handle to go up into: `double? ?? 0` is a
+        // `num` in Dart and an `f64` here, where the literal takes the
+        // left's spelling as before (+6 the round `num` was taken, ws611).
+        final lub =
+            leftType is InterfaceType &&
+                resultType is InterfaceType &&
+                leftType.classNode != resultType.classNode &&
+                resultType.classNode.name != 'Object' &&
+                !scalarNames.contains(resultType.classNode.name)
+            ? resultType
+            : leftType;
+        final into = lub is InterfaceType || lub is FunctionType
             ? (resultNullable
-                  ? leftType!.withDeclaredNullability(Nullability.nullable)
-                  : leftType!.withDeclaredNullability(Nullability.nonNullable))
+                  ? lub!.withDeclaredNullability(Nullability.nullable)
+                  : lub!.withDeclaredNullability(Nullability.nonNullable))
             : null;
         var rightSide = expression(right);
         if (into != null) {
@@ -3878,6 +3930,14 @@ class KernelFrontend implements TypeWorld {
         if (leftType is InterfaceType && leftType.classNode.name != 'Object') {
           try {
             leftSide = coerce(leftSide, _type(leftType));
+            // ..and up into the whole's type when that is wider (see
+            // `lub`), still nullable: the arm that is `None` stays so.
+            if (!identical(lub, leftType) && lub is InterfaceType) {
+              leftSide = coerce(
+                leftSide,
+                _type(lub.withDeclaredNullability(Nullability.nullable)),
+              );
+            }
           } on Unsupported {
             // Unspelled: as it is.
           }
@@ -3889,6 +3949,20 @@ class KernelFrontend implements TypeWorld {
                 ..rustType = const IrType('dynamic', nullable: true))
             : leftSide;
         final resultIr = _recordedType(body.staticType);
+        // A `dynamic` whole whose right side is still an `Option` (a
+        // projected `T?` with `T` bound to `dynamic`: `tween.end ??
+        // tween.begin` on a `Tween<dynamic>`) is the handle, its null the
+        // `Null` object -- the arms agree on that, not on `Option` versus
+        // `Rc` (`_constructTweens`, ws614).
+        final rightIr = rightSide.rustType;
+        if (body.staticType is DynamicType &&
+            resultIr != null &&
+            !resultIr.nullable &&
+            rightIr != null &&
+            isNullable(rightIr)) {
+          rightSide = IrStaticCall(null, 'dart_option_object', [rightSide])
+            ..rustType = const IrType('dynamic');
+        }
         return IrIfNull(
           asked,
           rightSide,
@@ -3974,6 +4048,79 @@ class KernelFrontend implements TypeWorld {
     }
     return block;
   }
+
+  /// A conditional in statement position as an `if` (see the expression
+  /// statement lowering), through the `Let` the CFE binds its receiver
+  /// in. Not the `?.` shape (`#t == null ? null : #t.m()`) nor the `??`
+  /// one (`#t == null ? b : #t`): `_let` gives those their own forms
+  /// (a null-aware call on a place, a `match`). Null for anything else.
+  IrStmt? _conditionalStatement(Expression value) {
+    if (value is ConditionalExpression) {
+      final then = value.then;
+      final otherwise = value.otherwise;
+      // A throw anywhere in it -- TFA's "code removed" in a dead tail --
+      // keeps the expression form, which spelled it (`_callPopInvoked`,
+      // ws613).
+      if (value.condition is Throw || then is Throw || otherwise is Throw) {
+        return null;
+      }
+      // An arm that only reads (`#t_isSet ? #t : (#t_isSet = true, #t =
+      // ..)`, the CFE's pattern cache) does nothing as a statement, and
+      // as one it *moved* the temporary (`__t8;`, +13 at ws613).
+      final thenPure = _pureRead(then);
+      final otherwisePure = _pureRead(otherwise);
+      if (thenPure && otherwisePure) return null;
+      IrStmt arm(Expression e) => statement(ExpressionStatement(e));
+      // An empty `then` is the other arm under the negated test, as one
+      // would write it.
+      if (thenPure) {
+        return IrIf(
+          IrUnary('!', expression(value.condition)),
+          arm(otherwise),
+          null,
+        );
+      }
+      return IrIf(
+        expression(value.condition),
+        arm(then),
+        otherwisePure ? null : arm(otherwise),
+      );
+    }
+    if (value is Let) {
+      final body = value.body;
+      final initial = value.variable.initializer;
+      if (body is! ConditionalExpression || initial == null) return null;
+      final condition = body.condition;
+      if (condition is EqualsNull &&
+          _isThe(condition.expression, value.variable) &&
+          (body.then is NullLiteral ||
+              _isThe(body.otherwise, value.variable))) {
+        return null;
+      }
+      if (_isAliasablePlace(initial) &&
+          _TempMutationFinder.mutates(value.variable, body)) {
+        return null;
+      }
+      final name = _nameFor(value.variable);
+      final declared = IrLocalDecl(
+        name,
+        value.variable.type is VoidType ? null : _type(value.variable.type),
+        _widened(initial, value.variable.type, expression(initial)),
+      );
+      final rest = _conditionalStatement(body);
+      if (rest == null) return null;
+      return IrBlock([declared, rest]);
+    }
+    return null;
+  }
+
+  /// An expression with no effect: a read, a literal, `this`.
+  static bool _pureRead(Expression e) =>
+      e is VariableGet ||
+      e is BasicLiteral ||
+      e is NullLiteral ||
+      e is ConstantExpression ||
+      e is ThisExpression;
 
   /// One local declaration, wherever it is written.
   ///
@@ -10024,6 +10171,13 @@ class KernelFrontend implements TypeWorld {
           ),
         );
       }
+      // A conditional whose value is discarded is an `if`: its arms need
+      // no common type then. The CFE spells `tween.end ??= tween.begin`
+      // as `let #t = tween in #t.end == null ? #t.end = .. : null`, whose
+      // arms are the store's `Option<Rc<dyn Object>>` and the `Null`
+      // object (`_constructTweens`, run612).
+      final asIf = _conditionalStatement(value);
+      if (asIf != null) return asIf;
       return IrExprStmt(expression(value));
     }
     if (node is AssertStatement) {

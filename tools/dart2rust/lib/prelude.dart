@@ -1547,19 +1547,33 @@ impl DartAny for StringBuffer {
 }
 
 impl StringBuffer {
-    /// `StringBuffer([content = ''])`: the optional start, which the front
-    /// end always supplies.
-    pub fn new(content: String) -> Self {
-        StringBuffer { text: content }
+    /// `StringBuffer([Object content = ''])`: the optional start, which
+    /// the front end always supplies, printed as `write` prints (a
+    /// handle once `Object` slots are coerced, the complerr fixture).
+    pub fn new<T: DartAny>(content: T) -> Self {
+        StringBuffer { text: content.dart_to_string() }
     }
 
-    pub fn write<T: fmt::Display>(&mut self, value: T) {
-        self.text.push_str(&value.to_string());
+    /// `write(Object? object)`: the object's `toString()` -- through the
+    /// Object protocol, so a `null`, a handle, a scalar and a struct all
+    /// print as Dart prints them.
+    pub fn write<T: DartAny>(&mut self, value: T) {
+        self.text.push_str(&value.dart_to_string());
     }
 
-    pub fn writeln<T: fmt::Display>(&mut self, value: T) {
-        self.text.push_str(&value.to_string());
+    pub fn writeln<T: DartAny>(&mut self, value: T) {
+        self.text.push_str(&value.dart_to_string());
         self.text.push('\n');
+    }
+
+    /// `writeAll(Iterable objects, [String separator = ''])`.
+    pub fn write_all<T: DartAny>(&mut self, objects: Vec<T>, separator: String) {
+        for (i, object) in objects.iter().enumerate() {
+            if i > 0 {
+                self.text.push_str(&separator);
+            }
+            self.text.push_str(&object.dart_to_string());
+        }
     }
 
     pub fn write_char_code(&mut self, code: i64) {
