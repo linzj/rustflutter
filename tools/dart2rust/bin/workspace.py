@@ -245,7 +245,8 @@ def write_workspace(src, out, mods, crate_of, graph):
         # module, so the runtime still compiles.
         # ..and the ones the render-tree dump names (`report`).
         runtime_modules = ['dart_ui', 'services_message_codecs', 'services_message_codec',
-                           'rendering_binding', 'rendering_object', 'foundation_diagnostics']
+                           'rendering_binding', 'rendering_object', 'foundation_diagnostics',
+                           'widgets_binding', 'widgets_framework']
         r = os.path.join(out, 'dart_runtime', 'src')
         os.makedirs(r, exist_ok=True)
         shutil.copy(os.path.join(TOOL, 'runtime', 'src', 'lib.rs'), os.path.join(r, 'lib.rs'))

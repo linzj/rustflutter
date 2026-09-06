@@ -6702,6 +6702,9 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws532 | 链：**1197**（+181）：非 `this` 接收者的限定调用改成 `<dyn Held as Q>::m(&*x)` 时丢了 `Q` 的泛型（`<dyn Animation<f64> as Animation>::value`，132 个 "missing generics"）。这个改动只为撤回的恢复服务。**撤回**。 | ws533 只带 appliedFields 一族。 |
 | ws533 | 链：**1015**（只带 appliedFields 一族：新 0/去 1），142。 | |
 | run533 | render 树 dump 仍空：`renderViews` 仍空。夹具里 `addRenderView` 已走 `_cell().borrow_mut().insert`，struct 侧读的也是自己的 cell，所以要么 `_RawViewElement._attachView`（`RendererBinding.instance.addRenderView(renderObject)`）根本没走到。 | 后端加编译期选择的运行时追踪 `DART2RUST_RUNTIME_TRACE=名,名`（匹配的成员入口打印 `Class.member`），ws534 带着看注册路径。 |
+| ws534 | 链：**1015**（持平，新 0/去 0），142。后端带 `DART2RUST_RUNTIME_TRACE=名,名`（编译期选中的成员入口 eprintln，闭包体也带）；宿主 `DART2RUST_DUMP_APP=1` 走元素树打印 `Widget (Element)`。 | |
+| run534 | 追踪显示 timer 回调、`attachRootWidget` 都跑了；元素树只有 `RootWidget (RootElement)` → `View (StatefulElementImpl)`，View 下面**没有孩子**，`renderViews` 0，所以没有 `_RawViewElement.mount`/`_attachView`/`addRenderView`。 | 查 View 的 StatefulElement 为什么没 build。 |
+| （ws535 前） | 原因：`impl Element for StatefulElementImpl` 里没有 `mount`。基 trait 的具体方法被中间抽象类（`ComponentElement.mount`、`StatefulElement.performRebuild`）或 mixin 覆盖时，struct 的基 trait impl 没转发，`dyn Element` 上的 `mount()` 走了 `Element::mount` 默认体，`_firstBuild` 从没跑（Rust 子 trait 的默认方法不替换父 trait 的）。通用修：`_emitImplFor` 把"比 base 更近的祖先或 mixin 覆盖的方法"也算 overridden，转发到最近的体（`_overriddenAbove`）；`_inherited` 的查找顺序改成 Dart 的：自身、mixin（后应用的先）、父类，逐级向上。夹具 midover（抽象中间类、Impl 结构、mixin、mixin 的孙类 4 条 `dyn` 派发路径全对）。 | ws535/run535 量。 |
 
 ## 下一步(2026-09-05 重铺)
 

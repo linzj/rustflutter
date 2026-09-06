@@ -8216,8 +8216,10 @@ class RustBackend {
     // the trait's default instead -- the inherent method would still be right,
     // so only a call through `dyn Base` can tell, which is why the tests make
     // that call.
+    // ..and one that an ancestor nearer than the base overrides
+    // (`_overriddenAbove`), for the same reason.
     final overridden = base.methods
-        .where((m) => !m.isStatic && _matching(m) != null)
+        .where((m) => !m.isStatic && _overriddenAbove(base, m))
         .toList();
     // Accessors come from this base alone here; a farther ancestor gets its own
     // impl block and its own.
@@ -8783,25 +8785,74 @@ class RustBackend {
   /// `todo!("X does not translate Y yet")`: 26199 of them, `insert`,
   /// `perform_layout` and `first_child` of `RenderFlexImpl` and all 796
   /// getters of each `GalleryLocalizationsXxImpl` -- compiled, never ran.
+  ///
+  /// The walk is Dart's own lookup order: a class's members, then its mixins
+  /// nearest-applied first, then the superclass -- and so on up. Walking the
+  /// `extends` chain alone passed over a mixin's override, and `class X
+  /// extends Element with M` reached `Element.mount` where Dart runs
+  /// `M.mount`.
   (IrClass, IrMethod)? _inherited(IrMethod need) {
-    var above = cls.superclass;
-    final seen = <String>{cls.name};
-    while (above != null && seen.add(above)) {
-      final base = library[above];
-      if (base == null || !library.isAbstract(base.name)) return null;
-      for (final method in base.methods) {
+    IrMethod? declared(IrClass at) {
+      for (final method in at.methods) {
         if (need.operator != null) {
-          if (method.operator == need.operator) return (base, method);
+          if (method.operator == need.operator) return method;
         } else if (method.operator == null &&
             method.name == need.name &&
             method.isSetter == need.isSetter &&
             method.isStatic == need.isStatic) {
-          return (base, method);
+          return method;
         }
       }
-      above = base.superclass;
+      return null;
+    }
+
+    final seen = <String>{cls.name};
+    IrClass? at = cls;
+    var own = true;
+    while (at != null) {
+      // This class's own members are `_matching`'s; the walk starts at its
+      // mixins.
+      if (!own) {
+        if (!library.isAbstract(at.name)) return null;
+        final method = declared(at);
+        if (method != null) return (at, method);
+      }
+      own = false;
+      for (final applied in at.mixins.reversed) {
+        final mixin = library[applied.name];
+        if (mixin == null || !seen.add(mixin.name)) continue;
+        if (!library.isAbstract(mixin.name)) continue;
+        final method = declared(mixin);
+        if (method != null) return (mixin, method);
+      }
+      final above = at.superclass;
+      if (above == null || !seen.add(above)) return null;
+      at = library[above];
     }
     return null;
+  }
+
+  /// Whether a body nearer than `base`'s answers `need` for this class: an
+  /// abstract class between the two, or a mixin, overrides it.
+  ///
+  /// A Rust trait's default method does not replace the one a supertrait
+  /// declared: `ComponentElement::mount` is what a `dyn ComponentElement`
+  /// reaches, and a `dyn Element` still reaches `Element::mount`. The
+  /// struct's `impl Element` has to route the method to the nearest override
+  /// itself, exactly as it routes an abstract method to the nearest body.
+  /// Without it, `StatefulElementImpl.mount` ran `Element.mount` alone and
+  /// never built a child (run534: the tree ended at `View`).
+  bool _overriddenAbove(IrClass base, IrMethod need) {
+    if (_matching(need) != null) return true;
+    final inherited = _inherited(need);
+    if (Platform.environment['DART2RUST_TRACE_FWD'] == need.name) {
+      stderr.writeln(
+        'TRACE_FWD ${cls.name}.${need.name} above=${inherited?.$1.name} base=${base.name} super=${cls.superclass} abstract=${library.isAbstract(cls.superclass)}',
+      );
+    }
+    return inherited != null &&
+        !identical(inherited.$1, base) &&
+        inherited.$1.name != base.name;
   }
 
   String _inherentCall(IrMethod method, [IrMethod? through, String? via]) {

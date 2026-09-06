@@ -64,6 +64,21 @@ pub fn report() {
             ),
         }
     }
+    // `DART2RUST_DUMP_APP=1`: the element tree (`Element.toStringDeep`),
+    // for where the widget tree got to when the render tree is empty.
+    if std::env::var_os("DART2RUST_DUMP_APP").is_some() {
+        match dump_app() {
+            Ok(text) => {
+                eprintln!("=== DART2RUST ELEMENT TREE BEGIN ===");
+                eprintln!("{}", text);
+                eprintln!("=== DART2RUST ELEMENT TREE END ===");
+            }
+            Err(e) => eprintln!(
+                "dart2rust runtime: dumping the element tree threw: {}",
+                dart_error_text(&e)
+            ),
+        }
+    }
     let frames = FRAMES.with(|f| *f.borrow());
     let messages = MESSAGES.with(|m| m.borrow().clone());
     eprintln!(
@@ -327,6 +342,45 @@ fn dump_render_tree() -> Result<String, DartError> {
         )?);
     }
     Ok(out)
+}
+
+fn dump_app() -> Result<String, DartError> {
+    use generated::widgets_framework::Element;
+    let binding = generated::widgets_binding::widgets_binding_instance()?;
+    let views = generated::rendering_binding::renderer_binding_instance()?.render_views()?;
+    eprintln!("dart2rust runtime: {} render view(s)", views.len());
+    // The tree walked by hand -- `visitChildren` and each widget's runtime
+    // type -- since `toStringDeep` overflowed the stack (run534).
+    let out = Rc::new(RefCell::new(String::new()));
+    fn walk(
+        element: Rc<dyn Element>,
+        depth: usize,
+        out: Rc<RefCell<String>>,
+    ) -> Result<(), DartError> {
+        let widget = Element::widget(&*element)?;
+        let line = format!(
+            "{}{} ({})\n",
+            "  ".repeat(depth),
+            (&*widget).dart_runtime_type().name,
+            (&*element).dart_runtime_type().name
+        );
+        out.borrow_mut().push_str(&line);
+        if depth > 200 {
+            return Ok(());
+        }
+        let out_child = out.clone();
+        element.visit_children(Rc::new(move |child: Rc<dyn Element>| {
+            walk(child, depth + 1, out_child.clone())
+        }))
+    }
+    match binding.root_element()? {
+        Some(root) => {
+            walk(root, 0, out.clone())?;
+            let text = out.borrow().clone();
+            Ok(text)
+        }
+        None => Ok("<no root element>".to_string()),
+    }
 }
 
 fn app_dir(kind: &str) -> String {
