@@ -1181,6 +1181,33 @@ macro_rules! dart_any_named {
     };
 }
 
+/// As `dart_any_named!`, for a type whose `Display` is its Dart
+/// `toString()`: `Uri`, `Duration`, the error classes. Through the
+/// named macro they printed `Instance of 'Uri'` (the uripath fixture).
+macro_rules! dart_any_display {
+    ($($t:ty => $name:literal),* $(,)?) => {
+        $(
+            impl DartAny for $t {
+                fn dart_runtime_type(&self) -> Type {
+                    Type::of($name)
+                }
+                fn dart_to_string(&self) -> String {
+                    format!("{}", self)
+                }
+                fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+                    match other.downcast_ref::<Self>() {
+                        Some(o) => self.dart_eq(o),
+                        None => false,
+                    }
+                }
+                fn dart_hash_any(&self) -> i64 {
+                    self.dart_hash_code()
+                }
+            }
+        )*
+    };
+}
+
 macro_rules! dart_any_generic {
     ($($t:ident<$($p:ident),*> => $name:literal),* $(,)?) => {
         $(
@@ -1313,22 +1340,20 @@ impl DartAny for Type {
 dart_any_named!(
     i8 => "int", i16 => "int", i32 => "int", u8 => "int", u16 => "int", u32 => "int", u64 => "int",
     usize => "int", isize => "int", f32 => "double", char => "String",
-    Duration => "Duration", Symbol => "Symbol", StringBuffer => "StringBuffer", StackTrace => "StackTrace",
-    DateTime => "DateTime", SentinelValue => "SentinelValue", Stopwatch => "Stopwatch", Uri => "Uri",
-    JsonUtf8Encoder => "JsonUtf8Encoder", Pattern => "Pattern", ServiceExtensionResponse => "ServiceExtensionResponse",
+    DateTime => "DateTime", SentinelValue => "SentinelValue", Stopwatch => "Stopwatch", JsonUtf8Encoder => "JsonUtf8Encoder", Pattern => "Pattern", ServiceExtensionResponse => "ServiceExtensionResponse",
     Flow => "Flow", RandomAccessFile => "RandomAccessFile", File => "File", Directory => "Directory",
-    FileSystemEntity => "FileSystemEntity", FileSystemException => "FileSystemException", FileMode => "FileMode",
+    FileSystemEntity => "FileSystemEntity", FileMode => "FileMode",
     FileLock => "FileLock", RegExpMatch => "RegExpMatch", HttpClientResponse => "HttpClientResponse",
     TimelineTask => "TimelineTask", Endian => "Endian", InternetAddress => "InternetAddress", Invocation => "Invocation",
-    InvocationKind => "InvocationKind", Zone => "Zone", Timer => "Timer", RegExp => "RegExp", Exception => "Exception",
-    Utf8Decoder => "Utf8Decoder", OSError => "OSError", SocketException => "SocketException", HttpClient => "HttpClient",
+    InvocationKind => "InvocationKind", Zone => "Zone", Timer => "Timer", RegExp => "RegExp", Utf8Decoder => "Utf8Decoder", OSError => "OSError", HttpClient => "HttpClient",
     JsonCodec => "JsonCodec", Utf8Codec => "Utf8Codec", Encoding => "Encoding", TypedData => "TypedData",
-    ByteBuffer => "ByteBuffer", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError",
-    IndexError => "IndexError", RangeError => "RangeError", ByteData => "ByteData", FormatException => "FormatException",
-    Timeline => "Timeline", NativeType => "NativeType", Void => "Void", DynamicLibrary => "DynamicLibrary",
+    ByteBuffer => "ByteBuffer", ByteData => "ByteData", Timeline => "Timeline", NativeType => "NativeType", Void => "Void", DynamicLibrary => "DynamicLibrary",
     Allocator => "Allocator", _ByteCallbackSink => "_ByteCallbackSink", Iterable => "Iterable", MapBase => "MapBase",
     _Uri => "_Uri", Scheduler => "Scheduler", Random => "Random", std::convert::Infallible => "Never",
-    UserTag => "UserTag", AssertionError => "AssertionError",
+    UserTag => "UserTag", );
+
+dart_any_display!(
+    Duration => "Duration", Symbol => "Symbol", StackTrace => "StackTrace", Uri => "Uri", Exception => "Exception", FormatException => "FormatException", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError", IndexError => "IndexError", RangeError => "RangeError", FileSystemException => "FileSystemException", SocketException => "SocketException", AssertionError => "AssertionError",
 );
 
 dart_any_generic!(
@@ -1554,6 +1579,17 @@ impl fmt::Display for Duration {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StringBuffer {
     text: String,
+}
+
+/// `toString()` of a buffer is its text (`'$locale'` through `Locale.
+/// toString`'s buffer printed `Instance of 'StringBuffer'`, run601).
+impl DartAny for StringBuffer {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("StringBuffer")
+    }
+    fn dart_to_string(&self) -> String {
+        self.text.clone()
+    }
 }
 
 impl StringBuffer {
@@ -3458,14 +3494,28 @@ impl Uri {
         String::from_utf8_lossy(&out).into_owned()
     }
 
+    /// `path`: after the authority when there is one, else everything
+    /// past the scheme. Without an authority the first segment is *not*
+    /// a host: `Uri(path: 'packages/x/data/en.json').path` was
+    /// `/x/data/en.json`, and every package asset was asked for under the
+    /// wrong key (`PlatformAssetBundle.load`, run606).
     pub fn path(&self) -> String {
         let rest = match self.text.find("://") {
-            Some(at) => &self.text[at + 3..],
-            None => &self.text[..],
-        };
-        let rest = match rest.find('/') {
-            Some(at) => &rest[at..],
-            None => rest,
+            Some(at) => {
+                let after = &self.text[at + 3..];
+                match after.find('/') {
+                    Some(slash) => &after[slash..],
+                    None => "",
+                }
+            }
+            None => {
+                let scheme = self.scheme().len();
+                if scheme > 0 {
+                    &self.text[scheme + 1..]
+                } else {
+                    &self.text[..]
+                }
+            }
         };
         rest.split(['?', '#']).next().unwrap_or("").to_string()
     }
@@ -6667,15 +6717,22 @@ pub fn run_until_idle() -> bool {
         // of them woke something (a completer another awaits).
         let tasks = std::mem::take(&mut (**SCHEDULER).borrow_mut().tasks);
         if !tasks.is_empty() {
-            worked = true;
             dart_woken();
             let waker = dart_waker();
             let mut cx = std::task::Context::from_waker(&waker);
             let mut pending = Vec::new();
+            let polled = tasks.len();
             for (name, mut task) in tasks {
                 if task.as_mut().poll(&mut cx).is_pending() {
                     pending.push((name, task));
                 }
+            }
+            // Polling is not progress: a task waiting on a completer no
+            // one will complete stayed pending, this reported "worked",
+            // and `run_main` spun on it for ever instead of reporting
+            // what it was waiting on (run601's hang).
+            if pending.len() < polled {
+                worked = true;
             }
             // A task spawned *during* the pass (an `async` closure's body,
             // spawned when the closure ran) is polled in the next pass, not
@@ -6735,7 +6792,28 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
     let waker = dart_waker();
     let mut cx = std::task::Context::from_waker(&waker);
     let mut done = false;
+    // `DART2RUST_RUN_SECONDS=n`: a program that keeps a periodic timer
+    // never becomes idle -- Flutter's does not exit either -- and the host
+    // was killed from outside before it could report (run601). Past the
+    // budget the loop stops and reports what kept it alive.
+    let budget = std::env::var("DART2RUST_RUN_SECONDS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
     loop {
+        if let Some(deadline) = budget {
+            if std::time::Instant::now() >= deadline {
+                let timers = active_timers();
+                eprintln!(
+                    "dart2rust: run budget spent with main {}; {} timer(s) still active: {}",
+                    if done { "done" } else { "pending" },
+                    timers.len(),
+                    timers.join(", ")
+                );
+                report_natives_skipped();
+                return;
+            }
+        }
         if !done {
             match main.as_mut().poll(&mut cx) {
                 std::task::Poll::Ready(Ok(())) => done = true,
@@ -6755,6 +6833,10 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
         match next_due() {
             Some(due) => {
                 let now = std::time::Instant::now();
+                let due = match budget {
+                    Some(deadline) => due.min(deadline),
+                    None => due,
+                };
                 if due > now {
                     std::thread::sleep(due - now);
                 }
@@ -6776,6 +6858,22 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
             }
         }
     }
+}
+
+/// The timers still armed, each by its period (`every 16ms`) or its
+/// remaining delay (`in 250ms`), for the budget report.
+pub fn active_timers() -> Vec<String> {
+    let now = std::time::Instant::now();
+    (**SCHEDULER)
+        .borrow()
+        .timers
+        .iter()
+        .filter(|t| t.active)
+        .map(|t| match t.period {
+            Some(period) => format!("every {:?}", period),
+            None => format!("in {:?}", t.due.saturating_duration_since(now)),
+        })
+        .collect()
 }
 
 /// The spawned futures not yet complete, by the name each was spawned
@@ -6884,6 +6982,13 @@ impl Timer {
         period: Option<Duration>,
     ) -> Self {
         let wait = std::time::Duration::from_micros(delay.microseconds.max(0) as u64);
+        // `DART2RUST_TRACE_TIMERS=1`: every timer as it is armed.
+        if std::env::var_os("DART2RUST_TRACE_TIMERS").is_some() {
+            match period {
+                Some(_) => eprintln!("dart2rust: timer every {:?}", wait),
+                None => eprintln!("dart2rust: timer in {:?}", wait),
+            }
+        }
         let mut scheduler = (**SCHEDULER).borrow_mut();
         let id = scheduler.next_id;
         scheduler.next_id += 1;
@@ -7471,6 +7576,56 @@ pub fn platform_local_hostname() -> String {
 }
 pub fn platform_version() -> String {
     "dart2rust".to_string()
+}
+/// `Platform.executable` and `resolvedExecutable`: this binary's path.
+pub fn platform_executable() -> String {
+    std::env::args().next().unwrap_or_default()
+}
+pub fn platform_resolved_executable() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| platform_executable())
+}
+/// `Platform.script`: the program's own URI -- there is no script here, so
+/// the binary's `file:` URI stands in for it.
+pub fn platform_script() -> Uri {
+    Uri::parse(
+        format!("file://{}", platform_resolved_executable()),
+        0,
+        None,
+    )
+}
+/// `Platform.executableArguments`: the VM's own flags, of which a
+/// translated binary has none.
+pub fn platform_executable_arguments() -> Vec<String> {
+    Vec::new()
+}
+/// `Platform.packageConfig`: no package config was passed to a binary.
+pub fn platform_package_config() -> Option<String> {
+    None
+}
+/// `Platform.localeName`: from the locale environment (`LC_ALL`, `LANG`)
+/// as the VM reads it on POSIX, with the encoding suffix dropped;
+/// `en_US` when nothing is set.
+pub fn platform_locale_name() -> String {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(value) = std::env::var(key) {
+            let name = value.split('.').next().unwrap_or("").to_string();
+            if !name.is_empty() && name != "C" && name != "POSIX" {
+                return name;
+            }
+        }
+    }
+    "en_US".to_string()
+}
+/// `Platform.environment`: the process's, as a map (`isTest` in
+/// google_fonts asks it for `FLUTTER_TEST`, run605).
+pub fn platform_environment() -> Map<String, String> {
+    let mut out = Map::new();
+    for (key, value) in std::env::vars() {
+        out.insert(key, value);
+    }
+    out
 }
 /// `dart:io`'s `OSError` and `SocketException`, with the fields `http`'s
 /// client reads off them.

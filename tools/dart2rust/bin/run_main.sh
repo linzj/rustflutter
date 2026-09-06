@@ -20,7 +20,12 @@ cd "$here/.crate-ws" || exit 2
   echo "BUILD-DONE"
   # The whole run to its own file, then the status: through `head` the
   # program died of SIGPIPE past 60 lines and the status was `head`'s.
-  RUST_BACKTRACE=1 timeout 120 ./target/debug/dart_main > "$log.run" 2>&1
+  # A budget inside the program (it reports and dumps at the end of it; a
+  # periodic timer keeps a Flutter app alive for ever), `timeout` behind it.
+  # The assets a `flutter build` of the program left, for the runtime's
+  # `flutter/assets` (see runtime/src/lib.rs); unset means no assets.
+  DART2RUST_ASSETS="${DART2RUST_ASSETS:-$HOME/gallery_upstream/build/flutter_assets}" \
+  DART2RUST_RUN_SECONDS="${DART2RUST_RUN_SECONDS:-60}" RUST_BACKTRACE=1 timeout 120 ./target/debug/dart_main > "$log.run" 2>&1
   echo "RUN-DONE exit=$?"
   head -c 400000 "$log.run"
 ) > "$log" 2>&1 &

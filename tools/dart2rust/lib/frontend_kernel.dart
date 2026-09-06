@@ -974,7 +974,17 @@ class KernelFrontend implements TypeWorld {
           static is TypeParameterType &&
           static.nullability == Nullability.nullable &&
           _projectedSlot(static);
-      if (projected != null) {
+      // An `async` function returns the future it spawns, whatever it
+      // was declared: `Future<flatten(R)>`, so `FutureOr<void> f() async`
+      // hands back a `DartFuture<()>`, not a `FutureOr` (`_sendFontChange
+      // Message` into `then`, run607). Static calls here; `_qualified`
+      // does the same for instance ones.
+      final spawned = node is StaticInvocation && _asyncMember(node.target)
+          ? _spawnedFuture(static)
+          : null;
+      if (spawned != null) {
+        lowered.rustType = spawned;
+      } else if (projected != null) {
         lowered.rustType = projected;
       } else if (static != null) {
         try {
@@ -987,6 +997,25 @@ class KernelFrontend implements TypeWorld {
       }
     }
     return lowered;
+  }
+
+  /// The `Future<T>` an `async` member declared `FutureOr<T>` or
+  /// `Future<T>?` actually returns (Dart's `flatten`); null when the
+  /// declaration is a plain `Future<T>` already, or cannot be spelled.
+  IrType? _spawnedFuture(DartType? declared) {
+    final flattened =
+        declared is FutureOrType ||
+            (declared is InterfaceType &&
+                declared.classNode.name == 'Future' &&
+                declared.nullability == Nullability.nullable)
+        ? _awaitedType(declared)
+        : null;
+    if (flattened == null) return null;
+    try {
+      return IrType('Future', arguments: [_type(flattened)]);
+    } on Unsupported {
+      return null;
+    }
   }
 
   /// `dynamic?`, the `Option<Rc<dyn Object>>` a nullable type parameter is
@@ -5870,6 +5899,11 @@ class KernelFrontend implements TypeWorld {
     if (out.asyncTarget && t != null && t.name == 'Future' && t.nullable) {
       out.rustType = IrType('Future', arguments: t.arguments);
     }
+    // ..and one declared `FutureOr<T>` hands back a `Future<T>` too
+    // (Dart's `flatten`; see `_spawnedFuture`).
+    if (out.asyncTarget && t != null && t.name == 'FutureOr') {
+      out.rustType = IrType('Future', arguments: t.arguments);
+    }
     return out;
   }
 
@@ -7141,8 +7175,20 @@ class KernelFrontend implements TypeWorld {
       return null;
     }
     if (!_mentionsParametersOf(declared, callee.typeParameters)) return null;
+    // The receiver class's own parameters put in first: `Future<String>.
+    // then<R>(FutureOr<R> Function(T))` takes a `String`, and a bare `T`
+    // left in collided with the caller's `T` (`loadStructuredData<T>`'s
+    // parser adapter took a `T`, run600).
+    var substituted = declared;
+    final receiverType = _dispatchReceiverType;
+    if (receiverType is InterfaceType &&
+        identical(callee, _dispatchInterface) &&
+        receiverType.typeArguments.isNotEmpty) {
+      substituted = Substitution.fromInterfaceType(receiverType)
+          .substituteType(declared);
+    }
     try {
-      return _typeKept(declared, _genericArgs);
+      return _typeKept(substituted, _genericArgs);
     } on Unsupported {
       return null;
     }
@@ -11907,10 +11953,27 @@ class _CapturedWrites extends RecursiveVisitor {
   final _stack = <FunctionNode>[];
   final found = <Variable>{};
 
+  /// Read from inside a closure, and assigned in its own function *after*
+  /// that closure was made (in source order): Dart's closure sees the
+  /// variable, not its value when the closure was made (`completer`
+  /// assigned after the `then` callbacks that complete it were written,
+  /// `CachingAssetBundle.loadStructuredData`, run601). One assigned only
+  /// before its captures (`Widget child; .. child = ..; builder: (_) =>
+  /// child`) stays a plain local: its value is final by the time the
+  /// closure exists, and a cell of a `dyn Widget` has no `Default` to
+  /// start from (eight stubs, ws602).
+  final _captured = <Variable>{};
+
   static Set<Variable> of(Member member, bool Function(Procedure, int) fills) {
     final v = _CapturedWrites(fills);
     member.accept(v);
     return v.found;
+  }
+
+  @override
+  void visitVariableGet(VariableGet node) {
+    if (_fromOutside(node.variable)) _captured.add(node.variable);
+    super.visitVariableGet(node);
   }
 
   bool _fromOutside(Variable variable) {
@@ -11975,6 +12038,8 @@ class _CapturedWrites extends RecursiveVisitor {
   void visitVariableSet(VariableSet node) {
     final home = _declaredIn[node.variable];
     if (home != null && _stack.isNotEmpty && home != _stack.last) {
+      found.add(node.variable);
+    } else if (home != null && _captured.contains(node.variable)) {
       found.add(node.variable);
     }
     super.visitVariableSet(node);

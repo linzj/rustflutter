@@ -340,6 +340,29 @@ fn plugin_reply(channel: &str, data: Option<ByteData>) -> Result<Option<ByteData
         | "flutter/restoration" => Ok(Some(
             standard_codec().encode_success_envelope(dart_null_object())?,
         )),
+        // The asset bundle, as the engine's embedder serves it: the key
+        // (UTF-8) is a path under the assets directory `DART2RUST_ASSETS`
+        // (a `flutter build`'s `flutter_assets`), the reply is the file's
+        // bytes, and no reply is "no such asset" -- the gallery's locale
+        // names come from `packages/flutter_localized_locales/data/en.json`
+        // (run601).
+        "flutter/assets" => {
+            let key = match data {
+                Some(bytes) => String::from_utf8_lossy(&bytes.dart_bytes()).to_string(),
+                None => return Ok(None),
+            };
+            let root = match std::env::var_os("DART2RUST_ASSETS") {
+                Some(root) => std::path::PathBuf::from(root),
+                None => return Ok(None),
+            };
+            if key.split('/').any(|part| part == "..") {
+                return Ok(None);
+            }
+            match std::fs::read(root.join(&key)) {
+                Ok(bytes) => Ok(Some(ByteData::view(bytes, 0, None))),
+                Err(_) => Ok(None),
+            }
+        }
         "plugins.flutter.io/path_provider" => {
             let codec = standard_codec();
             let call = codec.decode_method_call(data)?;

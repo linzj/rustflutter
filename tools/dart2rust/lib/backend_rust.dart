@@ -2423,6 +2423,13 @@ class RustBackend {
       }
       return '$owner::${_ctorName(null)}(${args.map(expr).join(', ')})';
     }
+    // `dart:io`'s `Platform` statics are the prelude's functions whether
+    // upstream spells them as fields (`isMacOS`, read through
+    // `_staticRead`) or as getters (`environment`, a static call here:
+    // google_fonts' `isTest`, run605).
+    if (owner == 'Platform' && args.isEmpty) {
+      return 'platform_${snake(name)}()';
+    }
     final target = library[owner];
     if (target != null &&
         !target.methods.any((m) => m.name == name && m.operator == null)) {
@@ -4402,7 +4409,24 @@ class RustBackend {
       final item = step == 'filter' ? '(*__x).clone()' : '__x.clone()';
       return '|__x| (${expr(e)})($item).unwrap()';
     }
-    final params = e.params.map((p) => snake(p.name)).join(', ');
+    // `filter` hands `&&T`, and a body written for the item -- `asset.
+    // endsWith(other)`, a tear-off's own parameter passed on bare --
+    // does not read through two references (`dart_ends_with(&&String)`,
+    // `_findFamilyWithVariantAssetPath`, run604). The item is cloned out
+    // first, so the body sees what a `map` step's does.
+    final owned = step == 'filter';
+    final params = e.params
+        .map((p) => owned ? '__p_${snake(p.name)}' : snake(p.name))
+        .join(', ');
+    final unwrapped = owned
+        ? e.params
+              .map(
+                (p) =>
+                    'let ${_assignedIn(e.body).contains(p.name) ? 'mut ' : ''}'
+                    '${snake(p.name)} = (*__p_${snake(p.name)}).clone(); ',
+              )
+              .join()
+        : '';
     final saved = _out.length;
     final savedIndent = _indent;
     _indent = 0;
@@ -4425,7 +4449,7 @@ class RustBackend {
               'let ${_assignedIn(e.body).contains(c.name) ? 'mut ' : ''}${snake(c.name)} = ${_copyOf(c)}; ',
         )
         .join();
-    return '|$params| { $copies$body }';
+    return '|$params| { $unwrapped$copies$body }';
   }
 
   /// A read of a static, or of an enum value.
@@ -8378,8 +8402,12 @@ class RustBackend {
   }
 
   /// `Future<T>` -> `T`; anything else unchanged.
+  /// `Future<T>` or `FutureOr<T>` -> `T` (Dart's `flatten`: an `async`
+  /// function declared `FutureOr<void>` spawns a `Future<void>`, run607).
   static IrType _awaited(IrType t) =>
-      t.name == 'Future' && t.arguments.length == 1 ? t.arguments.single : t;
+      (t.name == 'Future' || t.name == 'FutureOr') && t.arguments.length == 1
+      ? t.arguments.single
+      : t;
 
   String _param(IrParam p, {bool owned = true}) => p.mutRef
       // A parameter the callee fills: the caller's place, lent
