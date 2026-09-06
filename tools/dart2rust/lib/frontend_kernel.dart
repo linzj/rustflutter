@@ -7895,7 +7895,13 @@ class KernelFrontend implements TypeWorld {
       // -- into a parameter the callee only calls (`impl Fn`): the closure
       // behind the handle, lent (`memoize`'s `ifAbsent` into
       // `putIfAbsent`, ws549).
+      // ..only where the parameter is known not to keep it: with no
+      // parameter to ask (a named argument's), the slot is the owned
+      // handle every unknown slot is (`addWithPaintOffset(hitTest: ..)`,
+      // 3 `&{closure}` where `Rc<dyn Fn>` went, ws553).
       if (!kept &&
+          param != null &&
+          callee != null &&
           value is IrLocal &&
           (value.rustType?.isFunction ?? false) &&
           _boxedFunctionLocals.contains(value.name)) {

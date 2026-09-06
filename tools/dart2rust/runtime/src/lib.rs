@@ -30,6 +30,8 @@ const HEIGHT: f64 = 600.0;
 
 thread_local! {
     static FRAMES: RefCell<i64> = RefCell::new(0);
+    /// Frames that panicked part-way (see `schedule_frame`).
+    static FRAME_PANICS: RefCell<i64> = RefCell::new(0);
     static FRAME_PENDING: RefCell<bool> = RefCell::new(false);
     static MESSAGES: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
@@ -80,10 +82,12 @@ pub fn report() {
         }
     }
     let frames = FRAMES.with(|f| *f.borrow());
+    let panicked = FRAME_PANICS.with(|f| *f.borrow());
     let messages = MESSAGES.with(|m| m.borrow().clone());
     eprintln!(
-        "dart2rust runtime: {} frame(s) drawn; {} platform message(s): {}",
+        "dart2rust runtime: {} frame(s) drawn ({} panicked); {} platform message(s): {}",
         frames,
+        panicked,
         messages.len(),
         messages.join(", ")
     );
@@ -167,9 +171,28 @@ fn schedule_frame() {
             *f.borrow()
         });
         let micros = Timeline::now();
-        dart_ui::_begin_frame(micros, number)?;
-        dart_ui::_draw_frame()?;
-        Ok(())
+        // A frame that panics -- a stub on the compositing path, say -- is
+        // reported and the run goes on to `report()`, so the trees built
+        // and laid out before the panic can still be dumped and compared
+        // (run553: the render tree was there and never printed). The
+        // unwinding drops every `RefMut` the frame held.
+        let frame = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dart_ui::_begin_frame(micros, number)?;
+            dart_ui::_draw_frame()
+        }));
+        match frame {
+            Ok(result) => result,
+            Err(payload) => {
+                let text = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "(no message)".to_string());
+                eprintln!("dart2rust host: frame {} panicked: {}", number, text);
+                FRAME_PANICS.with(|p| *p.borrow_mut() += 1);
+                Ok(())
+            }
+        }
     }));
 }
 

@@ -4771,8 +4771,43 @@ pub fn _print_debug(arg: String) {
 }
 
 pub fn _schedule_microtask(callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>) {
-    // An error out of a microtask has no caller to reach: loud.
-    callback().unwrap();
+    run_callback("a microtask", || callback());
+}
+
+thread_local! {
+    /// Callbacks the event loop ran that threw or panicked (`run_callback`).
+    static UNCAUGHT: std::cell::RefCell<i64> = std::cell::RefCell::new(0);
+}
+
+/// How many event-loop callbacks threw or panicked so far.
+pub fn uncaught_count() -> i64 {
+    UNCAUGHT.with(|u| *u.borrow())
+}
+
+/// An event-loop callback -- a timer's, a microtask's -- run as Dart's loop
+/// runs it: an error it throws is uncaught, reported, and the loop goes
+/// on to the next callback (the isolate does not die). A *panic* in it --
+/// a stub, an `unwrap` -- is reported the same way and the loop goes on
+/// too, so that what the program built before it can still be looked at
+/// (the render tree dump behind a stub on the compositing path, run553).
+/// The unwinding drops every `RefMut` the callback held.
+pub fn run_callback<F: FnOnce() -> Result<(), DartError>>(what: &str, callback: F) {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback)) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            UNCAUGHT.with(|u| *u.borrow_mut() += 1);
+            eprintln!("dart2rust: uncaught Dart exception in {}: {}", what, dart_error_text(&error));
+        }
+        Err(payload) => {
+            UNCAUGHT.with(|u| *u.borrow_mut() += 1);
+            let text = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "(no message)".to_string());
+            eprintln!("dart2rust: {} panicked: {}", what, text);
+        }
+    }
 }
 
 /// `dart:core`'s `_StringStackTrace`, a stack trace that is just text: the
@@ -5634,8 +5669,7 @@ pub fn run_until_idle() -> bool {
         let task = (**SCHEDULER).borrow_mut().microtasks.pop_front();
         match task {
             Some(task) => {
-                // No caller to reach from the event loop: loud.
-                task().unwrap();
+                run_callback("a microtask", task);
                 worked = true;
                 continue;
             }
@@ -5695,7 +5729,7 @@ pub fn run_until_idle() -> bool {
                     }
                 }
             }
-            callback().unwrap();
+            run_callback("a timer callback", || callback());
         }
     }
 }

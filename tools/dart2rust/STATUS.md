@@ -6738,6 +6738,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws551 | 链：**845**（+49 对 796；新 66/去 17），141。带类型的 `let` 也不行：拼出的句柄类型点名了作用域外的 `R`/`S`，迭代器闭包（`(0..n).map(f)`）也被装成句柄。**撤回**两处拼写，只在真正没有槽位可推的地方——null-aware 的 `.map(|it| ..)`——把 map 闭包的返回类型拼出来（`_closureLike` 看穿 coerce 造的 `{ let __f = ..; Rc::new(..) }` 块）。 | |
 | ws552 | 链：**794**（−2 对 796；新 12/去 14），141。新的里 `focus_node_super_next_focus`：`policy.next(node)` 撞上 prelude 给每个 `Rc<E>` 实现的 `LinkedListEntry::next()`。 | 入口协议只给标了 `DartLinkedEntry` 的类（后端对 `superclass == 'LinkedListEntry'` 的类发 `impl DartLinkedEntry for X {}`）。 |
 | run552 | **build、layout、paint 全过了**，停在合成：`TransformLayer.addToScene` → `SceneBuilder._pushTransform` 的 native 参数——`oldLayer?._nativeLayer` 进 native 的 `Object` 槽被 `unwrap()`（None panic）。native 参数槽改成 `dynamic`（可空句柄以 `Null` 对象过去）。顺带：`removeLast()` → `pop().unwrap()`；prelude 加 `EmptyIterable<T>`（`Iterable.empty()`）。 | ws553 量；run553 看 render 树 dump。 |
+| ws553 | 链：**783**（−13 对 796；新 8/去 21），141。新 8 里 3 个是 `&*f` 借出用错了地方——具名实参没有 `param` 可问 `_keeps`，被当成"不保留"（`addWithPaintOffset(hitTest: ..)` 要的是 `Rc<dyn Fn>`）：只在参数已知不保留时借出。 | |
+| run553 | **过了 `pushTransform`**，停在合成的 `RenderView.compositeFrame` → `_updateSystemChrome` → `Layer.find<S>` 的 stub：`find<S>` 在 super fn 里对 `this_`（`dyn`）调 `findAnnotations<S>` 只能走擦除孪生，`AnnotationResult<S>` 对不上 `AnnotationResult<Rc<dyn Object>>`（泛型值类当出参经擦除孪生：待做的机制）。render 树在 panic 前已经建好却没打出来：宿主帧回调外加 `catch_unwind`，prelude 的事件循环（timer/microtask）回调外加 `run_callback`——未捕获的异常或 panic 报出来、循环继续（Dart 的 isolate 也不会因此死），`report()` 于是总能到。 | ws554 量；run554 看 dump。 |
 
 ## 下一步(2026-09-05 重铺)
 
