@@ -567,6 +567,16 @@ class KernelFrontend implements TypeWorld {
       if (census != null && !_censusOff && type.typeArguments.isNotEmpty) {
         _censusMembers(type, census);
       }
+      // A class that *is* a `Future` (implements `dart:async`'s): the
+      // prelude's future, since that is what every `Future<T>` slot holds
+      // (`SynchronousFuture<T>`, ws482).
+      if (_futureLike(type.classNode) && type.typeArguments.length == 1) {
+        return IrType(
+          'Future',
+          nullable: nullable,
+          arguments: _nested(() => [_type(type.typeArguments.single)]),
+        );
+      }
       return IrType(
         name,
         nullable: nullable,
@@ -1632,6 +1642,14 @@ class KernelFrontend implements TypeWorld {
                 from.nullability == Nullability.nullable
             ? IrNullCheck(expression(node.operand))
             : expression(node.operand);
+        // `as T?`: the `Option` the downcast hands back, Dart's null for
+        // a `Null` object or another type (`decodeEnvelope(result) as T?`
+        // returning `T?`, ws482).
+        if (to.nullability == Nullability.nullable) {
+          return IrCall(operand, '!as_opt', [
+            IrLiteral(to.parameter.name ?? 'T', const IrType('raw')),
+          ])..rustType = _type(to);
+        }
         return IrCall(
           IrDowncast(operand, to.parameter.name ?? 'T'),
           'clone',
@@ -2914,8 +2932,13 @@ class KernelFrontend implements TypeWorld {
             expression(otherwise),
             // `void` is "nullable" to Kernel; `x?.addListener(..)` is a
             // `map`, not an `and_then` (`Option<_> <= ()`).
+            // ..and a `T?` of a type parameter flattens too: `scope?.
+            // localizationsState.resourcesFor<T?>(type)` is a `T?`, not an
+            // `Option<Option<T>>` (`Localizations.of`, ws482).
             flatten:
-                memberType is InterfaceType &&
+                memberType != null &&
+                (memberType is InterfaceType ||
+                    memberType is TypeParameterType) &&
                 memberType.nullability == Nullability.nullable,
           );
         } finally {
@@ -3028,7 +3051,7 @@ class KernelFrontend implements TypeWorld {
         node.variable.type.nullability == Nullability.nullable &&
         letBody.promotedType != null &&
         letBody.promotedType!.nullability != Nullability.nullable;
-    return IrBlockValue([
+    final block = IrBlockValue([
       IrLocalDecl(
         name,
         // The post-increment's middle binding is `void` (see `_declare`).
@@ -3042,6 +3065,14 @@ class KernelFrontend implements TypeWorld {
         _widened(initial, node.variable.type, expression(initial)),
       ),
     ], promotedRead ? IrNullCheck(IrLocal(name)) : expression(letBody));
+    // Typed as its value, so a slot adapts the block as it would the
+    // value: TFA's `let #t = channel in SystemChannels.menu` (the `??`
+    // decided) into a `MethodChannel` field wants the handle (run483).
+    final letValue = block.value;
+    if (!promotedRead && letValue.rustType != null) {
+      block.rustType = letValue.rustType;
+    }
+    return block;
   }
 
   /// One local declaration, wherever it is written.
@@ -4038,7 +4069,7 @@ class KernelFrontend implements TypeWorld {
         return IrCall(_receiver(node.receiver), '!expando_get', [args.single]);
       }
       if (name == '[]=' && args.length == 2) {
-        return IrCall(_receiver(node.receiver), 'set', args);
+        return IrCall(_receiver(node.receiver), '!expando_set', args);
       }
     }
     // A typed list with a narrow element -- `Float32List` is `Vec<f32>`,
@@ -4787,9 +4818,40 @@ class KernelFrontend implements TypeWorld {
     return uri.scheme != 'dart' || uri.toString() == 'dart:ui';
   }
 
+  /// Whether `c` implements `dart:async`'s `Future` directly: such a
+  /// class is the prelude's future here (`_type`), and constructing it
+  /// with its value is a future already done (`future_ready`).
+  bool _futureLike(Class c) =>
+      c.typeParameters.length == 1 &&
+      c.enclosingLibrary.importUri.scheme != 'dart' &&
+      c.implementedTypes.any(
+        (t) =>
+            t.classNode.name == 'Future' &&
+            t.classNode.enclosingLibrary.importUri.toString() == 'dart:async',
+      );
+
   IrExpr _construct(ConstructorInvocation node) {
     final target = node.target;
     final name = target.name.text;
+    if (_futureLike(target.enclosingClass) &&
+        node.arguments.positional.length == 1 &&
+        node.arguments.named.isEmpty) {
+      final held = node.arguments.types.isNotEmpty
+          ? _type(node.arguments.types.single)
+          : null;
+      final value = expression(node.arguments.positional.single);
+      final ready = IrStaticCall(null, 'future_ready', [
+        held == null
+            ? value
+            : _widened(
+                node.arguments.positional.single,
+                node.arguments.types.single,
+                value,
+              ),
+      ]);
+      if (held != null) ready.rustType = IrType('Future', arguments: [held]);
+      return ready;
+    }
     // `ListQueue([capacity])`: the prelude's `Queue` (a `VecDeque`), and
     // the capacity hint is dropped.
     if (const {

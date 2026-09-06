@@ -4258,22 +4258,33 @@ impl<T: 'static> DartFuture<T> {
 
     /// `future.then(onValue, onError: ..)`: the error goes to `onError` when
     /// there is one, and on through the returned future when there is not.
-    pub fn then<R: 'static>(
+    /// `then(onValue, onError:)`: Dart's callback returns a `FutureOr<R>`,
+    /// and a translated one returns that or an `R` outright
+    /// (`IntoFutureOr`); a future it returns is awaited, as Dart chains
+    /// it. The backend spells `R` at the call.
+    pub fn then<R: Clone + 'static, X: IntoFutureOr<R> + 'static>(
         &self,
-        on_value: std::rc::Rc<dyn Fn(T) -> Result<R, DartError>>,
-        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<R, DartError>>>,
+        on_value: std::rc::Rc<dyn Fn(T) -> Result<X, DartError>>,
+        on_error: Option<std::rc::Rc<dyn Fn(DartError) -> Result<X, DartError>>>,
     ) -> DartFuture<R>
     where
         T: Clone + 'static,
     {
         let me = self.clone();
         DartFuture::spawn_named("then", Box::pin(async move {
-            match me.await {
+            let produced = match me.await {
                 Ok(value) => on_value(value),
                 Err(error) => match on_error {
                     Some(handler) => handler(error),
                     None => Err(error),
                 },
+            };
+            match produced?.into_future_or() {
+                FutureOr::Value(value) => match value {
+                    Some(v) => Ok(v),
+                    None => Err(std::rc::Rc::new(StateError::new("a FutureOr held no value".to_string())) as DartError),
+                },
+                FutureOr::Future(future) => future.await,
             }
         }))
     }
@@ -4292,6 +4303,12 @@ impl<T: Clone> std::future::Future for DartFuture<T> {
             }
         }
     }
+}
+
+/// A future already done with `value`: what constructing a class that
+/// implements `Future` (`SynchronousFuture(value)`) is here.
+pub fn future_ready<T: 'static>(value: T) -> DartFuture<T> {
+    DartFuture::ready(Ok(value))
 }
 
 /// `DartFuture::spawn`, as a function.
@@ -4381,6 +4398,25 @@ pub fn future_wait<T: Clone + 'static>(futures: Vec<DartFuture<T>>) -> DartFutur
 pub enum FutureOr<T> {
     Value(Option<T>),
     Future(DartFuture<T>),
+}
+
+/// What a `then` callback hands back: a `FutureOr<R>`, or the `R`
+/// itself (the front end adapts a callback to the slot's `FutureOr` in
+/// some shapes and not others).
+pub trait IntoFutureOr<R> {
+    fn into_future_or(self) -> FutureOr<R>;
+}
+
+impl<R> IntoFutureOr<R> for FutureOr<R> {
+    fn into_future_or(self) -> FutureOr<R> {
+        self
+    }
+}
+
+impl<R> IntoFutureOr<R> for R {
+    fn into_future_or(self) -> FutureOr<R> {
+        FutureOr::Value(Some(self))
+    }
 }
 
 impl<T> FutureOr<T> {
@@ -5564,7 +5600,7 @@ impl CastErased<()> for Option<std::rc::Rc<dyn Object>> {
     fn cast_erased(self) {}
 }
 
-impl<A: Clone + 'static, B: 'static> CastErased<DartFuture<B>> for DartFuture<A>
+impl<A: Clone + 'static, B: Clone + 'static> CastErased<DartFuture<B>> for DartFuture<A>
 where
     A: CastErased<B>,
 {

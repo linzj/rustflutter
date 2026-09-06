@@ -533,9 +533,8 @@ class RustBackend {
       // (`instance.on_start = on_start`) moves the clone (107 E0507).
       IrLocal(:final name) =>
         _cellLocals.containsKey(name)
-            ? (_cellLocals[name]!
-                  ? '${snake(name)}.get()'
-                  : '{ let __r = ${snake(name)}.borrow().clone(); __r }')
+            ? '${_cellLocals[name]! ? '${snake(name)}.get()' : '{ let __r = ${snake(name)}.borrow().clone(); __r }'}'
+                  '${_lateCellLocals.contains(name) ? '.unwrap()' : ''}'
             : _closureCaptured.contains(name)
             ? '${snake(name)}.clone()'
             : snake(name),
@@ -553,7 +552,7 @@ class RustBackend {
         _selfByValue
             ? _selfName
             : _fieldsAreAccessors || _selfName == 'this_'
-            ? '$_selfName.dart_self_${snake(cls.name)}()'
+            ? '$_selfName.dart_self_${snakeRaw(cls.name)}()'
             // A counted object as a value is its own handle: a clone of
             // the struct would be a second object sharing one `DartSelf`
             // (`_RenderObjectSemantics(this)` in a lazy initializer,
@@ -1038,6 +1037,15 @@ class RustBackend {
       for (final c in node.captures)
         if (_sharedField(c.name) != null) c.name: _isCopy(type(c.type)),
     };
+    // ..and which of those cells hold a `late` field: read unwrapped, as
+    // the field is on the object (`_localizationsResolver` in
+    // `WidgetsApp.build`'s closure, ws482).
+    final savedLateCells = _lateCellLocals;
+    _lateCellLocals = {
+      ..._lateCellLocals,
+      for (final c in node.captures)
+        if (_sharedField(c.name) != null && _lateField(c.name) != null) c.name,
+    };
     final saved = _out.length;
     final savedIndent = _indent;
     final savedSelf = _selfName;
@@ -1123,6 +1131,7 @@ class RustBackend {
               : '${owns ? 'move ' : ''}|$params| -> Result<_, $_error> { $again let _ = $spawned; Ok(()) }')
         : '${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<${_closureReturnSpelled(node.returns)}, $_error>' : ''} { $body }';
     _cellLocals = savedCells;
+    _lateCellLocals = savedLateCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
     return node.boxed ? 'std::rc::Rc::new($whole)' : whole;
   }
@@ -1724,6 +1733,9 @@ class RustBackend {
     return '_';
   }
 
+  /// The captured cell locals that hold a `late` field (see `_cellLocals`).
+  Set<String> _lateCellLocals = const {};
+
   /// Whether the null-aware body being printed binds its value by value
   /// (a scalar receiver) rather than by reference.
   bool _boundByValue = false;
@@ -2198,7 +2210,7 @@ class RustBackend {
   /// `this` as an owned handle, from wherever the body is: a trait body's
   /// `dart_self_<trait>()`, a counted class's stored handle, else a clone.
   String _selfHandle() => _fieldsAreAccessors
-      ? '$_selfName.dart_self_${snake(cls.name)}()'
+      ? '$_selfName.dart_self_${snakeRaw(cls.name)}()'
       : cls.counted
       ? '$_selfName.dart_self_ref().get()'
       : '$_selfName.clone()';
@@ -2277,7 +2289,7 @@ class RustBackend {
   /// has none (a plain value struct).
   String? _thisHandle() {
     if (_fieldsAreAccessors || _selfName == 'this_') {
-      return '$_selfName.dart_self_${snake(cls.name)}()';
+      return '$_selfName.dart_self_${snakeRaw(cls.name)}()';
     }
     if (cls.counted) return '$_selfName.dart_self_ref().get()';
     return null;
@@ -2446,8 +2458,14 @@ class RustBackend {
       for (var i = 0; i < classArity; i++) '_',
       ...typeArguments.map(type),
     ];
+    // An async base method's super function is its future, not a
+    // `Result` (`invokeMethod` reaching `_invokeMethod<T>`, ws482).
+    final baseMethod = library[base]?.methods
+        .where((m) => m.name == name && !m.isStatic)
+        .firstOrNull;
+    final suffix = (baseMethod?.isAsync ?? false) ? '' : _propagate;
     return '${superFn(base, name)}::<${generics.join(', ')}>'
-        '(${['&*$on', ...args.map(expr)].join(', ')})$_propagate';
+        '(${['&*$on', ...args.map(expr)].join(', ')})$suffix';
   }
 
   /// `dyn Foo<A, B>`: the trait object a trait-typed `IrType` names.
@@ -2846,7 +2864,7 @@ class RustBackend {
         // `Rc::new(this_.clone())` boxed a reference (the last 20 lifetime
         // errors at ws335).
         if (_fieldsAreAccessors || _selfName == 'this_') {
-          return '($_selfName.dart_self_${snake(cls.name)}() as std::rc::Rc<dyn Object>)';
+          return '($_selfName.dart_self_${snakeRaw(cls.name)}() as std::rc::Rc<dyn Object>)';
         }
         if (cls.counted) {
           return '($_selfName.dart_self_ref().get() as std::rc::Rc<dyn Object>)';
@@ -2868,7 +2886,7 @@ class RustBackend {
       // `Rc::new(self.clone())`, 82 `Rc::new(this_)` at ws292).
       if (target == null || target is IrThis) {
         if (_fieldsAreAccessors) {
-          return '($_selfName.dart_self_${snake(cls.name)}() as std::rc::Rc<dyn Object>)';
+          return '($_selfName.dart_self_${snakeRaw(cls.name)}() as std::rc::Rc<dyn Object>)';
         }
         if (cls.counted) {
           return '($_selfName.dart_self_ref().get() as std::rc::Rc<dyn Object>)';
@@ -2891,6 +2909,11 @@ class RustBackend {
     }
     if (name == '!expando_get' && args.length == 1) {
       return '$receiver.get(&${_borrowed(args.single)})';
+    }
+    // `expando[object] = v`: keyed by identity, so the object's handle
+    // (`this` by its own; `PlatformInterface`'s token registry, run482).
+    if (name == '!expando_set' && args.length == 2) {
+      return '$receiver.set(${_handleOf(args[0])}, ${expr(args[1])})';
     }
     // `m[k]` is a `V?`, and Dart's `V?` of a nullable `V` is `V` itself:
     // `data['platformBrightness']` on a `Map<String, Object?>` is an
@@ -3163,6 +3186,19 @@ class RustBackend {
     // `MethodChannel.setMethodCallHandler`'s super fn, run458).
     final viaTrait =
         _fieldsAreAccessors && (target == null || target is IrThis);
+    // `f.then(cb)`: the prelude's takes any callback whose result is a
+    // `FutureOr<R>` or an `R` (`IntoFutureOr`), and `R` is what this call
+    // declared -- spelled, since a callback returning `FutureOr` leaves it
+    // ambiguous (`_LocalizationsState.load`, ws482).
+    if (name == 'then' &&
+        resultType != null &&
+        resultType.name == 'Future' &&
+        resultType.arguments.length == 1 &&
+        !resultType.arguments.single.isFunction &&
+        (receiverClass == null || library[receiverClass] == null)) {
+      return '$receiver.then::<${type(resultType.arguments.single)}, _>'
+          '(${args.map(expr).join(', ')})${suffixFor(viaTrait)}';
+    }
     // A generic method through a trait object: its erased twin, and the
     // result cast back to what this call declared (see the prelude's
     // `CastErased`).
@@ -3873,7 +3909,13 @@ class RustBackend {
         _line('match __finally {');
         _indent++;
         if (flows) {
-          _line('Ok(Some(__returned)) => return __returned,');
+          // Inside an outer try's closure the return is that closure's
+          // value again (`inflateWidget`'s try in a try, ws482).
+          _line(
+            wasFlowing
+                ? 'Ok(Some(__returned)) => return Ok(Some(__returned)),'
+                : 'Ok(Some(__returned)) => return __returned,',
+          );
           _line(
             _alwaysReturns(body)
                 ? "Ok(None) => unreachable!(\"the try body always returns\"),"
@@ -4675,7 +4717,7 @@ class RustBackend {
     }
     // `this` as a value inside the trait's own bodies (see `DartSelf`).
     _line(
-      'fn dart_self_${snake(cls.name)}(&self) -> std::rc::Rc<dyn ${cls.name}${_useArguments(cls)}>;',
+      'fn dart_self_${snakeRaw(cls.name)}(&self) -> std::rc::Rc<dyn ${cls.name}${_useArguments(cls)}>;',
     );
     _line('');
     for (final method in cls.abstractMethods) {
@@ -5452,7 +5494,14 @@ class RustBackend {
     final spelled = method.isAsync
         ? 'DartFuture<${type(_awaited(returns))}>'
         : _spelledReturn(type(returns));
-    return 'fn ${_methodName(method)}__erased($params) -> ${_wrapped(spelled)}';
+    // The class's own parameters bounded as the trait's defaults bound
+    // them (`_traitWhere`): the super function the default body reaches
+    // asks `V: Clone` (`CanonicalizedMap.cast__erased`, ws483).
+    final clauses = [
+      for (final p in cls.typeParameters) '$p: Clone${_nb(cls)}',
+    ];
+    final where = clauses.isEmpty ? '' : ' where ${clauses.join(', ')}';
+    return 'fn ${_methodName(method)}__erased($params) -> ${_wrapped(spelled)}$where';
   }
 
   /// The erased twin of a generic trait method, in the trait: declared
@@ -5615,7 +5664,7 @@ class RustBackend {
           '${_vis(cls.name)}fn $name$generics($params) -> ${_futureOf(method)}',
           '${name}__body',
           receiver: (
-            'let __self = this_.dart_self_${snake(cls.name)}();',
+            'let __self = this_.dart_self_${snakeRaw(cls.name)}();',
             '&*__self',
           ),
           turbofish:
@@ -6087,6 +6136,8 @@ class RustBackend {
   static const _preludeFunctions = {
     'dart_native',
     'dart_native_as',
+    'future_ready',
+    'dart_cast_erased',
     // By their Dart names, as the call names them (`postEvent`, not the
     // `post_event` it is spelled as).
     'exit',
@@ -7137,7 +7188,7 @@ class RustBackend {
     // What this object is (`dart_cast_to`): its own struct, and every
     // trait it has an impl for, each through the handle that impl keeps.
     _line(
-      'fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {',
+      'fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {',
     );
     _indent++;
     final own = cls.counted
@@ -7149,23 +7200,23 @@ class RustBackend {
     // is instantiated with `Rc<ScaffoldState>`, not `ScaffoldState`.
     if (own != null) {
       _line(
-        'if __t == std::any::TypeId::of::<Self>() || __t == std::any::TypeId::of::<std::rc::Rc<Self>>() { return Some(Box::new($own)); }',
+        'if __t == std::any::TypeId::of::<Self>() || __t == std::any::TypeId::of::<std::rc::Rc<Self>>() { return Some(std::boxed::Box::new($own)); }',
       );
     }
     for (final above in _abstractAncestors(cls)) {
       final arguments = _baseArguments(above);
       if (arguments == null) continue;
       final handle = cls.extraImpls.any((w) => w.name == above.name)
-          ? '<Self as ${above.name}$arguments>::dart_self_${snake(above.name)}(self)'
-          : 'self.dart_self_${snake(above.name)}()';
+          ? '<Self as ${above.name}$arguments>::dart_self_${snakeRaw(above.name)}(self)'
+          : 'self.dart_self_${snakeRaw(above.name)}()';
       _line(
-        'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(Box::new($handle)); }',
+        'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(std::boxed::Box::new($handle)); }',
       );
     }
     for (final wider in cls.extraImpls) {
       final arguments = '<${wider.arguments.map((a) => type(a)).join(', ')}>';
       _line(
-        'if __t == std::any::TypeId::of::<dyn ${wider.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${wider.name}$arguments>>() { return Some(Box::new(<Self as ${wider.name}$arguments>::dart_self_${snake(wider.name)}(self))); }',
+        'if __t == std::any::TypeId::of::<dyn ${wider.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${wider.name}$arguments>>() { return Some(std::boxed::Box::new(<Self as ${wider.name}$arguments>::dart_self_${snakeRaw(wider.name)}(self))); }',
       );
     }
     _line('None');
@@ -7461,7 +7512,7 @@ class RustBackend {
     // no identity to give, and a fresh handle around a copy is what the
     // rest of its translation does with it too.
     _line(
-      'fn dart_self_${snake(base.name)}(&self) -> std::rc::Rc<dyn ${base.name}$arguments> {',
+      'fn dart_self_${snakeRaw(base.name)}(&self) -> std::rc::Rc<dyn ${base.name}$arguments> {',
     );
     _indent++;
     // ..and a generic value class cannot even be cloned here: its derived
