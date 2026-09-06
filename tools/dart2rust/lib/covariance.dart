@@ -19,6 +19,7 @@
 import 'dart:io';
 
 import 'package:kernel/ast.dart';
+import 'package:kernel/class_hierarchy.dart';
 import 'package:kernel/type_algebra.dart';
 import 'package:kernel/type_environment.dart';
 
@@ -43,11 +44,7 @@ Set<TypeParameter> covariantParameters(
   while (changed) {
     changed = false;
     for (final cls in classes) {
-      for (final above in [
-        if (cls.supertype != null) cls.supertype!,
-        if (cls.mixedInType != null) cls.mixedInType!,
-        ...cls.implementedTypes,
-      ]) {
+      for (final above in _supertypesOf(cls)) {
         final params = above.classNode.typeParameters;
         for (
           var i = 0;
@@ -65,6 +62,71 @@ Set<TypeParameter> covariantParameters(
       }
     }
   }
+  // All or nothing along a hierarchy: a parameter erased while the
+  // supertype's it is passed into keeps its own leaves `TweenImpl` no
+  // `Animatable<f64>` (+99 at ws521); a subclass parameter that cannot be
+  // erased (`RestorableEnum<T extends Enum>`, no handle to erase to) keeps
+  // its supertype's too. Dropped, to a fixpoint: the sites that asked for
+  // it stay as they were, which is fewer stubs than a half-erased chain.
+  final hierarchy = environment.hierarchy;
+  final subtypes = hierarchy is ClosedWorldClassHierarchy
+      ? hierarchy.computeSubtypesInformation()
+      : null;
+  bool erasable(TypeParameter p) {
+    final bound = p.bound;
+    if (bound is DynamicType) return true;
+    if (bound is! InterfaceType) return false;
+    final cls = bound.classNode;
+    if (cls.name == 'Object' &&
+        cls.enclosingLibrary.importUri.toString() == 'dart:core') {
+      return true;
+    }
+    if (!_translated(cls)) return false;
+    return cls.isAbstract ||
+        (subtypes != null && subtypes.getSubtypesOf(cls).length > 1);
+  }
+
+  changed = true;
+  while (changed) {
+    changed = false;
+    for (final cls in classes) {
+      for (final above in _supertypesOf(cls)) {
+        if (!_translated(above.classNode)) continue;
+        final params = above.classNode.typeParameters;
+        for (
+          var i = 0;
+          i < above.typeArguments.length && i < params.length;
+          i++
+        ) {
+          final arg = above.typeArguments[i];
+          if (arg is! TypeParameterType ||
+              !cls.typeParameters.contains(arg.parameter)) {
+            continue;
+          }
+          final below = arg.parameter;
+          final up = params[i];
+          final belowMarked = found.contains(below) && erasable(below);
+          final upMarked = found.contains(up) && erasable(up);
+          if (belowMarked != upMarked) {
+            if (Platform.environment['DART2RUST_TRACE_COVARIANT'] != null &&
+                (found.contains(below) || found.contains(up))) {
+              stderr.writeln(
+                'TRACE_COVARIANT_DROP ${cls.name}<${below.name}> '
+                '(${belowMarked ? "marked" : "not"}) vs '
+                '${above.classNode.name}<${up.name}> '
+                '(${upMarked ? "marked" : "not"})',
+              );
+            }
+            if (found.remove(below)) changed = true;
+            if (found.remove(up)) changed = true;
+          }
+        }
+      }
+    }
+    for (final p in found.toList()) {
+      if (!erasable(p) && found.remove(p)) changed = true;
+    }
+  }
   if (Platform.environment['DART2RUST_TRACE_COVARIANT'] != null) {
     for (final p in found) {
       final owner = p.declaration;
@@ -74,6 +136,29 @@ Set<TypeParameter> covariantParameters(
     }
   }
   return found;
+}
+
+/// A class's supertypes with anonymous mixin applications looked through:
+/// `ModalRoute<T> extends TransitionRoute<T> with LocalHistoryRoute<T>` is
+/// `ModalRoute<T> extends _App<T>`, and the application -- deduplicated,
+/// in a library of its own -- broke the chain (`PageRoute<T>` dropped for
+/// an unmarked `ModalRoute<T>`, ws521).
+Iterable<Supertype> _supertypesOf(Class cls, [int depth = 0]) sync* {
+  for (final above in [
+    if (cls.supertype != null) cls.supertype!,
+    if (cls.mixedInType != null) cls.mixedInType!,
+    ...cls.implementedTypes,
+  ]) {
+    final target = above.classNode;
+    if (target.isAnonymousMixin && depth < 8) {
+      final substitution = Substitution.fromSupertype(above);
+      for (final inner in _supertypesOf(target, depth + 1)) {
+        yield substitution.substituteSupertype(inner);
+      }
+    } else {
+      yield above;
+    }
+  }
 }
 
 class _FlowScan extends RecursiveVisitor {

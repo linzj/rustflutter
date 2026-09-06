@@ -819,7 +819,7 @@ class RustBackend {
           when arguments.isEmpty && _isTypeParam(type) =>
         '<$type as FromDynamic>::from_dynamic(&(${expr(target)} as std::rc::Rc<dyn Object>)).unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
-        '${expr(target)}.as_any().downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
+        '${_asAny(target)}.downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
         receiver,
         arms,
@@ -2701,9 +2701,7 @@ class RustBackend {
     }
     if (scalars.containsKey(name)) {
       final tests = scalars[name]!
-          .map(
-            (t) => '${expr(operand)}.as_any().downcast_ref::<$t>().is_some()',
-          )
+          .map((t) => '${_asAny(operand)}.downcast_ref::<$t>().is_some()')
           .join(' || ');
       return negated ? '!($tests)' : '($tests)';
     }
@@ -2742,7 +2740,7 @@ class RustBackend {
     };
     final typed = typedData[name];
     if (typed != null && library[name] == null) {
-      return '${expr(operand)}.as_any().downcast_ref::<$typed>()'
+      return '${_asAny(operand)}.downcast_ref::<$typed>()'
           '.${negated ? "is_none" : "is_some"}()';
     }
     // A prelude class answers `is` through `Any` like a translated one:
@@ -2754,9 +2752,28 @@ class RustBackend {
     final arguments = target.arguments.isEmpty
         ? ''
         : '<${target.arguments.map(type).join(', ')}>';
-    return '${expr(operand)}.as_any()'
+    return '${_asAny(operand)}'
         '.downcast_ref::<$name$arguments>().${negated ? "is_none" : "is_some"}()';
   }
+
+  /// Whether a value of this recorded type is a handle: an `Rc<dyn Trait>`,
+  /// a `dynamic`, a counted class's `Rc<Struct>`.
+  bool _handleLike(IrExpr e) {
+    final t = e.rustType;
+    if (t == null || e is IrThis || t.isFunction || isNullable(t)) return false;
+    return t.name == 'Object' ||
+        t.name == 'dynamic' ||
+        library.isAbstract(t.name) ||
+        (library[t.name]?.counted ?? false);
+  }
+
+  /// `x.as_any()` for a downcast or an `is`: through the handle when `x` is
+  /// one. The blanket `Object` on the `Rc` itself answers with the
+  /// *handle's* `Any` -- an `Rc<dyn Widget>`, never a `RootWidget` -- so
+  /// `widget is RootWidget` was always false and `RootElement.mount`
+  /// unwrapped a `None` (run521). `this` and a value are asked directly.
+  String _asAny(IrExpr e) =>
+      _handleLike(e) ? '${expr(e)}.as_ref().as_any()' : '${expr(e)}.as_any()';
 
   /// Whether `name` is a field of this struct's own, not in a cell, whose
   /// Rust type is one of the prelude's collections by value.
@@ -3999,13 +4016,16 @@ class RustBackend {
   /// See `IrDynamicDispatch`.
   String _dispatch(IrExpr receiver, List<(IrType?, IrExpr)> arms) {
     final out = StringBuffer('{ let __d = ${expr(receiver)}; ');
+    final asAny = _handleLike(receiver)
+        ? '__d.as_ref().as_any()'
+        : '__d.as_any()';
     var first = true;
     for (final (t, body) in arms) {
       if (t == null) {
         out.write('${first ? '' : ' else '}{ ${expr(body)} }');
       } else {
         out.write(
-          '${first ? '' : ' else '}if let Some(__t) = __d.as_any().downcast_ref::<${type(t)}>() '
+          '${first ? '' : ' else '}if let Some(__t) = $asAny.downcast_ref::<${type(t)}>() '
           '{ let __d = __t.clone(); ${expr(body)} }',
         );
       }
