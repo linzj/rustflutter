@@ -1895,12 +1895,19 @@ class KernelFrontend implements TypeWorld {
   ) {
     final body = node.body;
     if (body is! Block || body.statements.isEmpty) return false;
+    // The last arm may sit in a block of its own with the variables its
+    // pattern binds (`{ final double lower; final double upper; if (..)
+    // {..} }` for a record pattern, `scaleFontSize`, ws473): the block's
+    // last statement is the arm, the ones before it are looked at too.
+    final before = <Statement>[];
     Statement last = body.statements.last;
-    while (last is Block && last.statements.length == 1) {
-      last = last.statements.single;
+    before.addAll(body.statements.take(body.statements.length - 1));
+    while (last is Block && last.statements.isNotEmpty) {
+      before.addAll(last.statements.take(last.statements.length - 1));
+      last = last.statements.last;
     }
     if (last is! IfStatement || last.otherwise != null) return false;
-    for (final s in body.statements.take(body.statements.length - 1)) {
+    for (final s in before) {
       if (s is ExpressionStatement) {
         final e = s.expression;
         if (e is VariableSet && e.variable == bound) return false;

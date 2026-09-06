@@ -4677,13 +4677,26 @@ impl JsonCodec {
         out
     }
 
-    pub fn decode(&self, _source: String) -> std::rc::Rc<dyn Object> {
-        panic!("dart2rust: JsonCodec.decode is not written")
+    /// `json.decode(source, reviver: ..)`: what a translated `dynamic`
+    /// holds -- a `String`, an `i64` or `f64`, a `bool`, `Null`, a
+    /// `Map<String, Rc<dyn Object>>`, a `Vec<Rc<dyn Object>>`. Malformed
+    /// text is Dart's `FormatException`, which the signature (no
+    /// `Result`: the call is not a failing one to the front end) can only
+    /// panic with.
+    pub fn decode(&self, source: String, reviver: Option<JsonReviver>) -> std::rc::Rc<dyn Object> {
+        let mut parser = JsonParser { text: source.as_bytes(), at: 0, reviver };
+        parser.skip_space();
+        let value = parser.value();
+        parser.skip_space();
+        if parser.at != parser.text.len() {
+            parser.fail("Unexpected trailing text");
+        }
+        parser.revive(None, value)
     }
 
     /// `json.decoder`: a `Converter<String, Object?>`.
     pub fn decoder(&self) -> Converter<String, Option<std::rc::Rc<dyn Object>>> {
-        Converter::new(std::rc::Rc::new(|source: String| Ok(Some(JsonCodec.decode(source)))))
+        Converter::new(std::rc::Rc::new(|source: String| Ok(Some(JsonCodec.decode(source, None)))))
     }
 
     /// `json.encoder`: a `Converter<Object?, String>`.
@@ -4692,6 +4705,352 @@ impl JsonCodec {
             Ok(JsonCodec.encode(value.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>), None))
         }))
     }
+}
+
+/// `Object? reviver(Object? key, Object? value)`, as translated code spells it.
+pub type JsonReviver = std::rc::Rc<
+    dyn Fn(Option<std::rc::Rc<dyn Object>>, Option<std::rc::Rc<dyn Object>>) -> Result<Option<std::rc::Rc<dyn Object>>, DartError>,
+>;
+
+struct JsonParser<'a> {
+    text: &'a [u8],
+    at: usize,
+    reviver: Option<JsonReviver>,
+}
+
+impl<'a> JsonParser<'a> {
+    fn fail(&self, what: &str) -> ! {
+        panic!(
+            "uncaught Dart exception: FormatException: {} (at character {})",
+            what,
+            self.at + 1
+        )
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.text.get(self.at).copied()
+    }
+
+    fn skip_space(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.at += 1;
+        }
+    }
+
+    fn expect(&mut self, literal: &str) {
+        if self.text[self.at..].starts_with(literal.as_bytes()) {
+            self.at += literal.len();
+        } else {
+            self.fail(&format!("Expected '{}'", literal));
+        }
+    }
+
+    /// The reviver's say on one decoded value, if there is one.
+    fn revive(&self, key: Option<std::rc::Rc<dyn Object>>, value: std::rc::Rc<dyn Object>) -> std::rc::Rc<dyn Object> {
+        match &self.reviver {
+            None => value,
+            Some(reviver) => match reviver(key, dart_nullable(value)) {
+                Ok(revived) => revived.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>),
+                Err(error) => panic!("uncaught Dart exception in a JSON reviver: {}", dart_error_text(&error)),
+            },
+        }
+    }
+
+    fn value(&mut self) -> std::rc::Rc<dyn Object> {
+        match self.peek() {
+            Some(b'{') => self.object(),
+            Some(b'[') => self.array(),
+            Some(b'"') => std::rc::Rc::new(self.string()) as std::rc::Rc<dyn Object>,
+            Some(b't') => {
+                self.expect("true");
+                std::rc::Rc::new(true) as std::rc::Rc<dyn Object>
+            }
+            Some(b'f') => {
+                self.expect("false");
+                std::rc::Rc::new(false) as std::rc::Rc<dyn Object>
+            }
+            Some(b'n') => {
+                self.expect("null");
+                std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>
+            }
+            Some(b'-' | b'0'..=b'9') => self.number(),
+            Some(_) => self.fail("Unexpected character"),
+            None => self.fail("Unexpected end of input"),
+        }
+    }
+
+    fn object(&mut self) -> std::rc::Rc<dyn Object> {
+        self.at += 1;
+        let mut map: Map<String, std::rc::Rc<dyn Object>> = Map::new();
+        self.skip_space();
+        if self.peek() == Some(b'}') {
+            self.at += 1;
+            return std::rc::Rc::new(map) as std::rc::Rc<dyn Object>;
+        }
+        loop {
+            self.skip_space();
+            if self.peek() != Some(b'"') {
+                self.fail("Expected string");
+            }
+            let key = self.string();
+            self.skip_space();
+            self.expect(":");
+            self.skip_space();
+            let value = self.value();
+            let value = self.revive(Some(std::rc::Rc::new(key.clone()) as std::rc::Rc<dyn Object>), value);
+            map.insert(key, value);
+            self.skip_space();
+            match self.peek() {
+                Some(b',') => self.at += 1,
+                Some(b'}') => {
+                    self.at += 1;
+                    return std::rc::Rc::new(map) as std::rc::Rc<dyn Object>;
+                }
+                _ => self.fail("Expected ',' or '}'"),
+            }
+        }
+    }
+
+    fn array(&mut self) -> std::rc::Rc<dyn Object> {
+        self.at += 1;
+        let mut list: Vec<std::rc::Rc<dyn Object>> = Vec::new();
+        self.skip_space();
+        if self.peek() == Some(b']') {
+            self.at += 1;
+            return std::rc::Rc::new(list) as std::rc::Rc<dyn Object>;
+        }
+        loop {
+            self.skip_space();
+            let value = self.value();
+            let index = list.len() as i64;
+            let value = self.revive(Some(std::rc::Rc::new(index) as std::rc::Rc<dyn Object>), value);
+            list.push(value);
+            self.skip_space();
+            match self.peek() {
+                Some(b',') => self.at += 1,
+                Some(b']') => {
+                    self.at += 1;
+                    return std::rc::Rc::new(list) as std::rc::Rc<dyn Object>;
+                }
+                _ => self.fail("Expected ',' or ']'"),
+            }
+        }
+    }
+
+    fn number(&mut self) -> std::rc::Rc<dyn Object> {
+        let start = self.at;
+        let mut integral = true;
+        if self.peek() == Some(b'-') {
+            self.at += 1;
+        }
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.at += 1;
+        }
+        if self.peek() == Some(b'.') {
+            integral = false;
+            self.at += 1;
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.at += 1;
+            }
+        }
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            integral = false;
+            self.at += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.at += 1;
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.at += 1;
+            }
+        }
+        let text = std::str::from_utf8(&self.text[start..self.at]).unwrap_or("");
+        if integral {
+            if let Ok(i) = text.parse::<i64>() {
+                return std::rc::Rc::new(i) as std::rc::Rc<dyn Object>;
+            }
+        }
+        match text.parse::<f64>() {
+            Ok(d) => std::rc::Rc::new(d) as std::rc::Rc<dyn Object>,
+            Err(_) => self.fail("Invalid number"),
+        }
+    }
+
+    fn hex4(&mut self) -> u32 {
+        let end = self.at + 4;
+        if end > self.text.len() {
+            self.fail("Unterminated unicode escape");
+        }
+        let digits = std::str::from_utf8(&self.text[self.at..end]).unwrap_or("");
+        match u32::from_str_radix(digits, 16) {
+            Ok(code) => {
+                self.at = end;
+                code
+            }
+            Err(_) => self.fail("Invalid unicode escape"),
+        }
+    }
+
+    fn string(&mut self) -> String {
+        self.at += 1;
+        let mut out: Vec<u8> = Vec::new();
+        loop {
+            let byte = match self.peek() {
+                Some(b) => b,
+                None => self.fail("Unterminated string"),
+            };
+            self.at += 1;
+            match byte {
+                b'"' => break,
+                b'\\' => {
+                    let escaped = match self.peek() {
+                        Some(b) => b,
+                        None => self.fail("Unterminated string"),
+                    };
+                    self.at += 1;
+                    match escaped {
+                        b'"' => out.push(b'"'),
+                        b'\\' => out.push(b'\\'),
+                        b'/' => out.push(b'/'),
+                        b'b' => out.push(8),
+                        b'f' => out.push(12),
+                        b'n' => out.push(b'\n'),
+                        b'r' => out.push(b'\r'),
+                        b't' => out.push(b'\t'),
+                        b'u' => {
+                            let mut code = self.hex4();
+                            if (0xD800..0xDC00).contains(&code)
+                                && self.text[self.at..].starts_with(b"\\u")
+                            {
+                                self.at += 2;
+                                let low = self.hex4();
+                                if (0xDC00..0xE000).contains(&low) {
+                                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                                } else {
+                                    self.at -= 6;
+                                }
+                            }
+                            let ch = char::from_u32(code).unwrap_or('\u{FFFD}');
+                            let mut buffer = [0u8; 4];
+                            out.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
+                        }
+                        _ => self.fail("Invalid escape"),
+                    }
+                }
+                b => out.push(b),
+            }
+        }
+        String::from_utf8(out).unwrap_or_else(|_| self.fail("Invalid UTF-8"))
+    }
+}
+
+/// What a value out of a `dynamic` becomes in a typed collection: the
+/// conversions Dart's runtime does not need, because `Map<String, dynamic>`
+/// and `Map<String, Object?>` are one type there and two here (`json.decode`
+/// cast `as Map<String, Object?>`, ws473). A translated class is not one of
+/// these: its downcast is exact.
+pub trait FromDynamic: Sized + Clone + 'static {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self>;
+
+    fn from_nullable(value: &Option<std::rc::Rc<dyn Object>>) -> Option<Self> {
+        match value {
+            Some(v) => Self::from_dynamic(v),
+            None => Self::from_dynamic(&(std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>)),
+        }
+    }
+}
+
+impl FromDynamic for std::rc::Rc<dyn Object> {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+impl FromDynamic for Option<std::rc::Rc<dyn Object>> {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        Some(dart_nullable(value.clone()))
+    }
+}
+
+macro_rules! from_dynamic_scalar {
+    ($($t:ty),*) => {
+        $(
+            impl FromDynamic for $t {
+                fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+                    value.as_any().downcast_ref::<$t>().cloned()
+                }
+            }
+        )*
+    };
+}
+from_dynamic_scalar!(String, i64, f64, bool);
+
+impl<T: FromDynamic> FromDynamic for Vec<T> {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        dart_cast_list::<T>(value)
+    }
+}
+
+impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        dart_cast_map::<K, V>(value)
+    }
+}
+
+/// `x as List<T>` on an object: the list as it is when it is one of `T`,
+/// else each element of a `List<dynamic>` / `List<Object?>` converted.
+pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {
+    let any = value.as_any();
+    if let Some(list) = any.downcast_ref::<Vec<T>>() {
+        return Some(list.clone());
+    }
+    if let Some(list) = any.downcast_ref::<Vec<std::rc::Rc<dyn Object>>>() {
+        return list.iter().map(T::from_dynamic).collect();
+    }
+    if let Some(list) = any.downcast_ref::<Vec<Option<std::rc::Rc<dyn Object>>>>() {
+        return list.iter().map(T::from_nullable).collect();
+    }
+    None
+}
+
+/// `x as Map<K, V>` on an object: see `dart_cast_list`.
+pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option<Map<K, V>> {
+    let any = value.as_any();
+    if let Some(map) = any.downcast_ref::<Map<K, V>>() {
+        return Some(map.clone());
+    }
+    fn convert<K1: Clone + 'static, V1: Clone + 'static, K: FromDynamic + DartEq, V: FromDynamic>(
+        any: &dyn std::any::Any,
+        key: fn(&K1) -> Option<K>,
+        value: fn(&V1) -> Option<V>,
+    ) -> Option<Option<Map<K, V>>> {
+        let map = any.downcast_ref::<Map<K1, V1>>()?;
+        let mut out: Map<K, V> = Map::new();
+        for (k, v) in map.entries.iter() {
+            match (key(k), value(v)) {
+                (Some(k), Some(v)) => {
+                    out.insert(k, v);
+                }
+                _ => return Some(None),
+            }
+        }
+        Some(Some(out))
+    }
+    if let Some(r) = convert::<String, std::rc::Rc<dyn Object>, K, V>(any, |k| K::from_dynamic(&(std::rc::Rc::new(k.clone()) as std::rc::Rc<dyn Object>)), V::from_dynamic) {
+        return r;
+    }
+    if let Some(r) = convert::<String, Option<std::rc::Rc<dyn Object>>, K, V>(any, |k| K::from_dynamic(&(std::rc::Rc::new(k.clone()) as std::rc::Rc<dyn Object>)), V::from_nullable) {
+        return r;
+    }
+    if let Some(r) = convert::<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>, K, V>(any, K::from_dynamic, V::from_dynamic) {
+        return r;
+    }
+    if let Some(r) = convert::<std::rc::Rc<dyn Object>, Option<std::rc::Rc<dyn Object>>, K, V>(any, K::from_dynamic, V::from_nullable) {
+        return r;
+    }
+    if let Some(r) = convert::<Option<std::rc::Rc<dyn Object>>, Option<std::rc::Rc<dyn Object>>, K, V>(any, K::from_nullable, V::from_nullable) {
+        return r;
+    }
+    None
 }
 
 fn json_write(out: &mut String, value: &std::rc::Rc<dyn Object>) {

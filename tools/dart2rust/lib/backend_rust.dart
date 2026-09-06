@@ -754,7 +754,7 @@ class RustBackend {
       // a reference does not cast: `lerpDouble`'s `a as double` on an
       // `Option<f64>` (E0606).
       IrCast(:final value, :final rust) =>
-        value is IrBound
+        value is IrBound && !_boundByValue
             ? '(*${expr(value)} as $rust)'
             : '(${expr(value)} as $rust)',
       // `state as T?` with `T` a type parameter: by id, and the `Option`
@@ -784,6 +784,15 @@ class RustBackend {
           classArity,
           castTo,
         ),
+      // A collection of `dynamic`/`Object?`/scalars: the object's own
+      // element representation may differ (`Map<String, dynamic>` from
+      // `json.decode` cast `as Map<String, Object?>`), and Dart's runtime
+      // type does not tell them apart; the prelude converts (ws473).
+      IrDowncast(:final target, :final type, :final arguments)
+          when (type == 'Map' || type == 'List') &&
+              arguments.isNotEmpty &&
+              arguments.every(_dynamicRepresentable) =>
+        '${type == 'Map' ? 'dart_cast_map' : 'dart_cast_list'}::<${arguments.map(this.type).join(', ')}>(&${expr(target)}).unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
         '${expr(target)}.as_any().downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
@@ -807,10 +816,14 @@ class RustBackend {
       // Under the Result model the body may `?`: it runs inside a closure
       // returning `Result`, and `transpose()?` lifts the error out of the
       // `Option` again.
-      IrNullAware(:final receiver, :final body, :final flatten) =>
-        _failure == null
-            ? '${expr(_plain(receiver))}.as_ref().${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
-            : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}',
+      // ..except a scalar, which is `Copy`: the body gets the value
+      // itself, and `it as f64` needs no dereference (`a?.toDouble()` in
+      // `lerpDouble`, ws473).
+      IrNullAware(:final receiver, :final body, :final flatten) => _nullAware(
+        receiver,
+        body,
+        flatten,
+      ),
       // A counted class's constructor already hands out an `Rc`.
       IrMapElements(:final collection, :final kind, :final body) =>
         kind == 'Future'
@@ -1403,6 +1416,18 @@ class RustBackend {
     if (!passthrough.contains(op)) {
       throw Unsupported('binary operator `$op`', '${expr(left)} $op ...');
     }
+    // An operator on an open class's handle: `Rc<dyn Size> * f64` has no
+    // `impl std::ops::Mul` to land on (the orphan rule: `Rc` is not
+    // fundamental), so it is the trait's method, which fails like any
+    // method (`Size.lerp`, ws473).
+    final leftName = left.rustType?.name;
+    final mapping = _operatorTraits[op];
+    if (mapping != null &&
+        leftName != null &&
+        library[leftName] != null &&
+        library.isAbstract(leftName)) {
+      return '${expr(left)}.op_${mapping.$2}(${expr(right)})$_propagate';
+    }
     // `==` on a type parameter's values (`T`, `T?`) is Dart's `==`, the
     // prelude's `DartEq`, which every parameter carries; `PartialEq` is
     // not asked of one (`selected == value` on a `T?` in
@@ -1577,11 +1602,53 @@ class RustBackend {
   /// a `Vec<T?>` or a generic accessor) where an `Option` operation --
   /// `!`, `== null`, `?.`, `??`, `==` -- wants the `Option<T>` a body works
   /// with: the prelude's conversion first.
+  /// A type the prelude's `FromDynamic` converts: what a `dynamic` holds
+  /// as itself, the scalars, and collections of those.
+  bool _dynamicRepresentable(IrType t) {
+    if (t.isFunction) return false;
+    if (const {
+      'Object',
+      'dynamic',
+      'String',
+      'int',
+      'double',
+      'bool',
+    }.contains(t.name)) {
+      return true;
+    }
+    return (t.name == 'List' || t.name == 'Map') &&
+        t.arguments.isNotEmpty &&
+        t.arguments.every(_dynamicRepresentable);
+  }
+
   /// `.flatten()` after a map lookup whose value type is itself nullable.
   String _flattenedValue(IrExpr? map) {
     final t = map?.rustType;
     if (t == null || t.arguments.length != 2) return '';
     return t.arguments[1].nullable ? '.flatten()' : '';
+  }
+
+  /// Whether the null-aware body being printed binds its value by value
+  /// (a scalar receiver) rather than by reference.
+  bool _boundByValue = false;
+
+  String _nullAware(IrExpr receiver, IrExpr body, bool flatten) {
+    final scalar = const {
+      'int',
+      'double',
+      'num',
+      'bool',
+    }.contains(receiver.rustType?.name);
+    final outer = _boundByValue;
+    _boundByValue = scalar;
+    try {
+      final at = scalar ? '' : '.as_ref()';
+      return _failure == null
+          ? '${expr(_plain(receiver))}$at.${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
+          : '${expr(receiver)}$at.map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}';
+    } finally {
+      _boundByValue = outer;
+    }
   }
 
   IrExpr _plain(IrExpr e) {
