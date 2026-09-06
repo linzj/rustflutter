@@ -21,6 +21,10 @@ abstract class TypeWorld {
   /// A trait here: an abstract or open class, or `Object`.
   bool isTrait(String name);
 
+  /// A translated enum: a value that goes behind a fresh handle into a
+  /// trait slot, as a struct's does.
+  bool isEnum(String name);
+
   /// A counted class: its values are handles already.
   bool isCounted(String name);
 
@@ -510,6 +514,12 @@ IrExpr coerceInto(
       handle: world.isCounted(have.name),
       explicit: inClosure,
     )..rustType = slot;
+  }
+  // An enum implementing an interface (`_UnspecifiedTextScaler`, an
+  // `Ts` here): the value behind a fresh handle (ws510).
+  if (slotTrait && world.isEnum(have.name)) {
+    return IrUpcast(value, slot, handle: false, explicit: inClosure)
+      ..rustType = slot;
   }
   if (haveTrait && world.isStruct(slot.name)) {
     // Down to a struct through `Any`, with the slot's kept type arguments.

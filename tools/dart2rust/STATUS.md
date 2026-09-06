@@ -6652,6 +6652,10 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws506 | 链：**1214**（−7；比 1300 少 86），141。 | |
 | ws507 | 链：**1201**（−13；比 1300 少 99），141。 | |
 | run507 | **`writeValue`/`WriteBuffer` 走通，平台消息编出来了**；`main` 抛 `MissingPluginException`：宿主只答 path_provider，`flutter/keyboard`（`getKeyboardState`，非 Optional 的 `MethodChannel`）和 `flutter/platform`（JSON）没人答；而且宿主解 path_provider 的调用时 `FormatException: Message corrupted`。 | 宿主按名字和 codec 表答 embedder 自己的通道（JSON 一族回 `[null]`，standard 一族回 null 信封，`flutter/keyboard` 回空 map）；`DART2RUST_TRACE_MESSAGES` 下打印收到的字节。同批：TFA 把 `!` 改写成的 `unsafeCast<Fn>(nullableFn)` 作为只去 `?` 的 `as` 处理（函数类型也算）。 |
+| ws508 | 链：**1176**（−25；比 1300 少 124：新 4/去 112），141。 | |
+| run508 | 宿主答了 `flutter/platform`/`flutter/keyboard`；path_provider 的消息**字节是空的**（`Message corrupted`）：`WriteBuffer._append` 在 `_buffer.clone()` 上 `setRange`，真正的 `_buffer` 从没变过——"对 `this` 字段的 mutating 调用作用在克隆上"这一族到此挡住运行时。 | struct 自己的方法里，对 `this` 字段的 mutating 调用直接作用在字段上（`self._buffer.set_range(..)`），不再取值读的克隆（a4e79ce7，进 ws509）。 |
+| ws509 | 链：**1229（+53）**，141：字段就地 mutating 这条规则劫持了两种形状——同名的非集合方法（`AnimationController.reverse`，44 个）和 cell 里的字段（`Rc<RefCell<Option<Set>>>.clear()`）。 | 规则只对本 struct 自己的、非 cell 的、集合型（按 IR 名：List/Map/Set/Queue/typed lists/ByteData）字段生效。 |
+| run509 | 编码器就地改了，字节**还是空的**：`writeValue(buffer, ..)` 按**值**接 `WriteBuffer`，填的是副本——Dart 对象是引用，非计数的 struct 传参即复制。 | **别名突变分析**（`lib/alias_mutation.dart`，全程序预扫）：某类的 mutating 成员（写 `this` 字段、对 `this` 字段调集合/ByteData 的 mutator、或调到这样的成员，类内定点）在非 `this` 接收者上被调用 → 该类计数（`Rc` + cell 字段）。同批：`ByteData` 的 set_* 也算就地 mutator。待办：`_eightBytesAsList` 是 `_eightBytes.buffer` 的**视图**，这里是拷贝，`putUint16/32/Float64` 写进去的字节读不到——typed_data 的共享 buffer 语义还没有。 |
 
 ## 下一步(2026-09-05 重铺)
 

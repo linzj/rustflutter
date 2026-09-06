@@ -2704,6 +2704,36 @@ class RustBackend {
         '.downcast_ref::<$name$arguments>().${negated ? "is_none" : "is_some"}()';
   }
 
+  /// Whether `name` is a field of this struct's own, not in a cell, whose
+  /// Rust type is one of the prelude's collections by value.
+  bool _ownCollectionField(String name) {
+    if (_sharedField(name) != null) return false;
+    final decl = cls.fields.where((f) => f.name == name).firstOrNull;
+    if (decl == null || decl.type.nullable) return false;
+    // By the IR's name: a typed list (`Uint8List`) is a prelude alias of
+    // its `Vec` and spells as one.
+    return const {
+      'List',
+      'Vec',
+      'Iterable',
+      'Map',
+      'Set',
+      'Queue',
+      'Int8List',
+      'Int16List',
+      'Int32List',
+      'Int64List',
+      'Uint8List',
+      'Uint8ClampedList',
+      'Uint16List',
+      'Uint32List',
+      'Uint64List',
+      'Float32List',
+      'Float64List',
+      'ByteData',
+    }.contains(decl.type.name);
+  }
+
   /// The receiver of a field read or a call.
   ///
   /// `this` is two different things in Rust depending on where it stands. As a
@@ -2832,6 +2862,18 @@ class RustBackend {
     'remove_range',
     'replace_range',
     'set_all',
+    // `ByteData`'s setters: a byte view written in place (`WriteBuffer.
+    // putUint16` on its `_eightBytes`, run509).
+    'set_int8',
+    'set_uint8',
+    'set_int16',
+    'set_uint16',
+    'set_int32',
+    'set_uint32',
+    'set_int64',
+    'set_uint64',
+    'set_float32',
+    'set_float64',
   };
 
   static bool _mutatesInPlace(String name) => _inPlace.contains(name);
@@ -3000,13 +3042,18 @@ class RustBackend {
     // on the field, not on the clone a value read takes: `_buffer.setRange
     // (..)` on a clone left `WriteBuffer` empty and every platform message
     // without a byte (run507).
+    // ..a field of this struct's own, held as a plain collection: a cell
+    // (`Rc<RefCell<..>>`) has its place above, and a handle's method that
+    // shares a mutator's name (`AnimationController.reverse`) is not a
+    // mutation of the field (+44 at ws509).
     final ownPlace =
         cellPlace == null &&
             _mutatesInPlace(name) &&
             target is IrField &&
             (target.target == null || target.target is IrThis) &&
             !_fieldsAreAccessors &&
-            _selfName == 'self'
+            _selfName == 'self' &&
+            _ownCollectionField(target.name)
         ? '$_selfName.${snake(target.name)}'
         : null;
     final receiver = cellPlace != null
@@ -5632,6 +5679,10 @@ class RustBackend {
       if (prelude != null) continue;
       final other = library[name];
       if (other != null && !_classIsCopy(other, seen)) return false;
+      // A name nothing here knows -- another class's type parameter in a
+      // field written from outside it (`h.value = ..` on a `Holder<T>`,
+      // ws510) -- is not known to be `Copy` either.
+      if (other == null) return false;
     }
     return true;
   }
@@ -8481,6 +8532,13 @@ class RustBackend {
         : '';
     final call =
         '${via == null ? cls.name : _implementedAs(via)}::$name$fish(${[receiver, ...args].join(', ')})';
+    // An inherent method the analysis typed `Never` (`throw
+    // UnimplementedError()` for a body) returns `Result<Infallible, E>`;
+    // the trait's signature wants its own `T`, which the impossible value
+    // maps into (`_UnspecifiedTextScaler.clamp`, ws503).
+    if (method.returnType.name == 'Never') {
+      return '$call.map(|__never| match __never {})';
+    }
     // An `async fn` yields its own future type; the trait wants the boxed
     // one every `Future<T>` is here (`_NativeCodec::get_next_frame(self)`).
     return call;
@@ -9537,6 +9595,9 @@ class _BackendWorld implements TypeWorld {
 
   @override
   bool isCounted(String name) => library[name]?.counted ?? false;
+
+  @override
+  bool isEnum(String name) => library[name]?.isEnum ?? false;
 
   @override
   bool isStruct(String name) {

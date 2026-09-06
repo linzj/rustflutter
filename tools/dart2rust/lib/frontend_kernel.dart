@@ -64,6 +64,7 @@ class KernelFrontend implements TypeWorld {
     this.instantiations,
     this.applications = const {},
     this.moduleOf = const {},
+    this.aliasMutated = const {},
   });
 
   /// Each translated library's module name, from the driver: what a
@@ -1550,29 +1551,7 @@ class KernelFrontend implements TypeWorld {
       if (node.named.isNotEmpty) {
         throw Unsupported('a record with named fields', _sample(node));
       }
-      // Each field into the record's field type by the one rule: `(false,
-      // null)` as a `(bool, Object?)` holds the `Null` object (ws502).
-      // ..as translated slots, whatever call the record sits in.
-      final fields = node.recordType.positional;
-      final wasTranslated = _slotTranslated;
-      final wasPrelude = _slotPrelude;
-      _slotTranslated = true;
-      _slotPrelude = false;
-      try {
-        return IrRecord([
-          for (var i = 0; i < node.positional.length; i++)
-            i < fields.length
-                ? _widened(
-                    node.positional[i],
-                    fields[i],
-                    expression(node.positional[i]),
-                  )
-                : expression(node.positional[i]),
-        ]);
-      } finally {
-        _slotTranslated = wasTranslated;
-        _slotPrelude = wasPrelude;
-      }
+      return _recordLiteral(node, node.recordType.positional);
     }
     if (node is MapLiteral) {
       return _mapLiteral(node, node.keyType, node.valueType);
@@ -6752,6 +6731,47 @@ class KernelFrontend implements TypeWorld {
   /// more than eight elements as a node (the `_literalN` constructors stop
   /// there): its elements widen and share into the element type exactly as
   /// the short ones' do.
+  /// A record literal's fields into `fields` -- the literal's own types,
+  /// or the slot's when it lands in one of other field types (see
+  /// `_widenedInto`): `(false, null)` returned as a `(bool, Object?)`
+  /// holds the `Null` object, `(true, x)` boxes its `int` (ws502, ws509).
+  /// As translated slots, whatever call the record sits in.
+  IrExpr _recordLiteral(RecordLiteral node, List<DartType> fields) {
+    final wasTranslated = _slotTranslated;
+    final wasPrelude = _slotPrelude;
+    _slotTranslated = true;
+    _slotPrelude = false;
+    try {
+      return IrRecord([
+          for (var i = 0; i < node.positional.length; i++)
+            i < fields.length
+                ? _widened(
+                    node.positional[i],
+                    fields[i],
+                    expression(node.positional[i]),
+                  )
+                : expression(node.positional[i]),
+        ])
+        ..rustType = IrType(
+          'Record',
+          arguments: _nested(
+            () => [
+              for (var i = 0; i < node.positional.length; i++)
+                _recordedType(
+                      i < fields.length
+                          ? fields[i]
+                          : node.recordType.positional[i],
+                    ) ??
+                    const IrType('dynamic'),
+            ],
+          ),
+        );
+    } finally {
+      _slotTranslated = wasTranslated;
+      _slotPrelude = wasPrelude;
+    }
+  }
+
   IrExpr _listLiteral(ListLiteral node, DartType element) {
     return IrListLiteral([
       for (final e in node.expressions)
@@ -6833,6 +6853,11 @@ class KernelFrontend implements TypeWorld {
     return c != null && _translatedClass(c) && !c.isEnum;
   }
 
+  bool _isEnumName(String name) {
+    final c = _classNamed(name);
+    return c != null && _translatedClass(c) && c.isEnum;
+  }
+
   bool _isBelow(String sub, String sup) {
     final a = _classNamed(sub);
     final b = _classNamed(sup);
@@ -6850,6 +6875,9 @@ class KernelFrontend implements TypeWorld {
 
   @override
   bool isStruct(String name) => _isStructName(name);
+
+  @override
+  bool isEnum(String name) => _isEnumName(name);
 
   @override
   bool isBelow(String sub, String sup) => _isBelow(sub, sup);
@@ -6921,6 +6949,15 @@ class KernelFrontend implements TypeWorld {
           args[0] != value.typeArgument) {
         return _listLiteral(value, args[0]);
       }
+    }
+    // ..and a record literal into a record slot of other field types: its
+    // fields lowered again against the slot's.
+    if (value is RecordLiteral &&
+        param is RecordType &&
+        param.named.isEmpty &&
+        param.positional.length == value.positional.length &&
+        param.positional.toString() != value.recordType.positional.toString()) {
+      return _recordLiteral(value, param.positional);
     }
     if (coerceByType &&
         translated &&
@@ -9374,6 +9411,9 @@ class KernelFrontend implements TypeWorld {
         node.isMixinDeclaration ||
         (node.superclass != null && _abstractLike(node.superclass!));
     if (reachedThroughTrait && _writesFieldInMethod(node)) return true;
+    // ..or mutated through an alias anywhere in the program: a value
+    // handed on is a copy, and Dart's is the one object.
+    if (aliasMutated.contains(node)) return true;
     // ..or mixes in / extends an abstract class with a mutable field: that
     // class's own methods write it through the trait's setter, on `&self`,
     // so the storage here has to be a cell (`_TypedDataBuffer._length`).
@@ -9406,6 +9446,12 @@ class KernelFrontend implements TypeWorld {
     }
     return false;
   }
+
+  /// The classes mutated through an alias, whole program (see
+  /// `alias_mutation.dart`): counted, since a Rust value handed to a
+  /// method is a copy (`writeValue(buffer, ..)` filled a copy of the
+  /// `WriteBuffer`, run509).
+  final Set<Class> aliasMutated;
 
   /// Whether the class being lowered is reference counted.
   bool _counted = false;
