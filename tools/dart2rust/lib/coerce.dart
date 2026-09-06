@@ -253,7 +253,12 @@ IrExpr coerceInto(
   // A `dynamic` into a `T?` is null when it holds the `Null` object: the
   // prelude asks (`dart_nullable`), and the value inside goes on by the
   // rule below (a native's answer into `RootIsolateToken?`, run462).
-  if (isNullable(slot) && have.name == 'dynamic' && !slot.projected) {
+  // ..a `dynamic` that is not an `Option` already: a `dynamic?` (an erased
+  // `T?` read) is one, and maps through the rule below.
+  if (isNullable(slot) &&
+      have.name == 'dynamic' &&
+      !isNullable(have) &&
+      !slot.projected) {
     final asked = IrCall(value, '!nullable', const [])
       ..rustType = const IrType('Object', nullable: true);
     return coerceInto(asked, slot, world, inClosure: inClosure);

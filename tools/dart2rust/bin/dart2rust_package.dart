@@ -37,6 +37,7 @@ import '../lib/ir.dart';
 import '../lib/throws.dart';
 import '../lib/frontend_kernel.dart';
 import '../lib/alias_mutation.dart';
+import '../lib/covariance.dart';
 import '../lib/prelude.dart';
 
 /// `package:flutter/src/painting/alignment.dart` -> `painting_alignment`.
@@ -283,10 +284,15 @@ Future<void> main(List<String> args) async {
   }
   // The classes mutated through an alias (`alias_mutation.dart`): counted.
   final aliasMutated = aliasMutatedClasses(inPackage);
+  // The type parameters used covariantly (`covariance.dart`): erased.
+  final covariant = typeEnvironment == null
+      ? const <TypeParameter>{}
+      : covariantParameters(inPackage, typeEnvironment);
   for (final library in inPackage) {
     final frontend = KernelFrontend(
       library,
       aliasMutated: aliasMutated,
+      covariantParameters: covariant,
       enumValues: enumValues,
       enumFields: enumFields,
       abstractElsewhere: abstractNames,

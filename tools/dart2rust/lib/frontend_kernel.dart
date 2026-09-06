@@ -65,6 +65,7 @@ class KernelFrontend implements TypeWorld {
     this.applications = const {},
     this.moduleOf = const {},
     this.aliasMutated = const {},
+    this.covariantParameters = const {},
   });
 
   /// Each translated library's module name, from the driver: what a
@@ -3406,7 +3407,17 @@ class KernelFrontend implements TypeWorld {
         // `Null` object, asked by the prelude; and whether the result is
         // still an `Option` is the *Rust* type's answer -- a `dynamic`
         // result is no `Option`.
-        final leftSide = expression(value);
+        // The left side as Dart types it: an erased read (`route.result`
+        // on a `Route<int>` whose `T` is erased) is recorded wider, and is
+        // narrowed where it is consumed, as a receiver or an argument is.
+        var leftSide = expression(value);
+        if (leftType is InterfaceType && leftType.classNode.name != 'Object') {
+          try {
+            leftSide = coerce(leftSide, _type(leftType));
+          } on Unsupported {
+            // Unspelled: as it is.
+          }
+        }
         final leftIr = leftSide.rustType;
         final asked =
             leftIr != null && leftIr.name == 'dynamic' && !leftIr.nullable
@@ -8089,6 +8100,7 @@ class KernelFrontend implements TypeWorld {
 
   bool _erasedParameter(TypeParameter p) {
     if (!erase) return false;
+    if (covariantParameters.contains(p)) return true;
     // An anonymous mixin application's parameter stands for the mixin's:
     // erased when that one is (`SlottedRenderObjectElement<SlotType>` kept
     // a `SlotType` nothing declared, ws315).
@@ -9588,6 +9600,12 @@ class KernelFrontend implements TypeWorld {
   /// method is a copy (`writeValue(buffer, ..)` filled a copy of the
   /// `WriteBuffer`, run509).
   final Set<Class> aliasMutated;
+
+  /// The type parameters the program uses covariantly, whole program (see
+  /// `covariance.dart`): erased, since a trait object of one instantiation
+  /// is no trait object of another (`Route<void>` kept as a
+  /// `Route<dynamic>` by the navigator).
+  final Set<TypeParameter> covariantParameters;
 
   /// Whether the class being lowered is reference counted.
   bool _counted = false;
