@@ -552,6 +552,17 @@ class KernelFrontend implements TypeWorld {
       // module: it is the prelude's `DartIterator`.
       final core =
           type.classNode.enclosingLibrary.importUri.toString() == 'dart:core';
+      // `Object?` is `dynamic`: Dart's two top types are one type to its
+      // subtyping (`LocalizationsDelegate<dynamic>` and
+      // `LocalizationsDelegate<Object?>` are the same type, `WidgetsApp.
+      // build`, ws497), and one representation here -- a `dynamic` holds
+      // its null as the `Null` object. Everywhere, not only as a type
+      // argument: an expression's Rust type follows its Dart static type,
+      // and `m[k]` on a `Map<Object?, Object?>` is typed `Object?` by the
+      // substitution Kernel already did.
+      if (core && type.classNode.name == 'Object' && nullable) {
+        return const IrType('dynamic');
+      }
       final name = core && type.classNode.name == 'Iterator'
           ? 'DartIterator'
           : type.classNode.name;
@@ -745,6 +756,29 @@ class KernelFrontend implements TypeWorld {
     return lowered;
   }
 
+  /// `x!`, and every unwrap the lowering adds on Dart's word that a value
+  /// is nullable: the value itself when its recorded Rust type is not an
+  /// `Option` -- a `dynamic`, an `Object?` (one type here, see `_type`),
+  /// arithmetic the type flow analysis typed non-nullable and Kernel still
+  /// writes `double?` for (`lerpDouble`, ws331) -- and the unwrap
+  /// otherwise. An operand with no recorded type is unwrapped as Dart says.
+  IrExpr _nullChecked(IrExpr inner) {
+    final have = inner.rustType;
+    if (have != null && !isNullable(have)) return inner;
+    return IrNullCheck(inner);
+  }
+
+  /// A declared type as recorded on a value: `null` where this compiler
+  /// has no spelling for it.
+  IrType? _recordedType(DartType? declared) {
+    if (declared == null) return null;
+    try {
+      return _type(declared);
+    } on Unsupported {
+      return null;
+    }
+  }
+
   static IrType? _binaryType(IrBinary b) {
     const comparisons = {'==', '!=', '<', '>', '<=', '>=', '&&', '||'};
     if (comparisons.contains(b.op)) return const IrType('bool');
@@ -835,7 +869,7 @@ class KernelFrontend implements TypeWorld {
             const [],
           )..rustType = _type(node.variable.type);
         }
-        return IrLocal(name)..rustType = _type(_localType(node.variable));
+        return IrLocal(name)..rustType = _localIrType(node.variable);
       }
       // A constructor's projected parameter is read as it was declared,
       // the spelled `T?`: a constructor has no body prologue to re-bind
@@ -934,10 +968,7 @@ class KernelFrontend implements TypeWorld {
         return IrCall(
           IrDowncast(
             // A `dynamic` is a handle, never an `Option`; an `Object?` is.
-            declared is InterfaceType &&
-                    declared.nullability == Nullability.nullable
-                ? IrNullCheck(IrLocal(name))
-                : IrLocal(name),
+            _nullChecked(IrLocal(name)..rustType = _recordedType(declared)),
             _rustScalar(asName),
             arguments: to.arguments,
           ),
@@ -968,7 +999,10 @@ class KernelFrontend implements TypeWorld {
           declared is! DynamicType &&
           promoted.nullability != Nullability.nullable &&
           declared.nullability == Nullability.nullable) {
-        final inside = IrNullCheck(IrCall(IrLocal(name), 'clone', const []));
+        final inside = _nullChecked(
+          IrCall(IrLocal(name), 'clone', const [])
+            ..rustType = _recordedType(declared),
+        );
         // ..and narrowed as well as unwrapped: `ancestor` after `ancestor
         // is StatefulElement`, on an `Element?`, read `.state` of an
         // `Rc<dyn Element>` (`findAncestorStateOfType`).
@@ -1340,7 +1374,12 @@ class KernelFrontend implements TypeWorld {
       // Into a `dynamic` local (`dynamic result = scaled(x)` in vector_math's
       // `operator *`) the value is shared into its `Rc<dyn Object>`.
       final raw = expression(node.value);
-      final stored = _widened(node.value, _localType(node.variable), raw);
+      final stored = _widened(
+        node.value,
+        _localType(node.variable),
+        raw,
+        slotIr: _localIrType(node.variable),
+      );
       // `(index = s.indexOf(p)) >= 0` with `int? index`: the store is
       // `Some(..)`, the value of the expression is not -- nor, for a
       // `dynamic` temporary assigned a `String` (a pattern's `#0#2 =
@@ -1359,7 +1398,12 @@ class KernelFrontend implements TypeWorld {
           IrLocalDecl(held, null, raw),
           IrAssign(
             name,
-            _widened(node.value, _localType(node.variable), again),
+            _widened(
+              node.value,
+              _localType(node.variable),
+              again,
+              slotIr: _localIrType(node.variable),
+            ),
           ),
         ], IrLocal(held))..rustType = raw.rustType;
       }
@@ -1611,14 +1655,7 @@ class KernelFrontend implements TypeWorld {
       return IrSetValue(null, node.name.text, stored);
     }
     if (node is NullCheck) {
-      // `x!` on a value that is not an `Option` here -- arithmetic the type
-      // flow analysis typed non-nullable and Kernel still writes `double?`
-      // for -- is the value: the operand's recorded type says so, where a
-      // list of shapes used to (`lerpDouble`, ws331).
-      final inner = expression(node.operand);
-      final have = inner.rustType;
-      if (have != null && !isNullable(have)) return inner;
-      return IrNullCheck(inner);
+      return _nullChecked(expression(node.operand));
     }
     if (node is AsExpression) {
       // `null as T`: the null of `T` -- `None` for a nullable `T`, a panic
@@ -1683,7 +1720,7 @@ class KernelFrontend implements TypeWorld {
             from != null &&
                 from is! DynamicType &&
                 from.nullability == Nullability.nullable
-            ? IrNullCheck(expression(node.operand))
+            ? _nullChecked(expression(node.operand))
             : expression(node.operand);
         // `as T?`: the `Option` the downcast hands back, Dart's null for
         // a `Null` object or another type (`decodeEnvelope(result) as T?`
@@ -2809,6 +2846,60 @@ class KernelFrontend implements TypeWorld {
   /// under (`PlatformConfigurationNativeApi::SetNeedsReportTimings`), as
   /// the CFE leaves it: a `pragma("cfe:ffi:native-marker", Native<..>(
   /// symbol: ..))`. Null for an external with no such annotation.
+  /// A `@Native` member through the one boundary the runtime answers
+  /// (`dart_native` in the prelude): the symbol the engine registers it
+  /// under, the arguments as objects, and whether a value comes back. The
+  /// generated code sees only the Dart signature; what the symbol does is
+  /// the native host's (run455). Null where the member has no symbol or a
+  /// signature the boundary cannot spell -- the caller's refusal then.
+  /// Both the `external` member and the one the AOT FFI transform gave a
+  /// body (`__sendPlatformMessage`, run497) come here: the transform
+  /// leaves the marker on the member.
+  IrStmt? _nativeBoundary(FunctionNode function, Member member, String name) {
+    final symbol = _nativeSymbol(member);
+    if (symbol == null) return null;
+    {
+      try {
+        final args = [
+          for (final p in function.positionalParameters)
+            coerce(
+              IrLocal(_paramName(p))..rustType = _type(p.type),
+              IrType('Object'),
+            ),
+        ];
+        final returns = function.returnType;
+        final symbolText = IrLiteral(symbol, const IrType('String'));
+        final passed = IrListLiteral(args, IrType('Object'));
+        if (returns is VoidType || returns is NeverType) {
+          final call = IrStaticCall(null, 'dart_native', [
+            symbolText,
+            passed,
+            IrLiteral('false', const IrType('bool')),
+          ], fails: true)..rustType = const IrType('dynamic');
+          if (returns is VoidType) return IrBlock([IrExprStmt(call)]);
+          return IrBlock([IrExprStmt(call), IrExprStmt(_unreachable)]);
+        }
+        // A value comes back as the declared type (`NativeAnswer`):
+        // the host's object read as it, or the absent engine's value.
+        final type = _type(returns);
+        final valued = IrStaticCall(
+          null,
+          'dart_native_as',
+          [symbolText, passed],
+          fails: true,
+          typeArguments: [type],
+        )..rustType = type;
+        return IrBlock([IrReturn(valued)]);
+      } on Unsupported catch (error) {
+        // A signature the boundary cannot spell: the refusal below.
+        if (Platform.environment['DART2RUST_TRACE_NATIVE'] != null) {
+          stderr.writeln('TRACE_NATIVE $name unsupported: $error');
+        }
+      }
+    }
+    return null;
+  }
+
   String? _nativeSymbol(Member member) {
     for (final a in member.annotations) {
       if (a is! ConstantExpression) continue;
@@ -3013,7 +3104,7 @@ class KernelFrontend implements TypeWorld {
         if (value == null) {
           throw Unsupported('`!` with no operand', _sample(node));
         }
-        return IrNullCheck(expression(value));
+        return _nullChecked(expression(value));
       }
       if (condition is EqualsNull &&
           _isThe(condition.expression, node.variable) &&
@@ -3103,20 +3194,27 @@ class KernelFrontend implements TypeWorld {
         node.variable.type.nullability == Nullability.nullable &&
         letBody.promotedType != null &&
         letBody.promotedType!.nullability != Nullability.nullable;
-    final block = IrBlockValue([
-      IrLocalDecl(
-        name,
-        // The post-increment's middle binding is `void` (see `_declare`).
-        node.variable.type is VoidType ? null : _type(node.variable.type),
-        // A local bound here is shared, not moved: `let __t = key;` and
-        // `key` read again two lines on (13 E0382s). Into a `dynamic`
-        // binding it is shared into the `Rc<dyn Object>` (`__t: Rc<dyn
-        // Object> = true`).
-        // ..and widened into the binding's type: `double? t = size?.height`
-        // after TFA holds a `double`, and the binding says `Some`.
-        _widened(initial, node.variable.type, expression(initial)),
-      ),
-    ], promotedRead ? IrNullCheck(IrLocal(name)) : expression(letBody));
+    final block = IrBlockValue(
+      [
+        IrLocalDecl(
+          name,
+          // The post-increment's middle binding is `void` (see `_declare`).
+          node.variable.type is VoidType ? null : _type(node.variable.type),
+          // A local bound here is shared, not moved: `let __t = key;` and
+          // `key` read again two lines on (13 E0382s). Into a `dynamic`
+          // binding it is shared into the `Rc<dyn Object>` (`__t: Rc<dyn
+          // Object> = true`).
+          // ..and widened into the binding's type: `double? t = size?.height`
+          // after TFA holds a `double`, and the binding says `Some`.
+          _widened(initial, node.variable.type, expression(initial)),
+        ),
+      ],
+      promotedRead
+          ? _nullChecked(
+              IrLocal(name)..rustType = _recordedType(node.variable.type),
+            )
+          : expression(letBody),
+    );
     // Typed as its value, so a slot adapts the block as it would the
     // value: TFA's `let #t = channel in SystemChannels.menu` (the `??`
     // decided) into a `MethodChannel` field wants the handle (run483).
@@ -3387,7 +3485,7 @@ class KernelFrontend implements TypeWorld {
       _optionLocals.add(variable);
       return IrLocalDecl(
         name,
-        _type(_localType(variable)),
+        _localIrType(variable),
         IrLiteral('null', const IrType('Null', nullable: true)),
         cell: _capturedWrites.contains(variable),
       );
@@ -3460,6 +3558,27 @@ class KernelFrontend implements TypeWorld {
   DartType _localType(Variable v) => _optionLocals.contains(v)
       ? v.type.withDeclaredNullability(Nullability.nullable)
       : v.type;
+
+  /// A local's Rust type: an option local's is the `Option` of its
+  /// declared type's, whatever Dart's nullable spelling of that type maps
+  /// to (`late Object x` is an `Option<Rc<dyn Object>>`, where `Object?`
+  /// itself is a `dynamic`, ws497).
+  IrType _localIrType(Variable v) {
+    final declared = _type(v.type);
+    return _optionLocals.contains(v) ? _nullableIr(declared) : declared;
+  }
+
+  static IrType _nullableIr(IrType t) {
+    if (t.nullable) return t;
+    if (t.isFunction)
+      return IrType.function(t.parameters!, t.returns!, nullable: true);
+    return IrType(
+      t.name,
+      nullable: true,
+      arguments: t.arguments,
+      projected: t.projected,
+    );
+  }
 
   /// The Rust element type of a typed list narrower than Dart's `double`
   /// and `int`, or null for anything else.
@@ -6727,7 +6846,7 @@ class KernelFrontend implements TypeWorld {
           given is InterfaceType &&
           given.nullability == Nullability.nullable &&
           given.classNode == param.classNode) {
-        return IrNullCheck(lowered);
+        return _nullChecked(lowered);
       }
       return lowered;
     }
@@ -7931,6 +8050,7 @@ class KernelFrontend implements TypeWorld {
               value.value,
               _localType(value.variable),
               expression(value.value),
+              slotIr: _localIrType(value.variable),
             ),
           ),
         );
@@ -8204,6 +8324,10 @@ class KernelFrontend implements TypeWorld {
       final member = function.parent;
       final owner = member is Member ? member.enclosingClass?.name ?? '' : '';
       final name = member is Member ? member.name.text : '';
+      if (member is Member) {
+        final boundary = _nativeBoundary(function, member, '$owner.$name');
+        if (boundary != null) return boundary;
+      }
       return IrBlock([
         IrExprStmt(
           IrLiteral(
@@ -8253,46 +8377,10 @@ class KernelFrontend implements TypeWorld {
         // the symbol does is the native host's (run455: the first panic
         // past the bindings' constructors was `__nativeSetNeedsReport
         // Timings`).
-        final symbol = _nativeSymbol(member);
-        if (symbol != null) {
-          try {
-            final args = [
-              for (final p in function.positionalParameters)
-                coerce(
-                  IrLocal(_paramName(p))..rustType = _type(p.type),
-                  IrType('Object'),
-                ),
-            ];
-            final returns = function.returnType;
-            final symbolText = IrLiteral(symbol, const IrType('String'));
-            final passed = IrListLiteral(args, IrType('Object'));
-            if (returns is VoidType || returns is NeverType) {
-              final call = IrStaticCall(null, 'dart_native', [
-                symbolText,
-                passed,
-                IrLiteral('false', const IrType('bool')),
-              ], fails: true)..rustType = const IrType('dynamic');
-              if (returns is VoidType) return IrBlock([IrExprStmt(call)]);
-              return IrBlock([IrExprStmt(call), IrExprStmt(_unreachable)]);
-            }
-            // A value comes back as the declared type (`NativeAnswer`):
-            // the host's object read as it, or the absent engine's value.
-            final type = _type(returns);
-            final valued = IrStaticCall(
-              null,
-              'dart_native_as',
-              [symbolText, passed],
-              fails: true,
-              typeArguments: [type],
-            )..rustType = type;
-            return IrBlock([IrReturn(valued)]);
-          } on Unsupported catch (error) {
-            // A signature the boundary cannot spell: the refusal below.
-            if (Platform.environment['DART2RUST_TRACE_NATIVE'] != null) {
-              stderr.writeln('TRACE_NATIVE $name unsupported: $error');
-            }
-          }
-        } else if (Platform.environment['DART2RUST_TRACE_NATIVE'] != null) {
+        final boundary = _nativeBoundary(function, member, name);
+        if (boundary != null) return boundary;
+        if (_nativeSymbol(member) == null &&
+            Platform.environment['DART2RUST_TRACE_NATIVE'] != null) {
           stderr.writeln(
             'TRACE_NATIVE $name no symbol: ${member.annotations.map((a) => a is ConstantExpression && a.constant is InstanceConstant ? (a.constant as InstanceConstant).fieldValues.entries.map((e) => '${e.key.asField.name.text}=${e.value.toString().substring(0, e.value.toString().length.clamp(0, 90))}').join(';') : a.runtimeType.toString()).join(' | ')}',
           );
@@ -8369,7 +8457,7 @@ class KernelFrontend implements TypeWorld {
         ...function.namedParameters,
       ]) {
         if (!_capturedWrites.contains(p)) continue;
-        final type = _type(_localType(p));
+        final type = _localIrType(p);
         final held = '__p${_nextTemporary++}';
         rebound.add(
           IrLocalDecl(held, type, IrLocal(_paramName(p))..rustType = type),
