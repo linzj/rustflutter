@@ -6672,6 +6672,7 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run516 | 过了 path_provider，停在 get 的 `TaskManager._instance ??= TaskManager._()`：`match (**X).borrow().clone() { .. None => { *(**X).borrow_mut() = .. } }`——`match` 的被匹配值的临时量（`Ref`）活到所有分支结束，`borrow_mut` 时"already borrowed"。 | `_ifNull` 的被匹配值先 `let` 绑定再 `match`（`{ let __scrutinee = ..; __scrutinee }`）。夹具 staticcell。 |
 | ws517 | 链：**1127**（持平；比 1300 少 173：新 10/去 170），141。`RenderObject::new` 回来了；但兜底门关得太死：`ObserverList<T>.contains(Object?)`、`SlottedRenderObjectElement<SlotType>`、`CanonicalizedMap<K,..>` 里 `Object → T`（作用域里的类型参数，bound 里有 `FromDynamic`）也被关了（+6）。 | `TypeWorld.isTypeParameter(name)`（后端 `_isTypeParam`，前端当前类/成员的参数）：作用域里的类型参数放行，别的声明的 `T` 仍不放。同批：函数适配闭包对非字面量值先 `let __f = ..` 再 move 进去（`WidgetsApp.build` 的 `custom ?? _defaultOnNote` tear-off 在适配器体内绑 `__me`，借了 `self`）。夹具 tparam、fnadapt。 |
 | run517 | 过了 `TaskManager`，停在 get_storage 的 `storage_io.rs:58`：又一个 "RefCell already borrowed"。 | 见下一轮。 |
+| ws518 | 链：**1113**（−14；比 1300 少 187：新 9/去 181），141。`WidgetsApp.build`、`widgets_layout_builder::new`、`material_dialog::on_pop_invoked` 等去了。 | run517 的 `*self.f.borrow_mut() = Some(self.f.borrow().clone().unwrap()..)`：先试"写侧先 `let __v` 再写"，`Some(Rc<Semantics>)` 失去了向 `Option<Rc<dyn Widget>>` 的强制转换位置（夹具 ifnullset 红），未提交、撤回；改为**读侧**：`this` 的 cell 字段读、可变静态/顶层读都写成 `({ let __r = x.borrow().clone(); __r })`，`Ref` 在自己的语句里就放掉（另一个对象的字段读早已如此）。夹具 cellwrite。 |
 
 ## 下一步(2026-09-05 重铺)
 

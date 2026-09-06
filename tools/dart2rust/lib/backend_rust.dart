@@ -828,7 +828,7 @@ class RustBackend {
       // and the `Isolate`, then a `borrow`.
       IrTopLevel(:final name) =>
         _isMutableTopLevel(name)
-            ? '(**${screamingSnake(name)}).borrow().clone()'
+            ? '({ let __r = (**${screamingSnake(name)}).borrow().clone(); __r })'
             : _isLazyConst(name)
             ? '(**${screamingSnake(name)}).clone()'
             : screamingSnake(name),
@@ -2531,9 +2531,14 @@ class RustBackend {
         final lazy = _lazyDecl(name);
         if (lazy != null) return _lazyRead(lazy, receiver);
         final held = _heldType(shared);
+        // The guard bound and dropped in its own statement (as another
+        // object's field is read below): a bare `.borrow().clone()` keeps
+        // its `Ref` to the statement's end, into a `borrow_mut()` of the
+        // same cell on the left (`_file = _file.setPosition(0)`, run517).
+        // Parenthesised: a block at a statement's start is a statement.
         final read = _isCopy(held)
             ? '$receiver.${snake(name)}.get()'
-            : '$receiver.${snake(name)}.borrow().clone()';
+            : '({ let __r = $receiver.${snake(name)}.borrow().clone(); __r })';
         // Out of the cell it is a value, so the `late` unwrap is on a value
         // too. This is the one shape that does need `T: Clone`.
         return shared.isLate ? '$read.unwrap()' : read;
@@ -3841,7 +3846,7 @@ class RustBackend {
     // Two derefs: through the `LazyLock`, then through the `Isolate` that
     // carries "one per isolate, not one per process".
     if (_isMutableStatic(owner, name)) {
-      return '(**${_lazyName(owner, name)}).borrow().clone()';
+      return '({ let __r = (**${_lazyName(owner, name)}).borrow().clone(); __r })';
     }
     // A clone: the lock hands out a reference, and a read is a value.
     // `(**CHANGE_NOTIFIER__EMPTY_LISTENERS)` moved out of the lock (E0507).
