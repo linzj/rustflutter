@@ -2436,6 +2436,9 @@ pub trait DartList<T> {
     fn length(&self) -> i64;
     /// `sublist(start, [end])`: a copy of that range.
     fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T>;
+    /// `getRange(start, end)`: Dart's lazy view of the range, a copy here
+    /// (`PipelineOwner.flushLayout`, run526).
+    fn get_range(&self, start: i64, end: i64) -> Vec<T>;
     /// `sort([compare])`: without one, the elements' own order.
     fn sort_by_dart(
         &mut self,
@@ -2468,6 +2471,10 @@ impl<T: Clone> DartList<T> for Vec<T> {
             .map(|n| (n.max(0) as usize).min(self.len()))
             .unwrap_or(self.len());
         self[s..e.max(s)].to_vec()
+    }
+
+    fn get_range(&self, start: i64, end: i64) -> Vec<T> {
+        self.sublist(start, Some(end))
     }
 
     fn sort_by_dart(

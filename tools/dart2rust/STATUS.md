@@ -6686,6 +6686,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run524 | 停在同一处 stub（见 ws524）。 | 同上。 |
 | ws525 | 链：**1039**（−18；新 1/去 12），141。压平构造链嵌套后 12 个 `new` 去了（focus_traversal、widgets_basic、app_bar、chip、fab、page_view…）；新 1 个 `TextStyle::new`：`dart_str(font_family)` 在条件字段初始化里 move 了参数，后面又用。 | 插值里的局部量 clone（见下轮）。 |
 | run525 | **过了 FocusTraversalGroup**，进 `BuildScope._flushDirtyElements`，停在拒绝：`identical(element.buildScope, this)`——左边是 getter 调用（`IrCall`），"不是引用"。 | 句柄值（trait 句柄、计数类）的 `identical` 先绑成局部再按地址比。另：`RenderBoxContainerDefaultsMixin.defaultComputeDistanceToHighestActualBaseline` 之所以整个缺席（`RenderFlex` 基线 stub），是被拒绝了：`ExtensionType(BaselineOffset)` 没有拼写——扩展类型按其表示类型擦除。`DartNullable::is_dart_null`：`T` 上的 `== null`。 |
+| ws526 | 链：**1087**（**+48**；新 54/去 8），141。去的是基线族（`RenderFlex`/`RenderStack`/`RenderWrap`/`OverflowBar` 的 `computeDistanceToActualBaseline`、`TextStyle::new`）；新的：45 个 `*_super_op_eq`——`identical(this, other)` 的句柄绑定 `let __hb = other;` move 了参数、后面又读；2 个新翻译出来的 `defaultComputeDistanceToHighestActualBaseline`：trait 句柄上的字段访问器 `next_sibling()` 在 `ContainerBoxParentData` 和 `ContainerParentDataMixin` 两个父 trait 都有，二义。 | 绑定裸局部量时 `.clone()`；句柄上的字段访问器按声明 trait 限定（`<dyn Held as Declaring>::name(&*x)`）。 |
+| run526 | **过了 `_flushDirtyElements` 和第一次 build**，进 `handleDrawFrame` → `PipelineOwner.flushLayout`，停在拒绝：`List.getRange`（`_nodesNeedingLayout.addAll(dirtyNodes.getRange(i, dirtyNodes.length))`）。 | prelude 加 `get_range`（切片拷贝），表里加 `getRange`。 |
 
 ## 下一步(2026-09-05 重铺)
 

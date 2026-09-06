@@ -2443,7 +2443,10 @@ class RustBackend {
   /// `CupertinoThemeData` over `NoDefaultCupertinoThemeData`; 13 E0034 at
   /// ws308): this trait when it declares the name, which is the override
   /// Dart would dispatch to, else the nearest abstract supertype that does.
-  String? _accessorQualifier(String name, {String kind = 'read'}) {
+  String? _accessorQualifier(String name, {String kind = 'read', IrClass? on}) {
+    // ..on this class by default, or on the class a handle is typed by
+    // (a trait object's field read, `_fieldRead`).
+    final cls = on ?? this.cls;
     // What each kind of accessor a trait declares (`_emitTrait`): a read
     // for any field or getter, a write for a mutable field or a setter, a
     // cell for a held collection. Naming a trait that lacks the item was
@@ -2654,7 +2657,20 @@ class RustBackend {
     if (held != null && !isNullable(held) && library.isAbstract(held.name)) {
       final owned = library[held.name];
       if (owned != null && _allFields(owned).any((f) => f.name == name)) {
-        return '$receiver.${snake(name)}()$_propagate';
+        // Qualified when two of the handle's traits declare it
+        // (`next_sibling` on `ContainerBoxParentData` and on the mixin,
+        // E0034 at ws526), through the trait object the handle holds.
+        final through = _accessorQualifier(name, on: owned);
+        final declaring = through == null ? null : library[through];
+        if (declaring == null) return '$receiver.${snake(name)}()$_propagate';
+        final passed = _argumentsThrough(owned, const {}, declaring, {});
+        final traitArgs = passed == null || passed.isEmpty
+            ? ''
+            : '<${passed.map(type).join(', ')}>';
+        final heldArgs = held.arguments.isEmpty
+            ? ''
+            : '<${held.arguments.map(type).join(', ')}>';
+        return '<dyn ${held.name}$heldArgs as $through$traitArgs>::${snake(name)}(&*$receiver)$_propagate';
       }
     }
     // Any other object's field: cloned out, as a field of `self` or of a
@@ -4025,9 +4041,12 @@ class RustBackend {
         (bindRight || _isReference(right)) &&
         (bindLeft || bindRight)) {
       const asPtr = 'as *const u8 as *const ()';
+      // A bare local is cloned into the binding: `other` in `operator ==`
+      // was moved and read again (45 `_super_op_eq` at ws526).
+      String bound(IrExpr e) => e is IrLocal ? '${expr(e)}.clone()' : expr(e);
       return '{ '
-          '${bindLeft ? 'let __ha = ${expr(left)}; ' : ''}'
-          '${bindRight ? 'let __hb = ${expr(right)}; ' : ''}'
+          '${bindLeft ? 'let __ha = ${bound(left)}; ' : ''}'
+          '${bindRight ? 'let __hb = ${bound(right)}; ' : ''}'
           'std::ptr::eq('
           '${bindLeft ? 'std::rc::Rc::as_ptr(&__ha) $asPtr' : _asPointer(left)}, '
           '${bindRight ? 'std::rc::Rc::as_ptr(&__hb) $asPtr' : _asPointer(right)}) }';

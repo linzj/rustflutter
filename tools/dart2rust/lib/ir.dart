@@ -1084,6 +1084,9 @@ const listMethodNames = <String, String>{
   'removeAt': '!remove_at',
   'elementAt': '!element_at',
   'sublist': '!sublist',
+  // `getRange(start, end)`: Dart's lazy view, a copy here (`PipelineOwner.
+  // flushLayout`'s `dirtyNodes.getRange(i, dirtyNodes.length)`, run526).
+  'getRange': 'get_range',
   'reversed': '!reversed',
   // Dart's `cast` re-types a list and copies nothing. Rust's types are
   // already what they are, so it is the receiver.
