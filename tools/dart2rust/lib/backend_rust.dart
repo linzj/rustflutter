@@ -2613,6 +2613,16 @@ class RustBackend {
             : '$receiver.${snake(name)}.clone().unwrap()';
       }
     }
+    // A field of a *trait object*: the accessor the trait declares, since
+    // a `dyn` has no fields (`childParentData.nextSibling` on an `Rc<dyn
+    // StackParentData>`, the mixin's field, ws523).
+    final held = target?.rustType;
+    if (held != null && !isNullable(held) && library.isAbstract(held.name)) {
+      final owned = library[held.name];
+      if (owned != null && _allFields(owned).any((f) => f.name == name)) {
+        return '$receiver.${snake(name)}()$_propagate';
+      }
+    }
     // Any other object's field: cloned out, as a field of `self` or of a
     // local is (`..get().child` handed to `updateChild` moved out of the
     // handle, E0507, run459).
@@ -2865,7 +2875,13 @@ class RustBackend {
         // unsizes on its own; wrapping it again was `Rc<Rc<X>>`.
         !(library[_concreteType(value).name]?.counted ?? false)) {
       // Registered for `dart_cast_to` through `dyn Object` on the way.
-      return 'dart_object($text)';
+      // ..with the cast spelled: an `if` arm has no expected type of its
+      // own where the `let` is unannotated, and two arms of different
+      // classes did not unify (`ThemeData`'s `splashFactory`, ws523).
+      final spelled = isNullable(declared) ? null : type(declared);
+      return spelled == null
+          ? 'dart_object($text)'
+          : '(dart_object($text) as $spelled)';
     }
     // Each branch of a conditional on its own: `s.isEmpty ? StringCharacters
     // ("") : StringCharacters(s)` returned as a `Characters`.
@@ -3470,7 +3486,10 @@ class RustBackend {
           ? '&*${expr(target)}'
           : target is IrBound
           ? (_isHandle(receiverClass) ? '&**${expr(target)}' : expr(target))
-          : _isHandle(receiverClass)
+          // ..or a handle by its recorded type, when the class went
+          // unrecorded (`widget.toStringShort()` on an `Rc<dyn
+          // StatefulWidget>` was `&handle`, ws523).
+          : _isHandle(receiverClass) || _handleLike(target)
           ? '&*${expr(target)}'
           : '&${expr(target)}';
       // A trait as the qualifier of a call on `this` is spelled through
@@ -6835,9 +6854,12 @@ class RustBackend {
     if (baseCtors.length != 1) return const [];
     final baseCtor = baseCtors.single;
     if (baseCtor.params.length != ctor.superArgs.length) return const [];
+    // A bodiless base too: its parameters are what the next base's
+    // arguments name (`RenderProxyBoxWithHitTestBehavior({child}) :
+    // super(child)`, whose `child` was never bound, ws523).
     return [
       ..._inheritedBodies(baseCtor, base),
-      if (baseCtor.body != null) (base, baseCtor, ctor.superArgs),
+      (base, baseCtor, ctor.superArgs),
     ];
   }
 
@@ -8947,23 +8969,35 @@ class RustBackend {
               : '__new.${snake(field.name)} = $value;',
         );
       }
-      for (final (base, baseCtor, superArgs) in bases) {
-        // In a block of its own: the base's temporaries and parameters are
-        // bound here by name, shadowing nothing outside it.
+      // Nested, nearest base outermost: a base's parameters are bound
+      // from the arguments the class below it passed -- which name that
+      // class's own parameters -- so the bindings go downward, one block
+      // per base, each shadowing the last; the bodies run on the way back
+      // out, deepest first, as Dart runs them. A flat block per base
+      // evaluated `super(child)` where no `child` was bound (ws523).
+      final chain = bases.reversed.toList();
+      for (final (_, baseCtor, superArgs) in chain) {
         _line('{');
         _indent++;
+        final assigned = baseCtor.body == null
+            ? const <String>{}
+            : _assignedIn(baseCtor.body!);
         for (var i = 0; i < baseCtor.params.length; i++) {
           // Typed by the parameter: an unused `None` inferred nothing
           // (`configuration` in `_ReusableRenderView`, E0282 at ws461).
           final p = baseCtor.params[i];
           _line(
-            'let ${_assignedIn(baseCtor.body!).contains(p.name) ? 'mut ' : ''}${snake(p.name)}: ${type(_substituteType(p.type, _baseTypes(cls, const {})))} = ${expr(superArgs[i])};',
+            'let ${assigned.contains(p.name) ? 'mut ' : ''}${snake(p.name)}: ${type(_substituteType(p.type, _baseTypes(cls, const {})))} = ${expr(superArgs[i])};',
           );
         }
-        final savedReassigned = _reassigned;
-        _reassigned = {..._reassigned, ..._assignedIn(baseCtor.body!)};
-        stmt(baseCtor.body!);
-        _reassigned = savedReassigned;
+      }
+      for (final (_, baseCtor, _) in bases) {
+        if (baseCtor.body != null) {
+          final savedReassigned = _reassigned;
+          _reassigned = {..._reassigned, ..._assignedIn(baseCtor.body!)};
+          stmt(baseCtor.body!);
+          _reassigned = savedReassigned;
+        }
         _indent--;
         _line('}');
       }

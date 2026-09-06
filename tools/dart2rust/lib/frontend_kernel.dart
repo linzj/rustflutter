@@ -7120,20 +7120,27 @@ class KernelFrontend implements TypeWorld {
     } on Unsupported {
       slot = null;
     }
-    return IrCall(
-      IrClosure(
-        params,
-        IrReturn(
-          IrCallValue(lowered, [
-            ...positional,
-            for (final n in torn.function.namedParameters)
-              byName[n.parameterName]!,
-          ]),
+    // The value bound first and moved in: emitted inside the closure it
+    // borrowed the constructor's parameter (`request_focus_callback` in
+    // the `let` the analysis left, "does not live long enough", run524).
+    return IrBlockValue(
+      [IrLocalDecl('__f', null, lowered)],
+      IrCall(
+        IrClosure(
+          params,
+          IrReturn(
+            IrCallValue(IrLocal('__f'), [
+              ...positional,
+              for (final n in torn.function.namedParameters)
+                byName[n.parameterName]!,
+            ]),
+          ),
+          _type(param.returnType),
+          locals: const ['__f'],
         ),
-        _type(param.returnType),
+        '!rc',
+        const [],
       ),
-      '!rc',
-      const [],
     )..rustType = slot;
   }
 

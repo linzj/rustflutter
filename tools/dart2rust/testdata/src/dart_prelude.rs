@@ -1467,6 +1467,16 @@ impl<K, V> Map<K, V> {
 
 impl<K: Clone, V: Clone> Map<K, V> {
     /// `Map.of(other)`: a copy with the same entries, in the same order.
+    /// `Map.unmodifiable(other)`: a copy; the immutability is not modeled
+    /// (`ThemeData._themeExtensionIterableToMap`, ws523).
+    pub fn unmodifiable(other: Map<K, V>) -> Map<K, V>
+    where
+        K: DartEq + Clone,
+        V: Clone,
+    {
+        Map::of(other)
+    }
+
     pub fn of(other: Map<K, V>) -> Map<K, V> {
         other
     }
