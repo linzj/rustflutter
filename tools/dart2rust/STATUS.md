@@ -6641,6 +6641,9 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws500 | 链**坏了**：reachable 29。`ObserverList` 自己重写了 `toList`，生成的 `to_list` 与之重名（E0592，函数体外）。 | 生成的遍历器叫 `__to_list`（Dart 成员取不到的名字）。 |
 | ws501 | 链：**1352**（−20；比 ws497 的 1300 仍多 52：新 107/去 41）。新的仍以 `None` 进 `Rc<dyn Object>` 为主（85）：不走 coerce 的三处——省略的可选实参补的 `null`、无初值的可空局部量、override 的缺省——都按 **Dart** 可空性写 `None`；其余：`T?` 绑到顶类型的投影（`Or` 是 `Option<Rc<dyn Object>>`，前端却按代换后的 `Object?` 拼成裸 `dynamic`）；`Float32List` 的 native 要 `f32: FromDynamic`；可空键查表按 Dart 可空性。 | 三处一律按 **Rust** 类型定 null（`dynamic` → `dart_null_object()`）；`T?` 绑到顶类型时结果和实参槽都按 `dynamic?`（`_topBound`），coerce 负责与 `dynamic` 互转；`==` 两边可空性不同时裸侧进 `Option`；`null` 进任何 `Option` 就是 `None`；窄数值型的 `FromDynamic`（`from_dynamic_narrow!`）；可空键查表按键的 Rust 类型；`__to_list` 只在 `iterator` getter 声明为 `Iterator<E>` 时生成（`CharacterRange` 的协变 getter 不算）。 |
 | run501 | 仍停在 `_update_user_settings_data`（无初值的 `Object? value` 局部量写成 `None`）。 | 见 ws501。 |
+| ws502 | 链：**1342**（−10；比 1300 多 42：新 96/去 40）。85 个仍是 `None` 进 `Rc<dyn Object>`：省略的具名实参（`aspect`）——`_omitted` 的 coerce 没生效，因为 lowering 自造的 `null` 字面量没带 rustType，coerce 直接放行。其余：`?.` 结果按 Kernel 的 `T?` 记成裸 `dynamic`（Rust 值是 `Option`）；`a ?? b` 左边是 `dynamic`；record 字面量的字段没 coerce；`JsonCodec.decoder()` 仍返回 `Converter<_, Option<..>>`。 | lowering 自造的 `null` 一律带类型（`_nullLiteral`）；`?.`/`??` 的左边是 `dynamic` 时经 `dart_nullable` 问 prelude，结果是否 `Option` 按 Rust 类型；record 字段按记录类型 coerce；`json.decoder/encoder` 走 `dynamic`；两个具体类的 `??` 分支不再吃顶类型。 |
+| run502 | 停在 `_update_user_settings_data` 的桩：**`Rc` 被 `==` 移走**——探针证实两个 `Rc<dyn Object>` 的裸 `==` 会 move 右操作数（`&a == &b` 不会）。 | `dynamic`/`Object` 也算 object-like：`==` 走 `dart_eq(&..)`（`DartEq for dyn Object` 就是按值比较）。 |
+| ws503 | 链：**1249**（−93；比 ws497 的 1300 **少 51**：新 8/去 45），141。`Object?` 即 `dynamic` 这一族到此收口。 | |
 
 ## 下一步(2026-09-05 重铺)
 
