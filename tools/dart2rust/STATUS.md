@@ -6624,6 +6624,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run490 | 同 run489（`is Map`，修在链之后）。 | |
 | ws491 | 链：**1335**；新桩 2：`decodeMethodCall` 的 `containsKey('method')` 在 `Map<Object?, Object?>` 上（键没装箱）；provider 的 `<int?>[] is! List<int>` 探针（`vec![]` 推不出类型）。 | 一批：挪走的初始化按字段在本类的类型 widen；空 `const {}` 带类型、按槽重定型；TFA 从声明里删掉的 mixin 方法按**反替换** application 实参定型（`Slot` → `SlotType`）；`Map/List.cast<..>()` 是 prelude 的 `cast_to`（按 `FromDynamic` 换元素表示；TFA 曾把它虚化到 `CanonicalizedMap`）；`containsKey`/`remove` 的键按 map 的键类型 widen（同 `m[k]`）；集合字面量上的 `is` 按 Dart 子类型关系静态折叠；克隆被 lower 两次时参数重定型表按成员清空。 |
 | run491 | **`GetStorage.init` 起步了**（`Value<T>`、`_isNullOrEmpty` 都过）；停在调度器上的一个 future：`MethodChannel.invokeMapMethod<int,int>`（键盘状态同步）的 `result.cast<K, V>()`。 | 见 ws491 行（`cast_to`）。 |
+| ws492 | 链：**1314**（−21）；新桩 3 个 `didPop`：super 调用的实参按 mixin 声明的 `T?` 填，没把本类的实参放进去（`Option<T>` 对 `Or`）。 | super 调用的槽 = 声明的参数类型经 `_asApplied`（`_arguments` 新增按位/按名的声明类型覆盖）。 |
+| run492 | 同 run491（`invokeMapMethod` 的 `cast`）：`result?.cast<K, V>()` 的 interfaceTarget 被 TFA 虚化成 `CanonicalizedMap.cast`，没走 Map 的路。 | 集合成员按**接收者的静态类**（dart:core 的 List/Map/Set/Iterable）走 prelude 的路。另：`PlatformInterface` 的构造函数把 `this` 放进 Expando，子类跑的是它的体——继承的构造函数体里的逃逸也算入 counted（path_provider 的 platform 类原来是值，Expando 键没身份）。 |
 
 ## 下一步(2026-09-05 重铺)
 
