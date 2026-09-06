@@ -2452,15 +2452,20 @@ class RustBackend {
     // for any field or getter, a write for a mutable field or a setter, a
     // cell for a held collection. Naming a trait that lacks the item was
     // "expected a type, found a trait" (22 at ws309).
-    bool field(IrClass c) => c.fields.any(
-      (f) =>
-          f.name == name &&
-          switch (kind) {
-            'write' => !f.isFinal,
-            'cell' => _handsCell(f),
-            _ => true,
-          },
-    );
+    bool field(IrClass c) =>
+        c.fields.any(
+          (f) =>
+              f.name == name &&
+              switch (kind) {
+                'write' => !f.isFinal,
+                'cell' => _handsCell(f),
+                _ => true,
+              },
+        ) ||
+        // A cell an application holds for a hollow mixin is the mixin's
+        // to hand out (`appliedFields`).
+        (kind == 'cell' &&
+            c.appliedFields.any((f) => f.name == name && _handsCell(f)));
     bool method(IrClass c) =>
         c.methods.any(
           (m) =>
@@ -2490,6 +2495,17 @@ class RustBackend {
           orElse: () => fields.last,
         )
         .name;
+  }
+
+  /// A field an application holds for `of` or one of its abstract
+  /// ancestors (`IrClass.appliedFields`), by name.
+  IrFieldDecl? _appliedFieldOf(IrClass of, String name) {
+    for (final c in [of, ..._abstractAncestors(of)]) {
+      for (final f in c.appliedFields) {
+        if (f.name == name) return f;
+      }
+    }
+    return null;
   }
 
   /// The trait, `from` or one above it, that declares the Rust item
@@ -3052,7 +3068,8 @@ class RustBackend {
       final owned = atThis ? cls : library[owner!];
       final decl = owned == null
           ? null
-          : _allFields(owned).where((f) => f.name == target.name).firstOrNull;
+          : _allFields(owned).where((f) => f.name == target.name).firstOrNull ??
+                _appliedFieldOf(owned, target.name);
       if (decl == null || !_handsCell(decl)) return null;
       final holder = atThis ? _selfName : expr(base);
       final through = atThis
@@ -3629,11 +3646,24 @@ class RustBackend {
         final declaring = _declaringTrait(qualifier, _identifier(name));
         if (declaring != null) qualifier = declaring;
       }
+      // ..and on another object, through the trait object its handle
+      // holds: a bare `Trait::m(&*x)` is E0782 (`ContainerBoxParentData::
+      // next_sibling` on a `Rc<dyn StackParentData>`, ws531).
+      final heldType = target?.rustType;
+      final viaHeld =
+          library.isAbstract(qualifier) &&
+              target != null &&
+              target is! IrThis &&
+              heldType != null &&
+              !isNullable(heldType) &&
+              library.isAbstract(heldType.name)
+          ? '<dyn ${heldType.name}${heldType.arguments.isEmpty ? '' : '<${heldType.arguments.map(type).join(', ')}>'} as $qualifier${_traitArgsOf(qualifier)}>'
+          : null;
       final path =
           asTrait ??
           (library.isAbstract(qualifier) && (target == null || target is IrThis)
               ? '<${_inSuperFn ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
-              : qualifier);
+              : viaHeld ?? qualifier);
       // A generic method of the trait, on `this` in a trait body through
       // the qualified path: its erased twin, as the plain call goes (the
       // method is `where Self: Sized` in the trait, and `__Self` may be
@@ -5297,6 +5327,16 @@ class RustBackend {
           'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(type(field.type)))};',
         );
       }
+      _line('');
+    }
+    // A held collection an application keeps for this hollow mixin: its
+    // cell, so a trait body mutates the place (`IrClass.appliedFields`).
+    for (final field in cls.appliedFields) {
+      if (inherited.contains(field.name) || !_handsCell(field)) continue;
+      _line('/// `${cls.name}.${field.name}`, held by the implementor.');
+      _line(
+        'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(type(field.type)))};',
+      );
       _line('');
     }
     // `this` as a value inside the trait's own bodies (see `DartSelf`).
@@ -8269,6 +8309,27 @@ class RustBackend {
     // `self.view_id` names a field the struct does not have. 345 of those in
     // `PointerEvent` alone.
     final held = {for (final f in _allFields(cls)) f.name};
+    for (final field in base.appliedFields) {
+      if (!_handsCell(field) || accessors.any((a) => a.name == field.name)) {
+        continue;
+      }
+      final cell = held.contains(field.name) ? _sharedField(field.name) : null;
+      final substituted = type(_substituteType(field.type, _implBinding));
+      _line(
+        'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(substituted))} {',
+      );
+      _indent++;
+      _line(
+        cell != null
+            ? (_resultModel
+                  ? 'Ok(self.${snake(field.name)}.clone())'
+                  : 'self.${snake(field.name)}.clone()')
+            : 'todo!("${cls.name}.${field.name} is mutated through a trait but is not a cell")',
+      );
+      _indent--;
+      _line('}');
+      _line('');
+    }
     for (final field in accessors) {
       // The cell accessor first, before a getter of the class's own can
       // take the value accessor's place: the trait asks for both.
@@ -9086,7 +9147,14 @@ class RustBackend {
       // per base, each shadowing the last; the bodies run on the way back
       // out, deepest first, as Dart runs them. A flat block per base
       // evaluated `super(child)` where no `child` was bound (ws523).
+      // A bodiless base at the far end binds nothing anyone reads: no
+      // block for it (an empty `{ let h = h; }` in every value class's
+      // `const fn`, ws531).
       final chain = bases.reversed.toList();
+      while (chain.isNotEmpty && chain.last.$2.body == null) {
+        chain.removeLast();
+      }
+      final kept = chain.length;
       for (final (_, baseCtor, superArgs) in chain) {
         _line('{');
         _indent++;
@@ -9102,7 +9170,8 @@ class RustBackend {
           );
         }
       }
-      for (final (_, baseCtor, _) in bases) {
+      for (final (_, baseCtor, _)
+          in bases.take(kept).toList().reversed.toList().reversed) {
         if (baseCtor.body != null) {
           final savedReassigned = _reassigned;
           _reassigned = {..._reassigned, ..._assignedIn(baseCtor.body!)};

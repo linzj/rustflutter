@@ -10067,29 +10067,6 @@ class KernelFrontend implements TypeWorld {
       if (trace) stderr.writeln('TRACE ${node.name}.$member: $error\n$stack');
     }
 
-    // A hollow mixin's fields, from an application that kept them: the
-    // CFE moves a mixin's field into the application, and the AOT
-    // declaration keeps an abstract getter at most. A trait declares a
-    // field's accessors -- and the cell of a held collection
-    // (`_handsCell`) -- only for a field it knows: with the getter alone,
-    // `this_._viewIdToRenderView().insert(..)` inserted into a clone and
-    // `RendererBinding` never had a view (run530). Typed by the
-    // declaration's own getter (`_declaredFieldType`), in the mixin's terms.
-    final recoveredFields = <String>{};
-    if (node.isMixinDeclaration) {
-      final own = {for (final f in node.fields) f.name.text};
-      for (final application in applications[node] ?? const <Class>[]) {
-        for (final f in application.fields) {
-          if (f.isStatic || own.contains(f.name.text)) continue;
-          if (!recoveredFields.add(f.name.text)) continue;
-          try {
-            _lowerField(cls, f, declaredType: _declaredFieldType(f) ?? f.type);
-          } on Unsupported catch (error, stack) {
-            refuse(f.name.text, error, stack);
-          }
-        }
-      }
-    }
     for (final field in node.fields) {
       try {
         _lowerField(cls, field);
@@ -10105,12 +10082,6 @@ class KernelFrontend implements TypeWorld {
       }
     }
     for (final procedure in node.procedures) {
-      // The abstract getter or setter standing for a recovered field: the
-      // field's own accessors are declared instead.
-      if ((procedure.isGetter || procedure.isSetter) &&
-          recoveredFields.contains(procedure.name.text)) {
-        continue;
-      }
       // A hollow mixin method: its body, from an application of the mixin.
       final lowered = node.isMixinDeclaration && procedure.isAbstract
           ? _appliedBody(node, procedure) ?? procedure
@@ -10129,6 +10100,31 @@ class KernelFrontend implements TypeWorld {
         refuse(procedure.name.text, error, stack);
         final stub = _stubFor(procedure, '$error');
         if (stub != null) cls.methods.add(stub);
+      }
+    }
+    // ..and the fields the declaration no longer lists, held by an
+    // application: known to the trait for their cells only
+    // (`IrClass.appliedFields`), typed by the declaration's own getter.
+    if (node.isMixinDeclaration) {
+      final own = {for (final f in node.fields) f.name.text};
+      final seenApplied = <String>{};
+      for (final application in applications[node] ?? const <Class>[]) {
+        for (final f in application.fields) {
+          if (f.isStatic || own.contains(f.name.text)) continue;
+          if (!seenApplied.add(f.name.text)) continue;
+          try {
+            cls.appliedFields.add(
+              IrFieldDecl(
+                f.name.text,
+                _type(_declaredFieldType(f) ?? f.type),
+                isFinal: f.isFinal,
+                isLate: f.isLate,
+              ),
+            );
+          } on Unsupported {
+            // Unspelled: no cell to hand out.
+          }
+        }
       }
     }
     // ..and the mixin's methods the declaration no longer lists at all,

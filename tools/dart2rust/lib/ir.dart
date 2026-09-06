@@ -1669,6 +1669,13 @@ class IrClass {
 
   final String? doc;
   final List<IrFieldDecl> fields = [];
+
+  /// A hollow mixin's fields that live on an application of it (the CFE
+  /// moves them there; the AOT declaration keeps an abstract getter): not
+  /// this class's to declare accessors for, but a held collection among
+  /// them is mutated in place through the trait, and the trait hands out
+  /// its cell for that (`RendererBinding._viewIdToRenderView`, run530).
+  final List<IrFieldDecl> appliedFields = [];
   final List<IrConstDecl> constants = [];
   final List<IrMethod> methods = [];
   final List<IrConstructor> constructors = [];
