@@ -423,6 +423,54 @@ IrExpr coerceInto(
   // where the closure written takes `Option<..>`).
   if (have.isFunction && slot.isFunction) {
     final hp = have.parameters!, sp = slot.parameters!;
+    // A closure literal with more parameters than the slot takes, the
+    // extra ones nullable: Dart lets `focusNode.requestFocus` (one
+    // optional `FocusNode?`) stand as a `VoidCallback`, and the extra
+    // parameters are absent (`_FocusState.build`, ws547).
+    if (hp.length > sp.length &&
+        value is IrClosure &&
+        value.params.length == hp.length &&
+        value.params.skip(sp.length).every((p) => isNullable(p.type))) {
+      final params = <IrParam>[];
+      final args = <IrExpr>[];
+      for (var i = 0; i < sp.length; i++) {
+        final name = '__a$i';
+        params.add(IrParam(name, sp[i]));
+        args.add(
+          coerceInto(
+            IrLocal(name)..rustType = sp[i],
+            hp[i],
+            world,
+            inClosure: true,
+          ),
+        );
+      }
+      for (var i = sp.length; i < hp.length; i++) {
+        args.add(IrLiteral('None', const IrType('raw'))..rustType = hp[i]);
+      }
+      final inner = IrClosure(
+        value.params,
+        value.body,
+        value.returns,
+        locals: [for (final c in value.captures) c.name, ...value.locals],
+        holdsSelf: value.holdsSelf,
+        isAsync: value.isAsync,
+      )..rustType = value.rustType;
+      final called = IrCallValue(inner, args)..rustType = have.returns;
+      final shaped = coerceInto(called, slot.returns!, world, inClosure: true);
+      return IrCall(
+        IrClosure(
+          params,
+          IrReturn(shaped),
+          slot.returns!,
+          captures: value.captures,
+          locals: value.locals,
+          holdsSelf: value.holdsSelf,
+        ),
+        '!rc',
+        const [],
+      )..rustType = slot;
+    }
     if (hp.length != sp.length) return value;
     final params = <IrParam>[];
     final args = <IrExpr>[];

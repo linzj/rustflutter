@@ -4480,17 +4480,21 @@ impl HttpClient {
 pub struct Iterable;
 
 impl Iterable {
-    pub fn generate<T>(
+    /// `Iterable.generate(count, [generator])`: without a generator the
+    /// elements are the indices, which Dart admits only for an `int`
+    /// element -- asked of the element type's own conversion here, so
+    /// that `Iterable<RenderBox>.generate(1, (i) => child)` is not held
+    /// to `RenderBox: From<i64>` (ws547).
+    pub fn generate<T: FromDynamic + 'static>(
         count: i64,
         generator: Option<std::rc::Rc<dyn Fn(i64) -> Result<T, DartError>>>,
-    ) -> Result<Vec<T>, DartError>
-    where
-        T: From<i64>,
-    {
+    ) -> Result<Vec<T>, DartError> {
         (0..count.max(0))
             .map(|i| match &generator {
                 Some(f) => f(i),
-                None => Ok(T::from(i)),
+                None => Ok(dart_from_dynamic::<T>(
+                    std::rc::Rc::new(i) as std::rc::Rc<dyn Object>
+                )),
             })
             .collect()
     }

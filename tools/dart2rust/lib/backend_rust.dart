@@ -4725,7 +4725,12 @@ class RustBackend {
         );
       case IrLocalFunction(:final name, :final closure, :final recursive):
         if (!recursive) {
-          _line('let ${snake(name)} = ${expr(closure)};');
+          // Behind the handle every function value is (`Rc<dyn Fn>`): a
+          // bare closure bound to `listener` could not be handed to
+          // `property.addListener(listener)` (`registerForRestoration`,
+          // ws547); a call on the handle reads the same.
+          final boxed = closure.boxed ? '' : 'std::rc::Rc::new';
+          _line('let ${snake(name)} = $boxed(${expr(closure)});');
           break;
         }
         // A closure cannot name itself: the binding is a cell, filled

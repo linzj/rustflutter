@@ -6729,6 +6729,9 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws545 | 链：558/可达 **34**——两个函数外的错误（`<T as DartNullable>::Or: DartAny` 在 struct/trait 声明上）把 widgets crate 整个挡掉，数字作废。 | 通用约束串里 `Or:` 也要 `DartAny`。 |
 | ws546 | 链：**875**（−28 对 903；新 12/去 40），141，函数外 0。新 12：11 个 `()` 不实现 `Display`（TFA 删掉的值经 `!object_str` 变成 `()`——改回经 `dart_str`），3 个 `controller.reverse()` 被当成 cell 局部量的列表变异（`_cellPlace` 的局部量规则限定为集合类型）。 | |
 | run546 | **过了 `InheritedModel.inheritFrom`**（`_findModels` 借出列表填好了），停在拒绝：`MediaQueryData.textScaler` 的 `identical(_textScaler, _kUnspecifiedTextScaler)`——对常量实例的 `identical`。Dart 常量是规范化的：值相等即同一。规则：另一侧 `dart_cast_any::<C>()` 后 `dart_eq` 常量；夹具 identconst 与 dart 一致。 | ws548 量。 |
+| ws547 | 链：**863**（−12；新 0/去 12），141。 | |
+| ws548 | 链：**863**（持平），141。带 `identical` 常量规则。 | |
+| run548 | **过了 `MediaQueryData.textScaler`**，停在 `_FocusState.build` 的 stub：`focusNode.requestFocus`（一个可选参数）撕给 `VoidCallback`（`Semantics.onDidGainAccessibilityFocus`），适配器没按槽位元数造。coerce 加规则：闭包字面量参数多于槽位且多出的都可空 → 按槽位元数造适配器、多出的传 `None`。顺带：局部函数（`void listener() {..}`）绑定成句柄 `Rc::new(闭包)`，否则递给 `addListener` 不匹配（`registerForRestoration`）；`Iterable.generate` 的元素约束从 `From<i64>` 改成 `FromDynamic`（无 generator 时按元素类型转）。夹具 closureslot。 | ws549 量。 |
 
 ## 下一步(2026-09-05 重铺)
 
