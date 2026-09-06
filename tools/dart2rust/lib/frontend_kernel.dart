@@ -497,6 +497,7 @@ class KernelFrontend implements TypeWorld {
     final env = typeEnvironment;
     _typeContext = env == null ? null : StaticTypeContext(member, env);
     _capturedWrites = _CapturedWrites.of(member, _fillsParameter);
+    _boxedFunctionLocals.clear();
     _tryWrites = _TryWrites.of(member);
   }
 
@@ -506,6 +507,11 @@ class KernelFrontend implements TypeWorld {
   /// local's -- a plain `let` copied into the closure would have kept the
   /// sum to itself, and the fixture crate's `total` said 0.
   Set<Variable> _capturedWrites = const {};
+
+  /// The function-typed locals of the member being lowered that are
+  /// handles (`Rc<..>`): local functions, and locals with a closure
+  /// initialiser (see `_withBorrowing`).
+  final Set<String> _boxedFunctionLocals = {};
 
   /// Locals assigned inside a `try` body they are declared outside of.
   /// The backend lowers a `try` into a closure called on the spot, and
@@ -3996,6 +4002,10 @@ class KernelFrontend implements TypeWorld {
         : startType.nullable
         ? IrLiteral('None', const IrType('raw'))
         : null;
+    if (variable.type is FunctionType &&
+        (init is FunctionExpression || init is InstanceTearOff)) {
+      _boxedFunctionLocals.add(name);
+    }
     return IrLocalDecl(
       name,
       // `void` is what the CFE gives the temporary of a post-increment whose
@@ -7877,6 +7887,17 @@ class KernelFrontend implements TypeWorld {
     if (kept) _borrowedArgument = false;
     try {
       final value = lower();
+      // A function local -- a handle, since every function-typed local is
+      // one (`IrLocalFunction`, a closure initialiser boxed by `coerce`)
+      // -- into a parameter the callee only calls (`impl Fn`): the closure
+      // behind the handle, lent (`memoize`'s `ifAbsent` into
+      // `putIfAbsent`, ws549).
+      if (!kept &&
+          value is IrLocal &&
+          (value.rustType?.isFunction ?? false) &&
+          _boxedFunctionLocals.contains(value.name)) {
+        return IrCall(value, '!fn_ref', const [])..rustType = value.rustType;
+      }
       // The parameter is owned where it is kept, so the argument is boxed to
       // match: a closure's own type has no name.
       if (value is IrClosure) {
@@ -9239,6 +9260,7 @@ class KernelFrontend implements TypeWorld {
       // (`LocalFunctionInvocation`) or a read of it.
       final self = _SelfReference(node.variable);
       node.function.body?.accept(self);
+      if (!self.found) _boxedFunctionLocals.add(name);
       return IrLocalFunction(name, closure, recursive: self.found);
     }
     if (node is SwitchStatement) {

@@ -2488,7 +2488,287 @@ impl<T> DartQueue<T> for std::collections::VecDeque<T> {
 }
 pub type ListQueue<T> = std::collections::VecDeque<T>;
 pub type DoubleLinkedQueue<T> = std::collections::VecDeque<T>;
-pub type LinkedList<T> = std::collections::VecDeque<T>;
+/// Dart's `LinkedList<E extends LinkedListEntry<E>>`: an intrusive doubly
+/// linked list. Its elements are handles (`Rc<E>`), and the list is a
+/// handle to its own state -- a Dart `LinkedList` is an object -- so an
+/// entry's `insertAfter`/`previous`/`next`/`unlink` (`LinkedListEntry`,
+/// on every `Rc<E>`) finds its list in a side table keyed by the entry's
+/// address, where Dart's entry keeps a link. Order is a `VecDeque`; the
+/// entry's links are its neighbours in it. Membership is identity
+/// (`Rc::ptr_eq`), as Dart's is. (`Overlay`'s `_OverlayEntryLocation`
+/// ordering, run548: `insertAfter` on the old `VecDeque` alias.)
+pub struct LinkedList<T> {
+    state: std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<T>>>,
+}
+
+impl<T> Clone for LinkedList<T> {
+    fn clone(&self) -> Self {
+        LinkedList { state: self.state.clone() }
+    }
+}
+
+impl<T> Default for LinkedList<T> {
+    fn default() -> Self {
+        LinkedList::new()
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for LinkedList<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LinkedList({:?})", self.state.borrow())
+    }
+}
+
+impl<T> PartialEq for LinkedList<T> {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl<T> DartEq for LinkedList<T> {
+    fn dart_eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl<T: 'static> DartAny for LinkedList<T> {
+    fn dart_runtime_type(&self) -> Type {
+        Type::of("LinkedList")
+    }
+}
+
+impl<T> DartNullable for LinkedList<T> {
+    type Or = Option<Self>;
+    fn option(or: Option<Self>) -> Option<Self> {
+        or
+    }
+    fn from_option(option: Option<Self>) -> Option<Self> {
+        option
+    }
+}
+
+impl<T: 'static> FromDynamic for LinkedList<T> {
+    fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+        value.as_any().downcast_ref::<Self>().cloned()
+    }
+    fn from_same(value: &Self) -> Option<Self> {
+        Some(value.clone())
+    }
+}
+
+/// An entry's identity: what the side table is keyed by.
+pub trait LinkedListEntryKey {
+    fn __entry_key(&self) -> usize;
+}
+
+impl<E: ?Sized> LinkedListEntryKey for std::rc::Rc<E> {
+    fn __entry_key(&self) -> usize {
+        std::rc::Rc::as_ptr(self) as *const u8 as usize
+    }
+}
+
+thread_local! {
+    /// Entry address to the state of the list holding it.
+    static ENTRY_LISTS: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Rc<dyn std::any::Any>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+impl<T> LinkedList<T> {
+    pub fn new() -> Self {
+        LinkedList { state: std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::new())) }
+    }
+}
+
+/// The snapshot a `for-in` walks: owned handles, and `cloned()` on it is
+/// itself (the walk is written for a `Vec`'s `iter().cloned()`).
+pub struct LinkedListIter<T>(std::vec::IntoIter<T>);
+
+impl<T> LinkedListIter<T> {
+    pub fn cloned(self) -> Self {
+        self
+    }
+}
+
+impl<T> Iterator for LinkedListIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        self.0.next()
+    }
+}
+
+impl<T: Clone + LinkedListEntryKey + 'static> LinkedList<T> {
+    fn register(&self, entry: &T) {
+        let state: std::rc::Rc<dyn std::any::Any> = self.state.clone();
+        ENTRY_LISTS.with(|m| m.borrow_mut().insert(entry.__entry_key(), state));
+    }
+
+    fn unregister(entry: &T) {
+        ENTRY_LISTS.with(|m| m.borrow_mut().remove(&entry.__entry_key()));
+    }
+
+    fn position(&self, entry: &T) -> Option<usize> {
+        let key = entry.__entry_key();
+        self.state.borrow().iter().position(|e| e.__entry_key() == key)
+    }
+
+    pub fn contains(&self, entry: T) -> bool {
+        self.position(&entry).is_some()
+    }
+
+    /// `remove(entry)`: whether it was there.
+    pub fn remove(&self, entry: T) -> bool {
+        match self.position(&entry) {
+            Some(i) => {
+                self.state.borrow_mut().remove(i);
+                Self::unregister(&entry);
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn iter(&self) -> LinkedListIter<T> {
+        LinkedListIter(self.state.borrow().iter().cloned().collect::<Vec<T>>().into_iter())
+    }
+
+    pub fn len(&self) -> usize {
+        self.state.borrow().len()
+    }
+
+    pub fn for_each<F: FnMut(T)>(&self, mut f: F) {
+        for e in self.iter() {
+            f(e);
+        }
+    }
+
+    fn insert_at(&self, index: usize, entry: T) {
+        self.register(&entry);
+        self.state.borrow_mut().insert(index, entry);
+    }
+}
+
+impl<T: Clone + LinkedListEntryKey + 'static> IntoIterator for LinkedList<T> {
+    type Item = T;
+    type IntoIter = LinkedListIter<T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, T: Clone + LinkedListEntryKey + 'static> IntoIterator for &'a LinkedList<T> {
+    type Item = T;
+    type IntoIter = LinkedListIter<T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<T: Clone + LinkedListEntryKey + 'static> DartQueueRead<T> for LinkedList<T> {
+    fn first(&self) -> T {
+        self.state.borrow().front().cloned().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    }
+    fn last(&self) -> T {
+        self.state.borrow().back().cloned().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    }
+    fn to_list(&self) -> Vec<T> {
+        self.state.borrow().iter().cloned().collect()
+    }
+}
+
+impl<T: Clone + LinkedListEntryKey + 'static> DartQueue<T> for LinkedList<T> {
+    fn length(&self) -> i64 {
+        self.len() as i64
+    }
+    fn add(&mut self, value: T) {
+        let at = self.len();
+        self.insert_at(at, value)
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn is_not_empty(&self) -> bool {
+        self.len() != 0
+    }
+    fn clear(&mut self) {
+        for e in self.iter() {
+            Self::unregister(&e);
+        }
+        self.state.borrow_mut().clear()
+    }
+    fn remove_first(&mut self) -> T {
+        let first = self.first();
+        self.remove(first.clone());
+        first
+    }
+    fn remove_last(&mut self) -> T {
+        let last = self.last();
+        self.remove(last.clone());
+        last
+    }
+    fn add_first(&mut self, value: T) {
+        self.insert_at(0, value)
+    }
+    fn add_last(&mut self, value: T) {
+        let at = self.len();
+        self.insert_at(at, value)
+    }
+    fn add_all(&mut self, values: Vec<T>) {
+        for v in values {
+            let at = self.len();
+            self.insert_at(at, v);
+        }
+    }
+}
+
+/// Dart's `LinkedListEntry<E>`: what an element of a `LinkedList` can ask
+/// about its place, on the handle every element is.
+pub trait LinkedListEntry: Sized {
+    fn list(&self) -> Option<LinkedList<Self>>;
+    fn next(&self) -> Option<Self>;
+    fn previous(&self) -> Option<Self>;
+    fn insert_after(&self, entry: Self);
+    fn insert_before(&self, entry: Self);
+    fn unlink(&self);
+}
+
+impl<E: ?Sized + 'static> LinkedListEntry for std::rc::Rc<E> {
+    fn list(&self) -> Option<LinkedList<Self>> {
+        let found = ENTRY_LISTS.with(|m| m.borrow().get(&self.__entry_key()).cloned());
+        found
+            .and_then(|s| s.downcast::<std::cell::RefCell<std::collections::VecDeque<Self>>>().ok())
+            .map(|state| LinkedList { state })
+    }
+    fn next(&self) -> Option<Self> {
+        let list = self.list()?;
+        let i = list.position(self)?;
+        let out = list.state.borrow().get(i + 1).cloned();
+        out
+    }
+    fn previous(&self) -> Option<Self> {
+        let list = self.list()?;
+        let i = list.position(self)?;
+        if i == 0 {
+            return None;
+        }
+        let out = list.state.borrow().get(i - 1).cloned();
+        out
+    }
+    fn insert_after(&self, entry: Self) {
+        let list = self.list().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: insertAfter on an entry not in a list"));
+        let i = list.position(self).unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: entry not in its list"));
+        list.insert_at(i + 1, entry);
+    }
+    fn insert_before(&self, entry: Self) {
+        let list = self.list().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: insertBefore on an entry not in a list"));
+        let i = list.position(self).unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: entry not in its list"));
+        list.insert_at(i, entry);
+    }
+    fn unlink(&self) {
+        if let Some(list) = self.list() {
+            list.remove(self.clone());
+        }
+    }
+}
 
 /// Dart's `Stopwatch`.
 ///

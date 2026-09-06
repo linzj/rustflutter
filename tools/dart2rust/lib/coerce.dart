@@ -196,7 +196,17 @@ IrExpr coerceInto(
     return IrNullableOf(value, slot.name, toOption: !slot.projected)
       ..rustType = slot;
   }
-  if (sameRust(have0, slot) && !projectionDiffers(have0, slot)) {
+  // ..unless a closure literal is written with more parameters than its
+  // recorded type says (a tear-off adapter typed by its slot): that one
+  // goes on to the function rule, which adapts the arity (ws549).
+  final arityDiffers =
+      value is IrClosure &&
+      slot.isFunction &&
+      slot.parameters != null &&
+      value.params.length != slot.parameters!.length;
+  if (sameRust(have0, slot) &&
+      !projectionDiffers(have0, slot) &&
+      !arityDiffers) {
     // A closure literal of exactly the slot's type still goes behind the
     // handle every function slot is (`Listenable.onError = (..) {..}`
     // into a static's `Rc<dyn Fn>`, run453), unless it already is one.
@@ -422,59 +432,32 @@ IrExpr coerceInto(
   // `T? Function(T?, T?, double)` wants `Option<Option<..>>` parameters
   // where the closure written takes `Option<..>`).
   if (have.isFunction && slot.isFunction) {
-    final hp = have.parameters!, sp = slot.parameters!;
-    // A closure literal with more parameters than the slot takes, the
-    // extra ones nullable: Dart lets `focusNode.requestFocus` (one
-    // optional `FocusNode?`) stand as a `VoidCallback`, and the extra
-    // parameters are absent (`_FocusState.build`, ws547).
-    if (hp.length > sp.length &&
-        value is IrClosure &&
-        value.params.length == hp.length &&
-        value.params.skip(sp.length).every((p) => isNullable(p.type))) {
-      final params = <IrParam>[];
-      final args = <IrExpr>[];
-      for (var i = 0; i < sp.length; i++) {
-        final name = '__a$i';
-        params.add(IrParam(name, sp[i]));
-        args.add(
-          coerceInto(
-            IrLocal(name)..rustType = sp[i],
-            hp[i],
-            world,
-            inClosure: true,
-          ),
-        );
-      }
-      for (var i = sp.length; i < hp.length; i++) {
-        args.add(IrLiteral('None', const IrType('raw'))..rustType = hp[i]);
-      }
-      final inner = IrClosure(
-        value.params,
-        value.body,
-        value.returns,
-        locals: [for (final c in value.captures) c.name, ...value.locals],
-        holdsSelf: value.holdsSelf,
-        isAsync: value.isAsync,
-      )..rustType = value.rustType;
-      final called = IrCallValue(inner, args)..rustType = have.returns;
-      final shaped = coerceInto(called, slot.returns!, world, inClosure: true);
-      return IrCall(
-        IrClosure(
-          params,
-          IrReturn(shaped),
-          slot.returns!,
-          captures: value.captures,
-          locals: value.locals,
-          holdsSelf: value.holdsSelf,
-        ),
-        '!rc',
-        const [],
-      )..rustType = slot;
-    }
-    if (hp.length != sp.length) return value;
+    final sp = slot.parameters!;
+    // The value's parameters: a closure literal's own (a tear-off adapter
+    // is typed by its slot while written with the method's, ws549), else
+    // its type's.
+    final literal = value is IrClosure
+        ? value
+        : value is IrCall &&
+              value.name == '!rc' &&
+              value.args.isEmpty &&
+              value.target is IrClosure
+        ? value.target as IrClosure
+        : null;
+    final hp = literal != null
+        ? [for (final p in literal.params) p.type]
+        : have.parameters!;
+    // More parameters than the slot takes, the extra ones nullable: Dart
+    // lets `focusNode.requestFocus` (one optional `FocusNode?`) stand as
+    // a `VoidCallback`, and the extra parameters are absent (`_FocusState.
+    // build`, ws547; `cond ? f.requestFocus : null`, a conditional, ws549).
+    final extra = hp.length > sp.length && hp.skip(sp.length).every(isNullable)
+        ? hp.length - sp.length
+        : 0;
+    if (hp.length != sp.length && extra == 0) return value;
     final params = <IrParam>[];
     final args = <IrExpr>[];
-    var adapted = false;
+    var adapted = extra > 0;
     for (var i = 0; i < sp.length; i++) {
       final name = '__a$i';
       params.add(IrParam(name, sp[i]));
@@ -482,6 +465,14 @@ IrExpr coerceInto(
       final arg = coerceInto(given, hp[i], world, inClosure: true);
       if (!identical(arg, given)) adapted = true;
       args.add(arg);
+    }
+    for (var i = sp.length; i < hp.length; i++) {
+      args.add(IrLiteral('None', const IrType('raw'))..rustType = hp[i]);
+    }
+    if (literal != null && extra > 0) {
+      // The literal behind its handle, if it had one, is what the adapter
+      // calls: rebuilt below as any literal is.
+      value = literal;
     }
     final call = IrCallValue(value, args)..rustType = have.returns;
     final result = coerceInto(call, slot.returns!, world, inClosure: true);

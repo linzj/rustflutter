@@ -1208,7 +1208,36 @@ class RustBackend {
     _cellLocals = savedCells;
     _lateCellLocals = savedLateCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
-    return node.boxed ? 'std::rc::Rc::new($whole)' : whole;
+    if (!node.boxed) return whole;
+    // Unsized to the function type it is typed as, where that is
+    // spelled: inside a `.map(|__f| ..)` there is no slot to infer
+    // `Rc<dyn Fn>` from, and the `Rc<{closure}>` stayed one (a
+    // conditional tear-off into `VoidCallback?`, ws549).
+    final spelled = _closureHandleType(node, node.rustType);
+    if (spelled != null) return '(std::rc::Rc::new($whole) as $spelled)';
+    return 'std::rc::Rc::new($whole)';
+  }
+
+  /// The `Rc<dyn Fn(..) -> ..>` a boxed closure is, spelled from its
+  /// recorded type or, failing that, from its own parameters and return
+  /// -- or null when either names something this backend cannot spell (an
+  /// async closure's future, an unknown).
+  String? _closureHandleType(IrClosure node, IrType? recorded) {
+    if (node.isAsync) return null;
+    final own = recorded != null && recorded.isFunction
+        ? recorded
+        : IrType.function([for (final p in node.params) p.type], node.returns);
+    if (_mentionsUnknown(own) ||
+        own.parameters!.any((p) => p.name == '_' || p.name == 'raw') ||
+        own.returns!.name == '_' ||
+        own.returns!.name == 'raw') {
+      return null;
+    }
+    try {
+      return type(nonNull(own));
+    } on Unsupported {
+      return null;
+    }
   }
 
   /// A field's type, wrapped when a closure has to see it change.
@@ -1409,7 +1438,10 @@ class RustBackend {
     if (owned == null) return null;
     for (final f in _allFields(owned)) {
       if (f.name != name) continue;
-      return f.shared || (owned.counted && _mutableOnCounted(f)) ? f : null;
+      // The one predicate the struct's own reads use (`_inCellOf`): a
+      // collection a trait hands out as a cell is one here too, and
+      // `(widget as _Theater).children[i]` indexed the cell (ws547).
+      return _inCellOf(owned, f) ? f : null;
     }
     return null;
   }
@@ -3330,7 +3362,19 @@ class RustBackend {
       final own = _thisHandle();
       if (own != null) return own;
     }
-    if (name == '!rc' && args.isEmpty) return 'std::rc::Rc::new($receiver)';
+    if (name == '!rc' && args.isEmpty) {
+      // A closure behind its handle, unsized to the function type it is
+      // typed as where that is spelled: inside a `.map(|__f| ..)` there
+      // is no slot to infer `Rc<dyn Fn>` from, and the `Rc<{closure}>`
+      // stayed one (a conditional tear-off into `VoidCallback?`, ws549).
+      final spelled = target is IrClosure
+          ? _closureHandleType(target, resultType)
+          : null;
+      if (spelled != null) {
+        return '(std::rc::Rc::new($receiver) as $spelled)';
+      }
+      return 'std::rc::Rc::new($receiver)';
+    }
     // An `Option<Rc<dyn Object>>` into a `dynamic` slot: absent is `Null`.
     if (name == '!or_null' && args.isEmpty) {
       return '$receiver.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>)';
@@ -3544,6 +3588,14 @@ class RustBackend {
     if (name == '!cast' && args.isEmpty) return receiver;
     // `first` is an index on a list and a method on a translated class
     // with a getter of that name (`PriorityQueue.first`, E0608 at ws460).
+    // ..and a method on the prelude's queues and the intrusive
+    // `LinkedList` (`DartQueueRead`), which cannot be indexed (ws549).
+    const queueLike = {'Queue', 'ListQueue', 'DoubleLinkedQueue', 'LinkedList'};
+    if ((name == 'first' || name == 'last') &&
+        args.isEmpty &&
+        queueLike.contains(target?.rustType?.name ?? '')) {
+      return '$receiver.$name()';
+    }
     if (name == 'first' &&
         args.isEmpty &&
         library[receiverClass ?? ''] == null) {
@@ -3553,6 +3605,11 @@ class RustBackend {
     // the `Vec` (`_requestTabTraversalFocus(sortedNodes.last)`, ws522).
     if (name == 'last' && args.isEmpty) {
       return '$receiver[$receiver.len() - 1].clone()';
+    }
+    // A function local behind its handle, lent to an `impl Fn` slot: the
+    // closure inside (`&*f`; a handle is not a function to Rust).
+    if (name == '!fn_ref' && args.isEmpty && target != null) {
+      return '&*${expr(target)}';
     }
     // Dart's `toList` on a list copies it, which is `clone`.
     // `toList()` on a list is the list again; on any other collection --
