@@ -2982,11 +2982,14 @@ class RustBackend {
       return '${expr(target)}.dart_self_ref().get()';
     }
     // `runtimeType` on a super function's `this_` (see `DartAny`).
+    // ..and on a struct method's `self` too: through `&mut self`, `Object::
+    // runtime_type` resolved on the *reference*, which the blanket impl
+    // asks to be `'static` (E0521, `WriteBuffer.done`, run505).
     if ((name == 'runtimeType' || name == 'runtime_type') &&
         args.isEmpty &&
         (target == null || target is IrThis) &&
-        _selfName == 'this_') {
-      return 'this_.dart_runtime_type()';
+        (_selfName == 'this_' || _selfName == 'self')) {
+      return '$_selfName.dart_runtime_type()';
     }
     final cellPlace = _mutatesInPlace(name) ? _cellPlace(target) : null;
     final receiver = cellPlace != null

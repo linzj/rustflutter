@@ -1011,8 +1011,12 @@ class KernelFrontend implements TypeWorld {
       // `dynamic`): the prelude's value, converted where its element
       // representation differs (`dart_cast_map`, as an `as Map<..>` is;
       // get's `_isNullOrEmpty`, run489).
+      // ..and a typed list (`value is Float64List` in
+      // `StandardMessageCodec.writeValue`, run505): the `Vec` of its
+      // element the prelude names it.
       if (promoted is InterfaceType &&
           (_coreCollection(promoted.classNode) ||
+              _typedList(promoted.classNode) ||
               (promoted.classNode.name == 'Iterable' &&
                   promoted.classNode.enclosingLibrary.importUri.toString() ==
                       'dart:core')) &&
@@ -3733,6 +3737,49 @@ class KernelFrontend implements TypeWorld {
     );
   }
 
+  /// The argument slots of a member on a *typed list* receiver (`Vec<u8>`
+  /// here): the element slots take the list's narrow element, not Dart's
+  /// `int` -- `bytes.setRange(a, b, other)` on two `Uint8List`s handed the
+  /// prelude a `Vec<i64>` (`WriteBuffer._append`, run505). Null for any
+  /// other receiver or slot.
+  List<IrType?>? _narrowSlots(InstanceInvocation node) {
+    final narrow = _narrowElement(_staticType(node.receiver));
+    final declaring = node.interfaceTarget.enclosingClass;
+    final fn = node.interfaceTarget.function;
+    if (narrow == null ||
+        declaring == null ||
+        fn == null ||
+        declaring.enclosingLibrary.importUri.scheme != 'dart') {
+      return null;
+    }
+    IrType? slot(DartType t) {
+      if (t is TypeParameterType &&
+          declaring.typeParameters.contains(t.parameter)) {
+        return IrType(narrow);
+      }
+      if (t is InterfaceType &&
+          (t.classNode.name == 'Iterable' || t.classNode.name == 'List') &&
+          t.typeArguments.length == 1) {
+        final e = t.typeArguments.single;
+        if (e is TypeParameterType &&
+            declaring.typeParameters.contains(e.parameter)) {
+          return IrType('List', arguments: [IrType(narrow)]);
+        }
+      }
+      return null;
+    }
+
+    final slots = [for (final p in fn.positionalParameters) slot(p.type)];
+    return slots.any((s) => s != null) ? slots : null;
+  }
+
+  /// Whether `c` is one of `dart:typed_data`'s lists (`Uint8List`,
+  /// `Float64List`, ..): a `Vec` of its element here.
+  static bool _typedList(Class c) =>
+      c.enclosingLibrary.importUri.toString() == 'dart:typed_data' &&
+      c.name.endsWith('List') &&
+      !c.name.startsWith('_');
+
   /// The Rust element type of a typed list narrower than Dart's `double`
   /// and `int`, or null for anything else.
   static String? _narrowElement(DartType? type) {
@@ -4299,6 +4346,9 @@ class KernelFrontend implements TypeWorld {
           node.interfaceTarget.function,
           true,
           node.functionType,
+          null,
+          null,
+          _narrowSlots(node),
         ),
       );
     } finally {
@@ -5850,6 +5900,7 @@ class KernelFrontend implements TypeWorld {
     FunctionType? instantiated,
     List<DartType>? positionalTypes,
     Map<String, DartType>? namedTypes,
+    List<IrType?>? positionalSlots,
   ]) {
     final was = _borrowedArgument;
     _borrowedArgument = borrows;
@@ -5860,6 +5911,7 @@ class KernelFrontend implements TypeWorld {
         instantiated,
         positionalTypes,
         namedTypes,
+        positionalSlots,
       );
     } finally {
       _borrowedArgument = was;
@@ -7066,7 +7118,26 @@ class KernelFrontend implements TypeWorld {
     }
     // A typed list handed to a `List<int>` parameter widens its elements
     // (`Response.bytes(body)` with a `Uint8List`).
-    if (param is InterfaceType &&
+    // ..unless the slot it lands in is itself a narrow list -- a typed
+    // list's own member, `bytes.setRange(a, b, other)` on `Uint8List`s
+    // (`_narrowSlots`, run505).
+    final slotNarrow =
+        slotIr != null &&
+        slotIr.name == 'List' &&
+        slotIr.arguments.length == 1 &&
+        const {
+          'u8',
+          'i8',
+          'i16',
+          'u16',
+          'i32',
+          'u32',
+          'u64',
+          'f32',
+          'f64',
+        }.contains(slotIr.arguments.single.name);
+    if (!slotNarrow &&
+        param is InterfaceType &&
         _narrowElement(param) == null &&
         (param.classNode.name == 'List' ||
             param.classNode.name == 'Iterable') &&
@@ -7272,6 +7343,7 @@ class KernelFrontend implements TypeWorld {
     FunctionType? instantiated,
     List<DartType>? positionalTypes,
     Map<String, DartType>? namedTypes,
+    List<IrType?>? positionalSlots,
   ]) {
     final positional = [
       for (var i = 0; i < node.positional.length; i++)
@@ -7280,7 +7352,9 @@ class KernelFrontend implements TypeWorld {
           callee,
           i,
           instantiated,
-          null,
+          positionalSlots != null && i < positionalSlots.length
+              ? positionalSlots[i]
+              : null,
           positionalTypes != null && i < positionalTypes.length
               ? positionalTypes[i]
               : null,

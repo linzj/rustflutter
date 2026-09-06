@@ -5270,15 +5270,27 @@ pub fn uint8_list_view(buffer: Vec<u8>, offset: i64, length: Option<i64>) -> Vec
     buffer[start..end].to_vec()
 }
 
-/// `TypedData.buffer` on a list of ints: the bytes, one per element, which
-/// is what a `Uint8List` behind a `List<int>` holds.
+/// `TypedData.buffer` and its sizes on a typed list, which is a `Vec` of
+/// its element here: the bytes of the elements, little-endian, as the
+/// platform's are (`WriteBuffer.putFloat64List`, run505). A `List<int>`
+/// behind a `Uint8List` holds one byte per element.
 pub trait DartTypedList {
     fn buffer(&self) -> Vec<u8>;
+    fn element_size_in_bytes(&self) -> i64;
+    fn offset_in_bytes(&self) -> i64 {
+        0
+    }
+    fn length_in_bytes(&self) -> i64 {
+        self.buffer().len() as i64
+    }
 }
 
 impl DartTypedList for Vec<i64> {
     fn buffer(&self) -> Vec<u8> {
         self.iter().map(|v| *v as u8).collect()
+    }
+    fn element_size_in_bytes(&self) -> i64 {
+        1
     }
 }
 
@@ -5286,7 +5298,26 @@ impl DartTypedList for Vec<u8> {
     fn buffer(&self) -> Vec<u8> {
         self.clone()
     }
+    fn element_size_in_bytes(&self) -> i64 {
+        1
+    }
 }
+
+macro_rules! dart_typed_list {
+    ($($t:ty => $width:expr),* $(,)?) => {
+        $(
+            impl DartTypedList for Vec<$t> {
+                fn buffer(&self) -> Vec<u8> {
+                    self.iter().flat_map(|v| v.to_le_bytes()).collect()
+                }
+                fn element_size_in_bytes(&self) -> i64 {
+                    $width
+                }
+            }
+        )*
+    };
+}
+dart_typed_list!(i8 => 1, i16 => 2, u16 => 2, i32 => 4, u32 => 4, u64 => 8, f32 => 4, f64 => 8);
 
 /// `ByteBuffer.asUint8List(offset, length)` and its siblings on the bytes
 /// a buffer is here: windows copied out, in the element width asked for.
@@ -5297,6 +5328,11 @@ pub trait DartByteBuffer {
     fn as_int32_list(&self, offset: i64, length: Option<i64>) -> Vec<i32>;
     fn as_float32_list(&self, offset: i64, length: Option<i64>) -> Vec<f32>;
     fn as_float64_list(&self, offset: i64, length: Option<i64>) -> Vec<f64>;
+    fn as_int64_list(&self, offset: i64, length: Option<i64>) -> Vec<i64>;
+    fn as_uint64_list(&self, offset: i64, length: Option<i64>) -> Vec<u64>;
+    fn as_int16_list(&self, offset: i64, length: Option<i64>) -> Vec<i16>;
+    fn as_uint16_list(&self, offset: i64, length: Option<i64>) -> Vec<u16>;
+    fn as_uint32_list(&self, offset: i64, length: Option<i64>) -> Vec<u32>;
 }
 
 fn byte_window(bytes: &[u8], offset: i64, length: Option<i64>, width: usize) -> &[u8] {
@@ -5340,6 +5376,27 @@ impl DartByteBuffer for Vec<u8> {
             .chunks_exact(8)
             .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
             .collect()
+    }
+    fn as_int64_list(&self, offset: i64, length: Option<i64>) -> Vec<i64> {
+        byte_window(self, offset, length, 8)
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .collect()
+    }
+    fn as_uint64_list(&self, offset: i64, length: Option<i64>) -> Vec<u64> {
+        byte_window(self, offset, length, 8)
+            .chunks_exact(8)
+            .map(|c| u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .collect()
+    }
+    fn as_int16_list(&self, offset: i64, length: Option<i64>) -> Vec<i16> {
+        byte_window(self, offset, length, 2).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
+    }
+    fn as_uint16_list(&self, offset: i64, length: Option<i64>) -> Vec<u16> {
+        byte_window(self, offset, length, 2).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect()
+    }
+    fn as_uint32_list(&self, offset: i64, length: Option<i64>) -> Vec<u32> {
+        byte_window(self, offset, length, 4).chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
     }
 }
 
@@ -6783,6 +6840,20 @@ impl ByteData {
 
     pub fn get_uint16(&self, at: i64, _endian: Endian) -> i64 {
         u16::from_le_bytes(self.four(at, 2)[..2].try_into().unwrap()) as i64
+    }
+    pub fn set_uint16(&mut self, at: i64, value: i64, _endian: Endian) {
+        let bytes = (value as u16).to_le_bytes();
+        let at = at as usize;
+        self.bytes[at..at + 2].copy_from_slice(&bytes);
+    }
+    pub fn get_int16(&self, at: i64, _endian: Endian) -> i64 {
+        let at = at as usize;
+        i16::from_le_bytes([self.bytes[at], self.bytes[at + 1]]) as i64
+    }
+    pub fn set_int16(&mut self, at: i64, value: i64, _endian: Endian) {
+        let bytes = (value as i16).to_le_bytes();
+        let at = at as usize;
+        self.bytes[at..at + 2].copy_from_slice(&bytes);
     }
 
     pub fn get_int32(&self, at: i64, _endian: Endian) -> i64 {
