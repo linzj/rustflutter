@@ -401,6 +401,10 @@ class KernelFrontend implements TypeWorld {
 
   void _enter(Member member) {
     _member = member;
+    // A slot's expected return is consumed by the body it was set for; a
+    // refusal before that left it for the next member (`RxStatus.loading`
+    // returned `()`, ws478).
+    _expectedReturn = null;
     final env = typeEnvironment;
     _typeContext = env == null ? null : StaticTypeContext(member, env);
     _capturedWrites = _CapturedWrites.of(member);
@@ -3851,7 +3855,10 @@ class KernelFrontend implements TypeWorld {
     final wasDispatch = _dispatchMember;
     final wasReceiver = _dispatchReceiverType;
     final wasInterface = _dispatchInterface;
-    _dispatchMember = dispatch is Procedure ? dispatch : null;
+    // ..the mixin's own declaration behind a copy in an application, as
+    // the copy is typed everywhere (`_originalOf`).
+    final dispatchOriginal = dispatch == null ? null : _originalOf(dispatch);
+    _dispatchMember = dispatchOriginal is Procedure ? dispatchOriginal : null;
     _dispatchReceiverType = receiverType;
     _dispatchInterface = node.interfaceTarget.function;
     final List<IrExpr> args;
@@ -5773,7 +5780,7 @@ class KernelFrontend implements TypeWorld {
     return identical(original, p) || original is! Procedure ? null : original;
   }
 
-  Member _originalOf(Member m) {
+  Member _originalOf(Member m, {bool forWrite = false}) {
     final owner = m.enclosingClass;
     if (owner == null || !owner.isAnonymousMixin) return m;
     final setter = m is Procedure && m.isSetter;
@@ -5785,7 +5792,13 @@ class KernelFrontend implements TypeWorld {
       for (final o in st.classNode.members) {
         if (o.name.text != m.name.text) continue;
         if (m is Field) {
+          // A hollow declaration keeps a field as an abstract getter and
+          // setter pair (`ChildType? get _lastChild` / `set _lastChild`
+          // in `ContainerRenderObjectMixin`, ws478).
           if (o is Field) return o;
+          if (o is Procedure && (forWrite ? o.isSetter : o.isGetter)) {
+            return o;
+          }
           continue;
         }
         if (o is Procedure && o.isSetter == setter && o.isGetter == getter) {
@@ -5794,6 +5807,18 @@ class KernelFrontend implements TypeWorld {
       }
     }
     return m;
+  }
+
+  /// The type a copy's field is declared with (see `_originalOf`), or
+  /// null for a field that is its own declaration.
+  DartType? _declaredFieldType(Field field) {
+    final original = _originalOf(field);
+    if (identical(original, field)) return null;
+    if (original is Field) return original.type;
+    if (original is Procedure && original.isGetter) {
+      return original.function.returnType;
+    }
+    return null;
   }
 
   /// Where a write lands for its slot's type: through the trait's setter
@@ -5805,6 +5830,7 @@ class KernelFrontend implements TypeWorld {
     _setterQualifier(receiver, interface) != null
         ? interface
         : _landing(interface, receiver),
+    forWrite: true,
   );
 
   DartType _writeSlot(Member interface, Expression receiver) {
@@ -8777,14 +8803,7 @@ class KernelFrontend implements TypeWorld {
         for (final field in anonymous.fields) {
           if (!own.add(field.name.text)) continue;
           try {
-            final original = _originalOf(field);
-            _lowerField(
-              cls,
-              field,
-              declaredType: identical(original, field) || original is! Field
-                  ? null
-                  : original.type,
-            );
+            _lowerField(cls, field, declaredType: _declaredFieldType(field));
           } on Unsupported catch (error, stack) {
             refuse(field.name.text, error, stack);
           }
