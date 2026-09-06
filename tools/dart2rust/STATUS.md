@@ -6616,6 +6616,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run486 | **`WidgetsFlutterBinding` 整个构造过了**（`initInstances` + `initServiceExtensions`）；`main` → `GetStorage.init` → `_internal` → `StorageImpl::new` → `ValueStorage::new` → get 包 `Value<T>::new` 桩：`*__new._value.borrow_mut() = <T as DartNullable>::from_option(Some(val))`，字段是投影的 `Option<T>`（impl 上有 `Or = Option<T>`），写入却按边类型 `T?` 写成 `Or`。 | `<T as DartNullable>::Or` 一族（挂着的），构造函数体里写投影字段这条待修。同批：`?.` 体的类型写出来（体里造的适配闭包才能 unsize 成 `Rc<dyn Fn>`），读了绑定值 `it` 的闭包自己 clone 一份并 `move`（`handler == null ? null : (m) async {..}`，fixture `futures` 整 crate 终于编过）。 |
 | ws487 | 链：**1383（+35）**：把 `?.` 体的 IR 类型一律写成 map 的返回类型太宽——TFA 删掉的体是 `Infallible`、`void?` 是 `Option<()>`，IR 类型不够精确。 | 只对闭包体（含 coerce 包在外面的 `Some`/上转型/clone）写出类型；那正是需要 unsize 的一种。 |
 | run487 | 同 run486（`Value<T>::new`）。 | |
+| ws488 | 链：**1348**（回到 ws486 的数，无新桩）。 | |
+| run488 | 同 run486（`Value<T>::new`）。 | 找到根因：mixin 克隆的 `T? _value` 拷进 `Value<T>` 时按克隆自己的参数（application 的 `T`）定型——没有规则把它投影——struct 里成了 `Option<T>`，而经声明的读写是边的 `Or`。修法：克隆成员的声明类型一律用**应用类的实参替换 mixin 的参数**后再定型（`T` → `Value` 的 `T`，按自有字段的规则投影；`ChildType` → bound；保留的 `LayoutInfoType` → application 放进去的 `BoxConstraints`），字段、参数、返回值同一条，替换掉之前"保留参数用克隆类型"的例外。fixture 用 `--aot --tfa` 建 dill 复现了 dedup 的形状（build.py 加 `FX_AOT=1`/`FX_MAIN`），整 crate 编过。 |
 
 ## 下一步(2026-09-05 重铺)
 
