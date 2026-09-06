@@ -6618,6 +6618,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run487 | 同 run486（`Value<T>::new`）。 | |
 | ws488 | 链：**1348**（回到 ws486 的数，无新桩）。 | |
 | run488 | 同 run486（`Value<T>::new`）。 | 找到根因：mixin 克隆的 `T? _value` 拷进 `Value<T>` 时按克隆自己的参数（application 的 `T`）定型——没有规则把它投影——struct 里成了 `Option<T>`，而经声明的读写是边的 `Or`。修法：克隆成员的声明类型一律用**应用类的实参替换 mixin 的参数**后再定型（`T` → `Value` 的 `T`，按自有字段的规则投影；`ChildType` → bound；保留的 `LayoutInfoType` → application 放进去的 `BoxConstraints`），字段、参数、返回值同一条，替换掉之前"保留参数用克隆类型"的例外。fixture 用 `--aot --tfa` 建 dill 复现了 dedup 的形状（build.py 加 `FX_AOT=1`/`FX_MAIN`），整 crate 编过。 |
+| ws489 | 链：**1395（+47）**：替换规则把 erased 的 `ChildType` 也换成了 application 的实参 `RenderBox`，trait 说的是 bound `RenderObject`。 | 只替换**保留**的参数（`_keptFor` 决定，和成员读取一致）。 |
+| run489 | `Value<T>::new` 过了；`_fillEmptyStatus` → `_isNullOrEmpty`：`val is Map` 被拒（`Any` 问不出"某个 `Map<_, _>`"）。 | prelude `dart_is_kind`：按 `runtime_type` 的类型名（`Map`/`Vec`/`Set`/`VecDeque`）答 `is Map`/`is List`/`is Set`/`is Iterable`；提升后的读经 `dart_cast_map`/`dart_cast_list`（和 `as Map<..>` 一样换元素表示）；`dynamic == null` 问句柄里的 `Null` 对象。另：`Disposer addListener(..)` 覆盖 `void addListener(..)`（get 的 `ListNotifier`），trait 转发器丢掉返回值。 |
 
 ## 下一步(2026-09-05 重铺)
 
