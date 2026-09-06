@@ -1020,6 +1020,11 @@ class RustBackend {
     // A closure that copies `final` fields in is a `move` closure with the
     // copies bound just before it. It borrows `self` not at all, which is the
     // whole point: it outlives the call that made it.
+    // A closure made inside a null-aware's body that reads the bound
+    // value (`it`, a reference the `map` hands in) keeps its own clone and
+    // moves it: an adapter made under `handler == null ? null : (m) async
+    // {..}` borrowed `it` past the statement (E0716, ws486).
+    final usesBound = (_WalkSelf()..statement(node.body)).readsBound;
     final bindings = [
       // The handle first: a closure that calls a method keeps the object.
       // The handle, not a clone of a reference: inside a trait body `this`
@@ -1027,6 +1032,7 @@ class RustBackend {
       // (`let __me = this_.clone()` captured a `&__Self` into a `'static`
       // closure, 91 lifetime errors at ws334).
       if (node.holdsSelf) 'let $_countedSelf = ${_selfHandle()};',
+      if (usesBound) 'let $_boundName = $_boundName.clone();',
       ...node.captures.map((c) => 'let ${snake(c.name)} = ${_copyOf(c)};'),
       ...node.locals.map((l) => 'let ${snake(l)} = ${snake(l)}.clone();'),
     ].join(' ');
@@ -1092,7 +1098,10 @@ class RustBackend {
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
     final owns =
-        node.captures.isNotEmpty || node.locals.isNotEmpty || node.holdsSelf;
+        node.captures.isNotEmpty ||
+        node.locals.isNotEmpty ||
+        node.holdsSelf ||
+        usesBound;
     // `async |..|` is stable since Rust 1.85. A Dart `async` closure keeps
     // its `await`s, and a closure emitted without the word put every one of
     // them outside an async context: 79 `E0728`s.
@@ -1745,6 +1754,17 @@ class RustBackend {
   /// The captured cell locals that hold a `late` field (see `_cellLocals`).
   Set<String> _lateCellLocals = const {};
 
+  /// A type that cannot be spelled as a return (`_`, a placeholder, a
+  /// method's own parameter nothing declares here).
+  bool _mentionsUnknown(IrType t) {
+    if (t.name == '_' || t.name == 'raw' || t.name.isEmpty) return true;
+    if (t.isFunction) {
+      return t.parameters!.any(_mentionsUnknown) ||
+          (t.returns != null && _mentionsUnknown(t.returns!));
+    }
+    return t.arguments.any(_mentionsUnknown);
+  }
+
   /// Whether the null-aware body being printed binds its value by value
   /// (a scalar receiver) rather than by reference.
   bool _boundByValue = false;
@@ -1760,9 +1780,20 @@ class RustBackend {
     _boundByValue = scalar;
     try {
       final at = scalar ? '' : '.as_ref()';
+      // The body's type spelled where it is known: an adapter closure
+      // made in the body (`handler == null ? null : (m) async {..}` into
+      // a `MessageHandler?` slot) unsizes against a spelled return and
+      // not against an inferred `_` (ws486).
+      final bodyType = body.rustType;
+      final spelled =
+          bodyType != null &&
+              bodyType.name != 'raw' &&
+              !_mentionsUnknown(bodyType)
+          ? type(bodyType)
+          : '_';
       return _failure == null
           ? '${expr(_plain(receiver))}$at.${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
-          : '${expr(receiver)}$at.map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}';
+          : '${expr(receiver)}$at.map(|$_boundName| -> Result<$spelled, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}';
     } finally {
       _boundByValue = outer;
     }
@@ -8829,6 +8860,11 @@ class RustBackend {
 /// expression, and missing one would emit `&self` for a method that assigns.
 class _WalkSelf {
   bool writesFields = false;
+
+  /// Whether a null-aware's bound value (`it`) is read: a closure made in
+  /// such a body must own a clone of it (`_closure`).
+  bool readsBound = false;
+  int _nullAwareDepth = 0;
   final selfCalls = <String>{};
 
   /// The classes `super` calls resolve into (`IrSuperCall.base`), each
@@ -9064,7 +9100,11 @@ class _WalkSelf {
         expression(right);
       case IrNullAware(:final receiver, :final body):
         expression(receiver);
+        // The body binds its own `it`: a read of the bound in there is
+        // not a read of an enclosing null-aware's.
+        _nullAwareDepth++;
         expression(body);
+        _nullAwareDepth--;
       case IrConditional(:final condition, :final then, :final otherwise):
         expression(condition);
         expression(then);
@@ -9147,11 +9187,14 @@ class _WalkSelf {
         expression(value);
       case IrThis():
         readsThis = true;
+      // Its own case: the empty cases above it would fall through into a
+      // body placed after them (every closure cloned `it`, ws486).
+      case IrBound():
+        if (_nullAwareDepth == 0) readsBound = true;
       case IrLiteral():
       case IrLocal():
       case IrStatic():
       case IrTopLevel():
-      case IrBound():
     }
   }
 }
