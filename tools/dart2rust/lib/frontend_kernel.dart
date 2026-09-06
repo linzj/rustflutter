@@ -1011,7 +1011,10 @@ class KernelFrontend implements TypeWorld {
         return nullOr(inner);
       }
     }
-    return IrStaticCall(null, 'dart_object_str', [lowered])..rustType = text;
+    // A value the AOT compiler removed (`!`) is its own text: a call on
+    // it would ask `!: DartAny` (11 "never type fallback" at ws545).
+    if (lowered.rustType?.name == 'Never') return lowered;
+    return IrCall(lowered, '!object_str', const [])..rustType = text;
   }
 
   /// Dart's `null`, as the lowering writes it on its own -- an omitted

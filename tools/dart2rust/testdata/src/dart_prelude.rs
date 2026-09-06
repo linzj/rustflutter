@@ -698,6 +698,19 @@ pub fn dart_object_str<T: DartAny>(value: T) -> String {
     value.dart_to_string()
 }
 
+/// The same as a method, so that a reference to a value -- the `&Rc<dyn
+/// Object>` a null-aware `as_ref().map(|it| ..)` binds -- reaches it by
+/// auto-deref (`&Rc<..>: DartAny` is not a thing, ws545).
+pub trait DartObjectStr {
+    fn dart_object_str(&self) -> String;
+}
+
+impl<T: ?Sized + DartAny> DartObjectStr for T {
+    fn dart_object_str(&self) -> String {
+        self.dart_to_string()
+    }
+}
+
 pub fn dart_object_str_ref(value: &dyn Object) -> String {
     let any = value.as_any();
     if let Some(s) = any.downcast_ref::<String>() {

@@ -3472,6 +3472,11 @@ class RustBackend {
     if (name == '!dart_to_string' && args.isEmpty && target != null) {
       return '${expr(target)}.dart_to_string()';
     }
+    // ..and of a value whose type only the object knows (`dart_object_str`
+    // as a method: a reference derefs to it).
+    if (name == '!object_str' && args.isEmpty && target != null) {
+      return '${expr(target)}.dart_object_str()';
+    }
     if (name == '!join' && args.length < 2) {
       final given = args.where((a) => !_isDefault(a, '')).toList();
       final separator = given.isEmpty ? '""' : '&${expr(given.single)}';
@@ -5589,10 +5594,10 @@ class RustBackend {
   /// it of a bare `K` (`invokeMapMethod`, run494). Every type carries it
   /// (the prelude's, `_emitFromDynamic` for the translated ones).
   String _nb(IrClass c) =>
-      ' + DartNullable<Or: Clone + DartEq + FromDynamic> + DartEq + FromDynamic + DartAny';
+      ' + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny';
 
   String _nbm(IrMethod m) =>
-      ' + DartNullable<Or: Clone + DartEq + FromDynamic> + DartEq + FromDynamic + DartAny';
+      ' + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny';
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
@@ -5924,7 +5929,7 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : "$p: DartNullable<Or: DartEq + FromDynamic> + DartEq + FromDynamic + DartAny + 'static",
+                : "$p: DartNullable<Or: DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';
