@@ -6659,6 +6659,7 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws510 | 链：**1233**（比 ws508 多 57，比 1300 少 67），141。别名突变计数把 `Matrix4`/`Matrix3`/`Quaternion`/`_Vector`/`Hct` 变成了计数类：它们的 `final Float64List _m4storage` 不是 cell（`_isMutableCollection` 只认拼出的 `Vec<`，`Float64List` 是别名），`self._m4storage[i] = ..` 在 `&Rc<Self>` 上 E0596（25）；"未知名不算 Copy" 顺手把 `f64` 当成未知，`Offset` 丢了 `Copy`（`offset` 被 move，8）。 | typed_data 别名和 `ByteData` 算可变集合（计数类里进 cell）；撤回"未知名不算 Copy"，改为 `_fieldIsCopy(field, owner)`——按字段**所属类**的类型参数判断。 |
 | run510 | 停在 gallery 的 `main`：`GoogleFonts.config.allowRuntimeFetching = false` 写成 `(**GOOGLE_FONTS_CONFIG).borrow_mut().allow_runtime_fetching = ..`——`Config` 现在是计数类，静态对象的字段写要走字段自己的 cell。 | 静态接收者的字段写按类是否计数分路。 |
 | ws511 | 链：**1173**（−60；比 1300 少 127：新 16/去 133；比 ws508 少 3），141。别名突变计数这一族收口。 | |
+| run511 | 平台消息**长度对了**（`getKeyboardState` 19 字节、path_provider 35 字节），内容全零：`WriteBuffer` 计数后 `_buffer` 进了 cell，`_add` 的 `_buffer[i] = byte` 写在 `borrow().clone()` 上。 | 进 cell 的字段上的下标赋值经 `_cellPlace` 的 `borrow_mut()`（81f8e7fa，进 ws512）。同批：`{ .. }[0]` 读下标时块表达式加括号（`gestures_arena`）；计数类的运算符两边取值（`Rc<Matrix4> * Rc<Matrix4>`）。 |
 
 ## 下一步(2026-09-05 重铺)
 
