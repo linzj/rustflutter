@@ -811,9 +811,6 @@ class KernelFrontend implements TypeWorld {
       // A closure parameter retyped to an erased bound (`_closureParamType`)
       // reads as the class it was declared with.
       final declaredAs = _declaredParamTypes[node.variable];
-      if (declaredAs != null) {
-        return IrLocal(name)..rustType = _type(declaredAs);
-      }
       final retyped = _retyped[node.variable];
       final declaredVar = node.variable.type;
       if (retyped is TypeParameterType &&
@@ -834,7 +831,9 @@ class KernelFrontend implements TypeWorld {
       // read is a downcast. Promotion to the *same* class (nullable to
       // non-null) is not.
       final promoted = node.promotedType;
-      final declared = node.variable.type;
+      // ..a copy's parameter as its declaration types it (`ChildType?`,
+      // the bound here) rather than as the copy does (`RenderBox?`).
+      final declared = declaredAs ?? node.variable.type;
       // The core scalars are abstract classes in Kernel and structs here:
       // an `Object?` promoted to `String` is a downcast to `String`.
       const scalars = {'String', 'int', 'double', 'bool', 'num'};
@@ -914,6 +913,9 @@ class KernelFrontend implements TypeWorld {
           return IrCastTo(inside, _type(promoted));
         }
         return inside;
+      }
+      if (declaredAs != null) {
+        return IrLocal(name)..rustType = _type(declaredAs);
       }
       return IrLocal(name);
     }
@@ -4411,10 +4413,14 @@ class KernelFrontend implements TypeWorld {
   /// parameters (Dart's instantiated type is the better answer there) or
   /// has no spelling here.
   IrType? _memberRustType(
-    Member landing,
+    Member reached,
     Expression receiver, {
     required bool asGetter,
   }) {
+    // A copy in an anonymous application is typed by the mixin's own
+    // declaration, as the copy itself is lowered (the kept parameters
+    // substituted below, the erased ones their bounds).
+    final landing = _originalOf(reached);
     var declared = asGetter || landing is! Procedure
         ? landing.getterType
         : landing.function.returnType;
@@ -5742,6 +5748,31 @@ class KernelFrontend implements TypeWorld {
   /// .child=` for `RenderObjectWithChildMixin.child=`): what the trait
   /// declares, with the mixin's parameter (`ChildType?`) where the copy
   /// has the application's argument (`RenderBox?`).
+  /// Whether `t` names a type parameter that is *kept* (not erased): a
+  /// copy's type substituted for one is that application's own, and the
+  /// declaration's cannot replace it (`LayoutInfoType get layoutInfo`
+  /// returning `BoxConstraints` in `RenderLayoutBuilder`, ws477).
+  bool _mentionsKeptParameter(DartType t) {
+    if (t is TypeParameterType) return !_erasedParameter(t.parameter);
+    if (t is InterfaceType) {
+      return t.typeArguments.any(_mentionsKeptParameter);
+    }
+    if (t is FunctionType) {
+      return _mentionsKeptParameter(t.returnType) ||
+          t.positionalParameters.any(_mentionsKeptParameter) ||
+          t.namedParameters.any((n) => _mentionsKeptParameter(n.type));
+    }
+    return false;
+  }
+
+  /// The declaration a copy in an anonymous application is lowered under
+  /// (see `_lowerProcedure`'s `signature`), or null for a member that is
+  /// its own declaration.
+  Procedure? _cloneSignature(Procedure p) {
+    final original = _originalOf(p);
+    return identical(original, p) || original is! Procedure ? null : original;
+  }
+
   Member _originalOf(Member m) {
     final owner = m.enclosingClass;
     if (owner == null || !owner.isAnonymousMixin) return m;
@@ -5770,10 +5801,11 @@ class KernelFrontend implements TypeWorld {
   /// for a copy in an application (`this.child = child` in `RenderView`'s
   /// constructor, `RenderBox?` there and `RenderObject?` in the trait,
   /// ws476); a plain write lands on the class's own.
-  Member _writeLanding(Member interface, Expression receiver) =>
-      _setterQualifier(receiver, interface) != null
-      ? _originalOf(interface)
-      : _landing(interface, receiver);
+  Member _writeLanding(Member interface, Expression receiver) => _originalOf(
+    _setterQualifier(receiver, interface) != null
+        ? interface
+        : _landing(interface, receiver),
+  );
 
   DartType _writeSlot(Member interface, Expression receiver) {
     final landing = _writeLanding(interface, receiver);
@@ -8738,10 +8770,21 @@ class KernelFrontend implements TypeWorld {
       var applied = node.supertype;
       while (applied != null && applied.classNode.isAnonymousMixin) {
         final anonymous = applied.classNode;
+        // ..typed by the mixin's declaration, as the trait is: a copy has
+        // the application's arguments where the mixin's erased parameter
+        // stood (`RenderBox?` for `ChildType?` in `RenderFlex`'s
+        // `_lastChild`), and the trait says the bound (ws477).
         for (final field in anonymous.fields) {
           if (!own.add(field.name.text)) continue;
           try {
-            _lowerField(cls, field);
+            final original = _originalOf(field);
+            _lowerField(
+              cls,
+              field,
+              declaredType: identical(original, field) || original is! Field
+                  ? null
+                  : original.type,
+            );
           } on Unsupported catch (error, stack) {
             refuse(field.name.text, error, stack);
           }
@@ -8749,7 +8792,11 @@ class KernelFrontend implements TypeWorld {
         for (final procedure in anonymous.procedures) {
           if (procedure.isAbstract || !own.add(procedure.name.text)) continue;
           try {
-            _lowerProcedure(cls, procedure);
+            _lowerProcedure(
+              cls,
+              procedure,
+              signature: _cloneSignature(procedure),
+            );
           } on Unsupported catch (error, stack) {
             refuse(procedure.name.text, error, stack);
           }
@@ -8806,9 +8853,14 @@ class KernelFrontend implements TypeWorld {
     return (cls, refused);
   }
 
-  void _lowerField(IrClass cls, Field field) {
+  void _lowerField(IrClass cls, Field field, {DartType? declaredType}) {
     _enter(field);
     final name = field.name.text;
+    // A copy's field under the mixin's declared type (see the applied
+    // members' lowering), unless that names a kept parameter.
+    final type = declaredType != null && !_mentionsKeptParameter(declaredType)
+        ? declaredType
+        : field.type;
     // An enum's own members are its variants and the CFE's bookkeeping; neither
     // becomes a field or a constant on the Rust side.
     if (cls.isEnum) return;
@@ -8818,12 +8870,8 @@ class KernelFrontend implements TypeWorld {
       cls.constants.add(
         IrConstDecl(
           name,
-          _type(field.type),
-          _intoDeclaredNum(
-            init,
-            field.type,
-            _widened(init, field.type, expression(init)),
-          ),
+          _type(type),
+          _intoDeclaredNum(init, type, _widened(init, type, expression(init))),
           // A `static final` is computed once on first use, which is what
           // `LazyLock` is. It was refused while there was nothing to say it
           // with; there is now.
@@ -8836,20 +8884,20 @@ class KernelFrontend implements TypeWorld {
         ),
       );
     } else {
-      if (_inspectorOnly(name, field.type)) return;
+      if (_inspectorOnly(name, type)) return;
       final initial = field.initializer;
       cls.fields.add(
         IrFieldDecl(
           name,
-          _edgeType(field.type),
+          _edgeType(type),
           isFinal: field.isFinal,
           // Into the field's type, and across a projected one (`T? _result
           // = null` in a generic route, ws414).
           initial: initial == null
               ? null
               : _acrossEdge(
-                  _widened(initial, field.type, expression(initial)),
-                  field.type,
+                  _widened(initial, type, expression(initial)),
+                  type,
                   toOption: false,
                 ),
           shared: _sharedFields.contains(name),
@@ -9063,17 +9111,23 @@ class KernelFrontend implements TypeWorld {
       ) {
         final p = own.positionalParameters[i];
         final t = sig.positionalParameters[i].type;
-        if (t != p.type) _declaredParamTypes[p] = t;
+        if (t != p.type && !_mentionsKeptParameter(t)) {
+          _declaredParamTypes[p] = t;
+        }
       }
       for (final p in own.namedParameters) {
         for (final q in sig.namedParameters) {
-          if (q.parameterName == p.parameterName && q.type != p.type) {
+          if (q.parameterName == p.parameterName &&
+              q.type != p.type &&
+              !_mentionsKeptParameter(q.type)) {
             _declaredParamTypes[p] = q.type;
           }
         }
       }
       // ..and its returns widen into the declaration's return type.
-      if (!node.isAbstract) _expectedReturn = sig.returnType;
+      if (!node.isAbstract && !_mentionsKeptParameter(sig.returnType)) {
+        _expectedReturn = sig.returnType;
+      }
     }
     DartType paramType(Variable p, DartType declared) =>
         _declaredParamTypes[p] ?? declared;
@@ -9148,7 +9202,12 @@ class KernelFrontend implements TypeWorld {
     final method = IrMethod(
       name,
       params,
-      _edgeReturnType((signature ?? node).function),
+      _edgeReturnType(
+        signature != null &&
+                !_mentionsKeptParameter(signature.function.returnType)
+            ? signature.function
+            : node.function,
+      ),
       node.isAbstract
           ? const IrBlock([])
           : _withEdgeParams(node.function, _body(node.function)),

@@ -56,6 +56,9 @@ pub fn report() {
 }
 
 fn announce_view() -> Result<(), DartError> {
+    // The engine tells the isolate its lifecycle state before `main`: the
+    // framework reads it as a `late` field (run478).
+    dart_ui::_update_initial_lifecycle_state("AppLifecycleState.resumed".to_string())?;
     dart_ui::_update_locales(vec![
         "en".to_string(),
         "US".to_string(),
