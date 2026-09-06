@@ -6614,6 +6614,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run485 | **`initInstances` 全过**（键盘那条修了）；`WidgetsFlutterBinding.new` → `initServiceExtensions`（dill 不是 release 折叠的，`kReleaseMode` 为假）→ `BindingBase.registerServiceExtension` 桩：mismatched types。 | 见下一行。同批（预读第一帧路径）：闭包自己的类型参数按 bound 擦除（`MaterialApp._buildWidgetApp` 里 `<T extends Object?>(settings, builder) => MaterialPageRoute<T>(..)`，泛型函数类型本来就按 bound 实例化）；`?.` 的压平按 lower 出的体的类型判（`child?..layout(..)` 的 cascade）；try/catch 套在 try/finally 闭包里的 `return` 经外层闭包返回（`inflateWidget`）。 |
 | ws486 | 链：**1348**（−7，无新桩）。 | |
 | run486 | **`WidgetsFlutterBinding` 整个构造过了**（`initInstances` + `initServiceExtensions`）；`main` → `GetStorage.init` → `_internal` → `StorageImpl::new` → `ValueStorage::new` → get 包 `Value<T>::new` 桩：`*__new._value.borrow_mut() = <T as DartNullable>::from_option(Some(val))`，字段是投影的 `Option<T>`（impl 上有 `Or = Option<T>`），写入却按边类型 `T?` 写成 `Or`。 | `<T as DartNullable>::Or` 一族（挂着的），构造函数体里写投影字段这条待修。同批：`?.` 体的类型写出来（体里造的适配闭包才能 unsize 成 `Rc<dyn Fn>`），读了绑定值 `it` 的闭包自己 clone 一份并 `move`（`handler == null ? null : (m) async {..}`，fixture `futures` 整 crate 终于编过）。 |
+| ws487 | 链：**1383（+35）**：把 `?.` 体的 IR 类型一律写成 map 的返回类型太宽——TFA 删掉的体是 `Infallible`、`void?` 是 `Option<()>`，IR 类型不够精确。 | 只对闭包体（含 coerce 包在外面的 `Some`/上转型/clone）写出类型；那正是需要 unsize 的一种。 |
+| run487 | 同 run486（`Value<T>::new`）。 | |
 
 ## 下一步(2026-09-05 重铺)
 
