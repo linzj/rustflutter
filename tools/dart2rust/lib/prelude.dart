@@ -3993,8 +3993,8 @@ pub fn _get_callback_handle(_callback: std::rc::Rc<dyn Object>) -> Option<i64> {
     None
 }
 
-pub fn _get_callback_from_handle(_handle: i64) -> Option<std::rc::Rc<dyn Object>> {
-    None
+pub fn _get_callback_from_handle(_handle: i64) -> std::rc::Rc<dyn Object> {
+    dart_null_object()
 }
 
 /// A value in a string interpolation, when it is not a string or a number:
@@ -5467,16 +5467,15 @@ impl JsonCodec {
         parser.revive(None, value)
     }
 
-    /// `json.decoder`: a `Converter<String, Object?>`.
-    pub fn decoder(&self) -> Converter<String, Option<std::rc::Rc<dyn Object>>> {
-        Converter::new(std::rc::Rc::new(|source: String| Ok(Some(JsonCodec.decode(source, None)))))
+    /// `json.decoder`: a `Converter<String, Object?>` -- and `Object?` is a
+    /// `dynamic` here, whose null is the `Null` object.
+    pub fn decoder(&self) -> Converter<String, std::rc::Rc<dyn Object>> {
+        Converter::new(std::rc::Rc::new(|source: String| Ok(JsonCodec.decode(source, None))))
     }
 
     /// `json.encoder`: a `Converter<Object?, String>`.
-    pub fn encoder(&self) -> Converter<Option<std::rc::Rc<dyn Object>>, String> {
-        Converter::new(std::rc::Rc::new(|value: Option<std::rc::Rc<dyn Object>>| {
-            Ok(JsonCodec.encode(value.unwrap_or_else(|| std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>), None))
-        }))
+    pub fn encoder(&self) -> Converter<std::rc::Rc<dyn Object>, String> {
+        Converter::new(std::rc::Rc::new(|value: std::rc::Rc<dyn Object>| Ok(JsonCodec.encode(value, None))))
     }
 }
 

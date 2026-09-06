@@ -3112,7 +3112,18 @@ class KernelFrontend implements TypeWorld {
         if (value == null) {
           throw Unsupported('`?.` with no receiver', _sample(node));
         }
-        final receiver = expression(value);
+        final lowered = expression(value);
+        // `x?.m` on a `dynamic` (an `Object?`, ws502): its null is the
+        // `Null` object, asked by the prelude (`dart_nullable`), and the
+        // value inside is what the body binds.
+        final loweredType = lowered.rustType;
+        final receiver =
+            loweredType != null &&
+                loweredType.name == 'dynamic' &&
+                !loweredType.nullable
+            ? (IrCall(lowered, '!nullable', const [])
+                ..rustType = const IrType('dynamic', nullable: true))
+            : lowered;
         final previous = _bound;
         final previousType = _boundType;
         _bound = node.variable;
@@ -7230,9 +7241,13 @@ class KernelFrontend implements TypeWorld {
     if (param.type.nullability == Nullability.nullable) {
       // ..into the slot's Rust type: an omitted `Object? aspect` is the
       // `Null` object, not `None` (85 at ws501).
+      // ..of a translated callee: a prelude callee's slot is its own Rust
+      // signature (`_slotPrelude`), an `Option` where Dart says `Object?`.
       final absent = IrLiteral('null', const IrType('Null', nullable: true));
       final slot = _recordedType(param.type);
-      return slot == null ? absent : coerce(absent, slot);
+      return slot == null || !_translatedCallee(_calleeOf(param))
+          ? absent
+          : coerce(absent, slot);
     }
     // An *interface* member carries no default -- `Canvas.clipRect({bool
     // doAntiAlias = true})` is abstract, and the default lives on the class
