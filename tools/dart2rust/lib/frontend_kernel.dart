@@ -10067,6 +10067,29 @@ class KernelFrontend implements TypeWorld {
       if (trace) stderr.writeln('TRACE ${node.name}.$member: $error\n$stack');
     }
 
+    // A hollow mixin's fields, from an application that kept them: the
+    // CFE moves a mixin's field into the application, and the AOT
+    // declaration keeps an abstract getter at most. A trait declares a
+    // field's accessors -- and the cell of a held collection
+    // (`_handsCell`) -- only for a field it knows: with the getter alone,
+    // `this_._viewIdToRenderView().insert(..)` inserted into a clone and
+    // `RendererBinding` never had a view (run530). Typed by the
+    // declaration's own getter (`_declaredFieldType`), in the mixin's terms.
+    final recoveredFields = <String>{};
+    if (node.isMixinDeclaration) {
+      final own = {for (final f in node.fields) f.name.text};
+      for (final application in applications[node] ?? const <Class>[]) {
+        for (final f in application.fields) {
+          if (f.isStatic || own.contains(f.name.text)) continue;
+          if (!recoveredFields.add(f.name.text)) continue;
+          try {
+            _lowerField(cls, f, declaredType: _declaredFieldType(f) ?? f.type);
+          } on Unsupported catch (error, stack) {
+            refuse(f.name.text, error, stack);
+          }
+        }
+      }
+    }
     for (final field in node.fields) {
       try {
         _lowerField(cls, field);
@@ -10082,6 +10105,12 @@ class KernelFrontend implements TypeWorld {
       }
     }
     for (final procedure in node.procedures) {
+      // The abstract getter or setter standing for a recovered field: the
+      // field's own accessors are declared instead.
+      if ((procedure.isGetter || procedure.isSetter) &&
+          recoveredFields.contains(procedure.name.text)) {
+        continue;
+      }
       // A hollow mixin method: its body, from an application of the mixin.
       final lowered = node.isMixinDeclaration && procedure.isAbstract
           ? _appliedBody(node, procedure) ?? procedure
