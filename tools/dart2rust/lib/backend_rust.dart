@@ -663,8 +663,13 @@ class RustBackend {
       // Dart indexes with an `int`; Rust wants a `usize`.
       // A clone: an indexed read is a value, and the element is behind the
       // list's reference (`cannot move out of index of Vec<..>`).
-      IrIndex(:final target, :final index) =>
-        '${expr(target)}[${expr(index)} as usize].clone()',
+      // The target in parentheses when it is a block: `{ .. }[0]` reads
+      // as a block statement and an array (`[{integer}; 1]`, ws511).
+      IrIndex(:final target, :final index) => () {
+        final t = expr(target);
+        final wrapped = t.startsWith('{') ? '($t)' : t;
+        return '$wrapped[${expr(index)} as usize].clone()';
+      }(),
       // A closure literal among the elements of a list of functions is an
       // `Rc<dyn Fn>` there, as a field's or a constant's is: `DateFormat`'s
       // `_fieldConstructors` is a `vec!` of three of them.
@@ -1614,6 +1619,22 @@ class RustBackend {
         library[leftName] != null &&
         library.isAbstract(leftName)) {
       return '${expr(left)}.op_${mapping.$2}(${expr(right)})$_propagate';
+    }
+    // ..and on a counted class's handle: the `impl std::ops::Mul` is the
+    // struct's, taking values, so each handle operand is the value it
+    // holds, cloned (`Rc<Matrix4> * Rc<Matrix4>`, ws511).
+    if (mapping != null) {
+      String operand(IrExpr e) {
+        final name = e.rustType?.name;
+        final counted = name != null && (library[name]?.counted ?? false);
+        return counted && !e.rustType!.nullable
+            ? '(*${expr(e)}).clone()'
+            : expr(e);
+      }
+
+      final l = operand(left);
+      final r = operand(right);
+      if (l != expr(left) || r != expr(right)) return '($l $op $r)';
     }
     // `==` on a type parameter's values (`T`, `T?`) is Dart's `==`, the
     // prelude's `DartEq`, which every parameter carries; `PartialEq` is
@@ -4371,12 +4392,17 @@ class RustBackend {
         // place, not into the clone a field *read* takes out:
         // `self._m4storage.clone()[14] = v` changed nothing, 17 times in
         // vector_math, and left the method `&self`.
-        final place =
-            target is IrField &&
-                (target.target == null || target.target is IrThis) &&
-                _sharedField(target.name) == null &&
-                !_fieldsAreAccessors &&
-                _allFields(cls).any((f) => f.name == target.name)
+        // ..and into one held in a cell -- a counted class's storage, its
+        // own or another object's (`cascaded._m4storage[i] = 1.0` on a
+        // counted `Matrix4`, ws511) -- through the cell's `borrow_mut`.
+        final cellPlace = _cellPlace(target);
+        final place = cellPlace != null
+            ? '$cellPlace.borrow_mut()'
+            : target is IrField &&
+                  (target.target == null || target.target is IrThis) &&
+                  _sharedField(target.name) == null &&
+                  !_fieldsAreAccessors &&
+                  _allFields(cls).any((f) => f.name == target.name)
             ? '${_receiver(target.target)}.${snake(target.name)}'
             : expr(target);
         // The index first: `self.f[self.index(r, c)] = v` borrows `self`
