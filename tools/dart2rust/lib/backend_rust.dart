@@ -687,12 +687,15 @@ class RustBackend {
         'vec![${elements.indexed.map((ix) => _listElement(ix.$1, ix.$2, element)).join(', ')}]',
       IrRecord(:final fields) => '(${fields.map(expr).join(', ')})',
       IrRecordField(:final record, :final index) => '${expr(record)}.$index',
-      // An empty one spells its key and value types: nothing else says
-      // them when the slot is an `Rc<dyn Object>` (E0283, `K` on `Map`).
-      // ..and a written one is typed by its first entry, as a `vec![..]`
-      // is by its first element: that entry's upcasts are spelled.
+      // Spells its key and value types: nothing else says them when the
+      // slot is an `Rc<dyn Object>` (E0283, `K` on `Map`), and a written
+      // one typed by its first entry alone was untyped where that entry's
+      // value is `null` (`{'a': null, 'b': 2}` into `Map<Object?, Object?>`,
+      // ws495). Through `from_pairs`, whose array parameter is of the
+      // spelled types, so every entry coerces to them; the first entry's
+      // upcasts are spelled all the same.
       IrMapLiteral(:final entries, :final key, :final value) =>
-        '${entries.isEmpty ? 'Map::<${type(key)}, ${type(value)}>' : 'Map'}::from(['
+        'Map::<${type(key)}, ${type(value)}>::from_pairs(['
             '${entries.indexed.map((ie) {
               final e = ie.$1 == 0 ? (_explicitUpcast(ie.$2.$1), _explicitUpcast(ie.$2.$2)) : ie.$2;
               return '(${expr(e.$1)}, ${expr(e.$2)})';
@@ -3291,11 +3294,17 @@ class RustBackend {
     // A generic method through a trait object: its erased twin, and the
     // result cast back to what this call declared (see the prelude's
     // `CastErased`).
+    // ..and on `this` inside a trait body -- a super fn's `this_: &__Self
+    // + ?Sized`, a default's `&self` -- where the receiver names no class:
+    // the generic method is `where Self: Sized` in the trait, and `__Self`
+    // may well be the trait object (`invokeMapMethod` calling
+    // `invokeMethod<Map>`, run494).
     if (typeArguments.isNotEmpty &&
         resultType != null &&
-        receiverClass != null &&
-        library.isAbstract(receiverClass) &&
-        (target is! IrThis || _fieldsAreAccessors)) {
+        ((receiverClass != null &&
+                library.isAbstract(receiverClass) &&
+                (target is! IrThis || _fieldsAreAccessors)) ||
+            (receiverClass == null && viaTrait))) {
       return 'dart_cast_erased::<${type(resultType)}, _>('
           '$receiver.${_identifier(name)}__erased'
           '(${args.map(expr).join(', ')})$_propagate)';
@@ -4991,9 +5000,15 @@ class RustBackend {
   /// still decides is `Clone` on a *struct's* parameters: a projecting
   /// struct's `T?` field is `<Vec<T> as DartNullable>::Or` when `T` is put
   /// in for a `List`, and that asks `T: Clone`.
-  String _nb(IrClass c) => ' + DartNullable<Or: Clone + DartEq> + DartEq';
+  /// ..and `FromDynamic` beside it, on the same footing: Dart's `cast<K,
+  /// V>` takes any `K`, and a generic body's `result.cast<K, V>()` asks
+  /// it of a bare `K` (`invokeMapMethod`, run494). Every type carries it
+  /// (the prelude's, `_emitFromDynamic` for the translated ones).
+  String _nb(IrClass c) =>
+      ' + DartNullable<Or: Clone + DartEq> + DartEq + FromDynamic';
 
-  String _nbm(IrMethod m) => ' + DartNullable<Or: Clone + DartEq> + DartEq';
+  String _nbm(IrMethod m) =>
+      ' + DartNullable<Or: Clone + DartEq> + DartEq + FromDynamic';
 
   /// `DartNullable` for this struct or enum (see the prelude): its `T?` is
   /// `Option<Self>`. With the class's own generics, as its `DartAny` is.
@@ -5074,7 +5089,26 @@ class RustBackend {
     _line('');
   }
 
+  /// `FromDynamic` for the struct or enum (see the prelude's): the object
+  /// asked for a value of this type (`dart_cast_any`), which is exact --
+  /// a struct that cannot be cloned out of an object answers `None`.
+  void _emitFromDynamic() {
+    final own = '${cls.name}${_generics(cls)}';
+    final body = _cloneable(cls) ? 'value.dart_cast_any::<Self>()' : 'None';
+    _line(
+      'impl${_generics(cls, static: true, clone: true)} FromDynamic for $own {',
+    );
+    _indent++;
+    _line(
+      'fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> { $body }',
+    );
+    _indent--;
+    _line('}');
+    _line('');
+  }
+
   void _emitDartNullable() {
+    _emitFromDynamic();
     final own = '${cls.name}${_generics(cls)}';
     // The struct's own bounds, not an impl's: `Or` is `Option<Self>` and
     // asks nothing of `T`, and a `T: Clone` here would have shut the
@@ -5176,7 +5210,7 @@ class RustBackend {
         ? params.map(
             (p) => clone
                 ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
-                : "$p: DartNullable<Or: DartEq> + DartEq + 'static",
+                : "$p: DartNullable<Or: DartEq> + DartEq + FromDynamic + 'static",
           )
         : params;
     return '<${bound.join(', ')}>';

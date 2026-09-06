@@ -3994,15 +3994,21 @@ class KernelFrontend implements TypeWorld {
     // implementation it found (`CanonicalizedMap`, a generic method on a
     // trait), and the prelude's `Map` is what the receiver is here
     // (`invokeMapMethod`, run492).
-    final staticOwner = _staticClass(node.receiver)?.name;
+    // The receiver's static type outright, not `_staticClass`, which
+    // answers only translated classes and so never a `dart:core` one
+    // (the rule was silent through ws494).
+    final staticReceiver = _staticType(node.receiver);
+    final receiverClass = staticReceiver is InterfaceType
+        ? staticReceiver.classNode
+        : null;
+    final staticOwner = receiverClass?.name;
     final collectionReceiver =
-        staticOwner != null &&
+        receiverClass != null &&
         (staticOwner == 'List' ||
             staticOwner == 'Iterable' ||
             staticOwner == 'Set' ||
             _isMapClass(staticOwner)) &&
-        _staticClass(node.receiver)?.enclosingLibrary.importUri.scheme ==
-            'dart';
+        receiverClass.enclosingLibrary.importUri.scheme == 'dart';
     final generic = collectionReceiver ? null : _genericOnTrait(node, args);
     if (generic != null) return generic;
     final owner = collectionReceiver
@@ -4052,6 +4058,24 @@ class KernelFrontend implements TypeWorld {
     // list: `pattern[0] == "a"` in intl's date formatting (44 + 44).
     // `[3, 4, 5].contains(n % 100)` with `n` a `num`: Dart compares by
     // value (`3 == 3.0`), so the `double` is cast to the list's `int`.
+    // `xs.cast<T2>()` / `m.cast<K2, V2>()` on any of the prelude's
+    // collections: its `cast_to`, converting element representations
+    // (`FromDynamic`) as `as List<T2>` does. TFA had devirtualised
+    // `Map.cast` onto a `CanonicalizedMap` (`invokeMapMethod`, run491).
+    if ((owner == 'List' ||
+            owner == 'Iterable' ||
+            owner == 'Set' ||
+            _isMapClass(owner)) &&
+        name == 'cast' &&
+        args.isEmpty &&
+        node.arguments.types.isNotEmpty) {
+      return IrCall(
+        _receiver(node.receiver),
+        'cast_to',
+        const [],
+        typeArguments: [for (final t in node.arguments.types) _type(t)],
+      );
+    }
     // The prelude's `Set::remove` takes the value by reference, like the
     // map's key (`_tickers.remove(ticker)`, 46).
     if (owner == 'Set' && name == 'remove' && args.length == 1) {
@@ -4225,14 +4249,6 @@ class KernelFrontend implements TypeWorld {
           args,
         );
       }
-      if (name == 'cast' && args.isEmpty && node.arguments.types.length == 1) {
-        return IrCall(
-          _receiver(node.receiver),
-          'cast_to',
-          const [],
-          typeArguments: [_type(node.arguments.types.single)],
-        );
-      }
       final rust = listMethodNames[name];
       if (rust != null) {
         // An element handed to `remove`/`indexOf`: into the element type,
@@ -4319,18 +4335,6 @@ class KernelFrontend implements TypeWorld {
         throw Unsupported(
           '`Map.$name`, which depends on insertion order',
           _sample(node),
-        );
-      }
-      // `m.cast<K2, V2>()`: the prelude's `cast_to`, converting element
-      // representations (`FromDynamic`), as `as Map<K2, V2>` does. TFA had
-      // devirtualised it onto a `CanonicalizedMap` (`invokeMapMethod`,
-      // run491).
-      if (name == 'cast' && args.isEmpty && node.arguments.types.length == 2) {
-        return IrCall(
-          _receiver(node.receiver),
-          'cast_to',
-          const [],
-          typeArguments: [for (final t in node.arguments.types) _type(t)],
         );
       }
       final rust = mapMethodNames[name];
