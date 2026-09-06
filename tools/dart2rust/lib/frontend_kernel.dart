@@ -5367,11 +5367,14 @@ class KernelFrontend implements TypeWorld {
     // the body into (`ServicesBinding::x(this_)` named the trait as a
     // type, 9 E0782 at ws436).
     final enclosing = _member?.enclosingClass;
+    // A receiver typed by a type parameter (`ChildType child` in a
+    // mixin's copy, read by its declaration) is its bound's class, which
+    // is what it is here: with no class at all the walk started at the
+    // member's owner and `child.toDiagnosticsNode()` on a `dyn
+    // RenderObject` was left for three traits to claim (4 E0034, ws536).
     final from = receiver is ThisExpression
         ? ((enclosing?.isAnonymousMixin ?? false) ? _lowering : enclosing)
-        : type is InterfaceType
-        ? type.classNode
-        : null;
+        : _classOfType(type);
     var qualifier = _qualifierFor(from ?? owner, member);
     // `this.x` where a trait declared `x` and this class overrides it: Rust
     // resolves `self.x()` to the inherent override, whose type may be
@@ -5415,7 +5418,7 @@ class KernelFrontend implements TypeWorld {
       renamed ? _dartName(call.name) : call.name,
       call.args,
       qualifier: qualifier,
-      receiverClass: type is InterfaceType ? type.classNode.name : null,
+      receiverClass: _classOfType(type)?.name,
       fails: fails,
       diverges: _diverges(member),
       // A struct's *own* async method, called plainly, is an `async fn`
@@ -5515,16 +5518,23 @@ class KernelFrontend implements TypeWorld {
     if (receiver == null || receiver is ThisExpression) {
       from = _lowering ?? _member?.enclosingClass;
     } else {
-      final t = _staticType(receiver);
-      from = t is InterfaceType ? t.classNode : null;
+      from = _classOfType(_staticType(receiver));
     }
     if (from == null) return null;
     return _qualifierFor(from, target);
   }
 
-  String? _classNameOf(Expression receiver) {
-    final t = _staticType(receiver);
-    return t is InterfaceType ? t.classNode.name : null;
+  String? _classNameOf(Expression receiver) =>
+      _classOfType(_staticType(receiver))?.name;
+
+  /// The class a value of `t` is: an interface's own, a type parameter's
+  /// bound's (through a bound that is itself a parameter).
+  Class? _classOfType(DartType? t) {
+    var seen = 0;
+    while (t is TypeParameterType && seen++ < 8) {
+      t = t.parameter.bound;
+    }
+    return t is InterfaceType ? t.classNode : null;
   }
 
   String? _qualifierFor(Class from, Member member) {

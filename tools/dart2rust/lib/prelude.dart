@@ -1572,8 +1572,28 @@ pub type Queue<T> = std::collections::VecDeque<T>;
 /// through this, so a `Set<VoidCallback>` or a `Map<PointerRoute, ..>` is
 /// as ordinary as a `Set<int>` (run437: `PointerRouter`, and every
 /// listener list before it).
+///
+/// ..and Dart's `hashCode` beside it, the other half of the `Object`
+/// protocol: what a value typed by a type parameter (`K` in
+/// `PersistentHashMap`) can ask of itself. The default, `0`, is consistent
+/// with any equality -- a hash structure degrades to one bucket, and is
+/// still right; the scalars, strings, `Type` and the shared objects hash
+/// for real. A translated class that overrides `hashCode` keeps that as
+/// its own method; this protocol does not reach it (a key of that class
+/// in a hashed structure lands in the one bucket).
 pub trait DartEq {
     fn dart_eq(&self, other: &Self) -> bool;
+    fn dart_hash_code(&self) -> i64 {
+        0
+    }
+}
+
+/// A hash by `std::hash::Hash`, folded into Dart's non-negative range.
+pub fn dart_std_hash<T: std::hash::Hash + ?Sized>(value: &T) -> i64 {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    (hasher.finish() as i64) & 0x3fff_ffff
 }
 
 /// A shared object compares as what it holds: a value struct by value, a
@@ -1581,6 +1601,9 @@ pub trait DartEq {
 impl<T: ?Sized + DartEq> DartEq for std::rc::Rc<T> {
     fn dart_eq(&self, other: &Self) -> bool {
         (**self).dart_eq(&**other)
+    }
+    fn dart_hash_code(&self) -> i64 {
+        (**self).dart_hash_code()
     }
 }
 
@@ -1602,6 +1625,12 @@ impl<T: DartEq> DartEq for Option<T> {
             (Some(a), Some(b)) => a.dart_eq(b),
             (None, None) => true,
             _ => false,
+        }
+    }
+    fn dart_hash_code(&self) -> i64 {
+        match self {
+            Some(a) => a.dart_hash_code(),
+            None => 0,
         }
     }
 }
@@ -1845,7 +1874,44 @@ macro_rules! dart_eq {
     };
 }
 
-dart_eq!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, f32, f64, bool, char, String, (), Duration, StringBuffer, StackTrace, DateTime, SentinelValue, Stopwatch, Uri, Type, JsonUtf8Encoder, Pattern, ServiceExtensionResponse, Flow, RandomAccessFile, File, Directory, FileSystemEntity, FileSystemException, FileMode, FileLock, Null, RegExpMatch, HttpClientResponse, TimelineTask, Endian, InternetAddress, Symbol, Invocation, InvocationKind, Zone, Timer, RegExp, Exception, Utf8Decoder, OSError, SocketException, HttpClient, JsonCodec, Utf8Codec, Encoding, TypedData, ByteBuffer, ArgumentError, UnimplementedError, IndexError, RangeError, ByteData, FormatException);
+/// `==` by `PartialEq` and `hashCode` by `Hash`, for the values Dart
+/// hashes by content.
+macro_rules! dart_eq_hashed {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl DartEq for $t {
+                fn dart_eq(&self, other: &Self) -> bool {
+                    self == other
+                }
+                fn dart_hash_code(&self) -> i64 {
+                    dart_std_hash(self)
+                }
+            }
+        )*
+    };
+}
+
+dart_eq_hashed!(i8, i16, i32, i64, u8, u16, u32, u64, usize, isize, bool, char, String, (), Duration, Type, Symbol);
+
+impl DartEq for f64 {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+    fn dart_hash_code(&self) -> i64 {
+        dart_std_hash(&self.to_bits())
+    }
+}
+
+impl DartEq for f32 {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+    fn dart_hash_code(&self) -> i64 {
+        dart_std_hash(&self.to_bits())
+    }
+}
+
+dart_eq!(StringBuffer, StackTrace, DateTime, SentinelValue, Stopwatch, Uri, JsonUtf8Encoder, Pattern, ServiceExtensionResponse, Flow, RandomAccessFile, File, Directory, FileSystemEntity, FileSystemException, FileMode, FileLock, Null, RegExpMatch, HttpClientResponse, TimelineTask, Endian, InternetAddress, Invocation, InvocationKind, Zone, Timer, RegExp, Exception, Utf8Decoder, OSError, SocketException, HttpClient, JsonCodec, Utf8Codec, Encoding, TypedData, ByteBuffer, ArgumentError, UnimplementedError, IndexError, RangeError, ByteData, FormatException);
 
 /// `hashCode` of a shared object: its identity, as Dart's `Object.hashCode`.
 pub trait RcHashCode {

@@ -1643,6 +1643,15 @@ class RustBackend {
       }
       return '${expr(left)}.unwrap_or_else(|| ${expr(right)})';
     }
+    // Dart's `>>>` is the logical shift on the 64-bit pattern; Rust's `>>`
+    // on `i64` is arithmetic, and on `u64` it is this (`_TrieNode.
+    // _trieIndex`, `_bitCount`: the `PersistentHashMap` every
+    // `InheritedElement` mounts through, run537).
+    if (op == '>>>') {
+      // Through `i64` first: `(-8) as u64` types the literal `u64` and
+      // cannot negate it (E0600).
+      return '((((${expr(left)}) as i64) as u64) >> (${expr(right)})) as i64';
+    }
     if (!passthrough.contains(op)) {
       throw Unsupported('binary operator `$op`', '${expr(left)} $op ...');
     }
@@ -3231,6 +3240,17 @@ class RustBackend {
         (target == null || target is IrThis) &&
         (_selfName == 'this_' || _selfName == 'self')) {
       return '$_selfName.dart_runtime_type()';
+    }
+    // `hashCode` on a value typed by a type parameter is the Object
+    // protocol's (`DartEq::dart_hash_code`, which every type argument
+    // implements as it implements `==`): `key.hash_code()` on a `K`
+    // named no trait (`PersistentHashMap.put`, run537).
+    if ((name == 'hashCode' || name == 'hash_code') &&
+        args.isEmpty &&
+        target != null &&
+        target is! IrThis &&
+        _isTypeParam(target.rustType?.name ?? '')) {
+      return 'DartEq::dart_hash_code(&${expr(target)})';
     }
     final cellPlace = _mutatesInPlace(name) ? _cellPlace(target) : null;
     // A mutating call on a field of `this` in a struct's own method acts
@@ -5304,6 +5324,10 @@ class RustBackend {
     _indent++;
     _line(
       'fn dart_eq(&self, other: &Self) -> bool { std::ptr::addr_eq(self as *const Self, other as *const Self) }',
+    );
+    // ..and hashes by it, consistently (see the prelude's `DartEq`).
+    _line(
+      'fn dart_hash_code(&self) -> i64 { (self as *const Self as *const u8 as usize as i64) & 0x3fff_ffff }',
     );
     _indent--;
     _line('}');
