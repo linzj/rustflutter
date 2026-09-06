@@ -1317,7 +1317,23 @@ class RustBackend {
       rust.startsWith('Set<') ||
       rust.startsWith('Map<') ||
       rust.startsWith('Queue<') ||
-      rust.startsWith('std::collections::VecDeque<');
+      rust.startsWith('std::collections::VecDeque<') ||
+      // The prelude's aliases of a `Vec` (`Float64List`, a counted
+      // `Matrix4`'s storage, ws510) and the byte view written in place.
+      const {
+        'Int8List',
+        'Int16List',
+        'Int32List',
+        'Int64List',
+        'Uint8List',
+        'Uint8ClampedList',
+        'Uint16List',
+        'Uint32List',
+        'Uint64List',
+        'Float32List',
+        'Float64List',
+        'ByteData',
+      }.contains(rust);
 
   /// What a field holds, `Option`-wrapped when it is `late`.
   ///
@@ -2515,7 +2531,7 @@ class RustBackend {
         // .borrow().clone())` on a local `data` was "does not live long
         // enough" 17 times (ws376). Bound and handed out, the guard dies
         // in its own statement.
-        final read = _isCopy(_heldType(cell))
+        final read = _fieldIsCopy(cell, owner == null ? null : library[owner])
             ? '$receiver.${snake(name)}.get()'
             : '{ let __r = $receiver.${snake(name)}.borrow().clone(); __r }';
         return cell.isLate ? '$read.unwrap()' : read;
@@ -2910,7 +2926,15 @@ class RustBackend {
     } else {
       cell = null;
     }
-    if (cell == null || _isCopy(_heldType(cell))) return null;
+    if (cell == null ||
+        _fieldIsCopy(
+          cell,
+          base == null || base is IrThis
+              ? cls
+              : (target.owner == null ? null : library[target.owner!]),
+        )) {
+      return null;
+    }
     // Only a collection is mutated through the cell: `reverse` on an
     // `Rc<RefCell<Option<Rc<AnimationController>>>>` is the controller's
     // method, not `Vec::reverse` (51 in `widgets`).
@@ -4553,14 +4577,26 @@ class RustBackend {
             ? 'Some(${expr(value)})'
             : expr(value);
         // A field of the value in a static's cell (`staticFieldWrites`).
-        if (target is IrStatic) {
+        // ..or, when the static holds a *counted* object, through the
+        // field's own cell on the handle: the object is not in a cell, its
+        // fields are (`GoogleFonts.config.allowRuntimeFetching = false` on
+        // a counted `Config`, run510).
+        final staticHolder = target is IrStatic
+            ? '(**${_lazyName(target.owner, target.name)})'
+            : target is IrTopLevel
+            ? '(**${screamingSnake(target.name)})'
+            : null;
+        if (staticHolder != null &&
+            shared != null &&
+            owner != null &&
+            (library[owner]?.counted ?? false)) {
           _line(
-            '(**${_lazyName(target.owner, target.name)}).borrow_mut().${snake(name)} = $written;',
+            _fieldIsCopy(shared, library[owner])
+                ? '$staticHolder.${snake(name)}.set($written);'
+                : '*$staticHolder.${snake(name)}.borrow_mut() = $written;',
           );
-        } else if (target is IrTopLevel) {
-          _line(
-            '(**${screamingSnake(target.name)}).borrow_mut().${snake(name)} = $written;',
-          );
+        } else if (staticHolder != null) {
+          _line('$staticHolder.borrow_mut().${snake(name)} = $written;');
         }
         // Inside a trait's body there is no field, only the setter it
         // declares (`this_.set__length(v)` in a mixin's super function).
@@ -4586,7 +4622,12 @@ class RustBackend {
           // Through the cell, which is why the field can be written from a
           // closure that does not hold `self` at all.
           _line(
-            _isCopy(_heldType(shared))
+            _fieldIsCopy(
+                  shared,
+                  target == null || target is IrThis
+                      ? cls
+                      : (owner == null ? null : library[owner]),
+                )
                 ? '$receiver.${snake(name)}.set($written);'
                 : '*$receiver.${snake(name)}.borrow_mut() = $written;',
           );
@@ -5712,12 +5753,20 @@ class RustBackend {
       if (prelude != null) continue;
       final other = library[name];
       if (other != null && !_classIsCopy(other, seen)) return false;
-      // A name nothing here knows -- another class's type parameter in a
-      // field written from outside it (`h.value = ..` on a `Holder<T>`,
-      // ws510) -- is not known to be `Copy` either.
-      if (other == null) return false;
     }
     return true;
+  }
+
+  /// Whether a field's cell is a `Cell` (its held type is `Copy`) as seen
+  /// from anywhere: a field of another class typed by *that* class's
+  /// parameter (`Holder<T>.value`, written as `h.value = ..` from outside,
+  /// ws510) is not `Copy` -- the parameter is no name known here.
+  bool _fieldIsCopy(IrFieldDecl field, IrClass? owner) {
+    final held = _heldType(field);
+    if (owner != null && _namesIn(held).any(owner.typeParameters.contains)) {
+      return false;
+    }
+    return _isCopy(held);
   }
 
   /// Which of the prelude's own types are `Copy`, read out of the prelude.

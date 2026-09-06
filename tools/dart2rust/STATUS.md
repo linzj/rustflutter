@@ -6656,6 +6656,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run508 | 宿主答了 `flutter/platform`/`flutter/keyboard`；path_provider 的消息**字节是空的**（`Message corrupted`）：`WriteBuffer._append` 在 `_buffer.clone()` 上 `setRange`，真正的 `_buffer` 从没变过——"对 `this` 字段的 mutating 调用作用在克隆上"这一族到此挡住运行时。 | struct 自己的方法里，对 `this` 字段的 mutating 调用直接作用在字段上（`self._buffer.set_range(..)`），不再取值读的克隆（a4e79ce7，进 ws509）。 |
 | ws509 | 链：**1229（+53）**，141：字段就地 mutating 这条规则劫持了两种形状——同名的非集合方法（`AnimationController.reverse`，44 个）和 cell 里的字段（`Rc<RefCell<Option<Set>>>.clear()`）。 | 规则只对本 struct 自己的、非 cell 的、集合型（按 IR 名：List/Map/Set/Queue/typed lists/ByteData）字段生效。 |
 | run509 | 编码器就地改了，字节**还是空的**：`writeValue(buffer, ..)` 按**值**接 `WriteBuffer`，填的是副本——Dart 对象是引用，非计数的 struct 传参即复制。 | **别名突变分析**（`lib/alias_mutation.dart`，全程序预扫）：某类的 mutating 成员（写 `this` 字段、对 `this` 字段调集合/ByteData 的 mutator、或调到这样的成员，类内定点）在非 `this` 接收者上被调用 → 该类计数（`Rc` + cell 字段）。同批：`ByteData` 的 set_* 也算就地 mutator。待办：`_eightBytesAsList` 是 `_eightBytes.buffer` 的**视图**，这里是拷贝，`putUint16/32/Float64` 写进去的字节读不到——typed_data 的共享 buffer 语义还没有。 |
+| ws510 | 链：**1233**（比 ws508 多 57，比 1300 少 67），141。别名突变计数把 `Matrix4`/`Matrix3`/`Quaternion`/`_Vector`/`Hct` 变成了计数类：它们的 `final Float64List _m4storage` 不是 cell（`_isMutableCollection` 只认拼出的 `Vec<`，`Float64List` 是别名），`self._m4storage[i] = ..` 在 `&Rc<Self>` 上 E0596（25）；"未知名不算 Copy" 顺手把 `f64` 当成未知，`Offset` 丢了 `Copy`（`offset` 被 move，8）。 | typed_data 别名和 `ByteData` 算可变集合（计数类里进 cell）；撤回"未知名不算 Copy"，改为 `_fieldIsCopy(field, owner)`——按字段**所属类**的类型参数判断。 |
+| run510 | 停在 gallery 的 `main`：`GoogleFonts.config.allowRuntimeFetching = false` 写成 `(**GOOGLE_FONTS_CONFIG).borrow_mut().allow_runtime_fetching = ..`——`Config` 现在是计数类，静态对象的字段写要走字段自己的 cell。 | 静态接收者的字段写按类是否计数分路。 |
 
 ## 下一步(2026-09-05 重铺)
 
