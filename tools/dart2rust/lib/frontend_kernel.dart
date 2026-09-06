@@ -2927,19 +2927,28 @@ class KernelFrontend implements TypeWorld {
           // `oldLayer?._nativeLayer` with `_nativeLayer` a `T?`: one
           // `Option`, not two (8 `Option<Option<..>>` in dart:ui).
           final memberType = _staticType(otherwise);
+          final body = expression(otherwise);
+          // By the lowered body's own type where it has one: a cascade on
+          // the bound (`child?..layout(..)`) is a `RenderBox` here whatever
+          // the CFE's temporaries say (`RenderProxyBoxMixin.performLayout`,
+          // ws485).
+          final bodyType = body.rustType;
           return IrNullAware(
             receiver,
-            expression(otherwise),
+            body,
             // `void` is "nullable" to Kernel; `x?.addListener(..)` is a
             // `map`, not an `and_then` (`Option<_> <= ()`).
             // ..and a `T?` of a type parameter flattens too: `scope?.
             // localizationsState.resourcesFor<T?>(type)` is a `T?`, not an
             // `Option<Option<T>>` (`Localizations.of`, ws482).
-            flatten:
-                memberType != null &&
-                (memberType is InterfaceType ||
-                    memberType is TypeParameterType) &&
-                memberType.nullability == Nullability.nullable,
+            flatten: bodyType != null
+                ? bodyType.nullable &&
+                      bodyType.name != 'void' &&
+                      bodyType.name != '()'
+                : memberType != null &&
+                      (memberType is InterfaceType ||
+                          memberType is TypeParameterType) &&
+                      memberType.nullability == Nullability.nullable,
           );
         } finally {
           _boundType = previousType;
@@ -7168,6 +7177,13 @@ class KernelFrontend implements TypeWorld {
           i < cls.typeParameters.length &&
           _erasedParameter(cls.typeParameters[i]);
     }
+    // A closure's or local function's own type parameter: a Rust closure
+    // cannot be generic, so it reads as its bound, as a generic function
+    // *type* is instantiated at its bounds (`_type`) -- `<T extends
+    // Object?>(settings, builder) => MaterialPageRoute<T>(..)` handed to
+    // `WidgetsApp.pageRouteBuilder` named a `T` nothing declared (ws485).
+    final generic = p.declaration as TreeNode?;
+    if (generic is FunctionNode && generic.parent is! Member) return true;
     if (decl is! Class) return false;
     return _erasedCache.putIfAbsent(p, () {
       final bound = p.bound;

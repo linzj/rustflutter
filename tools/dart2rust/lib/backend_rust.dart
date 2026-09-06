@@ -1056,6 +1056,14 @@ class RustBackend {
     // ..under the uniform Result model it does: a closure fails like a
     // function and says so in its type.
     _failure = _resultModel ? _error : null;
+    // ..and a `try` inside it that returns carries the *closure's* value
+    // out, not the enclosing method's (`registerExtension`'s callback in
+    // `BindingBase.registerServiceExtension`, run485).
+    final savedRustReturns = _rustReturns;
+    final closureReturns = node.isAsync ? _awaited(node.returns) : node.returns;
+    _rustReturns = _resultModel && closureReturns.name != 'raw'
+        ? 'Result<${type(closureReturns)}, $_error>'
+        : _rustReturns;
     // Nor is it inside the try body's flow closure: a `return` in it is
     // the closure's own (`Ok(Some(..))` in `|x| builder.setDay(x)`).
     _inFlowClosure = false;
@@ -1076,6 +1084,7 @@ class RustBackend {
     _body(node.body, node.isAsync ? _awaited(node.returns) : node.returns);
     _asyncBody = savedAsyncBody;
     _failure = savedFailure;
+    _rustReturns = savedRustReturns;
     _inFlowClosure = savedFlow;
     _selfName = savedSelf;
     _closureCaptured = savedCaptured;
@@ -3995,7 +4004,14 @@ class RustBackend {
         _line(_asyncBody ? '}; __r }.await {' : '})() {');
         _indent++;
         if (flows) {
-          _line('Ok(Some(__returned)) => return __returned,');
+          // Inside an outer try's closure the return is that closure's
+          // value again (`inflateWidget`'s try/catch inside its
+          // try/finally, ws485).
+          _line(
+            outer
+                ? 'Ok(Some(__returned)) => return Ok(Some(__returned)),'
+                : 'Ok(Some(__returned)) => return __returned,',
+          );
           // `{}` has type `()`, and when every path through the body returns
           // there is nothing after the match to give the method its value --
           // so the arm has to say it cannot happen rather than fall through.
