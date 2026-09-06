@@ -3082,6 +3082,13 @@ class RustBackend {
   /// The cell a field read would go through, as a place -- `self.x` or
   /// `other.x` -- when the field is kept in a `RefCell`; null otherwise.
   String? _cellPlace(IrExpr? target) {
+    // A local in a cell (`IrLocalDecl.cell`: captured and changed in a
+    // closure): the cell itself, whose `borrow_mut()` the call takes. The
+    // value read cloned it and `seen.add(..)` pushed into the clone (the
+    // lend2 fixture, ws544).
+    if (target is IrLocal && _cellLocals[target.name] == false) {
+      return snake(target.name);
+    }
     // A hollow mixin's field is read through the declaration's abstract
     // getter -- an accessor *call* on `this` in the trait body -- where the
     // application holds the field (`IrClass.appliedFields`): the same
