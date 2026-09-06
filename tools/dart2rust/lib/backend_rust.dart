@@ -643,10 +643,16 @@ class RustBackend {
       // The future's output is a `Result`: the `?` goes after the await.
       // `await f` on a `Future<T>?`: null stays null (`await proxy.send(..)`
       // where `send` returns `Future<ByteData?>?`).
+      // ..and `T?` of a `T` already nullable is `T`: awaiting a
+      // `Future<ByteData?>?` is a `ByteData?`, not an `Option<Option<..>>`
+      // (`BinaryMessenger.send`, ws474).
       IrAwait(:final operand)
           when operand.rustType?.name == 'Future' &&
               (operand.rustType?.nullable ?? false) =>
-        '(match ${_awaitOperand(operand)} { Some(__f) => Some(__f.await$_propagate), None => None })',
+        (operand.rustType!.arguments.isNotEmpty &&
+                operand.rustType!.arguments.first.nullable)
+            ? '(match ${_awaitOperand(operand)} { Some(__f) => __f.await$_propagate, None => None })'
+            : '(match ${_awaitOperand(operand)} { Some(__f) => Some(__f.await$_propagate), None => None })',
       IrAwait(:final operand) => '${_awaitOperand(operand)}.await$_propagate',
       IrIdentical(:final left, :final right) => _identical(left, right),
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
@@ -1092,10 +1098,16 @@ class RustBackend {
     // (`Future<bool>(() async {..})` in `GetStorage`, ws470: the stub that
     // kept `main` waiting without a word).
     final asFutureOr = node.returns.name == 'FutureOr';
+    // ..and where it says `Future<T>?` (a `MessageHandler`'s
+    // `Future<ByteData?>? Function(ByteData?)`), the future inside `Some`
+    // (`setMessageHandler`'s closure, ws474).
+    final asNullable = node.returns.name == 'Future' && node.returns.nullable;
     final closure = node.isAsync
         ? (wantsFuture
               ? (asFutureOr
                     ? '${owns ? 'move ' : ''}|$params| -> Result<FutureOr<_>, $_error> { $again Ok(FutureOr::future($spawned)) }'
+                    : asNullable
+                    ? '${owns ? 'move ' : ''}|$params| -> Result<Option<DartFuture<_>>, $_error> { $again Ok(Some($spawned)) }'
                     : '${owns ? 'move ' : ''}|$params| -> Result<DartFuture<_>, $_error> { $again Ok($spawned) }')
               : '${owns ? 'move ' : ''}|$params| -> Result<_, $_error> { $again let _ = $spawned; Ok(()) }')
         : '${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<_, $_error>' : ''} { $body }';

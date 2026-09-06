@@ -111,11 +111,26 @@ impl fmt::Display for dyn Object {
 /// still coerces to an `Rc<dyn Object>`, and `as_any` on it answers about the
 /// struct inside, not about a box.
 impl<T: 'static> Object for T {
+    /// The value's `Any` -- and a handle's is the object it holds: an
+    /// `Rc<dyn Object>` is `'static`, so this impl is what `.as_any()` on
+    /// one resolves to (before the `dyn Object` behind it), and every
+    /// `dynamic` downcast in translated code went to the `Rc`, never to
+    /// the string or number inside it (run475).
     fn as_any(&self) -> &dyn std::any::Any {
+        let any: &dyn std::any::Any = self;
+        if let Some(handle) = any.downcast_ref::<std::rc::Rc<dyn Object>>() {
+            let object: &dyn Object = handle.as_ref();
+            return object.as_any();
+        }
         self
     }
 
     fn runtime_type(&self) -> Type {
+        let any: &dyn std::any::Any = self;
+        if let Some(handle) = any.downcast_ref::<std::rc::Rc<dyn Object>>() {
+            let object: &dyn Object = handle.as_ref();
+            return object.runtime_type();
+        }
         // The struct's name alone, as `dart_runtime_type` spells it: no
         // module path, no type arguments.
         let full = std::any::type_name::<T>();
@@ -5435,7 +5450,8 @@ macro_rules! from_dynamic_scalar {
         $(
             impl FromDynamic for $t {
                 fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-                    value.as_any().downcast_ref::<$t>().cloned()
+                    let object: &dyn Object = value.as_ref();
+                    object.as_any().downcast_ref::<$t>().cloned()
                 }
             }
         )*
@@ -5458,7 +5474,10 @@ impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
 /// `x as List<T>` on an object: the list as it is when it is one of `T`,
 /// else each element of a `List<dynamic>` / `List<Object?>` converted.
 pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {
-    let any = value.as_any();
+    // The object's `Any`, not the handle's: `Rc<dyn Object>` is `'static`
+    // and so an `Object` itself under the blanket impl.
+    let object: &dyn Object = value.as_ref();
+    let any = object.as_any();
     if let Some(list) = any.downcast_ref::<Vec<T>>() {
         return Some(list.clone());
     }
@@ -5475,7 +5494,8 @@ pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option
 pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(
     value: &std::rc::Rc<dyn Object>,
 ) -> Option<Map<K, V>> {
-    let any = value.as_any();
+    let object: &dyn Object = value.as_ref();
+    let any = object.as_any();
     if let Some(map) = any.downcast_ref::<Map<K, V>>() {
         return Some(map.clone());
     }

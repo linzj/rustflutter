@@ -4410,6 +4410,13 @@ class KernelFrontend implements TypeWorld {
       receiver,
       asGetter: member is Field || (member is Procedure && member.isGetter),
     );
+    // An `async` member declared `Future<T>?` still hands back the future
+    // it spawns, never null: its wrapper is typed `DartFuture<T>`, and so
+    // is a call to it (`sendWithPostfix` in `send`, ws474).
+    final t = out.rustType;
+    if (out.asyncTarget && t != null && t.name == 'Future' && t.nullable) {
+      out.rustType = IrType('Future', arguments: t.arguments);
+    }
     return out;
   }
 
