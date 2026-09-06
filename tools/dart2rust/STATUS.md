@@ -6691,6 +6691,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws527 | 链：**1028**（−11；比 1039 新 7/去 20），141。`op_eq` 族全回来了；基线族（flex/stack/wrap/overflow_bar 的 `computeDistanceToActualBaseline`、`getChildrenAsList`、stack 的 `_compute_size`/`default_hit_test_children`）去了；新 7 个是刚翻译出来的基线代码暴露的（`baseline_offset_min_of`、wrap 的 `_compute_runs`/`_position_children`…）。 | |
 | run527 | **过了 `flushLayout`**（第一帧布局），停在拒绝：`List.whereType`（`rendering_object.dart` 语义节点里 `whereType<..>()`）。 | `whereType<T>()`：按类型筛的迭代步（`dart_cast_to`）。 |
 | （ws528 前） | 同批：tear-off 的内层调用经 `_qualified` 带上成员的擦除类型再收进 tear-off 自己的返回（`advance: childAfter` 返回擦除的 `RenderObject?`，槽位要 `RenderSliver?`——`RenderViewport._attemptLayout`）；`late` 无初始化的局部量走 `_optionLocals`（`Scaffold` 布局的 `late Rect floatingActionButtonRect`）。夹具 erasedtear、latelocal。**待办（夹具暴露）**：擦除参数类型的集合字段（mixin 里 `List<ChildType> children`）上的 `add` 落在 `__to_list`/`!narrow` 拷贝上，写丢了——就地变异规则要看穿收窄拷贝。 | |
+| ws528 | 链：**1015**（−13；新 8/去 20），**可达 crate 142**（多了一个叶 crate）。 | |
+| run528 | **第一帧画出来了**：`1 frame(s) drawn`，`main` 没抛、没 panic；剩下 3 个跳过的 void native（`ScheduleMicrotask`、`SendChannelUpdate`、`EndWarmUpFrame`）。Goal 2（gallery 无头构建、布局、绘制第一帧）达成。 | 下一个 goal 见"下一步"。 |
 
 ## 下一步(2026-09-05 重铺)
 
