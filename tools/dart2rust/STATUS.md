@@ -6628,6 +6628,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run492 | 同 run491（`invokeMapMethod` 的 `cast`）：`result?.cast<K, V>()` 的 interfaceTarget 被 TFA 虚化成 `CanonicalizedMap.cast`，没走 Map 的路。 | 集合成员按**接收者的静态类**（dart:core 的 List/Map/Set/Iterable）走 prelude 的路。另：`PlatformInterface` 的构造函数把 `this` 放进 Expando，子类跑的是它的体——继承的构造函数体里的逃逸也算入 counted（path_provider 的 platform 类原来是值，Expando 键没身份）。 |
 | ws493 | 链：**1308**（−6，无新桩）。 | |
 | run493 | 同 run492：`result?.cast<K, V>()` 仍走了 trait 泛型方法那条路（`_genericOnTrait` 排在前面）。 | 接收者静态类是 dart:core 集合时先走 prelude 路。同批预读平台消息路径：`StandardMessageCodec` 的 `Uint8List.sublistView(message)`/`ByteData.sublistView(bytes)`（`TypedData` 即字节：`ByteData`/`Uint8List`/`List<int>` 都收）、`JSONMessageCodec` 的 `JsonUtf8Encoder().convert(v)` 进 prelude。 |
+| ws494 | 链：**1302**（−6）；新桩 2：`RenderTable.setFlatChildren`、`_TableElement.mount`（table 一族）；141。 | 同批：`remove`/`indexOf`/`contains` 的实参按一条规则进元素类型（`Disposer` 进 `List<Disposer?>` 要 `Some`）。 |
+| run494 | 同 run493：`result?.cast<K, V>()`——静态类规则没生效（`_staticClass` 只答翻译过的类，dart:core 的 `Map` 一律 null），仍是 `CanonicalizedMap` 的 super 派发。修好后夹具再露两条：super 体里 `this_.invoke_method::<T>()`（`__Self: ?Sized` 撞 `where Self: Sized`）；`cast_to::<K, V>()` 要 `K: FromDynamic`，类型参数没有这个界。 | ① 规则直接读静态类型；② trait 体里对 `this` 调泛型 trait 方法一律走 `*__erased` 孪生 + `dart_cast_erased`；③ `FromDynamic` 做成**全类型**的（同 `DartNullable`：prelude 各型、`Rc<T>` 向对象要、每个翻译的 struct/enum 一条 impl），并进固定界 `Clone + DartNullable + DartEq + FromDynamic`；④ List/Iterable/Set/Map 的 `cast` 一条规则，`Set::cast_to`；⑤ 写出的 map 字面量经 `from_pairs`（数组参数就是拼出的类型，首项值为 `null` 时后项也能 coerce）。 |
 
 ## 下一步(2026-09-05 重铺)
 
