@@ -3383,10 +3383,15 @@ class KernelFrontend implements TypeWorld {
         // "arms have incompatible types" the round it was always non-null).
         final resultNullable =
             body.staticType.nullability == Nullability.nullable;
-        final into = leftType is InterfaceType
+        // ..and into a function type: a static tear-off whose named
+        // parameters are declared in another order than the type sorts
+        // them takes its adapter here too (`requestFocusCallback ??
+        // FocusTraversalPolicy.defaultTraversalRequestFocusCallback`,
+        // run522).
+        final into = leftType is InterfaceType || leftType is FunctionType
             ? (resultNullable
-                  ? leftType.withDeclaredNullability(Nullability.nullable)
-                  : leftType.withDeclaredNullability(Nullability.nonNullable))
+                  ? leftType!.withDeclaredNullability(Nullability.nullable)
+                  : leftType!.withDeclaredNullability(Nullability.nonNullable))
             : null;
         var rightSide = expression(right);
         if (into != null) {
