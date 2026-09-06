@@ -1127,10 +1127,16 @@ class IrFunctionRef extends IrExpr {
 
 /// A local function: `void step() { .. }` written inside a body.
 class IrLocalFunction extends IrStmt {
-  const IrLocalFunction(this.name, this.closure);
+  const IrLocalFunction(this.name, this.closure, {this.recursive = false});
 
   final String name;
   final IrClosure closure;
+
+  /// Whether the body names the function itself: a Rust closure cannot,
+  /// so the binding is a cell the closure holds a handle to and reads
+  /// (`void visit(Element e) { .. visit(child) }` in
+  /// `Element.updateSlotForChild`, ws475).
+  final bool recursive;
 }
 
 /// `switch (x) { case A: .. }`.

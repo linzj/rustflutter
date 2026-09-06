@@ -4052,8 +4052,30 @@ class RustBackend {
         _line(
           '{ let __i = ${expr(index)} as usize; $place[__i] = ${expr(value)}; }',
         );
-      case IrLocalFunction(:final name, :final closure):
-        _line('let ${snake(name)} = ${expr(closure)};');
+      case IrLocalFunction(:final name, :final closure, :final recursive):
+        if (!recursive) {
+          _line('let ${snake(name)} = ${expr(closure)};');
+          break;
+        }
+        // A closure cannot name itself: the binding is a cell, filled
+        // after the closure is made with a handle to the same cell, and
+        // every read of the name -- inside the body and after it -- goes
+        // through the cell (`_cellLocals`, unwrapped as a `late` local).
+        final fnType = type(
+          IrType.function([
+            for (final p in closure.params) p.type,
+          ], closure.returns),
+        );
+        _line(
+          'let ${snake(name)}: std::rc::Rc<std::cell::RefCell<Option<$fnType>>> = std::rc::Rc::new(std::cell::RefCell::new(None));',
+        );
+        _cellLocals = {..._cellLocals, name: false};
+        _lateCellLocals = {..._lateCellLocals, name};
+        // The closure moves a handle to the cell, not the cell's binding.
+        final boxed = closure.boxed ? '' : 'std::rc::Rc::new';
+        _line(
+          '*${snake(name)}.borrow_mut() = Some($boxed({ let ${snake(name)} = ${snake(name)}.clone(); ${expr(closure)} }));',
+        );
       case IrLabeled(:final label, :final body):
         _line("'$label: {");
         _indent++;

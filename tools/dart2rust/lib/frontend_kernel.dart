@@ -7678,7 +7678,12 @@ class KernelFrontend implements TypeWorld {
       if (node.function.typeParameters.isNotEmpty) {
         throw Unsupported('generic local function', _sample(node));
       }
-      return IrLocalFunction(name, _closure(node.function, node) as IrClosure);
+      final closure = _closure(node.function, node) as IrClosure;
+      // Recursive when the body names its own binding: a call
+      // (`LocalFunctionInvocation`) or a read of it.
+      final self = _SelfReference(node.variable);
+      node.function.body?.accept(self);
+      return IrLocalFunction(name, closure, recursive: self.found);
     }
     if (node is SwitchStatement) {
       final cases = <IrCase>[];
@@ -9521,6 +9526,26 @@ class _TryWrites extends RecursiveVisitor {
       found.add(node.variable);
     }
     super.visitVariableSet(node);
+  }
+}
+
+/// Whether a local function's body names the function itself.
+class _SelfReference extends RecursiveVisitor {
+  _SelfReference(this.variable);
+
+  final Variable variable;
+  bool found = false;
+
+  @override
+  void visitLocalFunctionInvocation(LocalFunctionInvocation node) {
+    if (node.variable == variable) found = true;
+    super.visitLocalFunctionInvocation(node);
+  }
+
+  @override
+  void visitVariableGet(VariableGet node) {
+    if (node.variable == variable) found = true;
+    super.visitVariableGet(node);
   }
 }
 

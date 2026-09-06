@@ -4881,6 +4881,40 @@ impl<R> IntoFutureOr<R> for R {
     }
 }
 
+/// The null a `FutureOr<R>?` callback hands back stands for: `R`'s own
+/// null, which only a nullable, `void` or `dynamic` `R` has (the shapes
+/// Dart admits a `FutureOr<R>?` for).
+pub trait NullValue {
+    fn null_value() -> Self;
+}
+
+impl NullValue for () {
+    fn null_value() {}
+}
+
+impl<T> NullValue for Option<T> {
+    fn null_value() -> Self {
+        None
+    }
+}
+
+impl NullValue for std::rc::Rc<dyn Object> {
+    fn null_value() -> Self {
+        std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>
+    }
+}
+
+/// `(_) { .. }` handed to `then`: a callback typed `FutureOr<void>?`
+/// (`_initKeyboard`, ws484).
+impl<R: NullValue> IntoFutureOr<R> for Option<FutureOr<R>> {
+    fn into_future_or(self) -> FutureOr<R> {
+        match self {
+            Some(inner) => inner,
+            None => FutureOr::Value(Some(R::null_value())),
+        }
+    }
+}
+
 impl<T> FutureOr<T> {
     pub fn value(value: T) -> Self {
         FutureOr::Value(Some(value))
