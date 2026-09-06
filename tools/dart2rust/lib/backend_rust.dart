@@ -2996,8 +2996,23 @@ class RustBackend {
       return '$_selfName.dart_runtime_type()';
     }
     final cellPlace = _mutatesInPlace(name) ? _cellPlace(target) : null;
+    // A mutating call on a field of `this` in a struct's own method acts
+    // on the field, not on the clone a value read takes: `_buffer.setRange
+    // (..)` on a clone left `WriteBuffer` empty and every platform message
+    // without a byte (run507).
+    final ownPlace =
+        cellPlace == null &&
+            _mutatesInPlace(name) &&
+            target is IrField &&
+            (target.target == null || target.target is IrThis) &&
+            !_fieldsAreAccessors &&
+            _selfName == 'self'
+        ? '$_selfName.${snake(target.name)}'
+        : null;
     final receiver = cellPlace != null
         ? '$cellPlace.borrow_mut()'
+        : ownPlace != null
+        ? ownPlace
         : target is IrLiteral && target.type.name == 'double'
         ? '(${_receiver(target)}_f64)'
         : _receiver(target);
