@@ -4763,11 +4763,21 @@ class KernelFrontend implements TypeWorld {
           final map = read is IrCall ? read.target?.rustType : null;
           if (map != null && map.name == 'Map' && map.arguments.length == 2) {
             final value = map.arguments[1];
-            read.rustType = IrType(
-              value.name,
-              nullable: true,
-              arguments: value.arguments,
-            );
+            // ..with its signature kept: rebuilt by name, a `Map<String,
+            // VoidCallback>`'s value read as a bare `Function` -- an
+            // object -- where the Rust value is the typed `Rc<dyn Fn>`
+            // (`_customActionCallbacks[id]`, ws515).
+            read.rustType = value.isFunction
+                ? IrType.function(
+                    value.parameters!,
+                    value.returns!,
+                    nullable: true,
+                  )
+                : IrType(
+                    value.name,
+                    nullable: true,
+                    arguments: value.arguments,
+                  );
           }
           return read;
         }
@@ -6458,6 +6468,10 @@ class KernelFrontend implements TypeWorld {
       // concrete class the slot normalises to the plain `Option` (and
       // `<GestureBinding as DartNullable>` names a trait as a type).
       final put = kept[t.parameter]!;
+      // A function type keeps its signature (see the map read's typing).
+      if (arg.isFunction) {
+        return IrType.function(arg.parameters!, arg.returns!, nullable: true);
+      }
       return IrType(
         arg.name,
         nullable: true,
