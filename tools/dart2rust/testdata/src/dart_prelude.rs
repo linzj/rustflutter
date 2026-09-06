@@ -4345,7 +4345,7 @@ pub fn run_main<F: std::future::Future<Output = Result<(), DartError>>>(main: F)
             match main.as_mut().poll(&mut cx) {
                 std::task::Poll::Ready(Ok(())) => done = true,
                 std::task::Poll::Ready(Err(error)) => {
-                    eprintln!("dart2rust: main threw: {}", dart_message(&error));
+                    eprintln!("dart2rust: main threw: {}", dart_error_text(&error));
                     return;
                 }
                 std::task::Poll::Pending => {}
@@ -4398,6 +4398,35 @@ pub fn pending_tasks() -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// A thrown object as Dart's `toString` would print it: the prelude's
+/// own error classes by their `Display` (`Bad state: ..`), a string as
+/// itself, anything else as `Instance of 'X'`. `dyn Object`'s `Display`
+/// cannot reach a concrete type's, so the prelude's errors are asked one
+/// by one.
+pub fn dart_error_text(error: &std::rc::Rc<dyn Object>) -> String {
+    let object: &dyn Object = error.as_ref();
+    let any = object.as_any();
+    macro_rules! try_display {
+        ($($t:ty),*) => {
+            $(if let Some(e) = any.downcast_ref::<$t>() { return format!("{}", e); })*
+        };
+    }
+    try_display!(
+        StateError,
+        ArgumentError,
+        RangeError,
+        AssertionError,
+        UnsupportedError,
+        UnimplementedError,
+        ConcurrentModificationError,
+        FormatException,
+        Exception,
+        Error,
+        String
+    );
+    dart_message(error)
 }
 
 /// What a run without a native host left undone, for the ruler to read:
