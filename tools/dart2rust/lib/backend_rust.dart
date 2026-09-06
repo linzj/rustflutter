@@ -3388,6 +3388,25 @@ class RustBackend {
     }
     // Dart's `reversed` is a lazy Iterable and nearly every use ends in
     // `toList`. A `Vec` is what that produces, and `to_list` on one clones.
+    // `whereType<T>()`: each element asked for a `T` through the cast
+    // table -- a trait object, a struct's own handle -- or `Any` for a
+    // scalar; the ones that answer, collected.
+    if (name == '!where_type' && args.isEmpty && typeArguments.length == 1) {
+      final wanted = typeArguments.single;
+      final spelledArgs = wanted.arguments.isEmpty
+          ? ''
+          : '<${wanted.arguments.map(type).join(', ')}>';
+      final String test;
+      if (scalarNames.contains(wanted.name)) {
+        test =
+            'v.as_ref().as_any().downcast_ref::<${rustScalar(wanted.name)}>().cloned()';
+      } else if (library.isAbstract(wanted.name)) {
+        test = 'v.dart_cast_to::<dyn ${wanted.name}$spelledArgs>()';
+      } else {
+        test = 'v.dart_cast_to::<${wanted.name}$spelledArgs>()';
+      }
+      return '$receiver.iter().filter_map(|v| $test).collect::<Vec<_>>()';
+    }
     if (name == '!reversed' && args.isEmpty) {
       return '{ let mut __r = $receiver.clone(); __r.reverse(); __r }';
     }

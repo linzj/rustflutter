@@ -2208,33 +2208,42 @@ class KernelFrontend implements TypeWorld {
           ),
       ];
       final receiver = node.receiver;
+      // The call typed by the member it reaches (`_qualified`) and coerced
+      // into the tear-off's own return: a mixin's `ChildType? childAfter`
+      // hands back the erased `RenderObject?` where the torn type says
+      // `RenderSliver?` (`RenderViewport._attemptLayout`'s `advance:
+      // childAfter`, ws527).
+      final tornCall = _qualified(
+        IrCall(
+          receiver is ThisExpression ? null : expression(receiver),
+          node.name.text,
+          [
+            for (var i = 0; i < fn.positionalParameters.length; i++)
+              IrLocal(params[i].name),
+            for (final p in fn.namedParameters) IrLocal(p.parameterName),
+          ],
+          // The adapter's call propagates like a written one would.
+          fails: _fails(node.interfaceTarget),
+          asyncFn: _inherentAsync(
+            node.interfaceTarget,
+            receiver is ThisExpression
+                ? ((_member?.enclosingClass?.isAnonymousMixin ?? false)
+                      ? _lowering
+                      : _member?.enclosingClass)
+                : _staticClass(receiver),
+            null,
+            onThis: receiver is ThisExpression,
+          ),
+          asyncTarget: _asyncMember(node.interfaceTarget),
+        ),
+        node.interfaceTarget,
+        receiver,
+      );
+      final tornReturns = _type(returnType);
       final adapter = IrClosure(
         params,
-        IrReturn(
-          IrCall(
-            receiver is ThisExpression ? null : expression(receiver),
-            node.name.text,
-            [
-              for (var i = 0; i < fn.positionalParameters.length; i++)
-                IrLocal(params[i].name),
-              for (final p in fn.namedParameters) IrLocal(p.parameterName),
-            ],
-            // The adapter's call propagates like a written one would.
-            fails: _fails(node.interfaceTarget),
-            asyncFn: _inherentAsync(
-              node.interfaceTarget,
-              receiver is ThisExpression
-                  ? ((_member?.enclosingClass?.isAnonymousMixin ?? false)
-                        ? _lowering
-                        : _member?.enclosingClass)
-                  : _staticClass(receiver),
-              null,
-              onThis: receiver is ThisExpression,
-            ),
-            asyncTarget: _asyncMember(node.interfaceTarget),
-          ),
-        ),
-        _type(returnType),
+        IrReturn(coerce(tornCall, tornReturns)),
+        tornReturns,
         // A tear-off of `message.invoke` keeps `message`: cloned in, moved.
         locals: receiver is ThisExpression
             ? const []
@@ -3805,9 +3814,14 @@ class KernelFrontend implements TypeWorld {
     final name = (written == null || written.startsWith('#'))
         ? _nameFor(variable)
         : written;
+    // ..and a `late` local without an initialiser: assigned on some path
+    // and read on another rustc cannot match up (`late Rect
+    // floatingActionButtonRect` in `Scaffold`'s layout, E0381, ws527).
     if (init == null &&
         written != null &&
-        (written.startsWith('#') || _tryWrites.contains(variable)) &&
+        (written.startsWith('#') ||
+            _tryWrites.contains(variable) ||
+            variable.isLate) &&
         variable.type is! VoidType &&
         variable.type.nullability != Nullability.nullable) {
       _optionLocals.add(variable);
@@ -4762,6 +4776,19 @@ class KernelFrontend implements TypeWorld {
               ..rustType = args[1].rustType,
           ),
         ], IrLocal(held));
+      }
+      // `whereType<T>()`: the elements that are a `T`, by the cast table
+      // (`_semantics` nodes filtered in `RenderObject`, run527).
+      if (name == 'whereType' &&
+          args.isEmpty &&
+          node.arguments.types.length == 1) {
+        final wanted = _type(node.arguments.types.single);
+        return IrCall(
+          _listReceiver(node.receiver),
+          '!where_type',
+          const [],
+          typeArguments: [wanted],
+        )..rustType = IrType('List', arguments: [wanted]);
       }
       final step = iterStepNames[name];
       if (step != null && args.length == 1) {
