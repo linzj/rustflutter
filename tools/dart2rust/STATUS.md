@@ -6673,6 +6673,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws517 | 链：**1127**（持平；比 1300 少 173：新 10/去 170），141。`RenderObject::new` 回来了；但兜底门关得太死：`ObserverList<T>.contains(Object?)`、`SlottedRenderObjectElement<SlotType>`、`CanonicalizedMap<K,..>` 里 `Object → T`（作用域里的类型参数，bound 里有 `FromDynamic`）也被关了（+6）。 | `TypeWorld.isTypeParameter(name)`（后端 `_isTypeParam`，前端当前类/成员的参数）：作用域里的类型参数放行，别的声明的 `T` 仍不放。同批：函数适配闭包对非字面量值先 `let __f = ..` 再 move 进去（`WidgetsApp.build` 的 `custom ?? _defaultOnNote` tear-off 在适配器体内绑 `__me`，借了 `self`）。夹具 tparam、fnadapt。 |
 | run517 | 过了 `TaskManager`，停在 get_storage 的 `storage_io.rs:58`：又一个 "RefCell already borrowed"。 | 见下一轮。 |
 | ws518 | 链：**1113**（−14；比 1300 少 187：新 9/去 181），141。`WidgetsApp.build`、`widgets_layout_builder::new`、`material_dialog::on_pop_invoked` 等去了。 | run517 的 `*self.f.borrow_mut() = Some(self.f.borrow().clone().unwrap()..)`：先试"写侧先 `let __v` 再写"，`Some(Rc<Semantics>)` 失去了向 `Option<Rc<dyn Widget>>` 的强制转换位置（夹具 ifnullset 红），未提交、撤回；改为**读侧**：`this` 的 cell 字段读、可变静态/顶层读都写成 `({ let __r = x.borrow().clone(); __r })`，`Ref` 在自己的语句里就放掉（另一个对象的字段读早已如此）。夹具 cellwrite。 |
+| ws519 | 链：**1113**（持平；比 1300 少 187），141。读侧放 `Ref` 对编译尺子中性。 | 协变泛型普查 `lib/covariance.dart`：全程序扫每个流动点（实参→形参、初始化/赋值→声明类型、return、字面量元素、`as`、条件分支），`C<A>` 进 `C<B>` 且 A≠B（顶类型视为同一）的参数记为协变，向子类同位置参数传递到不动点；`_erasedParameter` 先看这张表。`Route<T>`/`PageRoute<T>` 由此擦除，`Route<int>` 上读 `result` 得 `dynamic?`，在消费点（`??` 左侧）按 Dart 静态类型收窄；`dynamic?` 进 `Option` 槽按 Option 映射（原来 `!nullable` 规则没查 have 是否已是 Option）。夹具 covar。进 ws520。 |
+| run519 | 过了 get_storage（读侧放 `Ref` 生效），停在 `runApp`："The app requested a view, but the platform did not provide one"：`dart:ui` 顶层 `_implicitViewId` 由引擎 C++ 直接写，宿主没写。 | 宿主 `announce_view` 在 `_add_view` 前写 `_IMPLICIT_VIEW_ID`。 |
 
 ## 下一步(2026-09-05 重铺)
 
