@@ -834,12 +834,37 @@ class RustBackend {
             : screamingSnake(name),
       // `x == null` on a `dynamic`: the handle is never an `Option`; Dart's
       // null is the `Null` object inside it (`dart_nullable`).
+      // ..and on a type parameter: through its projection, since a `T`
+      // bound to a nullable type holds its null as the `Or` says
+      // (`x == null` on a mixin's `T x`, `is_none` on a bare `T`).
       IrIsNull(:final operand) =>
         operand.rustType != null &&
                 !operand.rustType!.nullable &&
                 (operand.rustType!.name == 'dynamic' ||
                     operand.rustType!.name == 'Object')
             ? 'dart_nullable(${expr(operand)}.clone()).is_none()'
+            : operand.rustType != null &&
+                  !operand.rustType!.nullable &&
+                  !operand.rustType!.projected &&
+                  operand.rustType!.arguments.isEmpty &&
+                  _isTypeParam(operand.rustType!.name)
+            ? '<${operand.rustType!.name} as DartNullable>::is_dart_null(&${expr(operand)})'
+            // ..and on a value of a concrete non-null type, Dart's static
+            // answer: a mixin's `T x` copied into a class with `int` put
+            // in asked `is_none` of an `i64` (ws525).
+            : operand.rustType != null &&
+                  !isNullable(operand.rustType!) &&
+                  !operand.rustType!.projected &&
+                  !operand.rustType!.isFunction &&
+                  operand.rustType!.name != 'dynamic' &&
+                  operand.rustType!.name != 'Object' &&
+                  operand.rustType!.name != 'Null' &&
+                  operand.rustType!.name != 'raw' &&
+                  operand.rustType!.name != '_' &&
+                  !_isTypeParam(operand.rustType!.name) &&
+                  (scalarNames.contains(operand.rustType!.name) ||
+                      library[operand.rustType!.name] != null)
+            ? '{ let _ = &${expr(operand)}; false }'
             : '${expr(_plain(operand))}.is_none()',
       IrIfNull() => _ifNull(_plainIfNull(e as IrIfNull)),
       // `as_ref()`: `a?.b` reads `a`, and `a` is a field or a loop variable
@@ -2187,7 +2212,16 @@ class RustBackend {
           '$name(...)',
         );
       }
-      return '${snake(name)}$fish(${args.map(expr).join(', ')})';
+      // A bare local is cloned in, as a translated callee's argument is
+      // by the front end: `dart_str(font_family)` moved a parameter the
+      // constructor read again (`TextStyle`, ws525).
+      String passed(IrExpr a) =>
+          a is IrLocal &&
+              !_cellLocals.containsKey(a.name) &&
+              !_closureCaptured.contains(a.name)
+          ? '${expr(a)}.clone()'
+          : expr(a);
+      return '${snake(name)}$fish(${args.map(passed).join(', ')})';
     }
     // An **unnamed factory** is a `Procedure` whose name is the empty string,
     // and Kernel calls it like a static: `RegExp('..')` arrives as
@@ -3981,6 +4015,22 @@ class RustBackend {
           ? '(${expr(e)} as f64)'
           : expr(e);
       return '(${side(left, right)} == ${side(right, left)})';
+    }
+    // A handle *value* -- a getter's `Rc<BuildScope>`, a call's trait
+    // object -- has an address once bound: `identical(element.buildScope,
+    // this)` in `BuildScope._flushDirtyElements` was refused (run525).
+    final bindLeft = !_isReference(left) && _handleLike(left);
+    final bindRight = !_isReference(right) && _handleLike(right);
+    if ((bindLeft || _isReference(left)) &&
+        (bindRight || _isReference(right)) &&
+        (bindLeft || bindRight)) {
+      const asPtr = 'as *const u8 as *const ()';
+      return '{ '
+          '${bindLeft ? 'let __ha = ${expr(left)}; ' : ''}'
+          '${bindRight ? 'let __hb = ${expr(right)}; ' : ''}'
+          'std::ptr::eq('
+          '${bindLeft ? 'std::rc::Rc::as_ptr(&__ha) $asPtr' : _asPointer(left)}, '
+          '${bindRight ? 'std::rc::Rc::as_ptr(&__hb) $asPtr' : _asPointer(right)}) }';
     }
     if (!_isReference(left) || !_isReference(right)) {
       // The question is not "is one side `this`" -- it is whether both sides

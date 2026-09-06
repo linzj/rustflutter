@@ -369,6 +369,11 @@ pub trait DartNullable: Sized {
     fn option(or: Self::Or) -> Option<Self>;
     /// The spelled `T?` from a body's `Option<Self>`.
     fn from_option(option: Option<Self>) -> Self::Or;
+    /// Whether a value of this type is Dart's null: only an `Option`'s
+    /// `None` is (`x == null` on a `T` bound to a nullable type, ws525).
+    fn is_dart_null(_value: &Self) -> bool {
+        false
+    }
     /// The `null` of this type, when it has one: growing a `List<T?>` by
     /// `length =` fills with it; a `List<T>` has none to fill with.
     fn dart_null() -> Option<Self> {
@@ -378,6 +383,9 @@ pub trait DartNullable: Sized {
 
 impl<X> DartNullable for Option<X> {
     type Or = Option<X>;
+    fn is_dart_null(value: &Self) -> bool {
+        value.is_none()
+    }
     fn option(or: Option<X>) -> Option<Option<X>> {
         or.map(Some)
     }

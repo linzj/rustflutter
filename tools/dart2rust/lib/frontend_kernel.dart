@@ -47,6 +47,44 @@ const _binaryOperators = {
   '>>>',
 };
 
+/// The identifier a CFE-lowered top-level name becomes: an extension's or
+/// extension type's member (`MediaQueryHinge|get#hinge`, `BaselineOffset|+`)
+/// with its separators as `_` and an operator spelled by name -- `+` and
+/// `<` both cleaned to `baseline_offset__` and redefined each other
+/// (ws525). One spelling, at the declaration and at every call.
+String _topLevelName(String text) {
+  const operators = {
+    '+': 'op_add',
+    '-': 'op_sub',
+    '*': 'op_mul',
+    '/': 'op_div',
+    '~/': 'op_truncdiv',
+    '%': 'op_rem',
+    'unary-': 'op_neg',
+    '&': 'op_bitand',
+    '|': 'op_bitor',
+    '^': 'op_bitxor',
+    '<<': 'op_shl',
+    '>>': 'op_shr',
+    '>>>': 'op_ushr',
+    '<': 'op_lt',
+    '>': 'op_gt',
+    '<=': 'op_le',
+    '>=': 'op_ge',
+    '==': 'op_eq',
+    '[]': 'op_index',
+    '[]=': 'op_index_set',
+    '~': 'op_not',
+  };
+  final bar = text.indexOf('|');
+  if (bar >= 0) {
+    final member = text.substring(bar + 1);
+    final named = operators[member];
+    if (named != null) return '${text.substring(0, bar)}_$named';
+  }
+  return text.replaceAll(RegExp(r'[|#]'), '_');
+}
+
 class KernelFrontend implements TypeWorld {
   KernelFrontend(
     this.library, {
@@ -574,6 +612,19 @@ class KernelFrontend implements TypeWorld {
 
   IrType _type(DartType type) {
     final nullable = type.nullability == Nullability.nullable;
+    // An extension type is its representation type at runtime -- Dart
+    // erases it -- and so it is here (`BaselineOffset(double? offset)`:
+    // `RenderBoxContainerDefaultsMixin.defaultComputeDistanceToHighest
+    // ActualBaseline` was refused whole, and `RenderFlex`'s baseline with
+    // it, ws525).
+    if (type is ExtensionType) {
+      final erased = type.extensionTypeErasure;
+      return _type(
+        nullable
+            ? erased.withDeclaredNullability(Nullability.nullable)
+            : erased,
+      );
+    }
     if (type is InterfaceType) {
       // `dart:core`'s `Iterator` would shadow `std::iter::Iterator` in every
       // module: it is the prelude's `DartIterator`.
@@ -1205,7 +1256,7 @@ class KernelFrontend implements TypeWorld {
         return IrStaticCall(
           constantTarget.enclosingClass?.name,
           constantTarget.enclosingClass == null
-              ? constantTarget.name.text.replaceAll(RegExp(r'[|#]'), '_')
+              ? _topLevelName(constantTarget.name.text)
               : constantTarget.name.text,
           _arguments(node.arguments, constantTarget.function),
           fails: _fails(constantTarget),
@@ -5931,7 +5982,7 @@ class KernelFrontend implements TypeWorld {
       // ends, and the crate-wide "does the callee exist" check compares them.
       return IrStaticCall(
         null,
-        target.name.text.replaceAll(RegExp(r'[|#]'), '_'),
+        _topLevelName(target.name.text),
         _withGenericArgs(
           declaration,
           node.arguments,
@@ -9319,21 +9370,12 @@ class KernelFrontend implements TypeWorld {
     final functions = <IrMethod>[];
     for (final procedure in library.procedures) {
       // `BaselineOffset|+` and friends are the CFE's lowering of an extension
-      // type's members into top-level functions. They are not what upstream
-      // wrote and they are not translated as though they were.
-      // An *extension type*'s members have no representation here yet. A
-      // plain extension's do: the CFE has already lowered `extension X on T {
-      // get hinge => .. }` to a top-level function taking the receiver, and
-      // the name it gave it (`MediaQueryHinge|get#hinge`) cleans to an
-      // identifier the same way at the declaration and at every call.
-      if (procedure.name.text.contains('|') &&
-          procedure.isExtensionTypeMember) {
-        refused.add(
-          'top-level ${procedure.name.text}: '
-          'an extension-type member lowered to a function',
-        );
-        continue;
-      }
+      // type's members into top-level functions taking the representation
+      // value, exactly as a plain extension's are (`MediaQueryHinge|get#
+      // hinge`), and the extension type itself is its representation type
+      // (`_type`): translated as those are. Refused until ws525, which
+      // took `RenderBoxContainerDefaultsMixin.defaultComputeDistanceTo
+      // HighestActualBaseline` -- and every flex baseline -- with it.
       try {
         functions.add(_lowerTopLevel(procedure));
       } on Unsupported catch (error) {
@@ -9378,7 +9420,7 @@ class KernelFrontend implements TypeWorld {
   /// `set defaultLocale(..)` as a function name: `setDefaultLocale`, which
   /// `snake` spells `set_default_locale` at the declaration and every store.
   static String _topLevelSetterName(String name) {
-    final clean = name.replaceAll(RegExp(r'[|#]'), '_');
+    final clean = _topLevelName(name);
     return 'set${clean[0].toUpperCase()}${clean.substring(1)}';
   }
 
@@ -9420,7 +9462,7 @@ class KernelFrontend implements TypeWorld {
       }
       final name = node.kind == ProcedureKind.Setter && isTopLevel
           ? _topLevelSetterName(node.name.text)
-          : node.name.text.replaceAll(RegExp(r'[|#]'), '_');
+          : _topLevelName(node.name.text);
       // Into a Rust string literal that is also a format string: braces
       // doubled, quotes and backslashes escaped, one line.
       final text = reason
@@ -9499,7 +9541,7 @@ class KernelFrontend implements TypeWorld {
     // site, so the declaration and the calls spell one identifier.
     final name = node.kind == ProcedureKind.Setter
         ? _topLevelSetterName(node.name.text)
-        : node.name.text.replaceAll(RegExp(r'[|#]'), '_');
+        : _topLevelName(node.name.text);
     return IrMethod(
       name,
       [
