@@ -235,6 +235,21 @@ IrExpr coerceInto(
   if ((slot.name == 'void' || slot.name == '()') && have.name == 'Null') {
     return IrLiteral('()', const IrType('raw'))..rustType = slot;
   }
+  // Any other value into `void`: evaluated and dropped, as Dart drops it
+  // (`_paintChildWithTransform`, returning `TransformLayer?`, torn off
+  // into `pushClipRect`'s `void Function(PaintingContext, Offset)`:
+  // the adapter returned the layer where `()` went, ws538).
+  if ((slot.name == 'void' || slot.name == '()') &&
+      have.name != 'void' &&
+      have.name != '()' &&
+      have.name != 'raw' &&
+      have.name != '_' &&
+      have.name != 'Never' &&
+      !have.projected) {
+    return IrBlockValue([
+      IrExprStmt(value),
+    ], IrLiteral('()', const IrType('raw')))..rustType = slot;
+  }
   // Dart's `null` where a `dynamic` goes: the `Null` object behind a
   // handle (an omitted `Object? aspect`, a `Object? value = null`; 91
   // `None` where an `Rc<dyn Object>` went once `Object?` was `dynamic`,

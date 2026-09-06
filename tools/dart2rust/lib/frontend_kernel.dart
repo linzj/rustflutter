@@ -1675,6 +1675,12 @@ class KernelFrontend implements TypeWorld {
         if (name != null &&
             plain.contains(name) &&
             type!.nullability != Nullability.nullable) {
+          // A double as Dart spells it (`3.0`, not Rust's `3`): the
+          // prelude's `dart_double_str`.
+          if (name == 'double') {
+            return IrStaticCall(null, 'dart_double_str', [lowered])
+              ..rustType = const IrType('String');
+          }
           return lowered;
         }
         return IrStaticCall(null, 'dart_str', [lowered]);
@@ -2309,10 +2315,10 @@ class KernelFrontend implements TypeWorld {
           initial == null &&
           value is VariableGet &&
           value.variable == bound;
-      final produced = expression(value);
-      // A block is typed as its value is, where that is known: Kernel's
-      // type for the block may be wider (see the bound read above).
-      return IrBlockValue([
+      // The statements first: they declare the temporaries the value
+      // reads (a switch expression's `#0`; 420 refusals the round the
+      // value was lowered first, ws540).
+      final lowered = [
         for (final s in statements)
           if (definite &&
               s is LabeledStatement &&
@@ -2323,7 +2329,11 @@ class KernelFrontend implements TypeWorld {
             )
           else
             statement(s),
-      ], produced)..rustType = produced.rustType;
+      ];
+      final produced = expression(value);
+      // A block is typed as its value is, where that is known: Kernel's
+      // type for the block may be wider (see the bound read above).
+      return IrBlockValue(lowered, produced)..rustType = produced.rustType;
     }
 
     final previous = _cascade;
@@ -4280,7 +4290,17 @@ class KernelFrontend implements TypeWorld {
 
   IrExpr _receiver(Expression e) {
     final lowered = expression(e);
-    final static = _staticType(e);
+    var static = _staticType(e);
+    // A receiver typed by a type parameter is its bound here (`_type`
+    // says so too): `widget.duration` in `ImplicitlyAnimatedWidgetState<T
+    // extends ImplicitlyAnimatedWidget>` reads `State<T>.widget` as the
+    // `Rc<dyn StatefulWidget>` the trait returns, and is narrowed to the
+    // `ImplicitlyAnimatedWidget` this class's `T` promises (`AnimatedTheme`
+    // in `MaterialApp`, ws538).
+    var hops = 0;
+    while (static is TypeParameterType && hops++ < 8) {
+      static = static.parameter.bound;
+    }
     if (!coerceByType || static is! InterfaceType) return lowered;
     try {
       final out = coerce(lowered, _type(static));
@@ -6057,6 +6077,13 @@ class KernelFrontend implements TypeWorld {
       );
     }
     if (target.name.text == 'identical' && positional.length == 2) {
+      // `identical(x, null)` is `x == null`: the null test the value's
+      // representation answers (`IrIsNull`), not a comparison against a
+      // `None` -- an `Object?` list element is an `Rc<dyn Object>` holding
+      // the `Null` object (`_CompressedNode.put`'s `identical(keyOrNull,
+      // null)`, run538).
+      if (_isNull(positional[1])) return IrIsNull(expression(positional[0]));
+      if (_isNull(positional[0])) return IrIsNull(expression(positional[1]));
       return IrIdentical(expression(positional[0]), expression(positional[1]));
     }
     if (owner == null) {

@@ -6713,6 +6713,10 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | （ws538 前） | 同批：`_qualifiedRaw`/`_setterQualifier` 的接收者类型是类型参数时取它 bound 的类（`_classOfType`）——ws536 新增的 4 个 `to_diagnostics_node` 二义由此来（`_staticType` 改按声明读拷贝参数后，`ChildType child` 不再是 `RenderBox`）。 | |
 | ws538 | 链：**947**（−12，新 0/去 12），141。去的：persistent_hash_map 全部 7 个、4 个 `_add_diagnostics`、2 个 `hash_code`（`Object.hash` 的参数经 `DartEq::dart_hash_code`）。 | |
 | （ws539 前） | 提前看启动路径上的 stub：(1) `?..` 级联（`(child?..layout(..))?.size`）多了一层 `.flatten()`——CFE 把块值写成未提升的 `=>#t3`，块按 Kernel 的 `RenderBox?` 定型；改成 bound 读取按绑定值定型（无 `Option`）、块值按其值定型（夹具 cascade）。(2) `RenderAnimatedOpacityMixin` 的 setter `alwaysIncludeSemantics=` 丢了：空心 mixin 找回 application 里的成员时按名字去重，getter 留下把同名 setter 挡掉；改按 名字+种类。(3) `Set.addAll` 收 `impl IntoIterator`，`Set.union/intersection/difference` 收值（gallery 里所有调用都传值，原来 `&Set` 一个也对不上）。夹具 cascade 与 dart 本机一致（`7 -1 true false 2`）。 | ws539 量。 |
+| ws539 | 链：**879**（−68 对 947；新 21/去 89），142。新 21 全是"成员不见了"：`RenderViewport.new`、`_SpringSolution` 工厂、`RenderSliverHelpers._getRightWayUp`、`findFirstFocusInDirection`……拒绝数 357 → 777："unsupported synthetic variable `#0`"——块值改按其值定型时把值先于语句降低，switch 表达式的临时量还没声明就被读。 | 语句先、值后。ws540 已带此 bug 启动，杀掉重开 ws541。 |
+| ws540 | 作废（翻译带上面的顺序 bug）。 | |
+| run538 | 过了 `PersistentHashMap.put` 的第一层，停在 `_CompressedNode.put` 的 stub：`identical(keyOrNull, null)` 写成 `key_or_null == None`，而 `List<Object?>` 的元素是持 `Null` 对象的 `Rc<dyn Object>`。 | `identical(x, null)` 降成 `IrIsNull(x)`（夹具 identnull 与 dart 一致）。 |
+| （ws541 前） | 同批（都是提前看到的启动路径 stub）：`_receiver` 对类型参数类型的接收者按 bound 收窄（`ImplicitlyAnimatedWidgetState<T extends ImplicitlyAnimatedWidget>` 里 `widget.duration`）；`coerce` 把任何值进 `void` 槽改为"求值后丢弃"（`_paintChildWithTransform` 撕给 `PaintingContextCallback`）；`double` 的字符串化走 `dart_double_str`（`3.0` 不是 `3`，插值与 `join` 都走它）。夹具 voidslot 与 dart 逐字一致。 | |
 
 ## 下一步(2026-09-05 重铺)
 

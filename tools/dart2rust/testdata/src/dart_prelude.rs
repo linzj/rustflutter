@@ -4638,6 +4638,24 @@ pub fn dart_str<T: std::fmt::Debug>(value: T) -> String {
     format!("{:?}", value)
 }
 
+/// Dart's `double.toString()`: an integral value keeps its `.0`
+/// (`3.0`, where Rust's `{}` says `3`), the infinities are spelled out,
+/// and the rest is the shortest round-trip text both agree on. The
+/// render tree's `Size(800.0, 600.0)` is compared against Flutter's own
+/// dump (ws541).
+pub fn dart_double_str(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value.is_infinite() {
+        return if value > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
+    }
+    if value == value.trunc() && value.abs() < 1e21 {
+        return format!("{:.1}", value);
+    }
+    format!("{}", value)
+}
+
 /// Dart's `Symbol`: a member name as a value.
 ///
 /// `#foo` in source, and what `Invocation.memberName` carries. Compared and

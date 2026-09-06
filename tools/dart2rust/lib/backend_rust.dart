@@ -3447,6 +3447,8 @@ class RustBackend {
           ? 'dart_str(__e)'
           : element.name == 'String'
           ? '__e.clone()'
+          : element.name == 'f64'
+          ? 'dart_double_str(*__e)'
           : plain.contains(element.name)
           ? '__e.to_string()'
           : 'dart_str(__e)';
@@ -6943,6 +6945,7 @@ class RustBackend {
     'dart_call_function',
     'dart_function_same',
     'dart_from_dynamic',
+    'dart_double_str',
     'vec_of_nulls',
     'dart_native',
     'dart_native_as',
