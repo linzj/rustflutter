@@ -3120,8 +3120,11 @@ class RustBackend {
     // a `Set`, whose static owner is `Iterable` (ws496) -- the prelude's
     // `to_list()`. Its `growable` is dropped either way.
     if (name == 'to_list') {
-      final held = target?.rustType?.name;
-      return held == null || held == 'Vec' || held == 'List'
+      // ..by what the receiver's type spells: an `Iterable` -- a map's
+      // `values`, a `reversed` -- is a `Vec` here too (ws497).
+      final held = target?.rustType;
+      final spelled = held == null ? null : type(held);
+      return spelled == null || spelled.startsWith('Vec<')
           ? '$receiver.clone()'
           : '$receiver.to_list()';
     }
