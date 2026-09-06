@@ -1443,7 +1443,31 @@ class RustBackend {
   /// parameter, nullable -- has no `CastErased` of its own: the value
   /// comes back as the `Option<T>` and goes out through `from_option`,
   /// as any projected value does (`find<T>()` returning `T?`, ws496).
-  String _erasedCast(IrType resultType, String call) {
+  /// A class's method by name, this class's or one of its ancestors'.
+  IrMethod? _methodOf(String? className, String name) {
+    var c = className == null ? null : library[className];
+    while (c != null) {
+      final own = [
+        ...c.methods,
+        ...c.abstractMethods,
+      ].where((m) => m.name == name && !m.isStatic).firstOrNull;
+      if (own != null) return own;
+      c = c.superclass == null ? null : library[c.superclass!];
+    }
+    return null;
+  }
+
+  String _erasedCast(IrType resultType, String call, {IrMethod? method}) {
+    // A twin whose return does not mention the method's own parameters
+    // (`getElementForInheritedWidgetOfExactType<T>` returns an
+    // `InheritedElement?`) hands back the declared type already: no cast
+    // (`CastErased<Option<Rc<dyn InheritedElement>>>` asked of itself,
+    // ws503).
+    if (method != null &&
+        type(_substituteType(method.returnType, _erasure(method))) ==
+            type(method.returnType)) {
+      return call;
+    }
     if (resultType.projected && resultType.nullable) {
       final inner = type(
         IrType(resultType.name, arguments: resultType.arguments),
@@ -2631,6 +2655,27 @@ class RustBackend {
           'dart_is_kind(&${expr(operand)}, &[${kinds.map((k) => '"$k"').join(', ')}])';
       return negated ? '!$test' : test;
     }
+    // `x is Uint8List`: the typed lists are `Vec`s of their element here
+    // (the front end's `_narrowElement`), asked of `Any` exactly
+    // (`StandardMessageCodec.writeValue`, run504).
+    const typedData = {
+      'Float32List': 'Vec<f32>',
+      'Float64List': 'Vec<f64>',
+      'Int8List': 'Vec<i8>',
+      'Int16List': 'Vec<i16>',
+      'Int32List': 'Vec<i32>',
+      'Int64List': 'Vec<i64>',
+      'Uint8List': 'Vec<u8>',
+      'Uint8ClampedList': 'Vec<u8>',
+      'Uint16List': 'Vec<u16>',
+      'Uint32List': 'Vec<u32>',
+      'Uint64List': 'Vec<u64>',
+    };
+    final typed = typedData[name];
+    if (typed != null && library[name] == null) {
+      return '${expr(operand)}.as_any().downcast_ref::<$typed>()'
+          '.${negated ? "is_none" : "is_some"}()';
+    }
     // A prelude class answers `is` through `Any` like a translated one:
     // every `'static` type is an `Object` there (`is StateError` in
     // `BindingBase._initListenable`, run433).
@@ -3281,6 +3326,7 @@ class RustBackend {
             resultType,
             '<$selfType as $through${_traitArgsOf(through)}>::${_identifier(name)}__erased'
             '(&*$_selfName${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate',
+            method: _methodOf(through, name),
           );
         }
         return _asyncValue(
@@ -3318,6 +3364,7 @@ class RustBackend {
           resultType,
           '$path::${_identifier(name)}__erased'
           '($through${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate',
+          method: _methodOf(qualifier, name),
         );
       }
       return _asyncValue(
@@ -3365,6 +3412,7 @@ class RustBackend {
         resultType,
         '$receiver.${_identifier(name)}__erased'
         '(${args.map(expr).join(', ')})$_propagate',
+        method: _methodOf(receiverClass ?? cls.name, name),
       );
     }
     if (Platform.environment['DART2RUST_TRACE_BACKEND'] == name) {

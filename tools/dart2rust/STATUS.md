@@ -6645,6 +6645,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run502 | 停在 `_update_user_settings_data` 的桩：**`Rc` 被 `==` 移走**——探针证实两个 `Rc<dyn Object>` 的裸 `==` 会 move 右操作数（`&a == &b` 不会）。 | `dynamic`/`Object` 也算 object-like：`==` 走 `dart_eq(&..)`（`DartEq for dyn Object` 就是按值比较）。 |
 | ws503 | 链：**1249**（−93；比 ws497 的 1300 **少 51**：新 8/去 45），141。`Object?` 即 `dynamic` 这一族到此收口。 | |
 | run503 | 同 run502（`==` 移走 `Rc`，修在 9c5afebb，ws503 没带上）。ws503 剩的 8 个新桩里：宿主自己的 `plugin_reply` 也被桩了——codec 的 `Object?` 结果成了 `dynamic`，宿主还传 `Option`；`return (false, null)` 的 record 字段在非翻译槽位下没 coerce；`AssertionError.message`（prelude）还是 `Option`；`errorMessage as String?` 把 `dynamic` 当 `Option` map；`Localizations.of` 的 `?.` 结果被投影包了两层（`resourcesFor<T?>` 的实参是可空的 `T?`，返回的是裸 `Option<T>`，不是 `Or`）。 | 宿主传 `Null` 对象；record 字段一律按翻译槽位 coerce；`AssertionError.message` 改 `Rc<dyn Object>`；`as Foo?` 的操作数按记录类型是 `dynamic` 时走 `!as_opt`；泛型调用的 `T?` 只在实参是本声明的**裸**参数时记为投影。 |
+| ws504 | 链：**1240**（−9；比 1300 少 60：新 2/去 48），141。 | |
+| run504 | **过了 `_update_user_settings_data`**（宿主的 `announce_view` 走通）；停在 `StandardMessageCodec.writeValue` 的拒绝：`value is Uint8List`——`is` 只认翻译类和 List/Map/Set 一族，typed_data 的类没在表里。 | typed_data 的类进 `is` 的表（`Uint8List` 即 `Vec<u8>`，按 `_narrowElement` 的元素型）。同批：`??` 右臂是闭包时装箱（`WidgetsApp.build`）；孪生返回不含方法自己参数时不 cast（`initState` 的 `getElementForInheritedWidgetOfExactType`）；`Queue.add` 等进 prelude 的 `DartQueue`；闭包声明的类型参数（`FunctionExpression`）也擦成界（`_buildWidgetApp` 的 `MaterialPageRoute<T>`）；prelude `AssertionError.message` 改 `dynamic`。 |
 
 ## 下一步(2026-09-05 重铺)
 

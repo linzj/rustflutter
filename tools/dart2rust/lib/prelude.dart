@@ -1888,13 +1888,49 @@ pub trait DartQueue<T> {
     fn remove_last(&mut self) -> T;
     fn add_first(&mut self, value: T);
     fn add_last(&mut self, value: T);
+    /// `queue.add(x)`: at the end (`Navigator`'s `_observedRouteAdditions`, ws503).
+    fn add(&mut self, value: T);
     /// `queue.addAll(iterable)`: at the end, in order (`_pendingPointerEvents`, run459).
     fn add_all(&mut self, values: Vec<T>);
+    fn is_empty(&self) -> bool;
+    fn is_not_empty(&self) -> bool;
+    fn clear(&mut self);
+}
+
+/// `first`, `last`, `toList()` on a `Queue`: copies, so `T: Clone`.
+pub trait DartQueueRead<T> {
+    fn first(&self) -> T;
+    fn last(&self) -> T;
+    fn to_list(&self) -> Vec<T>;
+}
+
+impl<T: Clone> DartQueueRead<T> for std::collections::VecDeque<T> {
+    fn first(&self) -> T {
+        self.front().cloned().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    }
+    fn last(&self) -> T {
+        self.back().cloned().unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    }
+    fn to_list(&self) -> Vec<T> {
+        self.iter().cloned().collect()
+    }
 }
 
 impl<T> DartQueue<T> for std::collections::VecDeque<T> {
     fn length(&self) -> i64 {
         self.len() as i64
+    }
+    fn add(&mut self, value: T) {
+        self.push_back(value)
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn is_not_empty(&self) -> bool {
+        self.len() != 0
+    }
+    fn clear(&mut self) {
+        std::collections::VecDeque::clear(self)
     }
     fn remove_first(&mut self) -> T {
         self.pop_front().expect("removeFirst on an empty Queue")

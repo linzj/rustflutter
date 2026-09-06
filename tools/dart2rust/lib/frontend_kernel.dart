@@ -3287,6 +3287,14 @@ class KernelFrontend implements TypeWorld {
               ? IrUpcast(widened.target!, _type(into))
               : widened;
         }
+        // A closure as the right arm of a function-typed `??` is boxed:
+        // the left arm is the `Rc<dyn Fn>` the slot holds, and a `match`
+        // arm does not coerce (`onNavigationNotification ??
+        // _defaultOnNavigationNotification`, `WidgetsApp.build`, ws503).
+        if (rightSide is IrClosure &&
+            (leftType is FunctionType || rightType is FunctionType)) {
+          rightSide.boxed = true;
+        }
         // `x ?? y` on a `dynamic` (an `Object?`, ws502): its null is the
         // `Null` object, asked by the prelude; and whether the result is
         // still an `Option` is the *Rust* type's answer -- a `dynamic`
@@ -7804,7 +7812,14 @@ class KernelFrontend implements TypeWorld {
     // *type* is instantiated at its bounds (`_type`) -- `<T extends
     // Object?>(settings, builder) => MaterialPageRoute<T>(..)` handed to
     // `WidgetsApp.pageRouteBuilder` named a `T` nothing declared (ws485).
+    // ..declared by the closure itself in this Kernel (`FunctionExpression`,
+    // `FunctionDeclaration`), or by its function node in another
+    // (`pageRouteBuilder: <T>(..) => MaterialPageRoute<T>(..)` spelled a
+    // `T` in `_MaterialAppState._buildWidgetApp`, ws503).
     final generic = p.declaration as TreeNode?;
+    if (generic is FunctionExpression || generic is FunctionDeclaration) {
+      return true;
+    }
     if (generic is FunctionNode && generic.parent is! Member) return true;
     if (decl is! Class) return false;
     return _erasedCache.putIfAbsent(p, () {

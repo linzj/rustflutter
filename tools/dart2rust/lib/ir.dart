@@ -488,7 +488,8 @@ class IrClosure extends IrExpr {
 
   /// Whether this closure goes to a parameter that keeps it, and so has to be
   /// boxed at the call site to match the owned parameter.
-  final bool boxed;
+  /// ..settable: a `??` arm boxes the closure it lowered (see `_ifNull`).
+  bool boxed;
 
   /// Whether this closure keeps a counted handle to `this`.
   ///
