@@ -5685,6 +5685,44 @@ impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
     }
 }
 
+/// `m.cast<K2, V2>()` / `xs.cast<T2>()`: a copy with each element
+/// converted (`FromDynamic`), which is the representation change Dart's
+/// `cast` does not need and this one does.
+impl<K: Clone + 'static, V: Clone + 'static> Map<K, V> {
+    pub fn cast_to<K2: FromDynamic + DartEq, V2: FromDynamic>(&self) -> Map<K2, V2> {
+        let mut out: Map<K2, V2> = Map::new();
+        for (k, v) in self.entries.iter() {
+            let key: std::rc::Rc<dyn Object> = std::rc::Rc::new(k.clone());
+            let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
+            match (K2::from_dynamic(&key), V2::from_dynamic(&value)) {
+                (Some(k2), Some(v2)) => {
+                    out.insert(k2, v2);
+                }
+                _ => erased_cast_failed(&value),
+            }
+        }
+        out
+    }
+}
+
+pub trait DartListCast {
+    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2>;
+}
+
+impl<T: Clone + 'static> DartListCast for Vec<T> {
+    fn cast_to<T2: FromDynamic>(&self) -> Vec<T2> {
+        self.iter()
+            .map(|v| {
+                let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
+                match T2::from_dynamic(&value) {
+                    Some(t) => t,
+                    None => erased_cast_failed(&value),
+                }
+            })
+            .collect()
+    }
+}
+
 /// `x as List<T>` on an object: the list as it is when it is one of `T`,
 /// else each element of a `List<dynamic>` / `List<Object?>` converted.
 pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option<Vec<T>> {

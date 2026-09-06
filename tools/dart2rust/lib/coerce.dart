@@ -454,6 +454,13 @@ IrExpr coerceInto(
       slot.name == 'Map' &&
       have.arguments.length == 2 &&
       slot.arguments.length == 2) {
+    // An empty literal holds whatever the slot holds, as a list's does:
+    // `Map<SlotType, ChildType> _slotToChild = {}` copied into a class
+    // with the mixin's `ChildType` erased (ws490).
+    if (value is IrMapLiteral && value.entries.isEmpty) {
+      return IrMapLiteral(const [], slot.arguments[0], slot.arguments[1])
+        ..rustType = slot;
+    }
     final k = IrLocal('k')..rustType = have.arguments[0];
     final v = IrLocal('v')..rustType = have.arguments[1];
     final kb = coerceInto(k, slot.arguments[0], world, inClosure: true);

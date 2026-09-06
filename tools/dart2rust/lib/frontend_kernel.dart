@@ -421,6 +421,10 @@ class KernelFrontend implements TypeWorld {
 
   void _enter(Member member) {
     _member = member;
+    // Per member: a copy lowered twice (into the mixin's trait under the
+    // declaration's types, into the applying struct under its own) kept
+    // the first lowering's parameter types for the second (ws491).
+    _declaredParamTypes.clear();
     // A slot's expected return is consumed by the body it was set for; a
     // refusal before that left it for the next member (`RxStatus.loading`
     // returned `()`, ws478).
@@ -4196,6 +4200,14 @@ class KernelFrontend implements TypeWorld {
           args,
         );
       }
+      if (name == 'cast' && args.isEmpty && node.arguments.types.length == 1) {
+        return IrCall(
+          _receiver(node.receiver),
+          'cast_to',
+          const [],
+          typeArguments: [_type(node.arguments.types.single)],
+        );
+      }
       final rust = listMethodNames[name];
       if (rust != null) {
         // An element handed to `remove`/`indexOf`: into the element type,
@@ -4284,6 +4296,18 @@ class KernelFrontend implements TypeWorld {
           _sample(node),
         );
       }
+      // `m.cast<K2, V2>()`: the prelude's `cast_to`, converting element
+      // representations (`FromDynamic`), as `as Map<K2, V2>` does. TFA had
+      // devirtualised it onto a `CanonicalizedMap` (`invokeMapMethod`,
+      // run491).
+      if (name == 'cast' && args.isEmpty && node.arguments.types.length == 2) {
+        return IrCall(
+          _receiver(node.receiver),
+          'cast_to',
+          const [],
+          typeArguments: [for (final t in node.arguments.types) _type(t)],
+        );
+      }
       final rust = mapMethodNames[name];
       if (rust == null) throw Unsupported('`Map.$name`', _sample(node));
       // `Map<int, _>.containsKey(tone)` with a `double`: Dart's `3.0 == 3`
@@ -4301,6 +4325,14 @@ class KernelFrontend implements TypeWorld {
             argType.classNode.name == 'double') {
           return IrCall(_receiver(node.receiver), rust, [
             IrCast(args.single, 'i64'),
+          ]);
+        }
+        // ..and into the map's key type by the one rule, as `m[k]` is: a
+        // `String` into a `Map<Object?, ..>.containsKey` goes behind a
+        // handle (`decodeMethodCall`, ws491).
+        if (key != null) {
+          return IrCall(_receiver(node.receiver), rust, [
+            _widened(node.arguments.positional.single, key, args.single),
           ]);
         }
       }
@@ -5943,6 +5975,63 @@ class KernelFrontend implements TypeWorld {
     return original is Procedure ? original.function : m.function!;
   }
 
+  /// A type of a copy in `application`, with the arguments the application
+  /// put in for `mixin`'s parameters taken back out: `Slot` where the
+  /// application implements `SlottedContainer<Slot, RenderBox>` reads as
+  /// `SlotType` again. An argument that is an erased parameter's is left:
+  /// erased, it is the bound everywhere. Structural, so an argument that
+  /// also occurs on its own in the type is taken for the parameter too --
+  /// the copy is the CFE's substitution, and this is its inverse.
+  DartType _unapplied(DartType t, Class application, Class mixin) {
+    Supertype? applied;
+    if (application.mixedInType?.classNode == mixin) {
+      applied = application.mixedInType;
+    } else {
+      for (final st in application.implementedTypes) {
+        if (st.classNode == mixin) applied = st;
+      }
+    }
+    if (applied == null) return t;
+    final back = <DartType, TypeParameter>{};
+    for (var i = 0; i < mixin.typeParameters.length; i++) {
+      if (i >= applied.typeArguments.length) break;
+      final p = mixin.typeParameters[i];
+      if (_erasedParameter(p)) continue;
+      final a = applied.typeArguments[i].withDeclaredNullability(
+        Nullability.nonNullable,
+      );
+      if (a is TypeParameterType && a.parameter == p) continue;
+      back[a] = p;
+    }
+    if (back.isEmpty) return t;
+    DartType walk(DartType x) {
+      final bare = x.withDeclaredNullability(Nullability.nonNullable);
+      final p = back[bare];
+      if (p != null) return TypeParameterType(p, x.nullability);
+      if (x is InterfaceType) {
+        return InterfaceType(x.classNode, x.nullability, [
+          for (final a in x.typeArguments) walk(a),
+        ]);
+      }
+      if (x is FunctionType) {
+        return FunctionType(
+          [for (final a in x.positionalParameters) walk(a)],
+          walk(x.returnType),
+          x.nullability,
+          namedParameters: [
+            for (final n in x.namedParameters)
+              NamedType(n.name, walk(n.type), isRequired: n.isRequired),
+          ],
+          typeParameters: x.typeParameters,
+          requiredParameterCount: x.requiredParameterCount,
+        );
+      }
+      return x;
+    }
+
+    return walk(t);
+  }
+
   /// A declared type of `owner`'s (a mixin's) with `owner`'s parameters
   /// substituted by the class being lowered's arguments for them.
   DartType _asApplied(DartType declared, Class? owner) {
@@ -5957,6 +6046,16 @@ class KernelFrontend implements TypeWorld {
     final kept = _keptFor(owner, thisType);
     if (kept.isEmpty) return declared;
     return Substitution.fromMap(kept).substituteType(declared);
+  }
+
+  /// A field's type as this class holds it: a copy's by the mixin's
+  /// declaration with this class's arguments put in (`_asApplied`), its
+  /// own otherwise. The same answer for the declaration and for the
+  /// initialiser the CFE moved into the application's constructor.
+  DartType _fieldTypeHere(Field field) {
+    final declared = _declaredFieldType(field);
+    if (declared == null) return field.type;
+    return _asApplied(declared, _originalOf(field).enclosingClass);
   }
 
   /// The type a copy's field is declared with (see `_originalOf`), or
@@ -6931,9 +7030,10 @@ class KernelFrontend implements TypeWorld {
     }
 
     if (constant is ListConstant) {
+      final elementType = _type(constant.typeArgument);
       return IrListLiteral([
         for (final e in constant.entries) element(e, constant.typeArgument),
-      ], _type(constant.typeArgument));
+      ], elementType)..rustType = IrType('List', arguments: [elementType]);
     }
     if (constant is SetConstant) {
       // A const set: the prelude's `Set::from(vec![..])`, which is what a
@@ -6955,6 +7055,10 @@ class KernelFrontend implements TypeWorld {
         return _widened(value, into, _constant(c, node));
       }
 
+      // Typed, so a slot of other element types adapts it: an empty
+      // `const {}` into a copy's erased field (ws490).
+      final keyType = _type(constant.keyType);
+      final valueType = _type(constant.valueType);
       return IrMapLiteral(
         [
           for (final e in constant.entries)
@@ -6963,9 +7067,9 @@ class KernelFrontend implements TypeWorld {
               entry(e.value, constant.valueType),
             ),
         ],
-        _type(constant.keyType),
-        _type(constant.valueType),
-      );
+        keyType,
+        valueType,
+      )..rustType = IrType('Map', arguments: [keyType, valueType]);
     }
     if (constant is StaticTearOffConstant) {
       // A top-level or static function used as a value. Rust names the
@@ -7295,6 +7399,54 @@ class KernelFrontend implements TypeWorld {
   /// backend (`dart_cast_any`).
   IrExpr _isExpression(IsExpression node) {
     final asked = node.type;
+    // A literal's runtime type is its static type: `<int?>[] is List<int>`
+    // (provider's sound-mode probe) is Dart's subtyping, decided here.
+    final operand = node.operand;
+    // ..or the CFE's spelling of one, `_GrowableList<int?>(0)`: a
+    // `dart:core` factory whose class is an implementation's.
+    final coreFactory =
+        operand is StaticInvocation &&
+        operand.target.enclosingLibrary.importUri.toString() == 'dart:core' &&
+        (operand.target.enclosingClass?.name.startsWith('_') ?? false);
+    final literal =
+        operand is ListLiteral ||
+        operand is MapLiteral ||
+        operand is SetLiteral ||
+        coreFactory ||
+        (operand is ConstantExpression &&
+            (operand.constant is ListConstant ||
+                operand.constant is MapConstant ||
+                operand.constant is SetConstant));
+    final env = typeEnvironment;
+    if (literal && env != null && asked is InterfaceType) {
+      final core = env.coreTypes;
+      final DartType? on = switch (operand) {
+        ListLiteral(:final typeArgument) => InterfaceType(
+          core.listClass,
+          Nullability.nonNullable,
+          [typeArgument],
+        ),
+        SetLiteral(:final typeArgument) => InterfaceType(
+          core.setClass,
+          Nullability.nonNullable,
+          [typeArgument],
+        ),
+        MapLiteral(:final keyType, :final valueType) => InterfaceType(
+          core.mapClass,
+          Nullability.nonNullable,
+          [keyType, valueType],
+        ),
+        ConstantExpression(:final type) => type,
+        StaticInvocation() => _staticType(operand),
+        _ => null,
+      };
+      if (on is InterfaceType) {
+        return IrLiteral(
+          env.isSubtypeOf(on, asked) ? 'true' : 'false',
+          const IrType('bool'),
+        );
+      }
+    }
     if (asked is TypeParameterType && !_erasedParameter(asked.parameter)) {
       final on = _staticType(node.operand);
       if (on is TypeParameterType && on.parameter == asked.parameter) {
@@ -8941,7 +9093,14 @@ class KernelFrontend implements TypeWorld {
             continue;
           }
           try {
-            _lowerProcedure(cls, p);
+            // Typed by the mixin, with the application's arguments taken
+            // back out (`_unapplied`): the trait's `SlotType`, not the
+            // `Slot` this application put in (ws490).
+            _lowerProcedure(
+              cls,
+              p,
+              retype: (t) => _unapplied(t, application, node),
+            );
           } on Unsupported catch (error, stack) {
             refuse(p.name.text, error, stack);
           }
@@ -9050,10 +9209,7 @@ class KernelFrontend implements TypeWorld {
     // kept `LayoutInfoType` is the `BoxConstraints` the application
     // put in (get's `Value<T>._value`: held as `Option<T>` while read and
     // written as the edge's `Or`, run486).
-    final original = _originalOf(field);
-    final type = declaredType != null && !identical(original, field)
-        ? _asApplied(declaredType, original.enclosingClass)
-        : field.type;
+    final type = declaredType != null ? _fieldTypeHere(field) : field.type;
     IrType fieldIrType() => _edgeType(type);
     // An enum's own members are its variants and the CFE's bookkeeping; neither
     // becomes a field or a constant on the Rust side.
@@ -9080,6 +9236,13 @@ class KernelFrontend implements TypeWorld {
     } else {
       if (_inspectorOnly(name, type)) return;
       final initial = field.initializer;
+      if (Platform.environment['DART2RUST_TRACE_FIELD'] == name &&
+          initial != null) {
+        final lowered = expression(initial);
+        stderr.writeln(
+          'TRACE_FIELD $name: initial=${initial.runtimeType} lowered=${lowered.runtimeType} type=${lowered.rustType} slot=$type translated=$_slotTranslated coerceByType=$coerceByType',
+        );
+      }
       cls.fields.add(
         IrFieldDecl(
           name,
@@ -9152,15 +9315,15 @@ class KernelFrontend implements TypeWorld {
                 // Into the field's type, as a written initialiser is
                 // (`_frameTimelineTask: TimelineTask? = TimelineTask()`
                 // needed its `Some`, run433).
+                // ..the field's type as this class holds it: a copy's
+                // erased `Map<SlotType, ChildType>` takes the `const {}`
+                // retyped (ws490).
+                final movedType = _fieldTypeHere(moved.field);
                 inits.putIfAbsent(
                   moved.field.name.text,
                   () => _acrossEdge(
-                    _widened(
-                      moved.value,
-                      moved.field.type,
-                      expression(moved.value),
-                    ),
-                    moved.field.type,
+                    _widened(moved.value, movedType, expression(moved.value)),
+                    movedType,
                     toOption: false,
                   ),
                 );
@@ -9290,8 +9453,27 @@ class KernelFrontend implements TypeWorld {
     );
   }
 
-  void _lowerProcedure(IrClass cls, Procedure node, {Procedure? signature}) {
+  void _lowerProcedure(
+    IrClass cls,
+    Procedure node, {
+    Procedure? signature,
+    DartType Function(DartType)? retype,
+  }) {
     _enter(node);
+    // A copy with no declaration left to take a signature from: each of
+    // its types re-typed (`retype`, the application's arguments taken out).
+    if (signature == null && retype != null) {
+      final own = node.function;
+      for (final p in own.positionalParameters) {
+        final t = retype(p.type);
+        if (t != p.type) _declaredParamTypes[p] = t;
+      }
+      for (final p in own.namedParameters) {
+        final t = retype(p.type);
+        if (t != p.type) _declaredParamTypes[p] = t;
+      }
+      if (!node.isAbstract) _expectedReturn = retype(own.returnType);
+    }
     // The declared signature's types for the body's parameters (see the
     // mixin lowering): a read of one is typed by the declaration.
     if (signature != null) {
@@ -9397,7 +9579,14 @@ class KernelFrontend implements TypeWorld {
       name,
       params,
       signature == null
-          ? _edgeReturnType(node.function)
+          ? (retype == null
+                ? _edgeReturnType(node.function)
+                : (() {
+                    final r = retype(node.function.returnType);
+                    return r is NeverType
+                        ? const IrType('Never')
+                        : _edgeType(r);
+                  })())
           : (() {
               final r = _asApplied(
                 signature.function.returnType,
