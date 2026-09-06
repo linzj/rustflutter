@@ -187,7 +187,7 @@ def write_workspace(src, out, mods, crate_of, graph):
             entry = m
             break
     if entry is not None:
-        members = members + ['dart_main']
+        members = members + ['dart_runtime', 'dart_main']
     io.open(os.path.join(out, 'Cargo.toml'), 'w', encoding='utf-8').write(
         # `panic = "abort"`: nothing translated catches a Rust panic (a Dart
         # throw is a `Result`; a panic is a stub or a refusal), and the
@@ -234,18 +234,35 @@ def write_workspace(src, out, mods, crate_of, graph):
             text = path_re.sub(rewrite, text)
             io.open(os.path.join(d, m + '.rs'), 'w', encoding='utf-8').write(text)
     if entry is not None:
+        # The runtime's own crate (`tools/dart2rust/runtime/`, hand-written):
+        # the headless engine that answers the native boundary. Its source
+        # is copied in; its manifest and the name of the crate holding
+        # `dart:ui` are written here, since the partition decides that name.
+        ui_owner = crate_of.get('dart_ui')
+        r = os.path.join(out, 'dart_runtime', 'src')
+        os.makedirs(r, exist_ok=True)
+        shutil.copy(os.path.join(TOOL, 'runtime', 'src', 'lib.rs'), os.path.join(r, 'lib.rs'))
+        io.open(os.path.join(r, 'generated.rs'), 'w', encoding='utf-8').write(
+            '// Written by bin/workspace.py: where `dart:ui` was translated to.\n'
+            + ('pub use %s::dart_ui;\n' % ui_owner if ui_owner else 'pub mod dart_ui {}\n'))
+        io.open(os.path.join(out, 'dart_runtime', 'Cargo.toml'), 'w', encoding='utf-8').write(
+            '[package]\nname = "dart_runtime"\nversion = "0.0.0"\nedition = "2021"\n\n'
+            '[lib]\npath = "src/lib.rs"\n\n'
+            '[dependencies]\ndart_prelude = { path = "../dart_prelude" }\n%s'
+            % ('%s = { path = "../%s" }\n' % (ui_owner, ui_owner) if ui_owner else ''))
         d = os.path.join(out, 'dart_main', 'src')
         os.makedirs(d, exist_ok=True)
         owner = crate_of[entry]
         io.open(os.path.join(out, 'dart_main', 'Cargo.toml'), 'w', encoding='utf-8').write(
             '[package]\nname = "dart_main"\nversion = "0.0.0"\nedition = "2021"\n\n'
             '[[bin]]\nname = "dart_main"\npath = "src/main.rs"\n\n'
-            '[dependencies]\ndart_prelude = { path = "../dart_prelude" }\n%s = { path = "../%s" }\n'
+            '[dependencies]\ndart_prelude = { path = "../dart_prelude" }\ndart_runtime = { path = "../dart_runtime" }\n%s = { path = "../%s" }\n'
             % (owner, owner))
         io.open(os.path.join(d, 'main.rs'), 'w', encoding='utf-8').write(
             '#![allow(warnings)]\n'
-            '// The translated program\'s entry, run under the prelude\'s scheduler.\n'
-            'fn main() {\n    dart_prelude::run_main(%s::%s::main());\n}\n' % (owner, entry))
+            '// The translated program\'s entry, run under the prelude\'s scheduler\n'
+            '// with the runtime\'s headless engine installed.\n'
+            'fn main() {\n    dart_runtime::install();\n    dart_prelude::run_main(%s::%s::main());\n    dart_runtime::report();\n}\n' % (owner, entry))
 
 
 def main():

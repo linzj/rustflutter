@@ -60,12 +60,37 @@ pub trait Object {
     fn runtime_type(&self) -> Type;
 }
 
-/// A `dyn Object` compares by identity and prints as its class, as a
-/// translated trait object does (see `_emitTrait`).
+/// A `dyn Object` prints as its class, as a translated trait object does
+/// (see `_emitTrait`), and compares as Dart's `Object.==` does on what it
+/// holds: a primitive by value (`'dark' == data['platformBrightness']`
+/// in a pattern switch, run472), anything else by identity. A translated
+/// class's own `operator ==` is not reached from here: the `Object`
+/// impl is blanket, so it cannot dispatch to one class's `DartEq`.
 impl PartialEq for dyn Object {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::addr_eq(self, other)
+        object_eq(self, other)
     }
+}
+
+/// Dart's `Object.==` on two values whose classes are not known.
+pub fn object_eq(a: &dyn Object, b: &dyn Object) -> bool {
+    fn same<T: PartialEq + 'static>(a: &dyn Object, b: &dyn Object) -> Option<bool> {
+        match (
+            a.as_any().downcast_ref::<T>(),
+            b.as_any().downcast_ref::<T>(),
+        ) {
+            (Some(x), Some(y)) => Some(x == y),
+            (Some(_), None) | (None, Some(_)) => Some(false),
+            (None, None) => None,
+        }
+    }
+    same::<String>(a, b)
+        .or_else(|| same::<i64>(a, b))
+        .or_else(|| same::<f64>(a, b))
+        .or_else(|| same::<bool>(a, b))
+        .or_else(|| same::<()>(a, b))
+        .or_else(|| same::<Null>(a, b))
+        .unwrap_or_else(|| std::ptr::addr_eq(a, b))
 }
 
 impl fmt::Debug for dyn Object {
@@ -2615,10 +2640,12 @@ impl<T: Clone> Expando<T> {
 /// nothing (counted, so a headless run can say how many it skipped), and
 /// one that returns a value has nothing to return and panics naming
 /// itself: that is where the headless ruler ends and the runtime begins.
+/// `Ok(None)` from a host means "not mine": the absent engine's answer
+/// stands, recorded as without a host.
 pub type NativeHost = dyn Fn(
     &str,
     Vec<std::rc::Rc<dyn Object>>,
-) -> Result<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>;
+) -> Result<Option<std::rc::Rc<dyn Object>>, std::rc::Rc<dyn Object>>;
 
 thread_local! {
     static NATIVE_HOST: std::cell::RefCell<Option<Box<NativeHost>>> = std::cell::RefCell::new(None);
@@ -2641,8 +2668,10 @@ pub fn dart_native(
     returns: bool,
 ) -> Result<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>> {
     let answered = NATIVE_HOST.with(|h| h.borrow().as_ref().map(|host| host(&symbol, args)));
-    if let Some(result) = answered {
-        return result;
+    match answered {
+        Some(Ok(Some(answer))) => return Ok(answer),
+        Some(Err(error)) => return Err(error),
+        _ => {}
     }
     // No host: a void native is skipped, and one that returns a value is
     // answered with Dart's null -- what an engine that is not there
@@ -2729,8 +2758,10 @@ pub fn dart_native_as<T: NativeAnswer>(
     args: Vec<std::rc::Rc<dyn Object>>,
 ) -> Result<T, std::rc::Rc<dyn Object>> {
     let answered = NATIVE_HOST.with(|h| h.borrow().as_ref().map(|host| host(&symbol, args)));
-    if let Some(result) = answered {
-        return result.map(|answer| T::from_answer(answer, &symbol));
+    match answered {
+        Some(Ok(Some(answer))) => return Ok(T::from_answer(answer, &symbol)),
+        Some(Err(error)) => return Err(error),
+        _ => {}
     }
     NATIVES_UNANSWERED.with(|s| {
         let mut s = s.borrow_mut();

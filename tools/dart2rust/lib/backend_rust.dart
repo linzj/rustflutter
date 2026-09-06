@@ -570,10 +570,14 @@ class RustBackend {
         name,
         isEnumValue,
       ),
+      // A comparison has no expected type: an operand shared into
+      // `Object` for it says so (`Some(Rc::new("dark"))` against an
+      // `Option<Rc<dyn Object>>` scrutinee in a pattern switch was an
+      // `Option<Rc<String>>`, `_updateUserSettingsData`, run472).
       IrBinary(:final op, :final left, :final right, :final type) => _binary(
         op,
-        op == '==' || op == '!=' ? _plain(left) : left,
-        op == '==' || op == '!=' ? _plain(right) : right,
+        op == '==' || op == '!=' ? _explicitUpcast(_plain(left)) : left,
+        op == '==' || op == '!=' ? _explicitUpcast(_plain(right)) : right,
         type,
       ),
       IrUnary(:final op, :final operand) => '($op${expr(operand)})',
@@ -2305,6 +2309,14 @@ class RustBackend {
       'bool': ['bool'],
       'String': ['String'],
     };
+    // `is Object` holds of every value but null, `is Object?` of every
+    // value: the pattern `final Object? value` a switch's last case
+    // binds is lowered to one (`_updateUserSettingsData`, run472).
+    if (name == 'Object' || name == 'dynamic') {
+      final always = target.nullable || operand.rustType?.nullable != true;
+      if (always) return negated ? 'false' : 'true';
+      return '${expr(operand)}.${negated ? "is_none" : "is_some"}()';
+    }
     if (scalars.containsKey(name)) {
       final tests = scalars[name]!
           .map(
