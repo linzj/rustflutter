@@ -1577,6 +1577,13 @@ class RustBackend {
   /// a `Vec<T?>` or a generic accessor) where an `Option` operation --
   /// `!`, `== null`, `?.`, `??`, `==` -- wants the `Option<T>` a body works
   /// with: the prelude's conversion first.
+  /// `.flatten()` after a map lookup whose value type is itself nullable.
+  String _flattenedValue(IrExpr? map) {
+    final t = map?.rustType;
+    if (t == null || t.arguments.length != 2) return '';
+    return t.arguments[1].nullable ? '.flatten()' : '';
+  }
+
   IrExpr _plain(IrExpr e) {
     final t = e.rustType;
     if (t == null || !t.projected) return e;
@@ -2720,8 +2727,12 @@ class RustBackend {
     if (name == '!expando_get' && args.length == 1) {
       return '$receiver.get(&${_borrowed(args.single)})';
     }
+    // `m[k]` is a `V?`, and Dart's `V?` of a nullable `V` is `V` itself:
+    // `data['platformBrightness']` on a `Map<String, Object?>` is an
+    // `Object?`, not an `Option<Option<..>>` (`_updateUserSettingsData`,
+    // ws472).
     if (name == '!map_get' && args.length == 1) {
-      return '$receiver.get(&${_borrowed(args.single)}).cloned()';
+      return '$receiver.get(&${_borrowed(args.single)}).cloned()${_flattenedValue(target)}';
     }
     // `_views[_implicitViewId]` with an `int?` key: Dart looks up `null`
     // and finds nothing; here the absent key is the absent value.
@@ -2729,7 +2740,7 @@ class RustBackend {
     // `?` in a literal's constructor) has no `Result` to leave through
     // inside an `and_then` returning `Option` (30 E0277 at ws441).
     if (name == '!map_get_opt' && args.length == 1) {
-      return '{ let __m = $receiver; ${expr(args.single)}.as_ref().and_then(|__k| __m.get(__k).cloned()) }';
+      return '{ let __m = $receiver; ${expr(args.single)}.as_ref().and_then(|__k| __m.get(__k).cloned()${_flattenedValue(target)}) }';
     }
     if (name == '!map_remove' && args.length == 1) {
       return '$receiver.remove(&${_borrowed(args.single)})';
