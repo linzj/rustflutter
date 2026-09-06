@@ -6600,6 +6600,7 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | run478 | 过了 `_initKeyboard`；`PlatformDispatcher.initialLifecycleState` 读 `late String _initialLifecycleState`——engine 在 `main` 之前通过 `_updateInitialLifecycleState` 设的。 | 无头引擎在 install 时报 `AppLifecycleState.resumed`。 |
 | ws478 | 链：**1521（+73）**。规则漏了两处：hollow 的 mixin 声明把字段留成抽象 getter/setter 对（`ChildType? get _lastChild`/`set _lastChild`），`_originalOf` 找不到 `Field` 就退回克隆（`RenderBox?`）；调用实参的槽仍按克隆的参数类型。另 `RxStatus.loading` 返回 `()`：一个被拒的克隆体把 `_expectedReturn` 留给了下一个成员。 | 字段克隆映射到 getter（读）/setter（写）；`_dispatchMember` 经 `_originalOf`；`_enter` 清 `_expectedReturn`。 |
 | run479 | 过了 services 的 init；`RendererBinding.initInstances` → `PipelineOwner.attach` → `_DefaultRootPipelineOwner.set__manifold` 是 `todo!("… is written through a trait but is not a cell")`：基类（open → trait）的 super 函数经 trait setter 写子类 struct 的字段，而 backend 没把那个字段做成 cell。 | 待修：经 trait setter 写的字段一律是 cell（见下一行）。 |
+| ws479 | 链：**1440**（基线 1483 之下 43），142。相对基线只多 3 个（sliver/viewport/segmented_control 各一）。mixin 声明定型这条路到此收口。 | 同批提交：① 经 trait setter 写的字段（trait 声明的非 final 字段）在每个实现 struct 里都是 cell——原来是 `todo!`；② prelude 的 `dart:io`：`FileMode`/`FileLock` 枚举（const 表按携带的数字映射）、`File`/`RandomAccessFile`/`Directory`/`FileSystemEntity`/`FileSystemException` 落到 `std::fs`（sync 成员按 Dart 异常文本 panic，async 成员把异常放进 future；`readInto` 填不了按值传的 buffer，只报数）；③ runtime 托管 `path_provider` 插件：用译出的 `StandardMethodCodec` 解码方法调用、回 XDG data home 下的目录（`path_provider_linux` 在 Dart 侧做的事）；`workspace.py` 把 codec 模块再导出给 runtime crate。 |
 
 ## 下一步(2026-09-05 重铺)
 
