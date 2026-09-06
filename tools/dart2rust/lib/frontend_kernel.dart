@@ -911,6 +911,36 @@ class KernelFrontend implements TypeWorld {
         // Cloned out of the reference `Any` hands back.
         return IrCall(downcast, 'clone', const []);
       }
+      // ..and to one of `dart:core`'s collections (`val is Map` on a
+      // `dynamic`): the prelude's value, converted where its element
+      // representation differs (`dart_cast_map`, as an `as Map<..>` is;
+      // get's `_isNullOrEmpty`, run489).
+      if (promoted is InterfaceType &&
+          (_coreCollection(promoted.classNode) ||
+              (promoted.classNode.name == 'Iterable' &&
+                  promoted.classNode.enclosingLibrary.importUri.toString() ==
+                      'dart:core')) &&
+          promoted.nullability != Nullability.nullable &&
+          (declared is DynamicType ||
+              (declared is InterfaceType &&
+                  declared.classNode.name == 'Object'))) {
+        final to = _type(promoted);
+        // An `Iterable` promotion reads the value as the list it is here.
+        final asName = promoted.classNode.name == 'Iterable' ? 'List' : to.name;
+        return IrCall(
+          IrDowncast(
+            // A `dynamic` is a handle, never an `Option`; an `Object?` is.
+            declared is InterfaceType &&
+                    declared.nullability == Nullability.nullable
+                ? IrNullCheck(IrLocal(name))
+                : IrLocal(name),
+            _rustScalar(asName),
+            arguments: to.arguments,
+          ),
+          'clone',
+          const [],
+        );
+      }
       // ..and to an abstract or open class: the trait cast every object
       // answers (`dart_cast_to`). Not from a nullable declaration, whose
       // `Option` the null-promotion below takes off first.

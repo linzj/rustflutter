@@ -818,7 +818,15 @@ class RustBackend {
             : _isLazyConst(name)
             ? '(**${screamingSnake(name)}).clone()'
             : screamingSnake(name),
-      IrIsNull(:final operand) => '${expr(_plain(operand))}.is_none()',
+      // `x == null` on a `dynamic`: the handle is never an `Option`; Dart's
+      // null is the `Null` object inside it (`dart_nullable`).
+      IrIsNull(:final operand) =>
+        operand.rustType != null &&
+                !operand.rustType!.nullable &&
+                (operand.rustType!.name == 'dynamic' ||
+                    operand.rustType!.name == 'Object')
+            ? 'dart_nullable(${expr(operand)}.clone()).is_none()'
+            : '${expr(_plain(operand))}.is_none()',
       IrIfNull() => _ifNull(_plainIfNull(e as IrIfNull)),
       // `as_ref()`: `a?.b` reads `a`, and `a` is a field or a loop variable
       // behind a reference far more often than an owned `Option` -- `.map`
@@ -2576,6 +2584,23 @@ class RustBackend {
           )
           .join(' || ');
       return negated ? '!($tests)' : '($tests)';
+    }
+    // `x is Map` / `is List` / `is Set` / `is Iterable` on a `dynamic`: the
+    // prelude's collections are generic structs, and `Any` cannot ask for
+    // "some `Map<_, _>`"; their runtime type names can (`dart_is_kind`,
+    // get's `_isNullOrEmpty`, run489).
+    const collections = {
+      'Map': ['Map'],
+      'List': ['Vec'],
+      'Set': ['Set'],
+      'Queue': ['VecDeque', 'Queue'],
+      'Iterable': ['Vec', 'Set', 'VecDeque', 'Queue'],
+    };
+    final kinds = collections[name];
+    if (kinds != null && library[name] == null) {
+      final test =
+          'dart_is_kind(&${expr(operand)}, &[${kinds.map((k) => '"$k"').join(', ')}])';
+      return negated ? '!$test' : test;
     }
     // A prelude class answers `is` through `Any` like a translated one:
     // every `'static` type is an `Object` there (`is StateError` in
@@ -6231,6 +6256,7 @@ class RustBackend {
     'dart_native_as',
     'future_ready',
     'dart_cast_erased',
+    'dart_is_kind',
     // By their Dart names, as the call names them (`postEvent`, not the
     // `post_event` it is spelled as).
     'exit',
@@ -8020,16 +8046,23 @@ class RustBackend {
             'TRACE_FWD ${cls.name}.${need.name} have=${have.returnType} need=${need.returnType} method',
           );
         }
+        final needReturns = _substituteType(need.returnType, _implBinding);
         final shaped = have.isAsync
             ? held
-            : coerceInto(
-                held,
-                _substituteType(need.returnType, _implBinding),
-                _world,
-                inClosure: true,
-              );
+            : coerceInto(held, needReturns, _world, inClosure: true);
+        // An override may return where the trait returns nothing
+        // (`Disposer addListener(..)` over `void addListener(..)` in get's
+        // `ListNotifier`): the value is dropped (run489).
+        final dropsValue =
+            !have.isAsync &&
+            type(needReturns) == '()' &&
+            type(have.returnType) != '()';
         _line(
-          identical(shaped, held) ? call : '$call.map(|__v| ${expr(shaped)})',
+          dropsValue
+              ? '$call.map(|_| ())'
+              : identical(shaped, held)
+              ? call
+              : '$call.map(|__v| ${expr(shaped)})',
         );
       }
       _indent--;

@@ -4305,6 +4305,18 @@ impl<T: Clone> std::future::Future for DartFuture<T> {
     }
 }
 
+/// `x is Map` / `is List` / `is Set` on a value whose class is not known:
+/// the prelude's collections are generic structs, told apart by the type
+/// name their `runtime_type` carries (`Map`, `Vec`, `Set`, `VecDeque`).
+pub fn dart_is_kind(value: &dyn Object, kinds: &[&str]) -> bool {
+    let object: &dyn Object = match value.as_any().downcast_ref::<std::rc::Rc<dyn Object>>() {
+        Some(handle) => handle.as_ref(),
+        None => value,
+    };
+    let name = object.runtime_type().name;
+    kinds.iter().any(|k| *k == name)
+}
+
 /// A future already done with `value`: what constructing a class that
 /// implements `Future` (`SynchronousFuture(value)`) is here.
 pub fn future_ready<T: 'static>(value: T) -> DartFuture<T> {
