@@ -6420,14 +6420,21 @@ impl fmt::Display for FormatException {
 /// read as one (`AssertionError(message: final Object? msg)` in
 /// `BindingBase._initListenable`, run451); `new` takes the text the
 /// backend's own asserts spell.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AssertionError {
-    pub message: Option<std::rc::Rc<dyn Object>>,
+    /// Dart's `Object?`: a `dynamic` here, whose null is the `Null` object.
+    pub message: std::rc::Rc<dyn Object>,
+}
+
+impl Default for AssertionError {
+    fn default() -> Self {
+        AssertionError { message: dart_null_object() }
+    }
 }
 
 impl AssertionError {
     pub fn new(message: String) -> Self {
-        AssertionError { message: Some(std::rc::Rc::new(message) as std::rc::Rc<dyn Object>) }
+        AssertionError { message: std::rc::Rc::new(message) as std::rc::Rc<dyn Object> }
     }
 }
 
@@ -6439,9 +6446,9 @@ impl PartialEq for AssertionError {
 
 impl fmt::Display for AssertionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.message {
+        match dart_nullable(self.message.clone()) {
             None => f.write_str("Assertion failed"),
-            Some(m) => write!(f, "Assertion failed: {}", dart_message(m)),
+            Some(m) => write!(f, "Assertion failed: {}", dart_message(&m)),
         }
     }
 }

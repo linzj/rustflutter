@@ -203,7 +203,12 @@ fn plugin_reply(channel: &str, data: Option<ByteData>) -> Result<Option<ByteData
                 "getTemporaryDirectory" => Some(temp_dir()),
                 _ => return Ok(None),
             };
-            let result = directory.map(|path| Rc::new(path) as Rc<dyn Object>);
+            // The envelope's `Object?` result is a `dynamic` here, whose
+            // null is the `Null` object.
+            let result = match directory {
+                Some(path) => Rc::new(path) as Rc<dyn Object>,
+                None => dart_null_object(),
+            };
             Ok(Some(codec.encode_success_envelope(result)?))
         }
         _ => Ok(None),

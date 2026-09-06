@@ -1491,17 +1491,27 @@ class KernelFrontend implements TypeWorld {
       }
       // Each field into the record's field type by the one rule: `(false,
       // null)` as a `(bool, Object?)` holds the `Null` object (ws502).
+      // ..as translated slots, whatever call the record sits in.
       final fields = node.recordType.positional;
-      return IrRecord([
-        for (var i = 0; i < node.positional.length; i++)
-          i < fields.length
-              ? _widened(
-                  node.positional[i],
-                  fields[i],
-                  expression(node.positional[i]),
-                )
-              : expression(node.positional[i]),
-      ]);
+      final wasTranslated = _slotTranslated;
+      final wasPrelude = _slotPrelude;
+      _slotTranslated = true;
+      _slotPrelude = false;
+      try {
+        return IrRecord([
+          for (var i = 0; i < node.positional.length; i++)
+            i < fields.length
+                ? _widened(
+                    node.positional[i],
+                    fields[i],
+                    expression(node.positional[i]),
+                  )
+                : expression(node.positional[i]),
+        ]);
+      } finally {
+        _slotTranslated = wasTranslated;
+        _slotPrelude = wasPrelude;
+      }
     }
     if (node is MapLiteral) {
       return _mapLiteral(node, node.keyType, node.valueType);
@@ -1876,8 +1886,17 @@ class KernelFrontend implements TypeWorld {
         // `Zone.current[#token] as Client?`: a `dynamic` (never an `Option`
         // here) to a nullable struct is a downcast that may fail: `cloned()`
         // of the `Option<&T>` `Any` gives.
-        if (from is DynamicType && to.nullability == Nullability.nullable) {
-          return IrCall(expression(node.operand), '!as_opt', [
+        // ..and from an `Object?`, a `dynamic` here (ws503): by the
+        // operand's recorded type, which is no `Option`.
+        final operandLowered = expression(node.operand);
+        final operandType = operandLowered.rustType;
+        final dynamicOperand =
+            from is DynamicType ||
+            (operandType != null &&
+                operandType.name == 'dynamic' &&
+                !operandType.nullable);
+        if (dynamicOperand && to.nullability == Nullability.nullable) {
+          return IrCall(operandLowered, '!as_opt', [
             IrLiteral(_rustScalar(to.classNode.name), const IrType('raw')),
           ], typeArguments: _type(to).arguments);
         }
@@ -1886,7 +1905,7 @@ class KernelFrontend implements TypeWorld {
         if (from.nullability == Nullability.nullable &&
             to.nullability == Nullability.nullable) {
           return IrNullAware(
-            expression(node.operand),
+            operandLowered,
             IrCall(
               IrDowncast(IrBound(), _rustScalar(to.classNode.name)),
               'clone',
@@ -4842,9 +4861,26 @@ class KernelFrontend implements TypeWorld {
     // return does.
     if (withTypeArgs) {
       final static = _staticType(node);
+      // ..projected only when the callee's `T` is put in as a *bare*
+      // parameter of this declaration: `resourcesFor<T?>(..)` returns
+      // `<Option<T> as DartNullable>::Or`, a plain `Option<T>`, and typed
+      // projected it was wrapped twice (`Localizations.of`, ws503).
+      final declaredReturn = target.function.returnType;
+      final bareArgument =
+          declaredReturn is TypeParameterType &&
+          target.function.typeParameters.contains(declaredReturn.parameter) &&
+          () {
+            final index = target.function.typeParameters.indexOf(
+              declaredReturn.parameter,
+            );
+            final argument = node.arguments.types[index];
+            return argument is TypeParameterType &&
+                argument.nullability != Nullability.nullable;
+          }();
       if (static is TypeParameterType &&
           static.nullability == Nullability.nullable &&
-          !_erasedParameter(static.parameter)) {
+          !_erasedParameter(static.parameter) &&
+          bareArgument) {
         call.rustType = IrType(
           static.parameter.name ?? 'T',
           nullable: true,
