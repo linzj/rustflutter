@@ -5178,7 +5178,10 @@ class RustBackend {
     final getter = cls.methods
         .where((m) => m.name == 'iterator' && m.isGetter && !m.isStatic)
         .firstOrNull;
-    if (getter == null) return;
+    // ..declared as an `Iterator<E>`: a covariant `CharacterRange get
+    // iterator` hands out its own trait handle, whose `move_next` is not
+    // the prelude's (ws501).
+    if (getter == null || getter.returnType.name != 'DartIterator') return;
     // Not a failing call: a `for-in` and a chain read the list where no
     // `?` can go, so a failing `iterator` getter is an uncaught exception
     // here, as it would be in Dart.
@@ -8335,6 +8338,10 @@ class RustBackend {
       // The override's own default is the value the base "has no value for".
       final fallback = p.defaultValue;
       if (fallback != null) return expr(fallback);
+      // A `dynamic` (an `Object?`) has no value as the `Null` object.
+      if (p.type.name == 'dynamic' && !p.type.nullable) {
+        return 'dart_null_object()';
+      }
       if (p.type.nullable) return 'None';
       throw Unsupported(
         'override widens `${method.name}` with `${p.name}`, '

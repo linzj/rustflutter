@@ -3526,6 +3526,29 @@ pub fn dart_null_as<T: DartNullable>() -> T {
 
 /// `List<T?>.filled(n, null)`: `n` nulls of `T?` as translated code spells
 /// it -- `<T as DartNullable>::Or`, one `Option` layer whatever `T` is.
+/// The narrow numbers a typed list holds (`Float32List` is a `Vec<f32>`):
+/// out of a `dynamic` they are the `f64`/`i64` a Dart number is, cast.
+macro_rules! from_dynamic_narrow {
+    ($($t:ty => $wide:ty),* $(,)?) => {
+        $(
+            impl FromDynamic for $t {
+                fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
+                    let object: &dyn Object = value.as_ref();
+                    let any = object.as_any();
+                    if let Some(v) = any.downcast_ref::<$t>() {
+                        return Some(*v);
+                    }
+                    any.downcast_ref::<$wide>().map(|v| *v as $t)
+                }
+                fn from_same(value: &Self) -> Option<Self> {
+                    Some(*value)
+                }
+            }
+        )*
+    };
+}
+from_dynamic_narrow!(f32 => f64, i8 => i64, i16 => i64, i32 => i64, u8 => i64, u16 => i64, u32 => i64, u64 => i64, usize => i64, isize => i64);
+
 /// Dart's `null` where a `dynamic` goes: the `Null` object behind a handle.
 pub fn dart_null_object() -> std::rc::Rc<dyn Object> {
     std::rc::Rc::new(Null) as std::rc::Rc<dyn Object>

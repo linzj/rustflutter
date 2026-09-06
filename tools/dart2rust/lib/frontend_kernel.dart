@@ -3558,18 +3558,17 @@ class KernelFrontend implements TypeWorld {
     // `dynamic`. Left uninitialized, a read Dart guards with its own flag
     // (a pattern's `#0#2` behind `#0#2#isSet`) is one rustc cannot see
     // assigned (E0381, run454).
+    // ..by the *Rust* type: an `Object?` is a `dynamic` (ws501).
     final type = variable.type;
-    final IrExpr? nullStart = init != null || type is VoidType
+    final IrType? startType = init != null || type is VoidType
         ? null
-        : type is DynamicType
-        ? IrUpcast(
-            IrLiteral('Null', const IrType('raw'))
-              ..rustType = const IrType('Null'),
-            IrType('Object'),
-            handle: false,
-            explicit: true,
-          )
-        : type.nullability == Nullability.nullable && type is! VoidType
+        : _recordedType(type);
+    final IrExpr? nullStart = startType == null
+        ? null
+        : startType.name == 'dynamic' && !startType.nullable
+        ? (IrStaticCall(null, 'dart_null_object', const [])
+            ..rustType = startType)
+        : startType.nullable
         ? IrLiteral('None', const IrType('raw'))
         : null;
     return IrLocalDecl(
@@ -4548,11 +4547,13 @@ class KernelFrontend implements TypeWorld {
           );
         }
         // A nullable key into a map of non-nullable ones: `_views[_implicitViewId]`.
+        // ..by the key's Rust type: an `Object?` key is a `dynamic`, no
+        // `Option` (ws501).
+        final keyIr = args.single.rustType;
         if (key != null &&
             key.nullability != Nullability.nullable &&
-            argType != null &&
-            argType is! DynamicType &&
-            argType.nullability == Nullability.nullable) {
+            keyIr != null &&
+            isNullable(keyIr)) {
           return typed(IrCall(_receiver(node.receiver), '!map_get_opt', args));
         }
         // The key into the map's key type by the one rule: a `String` into
@@ -7227,7 +7228,11 @@ class KernelFrontend implements TypeWorld {
       );
     }
     if (param.type.nullability == Nullability.nullable) {
-      return IrLiteral('null', const IrType('Null', nullable: true));
+      // ..into the slot's Rust type: an omitted `Object? aspect` is the
+      // `Null` object, not `None` (85 at ws501).
+      final absent = IrLiteral('null', const IrType('Null', nullable: true));
+      final slot = _recordedType(param.type);
+      return slot == null ? absent : coerce(absent, slot);
     }
     // An *interface* member carries no default -- `Canvas.clipRect({bool
     // doAntiAlias = true})` is abstract, and the default lives on the class
