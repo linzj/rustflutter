@@ -7965,36 +7965,38 @@ class KernelFrontend implements TypeWorld {
   /// library's tag; every reference resolves through the member, so the
   /// name is one everywhere.
   String _memberName(Member member) {
-    // Keyed by the declaration behind a copy (`_originalOf`): every
-    // application of a mixin and the mixin's own trait spell the field
-    // alike.
-    final original = _originalOf(member);
-    final known = _memberNames[original];
-    if (known != null) return known;
     final text = member.name.text;
-    var out = text;
-    final accessor =
-        original is Field ||
-        (original is Procedure && (original.isGetter || original.isSetter));
     final start = member.enclosingClass;
-    final static = switch (original) {
+    if (start == null) return text;
+    // The declaring class: a copy in an anonymous application (the CFE's
+    // `_X&Base&Mixin`, deduplicated or not) is the mixin's, and every copy
+    // and the mixin's own trait spell the field alike.
+    final home = start.isAnonymousMixin ? (_mixinOf(start) ?? start) : start;
+    final key = (home, text);
+    final known = _memberNames[key];
+    if (known != null) return known;
+    var out = text;
+    final accessor = switch (member) {
+      Field() => true,
+      Procedure(:final isGetter, :final isSetter) => isGetter || isSetter,
+      _ => false,
+    };
+    final static = switch (member) {
       Field(:final isStatic) => isStatic,
       Procedure(:final isStatic) => isStatic,
       _ => false,
     };
-    if (member.name.isPrivate && accessor && !static && start != null) {
-      final library = original.enclosingLibrary;
+    if (member.name.isPrivate && accessor && !static) {
+      final library = home.enclosingLibrary;
       // From the class itself, or -- for a mixin's member, whose own
-      // superclass is `Object` -- from every application of the mixin,
-      // whichever is asked first (the answer is cached by declaration).
-      final owner = original.enclosingClass;
+      // superclass is `Object` -- from every application of the mixin.
       final starts = <Class>[
         start,
-        if (owner != null && owner.isMixinDeclaration) ...?applications[owner],
+        if (home.isMixinDeclaration) ...?applications[home],
       ];
       if (Platform.environment['DART2RUST_TRACE_MEMBER'] == text) {
         stderr.writeln(
-          'TRACE_MEMBER $text in ${start.name} (${library.importUri}) starts=${starts.map((c) => c.name).toList()}',
+          'TRACE_MEMBER $text home=${home.name} (${library.importUri}) starts=${starts.map((c) => c.name).toList()}',
         );
       }
       outer:
@@ -8010,9 +8012,18 @@ class KernelFrontend implements TypeWorld {
         }
       }
     }
-    _memberNames[original] = out;
+    _memberNames[key] = out;
     return out;
   }
+
+  /// The mixin an anonymous application applies (its `mixedInType`, or
+  /// the mixin among a deduplicated application's `implementedTypes`).
+  static Class? _mixinOf(Class application) =>
+      application.mixedInType?.classNode ??
+      application.implementedTypes
+          .map((st) => st.classNode)
+          .where((c) => c.isMixinDeclaration)
+          .firstOrNull;
 
   /// Whether `c` declares a non-static private field, getter or setter
   /// named `text` -- its own, or a mixin's copy the CFE put in it.
@@ -8028,7 +8039,7 @@ class KernelFrontend implements TypeWorld {
             (p.isGetter || p.isSetter),
       );
 
-  final Map<Member, String> _memberNames = {};
+  final Map<(Class, String), String> _memberNames = {};
 
   /// A field's IR name from its target, or the written name for anything
   /// else (a setter's).

@@ -139,6 +139,15 @@ pub fn object_eq(a: &dyn Object, b: &dyn Object) -> bool {
             (None, None) => None,
         }
     }
+    // The object's own answer where it is registered (`DART_EQS`: every
+    // translated value made, the core values boxed); the core values below
+    // for what was never registered.
+    let any_a = a.as_any();
+    let id = std::any::Any::type_id(any_a);
+    let f = DART_EQS.with(|c| c.borrow().get(&id).copied());
+    if let Some(answer) = f.and_then(|f| f(any_a, b.as_any())) {
+        return answer;
+    }
     same::<String>(a, b)
         .or_else(|| same::<i64>(a, b))
         .or_else(|| same::<f64>(a, b))
@@ -146,6 +155,9 @@ pub fn object_eq(a: &dyn Object, b: &dyn Object) -> bool {
         .or_else(|| same::<()>(a, b))
         .or_else(|| same::<Null>(a, b))
         .or_else(|| same::<DartFunction>(a, b))
+        .or_else(|| same::<Type>(a, b))
+        .or_else(|| same::<Duration>(a, b))
+        .or_else(|| same::<Symbol>(a, b))
         .unwrap_or_else(|| std::ptr::addr_eq(a, b))
 }
 
@@ -624,6 +636,15 @@ pub trait DartAny: Object + 'static {
         self.as_any()
     }
 
+    /// Dart's `==` against a value whose class only the object knows
+    /// (`dyn Object` on either side): a class's own `==` (the backend
+    /// writes each struct's through its `DartEq`), the core values by
+    /// value, anything else by identity. A `Type` key looked up in
+    /// `_inheritedElements` compared by address and never matched (run556).
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        std::ptr::addr_eq(self.dart_any_ref() as *const dyn std::any::Any as *const u8, other as *const dyn std::any::Any as *const u8)
+    }
+
     fn dart_cast(&self, _target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
         None
     }
@@ -687,6 +708,14 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+/// `==` for objects reached through `dyn Object`, by the same key.
+type DartEqFn = fn(&dyn std::any::Any, &dyn std::any::Any) -> Option<bool>;
+
+thread_local! {
+    static DART_EQS: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartEqFn>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 pub fn dart_register<T: DartAny>() {
     DART_CASTS.with(|c| {
         c.borrow_mut()
@@ -697,6 +726,11 @@ pub fn dart_register<T: DartAny>() {
         c.borrow_mut()
             .entry(std::any::TypeId::of::<T>())
             .or_insert(|any| any.downcast_ref::<T>().map(|v| v.dart_to_string()));
+    });
+    DART_EQS.with(|c| {
+        c.borrow_mut()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert(|a, b| a.downcast_ref::<T>().map(|v| v.dart_eq_any(b)));
     });
 }
 
@@ -785,6 +819,15 @@ impl DartAny for dyn Object {
     fn dart_to_string(&self) -> String {
         dart_object_str_ref(self)
     }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        let any = self.as_any();
+        let id = std::any::Any::type_id(any);
+        let f = DART_EQS.with(|c| c.borrow().get(&id).copied());
+        match f.and_then(|f| f(any, other)) {
+            Some(answer) => answer,
+            None => std::ptr::addr_eq(any as *const dyn std::any::Any as *const u8, other as *const dyn std::any::Any as *const u8),
+        }
+    }
     fn dart_any_ref(&self) -> &dyn std::any::Any {
         self.as_any()
     }
@@ -803,6 +846,9 @@ impl<T: ?Sized + DartAny> DartAny for std::rc::Rc<T> {
     }
     fn dart_to_string(&self) -> String {
         (**self).dart_to_string()
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        (**self).dart_eq_any(other)
     }
     fn dart_any_ref(&self) -> &dyn std::any::Any {
         (**self).dart_any_ref()
@@ -840,6 +886,12 @@ impl<T: DartAny> DartAny for Option<T> {
         match self {
             Some(v) => v.dart_to_string(),
             None => "null".to_string(),
+        }
+    }
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match self {
+            Some(v) => v.dart_eq_any(other),
+            None => other.downcast_ref::<Null>().is_some() || other.downcast_ref::<()>().is_some(),
         }
     }
     fn dart_any_ref(&self) -> &dyn std::any::Any {
@@ -968,6 +1020,12 @@ macro_rules! dart_any_named {
                 fn dart_runtime_type(&self) -> Type {
                     Type::of($name)
                 }
+                fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+                    match other.downcast_ref::<Self>() {
+                        Some(o) => self.dart_eq(o),
+                        None => false,
+                    }
+                }
             }
         )*
     };
@@ -986,6 +1044,12 @@ macro_rules! dart_any_generic {
 }
 
 impl DartAny for i64 {
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self == o,
+            None => false,
+        }
+    }
     fn dart_runtime_type(&self) -> Type {
         Type::of("int")
     }
@@ -995,6 +1059,12 @@ impl DartAny for i64 {
 }
 
 impl DartAny for f64 {
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self == o,
+            None => false,
+        }
+    }
     fn dart_runtime_type(&self) -> Type {
         Type::of("double")
     }
@@ -1004,6 +1074,12 @@ impl DartAny for f64 {
 }
 
 impl DartAny for bool {
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self == o,
+            None => false,
+        }
+    }
     fn dart_runtime_type(&self) -> Type {
         Type::of("bool")
     }
@@ -1013,6 +1089,12 @@ impl DartAny for bool {
 }
 
 impl DartAny for String {
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self == o,
+            None => false,
+        }
+    }
     fn dart_runtime_type(&self) -> Type {
         Type::of("String")
     }
@@ -1049,6 +1131,12 @@ impl DartAny for () {
 }
 
 impl DartAny for Type {
+    fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool {
+        match other.downcast_ref::<Self>() {
+            Some(o) => self == o,
+            None => false,
+        }
+    }
     fn dart_runtime_type(&self) -> Type {
         Type::of("Type")
     }

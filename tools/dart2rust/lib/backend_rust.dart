@@ -5863,6 +5863,9 @@ class RustBackend {
       'fn dart_to_string(&self) -> String { ${_dartToStringBody(enumForm: true)} }',
     );
     _line(
+      'fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool { match other.downcast_ref::<Self>() { Some(o) => self.dart_eq(o), None => false } }',
+    );
+    _line(
       'fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {',
     );
     _indent++;
@@ -8215,6 +8218,9 @@ class RustBackend {
     );
     _indent++;
     _line('fn dart_to_string(&self) -> String { ${_dartToStringBody()} }');
+    _line(
+      'fn dart_eq_any(&self, other: &dyn std::any::Any) -> bool { match other.downcast_ref::<Self>() { Some(o) => self.dart_eq(o), None => false } }',
+    );
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
     _line('Type { name: "${cls.name}" }');
