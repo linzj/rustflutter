@@ -6801,6 +6801,16 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws588 | 链：stub **745**（+2）：常量实例拼类型实参过头——`const DeepCollectionEquality()` 是 `DefaultEquality<Never>`，`Never` 是 Dart 的"随便"，该留给槽推断；`ContextMenuButtonItem.hashCode`：`object_hash` 要 `Debug`，闭包没有。两处通用修：`Never` 实参不拼；`Object.hash/hashAll` 改走 Object 协议的 `dart_hash_any`（原来按 Debug 文本 hash，和 `==` 不一致）。 | |
 | ws589 | 链：stub **737**（-8：一批 `hashCode`），拒绝 260；+2 `hashCode`：`Object.hash(.., x == null ? null : hashAll(x!), ..)` 第二臂被 TFA 删掉后 `Some(!)` 推不出 `T`——条件式有发散臂时按 IR 类型拼成带类型的 `let`。 | |
 | run589 | 第一处 panic：`Locale.toString` 的 `identical(_cachedLocale, this)`——静态 `Locale?` 对 `this`，拒绝。通用：`identical` 一侧是可空句柄时，`match` 出来按两个句柄比（`dart_identical_any`），None 不同；规则排在"槽对槽"前面。夹具 identstatic 与 dart 一致。 | ws590 量；run590 看下一站。 |
+| ws590 | 链：stub **739**（+2：`RenderEditablePainter.shouldRepaint`——可空句柄 `identical` 的 match 按值把参数移走了，改成 `match &x`），拒绝 260。 | |
+| run590 | `Locale.toString` 过了；下一站 intl `DateFormat.localeExists` 的 stub：动态槽分派里 `UninitializedLocaleData.containsKey` 臂是翻译方法（`Result`），Map 臂是 `bool`——翻译类的臂标 `fails`。夹具 identstatic 加了 `shouldRepaint` 形状，揪出两件：`Painter? old` 提升成 `Caret` 的读没先脱 `Option`；`_nullChecked` 造的 `IrNullCheck` 没带类型，后端不知道它是句柄而问了 `Rc` 自己的 `Any`。 | ws591 量；run591 看下一站。 |
+| ws591 | 链：stub **736**（-1 `localeExists`），拒绝 253。 | |
+| run591 | 下一站 intl `verifiedLocale` 的 stub：函数值列表 `[canonicalizedLocale, languageRegionOnlyLocale, .., (s) => ..]` 走 push 形式（元素里有 `?`）时 `Vec::new()` 的元素类型被第一个闭包定死。修：push 形式带上元素类型 `let mut __v: Vec<T>`。夹具 fnlist 与 dart 一致。 | ws592 量；run592 看下一站。 |
+| ws592 | 链：stub **735**（-1），拒绝 253。 | |
+| run592 | `verifiedLocale` 还是 stub，换了错：列表里的闭包 `(locale) => deprecatedLocale(canonicalizedLocale(locale))`——`locale` 被槽重定型成 `String`（`_retype`），但读它时静态类型仍是 `dynamic`，实参 coerce 走了 `dynamic → String?`。修：`_staticType`/局部读认 `_retyped`。夹具 fnlist 加了这形状，与 dart 一致。 | ws593 量；run593 看下一站。 |
+| ws593 | 链：stub **732**（-3），拒绝 253。 | |
+| run593 | `verifiedLocale` 过了；下一站 `DateFormat._availableSkeletons` 的 stub：动态槽分派里 `UninitializedLocaleData` 自己的 `[]` 臂是翻译方法，`Some(Result<..>)` 没 `?`——同 containsKey 标 `fails`。夹具 isgeneric 加了类自带 `[]`/`containsKey` 的臂，与 dart 一致。 | ws594 量；run594 看下一站。 |
+| ws594 | 链：stub **730**（-2），拒绝 253。 | |
+| run594 | `_availableSkeletons` 译出来了，运行时 `dart_cast_map::<dyn Object, dyn Object>` 转不了 `Map<String, String>`（只认几种来源形状）→ None。通用：`Map`/`Vec` 的 `DartAny::dart_cast` 能给出**全 dynamic 形式**（每个条目装箱），`dart_cast_map`/`dart_cast_list` 最后从它转（`from_dynamic`），来源形状不用枚举。夹具 dyncastmap 与 dart 一致。 | ws595 量；run595 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 

@@ -585,6 +585,12 @@ class KernelFrontend implements TypeWorld {
     if (e is VariableGet && e.promotedType == null) {
       final declaredAs = _declaredParamTypes[e.variable];
       if (declaredAs != null) return declaredAs;
+      // A closure parameter retyped by the slot it fills (`_retype`): a
+      // `(locale) => f(locale)` in a `String Function(String)` list reads
+      // as the `String` it is, not the `dynamic` it was written as
+      // (intl's `verifiedLocale`, ws592).
+      final retyped = _retyped[e.variable];
+      if (retyped != null) return retyped;
     }
     // An instance constant is its own class before it is the slot's declared
     // type -- `getStaticType` answers `Curve` for `Curves.linear`, and the
@@ -1104,12 +1110,21 @@ class KernelFrontend implements TypeWorld {
     // field is the `Option` it was declared (`WidgetsApp.build`, ws506).
     final declared = operand == null ? null : _declaredTypeOf(operand);
     final declaredIr = declared == null ? null : _recordedType(declared);
+    // Typed as the operand without its `Option`: a downcast of the checked
+    // value asks a handle for its `Any` only when it knows it holds one
+    // (`old.width` after `Painter? old` promoted to `Caret`, ws591).
+    IrNullCheck checked() {
+      final have = inner.rustType;
+      return IrNullCheck(inner)
+        ..rustType = have == null ? null : _nonNull(have);
+    }
+
     if (declaredIr != null) {
-      return isNullable(declaredIr) ? IrNullCheck(inner) : inner;
+      return isNullable(declaredIr) ? checked() : inner;
     }
     final have = inner.rustType;
     if (have != null && !isNullable(have)) return inner;
-    return IrNullCheck(inner);
+    return checked();
   }
 
   /// The type a member or variable was *declared* with, for the read
@@ -1325,8 +1340,14 @@ class KernelFrontend implements TypeWorld {
         // With the struct's type arguments: `other is AsyncSnapshot<T>`
         // reads `other` as an `AsyncSnapshot<T>` (16 E0107 at ws425).
         final to = _type(promoted);
+        // Out of its `Option` first when the local is nullable: a
+        // `Painter? old` promoted to `Caret` asked the `Option` for its
+        // `Any` (`shouldRepaint`'s `old.width`, ws590).
+        final read = declared.nullability == Nullability.nullable
+            ? _nullChecked(IrLocal(name)..rustType = _recordedType(declared))
+            : IrLocal(name);
         final downcast = IrDowncast(
-          IrLocal(name),
+          read,
           _rustScalar(to.name),
           arguments: to.arguments,
         );
@@ -1406,6 +1427,11 @@ class KernelFrontend implements TypeWorld {
       }
       if (declaredAs != null) {
         return IrLocal(name)..rustType = _type(declaredAs);
+      }
+      // ..and as its slot retyped it (see `_staticType`).
+      if (retyped != null) {
+        final ir = _recordedType(retyped);
+        if (ir != null) return IrLocal(name)..rustType = ir;
       }
       return IrLocal(name);
     }
@@ -4885,7 +4911,7 @@ class KernelFrontend implements TypeWorld {
                 ])
               : hasMember
               ? IrStaticCall(null, 'dart_option_object', [
-                  IrSome(IrCall(slot, '[]', args)),
+                  IrSome(IrCall(slot, '[]', args, fails: true)),
                 ])
               : noSuch();
         case '[]=':
@@ -4913,14 +4939,21 @@ class KernelFrontend implements TypeWorld {
         case 'containsKey':
           // The map's is the prelude's `contains_key(&k)`, spelled as the
           // `Map` lowering spells it so the backend passes the key by
-          // reference; a class's is its own method, by value.
+          // reference; a class's is its own method, by value -- and a
+          // translated method's `Result` (`UninitializedLocaleData.
+          // containsKey` beside the map's `bool`, `DateFormat.localeExists`,
+          // run590).
           body = isMap
               ? IrCall(slot, 'contains_key', args)
               : hasMember
-              ? IrCall(slot, 'containsKey', args)
+              ? IrCall(slot, 'containsKey', args, fails: true)
               : noSuch();
         default:
-          body = isMap || hasMember ? IrCall(slot, name, args) : noSuch();
+          body = isMap
+              ? IrCall(slot, name, args)
+              : hasMember
+              ? IrCall(slot, name, args, fails: true)
+              : noSuch();
       }
       arms.add((_type(c), body));
     }

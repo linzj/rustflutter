@@ -1017,9 +1017,19 @@ impl<T: Copy + DartAny> DartAny for std::cell::Cell<T> {
 }
 
 /// The collections: named as Dart names them, printed as Dart prints them.
-impl<T: DartAny> DartAny for Vec<T> {
+impl<T: DartAny + Clone> DartAny for Vec<T> {
     fn dart_runtime_type(&self) -> Type {
         Type::of("List")
+    }
+    /// As the fully dynamic list (`List<dynamic>`), every element boxed:
+    /// see `Map`'s.
+    fn dart_cast(&self, target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if target == std::any::TypeId::of::<Vec<std::rc::Rc<dyn Object>>>() {
+            let items: Vec<std::rc::Rc<dyn Object>> =
+                self.iter().map(|e| dart_boxed(e.clone())).collect();
+            return Some(Box::new(items));
+        }
+        None
     }
     fn dart_to_string(&self) -> String {
         format!(
@@ -1063,9 +1073,25 @@ impl<T: DartAny> DartAny for Set<T> {
     }
 }
 
-impl<K: DartAny, V: DartAny> DartAny for Map<K, V> {
+impl<K: DartAny + Clone, V: DartAny + Clone> DartAny for Map<K, V> {
     fn dart_runtime_type(&self) -> Type {
         Type::of("Map")
+    }
+    /// As the fully dynamic map (`Map<dynamic, dynamic>`), every entry
+    /// boxed: what `dart_cast_map` converts from when the source map's
+    /// own types are not among the ones it knows (intl's `Map<String,
+    /// String>` patterns read as a `Map<dynamic, dynamic>`, run594).
+    fn dart_cast(&self, target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if target == std::any::TypeId::of::<Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>>()
+        {
+            let entries: Vec<(std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>)> = self
+                .entries
+                .iter()
+                .map(|(k, v)| (dart_boxed(k.clone()), dart_boxed(v.clone())))
+                .collect();
+            return Some(Box::new(Map { entries }));
+        }
+        None
     }
     fn dart_to_string(&self) -> String {
         format!(
@@ -8319,6 +8345,11 @@ pub fn dart_cast_list<T: FromDynamic>(value: &std::rc::Rc<dyn Object>) -> Option
     if let Some(list) = any.downcast_ref::<Vec<Option<std::rc::Rc<dyn Object>>>>() {
         return list.iter().map(T::from_nullable).collect();
     }
+    // Any other list, through the fully dynamic one it can become (see
+    // `Vec`'s `dart_cast`).
+    if let Some(dynamic) = value.dart_cast_any::<Vec<std::rc::Rc<dyn Object>>>() {
+        return dynamic.iter().map(T::from_dynamic).collect();
+    }
     None
 }
 
@@ -8390,6 +8421,18 @@ pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(
         V::from_nullable,
     ) {
         return r;
+    }
+    // Any other map, through the fully dynamic one it can become (see
+    // `Map`'s `dart_cast`).
+    if let Some(dynamic) =
+        value.dart_cast_any::<Map<std::rc::Rc<dyn Object>, std::rc::Rc<dyn Object>>>()
+    {
+        let entries: Option<Vec<(K, V)>> = dynamic
+            .entries
+            .iter()
+            .map(|(k, v)| Some((K::from_dynamic(k)?, V::from_dynamic(v)?)))
+            .collect();
+        return entries.map(Map::from_converted);
     }
     None
 }

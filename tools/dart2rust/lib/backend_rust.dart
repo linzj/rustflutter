@@ -687,9 +687,12 @@ class RustBackend {
       // viewer) is 4.6 million drops of codegen -- one function held
       // `rustc` for half an hour at 27 GB (run429). Pushed one at a time,
       // a failure drops the one partial `Vec`.
+      // ..with the element type spelled where it is known: `Vec::new()`
+      // took the first push's type -- one closure's, which the next
+      // closure was not (intl's `verifiedLocale`, run591).
       IrListLiteral(:final elements, :final element)
           when elements.isNotEmpty && _WalkSelf.failingIn(elements) =>
-        '{ let mut __v = Vec::new(); '
+        '{ let mut __v${_mentionsUnknown(element) ? '' : ': Vec<${type(element)}>'} = Vec::new(); '
             '${elements.indexed.map((ix) => '__v.push(${_listElement(ix.$1, ix.$2, element)});').join(' ')}'
             ' __v }',
       IrListLiteral(:final elements, :final element) =>
@@ -4470,7 +4473,9 @@ class RustBackend {
       final other = identical(absent, left) ? right : left;
       final otherHandle = handleText(other);
       if (otherHandle != null) {
-        return '(match ${expr(absent)} { Some(__o) => dart_identical_any(&__o, &$otherHandle), None => false })';
+        // Matched through a reference: by value it moved the handle out of
+        // a parameter read again below (`shouldRepaint`, ws590).
+        return '(match &${expr(absent)} { Some(__o) => dart_identical_any(__o, &$otherHandle), None => false })';
       }
       if (nullableHandle(other)) {
         return 'dart_identical_opt(&${expr(absent)}, &${expr(other)})';
