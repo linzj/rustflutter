@@ -1524,9 +1524,15 @@ class RustBackend {
     // `Element.inflateWidget`, ws494): a local or a field of `this` is
     // read by clone.
     final operand = node.left;
-    final left = operand is IrLocal
+    // The scrutinee bound first: a `match` keeps its scrutinee's
+    // temporaries -- the `Ref` of a `.borrow().clone()` -- alive through
+    // every arm, and the `None` arm of `_instance ??= X()` on a static
+    // cell wrote through `borrow_mut()` into it ("already borrowed",
+    // run516). A `let` drops them at its own end.
+    final read = operand is IrLocal
         ? '${expr(operand)}.clone()'
         : expr(operand);
+    final left = '{ let __scrutinee = $read; __scrutinee }';
     if (node.right is IrThrowValue) {
       // `a ?? throw e`. The closure forms are wrong here for the reason a try
       // body could not hold a `?`: the `return Err(e)` inside `unwrap_or_else`

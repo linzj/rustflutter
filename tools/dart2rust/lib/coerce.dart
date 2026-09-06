@@ -558,7 +558,16 @@ IrExpr coerceInto(
   // (every type has one): Dart's cast, failing as one does. Last, so the
   // rules above keep their shapes (a `dynamic`'s arguments into a
   // listener's `AnimationStatus`, ws515).
-  if (haveObject && !slotObject && !slot.isFunction && !isNullable(slot)) {
+  // ..only into a type the world can name: a type parameter of another
+  // declaration (a super constructor's `T`, `DiagnosticsDebugCreator`,
+  // ws516) is nothing to convert into.
+  if (haveObject &&
+      !slotObject &&
+      !slot.isFunction &&
+      !isNullable(slot) &&
+      (world.isStruct(slot.name) ||
+          world.isEnum(slot.name) ||
+          preludeValueTypes.contains(slot.name))) {
     return IrStaticCall(
       null,
       'dart_from_dynamic',
@@ -568,6 +577,48 @@ IrExpr coerceInto(
   }
   return value;
 }
+
+/// The prelude's value types with a `FromDynamic` of their own (its
+/// `dart_nullable!` list, the collections, the typed lists, the unit).
+const preludeValueTypes = {
+  'List',
+  'Iterable',
+  'Set',
+  'Map',
+  'Queue',
+  'Int8List',
+  'Int16List',
+  'Int32List',
+  'Int64List',
+  'Uint8List',
+  'Uint8ClampedList',
+  'Uint16List',
+  'Uint32List',
+  'Uint64List',
+  'Float32List',
+  'Float64List',
+  'ByteData',
+  'Duration',
+  'DateTime',
+  'RegExp',
+  'RegExpMatch',
+  'StackTrace',
+  'Stopwatch',
+  'StringBuffer',
+  'Symbol',
+  'Type',
+  'Uri',
+  'Random',
+  'Timer',
+  'Invocation',
+  'ArgumentError',
+  'RangeError',
+  'IndexError',
+  'FormatException',
+  'Exception',
+  'void',
+  '()',
+};
 
 const _dynamicType = IrType('dynamic');
 
