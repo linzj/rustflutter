@@ -656,6 +656,7 @@ class RustBackend {
             ? '(match ${_awaitOperand(operand)} { Some(__f) => __f.await$_propagate, None => None })'
             : '(match ${_awaitOperand(operand)} { Some(__f) => Some(__f.await$_propagate), None => None })',
       IrAwait(:final operand) => '${_awaitOperand(operand)}.await$_propagate',
+      IrMutRef(:final place) => _mutRef(place),
       IrIdentical(:final left, :final right) => _identical(left, right),
       // `return Err(e)` has type `!`, so it fits where a value was wanted.
       IrThrowValue(:final value) => _thrown(value),
@@ -2826,6 +2827,27 @@ class RustBackend {
     final t = e.rustType;
     if (t == null || e is IrThis || t.isFunction || isNullable(t)) return false;
     return library.isAbstract(t.name) || (library[t.name]?.counted ?? false);
+  }
+
+  /// A place as `&mut`: a local by name (through its cell when it has
+  /// one), a field of `this` through its cell, anything else as a
+  /// temporary the callee fills and nobody reads.
+  String _mutRef(IrExpr place) {
+    if (place is IrLocal) {
+      final cell = _cellLocals[place.name];
+      if (cell == null) return '&mut ${snake(place.name)}';
+      return cell
+          ? '&mut ${snake(place.name)}'
+          : '&mut *${snake(place.name)}.borrow_mut()';
+    }
+    if (place is IrField && (place.target == null || place.target is IrThis)) {
+      final shared = _sharedField(place.name);
+      if (shared != null && !_isCopy(_heldType(shared))) {
+        return '&mut *$_selfName.${snake(place.name)}.borrow_mut()';
+      }
+      if (shared == null) return '&mut $_selfName.${snake(place.name)}';
+    }
+    return '&mut ${expr(place)}';
   }
 
   /// `x.as_any()` for a downcast or an `is`: through the handle when `x` is
@@ -7248,6 +7270,7 @@ class RustBackend {
           typeArguments: typeArguments,
         ),
       IrAwait(:final operand) => IrAwait(go(operand)),
+      IrMutRef(:final place) => IrMutRef(go(place)),
       IrUpcast(:final value, :final type, :final handle, :final explicit) =>
         IrUpcast(go(value), type, handle: handle, explicit: explicit),
       IrMapElements(:final collection, :final kind, :final body) =>
@@ -9812,6 +9835,15 @@ class _WalkSelf {
       case IrAwait(:final operand):
         failing = true;
         expression(operand);
+      case IrMutRef(:final place):
+        // Written through: the local is `mut`, a field of `this` makes
+        // the method mutating.
+        if (place is IrLocal) {
+          mutatedLocals.add(place.name);
+          assignedLocals.add(place.name);
+        }
+        if (_rootedAtThis(place)) writesFields = true;
+        expression(place);
       case IrIdentical(:final left, :final right):
         expression(left);
         expression(right);

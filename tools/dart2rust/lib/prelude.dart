@@ -2649,6 +2649,35 @@ fn io_ready<T: 'static>(result: Result<T, FileSystemException>) -> DartFuture<T>
     DartFuture::ready(result.map_err(|e| e.failed()))
 }
 
+/// A list a prelude call writes bytes into: a `Uint8List` (`Vec<u8>`) or a
+/// `List<int>` (`Vec<i64>`), through the `&mut` the front end hands out.
+pub trait DartByteSink {
+    fn sink_len(&self) -> usize;
+    fn put_byte(&mut self, at: usize, byte: u8);
+}
+
+impl DartByteSink for Vec<u8> {
+    fn sink_len(&self) -> usize {
+        self.len()
+    }
+    fn put_byte(&mut self, at: usize, byte: u8) {
+        if at < self.len() {
+            self[at] = byte;
+        }
+    }
+}
+
+impl DartByteSink for Vec<i64> {
+    fn sink_len(&self) -> usize {
+        self.len()
+    }
+    fn put_byte(&mut self, at: usize, byte: u8) {
+        if at < self.len() {
+            self[at] = byte as i64;
+        }
+    }
+}
+
 fn bytes_of(list: &[i64], start: i64, end: Option<i64>) -> Vec<u8> {
     let start = start.max(0) as usize;
     let end = end.map(|e| e.max(0) as usize).unwrap_or(list.len()).min(list.len());
@@ -2928,19 +2957,29 @@ impl RandomAccessFile {
         io_ready(self.try_read(count.max(0) as usize).map(|bytes| bytes.into_iter().map(|b| b as i64).collect()))
     }
 
-    /// `readInto(buffer, [start, end])`: the buffer is a value here, so the
-    /// bytes are read and counted but reach no one.
-    pub fn read_into_sync(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) -> i64 {
-        let wanted = bytes_of(&buffer, start, end).len();
-        match self.try_read(wanted) {
-            Ok(bytes) => bytes.len() as i64,
+    /// `readInto(buffer, [start, end])`: the bytes read into the caller's
+    /// buffer -- handed in as `&mut` (`IrMutRef`), a `Uint8List` or a
+    /// `List<int>` alike (`DartByteSink`) -- and their count.
+    pub fn read_into_sync<B: DartByteSink + ?Sized>(&self, buffer: &mut B, start: i64, end: Option<i64>) -> i64 {
+        match self.try_read_into(buffer, start, end) {
+            Ok(n) => n,
             Err(e) => e.raise(),
         }
     }
 
-    pub fn read_into(&self, buffer: Vec<i64>, start: i64, end: Option<i64>) -> DartFuture<i64> {
-        let wanted = bytes_of(&buffer, start, end).len();
-        io_ready(self.try_read(wanted).map(|bytes| bytes.len() as i64))
+    fn try_read_into<B: DartByteSink + ?Sized>(&self, buffer: &mut B, start: i64, end: Option<i64>) -> Result<i64, FileSystemException> {
+        let len = buffer.sink_len();
+        let start = (start.max(0) as usize).min(len);
+        let end = end.map(|e| (e.max(0) as usize).min(len)).unwrap_or(len).max(start);
+        let bytes = self.try_read(end - start)?;
+        for (i, b) in bytes.iter().enumerate() {
+            buffer.put_byte(start + i, *b);
+        }
+        Ok(bytes.len() as i64)
+    }
+
+    pub fn read_into<B: DartByteSink + ?Sized>(&self, buffer: &mut B, start: i64, end: Option<i64>) -> DartFuture<i64> {
+        io_ready(self.try_read_into(buffer, start, end))
     }
 
     fn try_write(&self, bytes: &[u8]) -> Result<(), FileSystemException> {

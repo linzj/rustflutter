@@ -48,6 +48,22 @@ pub fn install() {
 
 /// What the run did, for the ruler: frames drawn, platform messages seen.
 pub fn report() {
+    // `DART2RUST_DUMP_RENDER_TREE=1`: the render tree as the translated
+    // program describes it (`toStringDeep`), for the ruler against
+    // Flutter's own `debugDumpRenderTree` of the same page.
+    if std::env::var_os("DART2RUST_DUMP_RENDER_TREE").is_some() {
+        match dump_render_tree() {
+            Ok(text) => {
+                eprintln!("=== DART2RUST RENDER TREE BEGIN ===");
+                eprintln!("{}", text);
+                eprintln!("=== DART2RUST RENDER TREE END ===");
+            }
+            Err(e) => eprintln!(
+                "dart2rust runtime: dumping the render tree threw: {}",
+                dart_error_text(&e)
+            ),
+        }
+    }
     let frames = FRAMES.with(|f| *f.borrow());
     let messages = MESSAGES.with(|m| m.borrow().clone());
     eprintln!(
@@ -295,6 +311,21 @@ fn plugin_reply(channel: &str, data: Option<ByteData>) -> Result<Option<ByteData
     }
 }
 
+fn dump_render_tree() -> Result<String, DartError> {
+    use generated::rendering_object::RenderObject;
+    let binding = generated::rendering_binding::renderer_binding_instance()?;
+    let mut out = String::new();
+    for view in binding.render_views()? {
+        out.push_str(&view.to_string_deep(
+            String::new(),
+            None,
+            generated::foundation_diagnostics::DiagnosticLevel::Debug,
+            65,
+        )?);
+    }
+    Ok(out)
+}
+
 fn app_dir(kind: &str) -> String {
     let base = std::env::var("XDG_DATA_HOME")
         .ok()
@@ -317,6 +348,10 @@ fn temp_dir() -> String {
 }
 
 fn answer(symbol: &str, args: Vec<Rc<dyn Object>>) -> Result<Option<Rc<dyn Object>>, DartError> {
+    // `DART2RUST_TRACE_HOST=1`: every native the program reaches, by symbol.
+    if std::env::var_os("DART2RUST_TRACE_HOST").is_some() {
+        eprintln!("dart2rust host: native {}", symbol);
+    }
     let answer: Option<Rc<dyn Object>> = match symbol {
         "PlatformConfigurationNativeApi::GetRootIsolateToken" => Some(int(1)),
         "PlatformConfigurationNativeApi::DefaultRouteName" => Some(string("/")),

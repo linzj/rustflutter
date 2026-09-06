@@ -366,6 +366,16 @@ class IrAwait extends IrExpr {
   final IrExpr operand;
 }
 
+/// A place handed out as `&mut`: the output buffer of a prelude call that
+/// fills its argument (`RandomAccessFile.readInto(buffer)`). Dart's list
+/// argument is a reference the callee writes through; a Rust value would
+/// be a copy the bytes never left (`GetStorage._readFile`, run529).
+class IrMutRef extends IrExpr {
+  IrMutRef(this.place);
+
+  final IrExpr place;
+}
+
 /// `expr is Type`.
 class IrIs extends IrExpr {
   IrIs(this.expr, this.type, {this.negated = false});

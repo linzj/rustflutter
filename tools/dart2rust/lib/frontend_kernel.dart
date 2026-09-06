@@ -6205,6 +6205,15 @@ class KernelFrontend implements TypeWorld {
   /// by the declared Dart type (132 new at ws419).
   var _slotPrelude = false;
 
+  /// The prelude members that write into a list argument, by class and
+  /// name: the positional indices handed out as `&mut` (see `IrMutRef`).
+  static const _outBufferArguments = <String, Map<String, Set<int>>>{
+    'RandomAccessFile': {
+      'readInto': {0},
+      'readIntoSync': {0},
+    },
+  };
+
   IrExpr _argument(
     Expression value,
     FunctionNode? callee,
@@ -6238,6 +6247,17 @@ class KernelFrontend implements TypeWorld {
     // `DART2RUST_TRACE_ARG=<callee name>`: the slot each argument lands
     // in, to stderr.
     final calleeMember = callee?.parent;
+    // A prelude call that *fills* its argument takes the place as `&mut`
+    // (`IrMutRef`), never a copy: the table names them.
+    if (calleeMember is Member) {
+      final outs =
+          _outBufferArguments[calleeMember.enclosingClass?.name]?[calleeMember
+              .name
+              .text];
+      if (outs != null && outs.contains(index)) {
+        return IrMutRef(expression(value));
+      }
+    }
     final tracedArg = Platform.environment['DART2RUST_TRACE_ARG'];
     if (calleeMember is Member &&
         (tracedArg == '*' ||
@@ -8631,18 +8651,30 @@ class KernelFrontend implements TypeWorld {
           value.value is VariableGet) {
         return IrBlock([_instanceSet(value), const IrReturn(null)]);
       }
+      // `return completer.future;` in an `async` body: Dart awaits the
+      // future it returns, and an `async fn` returning `T` has to as well.
+      // Before the `void` rule: `return c ? flush() : _readFile();` in an
+      // `async` `Future<void>` ran the futures detached and returned
+      // (`GetStorage.init`, an uncaught `FormatException` from the read
+      // that then raced the write, run529).
+      final valueType = value == null ? null : _staticType(value);
+      final returnsFuture =
+          _asyncBody &&
+          valueType is InterfaceType &&
+          valueType.classNode.name == 'Future';
+      if (returnsFuture && _voidReturn) {
+        return IrBlock([
+          IrExprStmt(IrAwait(expression(value!))),
+          const IrReturn(null),
+        ]);
+      }
       // Any other `return e;` in a `void` body -- `(x) => day = x` handed
       // to a `void Function(int)` -- runs `e` and returns nothing.
       if (_voidReturn && value != null) {
         return IrBlock([IrExprStmt(expression(value)), const IrReturn(null)]);
       }
       if (value == null) return const IrReturn(null);
-      // `return completer.future;` in an `async` body: Dart awaits the
-      // future it returns, and an `async fn` returning `T` has to as well.
-      final valueType = _staticType(value);
-      if (_asyncBody &&
-          valueType is InterfaceType &&
-          valueType.classNode.name == 'Future') {
+      if (returnsFuture) {
         return IrReturn(IrAwait(expression(value)));
       }
       return IrReturn(

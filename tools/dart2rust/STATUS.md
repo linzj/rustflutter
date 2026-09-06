@@ -6694,7 +6694,7 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws528 | 链：**1015**（−13；新 8/去 20），**可达 crate 142**（多了一个叶 crate）。 | |
 | run528 | **第一帧画出来了**：`1 frame(s) drawn`，`main` 没抛、没 panic；剩下 3 个跳过的 void native（`ScheduleMicrotask`、`SendChannelUpdate`、`EndWarmUpFrame`）。Goal 2（gallery 无头构建、布局、绘制第一帧）达成。 | 下一个 goal 见"下一步"。 |
 | ws529 | 链：**1015**（持平，新 0/去 0），142。可变列表成员的接收者不再收窄拷贝（`children.add(x)` 落回 `self.children.borrow_mut().push(..)`）。 | |
-| run529 | 仍 1 帧、`RUN-DONE exit=0`，无回归。 | |
+| run529 | 仍 1 帧、`RUN-DONE exit=0`——但**只是宿主自己踢的预热帧**：宿主加了 `DART2RUST_TRACE_HOST=1`（每个 native 符号），整轮只到 `SetNeedsReportTimings`/`GetRootIsolateToken`/`ScheduleMicrotask`/`SendChannelUpdate`/`SendPlatformMessage`，没有 `Render`、没有任何画布 native：布局之后管线没走到合成。而且存储目录清空后（首次运行的路径）二进制**中止**：`uncaught FormatException`（`JsonParser` ← `GetStorage._readFile`）——两处一般性错误：(1) async `Future<void>` 函数里 `return c ? flush() : _readFile();` 被当成 void 返回，future 丢掉、脱缰运行；(2) `_file.readInto(buffer)` 传的是 `Uint8List → List<int>` 的拷贝，prelude 的 `read_into` 又只读不填，`buffer` 全零 → `json.decode` 抛。 | (1) async 体里返回 `Future` 值先 `await`（void 也一样）；(2) `IrMutRef`：prelude 里写入实参的成员（表 `_outBufferArguments`：`RandomAccessFile.readInto/readIntoSync` 第 0 位）实参按位置以 `&mut` 传（局部量、cell 字段），prelude `read_into` 经 `DartByteSink` 填 `Vec<u8>`/`Vec<i64>`。夹具 readinto。宿主：`DART2RUST_DUMP_RENDER_TREE=1` 在 `report()` 里用翻译出来的 `toStringDeep` 打印 render 树；参考树由 `~/gallery_upstream/test/dump_render_tree_test.dart`（`flutter test`，800×600，`debugDumpRenderTree`）得到，56 行，存 `scratch/ref_render_tree.txt`。**Goal 3**：翻译出的 render 树与 Flutter 自己的一致（diff 行数 → 0）。 |
 
 ## 下一步(2026-09-05 重铺)
 
