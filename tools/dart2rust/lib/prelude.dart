@@ -4785,7 +4785,10 @@ pub trait DartString {
     fn replace_all(&self, from: String, to: String) -> String;
     /// `replaceFirst(from, to)`: the first occurrence replaced. Named apart
     /// from std's unstable inherent `replace_first`, which outranks a trait's.
-    fn dart_replace_first(&self, from: String, to: String) -> String;
+    /// `replaceFirst(from, to, [startIndex = 0])`: the first occurrence at
+    /// or after `start_index` (Dart's optional third parameter, which the
+    /// front end fills in; `GoogleFontsVariant.toString`, ws563).
+    fn dart_replace_first(&self, from: String, to: String, start_index: i64) -> String;
     fn is_not_empty(&self) -> bool;
     fn pad_left(&self, width: i64, padding: String) -> String;
     fn pad_right(&self, width: i64, padding: String) -> String;
@@ -4848,8 +4851,14 @@ impl DartString for String {
             .unwrap_or(-1)
     }
 
-    fn dart_replace_first(&self, from: String, to: String) -> String {
-        self.replacen(&from, &to, 1)
+    fn dart_replace_first(&self, from: String, to: String, start_index: i64) -> String {
+        let at = self
+            .char_indices()
+            .nth(start_index.max(0) as usize)
+            .map(|(i, _)| i)
+            .unwrap_or(self.len());
+        let (head, tail) = self.split_at(at);
+        format!("{}{}", head, tail.replacen(&from, &to, 1))
     }
 
     fn replace_all(&self, from: String, to: String) -> String {
@@ -5737,10 +5746,21 @@ pub fn future_new<T: Clone + 'static>(
 /// `FutureOr<T>? value`, and what arrives is the `T` in an `Option` (the
 /// front end coerces a plain value into the optional slot); no value is
 /// the `null` of `T` -- `()` for a `Future<void>`.
-pub fn future_value<T: DartNullable + 'static>(value: Option<T>) -> DartFuture<T> {
-    DartFuture::ready(Ok(value
+/// The slot is Dart's `T?` as every declaration spells it -- the
+/// projection `<T as DartNullable>::Or`, which a bare type parameter's
+/// value reaches by `from_option` (`Future<T>.value(value)` in
+/// `CachingAssetBundle.loadStructuredBinaryData<T>`, run569) and a
+/// concrete type's is the plain `Option`.
+pub fn future_value<T: DartNullable + 'static>(value: <T as DartNullable>::Or) -> DartFuture<T> {
+    DartFuture::ready(Ok(T::option(value)
         .or_else(T::dart_null)
         .expect("Future.value() without a value on a non-nullable type")))
+}
+
+/// `Future<T>.value()` with no value: the `null` of `T` (`()` for a
+/// `Future<void>`), with `T` inferred from where the future goes.
+pub fn future_none<T: DartNullable + 'static>() -> DartFuture<T> {
+    future_value::<T>(T::from_option(None))
 }
 
 /// `Future.microtask(computation)`: the same, one pass is a microtask here.

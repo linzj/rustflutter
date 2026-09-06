@@ -284,9 +284,63 @@ class KernelFrontend implements TypeWorld {
     // ..but not a `FutureOr<T>` slot: the prelude takes the `T` there
     // (`Future.value`, `Completer.complete`), so it goes by shape, as it
     // did while the walkers could not see into `FutureOr` (+47 at ws514).
+    // ..and not a slot whose every argument is `dynamic` -- Kernel's
+    // spelling of a raw `Map` or `Iterable` parameter (`Map.unmodifiable(
+    // Map other)`), which the prelude takes generically, as the value's
+    // own `Map<K, V>`; widening the values to `Rc<dyn Object>` there was
+    // a `Map<.., dyn Object>` where `Map<.., dyn ThemeExtension>` came
+    // back out (`ThemeData._themeExtensionIterableToMap`, run567).
+    // Only a collection constructor's own such slot: `postEvent(String,
+    // Map)` and `Timeline.startSync(.., Map? arguments)` are spelled
+    // `Map<Rc<dyn Object>, ..>` by the prelude and are coerced (+5 the
+    // round every all-`dynamic` slot was exempted, ws568).
+    if (declared is InterfaceType &&
+        declared.typeArguments.isNotEmpty &&
+        declared.typeArguments.every((a) => a is DynamicType) &&
+        owner != null &&
+        _collectionConstructor(member) &&
+        _coreCollections.contains(declared.classNode.name)) {
+      return false;
+    }
+    // A bare `Function` slot (`Future.then(onError: Function?)`) is the
+    // prelude's function object (`dart_function_object`, an `Rc<dyn
+    // Object>` carrying the arity `dart_call_error_handler` asks for):
+    // coerced, as a `dynamic` slot is. A closure handed over bare was "a
+    // {closure} called as a function" once the font manifest failed to
+    // load (run572).
+    if (_bareFunctionType(declared)) return true;
     return declared != null &&
         declared is! FutureOrType &&
         (_mentionsDynamic(declared) || _mentionsTypeParameter(declared));
+  }
+
+  /// `dart:core`'s `Function` (nullable or not): a slot with no signature.
+  static bool _bareFunctionType(DartType? t) =>
+      t is InterfaceType &&
+      t.classNode.name == 'Function' &&
+      t.classNode.enclosingLibrary.importUri.toString() == 'dart:core';
+
+  /// The `dart:core` / `dart:collection` classes the prelude has one
+  /// generic collection for each of.
+  static const _coreCollections = {
+    'Map',
+    'List',
+    'Set',
+    'Iterable',
+    'HashMap',
+    'LinkedHashMap',
+    'HashSet',
+    'LinkedHashSet',
+    'Queue',
+    'ListQueue',
+  };
+
+  /// A constructor or factory of one of those (`Map.unmodifiable(Map)`,
+  /// `List.from(Iterable)`): generic over what it is given.
+  static bool _collectionConstructor(Member member) {
+    final owner = member.enclosingClass;
+    if (owner == null || !_coreCollections.contains(owner.name)) return false;
+    return member is Constructor || (member is Procedure && member.isFactory);
   }
 
   /// `dynamic` anywhere in a type: the prelude spells it as translated
@@ -2499,12 +2553,13 @@ class KernelFrontend implements TypeWorld {
     // pattern binds (`{ final double lower; final double upper; if (..)
     // {..} }` for a record pattern, `scaleFontSize`, ws473): the block's
     // last statement is the arm, the ones before it are looked at too.
+    // ..and an arm the AOT compiler removed is left as `{ ; }` after the
+    // last real one (the `null` arm of `Typography._withPlatform`, whose
+    // callers never pass null, run566): trailing empties say nothing.
     final before = <Statement>[];
-    Statement last = body.statements.last;
-    before.addAll(body.statements.take(body.statements.length - 1));
+    Statement? last = _lastMeaningful(body.statements, before);
     while (last is Block && last.statements.isNotEmpty) {
-      before.addAll(last.statements.take(last.statements.length - 1));
-      last = last.statements.last;
+      last = _lastMeaningful(last.statements, before);
     }
     if (last is! IfStatement || last.otherwise != null) return false;
     for (final s in before) {
@@ -2515,6 +2570,24 @@ class KernelFrontend implements TypeWorld {
     }
     return true;
   }
+
+  /// The last statement of `statements` that says anything, with the ones
+  /// before it added to `before`; null when none does.
+  static Statement? _lastMeaningful(
+    List<Statement> statements,
+    List<Statement> before,
+  ) {
+    var end = statements.length;
+    while (end > 0 && _saysNothing(statements[end - 1])) {
+      end--;
+    }
+    if (end == 0) return null;
+    before.addAll(statements.take(end - 1));
+    return statements[end - 1];
+  }
+
+  static bool _saysNothing(Statement s) =>
+      s is EmptyStatement || (s is Block && s.statements.every(_saysNothing));
 
   static final _noCaseMatched = IrLiteral(
     'unreachable!("dart2rust: no case of an exhaustive switch matched")',
@@ -2847,11 +2920,27 @@ class KernelFrontend implements TypeWorld {
   /// another function type gets its adapter from `coerce` (`TextStyle.lerp`
   /// handed to `WidgetStateProperty.lerp<TextStyle?>`, whose `T?` is one
   /// `Option` deeper; 161 tear-offs typed `dynamic` at ws387).
-  IrType? _functionRefType(Procedure target) {
+  IrType? _functionRefType(Member target) {
+    final function = target.function;
+    if (function == null) return null;
     try {
-      return _type(
-        target.function.computeFunctionType(Nullability.nonNullable),
-      );
+      var type = function.computeFunctionType(Nullability.nonNullable);
+      // A generative constructor's function returns nothing in Kernel;
+      // as a value it makes an instance of its class.
+      final cls = target.enclosingClass;
+      if (target is Constructor && cls != null) {
+        type = FunctionType(
+          type.positionalParameters,
+          InterfaceType(cls, Nullability.nonNullable, [
+            for (final p in cls.typeParameters)
+              TypeParameterType(p, Nullability.nonNullable),
+          ]),
+          Nullability.nonNullable,
+          namedParameters: type.namedParameters,
+          requiredParameterCount: type.requiredParameterCount,
+        );
+      }
+      return _type(type);
     } on Unsupported {
       return null;
     }
@@ -6282,6 +6371,20 @@ class KernelFrontend implements TypeWorld {
         module: _topLevelModule(target),
       );
     }
+    // `Future<T>.value()` with no value: no argument, rather than the
+    // omitted optional filled in as `None` -- the prelude's `future_none`
+    // makes the `null` of `T` (`()` for `void`), which a `None` is not
+    // once the slot is the projected `T?` (+4 at ws570).
+    if (owner == 'Future' &&
+        target.name.text == 'value' &&
+        node.arguments.positional.isEmpty) {
+      return IrStaticCall(
+        owner,
+        'value',
+        const [],
+        typeArguments: _keptTypeArguments(declaration, node.arguments),
+      );
+    }
     return IrStaticCall(
       owner,
       // An unnamed factory -- `factory Vector3(x, y, z)` -- has no name in
@@ -6402,6 +6505,20 @@ class KernelFrontend implements TypeWorld {
   /// one needs `'static`, and a borrow cannot give it. Those go back to being
   /// refused, which is the truth about them until objects are counted.
   /// `lower()`, with the slot's owner known (`_slotTranslated`).
+  /// Whether the slot being widened into is a callee's parameter (an
+  /// edge, spelled projected for a bare `T?`) rather than a body's own.
+  bool _argumentEdge = false;
+
+  T _asArgument<T>(T Function() widen) {
+    final was = _argumentEdge;
+    _argumentEdge = true;
+    try {
+      return widen();
+    } finally {
+      _argumentEdge = was;
+    }
+  }
+
   IrExpr _forCallee(
     FunctionNode? callee,
     DartType? declared,
@@ -6538,18 +6655,20 @@ class KernelFrontend implements TypeWorld {
           callee,
           () => _withExpectedReturn(paramType, value, () => expression(value)),
         ),
-        (lowered) => _widened(
-          value,
-          paramType,
-          lowered,
-          // A `T?` slot with `T` bound to a top type is the `Option<Rc<dyn
-          // Object>>` the callee holds (`_topBound`; `DiagnosticsProperty<
-          // Object?>(value: ..)`, ws499).
-          slotIr:
-              slotIr ??
-              _landingSlotIr(callee: callee, index: index) ??
-              _topBound(declaredType, paramType) ??
-              _genericSlotIr(callee, declaredType),
+        (lowered) => _asArgument(
+          () => _widened(
+            value,
+            paramType,
+            lowered,
+            // A `T?` slot with `T` bound to a top type is the `Option<Rc<dyn
+            // Object>>` the callee holds (`_topBound`; `DiagnosticsProperty<
+            // Object?>(value: ..)`, ws499).
+            slotIr:
+                slotIr ??
+                _landingSlotIr(callee: callee, index: index) ??
+                _topBound(declaredType, paramType) ??
+                _genericSlotIr(callee, declaredType),
+          ),
         ),
       ),
     );
@@ -6909,6 +7028,18 @@ class KernelFrontend implements TypeWorld {
         ],
         _typeKept(t.returnType, kept),
         nullable: t.nullability == Nullability.nullable,
+      );
+    }
+    // `FutureOr<T>` with the call's `T` put in: a parser slot `FutureOr<T>
+    // Function(ByteData)` at `loadStructuredBinaryData<AssetManifest>(..)`
+    // takes the `_AssetManifestBin` a factory returns *as* a `dyn
+    // AssetManifest`, which a `T` left in said nothing about (run569).
+    if (t is FutureOrType && kept.isNotEmpty) {
+      final base = _type(t);
+      return IrType(
+        base.name,
+        nullable: base.nullable,
+        arguments: [_typeKept(t.typeArgument, kept)],
       );
     }
     return _type(t);
@@ -7471,11 +7602,15 @@ class KernelFrontend implements TypeWorld {
     _slotTranslated = true;
     _slotPrelude = false;
     try {
+      // ..except into a prelude callee's bare `Function` slot, which
+      // takes the function *object* (see `_calleeTranslated`).
       return _widenedInto(
         value,
         param,
         lowered,
-        translated: translated && !(prelude && lowered is IrClosure),
+        translated:
+            translated &&
+            !(prelude && lowered is IrClosure && !_bareFunctionType(param)),
         slotIr: slotIr,
       );
     } finally {
@@ -7505,20 +7640,24 @@ class KernelFrontend implements TypeWorld {
     IrExpr lowered,
   ) {
     final bare = _throughLets(value);
+    // ..a constructor's the same way (`RoundedRectangleBorder.new` as a
+    // `ShapeBorder Function({side, borderRadius})`, ws570).
     final torn = bare is StaticTearOff
         ? bare.target
-        : bare is ConstantExpression && bare.constant is StaticTearOffConstant
-        ? (bare.constant as StaticTearOffConstant).target
+        : bare is ConstantExpression && bare.constant is TearOffConstant
+        ? (bare.constant as TearOffConstant).target
         : null;
+    final tornFunction = torn?.function;
     if (torn == null ||
+        tornFunction == null ||
         param is! FunctionType ||
         param.namedParameters.isEmpty ||
         param.positionalParameters.length !=
-            torn.function.positionalParameters.length) {
+            tornFunction.positionalParameters.length) {
       return null;
     }
     final declared = [
-      for (final n in torn.function.namedParameters) n.parameterName,
+      for (final n in tornFunction.namedParameters) n.parameterName,
     ];
     final byType = [for (final n in param.namedParameters) n.name];
     if (declared.length != byType.length ||
@@ -7553,12 +7692,17 @@ class KernelFrontend implements TypeWorld {
       IrCall(
         IrClosure(
           params,
+          // ..the result into the slot's return: a constructor's instance
+          // as the trait the slot returns (`Rounded` as a `dyn Shape`).
           IrReturn(
-            IrCallValue(IrLocal('__f'), [
-              ...positional,
-              for (final n in torn.function.namedParameters)
-                byName[n.parameterName]!,
-            ]),
+            coerce(
+              IrCallValue(IrLocal('__f'), [
+                ...positional,
+                for (final n in tornFunction.namedParameters)
+                  byName[n.parameterName]!,
+              ])..rustType = _functionRefType(torn)?.returns,
+              _type(param.returnType),
+            ),
           ),
           _type(param.returnType),
           locals: const ['__f'],
@@ -7675,14 +7819,14 @@ class KernelFrontend implements TypeWorld {
     // `void Function(FlutterErrorDetails)` slot. The adapter passes the
     // defaults, as a call through the slot would.
     if (value is ConstantExpression &&
-        value.constant is StaticTearOffConstant &&
+        value.constant is TearOffConstant &&
         param is FunctionType &&
         given is FunctionType &&
         param.namedParameters.isEmpty &&
         given.namedParameters.isNotEmpty &&
         param.positionalParameters.length ==
             given.positionalParameters.length) {
-      final target = (value.constant as StaticTearOffConstant).target;
+      final target = (value.constant as TearOffConstant).target;
       final params = <IrParam>[];
       final args = <IrExpr>[];
       for (var i = 0; i < param.positionalParameters.length; i++) {
@@ -7690,7 +7834,7 @@ class KernelFrontend implements TypeWorld {
         params.add(IrParam(name, _paramType(param.positionalParameters[i])));
         args.add(IrLocal(name));
       }
-      for (final n in target.function.namedParameters) {
+      for (final n in target.function!.namedParameters) {
         final init = n.initializer;
         args.add(init == null ? _nullLiteral() : expression(init));
       }
@@ -7887,6 +8031,26 @@ class KernelFrontend implements TypeWorld {
     if (actual == null) return lowered;
     if (actual.nullability == Nullability.nullable) return lowered;
     if (actual is DynamicType || actual is NullType) return lowered;
+    // A `T?` slot over a bare kept type parameter of the code here is the
+    // projection `<T as DartNullable>::Or`, not an `Option<T>` -- as the
+    // declarations spell it (`_edgeType`) -- and the value goes in by
+    // `from_option`. A prelude callee's `FutureOr<T>?` is the same slot
+    // (`Completer<T>.complete(value)` in `CachingAssetBundle.
+    // loadStructuredBinaryData<T>`, run569).
+    // Only at an argument edge: a body's own `T? x = ..` local is the
+    // `Option<T>` a body works with (`DiagnosticsProperty.getChildren`,
+    // `_retrieveNewRouteInformation`, +2 at ws570).
+    final awaited = !translated && param is FutureOrType
+        ? param.typeArgument.withDeclaredNullability(Nullability.nullable)
+        : param;
+    if (_argumentEdge &&
+        awaited is TypeParameterType &&
+        _projectedSlot(awaited)) {
+      return coerce(
+        lowered,
+        IrType(awaited.parameter.name ?? 'T', nullable: true, projected: true),
+      );
+    }
     return IrSome(lowered);
   }
 
@@ -8549,6 +8713,22 @@ class KernelFrontend implements TypeWorld {
         constant.target.enclosingClass?.name,
         constant.target.name.text,
       )..rustType = _functionRefType(constant.target);
+    }
+    if (constant is ConstructorTearOffConstant) {
+      // A constructor or factory used as a value: the associated function
+      // the class has for it, by the name the backend declares it under
+      // (`AssetManifest.loadFromAssetBundle` hands `_AssetManifestBin.
+      // fromStandardMessageCodecMessage` to the bundle, run569).
+      final target = constant.target;
+      final cls = target.enclosingClass!;
+      final text = target.name.text;
+      final name = text.isEmpty
+          ? 'new'
+          : text == '_'
+          ? 'new_'
+          : text;
+      return IrFunctionRef(_instanceName(cls), name)
+        ..rustType = _functionRefType(target);
     }
     if (constant is InstanceConstant) {
       // `Zone.root` (the `_RootZone` constant): the prelude's `Zone::root()`.
@@ -12319,6 +12499,8 @@ class _ReferenceCollector extends RecursiveVisitor {
       _class(constant.classNode);
       constant.fieldValues.values.forEach(_constant);
     } else if (constant is StaticTearOffConstant) {
+      _member(constant.target);
+    } else if (constant is ConstructorTearOffConstant) {
       _member(constant.target);
     } else if (constant is ListConstant) {
       constant.entries.forEach(_constant);

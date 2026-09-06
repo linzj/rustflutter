@@ -695,7 +695,13 @@ class RustBackend {
       IrListLiteral(:final elements, :final element) =>
         'vec![${elements.indexed.map((ix) => _listElement(ix.$1, ix.$2, element)).join(', ')}]',
       IrRecord(:final fields) => '(${fields.map(expr).join(', ')})',
-      IrRecordField(:final record, :final index) => '${expr(record)}.$index',
+      // A field read out of a record held in a place is a copy of it: by
+      // value it moved the `TextTheme` out of the tuple the pattern's
+      // cache temporaries read twice (`Typography._withPlatform`, run565).
+      IrRecordField(:final record, :final index) =>
+        record is IrLocal || record is IrField
+            ? '${expr(record)}.$index.clone()'
+            : '${expr(record)}.$index',
       // Spells its key and value types: nothing else says them when the
       // slot is an `Rc<dyn Object>` (E0283, `K` on `Map`), and a written
       // one typed by its first entry alone was untyped where that entry's
@@ -1511,6 +1517,17 @@ class RustBackend {
     // It takes the value the field has when the closure is *made*, which is
     // the same trade round 97 made for every copied field.
     final late = _lateField(field.name);
+    // Inside a trait body (`this_: &__Self`) a field is an accessor, as
+    // `_fieldRead` spells every read there: a shared field's cell through
+    // its `_cell()` accessor, so the closure and the object keep one map
+    // (`CachingAssetBundle.loadStructuredBinaryData`'s callbacks, run571).
+    if (_fieldsAreAccessors) {
+      if (_sharedField(field.name) != null) {
+        return '${read}_cell()$_propagate';
+      }
+      final value = '$read()$_propagate';
+      return late != null ? '$value.unwrap()' : value;
+    }
     if (late != null && _sharedField(field.name) == null) {
       return _isCopy(type(late.type))
           ? '$read.unwrap()'
@@ -2136,7 +2153,10 @@ class RustBackend {
       if (name == 'value' && args.length <= 1) {
         // The type spelled: `Future<void>.value()` alone left `T` to
         // inference (E0283, ws462).
-        return 'future_value$fish(${args.isEmpty ? 'None' : expr(args.single)})';
+        // ..and no value is the projected `None` of that type (`()` for
+        // a `Future<void>`), since the slot is `<T as DartNullable>::Or`.
+        if (args.isEmpty) return 'future_none$fish()';
+        return 'future_value$fish(${expr(args.single)})';
       }
       if ((name == '' || name == 'new') && args.length == 1) {
         return 'future_new(${expr(args.single)})';
@@ -3043,9 +3063,13 @@ class RustBackend {
     }
     // Each branch of a conditional on its own: `s.isEmpty ? StringCharacters
     // ("") : StringCharacters(s)` returned as a `Characters`.
+    // ..each with its implicit upcast spelled, as `expr`'s conditional
+    // does: an arm has no expected type of its own under an unannotated
+    // `let` (the `??=` temporary holding `ThemeData`'s `splashFactory`,
+    // three const classes into one trait, run564).
     if (value is IrConditional) {
-      return 'if ${expr(value.condition)} { ${_returned(value.then)} } '
-          'else { ${_returned(value.otherwise)} }';
+      return 'if ${expr(value.condition)} { ${_returned(_explicitUpcast(value.then))} } '
+          'else { ${_returned(_explicitUpcast(value.otherwise))} }';
     }
     return text;
   }
@@ -4215,7 +4239,19 @@ class RustBackend {
     // `identical(zone, Zone.current)` is the one site that asks, and the
     // prelude has a single zone, so both branches run the callback the same
     // way. 36 call sites were behind this.
-    bool slot(IrExpr e) => e is IrLocal || e is IrStatic;
+    // ..and a promoted nullable slot (`a!` of a `Map<T, U>? a`) of a
+    // value type is that slot: two copies of a map have no identity
+    // beyond the fast path (`mapEquals`' `identical(a, b)`, run574). A
+    // promoted *handle* keeps the pointee rules below.
+    bool slot(IrExpr e) =>
+        e is IrLocal ||
+        e is IrStatic ||
+        (e is IrCall &&
+            e.name == 'clone' &&
+            e.args.isEmpty &&
+            e.target != null &&
+            slot(e.target!)) ||
+        (e is IrNullCheck && slot(e.operand) && !_handleLike(e));
     // A slot against a static *call* -- `identical(zone, Zone.current)`,
     // the one site, in `_invoke` and its siblings (18 callers of those) --
     // binds the call and compares slots: distinct, as above.
@@ -4324,7 +4360,8 @@ class RustBackend {
         IrThis() => 'this',
         IrLocal(:final name) => name,
         IrField(:final name) => 'a field `$name`',
-        _ => e.runtimeType.toString(),
+        IrNullCheck(:final operand) => 'a promoted ${what(operand)}',
+        _ => '${e.runtimeType} (${e.rustType})',
       };
       throw Unsupported(
         '`identical` on something that is not a reference',
