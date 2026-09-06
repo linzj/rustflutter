@@ -5186,8 +5186,11 @@ class RustBackend {
         ? 'match self.iterator() { Ok(__it) => __it, Err(__e) => panic!("uncaught Dart exception: {}", dart_str(&__e)) }'
         : 'self.iterator()';
     final element_ = type(element);
+    // `__to_list`, a name no Dart member has: `ObserverList` overrides
+    // `toList` itself, and the walker beside it was a duplicate (E0592,
+    // ws500).
     _line(
-      'pub fn to_list(&self) -> Vec<$element_> { '
+      'pub fn __to_list(&self) -> Vec<$element_> { '
       'let __it = $fetched; let mut __out: Vec<$element_> = Vec::new(); '
       'while __it.move_next() { __out.push(__it.current()); } __out }',
     );

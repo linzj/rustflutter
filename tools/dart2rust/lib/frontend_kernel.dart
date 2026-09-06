@@ -3821,7 +3821,7 @@ class KernelFrontend implements TypeWorld {
     }
     final element = _iterableElement(static);
     if (element == null) return lowered;
-    return IrCall(lowered, 'to_list', const [])
+    return IrCall(lowered, '__to_list', const [])
       ..rustType = IrType('List', arguments: [_typeNested(element)]);
   }
 
