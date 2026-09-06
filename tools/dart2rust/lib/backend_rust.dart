@@ -3659,24 +3659,11 @@ class RustBackend {
         final declaring = _declaringTrait(qualifier, _identifier(name));
         if (declaring != null) qualifier = declaring;
       }
-      // ..and on another object, through the trait object its handle
-      // holds: a bare `Trait::m(&*x)` is E0782 (`ContainerBoxParentData::
-      // next_sibling` on a `Rc<dyn StackParentData>`, ws531).
-      final heldType = target?.rustType;
-      final viaHeld =
-          library.isAbstract(qualifier) &&
-              target != null &&
-              target is! IrThis &&
-              heldType != null &&
-              !isNullable(heldType) &&
-              library.isAbstract(heldType.name)
-          ? '<dyn ${heldType.name}${heldType.arguments.isEmpty ? '' : '<${heldType.arguments.map(type).join(', ')}>'} as $qualifier${_traitArgsOf(qualifier)}>'
-          : null;
       final path =
           asTrait ??
           (library.isAbstract(qualifier) && (target == null || target is IrThis)
               ? '<${_inSuperFn ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
-              : viaHeld ?? qualifier);
+              : qualifier);
       // A generic method of the trait, on `this` in a trait body through
       // the qualified path: its erased twin, as the plain call goes (the
       // method is `where Self: Sized` in the trait, and `__Self` may be
