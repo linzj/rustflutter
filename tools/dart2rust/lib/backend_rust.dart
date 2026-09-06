@@ -2908,6 +2908,10 @@ class RustBackend {
   /// The prelude's methods that take a callback and so return `Result`
   /// themselves (see `DartError` there).
   static const _preludeFailing = {
+    // `convert` on every prelude converter: a `Converter` runs a Dart
+    // closure, and the two fixed ones (`JsonUtf8Encoder`, `Utf8Decoder`)
+    // return `Result` to match (`JSONMessageCodec.decodeMessage`, ws506).
+    'convert',
     'put_if_absent',
     'for_each',
     'sort_by_dart',

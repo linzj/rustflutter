@@ -6650,6 +6650,8 @@ run471 之后启动路径上剩下的每个停点都是 engine 的 native，所�
 | ws505 | 链：**1221**（−19；比 1300 少 79：新 2/去 67），141。 | |
 | run505 | **过了 `is Uint8List`**；停在 `StandardMessageCodec.writeValue` 的桩：`value is Float64List` 之后读 `value` 没有向 `Vec<f64>` 下转（提升读只认翻译类和 List/Map/Set），下一站 `WriteBuffer` 整族：`_append`/`_resize`/`_add_all` 把 `Uint8List` 实参按 Dart 的 `Iterable<int>` 拓宽成了 `Vec<i64>`（prelude 的 `set_range` 要 `Vec<u8>`）；`done` 里 `this.runtimeType` 在 `&mut self` 上解析到引用本身（E0521）；`ByteData.setUint16`、`ByteBuffer.asInt64List`、`Float64List.buffer/offsetInBytes` 都缺。 | typed_data 的列表也按集合提升（下转到它的 `Vec`）；**typed list 接收者的成员槽位取它的窄元素**（`_narrowSlots` 经 `positionalSlots` 穿到每个实参，`!widen` 形状规则在窄槽位前让路）；struct 方法里 `this.runtimeType` 走 `dart_runtime_type()`；prelude：`ByteData` 16 位读写、`DartByteBuffer` 的 64/16/32 位视图、`DartTypedList` 给所有窄 `Vec` 的 `buffer/offsetInBytes/lengthInBytes`。 |
 | ws506 | 链：**1214**（−7；比 1300 少 86），141。 | |
+| ws507 | 链：**1201**（−13；比 1300 少 99），141。 | |
+| run507 | **`writeValue`/`WriteBuffer` 走通，平台消息编出来了**；`main` 抛 `MissingPluginException`：宿主只答 path_provider，`flutter/keyboard`（`getKeyboardState`，非 Optional 的 `MethodChannel`）和 `flutter/platform`（JSON）没人答；而且宿主解 path_provider 的调用时 `FormatException: Message corrupted`。 | 宿主按名字和 codec 表答 embedder 自己的通道（JSON 一族回 `[null]`，standard 一族回 null 信封，`flutter/keyboard` 回空 map）；`DART2RUST_TRACE_MESSAGES` 下打印收到的字节。同批：TFA 把 `!` 改写成的 `unsafeCast<Fn>(nullableFn)` 作为只去 `?` 的 `as` 处理（函数类型也算）。 |
 
 ## 下一步(2026-09-05 重铺)
 

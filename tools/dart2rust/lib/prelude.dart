@@ -2472,8 +2472,8 @@ pub struct JsonUtf8Encoder;
 impl JsonUtf8Encoder {
     /// `encoder.convert(value)`: the JSON text's UTF-8 bytes, as Dart's
     /// `List<int>` (`JSONMessageCodec.encodeMessage`, ws493).
-    pub fn convert<V: 'static>(&self, value: V) -> Vec<i64> {
-        JsonCodec.encode(value, None).into_bytes().into_iter().map(|b| b as i64).collect()
+    pub fn convert<V: 'static>(&self, value: V) -> Result<Vec<i64>, DartError> {
+        Ok(JsonCodec.encode(value, None).into_bytes().into_iter().map(|b| b as i64).collect())
     }
 
     /// `JsonUtf8Encoder([indent, toEncodable, bufferSize])`: a name with a
@@ -5406,16 +5406,16 @@ pub struct Utf8Decoder;
 
 impl Utf8Decoder {
     /// `convert(codeUnits, [start, end])`.
-    pub fn convert(&self, code_units: Vec<i64>, start: i64, end: Option<i64>) -> String {
+    pub fn convert(&self, code_units: Vec<i64>, start: i64, end: Option<i64>) -> Result<String, DartError> {
         let s = (start.max(0) as usize).min(code_units.len());
         let e = end.map(|n| (n.max(0) as usize).min(code_units.len())).unwrap_or(code_units.len());
-        Utf8Codec.decode(code_units[s..e].to_vec(), Some(true))
+        Ok(Utf8Codec.decode(code_units[s..e].to_vec(), Some(true)))
     }
 
     /// `utf8.decoder.fuse(other)`: the two conversions in a row.
     pub fn fuse<U: 'static>(&self, next: Converter<String, U>) -> Converter<Vec<i64>, U> {
         Converter::new(std::rc::Rc::new(move |bytes: Vec<i64>| {
-            next.convert(Utf8Decoder.convert(bytes, 0, None))
+            next.convert(Utf8Decoder.convert(bytes, 0, None)?)
         }))
     }
 }

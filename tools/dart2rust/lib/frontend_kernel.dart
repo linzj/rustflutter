@@ -738,7 +738,41 @@ class KernelFrontend implements TypeWorld {
   /// mapped through `_type` otherwise. A slot's coercion (`coerce`) reads
   /// this rather than re-deriving the value's shape at each site.
   IrExpr expression(Expression node) {
-    final lowered = _expressionRaw(node);
+    var lowered = _expressionRaw(node);
+    // A member read the type flow analysis narrowed past its declared
+    // null (`widget.builder(..)` under `if (widget.builder != null)`, the
+    // `!` rewritten away in an AOT dill): the Rust member is still the
+    // `Option` it was declared, and the read unwraps it -- the proof,
+    // spelled, as an argument's is (`_widenedInto`). A local's promotion
+    // is handled where it is read (`_localRead`); a projected `T?` has no
+    // `Option` to unwrap.
+    if (node is InstanceGet ||
+        node is InstanceInvocation ||
+        node is StaticGet ||
+        node is StaticInvocation) {
+      final declared = _declaredTypeOf(node);
+      // The node's *own* recorded type, which is where the analysis
+      // writes its narrowing (`getStaticType` recomputes the declared).
+      final narrowed = switch (node) {
+        InstanceGet(:final resultType) => resultType,
+        InstanceInvocation(:final functionType) => functionType.returnType,
+        _ => _staticType(node),
+      };
+      if (declared != null &&
+          declared is! TypeParameterType &&
+          declared.nullability == Nullability.nullable &&
+          narrowed != null &&
+          narrowed is! DynamicType &&
+          narrowed.nullability != Nullability.nullable &&
+          lowered is! IrNullCheck) {
+        // ..whatever the read's recorded type says: it follows the
+        // narrowing, the Rust member does not.
+        final declaredIr = _recordedType(declared);
+        if (declaredIr != null && isNullable(declaredIr)) {
+          lowered = IrNullCheck(lowered)..rustType = _recordedType(narrowed);
+        }
+      }
+    }
     // Arithmetic is typed by its operands, not by Dart: the `double?` Dart
     // gives an inlined `lerpDouble` is an `f64` here (69 `unwrap` on an
     // `f64` at ws357).
@@ -820,10 +854,33 @@ class KernelFrontend implements TypeWorld {
   /// arithmetic the type flow analysis typed non-nullable and Kernel still
   /// writes `double?` for (`lerpDouble`, ws331) -- and the unwrap
   /// otherwise. An operand with no recorded type is unwrapped as Dart says.
-  IrExpr _nullChecked(IrExpr inner) {
+  IrExpr _nullChecked(IrExpr inner, [Expression? operand]) {
+    // Unwrapped once: the read may have been already (`expression`).
+    if (inner is IrNullCheck) return inner;
+    // By the operand's *declared* type first: an AOT dill's type flow
+    // analysis narrows `widget.builder` to non-null under `if (widget.
+    // builder != null)`, and the recorded type follows it, while the Rust
+    // field is the `Option` it was declared (`WidgetsApp.build`, ws506).
+    final declared = operand == null ? null : _declaredTypeOf(operand);
+    final declaredIr = declared == null ? null : _recordedType(declared);
+    if (declaredIr != null) {
+      return isNullable(declaredIr) ? IrNullCheck(inner) : inner;
+    }
     final have = inner.rustType;
     if (have != null && !isNullable(have)) return inner;
     return IrNullCheck(inner);
+  }
+
+  /// The type a member or variable was *declared* with, for the read
+  /// `e` is of one: what the Rust side holds, whatever the flow analysis
+  /// narrowed the read to. Null for any other expression.
+  DartType? _declaredTypeOf(Expression e) {
+    if (e is InstanceGet) return e.interfaceTarget.getterType;
+    if (e is VariableGet) return e.variable.type;
+    if (e is InstanceInvocation) return e.interfaceTarget.function?.returnType;
+    if (e is StaticGet) return e.target.getterType;
+    if (e is StaticInvocation) return e.target.function.returnType;
+    return null;
   }
 
   /// A declared type as recorded on a value: `null` where this compiler
@@ -1752,7 +1809,7 @@ class KernelFrontend implements TypeWorld {
       return IrSetValue(null, node.name.text, stored);
     }
     if (node is NullCheck) {
-      return _nullChecked(expression(node.operand));
+      return _nullChecked(expression(node.operand), node.operand);
     }
     if (node is AsExpression) {
       // `null as T`: the null of `T` -- `None` for a nullable `T`, a panic
@@ -1776,12 +1833,20 @@ class KernelFrontend implements TypeWorld {
       // concrete ones. 12 `&Option<Hct>` where `&Hct` was wanted.
       final from = _staticType(node.operand);
       final to = node.type;
-      if (from != null &&
+      // ..of a function type too: TFA's `unsafeCast<Fn>(widget.builder)`
+      // under `if (widget.builder != null)` is the `!` it rewrote away
+      // (`WidgetsApp.build`, ws507).
+      final removesNullOnly =
+          from != null &&
           from.nullability == Nullability.nullable &&
           to.nullability == Nullability.nonNullable &&
-          from is InterfaceType &&
-          to is InterfaceType &&
-          from.classNode == to.classNode) {
+          ((from is InterfaceType &&
+                  to is InterfaceType &&
+                  from.classNode == to.classNode) ||
+              (from is FunctionType &&
+                  to is FunctionType &&
+                  from.withDeclaredNullability(Nullability.nonNullable) == to));
+      if (removesNullOnly) {
         // `unsafeCast<double>(..)`, the tree shaker's form of `..!`: the
         // value when the operand is not an `Option` here (its recorded
         // type says), the unwrap otherwise.
@@ -1817,7 +1882,7 @@ class KernelFrontend implements TypeWorld {
             from != null &&
                 from is! DynamicType &&
                 from.nullability == Nullability.nullable
-            ? _nullChecked(expression(node.operand))
+            ? _nullChecked(expression(node.operand), node.operand)
             : expression(node.operand);
         // `as T?`: the `Option` the downcast hands back, Dart's null for
         // a `Null` object or another type (`decodeEnvelope(result) as T?`

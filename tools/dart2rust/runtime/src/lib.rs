@@ -20,7 +20,9 @@ use std::rc::Rc;
 
 mod generated;
 use generated::dart_ui;
-use generated::services_message_codecs::{StandardMessageCodec, StandardMethodCodec};
+use generated::services_message_codecs::{
+    JSONMethodCodec, StandardMessageCodec, StandardMethodCodec,
+};
 
 const VIEW_ID: i64 = 0;
 const WIDTH: f64 = 800.0;
@@ -183,14 +185,58 @@ fn send_platform_message(args: &[Rc<dyn Object>]) {
 /// The plugins an embedder registers, hosted here: `path_provider`'s
 /// method channel, answered with directories under the XDG data home
 /// (what `path_provider_linux` does on the Dart side).
+fn standard_codec() -> StandardMethodCodec {
+    StandardMethodCodec {
+        message_codec: dart_rc(StandardMessageCodec {
+            __self: DartSelf::new(),
+        }),
+    }
+}
+
 fn plugin_reply(channel: &str, data: Option<ByteData>) -> Result<Option<ByteData>, DartError> {
+    if std::env::var_os("DART2RUST_TRACE_MESSAGES").is_some() {
+        if let Some(bytes) = &data {
+            let hex: Vec<String> = bytes
+                .dart_bytes()
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect();
+            eprintln!("dart2rust runtime: {} bytes: {}", channel, hex.join(" "));
+        }
+    }
     match channel {
+        // The embedder's own channels (`SystemChannels`), by name and codec:
+        // answered with success and nothing, as an embedder with nothing to
+        // say does -- a plain `MethodChannel` throws `MissingPluginException`
+        // on no reply, and `Title` sets the switcher description while the
+        // first frame builds (run507).
+        "flutter/platform"
+        | "flutter/textinput"
+        | "flutter/navigation"
+        | "flutter/undomanager"
+        | "flutter/localization"
+        | "flutter/spellcheck"
+        | "flutter/scribe" => Ok(Some(
+            JSONMethodCodec {}.encode_success_envelope(dart_null_object())?,
+        )),
+        "flutter/keyboard" => {
+            // `getKeyboardState`: no key is down.
+            let state: Map<Rc<dyn Object>, Rc<dyn Object>> = Map::new();
+            Ok(Some(standard_codec().encode_success_envelope(
+                Rc::new(state) as Rc<dyn Object>,
+            )?))
+        }
+        "flutter/menu"
+        | "flutter/mousecursor"
+        | "flutter/backgesture"
+        | "flutter/platform_views"
+        | "flutter/processtext"
+        | "flutter/contextmenu"
+        | "flutter/restoration" => Ok(Some(
+            standard_codec().encode_success_envelope(dart_null_object())?,
+        )),
         "plugins.flutter.io/path_provider" => {
-            let codec = StandardMethodCodec {
-                message_codec: dart_rc(StandardMessageCodec {
-                    __self: DartSelf::new(),
-                }),
-            };
+            let codec = standard_codec();
             let call = codec.decode_method_call(data)?;
             let directory = match call.method.as_str() {
                 "getApplicationDocumentsDirectory" => Some(app_dir("documents")),
