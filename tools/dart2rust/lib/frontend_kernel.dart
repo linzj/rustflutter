@@ -516,6 +516,16 @@ class KernelFrontend implements TypeWorld {
   Set<Variable> _tryWrites = const {};
 
   DartType? _staticType(Expression e) {
+    // A copy's parameter is typed by its declaration (`_declaredParamTypes`):
+    // the mixin's `S`, erased to its bound, not the `Dialog` this
+    // application put in. Typed by the copy, `oldWidget.label` in the
+    // mixin's super body downcast the `Rc<dyn Widget>` it holds to the one
+    // application's class and panicked on every other (the unapply
+    // fixture, ws536).
+    if (e is VariableGet && e.promotedType == null) {
+      final declaredAs = _declaredParamTypes[e.variable];
+      if (declaredAs != null) return declaredAs;
+    }
     // An instance constant is its own class before it is the slot's declared
     // type -- `getStaticType` answers `Curve` for `Curves.linear`, and the
     // `_Linear` value was never shared into the `Rc<dyn Curve>` (98).
@@ -6770,18 +6780,52 @@ class KernelFrontend implements TypeWorld {
   /// A super call's slots as this class sees them: the declaration's
   /// parameter types (the mixin's, behind a copy) with this class's
   /// arguments put in for the mixin's kept parameters.
+  ///
+  /// A copy whose declaration no longer lists the member (TFA dropped it
+  /// there) is typed the way the trait was: the application's arguments
+  /// taken back out (`_unapplied`) and this class's put in. Untyped, the
+  /// argument went to the mixin's super body as the copy's `Panel` where
+  /// the trait's erased `S` says `Rc<dyn Widget>` (the unapply fixture).
   (List<DartType>?, Map<String, DartType>?) _superSlots(Member target) {
     final original = _originalOf(target);
-    if (identical(original, target) || original is! Procedure) {
-      return (null, null);
+    if (original is! Procedure) return (null, null);
+    final Class? owner;
+    final DartType Function(DartType) declared;
+    if (identical(original, target)) {
+      final application = target.enclosingClass;
+      if (application == null || !application.isAnonymousMixin) {
+        return (null, null);
+      }
+      // A deduplicated application (`dart:mixin_deduplication`) has no
+      // `mixedInType`; the mixin is among its `implementedTypes`.
+      final mixin =
+          application.mixedInType?.classNode ??
+          application.implementedTypes
+              .map((st) => st.classNode)
+              .where((c) => c.isMixinDeclaration)
+              .firstOrNull;
+      if (mixin == null) return (null, null);
+      owner = mixin;
+      declared = (t) => _unapplied(t, application, mixin);
+    } else {
+      owner = original.enclosingClass;
+      declared = (t) => t;
     }
-    final owner = original.enclosingClass;
     final fn = original.function;
+    if (Platform.environment['DART2RUST_TRACE_SUPER'] != null) {
+      stderr.writeln(
+        'TRACE_SUPER ${target.enclosingClass?.name}.${target.name.text} same=${identical(original, target)} owner=${owner?.name} '
+        'slots=${[for (final p in fn.positionalParameters) '${p.type} -> ${declared(p.type)} -> ${_asApplied(declared(p.type), owner)}']}',
+      );
+    }
     return (
-      [for (final p in fn.positionalParameters) _asApplied(p.type, owner)],
+      [
+        for (final p in fn.positionalParameters)
+          _asApplied(declared(p.type), owner),
+      ],
       {
         for (final p in fn.namedParameters)
-          p.parameterName: _asApplied(p.type, owner),
+          p.parameterName: _asApplied(declared(p.type), owner),
       },
     );
   }
@@ -6796,10 +6840,14 @@ class KernelFrontend implements TypeWorld {
   /// A type of a copy in `application`, with the arguments the application
   /// put in for `mixin`'s parameters taken back out: `Slot` where the
   /// application implements `SlottedContainer<Slot, RenderBox>` reads as
-  /// `SlotType` again. An argument that is an erased parameter's is left:
-  /// erased, it is the bound everywhere. Structural, so an argument that
-  /// also occurs on its own in the type is taken for the parameter too --
-  /// the copy is the CFE's substitution, and this is its inverse.
+  /// `SlotType` again. An erased parameter's argument is taken out too:
+  /// the parameter reads as its bound, which is what the trait says
+  /// everywhere -- left in, `RestorationMixin<S>.didUpdateWidget(S)` was
+  /// declared on the trait with one application's `DatePickerDialog`, and
+  /// every other implementor's forwarder mismatched (ws535). Structural,
+  /// so an argument that also occurs on its own in the type is taken for
+  /// the parameter too -- the copy is the CFE's substitution, and this is
+  /// its inverse.
   DartType _unapplied(DartType t, Class application, Class mixin) {
     Supertype? applied;
     if (application.mixedInType?.classNode == mixin) {
@@ -6814,7 +6862,6 @@ class KernelFrontend implements TypeWorld {
     for (var i = 0; i < mixin.typeParameters.length; i++) {
       if (i >= applied.typeArguments.length) break;
       final p = mixin.typeParameters[i];
-      if (_erasedParameter(p)) continue;
       final a = applied.typeArguments[i].withDeclaredNullability(
         Nullability.nonNullable,
       );

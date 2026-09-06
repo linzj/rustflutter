@@ -3415,7 +3415,22 @@ class RustBackend {
     if (name == '!join' && args.length < 2) {
       final given = args.where((a) => !_isDefault(a, '')).toList();
       final separator = given.isEmpty ? '""' : '&${expr(given.single)}';
-      return '$receiver.iter().map(|__e| dart_str(__e))'
+      // Each element as Dart's `toString()` gives it, by the rule the
+      // front end applies to an interpolation's parts: a string is
+      // itself, a number or a bool prints as it is, and only the rest
+      // goes through `dart_str` (the `Debug` rendering). `dart_str` on
+      // every element put quotes around each string: `['a', 'b'].join(',')`
+      // came out as `"a","b"` (the midover fixture, ws535).
+      final element = target?.rustType?.arguments.firstOrNull;
+      const plain = {'String', 'i64', 'f64', 'bool'};
+      final shown = element == null || element.nullable
+          ? 'dart_str(__e)'
+          : element.name == 'String'
+          ? '__e.clone()'
+          : plain.contains(element.name)
+          ? '__e.to_string()'
+          : 'dart_str(__e)';
+      return '$receiver.iter().map(|__e| $shown)'
           '.collect::<Vec<_>>().join($separator)';
     }
     if (name == '!insert' && args.length == 2) {
@@ -8708,8 +8723,13 @@ class RustBackend {
       } else {
         // ..and an async inherent method is a future the forwarder wraps
         // in `Ok` (49 `Pin<Box<impl Future>>` where `Result<..>` goes).
+        // ..unless it is reached through an ancestor's trait (`via`): the
+        // trait's method already returns the `Result`, and `Ok(ModalRoute::
+        // will_pop(self))` doubled it (30 `will_pop` forwarders at ws535).
         final inherent = _inherentCall(have, need, via);
-        final call = have.isAsync && _resultModel ? 'Ok($inherent)' : inherent;
+        final call = have.isAsync && _resultModel && via == null
+            ? 'Ok($inherent)'
+            : inherent;
         // One `Option` short -- the override narrowed `T?` to `T`, which Dart
         // allows, or the trait's `T?` doubled up above -- is a `Some`.
         // The trait's future carries `+ '_` (see `_lifetimed`); the
@@ -9093,6 +9113,26 @@ class RustBackend {
     // `initServiceExtensions()` from its body, and no binding subclass
     // ran either until run441.
     final bases = _inheritedBodies(ctor);
+    // `DART2RUST_TRACE_CTOR=<Class>`: the constructor chain a class's
+    // constructor runs, with each body's statements, to stderr.
+    if (Platform.environment['DART2RUST_TRACE_CTOR'] == cls.name) {
+      String shape(IrStmt? body) => switch (body) {
+        null => 'none',
+        IrBlock(:final statements) =>
+          statements
+              .map(
+                (s) =>
+                    '${s.runtimeType}${s is IrExprStmt ? '(${s.expr.runtimeType})' : ''}',
+              )
+              .toList()
+              .toString(),
+        _ => body.runtimeType.toString(),
+      };
+      stderr.writeln(
+        'TRACE_CTOR ${cls.name}.${ctor.name ?? 'new'} own=${shape(ctor.body)} '
+        'bases=${[for (final (b, c, _) in bases) '${b.name}.${c.name ?? 'new'}:${shape(c.body)}']}',
+      );
+    }
     final built = ctor.body != null || deferred.isNotEmpty || bases.isNotEmpty;
     // A counted class is built *inside* its handle: the body's `this`
     // (`_recorder._canvas = this` in `_NativeCanvas`) is then the `Rc`
@@ -9233,8 +9273,13 @@ class RustBackend {
           );
         }
       }
-      for (final (_, baseCtor, _)
-          in bases.take(kept).toList().reversed.toList().reversed) {
+      // ..the kept bases' bodies, innermost block first -- the ones the
+      // blocks were opened for, not the deepest of `bases`: with bodiless
+      // `Element` and `ComponentElement` trimmed off, `bases.take(kept)`
+      // picked `DiagnosticableTree`'s (none) and `StatefulElement`'s
+      // `state._element = this` never ran (run535: `State.widget` on a
+      // `None`).
+      for (final (_, baseCtor, _) in chain.reversed) {
         if (baseCtor.body != null) {
           final savedReassigned = _reassigned;
           _reassigned = {..._reassigned, ..._assignedIn(baseCtor.body!)};
