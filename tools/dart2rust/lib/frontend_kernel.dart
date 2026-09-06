@@ -752,7 +752,27 @@ class KernelFrontend implements TypeWorld {
       // the CFE invented has none, and one whose name starts with `#` is a
       // temporary from its own lowering.
       final bound = _bound;
-      if (bound != null && node.variable == bound) return IrBound();
+      if (bound != null && node.variable == bound) {
+        // The receiver's element as the body's static type names it: a
+        // `child?.getDryLayout(..)` on a `child` the trait types
+        // `RenderObject?` and the body `RenderBox?` (a mixin's `T extends
+        // RenderBox`) reaches `RenderBox` through the object (ws476).
+        final wanted = node.promotedType ?? node.variable.type;
+        final have = _boundType;
+        if (wanted is InterfaceType &&
+            have != null &&
+            have.name != wanted.classNode.name &&
+            _abstractLike(wanted.classNode) &&
+            !_scalarClass(wanted.classNode) &&
+            _translatedClass(wanted.classNode) &&
+            isBelow(wanted.classNode.name, have.name)) {
+          return IrCastTo(
+            IrBound(),
+            _type(wanted.withDeclaredNullability(Nullability.nonNullable)),
+          );
+        }
+        return IrBound();
+      }
       if (_cascade != null && node.variable == _cascade) {
         return IrLocal(_cascadeName);
       }
@@ -790,11 +810,12 @@ class KernelFrontend implements TypeWorld {
       }
       // A closure parameter retyped to an erased bound (`_closureParamType`)
       // reads as the class it was declared with.
+      final declaredAs = _declaredParamTypes[node.variable];
+      if (declaredAs != null) {
+        return IrLocal(name)..rustType = _type(declaredAs);
+      }
       final retyped = _retyped[node.variable];
       final declaredVar = node.variable.type;
-      if (retyped != null && retyped is! TypeParameterType) {
-        return IrLocal(name)..rustType = _type(retyped);
-      }
       if (retyped is TypeParameterType &&
           _erasedParameter(retyped.parameter) &&
           declaredVar is InterfaceType &&
@@ -1167,13 +1188,25 @@ class KernelFrontend implements TypeWorld {
       // `x != null ? Color(..) : "unspecified"` inside a string: the branches
       // are of different classes and the result is `Object`, so both go
       // through `dart_str` (see the `??` case).
-      // ..no longer: each branch widens into `Object` below, which is
-      // right in every context, and an interpolation's part goes through
-      // `dart_str` on its own (`_stringPart`). Stringifying here turned
-      // `slots != null ? slots[i] : IndexedSlot(..)` -- an `Object?`
-      // returned from `slotFor` -- into a `String` (`updateChildren`,
-      // ws475).
+      // ..only inside a string: elsewhere each branch widens into
+      // `Object` below. Stringifying everywhere turned `slots != null ?
+      // slots[i] : IndexedSlot(..)` -- an `Object?` returned from
+      // `slotFor` -- into a `String` (`updateChildren`, ws475).
       final staticType = node.staticType;
+      final thenType = _staticType(node.then);
+      final elseType = _staticType(node.otherwise);
+      if (_inStringPart &&
+          staticType is InterfaceType &&
+          staticType.classNode.name == 'Object' &&
+          thenType is InterfaceType &&
+          elseType is InterfaceType &&
+          thenType.classNode != elseType.classNode) {
+        return IrConditional(
+          expression(condition),
+          IrStaticCall(null, 'dart_str', [expression(node.then)]),
+          IrStaticCall(null, 'dart_str', [expression(node.otherwise)]),
+        );
+      }
       // Each branch widens into the conditional's own type: `m == null ?
       // null : hashAll(m)` is an `Option`, and the second branch an `i64`
       // until it is wrapped (4 `if` and `else` have incompatible types).
@@ -1271,7 +1304,14 @@ class KernelFrontend implements TypeWorld {
       // A part that is neither text nor a number goes through `dart_str`
       // (the prelude's `Debug` rendering); the primitives print as they are.
       IrExpr part(Expression e) {
-        final lowered = expression(e);
+        final outerPart = _inStringPart;
+        _inStringPart = true;
+        final IrExpr lowered;
+        try {
+          lowered = expression(e);
+        } finally {
+          _inStringPart = outerPart;
+        }
         if (e is StringLiteral || lowered is IrLiteral) return lowered;
         final type = _staticType(e);
         final name = type is InterfaceType ? type.classNode.name : null;
@@ -2207,6 +2247,11 @@ class KernelFrontend implements TypeWorld {
   /// not what Kernel says, and an argument made of it is widened from it.
   final Map<Variable, DartType> _retyped = {};
 
+  /// A parameter of a mixin application's copy of a method, typed by the
+  /// mixin's own declaration (see `_lowerProcedure`'s `signature`): its
+  /// reads are of that type, the trait's.
+  final Map<Variable, DartType> _declaredParamTypes = {};
+
   IrType _closureReturnType(FunctionType? expected, FunctionNode fn) {
     if (expected != null) {
       try {
@@ -2825,7 +2870,12 @@ class KernelFrontend implements TypeWorld {
         }
         final receiver = expression(value);
         final previous = _bound;
+        final previousType = _boundType;
         _bound = node.variable;
+        final receiverType = receiver.rustType;
+        _boundType = receiverType == null
+            ? null
+            : IrType(receiverType.name, arguments: receiverType.arguments);
         try {
           // `oldLayer?._nativeLayer` with `_nativeLayer` a `T?`: one
           // `Option`, not two (8 `Option<Option<..>>` in dart:ui).
@@ -2840,6 +2890,7 @@ class KernelFrontend implements TypeWorld {
                 memberType.nullability == Nullability.nullable,
           );
         } finally {
+          _boundType = previousType;
           _bound = previous;
         }
       }
@@ -3286,6 +3337,13 @@ class KernelFrontend implements TypeWorld {
   /// read as `T?` (the coercion rule unwraps where a `T` goes), written
   /// with `Some`.
   final _optionLocals = <Variable>{};
+
+  /// The element type of the receiver `_bound` stands for (see the `?.`
+  /// lowering), for narrowing a read of it.
+  IrType? _boundType;
+
+  /// Set while a string interpolation's part is lowered.
+  bool _inStringPart = false;
 
   DartType _localType(Variable v) => _optionLocals.contains(v)
       ? v.type.withDeclaredNullability(Nullability.nullable)
@@ -5679,8 +5737,46 @@ class KernelFrontend implements TypeWorld {
 
   /// The type a write into `interface` on `receiver` must produce: the
   /// landing member's -- a mixin clone's field, or the trait's setter.
+  /// The mixin's own member behind a copy the CFE made in an anonymous
+  /// application (`_MixinApplication8&RenderBox&RenderObjectWithChildMixin
+  /// .child=` for `RenderObjectWithChildMixin.child=`): what the trait
+  /// declares, with the mixin's parameter (`ChildType?`) where the copy
+  /// has the application's argument (`RenderBox?`).
+  Member _originalOf(Member m) {
+    final owner = m.enclosingClass;
+    if (owner == null || !owner.isAnonymousMixin) return m;
+    final setter = m is Procedure && m.isSetter;
+    final getter = m is Procedure && m.isGetter;
+    for (final st in [
+      if (owner.mixedInType != null) owner.mixedInType!,
+      ...owner.implementedTypes,
+    ]) {
+      for (final o in st.classNode.members) {
+        if (o.name.text != m.name.text) continue;
+        if (m is Field) {
+          if (o is Field) return o;
+          continue;
+        }
+        if (o is Procedure && o.isSetter == setter && o.isGetter == getter) {
+          return o;
+        }
+      }
+    }
+    return m;
+  }
+
+  /// Where a write lands for its slot's type: through the trait's setter
+  /// (a qualified write) it is the declaring member's, the mixin's own
+  /// for a copy in an application (`this.child = child` in `RenderView`'s
+  /// constructor, `RenderBox?` there and `RenderObject?` in the trait,
+  /// ws476); a plain write lands on the class's own.
+  Member _writeLanding(Member interface, Expression receiver) =>
+      _setterQualifier(receiver, interface) != null
+      ? _originalOf(interface)
+      : _landing(interface, receiver);
+
   DartType _writeSlot(Member interface, Expression receiver) {
-    final landing = _landing(interface, receiver);
+    final landing = _writeLanding(interface, receiver);
     final declared = landing is Procedure && landing.isSetter
         ? landing.function.positionalParameters.single.type
         : landing.setterType;
@@ -5695,7 +5791,7 @@ class KernelFrontend implements TypeWorld {
 
   /// `_writeSlot` in the IR, `Option` layers kept apart (`_typeKept`).
   IrType? _writeSlotIr(Member interface, Expression receiver) {
-    final landing = _landing(interface, receiver);
+    final landing = _writeLanding(interface, receiver);
     final declared = landing is Procedure && landing.isSetter
         ? landing.function.positionalParameters.single.type
         : landing.setterType;
@@ -8967,18 +9063,20 @@ class KernelFrontend implements TypeWorld {
       ) {
         final p = own.positionalParameters[i];
         final t = sig.positionalParameters[i].type;
-        if (t != p.type) _retyped[p] = t;
+        if (t != p.type) _declaredParamTypes[p] = t;
       }
       for (final p in own.namedParameters) {
         for (final q in sig.namedParameters) {
           if (q.parameterName == p.parameterName && q.type != p.type) {
-            _retyped[p] = q.type;
+            _declaredParamTypes[p] = q.type;
           }
         }
       }
+      // ..and its returns widen into the declaration's return type.
+      if (!node.isAbstract) _expectedReturn = sig.returnType;
     }
     DartType paramType(Variable p, DartType declared) =>
-        _retyped[p] ?? declared;
+        _declaredParamTypes[p] ?? declared;
     // An unnamed factory has no name in Kernel; an empty identifier stopped
     // all 37 members of vector_math's classes through `_computeFailing`.
     // `new`, as the backend spells the call.

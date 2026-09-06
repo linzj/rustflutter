@@ -722,8 +722,11 @@ class RustBackend {
         name,
         value,
       ),
+      // The branches have no expected type from each other: an upcast in
+      // one is explicit (`dart_object(FontWeight)` against
+      // `Rc::new("unspecified")`, ws476).
       IrConditional(:final condition, :final then, :final otherwise) =>
-        'if ${expr(condition)} { ${expr(then)} } else { ${expr(otherwise)} }',
+        'if ${expr(condition)} { ${expr(_explicitUpcast(then))} } else { ${expr(_explicitUpcast(otherwise))} }',
       IrIs(expr: final operand, :final type, :final negated) => _isTest(
         operand,
         type,
@@ -1110,7 +1113,7 @@ class RustBackend {
                     ? '${owns ? 'move ' : ''}|$params| -> Result<Option<DartFuture<_>>, $_error> { $again Ok(Some($spawned)) }'
                     : '${owns ? 'move ' : ''}|$params| -> Result<DartFuture<_>, $_error> { $again Ok($spawned) }')
               : '${owns ? 'move ' : ''}|$params| -> Result<_, $_error> { $again let _ = $spawned; Ok(()) }')
-        : '${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<_, $_error>' : ''} { $body }';
+        : '${owns ? 'move ' : ''}|$params|${_resultModel ? ' -> Result<${_closureReturnSpelled(node.returns)}, $_error>' : ''} { $body }';
     _cellLocals = savedCells;
     final whole = owns ? '{ $bindings $closure }' : closure;
     return node.boxed ? 'std::rc::Rc::new($whole)' : whole;
@@ -1638,6 +1641,16 @@ class RustBackend {
     final t = map?.rustType;
     if (t == null || t.arguments.length != 2) return '';
     return t.arguments[1].nullable ? '.flatten()' : '';
+  }
+
+  /// A closure's return type, spelled where inference has nothing to go
+  /// on: a body ending in `Ok(None)` -- a `Null`-returning closure handed
+  /// to the prelude's `then` -- left `Option<_>` open (`_initKeyboard`,
+  /// run477). Elsewhere `_`, as before.
+  String _closureReturnSpelled(IrType returns) {
+    if (returns.isFunction || returns.name == 'raw') return '_';
+    if (returns.name == 'Null' || returns.nullable) return type(returns);
+    return '_';
   }
 
   /// Whether the null-aware body being printed binds its value by value
