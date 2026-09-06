@@ -5509,10 +5509,72 @@ impl FromDynamic for std::rc::Rc<dyn Object> {
     }
 }
 
-impl FromDynamic for Option<std::rc::Rc<dyn Object>> {
+/// A nullable of anything convertible: Dart's null (the `Null` object)
+/// is `None`, else the value converted.
+impl<T: FromDynamic> FromDynamic for Option<T> {
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
-        Some(dart_nullable(value.clone()))
+        let object: &dyn Object = value.as_ref();
+        if object.as_any().is::<Null>() {
+            return Some(None);
+        }
+        T::from_dynamic(value).map(Some)
     }
+}
+
+/// A generic method of a trait, called through a trait object: Rust keeps
+/// such a method out of the vtable (`where Self: Sized`), so the call goes
+/// by the method's *erased twin* (`m__erased`, its type parameters read as
+/// `Object`) and the result comes back to what the call site declared
+/// through this conversion (`MethodChannel.invokeMethod<String>` on a
+/// `MethodChannel` field, 19 stubs at ws479).
+pub trait CastErased<To> {
+    fn cast_erased(self) -> To;
+}
+
+fn erased_cast_failed(value: &std::rc::Rc<dyn Object>) -> ! {
+    panic!(
+        "uncaught Dart exception: TypeError: a value of type '{}' came back through an erased method where another type was declared",
+        value.runtime_type().name
+    )
+}
+
+impl<T: FromDynamic> CastErased<T> for std::rc::Rc<dyn Object> {
+    fn cast_erased(self) -> T {
+        match T::from_dynamic(&self) {
+            Some(v) => v,
+            None => erased_cast_failed(&self),
+        }
+    }
+}
+
+impl<T: FromDynamic> CastErased<Option<T>> for Option<std::rc::Rc<dyn Object>> {
+    fn cast_erased(self) -> Option<T> {
+        match self {
+            None => None,
+            Some(v) => match T::from_dynamic(&v) {
+                Some(t) => Some(t),
+                None => erased_cast_failed(&v),
+            },
+        }
+    }
+}
+
+/// `invokeMethod<void>`: whatever came back is dropped.
+impl CastErased<()> for Option<std::rc::Rc<dyn Object>> {
+    fn cast_erased(self) {}
+}
+
+impl<A: Clone + 'static, B: 'static> CastErased<DartFuture<B>> for DartFuture<A>
+where
+    A: CastErased<B>,
+{
+    fn cast_erased(self) -> DartFuture<B> {
+        self.then(std::rc::Rc::new(|v: A| Ok(v.cast_erased())), None)
+    }
+}
+
+pub fn dart_cast_erased<To, From: CastErased<To>>(value: From) -> To {
+    value.cast_erased()
 }
 
 macro_rules! from_dynamic_scalar {

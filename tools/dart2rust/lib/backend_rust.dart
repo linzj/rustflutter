@@ -602,6 +602,7 @@ class RustBackend {
             typeArguments: typeArguments,
             asyncFn: e.asyncFn,
             asyncTarget: e.asyncTarget,
+            resultType: e.rustType,
           ),
           diverges && fails,
         ),
@@ -2744,6 +2745,7 @@ class RustBackend {
     List<IrType> typeArguments = const [],
     bool asyncFn = false,
     bool asyncTarget = false,
+    IrType? resultType,
   }) {
     final turbofish = typeArguments.isEmpty
         ? ''
@@ -3120,6 +3122,13 @@ class RustBackend {
         final selfType = _fieldsAreAccessors
             ? 'dyn ${cls.name}${_useArguments(cls)}'
             : 'Self';
+        if (typeArguments.isNotEmpty &&
+            resultType != null &&
+            _fieldsAreAccessors) {
+          return 'dart_cast_erased::<${type(resultType)}, _>('
+              '<$selfType as $through${_traitArgsOf(through)}>::${_identifier(name)}__erased'
+              '(&*$_selfName${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})$_propagate)';
+        }
         return _asyncValue(
           '<$selfType as $through${_traitArgsOf(through)}>::${_identifier(name)}$turbofish'
           '(&*$_selfName${args.isEmpty ? '' : ', '}${args.map(expr).join(', ')})${suffixFor(_fieldsAreAccessors)}',
@@ -3154,6 +3163,18 @@ class RustBackend {
     // `MethodChannel.setMethodCallHandler`'s super fn, run458).
     final viaTrait =
         _fieldsAreAccessors && (target == null || target is IrThis);
+    // A generic method through a trait object: its erased twin, and the
+    // result cast back to what this call declared (see the prelude's
+    // `CastErased`).
+    if (typeArguments.isNotEmpty &&
+        resultType != null &&
+        receiverClass != null &&
+        library.isAbstract(receiverClass) &&
+        (target is! IrThis || _fieldsAreAccessors)) {
+      return 'dart_cast_erased::<${type(resultType)}, _>('
+          '$receiver.${_identifier(name)}__erased'
+          '(${args.map(expr).join(', ')})$_propagate)';
+    }
     if (Platform.environment['DART2RUST_TRACE_BACKEND'] == name) {
       stderr.writeln(
         'TRACE_BACKEND $name asyncFn=$asyncFn fails=$fails failing=$failing accessors=$_fieldsAreAccessors target=${target.runtimeType} self=$_selfName cls=${cls.name}',
@@ -4666,6 +4687,7 @@ class RustBackend {
           ' -> ${_wrapped(method.isAsync ? _futureOf(method) : _spelledReturn(type(method.returnType)))}${_sizedBound(method)};',
         );
         _line('');
+        _emitErasedTwin(method, defaultBody: false);
       });
     }
     for (final method in cls.methods) {
@@ -4702,6 +4724,10 @@ class RustBackend {
         _indent--;
         _line('}');
         _line('');
+        _emitErasedTwin(
+          method,
+          defaultBody: !_superFailed.contains(method.name),
+        );
       });
     }
     _indent--;
@@ -5397,6 +5423,81 @@ class RustBackend {
         _superFailed.add(method.name);
       }
     }
+  }
+
+  /// A generic method's type parameters read as `Object` (the erased
+  /// twin's view; see the prelude's `CastErased`).
+  Map<String, IrType> _erasure(IrMethod method) => {
+    for (final p in method.typeParameters) p: const IrType('Object'),
+  };
+
+  String _erasedSignature(IrMethod method) {
+    final erasure = _erasure(method);
+    final params = [
+      if (!method.isStatic) _sharedMutation(method) ? '&mut self' : '&self',
+      ...method.params.map(
+        (p) => _param(
+          IrParam(
+            p.name,
+            _substituteType(p.type, erasure),
+            named: p.named,
+            hasDefault: p.hasDefault,
+            kept: p.kept,
+          ),
+          owned: false,
+        ),
+      ),
+    ].join(', ');
+    final returns = _substituteType(method.returnType, erasure);
+    final spelled = method.isAsync
+        ? 'DartFuture<${type(_awaited(returns))}>'
+        : _spelledReturn(type(returns));
+    return 'fn ${_methodName(method)}__erased($params) -> ${_wrapped(spelled)}';
+  }
+
+  /// The erased twin of a generic trait method, in the trait: declared
+  /// beside a required method, with the super function's body (its type
+  /// parameters `Rc<dyn Object>`) beside a default one. Object-safe, so
+  /// a `dyn` receiver reaches the method through it.
+  void _emitErasedTwin(IrMethod method, {required bool defaultBody}) {
+    if (method.typeParameters.isEmpty || method.isStatic) return;
+    if (!defaultBody) {
+      _line('${_erasedSignature(method)};');
+      _line('');
+      return;
+    }
+    _line('${_erasedSignature(method)} {');
+    _indent++;
+    final erased = method.typeParameters
+        .map((_) => 'std::rc::Rc<dyn Object>')
+        .join(', ');
+    final spelled =
+        '::<Self${[...cls.typeParameters].map((p) => ', $p').join()}, $erased>';
+    final call =
+        '${superFn(cls.name, method.name, isSetter: method.isSetter)}$spelled('
+        '${['self', ...method.params.map((p) => snake(p.name))].join(', ')})';
+    _line(method.isAsync && _resultModel ? 'Ok($call)' : call);
+    _indent--;
+    _line('}');
+    _line('');
+  }
+
+  /// The erased twin in an implementer: through the class's own generic
+  /// version, at `Rc<dyn Object>`.
+  void _emitErasedImplTwin(IrMethod need, String trait) {
+    if (need.typeParameters.isEmpty || need.isStatic) return;
+    _line('${_erasedSignature(need)} {');
+    _indent++;
+    final erased = need.typeParameters
+        .map((_) => 'std::rc::Rc<dyn Object>')
+        .join(', ');
+    _line(
+      '<Self as $trait${_traitArgsOf(trait)}>::${_methodName(need)}::<$erased>'
+      '(${['self', ...need.params.map((p) => snake(p.name))].join(', ')})',
+    );
+    _indent--;
+    _line('}');
+    _line('');
   }
 
   /// `where Self: Sized` for a generic method on a trait, or nothing.
@@ -7790,6 +7891,8 @@ class RustBackend {
       _indent--;
       _line('}');
       _line('');
+      final implFor = _implFor;
+      if (implFor != null) _emitErasedImplTwin(need, implFor);
     }
   }
 

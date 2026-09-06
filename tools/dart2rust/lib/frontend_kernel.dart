@@ -6929,11 +6929,16 @@ class KernelFrontend implements TypeWorld {
               )
             : rebuilt;
       }
+      // Typed, so a slot of another type adapts it: `const
+      // OptionalMethodChannel('flutter/menu')` into a `MethodChannel`
+      // field wants the handle (`DefaultPlatformMenuDelegate`, run482).
       final instance = IrConstInstance(IrType(_instanceName(cls)), {
         for (final entry in byName.entries)
           entry.key: _constant(entry.value, node),
-      });
-      return _isOpen(cls) ? IrUpcast(instance, IrType(cls.name)) : instance;
+      })..rustType = IrType(_instanceName(cls));
+      return _isOpen(cls)
+          ? (IrUpcast(instance, IrType(cls.name))..rustType = IrType(cls.name))
+          : instance;
     }
     throw Unsupported('constant ${constant.runtimeType}', _sample(node));
   }
