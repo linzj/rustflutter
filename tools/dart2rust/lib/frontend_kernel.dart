@@ -7664,27 +7664,16 @@ class KernelFrontend implements TypeWorld {
   /// ws311). A counted class's handle is upcast (`IrUpcast.handle`), a
   /// value put behind a fresh one. Only a named value: `this` may be a
   /// struct behind `&self` (ws312).
+  /// An element handed to a list's `remove`/`indexOf`/`contains`: into
+  /// the list's element type by the one rule, as an `add` is -- a
+  /// `Disposer` into a `List<Disposer?>.remove` wants its `Some` (get's
+  /// `ListNotifier.removeListener`, ws493), a subclass its handle.
   IrExpr _intoElement(IrExpr lowered, Expression value, DartType? collection) {
     if (collection is! InterfaceType || collection.typeArguments.isEmpty) {
       return lowered;
     }
     final element = collection.typeArguments.first;
-    final given = _staticType(value);
-    if (element is! InterfaceType ||
-        given is! InterfaceType ||
-        value is ThisExpression ||
-        element.nullability == Nullability.nullable ||
-        given.nullability == Nullability.nullable ||
-        !_translatedClass(element.classNode) ||
-        !_translatedClass(given.classNode) ||
-        !_abstractLike(element.classNode) ||
-        _abstractLike(given.classNode) ||
-        element.classNode == given.classNode) {
-      return lowered;
-    }
-    return _closureCallsMethod(given.classNode)
-        ? IrUpcast(lowered, _type(element), handle: true)
-        : IrCall(lowered, '!rc', const []);
+    return _widened(value, element, lowered);
   }
 
   /// Whether a type names an erased parameter anywhere in it.
