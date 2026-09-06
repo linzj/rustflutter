@@ -6571,6 +6571,7 @@ r131 的 `this`-as-handle 只去掉 2 条 E0053;剩 16 条的根是 **`dynamic` 
 | ws470 结果 | 编译尺子 **1553**（同 ws469），141 crate：量的是 future 来源标签，不动桩数。另发现 prelude 调度器的一个洞：一轮里**新 spawn 出来的任务**要等某个 wake 才会被 poll，没人 wake 就一直挂着（`initStorage` 的 async 闭包体就是这样）——改成同轮有新任务就再跑一轮。 |
 | run470 | 标签报出："1 future(s) still pending: WidgetsFlutterBinding.new"——只有 `_firstFrameCompleter` 在等，**main 自己的 future 已经完成了**却仍被报成 waiting。真相：`run_main` 靠 `dart_woken()` 决定要不要再 poll main，而 `run_until_idle` 里自己也调 `dart_woken()` 把标志吃掉了——任务完成时发给 main 的 wake 被调度器消费，main 再没被 poll。通用修法：`run_until_idle` 返回"这一轮干了没有活"，干了就重新 poll main。另：`GetStorage._internal` 是桩——`Future<bool>(() async {..})` 的 async 闭包在 `FutureOr<T> Function()` 槽上该返回 `Ok(FutureOr::future(spawn))`。 |
 | ws471 结果 | 编译尺子 **1552**（ws470 1553，−1），141 crate。 |
+| run471 | **无头尺子到头了**。修掉 `run_main` 的 wake 丢失和 `GetStorage._internal` 的桩之后，`main` 跑完 binding 构造、`GetStorage.init` → `_internal` → `initStorage`，最后以 Dart 异常结束（错误文本改为按 prelude 错误类的 `Display` 打印）："Bad state: The BackgroundIsolateBinaryMessenger.instance value is invalid until … ensureInitialized" —— 来自 `MethodChannel._findBinaryMessenger()`：`ServicesBinding.rootIsolateToken == null`，因为无宿主时 `GetRootIsolateToken` 答的是 0，`RootIsolateToken.instance` 把 0 当"没有"。也就是说：启动路径上剩下的每一个停点都是 engine 的 native（这一个之后是 path_provider 的 platform message 回复）。翻译这半到此为止；下一半是 runtime crate（native host + `Dart_*`），见〈两条路〉。 |
 
 ## 下一步(2026-09-05 重铺)
 
