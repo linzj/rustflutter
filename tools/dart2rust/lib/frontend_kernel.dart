@@ -496,7 +496,7 @@ class KernelFrontend implements TypeWorld {
     _expectedReturn = null;
     final env = typeEnvironment;
     _typeContext = env == null ? null : StaticTypeContext(member, env);
-    _capturedWrites = _CapturedWrites.of(member);
+    _capturedWrites = _CapturedWrites.of(member, _fillsParameter);
     _tryWrites = _TryWrites.of(member);
   }
 
@@ -881,11 +881,38 @@ class KernelFrontend implements TypeWorld {
         ),
         _ => null,
       };
+      // A generic callee's `T?` result, instantiated with a type
+      // parameter of the code here, arrives as the callee's edge spells
+      // it -- `<T as DartNullable>::Or` -- not as the body's `Option<T>`:
+      // typed as the edge, so the coercion into a body slot converts it
+      // (`dependOnInheritedWidgetOfExactType<T>()` returned into
+      // `inheritFrom<T>`'s `T?`, wrapped in a `from_option` that took an
+      // `Option`, ws543).
+      final declaredReturn = switch (node) {
+        InstanceInvocation(:final interfaceTarget) =>
+          interfaceTarget.function?.returnType,
+        StaticInvocation(:final target) => target.function.returnType,
+        _ => null,
+      };
+      final calleeParams = switch (node) {
+        InstanceInvocation(:final interfaceTarget) =>
+          interfaceTarget.function?.typeParameters ?? const <TypeParameter>[],
+        StaticInvocation(:final target) => target.function.typeParameters,
+        _ => const <TypeParameter>[],
+      };
+      final edgeResult =
+          declaredReturn is TypeParameterType &&
+          declaredReturn.nullability == Nullability.nullable &&
+          calleeParams.contains(declaredReturn.parameter) &&
+          !_erasedParameter(declaredReturn.parameter) &&
+          static is TypeParameterType &&
+          static.nullability == Nullability.nullable &&
+          _projectedSlot(static);
       if (projected != null) {
         lowered.rustType = projected;
       } else if (static != null) {
         try {
-          lowered.rustType = _type(static);
+          lowered.rustType = edgeResult ? _typeNested(static) : _type(static);
         } on Unsupported {
           // A type this compiler has no spelling for: the node stays
           // untyped, and a coercion into a slot falls back to the shape
@@ -915,6 +942,76 @@ class KernelFrontend implements TypeWorld {
                 'dart:core' &&
             substituted.nullability == Nullability.nullable);
     return top ? const IrType('dynamic', nullable: true) : null;
+  }
+
+  /// Dart's `toString()` of `lowered`, typed `type`, as a `String`: the
+  /// `DartAny` protocol for a translated class (`!dart_to_string`: its
+  /// own override, an enum's `X.value`, `Instance of` otherwise), `null`
+  /// or that for a nullable one, and the object's own answer
+  /// (`dart_object_str`: the registry, the core values) for a `dynamic`,
+  /// an `Object`, a type parameter, a core value this lowering does not
+  /// spell. Under `explicit` -- an `x.toString()` call -- a `String`
+  /// or number receiver is left to the ordinary call and null is
+  /// returned. `dart_str` (Rust's `Debug`) printed `Some(1)`, `Type {
+  /// name: .. }` and `Size { _width: .. }` where Dart says `1`, `Size`
+  /// and `Size(800.0, 600.0)` (ws543).
+  IrExpr? _stringOf(IrExpr lowered, DartType? type, {bool explicit = false}) {
+    const text = IrType('String');
+    IrExpr nullOr(IrExpr inner) => IrIfNull(
+      IrNullAware(lowered, inner)
+        ..rustType = const IrType('String', nullable: true),
+      IrLiteral('"null".to_string()', const IrType('raw'))..rustType = text,
+      nullableResult: false,
+      eager: true,
+    )..rustType = text;
+    if (type is InterfaceType) {
+      final node = type.classNode;
+      final core = node.enclosingLibrary.importUri.toString() == 'dart:core';
+      final nullable = type.nullability == Nullability.nullable;
+      if (_translatedClass(node) && !core) {
+        final own = IrCall(IrBound(), '!dart_to_string', const [])
+          ..rustType = text;
+        if (!nullable) {
+          return IrCall(lowered, '!dart_to_string', const [])..rustType = text;
+        }
+        return nullOr(own);
+      }
+      // A `List`/`Set`: `[a, b]` / `{a, b}`, each element by this rule
+      // (`join`'s element rule in the backend); a nullable one `null` or
+      // that.
+      if (core && const {'List', 'Set'}.contains(node.name)) {
+        final open = node.name == 'List' ? '[' : '{';
+        final close = node.name == 'List' ? ']' : '}';
+        IrExpr joined(IrExpr list) => IrInterpolation([
+          IrLiteral(open, const IrType('String')),
+          IrCall(list, '!join', [IrLiteral(', ', const IrType('String'))])
+            ..rustType = text,
+          IrLiteral(close, const IrType('String')),
+        ])..rustType = text;
+        if (!nullable) return joined(lowered);
+        return nullOr(
+          joined(
+            IrBound()
+              ..rustType = _typeNested(
+                type.withDeclaredNullability(Nullability.nonNullable),
+              ),
+          ),
+        );
+      }
+      if (core &&
+          const {'String', 'int', 'double', 'bool'}.contains(node.name)) {
+        if (!nullable) return explicit ? null : lowered;
+        final inner = switch (node.name) {
+          'String' => IrCall(IrBound(), 'clone', const [])..rustType = text,
+          'double' => IrStaticCall(null, 'dart_double_str', [
+            IrBound(),
+          ])..rustType = text,
+          _ => IrStaticCall(null, 'dart_str', [IrBound()])..rustType = text,
+        };
+        return nullOr(inner);
+      }
+    }
+    return IrStaticCall(null, 'dart_object_str', [lowered])..rustType = text;
   }
 
   /// Dart's `null`, as the lowering writes it on its own -- an omitted
@@ -1697,7 +1794,7 @@ class KernelFrontend implements TypeWorld {
           }
           return lowered;
         }
-        return IrStaticCall(null, 'dart_str', [lowered]);
+        return _stringOf(lowered, type)!;
       }
 
       return IrInterpolation([for (final e in node.expressions) part(e)]);
@@ -4673,11 +4770,10 @@ class KernelFrontend implements TypeWorld {
     // Dart does.
     if (name == 'toString' && args.isEmpty) {
       final t = _staticType(node.receiver);
-      if (t != null &&
-          t is! DynamicType &&
-          t.nullability == Nullability.nullable) {
-        return IrStaticCall(null, 'dart_str', [_receiver(node.receiver)]);
-      }
+      // The receiver as it is, not narrowed to its bound (`_receiver`):
+      // a `T` receiver went behind a fresh `Rc<T>` and printed as one.
+      final asObject = _stringOf(expression(node.receiver), t, explicit: true);
+      if (asObject != null) return asObject;
     }
     if (owner == 'List' || _isMapClass(owner) || owner == 'Iterable') {
       // A collection member is a *Rust* method taking `impl Fn`, so a closure
@@ -6328,8 +6424,38 @@ class KernelFrontend implements TypeWorld {
       }
       // ..and a translated callee that fills the slot (`_fillsParameter`)
       // takes the caller's place the same way.
+      // ..converted into the slot's own type first where it differs
+      // (`List<ContainerLayer>` lent to a `List<ContainerLayer?>`,
+      // `FollowerLayer._pathsToCommonAncestor`): a lent temporary, filled
+      // and dropped -- what the copy did before -- rather than a type
+      // error.
       if (calleeMember is Procedure && _fillsParameter(calleeMember, index)) {
-        return IrMutRef(expression(value));
+        final place = expression(value);
+        IrType? slotType;
+        try {
+          slotType = paramType == null ? null : _type(paramType);
+        } on Unsupported {
+          slotType = null;
+        }
+        // The place itself when the types agree: `_widened` clones a
+        // local on its way into a slot, and the fill went into the clone.
+        if (slotType == null ||
+            place.rustType == null ||
+            '${place.rustType}' == '$slotType') {
+          return IrMutRef(place);
+        }
+        return IrMutRef(
+          _widened(
+            value,
+            paramType,
+            place,
+            slotIr:
+                slotIr ??
+                _landingSlotIr(callee: callee, index: index) ??
+                _topBound(declaredType, paramType) ??
+                _genericSlotIr(callee, declaredType),
+          ),
+        );
       }
     }
     final tracedArg = Platform.environment['DART2RUST_TRACE_ARG'];
@@ -7770,6 +7896,29 @@ class KernelFrontend implements TypeWorld {
   /// "keeps": guessing the other way is guessing that a borrow outlives its
   /// borrower.
   static final _keepsCache = <Object, bool>{};
+
+  /// `IrMethod.typeParameterBounds`: each kept type parameter whose bound
+  /// is a translated abstract class, with the bound spelled.
+  Map<String, IrType> _traitBounds(FunctionNode function) {
+    final out = <String, IrType>{};
+    for (final p in function.typeParameters) {
+      if (_erasedParameter(p)) continue;
+      final bound = p.bound;
+      if (bound is! InterfaceType ||
+          bound.nullability == Nullability.nullable ||
+          !_translatedClass(bound.classNode) ||
+          !_abstractLike(bound.classNode) ||
+          _scalarClass(bound.classNode)) {
+        continue;
+      }
+      try {
+        out[p.name ?? 'T'] = _type(bound);
+      } on Unsupported {
+        // Unspelled: no bound.
+      }
+    }
+    return out;
+  }
 
   /// Whether `callee` fills its `index`th positional parameter: a `List`
   /// or `Set` it adds to, removes from or writes into (`_mutatingListNames`),
@@ -9782,11 +9931,12 @@ class KernelFrontend implements TypeWorld {
     return IrMethod(
       name,
       [
-        for (final p in node.function.positionalParameters)
+        for (final (i, p) in node.function.positionalParameters.indexed)
           IrParam(
             _paramName(p),
             _edgeType(p.type),
             kept: _keeps(node.function, p),
+            mutRef: _fillsParameter(node, i),
           ),
         for (final p in node.function.namedParameters)
           if (!_inspectorOnly(p.parameterName))
@@ -9803,6 +9953,7 @@ class KernelFrontend implements TypeWorld {
         for (final p in node.function.typeParameters)
           if (!_erasedParameter(p)) p.name ?? 'T',
       ],
+      typeParameterBounds: _traitBounds(node.function),
       isStatic: true,
       // A top-level function is `async` the same way a method is. Round 71
       // marked the methods and left these, so `await` came out inside a
@@ -10802,6 +10953,7 @@ class KernelFrontend implements TypeWorld {
         for (final p in node.function.typeParameters)
           if (!_erasedParameter(p)) p.name ?? 'T',
       ],
+      typeParameterBounds: _traitBounds(node.function),
       isStatic: node.isStatic,
       isGetter: node.kind == ProcedureKind.Getter,
       isSetter: node.kind == ProcedureKind.Setter,
@@ -10894,14 +11046,53 @@ class _FfiNativeFinder extends RecursiveVisitor {
 /// Finds the variables a member declares in one function and assigns in a
 /// nested one.
 class _CapturedWrites extends RecursiveVisitor {
+  _CapturedWrites(this.fills);
+
+  /// Whether a callee fills its positional parameter (`_fillsParameter`).
+  final bool Function(Procedure, int) fills;
   final _declaredIn = <Variable, FunctionNode>{};
   final _stack = <FunctionNode>[];
   final found = <Variable>{};
 
-  static Set<Variable> of(Member member) {
-    final v = _CapturedWrites();
+  static Set<Variable> of(Member member, bool Function(Procedure, int) fills) {
+    final v = _CapturedWrites(fills);
     member.accept(v);
     return v.found;
+  }
+
+  bool _fromOutside(Variable variable) {
+    final home = _declaredIn[variable];
+    return home != null && _stack.isNotEmpty && home != _stack.last;
+  }
+
+  /// A list or set *changed in place* from inside a closure -- added
+  /// to, or lent to a callee that fills it -- is shared as an assigned
+  /// one is: the closure's copy took the adds (`seen.add(..)` inside
+  /// `each(..)`'s callback, the lend2 fixture, ws543).
+  @override
+  void visitInstanceInvocation(InstanceInvocation node) {
+    final receiver = node.receiver;
+    if (receiver is VariableGet &&
+        KernelFrontend._mutatingListNames.contains(node.name.text) &&
+        node.name.text != 'length' &&
+        _fromOutside(receiver.variable)) {
+      found.add(receiver.variable);
+    }
+    super.visitInstanceInvocation(node);
+  }
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    final positional = node.arguments.positional;
+    for (var i = 0; i < positional.length; i++) {
+      final arg = positional[i];
+      if (arg is VariableGet &&
+          _fromOutside(arg.variable) &&
+          fills(node.target, i)) {
+        found.add(arg.variable);
+      }
+    }
+    super.visitStaticInvocation(node);
   }
 
   @override

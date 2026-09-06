@@ -818,7 +818,9 @@ class RustBackend {
       // `T` bound to `Rc<dyn Object>` is none.
       IrDowncast(:final target, :final type, :final arguments)
           when arguments.isEmpty && _isTypeParam(type) =>
-        '<$type as FromDynamic>::from_dynamic(&(${expr(target)} as std::rc::Rc<dyn Object>)).unwrap()',
+        // The handle cloned first: the `as` consumes it, and a local read
+        // twice (`m is T && m.supports(..)`) was moved (E0382).
+        '<$type as FromDynamic>::from_dynamic(&(${expr(target)}.clone() as std::rc::Rc<dyn Object>)).unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
         '${_asAny(target)}.downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
@@ -906,17 +908,19 @@ class RustBackend {
             ? (explicit
                   ? '(${_handleOf(value)} as ${this.type(type)})'
                   : _handleOf(value))
-            // An enum is not a `DartAny`: a plain handle (49 `_ScaffoldSlot:
-            // DartAny` at ws367).
-            : (library[value.rustType?.name ?? _concreteType(value).name]
-                      ?.isEnum ==
-                  false)
+            // ..an enum too, since `_emitEnumDartAny` (ws510): registered
+            // as it is boxed, so `dart_object_str` finds its `X.value`.
+            : (library[value.rustType?.name ?? _concreteType(value).name] !=
+                  null)
             ? (explicit
                   ? '(dart_object(${expr(value)}) as ${this.type(type)})'
                   : 'dart_object(${expr(value)})')
+            // A core value behind a plain handle. An `int` literal spelled
+            // as the `i64` it is: boxed bare, Rust typed `3` an `i32`, and
+            // the object printed as one (the tostr fixture, ws543).
             : (explicit
-                  ? '(std::rc::Rc::new(${expr(value)}) as ${this.type(type)})'
-                  : 'std::rc::Rc::new(${expr(value)})'),
+                  ? '(std::rc::Rc::new(${_boxedLiteral(value)}) as ${this.type(type)})'
+                  : 'std::rc::Rc::new(${_boxedLiteral(value)})'),
       IrBound() => _boundName,
       IrClosure() => _closure(e as IrClosure),
       // A function value returns `Result` like everything else.
@@ -1081,7 +1085,12 @@ class RustBackend {
       // closure, 91 lifetime errors at ws334).
       if (node.holdsSelf) 'let $_countedSelf = ${_selfHandle()};',
       if (usesBound) 'let $_boundName = $_boundName.clone();',
-      ...node.captures.map((c) => 'let ${snake(c.name)} = ${_copyOf(c)};'),
+      // `mut` when the body writes or lends the copy (`&mut keys` inside
+      // `visitAncestorElements`'s callback, `PageStorageBucket._allKeys`).
+      ...node.captures.map(
+        (c) =>
+            'let ${_assignedIn(node.body).contains(c.name) ? 'mut ' : ''}${snake(c.name)} = ${_copyOf(c)};',
+      ),
       ...node.locals.map((l) => 'let ${snake(l)} = ${snake(l)}.clone();'),
     ].join(' ');
     // Which of them are cells, for the body that is about to be written.
@@ -3248,6 +3257,18 @@ class RustBackend {
         (_selfName == 'this_' || _selfName == 'self')) {
       return '$_selfName.dart_runtime_type()';
     }
+    // ..and on a value of a translated class (a struct, an enum, a trait
+    // handle -- `Rc` derefs): the class's own name, where the blanket
+    // `Object::runtime_type` on the handle said `Rc` (the tostr fixture,
+    // ws543).
+    if ((name == 'runtimeType' || name == 'runtime_type') &&
+        args.isEmpty &&
+        target != null &&
+        target is! IrThis &&
+        library[target.rustType?.name ?? ''] != null &&
+        !(target.rustType?.nullable ?? false)) {
+      return '${expr(target)}.dart_runtime_type()';
+    }
     // `hashCode` on a value typed by a type parameter is the Object
     // protocol's (`DartEq::dart_hash_code`, which every type argument
     // implements as it implements `==`): `key.hash_code()` on a `K`
@@ -3439,6 +3460,11 @@ class RustBackend {
     // off, so the omitted argument has to be recognised rather than trusted to
     // be absent. The fixtures said so: the two sides wrote `join("")` and
     // `join(&"".to_string())` for one line of Dart.
+    // `Object.toString()`: the `DartAny` protocol's (a struct's own
+    // override, an enum's `X.value`, `Instance of` otherwise).
+    if (name == '!dart_to_string' && args.isEmpty && target != null) {
+      return '${expr(target)}.dart_to_string()';
+    }
     if (name == '!join' && args.length < 2) {
       final given = args.where((a) => !_isDefault(a, '')).toList();
       final separator = given.isEmpty ? '""' : '&${expr(given.single)}';
@@ -3449,16 +3475,7 @@ class RustBackend {
       // every element put quotes around each string: `['a', 'b'].join(',')`
       // came out as `"a","b"` (the midover fixture, ws535).
       final element = target?.rustType?.arguments.firstOrNull;
-      const plain = {'String', 'i64', 'f64', 'bool'};
-      final shown = element == null || element.nullable
-          ? 'dart_str(__e)'
-          : element.name == 'String'
-          ? '__e.clone()'
-          : element.name == 'f64'
-          ? 'dart_double_str(*__e)'
-          : plain.contains(element.name)
-          ? '__e.to_string()'
-          : 'dart_str(__e)';
+      final shown = _elementText(element);
       return '$receiver.iter().map(|__e| $shown)'
           '.collect::<Vec<_>>().join($separator)';
     }
@@ -4028,7 +4045,10 @@ class RustBackend {
     // kind. A chain step that read `this.trashEmailIds` named a local that
     // this line had not declared.
     final copies = e.captures
-        .map((c) => 'let ${snake(c.name)} = ${_copyOf(c)}; ')
+        .map(
+          (c) =>
+              'let ${_assignedIn(e.body).contains(c.name) ? 'mut ' : ''}${snake(c.name)} = ${_copyOf(c)}; ',
+        )
         .join();
     return '|$params| { $copies$body }';
   }
@@ -5723,6 +5743,35 @@ class RustBackend {
     _line('');
   }
 
+  /// Dart's `toString()` of this class, for `DartAny::dart_to_string`: the
+  /// class's own override, the nearest ancestor's through its trait, or
+  /// `Object`'s `Instance of 'X'` -- an enum's `X.value`.
+  String _dartToStringBody({bool enumForm = false}) {
+    final need = IrMethod(
+      'toString',
+      const [],
+      const IrType('String'),
+      IrBlock(const []),
+    );
+    final own = _matching(need);
+    final String? call;
+    if (own != null && !own.isStatic && own.params.isEmpty) {
+      call = _inherentCall(own);
+    } else {
+      final inherited = _inherited(need);
+      call = inherited != null && inherited.$2.params.isEmpty
+          ? _inherentCall(inherited.$2, need, inherited.$1.name)
+          : null;
+    }
+    if (call != null) {
+      return _resultModel ? '$call.unwrap_or_default()' : call;
+    }
+    if (enumForm) {
+      return 'format!("${cls.name}.{}", DartEnum::name(self))';
+    }
+    return 'format!("Instance of \'{}\'", "${cls.name}")';
+  }
+
   /// `DartAny` for an enum (see the struct's inline impl): its own type
   /// behind a fresh handle, and every interface it implements through the
   /// handle that impl keeps -- what lets `_emitBaseImpl`'s `impl Ts for U`
@@ -5732,6 +5781,9 @@ class RustBackend {
     _indent++;
     _line(
       'fn dart_runtime_type(&self) -> Type { Type { name: "${cls.name}" } }',
+    );
+    _line(
+      'fn dart_to_string(&self) -> String { ${_dartToStringBody(enumForm: true)} }',
     );
     _line(
       'fn dart_cast(&self, __t: std::any::TypeId) -> Option<std::boxed::Box<dyn std::any::Any>> {',
@@ -5850,8 +5902,13 @@ class RustBackend {
     // its `T` (148 ".clone on T"), and nothing instantiates a method's
     // parameter with a future. A class's does not (`_CallbackHookProvider<
     // Future<bool>>`), see `bound` in `_boundedGenerics`.
+    // ..and the trait its Dart bound names (`IrMethod.typeParameterBounds`),
+    // so the body can call the bound's members on it.
     final bound = owner is IrMethod
-        ? params.map((p) => "$p: Clone${_nbm(owner)} + 'static")
+        ? params.map(
+            (p) =>
+                "$p: Clone${_nbm(owner)} + 'static${_traitBoundOf(owner, p)}",
+          )
         : static
         // `Clone` on a class's parameters after all (ws301): every held
         // `T` is read by `.clone()`, and 240 stubs said so; the one shape
@@ -5863,6 +5920,55 @@ class RustBackend {
           )
         : params;
     return '<${bound.join(', ')}>';
+  }
+
+  /// Dart's `toString()` of a collection element `__e` (a reference into
+  /// the collection) typed `element`: a string is itself, a number or a
+  /// bool prints as it is, a translated class by the Object protocol
+  /// (`DartAny::dart_to_string`), a nullable one `null` or that, and the
+  /// rest by what the object knows (`dart_object_str`). `dart_str` on
+  /// every element put quotes around each string (ws535) and `Instance
+  /// of 'Vec'` around a list (ws543).
+  String _elementText(IrType? element) {
+    if (element == null) return 'dart_object_str(__e.clone())';
+    if (element.nullable) {
+      final inner = _elementText(
+        IrType(element.name, arguments: element.arguments),
+      );
+      return '__e.as_ref().map(|__e| $inner).unwrap_or_else(|| "null".to_string())';
+    }
+    return switch (element.name) {
+      'String' => '__e.clone()',
+      'f64' => 'dart_double_str(*__e)',
+      'i64' || 'bool' => '__e.to_string()',
+      final name when library[name] != null => '__e.dart_to_string()',
+      _ => 'dart_object_str(__e.clone())',
+    };
+  }
+
+  /// A value on its way behind a fresh handle: an `int` literal with its
+  /// `i64` suffix, anything else as it is.
+  String _boxedLiteral(IrExpr value) {
+    final text = expr(value);
+    if (value is IrLiteral &&
+        value.type.name == 'int' &&
+        RegExp(r'^-?[0-9]+$').hasMatch(text)) {
+      return '${text}i64';
+    }
+    return text;
+  }
+
+  /// ` + Trait<..>` for a method type parameter bounded by a translated
+  /// abstract class, or nothing.
+  String _traitBoundOf(IrMethod method, String p) {
+    final bound = method.typeParameterBounds[p];
+    if (bound == null) return '';
+    final trait = library[bound.name];
+    if (trait == null || !library.isAbstract(bound.name)) return '';
+    final args = trait.typeParameters.isEmpty || bound.arguments.isEmpty
+        ? ''
+        : '<${bound.arguments.map(type).join(', ')}>';
+    return ' + ${bound.name}$args';
   }
 
   /// A top-level constant whose Rust type has a destructor, kept as a
@@ -6447,9 +6553,10 @@ class RustBackend {
         'this_: &__Self',
         ...method.params.map(
           // `mut` when the body assigns it (`start = index + 1` in a loop).
+          // A lent place (`IrParam.mutRef`) as the trait declares it.
           (p) =>
               '${_assignedIn(method.body).contains(p.name) ? 'mut ' : ''}'
-              '${snake(p.name)}: ${type(p.type, owned: false)}',
+              '${snake(p.name)}: ${p.mutRef ? '&mut ${type(p.type, owned: true)}' : type(p.type, owned: false)}',
         ),
       ].join(', ');
       // ..and by every trait a `super` call inside reaches that this
@@ -6962,6 +7069,7 @@ class RustBackend {
     'dart_function_same',
     'dart_from_dynamic',
     'dart_double_str',
+    'dart_object_str',
     'vec_of_nulls',
     'dart_native',
     'dart_native_as',
@@ -8020,6 +8128,7 @@ class RustBackend {
       '${cls.name}${_generics(cls)} {',
     );
     _indent++;
+    _line('fn dart_to_string(&self) -> String { ${_dartToStringBody()} }');
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
     _line('Type { name: "${cls.name}" }');

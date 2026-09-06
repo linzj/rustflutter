@@ -173,6 +173,23 @@ impl<T: 'static> Object for T {
             let object: &dyn Object = handle.as_ref();
             return object.runtime_type();
         }
+        // The core values as Dart names them (`int`, not `i64`).
+        let id = std::any::TypeId::of::<T>();
+        if id == std::any::TypeId::of::<i64>() {
+            return Type { name: "int" };
+        }
+        if id == std::any::TypeId::of::<f64>() {
+            return Type { name: "double" };
+        }
+        if id == std::any::TypeId::of::<bool>() {
+            return Type { name: "bool" };
+        }
+        if id == std::any::TypeId::of::<String>() || id == std::any::TypeId::of::<&'static str>() {
+            return Type { name: "String" };
+        }
+        if id == std::any::TypeId::of::<Null>() || id == std::any::TypeId::of::<()>() {
+            return Type { name: "Null" };
+        }
         // The struct's name alone, as `dart_runtime_type` spells it: no
         // module path, no type arguments.
         let full = std::any::type_name::<T>();
@@ -584,6 +601,14 @@ pub trait DartAny: Object + 'static {
     /// `Rc<dyn Trait>` the caller asked for by `TypeId` (see `dart_cast_to`).
     /// Every translated struct answers for its own type and for every trait
     /// it has an `impl` for; the closed world is what makes that a list.
+    /// Dart's `toString()`: the class's own override where it has one
+    /// (the backend writes each struct's), else `Instance of 'X'` as
+    /// `Object.toString` says. `dart_object_str` reaches it through a
+    /// `dyn Object` by the registry.
+    fn dart_to_string(&self) -> String {
+        format!("Instance of '{}'", self.dart_runtime_type().name)
+    }
+
     fn dart_cast(&self, _target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
         None
     }
@@ -653,12 +678,86 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
+/// `toString` for objects reached through `dyn Object`, by the same key.
+type DartStrFn = fn(&dyn std::any::Any) -> Option<String>;
+
+thread_local! {
+    static DART_STRINGS: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, DartStrFn>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 pub fn dart_register<T: DartAny>() {
     DART_CASTS.with(|c| {
         c.borrow_mut()
             .entry(std::any::TypeId::of::<T>())
             .or_insert(|any, t| any.downcast_ref::<T>().and_then(|v| v.dart_cast(t)));
     });
+    DART_STRINGS.with(|c| {
+        c.borrow_mut()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert(|any| any.downcast_ref::<T>().map(|v| v.dart_to_string()));
+    });
+}
+
+/// Dart's `toString()` of a value whose type only the object knows: a
+/// `dynamic`, an `Object?`, a type parameter. The core values print as
+/// Dart prints them, a translated object by its own `toString` (the
+/// registry, filled as objects are made), anything else as `Instance of`.
+pub fn dart_object_str<T: Object>(value: T) -> String {
+    dart_object_str_ref(&value)
+}
+
+pub fn dart_object_str_ref(value: &dyn Object) -> String {
+    let any = value.as_any();
+    if let Some(s) = any.downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(s) = any.downcast_ref::<&'static str>() {
+        return s.to_string();
+    }
+    if let Some(i) = any.downcast_ref::<i64>() {
+        return i.to_string();
+    }
+    if let Some(d) = any.downcast_ref::<f64>() {
+        return dart_double_str(*d);
+    }
+    if let Some(b) = any.downcast_ref::<bool>() {
+        return b.to_string();
+    }
+    if any.downcast_ref::<Null>().is_some() || any.downcast_ref::<()>().is_some() {
+        return "null".to_string();
+    }
+    if let Some(t) = any.downcast_ref::<Type>() {
+        return t.name.to_string();
+    }
+    if let Some(s) = any.downcast_ref::<Option<String>>() {
+        return s.clone().unwrap_or_else(|| "null".to_string());
+    }
+    if let Some(i) = any.downcast_ref::<Option<i64>>() {
+        return i
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "null".to_string());
+    }
+    if let Some(d) = any.downcast_ref::<Option<f64>>() {
+        return d.map(dart_double_str).unwrap_or_else(|| "null".to_string());
+    }
+    if let Some(b) = any.downcast_ref::<Option<bool>>() {
+        return b
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "null".to_string());
+    }
+    if let Some(o) = any.downcast_ref::<Option<std::rc::Rc<dyn Object>>>() {
+        return match o {
+            Some(o) => dart_object_str_ref(&**o),
+            None => "null".to_string(),
+        };
+    }
+    let id = std::any::Any::type_id(any);
+    let f = DART_STRINGS.with(|c| c.borrow().get(&id).copied());
+    if let Some(text) = f.and_then(|f| f(any)) {
+        return text;
+    }
+    format!("Instance of '{}'", value.runtime_type().name)
 }
 
 /// `Rc::new` for a value shared as an object: registered on the way.

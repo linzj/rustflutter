@@ -1455,7 +1455,15 @@ class IrMethod {
     this.throws,
     this.doc,
     this.isAsync = false,
+    this.typeParameterBounds = const {},
   });
+
+  /// The bound of each kept type parameter that is a translated abstract
+  /// class -- a trait the Rust parameter is bounded by, so the body can
+  /// call the bound's members on a value of the parameter
+  /// (`inheritFrom<T extends InheritedModel<Object>>` asks its `T` for
+  /// `isSupportedAspect`; unbounded, `T` had no such method).
+  final Map<String, IrType> typeParameterBounds;
 
   final String name;
   final IrTypeParams typeParameters;
