@@ -2758,13 +2758,14 @@ class RustBackend {
 
   /// Whether a value of this recorded type is a handle: an `Rc<dyn Trait>`,
   /// a `dynamic`, a counted class's `Rc<Struct>`.
+  /// Not a `dynamic`: the blanket `as_any` looks through an `Rc<dyn
+  /// Object>` itself, and a call on a `dynamic` the type flow analysis
+  /// narrowed (`x.isNegative` on an `f64`) is recorded `dynamic` while its
+  /// value is a plain `bool` (intl's `_floor`, ws522).
   bool _handleLike(IrExpr e) {
     final t = e.rustType;
     if (t == null || e is IrThis || t.isFunction || isNullable(t)) return false;
-    return t.name == 'Object' ||
-        t.name == 'dynamic' ||
-        library.isAbstract(t.name) ||
-        (library[t.name]?.counted ?? false);
+    return library.isAbstract(t.name) || (library[t.name]?.counted ?? false);
   }
 
   /// `x.as_any()` for a downcast or an `is`: through the handle when `x` is
