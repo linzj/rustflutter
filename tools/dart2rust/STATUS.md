@@ -302,14 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws675 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws677 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws675 | 链：stub **502**（-3），拒绝 **188**（-4：`addLocalHistoryEntry` 一族）。 | |
-| run675 | Scaffold 过了，render 树 64 节点；下一站 gallery 自己的 `_AnimatedHomePageState.build`（两处 stub 同文件）：① `Function` 槽里的 void 闭包：适配器把 `Null` 类型的调用**整个换成** `dart_null_object()`（两处 `Null→Object` 规则都丢了副作用）——修：非字面量的 `Null` 值先求值再给 null 对象。② `_AnimatedCarousel.build` 的 `LayoutBuilder` builder 里的嵌套 builder 又从 `self.` 拷字段，把 `&self` 借进了 `'static` 闭包——修：外层闭包已拷贝的字段，内层从外层的局部拷。夹具还揪出 `flag.value = true` 在闭包里写**值类**局部的字段改到的是副本：别名普查把「经捕获的局部写字段」也算别名变异（`_ownLocal` 看声明函数）。夹具 dynfall、nestcapture SAME。 | 链 ws676 |
-| ws676 | 链：stub **495**（-7），拒绝 188。提交 f0cdc53f。 | |
-| run676 | 主页建到 render 树 **90 节点**；下一站老欠账 `AnimationMin<T extends num>.value`：`math.min(first.value, next.value)` 在 `T` 上没有 `min`。修（通用）：Dart 界是 `num`/`int`/`double` 的类型参数记为 `IrClass.numericParameters`，泛型界拼上 prelude 的 `DartNum`（`dart_min`/`dart_max`，实现在 i64/f64；名字不与 `Ord::min` 撞），`math.min/max` 的第一个实参是这种 `T` 时走它。夹具 nummin SAME。 | 链 ws677 |
 | ws677 | 链：stub **494**（-1），拒绝 188。 | |
 | run677 | `AnimationMin` 过了；下一站 `UndoHistoryState<T>.initState` 同文件两处 stub：① `UndoHistoryValue.hashCode` 的 `Object.hash(canUndo, ..)` 在 `bool` 字段上拼 `.hash_code()`——修：非翻译类的值（标量/prelude 类型/句柄）上的 `hashCode` 走 `DartEq::dart_hash_code`；② 顶层泛型 `_throttle<T>` 里被闭包写的 `T? arg` 局部拼成 `Cell<Option<T>>` 又 `.get()`——`_isCopy` 只把**类**的类型参数当非 Copy，方法/函数自己的没算。修：方法级类型参数同样非 Copy。夹具还揪出 `arg as T` 在 `Option<T>` 局部上（不是投影的 `Or`）：`dart_as_own` 改收 `Option<T>`，投影操作数先经 `option()`。夹具 hashfield、throttle SAME。 | 链 ws678 |
 | ws678 | 链：stub **490**（-4），拒绝 188。 | |
@@ -346,6 +342,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run696 | 过了 `Icon.build`，进 viewport。停在 `RenderShrinkWrappingViewport::new` 的 stub：「cannot find value `cache_extent`」——抽象基类 `RenderViewportBase` 的字段初始化式被内联进子类构造器（`_inheritedInits`），里面的 `switch (cacheExtentStyle) {..}` 是**语句**，而后端的 `_substitute` 只走表达式，`IrBlockValue` 里也只替换 `IrLocalDecl` 的初始化式，于是基类形参名原样留下——子类只转发了 6 个 `super.` 形参，没转发 `cacheExtent`/`cacheExtentStyle`。修（通用）：`_substitute` 配一个语句遍历 `_substituteStmt`（22 种语句全覆盖；局部函数体是闭包，捕获是它自己的，不进）。夹具 basedefault SAME。 | 链 ws697 |
 | ws697 | 链：stub **464**（数目没变，同一个 `new` 的错因从「cannot find value」变成「type annotations needed」）——替换生效后，基类默认值 `null` 变成裸 `None`，落在 TFA 判死的那条臂里的 `cacheExtent!` 上成了 `None.unwrap()`，推不出 `T`。修（通用）：`null!` 是 Dart 的 `TypeError`，不是值——prelude 加 `dart_null_check_failed() -> !`，后端把「操作数是 `Null` 字面量的 `IrNullCheck`」拼成它（类型是 `!`，哪里都放得下，也不用名字）。夹具 basedefault 扩了这条臂后 SAME；isnull/asnull/identnull/dynifnull/ifnull/ornull/nullmut/nullfn/nullarg/recnull/condstmt/patsw/switchbrk/enumif 回归 SAME。 | 链 ws698 |
 | ws698 | 链：stub **463**（-1：`RenderShrinkWrappingViewport::new`，无新增），拒绝 183，可达 64。 | run698 |
+| run698 | 过了 viewport。停在 `Switch._getSwitchSize` 的**运行期** unwrap（不是 stub）：`defaults.padding!` 拿到 `None`——`_SwitchDefaultsM3` 用 getter 覆盖了基类 `SwitchThemeData` 的**字段** `padding`（`const EdgeInsets.symmetric(horizontal: 4)`），而 trait 的字段访问器一律读存储，动态分发到不了 getter。修（通用）：本类自己声明的同名 getter 覆盖基类字段，访问器改调它——仅当 getter 的结果就是 trait 声明的那个 Rust 类型（Dart 允许协变收窄，如 `WidgetStateProperty<Color>` 顶 `WidgetStateProperty<Color?>`，那是另一笔欠账，仍读存储）。夹具 getterover SAME（基线复现同一个 `unwrap` on None）。 | 链 ws699 |
+| ws699 | 链：stub **463**（无变化），拒绝 183，可达 64。 | run699 |
+| run699 | 栈溢出（gdb：`AnimatedWidget::listenable` → `listenable_builder_super_listenable` → `AnimatedBuilder::listenable` → 回到第一个）。`ListenableBuilder.listenable` 和 `AnimatedBuilder.listenable` 上游都是 `=> super.listenable;`（只为挂文档），而基类字段的 trait 访问器**就是** `super.x` 读到的那份存储——把它改调这种 getter 就成环。修（通用）：getter 体里读了 `super.<同名>` 的不改路（它本来就是基类的 `x`；`_WalkSelf` 记下 `superMembers`）。夹具 getterover 加了 restated / restated2 两层 SAME。 | 链 ws700 |
+| ws700 | 链：stub **463**（无变化），拒绝 183，可达 64。 | run700 |
 
 ## 下一步(2026-09-05 重铺)
 

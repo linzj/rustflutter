@@ -9726,6 +9726,15 @@ class RustBackend {
     return _argumentsThrough(next, binding(next, passed), base, seen);
   }
 
+  /// Whether a member's body reads `super.<name>`: then it is the base's
+  /// storage, whatever else it does with it, and the base's accessor has
+  /// to stay that storage.
+  static bool _readsSuper(IrMethod m, String name) {
+    final walk = _WalkSelf();
+    walk.statement(m.body);
+    return walk.superMembers.contains(name);
+  }
+
   /// The trait whose impl block is being printed (`_emitImplFor`).
   String? _implFor;
 
@@ -9925,7 +9934,40 @@ class RustBackend {
       // `late bool _needsCompositing` alone was 363 mismatches in
       // `rendering` (194 `set`, 169 reads).
       final late = field.isLate ? '.unwrap()' : '';
-      final reads = held.contains(field.name)
+      // A getter this class declares *overrides* the base's field: Dart
+      // resolves the name to the getter, and a call through the trait is
+      // the one path that can tell (`_SwitchDefaultsM3.padding` is
+      // `EdgeInsets.symmetric(horizontal: 4)` where `SwitchThemeData`'s
+      // field is null, and the switch's size read the field, run698).
+      // Only when the getter's result is the trait's own type: a Dart
+      // override may narrow it (`WidgetStateProperty<Color>` for a
+      // `WidgetStateProperty<Color?>`), and that is a different Rust type
+      // and a debt of its own -- those keep reading the storage.
+      final ownGetter = cls.methods
+          .where(
+            (m) =>
+                m.name == field.name &&
+                !m.isStatic &&
+                !m.isSetter &&
+                m.params.isEmpty,
+          )
+          .firstOrNull;
+      // ..and not a getter that reads `super.<name>` itself: the base's
+      // accessor *is* the storage a `super` read reaches, so routing it
+      // to such a getter is a cycle (`ListenableBuilder.listenable` and
+      // `AnimatedBuilder.listenable` are both `=> super.listenable`, for
+      // a doc comment, and the program overflowed its stack, run699).
+      // Such a getter is the base's `x` anyway.
+      final overrides =
+          ownGetter != null &&
+          !_readsSuper(ownGetter, field.name) &&
+          sameRust(
+            ownGetter.returnType,
+            _substituteType(field.type, _implBinding),
+          );
+      final reads = overrides
+          ? 'self.${snake(field.name)}()${_resultModel ? '?' : ''}'
+          : held.contains(field.name)
           ? (cell != null
                 ? (_lazyLate(field)
                       ? _lazyRead(field, 'self')
@@ -11481,6 +11523,9 @@ class _WalkSelf {
   /// with its type arguments (`baseArguments`).
   final superBases = <String, List<IrType>>{};
 
+  /// The member names `super.x` reads or calls.
+  final superMembers = <String>{};
+
   /// Whether anything walked can fail -- a `?` on a call, a constructor,
   /// an `await`.
   bool failing = false;
@@ -11760,8 +11805,14 @@ class _WalkSelf {
         failing = true;
         if (args.any((a) => a is IrThis)) passesSelf = true;
         args.forEach(expression);
-      case IrSuperCall(:final base, :final args, :final baseArguments):
+      case IrSuperCall(
+        :final base,
+        :final name,
+        :final args,
+        :final baseArguments,
+      ):
         superBases.putIfAbsent(base, () => baseArguments);
+        superMembers.add(name);
         args.forEach(expression);
       case IrIs(:final expr):
         expression(expr);
