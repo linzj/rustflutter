@@ -5390,9 +5390,20 @@ class RustBackend {
     final falling = _fallsOffValue(rendered);
     final fallsOff =
         _failure != null && falling != null && !_alwaysReturns(body);
+    // ..and a bare `return;` in the body hands back that same value: it
+    // is the language's `return null`, not a `void`'s nothing (a `then`
+    // callback's `FutureOr<void>` with an `if (!mounted) { return; }`
+    // guard, `_SettingsListItemState._handleExpansion`, run692).
+    final savedFalling = _fallsOff;
+    _fallsOff = falling;
     stmt(body, tail: !fallsOff);
+    _fallsOff = savedFalling;
     if (fallsOff) _line('Ok($falling)');
   }
+
+  /// The null of the return type of the body being emitted: what a bare
+  /// `return;` in it hands back, as falling off its end does.
+  String? _fallsOff;
 
   /// The value a body of the rendered return type falls off into, or null
   /// when the type has no null to fall into.
@@ -5423,8 +5434,9 @@ class RustBackend {
         // the `Ok`, and leaving it off is a type error rather than a quiet
         // wrong answer, which is the one comfort here.
         final wrap = _failure != null;
+        final falls = _fallsOff ?? '()';
         final returned = value == null
-            ? (wrap ? 'Ok(())' : '')
+            ? (wrap ? 'Ok($falls)' : (falls == '()' ? '' : falls))
             : (wrap ? 'Ok(${_returned(value)})' : _returned(value));
         if (_inFlowClosure) {
           // Inside the try closure this is not a return from the method yet --

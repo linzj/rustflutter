@@ -302,12 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,run668 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,run669 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| run668 | 滚动条 `initState` 过了，`build` → `_gestures` → `ScrollController.position` refusal：`_positions.single`——列表表里没有 `single`。修（表 + prelude）：`single` 进 `listMethodNames`，`DartList::single`/`Set::single`（`StateError` 语义 panic，同 `first`）。夹具 listsingle SAME。 | 链 ws669 |
-| ws669 | 链：stub **523**（持平），拒绝 **192**（-5：`single`）。 | |
 | run669 | `ScrollController.position` 过了，render 树 59 节点；下一站 `SliverList.createElement` → `SliverMultiBoxAdaptorElement` 构造子 stub：字段初始化 `SplayTreeMap<int, Element?>()` 拼成 `Map::new(None, None)`——`SplayTreeMap([compare, isValidKey])` 两个省略的可选参数被当实参填了 `None`，而 `SplayTreeMap` 不在后端「空集合构造」表里。修：`SplayTreeMap`/`SplayTreeSet` 进表（prelude 里就是 `Map`/`Set` 的别名，顺序已知丢失），省略的可选参数（拼出来是 `None`）不算实参。夹具 splaymap SAME。 | 链 ws670 |
 | ws670 | 链：stub **521**（-4 +2：`SliverMultiBoxAdaptorElement.createChild/removeChild` 里 `_childElements.remove(index)` 在闭包中拼成 `&*__me._child_elements_cell()?.borrow_mut().remove(..)`——`&*` 本是给 `Trait::x_cell(&*__me)` 这种**实参**位置的，作方法接收者时套在整条链上把 `remove` 的结果解引用了），拒绝 192。修：cell 访问器作接收者时用裸句柄。夹具 closurefield 加 map 字段在闭包里改。提交 c5da374b。 | 链 ws671 |
 | ws671 | 链：stub **517**（-4，无新增），拒绝 192。 | |
@@ -346,6 +344,8 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws691 | 链：stub **480**（-1，回到 ws689 的同一组；`settings_list_item.rs build` 的错因从「closure arguments」变成「mismatched types」，集合没变所以 diff 空），拒绝 183，可达 64。 | run691 |
 | run691 | 仍停在 `_SettingsListItemState.build` 的 stub，但错因换了：`RadioListTile<T?>(value: _options.elementAt(index))`——`late Iterable<T?> _options` 的元素槽是 `<T as DartNullable>::Or`（类型实参已投影），读出来却按静态类型 `T?` 在深度 0 拼成 `Option<T>`，于是又包了一层 `from_option`。修（通用，两处）：① 被调方声明的返回类型是**裸**类型参数（`Iterable<E>.elementAt` 的 `E`，不是 `E?`）而此处静态类型是投影的 `T?` 时，值按被调方的实参拼法到达（`elementResult`，与既有 `edgeResult` 并列；`E?` 不算——prelude 容器把自己的 `V?` 拼成真 `Option<V>`，比实参多一层）；② `!element_at` 与 `IrIndex` 一样是「索引读」，要 `.clone()`（元素在 list 的引用后面）。夹具 elemslot SAME；iterable/itermap/listcast/listgen/listplus/listsingle/insertall/tearcol/removewhere/wheretear/fromiterable 与 projarg/projected/tparam/isgeneric/gentrait/genhandle/qualgeneric/nullarg/nullsuper 回归 SAME。 | 链 ws692 |
 | ws692 | 链：stub **478**（-2：`_SettingsListItemState.build`、`_CupertinoSegmentedControlState.segmentForXPosition`，无新增），拒绝 183，可达 64。 | run692 |
+| run692 | 过了 `build`（元素槽的拼法一致后）。停在同文件 `_handleExpansion` 的 stub：`_controller.reverse().then<void>((value) { if (!mounted) { return; } })`——闭包的返回类型是 `FutureOr<void>`，体末尾落出去时后端已经会给 `Ok(FutureOr::value(()))`（`_fallsOffValue`），可裸 `return;` 一律拼成 `Ok(())`。修（通用）：裸 `return;` 就是语言的 `return null`，交回**该返回类型的 null**——与「落出末尾」同一个值（后端 `_fallsOff`，`_body` 里存取、闭包嵌套时保存恢复）。夹具 bareret SAME；tfthen/thenfwd/asyncfwd/asyncfutor/nullfn/voidslot/localfn/gclosure 回归 SAME。 | 链 ws693 |
+| ws693 | 链：stub **475**（-3：`_SettingsListItemState._handleExpansion`、`_DropdownButtonState._handleTap`、`ServicesBinding._handlePlatformMessage` 体，无新增），拒绝 183，可达 64。 | run693 |
 
 ## 下一步(2026-09-05 重铺)
 
