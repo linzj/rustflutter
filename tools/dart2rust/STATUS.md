@@ -413,6 +413,12 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run635 | `List.generate` 过了；下一站运行时 `dart_from_dynamic::<Rc<dyn Fn(AnimationStatus)>>` panic：`AnimationController.notifyStatusListeners` 从 `ObserverList<T>`（`T` 擦除，存的是 `DartFunction` 对象）取回监听器，`Rc<T>` 的 `FromDynamic` 只认句柄/对象，不认 `Function` 对象。加一条：`DartFunction` 里存着它由之而来的那个类型化闭包（`original`），同型就原样取回（`removeListener` 也因此找得到）。夹具 fnback（泛型观察者列表存/取/删类型化监听器）SAME。 | ws636 量；run636 看下一站。 |
 | ws636 | 链：stub **623**（持平），拒绝 231。 | |
 | run636 | 状态监听器回得来了；下一站 `_flushRouteAnnouncement` 里 `next?.route != entry.lastAnnouncedNextRoute` `unwrap on None`：`Route?` 对 `_RoutePlaceholder?`（`Route extends _RoutePlaceholder`），`==` 一律把右边 coerce 进左边的类型 → 对占位符对象做 `dart_cast_to::<dyn Route>` 失败。改：类型不同时**低的一边升到高的一边**（前端按 `isSubInterfaceOf`），互不相干的两个 trait 留给后端按对象比（`dart_option_object(..).dart_eq`）。夹具 eqabove SAME；identmap/identstatic 仍 SAME。 | ws637 量；run637 看下一站。 |
+| ws637 | 链：stub **622**（-1），拒绝 231。 | |
+| run637 | 路由通告过了，**Navigator 把 Overlay 建起来了**（渲染树 10 个节点：多了 `RenderPointerListener`、`RenderAbsorbPointer`）；下一站拒绝 `List.insertAll`（`OverlayState.insertAll`）——表里加 `insertAll`，prelude `DartList` 加 `insert_all`。夹具 insertall SAME。 | ws638 量；run638 看下一站。 |
+| ws638 | 链：stub **623**（+1 `OverlayState.rearrange`，解禁露出：`Iterable<T>` 提升成 `List<T>` 被当成 trait cast `dyn List<..>`），拒绝 **229**（-2）。修：prelude 的集合彼此不是 trait，`Iterable`→`List` 就是同一个 `Vec`。 | |
+| run638 | `insertAll` 过了，`_RenderTheater` 进树（渲染树 11 节点）；下一站 `_RenderTheater.attach` 的 stub：`Iterator<RenderBox>? iterator = childParentData.paintOrderIterator`，getter 记录的类型是 TFA 收窄的 `Iterator<_RenderDeferredLayoutBox>`，Rust 的 `DartIterator<T>` 不协变。加通用机制：`Iterator<A>` 进 `Iterator<B>` 槽走 prelude 的 `dart_iterator_map`（同一游标，元素按 coerce 规则逐个转），coerce 加规则、IR 复用 `IrMapElements('Iterator')`。夹具 itermap SAME。 | ws639 量；run639 看下一站。 |
+| ws639 | 链：stub **622**（-1 `attach`），拒绝 229；`rearrange` 仍在——那个 `dyn List` cast 来自提升读（`newEntries is List ? newEntries : ..`），不是 coerce：提升读的 trait cast 也只对**翻译过的**类做。 | |
+| run639 | `_RenderTheater.attach` 过了，**路由的 ModalBarrier 开始 build**；下一站 `ModalBarrier.build` 的 stub：局部函数 `handleDismiss` 传给 `_ModalBarrierGestureDetector(onDismiss: ..)` 时给的是借用 `&*f`——`_keeps` 只看构造函数的 body，`this.onDismiss` 的存储在 initializer 里，没算"留下"。构造函数的 initializers 也算。顺带：dump 时 `visitChildrenOfOverlayEntry` 的 `value!` 在半建的 entry 上 panic，把 panic hook 里的报告一起带走（Dart 里同样会抛；记为 runtime 报告的健壮性债）。夹具 localfn/itermap SAME。 | ws640 量；run640 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 

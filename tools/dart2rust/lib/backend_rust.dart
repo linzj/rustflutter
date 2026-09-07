@@ -942,6 +942,8 @@ class RustBackend {
       IrMapElements(:final collection, :final kind, :final body) =>
         kind == 'Future'
             ? '${expr(collection)}.map(|v| ${expr(body)})'
+            : kind == 'Iterator'
+            ? 'dart_iterator_map(${expr(collection)}, |v| ${expr(body)})'
             : kind == 'Set'
             ? 'Set::of(${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>())'
             : kind == 'Map'
@@ -7928,6 +7930,7 @@ class RustBackend {
     'string_from_char_codes',
     'vec_of_nones',
     'dart_iter',
+    'dart_iterator_map',
     'post_event',
     '_print',
     '_print_debug',

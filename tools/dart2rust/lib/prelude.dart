@@ -85,6 +85,31 @@ impl<T: Clone + 'static> DartIterator<T> for VecIterator<T> {
     }
 }
 
+/// An `Iterator<A>` seen as an `Iterator<B>` (Dart's covariance:
+/// `Iterator<_RenderDeferredLayoutBox>` where `Iterator<RenderBox>?` is
+/// declared, `_RenderTheater.attach`, run638): the same cursor, each
+/// element converted on the way out.
+struct MappedIterator<A, B> {
+    inner: std::rc::Rc<dyn DartIterator<A>>,
+    map: std::rc::Rc<dyn Fn(A) -> B>,
+}
+
+impl<A: 'static, B: 'static> DartIterator<B> for MappedIterator<A, B> {
+    fn move_next(&self) -> bool {
+        self.inner.move_next()
+    }
+    fn current(&self) -> B {
+        (self.map)(self.inner.current())
+    }
+}
+
+pub fn dart_iterator_map<A: 'static, B: 'static, F: Fn(A) -> B + 'static>(
+    inner: std::rc::Rc<dyn DartIterator<A>>,
+    map: F,
+) -> std::rc::Rc<dyn DartIterator<B>> {
+    std::rc::Rc::new(MappedIterator { inner, map: std::rc::Rc::new(map) })
+}
+
 impl<T: Clone + 'static> DartIterable<T> for Vec<T> {
     fn iterator(&self) -> std::rc::Rc<dyn DartIterator<T>> {
         std::rc::Rc::new(VecIterator { items: self.clone(), at: std::cell::Cell::new(-1) })
@@ -3456,6 +3481,8 @@ pub trait DartList<T> {
     /// failure carried out.
     fn remove_where<F: Fn(T) -> Result<bool, DartError>>(&mut self, test: F) -> Result<(), DartError>;
     fn retain_where<F: Fn(T) -> Result<bool, DartError>>(&mut self, test: F) -> Result<(), DartError>;
+    /// `insertAll(index, iterable)`: the items in order from `index` on.
+    fn insert_all(&mut self, index: i64, items: Vec<T>);
 }
 
 impl<T: Clone> DartList<T> for Vec<T> {
@@ -3478,6 +3505,13 @@ impl<T: Clone> DartList<T> for Vec<T> {
         }
         *self = kept;
         Ok(())
+    }
+
+    fn insert_all(&mut self, index: i64, items: Vec<T>) {
+        let at = (index.max(0) as usize).min(self.len());
+        let tail = self.split_off(at);
+        self.extend(items);
+        self.extend(tail);
     }
 
     fn retain_where<F: Fn(T) -> Result<bool, DartError>>(&mut self, test: F) -> Result<(), DartError> {

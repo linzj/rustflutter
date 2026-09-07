@@ -1097,6 +1097,9 @@ const listMethodNames = <String, String>{
   // (`Navigator.defaultGenerateInitialRoutes`, run630).
   'removeWhere': 'remove_where',
   'retainWhere': 'retain_where',
+  // `insertAll(index, iterable)`, in the prelude's `DartList`
+  // (`OverlayState.insertAll`, run637).
+  'insertAll': 'insert_all',
   'iterator': 'iterator',
   'addAll': 'extend',
   'clear': 'clear',

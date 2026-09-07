@@ -1506,8 +1506,12 @@ class KernelFrontend implements TypeWorld {
       // ..and to an abstract or open class: the trait cast every object
       // answers (`dart_cast_to`). Not from a nullable declaration, whose
       // `Option` the null-promotion below takes off first.
+      // ..a *translated* one: `dart:core`'s `List` is abstract to Kernel
+      // and a `Vec` here, the same `Vec` an `Iterable<T>` is (`newEntries
+      // is List<OverlayEntry> ? newEntries : ..`, ws638).
       if (promoted is InterfaceType &&
           _abstractLike(promoted.classNode) &&
+          _translatedClass(promoted.classNode) &&
           !scalars.contains(promoted.classNode.name) &&
           promoted.nullability != Nullability.nullable &&
           !(declared is InterfaceType &&
@@ -8982,6 +8986,18 @@ class KernelFrontend implements TypeWorld {
   bool _keeps(FunctionNode callee, Object param) {
     final known = _keepsCache[param];
     if (known != null) return known;
+    // A constructor keeps what its initializers store (`this.onDismiss`,
+    // `super(onTap: onTap)`): the body alone said nothing of a parameter
+    // that never reaches it, and `_ModalBarrierGestureDetector(onDismiss:
+    // handleDismiss)` was handed a borrow of the closure (run639).
+    final parent = callee.parent;
+    if (parent is Constructor) {
+      for (final initializer in parent.initializers) {
+        final walk = _ParameterEscapes(param);
+        initializer.accept(walk);
+        if (walk.escapes) return _keepsCache[param] = true;
+      }
+    }
     final body = callee.body;
     if (body == null) return _keepsCache[param] = true;
     final walk = _ParameterEscapes(param);

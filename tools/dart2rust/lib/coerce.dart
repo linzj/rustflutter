@@ -354,6 +354,25 @@ IrExpr coerceInto(
   // the `Future<dynamic>` a handler slot declares, `setMethodCallHandler(
   // _handleNavigationInvocation)`, run447): the value mapped through the
   // same rule when it arrives (`DartFuture::map`).
+  // An iterator of one element type into an iterator of another
+  // (`Iterator<Sub>` where `Iterator<Base>?` is declared): the prelude's
+  // mapped iterator, each element through this rule (`dart_iterator_map`,
+  // run638).
+  if (have.name == 'DartIterator' &&
+      slot.name == 'DartIterator' &&
+      have.arguments.length == 1 &&
+      slot.arguments.length == 1 &&
+      !sameRust(have.arguments.single, slot.arguments.single)) {
+    final element = IrLocal('v')..rustType = have.arguments.single;
+    final body = coerceInto(
+      element,
+      slot.arguments.single,
+      world,
+      inClosure: true,
+    );
+    if (identical(body, element)) return value;
+    return IrMapElements(value, 'Iterator', body)..rustType = slot;
+  }
   if (have.name == 'Future' &&
       slot.name == 'Future' &&
       have.arguments.length == 1 &&
@@ -603,6 +622,14 @@ IrExpr coerceInto(
       ..rustType = slot;
   }
   if (have.name == 'Map' || slot.name == 'Map') return value;
+  // The prelude's collections are one `Vec`/`Set` whatever Dart calls
+  // them: `Iterable<T>` promoted to `List<T>` is the value itself, not a
+  // cast to a trait no one declares (`dyn List<..>`, `OverlayState.
+  // rearrange`, ws638).
+  if (collectionNames.contains(have.name) &&
+      collectionNames.contains(slot.name)) {
+    return value;
+  }
   final haveTrait = world.isTrait(have.name);
   final slotTrait = world.isTrait(slot.name);
   // Out of `Object`: a scalar by `Any`, cloned out of the reference.
