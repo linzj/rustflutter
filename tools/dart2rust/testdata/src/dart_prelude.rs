@@ -3649,11 +3649,19 @@ pub trait DartList<T> {
     /// `skip(n)`/`take(n)`, collected.
     fn skip_dart(&self, n: i64) -> Vec<T>;
     fn take_dart(&self, n: i64) -> Vec<T>;
+    /// `a + b`: a new list of `a`'s elements followed by `b`'s.
+    fn dart_concat(&self, other: Vec<T>) -> Vec<T>;
 }
 
 impl<T: Clone> DartList<T> for Vec<T> {
     fn length(&self) -> i64 {
         self.len() as i64
+    }
+
+    fn dart_concat(&self, other: Vec<T>) -> Vec<T> {
+        let mut out = self.clone();
+        out.extend(other);
+        out
     }
 
     fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T> {

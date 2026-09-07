@@ -1090,6 +1090,9 @@ const listMethodNames = <String, String>{
   'skip': 'skip_dart',
   'take': 'take_dart',
   'add': 'push',
+  // `a + b`: a new list of both, in the prelude's `DartList`
+  // (`widget.observers + [scopeController]`, `NavigatorState`, run625).
+  '+': 'dart_concat',
   'iterator': 'iterator',
   'addAll': 'extend',
   'clear': 'clear',

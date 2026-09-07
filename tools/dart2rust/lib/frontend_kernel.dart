@@ -2405,10 +2405,20 @@ class KernelFrontend implements TypeWorld {
         // `Option<_ImageFilter>`, element by element.
         if (from.nullability == Nullability.nullable &&
             to.nullability == Nullability.nullable) {
+          // The bound typed as the value inside: a trait handle is asked
+          // through `as_ref()`, and untyped it was asked for the `Rc`'s
+          // own `Any` (`?.widget as HeroControllerScope?` in
+          // `NavigatorState.initState`, run624).
           return IrNullAware(
             operandLowered,
             IrCall(
-              IrDowncast(IrBound(), _rustScalar(to.classNode.name)),
+              IrDowncast(
+                IrBound()
+                  ..rustType = _recordedType(
+                    from.withDeclaredNullability(Nullability.nonNullable),
+                  ),
+                _rustScalar(to.classNode.name),
+              ),
               'clone',
               const [],
             ),

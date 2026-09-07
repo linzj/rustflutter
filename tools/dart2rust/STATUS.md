@@ -390,6 +390,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run622 | `resolve` 过了；下一站 `CupertinoDynamicColor.resolveFrom` 的 stub（E0282）：记录模式的 switch，CFE 的缓存临时量 `#0#15 = block{..}`，TFA 把块里的读换成了 throw，块的值成了 `!`；赋值当值用时前端把值先 hold 进 `let mut __t = ..`，没类型，rustc 推不出。hold 的临时量在值类型为 `Never`/未知时按 Dart 静态类型标注。夹具 patcache（记录模式 + 枚举元组 switch）SAME。 | ws623 量；run623 看下一站。 |
 | ws623 | 链：stub **681**（-15，全是记录模式 switch 的缓存形），拒绝 244。 | |
 | run623 | `resolveFrom` 过了；下一站运行时 `unwrap on None`：`MediaQuery._of` → `InheritedModel.inheritFrom<MediaQuery>` → `_findModels<T>` 里 `context.getElementForInheritedWidgetOfExactType<T>()` 走了 `__erased` 孪生——`T` 成了 `Rc<dyn Object>`，体内 `_inheritedElements[T]` 查的是 `dart_type_of::<Rc<dyn Object>>()`。`_genericOnTrait` 没接手是因为 provider 的 `_InheritedProviderScopeElement` 也有一份体（两份 → 放弃）。通用机制：**被当作类型字面量用的方法类型参数以 `Type` 值随隐藏尾参 `__ty_<i>` 传递**（Dart 运行时本来就这么传类型实参）：按方法族（最顶层声明 + 所有覆盖）算观察到的下标；体内字面量读 `__ty_i`，闭包按局部捕获；调用点补 `_typeLiteral(实参)`；trait 声明/孪生/转发器随 `IrParam` 自然带上。顺带：`_genericBodies` 按 `_translatedClass` 而非 `package:` 前缀；`super.m<T>()` 的返回按投影边类型；`dart_cast_any` 接受结构体答的 `Rc<T>`；值结构体的 `dart_cast` 也答 `Object`（擦除孪生里的 `as T`）。夹具 gentrait（trait 泛型方法 + 结构体覆盖 + 闭包里的 `T`）SAME。 | ws624 量；run624 看下一站。 |
+| ws624 | 链：stub **681**（持平），拒绝 244，可达 **64**。 | |
+| run624 | **MediaQuery 过了**（`__erased(Type::of("HeroControllerScope"))` 找到了元素）；渲染树 8 个节点。下一站 `NavigatorState.initState` 的 `unwrap on None`：`?.widget as HeroControllerScope?`——可空转可空的 `as` 里 `IrBound()` 没类型，`_asAny` 问的是 `Rc` 自己的 `Any`。bound 按操作数的非空记录类型标注。夹具 asnull SAME。 | ws625 量；run625 看下一站。 |
+| ws625 | 链：stub **681**（持平），拒绝 244，可达 64。 | |
+| run625 | `initState` 的 `as` 过了；下一站拒绝 `List.+`（`widget.observers + <NavigatorObserver>[..]`，`NavigatorState._updateEffectiveObservers`）。表里加 `'+': 'dart_concat'`，prelude `DartList` 加 `dart_concat`。夹具 listplus SAME。 | ws626 量；run626 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 
