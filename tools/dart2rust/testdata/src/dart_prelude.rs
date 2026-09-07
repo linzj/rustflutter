@@ -1005,7 +1005,21 @@ impl<T: DartAny> DartAny for Option<T> {
         }
     }
     fn dart_cast(&self, target: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
-        self.as_ref().and_then(|v| v.dart_cast(target))
+        match self {
+            Some(v) => v.dart_cast(target),
+            // An absent value *is* Dart's null: as an `Object` it is the
+            // `Null` object (`dart_boxed(None)` for a `List<Route?>`'s
+            // `cast<Route>()`, run632).
+            None => {
+                if target == std::any::TypeId::of::<dyn Object>()
+                    || target == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+                {
+                    Some(Box::new(dart_null_object()))
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -1247,6 +1261,20 @@ impl DartAny for i64 {
     fn dart_to_string(&self) -> String {
         self.to_string()
     }
+    /// As an `Object`: a fresh handle around a copy, so that an
+    /// `Option` of one boxes to the value and not to the `Option`
+    /// (`Map<String, Object?>.cast<String, int>()`, the listcast fixture).
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            Some(Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 impl DartAny for f64 {
@@ -1264,6 +1292,20 @@ impl DartAny for f64 {
     }
     fn dart_to_string(&self) -> String {
         dart_double_str(*self)
+    }
+    /// As an `Object`: a fresh handle around a copy, so that an
+    /// `Option` of one boxes to the value and not to the `Option`
+    /// (`Map<String, Object?>.cast<String, int>()`, the listcast fixture).
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            Some(Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -1283,6 +1325,20 @@ impl DartAny for bool {
     fn dart_to_string(&self) -> String {
         self.to_string()
     }
+    /// As an `Object`: a fresh handle around a copy, so that an
+    /// `Option` of one boxes to the value and not to the `Option`
+    /// (`Map<String, Object?>.cast<String, int>()`, the listcast fixture).
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            Some(Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ))
+        } else {
+            None
+        }
+    }
 }
 
 impl DartAny for String {
@@ -1300,6 +1356,20 @@ impl DartAny for String {
     }
     fn dart_to_string(&self) -> String {
         self.clone()
+    }
+    /// As an `Object`: a fresh handle around a copy, so that an
+    /// `Option` of one boxes to the value and not to the `Option`
+    /// (`Map<String, Object?>.cast<String, int>()`, the listcast fixture).
+    fn dart_cast(&self, __t: std::any::TypeId) -> Option<Box<dyn std::any::Any>> {
+        if __t == std::any::TypeId::of::<dyn Object>()
+            || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>()
+        {
+            Some(Box::new(
+                std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -9148,12 +9218,12 @@ impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
 /// `m.cast<K2, V2>()` / `xs.cast<T2>()`: a copy with each element
 /// converted (`FromDynamic`), which is the representation change Dart's
 /// `cast` does not need and this one does.
-impl<K: Clone + 'static, V: Clone + 'static> Map<K, V> {
+impl<K: DartAny + Clone + 'static, V: DartAny + Clone + 'static> Map<K, V> {
     pub fn cast_to<K2: FromDynamic + DartEq, V2: FromDynamic>(&self) -> Map<K2, V2> {
         let mut out: Vec<(K2, V2)> = Vec::new();
         for (k, v) in self.entries.iter() {
-            let key: std::rc::Rc<dyn Object> = std::rc::Rc::new(k.clone());
-            let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
+            let key: std::rc::Rc<dyn Object> = dart_boxed(k.clone());
+            let value: std::rc::Rc<dyn Object> = dart_boxed(v.clone());
             match (K2::from_dynamic(&key), V2::from_dynamic(&value)) {
                 (Some(k2), Some(v2)) => out.push((k2, v2)),
                 _ => erased_cast_failed(&value),
@@ -9163,11 +9233,11 @@ impl<K: Clone + 'static, V: Clone + 'static> Map<K, V> {
     }
 }
 
-impl<T: Clone + 'static> Set<T> {
+impl<T: DartAny + Clone + 'static> Set<T> {
     pub fn cast_to<T2: FromDynamic + DartEq>(&self) -> Set<T2> {
         let mut out: Vec<T2> = Vec::new();
         for v in self.iter() {
-            let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
+            let value: std::rc::Rc<dyn Object> = dart_boxed(v.clone());
             match T2::from_dynamic(&value) {
                 Some(t) => out.push(t),
                 None => erased_cast_failed(&value),
@@ -9181,11 +9251,11 @@ pub trait DartListCast {
     fn cast_to<T2: FromDynamic>(&self) -> Vec<T2>;
 }
 
-impl<T: Clone + 'static> DartListCast for Vec<T> {
+impl<T: DartAny + Clone + 'static> DartListCast for Vec<T> {
     fn cast_to<T2: FromDynamic>(&self) -> Vec<T2> {
         self.iter()
             .map(|v| {
-                let value: std::rc::Rc<dyn Object> = std::rc::Rc::new(v.clone());
+                let value: std::rc::Rc<dyn Object> = dart_boxed(v.clone());
                 match T2::from_dynamic(&value) {
                     Some(t) => t,
                     None => erased_cast_failed(&value),

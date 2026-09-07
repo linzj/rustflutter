@@ -403,6 +403,8 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run630 | `restoreState` 过了；下一站拒绝 `List.removeWhere`（`Navigator.defaultGenerateInitialRoutes`）。表里加 `removeWhere`/`retainWhere`，prelude `DartList` 加 `remove_where`/`retain_where`（`impl Fn`，Result 经 `_preludeFailing` 传出）。**记债**：值结构体局部的集合字段就地变异（`h.routes.addAll(..)`）落在 clone 上（读字段即拷贝），夹具里改经 `this` 的方法避开。夹具 removewhere SAME。 | ws631 量；run631 看下一站。 |
 | ws631 | 链：stub **629**（+2，解禁露出：`LinkedHashMap.fromEntries` 缺、`showOnScreen` 回调槽 0 参对 4 参），拒绝 **232**（-10）。 | |
 | run631 | `removeWhere` 过了；进到 gallery 自己的 `RouteConfiguration.onGenerateRoute`：`RegExpMatch.groupCount` 缺——而 prelude 的 `RegExp` 根本**没有引擎**（`hasMatch` panic、`firstMatch` 恒 null；设计上不引 crate）。在 prelude 里写了一个回溯正则引擎：字面量/转义（`\d \w \s \b` 及取反）、`.`、字符类（区间/取反）、`^ $`（multiLine）、捕获/非捕获/命名组、`|`、`* + ? {m,n}` 贪婪与懒惰，`caseSensitive`/`dotAll`；`RegExpMatch` 带各组区间：`group`/`groupCount`/`namedGroup`/`[]`（`index_of`）/`start`/`end`；`allMatches(input, [start])`、`matchAsPrefix`、`RegExp.escape`。夹具 regex1（21 例含 gallery 路由模式）与 Dart 全同。 | ws632 量；run632 看下一站。 |
+| ws632 | 链：stub **627**（-2），拒绝 232。 | |
+| run632 | 路由正则过了；下一站运行时 `erased_cast_failed`：`result.cast<Route>()`（`List<Route?>` → `List<Route>`，`defaultGenerateInitialRoutes`）——prelude 的 `cast_to` 把元素 `Rc::new(v.clone())` 装箱，`Option<Rc<dyn Route>>` 装成了 `Rc<Option<..>>`，再 `from_dynamic::<Rc<dyn Route>>` 认不出。改走 Object 协议 `dart_boxed`：`Option` 的 `dart_cast` 对 `None` 答 `Null` 对象；标量（i64/f64/bool/String）的 `dart_cast` 也答 `Object`（否则 `Option<Rc<dyn Object>>` 里的标量还是装成 `Option`）。夹具 listcast（List/Map/Set 的 cast）SAME。 | ws633 量；run633 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 
