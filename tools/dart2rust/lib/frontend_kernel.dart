@@ -234,7 +234,14 @@ class KernelFrontend implements TypeWorld {
         final selfKey = selfArgs == null ? '' : '${selfArgs.join(',')}|';
         for (final entry in census.entries) {
           final base = entry.key;
-          if (identical(base, node) || base.typeParameters.isEmpty) continue;
+          // An open class's own trait is a base of its struct too:
+          // `TweenImpl<f64>` answers for `Tween<Object>` as `ColorTween`
+          // does (`_AnimatedPhysicalModelState.forEachTween`'s visitor
+          // cast, run658).
+          if ((identical(base, node) && !_isOpen(node)) ||
+              base.typeParameters.isEmpty) {
+            continue;
+          }
           // As Rust holds it: a class reaches a base through its
           // supertype clauses, each spelled with its erased parameters at
           // their bounds (`BoxBuilder: CBuilder<BoxC>: Builder<C>` is
@@ -1378,10 +1385,14 @@ class KernelFrontend implements TypeWorld {
             !_scalarClass(wanted.classNode) &&
             _translatedClass(wanted.classNode) &&
             isBelow(wanted.classNode.name, have.name)) {
-          return IrCastTo(
-            IrBound(),
-            _type(wanted.withDeclaredNullability(Nullability.nonNullable)),
+          // ..typed as the cast's own value, not Kernel's `RenderBox?`:
+          // the cascade's `=>#t3` is the bound, never doubled, and the
+          // untyped cast took the static type and a `.flatten()` with it
+          // (`RenderProxyBoxMixin.performLayout` again, run657).
+          final narrowed = _type(
+            wanted.withDeclaredNullability(Nullability.nonNullable),
           );
+          return IrCastTo(IrBound(), narrowed)..rustType = narrowed;
         }
         // Typed as the value the body binds: the receiver without its
         // `Option`. A `?..` cascade produces the bound (`=>#t3`, which
@@ -7516,7 +7527,8 @@ class KernelFrontend implements TypeWorld {
                 slotIr ??
                 _landingSlotIr(callee: callee, index: index) ??
                 _topBound(declaredType, paramType) ??
-                _genericSlotIr(callee, declaredType),
+                _genericSlotIr(callee, declaredType) ??
+                _constructedSlotIr(callee, declaredType),
           ),
         );
       }
@@ -7557,7 +7569,8 @@ class KernelFrontend implements TypeWorld {
                 slotIr ??
                 _landingSlotIr(callee: callee, index: index) ??
                 _topBound(declaredType, paramType) ??
-                _genericSlotIr(callee, declaredType),
+                _genericSlotIr(callee, declaredType) ??
+                _constructedSlotIr(callee, declaredType),
           ),
         ),
       ),
@@ -7697,7 +7710,8 @@ class KernelFrontend implements TypeWorld {
                 name: param is FunctionParameter ? param.parameterName : null,
               ) ??
               _topBound(declared, _argumentBinding(callee, declared)) ??
-              _genericSlotIr(callee, declared),
+              _genericSlotIr(callee, declared) ??
+              _constructedSlotIr(callee, declared),
         ),
       ),
     );
@@ -7777,6 +7791,31 @@ class KernelFrontend implements TypeWorld {
     }
     try {
       return _typeKept(substituted, _genericArgs);
+    } on Unsupported {
+      return null;
+    }
+  }
+
+  /// The slot a constructor's parameter is at the class's instantiation
+  /// (`_constructing`): `SettingsListItem<ThemeMode?>(selectedOption: x)`
+  /// takes an `Option<ThemeMode>` where the declaration says `T`, and a
+  /// bare `T` widened nothing (`_SettingsPageState.build`, run660).
+  IrType? _constructedSlotIr(FunctionNode? callee, DartType? declared) {
+    if (declared == null ||
+        callee == null ||
+        !identical(callee, _constructedCallee) ||
+        _constructedArgs.isEmpty) {
+      return null;
+    }
+    final kept = {
+      for (final e in _constructedArgs.entries)
+        if (!_erasedParameter(e.key)) e.key: e.value,
+    };
+    if (kept.isEmpty || !_mentionsParametersOf(declared, kept.keys.toList())) {
+      return null;
+    }
+    try {
+      return _typeKept(declared, kept);
     } on Unsupported {
       return null;
     }

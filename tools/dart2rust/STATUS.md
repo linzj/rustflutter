@@ -224,6 +224,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
   RenderSemanticsAnnotations → RenderSemanticsAnnotations → RenderTapRegionSurface →
   RenderSemanticsAnnotations → RenderConstrainedBox`,后五个带 `size=Size(800.0, 600.0)`。
 - 产物:`~/dart2rust_build/scratch/got_render_walk.txt`。
+- 第二份参考(2026-09-07):`test/dump_render_walk_settled_test.dart`(pump 8×100ms)→
+  `~/dart2rust_build/scratch/ref_render_walk_settled.txt`,708 行,gallery 主页整棵树;
+  run658 起前 23 行类型一致,分叉在过渡(`_RenderSnapshotWidget` vs `RenderAnimatedOpacity`)。
 - **现状(run599):节点类型序列 6/6 一致(自 run584);还差 `size=`**——dump 时
   没有 layout 数据(2 帧已画,待查是 dump 时机还是 size 读取)。
 - 仪器:`DART2RUST_DUMP_RENDER_TREE=1`(render 树)、`DART2RUST_DUMP_APP=1`
@@ -299,17 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,run635 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws639 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| run635 | `List.generate` 过了；下一站运行时 `dart_from_dynamic::<Rc<dyn Fn(AnimationStatus)>>` panic：`AnimationController.notifyStatusListeners` 从 `ObserverList<T>`（`T` 擦除，存的是 `DartFunction` 对象）取回监听器，`Rc<T>` 的 `FromDynamic` 只认句柄/对象，不认 `Function` 对象。加一条：`DartFunction` 里存着它由之而来的那个类型化闭包（`original`），同型就原样取回（`removeListener` 也因此找得到）。夹具 fnback（泛型观察者列表存/取/删类型化监听器）SAME。 | ws636 量；run636 看下一站。 |
-| ws636 | 链：stub **623**（持平），拒绝 231。 | |
-| run636 | 状态监听器回得来了；下一站 `_flushRouteAnnouncement` 里 `next?.route != entry.lastAnnouncedNextRoute` `unwrap on None`：`Route?` 对 `_RoutePlaceholder?`（`Route extends _RoutePlaceholder`），`==` 一律把右边 coerce 进左边的类型 → 对占位符对象做 `dart_cast_to::<dyn Route>` 失败。改：类型不同时**低的一边升到高的一边**（前端按 `isSubInterfaceOf`），互不相干的两个 trait 留给后端按对象比（`dart_option_object(..).dart_eq`）。夹具 eqabove SAME；identmap/identstatic 仍 SAME。 | ws637 量；run637 看下一站。 |
-| ws637 | 链：stub **622**（-1），拒绝 231。 | |
-| run637 | 路由通告过了，**Navigator 把 Overlay 建起来了**（渲染树 10 个节点：多了 `RenderPointerListener`、`RenderAbsorbPointer`）；下一站拒绝 `List.insertAll`（`OverlayState.insertAll`）——表里加 `insertAll`，prelude `DartList` 加 `insert_all`。夹具 insertall SAME。 | ws638 量；run638 看下一站。 |
-| ws638 | 链：stub **623**（+1 `OverlayState.rearrange`，解禁露出：`Iterable<T>` 提升成 `List<T>` 被当成 trait cast `dyn List<..>`），拒绝 **229**（-2）。修：prelude 的集合彼此不是 trait，`Iterable`→`List` 就是同一个 `Vec`。 | |
-| run638 | `insertAll` 过了，`_RenderTheater` 进树（渲染树 11 节点）；下一站 `_RenderTheater.attach` 的 stub：`Iterator<RenderBox>? iterator = childParentData.paintOrderIterator`，getter 记录的类型是 TFA 收窄的 `Iterator<_RenderDeferredLayoutBox>`，Rust 的 `DartIterator<T>` 不协变。加通用机制：`Iterator<A>` 进 `Iterator<B>` 槽走 prelude 的 `dart_iterator_map`（同一游标，元素按 coerce 规则逐个转），coerce 加规则、IR 复用 `IrMapElements('Iterator')`。夹具 itermap SAME。 | ws639 量；run639 看下一站。 |
 | ws639 | 链：stub **622**（-1 `attach`），拒绝 229；`rearrange` 仍在——那个 `dyn List` cast 来自提升读（`newEntries is List ? newEntries : ..`），不是 coerce：提升读的 trait cast 也只对**翻译过的**类做。 | |
 | run639 | `_RenderTheater.attach` 过了，**路由的 ModalBarrier 开始 build**；下一站 `ModalBarrier.build` 的 stub：局部函数 `handleDismiss` 传给 `_ModalBarrierGestureDetector(onDismiss: ..)` 时给的是借用 `&*f`——`_keeps` 只看构造函数的 body，`this.onDismiss` 的存储在 initializer 里，没算"留下"。构造函数的 initializers 也算。顺带：dump 时 `visitChildrenOfOverlayEntry` 的 `value!` 在半建的 entry 上 panic，把 panic hook 里的报告一起带走（Dart 里同样会抛；记为 runtime 报告的健壮性债）。夹具 localfn/itermap SAME。 | ws640 量；run640 看下一站。 |
 | ws640 | 链：stub **619**（-3），拒绝 229。 | |
@@ -343,6 +339,13 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run655 | dump 走到 `_paintOrderIterable` 的访问器，初始化器 `_createChildIterable(..)` 是 **`sync*`**：refusal「unsupported statement YieldStatement」。修（通用）：`sync*` 体降成收集列表——`yield x` push、`yield* xs` extend、裸 `return`/落尾返回 `__yielded`（Dart 是惰性的，这里是急的；只有无界生成器能分辨）。夹具 syncstar SAME（含 `yield*`、生成器套生成器）。 | 链 ws656 |
 | ws656 | 链：stub **551**（持平，无新增），拒绝 **197**（-5：五个 `sync*` 体翻出来了）。 | |
 | run656 | **启动路径无 panic**：5 帧画出（0 panicked），render 树 32 节点、元素树 150 行完整 dump（gallery 主页整棵树，不再是 restoration 的 `SizedBox`）。但 render 树**没有一个 `size=`**：layout 从没跑——gdb dprintf 计数：`flushLayout` 24 次、`markNeedsLayout` 34、`scheduleInitialLayout` 1，`RenderView.performLayout` **0**。根因：`scheduleInitialLayout` 的 `owner!._nodesNeedingLayout.add(this)`——`PipelineOwner` 是 open 类（trait），字段经值访问器读出来是**克隆**，push 进克隆就丢了；`this` 上的同类写法早走 cell 访问器（`_cell()`），别的句柄上没走。修（通用）：`_cellPlace` 对 trait 句柄上的字段访问器调用，字段是 trait 交出 cell 的集合时走 `<f>_cell()?.borrow_mut()`。夹具 ownerqueue SAME。参考尺子 `ref_render_walk.txt` 是 `pumpWidget`+一次 `pump` 时刻（6 行），与我们跑完 5 帧的树不是同一时刻——待补一份 settle 后的参考。 | 链 ws657 |
+| ws657 | 链：stub **551**（持平），拒绝 197。 | |
+| run657 | **layout 跑起来了**（`RenderView.performLayout` → 子树 `layout`），停在 `RenderProxyBoxMixin.performLayout` 的 stub：`(child?..layout(..))?.size ?? ..`——`?..` 级联的值 `=>#t3` 是绑定值经 `dart_cast_to::<dyn RenderBox>`（子访问器是擦除的 `RenderObject?`，mixin 的 `T extends RenderBox`）——这个 `IrCastTo` 没带 rustType，`expression()` 用 Kernel 的 `RenderBox?` 补了个可空 → 外层 `.flatten()` 套在非 Option 上。修：绑定值的转型按自身（非空）定型。夹具 cascade（界更窄的 `T`）SAME。此刻的 render 树正好是参考尺子的 6 行（restoration `SizedBox` 时刻）。另外补了一份 **settle 后的参考**：`~/gallery_upstream/test/dump_render_walk_settled_test.dart`（pump 8×100ms）→ `~/dart2rust_build/scratch/ref_render_walk_settled.txt`，708 行。 | 链 ws658 |
+| ws658 | 链：stub **549**（-2：两个 `performLayout`），拒绝 197。 | |
+| run658 | **`size=` 出现了**：前 5 行与参考完全一致（`RenderSemanticsAnnotations size=Size(800.0, 600.0)`…），树 34 节点。第一个 panic：`_AnimatedPhysicalModelState.forEachTween` 里 `(dynamic v) => Tween<double>(begin: v as double)` 作为 `TweenConstructor<dynamic>` 交出去时 `dart_cast_to::<dyn Tween<Rc<dyn Object>>>()` 得 None——`TweenImpl<f64>`（open 类 `Tween` 自己的 struct）没有 `Tween<Object>` 的宽 impl：`addWiderImpls` 把「base 就是自己」一律跳过，open 类自己的 trait 也是它 struct 的一个 base。修：open 类不跳。夹具 opentween SAME（`TwImpl<f64>: Tw<Object>`、`Anim<Object>`）。 | 链 ws659 |
+| ws659 | 链：stub **550**（+1：`ValueKeyImpl<i64>: ValueKey<Option<i64>>` 的字段访问器转发 `Ok(self.value)` 少了 `Some`——转发时 `__v` 按声明 `T` 定型，规则看不出 `i64`→`Option<i64>`），拒绝 197。修：转发的字段按 impl 的实例化定型（`_selfBound`）。夹具 opentween 加 `Tw<int?>` 读 `start`。 | 链 ws660 |
+| ws660 | 链：stub **549**（持平，无新增），拒绝 197。 | |
+| run660 | `forEachTween` 过了；4 帧，render 树 41 节点、18 个带 `size=`，前 5 行与参考尺子一致（第 6 行起是 gallery 主页而非 restoration `SizedBox`，时刻不同）。第一个 panic：gallery 自己的 `_SettingsPageState.build` stub：`SettingsListItem<ThemeMode?>(selectedOption: options.themeMode)`——构造子参数 `T selectedOption` 在 `T := ThemeMode?` 下是 `Option<ThemeMode>`，槽却拼成裸 `T`（`_genericSlotIr` 只认方法级泛型调用，不认构造实例化）。修：`_constructedSlotIr`——构造调用的参数槽按类实例化（保留参数代入，擦除的按界）拼，三条槽链都接上。夹具 ctornull SAME（含命名参数 + `LinkedHashMap.of`）。 | 链 ws661 |
 
 ## 下一步(2026-09-05 重铺)
 

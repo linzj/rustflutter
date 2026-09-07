@@ -9559,7 +9559,11 @@ class RustBackend {
           .firstOrNull;
       String value;
       if (reads != null && own != null && substituted.name != 'Option') {
-        final held = IrLocal('__v')..rustType = own.type;
+        // The field as this *instantiation* holds it: under `impl
+        // ValueKey<Option<i64>> for ValueKeyImpl<i64>` the `T value` is
+        // an `i64`, and typed `T` the rule could not see the `Some` it
+        // needed (ws659).
+        final held = IrLocal('__v')..rustType = _selfBound(own.type);
         final shaped = coerceInto(held, substituted, _world);
         value = identical(shaped, held)
             ? body
