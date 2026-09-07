@@ -102,6 +102,7 @@ class KernelFrontend implements TypeWorld {
     this.instantiations,
     this.applications = const {},
     this.moduleOf = const {},
+    this.collidingClassNames = const {},
     this.aliasMutated = const {},
     this.covariantParameters = const {},
   });
@@ -109,6 +110,22 @@ class KernelFrontend implements TypeWorld {
   /// Each translated library's module name, from the driver: what a
   /// qualified top-level reference is spelled by (`IrStaticCall.module`).
   final Map<Library, String> moduleOf;
+
+  /// Class names more than one translated library declares (the driver):
+  /// a reference to another library's is spelled by module.
+  final Set<String> collidingClassNames;
+
+  /// The module a reference to `cls` carries (`IrType.module`): the
+  /// declaring library's, when the name is one two libraries declare and
+  /// the class is another library's (`ui.StrutStyle(..)` in `painting`'s
+  /// `TextStyle.getParagraphStyle` resolved to painting's own
+  /// `StrutStyle`, run679). Null otherwise.
+  String? _moduleQualifier(Class cls) {
+    if (!collidingClassNames.contains(cls.name)) return null;
+    final home = cls.enclosingLibrary;
+    if (identical(home, library)) return null;
+    return moduleOf[home];
+  }
 
   /// The module to qualify a top-level `target` by: another library's,
   /// when this library declares a top-level of the same name -- an
@@ -882,6 +899,7 @@ class KernelFrontend implements TypeWorld {
         arguments: _nested(
           () => _erasedArguments(type.classNode, type.typeArguments),
         ),
+        module: _moduleQualifier(type.classNode),
       );
     }
     if (type is RecordType) {
@@ -6861,6 +6879,7 @@ class KernelFrontend implements TypeWorld {
           node.constructedType,
           _erasedArguments(cls, node.constructedType.typeArguments),
         ),
+        module: _moduleQualifier(cls),
       ),
       _constructing(
         target.function,
@@ -9860,6 +9879,7 @@ class KernelFrontend implements TypeWorld {
         Nullability.nonNullable,
         [c.keyType, c.valueType],
       ),
+      RecordConstant() => c.recordType,
       _ => const DynamicType(),
     };
   }
@@ -10093,6 +10113,21 @@ class KernelFrontend implements TypeWorld {
           ? (IrUpcast(instance, IrType(cls.name))..rustType = IrType(cls.name))
           : instance;
     }
+    if (constant is RecordConstant) {
+      // A const record: the tuple a record literal is (`IrRecord`), each
+      // field into the record type's own field type. The `switch` over
+      // `axisDirection` in `ScrollPosition._updateSemanticActions` yields
+      // `const (SemanticsAction.scrollDown, SemanticsAction.scrollUp)`
+      // (run684). Named fields are refused as a literal's are.
+      if (constant.named.isNotEmpty) {
+        throw Unsupported('a const record with named fields', _sample(node));
+      }
+      final fields = constant.recordType.positional;
+      return IrRecord([
+        for (var i = 0; i < constant.positional.length; i++)
+          element(constant.positional[i], fields[i]),
+      ])..rustType = _type(constant.recordType);
+    }
     throw Unsupported('constant ${constant.runtimeType}', _sample(node));
   }
 
@@ -10193,6 +10228,7 @@ class KernelFrontend implements TypeWorld {
   IrType _constantType(Class cls, List<DartType> typeArguments) => IrType(
     _instanceName(cls),
     arguments: _erasedArguments(cls, typeArguments),
+    module: _moduleQualifier(cls),
   );
 
   /// Whether a class's type parameter is erased to its bound.

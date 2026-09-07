@@ -64,7 +64,12 @@ def cargo_errors(ws):
                   % (budget // (1024 * 1024)), flush=True)
             p.kill()
             break
-        if len(raw) > 4 * 1024 * 1024:
+        # A diagnostic's JSON carries its source line in `rendered`, and a
+        # generated line is long: over 4 MB the error was dropped and the
+        # crate silently failed with "0 errors" (ws681, once class names
+        # were spelled by module). Parsed up to 64 MB; `rendered` is cut
+        # to its head below either way.
+        if len(raw) > 64 * 1024 * 1024:
             continue
         try:
             m = json.loads(raw)

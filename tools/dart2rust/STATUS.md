@@ -302,19 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws657 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws662 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws657 | 链：stub **551**（持平），拒绝 197。 | |
-| run657 | **layout 跑起来了**（`RenderView.performLayout` → 子树 `layout`），停在 `RenderProxyBoxMixin.performLayout` 的 stub：`(child?..layout(..))?.size ?? ..`——`?..` 级联的值 `=>#t3` 是绑定值经 `dart_cast_to::<dyn RenderBox>`（子访问器是擦除的 `RenderObject?`，mixin 的 `T extends RenderBox`）——这个 `IrCastTo` 没带 rustType，`expression()` 用 Kernel 的 `RenderBox?` 补了个可空 → 外层 `.flatten()` 套在非 Option 上。修：绑定值的转型按自身（非空）定型。夹具 cascade（界更窄的 `T`）SAME。此刻的 render 树正好是参考尺子的 6 行（restoration `SizedBox` 时刻）。另外补了一份 **settle 后的参考**：`~/gallery_upstream/test/dump_render_walk_settled_test.dart`（pump 8×100ms）→ `~/dart2rust_build/scratch/ref_render_walk_settled.txt`，708 行。 | 链 ws658 |
-| ws658 | 链：stub **549**（-2：两个 `performLayout`），拒绝 197。 | |
-| run658 | **`size=` 出现了**：前 5 行与参考完全一致（`RenderSemanticsAnnotations size=Size(800.0, 600.0)`…），树 34 节点。第一个 panic：`_AnimatedPhysicalModelState.forEachTween` 里 `(dynamic v) => Tween<double>(begin: v as double)` 作为 `TweenConstructor<dynamic>` 交出去时 `dart_cast_to::<dyn Tween<Rc<dyn Object>>>()` 得 None——`TweenImpl<f64>`（open 类 `Tween` 自己的 struct）没有 `Tween<Object>` 的宽 impl：`addWiderImpls` 把「base 就是自己」一律跳过，open 类自己的 trait 也是它 struct 的一个 base。修：open 类不跳。夹具 opentween SAME（`TwImpl<f64>: Tw<Object>`、`Anim<Object>`）。 | 链 ws659 |
-| ws659 | 链：stub **550**（+1：`ValueKeyImpl<i64>: ValueKey<Option<i64>>` 的字段访问器转发 `Ok(self.value)` 少了 `Some`——转发时 `__v` 按声明 `T` 定型，规则看不出 `i64`→`Option<i64>`），拒绝 197。修：转发的字段按 impl 的实例化定型（`_selfBound`）。夹具 opentween 加 `Tw<int?>` 读 `start`。 | 链 ws660 |
-| ws660 | 链：stub **549**（持平，无新增），拒绝 197。 | |
-| run660 | `forEachTween` 过了；4 帧，render 树 41 节点、18 个带 `size=`，前 5 行与参考尺子一致（第 6 行起是 gallery 主页而非 restoration `SizedBox`，时刻不同）。第一个 panic：gallery 自己的 `_SettingsPageState.build` stub：`SettingsListItem<ThemeMode?>(selectedOption: options.themeMode)`——构造子参数 `T selectedOption` 在 `T := ThemeMode?` 下是 `Option<ThemeMode>`，槽却拼成裸 `T`（`_genericSlotIr` 只认方法级泛型调用，不认构造实例化）。修：`_constructedSlotIr`——构造调用的参数槽按类实例化（保留参数代入，擦除的按界）拼，三条槽链都接上。夹具 ctornull SAME（含命名参数 + `LinkedHashMap.of`）。 | 链 ws661 |
-| ws661 | 链：stub **541**（-8：构造槽按实例化后 `segmented_control`/`radio`/`restoration_properties` 一批过了），拒绝 197。 | |
-| run661 | 同一函数 `_SettingsPageState.build` 的下一处：`SettingsListItem<Locale?>(optionsMap: _getLocaleOptions())`——`LinkedHashMap<Locale, X>` 进 `Map<Locale?, X>` 槽：coerce 的「逐键逐值」map 规则只认名字 `Map`，`LinkedHashMap` 被 `if (have == 'Map' || slot == 'Map') return value` 放行了。修：`dart:` 的各 map 类名（`mapNames`）视同 prelude 的一个 `Map`。夹具 mapwiden SAME（map 键 `Locale`→`Locale?`、`List<int>`→`List<int?>`）。 | 链 ws662 |
 | ws662 | 链：stub **540**（-1），拒绝 197。 | |
 | run662 | `_SettingsPageState.build` 再下一处：`LinkedHashMap.fromEntries(displayLocales)`——prelude 没有 `Map::from_entries`；夹具还揪出 `MapEntry(k, v)` 解析到 dart:core 的私有 `MapEntry._`（公共的是重定向工厂），拼成 `new_`。修（prelude 表）：`Map::from_entries(Vec<MapEntry>)`、`MapEntry::new_`。夹具 fromentries SAME。 | 链 ws663 |
 | ws663 | 链：stub **538**（-2），拒绝 197。 | |
@@ -346,6 +337,15 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run678 | `UndoHistoryState.initState` 下一处 refusal：`UndoManager.client = this`——类的**静态 setter** 赋值只做了顶层 setter 的形。修：类静态 setter → `Owner::set_x(v)` 静态调用；顺带 free-static 类（只有静态成员的类）的静态 setter 与同名 getter 拼成同一个函数名（E0428）→ setter 保留 `set_` 前缀，静态调用存在性检查按 Rust 名。夹具 staticset SAME。 | 链 ws679 |
 | ws679 | 链：stub **490**（持平），拒绝 **186**（-2）。 | |
 | run679 | **走到文字排版**：`RenderEditable.performLayout` → `TextPainter.layout` → `TextStyle.getParagraphStyle` 的 stub——`ui.StrutStyle(..)` 9 个实参对上了 painting 的 `StrutStyle::new`（11 个）：dart:ui 与 painting 同名类（`StrutStyle`/`TextStyle`/`Gradient`/`Image`）在同一 crate 里按简单名引用，谁被 `use` 谁赢（老欠账「TextStyle 名字冲突」）。下一步：跨库同名类的引用按模块限定（`crate::dart_ui::StrutStyle`），同 `IrStaticCall.module` 对顶层函数的做法。 | |
+| ws680 | 链**断**：`painting_text_style.rs` 一处 unstubbable「expected trait, found struct `crate::dart_ui::TextStyle`」，可达 34。跨库同名类按模块限定（`_qualifiedClassName` → `crate::<module>::Name`；`IrLibrary` 的查找剥掉路径按简单名找）——剥掉路径后在 painting 模块里查到的是 painting 自己的 `TextStyle`（trait），把 dart:ui 的 struct 拼成了 `dyn`。修：`IrLibrary.byModule`（模块→类名→类），带模块的引用按模块查。 | 链 ws681 |
+| ws681 | 链又**假通**：round 4「0 errors」但可达 34——`stubs.py` 把超过 4 MB 的诊断 JSON 行整行丢掉（生成的行本来就长，限定名把它撑过了线），widgets crate 悄悄编译失败。修：解析到 64 MB（`rendered` 本来就只留头部）。本地重跑 `stubs.py` 立刻看见错误（6 轮后 58 可达）。 | 链 ws682 |
+| ws682 | 链：stub **530**（+40），拒绝 184，可达 64。限定名进了 `IrType.name`（`crate::dart_ui::TextStyle`），所有按名字比较的规则（coerce 的同名同类判断、covariance、backend 的 `library[t.name]`）都不认它——+40 全是 TextStyle 相关的类型错配。撤：名字保持裸的，模块另放 `IrType.module`；backend 只在拼字时 `_spelled(t)` 出 `crate::<module>::Name`，查类走 `library.resolve(t)`/`isAbstractType(t)`。 | 链 ws683 |
+| ws683 | 链：stub **487**（-3：`_createLayoutTemplate`、`getParagraphStyle`、`EditableText.build`），拒绝 184，可达 64。翻译出来 `dyn crate::dart_ui::TextStyle` 0 处，`crate::dart_ui::StrutStyle` 在 painting 里出现。 | run683 |
+| run683 | 文字排版过了 `getParagraphStyle`，停在 `TextSpan.build` 的 stub：`on ArgumentError catch` 把 try 闭包声明成 `Result<_, ArgumentError>`，而体内 `builder.addText(..)?` 的错误是模型唯一的 `Rc<dyn Object>`，`?` 转不过去（同因 3 个 stub：`load_buffer__body`、`parseCompactDate`）。修（通用）：带类型的 catch 不收窄闭包，Err 臂用语言自己的 `is` 测（`_isTest`）、`as` 绑定（`IrDowncast`/`IrCastTo`），不是就 `return Err(__caught)` 往外抛。顺带：prelude 的异常结构体之间没有 Dart 的继承——`RangeError` 不 `is ArgumentError`——加 `DartCoreAs` 一张表（子类值按父类读，保留子类的 toString 文本）；`dart_error!` 的五个类型补 `DartAny`；`RangeError([dynamic message])` 收 boxed。夹具 oncatch SAME。 | 链 ws684 |
+| ws684 | 链：stub **484**（-3，正是那三个 typed catch），拒绝 184，可达 64。 | run684 |
+| run684 | **过了文字排版**（`TextPainter.layout` 走通）。停在 `ScrollPosition._updateSemanticActions`：`switch (axisDirection)` 的臂是 `const (SemanticsAction, SemanticsAction)`——`RecordConstant` 没降（拒绝）。修：常量记录 → `IrRecord`（元组），静态类型取 `recordType`；命名字段同字面量一样拒绝。夹具 recconst SAME。翻译拒绝 184→183。 | 链 ws685 |
+| ws685 | 链：stub **484**（持平），拒绝 183（-1），可达 64。 | run685 |
+| run685 | 过了 `_updateSemanticActions`。停在 `ScrollableState.setCanDrag`（super 体）的 stub：`_configuration_cell` 在 `&__Self` 上没有这个方法。 | 下一轮 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -505,5 +505,9 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `async*` 仍拒绝。(run655 记)
 - **provider `_DelegateState<T>.element`**:槽是 `_InheritedProviderScopeElement<T?>`,值是 `<T>`——
   泛型值类的 `T` 与 `T?` 实例化在 Rust 里是两个类型,没有一般转换(ws654 记,`build`/`mount` 同因已 stub)。
+- **翻译类实现 prelude 异常接口**（`FlutterError implements AssertionError`）时 `is AssertionError`/
+  `on AssertionError catch` 不认：`DartCoreAs` 表只认 prelude 自己的结构体（上游 `is AssertionError` 3 处、
+  `on AssertionError catch` 1 处）。子类值按父类读是**转换出来的拷贝**（`RangeError` → `ArgumentError{name: None}`），
+  子类独有的字段丢了，`toString` 文本保留。（run683 记）
 - **列表/映射按值传递**:`f(log)` 里 `log` 是 `Vec` 的拷贝,被调方(或它返回的闭包)往里 `add`
   调用方看不见(throttle 夹具第一版踩到,改夹具绕开)。counted 类有身份,集合没有——通用解还没有。

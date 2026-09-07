@@ -360,6 +360,12 @@ class RustBackend {
   String _vis(String dartName) =>
       dartName.startsWith('_') ? 'pub(crate) ' : 'pub ';
 
+  /// A class name as this module spells it: by module when the type
+  /// carries one (`IrType.module`: `crate::dart_ui::TextStyle` beside
+  /// painting's own `TextStyle`), bare otherwise.
+  String _spelled(IrType t) =>
+      t.module == null ? t.name : 'crate::${t.module}::${t.name}';
+
   String type(IrType t, {bool owned = true}) {
     // Dart's `void?` is `void`, and the prelude's unit says so (`<() as
     // DartNullable>::Or = ()`): no `Option` around it.
@@ -431,7 +437,7 @@ class RustBackend {
       const anything = 'std::rc::Rc<dyn Object>';
       return t.nullable ? 'Option<$anything>' : anything;
     }
-    if (library.isAbstract(t.name)) {
+    if (library.isAbstractType(t)) {
       // With the arguments: an abstract `Animatable<T>` is `dyn Animatable<T>`,
       // and dropping them made 477 uses wrong the moment traits became
       // generic. The name alone was consistent only while nothing had
@@ -443,7 +449,7 @@ class RustBackend {
       // `&dyn DynamicScheme` could not be the key of the `Map<Rc<dyn
       // DynamicScheme>, Hct>` the method caches into, and the `Rc` every
       // caller holds could not be passed to it -- 7 `E0308`s each way.
-      final dynamic_ = 'std::rc::Rc<dyn ${t.name}$args>';
+      final dynamic_ = 'std::rc::Rc<dyn ${_spelled(t)}$args>';
       return t.nullable ? 'Option<$dynamic_>' : dynamic_;
     }
     if (t.name == 'Record') {
@@ -517,20 +523,20 @@ class RustBackend {
     }
     // A counted class is `Rc<Name>` everywhere it is named -- fields,
     // parameters, returns, locals. One rule here rather than 1150 edits.
-    final owner = library[t.name];
+    final owner = library.resolve(t);
     // Its own name included: a counted class's fields, parameters and
     // returns that name the class itself are handles too, as they are from
     // every other module. `impl` headers and constructors do not come
     // through here.
     if (owner != null && owner.counted) {
       final spelled =
-          'std::rc::Rc<${t.name}${t.arguments.isEmpty ? '' : '<'
+          'std::rc::Rc<${_spelled(t)}${t.arguments.isEmpty ? '' : '<'
                     '${t.arguments.map((a) => type(a)).join(', ')}>'}>';
       return t.nullable ? 'Option<$spelled>' : spelled;
     }
     // A nullable type parameter in a signature: the associated type that
     // collapses `T?` with `T` bound to `X?` (see `IrType.projected`).
-    final mapped = _primitives[t.name] ?? t.name;
+    final mapped = _primitives[t.name] ?? _spelled(t);
     // `Foo<int>` was coming out as a bare `Foo`, which is a different type.
     final spelled = t.arguments.isEmpty || _primitives.containsKey(t.name)
         ? mapped
@@ -879,6 +885,13 @@ class RustBackend {
       IrDowncast(:final target, :final type, :final arguments)
           when (library[type]?.counted ?? false) =>
         '${expr(target)}.dart_cast_any::<std::rc::Rc<$type${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>>().unwrap()',
+      // A prelude exception class: through the prelude's hierarchy, as
+      // `is` asks (`_isTest`), so a subtype's value reads as it.
+      IrDowncast(:final target, :final type, :final arguments)
+          when arguments.isEmpty &&
+              library[type] == null &&
+              _preludeClasses.contains(type) =>
+        '<$type as DartCoreAs>::dart_core_as(&${_optionRead(target) ?? expr(target)}).unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
         '${_asAny(target)}.downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
@@ -3140,8 +3153,8 @@ class RustBackend {
 
   /// `dyn Foo<A, B>`: the trait object a trait-typed `IrType` names.
   String _dynOf(IrType t) => t.arguments.isEmpty
-      ? 'dyn ${t.name}'
-      : 'dyn ${t.name}<${t.arguments.map(type).join(', ')}>';
+      ? 'dyn ${_spelled(t)}'
+      : 'dyn ${_spelled(t)}<${t.arguments.map(type).join(', ')}>';
 
   String _isTest(IrExpr operand, IrType target, bool negated) {
     final name = target.name;
@@ -3242,7 +3255,15 @@ class RustBackend {
     // A prelude class answers `is` through `Any` like a translated one:
     // every `'static` type is an `Object` there (`is StateError` in
     // `BindingBase._initListenable`, run433).
-    if (library[name] == null && !_preludeClasses.contains(name)) {
+    // ..through the prelude's own hierarchy (`DartCoreAs`): its exception
+    // structs are unrelated to Rust, and a `RangeError` was no
+    // `ArgumentError` to `Any` (fixture oncatch).
+    if (library[name] == null && _preludeClasses.contains(name)) {
+      final test =
+          '<$name as DartCoreAs>::dart_core_as(&${_optionRead(operand) ?? expr(operand)}).is_some()';
+      return negated ? '!$test' : test;
+    }
+    if (library[name] == null) {
       throw Unsupported('`is` against `$name`, which was not translated', name);
     }
     // `x is C<dynamic>` against a translated generic struct: true of every
@@ -4657,7 +4678,7 @@ class RustBackend {
     final turbofish = t.arguments.isEmpty || !spellable
         ? ''
         : '::<${t.arguments.map(type).join(', ')}>';
-    return '${t.name}$turbofish { ${parts.join(', ')} }';
+    return '${_spelled(t)}$turbofish { ${parts.join(', ')} }';
   }
 
   /// A constructor's Rust name. One function, used by both the definition and
@@ -5230,7 +5251,7 @@ class RustBackend {
     if (t.name == 'Object' && args.isEmpty) {
       return '(std::rc::Rc::new(()) as std::rc::Rc<dyn Object>)';
     }
-    if (library.isAbstract(t.name)) {
+    if (library.isAbstractType(t)) {
       throw Unsupported(
         'a constructor of `${t.name}`, which is abstract and became a trait',
         '${t.name}(..)',
@@ -5241,13 +5262,13 @@ class RustBackend {
     // The *name*, not the type: a counted class's type is `Rc<Foo>` and its
     // constructor is `Foo::new`, which hands one out. Spelling the type here
     // wrote `Rc<Foo>::new()`, which does not parse.
-    final counted = library[t.name]?.counted ?? false;
+    final counted = library.resolve(t)?.counted ?? false;
     final name = t.arguments.isEmpty
         // The bare name: `type(t)` of an argument-less `Map` fills in its
         // `Rc<dyn Object>` arguments, and `Map<K, V>::new()` needs a
         // turbofish to parse (`comparison operators cannot be chained`).
-        ? (counted || type(t).contains('<') ? t.name : type(t))
-        : '${t.name}::<${t.arguments.map((a) => type(a)).join(', ')}>';
+        ? (counted || type(t).contains('<') ? _spelled(t) : type(t))
+        : '${_spelled(t)}::<${t.arguments.map((a) => type(a)).join(', ')}>';
     final ctor = _ctorName(constructor);
     return '$name::$ctor(${args.map(expr).join(', ')})';
   }
@@ -5484,11 +5505,13 @@ class RustBackend {
         // A body with nothing that fails -- `listener()` behind a catch-all
         // in `ChangeNotifier.notifyListeners` -- leaves `_` with nothing to
         // infer it from (E0282). A catch-all catches an `Object`.
-        final failure =
-            errorType ??
-            _errorIn(body) ??
-            _failure ??
-            'std::rc::Rc<dyn Object>';
+        // A typed clause (`on ArgumentError catch (e)`) does not narrow
+        // the closure: every failure travels as the model's one error
+        // type, and a closure declared `Result<_, ArgumentError>` could
+        // not take the `?` of a callee inside it (`TextSpan.build` around
+        // `builder.addText`, stubbed, run683). The arm below asks the
+        // error whether it is the caught type and hands the rest back on.
+        final failure = _errorIn(body) ?? _failure ?? 'std::rc::Rc<dyn Object>';
         // The closure catches `?`, and it would catch a `return` too: written
         // plainly, `return x` in the body returns from the *closure* and the
         // method carries on, which compiles and is wrong. So when the body
@@ -5542,15 +5565,29 @@ class RustBackend {
         } else {
           _line('Ok(()) => {}');
         }
-        _line('Err(${snake(error)}) => {');
+        _line(
+          errorType == null
+              ? 'Err(${snake(error)}) => {'
+              : 'Err(__caught) => {',
+        );
+        _indent++;
+        if (errorType != null) {
+          // The test is the language's own `is` (`_isTest`: a trait by
+          // `dart_cast_to`, a struct by `Any`), and the binding its `as`;
+          // an error of another type is thrown on as `throw` is.
+          final caught = IrLocal('__caught')..rustType = const IrType('Object');
+          final target = IrType(errorType);
+          _line('if ${_isTest(caught, target, true)} { ${_thrown(caught)}; }');
+          final bound = library.isAbstract(errorType)
+              ? IrCastTo(caught, target)
+              : IrDowncast(caught, errorType, arguments: const []);
+          _line('let ${snake(error)} = ${expr(bound)}.clone();');
+        }
         // The catch clause's stack trace: the catch site's own, since a
         // `Result` carries none (see the front end's note).
         if (stack != null) {
-          _indent++;
           _line('let mut ${snake(stack)} = StackTrace::current();');
-          _indent--;
         }
-        _indent++;
         stmt(handler);
         _indent--;
         _line('}');

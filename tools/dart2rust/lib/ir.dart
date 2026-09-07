@@ -22,8 +22,16 @@ class IrType {
     this.nullable = false,
     this.arguments = const [],
     this.projected = false,
+    this.module,
   }) : parameters = null,
        returns = null;
+
+  /// The module that declares the class, when another module declares a
+  /// class of the same name (`TextStyle` in dart:ui and in painting) and
+  /// this reference is not from the declaring library: the backend spells
+  /// the type `crate::<module>::<name>` and looks the class up there. The
+  /// name stays bare, so every rule that compares names still holds.
+  final String? module;
 
   /// A function type: `double Function(double, String)`.
   ///
@@ -31,7 +39,8 @@ class IrType {
   /// takes `impl Fn(f32) -> f32` and a field holds `Box<dyn Fn(f32) -> f32>`,
   /// and neither can be built from the string `Function`.
   const IrType.function(this.parameters, this.returns, {this.nullable = false})
-    : name = 'Function',
+    : module = null,
+      name = 'Function',
       arguments = const [],
       projected = false;
 
@@ -1758,6 +1767,7 @@ class IrLibrary {
     this.functions = const [],
     this.abstractElsewhere = const {},
     this.elsewhere = const {},
+    this.byModule = const {},
     this.functionsElsewhere = const {},
     this.constantsElsewhere = const {},
   });
@@ -1787,6 +1797,10 @@ class IrLibrary {
   /// really is there, and `use crate::<module>::*` reaches it.
   final Map<String, IrClass> elsewhere;
 
+  /// Every module's classes by name (the driver): what a reference spelled
+  /// by module (`crate::<module>::<Name>`) resolves to.
+  final Map<String, Map<String, IrClass>> byModule;
+
   /// Abstract classes declared in *other* libraries of the same crate.
   ///
   /// Whether a class is abstract decides whether its name is a struct or a
@@ -1808,6 +1822,21 @@ class IrLibrary {
   /// `package:flutter` alone -- `kMinInteractiveDimension`, `kIsWeb` -- and
   /// they are referred to 507 times.
   final List<IrConstDecl> constants;
+
+  /// The class a type names: the module's when the type carries one
+  /// (`IrType.module`), else by name as `[]` looks it up.
+  IrClass? resolve(IrType t) {
+    final module = t.module;
+    if (module != null) {
+      final found = byModule[module]?[t.name];
+      if (found != null) return found;
+    }
+    return this[t.name];
+  }
+
+  /// `isAbstract` of the class a type names (see `resolve`).
+  bool isAbstractType(IrType t) =>
+      resolve(t)?.isAbstract ?? abstractElsewhere.contains(t.name);
 
   IrClass? operator [](String? name) {
     if (name == null) return null;

@@ -282,6 +282,22 @@ Future<void> main(List<String> args) async {
       }
     }
   }
+  // Class names two translated libraries both declare (`TextStyle`,
+  // `StrutStyle`, `Gradient`, `Image` in dart:ui and in flutter's painting
+  // and widgets): a reference from another library is spelled by module
+  // (`crate::dart_ui::StrutStyle`), since by the bare name whichever the
+  // module imported won (run679).
+  final classNameCount = <String, int>{};
+  for (final library in inPackage) {
+    for (final cls in library.classes) {
+      if (cls.isAnonymousMixin || cls.name.startsWith('_')) continue;
+      classNameCount[cls.name] = (classNameCount[cls.name] ?? 0) + 1;
+    }
+  }
+  final collidingClassNames = {
+    for (final e in classNameCount.entries)
+      if (e.value > 1) e.key,
+  };
   // The classes mutated through an alias (`alias_mutation.dart`): counted.
   // ..with the deduplicated mixin applications' bodies scanned too: a
   // hollow mixin's methods live there (`LocalHistoryRoute.addLocalHistory
@@ -306,6 +322,7 @@ Future<void> main(List<String> args) async {
       enumValues: enumValues,
       enumFields: enumFields,
       abstractElsewhere: abstractNames,
+      collidingClassNames: collidingClassNames,
       typeEnvironment: typeEnvironment,
       dynamicSlots: dynamicSlots,
       throws: throwsAnalysis,
@@ -449,6 +466,10 @@ Future<void> main(List<String> args) async {
             entry.key: classesOf[entry.value.single]![entry.key]!,
       },
       functionsElsewhere: everyFunction,
+      byModule: {
+        for (final e in classesOf.entries)
+          if (nameOf[e.key] != null) nameOf[e.key]!: e.value,
+      },
     );
     final (text, more) = RustBackend.emitLibrary(ir, frontEndRefusals: refused);
     // Counted from what is written, not from what the two lists happen to

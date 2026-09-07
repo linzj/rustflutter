@@ -1487,6 +1487,7 @@ dart_any_named!(
 
 dart_any_display!(
     Duration => "Duration", Symbol => "Symbol", StackTrace => "StackTrace", Uri => "Uri", Exception => "Exception", FormatException => "FormatException", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError", IndexError => "IndexError", RangeError => "RangeError", FileSystemException => "FileSystemException", SocketException => "SocketException", AssertionError => "AssertionError",
+    StateError => "StateError", TypeError => "TypeError", Error => "Error", UnsupportedError => "UnsupportedError", ConcurrentModificationError => "ConcurrentModificationError",
 );
 
 dart_any_generic!(
@@ -3854,9 +3855,9 @@ impl<T: DartNullable> DartListLength for Vec<T> {
             match T::dart_null() {
                 Some(null) => self.push(null),
                 None => {
-                    return Err(std::rc::Rc::new(RangeError::new(
+                    return Err(std::rc::Rc::new(RangeError::new(dart_boxed(
                         "Cannot grow a list of non-nullable elements".to_string(),
-                    )))
+                    ))))
                 }
             }
         }
@@ -8309,19 +8310,26 @@ macro_rules! dart_error {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Exception {
     pub message: String,
+    /// A subtype's value read as an `Exception` (`DartCoreAs`) keeps the
+    /// subtype's own text: `on Exception catch (e)` prints `$e` as the
+    /// `FormatException` it was.
+    pub rendered: Option<String>,
 }
 
 impl Exception {
     pub fn new(message: std::rc::Rc<dyn Object>) -> Self {
         Exception {
             message: dart_message(&message),
+            rendered: None,
         }
     }
 }
 
 impl fmt::Display for Exception {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.message.is_empty() {
+        if let Some(rendered) = &self.rendered {
+            f.write_str(rendered)
+        } else if self.message.is_empty() {
             f.write_str("Exception")
         } else {
             write!(f, "Exception: {}", self.message)
@@ -8343,7 +8351,96 @@ pub fn dart_message(message: &std::rc::Rc<dyn Object>) -> String {
 }
 dart_error!(StateError, "Bad state");
 dart_error!(TypeError, "TypeError");
-dart_error!(Error, "Error");
+/// `Error`, the root of dart:core's errors: as `dart_error!` writes one,
+/// with the text of a subtype's value read as an `Error` (see `Exception`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Error {
+    pub message: String,
+    pub rendered: Option<String>,
+}
+
+impl Error {
+    pub fn new(message: String) -> Self {
+        Error {
+            message,
+            rendered: None,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(rendered) = &self.rendered {
+            f.write_str(rendered)
+        } else if self.message.is_empty() {
+            f.write_str("Error")
+        } else {
+            write!(f, "Error: {}", self.message)
+        }
+    }
+}
+
+impl DartEq for Error {
+    fn dart_eq(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+/// dart:core's class hierarchy among the prelude's exception structs, for
+/// `is`, `as` and `on .. catch`: a value of a subtype *is* the supertype
+/// (`on ArgumentError` catches a `RangeError`, `on Exception` a
+/// `FormatException`), and reads as it by conversion -- the structs are
+/// unrelated to Rust, so this table is the hierarchy. A translated class
+/// that implements one of these (`FlutterError implements AssertionError`)
+/// is not in it; that is recorded as a debt.
+pub trait DartCoreAs: Sized + Clone + 'static {
+    fn dart_core_as(value: &dyn Object) -> Option<Self>;
+}
+
+macro_rules! dart_core_as {
+    ($name:ident $(, $sub:ident => $conv:expr)*) => {
+        impl DartCoreAs for $name {
+            fn dart_core_as(value: &dyn Object) -> Option<Self> {
+                let value: &dyn Object = match value.as_any().downcast_ref::<std::rc::Rc<dyn Object>>() {
+                    Some(handle) => handle.as_ref(),
+                    None => value,
+                };
+                if let Some(own) = value.as_any().downcast_ref::<$name>() {
+                    return Some(own.clone());
+                }
+                $(
+                    if let Some(sub) = value.as_any().downcast_ref::<$sub>() {
+                        let convert: fn(&$sub) -> $name = $conv;
+                        return Some(convert(sub));
+                    }
+                )*
+                None
+            }
+        }
+    };
+}
+
+dart_core_as!(Exception, FormatException => |e| Exception { message: e.message.clone(), rendered: Some(format!("{}", e)) });
+dart_core_as!(FormatException);
+dart_core_as!(ArgumentError, RangeError => |e| ArgumentError { message: e.message.clone(), name: None });
+dart_core_as!(RangeError);
+dart_core_as!(StateError);
+dart_core_as!(TypeError);
+dart_core_as!(AssertionError);
+dart_core_as!(UnsupportedError);
+dart_core_as!(UnimplementedError);
+dart_core_as!(ConcurrentModificationError);
+dart_core_as!(
+    Error,
+    ArgumentError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    RangeError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    StateError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    TypeError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    AssertionError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    UnsupportedError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    UnimplementedError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) },
+    ConcurrentModificationError => |e| Error { message: format!("{}", e), rendered: Some(format!("{}", e)) }
+);
 
 /// `String.fromCharCodes(codes)`: UTF-16 code units to a String.
 pub fn string_from_char_codes(codes: Vec<i64>) -> String {
@@ -10201,9 +10298,12 @@ pub struct RangeError {
 }
 
 impl RangeError {
-    pub fn new(message: String) -> Self {
+    /// `RangeError([dynamic message])`: boxed, as `ArgumentError`'s is (a
+    /// `String` here refused the boxed message the front end hands every
+    /// `dynamic` parameter, fixture oncatch).
+    pub fn new(message: std::rc::Rc<dyn Object>) -> Self {
         RangeError {
-            message,
+            message: dart_message(&message),
             start: None,
             end: None,
         }
