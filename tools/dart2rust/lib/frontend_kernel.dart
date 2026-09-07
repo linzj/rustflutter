@@ -987,10 +987,16 @@ class KernelFrontend implements TypeWorld {
     // `FutureOr::value` / `FutureOr::future` (`coerceInto`). The gallery's
     // startup path needs it: `Future<bool>(() async {..})` in
     // `GetStorage._internal`, `SchedulerBinding.scheduleTask`.
+    // Nullable only as *declared* (`FutureOr<int>?`): Dart computes
+    // `FutureOr<void>` and `FutureOr<T?>` nullable from the argument,
+    // whose null the `T` inside already carries here -- as an `Option`
+    // around the whole, a void `then<void>` callback returned `None` and
+    // the adapter into the `FutureOr<()>` slot unwrapped it (`Route.
+    // didAdd` through `TickerFuture.then`, run652).
     if (type is FutureOrType) {
       return IrType(
         'FutureOr',
-        nullable: type.nullability == Nullability.nullable,
+        nullable: type.declaredNullability == Nullability.nullable,
         arguments: [_type(type.typeArgument)],
       );
     }
@@ -2166,6 +2172,27 @@ class KernelFrontend implements TypeWorld {
           ? null
           : _realOwner(target, node.name.text);
       final base = ownerClass?.name ?? owner;
+      // `super.paint` as a value (`context.pushLayer(layer, super.paint,
+      // offset)`): the closure the tear-off is, calling the super
+      // function -- as an instance tear-off is (ws649, 15 stubs the
+      // moment the owner resolved).
+      if (target is Procedure && target.kind == ProcedureKind.Method) {
+        return _superTearOff(node, target);
+      }
+      // Typed by the getter, in this class's kept terms: an erased
+      // `ChildType?` is the `RenderObject?` the super function hands
+      // back, which the slot narrows (`_RenderTheater._firstOnstageChild`
+      // reading `super.firstChild` into a `RenderBox?`, ws649).
+      // ..the *mixin's* declaration where it still has one: the target
+      // may be the application's copy, already at `RenderBox?`, while the
+      // super function is written in the mixin's erased terms.
+      final typed = target == null ? null : _superReturn(target);
+      if (Platform.environment['DART2RUST_TRACE_SUPER'] == node.name.text) {
+        stderr.writeln(
+          'TRACE_SUPER get ${node.name.text} owner=${ownerClass?.name} '
+          'typed=$typed',
+        );
+      }
       return IrSuperCall(
         base,
         node.name.text,
@@ -2173,7 +2200,7 @@ class KernelFrontend implements TypeWorld {
         baseArguments: ownerClass == null
             ? const []
             : _superBaseArguments(ownerClass),
-      );
+      )..rustType = typed;
     }
     if (node is SuperPropertySet) {
       // `super.value = value` in `_RestorablePrimitiveValue.value=`: the
@@ -3881,6 +3908,77 @@ class KernelFrontend implements TypeWorld {
       }
     }
     return null;
+  }
+
+  /// `super.m` as a value: a closure over the super call, its parameters
+  /// the method's (see the `InstanceTearOff` case).
+  IrExpr _superTearOff(SuperPropertyGet node, Procedure target) {
+    final fn = target.function;
+    if (fn.typeParameters.isNotEmpty) {
+      throw Unsupported(
+        'a generic super method used as a value',
+        _sample(node),
+      );
+    }
+    if (!_counted) {
+      throw Unsupported(
+        'a super method used as a value in a class with no handle',
+        _sample(node),
+      );
+    }
+    final torn = _staticType(node);
+    DartType positionalType(int i) =>
+        torn is FunctionType && i < torn.positionalParameters.length
+        ? torn.positionalParameters[i]
+        : fn.positionalParameters[i].type;
+    DartType namedType(String name, DartType declared) {
+      if (torn is FunctionType) {
+        for (final n in torn.namedParameters) {
+          if (n.name == name) return n.type;
+        }
+      }
+      return declared;
+    }
+
+    final returnType = torn is FunctionType ? torn.returnType : fn.returnType;
+    final params = [
+      for (var i = 0; i < fn.positionalParameters.length; i++)
+        IrParam(
+          _paramName(fn.positionalParameters[i], 'a$i'),
+          _type(positionalType(i)),
+        ),
+      for (final p in _namedInTypeOrder(fn))
+        IrParam(
+          p.parameterName,
+          _type(namedType(p.parameterName, p.type)),
+          named: true,
+        ),
+    ];
+    final call = SuperMethodInvocation(
+      ThisExpression(),
+      node.name,
+      Arguments(
+        [for (final p in fn.positionalParameters) VariableGet(p)],
+        named: [
+          for (final p in fn.namedParameters)
+            NamedExpression(p.parameterName, VariableGet(p)),
+        ],
+      ),
+      target,
+    );
+    final tornReturns = _type(returnType);
+    final lowered = expression(call);
+    return IrClosure(
+        params,
+        IrReturn(coerce(lowered, tornReturns)),
+        tornReturns,
+        locals: const [],
+        // Over a handle to `this`, as any closure calling into it is.
+        holdsSelf: true,
+      )
+      ..rustType = IrType.function([
+        for (final p in params) p.type,
+      ], tornReturns);
   }
 
   Class? _realOwner(Member target, String name) {
@@ -7044,6 +7142,26 @@ class KernelFrontend implements TypeWorld {
     // `scheduleMicrotask(f)`: the prelude's `_schedule_microtask` takes the
     // `Rc<dyn Fn()>` a translated closure is; the public-named one is the
     // prelude's own `Box<dyn FnOnce()>` entry.
+    // A `dart:collection` extension getter on an iterable (`xs.lastOrNull`,
+    // lowered by the CFE to `IterableExtensions|get#lastOrNull<T>(xs)`):
+    // the prelude's method on the receiver, so that the receiver is
+    // borrowed as any list method's is (`FocusScopeNode.focusedChild`,
+    // run650). The table is the mapping.
+    final coreExtension =
+        _coreExtensionMethods[target.enclosingLibrary.importUri
+            .toString()]?[target.name.text];
+    if (coreExtension != null && owner == null && positional.isNotEmpty) {
+      final args = _arguments(node.arguments, target.function);
+      final element = node.arguments.types.isNotEmpty
+          ? _type(node.arguments.types.first)
+          : const IrType('dynamic');
+      return IrCall(args.first, coreExtension, args.sublist(1))
+        ..rustType = IrType(
+          element.name,
+          nullable: true,
+          arguments: element.arguments,
+        );
+    }
     final coreFunction =
         _coreTopLevel[target.enclosingLibrary.importUri
             .toString()]?[target.name.text];
@@ -7136,9 +7254,25 @@ class KernelFrontend implements TypeWorld {
       fails: _fails(target),
       diverges: _diverges(target),
       asyncFn: _asyncMember(target),
-      typeArguments: _keptTypeArguments(declaration, node.arguments),
+      // The prelude's `Future` constructors are generic functions with
+      // nothing but the type argument to say what `T` is when no value
+      // is handed in (`Future<void>.delayed(Duration.zero)` fell back to
+      // the never type, the thenvoid fixture): the class's arguments,
+      // spelled.
+      typeArguments: owner == 'Future'
+          ? _recordedTypes(node.arguments.types)
+          : _keptTypeArguments(declaration, node.arguments),
       module: owner == null ? _topLevelModule(target) : null,
     );
+  }
+
+  /// `types` spelled, or none when one cannot be.
+  List<IrType> _recordedTypes(List<DartType> types) {
+    try {
+      return [for (final t in types) _type(t)];
+    } on Unsupported {
+      return const [];
+    }
   }
 
   /// dart:core members the prelude implements as a *sibling* declares
@@ -7973,6 +8107,44 @@ class KernelFrontend implements TypeWorld {
           p.parameterName: _asApplied(declared(p.type), owner),
       },
     );
+  }
+
+  /// What a super read of `target` hands back, as this class sees it:
+  /// the declaration's type (the mixin's, behind a copy; a copy whose
+  /// declaration is gone unapplied, as `_superSlots` does) with this
+  /// class's arguments put in for the kept parameters. Null where this
+  /// compiler has no spelling for it.
+  IrType? _superReturn(Member target) {
+    final original = _originalOf(target);
+    final Class? owner;
+    final DartType Function(DartType) declared;
+    if (identical(original, target)) {
+      final application = target.enclosingClass;
+      if (application != null && application.isAnonymousMixin) {
+        final mixin =
+            application.mixedInType?.classNode ??
+            application.implementedTypes
+                .map((st) => st.classNode)
+                .where((c) => c.isMixinDeclaration)
+                .firstOrNull;
+        if (mixin == null) return null;
+        owner = mixin;
+        declared = (t) => _unapplied(t, application, mixin);
+      } else {
+        owner = target.enclosingClass;
+        declared = (t) => t;
+      }
+    } else {
+      owner = original.enclosingClass;
+      declared = (t) => t;
+    }
+    final DartType? type = original is Procedure
+        ? original.function.returnType
+        : original is Field
+        ? original.type
+        : null;
+    if (type == null) return null;
+    return _recordedType(_asApplied(declared(type), owner));
   }
 
   /// The function whose parameters a call to `m` fills: the mixin's own
@@ -9912,6 +10084,17 @@ class KernelFrontend implements TypeWorld {
   /// prelude); `print` is Dart's, to stdout, through the Object
   /// protocol's `toString` (google_fonts' error path, run561).
   /// Each with the Rust slots its arguments are coerced into, or none.
+  /// `dart:collection`'s extension getters on iterables, by the CFE's
+  /// name for the lowered static, to the prelude's list method.
+  static const _coreExtensionMethods = <String, Map<String, String>>{
+    'dart:collection': {
+      'IterableExtensions|get#firstOrNull': 'first_or_null',
+      'IterableExtensions|get#lastOrNull': 'last_or_null',
+      'IterableExtensions|get#singleOrNull': 'single_or_null',
+      'IterableExtensions|elementAtOrNull': 'element_at_or_null',
+    },
+  };
+
   static const _coreTopLevel = <String, Map<String, (String, List<IrType>?)>>{
     'dart:core': {
       'print': ('dart_print', [IrType('dynamic')]),
@@ -10443,8 +10626,33 @@ class KernelFrontend implements TypeWorld {
   // -- Statements -------------------------------------------------------------
 
   IrStmt statement(Statement node) {
+    if (node is YieldStatement) {
+      final element = _syncStarElement;
+      if (element == null) {
+        throw Unsupported('yield outside a sync* body', _sample(node));
+      }
+      final listed = IrType('List', arguments: [_type(element)]);
+      final out = IrLocal(_syncStarOut)..rustType = listed;
+      if (node.isYieldStar) {
+        return IrExprStmt(
+          IrCall(out, 'extend', [coerce(expression(node.expression), listed)]),
+        );
+      }
+      return IrExprStmt(
+        IrCall(out, 'push', [
+          _widened(node.expression, element, expression(node.expression)),
+        ]),
+      );
+    }
     if (node is ReturnStatement) {
       final value = node.expression;
+      // A bare `return` in a `sync*` body hands the collected list back.
+      if (value == null && _syncStarElement != null) {
+        return IrReturn(
+          IrLocal(_syncStarOut)
+            ..rustType = IrType('List', arguments: [_type(_syncStarElement!)]),
+        );
+      }
       // `=> x = v` in a setter or a void closure: the CFE puts the assignment
       // in the `return`, and a void function has no value to carry out. The
       // assignment is the statement; the return is bare. Only when the value
@@ -11056,6 +11264,23 @@ class KernelFrontend implements TypeWorld {
     _voidReturn = (expected ?? own) is VoidType;
     _returnsType = expected ?? own;
     _asyncBody = async;
+    // A `sync*` body collects what it yields into the list it returns:
+    // `yield x` pushes, `yield* xs` extends, a bare `return` hands the
+    // list back, and so does falling off the end. Eager where Dart is
+    // lazy, which only an unbounded generator could tell apart
+    // (`_OverlayEntryWidgetState._createChildIterable`, run655).
+    final outerSyncStar = _syncStarElement;
+    final DartType? syncStarElement;
+    if (function.asyncMarker == AsyncMarker.SyncStar) {
+      final declared = function.returnType;
+      syncStarElement =
+          declared is InterfaceType && declared.typeArguments.length == 1
+          ? declared.typeArguments.single
+          : const DynamicType();
+    } else {
+      syncStarElement = null;
+    }
+    _syncStarElement = syncStarElement;
     final outerEdge = _edgeReturn;
     // ..the awaited type for an `async` body, whose `return v` is the
     // future's value (`Future<T?> send()` returning `T?`, ws421).
@@ -11093,6 +11318,20 @@ class KernelFrontend implements TypeWorld {
           ),
         );
       }
+      if (syncStarElement != null) {
+        final element = _type(syncStarElement);
+        final listed = IrType('List', arguments: [element]);
+        return IrBlock([
+          ...rebound,
+          IrLocalDecl(
+            _syncStarOut,
+            listed,
+            IrListLiteral(const [], element)..rustType = listed,
+          ),
+          statement(body),
+          IrReturn(IrLocal(_syncStarOut)..rustType = listed),
+        ]);
+      }
       if (rebound.isEmpty) return statement(body);
       return IrBlock([...rebound, statement(body)]);
     } finally {
@@ -11100,8 +11339,15 @@ class KernelFrontend implements TypeWorld {
       _returnsType = outerType;
       _asyncBody = outerAsync;
       _edgeReturn = outerEdge;
+      _syncStarElement = outerSyncStar;
     }
   }
+
+  /// The element type of the `sync*` body being lowered, or null.
+  DartType? _syncStarElement;
+
+  /// The list a `sync*` body collects into.
+  static const _syncStarOut = '__yielded';
 
   /// Whether the body being lowered is an `async` one.
   bool _asyncBody = false;

@@ -2424,8 +2424,11 @@ class RustBackend {
       if (name == 'sync' && args.length == 1) {
         return 'future_sync(${expr(args.single)})';
       }
+      // With its type argument, as `value` has it: without a computation
+      // there is nothing to infer `T` from (`Future<void>.delayed(Duration
+      // .zero)` fell back to the never type, the thenvoid fixture).
       if (name == 'delayed' && (args.length == 1 || args.length == 2)) {
-        return 'future_delayed(${expr(args[0])}, ${args.length == 2 ? expr(args[1]) : 'None'})';
+        return 'future_delayed$fish(${expr(args[0])}, ${args.length == 2 ? expr(args[1]) : 'None'})';
       }
       if (name == 'error' && args.isNotEmpty) {
         return 'DartFuture::ready(Err(${expr(args[0])}))';
@@ -2973,8 +2976,11 @@ class RustBackend {
     // side does. Without this the read was `entry.x` against a `RefCell`.
     if (owner != null) {
       final cell = _cellFieldOf(owner, name);
-      if (cell != null && _lazyDecl(name) != null) {
-        return _lazyRead(_lazyDecl(name)!, receiver);
+      // Its own class's accessor runs the initialiser on the right
+      // object (`_emitLazyAccessors`); `_lazyRead` here printed it
+      // against *this* class's `self`.
+      if (cell != null && _lazyFieldOf(owner, name)) {
+        return '$receiver.${_lazyAccessor(name)}()$_propagate';
       }
       if (cell != null) {
         // The `borrow()` guard is a temporary, and a temporary in a block's
@@ -3617,6 +3623,29 @@ class RustBackend {
         _appliedFieldOf(cls, target.name) != null) {
       return _cellPlace(IrField(target.target, target.name));
     }
+    // ..and on a *handle* whose class is a trait: the front end reads a
+    // trait's field through its accessor (`owner!._nodesNeedingLayout`),
+    // whose value is a clone -- `scheduleInitialLayout` pushed the root
+    // into the copy and no layout ever ran (run656). The trait hands the
+    // cell out too (`_handsCell`).
+    if (target is IrCall &&
+        target.args.isEmpty &&
+        target.typeArguments.isEmpty &&
+        target.target != null &&
+        target.target is! IrThis) {
+      final held = target.target!.rustType;
+      final owned = held == null || isNullable(held)
+          ? null
+          : library[held.name];
+      if (owned != null && library.isAbstract(held!.name)) {
+        final decl =
+            _allFields(owned).where((f) => f.name == target.name).firstOrNull ??
+            _appliedFieldOf(owned, target.name);
+        if (decl != null && _handsCell(decl)) {
+          return '${expr(target.target!)}.${snake(target.name)}_cell()$_propagate';
+        }
+      }
+    }
     if (target is! IrField) return null;
     final base = target.target;
     final atThis = base == null || base is IrThis;
@@ -3807,6 +3836,15 @@ class RustBackend {
         target is! IrThis &&
         _isTypeParam(target.rustType?.name ?? '')) {
       return 'DartEq::dart_hash_code(&${expr(target)})';
+    }
+    // ..and on `this` in a class that declares none (`OrdinalSortKey(1.0,
+    // name: hashCode.toString())` in `_InputDecoratorState`, ws654): the
+    // protocol's, which every struct implements.
+    if ((name == 'hashCode' || name == 'hash_code') &&
+        args.isEmpty &&
+        (target == null || target is IrThis) &&
+        !_declaresHashCode(cls)) {
+      return 'DartEq::dart_hash_code(&*$_selfName)';
     }
     final cellPlace = _mutatesInPlace(name) ? _mutPlace(target) : null;
     // The arguments first, bound: the receiver's `borrow_mut()` is taken
@@ -5187,27 +5225,30 @@ class RustBackend {
       _line('eprintln!("dart2rust trace: $_here");');
     }
     final rendered = type(returnType);
-    // A `Null?` return (a `FutureOr<void>` callback's) falls off into
-    // `Ok(None)` as `()` does into `Ok(())` (52 in `widgets`).
-    final unit = rendered == '()';
-    final optional = rendered.startsWith('Option<');
-    // ..and a `FutureOr<void>` one (a `then` callback's, `Route.didAdd`,
-    // ws504) into the done `FutureOr` of `()`.
-    final futureOrUnit = rendered == 'FutureOr<()>';
+    // A body that falls off its end returns the null of its type: `()`,
+    // `None` for an `Option` (a `Null` callback's, 52 in `widgets`), and
+    // the done `FutureOr` of either (a `then` callback's `FutureOr<void>`,
+    // `Route.didAdd`, ws504; `FutureOr<Null>` once `FutureOr` stopped
+    // being an `Option` of its own, the thenvoid fixture).
+    final falling = _fallsOffValue(rendered);
     final fallsOff =
-        _failure != null &&
-        (unit || optional || futureOrUnit) &&
-        !_alwaysReturns(body);
+        _failure != null && falling != null && !_alwaysReturns(body);
     stmt(body, tail: !fallsOff);
-    if (fallsOff) {
-      _line(
-        unit
-            ? 'Ok(())'
-            : futureOrUnit
-            ? 'Ok(FutureOr::value(()))'
-            : 'Ok(None)',
+    if (fallsOff) _line('Ok($falling)');
+  }
+
+  /// The value a body of the rendered return type falls off into, or null
+  /// when the type has no null to fall into.
+  static String? _fallsOffValue(String rendered) {
+    if (rendered == '()') return '()';
+    if (rendered.startsWith('Option<')) return 'None';
+    if (rendered.startsWith('FutureOr<') && rendered.endsWith('>')) {
+      final inner = _fallsOffValue(
+        rendered.substring('FutureOr<'.length, rendered.length - 1),
       );
+      return inner == null ? null : 'FutureOr::value($inner)';
     }
+    return null;
   }
 
   void stmt(IrStmt s, {bool tail = false}) {
@@ -8942,6 +8983,7 @@ class RustBackend {
       _indent++;
     }
     _emitMethods();
+    _emitLazyAccessors();
     _emitToList();
     _indent--;
     _line('}');
@@ -10103,6 +10145,124 @@ class RustBackend {
     return call;
   }
 
+  /// A lazy `late` field's accessor (`_lazyLate`): the field filled on
+  /// the first read, through whatever handle holds the object. A read
+  /// from another object (`it._paintOrderIterable` in `_TheaterParentData`)
+  /// has no `self` to run the initialiser on, and read the empty cell
+  /// (run653's render walk).
+  void _emitLazyAccessors() {
+    final wanted = _foreignReadsOf(cls.name);
+    for (final f in _allFields(cls)) {
+      // Only where some body reads it from outside: an accessor nobody
+      // calls is a body that may not compile for nothing (+4 at ws654).
+      if (!_lazyLate(f) || !wanted.contains(f.name)) continue;
+      _member('${cls.name}.${f.name}', () {
+        _here = '${cls.name}.${f.name}';
+        final savedFailure = _failure;
+        final savedReturns = _rustReturns;
+        final savedAsync = _asyncBody;
+        final savedParams = _methodTypeParams;
+        final savedReassigned = _reassigned;
+        _failure = _resultModel ? _error : null;
+        _asyncBody = false;
+        _methodTypeParams = const [];
+        _reassigned = {};
+        final held = _declSpelling(() => type(f.type));
+        final returns = _wrapped(held);
+        _rustReturns = returns;
+        _line('pub fn ${_lazyAccessor(f.name)}(&self) -> $returns {');
+        _indent++;
+        final read = _lazyRead(f, 'self');
+        _line(_failure != null ? 'Ok($read)' : read);
+        _indent--;
+        _line('}');
+        _line('');
+        _failure = savedFailure;
+        _rustReturns = savedReturns;
+        _asyncBody = savedAsync;
+        _methodTypeParams = savedParams;
+        _reassigned = savedReassigned;
+      });
+    }
+  }
+
+  static String _lazyAccessor(String field) => '__lazy_${snake(field)}';
+
+  /// Whether a class or a base of it writes its own `hashCode`.
+  bool _declaresHashCode(IrClass c) =>
+      c.methods.any((m) => m.name == 'hashCode' && !m.isStatic) ||
+      _abstractAncestors(
+        c,
+      ).any((a) => a.methods.any((m) => m.name == 'hashCode' && !m.isStatic)) ||
+      _superclassChain(
+        c,
+      ).any((a) => a.methods.any((m) => m.name == 'hashCode' && !m.isStatic));
+
+  /// The concrete superclasses above `c`, nearest first.
+  Iterable<IrClass> _superclassChain(IrClass c) sync* {
+    var name = c.superclass;
+    final seen = <String>{};
+    while (name != null && seen.add(name)) {
+      final above = library[name];
+      if (above == null) return;
+      yield above;
+      name = above.superclass;
+    }
+  }
+
+  /// The fields of `owner` some body in the program reads on another
+  /// object (`_WalkSelf.foreignFieldReads`), over every module's classes.
+  Set<String> _foreignReadsOf(String owner) =>
+      _foreignReads.putIfAbsent(owner, () {
+        final found = <String>{};
+        final classes = <IrClass>{
+          ...library.elsewhere.values,
+          ...library.classes,
+        };
+        for (final c in classes) {
+          final reads = _foreignReadsIn(c)[owner];
+          if (reads != null) found.addAll(reads);
+        }
+        return found;
+      });
+
+  final Map<String, Set<String>> _foreignReads = {};
+
+  static final _foreignReadsOfClass = Expando<Map<String, Set<String>>>();
+
+  static Map<String, Set<String>> _foreignReadsIn(IrClass c) {
+    final cached = _foreignReadsOfClass[c];
+    if (cached != null) return cached;
+    final walk = _WalkSelf();
+    for (final m in c.methods) {
+      walk.statement(m.body);
+    }
+    for (final k in c.constructors) {
+      final body = k.body;
+      if (body != null) walk.statement(body);
+    }
+    for (final f in c.fields) {
+      final init = f.initial;
+      if (init != null) walk.expression(init);
+    }
+    return _foreignReadsOfClass[c] = walk.foreignFieldReads;
+  }
+
+  /// Whether `owner`'s field `name` is a lazy `late` (see `_lazyLate`),
+  /// read through its accessor from outside.
+  bool _lazyFieldOf(String owner, String name) {
+    final owned = library[owner];
+    if (owned == null) return false;
+    for (final f in _allFields(owned)) {
+      if (f.name != name) continue;
+      return f.isLate &&
+          f.initial != null &&
+          _mentionsThis(f.initial!) &&
+          _inCellOf(owned, f);
+    }
+    return false;
+  }
+
   void _emitConstructors() {
     for (final ctor in cls.constructors) {
       // Through `_member`, like every other member. Without it an
@@ -10858,6 +11018,11 @@ class RustBackend {
 class _WalkSelf {
   bool writesFields = false;
 
+  /// Fields read on another object, by the declaring class the front end
+  /// named (`IrField.owner`): a lazy `late` one needs its accessor
+  /// (`_emitLazyAccessors`).
+  final foreignFieldReads = <String, Set<String>>{};
+
   /// Whether a null-aware's bound value (`it`) is read: a closure made in
   /// such a body must own a clone of it (`_closure`).
   bool readsBound = false;
@@ -11088,8 +11253,11 @@ class _WalkSelf {
         }
         if (target != null) expression(target);
         args.forEach(expression);
-      case IrField(:final target):
+      case IrField(:final target, :final name, :final owner):
         if (target == null) readsThis = true;
+        if (target != null && target is! IrThis && owner != null) {
+          foreignFieldReads.putIfAbsent(owner, () => {}).add(name);
+        }
         if (target != null) expression(target);
       case IrBinary(:final left, :final right):
         expression(left);

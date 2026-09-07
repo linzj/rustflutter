@@ -680,6 +680,21 @@ IrExpr coerceInto(
     }
     return IrCastTo(value, slot)..rustType = slot;
   }
+  // A trait handle into a *struct* slot (`Leaf? child = super.firstNode`
+  // on a mixin's erased `ChildType?`): the object behind the handle, when
+  // it is one -- Dart's implicit downcast, failing as one does (the
+  // supertear fixture).
+  if (haveTrait &&
+      world.isStruct(slot.name) &&
+      !isNullable(have) &&
+      !isNullable(slot) &&
+      !slot.isFunction) {
+    return IrCall(
+      IrDowncast(value, slot.name, arguments: slot.arguments),
+      'clone',
+      const [],
+    )..rustType = slot;
+  }
   if (slotTrait && world.isStruct(have.name)) {
     return IrUpcast(
       value,

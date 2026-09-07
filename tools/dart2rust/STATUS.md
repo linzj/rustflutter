@@ -299,23 +299,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws628 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,run635 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws628 | 链：stub **677**（-4 vs ws626：-9 +6），拒绝 242。run628 仍停在 `restoreState`：实参是 trait 句柄 `Rc<dyn RestorableNum<i64>>`，coerce 对 trait→超 trait 一律隐式上转（Rust 只能同实参上转）——带实参的改走 `dart_cast_to`（对象经宽 impl 作答）。连带：开放泛型类自己的结构体（`NumValImpl`）也按 Dart 类名领宽 impl；继承来的方法（`via`）的类型先换成本类的实参（`RestorableValue<T?>` 的 `T`）；泛型接收者按记录类型的实参限定 `<SetEquality<..> as Equality<..>>`。夹具 restoreprop（值/句柄/子类三形）、gentrait SAME。 | ws629 量；run629 看下一站。 |
-| ws629 | 链：stub **658**（-19），拒绝 242。`restoreState` 过了编译；run629 停在 `_HistoryProperty` 宽 impl 的 `initWithValue`：转发把 `Rc<dyn Object>` 送进 `Map<String?, List<Object>>?` 只做了 `dart_nullable`——coerce 对 `dynamic → Map/List` 一直放行不转，补 `IrDowncast`（`dart_cast_map`）。新增 8 个 stub 是 `dart_cast_to::<dyn ValueListenable<T>>` 里 `T` 是被调方的类型参数（无 `TypeId`）——带实参的 trait cast 只在实参全是已知类型时走对象，否则仍隐式上转；`DiagnosticsProperty<void>` 的宽 impl 不写。顺带：语句开头的块表达式加括号（`{..}[i].m()` 被 Rust 拆成两句）。**记债**：(a) `ui.TextStyle` 在 painting 模块里拼成本模块的 `TextStyle`（同名类跨模块碰撞，`EditableText.build` 因此 stub，不在启动路径）；(b) 子类把 `T` 绑成可空（`Val<Map?>`）时 `super(v)` 进 `T` 槽少了 `Some`。夹具 restoreprop 加 map 属性经宽句柄 `initWithValue`，SAME。 | ws630 量；run630 看下一站。 |
-| ws630 | 链：stub **627**（-31），拒绝 242。 | |
-| run630 | `restoreState` 过了；下一站拒绝 `List.removeWhere`（`Navigator.defaultGenerateInitialRoutes`）。表里加 `removeWhere`/`retainWhere`，prelude `DartList` 加 `remove_where`/`retain_where`（`impl Fn`，Result 经 `_preludeFailing` 传出）。**记债**：值结构体局部的集合字段就地变异（`h.routes.addAll(..)`）落在 clone 上（读字段即拷贝），夹具里改经 `this` 的方法避开。夹具 removewhere SAME。 | ws631 量；run631 看下一站。 |
-| ws631 | 链：stub **629**（+2，解禁露出：`LinkedHashMap.fromEntries` 缺、`showOnScreen` 回调槽 0 参对 4 参），拒绝 **232**（-10）。 | |
-| run631 | `removeWhere` 过了；进到 gallery 自己的 `RouteConfiguration.onGenerateRoute`：`RegExpMatch.groupCount` 缺——而 prelude 的 `RegExp` 根本**没有引擎**（`hasMatch` panic、`firstMatch` 恒 null；设计上不引 crate）。在 prelude 里写了一个回溯正则引擎：字面量/转义（`\d \w \s \b` 及取反）、`.`、字符类（区间/取反）、`^ $`（multiLine）、捕获/非捕获/命名组、`|`、`* + ? {m,n}` 贪婪与懒惰，`caseSensitive`/`dotAll`；`RegExpMatch` 带各组区间：`group`/`groupCount`/`namedGroup`/`[]`（`index_of`）/`start`/`end`；`allMatches(input, [start])`、`matchAsPrefix`、`RegExp.escape`。夹具 regex1（21 例含 gallery 路由模式）与 Dart 全同。 | ws632 量；run632 看下一站。 |
-| ws632 | 链：stub **627**（-2），拒绝 232。 | |
-| run632 | 路由正则过了；下一站运行时 `erased_cast_failed`：`result.cast<Route>()`（`List<Route?>` → `List<Route>`，`defaultGenerateInitialRoutes`）——prelude 的 `cast_to` 把元素 `Rc::new(v.clone())` 装箱，`Option<Rc<dyn Route>>` 装成了 `Rc<Option<..>>`，再 `from_dynamic::<Rc<dyn Route>>` 认不出。改走 Object 协议 `dart_boxed`：`Option` 的 `dart_cast` 对 `None` 答 `Null` 对象；标量（i64/f64/bool/String）的 `dart_cast` 也答 `Object`（否则 `Option<Rc<dyn Object>>` 里的标量还是装成 `Option`）。夹具 listcast（List/Map/Set 的 cast）SAME。 | ws633 量；run633 看下一站。 |
-| ws633 | 链：stub **627**（持平），拒绝 232。 | |
-| run633 | `cast<Route>()` 过了；下一站 `RestorableValue.value=` 的 stub：`final T? oldValue = _value; didUpdateValue(oldValue)`——体内 `Option<T>` 进边上的投影 `<T as DartNullable>::Or` 没做 `from_option`：`this` 上的调用没绑定本类的类型参数（`this` 的静态类型不在节点上，且 `didUpdateValue` 是抽象方法、`getDispatchTarget` 无目标）。修：`this` 按当前类定型；抽象目标以接口成员为落点。顺带 `CastErased<Option<T>>` 里 `Some(Null 对象)` 视为 null。夹具 projarg SAME；gentrait/listcast/restoreprop 仍 SAME。 | ws634 量；run634 看下一站。 |
-| ws634 | 链：stub **623**（-4），拒绝 232。 | |
-| run634 | `value=` 过了，`MaterialPageRoute.didAdd` 起动画；下一站拒绝 `List.generate` 3 参（`growable:`，`HashedObserverList.toList`）——接受第三参。夹具 listgen 顺带揪出三处：`Iterator` 局部被闭包捕获后 `..moveNext()`——prelude 的 `DartIter` 不共享游标也不是 `Iterator<T>` 的拼法，改 `dart_iter` 返回 `xs.iterator` 同款 `Rc<dyn DartIterator<T>>`；`=> _map[v] = ..` 在 void 函数里走了值形（写进 clone）——void `return e` 改按语句译；CFE 把 `this._map` 绑进临时量再 `[]=`——`this.field` 也算可别名的 place。夹具 listgen/latecell/nullmut/statmut SAME。 | ws635 量；run635 看下一站。 |
-| ws635 | 链：stub **623**（持平），拒绝 **231**（-1）。 | |
 | run635 | `List.generate` 过了；下一站运行时 `dart_from_dynamic::<Rc<dyn Fn(AnimationStatus)>>` panic：`AnimationController.notifyStatusListeners` 从 `ObserverList<T>`（`T` 擦除，存的是 `DartFunction` 对象）取回监听器，`Rc<T>` 的 `FromDynamic` 只认句柄/对象，不认 `Function` 对象。加一条：`DartFunction` 里存着它由之而来的那个类型化闭包（`original`），同型就原样取回（`removeListener` 也因此找得到）。夹具 fnback（泛型观察者列表存/取/删类型化监听器）SAME。 | ws636 量；run636 看下一站。 |
 | ws636 | 链：stub **623**（持平），拒绝 231。 | |
 | run636 | 状态监听器回得来了；下一站 `_flushRouteAnnouncement` 里 `next?.route != entry.lastAnnouncedNextRoute` `unwrap on None`：`Route?` 对 `_RoutePlaceholder?`（`Route extends _RoutePlaceholder`），`==` 一律把右边 coerce 进左边的类型 → 对占位符对象做 `dart_cast_to::<dyn Route>` 失败。改：类型不同时**低的一边升到高的一边**（前端按 `isSubInterfaceOf`），互不相干的两个 trait 留给后端按对象比（`dart_option_object(..).dart_eq`）。夹具 eqabove SAME；identmap/identstatic 仍 SAME。 | ws637 量；run637 看下一站。 |
@@ -343,6 +330,19 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run647 | `layer_super_find` 过了；panic 在 `_ZoomEnterTransitionState._updateAnimations` 的 `unwrap`（`Animation<f64>` 转型 None）——正是上面擦除 `Animatable.T` 的后果，不算站点。修：孪生流与成员传播只标 **struct**（非抽象、无子类）的参数；trait 的宽实例化本来就是对象经宽 impl 应答的转型。 | 链 ws648 |
 | ws648 | 链：stub **584**（-8，无新增），拒绝 229。 | |
 | run648 | `Layer.find<SystemUiOverlayStyle>` 过了，`compositeFrame` 之后到 post-frame 的 `_handleHistoryChanged` → `MaterialPageRoute.popDisposition`：refusal「super call into `_MixinApplication3&TransitionRoute&LocalHistoryRoute`」——`super.popDisposition` 是 **getter**，`SuperPropertyGet` 直接拿 `interfaceTarget.enclosingClass`（匿名应用类）没走 `_realOwner`（方法调用与 setter 早走了）；AOT dill 里 `LocalHistoryRoute` 的声明被 TFA 掏空，体在应用类里（`_appliedProcedure` 能找到）。修：getter 读也经 `_realOwner`。夹具 supergetter SAME。 | 链 ws649 |
+| ws649 | 链：stub **599**（+15），拒绝 **212**（-17）：17 处 `super.x` getter 翻出来了，其中 `context.pushLayer(layer, super.paint, offset)` 是 **super 方法撕下**（`SuperPropertyGet` 的目标是方法），被当成无参调用；`_RenderTheater._firstOnstageChild` 的 `super.firstChild` 没带类型，`RenderObject?` 进 `RenderBox?` 槽没转型。修：super 撕下 = 闭包包一次 super 调用（同实例撕下，`holdsSelf`）；super 读按**声明**类型（`_superReturn`：声明还在用声明，声明被 TFA 掏空的用应用类拷贝 `_unapplied` 回写），槽再按一般规则窄化；coerce 补 trait 句柄进 **struct** 槽的向下转型（`IrDowncast`）。夹具 supertear SAME（super 撕下 + 擦除 `ChildType?` 读进 `Leaf?`）。 | 链 ws650/651 |
+| ws650 | 链：stub **582**（-2 对 ws648），拒绝 212；`_firstOnstageChild` 仍 stub（声明被 TFA 掏空那支还没写）。 | |
+| run650 | `popDisposition` 过了；下一站 `FocusScopeNode.focusedChild` 的 refusal：`_focusedChildren.lastOrNull`——`dart:collection` 的 `IterableExtensions|get#lastOrNull<T>(xs)` 静态调用无表。修（表）：`_coreExtensionMethods` 把 first/last/singleOrNull、elementAtOrNull 映到 prelude `DartList` 的方法，按**接收者方法**拼（借用走列表方法的老路）。夹具 ornull SAME。 | 链 ws652 |
+| ws651 | 链：stub **554**（-28：super 读带类型后一批 `didUpdateWidget`/`onTap` 编译过了），拒绝 212。 | |
+| ws652 | 链：stub **554**（持平；+1 `diagnostics.write` 的 `_wrappableRanges.last = x`——`List.last=` setter 无 prelude 方法，且写在**字段列表的克隆**上，欠账；-1），拒绝 **202**（-10）。 | |
+| run652 | `focusedChild` 过了；下一站 `Route.didAdd` 的 `TickerFuture.complete().then<void>((void _) { navigator?.focusNode.enclosingScope?.requestFocus(); })`：闭包体空手落回 `Ok(None)`，适配器再 `.unwrap()`——`FutureOr<void>` 被拼成 `Option<FutureOr<()>>`（Kernel 的 `FutureOr<T>.nullability` 由 `T` 推出来，`void`/`T?` 都算可空）。修：`FutureOr` 只按**声明**可空（`declaredNullability`），null 由里面的 `T` 背；后端体落尾的值按返回类型递归求（`()`/`None`/`FutureOr::value(..)`，`_fallsOffValue`）；顺手：prelude `Future` 构造子带类型实参（`Future<void>.delayed` 无值可推，never 回退）。夹具 thenvoid SAME（异步入口跑 `run_main`，新 `run2.tmpl`）。 | 链 ws653 |
+| ws653 | 链：stub **553**（-1），拒绝 202。 | |
+| run653 | **整个启动路径走完，第一个 panic 是 dump 钩子自己**：`_TheaterParentData.visitOverlayPortalChildrenOnOverlayEntry` 读 `value!._paintOrderIterable`——`late final x = _createChildIterable(..)`（惰性 late，cell）经**别的对象**读（`it._paint_order_iterable`）直接 `unwrap` 空 cell；只有 `self` 读走 `_lazyRead`。修（通用）：惰性 late 字段在自己的类上生成 `__lazy_<f>()` 访问器，外部读经它。夹具 lazyforeign SAME。 | 链 ws654 |
+| ws654 | 链：stub **557**（+4：新访问器把原本藏在已 stub 方法里的两个失败单独算了——`_InputDecoratorState` 的 `hashCode`（无覆盖的类上 `self.hash_code()` 没走 Object 协议）、provider `_delegateState` 初始化里 `element = this` 的 `T` 对 `T?`），拒绝 202。修：`hashCode` 在无自身覆盖的类上 → `DartEq::dart_hash_code`（协议）；惰性访问器只对**被别的对象读过**的字段生成（`_WalkSelf.foreignFieldReads` 全程序扫一次）。夹具 hashthis SAME。 | 链 ws655 |
+| ws655 | 链：stub **551**（-2 对 ws653），拒绝 202。 | |
+| run655 | dump 走到 `_paintOrderIterable` 的访问器，初始化器 `_createChildIterable(..)` 是 **`sync*`**：refusal「unsupported statement YieldStatement」。修（通用）：`sync*` 体降成收集列表——`yield x` push、`yield* xs` extend、裸 `return`/落尾返回 `__yielded`（Dart 是惰性的，这里是急的；只有无界生成器能分辨）。夹具 syncstar SAME（含 `yield*`、生成器套生成器）。 | 链 ws656 |
+| ws656 | 链：stub **551**（持平，无新增），拒绝 **197**（-5：五个 `sync*` 体翻出来了）。 | |
+| run656 | **启动路径无 panic**：5 帧画出（0 panicked），render 树 32 节点、元素树 150 行完整 dump（gallery 主页整棵树，不再是 restoration 的 `SizedBox`）。但 render 树**没有一个 `size=`**：layout 从没跑——gdb dprintf 计数：`flushLayout` 24 次、`markNeedsLayout` 34、`scheduleInitialLayout` 1，`RenderView.performLayout` **0**。根因：`scheduleInitialLayout` 的 `owner!._nodesNeedingLayout.add(this)`——`PipelineOwner` 是 open 类（trait），字段经值访问器读出来是**克隆**，push 进克隆就丢了；`this` 上的同类写法早走 cell 访问器（`_cell()`），别的句柄上没走。修（通用）：`_cellPlace` 对 trait 句柄上的字段访问器调用，字段是 trait 交出 cell 的集合时走 `<f>_cell()?.borrow_mut()`。夹具 ownerqueue SAME。参考尺子 `ref_render_walk.txt` 是 `pumpWidget`+一次 `pump` 时刻（6 行），与我们跑完 5 帧的树不是同一时刻——待补一份 settle 后的参考。 | 链 ws657 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -496,3 +496,9 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
 - **窄化覆盖的 trait 重声明**:`Builder<L>` 覆盖 `Builder0.makeRender` 把返回窄化成 `Render<L>`
   时 trait 里重声明了一份;gallery 的 `AbstractLayoutBuilder.createRenderObject` 却没有。
   两者差在哪没查(run644 记)。
+- **`List.last = v` / `first = v`**:prelude 无 `set_last`/`set_first`;且 `TextTreeRenderer` 里写的是
+  字段列表的**克隆**(同「值类字段集合就地改」欠账)。ws652 记,不在启动路径上。
+- **`sync*` 是急的**:生成器降成收集好的 `Vec`;无界/惰性依赖副作用顺序的生成器会跑偏。
+  `async*` 仍拒绝。(run655 记)
+- **provider `_DelegateState<T>.element`**:槽是 `_InheritedProviderScopeElement<T?>`,值是 `<T>`——
+  泛型值类的 `T` 与 `T?` 实例化在 Rust 里是两个类型,没有一般转换(ws654 记,`build`/`mount` 同因已 stub)。

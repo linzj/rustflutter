@@ -3808,6 +3808,12 @@ pub trait DartList<T> {
     ) -> Result<(), DartError>;
     /// `insertAll(index, iterable)`: the items in order from `index` on.
     fn insert_all(&mut self, index: i64, items: Vec<T>);
+    /// `dart:collection`'s `IterableExtensions`: `firstOrNull`,
+    /// `lastOrNull`, `singleOrNull`, `elementAtOrNull`.
+    fn first_or_null(&self) -> Option<T>;
+    fn last_or_null(&self) -> Option<T>;
+    fn single_or_null(&self) -> Option<T>;
+    fn element_at_or_null(&self, index: i64) -> Option<T>;
 }
 
 impl<T: Clone> DartList<T> for Vec<T> {
@@ -3833,6 +3839,30 @@ impl<T: Clone> DartList<T> for Vec<T> {
         }
         *self = kept;
         Ok(())
+    }
+
+    fn first_or_null(&self) -> Option<T> {
+        self.first().cloned()
+    }
+
+    fn last_or_null(&self) -> Option<T> {
+        self.last().cloned()
+    }
+
+    fn single_or_null(&self) -> Option<T> {
+        if self.len() == 1 {
+            self.first().cloned()
+        } else {
+            None
+        }
+    }
+
+    fn element_at_or_null(&self, index: i64) -> Option<T> {
+        if index < 0 {
+            None
+        } else {
+            self.get(index as usize).cloned()
+        }
     }
 
     fn insert_all(&mut self, index: i64, items: Vec<T>) {
