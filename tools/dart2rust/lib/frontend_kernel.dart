@@ -3162,10 +3162,10 @@ class KernelFrontend implements TypeWorld {
         _erasedParameter(declared.parameter)) {
       return false;
     }
-    if (binding is! TypeParameterType ||
-        binding.nullability == Nullability.nullable) {
-      return false;
-    }
+    // A nullable `U?` put in crosses too, now that a type argument `U?`
+    // is spelled projected (`_erasedArguments`): the slot is `<U as
+    // DartNullable>::Or` either way, and the code has an `Option<U>`.
+    if (binding is! TypeParameterType) return false;
     return _projectedSlot(
       binding.withDeclaredNullability(Nullability.nullable),
     );
@@ -3319,7 +3319,11 @@ class KernelFrontend implements TypeWorld {
 
   /// A body behind its projected parameters: each re-bound, in the same
   /// scope, as the `Option<T>` the body reads and writes.
-  IrStmt _withEdgeParams(FunctionNode fn, IrStmt body) {
+  IrStmt _withEdgeParams(
+    FunctionNode fn,
+    IrStmt body, {
+    List<DartType>? positional,
+  }) {
     final prologue = <IrStmt>[];
     void rebind(String name, DartType type) {
       if (!_projectedSlot(type)) return;
@@ -3337,8 +3341,8 @@ class KernelFrontend implements TypeWorld {
       );
     }
 
-    for (final p in fn.positionalParameters) {
-      rebind(_paramName(p), p.type);
+    for (final (i, p) in fn.positionalParameters.indexed) {
+      rebind(_paramName(p), positional?[i] ?? p.type);
     }
     for (final p in fn.namedParameters) {
       if (!_inspectorOnly(p.parameterName)) rebind(p.parameterName, p.type);
@@ -3495,13 +3499,26 @@ class KernelFrontend implements TypeWorld {
     // out of it: the fields are reached through the handle as usual.
     final holds = _counted && _reachesThis(fn) && !copies;
     if (copies) _captured = {for (final f in finals) f.name.text};
+    // A closure's parameters are an edge like a method's: a `T?` of the
+    // enclosing declaration is spelled projected (`<T as DartNullable>::
+    // Or`), which is what every slot of function type says, and rebound to
+    // the body's `Option<T>` in a prologue (`_withEdgeParams`). Spelled
+    // `Option<T>` it did not fit `RadioListTile<T?>`'s `onChanged` when
+    // the state's `T` was itself nullable (`_SettingsListItemState.build`,
+    // run689).
+    final positionalTypes = [
+      for (final (i, p) in fn.positionalParameters.indexed)
+        _retype(p, _closureParamType(expected, i, p.type)),
+    ];
     try {
       final closure = IrClosure(
         [
           for (final (i, p) in fn.positionalParameters.indexed)
             IrParam(
               _paramName(p),
-              _paramType(_retype(p, _closureParamType(expected, i, p.type))),
+              _projectedSlot(positionalTypes[i])
+                  ? _edgeType(positionalTypes[i])
+                  : _paramType(positionalTypes[i]),
             ),
           // Named parameters, **sorted by name**. A Rust closure has only
           // positions, and a call through a function value sees only the
@@ -3512,7 +3529,7 @@ class KernelFrontend implements TypeWorld {
           for (final p in _namedInTypeOrder(fn))
             IrParam(p.parameterName, _type(p.type), named: true),
         ],
-        _lowerBody(fn, body),
+        _withEdgeParams(fn, _lowerBody(fn, body), positional: positionalTypes),
         // The return as the body was lowered against it: the slot's, when
         // a parameter's function type set one (`_lowerBody`'s expected
         // return), else the closure's own. Typing the closure by its own
@@ -8036,8 +8053,14 @@ class KernelFrontend implements TypeWorld {
       // rustc normalises the projected signature to (`<Option<X> as
       // DartNullable>::Or` is `Option<X>`): the plain `Option`, projected
       // no more. With `T` bound to a bare `U` the slot stays `Or`.
+      // ..unless what is put in is itself a projected `U?` of the code
+      // here: `<<U as DartNullable>::Or as DartNullable>::Or` normalises
+      // to `<U as DartNullable>::Or`, still projected (`Tile<T?>`'s slots
+      // from a `Picker<T>`, fixture closureedge).
       if (isNullable(arg)) {
-        return IrType(arg.name, nullable: true, arguments: arg.arguments);
+        return arg.projected
+            ? arg
+            : IrType(arg.name, nullable: true, arguments: arg.arguments);
       }
       // Projected only over a bare type parameter of the code here: over a
       // concrete class the slot normalises to the plain `Option` (and

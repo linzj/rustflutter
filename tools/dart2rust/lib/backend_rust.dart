@@ -823,8 +823,11 @@ class RustBackend {
             ? '${expr(operand)}.clone().unwrap()'
             : '${expr(_plain(operand))}.unwrap()',
       // A closure inside `Some(..)` is the `Rc<dyn Fn>` its slot holds.
+      // A local crossing is cloned: a closure's parameter rebound in its
+      // prologue (`_withEdgeParams`) may be the `&T` a prelude iterator
+      // hands out (`items.map((T? x) => ..)`, fixture closureedge).
       IrNullableOf(:final value, :final parameter, :final toOption) =>
-        '<${_nullableOf(parameter)} as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)})',
+        '<${_nullableOf(parameter)} as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)}${value is IrLocal ? '.clone()' : ''})',
       IrSome(:final value) =>
         value is IrClosure && !value.boxed
             ? 'Some(std::rc::Rc::new(${expr(value)}))'
