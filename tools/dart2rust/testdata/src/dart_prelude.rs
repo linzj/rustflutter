@@ -5348,29 +5348,51 @@ pub fn vec_of_nones<T: DartNullable>(n: i64) -> Vec<<T as DartNullable>::Or> {
 /// A Dart `Iterator<T>` over a list, for code that drives one by hand --
 /// `final it = xs.iterator; while (it.moveNext()) ..` -- rather than with a
 /// `for-in` the front end restores. `moveNext` before `current`, as Dart.
+/// An object, as Dart's is: a clone shares the cursor, so a closure that
+/// captures the iterator and advances it advances the one iterator
+/// (`List.generate(n, (_) => (iterator..moveNext()).current)` in
+/// `HashedObserverList.toList`, run634).
 pub struct DartIter<T> {
-    items: Vec<T>,
-    index: i64,
+    state: std::rc::Rc<std::cell::RefCell<(Vec<T>, i64)>>,
+}
+
+impl<T> Clone for DartIter<T> {
+    fn clone(&self) -> Self {
+        DartIter {
+            state: self.state.clone(),
+        }
+    }
 }
 
 impl<T: Clone> DartIter<T> {
     pub fn new(items: Vec<T>) -> Self {
-        DartIter { items, index: -1 }
+        DartIter {
+            state: std::rc::Rc::new(std::cell::RefCell::new((items, -1))),
+        }
     }
 
-    pub fn move_next(&mut self) -> bool {
-        self.index += 1;
-        (self.index as usize) < self.items.len()
+    pub fn move_next(&self) -> bool {
+        let mut state = self.state.borrow_mut();
+        state.1 += 1;
+        (state.1 as usize) < state.0.len()
     }
 
     pub fn current(&self) -> T {
-        self.items[self.index as usize].clone()
+        let state = self.state.borrow();
+        state.0[state.1 as usize].clone()
     }
 }
 
 /// Over anything Dart iterates: a `Set` as much as a `List` (46 in `widgets`).
-pub fn dart_iter<T: Clone, I: IntoIterator<Item = T>>(items: I) -> DartIter<T> {
-    DartIter::new(items.into_iter().collect::<Vec<T>>())
+/// The same handle `xs.iterator` hands out (`DartIterable`): a local
+/// declared `Iterator<T>` is an `Rc<dyn DartIterator<T>>` everywhere it
+/// is read, and a cascade on one bound that type to a `DartIter` value
+/// (the listgen fixture, run634).
+pub fn dart_iter<T: Clone + 'static, I: IntoIterator<Item = T>>(
+    items: I,
+) -> std::rc::Rc<dyn DartIterator<T>> {
+    let items: Vec<T> = items.into_iter().collect();
+    <Vec<T> as DartIterable<T>>::iterator(&items)
 }
 
 /// `dart:math`'s `Point<T>`.
@@ -9007,9 +9029,16 @@ impl<T: FromDynamic> CastErased<Option<T>> for Option<std::rc::Rc<dyn Object>> {
     fn cast_erased(self) -> Option<T> {
         match self {
             None => None,
-            Some(v) => match T::from_dynamic(&v) {
-                Some(t) => Some(t),
-                None => erased_cast_failed(&v),
+            // The `Null` object inside a `Some` is null too: an erased
+            // `dart_cast_any::<Rc<dyn Object>>()` of an absent value answers
+            // with it (the gentrait fixture's `get<Blue>()` on a map without
+            // one).
+            Some(v) => match dart_nullable(v) {
+                None => None,
+                Some(v) => match T::from_dynamic(&v) {
+                    Some(t) => Some(t),
+                    None => erased_cast_failed(&v),
+                },
             },
         }
     }

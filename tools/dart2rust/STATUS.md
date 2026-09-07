@@ -405,6 +405,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run631 | `removeWhere` 过了；进到 gallery 自己的 `RouteConfiguration.onGenerateRoute`：`RegExpMatch.groupCount` 缺——而 prelude 的 `RegExp` 根本**没有引擎**（`hasMatch` panic、`firstMatch` 恒 null；设计上不引 crate）。在 prelude 里写了一个回溯正则引擎：字面量/转义（`\d \w \s \b` 及取反）、`.`、字符类（区间/取反）、`^ $`（multiLine）、捕获/非捕获/命名组、`|`、`* + ? {m,n}` 贪婪与懒惰，`caseSensitive`/`dotAll`；`RegExpMatch` 带各组区间：`group`/`groupCount`/`namedGroup`/`[]`（`index_of`）/`start`/`end`；`allMatches(input, [start])`、`matchAsPrefix`、`RegExp.escape`。夹具 regex1（21 例含 gallery 路由模式）与 Dart 全同。 | ws632 量；run632 看下一站。 |
 | ws632 | 链：stub **627**（-2），拒绝 232。 | |
 | run632 | 路由正则过了；下一站运行时 `erased_cast_failed`：`result.cast<Route>()`（`List<Route?>` → `List<Route>`，`defaultGenerateInitialRoutes`）——prelude 的 `cast_to` 把元素 `Rc::new(v.clone())` 装箱，`Option<Rc<dyn Route>>` 装成了 `Rc<Option<..>>`，再 `from_dynamic::<Rc<dyn Route>>` 认不出。改走 Object 协议 `dart_boxed`：`Option` 的 `dart_cast` 对 `None` 答 `Null` 对象；标量（i64/f64/bool/String）的 `dart_cast` 也答 `Object`（否则 `Option<Rc<dyn Object>>` 里的标量还是装成 `Option`）。夹具 listcast（List/Map/Set 的 cast）SAME。 | ws633 量；run633 看下一站。 |
+| ws633 | 链：stub **627**（持平），拒绝 232。 | |
+| run633 | `cast<Route>()` 过了；下一站 `RestorableValue.value=` 的 stub：`final T? oldValue = _value; didUpdateValue(oldValue)`——体内 `Option<T>` 进边上的投影 `<T as DartNullable>::Or` 没做 `from_option`：`this` 上的调用没绑定本类的类型参数（`this` 的静态类型不在节点上，且 `didUpdateValue` 是抽象方法、`getDispatchTarget` 无目标）。修：`this` 按当前类定型；抽象目标以接口成员为落点。顺带 `CastErased<Option<T>>` 里 `Some(Null 对象)` 视为 null。夹具 projarg SAME；gentrait/listcast/restoreprop 仍 SAME。 | ws634 量；run634 看下一站。 |
+| ws634 | 链：stub **623**（-4），拒绝 232。 | |
+| run634 | `value=` 过了，`MaterialPageRoute.didAdd` 起动画；下一站拒绝 `List.generate` 3 参（`growable:`，`HashedObserverList.toList`）——接受第三参。夹具 listgen 顺带揪出三处：`Iterator` 局部被闭包捕获后 `..moveNext()`——prelude 的 `DartIter` 不共享游标也不是 `Iterator<T>` 的拼法，改 `dart_iter` 返回 `xs.iterator` 同款 `Rc<dyn DartIterator<T>>`；`=> _map[v] = ..` 在 void 函数里走了值形（写进 clone）——void `return e` 改按语句译；CFE 把 `this._map` 绑进临时量再 `[]=`——`this.field` 也算可别名的 place。夹具 listgen/latecell/nullmut/statmut SAME。 | ws635 量；run635 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 

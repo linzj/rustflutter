@@ -2422,7 +2422,10 @@ class RustBackend {
     // `_GrowableList.filled` is. Same names as the constructors, same answer.
     if ((_collections[owner] == 'Vec' || owner == 'List') &&
         _listStatics.contains(name)) {
-      if (name == 'generate' && args.length == 2) {
+      // `List.generate(n, f, growable: ..)`: the flag changes nothing for
+      // a `Vec` (`HashedObserverList.toList` under `notifyListeners`,
+      // run634).
+      if (name == 'generate' && (args.length == 2 || args.length == 3)) {
         // `map` wants the closure itself, not the `Rc<dyn Fn>` a function
         // parameter would (E0277 in `plural_rules`); a function *value*
         // is called through one.

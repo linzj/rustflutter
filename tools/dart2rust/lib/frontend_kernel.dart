@@ -2777,6 +2777,14 @@ class KernelFrontend implements TypeWorld {
       bare = bare.expression;
     }
     if (bare is VariableGet) return !_temporaries.containsKey(bare.variable);
+    // A field of `this` is a place too: `=> _map[v] = ..` binds `this._map`
+    // in a temporary and inserted into a clone of it (the listgen
+    // fixture); acting on the field is acting on the object.
+    if (bare is InstanceGet &&
+        bare.receiver is ThisExpression &&
+        bare.interfaceTarget is Field) {
+      return true;
+    }
     return _mutatedStaticOf(bare);
   }
 
@@ -5308,7 +5316,15 @@ class KernelFrontend implements TypeWorld {
     // application's copy of `_addDiagnostics(ChildType child)` has
     // `RenderBox` written in it, and only the mixin's own -- the trait's
     // -- takes the erased bound (188 `RenderBox` <- `RenderObject`, ws342).
-    final receiverType = _staticType(node.receiver);
+    // `this` typed as the class being lowered (`_bindingOf` does the
+    // same): its static type is not on the node, and without it a call on
+    // `this` bound none of the class's own parameters -- `didUpdateValue(
+    // oldValue)` took an `Option<T>` where the edge is `<T as
+    // DartNullable>::Or` (`RestorableValue.value=`, run633).
+    final env = typeEnvironment;
+    final receiverType = node.receiver is ThisExpression && env != null
+        ? _lowering?.getThisType(env.coreTypes, Nullability.nonNullable)
+        : _staticType(node.receiver);
     final dispatch = receiverType is InterfaceType
         ? typeEnvironment?.hierarchy.getDispatchTarget(
             receiverType.classNode,
@@ -5321,7 +5337,16 @@ class KernelFrontend implements TypeWorld {
     // ..the mixin's own declaration behind a copy in an application, as
     // the copy is typed everywhere (`_originalOf`).
     final dispatchOriginal = dispatch == null ? null : _originalOf(dispatch);
-    _dispatchMember = dispatchOriginal is Procedure ? dispatchOriginal : null;
+    // An *abstract* target has no dispatch target; the interface member
+    // is the landing then, and still binds the class's parameters for
+    // the arguments (`didUpdateValue(oldValue)` on `RestorableValue<T>`,
+    // the projarg fixture).
+    final interfaceTarget = node.interfaceTarget;
+    _dispatchMember = dispatchOriginal is Procedure
+        ? dispatchOriginal
+        : interfaceTarget is Procedure
+        ? interfaceTarget
+        : null;
     _dispatchReceiverType = receiverType;
     _dispatchInterface = node.interfaceTarget.function;
     // A prelude method's slots as its sibling declares them
@@ -10206,8 +10231,14 @@ class KernelFrontend implements TypeWorld {
       }
       // Any other `return e;` in a `void` body -- `(x) => day = x` handed
       // to a `void Function(int)` -- runs `e` and returns nothing.
+      // ..as the *statement* it would have been: `=> _map[v] = ..` on a
+      // field of `this` is the in-place `insert`, where the value form
+      // wrote into a clone of the map (the listgen fixture).
       if (_voidReturn && value != null) {
-        return IrBlock([IrExprStmt(expression(value)), const IrReturn(null)]);
+        return IrBlock([
+          statement(ExpressionStatement(value)),
+          const IrReturn(null),
+        ]);
       }
       if (value == null) return const IrReturn(null);
       if (returnsFuture) {
