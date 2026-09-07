@@ -2638,6 +2638,53 @@ class KernelFrontend implements TypeWorld {
           ),
       ];
       final receiver = node.receiver;
+      // A tear-off of one of the prelude's collection methods
+      // (`nodeScope._focusedChildren.remove` handed to `forEach`): the
+      // call it stands for, lowered as an invocation, so that the
+      // collection tables apply (`remove` is `remove_value`, not `Vec::
+      // remove(usize)`, `FocusNode._removeChild`, run642). The callee's
+      // own parameters name the closure's, as `params` does.
+      final declaringClass = node.interfaceTarget.enclosingClass;
+      if (declaringClass != null &&
+          _coreCollections.contains(declaringClass.name) &&
+          declaringClass.enclosingLibrary.importUri.scheme == 'dart' &&
+          receiver is! ThisExpression) {
+        // The receiver node itself (a clone would need the closure's free
+        // variables mapped): borrowed into the call and given back to
+        // the tear-off after.
+        final call = InstanceInvocation(
+          InstanceAccessKind.Instance,
+          receiver,
+          node.name,
+          Arguments(
+            [for (final p in fn.positionalParameters) VariableGet(p)],
+            named: [
+              for (final p in fn.namedParameters)
+                NamedExpression(p.parameterName, VariableGet(p)),
+            ],
+          ),
+          interfaceTarget: node.interfaceTarget,
+          functionType: torn is FunctionType
+              ? torn
+              : fn.computeFunctionType(Nullability.nonNullable),
+        );
+        final tornReturns = _type(returnType);
+        final IrExpr lowered;
+        try {
+          lowered = expression(call);
+        } finally {
+          receiver.parent = node;
+        }
+        return IrClosure(
+            params,
+            IrReturn(coerce(lowered, tornReturns)),
+            tornReturns,
+            locals: _freeLocalsIn(receiver, {}),
+          )
+          ..rustType = IrType.function([
+            for (final p in params) p.type,
+          ], tornReturns);
+      }
       // The call typed by the member it reaches (`_qualified`) and coerced
       // into the tear-off's own return: a mixin's `ChildType? childAfter`
       // hands back the erased `RenderObject?` where the torn type says

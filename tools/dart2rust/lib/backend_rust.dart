@@ -4698,6 +4698,13 @@ class RustBackend {
               'let ${_assignedIn(e.body).contains(c.name) ? 'mut ' : ''}${snake(c.name)} = ${_copyOf(c)}; ',
         )
         .join();
+    // A `forEach` step returns nothing whatever its closure's body is
+    // worth: `xs.forEach(list.remove)` hands it a `bool`-returning
+    // tear-off, which Dart's `void Function(T)` slot discards (the
+    // tearcol fixture).
+    if (step == 'for_each') {
+      return '|$params| { $unwrapped${copies}let _ = { $body }; }';
+    }
     return '|$params| { $unwrapped$copies$body }';
   }
 
@@ -8756,6 +8763,12 @@ class RustBackend {
         _allFields(cls).every((f) => !f.type.projected) &&
         _allFields(cls)
             .every((f) => _comparableType(_fieldType(f), {cls.name}));
+    // A counted class without an `operator ==` of its own is Dart's
+    // `Object.==`: identity. Field by field it walked the object graph --
+    // `FocusManager` holds its root scope, which holds its manager -- and
+    // overflowed the stack on the first `==` between two (run641).
+    final identityEq =
+        cls.counted && !cls.methods.any((m) => m.operator == '==');
     // A boxed future is not `Clone`, and a struct holding one (an
     // `AssetBundle`'s caches) cannot derive it; its handle, the `Rc` every
     // counted class is passed by, still is. A value class holding one
@@ -8785,7 +8798,7 @@ class RustBackend {
       if (cloneable && !writesClone) 'Clone',
       if (copyable && !writesClone) 'Copy',
       if (derivesDebug) 'Debug',
-      if (comparable) 'PartialEq',
+      if (comparable && !identityEq) 'PartialEq',
     ];
     if (derives.isNotEmpty) _line('#[derive(${derives.join(', ')})]');
     // `'static` on the struct: an `Rc<dyn Equality<Option<E>>>` field needs
@@ -8875,7 +8888,7 @@ class RustBackend {
       _indent--;
       _line('}');
     }
-    if (byIdentity.isNotEmpty) {
+    if (byIdentity.isNotEmpty || (identityEq && comparable)) {
       final projected = {
         for (final f in _allFields(cls))
           if (f.type.projected)
@@ -8899,7 +8912,11 @@ class RustBackend {
       ];
       _line(
         'fn eq(&self, other: &Self) -> bool { '
-        '${terms.isEmpty ? 'true' : terms.join(' && ')} }',
+        '${identityEq
+            ? 'std::ptr::eq(self, other)'
+            : terms.isEmpty
+            ? 'true'
+            : terms.join(' && ')} }',
       );
       _indent--;
       _line('}');
@@ -8961,7 +8978,9 @@ class RustBackend {
       return parts.isEmpty ? 'true' : parts.join(' && ');
     }
 
-    if (comparable || byIdentity.isNotEmpty) {
+    if (identityEq) {
+      _emitDartEq(body: 'std::ptr::eq(self, other)');
+    } else if (comparable || byIdentity.isNotEmpty) {
       _emitDartEq(
         body: cls.typeParameters.isEmpty ? 'self == other' : fieldWise(),
       );
@@ -9367,15 +9386,14 @@ class RustBackend {
       'fn dart_self_${snakeRaw(base.name)}(&self) -> std::rc::Rc<dyn ${base.name}$arguments> {',
     );
     _indent++;
-    // ..and a generic value class cannot even be cloned here: its derived
-    // `Clone` wants `T: Clone`, which the impl's `T: 'static` does not
-    // promise (192 `&X<T>: Trait` bounds at ws275). At one concrete
-    // instantiation it can.
+    // ..and a generic value class can be cloned here too: the impl's
+    // generics carry `T: Clone` since ws595 (`_implGenerics`), so the
+    // derived `Clone` holds (`_ModalScope<T>` had "no handle of its own"
+    // where `createElement` wanted one, run640).
     _line(
       cls.counted
           ? 'self.__self.get()'
-          : (cls.typeParameters.isEmpty || selfOverride != null) &&
-                _cloneable(cls)
+          : _cloneable(cls)
           ? 'std::rc::Rc::new(self.clone())'
           : 'todo!("${cls.name} has no handle of its own")',
     );

@@ -626,9 +626,22 @@ IrExpr coerceInto(
   // them: `Iterable<T>` promoted to `List<T>` is the value itself, not a
   // cast to a trait no one declares (`dyn List<..>`, `OverlayState.
   // rearrange`, ws638).
+  // ..`List` and `Iterable` are the one `Vec`; a `Set` is its own struct
+  // and goes through the rules below (`insertAll(index, Set)`, ws640).
   if (collectionNames.contains(have.name) &&
-      collectionNames.contains(slot.name)) {
+      collectionNames.contains(slot.name) &&
+      (have.name == 'Set') == (slot.name == 'Set')) {
     return value;
+  }
+  // A `Set` where an `Iterable`/`List` goes: its elements, in order
+  // (`_entries.insertAll(index, old)` with a `LinkedHashSet`, ws642).
+  if (have.name == 'Set' &&
+      (slot.name == 'List' || slot.name == 'Iterable') &&
+      !isNullable(have) &&
+      !isNullable(slot)) {
+    final listed = IrCall(value, 'to_list', const [])
+      ..rustType = IrType('List', arguments: have.arguments);
+    return coerceInto(listed, slot, world, inClosure: inClosure);
   }
   final haveTrait = world.isTrait(have.name);
   final slotTrait = world.isTrait(slot.name);

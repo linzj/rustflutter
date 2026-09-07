@@ -419,6 +419,12 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run638 | `insertAll` 过了，`_RenderTheater` 进树（渲染树 11 节点）；下一站 `_RenderTheater.attach` 的 stub：`Iterator<RenderBox>? iterator = childParentData.paintOrderIterator`，getter 记录的类型是 TFA 收窄的 `Iterator<_RenderDeferredLayoutBox>`，Rust 的 `DartIterator<T>` 不协变。加通用机制：`Iterator<A>` 进 `Iterator<B>` 槽走 prelude 的 `dart_iterator_map`（同一游标，元素按 coerce 规则逐个转），coerce 加规则、IR 复用 `IrMapElements('Iterator')`。夹具 itermap SAME。 | ws639 量；run639 看下一站。 |
 | ws639 | 链：stub **622**（-1 `attach`），拒绝 229；`rearrange` 仍在——那个 `dyn List` cast 来自提升读（`newEntries is List ? newEntries : ..`），不是 coerce：提升读的 trait cast 也只对**翻译过的**类做。 | |
 | run639 | `_RenderTheater.attach` 过了，**路由的 ModalBarrier 开始 build**；下一站 `ModalBarrier.build` 的 stub：局部函数 `handleDismiss` 传给 `_ModalBarrierGestureDetector(onDismiss: ..)` 时给的是借用 `&*f`——`_keeps` 只看构造函数的 body，`this.onDismiss` 的存储在 initializer 里，没算"留下"。构造函数的 initializers 也算。顺带：dump 时 `visitChildrenOfOverlayEntry` 的 `value!` 在半建的 entry 上 panic，把 panic hook 里的报告一起带走（Dart 里同样会抛；记为 runtime 报告的健壮性债）。夹具 localfn/itermap SAME。 | ws640 量；run640 看下一站。 |
+| ws640 | 链：stub **619**（-3），拒绝 229。 | |
+| run640 | ModalBarrier 过了，路由的 `_ModalScope` 开始 inflate；下一站 `todo!("_ModalScope has no handle of its own")`——泛型值类在 trait impl 里不给句柄（ws275 时 impl 泛型没带 `Clone`，如今 `_implGenerics` 早带了 `T: Clone`），改为一律 `Rc::new(self.clone())`。夹具 genhandle SAME。 | ws641 量；run641 看下一站。 |
+| ws641 | 链：stub **619**（持平），拒绝 229；`rearrange` 仍在——真因是我 ws638 的集合捷径把 `Set` 也当成 `Vec`（`insertAll(index, Set)`），改成只在两边同为 `Vec` 类（`List`/`Iterable`）或同为 `Set` 时放行。 | |
+| run641 | `_ModalScope` 有句柄了；下一站**栈溢出**（gdb 跑子进程看到）：`FocusManager == FocusManager` 走字段逐一比较，`FocusManager → rootScope → manager → …` 环形对象图无限递归。Dart 里没有重写 `operator ==` 的类是**恒等**比较：计数类且无 `==` 的，`PartialEq`/`DartEq` 一律 `std::ptr::eq`（`hashCode` 本来就是地址）。夹具 identeq（环形图恒等、有 `==` 的值类仍按值）SAME。 | ws642 量；run642 看下一站。 |
+| ws642 | 链：stub **614**（-5：五个 `eq`），拒绝 229；`rearrange` 仍在：`insertAll(index, LinkedHashSet)`——coerce 里 `Set` 进 `List`/`Iterable` 槽没有规则（`to_list()`），补上。 | |
+| run642 | 栈溢出没了；下一站 `FocusNode._removeChild` 的 stub：`.forEach(nodeScope._focusedChildren.remove)`——prelude 集合方法的**撕下**直接拼 `IrCall(list, 'remove')`，绕过了 `listMethodNames`（`remove` 是 `remove_value`，不是 `Vec::remove(usize)`）。撕下改为合成 `InstanceInvocation` 走正常调用 lowering（所有集合表都生效）；`for_each` 步的闭包丢弃返回值（`void Function(T)` 槽接 `bool` 撕下）。夹具 tearcol（list.remove / set.add / map.containsKey 撕下）SAME；wheretear 仍 SAME。 | ws643 量；run643 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 
