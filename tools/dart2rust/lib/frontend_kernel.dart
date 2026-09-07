@@ -1133,6 +1133,25 @@ class KernelFrontend implements TypeWorld {
           static is TypeParameterType &&
           static.nullability == Nullability.nullable &&
           _projectedSlot(static);
+      // ..and a callee that hands back its *own* element -- a container's
+      // `E`, not an `E?` -- hands back whatever its type argument was
+      // spelled with, and a type argument is nested: `_options.elementAt
+      // (i)` on an `Iterable<T?>` arrives as `<T as DartNullable>::Or`,
+      // the slot `RadioListTile<T?>.value` is, and a `from_option` that
+      // took an `Option` stubbed `_SettingsListItemState.build` (ws691).
+      // Whose parameter it is does not matter: if the declared result is
+      // the bare parameter and the result here is nullable, the argument
+      // put in for it was nullable and is spelled projected. An `E?` is
+      // *not* the same -- a prelude container spells its own `V?` as a
+      // real `Option<V>`, one layer more than the argument.
+      final elementResult =
+          declaredReturn is TypeParameterType &&
+          declaredReturn.nullability != Nullability.nullable &&
+          !_erasedParameter(declaredReturn.parameter) &&
+          !_spelledAsBound(declaredReturn.parameter) &&
+          static is TypeParameterType &&
+          static.nullability == Nullability.nullable &&
+          _projectedSlot(static);
       // An `async` function returns the future it spawns, whatever it
       // was declared: `Future<flatten(R)>`, so `FutureOr<void> f() async`
       // hands back a `DartFuture<()>`, not a `FutureOr` (`_sendFontChange
@@ -1147,7 +1166,9 @@ class KernelFrontend implements TypeWorld {
         lowered.rustType = projected;
       } else if (static != null) {
         try {
-          lowered.rustType = edgeResult ? _typeNested(static) : _type(static);
+          lowered.rustType = edgeResult || elementResult
+              ? _typeNested(static)
+              : _type(static);
         } on Unsupported {
           // A type this compiler has no spelling for: the node stays
           // untyped, and a coercion into a slot falls back to the shape
@@ -7447,6 +7468,14 @@ class KernelFrontend implements TypeWorld {
   /// it keeps (an erased one is its bound and has no slot), spelled as a
   /// turbofish; nothing for a prelude callee, whose Rust signature is its
   /// own, or when one cannot be spelled.
+  ///
+  /// As type arguments (`_typeNested`), like a class's (`_erasedArguments`):
+  /// a `T?` put in for the callee's `R` is the slot `<T as DartNullable>::
+  /// Or`, so `makeBox<T?>(..)` returns the same `Box<<T as DartNullable>::
+  /// Or>` the local declaring it is spelled with, and the closure it takes
+  /// -- whose parameter is that same `T?` -- has the callee's parameter
+  /// type. Spelled `Option<T>` the two disagreed (`showMenu<T?>(..).then`
+  /// in `_PopupMenuButtonState.showButtonMenu`, ws690).
   List<IrType> _keptTypeArguments(FunctionNode fn, Arguments arguments) {
     final parameters = fn.typeParameters;
     if (parameters.isEmpty || arguments.types.length != parameters.length) {
@@ -7456,7 +7485,7 @@ class KernelFrontend implements TypeWorld {
     try {
       return [
         for (var i = 0; i < parameters.length; i++)
-          if (!_erasedParameter(parameters[i])) _type(arguments.types[i]),
+          if (!_erasedParameter(parameters[i])) _typeNested(arguments.types[i]),
       ];
     } on Unsupported {
       return const [];

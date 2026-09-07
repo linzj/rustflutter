@@ -4205,7 +4205,13 @@ class RustBackend {
       return '$receiver.remove(${expr(args.single)} as usize)';
     }
     if (name == '!element_at' && args.length == 1) {
-      return '$receiver[${expr(args.single)} as usize]';
+      // A clone, as `IrIndex` is: the element is behind the list's
+      // reference, and `elementAt` on an `Iterable<T?>` moved out of it
+      // once the element's type was the slot's rather than `Option<T>`
+      // (`cannot move out of index of Vec<<T as DartNullable>::Or>`,
+      // ws691).
+      final wrapped = receiver.startsWith('{') ? '($receiver)' : receiver;
+      return '$wrapped[${expr(args.single)} as usize].clone()';
     }
     if (name == '!sublist' && args.isNotEmpty && args.length < 3) {
       // `sublist(from)` arrives with an explicit `null` end from Kernel and
