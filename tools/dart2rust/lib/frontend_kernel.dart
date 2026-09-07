@@ -896,9 +896,7 @@ class KernelFrontend implements TypeWorld {
       return IrType(
         name,
         nullable: nullable,
-        arguments: _nested(
-          () => _erasedArguments(type.classNode, type.typeArguments),
-        ),
+        arguments: _erasedArguments(type.classNode, type.typeArguments),
         module: _moduleQualifier(type.classNode),
       );
     }
@@ -10461,12 +10459,21 @@ class KernelFrontend implements TypeWorld {
   }
 
   /// A class's type arguments with the erased ones left out.
-  List<IrType> _erasedArguments(Class cls, List<DartType> arguments) => [
-    for (var i = 0; i < arguments.length; i++)
-      if (i >= cls.typeParameters.length ||
-          !_erasedParameter(cls.typeParameters[i]))
-        _type(arguments[i]),
-  ];
+  ///
+  /// As type arguments (`_nested`): a `T?` among them is projected, so
+  /// `_SettingsListItemState<T?>()` with `T` bound to `double?` is the
+  /// state over `double?` -- `Option<T>` there was `Option<Option<f64>>`,
+  /// and the state's downcast of its widget found none (run687). The
+  /// callers that lowered a class type did this themselves; the
+  /// constructor, constant and cast sites did not.
+  List<IrType> _erasedArguments(Class cls, List<DartType> arguments) => _nested(
+    () => [
+      for (var i = 0; i < arguments.length; i++)
+        if (i >= cls.typeParameters.length ||
+            !_erasedParameter(cls.typeParameters[i]))
+          _type(arguments[i]),
+    ],
+  );
 
   /// `x is T`. Against a type parameter that is the operand's own type
   /// (`value is! T` on a `T?` in `Provider.of`) it asks only about null,

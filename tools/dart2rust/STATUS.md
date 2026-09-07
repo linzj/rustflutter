@@ -302,17 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws662 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws666 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws662 | 链：stub **540**（-1），拒绝 197。 | |
-| run662 | `_SettingsPageState.build` 再下一处：`LinkedHashMap.fromEntries(displayLocales)`——prelude 没有 `Map::from_entries`；夹具还揪出 `MapEntry(k, v)` 解析到 dart:core 的私有 `MapEntry._`（公共的是重定向工厂），拼成 `new_`。修（prelude 表）：`Map::from_entries(Vec<MapEntry>)`、`MapEntry::new_`。夹具 fromentries SAME。 | 链 ws663 |
-| ws663 | 链：stub **538**（-2），拒绝 197。 | |
-| run663 | `_getLocaleOptions` 再下一处：`Map<Locale, DisplayOption>.fromIterable(supportedLocales, value: (dynamic l) => ..)`——prelude 无 `Map::from_iterable`。修（prelude 表）：`from_iterable<E>(Vec<E>, key: Option<Rc<dyn Fn(Object)>>, value: ..)`，元素按调用方持有的列表类型收、装箱交回调，缺省 `as K`/`as V` 走 `FromDynamic`。夹具 fromiterable SAME（typed list 进 `Iterable<dynamic>`、只 value、key+value、都缺省）。 | 链 ws664 |
-| ws664 | 链：stub **538**（持平），拒绝 197；settings 的 stub 挪到 `_getLocaleOptions`：`(dynamic locale) => .. locale as Locale?`——`dynamic` 上的 `as T?` 走 `<Locale as FromDynamic>`，可 `Locale` 是 counted 类，持有形式是 `Rc<Locale>`（拷了 struct，身份也丢）。修：`!as_opt`/`IrDowncast` 对 counted 类按句柄（`<Rc<T> as FromDynamic>` / `dart_cast_any::<Rc<T>>`）；顺带：所有局部读都带声明类型；持句柄的局部（`Rc<T>`/`Rc<dyn X>`）有「地址」= 指向物（`identical(b, loc)` 两个局部原按槽地址比，永远不等）。夹具 dyncast SAME。 | 链 ws665 |
-| ws665 | 链：stub **537**（-1），拒绝 197。 | |
-| run665 | settings 页建完；下一站 `RestorableValue<double?>.value`：`_value as T`（AOT 写成 `let #t = _value in #t == null ? #t as T : #t`，即 `x!` 的形）被当成 null 检查 `unwrap`——`T = double?` 时 null 是合法的 `T`。修（通用）：`x as T` 在参数自己的 `T?` 上（两种写法）走 prelude `dart_as_own::<T>`：里面的 `T`，或 `T` 自己的 null（`dart_null()`），都没有则是 Dart 的 TypeError（新 `TypeError` 错误类，可 catch）。夹具 asown SAME（`double?` 的 null、`int` 的抛错可 catch）。 | 链 ws666 |
 | ws666 | 链：stub **536**（-1），拒绝 197。 | |
 | run666 | `RestorableValue.value` 过了；下一站 `RawScrollbarState.initState` 的 stub：`scrollbarPainter = ScrollbarPainter(..)`——`late final ScrollbarPainter scrollbarPainter;`（无初始化器）在 open 类上，trait 只给了 getter 没给 setter（`!isFinal` 当「可写」）。修（通用）：无初始化器的 `late final` 是「赋一次」的可写字段（`_writable`），trait 声明 setter、impl 交 setter、经 trait 写的字段进 cell。夹具 latefinal SAME。同文件还有三处 stub 待踩：`_fadeoutTimer` 的 cell、`_getPrimaryDelta` 的 `Option<f64> + f64`、`_repaint` 的 `noSuchMethod`。 | 链 ws667 |
 | ws667 | 链：stub **534**（-2：`late final` 可写后 `FormFieldState.initState`、`RawScrollbarState.initState`），拒绝 197。跳过 run667，先把同文件的另两处一起修：① `_fadeoutTimer = null` 在 trait 体的闭包里——闭包捕获字段的 cell（`_copyOf` 要 `_cell()`），trait 却只为集合字段交 cell；修：`shared`（被闭包写的）字段也交 cell，且 Copy 类型的 cell 是 `Cell`（`_cellType`）。② `late double primaryDeltaFromDragStart` 在 switch 里赋值再读——`late` 局部持 `Option` 读时没 unwrap；修：`late` 非空局部读 unwrap（同 try 写入的局部）。夹具 closurefield、latelocal SAME。 | 链 ws668 |
@@ -345,7 +338,14 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws684 | 链：stub **484**（-3，正是那三个 typed catch），拒绝 184，可达 64。 | run684 |
 | run684 | **过了文字排版**（`TextPainter.layout` 走通）。停在 `ScrollPosition._updateSemanticActions`：`switch (axisDirection)` 的臂是 `const (SemanticsAction, SemanticsAction)`——`RecordConstant` 没降（拒绝）。修：常量记录 → `IrRecord`（元组），静态类型取 `recordType`；命名字段同字面量一样拒绝。夹具 recconst SAME。翻译拒绝 184→183。 | 链 ws685 |
 | ws685 | 链：stub **484**（持平），拒绝 183（-1），可达 64。 | run685 |
-| run685 | 过了 `_updateSemanticActions`。停在 `ScrollableState.setCanDrag`（super 体）的 stub：`_configuration_cell` 在 `&__Self` 上没有这个方法。 | 下一轮 |
+| run685 | 过了 `_updateSemanticActions`。停在 `ScrollableState.setCanDrag`（super 体）的 stub：`_configuration_cell` 在 `&__Self` 上没有——`late ScrollBehavior _configuration` 被 trait 体里的闭包捕获（`shared`），闭包拷贝走 `_copyOf` 要它的 cell，而 `_handsCell` 一律不给 `late` 字段 cell，trait 没声明（同因 3 个 stub：`_animation_cell`、`_fadeoutAnimationController_cell`）。修（通用）：`shared` 的 late 字段也交 cell，cell 里装结构体本来就装的 `Option<T>`（`_heldType`）；闭包里写它包 `Some`（`_lateCellLocals`）。late 的集合字段仍按值（`_cellPlace` 的就地写不看 `Option`）。夹具 latecapture SAME、closurefield SAME。 | 链 ws686 |
+| ws686 | 链：stub **482**（-2：`setCanDrag`、`_maybeStartFadeoutTimer`；`didUpdateWidget` 另有 `Option<&Rc<..>>` 的 `?` 错配），拒绝 183，可达 64。新增 late cell 访问器 470 个，没带来新 stub。 | run686 |
+| run686 | 过了 `setCanDrag`，进设置页：`SETTING_ITEM_BORDER_RADIUS` 的 `BorderRadius.circular` → `BorderRadius.all` 的 stub：`const BorderRadius.all(r) : this.only(..)` 拼成 `const fn`，体是 `Self::only(radius.clone(), ..)`——`Radius` 是 Copy 但前端不知道（拼了 `.clone()`），且 `only` 本身不是 `const fn`（带 assert 体）。修（通用）：`const fn` 与否沿转发链算（`_constCtor`：自身规则 ∧ 目标规则），转发路径也做同样的 `.clone()` 降级。夹具 constredir SAME。 | 链 ws687 |
+| ws687 | 链：stub **480**（-2：`BorderRadius.all`/`horizontal`），拒绝 183，可达 64。 | run687 |
+| run687 | 过了边框半径，进 `_SettingsListItemState.initState`：`widget` 向下转型 `SettingsListItem<<T as DartNullable>::Or>` 拿到 `None`——state 是 `_SettingsListItemState::<Option<T>>` 建的（`createState() => _SettingsListItemState<T?>()`），`T = double?` 时成了 `Option<Option<f64>>`，Dart 的 `T?` 在 `T = double?` 时只有一层。构造器/常量/转型的类型实参走 `_erasedArguments` 没进 `_nested`，`T?` 没投影成 `<T as DartNullable>::Or`（类类型走的 `_type` 自己包了 `_nested`）。修（通用）：`_erasedArguments` 本身就是"类型实参"，深度计数放进它。夹具 nullarg SAME。 | 链 ws688 |
+| ws688 | 链：stub **481**（+1：`RestorableEnumN::new`——`extends RestorableValue<T?>` 的 `T?` 现在投影了，基类字段 `T? _value = null` 的跨投影 `IrNullableOf` 在按子类实参替换时被丢掉（替换规则：实参可空就丢转换），槽却仍是 `<T as DartNullable>::Or`，裸 `None` 进不去），拒绝 183，可达 64。修（通用）：实参是**投影的**可空 `T?` 时转换保留。夹具 nullsuper SAME。 | 链 ws689 |
+| ws689 | 链：stub **480**（-1，回到 ws687），拒绝 183，可达 64。 | run689 |
+| run689 | `initState` 过了（state 现在是 `_SettingsListItemState<Option<f64>>`）。停在 `_SettingsListItemState.build` 的 stub：「type mismatch in closure arguments」。 | 下一轮 |
 
 ## 下一步(2026-09-05 重铺)
 

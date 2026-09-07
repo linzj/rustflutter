@@ -773,9 +773,9 @@ class RustBackend {
           null =>
             '{ let __set = ${expr(value)}; ${snake(name)} = __set.clone(); __set }',
           true =>
-            '{ let __set = ${expr(value)}; ${snake(name)}.set(__set.clone()); __set }',
+            '{ let __set = ${expr(value)}; ${snake(name)}.set(${_lateCellLocals.contains(name) ? 'Some(__set.clone())' : '__set.clone()'}); __set }',
           false =>
-            '{ let __set = ${expr(value)}; *${snake(name)}.borrow_mut() = __set.clone(); __set }',
+            '{ let __set = ${expr(value)}; *${snake(name)}.borrow_mut() = ${_lateCellLocals.contains(name) ? 'Some(__set.clone())' : '__set.clone()'}; __set }',
         },
       IrSetValue(:final target, :final name, :final value) => _setValue(
         target,
@@ -1516,8 +1516,14 @@ class RustBackend {
   /// closure captures the cell (`_copyOf`), which the trait must hand out
   /// (`_fadeoutTimer = null` inside `RawScrollbarState`'s timer callback,
   /// run666).
+  /// A `late` one too when shared -- the copy a trait body's closure
+  /// takes asks for the cell (`_copyOf`), and no trait declared it
+  /// (`_configuration` inside `ScrollableState.setCanDrag`'s recognizer
+  /// factory, run685); its cell holds the `Option` the struct holds
+  /// (`_heldType`). A late collection stays a value: the in-place writes
+  /// through `_cellPlace` do not look inside an `Option`.
   bool _handsCell(IrFieldDecl field) =>
-      !field.isLate && (_isMutableCollection(type(field.type)) || field.shared);
+      field.shared || (!field.isLate && _isMutableCollection(type(field.type)));
 
   /// The cell a handed-out field lives in: a `Cell` for a `Copy` value,
   /// as the struct holds it (a shared `int` counter a trait body's
@@ -1563,6 +1569,10 @@ class RustBackend {
     final held = type(field.type);
     return field.isLate ? 'Option<$held>' : held;
   }
+
+  /// `_heldType` of a type already spelled (substituted for an impl).
+  String _lateWrapped(IrFieldDecl field, String held) =>
+      field.isLate ? 'Option<$held>' : held;
 
   /// The held type as the *declaration* spells it, for deciding a cell's
   /// kind: inside a wider impl for one instantiation (`_selfBinding`) a
@@ -5807,12 +5817,18 @@ class RustBackend {
         _line('let $mutable${snake(name)}$annotation = $value;');
       case IrAssign(:final name, :final value):
         final cell = _cellLocals[name];
+        // A captured `late` field's cell holds the `Option` the struct
+        // does (`_lateCellLocals`): the write goes in wrapped, as the
+        // reads come out unwrapped.
+        final written = _lateCellLocals.contains(name)
+            ? 'Some(${expr(value)})'
+            : expr(value);
         _line(
           cell == null
-              ? '${snake(name)} = ${expr(value)};'
+              ? '${snake(name)} = $written;'
               : cell
-              ? '${snake(name)}.set(${expr(value)});'
-              : '*${snake(name)}.borrow_mut() = ${expr(value)};',
+              ? '${snake(name)}.set($written);'
+              : '*${snake(name)}.borrow_mut() = $written;',
         );
       case IrAssignField(
         :final target,
@@ -6349,7 +6365,7 @@ class RustBackend {
       }
       if (_handsCell(field)) {
         _line(
-          'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(type(field.type)))};',
+          'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(_heldType(field)))};',
         );
       }
       _line('');
@@ -6360,7 +6376,7 @@ class RustBackend {
       if (inherited.contains(field.name) || !_handsCell(field)) continue;
       _line('/// `${cls.name}.${field.name}`, held by the implementor.');
       _line(
-        'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(type(field.type)))};',
+        'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(_heldType(field)))};',
       );
       _line('');
     }
@@ -8529,12 +8545,15 @@ class RustBackend {
       // An edge conversion inlined from a base (`_inheritedInits`): the
       // base's `T` is this class's own parameter, renamed, or a concrete
       // type -- and for one of those the conversion is the identity.
+      // ..or this class's own projected `T?` (`EnumBox<T> extends
+      // Box<T?>`): the slot stays `<T as DartNullable>::Or`, and so does
+      // the crossing -- dropping it put a bare `None` into it (ws688).
       IrNullableOf(:final value, :final parameter, :final toOption) =>
         switch (types[parameter]) {
           null => IrNullableOf(go(value), parameter, toOption: toOption),
           final to
               when to.arguments.isEmpty &&
-                  !to.nullable &&
+                  (!to.nullable || to.projected) &&
                   cls.typeParameters.contains(to.name) =>
             IrNullableOf(go(value), to.name, toOption: toOption),
           _ => go(value),
@@ -9711,7 +9730,10 @@ class RustBackend {
         continue;
       }
       final cell = held.contains(field.name) ? _sharedField(field.name) : null;
-      final substituted = type(_substituteType(field.type, _implBinding));
+      final substituted = _lateWrapped(
+        field,
+        type(_substituteType(field.type, _implBinding)),
+      );
       _line(
         'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(substituted))} {',
       );
@@ -9734,7 +9756,10 @@ class RustBackend {
         final cell = held.contains(field.name)
             ? _sharedField(field.name)
             : null;
-        final substituted = type(_substituteType(field.type, _implBinding));
+        final substituted = _lateWrapped(
+          field,
+          type(_substituteType(field.type, _implBinding)),
+        );
         _line(
           'fn ${snake(field.name)}_cell(&self) -> ${_wrapped(_cellType(substituted))} {',
         );
@@ -10530,6 +10555,25 @@ class RustBackend {
     }
   }
 
+  /// Whether a constructor is written as a `const fn`: see the note at
+  /// `constness` in `_emitConstructor`. Through a redirect chain, each
+  /// step's own rule and the target's (`seen` stops a cycle).
+  bool _constCtor(IrConstructor ctor, Set<IrConstructor> seen) {
+    if (!seen.add(ctor)) return false;
+    if (!ctor.isConst ||
+        ctor.body != null ||
+        !ctor.params.every((p) => _isCopy(type(p.type))) ||
+        ctor.fieldInits.values.any((e) => expr(e).contains('.clone()'))) {
+      return false;
+    }
+    final redirect = ctor.redirectTo;
+    if (redirect == null) return true;
+    final target = cls.constructors
+        .where((c) => (c.name ?? '') == redirect)
+        .firstOrNull;
+    return target != null && _constCtor(target, seen);
+  }
+
   void _emitConstructor(IrConstructor ctor) {
     _here = '${cls.name}.${ctor.name?.isEmpty ?? true ? 'new' : ctor.name}';
     // Dart's named constructors are Rust's associated functions already --
@@ -10576,13 +10620,10 @@ class RustBackend {
     // `TextAlignVertical` -- and keep it.
     // ..nor one whose field initialisers clone -- `Color`, a `Copy` struct
     // the front end could not know is one, arrives as `color.clone()`.
-    final constness =
-        ctor.isConst &&
-            ctor.body == null &&
-            ctor.params.every((p) => _isCopy(type(p.type))) &&
-            !ctor.fieldInits.values.any((e) => expr(e).contains('.clone()'))
-        ? 'const '
-        : '';
+    // ..and a redirecting one (`const BorderRadius.all(r) : this.only(..)`)
+    // only when the constructor it hands its arguments to is one: a
+    // `const fn` may not call a plain `fn` (run686).
+    final constness = _constCtor(ctor, {}) ? 'const ' : '';
     // A counted class hands out a handle, not a value: everything that
     // holds one holds an `Rc`, so the constructor is where the first one is
     // made. A `const fn` cannot allocate, so a counted constructor is not one.
@@ -10613,6 +10654,14 @@ class RustBackend {
       _line('Self::${_ctorName(redirect.isEmpty ? null : redirect)}($args)');
       _indent--;
       _line('}');
+      // The same clone check as a constructor with a body gets below: a
+      // `Copy` argument the front end could not know is one arrives as
+      // `radius.clone()` (`BorderRadius.all`, run686).
+      if (constness.isNotEmpty &&
+          _out.sublist(signatureAt + 1).any((l) => l.contains('.clone()'))) {
+        _out[signatureAt] = _out[signatureAt].replaceFirst('const fn ', 'fn ');
+      }
+      _line('');
       return;
     }
     for (final check in ctor.asserts) {
@@ -10691,7 +10740,15 @@ class RustBackend {
       if (init == null && field.type.nullable) {
         // A nullable Dart field with no initialiser *is* null. Rust needs the
         // value written down, and `None` is exactly it -- not a stand-in.
-        init = IrLiteral('null', const IrType('Null', nullable: true));
+        // Into a projected `T?` slot (`<T as DartNullable>::Or`, a
+        // `RestorableValue<T?>`'s `_value` seen from `RestorableEnumN<T>`)
+        // the null crosses as every value does, by `from_option`
+        // (`IrNullableOf`; a bare `None` was "expected associated type",
+        // ws688).
+        final absent = IrLiteral('null', const IrType('Null', nullable: true));
+        init = field.type.projected
+            ? IrNullableOf(absent, field.type.name, toOption: false)
+            : absent;
       }
       if (init == null) {
         // Dart's `late`, which starts with no value at all. `None` is that,
