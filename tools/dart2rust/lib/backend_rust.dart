@@ -818,6 +818,13 @@ class RustBackend {
             : '${_superCall(base, name, args, isSetter: isSetter, baseArguments: baseArguments, typeArguments: typeArguments)}${(library[base]?.methods.any((m) => m.name == name && !m.isStatic && m.isAsync) ?? false) ? '' : _propagate}',
       // A local's `!` clones first: `a!.axis` and then `a!.value` moved
       // `a` at the first (E0382); a `Copy` local clones for free.
+      // `null!` is Dart's `TypeError`, not a value: there is nothing to
+      // unwrap and no type to unwrap it at (`cacheExtent!` in a viewport
+      // arm the AOT compiler proved dead, once the base's default `null`
+      // was substituted in for it -- `None.unwrap()` could infer nothing,
+      // run696).
+      IrNullCheck(operand: IrLiteral(type: IrType(name: 'Null'))) =>
+        'dart_null_check_failed()',
       IrNullCheck(:final operand) =>
         operand is IrLocal
             ? '${expr(operand)}.clone().unwrap()'
@@ -8254,6 +8261,7 @@ class RustBackend {
     // `post_event` it is spelled as).
     'exit',
     'dart_null_as',
+    'dart_null_check_failed',
     'postEvent',
     'registerExtension',
     'EnumName_get_name',
@@ -8681,19 +8689,16 @@ class RustBackend {
         go(target),
         args.map(go).toList(),
       ),
-      IrBlockValue(:final statements, :final value) => IrBlockValue(
-        // The bindings too: a base constructor's `errorPalette ??
-        // TonalPalette.of(..)` is `let __t = error_palette; ..`, and the
-        // parameter it names is the subclass's super argument (9).
-        [
-          for (final s in statements)
-            if (s is IrLocalDecl)
-              IrLocalDecl(s.name, s.type, s.init == null ? null : go(s.init!))
-            else
-              s,
-        ],
-        go(value),
-      ),
+      // The statements too, all of them: a base constructor's `errorPalette
+      // ?? TonalPalette.of(..)` is `let __t = error_palette; ..`, and the
+      // parameter it names is the subclass's super argument (9). A `switch`
+      // among them names one as well -- `_scrollCacheExtent = switch
+      // (cacheExtentStyle) {..}` in `RenderViewportBase`, whose
+      // `cacheExtentStyle` `RenderShrinkWrappingViewport` does not forward
+      // and left unbound (run696).
+      IrBlockValue(:final statements, :final value) => IrBlockValue([
+        for (final s in statements) _substituteStmt(s, by, types),
+      ], go(value)),
       IrConstInstance(:final type, :final fields) => IrConstInstance(type, {
         for (final entry in fields.entries) entry.key: go(entry.value),
       }),
@@ -8737,6 +8742,117 @@ class RustBackend {
       IrTopLevel() ||
       IrThis() ||
       IrBound() => e,
+    };
+  }
+
+  /// `_substitute` through a statement: a base constructor's initialiser is
+  /// inlined into the subclass's, and every parameter it names -- wherever
+  /// in it -- is the argument the `super(..)` passed. A statement left
+  /// unwalked kept the base's own parameter name, which is not in scope
+  /// when the subclass does not forward it.
+  IrStmt _substituteStmt(
+    IrStmt s,
+    Map<String, IrExpr> by, [
+    Map<String, IrType> types = const {},
+  ]) {
+    IrExpr go(IrExpr e) => _substitute(e, by, types);
+    IrStmt at(IrStmt inner) => _substituteStmt(inner, by, types);
+    return switch (s) {
+      IrReturn(:final value) => IrReturn(value == null ? null : go(value)),
+      IrLocalDecl(:final name, :final type, :final init, :final cell) =>
+        IrLocalDecl(name, type, init == null ? null : go(init), cell: cell),
+      IrIf(:final condition, :final then, :final otherwise) => IrIf(
+        go(condition),
+        at(then),
+        otherwise == null ? null : at(otherwise),
+      ),
+      IrBlock(:final statements) => IrBlock([
+        for (final inner in statements) at(inner),
+      ]),
+      IrExprStmt(:final expr) => IrExprStmt(go(expr)),
+      IrAssign(:final name, :final value) => IrAssign(name, go(value)),
+      IrAssignStatic(:final owner, :final name, :final value) => IrAssignStatic(
+        owner,
+        name,
+        go(value),
+      ),
+      IrAssignTopLevel(:final name, :final value) => IrAssignTopLevel(
+        name,
+        go(value),
+      ),
+      IrAssignField(:final name, :final value, :final target, :final owner) =>
+        IrAssignField(
+          name,
+          go(value),
+          target: target == null ? null : go(target),
+          owner: owner,
+        ),
+      IrSetter(
+        :final target,
+        :final name,
+        :final value,
+        :final qualifier,
+        :final receiverClass,
+      ) =>
+        IrSetter(
+          target == null ? null : go(target),
+          name,
+          go(value),
+          qualifier: qualifier,
+          receiverClass: receiverClass,
+        ),
+      IrLabeled(:final label, :final body) => IrLabeled(label, at(body)),
+      IrForIn(:final name, :final iterable, :final body) => IrForIn(
+        name,
+        go(iterable),
+        at(body),
+      ),
+      IrIndexSet(:final target, :final index, :final value) => IrIndexSet(
+        go(target),
+        go(index),
+        go(value),
+      ),
+      IrSwitch(:final value, :final cases, :final otherwise) => IrSwitch(
+        go(value),
+        [
+          for (final c in cases)
+            IrCase([for (final v in c.values) go(v)], at(c.body)),
+        ],
+        otherwise == null ? null : at(otherwise),
+      ),
+      IrWhile(:final condition, :final body, :final label) => IrWhile(
+        go(condition),
+        at(body),
+        label: label,
+      ),
+      IrTryFinally(:final body, :final finalizer) => IrTryFinally(
+        at(body),
+        at(finalizer),
+      ),
+      IrTryCatch(
+        :final body,
+        :final error,
+        :final handler,
+        :final errorType,
+        :final stack,
+      ) =>
+        IrTryCatch(
+          at(body),
+          error,
+          at(handler),
+          errorType: errorType,
+          stack: stack,
+        ),
+      IrThrow(:final value) => IrThrow(go(value)),
+      IrAssert(:final condition, :final literalMessage, :final message) =>
+        IrAssert(
+          go(condition),
+          literalMessage: literalMessage,
+          message: message,
+        ),
+      // A local function's body is a closure, which `_substitute` leaves as
+      // it is: a closure's captures are its own.
+      IrLocalFunction() || IrBreak() || IrContinue() => s,
     };
   }
 

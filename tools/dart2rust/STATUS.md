@@ -302,13 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,run672 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws675 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| run672 | `children` 过了，render 树 61 节点；下一站 `ScaffoldState.didChangeDependencies` → `_maybeBuildPersistentBottomSheet` 的 stub：`ModalRoute.of(context)!.addLocalHistoryEntry(entry)` 拼成 `ModalRoute::add_local_history_entry(&*route, ..)`——两个 trait 都声明该方法所以限定了，可 `ModalRoute<T>` 是**泛型** trait，裸 `Trait::m(..)` 是 E0782。修：非 `this` 句柄上的泛型 trait 限定走 `<dyn Trait<args> as Trait<args>>::m(&*h)`（实参从句柄类型/经类的实例化取，`_dynQualified`）。夹具 qualgeneric SAME。 | 链 ws673 |
-| ws673 | 链：stub **509**（+4：`_dynQualified` 把 `RestorableEnum<X>` 经 `_argumentsThrough` 拿到的 `RestorableProperty<T>` 没代入句柄自己的实参——修：按句柄实参代入），拒绝 192。scaffold 的 `ModalRoute::add_local_history_entry` 其实另有根因：`LocalHistoryRoute.addLocalHistoryEntry` **根本没翻**（refusal「assignment to a field of another object (param, value)」：`entry._owner = this` 经参数写 `LocalHistoryEntry` 的字段，该类不是 counted）。修（通用）：别名变异普查（`alias_mutation.dart`）把「经非 this、非本地持有者的引用写字段」也算别名变异 → 类 counted；`_declaringTrait`/`_abstractAncestors` 跨模块查（`elsewhere`）。夹具 aliasparam SAME。小欠：Dart 方法叫 `drop` 会撞 Rust 的析构名。 | 链 ws674 |
-| ws674 | 链：stub **505**（持平），拒绝 192（**没降**）：别名普查只扫 `inPackage` 的库，`entry._owner = this` 所在的应用类在 `dart:mixin_deduplication` 里，根本没被扫到。修：普查连去重库一起扫（写在应用类里、目标是 package 类的字段）。本地翻译验证：拒绝 192→188，`LocalHistoryEntry._owner` 进了 cell。 | 链 ws675 |
 | ws675 | 链：stub **502**（-3），拒绝 **188**（-4：`addLocalHistoryEntry` 一族）。 | |
 | run675 | Scaffold 过了，render 树 64 节点；下一站 gallery 自己的 `_AnimatedHomePageState.build`（两处 stub 同文件）：① `Function` 槽里的 void 闭包：适配器把 `Null` 类型的调用**整个换成** `dart_null_object()`（两处 `Null→Object` 规则都丢了副作用）——修：非字面量的 `Null` 值先求值再给 null 对象。② `_AnimatedCarousel.build` 的 `LayoutBuilder` builder 里的嵌套 builder 又从 `self.` 拷字段，把 `&self` 借进了 `'static` 闭包——修：外层闭包已拷贝的字段，内层从外层的局部拷。夹具还揪出 `flag.value = true` 在闭包里写**值类**局部的字段改到的是副本：别名普查把「经捕获的局部写字段」也算别名变异（`_ownLocal` 看声明函数）。夹具 dynfall、nestcapture SAME。 | 链 ws676 |
 | ws676 | 链：stub **495**（-7），拒绝 188。提交 f0cdc53f。 | |
@@ -346,6 +343,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws695 | 链：stub **472**（比 ws693 -3：`_buildHeaderWithChildren`、`RenderBox.baselineOffsetMinOf`、`Widget.==`，无新增），拒绝 183，可达 64。 | run695 |
 | run695 | 过了整个 `_SettingsListItemState`（`build`/`_handleExpansion`/`_buildHeaderWithChildren` 都不再是 stub）。停在 `Icon.build` 的 stub：`String.fromCharCode(icon.codePoint)`——prelude 没有这个 dart:core 静态，前端也没映射，于是拼成了 `String::from_char_code`。修（通用，按「dart:core→prelude 只走一张表」）：prelude 加 `string_from_char_code`（一个 rune；落单代理面给替换字符，Rust 的 String 装不下），前端映射表加一条，后端自由函数表加一条。夹具 charcode SAME。 | 链 ws696 |
 | ws696 | 链：stub **464**（-8：`Icon.build`、`CupertinoNavigationBar.build`、`TextPainter._skipSpacesAndPunctuations`、`RawKeyEvent.fromMessage` 与四个平台的 `keyLabel`/`runeToLowerCase`，无新增），拒绝 183，可达 64。 | run696 |
+| run696 | 过了 `Icon.build`，进 viewport。停在 `RenderShrinkWrappingViewport::new` 的 stub：「cannot find value `cache_extent`」——抽象基类 `RenderViewportBase` 的字段初始化式被内联进子类构造器（`_inheritedInits`），里面的 `switch (cacheExtentStyle) {..}` 是**语句**，而后端的 `_substitute` 只走表达式，`IrBlockValue` 里也只替换 `IrLocalDecl` 的初始化式，于是基类形参名原样留下——子类只转发了 6 个 `super.` 形参，没转发 `cacheExtent`/`cacheExtentStyle`。修（通用）：`_substitute` 配一个语句遍历 `_substituteStmt`（22 种语句全覆盖；局部函数体是闭包，捕获是它自己的，不进）。夹具 basedefault SAME。 | 链 ws697 |
+| ws697 | 链：stub **464**（数目没变，同一个 `new` 的错因从「cannot find value」变成「type annotations needed」）——替换生效后，基类默认值 `null` 变成裸 `None`，落在 TFA 判死的那条臂里的 `cacheExtent!` 上成了 `None.unwrap()`，推不出 `T`。修（通用）：`null!` 是 Dart 的 `TypeError`，不是值——prelude 加 `dart_null_check_failed() -> !`，后端把「操作数是 `Null` 字面量的 `IrNullCheck`」拼成它（类型是 `!`，哪里都放得下，也不用名字）。夹具 basedefault 扩了这条臂后 SAME；isnull/asnull/identnull/dynifnull/ifnull/ornull/nullmut/nullfn/nullarg/recnull/condstmt/patsw/switchbrk/enumif 回归 SAME。 | 链 ws698 |
+| ws698 | 链：stub **463**（-1：`RenderShrinkWrappingViewport::new`，无新增），拒绝 183，可达 64。 | run698 |
 
 ## 下一步(2026-09-05 重铺)
 

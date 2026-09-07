@@ -5036,6 +5036,12 @@ pub fn dart_null_as<T: DartNullable>() -> T {
     T::dart_null().expect("type 'Null' is not a subtype of the cast's type")
 }
 
+/// `null!`: Dart's null check operator on a value that is Dart's `null`.
+/// It throws, so there is no value to hand back and no type to name.
+pub fn dart_null_check_failed() -> ! {
+    panic!("Null check operator used on a null value")
+}
+
 /// `List<T?>.filled(n, null)`: `n` nulls of `T?` as translated code spells
 /// it -- `<T as DartNullable>::Or`, one `Option` layer whatever `T` is.
 /// The narrow numbers a typed list holds (`Float32List` is a `Vec<f32>`):
