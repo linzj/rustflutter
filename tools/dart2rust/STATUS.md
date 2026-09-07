@@ -302,13 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,run669 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,run671 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| run669 | `ScrollController.position` 过了，render 树 59 节点；下一站 `SliverList.createElement` → `SliverMultiBoxAdaptorElement` 构造子 stub：字段初始化 `SplayTreeMap<int, Element?>()` 拼成 `Map::new(None, None)`——`SplayTreeMap([compare, isValidKey])` 两个省略的可选参数被当实参填了 `None`，而 `SplayTreeMap` 不在后端「空集合构造」表里。修：`SplayTreeMap`/`SplayTreeSet` 进表（prelude 里就是 `Map`/`Set` 的别名，顺序已知丢失），省略的可选参数（拼出来是 `None`）不算实参。夹具 splaymap SAME。 | 链 ws670 |
-| ws670 | 链：stub **521**（-4 +2：`SliverMultiBoxAdaptorElement.createChild/removeChild` 里 `_childElements.remove(index)` 在闭包中拼成 `&*__me._child_elements_cell()?.borrow_mut().remove(..)`——`&*` 本是给 `Trait::x_cell(&*__me)` 这种**实参**位置的，作方法接收者时套在整条链上把 `remove` 的结果解引用了），拒绝 192。修：cell 访问器作接收者时用裸句柄。夹具 closurefield 加 map 字段在闭包里改。提交 c5da374b。 | 链 ws671 |
-| ws671 | 链：stub **517**（-4，无新增），拒绝 192。 | |
 | run671 | render 树 60 节点；下一站 `MultiChildRenderObjectElement.children`：`_children.where((c) => !_forgottenChildren.contains(c))`——迭代器步闭包里捕获字段的绑定（`this_._forgotten_children_cell()?`）带 `?`，而步闭包不返回 Result；且捕获的 cell 没按 cell 读。修：步闭包的捕获绑定也在「unwrap」语境下拼，捕获的共享字段登记为 cell 局部（同 boxed 闭包）。夹具 stepcapture SAME。 | 链 ws672 |
 | ws672 | 链：stub **505**（-12：`where` 步闭包捕获修好后 reply/shrine 的一批 getter 过了），拒绝 192。 | |
 | run672 | `children` 过了，render 树 61 节点；下一站 `ScaffoldState.didChangeDependencies` → `_maybeBuildPersistentBottomSheet` 的 stub：`ModalRoute.of(context)!.addLocalHistoryEntry(entry)` 拼成 `ModalRoute::add_local_history_entry(&*route, ..)`——两个 trait 都声明该方法所以限定了，可 `ModalRoute<T>` 是**泛型** trait，裸 `Trait::m(..)` 是 E0782。修：非 `this` 句柄上的泛型 trait 限定走 `<dyn Trait<args> as Trait<args>>::m(&*h)`（实参从句柄类型/经类的实例化取，`_dynQualified`）。夹具 qualgeneric SAME。 | 链 ws673 |
@@ -346,6 +343,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws692 | 链：stub **478**（-2：`_SettingsListItemState.build`、`_CupertinoSegmentedControlState.segmentForXPosition`，无新增），拒绝 183，可达 64。 | run692 |
 | run692 | 过了 `build`（元素槽的拼法一致后）。停在同文件 `_handleExpansion` 的 stub：`_controller.reverse().then<void>((value) { if (!mounted) { return; } })`——闭包的返回类型是 `FutureOr<void>`，体末尾落出去时后端已经会给 `Ok(FutureOr::value(()))`（`_fallsOffValue`），可裸 `return;` 一律拼成 `Ok(())`。修（通用）：裸 `return;` 就是语言的 `return null`，交回**该返回类型的 null**——与「落出末尾」同一个值（后端 `_fallsOff`，`_body` 里存取、闭包嵌套时保存恢复）。夹具 bareret SAME；tfthen/thenfwd/asyncfwd/asyncfutor/nullfn/voidslot/localfn/gclosure 回归 SAME。 | 链 ws693 |
 | ws693 | 链：stub **475**（-3：`_SettingsListItemState._handleExpansion`、`_DropdownButtonState._handleTap`、`ServicesBinding._handlePlatformMessage` 体，无新增），拒绝 183，可达 64。 | run693 |
+| run693 | 过了 `_handleExpansion`。停在同文件 `_buildHeaderWithChildren` 的 stub：`widget.optionsMap[widget.selectedOption]`——`optionsMap` 是 `LinkedHashMap<T?, DisplayOption>`，键槽是类型实参的拼法 `<T as DartNullable>::Or`；键值 `widget.selectedOption`（声明是裸参数 `T`）读出来本来就是投影的，却按 `_type(T?)` 深度 0 的 `Option<T>` 当槽，包了个 `option()` 再喂给 `Map::get(&K)`。修（通用）：集合自己的槽（元素、键、值）**就是类型实参**，`_intoArgument` 用 `_typeNested` 拼槽；`_intoElement`、`m[k]` 取、`m[k]=v`（表达式式与语句式两条路，`_mapEntry`）都走它。夹具 mapkeyslot SAME。 | 链 ws694 |
+| ws694 | 链：stub **476**（-1 `_buildHeaderWithChildren`，+2 新增：`_InkResponseState.updateHighlight`、`SliverMultiBoxAdaptorElement.createChild`）——两处都是 `Map<K, V?>` 的 `m[k] = 非空值` 出了 `Some(Some(..))`：`_arguments` 已按被调方声明的槽包过一次 `Some`，集合槽这一遍（第二次 `_widened`）又包了一次。修（通用）：`_widened` 的收尾「非空值进可空槽包 `Some`」看**手里已有的 Rust 类型**——已经是该槽的 `Option` 就不再包。夹具 mapnullval SAME；identmap/mapwiden/unmodmap/phmuse/splaymap/listgen/fromentries/hashtrie/insertall/iterable/itermap/listcast/listplus/listsingle/slotted 与 nullarg/nullsuper/ctornull/outparam/projarg/projected/tparam/qualgeneric/ifnull/ornull/nullmut/nullfn/dynifnull/dynslot 回归 SAME。 | 链 ws695 |
+| ws695 | 链：stub **472**（比 ws693 -3：`_buildHeaderWithChildren`、`RenderBox.baselineOffsetMinOf`、`Widget.==`，无新增），拒绝 183，可达 64。 | run695 |
 
 ## 下一步(2026-09-05 重铺)
 

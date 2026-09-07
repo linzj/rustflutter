@@ -6168,13 +6168,17 @@ class KernelFrontend implements TypeWorld {
         // a `Map<Object?, ..>` goes behind a handle (15 at ws421).
         final keyed = key == null
             ? args.single
-            : _widened(node.arguments.positional.single, key, args.single);
+            : _intoArgument(node.arguments.positional.single, key, args.single);
         return typed(IrCall(_receiver(node.receiver), '!map_get', [keyed]));
       }
       // `m[k] = v`: `insert`, as a statement or for its value (Dart's is
       // `v`; here the old value, which no caller reads).
       if (name == '[]=' && args.length == 2) {
-        return IrCall(_receiver(node.receiver), 'insert', args);
+        return IrCall(
+          _receiver(node.receiver),
+          'insert',
+          _mapEntry(node, args),
+        );
       }
       if (orderedMapMembers.contains(name)) {
         throw Unsupported(
@@ -9227,6 +9231,27 @@ class KernelFrontend implements TypeWorld {
     if (actual == null) return lowered;
     if (actual.nullability == Nullability.nullable) return lowered;
     if (actual is DynamicType || actual is NullType) return lowered;
+    // A value already in the slot's `Option` is not put in it twice: a
+    // collection's key or element goes through `_widened` a second time,
+    // for the collection's own slot rather than the callee's declared
+    // type, and the first pass did the wrapping (`m[k] = Box()` on a
+    // `Map<int, Box?>` came out `Some(Some(..))`, ws694).
+    final inHand = lowered.rustType;
+    if (inHand != null && isNullable(inHand) && !inHand.projected) {
+      IrType? spelled = slotIr;
+      if (spelled == null) {
+        try {
+          spelled = _type(param);
+        } on Unsupported {
+          spelled = null;
+        }
+      }
+      if (spelled != null &&
+          isNullable(spelled) &&
+          spelled.name == inHand.name) {
+        return lowered;
+      }
+    }
     // A `T?` slot over a bare kept type parameter of the code here is the
     // projection `<T as DartNullable>::Or`, not an `Option<T>` -- as the
     // declarations spell it (`_edgeType`) -- and the value goes in by
@@ -10824,7 +10849,46 @@ class KernelFrontend implements TypeWorld {
       return lowered;
     }
     final element = collection.typeArguments.first;
-    return _widened(value, element, lowered);
+    return _intoArgument(value, element, lowered);
+  }
+
+  /// A value into a collection's own slot -- an element, a key: the slot
+  /// is a *type argument*, so a `T?` there is spelled projected (`<T as
+  /// DartNullable>::Or`) and not the body's `Option<T>`. A read of the
+  /// same slot arrives projected too, so nothing converts in between
+  /// (`widget.optionsMap[widget.selectedOption]` put the key through an
+  /// `option` the map's `get` would not take, run693).
+  /// `m[k] = v`: the key and the value into the *map's own* slots, which
+  /// are type arguments. The callee here is `Map.[]=`, a prelude member
+  /// whose declared `K`, `V` coerce nothing, so a `Map<T?, ..>`'s key
+  /// arrived as the body's `Option<T>` where the map holds the projected
+  /// `<T as DartNullable>::Or` (run693).
+  List<IrExpr> _mapEntry(InstanceInvocation node, List<IrExpr> args) {
+    final mapType = _staticType(node.receiver);
+    if (args.length != 2 ||
+        node.arguments.positional.length != 2 ||
+        mapType is! InterfaceType ||
+        mapType.typeArguments.length != 2) {
+      return args;
+    }
+    return [
+      for (var i = 0; i < 2; i++)
+        _intoArgument(
+          node.arguments.positional[i],
+          mapType.typeArguments[i],
+          args[i],
+        ),
+    ];
+  }
+
+  IrExpr _intoArgument(Expression value, DartType slot, IrExpr lowered) {
+    IrType? spelled;
+    try {
+      spelled = _typeNested(slot);
+    } on Unsupported {
+      spelled = null;
+    }
+    return _widened(value, slot, lowered, slotIr: spelled);
   }
 
   /// Whether a type names an erased parameter anywhere in it.
@@ -10991,11 +11055,14 @@ class KernelFrontend implements TypeWorld {
           IrCall(
             expression(value.receiver),
             'insert',
-            _arguments(
-              value.arguments,
-              value.interfaceTarget.function,
-              true,
-              value.functionType,
+            _mapEntry(
+              value,
+              _arguments(
+                value.arguments,
+                value.interfaceTarget.function,
+                true,
+                value.functionType,
+              ),
             ),
           ),
         );
