@@ -305,11 +305,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,run683 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws684 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| run683 | 文字排版过了 `getParagraphStyle`，停在 `TextSpan.build` 的 stub：`on ArgumentError catch` 把 try 闭包声明成 `Result<_, ArgumentError>`，而体内 `builder.addText(..)?` 的错误是模型唯一的 `Rc<dyn Object>`，`?` 转不过去（同因 3 个 stub：`load_buffer__body`、`parseCompactDate`）。修（通用）：带类型的 catch 不收窄闭包，Err 臂用语言自己的 `is` 测（`_isTest`）、`as` 绑定（`IrDowncast`/`IrCastTo`），不是就 `return Err(__caught)` 往外抛。顺带：prelude 的异常结构体之间没有 Dart 的继承——`RangeError` 不 `is ArgumentError`——加 `DartCoreAs` 一张表（子类值按父类读，保留子类的 toString 文本）；`dart_error!` 的五个类型补 `DartAny`；`RangeError([dynamic message])` 收 boxed。夹具 oncatch SAME。 | 链 ws684 |
 | ws684 | 链：stub **484**（-3，正是那三个 typed catch），拒绝 184，可达 64。 | run684 |
 | run684 | **过了文字排版**（`TextPainter.layout` 走通）。停在 `ScrollPosition._updateSemanticActions`：`switch (axisDirection)` 的臂是 `const (SemanticsAction, SemanticsAction)`——`RecordConstant` 没降（拒绝）。修：常量记录 → `IrRecord`（元组），静态类型取 `recordType`；命名字段同字面量一样拒绝。夹具 recconst SAME。翻译拒绝 184→183。 | 链 ws685 |
 | ws685 | 链：stub **484**（持平），拒绝 183（-1），可达 64。 | run685 |
@@ -349,6 +348,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws707 | 链：stub **452**（与 ws703 同一组，三条边界规则对 gallery 是中性的），拒绝 183，可达 64。 | run707 |
 | run707 | 追那两处「擦除边界」剩下的：① `mouseCursor?.resolve(states)` 走的不是 null-aware 那条 lowering——TFA 把它换成了 `unsafeCast<MouseCursor?>(#t.resolve(s))`，而 `unsafeCast` 的「非空进可空」分支直接 `IrSome(操作数)`，手里是擦到的 `Rc<dyn Object>`。修（通用）：包 `Some` 之前先按同一条 coercion 规则把值读回来。夹具 covarnull 加 cursorBang SAME。② `TweenSequence._evaluateAt` 那条（保留的 `T` 收擦除结果）在夹具里已经成立（Seq/at/pair SAME），gallery 里那处是 super 自由函数，留 1 个 stub。补完后把 covariance 那条重新打开。 | 链 ws708 |
 | ws708 | 链：stub **449**（-3：`_SwitchDefaultsM3` 一族的访问器接上了；唯一新增是 `tween_sequence_super__evaluate_at`），拒绝 183，可达 64。covariance 那条从 +22 变成 -3。 | run708 |
+| run708 | **过了整个 Switch**（`_getSwitchSize`、`_MaterialSwitchState.build` 都不再 unwrap 到 `None`）。停在 `material_page_transitions_theme` 的静态初始化式：`.dart_cast_to::<dyn Animatable<Rc<dyn Object>>>().unwrap()` 拿到 `None`——`TweenSequenceItem<T>` 的 `T` 现在被擦除（真实 flow site：`_OpenContainerRoute._getColorTween` 把 `TweenSequenceItem<Color>` 交给 `TweenSequenceItem<Color?>`，可空一算数就露出来了），字段槽成了 `Rc<dyn Animatable<Rc<dyn Object>>>`；`TweenImpl<f64>` 有那个「更宽实例」的 impl（`addWiderImpls` 按**程序里出现过的**实例化生成），`_ChainedEvaluation<f64>` 没有——它是在泛型自由函数 `animatable_super_chain` 里造出来的，程序里从没写过这个类型，实例化普查看不见。下一轮：让「更宽实例」的普查也看见「泛型函数体内构造的类，按该函数被调用的实例化」。 | 下一轮 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -512,6 +512,10 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `on AssertionError catch` 不认：`DartCoreAs` 表只认 prelude 自己的结构体（上游 `is AssertionError` 3 处、
   `on AssertionError catch` 1 处）。子类值按父类读是**转换出来的拷贝**（`RangeError` → `ArgumentError{name: None}`），
   子类独有的字段丢了，`toString` 文本保留。（run683 记）
+- **「更宽实例」的 impl 只按程序里出现过的实例化生成**(run708 记):`addWiderImpls` 走
+  `instantiations` 普查,泛型自由函数体内构造的类(`animatable_super_chain` 里的
+  `_ChainedEvaluation<T>`)从不以具体实例化出现,于是 `_ChainedEvaluation<f64>` 没有
+  `impl Animatable<Rc<dyn Object>>`,擦除槽上的 `dart_cast_to` 运行期拿到 `None`。
 - **列表/映射按值传递**:`f(log)` 里 `log` 是 `Vec` 的拷贝,被调方(或它返回的闭包)往里 `add`
   调用方看不见(throttle 夹具第一版踩到,改夹具绕开)。counted 类有身份,集合没有——通用解还没有。
 - ~~**覆盖时收窄类型实参**~~(run703 量的,ws708 已解:覆盖关系算 flow site,那 82 处的
