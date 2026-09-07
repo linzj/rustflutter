@@ -38,6 +38,37 @@ Set<TypeParameter> covariantParameters(
   for (final library in libraries) {
     library.accept(scan);
   }
+  // An override *is* a flow site, and the only one this shape has: Dart's
+  // covariance lets `_SwitchDefaultsM3.thumbColor` answer a
+  // `WidgetStateProperty<Color>` where `SwitchThemeData.thumbColor` is a
+  // `WidgetStateProperty<Color?>?`, and every read is typed by the
+  // declaration, so no expression ever shows the two meeting. 82 accessors
+  // in the gallery are that shape, all of them the Material "defaults"
+  // idiom (run703).
+  for (final library in libraries) {
+    for (final cls in library.classes) {
+      if (!_translated(cls)) continue;
+      final thisType = cls.getThisType(
+        environment.coreTypes,
+        Nullability.nonNullable,
+      );
+      for (final above in _ancestorsOf(cls)) {
+        if (!_translated(above)) continue;
+        final asAbove = environment.hierarchy.getTypeAsInstanceOf(
+          thisType,
+          above,
+        );
+        if (asAbove is! InterfaceType) continue;
+        final substitution = Substitution.fromInterfaceType(asAbove);
+        for (final name in _resultNames(cls)) {
+          final declared = _resultTypeOf(above, name);
+          final own = _resultTypeOf(cls, name);
+          if (declared == null || own == null) continue;
+          scan._compare(own, substitution.substituteType(declared));
+        }
+      }
+    }
+  }
   // Handed down to a subclass parameter in an erased position, to a fixpoint.
   final classes = [for (final library in libraries) ...library.classes];
   var changed = true;
@@ -251,6 +282,44 @@ bool _mentionsAny(DartType t, Iterable<TypeParameter> params) {
 /// `ModalRoute<T> extends _App<T>`, and the application -- deduplicated,
 /// in a library of its own -- broke the chain (`PageRoute<T>` dropped for
 /// an unmarked `ModalRoute<T>`, ws521).
+/// Every class above `cls`, transitively.
+Set<Class> _ancestorsOf(Class cls) {
+  final out = <Class>{};
+  final queue = [cls];
+  while (queue.isNotEmpty) {
+    final here = queue.removeLast();
+    for (final above in _supertypesOf(here)) {
+      if (out.add(above.classNode)) queue.add(above.classNode);
+    }
+  }
+  return out;
+}
+
+/// The names a class declares a *result* for: a field, a getter, a method.
+Iterable<String> _resultNames(Class cls) sync* {
+  for (final f in cls.fields) {
+    yield f.name.text;
+  }
+  for (final p in cls.procedures) {
+    if (p.kind != ProcedureKind.Setter) yield p.name.text;
+  }
+}
+
+/// The declared result type of `cls`'s own `name`, in `cls`'s own terms.
+DartType? _resultTypeOf(Class cls, String name) {
+  for (final f in cls.fields) {
+    if (f.name.text == name) return f.type;
+  }
+  for (final p in cls.procedures) {
+    if (p.name.text == name && p.kind != ProcedureKind.Setter) {
+      return p.kind == ProcedureKind.Getter
+          ? p.function.returnType
+          : p.function.computeFunctionType(Nullability.nonNullable);
+    }
+  }
+  return null;
+}
+
 Iterable<Supertype> _supertypesOf(Class cls, [int depth = 0]) sync* {
   for (final above in [
     if (cls.supertype != null) cls.supertype!,
@@ -469,17 +538,25 @@ class _FlowScan extends RecursiveVisitor {
     }
   }
 
-  /// The same type, nullability aside; Dart's two top types are one type
-  /// here (`Object?` is `dynamic`).
+  /// The same type; Dart's two top types are one type here (`Object?` is
+  /// `dynamic`).
+  ///
+  /// Nullability counts: this compares *type arguments*, and `Color` and
+  /// `Color?` are `Rc<dyn Color>` and `Option<Rc<dyn Color>>` -- a
+  /// `WidgetStateProperty<Color>` is no `WidgetStateProperty<Color?>`
+  /// here, however freely Dart's covariance passes one for the other
+  /// (run703). At the top the two are the same slot and this is not
+  /// asked.
   static bool _same(DartType a, DartType b) {
     if (_top(a) && _top(b)) return true;
     // A closure's own parameter and its structural copy in the closure's
     // type are one parameter (`<T>(..) => MaterialPageRoute<T>(..)` into
     // a `PageRoute<T> Function<T>(..)` slot).
     final aName = _parameterName(a), bName = _parameterName(b);
-    if (aName != null && bName != null) return aName == bName;
-    return a.withDeclaredNullability(Nullability.nonNullable) ==
-        b.withDeclaredNullability(Nullability.nonNullable);
+    if (aName != null && bName != null) {
+      return aName == bName && a.nullability == b.nullability;
+    }
+    return a == b;
   }
 
   static String? _parameterName(DartType t) => t is TypeParameterType

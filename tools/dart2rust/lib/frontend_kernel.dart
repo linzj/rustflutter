@@ -7065,7 +7065,21 @@ class KernelFrontend implements TypeWorld {
           from.classNode == to.classNode &&
           from.nullability != Nullability.nullable &&
           to.nullability == Nullability.nullable) {
-        return IrSome(lowered);
+        // ..reading the value back first: what is in hand may be the
+        // bound an erased slot handed out, and `Some(x)` around an
+        // `Rc<dyn Object>` is no `Option<Rc<dyn Cursor>>`
+        // (`mouseCursor?.resolve(states)` in
+        // `ToggleableStateMixin.buildToggleable`, ws707).
+        IrExpr inner = lowered;
+        try {
+          inner = coerce(
+            lowered,
+            _type(to.withDeclaredNullability(Nullability.nonNullable)),
+          );
+        } on Unsupported {
+          inner = lowered;
+        }
+        return IrSome(inner)..rustType = _type(to);
       }
       return lowered;
     }

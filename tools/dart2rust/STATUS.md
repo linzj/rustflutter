@@ -269,11 +269,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 近期的(细节在活账/git):
 
-- **ws704–706**:把「覆盖关系」算成 covariance 的 flow site、并让 `_same` 认可空,
-  好让 `WidgetStateProperty<T>` 擦除、消掉那 82 处收窄(见〈已知欠账〉)——stub 474(+22)。
-  补了三条擦除边界规则后 455(+3),仍差两处(`buildToggleable` 的 null-aware、
-  `TweenSequence._evaluateAt` 进保留 `T` 的 return)。撤回;三条边界规则留下。
-  下次要走这条路,先把「擦除边界上标量与句柄的进出」补完,再开 covariance 那一条。
+- **ws704–706**(已作废,ws708 走通了):把「覆盖关系」算成 covariance 的 flow site
+  一开始是 +22——擦除边界上标量与句柄进出不成立。补齐四条边界规则后(见 ws707/ws708)
+  同一条改动是 **-3**。教训:量到 +N 时先看是不是边界规则缺,不要先撤回结论。
 - **ws531/532**:把空心 mixin 的字段从 application 恢复到声明上(+163/+181,撤回)
   → 窄解是 `IrClass.appliedFields`(trait 只多声明 `_cell()`)。
 - **ws544**:方法类型参数加 `+ Trait` 约束撞擦除孪生(`__erased` 用 `Rc<dyn Object>`
@@ -307,12 +305,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws682 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,run683 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws682 | 链：stub **530**（+40），拒绝 184，可达 64。限定名进了 `IrType.name`（`crate::dart_ui::TextStyle`），所有按名字比较的规则（coerce 的同名同类判断、covariance、backend 的 `library[t.name]`）都不认它——+40 全是 TextStyle 相关的类型错配。撤：名字保持裸的，模块另放 `IrType.module`；backend 只在拼字时 `_spelled(t)` 出 `crate::<module>::Name`，查类走 `library.resolve(t)`/`isAbstractType(t)`。 | 链 ws683 |
-| ws683 | 链：stub **487**（-3：`_createLayoutTemplate`、`getParagraphStyle`、`EditableText.build`），拒绝 184，可达 64。翻译出来 `dyn crate::dart_ui::TextStyle` 0 处，`crate::dart_ui::StrutStyle` 在 painting 里出现。 | run683 |
 | run683 | 文字排版过了 `getParagraphStyle`，停在 `TextSpan.build` 的 stub：`on ArgumentError catch` 把 try 闭包声明成 `Result<_, ArgumentError>`，而体内 `builder.addText(..)?` 的错误是模型唯一的 `Rc<dyn Object>`，`?` 转不过去（同因 3 个 stub：`load_buffer__body`、`parseCompactDate`）。修（通用）：带类型的 catch 不收窄闭包，Err 臂用语言自己的 `is` 测（`_isTest`）、`as` 绑定（`IrDowncast`/`IrCastTo`），不是就 `return Err(__caught)` 往外抛。顺带：prelude 的异常结构体之间没有 Dart 的继承——`RangeError` 不 `is ArgumentError`——加 `DartCoreAs` 一张表（子类值按父类读，保留子类的 toString 文本）；`dart_error!` 的五个类型补 `DartAny`；`RangeError([dynamic message])` 收 boxed。夹具 oncatch SAME。 | 链 ws684 |
 | ws684 | 链：stub **484**（-3，正是那三个 typed catch），拒绝 184，可达 64。 | run684 |
 | run684 | **过了文字排版**（`TextPainter.layout` 走通）。停在 `ScrollPosition._updateSemanticActions`：`switch (axisDirection)` 的臂是 `const (SemanticsAction, SemanticsAction)`——`RecordConstant` 没降（拒绝）。修：常量记录 → `IrRecord`（元组），静态类型取 `recordType`；命名字段同字面量一样拒绝。夹具 recconst SAME。翻译拒绝 184→183。 | 链 ws685 |
@@ -351,6 +347,8 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run703 | 仍停在同一处：`thumbColor` 属于那 82 个「类型实参收窄」的。量过、放下的一条路（**不要再原样试**）：把「覆盖关系」也算成 covariance 的 flow site，并让 `_same` 认可空（比较的本来就是类型实参，`Color`/`Color?` 在这边是两个 Rust 类型）——`WidgetStateProperty<T>` 于是被擦除，两边拼法一致，但 **stub 474（+22）**：擦除边界上标量进出不成立。补了三条边界规则后降到 455（+3），剩两处：`buildToggleable` 的 `mouseCursor?.resolve(states)`（null-aware 体没按自己的静态类型转换，改了两版都没打中，说明它走的不是那条 lowering）和 `TweenSequence._evaluateAt` 的 `return`（进的是保留的 `T`）。covariance 那条撤回；三条边界规则留下（本身就对）：① `_asConstructorCall` 只按**保留的**类型参数代入（擦除的槽是 `Rc<dyn Object>`，代 `double` 进去把 `f64` 塞给了收对象的构造器）；② 被调方声明的返回是**擦除的**类型参数时，值按擦到的 bound 到达（`_erasedResult`），落地时由 coerce 读回；③ 条件是 `bool`——`if`/`while`/`?:`/`!`/`&&`/`||` 的操作数都走 `_condition`。夹具 covarnull（真实 flow site 触发擦除）SAME，基线 9 个错。 | 链 ws707 |
 | ws704–706 | 上面那条路的三次测量：474 → 458 → 455。记在〈撤回与作废〉。 | |
 | ws707 | 链：stub **452**（与 ws703 同一组，三条边界规则对 gallery 是中性的），拒绝 183，可达 64。 | run707 |
+| run707 | 追那两处「擦除边界」剩下的：① `mouseCursor?.resolve(states)` 走的不是 null-aware 那条 lowering——TFA 把它换成了 `unsafeCast<MouseCursor?>(#t.resolve(s))`，而 `unsafeCast` 的「非空进可空」分支直接 `IrSome(操作数)`，手里是擦到的 `Rc<dyn Object>`。修（通用）：包 `Some` 之前先按同一条 coercion 规则把值读回来。夹具 covarnull 加 cursorBang SAME。② `TweenSequence._evaluateAt` 那条（保留的 `T` 收擦除结果）在夹具里已经成立（Seq/at/pair SAME），gallery 里那处是 super 自由函数，留 1 个 stub。补完后把 covariance 那条重新打开。 | 链 ws708 |
+| ws708 | 链：stub **449**（-3：`_SwitchDefaultsM3` 一族的访问器接上了；唯一新增是 `tween_sequence_super__evaluate_at`），拒绝 183，可达 64。covariance 那条从 +22 变成 -3。 | run708 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -516,7 +514,8 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   子类独有的字段丢了，`toString` 文本保留。（run683 记）
 - **列表/映射按值传递**:`f(log)` 里 `log` 是 `Vec` 的拷贝,被调方(或它返回的闭包)往里 `add`
   调用方看不见(throttle 夹具第一版踩到,改夹具绕开)。counted 类有身份,集合没有——通用解还没有。
-- **覆盖时收窄类型实参**(run703 量的):子类 getter 覆盖基类字段并把类型实参收窄——
+- ~~**覆盖时收窄类型实参**~~(run703 量的,ws708 已解:覆盖关系算 flow site,那 82 处的
+  `WidgetStateProperty<T>` 等被擦除,两边拼法一致):子类 getter 覆盖基类字段并把类型实参收窄——
   `_SwitchDefaultsM3.thumbColor` 是 `WidgetStateProperty<Color>`,基类字段是
   `WidgetStateProperty<Color?>?`。Dart 的协变允许,Rust 的 `dyn WSP<Rc<dyn Color>>` 与
   `dyn WSP<Option<Rc<dyn Color>>>` 无关。全 gallery **82** 处,全是 Material 的 defaults 惯用法;
