@@ -409,6 +409,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run633 | `cast<Route>()` 过了；下一站 `RestorableValue.value=` 的 stub：`final T? oldValue = _value; didUpdateValue(oldValue)`——体内 `Option<T>` 进边上的投影 `<T as DartNullable>::Or` 没做 `from_option`：`this` 上的调用没绑定本类的类型参数（`this` 的静态类型不在节点上，且 `didUpdateValue` 是抽象方法、`getDispatchTarget` 无目标）。修：`this` 按当前类定型；抽象目标以接口成员为落点。顺带 `CastErased<Option<T>>` 里 `Some(Null 对象)` 视为 null。夹具 projarg SAME；gentrait/listcast/restoreprop 仍 SAME。 | ws634 量；run634 看下一站。 |
 | ws634 | 链：stub **623**（-4），拒绝 232。 | |
 | run634 | `value=` 过了，`MaterialPageRoute.didAdd` 起动画；下一站拒绝 `List.generate` 3 参（`growable:`，`HashedObserverList.toList`）——接受第三参。夹具 listgen 顺带揪出三处：`Iterator` 局部被闭包捕获后 `..moveNext()`——prelude 的 `DartIter` 不共享游标也不是 `Iterator<T>` 的拼法，改 `dart_iter` 返回 `xs.iterator` 同款 `Rc<dyn DartIterator<T>>`；`=> _map[v] = ..` 在 void 函数里走了值形（写进 clone）——void `return e` 改按语句译；CFE 把 `this._map` 绑进临时量再 `[]=`——`this.field` 也算可别名的 place。夹具 listgen/latecell/nullmut/statmut SAME。 | ws635 量；run635 看下一站。 |
+| ws635 | 链：stub **623**（持平），拒绝 **231**（-1）。 | |
+| run635 | `List.generate` 过了；下一站运行时 `dart_from_dynamic::<Rc<dyn Fn(AnimationStatus)>>` panic：`AnimationController.notifyStatusListeners` 从 `ObserverList<T>`（`T` 擦除，存的是 `DartFunction` 对象）取回监听器，`Rc<T>` 的 `FromDynamic` 只认句柄/对象，不认 `Function` 对象。加一条：`DartFunction` 里存着它由之而来的那个类型化闭包（`original`），同型就原样取回（`removeListener` 也因此找得到）。夹具 fnback（泛型观察者列表存/取/删类型化监听器）SAME。 | ws636 量；run636 看下一站。 |
+| ws636 | 链：stub **623**（持平），拒绝 231。 | |
+| run636 | 状态监听器回得来了；下一站 `_flushRouteAnnouncement` 里 `next?.route != entry.lastAnnouncedNextRoute` `unwrap on None`：`Route?` 对 `_RoutePlaceholder?`（`Route extends _RoutePlaceholder`），`==` 一律把右边 coerce 进左边的类型 → 对占位符对象做 `dart_cast_to::<dyn Route>` 失败。改：类型不同时**低的一边升到高的一边**（前端按 `isSubInterfaceOf`），互不相干的两个 trait 留给后端按对象比（`dart_option_object(..).dart_eq`）。夹具 eqabove SAME；identmap/identstatic 仍 SAME。 | ws637 量；run637 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 

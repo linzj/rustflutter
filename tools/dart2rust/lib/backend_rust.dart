@@ -1907,6 +1907,28 @@ class RustBackend {
         final same = 'dart_identical_any(&${expr(left)}, &${expr(right)})';
         return op == '==' ? same : '(!$same)';
       }
+      // Two handles of different traits: the one *below* goes up into the
+      // other's type -- never the other way, which is a cast that fails
+      // (`next?.route != entry.lastAnnouncedNextRoute`, a `Route?` against
+      // a `_RoutePlaceholder?` above it, run636); unrelated ones compare
+      // as the objects they are.
+      final bareType = bare.rustType;
+      if (leftType != null && bareType != null) {
+        final ln = stripNull(leftType).name;
+        final rn = stripNull(bareType).name;
+        if (ln != rn && library.isAbstract(ln) && library.isAbstract(rn)) {
+          if (_world.isBelow(ln, rn) && !_world.isBelow(rn, ln)) {
+            final lifted = coerceInto(left, bareType, _world, inClosure: true);
+            final eq = '${expr(lifted)}.dart_eq(&${expr(bare)})';
+            return op == '==' ? eq : '(!$eq)';
+          }
+          if (!_world.isBelow(rn, ln)) {
+            final eq =
+                'dart_option_object(${_asOption(left)}).dart_eq(&dart_option_object(${_asOption(bare)}))';
+            return op == '==' ? eq : '(!$eq)';
+          }
+        }
+      }
       final coerced = leftType != null && bare.rustType != null
           ? coerceInto(bare, leftType, _world, inClosure: true)
           : bare;
@@ -1915,6 +1937,15 @@ class RustBackend {
       return op == '==' ? eq : '(!$eq)';
     }
     return '(${expr(left)} $op ${expr(right)})';
+  }
+
+  /// A value as an `Option` for `dart_option_object`: itself when its
+  /// recorded type is nullable, `Some(..)` otherwise.
+  String _asOption(IrExpr e) {
+    final t = e.rustType;
+    return t != null && isNullable(t) && !t.projected
+        ? expr(e)
+        : 'Some(${expr(e)})';
   }
 
   /// The type a `<T as DartNullable>` projection names: the parameter

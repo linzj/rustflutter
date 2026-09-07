@@ -8884,10 +8884,21 @@ impl<T: ?Sized + 'static> FromDynamic for std::rc::Rc<T> {
         let same: Box<dyn std::any::Any> = Box::new(value.clone());
         match same.downcast::<std::rc::Rc<T>>() {
             Ok(handle) => Some(*handle),
-            // ..the object as the handle, or a handle boxed as an object.
+            // ..the object as the handle, or a handle boxed as an object,
+            // or the typed closure a `Function` object was made from
+            // (`dart_function_same`): a listener stored in an
+            // `ObserverList<T>` with `T` erased comes back as the
+            // `Rc<dyn Fn(AnimationStatus)>` it was added as (run635).
             Err(_) => value
                 .dart_cast_to::<T>()
-                .or_else(|| value.as_any().downcast_ref::<std::rc::Rc<T>>().cloned()),
+                .or_else(|| value.as_any().downcast_ref::<std::rc::Rc<T>>().cloned())
+                .or_else(|| {
+                    let object: &dyn Object = value.as_ref();
+                    object
+                        .as_any()
+                        .downcast_ref::<DartFunction>()
+                        .and_then(|f| f.original.downcast_ref::<std::rc::Rc<T>>().cloned())
+                }),
         }
     }
     fn from_same(value: &Self) -> Option<Self> {

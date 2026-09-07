@@ -1776,11 +1776,37 @@ class KernelFrontend implements TypeWorld {
           lt != null &&
           rt != null &&
           _normalName(lt.name) != _normalName(rt.name)) {
-        final r = coerce(right, lt);
-        if (!identical(r, right)) {
-          right = r;
-        } else {
+        // The side *below* goes up into the other's type; the other way
+        // is a downcast that fails on a value of the wider class
+        // (`next?.route != entry.lastAnnouncedNextRoute`: a `Route?`
+        // against the `_RoutePlaceholder?` it extends, run636). Two
+        // unrelated traits are left as they are: the backend compares
+        // them as objects.
+        final hierarchy = typeEnvironment?.hierarchy;
+        final lc = leftType is InterfaceType ? leftType.classNode : null;
+        final rc = rightType is InterfaceType ? rightType.classNode : null;
+        final related = lc != null && rc != null && lc != rc;
+        final leftBelow =
+            related && (hierarchy?.isSubInterfaceOf(lc, rc) ?? false);
+        final rightBelow =
+            related && (hierarchy?.isSubInterfaceOf(rc, lc) ?? false);
+        if (leftBelow && !rightBelow) {
           left = coerce(left, rt);
+        } else if (rightBelow && !leftBelow) {
+          right = coerce(right, lt);
+        } else if (related &&
+            !leftBelow &&
+            !rightBelow &&
+            _abstractLike(lc) &&
+            _abstractLike(rc)) {
+          // Unrelated: as they are.
+        } else {
+          final r = coerce(right, lt);
+          if (!identical(r, right)) {
+            right = r;
+          } else {
+            left = coerce(left, rt);
+          }
         }
       }
       return IrBinary('==', left, right);
