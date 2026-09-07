@@ -1366,7 +1366,7 @@ class KernelFrontend implements TypeWorld {
           // = map[T]; w is T ? w : null`, the typelit fixture).
           final read = declared.nullability == Nullability.nullable
               ? _nullChecked(IrLocal(name)..rustType = _recordedType(declared))
-              : IrLocal(name);
+              : (IrLocal(name)..rustType = _recordedType(declared));
           return IrDowncast(read, parameter.name ?? 'T')
             ..rustType = _type(promoted);
         }
@@ -1409,9 +1409,13 @@ class KernelFrontend implements TypeWorld {
         // Out of its `Option` first when the local is nullable: a
         // `Painter? old` promoted to `Caret` asked the `Option` for its
         // `Any` (`shouldRepaint`'s `old.width`, ws590).
+        // ..and typed as declared either way: untyped, the backend asked
+        // the *handle's* `Any` (`resolvable.as_any()` on an `Rc<dyn
+        // Color>`, never the `CupertinoDynamicColor` inside; `resolve`
+        // unwrapped a `None` where `is` had just said yes, run621).
         final read = declared.nullability == Nullability.nullable
             ? _nullChecked(IrLocal(name)..rustType = _recordedType(declared))
-            : IrLocal(name);
+            : (IrLocal(name)..rustType = _recordedType(declared));
         final downcast = IrDowncast(
           read,
           _rustScalar(to.name),
@@ -1993,10 +1997,16 @@ class KernelFrontend implements TypeWorld {
       if (node.interfaceTarget is Field) {
         // A base field is copied into the subclass struct by the flattening,
         // so `super.x` and `this.x` are the same storage.
+        // ..with the field's own class named: in a trait body a read on
+        // `this` is the accessor, and this class may override it with a
+        // getter (`Color get primaryColor => super.primaryColor ?? ..`
+        // over `NoDefaultCupertinoThemeData`'s field, run618) -- the
+        // backend then asks the base trait's accessor for the storage.
         return IrField(
           null,
           _memberName(node.interfaceTarget!),
           onEnum: node.interfaceTarget?.enclosingClass?.isEnum ?? false,
+          owner: owner,
         );
       }
       final ownerClass = node.interfaceTarget?.enclosingClass;

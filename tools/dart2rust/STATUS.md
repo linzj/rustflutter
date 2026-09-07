@@ -379,6 +379,13 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws616 | 链：stub **708**（持平），拒绝 244。 | |
 | run616 | 还是同一个 `todo!`：gallery 里那笔写不是 `IrSetter`，是经 CFE 临时量的 `IrAssignField(owner: 'Tween')`（夹具里参数写才是 setter 形）。`_WalkSelf` 对非 `this` 的 `IrAssignField`（按 `owner`）和 `IrSetValue`（按接收者类型）也记入 `setterWrites`。夹具 traitset 加 gallery 同形（闭包参数重赋值后经临时量写），SAME，且生成里无 `todo!`。 | ws617 量；run617 看下一站。 |
 | ws617 | **链断了**：stub 464、unstubbable 1、可达 34——`_AnimatedPhysicalModelState._borderRadius` 进了 `Cell<Option<BorderRadiusTween>>`，而 `BorderRadiusTween` 的 `begin`/`end` 刚成了 cell（`Rc`，不 `Copy`）：`_classIsCopy` 只问 shared 和计数类的可变字段，没问 `_inCellOf` 的另外两条（trait 交出的 / 经 trait 写的）。改为按 `_inCellOf`。夹具 traitset 加 holder 形，SAME。 | ws618 量。 |
+| ws618 | 链：stub **707**（-1），拒绝 244，63 可达；`ThemeDataTween.end` 的 `todo!` 没了。 | |
+| run618 | AnimatedTheme 过了；下一站 `CupertinoThemeData.noDefault` 的 stub：`super.primaryColor`——基类 `NoDefaultCupertinoThemeData` 的**字段**，本类用 getter 覆盖；`super.x` 对字段一直译成 `this.x`（结构体里同一存储），但在 trait 体里 `this.x` 是本 trait 的访问器 = 覆盖的 getter（非空），槽要的是基类的 `Color?`。前端在节点上记字段的类（`owner`），后端在 trait 体里改问基 trait 的访问器 `Base::x(this_)`。夹具 superfield SAME。 | ws619 量；run619 看下一站。 |
+| ws619 | 链：stub **696**（-11：CupertinoThemeData 全部 super fn），拒绝 244。 | |
+| run619 | `noDefault` 过了；下一站运行时 `unwrap on None`：`CupertinoDynamicColor.maybeResolve(Color? resolvable, ..)` 的 `resolvable is CupertinoDynamicColor`——`_isTest` 的 `_asAny` 把 `Option` 直接 unwrap。对可空操作数（非投影）且目标非空的 `is`：`match &x { Some(__v) => 测试(__v), None => false }`（取反则 true）。夹具 isnull SAME。 | ws620 量；run620 看下一站。 |
+| ws620 | 链：stub **698**（+2）：`CupertinoTextField.build` 的 `border is Border` 是提升过的读（记录类型可空、值已脱壳），`_maybeAddKey` 里 `match &key` 借用活不过 `dart_is_kind` 的 `'static`。只对 `_optionRead` 认得的普通 `Option` 读包 `match`，且按值 match（`.clone()`）。夹具 isnull 加提升读与 `Key?` 句柄两形。 | ws621 量。 |
+| ws621 | 链：stub **696**（=ws619），拒绝 244。 | |
+| run621 | `maybeResolve` 过了；下一站同文件 `resolve(Color resolvable, ..)`（非空）：`is` 说是、提升读却 `unwrap on None`——提升读的 `IrLocal` 没带 rustType，后端 `_asAny` 不知道它是句柄，问了 `Rc` 自己的 `Any`（`resolvable.as_any()` 而非 `.as_ref().as_any()`）。提升读的局部一律带声明类型。夹具 isnull 加非空句柄提升，SAME。 | ws622 量；run622 看下一站。 |
 
 ## 下一步(2026-09-05 重铺)
 

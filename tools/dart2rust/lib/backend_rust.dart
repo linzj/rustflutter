@@ -2785,6 +2785,13 @@ class RustBackend {
     // no fields, and a mixin's `this_.source_url` names a getter of the
     // implementer's, declared in an interface the mixin never sees (7).
     if (_fieldsAreAccessors && (target == null || target is IrThis)) {
+      // `super.x` of a base's *field* (the front end names the base on
+      // the node): the base trait's accessor, which is the storage --
+      // this trait's own may be a getter over it (`CupertinoThemeData.
+      // primaryColor` over `NoDefaultCupertinoThemeData`'s field, run618).
+      if (owner != null && owner != cls.name && library.isAbstract(owner)) {
+        return '${_implementedAs(owner)}::${snake(name)}($receiver)$_propagate';
+      }
       final through =
           _accessorQualifier(name) ?? _wideTraitFor(cls, name)?.name;
       return through == null
@@ -2961,6 +2968,26 @@ class RustBackend {
 
   String _isTest(IrExpr operand, IrType target, bool negated) {
     final name = target.name;
+    // `x is C` on a nullable `x`: null is no `C` (a non-nullable one), so
+    // the test is asked of the value inside the `Option` and answers
+    // `false` for `None` -- `_asAny` unwrapped it and panicked on the
+    // null `Color?` `CupertinoDynamicColor.maybeResolve` is given
+    // (run619). `is Object?`/`dynamic` below know about null themselves.
+    // Only a *plain* read of an `Option` (`_optionRead`): a promoted
+    // read is recorded nullable while its value is already unwrapped
+    // (`border` under `border is Border`, `CupertinoTextField.build`,
+    // ws620). Matched by value, so that the inner is the handle itself and
+    // not a borrow the test would have to keep (`_maybeAddKey`, ws620).
+    final held = operand.rustType;
+    if (held != null &&
+        _optionRead(operand) != null &&
+        !target.nullable &&
+        name != 'Object' &&
+        name != 'dynamic') {
+      final inner = IrLocal('__v')..rustType = stripNull(held);
+      final test = _isTest(inner, target, negated);
+      return '(match ${expr(operand)}.clone() { Some(__v) => $test, None => $negated })';
+    }
     // A type parameter: whatever the caller passed for it, asked by id
     // (`dart_cast_any`). `ancestor.state is T` in `findAncestorStateOfType`,
     // refused as "`is` against `T`" since the first round.
