@@ -508,13 +508,25 @@ class KernelFrontend implements TypeWorld {
     final key = type.withDeclaredNullability(Nullability.nonNullable);
     if (!_censused.add(key)) return;
     final substitution = Substitution.fromInterfaceType(key);
+    // Whether the type being walked is one the bodies *construct*: such a
+    // class is instantiated at this instantiation and at no other name in
+    // the program, so it is censused whether or not it is trait-like --
+    // the census is also what says which instantiations of a generic
+    // class get wider impls. `Animatable<T>.chain` builds a
+    // `_ChainedEvaluation<T>`, and `_ChainedEvaluation<f64>` had no
+    // `Animatable<Object>` for the erased `TweenSequenceItem<T>` field to
+    // hold: the cast came back `None` (run708). A type merely *named* in a
+    // member's signature stays as it was -- censusing those as well put
+    // `provider`'s `_DelegateState.element` two Rust types apart (+2,
+    // ws709).
+    var built = false;
     void walk(DartType t) {
       if (t is InterfaceType) {
         if (t.typeArguments.isNotEmpty &&
             !_mentionsTypeParameter(t) &&
             t.classNode.enclosingLibrary.importUri.scheme != 'dart' &&
             _translatedClass(t.classNode)) {
-          if (_abstractLike(t.classNode)) {
+          if (_abstractLike(t.classNode) || built) {
             census
                 .putIfAbsent(t.classNode, () => {})
                 .add(t.withDeclaredNullability(Nullability.nonNullable));
@@ -558,9 +570,11 @@ class KernelFrontend implements TypeWorld {
     // `renderObject` is asked for `RenderAbstractLayoutBuilderMixin<
     // Constraints, ..>` -- named nowhere else once the AOT dill has shaken
     // `createRenderObject`'s override (run645).
+    built = true;
     for (final t in _constructedIn(cls)) {
       walk(substitution.substituteType(t));
     }
+    built = false;
   }
 
   /// The generic class types a class's bodies construct, once per class.

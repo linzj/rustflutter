@@ -305,12 +305,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws684 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws685 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws684 | 链：stub **484**（-3，正是那三个 typed catch），拒绝 184，可达 64。 | run684 |
-| run684 | **过了文字排版**（`TextPainter.layout` 走通）。停在 `ScrollPosition._updateSemanticActions`：`switch (axisDirection)` 的臂是 `const (SemanticsAction, SemanticsAction)`——`RecordConstant` 没降（拒绝）。修：常量记录 → `IrRecord`（元组），静态类型取 `recordType`；命名字段同字面量一样拒绝。夹具 recconst SAME。翻译拒绝 184→183。 | 链 ws685 |
 | ws685 | 链：stub **484**（持平），拒绝 183（-1），可达 64。 | run685 |
 | run685 | 过了 `_updateSemanticActions`。停在 `ScrollableState.setCanDrag`（super 体）的 stub：`_configuration_cell` 在 `&__Self` 上没有——`late ScrollBehavior _configuration` 被 trait 体里的闭包捕获（`shared`），闭包拷贝走 `_copyOf` 要它的 cell，而 `_handsCell` 一律不给 `late` 字段 cell，trait 没声明（同因 3 个 stub：`_animation_cell`、`_fadeoutAnimationController_cell`）。修（通用）：`shared` 的 late 字段也交 cell，cell 里装结构体本来就装的 `Option<T>`（`_heldType`）；闭包里写它包 `Some`（`_lateCellLocals`）。late 的集合字段仍按值（`_cellPlace` 的就地写不看 `Option`）。夹具 latecapture SAME、closurefield SAME。 | 链 ws686 |
 | ws686 | 链：stub **482**（-2：`setCanDrag`、`_maybeStartFadeoutTimer`；`didUpdateWidget` 另有 `Option<&Rc<..>>` 的 `?` 错配），拒绝 183，可达 64。新增 late cell 访问器 470 个，没带来新 stub。 | run686 |
@@ -349,6 +347,8 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run707 | 追那两处「擦除边界」剩下的：① `mouseCursor?.resolve(states)` 走的不是 null-aware 那条 lowering——TFA 把它换成了 `unsafeCast<MouseCursor?>(#t.resolve(s))`，而 `unsafeCast` 的「非空进可空」分支直接 `IrSome(操作数)`，手里是擦到的 `Rc<dyn Object>`。修（通用）：包 `Some` 之前先按同一条 coercion 规则把值读回来。夹具 covarnull 加 cursorBang SAME。② `TweenSequence._evaluateAt` 那条（保留的 `T` 收擦除结果）在夹具里已经成立（Seq/at/pair SAME），gallery 里那处是 super 自由函数，留 1 个 stub。补完后把 covariance 那条重新打开。 | 链 ws708 |
 | ws708 | 链：stub **449**（-3：`_SwitchDefaultsM3` 一族的访问器接上了；唯一新增是 `tween_sequence_super__evaluate_at`），拒绝 183，可达 64。covariance 那条从 +22 变成 -3。 | run708 |
 | run708 | **过了整个 Switch**（`_getSwitchSize`、`_MaterialSwitchState.build` 都不再 unwrap 到 `None`）。停在 `material_page_transitions_theme` 的静态初始化式：`.dart_cast_to::<dyn Animatable<Rc<dyn Object>>>().unwrap()` 拿到 `None`——`TweenSequenceItem<T>` 的 `T` 现在被擦除（真实 flow site：`_OpenContainerRoute._getColorTween` 把 `TweenSequenceItem<Color>` 交给 `TweenSequenceItem<Color?>`，可空一算数就露出来了），字段槽成了 `Rc<dyn Animatable<Rc<dyn Object>>>`；`TweenImpl<f64>` 有那个「更宽实例」的 impl（`addWiderImpls` 按**程序里出现过的**实例化生成），`_ChainedEvaluation<f64>` 没有——它是在泛型自由函数 `animatable_super_chain` 里造出来的，程序里从没写过这个类型，实例化普查看不见。下一轮：让「更宽实例」的普查也看见「泛型函数体内构造的类，按该函数被调用的实例化」。 | 下一轮 |
+| ws709–712 | 修 run708：实例化普查（`_censusMembers` 的 `walk`）只收 abstract-like 的类，可「更宽 impl」要的是**具体泛型类的实例化**。第一版把 `walk` 一律收进来 → **451**（+2：provider 的 `_DelegateState.element/set_element`）；改成只收「体内构造的」（`_constructedIn` 那一趟，`built` 标记）仍 451——那两处正是从这条路来的：新的 self 实例化让 `_ValueInheritedProviderState<Listenable?>` 多了一个 `impl _DelegateState<Object>`，而字段是 `_InheritedProviderScopeElement<Listenable?>`，两个结构体实例化之间没有转换（已知欠账）。修（通用）：访问器（读与写）在**没有任何规则能架桥**时写 `todo!()`，不写不编译的代码——方法那条路一直是这么说的。链 **449**，与 ws708 同一组。 | run712 |
+| run712 | 过了页面转场的静态初始化式。停在 `RenderFlex.performLayout` 的**拒绝**（not yet implemented）。 | 下一轮 |
 
 ## 下一步(2026-09-05 重铺)
 

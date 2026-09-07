@@ -10069,8 +10069,19 @@ class RustBackend {
           (overrides || substituted.name != 'Option')) {
         final held = IrLocal('__v')..rustType = handed;
         final shaped = coerceInto(held, substituted, _world);
+        // Nothing bridged the two and they are not the same type: a
+        // *wider* impl of a generic trait whose accessor is a struct at
+        // another instantiation (`_DelegateState<Object>.element` over a
+        // `_InheritedProviderScopeElement<Listenable?>` field, ws710).
+        // `todo!()` rather than code that does not compile: the method
+        // path next door has always said it that way, and a body that
+        // does not compile takes the whole function with it.
         value = identical(shaped, held)
-            ? body
+            ? (sameRust(handed, substituted)
+                  ? body
+                  : 'todo!("${cls.name}.${field.name} is ${type(handed)} '
+                        'and ${_implFor ?? base.name} asks '
+                        '${type(substituted)}")')
             : '{ let __v = $body; ${expr(shaped)} }';
       } else {
         value = substituted.name == 'Option' && reads != null
@@ -10098,23 +10109,28 @@ class RustBackend {
           // (`Tween<T>.begin` as `T?` erased against `ColorTween`'s
           // `Color?`): the value is adapted into what the field holds.
           final own = cell.type;
-          final adapted = type(substituted) == type(own)
-              ? 'value'
-              : expr(
-                  coerceInto(
-                    IrLocal('value')..rustType = substituted,
-                    own,
-                    _world,
-                    inClosure: true,
-                  ),
-                );
-          final stored = field.isLate ? 'Some($adapted)' : adapted;
-          _line(
-            _isCopy(_heldDecl(cell))
-                ? 'self.${snake(field.name)}.set($stored);'
-                : '*self.${snake(field.name)}.borrow_mut() = $stored;',
-          );
-          if (_resultModel) _line('Ok(())');
+          final given = IrLocal('value')..rustType = substituted;
+          final into = type(substituted) == type(own)
+              ? given
+              : coerceInto(given, own, _world, inClosure: true);
+          // ..and nothing bridged them: `todo!()`, as the read above says
+          // it (`_DelegateState<Object>.element` over a
+          // `_InheritedProviderScopeElement<Listenable?>` field, ws711).
+          if (identical(into, given) && !sameRust(substituted, own)) {
+            _line(
+              'todo!("${cls.name}.${field.name} is ${type(own)} and '
+              '${_implFor ?? base.name} writes ${type(substituted)}")',
+            );
+          } else {
+            final adapted = expr(into);
+            final stored = field.isLate ? 'Some($adapted)' : adapted;
+            _line(
+              _isCopy(_heldDecl(cell))
+                  ? 'self.${snake(field.name)}.set($stored);'
+                  : '*self.${snake(field.name)}.borrow_mut() = $stored;',
+            );
+            if (_resultModel) _line('Ok(())');
+          }
         } else {
           _line(
             'todo!("${cls.name}.${field.name} is written through a trait but is not a cell")',
