@@ -8260,6 +8260,7 @@ class RustBackend {
     'never',
     'new_object',
     'string_from_char_codes',
+    'string_from_char_code',
     'vec_of_nones',
     'dart_iter',
     'dart_iterator_map',

@@ -7290,6 +7290,15 @@ class KernelFrontend implements TypeWorld {
         expression(positional[0]),
       ]);
     }
+    // ..and `String.fromCharCode(code)`, one rune (`Icon.build` spells the
+    // glyph of an `IconData.codePoint`, run695).
+    if (owner == 'String' &&
+        target.name.text == 'fromCharCode' &&
+        positional.length == 1) {
+      return IrStaticCall(null, 'string_from_char_code', [
+        expression(positional[0]),
+      ]);
+    }
     // `scheduleMicrotask(f)`: the prelude's `_schedule_microtask` takes the
     // `Rc<dyn Fn()>` a translated closure is; the public-named one is the
     // prelude's own `Box<dyn FnOnce()>` entry.

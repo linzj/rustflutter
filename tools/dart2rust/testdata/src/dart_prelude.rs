@@ -8448,6 +8448,16 @@ pub fn string_from_char_codes(codes: Vec<i64>) -> String {
     String::from_utf16_lossy(&units)
 }
 
+/// `String.fromCharCode(code)`: the one rune the code point names. An
+/// unpaired surrogate is the replacement character -- Dart's String holds
+/// one and Rust's cannot.
+pub fn string_from_char_code(code: i64) -> String {
+    match u32::try_from(code).ok().and_then(char::from_u32) {
+        Some(c) => c.to_string(),
+        None => String::from_utf16_lossy(&[code as u16]),
+    }
+}
+
 /// `Object()`: a fresh object with nothing but an identity -- `final
 /// _clockKey = Object();` uses one as a zone key.
 pub fn new_object() -> std::rc::Rc<dyn Object> {
