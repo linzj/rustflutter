@@ -3651,6 +3651,16 @@ pub trait DartList<T> {
     fn take_dart(&self, n: i64) -> Vec<T>;
     /// `a + b`: a new list of `a`'s elements followed by `b`'s.
     fn dart_concat(&self, other: Vec<T>) -> Vec<T>;
+    /// `removeWhere(test)` / `retainWhere(test)`: in place, the test's
+    /// failure carried out.
+    fn remove_where<F: Fn(T) -> Result<bool, DartError>>(
+        &mut self,
+        test: F,
+    ) -> Result<(), DartError>;
+    fn retain_where<F: Fn(T) -> Result<bool, DartError>>(
+        &mut self,
+        test: F,
+    ) -> Result<(), DartError>;
 }
 
 impl<T: Clone> DartList<T> for Vec<T> {
@@ -3662,6 +3672,34 @@ impl<T: Clone> DartList<T> for Vec<T> {
         let mut out = self.clone();
         out.extend(other);
         out
+    }
+
+    fn remove_where<F: Fn(T) -> Result<bool, DartError>>(
+        &mut self,
+        test: F,
+    ) -> Result<(), DartError> {
+        let mut kept: Vec<T> = Vec::new();
+        for e in self.drain(..) {
+            if !test(e.clone())? {
+                kept.push(e);
+            }
+        }
+        *self = kept;
+        Ok(())
+    }
+
+    fn retain_where<F: Fn(T) -> Result<bool, DartError>>(
+        &mut self,
+        test: F,
+    ) -> Result<(), DartError> {
+        let mut kept: Vec<T> = Vec::new();
+        for e in self.drain(..) {
+            if test(e.clone())? {
+                kept.push(e);
+            }
+        }
+        *self = kept;
+        Ok(())
     }
 
     fn sublist(&self, start: i64, end: Option<i64>) -> Vec<T> {
@@ -5163,31 +5201,6 @@ impl Iterable {
 /// `dart:core`'s `Match`, the interface `RegExpMatch` implements: one
 /// struct stands for both here.
 pub type Match = RegExpMatch;
-
-/// A `RegExpMatch`: what `firstMatch` hands back. There is no regular
-/// expression engine here yet, so `first_match` finds nothing and says so.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RegExpMatch {
-    pub input: String,
-    pub start: i64,
-    pub end: i64,
-}
-
-impl RegExpMatch {
-    pub fn group(&self, index: i64) -> Option<String> {
-        if index == 0 {
-            Some(self.input[self.start as usize..self.end as usize].to_string())
-        } else {
-            None
-        }
-    }
-    pub fn start(&self) -> i64 {
-        self.start
-    }
-    pub fn end(&self) -> i64 {
-        self.end
-    }
-}
 
 /// `dart:collection`'s `MapBase`, for its one static in use.
 pub struct MapBase;
@@ -7172,51 +7185,753 @@ impl<T: DartNullable + 'static> Completer<T> {
     }
 }
 
-/// Dart's `RegExp`, as a name and a pattern and nothing else.
-///
-/// There is no regular-expression engine here and writing one is not this
-/// project's job. What upstream does with a `RegExp` is match and replace, and
-/// both `panic!` with the pattern in the message -- the same answer the
-/// backend gives for a method it cannot translate, and for the same reason: a
-/// loud failure at the point of use beats a quiet wrong answer, and beats a
-/// missing name that stops a thousand lines from compiling.
-///
-/// Pulling in a regex crate would work and is deliberately not done: the
-/// generated crate has no dependencies, which is what makes it possible to say
-/// that everything in it came from the Dart or from this file.
+/// A backtracking regular-expression engine for `RegExp`, written here
+/// like everything else in this file: ECMAScript's common subset --
+/// literals and escapes (`\d \w \s \b`, their negations), `.`, classes
+/// with ranges and negation, `^`/`$` (multi-line aware), capturing,
+/// non-capturing and named groups, alternation, and the quantifiers
+/// `* + ? {m} {m,} {m,n}` greedy or lazy -- with `caseSensitive`,
+/// `multiLine` and `dotAll` honoured. The gallery routes on
+/// `^/demo/([\w-]+)$` (run631).
+#[derive(Clone, Debug, PartialEq)]
+enum ReNode {
+    Char(char),
+    Any,
+    Class {
+        items: Vec<ReClassItem>,
+        negated: bool,
+    },
+    Start,
+    End,
+    WordBoundary(bool),
+    Group {
+        body: Box<ReNode>,
+        index: Option<usize>,
+    },
+    Alt(Vec<Vec<ReNode>>),
+    Repeat {
+        body: Box<ReNode>,
+        min: usize,
+        max: Option<usize>,
+        greedy: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum ReClassItem {
+    Range(char, char),
+    Digit(bool),
+    Word(bool),
+    Space(bool),
+}
+
+struct ReParser {
+    chars: Vec<char>,
+    pos: usize,
+    groups: usize,
+    names: Vec<(String, usize)>,
+}
+
+impl ReParser {
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn parse_alt(&mut self) -> Result<ReNode, String> {
+        let mut alternatives = vec![self.parse_seq()?];
+        while self.peek() == Some('|') {
+            self.pos += 1;
+            alternatives.push(self.parse_seq()?);
+        }
+        Ok(ReNode::Alt(alternatives))
+    }
+
+    fn parse_seq(&mut self) -> Result<Vec<ReNode>, String> {
+        let mut seq = Vec::new();
+        while let Some(c) = self.peek() {
+            if c == '|' || c == ')' {
+                break;
+            }
+            let atom = self.parse_atom()?;
+            let atom = self.parse_quantifier(atom)?;
+            seq.push(atom);
+        }
+        Ok(seq)
+    }
+
+    fn parse_quantifier(&mut self, atom: ReNode) -> Result<ReNode, String> {
+        let (min, max) = match self.peek() {
+            Some('*') => {
+                self.pos += 1;
+                (0, None)
+            }
+            Some('+') => {
+                self.pos += 1;
+                (1, None)
+            }
+            Some('?') => {
+                self.pos += 1;
+                (0, Some(1))
+            }
+            Some('{') => {
+                let save = self.pos;
+                self.pos += 1;
+                let mut min_text = String::new();
+                while let Some(d) = self.peek().filter(|d| d.is_ascii_digit()) {
+                    min_text.push(d);
+                    self.pos += 1;
+                }
+                if min_text.is_empty() {
+                    self.pos = save;
+                    return Ok(atom);
+                }
+                let min: usize = min_text.parse().unwrap_or(0);
+                let max = if self.peek() == Some(',') {
+                    self.pos += 1;
+                    let mut max_text = String::new();
+                    while let Some(d) = self.peek().filter(|d| d.is_ascii_digit()) {
+                        max_text.push(d);
+                        self.pos += 1;
+                    }
+                    if max_text.is_empty() {
+                        None
+                    } else {
+                        Some(max_text.parse().unwrap_or(0))
+                    }
+                } else {
+                    Some(min)
+                };
+                if self.peek() != Some('}') {
+                    self.pos = save;
+                    return Ok(atom);
+                }
+                self.pos += 1;
+                (min, max)
+            }
+            _ => return Ok(atom),
+        };
+        let greedy = if self.peek() == Some('?') {
+            self.pos += 1;
+            false
+        } else {
+            true
+        };
+        Ok(ReNode::Repeat {
+            body: Box::new(atom),
+            min,
+            max,
+            greedy,
+        })
+    }
+
+    fn parse_atom(&mut self) -> Result<ReNode, String> {
+        let c = self.peek().ok_or_else(|| "unexpected end".to_string())?;
+        self.pos += 1;
+        match c {
+            '.' => Ok(ReNode::Any),
+            '^' => Ok(ReNode::Start),
+            '$' => Ok(ReNode::End),
+            '(' => {
+                let mut index = None;
+                if self.peek() == Some('?') {
+                    self.pos += 1;
+                    match self.peek() {
+                        Some(':') => {
+                            self.pos += 1;
+                        }
+                        Some('<') => {
+                            self.pos += 1;
+                            let mut name = String::new();
+                            while let Some(n) = self.peek() {
+                                self.pos += 1;
+                                if n == '>' {
+                                    break;
+                                }
+                                name.push(n);
+                            }
+                            self.groups += 1;
+                            index = Some(self.groups);
+                            self.names.push((name, self.groups));
+                        }
+                        _ => return Err("unsupported group".to_string()),
+                    }
+                } else {
+                    self.groups += 1;
+                    index = Some(self.groups);
+                }
+                let body = self.parse_alt()?;
+                if self.peek() != Some(')') {
+                    return Err("missing )".to_string());
+                }
+                self.pos += 1;
+                Ok(ReNode::Group {
+                    body: Box::new(body),
+                    index,
+                })
+            }
+            '[' => self.parse_class(),
+            '\\' => self.parse_escape(false),
+            other => Ok(ReNode::Char(other)),
+        }
+    }
+
+    fn parse_escape(&mut self, in_class: bool) -> Result<ReNode, String> {
+        let e = self.peek().ok_or_else(|| "dangling escape".to_string())?;
+        self.pos += 1;
+        let item = match e {
+            'd' => Some(ReClassItem::Digit(false)),
+            'D' => Some(ReClassItem::Digit(true)),
+            'w' => Some(ReClassItem::Word(false)),
+            'W' => Some(ReClassItem::Word(true)),
+            's' => Some(ReClassItem::Space(false)),
+            'S' => Some(ReClassItem::Space(true)),
+            _ => None,
+        };
+        if let Some(item) = item {
+            return Ok(ReNode::Class {
+                items: vec![item],
+                negated: false,
+            });
+        }
+        if !in_class {
+            if e == 'b' {
+                return Ok(ReNode::WordBoundary(false));
+            }
+            if e == 'B' {
+                return Ok(ReNode::WordBoundary(true));
+            }
+        }
+        Ok(ReNode::Char(match e {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            'f' => '\u{c}',
+            'v' => '\u{b}',
+            '0' => '\0',
+            'b' => '\u{8}',
+            'u' => {
+                let mut hex = String::new();
+                for _ in 0..4 {
+                    if let Some(h) = self.peek() {
+                        hex.push(h);
+                        self.pos += 1;
+                    }
+                }
+                u32::from_str_radix(&hex, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .unwrap_or('u')
+            }
+            'x' => {
+                let mut hex = String::new();
+                for _ in 0..2 {
+                    if let Some(h) = self.peek() {
+                        hex.push(h);
+                        self.pos += 1;
+                    }
+                }
+                u32::from_str_radix(&hex, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+                    .unwrap_or('x')
+            }
+            other => other,
+        }))
+    }
+
+    fn parse_class(&mut self) -> Result<ReNode, String> {
+        let mut negated = false;
+        if self.peek() == Some('^') {
+            negated = true;
+            self.pos += 1;
+        }
+        let mut items = Vec::new();
+        let mut first = true;
+        loop {
+            let c = self.peek().ok_or_else(|| "missing ]".to_string())?;
+            if c == ']' && !first {
+                self.pos += 1;
+                break;
+            }
+            first = false;
+            self.pos += 1;
+            let low = if c == '\\' {
+                match self.parse_escape(true)? {
+                    ReNode::Class {
+                        items: mut inner, ..
+                    } => {
+                        items.append(&mut inner);
+                        continue;
+                    }
+                    ReNode::Char(ch) => ch,
+                    _ => continue,
+                }
+            } else {
+                c
+            };
+            if self.peek() == Some('-') && self.chars.get(self.pos + 1).map_or(false, |n| *n != ']')
+            {
+                self.pos += 1;
+                let hc = self.peek().ok_or_else(|| "missing ]".to_string())?;
+                self.pos += 1;
+                let high = if hc == '\\' {
+                    match self.parse_escape(true)? {
+                        ReNode::Char(ch) => ch,
+                        _ => hc,
+                    }
+                } else {
+                    hc
+                };
+                items.push(ReClassItem::Range(low, high));
+            } else {
+                items.push(ReClassItem::Range(low, low));
+            }
+        }
+        Ok(ReNode::Class { items, negated })
+    }
+}
+
+fn re_is_word(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+struct ReMatcher<'a> {
+    input: &'a [char],
+    caps: Vec<Option<(usize, usize)>>,
+    case_insensitive: bool,
+    multi_line: bool,
+    dot_all: bool,
+}
+
+impl<'a> ReMatcher<'a> {
+    fn chars_equal(&self, a: char, b: char) -> bool {
+        if a == b {
+            return true;
+        }
+        self.case_insensitive && a.to_lowercase().eq(b.to_lowercase())
+    }
+
+    fn class_holds(&self, items: &[ReClassItem], negated: bool, c: char) -> bool {
+        let mut hit = false;
+        for item in items {
+            let holds = match item {
+                ReClassItem::Range(lo, hi) => {
+                    (*lo <= c && c <= *hi)
+                        || (self.case_insensitive && {
+                            let l = c.to_lowercase().next().unwrap_or(c);
+                            let u = c.to_uppercase().next().unwrap_or(c);
+                            (*lo <= l && l <= *hi) || (*lo <= u && u <= *hi)
+                        })
+                }
+                ReClassItem::Digit(neg) => c.is_ascii_digit() != *neg,
+                ReClassItem::Word(neg) => re_is_word(c) != *neg,
+                ReClassItem::Space(neg) => c.is_whitespace() != *neg,
+            };
+            if holds {
+                hit = true;
+                break;
+            }
+        }
+        hit != negated
+    }
+
+    fn m_seq(
+        &mut self,
+        seq: &[ReNode],
+        idx: usize,
+        pos: usize,
+        cont: &mut dyn FnMut(&mut Self, usize) -> bool,
+    ) -> bool {
+        if idx == seq.len() {
+            return cont(self, pos);
+        }
+        let node = &seq[idx];
+        self.m(node, pos, &mut |s: &mut Self, p: usize| {
+            s.m_seq(seq, idx + 1, p, cont)
+        })
+    }
+
+    fn m(
+        &mut self,
+        node: &ReNode,
+        pos: usize,
+        cont: &mut dyn FnMut(&mut Self, usize) -> bool,
+    ) -> bool {
+        match node {
+            ReNode::Char(c) => {
+                if pos < self.input.len() && self.chars_equal(self.input[pos], *c) {
+                    cont(self, pos + 1)
+                } else {
+                    false
+                }
+            }
+            ReNode::Any => {
+                if pos < self.input.len() && (self.dot_all || self.input[pos] != '\n') {
+                    cont(self, pos + 1)
+                } else {
+                    false
+                }
+            }
+            ReNode::Class { items, negated } => {
+                if pos < self.input.len() && self.class_holds(items, *negated, self.input[pos]) {
+                    cont(self, pos + 1)
+                } else {
+                    false
+                }
+            }
+            ReNode::Start => {
+                if pos == 0 || (self.multi_line && self.input[pos - 1] == '\n') {
+                    cont(self, pos)
+                } else {
+                    false
+                }
+            }
+            ReNode::End => {
+                if pos == self.input.len() || (self.multi_line && self.input[pos] == '\n') {
+                    cont(self, pos)
+                } else {
+                    false
+                }
+            }
+            ReNode::WordBoundary(negated) => {
+                let before = pos > 0 && re_is_word(self.input[pos - 1]);
+                let after = pos < self.input.len() && re_is_word(self.input[pos]);
+                if (before != after) != *negated {
+                    cont(self, pos)
+                } else {
+                    false
+                }
+            }
+            ReNode::Group { body, index } => {
+                let index = *index;
+                self.m(body, pos, &mut |s: &mut Self, p: usize| match index {
+                    Some(i) => {
+                        let previous = s.caps[i];
+                        s.caps[i] = Some((pos, p));
+                        if cont(s, p) {
+                            true
+                        } else {
+                            s.caps[i] = previous;
+                            false
+                        }
+                    }
+                    None => cont(s, p),
+                })
+            }
+            ReNode::Alt(alternatives) => {
+                for alternative in alternatives {
+                    if self.m_seq(alternative, 0, pos, cont) {
+                        return true;
+                    }
+                }
+                false
+            }
+            ReNode::Repeat {
+                body,
+                min,
+                max,
+                greedy,
+            } => self.m_rep(body, *min, *max, *greedy, 0, pos, cont),
+        }
+    }
+
+    fn m_rep(
+        &mut self,
+        body: &ReNode,
+        min: usize,
+        max: Option<usize>,
+        greedy: bool,
+        count: usize,
+        pos: usize,
+        cont: &mut dyn FnMut(&mut Self, usize) -> bool,
+    ) -> bool {
+        if count < min {
+            return self.m(body, pos, &mut |s: &mut Self, p: usize| {
+                // An empty iteration satisfies the minimum without moving.
+                if p == pos && count + 1 < min {
+                    s.m_rep(body, min, max, greedy, min, p, cont)
+                } else {
+                    s.m_rep(body, min, max, greedy, count + 1, p, cont)
+                }
+            });
+        }
+        let can_more = max.map_or(true, |m| count < m);
+        if greedy {
+            if can_more
+                && self.m(body, pos, &mut |s: &mut Self, p: usize| {
+                    // An empty iteration past the minimum cannot repeat for ever.
+                    p != pos && s.m_rep(body, min, max, greedy, count + 1, p, cont)
+                })
+            {
+                return true;
+            }
+            cont(self, pos)
+        } else {
+            if cont(self, pos) {
+                return true;
+            }
+            can_more
+                && self.m(body, pos, &mut |s: &mut Self, p: usize| {
+                    p != pos && s.m_rep(body, min, max, greedy, count + 1, p, cont)
+                })
+        }
+    }
+}
+
+/// Dart's `RegExp`: the pattern, its flags, and the program parsed from
+/// it (once, lazily; a pattern that does not parse matches nothing and
+/// says so on `stderr` once).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegExp {
     pub pattern: String,
+    pub is_multi_line: bool,
+    pub is_case_sensitive: bool,
+    pub is_dot_all: bool,
 }
 
 impl RegExp {
-    /// `RegExp(source, {multiLine, caseSensitive, unicode, dotAll})`: the
-    /// flags are carried and not yet honoured.
+    /// `RegExp(source, {multiLine, caseSensitive, unicode, dotAll})`.
     pub fn new(
         pattern: String,
-        _multi_line: bool,
-        _case_sensitive: bool,
+        multi_line: bool,
+        case_sensitive: bool,
         _unicode: bool,
-        _dot_all: bool,
+        dot_all: bool,
     ) -> Self {
-        RegExp { pattern }
+        RegExp {
+            pattern,
+            is_multi_line: multi_line,
+            is_case_sensitive: case_sensitive,
+            is_dot_all: dot_all,
+        }
     }
 
-    /// `firstMatch(input)`: none, until there is an engine (see `RegExpMatch`).
-    pub fn first_match(&self, _input: String) -> Option<RegExpMatch> {
+    fn program(&self) -> Option<Vec<ReNode>> {
+        let mut parser = ReParser {
+            chars: self.pattern.chars().collect(),
+            pos: 0,
+            groups: 0,
+            names: Vec::new(),
+        };
+        match parser.parse_alt() {
+            Ok(node) if parser.pos == parser.chars.len() => Some(vec![node]),
+            Ok(_) => {
+                eprintln!("dart2rust: RegExp `{}`: unexpected `)`", self.pattern);
+                None
+            }
+            Err(e) => {
+                eprintln!("dart2rust: RegExp `{}`: {}", self.pattern, e);
+                None
+            }
+        }
+    }
+
+    fn group_names(&self) -> (usize, Vec<(String, usize)>) {
+        let mut parser = ReParser {
+            chars: self.pattern.chars().collect(),
+            pos: 0,
+            groups: 0,
+            names: Vec::new(),
+        };
+        let _ = parser.parse_alt();
+        (parser.groups, parser.names)
+    }
+
+    fn match_from(&self, chars: &[char], input: &str, from: usize) -> Option<RegExpMatch> {
+        let program = self.program()?;
+        let (groups, names) = self.group_names();
+        let mut matcher = ReMatcher {
+            input: chars,
+            caps: vec![None; groups + 1],
+            case_insensitive: !self.is_case_sensitive,
+            multi_line: self.is_multi_line,
+            dot_all: self.is_dot_all,
+        };
+        for start in from..=chars.len() {
+            for c in matcher.caps.iter_mut() {
+                *c = None;
+            }
+            let mut end = None;
+            if matcher.m_seq(&program, 0, start, &mut |_, p| {
+                end = Some(p);
+                true
+            }) {
+                let end = end.unwrap_or(start);
+                let mut caps = matcher.caps.clone();
+                caps[0] = Some((start, end));
+                return Some(RegExpMatch {
+                    input: input.to_string(),
+                    start: start as i64,
+                    end: end as i64,
+                    groups: caps
+                        .into_iter()
+                        .map(|c| c.map(|(s, e)| (s as i64, e as i64)))
+                        .collect(),
+                    names: names.clone(),
+                });
+            }
+        }
         None
     }
 
-    pub fn has_match(&self, _input: String) -> bool {
-        panic!("RegExp has no engine here: {}", self.pattern)
+    /// `firstMatch(input)`.
+    pub fn first_match(&self, input: String) -> Option<RegExpMatch> {
+        let chars: Vec<char> = input.chars().collect();
+        self.match_from(&chars, &input, 0)
     }
 
-    pub fn string_match(&self, _input: String) -> Option<String> {
-        panic!("RegExp has no engine here: {}", self.pattern)
+    /// `matchAsPrefix(input, [start])`: a match that begins exactly at `start`.
+    pub fn match_as_prefix(&self, input: String, start: i64) -> Option<RegExpMatch> {
+        let chars: Vec<char> = input.chars().collect();
+        let program = self.program()?;
+        let (groups, names) = self.group_names();
+        let mut matcher = ReMatcher {
+            input: &chars,
+            caps: vec![None; groups + 1],
+            case_insensitive: !self.is_case_sensitive,
+            multi_line: self.is_multi_line,
+            dot_all: self.is_dot_all,
+        };
+        let from = start.max(0) as usize;
+        if from > chars.len() {
+            return None;
+        }
+        let mut end = None;
+        if matcher.m_seq(&program, 0, from, &mut |_, p| {
+            end = Some(p);
+            true
+        }) {
+            let end = end.unwrap_or(from);
+            let mut caps = matcher.caps.clone();
+            caps[0] = Some((from, end));
+            return Some(RegExpMatch {
+                input,
+                start: from as i64,
+                end: end as i64,
+                groups: caps
+                    .into_iter()
+                    .map(|c| c.map(|(s, e)| (s as i64, e as i64)))
+                    .collect(),
+                names,
+            });
+        }
+        None
     }
 
-    pub fn all_matches(&self, _input: &str) -> Vec<String> {
-        panic!("RegExp has no engine here: {}", self.pattern)
+    pub fn has_match(&self, input: String) -> bool {
+        self.first_match(input).is_some()
+    }
+
+    /// `stringMatch(input)`: the first match's text.
+    pub fn string_match(&self, input: String) -> Option<String> {
+        self.first_match(input)
+            .map(|m| m.group(0).unwrap_or_default())
+    }
+
+    /// `allMatches(input, [start])`: every non-overlapping match, an empty
+    /// one stepping forward by one.
+    pub fn all_matches(&self, input: String, start: i64) -> Vec<RegExpMatch> {
+        let chars: Vec<char> = input.chars().collect();
+        let mut out = Vec::new();
+        let mut from = start.max(0) as usize;
+        while from <= chars.len() {
+            match self.match_from(&chars, &input, from) {
+                Some(m) => {
+                    let (s, e) = (m.start as usize, m.end as usize);
+                    out.push(m);
+                    from = if e == s { e + 1 } else { e };
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// `RegExp.escape(text)`: every metacharacter backslashed.
+    pub fn escape(text: String) -> String {
+        let mut out = String::new();
+        for c in text.chars() {
+            if "\\^$.|?*+()[]{}/".contains(c) {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
+    }
+}
+
+/// Dart's `RegExpMatch`: the input, the whole match's span, and each
+/// group's, in *character* offsets (as the rest of this file counts).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegExpMatch {
+    pub input: String,
+    pub start: i64,
+    pub end: i64,
+    pub groups: Vec<Option<(i64, i64)>>,
+    pub names: Vec<(String, usize)>,
+}
+
+impl RegExpMatch {
+    fn slice(&self, span: Option<(i64, i64)>) -> Option<String> {
+        let (s, e) = span?;
+        Some(
+            self.input
+                .chars()
+                .skip(s as usize)
+                .take((e - s).max(0) as usize)
+                .collect(),
+        )
+    }
+
+    /// `group(index)` / `match[index]`: the group's text, null when it
+    /// did not take part.
+    pub fn group(&self, index: i64) -> Option<String> {
+        self.slice(self.groups.get(index.max(0) as usize).copied().flatten())
+    }
+
+    pub fn index_get(&self, index: i64) -> Option<String> {
+        self.group(index)
+    }
+
+    /// `match[index]`, as the backend spells `[]` on a translated class.
+    pub fn index_of(&self, index: i64) -> Option<String> {
+        self.group(index)
+    }
+
+    /// `groups(indices)`.
+    pub fn groups(&self, indices: Vec<i64>) -> Vec<Option<String>> {
+        indices.into_iter().map(|i| self.group(i)).collect()
+    }
+
+    /// `groupCount`: the capturing groups, not counting the whole.
+    pub fn group_count(&self) -> i64 {
+        (self.groups.len() as i64 - 1).max(0)
+    }
+
+    /// `namedGroup(name)`.
+    pub fn named_group(&self, name: String) -> Option<String> {
+        let index = self
+            .names
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, i)| *i)?;
+        self.group(index as i64)
+    }
+
+    pub fn group_names(&self) -> Vec<String> {
+        self.names.iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    pub fn start(&self) -> i64 {
+        self.start
+    }
+
+    pub fn end(&self) -> i64 {
+        self.end
+    }
+
+    pub fn input(&self) -> String {
+        self.input.clone()
     }
 }
 

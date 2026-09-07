@@ -1093,6 +1093,10 @@ const listMethodNames = <String, String>{
   // `a + b`: a new list of both, in the prelude's `DartList`
   // (`widget.observers + [scopeController]`, `NavigatorState`, run625).
   '+': 'dart_concat',
+  // `removeWhere(test)`/`retainWhere(test)`, in the prelude's `DartList`
+  // (`Navigator.defaultGenerateInitialRoutes`, run630).
+  'removeWhere': 'remove_where',
+  'retainWhere': 'retain_where',
   'iterator': 'iterator',
   'addAll': 'extend',
   'clear': 'clear',

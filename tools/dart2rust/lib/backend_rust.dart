@@ -3668,6 +3668,9 @@ class RustBackend {
     'sort_by_dart',
     'first_where',
     'first_where_or',
+    // `removeWhere`/`retainWhere`: the test's failure comes out.
+    'remove_where',
+    'retain_where',
     // Not `then`: the prelude's returns the future it spawns, and the
     // callback's own failure lands in that future (`_initKeyboard`, run476).
     'run',
