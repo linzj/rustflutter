@@ -1112,6 +1112,9 @@ const listMethodNames = <String, String>{
   'isNotEmpty': '!is_empty',
   'first': 'first',
   'last': 'last',
+  // `single`: the one element, a `StateError` otherwise, in the
+  // prelude's `DartList` (`ScrollController.position`, run668).
+  'single': 'single',
   'toList': 'to_list',
   'any': '!any',
   'every': '!every',

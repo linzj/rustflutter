@@ -47,6 +47,9 @@ abstract class TypeWorld {
 const scalarNames = {'int', 'double', 'num', 'bool', 'String'};
 const collectionNames = {'List', 'Iterable', 'Set'};
 
+/// The `dart:` map classes, all the prelude's one `Map`.
+const mapNames = {'Map', 'LinkedHashMap', 'HashMap', 'SplayTreeMap'};
+
 /// `dart:core` interfaces the prelude spells as a sum of their cases: the
 /// case's class to the constructor that wraps it. `Pattern` is a `String`
 /// or a `RegExp`, and the prelude's struct holds either.
@@ -591,9 +594,11 @@ IrExpr coerceInto(
     if (identical(body, element)) return value;
     return IrMapElements(value, normalName(slot.name), body)..rustType = slot;
   }
-  // A map, key by key and value by value.
-  if (have.name == 'Map' &&
-      slot.name == 'Map' &&
+  // A map, key by key and value by value -- the prelude's one `Map`
+  // under every `dart:` map name (`LinkedHashMap<Locale, X>` from
+  // `_getLocaleOptions()` into a `T := Locale?` slot, run661).
+  if (mapNames.contains(have.name) &&
+      mapNames.contains(slot.name) &&
       have.arguments.length == 2 &&
       slot.arguments.length == 2) {
     // An empty literal holds whatever the slot holds, as a list's does:
@@ -621,7 +626,9 @@ IrExpr coerceInto(
     return IrDowncast(value, slot.name, arguments: slot.arguments)
       ..rustType = slot;
   }
-  if (have.name == 'Map' || slot.name == 'Map') return value;
+  if (mapNames.contains(have.name) || mapNames.contains(slot.name)) {
+    return value;
+  }
   // The prelude's collections are one `Vec`/`Set` whatever Dart calls
   // them: `Iterable<T>` promoted to `List<T>` is the value itself, not a
   // cast to a trait no one declares (`dyn List<..>`, `OverlayState.

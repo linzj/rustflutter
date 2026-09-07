@@ -1421,7 +1421,10 @@ class KernelFrontend implements TypeWorld {
       // Option<String>`). It used to return before the checks below.
       final name = temporary ?? written!;
       if (_optionLocals.contains(node.variable)) {
-        if (_tryWrites.contains(node.variable) &&
+        // ..a `late` local too: assigned on some path, read as the value
+        // (`late double primaryDeltaFromDragStart` set in a `switch`,
+        // `RawScrollbarState._getPrimaryDelta`, run666).
+        if ((_tryWrites.contains(node.variable) || node.variable.isLate) &&
             node.variable.type.nullability != Nullability.nullable) {
           return IrCall(
             IrCall(IrLocal(name), 'clone', const []),
@@ -1628,7 +1631,10 @@ class KernelFrontend implements TypeWorld {
       if (promoted != null) {
         return IrLocal(name)..rustType = _recordedType(declared);
       }
-      return IrLocal(name);
+      // ..and any other read as the local is declared: untyped, two
+      // handles in two locals compared by their slots' addresses
+      // (`identical(b, loc)`, the dyncast fixture).
+      return IrLocal(name)..rustType = _localIrType(node.variable);
     }
     if (node is InstanceGet) return _instanceGet(node);
     if (node is StaticGet) return _staticGet(node);
@@ -2508,9 +2514,21 @@ class KernelFrontend implements TypeWorld {
       // (`value as T` on a `T?`) only null is in question.
       if (to is TypeParameterType && !_erasedParameter(to.parameter)) {
         if (from is TypeParameterType && from.parameter == to.parameter) {
-          return to.nullability == Nullability.nullable
-              ? expression(node.operand)
-              : IrNullCheck(expression(node.operand));
+          if (to.nullability == Nullability.nullable) {
+            return expression(node.operand);
+          }
+          // `_value as T` on a `T?`: the `T` inside, or `T`'s own null
+          // when `T` has one (`RestorableValue<double?>.value`, run665) --
+          // an unwrap said a null `double?` was no `double?`.
+          return IrStaticCall(
+            null,
+            'dart_as_own',
+            [expression(node.operand)],
+            fails: true,
+            typeArguments: [
+              _type(to.withDeclaredNullability(Nullability.nonNullable)),
+            ],
+          )..rustType = _type(to);
         }
         if (from is InterfaceType) {
           return IrCastTo(expression(node.operand), _type(to));
@@ -4198,6 +4216,25 @@ class KernelFrontend implements TypeWorld {
         final value = node.variable.initializer;
         if (value == null) {
           throw Unsupported('`!` with no operand', _sample(node));
+        }
+        // ..and `x as T` on a `T?` of the parameter's own, which the AOT
+        // compiler writes in this same shape: the `T` inside, or `T`'s
+        // own null where `T` has one (`RestorableValue<double?>.value`,
+        // run665), by the prelude (`dart_as_own`).
+        final asType = then.type;
+        if (asType is TypeParameterType &&
+            asType.nullability != Nullability.nullable &&
+            !_erasedParameter(asType.parameter)) {
+          final own = _type(
+            asType.withDeclaredNullability(Nullability.nonNullable),
+          );
+          return IrStaticCall(
+            null,
+            'dart_as_own',
+            [expression(value)],
+            fails: true,
+            typeArguments: [own],
+          )..rustType = own;
         }
         return _nullChecked(expression(value));
       }
@@ -7688,6 +7725,7 @@ class KernelFrontend implements TypeWorld {
               )
             : null) ??
         declared;
+    final tracedNamed = Platform.environment['DART2RUST_TRACE_NAMED'];
     final argument = _numLiteral(
       value,
       type,
@@ -7700,19 +7738,31 @@ class KernelFrontend implements TypeWorld {
           callee,
           () => _withExpectedReturn(type, value, () => expression(value)),
         ),
-        (lowered) => _widened(
-          value,
-          type,
-          lowered,
-          slotIr:
-              _landingSlotIr(
-                callee: callee,
-                name: param is FunctionParameter ? param.parameterName : null,
-              ) ??
-              _topBound(declared, _argumentBinding(callee, declared)) ??
-              _genericSlotIr(callee, declared) ??
-              _constructedSlotIr(callee, declared),
-        ),
+        (lowered) {
+          if (tracedNamed != null &&
+              param is FunctionParameter &&
+              param.parameterName == tracedNamed) {
+            stderr.writeln(
+              'TRACE_NAMED ${param.parameterName} declared=$declared type=$type '
+              'lowered=${lowered.runtimeType} rust=${lowered.rustType} '
+              'slotIr=${_constructedSlotIr(callee, declared)} '
+              'translated=${_calleeTranslated(callee, declared)}',
+            );
+          }
+          return _widened(
+            value,
+            type,
+            lowered,
+            slotIr:
+                _landingSlotIr(
+                  callee: callee,
+                  name: param is FunctionParameter ? param.parameterName : null,
+                ) ??
+                _topBound(declared, _argumentBinding(callee, declared)) ??
+                _genericSlotIr(callee, declared) ??
+                _constructedSlotIr(callee, declared),
+          );
+        },
       ),
     );
     return _translatedCallee(callee)

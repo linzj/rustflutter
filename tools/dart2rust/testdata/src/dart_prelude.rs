@@ -1810,6 +1810,18 @@ impl<T: Clone> Set<T> {
 }
 
 impl<T: DartEq + Clone> Set<T> {
+    /// `single`: the one element; Dart's `StateError` for none or more.
+    pub fn single(&self) -> T
+    where
+        T: Clone,
+    {
+        match self.items.len() {
+            1 => self.items[0].clone(),
+            0 => panic!("uncaught Dart exception: Bad state: No element"),
+            _ => panic!("uncaught Dart exception: Bad state: Too many elements"),
+        }
+    }
+
     /// `set.removeWhere(test)`: every element the test holds of goes.
     pub fn remove_where(
         &mut self,
@@ -2285,6 +2297,13 @@ impl<K, V> MapEntry<K, V> {
     pub fn new(key: K, value: V) -> Self {
         MapEntry { key, value }
     }
+
+    /// `MapEntry._(key, value)`: the private constructor dart:core's
+    /// public factory redirects to, spelled `new_` as every `_` is
+    /// (the fromentries fixture).
+    pub fn new_(key: K, value: V) -> Self {
+        MapEntry { key, value }
+    }
 }
 
 /// Dart's `Map`: a lookup that **keeps insertion order**.
@@ -2369,6 +2388,58 @@ impl<K: Clone, V: Clone> Map<K, V> {
 
     pub fn of(other: Map<K, V>) -> Map<K, V> {
         other
+    }
+
+    /// `Map.fromIterable(iterable, key: k, value: v)`: each element,
+    /// keyed by `k(e)` and valued by `v(e)`, the element itself where a
+    /// callback is absent (Dart's `as K` / `as V`). The elements come as
+    /// whatever list the caller holds and are boxed for the callbacks,
+    /// whose failures panic: the call is a plain expression here
+    /// (`_SettingsPageState._getLocaleOptions`, run663).
+    pub fn from_iterable<E: DartAny + Clone + 'static>(
+        elements: Vec<E>,
+        key: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> Result<K, DartError>>>,
+        value: Option<std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> Result<V, DartError>>>,
+    ) -> Map<K, V>
+    where
+        K: DartEq + FromDynamic,
+        V: FromDynamic,
+    {
+        let mut out = Map::new();
+        for e in elements {
+            let boxed = dart_boxed(e);
+            let k = match &key {
+                Some(f) => f(boxed.clone())
+                    .unwrap_or_else(|err| panic!("Map.fromIterable key: {}", err.dart_to_string())),
+                None => {
+                    K::from_dynamic(&boxed).expect("Map.fromIterable: an element that is no key")
+                }
+            };
+            let v = match &value {
+                Some(f) => f(boxed.clone()).unwrap_or_else(|err| {
+                    panic!("Map.fromIterable value: {}", err.dart_to_string())
+                }),
+                None => {
+                    V::from_dynamic(&boxed).expect("Map.fromIterable: an element that is no value")
+                }
+            };
+            out.insert(k, v);
+        }
+        out
+    }
+
+    /// `Map.fromEntries(entries)`: each entry in order, a later key
+    /// replacing an earlier one (`LinkedHashMap.fromEntries(displayLocales)`
+    /// in the gallery's settings page, run662).
+    pub fn from_entries(entries: Vec<MapEntry<K, V>>) -> Map<K, V>
+    where
+        K: DartEq,
+    {
+        let mut out = Map::new();
+        for e in entries {
+            out.insert(e.key, e.value);
+        }
+        out
     }
     pub fn new() -> Self {
         Map {
@@ -3810,6 +3881,8 @@ pub trait DartList<T> {
     fn insert_all(&mut self, index: i64, items: Vec<T>);
     /// `dart:collection`'s `IterableExtensions`: `firstOrNull`,
     /// `lastOrNull`, `singleOrNull`, `elementAtOrNull`.
+    /// `single`: the one element; Dart's `StateError` for none or more.
+    fn single(&self) -> T;
     fn first_or_null(&self) -> Option<T>;
     fn last_or_null(&self) -> Option<T>;
     fn single_or_null(&self) -> Option<T>;
@@ -3839,6 +3912,14 @@ impl<T: Clone> DartList<T> for Vec<T> {
         }
         *self = kept;
         Ok(())
+    }
+
+    fn single(&self) -> T {
+        match self.len() {
+            1 => self[0].clone(),
+            0 => panic!("uncaught Dart exception: Bad state: No element"),
+            _ => panic!("uncaught Dart exception: Bad state: Too many elements"),
+        }
     }
 
     fn first_or_null(&self) -> Option<T> {
@@ -5111,6 +5192,22 @@ pub fn dart_identical_opt<T: ?Sized>(
         (None, None) => true,
         (Some(x), Some(y)) => std::rc::Rc::ptr_eq(x, y),
         _ => false,
+    }
+}
+
+/// `x as T` on a `T?` of the parameter's own: the `T` inside, or `T`'s
+/// own null where `T` has one (`_value as T` in `RestorableValue<double?>
+/// .value` is Dart's null, not a throw, run665); Dart's cast failure
+/// where it has none.
+pub fn dart_as_own<T: DartNullable>(or: T::Or) -> Result<T, DartError> {
+    match T::option(or) {
+        Some(value) => Ok(value),
+        None => match T::dart_null() {
+            Some(null) => Ok(null),
+            None => Err(std::rc::Rc::new(TypeError::new(
+                "type 'Null' is not a subtype of the cast's type".to_string(),
+            ))),
+        },
     }
 }
 
@@ -8219,6 +8316,7 @@ pub fn dart_message(message: &std::rc::Rc<dyn Object>) -> String {
     }
 }
 dart_error!(StateError, "Bad state");
+dart_error!(TypeError, "TypeError");
 dart_error!(Error, "Error");
 
 /// `String.fromCharCodes(codes)`: UTF-16 code units to a String.

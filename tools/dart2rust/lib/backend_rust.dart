@@ -874,6 +874,11 @@ class RustBackend {
         // The handle cloned first: the `as` consumes it, and a local read
         // twice (`m is T && m.supports(..)`) was moved (E0382).
         '<$type as FromDynamic>::from_dynamic(&(${expr(target)}.clone() as std::rc::Rc<dyn Object>)).unwrap()',
+      // A counted class out of a `dynamic`: the object's own handle
+      // (`dart_cast_any` at `Rc<Self>`), not a copy of the struct.
+      IrDowncast(:final target, :final type, :final arguments)
+          when (library[type]?.counted ?? false) =>
+        '${expr(target)}.dart_cast_any::<std::rc::Rc<$type${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>>().unwrap()',
       IrDowncast(:final target, :final type, :final arguments) =>
         '${_asAny(target)}.downcast_ref::<${_downcastNames[type] ?? type}${arguments.isEmpty ? '' : '<${arguments.map(this.type).join(', ')}>'}>().unwrap()',
       IrDynamicDispatch(:final receiver, :final arms) => _dispatch(
@@ -1325,13 +1330,20 @@ class RustBackend {
   /// `todo!` (`_DefaultRootPipelineOwner._manifold`, written by
   /// `PipelineOwner.attach`'s super function, run479).
   bool _setThroughTraitOf(IrClass owner, IrFieldDecl field) =>
-      !field.isFinal &&
+      _writable(field) &&
       _supertypesOf(owner).any(
         (t) =>
             library.isAbstract(t.name) &&
-            t.fields.any((f) => f.name == field.name && !f.isFinal) &&
+            t.fields.any((f) => f.name == field.name && _writable(f)) &&
             _fieldsWrittenBy(t).contains(field.name),
       );
+
+  /// A field some body may assign: not `final`, or a `late final` without
+  /// an initialiser, which is assigned once somewhere (`late final
+  /// ScrollbarPainter scrollbarPainter` set in `RawScrollbarState.
+  /// initState`, run666: the trait had no setter for it).
+  static bool _writable(IrFieldDecl field) =>
+      !field.isFinal || (field.isLate && field.initial == null);
 
   /// The fields a trait's own bodies assign on `this` (`_manifold =
   /// manifold` in `PipelineOwner.attach`): those writes reach an
@@ -1487,10 +1499,19 @@ class RustBackend {
   /// A trait's collection field that a trait body mutates in place is handed
   /// out as its cell: the value accessor clones, and `this_._trackers
   /// .borrow_mut().insert(..)` on a clone inserted into a copy (125 at ws271).
+  /// ..and a field a closure in a trait body writes (`shared`): the
+  /// closure captures the cell (`_copyOf`), which the trait must hand out
+  /// (`_fadeoutTimer = null` inside `RawScrollbarState`'s timer callback,
+  /// run666).
   bool _handsCell(IrFieldDecl field) =>
-      !field.isLate && _isMutableCollection(type(field.type));
+      !field.isLate && (_isMutableCollection(type(field.type)) || field.shared);
 
-  String _cellType(String held) => 'std::rc::Rc<std::cell::RefCell<$held>>';
+  /// The cell a handed-out field lives in: a `Cell` for a `Copy` value,
+  /// as the struct holds it (a shared `int` counter a trait body's
+  /// closure bumps, the closurefield fixture), a `RefCell` otherwise.
+  String _cellType(String held) => _isCopy(held)
+      ? 'std::rc::Rc<std::cell::Cell<$held>>'
+      : 'std::rc::Rc<std::cell::RefCell<$held>>';
 
   static bool _isMutableCollection(String rust) =>
       // ..or an absent-or-not one (`Map<K, V>?` in a cell, mutated under
@@ -3663,10 +3684,17 @@ class RustBackend {
       // `this` as the accessor's `&self`: inside a closure it is the
       // handle `__me`, dereferenced (`ListNotifierMixin::_updaters_cell(
       // __me)` handed the `Rc`, ws578).
-      final holder = atThis ? (_addressOf(IrThis()) ?? _selfName) : expr(base);
       final through = atThis
           ? _accessorQualifier(target.name, kind: 'cell')
           : null;
+      // The dereferenced handle only where it is an argument (`Trait::
+      // x_cell(&*__me)`): as a method receiver it auto-derefs, and `&*`
+      // in front of the whole chain dereferenced the `remove(..)` result
+      // instead (`SliverMultiBoxAdaptorElement.createChild`'s closure,
+      // ws670).
+      final holder = atThis
+          ? (through == null ? _selfName : (_addressOf(IrThis()) ?? _selfName))
+          : expr(base);
       return through == null
           ? '$holder.${snake(target.name)}_cell()$_propagate'
           : '$through::${snake(target.name)}_cell($holder)$_propagate';
@@ -3958,8 +3986,14 @@ class RustBackend {
       final spelledArgs = typeArguments.isEmpty
           ? ''
           : '<${typeArguments.map(type).join(', ')}>';
-      final asked =
-          '<${expr(args.single)}$spelledArgs as FromDynamic>::from_dynamic';
+      // A counted class is held by its handle: `locale as Locale?` on a
+      // `dynamic` is the `Rc<Locale>` the object is, not a copy of the
+      // struct (`_getLocaleOptions`, run664).
+      final spelledName = expr(args.single);
+      final held = (library[spelledName]?.counted ?? false)
+          ? 'std::rc::Rc<$spelledName$spelledArgs>'
+          : '$spelledName$spelledArgs';
+      final asked = '<$held as FromDynamic>::from_dynamic';
       // ..on an `Option` already (a `dynamic?`): through it.
       final targetIr = target?.rustType;
       if (targetIr != null && isNullable(targetIr)) {
@@ -5047,7 +5081,25 @@ class RustBackend {
       if (_selfName == _countedSelf) return '&*$_countedSelf';
       return _selfIsHandle ? '&**$_selfName' : _selfName;
     }
-    if (e is IrLocal) return _referenceParams[e.name];
+    if (e is IrLocal) {
+      final known = _referenceParams[e.name];
+      if (known != null) return known;
+      // A local holding a handle (`let b: Rc<Loc> = ..`): the object
+      // behind it, as a parameter's is -- two locals compared by their
+      // slots said "not identical" of one object (the dyncast fixture).
+      final t = e.rustType;
+      if (t != null &&
+          !isNullable(t) &&
+          !t.isFunction &&
+          !_cellLocals.containsKey(e.name) &&
+          !_closureCaptured.contains(e.name)) {
+        final held = library[t.name];
+        if (held != null && (held.counted || held.isAbstract)) {
+          return '&*${snake(e.name)}';
+        }
+      }
+      return null;
+    }
     return null;
   }
 
@@ -5075,6 +5127,11 @@ class RustBackend {
     'HashSet': 'Set',
     'LinkedHashMap': 'Map',
     'HashMap': 'Map',
+    // Sorted in Dart, the prelude's insertion-ordered ones here (the
+    // alias says so): `SplayTreeMap<int, Element?>()` in
+    // `SliverMultiBoxAdaptorElement` (run669).
+    'SplayTreeMap': 'Map',
+    'SplayTreeSet': 'Set',
     '_Set': 'Set',
     '_LinkedHashSet': 'Set',
     '_CompactLinkedHashSet': 'Set',
@@ -5090,7 +5147,10 @@ class RustBackend {
   String _new(IrType t, List<IrExpr> args, String? constructor) {
     final collection = _collections[t.name];
     if (collection != null) {
-      if (args.isNotEmpty) {
+      // An omitted optional (`SplayTreeMap([compare, isValidKey])`) is no
+      // argument: the front end fills it as `None` from the declaration.
+      final real = args.where((a) => expr(a) != 'None').toList();
+      if (real.isNotEmpty) {
         throw Unsupported(
           '`${t.name}` with arguments, which is not the empty collection',
           '${t.name}(..)',
@@ -6184,7 +6244,7 @@ class RustBackend {
       // newLength` inside `_TypedDataBuffer._grow` goes through this. The
       // receiver is `&self`: an implementer of a mixin that writes is
       // counted, and its field is a cell.
-      if (!field.isFinal) {
+      if (_writable(field)) {
         _line(
           'fn set_${snake(field.name)}(&self, value: ${type(field.type)}) -> ${_wrapped('()')};',
         );
@@ -7965,6 +8025,7 @@ class RustBackend {
     'dart_cast_erased',
     'dart_is_kind',
     'dart_is_type',
+    'dart_as_own',
     'uint8_list_sublist_view',
     'byte_data_sublist_view',
     // By their Dart names, as the call names them (`postEvent`, not the
@@ -9581,7 +9642,7 @@ class RustBackend {
       // Every setter the trait declares, held or not: an impl missing one
       // is "not all trait items implemented", and a whole crate with it
       // (`SnapshotController with ChangeNotifier`, the round the gate opened).
-      if (!field.isFinal) {
+      if (_writable(field)) {
         final cell = held.contains(field.name)
             ? _sharedField(field.name)
             : null;
