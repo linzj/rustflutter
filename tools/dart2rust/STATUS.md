@@ -269,6 +269,11 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 近期的(细节在活账/git):
 
+- **ws704–706**:把「覆盖关系」算成 covariance 的 flow site、并让 `_same` 认可空,
+  好让 `WidgetStateProperty<T>` 擦除、消掉那 82 处收窄(见〈已知欠账〉)——stub 474(+22)。
+  补了三条擦除边界规则后 455(+3),仍差两处(`buildToggleable` 的 null-aware、
+  `TweenSequence._evaluateAt` 进保留 `T` 的 return)。撤回;三条边界规则留下。
+  下次要走这条路,先把「擦除边界上标量与句柄的进出」补完,再开 covariance 那一条。
 - **ws531/532**:把空心 mixin 的字段从 application 恢复到声明上(+163/+181,撤回)
   → 窄解是 `IrClass.appliedFields`(trait 只多声明 `_cell()`)。
 - **ws544**:方法类型参数加 `+ Trait` 约束撞擦除孪生(`__erased` 用 `Rc<dyn Object>`
@@ -302,16 +307,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws678 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws682 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws678 | 链：stub **490**（-4），拒绝 188。 | |
-| run678 | `UndoHistoryState.initState` 下一处 refusal：`UndoManager.client = this`——类的**静态 setter** 赋值只做了顶层 setter 的形。修：类静态 setter → `Owner::set_x(v)` 静态调用；顺带 free-static 类（只有静态成员的类）的静态 setter 与同名 getter 拼成同一个函数名（E0428）→ setter 保留 `set_` 前缀，静态调用存在性检查按 Rust 名。夹具 staticset SAME。 | 链 ws679 |
-| ws679 | 链：stub **490**（持平），拒绝 **186**（-2）。 | |
-| run679 | **走到文字排版**：`RenderEditable.performLayout` → `TextPainter.layout` → `TextStyle.getParagraphStyle` 的 stub——`ui.StrutStyle(..)` 9 个实参对上了 painting 的 `StrutStyle::new`（11 个）：dart:ui 与 painting 同名类（`StrutStyle`/`TextStyle`/`Gradient`/`Image`）在同一 crate 里按简单名引用，谁被 `use` 谁赢（老欠账「TextStyle 名字冲突」）。下一步：跨库同名类的引用按模块限定（`crate::dart_ui::StrutStyle`），同 `IrStaticCall.module` 对顶层函数的做法。 | |
-| ws680 | 链**断**：`painting_text_style.rs` 一处 unstubbable「expected trait, found struct `crate::dart_ui::TextStyle`」，可达 34。跨库同名类按模块限定（`_qualifiedClassName` → `crate::<module>::Name`；`IrLibrary` 的查找剥掉路径按简单名找）——剥掉路径后在 painting 模块里查到的是 painting 自己的 `TextStyle`（trait），把 dart:ui 的 struct 拼成了 `dyn`。修：`IrLibrary.byModule`（模块→类名→类），带模块的引用按模块查。 | 链 ws681 |
-| ws681 | 链又**假通**：round 4「0 errors」但可达 34——`stubs.py` 把超过 4 MB 的诊断 JSON 行整行丢掉（生成的行本来就长，限定名把它撑过了线），widgets crate 悄悄编译失败。修：解析到 64 MB（`rendered` 本来就只留头部）。本地重跑 `stubs.py` 立刻看见错误（6 轮后 58 可达）。 | 链 ws682 |
 | ws682 | 链：stub **530**（+40），拒绝 184，可达 64。限定名进了 `IrType.name`（`crate::dart_ui::TextStyle`），所有按名字比较的规则（coerce 的同名同类判断、covariance、backend 的 `library[t.name]`）都不认它——+40 全是 TextStyle 相关的类型错配。撤：名字保持裸的，模块另放 `IrType.module`；backend 只在拼字时 `_spelled(t)` 出 `crate::<module>::Name`，查类走 `library.resolve(t)`/`isAbstractType(t)`。 | 链 ws683 |
 | ws683 | 链：stub **487**（-3：`_createLayoutTemplate`、`getParagraphStyle`、`EditableText.build`），拒绝 184，可达 64。翻译出来 `dyn crate::dart_ui::TextStyle` 0 处，`crate::dart_ui::StrutStyle` 在 painting 里出现。 | run683 |
 | run683 | 文字排版过了 `getParagraphStyle`，停在 `TextSpan.build` 的 stub：`on ArgumentError catch` 把 try 闭包声明成 `Result<_, ArgumentError>`，而体内 `builder.addText(..)?` 的错误是模型唯一的 `Rc<dyn Object>`，`?` 转不过去（同因 3 个 stub：`load_buffer__body`、`parseCompactDate`）。修（通用）：带类型的 catch 不收窄闭包，Err 臂用语言自己的 `is` 测（`_isTest`）、`as` 绑定（`IrDowncast`/`IrCastTo`），不是就 `return Err(__caught)` 往外抛。顺带：prelude 的异常结构体之间没有 Dart 的继承——`RangeError` 不 `is ArgumentError`——加 `DartCoreAs` 一张表（子类值按父类读，保留子类的 toString 文本）；`dart_error!` 的五个类型补 `DartAny`；`RangeError([dynamic message])` 收 boxed。夹具 oncatch SAME。 | 链 ws684 |
@@ -346,6 +345,12 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws700 | 链：stub **463**（无变化），拒绝 183，可达 64。 | run700 |
 | run700 | 过了开关尺寸。停在 `_SwitchPainter::new` 的 stub：「cannot find struct `_UnspecifiedTextScaler`」——三个库各声明一个同名私有类（paragraph/text_painter/media_query），`TextPainter.textScaler` 的默认值 `const _UnspecifiedTextScaler()` 谁也没指。两处原因：① 同名类普查（`collidingClassNames`）把**私有**名字排除了——私有在上游是库内可见，在这边是每库一个模块的 `pub(crate)`，跨模块按裸名解析等于看那个文件 import 了谁；② 常量实例的 `IrType` 没带 `module`（`_type` 带，`IrConstInstance` 不带），后端查类也只按名字。修（通用）：普查收私有名（匿名 mixin 仍不收）；常量实例带 `module`，后端 `library.resolve(t)` 查类。夹具 constmod（三个库同名私有 `_Unspecified`）SAME，基线是 `A:c,B:c,A:c`。 | 链 ws701 |
 | ws701 | 链：stub **452**（-11：`_SwitchPainter`/`_CupertinoSwitch`/`Slider`/`RangeSlider`/`TabBar`/两个 Cupertino 对话框/日期选择器的 `new`、`RenderEditable._textIntrinsics`、`TwoPaneDemo.build`、`LineChart._drawXAxisLabels`，无新增），拒绝 183，可达 64。 | run701 |
+| run701 | 停在 `_MaterialSwitchState.build`：`defaults.thumbColor!` 拿到 `None`——又是「子类 getter 覆盖基类字段」，但这次 getter 的类型收窄了。量了一遍：全 gallery 206 个这样的访问器，115 个只差可空（`Color` vs `Color?`）、9 个差类（`EdgeInsets` vs `EdgeInsetsGeometry`）、82 个差**类型实参**（`WidgetStateProperty<Color>` vs `WidgetStateProperty<Color?>`，Material 的 defaults 惯用法）。修（通用）：访问器改调 getter 的条件从「类型相同」放宽到「能按同一条 coercion 规则装进去」（`_fitsAccessor`：类型实参必须逐个相同，差类/差可空交给 coerce）——前两类共 124 个从此走 getter，第三类仍读存储。 | 链 ws702 |
+| ws702 | 链：stub **454**（+2：-2 `_FileSpan.start/end`，+4 `Checkbox/Switch.overlayColor`（本类 getter 收 `&Rc<Self>`，trait 体里没有句柄）、`_TimePickerDefaultsM3.hourMinuteTextColor/TextStyle`（`_TimePickerDefaults` 与 `TimePickerThemeData` 都声明了它，`self.x()` 有歧义））。修（通用）：只有「这个 impl 块能以 `self.x()` 叫到」的 getter 才改路——排除 `&Rc<Self>` receiver 和「抽象父型把它声明成方法」（那种被发到那个 trait 的 impl 里去了）。 | 链 ws703 |
+| ws703 | 链：stub **452**（回到 ws701 的同一组），拒绝 183，可达 64。 | run703 |
+| run703 | 仍停在同一处：`thumbColor` 属于那 82 个「类型实参收窄」的。量过、放下的一条路（**不要再原样试**）：把「覆盖关系」也算成 covariance 的 flow site，并让 `_same` 认可空（比较的本来就是类型实参，`Color`/`Color?` 在这边是两个 Rust 类型）——`WidgetStateProperty<T>` 于是被擦除，两边拼法一致，但 **stub 474（+22）**：擦除边界上标量进出不成立。补了三条边界规则后降到 455（+3），剩两处：`buildToggleable` 的 `mouseCursor?.resolve(states)`（null-aware 体没按自己的静态类型转换，改了两版都没打中，说明它走的不是那条 lowering）和 `TweenSequence._evaluateAt` 的 `return`（进的是保留的 `T`）。covariance 那条撤回；三条边界规则留下（本身就对）：① `_asConstructorCall` 只按**保留的**类型参数代入（擦除的槽是 `Rc<dyn Object>`，代 `double` 进去把 `f64` 塞给了收对象的构造器）；② 被调方声明的返回是**擦除的**类型参数时，值按擦到的 bound 到达（`_erasedResult`），落地时由 coerce 读回；③ 条件是 `bool`——`if`/`while`/`?:`/`!`/`&&`/`||` 的操作数都走 `_condition`。夹具 covarnull（真实 flow site 触发擦除）SAME，基线 9 个错。 | 链 ws707 |
+| ws704–706 | 上面那条路的三次测量：474 → 458 → 455。记在〈撤回与作废〉。 | |
+| ws707 | 链：stub **452**（与 ws703 同一组，三条边界规则对 gallery 是中性的），拒绝 183，可达 64。 | run707 |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -511,3 +516,10 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   子类独有的字段丢了，`toString` 文本保留。（run683 记）
 - **列表/映射按值传递**:`f(log)` 里 `log` 是 `Vec` 的拷贝,被调方(或它返回的闭包)往里 `add`
   调用方看不见(throttle 夹具第一版踩到,改夹具绕开)。counted 类有身份,集合没有——通用解还没有。
+- **覆盖时收窄类型实参**(run703 量的):子类 getter 覆盖基类字段并把类型实参收窄——
+  `_SwitchDefaultsM3.thumbColor` 是 `WidgetStateProperty<Color>`,基类字段是
+  `WidgetStateProperty<Color?>?`。Dart 的协变允许,Rust 的 `dyn WSP<Rc<dyn Color>>` 与
+  `dyn WSP<Option<Rc<dyn Color>>>` 无关。全 gallery **82** 处,全是 Material 的 defaults 惯用法;
+  这些 trait 访问器仍读存储(基类字段的 `None`),所以 `Switch._getSwitchSize` 之后的
+  `defaults.thumbColor!` 在运行期 unwrap 到 `None`。两条路都试过:适配器对象会换身份
+  (covariance.dart 开头写过为什么不走);擦除那条量了 +22(见〈撤回与作废〉ws704)。

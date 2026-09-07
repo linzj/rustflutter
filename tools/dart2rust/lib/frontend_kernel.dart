@@ -1089,14 +1089,12 @@ class KernelFrontend implements TypeWorld {
       // `raw[id]` on a `Map<String, Object?>`, ws499); `coerce` converts
       // it into a `dynamic` slot from there.
       final projected = switch (node) {
-        InstanceInvocation(:final interfaceTarget) => _topBound(
-          interfaceTarget.function?.returnType,
-          static,
-        ),
-        InstanceGet(:final interfaceTarget) => _topBound(
-          interfaceTarget.getterType,
-          static,
-        ),
+        InstanceInvocation(:final interfaceTarget) =>
+          _topBound(interfaceTarget.function?.returnType, static) ??
+              _erasedResult(interfaceTarget.function?.returnType),
+        InstanceGet(:final interfaceTarget) =>
+          _topBound(interfaceTarget.getterType, static) ??
+              _erasedResult(interfaceTarget.getterType),
         _ => null,
       };
       // A generic callee's `T?` result, instantiated with a type
@@ -1203,6 +1201,28 @@ class KernelFrontend implements TypeWorld {
   /// holds for it (`<Rc<dyn Object> as DartNullable>::Or`), where the
   /// substituted Dart type says only `Object?` -- a `dynamic` here. Null
   /// for any other declared type or binding.
+  /// A member whose declared result is an *erased* type parameter hands
+  /// back the bound it was erased to, whatever the static type says: a
+  /// `WidgetStateProperty<bool>.resolve(states)` is a `bool` to Dart and
+  /// an `Rc<dyn Object>` here, and the coercion into the slot reads it
+  /// back (`_MaterialScrollbar._thickness`, ws704).
+  /// A condition is a `bool`: whatever the value in hand is spelled as --
+  /// the `Rc<dyn Object>` an erased result hands back, say -- it goes in
+  /// through the one coercion rule (`_MaterialScrollbar._thickness`,
+  /// ws704).
+  IrExpr _condition(Expression condition) =>
+      coerce(expression(condition), const IrType('bool'));
+
+  IrType? _erasedResult(DartType? declared) {
+    if (declared is! TypeParameterType) return null;
+    if (!_erasedParameter(declared.parameter)) return null;
+    try {
+      return _type(declared);
+    } on Unsupported {
+      return null;
+    }
+  }
+
   IrType? _topBound(DartType? declared, DartType? substituted) {
     if (declared is! TypeParameterType ||
         declared.nullability != Nullability.nullable ||
@@ -2023,13 +2043,16 @@ class KernelFrontend implements TypeWorld {
         }
         return IrUnary('!', test);
       }
-      return IrUnary('!', expression(node.operand));
+      return IrUnary('!', _condition(node.operand));
     }
     if (node is LogicalExpression) {
+      // Both operands are conditions (`_condition`): `a && prop.resolve(s)`
+      // on an erased `resolve` had an `Rc<dyn Object>` where `&&` wants a
+      // `bool` (`_MaterialScrollbar._thickness`, ws705).
       return IrBinary(
         node.operatorEnum == LogicalExpressionOperator.AND ? '&&' : '||',
-        expression(node.left),
-        expression(node.right),
+        _condition(node.left),
+        _condition(node.right),
       );
     }
     if (node is ConditionalExpression) {
@@ -2063,7 +2086,7 @@ class KernelFrontend implements TypeWorld {
       // null : hashAll(m)` is an `Option`, and the second branch an `i64`
       // until it is wrapped (4 `if` and `else` have incompatible types).
       return IrConditional(
-        expression(condition),
+        _condition(condition),
         _widened(node.then, staticType, expression(node.then)),
         _widened(node.otherwise, staticType, expression(node.otherwise)),
       );
@@ -10260,14 +10283,27 @@ class KernelFrontend implements TypeWorld {
       // ..the parameter's type at the constant's own instantiation: `const
       // WidgetStatePropertyAll<OutlinedBorder?>(StadiumBorder())` takes an
       // `OutlinedBorder?`, not the bare `T` (ws463).
+      // ..the *kept* parameters only: an erased one's slot is its bound,
+      // `Rc<dyn Object>`, whatever the constant instantiates it at, and
+      // substituting `double` in put an `f64` where the constructor takes
+      // an object (`const WidgetStatePropertyAll<double>(24.0)`, ws704).
       final declaredParam = paramType[name];
+      final kept = [
+        for (final p in cls.typeParameters)
+          if (!_erasedParameter(p)) p,
+      ];
+      final keptArguments = [
+        for (var i = 0; i < cls.typeParameters.length; i++)
+          if (!_erasedParameter(cls.typeParameters[i])) typeArguments[i],
+      ];
       final t = declaredParam == null
           ? null
           : cls.typeParameters.isNotEmpty &&
-                cls.typeParameters.length == typeArguments.length
+                cls.typeParameters.length == typeArguments.length &&
+                kept.isNotEmpty
           ? Substitution.fromPairs(
-              cls.typeParameters,
-              typeArguments,
+              kept,
+              keptArguments,
             ).substituteType(declaredParam)
           : declaredParam;
       // Into the parameter's type by the coercion rule, under the
@@ -11014,7 +11050,7 @@ class KernelFrontend implements TypeWorld {
     }
     if (node is IfStatement) {
       return IrIf(
-        expression(node.condition),
+        _condition(node.condition),
         statement(node.then),
         node.otherwise == null ? null : statement(node.otherwise!),
       );
@@ -11311,7 +11347,7 @@ class KernelFrontend implements TypeWorld {
       final restored = _forInWhile(node);
       if (restored != null) return restored;
       // No updates, so a `continue` really is Rust's `continue`.
-      return IrWhile(expression(node.condition), _loopBody(node.body, false));
+      return IrWhile(_condition(node.condition), _loopBody(node.body, false));
     }
     if (node is DoStatement) {
       // `do { .. } while (c)`: a `loop` whose body runs first and tests

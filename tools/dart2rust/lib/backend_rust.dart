@@ -9728,6 +9728,23 @@ class RustBackend {
     return _argumentsThrough(next, binding(next, passed), base, seen);
   }
 
+  /// Whether a getter's result can fill the trait's accessor: the same
+  /// type, or one the coercion rule can put there -- an `Option` around
+  /// it, a subclass's handle where the slot is a trait object. A
+  /// differing *type argument* is not one of those: Dart's covariance
+  /// makes a `WidgetStateProperty<Color>` a `WidgetStateProperty<Color?>`
+  /// and Rust's does not, so those 82 keep reading the storage and stay a
+  /// debt (run701).
+  static bool _fitsAccessor(IrType have, IrType slot) {
+    if (sameRust(have, slot)) return true;
+    if (have.isFunction != slot.isFunction) return false;
+    if (have.arguments.length != slot.arguments.length) return false;
+    for (var i = 0; i < have.arguments.length; i++) {
+      if (!sameRust(have.arguments[i], slot.arguments[i])) return false;
+    }
+    return true;
+  }
+
   /// Whether a member's body reads `super.<name>`: then it is the base's
   /// storage, whatever else it does with it, and the base's accessor has
   /// to stay that storage.
@@ -9960,11 +9977,34 @@ class RustBackend {
       // `AnimatedBuilder.listenable` are both `=> super.listenable`, for
       // a doc comment, and the program overflowed its stack, run699).
       // Such a getter is the base's `x` anyway.
+      // ..and only a getter this block can *call* as `self.x()`: an
+      // inherent method taking `&self`. A counted class's method that
+      // hands out `this` takes `&Rc<Self>` (`_receiverOf`), which a trait
+      // body has no handle for; one an abstract supertype declares as a
+      // *method* was emitted into that trait's impl, where the call is
+      // ambiguous with the one being written here (`_TimePickerDefaults`
+      // and `TimePickerThemeData` both declare `hourMinuteTextColor`,
+      // ws702). Those keep reading the storage, with the covariant ones.
+      final reachable =
+          ownGetter != null &&
+          !(cls.counted && _handles.contains(_rustName(ownGetter))) &&
+          !_supertypesOf(cls)
+              .where((t) => library.isAbstract(t.name))
+              .any(
+                (t) =>
+                    t.methods.any(
+                      (m) => m.name == field.name && !m.isStatic && !m.isSetter,
+                    ) ||
+                    t.abstractMethods.any(
+                      (m) => m.name == field.name && !m.isSetter,
+                    ),
+              );
       final overrides =
           ownGetter != null &&
+          reachable &&
           !_readsSuper(ownGetter, field.name) &&
-          sameRust(
-            ownGetter.returnType,
+          _fitsAccessor(
+            _selfBound(ownGetter.returnType),
             _substituteType(field.type, _implBinding),
           );
       final reads = overrides
@@ -10014,12 +10054,20 @@ class RustBackend {
           .where((f) => f.name == field.name)
           .firstOrNull;
       String value;
-      if (reads != null && own != null && substituted.name != 'Option') {
-        // The field as this *instantiation* holds it: under `impl
-        // ValueKey<Option<i64>> for ValueKeyImpl<i64>` the `T value` is
-        // an `i64`, and typed `T` the rule could not see the `Some` it
-        // needed (ws659).
-        final held = IrLocal('__v')..rustType = _selfBound(own.type);
+      // What the body hands back: the getter's own result when the
+      // accessor calls it, the field as this *instantiation* holds it
+      // otherwise -- under `impl ValueKey<Option<i64>> for ValueKeyImpl
+      // <i64>` the `T value` is an `i64`, and typed `T` the rule could
+      // not see the `Some` it needed (ws659).
+      final handed = overrides
+          ? _selfBound(ownGetter!.returnType)
+          : own == null
+          ? null
+          : _selfBound(own.type);
+      if (reads != null &&
+          handed != null &&
+          (overrides || substituted.name != 'Option')) {
+        final held = IrLocal('__v')..rustType = handed;
         final shaped = coerceInto(held, substituted, _world);
         value = identical(shaped, held)
             ? body
