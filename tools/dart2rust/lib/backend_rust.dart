@@ -2656,7 +2656,10 @@ class RustBackend {
     }
     final target = library[owner];
     if (target != null &&
-        !target.methods.any((m) => m.name == name && m.operator == null)) {
+        !target.methods.any(
+          (m) =>
+              (m.name == name || _methodName(m) == name) && m.operator == null,
+        )) {
       throw Unsupported(
         'call to `$owner.$name`, which was not translated',
         '$owner.$name(...)',
@@ -3883,6 +3886,24 @@ class RustBackend {
         (target == null || target is IrThis) &&
         !_declaresHashCode(cls)) {
       return 'DartEq::dart_hash_code(&*$_selfName)';
+    }
+    // ..and on a value of no translated class: a scalar, a prelude type,
+    // a handle to a trait (`Object.hash(canUndo, canRedo, ..)` on two
+    // `bool` fields, `UndoHistoryValue.hashCode`, run677).
+    if ((name == 'hashCode' || name == 'hash_code') &&
+        args.isEmpty &&
+        target != null &&
+        target is! IrThis) {
+      final held = target.rustType;
+      final owned = held == null || held.isFunction || isNullable(held)
+          ? null
+          : library[held.name];
+      if (held != null &&
+          !held.isFunction &&
+          !isNullable(held) &&
+          (owned == null || !_declaresHashCode(owned))) {
+        return 'DartEq::dart_hash_code(&${expr(target)})';
+      }
     }
     final cellPlace = _mutatesInPlace(name) ? _mutPlace(target) : null;
     // The arguments first, bound: the receiver's `borrow_mut()` is taken
@@ -6412,9 +6433,17 @@ class RustBackend {
         '${cls.name}.${method.name} (static)',
         () => _emitMethod(
           method,
+          // A static setter beside its getter keeps the `set_` prefix
+          // here as it does in an impl (`Manager.client = ..` / `Manager
+          // .client` were two `manager_client`s, E0428, the staticset
+          // fixture).
           as: _abstractStaticName(
             cls.name,
-            method.name.isEmpty ? 'new' : method.name,
+            method.name.isEmpty
+                ? 'new'
+                : method.isSetter
+                ? _methodName(method)
+                : method.name,
           ),
         ),
       );
@@ -6470,6 +6499,11 @@ class RustBackend {
   /// (the prelude's, `_emitFromDynamic` for the translated ones).
   String _nb(IrClass c) =>
       ' + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny';
+
+  /// ..for one parameter of the class: a numeric one (`T extends num`)
+  /// carries the prelude's `DartNum` as well (`min`/`max` on a `T`).
+  String _nbp(IrClass c, String p) =>
+      '${_nb(c)}${c.numericParameters.contains(p) ? ' + DartNum' : ''}';
 
   String _nbm(IrMethod m) =>
       ' + DartNullable<Or: Clone + DartEq + FromDynamic + DartAny> + DartEq + FromDynamic + DartAny';
@@ -6613,7 +6647,7 @@ class RustBackend {
     final own = '${cls.name}${_generics(cls)}';
     final header = cls.typeParameters.isEmpty
         ? ''
-        : '<${cls.typeParameters.map((p) => "$p: Clone${_nb(cls)} + 'static$extraBound").join(', ')}>';
+        : '<${cls.typeParameters.map((p) => "$p: Clone${_nbp(cls, p)} + 'static$extraBound").join(', ')}>';
     _line('impl$header DartEq for $own$where {');
     _indent++;
     _line('fn dart_eq(&self, other: &Self) -> bool { $body }');
@@ -6921,7 +6955,7 @@ class RustBackend {
         // that is not `Clone`, a bare future, is measured against that.
         ? params.map(
             (p) => clone
-                ? "$p: Clone${owner is IrClass ? _nb(owner) : ''} + 'static"
+                ? "$p: Clone${owner is IrClass ? _nbp(owner, p) : ''} + 'static"
                 // `Clone` on a trait's parameters too: a `Vec<E>` is
                 // `DartAny` only for a `Clone` element now that a list
                 // answers a cast to its dynamic form (`_UnorderedEquality<
@@ -7142,7 +7176,7 @@ class RustBackend {
       // prelude's `Map` and `Set` compare keys by `DartEq`, which every
       // parameter already carries; the `PartialEq` block shut
       // `ObserverList<VoidCallback>.add` out (run459).
-      return "$p: Clone${_nb(cls)} + 'static";
+      return "$p: Clone${_nbp(cls, p)} + 'static";
     }
 
     return '<${cls.typeParameters.map(bound).join(', ')}>';
@@ -7209,7 +7243,12 @@ class RustBackend {
     for (final name in _namesIn(rust)) {
       // A type parameter is not known to be `Copy`, and a read of a `T`
       // field behind `&self` has to clone it: `ValueNotifier.value`.
-      if (cls.typeParameters.contains(name)) return false;
+      // ..a method's own parameter too: a captured `T? arg` local in
+      // `_throttle<T>` was a `Cell<Option<T>>` read by `get()` (run677).
+      if (cls.typeParameters.contains(name) ||
+          _methodTypeParams.contains(name)) {
+        return false;
+      }
       final prelude = _preludeCopy[name];
       if (prelude == false) return false;
       if (prelude != null) continue;
@@ -7470,7 +7509,7 @@ class RustBackend {
     // them (`_traitWhere`): the super function the default body reaches
     // asks `V: Clone` (`CanonicalizedMap.cast__erased`, ws483).
     final clauses = [
-      for (final p in cls.typeParameters) '$p: Clone${_nb(cls)}',
+      for (final p in cls.typeParameters) '$p: Clone${_nbp(cls, p)}',
     ];
     final where = clauses.isEmpty ? '' : ' where ${clauses.join(', ')}';
     return 'fn ${_methodName(method)}__erased($params) -> ${_wrapped(spelled)}$where';
@@ -7545,7 +7584,7 @@ class RustBackend {
   String _traitWhere(IrMethod method) {
     final clauses = [
       if (_sizedBound(method).isNotEmpty) 'Self: Sized',
-      for (final p in cls.typeParameters) '$p: Clone${_nb(cls)}',
+      for (final p in cls.typeParameters) '$p: Clone${_nbp(cls, p)}',
     ];
     return clauses.isEmpty ? '' : ' where ${clauses.join(', ')}';
   }
@@ -7624,7 +7663,7 @@ class RustBackend {
       ].join();
       final generics =
           '<__Self: ${cls.name}${_generics(cls)}$superBounds + ?Sized + \'static'
-          '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone${_nb(cls)} + 'static").join(', ')}'}'
+          '${cls.typeParameters.isEmpty ? '' : ', ${cls.typeParameters.map((p) => "$p: Clone${_nbp(cls, p)} + 'static").join(', ')}'}'
           '${method.typeParameters.isEmpty ? '' : ', ${method.typeParameters.map((p) => "$p: Clone${_nbm(method)} + 'static").join(', ')}'}'
           '>';
       final name = superFn(cls.name, method.name, isSetter: method.isSetter);
@@ -9168,7 +9207,7 @@ class RustBackend {
           '${cls.name}.${method.name} (static)',
           () => _emitMethod(
             method,
-            as: _abstractStaticName(cls.name, method.name),
+            as: _abstractStaticName(cls.name, _methodName(method)),
           ),
         );
       }

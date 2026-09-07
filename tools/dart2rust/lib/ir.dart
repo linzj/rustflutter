@@ -1605,6 +1605,7 @@ class IrClass {
     this.name, {
     this.dartName,
     this.typeParameters = const [],
+    this.numericParameters = const {},
     this.superclass,
     this.superclassArguments = const [],
     this.mixins = const [],
@@ -1650,6 +1651,12 @@ class IrClass {
 
   /// `class Foo<T>` -- the names, in order. See [IrTypeParams].
   final IrTypeParams typeParameters;
+
+  /// The type parameters bounded by `num` (or `int`, `double`) in Dart:
+  /// spelled with the prelude's numeric protocol (`DartNum`) so a body's
+  /// `math.min(a, b)` on two `T`s compiles (`AnimationMin<T extends num>`,
+  /// run676).
+  final Set<String> numericParameters;
   final String? superclass;
 
   /// The classes mixed in: `class Panel extends Measured with Scaled` -- the

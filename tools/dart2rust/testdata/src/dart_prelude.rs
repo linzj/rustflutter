@@ -405,6 +405,32 @@ impl DartInt for i64 {
 /// result or a field write goes out through `from_option`. Every type a
 /// type parameter can be bound to implements it; the backend writes the
 /// impl for each translated struct and enum.
+/// The numeric protocol a `T extends num` carries: what a body may ask
+/// of two `T`s without knowing which number they are (`math.min(a, b)` in
+/// `AnimationMin<T extends num>.value`, run676).
+pub trait DartNum: Copy + PartialOrd {
+    fn dart_min(self, other: Self) -> Self;
+    fn dart_max(self, other: Self) -> Self;
+}
+
+impl DartNum for i64 {
+    fn dart_min(self, other: Self) -> Self {
+        std::cmp::min(self, other)
+    }
+    fn dart_max(self, other: Self) -> Self {
+        std::cmp::max(self, other)
+    }
+}
+
+impl DartNum for f64 {
+    fn dart_min(self, other: Self) -> Self {
+        f64::min(self, other)
+    }
+    fn dart_max(self, other: Self) -> Self {
+        f64::max(self, other)
+    }
+}
+
 pub trait DartNullable: Sized {
     /// Not `Clone` by itself -- `Vec<T>` is one only for `T: Clone` --
     /// so a declaration that clones a `T?` asks `DartNullable<Or: Clone>`.
@@ -5199,8 +5225,8 @@ pub fn dart_identical_opt<T: ?Sized>(
 /// own null where `T` has one (`_value as T` in `RestorableValue<double?>
 /// .value` is Dart's null, not a throw, run665); Dart's cast failure
 /// where it has none.
-pub fn dart_as_own<T: DartNullable>(or: T::Or) -> Result<T, DartError> {
-    match T::option(or) {
+pub fn dart_as_own<T: DartNullable>(option: Option<T>) -> Result<T, DartError> {
+    match option {
         Some(value) => Ok(value),
         None => match T::dart_null() {
             Some(null) => Ok(null),

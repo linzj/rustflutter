@@ -302,18 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,run652 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws657 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| run652 | `focusedChild` 过了；下一站 `Route.didAdd` 的 `TickerFuture.complete().then<void>((void _) { navigator?.focusNode.enclosingScope?.requestFocus(); })`：闭包体空手落回 `Ok(None)`，适配器再 `.unwrap()`——`FutureOr<void>` 被拼成 `Option<FutureOr<()>>`（Kernel 的 `FutureOr<T>.nullability` 由 `T` 推出来，`void`/`T?` 都算可空）。修：`FutureOr` 只按**声明**可空（`declaredNullability`），null 由里面的 `T` 背；后端体落尾的值按返回类型递归求（`()`/`None`/`FutureOr::value(..)`，`_fallsOffValue`）；顺手：prelude `Future` 构造子带类型实参（`Future<void>.delayed` 无值可推，never 回退）。夹具 thenvoid SAME（异步入口跑 `run_main`，新 `run2.tmpl`）。 | 链 ws653 |
-| ws653 | 链：stub **553**（-1），拒绝 202。 | |
-| run653 | **整个启动路径走完，第一个 panic 是 dump 钩子自己**：`_TheaterParentData.visitOverlayPortalChildrenOnOverlayEntry` 读 `value!._paintOrderIterable`——`late final x = _createChildIterable(..)`（惰性 late，cell）经**别的对象**读（`it._paint_order_iterable`）直接 `unwrap` 空 cell；只有 `self` 读走 `_lazyRead`。修（通用）：惰性 late 字段在自己的类上生成 `__lazy_<f>()` 访问器，外部读经它。夹具 lazyforeign SAME。 | 链 ws654 |
-| ws654 | 链：stub **557**（+4：新访问器把原本藏在已 stub 方法里的两个失败单独算了——`_InputDecoratorState` 的 `hashCode`（无覆盖的类上 `self.hash_code()` 没走 Object 协议）、provider `_delegateState` 初始化里 `element = this` 的 `T` 对 `T?`），拒绝 202。修：`hashCode` 在无自身覆盖的类上 → `DartEq::dart_hash_code`（协议）；惰性访问器只对**被别的对象读过**的字段生成（`_WalkSelf.foreignFieldReads` 全程序扫一次）。夹具 hashthis SAME。 | 链 ws655 |
-| ws655 | 链：stub **551**（-2 对 ws653），拒绝 202。 | |
-| run655 | dump 走到 `_paintOrderIterable` 的访问器，初始化器 `_createChildIterable(..)` 是 **`sync*`**：refusal「unsupported statement YieldStatement」。修（通用）：`sync*` 体降成收集列表——`yield x` push、`yield* xs` extend、裸 `return`/落尾返回 `__yielded`（Dart 是惰性的，这里是急的；只有无界生成器能分辨）。夹具 syncstar SAME（含 `yield*`、生成器套生成器）。 | 链 ws656 |
-| ws656 | 链：stub **551**（持平，无新增），拒绝 **197**（-5：五个 `sync*` 体翻出来了）。 | |
-| run656 | **启动路径无 panic**：5 帧画出（0 panicked），render 树 32 节点、元素树 150 行完整 dump（gallery 主页整棵树，不再是 restoration 的 `SizedBox`）。但 render 树**没有一个 `size=`**：layout 从没跑——gdb dprintf 计数：`flushLayout` 24 次、`markNeedsLayout` 34、`scheduleInitialLayout` 1，`RenderView.performLayout` **0**。根因：`scheduleInitialLayout` 的 `owner!._nodesNeedingLayout.add(this)`——`PipelineOwner` 是 open 类（trait），字段经值访问器读出来是**克隆**，push 进克隆就丢了；`this` 上的同类写法早走 cell 访问器（`_cell()`），别的句柄上没走。修（通用）：`_cellPlace` 对 trait 句柄上的字段访问器调用，字段是 trait 交出 cell 的集合时走 `<f>_cell()?.borrow_mut()`。夹具 ownerqueue SAME。参考尺子 `ref_render_walk.txt` 是 `pumpWidget`+一次 `pump` 时刻（6 行），与我们跑完 5 帧的树不是同一时刻——待补一份 settle 后的参考。 | 链 ws657 |
 | ws657 | 链：stub **551**（持平），拒绝 197。 | |
 | run657 | **layout 跑起来了**（`RenderView.performLayout` → 子树 `layout`），停在 `RenderProxyBoxMixin.performLayout` 的 stub：`(child?..layout(..))?.size ?? ..`——`?..` 级联的值 `=>#t3` 是绑定值经 `dart_cast_to::<dyn RenderBox>`（子访问器是擦除的 `RenderObject?`，mixin 的 `T extends RenderBox`）——这个 `IrCastTo` 没带 rustType，`expression()` 用 Kernel 的 `RenderBox?` 补了个可空 → 外层 `.flatten()` 套在非 Option 上。修：绑定值的转型按自身（非空）定型。夹具 cascade（界更窄的 `T`）SAME。此刻的 render 树正好是参考尺子的 6 行（restoration `SizedBox` 时刻）。另外补了一份 **settle 后的参考**：`~/gallery_upstream/test/dump_render_walk_settled_test.dart`（pump 8×100ms）→ `~/dart2rust_build/scratch/ref_render_walk_settled.txt`，708 行。 | 链 ws658 |
 | ws658 | 链：stub **549**（-2：两个 `performLayout`），拒绝 197。 | |
@@ -346,6 +338,14 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws674 | 链：stub **505**（持平），拒绝 192（**没降**）：别名普查只扫 `inPackage` 的库，`entry._owner = this` 所在的应用类在 `dart:mixin_deduplication` 里，根本没被扫到。修：普查连去重库一起扫（写在应用类里、目标是 package 类的字段）。本地翻译验证：拒绝 192→188，`LocalHistoryEntry._owner` 进了 cell。 | 链 ws675 |
 | ws675 | 链：stub **502**（-3），拒绝 **188**（-4：`addLocalHistoryEntry` 一族）。 | |
 | run675 | Scaffold 过了，render 树 64 节点；下一站 gallery 自己的 `_AnimatedHomePageState.build`（两处 stub 同文件）：① `Function` 槽里的 void 闭包：适配器把 `Null` 类型的调用**整个换成** `dart_null_object()`（两处 `Null→Object` 规则都丢了副作用）——修：非字面量的 `Null` 值先求值再给 null 对象。② `_AnimatedCarousel.build` 的 `LayoutBuilder` builder 里的嵌套 builder 又从 `self.` 拷字段，把 `&self` 借进了 `'static` 闭包——修：外层闭包已拷贝的字段，内层从外层的局部拷。夹具还揪出 `flag.value = true` 在闭包里写**值类**局部的字段改到的是副本：别名普查把「经捕获的局部写字段」也算别名变异（`_ownLocal` 看声明函数）。夹具 dynfall、nestcapture SAME。 | 链 ws676 |
+| ws676 | 链：stub **495**（-7），拒绝 188。提交 f0cdc53f。 | |
+| run676 | 主页建到 render 树 **90 节点**；下一站老欠账 `AnimationMin<T extends num>.value`：`math.min(first.value, next.value)` 在 `T` 上没有 `min`。修（通用）：Dart 界是 `num`/`int`/`double` 的类型参数记为 `IrClass.numericParameters`，泛型界拼上 prelude 的 `DartNum`（`dart_min`/`dart_max`，实现在 i64/f64；名字不与 `Ord::min` 撞），`math.min/max` 的第一个实参是这种 `T` 时走它。夹具 nummin SAME。 | 链 ws677 |
+| ws677 | 链：stub **494**（-1），拒绝 188。 | |
+| run677 | `AnimationMin` 过了；下一站 `UndoHistoryState<T>.initState` 同文件两处 stub：① `UndoHistoryValue.hashCode` 的 `Object.hash(canUndo, ..)` 在 `bool` 字段上拼 `.hash_code()`——修：非翻译类的值（标量/prelude 类型/句柄）上的 `hashCode` 走 `DartEq::dart_hash_code`；② 顶层泛型 `_throttle<T>` 里被闭包写的 `T? arg` 局部拼成 `Cell<Option<T>>` 又 `.get()`——`_isCopy` 只把**类**的类型参数当非 Copy，方法/函数自己的没算。修：方法级类型参数同样非 Copy。夹具还揪出 `arg as T` 在 `Option<T>` 局部上（不是投影的 `Or`）：`dart_as_own` 改收 `Option<T>`，投影操作数先经 `option()`。夹具 hashfield、throttle SAME。 | 链 ws678 |
+| ws678 | 链：stub **490**（-4），拒绝 188。 | |
+| run678 | `UndoHistoryState.initState` 下一处 refusal：`UndoManager.client = this`——类的**静态 setter** 赋值只做了顶层 setter 的形。修：类静态 setter → `Owner::set_x(v)` 静态调用；顺带 free-static 类（只有静态成员的类）的静态 setter 与同名 getter 拼成同一个函数名（E0428）→ setter 保留 `set_` 前缀，静态调用存在性检查按 Rust 名。夹具 staticset SAME。 | 链 ws679 |
+| ws679 | 链：stub **490**（持平），拒绝 **186**（-2）。 | |
+| run679 | **走到文字排版**：`RenderEditable.performLayout` → `TextPainter.layout` → `TextStyle.getParagraphStyle` 的 stub——`ui.StrutStyle(..)` 9 个实参对上了 painting 的 `StrutStyle::new`（11 个）：dart:ui 与 painting 同名类（`StrutStyle`/`TextStyle`/`Gradient`/`Image`）在同一 crate 里按简单名引用，谁被 `use` 谁赢（老欠账「TextStyle 名字冲突」）。下一步：跨库同名类的引用按模块限定（`crate::dart_ui::StrutStyle`），同 `IrStaticCall.module` 对顶层函数的做法。 | |
 
 ## 下一步(2026-09-05 重铺)
 
@@ -505,3 +505,5 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   `async*` 仍拒绝。(run655 记)
 - **provider `_DelegateState<T>.element`**:槽是 `_InheritedProviderScopeElement<T?>`,值是 `<T>`——
   泛型值类的 `T` 与 `T?` 实例化在 Rust 里是两个类型,没有一般转换(ws654 记,`build`/`mount` 同因已 stub)。
+- **列表/映射按值传递**:`f(log)` 里 `log` 是 `Vec` 的拷贝,被调方(或它返回的闭包)往里 `add`
+  调用方看不见(throttle 夹具第一版踩到,改夹具绕开)。counted 类有身份,集合没有——通用解还没有。

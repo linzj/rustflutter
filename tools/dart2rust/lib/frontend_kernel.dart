@@ -1751,6 +1751,29 @@ class KernelFrontend implements TypeWorld {
           ),
         ], IrLocal(held));
       }
+      // ..and a class's static setter: its static function (`UndoManager
+      // .client = this` in `UndoHistoryState.initState`, run678).
+      if (target is Procedure &&
+          target.kind == ProcedureKind.Setter &&
+          target.enclosingClass != null) {
+        final held = '__t${_nextTemporary++}';
+        final init = expression(node.value);
+        final stored = _widened(
+          node.value,
+          target.function.positionalParameters.single.type,
+          IrCall(IrLocal(held), 'clone', const [])..rustType = init.rustType,
+        );
+        return IrBlockValue([
+          IrLocalDecl(held, null, init),
+          IrExprStmt(
+            IrStaticCall(
+              target.enclosingClass!.name,
+              'set_${target.name.text}',
+              [stored],
+            ),
+          ),
+        ], IrLocal(held));
+      }
       if (target is! Field) {
         throw Unsupported('static setter used for its value', _sample(node));
       }
@@ -2523,7 +2546,7 @@ class KernelFrontend implements TypeWorld {
           return IrStaticCall(
             null,
             'dart_as_own',
-            [expression(node.operand)],
+            [_asOwnOption(expression(node.operand), to)],
             fails: true,
             typeArguments: [
               _type(to.withDeclaredNullability(Nullability.nonNullable)),
@@ -4010,6 +4033,20 @@ class KernelFrontend implements TypeWorld {
       ], tornReturns);
   }
 
+  /// The `Option<T>` a `T?` operand of `dart_as_own` is: a field's or a
+  /// parameter's is the projected `<T as DartNullable>::Or` and goes
+  /// through `option`; a local's is the `Option<T>` already (`arg as T`
+  /// on a captured `T? arg`, the throttle fixture).
+  IrExpr _asOwnOption(IrExpr operand, TypeParameterType parameter) {
+    final held = operand.rustType;
+    final name = parameter.parameter.name ?? 'T';
+    if (held != null && held.projected) {
+      return IrNullableOf(operand, name, toOption: true)
+        ..rustType = IrType(name, nullable: true);
+    }
+    return operand;
+  }
+
   Class? _realOwner(Member target, String name) {
     // A super call in a mixin's body names the `on` constraint's member
     // (`BindingBase.initInstances`), but dispatches to the *actual*
@@ -4231,7 +4268,7 @@ class KernelFrontend implements TypeWorld {
           return IrStaticCall(
             null,
             'dart_as_own',
-            [expression(value)],
+            [_asOwnOption(expression(value), asType)],
             fails: true,
             typeArguments: [own],
           )..rustType = own;
@@ -6973,6 +7010,13 @@ class KernelFrontend implements TypeWorld {
       } else if (cls(positional[0]) == 'double' &&
           cls(positional[1]) == 'int') {
         b = _toF64(b);
+      }
+      // On a `T extends num`: the prelude's numeric protocol (`DartNum`),
+      // whose names do not collide with `Ord`'s on a known number
+      // (`AnimationMin<T extends num>.value`, run676).
+      final first = _staticType(positional[0]);
+      if (first is TypeParameterType && !_erasedParameter(first.parameter)) {
+        return IrCall(a, 'dart_$rust', [b])..rustType = _type(first);
       }
       return IrCall(a, rust, [b]);
     }
@@ -12171,12 +12215,24 @@ class KernelFrontend implements TypeWorld {
         );
       }
     }
+    bool numericBound(TypeParameter p) {
+      final bound = p.bound;
+      return bound is InterfaceType &&
+          bound.classNode.enclosingLibrary.importUri.toString() ==
+              'dart:core' &&
+          const {'num', 'int', 'double'}.contains(bound.classNode.name);
+    }
+
     final cls = IrClass(
       node.name,
       typeParameters: [
         for (final p in node.typeParameters)
           if (!_erasedParameter(p)) p.name ?? 'T',
       ],
+      numericParameters: {
+        for (final p in node.typeParameters)
+          if (!_erasedParameter(p) && numericBound(p)) p.name ?? 'T',
+      },
       superclassArguments: superType == null
           ? const []
           : _erasedArguments(superType.classNode, superType.typeArguments),
