@@ -216,27 +216,25 @@ impl<T: 'static> Object for T {
         // The core values as Dart names them (`int`, not `i64`).
         let id = std::any::TypeId::of::<T>();
         if id == std::any::TypeId::of::<i64>() {
-            return Type { name: "int" };
+            return Type::of("int");
         }
         if id == std::any::TypeId::of::<f64>() {
-            return Type { name: "double" };
+            return Type::of("double");
         }
         if id == std::any::TypeId::of::<bool>() {
-            return Type { name: "bool" };
+            return Type::of("bool");
         }
         if id == std::any::TypeId::of::<String>() || id == std::any::TypeId::of::<&'static str>() {
-            return Type { name: "String" };
+            return Type::of("String");
         }
         if id == std::any::TypeId::of::<Null>() || id == std::any::TypeId::of::<()>() {
-            return Type { name: "Null" };
+            return Type::of("Null");
         }
         // The struct's name alone, as `dart_runtime_type` spells it: no
         // module path, no type arguments.
         let full = std::any::type_name::<T>();
         let bare = full.split('<').next().unwrap_or(full);
-        Type {
-            name: bare.rsplit("::").next().unwrap_or("Object"),
-        }
+        Type::of(bare.rsplit("::").next().unwrap_or("Object"))
     }
 }
 
@@ -3670,14 +3668,63 @@ impl fmt::Display for Uri {
 /// map key; none of that needs the reflection Dart's `Type` can do and Rust
 /// cannot. What it does *not* support is being turned back into a class, and
 /// nothing here tries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// ..and the Rust type's id when a `dart_type_of` made it, for `is`
+/// against a type parameter that travels as a value (`dart_is_type`): the
+/// name alone cannot tell a subclass from a stranger. Two `Type`s are one
+/// by name, id or no id.
+#[derive(Clone, Copy, Debug)]
 pub struct Type {
     pub name: &'static str,
+    pub id: Option<std::any::TypeId>,
 }
 
 impl Type {
     pub const fn of(name: &'static str) -> Self {
-        Type { name }
+        Type { name, id: None }
+    }
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Type {}
+
+impl PartialOrd for Type {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Type {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.name.cmp(other.name)
+    }
+}
+
+impl std::hash::Hash for Type {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state)
+    }
+}
+
+/// `value is T` with `T` a type parameter that travels as a value: the
+/// object's own cast table asked for the Rust type's id, as `dart_cast_any`
+/// asks it at a type known to the compiler; by name where the `Type` was a
+/// literal.
+pub fn dart_is_type(value: std::rc::Rc<dyn Object>, ty: Type) -> bool {
+    let object: &dyn Object = match value.as_any().downcast_ref::<std::rc::Rc<dyn Object>>() {
+        Some(handle) => handle.as_ref(),
+        None => value.as_ref(),
+    };
+    if object.runtime_type().name == ty.name {
+        return true;
+    }
+    match ty.id {
+        Some(id) => object.dart_cast(id).is_some(),
+        None => false,
     }
 }
 
@@ -6103,7 +6150,10 @@ pub fn dart_type_of<T: ?Sized + 'static>() -> Type {
         "Null" | "()" => "Null",
         other => Box::leak(other.to_string().into_boxed_str()),
     };
-    Type { name }
+    Type {
+        name,
+        id: Some(std::any::TypeId::of::<T>()),
+    }
 }
 
 /// Dart's `Symbol`: a member name as a value.

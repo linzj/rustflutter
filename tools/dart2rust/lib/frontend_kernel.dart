@@ -235,8 +235,13 @@ class KernelFrontend implements TypeWorld {
         for (final entry in census.entries) {
           final base = entry.key;
           if (identical(base, node) || base.typeParameters.isEmpty) continue;
-          final asBase = env.hierarchy.getTypeAsInstanceOf(thisType, base);
-          if (asBase is! InterfaceType) continue;
+          // As Rust holds it: a class reaches a base through its
+          // supertype clauses, each spelled with its erased parameters at
+          // their bounds (`BoxBuilder: CBuilder<BoxC>: Builder<C>` is
+          // `Builder<Rc<dyn Constraints>>`, and Dart's `Builder<BoxC>` beside
+          // it was the same impl twice, E0119, the atbounds fixture).
+          final asBase = _asRustInstance(thisType, base);
+          if (asBase == null) continue;
           // A generic class's own instantiation names its parameter
           // (`DefaultEquality<E>: Equality<E>`): a wider impl would overlap
           // it for the `E` that is the wider type (E0119).
@@ -262,14 +267,9 @@ class KernelFrontend implements TypeWorld {
                   !_abstractLike(above)) {
                 continue;
               }
-              final asAbove = env.hierarchy.getTypeAsInstanceOf(wider, above);
-              final ownAbove = env.hierarchy.getTypeAsInstanceOf(
-                thisType,
-                above,
-              );
-              if (asAbove is! InterfaceType || ownAbove is! InterfaceType) {
-                continue;
-              }
+              final asAbove = _asRustInstance(wider, above);
+              final ownAbove = _asRustInstance(thisType, above);
+              if (asAbove == null || ownAbove == null) continue;
               if (ownAbove.typeArguments.any(_mentionsTypeParameter)) continue;
               final List<IrType> args, ownArgs;
               try {
@@ -444,6 +444,35 @@ class KernelFrontend implements TypeWorld {
   /// through the same census; one level at a time, each instantiation once.
   static final _censused = <InterfaceType>{};
 
+  /// The census (`addWiderImpls`): a generic trait-like class named with
+  /// arguments, as the closed world names it -- and a concrete generic
+  /// class's, as the instantiations its wider impls are written for
+  /// (`RestorableNum<int>` as a `RestorableProperty<Object?>`, run626).
+  /// One naming an *erased* parameter counts as Rust holds it, at the
+  /// parameter's bound: `ConstrainedLayoutBuilder<ConstraintType extends
+  /// Constraints>` is `AbstractLayoutBuilder<ConstraintType>`, which puts
+  /// `LayoutBuilder` into `AbstractLayoutBuilder<Rc<dyn Constraints>>`;
+  /// its element then asks its render object for
+  /// `RenderAbstractLayoutBuilderMixin<Constraints, ..>`, an instantiation
+  /// nothing spelled (`Option::unwrap()` on the cast, run644).
+  void _census(InterfaceType type) {
+    final census = instantiations;
+    if (census == null || _censusOff || type.typeArguments.isEmpty) return;
+    final core = type.classNode.enclosingLibrary.importUri.scheme == 'dart';
+    if (!core && _translatedClass(type.classNode)) {
+      census
+          .putIfAbsent(type.classNode, () => {})
+          .add(type.withDeclaredNullability(Nullability.nonNullable));
+    }
+    _censusMembers(type, census);
+    if (_mentionsTypeParameter(type)) {
+      final atBounds = _atErasedBounds(type, 0);
+      if (atBounds is InterfaceType && !_mentionsTypeParameter(atBounds)) {
+        _census(atBounds);
+      }
+    }
+  }
+
   void _censusMembers(
     InterfaceType type,
     Map<Class, Set<InterfaceType>> census,
@@ -499,6 +528,43 @@ class KernelFrontend implements TypeWorld {
         walk(substitution.substituteType(v.type));
       }
     }
+    // ..and what its bodies construct: `AbstractLayoutBuilder<T>.
+    // createElement` makes a `_LayoutBuilderElement<T>`, so the
+    // instantiation at `Constraints` makes one at `Constraints`, whose
+    // `renderObject` is asked for `RenderAbstractLayoutBuilderMixin<
+    // Constraints, ..>` -- named nowhere else once the AOT dill has shaken
+    // `createRenderObject`'s override (run645).
+    for (final t in _constructedIn(cls)) {
+      walk(substitution.substituteType(t));
+    }
+  }
+
+  /// The generic class types a class's bodies construct, once per class.
+  static final _constructedCache = <Class, List<InterfaceType>>{};
+
+  static List<InterfaceType> _constructedIn(Class cls) =>
+      _constructedCache.putIfAbsent(cls, () {
+        final finder = _Constructed();
+        for (final p in cls.procedures) {
+          p.function.body?.accept(finder);
+        }
+        for (final c in cls.constructors) {
+          c.function.body?.accept(finder);
+          for (final i in c.initializers) {
+            i.accept(finder);
+          }
+        }
+        for (final f in cls.fields) {
+          f.initializer?.accept(finder);
+        }
+        return finder.types;
+      });
+
+  /// A constructed type through the census (`_census`), its arguments
+  /// unchanged: `Elem<L>(this)` names `Elem<L>` as a slot would.
+  List<IrType> _censusOf(InterfaceType type, List<IrType> arguments) {
+    _census(type);
+    return arguments;
   }
 
   /// `dart:core`'s `List`, `Set`, `Map`: abstract there, values here.
@@ -792,24 +858,7 @@ class KernelFrontend implements TypeWorld {
       final name = core && type.classNode.name == 'Iterator'
           ? 'DartIterator'
           : type.classNode.name;
-      // The census (`addWiderImpls`): a generic trait-like class named with
-      // arguments, as the closed world names it.
-      final census = instantiations;
-      // ..and a concrete generic class's, as the instantiations its wider
-      // impls are written for (`addWiderImpls`: `RestorableNum<int>` as a
-      // `RestorableProperty<Object?>`, run626).
-      if (census != null &&
-          !_censusOff &&
-          type.typeArguments.isNotEmpty &&
-          !core &&
-          _translatedClass(type.classNode)) {
-        census
-            .putIfAbsent(type.classNode, () => {})
-            .add(type.withDeclaredNullability(Nullability.nonNullable));
-      }
-      if (census != null && !_censusOff && type.typeArguments.isNotEmpty) {
-        _censusMembers(type, census);
-      }
+      _census(type);
       // A class that *is* a `Future` (implements `dart:async`'s): the
       // prelude's future, since that is what every `Future<T>` slot holds
       // (`SynchronousFuture<T>`, ws482).
@@ -1555,6 +1604,13 @@ class KernelFrontend implements TypeWorld {
         final ir = _recordedType(retyped);
         if (ir != null) return IrLocal(name)..rustType = ir;
       }
+      // A promotion no rule above reads through (`v is! S` on a `T`, both
+      // parameters) still reads the local as declared: untyped, the slot
+      // could not box it (`Entry<S>(v)` into an erased `Rc<dyn Object>`,
+      // the outparam fixture).
+      if (promoted != null) {
+        return IrLocal(name)..rustType = _recordedType(declared);
+      }
       return IrLocal(name);
     }
     if (node is InstanceGet) return _instanceGet(node);
@@ -2101,9 +2157,17 @@ class KernelFrontend implements TypeWorld {
           owner: owner,
         );
       }
-      final ownerClass = node.interfaceTarget?.enclosingClass;
+      // The class the read lands in (`_realOwner`), as a method call's
+      // is: `super.popDisposition` in `ModalRoute` names the anonymous
+      // application of `LocalHistoryRoute`, whose hollow declaration TFA
+      // emptied and whose body the application holds (run648).
+      final target = node.interfaceTarget;
+      final ownerClass = target == null
+          ? null
+          : _realOwner(target, node.name.text);
+      final base = ownerClass?.name ?? owner;
       return IrSuperCall(
-        owner,
+        base,
         node.name.text,
         const [],
         baseArguments: ownerClass == null
@@ -3103,7 +3167,12 @@ class KernelFrontend implements TypeWorld {
     if (callee.typeParameters.contains(p)) {
       return identical(callee, _genericCallee) ? _genericArgs[p] : null;
     }
-    if (identical(callee, _constructedCallee)) return _constructedArgs[p];
+    // An erased parameter of the constructed class is spelled as its
+    // bound, whatever the call put in for it (`Entry<S>(v)` with `Entry.T`
+    // erased takes an `Rc<dyn Object>`, the outparam fixture).
+    if (identical(callee, _constructedCallee)) {
+      return _erasedParameter(p) ? null : _constructedArgs[p];
+    }
     final landing = _dispatchMember;
     if (landing == null || !identical(callee, _dispatchInterface)) return null;
     return _keptFor(landing.enclosingClass, _dispatchReceiverType)[p];
@@ -5906,7 +5975,17 @@ class KernelFrontend implements TypeWorld {
       }
       return IrCall(_receiver(node.receiver), rust, args);
     }
-    if (_binaryOperators.contains(name) && args.length == 1) {
+    // A comparison (or any operator outside `stdOperators`) that a
+    // translated class declares is that class's method here (`ge`, `lt`):
+    // `getWindowType(context) >= AdaptiveWindowType.medium` was a Rust
+    // `>=` on a struct with no `PartialOrd` (run643). Only the std
+    // operators (`+`, `-`, ..) have an operator trait impl to reach.
+    final operatorOwner = node.interfaceTarget.enclosingClass;
+    final userOperator =
+        operatorOwner != null &&
+        _translatedClass(operatorOwner) &&
+        !stdOperators.contains(name);
+    if (_binaryOperators.contains(name) && args.length == 1 && !userOperator) {
       // `int * double` is a `double` in Dart and a type error in Rust: the
       // `int` side is cast. The receiver's class is the operator's owner;
       // the argument's is asked of the static types.
@@ -6595,7 +6674,10 @@ class KernelFrontend implements TypeWorld {
     final created = IrNew(
       IrType(
         _instanceName(cls),
-        arguments: _erasedArguments(cls, node.constructedType.typeArguments),
+        arguments: _censusOf(
+          node.constructedType,
+          _erasedArguments(cls, node.constructedType.typeArguments),
+        ),
       ),
       _constructing(
         target.function,
@@ -7243,11 +7325,14 @@ class KernelFrontend implements TypeWorld {
     // A super call fills the mixin's declared slots, with this class's
     // arguments put in (`declaredOverride`, see the super-call lowering).
     final declaredType = declaredOverride ?? param?.type;
+    // ..or any declared type naming one: `Entry<S>(v)` with `Entry.T`
+    // erased holds an `Rc<dyn Object>`, not the `S` the call put in (the
+    // outparam fixture).
     final paramType =
         (declaredOverride == null
             ? _landingSlot(callee: callee, index: index)
             : null) ??
-        (declaredType is FunctionType && _mentionsErased(declaredType)
+        (declaredType != null && _mentionsErased(declaredType)
             ? declaredType
             : instantiated != null &&
                   index < instantiated.positionalParameters.length
@@ -9972,6 +10057,57 @@ class KernelFrontend implements TypeWorld {
     return false;
   }
 
+  /// `type` as an instance of `base` the way Rust holds it: up the
+  /// supertype clauses, each spelled with the declaring class's erased
+  /// parameters at their bounds (`_atErasedBounds`) before `type`'s
+  /// arguments go in. Null when `base` is not above `type`.
+  InterfaceType? _asRustInstance(
+    InterfaceType type,
+    Class base, [
+    int depth = 0,
+  ]) {
+    if (identical(type.classNode, base)) return type;
+    if (depth > 40) return null;
+    final cls = type.classNode;
+    final substitution = Substitution.fromInterfaceType(type);
+    for (final st in [
+      if (cls.supertype != null) cls.supertype!,
+      if (cls.mixedInType != null) cls.mixedInType!,
+      ...cls.implementedTypes,
+    ]) {
+      final direct = _atErasedBounds(
+        InterfaceType(st.classNode, Nullability.nonNullable, st.typeArguments),
+        0,
+      );
+      final substituted = substitution.substituteType(direct);
+      if (substituted is! InterfaceType) continue;
+      final found = _asRustInstance(substituted, base, depth + 1);
+      if (found != null) return found;
+    }
+    return null;
+  }
+
+  /// A type with each erased parameter (`_erasedParameter`) in it replaced
+  /// by its bound, a few levels deep: the instantiation Rust holds for it.
+  DartType _atErasedBounds(DartType t, int depth) {
+    if (depth > 4) return t;
+    if (t is TypeParameterType && _erasedParameter(t.parameter)) {
+      final bound = t.parameter.bound;
+      return _atErasedBounds(
+        t.nullability == Nullability.nullable
+            ? bound.withDeclaredNullability(Nullability.nullable)
+            : bound,
+        depth + 1,
+      );
+    }
+    if (t is InterfaceType && t.typeArguments.isNotEmpty) {
+      return InterfaceType(t.classNode, t.nullability, [
+        for (final a in t.typeArguments) _atErasedBounds(a, depth + 1),
+      ]);
+    }
+    return t;
+  }
+
   /// A class's type arguments with the erased ones left out.
   List<IrType> _erasedArguments(Class cls, List<DartType> arguments) => [
     for (var i = 0; i < arguments.length; i++)
@@ -10043,6 +10179,24 @@ class KernelFrontend implements TypeWorld {
       }
       if (node.operand is NullLiteral) {
         return IrLiteral('false', const IrType('bool'));
+      }
+    }
+    // Against a method's own parameter that travels as a value
+    // (`_typeValues`): the object asked by that value (`dart_is_type`).
+    final member = _member;
+    if (asked is TypeParameterType && member is Procedure) {
+      final index = member.function.typeParameters.indexOf(asked.parameter);
+      if (index >= 0 && _typeValues(member).contains(index)) {
+        // A local is shared: boxed from a clone, the local stays.
+        var operand = expression(node.operand);
+        if (node.operand is VariableGet) {
+          operand = IrCall(operand, 'clone', const [])
+            ..rustType = operand.rustType;
+        }
+        return IrStaticCall(null, 'dart_is_type', [
+          coerce(operand, const IrType('dynamic')),
+          IrLocal('__ty_$index')..rustType = const IrType('Type'),
+        ])..rustType = const IrType('bool');
       }
     }
     return IrIs(expression(node.operand), _type(asked));
@@ -11663,6 +11817,25 @@ class KernelFrontend implements TypeWorld {
         ? values
         : names;
     _kernelClasses[node.name] = node;
+    // A supertype clause instantiates its base as much as a slot does
+    // (`_census`): `CBuilder<C extends Constraints> extends Builder<C>` is
+    // where `Builder<Constraints>` gets named, and it was spelled argument
+    // by argument, past the census (the atbounds fixture).
+    for (final st in [
+      if (node.supertype != null) node.supertype!,
+      if (node.mixedInType != null) node.mixedInType!,
+      ...node.implementedTypes,
+    ]) {
+      if (st.typeArguments.isNotEmpty) {
+        _census(
+          InterfaceType(
+            st.classNode,
+            Nullability.nonNullable,
+            st.typeArguments,
+          ),
+        );
+      }
+    }
     final cls = IrClass(
       node.name,
       typeParameters: [
@@ -12437,6 +12610,32 @@ class _FfiNativeFinder extends RecursiveVisitor {
 /// The variables a function body reads and the ones it declares.
 /// Finds the variables a member declares in one function and assigns in a
 /// nested one.
+/// The generic class types a body constructs (`_constructedIn`).
+class _Constructed extends RecursiveVisitor {
+  final types = <InterfaceType>[];
+
+  @override
+  void visitConstructorInvocation(ConstructorInvocation node) {
+    if (node.constructedType.typeArguments.isNotEmpty) {
+      types.add(node.constructedType);
+    }
+    super.visitConstructorInvocation(node);
+  }
+
+  @override
+  void visitStaticInvocation(StaticInvocation node) {
+    final owner = node.target.enclosingClass;
+    if (node.target.isFactory &&
+        owner != null &&
+        node.arguments.types.isNotEmpty) {
+      types.add(
+        InterfaceType(owner, Nullability.nonNullable, node.arguments.types),
+      );
+    }
+    super.visitStaticInvocation(node);
+  }
+}
+
 class _CapturedWrites extends RecursiveVisitor {
   _CapturedWrites(this.fills);
 
@@ -13573,11 +13772,29 @@ class _TypeLiteralFinder extends RecursiveVisitor {
 
   @override
   void visitTypeLiteral(TypeLiteral node) {
-    final t = node.type;
+    _use(node.type);
+    super.visitTypeLiteral(node);
+  }
+
+  // `v is S` / `v as S` ask the same question of the parameter: through
+  // an erased twin, `S` is `Rc<dyn Object>` and `is` said yes to
+  // everything (`TagLayer.findAnnotations<S>`, the outparam fixture).
+  @override
+  void visitIsExpression(IsExpression node) {
+    _use(node.type);
+    super.visitIsExpression(node);
+  }
+
+  @override
+  void visitAsExpression(AsExpression node) {
+    _use(node.type);
+    super.visitAsExpression(node);
+  }
+
+  void _use(DartType t) {
     if (t is TypeParameterType && parameters.contains(t.parameter)) {
       found.add(t.parameter);
     }
-    super.visitTypeLiteral(node);
   }
 }
 

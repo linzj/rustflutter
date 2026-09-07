@@ -86,6 +86,9 @@ Set<TypeParameter> covariantParameters(
         (subtypes != null && subtypes.getSubtypesOf(cls).length > 1);
   }
 
+  // What the hierarchy rule dropped stays dropped: the member rule below
+  // put `Entry.T` back each time the rule took it, forever (ws647).
+  final dropped = <TypeParameter>{};
   changed = true;
   while (changed) {
     changed = false;
@@ -117,6 +120,8 @@ Set<TypeParameter> covariantParameters(
                 '(${upMarked ? "marked" : "not"})',
               );
             }
+            dropped.add(below);
+            dropped.add(up);
             if (found.remove(below)) changed = true;
             if (found.remove(up)) changed = true;
           }
@@ -125,6 +130,29 @@ Set<TypeParameter> covariantParameters(
     }
     for (final p in found.toList()) {
       if (!erasable(p) && found.remove(p)) changed = true;
+    }
+    bool admissible(TypeParameter p) => erasable(p) && !dropped.contains(p);
+    // An erased parameter erases what its members spell it into: `Bag<T>`
+    // erased holds `add(Entry<Object>)`, and the `Entry<S>` the program
+    // hands it is a `C<A>` into a `C<B>` again (the outparam fixture).
+    // Only into a parameter that can be erased, or the filter above and
+    // this would take turns forever.
+    // ..into a *struct*'s parameter only: a trait's wider instantiation
+    // is a cast the object answers (see `_FlowScan._twinInto`).
+    bool structLike(Class c) =>
+        !c.isAbstract && (subtypes?.getSubtypesOf(c).length ?? 1) <= 1;
+    for (final cls in classes) {
+      if (!_translated(cls)) continue;
+      final erased = [
+        for (final p in cls.typeParameters)
+          if (found.contains(p)) p,
+      ];
+      if (erased.isEmpty) continue;
+      for (final t in _memberTypes(cls)) {
+        if (_spelledInto(t, erased, admissible, structLike, found)) {
+          changed = true;
+        }
+      }
     }
   }
   if (Platform.environment['DART2RUST_TRACE_COVARIANT'] != null) {
@@ -136,6 +164,86 @@ Set<TypeParameter> covariantParameters(
     }
   }
   return found;
+}
+
+/// The declared types of a class's members.
+Iterable<DartType> _memberTypes(Class cls) sync* {
+  for (final f in cls.fields) {
+    yield f.type;
+  }
+  for (final p in cls.procedures) {
+    yield p.function.returnType;
+    for (final v in p.function.positionalParameters) {
+      yield v.type;
+    }
+    for (final v in p.function.namedParameters) {
+      yield v.type;
+    }
+  }
+  for (final c in cls.constructors) {
+    for (final v in c.function.positionalParameters) {
+      yield v.type;
+    }
+    for (final v in c.function.namedParameters) {
+      yield v.type;
+    }
+  }
+}
+
+/// Marks the parameters of every translated class `t` instantiates at one
+/// of `erased` (at any depth), when they can be erased; whether any was
+/// new.
+bool _spelledInto(
+  DartType t,
+  List<TypeParameter> erased,
+  bool Function(TypeParameter) erasable,
+  bool Function(Class) structLike,
+  Set<TypeParameter> found, [
+  int depth = 0,
+]) {
+  if (depth > 6) return false;
+  var changed = false;
+  bool into(DartType a) =>
+      _spelledInto(a, erased, erasable, structLike, found, depth + 1);
+  if (t is InterfaceType) {
+    final params = t.classNode.typeParameters;
+    for (var i = 0; i < t.typeArguments.length; i++) {
+      final a = t.typeArguments[i];
+      if (_translated(t.classNode) &&
+          structLike(t.classNode) &&
+          i < params.length &&
+          _mentionsAny(a, erased) &&
+          erasable(params[i]) &&
+          found.add(params[i])) {
+        changed = true;
+      }
+      if (into(a)) changed = true;
+    }
+  } else if (t is FunctionType) {
+    if (into(t.returnType)) changed = true;
+    for (final a in t.positionalParameters) {
+      if (into(a)) changed = true;
+    }
+    for (final n in t.namedParameters) {
+      if (into(n.type)) changed = true;
+    }
+  } else if (t is FutureOrType) {
+    return into(t.typeArgument);
+  }
+  return changed;
+}
+
+bool _mentionsAny(DartType t, Iterable<TypeParameter> params) {
+  if (t is TypeParameterType) return params.contains(t.parameter);
+  if (t is InterfaceType)
+    return t.typeArguments.any((a) => _mentionsAny(a, params));
+  if (t is FutureOrType) return _mentionsAny(t.typeArgument, params);
+  if (t is FunctionType) {
+    return _mentionsAny(t.returnType, params) ||
+        t.positionalParameters.any((a) => _mentionsAny(a, params)) ||
+        t.namedParameters.any((n) => _mentionsAny(n.type, params));
+  }
+  return false;
 }
 
 /// A class's supertypes with anonymous mixin applications looked through:
@@ -167,6 +275,15 @@ class _FlowScan extends RecursiveVisitor {
   final TypeEnvironment environment;
   final Set<TypeParameter> found;
 
+  /// The closed world's subtype table, computed once: per procedure it
+  /// was a full recomputation (ws647 translated for 20 minutes).
+  late final ClassHierarchySubtypes? _subtypes = () {
+    final hierarchy = environment.hierarchy;
+    return hierarchy is ClosedWorldClassHierarchy
+        ? hierarchy.computeSubtypesInformation()
+        : null;
+  }();
+
   StaticTypeContext? _context;
   final List<FunctionNode> _functions = [];
   Member? _member;
@@ -181,9 +298,83 @@ class _FlowScan extends RecursiveVisitor {
   void visitProcedure(Procedure node) {
     _context = StaticTypeContext(node, environment);
     _member = node;
+    _throughTwin(node);
     super.visitProcedure(node);
     _context = null;
   }
+
+  /// A generic instance method of a trait-like class is reached through
+  /// its *erased twin*, whose type parameters are spelled as their bounds:
+  /// a `Bag<S>` declared on it arrives as a `Bag<Object>` -- one value of
+  /// `C<A>` reaching a slot of `C<B>`, the flow this scan exists for,
+  /// only the compiler's own. `Layer.findAnnotations<S>(AnnotationResult<
+  /// S> result, ..)` fills the caller's result *in place*, and the twin's
+  /// `AnnotationResult<Rc<dyn Object>>` was another struct (run646).
+  void _throughTwin(Procedure node) {
+    final cls = node.enclosingClass;
+    if (cls == null ||
+        node.isStatic ||
+        node.kind != ProcedureKind.Method ||
+        node.function.typeParameters.isEmpty ||
+        !_translated(cls)) {
+      return;
+    }
+    final traitLike =
+        cls.isAbstract || (_subtypes?.getSubtypesOf(cls).length ?? 0) > 1;
+    if (!traitLike) return;
+    final fn = node.function;
+    final own = fn.typeParameters.toSet();
+    for (final t in [
+      fn.returnType,
+      for (final v in fn.positionalParameters) v.type,
+      for (final v in fn.namedParameters) v.type,
+    ]) {
+      _twinInto(t, own);
+    }
+  }
+
+  /// Marks the parameters of every *struct* `t` instantiates at one of a
+  /// method's own parameters. A trait's are left: `drive<U>(Animatable<U>)`
+  /// hands its twin an `Rc<dyn Animatable<Object>>`, which the object's
+  /// wider impl answers for by a cast; erasing `Animatable.T` instead
+  /// took `Tween<double>`'s values behind `Rc<dyn Object>` (+12, ws647).
+  void _twinInto(DartType t, Set<TypeParameter> own, [int depth = 0]) {
+    if (depth > 6) return;
+    if (t is InterfaceType) {
+      final cls = t.classNode;
+      final params = cls.typeParameters;
+      for (var i = 0; i < t.typeArguments.length; i++) {
+        final a = t.typeArguments[i];
+        if (i < params.length &&
+            _translated(cls) &&
+            _structLike(cls) &&
+            _mentionsAny(a, own) &&
+            found.add(params[i])) {
+          if (Platform.environment['DART2RUST_TRACE_COVARIANT'] != null) {
+            stderr.writeln(
+              'TRACE_COVARIANT_TWIN ${cls.name}<${params[i].name}> '
+              'in ${_where()}: $t',
+            );
+          }
+        }
+        _twinInto(a, own, depth + 1);
+      }
+    } else if (t is FunctionType) {
+      _twinInto(t.returnType, own, depth + 1);
+      for (final a in t.positionalParameters) {
+        _twinInto(a, own, depth + 1);
+      }
+      for (final n in t.namedParameters) {
+        _twinInto(n.type, own, depth + 1);
+      }
+    } else if (t is FutureOrType) {
+      _twinInto(t.typeArgument, own, depth + 1);
+    }
+  }
+
+  /// A class Rust holds as a struct: concrete, nothing under it.
+  bool _structLike(Class c) =>
+      !c.isAbstract && (_subtypes?.getSubtypesOf(c).length ?? 1) <= 1;
 
   @override
   void visitConstructor(Constructor node) {

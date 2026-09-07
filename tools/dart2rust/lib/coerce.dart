@@ -651,9 +651,21 @@ IrExpr coerceInto(
       ..rustType = slot;
   }
   if (haveTrait && slotTrait) {
-    // The same trait with other arguments (`Tween<f64>` into a
-    // `Tween<Object>`) has no cast.
-    if (have.name == slot.name) return value;
+    // The same trait with other arguments: a cast, which the object
+    // answers through its wider impl (`Render<BoxC>` returned where the
+    // erased trait says `Render<Rc<dyn Constraints>>`, the atbounds
+    // fixture). At a type parameter there is no `TypeId` to ask for, and
+    // the value goes as it is, as it did before wider impls existed.
+    if (have.name == slot.name) {
+      final same =
+          have.arguments.length == slot.arguments.length &&
+          [
+            for (var i = 0; i < have.arguments.length; i++)
+              sameRust(have.arguments[i], slot.arguments[i]),
+          ].every((s) => s);
+      if (same || !_concreteArguments(slot, world)) return value;
+      return IrCastTo(value, slot)..rustType = slot;
+    }
     // A supertrait *without* arguments unsizes (`Rc<dyn Sub>` as `Rc<dyn
     // Base>`); with arguments the wider instantiation is another trait
     // (`RestorableNum<i64>` into `RestorableProperty<Rc<dyn Object>>`,

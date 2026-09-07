@@ -6558,7 +6558,7 @@ class RustBackend {
     _line('impl DartAny for ${cls.name} {');
     _indent++;
     _line(
-      'fn dart_runtime_type(&self) -> Type { Type { name: "${cls.dartName ?? cls.name}" } }',
+      'fn dart_runtime_type(&self) -> Type { Type::of("${cls.dartName ?? cls.name}") }',
     );
     _line(
       'fn dart_to_string(&self) -> String { ${_dartToStringBody(enumForm: true)} }',
@@ -7923,6 +7923,7 @@ class RustBackend {
     'future_ready',
     'dart_cast_erased',
     'dart_is_kind',
+    'dart_is_type',
     'uint8_list_sublist_view',
     'byte_data_sublist_view',
     // By their Dart names, as the call names them (`postEvent`, not the
@@ -9001,7 +9002,7 @@ class RustBackend {
     _line('fn dart_hash_any(&self) -> i64 { self.dart_hash_code() }');
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
-    _line('Type { name: "${cls.dartName ?? cls.name}" }');
+    _line('Type::of("${cls.dartName ?? cls.name}")');
     _indent--;
     _line('}');
     // What this object is (`dart_cast_to`): its own struct, and every
