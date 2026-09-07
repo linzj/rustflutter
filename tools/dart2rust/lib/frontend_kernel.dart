@@ -10187,6 +10187,11 @@ class KernelFrontend implements TypeWorld {
       // say what its `PhantomData` was (ws588).
       final instanceType = IrType(
         _instanceName(cls),
+        // ..and its module, when the name is one two libraries declare:
+        // three of them have a `_UnspecifiedTextScaler`, and the default
+        // `const _UnspecifiedTextScaler()` of `TextPainter`'s `textScaler`
+        // named none of them (`_SwitchPainter`, run700).
+        module: _moduleQualifier(cls),
         arguments: _erasedArguments(cls, constant.typeArguments),
       );
       final instance = IrConstInstance(instanceType, {

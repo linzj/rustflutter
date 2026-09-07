@@ -302,12 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws677 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws678 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws677 | 链：stub **494**（-1），拒绝 188。 | |
-| run677 | `AnimationMin` 过了；下一站 `UndoHistoryState<T>.initState` 同文件两处 stub：① `UndoHistoryValue.hashCode` 的 `Object.hash(canUndo, ..)` 在 `bool` 字段上拼 `.hash_code()`——修：非翻译类的值（标量/prelude 类型/句柄）上的 `hashCode` 走 `DartEq::dart_hash_code`；② 顶层泛型 `_throttle<T>` 里被闭包写的 `T? arg` 局部拼成 `Cell<Option<T>>` 又 `.get()`——`_isCopy` 只把**类**的类型参数当非 Copy，方法/函数自己的没算。修：方法级类型参数同样非 Copy。夹具还揪出 `arg as T` 在 `Option<T>` 局部上（不是投影的 `Or`）：`dart_as_own` 改收 `Option<T>`，投影操作数先经 `option()`。夹具 hashfield、throttle SAME。 | 链 ws678 |
 | ws678 | 链：stub **490**（-4），拒绝 188。 | |
 | run678 | `UndoHistoryState.initState` 下一处 refusal：`UndoManager.client = this`——类的**静态 setter** 赋值只做了顶层 setter 的形。修：类静态 setter → `Owner::set_x(v)` 静态调用；顺带 free-static 类（只有静态成员的类）的静态 setter 与同名 getter 拼成同一个函数名（E0428）→ setter 保留 `set_` 前缀，静态调用存在性检查按 Rust 名。夹具 staticset SAME。 | 链 ws679 |
 | ws679 | 链：stub **490**（持平），拒绝 **186**（-2）。 | |
@@ -346,6 +344,8 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws699 | 链：stub **463**（无变化），拒绝 183，可达 64。 | run699 |
 | run699 | 栈溢出（gdb：`AnimatedWidget::listenable` → `listenable_builder_super_listenable` → `AnimatedBuilder::listenable` → 回到第一个）。`ListenableBuilder.listenable` 和 `AnimatedBuilder.listenable` 上游都是 `=> super.listenable;`（只为挂文档），而基类字段的 trait 访问器**就是** `super.x` 读到的那份存储——把它改调这种 getter 就成环。修（通用）：getter 体里读了 `super.<同名>` 的不改路（它本来就是基类的 `x`；`_WalkSelf` 记下 `superMembers`）。夹具 getterover 加了 restated / restated2 两层 SAME。 | 链 ws700 |
 | ws700 | 链：stub **463**（无变化），拒绝 183，可达 64。 | run700 |
+| run700 | 过了开关尺寸。停在 `_SwitchPainter::new` 的 stub：「cannot find struct `_UnspecifiedTextScaler`」——三个库各声明一个同名私有类（paragraph/text_painter/media_query），`TextPainter.textScaler` 的默认值 `const _UnspecifiedTextScaler()` 谁也没指。两处原因：① 同名类普查（`collidingClassNames`）把**私有**名字排除了——私有在上游是库内可见，在这边是每库一个模块的 `pub(crate)`，跨模块按裸名解析等于看那个文件 import 了谁；② 常量实例的 `IrType` 没带 `module`（`_type` 带，`IrConstInstance` 不带），后端查类也只按名字。修（通用）：普查收私有名（匿名 mixin 仍不收）；常量实例带 `module`，后端 `library.resolve(t)` 查类。夹具 constmod（三个库同名私有 `_Unspecified`）SAME，基线是 `A:c,B:c,A:c`。 | 链 ws701 |
+| ws701 | 链：stub **452**（-11：`_SwitchPainter`/`_CupertinoSwitch`/`Slider`/`RangeSlider`/`TabBar`/两个 Cupertino 对话框/日期选择器的 `new`、`RenderEditable._textIntrinsics`、`TwoPaneDemo.build`、`LineChart._drawXAxisLabels`，无新增），拒绝 183，可达 64。 | run701 |
 
 ## 下一步(2026-09-05 重铺)
 

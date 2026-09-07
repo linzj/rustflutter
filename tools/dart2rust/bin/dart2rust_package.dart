@@ -287,10 +287,16 @@ Future<void> main(List<String> args) async {
   // and widgets): a reference from another library is spelled by module
   // (`crate::dart_ui::StrutStyle`), since by the bare name whichever the
   // module imported won (run679).
+  // ..a *private* name too: it is library-local upstream and `pub(crate)`
+  // here, one module each, so a reference from another module resolves by
+  // whatever that module imported. Three libraries declare an
+  // `_UnspecifiedTextScaler`, and `TextPainter`'s default `const
+  // _UnspecifiedTextScaler()` named none of them (`_SwitchPainter`,
+  // run700).
   final classNameCount = <String, int>{};
   for (final library in inPackage) {
     for (final cls in library.classes) {
-      if (cls.isAnonymousMixin || cls.name.startsWith('_')) continue;
+      if (cls.isAnonymousMixin) continue;
       classNameCount[cls.name] = (classNameCount[cls.name] ?? 0) + 1;
     }
   }

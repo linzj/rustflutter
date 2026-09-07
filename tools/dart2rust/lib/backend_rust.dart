@@ -4632,7 +4632,9 @@ class RustBackend {
         return '${t.name}::${variants[index]}';
       }
     }
-    final cls = library[t.name];
+    // By module where the constant carries one: the fields are that
+    // class's, not another library's class of the same name.
+    final cls = library.resolve(t);
     if (cls == null) {
       throw Unsupported(
         'const instance of `${t.name}`, which is not in this file',
