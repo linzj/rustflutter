@@ -283,7 +283,17 @@ Future<void> main(List<String> args) async {
     }
   }
   // The classes mutated through an alias (`alias_mutation.dart`): counted.
-  final aliasMutated = aliasMutatedClasses(inPackage);
+  // ..with the deduplicated mixin applications' bodies scanned too: a
+  // hollow mixin's methods live there (`LocalHistoryRoute.addLocalHistory
+  // Entry` writing `entry._owner`, run672), and the census saw none of
+  // them.
+  final aliasScanned = [
+    ...inPackage,
+    ...component.libraries.where(
+      (l) => l.importUri.toString() == 'dart:mixin_deduplication',
+    ),
+  ];
+  final aliasMutated = aliasMutatedClasses(aliasScanned);
   // The type parameters used covariantly (`covariance.dart`): erased.
   final covariant = typeEnvironment == null
       ? const <TypeParameter>{}

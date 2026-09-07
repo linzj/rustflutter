@@ -271,7 +271,12 @@ IrExpr coerceInto(
   if ((slot.name == 'dynamic' || slot.name == 'Object') &&
       !isNullable(slot) &&
       have.name == 'Null') {
-    return IrStaticCall(null, 'dart_null_object', const [])..rustType = slot;
+    final nullObject = IrStaticCall(null, 'dart_null_object', const [])
+      ..rustType = slot;
+    // A `Null`-typed *call* still runs (the `Function` adapter around a
+    // void callback, the dynfall fixture): its value is the null object.
+    if (value is IrLiteral) return nullObject;
+    return IrBlockValue([IrExprStmt(value)], nullObject)..rustType = slot;
   }
   // ..and into any `Option` it is the `None` it already is: mapped through
   // the rules below, `null` into a `dynamic?` was `None.as_ref().map(..)`,
@@ -436,7 +441,13 @@ IrExpr coerceInto(
   if (slotObject) {
     if (haveObject) return value;
     if (have.name == 'Null') {
-      return IrStaticCall(null, 'dart_null_object', const [])..rustType = slot;
+      final nullObject = IrStaticCall(null, 'dart_null_object', const [])
+        ..rustType = slot;
+      // A `Null`-typed *call* still runs: the `Function` adapter around a
+      // void callback returned the null object and never called it
+      // (`flag.value = true` inside, the dynfall fixture).
+      if (value is IrLiteral) return nullObject;
+      return IrBlockValue([IrExprStmt(value)], nullObject)..rustType = slot;
     }
     // A typed function value into a bare `Function`: the prelude's
     // function object, called dynamically -- an adapter taking its

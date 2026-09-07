@@ -147,6 +147,29 @@ class _AliasScan extends RecursiveVisitor {
   final Map<Class, Set<Member>> mutators;
   final Set<Class> out;
 
+  /// The functions being walked, innermost last: a local written to from
+  /// a *nested* function was captured, and the write must reach the
+  /// enclosing function's object (`flag.value = true` inside a callback,
+  /// the dynfall fixture).
+  final List<FunctionNode> _functions = [];
+
+  @override
+  void visitFunctionNode(FunctionNode node) {
+    _functions.add(node);
+    super.visitFunctionNode(node);
+    _functions.removeLast();
+  }
+
+  /// Whether `v` is a local of the innermost function being walked.
+  bool _ownLocal(Variable v) {
+    if (v.parent is FunctionNode) return false;
+    TreeNode? p = v.parent;
+    while (p != null && p is! FunctionNode) {
+      p = p.parent;
+    }
+    return _functions.isNotEmpty && identical(p, _functions.last);
+  }
+
   void _mark(Member target, Expression receiver) {
     if (receiver is ThisExpression) return;
     final cls = target.enclosingClass;
@@ -163,6 +186,25 @@ class _AliasScan extends RecursiveVisitor {
   @override
   void visitInstanceSet(InstanceSet node) {
     _mark(node.interfaceTarget, node.receiver);
+    // A *field* written through another object's reference -- a
+    // parameter, a field, a call's result -- is the same alias mutation
+    // a mutating method is: `entry._owner = this` in `LocalHistoryRoute.
+    // addLocalHistoryEntry` fills the caller's entry (run672). A local
+    // that owns the value is Rust's `let mut`, and `this`'s own fields
+    // are `&mut self`: neither needs the class counted.
+    final target = node.interfaceTarget;
+    final receiver = node.receiver;
+    if (target is Field) {
+      final localOwner =
+          receiver is VariableGet && _ownLocal(receiver.variable);
+      final onThis =
+          receiver is ThisExpression ||
+          (receiver is InstanceGet && receiver.receiver is ThisExpression);
+      final cls = target.enclosingClass;
+      if (!localOwner && !onThis && cls != null && _translated(cls)) {
+        out.add(cls);
+      }
+    }
     super.visitInstanceSet(node);
   }
 }

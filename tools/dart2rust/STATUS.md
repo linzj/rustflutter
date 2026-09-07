@@ -302,19 +302,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws647 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,run652 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws647 | 链：stub **590**（-2 净；+12 新：`Tween.lerp`、`animation_super_drive`、`memoize`… 全是 `Tween<T>`/`Animation<T>` 的值变成了 `Rc<dyn Object>`——`_throughTwin` 把 `drive<U>(Animatable<U>)` 这类 **trait** 实参也算成了协变流，`Animatable.T` 被擦除并顺 `_spelledInto` 传到 `Tween.T`；-14 旧），拒绝 229。第一次跑挂在翻译 20 分钟：`_throughTwin` 每个方法重算一遍子类型表（改成算一次）；第二次挂在协变定点：层级规则删掉的参数被成员规则加回来（`dropped` 集合，删了就不再加）。 | |
-| run647 | `layer_super_find` 过了；panic 在 `_ZoomEnterTransitionState._updateAnimations` 的 `unwrap`（`Animation<f64>` 转型 None）——正是上面擦除 `Animatable.T` 的后果，不算站点。修：孪生流与成员传播只标 **struct**（非抽象、无子类）的参数；trait 的宽实例化本来就是对象经宽 impl 应答的转型。 | 链 ws648 |
-| ws648 | 链：stub **584**（-8，无新增），拒绝 229。 | |
-| run648 | `Layer.find<SystemUiOverlayStyle>` 过了，`compositeFrame` 之后到 post-frame 的 `_handleHistoryChanged` → `MaterialPageRoute.popDisposition`：refusal「super call into `_MixinApplication3&TransitionRoute&LocalHistoryRoute`」——`super.popDisposition` 是 **getter**，`SuperPropertyGet` 直接拿 `interfaceTarget.enclosingClass`（匿名应用类）没走 `_realOwner`（方法调用与 setter 早走了）；AOT dill 里 `LocalHistoryRoute` 的声明被 TFA 掏空，体在应用类里（`_appliedProcedure` 能找到）。修：getter 读也经 `_realOwner`。夹具 supergetter SAME。 | 链 ws649 |
-| ws649 | 链：stub **599**（+15），拒绝 **212**（-17）：17 处 `super.x` getter 翻出来了，其中 `context.pushLayer(layer, super.paint, offset)` 是 **super 方法撕下**（`SuperPropertyGet` 的目标是方法），被当成无参调用；`_RenderTheater._firstOnstageChild` 的 `super.firstChild` 没带类型，`RenderObject?` 进 `RenderBox?` 槽没转型。修：super 撕下 = 闭包包一次 super 调用（同实例撕下，`holdsSelf`）；super 读按**声明**类型（`_superReturn`：声明还在用声明，声明被 TFA 掏空的用应用类拷贝 `_unapplied` 回写），槽再按一般规则窄化；coerce 补 trait 句柄进 **struct** 槽的向下转型（`IrDowncast`）。夹具 supertear SAME（super 撕下 + 擦除 `ChildType?` 读进 `Leaf?`）。 | 链 ws650/651 |
-| ws650 | 链：stub **582**（-2 对 ws648），拒绝 212；`_firstOnstageChild` 仍 stub（声明被 TFA 掏空那支还没写）。 | |
-| run650 | `popDisposition` 过了；下一站 `FocusScopeNode.focusedChild` 的 refusal：`_focusedChildren.lastOrNull`——`dart:collection` 的 `IterableExtensions|get#lastOrNull<T>(xs)` 静态调用无表。修（表）：`_coreExtensionMethods` 把 first/last/singleOrNull、elementAtOrNull 映到 prelude `DartList` 的方法，按**接收者方法**拼（借用走列表方法的老路）。夹具 ornull SAME。 | 链 ws652 |
-| ws651 | 链：stub **554**（-28：super 读带类型后一批 `didUpdateWidget`/`onTap` 编译过了），拒绝 212。 | |
-| ws652 | 链：stub **554**（持平；+1 `diagnostics.write` 的 `_wrappableRanges.last = x`——`List.last=` setter 无 prelude 方法，且写在**字段列表的克隆**上，欠账；-1），拒绝 **202**（-10）。 | |
 | run652 | `focusedChild` 过了；下一站 `Route.didAdd` 的 `TickerFuture.complete().then<void>((void _) { navigator?.focusNode.enclosingScope?.requestFocus(); })`：闭包体空手落回 `Ok(None)`，适配器再 `.unwrap()`——`FutureOr<void>` 被拼成 `Option<FutureOr<()>>`（Kernel 的 `FutureOr<T>.nullability` 由 `T` 推出来，`void`/`T?` 都算可空）。修：`FutureOr` 只按**声明**可空（`declaredNullability`），null 由里面的 `T` 背；后端体落尾的值按返回类型递归求（`()`/`None`/`FutureOr::value(..)`，`_fallsOffValue`）；顺手：prelude `Future` 构造子带类型实参（`Future<void>.delayed` 无值可推，never 回退）。夹具 thenvoid SAME（异步入口跑 `run_main`，新 `run2.tmpl`）。 | 链 ws653 |
 | ws653 | 链：stub **553**（-1），拒绝 202。 | |
 | run653 | **整个启动路径走完，第一个 panic 是 dump 钩子自己**：`_TheaterParentData.visitOverlayPortalChildrenOnOverlayEntry` 读 `value!._paintOrderIterable`——`late final x = _createChildIterable(..)`（惰性 late，cell）经**别的对象**读（`it._paint_order_iterable`）直接 `unwrap` 空 cell；只有 `self` 读走 `_lazyRead`。修（通用）：惰性 late 字段在自己的类上生成 `__lazy_<f>()` 访问器，外部读经它。夹具 lazyforeign SAME。 | 链 ws654 |
@@ -346,6 +337,15 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | run668 | 滚动条 `initState` 过了，`build` → `_gestures` → `ScrollController.position` refusal：`_positions.single`——列表表里没有 `single`。修（表 + prelude）：`single` 进 `listMethodNames`，`DartList::single`/`Set::single`（`StateError` 语义 panic，同 `first`）。夹具 listsingle SAME。 | 链 ws669 |
 | ws669 | 链：stub **523**（持平），拒绝 **192**（-5：`single`）。 | |
 | run669 | `ScrollController.position` 过了，render 树 59 节点；下一站 `SliverList.createElement` → `SliverMultiBoxAdaptorElement` 构造子 stub：字段初始化 `SplayTreeMap<int, Element?>()` 拼成 `Map::new(None, None)`——`SplayTreeMap([compare, isValidKey])` 两个省略的可选参数被当实参填了 `None`，而 `SplayTreeMap` 不在后端「空集合构造」表里。修：`SplayTreeMap`/`SplayTreeSet` 进表（prelude 里就是 `Map`/`Set` 的别名，顺序已知丢失），省略的可选参数（拼出来是 `None`）不算实参。夹具 splaymap SAME。 | 链 ws670 |
+| ws670 | 链：stub **521**（-4 +2：`SliverMultiBoxAdaptorElement.createChild/removeChild` 里 `_childElements.remove(index)` 在闭包中拼成 `&*__me._child_elements_cell()?.borrow_mut().remove(..)`——`&*` 本是给 `Trait::x_cell(&*__me)` 这种**实参**位置的，作方法接收者时套在整条链上把 `remove` 的结果解引用了），拒绝 192。修：cell 访问器作接收者时用裸句柄。夹具 closurefield 加 map 字段在闭包里改。提交 c5da374b。 | 链 ws671 |
+| ws671 | 链：stub **517**（-4，无新增），拒绝 192。 | |
+| run671 | render 树 60 节点；下一站 `MultiChildRenderObjectElement.children`：`_children.where((c) => !_forgottenChildren.contains(c))`——迭代器步闭包里捕获字段的绑定（`this_._forgotten_children_cell()?`）带 `?`，而步闭包不返回 Result；且捕获的 cell 没按 cell 读。修：步闭包的捕获绑定也在「unwrap」语境下拼，捕获的共享字段登记为 cell 局部（同 boxed 闭包）。夹具 stepcapture SAME。 | 链 ws672 |
+| ws672 | 链：stub **505**（-12：`where` 步闭包捕获修好后 reply/shrine 的一批 getter 过了），拒绝 192。 | |
+| run672 | `children` 过了，render 树 61 节点；下一站 `ScaffoldState.didChangeDependencies` → `_maybeBuildPersistentBottomSheet` 的 stub：`ModalRoute.of(context)!.addLocalHistoryEntry(entry)` 拼成 `ModalRoute::add_local_history_entry(&*route, ..)`——两个 trait 都声明该方法所以限定了，可 `ModalRoute<T>` 是**泛型** trait，裸 `Trait::m(..)` 是 E0782。修：非 `this` 句柄上的泛型 trait 限定走 `<dyn Trait<args> as Trait<args>>::m(&*h)`（实参从句柄类型/经类的实例化取，`_dynQualified`）。夹具 qualgeneric SAME。 | 链 ws673 |
+| ws673 | 链：stub **509**（+4：`_dynQualified` 把 `RestorableEnum<X>` 经 `_argumentsThrough` 拿到的 `RestorableProperty<T>` 没代入句柄自己的实参——修：按句柄实参代入），拒绝 192。scaffold 的 `ModalRoute::add_local_history_entry` 其实另有根因：`LocalHistoryRoute.addLocalHistoryEntry` **根本没翻**（refusal「assignment to a field of another object (param, value)」：`entry._owner = this` 经参数写 `LocalHistoryEntry` 的字段，该类不是 counted）。修（通用）：别名变异普查（`alias_mutation.dart`）把「经非 this、非本地持有者的引用写字段」也算别名变异 → 类 counted；`_declaringTrait`/`_abstractAncestors` 跨模块查（`elsewhere`）。夹具 aliasparam SAME。小欠：Dart 方法叫 `drop` 会撞 Rust 的析构名。 | 链 ws674 |
+| ws674 | 链：stub **505**（持平），拒绝 192（**没降**）：别名普查只扫 `inPackage` 的库，`entry._owner = this` 所在的应用类在 `dart:mixin_deduplication` 里，根本没被扫到。修：普查连去重库一起扫（写在应用类里、目标是 package 类的字段）。本地翻译验证：拒绝 192→188，`LocalHistoryEntry._owner` 进了 cell。 | 链 ws675 |
+| ws675 | 链：stub **502**（-3），拒绝 **188**（-4：`addLocalHistoryEntry` 一族）。 | |
+| run675 | Scaffold 过了，render 树 64 节点；下一站 gallery 自己的 `_AnimatedHomePageState.build`（两处 stub 同文件）：① `Function` 槽里的 void 闭包：适配器把 `Null` 类型的调用**整个换成** `dart_null_object()`（两处 `Null→Object` 规则都丢了副作用）——修：非字面量的 `Null` 值先求值再给 null 对象。② `_AnimatedCarousel.build` 的 `LayoutBuilder` builder 里的嵌套 builder 又从 `self.` 拷字段，把 `&self` 借进了 `'static` 闭包——修：外层闭包已拷贝的字段，内层从外层的局部拷。夹具还揪出 `flag.value = true` 在闭包里写**值类**局部的字段改到的是副本：别名普查把「经捕获的局部写字段」也算别名变异（`_ownLocal` 看声明函数）。夹具 dynfall、nestcapture SAME。 | 链 ws676 |
 
 ## 下一步(2026-09-05 重铺)
 

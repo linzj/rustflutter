@@ -1655,6 +1655,13 @@ class RustBackend {
   ///
   /// `clone()` unless the type is `Copy`, where it would only be noise.
   String _copyOf(IrParam field) {
+    // Inside a closure that copied the field already: its copy, the
+    // local of that name -- reading `self.x` again borrowed `self` into a
+    // nested `'static` closure (`_AnimatedCarousel.build`'s builder inside
+    // its `LayoutBuilder` builder, run675).
+    if (_closureCaptured.contains(field.name)) {
+      return '${snake(field.name)}.clone()';
+    }
     final read = '$_selfName.${snake(field.name)}';
     // A copied `late` field is unwrapped here rather than in the body: the
     // closure holds a `T`, so the reads inside it are ordinary local reads.
@@ -2889,7 +2896,10 @@ class RustBackend {
   /// `rustName` (a method, a setter, a field's accessor); null when none
   /// of them does.
   String? _declaringTrait(String from, String rustName) {
-    final start = library[from];
+    // Another module's trait too (`ModalRoute` from `widgets`, whose
+    // `addLocalHistoryEntry` is `LocalHistoryRoute`'s: `ModalRoute::add_
+    // local_history_entry(..)` was E0782 in `material`, run672).
+    final start = library[from] ?? library.elsewhere[from];
     if (start == null) return null;
     bool declares(IrClass c) =>
         c.methods.any((m) => !m.isStatic && _methodName(m) == rustName) ||
@@ -4413,12 +4423,16 @@ class RustBackend {
         final declaring = _declaringTrait(qualifier, _identifier(name));
         if (declaring != null) qualifier = declaring;
       }
+      // ..and a trait the front end named to call through (`asTrait`),
+      // when it is generic, through the handle's type as well (a bare
+      // `ModalRoute::add_local_history_entry(&*route, ..)` was E0782,
+      // run672).
       final path =
           asTrait ??
           _throughOwnInstantiation(target, receiverClass, qualifier) ??
           (library.isAbstract(qualifier) && (target == null || target is IrThis)
               ? '<${_inSuperFn ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
-              : qualifier);
+              : _dynQualified(target, qualifier) ?? qualifier);
       // A generic method of the trait, on `this` in a trait body through
       // the qualified path: its erased twin, as the plain call goes (the
       // method is `where Self: Sized` in the trait, and `__Self` may be
@@ -4756,20 +4770,42 @@ class RustBackend {
     // Loud, and recorded: an exception in a `where` predicate panics.
     final savedFailure = _failure;
     _failure = null;
+    // Which copies are cells, for the body: a shared field's copy is its
+    // cell (`_copyOf`), read through `borrow()` as the boxed closure's is
+    // (`_closure`); as a plain local it was asked the set's methods
+    // (the stepcapture fixture).
+    final savedCells = _cellLocals;
+    _cellLocals = {
+      ..._cellLocals,
+      for (final c in e.captures)
+        if (_sharedField(c.name) != null) c.name: _isCopy(type(c.type)),
+    };
+    final savedLateCells = _lateCellLocals;
+    _lateCellLocals = {
+      ..._lateCellLocals,
+      for (final c in e.captures)
+        if (_sharedField(c.name) != null && _lateField(c.name) != null) c.name,
+    };
     stmt(e.body, tail: true);
-    _failure = savedFailure;
+    _cellLocals = savedCells;
+    _lateCellLocals = savedLateCells;
     final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
     _indent = savedIndent;
     // The fields the closure copies in, as `_closure` does for the boxed
     // kind. A chain step that read `this.trashEmailIds` named a local that
     // this line had not declared.
+    // ..spelled inside the step too, so a cell accessor's failure unwraps
+    // as the body's calls do: with `?` it was "`?` in a closure that
+    // returns no `Result`" (`MultiChildRenderObjectElement.children`'s
+    // `where` over `_forgottenChildren`, run671).
     final copies = e.captures
         .map(
           (c) =>
               'let ${_assignedIn(e.body).contains(c.name) ? 'mut ' : ''}${snake(c.name)} = ${_copyOf(c)}; ',
         )
         .join();
+    _failure = savedFailure;
     // A `forEach` step returns nothing whatever its closure's body is
     // worth: `xs.forEach(list.remove)` hands it a `bool`-returning
     // tear-off, which Dart's `void Function(T)` slot discards (the
@@ -5302,6 +5338,10 @@ class RustBackend {
   static String? _fallsOffValue(String rendered) {
     if (rendered == '()') return '()';
     if (rendered.startsWith('Option<')) return 'None';
+    // A `dynamic` (a `Function` slot's callback, `RestorableBool.value =
+    // ..` inside one, `_AnimatedHomePageState.build`, run675): Dart's
+    // null, the `Null` object.
+    if (rendered == 'std::rc::Rc<dyn Object>') return 'dart_null_object()';
     if (rendered.startsWith('FutureOr<') && rendered.endsWith('>')) {
       final inner = _fallsOffValue(
         rendered.substring('FutureOr<'.length, rendered.length - 1),
@@ -6474,6 +6514,75 @@ class RustBackend {
     return _isCopy(_heldDecl(f))
         ? '{ if $receiver.$name.get().is_none() { let __v = $init; $receiver.$name.set(Some(__v)); } $receiver.$name.get().unwrap() }'
         : '{ if $receiver.$name.borrow().is_none() { let __v = $init; *$receiver.$name.borrow_mut() = Some(__v); } let __r = $receiver.$name.borrow().clone().unwrap(); __r }';
+  }
+
+  /// A *generic* trait as the qualifier of a call on another object's
+  /// handle: through the type the handle holds (`<dyn ModalRoute<T> as
+  /// ModalRoute<T>>::add_local_history_entry(&*route)`), since a bare
+  /// `ModalRoute::m(..)` is E0782 for a trait with parameters
+  /// (`ScaffoldState._maybeBuildPersistentBottomSheet`, run672). Null
+  /// where the handle's type or the arguments are unknown.
+  String? _dynQualified(IrExpr? target, String qualifier) {
+    if (target == null || target is IrThis) return null;
+    final traced = Platform.environment['DART2RUST_TRACE_QUAL'] == qualifier;
+    // The trait may be another module's (`ModalRoute` from `widgets`
+    // called in `material`): `elsewhere` knows it.
+    final declaring = library[qualifier] ?? library.elsewhere[qualifier];
+    if (declaring == null ||
+        !library.isAbstract(qualifier) ||
+        declaring.typeParameters.isEmpty) {
+      if (traced) {
+        stderr.writeln(
+          'TRACE_QUAL $qualifier: declaring=${declaring != null} abstract=${library.isAbstract(qualifier)} params=${declaring?.typeParameters}',
+        );
+      }
+      return null;
+    }
+    final held = target.rustType;
+    if (held == null || held.isFunction) {
+      if (traced)
+        stderr.writeln(
+          'TRACE_QUAL $qualifier: untyped target ${target.runtimeType}',
+        );
+      return null;
+    }
+    final base = stripNull(held);
+    final owned = library[base.name] ?? library.elsewhere[base.name];
+    if (owned == null) {
+      if (traced)
+        stderr.writeln('TRACE_QUAL $qualifier: unknown class ${base.name}');
+      return null;
+    }
+    // The base's arguments through the held class, in the *handle's*
+    // terms: `RestorableEnum<X>` is a `RestorableProperty<X>`, not a
+    // `RestorableProperty<T>` (E0425, ws673).
+    final ownBinding = {
+      for (
+        var i = 0;
+        i < owned.typeParameters.length && i < base.arguments.length;
+        i++
+      )
+        owned.typeParameters[i]: base.arguments[i],
+    };
+    final through = base.name == qualifier
+        ? base.arguments
+        : _argumentsThrough(owned, const {}, declaring, {});
+    final passed = through == null
+        ? null
+        : [for (final t in through) _substituteType(t, ownBinding)];
+    if (passed == null || passed.length != declaring.typeParameters.length) {
+      if (traced)
+        stderr.writeln('TRACE_QUAL $qualifier: args $passed for ${base.name}');
+      return null;
+    }
+    final args = passed.isEmpty ? '' : '<${passed.map(type).join(', ')}>';
+    final heldArgs = base.arguments.isEmpty
+        ? ''
+        : '<${base.arguments.map(type).join(', ')}>';
+    final holder = library.isAbstract(base.name)
+        ? 'dyn ${base.name}$heldArgs'
+        : '${base.name}$heldArgs';
+    return '<$holder as $qualifier$args>';
   }
 
   /// The type arguments this class passes to the generic trait `name`, spelled
@@ -9299,7 +9408,10 @@ class RustBackend {
         // the bodies, which is what a Rust `impl` is.
         ...from.interfaces.map((i) => i.name),
       ]) {
-        final above = library[name];
+        // ..in another module too: a trait's ancestors decide which trait
+        // declares a member (`_declaringTrait`), and `ModalRoute`'s are
+        // `widgets`' when the call is in `material` (run672).
+        final above = library[name] ?? library.elsewhere[name];
         if (above == null) continue;
         // A class is not its own ancestor. Had the recursion above not ended
         // the run, this is what the same name collision would have emitted:
