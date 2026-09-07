@@ -987,16 +987,23 @@ class KernelFrontend implements TypeWorld {
       // (`dependOnInheritedWidgetOfExactType<T>()` returned into
       // `inheritFrom<T>`'s `T?`, wrapped in a `from_option` that took an
       // `Option`, ws543).
+      // ..and a `super.m<T>()` reaching a generic base method is the
+      // same edge (`super.get<T>()` returning `T?` was wrapped in a
+      // `from_option` that took an `Option`, the gentrait fixture).
       final declaredReturn = switch (node) {
         InstanceInvocation(:final interfaceTarget) =>
           interfaceTarget.function?.returnType,
         StaticInvocation(:final target) => target.function.returnType,
+        SuperMethodInvocation(:final interfaceTarget) =>
+          interfaceTarget.function.returnType,
         _ => null,
       };
       final calleeParams = switch (node) {
         InstanceInvocation(:final interfaceTarget) =>
           interfaceTarget.function?.typeParameters ?? const <TypeParameter>[],
         StaticInvocation(:final target) => target.function.typeParameters,
+        SuperMethodInvocation(:final interfaceTarget) =>
+          interfaceTarget.function.typeParameters,
         _ => const <TypeParameter>[],
       };
       final edgeResult =
@@ -1925,8 +1932,22 @@ class KernelFrontend implements TypeWorld {
         final held = '__t${_nextTemporary++}';
         final again = IrCall(IrLocal(held), 'clone', const [])
           ..rustType = raw.rustType;
+        // The held value typed by Dart's static type when its own says
+        // nothing Rust can infer from: a pattern cache's block whose read
+        // TFA removed ends in `unreachable!()`, and `let __t = { ..;
+        // unreachable!() }` has no type (`CupertinoDynamicColor.
+        // resolveFrom`, run622).
+        final rawType = raw.rustType;
+        IrType? heldType;
+        if (rawType == null || rawType.name == 'Never') {
+          // The local's own type, without its `Option`: the value the
+          // store wraps (`Some(__t.clone())`). Dart's static type of the
+          // block is `Never` once TFA has been through it.
+          final slot = _localIrType(node.variable);
+          heldType = slot == null ? null : _nonNull(slot);
+        }
         return IrBlockValue([
-          IrLocalDecl(held, null, raw),
+          IrLocalDecl(held, heldType, raw),
           IrAssign(
             name,
             _widened(
@@ -3240,6 +3261,25 @@ class KernelFrontend implements TypeWorld {
           _temporaries[v] ??
           (written == null || written.startsWith('#') ? _nameFor(v) : written);
       if (!names.contains(name)) names.add(name);
+    }
+    // A type literal of the enclosing method's observed type parameter
+    // reads the hidden `__ty_<i>` (`_typeLiteral`): a local of the method,
+    // captured as one.
+    final member = _member;
+    if (member is Procedure) {
+      final values = _typeValues(member);
+      if (values.isNotEmpty) {
+        final finder = _TypeLiteralFinder(
+          member.function.typeParameters.toSet(),
+        );
+        node.accept(finder);
+        for (final t in finder.found) {
+          final index = member.function.typeParameters.indexOf(t);
+          if (values.contains(index) && !names.contains('__ty_$index')) {
+            names.add('__ty_$index');
+          }
+        }
+      }
     }
     return names;
   }
@@ -6945,7 +6985,7 @@ class KernelFrontend implements TypeWorld {
     final was = _borrowedArgument;
     _borrowedArgument = borrows;
     try {
-      return _argumentList(
+      final out = _argumentList(
         node,
         callee,
         instantiated,
@@ -6953,6 +6993,21 @@ class KernelFrontend implements TypeWorld {
         namedTypes,
         positionalSlots,
       );
+      // The hidden `Type` arguments a generic method takes (`_typeValues`):
+      // each observed type argument as a value -- a `Type::of("X")`, or the
+      // enclosing method's own hidden parameter when the argument is its
+      // type parameter (`_findModels<T>` calling `getElement..<T>`).
+      final target = callee?.parent;
+      if (target is Procedure) {
+        for (final i in _typeValues(target)) {
+          out.add(
+            _typeLiteral(
+              i < node.types.length ? node.types[i] : const DynamicType(),
+            ),
+          );
+        }
+      }
+      return out;
     } finally {
       _borrowedArgument = was;
     }
@@ -9175,6 +9230,16 @@ class KernelFrontend implements TypeWorld {
     // `dependOnInheritedWidgetOfExactType<T>` found nothing, run555).
     // An erased one is its bound.
     if (type is TypeParameterType) {
+      // A method's own parameter that travels as a value (`_typeValues`):
+      // the hidden parameter, wherever in the body (a closure captures
+      // it as a local, `_freeLocalsIn`).
+      final member = _member;
+      if (member is Procedure) {
+        final index = member.function.typeParameters.indexOf(type.parameter);
+        if (index >= 0 && _typeValues(member).contains(index)) {
+          return IrLocal('__ty_$index')..rustType = const IrType('Type');
+        }
+      }
       if (_erasedParameter(type.parameter)) {
         // An erased parameter of an abstract class is answered by the
         // object: every class under it says what it put in (`Type get
@@ -9859,6 +9924,13 @@ class KernelFrontend implements TypeWorld {
       if (from == null || !_abstractLike(from)) return null;
     }
     final bodies = _genericBodies(target);
+    if (Platform.environment['DART2RUST_TRACE_CALL'] == target.name.text) {
+      stderr.writeln(
+        'TRACE_CALL generic-on-trait ${declaring.name}.${target.name.text} '
+        'from=${from.name} bodies=${bodies.map((c) => c.name).toList()} '
+        'subtypes=${_subtypes != null}',
+      );
+    }
     if (bodies.length != 1) return null;
     final body = bodies.single;
     if (!_abstractLike(body)) return null;
@@ -9876,6 +9948,84 @@ class KernelFrontend implements TypeWorld {
     );
   }
 
+  /// The indices of a generic instance method's type parameters that some
+  /// body in its *family* -- the topmost declaration and every override
+  /// under it -- uses as a type literal (`_inheritedElements[T]` in
+  /// `Element.getElementForInheritedWidgetOfExactType<T>`). Those travel
+  /// as `Type` values in hidden trailing parameters `__ty_<i>`: a `dyn`
+  /// receiver reaches the method through its erased twin, whose `T` is
+  /// `Rc<dyn Object>` and whose `dart_type_of::<T>()` was therefore the
+  /// wrong type (`MediaQuery._of` through provider's override, run623).
+  /// Dart's own runtime passes type arguments this way; here only the
+  /// observed ones are.
+  final _typeValueIndices = <Procedure, List<int>>{};
+
+  List<int> _typeValues(Procedure p) {
+    if (p.isStatic ||
+        p.kind != ProcedureKind.Method ||
+        p.function.typeParameters.isEmpty ||
+        p.enclosingClass == null ||
+        !_translatedClass(p.enclosingClass!)) {
+      return const [];
+    }
+    final root = _familyRoot(p);
+    return _typeValueIndices.putIfAbsent(root, () {
+      final arity = root.function.typeParameters.length;
+      final found = <int>{};
+      final classes = <Class>{root.enclosingClass!, ..._genericBodies(root)};
+      for (final c in classes) {
+        for (final q in c.procedures) {
+          if (q.name.text != root.name.text ||
+              q.isStatic ||
+              q.kind != ProcedureKind.Method) {
+            continue;
+          }
+          final params = q.function.typeParameters;
+          if (params.length != arity) continue;
+          final finder = _TypeLiteralFinder(params.toSet());
+          q.function.body?.accept(finder);
+          for (final t in finder.found) {
+            found.add(params.indexOf(t));
+          }
+        }
+      }
+      return found.toList()..sort();
+    });
+  }
+
+  /// The topmost declaration of an instance method's name above `p`'s
+  /// class (through every supertype, declared or inherited), or `p`.
+  Procedure _familyRoot(Procedure p) {
+    final name = p.name.text;
+    Procedure? best = p;
+    final seen = <Class>{};
+    final queue = <Class>[p.enclosingClass!];
+    while (queue.isNotEmpty) {
+      final c = queue.removeAt(0);
+      if (!seen.add(c)) continue;
+      for (final q in c.procedures) {
+        if (q.name.text == name &&
+            !q.isStatic &&
+            q.kind == ProcedureKind.Method &&
+            q.function.typeParameters.length ==
+                p.function.typeParameters.length) {
+          best = q;
+        }
+      }
+      queue.addAll([
+        if (c.superclass != null) c.superclass!,
+        if (c.mixedInClass != null) c.mixedInClass!,
+        for (final t in c.implementedTypes) t.classNode,
+      ]);
+    }
+    return best!;
+  }
+
+  /// The hidden `Type` parameters `p` takes (see `_typeValues`).
+  List<IrParam> _typeValueParams(Procedure p) => [
+    for (final i in _typeValues(p)) IrParam('__ty_$i', const IrType('Type')),
+  ];
+
   /// The classes below (and including) the target's that carry a body for
   /// its name, whole program.
   List<Class> _genericBodies(Procedure target) {
@@ -9885,8 +10035,10 @@ class KernelFrontend implements TypeWorld {
     final out = <Class>[];
     for (final c in [declaring, ...subtypes.getSubtypesOf(declaring)]) {
       if (c.isAnonymousMixin || out.contains(c)) continue;
-      final uri = c.enclosingLibrary.importUri.toString();
-      if (!uri.startsWith('package:') && uri != 'dart:ui') continue;
+      // The translated classes -- by the prefixes this run was given, not
+      // `package:` by name: a fixture's `file:` classes had no bodies
+      // here and every generic trait call went to the erased twin.
+      if (!_translatedClass(c)) continue;
       for (final p in c.procedures) {
         if (p.name.text == target.name.text &&
             !p.isStatic &&
@@ -11978,6 +12130,8 @@ class KernelFrontend implements TypeWorld {
             hasDefault: p.defaultValue != null,
             defaultValue: _default(p),
           ),
+      // The hidden `Type` parameters last (`_typeValues`).
+      ..._typeValueParams(node),
     ];
     final isOperator = node.kind == ProcedureKind.Operator;
     final thrown = <String>{};

@@ -6402,6 +6402,12 @@ class RustBackend {
         'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(std::boxed::Box::new(self.dart_self_${snakeRaw(above.name)}())); }',
       );
     }
+    // ..and `Object`, as a counted struct answers it: an erased twin's
+    // `as T` is `dart_cast_any::<Rc<dyn Object>>()` (the gentrait
+    // fixture's `found as T` through `get__erased`).
+    _line(
+      'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() { return Some(std::boxed::Box::new(std::rc::Rc::new(self.clone()) as std::rc::Rc<dyn Object>)); }',
+    );
     _line('None');
     _indent--;
     _line('}');
@@ -8829,6 +8835,13 @@ class RustBackend {
     if (cls.counted) {
       _line(
         'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() { return Some(std::boxed::Box::new(self.dart_self_ref().get() as std::rc::Rc<dyn Object>)); }',
+      );
+    } else if (own != null) {
+      // A value struct behind a fresh handle: an erased twin's `as T` is
+      // `dart_cast_any::<Rc<dyn Object>>()` (`found as T` through
+      // `get__erased`, the gentrait fixture).
+      _line(
+        'if __t == std::any::TypeId::of::<dyn Object>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn Object>>() { return Some(std::boxed::Box::new($own as std::rc::Rc<dyn Object>)); }',
       );
     }
     for (final above in _abstractAncestors(cls)) {

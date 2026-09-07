@@ -684,11 +684,22 @@ impl<S: DartAny + ?Sized> DartCastExt for S {
             .and_then(|b| b.downcast::<std::rc::Rc<T>>().ok())
             .map(|b| *b)
     }
+    /// The object as a `T`: what `dart_cast` answers for `T`'s id -- the
+    /// value, or the handle `Rc<T>` a struct answers with for its own type
+    /// (a value struct behind a trait handle, `found as T` in the
+    /// gentrait fixture) -- else the object's `Any`.
     fn dart_cast_any<T: Clone + 'static>(&self) -> Option<T> {
-        self.dart_cast(std::any::TypeId::of::<T>())
-            .and_then(|b| b.downcast::<T>().ok())
-            .map(|b| *b)
-            .or_else(|| self.dart_any_ref().downcast_ref::<T>().cloned())
+        if let Some(b) = self.dart_cast(std::any::TypeId::of::<T>()) {
+            match b.downcast::<T>() {
+                Ok(v) => return Some(*v),
+                Err(b) => {
+                    if let Ok(rc) = b.downcast::<std::rc::Rc<T>>() {
+                        return Some((**rc).clone());
+                    }
+                }
+            }
+        }
+        self.dart_any_ref().downcast_ref::<T>().cloned()
     }
 }
 
