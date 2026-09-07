@@ -186,9 +186,12 @@ class KernelFrontend implements TypeWorld {
 
     for (final ir in lowered.classes) {
       if (ir.isAbstract || ir.isEnum) continue;
-      final node = _kernelClasses[ir.name];
+      // An open class's own struct (`NumValImpl`) is the Dart class too:
+      // its wider impls are the class's (`dartName`; a `NumVal<int>`
+      // handle into a `Prop<Object?>` slot found none, the restoreprop
+      // fixture).
+      final node = _kernelClasses[ir.dartName ?? ir.name];
       if (node == null) continue;
-      final thisType = node.getThisType(env.coreTypes, Nullability.nonNullable);
       // What has an impl already, by the *Rust* type (`sameRust`): `Object`
       // and `dynamic` are one spelling, and `ValueKey<Object>` beside
       // `ValueKey<dynamic>` was two impls of one trait (E0119, ws498).
@@ -204,49 +207,85 @@ class KernelFrontend implements TypeWorld {
         return false;
       }
 
-      for (final entry in census.entries) {
-        final base = entry.key;
-        if (identical(base, node) || base.typeParameters.isEmpty) continue;
-        final asBase = env.hierarchy.getTypeAsInstanceOf(thisType, base);
-        if (asBase is! InterfaceType) continue;
-        // A generic class's own instantiation names its parameter
-        // (`DefaultEquality<E>: Equality<E>`): a wider impl would overlap
-        // it for the `E` that is the wider type (E0119).
-        if (asBase.typeArguments.any(_mentionsTypeParameter)) continue;
-        final own = _erasedArguments(base, asBase.typeArguments);
-        if (own.isEmpty) continue;
-        for (final wider in entry.value) {
-          if (wider == asBase) continue;
-          if (wider.typeArguments.any(_mentionsTypeParameter)) continue;
-          if (!wider.typeArguments.every(nameable)) continue;
-          if (!env.isSubtypeOf(asBase, wider)) continue;
-          // The trait and every generic trait above it, as the wider
-          // instantiation reaches them: `impl Tween<Object> for IntTween`
-          // asks `IntTween: Animatable<Object>` of its supertrait.
-          for (final above in [base, ..._kernelAncestors(base)]) {
-            // An anonymous mixin application is no trait anyone names.
-            if (above.isAnonymousMixin) continue;
-            if (above.typeParameters.isEmpty ||
-                !_translatedClass(above) ||
-                !_abstractLike(above)) {
-              continue;
+      // A generic class per concrete instantiation the program names
+      // (`IrClass.extraImplSelf`); a plain one once, as itself.
+      final selves = <(InterfaceType, List<IrType>?)>[];
+      if (node.typeParameters.isEmpty) {
+        selves.add((
+          node.getThisType(env.coreTypes, Nullability.nonNullable),
+          null,
+        ));
+      } else {
+        for (final inst in census[node] ?? const <InterfaceType>{}) {
+          if (inst.typeArguments.any(_mentionsTypeParameter)) continue;
+          if (!inst.typeArguments.every(nameable)) continue;
+          final List<IrType> selfArgs;
+          try {
+            selfArgs = _erasedArguments(node, inst.typeArguments);
+          } on Unsupported {
+            continue;
+          }
+          // Every parameter erased: the class as declared (`MapEquality<>`
+          // was spelled for one, ws627).
+          selves.add((inst, selfArgs.isEmpty ? null : selfArgs));
+        }
+      }
+      for (final (thisType, selfArgs) in selves) {
+        final selfKey = selfArgs == null ? '' : '${selfArgs.join(',')}|';
+        for (final entry in census.entries) {
+          final base = entry.key;
+          if (identical(base, node) || base.typeParameters.isEmpty) continue;
+          final asBase = env.hierarchy.getTypeAsInstanceOf(thisType, base);
+          if (asBase is! InterfaceType) continue;
+          // A generic class's own instantiation names its parameter
+          // (`DefaultEquality<E>: Equality<E>`): a wider impl would overlap
+          // it for the `E` that is the wider type (E0119).
+          if (asBase.typeArguments.any(_mentionsTypeParameter)) continue;
+          final own = _erasedArguments(base, asBase.typeArguments);
+          if (own.isEmpty) continue;
+          for (final wider in entry.value) {
+            if (wider == asBase) continue;
+            if (wider.typeArguments.any(_mentionsTypeParameter)) continue;
+            if (!wider.typeArguments.every(nameable)) continue;
+            // Not at `void`: the unit has no `Option` to forward through
+            // (`DiagnosticsProperty<void>`, `FlagProperty._value`, ws629).
+            if (wider.typeArguments.any((a) => a is VoidType)) continue;
+            if (!env.isSubtypeOf(asBase, wider)) continue;
+            // The trait and every generic trait above it, as the wider
+            // instantiation reaches them: `impl Tween<Object> for IntTween`
+            // asks `IntTween: Animatable<Object>` of its supertrait.
+            for (final above in [base, ..._kernelAncestors(base)]) {
+              // An anonymous mixin application is no trait anyone names.
+              if (above.isAnonymousMixin) continue;
+              if (above.typeParameters.isEmpty ||
+                  !_translatedClass(above) ||
+                  !_abstractLike(above)) {
+                continue;
+              }
+              final asAbove = env.hierarchy.getTypeAsInstanceOf(wider, above);
+              final ownAbove = env.hierarchy.getTypeAsInstanceOf(
+                thisType,
+                above,
+              );
+              if (asAbove is! InterfaceType || ownAbove is! InterfaceType) {
+                continue;
+              }
+              if (ownAbove.typeArguments.any(_mentionsTypeParameter)) continue;
+              final List<IrType> args, ownArgs;
+              try {
+                args = _erasedArguments(above, asAbove.typeArguments);
+                ownArgs = _erasedArguments(above, ownAbove.typeArguments);
+              } on Unsupported {
+                continue;
+              }
+              if (args.isEmpty) continue;
+              if (sameArgs(args, ownArgs) ||
+                  seen('$selfKey${above.name}', args)) {
+                continue;
+              }
+              ir.extraImpls.add(IrType(above.name, arguments: args));
+              ir.extraImplSelf.add(selfArgs);
             }
-            final asAbove = env.hierarchy.getTypeAsInstanceOf(wider, above);
-            final ownAbove = env.hierarchy.getTypeAsInstanceOf(thisType, above);
-            if (asAbove is! InterfaceType || ownAbove is! InterfaceType) {
-              continue;
-            }
-            if (ownAbove.typeArguments.any(_mentionsTypeParameter)) continue;
-            final List<IrType> args, ownArgs;
-            try {
-              args = _erasedArguments(above, asAbove.typeArguments);
-              ownArgs = _erasedArguments(above, ownAbove.typeArguments);
-            } on Unsupported {
-              continue;
-            }
-            if (args.isEmpty) continue;
-            if (sameArgs(args, ownArgs) || seen(above.name, args)) continue;
-            ir.extraImpls.add(IrType(above.name, arguments: args));
           }
         }
       }
@@ -756,12 +795,14 @@ class KernelFrontend implements TypeWorld {
       // The census (`addWiderImpls`): a generic trait-like class named with
       // arguments, as the closed world names it.
       final census = instantiations;
+      // ..and a concrete generic class's, as the instantiations its wider
+      // impls are written for (`addWiderImpls`: `RestorableNum<int>` as a
+      // `RestorableProperty<Object?>`, run626).
       if (census != null &&
           !_censusOff &&
           type.typeArguments.isNotEmpty &&
           !core &&
-          _translatedClass(type.classNode) &&
-          _abstractLike(type.classNode)) {
+          _translatedClass(type.classNode)) {
         census
             .putIfAbsent(type.classNode, () => {})
             .add(type.withDeclaredNullability(Nullability.nonNullable));

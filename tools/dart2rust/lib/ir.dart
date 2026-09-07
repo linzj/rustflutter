@@ -1629,6 +1629,15 @@ class IrClass {
   /// (the front end's census), so the list is finite.
   final List<IrType> extraImpls = [];
 
+  /// For each of [extraImpls], the class's own type arguments the impl is
+  /// written for, or null for the class as declared: a *generic* class
+  /// gets its wider impls per concrete instantiation the program names
+  /// (`impl RestorableProperty<Rc<dyn Object>> for RestorableNum<i64>`
+  /// beside the generic `impl<T> RestorableProperty<T> for
+  /// RestorableNum<T>`; the two never overlap, where a generic wider impl
+  /// would, E0119).
+  final List<List<IrType>?> extraImplSelf = [];
+
   /// `class Foo<T>` -- the names, in order. See [IrTypeParams].
   final IrTypeParams typeParameters;
   final String? superclass;

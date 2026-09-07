@@ -591,6 +591,17 @@ IrExpr coerceInto(
     if (identical(kb, k) && identical(vb, v)) return value;
     return IrMapElements(value, 'Map', IrRecord([kb, vb]))..rustType = slot;
   }
+  // A `dynamic` into a collection slot: the prelude's checked conversion
+  // (`dart_cast_map`/`dart_cast_list`, as `as Map<..>` takes): a wider
+  // impl's forwarder handed `_HistoryProperty.initWithValue` the bare
+  // handle where its `Map<String?, List<Object>>?` went (run629).
+  if (haveObject &&
+      (slot.name == 'Map' || slot.name == 'List') &&
+      !isNullable(slot) &&
+      slot.arguments.isNotEmpty) {
+    return IrDowncast(value, slot.name, arguments: slot.arguments)
+      ..rustType = slot;
+  }
   if (have.name == 'Map' || slot.name == 'Map') return value;
   final haveTrait = world.isTrait(have.name);
   final slotTrait = world.isTrait(slot.name);
@@ -603,7 +614,15 @@ IrExpr coerceInto(
     // The same trait with other arguments (`Tween<f64>` into a
     // `Tween<Object>`) has no cast.
     if (have.name == slot.name) return value;
-    if (world.isBelow(have.name, slot.name)) {
+    // A supertrait *without* arguments unsizes (`Rc<dyn Sub>` as `Rc<dyn
+    // Base>`); with arguments the wider instantiation is another trait
+    // (`RestorableNum<i64>` into `RestorableProperty<Rc<dyn Object>>`,
+    // run626), which the object answers for through its wider impl.
+    // ..spelled concretely: a slot naming the callee's own type parameter
+    // (`ValueListenable<T>` of `ValueListenableBuilder<T>`) has no
+    // `TypeId` to ask for, and unsizes as before (+8 at ws629).
+    if (world.isBelow(have.name, slot.name) &&
+        (slot.arguments.isEmpty || !_concreteArguments(slot, world))) {
       return IrUpcast(value, slot, handle: true, explicit: inClosure)
         ..rustType = slot;
     }
@@ -719,6 +738,41 @@ const preludeValueTypes = {
 };
 
 const _dynamicType = IrType('dynamic');
+
+/// Whether every name in a type's arguments is a class, scalar or prelude
+/// type the world knows -- not a type parameter of some declaration, which
+/// a cast's `TypeId` could not be taken for.
+bool _concreteArguments(IrType t, TypeWorld world) {
+  const known = {
+    'Object',
+    'dynamic',
+    'Null',
+    'Type',
+    'void',
+    '()',
+    'Future',
+    'FutureOr',
+    'Function',
+    'Vec',
+  };
+  bool ok(IrType a) {
+    if (a.isFunction) {
+      return (a.parameters ?? const []).every(ok) &&
+          (a.returns == null || ok(a.returns!));
+    }
+    final name = a.name;
+    final knownName =
+        known.contains(name) ||
+        scalarNames.contains(name) ||
+        preludeValueTypes.contains(name) ||
+        world.isTrait(name) ||
+        world.isStruct(name) ||
+        world.isEnum(name);
+    return knownName && a.arguments.every(ok);
+  }
+
+  return t.arguments.every(ok);
+}
 
 /// Whether a type can be written as a turbofish: no placeholder in it.
 bool _spellable(IrType t) {

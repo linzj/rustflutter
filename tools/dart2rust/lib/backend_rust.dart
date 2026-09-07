@@ -364,6 +364,23 @@ class RustBackend {
     // Dart's `void?` is `void`, and the prelude's unit says so (`<() as
     // DartNullable>::Or = ()`): no `Option` around it.
     if (t.name == 'void' && t.nullable) return '()';
+    // Inside a wider impl written for one concrete instantiation of a
+    // generic class (`_selfBinding`), the class's own parameter spells as
+    // what that instantiation put in for it.
+    if (_selfBinding.isNotEmpty && !t.isFunction && t.arguments.isEmpty) {
+      final bound = _selfBinding[t.name];
+      if (bound != null && bound.name != t.name) {
+        return type(
+          IrType(
+            bound.name,
+            nullable: t.nullable || bound.nullable,
+            arguments: bound.arguments,
+            projected: t.projected,
+          ),
+          owned: owned,
+        );
+      }
+    }
     if (t.isFunction) {
       // A parameter takes `impl Fn(..)`, which needs no allocation and lets the
       // caller pass a closure literal; anything owned -- a field, a return --
@@ -1511,6 +1528,23 @@ class RustBackend {
     return field.isLate ? 'Option<$held>' : held;
   }
 
+  /// The held type as the *declaration* spells it, for deciding a cell's
+  /// kind: inside a wider impl for one instantiation (`_selfBinding`) a
+  /// `T` field spells `i64`, but the struct's cell is the `RefCell` a
+  /// `T` got (`NumVal<i64>.value.get()` on a `RefCell`, the restoreprop
+  /// fixture).
+  String _heldDecl(IrFieldDecl field) => _declSpelling(() => _heldType(field));
+
+  String _declSpelling(String Function() spell) {
+    final saved = _selfBinding;
+    _selfBinding = const {};
+    try {
+      return spell();
+    } finally {
+      _selfBinding = saved;
+    }
+  }
+
   /// The `late` field of *this* class by that name, or null.
   IrFieldDecl? _lateField(String name) {
     for (final f in _allFields(cls)) {
@@ -1616,7 +1650,7 @@ class RustBackend {
       return late != null ? '$value.unwrap()' : value;
     }
     if (late != null && _sharedField(field.name) == null) {
-      return _isCopy(type(late.type))
+      return _isCopy(_declSpelling(() => type(late.type)))
           ? '$read.unwrap()'
           : '$read.clone().unwrap()';
     }
@@ -1888,12 +1922,35 @@ class RustBackend {
   /// substituted with, spelled (`<Rc<dyn Object> as DartNullable>`, not
   /// `<Object as ..>`: E0782 26 and `dynamic` 25 at ws465).
   String _nullableOf(String parameter) {
+    // ..bound to one instantiation inside a wider impl (`_selfBinding`).
+    final bound = _selfBinding[parameter];
+    if (bound != null) return type(bound);
     if (cls.typeParameters.contains(parameter) ||
         _methodTypeParams.contains(parameter)) {
       return parameter;
     }
     return type(IrType(parameter));
   }
+
+  /// `::<i64>` for the class's own parameters inside a wider impl for one
+  /// instantiation (`_selfBinding`), so that `ConstantTween::lerp(self,
+  /// t)` names `ConstantTween::<f64>` and rustc does not infer the class's
+  /// `T` from the trait's return type instead (ws627); empty otherwise.
+  String _selfTurbofish() {
+    if (_selfBinding.isEmpty) return '';
+    final args = [
+      for (final p in cls.typeParameters)
+        if (_selfBinding[p] != null) type(_selfBinding[p]!),
+    ];
+    if (args.length != cls.typeParameters.length) return '';
+    return '::<${args.join(', ')}>';
+  }
+
+  /// A type in the class's own terms, as the wider impl being written
+  /// binds them (`_selfBinding`), for the coercion rule to compare with
+  /// the trait's side; the type itself outside one.
+  IrType _selfBound(IrType t) =>
+      _selfBinding.isEmpty ? t : _substituteType(t, _selfBinding);
 
   /// Whether a type is a translated class's, a trait's, or a collection's
   /// -- anything `==` compares by `DartEq` rather than by value.
@@ -2207,6 +2264,51 @@ class RustBackend {
       if (declares) return above;
     }
     return null;
+  }
+
+  /// `<Recv<args> as Trait<traitArgs>>` for a call on another object
+  /// whose class implements the trait more than once (`extraImpls`): a
+  /// bare `Trait::m(&*x)` cannot say which (`RestorableProperty::dispose`
+  /// on a `RestorableEnumN<Orientation>`, E0283 at ws627). Null when the
+  /// plain spelling is unambiguous.
+  String? _throughOwnInstantiation(
+    IrExpr? target,
+    String? receiverClass,
+    String trait,
+  ) {
+    if (target == null || target is IrThis || receiverClass == null) {
+      return null;
+    }
+    final owner = library[receiverClass];
+    if (owner == null ||
+        owner.isAbstract ||
+        !owner.extraImpls.any((w) => w.name == trait)) {
+      return null;
+    }
+    final base = library[trait];
+    if (base == null) return null;
+    final recv = target.rustType;
+    final binding = <String, IrType>{
+      if (recv != null)
+        for (
+          var i = 0;
+          i < owner.typeParameters.length && i < recv.arguments.length;
+          i++
+        )
+          owner.typeParameters[i]: recv.arguments[i],
+    };
+    final passed = _argumentsThrough(owner, binding, base, {});
+    if (passed == null ||
+        passed.any((a) => owner.typeParameters.contains(a.name))) {
+      return null;
+    }
+    final self = recv != null && recv.arguments.isNotEmpty
+        ? '${owner.name}<${recv.arguments.map((a) => type(a)).join(', ')}>'
+        : owner.name;
+    final args = passed.isEmpty
+        ? ''
+        : '<${passed.map((a) => type(a)).join(', ')}>';
+    return '<$self as $trait$args>';
   }
 
   /// `<Self as Trait<args>>` for a trait this class implements more than
@@ -2806,13 +2908,12 @@ class RustBackend {
       if (shared != null) {
         final lazy = _lazyDecl(name);
         if (lazy != null) return _lazyRead(lazy, receiver);
-        final held = _heldType(shared);
         // The guard bound and dropped in its own statement (as another
         // object's field is read below): a bare `.borrow().clone()` keeps
         // its `Ref` to the statement's end, into a `borrow_mut()` of the
         // same cell on the left (`_file = _file.setPosition(0)`, run517).
         // Parenthesised: a block at a statement's start is a statement.
-        final read = _isCopy(held)
+        final read = _isCopy(_heldDecl(shared))
             ? '$receiver.${snake(name)}.get()'
             : '({ let __r = $receiver.${snake(name)}.borrow().clone(); __r })';
         // Out of the cell it is a value, so the `late` unwrap is on a value
@@ -2826,7 +2927,7 @@ class RustBackend {
         // `Copy` value is taken out whole, which is what a place does anyway.
         // Cloned out, as every other field read is now: `as_ref()` handed
         // back a `&_ImageFilter` where the getter returns one by value (4).
-        return _isCopy(type(late.type))
+        return _isCopy(_declSpelling(() => type(late.type)))
             ? '$receiver.${snake(name)}.unwrap()'
             : '$receiver.${snake(name)}.clone().unwrap()';
       }
@@ -2856,7 +2957,7 @@ class RustBackend {
       if (owned != null) {
         for (final f in _allFields(owned)) {
           if (f.name != name || !f.isLate) continue;
-          return _isCopy(type(f.type))
+          return _isCopy(_declSpelling(() => type(f.type)))
               ? '$receiver.${snake(name)}.unwrap()'
               : '$receiver.${snake(name)}.clone().unwrap()';
         }
@@ -2870,7 +2971,7 @@ class RustBackend {
     if (target == null || target is IrThis) {
       for (final f in _allFields(cls)) {
         if (f.name == name) {
-          return _isCopy(type(f.type))
+          return _isCopy(_declSpelling(() => type(f.type)))
               ? '$receiver.${snake(name)}'
               : '$receiver.${snake(name)}.clone()';
         }
@@ -2884,7 +2985,7 @@ class RustBackend {
     if (target is IrDowncast && target.type == cls.name) {
       final late = _lateField(name);
       if (late != null) {
-        return _isCopy(type(late.type))
+        return _isCopy(_declSpelling(() => type(late.type)))
             ? '$receiver.${snake(name)}.unwrap()'
             : '$receiver.${snake(name)}.clone().unwrap()';
       }
@@ -3123,7 +3224,7 @@ class RustBackend {
     }
     if (place is IrField && (place.target == null || place.target is IrThis)) {
       final shared = _sharedField(place.name);
-      if (shared != null && !_isCopy(_heldType(shared))) {
+      if (shared != null && !_isCopy(_heldDecl(shared))) {
         return '&mut *$_selfName.${snake(place.name)}.borrow_mut()';
       }
       if (shared == null) return '&mut $_selfName.${snake(place.name)}';
@@ -4054,7 +4155,13 @@ class RustBackend {
         : receiverClass == null
         ? null
         : library[receiverClass];
-    var wide = _wideTraitFor(owner, name);
+    // ..not when the class has the method inherently: that is what Dart
+    // calls, and it may widen the trait's signature (`MapEquality.equals(
+    // Map? e1, ..)` over `Equality<Map>.equals(Map e1, ..)`, ws627).
+    var wide =
+        owner != null && owner.methods.any((m) => m.name == name && !m.isStatic)
+        ? null
+        : _wideTraitFor(owner, name);
     // ..or one of *two* traits the receiver's class implements that both
     // declare the method (`RenderBox` re-declares `RenderObject`'s
     // `markNeedsLayout`), with no inherent method to win: the nearest is
@@ -4079,15 +4186,35 @@ class RustBackend {
     if (wide != null &&
         owner != null &&
         (qualifier == null || qualifier == wide.name)) {
-      final passed = _argumentsThrough(owner, const {}, wide, {});
-      if (passed != null &&
-          (identical(owner, cls) || owner.typeParameters.isEmpty)) {
+      // A generic receiver's own instantiation is read off its recorded
+      // type (`SetEquality<Rc<dyn Object>>` calling `equals`: plain, it
+      // resolved to the wider `Equality<Vec<..>>` impl, ws628).
+      final recv = target == null || target is IrThis ? null : target.rustType;
+      final ownBinding = <String, IrType>{
+        if (!identical(owner, cls) && recv != null)
+          for (
+            var i = 0;
+            i < owner.typeParameters.length && i < recv.arguments.length;
+            i++
+          )
+            owner.typeParameters[i]: recv.arguments[i],
+      };
+      final passed = _argumentsThrough(owner, ownBinding, wide, {});
+      final concrete =
+          identical(owner, cls) ||
+          owner.typeParameters.isEmpty ||
+          (ownBinding.length == owner.typeParameters.length &&
+              passed != null &&
+              !passed.any((a) => owner.typeParameters.contains(a.name)));
+      if (passed != null && concrete) {
         final spelledArgs = passed.isEmpty
             ? ''
             : '<${passed.map((a) => type(a)).join(', ')}>';
         final self = identical(owner, cls)
             ? (_inSuperFn ? '__Self' : 'Self')
-            : owner.name;
+            : ownBinding.isEmpty
+            ? owner.name
+            : '${owner.name}<${owner.typeParameters.map((p) => type(ownBinding[p]!)).join(', ')}>';
         asTrait = '<$self as ${wide.name}$spelledArgs>';
         qualifier = wide.name;
       }
@@ -4177,6 +4304,7 @@ class RustBackend {
       }
       final path =
           asTrait ??
+          _throughOwnInstantiation(target, receiverClass, qualifier) ??
           (library.isAbstract(qualifier) && (target == null || target is IrThis)
               ? '<${_inSuperFn ? '__Self' : 'Self'} as $qualifier${_traitArgsOf(qualifier)}>'
               : qualifier);
@@ -4360,7 +4488,7 @@ class RustBackend {
       final stored = wrapped ? 'Some($text)' : text;
       // Into the cell the struct holds it in (`_fieldType`).
       final celled = _inCellOf(cls, f)
-          ? (_isCopy(_heldType(f))
+          ? (_isCopy(_heldDecl(f))
                 ? 'std::rc::Rc::new(std::cell::Cell::new($stored))'
                 : 'std::rc::Rc::new(std::cell::RefCell::new($stored))')
           : stored;
@@ -4419,7 +4547,7 @@ class RustBackend {
           : '{ let __set = ${expr(value)}; $through::set_${snake(name)}($receiver, $widened)$_propagate; __set }';
     }
     if (shared != null) {
-      final copy = _isCopy(_heldType(shared));
+      final copy = _isCopy(_heldDecl(shared));
       return copy
           ? '{ let __set = ${expr(value)}; $receiver.${snake(name)}.set(__set); __set }'
           : '{ let __set = ${expr(value)}; '
@@ -5569,7 +5697,12 @@ class RustBackend {
           for (final s in expr.statements) stmt(s);
           break;
         }
-        _line('${this.expr(expr)};');
+        // A block at a statement's start is a block *statement* to Rust,
+        // and what follows it -- `[i].clone().m()` after a cell read --
+        // starts another (`r.props.last.initWithValue(..)`, the
+        // restoreprop fixture). Parenthesised, it is the expression.
+        final text = this.expr(expr);
+        _line(text.startsWith('{') ? '($text);' : '$text;');
       case IrAssert(:final condition, :final literalMessage, :final message):
         // `debug_assert!`, not `assert!`: Dart's assert runs in debug builds
         // and is compiled out of release ones, and so is this. Using `assert!`
@@ -6191,7 +6324,7 @@ class RustBackend {
           : _substitute(f.initial!, const {}, _implBinding),
     );
     _lazyExpanding.remove(f.name);
-    return _isCopy(_heldType(f))
+    return _isCopy(_heldDecl(f))
         ? '{ if $receiver.$name.get().is_none() { let __v = $init; $receiver.$name.set(Some(__v)); } $receiver.$name.get().unwrap() }'
         : '{ if $receiver.$name.borrow().is_none() { let __v = $init; *$receiver.$name.borrow_mut() = Some(__v); } let __r = $receiver.$name.borrow().clone().unwrap(); __r }';
   }
@@ -6835,7 +6968,7 @@ class RustBackend {
   /// parameter (`Holder<T>.value`, written as `h.value = ..` from outside,
   /// ws510) is not `Copy` -- the parameter is no name known here.
   bool _fieldIsCopy(IrFieldDecl field, IrClass? owner) {
-    final held = _heldType(field);
+    final held = _heldDecl(field);
     if (owner != null && _namesIn(held).any(owner.typeParameters.contains)) {
       return false;
     }
@@ -8854,10 +8987,21 @@ class RustBackend {
         'if __t == std::any::TypeId::of::<dyn ${above.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${above.name}$arguments>>() { return Some(std::boxed::Box::new($handle)); }',
       );
     }
-    for (final wider in cls.extraImpls) {
+    for (var i = 0; i < cls.extraImpls.length; i++) {
+      final wider = cls.extraImpls[i];
       final arguments = '<${wider.arguments.map((a) => type(a)).join(', ')}>';
+      final self = i < cls.extraImplSelf.length ? cls.extraImplSelf[i] : null;
+      if (self == null) {
+        _line(
+          'if __t == std::any::TypeId::of::<dyn ${wider.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${wider.name}$arguments>>() { return Some(std::boxed::Box::new(<Self as ${wider.name}$arguments>::dart_self_${snakeRaw(wider.name)}(self))); }',
+        );
+        continue;
+      }
+      // An impl written for one instantiation of this generic class: the
+      // object answers only when it *is* that instantiation.
+      final me = '${cls.name}<${self.map((a) => type(a)).join(', ')}>';
       _line(
-        'if __t == std::any::TypeId::of::<dyn ${wider.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${wider.name}$arguments>>() { return Some(std::boxed::Box::new(<Self as ${wider.name}$arguments>::dart_self_${snakeRaw(wider.name)}(self))); }',
+        'if __t == std::any::TypeId::of::<dyn ${wider.name}$arguments>() || __t == std::any::TypeId::of::<std::rc::Rc<dyn ${wider.name}$arguments>>() { if let Some(__me) = (self as &dyn std::any::Any).downcast_ref::<$me>() { return Some(std::boxed::Box::new(<$me as ${wider.name}$arguments>::dart_self_${snakeRaw(wider.name)}(__me))); } }',
       );
     }
     _line('None');
@@ -8948,12 +9092,18 @@ class RustBackend {
     // The wider instantiations the program names (`IrClass.extraImpls`):
     // an impl each, its signatures in the wider terms, forwarding to the
     // class's own methods through the coercion rule.
-    for (final wider in cls.extraImpls) {
+    for (var i = 0; i < cls.extraImpls.length; i++) {
+      final wider = cls.extraImpls[i];
       final base = library[wider.name];
       if (base == null) continue;
+      final self = i < cls.extraImplSelf.length ? cls.extraImplSelf[i] : null;
       _member(
         'impl ${wider.name}<${wider.arguments.join(', ')}> for ${cls.name}',
-        () => _emitImplFor(base, passedOverride: wider.arguments),
+        () => _emitImplFor(
+          base,
+          passedOverride: wider.arguments,
+          selfOverride: self,
+        ),
       );
     }
   }
@@ -9071,8 +9221,22 @@ class RustBackend {
   /// The trait whose impl block is being printed (`_emitImplFor`).
   String? _implFor;
 
-  void _emitImplFor(IrClass base, {List<IrType>? passedOverride}) {
+  void _emitImplFor(
+    IrClass base, {
+    List<IrType>? passedOverride,
+    List<IrType>? selfOverride,
+  }) {
     _implFor = base.name;
+    _selfBinding = selfOverride == null
+        ? const {}
+        : {
+            for (
+              var i = 0;
+              i < cls.typeParameters.length && i < selfOverride.length;
+              i++
+            )
+              cls.typeParameters[i]: selfOverride[i],
+          };
     // Not just the abstract ones. A class that overrides a *concrete* base
     // method needs that override in the impl too, or dynamic dispatch reaches
     // the trait's default instead -- the inherent method would still be right,
@@ -9146,9 +9310,14 @@ class RustBackend {
     // `DartAny` hands out a `&dyn Any`. A generic class implementing a trait
     // is the commonest shape in the widget layer, so leaving the bound off
     // here was 620 `E0310` in one go.
+    // For one concrete instantiation (`selfOverride`): no impl generics,
+    // the class spelled with those arguments.
     _line(
-      'impl${_implGenerics(cls)} ${base.name}$arguments for '
-      '${cls.name}${_generics(cls)} {',
+      selfOverride != null
+          ? 'impl ${base.name}$arguments for '
+                '${cls.name}<${selfOverride.map((a) => type(a)).join(', ')}> {'
+          : 'impl${_implGenerics(cls)} ${base.name}$arguments for '
+                '${cls.name}${_generics(cls)} {',
     );
     _indent++;
     // The handle a trait body's `this` is. A struct that is not counted has
@@ -9160,11 +9329,13 @@ class RustBackend {
     _indent++;
     // ..and a generic value class cannot even be cloned here: its derived
     // `Clone` wants `T: Clone`, which the impl's `T: 'static` does not
-    // promise (192 `&X<T>: Trait` bounds at ws275).
+    // promise (192 `&X<T>: Trait` bounds at ws275). At one concrete
+    // instantiation it can.
     _line(
       cls.counted
           ? 'self.__self.get()'
-          : cls.typeParameters.isEmpty && _cloneable(cls)
+          : (cls.typeParameters.isEmpty || selfOverride != null) &&
+                _cloneable(cls)
           ? 'std::rc::Rc::new(self.clone())'
           : 'todo!("${cls.name} has no handle of its own")',
     );
@@ -9245,7 +9416,7 @@ class RustBackend {
           ? (cell != null
                 ? (_lazyLate(field)
                       ? _lazyRead(field, 'self')
-                      : _isCopy(_heldType(cell))
+                      : _isCopy(_heldDecl(cell))
                       ? 'self.${snake(field.name)}.get()$late'
                       : 'self.${snake(field.name)}.borrow().clone()$late')
                 : _isCopy(type(_substituteType(field.type, _implBinding)))
@@ -9330,7 +9501,7 @@ class RustBackend {
                 );
           final stored = field.isLate ? 'Some($adapted)' : adapted;
           _line(
-            _isCopy(_heldType(cell))
+            _isCopy(_heldDecl(cell))
                 ? 'self.${snake(field.name)}.set($stored);'
                 : '*self.${snake(field.name)}.borrow_mut() = $stored;',
           );
@@ -9353,6 +9524,7 @@ class RustBackend {
     }
     _indent--;
     _line('}');
+    _selfBinding = const {};
   }
 
   /// The base the impl block currently being written is for.
@@ -9366,6 +9538,11 @@ class RustBackend {
   /// declares, which is the same mistake flattening made with fields one level
   /// down.
   var _implBinding = <String, IrType>{};
+
+  /// The class's own type parameters bound to one concrete instantiation,
+  /// while its wider impl for that instantiation is written (see
+  /// `IrClass.extraImplSelf`); empty otherwise.
+  Map<String, IrType> _selfBinding = const {};
 
   /// The method with each type parameter that shadows one of the class's
   /// renamed `T_` in its signature, or null when none does. The body is
@@ -9521,7 +9698,7 @@ class RustBackend {
             }
             final stored = field.isLate ? 'Some($value)' : value;
             _line(
-              _isCopy(_heldType(cell))
+              _isCopy(_heldDecl(cell))
                   ? 'self.$name.set($stored);'
                   : '*self.$name.borrow_mut() = $stored;',
             );
@@ -9535,7 +9712,7 @@ class RustBackend {
           final read = cell != null
               ? (_lazyLate(field)
                     ? _lazyRead(field, 'self')
-                    : _isCopy(_heldType(cell))
+                    : _isCopy(_heldDecl(cell))
                     ? 'self.$name.get()$late'
                     : 'self.$name.borrow().clone()$late')
               : _isCopy(type(field.type))
@@ -9592,7 +9769,8 @@ class RustBackend {
         // ..all by the one rule (`coerceInto`) inside the `Result`'s `map`.
         // A future is the same future under a lifetime spelling and is
         // left alone.
-        final held = IrLocal('__v')..rustType = have.returnType;
+        final held = IrLocal('__v')
+          ..rustType = _selfBound(_inThisClassTerms(have.returnType, via));
         if (Platform.environment['DART2RUST_TRACE_FWD'] == need.name) {
           stderr.writeln(
             'TRACE_FWD ${cls.name}.${need.name} have=${have.returnType} need=${need.returnType} method',
@@ -9727,6 +9905,24 @@ class RustBackend {
         inherited.$1.name != base.name;
   }
 
+  /// A type of an inherited method (`via`, the ancestor declaring it) in
+  /// this class's terms: the ancestor's parameters replaced by what this
+  /// class passes it (`RestorableEnumN<T> extends RestorableValue<T?>`:
+  /// `RestorableValue`'s `T` is `Option<T>` here, and the forwarder
+  /// handed `initWithValue` a bare `Orientation`, ws628).
+  IrType _inThisClassTerms(IrType t, String? via) {
+    if (via == null) return t;
+    final base = library[via];
+    if (base == null || base.typeParameters.isEmpty) return t;
+    final passed = _argumentsThrough(cls, const {}, base, {});
+    if (passed == null || passed.length != base.typeParameters.length) {
+      return t;
+    }
+    return _substituteType(t, {
+      for (var i = 0; i < passed.length; i++) base.typeParameters[i]: passed[i],
+    });
+  }
+
   String _inherentCall(IrMethod method, [IrMethod? through, String? via]) {
     // Dart lets an override *widen* an optional signature:
     // `OutlinedBorder.copyWith({side})` is overridden by
@@ -9783,7 +9979,13 @@ class RustBackend {
             ? (IrLiteral('${snake(from.name)}.flatten()', const IrType('raw'))
                 ..rustType = flattened)
             : (IrLocal(from.name)..rustType = flattened);
-        return expr(coerceInto(passed, p.type, _world));
+        return expr(
+          coerceInto(
+            passed,
+            _selfBound(_inThisClassTerms(p.type, via)),
+            _world,
+          ),
+        );
       }
       // The override's own default is the value the base "has no value for".
       final fallback = p.defaultValue;
@@ -9829,7 +10031,7 @@ class RustBackend {
         ? _turbofish([for (final g in generics) IrType(g)])
         : '';
     final call =
-        '${via == null ? cls.name : _implementedAs(via)}::$name$fish(${[receiver, ...args].join(', ')})';
+        '${via == null ? '${cls.name}${_selfTurbofish()}' : _implementedAs(via)}::$name$fish(${[receiver, ...args].join(', ')})';
     // An inherent method the analysis typed `Never` (`throw
     // UnimplementedError()` for a body) returns `Result<Infallible, E>`;
     // the trait's signature wants its own `T`, which the impossible value
@@ -10005,7 +10207,7 @@ class RustBackend {
         _line(
           _inCell(field)
               ? '${snake(field.name)}: std::rc::Rc::new(std::cell::'
-                    '${_isCopy(_heldType(field)) ? 'Cell' : 'RefCell'}'
+                    '${_isCopy(_heldDecl(field)) ? 'Cell' : 'RefCell'}'
                     '::new(None)),'
               : '${snake(field.name)}: None,',
         );
@@ -10026,7 +10228,7 @@ class RustBackend {
           _line(
             _inCell(field)
                 ? '${snake(field.name)}: std::rc::Rc::new(std::cell::'
-                      '${_isCopy(_heldType(field)) ? 'Cell' : 'RefCell'}'
+                      '${_isCopy(_heldDecl(field)) ? 'Cell' : 'RefCell'}'
                       '::new(None)),'
                 : '${snake(field.name)}: None,',
           );
@@ -10090,7 +10292,7 @@ class RustBackend {
         final value = 'Some(${expr(entry.value)})';
         _line(
           _inCell(field)
-              ? (_isCopy(_heldType(field))
+              ? (_isCopy(_heldDecl(field))
                     ? '__new.${snake(field.name)}.set($value);'
                     : '*__new.${snake(field.name)}.borrow_mut() = $value;')
               : '__new.${snake(field.name)} = $value;',
