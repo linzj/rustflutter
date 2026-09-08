@@ -1347,8 +1347,17 @@ class KernelFrontend implements TypeWorld {
     if (declared == null || declared is TypeParameterType) return null;
     final owner = target.enclosingClass;
     if (owner == null) return null;
+    // Only where the class kept *none* of them: the struct then has no
+    // type parameters at all and every mention is at the bound, which is
+    // what makes the read's spelling unambiguous. A class that kept some
+    // still names them, and reading at the bound there was 87 more errors
+    // in one round (ws765).
     final erased = owner.typeParameters.where(_erasedParameter).toList();
-    if (erased.isEmpty || !_mentionsParametersOf(declared, erased)) return null;
+    if (erased.isEmpty ||
+        erased.length != owner.typeParameters.length ||
+        !_mentionsParametersOf(declared, erased)) {
+      return null;
+    }
     try {
       return _typeNested(declared);
     } on Unsupported {

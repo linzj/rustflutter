@@ -854,3 +854,16 @@ declaring class's parameter, and dropped the declared nullability with it:
 `Option<Rc<dyn Object>>`, and a bare `dynamic` there took the `Option` off
 every null-aware read around it. Narrowed to a non-nullable parameter,
 which is the case it was written for (`Animatable<T>.transform`).
+
+## ws766 — the nullability was not the overreach (324)
+
+    ws765 324 stubbed
+    ws766 324 stubbed, 130 refusals, 64 crates   (vs ws764: 1 gone, 33 new)
+
+Narrowing `_throughReceiver` to a non-nullable parameter changed nothing,
+so the cost is `_erasedRead`: it fired for *any* read whose declared type
+mentions a parameter the declaring class erased, and most such classes
+keep some of their parameters, so reading at the bound there is simply
+wrong. Narrowed again to a class that kept **none** of them -- the struct
+then has no type parameters at all, which is what makes the spelling
+unambiguous, and is exactly `TweenSequenceItem`.
