@@ -2784,3 +2784,29 @@ That is the honest limit here: what is left in the tail is mostly shapes
 whose cause is only visible with the whole gallery in hand, and the
 fixture-first rule this session has kept means they wait for a way to
 reproduce them rather than for a plausible patch.
+
+### The fixture harness is now the binding constraint
+
+Four groups were taken to the point of a fixture this session and none of
+the four could be reproduced in one file:
+
+    ws858  the erased accessor        mapfnslot   agrees at HEAD
+    ws864  the double box             traithandle agrees at HEAD (2 shapes)
+                                      mapwiden    agrees at HEAD
+    ws865  a `None` with no element    nullaware   agrees at HEAD
+
+Each is produced by an analysis that runs over the *whole* program -- the
+erasure census, the closed-world instantiation list, TFA's narrowing of a
+field to `Null` -- and `fx.sh` builds a single library with none of them.
+The shapes are real (the chain names the members, and the emission shows
+the text), but the harness cannot make them fail.
+
+So the goal's own rule -- a fixture per cleared group, agreeing with Dart
+-- cannot be satisfied for what is left by fixtures of this kind. Either
+the harness grows a way to build a small multi-library program *with* the
+AOT pipeline's analyses, and these shapes become reproducible; or these
+groups are verified the way ws858 was, by reading the emission before and
+after and taking the chain's diff as the measurement, and STATUS says so
+each time. That is a decision about how this compiler is to be tested, and
+it is the thing standing between here and zero for a good part of the
+remaining 181.
