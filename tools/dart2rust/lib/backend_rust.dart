@@ -3355,6 +3355,24 @@ class RustBackend {
       final test = _isTest(inner, target, negated);
       return '(match ${expr(operand)}.clone() { Some(__v) => $test, None => $negated })';
     }
+    // A prelude *generic* class answers `is` by the runtime type it
+    // reports: a `DartFuture<T>` is a `Future` whatever `T` is, and a
+    // downcast would have to name the one instantiation it was boxed as.
+    // Only for a test with no type arguments -- `x is Future<int>` asks
+    // about `T`, which this cannot answer, and stops as before
+    // (`SynchronousFuture.then`'s `result is Future`, 2 at ws850).
+    // ..`x is Future` is `Future<dynamic>` by the time it gets here, so a
+    // top argument counts as none.
+    final preludeGeneric = _preludeGenerics[name];
+    if (library[name] == null &&
+        preludeGeneric != null &&
+        target.arguments.every(
+          (a) => a.name == 'dynamic' || a.name == 'Object',
+        )) {
+      final read = _optionRead(operand) ?? expr(operand);
+      final test = '($read.runtime_type().name == "$preludeGeneric")';
+      return negated ? '!$test' : test;
+    }
     // `x is R Function(..)`: the function object keeps the handle it was
     // made from, whose Rust type is this signature -- a downcast, not a
     // guess at the arity (the prelude's `dart_is_function_of`). A bare
@@ -8937,6 +8955,18 @@ class RustBackend {
   };
 
   /// The prelude's classes that `is` can ask about and a `throw` boxes.
+  /// The prelude's generic classes, by their Dart name and the Rust one
+  /// `runtimeType` reports: `is` asks that name rather than downcasting to
+  /// the single instantiation a value happened to be boxed as. The blanket
+  /// `runtime_type` spells the *struct*, so `Future` is `DartFuture`.
+  static const _preludeGenerics = {
+    'Future': 'DartFuture',
+    'Completer': 'Completer',
+    'StreamSubscription': 'StreamSubscription',
+    'Converter': 'Converter',
+    'Expando': 'Expando',
+  };
+
   /// `const X()` of a prelude class, where the prelude has the value it
   /// names. Only for a constant with no fields: a constant that carries
   /// some is a different object, and the shapes have to agree.
