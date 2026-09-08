@@ -5812,6 +5812,11 @@ pub trait DartString {
     /// `indexOf(pattern, [start = 0])`: the default is filled in by the
     /// front end, so `start` is never absent here.
     fn index_of(&self, other: String, start: i64) -> i64;
+    /// `lastIndexOf(pattern, [start])`: the last occurrence at or before
+    /// `start`, in UTF-16 code units as `indexOf` counts them; -1 when
+    /// there is none. Dart's `start` is nullable and means "the end"
+    /// (`FlutterErrorDetails.exceptionAsString`, run731).
+    fn last_index_of(&self, other: String, start: Option<i64>) -> i64;
     fn replace_all(&self, from: String, to: String) -> String;
     /// `replaceFirst(from, to)`: the first occurrence replaced. Named apart
     /// from std's unstable inherent `replace_first`, which outranks a trait's.
@@ -5888,6 +5893,25 @@ impl DartString for String {
         }
         (from..units.len().saturating_sub(needle.len() - 1))
             .find(|&i| units[i..i + needle.len()] == needle[..])
+            .map(|i| i as i64)
+            .unwrap_or(-1)
+    }
+
+    fn last_index_of(&self, other: String, start: Option<i64>) -> i64 {
+        let units: Vec<u16> = self.encode_utf16().collect();
+        let needle: Vec<u16> = other.encode_utf16().collect();
+        let last = units.len().saturating_sub(needle.len());
+        let from = match start {
+            Some(n) if n < 0 => return -1,
+            Some(n) => (n as usize).min(last),
+            None => last,
+        };
+        if needle.is_empty() {
+            return from.min(units.len()) as i64;
+        }
+        (0..=from)
+            .rev()
+            .find(|&i| i + needle.len() <= units.len() && units[i..i + needle.len()] == needle[..])
             .map(|i| i as i64)
             .unwrap_or(-1)
     }
