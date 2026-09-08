@@ -305,12 +305,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws686 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws687 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws686 | 链：stub **482**（-2：`setCanDrag`、`_maybeStartFadeoutTimer`；`didUpdateWidget` 另有 `Option<&Rc<..>>` 的 `?` 错配），拒绝 183，可达 64。新增 late cell 访问器 470 个，没带来新 stub。 | run686 |
-| run686 | 过了 `setCanDrag`，进设置页：`SETTING_ITEM_BORDER_RADIUS` 的 `BorderRadius.circular` → `BorderRadius.all` 的 stub：`const BorderRadius.all(r) : this.only(..)` 拼成 `const fn`，体是 `Self::only(radius.clone(), ..)`——`Radius` 是 Copy 但前端不知道（拼了 `.clone()`），且 `only` 本身不是 `const fn`（带 assert 体）。修（通用）：`const fn` 与否沿转发链算（`_constCtor`：自身规则 ∧ 目标规则），转发路径也做同样的 `.clone()` 降级。夹具 constredir SAME。 | 链 ws687 |
 | ws687 | 链：stub **480**（-2：`BorderRadius.all`/`horizontal`），拒绝 183，可达 64。 | run687 |
 | run687 | 过了边框半径，进 `_SettingsListItemState.initState`：`widget` 向下转型 `SettingsListItem<<T as DartNullable>::Or>` 拿到 `None`——state 是 `_SettingsListItemState::<Option<T>>` 建的（`createState() => _SettingsListItemState<T?>()`），`T = double?` 时成了 `Option<Option<f64>>`，Dart 的 `T?` 在 `T = double?` 时只有一层。构造器/常量/转型的类型实参走 `_erasedArguments` 没进 `_nested`，`T?` 没投影成 `<T as DartNullable>::Or`（类类型走的 `_type` 自己包了 `_nested`）。修（通用）：`_erasedArguments` 本身就是"类型实参"，深度计数放进它。夹具 nullarg SAME。 | 链 ws688 |
 | ws688 | 链：stub **481**（+1：`RestorableEnumN::new`——`extends RestorableValue<T?>` 的 `T?` 现在投影了，基类字段 `T? _value = null` 的跨投影 `IrNullableOf` 在按子类实参替换时被丢掉（替换规则：实参可空就丢转换），槽却仍是 `<T as DartNullable>::Or`，裸 `None` 进不去），拒绝 183，可达 64。修（通用）：实参是**投影的**可空 `T?` 时转换保留。夹具 nullsuper SAME。 | 链 ws689 |
@@ -348,7 +346,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws709–712 | 修 run708：实例化普查（`_censusMembers` 的 `walk`）只收 abstract-like 的类，可「更宽 impl」要的是**具体泛型类的实例化**。第一版把 `walk` 一律收进来 → **451**（+2：provider 的 `_DelegateState.element/set_element`）；改成只收「体内构造的」（`_constructedIn` 那一趟，`built` 标记）仍 451——那两处正是从这条路来的：新的 self 实例化让 `_ValueInheritedProviderState<Listenable?>` 多了一个 `impl _DelegateState<Object>`，而字段是 `_InheritedProviderScopeElement<Listenable?>`，两个结构体实例化之间没有转换（已知欠账）。修（通用）：访问器（读与写）在**没有任何规则能架桥**时写 `todo!()`，不写不编译的代码——方法那条路一直是这么说的。链 **449**，与 ws708 同一组。 | run712 |
 | run712 | 过了页面转场的静态初始化式。停在 `RenderFlex.performLayout` 的**拒绝**（not yet implemented）。 | 链 ws713 |
 | ws713–717 | `RenderFlex.performLayout`/`_computeSizes` 的拒绝是「`is` against `Function`/`Record`」——CFE 把记录解构模式（`final (nextChild, topLeftChild) = ..`）降成「拿每个字段跟它本来就有的类型做 `is`」，函数类型和 Record 都不是 `Any` 问得出来的。修（通用，四条）：① 操作数的静态类型是所问类型的子类型时，Dart 自己的子类型关系就是答案，拼 `true`（与上面字面量那条同源）；扩展类型走**表示类型**（`_AscentDescent` 就是 `(double, double)?`）。② 只差一个 `?`、且所问类型没有运行期测试（记录/函数类型）时，测试就是那个空检查——类的情形留给原来的 `is`，它的收窄这条看不见（`is_none` 打到 `Rc<Border>` 上，ws716）。③ 记录字段读按**记录持有的**类型定型，不按模式提升后的 `Object?`（Rust 元组里仍是 `f64`），可空记录读经 unwrap（Dart 只允许提升后读）。④ `_clonedWhenPassed` 穿过扩展类型（`_AxisSize` 就是 `Size`，不克隆就被第一个实参移走）。夹具 recdestr2 SAME。链 **449**（与 ws713 同一组），拒绝 **183 → 174**。 | run717 |
-| run717 | `_computeSizes` 过了。停在 `_AscentDescent operator +` 的拒绝：仍是 `is` against `Record`。 | 下一轮 |
+| run717 | `_computeSizes` 过了。停在 `_AscentDescent operator +` 的拒绝：仍是 `is` against `Record`。 | 链 ws718 |
+| ws718 | 修 run717：所问的类型也要擦——扩展类型在运行期没有身份，`x is _AscentDescent` 问的就是表示类型。链 **449**（同一组），拒绝 **173**。 | run718 |
+| run718 | 整个 `RenderFlex` 布局过了。停在 `SliverMultiBoxAdaptorElement.didFinishLayout` 的拒绝：`Map.firstKey`（`_childElements` 是 `SplayTreeMap<int, Element?>`，prelude 没有按键排序的首/末键）。 | 下一轮 |
 
 ## 下一步(2026-09-05 重铺)
 

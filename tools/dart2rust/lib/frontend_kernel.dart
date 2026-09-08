@@ -10749,13 +10749,19 @@ class KernelFrontend implements TypeWorld {
       final on = declared is ExtensionType
           ? declared.extensionTypeErasure
           : declared;
+      // The asked type erases too: an extension type has no run-time
+      // identity, so `x is _AscentDescent` really asks the representation
+      // (`_AscentDescent operator +`, run717).
+      final wanted = asked is ExtensionType
+          ? asked.extensionTypeErasure
+          : asked;
       if (on != null &&
           on is! DynamicType &&
           on is! NeverType &&
           !_mentionsTypeParameter(on) &&
-          !_mentionsTypeParameter(asked)) {
+          !_mentionsTypeParameter(wanted)) {
         try {
-          if (env.isSubtypeOf(on, asked)) {
+          if (env.isSubtypeOf(on, wanted)) {
             return IrBlockValue(
               [IrExprStmt(expression(node.operand))],
               IrLiteral('true', const IrType('bool')),
@@ -10772,12 +10778,12 @@ class KernelFrontend implements TypeWorld {
           // the ordinary test below, whose narrowing this cannot see
           // (`is_none` on an `Rc<Border>`, `CupertinoTextField.build`,
           // ws716).
-          if ((asked is RecordType || asked is FunctionType) &&
+          if ((wanted is RecordType || wanted is FunctionType) &&
               on.nullability == Nullability.nullable &&
-              asked.nullability != Nullability.nullable &&
+              wanted.nullability != Nullability.nullable &&
               env.isSubtypeOf(
                 on.withDeclaredNullability(Nullability.nonNullable),
-                asked,
+                wanted,
               )) {
             return IrUnary('!', IrIsNull(expression(node.operand)))
               ..rustType = const IrType('bool');
