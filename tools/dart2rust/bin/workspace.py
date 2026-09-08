@@ -195,7 +195,29 @@ def write_workspace(src, out, mods, crate_of, graph):
         # thousands of temporaries are most of its code -- the gallery's
         # 6.7 MB code-viewer module sat in codegen for half an hour with
         # them (2026-09-05, run429).
-        '[workspace]\nresolver = "2"\nmembers = [\n%s]\n\n[profile.dev]\ndebug = false\npanic = "abort"\n'
+        #
+        # Incremental stays *on*, and the reason is worth writing down
+        # because it was turned off once on a wrong measurement (2026-09-08).
+        # The cold numbers say incremental costs: a from-nothing `cargo
+        # check` of the 1.03M-line `merged_gallery_scc` is 70.5s without it
+        # and 79.5s with it (`type_check_crate` 28.9s -> 39.3s -- tracking
+        # the dep graph is not free). But the chain never runs cold. Chains
+        # 719-723, with it, spent 151-224s of `cargo` per run; 725, without
+        # it, spent 347s. Roughly double. The cold comparison was the wrong
+        # one.
+        #
+        # What it does cost is disk, and that is a *reclamation* problem,
+        # not a reason to turn it off: every round re-partitions the
+        # workspace, so a crate's `-C metadata` changes, rustc opens a new
+        # session directory, and cargo -- which only reclaims units it still
+        # recognises -- never touches the old one. 721 runs had left 230 GB
+        # in `target/debug/incremental`, of which 11 GB was live: 99 of the
+        # 163 crate names in it no longer existed, `merged_gallery_scc` had
+        # 32 session directories at 2.4 GB each, and 255 more were
+        # `-working` stubs left behind by the OOM guard's `pkill -9`. The
+        # chain prunes those before it starts; see run_chain.sh.
+        '[workspace]\nresolver = "2"\nmembers = [\n%s]\n\n[profile.dev]\n'
+        'debug = false\npanic = "abort"\n'
         % ''.join('    "%s",\n' % m for m in members))
     # the prelude crate
     pd = os.path.join(out, 'dart_prelude', 'src')

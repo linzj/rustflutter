@@ -20,13 +20,36 @@ log=$2
 : "${DART2RUST_JOBS:=4}"
 : "${DART2RUST_MIN_FREE_GB:=16}"
 export DART2RUST_JOBS
+
+# rustc's front end is one thread, and this workspace is a chain of eleven
+# crates in which two hold 79% of the lines: a full `cargo check --workspace
+# -j 6` ran at 98% CPU on a 32-core machine and took 133s. `-Zthreads`
+# parallelises the two passes that are 79% of that -- `type_check_crate` and
+# `MIR_borrow_checking` -- and took it to 72.6s at eight threads, 0 errors,
+# the same 6.5 GB peak. Past eight it flattens: the critical path is two
+# crates, and the front end saturates near 2.5 cores. Measured 2026-09-08.
+#
+# It is a `-Z` flag on a stable toolchain, so it needs the bootstrap escape
+# hatch, and the parallel front end is still experimental --
+# `DART2RUST_THREADS=1` turns it off. run_main.sh sets exactly the same two
+# variables on purpose: a different RUSTFLAGS is a different fingerprint, and
+# the chain and the run would each rebuild the other's work.
+: "${DART2RUST_THREADS:=8}"
+export RUSTC_BOOTSTRAP=1
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zthreads=$DART2RUST_THREADS"
 here=$(cd "$(dirname "$0")/.." && pwd)
 dart=$HOME/flutter_sdk/engine/src/out/host_profile/dart-sdk/bin/dart
 export PATH="$HOME/.cargo/bin:$PATH"
 
 cd "$here" || exit 2
 (
-  "$dart" run --packages=.agree/kernel_package_config.json bin/dart2rust_package.dart \
+  # The workspace is re-partitioned every run, so crate identities
+  # change and cargo stops recognising -- and therefore stops
+  # reclaiming -- what it built last time: 721 runs had left 248 GB
+  # in target/, under 16 GB of it live. This reclaims it while
+  # nothing is compiling.
+  python3 bin/prune_target.py \
+  && "$dart" run --packages=.agree/kernel_package_config.json bin/dart2rust_package.dart \
     "$HOME/dart2rust_build/gallery/app_aot_sig.dill" "package:,dart:ui" .crate/src \
   && python3 bin/workspace.py \
   && python3 bin/stubs.py --rounds 80 --report "$report"

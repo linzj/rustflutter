@@ -12,6 +12,23 @@ set -u
 log=$1
 : "${DART2RUST_JOBS:=4}"
 : "${DART2RUST_MIN_FREE_GB:=16}"
+
+# rustc's front end is one thread, and this workspace is a chain of eleven
+# crates in which two hold 79% of the lines: a full `cargo check --workspace
+# -j 6` ran at 98% CPU on a 32-core machine and took 133s. `-Zthreads`
+# parallelises the two passes that are 79% of that -- `type_check_crate` and
+# `MIR_borrow_checking` -- and took it to 72.6s at eight threads, 0 errors,
+# the same 6.5 GB peak. Past eight it flattens: the critical path is two
+# crates, and the front end saturates near 2.5 cores. Measured 2026-09-08.
+#
+# It is a `-Z` flag on a stable toolchain, so it needs the bootstrap escape
+# hatch, and the parallel front end is still experimental --
+# `DART2RUST_THREADS=1` turns it off. run_main.sh sets exactly the same two
+# variables on purpose: a different RUSTFLAGS is a different fingerprint, and
+# the chain and the run would each rebuild the other's work.
+: "${DART2RUST_THREADS:=8}"
+export RUSTC_BOOTSTRAP=1
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zthreads=$DART2RUST_THREADS"
 here=$(cd "$(dirname "$0")/.." && pwd)
 export PATH="$HOME/.cargo/bin:$PATH"
 cd "$here/.crate-ws" || exit 2
