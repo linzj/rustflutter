@@ -5712,7 +5712,9 @@ class KernelFrontend implements TypeWorld {
       // too; a computed `get foo => ...` is a function and stops here.
       // Mutable ones too, now that they are emitted. A read of one goes
       // through the cell, which the backend knows from the declaration.
-      if (target is Field) return IrTopLevel(target.name.text);
+      if (target is Field) {
+        return IrTopLevel(target.name.text, module: _topLevelModule(target));
+      }
       // A top-level getter is a function here, so reading it is calling it.
       if (target is Procedure && target.kind == ProcedureKind.Getter) {
         return IrStaticCall(

@@ -910,12 +910,16 @@ class RustBackend {
       ),
       // A mutable one is read through its cell: two derefs for the `LazyLock`
       // and the `Isolate`, then a `borrow`.
-      IrTopLevel(:final name) =>
-        _isMutableTopLevel(name)
-            ? '({ let __r = (**${screamingSnake(name)}).borrow().clone(); __r })'
+      IrTopLevel(:final name, :final module) => () {
+        final spelled = module == null
+            ? screamingSnake(name)
+            : 'crate::$module::${screamingSnake(name)}';
+        return _isMutableTopLevel(name)
+            ? '({ let __r = (**$spelled).borrow().clone(); __r })'
             : _isLazyConst(name)
-            ? '(**${screamingSnake(name)}).clone()'
-            : screamingSnake(name),
+            ? '(**$spelled).clone()'
+            : spelled;
+      }(),
       // `x == null` on a `dynamic`: the handle is never an `Option`; Dart's
       // null is the `Null` object inside it (`dart_nullable`).
       // ..and on a type parameter: through its projection, since a `T`

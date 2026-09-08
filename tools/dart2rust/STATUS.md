@@ -307,13 +307,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws689 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws691 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws689 | 链：stub **480**（-1，回到 ws687），拒绝 183，可达 64。 | run689 |
-| run689 | `initState` 过了（state 现在是 `_SettingsListItemState<Option<f64>>`）。停在 `_SettingsListItemState.build` 的 stub：「type mismatch in closure arguments」——`onChanged: (newOption) => ..` 传给 `RadioListTile<T?>`：槽是 `Fn(<T as DartNullable>::Or)`，闭包参数拼成 `Option<T>`（闭包参数走 `_paramType`，深度 0 不投影）。修（通用，三处）：闭包参数与方法参数同样是"边"——`T?` 拼投影、体内序言重绑成 `Option<T>`（`_withEdgeParams` 加 `positional` 覆盖）；`_typeKept` 把投影的可空实参 `U?` 代进 `T?` 时保持投影（rustc 把 `<<U as Or> as Or>::Or` 归一成 `<U as Or>::Or`）；`_crossing` 对可空的 `U?` 绑定也按 `_projectedSlot` 判（此前假定"可空实参的槽就是 Option"，`_erasedArguments` 投影后不再成立）；backend `IrNullableOf(IrLocal)` 读时 `.clone()`（prelude 迭代器给闭包的是 `&T`）。夹具 closureedge SAME；nullarg/nullsuper/ctornull/outparam/qualgeneric 回归 SAME。链 ws690 已发未读。 | 链 ws690 |
-| ws690 | 链：stub **481**（+1：`_PopupMenuButtonState.showButtonMenu`），拒绝 183，可达 64。诊断：`showMenu<T?>(..).then(闭包)`——turbofish 拼成 `show_menu::<Option<T>>`，闭包参数（现在是"边"）拼 `<T as DartNullable>::Or`，两边说同一个 Dart 类型却不同拼法。同一行的局部声明 `Box<<T as DartNullable>::Or>` 是投影的（类类型实参走 `_erasedArguments`），可见 turbofish 才是异类。修（通用）：`_keptTypeArguments` 也是"类型实参"，走 `_typeNested`。夹具 fntypearg SAME。 | 链 ws691 |
 | ws691 | 链：stub **480**（-1，回到 ws689 的同一组；`settings_list_item.rs build` 的错因从「closure arguments」变成「mismatched types」，集合没变所以 diff 空），拒绝 183，可达 64。 | run691 |
 | run691 | 仍停在 `_SettingsListItemState.build` 的 stub，但错因换了：`RadioListTile<T?>(value: _options.elementAt(index))`——`late Iterable<T?> _options` 的元素槽是 `<T as DartNullable>::Or`（类型实参已投影），读出来却按静态类型 `T?` 在深度 0 拼成 `Option<T>`，于是又包了一层 `from_option`。修（通用，两处）：① 被调方声明的返回类型是**裸**类型参数（`Iterable<E>.elementAt` 的 `E`，不是 `E?`）而此处静态类型是投影的 `T?` 时，值按被调方的实参拼法到达（`elementResult`，与既有 `edgeResult` 并列；`E?` 不算——prelude 容器把自己的 `V?` 拼成真 `Option<V>`，比实参多一层）；② `!element_at` 与 `IrIndex` 一样是「索引读」，要 `.clone()`（元素在 list 的引用后面）。夹具 elemslot SAME；iterable/itermap/listcast/listgen/listplus/listsingle/insertall/tearcol/removewhere/wheretear/fromiterable 与 projarg/projected/tparam/isgeneric/gentrait/genhandle/qualgeneric/nullarg/nullsuper 回归 SAME。 | 链 ws692 |
 | ws692 | 链：stub **478**（-2：`_SettingsListItemState.build`、`_CupertinoSegmentedControlState.segmentForXPosition`，无新增），拒绝 183，可达 64。 | run692 |
@@ -351,6 +348,9 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws719 | 修 run718：prelude 的 `Map` 按插入序存（`SplayTreeMap` 就是它的别名），排序映射承诺的首/末键**算出来**——`impl<K: Clone + PartialOrd, V> Map<K, V>` 上的 `first_key`/`last_key`，只有键可比时才有这两个方法；`mapMethodNames` 加两条。夹具 sortedmap SAME。链 **449**（同一组），拒绝 **170**。 | run719 |
 | run719 | 过了 sliver 的 `didFinishLayout`。停在 `_PageViewState.build` 的 stub：「multiple applicable items in scope」。 | 链 ws720–722 |
 | ws720–722 | `_PageViewState.build` 的两处，同一个根因：`NotificationListener<ScrollNotification>` 的回调形参被擦除的 `T` **重定类型**成 `Notification`，读回时按声明的类下转型（`_localRead`），但两处判断都还在看 Dart 静态类型。① `notification.depth` 的限定名从静态类型（bound）走，那上面什么也没声明，于是 `ScrollNotification` 与 `ViewportNotificationMixin` 都来认领（E0034）→ 重定类型的形参按**声明的类**算限定名。② `notification.metrics` 出成字段访问：TFA 把静态类型收窄成了具体子类 `OverscrollNotification`，`concrete` 判真，可手里的值还是 `dyn ScrollNotification` → 重定类型的形参的「接收者的类」也按声明的那个算。中途试过「接收者不是具体类就一律走访问器」——**stub 805**，远超，撤回（记在〈撤回与作废〉）。夹具 mixdepth SAME。链 **448**（-1），拒绝 170。 | run722 |
+| run722 | 过了 PageView。停在 gallery 自己的 `_MobileCarouselState.builder`：`x.clamp(0, 1)`——`clamp` 的形参声明是 `num`，而 `num` 在这边不是类型，整型字面量原样给了 `f64::clamp`。修（通用）：`num` 形参在**数字自己的方法**上就是接收者那个数字（`_numReceiver`）；`int.+(num)` 那条不受影响（接收者是 int）。夹具 numclamp SAME。 | 链 ws723 |
+| ws723 | 链：stub **439**（-9：滑块/进度/购物车/雪碧图等一串 `clamp`），拒绝 170，可达 64。 | run723 |
+| run723 | **启动路径上不再有 panic**——程序跑满 120s 无输出、无 panic。gdb 抓栈：`gallery/constants.dart` 的 `kTransparentImage` 的 `LazyLock` 自锁——上游写的是 `final kTransparentImage = transparent_image::kTransparentImage;`（另一个库的同名顶层），拼成裸名后读到了自己。修（通用）：顶层**读**也带 module（`IrTopLevel.module`，与 `_topLevelModule` 同一张判断），后端拼 `crate::<module>::NAME`。夹具 topshadow SAME（基线挂住）。 | 链 ws724 |
 
 ## 下一步(2026-09-05 重铺)
 

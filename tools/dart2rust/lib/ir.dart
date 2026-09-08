@@ -583,9 +583,16 @@ class IrIsNull extends IrExpr {
 /// its own node rather than an [IrStatic] with an empty owner because a name
 /// with no owner is not a static field with a missing one.
 class IrTopLevel extends IrExpr {
-  IrTopLevel(this.name);
+  IrTopLevel(this.name, {this.module});
 
   final String name;
+
+  /// The module to spell it through, when another library's top-level of
+  /// this name would otherwise be shadowed by one here (`IrType.module`;
+  /// the gallery's `kTransparentImage = transparent_image::
+  /// kTransparentImage` read itself and deadlocked its own `LazyLock`,
+  /// run723).
+  final String? module;
 }
 
 /// `this`.
