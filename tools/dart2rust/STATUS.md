@@ -602,3 +602,28 @@ value. Inside one, `this` for such a call is `dart_self_ref().get()`.
 17, not the 12 the census showed: the `clone_` blocks were the visible
 part of a bigger set (`op_add`, `op_sub`, `op_neg` on Vector2/3/4 and
 Matrix2/3/4 all clone `this` first).
+
+## ws753 — a closure's trait return type is spelled (363 → 353)
+
+`_closureReturnSpelled` gave `_` for everything but a nullable, so a
+closure returning a trait had no coercion site: `List<Widget>.generate(n,
+(i) => _VisibilityScope(..))` collected a `Vec<Rc<_VisibilityScope>>`
+where `Vec<Rc<dyn Widget>>` went, and the unsizing had nowhere to be
+written. Spelled, the `Ok(..)` around the body is that site.
+
+    ws752 363 stubbed, 162 refusals, 64 crates
+    ws753 353 stubbed, 162 refusals, 64 crates   -10, 0 new
+
+Four more rules go in with this commit, measured next:
+
+* an indexed assignment crosses into the element as the *list* spells it
+  (a `List<E?>` field of a generic class holds `<E as DartNullable>::Or`,
+  3 at ws751);
+* a value that already is a handle is not wrapped in another (`dart_object`
+  around an `Rc<dyn Widget>` made an `Rc<Rc<dyn Widget>>`, 10 at ws751);
+* `Object.noSuchMethod` is the prelude's, so the CFE's forwarders on a
+  concrete class that implements an interface without implementing it
+  resolve (`_DefaultSnapshotPainter`, 15 at ws751);
+* a record with named fields is a tuple: the named part after the
+  positional, in the type's sorted order, which is Dart's canonical order
+  (`SelectionOverlay._handles`, 6 stubs and 5 refusals at ws751).

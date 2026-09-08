@@ -127,6 +127,26 @@ pub trait Object {
     /// `runtimeType`: the Rust type's name, which is the Dart class's name
     /// for a translated class and a longer path for a prelude one.
     fn runtime_type(&self) -> Type;
+
+    /// `Object.noSuchMethod`: the member was never implemented, so the call
+    /// is an error where it is made.
+    ///
+    /// The CFE writes one forwarder per unimplemented interface member of a
+    /// *concrete* class -- `_DefaultSnapshotPainter implements
+    /// SnapshotPainter` gets fifteen -- and each calls this. A class that
+    /// declares its own `noSuchMethod` gets an inherent method of this name,
+    /// which wins over the default. The error is a `StateError` carrying the
+    /// member's name, as `dart_call_function`'s wrong-arity error is: Dart
+    /// throws `NoSuchMethodError`, and nothing in the program catches one.
+    fn no_such_method(
+        &self,
+        invocation: Invocation,
+    ) -> Result<std::convert::Infallible, std::rc::Rc<dyn Object>> {
+        Err(std::rc::Rc::new(StateError::new(format!(
+            "NoSuchMethodError: {} was not implemented",
+            invocation.member_name().name
+        ))) as std::rc::Rc<dyn Object>)
+    }
 }
 
 /// A `dyn Object` prints as its class, as a translated trait object does

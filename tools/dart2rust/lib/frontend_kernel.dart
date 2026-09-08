@@ -937,13 +937,21 @@ class KernelFrontend implements TypeWorld {
       );
     }
     if (type is RecordType) {
-      if (type.named.isNotEmpty) {
-        throw Unsupported('a record type with named fields', '$type');
-      }
+      // A named field is a tuple field too, after the positional ones and
+      // in the record type's own order -- Kernel asserts that order is
+      // lexicographic, which is Dart's canonical order for named fields, so
+      // two spellings of one record type give one tuple
+      // (`({OverlayEntry start, OverlayEntry end})? _handles` of
+      // `SelectionOverlay`, 6 stubs and 5 refusals at ws751).
       return IrType(
         'Record',
         nullable: nullable,
-        arguments: _nested(() => [for (final f in type.positional) _type(f)]),
+        arguments: _nested(
+          () => [
+            for (final f in type.positional) _type(f),
+            for (final n in type.named) _type(n.type),
+          ],
+        ),
       );
     }
     if (type is VoidType) return const IrType('void');
@@ -2255,11 +2263,32 @@ class KernelFrontend implements TypeWorld {
       }
       return read;
     }
-    if (node is RecordLiteral) {
-      if (node.named.isNotEmpty) {
-        throw Unsupported('a record with named fields', _sample(node));
+    if (node is RecordNameGet) {
+      // A named field is the tuple field after the positional ones, at its
+      // place in the type's (sorted) named list -- the same read as
+      // `RecordIndexGet` above, by a different spelling of the index.
+      var held = expression(node.receiver);
+      final receiverType = held.rustType;
+      if (receiverType != null && isNullable(receiverType)) {
+        held = _nullChecked(held);
       }
-      return _recordLiteral(node, node.recordType.positional);
+      final where = node.receiverType.named.indexWhere(
+        (n) => n.name == node.name,
+      );
+      final index = node.receiverType.positional.length + where;
+      final read = IrRecordField(held, index);
+      final record = held.rustType;
+      if (where >= 0 && record != null && index < record.arguments.length) {
+        read.rustType = record.arguments[index];
+      }
+      return read;
+    }
+    if (node is RecordLiteral) {
+      return _recordLiteral(
+        node,
+        node.recordType.positional,
+        node.recordType.named,
+      );
     }
     if (node is MapLiteral) {
       return _mapLiteral(node, node.keyType, node.valueType);
@@ -8846,7 +8875,16 @@ class KernelFrontend implements TypeWorld {
   /// `_widenedInto`): `(false, null)` returned as a `(bool, Object?)`
   /// holds the `Null` object, `(true, x)` boxes its `int` (ws502, ws509).
   /// As translated slots, whatever call the record sits in.
-  IrExpr _recordLiteral(RecordLiteral node, List<DartType> fields) {
+  IrExpr _recordLiteral(
+    RecordLiteral node,
+    List<DartType> fields, [
+    List<NamedType> named = const [],
+  ]) {
+    // The named fields in the *slot's* order, found by name: a literal
+    // writes them in source order and the type spells them sorted.
+    final namedFields = named.isEmpty ? node.recordType.named : named;
+    NamedExpression written(String name) =>
+        node.named.firstWhere((e) => e.name == name);
     final wasTranslated = _slotTranslated;
     final wasPrelude = _slotPrelude;
     _slotTranslated = true;
@@ -8861,6 +8899,12 @@ class KernelFrontend implements TypeWorld {
                     expression(node.positional[i]),
                   )
                 : expression(node.positional[i]),
+          for (final n in namedFields)
+            _widened(
+              written(n.name).value,
+              n.type,
+              expression(written(n.name).value),
+            ),
         ])
         ..rustType = IrType(
           'Record',
@@ -8873,6 +8917,8 @@ class KernelFrontend implements TypeWorld {
                           : node.recordType.positional[i],
                     ) ??
                     const IrType('dynamic'),
+              for (final n in namedFields)
+                _recordedType(n.type) ?? const IrType('dynamic'),
             ],
           ),
         );
@@ -11496,10 +11542,19 @@ class KernelFrontend implements TypeWorld {
             ? listType.typeArguments.first
             : null;
         final stored = value.arguments.positional[1];
+        final list = expression(value.receiver);
+        final lowered = _widened(stored, element, expression(stored));
+        // ..and crosses into the element as the *list* spells it: inside a
+        // generic class a `List<E?>` field holds `<E as DartNullable>::Or`,
+        // and a body's `Option<E>` is not that (`_queue[index] = element`
+        // in `HeapPriorityQueue._bubbleDown`, 3 at ws751).
+        final slot = list.rustType?.arguments.length == 1
+            ? list.rustType!.arguments.single
+            : null;
         return IrIndexSet(
-          expression(value.receiver),
+          list,
           expression(value.arguments.positional[0]),
-          _widened(stored, element, expression(stored)),
+          slot == null ? lowered : coerce(lowered, slot),
         );
       }
       // A top-level variable's assignment. `StaticSet` on a `Field` with no
@@ -13572,7 +13627,11 @@ class KernelFrontend implements TypeWorld {
           // `never()` does the coercion `!` would have done.
           IrReturn(
             IrStaticCall(null, 'never', [
-              IrCall(IrThis(), 'noSuchMethod', [invocation]),
+              // Always `?`: `noSuchMethod` yields `Never`, whether it is the
+              // class's own or the `Object` default the prelude gives every
+              // class (15 forwarders on `_DefaultSnapshotPainter` reached a
+              // method the class does not declare, ws751).
+              IrCall(IrThis(), 'noSuchMethod', [invocation], fails: true),
             ]),
           ),
         ]),

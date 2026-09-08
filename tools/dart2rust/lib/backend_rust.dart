@@ -2227,6 +2227,14 @@ class RustBackend {
   String _closureReturnSpelled(IrType returns) {
     if (returns.isFunction || returns.name == 'raw') return '_';
     if (returns.name == 'Null' || returns.nullable) return type(returns);
+    // A trait, spelled: then the `Ok(..)` around the body is a coercion
+    // site, and a concrete handle unsizes into the trait object there.
+    // Left `_`, `List<Widget>.generate(n, (i) => _VisibilityScope(..))`
+    // collected a `Vec<Rc<_VisibilityScope>>` where `Vec<Rc<dyn Widget>>`
+    // went -- the cast has nowhere to be written (12 at ws747).
+    if (library.isAbstract(returns.name) && !_mentionsUnknown(returns)) {
+      return type(returns);
+    }
     return '_';
   }
 
@@ -4058,6 +4066,11 @@ class RustBackend {
       if (own != null) return own;
     }
     if (name == '!rc' && args.isEmpty) {
+      // ..a value that already *is* a handle is one: `dart_object` around
+      // an `Rc<dyn Widget>` made an `Rc<Rc<dyn Widget>>`, whose pointee
+      // implements nothing (`picker = dart_object(inputDatePicker())`,
+      // ws751).
+      if (target != null && _handleLike(target)) return expr(target);
       // A closure behind its handle, unsized to the function type it is
       // typed as where that is spelled: inside a `.map(|__f| ..)` there
       // is no slot to infer `Rc<dyn Fn>` from, and the `Rc<{closure}>`
