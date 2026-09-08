@@ -8379,13 +8379,22 @@ class RustBackend {
     final baseName = ctor.superBase;
     if (baseName == null) return const [];
     final base = library[baseName];
-    if (base == null || base.typeParameters.isNotEmpty) return const [];
+    if (base == null) return const [];
     final baseCtors = base.constructors
         .where((c) => c.name == ctor.superName)
         .toList();
     if (baseCtors.length != 1) return const [];
     final baseCtor = baseCtors.single;
     if (baseCtor.params.length != ctor.superArgs.length) return const [];
+    // A *generic* base's own body names the base's `T`, which this
+    // constructor cannot -- but a bodiless one names nothing, and the walk
+    // goes on through it to the bases above. `RenderObject()`'s body sets
+    // `late bool _needsCompositing`, and the bodiless
+    // `_RenderPhysicalModelBase<T>` in between stopped the walk: every
+    // `RenderPhysicalModel` read that `late` unset (run733).
+    if (base.typeParameters.isNotEmpty && baseCtor.body != null) {
+      return const [];
+    }
     // A bodiless base too: its parameters are what the next base's
     // arguments name (`RenderProxyBoxWithHitTestBehavior({child}) :
     // super(child)`, whose `child` was never bound, ws523).
