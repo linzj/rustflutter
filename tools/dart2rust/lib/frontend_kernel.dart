@@ -1010,12 +1010,20 @@ class KernelFrontend implements TypeWorld {
       // compiled changes (`OpenContainer<T>`'s `openContainer` callback
       // written inside a `build`, 4 `cannot find type T` at ws756).
       if (!_parameterNamed(type.parameter)) {
-        final asBound = _typeOfBound(type.parameter.bound);
-        return IrType(
-          asBound.name,
-          nullable: nullable || asBound.nullable,
-          arguments: asBound.arguments,
-        );
+        // A bound that names the parameter again (`T extends Comparable<T>`)
+        // would spell itself forever: inside its own bound the parameter is
+        // `dynamic`, which is what a trait object of it holds anyway.
+        if (!_atBound.add(type.parameter)) return const IrType('dynamic');
+        try {
+          final asBound = _typeOfBound(type.parameter.bound);
+          return IrType(
+            asBound.name,
+            nullable: nullable || asBound.nullable,
+            arguments: asBound.arguments,
+          );
+        } finally {
+          _atBound.remove(type.parameter);
+        }
       }
       return IrType(
         type.parameter.name ?? 'T',
@@ -3309,6 +3317,10 @@ class KernelFrontend implements TypeWorld {
   /// `T` bound to `X?` is `X?`, one `Option` layer -- and a value crosses
   /// it through `IrNullableOf`. Only the class's or the member's own
   /// parameters: another declaration's `T` is not a name here.
+  /// The type parameters being spelled at their bounds right now: a bound
+  /// that names its own parameter has to stop somewhere.
+  final _atBound = <TypeParameter>{};
+
   /// Whether the code being lowered has a Rust type parameter of this
   /// name: the class being lowered declares one, or the member (or its
   /// function) does. By *name*, because that is what Rust reads -- a
