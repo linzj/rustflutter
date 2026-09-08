@@ -1034,3 +1034,8 @@ the top-bound rule that reads a `T?` of a top-bounded parameter as
 `Option<Rc<dyn Object>>` only looks at a bare return, not at one inside a
 `Future`. The cast target should come from the method's own return
 instantiated, not from the recorded type. Left for the next round.
+
+## ws774 — 288, the applied `runtimeType` costs nothing
+
+    ws772 288 stubbed
+    ws774 288 stubbed, 130 refusals, 64 crates   0 gone, 0 new
