@@ -752,3 +752,31 @@ The render walk is 708 lines against the reference's 708, and the first
 
 The six error boxes are the thing to chase: each is a `build` that threw,
 and until ws762 every one of them printed `Instance of 'StateError'`.
+
+## run763 — the error boxes are legible, and they are one bug
+
+`dart_boxed` did its work: the gallery's first uncaught exception now
+reads
+
+    Bad state: TweenSequence.evaluate() could not find an interval for 0.0
+
+instead of `Instance of 'StateError'`. The six `RenderErrorBox`es are that
+one error, reported six times.
+
+`TweenSequenceImpl::new` was a struct literal and nothing else: the
+constructor's whole body -- `_items.addAll(items)` and the loop that fills
+`_intervals` -- had been dropped. Two rules behind it, each with a fixture
+that now agrees with Dart:
+
+* a constructor body's mutation of the class's own collection acts on the
+  field, not on a clone. `_ownCollectionField` asked for `_selfName ==
+  'self'`, and a constructor body's `this` is `__new` (fixture ctorbody2:
+  `00012` -> `12312`);
+* a *generic* base's constructor body runs when what this class puts in
+  for the base's parameters is those same names -- the struct beside an
+  open class's trait carries them unchanged (`SeqImpl<T>` over `Seq<T>`).
+  The rule was written for a base whose `T` the subclass cannot name;
+  this one can (fixture ctorbody: `0/0/0/0` -> `3/3/1/1`).
+
+Both are silent-wrong-answer bugs, not compile errors: neither shows in
+the stub count.

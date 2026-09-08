@@ -4054,7 +4054,11 @@ class RustBackend {
             target is IrField &&
             (target.target == null || target.target is IrThis) &&
             !_fieldsAreAccessors &&
-            _selfName == 'self' &&
+            // ..and in a constructor body, where `this` is the value being
+            // built (`__new`): `_items.addAll(items)` there extended a
+            // clone and the field stayed empty -- `TweenSequence` then had
+            // no intervals and threw on the first frame (run763).
+            (_selfName == 'self' || _selfName == '__new') &&
             _ownCollectionField(target.name)
         ? '$_selfName.${snake(target.name)}'
         : null;
@@ -8512,7 +8516,21 @@ class RustBackend {
     // `_RenderPhysicalModelBase<T>` in between stopped the walk: every
     // `RenderPhysicalModel` read that `late` unset (run733).
     if (base.typeParameters.isNotEmpty && baseCtor.body != null) {
-      return const [];
+      // ..unless what this class puts in for them is those same names: the
+      // struct beside an open class's trait carries the class's parameters
+      // unchanged (`SeqImpl<T>` over `Seq<T>`), so the base's body already
+      // spells only what can be named here. Without this `TweenSequence`'s
+      // constructor -- the one that fills `_intervals` -- never ran, and the
+      // first frame threw "could not find an interval for 0.0" (run763).
+      final passed = _baseTypes(from ?? cls, const {});
+      final sameNames = base.typeParameters.every((p) {
+        final put = passed[p];
+        return put != null &&
+            put.name == p &&
+            put.arguments.isEmpty &&
+            !put.nullable;
+      });
+      if (!sameNames) return const [];
     }
     // A bodiless base too: its parameters are what the next base's
     // arguments name (`RenderProxyBoxWithHitTestBehavior({child}) :
