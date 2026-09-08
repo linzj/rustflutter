@@ -1229,6 +1229,13 @@ class RustBackend {
       // (`let __me = this_.clone()` captured a `&__Self` into a `'static`
       // closure, 91 lifetime errors at ws334).
       if (node.holdsSelf) 'let $_countedSelf = ${_selfHandle()};',
+      // A lending local function inside a `&mut self` method: the closure
+      // is a `move` one (it owns the locals it copied in), and a `&mut Self`
+      // is not `Copy` -- so it moves `self` rather than borrowing it. A
+      // reborrow bound here is what it moves instead, and it lasts exactly
+      // as long as the closure (`_popPolicyDataIfNeeded`, ws838).
+      if (_lendingClosure && _selfIsMut && !node.holdsSelf)
+        'let $_lentSelf = &mut *$_selfName;',
       if (usesBound) 'let $_boundName = $_boundName.clone();',
       // `mut` when the body writes or lends the copy (`&mut keys` inside
       // `visitAncestorElements`'s callback, `PageStorageBucket._allKeys`).
@@ -1282,7 +1289,15 @@ class RustBackend {
     // Nor is it inside the try body's flow closure: a `return` in it is
     // the closure's own (`Ok(Some(..))` in `|x| builder.setDay(x)`).
     _inFlowClosure = false;
-    if (node.holdsSelf) _selfName = _countedSelf;
+    // ..and the reborrow is what `this` is inside that closure.
+    final lentSelf = _lendingClosure && _selfIsMut && !node.holdsSelf;
+    final savedLendingBody = _lendingClosure;
+    _lendingClosure = false;
+    if (node.holdsSelf) {
+      _selfName = _countedSelf;
+    } else if (lentSelf) {
+      _selfName = _lentSelf;
+    }
     final savedCaptured = _closureCaptured;
     _closureCaptured = {
       ..._closureCaptured,
@@ -1309,6 +1324,7 @@ class RustBackend {
     _returns = savedReturns;
     _inFlowClosure = savedFlow;
     _selfName = savedSelf;
+    _lendingClosure = savedLendingBody;
     _closureCaptured = savedCaptured;
     final body = _out.sublist(saved).map(_inlineSafe).join(' ');
     _out.removeRange(saved, _out.length);
@@ -2552,6 +2568,13 @@ class RustBackend {
         ? 'std::rc::Rc::new(${expr(first)})'
         : expr(first);
   }
+
+  /// The reborrow a lending local function's closure moves in place of a
+  /// `&mut self` it cannot copy.
+  static const _lentSelf = '__mut_me';
+
+  /// Set while a lending local function's closure is printed.
+  var _lendingClosure = false;
 
   /// Whether a `return` in the body being printed has to spell its upcast:
   /// set for a step closure of an iterator chain, whose return type Rust
@@ -6192,7 +6215,14 @@ class RustBackend {
         // A binding that is only called is a plain `let`: no handle, so the
         // closure may borrow what it reads (`IrLocalFunction.lends`).
         if (lends) {
-          _line('let ${snake(name)} = ${expr(closure)};');
+          final savedLending = _lendingClosure;
+          _lendingClosure = true;
+          // `mut`: a closure that borrows anything mutably -- through the
+          // reborrow of `&mut self`, or a local it changes -- is an `FnMut`,
+          // and calling one needs the binding to be mutable. Where it is not
+          // one rustc says only that the `mut` was not needed.
+          _line('let mut ${snake(name)} = ${expr(closure)};');
+          _lendingClosure = savedLending;
           break;
         }
         if (!recursive) {
@@ -11978,7 +12008,13 @@ class RustBackend {
     return out;
   }
 
+  /// Whether the method being printed takes `&mut self` (`_sharedMutation`).
+  /// A lending local function's closure has to reborrow one rather than
+  /// move it (see `IrLocalFunction.lends`).
+  var _selfIsMut = false;
+
   void _emitMethod(IrMethod method, {String? as, String? stubbed}) {
+    _selfIsMut = !method.isStatic && _sharedMutation(method);
     {
       // A static `of<T>` inside `ScopedModel<T>`: Rust will not have the
       // name twice (E0403, the two errors outside any body once the
