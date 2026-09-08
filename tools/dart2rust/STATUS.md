@@ -895,3 +895,16 @@ its `Option` off.
 
 289 is also three better than ws764: the lending fix, `DartEnum` on an
 `Enum`-bounded parameter, and the promoted downcast's type.
+
+## ws769 — 289 with the rules on, and the guard was one notch too tight
+
+    ws768 289 (rules off)
+    ws769 289 (rules on, strict non-null guard)   0 gone, 0 new
+
+Identical, and `_evaluateAt` still stubbed: `Animatable<T>.transform`
+returns a bare `T`, which Kernel also writes *undetermined* when `T`'s
+bound is nullable, so "strictly non-null" rejected the very case the rule
+was for. The distinction that matters is the one Kernel does draw:
+`T?` is `nullable`, a bare `T` is not. Rejecting only `nullable` keeps
+`Map<K, V>.[]` out and lets `transform` in -- checked in the translation,
+both ways, before measuring this time.

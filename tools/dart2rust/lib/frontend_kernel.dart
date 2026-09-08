@@ -1303,7 +1303,7 @@ class KernelFrontend implements TypeWorld {
     // through, the read lost its `Option` and every null-aware read around
     // it stopped compiling: round 3 at 336 against 246 with the rules off
     // (ws765 through ws768).
-    if (declared.nullability != Nullability.nonNullable) return null;
+    if (declared.nullability == Nullability.nullable) return null;
     final owner = target.enclosingClass;
     final env = typeEnvironment;
     if (owner == null || env == null) return null;
