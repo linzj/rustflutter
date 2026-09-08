@@ -1160,3 +1160,8 @@ default body's bare `self.iterator()` was ambiguous; it goes through this
 trait explicitly now.
 
 Grouped, from ws747: **433 -> 259** stubbed, 183 -> 130 refusals.
+
+## ws784 — 258
+
+    ws783 259 stubbed
+    ws784 258 stubbed, 130 refusals, 64 crates   -1, 0 new
