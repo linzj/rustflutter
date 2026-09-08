@@ -1411,3 +1411,26 @@ element depending on a `Theme` or a `Localizations`, scanned on every
 
 The two the borrowed read had broken, and nothing else moved.
 433 -> 221 over the grouped method.
+
+## run802 — the Map index found a refusal that had never been called
+
+4 frames, then
+
+    material_theme_data.rs:1200
+    _IdentityThemeDataCacheKey::hash_code
+      -> dart2rust: not translated: unsupported call to top-level
+         `identityHashCode`
+
+`_IdentityThemeDataCacheKey.hashCode` is `identityHashCode(baseTheme) ^
+identityHashCode(localTextGeometry)`, which this compiler refuses; the stub
+it left had simply never been called, because nothing asked a key to hash
+until `Map` started indexing. Two things follow, and both are the rule
+rather than the case:
+
+  - `DartEq::dart_hash_code` must not panic -- its default (`0`, or a
+    counted handle's address) is consistent with any equality, which is
+    what the protocol promises. A `hashCode` this class could not emit is
+    no longer wired into it (`_stubbed`).
+  - a map small enough never to have built an index must never ask its keys
+    to hash at all: `insert` asks *inside* the index, so the five-entry
+    `_FifoCache` behaves exactly as it did before.
