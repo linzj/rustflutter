@@ -613,6 +613,33 @@ IrExpr coerceInto(
     if (identical(body, element)) return value;
     return IrMapElements(value, normalName(slot.name), body)..rustType = slot;
   }
+  // A record into a record slot, field by field, as a list's elements are:
+  // a record literal is typed by what was *written* in it, and the slot may
+  // spell a field wider (`(inside: <RenderTapRegion>{..}, outside: [..])`
+  // returned where the typedef says `Iterable`, `_classifyRegions` at
+  // ws754). Only a literal: a record already in a place would have to be
+  // taken apart and rebuilt, and nothing asks for that yet.
+  if (have.name == 'Record' &&
+      slot.name == 'Record' &&
+      value is IrRecord &&
+      have.arguments.length == slot.arguments.length &&
+      value.fields.length == slot.arguments.length) {
+    final fields = [
+      for (var i = 0; i < value.fields.length; i++)
+        coerceInto(
+          value.fields[i],
+          slot.arguments[i],
+          world,
+          inClosure: inClosure,
+        ),
+    ];
+    var same = true;
+    for (var i = 0; i < fields.length; i++) {
+      if (!identical(fields[i], value.fields[i])) same = false;
+    }
+    if (same) return value;
+    return IrRecord(fields)..rustType = slot;
+  }
   // A map, key by key and value by value -- the prelude's one `Map`
   // under every `dart:` map name (`LinkedHashMap<Locale, X>` from
   // `_getLocaleOptions()` into a `T := Locale?` slot, run661).

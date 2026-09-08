@@ -728,10 +728,15 @@ class RustBackend {
       // A field read out of a record held in a place is a copy of it: by
       // value it moved the `TextTheme` out of the tuple the pattern's
       // cache temporaries read twice (`Typography._withPlatform`, run565).
+      // ..and out of anything but a record built right here: a closure's
+      // parameter is a reference (`|it| it.0` under `as_ref().map`), and a
+      // field read out of one moves (`SelectionOverlay.showToolbar`, E0507
+      // at ws754). A clone of a handle is a count, and of a `Copy` field
+      // nothing.
       IrRecordField(:final record, :final index) =>
-        record is IrLocal || record is IrField
-            ? '${expr(record)}.$index.clone()'
-            : '${expr(record)}.$index',
+        record is IrRecord
+            ? '${expr(record)}.$index'
+            : '${expr(record)}.$index.clone()',
       // Spells its key and value types: nothing else says them when the
       // slot is an `Rc<dyn Object>` (E0283, `K` on `Map`), and a written
       // one typed by its first entry alone was untyped where that entry's
@@ -1234,6 +1239,13 @@ class RustBackend {
     _rustReturns = _resultModel && closureReturns.name != 'raw'
         ? 'Result<${type(closureReturns)}, $_error>'
         : _rustReturns;
+    // ..and so does the *declared* return `_returned` wraps against: left
+    // at the enclosing method's, a closure returning a concrete class got
+    // that method's trait around it -- `getIcon: (context) => Icons.menu`
+    // inside a `Widget build` was `dart_object(IconData::new(..)) as
+    // Rc<dyn Widget>` (`_ActionIcon`, 4 at ws751).
+    final savedReturns = _returns;
+    _returns = closureReturns;
     // Nor is it inside the try body's flow closure: a `return` in it is
     // the closure's own (`Ok(Some(..))` in `|x| builder.setDay(x)`).
     _inFlowClosure = false;
@@ -1255,6 +1267,7 @@ class RustBackend {
     _asyncBody = savedAsyncBody;
     _failure = savedFailure;
     _rustReturns = savedRustReturns;
+    _returns = savedReturns;
     _inFlowClosure = savedFlow;
     _selfName = savedSelf;
     _closureCaptured = savedCaptured;

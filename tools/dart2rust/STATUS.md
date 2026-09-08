@@ -641,3 +641,25 @@ named fields` and `RecordNameGet`. The 4 new stubs are that same rule's
 bill -- `SelectionOverlay.showMagnifier`, `showToolbar`,
 `_classifyRegions`, `getGlyphHeights` were refused before and now compile
 far enough to be counted.
+
+## ws755 — an enum's mixins (333 → 329)
+
+    ws754 333 stubbed, 130 refusals, 64 crates
+    ws755 329 stubbed, 130 refusals, 64 crates   -4, 0 new
+
+Three rules go in with this commit, measured next -- two of them the bill
+for ws754's record rule:
+
+* a closure body's `return` is wrapped against the *closure's* declared
+  type, not the enclosing method's. The backend saved `_rustReturns`
+  around a closure but not `_returns`, which is what `_returned` reads, so
+  `getIcon: (context) => Icons.menu` inside a `Widget build` became
+  `dart_object(IconData::new(..)) as Rc<dyn Widget>` (`_ActionIcon`, 4 at
+  ws751);
+* a record into a record slot converts field by field, as a list's
+  elements do: a literal is typed by what was written in it, and the slot
+  may spell a field wider (`_classifyRegions` returning a `Set` where the
+  typedef says `Iterable`);
+* a record field read clones unless the record is a literal built right
+  there: a closure's parameter is a reference, and reading a field out of
+  one moves (`SelectionOverlay.showToolbar`, E0507).
