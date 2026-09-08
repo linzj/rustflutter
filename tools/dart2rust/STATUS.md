@@ -986,3 +986,16 @@ ancestor's, which is most of the 510.
 
 Next: why a paragraph measures zero, and `runtimeType` of a generic class
 spelling its type arguments.
+
+## The generic class's `runtimeType`
+
+Dart's `runtimeType` names the arguments a class was instantiated at, and
+this output printed the bare name -- the one node of 708 the render walk
+still spelled differently. `dart_type_applied(base, args)` builds and
+interns the spelling (`Type` holds a `&'static str` and the instantiation
+is only known at run time), and a generic class's `dart_runtime_type` calls
+it with `dart_type_of::<T>()` for each parameter.
+
+It also makes `runtimeType` comparisons what Dart's are: two
+instantiations of one class are different types, and the `operator ==`
+fast path now says so.

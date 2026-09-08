@@ -9632,7 +9632,16 @@ class RustBackend {
     _line('fn dart_hash_any(&self) -> i64 { self.dart_hash_code() }');
     _line('fn dart_runtime_type(&self) -> Type {');
     _indent++;
-    _line('Type::of("${cls.dartName ?? cls.name}")');
+    // A generic class names its arguments, as Dart's `runtimeType` does:
+    // `RenderAnnotatedRegion<SystemUiOverlayStyle>` is what the render
+    // walk's reference prints, and the bare name was the one node of 708
+    // that differed (run773).
+    _line(
+      cls.typeParameters.isEmpty
+          ? 'Type::of("${cls.dartName ?? cls.name}")'
+          : 'dart_type_applied("${cls.dartName ?? cls.name}", &['
+                '${cls.typeParameters.map((p) => 'dart_type_of::<$p>()').join(', ')}])',
+    );
     _indent--;
     _line('}');
     // What this object is (`dart_cast_to`): its own struct, and every

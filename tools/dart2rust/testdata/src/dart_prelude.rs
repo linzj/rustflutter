@@ -3850,6 +3850,43 @@ impl Type {
     }
 }
 
+/// `runtimeType` of a generic class: the class's name with the arguments
+/// it was instantiated at, as Dart prints it
+/// (`RenderAnnotatedRegion<SystemUiOverlayStyle>`, the one node the render
+/// walk still spelled differently at run773).
+///
+/// A `Type` holds a `&'static str` and the spelling is only known at run
+/// time, so the name is interned. The set is bounded by the instantiations
+/// the program has, which is what the census counts.
+pub fn dart_type_applied(base: &'static str, arguments: &[Type]) -> Type {
+    if arguments.is_empty() {
+        return Type::of(base);
+    }
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static NAMES: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let spelled = format!(
+        "{}<{}>",
+        base,
+        arguments
+            .iter()
+            .map(|t| t.name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let names = NAMES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut names = names.lock().unwrap();
+    let kept: &'static str = match names.get(spelled.as_str()) {
+        Some(known) => known,
+        None => {
+            let leaked: &'static str = Box::leak(spelled.into_boxed_str());
+            names.insert(leaked);
+            leaked
+        }
+    };
+    Type::of(kept)
+}
+
 impl PartialEq for Type {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
