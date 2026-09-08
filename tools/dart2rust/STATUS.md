@@ -318,6 +318,14 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 近期的(细节在活账/git):
 
+- **ws879**:泛型局部函数(`T? effectiveValue<T>(..)`,4 个拒绝)——声明按 bound 擦除、
+  调用点也说擦除后的话,这半是**成的**:fixture `genlocalfn` 两端都打 `red/12|black/12`,
+  拒绝 49 → **45**。但翻出来的四个成员编不过,stub **152 → 156**;再补一条
+  「被同体内另一个闭包调用的局部函数必须自持」(`_CalledInNestedFunction`)之后仍
+  **157**(多出 `material_time_picker.rs paint`)。**stub 只许降不许升**,故整轮撤回;
+  改动留在 scratchpad 的 `ws879_frontend_kernel.dart`。下次的窄解要先解决借用/移动那
+  一面:`effective_value` 被 `resolveWith` 的闭包捕获后活不过它的 `let`,以及
+  `resolved_foreground_builder` 这类捕获值被移动。
 - **ws721**:「接收者的静态类不是具体类就一律走 trait 访问器」(想修 `notification.metrics`
   的字段访问)——**stub 805**(基线 449),撤回。窄解是只对**重定类型的形参**按声明的类判断。
 - **ws704–706**(已作废,ws708 走通了):把「覆盖关系」算成 covariance 的 flow site
@@ -417,6 +425,7 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws877 | a super call reaches an operator, as it reaches any other member | stub **152**,拒绝 52,可达 64 |
 | run877 | the reading, after ws875-ws877 | — |
 | ws878 | `identityHashCode` on a handle is the address behind it | stub **152**,拒绝 49,可达 64 |
+| ws879 | 泛型局部函数:翻得出来,编不过,整轮撤回(见〈撤回与作废〉) | stub **152**,拒绝 49,可达 64(未动) |
 
 ## 下一步(2026-09-05 重铺)
 
