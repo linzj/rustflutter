@@ -8920,24 +8920,42 @@ impl<S: 'static, T: 'static> Converter<S, T> {
     }
 }
 
-/// `Platform.isWindows` and its siblings: what this binary was built for.
+/// The operating system this run presents itself as.
+///
+/// What the binary was built for, unless `DART2RUST_OS` says otherwise.
+/// The knob is for the rulers: the render-tree reference is a `flutter
+/// test` capture, and the test binding presents `TargetPlatform.android`,
+/// so a run compared against it has to answer the same way -- Flutter's
+/// `defaultTargetPlatform` is `Platform.isAndroid` and its siblings, and
+/// the transition a `MaterialApp` builds follows from it (ours took
+/// `ZoomPageTransitionsBuilder` where the reference took
+/// `FadeForwardsPageTransitionsBuilder`, run771).
+fn platform_os() -> &'static str {
+    static OS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    OS.get_or_init(|| {
+        std::env::var("DART2RUST_OS").unwrap_or_else(|_| std::env::consts::OS.to_string())
+    })
+    .as_str()
+}
+
+/// `Platform.isWindows` and its siblings.
 pub fn platform_is_windows() -> bool {
-    cfg!(target_os = "windows")
+    platform_os() == "windows"
 }
 pub fn platform_is_linux() -> bool {
-    cfg!(target_os = "linux")
+    platform_os() == "linux"
 }
 pub fn platform_is_mac_o_s() -> bool {
-    cfg!(target_os = "macos")
+    platform_os() == "macos"
 }
 pub fn platform_is_android() -> bool {
-    cfg!(target_os = "android")
+    platform_os() == "android"
 }
 pub fn platform_is_i_o_s() -> bool {
-    cfg!(target_os = "ios")
+    platform_os() == "ios"
 }
 pub fn platform_is_fuchsia() -> bool {
-    cfg!(target_os = "fuchsia")
+    platform_os() == "fuchsia"
 }
 
 pub fn platform_number_of_processors() -> i64 {
@@ -8949,7 +8967,7 @@ pub fn platform_path_separator() -> String {
     std::path::MAIN_SEPARATOR.to_string()
 }
 pub fn platform_operating_system() -> String {
-    std::env::consts::OS.to_string()
+    platform_os().to_string()
 }
 pub fn platform_operating_system_version() -> String {
     String::new()

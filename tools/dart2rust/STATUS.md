@@ -917,3 +917,38 @@ both ways, before measuring this time.
 The one that went is `TweenSequence._evaluateAt` -- the run ruler's
 current stop. Grouped, from ws747: 433 -> 288 stubbed, 183 -> 130
 refusals, 64 crates throughout.
+
+## run771 — the walk is 770 lines and the difference is one widget
+
+    walk 770 lines against the reference's 708, 752 of them laid out
+    RenderErrorBox 0
+
+`_evaluateAt` compiling put the whole home page back. Counted per node
+type, these now *match* the reference exactly: `RenderImage` (16, and it
+was 0 four runs ago), `RenderPadding`, `RenderSemanticsAnnotations`,
+`RenderParagraph`, `RenderFlex`, `RenderStack`, `RenderPhysicalShape`,
+`RenderConstrainedBox`, `RenderPositionedBox`, `_RenderInkFeatures`,
+`RenderIndexedSemantics`, `RenderWrap`, `RenderOpacity`.
+
+What is left is one divergence, at line 24, and everything else follows
+from it:
+
+    ref : RenderAnimatedOpacity + RenderFractionalTranslation  (4 each)
+    ours: _RenderSnapshotWidget                                (4)
+
+    RenderPointerListener      52 -> 76      RenderClipRect  21 -> 13
+    RenderRepaintBoundary      29 -> 53      RenderTransform 20 -> 12
+    RenderMouseRegion          23 -> 35
+    RenderSemanticsGestureHandler 11 -> 23
+    RenderCustomPaint          17 -> 29
+
+That is the page transition. The reference is a `flutter test` capture and
+the test binding presents `TargetPlatform.android`, whose default builder
+is `PredictiveBack` -> `FadeForwards` (fade and slide, no snapshot); this
+run is on Linux and `PageTransitionsTheme` gave it
+`ZoomPageTransitionsBuilder`, which is a `SnapshotWidget`. So the trees
+are both right and the *platforms* differ.
+
+`DART2RUST_OS` makes the run present a platform, as `DART2RUST_DUMP_*`
+make it dump: a host knob, not a translation rule. The next run sets it to
+`android` and the walk is compared again.

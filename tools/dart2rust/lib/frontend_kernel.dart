@@ -1814,7 +1814,13 @@ class KernelFrontend implements TypeWorld {
               declared.classNode == promoted.classNode) &&
           !(declared is InterfaceType &&
               declared.nullability == Nullability.nullable)) {
-        return IrCastTo(IrLocal(name), _type(promoted));
+        // Typed as the promotion says, for the same reason the downcast
+        // above is: a slot that takes an `Option` cannot otherwise tell a
+        // promoted value from one still in its `Option`, and left the
+        // `Some` off (`BoxBorder.lerp`'s `BorderDirectional::lerp(a, b)`,
+        // ws770).
+        return IrCastTo(IrLocal(name), _type(promoted))
+          ..rustType = _type(promoted);
       }
       // Promoted from `T?` to `T` -- `if (x != null) f(x)` -- the read is
       // the value inside. A clone first, so the local is still there for
