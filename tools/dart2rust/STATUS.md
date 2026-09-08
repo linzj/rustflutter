@@ -568,3 +568,23 @@ is also what Dart does -- `where`'s argument is evaluated once.
     ws750 390 stubbed, 162 refusals, 64 crates   -8, 0 new
 
 (The rule rode along in ws749's commit; the measurement is this one.)
+
+## ws751 — an operator's right operand is its parameter, not its `Self` (390 → 380)
+
+Third group: `expected Rc<X>, found X`, 17 blocks across `Vector3`,
+`_Vector`, `OffsetPair`, `AttributedString`. `impl std::ops::Mul for
+Struct` fixes the *left* operand as the struct value, and ws511 wrote
+"each handle operand is the value it holds". The right is not that: the
+impl's `Rhs` is the operator as it was declared, and a counted class
+named in a parameter is its handle -- `Mul<Rc<Matrix3>> for Matrix3`,
+`Mul<Rc<dyn Object>>` where the parameter is `dynamic`. Dereferencing it
+handed `Vector3` to an `Rc<Vector3>` slot.
+
+    ws750 390 stubbed, 162 refusals, 64 crates
+    ws751 380 stubbed, 162 refusals, 64 crates   -10, 0 new
+
+Also in this commit, measured next: an operator's `self` is `std::ops`'s,
+by value, so the `_handles` contagion -- "a method that calls a
+`&Rc<Self>` method takes the handle too" -- has nowhere to put the
+handle. Inside an operator, `this` for such a call is the object's own
+`dart_self_ref().get()` (`Vector4::op_mul` calling `clone`, 12 at ws747).

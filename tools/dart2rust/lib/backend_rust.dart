@@ -1927,21 +1927,20 @@ class RustBackend {
         library.isAbstract(leftName)) {
       return '${expr(left)}.op_${mapping.$2}(${expr(right)})$_propagate';
     }
-    // ..and on a counted class's handle: the `impl std::ops::Mul` is the
-    // struct's, taking values, so each handle operand is the value it
-    // holds, cloned (`Rc<Matrix4> * Rc<Matrix4>`, ws511).
+    // ..and on a counted class's handle: the `impl std::ops::Mul` is
+    // `for Struct`, so the *left* operand is the value the handle holds,
+    // cloned (`Rc<Matrix4> * Rc<Matrix4>`, ws511). The right is not: the
+    // impl's `Rhs` is the operator's parameter as it was declared, and a
+    // counted class named in a parameter is its handle -- `Mul<Rc<Matrix3>>
+    // for Matrix3`, `Mul<Rc<dyn Object>>` where the parameter is `dynamic`.
+    // Dereferencing it too handed `Vector3` to a `Rc<Vector3>` slot (17 at
+    // ws747, across Vector3, _Vector, OffsetPair, AttributedString).
     if (mapping != null) {
-      String operand(IrExpr e) {
-        final name = e.rustType?.name;
-        final counted = name != null && (library[name]?.counted ?? false);
-        return counted && !e.rustType!.nullable
-            ? '(*${expr(e)}).clone()'
-            : expr(e);
+      final name = left.rustType?.name;
+      final counted = name != null && (library[name]?.counted ?? false);
+      if (counted && !left.rustType!.nullable) {
+        return '((*${expr(left)}).clone() $op ${expr(right)})';
       }
-
-      final l = operand(left);
-      final r = operand(right);
-      if (l != expr(left) || r != expr(right)) return '($l $op $r)';
     }
     // `==` on a type parameter's values (`T`, `T?`) is Dart's `==`, the
     // prelude's `DartEq`, which every parameter carries; `PartialEq` is
@@ -4025,7 +4024,22 @@ class RustBackend {
             _ownCollectionField(target.name)
         ? '$_selfName.${snake(target.name)}'
         : null;
-    final receiver = cellPlace != null
+    // A method of this class that takes `self: &Rc<Self>` (`_receiverOf`),
+    // called on `this` from an operator: `std::ops` fixes the receiver by
+    // value, so the contagion that makes every other caller take the handle
+    // has nowhere to put it. `this` is the object's own handle instead
+    // (`Vector4::op_mul` calling `clone`, 12 at ws747).
+    final selfHandle =
+        (target == null || target is IrThis) &&
+            _selfByValue &&
+            cls.counted &&
+            (_handles.contains(snake(name)) ||
+                _handles.contains(_identifier(name)))
+        ? _thisHandle()
+        : null;
+    final receiver = selfHandle != null
+        ? selfHandle
+        : cellPlace != null
         ? cellPlace
         : ownPlace != null
         ? ownPlace
