@@ -5108,18 +5108,23 @@ class RustBackend {
     // `_findFamilyWithVariantAssetPath`, run604). The item is cloned out
     // first, so the body sees what a `map` step's does.
     final owned = step == 'filter';
+    // ..and a scalar parameter of any step is bound by value: `iter()`
+    // yields `&i64`, and a body handing it on to a callee that takes an
+    // `i64` -- `model.getProductById(id)` over `productsInCart.keys` --
+    // has no deref to reach through the reference (3 at ws793). A scalar
+    // is `Copy`, so the binding costs nothing.
+    bool byValue(IrParam p) => owned || _isCopy(type(p.type));
     final params = e.params
-        .map((p) => owned ? '__p_${snake(p.name)}' : snake(p.name))
+        .map((p) => byValue(p) ? '__p_${snake(p.name)}' : snake(p.name))
         .join(', ');
-    final unwrapped = owned
-        ? e.params
-              .map(
-                (p) =>
-                    'let ${_assignedIn(e.body).contains(p.name) ? 'mut ' : ''}'
-                    '${snake(p.name)} = (*__p_${snake(p.name)}).clone(); ',
-              )
-              .join()
-        : '';
+    final unwrapped = e.params
+        .where(byValue)
+        .map(
+          (p) =>
+              'let ${_assignedIn(e.body).contains(p.name) ? 'mut ' : ''}'
+              '${snake(p.name)} = (*__p_${snake(p.name)}).clone(); ',
+        )
+        .join();
     final saved = _out.length;
     final savedIndent = _indent;
     _indent = 0;
