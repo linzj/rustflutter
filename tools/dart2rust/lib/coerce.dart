@@ -455,7 +455,18 @@ IrExpr coerceInto(
       slot.name == 'Object' ||
       slot.name == 'dynamic' ||
       (slot.name == 'Function' && !slot.isFunction);
-  if (scalarNames.contains(have.name) && !slotObject) return value;
+  if (scalarNames.contains(have.name) && !slotObject) {
+    // ..unless the slot is an interface the scalar implements: Dart's
+    // `num implements Comparable<num>`, and a `Comparable<num>` slot is
+    // an `Rc<dyn Comparable<f64>>` (`_sort`'s field getter in the data
+    // table demo). The value goes behind a fresh handle, as an enum's
+    // does below; the prelude's impls say which scalars can (ws875).
+    if (world.isTrait(slot.name) && !slot.isFunction && !isNullable(slot)) {
+      return IrUpcast(value, slot, handle: false, explicit: inClosure)
+        ..rustType = slot;
+    }
+    return value;
+  }
   if (scalarNames.contains(slot.name) && !haveObject) return value;
   // Into `Object`: a handle unsizes, a value goes behind a fresh,
   // registered one.

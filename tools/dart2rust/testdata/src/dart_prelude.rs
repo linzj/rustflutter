@@ -24,6 +24,16 @@ impl Comparable<f64> for f64 {
     }
 }
 
+/// Dart declares `num implements Comparable<num>` and `int extends num`,
+/// so an `int` stands in a `Comparable<num>` slot as a `double` does
+/// (`_sort<num>((d) => d.iron, ..)` in the data table demo).
+impl Comparable<f64> for i64 {
+    fn compare_to(&self, other: f64) -> i64 {
+        let mine = *self as f64;
+        (mine > other) as i64 - (mine < other) as i64
+    }
+}
+
 impl Comparable<String> for String {
     fn compare_to(&self, other: String) -> i64 {
         match self.cmp(&other) {

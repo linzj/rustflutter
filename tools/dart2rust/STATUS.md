@@ -3103,3 +3103,40 @@ no top-level `use`).
 run874 holds the ruler after a change that touches every method body: 708
 walk lines, 0 type-only differences, 508 as printed, no `RenderErrorBox`,
 196 frames drawn and 0 panicked.
+
+## ws875 -- a scalar stands in an interface slot it implements
+
+    bin/run_chain.sh:  154 stubbed (was 156), 57 refusals (unchanged), 64 crates
+
+`coerceInto` bailed on a scalar the moment the slot was not `Object`:
+"a scalar into anything but the object is itself". That is right for a
+scalar slot and wrong for an interface one. `_sort<num>((d) => d.iron, ..)`
+in the data table demo declares its field getter
+`Comparable<T> Function(_Dessert)`, so the closure's return slot is an
+`Rc<dyn Comparable<f64>>` and what the body hands back is the `i64` of
+`d.iron`: "expected `Rc<dyn Comparable<f64>>`, found `i64`", in `build` and
+in `restore_state`.
+
+Dart's hierarchy says the scalar belongs there -- `num implements
+Comparable<num>`, and `int` and `double` extend `num` -- so the value goes
+behind a fresh handle, exactly as an enum standing in an interface slot
+does two rules below:
+
+    if (world.isTrait(slot.name) && !slot.isFunction && !isNullable(slot)) {
+      return IrUpcast(value, slot, handle: false, explicit: inClosure)
+        ..rustType = slot;
+    }
+
+The prelude's impls are what decide which scalars can, and it was missing
+the one Dart declares: `Comparable<f64> for i64`, `int.compareTo(num)`.
+`Comparable<f64> for f64` and `Comparable<String> for String` were already
+there.
+
+`cmpscalar` holds two field getters in a list -- one returning the `int`
+field, one its `toDouble()` -- behind a `Comparable<num> Function(Row)`
+slot. At HEAD it is the gallery's error verbatim; with the rule both ends
+print `-11 -11`. Writing the comparison as `x.compareTo(5)` rather than
+`5.0` finds a second, separate gap: an `int` literal in a prelude
+interface method's `num` parameter is not widened to `f64`, because the
+trait's `__A0` is not a slot the coercion knows. No gallery member is on
+that shape, so it waits for one.
