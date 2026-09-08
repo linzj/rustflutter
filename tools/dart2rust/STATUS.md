@@ -1335,3 +1335,16 @@ The walk at run796 is 450 lines against the settled reference's 708 -- the
 process aborts in `_MaterialInteriorState`'s implicit animation before the
 tree settles, so this is the panic's shadow, not a structural regression.
 run787 (the last run that reached the end) was 708/0.
+
+## ws797 — 230 stubbed (was 234), 130 refusals, 64 crates
+
+  - the function-holding field's `dart_eq`: widgets_app, material_app,
+    cupertino_tab_view `eq`
+  - the scalar step parameter: material_paginated_data_table.build,
+    studies_shrine_shopping_cart, cupertino_picker_demo, material_about (2)
+
+Four regressions came with the step rule and are fixed on top:
+`|__p_r#box|` is a prefixed identifier, which Rust 2021 reserves (the
+temporary is named from the identifier now), and a source that already
+hands values out -- `iter().cloned()`, which `for_each`, `any` and `all`
+take -- has nothing to deref.
