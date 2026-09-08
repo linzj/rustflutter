@@ -307,14 +307,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,run695 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws698 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| run695 | 过了整个 `_SettingsListItemState`（`build`/`_handleExpansion`/`_buildHeaderWithChildren` 都不再是 stub）。停在 `Icon.build` 的 stub：`String.fromCharCode(icon.codePoint)`——prelude 没有这个 dart:core 静态，前端也没映射，于是拼成了 `String::from_char_code`。修（通用，按「dart:core→prelude 只走一张表」）：prelude 加 `string_from_char_code`（一个 rune；落单代理面给替换字符，Rust 的 String 装不下），前端映射表加一条，后端自由函数表加一条。夹具 charcode SAME。 | 链 ws696 |
-| ws696 | 链：stub **464**（-8：`Icon.build`、`CupertinoNavigationBar.build`、`TextPainter._skipSpacesAndPunctuations`、`RawKeyEvent.fromMessage` 与四个平台的 `keyLabel`/`runeToLowerCase`，无新增），拒绝 183，可达 64。 | run696 |
-| run696 | 过了 `Icon.build`，进 viewport。停在 `RenderShrinkWrappingViewport::new` 的 stub：「cannot find value `cache_extent`」——抽象基类 `RenderViewportBase` 的字段初始化式被内联进子类构造器（`_inheritedInits`），里面的 `switch (cacheExtentStyle) {..}` 是**语句**，而后端的 `_substitute` 只走表达式，`IrBlockValue` 里也只替换 `IrLocalDecl` 的初始化式，于是基类形参名原样留下——子类只转发了 6 个 `super.` 形参，没转发 `cacheExtent`/`cacheExtentStyle`。修（通用）：`_substitute` 配一个语句遍历 `_substituteStmt`（22 种语句全覆盖；局部函数体是闭包，捕获是它自己的，不进）。夹具 basedefault SAME。 | 链 ws697 |
-| ws697 | 链：stub **464**（数目没变，同一个 `new` 的错因从「cannot find value」变成「type annotations needed」）——替换生效后，基类默认值 `null` 变成裸 `None`，落在 TFA 判死的那条臂里的 `cacheExtent!` 上成了 `None.unwrap()`，推不出 `T`。修（通用）：`null!` 是 Dart 的 `TypeError`，不是值——prelude 加 `dart_null_check_failed() -> !`，后端把「操作数是 `Null` 字面量的 `IrNullCheck`」拼成它（类型是 `!`，哪里都放得下，也不用名字）。夹具 basedefault 扩了这条臂后 SAME；isnull/asnull/identnull/dynifnull/ifnull/ornull/nullmut/nullfn/nullarg/recnull/condstmt/patsw/switchbrk/enumif 回归 SAME。 | 链 ws698 |
 | ws698 | 链：stub **463**（-1：`RenderShrinkWrappingViewport::new`，无新增），拒绝 183，可达 64。 | run698 |
 | run698 | 过了 viewport。停在 `Switch._getSwitchSize` 的**运行期** unwrap（不是 stub）：`defaults.padding!` 拿到 `None`——`_SwitchDefaultsM3` 用 getter 覆盖了基类 `SwitchThemeData` 的**字段** `padding`（`const EdgeInsets.symmetric(horizontal: 4)`），而 trait 的字段访问器一律读存储，动态分发到不了 getter。修（通用）：本类自己声明的同名 getter 覆盖基类字段，访问器改调它——仅当 getter 的结果就是 trait 声明的那个 Rust 类型（Dart 允许协变收窄，如 `WidgetStateProperty<Color>` 顶 `WidgetStateProperty<Color?>`，那是另一笔欠账，仍读存储）。夹具 getterover SAME（基线复现同一个 `unwrap` on None）。 | 链 ws699 |
 | ws699 | 链：stub **463**（无变化），拒绝 183，可达 64。 | run699 |
@@ -351,6 +347,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws728 | 链：stub **438**，拒绝 168。 | run728 |
 | run728 | 停在 prelude 的 `List.sort() without a comparator on a type with no natural order` —— `DartList<T> for Vec<T>` 对任意 `T`，自然序放不进去。修（通用）：`sort_natural` 单独一个 trait，按 **Dart 的 `Comparable`** 排（标量在 prelude 里已实现，翻译类的 impl 由后端 `_preludeInterfaces` 生成）；没有 `Comparable` 的元素就没有这个方法——停在编译期而不是运行期。省略的比较器是「无比较器」那一支，不是 `sort_by_dart(None)`。中途先用 `PartialOrd` 试过：ws729 **441**（+3，`_SemanticsSortGroup` 这类只实现 `Comparable` 的翻译类不满足），改成 `Comparable` 后 **438**。夹具 sortnat SAME。 | 链 ws730 |
 | ws730 | 链：stub **438**（与 ws728 同一组），拒绝 168，可达 64。 | run730 |
+| run730–733 | 一串小口子，各修各的（都带夹具，链每轮不涨）：`firstWhere` 给了 `orElse` 时要**裸**传（Dart 的槽是 `E Function()?`，coercion 包了 `Some(Rc::new(..))`，prelude 的形参是 `impl Fn()`）；prelude 加 `String.lastIndexOf`；枚举方法里的 `*self` 作接收者要加括号（`*self.dart_to_string()` 解引用的是那个 `String`）；枚举上**程序员写的** `toString` 不能当隐式成员丢掉（丢了 `dart_to_string` 就回落到 `Kind.material`，Dart 打的是 `MATERIAL`）。链 ws733 **435**，拒绝 168。 | run733 |
+| run733–734 | `RenderPhysicalModel` 读到未初始化的 `late _needsCompositing`：`RenderObject()` 的**体**设它，而构造器体上溯到泛型基类就停（基类体里的 `T` 这边拼不出来）——可**无体**的泛型基类什么也没拼，`_RenderPhysicalModelBase<T>` 正是这样夹在中间。修（通用）：无体的泛型基类不挡路。链 ws734 **435**（同组）。 | run734 |
+| run734–743 | `ContainerRenderObjectMixin.visitChildren` 把 `SliverMultiBoxAdaptorParentData` 往 `FlexParentData` 上转：mixin 的体是从**某一个应用**里借的（CFE 把参数替换掉了），当 trait 默认体用时要服务所有应用。修（通用）：借来的体里，应用替进去的实参**换回** mixin 自己的类型参数——只对**被擦除**的参数（它的拼法就是 bound，本来就是大家读的那个 trait），`_appliedBack` 一张映射，`_type`、字段读的「接收者的类」、限定名（读与写）、`as` 的目标类型都走它；映射只应用一次（bound 里再提到被映射的类型会打转，ws741 前端栈溢出）。同一趟还补：`__aN` 实参临时量绑定的是**位置**时要克隆（`slot` 被移走后又读）。链 ws743 **435**（与 ws734 同一组），拒绝 168，`rendering_object.rs` 里再无 `FlexParentData`。 | run743 |
+| run743 | 停在 `BorderDirectional.paint` 的 stub：`cannot index into a value of type Set<Color>`。 | 下一轮 |
 
 ## 下一步(2026-09-05 重铺)
 

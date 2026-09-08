@@ -864,6 +864,28 @@ class KernelFrontend implements TypeWorld {
 
   IrType _type(DartType type) {
     final nullable = type.nullability == Nullability.nullable;
+    // An applied mixin body's concrete argument back to the mixin's own
+    // erased parameter (`_appliedBack`), which spells as its bound.
+    if (_appliedBack.isNotEmpty && type is InterfaceType) {
+      final back =
+          _appliedBack[type.withDeclaredNullability(Nullability.nonNullable)];
+      if (back != null) {
+        // Once: the parameter spells as its bound, and a bound that
+        // mentions a mapped type would send this straight back here
+        // (a stack overflow in the front end, ws741).
+        final was = _appliedBack;
+        _appliedBack = const {};
+        try {
+          return _type(
+            nullable
+                ? back.withDeclaredNullability(Nullability.nullable)
+                : back,
+          );
+        } finally {
+          _appliedBack = was;
+        }
+      }
+    }
     // An extension type is its representation type at runtime -- Dart
     // erases it -- and so it is here (`BaselineOffset(double? offset)`:
     // `RenderBoxContainerDefaultsMixin.defaultComputeDistanceToHighest
@@ -2564,8 +2586,11 @@ class KernelFrontend implements TypeWorld {
       // private field, `_hct` after `if (_hct != null)` -- is a null check.
       // Any other cast is the operand: Rust's types are already the
       // concrete ones. 12 `&Option<Hct>` where `&Hct` was wanted.
-      final from = _staticType(node.operand);
-      final to = node.type;
+      final from = _backHere(_staticType(node.operand));
+      // ..and the target through `_appliedBack`: a mixin body borrowed
+      // from an application casts to the application's `FlexParentData`
+      // where the trait holds the erased bound (ws739).
+      final to = _backHere(node.type)!;
       // ..of a function type too: TFA's `unsafeCast<Fn>(widget.builder)`
       // under `if (widget.builder != null)` is the `!` it rewrote away
       // (`WidgetsApp.build`, ws507).
@@ -5541,9 +5566,15 @@ class KernelFrontend implements TypeWorld {
     // (`notification.metrics` on a `dyn ScrollNotification`, ws721).
     final receiverType = target == null
         ? null
-        : (receiver is VariableGet && _retyped.containsKey(receiver.variable)
-              ? receiver.variable.type
-              : _staticType(receiver));
+        // ..and through `_appliedBack`: inside a mixin's body borrowed from
+        // an application the copy says `FlexParentData` where the trait
+        // holds the erased bound, and a field read on a `dyn` is the
+        // accessor (ws735).
+        : _backHere(
+            receiver is VariableGet && _retyped.containsKey(receiver.variable)
+                ? receiver.variable.type
+                : _staticType(receiver),
+          );
     final concrete =
         receiverType is InterfaceType &&
         !_abstractLike(receiverType.classNode) &&
@@ -6573,7 +6604,13 @@ class KernelFrontend implements TypeWorld {
   /// for both: on an abstract class it finds the hollow mixin's own.
   Member _landing(Member interface, Expression receiver) {
     final hierarchy = typeEnvironment?.hierarchy;
-    final type = receiver is ThisExpression ? null : _staticType(receiver);
+    // ..through `_appliedBack`, as the read does: inside a mixin's body
+    // borrowed from an application the copy says `FlexParentData` where
+    // the trait holds the erased bound, and the qualifier is that bound's
+    // trait, not the application's (ws736).
+    final type = receiver is ThisExpression
+        ? null
+        : _backHere(_staticType(receiver));
     final on = receiver is ThisExpression
         ? (_lowering ?? _member?.enclosingClass)
         : type is InterfaceType
@@ -6714,7 +6751,13 @@ class KernelFrontend implements TypeWorld {
     }
     // From the receiver's own class: a mixin's `child` is declared again
     // by the trait of the class that mixes it in, *below* the owner.
-    final type = receiver is ThisExpression ? null : _staticType(receiver);
+    // ..through `_appliedBack`, as the read does: inside a mixin's body
+    // borrowed from an application the copy says `FlexParentData` where
+    // the trait holds the erased bound, and the qualifier is that bound's
+    // trait, not the application's (ws736).
+    final type = receiver is ThisExpression
+        ? null
+        : _backHere(_staticType(receiver));
     // Inside a body borrowed from a mixin application (`_appliedBody`)
     // `this` is the mixin's trait, not the anonymous class the CFE copied
     // the body into (`ServicesBinding::x(this_)` named the trait as a
@@ -6885,14 +6928,15 @@ class KernelFrontend implements TypeWorld {
     if (receiver == null || receiver is ThisExpression) {
       from = _lowering ?? _member?.enclosingClass;
     } else {
-      from = _classOfType(_staticType(receiver));
+      // ..through `_appliedBack`, as the read's qualifier is (ws737).
+      from = _classOfType(_backHere(_staticType(receiver)));
     }
     if (from == null) return null;
     return _qualifierFor(from, target);
   }
 
   String? _classNameOf(Expression receiver) =>
-      _classOfType(_staticType(receiver))?.name;
+      _classOfType(_backHere(_staticType(receiver)))?.name;
 
   /// The class a value of `t` is: an interface's own, a type parameter's
   /// bound's (through a bound that is itself a parameter).
@@ -8616,6 +8660,49 @@ class KernelFrontend implements TypeWorld {
 
   /// A declared type of `owner`'s (a mixin's) with `owner`'s parameters
   /// substituted by the class being lowered's arguments for them.
+  /// A mixin's body comes from an *application* (`_appliedBody`), where the
+  /// CFE has already put the application's arguments in for the mixin's
+  /// parameters: `ContainerRenderObjectMixin.visitChildren` copied into
+  /// `RenderFlex`'s application casts to `FlexParentData` where the mixin
+  /// wrote `ParentDataType`. Lowered as the *trait's* default that body
+  /// serves every application, so the argument goes back to the parameter
+  /// -- and only for an **erased** one, whose spelling is its bound, the
+  /// trait everything reads through anyway (`RenderSliverList` cast a
+  /// `SliverMultiBoxAdaptorParentData` to `FlexParentData`, run734).
+  Map<DartType, DartType> _appliedBack = const {};
+
+  /// A type as this *body* holds it: an applied mixin body's concrete
+  /// argument is the mixin's erased parameter here (`_appliedBack`).
+  DartType? _backHere(DartType? t) {
+    if (t is! InterfaceType || _appliedBack.isEmpty) return t;
+    final back =
+        _appliedBack[t.withDeclaredNullability(Nullability.nonNullable)];
+    if (back == null) return t;
+    return t.nullability == Nullability.nullable
+        ? back.withDeclaredNullability(Nullability.nullable)
+        : back;
+  }
+
+  Map<DartType, DartType> _appliedBackMap(Class mixin, Class? application) {
+    if (application == null) return const {};
+    Supertype? applied;
+    for (final t in application.implementedTypes) {
+      if (t.classNode == mixin) applied = t;
+    }
+    if (applied == null) return const {};
+    final out = <DartType, DartType>{};
+    for (var i = 0; i < applied.typeArguments.length; i++) {
+      if (i >= mixin.typeParameters.length) break;
+      final p = mixin.typeParameters[i];
+      if (!_erasedParameter(p)) continue;
+      final argument = applied.typeArguments[i];
+      if (argument is! InterfaceType) continue;
+      out[argument.withDeclaredNullability(Nullability.nonNullable)] =
+          TypeParameterType(p, Nullability.nonNullable);
+    }
+    return out;
+  }
+
   DartType _asApplied(DartType declared, Class? owner) {
     final env = typeEnvironment;
     final thisType = env == null
@@ -12798,6 +12885,10 @@ class KernelFrontend implements TypeWorld {
       final lowered = node.isMixinDeclaration && procedure.isAbstract
           ? _appliedBody(node, procedure) ?? procedure
           : procedure;
+      final wasBack = _appliedBack;
+      if (!identical(lowered, procedure)) {
+        _appliedBack = _appliedBackMap(node, lowered.enclosingClass);
+      }
       try {
         // ..under the declaration's own signature: the application's copy
         // has the mixin's parameter substituted (`RenderBox?` for
@@ -12812,6 +12903,8 @@ class KernelFrontend implements TypeWorld {
         refuse(procedure.name.text, error, stack);
         final stub = _stubFor(procedure, '$error');
         if (stub != null) cls.methods.add(stub);
+      } finally {
+        _appliedBack = wasBack;
       }
     }
     _typeArgumentGetters(node, cls);
@@ -12861,10 +12954,15 @@ class KernelFrontend implements TypeWorld {
           if (declared.contains(keyOf(p)) || !seen.add(keyOf(p))) {
             continue;
           }
+          final wasBack = _appliedBack;
+          _appliedBack = _appliedBackMap(node, application);
           try {
             // Typed by the mixin, with the application's arguments taken
             // back out (`_unapplied`): the trait's `SlotType`, not the
-            // `Slot` this application put in (ws490).
+            // `Slot` this application put in (ws490). The *body* takes
+            // them back out too, for the erased parameters
+            // (`_appliedBack`): `visitChildren` cast to this application's
+            // `FlexParentData` where the trait holds the bound (run740).
             _lowerProcedure(
               cls,
               p,
@@ -12872,6 +12970,8 @@ class KernelFrontend implements TypeWorld {
             );
           } on Unsupported catch (error, stack) {
             refuse(p.name.text, error, stack);
+          } finally {
+            _appliedBack = wasBack;
           }
         }
       }

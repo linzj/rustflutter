@@ -3977,7 +3977,16 @@ class RustBackend {
         // ..with its implicit upcast spelled: a `let` has no slot to
         // unsize against (`_tickers!.remove(ticker)` bound a
         // `Rc<_WidgetTicker>` where the set holds `Rc<dyn Ticker>`, ws577).
-        binds.add('let __a$i = ${expr(_explicitUpcast(a))};');
+        // A place bound is shared, not moved: `slot` read again two lines
+        // on had been moved into the temporary
+        // (`SlottedContainerRenderObjectMixin._setChild`, ws738).
+        final held = a.rustType;
+        final shared =
+            (a is IrLocal || a is IrField) &&
+            (held == null || !_isCopy(type(held)));
+        binds.add(
+          'let __a$i = ${expr(_explicitUpcast(a))}${shared ? '.clone()' : ''};',
+        );
         rebound.add(
           IrLiteral('__a$i', const IrType('raw'))..rustType = a.rustType,
         );
