@@ -185,6 +185,14 @@ IrExpr coerceInto(
 }) {
   final have0 = value.rustType;
   if (have0 == null) return value;
+  // A block that produces a closure -- a tear-off that binds its receiver
+  // first -- is adapted as the closure is, and rewrapped: the slot wants
+  // the `Rc<dyn Fn>` a closure literal goes behind (run745).
+  if (value is IrBlockValue && value.value is IrClosure) {
+    final inner = coerceInto(value.value, slot, world, inClosure: inClosure);
+    if (identical(inner, value.value)) return value;
+    return IrBlockValue(value.statements, inner)..rustType = inner.rustType;
+  }
   // A `T?` spelled projected (`<T as DartNullable>::Or`, a generic
   // declaration's edge) against the plain `Option<T>` a body works with:
   // the prelude's conversion, one way or the other (`IrNullableOf`).

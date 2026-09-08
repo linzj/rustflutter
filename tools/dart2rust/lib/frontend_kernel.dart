@@ -2852,12 +2852,12 @@ class KernelFrontend implements TypeWorld {
       // ..and of a *constant* (`const GZipCodec().decode`): the closure
       // captures nothing, the constant is spelled inside it.
       final onConstant = node.receiver is ConstantExpression;
-      if (!holds && !_borrowedArgument && !onLocal && !onConstant) {
-        throw Unsupported(
-          'a method used as a value (${_shape(node.receiver)})',
-          _sample(node),
-        );
-      }
+      // ..and any other receiver is *evaluated once* and captured, which
+      // is what Dart does at the tear-off: bound outside the closure and
+      // moved in. `PaintingBinding.instance.instantiateImageCodecWithSize`
+      // handed to `loadImage` was refused for want of this (run745).
+      final bindReceiver =
+          !holds && !_borrowedArgument && !onLocal && !onConstant;
       final target = node.interfaceTarget;
       final fn = target.function;
       // The tear-off's own type is the instantiated one: `sink.add` on a
@@ -2975,9 +2975,19 @@ class KernelFrontend implements TypeWorld {
       // hands back the erased `RenderObject?` where the torn type says
       // `RenderSliver?` (`RenderViewport._attemptLayout`'s `advance:
       // childAfter`, ws527).
+      // The receiver bound once (see `bindReceiver`): a closure that read
+      // it again would read whatever it says the next time.
+      final IrExpr? boundInit = bindReceiver && receiver is! ThisExpression
+          ? expression(receiver)
+          : null;
+      final String? bound = boundInit == null ? null : '__t${_nextTemporary++}';
       final tornCall = _qualified(
         IrCall(
-          receiver is ThisExpression ? null : expression(receiver),
+          receiver is ThisExpression
+              ? null
+              : bound != null
+              ? (IrLocal(bound)..rustType = boundInit!.rustType)
+              : expression(receiver),
           node.name.text,
           [
             for (var i = 0; i < fn.positionalParameters.length; i++)
@@ -3009,12 +3019,23 @@ class KernelFrontend implements TypeWorld {
         // A tear-off of `message.invoke` keeps `message`: cloned in, moved.
         locals: receiver is ThisExpression
             ? const []
+            : bound != null
+            ? [bound]
             : _freeLocalsIn(receiver, {}),
         holdsSelf: holds,
       );
       // Typed as the function it is, so the slot's coercion sees it: a
       // `Future<bool> Function(MethodCall)` handed to a `Future<dynamic>
       // Function(MethodCall)` slot gets its result mapped (run447).
+      if (bound != null) {
+        final typed = adapter
+          ..rustType = IrType.function([
+            for (final p in params) p.type,
+          ], tornReturns);
+        return IrBlockValue([
+          IrLocalDecl(bound, boundInit!.rustType, boundInit),
+        ], typed)..rustType = typed.rustType;
+      }
       return adapter
         ..rustType = IrType.function([
           for (final p in params) p.type,
