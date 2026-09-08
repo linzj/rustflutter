@@ -1459,3 +1459,41 @@ Where the two rulers stand at the end of this stretch:
     dynamic`, the theme cache's untranslatable `hashCode` -- and the walk
     was last measured whole at run787: 708 lines against the reference's
     708, with **0** type-only differences.
+
+## run807 — the walk is back, and it matches: 708 / 708, 0 type-only
+
+    dart2rust: run budget spent with main pending; 1 timer(s) still active
+    192 frame(s) drawn (0 panicked); 2821 platform message(s)
+    render tree: 708 lines
+
+    diff <settled reference> <ours>, ignoring size= and offset=:  0
+    diff <settled reference> <ours>, as printed:                508
+
+The runs since run796 produced *nothing* -- no tree, no frame count, no
+report -- and the reason was the ruler, not the translation. `run_main`
+checks its `DART2RUST_RUN_SECONDS` budget at the top of its loop, and it
+only gets the loop back from `run_until_idle`; a program whose every frame
+schedules the next never leaves `run_until_idle`, so the budget was never
+reached and `timeout` killed the host before it could report. The budget is
+a thread-local deadline now and the scheduler stops at it between tasks.
+
+`runtime/src/lib.rs` also grew `DART2RUST_TRACE_FRAMES=1`: one line per
+frame, begin and end, with the wall clock. That is what found this --
+
+    frame  1 end after  71.703µs
+    frame  6 end after 264.587336ms
+    frame 380 end after 436.684488ms
+
+-- and it says two more things worth having:
+
+  - the gallery **never settles**: 381 frames and counting, one scheduling
+    the next for ever. Upstream's does settle, so something keeps marking
+    needs-build or needs-paint.
+  - a frame gets **steadily more expensive**: 265ms at frame 6, 440ms at
+    frame 380. Something accumulates per frame -- a listener list, an
+    element's dependents, the inactive elements -- and that is the next
+    thing the run ruler should name.
+
+Against `ref_render_walk.txt` (a *first-frame* capture, 6 lines) ours agrees
+on 5 of 6; the sixth is where a settled tree and a first frame part company,
+as before.
