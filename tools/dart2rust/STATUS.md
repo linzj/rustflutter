@@ -1731,3 +1731,32 @@ compares the addresses of the two bindings, and `identical(xs, xs)` on a
 list came out `false` where Dart says `true`. A Dart list is a reference
 and this compiler makes it a value; identity on one is not something the
 model can answer, so those four stay refused rather than answered wrongly.
+
+## ws816/ws817 -- a supertrait is an obligation on every implementer
+
+ws815 left six new stubs from forwarding impls emitted for interfaces an
+*ancestor* listed, and the fix looked obvious: emit the impl only where
+every call it makes lands on a method this class declares. It was the
+wrong fix, and the ruler said so in the loudest way it has:
+
+    ws816:  27 stubbed, 88 refusals, **33 reachable crates**, 1 unstubbable
+
+`CharacterRange: DartIterator<String>` as a supertrait is an obligation on
+every implementer, and `StringCharacterRange` declares `moveNext([int
+count = 1])` -- one argument, not the prelude's `move_next()`. With the
+forwarding impl now (correctly) withheld, the obligation could not be met,
+and the error landed in a `dart_cast` body outside any function. `stubs.py`
+stubs *functions*; an error outside one is unstubbable, so `characters_-
+below` failed to build and took every crate above it out of the workspace.
+Half the program stopped being measured.
+
+The supertrait is reverted. The widening and its `_canForward` guard stay:
+they emit a forwarding impl for an interface an ancestor listed, where the
+class has the method to forward to.
+
+    ws817:  208 stubbed, 88 refusals, 64 reachable crates
+
+The same count as ws814, with one member swapped inside it (`Board.current`
+for `Board.iterator`). The `current` group is a stub again, and the lesson
+is recorded above it: a rule that adds an *obligation* has to be measured
+against the thing that must meet it, not only against the thing that asked.

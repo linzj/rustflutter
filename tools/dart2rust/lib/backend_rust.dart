@@ -4132,13 +4132,32 @@ class RustBackend {
     'skip_while_dart',
     'take_while_dart',
     'map_entries',
+    'remove_where',
+    'retain_where',
+    'for_each',
+    'put_if_absent',
   };
 
   /// A function value at one of those slots: the function behind an `Rc`
   /// `coerce` added, or a loan of the handle. A closure is already one.
   static IrExpr _lentFunction(IrExpr a) {
+    // A closure written at the call site is the closure -- unboxed, since
+    // an `Rc<dyn Fn>` is no `impl Fn`.
+    if (a is IrClosure) {
+      return a.boxed
+          ? (IrClosure(
+              a.params,
+              a.body,
+              a.returns,
+              captures: a.captures,
+              locals: a.locals,
+              holdsSelf: a.holdsSelf,
+              isAsync: a.isAsync,
+            )..rustType = a.rustType)
+          : a;
+    }
     final t = a.rustType;
-    if (t == null || !t.isFunction || a is IrClosure) return a;
+    if (t == null || !t.isFunction) return a;
     // `Rc::new(f)` -> `f`: a function item is an `impl Fn` already.
     if (a is IrCall && a.name == '!rc' && a.args.isEmpty && a.target != null) {
       return a.target!;
@@ -6813,17 +6832,6 @@ class RustBackend {
             i.name != 'Object' &&
             !_preludeInterfaces.containsKey(i.name))
           _traitPath(i),
-      // ..and a `dart:core` interface the prelude *does* have a trait for,
-      // where its arguments do not name this class: a `dyn CharacterRange`
-      // could not be asked `current()`, because `Iterator<String>` was
-      // only ever an impl on the concrete classes (`EditableTextState
-      // ._transposeCharacters`, 4 at ws814). Self-referential ones stay
-      // out: `SourceSpan implements Comparable<SourceSpan>` names the
-      // trait inside its own bound.
-      for (final i in cls.interfaces)
-        if (_preludeInterfaces.containsKey(i.name) &&
-            !i.arguments.any((a) => a.name == cls.name))
-          '${i.name}${i.arguments.isEmpty ? '' : '<${i.arguments.map(type).join(', ')}>'}',
     }.toList();
     // A trait object compares by identity (`DartEq`), as `dyn Object` does.
     _line(

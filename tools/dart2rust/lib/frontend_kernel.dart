@@ -10151,23 +10151,14 @@ class KernelFrontend implements TypeWorld {
     if (kept) _borrowedArgument = false;
     try {
       final value = lower();
-      // A function local -- a handle, since every function-typed local is
-      // one (`IrLocalFunction`, a closure initialiser boxed by `coerce`)
-      // -- into a parameter the callee only calls (`impl Fn`): the closure
-      // behind the handle, lent (`memoize`'s `ifAbsent` into
-      // `putIfAbsent`, ws549).
-      // ..only where the parameter is known not to keep it: with no
-      // parameter to ask (a named argument's), the slot is the owned
-      // handle every unknown slot is (`addWithPaintOffset(hitTest: ..)`,
-      // 3 `&{closure}` where `Rc<dyn Fn>` went, ws553).
-      if (!kept &&
-          param != null &&
-          callee != null &&
-          value is IrLocal &&
-          (value.rustType?.isFunction ?? false) &&
-          _boxedFunctionLocals.contains(value.name)) {
-        return IrCall(value, '!fn_ref', const [])..rustType = value.rustType;
-      }
+      // A function-typed parameter of translated code is spelled
+      // `Rc<dyn Fn(..)>` whatever the callee does with it ("one spelling,
+      // both sides", `type`), so lending the closure behind the handle is
+      // always the wrong shape there -- `&*layout_child.clone()` where
+      // `_computeSizes` declares the handle (`RenderFlex`,
+      // `_RenderTheater.hitTestChildren`; 5 at ws815). The prelude's
+      // `impl Fn` slots are the ones that want the loan, and the backend
+      // gives it to them (`_preludeLends`).
       // The parameter is owned where it is kept, so the argument is boxed to
       // match: a closure's own type has no name.
       if (value is IrClosure) {
