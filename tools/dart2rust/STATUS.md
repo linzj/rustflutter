@@ -2010,3 +2010,34 @@ byte apart from the comment. What changed is that the census no longer
 counts eight of the compiler's own diagnostics as work left to do.
 `KeyboardLockMode.findLockByLogicalKey` is still refused, and correctly:
 that member *is* in the program and cannot be translated without values.
+
+## ws828 -- N catch clauses are one catch that dispatches on the type
+
+    bin/run_chain.sh:  202 stubbed (unchanged), 70 refusals (was 71), 64 crates
+    the stub set is identical to ws826's, member for member
+
+Two rules, each with a fixture.
+
+**`try { } on A catch (e) { } on B catch (e) { }` is one catch whose
+handler dispatches.** Written as the nesting rather than as a new IR node,
+because that is what Dart's clauses *are*: the clauses are tried in order,
+the first matching guard handles it, an unguarded one catches everything,
+and none matching is the error going back out -- which is `rethrow`, and is
+what the chain's base is. Each clause's own variable is bound inside its
+branch, narrowed the way a typed catch's binding already is (a trait by the
+cast, a struct by `Any`): `coerce` leaves a prelude class alone, and `let
+e: StateError = __caught` did not type. The multicatch fixture runs four
+paths through a three-clause try and one error that no clause takes.
+
+**A `try` whose body only throws had a `()` where its value goes.** The
+`Ok(())` arm of the match is unreachable then, and the handler's every path
+returns, so the match is the method's tail and `{}` is a unit. Proved
+pre-existing first, with singlecatch_tail: a *single* typed catch on a body
+that only throws fails exactly the same way. The arm is `unreachable!` now,
+which is `!` and coerces to whatever the tail wants -- the same thing the
+`flows` arm two lines up has always said for returns.
+
+Refusals moved 71 -> 70 rather than 68: both multi-clause `try`s translate
+now, and one of the bodies they let through (`IOClient.send`) reaches an
+`is` against a class this compiler does not have, which is the group next
+door.

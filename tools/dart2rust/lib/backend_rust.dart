@@ -6099,6 +6099,14 @@ class RustBackend {
                 ? "Ok(None) => unreachable!(\"the try body always returns\"),"
                 : 'Ok(None) => {}',
           );
+        } else if (_alwaysReturns(body)) {
+          // Every path through the body throws, so the body never completes
+          // normally -- and with the handler's every path returning too, the
+          // `match` is the method's tail and `{}` is a `()` where its value
+          // goes. `unreachable!` is `!` and coerces to whatever the tail
+          // wants, as the `flows` arm above already says for returns (a
+          // typed catch on a body that only throws, ws826).
+          _line('Ok(()) => unreachable!("the try body always throws"),');
         } else {
           _line('Ok(()) => {}');
         }

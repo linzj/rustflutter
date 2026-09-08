@@ -12383,17 +12383,110 @@ class KernelFrontend implements TypeWorld {
     throw Unsupported('statement ${node.runtimeType}', _sample(node));
   }
 
-  /// `try { .. } catch (e) { .. }`, when there is one clause.
+  /// `try { .. } on A catch (e) { .. } on B catch (e) { .. }`: one catch
+  /// whose handler dispatches on the type, which is what Dart's clauses
+  /// are. The clauses are tried in order, the first whose guard matches
+  /// handles it, and an unguarded one catches everything; with none
+  /// matching the error goes back out, which is `rethrow`.
   ///
-  /// Two clauses is two type tests, and only two `try`s in the corpus have
-  /// them; the general answer waits for a reason to exist.
-  IrStmt _tryCatch(TryCatch node) {
-    if (node.catches.length != 1) {
-      throw Unsupported(
-        'try with ${node.catches.length} catch clauses',
-        _sample(node),
+  /// Written as the nesting rather than as a new IR node, because that is
+  /// what it *is*: `on A catch (e) H` after another clause is `if (e is A)
+  /// H` inside the one catch (`MethodChannel._handleAsMethodCall` with
+  /// three, `IOClient.send` with two; ws826).
+  IrStmt _tryCatchMany(TryCatch node) {
+    // The one binding the whole handler works with. A clause's own name is
+    // bound to it inside that clause's branch, narrowed to its guard.
+    final held = '__caught${_nextTemporary++}';
+    // ..and one stack trace, bound where any clause asked for one.
+    String? stack;
+    for (final clause in node.catches) {
+      stack ??= clause.stackTrace?.cosmeticName;
+    }
+    final outerCaught = _caught;
+    final outerCaughtType = _caughtType;
+    // Nothing matching is the error going back out, which is `rethrow`:
+    // that is what the last clause's `else` is, until an unguarded clause
+    // replaces it.
+    IrStmt chain = IrThrow(IrLocal(held)..rustType = const IrType('Object'));
+    // Backwards: each clause's `else` is what the clauses after it do.
+    for (final clause in node.catches.reversed) {
+      final guard = clause.guard;
+      final guarded =
+          guard is InterfaceType &&
+          guard.classNode.name != 'Object' &&
+          guard is! DynamicType;
+      final name = clause.exception?.cosmeticName;
+      IrType? guardIr;
+      if (guarded) {
+        try {
+          guardIr = _type(guard);
+        } on Unsupported {
+          guardIr = null;
+        }
+      }
+      _caught = name ?? held;
+      _caughtType = guardIr;
+      final IrStmt body;
+      try {
+        body = statement(clause.body);
+      } finally {
+        _caught = outerCaught;
+        _caughtType = outerCaughtType;
+      }
+      // The clause's own name, narrowed the way a typed catch's binding is
+      // (`IrTryCatch.errorType` in the backend): a trait by the cast, a
+      // struct by `Any` -- `coerce` leaves a prelude class alone, and
+      // `let e: StateError = __caught` did not type.
+      final held0 = IrLocal(held)..rustType = const IrType('Object');
+      final narrowed = guardIr == null
+          ? held0
+          : _abstractLike((guard as InterfaceType).classNode)
+          ? (IrCastTo(held0, guardIr)..rustType = guardIr)
+          : (IrCall(
+              IrDowncast(held0, guardIr.name, arguments: const []),
+              'clone',
+              const [],
+            )..rustType = guardIr);
+      final bound = <IrStmt>[
+        if (name != null && name != held) IrLocalDecl(name, guardIr, narrowed),
+        // ..and its own stack trace name, when it is not the one bound.
+        if (clause.stackTrace != null &&
+            clause.stackTrace!.cosmeticName != null &&
+            clause.stackTrace!.cosmeticName != stack)
+          IrLocalDecl(
+            clause.stackTrace!.cosmeticName!,
+            null,
+            IrLocal(stack ?? '__stack'),
+          ),
+        body,
+      ];
+      final branch = IrBlock(bound);
+      if (!guarded || guardIr == null) {
+        // An unguarded clause catches everything after it; a guard this
+        // compiler cannot spell would silently skip its clause, so it
+        // stops rather than guessing.
+        if (!guarded) {
+          chain = branch;
+          continue;
+        }
+        throw Unsupported(
+          '`on ${guard.toString()}` in a multi-clause try',
+          _sample(node),
+        );
+      }
+      chain = IrIf(
+        IrIs(IrLocal(held)..rustType = const IrType('dynamic'), guardIr)
+          ..rustType = const IrType('bool'),
+        branch,
+        chain,
       );
     }
+    return IrTryCatch(statement(node.body), held, chain, stack: stack);
+  }
+
+  /// `try { .. } catch (e) { .. }`, when there is one clause.
+  IrStmt _tryCatch(TryCatch node) {
+    if (node.catches.length != 1) return _tryCatchMany(node);
     final clause = node.catches.single;
     final error = clause.exception?.cosmeticName ?? 'error';
     final stack = clause.stackTrace;
