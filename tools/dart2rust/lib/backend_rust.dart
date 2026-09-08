@@ -1014,14 +1014,14 @@ class RustBackend {
       // A counted class's constructor already hands out an `Rc`.
       IrMapElements(:final collection, :final kind, :final body) =>
         kind == 'Future'
-            ? '${expr(collection)}.map(|v| ${expr(body)})'
+            ? '${expr(collection)}.map(|v| ${_mappedBody(body)})'
             : kind == 'Iterator'
-            ? 'dart_iterator_map(${expr(collection)}, |v| ${expr(body)})'
+            ? 'dart_iterator_map(${expr(collection)}, |v| ${_mappedBody(body)})'
             : kind == 'Set'
-            ? 'Set::of(${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>())'
+            ? 'Set::of(${expr(collection)}.into_iter().map(|v| ${_mappedBody(body)}).collect::<Vec<_>>())'
             : kind == 'Map'
-            ? 'Map::from(${expr(collection)}.into_iter().map(|(k, v)| ${expr(body)}).collect::<Vec<_>>())'
-            : '${expr(collection)}.into_iter().map(|v| ${expr(body)}).collect::<Vec<_>>()',
+            ? 'Map::from(${expr(collection)}.into_iter().map(|(k, v)| ${_mappedBody(body)}).collect::<Vec<_>>())'
+            : '${expr(collection)}.into_iter().map(|v| ${_mappedBody(body)}).collect::<Vec<_>>()',
       // `this` shared as an object is its own handle (`!as_object`).
       IrUpcast(:final value, :final type)
           when value is IrThis && type.name == 'Object' =>
@@ -2322,6 +2322,20 @@ class RustBackend {
       return 'Some({ let __f: ${type(t)} = $held; __f })';
     }
     return 'Some($held)';
+  }
+
+  /// A mapped element's body: the closure around it is one the prelude
+  /// calls, and its return is a plain value. A failing call inside
+  /// unwraps, as a chain step's does (`_stepClosure`); left propagating,
+  /// the `?` had no `Result` to come out of -- "the `?` operator can only
+  /// be used in a closure that returns `Result`" (3 in `Navigator` at
+  /// ws871).
+  String _mappedBody(IrExpr body) {
+    final saved = _failure;
+    _failure = null;
+    final text = expr(body);
+    _failure = saved;
+    return text;
   }
 
   /// A closure, possibly behind the wrappers coerce puts on one (a

@@ -2960,3 +2960,37 @@ answer, exactly the two members and nothing else.
 run870 holds the ruler after ws869 and ws870: 708 walk lines, 0 type-only
 differences, 508 as printed, no `RenderErrorBox`, 197 frames drawn and 0
 panicked.
+
+## ws871 -- a mapped element's body unwraps, as a chain step's does
+
+    bin/run_chain.sh:  166 stubbed (was 169), 57 refusals (unchanged), 64 crates
+
+`coerce` maps a collection or a future element by element, and the closure
+it puts the body in is one the *prelude* calls: `DartFuture::map`,
+`dart_iterator_map`, `Vec::into_iter().map`. Their closures hand back a
+plain value, so a failing call inside has no `Result` to come out of --
+"the `?` operator can only be used in a closure that returns `Result`".
+`_stepClosure` has cleared the failure model for an iterator chain's steps
+since ws464; the element map now does the same, and the three `Navigator`
+members that map a `Future<T?>` through the erased twin compile.
+
+The emission says it plainly. Before:
+
+    .map(|v| <T as DartNullable>::from_option(v.as_ref()
+        .map(|it| -> Result<_, _> { Ok(dart_from_dynamic::<T>(it.clone())) })
+        .transpose()?))
+
+after:
+
+    .map(|v| <T as DartNullable>::from_option(v.as_ref()
+        .map(|it| dart_from_dynamic::<T>(it.clone()))))
+
+No fixture reproduces it: the shape wants a `Future<T?>` mapped where `T`
+is the enclosing method's erased parameter, and a fixture written for it
+(mapfail) compiles at HEAD. The evidence is the emission above and the
+chain's answer -- exactly `_hookOntoRouteFuture`, `push` and `_updatePages`,
+nothing added.
+
+run871 holds the ruler after a change that touches every element map: 708
+walk lines, 0 type-only differences, 508 as printed, no `RenderErrorBox`,
+200 frames drawn and 0 panicked.
