@@ -974,3 +974,29 @@ the four attempts above used.
 run877 holds the ruler after ws875-ws877: 708 walk lines, 0 type-only
 differences, 508 as printed, no `RenderErrorBox`, 197 frames drawn and 0
 panicked.
+
+## ws878 -- `identityHashCode` on a handle is the address behind it
+
+    bin/run_chain.sh:  152 stubbed (unchanged), 49 refusals (was 52), 64 crates
+
+`identityHashCode(x)` was refused wholesale as a top-level function nobody
+wrote. It is the hash of the object's *identity*, and identity here is the
+address behind the handle -- the same one `_identical` compares and the one
+`Expando` keys by. So a handle has an answer, and the prelude gives it one:
+
+    pub trait DartIdentityHash { fn dart_identity_hash_code(&self) -> i64; }
+    impl<O: Object + ?Sized + 'static> DartIdentityHash for std::rc::Rc<O>
+
+A value class does not: it is copied into each slot, and two copies of one
+Dart object would answer differently. Those stay refused, which is the same
+answer `identical` gives on one (`_identical`'s census, ws828).
+
+Dart's null is one value with one hash, and an `Object`/`dynamic` slot
+holds it as a fresh `Null` each time `dart_null_object` writes one, so the
+impl answers `2011` for it -- the hash `RcHashCode` already gives `None`.
+
+`idhash` asks the three things the gallery's callers ask: that one object
+hashes the same twice, that two objects hash differently, and that an
+`Object? value` field holding null hashes the same twice. At HEAD it is the
+gallery's refusal verbatim, twice; with the rule both ends print
+`true false true false true`.

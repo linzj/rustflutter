@@ -5396,6 +5396,38 @@ pub fn natives_unanswered() -> Vec<String> {
     NATIVES_UNANSWERED.with(|s| s.borrow().clone())
 }
 
+/// `identityHashCode(x)` on a handle: the address the object lives at,
+/// which is the identity `identical` compares and the one `Expando` keys
+/// by. A value class copied into a slot has no such identity, and the
+/// backend refuses the call there rather than answer for a copy.
+pub trait DartIdentityHash {
+    fn dart_identity_hash_code(&self) -> i64;
+}
+
+impl<O: Object + ?Sized + 'static> DartIdentityHash for std::rc::Rc<O> {
+    fn dart_identity_hash_code(&self) -> i64 {
+        // Dart's null is one value with one hash, and an `Object`/`dynamic`
+        // slot holds it as a fresh `Null` object each time it is written
+        // (`dart_null_object`): its address is not what `identityHashCode`
+        // answers for it.
+        if self.as_any().downcast_ref::<Null>().is_some() {
+            return 2011;
+        }
+        std::rc::Rc::as_ptr(self) as *const u8 as usize as i64
+    }
+}
+
+/// `identityHashCode(null)` is the null object's own hash, the one
+/// `RcHashCode` gives it.
+impl<T: DartIdentityHash> DartIdentityHash for Option<T> {
+    fn dart_identity_hash_code(&self) -> i64 {
+        match self {
+            Some(value) => value.dart_identity_hash_code(),
+            None => 2011,
+        }
+    }
+}
+
 /// `identical(a, b)` on two nullable *value* slots: both absent, or the
 /// same storage. A class spelled by value is copied where Dart shared one
 /// object, so two distinct slots answer "not identical" -- the same answer

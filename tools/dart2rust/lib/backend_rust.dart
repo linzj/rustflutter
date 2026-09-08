@@ -2802,6 +2802,33 @@ class RustBackend {
       return '${expr(args.single)}.clone()';
     }
     if (owner == null) {
+      // `identityHashCode(x)`: Dart's hash of the object's *identity*, which
+      // here is the address behind the handle -- the same address
+      // `identical` compares (`_identical`) and the same one `Expando` keys
+      // by. Only a handle has one: a value class is copied into each slot,
+      // so two copies of one Dart object would answer differently, and the
+      // call stays refused there, as `identical` on one does (ws878).
+      if (name == 'identityHashCode' && args.length == 1) {
+        final only = args.single;
+        // A handle, an absent-or-handle, or the object every `Object` and
+        // `dynamic` slot holds. `_handleLike` is the wrong question here:
+        // it says no to a `dynamic` on purpose (a narrowed call is recorded
+        // one while its value is a scalar), and `Object value` is what
+        // `GlobalObjectKey` and `ObjectKey` hash.
+        bool identityBearing(IrExpr e) {
+          final t = e.rustType;
+          if (t == null || t.isFunction) return false;
+          if (t.name == 'Object' || t.name == 'dynamic') return true;
+          return library.isAbstract(t.name) ||
+              (library[t.name]?.counted ?? false);
+        }
+
+        if (only is IrThis
+            ? cls.counted || cls.isAbstract
+            : identityBearing(only)) {
+          return '(${_handleOf(only)}).dart_identity_hash_code()';
+        }
+      }
       // A top-level function: no owner in either language. Checked against
       // what this file emits, for the same reason a static call is -- a call
       // to something refused would name a function nobody wrote.
