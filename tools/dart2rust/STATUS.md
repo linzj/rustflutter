@@ -2209,3 +2209,26 @@ it, and the super function's `this_: &__Self` cannot reach a `&mut self`
 trait method. The refusal was "this cannot be expressed"; what is left is
 "this needs a reborrow, and super functions need to know when a method
 mutates".
+
+## ws840/ws841 -- the reborrow, and the binding that holds it
+
+    ws840:  204 stubbed, 60 refusals   (the reborrow landed, `let mut` did not)
+    ws841:  202 stubbed, 60 refusals, 64 crates
+
+Two steps to finish what ws838 started. A lending local function's closure
+is a `move` one -- it owns the locals it copied in -- and a `&mut Self` is
+not `Copy`, so it *moved* `self` instead of borrowing it. The closure now
+moves a reborrow bound just before it (`let __mut_me = &mut *self;`), which
+lasts exactly as long as the closure does; ws840 proved that half by the
+error changing from "borrow of moved value" to the next one. That next one
+was the binding: a closure that borrows anything mutably is an `FnMut`, and
+calling one wants `let mut`. Both fixtures (a mixin's local function, and
+one inside a method that writes a field) agree with Dart.
+
+    from ws836:  203 stubbed and 64 refusals -> 202 and 60
+
+What is left of the group is the two *super functions* of the same method:
+a super function's receiver is `this_: &__Self` by design, and
+`invalidateScopeData` is `&mut self` because an implementer writes a field
+in it. That is the same question the group started from, one level up: a
+super function needs to know when the method it holds mutates.
