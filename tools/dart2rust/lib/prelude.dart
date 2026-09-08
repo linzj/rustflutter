@@ -8850,6 +8850,30 @@ pub fn json_decode(source: String, reviver: Option<JsonReviver>) -> std::rc::Rc<
     JsonCodec.decode(source, reviver)
 }
 
+/// ..and `jsonEncode(value, {toEncodable})`, the other half of the pair:
+/// the codec's, which the `json.encoder` converter already calls
+/// (`Value.toJson` in `get`'s notifier, ws828).
+/// By the value's *own* type, not through the `dynamic` table: a top-level
+/// `jsonEncode(x)` has `x` in hand with its Rust type, and asking the
+/// shape table to find a `Vec<i64>` behind a fresh handle is a lookup that
+/// can miss (it did). `JsonPiece` is the same set of shapes, decided by
+/// the compiler instead.
+/// `toEncodable` is `Object? Function(Object?)`, and an `Object?` here is
+/// the handle whose null is the `Null` object -- not an `Option` (the
+/// closure `NavigatorState._afterNavigation` hands it takes `Rc<dyn
+/// Object>`). Unused, as `JsonCodec.encode`'s is: this encoder panics on a
+/// value it does not know rather than asking.
+pub fn json_encode<V: JsonPiece>(
+    value: V,
+    _to_encodable: Option<
+        std::rc::Rc<dyn Fn(std::rc::Rc<dyn Object>) -> Result<std::rc::Rc<dyn Object>, DartError>>,
+    >,
+) -> String {
+    let mut out = String::new();
+    value.json_write(&mut out);
+    out
+}
+
 pub type JsonReviver = std::rc::Rc<
     dyn Fn(Option<std::rc::Rc<dyn Object>>, Option<std::rc::Rc<dyn Object>>) -> Result<Option<std::rc::Rc<dyn Object>>, DartError>,
 >;

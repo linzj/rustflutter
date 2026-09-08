@@ -8840,6 +8840,8 @@ class RustBackend {
     // `package:collection`'s `.indexed`, and `dart:async`'s `unawaited`.
     'IterableExtensions_get_indexed',
     'unawaited',
+    // `dart:convert`'s `jsonEncode`, beside the `jsonDecode` next to it.
+    'jsonEncode',
     'never',
     'new_object',
     'string_from_char_codes',

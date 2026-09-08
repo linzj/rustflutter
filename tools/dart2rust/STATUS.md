@@ -2079,3 +2079,24 @@ value (`IrCall (Object)`) rather than a reference. The two halves are one
 wall, and the rule is reverted rather than left as a path that only ever
 says no. `super.hashCode` did translate on its own, and took a call
 resolution with it (`hash_code()?` on an `i64`), so it goes back too.
+
+## ws830 -- `jsonEncode`, by the value's own type
+
+    bin/run_chain.sh:  203 stubbed (was 202), 69 refusals (was 70), 64 crates
+
+`dart:convert`'s `jsonEncode` was the last of the top-level functions that
+needed nothing new to be *possible*: `JsonCodec.encode` was already there,
+reached through `json.encoder`. What it needed was to be asked the right
+way. The codec's own path boxes the value and walks a table of shapes,
+downcasting one by one -- and a `Vec<i64>` behind a fresh handle is not
+found by it (the fixture panicked, "JsonCodec.encode of a Vec"). A
+top-level `jsonEncode(x)` has `x` with its Rust type in hand, so the
+prelude's `json_encode` takes `V: JsonPiece` and lets the compiler pick
+the shape. The jsonenc fixture: a map of mixed values, a list, a string,
+a map of strings.
+
+The stub it added is the member that stopped being refused
+(`NavigatorState._afterNavigation`) meeting the `toEncodable` slot: Dart
+declares `Object? Function(Object?)`, and an `Object?` here is the handle
+whose null is the `Null` object, not an `Option`. Fixed in the same round
+by spelling the parameter the way the caller writes it.
