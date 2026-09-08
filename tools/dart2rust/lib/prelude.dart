@@ -3890,6 +3890,34 @@ impl<K: Clone + PartialOrd, V> Map<K, V> {
             .cloned()
     }
 
+    /// `SplayTreeMap.lastKeyBefore(key)`: the largest key strictly less
+    /// than `key`, and `firstKeyAfter(key)` the smallest strictly greater;
+    /// null when there is none (`AssetImage._findBestVariant` walks the
+    /// device pixel ratios either side of the one it wants, run744).
+    pub fn last_key_before(&self, key: K) -> Option<K> {
+        self.entries
+            .iter()
+            .map(|(k, _)| k)
+            .filter(|k| **k < key)
+            .fold(None::<&K>, |best, k| match best {
+                Some(b) if !(k > b) => Some(b),
+                _ => Some(k),
+            })
+            .cloned()
+    }
+
+    pub fn first_key_after(&self, key: K) -> Option<K> {
+        self.entries
+            .iter()
+            .map(|(k, _)| k)
+            .filter(|k| **k > key)
+            .fold(None::<&K>, |best, k| match best {
+                Some(b) if !(k < b) => Some(b),
+                _ => Some(k),
+            })
+            .cloned()
+    }
+
     /// `SplayTreeMap.lastKey()`: the largest key, or null when empty.
     pub fn last_key(&self) -> Option<K> {
         self.entries

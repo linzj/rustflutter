@@ -1078,6 +1078,8 @@ const mapMethodNames = <String, String>{
   // both off a `SplayTreeMap<int, Element?>`, run718).
   'firstKey': 'first_key',
   'lastKey': 'last_key',
+  'lastKeyBefore': 'last_key_before',
+  'firstKeyAfter': 'first_key_after',
 };
 
 /// `Map` members that depend on iteration order and are still not translated.
