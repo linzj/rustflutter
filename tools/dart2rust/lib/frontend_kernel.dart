@@ -9129,6 +9129,7 @@ class KernelFrontend implements TypeWorld {
         translated:
             translated &&
             !(prelude && lowered is IrClosure && !_bareFunctionType(param)),
+        prelude: prelude,
         slotIr: slotIr,
       );
     } finally {
@@ -9236,6 +9237,7 @@ class KernelFrontend implements TypeWorld {
     DartType? param,
     IrExpr lowered, {
     required bool translated,
+    bool prelude = false,
     IrType? slotIr,
   }) {
     // A literal into a collection slot of other element types is lowered
@@ -9321,6 +9323,15 @@ class KernelFrontend implements TypeWorld {
         } on Unsupported {
           slot = null;
         }
+      }
+      // A prelude callee's generic slot is its own Rust signature's
+      // `Option<T>`, never the projected `<T as DartNullable>::Or`: the
+      // projection is how *this* declaration spells its own edges, and a
+      // callee's `T?` reached with this declaration's `T` put in is not one
+      // of them (`ArgumentError.checkNotNull(other, 'other')` inside a
+      // generic function, 29 at ws755).
+      if (prelude && slot != null && slot.projected) {
+        slot = IrType(slot.name, nullable: true, arguments: slot.arguments);
       }
       if (slot != null) {
         // A local handed on is shared, as below: the clone comes first so

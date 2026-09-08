@@ -663,3 +663,11 @@ for ws754's record rule:
 * a record field read clones unless the record is a literal built right
   there: a closure's parameter is a reference, and reading a field out of
   one moves (`SelectionOverlay.showToolbar`, E0507).
+
+## ws756 — the closure return and the two record rules (329 → 315)
+
+    ws755 329 stubbed, 130 refusals, 64 crates
+    ws756 315 stubbed, 130 refusals, 64 crates   -14, 0 new
+
+Grouped, eight rounds in: 433 -> 315 stubbed, 183 -> 130 refusals, 64
+crates throughout, and not one round went up.
