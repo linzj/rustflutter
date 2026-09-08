@@ -2211,7 +2211,27 @@ class KernelFrontend implements TypeWorld {
     if (node is RecordIndexGet) {
       // `r.$1` in Dart is `r.0` in Rust -- Dart counts its positional record
       // fields from one and Rust counts tuple fields from zero.
-      return IrRecordField(expression(node.receiver), node.index);
+      var held = expression(node.receiver);
+      // Through the unwrap where the record is an `Option`: Dart lets a
+      // field be read only once the record is promoted non-null, and the
+      // `is` above it is that promotion (`_AscentDescent` is a
+      // `(double, double)?`, `RenderFlex._computeSizes`, ws715).
+      final receiverType = held.rustType;
+      if (receiverType != null && isNullable(receiverType)) {
+        held = _nullChecked(held);
+      }
+      final read = IrRecordField(held, node.index);
+      // Typed as the *record* holds it, not as a promotion reads it: a
+      // record pattern promotes a `(double, double)` to `(Object?,
+      // Object?)` and reads `$1` at `Object?`, where the Rust tuple still
+      // holds an `f64` -- and the coercion into the slot, seeing an
+      // `Rc<dyn Object>` already, boxed nothing
+      // (`RenderFlex._computeSizes`, run713).
+      final record = held.rustType;
+      if (record != null && node.index < record.arguments.length) {
+        read.rustType = record.arguments[node.index];
+      }
+      return read;
     }
     if (node is RecordLiteral) {
       if (node.named.isNotEmpty) {
@@ -10713,6 +10733,60 @@ class KernelFrontend implements TypeWorld {
         ])..rustType = const IrType('bool');
       }
     }
+    // A test Dart's own subtyping already answers: the operand's static
+    // type is a subtype of the asked one, so every value it can hold is
+    // one. The CFE writes these itself -- a record destructuring pattern
+    // (`final (nextChild, topLeftChild) = flipMainAxis ? .. : ..;` in
+    // `RenderFlex.performLayout`) becomes a test of each field against
+    // the type the field already has, and `is` against a function type or
+    // `Record` is nothing `Any` can be asked (run712). Answered here, as
+    // a literal's is above.
+    if (env != null) {
+      // ..through an extension type's erasure: it *is* its representation
+      // at run time, and `_AscentDescent` is a `(double, double)?`
+      // (`RenderFlex._computeSizes`, run713).
+      final declared = _staticType(node.operand);
+      final on = declared is ExtensionType
+          ? declared.extensionTypeErasure
+          : declared;
+      if (on != null &&
+          on is! DynamicType &&
+          on is! NeverType &&
+          !_mentionsTypeParameter(on) &&
+          !_mentionsTypeParameter(asked)) {
+        try {
+          if (env.isSubtypeOf(on, asked)) {
+            return IrBlockValue(
+              [IrExprStmt(expression(node.operand))],
+              IrLiteral('true', const IrType('bool')),
+            )..rustType = const IrType('bool');
+          }
+          // ..and where only the `?` stands between them, the test is the
+          // null check alone: the CFE's record pattern asks this after its
+          // own `== null` arm. Only when the value in hand is an `Option`:
+          // a narrowed one is not, and `is_none` is no method of an
+          // `Rc<Border>` (`CupertinoTextField.build`, ws715).
+          // ..only where the asked type has no runtime test of its own: a
+          // record or a function type is nothing `Any` can be asked, and
+          // this is the whole of what Dart means there. A class is left to
+          // the ordinary test below, whose narrowing this cannot see
+          // (`is_none` on an `Rc<Border>`, `CupertinoTextField.build`,
+          // ws716).
+          if ((asked is RecordType || asked is FunctionType) &&
+              on.nullability == Nullability.nullable &&
+              asked.nullability != Nullability.nullable &&
+              env.isSubtypeOf(
+                on.withDeclaredNullability(Nullability.nonNullable),
+                asked,
+              )) {
+            return IrUnary('!', IrIsNull(expression(node.operand)))
+              ..rustType = const IrType('bool');
+          }
+        } catch (_) {
+          // Not a relation this environment can decide: asked below.
+        }
+      }
+    }
     return IrIs(expression(node.operand), _type(asked));
   }
 
@@ -11829,6 +11903,12 @@ class KernelFrontend implements TypeWorld {
 
   /// Whether a local of this type is cloned when passed on (see `_widened`).
   static bool _clonedWhenPassed(DartType type) {
+    // An extension type is its representation at run time: `_AxisSize` is
+    // a `Size`, and passed without the clone it moved out of the local the
+    // next argument reads (`RenderFlex._computeSizes`, ws716).
+    if (type is ExtensionType) {
+      return _clonedWhenPassed(type.extensionTypeErasure);
+    }
     if (type is FunctionType || type is DynamicType) return true;
     // Every type parameter is bounded `Clone` in the output.
     if (type is TypeParameterType) return true;
