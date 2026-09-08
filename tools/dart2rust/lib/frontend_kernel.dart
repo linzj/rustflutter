@@ -6170,10 +6170,18 @@ class KernelFrontend implements TypeWorld {
         // two prelude methods. 25 calls.
         final orElse = args[1];
         final omitted = orElse is IrLiteral && orElse.type.name == 'Null';
+        // ..and a *given* one goes in bare: Dart's slot is `E Function()?`
+        // and the coercion wrapped it, where the prelude's parameter is a
+        // plain `impl Fn()` (`FlutterErrorDetails.summary`, run730).
+        var given = orElse is IrSome ? orElse.value : orElse;
+        given = given is IrCall && given.name == '!rc' && given.args.isEmpty
+            ? given.target!
+            : given;
+        given = _unboxed(given);
         return IrCall(
           _listReceiver(node.receiver, name),
           omitted ? 'first_where' : 'first_where_or',
-          omitted ? [args[0]] : args,
+          omitted ? [args[0]] : [args[0], given],
         );
       }
       if (name == 'sort') {
