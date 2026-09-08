@@ -2260,6 +2260,26 @@ impl<K: DartEq, V> Map<K, V> {
     }
 }
 
+/// A set's ends, in iteration order: the prelude's `Set` keeps its elements
+/// as they went in, and Dart's `first`/`last` read that order. `StateError`
+/// on an empty set, as Dart throws (`BorderDirectional.paint` reads
+/// `_distinctVisibleColors().first`, run743).
+impl<T: Clone> Set<T> {
+    pub fn first(&self) -> T {
+        self.items
+            .first()
+            .cloned()
+            .unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    }
+
+    pub fn last(&self) -> T {
+        self.items
+            .last()
+            .cloned()
+            .unwrap_or_else(|| panic!("uncaught Dart exception: Bad state: No element"))
+    }
+}
+
 impl<T: DartEq> Set<T> {
     /// Elements converted one by one (`cast_to`, `dart_cast_set`): a later
     /// duplicate is dropped, as `add` does.

@@ -4281,7 +4281,17 @@ class RustBackend {
     // with a getter of that name (`PriorityQueue.first`, E0608 at ws460).
     // ..and a method on the prelude's queues and the intrusive
     // `LinkedList` (`DartQueueRead`), which cannot be indexed (ws549).
-    const queueLike = {'Queue', 'ListQueue', 'DoubleLinkedQueue', 'LinkedList'};
+    // ..and a `Set`, whose ends are its own methods: a set is no `Vec` and
+    // `visibleColors[0]` did not index (`BorderDirectional.paint`, run743).
+    const queueLike = {
+      'Queue',
+      'ListQueue',
+      'DoubleLinkedQueue',
+      'LinkedList',
+      'Set',
+      'LinkedHashSet',
+      'HashSet',
+    };
     if ((name == 'first' || name == 'last') &&
         args.isEmpty &&
         queueLike.contains(target?.rustType?.name ?? '')) {
