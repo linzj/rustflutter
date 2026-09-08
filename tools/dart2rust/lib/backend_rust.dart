@@ -5422,7 +5422,13 @@ class RustBackend {
   /// when the type has no null to fall into.
   static String? _fallsOffValue(String rendered) {
     if (rendered == '()') return '()';
-    if (rendered.startsWith('Option<')) return 'None';
+    // Spelled: nothing else says what the `None` is when the body's own
+    // return type is a `_` the context cannot fill -- a `catch_error`
+    // handler is held as an `Rc<dyn Object>` and constrains nothing
+    // (`AssetImage.obtainKey`, ws726).
+    if (rendered.startsWith('Option<') && rendered.endsWith('>')) {
+      return 'None::<${rendered.substring('Option<'.length, rendered.length - 1)}>';
+    }
     // A `dynamic` (a `Function` slot's callback, `RestorableBool.value =
     // ..` inside one, `_AnimatedHomePageState.build`, run675): Dart's
     // null, the `Null` object.
