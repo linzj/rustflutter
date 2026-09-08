@@ -9774,19 +9774,32 @@ class KernelFrontend implements TypeWorld {
         final init = declared?.initializer;
         args.add(init == null ? _nullLiteral() : expression(init));
       }
-      return IrCall(
-        IrClosure(
-          params,
-          IrReturn(IrCallValue(lowered, args)),
-          _type(param.returnType),
-          // An instance tear-off holds its receiver: the adapter around it
-          // has to hold it too, or it borrows the local the receiver came
-          // from and cannot outlive the call (E0597, the tearopt fixture).
-          locals: _freeLocalsIn(value, {}),
-        ),
-        '!rc',
-        const [],
-      );
+      final adapter =
+          IrCall(
+              IrClosure(
+                params,
+                IrReturn(IrCallValue(lowered, args)),
+                _type(param.returnType),
+                // An instance tear-off holds its receiver: the adapter
+                // around it has to hold it too, or it borrows the local
+                // the receiver came from and cannot outlive the call
+                // (E0597, the tearopt fixture).
+                locals: _freeLocalsIn(value, {}),
+              ),
+              '!rc',
+              const [],
+            )
+            ..rustType = _type(
+              param.withDeclaredNullability(Nullability.nonNullable),
+            );
+      // Into the slot as any other value is: returning here skips the
+      // wrapping this method ends with, and a `VoidCallback?` field took a
+      // bare `Rc<{closure}>` (`SemanticsNode.showOnScreen`, 4 at ws795).
+      try {
+        return coerce(adapter, slotIr ?? _type(param));
+      } on Unsupported {
+        return adapter;
+      }
     }
     // A static tear-off into a slot whose type *keeps* named parameters: a
     // function value is called through its type, whose named parameters
