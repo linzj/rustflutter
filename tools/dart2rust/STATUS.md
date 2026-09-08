@@ -1312,3 +1312,26 @@ holding the receiver (`Timer(delay, _controller.reverse)`, 8).
   - `~x`: services_raw_keyboard_linux (2), crypto's sha256
 
 433 -> 234 over the grouped method.
+
+## run796 — the run finishes again: 7 frames, 46 platform messages
+
+`Map::from_pairs` unblocked it. The run now aborts on a real panic instead
+of the clock:
+
+    scc_flutter_widgets/src/animation_tween.rs:952
+    tween_super_lerp::<TweenImpl<f64>, f64>  ->  Option::unwrap() on a None
+
+`Tween.lerp` is `(begin as dynamic) + ((end as dynamic) - (begin as
+dynamic)) * t`, and `begin` is a projected `T?`. The cast to `dynamic` was
+*dropped* -- the lowering's last resort is the operand itself -- so the
+value kept its `<T as DartNullable>::Or` spelling while its recorded type
+said `dynamic`, and the `dynamic` operator rules asked that associated type
+for its `Any`. A cast to `dynamic`/`Object` now goes through `coerce` like
+any other crossing; a value already behind the handle coerces to itself.
+The tweenlerp fixture (`transform(0)/transform(0.5)/transform(1)`) agrees
+with Dart.
+
+The walk at run796 is 450 lines against the settled reference's 708 -- the
+process aborts in `_MaterialInteriorState`'s implicit animation before the
+tree settles, so this is the panic's shadow, not a structural regression.
+run787 (the last run that reached the end) was 708/0.
