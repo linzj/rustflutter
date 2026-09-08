@@ -2249,3 +2249,28 @@ across the whole program and the walk is unchanged, node for node.
 
 From the start of this stretch -- 221 stubbed and 130 refusals -- 351
 unfinished members are 262.
+
+## ws843/ws845 -- three ways of asking the same null question, none of them the right one
+
+    ws843:  202 stubbed, 60 refusals, 64 crates   (unchanged, member for member)
+    ws845:  202 stubbed, 60 refusals, 64 crates   (unchanged, member for member)
+
+`WidgetStateTextStyle`'s constructor emits
+
+    font_family: if None.is_none() { None.clone() }
+                 else { Some(format!("packages/{}/{}", None.clone().unwrap(), ..)) }
+
+-- a test on something the AOT compiler already folded to null, with a dead
+`else` whose `None.as_ref().map(|it| ..)` has no element type to infer.
+Three of the eight "type annotations needed" stubs are this.
+
+ws815 folded a `ConditionalExpression` whose condition is `EqualsNull` over
+a *literal* null. ws843 widened that to the operand's static type being
+`Null`. ws845 asked instead what the condition *lowered to*, an `IrIsNull`
+over an `IrLiteral('null')`, lowering it once so nothing is evaluated
+twice. All three are inert here: the stub set did not move by one member.
+
+So this `if` is not reaching the `ConditionalExpression` branch at all, and
+the next attempt should start by finding which lowering emits it rather
+than by widening the test again. Recorded with the shape above, which is
+the thing to search the output for.

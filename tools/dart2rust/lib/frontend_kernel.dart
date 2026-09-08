@@ -2350,26 +2350,11 @@ class KernelFrontend implements TypeWorld {
           IrStaticCall(null, 'dart_str', [expression(node.otherwise)]),
         );
       }
-      // ..and the same question asked of what the condition *lowered to*:
-      // type flow analysis folds a value it proved always null into the
-      // literal somewhere below the read, so the Kernel node is still a
-      // field access while the IR is `None`. Both arms were lowered anyway,
-      // and the dead one had nothing to infer its types from -- `None
-      // .as_ref().map(|it| ..)` (`WidgetStateTextStyle`, 3 of the 8 "type
-      // annotations needed" at ws841). Lowered once, so nothing is
-      // evaluated twice.
-      final lowered = _condition(condition);
-      if (lowered is IrIsNull) {
-        final operand = lowered.operand;
-        if (operand is IrLiteral && operand.type.name == 'Null') {
-          return _widened(node.then, staticType, expression(node.then));
-        }
-      }
       // Each branch widens into the conditional's own type: `m == null ?
       // null : hashAll(m)` is an `Option`, and the second branch an `i64`
       // until it is wrapped (4 `if` and `else` have incompatible types).
       return IrConditional(
-        lowered,
+        _condition(condition),
         _widened(node.then, staticType, expression(node.then)),
         _widened(node.otherwise, staticType, expression(node.otherwise)),
       );
