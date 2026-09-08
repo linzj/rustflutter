@@ -1629,3 +1629,37 @@ The one added was the rule reading a name it did not own: `_History`
 declares its own `indexWhere`, whose Rust name is `index_where`, and its
 signature takes the handle. `_preludeLends` now asks only on a receiver
 whose class the library does not know.
+
+## ws813 -- the names the CFE invents, a generic function torn off, and `Map.map`
+
+The refusal census, taken properly this time (a marker's reason is on the
+line under it when the member's own line does not carry one), named three
+groups this round could answer.
+
+**A local function the CFE invented has no name a human wrote.** `late
+final x = ..` inside a body becomes a `#x#initializer()` local function
+beside the cell and its flag, and `#` is not a character the backend can
+carry. It gets the same `__tN` a temporary gets, by identity, and both
+`LocalFunctionInvocation` and `VariableGet` find it again the same way --
+which is exactly what `_declare` already did for the CFE's variables. The
+lateinit fixture: `late final` read twice, computed once.
+
+**A generic function torn off at a type is the function.** `sizes.reduce(
+math.max)` arrives as an `InstantiationConstant` wrapping the tear-off,
+and Rust's function items are named rather than instantiated at a value --
+the slot's own type says which instantiation this is. `math.max`/`min`
+needed one thing more: a *call* to them is an inherent method of the
+receiver (`f64::max`, `Ord::max`), and a method is no name to hand on, so
+the prelude grew `dart_max_of`/`dart_min_of` for the value form. The
+mathvalue fixture, over both `double` and `int`.
+
+**`Map.map` was refused for insertion order it no longer loses.** The
+prelude's `Map` is a `Vec` of pairs, so the entries the transform returns
+keep the order it returns them in, a later key replacing an earlier one.
+`orderedMapMembers` is empty now. The mapmap fixture.
+
+    bin/run_chain.sh:  208 stubbed (was 209), 88 refusals (was 102), 64 crates
+
+Nothing new: all seventeen members that stopped being refused compiled.
+The one stub cleared was ws812's regression, `_preludeLends` reading a
+name it did not own.

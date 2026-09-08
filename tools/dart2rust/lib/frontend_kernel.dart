@@ -4859,7 +4859,7 @@ class KernelFrontend implements TypeWorld {
           rightSide = IrStaticCall(null, 'dart_option_object', [rightSide])
             ..rustType = const IrType('dynamic');
         }
-        return IrIfNull(
+        final whole = IrIfNull(
           asked,
           rightSide,
           // Whether the whole thing is still nullable is the right side's
@@ -4871,6 +4871,21 @@ class KernelFrontend implements TypeWorld {
               : body.staticType.nullability == Nullability.nullable,
           eager: right is BasicLiteral || right is ConstantExpression,
         );
+        // The `??` says what it is where its two arms agree. Untyped, a
+        // slot could not coerce it: `labelText ?? label` is an `Object` in
+        // Dart and two `String`s here, and the `Rc<dyn Object>` it went
+        // into never got the handle put on (`InputDecorator.build`,
+        // `KeyedSubtree.wrap`; 4 at ws812). Only where they agree -- the
+        // arms are what the block actually produces, whatever Dart calls
+        // the whole.
+        final leftArm = asked.rustType;
+        final rightArm = rightSide.rustType;
+        if (leftArm != null &&
+            rightArm != null &&
+            sameRust(nonNull(leftArm), nonNull(rightArm))) {
+          whole.rustType = whole.nullableResult ? rightArm : nonNull(rightArm);
+        }
+        return whole;
       }
     }
     // Everything else is what a `Let` says it is: bind a name, then evaluate
@@ -4943,6 +4958,33 @@ class KernelFrontend implements TypeWorld {
       block.rustType = letValue.rustType;
     }
     return block;
+  }
+
+  /// What one element of a finished chain is, or null when no step says.
+  ///
+  /// `map`/`expand` replace the element with their closure's return (an
+  /// `expand`'s is a collection, and its element is what comes out);
+  /// `filter` keeps it. A step whose function is not a written closure
+  /// says nothing, and neither does the chain.
+  static IrType? _chainElement(IrIterChain chain) {
+    IrType? element = chain.source.rustType?.arguments.length == 1
+        ? chain.source.rustType!.arguments.single
+        : null;
+    for (final (step, f) in chain.steps) {
+      switch (step) {
+        case 'filter':
+          continue;
+        case 'map':
+          if (f is! IrClosure) return null;
+          element = f.returns;
+        case 'flat_map':
+          if (f is! IrClosure || f.returns.arguments.length != 1) return null;
+          element = f.returns.arguments.single;
+        default:
+          return null;
+      }
+    }
+    return element;
   }
 
   /// A conditional in statement position as an `if` (see the expression
@@ -6523,9 +6565,20 @@ class KernelFrontend implements TypeWorld {
         // A chain, extended rather than started again when the receiver is
         // already one: `xs.where(f).map(g)` is one `iter()`, not two.
         final source = _listReceiver(node.receiver, name);
-        return source is IrIterChain
+        final chain = source is IrIterChain
             ? IrIterChain(source.source, [...source.steps, (step, args.single)])
             : IrIterChain(source, [(step, args.single)]);
+        // ..typed by what it *produces*, not by what Dart calls the whole:
+        // a `map` step's element is the closure's own return. Untyped, a
+        // slot coerced the chain against the declared element type and
+        // upcast a handle that was already the trait -- `dart_object(v) as
+        // Rc<dyn Widget>` on a `v` that was one, which is `Rc<Rc<dyn
+        // Widget>>` (`_RallyHomePageState.build`, 3 at ws808).
+        final element = _chainElement(chain);
+        if (element != null) {
+          chain.rustType = IrType('List', arguments: [element]);
+        }
+        return chain;
       }
       // `lastWhere` is the same shape read from the other end, and the
       // same two prelude methods (`NavigatorState.pop`, ws810).
