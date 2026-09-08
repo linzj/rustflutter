@@ -1296,7 +1296,13 @@ class RustBackend {
     // (`setMessageHandler`'s handler, E0728 at ws461).
     final savedAsyncBody = _asyncBody;
     _asyncBody = node.isAsync;
+    // A closure of its own is a slot's value again: its return type comes
+    // from the `Rc<dyn Fn(..)>` it goes into, so the upcasts inside it are
+    // left to Rust as they were (see `_spellsReturn`).
+    final savedSpells = _spellsReturn;
+    _spellsReturn = false;
     _body(node.body, node.isAsync ? _awaited(node.returns) : node.returns);
+    _spellsReturn = savedSpells;
     _asyncBody = savedAsyncBody;
     _failure = savedFailure;
     _rustReturns = savedRustReturns;
@@ -2547,6 +2553,11 @@ class RustBackend {
         : expr(first);
   }
 
+  /// Whether a `return` in the body being printed has to spell its upcast:
+  /// set for a step closure of an iterator chain, whose return type Rust
+  /// reads off the body rather than from a slot.
+  var _spellsReturn = false;
+
   /// An implicit upcast made explicit, through any `Some` around it: the
   /// first element of a `vec![..]` decides the `Vec`'s type.
   IrExpr _explicitUpcast(IrExpr e) => switch (e) {
@@ -3612,7 +3623,12 @@ class RustBackend {
         if (own != null) return own;
       }
     }
-    final text = expr(value);
+    // A closure whose return type Rust reads off its body -- a step of an
+    // iterator chain, which no slot expects a type from -- is not a
+    // coercion site, so an implicit upcast there left the chain collecting
+    // the concrete element (`Vec<Rc<Sq>>` where `Vec<Rc<dyn Shape>>` was
+    // declared, the mapret fixture; 2 at ws808).
+    final text = expr(_spellsReturn ? _explicitUpcast(value) : value);
     // A closure returned from a function is an *owned* position, and a
     // closure's own type has no name -- so the declared type is
     // `Box<dyn Fn(..)>` and the value has to be boxed to match. This only
@@ -5217,7 +5233,10 @@ class RustBackend {
       for (final c in e.captures)
         if (_sharedField(c.name) != null && _lateField(c.name) != null) c.name,
     };
+    final savedSpells = _spellsReturn;
+    _spellsReturn = true;
     stmt(e.body, tail: true);
+    _spellsReturn = savedSpells;
     _cellLocals = savedCells;
     _lateCellLocals = savedLateCells;
     final body = _out.sublist(saved).map(_inlineSafe).join(' ');

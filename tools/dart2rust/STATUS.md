@@ -1520,3 +1520,58 @@ answers no `Paragraph::*` native, and the native bridge hands an instance
 native no receiver, so a host cannot model per-paragraph state. Those two
 are the text gap, unchanged and still the only thing between this walk and
 the reference.
+
+## ws810 -- a capture and a parameter cannot share a name, and a step of a chain is not a coercion site
+
+The goal changed with this round: clear every stub *and* every refusal,
+and prove each cleared group with a fixture that agrees with Dart while
+the render-tree reading holds. So the census now has two halves. Stubs
+come from `stubsNNN.txt.detail.txt`; refusals never appear there -- they
+are `// NOT TRANSLATED:` lines in `.crate/src/*.rs`, and this is the
+first round that counted them:
+
+    130 refusals, by reason:
+      32  a `List`/`Map` method with no prelude name (fold 8, reduce 5,
+          removeRange 4, Map.map 3, indexWhere 3, followedBy 3,
+          Map.removeWhere 2, skipWhile/lastWhere/fillRange/asMap 1 each)
+       6  a constant `InstantiationConstant`
+       6  a local function with no name
+       5  a super call to something not translated
+       4  a const instance of a class in another file
+       4  a generic local function
+       5  a closure capturing `this` in a mixin application
+       3  `Map.map`, refused for insertion order
+      ..  and a tail of ones
+
+Two rules this round, each with its own fixture.
+
+**A closure's captured field and its own parameter cannot share a name.**
+A closure that only reads `final` fields copies them in as locals named
+after the field (`IrClosure.captures`), and a parameter of the same name
+shadows the copy -- so a read of the *field* found the parameter instead.
+Dart has no such collision: there the field is `this.child`. The gallery's
+`FadeInImagePlaceholder.build` writes `this.child ?? child`, and the copy
+came out `let child = self.child.clone()` under a `move |child: Rc<dyn
+Widget>|`. A parameter whose written name is one of the copies now takes a
+temporary's name instead (`_paramName`); the reads follow, because they
+find the name through `_temporaries` by identity. The capshadow fixture:
+Rust printed nothing, Dart printed `param|field`.
+
+**A step of an iterator chain is not a coercion site.** `xs.map<Shape>((x)
+=> Sq(x))` renders `.map(|x| ..).collect::<Vec<_>>()`, and Rust reads the
+closure's return type off the body -- so the implicit upcast the front end
+put there (`dart_object(..)`, an `IrUpcast` left unspelled) never happened
+and the chain collected `Vec<Rc<Sq>>` where `Vec<Rc<dyn Shape>>` was
+declared. `IrUpcast.explicit` already says this ("inside a closure body
+nothing expects a type"); it just was not asked at a step closure's
+`return`. `_spellsReturn` now says so, and `_returned` spells the upcast.
+The mapret fixture, in both its expression-bodied and block-bodied forms.
+
+    bin/run_chain.sh:  211 stubbed (was 221), 130 refusals, 64 crates
+    the 10 cleared: cupertino/material `AdaptiveTextSelectionToolbar
+      .getAdaptiveButtons`, `TabBarView._updateChildren`,
+      `FadeInImagePlaceholder.build`, `PointerEventConverter.expand`,
+      `Element.describeElements`, `_MaterialGridListDemo.build`,
+      `UserAccountsDrawerHeader.build`, `FlutterErrorDetails.new`,
+      `_SpellCheckSuggestionsToolbar._buildToolbarButtons`
+    no new stubs

@@ -5465,7 +5465,21 @@ class KernelFrontend implements TypeWorld {
     // forwarder passes it on by name, and `_` is a pattern in Rust, not a
     // value -- `super_set_first(self, _)` did not parse.
     if (written == null) return fallback ?? _nameFor(p);
-    return written.startsWith('#') || written == '_' ? _nameFor(p) : written;
+    if (written.startsWith('#') || written == '_') return _nameFor(p);
+    // Once renamed, always renamed: reads find the name through
+    // `_temporaries` by identity, and a nested closure lowering under its
+    // own captured set would otherwise name the same parameter twice.
+    final already = _temporaries[p];
+    if (already != null) return already;
+    // A parameter of a closure that copied a field of `this` in under the
+    // field's own name (`IrClosure.captures`): in Rust the parameter
+    // shadows the copy, so the body's read of the *field* found the
+    // parameter instead. Dart has no such collision -- there the field is
+    // `this.child` -- so the copy keeps the name the reads use and the
+    // parameter takes a temporary's (`this.child ?? child` in the gallery's
+    // `FadeInImagePlaceholder.build`, ws808).
+    if (_captured.contains(written)) return _nameFor(p);
+    return written;
   }
 
   String _nameFor(Variable variable) =>
