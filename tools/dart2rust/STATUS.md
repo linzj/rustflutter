@@ -1297,3 +1297,18 @@ promotion keeps the absence (nested's `SingleChildWidgetElementMixin.mount`,
 4); a tear-off whose extra parameters are all optional adapts to the slot
 that takes none -- instance tear-offs included, in the *type's* named order,
 holding the receiver (`Timer(delay, _controller.reverse)`, 8).
+
+## ws795 — 234 stubbed (was 247), 130 refusals, 64 crates
+
+`x is T?` was worth 13 on its own, and not only where it was found:
+
+  - nested.rs: 4 `mount` (`if (parent is _NestedHookElement?)`)
+  - painting_shape_decoration, painting_flutter_logo, painting_box_border:
+    5 `lerp_from`/`lerp_to`/`box_border_lerp` -- upstream writes these as a
+    `switch (a) { ShapeDecoration? _ => .. }`, whose nullable *pattern* is
+    the same test, and the missing `Some` those had at ws786 was the
+    promotion, not the argument edge
+  - rendering_object.update_children
+  - `~x`: services_raw_keyboard_linux (2), crypto's sha256
+
+433 -> 234 over the grouped method.
