@@ -1738,8 +1738,11 @@ class KernelFrontend implements TypeWorld {
           _rustScalar(to.name),
           arguments: to.arguments,
         );
-        // Cloned out of the reference `Any` hands back.
-        return IrCall(downcast, 'clone', const []);
+        // Cloned out of the reference `Any` hands back, and typed as what
+        // the promotion says it is: untyped, a slot that takes an `Option`
+        // could not tell a promoted value from one still in its `Option`
+        // and left the `Some` off (`ShapeDecoration.lerpFrom`, 6 at ws764).
+        return IrCall(downcast, 'clone', const [])..rustType = to;
       }
       // ..and to one of `dart:core`'s collections (`val is Map` on a
       // `dynamic`): the prelude's value, converted where its element
@@ -1770,7 +1773,7 @@ class KernelFrontend implements TypeWorld {
           ),
           'clone',
           const [],
-        );
+        )..rustType = IrType(asName, arguments: to.arguments);
       }
       // ..and to an abstract or open class: the trait cast every object
       // answers (`dart_cast_to`). Not from a nullable declaration, whose

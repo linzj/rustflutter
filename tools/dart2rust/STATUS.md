@@ -842,3 +842,15 @@ is there. Two rules:
   put on, because that type is the lie.
 
 `_evaluateAt` now reads `dart_from_dynamic::<T>(element.tween.transform(t)?)`.
+
+## ws765 — the erasure rule overreached (292 → 324)
+
+    ws764 292 stubbed, 130 refusals, 64 crates
+    ws765 324 stubbed, 130 refusals, 64 crates   1 gone, 33 new
+
+`_throughReceiver` typed the result by what the receiver puts in for the
+declaring class's parameter, and dropped the declared nullability with it:
+`Map<K, V>.[]` returns `V?`, which the top-bound rule already spells
+`Option<Rc<dyn Object>>`, and a bare `dynamic` there took the `Option` off
+every null-aware read around it. Narrowed to a non-nullable parameter,
+which is the case it was written for (`Animatable<T>.transform`).
