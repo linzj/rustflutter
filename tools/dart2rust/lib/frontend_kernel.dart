@@ -13509,6 +13509,22 @@ class KernelFrontend implements TypeWorld {
         for (final m in cls.methods) m.name,
         for (final m in cls.abstractMethods) m.name,
       };
+      // An abstract class that *is* an `Iterable<E>` declares its
+      // `iterator`, so the trait has one and the walk beside it
+      // (`__to_list`) can run: a `Rc<dyn Characters>` had neither, and
+      // every `Iterable` member on one was a call to nothing (6 at ws782).
+      final element = cls.iterableElement;
+      if (element != null && declared.add('iterator')) {
+        cls.abstractMethods.add(
+          IrMethod(
+            'iterator',
+            const [],
+            IrType('DartIterator', arguments: [element]),
+            const IrBlock([]),
+            isGetter: true,
+          ),
+        );
+      }
       for (final t in node.implementedTypes) {
         final iface = t.classNode;
         if (iface.isAbstract) continue;

@@ -1135,3 +1135,16 @@ already suffixed read `0.0_f64_f64`. Suffixed once now.
 
 Grouped, from ws747: **433 -> 264** stubbed, 183 -> 130 refusals, 64
 crates throughout, and the render walk's structure is the reference's.
+
+## An abstract class that is an `Iterable` declares its iterator
+
+A `Rc<dyn Characters>` had neither `iterator` nor `__to_list` on it: the
+trait carried only what the class itself declared, and `Iterable`'s
+members are the prelude's. So every `Iterable` member on such a handle was
+a call to nothing (6 at ws782, all of them the text-field code).
+
+The trait now declares `iterator` (the front end, from
+`IrClass.iterableElement`) and carries `__to_list` as a default beside it
+(the backend, the same walk `_emitToList` writes for a struct). Every
+implementor has an `iterator` of its own, so the impl forwards it like any
+other trait method.

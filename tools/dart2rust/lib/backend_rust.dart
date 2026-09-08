@@ -6657,6 +6657,11 @@ class RustBackend {
         );
       });
     }
+    // An abstract class that *is* an `Iterable<E>` walks its own iterator,
+    // as a struct that is one does (`_emitToList`) -- as a trait default,
+    // since a `Rc<dyn Characters>` is what the callers hold and a trait
+    // object has only the trait's methods (6 at ws782).
+    _emitTraitToList();
     _indent--;
     _line('}');
     // A trait holds no storage, but the *class* still had its statics, and in
@@ -7015,6 +7020,28 @@ class RustBackend {
       'let __it = $fetched; let mut __out: Vec<$element_> = Vec::new(); '
       'while __it.move_next() { __out.push(__it.current()); } __out }',
     );
+  }
+
+  /// `__to_list` as a *trait* default, for an abstract class that is an
+  /// `Iterable<E>`: the same walk `_emitToList` writes for a struct, over
+  /// the trait's own `iterator` (which the front end declares for it).
+  void _emitTraitToList() {
+    final element = cls.iterableElement;
+    if (element == null) return;
+    final getter = [...cls.methods, ...cls.abstractMethods]
+        .where((m) => m.name == 'iterator' && m.isGetter && !m.isStatic)
+        .firstOrNull;
+    if (getter == null || getter.returnType.name != 'DartIterator') return;
+    final fetched = _resultModel
+        ? 'match self.iterator() { Ok(__it) => __it, Err(__e) => panic!("uncaught Dart exception: {}", dart_str(&__e)) }'
+        : 'self.iterator()';
+    final element_ = type(element);
+    _line(
+      'fn __to_list(&self) -> Vec<$element_> { '
+      'let __it = $fetched; let mut __out: Vec<$element_> = Vec::new(); '
+      'while __it.move_next() { __out.push(__it.current()); } __out }',
+    );
+    _line('');
   }
 
   /// `NativeAnswer` for the struct or enum (see the prelude's): a native
