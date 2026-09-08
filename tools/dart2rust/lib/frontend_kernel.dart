@@ -8330,6 +8330,14 @@ class KernelFrontend implements TypeWorld {
   static IrExpr _toF64(IrExpr e) {
     if (e.rustType?.name == 'double') return e;
     if (e is IrCast && e.rust == 'f64') return e;
+    // An integer *literal* is written as a float rather than cast: an
+    // unsuffixed literal under `as f64` is an `i32` to Rust, and
+    // `1000000000000000000 as f64` does not fit one (`NumberFormat.
+    // _numberOfIntegerDigits`, 4 at ws777).
+    if (e is IrLiteral && e.type.name == 'int') {
+      return IrLiteral('${e.value}.0', const IrType('double'))
+        ..rustType = const IrType('double');
+    }
     return IrCast(e, 'f64')..rustType = const IrType('double');
   }
 
