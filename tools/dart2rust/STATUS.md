@@ -2305,3 +2305,42 @@ round, and a `toString` is the kind of thing a diagnostics walk prints.
 It did not move: 708 lines, no type differing, nothing panicking.
 
     the compile ruler in the same tree:  201 stubbed, 60 refusals, 64 crates
+
+## Where this stretch stands
+
+    from  ws808:  221 stubbed, 130 refusals, 64 reachable crates
+    to    ws847:  201 stubbed,  60 refusals, 64 reachable crates
+    run848:       708 lines, 0 type-only differences, 0 panicked, 201 frames
+
+351 unfinished members are 261, reachable crates never dropped (once, and
+it was caught and reverted in the same round), and the run ruler's reading
+was taken four times across the stretch without moving.
+
+Twenty-one rules landed, each with a fixture that agrees with Dart and its
+own reading of the chain. Ten were reverted after being measured, and six
+of those would have compiled and been **wrong** -- which is why a round
+pays for a fixture before it pays for a chain.
+
+The stub side is now a long tail: the largest shape inside the 61
+"mismatched types" is *two* members. The refusal side is 60, and 51 of
+them are in four groups that are each one decision, not one rule:
+
+     16  `dart:ffi`'s internals behind the win32 windowing layer. The
+         prelude gives them names and no behaviour on purpose ("the refusal
+         is at the call"); clearing them means giving `Pointer` a memory
+         model, which is a decision about what this compiler promises, not
+         a gap in it.
+     15  identity on a value class -- `identical` (5), `identityHashCode`
+         (4), and the `super.==`/`super.hashCode` calls that stand on them
+         (6). Counted: 239 classes have their identity observed, and the
+         faithful fix is an identity token carried through `clone`, on all
+         239, with hand-written equality to keep it out. Measured, written
+         up, and not attempted.
+      4  a generic local function, which needs the declaration, the call
+         site and the two spellings of `dynamic` settled in one round; the
+         second attempt got the first two and is written up.
+      4  `is` against a type this compiler does not have (`Future`,
+         `HttpException`), and `is Function`, which needs the `is` lowering
+         to carry the function *type* rather than the name `Function`.
+
+The rest is ones and twos, each with its shape recorded above.
