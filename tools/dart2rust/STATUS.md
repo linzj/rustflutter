@@ -683,3 +683,19 @@ projection crossings were right to fix and the functions behind them fail
 on something else next. From here a rule's number is what it *uncovers*
 as much as what it clears -- `intl_plural_logic`'s next error is
 `substring` on an `Option<String>`.
+
+## ws759 — the out-of-scope parameter rule was wrong (314 → 325)
+
+    ws758 no report: `T extends Comparable<T>` spelled itself forever and
+          the translation was a stack overflow
+    ws759 325 stubbed, 130 refusals, 64 crates   2 gone, 13 new
+
+"A type parameter no name here stands for is its bound" reads well and is
+wrong: the parameter *is* meaningful, and what puts a name to it is the
+instantiation the substitution machinery fills in later (`_asApplied`).
+Spelling it at its bound intercepted that -- `MaterialPointArcTween`'s
+inherited `Tween<T>.begin=` became `Option<Rc<dyn Object>>` where the
+`Option<Offset>` field is, and `FocusNode._focusedChildren` a
+`Vec<Rc<dyn Object>>`. It also fixed none of the ten `cannot find type`
+it was written for. Reverted; the `return this` rule beside it goes on to
+ws760 with the rest.

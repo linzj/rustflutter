@@ -1004,27 +1004,6 @@ class KernelFrontend implements TypeWorld {
           arguments: asBound.arguments,
         );
       }
-      // A parameter no name here stands for -- a callee's, reached before
-      // its instantiation is put in -- is spelled at its bound, as an
-      // erased one is. Rust would reject the name anyway, so nothing that
-      // compiled changes (`OpenContainer<T>`'s `openContainer` callback
-      // written inside a `build`, 4 `cannot find type T` at ws756).
-      if (!_parameterNamed(type.parameter)) {
-        // A bound that names the parameter again (`T extends Comparable<T>`)
-        // would spell itself forever: inside its own bound the parameter is
-        // `dynamic`, which is what a trait object of it holds anyway.
-        if (!_atBound.add(type.parameter)) return const IrType('dynamic');
-        try {
-          final asBound = _typeOfBound(type.parameter.bound);
-          return IrType(
-            asBound.name,
-            nullable: nullable || asBound.nullable,
-            arguments: asBound.arguments,
-          );
-        } finally {
-          _atBound.remove(type.parameter);
-        }
-      }
       return IrType(
         type.parameter.name ?? 'T',
         nullable: nullable,
@@ -3317,38 +3296,6 @@ class KernelFrontend implements TypeWorld {
   /// `T` bound to `X?` is `X?`, one `Option` layer -- and a value crosses
   /// it through `IrNullableOf`. Only the class's or the member's own
   /// parameters: another declaration's `T` is not a name here.
-  /// The type parameters being spelled at their bounds right now: a bound
-  /// that names its own parameter has to stop somewhere.
-  final _atBound = <TypeParameter>{};
-
-  /// Whether the code being lowered has a Rust type parameter of this
-  /// name: the class being lowered declares one, or the member (or its
-  /// function) does. By *name*, because that is what Rust reads -- a
-  /// subclass carrying a base's body names the base's `T` with its own.
-  ///
-  /// When nothing is being lowered there is nothing to check against, and
-  /// the name stands.
-  bool _parameterNamed(TypeParameter p) {
-    final name = p.name;
-    final owner = _lowering;
-    final member = _member;
-    if (name == null || (owner == null && member == null)) return true;
-    if (owner != null && owner.typeParameters.any((q) => q.name == name)) {
-      return true;
-    }
-    if (member != null) {
-      if (member.enclosingClass?.typeParameters.any((q) => q.name == name) ??
-          false) {
-        return true;
-      }
-      final fn = member.function;
-      if (fn != null && fn.typeParameters.any((q) => q.name == name)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   bool _projectedSlot(DartType? t) {
     if (t is! TypeParameterType ||
         t.nullability != Nullability.nullable ||
@@ -7716,12 +7663,19 @@ class KernelFrontend implements TypeWorld {
     if (owner == 'Future' &&
         target.name.text == 'value' &&
         node.arguments.positional.isEmpty) {
-      return IrStaticCall(
-        owner,
-        'value',
-        const [],
-        typeArguments: _keptTypeArguments(declaration, node.arguments),
-      );
+      // Spelled even though the callee is the prelude's -- `_keptTypeArguments`
+      // gives a prelude callee none -- because `future_none`'s `T` has
+      // nothing else to infer it from: `Future<void>.value()` in an `async`
+      // body left `!` to the never-type fallback (5 at ws757).
+      List<IrType> spelled() {
+        try {
+          return [for (final t in node.arguments.types) _typeNested(t)];
+        } on Unsupported {
+          return const [];
+        }
+      }
+
+      return IrStaticCall(owner, 'value', const [], typeArguments: spelled());
     }
     return IrStaticCall(
       owner,
