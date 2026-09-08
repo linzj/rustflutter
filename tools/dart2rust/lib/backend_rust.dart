@@ -11240,7 +11240,13 @@ class RustBackend {
           // result is.
           // ..and widened on the way out by the one rule (`coerceInto`),
           // as a method's result is.
-          final held = IrLocal('__v')..rustType = field.type;
+          // ..in *this* class's terms first, as the method path does
+          // (`_selfBound`): inside a wider impl for one instantiation the
+          // field's `T` is the class's and the trait's `T` is the wider
+          // argument, and left unresolved the two read as the same name
+          // and the rule found nothing to do -- `Ok(self.value)` where an
+          // `Option<f64>` goes (`AlwaysStoppedAnimation`, 2 at ws870).
+          final held = IrLocal('__v')..rustType = _selfBound(field.type);
           if (Platform.environment['DART2RUST_TRACE_FWD'] == field.name) {
             stderr.writeln(
               'TRACE_FWD ${cls.name}.${field.name} field=${field.type} need=${need.returnType} for=${_implFor}',

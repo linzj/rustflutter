@@ -2932,3 +2932,31 @@ reads `host`, `path` and a query parameter back. HEAD gives the gallery's
 Two neighbours in the same group are *not* this: `Isolate.run` (Flutter's
 `compute`) needs a decision about what an isolate is in a single-threaded
 runtime, and `_WindowsMessage._fromTypedDataBase` is `dart:ffi` again.
+
+## ws870 -- a wider impl's field is read in this class's terms
+
+    bin/run_chain.sh:  169 stubbed (was 171), 57 refusals (unchanged), 64 crates
+
+`impl ValueListenable<Option<f64>> for AlwaysStoppedAnimation<f64>` -- a
+wider instantiation the program names -- forwards `value` to the struct's
+field. The forwarder does put the value through the coercion rule, and the
+rule found nothing to do: the field's type is the *class's* `T` and the
+trait's is the *wider argument*, and neither was resolved, so both read as
+the name `T`. Out came `Ok(self.value)` where an `Option<f64>` goes. The
+method path beside it has always resolved its side (`_selfBound`); the
+field path now does too.
+
+No fixture reproduces this one. Two shapes were tried -- a generic class
+whose field is `T`, named at `Listen<Object?>` and at `Listen<double?>` --
+and neither made the census ask for the wider impl the gallery asks for.
+What stands in for it is the trace the file already carries:
+`DART2RUST_TRACE_FWD=value` on the gallery says
+
+    TRACE_FWD AlwaysStoppedAnimation.value field=T need=T for=ValueListenable
+
+-- the two sides the rule compares, both unresolved -- and the chain's own
+answer, exactly the two members and nothing else.
+
+run870 holds the ruler after ws869 and ws870: 708 walk lines, 0 type-only
+differences, 508 as printed, no `RenderErrorBox`, 197 frames drawn and 0
+panicked.
