@@ -1177,3 +1177,14 @@ position (E0317) and the function was stubbed for it. Nothing after a
 statement that always returns is emitted now -- by `_alwaysReturns`, which
 already knew how to say it, so a nested block or a both-arms `if` counts
 too.
+
+## ws786 — 256 stubbed (was 258), 130 refusals, 64 crates
+
+The dead-tail rule cleared exactly the two functions it was written for and
+brought nothing new:
+
+  - gestures_tap_and_drag.rs  base_tap_and_drag_gesture_recognizer_super__reset_drag_update_throttle
+  - rendering_paragraph.rs    _update_selection_registrar_subscription
+
+Both had a TFA-proved `return` with a live tail behind it, and the tail's
+`else`-less `if` landed in the function's tail position (E0317).
