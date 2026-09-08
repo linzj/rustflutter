@@ -3060,3 +3060,46 @@ and short-circuits, the translation walks the elements and reaches the same
 answer. The standing identity fixtures still agree (`identconst`,
 `identmap`, `identstatic`, `aliasparam`, `hsetbox`); `identhash` still
 refuses `identityHashCode`, as it did before this round.
+
+## ws874 -- a method body falls into the null of its own type, once
+
+    bin/run_chain.sh:  156 stubbed (was 159), 57 refusals (unchanged), 64 crates
+
+`_body` -- the closure's and the free function's path -- has known since
+ws504 what a body of each shape falls off into: `()`, the `None` of a
+spelled `Option`, the `Null` object of a `dynamic`, the done `FutureOr` of
+either. The method path asked a narrower question, `type(produced) == '()'`,
+so a body of any other shape got no tail at all and a bare `return;` inside
+one became `Ok(())`. `Future<dynamic> _handleTextInputInvocation(..) async`
+and its two siblings end in an `if`/`else if` chain with no `else`, and the
+chain's `()` was left in the tail position of a
+`Result<Rc<dyn Object>, ..>`.
+
+The method path now asks `_fallsOffValue` the same question `_body` asks,
+on the awaited type an `async` body produces:
+
+    final falling = _fallsOffValue(type(produced));
+    final fallsOff =
+        _failure != null && falling != null && !_alwaysReturns(method.body);
+
+..and `_fallsOff` is set around the body, so a bare `return;` in one hands
+back that value, as it already did in a closure.
+
+Once a body ends in that value there is nothing left for `_closeOpenIf` to
+close, and its `unreachable!` after the tail did not even parse ("expected
+`;`, found `unreachable`"). That was already true wherever `_body` fell
+off; `_body` now says whether it did, and the three callers that close an
+open chain only do so when it did not.
+
+`fallnull` carries all three: an `async Future<dynamic>` method, the same
+body as a plain `dynamic` method, and a free function whose open chain is
+closed by the null. At HEAD it is 7 errors -- the parse error and six
+`E0308`s, the gallery's two shapes -- and with the rule both ends print
+`add:1,skip:2,note:3 2 null null 7 null null`. `bareret` and `asyncfwd`
+still agree; `futnone` and `thenvoid` fail in the harness as they did
+before (an `async use()` the run template cannot unwrap, and a fixture with
+no top-level `use`).
+
+run874 holds the ruler after a change that touches every method body: 708
+walk lines, 0 type-only differences, 508 as printed, no `RenderErrorBox`,
+196 frames drawn and 0 panicked.

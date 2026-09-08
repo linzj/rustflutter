@@ -6056,7 +6056,10 @@ class RustBackend {
           .where((s) => s.isNotEmpty)
           .toList();
 
-  void _body(IrStmt body, IrType returnType) {
+  /// Emits a body, and says whether it ended with the null its type falls
+  /// into: a caller that closes an open `if` chain has nothing left to close
+  /// when it did (the two tails did not parse, the fallnull fixture).
+  bool _body(IrStmt body, IrType returnType) {
     if (_runtimeTraced.any(_here.contains)) {
       _line('eprintln!("dart2rust trace: $_here");');
     }
@@ -6078,6 +6081,7 @@ class RustBackend {
     stmt(body, tail: !fallsOff);
     _fallsOff = savedFalling;
     if (fallsOff) _line('Ok($falling)');
+    return fallsOff;
   }
 
   /// The null of the return type of the body being emitted: what a bare
@@ -8296,11 +8300,12 @@ class RustBackend {
     if (stubbed != null) {
       _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
     } else {
-      _body(
+      if (!_body(
         method.body,
         method.isAsync ? _awaited(method.returnType) : method.returnType,
-      );
-      _closeOpenIf(method.body);
+      )) {
+        _closeOpenIf(method.body);
+      }
     }
     _returns = null;
     _rustReturns = null;
@@ -8573,11 +8578,12 @@ class RustBackend {
       // itself. `this_.start` was read as a field 6 times in `source_span`.
       final accessors = _fieldsAreAccessors;
       _fieldsAreAccessors = true;
-      _body(
+      if (!_body(
         method.body,
         method.isAsync ? _awaited(method.returnType) : method.returnType,
-      );
-      _closeOpenIf(method.body);
+      )) {
+        _closeOpenIf(method.body);
+      }
       _fieldsAreAccessors = accessors;
       _rustReturns = outerRustReturns;
       _returns = null;
@@ -12336,16 +12342,26 @@ class RustBackend {
       final produced = method.isAsync
           ? _awaited(method.returnType)
           : method.returnType;
+      // The null the body's type falls into, the same one a closure's body
+      // gets from `_body`: `()`, a `None` of the spelled `Option`, the
+      // `Null` object of a `dynamic`. Only `()` was asked for here, so an
+      // `async Future<dynamic>` whose body ends in an `if`/`else if` chain
+      // -- `_handleTextInputInvocation`, `_handleUndoManagerInvocation`,
+      // `_handlePlatformMessage` -- left the chain's `()` in the tail
+      // position of a `Result<Rc<dyn Object>, ..>`, and a bare `return;`
+      // inside one became `Ok(())` (ws874).
+      final falling = _fallsOffValue(type(produced));
       final fallsOff =
-          _failure != null &&
-          type(produced) == '()' &&
-          !_alwaysReturns(method.body);
+          _failure != null && falling != null && !_alwaysReturns(method.body);
+      final savedFalling = _fallsOff;
+      _fallsOff = falling;
       if (stubbed != null) {
         _line('panic!("dart2rust: not translated: ${_stubText(stubbed)}")');
       } else {
         stmt(method.body, tail: !fallsOff);
-        if (fallsOff) _line('Ok(())');
+        if (fallsOff) _line('Ok($falling)');
       }
+      _fallsOff = savedFalling;
       // `TileMode` to text as an `if`/`else if` chain over every variant with
       // no final `else`: Dart lets the body fall off the end (returning null
       // it would then refuse at runtime); Rust wants the last `if` to be an
@@ -12453,12 +12469,12 @@ class RustBackend {
       // ..and takes `self` by value: `this` inside is `self`, not `*self`
       // (`Priority.operator -` doing `this + (-offset)`, E0614 at ws463).
       _selfByValue = true;
-      _body(
+      final closed = _body(
         method.body,
         method.isAsync ? _awaited(method.returnType) : method.returnType,
       );
       _selfByValue = false;
-      _closeOpenIf(method.body);
+      if (!closed) _closeOpenIf(method.body);
       _failure = savedFailure;
       _returns = null;
       _indent--;
