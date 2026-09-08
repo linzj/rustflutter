@@ -6649,13 +6649,24 @@ class RustBackend {
     _line('// (Dart enum -> Rust enum).');
     _line('');
     _doc(cls.doc);
+    if (cls.values.isEmpty && !cls.enumElementsDeclared) {
+      // The tree shaker took every element: the dill declares none, so the
+      // program this was shaken out of cannot make one of these either, and
+      // an uninhabited Rust enum is exact rather than a refusal. The *type*
+      // is still named -- fields and signatures want it -- so it is emitted
+      // (`_StateLifecycle`, `PathOperation`, `TextGranularity` and five more
+      // at ws824; every one of them has zero `isEnumElement` fields in
+      // `app_aot_sig.dill`, checked before this rule was written).
+      _line('// `${cls.name}` has no values in this dill: the tree shaker');
+      _line('// took its elements, and nothing here can make one. Emitted');
+      _line('// uninhabited so that the name still resolves.');
+      _line('#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]');
+      _line('${_vis(cls.name)}enum ${cls.name} {}');
+      return _out.join('\n') + '\n';
+    }
     if (cls.values.isEmpty) {
-      // No values: either the front end refused an enhanced enum's members,
-      // or the tree shaker dropped every value because nothing reads one
-      // (`KeyboardLockMode`, held in a `Set` nothing fills). The *type* is
-      // still named -- 5 fields and signatures wanted it -- so it is emitted
-      // uninhabited, which is exact: no value of it is ever made, and any
-      // code that tries does not compile. The note keeps the distinction.
+      // No values, but the elements *are* declared: the front end refused an
+      // enhanced enum's members. That is a refusal, and it says so.
       _line('// NOT TRANSLATED: `${cls.name}` has no values here -- either');
       _line(
         '// an enhanced enum this compiler refused, or one the tree shaker',

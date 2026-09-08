@@ -1776,6 +1776,15 @@ class IrClass {
   /// The enum's values, in declaration order, under their Dart names.
   final List<String> values;
 
+  /// Whether the dill still holds the enum's element *fields*.
+  ///
+  /// `values` is recovered from the constants, and both can be empty for two
+  /// different reasons. An enhanced enum whose members this compiler refused
+  /// still has its elements declared -- that is a refusal. One the tree
+  /// shaker emptied has none, and then an uninhabited Rust enum is exact:
+  /// the program it was shaken out of cannot make one either.
+  bool enumElementsDeclared = false;
+
   /// What each variant carries, when a Dart enum gave its values fields of
   /// their own: variant name -> field name -> the Rust literal.
   ///

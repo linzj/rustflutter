@@ -13512,7 +13512,7 @@ class KernelFrontend implements TypeWorld {
       valueFields: stateRecovered
           ? {for (final v in recovered) v: carriedValues[v]!}
           : const {},
-    );
+    )..enumElementsDeclared = node.fields.any((f) => f.isEnumElement);
     _superclass = cls.superclass;
     final refused = <String>[];
     if (base != null && _isStreamView(base)) {

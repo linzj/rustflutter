@@ -1979,3 +1979,34 @@ same question asked three ways: **what does this compiler let an object
 be?** A Dart list is a reference and a `Vec` here; a `Widget` is an object
 with an address and a struct here. Each of the three is a model change
 with its own round of fixtures, not a rule that can be added to a table.
+
+## ws826 -- an enum the tree shaker emptied is not a refusal
+
+    bin/run_chain.sh:  202 stubbed (unchanged), 71 refusals (was 79), 64 crates
+    the stub set is identical to ws824's, member for member
+
+The marker on an empty enum said "either an enhanced enum this compiler
+refused, or one the tree shaker emptied" -- two different situations under
+one word. Kernel can tell them apart: an enum's elements are `Field`s with
+`isEnumElement`, and a class the shaker emptied has none. Checked before
+the rule was written, on `app_aot_sig.dill`, for all eight:
+
+    _StateLifecycle  isEnum=true fields=0 enumElements=0
+    KeyboardLockMode isEnum=true fields=2 enumElements=0
+    SelectionResult, SelectionEventType, SelectionExtendDirection,
+    TextGranularity, SmartManagement, PathOperation -- all fields=0
+
+Not one is an enhanced enum this compiler refused. Every one of them was
+emptied by the shaker, and the *program that was shaken* cannot make one
+of these either -- an uninhabited Rust enum is exact, which is what the
+old marker's own comment already said ("no value of it is ever made, and
+any code that tries does not compile"). `IrClass.enumElementsDeclared`
+carries the distinction now: elements still declared and no values
+recovered is a refusal and says so; elements gone is a fact about the
+input, and the emitted enum says that instead.
+
+Nothing about the output changed -- the same uninhabited enum, byte for
+byte apart from the comment. What changed is that the census no longer
+counts eight of the compiler's own diagnostics as work left to do.
+`KeyboardLockMode.findLockByLogicalKey` is still refused, and correctly:
+that member *is* in the program and cannot be translated without values.
