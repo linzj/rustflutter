@@ -710,6 +710,18 @@ class RustBackend {
       // The target in parentheses when it is a block: `{ .. }[0]` reads
       // as a block statement and an array (`[{integer}; 1]`, ws511).
       IrIndex(:final target, :final index) => () {
+        // The collection *in* its cell, borrowed: a read of the place
+        // hands out a clone of the whole collection, and `_listeners[i]`
+        // in `ChangeNotifier.removeListener`'s loop cloned the entire
+        // listener list once per listener -- `addListener` did it again
+        // per element while growing. The unmount walk of one page never
+        // finished (run792 timed out before its first line of output).
+        // The index bound first, so a read inside it happens before the
+        // borrow, as `IrIndexSet` binds it.
+        final place = _readPlace(target);
+        if (place != null) {
+          return '{ let __i = ${expr(index)} as usize; $place[__i].clone() }';
+        }
         final t = expr(target);
         final wrapped = t.startsWith('{') ? '($t)' : t;
         return '$wrapped[${expr(index)} as usize].clone()';
@@ -3818,6 +3830,32 @@ class RustBackend {
       return snake(collection.name);
     }
     return null;
+  }
+
+  /// The place a read goes through, borrowed shared: `_mutPlace`'s other
+  /// half. Null when the target is not kept in a cell.
+  String? _readPlace(IrExpr? target) {
+    if (target is IrCall &&
+        target.name == 'clone' &&
+        target.args.isEmpty &&
+        target.target != null) {
+      return _readPlace(target.target!);
+    }
+    final cell = _cellPlace(target);
+    if (cell == null) return null;
+    // A `late` field's cell holds an `Option`: the value inside it.
+    if (target is IrField) {
+      final atThis = target.target == null || target.target is IrThis;
+      final decl = atThis
+          ? _lateField(target.name)
+          : target.owner == null
+          ? null
+          : _cellFieldOf(target.owner!, target.name);
+      if (decl != null && decl.isLate) {
+        return '$cell.borrow().as_ref().unwrap()';
+      }
+    }
+    return '$cell.borrow()';
   }
 
   /// The cell a field read would go through, as a place -- `self.x` or
