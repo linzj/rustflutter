@@ -1550,8 +1550,6 @@ impl DartAny for Type {
 }
 
 dart_any_named!(
-    i8 => "int", i16 => "int", i32 => "int", u8 => "int", u16 => "int", u32 => "int", u64 => "int",
-    usize => "int", isize => "int", f32 => "double", char => "String",
     DateTime => "DateTime", SentinelValue => "SentinelValue", Stopwatch => "Stopwatch", JsonUtf8Encoder => "JsonUtf8Encoder", Pattern => "Pattern", ServiceExtensionResponse => "ServiceExtensionResponse",
     Flow => "Flow", RandomAccessFile => "RandomAccessFile", File => "File", Directory => "Directory",
     FileSystemEntity => "FileSystemEntity", FileMode => "FileMode",
@@ -1565,6 +1563,13 @@ dart_any_named!(
     UserTag => "UserTag", );
 
 dart_any_display!(
+    // The narrow numbers a typed list holds print as themselves, like the
+    // `i64` and `f64` next door: through the *named* macro they had no
+    // `dart_to_string` and every element of a `Uint8List` came out as
+    // `Instance of 'int'` (the bytebuffer fixture, ws845).
+    u8 => "int", i8 => "int", u16 => "int", i16 => "int",
+    u32 => "int", i32 => "int", u64 => "int", usize => "int", isize => "int",
+    f32 => "double", char => "String",
     Duration => "Duration", Symbol => "Symbol", StackTrace => "StackTrace", Uri => "Uri", Exception => "Exception", FormatException => "FormatException", ArgumentError => "ArgumentError", UnimplementedError => "UnimplementedError", IndexError => "IndexError", RangeError => "RangeError", FileSystemException => "FileSystemException", SocketException => "SocketException", AssertionError => "AssertionError",
     StateError => "StateError", TypeError => "TypeError", Error => "Error", UnsupportedError => "UnsupportedError", ConcurrentModificationError => "ConcurrentModificationError",
 );
@@ -10921,6 +10926,52 @@ pub struct TypedData;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ByteBuffer {
     pub bytes: Vec<u8>,
+}
+
+/// A `ByteBuffer` is the bytes it holds: `asByteData`, `asUint8List` and
+/// the rest are `DartByteBuffer`'s, declared on the `Vec<u8>` a typed list
+/// is here, and the buffer forwards to them (`HashSink._finalizeData`
+/// reads `buffer.asByteData(0)`, ws845).
+impl ByteBuffer {
+    pub fn as_byte_data(&self, offset: i64, length: Option<i64>) -> ByteData {
+        self.bytes.as_byte_data(offset, length)
+    }
+
+    pub fn as_uint8_list(&self, offset: i64, length: Option<i64>) -> Vec<u8> {
+        self.bytes.as_uint8_list(offset, length)
+    }
+
+    pub fn as_int8_list(&self, offset: i64, length: Option<i64>) -> Vec<i8> {
+        self.bytes.as_int8_list(offset, length)
+    }
+
+    pub fn as_int32_list(&self, offset: i64, length: Option<i64>) -> Vec<i32> {
+        self.bytes.as_int32_list(offset, length)
+    }
+
+    pub fn as_uint32_list(&self, offset: i64, length: Option<i64>) -> Vec<u32> {
+        self.bytes.as_uint32_list(offset, length)
+    }
+
+    pub fn as_float32_list(&self, offset: i64, length: Option<i64>) -> Vec<f32> {
+        self.bytes.as_float32_list(offset, length)
+    }
+
+    pub fn as_float64_list(&self, offset: i64, length: Option<i64>) -> Vec<f64> {
+        self.bytes.as_float64_list(offset, length)
+    }
+
+    pub fn as_int64_list(&self, offset: i64, length: Option<i64>) -> Vec<i64> {
+        self.bytes.as_int64_list(offset, length)
+    }
+
+    pub fn as_uint64_list(&self, offset: i64, length: Option<i64>) -> Vec<u64> {
+        self.bytes.as_uint64_list(offset, length)
+    }
+
+    pub fn as_int16_list(&self, offset: i64, length: Option<i64>) -> Vec<i16> {
+        self.bytes.as_int16_list(offset, length)
+    }
 }
 
 /// `ArgumentError([message, name])`: its constructor has two parameters,
