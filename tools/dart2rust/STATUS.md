@@ -1348,3 +1348,9 @@ Four regressions came with the step rule and are fixed on top:
 temporary is named from the identifier now), and a source that already
 hands values out -- `iter().cloned()`, which `for_each`, `any` and `all`
 take -- has nothing to deref.
+
+## ws798 — 226 stubbed (was 230), 130 refusals, 64 crates
+
+The four the step rule had broken, and nothing else moved.
+433 -> 226 over the grouped method; refusals 183 -> 130; reachable crates 64
+throughout.
