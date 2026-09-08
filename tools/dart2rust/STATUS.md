@@ -2994,3 +2994,32 @@ nothing added.
 run871 holds the ruler after a change that touches every element map: 708
 walk lines, 0 type-only differences, 508 as printed, no `RenderErrorBox`,
 200 frames drawn and 0 panicked.
+
+## ws872 -- `hashCode` on a handle reaches the class's own, not `Rc`'s blanket
+
+    bin/run_chain.sh:  164 stubbed (was 166), 57 refusals (unchanged), 64 crates
+
+The prelude gives every `Rc<T>` a `hash_code` through `RcHashCode`, and it
+hands back a plain `i64`. A translated class whose own `hashCode` can fail
+returns `Result<i64, DartError>`. When the receiver is a handle -- an
+`Rc<TextSelection>`, an `Rc<dyn BorderSide>` -- method resolution reaches
+the blanket first, so a call written with `?` on it had nothing to come out
+of: "the `?` operator can only be applied to values that implement `Try`".
+Two members: `services_text_input.rs hash_code` and
+`painting_stadium_border.rs hash_code`.
+
+The rule dereferences the handle when the receiver's recorded type names a
+translated class that declares `hashCode` and is counted or abstract, so
+the call names the class's own method instead of the blanket on the handle:
+
+    Ok((*self.side.clone()).hash_code()?)      // was self.side.clone().hash_code()?
+
+`handlehash` reproduces the gallery's error at HEAD -- it needs a *counted*
+class (a real method tear-off, `void Function() get bump => ping;`) and a
+*failing* `hashCode` (`int.parse(tag) * 3`) -- and agrees with the rule,
+`true 3 1` from both ends. The five standing hash fixtures (`hashfield`,
+`hashthis`, `hashtrie`, `nullhash`, `divsome`) still agree. The chain's
+answer is exactly the two members, nothing added.
+
+run872 holds the ruler: 708 walk lines, 0 type-only differences, 508 as
+printed, no `RenderErrorBox`, 200 frames drawn and 0 panicked.

@@ -4375,6 +4375,27 @@ class RustBackend {
         !_declaresHashCode(cls)) {
       return 'DartEq::dart_hash_code(&*$_selfName)';
     }
+    // ..and on a *handle* to a class that declares one, through the value:
+    // the prelude gives every `Rc<T>` a `hash_code` of its own (`RcHashCode`,
+    // a shared object's identity) and that is the one the call reached --
+    // an `i64` where the class's own hands back a `Result`, so the `?` had
+    // nothing to come out of (`TextSelection` in `TextEditingValue
+    // .hashCode`, `BorderSide` in `StadiumBorder`'s, 2 at ws872).
+    if ((name == 'hashCode' || name == 'hash_code') &&
+        args.isEmpty &&
+        target != null &&
+        target is! IrThis) {
+      final held = target.rustType;
+      final owned = held == null || held.isFunction || isNullable(held)
+          ? null
+          : library[held.name];
+      if (held != null &&
+          owned != null &&
+          _declaresHashCode(owned) &&
+          (owned.counted || library.isAbstract(held.name))) {
+        return '(*${expr(target)}).hash_code()$_propagate';
+      }
+    }
     // ..and on a value of no translated class: a scalar, a prelude type,
     // a handle to a trait (`Object.hash(canUndo, canRedo, ..)` on two
     // `bool` fields, `UndoHistoryValue.hashCode`, run677).
