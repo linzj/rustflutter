@@ -1932,3 +1932,50 @@ the function *type*, not the name `Function`.
 
 The tree is back at ws822's translator, whose reading is 202 stubbed,
 79 refusals, 64 reachable crates.
+
+## ws824 / run825 -- where this stretch stands
+
+    bin/run_chain.sh:  202 stubbed, 79 refusals, 64 reachable crates
+                       (the stub set is ws822's, member for member)
+
+    DART2RUST_OS=android DART2RUST_DUMP_RENDER_TREE=1 bin/run_main.sh:
+                       exit 0, budget spent with main pending
+                       201 frame(s) drawn, 0 panicked
+                       render tree 708 lines, RenderErrorBox 0
+
+    diff ref_render_walk_settled.txt walk, ignoring size=/offset=:    0
+    diff ref_render_walk_settled.txt walk, as printed:              508
+
+From ws808's 221 stubbed and 130 refusals: 351 unfinished members down to
+281, reachable crates 64 the whole way, and the run ruler's reading
+unchanged -- 708 lines, no type differing, nothing panicking.
+
+Fourteen rules landed with a fixture each, and six were reverted after
+being measured: the chain's type (twice), `identical` on a prelude value,
+`identityHashCode`, a `dart:core` interface as a supertrait, `first =`/
+`last =`, and `x is Function`. Every one of the six is written up above
+with what it answered and what it should have answered; four of them
+would have compiled and been *wrong*, which is the reason each round pays
+for a fixture before it pays for a chain.
+
+What is left is not a table gap. The 79 refusals are, by count:
+
+    24  a top-level function with no translation -- 16 of them `dart:ffi`'s
+        internals (`_abi`, `_loadInt64`, `_storePointer`) behind the win32
+        windowing layer, which the prelude deliberately gives names and no
+        behaviour. Clearing them means a memory model for `Pointer`.
+     8  an enum the tree shaker emptied of its constants
+     6  `super.==` / `super.hashCode` into `Object`, and 3 more `super`
+        calls into classes not in the file
+     5  `identical` on something that is not a reference
+     5  a `const` instance of a prelude class
+     5  a closure capturing `this` in a mixin application
+     4  a generic local function
+    19  a tail of ones and twos
+
+Three of those groups -- identity on a value class, `dart:ffi`'s memory,
+and a local function that captures `this` and cannot escape -- are the
+same question asked three ways: **what does this compiler let an object
+be?** A Dart list is a reference and a `Vec` here; a `Widget` is an object
+with an address and a struct here. Each of the three is a model change
+with its own round of fixtures, not a rule that can be added to a table.
