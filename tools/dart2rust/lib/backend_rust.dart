@@ -3508,6 +3508,19 @@ class RustBackend {
   /// double `Box::new` compiles into something quietly wrong.
   String _returned(IrExpr value) {
     final declared = _returns;
+    // `this` returned where a handle of this class goes is the object's own
+    // handle, not a copy: inside an operator `self` is the value `std::ops`
+    // fixed, and `return this` gave an `AttributedString` where
+    // `Rc<AttributedString>` was declared (`operator +`, 7 at ws756).
+    if (value is IrThis && declared != null && !declared.isFunction) {
+      final held = library[declared.name];
+      if (declared.name == cls.name &&
+          (held?.counted ?? false) &&
+          !isNullable(declared)) {
+        final own = _thisHandle();
+        if (own != null) return own;
+      }
+    }
     final text = expr(value);
     // A closure returned from a function is an *owned* position, and a
     // closure's own type has no name -- so the declared type is

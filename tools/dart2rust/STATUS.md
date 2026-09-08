@@ -671,3 +671,15 @@ for ws754's record rule:
 
 Grouped, eight rounds in: 433 -> 315 stubbed, 183 -> 130 refusals, 64
 crates throughout, and not one round went up.
+
+## ws757 — the prelude's slot (315 → 314)
+
+    ws756 315 stubbed, 130 refusals, 64 crates
+    ws757 314 stubbed, 130 refusals, 64 crates   -1, 0 new
+
+One, not the group's fifteen. `stubs.py` reports the *first* error of a
+stubbed function, so a census groups first errors, not functions: the
+projection crossings were right to fix and the functions behind them fail
+on something else next. From here a rule's number is what it *uncovers*
+as much as what it clears -- `intl_plural_logic`'s next error is
+`substring` on an `Option<String>`.

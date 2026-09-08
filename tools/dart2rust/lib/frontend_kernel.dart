@@ -1004,6 +1004,19 @@ class KernelFrontend implements TypeWorld {
           arguments: asBound.arguments,
         );
       }
+      // A parameter no name here stands for -- a callee's, reached before
+      // its instantiation is put in -- is spelled at its bound, as an
+      // erased one is. Rust would reject the name anyway, so nothing that
+      // compiled changes (`OpenContainer<T>`'s `openContainer` callback
+      // written inside a `build`, 4 `cannot find type T` at ws756).
+      if (!_parameterNamed(type.parameter)) {
+        final asBound = _typeOfBound(type.parameter.bound);
+        return IrType(
+          asBound.name,
+          nullable: nullable || asBound.nullable,
+          arguments: asBound.arguments,
+        );
+      }
       return IrType(
         type.parameter.name ?? 'T',
         nullable: nullable,
@@ -3296,6 +3309,34 @@ class KernelFrontend implements TypeWorld {
   /// `T` bound to `X?` is `X?`, one `Option` layer -- and a value crosses
   /// it through `IrNullableOf`. Only the class's or the member's own
   /// parameters: another declaration's `T` is not a name here.
+  /// Whether the code being lowered has a Rust type parameter of this
+  /// name: the class being lowered declares one, or the member (or its
+  /// function) does. By *name*, because that is what Rust reads -- a
+  /// subclass carrying a base's body names the base's `T` with its own.
+  ///
+  /// When nothing is being lowered there is nothing to check against, and
+  /// the name stands.
+  bool _parameterNamed(TypeParameter p) {
+    final name = p.name;
+    final owner = _lowering;
+    final member = _member;
+    if (name == null || (owner == null && member == null)) return true;
+    if (owner != null && owner.typeParameters.any((q) => q.name == name)) {
+      return true;
+    }
+    if (member != null) {
+      if (member.enclosingClass?.typeParameters.any((q) => q.name == name) ??
+          false) {
+        return true;
+      }
+      final fn = member.function;
+      if (fn != null && fn.typeParameters.any((q) => q.name == name)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool _projectedSlot(DartType? t) {
     if (t is! TypeParameterType ||
         t.nullability != Nullability.nullable ||
