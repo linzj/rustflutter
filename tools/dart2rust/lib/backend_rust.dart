@@ -6813,6 +6813,17 @@ class RustBackend {
             i.name != 'Object' &&
             !_preludeInterfaces.containsKey(i.name))
           _traitPath(i),
+      // ..and a `dart:core` interface the prelude *does* have a trait for,
+      // where its arguments do not name this class: a `dyn CharacterRange`
+      // could not be asked `current()`, because `Iterator<String>` was
+      // only ever an impl on the concrete classes (`EditableTextState
+      // ._transposeCharacters`, 4 at ws814). Self-referential ones stay
+      // out: `SourceSpan implements Comparable<SourceSpan>` names the
+      // trait inside its own bound.
+      for (final i in cls.interfaces)
+        if (_preludeInterfaces.containsKey(i.name) &&
+            !i.arguments.any((a) => a.name == cls.name))
+          '${i.name}${i.arguments.isEmpty ? '' : '<${i.arguments.map(type).join(', ')}>'}',
     }.toList();
     // A trait object compares by identity (`DartEq`), as `dyn Object` does.
     _line(
@@ -10120,8 +10131,22 @@ class RustBackend {
     ],
   };
 
+  /// The `dart:core` interfaces the prelude has a trait for that this class
+  /// answers -- its own, and those an abstract ancestor listed: a class
+  /// `implements CharacterRange` and it is `CharacterRange` that
+  /// `implements Iterator<String>` (ws814).
+  List<IrType> _preludeInterfacesOf(IrClass of) {
+    final out = <String, IrType>{};
+    for (final c in [of, ..._abstractAncestors(of)]) {
+      for (final i in c.interfaces) {
+        if (_preludeInterfaces.containsKey(i.name)) out[i.name] ??= i;
+      }
+    }
+    return out.values.toList();
+  }
+
   void _emitPreludeInterfaces() {
-    for (final i in cls.interfaces) {
+    for (final i in _preludeInterfacesOf(cls)) {
       final methods = _preludeInterfaces[i.name];
       if (methods == null) continue;
       final args = i.arguments.map((a) => type(a)).toList();

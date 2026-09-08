@@ -1663,3 +1663,36 @@ keep the order it returns them in, a later key replacing an earlier one.
 Nothing new: all seventeen members that stopped being refused compiled.
 The one stub cleared was ws812's regression, `_preludeLends` reading a
 name it did not own.
+
+## ws814 -- two expressions that now say what they are, and nothing moved
+
+Two rules, both about an expression carrying its own Rust type so that a
+slot can coerce it.
+
+**`a ?? b` says what it is where its arms agree.** Untyped, nothing could
+coerce it: `final Object o = a ?? b` with two `String` arms left the
+handle off, because `coerce` asks the value's `rustType` first and there
+was none. The ifnullobj fixture fails without the rule (no `dart_boxed`
+around the `match`) and agrees with it.
+
+**A chain says what it produces.** `xs.map(f)` was untyped, so a slot
+coerced it against Dart's declared element and upcast a handle that was
+already the trait (`dart_object(v) as Rc<dyn Widget>` on a `v` that was
+one). Typing the chain by the closure's own return should have settled the
+three `Rc<dyn Widget>: Widget` stubs.
+
+    bin/run_chain.sh:  208 stubbed (unchanged), 88 refusals, 64 crates
+    the stub set is identical to ws813's, member for member
+
+It did not: the three are still there, and the chain rule changed nothing
+anywhere. The coercion those three go through does not read the chain's
+type, so typing it was inert -- and an inert rule is a rule with no
+evidence, so it is reverted. The `??` rule stays: its fixture fails
+without it, which is evidence of its own even though the gallery's stubs
+do not happen to be that shape.
+
+Recorded for the next census: `xs.map(f).where(g)` does not compile
+(`filter` after `map` gets the item by value and the chain's trailing
+`.cloned()` has nothing to clone) -- found by a fixture written for
+something else, and not yet in any stub because no gallery member writes
+it.

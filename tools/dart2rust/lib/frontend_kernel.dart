@@ -2306,6 +2306,24 @@ class KernelFrontend implements TypeWorld {
       // whole conditional is dead, and its branches' types no longer meet.
       final condition = node.condition;
       if (condition is Throw && _tfaUnreachable(condition)) return _unreachable;
+      // A null test on a *literal* null: type flow analysis folds a value
+      // it proved always null into the literal, and the test around it is
+      // then a question with one answer. Both arms were lowered anyway,
+      // and the dead one had nothing to infer its types from -- `None
+      // .as_ref().map(|it| ..)` on a `None` with no element type (8 "type
+      // annotations needed" at ws813). The branch that runs is the whole
+      // conditional.
+      if (condition is EqualsNull && _isNull(condition.expression)) {
+        final taken = node.then;
+        return _widened(taken, node.staticType, expression(taken));
+      }
+      if (condition is Not) {
+        final inner = condition.operand;
+        if (inner is EqualsNull && _isNull(inner.expression)) {
+          final taken = node.otherwise;
+          return _widened(taken, node.staticType, expression(taken));
+        }
+      }
       // `x != null ? Color(..) : "unspecified"` inside a string: the branches
       // are of different classes and the result is `Object`, so both go
       // through `dart_str` (see the `??` case).
@@ -4960,33 +4978,6 @@ class KernelFrontend implements TypeWorld {
     return block;
   }
 
-  /// What one element of a finished chain is, or null when no step says.
-  ///
-  /// `map`/`expand` replace the element with their closure's return (an
-  /// `expand`'s is a collection, and its element is what comes out);
-  /// `filter` keeps it. A step whose function is not a written closure
-  /// says nothing, and neither does the chain.
-  static IrType? _chainElement(IrIterChain chain) {
-    IrType? element = chain.source.rustType?.arguments.length == 1
-        ? chain.source.rustType!.arguments.single
-        : null;
-    for (final (step, f) in chain.steps) {
-      switch (step) {
-        case 'filter':
-          continue;
-        case 'map':
-          if (f is! IrClosure) return null;
-          element = f.returns;
-        case 'flat_map':
-          if (f is! IrClosure || f.returns.arguments.length != 1) return null;
-          element = f.returns.arguments.single;
-        default:
-          return null;
-      }
-    }
-    return element;
-  }
-
   /// A conditional in statement position as an `if` (see the expression
   /// statement lowering), through the `Let` the CFE binds its receiver
   /// in. Not the `?.` shape (`#t == null ? null : #t.m()`) nor the `??`
@@ -6565,20 +6556,9 @@ class KernelFrontend implements TypeWorld {
         // A chain, extended rather than started again when the receiver is
         // already one: `xs.where(f).map(g)` is one `iter()`, not two.
         final source = _listReceiver(node.receiver, name);
-        final chain = source is IrIterChain
+        return source is IrIterChain
             ? IrIterChain(source.source, [...source.steps, (step, args.single)])
             : IrIterChain(source, [(step, args.single)]);
-        // ..typed by what it *produces*, not by what Dart calls the whole:
-        // a `map` step's element is the closure's own return. Untyped, a
-        // slot coerced the chain against the declared element type and
-        // upcast a handle that was already the trait -- `dart_object(v) as
-        // Rc<dyn Widget>` on a `v` that was one, which is `Rc<Rc<dyn
-        // Widget>>` (`_RallyHomePageState.build`, 3 at ws808).
-        final element = _chainElement(chain);
-        if (element != null) {
-          chain.rustType = IrType('List', arguments: [element]);
-        }
-        return chain;
       }
       // `lastWhere` is the same shape read from the other end, and the
       // same two prelude methods (`NavigatorState.pop`, ws810).
