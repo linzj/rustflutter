@@ -7998,7 +7998,11 @@ class KernelFrontend implements TypeWorld {
         _withBorrowing(
           param,
           callee,
-          () => _withExpectedReturn(paramType, value, () => expression(value)),
+          () => _withExpectedReturn(
+            _instantiatedSlot(callee, paramType),
+            value,
+            () => expression(value),
+          ),
         ),
         (lowered) => _asArgument(
           () => _widened(
@@ -8043,6 +8047,36 @@ class KernelFrontend implements TypeWorld {
   /// the *parameter's* type says: `String? Function(String)` taking
   /// `(l) => "default"` returns `Some("default")`. The closure's own
   /// return type is what it wrote, not what it is for (5 in intl).
+  /// A function-typed slot with the callee's own instantiation put in.
+  ///
+  /// A generic class's constructor parameter still names the class's `T`
+  /// (`OpenContainerBuilder<T>` is `Widget Function(BuildContext, void
+  /// Function([T?]))`), and a closure written for it declared a parameter
+  /// no name here stands for -- 4 `cannot find type T` at ws761, each one
+  /// a `build` that then did not compile. The erased parameters stay as
+  /// they are: those slots hold the bound, not what the call put in.
+  DartType? _instantiatedSlot(FunctionNode? callee, DartType? param) {
+    if (param is! FunctionType || callee == null) return param;
+    final Map<TypeParameter, DartType> kept;
+    if (identical(callee, _constructedCallee) && _constructedArgs.isNotEmpty) {
+      kept = _constructedArgs;
+    } else if (identical(callee, _genericCallee) && _genericArgs.isNotEmpty) {
+      kept = _genericArgs;
+    } else {
+      return param;
+    }
+    final map = {
+      for (final e in kept.entries)
+        if (!_erasedParameter(e.key)) e.key: e.value,
+    };
+    if (map.isEmpty) return param;
+    try {
+      return Substitution.fromMap(map).substituteType(param);
+    } on Object {
+      return param;
+    }
+  }
+
   IrExpr _withExpectedReturn(
     DartType? param,
     Expression value,
@@ -8142,7 +8176,11 @@ class KernelFrontend implements TypeWorld {
         _withBorrowing(
           param,
           callee,
-          () => _withExpectedReturn(type, value, () => expression(value)),
+          () => _withExpectedReturn(
+            _instantiatedSlot(callee, type),
+            value,
+            () => expression(value),
+          ),
         ),
         (lowered) {
           if (tracedNamed != null &&
@@ -8376,7 +8414,16 @@ class KernelFrontend implements TypeWorld {
     if (t is TypeParameterType && kept.containsKey(t.parameter)) {
       // What is put in is a type argument: a `U?` there is projected.
       final arg = _typeNested(kept[t.parameter]!);
-      if (t.nullability != Nullability.nullable) return arg;
+      if (t.nullability != Nullability.nullable) {
+        // The callee's own parameter, instantiated by what the turbofish
+        // spells -- and the turbofish spells the plain `Option<T>`, so the
+        // slot is that and not the projection this declaration uses for its
+        // own edges (`entry.complete<T?>(result)` in `Navigator.removeRoute`,
+        // 14 at ws761).
+        return arg.projected
+            ? IrType(arg.name, nullable: true, arguments: arg.arguments)
+            : arg;
+      }
       // `T?` with `T` bound to `X?` is `X?`, as Dart collapses it and as
       // rustc normalises the projected signature to (`<Option<X> as
       // DartNullable>::Or` is `Option<X>`): the plain `Option`, projected

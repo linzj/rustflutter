@@ -723,3 +723,32 @@ Two, and both of them matter more than the number: the prelude's own
 `run_until_idle` (the scheduler, and with it every timer at runtime) and
 `AssetBundleImageProvider._loadAsync` -- the gallery's whole image path,
 which the render-tree reconciliation reads as `RenderImage` 16 -> 0.
+
+## ws762 — the same 297, and the run ruler moved
+
+    ws761 297 stubbed, 130 refusals, 64 crates
+    ws762 297 stubbed, 130 refusals, 64 crates   0 gone, 0 new
+
+`dart_boxed` changes no count; it changes what the run can say.
+
+Run 762 (the ws761 workspace): 4 frames, 0 panicked, 14 platform messages
+(was 12). The startup panic moved off the image path --
+`AssetBundleImageProvider._loadAsync` compiles now -- and onto
+`DefaultProcessTextService.queryTextActions`, a stub whose panic the app
+survives.
+
+The render walk is 708 lines against the reference's 708, and the first
+23 lines are identical. What the counts say, per node type:
+
+    RenderImage              16 -> 0     no image renders at all
+    RenderAnimatedOpacity     4 -> 0     the page transition differs:
+    RenderFractionalTranslation 4 -> 0     ours builds SnapshotWidget
+    RenderClipRect           21 -> 11
+    RenderTransform          20 -> 12
+    RenderStack              18 -> 10
+    RenderRepaintBoundary    29 -> 51
+    RenderPointerListener    52 -> 74
+    RenderErrorBox            0 -> 6     six subtrees threw while building
+
+The six error boxes are the thing to chase: each is a `build` that threw,
+and until ws762 every one of them printed `Instance of 'StateError'`.
