@@ -2709,3 +2709,59 @@ it and the fixture drops it.
 run863 holds the ruler after ws861-863: 708 walk lines, 0 type-only
 differences, 508 as printed, no `RenderErrorBox`, 198 frames drawn and 0
 panicked.
+
+### ws864 -- two rules tried, neither shipped, and why
+
+The double box is real and now read from the source rather than guessed at.
+`CupertinoDatePicker.build` emits
+
+    columns.iter().map(|child| (dart_object(Expanded::new(..)) as Rc<dyn Widget>))
+        .collect::<Vec<_>>()
+        .into_iter().map(|v| (dart_object(v) as Rc<dyn Widget>)).collect::<Vec<_>>()
+
+-- the `map` closure's body is lowered against the slot it lands in
+(`_withExpectedReturn`) and already hands back the handle, while the chain
+is *recorded* by Dart's static type, `Iterable<Expanded>`, so the coercion
+into `List<Widget>` widens every element a second time. `dart_object`
+around an `Rc<dyn Widget>` makes an `Rc<Rc<dyn Widget>>`, whose pointee
+implements nothing: the same shape ws751 fixed on `!rc`. Three `build`s
+stop there.
+
+Two fixes were written and both reverted, because **neither could be made
+to fail at HEAD**:
+
+  * a trait-typed value is already a handle, so `IrUpcast` should take
+    `_handleOf` and not `dart_object` (traithandle, in two shapes);
+  * the chain's type follows its `map`'s closure, not the static type
+    (mapwiden).
+
+Four fixtures across the two, all agreeing at HEAD as well as with the
+rule. The shape needs the *expected return* to reach inside the closure,
+and that depends on whole-program context -- the erasure census, TFA, the
+closed world -- which a one-file fixture does not recreate. This is the
+same wall ws858 hit and worked around by reading the emission.
+
+Three more attempts followed, each read back from a fresh translate of the
+gallery rather than from a fixture, and each eliminating a candidate:
+
+  * the chain's own `rustType`, set from its `map` closure's recorded
+    return -- which *is* the coerced one (`_returnsType` takes
+    `_expectedReturn` when there is one), so the closure knows. The
+    emission did not change: `expression()` ends with
+    `if (erasedThrough != null) lowered.rustType = erasedThrough`, which
+    overwrites whatever the visitor recorded.
+  * that overwrite guarded for a chain. Still no change.
+  * the element type carried through `toList()`/`toSet()` as well, since
+    `map(..).toList()` is two nodes. Still no change -- this attempt had
+    dropped the guard above, so the clobber was back.
+
+What is established: the closure records the right return, the coercion
+that doubles the box is `coerce.dart`'s element-by-element rule reading
+`have.arguments.single`, and the wrong `have` arrives because the node's
+recorded type is the *declared* one. The untried combination is all three
+of the above at once. Nothing was shipped on that guess.
+
+That is the honest limit here: what is left in the tail is mostly shapes
+whose cause is only visible with the whole gallery in hand, and the
+fixture-first rule this session has kept means they wait for a way to
+reproduce them rather than for a plausible patch.
