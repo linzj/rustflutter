@@ -1406,3 +1406,8 @@ map meets `try_borrow_mut` and falls back to the scan.
 `InheritedElement._dependents` is the case that named this: one entry per
 element depending on a `Theme` or a `Localizations`, scanned on every
 `dependOnInheritedElement`.
+
+## ws801 — 221 stubbed (was 223), 130 refusals, 64 crates
+
+The two the borrowed read had broken, and nothing else moved.
+433 -> 221 over the grouped method.
