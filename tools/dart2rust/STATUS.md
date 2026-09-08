@@ -2511,3 +2511,33 @@ run855 holds the ruler: 708 walk lines, 0 type-only differences, 508 as
 printed, no `RenderErrorBox`, 199 frames drawn and 0 panicked. Four of the
 six members are semantics (`_buildSemanticsSubtree` and its neighbours), so
 they now run where they used to panic, and the walk did not move.
+
+## ws856/857 -- a closure into an optional function slot is spelled, by a binding and not a cast
+
+    bin/run_chain.sh:  195 stubbed (unchanged), 57 refusals (unchanged), 64 crates
+
+A closure going into a `T Function(..)?` slot is emitted `Some(Rc::new(..))`,
+and Rust does not unsize a closure through the `Some` on the way into a
+struct literal's field: the `Rc<{closure}>` stays one. The optfnslot fixture
+is the shape (a `Field<T>` whose validator slot is erased, a `StringField`
+handing it a closure) and it does not compile at HEAD.
+
+ws856 spelled the type with a cast -- `Some(x as Rc<dyn Fn..>)` -- and the
+chain answered 196 stubbed: one member added, none cleared. The cast is not
+the same as a slot. `RenderObject._colorsWithinRect` hands a closure whose
+body is `Ok(1)`, and where the slot had made that `1` an `i64`, the cast
+left it the `i32` a bare literal defaults to. This is ws551's lesson again:
+spelling a type takes inference away.
+
+ws857 spells it as a *binding* instead -- `Some({ let __f: Rc<dyn Fn..> = x;
+__f })` -- which unsizes the same way and still hands the literal its type.
+The optfnint fixture is that guard: a `Holder(count: () => 1)` through an
+`int Function()?`, which the cast broke and the binding does not.
+
+The chain says 195 and the stub set is *identical* to ws855's: the rule is
+inert on the gallery. The two members that look like this shape --
+`TextFormField`'s `validator` and `onSaved` -- fail at the other site, a
+null-aware `.map` whose closure the same reasoning would spell, and that is
+a separate place to teach. Kept rather than reverted because the fixture,
+not the chain, is the evidence: the gap is real and the cure is measured
+not to cost anything.

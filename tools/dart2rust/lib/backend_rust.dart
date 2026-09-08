@@ -879,10 +879,7 @@ class RustBackend {
       // hands out (`items.map((T? x) => ..)`, fixture closureedge).
       IrNullableOf(:final value, :final parameter, :final toOption) =>
         '<${_nullableOf(parameter)} as DartNullable>::${toOption ? 'option' : 'from_option'}(${expr(value)}${value is IrLocal ? '.clone()' : ''})',
-      IrSome(:final value) =>
-        value is IrClosure && !value.boxed
-            ? 'Some(std::rc::Rc::new(${expr(value)}))'
-            : 'Some(${expr(value)})',
+      IrSome(:final value) => _some(value),
       // Inside `as_ref().map(|it| ..)` the bound value is a reference, and
       // a reference does not cast: `lerpDouble`'s `a as double` on an
       // `Option<f64>` (E0606).
@@ -2308,6 +2305,24 @@ class RustBackend {
 
   /// The captured cell locals that hold a `late` field (see `_cellLocals`).
   Set<String> _lateCellLocals = const {};
+
+  /// `Some(v)`, with a closure inside it unsized to the function type it
+  /// is typed as. A struct literal's field spells the slot
+  /// (`Option<Rc<dyn Fn(..)>>`) and Rust still does not unsize a closure
+  /// through the `Some` on the way in: the `Rc<{closure}>` stayed one
+  /// where a `FormField<T>`'s erased validator went (ws856). Only where
+  /// the type is spelled -- a closure whose own type this is -- since
+  /// spelling it everywhere named type parameters out of scope (ws551).
+  String _some(IrExpr value) {
+    final held = value is IrClosure && !value.boxed
+        ? 'std::rc::Rc::new(${expr(value)})'
+        : expr(value);
+    final t = value.rustType;
+    if (t != null && t.isFunction && _closureLike(value)) {
+      return 'Some({ let __f: ${type(t)} = $held; __f })';
+    }
+    return 'Some($held)';
+  }
 
   /// A closure, possibly behind the wrappers coerce puts on one (a
   /// `Some`, an upcast, a clone).
@@ -4484,7 +4499,11 @@ class RustBackend {
       // A closure behind its handle, unsized to the function type it is
       // typed as where that is spelled: inside a `.map(|__f| ..)` there
       // is no slot to infer `Rc<dyn Fn>` from, and the `Rc<{closure}>`
-      // stayed one (a conditional tear-off into `VoidCallback?`, ws549).
+      // stayed one (a conditional tear-off into `VoidCallback?`, ws549;
+      // a closure into a `FormFieldValidator<String>?`, ws856).
+      if (resultType != null && resultType.isFunction) {
+        return '{ let __f: ${type(resultType)} = std::rc::Rc::new($receiver); __f }';
+      }
       return 'std::rc::Rc::new($receiver)';
     }
     // An `Option<Rc<dyn Object>>` into a `dynamic` slot: absent is `Null`.
