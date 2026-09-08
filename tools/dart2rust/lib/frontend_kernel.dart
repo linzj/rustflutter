@@ -9538,7 +9538,17 @@ class KernelFrontend implements TypeWorld {
     if (_isNull(value)) return lowered;
     final actual = _staticType(value);
     if (actual == null) return lowered;
-    if (actual.nullability == Nullability.nullable) return lowered;
+    // Dart's static type says the value may be null; the *value in hand*
+    // says whether it is an `Option` here. A nullable one the lowering
+    // unwrapped -- a `!`, a downcast -- is no `Option`, and skipping the
+    // wrap on the static type alone handed a bare `ShapeDecoration` to a
+    // slot that takes one (`Decoration.lerp`, `BoxBorder.lerp`, 13 of the
+    // 433 stubbed at ws745).
+    final atHand = lowered.rustType;
+    if (actual.nullability == Nullability.nullable &&
+        (atHand == null || isNullable(atHand))) {
+      return lowered;
+    }
     if (actual is DynamicType || actual is NullType) return lowered;
     // A value already in the slot's `Option` is not put in it twice: a
     // collection's key or element goes through `_widened` a second time,
