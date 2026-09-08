@@ -1087,6 +1087,8 @@ const mapMethodNames = <String, String>{
   // (3 refusals at ws811). Named apart from `Iterable.map`, whose Rust
   // name is a step of an iterator chain.
   'map': 'map_entries',
+  // `addEntries(entries)`: each inserted in order (ws820).
+  'addEntries': 'add_entries',
 };
 
 /// `Map` members that depend on iteration order and are still not translated.

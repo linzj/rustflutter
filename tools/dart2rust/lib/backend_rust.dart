@@ -3728,6 +3728,7 @@ class RustBackend {
     'put_if_absent',
     'update',
     'remove_range',
+    'add_entries',
     'replace_range',
     'set_all',
     // `ByteData`'s setters: a byte view written in place (`WriteBuffer.

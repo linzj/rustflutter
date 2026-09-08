@@ -2741,6 +2741,18 @@ impl<K: Clone, V: Clone> Map<K, V> {
         Ok(())
     }
 
+    /// `addEntries(entries)`: each entry inserted in order, a later key
+    /// replacing an earlier one -- what `insert` does, entry by entry
+    /// (`ThemeData._lerpThemeExtensions`, ws820).
+    pub fn add_entries(&mut self, entries: Vec<MapEntry<K, V>>)
+    where
+        K: DartEq,
+    {
+        for entry in entries {
+            self.insert(entry.key, entry.value);
+        }
+    }
+
     /// `removeWhere(test)`: the entries that pass dropped, in order, in
     /// place. The index is rebuilt rather than patched: the positions of
     /// everything after a removal move.

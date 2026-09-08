@@ -1834,3 +1834,36 @@ runs both. `unawaited` takes an `Option<DartFuture<T>>`: Dart declares
 Also fixed here: the fixture harness ran the Dart side without a package
 config, so a fixture importing `package:collection` "agreed" with Dart by
 both sides printing nothing. It runs against the gallery's config now.
+
+## ws821 -- `.indexed`, `unawaited`, and what identity cannot answer
+
+    bin/run_chain.sh:  202 stubbed (was 201), 80 refusals (was 85), 64 crates
+
+Five refusals cleared: `package:collection`'s
+`IterableExtensions.indexed` and `dart:async`'s `unawaited`, both as
+prelude functions under the names the CFE lowers their extension and
+top-level forms to. The indexedext fixture runs both. `unawaited` takes an
+`Option<DartFuture<T>>` -- Dart declares `Future<void>?` -- and is a no-op
+that consumes the handle: `DartFuture` is a handle on a task the scheduler
+holds, not the task, so dropping it does not cancel anything.
+
+The one stub added is `_CupertinoDatePickerDateTimeState.build`, which
+stopped being refused (it needed `.indexed`) and landed in the
+`Rc<dyn Widget>: Widget` group -- the double upcast ws814 tried and failed
+to settle. It is tried again this round from the other end: the chain
+carries its element type *and* `toList()` on a chain carries the chain's,
+which is the type a slot actually reads.
+
+**`identityHashCode` was tried and reverted, for the second time and now
+with the reason written down.** It looks answerable for a handle -- the
+address is the identity -- and it is not, because a value class is boxed
+into its trait object *at the call*: `Key(a)` and `Key(a)` box the same
+`Named` twice and get two `Rc`s. The identhash2 fixture said
+`k1.code == k2.code` was `false` where Dart says `true`. Identity in this
+model belongs to counted classes only, and the four `hashCode`s that ask
+for it (`ObjectKey`, `GlobalObjectKey`, `_HeroTag`,
+`_IdentityThemeDataCacheKey`) hold values. They stay refused: this is the
+same wall `identical` on a list stops at, and the same answer.
+
+`Map.addEntries` did land (the addentries fixture): each entry inserted in
+order, a later key replacing an earlier one.

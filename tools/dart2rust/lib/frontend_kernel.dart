@@ -4978,6 +4978,34 @@ class KernelFrontend implements TypeWorld {
     return block;
   }
 
+  /// What one element of a finished chain is, or null when no step says.
+  ///
+  /// `map`/`expand` replace the element with their closure's return (an
+  /// `expand`'s closure returns a collection, and its element is what comes
+  /// out); `filter` keeps it. A step whose function is not a written
+  /// closure says nothing, and neither does the chain.
+  static IrType? _chainElement(IrIterChain chain) {
+    final source = chain.source.rustType;
+    IrType? element = source != null && source.arguments.length == 1
+        ? source.arguments.single
+        : null;
+    for (final (step, f) in chain.steps) {
+      switch (step) {
+        case 'filter':
+          continue;
+        case 'map':
+          if (f is! IrClosure) return null;
+          element = f.returns;
+        case 'flat_map':
+          if (f is! IrClosure || f.returns.arguments.length != 1) return null;
+          element = f.returns.arguments.single;
+        default:
+          return null;
+      }
+    }
+    return element;
+  }
+
   /// A conditional in statement position as an `if` (see the expression
   /// statement lowering), through the `Let` the CFE binds its receiver
   /// in. Not the `?.` shape (`#t == null ? null : #t.m()`) nor the `??`
@@ -6556,9 +6584,21 @@ class KernelFrontend implements TypeWorld {
         // A chain, extended rather than started again when the receiver is
         // already one: `xs.where(f).map(g)` is one `iter()`, not two.
         final source = _listReceiver(node.receiver, name);
-        return source is IrIterChain
+        final chain = source is IrIterChain
             ? IrIterChain(source.source, [...source.steps, (step, args.single)])
             : IrIterChain(source, [(step, args.single)]);
+        // ..typed by what it *produces*: a `map` step's element is the
+        // closure's own return, which is the slot's element type where a
+        // slot set one and the concrete class otherwise. Untyped, a slot
+        // coerced the chain against Dart's declared element and upcast a
+        // handle that was already the trait -- `dart_object(v) as Rc<dyn
+        // Widget>` on a `v` that was one, which is `Rc<Rc<dyn Widget>>`
+        // (`_CupertinoDatePickerDateTimeState.build`, 4 at ws821).
+        final element = _chainElement(chain);
+        if (element != null) {
+          chain.rustType = IrType('List', arguments: [element]);
+        }
+        return chain;
       }
       // `lastWhere` is the same shape read from the other end, and the
       // same two prelude methods (`NavigatorState.pop`, ws810).
@@ -6607,8 +6647,9 @@ class KernelFrontend implements TypeWorld {
         final byElement =
             const {'remove', 'indexOf', 'lastIndexOf'}.contains(name) &&
             args.length == 1;
-        return IrCall(
-          _listReceiver(node.receiver, name),
+        final receiver = _listReceiver(node.receiver, name);
+        final call = IrCall(
+          receiver,
           rust,
           byElement
               ? [
@@ -6620,6 +6661,15 @@ class KernelFrontend implements TypeWorld {
                 ]
               : args,
         );
+        // `toList()` on a chain is the chain: what it collects is what the
+        // chain produces, and saying so is what lets a slot see that no
+        // element coercion is due (see the chain's own type above).
+        if ((rust == 'to_list' || rust == '!to_list') &&
+            args.isEmpty &&
+            receiver is IrIterChain) {
+          call.rustType = receiver.rustType;
+        }
+        return call;
       }
       throw Unsupported('`List.$name`', _sample(node));
     }
