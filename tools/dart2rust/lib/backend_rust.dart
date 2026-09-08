@@ -584,7 +584,11 @@ class RustBackend {
             ? '$_selfName.dart_self_ref().get()'
             : _selfIsHandle || !_classIsCopy(cls, {}) || _selfName != 'self'
             ? '$_selfName.clone()'
-            : '*$_selfName',
+            // Parenthesised: as the receiver of a call the bare `*` binds
+            // to the call's result -- `*self.dart_to_string()` derefs the
+            // `String` (`GalleryDemoCategory.displayTitle` returning
+            // `toString()`, run732).
+            : '(*$_selfName)',
       IrField(:final target, :final name, :final onEnum, :final owner) =>
         _fieldRead(target, name, onEnum, owner),
       IrStatic(:final owner, :final name, :final isEnumValue) => _staticRead(

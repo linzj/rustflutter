@@ -13309,7 +13309,14 @@ class KernelFrontend implements TypeWorld {
         '_enumToString',
         'compareTo',
       };
-      if (implicit.contains(name) || node.isSynthetic) return;
+      // ..except a `toString` the programmer *wrote*: an enhanced enum may
+      // override it, and dropped, `dart_to_string` fell back to the
+      // `Kind.material` an enum prints by default where Dart printed
+      // `MATERIAL` (`GalleryDemoCategory.displayTitle`, run732). The
+      // implicit one is the CFE's and carries no body of its own.
+      final written =
+          name == 'toString' && !node.isSynthetic && node.function.body != null;
+      if ((implicit.contains(name) && !written) || node.isSynthetic) return;
       // Not implicit: a method or getter the programmer wrote. It goes in the
       // enum's `impl`, where it loses nothing.
       if (cls.values.isEmpty) {
