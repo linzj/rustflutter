@@ -3023,3 +3023,40 @@ answer is exactly the two members, nothing added.
 
 run872 holds the ruler: 708 walk lines, 0 type-only differences, 508 as
 printed, no `RenderErrorBox`, 200 frames drawn and 0 panicked.
+
+## ws873 -- identity on a nullable slot asks the spelling, not the class table
+
+    bin/run_chain.sh:  159 stubbed (was 164), 57 refusals (unchanged), 64 crates
+
+`identical(a, b)` on two nullable slots picked between the prelude's two
+forms by looking the operand's class up in the translated-class table:
+found and by value -> `dart_identical_opt_value`, anything else ->
+`dart_identical_opt`, which takes `&Option<Rc<T>>`. A `List<E>?`, a
+`Map<K, V>?` and a `Set<E>?` are in no class table at all, and they are
+not `Rc`s either, so the handle form got a `Vec`, a `Map` and a `Set`:
+"expected `&Option<Rc<_>>`, found `&Option<Vec<E>>`". Five members --
+`listEquals`, `setEquals` and `unorderedEquals` in `equality.rs`, and
+`BoxShadow.lerpList`.
+
+What decides is the *representation*, so the rule asks the type speller,
+which is the representation:
+
+    final spelled = type(t);
+    return spelled.startsWith('Option<') &&
+        !spelled.startsWith('Option<std::rc::Rc<');
+
+`dynamic`, `Object` and every prelude interface spell `Option<Rc<..>>` and
+stay handles; a collection, a scalar and a value struct do not and take the
+value form, which is the answer the promoted `a!` of the same slot has been
+getting since run574 -- two copies of a map have no identity beyond the
+fast path.
+
+`identlist` carries all three shapes -- `listEquals`'s walk, a `Map<K, V>?`
+and `BoxShadow.lerpList`'s `List<Shadow>?` -- and reproduces the gallery's
+three `E0308`s at HEAD; with the rule both ends print
+`true true false true false true true 2.0,4.0 true`. The fast path is
+transparent, which is why it agrees: where Dart is handed one list twice
+and short-circuits, the translation walks the elements and reaches the same
+answer. The standing identity fixtures still agree (`identconst`,
+`identmap`, `identstatic`, `aliasparam`, `hsetbox`); `identhash` still
+refuses `identityHashCode`, as it did before this round.

@@ -5600,7 +5600,16 @@ class RustBackend {
       final t = e.rustType;
       if (t == null || !isNullable(t) || t.isFunction) return false;
       final held = library[t.name];
-      return held != null && !held.isAbstract && !held.counted;
+      if (held != null) return !held.isAbstract && !held.counted;
+      // Not a translated class at all: what the type *spells* decides,
+      // since that is the representation `dart_identical_opt` has to take.
+      // A nullable `List<E>`, `Map<K, V>` or `Set<E>` is the collection
+      // itself, no `Rc` anywhere (`listEquals`'s and `lerpList`'s fast
+      // path, ws873); `dynamic`, `Object` and every prelude interface do
+      // spell `Rc`, and stay handles.
+      final spelled = type(t);
+      return spelled.startsWith('Option<') &&
+          !spelled.startsWith('Option<std::rc::Rc<');
     }
 
     if (leftType != null &&
