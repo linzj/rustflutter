@@ -2755,11 +2755,30 @@ gallery rather than from a fixture, and each eliminating a candidate:
     `map(..).toList()` is two nodes. Still no change -- this attempt had
     dropped the guard above, so the clobber was back.
 
-What is established: the closure records the right return, the coercion
-that doubles the box is `coerce.dart`'s element-by-element rule reading
-`have.arguments.single`, and the wrong `have` arrives because the node's
-recorded type is the *declared* one. The untried combination is all three
-of the above at once. Nothing was shipped on that guess.
+The three together were then tried as well, and the emission still did not
+change -- so the model behind them was wrong, and two traces were added to
+say what is actually there (both reverted; the switches are
+`DART2RUST_TRACE_ELEMENTMAP` and `DART2RUST_TRACE_CHAIN` in the commit
+message of this note if they are wanted again):
+
+  * `TRACE_ELEMENTMAP` -- the second box is `coerce.dart`'s
+    element-by-element rule, and every one of its `have`s is a
+    `List<ConcreteWidget>` against a `List<Widget>` slot
+    (`_TextStyleItem`, `LayoutId`, `DropdownMenuItem<int>`,
+    `_OverlayEntryWidget`, ..). That coercion is *correct* on its own: a
+    list of values does become a list of handles.
+  * `TRACE_CHAIN` -- the `map` closure of the `Expanded` site records
+    `returns=Expanded` (one such closure in the gallery; twelve others
+    record `Widget`), and its `toList()` receiver is `Iterable<Expanded>`.
+
+So the two halves disagree in the *other* direction from what was assumed:
+the closure is declared to return `Expanded` and Dart's static type agrees,
+which makes the element coercion right -- and the closure's **body** has
+already been upcast to `Rc<dyn Widget>` anyway. The box to remove is the
+one inside the closure, not the one after it, and the question for the next
+attempt is what put it there when the closure's own return says `Expanded`.
+Nothing was shipped: five candidate fixes, all reverted, and the shape is
+now pinned to a single closure whose body and declared return disagree.
 
 That is the honest limit here: what is left in the tail is mostly shapes
 whose cause is only visible with the whole gallery in hand, and the
