@@ -2378,6 +2378,25 @@ impl<K: Clone, V: Clone> Map<K, V> {    /// `Map.of(other)`: a copy with the sam
         out
     }
 
+    /// `Map.fromIterables(keys, values)`: the two zipped in order, a later
+    /// key replacing an earlier one, and Dart's `ArgumentError` when the
+    /// lengths differ (`SlottedContainerRenderObjectMixin.
+    /// debugDescribeChildren` builds one to name each child by its slot,
+    /// 5 at ws790).
+    pub fn from_iterables(keys: Vec<K>, values: Vec<V>) -> Map<K, V>
+    where
+        K: DartEq,
+    {
+        if keys.len() != values.len() {
+            panic!("Invalid argument(s): Iterables do not have same length.");
+        }
+        let mut out = Map::new();
+        for (k, v) in keys.into_iter().zip(values) {
+            out.insert(k, v);
+        }
+        out
+    }
+
     /// `Map.fromEntries(entries)`: each entry in order, a later key
     /// replacing an earlier one (`LinkedHashMap.fromEntries(displayLocales)`
     /// in the gallery's settings page, run662).
