@@ -821,3 +821,24 @@ function-typed parameter, and four gallery `build`s came back.
 
 Grouped, from ws747: 433 -> 292 stubbed, 183 -> 130 refusals, 64 crates
 throughout.
+
+## run765 — 557 lines, no error boxes, and the next stop is the erasure boundary
+
+    walk 557 lines (was 138 at run764, 708 in the reference)
+    RenderErrorBox 0
+
+The narrowing brought the settings list back. The panic is now
+`TweenSequence._evaluateAt`, and it is the erasure boundary:
+`TweenSequenceItem<T>` loses its `T`, so `item.tween` is an
+`Rc<dyn Animatable<Rc<dyn Object>>>` -- while Kernel's substitution says
+`Animatable<TweenSequence.T>`, which is what the caller wrote and not what
+is there. Two rules:
+
+* a read whose declared type *mentions* a parameter the declaring class
+  erased is recorded the way the struct spells it (`_erasedRead`);
+* a call whose declared return is the declaring class's own parameter,
+  through a receiver that puts a `dynamic` there, returns that `dynamic`
+  (`_throughReceiver`) -- recorded even over the type the lowering already
+  put on, because that type is the lie.
+
+`_evaluateAt` now reads `dart_from_dynamic::<T>(element.tween.transform(t)?)`.

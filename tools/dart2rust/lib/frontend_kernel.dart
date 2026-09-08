@@ -1125,6 +1125,28 @@ class KernelFrontend implements TypeWorld {
       final inner = lowered.operand.rustType;
       if (inner != null) lowered.rustType = _nonNull(inner);
     }
+    // A call or read whose declared type is the *declaring class's* type
+    // parameter, through a receiver that puts a `dynamic` there: the value
+    // is that `dynamic` whatever Kernel's substitution says. Recorded even
+    // over a type the lowering already put on, because that type is the
+    // lie (`_throughReceiver`).
+    final erasedThrough = switch (node) {
+      InstanceInvocation(:final interfaceTarget, :final receiver) =>
+        _throughReceiver(
+          receiver,
+          interfaceTarget,
+          interfaceTarget.function?.returnType,
+        ),
+      InstanceGet(:final interfaceTarget, :final receiver) =>
+        _erasedRead(interfaceTarget, interfaceTarget.getterType) ??
+            _throughReceiver(
+              receiver,
+              interfaceTarget,
+              interfaceTarget.getterType,
+            ),
+      _ => null,
+    };
+    if (erasedThrough != null) lowered.rustType = erasedThrough;
     if (lowered.rustType == null) {
       final static = _staticType(node);
       // A member declared `T?` with `T` bound to a top type reads as the
@@ -1256,6 +1278,83 @@ class KernelFrontend implements TypeWorld {
   /// ws704).
   IrExpr _condition(Expression condition) =>
       coerce(expression(condition), const IrType('bool'));
+
+  /// The result of a member whose declared type is the *declaring class's*
+  /// type parameter, read through a receiver that puts a `dynamic` there.
+  ///
+  /// Kernel's substitution says `T`, because Dart kept the argument; this
+  /// output erased it, so what comes back is the `Rc<dyn Object>` the
+  /// erased slot holds. Typed as that, the coercion into the slot converts
+  /// it -- untyped, `item.tween.transform(t)` on a `TweenSequenceItem`
+  /// whose `T` is erased returned an `Rc<dyn Object>` where the function
+  /// says `T` (`TweenSequence._evaluateAt`, the gallery's page transition,
+  /// run765).
+  IrType? _throughReceiver(
+    Expression receiver,
+    Member target,
+    DartType? declared,
+  ) {
+    if (declared is! TypeParameterType) return null;
+    final owner = target.enclosingClass;
+    final env = typeEnvironment;
+    if (owner == null || env == null) return null;
+    final at = owner.typeParameters.indexOf(declared.parameter);
+    if (at < 0) return null;
+    // The receiver as *this output* records it, not as Kernel wrote it: a
+    // field whose own class erased a parameter reads at the erased
+    // spelling, and Kernel's substitution put the caller's `T` there
+    // (`element.tween` on a `TweenSequenceItem<T>`, run765).
+    IrType? recorded;
+    if (receiver is InstanceGet) {
+      recorded = _erasedRead(
+        receiver.interfaceTarget,
+        receiver.interfaceTarget.getterType,
+      );
+    }
+    if (recorded == null) {
+      final receiverType = _staticType(receiver);
+      if (receiverType is! InterfaceType) return null;
+      final asOwner = env.hierarchy.getTypeAsInstanceOf(receiverType, owner);
+      if (asOwner is! InterfaceType || at >= asOwner.typeArguments.length) {
+        return null;
+      }
+      try {
+        recorded = IrType(
+          owner.name,
+          arguments: [for (final a in asOwner.typeArguments) _typeNested(a)],
+        );
+      } on Unsupported {
+        return null;
+      }
+    }
+    if (at >= recorded.arguments.length) return null;
+    final put = recorded.arguments[at];
+    // Only where the erasure really put a `dynamic` there: anything the
+    // output can still name is what the value is.
+    if (put.name != 'dynamic') return null;
+    return const IrType('dynamic');
+  }
+
+  /// A read whose declared type *mentions* a type parameter this output
+  /// erased on the declaring class: the value is spelled the way the struct
+  /// spells it, with the erased parameter at its bound.
+  ///
+  /// `TweenSequenceItem<T>` loses its `T`, so `item.tween` is an
+  /// `Rc<dyn Animatable<Rc<dyn Object>>>` -- and Kernel's substitution says
+  /// `Animatable<TweenSequence.T>`, which is what the caller wrote and not
+  /// what is there (`TweenSequence._evaluateAt`, run765).
+  IrType? _erasedRead(Member target, DartType? declared) {
+    if (declared == null || declared is TypeParameterType) return null;
+    final owner = target.enclosingClass;
+    if (owner == null) return null;
+    final erased = owner.typeParameters.where(_erasedParameter).toList();
+    if (erased.isEmpty || !_mentionsParametersOf(declared, erased)) return null;
+    try {
+      return _typeNested(declared);
+    } on Unsupported {
+      return null;
+    }
+  }
 
   IrType? _erasedResult(DartType? declared) {
     if (declared is! TypeParameterType) return null;
@@ -9959,7 +10058,24 @@ class KernelFrontend implements TypeWorld {
   /// Cached; a cycle (`_findModels` lending `results` to itself) is a
   /// "no" while it is being asked.
   bool _fillsParameter(Procedure callee, int index) {
-    if (callee.isAbstract || callee.isGetter || callee.isSetter) return false;
+    if (callee.isGetter || callee.isSetter) return false;
+    // An abstract target is the interface's view of a member some class
+    // does declare: the dispatch target's answer, not "no". A mixin's
+    // private method reached through the mixin's trait was passed a copy,
+    // and the copy is where the fill went
+    // (`SlottedContainerRenderObjectMixin._addDiagnostics`, 5 at ws764).
+    if (callee.isAbstract) {
+      final owner = callee.enclosingClass;
+      final env = typeEnvironment;
+      if (owner == null || env == null) return false;
+      final concrete = env.hierarchy.getDispatchTarget(owner, callee.name);
+      if (concrete is Procedure &&
+          !concrete.isAbstract &&
+          !identical(concrete, callee)) {
+        return _fillsParameter(concrete, index);
+      }
+      return false;
+    }
     final own = callee.isStatic || callee.enclosingClass == null;
     if (!own && !callee.name.isPrivate) return false;
     final params = callee.function.positionalParameters;
