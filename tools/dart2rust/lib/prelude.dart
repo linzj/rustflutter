@@ -3230,9 +3230,15 @@ pub fn try_parse_double(text: String) -> Option<f64> {
 }
 
 /// `null.hashCode` is a fixed number in Dart; an absent value hashes to it.
-impl<T: RcHashCode> RcHashCode for Option<T> {
+///
+/// Whatever the value is, not only a handle: `title.hashCode` on a
+/// `String?` is legal Dart -- `null` has a `hashCode` -- and asking for
+/// `RcHashCode` of the `String` inside found none (3 at ws863). Every
+/// value here answers `dart_hash_any`, and a handle forwards it to the
+/// object, which is what the handle's own `hash_code` did.
+impl<T: DartAny> RcHashCode for Option<T> {
     fn hash_code(&self) -> i64 {
-        match self { Some(v) => v.hash_code(), None => 2011 }
+        match self { Some(v) => v.dart_hash_any(), None => 2011 }
     }
 }
 

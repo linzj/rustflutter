@@ -2681,3 +2681,31 @@ reads `millisecondsSinceEpoch`, `microsecondsSinceEpoch` and `isUtc` back.
 It does not compile at HEAD -- the same "takes 1 argument but 2 arguments
 were supplied" the gallery had -- and both ends say
 `1700000000000 false true 5 true false`.
+
+## ws863 -- an `Option` hashes whatever it holds, not only a handle
+
+    bin/run_chain.sh:  181 stubbed (was 184), 57 refusals (unchanged), 64 crates
+
+`title.hashCode` where `title` is a `String?` is ordinary Dart -- `null`
+has a `hashCode`, and the prelude has had the number for it since the
+`Option` impl was written. What it did not have is a way to hash the value
+inside: the impl asked for `RcHashCode`, which only a handle has, and
+`Option<String>` found none. Three `hashCode`s stopped there, two of them
+in the `IOSSystemContextMenuItem` family and one in `CupertinoRoute`.
+
+Every value in this compiler answers `dart_hash_any` -- it is what `DartAny`
+is for -- and a handle's own `hash_code` was already forwarding to exactly
+that. The bound is `DartAny` now and the body asks it directly, so the
+handle case is unchanged and the scalars work.
+
+The nullhash fixture hashes a class with a `String?` and an `int?` through
+`Object.hash`, comparing two equal values, one with nulls, and two nulls.
+It does not compile at HEAD and both ends say `true false true`.
+
+A neighbour it does *not* cover: `null.hashCode` written on the literal has
+no type to infer (`None.hash_code()`, E0282). Nothing in the gallery writes
+it and the fixture drops it.
+
+run863 holds the ruler after ws861-863: 708 walk lines, 0 type-only
+differences, 508 as printed, no `RenderErrorBox`, 198 frames drawn and 0
+panicked.
