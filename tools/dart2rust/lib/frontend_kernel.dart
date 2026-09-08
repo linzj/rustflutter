@@ -6668,6 +6668,20 @@ class KernelFrontend implements TypeWorld {
         ? ((enclosing?.isAnonymousMixin ?? false) ? _lowering : enclosing)
         : _classOfType(type);
     var qualifier = _qualifierFor(from ?? owner, member);
+    // ..and from the class the receiver *is here* when the Dart type said
+    // nothing: a closure parameter retyped to an erased bound reads back
+    // through a cast, and the wider type above it declares no member for
+    // the walk to count -- `notification.depth` on a `ScrollNotification`
+    // read out of a `Notification` slot was left for two traits to claim
+    // (`_PageViewState.build`, ws719).
+    if (qualifier == null &&
+        receiver is VariableGet &&
+        _retyped.containsKey(receiver.variable)) {
+      final declaredClass = _classOfType(receiver.variable.type);
+      if (declaredClass != null && !identical(declaredClass, from)) {
+        qualifier = _qualifierFor(declaredClass, member);
+      }
+    }
     // `this.x` where a trait declared `x` and this class overrides it: Rust
     // resolves `self.x()` to the inherent override, whose type may be
     // narrower than the declaration the kernel typed the read by (`String?
