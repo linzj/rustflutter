@@ -2567,3 +2567,33 @@ HEAD and before this session's rounds alike -- `children.indexOf(child)` on
 a list of boxed values does not find the child it was handed, so the walk
 never advances. That is the identity-on-a-value-class group showing what it
 costs at runtime rather than as a refusal.
+
+## ws858 -- a null-aware map spells its return where the body cannot fail
+
+    bin/run_chain.sh:  193 stubbed (was 195), 57 refusals (unchanged), 64 crates
+
+The first of the two rounds the note above asked for. `_nullAware` already
+worked out what the body's type is and whether it is worth spelling
+(`spelled`, ws486), and then used it in one branch only: the one where the
+body can fail, which has a `Result` to hang the annotation on. A body that
+cannot fail got `.map(|it| ..)` with nothing said about what comes out, and
+an adapter closure made in there unsized against nothing.
+
+`DART2RUST_TRACE_NULLAWARE=1` -- a trace that has been in the file since
+ws486 -- said the type was there all along: nine of these bodies are
+closures with a spelled function type. The closure's own return says it
+now, `.map(|it| -> Rc<dyn Fn(..)> { .. })`, which is the same mechanism
+ws857 used and for the same reason: a declared type unsizes and still lets
+inference through.
+
+`TextFormField.validator` and `.onSaved` are the two members, both gone,
+and nothing came back in their place.
+
+No fixture reaches this one. The site is an *erased* accessor -- the field
+is stored under `<Rc<dyn Object> as DartNullable>::Or` and read back at
+`String?` -- and that erasure is a closed-world decision the whole gallery
+makes; the mapfnslot fixture builds the same class shape by hand, agrees
+with Dart, and does not produce the adapter at all. What stands in for a
+fixture here is the emission read before and after (`material_text_form_
+field.rs:264`, `.map(|it| ..)` becoming `.map(|it| -> Rc<dyn Fn(..)> ..)`)
+and the chain's own answer: exactly the two members, nothing added.

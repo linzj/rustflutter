@@ -2474,8 +2474,14 @@ class RustBackend {
       // 5 at ws798).
       final projectedBody = flatten && (body.rustType?.projected ?? false);
       final inner = expr(projectedBody ? _plain(body) : body);
+      // The same spelling where the body cannot fail: there is no
+      // `Result` to carry it, so the closure's own return says it. A
+      // `FormField<T>`'s validator adapter is made here, and unsized
+      // against nothing it stayed an `Rc<{closure}>` (2 at ws858).
+      final annotated = spelled != '_' && !flatten ? ' -> $spelled' : '';
       final whole = _failure == null
-          ? '$plain$at.${flatten ? 'and_then' : 'map'}(|$_boundName| $inner)'
+          ? '$plain$at.${flatten ? 'and_then' : 'map'}'
+                '(|$_boundName|$annotated ${annotated.isEmpty ? inner : '{ $inner }'})'
           : '$plain$at.map(|$_boundName| -> Result<$spelled, $_error> { Ok($inner) }).transpose()?${flatten ? '.flatten()' : ''}';
       return projectedBody
           ? '<${body.rustType!.name} as DartNullable>::from_option($whole)'
