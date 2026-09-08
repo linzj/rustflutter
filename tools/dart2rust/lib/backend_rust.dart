@@ -3854,10 +3854,11 @@ class RustBackend {
     final place = _readPlace(target);
     if (place == null) return null;
     if (name == '!map_get') {
-      // The key first: it is rendered inside the block, and a key that
-      // reads the same cell would meet the `Ref` this line just took.
-      return '({ let __k = ${_borrowed(args.single)}; '
-          'let __r = $place.get(&__k).cloned()${_flattenedValue(target)}; __r })';
+      // The key by reference, as the ordinary emission takes it: bound to a
+      // local it was *moved*, and a caller reading it again afterwards had
+      // nothing left (`SlottedContainerRenderObjectMixin._setChild`, ws800).
+      return '({ let __r = $place.get(&${_borrowed(args.single)}).cloned()'
+          '${_flattenedValue(target)}; __r })';
     }
     // `length` is a `usize` here and an `int` in Dart, as the ordinary
     // emission spells it.

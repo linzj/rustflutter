@@ -1196,7 +1196,10 @@ impl<K: DartAny + Clone, V: DartAny + Clone> DartAny for Map<K, V> {
                 .iter()
                 .map(|(k, v)| (dart_boxed(k.clone()), dart_boxed(v.clone())))
                 .collect();
-            return Some(Box::new(Map { entries }));
+            return Some(Box::new(Map {
+                entries,
+                index: Default::default(),
+            }));
         }
         None
     }
@@ -2374,9 +2377,43 @@ impl<K, V> MapEntry<K, V> {
 /// same trade `Set<T>` next door has always made, and taking it here too
 /// makes one decision instead of two: whatever these containers cost, they
 /// cost it the same way.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Default)]
 pub struct Map<K, V> {
     entries: Vec<(K, V)>,
+    /// A lazily built index over `entries`, by `DartEq::dart_hash_code`,
+    /// beside the number of entries it covers. It is valid exactly when
+    /// that number is `entries.len()`: every mutation but an append
+    /// changes the length, and an append extends the index itself. The
+    /// `Vec` still decides the order Dart promises; this only keeps the
+    /// lookup off the whole list -- `InheritedElement._dependents` holds
+    /// one entry per element depending on a `Theme`, and every
+    /// `dependOnInheritedElement` scanned all of them (run799).
+    index: std::cell::RefCell<Option<(usize, std::collections::HashMap<i64, Vec<usize>>)>>,
+}
+
+/// The index is a cache: a clone starts without one, and two maps are equal
+/// when their entries are.
+impl<K: Clone, V: Clone> Clone for Map<K, V> {
+    fn clone(&self) -> Self {
+        Map {
+            entries: self.entries.clone(),
+            index: Default::default(),
+        }
+    }
+}
+
+impl<K: PartialEq, V: PartialEq> PartialEq for Map<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for Map<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Map")
+            .field("entries", &self.entries)
+            .finish()
+    }
 }
 
 /// What needs no key equality: a `Map<Rc<dyn Fn()>, i64>` -- Dart's
@@ -2395,7 +2432,10 @@ impl<K: DartEq, V> Map<K, V> {
                 entries.push((k, v));
             }
         }
-        Map { entries }
+        Map {
+            entries,
+            index: Default::default(),
+        }
     }
 }
 
@@ -2472,7 +2512,10 @@ impl<K, V> Map<K, V> {
                 }
             }
         }
-        Map { entries: out }
+        Map {
+            entries: out,
+            index: Default::default(),
+        }
     }
 }
 
@@ -2565,6 +2608,7 @@ impl<K: Clone, V: Clone> Map<K, V> {
     pub fn new() -> Self {
         Map {
             entries: Vec::new(),
+            index: Default::default(),
         }
     }
 
@@ -2621,7 +2665,31 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
     }
 
     fn at(&self, key: &K) -> Option<usize> {
-        self.entries.iter().position(|(k, _)| k.dart_eq(key))
+        // Below a handful of entries the scan is cheaper than the index,
+        // and most maps here are that small.
+        if self.entries.len() < 8 {
+            return self.entries.iter().position(|(k, _)| k.dart_eq(key));
+        }
+        let wanted = key.dart_hash_code();
+        // A key whose `==` looks in this same map would meet the borrow
+        // this line took: the scan answers the same question.
+        let Ok(mut cell) = self.index.try_borrow_mut() else {
+            return self.entries.iter().position(|(k, _)| k.dart_eq(key));
+        };
+        if !matches!(&*cell, Some((n, _)) if *n == self.entries.len()) {
+            let mut buckets: std::collections::HashMap<i64, Vec<usize>> =
+                std::collections::HashMap::with_capacity(self.entries.len());
+            for (i, (k, _)) in self.entries.iter().enumerate() {
+                buckets.entry(k.dart_hash_code()).or_default().push(i);
+            }
+            *cell = Some((self.entries.len(), buckets));
+        }
+        let bucket = match cell.as_ref().unwrap().1.get(&wanted) {
+            Some(bucket) => bucket.clone(),
+            None => return None,
+        };
+        drop(cell);
+        bucket.into_iter().find(|&i| self.entries[i].0.dart_eq(key))
     }
 
     pub fn get(&self, key: &K) -> Option<&V> {
@@ -2646,7 +2714,21 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
         match self.at(&key) {
             Some(i) => Some(std::mem::replace(&mut self.entries[i].1, value)),
             None => {
+                // The index, when it is up to date, is extended rather than
+                // dropped: filling a map one key at a time would otherwise
+                // rebuild it on every insertion.
+                let hash = key.dart_hash_code();
+                let at = self.entries.len();
                 self.entries.push((key, value));
+                if let Ok(mut cell) = self.index.try_borrow_mut() {
+                    match cell.as_mut() {
+                        Some((n, buckets)) if *n == at => {
+                            buckets.entry(hash).or_default().push(at);
+                            *n = at + 1;
+                        }
+                        _ => {}
+                    }
+                }
                 None
             }
         }
@@ -9909,7 +9991,10 @@ impl<K: FromDynamic + DartEq, V: FromDynamic> FromDynamic for Map<K, V> {
             .iter()
             .map(|(k, v)| Some((K::from_same(k)?, V::from_same(v)?)))
             .collect();
-        entries.map(|entries| Map { entries })
+        entries.map(|entries| Map {
+            entries,
+            index: Default::default(),
+        })
     }
     fn from_dynamic(value: &std::rc::Rc<dyn Object>) -> Option<Self> {
         dart_cast_map::<K, V>(value)
@@ -10047,7 +10132,10 @@ pub fn dart_cast_map<K: FromDynamic + DartEq, V: FromDynamic>(
             .iter()
             .map(|(k, v)| Some((K::from_same(k)?, V::from_same(v)?)))
             .collect();
-        return entries.map(|entries| Map { entries });
+        return entries.map(|entries| Map {
+            entries,
+            index: Default::default(),
+        });
     }
     fn convert<
         K1: Clone + 'static,
