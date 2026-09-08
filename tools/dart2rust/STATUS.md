@@ -1250,3 +1250,13 @@ failing body takes -- and a flattened body handed back an
 `Option<<T as DartNullable>::Or>`, which is one `Option` layer, not two.
 Both go through `_plain` now. The projread fixture (`T? get value` read
 through `?.`, and a `final T? held` field) agrees with Dart.
+
+## ws791 — 247 stubbed (was 253), 130 refusals, 64 crates
+
+  - `Map.fromIterables`: 4 `debug_describe_children` (cupertino_text_field,
+    material_chip, material_input_decorator, material_list_tile).
+  - the null-aware projection: `foundation_diagnostics.value_to_string`,
+    `widgets_restoration_properties.to_primitives`.
+
+433 -> 247 over the grouped method; refusals 183 -> 130; reachable crates 64
+throughout.
