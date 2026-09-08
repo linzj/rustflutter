@@ -6571,7 +6571,10 @@ struct Scheduled {
     id: i64,
     due: std::time::Instant,
     period: Option<std::time::Duration>,
-    callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>,
+    /// Dart hands `Timer.periodic`'s callback the timer itself, so that it
+    /// can cancel from inside; `Timer(..)` and `Timer.run` take none and are
+    /// wrapped where they are made.
+    callback: std::rc::Rc<dyn Fn(Timer) -> Result<(), DartError>>,
     active: bool,
 }
 
@@ -6671,7 +6674,7 @@ pub fn run_until_idle() -> bool {
                     }
                 }
             }
-            run_callback("a timer callback", || callback());
+            run_callback("a timer callback", || callback(Timer { id }));
         }
     }
 }
@@ -6852,10 +6855,16 @@ pub struct Timer {
 
 impl Timer {
     pub fn new(delay: Duration, callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>) -> Self {
-        Timer::schedule(delay, callback, None)
+        Timer::schedule(delay, std::rc::Rc::new(move |_| callback()), None)
     }
 
-    pub fn periodic(period: Duration, callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>) -> Self {
+    /// `Timer.periodic(period, void Function(Timer) callback)`: the callback
+    /// takes the timer, as Dart's does (`EditableTextState._onCursorTick`
+    /// and nine more, ws757).
+    pub fn periodic(
+        period: Duration,
+        callback: std::rc::Rc<dyn Fn(Timer) -> Result<(), DartError>>,
+    ) -> Self {
         Timer::schedule(period, callback, Some(period))
     }
 
@@ -6866,7 +6875,7 @@ impl Timer {
 
     fn schedule(
         delay: Duration,
-        callback: std::rc::Rc<dyn Fn() -> Result<(), DartError>>,
+        callback: std::rc::Rc<dyn Fn(Timer) -> Result<(), DartError>>,
         period: Option<Duration>,
     ) -> Self {
         let wait = std::time::Duration::from_micros(delay.microseconds.max(0) as u64);

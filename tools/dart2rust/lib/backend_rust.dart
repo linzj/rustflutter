@@ -10223,6 +10223,25 @@ class RustBackend {
             ? 'Some($body)'
             : body;
       }
+      // ..and a getter the trait asks for that this class writes as a
+      // *method* hands back that method's type, which an override may have
+      // narrowed (`_FileSpan.end` is a `FileLocation` where
+      // `SourceSpanBase.end` is `Rc<dyn SourceLocation>`, 6 at ws757). Only
+      // where the rule has something to say: no conversion leaves the body
+      // as it was, since this branch used to have no type to compare at all.
+      if (handed == null && reads != null) {
+        final ownMethod = cls.methods
+            .where((m) => m.name == field.name && !m.isStatic && !m.isSetter)
+            .firstOrNull;
+        if (ownMethod != null) {
+          final from = IrLocal('__v')
+            ..rustType = _selfBound(ownMethod.returnType);
+          final shaped = coerceInto(from, substituted, _world);
+          if (!identical(shaped, from)) {
+            value = '{ let __v = $body; ${expr(shaped)} }';
+          }
+        }
+      }
       _line(reads != null && _resultModel ? 'Ok($value)' : value);
       _indent--;
       _line('}');
@@ -10550,11 +10569,25 @@ class RustBackend {
             !have.isAsync &&
             type(needReturns) == '()' &&
             type(have.returnType) != '()';
+        // An inherent *operator* is a `std::ops` method: it takes `self` by
+        // value and hands back the `Output` itself, not a `Result`. So the
+        // conversion binds the value rather than mapping a `Result`, and
+        // the trait's own `Result` is put on here (`impl EdgeInsetsGeometry
+        // for EdgeInsets`'s `op_mul` got `*self * other.map(|__v| ..)`,
+        // which mapped the *operand*, 6 at ws757).
+        final infallible =
+            have.operator != null && _operatorTraits.containsKey(have.operator);
+        final wrapsOk = _returnType(need).startsWith('Result<');
+        String infallibleText(String inner) => wrapsOk ? 'Ok($inner)' : inner;
         _line(
           dropsValue
-              ? '$call.map(|_| ())'
+              ? (infallible
+                    ? infallibleText('{ let _ = $call; () }')
+                    : '$call.map(|_| ())')
               : identical(shaped, held)
-              ? call
+              ? (infallible ? infallibleText(call) : call)
+              : infallible
+              ? '{ let __v = $call; ${infallibleText(expr(shaped))} }'
               : '$call.map(|__v| ${expr(shaped)})',
         );
       }
