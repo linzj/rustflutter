@@ -2422,10 +2422,19 @@ class RustBackend {
       // back a projected `T?` makes an `Option<<T as DartNullable>::Or>`,
       // which is not two `Option` layers and has no `flatten`
       // (`Provider._inheritedElementOf(context)?.value`, 3 at ws789).
-      final inner = expr(flatten ? _plain(body) : body);
-      return _failure == null
+      // What comes out is then the plain `Option<T>`, and this expression
+      // is recorded as the projection its Dart type is: put back, so the
+      // spelling and the recorded type agree and a reader of it does not
+      // unproject a second time (`RawRadio.value`, `registry?.groupValue`,
+      // 5 at ws798).
+      final projectedBody = flatten && (body.rustType?.projected ?? false);
+      final inner = expr(projectedBody ? _plain(body) : body);
+      final whole = _failure == null
           ? '$plain$at.${flatten ? 'and_then' : 'map'}(|$_boundName| $inner)'
           : '$plain$at.map(|$_boundName| -> Result<$spelled, $_error> { Ok($inner) }).transpose()?${flatten ? '.flatten()' : ''}';
+      return projectedBody
+          ? '<${body.rustType!.name} as DartNullable>::from_option($whole)'
+          : whole;
     } finally {
       _boundByValue = outer;
     }
@@ -3832,6 +3841,34 @@ class RustBackend {
     return null;
   }
 
+  /// The collection members whose answer does not need the collection --
+  /// a length, an emptiness, one value out of a map -- read through the
+  /// cell rather than through a clone of the whole thing.
+  String? _borrowedRead(IrExpr? target, String name, List<IrExpr> args) {
+    const noArgument = {'len', 'is_empty', '!is_empty', 'keys', 'values'};
+    if (!noArgument.contains(name) &&
+        !(name == '!map_get' && args.length == 1)) {
+      return null;
+    }
+    if (args.isNotEmpty && name != '!map_get') return null;
+    final place = _readPlace(target);
+    if (place == null) return null;
+    if (name == '!map_get') {
+      // The key first: it is rendered inside the block, and a key that
+      // reads the same cell would meet the `Ref` this line just took.
+      return '({ let __k = ${_borrowed(args.single)}; '
+          'let __r = $place.get(&__k).cloned()${_flattenedValue(target)}; __r })';
+    }
+    // `length` is a `usize` here and an `int` in Dart, as the ordinary
+    // emission spells it.
+    final call = switch (name) {
+      '!is_empty' => '!$place.is_empty()',
+      'len' => '($place.len() as i64)',
+      _ => '$place.$name()',
+    };
+    return '({ let __r = $call; __r })';
+  }
+
   /// The place a read goes through, borrowed shared: `_mutPlace`'s other
   /// half. Null when the target is not kept in a cell.
   String? _readPlace(IrExpr? target) {
@@ -4163,6 +4200,16 @@ class RustBackend {
         return 'DartEq::dart_hash_code(&${expr(target)})';
       }
     }
+    // A read that does not need the collection itself: through the cell's
+    // `borrow()`, not through the clone a read of the place hands out.
+    // `_listeners.length` in `ImageStreamCompleter.removeListener`'s loop
+    // cloned the whole listener list once per iteration, and the run spent
+    // its whole budget there (run799). Inside a block, so the `Ref` guard
+    // drops with the `let` that made it and cannot outlive a `borrow_mut()`
+    // later in the same statement -- which is why a read of the place is
+    // written `({ let __r = ..borrow().clone(); __r })` to begin with.
+    final borrowedRead = _borrowedRead(target, name, args);
+    if (borrowedRead != null) return borrowedRead;
     final cellPlace = _mutatesInPlace(name) ? _mutPlace(target) : null;
     // The arguments first, bound: the receiver's `borrow_mut()` is taken
     // before the arguments are evaluated, and an argument reading the same

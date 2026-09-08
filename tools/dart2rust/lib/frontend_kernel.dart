@@ -3740,11 +3740,20 @@ class KernelFrontend implements TypeWorld {
       );
     }
 
+    // The type the *signature* declared, which is what the body has in
+    // hand: a mixin copy takes its parameter types from the declaration it
+    // was copied from (`_declaredParamTypes`), and those name the
+    // declaration's own type parameters -- not this copy's, which is what
+    // `_projectedSlot` asks about. Read from `p.type` instead, the prologue
+    // unprojected a parameter the signature had spelled `Option<U>`
+    // (`_OverridableActionMixin._getOverrideAction`, 3 at ws798).
     for (final (i, p) in fn.positionalParameters.indexed) {
-      rebind(_paramName(p), positional?[i] ?? p.type);
+      rebind(_paramName(p), positional?[i] ?? _declaredParamTypes[p] ?? p.type);
     }
     for (final p in fn.namedParameters) {
-      if (!_inspectorOnly(p.parameterName)) rebind(p.parameterName, p.type);
+      if (!_inspectorOnly(p.parameterName)) {
+        rebind(p.parameterName, _declaredParamTypes[p] ?? p.type);
+      }
     }
     if (prologue.isEmpty) return body;
     return IrBlock([
