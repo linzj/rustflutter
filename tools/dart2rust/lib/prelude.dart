@@ -4861,6 +4861,21 @@ pub fn natives_unanswered() -> Vec<String> {
     NATIVES_UNANSWERED.with(|s| s.borrow().clone())
 }
 
+/// `identical(a, b)` on two nullable *value* slots: both absent, or the
+/// same storage. A class spelled by value is copied where Dart shared one
+/// object, so two distinct slots answer "not identical" -- the same answer
+/// two value locals get, and the one a `lerp` fast path needs
+/// (`BadgeThemeData? a`, 35 sites at ws747).
+pub fn dart_identical_opt_value<T, U>(a: &Option<T>, b: &Option<U>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            std::ptr::eq(x as *const T as *const (), y as *const U as *const ())
+        }
+        _ => false,
+    }
+}
+
 /// `identical(a, b)` on two nullable handles: both null, or one object.
 pub fn dart_identical_opt<T: ?Sized>(a: &Option<std::rc::Rc<T>>, b: &Option<std::rc::Rc<T>>) -> bool {
     match (a, b) {

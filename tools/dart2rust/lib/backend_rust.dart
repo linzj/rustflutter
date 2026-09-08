@@ -756,10 +756,12 @@ class RustBackend {
       // lazy is eager here, and what was refused as "never collected"
       // (`Future.wait(pendingList.map(..))` in `_loadAll`, run578) is the
       // list it would have made.
-      IrIterChain(:final steps) =>
-        '${_chain(e as IrIterChain)}'
+      IrIterChain(:final steps) => _chain(
+        e as IrIterChain,
+        tail:
             '${steps.isNotEmpty && steps.last.$1 == 'filter' ? '.cloned()' : ''}'
             '.collect::<Vec<_>>()',
+      ),
       // Boxed, because a function item is not a `Box<dyn Fn>` and that is what
       // a function-typed field or local is here. A `Box<dyn Fn>` also
       // implements `Fn`, so it still passes where `impl Fn` is wanted.
@@ -3878,7 +3880,7 @@ class RustBackend {
       final cloned = target.steps.isNotEmpty && target.steps.last.$1 == 'filter'
           ? '.cloned()'
           : '';
-      return '${_chain(target)}$cloned.collect::<Vec<_>>()';
+      return _chain(target, tail: '$cloned.collect::<Vec<_>>()');
     }
     // `0.29.powf(x)`: a float literal as a receiver is an "ambiguous numeric
     // type" until it says which (21 `E0689`s in the HCT colour code).
@@ -4809,16 +4811,33 @@ class RustBackend {
         : 'format!("$text", ${args.join(', ')})';
   }
 
-  /// The iterator part of a chain, without the collect that ends it.
-  String _chain(IrIterChain chain) {
-    final steps = chain.steps
-        .map((step) => '.${step.$1}(${_stepClosure(step.$2, step: step.$1)})')
-        .join();
+  /// The iterator part of a chain, and whatever ends it (`tail`).
+  ///
+  /// A step whose callback is a *value* rather than a written closure is
+  /// bound before the chain: inlined, it is rebuilt once per element, and
+  /// its statements land in the closure the step makes rather than in the
+  /// function that wrote them. A `switch` expression with a throwing arm
+  /// reaching `where` put that arm's `return Err(..)` inside a `-> bool`
+  /// closure (`_sortAndFilterHorizontally`, 8 at ws747). The bindings run
+  /// before the source, which Dart evaluates first: both are `?` sites, so
+  /// the only difference is which of two throws is reported.
+  String _chain(IrIterChain chain, {String tail = ''}) {
+    final bound = <String>[];
+    final steps = chain.steps.map((step) {
+      String? name;
+      if (step.$2 is! IrClosure) {
+        name = '__f${bound.length}';
+        bound.add('let $name = ${expr(step.$2)};');
+      }
+      return '.${step.$1}(${_stepClosure(step.$2, step: step.$1, bound: name)})';
+    }).join();
     // A bare `forEach` hands the closure each element by value, as Dart
     // does: `keys.forEach(_updateProperty)` gave it `&Rc<..>` (53).
     final owned =
         chain.steps.length == 1 && chain.steps.single.$1 == 'for_each';
-    return '${expr(chain.source)}.iter()${owned ? '.cloned()' : ''}$steps';
+    final body =
+        '${expr(chain.source)}.iter()${owned ? '.cloned()' : ''}$steps$tail';
+    return bound.isEmpty ? body : '{ ${bound.join(' ')} $body }';
   }
 
   /// Whether an argument is the omitted one, written out.
@@ -4836,14 +4855,15 @@ class RustBackend {
   /// `iter()` yields references, so the Dart type is the wrong annotation --
   /// `|m: i64|` against a `&i64` does not compile. Left off, Rust infers it,
   /// and the body reads the same either way.
-  String _stepClosure(IrExpr e, {String step = ''}) {
+  String _stepClosure(IrExpr e, {String step = '', String? bound}) {
     // A function *value* as the step (`where(shouldNotSkip)`): called
     // from a closure of the step's own shape -- `filter` hands `&&T`,
     // the rest the item -- and its `Result` unwrapped, as a written
-    // closure's is (E0631, 17 at ws464).
+    // closure's is (E0631, 17 at ws464). By the name `_chain` bound it to,
+    // so it is built once and outside.
     if (e is! IrClosure) {
       final item = step == 'filter' ? '(*__x).clone()' : '__x.clone()';
-      return '|__x| (${expr(e)})($item).unwrap()';
+      return '|__x| (${bound ?? expr(e)})($item).unwrap()';
     }
     // `filter` hands `&&T`, and a body written for the item -- `asset.
     // endsWith(other)`, a tear-off's own parameter passed on bare --
@@ -4976,10 +4996,26 @@ class RustBackend {
     // Two nullable handles: identical when both null or both the same
     // object (the prelude asks; `&*a` on an `Option` was E0614, ws463).
     final leftType = left.rustType, rightType = right.rustType;
+    // ..only handles: `dart_identical_opt` takes `Option<Rc<T>>`, and a
+    // nullable slot of a class spelled by value holds the struct itself
+    // (`BadgeThemeData? a` of every theme's `lerp`, 35 sites at ws747).
+    // Those are two slots, and the prelude's value form answers them the
+    // way two value locals are answered below: both absent, or the same
+    // storage.
+    bool nullableValue(IrExpr e) {
+      final t = e.rustType;
+      if (t == null || !isNullable(t) || t.isFunction) return false;
+      final held = library[t.name];
+      return held != null && !held.isAbstract && !held.counted;
+    }
+
     if (leftType != null &&
         rightType != null &&
         isNullable(leftType) &&
         isNullable(rightType)) {
+      if (nullableValue(left) || nullableValue(right)) {
+        return 'dart_identical_opt_value(&${expr(left)}, &${expr(right)})';
+      }
       return 'dart_identical_opt(&${expr(left)}, &${expr(right)})';
     }
     // One side an absent-or-not handle (`identical(_cachedLocale, this)`

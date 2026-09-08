@@ -528,3 +528,24 @@ ws601:  722 stub / 252 拒绝 / 63 crate 全可达(138 分区,延迟库合并后
   这些 trait 访问器仍读存储(基类字段的 `None`),所以 `Switch._getSwitchSize` 之后的
   `defaults.thumbColor!` 在运行期 unwrap 到 `None`。两条路都试过:适配器对象会换身份
   (covariance.dart 开头写过为什么不走);擦除那条量了 +22(见〈撤回与作废〉ws704)。
+
+## ws749 — identical on a nullable value slot (433 → 398)
+
+The 433 blocks of `stubs747.txt.detail.txt`, grouped by normalised
+expected/found pairs, put 35 in one group: `&Option<Rc<_>>` wanted where
+`&Option<BadgeThemeData>` was given. `dart_identical_opt` takes handles,
+and every theme's `static X? lerp(X? a, X? b, double t)` starts with
+`identical(a, b)` on two nullable slots of a class the backend spells by
+value.
+
+The rule: a nullable slot that is not a handle is answered by the prelude's
+`dart_identical_opt_value` -- both absent, or the same storage. That is the
+answer two value locals already get here (a value class is copied where
+Dart shared one object), so the nullable case now says what the non-nullable
+case says.
+
+    ws747 433 stubbed, 162 refusals, 64 crates
+    ws749 398 stubbed, 162 refusals, 64 crates   -35, 0 new
+
+Grouping is worth far more than the panic-by-panic walk: one rule, 35 gone,
+nothing new.
