@@ -8460,6 +8460,19 @@ class KernelFrontend implements TypeWorld {
   /// the way into the operand slot -- is left alone (`((1 as f64) as f64)`,
   /// 430 at ws356).
   static IrExpr _toF64(IrExpr e) {
+    // Each arm of a conditional, not the whole of it: `n > 3 ? 30.0 * s : 0`
+    // is a `double` in Dart, and `if .. { 30.0 * s } else { 0 } as f64`
+    // is two types Rust will not unify before the cast is reached
+    // (`ExpandingBottomSheet._mobileWidthFor` and two more, ws867).
+    if (e is IrConditional) {
+      final then = _toF64(e.then);
+      final otherwise = _toF64(e.otherwise);
+      if (identical(then, e.then) && identical(otherwise, e.otherwise)) {
+        return e;
+      }
+      return IrConditional(e.condition, then, otherwise)
+        ..rustType = const IrType('double');
+    }
     if (e.rustType?.name == 'double') return e;
     if (e is IrCast && e.rust == 'f64') return e;
     // Inside the `Some` the widening already put on: the cast belongs to

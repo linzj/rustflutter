@@ -2866,3 +2866,27 @@ enclosing shape.
 run866 holds the ruler after a change that touches every chain step: 708
 walk lines, 0 type-only differences, 508 as printed, no `RenderErrorBox`,
 200 frames drawn and 0 panicked.
+
+## ws867 -- each arm of a conditional widens, not the conditional
+
+    bin/run_chain.sh:  175 stubbed (was 178), 57 refusals (unchanged), 64 crates
+
+    final overflowNumberWidth =
+        numProducts > _maxThumbnailCount ? 30 * cappedTextScale(context) : 0;
+
+No declared type, so Dart infers `num` -- the least upper bound of the
+`double` one arm makes and the `int` literal in the other -- and this
+compiler spells a `num` as `f64`. `_toF64` put the cast around the whole
+conditional, and `if .. { 30.0 * s } else { 0 } as f64` is two types Rust
+will not unify before it reaches the cast. It widens each arm now, which is
+what the same function already does inside a `Some` (ws779).
+
+Three members, all in Shrine: `_mobileWidthFor`, `_desktopHeightFor` and
+the asymmetric view's `build`.
+
+The condf64 fixture needed the *inferred* local to reproduce: with
+`final double extra = ..` written out, the CFE folds the literal and
+nothing fails. With `final gap = n > 0 ? 16 : 0` and `final overflow =
+n > 3 ? 30 * scaleOf(scale) : 0` beside it, HEAD gives the gallery's own
+"`if` and `else` have incompatible types" and both ends say
+`140.0 80.0 64.0`.
