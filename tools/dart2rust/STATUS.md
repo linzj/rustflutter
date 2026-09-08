@@ -2824,3 +2824,45 @@ make the same decisions the gallery makes. That is worth trying before
 concluding anything about the method -- the harness already gives multiple
 files, the AOT pipeline and a whole-package emission, which is more than
 the four attempts above used.
+
+## ws866 -- a chain step returns against its own return, as any closure does
+
+    bin/run_chain.sh:  178 stubbed (was 181), 57 refusals (unchanged), 64 crates
+
+This is the double box of the note above, and it is ws751's rule in the one
+closure that rule never reached.
+
+`_closure` sets `_returns` to the closure's own return before emitting the
+body, and says why: "left at the enclosing method's, a closure returning a
+concrete class got that method's trait around it -- `getIcon: (context) =>
+Icons.menu` inside a `Widget build` was `dart_object(IconData::new(..)) as
+Rc<dyn Widget>`". `_stepClosure`, which emits the closure of an iterator
+chain, did not. So in
+
+    Row(children: columns.map((c) => Expanded(child: c)).toList())
+
+inside a `Widget build`, the step's body was spelled against `build`'s
+`Widget`, and the coercion that follows the chain -- which is right, a list
+of `Expanded` does become a list of handles -- put a second box on top.
+`dart_object` around an `Rc<dyn Widget>` is an `Rc<Rc<dyn Widget>>`, whose
+pointee implements nothing. Three `build`s: `CupertinoDatePicker`,
+`RallyHome` and the transformations demo's colour picker.
+
+One line, the same three lines `_closure` uses. What took six attempts was
+believing the fault was in the *coercion* after the chain rather than in
+the spelling inside it; five candidate fixes were reverted before a trace
+of the emitted upcasts showed only four of them for four sites, so the
+fifth `as Rc<dyn Widget>` in the text was not an upcast at all but a
+*declared-return* box.
+
+The doublebox fixture is the shape in two files -- a widget hierarchy, a
+getter handing back `List<Widget>`, and the map inside a constructor
+argument in a method returning `Widget`. It does not compile at HEAD, with
+the gallery's own "the trait bound `Rc<dyn Widget>: Widget` is not
+satisfied", and both ends say `{<[1 a] [1 b]>}`. It also settles the note
+above: what the earlier fixtures lacked was not the harness but this
+enclosing shape.
+
+run866 holds the ruler after a change that touches every chain step: 708
+walk lines, 0 type-only differences, 508 as printed, no `RenderErrorBox`,
+200 frames drawn and 0 panicked.

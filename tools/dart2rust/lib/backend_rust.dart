@@ -5454,7 +5454,18 @@ class RustBackend {
     };
     final savedSpells = _spellsReturn;
     _spellsReturn = true;
+    // ..and against the step's *own* return, as `_closure` does for the
+    // boxed kind: left at the enclosing method's, a step returning a
+    // concrete class got that method's trait around it, and the coercion
+    // after the chain put a second one on top -- `dart_object` around an
+    // `Rc<dyn Widget>`, whose pointee implements nothing
+    // (`columns.map((c) => Expanded(child: c))` inside a `Widget build`,
+    // the same shape as ws751 in the one closure it did not reach; 3
+    // `build`s at ws866).
+    final savedStepReturns = _returns;
+    _returns = e.returns;
     stmt(e.body, tail: true);
+    _returns = savedStepReturns;
     _spellsReturn = savedSpells;
     _cellLocals = savedCells;
     _lateCellLocals = savedLateCells;
