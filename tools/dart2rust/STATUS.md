@@ -1760,3 +1760,22 @@ The same count as ws814, with one member swapped inside it (`Board.current`
 for `Board.iterator`). The `current` group is a stub again, and the lesson
 is recorded above it: a rule that adds an *obligation* has to be measured
 against the thing that must meet it, not only against the thing that asked.
+
+## run818 -- the reading still holds
+
+Eight rounds of translator changes since run809, so the other half of the
+goal was measured before going further. The same commands, on ws817's
+workspace:
+
+    DART2RUST_OS=android DART2RUST_DUMP_RENDER_TREE=1 bin/run_main.sh:
+                       exit 0, budget spent with main pending
+                       198 frame(s) drawn, 0 panicked
+                       2911 platform messages
+                       render tree 708 lines, RenderErrorBox 0
+
+    diff ref_render_walk_settled.txt walk, ignoring size=/offset=:    0
+    diff ref_render_walk_settled.txt walk, as printed:              508
+
+Unchanged from run809 except the frame count (191 -> 198, the run is
+timed and the machine was less busy). Nothing the compile ruler cleared
+has cost the run ruler anything.
