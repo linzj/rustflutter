@@ -1091,3 +1091,11 @@ Grouped, from ws747: 433 -> 280 stubbed, 183 -> 130 refusals, 64 crates.
 
     ws777 280 stubbed
     ws778 277 stubbed, 130 refusals, 64 crates   -3, 0 new
+
+## ws779 — the null-aware fold and the big literal (277 → 276)
+
+    ws778 277 stubbed
+    ws779 276 stubbed, 130 refusals, 64 crates
+
+Grouped, from ws747: 433 -> 276 stubbed, 183 -> 130 refusals, 64 crates
+throughout, and the render walk's structure is the reference's.
