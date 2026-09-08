@@ -2785,7 +2785,24 @@ whose cause is only visible with the whole gallery in hand, and the
 fixture-first rule this session has kept means they wait for a way to
 reproduce them rather than for a plausible patch.
 
-### The fixture harness is now the binding constraint
+### What the fixture harness can and cannot reach
+
+**Corrected below.** The claim first written here -- that the harness
+builds a single library and that this is what blocks the remaining groups
+-- is wrong, and the correction is the useful part.
+
+`fx.sh` builds the fixture through the *AOT* pipeline (`FX_AOT=1`, so TFA
+runs) and then emits the whole `file:` package with
+`dart2rust_package.dart`, exactly as the chain does for the gallery. A
+fixture may therefore span several files: `staticset.dart` importing
+`staticset_binding.dart` compiles, translates and runs both. Cross-library
+shapes are reachable, and so is anything TFA decides within the fixture.
+
+What the four fixtures below still failed to reproduce is therefore not
+"one library" but something else -- most likely the *scale* of the closed
+world, since the erasure census and the instantiation list are decided by
+what the whole 924-library program names, and a four-class fixture names
+too little to make the same decisions.
 
 Four groups were taken to the point of a fixture this session and none of
 the four could be reproduced in one file:
@@ -2801,12 +2818,9 @@ field to `Null` -- and `fx.sh` builds a single library with none of them.
 The shapes are real (the chain names the members, and the emission shows
 the text), but the harness cannot make them fail.
 
-So the goal's own rule -- a fixture per cleared group, agreeing with Dart
--- cannot be satisfied for what is left by fixtures of this kind. Either
-the harness grows a way to build a small multi-library program *with* the
-AOT pipeline's analyses, and these shapes become reproducible; or these
-groups are verified the way ws858 was, by reading the emission before and
-after and taking the chain's diff as the measurement, and STATUS says so
-each time. That is a decision about how this compiler is to be tested, and
-it is the thing standing between here and zero for a good part of the
-remaining 181.
+So a fixture for these groups has to be *bigger*, not differently built:
+enough classes and enough instantiations that the census and the erasure
+make the same decisions the gallery makes. That is worth trying before
+concluding anything about the method -- the harness already gives multiple
+files, the AOT pipeline and a whole-package emission, which is more than
+the four attempts above used.
