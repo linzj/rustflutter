@@ -5510,7 +5510,17 @@ class KernelFrontend implements TypeWorld {
     // ..unless the receiver's own static class is concrete: the struct has
     // the abstract base's field flattened in, and the field is read as one
     // (`Get.isLogEnable` on a `_GetImpl`, whose trait was not even in scope).
-    final receiverType = target == null ? null : _staticType(receiver);
+    // The class the receiver *is here*: a closure parameter retyped to an
+    // erased bound reads back through a cast to the class it was declared
+    // with (`_localRead`), whatever the type flow analysis narrowed the
+    // static type to. Narrowed to a concrete subclass, the read came out
+    // as a field access on a value that is still a trait object
+    // (`notification.metrics` on a `dyn ScrollNotification`, ws721).
+    final receiverType = target == null
+        ? null
+        : (receiver is VariableGet && _retyped.containsKey(receiver.variable)
+              ? receiver.variable.type
+              : _staticType(receiver));
     final concrete =
         receiverType is InterfaceType &&
         !_abstractLike(receiverType.classNode) &&

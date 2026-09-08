@@ -269,6 +269,8 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 
 近期的(细节在活账/git):
 
+- **ws721**:「接收者的静态类不是具体类就一律走 trait 访问器」(想修 `notification.metrics`
+  的字段访问)——**stub 805**(基线 449),撤回。窄解是只对**重定类型的形参**按声明的类判断。
 - **ws704–706**(已作废,ws708 走通了):把「覆盖关系」算成 covariance 的 flow site
   一开始是 +22——擦除边界上标量与句柄进出不成立。补齐四条边界规则后(见 ws707/ws708)
   同一条改动是 **-3**。教训:量到 +N 时先看是不是边界规则缺,不要先撤回结论。
@@ -305,11 +307,10 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 - 第 86 轮:那 14 个错误该留着(否定结果)。
 - 第 102/103 轮:`Rc<Self>` 的价钱由 fixture 定的形状。
 
-## 活账:ws/run 表(窗口约 40 行,ws688 起;更老的在 git)
+## 活账:ws/run 表(窗口约 40 行,ws689 起;更老的在 git)
 
 | 轮 | 第一个停点 / 读数 | 处理 |
 |---|---|---|
-| ws688 | 链：stub **481**（+1：`RestorableEnumN::new`——`extends RestorableValue<T?>` 的 `T?` 现在投影了，基类字段 `T? _value = null` 的跨投影 `IrNullableOf` 在按子类实参替换时被丢掉（替换规则：实参可空就丢转换），槽却仍是 `<T as DartNullable>::Or`，裸 `None` 进不去），拒绝 183，可达 64。修（通用）：实参是**投影的**可空 `T?` 时转换保留。夹具 nullsuper SAME。 | 链 ws689 |
 | ws689 | 链：stub **480**（-1，回到 ws687），拒绝 183，可达 64。 | run689 |
 | run689 | `initState` 过了（state 现在是 `_SettingsListItemState<Option<f64>>`）。停在 `_SettingsListItemState.build` 的 stub：「type mismatch in closure arguments」——`onChanged: (newOption) => ..` 传给 `RadioListTile<T?>`：槽是 `Fn(<T as DartNullable>::Or)`，闭包参数拼成 `Option<T>`（闭包参数走 `_paramType`，深度 0 不投影）。修（通用，三处）：闭包参数与方法参数同样是"边"——`T?` 拼投影、体内序言重绑成 `Option<T>`（`_withEdgeParams` 加 `positional` 覆盖）；`_typeKept` 把投影的可空实参 `U?` 代进 `T?` 时保持投影（rustc 把 `<<U as Or> as Or>::Or` 归一成 `<U as Or>::Or`）；`_crossing` 对可空的 `U?` 绑定也按 `_projectedSlot` 判（此前假定"可空实参的槽就是 Option"，`_erasedArguments` 投影后不再成立）；backend `IrNullableOf(IrLocal)` 读时 `.clone()`（prelude 迭代器给闭包的是 `&T`）。夹具 closureedge SAME；nullarg/nullsuper/ctornull/outparam/qualgeneric 回归 SAME。链 ws690 已发未读。 | 链 ws690 |
 | ws690 | 链：stub **481**（+1：`_PopupMenuButtonState.showButtonMenu`），拒绝 183，可达 64。诊断：`showMenu<T?>(..).then(闭包)`——turbofish 拼成 `show_menu::<Option<T>>`，闭包参数（现在是"边"）拼 `<T as DartNullable>::Or`，两边说同一个 Dart 类型却不同拼法。同一行的局部声明 `Box<<T as DartNullable>::Or>` 是投影的（类类型实参走 `_erasedArguments`），可见 turbofish 才是异类。修（通用）：`_keptTypeArguments` 也是"类型实参"，走 `_typeNested`。夹具 fntypearg SAME。 | 链 ws691 |
@@ -348,7 +349,8 @@ laid-out 的 `size`、`BoxParentData` 的 `offset`)与 Flutter 自己的输出 d
 | ws718 | 修 run717：所问的类型也要擦——扩展类型在运行期没有身份，`x is _AscentDescent` 问的就是表示类型。链 **449**（同一组），拒绝 **173**。 | run718 |
 | run718 | 整个 `RenderFlex` 布局过了。停在 `SliverMultiBoxAdaptorElement.didFinishLayout` 的拒绝：`Map.firstKey`（`_childElements` 是 `SplayTreeMap<int, Element?>`，prelude 没有按键排序的首/末键）。 | 链 ws719 |
 | ws719 | 修 run718：prelude 的 `Map` 按插入序存（`SplayTreeMap` 就是它的别名），排序映射承诺的首/末键**算出来**——`impl<K: Clone + PartialOrd, V> Map<K, V>` 上的 `first_key`/`last_key`，只有键可比时才有这两个方法；`mapMethodNames` 加两条。夹具 sortedmap SAME。链 **449**（同一组），拒绝 **170**。 | run719 |
-| run719 | 过了 sliver 的 `didFinishLayout`。停在 `_PageViewState.build` 的 stub：「multiple applicable items in scope」。 | 下一轮 |
+| run719 | 过了 sliver 的 `didFinishLayout`。停在 `_PageViewState.build` 的 stub：「multiple applicable items in scope」。 | 链 ws720–722 |
+| ws720–722 | `_PageViewState.build` 的两处，同一个根因：`NotificationListener<ScrollNotification>` 的回调形参被擦除的 `T` **重定类型**成 `Notification`，读回时按声明的类下转型（`_localRead`），但两处判断都还在看 Dart 静态类型。① `notification.depth` 的限定名从静态类型（bound）走，那上面什么也没声明，于是 `ScrollNotification` 与 `ViewportNotificationMixin` 都来认领（E0034）→ 重定类型的形参按**声明的类**算限定名。② `notification.metrics` 出成字段访问：TFA 把静态类型收窄成了具体子类 `OverscrollNotification`，`concrete` 判真，可手里的值还是 `dyn ScrollNotification` → 重定类型的形参的「接收者的类」也按声明的那个算。中途试过「接收者不是具体类就一律走访问器」——**stub 805**，远超，撤回（记在〈撤回与作废〉）。夹具 mixdepth SAME。链 **448**（-1），拒绝 170。 | run722 |
 
 ## 下一步(2026-09-05 重铺)
 
