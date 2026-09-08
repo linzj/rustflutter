@@ -1074,3 +1074,15 @@ is an `Iterable`. `Board extends Iterable<BoardPoint?>` mixes in
 build `SkipIterable`, `WhereIterable` and `CastIterable` -- private
 classes nothing translates. The prelude answers those members through
 `__to_list` (9 at ws774).
+
+## ws777 — a `dart:` mixin's bodies stay out (288 → 280)
+
+    ws776 288 stubbed
+    ws777 280 stubbed, 130 refusals, 64 crates   -8, 0 new
+
+All eight are `Board`'s: `cast`, `elementAt`, `first`, `where`, `skip`,
+`toList`, `toSet`, `toString`, copied in from `dart:collection`'s
+`IterableMixin` and building private classes nothing translates. The
+prelude answers them.
+
+Grouped, from ws747: 433 -> 280 stubbed, 183 -> 130 refusals, 64 crates.
