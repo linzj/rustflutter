@@ -2142,3 +2142,20 @@ and the result still came back as `Option<Rc<dyn Object>>` into an
 `Option<f64>` binding. `_argument` with no callee does not set the expected
 return, which is where the adaptation would have come from. The refusal
 stands with that written next to it.
+
+## run834 -- the reading, again
+
+    DART2RUST_OS=android DART2RUST_DUMP_RENDER_TREE=1 bin/run_main.sh:
+                       exit 0, budget spent with main pending
+                       203 frame(s) drawn, 0 panicked
+                       render tree 708 lines, RenderErrorBox 0
+
+    diff ref_render_walk_settled.txt walk, ignoring size=/offset=:    0
+    diff ref_render_walk_settled.txt walk, as printed:              508
+
+Twelve more rounds since run818 and the reading has not moved: 708 lines,
+no type differing, nothing panicking. The compile ruler in the same tree
+reads 203 stubbed, 64 refusals, 64 reachable crates.
+
+From the start of this stretch: 221 stubbed and 130 refusals, so 351
+unfinished members down to 267.
