@@ -3944,6 +3944,21 @@ pub trait DartList<T> {
     fn element_at_or_null(&self, index: i64) -> Option<T>;
 }
 
+/// `list.sort()` with no comparator: Dart sorts by `Comparable`, and the
+/// prelude's numbers and strings have that order. A `Vec<T>` for a `T`
+/// with none has no `sort_natural`, which is where the compiler stops --
+/// `DartList` is generic over every `T`, so the order cannot live there
+/// (`FlutterError.defaultStackFilter`, run728).
+pub trait DartSortNatural {
+    fn sort_natural(&mut self);
+}
+
+impl<T: PartialOrd> DartSortNatural for Vec<T> {
+    fn sort_natural(&mut self) {
+        self.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+
 impl<T: Clone> DartList<T> for Vec<T> {
     fn length(&self) -> i64 {
         self.len() as i64

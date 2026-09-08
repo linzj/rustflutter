@@ -3556,6 +3556,7 @@ class RustBackend {
     'truncate',
     'pop',
     'sort',
+    'sort_natural',
     'sort_by',
     'reverse',
     'swap',
@@ -11632,8 +11633,11 @@ class _WalkSelf {
     '!insert',
     '!remove_at',
     // The ordered `Map`'s own mutators. `put_if_absent` may write, so it
-    // takes `&mut self`, and its receiver needs to say so.
+    // takes `&mut self`, and its receiver needs to say so; so does
+    // `update`, and `sort_natural` sorts in place.
     'put_if_absent',
+    'update',
+    'sort_natural',
   };
 
   /// Locals a mutating call is made on -- `xs.insert(..)` needs `let mut xs`,

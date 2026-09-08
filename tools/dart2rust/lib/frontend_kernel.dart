@@ -6177,13 +6177,19 @@ class KernelFrontend implements TypeWorld {
         );
       }
       if (name == 'sort') {
-        // `sort()` is `Vec::sort`; `sort(compare)` takes a Dart comparator
+        // `sort()` is the natural order Dart's `Comparable` gives
+        // (`sort_natural`); `sort(compare)` takes a Dart comparator
         // returning an `int`, which the prelude's `sort_by_dart` turns into
-        // an `Ordering`. 36 of these.
+        // an `Ordering`. 36 of these. An *omitted* comparator arrives as
+        // the `null` default and is the first of the two, not the second
+        // with a `None` (`FlutterError.defaultStackFilter`, run728).
+        final given = args.length == 1 ? args.single : null;
+        final omitted =
+            args.isEmpty || (given is IrLiteral && given.type.name == 'Null');
         return IrCall(
           _listReceiver(node.receiver, name),
-          args.isEmpty ? 'sort' : 'sort_by_dart',
-          args,
+          omitted ? 'sort_natural' : 'sort_by_dart',
+          omitted ? const [] : args,
         );
       }
       final rust = listMethodNames[name];
