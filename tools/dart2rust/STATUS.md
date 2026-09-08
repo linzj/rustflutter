@@ -2292,3 +2292,16 @@ runtime type and no `dart_to_string`, so every one of them fell through to
 the blanket `Object`'s "Instance of". They go through `dart_any_display!`
 now, like the `i64` and `f64` beside them. Compile-neutral, and a silent
 wrong answer fewer: nothing in the stub set moved for it.
+
+## run848 -- the reading, after `toString` changed for ten types
+
+    DART2RUST_OS=android DART2RUST_DUMP_RENDER_TREE=1 bin/run_main.sh:
+                       exit 0, 201 frame(s) drawn, 0 panicked
+                       render tree 708 lines, RenderErrorBox 0
+    type-only differences: 0     as printed: 508
+
+Worth its own reading because `dart_to_string` changed for ten types this
+round, and a `toString` is the kind of thing a diagnostics walk prints.
+It did not move: 708 lines, no type differing, nothing panicking.
+
+    the compile ruler in the same tree:  201 stubbed, 60 refusals, 64 crates
