@@ -1117,3 +1117,13 @@ is *translated*, so its `num` really is an `f64` here -- the guard was
 arrives as a `ConstantExpression`, not an `IntLiteral`; and `_toF64` has
 to reach inside the `Some` the widening already put on, or the cast lands
 on the `Option`.
+
+## ws781 — 276, twelve for twelve
+
+    ws779 276 stubbed
+    ws781 276 stubbed, 130 refusals, 64 crates   12 gone, 12 new
+
+The twelve that went are the `lerpDouble(a, 0, t)` family and the cascade
+binding. The twelve that came are one typo's worth: the backend suffixes a
+float literal *receiver* with `_f64`, and a literal the front end had
+already suffixed read `0.0_f64_f64`. Suffixed once now.

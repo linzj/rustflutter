@@ -4132,7 +4132,12 @@ class RustBackend {
         : ownPlace != null
         ? ownPlace
         : target is IrLiteral && target.type.name == 'double'
-        ? '(${_receiver(target)}_f64)'
+        ? (() {
+            // ..once: a literal the front end already suffixed (an integer
+            // written as a double, ws779) would read `0.0_f64_f64`.
+            final text = _receiver(target);
+            return text.endsWith('_f64') ? '($text)' : '(${text}_f64)';
+          }())
         : _receiver(target);
     // `HashMap` looks up by reference, and gives back a reference to the
     // value. Dart's `m[k]` is a `V?`, so the borrow is cloned away rather
