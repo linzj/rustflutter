@@ -1867,3 +1867,34 @@ same wall `identical` on a list stops at, and the same answer.
 
 `Map.addEntries` did land (the addentries fixture): each entry inserted in
 order, a later key replacing an earlier one.
+
+## ws822 -- `Map.addEntries`, and two rules that measured to nothing
+
+    bin/run_chain.sh:  202 stubbed (unchanged), 79 refusals (was 80), 64 crates
+    the stub set is identical to ws821's, member for member
+
+`Map.addEntries` landed (one refusal, the addentries fixture). The other
+two things tried this round both measured to nothing, and both are worth
+writing down because each looked certain.
+
+**The chain's type, second attempt.** ws814 typed the chain and nothing
+moved; the diagnosis then was that the coercion reads the *`toList()`*
+expression, not the chain. So this round typed both -- and nothing moved
+again, member for member. Whatever puts the second upcast on
+`_CupertinoDatePickerDateTimeState.build`'s children does not read either
+type. Reverted a second time. What is now known about the group: the inner
+step closure already spells `as Rc<dyn Widget>` (so `IrClosure.returns` is
+the trait), and something still coerces the collected `Vec` element by
+element into the same trait. The next attempt should find that coercion
+rather than guess at its input; `_receiver`'s coercion of a receiver to its
+Dart static type is the untested candidate.
+
+**`xs.last = v` on a field, and why it stayed refused.** The prelude has
+no `first =`/`last =`, so `DiagnosticsNode.write` is a stub. Adding them
+compiles -- and the listends fixture then read `[1, 2, 3]` where Dart
+reads `[70, 2, 7]`: a setter's receiver does not go through `_mutPlace`,
+so the write lands in a *copy* read out of the cell. A compile error
+became a silent wrong answer, which is the one trade this compiler does
+not make, so the methods are reverted and the stub stands. The fixture is
+the evidence for whoever routes `IrSetter` through the mutating-call path:
+a local (`local.last = 9`) is already right, only a field is not.
