@@ -9733,28 +9733,15 @@ class KernelFrontend implements TypeWorld {
     // where `dumpErrorToConsole(details, {forceReport = false})` fills a
     // `void Function(FlutterErrorDetails)` slot. The adapter passes the
     // defaults, as a call through the slot would.
-    // ..and an *instance* tear-off the same way: `Timer(delay,
-    // _controller.reverse)` tears off `reverse({double? from})` into a
-    // `void Function()`, and `showOnScreen`'s four optional named
-    // parameters land in a `VoidCallback` (8 at ws793). The target is a
-    // Member either way, and the adapter calls the tear-off -- which
-    // already holds its receiver -- with the defaults filled in.
-    final tearOffTarget = switch (value) {
-      ConstantExpression(:final constant) when constant is TearOffConstant =>
-        constant.target,
-      StaticTearOff(:final target) => target,
-      InstanceTearOff(:final interfaceTarget) => interfaceTarget,
-      _ => null,
-    };
-    if (tearOffTarget != null &&
-        tearOffTarget.function != null &&
+    if (value is ConstantExpression &&
+        value.constant is TearOffConstant &&
         param is FunctionType &&
         given is FunctionType &&
         param.namedParameters.isEmpty &&
         given.namedParameters.isNotEmpty &&
         param.positionalParameters.length ==
             given.positionalParameters.length) {
-      final target = tearOffTarget;
+      final target = (value.constant as TearOffConstant).target;
       final params = <IrParam>[];
       final args = <IrExpr>[];
       for (var i = 0; i < param.positionalParameters.length; i++) {
@@ -9762,16 +9749,8 @@ class KernelFrontend implements TypeWorld {
         params.add(IrParam(name, _paramType(param.positionalParameters[i])));
         args.add(IrLocal(name));
       }
-      // In the *type's* order, which Kernel sorts and the lowered tear-off
-      // takes its parameters in -- not the declaration's, which is the
-      // order the defaults are written in (`show({int? which, String tag =
-      // 'd', bool loud = false})` was called `(None, "d", false)` against
-      // `|loud, tag, which|`).
-      for (final n in given.namedParameters) {
-        final declared = target.function!.namedParameters
-            .where((p) => p.parameterName == n.name)
-            .firstOrNull;
-        final init = declared?.initializer;
+      for (final n in target.function!.namedParameters) {
+        final init = n.initializer;
         args.add(init == null ? _nullLiteral() : expression(init));
       }
       return IrCall(
@@ -9779,10 +9758,6 @@ class KernelFrontend implements TypeWorld {
           params,
           IrReturn(IrCallValue(lowered, args)),
           _type(param.returnType),
-          // An instance tear-off holds its receiver: the adapter around it
-          // has to hold it too, or it borrows the local the receiver came
-          // from and cannot outlive the call (E0597, the tearopt fixture).
-          locals: _freeLocalsIn(value, {}),
         ),
         '!rc',
         const [],
