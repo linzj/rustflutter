@@ -1039,3 +1039,19 @@ instantiated, not from the recorded type. Left for the next round.
 
     ws772 288 stubbed
     ws774 288 stubbed, 130 refusals, 64 crates   0 gone, 0 new
+
+## run775 — the render walk's structure is the reference's, exactly
+
+    DART2RUST_OS=android
+    708 lines against 708
+    ignoring `size=` and `offset=`: **0 differing lines**
+    with them: 508, and the identical prefix is 60 lines
+
+Every node's `runtimeType`, in order, at the same depth, is the
+reference's -- the applied `runtimeType` closed the last one. Goal 3's
+structural half is done.
+
+The 508 are the sizes, and their root is the 32 paragraphs measuring zero
+(see above): a text engine, not a translation. The first size to differ is
+`RenderIndexedSemantics size=Size(800.0, 52.0)` against our
+`Size(800.0, 26.0)` -- a list row whose height is its text's.

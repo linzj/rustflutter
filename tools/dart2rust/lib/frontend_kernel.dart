@@ -1411,6 +1411,25 @@ class KernelFrontend implements TypeWorld {
   }
 
   IrType? _topBound(DartType? declared, DartType? substituted) {
+    // Through a `Future`: `invokeMethod<T>` returns `Future<T?>`, and the
+    // rule below reads its `T?` as the `Option<Rc<dyn Object>>` a handle's
+    // `Or` is. Stopping at the `Future` recorded a bare `Future<dynamic>`,
+    // and the erased twin's cast then asked for `DartFuture<Rc<dyn
+    // Object>>` where the twin hands back `DartFuture<Option<..>>`
+    // (`DefaultProcessTextService.queryTextActions`, the run's own panic
+    // at run773).
+    if (declared is InterfaceType &&
+        declared.classNode.name == 'Future' &&
+        declared.typeArguments.length == 1 &&
+        substituted is InterfaceType &&
+        substituted.classNode.name == 'Future' &&
+        substituted.typeArguments.length == 1) {
+      final inner = _topBound(
+        declared.typeArguments.single,
+        substituted.typeArguments.single,
+      );
+      return inner == null ? null : IrType('Future', arguments: [inner]);
+    }
     if (declared is! TypeParameterType ||
         declared.nullability != Nullability.nullable ||
         _erasedParameter(declared.parameter)) {
