@@ -1379,3 +1379,30 @@ read counterpart of `_mutPlace`, and the same shape the existing
 association list, so every lookup is O(n). A hash index over
 `DartEq::dart_hash_code` (identity for a counted class, a real hash for a
 `String`) would fix it, keeping the insertion order a `Vec` gives.
+
+## ws800 — 223 stubbed (was 226), 130 refusals, 64 crates
+
+The projection family went: `Provider.of`, `RawRadio.value`, and the three
+`_getOverrideAction`. The last of those was a *signature/prologue*
+disagreement -- a mixin copy takes its parameter types from the declaration
+it was copied from, and those name the declaration's own type parameters,
+which `_projectedSlot` does not recognise as this one's; the signature came
+out `Option<U>` and the prologue unprojected it anyway. The prologue reads
+the same `_declaredParamTypes` the signature does now.
+
+Two regressions came with the borrowed read and are fixed on top: binding
+the key of `m[k]` to a local *moved* it, where the ordinary emission takes
+it by reference (`SlottedContainerRenderObjectMixin._setChild`).
+
+## `Map` is no longer an association list to look in
+
+`Map<K, V>` keeps its `Vec<(K, V)>` -- the order Dart promises -- and gains
+a lazily built index beside it, by `DartEq::dart_hash_code`, valid exactly
+while it covers `entries.len()`. An append extends it; every other mutation
+changes the length and the next lookup rebuilds. Under eight entries the
+scan is still cheaper and is what runs. A key whose `==` looks in the same
+map meets `try_borrow_mut` and falls back to the scan.
+
+`InheritedElement._dependents` is the case that named this: one entry per
+element depending on a `Theme` or a `Localizations`, scanned on every
+`dependOnInheritedElement`.
