@@ -627,3 +627,17 @@ Four more rules go in with this commit, measured next:
 * a record with named fields is a tuple: the named part after the
   positional, in the type's sorted order, which is Dart's canonical order
   (`SelectionOverlay._handles`, 6 stubs and 5 refusals at ws751).
+
+## ws754 — four rules from the census (353 → 333, refusals 162 → 130)
+
+    ws753 353 stubbed, 162 refusals, 64 crates
+    ws754 333 stubbed, 130 refusals, 64 crates   24 gone, 4 new
+
+The four: the indexed assignment's projection crossing, no second handle
+around a handle, `Object.noSuchMethod` in the prelude, named record
+fields as the sorted tail of the tuple. The refusal count is the record
+rule: 32 refusals were `a record type with named fields`, `a record with
+named fields` and `RecordNameGet`. The 4 new stubs are that same rule's
+bill -- `SelectionOverlay.showMagnifier`, `showToolbar`,
+`_classifyRegions`, `getGlyphHeights` were refused before and now compile
+far enough to be counted.

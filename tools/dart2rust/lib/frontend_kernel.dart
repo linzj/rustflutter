@@ -12892,7 +12892,13 @@ class KernelFrontend implements TypeWorld {
               _isStreamView(base)
           ? null
           : base.name,
-      mixins: node.isEnum ? const [] : mixins,
+      // An enum's mixins too: `enum WidgetState with WidgetStatesConstraint`
+      // is a Rust enum, and the mixin is the trait impl that lets its value
+      // stand where the mixin's type goes -- dropped, the value had no
+      // `impl WidgetStatesConstraint` to be cast through (5 at ws751). A
+      // mixin that declares fields still has nowhere to put them on an
+      // enum, and the emission refuses as it would for any other class.
+      mixins: mixins,
       iterableElement: node.isEnum ? null : _iterableElementIr(node),
       // The class's own `implements` clause. The applied mixins reached
       // through `implementedTypes` above belong to the *synthetic* classes on
