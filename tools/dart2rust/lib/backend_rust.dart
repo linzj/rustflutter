@@ -4417,10 +4417,10 @@ class RustBackend {
     // `expected &i64, found i64`. The chain steps get away with `iter()`
     // because what they produce is collected, not compared.
     if (name == '!any' && args.length == 1) {
-      return '$receiver.iter().cloned().any(${_stepClosure(args.single)})';
+      return '$receiver.iter().cloned().any(${_stepClosure(args.single, cloned: true)})';
     }
     if (name == '!every' && args.length == 1) {
-      return '$receiver.iter().cloned().all(${_stepClosure(args.single)})';
+      return '$receiver.iter().cloned().all(${_stepClosure(args.single, cloned: true)})';
     }
     if (name == '!to_set' && args.isEmpty) {
       return 'Set::from($receiver.clone())';
@@ -5060,18 +5060,18 @@ class RustBackend {
   /// the only difference is which of two throws is reported.
   String _chain(IrIterChain chain, {String tail = ''}) {
     final bound = <String>[];
+    // A bare `forEach` hands the closure each element by value, as Dart
+    // does: `keys.forEach(_updateProperty)` gave it `&Rc<..>` (53).
+    final owned =
+        chain.steps.length == 1 && chain.steps.single.$1 == 'for_each';
     final steps = chain.steps.map((step) {
       String? name;
       if (step.$2 is! IrClosure) {
         name = '__f${bound.length}';
         bound.add('let $name = ${expr(step.$2)};');
       }
-      return '.${step.$1}(${_stepClosure(step.$2, step: step.$1, bound: name)})';
+      return '.${step.$1}(${_stepClosure(step.$2, step: step.$1, bound: name, cloned: owned)})';
     }).join();
-    // A bare `forEach` hands the closure each element by value, as Dart
-    // does: `keys.forEach(_updateProperty)` gave it `&Rc<..>` (53).
-    final owned =
-        chain.steps.length == 1 && chain.steps.single.$1 == 'for_each';
     final body =
         '${expr(chain.source)}.iter()${owned ? '.cloned()' : ''}$steps$tail';
     return bound.isEmpty ? body : '{ ${bound.join(' ')} $body }';
@@ -5092,7 +5092,12 @@ class RustBackend {
   /// `iter()` yields references, so the Dart type is the wrong annotation --
   /// `|m: i64|` against a `&i64` does not compile. Left off, Rust infers it,
   /// and the body reads the same either way.
-  String _stepClosure(IrExpr e, {String step = '', String? bound}) {
+  String _stepClosure(
+    IrExpr e, {
+    String step = '',
+    String? bound,
+    bool cloned = false,
+  }) {
     // A function *value* as the step (`where(shouldNotSkip)`): called
     // from a closure of the step's own shape -- `filter` hands `&&T`,
     // the rest the item -- and its `Result` unwrapped, as a written
@@ -5113,16 +5118,23 @@ class RustBackend {
     // `i64` -- `model.getProductById(id)` over `productsInCart.keys` --
     // has no deref to reach through the reference (3 at ws793). A scalar
     // is `Copy`, so the binding costs nothing.
-    bool byValue(IrParam p) => owned || _isCopy(type(p.type));
+    // ..unless the source already handed values out (`iter().cloned()`,
+    // which `for_each`, `any` and `all` take): there is nothing to deref.
+    bool byValue(IrParam p) => !cloned && (owned || _isCopy(type(p.type)));
+    // The temporary's name is spelled from the *identifier*, not from the
+    // Rust name: a parameter called `box` snakes to `r#box`, and
+    // `__p_r#box` is a prefixed identifier, which Rust 2021 reserves
+    // (`TextPainter.getBoxesForSelection`, ws797).
+    String temp(IrParam p) => '__p_${snake(p.name).replaceAll('r#', '')}';
     final params = e.params
-        .map((p) => byValue(p) ? '__p_${snake(p.name)}' : snake(p.name))
+        .map((p) => byValue(p) ? temp(p) : snake(p.name))
         .join(', ');
     final unwrapped = e.params
         .where(byValue)
         .map(
           (p) =>
               'let ${_assignedIn(e.body).contains(p.name) ? 'mut ' : ''}'
-              '${snake(p.name)} = (*__p_${snake(p.name)}).clone(); ',
+              '${snake(p.name)} = (*${temp(p)}).clone(); ',
         )
         .join();
     final saved = _out.length;
