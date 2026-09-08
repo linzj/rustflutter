@@ -2641,3 +2641,25 @@ run860 holds the ruler: 708 walk lines, 0 type-only differences, 508 as
 printed, no `RenderErrorBox`, 196 frames drawn and 0 panicked. Four members
 that walk graphemes now run where they used to panic, and the walk did not
 move.
+
+## ws861 -- a value widens under the `Option` only when it is in one
+
+    bin/run_chain.sh:  186 stubbed (was 189), 57 refusals (unchanged), 64 crates
+
+`Object.hash(.., fallback == null ? null : Object.hashAll(fallback), ..)`:
+in the second arm Dart has promoted `fallback` to a `List<String>` and the
+value in hand is a `Vec`, but `_widened` asked the *declared* type, saw
+`List<String>?`, and widened the elements "under the `Option`" -- a
+null-aware map over something that is not one. What came out was
+`as_ref()` on a `Vec`, which names two `AsRef` impls and types nothing
+(E0282), and the three members that hash a nullable list stopped there:
+`TextStyle.hashCode` and two in `dart:ui`.
+
+The rule now asks what is actually in hand (`lowered.rustType`) as well as
+what was declared, which is the same distinction `_isTest` draws for a
+promoted read (ws620): recorded nullable, already unwrapped.
+
+The hashallnull fixture is that expression -- a class hashing a
+`List<String>?` field through `Object.hash` and `Object.hashAll` under a
+null check, compared for two equal values, two nulls, and one of each. It
+does not compile at HEAD and both ends say `true true false`.

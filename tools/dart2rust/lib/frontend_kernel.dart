@@ -10038,8 +10038,15 @@ class KernelFrontend implements TypeWorld {
         (held.typeArguments.first as InterfaceType).classNode.name !=
             'Object' &&
         held.typeArguments.first.nullability != Nullability.nullable) {
-      // A nullable list widens element by element under the `Option`.
-      if (held.nullability == Nullability.nullable) {
+      // A nullable list widens element by element under the `Option` --
+      // unless the value in hand is not one. A read promoted by a null
+      // check is recorded by its *declaration* and unwrapped where it is
+      // used, and mapping over what is already a `Vec` emitted
+      // `as_ref()`, which names two `AsRef` impls (E0282; `Object.hashAll(
+      // fallback)` under `fallback == null ? null : ..`, 6 at ws861).
+      final inHand = lowered.rustType;
+      if (held.nullability == Nullability.nullable &&
+          (inHand == null || inHand.nullable)) {
         return IrNullAware(
           lowered,
           IrCall(IrBound(), '!widen_object', const []),
