@@ -1696,3 +1696,38 @@ Recorded for the next census: `xs.map(f).where(g)` does not compile
 `.cloned()` has nothing to clone) -- found by a fixture written for
 something else, and not yet in any stub because no gallery member writes
 it.
+
+## ws815 -- a `dart:core` interface on a trait, and a null test with one answer
+
+**A `dyn CharacterRange` could not be asked `current()`.** `CharacterRange
+implements Iterator<String>`, and the prelude's `DartIterator` was only
+ever an impl on the concrete classes -- so the trait the abstract class
+becomes did not carry it, and every read through a handle was "no method
+named `current`". It is a supertrait now, except where its arguments name
+the class itself (`SourceSpan implements Comparable<SourceSpan>` inside
+its own bound is a cycle). The iterface fixture.
+
+**A null test on a literal null has one answer.** Type flow analysis folds
+a value it proved always null into the literal, and both arms were lowered
+anyway -- the dead one with nothing to infer its types from (`None
+.as_ref().map(|it| ..)`). The branch that runs is the whole conditional
+now. The nullfold fixture.
+
+    bin/run_chain.sh:  211 stubbed (was 208), 88 refusals, 64 crates
+    3 cleared (the `current` group), 6 added
+
+The six were a second half of the interface rule that went too far:
+forwarding impls were emitted for interfaces an *ancestor* listed, and a
+forwarding impl calls an **inherent** method. Reached only through a trait
+`self.compare_to(other)` names two candidates and neither wins; with
+another arity (`moveNext(int count)` against the prelude's `move_next()`)
+it is the wrong method outright. The impl is now emitted only where every
+call it would make lands on a method this class declares.
+
+Also tried and reverted: `identical` on a nullable *prelude* value (an
+`Option<Vec<E>>`, four stubs in `package:collection`'s equalities) picking
+the prelude's value form. It compiles and it is **wrong**: the value form
+compares the addresses of the two bindings, and `identical(xs, xs)` on a
+list came out `false` where Dart says `true`. A Dart list is a reference
+and this compiler makes it a value; identity on one is not something the
+model can answer, so those four stay refused rather than answered wrongly.

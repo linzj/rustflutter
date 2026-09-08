@@ -10145,10 +10145,38 @@ class RustBackend {
     return out.values.toList();
   }
 
+  /// Whether this class has its own method for one of the forwarding calls
+  /// (`compare_to(other)`, `current()`).
+  ///
+  /// The impl forwards to an *inherent* method. Reached only through a
+  /// trait, `self.compare_to(other)` names two candidates and neither wins
+  /// (E0034); with another arity -- `moveNext(int count)` against the
+  /// prelude's `move_next()` -- it is the wrong method. 6 at ws815.
+  bool _canForward(String call) {
+    final open = call.indexOf('(');
+    final name = call.substring(0, open);
+    final inside = call.substring(open + 1, call.length - 1).trim();
+    final count = inside.isEmpty ? 0 : inside.split(',').length;
+    return cls.methods.any(
+      (m) =>
+          !m.isStatic &&
+          !m.isSetter &&
+          m.operator == null &&
+          snake(m.name) == name &&
+          m.params.length == count,
+    );
+  }
+
   void _emitPreludeInterfaces() {
     for (final i in _preludeInterfacesOf(cls)) {
       final methods = _preludeInterfaces[i.name];
       if (methods == null) continue;
+      // Every call it would make has to land on a method of this class.
+      var forwards = true;
+      for (var k = 1; k < methods.length; k += 2) {
+        if (!_canForward(methods[k])) forwards = false;
+      }
+      if (!forwards) continue;
       final args = i.arguments.map((a) => type(a)).toList();
       final generic = args.isEmpty ? '' : '<${args.join(', ')}>';
       _member('impl ${i.name} for ${cls.name}', () {
