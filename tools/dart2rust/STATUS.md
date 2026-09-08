@@ -1232,3 +1232,21 @@ turned out to be:
   - 8 `C<T> <= C<Rc<dyn Object>>` (provider's `_DelegateState<T>`, the
     scheduler's `_TaskEntry<T>`) -- erasure at a *nested* type argument;
     still open.
+
+## ws790 — 253 stubbed (was 256), 130 refusals, 64 crates
+
+The projection-edge rule cleared `AsyncSnapshot.nothing/withData/withError`.
+The mixin-fill rule cleared the five `&mut Vec<Rc<dyn DiagnosticsNode>>`
+errors outright -- those functions are still stubbed, but on a different and
+much simpler ground: `Map.fromIterables` was missing from the prelude
+(`SlottedContainerRenderObjectMixin.debugDescribeChildren` builds one from
+`_slotToChild.values()` and `.keys()`, and four `debugDescribeChildren`
+copies of it do too). Added.
+
+Also fixed after the ws789 census: a `?.` on a projected `T?` spelled
+`.as_ref()` on the associated type. `_nullAware` unprojected its receiver in
+one of its four branches only -- not in the `Result` one, which is the one a
+failing body takes -- and a flattened body handed back an
+`Option<<T as DartNullable>::Or>`, which is one `Option` layer, not two.
+Both go through `_plain` now. The projread fixture (`T? get value` read
+through `?.`, and a `final T? held` field) agrees with Dart.
