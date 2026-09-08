@@ -3704,6 +3704,15 @@ class RustBackend {
         target.target != null) {
       return _mutPlace(target.target!);
     }
+    // A value a collection *holds* is mutated where the collection keeps
+    // it: `m[k]!.add(v)` and `xs[i].add(v)` reach the set and the list
+    // inside, and reading one out took a copy -- the call compiled and
+    // changed nothing. `_groupIdToRegions[region.groupId]!.add(region)`
+    // left every group empty; the emptied group was then dropped as
+    // "empty", and the next unregistration found no key at all
+    // (`RenderTapRegionSurface`, run787).
+    final held = _heldSlot(target);
+    if (held != null) return held;
     if (target is IrNullCheck) {
       final inner = _mutPlace(target.operand);
       if (inner != null) return '$inner.as_mut().unwrap()';
@@ -3736,6 +3745,67 @@ class RustBackend {
       }
     }
     return '$cell.borrow_mut()';
+  }
+
+  /// The place a collection keeps one of its values in, borrowed mutably.
+  ///
+  /// Dart's `[]` hands back the object the collection holds; a `Vec` and a
+  /// `Map` here hand back a value, and a clone of it is not the collection's.
+  /// A map's `[]` is a `V?`, so the shape is the `!` the Dart wrote --
+  /// `get_mut` answers the same absence.
+  /// Null when the collection itself has no place (a call's result, a
+  /// parameter read): nothing can be mutated in place there.
+  String? _heldSlot(IrExpr? read) {
+    if (read is IrCall &&
+        read.name == 'clone' &&
+        read.args.isEmpty &&
+        read.target != null) {
+      return _heldSlot(read.target!);
+    }
+    if (read is IrNullCheck) {
+      var inner = read.operand;
+      if (inner is IrCall &&
+          inner.name == 'clone' &&
+          inner.args.isEmpty &&
+          inner.target != null) {
+        inner = inner.target!;
+      }
+      if (inner is IrCall &&
+          inner.name == '!map_get' &&
+          inner.args.length == 1 &&
+          inner.target != null) {
+        final place = _collectionPlace(inner.target!);
+        return place == null
+            ? null
+            : '$place.get_mut(&${_borrowed(inner.args.single)}).unwrap()';
+      }
+      return null;
+    }
+    if (read is IrIndex) {
+      final place = _collectionPlace(read.target);
+      // The index first, as `IrIndexSet` takes it: `xs[self.i()]` inside a
+      // `borrow_mut()` would borrow the same cell twice.
+      return place == null ? null : '$place[${expr(read.index)} as usize]';
+    }
+    return null;
+  }
+
+  /// A collection as a place: a cell's `borrow_mut()`, one of this struct's
+  /// own fields, or a local.
+  String? _collectionPlace(IrExpr collection) {
+    final cell = _mutPlace(collection);
+    if (cell != null) return cell;
+    if (collection is IrField &&
+        (collection.target == null || collection.target is IrThis) &&
+        !_fieldsAreAccessors &&
+        (_selfName == 'self' || _selfName == '__new') &&
+        _ownCollectionField(collection.name)) {
+      return '$_selfName.${snake(collection.name)}';
+    }
+    if (collection is IrLocal && !_cellLocals.containsKey(collection.name)) {
+      return snake(collection.name);
+    }
+    return null;
   }
 
   /// The cell a field read would go through, as a place -- `self.x` or
@@ -11951,6 +12021,18 @@ class _WalkSelf {
     _ => false,
   };
 
+  /// The collection a receiver reads a held value out of -- `m[k]!`, `xs[i]`
+  /// -- which is the place a mutating call on that value acts on
+  /// (`_heldSlot`); null when the receiver is not such a read.
+  static IrExpr? _heldIn(IrExpr? e) => switch (e) {
+    IrIndex(:final target) => target,
+    IrNullCheck(:final operand) => _heldIn(operand),
+    IrCall(:final target, name: '!map_get') when target != null => target,
+    IrCall(:final target, name: 'clone', args: []) when target != null =>
+      _heldIn(target),
+    _ => null,
+  };
+
   /// Locals written by an assignment used for its value.
   final assignedLocals = <String>{};
 
@@ -12115,8 +12197,12 @@ class _WalkSelf {
         // immutable parameter was E0596. An unneeded `mut` is a warning.
         if (target is IrLocal) receiverLocals.add(target.name);
         if (_mutatingListMethods.contains(name)) {
-          if (_rootedAtThis(target)) writesFields = true;
-          if (target is IrLocal) mutatedLocals.add(target.name);
+          // A call on a value read out of one of this object's collections
+          // acts on the collection (`_heldSlot`): `m[k]!.add(v)` writes the
+          // field the map is, and `xs[i].push(v)` needs `let mut xs`.
+          final on = _heldIn(target) ?? target;
+          if (_rootedAtThis(on)) writesFields = true;
+          if (on is IrLocal) mutatedLocals.add(on.name);
         }
         if (target != null) expression(target);
         args.forEach(expression);

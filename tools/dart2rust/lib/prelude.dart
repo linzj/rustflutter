@@ -2450,6 +2450,17 @@ impl<K: DartEq + Clone, V: Clone> Map<K, V> {
         self.at(key).map(|i| &self.entries[i].1)
     }
 
+    /// The value the map holds, to change in place: Dart's `[]` hands back
+    /// the object itself, so `m[k]!.add(v)` adds to the map's own set --
+    /// where a value read out of a `Map` here is a copy and the map keeps
+    /// the empty one (`RenderTapRegionSurface._groupIdToRegions`, run787).
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        match self.at(key) {
+            Some(i) => Some(&mut self.entries[i].1),
+            None => None,
+        }
+    }
+
     /// Dart gives back what was there; so does Rust's `HashMap::insert`.
     /// Replacing a value keeps the key where it was, which is what insertion
     /// order means once a key is written twice.
