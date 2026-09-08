@@ -549,3 +549,22 @@ case says.
 
 Grouping is worth far more than the panic-by-panic walk: one rule, 35 gone,
 nothing new.
+
+## ws750 — a chain step's callback is built once, outside (398 → 390)
+
+Second group of the ws747 census: 8 blocks of `expected bool, found
+Result<_, Rc<dyn Object>>`, all in `_sortAndFilter{Horizontally,Vertically}`.
+Upstream writes `nodes.where(switch (direction) { .. => (node) => .., up ||
+down => throw ArgumentError(..) })`. The switch expression is a block, and
+`_stepClosure` inlined it into the `filter` closure it writes -- so the
+throwing arm's `return Err(..)` returned from a closure typed `-> bool`,
+and the block was rebuilt once per element.
+
+The rule: a chain step whose callback is a *value* rather than a written
+closure is bound before the chain, and the closure calls the binding. That
+is also what Dart does -- `where`'s argument is evaluated once.
+
+    ws749 398 stubbed, 162 refusals, 64 crates
+    ws750 390 stubbed, 162 refusals, 64 crates   -8, 0 new
+
+(The rule rode along in ws749's commit; the measurement is this one.)
