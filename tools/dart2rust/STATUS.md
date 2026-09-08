@@ -1434,3 +1434,7 @@ rather than the case:
   - a map small enough never to have built an index must never ask its keys
     to hash at all: `insert` asks *inside* the index, so the five-entry
     `_FifoCache` behaves exactly as it did before.
+
+## ws803 — 221 stubbed, the same set as ws801
+
+The map index and the two rules that came with it are compile-neutral.
