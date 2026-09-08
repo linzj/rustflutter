@@ -3355,6 +3355,20 @@ class RustBackend {
       final test = _isTest(inner, target, negated);
       return '(match ${expr(operand)}.clone() { Some(__v) => $test, None => $negated })';
     }
+    // `x is R Function(..)`: the function object keeps the handle it was
+    // made from, whose Rust type is this signature -- a downcast, not a
+    // guess at the arity (the prelude's `dart_is_function_of`). A bare
+    // `Function` is any of them. Both are the prelude's, so a translated
+    // class of the same name is left alone.
+    if (library[name] == null && (target.isFunction || name == 'Function')) {
+      final read = _optionRead(operand) ?? expr(operand);
+      final test = target.isFunction && target.parameters != null
+          ? 'dart_is_function_of::<dyn Fn('
+                '${target.parameters!.map((p) => type(p, owned: false)).join(', ')}'
+                ') -> ${_wrapped(type(target.returns!))}>(&$read)'
+          : 'dart_is_function(&$read)';
+      return negated ? '!$test' : test;
+    }
     // A type parameter: whatever the caller passed for it, asked by id
     // (`dart_cast_any`). `ancestor.state is T` in `findAncestorStateOfType`,
     // refused as "`is` against `T`" since the first round.

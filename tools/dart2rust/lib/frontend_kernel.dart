@@ -1784,6 +1784,21 @@ class KernelFrontend implements TypeWorld {
           return IrLocal(name);
         }
       }
+      // Promoted to a *function* type (`if (userMainFunction is
+      // _ListStringArgFunction)` in `dart:ui`'s `_runMain`): what the
+      // declaration holds is still the function *object*, and Rust will not
+      // call an `Rc<dyn Object>`. The coercion rule builds the closure of
+      // the promoted type that calls it dynamically -- sound because the
+      // `is` that promoted it is exact (`dart_is_function_of` downcasts the
+      // handle the object was made from, ws847).
+      if (promoted is FunctionType) {
+        final read = IrLocal(name)..rustType = _recordedType(declared);
+        try {
+          return coerce(read, _type(promoted));
+        } on Unsupported {
+          return read;
+        }
+      }
       if (promoted is InterfaceType &&
           !toObject &&
           (!_abstractLike(promoted.classNode) ||

@@ -9432,6 +9432,26 @@ fn dart_function_of(object: &std::rc::Rc<dyn Object>) -> &DartFunction {
 }
 
 /// The typed function a `Function` was made from, when it is of type `F`.
+/// `x is R Function(..)`: the function object keeps the handle it was made
+/// from (`original`), and that handle's Rust type *is* the Dart signature
+/// translated -- so the test is a downcast, exact rather than a guess at
+/// the arity. Something that is not a function object is not a function.
+/// `dart:ui`'s `_runMain` asks exactly this, and answering it by arity
+/// would hand a zero-argument `main` the argument list.
+pub fn dart_is_function_of<F: ?Sized + 'static>(value: &std::rc::Rc<dyn Object>) -> bool {
+    let any: &dyn Object = value.as_ref();
+    match any.as_any().downcast_ref::<DartFunction>() {
+        Some(function) => function.original.downcast_ref::<std::rc::Rc<F>>().is_some(),
+        None => false,
+    }
+}
+
+/// `x is Function`: any of them, whatever it takes.
+pub fn dart_is_function(value: &std::rc::Rc<dyn Object>) -> bool {
+    let any: &dyn Object = value.as_ref();
+    any.as_any().downcast_ref::<DartFunction>().is_some()
+}
+
 pub fn dart_function_same<F: ?Sized + 'static>(object: std::rc::Rc<dyn Object>) -> Option<std::rc::Rc<F>> {
     dart_function_of(&object).original.downcast_ref::<std::rc::Rc<F>>().cloned()
 }

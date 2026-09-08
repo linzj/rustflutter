@@ -937,14 +937,29 @@ IrExpr _dynamicFunction(IrExpr value, IrType have, TypeWorld world) {
   ];
   final params = [IrParam('__args', argsList.rustType!)];
   final arity = IrLiteral('${hp.length}', const IrType('raw'));
-  final handle = value is IrClosure && !value.boxed
-      ? (IrCall(value, '!rc', const [])..rustType = have)
+  // The value itself, unboxed: the binding below is declared with the
+  // function's type, and a closure or a tear-off boxes into it there. Boxed
+  // here as well it was an `Rc<Rc<..>>` (ws847).
+  final handle = value is IrClosure && value.boxed
+      ? (IrClosure(
+          value.params,
+          value.body,
+          value.returns,
+          captures: value.captures,
+          locals: value.locals,
+          holdsSelf: value.holdsSelf,
+          isAsync: value.isAsync,
+        )..rustType = value.rustType)
       : value;
   final function = IrLocal('__f')..rustType = have;
   final called = IrCallValue(function, args)..rustType = have.returns;
   final result = coerceInto(called, _dynamicType, world, inClosure: true);
   return IrBlockValue(
-    [IrLocalDecl('__f', null, handle)],
+    // Declared, so the handle is the `Rc<dyn Fn(..)>` of the function's own
+    // type and not the `Rc<{fn item}>` a tear-off would infer: what the
+    // object keeps is what `dart_function_same` and `dart_is_function_of`
+    // ask it for, and the two have to spell the same type (ws847).
+    [IrLocalDecl('__f', have, handle)],
     IrStaticCall(null, 'dart_function_object', [
       arity,
       // A clone: the entry after it moves the binding in.
