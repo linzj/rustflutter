@@ -460,13 +460,6 @@ IrExpr coerceInto(
   // Into `Object`: a handle unsizes, a value goes behind a fresh,
   // registered one.
   if (slotObject) {
-    // A `dynamic` that is still an `Option` into one that is not: the
-    // handle, whose null is the `Null` object. The two spellings of "a
-    // `dynamic`" meet here rather than in three hand-written places (the
-    // `??` arm, the `?.` receiver, a generic local function's returns).
-    if (haveObject && isNullable(have) && !isNullable(slot)) {
-      return IrStaticCall(null, 'dart_option_object', [value])..rustType = slot;
-    }
     if (haveObject) return value;
     if (have.name == 'Null') {
       final nullObject = IrStaticCall(null, 'dart_null_object', const [])

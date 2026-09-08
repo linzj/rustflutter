@@ -2159,3 +2159,27 @@ reads 203 stubbed, 64 refusals, 64 reachable crates.
 
 From the start of this stretch: 221 stubbed and 130 refusals, so 351
 unfinished members down to 267.
+
+## ws836 -- a rule that changed nothing, and where the generic local function stops
+
+    bin/run_chain.sh:  203 stubbed, 64 refusals, 64 crates
+    the stub set is identical to ws832's, member for member
+
+The generic local function was tried a second time and got further. The
+first attempt failed because a generic function *type* carries **structural**
+parameters, not the `TypeParameter`s the declaration erased -- asking the
+erased set about them is always no, so the call site never took the erased
+path at all. With that fixed the declaration and the argument closure
+agree (`Fn(Option<Style>) -> Result<Rc<dyn Object>, _>`), and what is left
+is the older question of which `dynamic` an erased `T?` is: the
+declaration's slot spells `Option<Rc<dyn Object>>` and the body's returns
+spell `Rc<dyn Object>`, because a `dynamic` carries its own null.
+
+That produced a rule worth having on its own -- a `dynamic` that is still
+an `Option` meeting one that is not, which the front end does by hand in
+three places (`??`'s arm, `?.`'s receiver, and this) -- so it was measured
+alone. It changed nothing: the same 203 stubs, member for member. Inert,
+so it is reverted with the rest, and both are written down here for the
+round that does the generic local function properly, which needs the
+declaration, the call site and the two spellings of `dynamic` settled
+together.
