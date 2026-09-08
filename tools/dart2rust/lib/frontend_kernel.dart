@@ -2626,7 +2626,21 @@ class KernelFrontend implements TypeWorld {
             ),
         );
       }
-      return IrAwait(expression(node.operand));
+      // Typed as the operand's future says: `await channel.invokeMethod<T>()`
+      // hands back the `Option<Rc<dyn Object>>` the erased twin's future
+      // holds, and typed by Dart's static type alone it was a bare
+      // `dynamic` -- `dart_nullable` was then put around a value already in
+      // its `Option` (`DefaultProcessTextService.processTextAction`, the
+      // run's own panic, ws776).
+      final operand = expression(node.operand);
+      final future = operand.rustType;
+      final held =
+          future != null &&
+              future.name == 'Future' &&
+              future.arguments.length == 1
+          ? future.arguments.single
+          : null;
+      return IrAwait(operand)..rustType = held;
     }
     if (node is Throw) {
       if (_tfaUnreachable(node)) return _unreachable;
@@ -13419,8 +13433,24 @@ class KernelFrontend implements TypeWorld {
             refuse(field.name.text, error, stack);
           }
         }
+        // ..but not a `dart:` mixin's own bodies: `IterableMixin`'s `skip`,
+        // `where` and `cast` build `SkipIterable`, `WhereIterable` and
+        // `CastIterable`, which are `dart:collection`'s private classes and
+        // are not translated -- the prelude answers `Iterable`'s members on
+        // a class that is one, through `__to_list` (`Board extends
+        // Iterable<BoardPoint?>`, 9 at ws774).
+        final from = anonymous.mixedInClass ?? anonymous;
+        final env = typeEnvironment;
+        final preludeMixin =
+            from.enclosingLibrary.importUri.scheme == 'dart' &&
+            env != null &&
+            _iterableElement(
+                  node.getThisType(env.coreTypes, Nullability.nonNullable),
+                ) !=
+                null;
         for (final procedure in anonymous.procedures) {
           if (procedure.isAbstract || !own.add(procedure.name.text)) continue;
+          if (preludeMixin) continue;
           try {
             _lowerProcedure(
               cls,

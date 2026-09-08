@@ -1055,3 +1055,22 @@ The 508 are the sizes, and their root is the 32 paragraphs measuring zero
 (see above): a text engine, not a translation. The first size to differ is
 `RenderIndexedSemantics size=Size(800.0, 52.0)` against our
 `Size(800.0, 26.0)` -- a list row whose height is its text's.
+
+## ws776 — 288, and the run's panic moved one level in
+
+    ws774 288 stubbed
+    ws776 288 stubbed, 130 refusals, 64 crates   0 gone, 0 new
+
+The `Future` top-bound rule did what it said: the erased twin's cast now
+asks for `DartFuture<Option<Rc<dyn Object>>>`, which is what the twin
+returns. The error behind it is one level in -- the *awaited* value was
+still recorded a bare `dynamic`, so `dart_nullable` went around something
+already in its `Option`. An `await` is now typed by the future its operand
+holds.
+
+Also in flight: a `dart:` mixin's bodies are not copied into a class that
+is an `Iterable`. `Board extends Iterable<BoardPoint?>` mixes in
+`dart:collection`'s `IterableMixin`, whose `skip`, `where` and `cast`
+build `SkipIterable`, `WhereIterable` and `CastIterable` -- private
+classes nothing translates. The prelude answers those members through
+`__to_list` (9 at ws774).
