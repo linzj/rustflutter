@@ -3054,6 +3054,20 @@ class KernelFrontend implements TypeWorld {
               true)) {
         return IrCastTo(expression(node.operand), _type(toClass));
       }
+      // `x as dynamic` (and `as Object`): every value goes behind the
+      // handle a `dynamic` is here, and a projected `T?` is not one --
+      // `<T as DartNullable>::Or` was handed to the `dynamic` operator
+      // rules, which asked it for its `Any` and found no `f64` inside
+      // (`Tween.lerp`'s `(begin as dynamic) + ((end as dynamic) - ..)`,
+      // the run's own panic at run796). A value already behind the handle
+      // coerces to itself.
+      if (to is DynamicType ||
+          (to is InterfaceType &&
+              to.classNode.name == 'Object' &&
+              to.classNode.enclosingLibrary.importUri.toString() ==
+                  'dart:core')) {
+        return coerce(expression(node.operand), const IrType('dynamic'));
+      }
       return expression(node.operand);
     }
     if (node is StaticTearOff) {
