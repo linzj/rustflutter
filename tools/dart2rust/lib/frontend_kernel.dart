@@ -4783,7 +4783,12 @@ class KernelFrontend implements TypeWorld {
         // ..two *concrete* classes: a top-typed side (`Object?`, a
         // `dynamic`) takes the general path, where the other side goes
         // behind the handle (ws502).
-        if (leftType is InterfaceType &&
+        // ..and only *inside* a string, as the conditional's own rule is
+        // (`_inStringPart` there): outside one the `Object` is an object,
+        // and stringifying it put a `String` in a `ValueKey<Object>` and
+        // in `InputDecorator`'s `label` (`KeyedSubtree.wrap`, ws876).
+        if (_inStringPart &&
+            leftType is InterfaceType &&
             rightType is InterfaceType &&
             leftType.classNode != rightType.classNode &&
             leftType.classNode.name != 'Object' &&
@@ -4825,11 +4830,20 @@ class KernelFrontend implements TypeWorld {
         // ..a class with a handle to go up into: `double? ?? 0` is a
         // `num` in Dart and an `f64` here, where the literal takes the
         // left's spelling as before (+6 the round `num` was taken, ws611).
+        // ..and `Object` itself is that type when the two sides are of
+        // different classes: neither side is the other, and the whole is
+        // the object both go behind (`child.key ?? childIndex` in
+        // `KeyedSubtree.wrap`, ws876). Where they are of one class the
+        // left's own spelling still wins, as it did.
+        final differing =
+            leftType is InterfaceType &&
+            rightType is InterfaceType &&
+            leftType.classNode != rightType.classNode;
         final lub =
             leftType is InterfaceType &&
                 resultType is InterfaceType &&
                 leftType.classNode != resultType.classNode &&
-                resultType.classNode.name != 'Object' &&
+                (resultType.classNode.name != 'Object' || differing) &&
                 !scalarNames.contains(resultType.classNode.name)
             ? resultType
             : leftType;

@@ -3140,3 +3140,45 @@ print `-11 -11`. Writing the comparison as `x.compareTo(5)` rather than
 interface method's `num` parameter is not widened to `f64`, because the
 trait's `__A0` is not a slot the coercion knows. No gallery member is on
 that shape, so it waits for one.
+
+## ws876 -- `a ?? b` is an object where Dart says `Object`, not its text
+
+    bin/run_chain.sh:  152 stubbed (was 154), 57 refusals (unchanged), 64 crates
+
+`locale ?? "unspecified"` inside a string wants both sides as text, and
+ws502 gave the pair a rule: two sides of different concrete classes whose
+`??` is an `Object` both go through `dart_str`. The rule never asked
+whether it was in a string. `ValueKey<Object>(child.key ?? childIndex)` in
+`KeyedSubtree.wrap` is not, and neither is `labelText ?? label` in
+`InputDecorator.build`: both got a `String` where an `Rc<dyn Object>` was
+the slot, which is the error the chain reported and, had it compiled, the
+wrong value in the key.
+
+The conditional's own version of this rule has always asked
+(`_inStringPart`, the `?:` rule above it). The `??` asks now too, and
+outside a string the general path builds what Dart's least upper bound
+says -- for which `Object` had to become an answer that path could give:
+
+    (resultType.classNode.name != 'Object' || differing)
+
+Where the two sides are of one class the left's own spelling still wins, as
+before; where they differ, `Object` is what neither side is and both go
+behind the handle.
+
+`ifnullobj` walks a `Tag?` and a `null` through `final Object v = t ?? 7;`
+and asks what came out. At HEAD it is the gallery's error verbatim
+("expected `Rc<dyn Object>`, found `String`"); with the rule both ends
+print `Tag(a) true false|7 false true` -- the object, not its text. Eleven
+`??` fixtures still agree (`ifnull`, `ifnulllub`, `ifnullset`, `dynifnull`,
+`basedefault`, `getterover`, `mapkeyslot`, `tearinfn`, `opentween`,
+`nullaware`, `voidtearoff`).
+
+What the round found and did not fix: *inside* a string the retained rule
+still renders each side with `dart_str`, Rust's `Debug`, so a translated
+class says `Tag { name: "a" }` where Dart says `Tag(a)`. Routing those two
+sides through `_stringOf` instead is the obvious fix and it costs a member:
+`CupertinoDynamicColor.toString` has `_debugResolveContext?.widget ??
+'UNRESOLVED'`, whose left side is a value TFA removed, and `_stringOf`'s
+`dart_to_string` on it has no type to resolve ("type annotations needed for
+`&_`") where `dart_str` had none to resolve either. It waits for the round
+that gives a removed value a type.
