@@ -2371,10 +2371,17 @@ class RustBackend {
       // object -- is a clone: `as_ref()` binds a `&T` and the slot takes
       // the `T` (`ImplicitlyAnimatedWidgetState.didUpdateWidget`, the
       // run's own panic at run780).
+      // The receiver's `Option` shape, in every branch that spells one: a
+      // projected `T?` is the associated type `<T as DartNullable>::Or`,
+      // which is an `Option` only after the prelude converts it, and
+      // `.as_ref()` on it resolved to no method at all
+      // (`RestorableValue.value?.name`, `DiagnosticsProperty.value?.
+      // toString()`, 3 at ws789).
+      final plain = expr(_plain(receiver));
       if (!scalar && _endsAtBound(body)) {
         return _failure == null
-            ? '${expr(receiver)}.as_ref().map(|$_boundName| ${_clonedBound(body)})'
-            : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> '
+            ? '$plain.as_ref().map(|$_boundName| ${_clonedBound(body)})'
+            : '$plain.as_ref().map(|$_boundName| -> Result<_, $_error> '
                   '{ Ok(${_clonedBound(body)}) }).transpose()?';
       }
       final at = scalar ? '' : '.as_ref()';
@@ -2399,9 +2406,14 @@ class RustBackend {
               !_mentionsUnknown(bodyType)
           ? type(bodyType)
           : '_';
+      // ..and the *body*'s, when the two are flattened: a body handing
+      // back a projected `T?` makes an `Option<<T as DartNullable>::Or>`,
+      // which is not two `Option` layers and has no `flatten`
+      // (`Provider._inheritedElementOf(context)?.value`, 3 at ws789).
+      final inner = expr(flatten ? _plain(body) : body);
       return _failure == null
-          ? '${expr(_plain(receiver))}$at.${flatten ? 'and_then' : 'map'}(|$_boundName| ${expr(body)})'
-          : '${expr(receiver)}$at.map(|$_boundName| -> Result<$spelled, $_error> { Ok(${expr(body)}) }).transpose()?${flatten ? '.flatten()' : ''}';
+          ? '$plain$at.${flatten ? 'and_then' : 'map'}(|$_boundName| $inner)'
+          : '$plain$at.map(|$_boundName| -> Result<$spelled, $_error> { Ok($inner) }).transpose()?${flatten ? '.flatten()' : ''}';
     } finally {
       _boundByValue = outer;
     }
