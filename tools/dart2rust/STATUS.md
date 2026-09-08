@@ -1808,3 +1808,29 @@ collection it holds.
 Also this round, from the refusal census: `x is DateTime` and
 `x is ByteData` answer through `DartCoreAs` like the prelude's exception
 classes (3 refusals). The isprelude fixture.
+
+## ws820 -- `x is DateTime`, and one convention for a callback slot
+
+    bin/run_chain.sh:  201 stubbed (was 202), 85 refusals (was 88), 64 crates
+
+Two small ones. `x is DateTime` and `x is ByteData` answer through
+`DartCoreAs`, as the prelude's exception classes already did -- the
+`is` lowering knew how to ask a prelude class and simply had not been
+told about these two (3 refusals; the isprelude fixture, which also
+checks that a `String` and an `int` still say no).
+
+And `Set.removeWhere` declared `Rc<dyn Fn>` where every other prelude
+callback slot declares `impl Fn`. Two conventions under one name meant a
+caller had to know which collection it held; the set's is `impl Fn` now,
+which is what ws819's one added stub was about.
+
+Staged for the next reading: `package:collection`'s
+`IterableExtensions.indexed` and `dart:async`'s `unawaited` (5 refusals,
+and `.indexed` is on the build path -- it is what
+`KeyedSubtree.ensureUniqueKeysForList` needs). The indexedext fixture
+runs both. `unawaited` takes an `Option<DartFuture<T>>`: Dart declares
+`Future<void>?`, and the argument arrives wrapped.
+
+Also fixed here: the fixture harness ran the Dart side without a package
+config, so a fixture importing `package:collection` "agreed" with Dart by
+both sides printing nothing. It runs against the gallery's config now.

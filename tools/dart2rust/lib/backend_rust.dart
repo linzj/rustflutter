@@ -8815,6 +8815,9 @@ class RustBackend {
     'postEvent',
     'registerExtension',
     'EnumName_get_name',
+    // `package:collection`'s `.indexed`, and `dart:async`'s `unawaited`.
+    'IterableExtensions_get_indexed',
+    'unawaited',
     'never',
     'new_object',
     'string_from_char_codes',

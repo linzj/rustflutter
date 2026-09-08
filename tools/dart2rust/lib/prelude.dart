@@ -5809,6 +5809,19 @@ pub fn enum_name_get_name<E: DartEnum>(value: E) -> String {
     value.name()
 }
 
+/// `package:collection`'s `IterableExtensions.indexed`, as the CFE lowers
+/// its extension getter: each element with its index, in order. Dart's is
+/// a lazy `Iterable<(int, T)>`; a `Vec` of pairs here, as `skip` and
+/// `take` are (`KeyedSubtree.ensureUniqueKeysForList`, ws819).
+pub fn iterable_extensions_get_indexed<T>(items: Vec<T>) -> Vec<(i64, T)> {
+    items.into_iter().enumerate().map(|(i, v)| (i as i64, v)).collect()
+}
+
+/// `dart:async`'s `unawaited(future)`: the future is already running --
+/// `DartFuture` is a handle on a task the scheduler holds, not the task --
+/// and this says only that nobody waits for it.
+pub fn unawaited<T>(_future: Option<DartFuture<T>>) {}
+
 /// `dart:io`'s `exit`.
 pub fn exit(code: i64) -> ! {
     std::process::exit(code as i32)
