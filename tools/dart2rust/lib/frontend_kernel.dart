@@ -9889,6 +9889,15 @@ class KernelFrontend implements TypeWorld {
       } on Unsupported {
         // Nothing to say about the two types: as it was.
       }
+      // ..and the handle on `this`, for the same reason as the locals: a
+      // tear-off on `this` is a closure holding one, and an adapter that
+      // does not hold its own reads the `__me` of whatever encloses it --
+      // a borrow inside the `Rc<dyn Fn>` a `Timer` keeps, where the two
+      // `RawTooltip` members stopped (`show()` is a local function, so the
+      // enclosing `__me` is a capture; ws855).
+      final torn = lowered is IrCall && lowered.name == '!rc'
+          ? lowered.target
+          : lowered;
       final adapter =
           IrCall(
               IrClosure(
@@ -9900,6 +9909,7 @@ class KernelFrontend implements TypeWorld {
                 // the receiver came from and cannot outlive the call
                 // (E0597, the tearopt fixture).
                 locals: _freeLocalsIn(value, {}),
+                holdsSelf: torn is IrClosure && torn.holdsSelf,
               ),
               '!rc',
               const [],

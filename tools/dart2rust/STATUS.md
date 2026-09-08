@@ -2474,3 +2474,40 @@ values, `indexOf` does not find the child it was just handed, and the
 identity-on-a-value-class group (15 refusals, counted at ws849) showing up
 as a *run* rather than a refusal, and it is the sharpest evidence yet for
 what that group costs. Recorded, not fixed.
+
+## ws855 -- an adapter holds `this` itself, or it borrows whoever does
+
+    bin/run_chain.sh:  195 stubbed (was 201), 57 refusals (unchanged), 64 crates
+
+Where ws854 left the two `RawTooltip` members: the adapter around
+`_controller.reverse` compiled its body and would not live long enough. It
+is made inside `show()`, a *local function*, which holds `this` as a
+capture; the adapter read that capture to take its own handle, and a
+closure that borrows what encloses it cannot be the `'static`
+`Rc<dyn Fn>` a `Timer` keeps.
+
+The frontend already gave the adapter the tear-off's free *locals* for
+exactly this reason (ws793's note: "or it borrows the local the receiver
+came from"). It gives it the handle on `this` now as well, which is the
+other half of the same sentence -- and the backend, which makes a closure
+a `move` closure when it owns anything, then binds `__me` at the adapter
+rather than inside it.
+
+Six stubs went, none came: the two tooltip members the two rounds were
+aimed at, and four more of the same shape that neither round went looking
+for -- `RenderObject._buildSemanticsSubtree`, `._createSemanticsNode`,
+`._mergeSiblingGroup` and `RenderScrollable.assembleSemanticsNode`, each
+tearing off a method with optional named parameters inside a closure that
+holds `this`. ws854 and ws855 are one rule in two halves; the numbers only
+moved when both were in.
+
+The tearinfn fixture is that shape: a class holding a `Timer`, a method
+with a named optional torn off inside a local function that also touches
+`this`. It fails to compile at HEAD with the same "lifetime may not live
+long enough" the gallery had, and agrees with Dart with the rule. Twelve
+tear-off fixtures beside it still agree.
+
+run855 holds the ruler: 708 walk lines, 0 type-only differences, 508 as
+printed, no `RenderErrorBox`, 199 frames drawn and 0 panicked. Four of the
+six members are semantics (`_buildSemanticsSubtree` and its neighbours), so
+they now run where they used to panic, and the walk did not move.
