@@ -1260,3 +1260,40 @@ through `?.`, and a `final T? held` field) agrees with Dart.
 
 433 -> 247 over the grouped method; refusals 183 -> 130; reachable crates 64
 throughout.
+
+## run792 / run794 — the ruler stopped being a panic and became a clock
+
+With the tap-region no-op fixed, the run no longer aborts: it times out with
+*no output at all* (the program dumps at the end of its budget, so a run that
+never reaches the end says nothing). Two stack samples under gdb, taken at
+the timeout, named two different quadratic reads.
+
+**1. An indexed read cloned the whole collection.** run792 sat in
+`ChangeNotifier.removeListener`, dropping a `Vec<Option<Rc<dyn Fn()>>>`:
+`_listeners[i]` was `this_._listeners()?[i]`, and the accessor hands out a
+*clone of the list*. Once per iteration in `removeListener`, once per element
+in `addListener`'s growth loop -- O(n^2) with an allocation and n reference
+counts in the inner step. An indexed read now borrows the cell the collection
+is kept in (`_readPlace`, `_mutPlace`'s other half): `xs.borrow()[i].clone()`,
+with the index bound first so its own reads happen before the borrow.
+ws793 = 247, the same stub set as ws791.
+
+**2. A map literal was built by scanning its own association list.** run794
+then sat in `flutter_localized_locales`'s `nativeLocaleNames`, a 700-entry
+const map that the *getter* rebuilds on every call -- and `Map::from_pairs`
+called `insert` per entry, each `insert` scanning every entry already there:
+245k `dart_eq`s per build, and the settings page builds one per locale.
+`from_pairs` now buckets by `dart_hash_code`, so a key that hashes for real
+costs one bucket and a key that does not degrades to the old scan.
+
+Still open from this: our `Map` is an association list, so every lookup is
+O(n); and a Dart `const` collection is one canonical object, which this
+output rebuilds at each mention. Either would be a bigger win than the
+literal's construction.
+
+Four more rules came out of the ws793 census while the run was measured:
+`~x` on an int (`DartInt::bit_not`, 3); `x is T?` admits null and its
+promotion keeps the absence (nested's `SingleChildWidgetElementMixin.mount`,
+4); a tear-off whose extra parameters are all optional adapts to the slot
+that takes none -- instance tear-offs included, in the *type's* named order,
+holding the receiver (`Timer(delay, _controller.reverse)`, 8).
