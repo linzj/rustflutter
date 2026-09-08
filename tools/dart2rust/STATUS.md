@@ -1354,3 +1354,28 @@ take -- has nothing to deref.
 The four the step rule had broken, and nothing else moved.
 433 -> 226 over the grouped method; refusals 183 -> 130; reachable crates 64
 throughout.
+
+## run799 — the Tween panic is gone; the clock moved twice
+
+The `as dynamic` fix cleared `Tween.lerp`, and the run went back to timing
+out with no output. Two gdb samples, one per attempt:
+
+  1. `InheritedElement.setDependencies` -> `Map::insert` -> `Map::at`, the
+     association-list scan. `_dependents` has one entry per element
+     depending on a `Theme` or a `Localizations`, and every
+     `dependOnInheritedElement` scans it. `dart_eq` on an `Rc<dyn Element>`
+     is identity (`std::ptr::addr_eq`), so this is the scan itself.
+  2. `ImageStreamCompleter.removeListener` -> `Vec<ImageStreamListener>::
+     clone`, from the accessor: `_listeners.length` in the loop condition
+     cloned the whole listener list once per iteration.
+
+(2) is fixed: a read that does not need the collection -- `length`,
+`isEmpty`, `keys`, `values`, `m[k]` -- goes through the cell's `borrow()`
+inside a block, so the `Ref` drops with the `let` that made it. That is the
+read counterpart of `_mutPlace`, and the same shape the existing
+`({ let __r = ..borrow().clone(); __r })` uses to keep a borrow short.
+
+(1) is still open, and is the same question as before: our `Map` is an
+association list, so every lookup is O(n). A hash index over
+`DartEq::dart_hash_code` (identity for a counted class, a real hash for a
+`String`) would fix it, keeping the insertion order a `Vec` gives.
