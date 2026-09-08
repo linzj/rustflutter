@@ -2232,3 +2232,20 @@ a super function's receiver is `this_: &__Self` by design, and
 `invalidateScopeData` is `&mut self` because an implementer writes a field
 in it. That is the same question the group started from, one level up: a
 super function needs to know when the method it holds mutates.
+
+## run842 -- the reading, after the borrowing rules
+
+    DART2RUST_OS=android DART2RUST_DUMP_RENDER_TREE=1 bin/run_main.sh:
+                       exit 0, budget spent with main pending
+                       201 frame(s) drawn, 0 panicked
+                       render tree 708 lines, RenderErrorBox 0
+
+    diff ref_render_walk_settled.txt walk, ignoring size=/offset=:    0
+    diff ref_render_walk_settled.txt walk, as printed:              508
+
+The compile ruler in the same tree: 202 stubbed, 60 refusals, 64 reachable
+crates. The borrowing rules changed how a local function reaches `this`
+across the whole program and the walk is unchanged, node for node.
+
+From the start of this stretch -- 221 stubbed and 130 refusals -- 351
+unfinished members are 262.
