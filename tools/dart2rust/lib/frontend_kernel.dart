@@ -1801,6 +1801,30 @@ class KernelFrontend implements TypeWorld {
           _rustScalar(to.name),
           arguments: to.arguments,
         );
+        // ..and a promotion that is itself nullable -- `if (parent is
+        // _NestedHookElement?)`, which matches null as well -- keeps the
+        // absence: the downcast is null-aware, and what comes back is the
+        // `Option` the slot takes. Null-checked, the read unwrapped the
+        // `None` the test had just admitted
+        // (`SingleChildWidgetElementMixin.mount`, 4 at ws793).
+        if (promoted.nullability == Nullability.nullable &&
+            declared.nullability == Nullability.nullable) {
+          // The bound value is typed as what the local holds, so the
+          // downcast asks the *object*'s `Any` and not the handle's
+          // (`it.as_any()` on an `&Rc<dyn Base>` found no `Hook`).
+          final held = _recordedType(declared);
+          final bound = IrBound()
+            ..rustType = held == null ? null : nonNull(held);
+          final inner = IrCall(
+            IrDowncast(bound, _rustScalar(to.name), arguments: to.arguments),
+            'clone',
+            const [],
+          )..rustType = nonNull(to);
+          return IrNullAware(
+            IrLocal(name)..rustType = _recordedType(declared),
+            inner,
+          )..rustType = to;
+        }
         // Cloned out of the reference `Any` hands back, and typed as what
         // the promotion says it is: untyped, a slot that takes an `Option`
         // could not tell a promoted value from one still in its `Option`
@@ -9709,15 +9733,28 @@ class KernelFrontend implements TypeWorld {
     // where `dumpErrorToConsole(details, {forceReport = false})` fills a
     // `void Function(FlutterErrorDetails)` slot. The adapter passes the
     // defaults, as a call through the slot would.
-    if (value is ConstantExpression &&
-        value.constant is TearOffConstant &&
+    // ..and an *instance* tear-off the same way: `Timer(delay,
+    // _controller.reverse)` tears off `reverse({double? from})` into a
+    // `void Function()`, and `showOnScreen`'s four optional named
+    // parameters land in a `VoidCallback` (8 at ws793). The target is a
+    // Member either way, and the adapter calls the tear-off -- which
+    // already holds its receiver -- with the defaults filled in.
+    final tearOffTarget = switch (value) {
+      ConstantExpression(:final constant) when constant is TearOffConstant =>
+        constant.target,
+      StaticTearOff(:final target) => target,
+      InstanceTearOff(:final interfaceTarget) => interfaceTarget,
+      _ => null,
+    };
+    if (tearOffTarget != null &&
+        tearOffTarget.function != null &&
         param is FunctionType &&
         given is FunctionType &&
         param.namedParameters.isEmpty &&
         given.namedParameters.isNotEmpty &&
         param.positionalParameters.length ==
             given.positionalParameters.length) {
-      final target = (value.constant as TearOffConstant).target;
+      final target = tearOffTarget;
       final params = <IrParam>[];
       final args = <IrExpr>[];
       for (var i = 0; i < param.positionalParameters.length; i++) {
@@ -9725,8 +9762,16 @@ class KernelFrontend implements TypeWorld {
         params.add(IrParam(name, _paramType(param.positionalParameters[i])));
         args.add(IrLocal(name));
       }
-      for (final n in target.function!.namedParameters) {
-        final init = n.initializer;
+      // In the *type's* order, which Kernel sorts and the lowered tear-off
+      // takes its parameters in -- not the declaration's, which is the
+      // order the defaults are written in (`show({int? which, String tag =
+      // 'd', bool loud = false})` was called `(None, "d", false)` against
+      // `|loud, tag, which|`).
+      for (final n in given.namedParameters) {
+        final declared = target.function!.namedParameters
+            .where((p) => p.parameterName == n.name)
+            .firstOrNull;
+        final init = declared?.initializer;
         args.add(init == null ? _nullLiteral() : expression(init));
       }
       return IrCall(
@@ -9734,6 +9779,10 @@ class KernelFrontend implements TypeWorld {
           params,
           IrReturn(IrCallValue(lowered, args)),
           _type(param.returnType),
+          // An instance tear-off holds its receiver: the adapter around it
+          // has to hold it too, or it borrows the local the receiver came
+          // from and cannot outlive the call (E0597, the tearopt fixture).
+          locals: _freeLocalsIn(value, {}),
         ),
         '!rc',
         const [],
@@ -11467,6 +11516,27 @@ class KernelFrontend implements TypeWorld {
         } catch (_) {
           // Not a relation this environment can decide: asked below.
         }
+      }
+    }
+    // `x is T?` admits null as well -- it is `x == null || x is T`, which
+    // is exactly what the CFE writes for `if (parent is _NestedHookElement?)`
+    // (nested's `SingleChildWidgetElementMixin.mount`). Asked as a plain
+    // `is T`, the test null-checked the operand and unwrapped the very
+    // absence it was admitting (4 at ws793). Only on a local: the operand
+    // is read twice, and `||` reads the second only when the first said no.
+    if (asked.nullability == Nullability.nullable &&
+        asked is InterfaceType &&
+        node.operand is VariableGet) {
+      final on = _staticType(node.operand);
+      if (on != null && on.nullability == Nullability.nullable) {
+        return IrBinary(
+          '||',
+          IrIsNull(expression(node.operand))..rustType = const IrType('bool'),
+          IrIs(
+            expression(node.operand),
+            _type(asked.withDeclaredNullability(Nullability.nonNullable)),
+          )..rustType = const IrType('bool'),
+        )..rustType = const IrType('bool');
       }
     }
     return IrIs(expression(node.operand), _type(asked));

@@ -2428,16 +2428,41 @@ impl<K, V> Map<K, V> {
     /// types*, so that every entry's value is coerced to them where
     /// `From<impl IntoIterator>` typed the array by its first entry
     /// alone (`{'a': null, 'b': 2}` into `Map<Object?, Object?>`, ws495).
+    /// A map literal's entries, in order, a later key replacing an earlier
+    /// one -- as `insert` does, but without `insert`'s scan of the whole
+    /// association list per entry. Keyed by `dart_hash_code`, so a key that
+    /// hashes for real (a `String`, a scalar) costs one bucket and a key
+    /// that does not (the protocol's `0` default) degrades to the scan this
+    /// replaced. `flutter_localized_locales`'s 700-entry const map cost
+    /// 245k comparisons *every time the getter ran*, and the settings page
+    /// runs it once per locale: run792 and run794 never reached their first
+    /// line of output.
     pub fn from_pairs<const N: usize>(entries: [(K, V); N]) -> Self
     where
         K: DartEq + Clone,
         V: Clone,
     {
-        let mut out = Map::new();
+        let mut out: Vec<(K, V)> = Vec::with_capacity(N);
+        let mut buckets: std::collections::HashMap<i64, Vec<usize>> =
+            std::collections::HashMap::new();
         for (k, v) in entries {
-            out.insert(k, v);
+            let bucket = buckets.entry(k.dart_hash_code()).or_default();
+            let mut at = None;
+            for &i in bucket.iter() {
+                if out[i].0.dart_eq(&k) {
+                    at = Some(i);
+                    break;
+                }
+            }
+            match at {
+                Some(i) => out[i].1 = v,
+                None => {
+                    bucket.push(out.len());
+                    out.push((k, v));
+                }
+            }
         }
-        out
+        Map { entries: out }
     }
 }
 
