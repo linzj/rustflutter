@@ -1188,3 +1188,47 @@ brought nothing new:
 
 Both had a TFA-proved `return` with a live tail behind it, and the tail's
 `else`-less `if` landed in the function's tail position (E0317).
+
+## ws788/789 — the run ruler's panic was a silent no-op, not a stub
+
+run787 aborted in `RenderTapRegionSurface.unregisterTapRegion`
+(`Option::unwrap()` on a `None`) after 6 frames and a walk that still holds
+at 708 lines / 0 type-only differences. The cause was two lines earlier and
+in a different method: `_groupIdToRegions[region.groupId]!.add(region)`
+read the set *out* of the map, added to the copy, and dropped it. The group
+in the map stayed empty, the next unregistration read it as empty and
+removed the key, and the one after that found no key at all.
+
+Dart's `[]` hands back the object the collection holds; a `Vec` and a `Map`
+here hand back a value. So a mutating call on a value read out of a
+collection now acts on the collection's own place (`_heldSlot`):
+`m[k]!.add(v)` is `map.borrow_mut().get_mut(&k).unwrap().add(v)`, and
+`xs[i].push(v)` is `xs.borrow_mut()[i].push(v)` -- the outermost collection,
+so `rawCells[y][x]` reaches `rawCells`. `Map::get_mut` is new in the
+prelude. The mapslot fixture disagreed with Dart before (`0 0 [] []` against
+`2 1 [7, 9] [8]`) and agrees now.
+
+  - ws788: 257 (`RenderTable.assembleSemanticsNode`: `_heldIn` stopped at
+    the inner index, so the local was not `let mut`)
+  - ws789: **256**, 130 refusals, 64 crates -- the same stub set as ws786.
+
+## The census on stubs786.txt.detail.txt
+
+256 blocks, grouped by normalised expected/found: 108 E0308, 50 E0599,
+30 E0277, 8 E0282, 8 E0593. The largest identifiable groups and what they
+turned out to be:
+
+  - 7 `expected <T as DartNullable>::Or, found Option<T>` -- a translated
+    callee's `T?` is the projection, and `_widenedInto` was building its
+    slot with `_type`, which spells the plain `Option<T>` a *body* works
+    with; the coercion then made `Some(..)` and returned before the tail's
+    projection rule could run. `AsyncSnapshot.withData` reaches its
+    redirecting `this._(state, data, null, null)` this way.
+  - 5 `&mut Vec<Rc<dyn DiagnosticsNode>> <= Vec<..>` -- `_fillsParameter`
+    resolved an abstract callee through `getDispatchTarget`, which inside a
+    mixin *declaration* answers the abstract member itself. The body the
+    CFE moved into an application of the mixin is the one that fills, and
+    the declaration's parameter was already emitted `&mut` from it.
+  - 8 `C<T> <= C<Rc<dyn Object>>` (provider's `_DelegateState<T>`, the
+    scheduler's `_TaskEntry<T>`) -- erasure at a *nested* type argument;
+    still open.
