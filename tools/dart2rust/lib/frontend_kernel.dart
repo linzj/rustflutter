@@ -7454,6 +7454,45 @@ class KernelFrontend implements TypeWorld {
           arguments: element.arguments,
         );
     }
+    // `future.onError<E>(handle, test: ..)` -- `dart:async`'s extension on
+    // `Future`, which the CFE lowers to `FutureExtensions|onError(future,
+    // handle, test: ..)`. It is `catchError` with the error type as part
+    // of the test, so at an `Object` `E` the prelude's `catch_error` is
+    // the whole of it (`AssetImage.obtainKey`, run725). A narrower `E`
+    // needs its `is` in the test and is refused rather than dropped.
+    if (target.name.text == 'FutureExtensions|onError' &&
+        target.enclosingLibrary.importUri.toString() == 'dart:async' &&
+        owner == null &&
+        positional.length >= 2) {
+      final e = node.arguments.types.length > 1
+          ? node.arguments.types[1]
+          : null;
+      final everyError =
+          e is DynamicType ||
+          (e is InterfaceType &&
+              e.classNode.name == 'Object' &&
+              e.classNode.enclosingLibrary.importUri.toString() == 'dart:core');
+      if (!everyError) {
+        throw Unsupported(
+          '`Future.onError` with an error type of its own',
+          _sample(node),
+        );
+      }
+      // With the extension's own parameters put in: the handler returns
+      // `FutureOr<T>`, and lowered against the declaration it spelled a
+      // `T` nothing here declares.
+      final args = _arguments(
+        node.arguments,
+        target.function,
+        true,
+        _instantiated(node),
+      );
+      final value = node.arguments.types.isNotEmpty
+          ? _type(node.arguments.types.first)
+          : const IrType('dynamic');
+      return IrCall(args.first, 'catch_error', args.sublist(1))
+        ..rustType = IrType('Future', arguments: [value]);
+    }
     final coreFunction =
         _coreTopLevel[target.enclosingLibrary.importUri
             .toString()]?[target.name.text];
