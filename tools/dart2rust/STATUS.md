@@ -999,3 +999,26 @@ it with `dart_type_of::<T>()` for each parameter.
 It also makes `runtimeType` comparisons what Dart's are: two
 instantiations of one class are different types, and the `operator ==`
 fast path now says so.
+
+## What the remaining `size=` difference is, and is not
+
+The reference's paragraphs are `Size(47.7, 17.0)`, `Size(97.3, 24.0)`,
+`Size(74.6, 21.0)` -- fractional widths, so **real font metrics**, not
+`flutter test`'s square-glyph font. Reproducing them needs a text engine
+that shapes Roboto; the headless runtime answers no `Paragraph::*` native
+at all, so every paragraph measures `Size(0.0, 0.0)` and its zero
+propagates into every ancestor's size.
+
+That is the whole of the remaining 510 lines. It is a *runtime* gap, not a
+translation one: the node types, their order and their nesting are the
+reference's, 708 of 708.
+
+Two further facts for whoever picks this up:
+
+* the native bridge passes an instance native no receiver
+  (`dart_native("Paragraph::layout", [width])`), so a host could not model
+  per-paragraph state even with metrics to hand -- that is the first thing
+  to change;
+* `ref_render_walk.txt` (6 lines) is a *first-frame* capture, not a prefix
+  of the settled one: our settled walk agrees with it for 5 of its 6 lines
+  and then has the subtree the first frame did not have yet.
