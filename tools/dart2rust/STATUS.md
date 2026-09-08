@@ -1099,3 +1099,21 @@ Grouped, from ws747: 433 -> 280 stubbed, 183 -> 130 refusals, 64 crates.
 
 Grouped, from ws747: 433 -> 276 stubbed, 183 -> 130 refusals, 64 crates
 throughout, and the render walk's structure is the reference's.
+
+## run780 — the walk holds, the panic moves again
+
+    DART2RUST_OS=android, 708 lines, structure identical, 32 zero paragraphs
+    panic: `ImplicitlyAnimatedWidgetState.didUpdateWidget`
+
+A `?..` cascade hands the binding back, and `as_ref()` binds a `&T` where
+the slot takes the `T`. The body's *value* being the binding is now a
+clone; a blanket clone would be wrong, because the cascade's steps mutate
+through that same reference.
+
+And the `lerpDouble(a, 0, t)` family, which took three tries to place:
+`lerpDouble` is declared `num?`, not `double?`; it lives in `dart:ui` but
+is *translated*, so its `num` really is an `f64` here -- the guard was
+"declared in `dart:`" and is now "not a translated callee"; the literal
+arrives as a `ConstantExpression`, not an `IntLiteral`; and `_toF64` has
+to reach inside the `Some` the widening already put on, or the cast lands
+on the `Option`.

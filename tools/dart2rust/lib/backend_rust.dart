@@ -2301,6 +2301,32 @@ class RustBackend {
   /// (a scalar receiver) rather than by reference.
   bool _boundByValue = false;
 
+  /// Whether a null-aware body hands the binding itself back: a `?..`
+  /// cascade's block, whose last expression is the bound name.
+  static bool _endsAtBound(IrExpr body) => switch (body) {
+    IrBound() => true,
+    IrBlockValue(:final value) => _endsAtBound(value),
+    _ => false,
+  };
+
+  /// That body with the binding cloned where it is produced.
+  String _clonedBound(IrExpr body) => switch (body) {
+    IrBound() => '$_boundName.clone()',
+    IrBlockValue(:final statements, :final value) => () {
+      final saved = _out.length;
+      final savedIndent = _indent;
+      _indent = 0;
+      for (final s in statements) {
+        stmt(s);
+      }
+      final written = _out.sublist(saved).join(' ');
+      _out.removeRange(saved, _out.length);
+      _indent = savedIndent;
+      return '{ $written ${_clonedBound(value)} }';
+    }(),
+    _ => expr(body),
+  };
+
   String _nullAware(IrExpr receiver, IrExpr body, bool flatten) {
     final scalar = const {
       'int',
@@ -2339,6 +2365,17 @@ class RustBackend {
         return _failure == null
             ? '$place.as_mut().map(|$_boundName| ${expr(body)})'
             : '$place.as_mut().map(|$_boundName| -> Result<_, $_error> { Ok(${expr(body)}) }).transpose()?';
+      }
+      // The body's *value* being the binding itself -- a `?..` cascade,
+      // whose steps mutate through the reference and whose result is the
+      // object -- is a clone: `as_ref()` binds a `&T` and the slot takes
+      // the `T` (`ImplicitlyAnimatedWidgetState.didUpdateWidget`, the
+      // run's own panic at run780).
+      if (!scalar && _endsAtBound(body)) {
+        return _failure == null
+            ? '${expr(receiver)}.as_ref().map(|$_boundName| ${_clonedBound(body)})'
+            : '${expr(receiver)}.as_ref().map(|$_boundName| -> Result<_, $_error> '
+                  '{ Ok(${_clonedBound(body)}) }).transpose()?';
       }
       final at = scalar ? '' : '.as_ref()';
       // The body's type spelled where it is known: an adapter closure

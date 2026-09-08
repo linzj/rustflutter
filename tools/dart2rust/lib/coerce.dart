@@ -183,6 +183,19 @@ IrExpr coerceInto(
   TypeWorld world, {
   bool inClosure = false,
 }) {
+  // An integer *literal* where a `double` goes is a double: that is Dart's
+  // rule about the literal, and it holds whoever declares the slot -- a
+  // prelude callee's slots are filled here rather than by `_widened`, so
+  // `lerpDouble(a, 0, t)` never saw it (9 at ws779). Before the early
+  // return below, because a literal carries no recorded type of its own.
+  // Suffixed, or two unsuffixed float literals make an ambiguous `{float}`.
+  if (value is IrLiteral &&
+      value.type.name == 'int' &&
+      nonNull(slot).name == 'double') {
+    final spelled = IrLiteral('${value.value}.0_f64', const IrType('double'))
+      ..rustType = const IrType('double');
+    return isNullable(slot) ? (IrSome(spelled)..rustType = slot) : spelled;
+  }
   final have0 = value.rustType;
   if (have0 == null) return value;
   // A block that produces a closure -- a tear-off that binds its receiver

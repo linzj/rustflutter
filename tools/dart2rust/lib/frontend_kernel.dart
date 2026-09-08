@@ -8336,6 +8336,12 @@ class KernelFrontend implements TypeWorld {
   static IrExpr _toF64(IrExpr e) {
     if (e.rustType?.name == 'double') return e;
     if (e is IrCast && e.rust == 'f64') return e;
+    // Inside the `Some` the widening already put on: the cast belongs to
+    // the value, not to the `Option` (`(Some(0) as f64)`, ws779).
+    if (e is IrSome) {
+      return IrSome(_toF64(e.value))
+        ..rustType = const IrType('double', nullable: true);
+    }
     // An integer *literal* is written as a float rather than cast: an
     // unsuffixed literal under `as f64` is an `i32` to Rust, and
     // `1000000000000000000 as f64` does not fit one (`NumberFormat.
@@ -8367,7 +8373,13 @@ class KernelFrontend implements TypeWorld {
     // ws763). A `num` slot keeps the callee test below, where an `int` is
     // still an `int` unless the callee's `num` is this output's `f64`.
     if (slot == 'double') {
-      if (value is! IntLiteral) return lowered;
+      // A literal, whichever way it arrives: type flow analysis turns one
+      // into a `ConstantExpression`, and testing only for `IntLiteral`
+      // missed every `lerpDouble(a, 0, t)` in the shape code (9 at ws779).
+      final literal =
+          value is IntLiteral ||
+          (value is ConstantExpression && value.constant is IntConstant);
+      if (!literal) return lowered;
       return _toF64(lowered)..rustType = const IrType('double');
     }
     // A literal, or a value whose static type is `int` (a translated
@@ -8381,7 +8393,12 @@ class KernelFrontend implements TypeWorld {
     if (!isInt) return lowered;
     final member = callee?.parent;
     if (member is! Member) return lowered;
-    if (member.enclosingLibrary.importUri.scheme == 'dart') return lowered;
+    // A *translated* callee's `num` is an `f64` here, whichever library
+    // declares it: `lerpDouble(a, 0, t)` lives in `dart:ui` and its body is
+    // translated, so its `num?` slots really are `Option<f64>` and an `int`
+    // there does not fit. Only a callee the prelude answers keeps its `num`
+    // as it was (9 at ws779).
+    if (!_translatedCallee(callee)) return lowered;
     return _toF64(lowered)..rustType = const IrType('double');
   }
 
