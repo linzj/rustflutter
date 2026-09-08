@@ -9579,8 +9579,18 @@ class RustBackend {
     // which `DartEq` compares by address as Dart compares closures. Left
     // out, the struct had no `PartialEq` at all and nothing generic over
     // it could be called (`_invoke1<PointerDataPacket>`).
+    // ..and a field that *holds* function values anywhere in its type: a
+    // `Map<String, WidgetBuilder>` (`WidgetsApp.routes`) has no
+    // `PartialEq` to derive from, because `Rc<dyn Fn>` has none, and Dart
+    // compares the closures inside it by identity -- which is exactly what
+    // `DartEq` says of them (3 at ws793).
     final byIdentity = _allFields(cls)
-        .where((f) => f.type.isFunction || handle.hasMatch(_fieldType(f)))
+        .where(
+          (f) =>
+              f.type.isFunction ||
+              handle.hasMatch(_fieldType(f)) ||
+              _fieldType(f).contains('dyn Fn'),
+        )
         .toList();
     // ..and every field's own class comparable, recursively: a
     // `VecDeque<_StoredMessage>` of a struct holding a closure derives
