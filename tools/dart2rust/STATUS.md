@@ -588,3 +588,17 @@ by value, so the `_handles` contagion -- "a method that calls a
 `&Rc<Self>` method takes the handle too" -- has nowhere to put the
 handle. Inside an operator, `this` for such a call is the object's own
 `dart_self_ref().get()` (`Vector4::op_mul` calling `clone`, 12 at ws747).
+
+## ws752 — `this` as a handle inside an operator (380 → 363)
+
+The rule committed with ws751, measured: `_handles` is a contagion --
+a method that calls a `&Rc<Self>` method on `this` takes the handle too --
+and an operator cannot join it, because `std::ops` fixes the receiver by
+value. Inside one, `this` for such a call is `dart_self_ref().get()`.
+
+    ws751 380 stubbed, 162 refusals, 64 crates
+    ws752 363 stubbed, 162 refusals, 64 crates   -17, 0 new
+
+17, not the 12 the census showed: the `clone_` blocks were the visible
+part of a bigger set (`op_add`, `op_sub`, `op_neg` on Vector2/3/4 and
+Matrix2/3/4 all clone `this` first).
